@@ -3,6 +3,8 @@
 【硬核教程】LangGraph+ReAct Agent实战：手把手教你玩转高德地图MCP Server全流程！细节拉满，干货满满，小白也能懂！                
 https://youtu.be/rYpCU1cDvvc                      
 对应文件夹:01_ReActAgentAmapMCPServerTest                      
+https://www.bilibili.com/video/BV1V7EfzDERy/                  
+
 
 # 南哥AGI研习社-入门系列（已完结）  
 ## 大模型应用技术开发          
