@@ -3,7 +3,11 @@
 【硬核教程】LangGraph+ReAct Agent实战：手把手教你玩转高德地图MCP Server全流程！细节拉满，干货满满，小白也能懂！                
 https://youtu.be/rYpCU1cDvvc                                  
 https://www.bilibili.com/video/BV1V7EfzDERy/            
-对应文件夹:01_ReActAgentAmapMCPServerTest                   
+对应文件夹:01_ReActAgentAmapMCPServerTest         
+
+AI总犯错？教你给AI装上"人工审查"开关！LangGraph+ReAct Agent实战HIL Review Tool Calls全流程详解（小白友好）           
+https://youtu.be/xdU2BGhdyPo           
+对应文件夹:02_ReActAgentHILTest         
 
 
 # 南哥AGI研习社-入门系列（已完结）  
