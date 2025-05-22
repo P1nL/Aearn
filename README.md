@@ -7,6 +7,7 @@ https://www.bilibili.com/video/BV1V7EfzDERy/
 
 AI总犯错？教你给AI装上"人工审查"开关！LangGraph+ReAct Agent实战HIL Review Tool Calls全流程详解（小白友好）           
 https://youtu.be/xdU2BGhdyPo           
+https://www.bilibili.com/video/BV1YWJWzXEro/              
 对应文件夹:02_ReActAgentHILTest         
 
 
