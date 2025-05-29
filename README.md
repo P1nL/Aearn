@@ -9,6 +9,10 @@ AI总犯错？教你给AI装上"人工审查"开关！LangGraph+ReAct Agent实�
 https://youtu.be/xdU2BGhdyPo           
 https://www.bilibili.com/video/BV1YWJWzXEro/              
 对应文件夹:02_ReActAgentHILTest         
+ 
+告别健忘AI！LangGraph+ReAct Agen长期记忆Long-Term和短期记忆Short-Term Memory集成全流程详解(小白友好)             
+https://youtu.be/6Wo4X1EzFQE            
+对应文件夹:03_ReActAgentMemoryTest       
 
 
 # 南哥AGI研习社-入门系列（已完结）  
