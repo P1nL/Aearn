@@ -12,6 +12,7 @@ https://www.bilibili.com/video/BV1YWJWzXEro/
  
 告别健忘AI！LangGraph+ReAct Agen长期记忆Long-Term和短期记忆Short-Term Memory集成全流程详解(小白友好)             
 https://youtu.be/6Wo4X1EzFQE            
+https://www.bilibili.com/video/BV1uE75zEE2V/             
 对应文件夹:03_ReActAgentMemoryTest       
 
 
