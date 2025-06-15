@@ -15,6 +15,10 @@ https://youtu.be/6Wo4X1EzFQE
 https://www.bilibili.com/video/BV1uE75zEE2V/             
 对应文件夹:03_ReActAgentMemoryTest       
 
+从零构建生产级AI Agent服务:LangGraph+FastAPI实现工具扩展/MCP集成/记忆/人工审查/故障恢复API后端接口服务(含完整前端demo)           
+https://youtu.be/rF9KEzmVt6Y              
+对应文件夹:04_ReActAgentHILApiTest             
+
 
 # 南哥AGI研习社-入门系列（已完结）  
 ## 大模型应用技术开发          
