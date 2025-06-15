@@ -17,6 +17,7 @@ https://www.bilibili.com/video/BV1uE75zEE2V/
 
 从零构建生产级AI Agent服务:LangGraph+FastAPI实现工具扩展/MCP集成/记忆/人工审查/故障恢复API后端接口服务(含完整前端demo)           
 https://youtu.be/rF9KEzmVt6Y              
+https://www.bilibili.com/video/BV1pcMbz9Epz/                   
 对应文件夹:04_ReActAgentHILApiTest             
 
 
