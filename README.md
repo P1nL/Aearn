@@ -23,8 +23,11 @@ https://www.bilibili.com/video/BV1pcMbz9Epz/
 【功能扩展】从零构建生产级AI Agent服务:新增历史会话管理和恢复、长期记忆管理、短期记忆管理、会话过期动态调整 API后端接口服务(含完整前端demo)                 
 https://youtu.be/o47MzUybB3Y                         
 https://www.bilibili.com/video/BV1tuNXzREmc/                                 
-对应文件夹:05_ReActAgentHILApiMultiSessionTest                                  
+对应文件夹:05_ReActAgentHILApiMultiSessionTest                          
 
+【高并发异步调用】从零构建生产级AI Agent服务:历史会话管理和恢复、历史记忆管理、高并发异步调用、任务管理和恢复API后端接口服务(含完整前端demo)          
+https://youtu.be/UZuqBkD9dPc              
+对应文件夹:06_ReActAgentHILApiMultiSessionTaskTest                 
 
 # 南哥AGI研习社-入门系列（已完结）  
 ## 大模型应用技术开发          
