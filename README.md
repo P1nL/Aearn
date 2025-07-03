@@ -27,6 +27,7 @@ https://www.bilibili.com/video/BV1tuNXzREmc/
 
 【高并发异步调用】从零构建生产级AI Agent服务:历史会话管理和恢复、历史记忆管理、高并发异步调用、任务管理和恢复API后端接口服务(含完整前端demo)          
 https://youtu.be/UZuqBkD9dPc              
+https://www.bilibili.com/video/BV1Wb38zNEnx/                  
 对应文件夹:06_ReActAgentHILApiMultiSessionTaskTest                 
 
 # 南哥AGI研习社-入门系列（已完结）  
