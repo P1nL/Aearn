@@ -10,8 +10,7 @@
 - 该文档明确说明当前仓库 `01_` 到 `07_` 目录是历史教程样例，不应继续作为最终应用目录。
 - 正式实现建议新建独立目录：`aearn/`。
 - `docs/` 必须保留为产品、架构、API、数据库、前端交互和验收规格的 source of truth。
-- `07_RefundApprovalAgent/` 只作为 LangChain 1.x、LangGraph 1.x、FastAPI、PostgreSQL checkpoint/store、Redis session 的参考实现。
-- `06_ReActAgentHILApiMultiSessionTaskTest/` 只作为 Celery、Redis task、异步任务状态管理的临时参考。
+- 历史教程代码不再作为当前仓库文件保留，也不作为 Aearn runtime 的默认参考实现。
 - 前一版 “为当前存在的 06 与 07 创建环境” 是错误方案，已废弃，不得执行。
 - 本机只读探测结果：`pwsh`、Git、Docker Compose、Node、pnpm、Rust/Cargo、Python、uv 均可用。
 - 当前 `aearn/` 目录不存在。

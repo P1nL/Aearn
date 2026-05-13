@@ -1,4 +1,4 @@
-# Historical tutorial projects are reference-only for the Aearn runtime.
+# Legacy tutorial project directories should stay out of the Aearn repo.
 01_ReActAgentAmapMCPServerTest/
 02_ReActAgentHILTest/
 03_ReActAgentMemoryTest/
