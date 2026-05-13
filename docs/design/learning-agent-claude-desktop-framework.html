@@ -1,0 +1,2124 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="icon" href="data:,">
+  <title>Aearn · Claude 桌面端框架</title>
+  <style>
+    :root {
+      --bg: #f7f1e8;
+      --sidebar: #eee5d8;
+      --main: #fbf7f0;
+      --panel: #fffaf2;
+      --panel-soft: #f3eadc;
+      --ink: #2b2722;
+      --muted: #7c7166;
+      --faint: #a89c8e;
+      --line: #ded2c1;
+      --line-soft: rgba(222, 210, 193, .54);
+      --line-strong: #c6b59f;
+      --accent: #8f4f32;
+      --accent-dark: #6f3a25;
+      --accent-soft: #ead9ca;
+      --success: #6f6848;
+      --warning: #a66a2a;
+      --radius-xl: 28px;
+      --radius-lg: 20px;
+      --radius-md: 14px;
+      --sidebar-width: 304px;
+      --ease: cubic-bezier(.2, .75, .2, 1);
+      --shadow: 0 24px 80px rgba(60, 48, 36, .14);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      min-height: 100%;
+    }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 18% 0%, rgba(143, 79, 50, .08), transparent 28%),
+        linear-gradient(135deg, #fbf8f2, var(--bg));
+      font-family: "Aptos", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+      text-wrap: pretty;
+    }
+
+    button,
+    textarea,
+    input,
+    select {
+      font: inherit;
+    }
+
+    button {
+      cursor: pointer;
+    }
+
+    a {
+      color: inherit;
+      text-decoration: none;
+    }
+
+    .stage {
+      min-height: 100vh;
+      display: grid;
+      place-items: stretch;
+      padding: 0;
+    }
+
+    .desktop {
+      width: 100%;
+      height: 100vh;
+      min-height: 720px;
+      display: grid;
+      grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+      grid-template-rows: 34px minmax(0, 1fr);
+      overflow: hidden;
+      background: var(--sidebar);
+      transition: grid-template-columns .28s var(--ease);
+    }
+
+    .desktop.sidebar-collapsed {
+      grid-template-columns: 0 minmax(0, 1fr);
+    }
+
+    .app-menu {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      min-width: 0;
+      padding: 0 12px;
+      color: var(--muted);
+      background: var(--sidebar);
+    }
+
+    .menu-left,
+    .menu-right,
+    .window-controls {
+      display: flex;
+      align-items: center;
+    }
+
+    .menu-left {
+      gap: 12px;
+      min-width: 0;
+    }
+
+    .menu-right,
+    .window-controls {
+      gap: 4px;
+    }
+
+    .app-title {
+      overflow: hidden;
+      color: var(--muted);
+      font-size: 13px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .menu-icon,
+    .window-btn,
+    .sidebar-toggle,
+    .icon-btn {
+      display: grid;
+      place-items: center;
+      padding: 0;
+      border: 1px solid transparent;
+      color: var(--muted);
+      background: transparent;
+      line-height: 1;
+    }
+
+    .menu-icon,
+    .window-btn,
+    .sidebar-toggle {
+      width: 24px;
+      height: 24px;
+      border-radius: 6px;
+      font-size: 15px;
+    }
+
+    .menu-icon:hover,
+    .window-btn:hover,
+    .sidebar-toggle:hover,
+    .icon-btn:hover {
+      background: rgba(255, 250, 242, .72);
+      border-color: rgba(116, 96, 70, .16);
+    }
+
+    .sidebar-toggle img {
+      width: 18px;
+      height: 18px;
+      object-fit: contain;
+      opacity: .76;
+    }
+
+    .settings-top svg {
+      display: block;
+      width: 15px;
+      height: 15px;
+      pointer-events: none;
+    }
+
+    .sidebar {
+      width: var(--sidebar-width);
+      display: grid;
+      grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+      gap: 16px;
+      min-width: 0;
+      overflow: hidden;
+      padding: 22px 18px;
+      background: var(--sidebar);
+      transition:
+        opacity .18s var(--ease),
+        transform .28s var(--ease);
+      will-change: opacity, transform;
+    }
+
+    .sidebar.no-context {
+      grid-template-rows: auto auto minmax(0, 1fr) auto;
+    }
+
+    .desktop.sidebar-collapsed .sidebar {
+      opacity: 0;
+      transform: translateX(-18px);
+      pointer-events: none;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-height: 34px;
+      padding: 0 4px;
+      font-weight: 850;
+    }
+
+    .mark {
+      width: 28px;
+      height: 28px;
+      display: grid;
+      place-items: center;
+      flex: 0 0 auto;
+      border-radius: 10px;
+      color: #fffaf2;
+      background: var(--accent);
+      font-size: 14px;
+      font-weight: 900;
+    }
+
+    .brand-name {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .new-goal {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      min-height: 44px;
+      padding: 0 14px;
+      border: 1px solid var(--line-strong);
+      border-radius: var(--radius-md);
+      color: var(--ink);
+      background: rgba(255, 250, 242, .62);
+      font-size: 14px;
+      font-weight: 750;
+      transition: background .18s var(--ease), transform .18s var(--ease);
+    }
+
+    .new-goal:hover {
+      background: rgba(255, 250, 242, .9);
+      transform: translateY(-1px);
+    }
+
+    .nav {
+      display: grid;
+      align-content: start;
+      gap: 4px;
+    }
+
+    .nav button {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      width: 100%;
+      min-height: 34px;
+      padding: 0 12px;
+      border: 0;
+      border-radius: 12px;
+      color: var(--muted);
+      background: transparent;
+      text-align: left;
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .nav button:hover,
+    .nav button.active {
+      color: var(--ink);
+      background: rgba(255, 250, 242, .7);
+    }
+
+    .nav-group {
+      display: grid;
+      gap: 2px;
+    }
+
+    .nav-trigger {
+      position: relative;
+    }
+
+    .nav-chevron {
+      margin-left: auto;
+      color: var(--muted);
+      font-size: 12px;
+      transform: rotate(0);
+      transition: transform .18s var(--ease);
+    }
+
+    .nav-group.open > .nav-trigger .nav-chevron {
+      transform: rotate(90deg);
+    }
+
+    .submenu {
+      display: grid;
+      grid-template-rows: 0fr;
+      overflow: hidden;
+      opacity: 0;
+      transition: grid-template-rows .22s var(--ease), opacity .18s var(--ease);
+    }
+
+    .nav-group.open > .submenu {
+      grid-template-rows: 1fr;
+      opacity: 1;
+    }
+
+    .submenu-inner {
+      min-height: 0;
+      overflow: hidden;
+      display: grid;
+      gap: 2px;
+      padding: 0 0 0 30px;
+    }
+
+    .nav-group.open > .submenu > .submenu-inner {
+      padding: 2px 0 6px 30px;
+    }
+
+    .submenu .nav-link {
+      min-height: 30px;
+      padding: 0 10px;
+      border-radius: 10px;
+      font-size: 12px;
+      font-weight: 760;
+    }
+
+    .submenu .nav-dot {
+      width: 6px;
+      height: 6px;
+    }
+
+    .nav-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: currentColor;
+      opacity: .55;
+    }
+
+    .nav button.active .nav-dot {
+      color: var(--accent);
+      opacity: 1;
+    }
+
+    .nav-spacer {
+      height: 4px;
+    }
+
+    .side-context {
+      min-height: 0;
+      overflow: auto;
+      padding: 4px 2px 0;
+    }
+
+    .side-context h2 {
+      margin: 0 4px 12px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 850;
+      letter-spacing: .03em;
+    }
+
+    .context-stack {
+      display: grid;
+      gap: 10px;
+    }
+
+    .trace-card,
+    .route-card,
+    .review-mini,
+    .note-mini,
+    .settings-mini {
+      padding: 12px;
+      border: 1px solid rgba(198, 181, 159, .54);
+      border-radius: 16px;
+      background: rgba(255, 250, 242, .46);
+    }
+
+    .trace-card {
+      display: grid;
+      grid-template-columns: 8px minmax(0, 1fr);
+      gap: 10px;
+    }
+
+    .trace-dot {
+      width: 8px;
+      height: 8px;
+      margin-top: 4px;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 0 5px rgba(143, 79, 50, .08);
+    }
+
+    .trace-title,
+    .mini-title {
+      margin: 0 0 5px;
+      font-size: 13px;
+      font-weight: 850;
+      line-height: 1.25;
+    }
+
+    .trace-body,
+    .mini-body {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .route-card.active,
+    .review-mini.active,
+    .note-mini.active,
+    .settings-mini.active {
+      border-color: rgba(143, 79, 50, .26);
+      background: var(--accent-soft);
+    }
+
+    .route-card {
+      display: grid;
+      grid-template-columns: 24px minmax(0, 1fr);
+      gap: 10px;
+      align-items: start;
+    }
+
+    .route-index {
+      display: grid;
+      place-items: center;
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      color: var(--muted);
+      background: rgba(255, 250, 242, .72);
+      font-size: 12px;
+      font-weight: 850;
+    }
+
+    .route-card.active .route-index {
+      color: #fffaf2;
+      background: var(--accent);
+    }
+
+    .progress {
+      height: 6px;
+      overflow: hidden;
+      border-radius: 999px;
+      background: rgba(96, 78, 56, .14);
+    }
+
+    .progress span {
+      display: block;
+      width: 36%;
+      height: 100%;
+      border-radius: inherit;
+      background: var(--accent);
+    }
+
+    .sidebar-footer {
+      display: grid;
+      gap: 10px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .main {
+      position: relative;
+      display: grid;
+      grid-template-rows: 58px minmax(0, 1fr) auto;
+      min-width: 0;
+      overflow: hidden;
+      border-top-left-radius: 24px;
+      background: var(--main);
+    }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      padding: 0 28px;
+      border-bottom: 0;
+    }
+
+    .crumb {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .screen {
+      position: relative;
+      display: none;
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    .screen.active {
+      display: block;
+    }
+
+    .screen-scroll {
+      height: 100%;
+      overflow: auto;
+      padding: 34px 28px 28px;
+    }
+
+    h1,
+    h2,
+    h3,
+    p {
+      margin-top: 0;
+    }
+
+    h1 {
+      max-width: 740px;
+      margin-bottom: 10px;
+      font-size: clamp(34px, 4.3vw, 58px);
+      line-height: .98;
+      letter-spacing: -.06em;
+    }
+
+    h2 {
+      margin-bottom: 12px;
+      font-size: 20px;
+      line-height: 1.16;
+      letter-spacing: -.02em;
+    }
+
+    h3 {
+      margin-bottom: 6px;
+      font-size: 14px;
+      line-height: 1.25;
+    }
+
+    p {
+      color: var(--muted);
+      font-size: 15px;
+      line-height: 1.62;
+    }
+
+    .kicker {
+      margin-bottom: 8px;
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 900;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+
+    .btn {
+      min-height: 42px;
+      padding: 0 14px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      color: var(--ink);
+      background: var(--panel-soft);
+      font-size: 14px;
+      font-weight: 850;
+      transition: transform .16s var(--ease), background .16s var(--ease), border-color .16s var(--ease);
+    }
+
+    .btn:hover {
+      transform: translateY(-1px);
+      background: #f8efe3;
+      border-color: var(--line-strong);
+    }
+
+    .btn.primary {
+      color: #fffaf2;
+      border-color: var(--accent);
+      background: var(--accent);
+    }
+
+    .btn.primary:hover {
+      background: var(--accent-dark);
+    }
+
+    .btn.ghost {
+      background: transparent;
+    }
+
+    .btn.small {
+      min-height: 30px;
+      padding: 0 10px;
+      border-radius: 10px;
+      font-size: 12px;
+    }
+
+    .cluster {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .stack {
+      display: grid;
+      gap: 14px;
+    }
+
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      min-height: 26px;
+      padding: 0 10px;
+      border: 1px solid rgba(198, 181, 159, .68);
+      border-radius: 999px;
+      color: var(--muted);
+      background: rgba(255, 250, 242, .62);
+      font-size: 12px;
+      font-weight: 820;
+      white-space: nowrap;
+    }
+
+    .tag.strong {
+      color: var(--accent);
+      border-color: rgba(143, 79, 50, .26);
+      background: rgba(234, 217, 202, .72);
+    }
+
+    .tag.warn {
+      color: var(--warning);
+      border-color: rgba(166, 106, 42, .28);
+      background: rgba(240, 219, 185, .66);
+    }
+
+    .panel {
+      border: 1px solid rgba(222, 210, 193, .88);
+      border-radius: var(--radius-lg);
+      background: rgba(255, 250, 242, .72);
+      box-shadow: 0 16px 42px rgba(60, 48, 36, .06);
+    }
+
+    .panel.pad {
+      padding: 20px;
+    }
+
+    .panel-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 14px;
+      margin-bottom: 16px;
+    }
+
+    .meta {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 760;
+      line-height: 1.5;
+    }
+
+    .text-field,
+    .textarea,
+    .select {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      outline: none;
+      color: var(--ink);
+      background: rgba(251, 247, 240, .74);
+    }
+
+    .text-field,
+    .select {
+      min-height: 44px;
+      padding: 0 14px;
+    }
+
+    .textarea {
+      min-height: 140px;
+      resize: vertical;
+      padding: 14px;
+      line-height: 1.55;
+    }
+
+    .text-field:focus,
+    .textarea:focus,
+    .select:focus {
+      border-color: rgba(143, 79, 50, .56);
+      box-shadow: 0 0 0 4px rgba(143, 79, 50, .08);
+    }
+
+    .conversation {
+      position: relative;
+      display: grid;
+      grid-template-columns: minmax(32px, 1fr) minmax(0, 860px) minmax(32px, 1fr);
+      min-height: 0;
+      overflow: auto;
+      padding: 34px 0 26px;
+    }
+
+    .thread {
+      grid-column: 2;
+      display: grid;
+      align-content: start;
+      gap: 22px;
+    }
+
+    .lesson-title {
+      padding: 16px 0 8px;
+    }
+
+    .lesson-title p {
+      max-width: 520px;
+      margin: 0;
+    }
+
+    .message {
+      display: grid;
+      grid-template-columns: 34px minmax(0, 1fr);
+      gap: 14px;
+      max-width: 780px;
+      animation: rise .4s var(--ease) both;
+    }
+
+    .avatar {
+      display: grid;
+      place-items: center;
+      width: 34px;
+      height: 34px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      color: var(--accent);
+      background: var(--panel);
+      font-size: 13px;
+      font-weight: 900;
+    }
+
+    .message.user {
+      justify-self: end;
+      grid-template-columns: minmax(0, 1fr) 34px;
+      max-width: 560px;
+    }
+
+    .message.user .avatar {
+      grid-column: 2;
+      grid-row: 1;
+      color: var(--muted);
+    }
+
+    .bubble {
+      padding: 16px 18px;
+      border-radius: 18px;
+      color: var(--ink);
+      background: transparent;
+    }
+
+    .message.user .bubble {
+      grid-column: 1;
+      grid-row: 1;
+      background: var(--panel);
+    }
+
+    .bubble-label {
+      margin-bottom: 8px;
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 850;
+    }
+
+    .bubble p {
+      margin: 0;
+    }
+
+    .tool-card {
+      margin-top: 12px;
+      padding: 12px 14px;
+      border-radius: 14px;
+      color: var(--muted);
+      background: rgba(255, 250, 242, .58);
+      font-size: 13px;
+    }
+
+    .composer-wrap {
+      padding: 0 28px 26px;
+      background: linear-gradient(180deg, rgba(251, 247, 240, 0), var(--main) 22%);
+    }
+
+    .composer {
+      width: min(860px, 100%);
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto auto;
+      align-items: end;
+      gap: 10px;
+      padding: 10px;
+      border: 1px solid rgba(143, 79, 50, .22);
+      border-radius: 24px;
+      background: var(--panel);
+      box-shadow: 0 14px 34px rgba(60, 48, 36, .08);
+    }
+
+    .composer textarea {
+      width: 100%;
+      min-height: 54px;
+      max-height: 34vh;
+      resize: vertical;
+      border: 0;
+      outline: none;
+      padding: 14px;
+      color: var(--ink);
+      background: transparent;
+      line-height: 1.5;
+    }
+
+    .send-btn {
+      display: grid;
+      place-items: center;
+      width: 34px;
+      height: 34px;
+      min-height: 34px;
+      padding: 0;
+      border-radius: 50%;
+      font-size: 16px;
+      line-height: 1;
+    }
+
+    .send-btn:hover {
+      transform: none;
+      background: var(--accent);
+    }
+
+    .note-inline-btn img {
+      width: 20px;
+      height: 20px;
+      object-fit: contain;
+      filter: brightness(0) invert(1);
+      opacity: .9;
+    }
+
+    .split-workspace {
+      height: 100%;
+      display: grid;
+      grid-template-columns: minmax(0, .92fr) 1px minmax(320px, .78fr);
+      gap: 0;
+      overflow: hidden;
+    }
+
+    .split-pane {
+      min-width: 0;
+      min-height: 0;
+      overflow: auto;
+      padding: 34px;
+    }
+
+    .split-divider {
+      width: 1px;
+      background: linear-gradient(180deg, transparent, rgba(198, 181, 159, .74), transparent);
+    }
+
+    .onboarding-chat {
+      display: grid;
+      gap: 18px;
+      max-width: 720px;
+    }
+
+    .onboarding-conversation {
+      height: 100%;
+      padding: 0;
+      grid-template-columns: minmax(0, 1fr);
+      grid-template-rows: minmax(0, 1fr) auto;
+    }
+
+    .onboarding-conversation .thread {
+      grid-column: 1;
+      max-width: 780px;
+      overflow: auto;
+    }
+
+    .onboarding-composer {
+      grid-column: 1;
+      max-width: 780px;
+      margin: 0;
+    }
+
+    .mode-switch {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      padding: 6px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: rgba(243, 234, 220, .62);
+    }
+
+    .mode-btn {
+      min-height: 42px;
+      border: 0;
+      border-radius: 13px;
+      color: var(--muted);
+      background: transparent;
+      font-weight: 850;
+    }
+
+    .mode-btn.active {
+      color: var(--ink);
+      background: var(--panel);
+      box-shadow: 0 8px 20px rgba(60, 48, 36, .08);
+    }
+
+    .draft-route {
+      display: grid;
+      gap: 14px;
+    }
+
+    .draft-module {
+      display: grid;
+      grid-template-columns: 38px minmax(0, 1fr) auto;
+      gap: 12px;
+      align-items: center;
+      padding: 14px;
+      border: 1px solid rgba(222, 210, 193, .76);
+      border-radius: 18px;
+      background: rgba(255, 250, 242, .58);
+    }
+
+    .draft-module.active {
+      border-color: rgba(143, 79, 50, .28);
+      background: rgba(234, 217, 202, .56);
+    }
+
+    .module-index {
+      display: grid;
+      place-items: center;
+      width: 34px;
+      height: 34px;
+      border-radius: 50%;
+      color: var(--accent);
+      background: var(--panel);
+      font-weight: 900;
+    }
+
+    .time-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .time-card,
+    .score-card,
+    .setting-card,
+    .knowledge-card,
+    .language-card {
+      border: 1px solid rgba(222, 210, 193, .76);
+      border-radius: 16px;
+      background: rgba(255, 250, 242, .58);
+    }
+
+    .time-card,
+    .score-card,
+    .setting-card,
+    .knowledge-card,
+    .language-card {
+      padding: 14px;
+    }
+
+    .review-screen {
+      height: 100%;
+      display: grid;
+      grid-template-rows: minmax(0, 1fr) auto;
+      overflow: hidden;
+    }
+
+    .review-thread-wrap {
+      position: relative;
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    .risk-meter {
+      height: 7px;
+      overflow: hidden;
+      border-radius: 999px;
+      background: rgba(96, 78, 56, .12);
+    }
+
+    .risk-meter span {
+      display: block;
+      height: 100%;
+      border-radius: inherit;
+      background: var(--accent);
+    }
+
+    .notes-layout {
+      height: 100%;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      padding: 34px;
+      overflow: hidden;
+    }
+
+    .note-editor-panel {
+      min-height: 0;
+      overflow: auto;
+    }
+
+    .note-editor-panel {
+      position: relative;
+      display: grid;
+      grid-template-rows: minmax(0, 1fr);
+    }
+
+    .note-content-editor {
+      min-height: 0;
+      height: 100%;
+      resize: none;
+      padding: 22px;
+      border: 1px solid rgba(198, 181, 159, .72);
+      border-radius: 22px;
+      outline: none;
+      color: var(--ink);
+      background:
+        linear-gradient(90deg, rgba(143, 79, 50, .045) 1px, transparent 1px),
+        linear-gradient(180deg, rgba(143, 79, 50, .035) 1px, transparent 1px),
+        rgba(255, 250, 242, .82);
+      background-size: 28px 28px;
+      font-size: 15px;
+      line-height: 1.72;
+    }
+
+    .settings-screen {
+      height: 100%;
+      overflow: auto;
+      padding: 34px;
+    }
+
+    .settings-tabs {
+      display: flex;
+      gap: 10px;
+      max-width: 100%;
+      overflow-x: auto;
+      padding: 6px 0 16px;
+    }
+
+    .settings-tab {
+      min-width: 128px;
+      min-height: 46px;
+      padding: 0 16px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      color: var(--muted);
+      background: rgba(255, 250, 242, .52);
+      font-weight: 850;
+      white-space: nowrap;
+    }
+
+    .settings-tab.active {
+      color: var(--ink);
+      border-color: rgba(143, 79, 50, .28);
+      background: var(--accent-soft);
+    }
+
+    .settings-content {
+      display: grid;
+      grid-template-columns: minmax(0, .88fr) minmax(320px, .72fr);
+      gap: 18px;
+      align-items: start;
+    }
+
+    .settings-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .drawer-scrim {
+      position: absolute;
+      inset: 58px 0 0;
+      z-index: 5;
+      pointer-events: none;
+      opacity: 0;
+      background: linear-gradient(180deg, rgba(43, 39, 34, 0), rgba(43, 39, 34, .08));
+      transition: opacity .24s var(--ease);
+    }
+
+    .drawer-scrim.open {
+      pointer-events: auto;
+      opacity: 1;
+    }
+
+    .drawer {
+      position: absolute;
+      right: 28px;
+      bottom: 0;
+      left: 28px;
+      z-index: 6;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      gap: 12px;
+      width: min(860px, calc(100% - 56px));
+      height: calc((100% - 58px) * .44);
+      min-height: 270px;
+      margin: 0 auto;
+      padding: 20px 20px 18px;
+      border: 1px solid var(--line-strong);
+      border-radius: 24px 24px 0 0;
+      background: rgba(255, 250, 242, .97);
+      box-shadow: 0 28px 76px rgba(60, 48, 36, .18);
+      transform: translateY(calc(100% + 140px));
+      transition: transform .34s var(--ease);
+      backdrop-filter: blur(18px);
+    }
+
+    .drawer.open {
+      transform: translateY(0);
+    }
+
+    .drawer-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+    }
+
+    .drawer h2 {
+      margin: 0;
+    }
+
+    .note-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 750;
+    }
+
+    .icon-btn {
+      width: 32px;
+      height: 32px;
+      border-radius: 10px;
+      color: var(--accent);
+      background: var(--panel-soft);
+      font-weight: 900;
+    }
+
+    .drawer-editor {
+      min-height: 0;
+      height: 100%;
+      max-height: none;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: var(--main);
+      resize: none;
+      padding: 14px;
+      outline: none;
+      line-height: 1.6;
+    }
+
+    .platform-row {
+      display: flex;
+      gap: 10px;
+      overflow-x: auto;
+      padding-bottom: 4px;
+    }
+
+    .platform-btn {
+      flex: 0 0 auto;
+      min-width: 112px;
+      min-height: 42px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      color: var(--muted);
+      background: rgba(243, 234, 220, .72);
+      font-weight: 850;
+    }
+
+    .platform-btn.active {
+      color: var(--ink);
+      border-color: rgba(143, 79, 50, .28);
+      background: var(--accent-soft);
+    }
+
+    .publish-draft {
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      gap: 12px;
+      min-height: 0;
+    }
+
+    @keyframes rise {
+      from {
+        opacity: 0;
+        transform: translateY(8px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    @media (max-width: 1180px) {
+      .split-workspace,
+      .notes-layout,
+      .settings-content {
+        grid-template-columns: 1fr;
+      }
+
+      .split-divider {
+        width: auto;
+        height: 1px;
+      }
+
+    }
+
+    @media (max-width: 980px) {
+      .desktop,
+      .desktop.sidebar-collapsed {
+        height: auto;
+        min-height: 100vh;
+        grid-template-columns: 1fr;
+        grid-template-rows: 34px auto minmax(0, 1fr);
+      }
+
+      .sidebar {
+        width: 100%;
+        max-height: 460px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .desktop.sidebar-collapsed .sidebar {
+        max-height: 0;
+        padding: 0 18px;
+      }
+
+      .main {
+        min-height: calc(100vh - 34px);
+        border-top-left-radius: 0;
+      }
+
+      .conversation {
+        grid-template-columns: 18px minmax(0, 1fr) 18px;
+      }
+
+      .time-grid,
+      .settings-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .split-pane,
+      .notes-layout,
+      .settings-screen {
+        padding: 22px 18px;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *,
+      *::before,
+      *::after {
+        animation-duration: .01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: .01ms !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="stage">
+    <section class="desktop" id="desktop" aria-label="Claude 桌面端风格 Aearn 框架">
+      <header class="app-menu" aria-label="桌面应用菜单栏">
+        <div class="menu-left">
+          <button class="sidebar-toggle" id="sidebarToggle" type="button" aria-label="折叠左侧栏" aria-expanded="true">
+            <img src="assets/sidebar.png" alt="">
+          </button>
+          <div class="app-title">AI Code Learning</div>
+        </div>
+        <div class="menu-right">
+          <button class="menu-icon settings-top" id="topSettings" type="button" aria-label="设置">
+            <svg width="15" height="15" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 15.4a3.4 3.4 0 1 0 0-6.8 3.4 3.4 0 0 0 0 6.8Z" fill="none" stroke="currentColor" stroke-width="2"/>
+              <path d="M19.3 13.5c.1-.5.1-1 .1-1.5s0-1-.1-1.5l2-1.5-2-3.5-2.4 1a7 7 0 0 0-2.6-1.5L14 2.4h-4L9.7 5a7 7 0 0 0-2.6 1.5l-2.4-1-2 3.5 2 1.5a8.6 8.6 0 0 0 0 3l-2 1.5 2 3.5 2.4-1a7 7 0 0 0 2.6 1.5l.3 2.6h4l.3-2.6a7 7 0 0 0 2.6-1.5l2.4 1 2-3.5-2-1.5Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+            </svg>
+          </button>
+          <div class="window-controls" aria-hidden="true">
+            <span class="window-btn">−</span>
+            <span class="window-btn">□</span>
+            <span class="window-btn">×</span>
+          </div>
+        </div>
+      </header>
+
+      <aside class="sidebar" aria-label="应用侧边栏">
+        <div class="brand">
+          <span class="mark">A</span>
+          <span class="brand-name">AI Code Learning</span>
+        </div>
+
+        <button class="new-goal" id="newGoal" type="button">
+          <span>新编程目标</span>
+          <span>+</span>
+        </button>
+
+        <nav class="nav" aria-label="主导航">
+          <section class="nav-group open" data-group="learn">
+            <button class="nav-trigger nav-link active" type="button" data-route="home" aria-expanded="true">
+              <span class="nav-dot"></span>
+              <span>学习</span>
+              <span class="nav-chevron">›</span>
+            </button>
+            <div class="submenu">
+              <div class="submenu-inner">
+                <button class="nav-link active" type="button" data-route="home">
+                  <span class="nav-dot"></span>
+                  <span>DOM 事件补全</span>
+                </button>
+                <button class="nav-link" type="button" data-route="home">
+                  <span class="nav-dot"></span>
+                  <span>HTML / CSS 选择器</span>
+                </button>
+                <button class="nav-link" type="button" data-route="home">
+                  <span class="nav-dot"></span>
+                  <span>Python 函数测试</span>
+                </button>
+              </div>
+            </div>
+          </section>
+          <section class="nav-group open" data-group="review">
+            <button class="nav-trigger nav-link" type="button" data-route="review" aria-expanded="true">
+              <span class="nav-dot"></span>
+              <span>复习</span>
+              <span class="nav-chevron">›</span>
+            </button>
+            <div class="submenu">
+              <div class="submenu-inner">
+                <button class="nav-link" type="button" data-route="review">
+                  <span class="nav-dot"></span>
+                  <span>今日错因复习</span>
+                </button>
+                <button class="nav-link" type="button" data-route="review">
+                  <span class="nav-dot"></span>
+                  <span>薄弱代码点</span>
+                </button>
+              </div>
+            </div>
+          </section>
+          <section class="nav-group" data-group="notes">
+            <button class="nav-trigger nav-link" type="button" data-route="notes" aria-expanded="false">
+              <span class="nav-dot"></span>
+              <span>笔记</span>
+              <span class="nav-chevron">›</span>
+            </button>
+            <div class="submenu">
+              <div class="submenu-inner">
+                <section class="nav-group nested" data-group="notes-python">
+                  <button class="nav-trigger nav-link" type="button" data-route="notes" aria-expanded="false">
+                    <span class="nav-dot"></span>
+                    <span>Python</span>
+                    <span class="nav-chevron">›</span>
+                  </button>
+                  <div class="submenu">
+                    <div class="submenu-inner">
+                      <button class="nav-link" type="button" data-route="notes">
+                        <span class="nav-dot"></span>
+                        <span>DOM 事件补全</span>
+                      </button>
+                      <button class="nav-link" type="button" data-route="notes">
+                        <span class="nav-dot"></span>
+                        <span>Python 返回值</span>
+                      </button>
+                      <button class="nav-link" type="button" data-route="notes">
+                        <span class="nav-dot"></span>
+                        <span>测试断言</span>
+                      </button>
+                    </div>
+                  </div>
+                </section>
+                <section class="nav-group nested" data-group="notes-javascript">
+                  <button class="nav-trigger nav-link" type="button" data-route="notes" aria-expanded="false">
+                    <span class="nav-dot"></span>
+                    <span>JavaScript</span>
+                    <span class="nav-chevron">›</span>
+                  </button>
+                  <div class="submenu">
+                    <div class="submenu-inner">
+                      <button class="nav-link" type="button" data-route="notes">
+                        <span class="nav-dot"></span>
+                        <span>按钮点击计数</span>
+                      </button>
+                      <button class="nav-link" type="button" data-route="notes">
+                        <span class="nav-dot"></span>
+                        <span>输入框字数统计</span>
+                      </button>
+                    </div>
+                  </div>
+                </section>
+                <section class="nav-group nested" data-group="notes-sql">
+                  <button class="nav-trigger nav-link" type="button" data-route="notes" aria-expanded="false">
+                    <span class="nav-dot"></span>
+                    <span>SQL</span>
+                    <span class="nav-chevron">›</span>
+                  </button>
+                  <div class="submenu">
+                    <div class="submenu-inner">
+                      <button class="nav-link" type="button" data-route="notes">
+                        <span class="nav-dot"></span>
+                        <span>查询结果校验</span>
+                      </button>
+                    </div>
+                  </div>
+                </section>
+              </div>
+            </div>
+          </section>
+        </nav>
+
+        <section class="side-context" id="sideContext" aria-live="polite"></section>
+
+        <footer class="sidebar-footer">
+          <div class="progress" aria-label="总进度 36%"><span></span></div>
+          <span id="sidebarHint">今晚 20:30 继续</span>
+        </footer>
+      </aside>
+
+      <section class="main" aria-label="工作区">
+        <header class="topbar">
+          <div class="crumb" id="crumb">JavaScript DOM / 事件补全</div>
+        </header>
+
+        <section class="screen" id="onboardingScreen" aria-label="首次建档">
+          <div class="split-workspace">
+            <div class="split-pane">
+              <section class="conversation onboarding-conversation" aria-label="建档对话">
+                <div class="thread">
+                  <article class="message agent">
+                    <div class="avatar">A</div>
+                    <div class="bubble">
+                      <div class="bubble-label">Agent</div>
+                      <p>先告诉我你想学哪门语言，以及你希望学完后能独立完成什么代码任务。</p>
+                    </div>
+                  </article>
+
+                  <article class="message user">
+                    <div class="avatar">你</div>
+                    <div class="bubble">
+                      <p>我想系统学 JavaScript/HTML/CSS 和一点 Python，能看懂 AI 生成代码、自己补全交互并用测试验证。</p>
+                    </div>
+                  </article>
+
+                  <article class="message agent">
+                    <div class="avatar">A</div>
+                    <div class="bubble">
+                      <div class="bubble-label">Agent</div>
+                      <p>我会先把路线拆成 HTML/CSS 基础、DOM 事件、Python 函数测试、AI 生成代码理解、调试小项目五段。右侧会随着澄清实时更新。</p>
+                    </div>
+                  </article>
+                </div>
+
+                <div class="composer onboarding-composer">
+                  <textarea aria-label="建档输入">我每天晚上有 45 分钟，目标是先能补全小题并看懂测试失败原因，不追求一次学完所有语言。</textarea>
+                  <button class="btn primary" id="finishOnboarding" type="button">确认</button>
+                  <button class="btn primary send-btn" type="button" aria-label="发送建档回复">↑</button>
+                </div>
+              </section>
+            </div>
+            <div class="split-divider" aria-hidden="true"></div>
+            <div class="split-pane">
+              <div class="stack">
+                <div>
+                  <div class="kicker">Live Plan Draft</div>
+                  <p>右侧只展示草稿。确认后才会写入正式练习计划，并在主页开始执行。</p>
+                </div>
+                <div class="draft-route">
+                  <article class="draft-module active">
+                    <span class="module-index">1</span>
+                    <div>
+                      <h3>HTML 结构与 CSS 选择器</h3>
+                      <span class="meta">建立页面结构、选择器和实时预览的共同语言</span>
+                    </div>
+                    <span class="tag strong">保留</span>
+                  </article>
+                  <article class="draft-module">
+                    <span class="module-index">2</span>
+                    <div>
+                      <h3>JavaScript DOM 事件</h3>
+                      <span class="meta">理解事件监听、状态变量和输出更新</span>
+                    </div>
+                    <span class="tag warn">主干</span>
+                  </article>
+                  <article class="draft-module">
+                    <span class="module-index">3</span>
+                    <div>
+                      <h3>Python 函数与测试</h3>
+                      <span class="meta">将补全结果与断言、测试反馈连接</span>
+                    </div>
+                    <span class="tag">新增</span>
+                  </article>
+                  <article class="draft-module">
+                    <span class="module-index">4</span>
+                    <div>
+                      <h3>AI 生成代码理解</h3>
+                      <span class="meta">识别关键路径、冗余代码和可验证修改</span>
+                    </div>
+                    <span class="tag">可压缩</span>
+                  </article>
+                  <article class="draft-module">
+                    <span class="module-index">5</span>
+                    <div>
+                      <h3>调试一个小型页面</h3>
+                      <span class="meta">用完整练习完成运行、测试和复盘</span>
+                    </div>
+                    <span class="tag">终局</span>
+                  </article>
+                </div>
+
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="screen" id="homeScreen" aria-label="学习页">
+            <section class="conversation" aria-label="Agent 代码练习对话">
+              <div class="thread" id="homeThread">
+                <div class="lesson-title">
+                  <p>今天只解决一个问题：状态变量应该放在哪里，测试为什么会失败。</p>
+                </div>
+
+              <article class="message agent">
+                <div class="avatar">A</div>
+                <div class="bubble">
+                  <div class="bubble-label">Agent</div>
+                  <p>先找到按钮和输出节点，再补事件监听。不要直接复制 AI 完整答案，先写最小可运行代码。</p>
+                  <div class="tool-card">当前练习：DOM 点击计数 · 测试 2/3</div>
+                </div>
+              </article>
+
+              <article class="message user">
+                <div class="avatar">你</div>
+                <div class="bubble">
+                  <p>我把 `let count = 0` 写在点击函数里，为什么测试说连续点击失败？</p>
+                </div>
+              </article>
+
+              <article class="message agent">
+                <div class="avatar">A</div>
+                <div class="bubble">
+                  <div class="bubble-label">Agent</div>
+                  <p>因为每次点击都会重新创建 `count`。把它移到监听器外层，让多次点击共享同一个状态，再运行测试验证。</p>
+                </div>
+              </article>
+            </div>
+          </section>
+        </section>
+
+        <section class="screen" id="reviewScreen" aria-label="复习页">
+          <div class="review-screen">
+            <div class="review-thread-wrap">
+              <section class="conversation" aria-label="复习新会话">
+                <div class="thread" id="reviewThread">
+                  <div class="lesson-title">
+                    <p>这是一个独立新会话，避免和当前代码练习互相干扰。输入栏保持与主页一致。</p>
+                  </div>
+
+                  <article class="message agent">
+                    <div class="avatar">A</div>
+                    <div class="bubble">
+                      <div class="bubble-label">Agent</div>
+                      <p>把“按钮点击计数”迁移成“输入框字数统计”，并解释为什么状态变量不能放进事件函数内部。</p>
+                      <div class="tool-card">复习目标：事件状态生命周期 · 遗忘风险 78%</div>
+                    </div>
+                  </article>
+
+                  <article class="message user">
+                    <div class="avatar">你</div>
+                    <div class="bubble">
+                      <p>状态变量要放在监听器外层，事件触发时只更新它；如果放进函数内部，每次输入都会重新初始化。</p>
+                    </div>
+                  </article>
+                </div>
+              </section>
+            </div>
+          </div>
+        </section>
+
+        <section class="screen" id="notesScreen" aria-label="笔记页">
+          <div class="notes-layout">
+            <section class="note-editor-panel" aria-label="Markdown 笔记书写区域">
+              <textarea class="note-content-editor" id="notePageEditor" aria-label="Markdown 笔记书写区域"># DOM 点击计数
+
+Attempt 1:
+把 `let count = 0` 写在 click 回调内部，连续点击测试失败。
+
+Attempt 2:
+把 `count` 放到监听器外层，click 回调只负责累加和更新 `textContent`。
+
+测试结果：
+1. 初始值显示 0，通过。
+2. 点击一次显示 1，通过。
+3. 连续点击三次显示 3，通过。
+
+错因：
+状态变量放进事件函数内部会在每次事件触发时重新初始化。</textarea>
+            </section>
+          </div>
+        </section>
+
+        <section class="screen" id="settingsScreen" aria-label="设置页">
+          <div class="settings-screen">
+            <div class="kicker">Settings</div>
+            <p>横向列表包含外观、模型设置、通知设置、Attempt 记录配置、练习设置和关于。</p>
+
+            <div class="settings-tabs" role="tablist" aria-label="设置分类">
+              <button class="settings-tab active" type="button" data-settings="appearance">外观</button>
+              <button class="settings-tab" type="button" data-settings="model">模型设置</button>
+              <button class="settings-tab" type="button" data-settings="notification">通知设置</button>
+              <button class="settings-tab" type="button" data-settings="memory">Attempt 记录配置</button>
+              <button class="settings-tab" type="button" data-settings="notes">练习设置</button>
+              <button class="settings-tab" type="button" data-settings="about">关于</button>
+            </div>
+
+            <div class="settings-content">
+              <section class="panel pad stack">
+                <div class="panel-head">
+                  <div>
+                    <h2 id="settingsTitle">外观</h2>
+                    <span class="meta" id="settingsMeta">控制桌面端视觉密度和主题偏好</span>
+                  </div>
+                  <button class="btn primary" type="button">保存设置</button>
+                </div>
+                <div class="settings-grid" id="settingsGrid">
+                  <article class="setting-card">
+                    <h3>主题</h3>
+                    <p>奶油色 Claude Desktop 风格</p>
+                  </article>
+                  <article class="setting-card">
+                    <h3>内容密度</h3>
+                    <p>宽松，减少学习焦虑</p>
+                  </article>
+                  <article class="setting-card">
+                    <h3>动效</h3>
+                    <p>轻量淡入和抽屉滑入</p>
+                  </article>
+                  <article class="setting-card">
+                    <h3>侧栏</h3>
+                    <p>默认展开，可折叠</p>
+                  </article>
+                </div>
+              </section>
+              <aside class="panel pad stack">
+                <h2>当前配置摘要</h2>
+                <div class="settings-mini active">
+                  <h3 class="mini-title">提示策略</h3>
+                  <p class="mini-body">先 hint 后解释，必要时再给最小代码片段。</p>
+                </div>
+                <div class="settings-mini">
+                  <h3 class="mini-title">提醒策略</h3>
+                  <p class="mini-body">due_at 到期时，优先进入复习页。</p>
+                </div>
+                <div class="settings-mini">
+                  <h3 class="mini-title">代码控制权</h3>
+                  <p class="mini-body">Agent 可解释错因，但用户保留最终补全权。</p>
+                </div>
+              </aside>
+            </div>
+          </div>
+        </section>
+
+        <div class="drawer-scrim" id="drawerScrim" aria-hidden="true"></div>
+
+        <section class="drawer" id="noteDrawer" aria-label="尝试记录弹窗" aria-hidden="true">
+          <div class="drawer-head">
+            <h2>尝试记录</h2>
+            <div class="note-status">
+              <span id="saveState">已保存</span>
+              <button class="icon-btn" id="noteSave" type="button" aria-label="保存尝试记录">✓</button>
+            </div>
+          </div>
+          <textarea class="drawer-editor" id="noteDrawerEditor" aria-label="尝试记录编辑器">Attempt 2：把 `count` 移到事件函数外层，连续点击测试通过。错因：状态变量不能在每次事件触发时重新初始化。</textarea>
+        </section>
+
+        <section class="drawer" id="publishDrawer" aria-label="复盘草稿弹窗" aria-hidden="true">
+          <div class="drawer-head">
+            <h2>复盘草稿</h2>
+            <div class="note-status">
+              <span id="publishState">复盘格式</span>
+              <button class="icon-btn" id="copyPublish" type="button" aria-label="复制复盘草稿">⧉</button>
+            </div>
+          </div>
+          <div class="publish-draft">
+            <div class="platform-row" aria-label="草稿类型">
+              <button class="platform-btn active" type="button" data-platform="review">复盘</button>
+              <button class="platform-btn" type="button" data-platform="solution">题解</button>
+              <button class="platform-btn" type="button" data-platform="prompt">AI 提示词</button>
+              <button class="platform-btn" type="button" data-platform="interview">面试讲述</button>
+            </div>
+            <textarea class="drawer-editor" id="publishEditor" aria-label="复盘草稿内容">今天复盘 DOM 点击计数题，终于把状态变量位置和事件函数边界分清了。
+
+错误：把 `count` 写进 click 回调内部，每次点击都会重置。
+修正：把 `count` 放在监听器外层，回调只负责累加和更新输出。
+
+测试：连续点击 3 次，输出应该显示 3。
+
+下次问 AI：请先指出状态变量位置和测试用例，不要直接给完整答案。</textarea>
+          </div>
+        </section>
+
+        <form class="composer-wrap" id="composer">
+          <div class="composer">
+            <textarea id="composerInput" aria-label="代码练习输入框" placeholder="粘贴你的代码、运行输出、测试失败或请 Agent 解释错因……"></textarea>
+            <button class="btn primary send-btn note-inline-btn" id="drawerToggle" type="button" aria-label="打开尝试记录" aria-controls="noteDrawer" aria-expanded="false">
+              <img src="assets/note.png" alt="">
+            </button>
+            <button class="btn primary send-btn" type="submit" aria-label="发送">↑</button>
+          </div>
+        </form>
+      </section>
+    </section>
+  </main>
+
+  <script>
+    const desktop = document.querySelector("#desktop");
+    const sidebar = document.querySelector(".sidebar");
+    const sidebarToggle = document.querySelector("#sidebarToggle");
+    const topSettings = document.querySelector("#topSettings");
+    const newGoal = document.querySelector("#newGoal");
+    const sideContext = document.querySelector("#sideContext");
+    const sidebarHint = document.querySelector("#sidebarHint");
+    const crumb = document.querySelector("#crumb");
+    const navLinks = document.querySelectorAll(".nav-link");
+    const navGroups = document.querySelectorAll(".nav-group");
+    const screens = {
+      onboarding: document.querySelector("#onboardingScreen"),
+      home: document.querySelector("#homeScreen"),
+      review: document.querySelector("#reviewScreen"),
+      notes: document.querySelector("#notesScreen"),
+      settings: document.querySelector("#settingsScreen")
+    };
+    const composer = document.querySelector("#composer");
+    const composerInput = document.querySelector("#composerInput");
+    const homeThread = document.querySelector("#homeThread");
+    const reviewThread = document.querySelector("#reviewThread");
+    const drawerScrim = document.querySelector("#drawerScrim");
+    const noteDrawer = document.querySelector("#noteDrawer");
+    const publishDrawer = document.querySelector("#publishDrawer");
+    const drawerToggle = document.querySelector("#drawerToggle");
+    const noteSave = document.querySelector("#noteSave");
+    const noteDrawerEditor = document.querySelector("#noteDrawerEditor");
+    const saveState = document.querySelector("#saveState");
+    const openPublishDrawer = document.querySelector("#openPublishDrawer");
+    const copyPublish = document.querySelector("#copyPublish");
+    const publishState = document.querySelector("#publishState");
+    const publishEditor = document.querySelector("#publishEditor");
+    const platformButtons = document.querySelectorAll(".platform-btn");
+    const settingsTabs = document.querySelectorAll(".settings-tab");
+    const settingsTitle = document.querySelector("#settingsTitle");
+    const settingsMeta = document.querySelector("#settingsMeta");
+    const settingsGrid = document.querySelector("#settingsGrid");
+    const finishOnboarding = document.querySelector("#finishOnboarding");
+
+    const routeMeta = {
+      onboarding: {
+        crumb: "首次建档 / 实时课程生成",
+        hint: "首次使用完成建档后进入学习页"
+      },
+      home: {
+        crumb: "JavaScript DOM / 事件补全",
+        hint: "今晚 20:30 继续"
+      },
+      review: {
+        crumb: "复习 / DOM 状态生命周期",
+        hint: "复习完成后更新 due_at"
+      },
+      notes: {
+        crumb: "笔记 / JavaScript / DOM 事件补全",
+        hint: "Markdown 笔记可编辑"
+      },
+      settings: {
+        crumb: "设置 / 外观",
+        hint: "设置影响 Agent 上下文和提醒策略"
+      }
+    };
+
+    const learningRouteTemplate = `
+      <h2>编程路线</h2>
+      <div class="context-stack">
+        <article class="route-card">
+          <span class="route-index">1</span>
+          <div><h3 class="mini-title">HTML / CSS 基础</h3><p class="mini-body">已完成 · 页面结构与选择器</p></div>
+        </article>
+        <article class="route-card active">
+          <span class="route-index">2</span>
+          <div><h3 class="mini-title">DOM 事件</h3><p class="mini-body">练习中 · 点击计数与状态变量</p></div>
+        </article>
+        <article class="route-card">
+          <span class="route-index">3</span>
+          <div><h3 class="mini-title">Python 函数测试</h3><p class="mini-body">未开始 · 补全函数并运行断言</p></div>
+        </article>
+        <article class="route-card">
+          <span class="route-index">4</span>
+          <div><h3 class="mini-title">AI 代码理解</h3><p class="mini-body">未开始 · 解释生成代码和报错</p></div>
+        </article>
+        <article class="route-card">
+          <span class="route-index">5</span>
+          <div><h3 class="mini-title">调试小项目</h3><p class="mini-body">未开始 · 完整运行、测试和复盘</p></div>
+        </article>
+      </div>
+    `;
+
+    const sideTemplates = {
+      onboarding: `
+        <h2>模型思考与工具调用</h2>
+        <div class="context-stack">
+          <article class="trace-card">
+            <span class="trace-dot"></span>
+            <div><h3 class="trace-title">analyze_goal</h3><p class="trace-body">识别用户目标：JavaScript/HTML/CSS、Python、AI 生成代码理解、测试验证。</p></div>
+          </article>
+          <article class="trace-card">
+            <span class="trace-dot"></span>
+            <div><h3 class="trace-title">ask_clarifying_question</h3><p class="trace-body">继续追问当前水平、目标用途、运行环境和时间边界。</p></div>
+          </article>
+          <article class="trace-card">
+            <span class="trace-dot"></span>
+            <div><h3 class="trace-title">generate_course_draft</h3><p class="trace-body">根据语言目标生成五段编程课程草稿。</p></div>
+          </article>
+        </div>
+      `,
+      home: learningRouteTemplate,
+      review: `
+        <h2>复习概览</h2>
+        <div class="context-stack">
+          <article class="review-mini active"><h3 class="mini-title">事件函数内部重置状态</h3><p class="mini-body">遗忘风险 78%，今天必须复习。</p></article>
+          <article class="review-mini"><h3 class="mini-title">CSS 状态类选择错误</h3><p class="mini-body">遗忘风险 54%，建议今晚处理。</p></article>
+          <article class="review-mini"><h3 class="mini-title">Python 返回值边界判断</h3><p class="mini-body">明天到期，今天只展示预告。</p></article>
+        </div>
+      `,
+      notes: learningRouteTemplate,
+      settings: ""
+    };
+
+    const settingPanels = {
+      appearance: {
+        title: "外观",
+        meta: "控制桌面端视觉密度和主题偏好",
+        cards: [
+          ["主题", "奶油色 Claude Desktop 风格"],
+          ["内容密度", "宽松，减少学习焦虑"],
+          ["动效", "轻量淡入和抽屉滑入"],
+          ["侧栏", "默认展开，可折叠"]
+        ]
+      },
+      model: {
+        title: "模型设置",
+        meta: "配置代码提示、复习变体、错因解释和复盘草稿所用模型",
+        cards: [
+          ["提示模型", "用于日常代码练习会话"],
+          ["测试解释模型", "用于解释失败用例与报错"],
+          ["复盘模型", "用于题解和 AI 协作提示词草稿"],
+          ["工具调用", "只在明确需要时启用"]
+        ]
+      },
+      notification: {
+        title: "通知设置",
+        meta: "控制学习提醒和复习到期提示",
+        cards: [
+          ["学习提醒", "工作日 20:30"],
+          ["复习优先", "due_at 到期时优先提示"],
+          ["中断恢复", "多日未学时展示阶段摘要"],
+          ["外部通知", "第一版默认关闭"]
+        ]
+      },
+      memory: {
+        title: "Attempt 记录配置",
+        meta: "配置原始 Attempt、测试结果、错因标签和复习状态的保存位置",
+        cards: [
+          ["原始 Attempt", "保存提交代码、运行输出和测试结果"],
+          ["阶段摘要", "按模块生成可恢复练习上下文"],
+          ["错因记忆", "绑定掌握度、复习状态和变体题"],
+          ["隐私策略", "不自动外传本地文件"]
+        ]
+      },
+      notes: {
+        title: "练习设置",
+        meta: "控制 Attempt 分类、自动保存和复盘草稿偏好",
+        cards: [
+          ["分类层级", "语言大类 / 练习点"],
+          ["自动保存", "编辑时保存 Attempt 状态"],
+          ["默认草稿类型", "复盘"],
+          ["导出方式", "只生成草稿，手动复制"]
+        ]
+      },
+      about: {
+        title: "关于",
+        meta: "Aearn 桌面端原型信息",
+        cards: [
+          ["版本", "V1 桌面端原型"],
+          ["定位", "代码补全、运行预览、测试判定、复习变体闭环"],
+          ["技术形态", "单文件 HTML 原型"],
+          ["范围", "不做对外分发和外部账号登录"]
+        ]
+      }
+    };
+
+    const retrospectiveDrafts = {
+      review: {
+        label: "复盘格式",
+        text: "今天复盘 DOM 点击计数题，终于把状态变量位置和事件函数边界分清了。\\n\\n错误：把 `count` 写进 click 回调内部，每次点击都会重置。\\n修正：把 `count` 放在监听器外层，回调只负责累加和更新输出。\\n\\n测试：连续点击 3 次，输出应该显示 3。\\n\\n下次问 AI：请先指出状态变量位置和测试用例，不要直接给完整答案。"
+      },
+      solution: {
+        label: "题解格式",
+        text: "这道 DOM 点击计数题的关键不是 `addEventListener` 本身，而是状态变量的生命周期。`count` 如果写在点击回调内部，每次点击都会重新初始化；应该把它放到监听器外层，让多次点击共享同一个变量。验证方式是连续点击三次，输出依次变成 1、2、3。"
+      },
+      prompt: {
+        label: "AI 提示词格式",
+        text: "请帮我调试一个 JavaScript DOM 点击计数练习。要求：\\n\\n1. 先检查状态变量是否放在正确作用域。\\n2. 只给 hint 和失败原因，不要直接给完整答案。\\n3. 用测试用例说明为什么连续点击三次应该输出 3。\\n4. 如果需要代码，只给最小修改片段。"
+      },
+      interview: {
+        label: "面试讲述格式",
+        text: "我会这样解释这道题：事件监听器会在每次点击时执行回调，如果把 `count` 声明在回调内部，每次执行都会从 0 开始。把 `count` 放在外层后，回调形成闭包，每次点击都能读写同一个状态，所以连续点击才会累加。"
+      }
+    };
+
+    function setSidebar(open) {
+      desktop.classList.toggle("sidebar-collapsed", !open);
+      sidebarToggle.setAttribute("aria-expanded", String(open));
+      sidebarToggle.setAttribute("aria-label", open ? "折叠左侧栏" : "展开左侧栏");
+    }
+
+    function closeDrawers() {
+      noteDrawer.classList.remove("open");
+      publishDrawer.classList.remove("open");
+      drawerScrim.classList.remove("open");
+      noteDrawer.setAttribute("aria-hidden", "true");
+      publishDrawer.setAttribute("aria-hidden", "true");
+      drawerToggle.setAttribute("aria-expanded", "false");
+      drawerToggle.setAttribute("aria-label", "打开尝试记录");
+    }
+
+    function openDrawer(drawer) {
+      closeDrawers();
+      drawer.classList.add("open");
+      drawerScrim.classList.add("open");
+      drawer.setAttribute("aria-hidden", "false");
+      if (drawer === noteDrawer) {
+        drawerToggle.setAttribute("aria-expanded", "true");
+        drawerToggle.setAttribute("aria-label", "关闭尝试记录");
+      }
+    }
+
+    function setActiveNavBranch(activeLink) {
+      navLinks.forEach((link) => link.classList.remove("active"));
+      if (!activeLink) {
+        return;
+      }
+      activeLink.classList.add("active");
+      let group = activeLink.closest(".nav-group");
+      while (group) {
+        const trigger = group.querySelector(":scope > .nav-trigger");
+        if (trigger) {
+          trigger.classList.add("active");
+        }
+        group = group.parentElement.closest(".nav-group");
+      }
+    }
+
+    function defaultNavLinkForRoute(route) {
+      if (route === "onboarding" || route === "settings") {
+        return null;
+      }
+      return document.querySelector(`.nav .submenu .nav-link[data-route="${route}"]`);
+    }
+
+    function updateChrome(route, activeLink = null) {
+      const meta = routeMeta[route];
+      crumb.textContent = meta.crumb;
+      sidebarHint.textContent = meta.hint;
+      const hideContext = route === "settings";
+      sidebar.classList.toggle("no-context", hideContext);
+      sideContext.hidden = hideContext;
+      sideContext.innerHTML = hideContext ? "" : sideTemplates[route];
+      setActiveNavBranch(activeLink || defaultNavLinkForRoute(route));
+    }
+
+    function setRoute(route, options = {}) {
+      const next = screens[route] ? route : "home";
+      Object.entries(screens).forEach(([name, screen]) => {
+        screen.classList.toggle("active", name === next);
+      });
+      updateChrome(next, options.activeLink || null);
+      composer.hidden = next === "onboarding" || next === "notes" || next === "settings";
+      composerInput.placeholder = next === "review" ? "用自己的话复述，或请求提示……" : "追问，或用自己的话解释……";
+      closeDrawers();
+      if (!options.skipHash && location.hash.slice(1) !== next) {
+        history.replaceState(null, "", `#${next}`);
+      }
+    }
+
+    function initialRoute() {
+      const hash = location.hash.slice(1);
+      if (screens[hash]) {
+        return hash;
+      }
+      return localStorage.getItem("learningAgentPlanReady") === "true" ? "home" : "onboarding";
+    }
+
+    function appendAgentMessage(thread, text) {
+      const card = document.createElement("article");
+      card.className = "message agent";
+      card.innerHTML = `
+        <div class="avatar">A</div>
+        <div class="bubble">
+          <div class="bubble-label">Agent</div>
+          <p>${text}</p>
+        </div>
+      `;
+      thread.appendChild(card);
+      const scroller = thread.closest(".conversation");
+      if (scroller) {
+        scroller.scrollTop = scroller.scrollHeight;
+      }
+    }
+
+    function renderSettings(key) {
+      const panel = settingPanels[key] || settingPanels.appearance;
+      settingsTitle.textContent = panel.title;
+      settingsMeta.textContent = panel.meta;
+      settingsGrid.innerHTML = panel.cards.map(([title, body]) => `
+        <article class="setting-card">
+          <h3>${title}</h3>
+          <p>${body}</p>
+        </article>
+      `).join("");
+      settingsTabs.forEach((tab) => tab.classList.toggle("active", tab.dataset.settings === key));
+      if (location.hash.slice(1) === "settings") {
+        crumb.textContent = `设置 / ${panel.title}`;
+      }
+    }
+
+    sidebarToggle.addEventListener("click", () => {
+      setSidebar(desktop.classList.contains("sidebar-collapsed"));
+    });
+
+    topSettings.addEventListener("click", () => {
+      setRoute("settings");
+    });
+
+    newGoal.addEventListener("click", () => {
+      setRoute("onboarding");
+    });
+
+    navLinks.forEach((link) => {
+      link.addEventListener("click", () => {
+        if (link.classList.contains("nav-trigger")) {
+          const group = link.closest(".nav-group");
+          const willOpen = !group.classList.contains("open");
+          group.classList.toggle("open", willOpen);
+          link.setAttribute("aria-expanded", String(willOpen));
+          return;
+        }
+        setRoute(link.dataset.route, { activeLink: link });
+      });
+    });
+
+    finishOnboarding.addEventListener("click", () => {
+      localStorage.setItem("learningAgentPlanReady", "true");
+      setRoute("home");
+    });
+
+    drawerToggle.addEventListener("click", () => {
+      if (noteDrawer.classList.contains("open")) {
+        closeDrawers();
+      } else {
+        openDrawer(noteDrawer);
+      }
+    });
+
+    drawerScrim.addEventListener("click", closeDrawers);
+
+    noteSave.addEventListener("click", () => {
+      saveState.textContent = "已保存";
+    });
+
+    noteDrawerEditor.addEventListener("input", () => {
+      saveState.textContent = "未保存";
+    });
+
+    if (openPublishDrawer) {
+      openPublishDrawer.addEventListener("click", () => {
+        openDrawer(publishDrawer);
+      });
+    }
+
+    platformButtons.forEach((button) => {
+      button.addEventListener("click", () => {
+        const draft = retrospectiveDrafts[button.dataset.platform];
+        platformButtons.forEach((item) => item.classList.toggle("active", item === button));
+        publishState.textContent = draft.label;
+        publishEditor.value = draft.text;
+      });
+    });
+
+    copyPublish.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(publishEditor.value);
+        publishState.textContent = "已复制";
+      } catch {
+        publishState.textContent = "复制不可用";
+      }
+    });
+
+    settingsTabs.forEach((tab) => {
+      tab.addEventListener("click", () => {
+        renderSettings(tab.dataset.settings);
+      });
+    });
+
+    composer.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const route = location.hash.slice(1) || initialRoute();
+      const targetThread = route === "review" ? reviewThread : homeThread;
+      const text = route === "review"
+        ? "收到。先按准确性、因果链、例子质量和表达清晰度评分，再决定下一次 due_at。"
+        : "收到。先用一句话区分：edit 会执行工具，response 只反馈。";
+      appendAgentMessage(targetThread, text);
+      composerInput.value = "";
+    });
+
+    window.addEventListener("hashchange", () => {
+      setRoute(location.hash.slice(1), { skipHash: true });
+    });
+
+    renderSettings("appearance");
+    setRoute(initialRoute());
+  </script>
+</body>
+</html>

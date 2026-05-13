@@ -1,0 +1,39 @@
+# Historical tutorial projects are reference-only for the Aearn runtime.
+01_ReActAgentAmapMCPServerTest/
+02_ReActAgentHILTest/
+03_ReActAgentMemoryTest/
+04_ReActAgentHILApiTest/
+05_ReActAgentHILApiMultiSessionTest/
+06_ReActAgentHILApiMultiSessionTaskTest/
+07_RefundApprovalAgent/
+
+# IDE and local tool state.
+.idea/
+.playwright-mcp/
+.omc/
+.claude/worktrees/
+
+# Runtime dependencies and build outputs.
+**/node_modules/
+**/dist/
+**/.venv/
+**/target/
+**/.logs/
+
+# Python and packaging caches.
+**/__pycache__/
+**/.pytest_cache/
+**/.ruff_cache/
+**/.mypy_cache/
+**/*.egg-info/
+
+# Local environment and logs.
+.env
+.env.*
+!.env.example
+*.log
+
+# OS files.
+Thumbs.db
+Desktop.ini
+.DS_Store
