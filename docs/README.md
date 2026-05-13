@@ -16,7 +16,7 @@
 | 验收测试 | `qa/acceptance-test-plan.md` | API、Agent 输出、FSRS、前端手工 QA 的完成标准 |
 | 环境配置 | `setup/development-environment.md` | Milestone 0 前置环境、依赖服务和验收命令 |
 | 实施计划 | `plans/learning-agent-implementation-plan.md` | 任务级实施计划、开发顺序和审查步骤 |
-| 主原型 | `design/learning-agent-claude-desktop-framework.html` | UI 视觉和桌面端布局参考 |
+| 主原型 | `design/learning-agent-claude-desktop-framework.html` | 用户设计的受保护前端原型，不能删除；作为 UI 视觉和桌面端布局参考 |
 
 ## 已移除的重复文档
 
