@@ -6,7 +6,7 @@
 
 ## Background / Known Context
 
-- 当前项目位于 `E:\codee\ReActAgentsTest`，已经完成 Trellis 初始化与刷新。
+- 当前项目已经完成 Trellis 初始化与刷新。
 - Trellis 初始化输出提示：Codex hooks 需要在 `C:\Users\PINKING\.codex\config.toml` 中启用 `features.hooks = true`。
 - Codex 0.129+ 还需要用户在客户端执行 `/hooks` 并批准 Trellis `UserPromptSubmit` hook；该步骤需要交互，不能由普通消息代替。
 - 当前仓库已有大量未提交删除项和未跟踪项，本任务不处理这些既有工作树变化。

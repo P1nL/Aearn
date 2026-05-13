@@ -8,13 +8,15 @@
 
 本文件定义开始实施前必须准备好的开发环境。完成本文件后，开发者或开发 Agent 才应进入项目骨架、数据库 migration、API mock、前端联调和 Agent 状态机实现。
 
-当前仓库里的 `01_` 到 `07_` 目录是历史教程样例，不应继续作为最终应用目录。正式实现建议新建独立目录：
+历史教程目录已从当前工作树移除，不应继续作为最终应用目录或默认参考实现。正式实现固定在独立目录：
 
 ```text
 aearn/
   apps/
     desktop/
+  services/
     api/
+    worker/
   packages/
     shared-contracts/
   infra/
@@ -25,21 +27,15 @@ aearn/
 
 ## 前置决策
 
-### 必须保留
+### 必须保留的当前输入
 
 - `docs/`：产品、架构、API、数据库、前端交互和验收规格的 source of truth。
-- `07_RefundApprovalAgent/`：参考 LangChain 1.x、LangGraph 1.x、FastAPI、PostgreSQL checkpoint/store、Redis session 的实现方式。
-- `06_ReActAgentHILApiMultiSessionTaskTest/`：临时参考 Celery、Redis task、异步任务状态管理。
+- `aearn/`：正式 MVP runtime、桌面端、API、worker、共享包和本地基础设施。
 
-### 可以归档或删除
+### 不再保留
 
-- `01_ReActAgentAmapMCPServerTest/`
-- `02_ReActAgentHILTest/`
-- `03_ReActAgentMemoryTest/`
-- `04_ReActAgentHILApiTest/`
-- `05_ReActAgentHILApiMultiSessionTest/`
-
-删除前建议先移动到 `archive/` 或单独分支确认，不要直接混入正式项目目录。
+- 历史教程目录不进入当前仓库工作树。
+- 历史教程代码不作为 Aearn runtime、测试夹具或默认实现来源。
 
 ## 本机工具链
 
@@ -94,8 +90,8 @@ corepack prepare pnpm@latest --activate
 |---|---|---|
 | Python | 3.11 或 3.12 | FastAPI、LangGraph、runner service |
 | uv | 建议使用 | Python 依赖与虚拟环境管理 |
-| LangChain | `1.2.0` | 与 `07_RefundApprovalAgent` 对齐 |
-| LangGraph | `1.0.5` | 与 `07_RefundApprovalAgent` 对齐 |
+| LangChain | `1.2.0` | 当前 MVP 基线 |
+| LangGraph | `1.0.5` | 当前 MVP 基线 |
 | FastAPI | `0.128.0` | API 服务 |
 | Redis client | `7.1.0` | session、Celery broker |
 | Celery | `5.5.3` | FSRS 调度与异步任务 |
@@ -257,7 +253,7 @@ pnpm --dir .\apps\desktop tauri dev
 - 不写正式 Agent prompt。
 - 不接真实 runner sandbox。
 - 不做 Java / C++ 编译沙箱。
-- 不把旧 `01_` 到 `07_` 目录直接改成正式项目。
+- 不把历史教程目录重新引入正式项目。
 - 不提交真实 API key、数据库密码或生产配置。
 
 ## 下一步
