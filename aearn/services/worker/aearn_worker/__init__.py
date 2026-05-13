@@ -1,0 +1,1 @@
+"""Aearn worker package."""
