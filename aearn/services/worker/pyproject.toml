@@ -1,0 +1,12 @@
+[project]
+name = "aearn-worker"
+version = "0.1.0"
+description = "Celery worker skeleton for Aearn."
+requires-python = ">=3.11,<3.13"
+dependencies = [
+  "celery==5.5.3",
+  "python-dotenv",
+]
+
+[tool.uv]
+package = true
