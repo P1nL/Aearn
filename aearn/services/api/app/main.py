@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.errors import error_response
 from app.routes.courses import router as courses_router
 from app.routes.health import router as health_router
+from app.routes.learning_sessions import router as learning_sessions_router
 from app.routes.plans import router as plans_router
 from app.routes.users import router as users_router
 
@@ -24,6 +25,7 @@ app.include_router(health_router)
 app.include_router(users_router)
 app.include_router(courses_router)
 app.include_router(plans_router)
+app.include_router(learning_sessions_router)
 
 
 @app.exception_handler(RequestValidationError)

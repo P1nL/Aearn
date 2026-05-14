@@ -1236,14 +1236,13 @@ Response JSON 示例：
 HTTP 状态码：
 
 - `200`：命中相同代码的已有 Attempt
-- `201`：运行完成并创建 Attempt
+- `201`：运行完成并创建 Attempt；M3 最小切片下 `compiled_sandbox_later` 也写入 `Attempt(run)`，并返回 `runtime_status=unsupported`
 - `400`：请求字段不合法
 - `404`：会话或练习不存在
-- `422`：运行能力不支持
 - `503`：runner 不可用
 - `504`：runner 超时
 
-错误码：`SESSION_NOT_FOUND`、`EXERCISE_NOT_FOUND`、`RUNTIME_UNSUPPORTED`、`RUNNER_UNAVAILABLE`、`RUNNER_TIMEOUT`、`VALIDATION_ERROR`
+错误码：`SESSION_NOT_FOUND`、`EXERCISE_NOT_FOUND`、`RUNNER_UNAVAILABLE`、`RUNNER_TIMEOUT`、`VALIDATION_ERROR`
 
 幂等/重试说明：幂等键为 `session_id + exercise_id + code_hash + run_mode`。若已生成 `Attempt`，重试返回原 `attempt_id` 和运行结果。
 
@@ -2178,7 +2177,7 @@ HTTP 状态码：
 | `easy_no_hint` | 零提示零错误，提交 `easy`、`fsrs_rating=Easy` |
 | `partial_with_hint` | 测试通过但提示依赖高，`next_action=review_variant` |
 | `runtime_error` | runner 返回 `runtime_error`，可进入 `explain_error` |
-| `unsupported_runtime` | `compiled_sandbox_later` 返回 `RUNTIME_UNSUPPORTED` |
+| `unsupported_runtime` | `compiled_sandbox_later` 返回 `runtime_status=unsupported` |
 | `due_review` | 今日有待复习项 |
 | `empty_dashboard` | 无活动计划、无复习 |
 

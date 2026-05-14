@@ -125,3 +125,90 @@ def route() -> dict[str, object] | JSONResponse:
 ```
 
 When a route may return both normal JSON and `JSONResponse` error envelopes, disable response model inference explicitly.
+
+## Scenario: M3 Learning Session Start, Run, Hint, Explain, Check, and Submit
+
+### 1. Scope / Trigger
+
+- Trigger: implementing or changing `POST /api/learning-sessions/start`, `run`, `hint`, `explain-error`, `check-explanation`, `submit`, their repository/service modules, or the `attempts` / `learning_sessions` schema contracts that back them.
+- Scope: `aearn/services/api/app/routes/learning_sessions.py`, `app/services/learning_session_repository.py`, runner/evaluation helpers, `app/services/exercise_guidance.py`, `app/db/schema.sql`, and M3 API tests.
+
+### 2. Signatures
+
+- `POST /api/learning-sessions/start`
+- `POST /api/learning-sessions/{session_id}/exercises/{exercise_id}/run`
+- `POST /api/learning-sessions/{session_id}/exercises/{exercise_id}/hint`
+- `POST /api/learning-sessions/{session_id}/attempts/{attempt_id}/explain-error`
+- `POST /api/learning-sessions/{session_id}/attempts/{attempt_id}/check-explanation`
+- `POST /api/learning-sessions/{session_id}/exercises/{exercise_id}/submit`
+- Session reuse lookup signature: active `learning_sessions` rows keyed by `(user_id, plan_id, entry_point, session_type='learn', status='active')`
+- Run idempotency signature: `run-exercise:{session_id}:{exercise_id}:{code_hash}:{run_mode}`
+- Hint idempotency signature: `hint:{attempt_id}:{blank_key}:{hint_level}`
+- Explain-error idempotency signature: `explain-error:{attempt_id}:{request_hash}`
+- Explanation-check idempotency signature: `check-explanation:{attempt_id}:{round}`
+- Submit idempotency signature: `submit-exercise:{session_id}:{exercise_id}:{attempt_id}:{submit_version}`
+
+### 3. Contracts
+
+- `start` reuses an active session only when `user_id`, `plan_id`, and `knowledge_point_id` all match the existing `entry_point`.
+- Starting a different knowledge point under the same plan must create a new `learning_sessions` row; it must not rewrite another active session's `entry_point`.
+- `run` writes one `Attempt(run)` per unique payload and may therefore create multiple rows for the same `(session_id, exercise_id)` over time.
+- `run` must preserve `Attempt(run)` as the fact record that later hint, explain-error, and explanation-check calls attach to; frontend may show natural action labels but backend must keep the attempt traceable.
+- `hint` updates `Attempt.hint_usage_count` on the referenced run attempt and returns the new count; replaying the same `(attempt_id, blank_key, hint_level)` must not increment again.
+- `explain-error` may update `Attempt.error_cause`, but must not create a new Attempt and must not double-increment `error_count` on replay.
+- `check-explanation` writes both `Attempt.explanation_text` and `Attempt.explanation_check_result`; later submit scoring must prefer this stored check result over a raw free-text fallback when the explanation text still matches.
+- Retry safety for `run` / `submit` belongs to `idempotency_records` and `request_id`, not to a blanket unique index that blocks valid later attempts.
+- Append-only writes with a unique `request_id` column, such as `review_logs`, must normalize placeholder values like `req_unset` and generate a per-write fallback when the client did not send `X-Request-Id`.
+- `submit` may read the referenced run attempt, but `run` must not update `ReviewState`.
+- `submit` must carry forward the higher of client-reported and stored `hint_usage_count` / `error_count` so later scoring reflects the real learning trace, not only the final request body.
+
+### 4. Validation & Error Matrix
+
+- Same `run` idempotency key with a different request hash -> `IDEMPOTENCY_CONFLICT` with 409.
+- Same `hint` idempotency key with a different request hash -> `IDEMPOTENCY_CONFLICT` with 409.
+- Same `check-explanation` round key with a different request hash -> `IDEMPOTENCY_CONFLICT` with 409.
+- Same `submit` idempotency key with a different request hash -> `IDEMPOTENCY_CONFLICT` with 409.
+- Missing session/exercise/attempt -> documented 404 error code (`SESSION_NOT_FOUND`, `EXERCISE_NOT_FOUND`, `ATTEMPT_NOT_FOUND`).
+- Invalid `blank_id`, missing error context, or empty explanation -> `VALIDATION_ERROR` with 400.
+- Explanation round > 2 -> `EVALUATION_CONFLICT` with 422.
+- `compiled_sandbox_later` run -> `runtime_status=unsupported` with a persisted `Attempt(run)`, but no `ReviewState` mutation.
+- Unsupported run attempt submitted for scoring -> `ATTEMPT_STATE_CONFLICT` with 409.
+
+### 5. Good/Base/Bad Cases
+
+- Good: repeat `start` for the same knowledge point and receive the existing `session_id`; repeat `run` with a different payload and receive a new `attempt_id`; call `hint` / `check-explanation` on that attempt and see the stored counts reused by `submit`.
+- Base: start knowledge point A, then knowledge point B under the same plan, and keep two distinct active sessions instead of mutating A into B.
+- Bad: enforcing `(session_id, exercise_id, attempt_type, submit_version)` as a blanket unique key, or recomputing explanation score from arbitrary frontend text after a stored explanation-check already exists.
+
+### 6. Tests Required
+
+- Assert same `user/plan/knowledge_point` start requests reuse the same session.
+- Assert different knowledge points under one plan create distinct active sessions.
+- Assert distinct run payloads for the same session/exercise create distinct `Attempt(run)` rows.
+- Assert replaying the same run payload returns the stored result instead of duplicating the attempt.
+- Assert replaying the same hint request returns the stored hint and does not increment `hint_usage_count`.
+- Assert `explain-error` maps a real runtime/test failure to a stable `error_cause`.
+- Assert `check-explanation` stops after round 2 and stored partial/failed explanation results downgrade submit outcome.
+- Assert 3+ hints degrade submit `fsrs_rating` to `Hard` / non-`Easy`.
+- Assert unsupported runtime paths persist `Attempt(run)` but leave `KnowledgePoint.last_exercise_result` and `ReviewState` unchanged.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```sql
+CREATE UNIQUE INDEX uq_attempts_submit_identity
+ON attempts(session_id, exercise_id, attempt_type, submit_version);
+```
+
+This turns idempotency into a business-level uniqueness rule and blocks valid later attempts for the same session/exercise.
+
+#### Correct
+
+```sql
+CREATE UNIQUE INDEX uq_attempts_request_id
+ON attempts(request_id)
+WHERE request_id IS NOT NULL;
+```
+
+Keep retry safety on request identity and `idempotency_records`, while allowing distinct run/submit payloads to persist as separate `Attempt` rows.

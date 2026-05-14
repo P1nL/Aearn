@@ -147,6 +147,36 @@ CREATE TABLE IF NOT EXISTS exercises (
   deleted_at timestamptz
 );
 
+CREATE TABLE IF NOT EXISTS code_blanks (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  exercise_id uuid NOT NULL REFERENCES exercises(id) ON DELETE RESTRICT,
+  blank_key text NOT NULL,
+  placeholder text NOT NULL,
+  expected_concept text NOT NULL,
+  acceptable_patterns_json jsonb NOT NULL DEFAULT '[]'::jsonb,
+  is_core boolean NOT NULL DEFAULT true,
+  order_index integer NOT NULL CHECK (order_index >= 0),
+  CONSTRAINT code_blanks_exercise_blank_key_key UNIQUE (exercise_id, blank_key),
+  CONSTRAINT code_blanks_exercise_order_key UNIQUE (exercise_id, order_index)
+);
+
+CREATE TABLE IF NOT EXISTS test_cases (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  exercise_id uuid NOT NULL REFERENCES exercises(id) ON DELETE RESTRICT,
+  case_type text NOT NULL CHECK (case_type IN ('visible', 'hidden', 'preview_assertion')),
+  input_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  expected_output_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  assertion_code text,
+  weight numeric(6,2) NOT NULL DEFAULT 1 CHECK (weight > 0),
+  is_critical boolean NOT NULL DEFAULT false,
+  timeout_ms integer NOT NULL DEFAULT 5000 CHECK (timeout_ms BETWEEN 100 AND 60000),
+  order_index integer NOT NULL CHECK (order_index >= 0),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  archived_at timestamptz,
+  CONSTRAINT test_cases_exercise_order_key UNIQUE (exercise_id, order_index)
+);
+
 CREATE TABLE IF NOT EXISTS learning_sessions (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
@@ -215,6 +245,22 @@ CREATE TABLE IF NOT EXISTS review_states (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS review_logs (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  knowledge_point_id uuid NOT NULL REFERENCES knowledge_points(id) ON DELETE RESTRICT,
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  plan_id uuid NOT NULL REFERENCES learning_plans(id) ON DELETE RESTRICT,
+  attempt_id uuid NOT NULL REFERENCES attempts(id) ON DELETE RESTRICT,
+  rating text NOT NULL CHECK (rating IN ('Again', 'Hard', 'Good', 'Easy')),
+  previous_state_json jsonb NOT NULL,
+  next_state_json jsonb NOT NULL,
+  scheduled_due_at timestamptz NOT NULL,
+  reviewed_at timestamptz NOT NULL DEFAULT now(),
+  source text NOT NULL CHECK (source IN ('learn_submit', 'review_submit', 'manual_adjust')),
+  request_id text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS idempotency_records (
   key text PRIMARY KEY,
   operation text NOT NULL,
@@ -223,6 +269,55 @@ CREATE TABLE IF NOT EXISTS idempotency_records (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+ALTER TABLE exercises
+  ADD COLUMN IF NOT EXISTS requires_explanation boolean NOT NULL DEFAULT false,
+  ADD COLUMN IF NOT EXISTS metadata_json jsonb NOT NULL DEFAULT '{}'::jsonb;
+
+ALTER TABLE learning_sessions
+  ADD COLUMN IF NOT EXISTS request_id text;
+
+ALTER TABLE attempts
+  ADD COLUMN IF NOT EXISTS test_results_json jsonb NOT NULL DEFAULT '[]'::jsonb,
+  ADD COLUMN IF NOT EXISTS stdout text,
+  ADD COLUMN IF NOT EXISTS stderr text,
+  ADD COLUMN IF NOT EXISTS error_message text,
+  ADD COLUMN IF NOT EXISTS error_cause text,
+  ADD COLUMN IF NOT EXISTS hint_usage_count integer NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS error_count integer NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS explanation_text text,
+  ADD COLUMN IF NOT EXISTS explanation_check_result jsonb,
+  ADD COLUMN IF NOT EXISTS evaluation_status text NOT NULL DEFAULT 'pending',
+  ADD COLUMN IF NOT EXISTS request_id text;
+
+ALTER TABLE review_states
+  ADD COLUMN IF NOT EXISTS last_fsrs_rating text,
+  ADD COLUMN IF NOT EXISTS scheduler_version text NOT NULL DEFAULT 'fsrs_v1_default',
+  ADD COLUMN IF NOT EXISTS suspended_at timestamptz;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'attempts_evaluation_status_check'
+  ) THEN
+    ALTER TABLE attempts
+      ADD CONSTRAINT attempts_evaluation_status_check
+      CHECK (evaluation_status IN ('pending', 'evaluated', 'needs_manual_review'));
+  END IF;
+END;
+$$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'review_states_last_fsrs_rating_check'
+  ) THEN
+    ALTER TABLE review_states
+      ADD CONSTRAINT review_states_last_fsrs_rating_check
+      CHECK (last_fsrs_rating IS NULL OR last_fsrs_rating IN ('Again', 'Hard', 'Good', 'Easy'));
+  END IF;
+END;
+$$;
+
 CREATE INDEX IF NOT EXISTS idx_users_deleted_at ON users(deleted_at);
 CREATE INDEX IF NOT EXISTS idx_runtime_profiles_language ON runtime_profiles(language);
 CREATE INDEX IF NOT EXISTS idx_language_courses_language_level ON language_courses(language, level);
@@ -230,9 +325,20 @@ CREATE INDEX IF NOT EXISTS idx_learning_plans_user_status ON learning_plans(user
 CREATE INDEX IF NOT EXISTS idx_plan_modules_plan_status ON plan_modules(plan_id, status);
 CREATE INDEX IF NOT EXISTS idx_knowledge_points_module_status ON knowledge_points(module_id, status);
 CREATE INDEX IF NOT EXISTS idx_exercises_knowledge_point ON exercises(knowledge_point_id);
+CREATE INDEX IF NOT EXISTS idx_exercises_runtime_type ON exercises(runtime_profile_id, exercise_type);
+CREATE INDEX IF NOT EXISTS idx_code_blanks_exercise ON code_blanks(exercise_id);
+CREATE INDEX IF NOT EXISTS idx_test_cases_exercise_type ON test_cases(exercise_id, case_type);
 CREATE INDEX IF NOT EXISTS idx_learning_sessions_user_plan ON learning_sessions(user_id, plan_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_learning_sessions_request_id ON learning_sessions(request_id) WHERE request_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_attempts_user_exercise_created ON attempts(user_id, exercise_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_attempts_session_created ON attempts(session_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_attempts_exercise_created ON attempts(exercise_id, created_at DESC);
+DROP INDEX IF EXISTS uq_attempts_submit_identity;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_attempts_request_id ON attempts(request_id) WHERE request_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_review_states_user_due ON review_states(user_id, due_at);
+CREATE INDEX IF NOT EXISTS idx_review_states_last_attempt ON review_states(last_attempt_id) WHERE last_attempt_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_review_logs_kp_reviewed ON review_logs(knowledge_point_id, reviewed_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_review_logs_request_id ON review_logs(request_id);
 CREATE INDEX IF NOT EXISTS idx_idempotency_records_operation ON idempotency_records(operation);
 
 DROP TRIGGER IF EXISTS trg_users_updated_at ON users;
@@ -261,6 +367,10 @@ FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
 DROP TRIGGER IF EXISTS trg_exercises_updated_at ON exercises;
 CREATE TRIGGER trg_exercises_updated_at BEFORE UPDATE ON exercises
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_test_cases_updated_at ON test_cases;
+CREATE TRIGGER trg_test_cases_updated_at BEFORE UPDATE ON test_cases
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
 DROP TRIGGER IF EXISTS trg_learning_sessions_updated_at ON learning_sessions;
