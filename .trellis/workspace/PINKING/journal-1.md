@@ -71,3 +71,37 @@ Expanded the Aearn learning-session flow to full M3 across backend routes/servic
 ### Next Steps
 
 - None - task complete
+
+
+## Session 3: Refactor desktop frontend structure
+
+**Date**: 2026-05-14
+**Task**: Refactor desktop frontend structure
+**Branch**: `main`
+
+### Summary
+
+Split the desktop app shell into pages, feature modules, and shared UI helpers, then recorded the frontend structure and quality guidance in Trellis specs.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `80f8119` | (see git log) |
+| `60a41e9` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
