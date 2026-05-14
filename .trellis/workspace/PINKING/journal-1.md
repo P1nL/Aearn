@@ -38,3 +38,36 @@ Implemented Aearn foundation plus onboarding and learning plan flow: FastAPI hea
 ### Next Steps
 
 - None - task complete
+
+
+## Session 2: Complete full M3 learning session runtime
+
+**Date**: 2026-05-14
+**Task**: Complete full M3 learning session runtime
+**Branch**: `main`
+
+### Summary
+
+Expanded the Aearn learning-session flow to full M3 across backend routes/services, desktop workbench UI, tests, and Trellis specs; validated with Ruff, targeted pytest, desktop build, and browser smoke.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `2e048d7` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
