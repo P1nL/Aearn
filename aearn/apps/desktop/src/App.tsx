@@ -6,7 +6,6 @@ import type {
   AppRoute,
   ConversationMessage,
   NavGroupKey,
-  PublishKey,
   SessionState,
   SettingsKey,
 } from "./appTypes";
@@ -19,7 +18,6 @@ import {
   HOME_BASE_MESSAGES,
   NAV_DEFAULTS,
   ONBOARDING_MESSAGES,
-  RETROSPECTIVE_DRAFTS,
   REVIEW_BASE_MESSAGES,
   ROUTE_META,
 } from "./lib/appContent";
@@ -58,11 +56,7 @@ function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [openGroups, setOpenGroups] = useState<Record<NavGroupKey, boolean>>(NAV_DEFAULTS);
   const [noteDrawerOpen, setNoteDrawerOpen] = useState(false);
-  const [publishDrawerOpen, setPublishDrawerOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsKey>("appearance");
-  const [publishDraftType, setPublishDraftType] = useState<PublishKey>("review");
-  const [publishState, setPublishState] = useState(RETROSPECTIVE_DRAFTS.review.label);
-  const [publishEditor, setPublishEditor] = useState(RETROSPECTIVE_DRAFTS.review.text);
   const [noteContent, setNoteContent] = useState(DEFAULT_NOTE_CONTENT);
   const [noteDrawerText, setNoteDrawerText] = useState(DEFAULT_ATTEMPT_NOTE);
   const [noteSaveState, setNoteSaveState] = useState("已保存");
@@ -187,7 +181,6 @@ function App() {
 
   function closeDrawers() {
     setNoteDrawerOpen(false);
-    setPublishDrawerOpen(false);
   }
 
   function toggleSidebar() {
@@ -207,9 +200,6 @@ function App() {
     setReviewConversation([]);
     setComposerInput("");
     setSettingsTab("appearance");
-    setPublishDraftType("review");
-    setPublishState(RETROSPECTIVE_DRAFTS.review.label);
-    setPublishEditor(RETROSPECTIVE_DRAFTS.review.text);
     setNoteContent(DEFAULT_NOTE_CONTENT);
     setNoteDrawerText(DEFAULT_ATTEMPT_NOTE);
     setNoteSaveState("已保存");
@@ -239,32 +229,13 @@ function App() {
     setComposerInput("");
   }
 
-  async function handleCopyPublish() {
-    try {
-      await navigator.clipboard.writeText(publishEditor);
-      setPublishState("已复制");
-    } catch {
-      setPublishState("复制不可用");
-    }
-  }
-
   function handleSaveAttempt() {
     setNoteContent((current) => mergeAttemptIntoNote(current, noteDrawerText));
     setNoteSaveState("已保存");
   }
 
-  function handleOpenPublishDrawer() {
-    setNoteDrawerOpen(false);
-    setPublishDrawerOpen(true);
-    const currentDraft = RETROSPECTIVE_DRAFTS[publishDraftType];
-    setPublishState(currentDraft.label);
-    setPublishEditor(currentDraft.text);
-  }
-
-  function handlePublishTypeChange(nextType: PublishKey) {
-    setPublishDraftType(nextType);
-    setPublishState(RETROSPECTIVE_DRAFTS[nextType].label);
-    setPublishEditor(RETROSPECTIVE_DRAFTS[nextType].text);
+  function handleOpenNoteDrawer() {
+    setNoteDrawerOpen(true);
   }
 
   useEffect(() => {
@@ -300,15 +271,15 @@ function App() {
       <section className={sidebarOpen ? "desktop" : "desktop sidebar-collapsed"} aria-label="Claude 桌面端风格 Aearn 框架">
         <header className="app-menu" aria-label="桌面应用菜单栏">
           <div className="menu-left">
-            <button
-              className="sidebar-toggle"
-              type="button"
-              aria-label={sidebarOpen ? "折叠左侧栏" : "展开左侧栏"}
-              aria-expanded={sidebarOpen}
-              onClick={toggleSidebar}
-            >
-              <img src="/sidebar.png" alt="" />
-            </button>
+            {sidebarOpen ? (
+              <button className="sidebar-toggle" type="button" aria-label="折叠左侧栏" aria-expanded="true" onClick={toggleSidebar}>
+                <img src="/sidebar.png" alt="" />
+              </button>
+            ) : (
+              <button className="sidebar-toggle" type="button" aria-label="展开左侧栏" aria-expanded="false" onClick={toggleSidebar}>
+                <img src="/sidebar.png" alt="" />
+              </button>
+            )}
             <div className="app-title">AI Code Learning</div>
           </div>
           <div className="menu-right">
@@ -370,9 +341,7 @@ function App() {
           />
 
           <footer className="sidebar-footer">
-            <div className="progress" aria-label={`总进度 ${Math.round(sidebarProgress * 100)}%`}>
-              <span style={{ width: `${sidebarProgress * 100}%` }}></span>
-            </div>
+            <progress className="progress" aria-label={`总进度 ${Math.round(sidebarProgress * 100)}%`} max={100} value={Math.round(sidebarProgress * 100)} />
             <span>{sidebarHint}</span>
           </footer>
         </aside>
@@ -407,12 +376,18 @@ function App() {
               onRunChange={setLastRun}
               onSubmitChange={setLastSubmit}
               onKnowledgePointUpdate={handleKnowledgePointUpdate}
-              onOpenPublishDrawer={handleOpenPublishDrawer}
+              onOpenNoteDrawer={handleOpenNoteDrawer}
             />
           </section>
 
           <section className={screenClassName(visibleRoute === "review")} aria-label="复习页">
-            <ReviewPage messages={reviewMessages} lastSubmit={lastSubmit} lastRun={lastRun} />
+            <ReviewPage
+              isActive={visibleRoute === "review"}
+              user={user}
+              messages={reviewMessages}
+              lastSubmit={lastSubmit}
+              lastRun={lastRun}
+            />
           </section>
 
           <section className={screenClassName(visibleRoute === "notes")} aria-label="笔记页">
@@ -423,60 +398,51 @@ function App() {
             <SettingsPage settingsTab={settingsTab} onSettingsTabChange={setSettingsTab} />
           </section>
 
-          <div className={noteDrawerOpen || publishDrawerOpen ? "drawer-scrim open" : "drawer-scrim"} onClick={closeDrawers}></div>
+          <div className={noteDrawerOpen ? "drawer-scrim open" : "drawer-scrim"} onClick={closeDrawers}></div>
 
-          <section className={noteDrawerOpen ? "drawer open" : "drawer"} aria-label="尝试记录弹窗" aria-hidden={!noteDrawerOpen}>
-            <div className="drawer-head">
-              <h2>尝试记录</h2>
-              <div className="note-status">
-                <span>{noteSaveState}</span>
-                <button className="icon-btn" type="button" aria-label="保存尝试记录" onClick={handleSaveAttempt}>
-                  ✓
-                </button>
-              </div>
-            </div>
-            <textarea
-              className="drawer-editor"
-              aria-label="尝试记录编辑器"
-              value={noteDrawerText}
-              onChange={(event) => {
-                setNoteDrawerText(event.target.value);
-                setNoteSaveState("未保存");
-              }}
-            />
-          </section>
-
-          <section className={publishDrawerOpen ? "drawer open" : "drawer"} aria-label="复盘草稿弹窗" aria-hidden={!publishDrawerOpen}>
-            <div className="drawer-head">
-              <h2>复盘草稿</h2>
-              <div className="note-status">
-                <span>{publishState}</span>
-                <button className="icon-btn" type="button" aria-label="复制复盘草稿" onClick={() => void handleCopyPublish()}>
-                  ⧉
-                </button>
-              </div>
-            </div>
-            <div className="publish-draft">
-              <div className="platform-row" aria-label="草稿类型">
-                {Object.entries(RETROSPECTIVE_DRAFTS).map(([key, draft]) => (
-                  <button
-                    className={publishDraftType === key ? "platform-btn active" : "platform-btn"}
-                    key={key}
-                    type="button"
-                    onClick={() => handlePublishTypeChange(key as PublishKey)}
-                  >
-                    {draft.label.replace("格式", "")}
+          {noteDrawerOpen ? (
+            <section id="noteDrawer" className="drawer open" aria-label="尝试记录弹窗" aria-hidden="false">
+              <div className="drawer-head">
+                <h2>尝试记录</h2>
+                <div className="note-status">
+                  <span>{noteSaveState}</span>
+                  <button className="icon-btn" type="button" aria-label="保存尝试记录" onClick={handleSaveAttempt}>
+                    ✓
                   </button>
-                ))}
+                </div>
               </div>
               <textarea
                 className="drawer-editor"
-                aria-label="复盘草稿内容"
-                value={publishEditor}
-                onChange={(event) => setPublishEditor(event.target.value)}
+                aria-label="尝试记录编辑器"
+                value={noteDrawerText}
+                onChange={(event) => {
+                  setNoteDrawerText(event.target.value);
+                  setNoteSaveState("未保存");
+                }}
               />
-            </div>
-          </section>
+            </section>
+          ) : (
+            <section id="noteDrawer" className="drawer" aria-label="尝试记录弹窗" aria-hidden="true">
+              <div className="drawer-head">
+                <h2>尝试记录</h2>
+                <div className="note-status">
+                  <span>{noteSaveState}</span>
+                  <button className="icon-btn" type="button" aria-label="保存尝试记录" onClick={handleSaveAttempt}>
+                    ✓
+                  </button>
+                </div>
+              </div>
+              <textarea
+                className="drawer-editor"
+                aria-label="尝试记录编辑器"
+                value={noteDrawerText}
+                onChange={(event) => {
+                  setNoteDrawerText(event.target.value);
+                  setNoteSaveState("未保存");
+                }}
+              />
+            </section>
+          )}
 
           {(visibleRoute === "home" || visibleRoute === "review") && (
             <form className="composer-wrap" onSubmit={handleComposerSubmit}>
@@ -487,19 +453,33 @@ function App() {
                   placeholder={visibleRoute === "review" ? "用自己的话复述，或请求提示……" : "粘贴你的代码、运行输出、测试失败或请 Agent 解释错因……"}
                   onChange={(event) => setComposerInput(event.target.value)}
                 />
-                <button
-                  className="btn primary send-btn note-inline-btn"
-                  type="button"
-                  aria-label={noteDrawerOpen ? "关闭尝试记录" : "打开尝试记录"}
-                  aria-controls="noteDrawer"
-                  aria-expanded={noteDrawerOpen}
-                  onClick={() => {
-                    setPublishDrawerOpen(false);
-                    setNoteDrawerOpen((current) => !current);
-                  }}
-                >
-                  <img src="/note.png" alt="" />
-                </button>
+                {noteDrawerOpen ? (
+                  <button
+                    className="btn primary send-btn note-inline-btn"
+                    type="button"
+                    aria-label="关闭尝试记录"
+                    aria-controls="noteDrawer"
+                    aria-expanded="true"
+                    onClick={() => {
+                      setNoteDrawerOpen(false);
+                    }}
+                  >
+                    <img src="/note.png" alt="" />
+                  </button>
+                ) : (
+                  <button
+                    className="btn primary send-btn note-inline-btn"
+                    type="button"
+                    aria-label="打开尝试记录"
+                    aria-controls="noteDrawer"
+                    aria-expanded="false"
+                    onClick={() => {
+                      setNoteDrawerOpen(true);
+                    }}
+                  >
+                    <img src="/note.png" alt="" />
+                  </button>
+                )}
                 <button className="btn primary send-btn" type="submit" aria-label="发送">
                   ↑
                 </button>

@@ -431,20 +431,31 @@
       background: var(--accent);
     }
 
-    .progress {
-      height: 6px;
-      overflow: hidden;
-      border-radius: 999px;
-      background: rgba(96, 78, 56, .14);
-    }
+.progress {
+  width: 100%;
+  height: 6px;
+  appearance: none;
+  -webkit-appearance: none;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(96, 78, 56, .14);
+  border: none;
+}
 
-    .progress span {
-      display: block;
-      width: 36%;
-      height: 100%;
-      border-radius: inherit;
-      background: var(--accent);
-    }
+.progress::-webkit-progress-bar {
+  background: rgba(96, 78, 56, .14);
+  border-radius: inherit;
+}
+
+.progress::-webkit-progress-value {
+  border-radius: inherit;
+  background: var(--accent);
+}
+
+.progress::-moz-progress-bar {
+  background: var(--accent);
+  border-radius: inherit;
+}
 
     .sidebar-footer {
       display: grid;

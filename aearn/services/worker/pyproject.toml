@@ -5,6 +5,7 @@ description = "Celery worker skeleton for Aearn."
 requires-python = ">=3.11,<3.13"
 dependencies = [
   "celery==5.5.3",
+  "psycopg[binary]",
   "python-dotenv",
 ]
 

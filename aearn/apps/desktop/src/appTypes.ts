@@ -29,7 +29,6 @@ export type WorkbenchState = "pristine" | "dirty" | "running" | "submitted" | "u
 
 export type AppRoute = "onboarding" | "home" | "review" | "notes" | "settings";
 export type SettingsKey = "appearance" | "model" | "notification" | "memory" | "notes" | "about";
-export type PublishKey = "review" | "solution" | "prompt" | "interview";
 export type NavGroupKey = "learn" | "review" | "notes" | "notes-python" | "notes-javascript" | "notes-sql";
 
 export type ConversationMessage = {

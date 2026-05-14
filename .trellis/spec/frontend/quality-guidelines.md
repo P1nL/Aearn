@@ -246,8 +246,70 @@ This keeps the shell as the owner of unrelated page-local workflows and guarante
 
 ```tsx
 function App() {
-  return <LearningWorkspacePage sessionState={sessionState} onOpenPublishDrawer={handleOpenPublishDrawer} />;
+  return <LearningWorkspacePage sessionState={sessionState} onOpenNoteDrawer={handleOpenNoteDrawer} />;
 }
 ```
 
 Keep the shell responsible for orchestration and let the page own the workbench workflow behind its own file boundary.
+
+## Scenario: M4 Desktop ReviewPage Backend-Driven Review Loop
+
+### 1. Scope / Trigger
+
+- Trigger: implementing or changing the desktop review queue, review session start, review exercise submit, or review result rendering.
+- Scope: `aearn/apps/desktop/src/pages/ReviewPage.tsx`, `api.ts`, `types.ts`, and the shell props passed from `App.tsx`.
+
+### 2. Signatures
+
+- `fetchTodayReviews(userId)` calls `GET /api/reviews/today?user_id=...`.
+- `startReviewSession({ userId, knowledgePointId })` calls `POST /api/reviews/start`.
+- `submitReviewExerciseResult({ sessionId, exerciseId, code, filledBlanks, explanation })` calls `POST /api/reviews/{session_id}/exercise-result`.
+- `ReviewPage` receives `isActive`, `user`, `messages`, `lastSubmit`, and `lastRun`; it owns review-page queue/session/editor/result state.
+
+### 3. Contracts
+
+- Frontend may own queue loading/error state, selected review session, editor text, blank inputs, explanation draft, and submit button state.
+- Backend remains source of truth for due queue membership, `ReviewState`, final result, `fsrs_rating`, `due_at`, `forget_risk`, and next action.
+- ReviewPage must not compute final score, `fsrs_rating`, `due_at`, `forget_risk`, or review counters locally.
+- API guards must validate `ReviewState.review_count` / `lapse_count` and still accept compatibility fields `reps` / `lapses`.
+- ReviewPage should not fetch due reviews before a user exists or while the page is inactive.
+- UI labels should use natural product language such as "开始复习" and "提交复习结果", not `review_submit` or internal Attempt labels.
+
+### 4. Validation & Error Matrix
+
+- No user -> visible prerequisite state and no review API call.
+- Due queue empty -> visible empty state.
+- API error envelope -> display stable `error.code` and `error.message`.
+- Start review failure with `REVIEW_NOT_DUE` -> show recoverable inline error.
+- Submit pending -> disable duplicate submit until response returns.
+- Submit done -> render backend `fsrs_rating`, `due_at`, and `forget_risk` from the response.
+
+### 5. Good/Base/Bad Cases
+
+- Good: open ReviewPage with an existing user, load due items, start one item, submit code and blanks, then render backend scheduling metrics.
+- Base: no due items returns a calm empty state without local fake cards.
+- Bad: deriving `Easy` from local blank values, calculating a due date in TypeScript, or showing `Attempt(review_submit)` as a user-facing concept.
+
+### 6. Tests Required
+
+- Run `pnpm --dir .\aearn desktop:check` after changing ReviewPage or review API types.
+- Backend M4 tests must pass because the ReviewPage depends on `/api/reviews/*` response shapes.
+- For browser smoke, create or reuse a user with due review state, open review route, start review, submit once, and verify visible `due_at` / `forget_risk`.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```tsx
+const dueAt = addDays(new Date(), rating === "Easy" ? 7 : 3);
+```
+
+This duplicates backend scheduling and can drift from persisted `ReviewState`.
+
+#### Correct
+
+```tsx
+setReviewResult(await submitReviewExerciseResult(payload));
+```
+
+Render `reviewResult.due_at`, `reviewResult.forget_risk`, and `reviewResult.ReviewState` exactly as returned by the API.

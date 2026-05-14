@@ -264,12 +264,18 @@ export type CodeCompletionResult = {
 export type ReviewStateSummary = {
   knowledge_point_id: string;
   card_state: "new" | "learning" | "review" | "relearning";
+  stability: number;
+  difficulty: number;
   due_at: string | null;
+  last_review_at: string | null;
   last_attempt_id: string | null;
   last_fsrs_rating: FsrsRating | null;
   scheduled_days: number;
+  review_count: number;
+  lapse_count: number;
   reps: number;
   lapses: number;
+  scheduler_version?: string | null;
 };
 
 export type SubmitExerciseResponse = {
@@ -321,6 +327,61 @@ export type ExplanationCheckResponse = {
   };
   follow_up_required: boolean;
   feedback: string;
+  next_action: NextAction;
+  idempotency_replayed?: boolean;
+};
+
+export type ReviewDueItem = {
+  ReviewState: ReviewStateSummary;
+  KnowledgePoint: {
+    id: string;
+    title: string;
+    status: CreatedKnowledgePoint["status"];
+    mastery_score: number;
+    weak_points_json: string[];
+  };
+  forget_risk: "low" | "normal" | "high";
+};
+
+export type TodayReviewsResponse = {
+  items: ReviewDueItem[];
+  page_info: {
+    limit: number;
+    next_cursor: string | null;
+    has_more: boolean;
+  };
+  timezone: "Asia/Shanghai";
+  generated_at: string;
+};
+
+export type ReviewSessionResponse = {
+  session_id: string;
+  session_type: "review";
+  knowledge_point: {
+    id: string;
+    title: string;
+    status: CreatedKnowledgePoint["status"];
+    weak_points_json: string[];
+  };
+  review_exercise: LearningExercise;
+  ReviewState: ReviewStateSummary;
+  variant_reason: string;
+  initial_agent_message: string;
+};
+
+export type ReviewExerciseResultResponse = {
+  attempt_id: string;
+  result: CodeCompletionResult["result"];
+  score: number;
+  score_breakdown: CodeCompletionResult["score_breakdown"];
+  fsrs_rating: FsrsRating;
+  weak_points: string[];
+  feedback: string;
+  due_at: string | null;
+  forget_risk: "low" | "normal" | "high";
+  ReviewState: ReviewStateSummary;
+  KnowledgePoint: SubmitExerciseResponse["KnowledgePoint"];
+  code_completion_result: CodeCompletionResult;
   next_action: NextAction;
   idempotency_replayed?: boolean;
 };

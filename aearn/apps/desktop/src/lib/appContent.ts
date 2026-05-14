@@ -2,7 +2,6 @@ import type {
   AppRoute,
   ConversationMessage,
   NavGroupKey,
-  PublishKey,
   SettingsKey,
   SettingsPanel,
 } from "../appTypes";
@@ -43,11 +42,11 @@ export const SETTING_PANELS: Record<SettingsKey, SettingsPanel> = {
   },
   model: {
     title: "模型设置",
-    meta: "配置代码提示、复习变体、错因解释和复盘草稿所用模型",
+    meta: "配置代码提示、复习变体、错因解释和笔记辅助补全所用模型",
     cards: [
       ["提示模型", "用于日常代码练习会话"],
       ["测试解释模型", "用于解释失败用例与报错"],
-      ["复盘模型", "用于题解和 AI 协作提示词草稿"],
+      ["笔记辅助模型", "用于补全当前知识点笔记和结构化总结"],
       ["工具调用", "只在明确需要时启用"],
     ],
   },
@@ -73,12 +72,12 @@ export const SETTING_PANELS: Record<SettingsKey, SettingsPanel> = {
   },
   notes: {
     title: "练习设置",
-    meta: "控制 Attempt 分类、自动保存和复盘草稿偏好",
+    meta: "控制 Attempt 摘要、自动保存和笔记抽屉偏好",
     cards: [
       ["分类层级", "语言大类 / 练习点"],
-      ["自动保存", "编辑时保存 Attempt 状态"],
-      ["默认草稿类型", "复盘"],
-      ["导出方式", "只生成草稿，手动复制"],
+      ["自动保存", "编辑时保存笔记抽屉状态"],
+      ["默认入口", "当前知识点笔记抽屉"],
+      ["导出方式", "仅保留本地 Markdown 笔记"],
     ],
   },
   about: {
@@ -90,37 +89,6 @@ export const SETTING_PANELS: Record<SettingsKey, SettingsPanel> = {
       ["技术形态", "React + Vite + Tauri"],
       ["范围", "当前实现对齐 docs/design 原型结构"],
     ],
-  },
-};
-
-export const RETROSPECTIVE_DRAFTS: Record<PublishKey, { label: string; text: string }> = {
-  review: {
-    label: "复盘格式",
-    text: `今天复盘 DOM 点击计数题，终于把状态变量位置和事件函数边界分清了。
-
-错误：把 \`count\` 写进 click 回调内部，每次点击都会重置。
-修正：把 \`count\` 放在监听器外层，回调只负责累加和更新输出。
-
-测试：连续点击 3 次，输出应该显示 3。
-
-下次问 AI：请先指出状态变量位置和测试用例，不要直接给完整答案。`,
-  },
-  solution: {
-    label: "题解格式",
-    text: `这道 DOM 点击计数题的关键不是 \`addEventListener\` 本身，而是状态变量的生命周期。\`count\` 如果写在点击回调内部，每次执行都会重新初始化；应该把它放到监听器外层，让多次点击共享同一个变量。验证方式是连续点击三次，输出依次变成 1、2、3。`,
-  },
-  prompt: {
-    label: "AI 提示词格式",
-    text: `请帮我调试一个 JavaScript DOM 点击计数练习。要求：
-
-1. 先检查状态变量是否放在正确作用域。
-2. 只给 hint 和失败原因，不要直接给完整答案。
-3. 用测试用例说明为什么连续点击三次应该输出 3。
-4. 如果需要代码，只给最小修改片段。`,
-  },
-  interview: {
-    label: "面试讲述格式",
-    text: `我会这样解释这道题：事件监听器会在每次点击时执行回调，如果把 \`count\` 声明在回调内部，每次执行都会从 0 开始。把 \`count\` 放在外层后，回调形成闭包，每次点击都能读写同一个状态，所以连续点击才会累加。`,
   },
 };
 

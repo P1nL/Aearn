@@ -3,16 +3,12 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping, Sequence
-from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from psycopg import Connection
 
 from app.services.evaluation import (
     build_code_completion_result,
-    knowledge_point_status_for,
-    mastery_score_for,
-    schedule_days_for,
 )
 from app.services.exercise_guidance import (
     build_error_explanation_response,
@@ -22,6 +18,7 @@ from app.services.exercise_guidance import (
 )
 from app.services.exercise_repository import get_exercise, get_or_create_exercise_for_knowledge_point
 from app.services.plan_repository import IdempotencyConflictError, request_hash
+from app.services.review_scheduler import apply_attempt_review_update
 from app.services.runtime_runner import RuntimeExecutionResult, run_exercise
 from app.services.user_repository import get_user
 
@@ -151,7 +148,7 @@ def run_learning_session_exercise(
     request_id: str | None,
     request_body: Mapping[str, object],
 ) -> tuple[dict[str, object], bool]:
-    session = _load_session(conn, session_id)
+    session = _load_session(conn, session_id, allowed_session_types={"learn", "review"})
     exercise = _load_session_exercise(conn, exercise_id=exercise_id, session=session)
     if runtime_profile_id is not None and runtime_profile_id != exercise["runtime_profile"]["id"]:
         raise SessionStateConflictError("runtime_profile_id does not match the exercise runtime profile")
@@ -617,16 +614,22 @@ def _load_learning_context(
     return context
 
 
-def _load_session(conn: Connection[dict[str, object]], session_id: str) -> Mapping[str, object]:
+def _load_session(
+    conn: Connection[dict[str, object]],
+    session_id: str,
+    *,
+    allowed_session_types: set[str] | None = None,
+) -> Mapping[str, object]:
+    expected_types = allowed_session_types or {"learn"}
     session = conn.execute(
         """
         SELECT *
         FROM learning_sessions
-        WHERE id = %s AND session_type = 'learn' AND status = 'active'
+        WHERE id = %s AND status = 'active'
         """,
         (session_id,),
     ).fetchone()
-    if session is None:
+    if session is None or str(session["session_type"]) not in expected_types:
         raise EntityNotFoundError("SESSION_NOT_FOUND", "学习会话不存在")
     return session
 
@@ -745,120 +748,13 @@ def _update_learning_records(
     explanation_check_result: Mapping[str, object],
     request_id: str | None,
 ) -> dict[str, object]:
-    knowledge_point_id = str(exercise["knowledge_point_id"])
-    result = str(code_completion_result["result"])
-    score = int(code_completion_result["score"])
-    mastery_score = mastery_score_for(result, score)
-    knowledge_point_status = knowledge_point_status_for(result)
-
-    knowledge_point = conn.execute(
-        """
-        UPDATE knowledge_points
-        SET
-          status = %s,
-          mastery_score = %s,
-          weak_points_json = %s::jsonb,
-          last_exercise_result = %s,
-          last_exercise_score = %s,
-          last_exercise_breakdown_json = %s::jsonb,
-          last_explanation_check_result = %s::jsonb,
-          last_session_id = %s
-        WHERE id = %s
-        RETURNING *
-        """,
-        (
-            knowledge_point_status,
-            mastery_score,
-            json.dumps(code_completion_result["weak_points"]),
-            result,
-            score,
-            json.dumps(code_completion_result["score_breakdown"]),
-            json.dumps(explanation_check_result),
-            session["id"],
-            knowledge_point_id,
-        ),
-    ).fetchone()
-    if knowledge_point is None:
-        raise RuntimeError("knowledge point update returned no row")
-
-    previous_review_state = conn.execute(
-        """
-        SELECT *
-        FROM review_states
-        WHERE knowledge_point_id = %s
-        """,
-        (knowledge_point_id,),
-    ).fetchone()
-    if previous_review_state is None:
-        raise RuntimeError("review state missing for knowledge point")
-
-    fsrs_rating = str(code_completion_result["fsrs_rating"])
-    scheduled_days = schedule_days_for(fsrs_rating)
-    due_at = datetime.now(UTC) + timedelta(days=scheduled_days)
-    next_card_state = "relearning" if fsrs_rating == "Again" else "review"
-
-    review_state = conn.execute(
-        """
-        UPDATE review_states
-        SET
-          card_state = %s,
-          stability = %s,
-          difficulty = %s,
-          due_at = %s,
-          elapsed_days = %s,
-          scheduled_days = %s,
-          reps = reps + 1,
-          lapses = lapses + %s,
-          last_review_at = now(),
-          last_attempt_id = %s,
-          last_fsrs_rating = %s,
-          scheduler_version = scheduler_version,
-          suspended_at = NULL
-        WHERE knowledge_point_id = %s
-        RETURNING *
-        """,
-        (
-            next_card_state,
-            round(max(score / 2, 1), 4),
-            round(max(9 - score / 2, 1), 4),
-            due_at,
-            previous_review_state["scheduled_days"],
-            scheduled_days,
-            1 if fsrs_rating == "Again" else 0,
-            submit_attempt["id"],
-            fsrs_rating,
-            knowledge_point_id,
-        ),
-    ).fetchone()
-    if review_state is None:
-        raise RuntimeError("review state update returned no row")
-
-    normalized_request_id = _request_id_or_none(request_id) or f"session-{session['id']}-submit-{submit_attempt['id']}"
-
-    conn.execute(
-        """
-        INSERT INTO review_logs (
-          knowledge_point_id, user_id, plan_id, attempt_id, rating,
-          previous_state_json, next_state_json, scheduled_due_at, source, request_id
-        )
-        VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, 'learn_submit', %s)
-        """,
-        (
-            knowledge_point_id,
-            session["user_id"],
-            session["plan_id"],
-            submit_attempt["id"],
-            fsrs_rating,
-            json.dumps(_serialize_review_state(previous_review_state)),
-            json.dumps(_serialize_review_state(review_state)),
-            due_at,
-            normalized_request_id,
-        ),
+    return apply_attempt_review_update(
+        conn,
+        knowledge_point_id=str(exercise["knowledge_point_id"]),
+        attempt_id=str(submit_attempt["id"]),
+        source="learn_submit",
+        request_id=request_id,
     )
-    return {
-        "KnowledgePoint": _serialize_knowledge_point(knowledge_point),
-        "ReviewState": _serialize_review_state(review_state),
-    }
 
 
 def _serialize_knowledge_point(row: Mapping[str, object]) -> dict[str, object]:

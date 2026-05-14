@@ -41,6 +41,7 @@ The dependency source for the API service is `aearn/services/api/pyproject.toml`
 - For database migrations, verify repeatability and core inserts for the tables touched by the task.
 - For runner/evaluation logic, test `success`, `runtime_error`, `timeout`, and `unsupported` separately.
 - For review scheduling, test that retries do not double-increment review counters.
+- API test batches that call `bootstrap_database()` share the same local database and must be run sequentially; do not launch M2/M3/M4 pytest commands in parallel.
 
 ---
 
@@ -212,3 +213,77 @@ WHERE request_id IS NOT NULL;
 ```
 
 Keep retry safety on request identity and `idempotency_records`, while allowing distinct run/submit payloads to persist as separate `Attempt` rows.
+
+## Scenario: M4 FSRS Review APIs, Scheduler, and Worker Due Counts
+
+### 1. Scope / Trigger
+
+- Trigger: implementing or changing shared review scheduling, `/api/reviews/*`, `review_logs`, `review_states`, or the due-count Celery task.
+- Scope: `app/services/review_scheduler.py`, `app/services/review_repository.py`, `app/routes/reviews.py`, `app/models/reviews.py`, `app/db/schema.sql`, `aearn_worker/worker_app.py`, and M4 API tests.
+
+### 2. Signatures
+
+- `GET /api/reviews/today?user_id={user_id}&due_before={iso?}&limit={n}` returns due review items sorted by `ReviewState.due_at`.
+- `POST /api/reviews/start` with `{user_id, knowledge_point_id}` starts or reuses an active `LearningSession(session_type='review')`.
+- `POST /api/reviews/{session_id}/exercise-result` with `exercise_id`, optional `attempt_id`, `code`, `filled_blanks`, `submit_version`, optional `explanation_check`, hint/error counts, and optional `code_hash` writes `Attempt(review_submit)`.
+- Shared scheduler signature: `apply_attempt_review_update(conn, knowledge_point_id, attempt_id, source, request_id)` updates `ReviewState` only from persisted `Attempt(submit|review_submit)`.
+- Worker task signature: `review.refresh_due_counts` reads due `review_states` and returns `{"total_due": int, "counts_by_user": {user_id: count}}`.
+
+### 3. Contracts
+
+- `Attempt(run)` must never update `ReviewState` or write `ReviewLog`.
+- Learning submit and review submit must both call the shared scheduler instead of duplicating FSRS update logic.
+- Scheduler idempotency key defaults to `review:update:{knowledge_point_id}:{attempt_id}:{rating}`; replay by request id or `(attempt_id, rating, source)` returns the existing next state.
+- `review_states` storage still uses legacy `reps` / `lapses`, but API payloads must expose `review_count` / `lapse_count` while preserving `reps` / `lapses` compatibility.
+- `review_logs.request_id` and `(attempt_id, rating, source)` must be unique to prevent double counter increments.
+- Worker due-count queries are read-only; they must not update `ReviewState`, create `ReviewLog`, or prepare variants.
+
+### 4. Validation & Error Matrix
+
+- Unknown user in due list or start -> `USER_NOT_FOUND` with 404.
+- Unknown knowledge point for review start -> `KNOWLEDGE_POINT_NOT_FOUND` with 404.
+- No due state, future `due_at`, suspended state, or inactive plan -> `REVIEW_NOT_DUE` with 409.
+- Review session/exercise mismatch -> `SESSION_CONFLICT` with 409.
+- Missing review session, exercise, or run attempt -> documented 404 error code.
+- Same review result idempotency key with different payload -> `IDEMPOTENCY_CONFLICT` with 409.
+- Invalid scheduling attempt type, rating, user mismatch, or unevaluated attempt -> `ReviewSchedulingError` and no `ReviewState` mutation.
+
+### 5. Good/Base/Bad Cases
+
+- Good: complete a learning submit, force due, start review, submit a review exercise, and see one `Attempt(review_submit)`, one `ReviewLog(source='review_submit')`, incremented `review_count`, backend `due_at`, and `forget_risk`.
+- Base: call due-count worker with existing due rows and verify the returned counts while the row snapshot and log count stay unchanged.
+- Bad: computing `due_at` from the request body, updating `review_states` from `Attempt(run)`, or inserting a second `ReviewLog` on retry.
+
+### 6. Tests Required
+
+- Assert `GET /api/reviews/today` returns empty state and due items sorted by `due_at`.
+- Assert `POST /api/reviews/start` rejects early items and reuses the active due review session.
+- Assert review exercise result writes `Attempt(review_submit)` and updates `ReviewState` exactly once.
+- Assert replaying the same review result returns `idempotency_replayed=true` without incrementing `reps`.
+- Assert `Attempt(run)` leaves review state unchanged.
+- Assert `review.refresh_due_counts` is registered, uses `Asia/Shanghai`, and is read-only.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+if attempt_type == "run":
+    update_review_state(...)
+```
+
+This makes exploratory runs change the spaced-repetition schedule.
+
+#### Correct
+
+```python
+apply_attempt_review_update(
+    conn,
+    knowledge_point_id=knowledge_point_id,
+    attempt_id=submit_attempt_id,
+    source="learn_submit",
+    request_id=request_id,
+)
+```
+
+Only persisted submit facts can move `ReviewState`, and retries reuse `ReviewLog` instead of mutating counters twice.

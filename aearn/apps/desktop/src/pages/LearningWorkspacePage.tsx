@@ -44,7 +44,7 @@ type LearningWorkspacePageProps = {
   onRunChange: (run: RunExerciseResponse | null) => void;
   onSubmitChange: (submit: SubmitExerciseResponse | null) => void;
   onKnowledgePointUpdate: (patch: SubmitExerciseResponse["KnowledgePoint"]) => void;
-  onOpenPublishDrawer: () => void;
+  onOpenNoteDrawer: () => void;
 };
 
 export function LearningWorkspacePage({
@@ -58,7 +58,7 @@ export function LearningWorkspacePage({
   onRunChange,
   onSubmitChange,
   onKnowledgePointUpdate,
-  onOpenPublishDrawer,
+  onOpenNoteDrawer,
 }: LearningWorkspacePageProps) {
   const [exerciseActionState, setExerciseActionState] = useState<AsyncActionState>({ status: "idle" });
   const [editorCode, setEditorCode] = useState("");
@@ -382,7 +382,7 @@ export function LearningWorkspacePage({
               onExplanationFocusChange={setExplanationFocus}
               onCheckExplanation={() => void handleCheckExplanation()}
               onRetryAction={handleRetryExerciseAction}
-              onOpenPublishDrawer={onOpenPublishDrawer}
+              onOpenNoteDrawer={onOpenNoteDrawer}
             />
           </>
         )}
