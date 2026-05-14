@@ -179,3 +179,75 @@ const submitDisabled =
 ```
 
 Submit follows the actual M3 contract instead of a single optimistic condition.
+
+## Scenario: Desktop App Shell vs Page and Feature Boundaries
+
+### 1. Scope / Trigger
+
+- Trigger: refactoring or extending the desktop app after `App.tsx` has grown to hold multiple route screens, M3 workbench panels, and shared shell widgets at once.
+- Scope: `aearn/apps/desktop/src/App.tsx`, `pages/`, `features/`, `components/`, `lib/`, and app-local UI types.
+
+### 2. Signatures
+
+- `App.tsx` remains the runtime shell entry.
+- Route screens live in `pages/`.
+- M3 workbench subtree lives in `features/learning/`.
+- Shared shell/presentational widgets live in `components/`.
+- Pure labels/content/helpers live in `lib/`.
+
+### 3. Contracts
+
+- `App.tsx` owns bootstrap, global route selection, drawers, and cross-page shared domain state.
+- Page-local interaction state should move to the owning page once a screen has meaningful local workflow state, for example onboarding draft editing or learning workbench run/submit state.
+- M3 result panes such as runtime feedback, hint history, error explanation, explanation check, and submit summary must not stay as inline component definitions inside `App.tsx` once they become reusable workbench subpanels.
+- Shared helpers extracted from `App.tsx` must stay pure; they must not hide React state or mutate backend-owned facts.
+- This structure refactor does not imply a router/store/library migration. Keep the existing runtime model unless task scope explicitly widens.
+
+### 4. Validation & Error Matrix
+
+- `App.tsx` still contains page/workbench component definitions after the refactor -> task incomplete.
+- Page-local state remains trapped in `App.tsx` only because props were inconvenient -> ownership boundary regression.
+- New shared helper duplicates an existing constant/label function -> code reuse failure.
+- Refactor changes run/hint/explain/submit behavior -> behavior regression requiring fix before commit.
+
+### 5. Good/Base/Bad Cases
+
+- Good: `App.tsx` orchestrates the shell while `OnboardingPage`, `LearningWorkspacePage`, and `features/learning/*` own their local UI logic.
+- Base: keep global CSS and local state routing, but still move pages and M3 panels into separate files.
+- Bad: moving JSX into files while keeping all meaningful state and workflow ownership in one giant `App.tsx`, or using the refactor as an excuse to slip in router/store rewrites.
+
+### 6. Tests Required
+
+- Run `pnpm --dir .\aearn desktop:check`.
+- For changes touching the M3 workbench wiring, browser smoke the onboarding -> learning session -> run visible tests -> check explanation -> submit path.
+- Confirm `App.tsx` no longer defines page-level or workbench result-panel functions by direct file inspection.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```tsx
+function App() {
+  const [editorCode, setEditorCode] = useState("");
+  const [goalText, setGoalText] = useState("");
+  return (
+    <>
+      <Onboarding JSX />
+      <Learning JSX />
+      <RuntimeFeedback JSX />
+    </>
+  );
+}
+```
+
+This keeps the shell as the owner of unrelated page-local workflows and guarantees the file will bloat again.
+
+#### Correct
+
+```tsx
+function App() {
+  return <LearningWorkspacePage sessionState={sessionState} onOpenPublishDrawer={handleOpenPublishDrawer} />;
+}
+```
+
+Keep the shell responsible for orchestration and let the page own the workbench workflow behind its own file boundary.
