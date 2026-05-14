@@ -14,12 +14,16 @@ import type {
   LearningMode,
   LearningSessionResponse,
   PlanDraft,
+  ReviewDueItem,
+  ReviewExerciseResultResponse,
+  ReviewSessionResponse,
   ReviewStateSummary,
   RunExerciseResponse,
   RuntimeProfile,
   RuntimeStatus,
   SubmitExerciseResponse,
   TestResult,
+  TodayReviewsResponse,
   UserProfile,
 } from "./types";
 
@@ -272,6 +276,59 @@ export async function checkLearningExplanation(input: {
   return payload;
 }
 
+export async function fetchTodayReviews(userId: string, signal?: AbortSignal): Promise<TodayReviewsResponse> {
+  const payload = await requestJson(`${API_BASE_URL}/api/reviews/today?user_id=${encodeURIComponent(userId)}`, {
+    signal,
+  });
+  if (!isTodayReviewsResponse(payload)) {
+    throw new Error("Today reviews API returned an invalid payload");
+  }
+  return payload;
+}
+
+export async function startReviewSession(input: {
+  userId: string;
+  knowledgePointId: string;
+}): Promise<ReviewSessionResponse> {
+  const payload = await requestJson(`${API_BASE_URL}/api/reviews/start`, {
+    method: "POST",
+    body: JSON.stringify({
+      user_id: input.userId,
+      knowledge_point_id: input.knowledgePointId,
+    }),
+  });
+  if (!isReviewSessionResponse(payload)) {
+    throw new Error("Review session start returned an invalid payload");
+  }
+  return payload;
+}
+
+export async function submitReviewExerciseResult(input: {
+  sessionId: string;
+  exerciseId: string;
+  code: string;
+  filledBlanks: Record<string, string>;
+  explanation?: string;
+  hintUsageCount?: number;
+  errorCount?: number;
+}): Promise<ReviewExerciseResultResponse> {
+  const payload = await requestJson(`${API_BASE_URL}/api/reviews/${input.sessionId}/exercise-result`, {
+    method: "POST",
+    body: JSON.stringify({
+      exercise_id: input.exerciseId,
+      code: input.code,
+      filled_blanks: input.filledBlanks,
+      explanation: input.explanation,
+      hint_usage_count: input.hintUsageCount ?? 0,
+      error_count: input.errorCount ?? 0,
+    }),
+  });
+  if (!isReviewExerciseResultResponse(payload)) {
+    throw new Error("Review exercise result API returned an invalid payload");
+  }
+  return payload;
+}
+
 async function requestJson(url: string, init: RequestInit = {}): Promise<unknown> {
   const response = await fetch(url, {
     ...init,
@@ -413,6 +470,67 @@ function isExplanationCheckResponse(payload: unknown): payload is ExplanationChe
   );
 }
 
+function isTodayReviewsResponse(payload: unknown): payload is TodayReviewsResponse {
+  return (
+    isRecord(payload) &&
+    Array.isArray(payload.items) &&
+    payload.items.every(isReviewDueItem) &&
+    isRecord(payload.page_info) &&
+    typeof payload.page_info.limit === "number" &&
+    typeof payload.page_info.has_more === "boolean" &&
+    typeof payload.timezone === "string" &&
+    typeof payload.generated_at === "string"
+  );
+}
+
+function isReviewDueItem(payload: unknown): payload is ReviewDueItem {
+  return (
+    isRecord(payload) &&
+    isReviewStateSummary(payload.ReviewState) &&
+    isRecord(payload.KnowledgePoint) &&
+    typeof payload.KnowledgePoint.id === "string" &&
+    typeof payload.KnowledgePoint.title === "string" &&
+    Array.isArray(payload.KnowledgePoint.weak_points_json) &&
+    isForgetRisk(payload.forget_risk)
+  );
+}
+
+function isReviewSessionResponse(payload: unknown): payload is ReviewSessionResponse {
+  return (
+    isRecord(payload) &&
+    typeof payload.session_id === "string" &&
+    payload.session_type === "review" &&
+    isRecord(payload.knowledge_point) &&
+    typeof payload.knowledge_point.id === "string" &&
+    typeof payload.knowledge_point.title === "string" &&
+    Array.isArray(payload.knowledge_point.weak_points_json) &&
+    isLearningExercise(payload.review_exercise) &&
+    isReviewStateSummary(payload.ReviewState) &&
+    typeof payload.variant_reason === "string" &&
+    typeof payload.initial_agent_message === "string"
+  );
+}
+
+function isReviewExerciseResultResponse(payload: unknown): payload is ReviewExerciseResultResponse {
+  return (
+    isRecord(payload) &&
+    typeof payload.attempt_id === "string" &&
+    typeof payload.result === "string" &&
+    typeof payload.score === "number" &&
+    isRecord(payload.score_breakdown) &&
+    typeof payload.fsrs_rating === "string" &&
+    Array.isArray(payload.weak_points) &&
+    typeof payload.feedback === "string" &&
+    (typeof payload.due_at === "string" || payload.due_at === null) &&
+    isForgetRisk(payload.forget_risk) &&
+    isReviewStateSummary(payload.ReviewState) &&
+    isRecord(payload.KnowledgePoint) &&
+    typeof payload.KnowledgePoint.id === "string" &&
+    isCodeCompletionResult(payload.code_completion_result) &&
+    typeof payload.next_action === "string"
+  );
+}
+
 function isRuntimeProfile(payload: unknown): payload is RuntimeProfile {
   return (
     isRecord(payload) &&
@@ -469,9 +587,14 @@ function isReviewStateSummary(payload: unknown): payload is ReviewStateSummary {
     isRecord(payload) &&
     typeof payload.knowledge_point_id === "string" &&
     typeof payload.card_state === "string" &&
+    typeof payload.stability === "number" &&
+    typeof payload.difficulty === "number" &&
     (typeof payload.due_at === "string" || payload.due_at === null) &&
+    (typeof payload.last_review_at === "string" || payload.last_review_at === null) &&
     (typeof payload.last_attempt_id === "string" || payload.last_attempt_id === null) &&
     typeof payload.scheduled_days === "number" &&
+    typeof payload.review_count === "number" &&
+    typeof payload.lapse_count === "number" &&
     typeof payload.reps === "number" &&
     typeof payload.lapses === "number"
   );
@@ -483,6 +606,10 @@ function isRuntimeStatus(payload: unknown): payload is RuntimeStatus {
 
 function isApiErrorEnvelope(payload: unknown): payload is { error: ApiError } {
   return isRecord(payload) && isRecord(payload.error) && typeof payload.error.code === "string";
+}
+
+function isForgetRisk(payload: unknown): payload is "low" | "normal" | "high" {
+  return payload === "low" || payload === "normal" || payload === "high";
 }
 
 function isRecord(payload: unknown): payload is Record<string, unknown> {

@@ -80,7 +80,7 @@ def mastery_score_for(result: str, score: int) -> float:
 
 
 def knowledge_point_status_for(result: str) -> str:
-    if result in {"passed", "easy"}:
+    if result in {"partial", "passed", "easy"}:
         return "reviewing"
     return "learning"
 

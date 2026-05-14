@@ -339,6 +339,7 @@ CREATE INDEX IF NOT EXISTS idx_review_states_user_due ON review_states(user_id, 
 CREATE INDEX IF NOT EXISTS idx_review_states_last_attempt ON review_states(last_attempt_id) WHERE last_attempt_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_review_logs_kp_reviewed ON review_logs(knowledge_point_id, reviewed_at DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS uq_review_logs_request_id ON review_logs(request_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_review_logs_attempt_rating_source ON review_logs(attempt_id, rating, source);
 CREATE INDEX IF NOT EXISTS idx_idempotency_records_operation ON idempotency_records(operation);
 
 DROP TRIGGER IF EXISTS trg_users_updated_at ON users;

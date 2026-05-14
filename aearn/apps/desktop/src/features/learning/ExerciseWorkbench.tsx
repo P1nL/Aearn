@@ -54,7 +54,7 @@ type ExerciseWorkbenchProps = {
   onExplanationFocusChange: (value: ExplanationFocus) => void;
   onCheckExplanation: () => void;
   onRetryAction: () => void;
-  onOpenPublishDrawer: () => void;
+  onOpenNoteDrawer: () => void;
 };
 
 export function ExerciseWorkbench({
@@ -90,7 +90,7 @@ export function ExerciseWorkbench({
   onExplanationFocusChange,
   onCheckExplanation,
   onRetryAction,
-  onOpenPublishDrawer,
+  onOpenNoteDrawer,
 }: ExerciseWorkbenchProps) {
   const runtimeUnsupported = exercise.runtime_profile.runtime_tier === "compiled_sandbox_later";
   const hasFailedRun =
@@ -192,8 +192,8 @@ export function ExerciseWorkbench({
             <button className="btn primary ghost-btn" type="button" disabled={submitDisabled || actionState.status === "loading"} onClick={onSubmit}>
               提交结果
             </button>
-            <button className="btn primary ghost-btn" type="button" onClick={onOpenPublishDrawer}>
-              复盘草稿
+            <button className="btn primary ghost-btn" type="button" onClick={onOpenNoteDrawer}>
+              打开笔记
             </button>
           </div>
 

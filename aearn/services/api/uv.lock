@@ -61,12 +61,14 @@ version = "0.1.0"
 source = { editable = "../worker" }
 dependencies = [
     { name = "celery" },
+    { name = "psycopg", extra = ["binary"] },
     { name = "python-dotenv" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "celery", specifier = "==5.5.3" },
+    { name = "psycopg", extras = ["binary"] },
     { name = "python-dotenv" },
 ]
 
