@@ -111,3 +111,71 @@ This implies Java execution exists in M2.
 ```
 
 M2 keeps course visibility separate from real runtime availability.
+
+## Scenario: M3 Generated Exercise Workbench
+
+### 1. Scope / Trigger
+
+- Trigger: implementing or changing the in-conversation generated exercise workbench, run action bar, stale/error/retry UX, or explanation-assist panels.
+- Scope: `aearn/apps/desktop/src/App.tsx`, `api.ts`, `types.ts`, and `styles.css`.
+
+### 2. Signatures
+
+- `startLearningSession({ userId, planId, knowledgePointId })`
+- `runLearningExercise({ sessionId, exerciseId, code, filledBlanks, runtimeProfileId, runMode })`
+- `requestLearningHint({ sessionId, exerciseId, attemptId, currentCode, blankId, hintLevel })`
+- `explainLearningError({ sessionId, attemptId, errorMessage, stderr, failedTests, currentCode })`
+- `checkLearningExplanation({ sessionId, attemptId, explanation, focus, round })`
+- `submitLearningExercise({ sessionId, exerciseId, attemptId, code, filledBlanks, explanation, hintUsageCount, errorCount })`
+
+### 3. Contracts
+
+- The frontend may own editor text, blank inputs, stale flags, loading/error state, explanation draft text, selected hint target, and local retry intent.
+- The backend remains source of truth for `runtime_status`, `test_results`, `hint_usage_count`, `error_cause`, `explanation_check_result`, `code_completion_result`, and `ReviewState`.
+- The generated exercise card must expose natural actions (`运行预览`, `运行可见测试`, `获取提示`, `解释错误`, `检查解释`, `提交结果`) without exposing `Attempt(run)` / `Attempt(submit)` labels.
+- `stale` must be visible as soon as code or blanks change after a run; old results may remain readable but cannot masquerade as current and cannot directly submit.
+- `preview` and `visible_tests` are separate user actions. If submit depends on the visible-test Attempt, the UI must explain why a pure preview result is not enough.
+- Explanation-check feedback and hint history must be rendered from API responses, not rederived from local heuristics.
+
+### 4. Validation & Error Matrix
+
+- API offline -> visible top status and disabled generation/run actions where appropriate.
+- API error envelope -> show stable `error.code` / `error.message` plus retry affordance when `recoverable=true`.
+- `compiled_sandbox_later` -> run-related actions disabled or boundary notice visible.
+- Code changed after run -> stale banner visible and submit blocked until rerun.
+- No run Attempt yet -> submit, hint, explain-error, and explanation-check actions show an inline prerequisite notice.
+
+### 5. Good/Base/Bad Cases
+
+- Good: complete onboarding, start a JS learning session, run visible tests, request a hint, check explanation, submit, and see preview/runtime/submit panels update from backend responses.
+- Base: use preview first, then see submit still require a visible-test run before scoring.
+- Bad: computing score or next action locally, hiding stale state after code changes, or using console output as the only error signal.
+
+### 6. Tests Required
+
+- Run `pnpm --dir .\aearn desktop:check`.
+- Browser smoke: open `http://127.0.0.1:1420`, create a JS plan, enter the workbench, run visible tests, check explanation, and submit once.
+- Verify hint/explain/check buttons enable only after a run Attempt exists and that stale UI appears after editing code post-run.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```tsx
+<button disabled={lastRun === null}>提交结果</button>
+```
+
+This ignores stale state, preview-only runs, and unsupported runtime boundaries.
+
+#### Correct
+
+```tsx
+const submitDisabled =
+  runtimeUnsupported ||
+  lastRun === null ||
+  lastRunMode !== "visible_tests" ||
+  isStale ||
+  lastRun.runtime_status === "unsupported";
+```
+
+Submit follows the actual M3 contract instead of a single optimistic condition.

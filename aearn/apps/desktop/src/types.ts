@@ -6,6 +6,11 @@ export type ApiHealth = {
 export type RuntimeTier = "browser_preview" | "python_stdout_test" | "compiled_sandbox_later";
 export type LearningMode = "goal_based" | "material_based";
 export type Language = "javascript" | "python" | "java" | "cpp" | "html_css";
+export type RuntimeStatus = "success" | "runtime_error" | "timeout" | "unsupported";
+export type NextAction = "retry_same" | "show_hint" | "explain_error" | "review_variant" | "schedule_review" | "advance_next";
+export type FsrsRating = "Again" | "Hard" | "Good" | "Easy";
+export type HintLevel = "nudge" | "concept" | "code_shape";
+export type ExplanationFocus = "core_logic" | "boundary_condition" | "ai_generated_change";
 
 export type RuntimeProfile = {
   id: string;
@@ -141,6 +146,183 @@ export type ApiError = {
   details: Record<string, unknown>;
   request_id: string;
   recoverable: boolean;
+};
+
+export type CodeBlank = {
+  id: string;
+  blank_key: string;
+  placeholder: string;
+  expected_concept: string;
+  acceptable_patterns_json: Record<string, unknown>[];
+  is_core: boolean;
+  order_index: number;
+};
+
+export type ExerciseTestCase = {
+  id: string;
+  case_type: "visible" | "hidden" | "preview_assertion";
+  input_json: Record<string, unknown>;
+  expected_output_json: Record<string, unknown>;
+  assertion_code: string | null;
+  weight: number;
+  is_critical: boolean;
+  timeout_ms: number;
+  order_index: number;
+};
+
+export type LearningExercise = {
+  id: string;
+  knowledge_point_id: string;
+  runtime_profile_id: string;
+  title: string;
+  exercise_type: "code_blank" | "fix_bug" | "implement_function" | "explain_code";
+  prompt_markdown: string;
+  starter_code: string;
+  solution_reference: string | null;
+  visible_test_policy: "visible_only" | "visible_and_hidden_summary" | "hidden_only";
+  difficulty: number;
+  estimated_minutes: number;
+  requires_explanation: boolean;
+  metadata_json: Record<string, unknown>;
+  runtime_profile: RuntimeProfile;
+  code_blanks: CodeBlank[];
+  test_cases: ExerciseTestCase[];
+};
+
+export type LearningSessionResponse = {
+  session_id: string;
+  session_type: "learn";
+  context_snapshot: {
+    current_stage: string;
+    LearningPlan: {
+      id: string;
+      current_module_id: string | null;
+    };
+    KnowledgePoint: {
+      id: string;
+      title: string;
+      status: CreatedKnowledgePoint["status"];
+    };
+    RuntimeProfile: RuntimeProfile;
+  };
+  exercise: LearningExercise;
+  initial_agent_message: string;
+  session_state: "learning";
+};
+
+export type TestResult = {
+  case_id: string;
+  case_type: "visible" | "hidden" | "preview_assertion";
+  passed: boolean;
+  weight: number;
+  is_critical: boolean;
+  duration_ms: number;
+  message: string;
+};
+
+export type RunExerciseResponse = {
+  attempt_id: string;
+  attempt_type: "run";
+  runtime_status: RuntimeStatus;
+  preview_html: string | null;
+  stdout: string;
+  stderr: string;
+  test_pass_rate: number;
+  passed_test_count: number;
+  total_test_count: number;
+  test_results: TestResult[];
+  error_message: string | null;
+  next_action: NextAction;
+  idempotency_replayed?: boolean;
+};
+
+export type CodeCompletionResult = {
+  result: "failed" | "partial" | "passed" | "easy";
+  score: number;
+  score_breakdown: {
+    completion_correctness: number;
+    runtime_and_tests: number;
+    error_diagnosis: number;
+    explanation_check: number;
+  };
+  hard_gates: {
+    runtime_gate: boolean;
+    test_gate: boolean;
+    core_blank_gate: boolean;
+    explanation_gate: boolean;
+  };
+  test_pass_rate: number;
+  hint_usage_count: number;
+  error_count: number;
+  weak_points: string[];
+  error_cause: string | null;
+  feedback: string;
+  next_action: NextAction;
+  fsrs_rating: FsrsRating;
+};
+
+export type ReviewStateSummary = {
+  knowledge_point_id: string;
+  card_state: "new" | "learning" | "review" | "relearning";
+  due_at: string | null;
+  last_attempt_id: string | null;
+  last_fsrs_rating: FsrsRating | null;
+  scheduled_days: number;
+  reps: number;
+  lapses: number;
+};
+
+export type SubmitExerciseResponse = {
+  attempt_id: string;
+  code_completion_result: CodeCompletionResult;
+  KnowledgePoint: {
+    id: string;
+    status: CreatedKnowledgePoint["status"];
+    mastery_score: number;
+    last_exercise_result: "failed" | "partial" | "passed" | "easy" | null;
+    last_exercise_score: number | null;
+  };
+  ReviewState: ReviewStateSummary;
+  next_action: NextAction;
+  idempotency_replayed?: boolean;
+};
+
+export type HintResponse = {
+  hint: {
+    hint_level: HintLevel;
+    content: string;
+  };
+  hint_usage_count: number;
+  affected_score: {
+    max_result: "passed" | "easy";
+    score_penalty_hint: number;
+  };
+  next_action: NextAction;
+  idempotency_replayed?: boolean;
+};
+
+export type ExplainErrorResponse = {
+  error_cause: string;
+  explanation: string;
+  fix_suggestion: string;
+  related_knowledge_points: Array<{
+    id: string;
+    title: string;
+  }>;
+  next_action: NextAction;
+  idempotency_replayed?: boolean;
+};
+
+export type ExplanationCheckResponse = {
+  result: "passed" | "partial" | "failed";
+  score: number;
+  score_breakdown: {
+    explanation_check: number;
+  };
+  follow_up_required: boolean;
+  feedback: string;
+  next_action: NextAction;
+  idempotency_replayed?: boolean;
 };
 
 export class ApiRequestError extends Error {

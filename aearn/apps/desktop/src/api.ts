@@ -1,11 +1,25 @@
 import type {
   ApiError,
   ApiHealth,
+  CodeCompletionResult,
   CreatedPlanResponse,
+  ExplainErrorResponse,
+  ExplanationFocus,
+  ExplanationCheckResponse,
+  HintLevel,
+  HintResponse,
   Language,
   LanguageCourse,
+  LearningExercise,
   LearningMode,
+  LearningSessionResponse,
   PlanDraft,
+  ReviewStateSummary,
+  RunExerciseResponse,
+  RuntimeProfile,
+  RuntimeStatus,
+  SubmitExerciseResponse,
+  TestResult,
   UserProfile,
 } from "./types";
 
@@ -105,6 +119,159 @@ export async function confirmPlan(userId: string, planDraft: PlanDraft): Promise
   return payload;
 }
 
+export async function startLearningSession(input: {
+  userId: string;
+  planId: string;
+  knowledgePointId: string;
+}): Promise<LearningSessionResponse> {
+  const payload = await requestJson(`${API_BASE_URL}/api/learning-sessions/start`, {
+    method: "POST",
+    body: JSON.stringify({
+      user_id: input.userId,
+      plan_id: input.planId,
+      knowledge_point_id: input.knowledgePointId,
+    }),
+  });
+  if (!isLearningSessionResponse(payload)) {
+    throw new Error("Learning session start returned an invalid payload");
+  }
+  return payload;
+}
+
+export async function runLearningExercise(input: {
+  sessionId: string;
+  exerciseId: string;
+  code: string;
+  filledBlanks: Record<string, string>;
+  runtimeProfileId: string;
+  runMode?: "preview" | "visible_tests";
+}): Promise<RunExerciseResponse> {
+  const payload = await requestJson(
+    `${API_BASE_URL}/api/learning-sessions/${input.sessionId}/exercises/${input.exerciseId}/run`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        code: input.code,
+        filled_blanks: input.filledBlanks,
+        runtime_profile_id: input.runtimeProfileId,
+        run_mode: input.runMode ?? "visible_tests",
+      }),
+    },
+  );
+  if (!isRunExerciseResponse(payload)) {
+    throw new Error("Run exercise returned an invalid payload");
+  }
+  return payload;
+}
+
+export async function submitLearningExercise(input: {
+  sessionId: string;
+  exerciseId: string;
+  attemptId: string;
+  code: string;
+  filledBlanks: Record<string, string>;
+  submitVersion?: number;
+  explanation?: string;
+  hintUsageCount?: number;
+  errorCount?: number;
+}): Promise<SubmitExerciseResponse> {
+  const payload = await requestJson(
+    `${API_BASE_URL}/api/learning-sessions/${input.sessionId}/exercises/${input.exerciseId}/submit`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        attempt_id: input.attemptId,
+        code: input.code,
+        filled_blanks: input.filledBlanks,
+        submit_version: input.submitVersion ?? 1,
+        explanation: input.explanation,
+        hint_usage_count: input.hintUsageCount ?? 0,
+        error_count: input.errorCount ?? 0,
+      }),
+    },
+  );
+  if (!isSubmitExerciseResponse(payload)) {
+    throw new Error("Submit exercise returned an invalid payload");
+  }
+  return payload;
+}
+
+export async function requestLearningHint(input: {
+  sessionId: string;
+  exerciseId: string;
+  attemptId: string;
+  currentCode: string;
+  blankId: string;
+  hintLevel: HintLevel;
+}): Promise<HintResponse> {
+  const payload = await requestJson(
+    `${API_BASE_URL}/api/learning-sessions/${input.sessionId}/exercises/${input.exerciseId}/hint`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        attempt_id: input.attemptId,
+        current_code: input.currentCode,
+        blank_id: input.blankId,
+        hint_level: input.hintLevel,
+      }),
+    },
+  );
+  if (!isHintResponse(payload)) {
+    throw new Error("Hint API returned an invalid payload");
+  }
+  return payload;
+}
+
+export async function explainLearningError(input: {
+  sessionId: string;
+  attemptId: string;
+  errorMessage: string | null;
+  stderr: string;
+  failedTests: Array<{ case_id: string; case_type: string; message: string }>;
+  currentCode: string;
+}): Promise<ExplainErrorResponse> {
+  const payload = await requestJson(
+    `${API_BASE_URL}/api/learning-sessions/${input.sessionId}/attempts/${input.attemptId}/explain-error`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        error_message: input.errorMessage,
+        stderr: input.stderr,
+        failed_tests: input.failedTests,
+        current_code: input.currentCode,
+      }),
+    },
+  );
+  if (!isExplainErrorResponse(payload)) {
+    throw new Error("Explain-error API returned an invalid payload");
+  }
+  return payload;
+}
+
+export async function checkLearningExplanation(input: {
+  sessionId: string;
+  attemptId: string;
+  explanation: string;
+  focus: ExplanationFocus;
+  round: number;
+}): Promise<ExplanationCheckResponse> {
+  const payload = await requestJson(
+    `${API_BASE_URL}/api/learning-sessions/${input.sessionId}/attempts/${input.attemptId}/check-explanation`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        explanation: input.explanation,
+        focus: input.focus,
+        round: input.round,
+      }),
+    },
+  );
+  if (!isExplanationCheckResponse(payload)) {
+    throw new Error("Explanation-check API returned an invalid payload");
+  }
+  return payload;
+}
+
 async function requestJson(url: string, init: RequestInit = {}): Promise<unknown> {
   const response = await fetch(url, {
     ...init,
@@ -135,8 +302,7 @@ function isLanguageCourse(payload: unknown): payload is LanguageCourse {
     typeof payload.id === "string" &&
     typeof payload.title === "string" &&
     typeof payload.language === "string" &&
-    isRecord(payload.runtime_profile) &&
-    typeof payload.runtime_profile.runtime_tier === "string"
+    isRuntimeProfile(payload.runtime_profile)
   );
 }
 
@@ -163,6 +329,156 @@ function isCreatedPlanResponse(payload: unknown): payload is CreatedPlanResponse
     Array.isArray(payload.knowledge_points) &&
     isRecord(payload.next_entry_point)
   );
+}
+
+function isLearningSessionResponse(payload: unknown): payload is LearningSessionResponse {
+  return (
+    isRecord(payload) &&
+    typeof payload.session_id === "string" &&
+    payload.session_type === "learn" &&
+    isRecord(payload.context_snapshot) &&
+    isRecord(payload.context_snapshot.KnowledgePoint) &&
+    typeof payload.context_snapshot.KnowledgePoint.id === "string" &&
+    isRuntimeProfile(payload.context_snapshot.RuntimeProfile) &&
+    isLearningExercise(payload.exercise) &&
+    typeof payload.initial_agent_message === "string"
+  );
+}
+
+function isRunExerciseResponse(payload: unknown): payload is RunExerciseResponse {
+  return (
+    isRecord(payload) &&
+    typeof payload.attempt_id === "string" &&
+    payload.attempt_type === "run" &&
+    isRuntimeStatus(payload.runtime_status) &&
+    typeof payload.stdout === "string" &&
+    typeof payload.stderr === "string" &&
+    typeof payload.test_pass_rate === "number" &&
+    Array.isArray(payload.test_results) &&
+    payload.test_results.every(isTestResult) &&
+    typeof payload.next_action === "string"
+  );
+}
+
+function isSubmitExerciseResponse(payload: unknown): payload is SubmitExerciseResponse {
+  return (
+    isRecord(payload) &&
+    typeof payload.attempt_id === "string" &&
+    isCodeCompletionResult(payload.code_completion_result) &&
+    isRecord(payload.KnowledgePoint) &&
+    typeof payload.KnowledgePoint.id === "string" &&
+    isReviewStateSummary(payload.ReviewState) &&
+    typeof payload.next_action === "string"
+  );
+}
+
+function isHintResponse(payload: unknown): payload is HintResponse {
+  return (
+    isRecord(payload) &&
+    isRecord(payload.hint) &&
+    typeof payload.hint.hint_level === "string" &&
+    typeof payload.hint.content === "string" &&
+    typeof payload.hint_usage_count === "number" &&
+    isRecord(payload.affected_score) &&
+    typeof payload.affected_score.max_result === "string" &&
+    typeof payload.affected_score.score_penalty_hint === "number" &&
+    typeof payload.next_action === "string"
+  );
+}
+
+function isExplainErrorResponse(payload: unknown): payload is ExplainErrorResponse {
+  return (
+    isRecord(payload) &&
+    typeof payload.error_cause === "string" &&
+    typeof payload.explanation === "string" &&
+    typeof payload.fix_suggestion === "string" &&
+    Array.isArray(payload.related_knowledge_points) &&
+    payload.related_knowledge_points.every(
+      (item) => isRecord(item) && typeof item.id === "string" && typeof item.title === "string",
+    ) &&
+    typeof payload.next_action === "string"
+  );
+}
+
+function isExplanationCheckResponse(payload: unknown): payload is ExplanationCheckResponse {
+  return (
+    isRecord(payload) &&
+    typeof payload.result === "string" &&
+    typeof payload.score === "number" &&
+    isRecord(payload.score_breakdown) &&
+    typeof payload.score_breakdown.explanation_check === "number" &&
+    typeof payload.follow_up_required === "boolean" &&
+    typeof payload.feedback === "string" &&
+    typeof payload.next_action === "string"
+  );
+}
+
+function isRuntimeProfile(payload: unknown): payload is RuntimeProfile {
+  return (
+    isRecord(payload) &&
+    typeof payload.id === "string" &&
+    typeof payload.slug === "string" &&
+    typeof payload.runtime_tier === "string" &&
+    typeof payload.language === "string" &&
+    typeof payload.runner === "string" &&
+    typeof payload.timeout_ms === "number"
+  );
+}
+
+function isLearningExercise(payload: unknown): payload is LearningExercise {
+  return (
+    isRecord(payload) &&
+    typeof payload.id === "string" &&
+    typeof payload.title === "string" &&
+    typeof payload.prompt_markdown === "string" &&
+    typeof payload.starter_code === "string" &&
+    isRuntimeProfile(payload.runtime_profile) &&
+    Array.isArray(payload.code_blanks) &&
+    Array.isArray(payload.test_cases)
+  );
+}
+
+function isTestResult(payload: unknown): payload is TestResult {
+  return (
+    isRecord(payload) &&
+    typeof payload.case_id === "string" &&
+    typeof payload.case_type === "string" &&
+    typeof payload.passed === "boolean" &&
+    typeof payload.weight === "number" &&
+    typeof payload.duration_ms === "number" &&
+    typeof payload.message === "string"
+  );
+}
+
+function isCodeCompletionResult(payload: unknown): payload is CodeCompletionResult {
+  return (
+    isRecord(payload) &&
+    typeof payload.result === "string" &&
+    typeof payload.score === "number" &&
+    isRecord(payload.score_breakdown) &&
+    isRecord(payload.hard_gates) &&
+    typeof payload.test_pass_rate === "number" &&
+    typeof payload.feedback === "string" &&
+    typeof payload.next_action === "string" &&
+    typeof payload.fsrs_rating === "string"
+  );
+}
+
+function isReviewStateSummary(payload: unknown): payload is ReviewStateSummary {
+  return (
+    isRecord(payload) &&
+    typeof payload.knowledge_point_id === "string" &&
+    typeof payload.card_state === "string" &&
+    (typeof payload.due_at === "string" || payload.due_at === null) &&
+    (typeof payload.last_attempt_id === "string" || payload.last_attempt_id === null) &&
+    typeof payload.scheduled_days === "number" &&
+    typeof payload.reps === "number" &&
+    typeof payload.lapses === "number"
+  );
+}
+
+function isRuntimeStatus(payload: unknown): payload is RuntimeStatus {
+  return payload === "success" || payload === "runtime_error" || payload === "timeout" || payload === "unsupported";
 }
 
 function isApiErrorEnvelope(payload: unknown): payload is { error: ApiError } {
