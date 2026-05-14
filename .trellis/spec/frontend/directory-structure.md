@@ -28,6 +28,12 @@ aearn/apps/desktop/
 - `src/` owns React application code and styling.
 - `src-tauri/` owns Tauri Rust shell code, capabilities, config, and native assets.
 - `src-tauri/icons/icon.ico` is required for Windows `cargo check` because `tauri-build` generates a Windows resource file even when bundling is disabled.
+- When the desktop UI grows beyond a single shell screen, split `src/` by responsibility instead of expanding one giant `App.tsx`:
+  - `pages/` for route-level screens
+  - `features/` for larger workflow-specific subtrees such as the M3 workbench
+  - `components/` for shared presentational/shell pieces
+  - `lib/` for pure labels, content seeds, and helper functions
+  - `appTypes.ts` for app-local shared UI types that do not belong in backend contract files
 
 ---
 
@@ -36,6 +42,7 @@ aearn/apps/desktop/
 - Keep the formal desktop runtime under `aearn/apps/desktop/`.
 - Use React component files with PascalCase when new components are introduced, such as `GeneratedCodeExerciseCard.tsx`.
 - Keep bootstrap files as `main.tsx`, `App.tsx`, and `styles.css` until the UI grows enough to split by feature.
+- After that split threshold is crossed, keep `App.tsx` as the app shell entry, not the home for page-local editors, workbench panels, or result cards.
 - Keep Tauri Rust code under `src-tauri/src/` and Tauri configuration under `src-tauri/`.
 - Do not treat `docs/design/learning-agent-claude-desktop-framework.html` as runtime source; it is a visual/reference prototype.
 
@@ -53,4 +60,5 @@ aearn/apps/desktop/
 
 - Building the product UI inside `docs/design/` instead of the Tauri/Vite app.
 - Adding route or feature files before checking `docs/product/frontend-interaction-spec.md`.
+- Letting `App.tsx` keep route JSX, page-local state, and M3 feature panels after the app already has clear page/feature boundaries.
 - Removing `src-tauri/icons/icon.ico`; Windows `cargo check` needs it through `tauri-build`.
