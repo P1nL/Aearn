@@ -1,4 +1,5 @@
 import type { ApiHealth, LearningSessionResponse } from "./types";
+import type { Language } from "./types";
 
 export type ApiHealthState =
   | { status: "loading" }
@@ -71,4 +72,13 @@ export type RouteCard = {
 export type ReviewCard = {
   title: string;
   body: string;
+};
+
+export type NoteContext = {
+  knowledgePointId: string;
+  knowledgePointTitle: string;
+  source: "learning" | "review" | "notes";
+  sessionId?: string;
+  attemptId?: string;
+  language?: Language | null;
 };

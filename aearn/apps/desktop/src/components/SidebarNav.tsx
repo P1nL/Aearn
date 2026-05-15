@@ -20,6 +20,15 @@ export function SidebarNav({
   onRouteChange,
 }: SidebarNavProps) {
   const learnItems = buildLearnNavItems(createdPlan, activeKnowledgePointId);
+  const noteItems =
+    createdPlan?.knowledge_points.slice(0, 5).map((knowledgePoint, index) => ({
+      id: knowledgePoint.id,
+      title: knowledgePoint.title,
+      active: knowledgePoint.id === activeKnowledgePointId || (index === 0 && activeRoute === "notes"),
+    })) ?? [
+      { id: "note-js-1", title: "当前知识点笔记", active: activeRoute === "notes" },
+      { id: "note-js-2", title: "错因与修正方式", active: false },
+    ];
 
   return (
     <nav className="nav" aria-label="主导航">
@@ -101,89 +110,20 @@ export function SidebarNav({
         </button>
         <div className="submenu">
           <div className="submenu-inner">
-            <NestedNotesGroup
-              groupKey="notes-python"
-              title="Python"
-              items={["DOM 事件补全", "Python 返回值", "测试断言"]}
-              activeRoute={activeRoute}
-              isOpen={openGroups["notes-python"]}
-              onToggle={onToggleGroup}
-              onRouteChange={onRouteChange}
-            />
-            <NestedNotesGroup
-              groupKey="notes-javascript"
-              title="JavaScript"
-              items={["按钮点击计数", "输入框字数统计"]}
-              activeRoute={activeRoute}
-              isOpen={openGroups["notes-javascript"]}
-              onToggle={onToggleGroup}
-              onRouteChange={onRouteChange}
-            />
-            <NestedNotesGroup
-              groupKey="notes-sql"
-              title="SQL"
-              items={["查询结果校验"]}
-              activeRoute={activeRoute}
-              isOpen={openGroups["notes-sql"]}
-              onToggle={onToggleGroup}
-              onRouteChange={onRouteChange}
-            />
+            {noteItems.map((item) => (
+              <button
+                className={activeRoute === "notes" && item.active ? "nav-link active" : "nav-link"}
+                key={item.id}
+                type="button"
+                onClick={() => onRouteChange("notes")}
+              >
+                <span className="nav-dot"></span>
+                <span>{item.title}</span>
+              </button>
+            ))}
           </div>
         </div>
       </section>
     </nav>
-  );
-}
-
-type NestedNotesGroupProps = {
-  groupKey: NavGroupKey;
-  title: string;
-  items: string[];
-  activeRoute: AppRoute;
-  isOpen: boolean;
-  onToggle: (group: NavGroupKey) => void;
-  onRouteChange: (route: AppRoute) => void;
-};
-
-function NestedNotesGroup({
-  groupKey,
-  title,
-  items,
-  activeRoute,
-  isOpen,
-  onToggle,
-  onRouteChange,
-}: NestedNotesGroupProps) {
-  return (
-    <section className={isOpen ? "nav-group nested open" : "nav-group nested"} data-group={groupKey}>
-      <button
-        className={activeRoute === "notes" ? "nav-trigger nav-link active" : "nav-trigger nav-link"}
-        type="button"
-        aria-expanded={isOpen}
-        onClick={() => {
-          onToggle(groupKey);
-          onRouteChange("notes");
-        }}
-      >
-        <span className="nav-dot"></span>
-        <span>{title}</span>
-        <span className="nav-chevron">›</span>
-      </button>
-      <div className="submenu">
-        <div className="submenu-inner">
-          {items.map((item, index) => (
-            <button
-              className={activeRoute === "notes" && index === 0 ? "nav-link active" : "nav-link"}
-              key={item}
-              type="button"
-              onClick={() => onRouteChange("notes")}
-            >
-              <span className="nav-dot"></span>
-              <span>{item}</span>
-            </button>
-          ))}
-        </div>
-      </div>
-    </section>
   );
 }

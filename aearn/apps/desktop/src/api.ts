@@ -13,6 +13,8 @@ import type {
   LearningExercise,
   LearningMode,
   LearningSessionResponse,
+  NoteListResponse,
+  NoteRecord,
   PlanDraft,
   ReviewDueItem,
   ReviewExerciseResultResponse,
@@ -329,6 +331,109 @@ export async function submitReviewExerciseResult(input: {
   return payload;
 }
 
+export async function fetchNotes(input: {
+  userId: string;
+  knowledgePointId?: string;
+  limit?: number;
+  signal?: AbortSignal;
+}): Promise<NoteListResponse> {
+  const query = new URLSearchParams({
+    user_id: input.userId,
+    limit: String(input.limit ?? 20),
+  });
+  if (input.knowledgePointId) {
+    query.set("knowledge_point_id", input.knowledgePointId);
+  }
+  const payload = await requestJson(`${API_BASE_URL}/api/notes?${query.toString()}`, {
+    signal: input.signal,
+  });
+  if (!isNoteListResponse(payload)) {
+    throw new Error("Notes API returned an invalid payload");
+  }
+  return payload;
+}
+
+export async function createNote(input: {
+  userId: string;
+  knowledgePointId: string;
+  title?: string;
+  contentMarkdown?: string;
+  source?: {
+    sessionId?: string;
+    attemptId?: string;
+  };
+}): Promise<NoteRecord> {
+  const payload = await requestJson(`${API_BASE_URL}/api/notes`, {
+    method: "POST",
+    body: JSON.stringify({
+      user_id: input.userId,
+      knowledge_point_id: input.knowledgePointId,
+      title: input.title,
+      content_markdown: input.contentMarkdown ?? "",
+      source: input.source
+        ? {
+            session_id: input.source.sessionId,
+            attempt_id: input.source.attemptId,
+          }
+        : undefined,
+    }),
+  });
+  if (!isRecord(payload) || !isNoteRecord(payload.note)) {
+    throw new Error("Create note API returned an invalid payload");
+  }
+  return payload.note;
+}
+
+export async function updateNote(input: {
+  noteId: string;
+  title?: string;
+  contentMarkdown?: string;
+  isUserEdited?: boolean;
+}): Promise<NoteRecord> {
+  const payload = await requestJson(`${API_BASE_URL}/api/notes/${input.noteId}`, {
+    method: "PATCH",
+    body: JSON.stringify({
+      title: input.title,
+      content_markdown: input.contentMarkdown,
+      is_user_edited: input.isUserEdited ?? true,
+    }),
+  });
+  if (!isRecord(payload) || !isNoteRecord(payload.note)) {
+    throw new Error("Update note API returned an invalid payload");
+  }
+  return payload.note;
+}
+
+export async function requestNoteAgentDraft(input: {
+  noteId: string;
+  userId: string;
+  style?: string;
+  focus?: string;
+  source?: {
+    sessionId?: string;
+    attemptId?: string;
+  };
+}): Promise<NoteRecord> {
+  const payload = await requestJson(`${API_BASE_URL}/api/notes/${input.noteId}/agent-draft`, {
+    method: "POST",
+    body: JSON.stringify({
+      user_id: input.userId,
+      style: input.style ?? "concise",
+      focus: input.focus ?? "mistake_summary",
+      source: input.source
+        ? {
+            session_id: input.source.sessionId,
+            attempt_id: input.source.attemptId,
+          }
+        : undefined,
+    }),
+  });
+  if (!isRecord(payload) || !isNoteRecord(payload.note)) {
+    throw new Error("Note agent-draft API returned an invalid payload");
+  }
+  return payload.note;
+}
+
 async function requestJson(url: string, init: RequestInit = {}): Promise<unknown> {
   const response = await fetch(url, {
     ...init,
@@ -528,6 +633,39 @@ function isReviewExerciseResultResponse(payload: unknown): payload is ReviewExer
     typeof payload.KnowledgePoint.id === "string" &&
     isCodeCompletionResult(payload.code_completion_result) &&
     typeof payload.next_action === "string"
+  );
+}
+
+function isNoteListResponse(payload: unknown): payload is NoteListResponse {
+  return (
+    isRecord(payload) &&
+    Array.isArray(payload.items) &&
+    payload.items.every(isNoteRecord) &&
+    isRecord(payload.page_info) &&
+    typeof payload.page_info.limit === "number" &&
+    typeof payload.page_info.has_more === "boolean"
+  );
+}
+
+function isNoteRecord(payload: unknown): payload is NoteRecord {
+  return (
+    isRecord(payload) &&
+    typeof payload.id === "string" &&
+    typeof payload.user_id === "string" &&
+    typeof payload.knowledge_point_id === "string" &&
+    typeof payload.title === "string" &&
+    typeof payload.content_markdown === "string" &&
+    (typeof payload.agent_draft_content === "string" || payload.agent_draft_content === null) &&
+    typeof payload.is_user_edited === "boolean" &&
+    typeof payload.updated_at === "string" &&
+    typeof payload.language === "string" &&
+    isRecord(payload.module) &&
+    typeof payload.module.title === "string" &&
+    isRecord(payload.course) &&
+    typeof payload.course.title === "string" &&
+    isRecord(payload.knowledge_point) &&
+    typeof payload.knowledge_point.id === "string" &&
+    typeof payload.knowledge_point.title === "string"
   );
 }
 

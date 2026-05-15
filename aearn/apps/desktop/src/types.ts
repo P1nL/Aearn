@@ -386,6 +386,41 @@ export type ReviewExerciseResultResponse = {
   idempotency_replayed?: boolean;
 };
 
+export type NoteRecord = {
+  id: string;
+  user_id: string;
+  knowledge_point_id: string;
+  title: string;
+  content_markdown: string;
+  agent_draft_content: string | null;
+  is_user_edited: boolean;
+  updated_at: string;
+  language: Language;
+  plan_id: string;
+  course: {
+    id: string;
+    title: string;
+  };
+  module: {
+    id: string;
+    title: string;
+  };
+  knowledge_point: {
+    id: string;
+    title: string;
+    description: string | null;
+  };
+};
+
+export type NoteListResponse = {
+  items: NoteRecord[];
+  page_info: {
+    limit: number;
+    next_cursor: string | null;
+    has_more: boolean;
+  };
+};
+
 export class ApiRequestError extends Error {
   readonly apiError: ApiError;
 

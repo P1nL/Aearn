@@ -986,20 +986,171 @@
     .notes-layout {
       height: 100%;
       display: grid;
-      grid-template-columns: minmax(0, 1fr);
+      grid-template-columns: minmax(240px, 320px) minmax(0, 1fr);
+      gap: 18px;
       padding: 34px;
       overflow: hidden;
     }
 
+    .notes-tree,
     .note-editor-panel {
       min-height: 0;
       overflow: auto;
+    }
+
+    .notes-tree {
+      display: grid;
+      gap: 14px;
+      align-content: start;
+      padding: 18px;
+      border: 1px solid rgba(198, 181, 159, .6);
+      border-radius: 24px;
+      background: rgba(255, 248, 238, .9);
+    }
+
+    .notes-tree-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .notes-tree-head h2,
+    .notes-editor-head h2,
+    .notes-empty-panel h3 {
+      margin: 0;
+    }
+
+    .notes-language-group {
+      display: grid;
+      gap: 10px;
+    }
+
+    .notes-language-group header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+
+    .notes-language-items {
+      display: grid;
+      gap: 8px;
+    }
+
+    .note-tree-item {
+      display: grid;
+      gap: 3px;
+      padding: 12px 14px;
+      border: 1px solid rgba(198, 181, 159, .5);
+      border-radius: 16px;
+      color: var(--ink);
+      background: rgba(255, 252, 247, .78);
+      text-align: left;
+    }
+
+    .note-tree-item small {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .note-tree-item.active {
+      border-color: rgba(143, 79, 50, .32);
+      background: var(--accent-soft);
+      box-shadow: inset 0 0 0 1px rgba(143, 79, 50, .08);
     }
 
     .note-editor-panel {
       position: relative;
       display: grid;
       grid-template-rows: minmax(0, 1fr);
+    }
+
+    .notes-editor-shell,
+    .notes-empty-panel {
+      min-height: 0;
+      height: 100%;
+      display: grid;
+      align-content: start;
+      gap: 16px;
+      padding: 20px;
+      border: 1px solid rgba(198, 181, 159, .6);
+      border-radius: 24px;
+      background: rgba(255, 250, 242, .88);
+    }
+
+    .notes-empty-panel {
+      place-content: center;
+      text-align: center;
+    }
+
+    .notes-editor-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+    }
+
+    .notes-editor-head p,
+    .drawer-note-meta {
+      margin: 6px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .notes-editor-actions {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 10px;
+    }
+
+    .note-save-chip {
+      padding: 8px 12px;
+      border-radius: 999px;
+      background: rgba(210, 230, 214, .9);
+      color: #315b39;
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .note-save-chip.error {
+      background: rgba(247, 221, 221, .92);
+      color: #8c3a3a;
+    }
+
+    .notes-editor-grid {
+      min-height: 0;
+      display: grid;
+      grid-template-columns: minmax(0, 1.3fr) minmax(260px, .7fr);
+      gap: 16px;
+    }
+
+    .notes-editor-stack,
+    .notes-context-panel {
+      min-height: 0;
+      display: grid;
+      gap: 14px;
+    }
+
+    .notes-context-panel {
+      align-content: start;
+    }
+
+    .notes-title-input {
+      width: 100%;
+      min-height: 44px;
+      padding: 0 14px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: rgba(255, 255, 255, .82);
+      color: var(--ink);
+      outline: none;
     }
 
     .note-content-editor {
@@ -1149,6 +1300,21 @@
       line-height: 1.6;
     }
 
+    .drawer-note-layout {
+      min-height: 0;
+      display: grid;
+      grid-template-columns: minmax(0, 1.2fr) minmax(220px, .8fr);
+      gap: 14px;
+    }
+
+    .drawer-note-side {
+      min-height: 0;
+      overflow: auto;
+      display: grid;
+      align-content: start;
+      gap: 12px;
+    }
+
     .platform-row {
       display: flex;
       gap: 10px;
@@ -1198,6 +1364,11 @@
         grid-template-columns: 1fr;
       }
 
+      .notes-editor-grid,
+      .drawer-note-layout {
+        grid-template-columns: 1fr;
+      }
+
       .split-divider {
         width: auto;
         height: 1px;
@@ -1243,6 +1414,12 @@
       .notes-layout,
       .settings-screen {
         padding: 22px 18px;
+      }
+
+      .notes-tree,
+      .notes-editor-shell,
+      .notes-empty-panel {
+        padding: 16px;
       }
     }
 

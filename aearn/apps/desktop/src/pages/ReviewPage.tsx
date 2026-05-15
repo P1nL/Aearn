@@ -1,7 +1,7 @@
 import { startTransition, useEffect, useState } from "react";
 
 import { fetchTodayReviews, startReviewSession, submitReviewExerciseResult } from "../api";
-import type { ConversationMessage } from "../appTypes";
+import type { ConversationMessage, NoteContext } from "../appTypes";
 import type {
   ReviewDueItem,
   ReviewExerciseResultResponse,
@@ -20,9 +20,10 @@ type ReviewPageProps = {
   messages: ConversationMessage[];
   lastSubmit: SubmitExerciseResponse | null;
   lastRun: RunExerciseResponse | null;
+  onActiveNoteContextChange: (context: NoteContext | null) => void;
 };
 
-export function ReviewPage({ isActive, user, messages, lastSubmit, lastRun }: ReviewPageProps) {
+export function ReviewPage({ isActive, user, messages, lastSubmit, lastRun, onActiveNoteContextChange }: ReviewPageProps) {
   const [dueItems, setDueItems] = useState<ReviewDueItem[]>([]);
   const [loadState, setLoadState] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -107,12 +108,27 @@ export function ReviewPage({ isActive, user, messages, lastSubmit, lastRun }: Re
 
   useEffect(() => {
     if (!isActive) {
+      onActiveNoteContextChange(null);
       return;
     }
     const controller = new AbortController();
     void loadDueReviews(controller.signal);
     return () => controller.abort();
   }, [isActive, user?.id]);
+
+  useEffect(() => {
+    if (!isActive || !activeReview) {
+      onActiveNoteContextChange(null);
+      return;
+    }
+    onActiveNoteContextChange({
+      knowledgePointId: activeReview.knowledge_point.id,
+      knowledgePointTitle: activeReview.knowledge_point.title,
+      source: "review",
+      sessionId: activeReview.session_id,
+      language: activeReview.review_exercise.runtime_profile.language,
+    });
+  }, [isActive, activeReview?.session_id, activeReview?.knowledge_point.id]);
 
   const activeExercise = activeReview?.review_exercise ?? null;
   const submittedCode = activeExercise ? buildSubmittedCode(editorCode, filledBlanks) : editorCode;

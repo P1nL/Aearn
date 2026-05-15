@@ -1,11 +1,20 @@
 import { startTransition, useEffect, useState, type FormEvent } from "react";
 
-import { fetchApiHealth, fetchLanguageCourses, startLearningSession } from "./api";
+import {
+  createNote,
+  fetchApiHealth,
+  fetchLanguageCourses,
+  fetchNotes,
+  requestNoteAgentDraft,
+  startLearningSession,
+  updateNote,
+} from "./api";
 import type {
   ApiHealthState,
   AppRoute,
   ConversationMessage,
   NavGroupKey,
+  NoteContext,
   SessionState,
   SettingsKey,
 } from "./appTypes";
@@ -13,8 +22,6 @@ import { ApiHealthChip } from "./components/ApiHealthChip";
 import { SidebarNav } from "./components/SidebarNav";
 import { SideContext } from "./components/SideContext";
 import {
-  DEFAULT_ATTEMPT_NOTE,
-  DEFAULT_NOTE_CONTENT,
   HOME_BASE_MESSAGES,
   NAV_DEFAULTS,
   ONBOARDING_MESSAGES,
@@ -22,15 +29,7 @@ import {
   ROUTE_META,
 } from "./lib/appContent";
 import { getCrumbLabel, screenClassName } from "./lib/desktopLabels";
-import {
-  applyKnowledgePointUpdate,
-  buildAttemptDraft,
-  buildSessionNote,
-  computeSidebarProgress,
-  createMessage,
-  markKnowledgePointLearning,
-  mergeAttemptIntoNote,
-} from "./lib/learningHelpers";
+import { applyKnowledgePointUpdate, computeSidebarProgress, createMessage, markKnowledgePointLearning } from "./lib/learningHelpers";
 import { LearningWorkspacePage } from "./pages/LearningWorkspacePage";
 import { NotesPage } from "./pages/NotesPage";
 import { OnboardingPage } from "./pages/OnboardingPage";
@@ -39,10 +38,20 @@ import { SettingsPage } from "./pages/SettingsPage";
 import type {
   CreatedPlanResponse,
   LanguageCourse,
+  LearningSessionResponse,
+  NoteRecord,
   RunExerciseResponse,
   SubmitExerciseResponse,
   UserProfile,
 } from "./types";
+import { ApiRequestError } from "./types";
+
+type NoteDraftState = {
+  title: string;
+  content: string;
+  status: "加载中" | "未保存" | "保存中" | "已保存" | "保存失败";
+  errorMessage: string | null;
+};
 
 function App() {
   const [apiHealth, setApiHealth] = useState<ApiHealthState>({ status: "loading" });
@@ -57,13 +66,20 @@ function App() {
   const [openGroups, setOpenGroups] = useState<Record<NavGroupKey, boolean>>(NAV_DEFAULTS);
   const [noteDrawerOpen, setNoteDrawerOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsKey>("appearance");
-  const [noteContent, setNoteContent] = useState(DEFAULT_NOTE_CONTENT);
-  const [noteDrawerText, setNoteDrawerText] = useState(DEFAULT_ATTEMPT_NOTE);
-  const [noteSaveState, setNoteSaveState] = useState("已保存");
   const [composerInput, setComposerInput] = useState("");
   const [homeConversation, setHomeConversation] = useState<ConversationMessage[]>([]);
   const [reviewConversation, setReviewConversation] = useState<ConversationMessage[]>([]);
   const [resetNonce, setResetNonce] = useState(0);
+
+  const [notesLoadState, setNotesLoadState] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [notesErrorMessage, setNotesErrorMessage] = useState<string | null>(null);
+  const [notesList, setNotesList] = useState<NoteRecord[]>([]);
+  const [notesByKnowledgePointId, setNotesByKnowledgePointId] = useState<Record<string, NoteRecord>>({});
+  const [noteDrafts, setNoteDrafts] = useState<Record<string, NoteDraftState>>({});
+  const [noteAssistBusyByKnowledgePointId, setNoteAssistBusyByKnowledgePointId] = useState<Record<string, boolean>>({});
+  const [noteDrawerContext, setNoteDrawerContext] = useState<NoteContext | null>(null);
+  const [reviewNoteContext, setReviewNoteContext] = useState<NoteContext | null>(null);
+  const [notesPageSelection, setNotesPageSelection] = useState<string | null>(null);
 
   const session = sessionState.status === "ready" ? sessionState.data : null;
   const activeExercise = session?.exercise ?? null;
@@ -81,6 +97,15 @@ function App() {
   const crumb = getCrumbLabel(visibleRoute, settingsTab, session, activeExercise);
   const homeMessages = [...HOME_BASE_MESSAGES, ...homeConversation];
   const reviewMessages = [...REVIEW_BASE_MESSAGES, ...reviewConversation];
+  const currentSessionNoteContext = buildLearningNoteContext(session);
+  const currentContext = currentSessionNoteContext ?? reviewNoteContext;
+  const drawerKnowledgePointId = noteDrawerContext?.knowledgePointId ?? null;
+  const drawerNote = drawerKnowledgePointId ? notesByKnowledgePointId[drawerKnowledgePointId] ?? null : null;
+  const drawerDraft = drawerKnowledgePointId ? noteDrafts[drawerKnowledgePointId] ?? null : null;
+  const selectedNote = notesPageSelection ? notesByKnowledgePointId[notesPageSelection] ?? null : null;
+  const selectedDraft = notesPageSelection ? noteDrafts[notesPageSelection] ?? null : null;
+  const activeEditorKnowledgePointId = noteDrawerOpen ? drawerKnowledgePointId : visibleRoute === "notes" ? notesPageSelection : null;
+  const canOpenNoteDrawer = Boolean(user && ((visibleRoute === "home" && currentSessionNoteContext) || (visibleRoute === "review" && reviewNoteContext)));
 
   async function bootstrap(signal?: AbortSignal) {
     setApiHealth({ status: "loading" });
@@ -174,13 +199,28 @@ function App() {
     );
   }
 
-  function goToRoute(route: AppRoute) {
+  async function goToRoute(route: AppRoute) {
+    const closed = await closeDrawers();
+    if (!closed) {
+      return;
+    }
     setActiveRoute(route);
-    closeDrawers();
   }
 
-  function closeDrawers() {
+  async function closeDrawers() {
+    if (!noteDrawerOpen || !drawerKnowledgePointId) {
+      setNoteDrawerOpen(false);
+      return true;
+    }
+    const draft = noteDrafts[drawerKnowledgePointId];
+    if (draft?.status === "未保存") {
+      const saved = await saveNoteByKnowledgePointId(drawerKnowledgePointId);
+      if (!saved) {
+        return false;
+      }
+    }
     setNoteDrawerOpen(false);
+    return true;
   }
 
   function toggleSidebar() {
@@ -200,12 +240,18 @@ function App() {
     setReviewConversation([]);
     setComposerInput("");
     setSettingsTab("appearance");
-    setNoteContent(DEFAULT_NOTE_CONTENT);
-    setNoteDrawerText(DEFAULT_ATTEMPT_NOTE);
-    setNoteSaveState("已保存");
     setActiveRoute("onboarding");
     setResetNonce((current) => current + 1);
-    closeDrawers();
+    setNotesLoadState("idle");
+    setNotesErrorMessage(null);
+    setNotesList([]);
+    setNotesByKnowledgePointId({});
+    setNoteDrafts({});
+    setNoteAssistBusyByKnowledgePointId({});
+    setNoteDrawerContext(null);
+    setReviewNoteContext(null);
+    setNotesPageSelection(null);
+    setNoteDrawerOpen(false);
   }
 
   function handleComposerSubmit(event: FormEvent<HTMLFormElement>) {
@@ -229,13 +275,229 @@ function App() {
     setComposerInput("");
   }
 
-  function handleSaveAttempt() {
-    setNoteContent((current) => mergeAttemptIntoNote(current, noteDrawerText));
-    setNoteSaveState("已保存");
+  function setDraftStatus(
+    knowledgePointId: string,
+    status: NoteDraftState["status"],
+    errorMessage: string | null = null,
+  ) {
+    setNoteDrafts((current) => {
+      const previous = current[knowledgePointId];
+      if (!previous) {
+        return current;
+      }
+      return {
+        ...current,
+        [knowledgePointId]: {
+          ...previous,
+          status,
+          errorMessage,
+        },
+      };
+    });
   }
 
-  function handleOpenNoteDrawer() {
+  function syncNoteRecord(note: NoteRecord, draftStatus: NoteDraftState["status"] = "已保存") {
+    setNotesByKnowledgePointId((current) => ({
+      ...current,
+      [note.knowledge_point_id]: note,
+    }));
+    setNotesList((current) => sortNotesByUpdatedAt(upsertNote(current, note)));
+    setNoteDrafts((current) => ({
+      ...current,
+      [note.knowledge_point_id]: {
+        title: note.title,
+        content: note.content_markdown,
+        status: draftStatus,
+        errorMessage: null,
+      },
+    }));
+  }
+
+  async function loadNotesIndex(signal?: AbortSignal) {
+    if (!user) {
+      setNotesLoadState("idle");
+      setNotesList([]);
+      setNotesByKnowledgePointId({});
+      return;
+    }
+    setNotesLoadState("loading");
+    setNotesErrorMessage(null);
+    try {
+      const response = await fetchNotes({ userId: user.id, limit: 50, signal });
+      startTransition(() => {
+        setNotesList(sortNotesByUpdatedAt(response.items));
+        setNotesByKnowledgePointId(Object.fromEntries(response.items.map((item) => [item.knowledge_point_id, item])));
+        setNotesLoadState("ready");
+        if (response.items.length > 0) {
+          setNotesPageSelection((current) => current ?? response.items[0].knowledge_point_id);
+        }
+      });
+    } catch (error) {
+      if (signal?.aborted) {
+        return;
+      }
+      setNotesLoadState("error");
+      setNotesErrorMessage(formatError(error, "无法读取笔记列表"));
+    }
+  }
+
+  async function ensureNoteForContext(context: NoteContext): Promise<NoteRecord | null> {
+    if (!user) {
+      return null;
+    }
+    setNoteDrafts((current) => ({
+      ...current,
+      [context.knowledgePointId]: {
+        title: current[context.knowledgePointId]?.title ?? context.knowledgePointTitle,
+        content: current[context.knowledgePointId]?.content ?? "",
+        status: "加载中",
+        errorMessage: null,
+      },
+    }));
+    try {
+      const response = await fetchNotes({
+        userId: user.id,
+        knowledgePointId: context.knowledgePointId,
+        limit: 1,
+      });
+      const existing = response.items[0];
+      if (existing) {
+        syncNoteRecord(existing);
+        return existing;
+      }
+      const created = await createNote({
+        userId: user.id,
+        knowledgePointId: context.knowledgePointId,
+        title: context.knowledgePointTitle,
+        contentMarkdown: "",
+        source: {
+          sessionId: context.sessionId,
+          attemptId: context.attemptId,
+        },
+      });
+      syncNoteRecord(created);
+      setNotesLoadState("ready");
+      return created;
+    } catch (error) {
+      setNoteDrafts((current) => ({
+        ...current,
+        [context.knowledgePointId]: {
+          title: current[context.knowledgePointId]?.title ?? context.knowledgePointTitle,
+          content: current[context.knowledgePointId]?.content ?? "",
+          status: "保存失败",
+          errorMessage: formatError(error, "无法加载笔记"),
+        },
+      }));
+      return null;
+    }
+  }
+
+  async function saveNoteByKnowledgePointId(knowledgePointId: string) {
+    const note = notesByKnowledgePointId[knowledgePointId];
+    const draft = noteDrafts[knowledgePointId];
+    if (!note || !draft) {
+      return false;
+    }
+    setDraftStatus(knowledgePointId, "保存中");
+    try {
+      const updated = await updateNote({
+        noteId: note.id,
+        title: draft.title,
+        contentMarkdown: draft.content,
+        isUserEdited: true,
+      });
+      syncNoteRecord(updated, "已保存");
+      return true;
+    } catch (error) {
+      setDraftStatus(knowledgePointId, "保存失败", formatError(error, "保存失败"));
+      return false;
+    }
+  }
+
+  async function requestAgentDraftForKnowledgePoint(knowledgePointId: string) {
+    const note = notesByKnowledgePointId[knowledgePointId];
+    if (!note) {
+      return;
+    }
+    setNoteAssistBusyByKnowledgePointId((current) => ({ ...current, [knowledgePointId]: true }));
+    try {
+      const context =
+        (noteDrawerContext?.knowledgePointId === knowledgePointId ? noteDrawerContext : null) ??
+        (currentContext?.knowledgePointId === knowledgePointId ? currentContext : null) ??
+        {
+          knowledgePointId,
+          knowledgePointTitle: note.knowledge_point.title,
+          source: "notes" as const,
+        };
+      const updated = await requestNoteAgentDraft({
+        noteId: note.id,
+        userId: user?.id ?? note.user_id,
+        style: "concise",
+        focus: "mistake_summary",
+        source: {
+          sessionId: context.sessionId,
+          attemptId: context.attemptId ?? lastSubmit?.attempt_id ?? lastRun?.attempt_id,
+        },
+      });
+      setNotesByKnowledgePointId((current) => ({
+        ...current,
+        [knowledgePointId]: updated,
+      }));
+      setNotesList((current) => sortNotesByUpdatedAt(upsertNote(current, updated)));
+    } catch (error) {
+      setDraftStatus(knowledgePointId, "保存失败", formatError(error, "辅助补全失败"));
+    } finally {
+      setNoteAssistBusyByKnowledgePointId((current) => ({ ...current, [knowledgePointId]: false }));
+    }
+  }
+
+  async function handleOpenNoteDrawer() {
+    const context = visibleRoute === "review" ? reviewNoteContext : currentSessionNoteContext;
+    if (!context) {
+      return;
+    }
+    setNoteDrawerContext(context);
     setNoteDrawerOpen(true);
+    const note = await ensureNoteForContext(context);
+    if (note) {
+      setNotesPageSelection((current) => current ?? note.knowledge_point_id);
+    }
+  }
+
+  function updateDraftContent(knowledgePointId: string, value: string) {
+    setNoteDrafts((current) => {
+      const previous = current[knowledgePointId];
+      if (!previous) {
+        return current;
+      }
+      return {
+        ...current,
+        [knowledgePointId]: {
+          ...previous,
+          content: value,
+          status: "未保存",
+          errorMessage: null,
+        },
+      };
+    });
+  }
+
+  function updateDraftTitle(knowledgePointId: string, value: string) {
+    setNoteDrafts((current) => {
+      const previous = current[knowledgePointId];
+      if (!previous) {
+        return current;
+      }
+      return {
+        ...current,
+        [knowledgePointId]: {
+          ...previous,
+          title: value,
+          status: "未保存",
+          errorMessage: null,
+        },
+      };
+    });
   }
 
   useEffect(() => {
@@ -246,25 +508,48 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (session && activeExercise) {
-      setNoteContent(buildSessionNote(session, activeExercise));
-      setNoteDrawerText(buildAttemptDraft(activeExercise, lastRun, lastSubmit));
-      setNoteSaveState("已保存");
+    if (visibleRoute !== "notes") {
+      return;
     }
-  }, [session?.session_id, activeExercise?.id]);
+    const controller = new AbortController();
+    void loadNotesIndex(controller.signal);
+    return () => controller.abort();
+  }, [visibleRoute, user?.id]);
 
   useEffect(() => {
-    if (activeExercise) {
-      setNoteDrawerText(buildAttemptDraft(activeExercise, lastRun, lastSubmit));
-      setNoteSaveState("已保存");
+    if (!activeEditorKnowledgePointId) {
+      return;
     }
-  }, [activeExercise?.id, lastRun?.attempt_id, lastSubmit?.attempt_id]);
+    const draft = noteDrafts[activeEditorKnowledgePointId];
+    if (!draft || draft.status !== "未保存") {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void saveNoteByKnowledgePointId(activeEditorKnowledgePointId);
+    }, 800);
+    return () => window.clearTimeout(timer);
+  }, [activeEditorKnowledgePointId, noteDrafts]);
 
   useEffect(() => {
-    if (createdPlan && activeRoute === "onboarding") {
-      setActiveRoute("home");
+    if (notesList.length === 0) {
+      return;
     }
-  }, [createdPlan, activeRoute]);
+    setNotesPageSelection((current) => {
+      if (current && notesByKnowledgePointId[current]) {
+        return current;
+      }
+      return notesList[0]?.knowledge_point_id ?? null;
+    });
+  }, [notesList, notesByKnowledgePointId]);
+
+  useEffect(() => {
+    if (!noteDrawerOpen || !noteDrawerContext) {
+      return;
+    }
+    if (!notesByKnowledgePointId[noteDrawerContext.knowledgePointId]) {
+      void ensureNoteForContext(noteDrawerContext);
+    }
+  }, [noteDrawerOpen, noteDrawerContext?.knowledgePointId]);
 
   return (
     <main className="stage">
@@ -376,9 +661,9 @@ function App() {
               onRunChange={setLastRun}
               onSubmitChange={setLastSubmit}
               onKnowledgePointUpdate={handleKnowledgePointUpdate}
-              onOpenNoteDrawer={handleOpenNoteDrawer}
-            />
-          </section>
+            onOpenNoteDrawer={() => void handleOpenNoteDrawer()}
+          />
+        </section>
 
           <section className={screenClassName(visibleRoute === "review")} aria-label="复习页">
             <ReviewPage
@@ -387,60 +672,134 @@ function App() {
               messages={reviewMessages}
               lastSubmit={lastSubmit}
               lastRun={lastRun}
+              onActiveNoteContextChange={setReviewNoteContext}
             />
           </section>
 
           <section className={screenClassName(visibleRoute === "notes")} aria-label="笔记页">
-            <NotesPage noteContent={noteContent} onNoteContentChange={setNoteContent} />
+            <NotesPage
+              loadState={notesLoadState}
+              errorMessage={notesErrorMessage}
+              notes={notesList}
+              selectedKnowledgePointId={notesPageSelection}
+              currentContext={currentContext}
+              selectedDraft={selectedDraft}
+              assistLoading={Boolean(notesPageSelection && noteAssistBusyByKnowledgePointId[notesPageSelection])}
+              onSelectKnowledgePoint={(knowledgePointId) => {
+                setNotesPageSelection(knowledgePointId);
+                const existing = notesByKnowledgePointId[knowledgePointId];
+                if (existing && !noteDrafts[knowledgePointId]) {
+                  syncNoteRecord(existing);
+                  return;
+                }
+                if (!existing && currentContext?.knowledgePointId === knowledgePointId) {
+                  void ensureNoteForContext({ ...currentContext, source: "notes" }).then((note) => {
+                    if (note) {
+                      setNotesPageSelection(note.knowledge_point_id);
+                    }
+                  });
+                }
+              }}
+              onDraftTitleChange={(value) => {
+                if (notesPageSelection) {
+                  updateDraftTitle(notesPageSelection, value);
+                }
+              }}
+              onDraftContentChange={(value) => {
+                if (notesPageSelection) {
+                  updateDraftContent(notesPageSelection, value);
+                }
+              }}
+              onRetrySave={() => {
+                if (notesPageSelection) {
+                  void saveNoteByKnowledgePointId(notesPageSelection);
+                }
+              }}
+              onRequestAgentDraft={() => {
+                if (notesPageSelection) {
+                  void requestAgentDraftForKnowledgePoint(notesPageSelection);
+                }
+              }}
+              onCreateCurrentNote={() => {
+                if (currentContext) {
+                  void ensureNoteForContext({ ...currentContext, source: "notes" }).then((note) => {
+                    if (note) {
+                      setNotesPageSelection(note.knowledge_point_id);
+                    }
+                  });
+                }
+              }}
+            />
           </section>
 
           <section className={screenClassName(visibleRoute === "settings")} aria-label="设置页">
             <SettingsPage settingsTab={settingsTab} onSettingsTabChange={setSettingsTab} />
           </section>
 
-          <div className={noteDrawerOpen ? "drawer-scrim open" : "drawer-scrim"} onClick={closeDrawers}></div>
+          <div className={noteDrawerOpen ? "drawer-scrim open" : "drawer-scrim"} onClick={() => void closeDrawers()}></div>
 
-          {noteDrawerOpen ? (
-            <section id="noteDrawer" className="drawer open" aria-label="尝试记录弹窗" aria-hidden="false">
+          {noteDrawerOpen && (
+            <section id="noteDrawer" className="drawer open" aria-label="知识点笔记抽屉">
               <div className="drawer-head">
-                <h2>尝试记录</h2>
+                <div>
+                  <h2>{noteDrawerContext?.knowledgePointTitle ?? "知识点笔记"}</h2>
+                  {noteDrawerNoteMeta(drawerNote)}
+                </div>
                 <div className="note-status">
-                  <span>{noteSaveState}</span>
-                  <button className="icon-btn" type="button" aria-label="保存尝试记录" onClick={handleSaveAttempt}>
+                  <span>{drawerDraft?.status ?? "加载中"}</span>
+                  <button className="icon-btn" type="button" aria-label="保存笔记" onClick={() => drawerKnowledgePointId && void saveNoteByKnowledgePointId(drawerKnowledgePointId)}>
                     ✓
+                  </button>
+                  <button
+                    className="btn primary ghost-btn"
+                    type="button"
+                    disabled={!drawerKnowledgePointId || noteAssistBusyByKnowledgePointId[drawerKnowledgePointId]}
+                    onClick={() => drawerKnowledgePointId && void requestAgentDraftForKnowledgePoint(drawerKnowledgePointId)}
+                  >
+                    {drawerKnowledgePointId && noteAssistBusyByKnowledgePointId[drawerKnowledgePointId] ? "补全中..." : "Agent 补全"}
                   </button>
                 </div>
               </div>
-              <textarea
-                className="drawer-editor"
-                aria-label="尝试记录编辑器"
-                value={noteDrawerText}
-                onChange={(event) => {
-                  setNoteDrawerText(event.target.value);
-                  setNoteSaveState("未保存");
-                }}
-              />
-            </section>
-          ) : (
-            <section id="noteDrawer" className="drawer" aria-label="尝试记录弹窗" aria-hidden="true">
-              <div className="drawer-head">
-                <h2>尝试记录</h2>
-                <div className="note-status">
-                  <span>{noteSaveState}</span>
-                  <button className="icon-btn" type="button" aria-label="保存尝试记录" onClick={handleSaveAttempt}>
-                    ✓
-                  </button>
+              {!drawerDraft ? (
+                <div className="tool-card">打开抽屉后会自动加载或创建当前知识点的共享 note。</div>
+              ) : (
+                <div className="drawer-note-layout">
+                  <textarea
+                    className="drawer-editor"
+                    aria-label="知识点笔记编辑器"
+                    value={drawerDraft.content}
+                    onChange={(event) => {
+                      if (drawerKnowledgePointId) {
+                        updateDraftContent(drawerKnowledgePointId, event.target.value);
+                      }
+                    }}
+                  />
+                  <aside className="drawer-note-side">
+                    <div className="tool-card">
+                      <strong>标题</strong>
+                      <input
+                        className="notes-title-input"
+                        value={drawerDraft.title}
+                        onChange={(event) => {
+                          if (drawerKnowledgePointId) {
+                            updateDraftTitle(drawerKnowledgePointId, event.target.value);
+                          }
+                        }}
+                      />
+                    </div>
+                    <div className="tool-card">
+                      <strong>辅助补全</strong>
+                      <p>{drawerNote?.agent_draft_content ?? "还没有生成结构化补全建议。会基于当前知识点和最近尝试，只回写 agent_draft_content。"}</p>
+                    </div>
+                    {drawerDraft.errorMessage && (
+                      <div className="tool-card">
+                        <strong>保存错误</strong>
+                        <p>{drawerDraft.errorMessage}</p>
+                      </div>
+                    )}
+                  </aside>
                 </div>
-              </div>
-              <textarea
-                className="drawer-editor"
-                aria-label="尝试记录编辑器"
-                value={noteDrawerText}
-                onChange={(event) => {
-                  setNoteDrawerText(event.target.value);
-                  setNoteSaveState("未保存");
-                }}
-              />
+              )}
             </section>
           )}
 
@@ -457,11 +816,11 @@ function App() {
                   <button
                     className="btn primary send-btn note-inline-btn"
                     type="button"
-                    aria-label="关闭尝试记录"
+                    aria-label="关闭知识点笔记"
                     aria-controls="noteDrawer"
-                    aria-expanded="true"
+                    aria-expanded={noteDrawerOpen}
                     onClick={() => {
-                      setNoteDrawerOpen(false);
+                      void closeDrawers();
                     }}
                   >
                     <img src="/note.png" alt="" />
@@ -470,11 +829,12 @@ function App() {
                   <button
                     className="btn primary send-btn note-inline-btn"
                     type="button"
-                    aria-label="打开尝试记录"
+                    aria-label="打开知识点笔记"
                     aria-controls="noteDrawer"
-                    aria-expanded="false"
+                    aria-expanded={noteDrawerOpen}
+                    disabled={!canOpenNoteDrawer}
                     onClick={() => {
-                      setNoteDrawerOpen(true);
+                      void handleOpenNoteDrawer();
                     }}
                   >
                     <img src="/note.png" alt="" />
@@ -489,6 +849,54 @@ function App() {
         </section>
       </section>
     </main>
+  );
+}
+
+function buildLearningNoteContext(session: LearningSessionResponse | null): NoteContext | null {
+  if (!session) {
+    return null;
+  }
+  return {
+    knowledgePointId: session.context_snapshot.KnowledgePoint.id,
+    knowledgePointTitle: session.context_snapshot.KnowledgePoint.title,
+    source: "learning",
+    sessionId: session.session_id,
+    language: session.exercise.runtime_profile.language,
+  };
+}
+
+function upsertNote(current: NoteRecord[], note: NoteRecord): NoteRecord[] {
+  const existingIndex = current.findIndex((item) => item.id === note.id);
+  if (existingIndex === -1) {
+    return [note, ...current];
+  }
+  const next = [...current];
+  next[existingIndex] = note;
+  return next;
+}
+
+function sortNotesByUpdatedAt(notes: NoteRecord[]): NoteRecord[] {
+  return [...notes].sort((left, right) => new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime());
+}
+
+function formatError(error: unknown, fallback: string): string {
+  if (error instanceof ApiRequestError) {
+    return `${error.apiError.code}: ${error.apiError.message}`;
+  }
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return fallback;
+}
+
+function noteDrawerNoteMeta(note: NoteRecord | null) {
+  if (!note) {
+    return null;
+  }
+  return (
+    <p className="drawer-note-meta">
+      {note.module.title} · {note.course.title}
+    </p>
   );
 }
 
