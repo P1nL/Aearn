@@ -261,6 +261,19 @@ CREATE TABLE IF NOT EXISTS review_logs (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS notes (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  knowledge_point_id uuid NOT NULL REFERENCES knowledge_points(id) ON DELETE RESTRICT,
+  title text NOT NULL,
+  content_markdown text NOT NULL DEFAULT '',
+  agent_draft_content text,
+  is_user_edited boolean NOT NULL DEFAULT false,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  deleted_at timestamptz
+);
+
 CREATE TABLE IF NOT EXISTS idempotency_records (
   key text PRIMARY KEY,
   operation text NOT NULL,
@@ -340,6 +353,9 @@ CREATE INDEX IF NOT EXISTS idx_review_states_last_attempt ON review_states(last_
 CREATE INDEX IF NOT EXISTS idx_review_logs_kp_reviewed ON review_logs(knowledge_point_id, reviewed_at DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS uq_review_logs_request_id ON review_logs(request_id);
 CREATE UNIQUE INDEX IF NOT EXISTS uq_review_logs_attempt_rating_source ON review_logs(attempt_id, rating, source);
+CREATE INDEX IF NOT EXISTS idx_notes_user_updated ON notes(user_id, updated_at DESC) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_notes_knowledge_point ON notes(knowledge_point_id) WHERE deleted_at IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_notes_user_knowledge_point_active ON notes(user_id, knowledge_point_id) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_idempotency_records_operation ON idempotency_records(operation);
 
 DROP TRIGGER IF EXISTS trg_users_updated_at ON users;
@@ -380,4 +396,8 @@ FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
 DROP TRIGGER IF EXISTS trg_review_states_updated_at ON review_states;
 CREATE TRIGGER trg_review_states_updated_at BEFORE UPDATE ON review_states
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_notes_updated_at ON notes;
+CREATE TRIGGER trg_notes_updated_at BEFORE UPDATE ON notes
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
