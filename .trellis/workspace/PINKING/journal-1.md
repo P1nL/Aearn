@@ -138,3 +138,36 @@ Implemented shared note storage, notes APIs, desktop notes page/drawer wiring, a
 ### Next Steps
 
 - None - task complete
+
+
+## Session 5: Archive M4 review loop task
+
+**Date**: 2026-05-15
+**Task**: Archive M4 review loop task
+**Branch**: `main`
+
+### Summary
+
+Confirmed the M4 FSRS/review loop task artifacts, validation state, and committed implementation on main, then archived the task.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `cb04f47` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
