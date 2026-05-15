@@ -105,3 +105,36 @@ Split the desktop app shell into pages, feature modules, and shared UI helpers, 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 4: Finish M5 shared notes flow
+
+**Date**: 2026-05-15
+**Task**: Finish M5 shared notes flow
+**Branch**: `main`
+
+### Summary
+
+Implemented shared note storage, notes APIs, desktop notes page/drawer wiring, and validated the M5 notes flow.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `d7e6dfe` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
