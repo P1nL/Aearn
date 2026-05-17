@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Request, status
+from fastapi import APIRouter, Query, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 
@@ -24,10 +24,34 @@ from app.services.learning_session_repository import (
     start_learning_session,
     submit_learning_session_exercise,
 )
+from app.services.dashboard_repository import (
+    EntityNotFoundError as ResumeEntityNotFoundError,
+    get_resume_context,
+)
 from app.services.plan_repository import IdempotencyConflictError
 
 
 router = APIRouter(prefix="/api/learning-sessions", tags=["learning-sessions"])
+
+
+@router.get("/resume", response_model=None)
+def read_resume_context(
+    request: Request,
+    user_id: str = Query(min_length=1),
+    plan_id: str = Query(min_length=1),
+) -> dict[str, object] | JSONResponse:
+    with connect() as conn:
+        try:
+            response = get_resume_context(conn, user_id=user_id, plan_id=plan_id)
+        except ResumeEntityNotFoundError as exc:
+            return error_response(
+                request,
+                code=exc.code,
+                message=exc.message,
+                status_code=status.HTTP_404_NOT_FOUND,
+                details={"user_id": user_id, "plan_id": plan_id},
+            )
+    return JSONResponse(status_code=status.HTTP_200_OK, content=jsonable_encoder(response))
 
 
 @router.post("/start", response_model=None)

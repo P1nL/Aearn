@@ -160,7 +160,7 @@ LearningWorkspacePage
 
 1. 页面加载 `GET /api/dashboard?user_id={user_id}`。
 2. 普通打开默认进入当前学习入口；如果有到期复习，只展示应用内提示，不强制跳转。
-3. 仅当后端判断“中断多日且复习高风险”时，优先进入 `ReviewPage`。
+3. 仅当后端判断“最近一次学习活动距当前超过 72 小时，且至少存在一条 `forget_risk=high` 的到期复习”时，优先进入 `ReviewPage`。
 4. 如果 `resume_available=true`，展示恢复学习提示和 `next_entry_point`。
 5. 用户点击当前知识点后调用 `POST /api/learning-sessions/start`。
 6. 前端以 `session_id` 加载会话，并由 Agent 在对话中生成练习 UI。

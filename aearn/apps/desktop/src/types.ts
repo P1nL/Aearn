@@ -9,6 +9,7 @@ export type Language = "javascript" | "python" | "java" | "cpp" | "html_css";
 export type RuntimeStatus = "success" | "runtime_error" | "timeout" | "unsupported";
 export type NextAction = "retry_same" | "show_hint" | "explain_error" | "review_variant" | "schedule_review" | "advance_next";
 export type FsrsRating = "Again" | "Hard" | "Good" | "Easy";
+export type ForgetRisk = "low" | "normal" | "high";
 export type HintLevel = "nudge" | "concept" | "code_shape";
 export type ExplanationFocus = "core_logic" | "boundary_condition" | "ai_generated_change";
 
@@ -138,6 +139,62 @@ export type CreatedPlanResponse = {
     knowledge_point_id: string | null;
   };
   idempotency_replayed?: boolean;
+};
+
+export type DashboardEntryPoint =
+  | {
+      type: "learning_session";
+      plan_id: string;
+      knowledge_point_id: string | null;
+      next_action: NextAction;
+    }
+  | {
+      type: "resume";
+      plan_id: string;
+      next_action: NextAction;
+    }
+  | {
+      type: "review";
+      plan_id: string;
+      knowledge_point_id: string;
+      next_action: NextAction;
+    };
+
+export type DashboardResponse = {
+  active_goal: string;
+  current_stage: string | null;
+  current_language: Language;
+  current_course: {
+    id: string;
+    title: string;
+  };
+  today_learning_tasks: Array<{
+    type: "learning_session";
+    plan_id: string;
+    knowledge_point_id: string | null;
+    title: string;
+  }>;
+  today_review_count: number;
+  overall_progress: number;
+  resume_available: boolean;
+  next_entry_point: DashboardEntryPoint;
+};
+
+export type ResumeContextResponse = {
+  last_session_summary: string | null;
+  next_entry_point: {
+    type: "learning_session";
+    plan_id: string;
+    knowledge_point_id: string | null;
+    next_action: NextAction;
+  };
+  current_module: {
+    id: string;
+    title: string;
+  } | null;
+  current_stage: string | null;
+  today_review_count: number;
+  resume_available: boolean;
 };
 
 export type ApiError = {
@@ -340,7 +397,7 @@ export type ReviewDueItem = {
     mastery_score: number;
     weak_points_json: string[];
   };
-  forget_risk: "low" | "normal" | "high";
+  forget_risk: ForgetRisk;
 };
 
 export type TodayReviewsResponse = {
@@ -378,12 +435,23 @@ export type ReviewExerciseResultResponse = {
   weak_points: string[];
   feedback: string;
   due_at: string | null;
-  forget_risk: "low" | "normal" | "high";
+  forget_risk: ForgetRisk;
   ReviewState: ReviewStateSummary;
   KnowledgePoint: SubmitExerciseResponse["KnowledgePoint"];
   code_completion_result: CodeCompletionResult;
   next_action: NextAction;
   idempotency_replayed?: boolean;
+};
+
+export type UserPreferencesUpdate = {
+  display_name?: string;
+  learning_style?: string | null;
+  teaching_preference?: string | null;
+  encouragement_preference?: string | null;
+  profession?: string | null;
+  background_context?: string | null;
+  preferred_time_slots?: Record<string, unknown>[];
+  reminder_preference?: Record<string, unknown>;
 };
 
 export type NoteRecord = {

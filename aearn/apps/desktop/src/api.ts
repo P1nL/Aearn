@@ -3,6 +3,7 @@ import type {
   ApiHealth,
   CodeCompletionResult,
   CreatedPlanResponse,
+  DashboardResponse,
   ExplainErrorResponse,
   ExplanationFocus,
   ExplanationCheckResponse,
@@ -20,18 +21,20 @@ import type {
   ReviewExerciseResultResponse,
   ReviewSessionResponse,
   ReviewStateSummary,
+  ResumeContextResponse,
   RunExerciseResponse,
   RuntimeProfile,
   RuntimeStatus,
   SubmitExerciseResponse,
   TestResult,
   TodayReviewsResponse,
+  UserPreferencesUpdate,
   UserProfile,
 } from "./types";
 
 import { ApiRequestError } from "./types";
 
-const API_BASE_URL = "http://127.0.0.1:8001";
+export const API_BASE_URL = "http://127.0.0.1:8001";
 
 export async function fetchApiHealth(signal?: AbortSignal): Promise<ApiHealth> {
   const payload = await requestJson(`${API_BASE_URL}/health`, { signal });
@@ -62,6 +65,28 @@ export async function createUser(displayName: string, signal?: AbortSignal): Pro
   });
   if (!isRecord(payload) || !isUserProfile(payload.user)) {
     throw new Error("User API returned an invalid payload");
+  }
+  return payload.user;
+}
+
+export async function fetchUserProfile(userId: string, signal?: AbortSignal): Promise<UserProfile> {
+  const payload = await requestJson(`${API_BASE_URL}/api/users/${encodeURIComponent(userId)}`, { signal });
+  if (!isRecord(payload) || !isUserProfile(payload.user)) {
+    throw new Error("User profile API returned an invalid payload");
+  }
+  return payload.user;
+}
+
+export async function updateUserPreferences(
+  userId: string,
+  input: UserPreferencesUpdate,
+): Promise<UserProfile> {
+  const payload = await requestJson(`${API_BASE_URL}/api/users/${encodeURIComponent(userId)}/preferences`, {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+  if (!isRecord(payload) || !isUserProfile(payload.user)) {
+    throw new Error("User preferences API returned an invalid payload");
   }
   return payload.user;
 }
@@ -121,6 +146,39 @@ export async function confirmPlan(userId: string, planDraft: PlanDraft): Promise
   });
   if (!isCreatedPlanResponse(payload)) {
     throw new Error("Plan confirmation returned an invalid payload");
+  }
+  return payload;
+}
+
+export async function fetchPlanDetail(planId: string, signal?: AbortSignal): Promise<CreatedPlanResponse> {
+  const payload = await requestJson(`${API_BASE_URL}/api/plans/${encodeURIComponent(planId)}`, { signal });
+  if (!isCreatedPlanResponse(payload)) {
+    throw new Error("Plan detail API returned an invalid payload");
+  }
+  return payload;
+}
+
+export async function fetchDashboard(userId: string, signal?: AbortSignal): Promise<DashboardResponse> {
+  const payload = await requestJson(`${API_BASE_URL}/api/dashboard?user_id=${encodeURIComponent(userId)}`, {
+    signal,
+  });
+  if (!isDashboardResponse(payload)) {
+    throw new Error("Dashboard API returned an invalid payload");
+  }
+  return payload;
+}
+
+export async function fetchResumeContext(
+  userId: string,
+  planId: string,
+  signal?: AbortSignal,
+): Promise<ResumeContextResponse> {
+  const payload = await requestJson(
+    `${API_BASE_URL}/api/learning-sessions/resume?user_id=${encodeURIComponent(userId)}&plan_id=${encodeURIComponent(planId)}`,
+    { signal },
+  );
+  if (!isResumeContextResponse(payload)) {
+    throw new Error("Resume API returned an invalid payload");
   }
   return payload;
 }
@@ -490,6 +548,62 @@ function isCreatedPlanResponse(payload: unknown): payload is CreatedPlanResponse
     Array.isArray(payload.modules) &&
     Array.isArray(payload.knowledge_points) &&
     isRecord(payload.next_entry_point)
+  );
+}
+
+function isDashboardResponse(payload: unknown): payload is DashboardResponse {
+  return (
+    isRecord(payload) &&
+    typeof payload.active_goal === "string" &&
+    (typeof payload.current_stage === "string" || payload.current_stage === null) &&
+    typeof payload.current_language === "string" &&
+    isRecord(payload.current_course) &&
+    typeof payload.current_course.id === "string" &&
+    typeof payload.current_course.title === "string" &&
+    Array.isArray(payload.today_learning_tasks) &&
+    payload.today_learning_tasks.every(
+      (item) =>
+        isRecord(item) &&
+        item.type === "learning_session" &&
+        typeof item.plan_id === "string" &&
+        (typeof item.knowledge_point_id === "string" || item.knowledge_point_id === null) &&
+        typeof item.title === "string",
+    ) &&
+    typeof payload.today_review_count === "number" &&
+    typeof payload.overall_progress === "number" &&
+    typeof payload.resume_available === "boolean" &&
+    isDashboardEntryPoint(payload.next_entry_point)
+  );
+}
+
+function isDashboardEntryPoint(payload: unknown): payload is DashboardResponse["next_entry_point"] {
+  return (
+    isRecord(payload) &&
+    typeof payload.type === "string" &&
+    typeof payload.plan_id === "string" &&
+    typeof payload.next_action === "string" &&
+    ((payload.type === "resume" && payload.knowledge_point_id === undefined) ||
+      ((payload.type === "learning_session" || payload.type === "review") &&
+        (typeof payload.knowledge_point_id === "string" || payload.knowledge_point_id === null)))
+  );
+}
+
+function isResumeContextResponse(payload: unknown): payload is ResumeContextResponse {
+  return (
+    isRecord(payload) &&
+    (typeof payload.last_session_summary === "string" || payload.last_session_summary === null) &&
+    isRecord(payload.next_entry_point) &&
+    payload.next_entry_point.type === "learning_session" &&
+    typeof payload.next_entry_point.plan_id === "string" &&
+    (typeof payload.next_entry_point.knowledge_point_id === "string" || payload.next_entry_point.knowledge_point_id === null) &&
+    typeof payload.next_entry_point.next_action === "string" &&
+    (payload.current_module === null ||
+      (isRecord(payload.current_module) &&
+        typeof payload.current_module.id === "string" &&
+        typeof payload.current_module.title === "string")) &&
+    (typeof payload.current_stage === "string" || payload.current_stage === null) &&
+    typeof payload.today_review_count === "number" &&
+    typeof payload.resume_available === "boolean"
   );
 }
 

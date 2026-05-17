@@ -32,7 +32,7 @@ export const ROUTE_META: Record<AppRoute, { crumb: string; hint: string }> = {
 export const SETTING_PANELS: Record<SettingsKey, SettingsPanel> = {
   appearance: {
     title: "外观",
-    meta: "控制桌面端视觉密度和主题偏好",
+    meta: "当前版本只展示界面偏好，不直接写后端业务规则",
     cards: [
       ["主题", "奶油色 Claude Desktop 风格"],
       ["内容密度", "宽松，减少学习焦虑"],
@@ -42,7 +42,7 @@ export const SETTING_PANELS: Record<SettingsKey, SettingsPanel> = {
   },
   model: {
     title: "模型设置",
-    meta: "配置代码提示、复习变体、错因解释和笔记辅助补全所用模型",
+    meta: "说明提示、解释、笔记辅助补全的模型边界；当前不引入未建模的持久化字段",
     cards: [
       ["提示模型", "用于日常代码练习会话"],
       ["测试解释模型", "用于解释失败用例与报错"],
@@ -50,44 +50,54 @@ export const SETTING_PANELS: Record<SettingsKey, SettingsPanel> = {
       ["工具调用", "只在明确需要时启用"],
     ],
   },
-  notification: {
+  learning: {
+    title: "学习偏好",
+    meta: "读取并保存当前用户画像与讲解偏好",
+    cards: [
+      ["讲解风格", "step_by_step / example_then_practice 等"],
+      ["鼓励偏好", "direct 等可读写字段"],
+      ["职业与背景", "帮助 Agent 控制举例粒度"],
+      ["显示名称", "用于本地学习身份和摘要展示"],
+    ],
+  },
+  review: {
+    title: "复习",
+    meta: "只展示复习优先规则与当前风险摘要，不暴露 FSRS 固定参数编辑",
+    cards: [
+      ["高风险优先", "最近学习活动超过 72 小时且存在 forget_risk=high 时优先进入复习"],
+      ["普通打开", "有 due review 时只提示，不强制跳转"],
+      ["后端负责", "due_at、forget_risk、fsrs_rating 仅由后端更新"],
+      ["前端负责", "展示提示、恢复入口和复习 notice"],
+    ],
+  },
+  notifications: {
     title: "通知设置",
-    meta: "控制学习提醒和复习到期提示",
+    meta: "保存提醒开关、时间段和安静时段",
     cards: [
-      ["学习提醒", "工作日 20:30"],
-      ["复习优先", "due_at 到期时优先提示"],
-      ["中断恢复", "多日未学时展示阶段摘要"],
-      ["外部通知", "第一版默认关闭"],
+      ["学习提醒", "由 preferred_time_slots 和 reminder_preference 驱动"],
+      ["复习提醒", "到期时展示应用内提示"],
+      ["安静时段", "quiet_hours 仅影响提醒展示"],
+      ["外部通知", "第一版默认只做 desktop channel 描述"],
     ],
   },
-  memory: {
-    title: "Attempt 记录配置",
-    meta: "配置原始 Attempt、测试结果、错因标签和复习状态的保存位置",
+  privacy: {
+    title: "记录与隐私",
+    meta: "展示事实日志和本地内容边界，不允许关闭 Attempt/FSRS 写入",
     cards: [
-      ["原始 Attempt", "保存提交代码、运行输出和测试结果"],
-      ["阶段摘要", "按模块生成可恢复练习上下文"],
-      ["错因记忆", "绑定掌握度、复习状态和变体题"],
-      ["隐私策略", "不自动外传本地文件"],
+      ["Attempt 事实", "run / submit / review_submit 继续作为后端事实日志写入"],
+      ["复习状态", "ReviewState 和 ReviewLog 不受用户开关控制"],
+      ["笔记", "共享知识点笔记仍可本地编辑和导出"],
+      ["隐私边界", "当前实现不自动外传本地文件"],
     ],
   },
-  notes: {
-    title: "练习设置",
-    meta: "控制 Attempt 摘要、自动保存和笔记抽屉偏好",
-    cards: [
-      ["分类层级", "语言大类 / 练习点"],
-      ["自动保存", "编辑时保存笔记抽屉状态"],
-      ["默认入口", "当前知识点笔记抽屉"],
-      ["导出方式", "仅保留本地 Markdown 笔记"],
-    ],
-  },
-  about: {
-    title: "关于",
-    meta: "Aearn 桌面端原型信息",
+  diagnostics: {
+    title: "关于与诊断",
+    meta: "Aearn 桌面端原型信息与本地 API 诊断",
     cards: [
       ["版本", "V1 桌面端原型"],
       ["定位", "代码补全、运行预览、测试判定、复习变体闭环"],
       ["技术形态", "React + Vite + Tauri"],
-      ["范围", "当前实现对齐 docs/design 原型结构"],
+      ["范围", "当前实现对齐 docs/design 原型结构并补齐 M6 恢复/设置流"],
     ],
   },
 };
