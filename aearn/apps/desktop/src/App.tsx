@@ -1,13 +1,19 @@
 import { startTransition, useEffect, useState, type FormEvent } from "react";
 
 import {
+  API_BASE_URL,
   createNote,
   fetchApiHealth,
+  fetchDashboard,
   fetchLanguageCourses,
   fetchNotes,
+  fetchPlanDetail,
+  fetchResumeContext,
+  fetchUserProfile,
   requestNoteAgentDraft,
   startLearningSession,
   updateNote,
+  updateUserPreferences,
 } from "./api";
 import type {
   ApiHealthState,
@@ -37,11 +43,14 @@ import { ReviewPage } from "./pages/ReviewPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import type {
   CreatedPlanResponse,
+  DashboardResponse,
   LanguageCourse,
   LearningSessionResponse,
   NoteRecord,
+  ResumeContextResponse,
   RunExerciseResponse,
   SubmitExerciseResponse,
+  UserPreferencesUpdate,
   UserProfile,
 } from "./types";
 import { ApiRequestError } from "./types";
@@ -53,12 +62,39 @@ type NoteDraftState = {
   errorMessage: string | null;
 };
 
+type DashboardState =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "ready"; data: DashboardResponse }
+  | { status: "error"; message: string };
+
+type SettingsFormState = {
+  displayName: string;
+  learningStyle: string;
+  teachingPreference: string;
+  encouragementPreference: string;
+  profession: string;
+  backgroundContext: string;
+  preferredWeekday: string;
+  preferredStart: string;
+  preferredEnd: string;
+  reminderEnabled: boolean;
+  reminderChannel: string;
+  quietHoursStart: string;
+  quietHoursEnd: string;
+};
+
 function App() {
   const [apiHealth, setApiHealth] = useState<ApiHealthState>({ status: "loading" });
+  const [dashboardState, setDashboardState] = useState<DashboardState>({ status: "idle" });
   const [courses, setCourses] = useState<LanguageCourse[]>([]);
   const [user, setUser] = useState<UserProfile | null>(null);
   const [createdPlan, setCreatedPlan] = useState<CreatedPlanResponse | null>(null);
   const [sessionState, setSessionState] = useState<SessionState>({ status: "idle" });
+  const [bootstrapHydrated, setBootstrapHydrated] = useState(false);
+  const [settingsForm, setSettingsForm] = useState<SettingsFormState>(emptySettingsForm());
+  const [settingsSaveState, setSettingsSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [settingsSaveErrorMessage, setSettingsSaveErrorMessage] = useState<string | null>(null);
   const [lastRun, setLastRun] = useState<RunExerciseResponse | null>(null);
   const [lastSubmit, setLastSubmit] = useState<SubmitExerciseResponse | null>(null);
   const [activeRoute, setActiveRoute] = useState<AppRoute>("onboarding");
@@ -81,8 +117,10 @@ function App() {
   const [reviewNoteContext, setReviewNoteContext] = useState<NoteContext | null>(null);
   const [notesPageSelection, setNotesPageSelection] = useState<string | null>(null);
 
+  const dashboard = dashboardState.status === "ready" ? dashboardState.data : null;
   const session = sessionState.status === "ready" ? sessionState.data : null;
   const activeExercise = session?.exercise ?? null;
+  const currentPlanId = createdPlan?.LearningPlan.id ?? null;
   const activeKnowledgePointId =
     sessionState.status === "ready"
       ? sessionState.data.context_snapshot.KnowledgePoint.id
@@ -97,6 +135,9 @@ function App() {
   const crumb = getCrumbLabel(visibleRoute, settingsTab, session, activeExercise);
   const homeMessages = [...HOME_BASE_MESSAGES, ...homeConversation];
   const reviewMessages = [...REVIEW_BASE_MESSAGES, ...reviewConversation];
+  const settingsDirty = isSettingsDirty(user, settingsForm);
+  const apiStatusLabel =
+    apiHealth.status === "online" ? "在线" : apiHealth.status === "offline" ? `离线: ${apiHealth.message}` : "检测中";
   const currentSessionNoteContext = buildLearningNoteContext(session);
   const currentContext = currentSessionNoteContext ?? reviewNoteContext;
   const drawerKnowledgePointId = noteDrawerContext?.knowledgePointId ?? null;
@@ -108,7 +149,9 @@ function App() {
   const canOpenNoteDrawer = Boolean(user && ((visibleRoute === "home" && currentSessionNoteContext) || (visibleRoute === "review" && reviewNoteContext)));
 
   async function bootstrap(signal?: AbortSignal) {
+    setBootstrapHydrated(false);
     setApiHealth({ status: "loading" });
+    setDashboardState({ status: "loading" });
 
     try {
       const [health, catalog] = await Promise.all([fetchApiHealth(signal), fetchLanguageCourses(signal)]);
@@ -116,18 +159,122 @@ function App() {
         setApiHealth({ status: "online", data: health });
         setCourses(catalog);
       });
+
+      const stored = readBootstrapContext();
+      if (!stored.userId) {
+        setDashboardState({ status: "idle" });
+        return;
+      }
+
+      const loadedUser = await fetchUserProfile(stored.userId, signal);
+      if (signal?.aborted) {
+        return;
+      }
+      startTransition(() => {
+        setUser(loadedUser);
+        setSettingsSaveState("idle");
+        setSettingsSaveErrorMessage(null);
+      });
+
+      if (!stored.planId) {
+        setCreatedPlan(null);
+        setSessionState({ status: "idle" });
+        setDashboardState({ status: "idle" });
+        setActiveRoute("onboarding");
+        return;
+      }
+
+      const [plan, dashboardResponse] = await Promise.all([
+        fetchPlanDetail(stored.planId, signal),
+        fetchDashboard(stored.userId, signal),
+      ]);
+      if (signal?.aborted) {
+        return;
+      }
+
+      startTransition(() => {
+        setCreatedPlan(plan);
+        setDashboardState({ status: "ready", data: dashboardResponse });
+      });
+
+      if (dashboardResponse.next_entry_point.type === "review") {
+        setActiveRoute("review");
+        setSessionState({ status: "idle" });
+        return;
+      }
+
+      if (dashboardResponse.next_entry_point.type === "resume") {
+        const resume = await fetchResumeContext(stored.userId, plan.LearningPlan.id, signal);
+        if (signal?.aborted) {
+          return;
+        }
+        if (resume.resume_available && resume.next_entry_point.knowledge_point_id) {
+          await openLearningSession(plan, resume.next_entry_point.knowledge_point_id, stored.userId);
+          return;
+        }
+        if (resume.next_entry_point.knowledge_point_id) {
+          await openLearningSession(plan, resume.next_entry_point.knowledge_point_id, stored.userId);
+          return;
+        }
+      }
+
+      if (dashboardResponse.next_entry_point.type === "learning_session" && dashboardResponse.next_entry_point.knowledge_point_id) {
+        await openLearningSession(plan, dashboardResponse.next_entry_point.knowledge_point_id, stored.userId);
+        return;
+      }
+
+      setActiveRoute("home");
     } catch (error) {
       if (signal?.aborted) {
+        return;
+      }
+      if (error instanceof ApiRequestError && (error.apiError.code === "USER_NOT_FOUND" || error.apiError.code === "PLAN_NOT_FOUND")) {
+        clearBootstrapContext();
+        setUser(null);
+        setCreatedPlan(null);
+        setSessionState({ status: "idle" });
+        setActiveRoute("onboarding");
+        setDashboardState({ status: "idle" });
         return;
       }
       setApiHealth({
         status: "offline",
         message: error instanceof Error ? error.message : "Unable to reach API service",
       });
+      setDashboardState({ status: "error", message: formatError(error, "无法恢复 dashboard") });
+    } finally {
+      if (!signal?.aborted) {
+        setBootstrapHydrated(true);
+      }
     }
   }
 
-  async function openLearningSession(planResponse: CreatedPlanResponse, knowledgePointId: string, activeUserId?: string) {
+  async function refreshDashboard(activeUserId?: string, signal?: AbortSignal) {
+    const userId = activeUserId ?? user?.id;
+    if (!userId) {
+      setDashboardState({ status: "idle" });
+      return;
+    }
+    try {
+      const response = await fetchDashboard(userId, signal);
+      if (signal?.aborted) {
+        return;
+      }
+      setDashboardState({ status: "ready", data: response });
+    } catch (error) {
+      if (signal?.aborted) {
+        return;
+      }
+      setDashboardState({ status: "error", message: formatError(error, "无法刷新 dashboard") });
+    }
+  }
+
+  async function openLearningSession(
+    planResponse: CreatedPlanResponse,
+    knowledgePointId: string,
+    activeUserId?: string,
+    activateHome = true,
+  ) {
     const userId = activeUserId ?? user?.id;
     if (!userId) {
       setSessionState({
@@ -150,15 +297,20 @@ function App() {
       startTransition(() => {
         setSessionState({ status: "ready", data: response });
         setCreatedPlan((current) => markKnowledgePointLearning(current ?? planResponse, knowledgePointId));
-        setActiveRoute("home");
+        if (activateHome) {
+          setActiveRoute("home");
+        }
       });
+      void refreshDashboard(userId);
     } catch (error) {
       setSessionState({
         status: "error",
         knowledgePointId,
         message: error instanceof Error ? error.message : "无法启动学习会话",
       });
-      setActiveRoute("home");
+      if (activateHome) {
+        setActiveRoute("home");
+      }
     }
   }
 
@@ -170,6 +322,7 @@ function App() {
       setLastRun(null);
       setLastSubmit(null);
     });
+    setDashboardState({ status: "idle" });
     const nextKnowledgePointId = plan.next_entry_point.knowledge_point_id;
     if (nextKnowledgePointId) {
       await openLearningSession(plan, nextKnowledgePointId, activeUser.id);
@@ -197,6 +350,66 @@ function App() {
           }
         : current,
     );
+    void refreshDashboard();
+  }
+
+  function updateSettingsField(field: keyof SettingsFormState, value: string | boolean) {
+    setSettingsForm((current) => ({
+      ...current,
+      [field]: value,
+    }));
+    setSettingsSaveState("idle");
+    setSettingsSaveErrorMessage(null);
+  }
+
+  async function handleSaveSettings() {
+    if (!user) {
+      return;
+    }
+    const payload = buildSettingsPayload(settingsForm);
+    setSettingsSaveState("saving");
+    setSettingsSaveErrorMessage(null);
+    try {
+      const updated = await updateUserPreferences(user.id, payload);
+      startTransition(() => {
+        setUser(updated);
+        setSettingsSaveState("saved");
+      });
+    } catch (error) {
+      setSettingsSaveState("error");
+      setSettingsSaveErrorMessage(formatError(error, "保存设置失败"));
+    }
+  }
+
+  async function handleResumeShortcut() {
+    if (!user || !createdPlan) {
+      return;
+    }
+    try {
+      const resume = await fetchResumeContext(user.id, createdPlan.LearningPlan.id);
+      if (resume.next_entry_point.knowledge_point_id) {
+        await openLearningSession(createdPlan, resume.next_entry_point.knowledge_point_id, user.id);
+        return;
+      }
+      setActiveRoute("home");
+    } catch (error) {
+      setDashboardState({ status: "error", message: formatError(error, "无法恢复上次学习") });
+    }
+  }
+
+  async function handleStartCurrentLearning() {
+    if (!createdPlan || !dashboard) {
+      return;
+    }
+    const knowledgePointId =
+      dashboard.next_entry_point.type === "learning_session"
+        ? dashboard.next_entry_point.knowledge_point_id
+        : dashboard.today_learning_tasks[0]?.knowledge_point_id ?? createdPlan.next_entry_point.knowledge_point_id;
+    if (!knowledgePointId) {
+      setActiveRoute("home");
+      return;
+    }
+    await openLearningSession(createdPlan, knowledgePointId);
   }
 
   async function goToRoute(route: AppRoute) {
@@ -234,6 +447,7 @@ function App() {
   function resetGoal() {
     setCreatedPlan(null);
     setSessionState({ status: "idle" });
+    setDashboardState({ status: "idle" });
     setLastRun(null);
     setLastSubmit(null);
     setHomeConversation([]);
@@ -252,6 +466,8 @@ function App() {
     setReviewNoteContext(null);
     setNotesPageSelection(null);
     setNoteDrawerOpen(false);
+    setSettingsSaveState("idle");
+    setSettingsSaveErrorMessage(null);
   }
 
   function handleComposerSubmit(event: FormEvent<HTMLFormElement>) {
@@ -501,6 +717,25 @@ function App() {
   }
 
   useEffect(() => {
+    setSettingsForm(user ? settingsFormFromUser(user) : emptySettingsForm());
+    setSettingsSaveErrorMessage(null);
+  }, [user?.id, user?.updated_at]);
+
+  useEffect(() => {
+    if (!bootstrapHydrated) {
+      return;
+    }
+    if (!user?.id) {
+      clearBootstrapContext();
+      return;
+    }
+    writeBootstrapContext({
+      userId: user.id,
+      planId: createdPlan?.LearningPlan.id ?? null,
+    });
+  }, [bootstrapHydrated, user?.id, createdPlan?.LearningPlan.id]);
+
+  useEffect(() => {
     const controller = new AbortController();
     void bootstrap(controller.signal);
 
@@ -637,104 +872,163 @@ function App() {
             <ApiHealthChip apiHealth={apiHealth} />
           </header>
 
-          <section className={screenClassName(visibleRoute === "onboarding")} aria-label="首次建档">
-            <OnboardingPage
-              apiHealth={apiHealth}
-              courses={courses}
-              existingUser={user}
-              messages={ONBOARDING_MESSAGES}
-              resetNonce={resetNonce}
-              onUserChange={setUser}
-              onPlanCreated={handlePlanCreated}
-            />
-          </section>
+          <div className="workspace-shell">
+            {dashboard && visibleRoute !== "onboarding" && (
+              <section className={dashboard.next_entry_point.type === "review" ? "dashboard-banner warning" : "dashboard-banner"} aria-label="恢复与复习提示">
+                <div className="dashboard-banner-copy">
+                  <strong>{dashboard.current_stage ?? "当前学习"}</strong>
+                  <span>
+                    今日复习 {dashboard.today_review_count} · 总进度 {Math.round(dashboard.overall_progress * 100)}%
+                  </span>
+                  <span>
+                    {dashboard.next_entry_point.type === "review"
+                      ? "检测到中断多日且复习高风险，优先进入复习。"
+                      : dashboard.resume_available
+                        ? "已识别到可恢复的当前学习上下文。"
+                        : "默认进入当前学习；有到期复习时只在应用内提示。"}
+                  </span>
+                </div>
+                <div className="dashboard-banner-actions">
+                  {dashboard.today_review_count > 0 && (
+                    <button className="btn ghost" type="button" onClick={() => void goToRoute("review")}>
+                      今日复习
+                    </button>
+                  )}
+                  {dashboard.resume_available && (
+                    <button className="btn ghost" type="button" onClick={() => void handleResumeShortcut()}>
+                      恢复上次
+                    </button>
+                  )}
+                  {createdPlan && (
+                    <button className="btn primary" type="button" onClick={() => void handleStartCurrentLearning()}>
+                      当前学习
+                    </button>
+                  )}
+                </div>
+              </section>
+            )}
 
-          <section className={screenClassName(visibleRoute === "home")} aria-label="学习页">
-            <LearningWorkspacePage
-              createdPlan={createdPlan}
-              sessionState={sessionState}
-              messages={homeMessages}
-              lastRun={lastRun}
-              lastSubmit={lastSubmit}
-              resetNonce={resetNonce}
-              onOpenLearningSession={openLearningSession}
-              onRunChange={setLastRun}
-              onSubmitChange={setLastSubmit}
-              onKnowledgePointUpdate={handleKnowledgePointUpdate}
-            onOpenNoteDrawer={() => void handleOpenNoteDrawer()}
-          />
-        </section>
+            {dashboardState.status === "error" && <div className="tool-card dashboard-inline-error">提示：{dashboardState.message}</div>}
 
-          <section className={screenClassName(visibleRoute === "review")} aria-label="复习页">
-            <ReviewPage
-              isActive={visibleRoute === "review"}
-              user={user}
-              messages={reviewMessages}
-              lastSubmit={lastSubmit}
-              lastRun={lastRun}
-              onActiveNoteContextChange={setReviewNoteContext}
-            />
-          </section>
+            <section className={screenClassName(visibleRoute === "onboarding")} aria-label="首次建档">
+              <OnboardingPage
+                apiHealth={apiHealth}
+                courses={courses}
+                existingUser={user}
+                messages={ONBOARDING_MESSAGES}
+                resetNonce={resetNonce}
+                onUserChange={setUser}
+                onPlanCreated={handlePlanCreated}
+              />
+            </section>
 
-          <section className={screenClassName(visibleRoute === "notes")} aria-label="笔记页">
-            <NotesPage
-              loadState={notesLoadState}
-              errorMessage={notesErrorMessage}
-              notes={notesList}
-              selectedKnowledgePointId={notesPageSelection}
-              currentContext={currentContext}
-              selectedDraft={selectedDraft}
-              assistLoading={Boolean(notesPageSelection && noteAssistBusyByKnowledgePointId[notesPageSelection])}
-              onSelectKnowledgePoint={(knowledgePointId) => {
-                setNotesPageSelection(knowledgePointId);
-                const existing = notesByKnowledgePointId[knowledgePointId];
-                if (existing && !noteDrafts[knowledgePointId]) {
-                  syncNoteRecord(existing);
-                  return;
-                }
-                if (!existing && currentContext?.knowledgePointId === knowledgePointId) {
-                  void ensureNoteForContext({ ...currentContext, source: "notes" }).then((note) => {
-                    if (note) {
-                      setNotesPageSelection(note.knowledge_point_id);
-                    }
-                  });
-                }
-              }}
-              onDraftTitleChange={(value) => {
-                if (notesPageSelection) {
-                  updateDraftTitle(notesPageSelection, value);
-                }
-              }}
-              onDraftContentChange={(value) => {
-                if (notesPageSelection) {
-                  updateDraftContent(notesPageSelection, value);
-                }
-              }}
-              onRetrySave={() => {
-                if (notesPageSelection) {
-                  void saveNoteByKnowledgePointId(notesPageSelection);
-                }
-              }}
-              onRequestAgentDraft={() => {
-                if (notesPageSelection) {
-                  void requestAgentDraftForKnowledgePoint(notesPageSelection);
-                }
-              }}
-              onCreateCurrentNote={() => {
-                if (currentContext) {
-                  void ensureNoteForContext({ ...currentContext, source: "notes" }).then((note) => {
-                    if (note) {
-                      setNotesPageSelection(note.knowledge_point_id);
-                    }
-                  });
-                }
-              }}
-            />
-          </section>
+            <section className={screenClassName(visibleRoute === "home")} aria-label="学习页">
+              <LearningWorkspacePage
+                createdPlan={createdPlan}
+                sessionState={sessionState}
+                messages={homeMessages}
+                lastRun={lastRun}
+                lastSubmit={lastSubmit}
+                resetNonce={resetNonce}
+                onOpenLearningSession={openLearningSession}
+                onRunChange={setLastRun}
+                onSubmitChange={setLastSubmit}
+                onKnowledgePointUpdate={handleKnowledgePointUpdate}
+                onOpenNoteDrawer={() => void handleOpenNoteDrawer()}
+              />
+            </section>
 
-          <section className={screenClassName(visibleRoute === "settings")} aria-label="设置页">
-            <SettingsPage settingsTab={settingsTab} onSettingsTabChange={setSettingsTab} />
-          </section>
+            <section className={screenClassName(visibleRoute === "review")} aria-label="复习页">
+              <ReviewPage
+                isActive={visibleRoute === "review"}
+                user={user}
+                messages={reviewMessages}
+                lastSubmit={lastSubmit}
+                lastRun={lastRun}
+                onActiveNoteContextChange={setReviewNoteContext}
+              />
+            </section>
+
+            <section className={screenClassName(visibleRoute === "notes")} aria-label="笔记页">
+              <NotesPage
+                loadState={notesLoadState}
+                errorMessage={notesErrorMessage}
+                notes={notesList}
+                selectedKnowledgePointId={notesPageSelection}
+                currentContext={currentContext}
+                selectedDraft={selectedDraft}
+                assistLoading={Boolean(notesPageSelection && noteAssistBusyByKnowledgePointId[notesPageSelection])}
+                onSelectKnowledgePoint={(knowledgePointId) => {
+                  setNotesPageSelection(knowledgePointId);
+                  const existing = notesByKnowledgePointId[knowledgePointId];
+                  if (existing && !noteDrafts[knowledgePointId]) {
+                    syncNoteRecord(existing);
+                    return;
+                  }
+                  if (!existing && currentContext?.knowledgePointId === knowledgePointId) {
+                    void ensureNoteForContext({ ...currentContext, source: "notes" }).then((note) => {
+                      if (note) {
+                        setNotesPageSelection(note.knowledge_point_id);
+                      }
+                    });
+                  }
+                }}
+                onDraftTitleChange={(value) => {
+                  if (notesPageSelection) {
+                    updateDraftTitle(notesPageSelection, value);
+                  }
+                }}
+                onDraftContentChange={(value) => {
+                  if (notesPageSelection) {
+                    updateDraftContent(notesPageSelection, value);
+                  }
+                }}
+                onRetrySave={() => {
+                  if (notesPageSelection) {
+                    void saveNoteByKnowledgePointId(notesPageSelection);
+                  }
+                }}
+                onRequestAgentDraft={() => {
+                  if (notesPageSelection) {
+                    void requestAgentDraftForKnowledgePoint(notesPageSelection);
+                  }
+                }}
+                onCreateCurrentNote={() => {
+                  if (currentContext) {
+                    void ensureNoteForContext({ ...currentContext, source: "notes" }).then((note) => {
+                      if (note) {
+                        setNotesPageSelection(note.knowledge_point_id);
+                      }
+                    });
+                  }
+                }}
+              />
+            </section>
+
+            <section className={screenClassName(visibleRoute === "settings")} aria-label="设置页">
+              <SettingsPage
+                settingsTab={settingsTab}
+                form={settingsForm}
+                isDirty={settingsDirty}
+                canSave={Boolean(user && settingsDirty && settingsSaveState !== "saving" && (settingsTab === "learning" || settingsTab === "notifications"))}
+                saveState={settingsSaveState}
+                saveErrorMessage={settingsSaveErrorMessage}
+                userLoaded={Boolean(user)}
+                diagnostics={{
+                  apiBaseUrl: API_BASE_URL,
+                  apiStatus: apiStatusLabel,
+                  userId: user?.id ?? null,
+                  planId: currentPlanId,
+                  currentStage: dashboard?.current_stage ?? session?.context_snapshot.current_stage ?? null,
+                  todayReviewCount: dashboard?.today_review_count ?? 0,
+                  resumeAvailable: dashboard?.resume_available ?? false,
+                }}
+                onSettingsTabChange={setSettingsTab}
+                onFieldChange={updateSettingsField}
+                onSave={() => void handleSaveSettings()}
+              />
+            </section>
+          </div>
 
           <div className={noteDrawerOpen ? "drawer-scrim open" : "drawer-scrim"} onClick={() => void closeDrawers()}></div>
 
@@ -877,6 +1171,134 @@ function upsertNote(current: NoteRecord[], note: NoteRecord): NoteRecord[] {
 
 function sortNotesByUpdatedAt(notes: NoteRecord[]): NoteRecord[] {
   return [...notes].sort((left, right) => new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime());
+}
+
+function emptySettingsForm(): SettingsFormState {
+  return {
+    displayName: "",
+    learningStyle: "",
+    teachingPreference: "",
+    encouragementPreference: "",
+    profession: "",
+    backgroundContext: "",
+    preferredWeekday: "mon",
+    preferredStart: "20:00",
+    preferredEnd: "21:00",
+    reminderEnabled: true,
+    reminderChannel: "desktop",
+    quietHoursStart: "23:00",
+    quietHoursEnd: "08:00",
+  };
+}
+
+function settingsFormFromUser(user: UserProfile): SettingsFormState {
+  const form = emptySettingsForm();
+  const firstSlot = Array.isArray(user.preferred_time_slots) ? user.preferred_time_slots[0] : null;
+  const reminderPreference = isRecord(user.reminder_preference) ? user.reminder_preference : {};
+  const quietHours = isRecord(reminderPreference.quiet_hours) ? reminderPreference.quiet_hours : {};
+  const channels = Array.isArray(reminderPreference.channels)
+    ? reminderPreference.channels.filter((item): item is string => typeof item === "string")
+    : typeof reminderPreference.channel === "string"
+      ? [reminderPreference.channel]
+      : [];
+
+  return {
+    displayName: user.display_name,
+    learningStyle: user.learning_style ?? "",
+    teachingPreference: user.teaching_preference ?? "",
+    encouragementPreference: user.encouragement_preference ?? "",
+    profession: user.profession ?? "",
+    backgroundContext: user.background_context ?? "",
+    preferredWeekday: typeof firstSlot?.weekday === "string" ? firstSlot.weekday : "mon",
+    preferredStart: typeof firstSlot?.start === "string" ? firstSlot.start : "20:00",
+    preferredEnd: typeof firstSlot?.end === "string" ? firstSlot.end : "21:00",
+    reminderEnabled: reminderPreference.enabled !== false,
+    reminderChannel: channels[0] ?? "desktop",
+    quietHoursStart: typeof quietHours.start === "string" ? quietHours.start : "23:00",
+    quietHoursEnd: typeof quietHours.end === "string" ? quietHours.end : "08:00",
+  };
+}
+
+function buildSettingsPayload(form: SettingsFormState): UserPreferencesUpdate {
+  return {
+    display_name: form.displayName.trim() || "Pinking",
+    learning_style: nullableString(form.learningStyle),
+    teaching_preference: nullableString(form.teachingPreference),
+    encouragement_preference: nullableString(form.encouragementPreference),
+    profession: nullableString(form.profession),
+    background_context: nullableString(form.backgroundContext),
+    preferred_time_slots: [
+      {
+        weekday: form.preferredWeekday.trim() || "mon",
+        start: form.preferredStart.trim() || "20:00",
+        end: form.preferredEnd.trim() || "21:00",
+        timezone: "Asia/Shanghai",
+      },
+    ],
+    reminder_preference: {
+      enabled: form.reminderEnabled,
+      channels: [form.reminderChannel.trim() || "desktop"],
+      quiet_hours: {
+        start: form.quietHoursStart.trim() || "23:00",
+        end: form.quietHoursEnd.trim() || "08:00",
+        timezone: "Asia/Shanghai",
+      },
+    },
+  };
+}
+
+function isSettingsDirty(user: UserProfile | null, form: SettingsFormState): boolean {
+  if (!user) {
+    return false;
+  }
+  const current = buildSettingsPayload(settingsFormFromUser(user));
+  const next = buildSettingsPayload(form);
+  return JSON.stringify(current) !== JSON.stringify(next);
+}
+
+function nullableString(value: string): string | null {
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+
+function readBootstrapContext(): { userId: string | null; planId: string | null } {
+  if (typeof window === "undefined") {
+    return { userId: null, planId: null };
+  }
+  try {
+    const raw = window.localStorage.getItem("aearn.bootstrap");
+    if (!raw) {
+      return { userId: null, planId: null };
+    }
+    const parsed = JSON.parse(raw);
+    if (!isRecord(parsed)) {
+      return { userId: null, planId: null };
+    }
+    return {
+      userId: typeof parsed.userId === "string" ? parsed.userId : null,
+      planId: typeof parsed.planId === "string" ? parsed.planId : null,
+    };
+  } catch {
+    return { userId: null, planId: null };
+  }
+}
+
+function writeBootstrapContext(value: { userId: string; planId: string | null }) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.localStorage.setItem("aearn.bootstrap", JSON.stringify(value));
+}
+
+function clearBootstrapContext() {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.localStorage.removeItem("aearn.bootstrap");
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
 function formatError(error: unknown, fallback: string): string {

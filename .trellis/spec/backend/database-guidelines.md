@@ -17,6 +17,7 @@ The formal MVP runtime lives under `aearn/`, not under the historical `01_` thro
 - Use explicit SQL or migration-defined schema contracts. Avoid ORM-only behavior that is not reflected in migration files.
 - Use UUID primary keys and stable `slug` fields only where the schema document defines them.
 - Use `timestamptz` for persisted timestamps and expose API timestamps as ISO 8601 UTC strings.
+- When implementing resume / inactivity heuristics, do not treat trigger-managed `updated_at` columns as user activity. Use domain timestamps such as `learning_sessions.started_at`, `learning_sessions.ended_at`, and `attempts.created_at`.
 - Use cursor pagination for list APIs where the API contract requires `page_info`.
 
 ---

@@ -28,6 +28,7 @@ State must respect the contract boundary: frontend owns interaction state, while
 - Promote to app-level state only when multiple pages need the same source: current user, active plan, API health, global toast, confirm dialog, and note drawer.
 - Do not create a global store just to pass props through one or two levels.
 - Do not keep backend-owned facts only in frontend memory; refetch or update from API responses after writes.
+- For persisted bootstrap state such as `localStorage` user/plan context, do not clear storage on first render before the initial restore attempt finishes. Gate write-back or cleanup behind an explicit hydration-complete flag.
 
 ---
 
