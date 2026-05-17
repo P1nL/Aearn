@@ -171,3 +171,36 @@ Confirmed the M4 FSRS/review loop task artifacts, validation state, and committe
 ### Next Steps
 
 - None - task complete
+
+
+## Session 6: M6 resume dashboard and settings hardening
+
+**Date**: 2026-05-17
+**Task**: M6 resume dashboard and settings hardening
+**Branch**: `main`
+
+### Summary
+
+Added dashboard/resume APIs, returning-user bootstrap restoration, seven-category settings UI, doc/spec backfill, and verified backend plus desktop smoke flows.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `93cf9d0` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
