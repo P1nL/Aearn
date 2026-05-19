@@ -313,3 +313,77 @@ setReviewResult(await submitReviewExerciseResult(payload));
 ```
 
 Render `reviewResult.due_at`, `reviewResult.forget_risk`, and `reviewResult.ReviewState` exactly as returned by the API.
+
+## Scenario: M6 Release Smoke for Bootstrap, Dashboard, and Resume
+
+### 1. Scope / Trigger
+
+- Trigger: release validation, changes to app bootstrap, `localStorage` persistence, dashboard routing, resume routing, or SettingsPage boundary behavior.
+- Scope: `aearn/apps/desktop/src/App.tsx`, onboarding confirmation flow, dashboard/resume API wiring, and settings-route smoke checks.
+
+### 2. Signatures
+
+- Bootstrap storage key: `localStorage["aearn.bootstrap"]`
+- Bootstrap payload: `{ userId: string; planId: string | null }`
+- Cold-start API bootstrap:
+  - `GET /health`
+  - `GET /api/language-courses`
+- Returning-user bootstrap:
+  - `GET /api/users/{user_id}`
+  - `GET /api/plans/{plan_id}`
+  - `GET /api/dashboard?user_id=...`
+  - `GET /api/learning-sessions/resume?user_id=...&plan_id=...`
+  - `POST /api/learning-sessions/start`
+
+### 3. Contracts
+
+- Cold start with no bootstrap key must enter onboarding instead of jumping into demo learning/review/notes routes.
+- Confirming onboarding must write `userId` and `planId` to `localStorage["aearn.bootstrap"]`.
+- Returning-user reload must fetch real user/plan/dashboard/resume data before deciding the landing route.
+- `dashboard` / `resume` remain the source of truth for `home` vs `review` vs resumable learning decisions; the frontend must not hard-code a review-first route on every reload.
+- Settings smoke must verify all seven categories are visible and that no visible control claims to edit `Attempt`, `FSRS`, score rules, or raw `due_at`.
+
+### 4. Validation & Error Matrix
+
+- No bootstrap key -> onboarding route visible.
+- Invalid bootstrap user/plan -> frontend clears bootstrap and falls back to onboarding.
+- Bootstrap exists but dashboard/resume requests are skipped -> release smoke fails.
+- Settings page shows rule-edit controls for score / Attempt / FSRS / `due_at` -> release smoke fails.
+
+### 5. Good/Base/Bad Cases
+
+- Good: cold reload enters onboarding, confirm plan writes bootstrap, second reload requests `users` + `plans` + `dashboard` + `resume`, then restores the learning route.
+- Base: returning user with no resumable context still loads dashboard and lands on the correct non-review route.
+- Bad: passing `desktop:check` while the app still opens a stale demo route, or calling only `/health` + `/api/language-courses` on a supposed returning-user reload.
+
+### 6. Tests Required
+
+- Run `pnpm --dir .\aearn desktop:check`.
+- Browser smoke cold start with `localStorage["aearn.bootstrap"]` cleared.
+- Browser smoke onboarding confirm -> bootstrap write -> reload -> request-chain verification.
+- Browser smoke SettingsPage category visibility and forbidden-rule-boundary check.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```tsx
+const stored = readBootstrapContext();
+if (stored.userId) {
+  setActiveRoute("home");
+}
+```
+
+This trusts local storage alone and skips the real dashboard/resume decision path.
+
+#### Correct
+
+```tsx
+const loadedUser = await fetchUserProfile(stored.userId, signal);
+const [plan, dashboardResponse] = await Promise.all([
+  fetchPlanDetail(stored.planId, signal),
+  fetchDashboard(stored.userId, signal),
+]);
+```
+
+Reload decisions come from validated backend state, not from a local optimistic shortcut.
