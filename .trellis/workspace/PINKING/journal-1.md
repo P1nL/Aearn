@@ -204,3 +204,36 @@ Added dashboard/resume APIs, returning-user bootstrap restoration, seven-categor
 ### Next Steps
 
 - None - task complete
+
+
+## Session 7: Aearn MVP release readiness closure
+
+**Date**: 2026-05-19
+**Task**: Aearn MVP release readiness closure
+**Branch**: `main`
+
+### Summary
+
+Validated the Aearn first-version release gate, recorded release evidence, added a frontend release-smoke spec for bootstrap/dashboard/resume behavior, archived the release-readiness task, and confirmed the MVP is ready to release.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `a62a65c` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
