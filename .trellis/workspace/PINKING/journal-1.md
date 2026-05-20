@@ -237,3 +237,36 @@ Validated the Aearn first-version release gate, recorded release evidence, added
 ### Next Steps
 
 - None - task complete
+
+
+## Session 8: Model-backed explain-error release readiness
+
+**Date**: 2026-05-20
+**Task**: Model-backed explain-error release readiness
+**Branch**: `main`
+
+### Summary
+
+Added OpenAI-compatible Responses API client for explain-error, documented LatteCode configuration, verified deterministic fallback/idempotency, and completed live LatteCode smoke plus backend/desktop quality gates.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `5a2f610` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
