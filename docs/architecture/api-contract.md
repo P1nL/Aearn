@@ -1354,7 +1354,9 @@ Response JSON 示例：
     "max_result": "passed",
     "score_penalty_hint": 1
   },
-  "next_action": "retry_same"
+  "next_action": "retry_same",
+  "generation_source": "llm",
+  "generation_model": "third-party-model"
 }
 ```
 
@@ -1417,7 +1419,9 @@ HTTP 状态码：
 
 错误码：`SESSION_NOT_FOUND`、`ATTEMPT_NOT_FOUND`、`VALIDATION_ERROR`、`EVALUATION_INVALID_JSON`
 
-幂等/重试说明：同一 Attempt 的相同错误上下文可安全重试；不重复增加 `error_count`，只更新 `Attempt.error_cause`。
+模型/兜底说明：`generation_source` 为可选非敏感诊断字段，取值为 `llm` 或 `deterministic`；`generation_model` 为可选模型标识。真实 API key、provider 原始错误和隐藏测试源码不得返回给前端。模型未配置、请求失败、超时、返回非法 JSON 或不符合 schema 时，后端必须回退到确定性错因解释。
+
+幂等/重试说明：同一 Attempt 的相同错误上下文可安全重试；不重复增加 `error_count`，只更新 `Attempt.error_cause`。命中幂等记录时不得再次调用模型。
 
 相关数据表/状态机节点：`Attempt`、`KnowledgePoint`；`hint_or_explain_error`、`explain_error_prompt`。
 

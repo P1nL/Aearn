@@ -113,10 +113,10 @@ pip install uv
 
 第一版本地开发需要 PostgreSQL 和 Redis。
 
-建议在正式项目目录提供统一 compose 文件：
+当前正式项目目录提供统一 compose 文件：
 
 ```text
-aearn/infra/docker/docker-compose.yml
+aearn/infra/docker-compose.yml
 ```
 
 建议服务：
@@ -136,8 +136,8 @@ redis://localhost:6379/0
 启动验证：
 
 ```powershell
-docker compose -f .\infra\docker\docker-compose.yml up -d
-docker compose -f .\infra\docker\docker-compose.yml ps
+docker compose -f .\aearn\infra\docker-compose.yml up -d
+docker compose -f .\aearn\infra\docker-compose.yml ps
 ```
 
 ## 环境变量
@@ -156,6 +156,7 @@ LLM_TYPE=openai
 OPENAI_API_KEY=
 OPENAI_BASE_URL=
 OPENAI_MODEL=
+LLM_TIMEOUT_SECONDS=20
 
 TZ=Asia/Shanghai
 FSRS_SCHEDULER_VERSION=fsrs_v1_default
@@ -166,6 +167,54 @@ RUNNER_BROWSER_ENABLED=true
 RUNNER_PYTHON_ENABLED=true
 RUNNER_COMPILED_SANDBOX_ENABLED=false
 ```
+
+### 第三方 OpenAI-compatible 模型 API
+
+MVP 第一条真实模型路径是后端 `POST /api/learning-sessions/{session_id}/attempts/{attempt_id}/explain-error`。模型配置只从 `aearn/.env` 读取，不从桌面设置页或数据库读取。
+
+```env
+LLM_TYPE=openai
+OPENAI_API_KEY=<your-third-party-api-key>
+OPENAI_BASE_URL=https://<provider-host>
+OPENAI_MODEL=<model-from-provider-model-list>
+LLM_TIMEOUT_SECONDS=20
+```
+
+配置说明：
+
+- `OPENAI_BASE_URL` 应填写 provider 的 OpenAI-compatible base URL。当前客户端会把 `https://<provider-host>` 或 `https://<provider-host>/v1` 统一归一到 `POST /v1/responses`。
+- 真实 key 只写入本机 `aearn/.env`，不要提交到 Git。
+- 未配置、配置不完整、模型超时、返回非法 JSON 或 schema 校验失败时，后端会自动回退到确定性错因解释。
+- 调用 `explain-error` 后可通过响应里的 `generation_source` 验证链路：`llm` 表示使用了模型，`deterministic` 表示走了规则兜底。
+
+LatteCode 中转站配置示例：
+
+```env
+LLM_TYPE=openai
+OPENAI_API_KEY=LatteCode_<your-key>
+OPENAI_BASE_URL=https://api.lattecode.net
+OPENAI_MODEL=<model returned by /v1/models>
+LLM_TIMEOUT_SECONDS=60
+```
+
+先用当前 key 查询可用模型，不要把真实 key 写入文档或提交：
+
+```powershell
+$env:OPENAI_API_KEY = "<your-third-party-api-key>"
+$headers = @{ Authorization = "Bearer $env:OPENAI_API_KEY" }
+Invoke-RestMethod -Uri "https://api.lattecode.net/v1/models" -Headers $headers
+```
+
+LatteCode `responses` 路径要求流式请求。后端客户端会自动发送 `stream=true`，并使用 `text.format=json_object` 约束 JSON 输出；不要改回非流式 `chat/completions`。
+
+常见失败签名：
+
+- `400 Unsupported parameter: temperature`：`responses` 请求带了该模型不支持的参数；当前客户端不再传 `temperature`。
+- `481`：API key 缺失、错误、过期或已撤销。
+- `482`：余额不足或 key 独立额度已用尽。
+- `483`：账号不可用，或 API key 未绑定对应能力分组。
+- `429`：请求频率过高或当前并发较高。
+- `503`：当前分组内暂无可用 provider。
 
 ## 依赖安装策略
 
@@ -226,7 +275,7 @@ PostgreSQL / Redis
 建议命令形态：
 
 ```powershell
-docker compose -f .\infra\docker\docker-compose.yml up -d
+docker compose -f .\aearn\infra\docker-compose.yml up -d
 uv run alembic upgrade head
 uv run uvicorn app.main:app --host 127.0.0.1 --port 8001 --reload
 uv run celery -A app.tasks.celery_app worker --loglevel=info
