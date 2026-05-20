@@ -32,6 +32,11 @@ def client() -> TestClient:
     return TestClient(app)
 
 
+@pytest.fixture(autouse=True)
+def disable_llm_generation(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(session_repository, "build_llm_error_explanation", lambda *args, **kwargs: None)
+
+
 def test_start_learning_session_creates_and_reuses_active_session(client: TestClient) -> None:
     user, plan = _confirmed_plan(client, language="javascript")
     knowledge_point_id = plan["knowledge_points"][0]["id"]
@@ -339,6 +344,87 @@ def test_hidden_failure_can_be_explained_without_leaking_hidden_source(client: T
     explain_body = explain_response.json()
     assert explain_body["error_cause"] == "state_scope_error"
     assert "回调外层" in explain_body["fix_suggestion"] or "回调外" in explain_body["fix_suggestion"]
+
+
+def test_explain_error_llm_generation_is_idempotent(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    user, plan = _confirmed_plan(client, language="javascript")
+    knowledge_point_id = plan["knowledge_points"][0]["id"]
+    start_response = client.post(
+        "/api/learning-sessions/start",
+        json={
+            "user_id": user["id"],
+            "plan_id": plan["LearningPlan"]["id"],
+            "knowledge_point_id": knowledge_point_id,
+        },
+    )
+    session = start_response.json()
+    exercise = session["exercise"]
+    flawed_code = (
+        "const button = document.querySelector(\"#counter-button\");\n"
+        "const output = document.querySelector(\"#counter-output\");\n\n"
+        "button.addEventListener(\"click\", () => {\n"
+        "  let count = 0;\n"
+        "  count += 1;\n"
+        "  output.textContent = String(count);\n"
+        "});\n"
+    )
+    run_response = client.post(
+        f"/api/learning-sessions/{session['session_id']}/exercises/{exercise['id']}/run",
+        json={
+            "code": flawed_code,
+            "filled_blanks": {
+                "blank_1": "addEventListener",
+                "blank_2": "count += 1",
+            },
+            "runtime_profile_id": exercise["runtime_profile"]["id"],
+            "run_mode": "visible_tests",
+        },
+    )
+    run_body = run_response.json()
+    failed_tests = [item for item in run_body["test_results"] if not item["passed"]]
+    payload = {
+        "error_message": run_body["error_message"],
+        "stderr": run_body["stderr"],
+        "failed_tests": [
+            {
+                "case_id": item["case_id"],
+                "case_type": item["case_type"],
+                "message": item["message"],
+            }
+            for item in failed_tests
+        ],
+        "current_code": flawed_code,
+    }
+    calls = {"count": 0}
+
+    def fake_llm_explanation(*args, **kwargs) -> dict[str, object]:
+        calls["count"] += 1
+        return {
+            "error_cause": "state_scope_error",
+            "explanation": "count 被放在点击回调里，每次点击都会重新初始化。",
+            "fix_suggestion": "把共享状态移到回调外层，只在回调里累加并同步页面。",
+            "related_knowledge_points": [{"id": knowledge_point_id, "title": "事件监听与状态变量"}],
+            "next_action": "retry_same",
+            "generation_source": "llm",
+            "generation_model": "third-party-model",
+        }
+
+    monkeypatch.setattr(session_repository, "build_llm_error_explanation", fake_llm_explanation)
+
+    first = client.post(
+        f"/api/learning-sessions/{session['session_id']}/attempts/{run_body['attempt_id']}/explain-error",
+        json=payload,
+    )
+    second = client.post(
+        f"/api/learning-sessions/{session['session_id']}/attempts/{run_body['attempt_id']}/explain-error",
+        json=payload,
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["generation_source"] == "llm"
+    assert second.json()["idempotency_replayed"] is True
+    assert calls["count"] == 1
 
 
 def test_python_runtime_error_can_be_explained(client: TestClient) -> None:

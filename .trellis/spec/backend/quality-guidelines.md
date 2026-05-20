@@ -287,3 +287,74 @@ apply_attempt_review_update(
 ```
 
 Only persisted submit facts can move `ReviewState`, and retries reuse `ReviewLog` instead of mutating counters twice.
+
+## Scenario: OpenAI-Compatible LLM Explain-Error Integration
+
+### 1. Scope / Trigger
+
+- Trigger: adding or changing backend model calls for `explain-error`, hints, evaluation, or other Agent-assisted learning feedback.
+- Scope: `app/core/config.py`, `app/services/llm_client.py`, feature-level LLM wrappers, learning-session repositories, API response types, and source-of-truth docs that describe model-backed responses.
+
+### 2. Signatures
+
+- Environment configuration:
+  - `LLM_TYPE=openai`
+  - `OPENAI_API_KEY`
+  - `OPENAI_BASE_URL`
+  - `OPENAI_MODEL`
+  - optional `LLM_TIMEOUT_SECONDS`
+- First model-backed API path: `POST /api/learning-sessions/{session_id}/attempts/{attempt_id}/explain-error`.
+- Required response fields remain `error_cause`, `explanation`, `fix_suggestion`, `related_knowledge_points`, and `next_action`.
+- Optional diagnostics are `generation_source` (`llm` or `deterministic`) and `generation_model`.
+
+### 3. Contracts
+
+- Feature code must not read raw LLM environment variables directly; it must go through `Settings` and the LLM client boundary.
+- The LLM client owns provider URL construction, headers, timeout, and JSON parsing.
+- Feature wrappers own prompt construction, evidence minimization, response schema validation, and fallback decisions.
+- `related_knowledge_points` returned to the frontend must be server-controlled or reconciled against server-loaded rows, not blindly trusted from the model.
+- Real API keys, provider error bodies, raw prompts, full code submissions, and hidden test source must not be returned to the frontend or logged.
+
+### 4. Validation & Error Matrix
+
+- `LLM_TYPE` blank/disabled/none/off -> deterministic fallback.
+- `LLM_TYPE=openai` with missing key, base URL, or model -> deterministic fallback.
+- Unsupported `LLM_TYPE` -> deterministic fallback unless a new adapter is explicitly implemented and tested.
+- Provider HTTP error, timeout, network error, invalid provider JSON, invalid model JSON, missing required fields, unsupported `error_cause`, unsupported `next_action`, code-fence/full-answer style output, or hidden case-id leakage -> deterministic fallback.
+- Idempotency replay for the same `attempt_id` plus same error context -> return stored response and do not call the model again.
+
+### 5. Good/Base/Bad Cases
+
+- Good: configured OpenAI-compatible provider returns valid JSON, backend validates it, stores the response once, and returns `generation_source=llm`.
+- Base: local developer has no key, endpoint still returns the deterministic response with `generation_source=deterministic`.
+- Bad: tests call a live model by default, feature code imports `os.getenv("OPENAI_API_KEY")`, or LLM output controls knowledge-point IDs.
+
+### 6. Tests Required
+
+- Unit-test `Settings` configured/incomplete/disabled behavior without real secrets.
+- Unit-test the model client with a fake transport, including base URL to `/chat/completions` and JSON parsing.
+- Unit-test the feature wrapper for valid model output, invalid JSON/schema fallback, and hidden-test identifier rejection.
+- API or repository test idempotency so a repeated `explain-error` request does not call the model twice.
+- Keep existing deterministic API tests isolated from live provider calls by mocking or disabling the LLM path.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+api_key = os.getenv("OPENAI_API_KEY")
+response = call_provider(api_key, prompt)
+return response
+```
+
+This leaks configuration into feature code and bypasses schema validation, fallback, and test isolation.
+
+#### Correct
+
+```python
+response = build_llm_error_explanation(...) or with_deterministic_generation_metadata(
+    build_error_explanation_response(...)
+)
+```
+
+The feature tries the model only through a testable boundary and keeps deterministic fallback as the stable MVP path.

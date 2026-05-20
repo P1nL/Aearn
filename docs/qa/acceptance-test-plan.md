@@ -168,6 +168,16 @@ LLM 输出质量单独用固定样例集评估，至少覆盖 JS/HTML/CSS、Pyth
 - P0 样例集中不得出现泄露隐藏测试、忽略硬门槛或虚构运行结果。
 - 对同一固定输入重复 3 次，结构校验通过率必须为 100%，质量 rubric 平均分不低于 8/10。
 
+### `explain-error` 模型接入验收
+
+- [ ] 使用第三方 OpenAI-compatible `.env` 配置后，`explain-error` 响应包含 `generation_source=llm`。
+- [ ] 中转站类 provider 先通过 `GET /v1/models` 确认当前 key 实际可请求的模型名，再把其中一个模型名写入本机 `aearn/.env`。
+- [ ] 对要求 Responses API streaming 的 provider，后端请求必须使用 `POST /v1/responses`、`stream=true` 和 JSON 输出约束；不得依赖旧的非流式 `/chat/completions`。
+- [ ] 未配置、key 无效、provider 超时或模型返回非法 JSON 时，`explain-error` 仍返回 200 和既有结构，并包含 `generation_source=deterministic`。
+- [ ] 同一 `attempt_id` 和同一错误上下文重复请求命中幂等记录，不再次调用模型。
+- [ ] 模型输出不得泄露隐藏测试 case id、隐藏测试源码、参考答案、真实 API key 或 provider 原始错误。
+- [ ] 本地默认测试不需要真实第三方 API key，模型成功/失败路径用 mock 覆盖。
+
 ## 前端手工 QA 清单
 
 ### 全局
@@ -225,7 +235,7 @@ LLM 输出质量单独用固定样例集评估，至少覆盖 JS/HTML/CSS、Pyth
 - [ ] 保存时禁用重复提交。
 - [ ] 字段级错误能定位到具体表单项。
 - [ ] 外观、模型设置、学习偏好、复习、通知设置、记录与隐私、关于与诊断七类可切换。
-- [ ] 模型 API、讲解风格、提示风格、通知偏好等用户偏好能保存并重新读取。
+- [ ] 模型设置页只说明后端 `.env` 模型配置和当前诊断状态，不保存真实 API key；学习偏好、讲解风格、提示风格、通知偏好等可编辑偏好能保存并重新读取。
 - [ ] 设置页不出现修改后端评分、Attempt 必填事实记录或 FSRS 固定规则的开关。
 
 ## 发布验收门禁

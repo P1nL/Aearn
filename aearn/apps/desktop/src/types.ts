@@ -373,6 +373,8 @@ export type ExplainErrorResponse = {
     title: string;
   }>;
   next_action: NextAction;
+  generation_source?: "llm" | "deterministic";
+  generation_model?: string;
   idempotency_replayed?: boolean;
 };
 

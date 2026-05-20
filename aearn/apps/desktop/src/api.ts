@@ -672,7 +672,11 @@ function isExplainErrorResponse(payload: unknown): payload is ExplainErrorRespon
     payload.related_knowledge_points.every(
       (item) => isRecord(item) && typeof item.id === "string" && typeof item.title === "string",
     ) &&
-    typeof payload.next_action === "string"
+    typeof payload.next_action === "string" &&
+    (payload.generation_source === undefined ||
+      payload.generation_source === "llm" ||
+      payload.generation_source === "deterministic") &&
+    (payload.generation_model === undefined || typeof payload.generation_model === "string")
   );
 }
 
