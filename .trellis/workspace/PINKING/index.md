@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 7
-- **Last Active**: 2026-05-19
+- **Total Sessions**: 8
+- **Last Active**: 2026-05-20
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~239 | Active |
+| `journal-1.md` | ~272 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 8 | 2026-05-20 | Model-backed explain-error release readiness | `5a2f610` | `main` |
 | 7 | 2026-05-19 | Aearn MVP release readiness closure | `a62a65c` | `main` |
 | 6 | 2026-05-17 | M6 resume dashboard and settings hardening | `93cf9d0` | `main` |
 | 5 | 2026-05-15 | Archive M4 review loop task | `cb04f47` | `main` |
