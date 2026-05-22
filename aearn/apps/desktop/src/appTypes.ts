@@ -29,7 +29,14 @@ export type ExerciseRunMode = "preview" | "visible_tests";
 export type WorkbenchState = "pristine" | "dirty" | "running" | "submitted" | "unsupported";
 
 export type AppRoute = "onboarding" | "home" | "review" | "notes" | "settings";
-export type SettingsKey = "learning" | "notifications" | "diagnostics";
+export type SettingsKey =
+  | "appearance"
+  | "models"
+  | "learning"
+  | "review"
+  | "notifications"
+  | "privacy"
+  | "diagnostics";
 export type NavGroupKey = "learn" | "review" | "notes" | "notes-python" | "notes-javascript" | "notes-sql";
 
 export type ConversationMessage = {
