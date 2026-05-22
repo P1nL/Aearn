@@ -360,6 +360,25 @@
       min-height: 0;
       overflow: auto;
       padding: 4px 2px 0;
+      scrollbar-width: thin;
+      scrollbar-color: var(--line-strong) transparent;
+    }
+
+    .side-context::-webkit-scrollbar {
+      width: 4px;
+    }
+
+    .side-context::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    .side-context::-webkit-scrollbar-thumb {
+      background: var(--line-strong);
+      border-radius: 4px;
+    }
+
+    .side-context::-webkit-scrollbar-thumb:hover {
+      background: var(--faint);
     }
 
     .side-context h2 {
@@ -493,6 +512,7 @@
     }
 
     .topbar {
+      position: relative;
       display: flex;
       align-items: center;
       justify-content: space-between;
@@ -1830,27 +1850,40 @@ img {
 }
 
 .status-chip {
+  position: absolute;
+  right: 28px;
+  top: 50%;
+  transform: translateY(-50%);
   max-width: 360px;
   overflow: hidden;
-  padding: 8px 12px;
+  padding: 6px 10px;
   border: 1px solid var(--line);
   border-radius: 999px;
-  background: rgba(255, 255, 255, .82);
+  background: rgba(255, 255, 255, .92);
+  backdrop-filter: blur(8px);
   color: var(--muted);
-  font-size: .74rem;
-  font-weight: 700;
+  font-size: .72rem;
+  font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
+  pointer-events: none;
+  opacity: .7;
+  transition: opacity .2s var(--ease);
+}
+
+.status-chip:hover {
+  opacity: 1;
 }
 
 .status-chip.online {
-  border-color: rgba(111, 104, 72, .24);
+  border-color: rgba(74, 140, 92, .2);
   color: var(--success);
 }
 
 .status-chip.offline {
-  border-color: rgba(143, 79, 50, .28);
+  border-color: rgba(196, 74, 74, .28);
   color: var(--accent-dark);
+  opacity: 1;
 }
 
 .onboarding-setup {
