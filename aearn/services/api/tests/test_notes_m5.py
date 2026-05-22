@@ -1,3 +1,4 @@
+import json
 import uuid
 
 import psycopg
@@ -8,6 +9,8 @@ from app.core.config import get_settings
 from app.db.bootstrap import bootstrap_database
 from app.db.connection import connect
 from app.main import app
+from app.services import note_repository
+from app.services.llm_client import LLMConfigurationError
 
 
 def _database_available() -> bool:
@@ -29,6 +32,15 @@ pytestmark = pytest.mark.skipif(
 def client() -> TestClient:
     bootstrap_database()
     return TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def disable_agent_draft_llm(monkeypatch: pytest.MonkeyPatch) -> None:
+    class DisabledClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            raise LLMConfigurationError("disabled in tests")
+
+    monkeypatch.setattr(note_repository, "OpenAICompatibleClient", DisabledClient)
 
 
 def test_note_create_get_patch_and_repeat_create_reuses_same_record(client: TestClient) -> None:
@@ -198,6 +210,61 @@ def test_agent_draft_only_updates_agent_field(client: TestClient) -> None:
     assert stored["is_user_edited"] is True
 
 
+def test_agent_draft_streams_sse_and_updates_agent_field(client: TestClient) -> None:
+    request_id = f"req_note_sse_{uuid.uuid4().hex}"
+    user, plan = _confirmed_plan(client, language="javascript")
+    knowledge_point = plan["knowledge_points"][0]
+    created = client.post(
+        "/api/notes",
+        json={
+            "user_id": user["id"],
+            "knowledge_point_id": knowledge_point["id"],
+            "title": "状态变量位置",
+            "content_markdown": "原始正文不应该被 agent draft 覆盖。",
+        },
+    )
+    note = created.json()["note"]
+
+    with client.stream(
+        "POST",
+        f"/api/notes/{note['id']}/agent-draft",
+        headers={"Accept": "text/event-stream", "X-Request-Id": request_id},
+        json={
+            "user_id": user["id"],
+            "style": "concise",
+            "focus": "mistake_summary",
+            "source": {
+                "session_id": "sess_learning_001",
+                "attempt_id": "att_submit_001",
+            },
+        },
+    ) as response:
+        assert response.status_code == 200
+        events = _parse_sse_events("".join(response.iter_text()))
+
+    event_types = [event["event"] for event in events]
+    assert event_types[0] == "tool_status"
+    assert "agent_message" in event_types
+    assert event_types[-1] == "done"
+    agent_messages = [event["data"] for event in events if event["event"] == "agent_message"]
+    assert agent_messages[-1]["request_id"] == request_id
+    assert agent_messages[-1]["content"]
+    assert events[-1]["data"]["result_ref"] == {"type": "Note", "id": note["id"]}
+
+    with connect() as conn:
+        stored = conn.execute(
+            """
+            SELECT content_markdown, agent_draft_content
+            FROM notes
+            WHERE id = %s
+            """,
+            (note["id"],),
+        ).fetchone()
+    assert stored is not None
+    assert stored["content_markdown"] == "原始正文不应该被 agent draft 覆盖。"
+    assert stored["agent_draft_content"] == agent_messages[-1]["content"].strip()
+
+
 def _confirmed_plan(client: TestClient, *, language: str) -> tuple[dict[str, object], dict[str, object]]:
     user = _create_user(client)
     course = _course_by_language(client, language)
@@ -241,3 +308,21 @@ def _course_by_language(client: TestClient, language: str) -> dict[str, object]:
     course = items[0]
     assert isinstance(course, dict)
     return course
+
+
+def _parse_sse_events(text: str) -> list[dict[str, object]]:
+    events: list[dict[str, object]] = []
+    for frame in text.replace("\r\n", "\n").split("\n\n"):
+        if not frame.strip():
+            continue
+        event_type = ""
+        data_lines: list[str] = []
+        for line in frame.splitlines():
+            if line.startswith("event:"):
+                event_type = line.removeprefix("event:").strip()
+            elif line.startswith("data:"):
+                data_lines.append(line.removeprefix("data:").strip())
+        if not event_type:
+            continue
+        events.append({"event": event_type, "data": json.loads("\n".join(data_lines))})
+    return events

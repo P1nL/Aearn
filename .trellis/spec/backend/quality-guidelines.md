@@ -358,3 +358,69 @@ response = build_llm_error_explanation(...) or with_deterministic_generation_met
 ```
 
 The feature tries the model only through a testable boundary and keeps deterministic fallback as the stable MVP path.
+
+## Scenario: Backend SSE Streaming for Long-Running POST Endpoints
+
+### 1. Scope / Trigger
+
+- Trigger: implementing or changing `Accept: text/event-stream` behavior on long-running API routes.
+- Scope: `app/routes/learning_sessions.py`, `app/routes/notes.py`, `app/services/sse.py`, `app/services/llm_client.py`, note/learning repositories, and API tests that assert SSE frames.
+
+### 2. Signatures
+
+- `POST /api/learning-sessions/{session_id}/exercises/{exercise_id}/run`
+- `POST /api/learning-sessions/{session_id}/exercises/{exercise_id}/submit`
+- `POST /api/notes/{note_id}/agent-draft`
+- Trigger header: `Accept: text/event-stream`
+- Default behavior without that header: existing JSON response path remains unchanged.
+
+### 3. Contracts
+
+- Use FastAPI `StreamingResponse` with `media_type="text/event-stream"`; do not introduce WebSocket or queue infrastructure for the MVP streaming path.
+- Every SSE frame must include `event: <type>` and a single-line JSON `data:` payload.
+- Event types are limited to `agent_message`, `tool_status`, `runner_result`, `evaluation_result`, `done`, and `error`.
+- Error events must use the documented API error envelope under `data.error`, including `code`, `message`, `details`, `request_id`, and `recoverable`.
+- Preserve `X-Request-Id` from the request when present; tests that write rows covered by unique `request_id` indexes must generate unique request IDs per request.
+- Keep JSON and SSE paths as content-negotiated branches over the same repository/service functions so idempotency and database write timing do not drift.
+
+### 4. Validation & Error Matrix
+
+- Invalid request body with `Accept: text/event-stream` -> `error` event with `VALIDATION_ERROR`.
+- Missing session, exercise, attempt, user, or note -> `error` event with the same stable code the JSON path would return.
+- Idempotency conflict -> `error` event with `IDEMPOTENCY_CONFLICT`, `recoverable=false`.
+- Unsupported runtime submit -> `error` event with `ATTEMPT_STATE_CONFLICT`, `recoverable=false`.
+- Unexpected server failure -> `error` event with `INTERNAL_ERROR`; do not expose raw provider errors, prompts, code submissions, or secrets.
+
+### 5. Good/Base/Bad Cases
+
+- Good: run streams `tool_status -> runner_result -> done`, while the same request without the SSE `Accept` header still returns the existing JSON run response.
+- Base: submit streams `tool_status -> runner_result -> evaluation_result -> done`, using the persisted submit Attempt as the source of truth for final runner and evaluation fields.
+- Bad: returning partial success before durable writes commit, streaming multi-line `data:` JSON, or implementing a second code path that bypasses idempotency records.
+
+### 6. Tests Required
+
+- Unit-test SSE frame formatting, including event ids and single-line JSON `data`.
+- Unit-test LLM text streaming with a fake transport and no real provider calls.
+- API-test run SSE success and error event sequences.
+- API-test submit SSE success sequence and confirm JSON mode still passes existing M3 tests.
+- API-test note agent-draft SSE `agent_message` chunks and final DB persistence.
+- Run the existing milestone pytest batch plus `pnpm --dir .\aearn desktop:check`.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+if wants_stream(request):
+    yield f"data: {json.dumps(response, indent=2)}\n\n"
+```
+
+Indented JSON produces multi-line `data:` content that the desktop hook is not required to parse.
+
+#### Correct
+
+```python
+yield writer.event("runner_result", runner_result)
+```
+
+The shared SSE writer serializes a compact one-line JSON frame and keeps the event id sequence consistent.
