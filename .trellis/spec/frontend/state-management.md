@@ -6,9 +6,15 @@
 
 ## Overview
 
-The current desktop shell has no external state management library and no global store. Keep this unless a feature creates a real sharing or caching need.
+The desktop shell uses **Zustand** for global state management, split into domain-specific stores:
+
+- `useAppStore` — bootstrap, routing, user, plan, session, dashboard, conversations
+- `useNotesStore` — notes CRUD, drawer state, agent draft, auto-save coordination
+- `useSettingsStore` — settings form, save state, dirty detection
 
 State must respect the contract boundary: frontend owns interaction state, while backend owns scoring, Attempts, ReviewState, FSRS scheduling, and durable notes.
+
+Toast notifications use **sonner** (`<Toaster>` in `main.tsx`); stores call `toast.success()` / `toast.error()` directly after async operations.
 
 ---
 
