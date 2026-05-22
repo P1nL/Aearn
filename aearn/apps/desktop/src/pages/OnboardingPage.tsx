@@ -50,9 +50,9 @@ export function OnboardingPage({
     setGoalText("两周内掌握 DOM 事件，并能验证 AI 生成代码。");
     setMaterialTitle("已有学习材料");
     setMaterialContent("");
-    setSelectedCourseId(courses[0]?.id ?? "");
+    setSelectedCourseId("");
     setPlanDraft(null);
-  }, [resetNonce, existingUser?.display_name, courses]);
+  }, [resetNonce]);
 
   const selectedCourse = courses.find((course) => course.id === selectedCourseId) ?? courses[0] ?? null;
   const canGenerate =

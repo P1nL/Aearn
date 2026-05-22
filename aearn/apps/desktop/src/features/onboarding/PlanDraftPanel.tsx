@@ -23,8 +23,8 @@ export function PlanDraftPanel({
   return (
     <div className="stack">
       <div>
-        <div className="kicker">Live Plan Draft</div>
-        <p>右侧只展示草稿。确认后才会写入正式练习计划，并在主页开始执行。</p>
+        <div className="kicker">学习计划草稿</div>
+        <p>确认后即可开始学习。</p>
       </div>
 
       {selectedCourse && (

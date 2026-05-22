@@ -18,6 +18,12 @@
 | 实施计划 | `plans/learning-agent-implementation-plan.md` | 任务级实施计划、开发顺序和审查步骤 |
 | 主原型 | `design/learning-agent-claude-desktop-framework.html` | 用户设计的受保护前端原型，不能删除；作为 UI 视觉和桌面端布局参考 |
 
+## 辅助对接文档
+
+| 类型 | 文档 | 用途 |
+|---|---|---|
+| Claude 前端对接模板 | `setup/claude-frontend-handoff.md` | 给外部代码助手执行 desktop 前端改造时使用的任务入口；不替代上方 source of truth |
+
 ## 已移除的重复文档
 
 - `specs/2026-04-25-learning-agent-design-v1.md`：母版草案，已由 `user-flows.md`、`frontend-interaction-spec.md` 和实施规格承接。

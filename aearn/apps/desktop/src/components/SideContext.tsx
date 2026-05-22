@@ -24,26 +24,26 @@ export function SideContext({
   if (route === "onboarding") {
     return (
       <section className="side-context" aria-live="polite">
-        <h2>模型思考与工具调用</h2>
+        <h2>建档进度</h2>
         <div className="context-stack">
           <article className="trace-card">
             <span className="trace-dot"></span>
             <div>
-              <h3 className="trace-title">analyze_goal</h3>
+              <h3 className="trace-title">分析学习目标</h3>
               <p className="trace-body">识别用户目标：JavaScript/HTML/CSS、Python、AI 生成代码理解、测试验证。</p>
             </div>
           </article>
           <article className="trace-card">
             <span className="trace-dot"></span>
             <div>
-              <h3 className="trace-title">ask_clarifying_question</h3>
+              <h3 className="trace-title">澄清细节</h3>
               <p className="trace-body">继续追问当前水平、目标用途、运行环境和时间边界。</p>
             </div>
           </article>
           <article className="trace-card">
             <span className="trace-dot"></span>
             <div>
-              <h3 className="trace-title">generate_course_draft</h3>
+              <h3 className="trace-title">生成课程草稿</h3>
               <p className="trace-body">根据语言目标生成五段编程课程草稿。</p>
             </div>
           </article>

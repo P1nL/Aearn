@@ -120,7 +120,7 @@ export function ExerciseWorkbench({
     <section className="exercise-workbench">
       <div className="exercise-head">
         <div>
-          <div className="kicker">Runtime Slice</div>
+          <div className="kicker">练习</div>
           <h2>{exercise.title}</h2>
         </div>
         <div className="workbench-head-meta">
@@ -162,10 +162,10 @@ export function ExerciseWorkbench({
             <span>代码区</span>
             <textarea className="drawer-editor code-editor" value={code} onChange={(event) => onCodeChange(event.target.value)} />
           </label>
-          <p className="meta">运行和提交前会自动把 `__BLANK_x__` 占位符替换成上方空缺输入。</p>
+          <p className="meta">运行和提交前会自动将上方空缺填入代码对应位置。</p>
 
           {runtimeUnsupported && (
-            <div className="draft-boundary">当前课程属于 compiled_sandbox_later。本切片只展示静态补全，不开放完整编译运行与最终提交评分。</div>
+            <div className="draft-boundary">当前课程暂不支持完整编译运行，只展示静态补全练习。</div>
           )}
         </article>
 
@@ -215,9 +215,9 @@ export function ExerciseWorkbench({
             <label className="inline-select">
               <span>提示层级</span>
               <select value={hintLevel} disabled={hintDisabled || actionState.status === "loading"} onChange={(event) => onHintLevelChange(event.target.value as HintLevel)}>
-                <option value="nudge">nudge</option>
-                <option value="concept">concept</option>
-                <option value="code_shape">code_shape</option>
+                <option value="nudge">轻推</option>
+                <option value="concept">概念</option>
+                <option value="code_shape">代码结构</option>
               </select>
             </label>
             <button className="btn primary ghost-btn" type="button" disabled={hintDisabled || actionState.status === "loading"} onClick={onRequestHint}>
@@ -242,12 +242,12 @@ export function ExerciseWorkbench({
             <label className="inline-select">
               <span>检查焦点</span>
               <select value={explanationFocus} disabled={runtimeUnsupported || actionState.status === "loading"} onChange={(event) => onExplanationFocusChange(event.target.value as ExplanationFocus)}>
-                <option value="core_logic">core_logic</option>
-                <option value="boundary_condition">boundary_condition</option>
-                <option value="ai_generated_change">ai_generated_change</option>
+                <option value="core_logic">核心逻辑</option>
+                <option value="boundary_condition">边界条件</option>
+                <option value="ai_generated_change">AI 生成变更</option>
               </select>
             </label>
-            <div className="tool-chip">当前轮次 {explanationRound} / 2</div>
+            <div className="tool-chip">第 {explanationRound} / 2 轮</div>
             <button className="btn primary ghost-btn" type="button" disabled={checkDisabled || actionState.status === "loading"} onClick={onCheckExplanation}>
               检查解释
             </button>
@@ -268,7 +268,7 @@ export function ExerciseWorkbench({
           )}
           {isStale && lastRun && <div className="draft-boundary">你已经修改了代码，下面的结果来自上一次运行，请先重新运行。</div>}
           {submitDisabled && lastRunMode === "preview" && <div className="draft-boundary">提交前需要先跑一次“运行可见测试”，预览结果不会直接进入评分。</div>}
-          {submitDisabled && !lastRun && <div className="draft-boundary">先运行一次，拿到当前 Attempt 后才能提交评分、获取提示或检查解释。</div>}
+          {submitDisabled && !lastRun && <div className="draft-boundary">先运行一次代码，才能提交结果、获取提示或检查解释。</div>}
 
           {!lastRun && !lastSubmit && <div className="empty-block">先运行一次，右侧会出现预览、stdout、测试结果和提交摘要。</div>}
 

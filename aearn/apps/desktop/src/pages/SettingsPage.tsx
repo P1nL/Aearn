@@ -58,7 +58,7 @@ export function SettingsPage({
   return (
     <div className="settings-screen">
       <div className="kicker">Settings</div>
-      <p>设置页保留七个分类；只有当前后端 contract 支持的字段会真正保存，其余分类显示边界说明和诊断信息。</p>
+      <p>管理你的学习偏好和通知设置。</p>
 
       <div className="settings-tabs" role="tablist" aria-label="设置分类">
         {Object.entries(SETTING_PANELS).map(([key, panel]) => (
@@ -104,26 +104,26 @@ export function SettingsPage({
           <div className="settings-mini active">
             <h3 className="mini-title">学习偏好</h3>
             <p className="mini-body">
-              {compactValue(form.learningStyle, "practice_first")} / {compactValue(form.teachingPreference, "step_by_step")} /{" "}
-              {compactValue(form.encouragementPreference, "direct")}
+              {compactValue(form.learningStyle, "先练后学")} / {compactValue(form.teachingPreference, "逐步讲解")} /{" "}
+              {compactValue(form.encouragementPreference, "直接反馈")}
             </p>
           </div>
           <div className="settings-mini">
             <h3 className="mini-title">提醒策略</h3>
             <p className="mini-body">
-              {form.reminderEnabled ? `启用 ${form.reminderChannel || "desktop"} · ${form.quietHoursStart}-${form.quietHoursEnd}` : "提醒关闭"}
+              {form.reminderEnabled ? `已启用 · 安静时段 ${form.quietHoursStart}-${form.quietHoursEnd}` : "提醒已关闭"}
             </p>
           </div>
           <div className="settings-mini">
-            <h3 className="mini-title">恢复状态</h3>
+            <h3 className="mini-title">学习状态</h3>
             <p className="mini-body">
-              {diagnostics.resumeAvailable ? `可恢复 · 今日复习 ${diagnostics.todayReviewCount}` : `不可恢复 · 今日复习 ${diagnostics.todayReviewCount}`}
+              {diagnostics.resumeAvailable ? `可继续上次学习 · 今日待复习 ${diagnostics.todayReviewCount}` : `今日待复习 ${diagnostics.todayReviewCount}`}
             </p>
           </div>
           <div className="settings-mini">
-            <h3 className="mini-title">诊断</h3>
+            <h3 className="mini-title">连接状态</h3>
             <p className="mini-body">
-              API {diagnostics.apiStatus} · {diagnostics.currentStage ?? "暂无阶段"} · {diagnostics.userId ? "已识别用户" : "未识别用户"}
+              {diagnostics.apiStatus === "ok" ? "服务正常" : "服务异常"} · {diagnostics.userId ? "已登录" : "未登录"}
             </p>
           </div>
         </aside>
@@ -212,20 +212,20 @@ function renderPanel(
     return (
       <div className="settings-grid">
         <article className="setting-card">
-          <h3>高风险优先条件</h3>
-          <p>最近学习活动超过 72 小时，且存在至少一条 `forget_risk = high` 的到期复习时，首页优先进入复习页。</p>
+          <h3>高风险优先</h3>
+          <p>中断学习超过 72 小时且存在高遗忘风险时，首页会优先引导你进入复习。</p>
         </article>
         <article className="setting-card">
-          <h3>普通打开规则</h3>
-          <p>只要没有同时满足“中断多日 + 高风险”，桌面端仍默认进入当前学习，并在应用内提示今日复习数量。</p>
+          <h3>普通打开</h3>
+          <p>有待复习内容时只在应用内提示，不会强制跳转。</p>
         </article>
         <article className="setting-card">
-          <h3>今日复习摘要</h3>
-          <p>当前后端返回的到期复习数：{diagnostics.todayReviewCount}。</p>
+          <h3>今日复习</h3>
+          <p>当前待复习：{diagnostics.todayReviewCount} 项</p>
         </article>
         <article className="setting-card">
-          <h3>固定规则</h3>
-          <p>FSRS rating、`due_at`、`forget_risk` 和 ReviewState 仍由后端负责，设置页不提供直接编辑。</p>
+          <h3>自动调度</h3>
+          <p>复习时间和遗忘风险由系统自动计算和更新，无需手动设置。</p>
         </article>
       </div>
     );

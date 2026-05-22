@@ -131,7 +131,6 @@ export function ReviewPage({ isActive, user, messages, lastSubmit, lastRun, onAc
   }, [isActive, activeReview?.session_id, activeReview?.knowledge_point.id]);
 
   const activeExercise = activeReview?.review_exercise ?? null;
-  const submittedCode = activeExercise ? buildSubmittedCode(editorCode, filledBlanks) : editorCode;
   const submitDisabled = !activeReview || submitState === "submitting" || submitState === "done";
 
   return (
@@ -140,7 +139,7 @@ export function ReviewPage({ isActive, user, messages, lastSubmit, lastRun, onAc
         <section className="conversation" aria-label="复习新会话">
           <div className="thread">
             <div className="lesson-title">
-              <p>这是一个独立复习会话。待复习列表、变体练习、下一次 due_at 和 forget_risk 都来自后端。</p>
+              <p>独立复习会话，针对薄弱知识点进行变体练习。</p>
             </div>
 
             <ThreadMessages messages={messages} />
@@ -156,7 +155,7 @@ export function ReviewPage({ isActive, user, messages, lastSubmit, lastRun, onAc
                 </button>
               </div>
 
-              {!user && <div className="tool-card">先完成建档和学习计划后，复习页才会读取后端 due queue。</div>}
+              {!user && <div className="tool-card">先完成建档和学习计划后，复习页才会加载待复习内容。</div>}
               {errorMessage && <div className="tool-card">错误：{errorMessage}</div>}
               {user && loadState === "ready" && dueItems.length === 0 && <div className="tool-card">当前没有已到期复习项。</div>}
 
@@ -166,10 +165,10 @@ export function ReviewPage({ isActive, user, messages, lastSubmit, lastRun, onAc
                     <article className="review-card active" key={item.KnowledgePoint.id}>
                       <h3>{item.KnowledgePoint.title}</h3>
                       <p>
-                        due_at：{formatDateTime(item.ReviewState.due_at)} · 风险：{riskLabel(item.forget_risk)}
+                        下次复习：{formatDateTime(item.ReviewState.due_at)} · 遗忘风险：{riskLabel(item.forget_risk)}
                       </p>
                       <p>
-                        复习次数：{item.ReviewState.review_count} · 上次评分：{item.ReviewState.last_fsrs_rating ?? "未评分"}
+                        已复习 {item.ReviewState.review_count} 次
                       </p>
                       <button className="btn primary" type="button" onClick={() => void handleStartReview(item)}>
                         开始复习
@@ -183,10 +182,10 @@ export function ReviewPage({ isActive, user, messages, lastSubmit, lastRun, onAc
                 <article className="review-card active" aria-label="复习变体练习">
                   <div className="exercise-head">
                     <div>
-                      <span className="eyebrow">Variant</span>
+                      <span className="eyebrow">变体练习</span>
                       <h2>{activeExercise.title}</h2>
                     </div>
-                    <span>{activeExercise.runtime_profile.runtime_tier}</span>
+                    <span className="runtime-pill">{runtimeTierLabel(activeExercise.runtime_profile.runtime_tier)}</span>
                   </div>
                   <p>{activeReview.variant_reason}</p>
                   <div className="tool-card">{activeReview.initial_agent_message}</div>
@@ -225,7 +224,6 @@ export function ReviewPage({ isActive, user, messages, lastSubmit, lastRun, onAc
                         代码
                         <textarea value={editorCode} onChange={(event) => setEditorCode(event.target.value)} />
                       </label>
-                      <pre className="tool-card">{submittedCode}</pre>
                       <button className="btn primary" type="button" disabled={submitDisabled} onClick={() => void handleSubmitReview()}>
                         {submitState === "submitting" ? "提交中..." : submitState === "done" ? "已提交" : "提交复习结果"}
                       </button>
@@ -236,20 +234,20 @@ export function ReviewPage({ isActive, user, messages, lastSubmit, lastRun, onAc
 
               {reviewResult && (
                 <article className="submit-summary">
-                  <h3>后端复习结果</h3>
+                  <h3>复习结果</h3>
                   <p>{reviewResult.feedback}</p>
                   <div className="review-recap-grid">
                     <div className="review-card">
-                      <h3>{reviewResult.fsrs_rating}</h3>
-                      <p>FSRS rating</p>
+                      <h3>{fsrsRatingLabel(reviewResult.fsrs_rating)}</h3>
+                      <p>掌握程度</p>
                     </div>
                     <div className="review-card">
                       <h3>{formatDateTime(reviewResult.due_at)}</h3>
-                      <p>下一次 due_at</p>
+                      <p>下次复习</p>
                     </div>
                     <div className="review-card">
                       <h3>{riskLabel(reviewResult.forget_risk)}</h3>
-                      <p>forget_risk</p>
+                      <p>遗忘风险</p>
                     </div>
                   </div>
                 </article>
@@ -261,9 +259,9 @@ export function ReviewPage({ isActive, user, messages, lastSubmit, lastRun, onAc
                 <div className="avatar">A</div>
                 <div className="bubble">
                   <div className="bubble-label">Agent</div>
-                  <p>最近一次提交已经写回复习状态。下一轮会优先追打 {lastSubmit.code_completion_result.weak_points[0] ?? "状态变量生命周期"}。</p>
+                  <p>复习已完成。下一轮会重点巩固「{lastSubmit.code_completion_result.weak_points[0] ?? "状态变量生命周期"}」。</p>
                   <div className="tool-card">
-                    FSRS：{lastSubmit.code_completion_result.fsrs_rating} · 下一步：{lastSubmit.next_action}
+                    掌握程度：{fsrsRatingLabel(lastSubmit.code_completion_result.fsrs_rating)} · 建议：{nextActionLabel(lastSubmit.next_action)}
                   </div>
                 </div>
               </article>
@@ -318,4 +316,49 @@ function formatError(error: unknown, fallback: string): string {
     return error.message;
   }
   return fallback;
+}
+
+function runtimeTierLabel(tier: string): string {
+  if (tier === "browser_preview") {
+    return "浏览器预览";
+  }
+  if (tier === "python_stdout_test") {
+    return "Python 测试";
+  }
+  return "静态补全";
+}
+
+function fsrsRatingLabel(rating: string | number): string {
+  if (rating === "again" || rating === 1) {
+    return "需要重学";
+  }
+  if (rating === "hard" || rating === 2) {
+    return "较困难";
+  }
+  if (rating === "good" || rating === 3) {
+    return "良好";
+  }
+  if (rating === "easy" || rating === 4) {
+    return "轻松掌握";
+  }
+  return String(rating);
+}
+
+function nextActionLabel(action: string): string {
+  if (action === "show_hint") {
+    return "获取提示";
+  }
+  if (action === "explain_error") {
+    return "解释错误";
+  }
+  if (action === "review_variant") {
+    return "复习变体";
+  }
+  if (action === "schedule_review") {
+    return "安排复习";
+  }
+  if (action === "advance_next") {
+    return "继续下一步";
+  }
+  return "重新运行";
 }
