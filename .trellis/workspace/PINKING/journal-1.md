@@ -305,3 +305,36 @@ Added OpenAI-compatible Responses API client for explain-error, documented Latte
 ### Next Steps
 
 - None - task complete
+
+
+## Session 10: Desktop release QA smoke closeout
+
+**Date**: 2026-05-22
+**Task**: Desktop release QA smoke closeout
+**Branch**: `main`
+
+### Summary
+
+Finished desktop release QA smoke: restored seven settings categories, fixed diagnostics online labeling, replaced spec-like settings copy with product-facing UI text, updated frontend quality spec, reran backend tests and desktop build.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `8802f7f` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
