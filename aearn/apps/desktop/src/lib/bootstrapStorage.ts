@@ -1,6 +1,4 @@
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
+import { isRecord } from "./typeGuards";
 
 export function readBootstrapContext(): { userId: string | null; planId: string | null } {
   if (typeof window === "undefined") {

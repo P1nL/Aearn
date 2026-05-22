@@ -2,6 +2,7 @@ import { startTransition, useEffect, useState } from "react";
 
 import { fetchTodayReviews, startReviewSession, submitReviewExerciseResult } from "../api";
 import type { ConversationMessage, NoteContext } from "../appTypes";
+import { formatErrorMessage } from "../lib/errorMessages";
 import type {
   ReviewDueItem,
   ReviewExerciseResultResponse,
@@ -10,7 +11,6 @@ import type {
   SubmitExerciseResponse,
   UserProfile,
 } from "../types";
-import { ApiRequestError } from "../types";
 import { ReviewRecap } from "../components/ReviewRecap";
 import { ThreadMessages } from "../components/ThreadMessages";
 
@@ -53,7 +53,7 @@ export function ReviewPage({ isActive, user, messages, lastSubmit, lastRun, onAc
         return;
       }
       setLoadState("error");
-      setErrorMessage(formatError(error, "无法加载今日复习"));
+      setErrorMessage(formatErrorMessage(error, "无法加载今日复习"));
     }
   }
 
@@ -76,7 +76,7 @@ export function ReviewPage({ isActive, user, messages, lastSubmit, lastRun, onAc
         setExplanation("");
       });
     } catch (error) {
-      setErrorMessage(formatError(error, "无法开始复习"));
+      setErrorMessage(formatErrorMessage(error, "无法开始复习"));
     }
   }
 
@@ -102,7 +102,7 @@ export function ReviewPage({ isActive, user, messages, lastSubmit, lastRun, onAc
       await loadDueReviews();
     } catch (error) {
       setSubmitState("error");
-      setErrorMessage(formatError(error, "复习提交失败"));
+      setErrorMessage(formatErrorMessage(error, "复习提交失败"));
     }
   }
 
@@ -308,15 +308,7 @@ function riskLabel(value: ReviewDueItem["forget_risk"]): string {
   return "正常";
 }
 
-function formatError(error: unknown, fallback: string): string {
-  if (error instanceof ApiRequestError) {
-    return `${error.apiError.code}: ${error.apiError.message}`;
-  }
-  if (error instanceof Error) {
-    return error.message;
-  }
-  return fallback;
-}
+
 
 function runtimeTierLabel(tier: string): string {
   if (tier === "browser_preview") {
