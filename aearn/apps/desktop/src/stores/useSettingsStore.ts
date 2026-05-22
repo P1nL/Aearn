@@ -5,6 +5,7 @@ import { updateUserPreferences } from "../api";
 import type { UserPreferencesUpdate, UserProfile } from "../types";
 import type { SettingsKey } from "../appTypes";
 import { getErrorInfo } from "../lib/errorMessages";
+import { isRecord } from "../lib/typeGuards";
 
 type SettingsFormState = {
   displayName: string;
@@ -111,10 +112,6 @@ function buildPayload(form: SettingsFormState): UserPreferencesUpdate {
 function nullableString(value: string): string | null {
   const trimmed = value.trim();
   return trimmed ? trimmed : null;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
 }
 
 export const useSettingsStore = create<SettingsStore>((set, get) => ({

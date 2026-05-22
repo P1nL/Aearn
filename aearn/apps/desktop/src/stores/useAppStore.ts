@@ -27,7 +27,7 @@ import type {
 } from "../types";
 import { ApiRequestError } from "../types";
 import { NAV_DEFAULTS } from "../lib/appContent";
-import { getErrorInfo } from "../lib/errorMessages";
+import { formatErrorMessage } from "../lib/errorMessages";
 import { applyKnowledgePointUpdate, markKnowledgePointLearning } from "../lib/learningHelpers";
 import { clearBootstrapContext, readBootstrapContext } from "../lib/bootstrapStorage";
 
@@ -77,11 +77,6 @@ type AppStore = {
   handleStartCurrentLearning: () => Promise<void>;
   resetGoal: () => void;
 };
-
-function formatError(error: unknown, fallback: string): string {
-  const info = getErrorInfo(error);
-  return info.message || fallback;
-}
 
 export const useAppStore = create<AppStore>((set, get) => ({
   apiHealth: { status: "loading" },
@@ -175,7 +170,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       }
       set({
         apiHealth: { status: "offline", message: error instanceof Error ? error.message : "Unable to reach API service" },
-        dashboardState: { status: "error", message: formatError(error, "无法恢复 dashboard") },
+        dashboardState: { status: "error", message: formatErrorMessage(error, "无法恢复 dashboard") },
       });
     } finally {
       if (!signal?.aborted) {
@@ -196,7 +191,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       set({ dashboardState: { status: "ready", data: response } });
     } catch (error) {
       if (signal?.aborted) return;
-      set({ dashboardState: { status: "error", message: formatError(error, "无法刷新 dashboard") } });
+      set({ dashboardState: { status: "error", message: formatErrorMessage(error, "无法刷新 dashboard") } });
     }
   },
 
@@ -266,7 +261,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       }
       set({ activeRoute: "home" });
     } catch (error) {
-      set({ dashboardState: { status: "error", message: formatError(error, "无法恢复上次学习") } });
+      set({ dashboardState: { status: "error", message: formatErrorMessage(error, "无法恢复上次学习") } });
     }
   },
 
