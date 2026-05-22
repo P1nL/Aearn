@@ -47,114 +47,100 @@ export function NotesPage({
 
   return (
     <div className="notes-layout">
-      <aside className="notes-tree" aria-label="语言与知识点笔记导航">
-        <div className="notes-tree-head">
-          <div>
-            <span className="eyebrow">Knowledge Notes</span>
-            <h2>共享笔记</h2>
-          </div>
+      {/* 左侧：紧凑树形列表 */}
+      <aside className="notes-sidebar" aria-label="笔记导航">
+        <div className="notes-sidebar-head">
+          <h3>笔记</h3>
           {canCreateCurrentContextNote && (
-            <button className="btn primary ghost-btn" type="button" onClick={onCreateCurrentNote}>
-              为「{currentContext?.knowledgePointTitle}」建笔记
+            <button className="btn small" type="button" onClick={onCreateCurrentNote} title={`为「${currentContext?.knowledgePointTitle}」建笔记`}>
+              +
             </button>
           )}
         </div>
 
-        {loadState === "loading" && <div className="tool-card">正在读取笔记列表…</div>}
-        {loadState === "error" && <div className="tool-card">错误：{errorMessage ?? "无法读取笔记列表"}</div>}
+        {loadState === "loading" && <p className="notes-hint">加载中…</p>}
+        {loadState === "error" && <p className="notes-hint notes-hint-error">{errorMessage ?? "无法读取笔记"}</p>}
         {loadState === "ready" && notes.length === 0 && (
-          <div className="tool-card">
-            你还没有保存过任何知识点笔记。
-            {currentContext ? ` 当前会话可直接创建「${currentContext.knowledgePointTitle}」的共享笔记。` : ""}
+          <div className="notes-empty-tree">
+            <p>还没有笔记</p>
+            {canCreateCurrentContextNote && (
+              <button className="btn small primary" type="button" onClick={onCreateCurrentNote}>
+                创建第一条
+              </button>
+            )}
           </div>
         )}
 
         {grouped.map((group) => (
-          <section className="notes-language-group" key={group.language}>
-            <header>
-              <span>{languageLabel(group.language)}</span>
-              <strong>{group.items.length}</strong>
-            </header>
-            <div className="notes-language-items">
-              {group.items.map((note) => (
-                <button
-                  key={note.id}
-                  className={note.knowledge_point_id === selectedKnowledgePointId ? "note-tree-item active" : "note-tree-item"}
-                  type="button"
-                  onClick={() => onSelectKnowledgePoint(note.knowledge_point_id)}
-                >
-                  <span>{note.knowledge_point.title}</span>
-                  <small>{note.module.title}</small>
-                </button>
-              ))}
-            </div>
+          <section className="notes-group" key={group.language}>
+            <div className="notes-group-label">{languageLabel(group.language)}</div>
+            {group.items.map((note) => (
+              <button
+                key={note.id}
+                className={note.knowledge_point_id === selectedKnowledgePointId ? "notes-item active" : "notes-item"}
+                type="button"
+                onClick={() => onSelectKnowledgePoint(note.knowledge_point_id)}
+              >
+                <span className="notes-item-title">{note.knowledge_point.title}</span>
+                <span className="notes-item-meta">{note.module.title}</span>
+              </button>
+            ))}
           </section>
         ))}
       </aside>
 
-      <section className="note-editor-panel" aria-label="Markdown 笔记书写区域">
+      {/* 右侧：编辑器 */}
+      <section className="notes-editor" aria-label="笔记编辑">
         {!selectedNote || !selectedDraft ? (
-          <div className="notes-empty-panel">
-            <h3>选择一条笔记</h3>
-            <p>从左侧选择一个知识点，开始编辑笔记。</p>
+          <div className="notes-empty-editor">
+            <div className="notes-empty-icon">&#9998;</div>
+            <h3>选择一条笔记开始编辑</h3>
+            <p>从左侧列表选择知识点，或创建新笔记</p>
             {canCreateCurrentContextNote && (
               <button className="btn primary" type="button" onClick={onCreateCurrentNote}>
-                直接创建当前知识点笔记
+                为「{currentContext?.knowledgePointTitle}」创建笔记
               </button>
             )}
           </div>
         ) : (
-          <div className="notes-editor-shell">
-            <header className="notes-editor-head">
-              <div>
-                <span className="eyebrow">{languageLabel(selectedNote.language)}</span>
-                <h2>{selectedNote.knowledge_point.title}</h2>
-                <p>
-                  {selectedNote.module.title} · {selectedNote.course.title}
-                </p>
+          <>
+            {/* 编辑器头部 */}
+            <header className="notes-editor-header">
+              <div className="notes-editor-title-row">
+                <div>
+                  <span className="notes-editor-lang">{languageLabel(selectedNote.language)}</span>
+                  <h2 className="notes-editor-title">{selectedNote.knowledge_point.title}</h2>
+                </div>
+                <div className="notes-editor-toolbar">
+                  <span className={`notes-save-dot ${saveStatusClass(selectedDraft.status)}`} title={selectedDraft.status} />
+                  {selectedDraft.status === "保存失败" && (
+                    <button className="btn small" type="button" onClick={onRetrySave}>重试</button>
+                  )}
+                  <button className="btn small primary" type="button" disabled={assistLoading} onClick={onRequestAgentDraft}>
+                    {assistLoading ? "生成中…" : "AI 补全"}
+                  </button>
+                </div>
               </div>
-              <div className="notes-editor-actions">
-                <span className={`note-save-chip ${selectedDraft.status === "保存失败" ? "error" : ""}`}>{selectedDraft.status}</span>
-                <button className="btn primary ghost-btn" type="button" onClick={onRetrySave}>
-                  立即保存
-                </button>
-                <button className="btn primary" type="button" disabled={assistLoading} onClick={onRequestAgentDraft}>
-                  {assistLoading ? "补全中..." : "Agent 辅助补全"}
-                </button>
-              </div>
+              <p className="notes-editor-breadcrumb">{selectedNote.module.title} · {selectedNote.course.title}</p>
             </header>
 
-            <div className="notes-editor-grid">
-              <div className="notes-editor-stack">
-                <label className="exercise-editor">
-                  <span>标题</span>
-                  <input className="notes-title-input" value={selectedDraft.title} onChange={(event) => onDraftTitleChange(event.target.value)} />
-                </label>
-                <textarea
-                  className="note-content-editor"
-                  aria-label="Markdown 笔记书写区域"
-                  value={selectedDraft.content}
-                  onChange={(event) => onDraftContentChange(event.target.value)}
-                />
-              </div>
+            {/* Agent 草稿提示（可折叠） */}
+            {selectedNote.agent_draft_content && (
+              <details className="notes-agent-draft">
+                <summary>AI 建议</summary>
+                <div className="notes-agent-draft-content">{selectedNote.agent_draft_content}</div>
+              </details>
+            )}
 
-              <aside className="notes-context-panel">
-                <div className="tool-card">
-                  <strong>知识点说明</strong>
-                  <p>{selectedNote.knowledge_point.description ?? "当前知识点没有额外描述。重点记录你验证过的规律和反例。"}</p>
-                </div>
-                <div className="tool-card">
-                  <strong>最近保存</strong>
-                  <p>{formatDateTime(selectedNote.updated_at)}</p>
-                  {selectedDraft.errorMessage && <p>保存错误：{selectedDraft.errorMessage}</p>}
-                </div>
-                <div className="tool-card">
-                  <strong>Agent 草稿</strong>
-                  <p>{selectedNote.agent_draft_content ?? "还没有辅助补全内容。点击上方「Agent 辅助补全」按钮生成。"}</p>
-                </div>
-              </aside>
-            </div>
-          </div>
+            {/* 编辑器主体 */}
+            <textarea
+              className="notes-textarea"
+              aria-label="Markdown 笔记内容"
+              placeholder="在这里记录你的学习笔记…&#10;&#10;支持 Markdown 格式"
+              value={selectedDraft.content}
+              onChange={(event) => onDraftContentChange(event.target.value)}
+            />
+          </>
         )}
       </section>
     </div>
@@ -190,11 +176,15 @@ function languageLabel(language: NoteRecord["language"]): string {
   return "Java";
 }
 
-function formatDateTime(value: string): string {
-  return new Intl.DateTimeFormat("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(new Date(value));
+function saveStatusClass(status: NoteDraftState["status"]): string {
+  if (status === "已保存") {
+    return "saved";
+  }
+  if (status === "保存失败") {
+    return "error";
+  }
+  if (status === "保存中" || status === "加载中") {
+    return "saving";
+  }
+  return "unsaved";
 }
