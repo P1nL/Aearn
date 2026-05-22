@@ -4,7 +4,7 @@ import json
 import socket
 import urllib.error
 import urllib.request
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 
 from app.core.config import Settings, get_settings
@@ -29,6 +29,7 @@ class LLMJsonResponse:
 
 
 JsonTransport = Callable[[str, Mapping[str, str], Mapping[str, object], float], Mapping[str, object]]
+TextStreamTransport = Callable[[str, Mapping[str, str], Mapping[str, object], float], Iterable[str]]
 
 
 class OpenAICompatibleClient:
@@ -37,11 +38,13 @@ class OpenAICompatibleClient:
         settings: Settings | None = None,
         *,
         transport: JsonTransport | None = None,
+        stream_transport: TextStreamTransport | None = None,
     ) -> None:
         self._settings = settings or get_settings()
         if not self._settings.openai_compatible_configured:
             raise LLMConfigurationError("OpenAI-compatible LLM settings are incomplete")
         self._transport = transport
+        self._stream_transport = stream_transport
 
     @property
     def model(self) -> str:
@@ -71,6 +74,47 @@ class OpenAICompatibleClient:
         content = _extract_message_content(provider_response)
         model = _response_model(provider_response) or self.model
         return LLMJsonResponse(content=_parse_json_object(content), model=model)
+
+    def complete_text_stream(
+        self,
+        messages: Sequence[Mapping[str, str]],
+        *,
+        temperature: float = 0.3,
+    ) -> Generator[str, None, str]:
+        instructions, input_text = _messages_to_responses_input(messages)
+        payload: dict[str, object] = {
+            "model": self.model,
+            "input": input_text,
+            "stream": True,
+        }
+        if instructions is not None:
+            payload["instructions"] = instructions
+        if temperature is not None:
+            payload["temperature"] = temperature
+        headers = {
+            "Authorization": f"Bearer {self._settings.openai_api_key}",
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+        }
+        url = _responses_url(str(self._settings.openai_base_url))
+        timeout = float(self._settings.llm_timeout_seconds)
+        try:
+            chunks = (
+                self._stream_transport(url, headers, payload, timeout)
+                if self._stream_transport is not None
+                else _post_text_stream(url, headers, payload, timeout)
+            )
+            full_text = ""
+            for delta in chunks:
+                if not delta:
+                    continue
+                full_text += delta
+                yield delta
+            return full_text
+        except (LLMCallError, LLMInvalidResponseError):
+            raise
+        except Exception as exc:
+            raise LLMCallError("LLM provider streaming transport failed") from exc
 
     def _request_provider(self, payload: Mapping[str, object], headers: Mapping[str, str]) -> Mapping[str, object]:
         url = _responses_url(str(self._settings.openai_base_url))
@@ -113,6 +157,98 @@ def _post_json_stream(
         raise LLMCallError(f"LLM provider returned HTTP {exc.code}") from exc
     except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
         raise LLMCallError("LLM provider request failed") from exc
+
+
+def _post_text_stream(
+    url: str,
+    headers: Mapping[str, str],
+    payload: Mapping[str, object],
+    timeout: float,
+) -> Generator[str, None, None]:
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers=dict(headers),
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            yield from _iter_response_text_deltas(response)
+    except urllib.error.HTTPError as exc:
+        raise LLMCallError(f"LLM provider returned HTTP {exc.code}") from exc
+    except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
+        raise LLMCallError("LLM provider request failed") from exc
+
+
+def _iter_response_text_deltas(response: Iterable[bytes]) -> Generator[str, None, None]:
+    pending_data: list[str] = []
+    yielded_delta = False
+
+    def flush_frame() -> list[str]:
+        nonlocal pending_data, yielded_delta
+        if not pending_data:
+            return []
+
+        payload_text = "\n".join(pending_data).strip()
+        pending_data = []
+        if not payload_text or payload_text == "[DONE]":
+            return []
+
+        try:
+            parsed = json.loads(payload_text)
+        except json.JSONDecodeError as exc:
+            raise LLMInvalidResponseError("LLM provider stream returned invalid JSON") from exc
+        if not isinstance(parsed, Mapping):
+            raise LLMInvalidResponseError("LLM provider stream event must be a JSON object")
+
+        event_type = str(parsed.get("type", ""))
+        if event_type == "response.output_text.delta":
+            delta = parsed.get("delta")
+            if isinstance(delta, str) and delta:
+                yielded_delta = True
+                return [delta]
+        if event_type == "response.output_text.done" and not yielded_delta:
+            text = parsed.get("text")
+            if isinstance(text, str) and text:
+                yielded_delta = True
+                return [text]
+        if event_type == "response.completed" and not yielded_delta:
+            maybe_response = parsed.get("response")
+            if isinstance(maybe_response, Mapping):
+                text = _extract_message_content(maybe_response)
+                yielded_delta = True
+                return [text]
+
+        choices = parsed.get("choices")
+        if isinstance(choices, Sequence) and not isinstance(choices, (str, bytes)):
+            deltas: list[str] = []
+            for choice in choices:
+                if not isinstance(choice, Mapping):
+                    continue
+                delta = choice.get("delta")
+                if isinstance(delta, Mapping) and isinstance(delta.get("content"), str):
+                    deltas.append(str(delta["content"]))
+                elif isinstance(choice.get("text"), str):
+                    deltas.append(str(choice["text"]))
+            if deltas:
+                yielded_delta = True
+                return deltas
+        return []
+
+    for raw_line in response:
+        line = raw_line.decode("utf-8", "replace").rstrip("\r\n")
+        if not line:
+            for delta in flush_frame():
+                yield delta
+            continue
+        if line.startswith("event: "):
+            continue
+        if line.startswith("data: "):
+            pending_data.append(line[len("data: ") :])
+            continue
+
+    for delta in flush_frame():
+        yield delta
 
 
 def _parse_responses_stream(response: Iterable[bytes]) -> Mapping[str, object]:

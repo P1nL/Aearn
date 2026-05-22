@@ -1,3 +1,4 @@
+import json
 import uuid
 
 import psycopg
@@ -213,6 +214,135 @@ def test_javascript_run_and_submit_persist_attempts(client: TestClient) -> None:
     assert attempt_rows[1]["fsrs_rating"] in {"Good", "Easy"}
     assert review_state is not None
     assert str(review_state["last_attempt_id"]) == submit_body["attempt_id"]
+
+
+def test_run_endpoint_streams_sse_events(client: TestClient) -> None:
+    request_id = f"req_run_sse_{uuid.uuid4().hex}"
+    user, plan = _confirmed_plan(client, language="javascript")
+    knowledge_point_id = plan["knowledge_points"][0]["id"]
+    start_response = client.post(
+        "/api/learning-sessions/start",
+        json={
+            "user_id": user["id"],
+            "plan_id": plan["LearningPlan"]["id"],
+            "knowledge_point_id": knowledge_point_id,
+        },
+    )
+    session = start_response.json()
+    exercise = session["exercise"]
+
+    with client.stream(
+        "POST",
+        f"/api/learning-sessions/{session['session_id']}/exercises/{exercise['id']}/run",
+        headers={"Accept": "text/event-stream", "X-Request-Id": request_id},
+        json={
+            "code": exercise["solution_reference"],
+            "filled_blanks": {
+                "blank_1": "addEventListener",
+                "blank_2": "count += 1",
+            },
+            "runtime_profile_id": exercise["runtime_profile"]["id"],
+            "run_mode": "visible_tests",
+        },
+    ) as response:
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/event-stream")
+        events = _parse_sse_events("".join(response.iter_text()))
+
+    assert [event["event"] for event in events] == ["tool_status", "runner_result", "done"]
+    runner_result = events[1]["data"]
+    assert runner_result["request_id"] == request_id
+    assert runner_result["session_id"] == session["session_id"]
+    assert runner_result["runtime_status"] == "success"
+    assert runner_result["test_pass_rate"] == 1.0
+    assert events[2]["data"]["result_ref"]["id"] == runner_result["attempt_id"]
+
+
+def test_submit_endpoint_streams_runner_and_evaluation_events(client: TestClient) -> None:
+    request_id = f"req_submit_sse_{uuid.uuid4().hex}"
+    user, plan = _confirmed_plan(client, language="javascript")
+    knowledge_point_id = plan["knowledge_points"][0]["id"]
+    start_response = client.post(
+        "/api/learning-sessions/start",
+        json={
+            "user_id": user["id"],
+            "plan_id": plan["LearningPlan"]["id"],
+            "knowledge_point_id": knowledge_point_id,
+        },
+    )
+    session = start_response.json()
+    exercise = session["exercise"]
+    filled_blanks = {
+        "blank_1": "addEventListener",
+        "blank_2": "count += 1",
+    }
+    explanation = "状态变量放在回调外层，所以多次点击会共享同一个 count；如果写在回调里，每次点击都会重新初始化。"
+    run_response = client.post(
+        f"/api/learning-sessions/{session['session_id']}/exercises/{exercise['id']}/run",
+        json={
+            "code": exercise["solution_reference"],
+            "filled_blanks": filled_blanks,
+            "runtime_profile_id": exercise["runtime_profile"]["id"],
+            "run_mode": "visible_tests",
+        },
+    )
+    run_body = run_response.json()
+    explanation_response = client.post(
+        f"/api/learning-sessions/{session['session_id']}/attempts/{run_body['attempt_id']}/check-explanation",
+        json={
+            "explanation": explanation,
+            "focus": "core_logic",
+            "round": 1,
+        },
+    )
+    assert explanation_response.status_code == 200
+
+    with client.stream(
+        "POST",
+        f"/api/learning-sessions/{session['session_id']}/exercises/{exercise['id']}/submit",
+        headers={"Accept": "text/event-stream", "X-Request-Id": request_id},
+        json={
+            "attempt_id": run_body["attempt_id"],
+            "code": exercise["solution_reference"],
+            "filled_blanks": filled_blanks,
+            "submit_version": 1,
+            "explanation": explanation,
+            "hint_usage_count": 0,
+            "error_count": 0,
+        },
+    ) as response:
+        assert response.status_code == 200
+        events = _parse_sse_events("".join(response.iter_text()))
+
+    assert [event["event"] for event in events] == [
+        "tool_status",
+        "runner_result",
+        "evaluation_result",
+        "done",
+    ]
+    runner_result = events[1]["data"]
+    evaluation_result = events[2]["data"]
+    assert runner_result["attempt_id"] == evaluation_result["attempt_id"]
+    assert evaluation_result["code_completion_result"]["next_action"] == "schedule_review"
+    assert events[3]["data"]["result_ref"]["id"] == evaluation_result["attempt_id"]
+
+
+def test_run_endpoint_streams_error_event(client: TestClient) -> None:
+    request_id = f"req_run_sse_error_{uuid.uuid4().hex}"
+    missing_session_id = str(uuid.uuid4())
+    missing_exercise_id = str(uuid.uuid4())
+    with client.stream(
+        "POST",
+        f"/api/learning-sessions/{missing_session_id}/exercises/{missing_exercise_id}/run",
+        headers={"Accept": "text/event-stream", "X-Request-Id": request_id},
+        json={"code": "console.log(1)", "filled_blanks": {}, "run_mode": "visible_tests"},
+    ) as response:
+        assert response.status_code == 200
+        events = _parse_sse_events("".join(response.iter_text()))
+
+    assert [event["event"] for event in events] == ["tool_status", "error"]
+    assert events[1]["data"]["error"]["code"] == "SESSION_NOT_FOUND"
+    assert events[1]["data"]["error"]["request_id"] == request_id
 
 
 def test_hint_endpoint_is_idempotent_and_accumulates_hint_count(client: TestClient) -> None:
@@ -937,3 +1067,21 @@ def _course_by_language(client: TestClient, language: str) -> dict[str, object]:
     course = items[0]
     assert isinstance(course, dict)
     return course
+
+
+def _parse_sse_events(text: str) -> list[dict[str, object]]:
+    events: list[dict[str, object]] = []
+    for frame in text.replace("\r\n", "\n").split("\n\n"):
+        if not frame.strip():
+            continue
+        event_type = ""
+        data_lines: list[str] = []
+        for line in frame.splitlines():
+            if line.startswith("event:"):
+                event_type = line.removeprefix("event:").strip()
+            elif line.startswith("data:"):
+                data_lines.append(line.removeprefix("data:").strip())
+        if not event_type:
+            continue
+        events.append({"event": event_type, "data": json.loads("\n".join(data_lines))})
+    return events

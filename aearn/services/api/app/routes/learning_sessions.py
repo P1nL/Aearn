@@ -1,6 +1,10 @@
+import asyncio
+from collections.abc import AsyncGenerator, Mapping
+from typing import Any
+
 from fastapi import APIRouter, Query, Request, status
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.core.errors import error_response, request_id_from
 from app.db.connection import connect
@@ -29,6 +33,7 @@ from app.services.dashboard_repository import (
     get_resume_context,
 )
 from app.services.plan_repository import IdempotencyConflictError
+from app.services.sse import SSEWriter, stream_response, wants_stream
 
 
 router = APIRouter(prefix="/api/learning-sessions", tags=["learning-sessions"])
@@ -93,17 +98,39 @@ async def run_learning_session(
     session_id: str,
     exercise_id: str,
     request: Request,
-) -> dict[str, object] | JSONResponse:
+) -> dict[str, object] | JSONResponse | StreamingResponse:
+    request_id = request_id_from(request)
     body = await request.json()
     try:
         payload = RunExerciseRequest.model_validate(body)
     except ValueError as exc:
+        if wants_stream(request):
+            return stream_response(
+                _error_stream(
+                    code="VALIDATION_ERROR",
+                    message="运行请求结构不合法",
+                    request_id=request_id,
+                    details={"reason": str(exc)},
+                )
+            )
         return error_response(
             request,
             code="VALIDATION_ERROR",
             message="运行请求结构不合法",
             status_code=status.HTTP_400_BAD_REQUEST,
             details={"reason": str(exc)},
+        )
+
+    if wants_stream(request):
+        return stream_response(
+            _run_learning_session_stream(
+                request,
+                session_id=session_id,
+                exercise_id=exercise_id,
+                payload=payload,
+                request_body=body,
+                request_id=request_id,
+            )
         )
 
     with connect() as conn:
@@ -354,17 +381,39 @@ async def submit_learning_session(
     session_id: str,
     exercise_id: str,
     request: Request,
-) -> dict[str, object] | JSONResponse:
+) -> dict[str, object] | JSONResponse | StreamingResponse:
+    request_id = request_id_from(request)
     body = await request.json()
     try:
         payload = SubmitExerciseRequest.model_validate(body)
     except ValueError as exc:
+        if wants_stream(request):
+            return stream_response(
+                _error_stream(
+                    code="VALIDATION_ERROR",
+                    message="提交请求结构不合法",
+                    request_id=request_id,
+                    details={"reason": str(exc)},
+                )
+            )
         return error_response(
             request,
             code="VALIDATION_ERROR",
             message="提交请求结构不合法",
             status_code=status.HTTP_400_BAD_REQUEST,
             details={"reason": str(exc)},
+        )
+
+    if wants_stream(request):
+        return stream_response(
+            _submit_learning_session_stream(
+                request,
+                session_id=session_id,
+                exercise_id=exercise_id,
+                payload=payload,
+                request_body=body,
+                request_id=request_id,
+            )
         )
 
     with connect() as conn:
@@ -420,3 +469,272 @@ async def submit_learning_session(
         status_code=status.HTTP_200_OK,
         content=jsonable_encoder(response),
     )
+
+
+async def _error_stream(
+    *,
+    code: str,
+    message: str,
+    request_id: str,
+    details: dict[str, object] | None = None,
+    recoverable: bool = True,
+) -> AsyncGenerator[str, None]:
+    yield SSEWriter().error(
+        code=code,
+        message=message,
+        request_id=request_id,
+        details=details,
+        recoverable=recoverable,
+    )
+
+
+async def _run_learning_session_stream(
+    request: Request,
+    *,
+    session_id: str,
+    exercise_id: str,
+    payload: RunExerciseRequest,
+    request_body: Mapping[str, object],
+    request_id: str,
+) -> AsyncGenerator[str, None]:
+    writer = SSEWriter()
+    try:
+        yield writer.event(
+            "tool_status",
+            {
+                "request_id": request_id,
+                "session_id": session_id,
+                "node": "run_exercise",
+                "tool": "runner_service",
+                "status": "running",
+                "message": "正在执行代码运行请求",
+            },
+        )
+        if await request.is_disconnected():
+            return
+
+        with connect() as conn:
+            try:
+                response, replayed = run_learning_session_exercise(
+                    conn,
+                    session_id=session_id,
+                    exercise_id=exercise_id,
+                    code=payload.code,
+                    filled_blanks=payload.filled_blanks,
+                    run_mode=payload.run_mode,
+                    runtime_profile_id=payload.runtime_profile_id,
+                    provided_code_hash=payload.code_hash,
+                    request_id=request_id,
+                    request_body=request_body,
+                )
+            except EntityNotFoundError as exc:
+                conn.rollback()
+                yield writer.error(
+                    code=exc.code,
+                    message=exc.message,
+                    request_id=request_id,
+                    details={"session_id": session_id, "exercise_id": exercise_id},
+                )
+                return
+            except SessionStateConflictError as exc:
+                conn.rollback()
+                yield writer.error(
+                    code="ATTEMPT_STATE_CONFLICT",
+                    message="当前会话状态不允许运行该练习",
+                    request_id=request_id,
+                    details={"reason": str(exc)},
+                    recoverable=False,
+                )
+                return
+            except IdempotencyConflictError as exc:
+                conn.rollback()
+                yield writer.error(
+                    code="IDEMPOTENCY_CONFLICT",
+                    message="同一运行幂等键对应不同请求体",
+                    request_id=request_id,
+                    details={"reason": str(exc)},
+                    recoverable=False,
+                )
+                return
+            conn.commit()
+
+        if replayed:
+            response["idempotency_replayed"] = True
+        yield writer.event("runner_result", _runner_result_from_response(response, request_id, session_id))
+        yield writer.done(
+            request_id=request_id,
+            session_id=session_id,
+            result_ref={"type": "Attempt", "id": response["attempt_id"]},
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        yield writer.error(
+            code="INTERNAL_ERROR",
+            message="运行流式响应失败",
+            request_id=request_id,
+            recoverable=True,
+        )
+
+
+async def _submit_learning_session_stream(
+    request: Request,
+    *,
+    session_id: str,
+    exercise_id: str,
+    payload: SubmitExerciseRequest,
+    request_body: Mapping[str, object],
+    request_id: str,
+) -> AsyncGenerator[str, None]:
+    writer = SSEWriter()
+    try:
+        yield writer.event(
+            "tool_status",
+            {
+                "request_id": request_id,
+                "session_id": session_id,
+                "node": "submit_pipeline",
+                "tool": "submit_exercise",
+                "status": "running",
+                "message": "正在提交并评分",
+            },
+        )
+        if await request.is_disconnected():
+            return
+
+        with connect() as conn:
+            try:
+                response, replayed = submit_learning_session_exercise(
+                    conn,
+                    session_id=session_id,
+                    exercise_id=exercise_id,
+                    attempt_id=payload.attempt_id,
+                    code=payload.code,
+                    filled_blanks=payload.filled_blanks,
+                    submit_version=payload.submit_version,
+                    explanation=payload.explanation,
+                    hint_usage_count=payload.hint_usage_count,
+                    error_count=payload.error_count,
+                    provided_code_hash=payload.code_hash,
+                    request_id=request_id,
+                    request_body=request_body,
+                )
+                runner_result = _load_attempt_runner_result(
+                    conn,
+                    attempt_id=str(response["attempt_id"]),
+                    request_id=request_id,
+                    session_id=session_id,
+                    next_action=str(response["next_action"]),
+                )
+            except EntityNotFoundError as exc:
+                conn.rollback()
+                yield writer.error(
+                    code=exc.code,
+                    message=exc.message,
+                    request_id=request_id,
+                    details={"session_id": session_id, "exercise_id": exercise_id, "attempt_id": payload.attempt_id},
+                )
+                return
+            except SessionStateConflictError as exc:
+                conn.rollback()
+                yield writer.error(
+                    code="ATTEMPT_STATE_CONFLICT",
+                    message="当前尝试不允许提交评分",
+                    request_id=request_id,
+                    details={"reason": str(exc)},
+                    recoverable=False,
+                )
+                return
+            except IdempotencyConflictError as exc:
+                conn.rollback()
+                yield writer.error(
+                    code="IDEMPOTENCY_CONFLICT",
+                    message="同一提交幂等键对应不同请求体",
+                    request_id=request_id,
+                    details={"reason": str(exc)},
+                    recoverable=False,
+                )
+                return
+            conn.commit()
+
+        if replayed:
+            response["idempotency_replayed"] = True
+        yield writer.event("runner_result", runner_result)
+        yield writer.event(
+            "evaluation_result",
+            {
+                "request_id": request_id,
+                "session_id": session_id,
+                "attempt_id": response["attempt_id"],
+                "code_completion_result": response["code_completion_result"],
+            },
+        )
+        yield writer.done(
+            request_id=request_id,
+            session_id=session_id,
+            result_ref={"type": "Attempt", "id": response["attempt_id"]},
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        yield writer.error(
+            code="INTERNAL_ERROR",
+            message="提交流式响应失败",
+            request_id=request_id,
+            recoverable=True,
+        )
+
+
+def _runner_result_from_response(
+    response: Mapping[str, Any],
+    request_id: str,
+    session_id: str,
+) -> dict[str, Any]:
+    return {
+        "request_id": request_id,
+        "session_id": session_id,
+        "attempt_id": response["attempt_id"],
+        "runtime_status": response["runtime_status"],
+        "preview_url": response.get("preview_url") or response.get("preview_html"),
+        "stdout": response.get("stdout") or "",
+        "stderr": response.get("stderr") or "",
+        "test_pass_rate": response.get("test_pass_rate") or 0,
+        "test_results": response.get("test_results") or [],
+        "next_action": response.get("next_action") or "retry_same",
+    }
+
+
+def _load_attempt_runner_result(
+    conn: Any,
+    *,
+    attempt_id: str,
+    request_id: str,
+    session_id: str,
+    next_action: str,
+) -> dict[str, Any]:
+    row = conn.execute(
+        """
+        SELECT id, runtime_status, stdout, stderr, test_pass_rate, test_results_json
+        FROM attempts
+        WHERE id = %s
+        LIMIT 1
+        """,
+        (attempt_id,),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError("submit attempt could not be reloaded for SSE runner_result")
+    test_results = row.get("test_results_json") or []
+    if not isinstance(test_results, list):
+        test_results = []
+    return {
+        "request_id": request_id,
+        "session_id": session_id,
+        "attempt_id": str(row["id"]),
+        "runtime_status": row["runtime_status"],
+        "preview_url": None,
+        "stdout": row.get("stdout") or "",
+        "stderr": row.get("stderr") or "",
+        "test_pass_rate": row.get("test_pass_rate") or 0,
+        "test_results": test_results,
+        "next_action": next_action,
+    }

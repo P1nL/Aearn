@@ -1,9 +1,12 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Generator, Mapping
+from datetime import date, datetime
+from decimal import Decimal
 
 from psycopg import Connection
 
+from app.services.llm_client import LLMCallError, LLMConfigurationError, LLMInvalidResponseError, OpenAICompatibleClient
 from app.services.user_repository import get_user
 
 
@@ -164,14 +167,8 @@ def update_agent_draft(
     session_id: str | None,
     attempt_id: str | None,
 ) -> dict[str, object]:
-    _ensure_user_exists(conn, user_id)
-    current = _load_note_row_by_id(conn, note_id)
-    if current is None:
-        raise EntityNotFoundError("NOTE_NOT_FOUND", "笔记不存在")
-    if str(current["user_id"]) != user_id:
-        raise EntityNotFoundError("NOTE_NOT_FOUND", "笔记不存在")
-
-    draft = _build_agent_draft(
+    current = load_note_for_agent_draft(conn, note_id=note_id, user_id=user_id)
+    draft = generate_agent_draft(
         conn,
         current,
         style=style,
@@ -179,6 +176,30 @@ def update_agent_draft(
         session_id=session_id,
         attempt_id=attempt_id,
     )
+    return update_agent_draft_content(conn, note_id=note_id, draft=draft)
+
+
+def load_note_for_agent_draft(
+    conn: Connection[dict[str, object]],
+    *,
+    note_id: str,
+    user_id: str,
+) -> Mapping[str, object]:
+    _ensure_user_exists(conn, user_id)
+    current = _load_note_row_by_id(conn, note_id)
+    if current is None:
+        raise EntityNotFoundError("NOTE_NOT_FOUND", "笔记不存在")
+    if str(current["user_id"]) != user_id:
+        raise EntityNotFoundError("NOTE_NOT_FOUND", "笔记不存在")
+    return current
+
+
+def update_agent_draft_content(
+    conn: Connection[dict[str, object]],
+    *,
+    note_id: str,
+    draft: str,
+) -> dict[str, object]:
     updated = conn.execute(
         """
         UPDATE notes
@@ -195,6 +216,67 @@ def update_agent_draft(
     if note is None:
         raise RuntimeError("agent draft note could not be reloaded")
     return serialize_note(note)
+
+
+def generate_agent_draft(
+    conn: Connection[dict[str, object]],
+    note: Mapping[str, object],
+    *,
+    style: str,
+    focus: str,
+    session_id: str | None,
+    attempt_id: str | None,
+) -> str:
+    chunks: list[str] = []
+    for delta in generate_agent_draft_stream(
+        conn,
+        note,
+        style=style,
+        focus=focus,
+        session_id=session_id,
+        attempt_id=attempt_id,
+    ):
+        chunks.append(delta)
+    return "".join(chunks).strip()
+
+
+def generate_agent_draft_stream(
+    conn: Connection[dict[str, object]],
+    note: Mapping[str, object],
+    *,
+    style: str,
+    focus: str,
+    session_id: str | None,
+    attempt_id: str | None,
+) -> Generator[str, None, str]:
+    prompt = _build_agent_draft_prompt(
+        conn,
+        note,
+        style=style,
+        focus=focus,
+        session_id=session_id,
+        attempt_id=attempt_id,
+    )
+    messages = [
+        {
+            "role": "system",
+            "content": "你是 Aearn 的编程学习笔记助手，只补充当前知识点的可插入笔记片段，不替用户重写整篇笔记。",
+        },
+        {"role": "user", "content": prompt},
+    ]
+    try:
+        full_text = ""
+        for delta in OpenAICompatibleClient().complete_text_stream(messages, temperature=0.3):
+            full_text += delta
+            yield delta
+        if full_text.strip():
+            return full_text.strip()
+    except (LLMConfigurationError, LLMCallError, LLMInvalidResponseError):
+        pass
+
+    for chunk in _chunk_deterministic_draft(prompt):
+        yield chunk
+    return prompt
 
 
 def _ensure_user_exists(conn: Connection[dict[str, object]], user_id: str) -> None:
@@ -302,7 +384,7 @@ def _reload_note(conn: Connection[dict[str, object]], note_id: str) -> Mapping[s
     return _load_note_row_by_id(conn, note_id)
 
 
-def _build_agent_draft(
+def _build_agent_draft_prompt(
     conn: Connection[dict[str, object]],
     note: Mapping[str, object],
     *,
@@ -346,7 +428,7 @@ def _build_agent_draft(
         ).fetchone()
     if latest_attempt is not None:
         context_lines.append(
-            f"最近一次尝试状态：{latest_attempt['runtime_status']}，通过率 {float(latest_attempt.get('test_pass_rate') or 0):.2f}。"
+            f"最近一次尝试状态：{latest_attempt['runtime_status']}，通过率 {_float_or_zero(latest_attempt.get('test_pass_rate')):.2f}。"
         )
         if latest_attempt.get("error_cause"):
             context_lines.append(f"建议补充的错因标签：{latest_attempt['error_cause']}。")
@@ -363,6 +445,15 @@ def _build_agent_draft(
     return "\n".join(context_lines)
 
 
+def _chunk_deterministic_draft(content: str) -> Generator[str, None, None]:
+    lines = content.splitlines(keepends=True)
+    if not lines:
+        yield content
+        return
+    for line in lines:
+        yield line
+
+
 def serialize_note(row: Mapping[str, object]) -> dict[str, object]:
     return {
         "id": str(row["id"]),
@@ -372,7 +463,7 @@ def serialize_note(row: Mapping[str, object]) -> dict[str, object]:
         "content_markdown": row["content_markdown"],
         "agent_draft_content": row["agent_draft_content"],
         "is_user_edited": row["is_user_edited"],
-        "updated_at": row["updated_at"].isoformat(),
+        "updated_at": _isoformat(row["updated_at"]),
         "language": row["plan_language"],
         "plan_id": str(row["plan_id"]),
         "course": {
@@ -389,3 +480,22 @@ def serialize_note(row: Mapping[str, object]) -> dict[str, object]:
             "description": row["knowledge_point_description"],
         },
     }
+
+
+def _float_or_zero(value: object) -> float:
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, int | float):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return 0.0
+    return 0.0
+
+
+def _isoformat(value: object) -> str:
+    if isinstance(value, datetime | date):
+        return value.isoformat()
+    return str(value)

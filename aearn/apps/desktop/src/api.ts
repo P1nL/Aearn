@@ -872,13 +872,8 @@ function isRecord(payload: unknown): payload is Record<string, unknown> {
   return typeof payload === "object" && payload !== null;
 }
 
-// --- SSE helpers (backend SSE not yet implemented; path reserved) ---
+// --- SSE helpers ---
 
-/**
- * Build a fully-qualified SSE endpoint URL.
- * Usage: pass the returned string to `useSSE(endpoint)` once the backend
- * supports `text/event-stream` responses.
- */
 export function buildSSEUrl(path: string, params?: Record<string, string>): string {
   const url = new URL(path, API_BASE_URL);
   if (params) {
@@ -888,8 +883,3 @@ export function buildSSEUrl(path: string, params?: Record<string, string>): stri
   }
   return url.toString();
 }
-
-// Future SSE-capable endpoints (currently REST, will migrate to SSE):
-// - POST /api/sessions/{id}/run       → SSE runner_result + evaluation_result
-// - POST /api/sessions/{id}/submit    → SSE evaluation_result + done
-// - POST /api/notes/{id}/agent-draft  → SSE agent_message + done

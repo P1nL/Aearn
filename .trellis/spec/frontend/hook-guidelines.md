@@ -27,6 +27,8 @@ Future hooks should support the frontend interaction spec rather than abstractin
 - First API integration should use small typed fetch wrappers aligned to `docs/architecture/api-contract.md`.
 - Include `X-Request-Id` for traceable requests when practical.
 - Handle JSON and SSE paths separately. SSE hooks must parse single-line JSON `data` frames and surface `done` / `error`.
+- Use `fetch` + `ReadableStream` for POST SSE endpoints. Browser `EventSource` is GET-only and cannot carry the existing run/submit/agent-draft request bodies.
+- Treat the SSE stream as incomplete if it closes without a terminal `done` or `error` event, and surface a visible recoverable error state.
 - API offline state must disable run/submit/generation actions and show a visible warning.
 
 ---
@@ -56,3 +58,4 @@ Future hooks should support the frontend interaction spec rather than abstractin
 - Hiding request errors in hooks without exposing `error.code`, `recoverable`, and retry options to the component.
 - Letting hooks mutate final scoring or FSRS state locally instead of using backend responses.
 - Reusing stale run results after the editor content changes.
+- Reusing one hard-coded `X-Request-Id` across streamed write tests. Backend write paths can persist request IDs under unique indexes, so tests and hooks should generate a fresh request ID per request unless intentionally testing replay behavior.

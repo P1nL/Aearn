@@ -71,6 +71,10 @@ export type SSEEvent =
 export type SSEStatus = "idle" | "connecting" | "streaming" | "done" | "error";
 
 type UseSSEOptions = {
+  method?: "GET" | "POST";
+  body?: unknown;
+  headers?: Record<string, string>;
+  requestId?: string;
   onEvent?: (event: SSEEvent) => void;
   onDone?: (data: SSEDone) => void;
   onError?: (error: ApiError) => void;
@@ -82,23 +86,21 @@ type UseSSEReturn = {
   close: () => void;
 };
 
-/**
- * SSE hook framework. Currently not connected to real SSE endpoints
- * (backend has not implemented SSE yet). This hook is ready for
- * seamless integration once the backend supports text/event-stream.
- */
 export function useSSE(endpoint: string | null, options: UseSSEOptions = {}): UseSSEReturn {
   const [events, setEvents] = useState<SSEEvent[]>([]);
   const [status, setStatus] = useState<SSEStatus>("idle");
-  const sourceRef = useRef<EventSource | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
   const optionsRef = useRef(options);
   optionsRef.current = options;
 
+  const requestBody = options.body === undefined ? undefined : JSON.stringify(options.body);
+  const requestHeaders = JSON.stringify(options.headers ?? {});
+  const method = options.method ?? (requestBody === undefined ? "GET" : "POST");
+  const requestId = options.requestId;
+
   const close = useCallback(() => {
-    if (sourceRef.current) {
-      sourceRef.current.close();
-      sourceRef.current = null;
-    }
+    abortRef.current?.abort();
+    abortRef.current = null;
   }, []);
 
   useEffect(() => {
@@ -111,52 +113,199 @@ export function useSSE(endpoint: string | null, options: UseSSEOptions = {}): Us
     setStatus("connecting");
     setEvents([]);
 
-    const source = new EventSource(endpoint);
-    sourceRef.current = source;
+    const controller = new AbortController();
+    const effectiveRequestId = requestId ?? `desktop-${Date.now()}`;
+    abortRef.current = controller;
+    let sawTerminalEvent = false;
 
-    source.onopen = () => {
-      setStatus("streaming");
+    const emitError = (error: ApiError) => {
+      sawTerminalEvent = true;
+      setStatus("error");
+      optionsRef.current.onError?.(error);
+      controller.abort();
     };
 
-    const handleEvent = (type: SSEEventType) => (e: MessageEvent) => {
-      try {
-        const data = JSON.parse(e.data);
-        const event = { type, data } as SSEEvent;
-        setEvents((prev) => [...prev, event]);
-        optionsRef.current.onEvent?.(event);
-
-        if (type === "done") {
-          setStatus("done");
-          optionsRef.current.onDone?.(data as SSEDone);
-          source.close();
-        }
-        if (type === "error") {
-          setStatus("error");
-          optionsRef.current.onError?.((data as SSEError).error);
-          source.close();
-        }
-      } catch {
-        // Ignore malformed events
+    const dispatchEvent = (event: SSEEvent) => {
+      setEvents((prev) => [...prev, event]);
+      optionsRef.current.onEvent?.(event);
+      if (event.type === "done") {
+        sawTerminalEvent = true;
+        setStatus("done");
+        optionsRef.current.onDone?.(event.data);
+        controller.abort();
+      } else if (event.type === "error") {
+        emitError(event.data.error);
       }
     };
 
-    source.addEventListener("agent_message", handleEvent("agent_message"));
-    source.addEventListener("tool_status", handleEvent("tool_status"));
-    source.addEventListener("runner_result", handleEvent("runner_result"));
-    source.addEventListener("evaluation_result", handleEvent("evaluation_result"));
-    source.addEventListener("done", handleEvent("done"));
-    source.addEventListener("error", handleEvent("error"));
+    void (async () => {
+      try {
+        const response = await fetch(endpoint, {
+          method,
+          body: requestBody,
+          headers: {
+            Accept: "text/event-stream",
+            "Content-Type": "application/json",
+            "X-Request-Id": effectiveRequestId,
+            ...JSON.parse(requestHeaders),
+          },
+          signal: controller.signal,
+        });
 
-    source.onerror = () => {
-      setStatus("error");
-      source.close();
-    };
+        if (!response.ok) {
+          emitError(await errorFromResponse(response, effectiveRequestId));
+          return;
+        }
+        if (!response.body) {
+          emitError(streamError("STREAM_UNAVAILABLE", "SSE response has no readable body", effectiveRequestId));
+          return;
+        }
+
+        setStatus("streaming");
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+
+        while (!controller.signal.aborted) {
+          const { done, value } = await reader.read();
+          if (done) {
+            break;
+          }
+          buffer += decoder.decode(value, { stream: true });
+          const drained = drainFrames(buffer);
+          buffer = drained.rest;
+          for (const frame of drained.frames) {
+            const event = parseSSEFrame(frame);
+            if (event) {
+              dispatchEvent(event);
+            }
+          }
+        }
+
+        buffer += decoder.decode();
+        const drained = drainFrames(buffer);
+        for (const frame of drained.frames.concat(drained.rest ? [drained.rest] : [])) {
+          const event = parseSSEFrame(frame);
+          if (event) {
+            dispatchEvent(event);
+          }
+        }
+
+        if (!sawTerminalEvent && !controller.signal.aborted) {
+          emitError(streamError("STREAM_INCOMPLETE", "SSE stream ended without done or error", effectiveRequestId));
+        }
+      } catch (error) {
+        if (controller.signal.aborted) {
+          return;
+        }
+        emitError(streamError("STREAM_ERROR", error instanceof Error ? error.message : "SSE request failed", effectiveRequestId));
+      }
+    })();
 
     return () => {
-      source.close();
-      sourceRef.current = null;
+      controller.abort();
+      if (abortRef.current === controller) {
+        abortRef.current = null;
+      }
     };
-  }, [endpoint]);
+  }, [endpoint, method, requestBody, requestHeaders, requestId]);
 
   return { events, status, close };
+}
+
+function drainFrames(buffer: string): { frames: string[]; rest: string } {
+  const normalized = buffer.replace(/\r\n/g, "\n");
+  const parts = normalized.split("\n\n");
+  return {
+    frames: parts.slice(0, -1).filter((frame) => frame.trim().length > 0),
+    rest: parts[parts.length - 1] ?? "",
+  };
+}
+
+function parseSSEFrame(frame: string): SSEEvent | null {
+  let type: SSEEventType | null = null;
+  const dataLines: string[] = [];
+
+  for (const line of frame.split("\n")) {
+    if (line.startsWith(":")) {
+      continue;
+    }
+    if (line.startsWith("event:")) {
+      const eventType = line.slice("event:".length).trim();
+      if (isSSEEventType(eventType)) {
+        type = eventType;
+      }
+    }
+    if (line.startsWith("data:")) {
+      dataLines.push(line.slice("data:".length).trimStart());
+    }
+  }
+
+  if (!type || dataLines.length === 0) {
+    return null;
+  }
+
+  try {
+    const data: unknown = JSON.parse(dataLines.join("\n"));
+    return toTypedSSEEvent(type, data);
+  } catch {
+    return null;
+  }
+}
+
+function toTypedSSEEvent(type: SSEEventType, data: unknown): SSEEvent | null {
+  if (!isRecord(data)) {
+    return null;
+  }
+  switch (type) {
+    case "agent_message":
+      return { type, data: data as SSEAgentMessage };
+    case "tool_status":
+      return { type, data: data as SSEToolStatus };
+    case "runner_result":
+      return { type, data: data as SSERunnerResult };
+    case "evaluation_result":
+      return { type, data: data as SSEEvaluationResult };
+    case "done":
+      return { type, data: data as SSEDone };
+    case "error":
+      return isRecord(data.error) ? { type, data: data as SSEError } : null;
+  }
+}
+
+async function errorFromResponse(response: Response, requestId: string): Promise<ApiError> {
+  try {
+    const payload: unknown = await response.json();
+    if (isRecord(payload) && isRecord(payload.error) && typeof payload.error.code === "string") {
+      return payload.error as ApiError;
+    }
+  } catch {
+    // Fall back to a synthetic stream error below.
+  }
+  return streamError("STREAM_HTTP_ERROR", `SSE request failed with status ${response.status}`, requestId);
+}
+
+function streamError(code: string, message: string, requestId: string): ApiError {
+  return {
+    code,
+    message,
+    details: {},
+    request_id: requestId,
+    recoverable: true,
+  };
+}
+
+function isSSEEventType(value: string): value is SSEEventType {
+  return (
+    value === "agent_message" ||
+    value === "tool_status" ||
+    value === "runner_result" ||
+    value === "evaluation_result" ||
+    value === "done" ||
+    value === "error"
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }

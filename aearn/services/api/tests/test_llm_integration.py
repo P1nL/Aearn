@@ -83,6 +83,55 @@ def test_openai_compatible_client_parses_responses_json_completion() -> None:
     assert response.model == "gpt-5.4"
 
 
+def test_openai_compatible_client_streams_text_deltas() -> None:
+    captured: dict[str, object] = {}
+
+    def stream_transport(
+        url: str,
+        headers: Mapping[str, str],
+        payload: Mapping[str, object],
+        timeout: float,
+    ) -> Sequence[str]:
+        captured["url"] = url
+        captured["headers"] = dict(headers)
+        captured["payload"] = dict(payload)
+        captured["timeout"] = timeout
+        return ["先看状态变量", "，再看事件回调。"]
+
+    client = OpenAICompatibleClient(
+        Settings(
+            llm_type="openai",
+            openai_api_key="test-key",
+            openai_base_url="https://provider.example/v1",
+            openai_model="third-party-model",
+            llm_timeout_seconds=9,
+        ),
+        stream_transport=stream_transport,
+    )
+
+    chunks = list(
+        client.complete_text_stream(
+            [
+                {"role": "system", "content": "system instructions"},
+                {"role": "user", "content": "draft note"},
+            ]
+        )
+    )
+
+    assert chunks == ["先看状态变量", "，再看事件回调。"]
+    assert captured["url"] == "https://provider.example/v1/responses"
+    assert captured["timeout"] == 9
+    assert captured["headers"] == {
+        "Authorization": "Bearer test-key",
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream",
+    }
+    assert captured["payload"]["model"] == "third-party-model"
+    assert captured["payload"]["input"] == "draft note"
+    assert captured["payload"]["stream"] is True
+    assert "text" not in captured["payload"]
+
+
 def test_llm_explain_error_uses_model_output_and_server_knowledge_point() -> None:
     class FakeClient:
         model = "third-party-model"
