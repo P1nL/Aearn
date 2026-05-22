@@ -65,18 +65,18 @@ export function nextActionLabel(nextAction: string): string {
 
 export function workbenchStateLabel(state: WorkbenchState): string {
   if (state === "dirty") {
-    return "dirty";
+    return "已修改";
   }
   if (state === "running") {
-    return "running";
+    return "运行中";
   }
   if (state === "submitted") {
-    return "submitted";
+    return "已提交";
   }
   if (state === "unsupported") {
-    return "unsupported";
+    return "暂不支持";
   }
-  return "pristine";
+  return "就绪";
 }
 
 export function knowledgePointStatusLabel(status: CreatedKnowledgePoint["status"]): string {

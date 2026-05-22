@@ -882,10 +882,10 @@ function App() {
                   </span>
                   <span>
                     {dashboard.next_entry_point.type === "review"
-                      ? "检测到中断多日且复习高风险，优先进入复习。"
+                      ? "你有一段时间没学习了，建议先复习巩固。"
                       : dashboard.resume_available
-                        ? "已识别到可恢复的当前学习上下文。"
-                        : "默认进入当前学习；有到期复习时只在应用内提示。"}
+                        ? "可以继续上次的学习进度。"
+                        : "准备好了就开始学习吧。"}
                   </span>
                 </div>
                 <div className="dashboard-banner-actions">
@@ -1055,7 +1055,7 @@ function App() {
                 </div>
               </div>
               {!drawerDraft ? (
-                <div className="tool-card">打开抽屉后会自动加载或创建当前知识点的共享 note。</div>
+                <div className="tool-card">正在加载当前知识点的笔记…</div>
               ) : (
                 <div className="drawer-note-layout">
                   <textarea
@@ -1083,7 +1083,7 @@ function App() {
                     </div>
                     <div className="tool-card">
                       <strong>辅助补全</strong>
-                      <p>{drawerNote?.agent_draft_content ?? "还没有生成结构化补全建议。会基于当前知识点和最近尝试，只回写 agent_draft_content。"}</p>
+                      <p>{drawerNote?.agent_draft_content ?? "还没有辅助补全内容。点击上方按钮生成结构化建议。"}</p>
                     </div>
                     {drawerDraft.errorMessage && (
                       <div className="tool-card">

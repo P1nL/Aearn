@@ -96,7 +96,7 @@ export function NotesPage({
         {!selectedNote || !selectedDraft ? (
           <div className="notes-empty-panel">
             <h3>选择一条笔记</h3>
-            <p>左侧按语言和知识点分组。抽屉与这里编辑的是同一条 note 记录。</p>
+            <p>从左侧选择一个知识点，开始编辑笔记。</p>
             {canCreateCurrentContextNote && (
               <button className="btn primary" type="button" onClick={onCreateCurrentNote}>
                 直接创建当前知识点笔记
@@ -150,7 +150,7 @@ export function NotesPage({
                 </div>
                 <div className="tool-card">
                   <strong>Agent 草稿</strong>
-                  <p>{selectedNote.agent_draft_content ?? "还没有辅助补全内容。可基于当前 note、最近尝试和知识点上下文生成结构化提示。"}</p>
+                  <p>{selectedNote.agent_draft_content ?? "还没有辅助补全内容。点击上方「Agent 辅助补全」按钮生成。"}</p>
                 </div>
               </aside>
             </div>

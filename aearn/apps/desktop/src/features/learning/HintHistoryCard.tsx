@@ -10,11 +10,24 @@ export function HintHistoryCard({ items }: { items: HintResponse[] }) {
       <ul className="hint-history-list">
         {items.map((item, index) => (
           <li key={`${item.hint.hint_level}-${index}`}>
-            <strong>{item.hint.hint_level}</strong>
+            <strong>{hintLevelLabel(item.hint.hint_level)}</strong>
             <p>{item.hint.content}</p>
           </li>
         ))}
       </ul>
     </article>
   );
+}
+
+function hintLevelLabel(level: string): string {
+  if (level === "nudge") {
+    return "轻推";
+  }
+  if (level === "concept") {
+    return "概念";
+  }
+  if (level === "code_shape") {
+    return "代码结构";
+  }
+  return level;
 }
