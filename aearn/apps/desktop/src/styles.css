@@ -1240,6 +1240,7 @@
       overflow: auto;
       padding: 32px;
       max-width: 720px;
+      margin: 0 auto;
     }
 
     .settings-header {
@@ -1404,7 +1405,47 @@
     .settings-form-grid {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 12px;
+      gap: 16px;
+    }
+
+    .settings-form-grid .inline-field {
+      display: grid;
+      gap: 6px;
+    }
+
+    .settings-form-grid .inline-field span {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: .02em;
+    }
+
+    .settings-form-grid .inline-field input,
+    .settings-form-grid .inline-field select,
+    .settings-form-grid .inline-field textarea {
+      width: 100%;
+      min-height: 40px;
+      padding: 8px 12px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-sm);
+      background: var(--panel);
+      color: var(--ink);
+      font-size: 14px;
+      outline: none;
+      transition: border-color .15s var(--ease), box-shadow .15s var(--ease);
+    }
+
+    .settings-form-grid .inline-field input:focus,
+    .settings-form-grid .inline-field select:focus,
+    .settings-form-grid .inline-field textarea:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(196, 112, 74, .1);
+    }
+
+    .settings-form-grid .inline-field textarea {
+      min-height: 100px;
+      resize: vertical;
+      line-height: 1.5;
     }
 
     .settings-span-2 {
@@ -1416,12 +1457,13 @@
       align-items: center;
       justify-content: space-between;
       gap: 14px;
-      min-height: 52px;
+      min-height: 48px;
       padding: 0 16px;
       border: 1px solid var(--line);
-      border-radius: 16px;
-      background: rgba(255, 250, 242, .58);
-      font-weight: 800;
+      border-radius: var(--radius-sm);
+      background: var(--panel);
+      font-size: 14px;
+      font-weight: 600;
     }
 
     .settings-toggle input {
@@ -1431,14 +1473,39 @@
     }
 
     .settings-callout {
-      margin-top: 0;
-      border: 1px solid rgba(198, 181, 159, .56);
+      margin-bottom: 16px;
+      padding: 12px 14px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-sm);
+      font-size: 13px;
+      color: var(--muted);
     }
 
     .settings-callout.error {
-      border-color: rgba(166, 106, 42, .3);
+      border-color: rgba(196, 74, 74, .3);
       color: var(--accent-dark);
-      background: rgba(255, 240, 222, .88);
+      background: rgba(255, 235, 235, .6);
+    }
+
+    .setting-card {
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      background: var(--panel);
+    }
+
+    .setting-card h3 {
+      margin: 0 0 4px;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--ink);
+    }
+
+    .setting-card p {
+      margin: 0;
+      font-size: 13px;
+      color: var(--muted);
+      line-height: 1.5;
     }
 
     .drawer-scrim {
