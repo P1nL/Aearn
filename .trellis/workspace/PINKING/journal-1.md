@@ -338,3 +338,36 @@ Finished desktop release QA smoke: restored seven settings categories, fixed dia
 ### Next Steps
 
 - None - task complete
+
+
+## Session 11: Backend SSE streaming implementation
+
+**Date**: 2026-05-23
+**Task**: Backend SSE streaming implementation
+**Branch**: `main`
+
+### Summary
+
+Implemented SSE streaming for run, submit, and note agent-draft endpoints; adapted desktop SSE hook; added contract tests and Trellis specs.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `ae88704` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
