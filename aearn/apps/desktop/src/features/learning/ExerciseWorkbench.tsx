@@ -15,6 +15,7 @@ import type {
   SubmitExerciseResponse,
 } from "../../types";
 import { runtimeLabel, workbenchStateLabel } from "../../lib/desktopLabels";
+import { CodeEditor } from "./CodeEditor";
 import { RuntimeFeedback } from "./RuntimeFeedback";
 import { HintHistoryCard } from "./HintHistoryCard";
 import { ErrorFeedbackPane } from "./ErrorFeedbackPane";
@@ -158,10 +159,16 @@ export function ExerciseWorkbench({
             </div>
           )}
 
-          <label className="exercise-editor">
+          <div className="exercise-editor">
             <span>代码区</span>
-            <textarea className="drawer-editor code-editor" value={code} onChange={(event) => onCodeChange(event.target.value)} />
-          </label>
+            <CodeEditor
+              language={exercise.runtime_profile.language}
+              value={code}
+              onChange={onCodeChange}
+              readOnly={actionState.status === "loading" || runtimeUnsupported}
+              height="280px"
+            />
+          </div>
           <p className="meta">运行和提交前会自动将上方空缺填入代码对应位置。</p>
 
           {runtimeUnsupported && (
