@@ -1,0 +1,2 @@
+{"file": "docs/product/frontend-interaction-spec.md", "reason": "验证组件树、页面状态和 API 边界是否被正确遵守"}
+{"file": "docs/architecture/api-contract.md", "reason": "验证错误码处理、SSE 类型定义是否与契约一致"}

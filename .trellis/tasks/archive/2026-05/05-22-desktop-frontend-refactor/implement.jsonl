@@ -1,0 +1,3 @@
+{"file": "docs/product/frontend-interaction-spec.md", "reason": "前端交互规格：组件树、页面状态、API 映射和运行能力分层"}
+{"file": "docs/architecture/api-contract.md", "reason": "API 契约：错误码枚举、SSE 事件帧格式、幂等规则"}
+{"file": "docs/product/user-flows.md", "reason": "用户流程：核心闭环、导航组织、关键产品决定"}
