@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 8
-- **Last Active**: 2026-05-20
+- **Total Sessions**: 9
+- **Last Active**: 2026-05-22
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~272 | Active |
+| `journal-1.md` | ~307 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 9 | 2026-05-22 | Desktop 前端架构重构 P1-P3 完成 | `2dd5a20`, `2af1696`, `1acff4a` | `main` |
 | 8 | 2026-05-20 | Model-backed explain-error release readiness | `5a2f610` | `main` |
 | 7 | 2026-05-19 | Aearn MVP release readiness closure | `a62a65c` | `main` |
 | 6 | 2026-05-17 | M6 resume dashboard and settings hardening | `93cf9d0` | `main` |
