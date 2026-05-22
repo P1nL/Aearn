@@ -1346,13 +1346,14 @@
 
     .settings-tabs {
       display: flex;
+      flex-wrap: wrap;
       gap: 4px;
       padding: 4px;
       margin-bottom: 24px;
       border: 1px solid var(--line);
       border-radius: var(--radius-md);
       background: var(--panel-soft);
-      width: fit-content;
+      width: 100%;
     }
 
     .settings-tab {

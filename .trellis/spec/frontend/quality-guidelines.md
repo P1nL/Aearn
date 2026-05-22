@@ -16,6 +16,7 @@ Every UI task must be checked against `docs/product/frontend-interaction-spec.md
 
 - Do not implement product UI in `docs/design/`; that directory is reference/prototype material.
 - Do not expose `Attempt(run)`, `Attempt(submit)`, `review_submit`, or FSRS internals as ordinary user labels.
+- Do not paste spec/runbook wording into the UI. Settings and diagnostics copy must use product-facing language such as "当前状态" and "复习节奏", not implementation terms like `Source of truth`, `MVP`, `ReviewState`, `due_at`, or "fixed backend rules".
 - Do not calculate final score, result, `fsrs_rating`, `due_at`, or review scheduling in the frontend.
 - Do not show unsupported Java/C++ sandbox capabilities as runnable.
 - Do not add new UI libraries, routers, or state managers without task scope and verification.
@@ -48,6 +49,7 @@ Every UI task must be checked against `docs/product/frontend-interaction-spec.md
 
 - The component names and page flow match `frontend-interaction-spec.md`.
 - UI labels avoid backend-internal Attempt and FSRS implementation terms.
+- Settings page copy preserves the documented category boundary while staying user-facing rather than spec-facing.
 - Async operations have user-visible state and do not allow duplicate writes while pending.
 - Old run output cannot masquerade as current output after code changes.
 - API errors branch on stable `error.code`, not free-form messages.

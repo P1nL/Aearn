@@ -1,4 +1,4 @@
-import type { SettingsKey } from "../appTypes";
+import type { SettingsKey, SettingsPanel } from "../appTypes";
 import { SETTING_PANELS } from "../lib/appContent";
 
 type SettingsFormValue = {
@@ -95,10 +95,27 @@ export function SettingsPage({
       )}
 
       <section className="settings-body">
+        {settingsTab === "appearance" && renderReadOnlyPanel(currentPanel)}
+        {settingsTab === "models" && renderModelPanel(currentPanel, diagnostics)}
         {settingsTab === "learning" && renderLearningPanel(form, onFieldChange)}
+        {settingsTab === "review" && renderReviewPanel(currentPanel)}
         {settingsTab === "notifications" && renderNotificationsPanel(form, onFieldChange)}
+        {settingsTab === "privacy" && renderPrivacyPanel(currentPanel, diagnostics)}
         {settingsTab === "diagnostics" && renderDiagnosticsPanel(diagnostics)}
       </section>
+    </div>
+  );
+}
+
+function renderReadOnlyPanel(panel: SettingsPanel) {
+  return (
+    <div className="settings-grid">
+      {panel.cards.map(([title, body]) => (
+        <article className="setting-card" key={title}>
+          <h3>{title}</h3>
+          <p>{body}</p>
+        </article>
+      ))}
     </div>
   );
 }
@@ -221,14 +238,85 @@ function renderNotificationsPanel(
   );
 }
 
+function renderModelPanel(
+  panel: SettingsPanel,
+  diagnostics: SettingsPageProps["diagnostics"],
+) {
+  return (
+    <>
+      <div className="tool-card settings-callout">
+        此处只显示当前服务状态。模型供应商和密钥在本地服务中配置，不在桌面端填写。
+      </div>
+      <div className="settings-grid">
+        {panel.cards.map(([title, body]) => (
+          <article className="setting-card" key={title}>
+            <h3>{title}</h3>
+            <p>{body}</p>
+          </article>
+        ))}
+        <article className="setting-card">
+          <h3>API Base URL</h3>
+          <p>{diagnostics.apiBaseUrl}</p>
+        </article>
+        <article className="setting-card">
+          <h3>服务诊断</h3>
+          <p className={diagnostics.apiStatus === "在线" ? "status-ok" : "status-error"}>
+            {diagnostics.apiStatus}
+          </p>
+        </article>
+      </div>
+    </>
+  );
+}
+
+function renderReviewPanel(panel: SettingsPanel) {
+  return (
+    <>
+      <div className="tool-card settings-callout">
+        复习节奏由系统根据练习结果安排。这里先提供查看说明，暂不开放手动调节。
+      </div>
+      {renderReadOnlyPanel(panel)}
+    </>
+  );
+}
+
+function renderPrivacyPanel(
+  panel: SettingsPanel,
+  diagnostics: SettingsPageProps["diagnostics"],
+) {
+  return (
+    <>
+      <div className="tool-card settings-callout">
+        当前用户{diagnostics.userId ? "已建立学习身份" : "尚未完成建档"}。这里展示恢复状态和数据入口，不直接清空学习记录。
+      </div>
+      <div className="settings-grid">
+        {panel.cards.map(([title, body]) => (
+          <article className="setting-card" key={title}>
+            <h3>{title}</h3>
+            <p>{body}</p>
+          </article>
+        ))}
+        <article className="setting-card">
+          <h3>当前计划</h3>
+          <p>{diagnostics.planId ? "已绑定恢复上下文" : "尚未创建学习计划"}</p>
+        </article>
+        <article className="setting-card">
+          <h3>恢复状态</h3>
+          <p>{diagnostics.resumeAvailable ? "存在可恢复学习会话" : "当前没有待恢复会话"}</p>
+        </article>
+      </div>
+    </>
+  );
+}
+
 function renderDiagnosticsPanel(diagnostics: SettingsPageProps["diagnostics"]) {
+  const apiOnline = diagnostics.apiStatus === "在线";
+
   return (
     <div className="settings-grid">
       <article className="setting-card">
         <h3>连接状态</h3>
-        <p className={diagnostics.apiStatus === "ok" ? "status-ok" : "status-error"}>
-          {diagnostics.apiStatus === "ok" ? "服务正常" : "连接异常"}
-        </p>
+        <p className={apiOnline ? "status-ok" : "status-error"}>{diagnostics.apiStatus}</p>
       </article>
       <article className="setting-card">
         <h3>用户</h3>
@@ -239,12 +327,20 @@ function renderDiagnosticsPanel(diagnostics: SettingsPageProps["diagnostics"]) {
         <p>{diagnostics.planId ? "已创建" : "未创建"}</p>
       </article>
       <article className="setting-card">
+        <h3>API Base URL</h3>
+        <p>{diagnostics.apiBaseUrl}</p>
+      </article>
+      <article className="setting-card">
         <h3>当前阶段</h3>
         <p>{diagnostics.currentStage ?? "暂无"}</p>
       </article>
       <article className="setting-card">
         <h3>今日待复习</h3>
         <p>{diagnostics.todayReviewCount} 项</p>
+      </article>
+      <article className="setting-card">
+        <h3>恢复状态</h3>
+        <p>{diagnostics.resumeAvailable ? "可恢复上次学习" : "当前没有待恢复会话"}</p>
       </article>
       <article className="setting-card">
         <h3>版本</h3>
