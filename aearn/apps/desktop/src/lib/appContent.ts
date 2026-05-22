@@ -30,26 +30,6 @@ export const ROUTE_META: Record<AppRoute, { crumb: string; hint: string }> = {
 };
 
 export const SETTING_PANELS: Record<SettingsKey, SettingsPanel> = {
-  appearance: {
-    title: "外观",
-    meta: "管理界面显示偏好",
-    cards: [
-      ["主题", "奶油色柔和风格"],
-      ["内容密度", "宽松布局，减少学习焦虑"],
-      ["动效", "轻量淡入和抽屉滑入"],
-      ["侧栏", "默认展开，可折叠"],
-    ],
-  },
-  model: {
-    title: "模型设置",
-    meta: "配置学习辅助模型",
-    cards: [
-      ["提示模型", "用于日常代码练习会话"],
-      ["测试解释模型", "用于解释失败用例与报错"],
-      ["笔记辅助模型", "用于补全当前知识点笔记和结构化总结"],
-      ["工具调用", "只在明确需要时启用"],
-    ],
-  },
   learning: {
     title: "学习偏好",
     meta: "个性化你的学习体验",
@@ -60,19 +40,9 @@ export const SETTING_PANELS: Record<SettingsKey, SettingsPanel> = {
       ["显示名称", "用于学习身份和摘要展示"],
     ],
   },
-  review: {
-    title: "复习",
-    meta: "查看复习规则与当前状态",
-    cards: [
-      ["高风险优先", "中断多日且存在高遗忘风险时优先进入复习"],
-      ["普通打开", "有待复习内容时只提示，不强制跳转"],
-      ["自动调度", "复习时间和遗忘风险由系统自动计算"],
-      ["前端提示", "展示复习提醒和恢复入口"],
-    ],
-  },
   notifications: {
-    title: "通知设置",
-    meta: "管理提醒和安静时段",
+    title: "通知与提醒",
+    meta: "管理提醒时段和安静模式",
     cards: [
       ["学习提醒", "按你设定的时间段推送学习提醒"],
       ["复习提醒", "到期时展示应用内提示"],
@@ -80,18 +50,8 @@ export const SETTING_PANELS: Record<SettingsKey, SettingsPanel> = {
       ["通知渠道", "当前支持桌面端通知"],
     ],
   },
-  privacy: {
-    title: "记录与隐私",
-    meta: "了解数据记录和隐私边界",
-    cards: [
-      ["学习记录", "运行和提交记录会自动保存，用于追踪进度"],
-      ["复习状态", "复习进度由系统自动维护"],
-      ["笔记", "知识点笔记可本地编辑和导出"],
-      ["隐私边界", "不会自动外传本地文件"],
-    ],
-  },
   diagnostics: {
-    title: "关于与诊断",
+    title: "关于",
     meta: "版本信息与连接状态",
     cards: [
       ["版本", "V1 桌面端"],

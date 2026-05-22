@@ -101,7 +101,7 @@ function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [openGroups, setOpenGroups] = useState<Record<NavGroupKey, boolean>>(NAV_DEFAULTS);
   const [noteDrawerOpen, setNoteDrawerOpen] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<SettingsKey>("appearance");
+  const [settingsTab, setSettingsTab] = useState<SettingsKey>("learning");
   const [composerInput, setComposerInput] = useState("");
   const [homeConversation, setHomeConversation] = useState<ConversationMessage[]>([]);
   const [reviewConversation, setReviewConversation] = useState<ConversationMessage[]>([]);
@@ -453,7 +453,7 @@ function App() {
     setHomeConversation([]);
     setReviewConversation([]);
     setComposerInput("");
-    setSettingsTab("appearance");
+    setSettingsTab("learning");
     setActiveRoute("onboarding");
     setResetNonce((current) => current + 1);
     setNotesLoadState("idle");
