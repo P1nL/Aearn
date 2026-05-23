@@ -130,6 +130,7 @@ def test_openai_compatible_client_streams_text_deltas() -> None:
     assert captured["payload"]["input"] == "draft note"
     assert captured["payload"]["stream"] is True
     assert "text" not in captured["payload"]
+    assert "temperature" not in captured["payload"]
 
 
 def test_llm_explain_error_uses_model_output_and_server_knowledge_point() -> None:

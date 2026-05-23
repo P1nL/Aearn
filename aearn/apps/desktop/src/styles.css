@@ -838,6 +838,35 @@
       margin: 0;
     }
 
+    .message.streaming .bubble {
+      border: 1px solid rgba(196, 112, 74, .18);
+      background: rgba(255, 248, 238, .62);
+    }
+
+    .message.error .bubble {
+      border: 1px solid rgba(166, 74, 74, .22);
+      background: rgba(255, 235, 235, .72);
+    }
+
+    .bubble-status {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .02em;
+    }
+
+    .stream-cursor {
+      display: inline-block;
+      width: 7px;
+      height: 1.1em;
+      margin-left: 3px;
+      vertical-align: text-bottom;
+      border-radius: 999px;
+      background: var(--accent);
+      animation: pulse 1s steps(2, start) infinite;
+    }
+
     .tool-card {
       margin-top: 10px;
       padding: 10px 14px;
@@ -885,6 +914,19 @@
       color: var(--ink);
       background: transparent;
       line-height: 1.5;
+    }
+
+    .composer textarea:disabled {
+      cursor: not-allowed;
+      color: var(--muted);
+      background: rgba(248, 244, 238, .68);
+    }
+
+    .composer-guidance {
+      width: min(860px, 100%);
+      margin: 8px auto 0;
+      color: var(--muted);
+      font-size: 12px;
     }
 
     .send-btn {

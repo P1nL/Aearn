@@ -79,7 +79,7 @@ class OpenAICompatibleClient:
         self,
         messages: Sequence[Mapping[str, str]],
         *,
-        temperature: float = 0.3,
+        temperature: float | None = None,
     ) -> Generator[str, None, str]:
         instructions, input_text = _messages_to_responses_input(messages)
         payload: dict[str, object] = {

@@ -1,5 +1,5 @@
 import asyncio
-from collections.abc import AsyncGenerator, Mapping
+from collections.abc import AsyncGenerator, Iterable, Mapping
 from typing import Any
 
 from fastapi import APIRouter, Query, Request, status
@@ -12,9 +12,19 @@ from app.models.learning_sessions import (
     CheckExplanationRequest,
     ExplainErrorRequest,
     HintRequest,
+    LearningMessageRequest,
     RunExerciseRequest,
     StartLearningSessionRequest,
     SubmitExerciseRequest,
+)
+from app.services.learning_conversation import (
+    build_learning_message_response,
+    create_learning_message_response,
+    deterministic_learning_message_generation,
+    prepare_learning_message,
+    safe_generation_exceptions,
+    start_learning_message_generation,
+    store_learning_message_response,
 )
 from app.services.learning_session_repository import (
     EvaluationConflictError,
@@ -91,6 +101,78 @@ def create_learning_session(
         status_code=status.HTTP_200_OK if reused else status.HTTP_201_CREATED,
         content=jsonable_encoder(response),
     )
+
+
+@router.post("/{session_id}/messages", response_model=None)
+async def create_learning_session_message(
+    session_id: str,
+    request: Request,
+) -> dict[str, object] | JSONResponse | StreamingResponse:
+    request_id = request_id_from(request)
+    body = await request.json()
+    try:
+        payload = LearningMessageRequest.model_validate(body)
+    except ValueError as exc:
+        if wants_stream(request):
+            return stream_response(
+                _error_stream(
+                    code="VALIDATION_ERROR",
+                    message="学习对话请求结构不合法",
+                    request_id=request_id,
+                    details={"reason": str(exc)},
+                )
+            )
+        return error_response(
+            request,
+            code="VALIDATION_ERROR",
+            message="学习对话请求结构不合法",
+            status_code=status.HTTP_400_BAD_REQUEST,
+            details={"reason": str(exc)},
+        )
+
+    if wants_stream(request):
+        return stream_response(
+            _learning_message_stream(
+                request,
+                session_id=session_id,
+                payload=payload,
+                request_body=body,
+                request_id=request_id,
+            )
+        )
+
+    with connect() as conn:
+        try:
+            response, replayed = create_learning_message_response(
+                conn,
+                session_id=session_id,
+                content=payload.content,
+                client_message_id=payload.client_message_id,
+                request_body=body,
+            )
+        except EntityNotFoundError as exc:
+            conn.rollback()
+            return error_response(
+                request,
+                code=exc.code,
+                message=exc.message,
+                status_code=status.HTTP_404_NOT_FOUND,
+                details={"session_id": session_id},
+            )
+        except IdempotencyConflictError as exc:
+            conn.rollback()
+            return error_response(
+                request,
+                code="IDEMPOTENCY_CONFLICT",
+                message="同一学习对话幂等键对应不同请求体",
+                status_code=status.HTTP_409_CONFLICT,
+                details={"reason": str(exc)},
+                recoverable=False,
+            )
+        conn.commit()
+    if replayed:
+        response["idempotency_replayed"] = True
+    return JSONResponse(status_code=status.HTTP_200_OK, content=jsonable_encoder(response))
 
 
 @router.post("/{session_id}/exercises/{exercise_id}/run", response_model=None)
@@ -485,6 +567,217 @@ async def _error_stream(
         request_id=request_id,
         details=details,
         recoverable=recoverable,
+    )
+
+
+async def _learning_message_stream(
+    request: Request,
+    *,
+    session_id: str,
+    payload: LearningMessageRequest,
+    request_body: Mapping[str, object],
+    request_id: str,
+) -> AsyncGenerator[str, None]:
+    writer = SSEWriter()
+    try:
+        with connect() as conn:
+            try:
+                prepared = prepare_learning_message(
+                    conn,
+                    session_id=session_id,
+                    client_message_id=payload.client_message_id,
+                    request_body=request_body,
+                )
+            except EntityNotFoundError as exc:
+                conn.rollback()
+                yield writer.error(
+                    code=exc.code,
+                    message=exc.message,
+                    request_id=request_id,
+                    details={"session_id": session_id},
+                )
+                return
+            except IdempotencyConflictError as exc:
+                conn.rollback()
+                yield writer.error(
+                    code="IDEMPOTENCY_CONFLICT",
+                    message="同一学习对话幂等键对应不同请求体",
+                    request_id=request_id,
+                    details={"reason": str(exc)},
+                    recoverable=False,
+                )
+                return
+
+        if prepared.stored_response is not None:
+            stored_message = prepared.stored_response.get("agent_message", {})
+            if not isinstance(stored_message, Mapping):
+                yield writer.error(
+                    code="INTERNAL_ERROR",
+                    message="学习对话回放数据不可用",
+                    request_id=request_id,
+                    recoverable=True,
+                )
+                return
+            stored_content = str(stored_message.get("content") or "")
+            yield writer.event(
+                "agent_message",
+                _agent_message_event(
+                    request_id=request_id,
+                    session_id=session_id,
+                    message_id=prepared.message_id,
+                    delta=stored_content,
+                    content=stored_content,
+                ),
+            )
+            yield _learning_message_done_event(
+                writer,
+                request_id=request_id,
+                session_id=session_id,
+                message_id=prepared.message_id,
+                generation_source=str(prepared.stored_response.get("generation_source") or "deterministic"),
+                generation_model=str(prepared.stored_response.get("generation_model") or ""),
+            )
+            return
+
+        generation = start_learning_message_generation(prepared.context, user_content=payload.content)
+        full_text = ""
+        generation_source = generation.generation_source
+        generation_model = generation.generation_model
+        try:
+            async for delta in _iter_generation_chunks(request, generation.chunks):
+                full_text += delta
+                yield writer.event(
+                    "agent_message",
+                    _agent_message_event(
+                        request_id=request_id,
+                        session_id=session_id,
+                        message_id=prepared.message_id,
+                        delta=delta,
+                        content=full_text,
+                    ),
+                )
+        except safe_generation_exceptions():
+            if full_text:
+                yield writer.error(
+                    code="EVALUATION_INVALID_JSON",
+                    message="模型流式响应中断，请重试同一个问题",
+                    request_id=request_id,
+                    recoverable=True,
+                    next_action="retry_same",
+                )
+                return
+            fallback = deterministic_learning_message_generation(prepared.context, user_content=payload.content)
+            generation_source = fallback.generation_source
+            generation_model = fallback.generation_model
+            async for delta in _iter_generation_chunks(request, fallback.chunks):
+                full_text += delta
+                yield writer.event(
+                    "agent_message",
+                    _agent_message_event(
+                        request_id=request_id,
+                        session_id=session_id,
+                        message_id=prepared.message_id,
+                        delta=delta,
+                        content=full_text,
+                    ),
+                )
+
+        if not full_text.strip():
+            fallback = deterministic_learning_message_generation(prepared.context, user_content=payload.content)
+            generation_source = fallback.generation_source
+            generation_model = fallback.generation_model
+            async for delta in _iter_generation_chunks(request, fallback.chunks):
+                full_text += delta
+                yield writer.event(
+                    "agent_message",
+                    _agent_message_event(
+                        request_id=request_id,
+                        session_id=session_id,
+                        message_id=prepared.message_id,
+                        delta=delta,
+                        content=full_text,
+                    ),
+                )
+
+        with connect() as conn:
+            response = build_learning_message_response(
+                prepared,
+                content=full_text.strip(),
+                generation_source=generation_source,
+                generation_model=generation_model,
+            )
+            store_learning_message_response(conn, prepared, response)
+            conn.commit()
+
+        yield _learning_message_done_event(
+            writer,
+            request_id=request_id,
+            session_id=session_id,
+            message_id=prepared.message_id,
+            generation_source=generation_source,
+            generation_model=generation_model,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        yield writer.error(
+            code="INTERNAL_ERROR",
+            message="学习对话流式响应失败",
+            request_id=request_id,
+            recoverable=True,
+        )
+
+
+async def _iter_generation_chunks(request: Request, chunks: Iterable[str]) -> AsyncGenerator[str, None]:
+    for delta in chunks:
+        if await request.is_disconnected():
+            return
+        if not delta:
+            continue
+        yield delta
+        await asyncio.sleep(0)
+
+
+def _agent_message_event(
+    *,
+    request_id: str,
+    session_id: str,
+    message_id: str,
+    delta: str,
+    content: str,
+) -> dict[str, object]:
+    return {
+        "request_id": request_id,
+        "session_id": session_id,
+        "message_id": message_id,
+        "delta": delta,
+        "content": content,
+        "next_action": "retry_same",
+    }
+
+
+def _learning_message_done_event(
+    writer: SSEWriter,
+    *,
+    request_id: str,
+    session_id: str,
+    message_id: str,
+    generation_source: str,
+    generation_model: str,
+) -> str:
+    return writer.event(
+        "done",
+        {
+            "request_id": request_id,
+            "session_id": session_id,
+            "message_id": message_id,
+            "generation_source": generation_source,
+            "generation_model": generation_model,
+            "result_ref": {
+                "type": "LearningConversationMessage",
+                "id": message_id,
+            },
+        },
     )
 
 

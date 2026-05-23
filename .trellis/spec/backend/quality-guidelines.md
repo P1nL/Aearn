@@ -359,6 +359,76 @@ response = build_llm_error_explanation(...) or with_deterministic_generation_met
 
 The feature tries the model only through a testable boundary and keeps deterministic fallback as the stable MVP path.
 
+## Scenario: Learning Session Message Streaming Conversation
+
+### 1. Scope / Trigger
+
+- Trigger: implementing or changing model-backed learning conversation messages for the active learning workspace.
+- Scope: `POST /api/learning-sessions/{session_id}/messages`, `LearningMessageRequest`, `app/services/learning_conversation.py`, `app/services/llm_client.py`, `idempotency_records`, and API tests for JSON and SSE modes.
+
+### 2. Signatures
+
+- `POST /api/learning-sessions/{session_id}/messages`
+- Request body: `{ "role": "user", "content": string, "client_message_id": string }`
+- Streaming selector: `Accept: text/event-stream`
+- Request tracing: optional `X-Request-Id`
+- Idempotency key: `learning-message:{session_id}:{client_message_id}`
+- LLM stream call: `OpenAICompatibleClient.complete_text_stream(messages, temperature=None)`
+
+### 3. Contracts
+
+- JSON mode returns `agent_message`, `session_state`, `generation_source`, and optional `generation_model`.
+- SSE mode emits one or more `agent_message` events and exactly one terminal `done` event on success.
+- `agent_message` data must include `request_id`, `session_id`, `message_id`, `delta`, and accumulated `content`.
+- `done` data must include `request_id`, `session_id`, `message_id`, `generation_source`, `generation_model`, and a `result_ref`.
+- Provider configuration, raw provider errors, API keys, hidden test source, hidden case IDs, and reference answers must never be returned or logged.
+- The prompt context may include current knowledge point, safe exercise prompt/starter code, visible run summary, and learner message only.
+- When model configuration is disabled, incomplete, failing, or produces an invalid/empty stream before useful output, return deterministic teaching guidance.
+
+### 4. Validation & Error Matrix
+
+- Blank `content` or `client_message_id` -> `VALIDATION_ERROR` with 400 in JSON mode or one SSE `error` event in streaming mode.
+- Missing or inactive learning session -> `SESSION_NOT_FOUND` with 404 in JSON mode or one SSE `error` event in streaming mode.
+- Same idempotency key with a different request body -> `IDEMPOTENCY_CONFLICT`, `recoverable=false`.
+- Same idempotency key with the same request body -> replay the stored completed assistant message; SSE replay may send it as one `agent_message` plus `done`.
+- Model failure before useful output -> deterministic response with `generation_source=deterministic`.
+- Model stream interruption after partial output -> SSE `error` event with recoverable retry guidance and no stored successful response.
+- Unexpected server failure -> `INTERNAL_ERROR` without raw provider details, prompt text, code submissions, or secrets.
+
+### 5. Good/Base/Bad Cases
+
+- Good: configured OpenAI-compatible provider streams deltas, the route accumulates safe content, stores the final response once, and replays the same `client_message_id` without calling the model again.
+- Base: local development has no model key; the endpoint still returns deterministic guidance and all tests pass without live provider access.
+- Bad: adding a durable chat-history table for this MVP, exposing hidden test data in prompt/response, or using WebSocket/global chatbot behavior for active learning composer messages.
+
+### 6. Tests Required
+
+- API-test JSON success and idempotent replay for a real active learning session.
+- API-test SSE success with ordered `agent_message` chunks followed by terminal `done`.
+- API-test missing session and validation errors in both JSON and SSE modes.
+- API-test LLM-disabled or LLM-failure fallback and assert provider raw details do not leak.
+- Unit-test OpenAI-compatible streaming payload compatibility so unsupported `temperature` is omitted by default.
+- Run the full backend pytest suite and `pnpm --dir .\aearn desktop:check` for cross-layer composer changes.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+payload = {"model": model, "input": prompt, "stream": True, "temperature": 0.3}
+return {"content": provider_error_body}
+```
+
+This can break Responses API-compatible providers that reject unsupported fields and can leak provider details to the UI.
+
+#### Correct
+
+```python
+chunks = OpenAICompatibleClient(settings).complete_text_stream(messages, temperature=None)
+```
+
+The feature owns safe prompt construction and fallback, while the provider client omits optional parameters unless explicitly requested.
+
 ## Scenario: Backend SSE Streaming for Long-Running POST Endpoints
 
 ### 1. Scope / Trigger
