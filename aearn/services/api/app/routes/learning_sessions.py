@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.core.errors import error_response, request_id_from
 from app.db.connection import connect
+from app.agents.guardrails import assert_safe_teaching_output
 from app.models.learning_sessions import (
     CheckExplanationRequest,
     ExplainErrorRequest,
@@ -645,7 +646,9 @@ async def _learning_message_stream(
         generation_model = generation.generation_model
         try:
             async for delta in _iter_generation_chunks(request, generation.chunks):
-                full_text += delta
+                candidate_text = full_text + delta
+                assert_safe_teaching_output(candidate_text)
+                full_text = candidate_text
                 yield writer.event(
                     "agent_message",
                     _agent_message_event(

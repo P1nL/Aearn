@@ -377,6 +377,8 @@ The feature tries the model only through a testable boundary and keeps determini
 - Local protocol boundary: `TextCompletionClient.complete_text_stream(messages, temperature=None)`.
 - Default configured model path: `AgentsSDKLearningConversationClient.complete_text_stream(...)`, backed by `openai-agents`.
 - Dependency signature: `openai-agents==0.17.3` in `aearn/services/api/pyproject.toml`.
+- SDK tool factory signature: `app/agents/tools.py::build_teaching_tools(messages) -> list[Tool]`.
+- SDK guardrail factory signature: `app/agents/guardrails.py::build_teaching_guardrails() -> tuple[list[InputGuardrail], list[OutputGuardrail]]`.
 
 ### 3. Contracts
 
@@ -387,6 +389,9 @@ The feature tries the model only through a testable boundary and keeps determini
 - Provider configuration, raw provider errors, API keys, hidden test source, hidden case IDs, and reference answers must never be returned or logged.
 - The prompt context may include current knowledge point, safe exercise prompt/starter code, visible run summary, and learner message only.
 - Aearn-owned SDK modules may use SDK `Agent`, `Runner.run_streamed`, `ModelSettings`, and `OpenAIProvider`, but product API shapes and durable state remain in Aearn services/repositories.
+- Teaching-agent SDK tools may read only the already-sanitized learning evidence prepared by `learning_conversation.py`; they must return bounded summaries and must not read or write repositories directly.
+- Teaching-agent SDK tools must not return hidden case IDs, hidden test source, `solution_reference`, full submitted code, provider payloads, raw prompts, API keys, or full note bodies.
+- Teaching-agent guardrails must exist at the SDK-agent boundary and at the public response boundary so fake clients and SDK clients both pass through the same leak checks before JSON or SSE output reaches the frontend.
 - SDK tracing must be disabled by default for this path unless a dedicated tracing configuration is explicitly designed.
 - SDK provider base URL handling must preserve existing `OPENAI_BASE_URL` behavior: both `https://provider.example` and `https://provider.example/v1` must resolve to the OpenAI client base URL ending in `/v1`.
 - When model configuration is disabled, incomplete, failing, or produces an invalid/empty stream before useful output, return deterministic teaching guidance.
@@ -399,14 +404,17 @@ The feature tries the model only through a testable boundary and keeps determini
 - Same idempotency key with the same request body -> replay the stored completed assistant message; SSE replay may send it as one `agent_message` plus `done`.
 - Model failure before useful output -> deterministic response with `generation_source=deterministic`.
 - SDK runner exception, invalid SDK event stream, or empty SDK output before useful output -> deterministic response with `generation_source=deterministic`.
+- Guardrail-blocked learner request or model output before useful output -> deterministic response with `generation_source=deterministic`.
 - Model stream interruption after partial output -> SSE `error` event with recoverable retry guidance and no stored successful response.
+- Guardrail-blocked model output after at least one public SSE `agent_message` chunk -> SSE `error` event with recoverable retry guidance and no stored successful idempotency response.
 - Unexpected server failure -> `INTERNAL_ERROR` without raw provider details, prompt text, code submissions, or secrets.
 
 ### 5. Good/Base/Bad Cases
 
 - Good: configured OpenAI-compatible provider streams deltas, the route accumulates safe content, stores the final response once, and replays the same `client_message_id` without calling the model again.
+- Good: SDK tools summarize current stage, knowledge point, exercise metadata, and visible latest-attempt facts without exposing raw code submissions or hidden identifiers.
 - Base: local development has no model key; the endpoint still returns deterministic guidance and all tests pass without live provider access.
-- Bad: adding a durable chat-history table for this MVP, exposing hidden test data in prompt/response, using WebSocket/global chatbot behavior for active learning composer messages, or exposing SDK event names directly through the public API.
+- Bad: adding a durable chat-history table for this MVP, exposing hidden test data in prompt/response, using WebSocket/global chatbot behavior for active learning composer messages, exposing SDK event names directly through the public API, or letting an SDK tool mutate `Attempt`, `ReviewState`, `ReviewLog`, `Note`, `LearningSession`, or `idempotency_records`.
 
 ### 6. Tests Required
 
@@ -414,8 +422,11 @@ The feature tries the model only through a testable boundary and keeps determini
 - API-test SSE success with ordered `agent_message` chunks followed by terminal `done`.
 - API-test missing session and validation errors in both JSON and SSE modes.
 - API-test LLM-disabled or LLM-failure fallback and assert provider raw details do not leak.
+- API-test guardrail-blocked JSON model output and assert deterministic fallback without leaked hidden IDs, key-like tokens, or complete-answer wording.
+- API-test guardrail-blocked SSE output after a partial safe chunk and assert a recoverable `error` event with no stored successful idempotency response.
 - Unit-test OpenAI-compatible streaming payload compatibility so unsupported `temperature` is omitted by default.
-- Unit-test the SDK-backed client with a fake SDK runner; tests must assert no live model call is required, tracing is disabled, text deltas are extracted, and base URLs are normalized.
+- Unit-test the SDK-backed client with a fake SDK runner; tests must assert no live model call is required, tracing is disabled, text deltas are extracted, base URLs are normalized, SDK tools are attached, and guardrails are attached.
+- Unit-test SDK tool summary helpers and guardrail helpers directly; assert summaries omit hidden case IDs, `solution_reference`, full starter/submitted code, provider errors, and raw prompt content.
 - Run the full backend pytest suite and `pnpm --dir .\aearn desktop:check` for cross-layer composer changes.
 
 ### 7. Wrong vs Correct
@@ -439,6 +450,25 @@ chunks = AgentsSDKLearningConversationClient(settings).complete_text_stream(
 ```
 
 The feature owns safe prompt construction, fallback, idempotency, and SSE framing while the SDK client remains behind the local `TextCompletionClient` boundary.
+
+#### Wrong
+
+```python
+@function_tool
+def update_attempt_score(attempt_id: str, score: int) -> dict[str, object]:
+    return repository.update_score(attempt_id, score)
+```
+
+SDK tools in the learning conversation path must not mutate durable Aearn product state; retry safety and writes belong to services/repositories.
+
+#### Correct
+
+```python
+tools = build_teaching_tools(messages)
+agent = build_agent(..., tools=tools, input_guardrails=input_guardrails)
+```
+
+Tools are derived from the sanitized message evidence and return bounded read-only summaries; public JSON/SSE responses are still guarded by Aearn-side leak checks.
 
 ## Scenario: Backend SSE Streaming for Long-Running POST Endpoints
 

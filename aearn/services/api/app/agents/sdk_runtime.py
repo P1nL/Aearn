@@ -6,7 +6,7 @@ import threading
 from collections.abc import AsyncIterator, Callable, Iterable, Mapping, Sequence
 from typing import Any, Protocol
 
-from agents import Agent, ModelSettings, RawResponsesStreamEvent, RunConfig
+from agents import Agent, InputGuardrail, ModelSettings, OutputGuardrail, RawResponsesStreamEvent, RunConfig, Tool
 from agents.models.openai_provider import OpenAIProvider
 
 from app.core.config import Settings
@@ -66,12 +66,18 @@ def build_agent(
     instructions: str,
     model: str,
     temperature: float | None,
+    tools: Sequence[Tool] | None = None,
+    input_guardrails: Sequence[InputGuardrail[object]] | None = None,
+    output_guardrails: Sequence[OutputGuardrail[object]] | None = None,
 ) -> Agent[object]:
     return Agent(
         name=name,
         instructions=instructions,
+        tools=list(tools or []),
         model=model,
         model_settings=ModelSettings(temperature=temperature),
+        input_guardrails=list(input_guardrails or []),
+        output_guardrails=list(output_guardrails or []),
     )
 
 
