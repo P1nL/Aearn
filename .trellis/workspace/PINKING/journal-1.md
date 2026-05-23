@@ -470,3 +470,36 @@ Implemented read-only OpenAI Agents SDK teaching tools, SDK and Aearn-side teach
 ### Next Steps
 
 - None - task complete
+
+
+## Session 15: SDK exercise coach endpoints
+
+**Date**: 2026-05-23
+**Task**: SDK exercise coach endpoints
+**Branch**: `main`
+
+### Summary
+
+Implemented SDK-backed hint, explain-error, and explanation-check coaching with safe summaries, guardrails, deterministic fallback, repository-owned Attempt writes, focused API/LLM tests, and backend spec updates.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `3e0b319` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

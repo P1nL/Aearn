@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 14
+- **Total Sessions**: 15
 - **Last Active**: 2026-05-23
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~472 | Active |
+| `journal-1.md` | ~505 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 15 | 2026-05-23 | SDK exercise coach endpoints | `3e0b319` | `main` |
 | 14 | 2026-05-23 | SDK teaching tools and guardrails | `85d23ca` | `main` |
 | 13 | 2026-05-23 | OpenAI Agents SDK foundation | `b2d3922` | `main` |
 | 12 | 2026-05-23 | Streaming learning conversation | `f5bf993` | `main` |
