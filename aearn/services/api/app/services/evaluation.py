@@ -24,11 +24,11 @@ def build_code_completion_result(
     runtime_gate = runtime_result.runtime_status == "success"
     explanation_gate = bool(explanation_result["passed"])
 
-    score_breakdown = {
+    score_breakdown: dict[str, int] = {
         "completion_correctness": 2 if runtime_result.core_blank_gate else 1 if runtime_result.any_blank_passed else 0,
         "runtime_and_tests": _runtime_and_test_score(runtime_result),
         "error_diagnosis": _error_diagnosis_score(runtime_result, explanation, error_count),
-        "explanation_check": int(explanation_result["score"]),
+        "explanation_check": _int_or_zero(explanation_result.get("score")),
     }
     hard_gates = {
         "runtime_gate": runtime_gate,
@@ -49,7 +49,7 @@ def build_code_completion_result(
     feedback = _feedback_text(result, runtime_result, weak_points, hint_usage_count, error_count)
     evaluation_status = "evaluated" if _is_valid_result(result, score, score_breakdown, hard_gates, fsrs_rating) else "needs_manual_review"
 
-    response = {
+    response: dict[str, object] = {
         "result": result,
         "score": score,
         "score_breakdown": score_breakdown,
@@ -63,7 +63,7 @@ def build_code_completion_result(
         "next_action": next_action,
         "fsrs_rating": fsrs_rating,
     }
-    service_fields = {
+    service_fields: dict[str, object] = {
         "evaluation_status": evaluation_status,
         "explanation_check_result": explanation_result,
     }
@@ -109,7 +109,7 @@ def _build_explanation_result(
         }
     if explanation_check_result is not None:
         result = str(explanation_check_result.get("result", "failed"))
-        score = int(explanation_check_result.get("score", 0))
+        score = _int_or_zero(explanation_check_result.get("score", 0))
         follow_up_required = bool(explanation_check_result.get("follow_up_required", False))
         return {
             "result": result,
@@ -233,10 +233,25 @@ def _is_valid_result(
         return False
     if fsrs_rating not in {"Again", "Hard", "Good", "Easy"}:
         return False
-    if score != sum(int(value) for value in score_breakdown.values()):
+    if score != sum(_int_or_zero(value) for value in score_breakdown.values()):
         return False
     if score < 0 or score > 8:
         return False
     if (not bool(hard_gates["runtime_gate"]) or not bool(hard_gates["test_gate"]) or not bool(hard_gates["core_blank_gate"])) and result in {"passed", "easy"}:
         return False
     return True
+
+
+def _int_or_zero(value: object) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return 0
+    return 0

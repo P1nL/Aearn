@@ -2,7 +2,7 @@
 
 ## Status
 
-This task is in `planning`. Do not implement until it is explicitly started with `task.py start`.
+Implementation is complete and ready for final verification. The task was started with `task.py start`; remaining work is validation, commit, archive, and journal closeout.
 
 ## Preconditions
 

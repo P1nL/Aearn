@@ -38,6 +38,8 @@ def client() -> TestClient:
 @pytest.fixture(autouse=True)
 def disable_llm_generation(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(session_repository, "build_llm_error_explanation", lambda *args, **kwargs: None)
+    monkeypatch.setattr(session_repository, "build_sdk_hint_response", lambda *args, **kwargs: None)
+    monkeypatch.setattr(session_repository, "build_sdk_explanation_check_response", lambda *args, **kwargs: None)
 
 
 def test_start_learning_session_creates_and_reuses_active_session(client: TestClient) -> None:
@@ -799,6 +801,70 @@ def test_hint_endpoint_is_idempotent_and_accumulates_hint_count(client: TestClie
     assert second_hint.json()["hint_usage_count"] == 2
 
 
+def test_hint_endpoint_uses_sdk_coach_without_changing_contract(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user, plan = _confirmed_plan(client, language="javascript")
+    knowledge_point_id = plan["knowledge_points"][0]["id"]
+    start_response = client.post(
+        "/api/learning-sessions/start",
+        json={
+            "user_id": user["id"],
+            "plan_id": plan["LearningPlan"]["id"],
+            "knowledge_point_id": knowledge_point_id,
+        },
+    )
+    session = start_response.json()
+    exercise = session["exercise"]
+
+    run_response = client.post(
+        f"/api/learning-sessions/{session['session_id']}/exercises/{exercise['id']}/run",
+        json={
+            "code": exercise["starter_code"],
+            "filled_blanks": {},
+            "runtime_profile_id": exercise["runtime_profile"]["id"],
+            "run_mode": "visible_tests",
+        },
+    )
+    run_body = run_response.json()
+    calls = {"count": 0}
+
+    def fake_sdk_hint(*args, **kwargs) -> dict[str, object]:  # type: ignore[no-untyped-def]
+        calls["count"] += 1
+        return {
+            "hint": {
+                "hint_level": "concept",
+                "content": "SDK 提示：先解释共享状态，再只改当前空缺。",
+            },
+            "hint_usage_count": 1,
+            "affected_score": {"max_result": "passed", "score_penalty_hint": 1},
+            "next_action": "retry_same",
+        }
+
+    monkeypatch.setattr(session_repository, "build_sdk_hint_response", fake_sdk_hint)
+
+    response = client.post(
+        f"/api/learning-sessions/{session['session_id']}/exercises/{exercise['id']}/hint",
+        json={
+            "attempt_id": run_body["attempt_id"],
+            "current_code": exercise["starter_code"],
+            "blank_id": "blank_2",
+            "hint_level": "concept",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["hint"] == {
+        "hint_level": "concept",
+        "content": "SDK 提示：先解释共享状态，再只改当前空缺。",
+    }
+    assert body["hint_usage_count"] == 1
+    assert set(body) == {"hint", "hint_usage_count", "affected_score", "next_action"}
+    assert calls["count"] == 1
+
+
 def test_hidden_failure_can_be_explained_without_leaking_hidden_source(client: TestClient) -> None:
     user, plan = _confirmed_plan(client, language="javascript")
     knowledge_point_id = plan["knowledge_points"][0]["id"]
@@ -941,6 +1007,69 @@ def test_explain_error_llm_generation_is_idempotent(client: TestClient, monkeypa
     assert second.status_code == 200
     assert first.json()["generation_source"] == "llm"
     assert second.json()["idempotency_replayed"] is True
+    assert calls["count"] == 1
+
+
+def test_check_explanation_endpoint_uses_sdk_coach_without_changing_contract(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user, plan = _confirmed_plan(client, language="javascript")
+    knowledge_point_id = plan["knowledge_points"][0]["id"]
+    start_response = client.post(
+        "/api/learning-sessions/start",
+        json={
+            "user_id": user["id"],
+            "plan_id": plan["LearningPlan"]["id"],
+            "knowledge_point_id": knowledge_point_id,
+        },
+    )
+    session = start_response.json()
+    exercise = session["exercise"]
+    run_response = client.post(
+        f"/api/learning-sessions/{session['session_id']}/exercises/{exercise['id']}/run",
+        json={
+            "code": exercise["starter_code"],
+            "filled_blanks": {},
+            "runtime_profile_id": exercise["runtime_profile"]["id"],
+            "run_mode": "visible_tests",
+        },
+    )
+    run_body = run_response.json()
+    calls = {"count": 0}
+
+    def fake_sdk_check(*args, **kwargs) -> dict[str, object]:  # type: ignore[no-untyped-def]
+        calls["count"] += 1
+        return {
+            "result": "partial",
+            "score": 1,
+            "score_breakdown": {"explanation_check": 1},
+            "follow_up_required": True,
+            "feedback": "SDK 检查：主路径接近，但还要说明连续点击为什么会保留状态。",
+            "next_action": "retry_same",
+        }
+
+    monkeypatch.setattr(session_repository, "build_sdk_explanation_check_response", fake_sdk_check)
+
+    response = client.post(
+        f"/api/learning-sessions/{session['session_id']}/attempts/{run_body['attempt_id']}/check-explanation",
+        json={
+            "explanation": "状态变量在外层。",
+            "focus": "core_logic",
+            "round": 1,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body == {
+        "result": "partial",
+        "score": 1,
+        "score_breakdown": {"explanation_check": 1},
+        "follow_up_required": True,
+        "feedback": "SDK 检查：主路径接近，但还要说明连续点击为什么会保留状态。",
+        "next_action": "retry_same",
+    }
     assert calls["count"] == 1
 
 

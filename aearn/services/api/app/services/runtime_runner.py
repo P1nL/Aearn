@@ -160,8 +160,8 @@ def run_exercise(
 
     inspection = inspect_submission(exercise, code, filled_blanks)
     test_results = _evaluate_cases(exercise, inspection)
-    total_weight = sum(float(result["weight"]) for result in test_results)
-    passed_weight = sum(float(result["weight"]) for result in test_results if bool(result["passed"]))
+    total_weight = sum(_float_or_zero(result.get("weight")) for result in test_results)
+    passed_weight = sum(_float_or_zero(result.get("weight")) for result in test_results if bool(result["passed"]))
     passed_test_count = sum(1 for result in test_results if bool(result["passed"]))
     total_test_count = len(test_results)
     test_pass_rate = 0.0 if total_weight == 0 else round(passed_weight / total_weight, 4)
@@ -339,6 +339,17 @@ def _next_action_for_run(
     if failed_results:
         return "show_hint"
     return "retry_same"
+
+
+def _float_or_zero(value: object) -> float:
+    if isinstance(value, int | float):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return 0.0
+    return 0.0
 
 
 def _matches_patterns(value: str, patterns: object) -> bool:
