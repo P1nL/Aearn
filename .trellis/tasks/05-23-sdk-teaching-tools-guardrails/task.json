@@ -3,7 +3,7 @@
   "name": "sdk-teaching-tools-guardrails",
   "title": "Add SDK teaching-agent tools and guardrails",
   "description": "Add read-only Aearn context tools and output/input guardrails to the OpenAI Agents SDK teaching-agent path, preserving existing learning message API, SSE, idempotency, deterministic fallback, and Aearn-owned durable state.",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,

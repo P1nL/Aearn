@@ -9,6 +9,7 @@ from typing import Protocol
 
 from psycopg import Connection
 
+from app.agents.guardrails import assert_safe_teaching_output, check_teaching_request
 from app.agents.learning_conversation_agent import AgentsSDKLearningConversationClient
 from app.core.config import Settings, get_settings
 from app.services.exercise_repository import get_exercise
@@ -151,6 +152,8 @@ def start_learning_message_generation(
     client: TextCompletionClient | None = None,
 ) -> LearningMessageGeneration:
     effective_settings = settings or get_settings()
+    if check_teaching_request(user_content).blocked:
+        return deterministic_learning_message_generation(context, user_content=user_content)
     if client is None:
         if not effective_settings.openai_compatible_configured:
             return deterministic_learning_message_generation(context, user_content=user_content)
@@ -196,6 +199,7 @@ def collect_learning_message_text(
     try:
         for delta in generation.chunks:
             if delta:
+                assert_safe_teaching_output("".join(chunks) + delta)
                 chunks.append(delta)
     except (LLMCallError, LLMConfigurationError, LLMInvalidResponseError, TypeError, ValueError):
         fallback = deterministic_learning_message_generation(context, user_content=user_content)

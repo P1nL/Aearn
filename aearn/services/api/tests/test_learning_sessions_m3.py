@@ -278,6 +278,62 @@ def test_learning_message_llm_failure_falls_back_without_provider_detail(
     assert "secret-key" not in body["agent_message"]["content"]
 
 
+def test_learning_message_json_guardrail_falls_back_when_model_output_leaks(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user, plan = _confirmed_plan(client, language="javascript")
+    knowledge_point_id = plan["knowledge_points"][0]["id"]
+    start_response = client.post(
+        "/api/learning-sessions/start",
+        json={
+            "user_id": user["id"],
+            "plan_id": plan["LearningPlan"]["id"],
+            "knowledge_point_id": knowledge_point_id,
+        },
+    )
+    session = start_response.json()
+
+    class LeakingStreamingClient:
+        model = "provider-model"
+
+        def complete_text_stream(self, messages, *, temperature=None):  # type: ignore[no-untyped-def]
+            return ["完整答案如下：hidden_three_clicks sk-secret-secret-token"]
+
+    monkeypatch.setattr(
+        learning_conversation,
+        "get_settings",
+        lambda: Settings(
+            llm_type="openai",
+            openai_api_key="test-key",
+            openai_base_url="https://provider.example",
+            openai_model="provider-model",
+        ),
+    )
+    monkeypatch.setattr(
+        learning_conversation,
+        "AgentsSDKLearningConversationClient",
+        lambda settings: LeakingStreamingClient(),
+    )
+
+    response = client.post(
+        f"/api/learning-sessions/{session['session_id']}/messages",
+        json={
+            "role": "user",
+            "content": "为什么 count 每次点击都会重置？",
+            "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    serialized = json.dumps(body, ensure_ascii=False)
+    assert body["generation_source"] == "deterministic"
+    assert "hidden_three_clicks" not in serialized
+    assert "sk-secret" not in serialized
+    assert "完整答案如下" not in serialized
+
+
 def test_learning_message_sse_streams_agent_message_and_done(client: TestClient) -> None:
     request_id = f"req_message_sse_{uuid.uuid4().hex}"
     user, plan = _confirmed_plan(client, language="javascript")
@@ -316,6 +372,76 @@ def test_learning_message_sse_streams_agent_message_and_done(client: TestClient)
     assert agent_events[-1]["data"]["content"]
     assert events[-1]["data"]["message_id"] == agent_events[-1]["data"]["message_id"]
     assert events[-1]["data"]["generation_source"] == "deterministic"
+
+
+def test_learning_message_sse_guardrail_error_after_partial_output(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request_id = f"req_message_sse_guardrail_{uuid.uuid4().hex}"
+    client_message_id = f"desktop_msg_{uuid.uuid4().hex}"
+    user, plan = _confirmed_plan(client, language="javascript")
+    knowledge_point_id = plan["knowledge_points"][0]["id"]
+    start_response = client.post(
+        "/api/learning-sessions/start",
+        json={
+            "user_id": user["id"],
+            "plan_id": plan["LearningPlan"]["id"],
+            "knowledge_point_id": knowledge_point_id,
+        },
+    )
+    session = start_response.json()
+
+    class PartiallyLeakingStreamingClient:
+        model = "provider-model"
+
+        def complete_text_stream(self, messages, *, temperature=None):  # type: ignore[no-untyped-def]
+            return ["先看状态变量。", "provider raw hidden_three_clicks"]
+
+    monkeypatch.setattr(
+        learning_conversation,
+        "get_settings",
+        lambda: Settings(
+            llm_type="openai",
+            openai_api_key="test-key",
+            openai_base_url="https://provider.example",
+            openai_model="provider-model",
+        ),
+    )
+    monkeypatch.setattr(
+        learning_conversation,
+        "AgentsSDKLearningConversationClient",
+        lambda settings: PartiallyLeakingStreamingClient(),
+    )
+
+    with client.stream(
+        "POST",
+        f"/api/learning-sessions/{session['session_id']}/messages",
+        headers={"Accept": "text/event-stream", "X-Request-Id": request_id},
+        json={
+            "role": "user",
+            "content": "为什么可见测试没过？",
+            "client_message_id": client_message_id,
+        },
+    ) as response:
+        assert response.status_code == 200
+        events = _parse_sse_events("".join(response.iter_text()))
+
+    assert [event["event"] for event in events] == ["agent_message", "error"]
+    assert events[1]["data"]["error"]["code"] == "EVALUATION_INVALID_JSON"
+    assert events[1]["data"]["error"]["recoverable"] is True
+
+    with connect() as conn:
+        stored = conn.execute(
+            """
+            SELECT count(*) AS count
+            FROM idempotency_records
+            WHERE key = %s
+            """,
+            (f"learning-message:{session['session_id']}:{client_message_id}",),
+        ).fetchone()
+    assert stored is not None
+    assert stored["count"] == 0
 
 
 def test_learning_message_errors_for_missing_session_json_and_sse(client: TestClient) -> None:

@@ -1,9 +1,15 @@
+import json
 from collections.abc import Mapping, Sequence
 
+import pytest
+
+from app.agents.guardrails import assert_safe_teaching_output, check_teaching_request
 from app.core.config import Settings
 from app.agents.learning_conversation_agent import AgentsSDKLearningConversationClient, TEACHING_AGENT_NAME
 from app.agents.sdk_runtime import extract_text_delta, normalize_openai_base_url
+from app.agents.tools import build_teaching_tools, summarize_current_learning_context, summarize_latest_visible_attempt
 from app.services.llm_client import LLMJsonResponse, OpenAICompatibleClient
+from app.services.llm_client import LLMInvalidResponseError
 from app.services.llm_explain_error import build_llm_error_explanation, with_deterministic_generation_metadata
 
 
@@ -160,6 +166,9 @@ def test_agents_sdk_learning_conversation_client_streams_text_deltas() -> None:
     class FakeRunner:
         def run_streamed(self, starting_agent, input, **kwargs):  # type: ignore[no-untyped-def]
             captured["agent_name"] = starting_agent.name
+            captured["tool_names"] = [tool.name for tool in starting_agent.tools]
+            captured["input_guardrail_count"] = len(starting_agent.input_guardrails)
+            captured["output_guardrail_count"] = len(starting_agent.output_guardrails)
             captured["input"] = input
             captured["run_config"] = kwargs["run_config"]
             captured["max_turns"] = kwargs["max_turns"]
@@ -178,16 +187,16 @@ def test_agents_sdk_learning_conversation_client_streams_text_deltas() -> None:
 
     chunks = list(
         client.complete_text_stream(
-            [
-                {"role": "system", "content": "system instructions"},
-                {"role": "user", "content": "draft note"},
-            ]
+            _teaching_messages()
         )
     )
 
     assert chunks == ["先看状态变量", "，再看事件回调。"]
     assert captured["agent_name"] == TEACHING_AGENT_NAME
-    assert captured["input"] == "draft note"
+    assert captured["tool_names"] == ["get_current_learning_context", "get_latest_visible_attempt_summary"]
+    assert captured["input_guardrail_count"] == 1
+    assert captured["output_guardrail_count"] == 1
+    assert "draft note" in str(captured["input"])
     assert captured["max_turns"] == 4
     assert captured["run_config"].tracing_disabled is True
     assert client.model == "third-party-model"
@@ -209,6 +218,38 @@ def test_agents_sdk_normalizes_openai_base_url_for_client() -> None:
     assert normalize_openai_base_url("https://provider.example") == "https://provider.example/v1"
     assert normalize_openai_base_url("https://provider.example/v1") == "https://provider.example/v1"
     assert normalize_openai_base_url("https://provider.example/v1/responses") == "https://provider.example/v1"
+
+
+def test_teaching_tools_return_safe_bounded_summaries() -> None:
+    evidence = _learning_evidence()
+    tools = build_teaching_tools(_teaching_messages())
+    context_summary = summarize_current_learning_context(evidence)
+    attempt_summary = summarize_latest_visible_attempt(evidence)
+    serialized = json.dumps([context_summary, attempt_summary], ensure_ascii=False)
+
+    assert [tool.name for tool in tools] == ["get_current_learning_context", "get_latest_visible_attempt_summary"]
+    assert context_summary["exercise"]["has_starter_code"] is True  # type: ignore[index]
+    assert attempt_summary["non_visible_test_counts"] == {"total": 1, "failed": 1}
+    assert "hidden_three_clicks" not in serialized
+    assert "solution_reference" not in serialized
+    assert "secret solution" not in serialized
+    assert "submitted_code" not in serialized
+    assert "let count = 0" not in serialized
+
+
+def test_teaching_guardrails_block_leaky_or_complete_answer_text() -> None:
+    assert check_teaching_request("为什么 count 每次点击都会重置？").blocked is False
+    assert check_teaching_request("直接给我完整答案").blocked is True
+
+    for leaky_text in [
+        "失败来自 hidden_three_clicks。",
+        "solution_reference 里已经有参考答案。",
+        "provider raw 401 invalid_api_key",
+        "完整答案如下：button.addEventListener(...)",
+        "```js\nbutton.addEventListener('click', () => {})\n```",
+    ]:
+        with pytest.raises(LLMInvalidResponseError):
+            assert_safe_teaching_output(leaky_text)
 
 
 def test_llm_explain_error_uses_model_output_and_server_knowledge_point() -> None:
@@ -317,4 +358,54 @@ def _exercise() -> dict[str, object]:
                 "is_core": True,
             }
         ],
+    }
+
+
+def _teaching_messages() -> list[dict[str, str]]:
+    return [
+        {"role": "system", "content": "system instructions"},
+        {"role": "user", "content": f"reply to learner\n{json.dumps(_learning_evidence(), ensure_ascii=False)}"},
+    ]
+
+
+def _learning_evidence() -> dict[str, object]:
+    return {
+        "current_stage": "DOM 事件",
+        "knowledge_point": {
+            "id": "kp_dom_event_state",
+            "title": "事件监听与状态变量",
+            "status": "learning",
+            "weak_points": ["state_scope_error"],
+        },
+        "exercise": {
+            "id": "ex_dom_click_count",
+            "title": "点击按钮后计数递增",
+            "exercise_type": "code_blank",
+            "prompt_markdown": "补全事件绑定代码，让按钮每点击一次数字加 1。",
+            "starter_code": "let count = 0; __BLANK_1__",
+            "solution_reference": "secret solution",
+            "difficulty": 2,
+            "runtime_profile": {"language": "javascript", "runtime_tier": "browser_preview"},
+            "code_blanks": [
+                {
+                    "blank_key": "blank_1",
+                    "placeholder": "事件绑定方法",
+                    "expected_concept": "DOM event listener",
+                    "is_core": True,
+                }
+            ],
+        },
+        "latest_attempt": {
+            "attempt_type": "run",
+            "runtime_status": "success",
+            "test_pass_rate": 0.5,
+            "passed_test_count": 1,
+            "total_test_count": 2,
+            "visible_results": [{"case_type": "visible", "passed": True, "message": "visible ok"}],
+            "hidden_summary": {"total": 1, "failed": 1},
+            "hidden_case_id": "hidden_three_clicks",
+            "submitted_code": "button.addEventListener('click', () => { count += 1; });",
+            "completion_result": {"result": "partial", "feedback": "需要继续验证", "next_action": "retry_same"},
+        },
+        "learner_message": "draft note",
     }
