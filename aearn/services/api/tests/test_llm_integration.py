@@ -1,6 +1,8 @@
 from collections.abc import Mapping, Sequence
 
 from app.core.config import Settings
+from app.agents.learning_conversation_agent import AgentsSDKLearningConversationClient, TEACHING_AGENT_NAME
+from app.agents.sdk_runtime import extract_text_delta, normalize_openai_base_url
 from app.services.llm_client import LLMJsonResponse, OpenAICompatibleClient
 from app.services.llm_explain_error import build_llm_error_explanation, with_deterministic_generation_metadata
 
@@ -131,6 +133,82 @@ def test_openai_compatible_client_streams_text_deltas() -> None:
     assert captured["payload"]["stream"] is True
     assert "text" not in captured["payload"]
     assert "temperature" not in captured["payload"]
+
+
+def test_agents_sdk_learning_conversation_client_streams_text_deltas() -> None:
+    captured: dict[str, object] = {}
+
+    class FakeDelta:
+        type = "response.output_text.delta"
+
+        def __init__(self, delta: str) -> None:
+            self.delta = delta
+
+    class FakeEvent:
+        type = "raw_response_event"
+
+        def __init__(self, delta: str) -> None:
+            self.data = FakeDelta(delta)
+
+    class FakeStreamedRun:
+        final_output = None
+
+        async def stream_events(self):  # type: ignore[no-untyped-def]
+            yield FakeEvent("先看状态变量")
+            yield FakeEvent("，再看事件回调。")
+
+    class FakeRunner:
+        def run_streamed(self, starting_agent, input, **kwargs):  # type: ignore[no-untyped-def]
+            captured["agent_name"] = starting_agent.name
+            captured["input"] = input
+            captured["run_config"] = kwargs["run_config"]
+            captured["max_turns"] = kwargs["max_turns"]
+            return FakeStreamedRun()
+
+    client = AgentsSDKLearningConversationClient(
+        Settings(
+            llm_type="openai",
+            openai_api_key="test-key",
+            openai_base_url="https://provider.example/v1",
+            openai_model="third-party-model",
+            llm_timeout_seconds=9,
+        ),
+        runner=FakeRunner(),
+    )
+
+    chunks = list(
+        client.complete_text_stream(
+            [
+                {"role": "system", "content": "system instructions"},
+                {"role": "user", "content": "draft note"},
+            ]
+        )
+    )
+
+    assert chunks == ["先看状态变量", "，再看事件回调。"]
+    assert captured["agent_name"] == TEACHING_AGENT_NAME
+    assert captured["input"] == "draft note"
+    assert captured["max_turns"] == 4
+    assert captured["run_config"].tracing_disabled is True
+    assert client.model == "third-party-model"
+
+
+def test_agents_sdk_extract_text_delta_accepts_raw_event_duck_type() -> None:
+    class FakeDelta:
+        type = "response.output_text.delta"
+        delta = "delta text"
+
+    class FakeEvent:
+        type = "raw_response_event"
+        data = FakeDelta()
+
+    assert extract_text_delta(FakeEvent()) == "delta text"
+
+
+def test_agents_sdk_normalizes_openai_base_url_for_client() -> None:
+    assert normalize_openai_base_url("https://provider.example") == "https://provider.example/v1"
+    assert normalize_openai_base_url("https://provider.example/v1") == "https://provider.example/v1"
+    assert normalize_openai_base_url("https://provider.example/v1/responses") == "https://provider.example/v1"
 
 
 def test_llm_explain_error_uses_model_output_and_server_knowledge_point() -> None:

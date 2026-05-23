@@ -16,6 +16,7 @@ dependencies = [
   "celery==5.5.3",
   "pydantic",
   "python-dotenv",
+  "openai-agents==0.17.3",
 ]
 
 [dependency-groups]

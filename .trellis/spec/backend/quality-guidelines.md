@@ -365,6 +365,7 @@ The feature tries the model only through a testable boundary and keeps determini
 
 - Trigger: implementing or changing model-backed learning conversation messages for the active learning workspace.
 - Scope: `POST /api/learning-sessions/{session_id}/messages`, `LearningMessageRequest`, `app/services/learning_conversation.py`, `app/services/llm_client.py`, `idempotency_records`, and API tests for JSON and SSE modes.
+- SDK-backed Agent modules for this flow belong under `app/agents/`, for example `app/agents/learning_conversation_agent.py` and `app/agents/sdk_runtime.py`.
 
 ### 2. Signatures
 
@@ -373,7 +374,9 @@ The feature tries the model only through a testable boundary and keeps determini
 - Streaming selector: `Accept: text/event-stream`
 - Request tracing: optional `X-Request-Id`
 - Idempotency key: `learning-message:{session_id}:{client_message_id}`
-- LLM stream call: `OpenAICompatibleClient.complete_text_stream(messages, temperature=None)`
+- Local protocol boundary: `TextCompletionClient.complete_text_stream(messages, temperature=None)`.
+- Default configured model path: `AgentsSDKLearningConversationClient.complete_text_stream(...)`, backed by `openai-agents`.
+- Dependency signature: `openai-agents==0.17.3` in `aearn/services/api/pyproject.toml`.
 
 ### 3. Contracts
 
@@ -383,6 +386,9 @@ The feature tries the model only through a testable boundary and keeps determini
 - `done` data must include `request_id`, `session_id`, `message_id`, `generation_source`, `generation_model`, and a `result_ref`.
 - Provider configuration, raw provider errors, API keys, hidden test source, hidden case IDs, and reference answers must never be returned or logged.
 - The prompt context may include current knowledge point, safe exercise prompt/starter code, visible run summary, and learner message only.
+- Aearn-owned SDK modules may use SDK `Agent`, `Runner.run_streamed`, `ModelSettings`, and `OpenAIProvider`, but product API shapes and durable state remain in Aearn services/repositories.
+- SDK tracing must be disabled by default for this path unless a dedicated tracing configuration is explicitly designed.
+- SDK provider base URL handling must preserve existing `OPENAI_BASE_URL` behavior: both `https://provider.example` and `https://provider.example/v1` must resolve to the OpenAI client base URL ending in `/v1`.
 - When model configuration is disabled, incomplete, failing, or produces an invalid/empty stream before useful output, return deterministic teaching guidance.
 
 ### 4. Validation & Error Matrix
@@ -392,6 +398,7 @@ The feature tries the model only through a testable boundary and keeps determini
 - Same idempotency key with a different request body -> `IDEMPOTENCY_CONFLICT`, `recoverable=false`.
 - Same idempotency key with the same request body -> replay the stored completed assistant message; SSE replay may send it as one `agent_message` plus `done`.
 - Model failure before useful output -> deterministic response with `generation_source=deterministic`.
+- SDK runner exception, invalid SDK event stream, or empty SDK output before useful output -> deterministic response with `generation_source=deterministic`.
 - Model stream interruption after partial output -> SSE `error` event with recoverable retry guidance and no stored successful response.
 - Unexpected server failure -> `INTERNAL_ERROR` without raw provider details, prompt text, code submissions, or secrets.
 
@@ -399,7 +406,7 @@ The feature tries the model only through a testable boundary and keeps determini
 
 - Good: configured OpenAI-compatible provider streams deltas, the route accumulates safe content, stores the final response once, and replays the same `client_message_id` without calling the model again.
 - Base: local development has no model key; the endpoint still returns deterministic guidance and all tests pass without live provider access.
-- Bad: adding a durable chat-history table for this MVP, exposing hidden test data in prompt/response, or using WebSocket/global chatbot behavior for active learning composer messages.
+- Bad: adding a durable chat-history table for this MVP, exposing hidden test data in prompt/response, using WebSocket/global chatbot behavior for active learning composer messages, or exposing SDK event names directly through the public API.
 
 ### 6. Tests Required
 
@@ -408,6 +415,7 @@ The feature tries the model only through a testable boundary and keeps determini
 - API-test missing session and validation errors in both JSON and SSE modes.
 - API-test LLM-disabled or LLM-failure fallback and assert provider raw details do not leak.
 - Unit-test OpenAI-compatible streaming payload compatibility so unsupported `temperature` is omitted by default.
+- Unit-test the SDK-backed client with a fake SDK runner; tests must assert no live model call is required, tracing is disabled, text deltas are extracted, and base URLs are normalized.
 - Run the full backend pytest suite and `pnpm --dir .\aearn desktop:check` for cross-layer composer changes.
 
 ### 7. Wrong vs Correct
@@ -415,19 +423,22 @@ The feature tries the model only through a testable boundary and keeps determini
 #### Wrong
 
 ```python
-payload = {"model": model, "input": prompt, "stream": True, "temperature": 0.3}
-return {"content": provider_error_body}
+agent = Agent(name="Teaching", instructions=prompt, model=model)
+return Runner.run_streamed(agent, input).stream_events()
 ```
 
-This can break Responses API-compatible providers that reject unsupported fields and can leak provider details to the UI.
+This leaks SDK event shapes through the feature layer and can bypass deterministic fallback, Aearn SSE framing, idempotency storage, and provider error redaction.
 
 #### Correct
 
 ```python
-chunks = OpenAICompatibleClient(settings).complete_text_stream(messages, temperature=None)
+chunks = AgentsSDKLearningConversationClient(settings).complete_text_stream(
+    messages,
+    temperature=None,
+)
 ```
 
-The feature owns safe prompt construction and fallback, while the provider client omits optional parameters unless explicitly requested.
+The feature owns safe prompt construction, fallback, idempotency, and SSE framing while the SDK client remains behind the local `TextCompletionClient` boundary.
 
 ## Scenario: Backend SSE Streaming for Long-Running POST Endpoints
 

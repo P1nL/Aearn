@@ -1,0 +1,6 @@
+{"file":"docs/architecture/api-contract.md","reason":"Source of truth for learning message endpoint, SSE shape, errors, and frontend contract."}
+{"file":"docs/architecture/langgraph-state-machine.md","reason":"Defines Aearn agent orchestration, write timing, LLM failure handling, and state ownership boundaries."}
+{"file":"docs/architecture/code-completion-evaluation-spec.md","reason":"Defines final evaluation constraints that should not be delegated to SDK runtime in the first slice."}
+{"file":"docs/setup/development-environment.md","reason":"Defines current backend dependencies, model configuration, and third-party OpenAI-compatible provider setup."}
+{"file":".trellis/spec/backend/index.md","reason":"Backend implementation guidelines and source-of-truth cross-checks."}
+{"file":".trellis/tasks/05-23-openai-agents-sdk-foundation/research/openai-agents-sdk.md","reason":"Official SDK capability and dependency research notes for this task."}
