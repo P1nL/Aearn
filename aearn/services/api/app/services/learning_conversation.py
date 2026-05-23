@@ -9,6 +9,7 @@ from typing import Protocol
 
 from psycopg import Connection
 
+from app.agents.learning_conversation_agent import AgentsSDKLearningConversationClient
 from app.core.config import Settings, get_settings
 from app.services.exercise_repository import get_exercise
 from app.services.learning_session_repository import EntityNotFoundError
@@ -16,7 +17,6 @@ from app.services.llm_client import (
     LLMCallError,
     LLMConfigurationError,
     LLMInvalidResponseError,
-    OpenAICompatibleClient,
 )
 from app.services.plan_repository import IdempotencyConflictError, request_hash
 
@@ -155,7 +155,7 @@ def start_learning_message_generation(
         if not effective_settings.openai_compatible_configured:
             return deterministic_learning_message_generation(context, user_content=user_content)
         try:
-            client = OpenAICompatibleClient(effective_settings)
+            client = AgentsSDKLearningConversationClient(effective_settings)
         except LLMConfigurationError:
             return deterministic_learning_message_generation(context, user_content=user_content)
 

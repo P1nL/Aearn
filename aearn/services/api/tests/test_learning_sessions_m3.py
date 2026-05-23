@@ -194,7 +194,11 @@ def test_learning_message_json_uses_configured_model_stream(
             openai_model="fake-teaching-model",
         ),
     )
-    monkeypatch.setattr(learning_conversation, "OpenAICompatibleClient", lambda settings: FakeStreamingClient())
+    monkeypatch.setattr(
+        learning_conversation,
+        "AgentsSDKLearningConversationClient",
+        lambda settings: FakeStreamingClient(),
+    )
 
     response = client.post(
         f"/api/learning-sessions/{session['session_id']}/messages",
@@ -252,7 +256,11 @@ def test_learning_message_llm_failure_falls_back_without_provider_detail(
             openai_model="provider-model",
         ),
     )
-    monkeypatch.setattr(learning_conversation, "OpenAICompatibleClient", lambda settings: FailingStreamingClient())
+    monkeypatch.setattr(
+        learning_conversation,
+        "AgentsSDKLearningConversationClient",
+        lambda settings: FailingStreamingClient(),
+    )
 
     response = client.post(
         f"/api/learning-sessions/{session['session_id']}/messages",

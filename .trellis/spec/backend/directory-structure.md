@@ -27,6 +27,7 @@ aearn/
 ## Module Organization
 
 - `services/api/` owns FastAPI, API contracts, database access, and LangGraph orchestration entry points.
+- `services/api/app/agents/` owns Aearn-specific OpenAI Agents SDK application modules. SDK code belongs here, not inside route handlers or repository modules.
 - `services/worker/` owns asynchronous task execution and Celery integration.
 - `packages/shared/` owns shared contracts only after they are needed by more than one runtime.
 - `infra/` owns Docker Compose and local service wiring.
@@ -46,6 +47,7 @@ aearn/
 ## Examples
 
 - `aearn/services/api/pyproject.toml`
+- `aearn/services/api/app/agents/learning_conversation_agent.py`
 - `aearn/services/api/README.md`
 - `aearn/infra/docker-compose.yml`
 
