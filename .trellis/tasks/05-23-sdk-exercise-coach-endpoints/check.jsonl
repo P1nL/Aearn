@@ -1,0 +1,4 @@
+{"file":"docs/qa/acceptance-test-plan.md","reason":"Agent output quality and no hidden-test/direct-answer leakage checks."}
+{"file":"aearn/services/api/tests/test_llm_integration.py","reason":"Fake SDK runner and fallback tests."}
+{"file":"aearn/services/api/tests/test_learning_sessions_m3.py","reason":"Endpoint contract, idempotency, and Attempt write regressions."}
+{"file":"aearn/services/api/app/services/learning_session_repository.py","reason":"Verify SDK code does not take over durable writes."}

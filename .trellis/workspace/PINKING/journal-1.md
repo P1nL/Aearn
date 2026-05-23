@@ -437,3 +437,36 @@ Added openai-agents SDK foundation for learning conversation, preserved Aearn AP
 ### Next Steps
 
 - None - task complete
+
+
+## Session 14: SDK teaching tools and guardrails
+
+**Date**: 2026-05-23
+**Task**: SDK teaching tools and guardrails
+**Branch**: `main`
+
+### Summary
+
+Implemented read-only OpenAI Agents SDK teaching tools, SDK and Aearn-side teaching guardrails, JSON/SSE leak fallback behavior, backend spec updates, and regression tests for tool safety, guardrail fallback, and partial SSE interruption.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `85d23ca` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

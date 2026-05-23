@@ -1,0 +1,5 @@
+{"file":"docs/qa/acceptance-test-plan.md","reason":"Global P0/P1/P2 acceptance gates."}
+{"file":"aearn/services/api/tests/test_llm_integration.py","reason":"SDK no-real-key coverage and leakage/fallback checks."}
+{"file":"aearn/services/api/pyproject.toml","reason":"Full backend pytest, mypy, ruff, and dependency configuration."}
+{"file":"aearn/package.json","reason":"Desktop check command source."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Verify final conventions are recorded for future tasks."}

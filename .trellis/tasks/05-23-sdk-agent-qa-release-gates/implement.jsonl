@@ -1,0 +1,10 @@
+{"file":".trellis/spec/backend/index.md","reason":"Backend source-of-truth index before hardening."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Stable SDK ownership and fallback conventions to verify/update."}
+{"file":"docs/README.md","reason":"Docs source-of-truth index before public doc changes."}
+{"file":"docs/qa/acceptance-test-plan.md","reason":"Acceptance and LLM quality gates."}
+{"file":"docs/setup/development-environment.md","reason":"Release validation commands and environment assumptions."}
+{"file":"aearn/services/api/tests/test_llm_integration.py","reason":"Cross-agent fake SDK and fallback tests."}
+{"file":"aearn/services/api/tests/test_learning_sessions_m3.py","reason":"Learning and exercise contract tests."}
+{"file":"aearn/services/api/tests/test_notes_m5.py","reason":"Note assist contract tests."}
+{"file":"aearn/services/api/tests/test_reviews_m4.py","reason":"Review contract tests."}
+{"file":"aearn/services/api/tests/test_onboarding_m2.py","reason":"Onboarding plan contract tests."}
