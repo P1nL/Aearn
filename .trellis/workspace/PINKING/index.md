@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 12
+- **Total Sessions**: 13
 - **Last Active**: 2026-05-23
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~406 | Active |
+| `journal-1.md` | ~439 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 13 | 2026-05-23 | OpenAI Agents SDK foundation | `b2d3922` | `main` |
 | 12 | 2026-05-23 | Streaming learning conversation | `f5bf993` | `main` |
 | 11 | 2026-05-23 | Backend SSE streaming implementation | `ae88704` | `main` |
 | 10 | 2026-05-22 | Desktop release QA smoke closeout | `8802f7f` | `main` |
