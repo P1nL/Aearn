@@ -404,3 +404,36 @@ Implemented active learning workspace POST SSE conversation, deterministic fallb
 ### Next Steps
 
 - None - task complete
+
+
+## Session 13: OpenAI Agents SDK foundation
+
+**Date**: 2026-05-23
+**Task**: OpenAI Agents SDK foundation
+**Branch**: `main`
+
+### Summary
+
+Added openai-agents SDK foundation for learning conversation, preserved Aearn API/SSE/idempotency/fallback boundaries, updated backend specs, and validated backend gates.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `b2d3922` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

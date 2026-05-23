@@ -1,0 +1,8 @@
+{"file":".trellis/spec/backend/index.md","reason":"Backend implementation checklist and source-of-truth pointers."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Defines SDK learning conversation boundary, deterministic fallback, and tests required."}
+{"file":"docs/architecture/api-contract.md","reason":"Preserve learning message JSON/SSE response shapes and error contract."}
+{"file":"docs/architecture/langgraph-state-machine.md","reason":"Preserve Aearn state ownership and keep writes outside SDK tools."}
+{"file":"aearn/services/api/app/agents/sdk_runtime.py","reason":"Existing SDK runtime wrapper to extend with tool and guardrail support."}
+{"file":"aearn/services/api/app/agents/learning_conversation_agent.py","reason":"Teaching Agent client to wire read-only tools and guardrails into."}
+{"file":"aearn/services/api/app/services/learning_conversation.py","reason":"Owns context loading, idempotency, fallback, and response storage."}
+{"file":"aearn/services/api/tests/test_llm_integration.py","reason":"Best unit-test entrypoint for model-key-free SDK runner/tool tests."}

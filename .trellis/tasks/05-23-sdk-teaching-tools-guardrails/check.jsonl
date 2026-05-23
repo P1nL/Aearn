@@ -1,0 +1,5 @@
+{"file":"docs/qa/acceptance-test-plan.md","reason":"Validate model-key-free behavior and no hidden-test leakage."}
+{"file":"docs/architecture/api-contract.md","reason":"Check JSON/SSE and error response contracts are unchanged."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Check SDK tool and guardrail implementation against backend spec."}
+{"file":"aearn/services/api/tests/test_llm_integration.py","reason":"Verify fake SDK runner/tool/guardrail coverage."}
+{"file":"aearn/services/api/tests/test_learning_sessions_m3.py","reason":"Verify existing learning message and M3 contracts still pass."}
