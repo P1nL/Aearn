@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "Check backend changes against project conventions."}
+{"file": ".trellis/spec/frontend/index.md", "reason": "Check frontend changes against project conventions."}
+{"file": "docs/architecture/api-contract.md", "reason": "Verify SSE event order, response shape, and no WebSocket drift."}
+{"file": "docs/product/frontend-interaction-spec.md", "reason": "Verify learning workspace UI behavior remains within product contract."}
+{"file": "docs/qa/acceptance-test-plan.md", "reason": "Verify automated and manual acceptance coverage."}

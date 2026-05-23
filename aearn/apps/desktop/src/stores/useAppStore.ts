@@ -65,6 +65,7 @@ type AppStore = {
   toggleSidebar: () => void;
   toggleGroup: (group: NavGroupKey) => void;
   addHomeMessage: (msg: ConversationMessage) => void;
+  updateHomeMessage: (id: string, patch: Partial<ConversationMessage>) => void;
   addReviewMessage: (msg: ConversationMessage) => void;
 
   // Complex actions
@@ -105,6 +106,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
   toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
   toggleGroup: (group) => set((s) => ({ openGroups: { ...s.openGroups, [group]: !s.openGroups[group] } })),
   addHomeMessage: (msg) => set((s) => ({ homeConversation: [...s.homeConversation, msg] })),
+  updateHomeMessage: (id, patch) =>
+    set((s) => ({
+      homeConversation: s.homeConversation.map((message) =>
+        message.id === id ? { ...message, ...patch } : message,
+      ),
+    })),
   addReviewMessage: (msg) => set((s) => ({ reviewConversation: [...s.reviewConversation, msg] })),
 
   bootstrap: async (signal) => {

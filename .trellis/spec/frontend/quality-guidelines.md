@@ -182,6 +182,77 @@ const submitDisabled =
 
 Submit follows the actual M3 contract instead of a single optimistic condition.
 
+## Scenario: Active Learning Composer SSE Assistant Bubble
+
+### 1. Scope / Trigger
+
+- Trigger: implementing or changing the bottom composer behavior for active learning workspace messages.
+- Scope: `aearn/apps/desktop/src/App.tsx`, `api.ts`, `appTypes.ts`, `components/ThreadMessages.tsx`, `hooks/useSSE.ts`, the app store message mutators, and composer CSS.
+
+### 2. Signatures
+
+- Frontend endpoint helper: `buildLearningMessageSSEUrl(sessionId)`
+- POST body: `{ role: "user", content: string, client_message_id: string }`
+- Headers from SSE hook: `Accept: text/event-stream`, `Content-Type: application/json`, and fresh `X-Request-Id`
+- Stream events consumed: `agent_message`, `done`, and `error`
+- Message UI state: `ConversationMessage.status?: "streaming" | "error" | "done"` and optional `statusText`
+
+### 3. Contracts
+
+- The composer calls `/api/learning-sessions/{session_id}/messages` only when `visibleRoute === "home"` and an active learning session is loaded.
+- Review route composer behavior remains local unless a separate review-chat task expands scope.
+- On send, append the learner message immediately, append one empty assistant placeholder, then update that same assistant message as `agent_message.content` grows.
+- Duplicate sends are disabled while a stream is active.
+- If no active session exists, show disabled guidance and do not call the backend.
+- A stream that closes without `done` or `error` must become a visible recoverable error state.
+- The frontend must not derive scoring, final exercise result, review scheduling, or hidden-test facts from conversation messages.
+
+### 4. Validation & Error Matrix
+
+- Empty composer input -> send button disabled and no request.
+- Active home session missing -> composer disabled with guidance and no request.
+- Stream in progress -> textarea/send disabled to prevent duplicate writes.
+- `agent_message` event -> update the existing assistant bubble, not append a new assistant bubble per delta.
+- `done` event -> mark the assistant bubble `done` and clear busy state.
+- `error` event or incomplete close -> mark the assistant bubble `error`, show stable error copy, and allow retry.
+- API offline or backend envelope error -> show visible state; do not rely on console output alone.
+
+### 5. Good/Base/Bad Cases
+
+- Good: learner asks a follow-up during an active session, sees one assistant bubble fill incrementally, then the streaming cursor disappears on `done`.
+- Base: learner opens home without an active session and sees guidance to start a knowledge point before asking the Agent.
+- Bad: using `EventSource` for this POST body, appending one message per delta, reusing a fixed `X-Request-Id`, or streaming review/global chatbot messages in this task.
+
+### 6. Tests Required
+
+- Run `pnpm --dir .\aearn desktop:check` after frontend changes.
+- Browser smoke the active learning path only when current backend and Vite/Tauri processes are serving this checkout.
+- Verify home composer sends `role=user`, `content`, and a fresh `client_message_id` only when an active session exists.
+- Verify duplicate send prevention while streaming.
+- Verify `agent_message` deltas update one assistant bubble and `done` clears the streaming state.
+- Verify stream error or incomplete close renders an error bubble and allows retry.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```tsx
+events.forEach((event) => addHomeMessage(createMessage("agent", event.data.delta)));
+```
+
+This creates one bubble per chunk and makes incremental rendering unreadable.
+
+#### Correct
+
+```tsx
+updateHomeMessage(assistantMessageId, {
+  text: event.data.content || event.data.delta,
+  status: "streaming",
+});
+```
+
+The stream owns one assistant bubble that changes status as the request moves from connecting to streaming, done, or error.
+
 ## Scenario: Desktop App Shell vs Page and Feature Boundaries
 
 ### 1. Scope / Trigger

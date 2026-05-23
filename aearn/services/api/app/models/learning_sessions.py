@@ -9,12 +9,27 @@ NextAction = Literal["retry_same", "show_hint", "explain_error", "review_variant
 FsrsRating = Literal["Again", "Hard", "Good", "Easy"]
 HintLevel = Literal["nudge", "concept", "code_shape"]
 ExplanationFocus = Literal["core_logic", "boundary_condition", "ai_generated_change"]
+LearningMessageRole = Literal["user"]
 
 
 class StartLearningSessionRequest(BaseModel):
     user_id: str = Field(min_length=1)
     plan_id: str = Field(min_length=1)
     knowledge_point_id: str = Field(min_length=1)
+
+
+class LearningMessageRequest(BaseModel):
+    role: LearningMessageRole
+    content: str = Field(min_length=1, max_length=4000)
+    client_message_id: str = Field(min_length=1, max_length=160)
+
+    @field_validator("content", "client_message_id")
+    @classmethod
+    def message_field_must_not_be_blank(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("message field must not be blank")
+        return stripped
 
 
 class RunExerciseRequest(BaseModel):

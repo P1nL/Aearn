@@ -883,3 +883,7 @@ export function buildSSEUrl(path: string, params?: Record<string, string>): stri
   }
   return url.toString();
 }
+
+export function buildLearningMessageSSEUrl(sessionId: string): string {
+  return buildSSEUrl(`/api/learning-sessions/${encodeURIComponent(sessionId)}/messages`);
+}

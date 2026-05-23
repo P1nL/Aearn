@@ -5,11 +5,13 @@ import psycopg
 import pytest
 from fastapi.testclient import TestClient
 
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.db.bootstrap import bootstrap_database
 from app.db.connection import connect
 from app.main import app
+from app.services import learning_conversation
 from app.services import learning_session_repository as session_repository
+from app.services.llm_client import LLMCallError
 
 
 def _database_available() -> bool:
@@ -119,6 +121,257 @@ def test_start_learning_session_keeps_distinct_knowledge_points_separate(client:
         ).fetchone()
     assert session_count is not None
     assert session_count["count"] == 2
+
+
+def test_learning_message_json_falls_back_and_is_idempotent(client: TestClient) -> None:
+    user, plan = _confirmed_plan(client, language="javascript")
+    knowledge_point_id = plan["knowledge_points"][0]["id"]
+    start_response = client.post(
+        "/api/learning-sessions/start",
+        json={
+            "user_id": user["id"],
+            "plan_id": plan["LearningPlan"]["id"],
+            "knowledge_point_id": knowledge_point_id,
+        },
+    )
+    assert start_response.status_code in {200, 201}
+    session = start_response.json()
+    payload = {
+        "role": "user",
+        "content": "为什么 count 每次点击都会重置？",
+        "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
+    }
+
+    first = client.post(f"/api/learning-sessions/{session['session_id']}/messages", json=payload)
+    assert first.status_code == 200
+    first_body = first.json()
+    assert first_body["agent_message"]["role"] == "assistant"
+    assert first_body["agent_message"]["content"]
+    assert first_body["session_state"]["session_id"] == session["session_id"]
+    assert first_body["session_state"]["next_action"] == "retry_same"
+    assert first_body["generation_source"] == "deterministic"
+    assert "solution_reference" not in json.dumps(first_body, ensure_ascii=False)
+
+    replay = client.post(f"/api/learning-sessions/{session['session_id']}/messages", json=payload)
+    assert replay.status_code == 200
+    replay_body = replay.json()
+    assert replay_body["idempotency_replayed"] is True
+    assert replay_body["agent_message"]["id"] == first_body["agent_message"]["id"]
+
+
+def test_learning_message_json_uses_configured_model_stream(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user, plan = _confirmed_plan(client, language="javascript")
+    knowledge_point_id = plan["knowledge_points"][0]["id"]
+    start_response = client.post(
+        "/api/learning-sessions/start",
+        json={
+            "user_id": user["id"],
+            "plan_id": plan["LearningPlan"]["id"],
+            "knowledge_point_id": knowledge_point_id,
+        },
+    )
+    session = start_response.json()
+    captured: dict[str, object] = {}
+
+    class FakeStreamingClient:
+        model = "fake-teaching-model"
+
+        def complete_text_stream(self, messages, *, temperature=None):  # type: ignore[no-untyped-def]
+            captured["messages"] = messages
+            captured["temperature"] = temperature
+            return ["先看 count 的作用域，", "再看点击回调。"]
+
+    monkeypatch.setattr(
+        learning_conversation,
+        "get_settings",
+        lambda: Settings(
+            llm_type="openai",
+            openai_api_key="test-key",
+            openai_base_url="https://provider.example",
+            openai_model="fake-teaching-model",
+        ),
+    )
+    monkeypatch.setattr(learning_conversation, "OpenAICompatibleClient", lambda settings: FakeStreamingClient())
+
+    response = client.post(
+        f"/api/learning-sessions/{session['session_id']}/messages",
+        json={
+            "role": "user",
+            "content": "我应该先看哪里？",
+            "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["generation_source"] == "llm"
+    assert body["generation_model"] == "fake-teaching-model"
+    assert body["agent_message"]["content"] == "先看 count 的作用域，再看点击回调。"
+    assert captured["temperature"] is None
+    prompt_text = json.dumps(captured["messages"], ensure_ascii=False)
+    assert "solution_reference" not in prompt_text
+    assert "hidden_" not in prompt_text
+
+
+def test_learning_message_llm_failure_falls_back_without_provider_detail(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user, plan = _confirmed_plan(client, language="javascript")
+    knowledge_point_id = plan["knowledge_points"][0]["id"]
+    start_response = client.post(
+        "/api/learning-sessions/start",
+        json={
+            "user_id": user["id"],
+            "plan_id": plan["LearningPlan"]["id"],
+            "knowledge_point_id": knowledge_point_id,
+        },
+    )
+    session = start_response.json()
+
+    class FailingStreamingClient:
+        model = "provider-model"
+
+        def complete_text_stream(self, messages, *, temperature=None):  # type: ignore[no-untyped-def]
+            def raise_on_iter():
+                raise LLMCallError("provider raw 481 secret-key-is-invalid")
+                yield ""
+
+            return raise_on_iter()
+
+    monkeypatch.setattr(
+        learning_conversation,
+        "get_settings",
+        lambda: Settings(
+            llm_type="openai",
+            openai_api_key="test-key",
+            openai_base_url="https://provider.example",
+            openai_model="provider-model",
+        ),
+    )
+    monkeypatch.setattr(learning_conversation, "OpenAICompatibleClient", lambda settings: FailingStreamingClient())
+
+    response = client.post(
+        f"/api/learning-sessions/{session['session_id']}/messages",
+        json={
+            "role": "user",
+            "content": "模型失败时还能回答吗？",
+            "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["generation_source"] == "deterministic"
+    assert "provider raw" not in body["agent_message"]["content"]
+    assert "secret-key" not in body["agent_message"]["content"]
+
+
+def test_learning_message_sse_streams_agent_message_and_done(client: TestClient) -> None:
+    request_id = f"req_message_sse_{uuid.uuid4().hex}"
+    user, plan = _confirmed_plan(client, language="javascript")
+    knowledge_point_id = plan["knowledge_points"][0]["id"]
+    start_response = client.post(
+        "/api/learning-sessions/start",
+        json={
+            "user_id": user["id"],
+            "plan_id": plan["LearningPlan"]["id"],
+            "knowledge_point_id": knowledge_point_id,
+        },
+    )
+    session = start_response.json()
+
+    with client.stream(
+        "POST",
+        f"/api/learning-sessions/{session['session_id']}/messages",
+        headers={"Accept": "text/event-stream", "X-Request-Id": request_id},
+        json={
+            "role": "user",
+            "content": "为什么可见测试没过？",
+            "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
+        },
+    ) as response:
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/event-stream")
+        events = _parse_sse_events("".join(response.iter_text()))
+
+    assert events
+    assert events[-1]["event"] == "done"
+    assert all(event["event"] in {"agent_message", "done"} for event in events)
+    agent_events = [event for event in events if event["event"] == "agent_message"]
+    assert agent_events
+    assert agent_events[0]["data"]["request_id"] == request_id
+    assert agent_events[0]["data"]["session_id"] == session["session_id"]
+    assert agent_events[-1]["data"]["content"]
+    assert events[-1]["data"]["message_id"] == agent_events[-1]["data"]["message_id"]
+    assert events[-1]["data"]["generation_source"] == "deterministic"
+
+
+def test_learning_message_errors_for_missing_session_json_and_sse(client: TestClient) -> None:
+    request_id = f"req_message_missing_{uuid.uuid4().hex}"
+    missing_session_id = str(uuid.uuid4())
+    payload = {
+        "role": "user",
+        "content": "这个会话还在吗？",
+        "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
+    }
+
+    json_response = client.post(f"/api/learning-sessions/{missing_session_id}/messages", json=payload)
+    assert json_response.status_code == 404
+    assert json_response.json()["error"]["code"] == "SESSION_NOT_FOUND"
+
+    with client.stream(
+        "POST",
+        f"/api/learning-sessions/{missing_session_id}/messages",
+        headers={"Accept": "text/event-stream", "X-Request-Id": request_id},
+        json=payload,
+    ) as response:
+        assert response.status_code == 200
+        events = _parse_sse_events("".join(response.iter_text()))
+
+    assert [event["event"] for event in events] == ["error"]
+    assert events[0]["data"]["error"]["code"] == "SESSION_NOT_FOUND"
+    assert events[0]["data"]["error"]["request_id"] == request_id
+
+
+def test_learning_message_validation_error_json_and_sse(client: TestClient) -> None:
+    request_id = f"req_message_validation_{uuid.uuid4().hex}"
+    user, plan = _confirmed_plan(client, language="javascript")
+    knowledge_point_id = plan["knowledge_points"][0]["id"]
+    start_response = client.post(
+        "/api/learning-sessions/start",
+        json={
+            "user_id": user["id"],
+            "plan_id": plan["LearningPlan"]["id"],
+            "knowledge_point_id": knowledge_point_id,
+        },
+    )
+    session = start_response.json()
+    invalid_payload = {
+        "role": "user",
+        "content": "   ",
+        "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
+    }
+
+    json_response = client.post(f"/api/learning-sessions/{session['session_id']}/messages", json=invalid_payload)
+    assert json_response.status_code == 400
+    assert json_response.json()["error"]["code"] == "VALIDATION_ERROR"
+
+    with client.stream(
+        "POST",
+        f"/api/learning-sessions/{session['session_id']}/messages",
+        headers={"Accept": "text/event-stream", "X-Request-Id": request_id},
+        json=invalid_payload,
+    ) as response:
+        assert response.status_code == 200
+        events = _parse_sse_events("".join(response.iter_text()))
+
+    assert [event["event"] for event in events] == ["error"]
+    assert events[0]["data"]["error"]["code"] == "VALIDATION_ERROR"
+    assert events[0]["data"]["error"]["request_id"] == request_id
 
 
 def test_javascript_run_and_submit_persist_attempts(client: TestClient) -> None:

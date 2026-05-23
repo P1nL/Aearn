@@ -1,7 +1,7 @@
-import { useCallback, useEffect, type FormEvent } from "react";
+import { useCallback, useEffect, useState, type FormEvent } from "react";
 
-import { API_BASE_URL } from "./api";
-import type { AppRoute, NoteContext } from "./appTypes";
+import { API_BASE_URL, buildLearningMessageSSEUrl } from "./api";
+import type { AppRoute, ConversationMessage, NoteContext } from "./appTypes";
 import { ApiHealthChip } from "./components/ApiHealthChip";
 import { NoteDrawer } from "./components/NoteDrawer";
 import { SidebarNav } from "./components/SidebarNav";
@@ -16,6 +16,7 @@ import { writeBootstrapContext, clearBootstrapContext } from "./lib/bootstrapSto
 import { getCrumbLabel, screenClassName } from "./lib/desktopLabels";
 import { computeSidebarProgress, createMessage } from "./lib/learningHelpers";
 import { useAutoSave } from "./hooks/useAutoSave";
+import { useSSE } from "./hooks/useSSE";
 import { useAppStore } from "./stores/useAppStore";
 import { useNotesStore } from "./stores/useNotesStore";
 import { useSettingsStore } from "./stores/useSettingsStore";
@@ -26,10 +27,22 @@ import { ReviewPage } from "./pages/ReviewPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import type { LearningSessionResponse } from "./types";
 
+type ComposerStreamRequest = {
+  endpoint: string;
+  requestId: string;
+  assistantMessageId: string;
+  body: {
+    role: "user";
+    content: string;
+    client_message_id: string;
+  };
+};
+
 function App() {
   const app = useAppStore();
   const notes = useNotesStore();
   const settings = useSettingsStore();
+  const [composerStream, setComposerStream] = useState<ComposerStreamRequest | null>(null);
 
   const dashboard = app.dashboardState.status === "ready" ? app.dashboardState.data : null;
   const session = app.sessionState.status === "ready" ? app.sessionState.data : null;
@@ -53,6 +66,16 @@ function App() {
   const settingsDirty = settings.isDirty(app.user);
   const apiStatusLabel =
     app.apiHealth.status === "online" ? "在线" : app.apiHealth.status === "offline" ? `离线: ${app.apiHealth.message}` : "检测中";
+  const composerStreaming = composerStream !== null;
+  const homeComposerNeedsSession = visibleRoute === "home" && !session;
+  const composerSendDisabled = composerStreaming || app.composerInput.trim().length === 0 || homeComposerNeedsSession;
+  const composerPlaceholder = composerStreaming
+    ? "Agent 正在生成回答……"
+    : homeComposerNeedsSession
+      ? "先从左侧路线进入一个知识点，再向 Agent 追问。"
+      : visibleRoute === "review"
+        ? "用自己的话复述，或请求提示……"
+        : "粘贴你的代码、运行输出、测试失败或请 Agent 解释错因……";
 
   const currentSessionNoteContext = buildLearningNoteContext(session);
   const currentContext = currentSessionNoteContext ?? notes.reviewNoteContext;
@@ -75,6 +98,37 @@ function App() {
     [activeEditorKnowledgePointId],
   );
   const { flush: flushAutoSave } = useAutoSave(autoSaveValue, handleAutoSave, { delay: 800, enabled: autoSaveEnabled });
+
+  useSSE(composerStream?.endpoint ?? null, {
+    method: "POST",
+    body: composerStream?.body,
+    requestId: composerStream?.requestId,
+    onEvent: (streamEvent) => {
+      if (!composerStream || streamEvent.type !== "agent_message") return;
+      app.updateHomeMessage(composerStream.assistantMessageId, {
+        text: streamEvent.data.content || streamEvent.data.delta,
+        status: "streaming",
+        statusText: "正在生成……",
+      });
+    },
+    onDone: () => {
+      if (!composerStream) return;
+      app.updateHomeMessage(composerStream.assistantMessageId, {
+        status: "done",
+        statusText: undefined,
+      });
+      setComposerStream(null);
+    },
+    onError: (error) => {
+      if (!composerStream) return;
+      app.updateHomeMessage(composerStream.assistantMessageId, {
+        text: `这次回答没有完成：${error.code}。${error.message}`,
+        status: "error",
+        statusText: "可以修改问题后重试。",
+      });
+      setComposerStream(null);
+    },
+  });
 
   // --- Handlers ---
   async function goToRoute(route: AppRoute) {
@@ -114,13 +168,34 @@ function App() {
 
   function handleComposerSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (app.composerInput.trim().length === 0) return;
+    const content = app.composerInput.trim();
+    if (content.length === 0 || composerStreaming) return;
     if (visibleRoute === "review") {
-      app.addReviewMessage(createMessage("user", app.composerInput.trim()));
+      app.addReviewMessage(createMessage("user", content));
       app.addReviewMessage(createMessage("agent", "收到。先按准确性、因果链、例子质量和表达清晰度评分，再决定下一次 due_at。", "Agent"));
     } else {
-      app.addHomeMessage(createMessage("user", app.composerInput.trim()));
-      app.addHomeMessage(createMessage("agent", "收到。先把失败用例和你刚修改的那一行对齐，再决定是重跑、提交，还是继续追问错因。", "Agent"));
+      if (!session) {
+        app.addHomeMessage(createMessage("agent", "先从左侧路线进入一个知识点，等练习卡片加载后再向 Agent 追问。", "Agent"));
+        app.setComposerInput("");
+        return;
+      }
+      const assistantMessage: ConversationMessage = {
+        ...createMessage("agent", "", "Agent"),
+        status: "streaming",
+        statusText: "正在连接模型……",
+      };
+      app.addHomeMessage(createMessage("user", content));
+      app.addHomeMessage(assistantMessage);
+      setComposerStream({
+        endpoint: buildLearningMessageSSEUrl(session.session_id),
+        requestId: createClientId("desktop_req"),
+        assistantMessageId: assistantMessage.id,
+        body: {
+          role: "user",
+          content,
+          client_message_id: createClientId("desktop_msg"),
+        },
+      });
     }
     app.setComposerInput("");
   }
@@ -317,7 +392,8 @@ function App() {
                 <textarea
                   aria-label="代码练习输入框"
                   value={app.composerInput}
-                  placeholder={visibleRoute === "review" ? "用自己的话复述，或请求提示……" : "粘贴你的代码、运行输出、测试失败或请 Agent 解释错因……"}
+                  placeholder={composerPlaceholder}
+                  disabled={composerStreaming || homeComposerNeedsSession}
                   onChange={(e) => app.setComposerInput(e.target.value)}
                 />
                 <button
@@ -331,14 +407,20 @@ function App() {
                 >
                   <img src="/note.png" alt="" />
                 </button>
-                <button className="btn primary send-btn" type="submit" aria-label="发送">↑</button>
+                <button className="btn primary send-btn" type="submit" aria-label="发送" disabled={composerSendDisabled}>↑</button>
               </div>
+              {homeComposerNeedsSession && <div className="composer-guidance">先进入一个 active learning session，composer 才会调用模型流式回答。</div>}
             </form>
           )}
         </section>
       </section>
     </main>
   );
+}
+
+function createClientId(prefix: string): string {
+  const uuid = globalThis.crypto?.randomUUID?.();
+  return uuid ? `${prefix}_${uuid}` : `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2)}`;
 }
 
 function buildLearningNoteContext(session: LearningSessionResponse | null): NoteContext | null {
