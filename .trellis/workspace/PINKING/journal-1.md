@@ -371,3 +371,36 @@ Implemented SSE streaming for run, submit, and note agent-draft endpoints; adapt
 ### Next Steps
 
 - None - task complete
+
+
+## Session 12: Streaming learning conversation
+
+**Date**: 2026-05-23
+**Task**: Streaming learning conversation
+**Branch**: `main`
+
+### Summary
+
+Implemented active learning workspace POST SSE conversation, deterministic fallback, frontend incremental assistant bubble, tests, and code-spec updates.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `f5bf993` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
