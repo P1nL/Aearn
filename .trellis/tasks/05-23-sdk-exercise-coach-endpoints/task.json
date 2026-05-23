@@ -3,7 +3,7 @@
   "name": "sdk-exercise-coach-endpoints",
   "title": "Add SDK exercise coach endpoints",
   "description": "Move hint, explain-error, and check-explanation generation behind Aearn-owned OpenAI Agents SDK coaching modules while preserving Attempt writes, idempotency, deterministic fallbacks, and existing API/SSE contracts.",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,

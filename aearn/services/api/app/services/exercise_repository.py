@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from decimal import Decimal
+from typing import Any
 
 from psycopg import Connection
 
@@ -229,7 +230,7 @@ def _serialize_test_case(row: Mapping[str, object]) -> dict[str, object]:
 def _exercise_template(
     knowledge_point: Mapping[str, object],
     runtime_profile: Mapping[str, object],
-) -> dict[str, object]:
+) -> dict[str, Any]:
     language = str(runtime_profile["language"])
     knowledge_point_id = str(knowledge_point["id"])
     title = str(knowledge_point["title"])

@@ -3,6 +3,14 @@ from collections.abc import Mapping, Sequence
 
 import pytest
 
+from app.agents.exercise_coach_agent import (
+    EXERCISE_COACH_AGENT_NAME,
+    AgentsSDKExerciseCoachClient,
+    ExerciseCoachJsonResponse,
+    build_sdk_error_explanation,
+    build_sdk_explanation_check_response,
+    build_sdk_hint_response,
+)
 from app.agents.guardrails import assert_safe_teaching_output, check_teaching_request
 from app.core.config import Settings
 from app.agents.learning_conversation_agent import AgentsSDKLearningConversationClient, TEACHING_AGENT_NAME
@@ -202,6 +210,65 @@ def test_agents_sdk_learning_conversation_client_streams_text_deltas() -> None:
     assert client.model == "third-party-model"
 
 
+def test_agents_sdk_exercise_coach_client_streams_json_and_attaches_guardrails() -> None:
+    captured: dict[str, object] = {}
+
+    class FakeDelta:
+        type = "response.output_text.delta"
+
+        def __init__(self, delta: str) -> None:
+            self.delta = delta
+
+    class FakeEvent:
+        type = "raw_response_event"
+
+        def __init__(self, delta: str) -> None:
+            self.data = FakeDelta(delta)
+
+    class FakeStreamedRun:
+        final_output = None
+
+        async def stream_events(self):  # type: ignore[no-untyped-def]
+            yield FakeEvent('{"content":"先看共享状态位置，')
+            yield FakeEvent('不要重写整题。"}')
+
+    class FakeRunner:
+        def run_streamed(self, starting_agent, input, **kwargs):  # type: ignore[no-untyped-def]
+            captured["agent_name"] = starting_agent.name
+            captured["tool_names"] = [tool.name for tool in starting_agent.tools]
+            captured["input_guardrail_count"] = len(starting_agent.input_guardrails)
+            captured["output_guardrail_count"] = len(starting_agent.output_guardrails)
+            captured["input"] = input
+            captured["run_config"] = kwargs["run_config"]
+            captured["max_turns"] = kwargs["max_turns"]
+            return FakeStreamedRun()
+
+    client = AgentsSDKExerciseCoachClient(
+        Settings(
+            llm_type="openai",
+            openai_api_key="test-key",
+            openai_base_url="https://provider.example/v1",
+            openai_model="third-party-model",
+        ),
+        runner=FakeRunner(),
+    )
+
+    response = client.complete_json(
+        [
+            {"role": "system", "content": "system instructions"},
+            {"role": "user", "content": '{"learner_message":"Generate a hint."}'},
+        ]
+    )
+
+    assert response.content == {"content": "先看共享状态位置，不要重写整题。"}
+    assert captured["agent_name"] == EXERCISE_COACH_AGENT_NAME
+    assert captured["tool_names"] == []
+    assert captured["input_guardrail_count"] == 1
+    assert captured["output_guardrail_count"] == 1
+    assert captured["max_turns"] == 2
+    assert captured["run_config"].tracing_disabled is True
+
+
 def test_agents_sdk_extract_text_delta_accepts_raw_event_duck_type() -> None:
     class FakeDelta:
         type = "response.output_text.delta"
@@ -235,6 +302,149 @@ def test_teaching_tools_return_safe_bounded_summaries() -> None:
     assert "secret solution" not in serialized
     assert "submitted_code" not in serialized
     assert "let count = 0" not in serialized
+
+
+def test_sdk_hint_response_uses_safe_prompt_and_normalizes_shape() -> None:
+    captured: dict[str, object] = {}
+
+    class FakeCoachClient:
+        model = "sdk-coach-model"
+
+        def complete_json(
+            self,
+            messages: Sequence[Mapping[str, str]],
+            *,
+            temperature: float = 0.2,
+        ) -> ExerciseCoachJsonResponse:
+            captured["messages"] = messages
+            captured["temperature"] = temperature
+            return ExerciseCoachJsonResponse(
+                content={"content": "先确认状态更新发生在点击回调中，不要重写整题。"},
+                model=self.model,
+            )
+
+    response = build_sdk_hint_response(
+        _exercise(),
+        blank={
+            "blank_key": "blank_2",
+            "placeholder": "count += 1",
+            "expected_concept": "在回调里递增共享状态。",
+            "is_core": True,
+        },
+        hint_level="concept",
+        current_code="button.__BLANK_1__('click', () => { __BLANK_2__; });",
+        hint_usage_count=2,
+        client=FakeCoachClient(),
+    )
+
+    assert response == {
+        "hint": {"hint_level": "concept", "content": "先确认状态更新发生在点击回调中，不要重写整题。"},
+        "hint_usage_count": 2,
+        "affected_score": {"max_result": "passed", "score_penalty_hint": 1},
+        "next_action": "retry_same",
+    }
+    prompt_text = json.dumps(captured["messages"], ensure_ascii=False)
+    assert captured["temperature"] == 0.2
+    assert "solution_reference" not in prompt_text
+    assert "secret solution" not in prompt_text
+    assert "submitted_code" not in prompt_text
+    assert "hidden_three_clicks" not in prompt_text
+
+
+def test_sdk_error_explanation_uses_server_knowledge_point_and_metadata() -> None:
+    class FakeCoachClient:
+        model = "sdk-coach-model"
+
+        def complete_json(
+            self,
+            messages: Sequence[Mapping[str, str]],
+            *,
+            temperature: float = 0.2,
+        ) -> ExerciseCoachJsonResponse:
+            return ExerciseCoachJsonResponse(
+                content={
+                    "error_cause": "state_scope_error",
+                    "explanation": "状态放在点击回调里，每次点击都会重新初始化。",
+                    "fix_suggestion": "把共享状态移到回调外层，再重新运行可见测试。",
+                    "related_knowledge_points": [{"id": "model_should_not_control_this", "title": "bad"}],
+                    "next_action": "retry_same",
+                },
+                model=self.model,
+            )
+
+    response = build_sdk_error_explanation(
+        _exercise(),
+        error_message="Expected textContent to be 3, got 1.",
+        stderr="",
+        failed_tests=[{"case_id": "hidden_three_clicks", "case_type": "hidden", "message": "连续点击三次后状态未累加"}],
+        current_code="button.addEventListener('click', () => { let count = 0; count += 1; });",
+        related_knowledge_points=[{"id": "kp_dom_event_state", "title": "事件监听与状态变量"}],
+        client=FakeCoachClient(),
+    )
+
+    assert response is not None
+    assert response["generation_source"] == "llm"
+    assert response["generation_model"] == "sdk-coach-model"
+    assert response["related_knowledge_points"] == [{"id": "kp_dom_event_state", "title": "事件监听与状态变量"}]
+
+
+def test_sdk_error_explanation_falls_back_when_output_leaks_hidden_identifier() -> None:
+    class LeakingCoachClient:
+        model = "sdk-coach-model"
+
+        def complete_json(
+            self,
+            messages: Sequence[Mapping[str, str]],
+            *,
+            temperature: float = 0.2,
+        ) -> ExerciseCoachJsonResponse:
+            return ExerciseCoachJsonResponse(
+                content={
+                    "error_cause": "state_scope_error",
+                    "explanation": "失败来自 hidden_three_clicks。",
+                    "fix_suggestion": "修改状态位置。",
+                    "next_action": "retry_same",
+                },
+                model=self.model,
+            )
+
+    response = build_sdk_error_explanation(
+        _exercise(),
+        error_message="Expected textContent to be 3, got 1.",
+        stderr="",
+        failed_tests=[{"case_id": "hidden_three_clicks", "case_type": "hidden", "message": "连续点击三次后状态未累加"}],
+        current_code="button.addEventListener('click', () => { let count = 0; count += 1; });",
+        related_knowledge_points=[{"id": "kp_dom_event_state", "title": "事件监听与状态变量"}],
+        client=LeakingCoachClient(),
+    )
+
+    assert response is None
+
+
+def test_sdk_explanation_check_falls_back_when_output_is_invalid() -> None:
+    class InvalidCoachClient:
+        model = "sdk-coach-model"
+
+        def complete_json(
+            self,
+            messages: Sequence[Mapping[str, str]],
+            *,
+            temperature: float = 0.2,
+        ) -> ExerciseCoachJsonResponse:
+            return ExerciseCoachJsonResponse(
+                content={"result": "easy", "feedback": "looks good"},
+                model=self.model,
+            )
+
+    response = build_sdk_explanation_check_response(
+        _exercise(),
+        explanation="状态变量放在回调外层，所以连续点击能共享同一个 count。",
+        focus="core_logic",
+        round_number=1,
+        client=InvalidCoachClient(),
+    )
+
+    assert response is None
 
 
 def test_teaching_guardrails_block_leaky_or_complete_answer_text() -> None:

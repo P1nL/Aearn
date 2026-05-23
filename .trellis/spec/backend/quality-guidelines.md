@@ -359,6 +359,70 @@ response = build_llm_error_explanation(...) or with_deterministic_generation_met
 
 The feature tries the model only through a testable boundary and keeps deterministic fallback as the stable MVP path.
 
+## Scenario: SDK Exercise Coach Modules
+
+### 1. Scope / Trigger
+
+- Trigger: adding or changing SDK-backed coaching for learning-session `hint`, `explain-error`, or `check-explanation`.
+- Scope: `app/agents/exercise_coach_agent.py`, `app/agents/sdk_runtime.py`, `app/agents/guardrails.py`, `app/services/learning_session_repository.py`, `app/services/exercise_guidance.py`, and M3/LLM integration tests.
+
+### 2. Signatures
+
+- `POST /api/learning-sessions/{session_id}/exercises/{exercise_id}/hint`
+- `POST /api/learning-sessions/{session_id}/attempts/{attempt_id}/explain-error`
+- `POST /api/learning-sessions/{session_id}/attempts/{attempt_id}/check-explanation`
+- SDK module signature: `app/agents/exercise_coach_agent.py`
+- Repository owner: `app/services/learning_session_repository.py`
+
+### 3. Contracts
+
+- SDK modules may build prompts, call the SDK runner, validate structured output, and apply teaching guardrails.
+- SDK modules must not import database connection types or mutate `Attempt`, `ReviewState`, `ReviewLog`, `LearningSession`, `Note`, or `idempotency_records`.
+- Repository code owns session/exercise/attempt loading, idempotency lookup/storage, `Attempt.hint_usage_count`, `Attempt.error_cause`, `Attempt.explanation_text`, and `Attempt.explanation_check_result` writes.
+- SDK inputs must be safe summaries: bounded exercise metadata, blank metadata, visible-test summaries, bounded runtime/stderr facts, and bounded code excerpts only when needed.
+- SDK inputs and outputs must not expose hidden test ids, hidden test source, `solution_reference`, full submitted code, provider raw errors, SDK event names, API keys, or raw prompts.
+- SDK output must normalize back to the existing public response shapes from `exercise_guidance.py` and `llm_explain_error.py`.
+- Deterministic fallback is required when model config is disabled or incomplete, SDK execution fails, output validation fails, or guardrails block output.
+
+### 4. Validation & Error Matrix
+
+- Model config disabled, incomplete, unsupported, or unavailable -> deterministic fallback.
+- SDK runner exception, invalid SDK event stream, invalid JSON, missing required fields, unsupported enum, or empty output -> deterministic fallback.
+- Guardrail-blocked learner input or model output -> deterministic fallback without leaking block internals.
+- Hidden test id/source, `solution_reference`, full answer, provider detail, SDK event name, or API key in output -> deterministic fallback.
+- Idempotency replay for the same request key -> return the stored response and do not call the SDK again.
+- Idempotency key reused with a different request hash -> existing `IDEMPOTENCY_CONFLICT` behavior.
+
+### 5. Good/Base/Bad Cases
+
+- Good: configured SDK returns valid structured coaching, repository stores the same `Attempt` fields as before, and response shape is unchanged.
+- Base: local developer has no model key; hint, explain-error, and check-explanation still return deterministic guidance and tests stay model-key-free.
+- Bad: SDK code imports `psycopg.Connection`, writes `Attempt` rows, exposes hidden case ids, controls `related_knowledge_points`, or changes public response envelopes.
+
+### 6. Tests Required
+
+- Unit-test fake SDK success for hint, explain-error, and explanation-check without live model credentials.
+- Unit-test invalid SDK output and guardrail-blocked leakage falling back to deterministic behavior.
+- API-test the learning-session endpoints for unchanged response envelopes, idempotent replay, and repository-owned `Attempt` writes.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+agent_response = exercise_coach_agent.update_attempt_and_return_response(conn, attempt_id)
+```
+
+This lets the SDK layer own durable product writes and bypasses repository idempotency.
+
+#### Correct
+
+```python
+response = build_sdk_hint_response(...) or build_hint_response(...)
+```
+
+The SDK layer only proposes validated coaching output; repository code still owns fallback, writes, and idempotency storage.
+
 ## Scenario: Learning Session Message Streaming Conversation
 
 ### 1. Scope / Trigger

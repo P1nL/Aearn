@@ -124,8 +124,8 @@ def apply_attempt_review_update(
 
     code_completion_result = _mapping_or_empty(attempt.get("code_completion_result"))
     result = str(code_completion_result.get("result", "failed"))
-    score = int(code_completion_result.get("score") or 0)
-    knowledge_point = conn.execute(
+    score = _int_or_zero(code_completion_result.get("score"))
+    updated_knowledge_point = conn.execute(
         """
         UPDATE knowledge_points
         SET
@@ -152,7 +152,7 @@ def apply_attempt_review_update(
             knowledge_point_id,
         ),
     ).fetchone()
-    if knowledge_point is None:
+    if updated_knowledge_point is None:
         raise ReviewSchedulingError("knowledge point update returned no row")
 
     next_state = serialize_review_state(review_state)
@@ -179,7 +179,7 @@ def apply_attempt_review_update(
         ),
     )
     return {
-        "KnowledgePoint": serialize_knowledge_point(knowledge_point),
+        "KnowledgePoint": serialize_knowledge_point(updated_knowledge_point),
         "ReviewState": next_state,
         "due_at": next_state["due_at"],
         "forget_risk": forget_risk_for(next_state),
@@ -191,8 +191,8 @@ def default_review_update_key(*, knowledge_point_id: str, attempt_id: str, ratin
 
 
 def serialize_review_state(row: Mapping[str, object]) -> dict[str, object]:
-    reps = int(row.get("reps") or row.get("review_count") or 0)
-    lapses = int(row.get("lapses") or row.get("lapse_count") or 0)
+    reps = _int_or_zero(row.get("reps") or row.get("review_count"))
+    lapses = _int_or_zero(row.get("lapses") or row.get("lapse_count"))
     return {
         "knowledge_point_id": str(row["knowledge_point_id"]),
         "card_state": row["card_state"],
@@ -204,8 +204,8 @@ def serialize_review_state(row: Mapping[str, object]) -> dict[str, object]:
         "lapse_count": lapses,
         "reps": reps,
         "lapses": lapses,
-        "elapsed_days": int(row.get("elapsed_days") or 0),
-        "scheduled_days": int(row.get("scheduled_days") or 0),
+        "elapsed_days": _int_or_zero(row.get("elapsed_days")),
+        "scheduled_days": _int_or_zero(row.get("scheduled_days")),
         "last_attempt_id": str(row["last_attempt_id"]) if row.get("last_attempt_id") else None,
         "last_fsrs_rating": row.get("last_fsrs_rating"),
         "scheduler_version": row.get("scheduler_version") or SCHEDULER_VERSION,
@@ -214,8 +214,8 @@ def serialize_review_state(row: Mapping[str, object]) -> dict[str, object]:
 
 def normalize_review_state_payload(payload: Mapping[str, object]) -> dict[str, object]:
     normalized = dict(payload)
-    reps = int(normalized.get("review_count") or normalized.get("reps") or 0)
-    lapses = int(normalized.get("lapse_count") or normalized.get("lapses") or 0)
+    reps = _int_or_zero(normalized.get("review_count") or normalized.get("reps"))
+    lapses = _int_or_zero(normalized.get("lapse_count") or normalized.get("lapses"))
     normalized["review_count"] = reps
     normalized["lapse_count"] = lapses
     normalized["reps"] = reps
@@ -375,6 +375,21 @@ def _decimal_to_float(value: object) -> float:
     if isinstance(value, int | float):
         return float(value)
     return 0.0
+
+
+def _int_or_zero(value: object) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return 0
+    return 0
 
 
 def _request_id_or_none(request_id: str | None) -> str | None:

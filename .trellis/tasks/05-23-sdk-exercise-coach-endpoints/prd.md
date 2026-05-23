@@ -29,15 +29,15 @@ This is a follow-up after `05-23-sdk-teaching-tools-guardrails`. The SDK should 
 
 ## Acceptance Criteria
 
-- [ ] Exercise Coach SDK module exists under `app/agents/` and is used by hint, explain-error, and/or check-explanation generation.
-- [ ] Public JSON response fields and error codes for the three endpoints are unchanged.
-- [ ] `Attempt` writes remain in `learning_session_repository.py`, not inside SDK tools or agent code.
-- [ ] Hint responses stay incremental in level: `nudge`, `concept`, and `code_shape` must not become complete answers by default.
-- [ ] Explain-error output is grounded in provided runtime/stderr/visible test facts and does not invent runner results.
-- [ ] Explanation-check output preserves the max-two-round rule and schema expected by submit/evaluate.
-- [ ] SDK failure or blocked output falls back to existing deterministic guidance.
-- [ ] Existing `tests/test_learning_sessions_m3.py` still passes.
-- [ ] Focused LLM/SDK integration tests cover fake SDK success, invalid output, blocked leakage, and deterministic fallback.
+- [x] Exercise Coach SDK module exists under `app/agents/` and is used by hint, explain-error, and check-explanation generation.
+- [x] Public JSON response fields and error codes for the three endpoints are unchanged.
+- [x] `Attempt` writes remain in `learning_session_repository.py`, not inside SDK tools or agent code.
+- [x] Hint responses stay incremental in level: `nudge`, `concept`, and `code_shape` must not become complete answers by default.
+- [x] Explain-error output is grounded in provided runtime/stderr/visible test facts and does not invent runner results.
+- [x] Explanation-check output preserves the max-two-round rule and schema expected by submit/evaluate.
+- [x] SDK failure or blocked output falls back to existing deterministic guidance.
+- [x] Existing `tests/test_learning_sessions_m3.py` still passes.
+- [x] Focused LLM/SDK integration tests cover fake SDK success, invalid output, blocked leakage, and deterministic fallback.
 
 ## Out Of Scope
 

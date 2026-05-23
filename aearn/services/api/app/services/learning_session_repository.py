@@ -7,6 +7,11 @@ from decimal import Decimal
 
 from psycopg import Connection
 
+from app.agents.exercise_coach_agent import (
+    build_sdk_error_explanation as build_llm_error_explanation,
+    build_sdk_explanation_check_response,
+    build_sdk_hint_response,
+)
 from app.services.evaluation import (
     build_code_completion_result,
 )
@@ -17,7 +22,7 @@ from app.services.exercise_guidance import (
     resolve_blank,
 )
 from app.services.exercise_repository import get_exercise, get_or_create_exercise_for_knowledge_point
-from app.services.llm_explain_error import build_llm_error_explanation, with_deterministic_generation_metadata
+from app.services.llm_explain_error import with_deterministic_generation_metadata
 from app.services.plan_repository import IdempotencyConflictError, request_hash
 from app.services.review_scheduler import apply_attempt_review_update
 from app.services.runtime_runner import RuntimeExecutionResult, run_exercise
@@ -130,7 +135,7 @@ def start_learning_session(
             "RuntimeProfile": runtime_profile,
         },
         "exercise": exercise,
-        "initial_agent_message": _initial_agent_message(runtime_profile["runtime_tier"], str(context["title"])),
+        "initial_agent_message": _initial_agent_message(str(runtime_profile["runtime_tier"]), str(context["title"])),
         "session_state": "learning",
     }
     return response, reused
@@ -151,7 +156,8 @@ def run_learning_session_exercise(
 ) -> tuple[dict[str, object], bool]:
     session = _load_session(conn, session_id, allowed_session_types={"learn", "review"})
     exercise = _load_session_exercise(conn, exercise_id=exercise_id, session=session)
-    if runtime_profile_id is not None and runtime_profile_id != exercise["runtime_profile"]["id"]:
+    runtime_profile = _mapping_or_empty(exercise.get("runtime_profile"))
+    if runtime_profile_id is not None and runtime_profile_id != str(runtime_profile.get("id")):
         raise SessionStateConflictError("runtime_profile_id does not match the exercise runtime profile")
 
     code_hash = provided_code_hash or build_code_hash(code, filled_blanks)
@@ -271,10 +277,10 @@ def submit_learning_session_exercise(
 
     stored_explanation_check_result = _normalized_explanation_check_result(run_attempt.get("explanation_check_result"))
     stored_explanation_text = _string_or_none(run_attempt.get("explanation_text"))
-    effective_hint_usage_count = max(hint_usage_count, int(run_attempt.get("hint_usage_count") or 0))
+    effective_hint_usage_count = max(hint_usage_count, _int_or_zero(run_attempt.get("hint_usage_count")))
     effective_error_count = max(
         error_count if error_count is not None else 0,
-        int(run_attempt.get("error_count") or 0),
+        _int_or_zero(run_attempt.get("error_count")),
         0 if runtime_result.runtime_status == "success" and runtime_result.test_pass_rate >= 1.0 else 1,
     )
     effective_explanation = explanation if explanation is not None else stored_explanation_text
@@ -341,13 +347,14 @@ def submit_learning_session_exercise(
     if submit_attempt is None:
         raise RuntimeError("submit attempt insert returned no row")
 
+    explanation_check_result = _normalized_explanation_check_result(service_fields.get("explanation_check_result")) or {}
     knowledge_point_result = _update_learning_records(
         conn,
         session=session,
         exercise=exercise,
         submit_attempt=submit_attempt,
         code_completion_result=code_completion_result,
-        explanation_check_result=service_fields["explanation_check_result"],
+        explanation_check_result=explanation_check_result,
         request_id=request_id,
     )
     response = {
@@ -399,14 +406,21 @@ def request_learning_hint(
             raise RuntimeError("stored hint response is invalid")
         return response, True
 
-    next_hint_count = int(attempt.get("hint_usage_count") or 0) + 1
-    response = build_hint_response(
+    next_hint_count = _int_or_zero(attempt.get("hint_usage_count")) + 1
+    deterministic_response = build_hint_response(
         exercise,
         blank=blank,
         hint_level=hint_level,
         current_code=current_code,
         hint_usage_count=next_hint_count,
     )
+    response = build_sdk_hint_response(
+        exercise,
+        blank=blank,
+        hint_level=hint_level,
+        current_code=current_code,
+        hint_usage_count=next_hint_count,
+    ) or deterministic_response
     conn.execute(
         """
         UPDATE attempts
@@ -520,12 +534,18 @@ def check_learning_attempt_explanation(
             raise RuntimeError("stored explanation-check response is invalid")
         return response, True
 
-    response = build_explanation_check_response(
+    deterministic_response = build_explanation_check_response(
         exercise,
         explanation=explanation,
         focus=focus,
         round_number=round_number,
     )
+    response = build_sdk_explanation_check_response(
+        exercise,
+        explanation=explanation,
+        focus=focus,
+        round_number=round_number,
+    ) or deterministic_response
     conn.execute(
         """
         UPDATE attempts
@@ -735,14 +755,14 @@ def _runtime_result_from_attempt(attempt: Mapping[str, object]) -> RuntimeExecut
         stdout=str(attempt.get("stdout") or ""),
         stderr=str(attempt.get("stderr") or ""),
         test_pass_rate=_decimal_to_float(attempt.get("test_pass_rate")),
-        passed_test_count=int(attempt.get("passed_test_count") or 0),
-        total_test_count=int(attempt.get("total_test_count") or 0),
+        passed_test_count=_int_or_zero(attempt.get("passed_test_count")),
+        total_test_count=_int_or_zero(attempt.get("total_test_count")),
         test_results=test_results,
         error_message=str(attempt["error_message"]) if attempt.get("error_message") else None,
         next_action="retry_same",
         preview_html=None,
         core_blank_gate=_decimal_to_float(attempt.get("test_pass_rate")) >= 1.0,
-        any_blank_passed=int(attempt.get("passed_test_count") or 0) > 0,
+        any_blank_passed=_int_or_zero(attempt.get("passed_test_count")) > 0,
         logic_pass=_decimal_to_float(attempt.get("test_pass_rate")) >= 1.0,
     )
 
@@ -800,7 +820,7 @@ def _serialize_review_state(row: Mapping[str, object]) -> dict[str, object]:
     return {
         "knowledge_point_id": str(row["knowledge_point_id"]),
         "card_state": row["card_state"],
-        "due_at": row["due_at"].isoformat() if row.get("due_at") else None,
+        "due_at": _iso_or_none(row.get("due_at")),
         "last_attempt_id": str(row["last_attempt_id"]) if row.get("last_attempt_id") else None,
         "last_fsrs_rating": row.get("last_fsrs_rating"),
         "scheduled_days": row.get("scheduled_days"),
@@ -841,3 +861,33 @@ def _decimal_to_float(value: object) -> float:
     if isinstance(value, int | float):
         return float(value)
     return 0.0
+
+
+def _int_or_zero(value: object) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return 0
+    return 0
+
+
+def _mapping_or_empty(value: object) -> Mapping[str, object]:
+    if isinstance(value, Mapping):
+        return value
+    return {}
+
+
+def _iso_or_none(value: object) -> str | None:
+    if value is None:
+        return None
+    isoformat = getattr(value, "isoformat", None)
+    if callable(isoformat):
+        return str(isoformat())
+    return str(value)
