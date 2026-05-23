@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 11
+- **Total Sessions**: 12
 - **Last Active**: 2026-05-23
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~373 | Active |
+| `journal-1.md` | ~406 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 12 | 2026-05-23 | Streaming learning conversation | `f5bf993` | `main` |
 | 11 | 2026-05-23 | Backend SSE streaming implementation | `ae88704` | `main` |
 | 10 | 2026-05-22 | Desktop release QA smoke closeout | `8802f7f` | `main` |
 | 9 | 2026-05-22 | Desktop 前端架构重构 P1-P3 完成 | `2dd5a20`, `2af1696`, `1acff4a` | `main` |

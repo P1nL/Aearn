@@ -1,0 +1,6 @@
+{"file":"docs/qa/acceptance-test-plan.md","reason":"Defines model-key-free validation expectations and acceptance levels."}
+{"file":"docs/architecture/api-contract.md","reason":"Check API/SSE compatibility and error contract preservation."}
+{"file":"docs/architecture/langgraph-state-machine.md","reason":"Check that state writes, LLM failure handling, and idempotency remain aligned."}
+{"file":"docs/product/frontend-interaction-spec.md","reason":"Check whether any frontend wiring preserves desktop interaction boundaries."}
+{"file":".trellis/spec/backend/index.md","reason":"Backend review checklist entry point."}
+{"file":".trellis/spec/frontend/index.md","reason":"Frontend review checklist entry point if desktop files are touched."}
