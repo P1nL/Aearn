@@ -1,0 +1,9 @@
+{"file":".trellis/spec/backend/index.md","reason":"Backend source-of-truth index before implementation."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"SDK agent boundary, deterministic fallback, and model-key-free test rules."}
+{"file":"docs/architecture/api-contract.md","reason":"Existing hint, explain-error, check-explanation, and SSE/API contract boundaries."}
+{"file":"docs/architecture/langgraph-state-machine.md","reason":"Exercise coach nodes and Aearn-owned Attempt write timing."}
+{"file":"docs/architecture/code-completion-evaluation-spec.md","reason":"Keep final scoring and FSRS mapping outside SDK coaching."}
+{"file":"aearn/services/api/app/services/learning_session_repository.py","reason":"Owns hint, explain-error, check-explanation writes and idempotency."}
+{"file":"aearn/services/api/app/services/exercise_guidance.py","reason":"Current deterministic hint and explanation-check builders."}
+{"file":"aearn/services/api/app/services/llm_explain_error.py","reason":"Current explain-error LLM adapter to replace or wrap."}
+{"file":"aearn/services/api/tests/test_learning_sessions_m3.py","reason":"Primary contract regression suite for learning endpoints."}

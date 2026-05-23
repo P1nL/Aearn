@@ -1,0 +1,9 @@
+{"file":".trellis/spec/backend/index.md","reason":"Backend source-of-truth index before implementation."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"SDK adapter, fallback, and provider compatibility rules."}
+{"file":"docs/product/user-flows.md","reason":"Onboarding flow and programming-language learning boundary."}
+{"file":"docs/architecture/api-contract.md","reason":"Plans generate/confirm API contract and plan_draft shape."}
+{"file":"docs/architecture/langgraph-state-machine.md","reason":"Onboarding graph, validate_plan_draft, and ReviewState initialization timing."}
+{"file":"aearn/services/api/app/routes/plans.py","reason":"Current plan generate and confirm route behavior."}
+{"file":"aearn/services/api/app/services/plan_generator.py","reason":"Current deterministic plan draft generation."}
+{"file":"aearn/services/api/app/services/plan_repository.py","reason":"Current confirm-plan validation, writes, and idempotency."}
+{"file":"aearn/services/api/tests/test_onboarding_m2.py","reason":"Primary onboarding and plan contract regression suite."}

@@ -1,0 +1,4 @@
+{"file":"docs/qa/acceptance-test-plan.md","reason":"UF-01/UF-02 and runtime-boundary acceptance checks."}
+{"file":"aearn/services/api/tests/test_onboarding_m2.py","reason":"Plan draft, confirm-plan, idempotency, and runtime boundary regressions."}
+{"file":"aearn/services/api/tests/test_llm_integration.py","reason":"Fake SDK runner, fallback, invalid-output, and leakage tests."}
+{"file":"aearn/services/api/app/services/plan_repository.py","reason":"Verify SDK code does not own durable plan or ReviewState writes."}

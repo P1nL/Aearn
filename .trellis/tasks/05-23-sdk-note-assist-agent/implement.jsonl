@@ -1,0 +1,8 @@
+{"file":".trellis/spec/backend/index.md","reason":"Backend source-of-truth index before implementation."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"SDK adapter, deterministic fallback, and no-secret test rules."}
+{"file":"docs/product/user-flows.md","reason":"MVP note assist boundaries and no full-note replacement rule."}
+{"file":"docs/architecture/api-contract.md","reason":"Note CRUD and agent-draft JSON/SSE contract."}
+{"file":"docs/architecture/langgraph-state-machine.md","reason":"Note Assist Graph and Note write timing."}
+{"file":"aearn/services/api/app/routes/notes.py","reason":"Public JSON/SSE route framing for agent-draft."}
+{"file":"aearn/services/api/app/services/note_repository.py","reason":"Current note draft generation and durable Note writes."}
+{"file":"aearn/services/api/tests/test_notes_m5.py","reason":"Primary Note contract regression suite."}
