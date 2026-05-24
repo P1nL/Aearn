@@ -244,7 +244,7 @@ $patterns = @(
   'desktop-ia' + '-and-layout',
   '2026-04-25-learning-agent' + '-design-v1',
   'documentation' + '-roadmap',
-  'superpowers' + '/plans'
+  'super' + 'powers' + '/plans'
 )
 Select-String -Path docs\**\*.md,docs\*.md -Pattern ($patterns -join '|')
 ```

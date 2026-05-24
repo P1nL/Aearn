@@ -63,13 +63,19 @@ docs/design/learning-agent-claude-desktop-framework.html
 
 ## 推荐任务提示词
 
-把下面这段交给 Claude，然后替换 `<任务目标>` 和 `<验收点>`：
+把下面这段交给 Claude，然后替换 `<任务目标>`、`<验收点>` 和 `<是否需要修改前先询问>`：
 
 ```text
 你在 Aearn 项目中修改 desktop 前端界面。
 
 任务目标：
-对现在的前端界面进行优化,当前的界面元素过于复杂,还把文档注释也当成了前端元素放了上去,在对前端修改前询问我
+<任务目标>
+
+验收点：
+<验收点>
+
+交互要求：
+<是否需要修改前先询问>
 
 必须遵守：
 1. 真实实现目录是 aearn/apps/desktop/src。
@@ -80,8 +86,6 @@ docs/design/learning-agent-claude-desktop-framework.html
 6. 不要修改 docs/design/learning-agent-claude-desktop-framework.html，除非用户明确要求。
 7. 修改后必须运行 pnpm --dir .\aearn desktop:check。
 8. 如果涉及学习闭环，必须浏览器验证 onboarding -> learning -> run visible tests -> explain-error -> stale -> rerun -> check explanation -> submit。
-
-
 
 输出要求：
 - 说明改了哪些用户可见行为。

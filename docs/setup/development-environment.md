@@ -1,12 +1,12 @@
 # Aearn 前置环境配置
 
-日期：2026-05-11  
-状态：Draft V1  
-适用范围：正式开发 `Aearn MVP` 前的本机开发环境、服务依赖、版本边界和验收命令
+日期：2026-05-24
+状态：Active V1.1
+适用范围：当前 `Aearn MVP` 的本机开发环境、服务依赖、版本边界、运行顺序和验收命令
 
 ## 目标
 
-本文件定义开始实施前必须准备好的开发环境。完成本文件后，开发者或开发 Agent 才应进入项目骨架、数据库 migration、API mock、前端联调和 Agent 状态机实现。
+本文件定义当前仓库可运行、可测试、可继续开发所需的本机环境。完成本文件后，开发者或开发 Agent 应能启动依赖服务、初始化数据库、运行 FastAPI、启动 desktop 前端，并执行最小验收命令。
 
 历史教程目录已从当前工作树移除，不应继续作为最终应用目录或默认参考实现。正式实现固定在独立目录：
 
@@ -18,11 +18,9 @@ aearn/
     api/
     worker/
   packages/
-    shared-contracts/
+    shared/
   infra/
-    docker/
-  migrations/
-  tests/
+    docker-compose.yml
 ```
 
 ## 前置决策
@@ -142,7 +140,7 @@ docker compose -f .\aearn\infra\docker-compose.yml ps
 
 ## 环境变量
 
-正式项目应提供 `.env.example`，本机复制为 `.env`。不要提交真实密钥。
+正式项目提供 `aearn/.env.example`，本机复制为 `aearn/.env`。不要提交真实密钥。
 
 ```env
 APP_ENV=development
@@ -262,13 +260,13 @@ mypy
 
 ## 运行顺序
 
-完成项目骨架后，本地开发应按以下顺序启动：
+本地开发应按以下顺序启动：
 
 ```text
 PostgreSQL / Redis
-  -> Alembic migration
+  -> schema bootstrap
   -> API server
-  -> Celery worker / beat
+  -> Celery worker
   -> Tauri desktop dev server
 ```
 
@@ -276,11 +274,10 @@ PostgreSQL / Redis
 
 ```powershell
 docker compose -f .\aearn\infra\docker-compose.yml up -d
-uv run alembic upgrade head
-uv run uvicorn app.main:app --host 127.0.0.1 --port 8001 --reload
-uv run celery -A app.tasks.celery_app worker --loglevel=info
-uv run celery -A app.tasks.celery_app beat --loglevel=info
-pnpm --dir .\apps\desktop tauri dev
+uv --directory .\aearn\services\api run python -m app.db.bootstrap
+uv --directory .\aearn\services\api run uvicorn app.main:app --host 127.0.0.1 --port 8001 --reload
+uv --directory .\aearn\services\worker run celery -A aearn_worker.worker_app:celery_app worker --loglevel=info
+pnpm --dir .\aearn desktop:dev
 ```
 
 ## 前置验收清单
@@ -307,10 +304,11 @@ pnpm --dir .\apps\desktop tauri dev
 
 ## 下一步
 
-前置环境通过后，进入 `Milestone 1：项目骨架与基础数据`：
+前置环境通过后，先跑最小本机 smoke：
 
-1. 新建正式项目目录。
-2. 建立 `apps/desktop` 和 `apps/api`。
-3. 建立统一 Docker Compose。
-4. 建立 `.env.example`。
-5. 跑通 `GET /health`、数据库连接和桌面端调用后端。
+```powershell
+uv --directory .\aearn\services\api run python -m pytest tests/test_health.py tests/test_db_bootstrap.py
+pnpm --dir .\aearn desktop:check
+```
+
+如果需要理解当前仓库，再阅读 `setup/newcomer-onboarding-guide.md`。如果要继续开发功能，按 `docs/README.md` 中列出的 source-of-truth 文档和 `plans/learning-agent-implementation-plan.md` 的审查顺序推进。
