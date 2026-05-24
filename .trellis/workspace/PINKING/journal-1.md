@@ -503,3 +503,36 @@ Implemented SDK-backed hint, explain-error, and explanation-check coaching with 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 16: Complete SDK agent rollout
+
+**Date**: 2026-05-24
+**Task**: Complete SDK agent rollout
+**Branch**: `main`
+
+### Summary
+
+Completed SDK Note Assist, Review Coach, Onboarding Plan, and cross-agent QA release gates; archived SDK tasks; validation passed for backend pytest, mypy, ruff, uv lock, and desktop check.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `733b132` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
