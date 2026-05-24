@@ -21,14 +21,10 @@ let messageCounter = 0;
 
 export function buildLearnNavItems(plan: CreatedPlanResponse | null, activeKnowledgePointId: string): LearnNavItem[] {
   if (!plan) {
-    return [
-      { id: "learn-1", title: "DOM 事件补全", active: true },
-      { id: "learn-2", title: "HTML / CSS 选择器", active: false },
-      { id: "learn-3", title: "Python 函数测试", active: false },
-    ];
+    return [];
   }
 
-  return plan.knowledge_points.slice(0, 3).map((knowledgePoint, index) => ({
+  return plan.knowledge_points.map((knowledgePoint, index) => ({
     id: knowledgePoint.id,
     title: knowledgePoint.title,
     active: knowledgePoint.id === activeKnowledgePointId || (index === 0 && activeKnowledgePointId.length === 0),
@@ -37,13 +33,7 @@ export function buildLearnNavItems(plan: CreatedPlanResponse | null, activeKnowl
 
 export function buildRouteCards(plan: CreatedPlanResponse | null, activeKnowledgePointId: string): RouteCard[] {
   if (!plan) {
-    return [
-      { id: "route-1", index: 1, title: "HTML / CSS 基础", body: "已完成 · 页面结构与选择器", active: false, knowledgePointId: "" },
-      { id: "route-2", index: 2, title: "DOM 事件", body: "练习中 · 点击计数与状态变量", active: true, knowledgePointId: "" },
-      { id: "route-3", index: 3, title: "Python 函数测试", body: "未开始 · 补全函数并运行断言", active: false, knowledgePointId: "" },
-      { id: "route-4", index: 4, title: "AI 代码理解", body: "未开始 · 解释生成代码和报错", active: false, knowledgePointId: "" },
-      { id: "route-5", index: 5, title: "调试小项目", body: "未开始 · 完整运行、测试和复盘", active: false, knowledgePointId: "" },
-    ];
+    return [];
   }
 
   return plan.modules.slice(0, 5).map((module, index) => {
@@ -85,16 +75,6 @@ export function buildReviewCards(
       title: "下一步",
       body: `调度建议：${lastSubmit.next_action}，知识点状态已更新为 ${knowledgePointStatusLabel(lastSubmit.KnowledgePoint.status)}。`,
     },
-  ];
-}
-
-export function buildFallbackDraftModules(): DraftModuleCard[] {
-  return [
-    { id: "draft-1", title: "HTML 结构与 CSS 选择器", description: "建立页面结构、选择器和实时预览的共同语言", tag: "保留", tagClass: "tag strong" },
-    { id: "draft-2", title: "JavaScript DOM 事件", description: "理解事件监听、状态变量和输出更新", tag: "主干", tagClass: "tag warn" },
-    { id: "draft-3", title: "Python 函数与测试", description: "将补全结果与断言、测试反馈连接", tag: "新增", tagClass: "tag" },
-    { id: "draft-4", title: "AI 生成代码理解", description: "识别关键路径、冗余代码和可验证修改", tag: "可压缩", tagClass: "tag" },
-    { id: "draft-5", title: "调试一个小型页面", description: "用完整练习完成运行、测试和复盘", tag: "终局", tagClass: "tag" },
   ];
 }
 

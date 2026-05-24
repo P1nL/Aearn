@@ -1,7 +1,7 @@
 import type { AsyncActionState } from "../../appTypes";
 import type { LanguageCourse, PlanDraft } from "../../types";
 import { runtimeLabel } from "../../lib/desktopLabels";
-import { buildFallbackDraftModules, mapDraftModuleCard } from "../../lib/learningHelpers";
+import { mapDraftModuleCard } from "../../lib/learningHelpers";
 
 type PlanDraftPanelProps = {
   actionState: AsyncActionState;
@@ -18,7 +18,7 @@ export function PlanDraftPanel({
   isBusy,
   onConfirm,
 }: PlanDraftPanelProps) {
-  const modules = planDraft ? planDraft.modules.map(mapDraftModuleCard) : buildFallbackDraftModules();
+  const modules = planDraft ? planDraft.modules.map(mapDraftModuleCard) : [];
 
   return (
     <div className="stack">
@@ -44,18 +44,25 @@ export function PlanDraftPanel({
         </article>
       )}
 
-      <div className="draft-route">
-        {modules.map((module, index) => (
-          <article className={index === 0 ? "draft-module active" : "draft-module"} key={module.id}>
-            <span className="module-index">{index + 1}</span>
-            <div>
-              <h3>{module.title}</h3>
-              <span className="meta">{module.description}</span>
-            </div>
-            <span className={module.tagClass}>{module.tag}</span>
-          </article>
-        ))}
-      </div>
+      {modules.length > 0 ? (
+        <div className="draft-route">
+          {modules.map((module, index) => (
+            <article className={index === 0 ? "draft-module active" : "draft-module"} key={module.id}>
+              <span className="module-index">{index + 1}</span>
+              <div>
+                <h3>{module.title}</h3>
+                <span className="meta">{module.description}</span>
+              </div>
+              <span className={module.tagClass}>{module.tag}</span>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <div className="empty-draft-state">
+          <strong>还没有学习计划草稿</strong>
+          <span>输入目标并点击生成后，这里只展示后端返回的真实模块。</span>
+        </div>
+      )}
 
       {planDraft && (
         <>

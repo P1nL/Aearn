@@ -6,12 +6,7 @@ import { ApiHealthChip } from "./components/ApiHealthChip";
 import { NoteDrawer } from "./components/NoteDrawer";
 import { SidebarNav } from "./components/SidebarNav";
 import { SideContext } from "./components/SideContext";
-import {
-  HOME_BASE_MESSAGES,
-  ONBOARDING_MESSAGES,
-  REVIEW_BASE_MESSAGES,
-  ROUTE_META,
-} from "./lib/appContent";
+import { ROUTE_META } from "./lib/appContent";
 import { writeBootstrapContext, clearBootstrapContext } from "./lib/bootstrapStorage";
 import { getCrumbLabel, screenClassName } from "./lib/desktopLabels";
 import { computeSidebarProgress, createMessage } from "./lib/learningHelpers";
@@ -38,6 +33,8 @@ type ComposerStreamRequest = {
   };
 };
 
+const EMPTY_MESSAGES: ConversationMessage[] = [];
+
 function App() {
   const app = useAppStore();
   const notes = useNotesStore();
@@ -61,8 +58,8 @@ function App() {
   const sidebarHint = ROUTE_META[visibleRoute].hint;
   const sidebarProgress = app.createdPlan ? computeSidebarProgress(app.createdPlan) : 0;
   const crumb = getCrumbLabel(visibleRoute, settings.settingsTab, session, activeExercise);
-  const homeMessages = [...HOME_BASE_MESSAGES, ...app.homeConversation];
-  const reviewMessages = [...REVIEW_BASE_MESSAGES, ...app.reviewConversation];
+  const homeMessages = app.homeConversation;
+  const reviewMessages = app.reviewConversation;
   const settingsDirty = settings.isDirty(app.user);
   const apiStatusLabel =
     app.apiHealth.status === "online" ? "在线" : app.apiHealth.status === "offline" ? `离线: ${app.apiHealth.message}` : "检测中";
@@ -105,8 +102,10 @@ function App() {
     requestId: composerStream?.requestId,
     onEvent: (streamEvent) => {
       if (!composerStream || streamEvent.type !== "agent_message") return;
+      const incomingText = streamEvent.data.content || streamEvent.data.delta;
       app.updateHomeMessage(composerStream.assistantMessageId, {
-        text: streamEvent.data.content || streamEvent.data.delta,
+        text: streamEvent.data.content ? incomingText : undefined,
+        appendText: streamEvent.data.content ? undefined : incomingText,
         status: "streaming",
         statusText: "正在生成……",
       });
@@ -246,13 +245,13 @@ function App() {
   // --- Render ---
   return (
     <main className="stage">
-      <section className={app.sidebarOpen ? "desktop" : "desktop sidebar-collapsed"} aria-label="Claude 桌面端风格 Aearn 框架">
+      <section className={app.sidebarOpen ? "desktop" : "desktop sidebar-collapsed"} aria-label="Aearn 对话学习工作台">
         <header className="app-menu" aria-label="桌面应用菜单栏">
           <div className="menu-left">
             <button className="sidebar-toggle" type="button" aria-label={app.sidebarOpen ? "折叠左侧栏" : "展开左侧栏"} aria-expanded={app.sidebarOpen} onClick={app.toggleSidebar}>
               <img src="/sidebar.png" alt="" />
             </button>
-            <div className="app-title">AI Code Learning</div>
+            <div className="app-title">Aearn Dialogue</div>
           </div>
           <div className="menu-right">
             <button className="menu-icon settings-top" type="button" aria-label="设置" onClick={() => goToRoute("settings")}>
@@ -272,10 +271,10 @@ function App() {
         <aside className={visibleRoute === "settings" ? "sidebar no-context" : "sidebar"} aria-label="应用侧边栏">
           <div className="brand">
             <span className="mark">A</span>
-            <span className="brand-name">AI Code Learning</span>
+            <span className="brand-name">Aearn Dialogue</span>
           </div>
           <button className="new-goal" type="button" onClick={handleResetGoal}>
-            <span>新编程目标</span><span>+</span>
+            <span>新学习目标</span><span>+</span>
           </button>
           <SidebarNav
             activeRoute={visibleRoute}
@@ -284,6 +283,11 @@ function App() {
             openGroups={app.openGroups}
             onToggleGroup={app.toggleGroup}
             onRouteChange={goToRoute}
+            onSelectKnowledgePoint={(id) => {
+              if (app.createdPlan) {
+                void app.openLearningSession(app.createdPlan, id);
+              }
+            }}
           />
           <SideContext
             route={visibleRoute}
@@ -327,7 +331,7 @@ function App() {
             {app.dashboardState.status === "error" && <div className="tool-card dashboard-inline-error">提示：{app.dashboardState.message}</div>}
 
             <section className={screenClassName(visibleRoute === "onboarding")} aria-label="首次建档">
-              <OnboardingPage apiHealth={app.apiHealth} courses={app.courses} existingUser={app.user} messages={ONBOARDING_MESSAGES} resetNonce={app.resetNonce} onUserChange={app.setUser} onPlanCreated={app.handlePlanCreated} />
+              <OnboardingPage apiHealth={app.apiHealth} courses={app.courses} existingUser={app.user} messages={EMPTY_MESSAGES} resetNonce={app.resetNonce} onUserChange={app.setUser} onPlanCreated={app.handlePlanCreated} />
             </section>
 
             <section className={screenClassName(visibleRoute === "home")} aria-label="学习页">

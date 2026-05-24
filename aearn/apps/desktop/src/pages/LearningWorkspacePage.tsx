@@ -1,4 +1,4 @@
-import { startTransition, useEffect, useState } from "react";
+import { startTransition, useEffect, useRef, useState } from "react";
 
 import {
   checkLearningExplanation,
@@ -76,9 +76,11 @@ export function LearningWorkspacePage({
   const [explanationFocus, setExplanationFocus] = useState<ExplanationFocus>("core_logic");
   const [explanationRound, setExplanationRound] = useState(1);
   const [explanationCheckResult, setExplanationCheckResult] = useState<ExplanationCheckResponse | null>(null);
+  const conversationScrollRef = useRef<HTMLElement | null>(null);
 
   const session = sessionState.status === "ready" ? sessionState.data : null;
   const activeExercise = session?.exercise ?? null;
+  const initialAgentMessage = session?.initial_agent_message.trim() ?? "";
 
   function resetWorkbenchState(nextCode = "", nextBlanks: Record<string, string> = {}, nextSelectedBlankId = "") {
     setEditorCode(nextCode);
@@ -110,6 +112,15 @@ export function LearningWorkspacePage({
     }
     resetWorkbenchState();
   }, [session?.session_id, activeExercise?.id, resetNonce]);
+
+  useEffect(() => {
+    const scrollContainer = conversationScrollRef.current;
+    if (!scrollContainer) return;
+    const frame = window.requestAnimationFrame(() => {
+      scrollContainer.scrollTop = scrollContainer.scrollHeight;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [messages.length, session?.session_id, activeExercise?.id, exerciseActionState.status, lastRun?.attempt_id, lastSubmit?.attempt_id]);
 
   async function handleRunExercise(runMode: ExerciseRunMode) {
     if (!session || !activeExercise) {
@@ -297,10 +308,16 @@ export function LearningWorkspacePage({
   }
 
   return (
-    <section className="conversation" aria-label="Agent 代码练习对话">
+    <section className="conversation" aria-label="Agent 代码练习对话" ref={conversationScrollRef}>
       <div className="thread">
         <div className="lesson-title">
-          <p>{session ? `当前只解决一个问题：${session.context_snapshot.KnowledgePoint.title}。先运行，再根据测试结果决定下一步。` : "今天只解决一个问题：状态变量应该放在哪里，测试为什么会失败。"}</p>
+          <p>
+            {session
+              ? `当前知识点：${session.context_snapshot.KnowledgePoint.title}。对话、运行结果和练习反馈会留在同一个线程里。`
+              : createdPlan
+                ? "从左侧学习路线选择一个知识点，主区会打开真实会话并启用 Agent 对话。"
+                : "先完成建档生成学习路线；这里不会预置固定示例对话。"}
+          </p>
         </div>
 
         <ThreadMessages messages={messages} />
@@ -320,24 +337,31 @@ export function LearningWorkspacePage({
         )}
 
         {!session && sessionState.status === "idle" && (
-          <SystemCard
-            title="会话未开始"
-            body="确认学习计划后，主页会在这里承载真实 M3 练习、运行反馈和提交结果。"
-          />
+          <div className="empty-chat-state">
+            <span className="empty-chat-kicker">Aearn Dialogue</span>
+            <h1>{createdPlan ? "选择知识点后开始对话" : "生成路线后开始真实对话"}</h1>
+            <p>
+              {createdPlan
+                ? "左侧会展示由你的学习目标生成的模块和知识点。进入知识点后，底部输入框会连接当前 learning session 的流式 Agent。"
+                : "对话区默认保持空白，不再用原型里的固定 DOM/Python 示例填充。"}
+            </p>
+          </div>
         )}
 
         {session && activeExercise && (
           <>
-            <article className="message agent">
-              <div className="avatar">A</div>
-              <div className="bubble">
-                <div className="bubble-label">Agent</div>
-                <p>{session.initial_agent_message}</p>
-                <div className="tool-card">
-                  当前练习：{activeExercise.title} · {session.context_snapshot.KnowledgePoint.title}
+            {initialAgentMessage && (
+              <article className="message agent">
+                <div className="avatar">A</div>
+                <div className="bubble">
+                  <div className="bubble-label">Agent</div>
+                  <p>{initialAgentMessage}</p>
+                  <div className="tool-card">
+                    当前练习：{activeExercise.title} · {session.context_snapshot.KnowledgePoint.title}
+                  </div>
                 </div>
-              </div>
-            </article>
+              </article>
+            )}
 
             <ExerciseWorkbench
               session={session}
