@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 16
+- **Total Sessions**: 17
 - **Last Active**: 2026-05-24
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~538 | Active |
+| `journal-1.md` | ~571 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 17 | 2026-05-24 | Dialogue-first desktop UI closeout | `08de55ddd7e232639df5570a4249a34f9db02a9b` | `main` |
 | 16 | 2026-05-24 | Complete SDK agent rollout | `733b132` | `main` |
 | 15 | 2026-05-23 | SDK exercise coach endpoints | `3e0b319` | `main` |
 | 14 | 2026-05-23 | SDK teaching tools and guardrails | `85d23ca` | `main` |
