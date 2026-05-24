@@ -4,10 +4,12 @@ import psycopg
 import pytest
 from fastapi.testclient import TestClient
 
+import app.routes.plans as plans_route
 from app.core.config import get_settings
 from app.db.bootstrap import bootstrap_database
 from app.db.connection import connect
 from app.main import app
+from app.models.onboarding import PlanDraft
 
 
 def _database_available() -> bool:
@@ -102,6 +104,36 @@ def test_generate_plan_goal_and_material_modes(client: TestClient) -> None:
     )
     assert material_response.status_code == 200
     assert "User materials" in material_response.json()["plan_draft"]["source_attribution"][1]
+
+
+def test_generate_plan_uses_valid_sdk_candidate(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    user = _create_user(client)
+    course = _course_by_language(client, "javascript")
+
+    def fake_sdk_response(context, **kwargs):  # type: ignore[no-untyped-def]
+        del kwargs
+        candidate = PlanDraft.model_validate(context.deterministic_plan_draft).model_copy(
+            update={"goal_text": "SDK refined DOM validation goal."}
+        )
+        return {"plan_draft": candidate, "agent_notes": ["SDK note: keep deterministic DOM templates."]}
+
+    monkeypatch.setattr(plans_route, "build_sdk_onboarding_plan_response", fake_sdk_response)
+
+    response = client.post(
+        "/api/plans/generate",
+        json={
+            "user_id": user["id"],
+            "mode": "goal_based",
+            "goal_text": "Learn DOM.",
+            "course_id": course["id"],
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["plan_draft"]["goal_text"] == "SDK refined DOM validation goal."
+    assert "SDK note: keep deterministic DOM templates." in body["agent_notes"]
+    assert body["plan_draft"]["runtime_boundary"]["runtime_tier"] == "browser_preview"
 
 
 def test_generate_plan_failure_paths_and_java_notice(client: TestClient) -> None:

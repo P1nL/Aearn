@@ -599,3 +599,52 @@ yield writer.event("runner_result", runner_result)
 ```
 
 The shared SSE writer serializes a compact one-line JSON frame and keeps the event id sequence consistent.
+
+## Scenario: SDK Agent Ownership And Release Gates
+
+### 1. Scope / Trigger
+
+- Trigger: adding, changing, or releasing OpenAI Agents SDK-backed behavior for teaching messages, exercise coaching, note assist, review coaching, or onboarding plan drafts.
+- Scope: `app/agents/*`, SDK-facing feature wrappers in `app/services/*`, API routes that expose JSON/SSE responses, and SDK release reports under `docs/qa/`.
+
+### 2. Signatures
+
+- SDK modules live under `app/agents/`.
+- Feature services and repositories own public response normalization, fallback selection, idempotency, and durable writes.
+- Release gate commands:
+  - `uv --directory .\aearn\services\api run python -m pytest`
+  - `uv --directory .\aearn\services\api run python -m mypy app`
+  - `uv --directory .\aearn\services\api run ruff check app tests`
+  - `uv --directory .\aearn\services\api lock --check`
+  - `pnpm --dir .\aearn desktop:check`
+
+### 3. Contracts
+
+- SDK modules may build prompts, call SDK runners, attach tools or guardrails, validate candidate output, and return safe candidate text or structured data.
+- SDK modules must not import database connection types or mutate `Attempt`, `ReviewState`, `ReviewLog`, `Note`, `LearningPlan`, `LearningSession`, or `idempotency_records`.
+- Durable writes, retries, idempotency replay, transaction boundaries, and public response envelopes remain owned by Aearn services/repositories.
+- SDK inputs must be safe summaries: bounded exercise metadata, visible test summaries, sanitized latest-attempt facts, bounded learner notes, and deterministic plan templates.
+- SDK inputs and outputs must not expose hidden test ids, hidden test source, `solution_reference`, full submitted code, raw provider errors, SDK event names, API keys, raw prompts, or full private notes.
+- Deterministic fallback is required when model config is disabled or incomplete, SDK execution fails, output validation fails, guardrails block input/output, or an SDK candidate claims unsupported runtime capabilities.
+- Provider diagnostics are allowed only when they are secret-free and normalized; raw provider payloads, stack traces, prompts, submitted code, and API keys must never reach public JSON/SSE responses or logs.
+
+### 4. Validation & Error Matrix
+
+- Fake SDK success -> existing public JSON/SSE contract stays unchanged.
+- SDK exception, invalid event stream, invalid JSON, missing required fields, unsupported enum, or empty output -> deterministic fallback.
+- Guardrail-blocked leakage -> deterministic fallback or recoverable SSE error according to the owning route contract, without exposing block internals.
+- Idempotency replay -> return the stored Aearn response and do not call the SDK again.
+- Idempotency key reused with a different request hash -> existing `IDEMPOTENCY_CONFLICT` behavior.
+
+### 5. Good/Base/Bad Cases
+
+- Good: a configured SDK candidate improves coaching or draft wording while repositories still own `Attempt`, `ReviewState`, `ReviewLog`, `Note`, `LearningPlan`, and `idempotency_records` writes.
+- Base: local development has no model key; every SDK-backed path still passes model-key-free tests through deterministic fallback.
+- Bad: SDK code writes product rows, exposes SDK event names through SSE, logs raw prompts, returns provider error bodies, trusts model-provided knowledge point IDs, or promises Java/C++ execution for `compiled_sandbox_later`.
+
+### 6. Tests Required
+
+- Maintain model-key-free fake runner coverage for each SDK-backed path.
+- Cover valid SDK output, SDK failure, invalid or malformed output, guardrail-blocked leakage, and deterministic fallback.
+- Keep route-level contract tests for learning JSON/SSE, exercise coach endpoints, note JSON/SSE draft updates, review start/rationale, onboarding plan generation, and dashboard/resume compatibility.
+- Before release, create or update a cross-agent SDK matrix and record exact command results plus residual risks in `docs/qa/`.

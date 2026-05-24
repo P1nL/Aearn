@@ -23,6 +23,7 @@
 | 类型 | 文档 | 用途 |
 |---|---|---|
 | Claude 前端对接模板 | `setup/claude-frontend-handoff.md` | 给外部代码助手执行 desktop 前端改造时使用的任务入口；不替代上方 source of truth |
+| SDK Agent 发布门禁 | `qa/sdk-agent-release-readiness.md` | SDK Agent 收口矩阵、验证命令结果和剩余风险；不替代验收测试总计划 |
 
 ## 已移除的重复文档
 

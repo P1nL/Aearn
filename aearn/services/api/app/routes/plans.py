@@ -1,9 +1,10 @@
 from fastapi import APIRouter, Header, Request, status
 from fastapi.responses import JSONResponse
 
+from app.agents.onboarding_plan_agent import build_onboarding_plan_context, build_sdk_onboarding_plan_response
 from app.core.errors import error_response
 from app.db.connection import connect
-from app.models.onboarding import PlanConfirmRequest, PlanGenerateRequest
+from app.models.onboarding import PlanConfirmRequest, PlanDraft, PlanGenerateRequest
 from app.services.catalog import get_course
 from app.services.plan_generator import (
     build_plan_draft,
@@ -57,7 +58,27 @@ def generate_plan(payload: PlanGenerateRequest, request: Request) -> dict[str, o
                 details={"course_id": payload.course_id, "language": payload.language},
             )
 
-    plan_draft = build_plan_draft(payload, user, course)
+    deterministic_plan_draft = build_plan_draft(payload, user, course)
+    plan_draft = deterministic_plan_draft
+    agent_notes = _deterministic_agent_notes(deterministic_plan_draft)
+    sdk_response = build_sdk_onboarding_plan_response(
+        build_onboarding_plan_context(payload, user, course, deterministic_plan_draft)
+    )
+    if sdk_response is not None:
+        sdk_plan_draft = sdk_response.get("plan_draft")
+        if isinstance(sdk_plan_draft, PlanDraft):
+            plan_draft = sdk_plan_draft.model_copy(
+                update={
+                    "source_attribution": _merge_unique_strings(
+                        deterministic_plan_draft.source_attribution,
+                        sdk_plan_draft.source_attribution,
+                    )
+                }
+            )
+            agent_notes = _merge_unique_strings(
+                _deterministic_agent_notes(deterministic_plan_draft),
+                _string_list(sdk_response.get("agent_notes")),
+            )
     if plan_draft.language in {"javascript", "html_css", "python"} and not has_supported_mvp_runtime(plan_draft):
         return error_response(
             request,
@@ -69,10 +90,7 @@ def generate_plan(payload: PlanGenerateRequest, request: Request) -> dict[str, o
 
     return {
         "plan_draft": plan_draft.model_dump(mode="json"),
-        "agent_notes": [
-            plan_draft.runtime_boundary.notice,
-            "M2 uses deterministic course templates; full runner sessions start in M3.",
-        ],
+        "agent_notes": agent_notes,
         "next_action": "advance_next",
     }
 
@@ -152,3 +170,25 @@ def read_plan(plan_id: str, request: Request) -> dict[str, object] | JSONRespons
             details={"plan_id": plan_id},
         )
     return plan
+
+
+def _deterministic_agent_notes(plan_draft: PlanDraft) -> list[str]:
+    return [
+        plan_draft.runtime_boundary.notice,
+        "M2 uses deterministic course templates; full runner sessions start in M3.",
+    ]
+
+
+def _merge_unique_strings(primary: list[str], secondary: list[str]) -> list[str]:
+    merged: list[str] = []
+    for item in [*primary, *secondary]:
+        text = str(item or "").strip()
+        if text and text not in merged:
+            merged.append(text)
+    return merged
+
+
+def _string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if str(item).strip()]

@@ -11,14 +11,38 @@ from app.agents.exercise_coach_agent import (
     build_sdk_explanation_check_response,
     build_sdk_hint_response,
 )
+from app.agents.note_assist_agent import (
+    NOTE_ASSIST_AGENT_NAME,
+    AgentsSDKNoteAssistClient,
+    NoteAssistContext,
+    assert_safe_note_draft_output,
+    build_deterministic_note_draft,
+)
+from app.agents.onboarding_plan_agent import (
+    ONBOARDING_PLAN_AGENT_NAME,
+    AgentsSDKOnboardingPlanClient,
+    OnboardingPlanContext,
+    OnboardingPlanJsonResponse,
+    build_onboarding_plan_context,
+    build_sdk_onboarding_plan_response,
+)
+from app.agents.review_coach_agent import (
+    REVIEW_COACH_AGENT_NAME,
+    AgentsSDKReviewCoachClient,
+    ReviewCoachContext,
+    ReviewCoachJsonResponse,
+    build_sdk_review_coach_response,
+)
 from app.agents.guardrails import assert_safe_teaching_output, check_teaching_request
 from app.core.config import Settings
 from app.agents.learning_conversation_agent import AgentsSDKLearningConversationClient, TEACHING_AGENT_NAME
 from app.agents.sdk_runtime import extract_text_delta, normalize_openai_base_url
 from app.agents.tools import build_teaching_tools, summarize_current_learning_context, summarize_latest_visible_attempt
+from app.models.onboarding import PlanDraft, PlanGenerateRequest
 from app.services.llm_client import LLMJsonResponse, OpenAICompatibleClient
 from app.services.llm_client import LLMInvalidResponseError
 from app.services.llm_explain_error import build_llm_error_explanation, with_deterministic_generation_metadata
+from app.services.plan_generator import build_plan_draft
 
 
 def test_settings_reports_openai_compatible_configuration() -> None:
@@ -267,6 +291,463 @@ def test_agents_sdk_exercise_coach_client_streams_json_and_attaches_guardrails()
     assert captured["output_guardrail_count"] == 1
     assert captured["max_turns"] == 2
     assert captured["run_config"].tracing_disabled is True
+
+
+def test_agents_sdk_note_assist_client_streams_text_deltas_and_attaches_guardrails() -> None:
+    captured: dict[str, object] = {}
+
+    class FakeDelta:
+        type = "response.output_text.delta"
+
+        def __init__(self, delta: str) -> None:
+            self.delta = delta
+
+    class FakeEvent:
+        type = "raw_response_event"
+
+        def __init__(self, delta: str) -> None:
+            self.data = FakeDelta(delta)
+
+    class FakeStreamedRun:
+        final_output = None
+
+        async def stream_events(self):  # type: ignore[no-untyped-def]
+            yield FakeEvent("补充主题：JavaScript DOM 基础 / 状态变量\n")
+            yield FakeEvent("可补充：\n- 错因：最近一次运行状态为 success。")
+
+    class FakeRunner:
+        def run_streamed(self, starting_agent, input, **kwargs):  # type: ignore[no-untyped-def]
+            captured["agent_name"] = starting_agent.name
+            captured["tool_names"] = [tool.name for tool in starting_agent.tools]
+            captured["input_guardrail_count"] = len(starting_agent.input_guardrails)
+            captured["output_guardrail_count"] = len(starting_agent.output_guardrails)
+            captured["input"] = input
+            captured["run_config"] = kwargs["run_config"]
+            captured["max_turns"] = kwargs["max_turns"]
+            return FakeStreamedRun()
+
+    client = AgentsSDKNoteAssistClient(
+        Settings(
+            llm_type="openai",
+            openai_api_key="test-key",
+            openai_base_url="https://provider.example/v1",
+            openai_model="third-party-model",
+            llm_timeout_seconds=9,
+        ),
+        runner=FakeRunner(),
+    )
+
+    context = NoteAssistContext(
+        note_id="note_001",
+        note_title="状态变量位置",
+        knowledge_point_title="事件监听与状态变量",
+        module_title="DOM 事件",
+        language="javascript",
+        note_excerpt="count 不能写在回调内部。",
+        style="concise",
+        focus="mistake_summary",
+        session_id="sess_001",
+        session_summary="上次在点击计数上犯了作用域错误。",
+        latest_attempt={
+            "attempt_id": "att_001",
+            "session_id": "sess_001",
+            "attempt_type": "run",
+            "runtime_status": "success",
+            "test_pass_rate": 0.5,
+            "passed_test_count": 1,
+            "total_test_count": 2,
+            "error_message": "Expected textContent to be 3, got 1.",
+            "error_cause": "state_scope_error",
+            "explanation_text": "count 放在回调外层才能跨点击共享。",
+            "hint_usage_count": 1,
+            "error_count": 0,
+        },
+    )
+
+    chunks = list(client.complete_text_stream(context))
+
+    assert chunks == ["补充主题：JavaScript DOM 基础 / 状态变量\n", "可补充：\n- 错因：最近一次运行状态为 success。"]
+    assert captured["agent_name"] == NOTE_ASSIST_AGENT_NAME
+    assert captured["tool_names"] == []
+    assert captured["input_guardrail_count"] == 1
+    assert captured["output_guardrail_count"] == 1
+    assert "count 不能写在回调内部。" in str(captured["input"])
+    assert captured["max_turns"] == 2
+    assert captured["run_config"].tracing_disabled is True
+    assert client.model == "third-party-model"
+
+
+def test_note_assist_client_falls_back_when_output_leaks_code_draft_wording() -> None:
+    class LeakingRunner:
+        def run_streamed(self, starting_agent, input, **kwargs):  # type: ignore[no-untyped-def]
+            del starting_agent, input, kwargs
+
+            class FakeStreamedRun:
+                final_output = None
+
+                async def stream_events(self):  # type: ignore[no-untyped-def]
+                    yield type(
+                        "FakeEvent",
+                        (),
+                        {
+                            "type": "raw_response_event",
+                            "data": type(
+                                "FakeDelta",
+                                (),
+                                {
+                                    "type": "response.output_text.delta",
+                                    "delta": "CodeDraft /api/code-drafts 完整笔记必须重写。",
+                                },
+                            )(),
+                        },
+                    )()
+
+            return FakeStreamedRun()
+
+    client = AgentsSDKNoteAssistClient(
+        Settings(
+            llm_type="openai",
+            openai_api_key="test-key",
+            openai_base_url="https://provider.example/v1",
+            openai_model="third-party-model",
+        ),
+        runner=LeakingRunner(),
+    )
+
+    context = NoteAssistContext(
+        note_id="note_001",
+        note_title="状态变量位置",
+        knowledge_point_title="事件监听与状态变量",
+        module_title="DOM 事件",
+        language="javascript",
+        note_excerpt="count 不能写在回调内部。",
+        style="concise",
+        focus="mistake_summary",
+    )
+
+    assert client.complete_text(context) is None
+
+
+def test_agents_sdk_review_coach_client_streams_text_deltas_and_attaches_guardrails() -> None:
+    captured: dict[str, object] = {}
+
+    class FakeDelta:
+        type = "response.output_text.delta"
+
+        def __init__(self, delta: str) -> None:
+            self.delta = delta
+
+    class FakeEvent:
+        type = "raw_response_event"
+
+        def __init__(self, delta: str) -> None:
+            self.data = FakeDelta(delta)
+
+    class FakeStreamedRun:
+        final_output = None
+
+        async def stream_events(self):  # type: ignore[no-untyped-def]
+            yield FakeEvent('{"initial_agent_message":"先用变体题验证能否接管，",')
+            yield FakeEvent('"variant_reason":"上次薄弱点是 state_scope_error。"}')
+
+    class FakeRunner:
+        def run_streamed(self, starting_agent, input, **kwargs):  # type: ignore[no-untyped-def]
+            captured["agent_name"] = starting_agent.name
+            captured["tool_names"] = [tool.name for tool in starting_agent.tools]
+            captured["input_guardrail_count"] = len(starting_agent.input_guardrails)
+            captured["output_guardrail_count"] = len(starting_agent.output_guardrails)
+            captured["input"] = input
+            captured["run_config"] = kwargs["run_config"]
+            captured["max_turns"] = kwargs["max_turns"]
+            return FakeStreamedRun()
+
+    client = AgentsSDKReviewCoachClient(
+        Settings(
+            llm_type="openai",
+            openai_api_key="test-key",
+            openai_base_url="https://provider.example/v1",
+            openai_model="third-party-model",
+            llm_timeout_seconds=9,
+        ),
+        runner=FakeRunner(),
+    )
+
+    context = ReviewCoachContext(
+        knowledge_point_id="kp_dom_event_state",
+        knowledge_point_title="事件监听与状态变量",
+        knowledge_point_description="理解事件回调和外层状态变量的关系。",
+        weak_points_json=["state_scope_error"],
+        mastery_score=0.42,
+        due_at="2026-05-11T09:00:00Z",
+        forget_risk="normal",
+        last_fsrs_rating="Good",
+        review_exercise_id="ex_dom_click_count",
+        review_exercise_title="点击按钮后计数递增",
+        review_exercise_type="code_blank",
+        review_exercise_prompt="补全事件绑定代码，让按钮每点击一次数字加 1。",
+        runtime_language="javascript",
+        runtime_tier="browser_preview",
+        visible_tests=[
+            {
+                "case_type": "visible",
+                "weight": 1,
+                "is_critical": True,
+                "timeout_ms": 5000,
+                "order_index": 0,
+            },
+        ],
+        latest_attempt={
+            "attempt_id": "att_001",
+            "attempt_type": "review_submit",
+            "runtime_status": "success",
+            "test_pass_rate": 1.0,
+            "passed_test_count": 1,
+            "total_test_count": 1,
+            "error_message": None,
+            "error_cause": None,
+            "explanation_text": "状态变量在回调外层。",
+            "hint_usage_count": 0,
+            "error_count": 0,
+            "score": 8,
+            "fsrs_rating": "Good",
+        },
+    )
+
+    response = client.complete_json(context)
+
+    assert response.content == {
+        "initial_agent_message": "先用变体题验证能否接管，",
+        "variant_reason": "上次薄弱点是 state_scope_error。",
+    }
+    assert captured["agent_name"] == REVIEW_COACH_AGENT_NAME
+    assert captured["tool_names"] == []
+    assert captured["input_guardrail_count"] == 1
+    assert captured["output_guardrail_count"] == 1
+    assert "state_scope_error" in str(captured["input"])
+    assert captured["max_turns"] == 2
+    assert captured["run_config"].tracing_disabled is True
+    assert client.model == "third-party-model"
+
+
+def test_review_coach_sdk_response_falls_back_when_output_leaks_hidden_identifier() -> None:
+    class LeakingCoachClient:
+        model = "sdk-review-model"
+
+        def complete_json(
+            self,
+            context: ReviewCoachContext,
+            *,
+            temperature: float = 0.2,
+        ) -> ReviewCoachJsonResponse:
+            del context, temperature
+            return ReviewCoachJsonResponse(
+                content={
+                    "initial_agent_message": "先看 hidden_three_clicks 再做题。",
+                    "variant_reason": "上次薄弱点是 hidden_three_clicks。",
+                },
+                model=self.model,
+            )
+
+    context = ReviewCoachContext(
+        knowledge_point_id="kp_dom_event_state",
+        knowledge_point_title="事件监听与状态变量",
+        knowledge_point_description="理解事件回调和外层状态变量的关系。",
+        weak_points_json=["state_scope_error"],
+        mastery_score=0.42,
+        due_at="2026-05-11T09:00:00Z",
+        forget_risk="normal",
+        last_fsrs_rating="Good",
+        review_exercise_id="ex_dom_click_count",
+        review_exercise_title="点击按钮后计数递增",
+        review_exercise_type="code_blank",
+        review_exercise_prompt="补全事件绑定代码，让按钮每点击一次数字加 1。",
+        runtime_language="javascript",
+        runtime_tier="browser_preview",
+        visible_tests=[],
+    )
+
+    assert build_sdk_review_coach_response(context, client=LeakingCoachClient()) is None
+
+
+def test_agents_sdk_onboarding_plan_client_streams_json_and_attaches_guardrails() -> None:
+    captured: dict[str, object] = {}
+    context, base_draft = _onboarding_plan_context()
+    candidate = base_draft.model_copy(update={"goal_text": "Learn DOM events while validating AI-generated code."})
+
+    class FakeDelta:
+        type = "response.output_text.delta"
+
+        def __init__(self, delta: str) -> None:
+            self.delta = delta
+
+    class FakeEvent:
+        type = "raw_response_event"
+
+        def __init__(self, delta: str) -> None:
+            self.data = FakeDelta(delta)
+
+    class FakeStreamedRun:
+        final_output = None
+
+        async def stream_events(self):  # type: ignore[no-untyped-def]
+            payload = json.dumps(
+                {
+                    "plan_draft": candidate.model_dump(mode="json"),
+                    "agent_notes": ["保持 DOM 模板，只细化验证 AI 生成代码的目标。"],
+                },
+                ensure_ascii=False,
+            )
+            midpoint = len(payload) // 2
+            yield FakeEvent(payload[:midpoint])
+            yield FakeEvent(payload[midpoint:])
+
+    class FakeRunner:
+        def run_streamed(self, starting_agent, input, **kwargs):  # type: ignore[no-untyped-def]
+            captured["agent_name"] = starting_agent.name
+            captured["tool_names"] = [tool.name for tool in starting_agent.tools]
+            captured["input_guardrail_count"] = len(starting_agent.input_guardrails)
+            captured["output_guardrail_count"] = len(starting_agent.output_guardrails)
+            captured["input"] = input
+            captured["run_config"] = kwargs["run_config"]
+            captured["max_turns"] = kwargs["max_turns"]
+            return FakeStreamedRun()
+
+    client = AgentsSDKOnboardingPlanClient(
+        Settings(
+            llm_type="openai",
+            openai_api_key="test-key",
+            openai_base_url="https://provider.example/v1",
+            openai_model="third-party-model",
+            llm_timeout_seconds=9,
+        ),
+        runner=FakeRunner(),
+    )
+
+    response = client.complete_json(context)
+
+    assert response.content["plan_draft"]["goal_text"] == "Learn DOM events while validating AI-generated code."  # type: ignore[index]
+    assert captured["agent_name"] == ONBOARDING_PLAN_AGENT_NAME
+    assert captured["tool_names"] == []
+    assert captured["input_guardrail_count"] == 1
+    assert captured["output_guardrail_count"] == 1
+    assert "safe_base_plan_draft" in str(captured["input"])
+    assert captured["max_turns"] == 2
+    assert captured["run_config"].tracing_disabled is True
+    assert client.model == "third-party-model"
+
+
+def test_onboarding_plan_sdk_response_accepts_valid_template_candidate() -> None:
+    context, base_draft = _onboarding_plan_context()
+    candidate = base_draft.model_copy(update={"goal_text": "Learn DOM events with visible assertion practice."})
+
+    class FakePlanClient:
+        model = "sdk-onboarding-model"
+
+        def complete_json(
+            self,
+            context: OnboardingPlanContext,
+            *,
+            temperature: float = 0.2,
+        ) -> OnboardingPlanJsonResponse:
+            del context, temperature
+            return OnboardingPlanJsonResponse(
+                content={
+                    "plan_draft": candidate.model_dump(mode="json"),
+                    "agent_notes": ["先保留浏览器 preview 边界，再安排 DOM 事件练习。"],
+                },
+                model=self.model,
+            )
+
+    response = build_sdk_onboarding_plan_response(context, client=FakePlanClient())
+
+    assert response is not None
+    plan_draft = response["plan_draft"]
+    assert isinstance(plan_draft, PlanDraft)
+    assert plan_draft.goal_text == "Learn DOM events with visible assertion practice."
+    assert response["agent_notes"] == ["先保留浏览器 preview 边界，再安排 DOM 事件练习。"]
+    assert response["generation_model"] == "sdk-onboarding-model"
+
+
+def test_onboarding_plan_sdk_response_falls_back_when_draft_is_invalid() -> None:
+    context, base_draft = _onboarding_plan_context()
+    invalid = base_draft.model_dump(mode="json") | {"modules": []}
+
+    class InvalidPlanClient:
+        model = "sdk-onboarding-model"
+
+        def complete_json(
+            self,
+            context: OnboardingPlanContext,
+            *,
+            temperature: float = 0.2,
+        ) -> OnboardingPlanJsonResponse:
+            del context, temperature
+            return OnboardingPlanJsonResponse(content={"plan_draft": invalid}, model=self.model)
+
+    assert build_sdk_onboarding_plan_response(context, client=InvalidPlanClient()) is None
+
+
+def test_onboarding_plan_sdk_response_falls_back_on_unsupported_runtime_claim() -> None:
+    context, base_draft = _onboarding_plan_context()
+    unsupported = base_draft.model_dump(mode="json")
+    unsupported["runtime_boundary"] = {
+        "runtime_tier": "compiled_sandbox_later",
+        "unsupported_languages": ["java", "cpp"],
+        "notice": "Java/C++ can run in the first MVP.",
+    }
+
+    class UnsupportedRuntimeClient:
+        model = "sdk-onboarding-model"
+
+        def complete_json(
+            self,
+            context: OnboardingPlanContext,
+            *,
+            temperature: float = 0.2,
+        ) -> OnboardingPlanJsonResponse:
+            del context, temperature
+            return OnboardingPlanJsonResponse(content={"plan_draft": unsupported}, model=self.model)
+
+    assert build_sdk_onboarding_plan_response(context, client=UnsupportedRuntimeClient()) is None
+
+
+def test_note_assist_deterministic_draft_is_bounded_and_insertable() -> None:
+    context = NoteAssistContext(
+        note_id="note_001",
+        note_title="状态变量位置",
+        knowledge_point_title="事件监听与状态变量",
+        module_title="DOM 事件",
+        language="javascript",
+        note_excerpt="count 不能写在回调内部。",
+        style="detailed",
+        focus="mistake_summary",
+        session_id="sess_001",
+        session_summary="上次在点击计数上犯了作用域错误。",
+        latest_attempt={
+            "runtime_status": "success",
+            "test_pass_rate": 0.5,
+            "error_cause": "state_scope_error",
+            "explanation_text": "count 放在回调外层才能跨点击共享。",
+        },
+    )
+
+    draft = build_deterministic_note_draft(context)
+
+    assert "补充主题：DOM 事件 / 事件监听与状态变量" in draft
+    assert "当前正文摘要：count 不能写在回调内部。" in draft
+    assert "会话摘要：上次在点击计数上犯了作用域错误。" in draft
+    assert "CodeDraft" not in draft
+    assert "完整笔记" not in draft
+
+
+def test_note_assist_guardrails_block_code_draft_and_full_note_phrasing() -> None:
+    for text in [
+        "CodeDraft /api/code-drafts 应该重写整篇笔记。",
+        "publishDrawer 不应该出现在笔记辅助输出里。",
+        "完整笔记如下：状态变量要放在回调外层。",
+    ]:
+        with pytest.raises(LLMInvalidResponseError):
+            assert_safe_note_draft_output(text)
 
 
 def test_agents_sdk_extract_text_delta_accepts_raw_event_duck_type() -> None:
@@ -619,3 +1100,44 @@ def _learning_evidence() -> dict[str, object]:
         },
         "learner_message": "draft note",
     }
+
+
+def _onboarding_plan_context() -> tuple[OnboardingPlanContext, PlanDraft]:
+    payload = PlanGenerateRequest(
+        user_id="user_001",
+        mode="goal_based",
+        goal_text="Learn DOM events by validating generated code.",
+        course_id="course_js_dom",
+        target_level="beginner_to_intermediate",
+    )
+    user = {
+        "id": "user_001",
+        "display_name": "M2 User",
+        "learning_style": "practice_first",
+        "teaching_preference": "step_by_step",
+        "profession": "frontend_developer",
+    }
+    course = {
+        "id": "course_js_dom",
+        "slug": "javascript-dom-basics",
+        "language": "javascript",
+        "title": "JavaScript DOM 基础",
+        "description": "通过浏览器预览和 DOM 断言学习事件、状态和渲染。",
+        "level": "beginner",
+        "runtime_profile_id": "rt_browser_js",
+        "runtime_profile": {
+            "id": "rt_browser_js",
+            "slug": "browser-js",
+            "runtime_tier": "browser_preview",
+            "language": "javascript",
+            "runner": "browser",
+            "supports_realtime_preview": True,
+            "supports_stdout": True,
+            "supports_tests": True,
+            "compile_required": False,
+            "sandbox_policy": "dom_preview_only",
+        },
+        "supported_exercise_types_json": ["code_blank", "fix_bug"],
+    }
+    base_draft = build_plan_draft(payload, user, course)
+    return build_onboarding_plan_context(payload, user, course, base_draft), base_draft

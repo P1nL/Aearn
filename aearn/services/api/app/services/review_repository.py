@@ -3,9 +3,12 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from datetime import UTC, datetime
+from typing import Any, cast
 
 from psycopg import Connection
 
+from app.agents.guardrails import assert_safe_teaching_output
+from app.agents.review_coach_agent import ReviewCoachContext, build_sdk_review_coach_response
 from app.models.reviews import ReviewExplanationCheck
 from app.services.evaluation import build_code_completion_result
 from app.services.exercise_repository import get_exercise, get_or_create_exercise_for_knowledge_point
@@ -13,6 +16,7 @@ from app.services.learning_session_repository import build_code_hash
 from app.services.plan_repository import IdempotencyConflictError, request_hash
 from app.services.review_scheduler import apply_attempt_review_update, forget_risk_for, serialize_review_state
 from app.services.runtime_runner import RuntimeExecutionResult, run_exercise
+from app.services.llm_client import LLMInvalidResponseError
 from app.services.user_repository import get_user
 
 
@@ -135,7 +139,7 @@ def start_review_session(
     else:
         reused = True
 
-    response = {
+    response: dict[str, object] = {
         "session_id": str(session["id"]),
         "session_type": "review",
         "knowledge_point": {
@@ -146,9 +150,19 @@ def start_review_session(
         },
         "review_exercise": exercise,
         "ReviewState": serialize_review_state(context),
-        "variant_reason": _variant_reason(context),
-        "initial_agent_message": f"这次复习围绕 {context['title']}，先用变体题验证你是否真的能接管这类代码。",
     }
+    review_coach_context = _build_review_coach_context(context, exercise, conn)
+    review_coach_response = build_sdk_review_coach_response(review_coach_context)
+    variant_reason = _variant_reason(context)
+    initial_agent_message = _initial_agent_message(context)
+    if review_coach_response is not None:
+        variant_reason = _safe_review_coach_text(review_coach_response.get("variant_reason"), variant_reason)
+        initial_agent_message = _safe_review_coach_text(
+            review_coach_response.get("initial_agent_message"),
+            initial_agent_message,
+        )
+    response["variant_reason"] = variant_reason
+    response["initial_agent_message"] = initial_agent_message
     return response, reused
 
 
@@ -308,7 +322,7 @@ def due_review_counts(conn: Connection[dict[str, object]]) -> dict[str, int]:
         ORDER BY user_id
         """
     ).fetchall()
-    return {str(row["user_id"]): int(row["due_count"]) for row in rows}
+    return {str(row["user_id"]): _int_or_zero(row["due_count"]) for row in rows}
 
 
 def _load_due_review_context(
@@ -422,14 +436,14 @@ def _runtime_result_from_attempt(attempt: Mapping[str, object]) -> RuntimeExecut
         stdout=str(attempt.get("stdout") or ""),
         stderr=str(attempt.get("stderr") or ""),
         test_pass_rate=_float_or_zero(attempt.get("test_pass_rate")),
-        passed_test_count=int(attempt.get("passed_test_count") or 0),
-        total_test_count=int(attempt.get("total_test_count") or 0),
+        passed_test_count=_int_or_zero(attempt.get("passed_test_count")),
+        total_test_count=_int_or_zero(attempt.get("total_test_count")),
         test_results=test_results,
         error_message=str(attempt["error_message"]) if attempt.get("error_message") else None,
         next_action="retry_same",
         preview_html=None,
         core_blank_gate=_float_or_zero(attempt.get("test_pass_rate")) >= 1.0,
-        any_blank_passed=int(attempt.get("passed_test_count") or 0) > 0,
+        any_blank_passed=_int_or_zero(attempt.get("passed_test_count")) > 0,
         logic_pass=_float_or_zero(attempt.get("test_pass_rate")) >= 1.0,
     )
 
@@ -475,6 +489,143 @@ def _variant_reason(context: Mapping[str, object]) -> str:
     return "本次不重复聊天问答，改用同构代码练习检查是否能独立验证。"
 
 
+def _safe_review_coach_text(value: object, fallback: str) -> str:
+    if not isinstance(value, str):
+        return fallback
+    stripped = value.strip()
+    if not stripped:
+        return fallback
+    try:
+        assert_safe_teaching_output(stripped)
+    except LLMInvalidResponseError:
+        return fallback
+    return stripped
+
+
+def _initial_agent_message(context: Mapping[str, object]) -> str:
+    return f"这次复习围绕 {context['title']}，先用变体题验证你是否真的能接管这类代码。"
+
+
+def _build_review_coach_context(
+    context: Mapping[str, object],
+    exercise: Mapping[str, object],
+    conn: Connection[dict[str, object]],
+) -> ReviewCoachContext:
+    latest_attempt = _load_latest_review_attempt_summary(
+        conn,
+        user_id=str(context["user_id"]),
+        knowledge_point_id=str(context["id"]),
+        attempt_id=str(context["last_attempt_id"]) if context.get("last_attempt_id") else None,
+    )
+    return ReviewCoachContext(
+        knowledge_point_id=str(context["id"]),
+        knowledge_point_title=str(context["title"]),
+        knowledge_point_description=str(context.get("description") or ""),
+        weak_points_json=tuple(str(item) for item in _string_list(context.get("weak_points_json"))[:8]),
+        mastery_score=_float_or_zero(context.get("mastery_score")) if context.get("mastery_score") is not None else None,
+        due_at=_iso_or_none(context.get("due_at")),
+        forget_risk=forget_risk_for(serialize_review_state(context)),
+        last_fsrs_rating=str(context.get("last_fsrs_rating")) if context.get("last_fsrs_rating") else None,
+        review_exercise_id=str(exercise["id"]),
+        review_exercise_title=str(exercise["title"]),
+        review_exercise_type=str(exercise["exercise_type"]),
+        review_exercise_prompt=str(exercise.get("prompt_markdown") or ""),
+        runtime_language=str(_exercise_runtime_profile(exercise)["language"]),
+        runtime_tier=str(_exercise_runtime_profile(exercise)["runtime_tier"]),
+        visible_tests=_visible_review_tests(exercise),
+        latest_attempt=latest_attempt,
+    )
+
+
+def _load_latest_review_attempt_summary(
+    conn: Connection[dict[str, object]],
+    *,
+    user_id: str,
+    knowledge_point_id: str,
+    attempt_id: str | None,
+) -> Mapping[str, object] | None:
+    if attempt_id is None:
+        return None
+    row = conn.execute(
+        """
+        SELECT
+          attempts.id,
+          attempts.attempt_type,
+          attempts.runtime_status,
+          attempts.test_pass_rate,
+          attempts.passed_test_count,
+          attempts.total_test_count,
+          attempts.error_message,
+          attempts.error_cause,
+          attempts.explanation_text,
+          attempts.hint_usage_count,
+          attempts.error_count,
+          attempts.score,
+          attempts.fsrs_rating
+        FROM attempts
+        JOIN exercises ON exercises.id = attempts.exercise_id
+        WHERE attempts.id = %s
+          AND attempts.user_id = %s
+          AND exercises.knowledge_point_id = %s
+        LIMIT 1
+        """,
+        (attempt_id, user_id, knowledge_point_id),
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "attempt_id": str(row["id"]),
+        "attempt_type": row["attempt_type"],
+        "runtime_status": row["runtime_status"],
+        "test_pass_rate": _float_or_zero(row.get("test_pass_rate")),
+        "passed_test_count": row["passed_test_count"],
+        "total_test_count": row["total_test_count"],
+        "error_message": row["error_message"],
+        "error_cause": row["error_cause"],
+        "explanation_text": row["explanation_text"],
+        "hint_usage_count": row["hint_usage_count"],
+        "error_count": row["error_count"],
+        "score": row["score"],
+        "fsrs_rating": row["fsrs_rating"],
+    }
+
+
+def _visible_review_tests(exercise: Mapping[str, object]) -> list[dict[str, object]]:
+    tests = exercise.get("test_cases") or []
+    if not isinstance(tests, list):
+        return []
+    visible: list[dict[str, object]] = []
+    for test in tests:
+        if not isinstance(test, Mapping):
+            continue
+        if str(test.get("case_type") or "").lower() == "hidden":
+            continue
+        visible.append(
+            {
+                "case_type": test.get("case_type"),
+                "weight": test.get("weight"),
+                "is_critical": bool(test.get("is_critical", False)),
+                "timeout_ms": test.get("timeout_ms"),
+                "order_index": test.get("order_index"),
+            }
+        )
+    return visible[:8]
+
+
+def _string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if str(item).strip()]
+
+
+def _iso_or_none(value: object) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return str(value)
+
+
 def _request_id_or_none(request_id: str | None) -> str | None:
     if request_id in {None, "", "req_unset"}:
         return None
@@ -488,6 +639,26 @@ def _aware_datetime(value: datetime) -> datetime:
 
 
 def _float_or_zero(value: object) -> float:
-    if isinstance(value, int | float):
-        return float(value)
-    return float(value) if value is not None else 0.0
+    if value is None:
+        return 0.0
+    try:
+        return float(cast(Any, value))
+    except (TypeError, ValueError):
+        return 0.0
+    return 0.0
+
+
+def _int_or_zero(value: object) -> int:
+    if value is None:
+        return 0
+    try:
+        return int(cast(Any, value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _exercise_runtime_profile(exercise: Mapping[str, object]) -> Mapping[str, object]:
+    runtime_profile = exercise.get("runtime_profile")
+    if not isinstance(runtime_profile, Mapping):
+        raise RuntimeError("exercise runtime profile is invalid")
+    return runtime_profile
