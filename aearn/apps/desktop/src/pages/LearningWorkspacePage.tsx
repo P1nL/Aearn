@@ -1,6 +1,7 @@
 import { startTransition, useEffect, useRef, useState } from "react";
 
 import {
+  buildLearningMessageSSEUrl,
   checkLearningExplanation,
   explainLearningError,
   requestLearningHint,
@@ -14,14 +15,17 @@ import type {
   ExerciseRunMode,
   SessionState,
 } from "../appTypes";
-import { ExerciseWorkbench } from "../features/learning/ExerciseWorkbench";
+import { AssistantThread } from "../components/AssistantThread";
+import { LearningComposer } from "../components/LearningComposer";
 import { SystemCard } from "../components/SystemCard";
-import { ThreadMessages } from "../components/ThreadMessages";
+import { ExerciseWorkbench } from "../features/learning/ExerciseWorkbench";
 import {
+  createMessage,
   initialBlankState,
   materializeExerciseCode,
   toActionError,
 } from "../lib/learningHelpers";
+import { useSSE } from "../hooks/useSSE";
 import type {
   CreatedPlanResponse,
   ExplainErrorResponse,
@@ -33,6 +37,17 @@ import type {
   SubmitExerciseResponse,
 } from "../types";
 
+type ComposerStreamRequest = {
+  endpoint: string;
+  requestId: string;
+  assistantMessageId: string;
+  body: {
+    role: "user";
+    content: string;
+    client_message_id: string;
+  };
+};
+
 type LearningWorkspacePageProps = {
   createdPlan: CreatedPlanResponse | null;
   sessionState: SessionState;
@@ -40,11 +55,16 @@ type LearningWorkspacePageProps = {
   lastRun: RunExerciseResponse | null;
   lastSubmit: SubmitExerciseResponse | null;
   resetNonce: number;
+  canOpenNoteDrawer: boolean;
+  noteDrawerOpen: boolean;
   onOpenLearningSession: (planResponse: CreatedPlanResponse, knowledgePointId: string) => Promise<void> | void;
   onRunChange: (run: RunExerciseResponse | null) => void;
   onSubmitChange: (submit: SubmitExerciseResponse | null) => void;
   onKnowledgePointUpdate: (patch: SubmitExerciseResponse["KnowledgePoint"]) => void;
   onOpenNoteDrawer: () => void;
+  onCloseNoteDrawer: () => void;
+  onAddMessage: (msg: ConversationMessage) => void;
+  onUpdateMessage: (id: string, patch: { text?: string; appendText?: string; status?: ConversationMessage["status"]; statusText?: string }) => void;
 };
 
 export function LearningWorkspacePage({
@@ -54,11 +74,16 @@ export function LearningWorkspacePage({
   lastRun,
   lastSubmit,
   resetNonce,
+  canOpenNoteDrawer,
+  noteDrawerOpen,
   onOpenLearningSession,
   onRunChange,
   onSubmitChange,
   onKnowledgePointUpdate,
   onOpenNoteDrawer,
+  onCloseNoteDrawer,
+  onAddMessage,
+  onUpdateMessage,
 }: LearningWorkspacePageProps) {
   const [exerciseActionState, setExerciseActionState] = useState<AsyncActionState>({ status: "idle" });
   const [editorCode, setEditorCode] = useState("");
@@ -76,11 +101,72 @@ export function LearningWorkspacePage({
   const [explanationFocus, setExplanationFocus] = useState<ExplanationFocus>("core_logic");
   const [explanationRound, setExplanationRound] = useState(1);
   const [explanationCheckResult, setExplanationCheckResult] = useState<ExplanationCheckResponse | null>(null);
+  const [composerInput, setComposerInput] = useState("");
+  const [composerStream, setComposerStream] = useState<ComposerStreamRequest | null>(null);
   const conversationScrollRef = useRef<HTMLElement | null>(null);
 
   const session = sessionState.status === "ready" ? sessionState.data : null;
   const activeExercise = session?.exercise ?? null;
   const initialAgentMessage = session?.initial_agent_message.trim() ?? "";
+  const composerStreaming = composerStream !== null;
+
+  // --- SSE streaming for composer messages ---
+  useSSE(composerStream?.endpoint ?? null, {
+    method: "POST",
+    body: composerStream?.body,
+    requestId: composerStream?.requestId,
+    onEvent: (streamEvent) => {
+      if (!composerStream || streamEvent.type !== "agent_message") return;
+      const incomingText = streamEvent.data.content || streamEvent.data.delta;
+      onUpdateMessage(composerStream.assistantMessageId, {
+        text: streamEvent.data.content ? incomingText : undefined,
+        appendText: streamEvent.data.content ? undefined : incomingText,
+        status: "streaming",
+        statusText: "正在生成……",
+      });
+    },
+    onDone: () => {
+      if (!composerStream) return;
+      onUpdateMessage(composerStream.assistantMessageId, {
+        status: "done",
+        statusText: undefined,
+      });
+      setComposerStream(null);
+    },
+    onError: (error) => {
+      if (!composerStream) return;
+      onUpdateMessage(composerStream.assistantMessageId, {
+        text: `这次回答没有完成：${error.code}。${error.message}`,
+        status: "error",
+        statusText: "可以修改问题后重试。",
+      });
+      setComposerStream(null);
+    },
+  });
+
+  function handleComposerSubmit() {
+    const content = composerInput.trim();
+    if (content.length === 0 || composerStreaming || !session) return;
+
+    const assistantMessage: ConversationMessage = {
+      ...createMessage("agent", "", "Agent"),
+      status: "streaming",
+      statusText: "正在连接模型……",
+    };
+    onAddMessage(createMessage("user", content));
+    onAddMessage(assistantMessage);
+    setComposerStream({
+      endpoint: buildLearningMessageSSEUrl(session.session_id),
+      requestId: createClientId("desktop_req"),
+      assistantMessageId: assistantMessage.id,
+      body: {
+        role: "user",
+        content,
+        client_message_id: createClientId("desktop_msg"),
+      },
+    });
+    setComposerInput("");
+  }
 
   function resetWorkbenchState(nextCode = "", nextBlanks: Record<string, string> = {}, nextSelectedBlankId = "") {
     setEditorCode(nextCode);
@@ -307,110 +393,133 @@ export function LearningWorkspacePage({
     }
   }
 
+  const emptyState = (
+    <div className="empty-chat-state">
+      <span className="empty-chat-kicker">Aearn Dialogue</span>
+      <h1>{createdPlan ? "选择知识点后开始对话" : "生成路线后开始真实对话"}</h1>
+      <p>
+        {createdPlan
+          ? "左侧会展示由你的学习目标生成的模块和知识点。进入知识点后，底部输入框会连接当前 learning session 的流式 Agent。"
+          : "对话区默认保持空白，不再用原型里的固定示例填充。"}
+      </p>
+    </div>
+  );
+
   return (
-    <section className="conversation" aria-label="Agent 代码练习对话" ref={conversationScrollRef}>
-      <div className="thread">
-        <div className="lesson-title">
-          <p>
-            {session
-              ? `当前知识点：${session.context_snapshot.KnowledgePoint.title}。对话、运行结果和练习反馈会留在同一个线程里。`
-              : createdPlan
-                ? "从左侧学习路线选择一个知识点，主区会打开真实会话并启用 Agent 对话。"
-                : "先完成建档生成学习路线；这里不会预置固定示例对话。"}
-          </p>
-        </div>
-
-        <ThreadMessages messages={messages} />
-
-        {sessionState.status === "loading" && <SystemCard title="系统状态" body="正在启动当前知识点会话…" />}
-        {sessionState.status === "error" && (
-          <SystemCard
-            title="启动失败"
-            body={sessionState.message}
-            actionLabel="重试当前知识点"
-            onAction={() => {
-              if (createdPlan && sessionState.knowledgePointId) {
-                void onOpenLearningSession(createdPlan, sessionState.knowledgePointId);
-              }
-            }}
-          />
-        )}
-
-        {!session && sessionState.status === "idle" && (
-          <div className="empty-chat-state">
-            <span className="empty-chat-kicker">Aearn Dialogue</span>
-            <h1>{createdPlan ? "选择知识点后开始对话" : "生成路线后开始真实对话"}</h1>
+    <div className="learning-workspace-layout">
+      <section className="conversation" aria-label="Agent 代码练习对话" ref={conversationScrollRef}>
+        <div className="thread">
+          <div className="lesson-title">
             <p>
-              {createdPlan
-                ? "左侧会展示由你的学习目标生成的模块和知识点。进入知识点后，底部输入框会连接当前 learning session 的流式 Agent。"
-                : "对话区默认保持空白，不再用原型里的固定 DOM/Python 示例填充。"}
+              {session
+                ? `当前知识点：${session.context_snapshot.KnowledgePoint.title}。对话、运行结果和练习反馈会留在同一个线程里。`
+                : createdPlan
+                  ? "从左侧学习路线选择一个知识点，主区会打开真实会话并启用 Agent 对话。"
+                  : "先完成建档生成学习路线；这里不会预置固定示例对话。"}
             </p>
           </div>
-        )}
 
-        {session && activeExercise && (
-          <>
-            {initialAgentMessage && (
-              <article className="message agent">
-                <div className="avatar">A</div>
-                <div className="bubble">
-                  <div className="bubble-label">Agent</div>
-                  <p>{initialAgentMessage}</p>
-                  <div className="tool-card">
-                    当前练习：{activeExercise.title} · {session.context_snapshot.KnowledgePoint.title}
-                  </div>
-                </div>
-              </article>
-            )}
+          {!session && sessionState.status === "idle" && (
+            <AssistantThread messages={[]} emptyState={emptyState} />
+          )}
 
-            <ExerciseWorkbench
-              session={session}
-              exercise={activeExercise}
-              code={editorCode}
-              filledBlanks={filledBlanks}
-              lastRun={lastRun}
-              lastRunMode={lastRunMode}
-              lastSubmit={lastSubmit}
-              actionState={exerciseActionState}
-              isStale={isStale}
-              hintUsageCount={hintUsageCount}
-              errorCount={errorCount}
-              hintLevel={hintLevel}
-              selectedBlankId={selectedBlankId}
-              hintHistory={hintHistory}
-              explainErrorResult={explainErrorResult}
-              explanationText={explanationText}
-              explanationFocus={explanationFocus}
-              explanationRound={explanationRound}
-              explanationCheckResult={explanationCheckResult}
-              onCodeChange={(value) => {
-                setEditorCode(value);
-                if (lastRun || lastSubmit) {
-                  setIsStale(true);
+          {session && <AssistantThread messages={messages} />}
+
+          {sessionState.status === "loading" && <SystemCard title="系统状态" body="正在启动当前知识点会话…" />}
+          {sessionState.status === "error" && (
+            <SystemCard
+              title="启动失败"
+              body={sessionState.message}
+              actionLabel="重试当前知识点"
+              onAction={() => {
+                if (createdPlan && sessionState.knowledgePointId) {
+                  void onOpenLearningSession(createdPlan, sessionState.knowledgePointId);
                 }
               }}
-              onBlankChange={(blankKey, value) => {
-                setFilledBlanks((current) => ({ ...current, [blankKey]: value }));
-                if (lastRun || lastSubmit) {
-                  setIsStale(true);
-                }
-              }}
-              onRunPreview={() => void handleRunExercise("preview")}
-              onRunVisibleTests={() => void handleRunExercise("visible_tests")}
-              onSubmit={() => void handleSubmitExercise()}
-              onHintLevelChange={setHintLevel}
-              onSelectedBlankChange={setSelectedBlankId}
-              onRequestHint={() => void handleRequestHint()}
-              onExplainError={() => void handleExplainError()}
-              onExplanationTextChange={setExplanationText}
-              onExplanationFocusChange={setExplanationFocus}
-              onCheckExplanation={() => void handleCheckExplanation()}
-              onRetryAction={handleRetryExerciseAction}
-              onOpenNoteDrawer={onOpenNoteDrawer}
             />
-          </>
-        )}
-      </div>
-    </section>
+          )}
+
+          {session && activeExercise && (
+            <>
+              {initialAgentMessage && (
+                <article className="message agent">
+                  <div className="avatar">A</div>
+                  <div className="bubble">
+                    <div className="bubble-label">Agent</div>
+                    <p>{initialAgentMessage}</p>
+                    <div className="tool-card">
+                      当前练习：{activeExercise.title} · {session.context_snapshot.KnowledgePoint.title}
+                    </div>
+                  </div>
+                </article>
+              )}
+
+              <ExerciseWorkbench
+                session={session}
+                exercise={activeExercise}
+                code={editorCode}
+                filledBlanks={filledBlanks}
+                lastRun={lastRun}
+                lastRunMode={lastRunMode}
+                lastSubmit={lastSubmit}
+                actionState={exerciseActionState}
+                isStale={isStale}
+                hintUsageCount={hintUsageCount}
+                errorCount={errorCount}
+                hintLevel={hintLevel}
+                selectedBlankId={selectedBlankId}
+                hintHistory={hintHistory}
+                explainErrorResult={explainErrorResult}
+                explanationText={explanationText}
+                explanationFocus={explanationFocus}
+                explanationRound={explanationRound}
+                explanationCheckResult={explanationCheckResult}
+                onCodeChange={(value) => {
+                  setEditorCode(value);
+                  if (lastRun || lastSubmit) {
+                    setIsStale(true);
+                  }
+                }}
+                onBlankChange={(blankKey, value) => {
+                  setFilledBlanks((current) => ({ ...current, [blankKey]: value }));
+                  if (lastRun || lastSubmit) {
+                    setIsStale(true);
+                  }
+                }}
+                onRunPreview={() => void handleRunExercise("preview")}
+                onRunVisibleTests={() => void handleRunExercise("visible_tests")}
+                onSubmit={() => void handleSubmitExercise()}
+                onHintLevelChange={setHintLevel}
+                onSelectedBlankChange={setSelectedBlankId}
+                onRequestHint={() => void handleRequestHint()}
+                onExplainError={() => void handleExplainError()}
+                onExplanationTextChange={setExplanationText}
+                onExplanationFocusChange={setExplanationFocus}
+                onCheckExplanation={() => void handleCheckExplanation()}
+                onRetryAction={handleRetryExerciseAction}
+                onOpenNoteDrawer={onOpenNoteDrawer}
+              />
+            </>
+          )}
+        </div>
+      </section>
+
+      <LearningComposer
+        value={composerInput}
+        onChange={setComposerInput}
+        onSubmit={handleComposerSubmit}
+        disabled={composerStreaming}
+        streaming={composerStreaming}
+        sessionActive={Boolean(session)}
+        canOpenNoteDrawer={canOpenNoteDrawer}
+        noteDrawerOpen={noteDrawerOpen}
+        onToggleNoteDrawer={() => { noteDrawerOpen ? onCloseNoteDrawer() : onOpenNoteDrawer(); }}
+      />
+    </div>
   );
+}
+
+function createClientId(prefix: string): string {
+  const uuid = globalThis.crypto?.randomUUID?.();
+  return uuid ? `${prefix}_${uuid}` : `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2)}`;
 }

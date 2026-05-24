@@ -764,6 +764,14 @@
       box-shadow: 0 0 0 3px rgba(196, 112, 74, .1);
     }
 
+    .learning-workspace-layout {
+      display: flex;
+      flex-direction: column;
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow: hidden;
+    }
+
     .conversation {
       position: relative;
       display: grid;

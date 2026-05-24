@@ -101,13 +101,6 @@ export const SETTING_PANELS: Record<SettingsKey, SettingsPanel> = {
   },
 };
 
-export const DEFAULT_NOTE_CONTENT = `# DOM 点击计数
-
-- 目标：把状态变量放到正确作用域，连续点击后输出累加。
-- 关注点：事件回调、闭包、测试断言。`;
-
-export const DEFAULT_ATTEMPT_NOTE =
-  "第 2 次练习：把 `count` 移到事件函数外层，连续点击测试通过。错因：状态变量不能在每次事件触发时重新初始化。";
 
 export const NAV_DEFAULTS: Record<NavGroupKey, boolean> = {
   learn: true,

@@ -55,11 +55,7 @@ export function buildReviewCards(
   lastRun?: RunExerciseResponse | null,
 ): ReviewCard[] {
   if (!lastSubmit) {
-    return [
-      { title: "事件函数内部重置状态", body: "遗忘风险 78%，今天必须复习。" },
-      { title: "CSS 状态类选择错误", body: "遗忘风险 54%，建议今晚处理。" },
-      { title: "Python 返回值边界判断", body: "明天到期，今天只展示预告。" },
-    ];
+    return [];
   }
 
   return [
