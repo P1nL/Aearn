@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 
-import { API_BASE_URL, buildLearningMessageSSEUrl } from "./api";
+import { API_BASE_URL } from "./api";
 import type { AppRoute, ConversationMessage, NoteContext } from "./appTypes";
 import { ApiHealthChip } from "./components/ApiHealthChip";
 import { NoteDrawer } from "./components/NoteDrawer";
@@ -11,7 +11,6 @@ import { writeBootstrapContext, clearBootstrapContext } from "./lib/bootstrapSto
 import { getCrumbLabel, screenClassName } from "./lib/desktopLabels";
 import { computeSidebarProgress, createMessage } from "./lib/learningHelpers";
 import { useAutoSave } from "./hooks/useAutoSave";
-import { useSSE } from "./hooks/useSSE";
 import { useAppStore } from "./stores/useAppStore";
 import { useNotesStore } from "./stores/useNotesStore";
 import { useSettingsStore } from "./stores/useSettingsStore";
@@ -22,24 +21,12 @@ import { ReviewPage } from "./pages/ReviewPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import type { LearningSessionResponse } from "./types";
 
-type ComposerStreamRequest = {
-  endpoint: string;
-  requestId: string;
-  assistantMessageId: string;
-  body: {
-    role: "user";
-    content: string;
-    client_message_id: string;
-  };
-};
-
 const EMPTY_MESSAGES: ConversationMessage[] = [];
 
 function App() {
   const app = useAppStore();
   const notes = useNotesStore();
   const settings = useSettingsStore();
-  const [composerStream, setComposerStream] = useState<ComposerStreamRequest | null>(null);
 
   const dashboard = app.dashboardState.status === "ready" ? app.dashboardState.data : null;
   const session = app.sessionState.status === "ready" ? app.sessionState.data : null;
@@ -63,16 +50,9 @@ function App() {
   const settingsDirty = settings.isDirty(app.user);
   const apiStatusLabel =
     app.apiHealth.status === "online" ? "在线" : app.apiHealth.status === "offline" ? `离线: ${app.apiHealth.message}` : "检测中";
-  const composerStreaming = composerStream !== null;
-  const homeComposerNeedsSession = visibleRoute === "home" && !session;
-  const composerSendDisabled = composerStreaming || app.composerInput.trim().length === 0 || homeComposerNeedsSession;
-  const composerPlaceholder = composerStreaming
-    ? "Agent 正在生成回答……"
-    : homeComposerNeedsSession
-      ? "先从左侧路线进入一个知识点，再向 Agent 追问。"
-      : visibleRoute === "review"
-        ? "用自己的话复述，或请求提示……"
-        : "粘贴你的代码、运行输出、测试失败或请 Agent 解释错因……";
+
+  // Review composer state (kept in App since ReviewPage doesn't own streaming)
+  const [reviewComposerInput, setReviewComposerInput] = useState("");
 
   const currentSessionNoteContext = buildLearningNoteContext(session);
   const currentContext = currentSessionNoteContext ?? notes.reviewNoteContext;
@@ -95,39 +75,6 @@ function App() {
     [activeEditorKnowledgePointId],
   );
   const { flush: flushAutoSave } = useAutoSave(autoSaveValue, handleAutoSave, { delay: 800, enabled: autoSaveEnabled });
-
-  useSSE(composerStream?.endpoint ?? null, {
-    method: "POST",
-    body: composerStream?.body,
-    requestId: composerStream?.requestId,
-    onEvent: (streamEvent) => {
-      if (!composerStream || streamEvent.type !== "agent_message") return;
-      const incomingText = streamEvent.data.content || streamEvent.data.delta;
-      app.updateHomeMessage(composerStream.assistantMessageId, {
-        text: streamEvent.data.content ? incomingText : undefined,
-        appendText: streamEvent.data.content ? undefined : incomingText,
-        status: "streaming",
-        statusText: "正在生成……",
-      });
-    },
-    onDone: () => {
-      if (!composerStream) return;
-      app.updateHomeMessage(composerStream.assistantMessageId, {
-        status: "done",
-        statusText: undefined,
-      });
-      setComposerStream(null);
-    },
-    onError: (error) => {
-      if (!composerStream) return;
-      app.updateHomeMessage(composerStream.assistantMessageId, {
-        text: `这次回答没有完成：${error.code}。${error.message}`,
-        status: "error",
-        statusText: "可以修改问题后重试。",
-      });
-      setComposerStream(null);
-    },
-  });
 
   // --- Handlers ---
   async function goToRoute(route: AppRoute) {
@@ -165,38 +112,13 @@ function App() {
     if (note) notes.setPageSelection(notes.pageSelection ?? note.knowledge_point_id);
   }
 
-  function handleComposerSubmit(event: FormEvent<HTMLFormElement>) {
+  function handleReviewComposerSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const content = app.composerInput.trim();
-    if (content.length === 0 || composerStreaming) return;
-    if (visibleRoute === "review") {
-      app.addReviewMessage(createMessage("user", content));
-      app.addReviewMessage(createMessage("agent", "收到。先按准确性、因果链、例子质量和表达清晰度评分，再决定下一次 due_at。", "Agent"));
-    } else {
-      if (!session) {
-        app.addHomeMessage(createMessage("agent", "先从左侧路线进入一个知识点，等练习卡片加载后再向 Agent 追问。", "Agent"));
-        app.setComposerInput("");
-        return;
-      }
-      const assistantMessage: ConversationMessage = {
-        ...createMessage("agent", "", "Agent"),
-        status: "streaming",
-        statusText: "正在连接模型……",
-      };
-      app.addHomeMessage(createMessage("user", content));
-      app.addHomeMessage(assistantMessage);
-      setComposerStream({
-        endpoint: buildLearningMessageSSEUrl(session.session_id),
-        requestId: createClientId("desktop_req"),
-        assistantMessageId: assistantMessage.id,
-        body: {
-          role: "user",
-          content,
-          client_message_id: createClientId("desktop_msg"),
-        },
-      });
-    }
-    app.setComposerInput("");
+    const content = reviewComposerInput.trim();
+    if (content.length === 0) return;
+    app.addReviewMessage(createMessage("user", content));
+    app.addReviewMessage(createMessage("agent", "收到。先按准确性、因果链、例子质量和表达清晰度评分，再决定下一次 due_at。", "Agent"));
+    setReviewComposerInput("");
   }
 
   function handleResetGoal() {
@@ -335,7 +257,24 @@ function App() {
             </section>
 
             <section className={screenClassName(visibleRoute === "home")} aria-label="学习页">
-              <LearningWorkspacePage createdPlan={app.createdPlan} sessionState={app.sessionState} messages={homeMessages} lastRun={app.lastRun} lastSubmit={app.lastSubmit} resetNonce={app.resetNonce} onOpenLearningSession={app.openLearningSession} onRunChange={app.setLastRun} onSubmitChange={app.setLastSubmit} onKnowledgePointUpdate={app.handleKnowledgePointUpdate} onOpenNoteDrawer={() => void handleOpenNoteDrawer()} />
+              <LearningWorkspacePage
+                createdPlan={app.createdPlan}
+                sessionState={app.sessionState}
+                messages={homeMessages}
+                lastRun={app.lastRun}
+                lastSubmit={app.lastSubmit}
+                resetNonce={app.resetNonce}
+                canOpenNoteDrawer={canOpenNoteDrawer}
+                noteDrawerOpen={notes.drawerOpen}
+                onOpenLearningSession={app.openLearningSession}
+                onRunChange={app.setLastRun}
+                onSubmitChange={app.setLastSubmit}
+                onKnowledgePointUpdate={app.handleKnowledgePointUpdate}
+                onOpenNoteDrawer={() => void handleOpenNoteDrawer()}
+                onCloseNoteDrawer={() => void closeDrawers()}
+                onAddMessage={app.addHomeMessage}
+                onUpdateMessage={app.updateHomeMessage}
+              />
             </section>
 
             <section className={screenClassName(visibleRoute === "review")} aria-label="复习页">
@@ -390,41 +329,23 @@ function App() {
             <NoteDrawer drawerKnowledgePointId={drawerKnowledgePointId} drawerNote={drawerNote} drawerDraft={drawerDraft} userId={app.user?.id} lastAttemptId={lastAttemptId} />
           )}
 
-          {(visibleRoute === "home" || visibleRoute === "review") && (
-            <form className="composer-wrap" onSubmit={handleComposerSubmit}>
+          {visibleRoute === "review" && (
+            <form className="composer-wrap" onSubmit={handleReviewComposerSubmit}>
               <div className="composer">
                 <textarea
-                  aria-label="代码练习输入框"
-                  value={app.composerInput}
-                  placeholder={composerPlaceholder}
-                  disabled={composerStreaming || homeComposerNeedsSession}
-                  onChange={(e) => app.setComposerInput(e.target.value)}
+                  aria-label="复习输入框"
+                  value={reviewComposerInput}
+                  placeholder="用自己的话复述，或请求提示……"
+                  onChange={(e) => setReviewComposerInput(e.target.value)}
                 />
-                <button
-                  className="btn primary send-btn note-inline-btn"
-                  type="button"
-                  aria-label={notes.drawerOpen ? "关闭知识点笔记" : "打开知识点笔记"}
-                  aria-controls="noteDrawer"
-                  aria-expanded={notes.drawerOpen}
-                  disabled={!notes.drawerOpen && !canOpenNoteDrawer}
-                  onClick={() => { notes.drawerOpen ? void closeDrawers() : void handleOpenNoteDrawer(); }}
-                >
-                  <img src="/note.png" alt="" />
-                </button>
-                <button className="btn primary send-btn" type="submit" aria-label="发送" disabled={composerSendDisabled}>↑</button>
+                <button className="btn primary send-btn" type="submit" aria-label="发送" disabled={reviewComposerInput.trim().length === 0}>↑</button>
               </div>
-              {homeComposerNeedsSession && <div className="composer-guidance">先进入一个 active learning session，composer 才会调用模型流式回答。</div>}
             </form>
           )}
         </section>
       </section>
     </main>
   );
-}
-
-function createClientId(prefix: string): string {
-  const uuid = globalThis.crypto?.randomUUID?.();
-  return uuid ? `${prefix}_${uuid}` : `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2)}`;
 }
 
 function buildLearningNoteContext(session: LearningSessionResponse | null): NoteContext | null {

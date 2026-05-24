@@ -3,7 +3,7 @@ import { startTransition, useDeferredValue, useEffect, useState } from "react";
 import { confirmPlan, createUser, generatePlanDraft } from "../api";
 import type { ApiHealthState, AsyncActionState, ConversationMessage } from "../appTypes";
 import { PlanDraftPanel } from "../features/onboarding/PlanDraftPanel";
-import { ThreadMessages } from "../components/ThreadMessages";
+import { AssistantThread } from "../components/AssistantThread";
 import { runtimeLabel } from "../lib/desktopLabels";
 import { toActionError } from "../lib/learningHelpers";
 import type { CreatedPlanResponse, LanguageCourse, LearningMode, PlanDraft, UserProfile } from "../types";
@@ -119,7 +119,7 @@ export function OnboardingPage({
       <div className="split-pane">
         <section className="conversation onboarding-conversation" aria-label="建档对话">
           <div className="thread">
-            <ThreadMessages messages={messages} />
+            <AssistantThread messages={messages} />
           </div>
 
           <div className="onboarding-setup">

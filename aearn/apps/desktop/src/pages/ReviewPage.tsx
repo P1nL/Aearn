@@ -11,8 +11,8 @@ import type {
   SubmitExerciseResponse,
   UserProfile,
 } from "../types";
+import { AssistantThread } from "../components/AssistantThread";
 import { ReviewRecap } from "../components/ReviewRecap";
-import { ThreadMessages } from "../components/ThreadMessages";
 
 type ReviewPageProps = {
   isActive: boolean;
@@ -142,7 +142,7 @@ export function ReviewPage({ isActive, user, messages, lastSubmit, lastRun, onAc
               <p>独立复习会话，针对薄弱知识点进行变体练习。</p>
             </div>
 
-            <ThreadMessages messages={messages} />
+            <AssistantThread messages={messages} />
 
             <section className="exercise-workbench" aria-label="今日复习闭环">
               <div className="exercise-head">
