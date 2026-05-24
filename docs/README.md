@@ -22,8 +22,13 @@
 
 | 类型 | 文档 | 用途 |
 |---|---|---|
+| 新人接手指南 | `setup/newcomer-onboarding-guide.md` | 面向首次接手仓库或学习项目的人，串联项目定位、代码地图、运行命令、验证入口和常见坑；不替代 source of truth |
 | Claude 前端对接模板 | `setup/claude-frontend-handoff.md` | 给外部代码助手执行 desktop 前端改造时使用的任务入口；不替代上方 source of truth |
 | SDK Agent 发布门禁 | `qa/sdk-agent-release-readiness.md` | SDK Agent 收口矩阵、验证命令结果和剩余风险；不替代验收测试总计划 |
+
+## 文档新鲜度
+
+2026-05-24 已完成一轮 `docs/` 新鲜度审计：当前没有需要整篇归档的 active 文档；`setup/development-environment.md` 和 `setup/claude-frontend-handoff.md` 已修正局部过期内容。后续如出现整篇过期文档，应移动到 `docs/archive/<date>/`，并在本索引标注替代入口。
 
 ## 已移除的重复文档
 
