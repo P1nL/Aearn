@@ -3,3 +3,4 @@
 {"file":"aearn/services/api/pyproject.toml","reason":"Full backend pytest, mypy, ruff, and dependency configuration."}
 {"file":"aearn/package.json","reason":"Desktop check command source."}
 {"file":".trellis/spec/backend/quality-guidelines.md","reason":"Verify final conventions are recorded for future tasks."}
+{"file": "docs/qa/sdk-agent-release-readiness.md", "reason": "Release readiness report with matrix, commands, and residual risks."}

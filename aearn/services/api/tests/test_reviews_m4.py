@@ -8,6 +8,7 @@ from app.core.config import get_settings
 from app.db.bootstrap import bootstrap_database
 from app.db.connection import connect
 from app.main import app
+from app.services import review_repository
 from app.services.review_scheduler import apply_attempt_review_update
 
 
@@ -30,6 +31,11 @@ pytestmark = pytest.mark.skipif(
 def client() -> TestClient:
     bootstrap_database()
     return TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def disable_review_coach_sdk(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(review_repository, "build_sdk_review_coach_response", lambda context: None)
 
 
 def test_today_reviews_returns_empty_and_sorted_due_items(client: TestClient) -> None:
@@ -105,6 +111,7 @@ def test_review_start_requires_due_state_and_reuses_active_session(client: TestC
     assert created_body["knowledge_point"]["id"] == knowledge_point_id
     assert created_body["review_exercise"]["knowledge_point_id"] == knowledge_point_id
     assert created_body["variant_reason"]
+    assert created_body["initial_agent_message"].startswith("这次复习围绕 ")
 
     replayed = client.post(
         "/api/reviews/start",
@@ -112,6 +119,64 @@ def test_review_start_requires_due_state_and_reuses_active_session(client: TestC
     )
     assert replayed.status_code == 200
     assert replayed.json()["session_id"] == created_body["session_id"]
+
+
+def test_review_start_uses_sdk_review_coach_text_when_available(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user, plan = _confirmed_plan(client, language="javascript")
+    knowledge_point_id = plan["knowledge_points"][0]["id"]
+    _mark_due(knowledge_point_id)
+
+    monkeypatch.setattr(
+        review_repository,
+        "build_sdk_review_coach_response",
+        lambda context: {
+            "initial_agent_message": "先看状态变量的变体题，别急着提交。",
+            "variant_reason": "上次薄弱点是 state_scope_error。",
+            "coaching_text": "先对照上次错因再动手。",
+            "generation_source": "llm",
+            "generation_model": "sdk-review-model",
+        },
+    )
+
+    created = client.post(
+        "/api/reviews/start",
+        json={"user_id": user["id"], "knowledge_point_id": knowledge_point_id},
+    )
+    assert created.status_code == 201
+    created_body = created.json()
+    assert created_body["initial_agent_message"] == "先看状态变量的变体题，别急着提交。"
+    assert created_body["variant_reason"] == "上次薄弱点是 state_scope_error。"
+
+
+def test_review_start_falls_back_when_sdk_review_text_leaks_answer(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user, plan = _confirmed_plan(client, language="javascript")
+    knowledge_point_id = plan["knowledge_points"][0]["id"]
+    _mark_due(knowledge_point_id)
+
+    monkeypatch.setattr(
+        review_repository,
+        "build_sdk_review_coach_response",
+        lambda context: {
+            "initial_agent_message": "完整答案如下：直接把 count 放在回调内部。",
+            "variant_reason": "失败来自 hidden_three_clicks。",
+        },
+    )
+
+    created = client.post(
+        "/api/reviews/start",
+        json={"user_id": user["id"], "knowledge_point_id": knowledge_point_id},
+    )
+    assert created.status_code == 201
+    created_body = created.json()
+    assert created_body["initial_agent_message"].startswith("这次复习围绕 ")
+    assert "完整答案" not in created_body["initial_agent_message"]
+    assert "hidden_three_clicks" not in created_body["variant_reason"]
 
 
 def test_review_run_and_submit_updates_schedule_once(client: TestClient) -> None:

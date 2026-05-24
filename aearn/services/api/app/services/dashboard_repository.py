@@ -108,11 +108,13 @@ def get_resume_context(
     if knowledge_point_id is None:
         knowledge_point_id = _knowledge_point_id_or_none(fallback_point)
 
+    display_point = current_point or fallback_point
+
     return {
         "last_session_summary": _session_summary_text(latest_session, current_point=current_point, latest_attempt=latest_attempt),
         "next_entry_point": _build_learning_entry_point(plan_id=plan_id, knowledge_point_id=knowledge_point_id),
-        "current_module": _serialize_module_summary(current_point or fallback_point, plan),
-        "current_stage": (current_point or fallback_point)["module_title"] if (current_point or fallback_point) is not None else plan["current_module_title"],
+        "current_module": _serialize_module_summary(display_point, plan),
+        "current_stage": display_point["module_title"] if display_point is not None else plan["current_module_title"],
         "today_review_count": len(due_items),
         "resume_available": True,
     }
@@ -292,7 +294,7 @@ def _load_plan_knowledge_points(
     conn: Connection[dict[str, object]],
     *,
     plan_id: str,
-) -> list[Mapping[str, object]]:
+) -> Sequence[Mapping[str, object]]:
     return conn.execute(
         """
         SELECT

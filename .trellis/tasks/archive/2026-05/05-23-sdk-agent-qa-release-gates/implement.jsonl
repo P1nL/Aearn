@@ -8,3 +8,6 @@
 {"file":"aearn/services/api/tests/test_notes_m5.py","reason":"Note assist contract tests."}
 {"file":"aearn/services/api/tests/test_reviews_m4.py","reason":"Review contract tests."}
 {"file":"aearn/services/api/tests/test_onboarding_m2.py","reason":"Onboarding plan contract tests."}
+{"file": "docs/qa/sdk-agent-release-readiness.md", "reason": "Cross-agent SDK release readiness matrix and validation results."}
+{"file": "aearn/services/api/app/services/dashboard_repository.py", "reason": "Type-safe dashboard resume helpers required for full mypy app gate."}
+{"file": "aearn/services/api/app/services/learning_conversation.py", "reason": "Type-safe sanitized attempt count conversion required for full mypy app gate."}

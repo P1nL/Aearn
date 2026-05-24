@@ -10,7 +10,6 @@ from app.db.bootstrap import bootstrap_database
 from app.db.connection import connect
 from app.main import app
 from app.services import note_repository
-from app.services.llm_client import LLMConfigurationError
 
 
 def _database_available() -> bool:
@@ -35,12 +34,8 @@ def client() -> TestClient:
 
 
 @pytest.fixture(autouse=True)
-def disable_agent_draft_llm(monkeypatch: pytest.MonkeyPatch) -> None:
-    class DisabledClient:
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            raise LLMConfigurationError("disabled in tests")
-
-    monkeypatch.setattr(note_repository, "OpenAICompatibleClient", DisabledClient)
+def disable_note_assist_sdk(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(note_repository, "build_note_assist_client", lambda: None)
 
 
 def test_note_create_get_patch_and_repeat_create_reuses_same_record(client: TestClient) -> None:
@@ -194,6 +189,8 @@ def test_agent_draft_only_updates_agent_field(client: TestClient) -> None:
     assert drafted_note["content_markdown"] == "原始正文不应该被 agent draft 覆盖。"
     assert isinstance(drafted_note["agent_draft_content"], str)
     assert drafted_note["agent_draft_content"]
+    assert "补充主题：" in drafted_note["agent_draft_content"]
+    assert "可补充：" in drafted_note["agent_draft_content"]
 
     with connect() as conn:
         stored = conn.execute(
@@ -210,7 +207,10 @@ def test_agent_draft_only_updates_agent_field(client: TestClient) -> None:
     assert stored["is_user_edited"] is True
 
 
-def test_agent_draft_streams_sse_and_updates_agent_field(client: TestClient) -> None:
+def test_agent_draft_streams_sse_and_updates_agent_field(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     request_id = f"req_note_sse_{uuid.uuid4().hex}"
     user, plan = _confirmed_plan(client, language="javascript")
     knowledge_point = plan["knowledge_points"][0]
@@ -224,6 +224,35 @@ def test_agent_draft_streams_sse_and_updates_agent_field(client: TestClient) -> 
         },
     )
     note = created.json()["note"]
+
+    class FakeNoteAssistClient:
+        model = "sdk-note-assist-model"
+
+        def __init__(self) -> None:
+            self.context = None
+
+        def complete_text(
+            self,
+            context: object,
+            *,
+            temperature: float = 0.3,
+        ) -> str:
+            self.context = context
+            del temperature
+            return "补充主题：JavaScript DOM 基础 / 状态变量\n可补充：\n- 错因：最近一次运行状态为 success，说明笔记可以补充对比说明。"
+
+        def complete_text_stream(
+            self,
+            context: object,
+            *,
+            temperature: float = 0.3,
+        ):
+            self.context = context
+            del temperature
+            yield "补充主题：JavaScript DOM 基础 / 状态变量\n"
+            yield "可补充：\n- 错因：最近一次运行状态为 success，说明笔记可以补充对比说明。"
+
+    monkeypatch.setattr(note_repository, "build_note_assist_client", lambda: FakeNoteAssistClient())
 
     with client.stream(
         "POST",
@@ -250,6 +279,8 @@ def test_agent_draft_streams_sse_and_updates_agent_field(client: TestClient) -> 
     assert agent_messages[-1]["request_id"] == request_id
     assert agent_messages[-1]["content"]
     assert events[-1]["data"]["result_ref"] == {"type": "Note", "id": note["id"]}
+    assert agent_messages[0]["delta"].startswith("补充主题：")
+    assert "可补充：" in agent_messages[-1]["content"]
 
     with connect() as conn:
         stored = conn.execute(
@@ -263,6 +294,66 @@ def test_agent_draft_streams_sse_and_updates_agent_field(client: TestClient) -> 
     assert stored is not None
     assert stored["content_markdown"] == "原始正文不应该被 agent draft 覆盖。"
     assert stored["agent_draft_content"] == agent_messages[-1]["content"].strip()
+
+
+def test_agent_draft_falls_back_when_sdk_output_mentions_code_draft(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user, plan = _confirmed_plan(client, language="javascript")
+    knowledge_point = plan["knowledge_points"][0]
+    created = client.post(
+        "/api/notes",
+        json={
+            "user_id": user["id"],
+            "knowledge_point_id": knowledge_point["id"],
+            "title": "状态变量位置",
+            "content_markdown": "原始正文不应该被 agent draft 覆盖。",
+        },
+    )
+    note = created.json()["note"]
+
+    class LeakingNoteAssistClient:
+        model = "sdk-note-assist-model"
+
+        def complete_text(
+            self,
+            context: object,
+            *,
+            temperature: float = 0.3,
+        ) -> str:
+            del context, temperature
+            return "CodeDraft /api/code-drafts 完整笔记必须重写。"
+
+        def complete_text_stream(
+            self,
+            context: object,
+            *,
+            temperature: float = 0.3,
+        ):
+            del context, temperature
+            yield "CodeDraft /api/code-drafts 完整笔记必须重写。"
+
+    monkeypatch.setattr(note_repository, "build_note_assist_client", lambda: LeakingNoteAssistClient())
+
+    drafted = client.post(
+        f"/api/notes/{note['id']}/agent-draft",
+        json={
+            "user_id": user["id"],
+            "style": "concise",
+            "focus": "mistake_summary",
+            "source": {
+                "session_id": "sess_learning_001",
+                "attempt_id": "att_submit_001",
+            },
+        },
+    )
+    assert drafted.status_code == 200
+    drafted_note = drafted.json()["note"]
+    assert drafted_note["id"] == note["id"]
+    assert "CodeDraft" not in drafted_note["agent_draft_content"]
+    assert "/api/code-drafts" not in drafted_note["agent_draft_content"]
+    assert "补充主题：" in drafted_note["agent_draft_content"]
 
 
 def _confirmed_plan(client: TestClient, *, language: str) -> tuple[dict[str, object], dict[str, object]]:

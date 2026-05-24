@@ -5,7 +5,7 @@ import json
 from collections.abc import Generator, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Protocol
+from typing import Any, Protocol, cast
 
 from psycopg import Connection
 
@@ -469,8 +469,8 @@ def _sanitize_attempt_context(attempt: Mapping[str, object]) -> dict[str, object
         "attempt_type": str(attempt.get("attempt_type") or ""),
         "runtime_status": str(attempt.get("runtime_status") or ""),
         "test_pass_rate": _decimal_to_float(attempt.get("test_pass_rate")),
-        "passed_test_count": int(attempt.get("passed_test_count") or 0),
-        "total_test_count": int(attempt.get("total_test_count") or 0),
+        "passed_test_count": _int_or_zero(attempt.get("passed_test_count")),
+        "total_test_count": _int_or_zero(attempt.get("total_test_count")),
         "visible_results": visible_results[:8],
         "hidden_summary": {
             "total": hidden_total_count,
@@ -478,8 +478,8 @@ def _sanitize_attempt_context(attempt: Mapping[str, object]) -> dict[str, object
         },
         "error_message": _limit_text(str(attempt.get("error_message") or ""), 400),
         "error_cause": _limit_text(str(attempt.get("error_cause") or ""), 120),
-        "hint_usage_count": int(attempt.get("hint_usage_count") or 0),
-        "error_count": int(attempt.get("error_count") or 0),
+        "hint_usage_count": _int_or_zero(attempt.get("hint_usage_count")),
+        "error_count": _int_or_zero(attempt.get("error_count")),
         "completion_result": {
             "result": str(completion.get("result") or ""),
             "feedback": _limit_text(str(completion.get("feedback") or ""), 400),
@@ -537,3 +537,12 @@ def _decimal_to_float(value: object) -> float:
     if isinstance(value, int | float):
         return float(value)
     return 0.0
+
+
+def _int_or_zero(value: object) -> int:
+    if value is None:
+        return 0
+    try:
+        return int(cast(Any, value))
+    except (TypeError, ValueError):
+        return 0
