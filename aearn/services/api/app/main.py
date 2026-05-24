@@ -8,6 +8,7 @@ from app.routes.courses import router as courses_router
 from app.routes.health import router as health_router
 from app.routes.learning_sessions import router as learning_sessions_router
 from app.routes.notes import router as notes_router
+from app.routes.onboarding import router as onboarding_router
 from app.routes.plans import router as plans_router
 from app.routes.reviews import router as reviews_router
 from app.routes.users import router as users_router
@@ -31,6 +32,7 @@ app.include_router(dashboard_router)
 app.include_router(plans_router)
 app.include_router(learning_sessions_router)
 app.include_router(reviews_router)
+app.include_router(onboarding_router)
 app.include_router(notes_router)
 
 

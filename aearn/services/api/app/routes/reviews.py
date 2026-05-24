@@ -1,13 +1,23 @@
+import asyncio
+from collections.abc import AsyncGenerator, Iterable
 from datetime import datetime
 
 from fastapi import APIRouter, Query, Request, status
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.core.errors import error_response, request_id_from
 from app.db.connection import connect
 from app.models.reviews import StartReviewSessionRequest, SubmitReviewExerciseResultRequest
 from app.services.plan_repository import IdempotencyConflictError
+from app.services.review_conversation import (
+    ReviewSessionNotFoundError,
+    deterministic_review_generation,
+    prepare_review_message,
+    safe_generation_exceptions,
+    start_review_generation,
+    store_review_agent_message,
+)
 from app.services.review_repository import (
     EntityNotFoundError,
     ReviewNotDueError,
@@ -16,6 +26,7 @@ from app.services.review_repository import (
     start_review_session,
     submit_review_exercise_result,
 )
+from app.services.sse import SSEWriter, stream_response, wants_stream
 
 
 router = APIRouter(prefix="/api/reviews", tags=["reviews"])
@@ -154,3 +165,222 @@ async def submit_review_result(
     if replayed:
         response["idempotency_replayed"] = True
     return JSONResponse(status_code=status.HTTP_200_OK, content=jsonable_encoder(response))
+
+
+@router.post("/{session_id}/messages", response_model=None)
+async def create_review_message(
+    session_id: str,
+    request: Request,
+) -> StreamingResponse:
+    request_id = request_id_from(request)
+    body = await request.json()
+
+    content = str(body.get("content") or "")
+    client_message_id = str(body.get("client_message_id") or "")
+
+    if not content or not client_message_id:
+        return stream_response(
+            _review_error_stream(
+                code="VALIDATION_ERROR",
+                message="复习对话请求缺少必要字段（content, client_message_id）",
+                request_id=request_id,
+            )
+        )
+
+    return stream_response(
+        _review_message_stream(
+            request,
+            session_id=session_id,
+            content=content,
+            client_message_id=client_message_id,
+            request_id=request_id,
+        )
+    )
+
+
+async def _review_message_stream(
+    request: Request,
+    *,
+    session_id: str,
+    content: str,
+    client_message_id: str,
+    request_id: str,
+) -> AsyncGenerator[str, None]:
+    writer = SSEWriter()
+    try:
+        with connect() as conn:
+            try:
+                prepared = prepare_review_message(
+                    conn,
+                    session_id=session_id,
+                    content=content,
+                    client_message_id=client_message_id,
+                )
+            except ReviewSessionNotFoundError as exc:
+                conn.rollback()
+                yield writer.error(
+                    code=exc.code,
+                    message=exc.message,
+                    request_id=request_id,
+                    details={"session_id": session_id},
+                )
+                return
+            conn.commit()
+
+        # Idempotency replay
+        if prepared.stored_content is not None:
+            yield writer.event(
+                "agent_message",
+                _review_agent_message_event(
+                    request_id=request_id,
+                    session_id=session_id,
+                    message_id=prepared.message_id,
+                    delta=prepared.stored_content,
+                    content=prepared.stored_content,
+                ),
+            )
+            yield writer.event(
+                "done",
+                {
+                    "request_id": request_id,
+                    "session_id": session_id,
+                    "message_id": prepared.message_id,
+                    "generation_source": "replay",
+                    "generation_model": "",
+                    "result_ref": {"type": "ReviewMessage", "id": prepared.message_id},
+                },
+            )
+            return
+
+        # Generate response
+        generation = start_review_generation(prepared.context, user_content=content)
+        full_text = ""
+        generation_source = generation.generation_source
+        generation_model = generation.generation_model
+
+        try:
+            async for delta in _review_iter_chunks(request, generation.chunks):
+                full_text += delta
+                yield writer.event(
+                    "agent_message",
+                    _review_agent_message_event(
+                        request_id=request_id,
+                        session_id=session_id,
+                        message_id=prepared.message_id,
+                        delta=delta,
+                        content=full_text,
+                    ),
+                )
+        except safe_generation_exceptions():
+            if full_text:
+                yield writer.error(
+                    code="GENERATION_INTERRUPTED",
+                    message="复习对话流式响应中断，请重试",
+                    request_id=request_id,
+                    recoverable=True,
+                )
+                return
+            fallback = deterministic_review_generation(prepared.context, user_content=content)
+            generation_source = fallback.generation_source
+            generation_model = fallback.generation_model
+            async for delta in _review_iter_chunks(request, fallback.chunks):
+                full_text += delta
+                yield writer.event(
+                    "agent_message",
+                    _review_agent_message_event(
+                        request_id=request_id,
+                        session_id=session_id,
+                        message_id=prepared.message_id,
+                        delta=delta,
+                        content=full_text,
+                    ),
+                )
+
+        if not full_text.strip():
+            fallback = deterministic_review_generation(prepared.context, user_content=content)
+            generation_source = fallback.generation_source
+            generation_model = fallback.generation_model
+            async for delta in _review_iter_chunks(request, fallback.chunks):
+                full_text += delta
+                yield writer.event(
+                    "agent_message",
+                    _review_agent_message_event(
+                        request_id=request_id,
+                        session_id=session_id,
+                        message_id=prepared.message_id,
+                        delta=delta,
+                        content=full_text,
+                    ),
+                )
+
+        # Persist agent message
+        with connect() as conn:
+            store_review_agent_message(
+                conn,
+                session_id=session_id,
+                content=full_text.strip(),
+            )
+            conn.commit()
+
+        yield writer.event(
+            "done",
+            {
+                "request_id": request_id,
+                "session_id": session_id,
+                "message_id": prepared.message_id,
+                "generation_source": generation_source,
+                "generation_model": generation_model,
+                "result_ref": {"type": "ReviewMessage", "id": prepared.message_id},
+            },
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        yield writer.error(
+            code="INTERNAL_ERROR",
+            message="复习对话流式响应失败",
+            request_id=request_id,
+            recoverable=True,
+        )
+
+
+async def _review_error_stream(
+    *,
+    code: str,
+    message: str,
+    request_id: str,
+    details: dict[str, object] | None = None,
+) -> AsyncGenerator[str, None]:
+    yield SSEWriter().error(
+        code=code,
+        message=message,
+        request_id=request_id,
+        details=details,
+    )
+
+
+async def _review_iter_chunks(request: Request, chunks: Iterable[str]) -> AsyncGenerator[str, None]:
+    for delta in chunks:
+        if await request.is_disconnected():
+            return
+        if not delta:
+            continue
+        yield delta
+        await asyncio.sleep(0)
+
+
+def _review_agent_message_event(
+    *,
+    request_id: str,
+    session_id: str,
+    message_id: str,
+    delta: str,
+    content: str,
+) -> dict[str, object]:
+    return {
+        "request_id": request_id,
+        "session_id": session_id,
+        "message_id": message_id,
+        "delta": delta,
+        "content": content,
+    }
