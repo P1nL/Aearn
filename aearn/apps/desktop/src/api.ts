@@ -887,3 +887,11 @@ export function buildSSEUrl(path: string, params?: Record<string, string>): stri
 export function buildLearningMessageSSEUrl(sessionId: string): string {
   return buildSSEUrl(`/api/learning-sessions/${encodeURIComponent(sessionId)}/messages`);
 }
+
+export function buildOnboardingMessageSSEUrl(): string {
+  return buildSSEUrl("/api/onboarding/messages");
+}
+
+export function buildReviewMessageSSEUrl(sessionId: string): string {
+  return buildSSEUrl(`/api/reviews/${encodeURIComponent(sessionId)}/messages`);
+}

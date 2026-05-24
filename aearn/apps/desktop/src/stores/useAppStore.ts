@@ -17,6 +17,7 @@ import type {
   NavGroupKey,
   SessionState,
 } from "../appTypes";
+import type { SSEPlanDraft } from "../hooks/useSSE";
 import type {
   CreatedPlanResponse,
   DashboardResponse,
@@ -59,6 +60,10 @@ type AppStore = {
   reviewConversation: ConversationMessage[];
   resetNonce: number;
 
+  // Onboarding conversation state
+  onboardingMessages: ConversationMessage[];
+  onboardingPlanDraft: SSEPlanDraft | null;
+
   // Simple setters
   setUser: (user: UserProfile | null) => void;
   setCreatedPlan: (plan: CreatedPlanResponse | null) => void;
@@ -71,6 +76,12 @@ type AppStore = {
   addHomeMessage: (msg: ConversationMessage) => void;
   updateHomeMessage: (id: string, patch: ConversationMessagePatch) => void;
   addReviewMessage: (msg: ConversationMessage) => void;
+  updateReviewMessage: (id: string, patch: ConversationMessagePatch) => void;
+
+  // Onboarding conversation actions
+  addOnboardingMessage: (msg: ConversationMessage) => void;
+  updateOnboardingMessage: (id: string, patch: ConversationMessagePatch) => void;
+  setOnboardingPlanDraft: (draft: SSEPlanDraft | null) => void;
 
   // Complex actions
   bootstrap: (signal?: AbortSignal) => Promise<void>;
@@ -100,6 +111,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
   homeConversation: [],
   reviewConversation: [],
   resetNonce: 0,
+  onboardingMessages: [],
+  onboardingPlanDraft: null,
 
   setUser: (user) => set({ user }),
   setCreatedPlan: (plan) => set({ createdPlan: plan }),
@@ -125,6 +138,36 @@ export const useAppStore = create<AppStore>((set, get) => ({
       }),
     })),
   addReviewMessage: (msg) => set((s) => ({ reviewConversation: [...s.reviewConversation, msg] })),
+  updateReviewMessage: (id, patch) =>
+    set((s) => ({
+      reviewConversation: s.reviewConversation.map((message) => {
+        if (message.id !== id) {
+          return message;
+        }
+        const { appendText, ...messagePatch } = patch;
+        return {
+          ...message,
+          ...messagePatch,
+          text: appendText ? `${message.text}${appendText}` : (messagePatch.text ?? message.text),
+        };
+      }),
+    })),
+  addOnboardingMessage: (msg) => set((s) => ({ onboardingMessages: [...s.onboardingMessages, msg] })),
+  updateOnboardingMessage: (id, patch) =>
+    set((s) => ({
+      onboardingMessages: s.onboardingMessages.map((message) => {
+        if (message.id !== id) {
+          return message;
+        }
+        const { appendText, ...messagePatch } = patch;
+        return {
+          ...message,
+          ...messagePatch,
+          text: appendText ? `${message.text}${appendText}` : (messagePatch.text ?? message.text),
+        };
+      }),
+    })),
+  setOnboardingPlanDraft: (draft) => set({ onboardingPlanDraft: draft }),
 
   bootstrap: async (signal) => {
     set({ bootstrapHydrated: false, apiHealth: { status: "loading" }, dashboardState: { status: "loading" } });
@@ -308,6 +351,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
       lastSubmit: null,
       homeConversation: [],
       reviewConversation: [],
+      onboardingMessages: [],
+      onboardingPlanDraft: null,
       composerInput: "",
       activeRoute: "onboarding",
       resetNonce: get().resetNonce + 1,

@@ -3,6 +3,7 @@ import type { ConversationMessage } from "../appTypes";
 type AssistantThreadProps = {
   messages: ConversationMessage[];
   emptyState?: React.ReactNode;
+  renderInlineCard?: (message: ConversationMessage) => React.ReactNode | null;
 };
 
 /**
@@ -11,8 +12,12 @@ type AssistantThreadProps = {
  * Renders a list of ConversationMessage items as an assistant-style thread.
  * Streaming messages show a cursor on the last line. Empty state is explicit
  * and provided by the parent.
+ *
+ * The optional `renderInlineCard` prop allows parent pages to inject
+ * inline card components (e.g., InlinePlanCard) after specific messages
+ * based on message metadata.
  */
-export function AssistantThread({ messages, emptyState }: AssistantThreadProps) {
+export function AssistantThread({ messages, emptyState, renderInlineCard }: AssistantThreadProps) {
   if (messages.length === 0 && emptyState) {
     return <>{emptyState}</>;
   }
@@ -20,15 +25,18 @@ export function AssistantThread({ messages, emptyState }: AssistantThreadProps) 
   return (
     <>
       {messages.map((message) => (
-        <article className={threadMessageClassName(message)} key={message.id} aria-live={message.status === "streaming" ? "polite" : undefined}>
-          <div className="avatar">{message.speaker === "agent" ? "A" : "你"}</div>
-          <div className="bubble">
-            {message.label && <div className="bubble-label">{message.label}</div>}
-            <AssistantMessageBody message={message} />
-            {message.toolCard && <div className="tool-card">{message.toolCard}</div>}
-            {message.statusText && <div className="bubble-status">{message.statusText}</div>}
-          </div>
-        </article>
+        <div key={message.id}>
+          <article className={threadMessageClassName(message)} aria-live={message.status === "streaming" ? "polite" : undefined}>
+            <div className="avatar">{message.speaker === "agent" ? "A" : "你"}</div>
+            <div className="bubble">
+              {message.label && <div className="bubble-label">{message.label}</div>}
+              <AssistantMessageBody message={message} />
+              {message.toolCard && <div className="tool-card">{message.toolCard}</div>}
+              {message.statusText && <div className="bubble-status">{message.statusText}</div>}
+            </div>
+          </article>
+          {renderInlineCard?.(message)}
+        </div>
       ))}
     </>
   );
