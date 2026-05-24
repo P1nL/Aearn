@@ -32,6 +32,7 @@ Every UI task must be checked against `docs/product/frontend-interaction-spec.md
 - Use backend responses as source of truth for run/submit results.
 - Preserve responsive behavior for narrow windows.
 - Keep `src-tauri/icons/icon.ico` present for Windows Tauri checks.
+- Runtime sidebar, conversation, and draft panels must render real user/plan/session data or explicit empty states. Do not use prototype fallback lesson titles, canned chat messages, or fake draft modules in `aearn/apps/desktop/src/`.
 
 ---
 
@@ -48,6 +49,8 @@ Every UI task must be checked against `docs/product/frontend-interaction-spec.md
 ## Code Review Checklist
 
 - The component names and page flow match `frontend-interaction-spec.md`.
+- The initial runtime conversation is empty until real user/session events exist; no demo `ConversationMessage` arrays or placeholder Agent bubbles are injected.
+- Sidebar learning and note entries come from `CreatedPlanResponse.knowledge_points` or a visible empty state, not fixed DOM/Python example titles.
 - UI labels avoid backend-internal Attempt and FSRS implementation terms.
 - Settings page copy preserves the documented category boundary while staying user-facing rather than spec-facing.
 - Async operations have user-visible state and do not allow duplicate writes while pending.
@@ -386,6 +389,67 @@ setReviewResult(await submitReviewExerciseResult(payload));
 ```
 
 Render `reviewResult.due_at`, `reviewResult.forget_risk`, and `reviewResult.ReviewState` exactly as returned by the API.
+
+## Scenario: Prototype-Free Dialogue Runtime
+
+### 1. Scope / Trigger
+
+- Trigger: changing desktop shell, sidebar navigation, onboarding draft panels, or learning conversation rendering.
+- Scope: `aearn/apps/desktop/src/App.tsx`, `components/SidebarNav.tsx`, `components/SideContext.tsx`, `features/onboarding/PlanDraftPanel.tsx`, `pages/OnboardingPage.tsx`, `pages/LearningWorkspacePage.tsx`, `lib/appContent.ts`, and `lib/learningHelpers.ts`.
+
+### 2. Signatures
+
+- Sidebar source: `CreatedPlanResponse.knowledge_points`.
+- Route source: `CreatedPlanResponse.modules` plus matching first `knowledge_point`.
+- Composer source: active `LearningSessionResponse.session_id`.
+- SSE endpoint: `POST /api/learning-sessions/{session_id}/messages`.
+
+### 3. Contracts
+
+- No plan: sidebar shows explicit empty states and no fixed lesson buttons.
+- No plan draft: draft panel shows an empty state and no fake module sequence.
+- No active learning session: home composer is disabled and does not call the backend.
+- Active learning session: composer can send `{ role: "user", content, client_message_id }` to the session SSE endpoint.
+- Streaming assistant text updates one existing assistant bubble; `delta` chunks append, while full `content` replaces the bubble text.
+
+### 4. Validation & Error Matrix
+
+- Empty composer input -> send disabled.
+- Missing active session -> guidance visible and no network request.
+- Stream in progress -> duplicate sends disabled.
+- `agent_message.delta` only -> append to current assistant bubble.
+- `agent_message.content` present -> replace assistant bubble with authoritative content.
+- No generated plan -> no hard-coded DOM/Python/C++ fallback route cards.
+
+### 5. Good/Base/Bad Cases
+
+- Good: cold start shows no message article in the conversation area and sidebar says generated route items appear after onboarding.
+- Base: returning user with a plan sees knowledge point titles from the backend in learning and notes navigation.
+- Bad: adding `HOME_BASE_MESSAGES`, fallback draft modules, or hard-coded lesson buttons to make the UI look populated before backend data exists.
+
+### 6. Tests Required
+
+- Run `pnpm --dir .\aearn desktop:check`.
+- Browser smoke cold start with `localStorage["aearn.bootstrap"]` cleared: assert `.conversation` has `overflow-y: auto`, no `.message` article, and sidebar empty-state copy.
+- Browser smoke returning-user or generated-plan state: assert sidebar entries match backend knowledge point titles.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```tsx
+const homeMessages = [...HOME_BASE_MESSAGES, ...app.homeConversation];
+```
+
+This makes the runtime look populated even when no real session message exists.
+
+#### Correct
+
+```tsx
+const homeMessages = app.homeConversation;
+```
+
+Only user actions and backend/session events create runtime conversation messages.
 
 ## Scenario: M6 Release Smoke for Bootstrap, Dashboard, and Resume
 

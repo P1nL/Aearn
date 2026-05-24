@@ -1,6 +1,5 @@
 import type {
   AppRoute,
-  ConversationMessage,
   NavGroupKey,
   SettingsKey,
   SettingsPanel,
@@ -8,19 +7,19 @@ import type {
 
 export const ROUTE_META: Record<AppRoute, { crumb: string; hint: string }> = {
   onboarding: {
-    crumb: "首次建档 / 实时课程生成",
+    crumb: "首次建档 / 学习路线生成",
     hint: "首次使用完成建档后进入学习页",
   },
   home: {
-    crumb: "JavaScript DOM / 事件补全",
-    hint: "今晚 20:30 继续",
+    crumb: "当前学习 / 对话练习",
+    hint: "从学习路线选择知识点开始",
   },
   review: {
-    crumb: "复习 / DOM 状态生命周期",
-    hint: "复习完成后更新下次复习时间",
+    crumb: "复习 / 到期知识点",
+    hint: "复习完成后更新巩固安排",
   },
   notes: {
-    crumb: "笔记 / JavaScript / DOM 事件补全",
+    crumb: "笔记 / 当前知识点",
     hint: "Markdown 笔记可编辑",
   },
   settings: {
@@ -101,44 +100,6 @@ export const SETTING_PANELS: Record<SettingsKey, SettingsPanel> = {
     ],
   },
 };
-
-export const ONBOARDING_MESSAGES: ConversationMessage[] = [
-  {
-    id: "onboarding-agent-1",
-    speaker: "agent",
-    label: "Agent",
-    text: "先告诉我你想学哪门语言，以及你希望学完后能独立完成什么代码任务。",
-  },
-  {
-    id: "onboarding-user-1",
-    speaker: "user",
-    text: "我想系统学 JavaScript/HTML/CSS 和一点 Python，能看懂 AI 生成代码、自己补全交互并用测试验证。",
-  },
-  {
-    id: "onboarding-agent-2",
-    speaker: "agent",
-    label: "Agent",
-    text: "我会先把路线拆成 HTML/CSS 基础、DOM 事件、Python 函数测试、AI 生成代码理解、调试小项目五段。右侧会随着澄清实时更新。",
-  },
-];
-
-export const HOME_BASE_MESSAGES: ConversationMessage[] = [
-  {
-    id: "home-agent-1",
-    speaker: "agent",
-    label: "Agent",
-    text: "今天先只解决一个问题：点击计数为什么始终回到 1。你先运行可见测试，再根据报错决定下一步。",
-  },
-];
-
-export const REVIEW_BASE_MESSAGES: ConversationMessage[] = [
-  {
-    id: "review-agent-1",
-    speaker: "agent",
-    label: "Review Agent",
-    text: "复习不会直接改写今天的学习会话。这里是独立新会话，只追打上一次提交暴露的薄弱点。",
-  },
-];
 
 export const DEFAULT_NOTE_CONTENT = `# DOM 点击计数
 

@@ -37,6 +37,10 @@ export type DashboardState =
   | { status: "ready"; data: DashboardResponse }
   | { status: "error"; message: string };
 
+type ConversationMessagePatch = Partial<ConversationMessage> & {
+  appendText?: string;
+};
+
 type AppStore = {
   apiHealth: ApiHealthState;
   dashboardState: DashboardState;
@@ -65,7 +69,7 @@ type AppStore = {
   toggleSidebar: () => void;
   toggleGroup: (group: NavGroupKey) => void;
   addHomeMessage: (msg: ConversationMessage) => void;
-  updateHomeMessage: (id: string, patch: Partial<ConversationMessage>) => void;
+  updateHomeMessage: (id: string, patch: ConversationMessagePatch) => void;
   addReviewMessage: (msg: ConversationMessage) => void;
 
   // Complex actions
@@ -108,9 +112,17 @@ export const useAppStore = create<AppStore>((set, get) => ({
   addHomeMessage: (msg) => set((s) => ({ homeConversation: [...s.homeConversation, msg] })),
   updateHomeMessage: (id, patch) =>
     set((s) => ({
-      homeConversation: s.homeConversation.map((message) =>
-        message.id === id ? { ...message, ...patch } : message,
-      ),
+      homeConversation: s.homeConversation.map((message) => {
+        if (message.id !== id) {
+          return message;
+        }
+        const { appendText, ...messagePatch } = patch;
+        return {
+          ...message,
+          ...messagePatch,
+          text: appendText ? `${message.text}${appendText}` : (messagePatch.text ?? message.text),
+        };
+      }),
     })),
   addReviewMessage: (msg) => set((s) => ({ reviewConversation: [...s.reviewConversation, msg] })),
 

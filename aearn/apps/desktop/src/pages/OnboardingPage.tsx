@@ -30,7 +30,7 @@ export function OnboardingPage({
   const [actionState, setActionState] = useState<AsyncActionState>({ status: "idle" });
   const [displayName, setDisplayName] = useState("Pinking");
   const [mode, setMode] = useState<LearningMode>("goal_based");
-  const [goalText, setGoalText] = useState("两周内掌握 DOM 事件，并能验证 AI 生成代码。");
+  const [goalText, setGoalText] = useState("");
   const [materialTitle, setMaterialTitle] = useState("已有学习材料");
   const [materialContent, setMaterialContent] = useState("");
   const [selectedCourseId, setSelectedCourseId] = useState("");
@@ -47,7 +47,7 @@ export function OnboardingPage({
     setActionState({ status: "idle" });
     setDisplayName(existingUser?.display_name ?? "Pinking");
     setMode("goal_based");
-    setGoalText("两周内掌握 DOM 事件，并能验证 AI 生成代码。");
+    setGoalText("");
     setMaterialTitle("已有学习材料");
     setMaterialContent("");
     setSelectedCourseId("");
@@ -120,15 +120,6 @@ export function OnboardingPage({
         <section className="conversation onboarding-conversation" aria-label="建档对话">
           <div className="thread">
             <ThreadMessages messages={messages} />
-            {selectedCourse && (
-              <article className="message agent">
-                <div className="avatar">A</div>
-                <div className="bubble">
-                  <div className="bubble-label">Agent</div>
-                  <p>当前课程模板会以 {selectedCourse.title} 为主干，运行能力是 {runtimeLabel(selectedCourse.runtime_profile.runtime_tier)}。</p>
-                </div>
-              </article>
-            )}
           </div>
 
           <div className="onboarding-setup">
