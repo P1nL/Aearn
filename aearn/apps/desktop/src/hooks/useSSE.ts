@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ApiError, CodeCompletionResult, NextAction, RuntimeStatus } from "../types";
 
-export type SSEEventType = "agent_message" | "tool_status" | "runner_result" | "evaluation_result" | "done" | "error";
+export type SSEEventType = "agent_message" | "tool_status" | "runner_result" | "evaluation_result" | "plan_draft" | "done" | "error";
 
 export type SSEAgentMessage = {
   request_id: string;
@@ -47,6 +47,14 @@ export type SSEEvaluationResult = {
   code_completion_result: CodeCompletionResult;
 };
 
+export type SSEPlanDraft = {
+  request_id: string;
+  session_id: string;
+  draft_id: string;
+  modules: Array<{ title: string; knowledge_points: Array<{ title: string; id: string }> }>;
+  summary: string;
+};
+
 export type SSEDone = {
   request_id: string;
   session_id: string;
@@ -65,6 +73,7 @@ export type SSEEvent =
   | { type: "tool_status"; data: SSEToolStatus }
   | { type: "runner_result"; data: SSERunnerResult }
   | { type: "evaluation_result"; data: SSEEvaluationResult }
+  | { type: "plan_draft"; data: SSEPlanDraft }
   | { type: "done"; data: SSEDone }
   | { type: "error"; data: SSEError };
 
@@ -266,6 +275,8 @@ function toTypedSSEEvent(type: SSEEventType, data: unknown): SSEEvent | null {
       return { type, data: data as SSERunnerResult };
     case "evaluation_result":
       return { type, data: data as SSEEvaluationResult };
+    case "plan_draft":
+      return { type, data: data as SSEPlanDraft };
     case "done":
       return { type, data: data as SSEDone };
     case "error":
@@ -301,6 +312,7 @@ function isSSEEventType(value: string): value is SSEEventType {
     value === "tool_status" ||
     value === "runner_result" ||
     value === "evaluation_result" ||
+    value === "plan_draft" ||
     value === "done" ||
     value === "error"
   );

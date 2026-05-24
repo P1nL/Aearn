@@ -1,8 +1,14 @@
-import { startTransition, useEffect, useState } from "react";
+import { startTransition, useEffect, useRef, useState } from "react";
 
-import { fetchTodayReviews, startReviewSession, submitReviewExerciseResult } from "../api";
+import { buildReviewMessageSSEUrl, fetchTodayReviews, startReviewSession, submitReviewExerciseResult } from "../api";
 import type { ConversationMessage, NoteContext } from "../appTypes";
+import { AssistantThread } from "../components/AssistantThread";
+import { LearningComposer } from "../components/LearningComposer";
+import { ReviewRecap } from "../components/ReviewRecap";
+import { useSSE } from "../hooks/useSSE";
 import { formatErrorMessage } from "../lib/errorMessages";
+import { createMessage } from "../lib/learningHelpers";
+import { useAppStore } from "../stores/useAppStore";
 import type {
   ReviewDueItem,
   ReviewExerciseResultResponse,
@@ -11,8 +17,6 @@ import type {
   SubmitExerciseResponse,
   UserProfile,
 } from "../types";
-import { AssistantThread } from "../components/AssistantThread";
-import { ReviewRecap } from "../components/ReviewRecap";
 
 type ReviewPageProps = {
   isActive: boolean;
@@ -23,7 +27,21 @@ type ReviewPageProps = {
   onActiveNoteContextChange: (context: NoteContext | null) => void;
 };
 
+type ReviewStreamRequest = {
+  endpoint: string;
+  requestId: string;
+  assistantMessageId: string;
+  body: {
+    role: "user";
+    content: string;
+    client_message_id: string;
+  };
+};
+
+const REVIEW_QUICK_REPLIES = ["我记得", "不太确定", "完全忘了"];
+
 export function ReviewPage({ isActive, user, messages, lastSubmit, lastRun, onActiveNoteContextChange }: ReviewPageProps) {
+  const store = useAppStore();
   const [dueItems, setDueItems] = useState<ReviewDueItem[]>([]);
   const [loadState, setLoadState] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -33,6 +51,81 @@ export function ReviewPage({ isActive, user, messages, lastSubmit, lastRun, onAc
   const [explanation, setExplanation] = useState("");
   const [submitState, setSubmitState] = useState<"idle" | "submitting" | "done" | "error">("idle");
   const [reviewResult, setReviewResult] = useState<ReviewExerciseResultResponse | null>(null);
+  const [composerInput, setComposerInput] = useState("");
+  const [streamRequest, setStreamRequest] = useState<ReviewStreamRequest | null>(null);
+  const conversationScrollRef = useRef<HTMLElement | null>(null);
+
+  const isStreaming = streamRequest !== null;
+
+  // SSE streaming for review messages
+  useSSE(streamRequest?.endpoint ?? null, {
+    method: "POST",
+    body: streamRequest?.body,
+    requestId: streamRequest?.requestId,
+    onEvent: (streamEvent) => {
+      if (!streamRequest || streamEvent.type !== "agent_message") return;
+      const incomingText = streamEvent.data.content || streamEvent.data.delta;
+      store.updateReviewMessage(streamRequest.assistantMessageId, {
+        text: streamEvent.data.content ? incomingText : undefined,
+        appendText: streamEvent.data.content ? undefined : incomingText,
+        status: "streaming",
+        statusText: "正在生成……",
+      });
+    },
+    onDone: () => {
+      if (!streamRequest) return;
+      store.updateReviewMessage(streamRequest.assistantMessageId, {
+        status: "done",
+        statusText: undefined,
+      });
+      setStreamRequest(null);
+    },
+    onError: (error) => {
+      if (!streamRequest) return;
+      store.updateReviewMessage(streamRequest.assistantMessageId, {
+        text: `回复出错：${error.code}。${error.message}`,
+        status: "error",
+        statusText: "可以修改问题后重试。",
+      });
+      setStreamRequest(null);
+    },
+  });
+
+  // Auto-scroll on new messages
+  useEffect(() => {
+    const scrollContainer = conversationScrollRef.current;
+    if (!scrollContainer) return;
+    const frame = window.requestAnimationFrame(() => {
+      scrollContainer.scrollTop = scrollContainer.scrollHeight;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [messages.length, activeReview?.session_id, reviewResult?.attempt_id]);
+
+  function handleComposerSubmit() {
+    const content = composerInput.trim();
+    if (content.length === 0 || isStreaming || !activeReview) return;
+
+    const assistantMessage: ConversationMessage = {
+      ...createMessage("agent", "", "Agent"),
+      status: "streaming",
+      statusText: "正在连接模型……",
+    };
+
+    store.addReviewMessage(createMessage("user", content));
+    store.addReviewMessage(assistantMessage);
+
+    setStreamRequest({
+      endpoint: buildReviewMessageSSEUrl(activeReview.session_id),
+      requestId: createClientId("desktop_review_req"),
+      assistantMessageId: assistantMessage.id,
+      body: {
+        role: "user",
+        content,
+        client_message_id: createClientId("desktop_review_msg"),
+      },
+    });
+    setComposerInput("");
+  }
 
   async function loadDueReviews(signal?: AbortSignal) {
     if (!user) {
@@ -75,6 +168,10 @@ export function ReviewPage({ isActive, user, messages, lastSubmit, lastRun, onAc
         setFilledBlanks(defaultFilledBlanks(response));
         setExplanation("");
       });
+      // Add AI greeting as first message in thread
+      store.addReviewMessage(
+        createMessage("agent", response.initial_agent_message, "Agent"),
+      );
     } catch (error) {
       setErrorMessage(formatErrorMessage(error, "无法开始复习"));
     }
@@ -99,6 +196,10 @@ export function ReviewPage({ isActive, user, messages, lastSubmit, lastRun, onAc
         setReviewResult(result);
         setSubmitState("done");
       });
+      // Add AI feedback as a message in the thread
+      store.addReviewMessage(
+        createMessage("agent", result.feedback, "Agent"),
+      );
       await loadDueReviews();
     } catch (error) {
       setSubmitState("error");
@@ -132,15 +233,18 @@ export function ReviewPage({ isActive, user, messages, lastSubmit, lastRun, onAc
 
   const activeExercise = activeReview?.review_exercise ?? null;
   const submitDisabled = !activeReview || submitState === "submitting" || submitState === "done";
+  const composerSessionActive = Boolean(activeReview);
 
   return (
     <div className="review-screen">
       <div className="review-thread-wrap">
-        <section className="conversation" aria-label="复习新会话">
+        <section className="conversation" aria-label="复习对话" ref={conversationScrollRef}>
           <div className="thread">
-            <div className="lesson-title">
-              <p>独立复习会话，针对薄弱知识点进行变体练习。</p>
-            </div>
+            {!activeReview && (
+              <div className="lesson-title">
+                <p>独立复习会话，针对薄弱知识点进行变体练习。</p>
+              </div>
+            )}
 
             <AssistantThread messages={messages} />
 
@@ -188,7 +292,6 @@ export function ReviewPage({ isActive, user, messages, lastSubmit, lastRun, onAc
                     <span className="runtime-pill">{runtimeTierLabel(activeExercise.runtime_profile.runtime_tier)}</span>
                   </div>
                   <p>{activeReview.variant_reason}</p>
-                  <div className="tool-card">{activeReview.initial_agent_message}</div>
 
                   <div className="exercise-grid">
                     <div className="exercise-panel">
@@ -271,6 +374,20 @@ export function ReviewPage({ isActive, user, messages, lastSubmit, lastRun, onAc
           </div>
         </section>
       </div>
+
+      <LearningComposer
+        value={composerInput}
+        onChange={setComposerInput}
+        onSubmit={handleComposerSubmit}
+        disabled={isStreaming}
+        streaming={isStreaming}
+        sessionActive={composerSessionActive}
+        hideNoteButton
+        quickReplies={composerSessionActive && messages.length <= 1 ? REVIEW_QUICK_REPLIES : undefined}
+        placeholder={isStreaming ? "AI 正在回复……" : !composerSessionActive ? "先开始一个复习会话……" : "用自己的话复述，或请求提示……"}
+        ariaLabel="复习输入框"
+        guidanceText={!composerSessionActive ? "点击上方「开始复习」后，可以在这里和 AI 对话。" : undefined}
+      />
     </div>
   );
 }
@@ -307,8 +424,6 @@ function riskLabel(value: ReviewDueItem["forget_risk"]): string {
   }
   return "正常";
 }
-
-
 
 function runtimeTierLabel(tier: string): string {
   if (tier === "browser_preview") {
@@ -353,4 +468,9 @@ function nextActionLabel(action: string): string {
     return "继续下一步";
   }
   return "重新运行";
+}
+
+function createClientId(prefix: string): string {
+  const uuid = globalThis.crypto?.randomUUID?.();
+  return uuid ? `${prefix}_${uuid}` : `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2)}`;
 }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect } from "react";
 
 import { API_BASE_URL } from "./api";
 import type { AppRoute, ConversationMessage, NoteContext } from "./appTypes";
@@ -9,7 +9,7 @@ import { SideContext } from "./components/SideContext";
 import { ROUTE_META } from "./lib/appContent";
 import { writeBootstrapContext, clearBootstrapContext } from "./lib/bootstrapStorage";
 import { getCrumbLabel, screenClassName } from "./lib/desktopLabels";
-import { computeSidebarProgress, createMessage } from "./lib/learningHelpers";
+import { computeSidebarProgress } from "./lib/learningHelpers";
 import { useAutoSave } from "./hooks/useAutoSave";
 import { useAppStore } from "./stores/useAppStore";
 import { useNotesStore } from "./stores/useNotesStore";
@@ -50,9 +50,6 @@ function App() {
   const settingsDirty = settings.isDirty(app.user);
   const apiStatusLabel =
     app.apiHealth.status === "online" ? "在线" : app.apiHealth.status === "offline" ? `离线: ${app.apiHealth.message}` : "检测中";
-
-  // Review composer state (kept in App since ReviewPage doesn't own streaming)
-  const [reviewComposerInput, setReviewComposerInput] = useState("");
 
   const currentSessionNoteContext = buildLearningNoteContext(session);
   const currentContext = currentSessionNoteContext ?? notes.reviewNoteContext;
@@ -110,15 +107,6 @@ function App() {
     notes.setDrawerOpen(true);
     const note = await notes.ensureForContext(app.user.id, context);
     if (note) notes.setPageSelection(notes.pageSelection ?? note.knowledge_point_id);
-  }
-
-  function handleReviewComposerSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const content = reviewComposerInput.trim();
-    if (content.length === 0) return;
-    app.addReviewMessage(createMessage("user", content));
-    app.addReviewMessage(createMessage("agent", "收到。先按准确性、因果链、例子质量和表达清晰度评分，再决定下一次 due_at。", "Agent"));
-    setReviewComposerInput("");
   }
 
   function handleResetGoal() {
@@ -329,19 +317,6 @@ function App() {
             <NoteDrawer drawerKnowledgePointId={drawerKnowledgePointId} drawerNote={drawerNote} drawerDraft={drawerDraft} userId={app.user?.id} lastAttemptId={lastAttemptId} />
           )}
 
-          {visibleRoute === "review" && (
-            <form className="composer-wrap" onSubmit={handleReviewComposerSubmit}>
-              <div className="composer">
-                <textarea
-                  aria-label="复习输入框"
-                  value={reviewComposerInput}
-                  placeholder="用自己的话复述，或请求提示……"
-                  onChange={(e) => setReviewComposerInput(e.target.value)}
-                />
-                <button className="btn primary send-btn" type="submit" aria-label="发送" disabled={reviewComposerInput.trim().length === 0}>↑</button>
-              </div>
-            </form>
-          )}
         </section>
       </section>
     </main>

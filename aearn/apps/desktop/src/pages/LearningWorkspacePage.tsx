@@ -110,6 +110,23 @@ export function LearningWorkspacePage({
   const initialAgentMessage = session?.initial_agent_message.trim() ?? "";
   const composerStreaming = composerStream !== null;
 
+  // Build thread messages with initialAgentMessage prepended as a proper message
+  const threadMessages: ConversationMessage[] = session && initialAgentMessage
+    ? [
+        {
+          id: `initial-${session.session_id}`,
+          speaker: "agent" as const,
+          text: initialAgentMessage,
+          label: "Agent",
+          toolCard: activeExercise ? `当前练习：${activeExercise.title} · ${session.context_snapshot.KnowledgePoint.title}` : undefined,
+          status: "done" as const,
+        },
+        ...messages,
+      ]
+    : messages;
+
+  const LEARNING_QUICK_REPLIES = ["给我提示", "解释这个错误"];
+
   // --- SSE streaming for composer messages ---
   useSSE(composerStream?.endpoint ?? null, {
     method: "POST",
@@ -423,7 +440,7 @@ export function LearningWorkspacePage({
             <AssistantThread messages={[]} emptyState={emptyState} />
           )}
 
-          {session && <AssistantThread messages={messages} />}
+          {session && <AssistantThread messages={threadMessages} />}
 
           {sessionState.status === "loading" && <SystemCard title="系统状态" body="正在启动当前知识点会话…" />}
           {sessionState.status === "error" && (
@@ -441,18 +458,6 @@ export function LearningWorkspacePage({
 
           {session && activeExercise && (
             <>
-              {initialAgentMessage && (
-                <article className="message agent">
-                  <div className="avatar">A</div>
-                  <div className="bubble">
-                    <div className="bubble-label">Agent</div>
-                    <p>{initialAgentMessage}</p>
-                    <div className="tool-card">
-                      当前练习：{activeExercise.title} · {session.context_snapshot.KnowledgePoint.title}
-                    </div>
-                  </div>
-                </article>
-              )}
 
               <ExerciseWorkbench
                 session={session}
@@ -514,6 +519,7 @@ export function LearningWorkspacePage({
         canOpenNoteDrawer={canOpenNoteDrawer}
         noteDrawerOpen={noteDrawerOpen}
         onToggleNoteDrawer={() => { noteDrawerOpen ? onCloseNoteDrawer() : onOpenNoteDrawer(); }}
+        quickReplies={session && messages.length === 0 ? LEARNING_QUICK_REPLIES : undefined}
       />
     </div>
   );

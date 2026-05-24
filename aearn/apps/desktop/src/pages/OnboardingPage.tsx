@@ -1,12 +1,15 @@
-import { startTransition, useDeferredValue, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
-import { confirmPlan, createUser, generatePlanDraft } from "../api";
-import type { ApiHealthState, AsyncActionState, ConversationMessage } from "../appTypes";
-import { PlanDraftPanel } from "../features/onboarding/PlanDraftPanel";
+import { buildOnboardingMessageSSEUrl, confirmPlan, createUser } from "../api";
+import type { ApiHealthState, ConversationMessage } from "../appTypes";
 import { AssistantThread } from "../components/AssistantThread";
-import { runtimeLabel } from "../lib/desktopLabels";
-import { toActionError } from "../lib/learningHelpers";
-import type { CreatedPlanResponse, LanguageCourse, LearningMode, PlanDraft, UserProfile } from "../types";
+import { InlinePlanCard } from "../components/InlinePlanCard";
+import { LearningComposer } from "../components/LearningComposer";
+import { useSSE } from "../hooks/useSSE";
+import type { SSEPlanDraft } from "../hooks/useSSE";
+import { createMessage } from "../lib/learningHelpers";
+import { useAppStore } from "../stores/useAppStore";
+import type { CreatedPlanResponse, LanguageCourse, PlanDraft, UserProfile } from "../types";
 
 type OnboardingPageProps = {
   apiHealth: ApiHealthState;
@@ -18,202 +21,214 @@ type OnboardingPageProps = {
   onPlanCreated: (plan: CreatedPlanResponse, user: UserProfile) => Promise<void> | void;
 };
 
+type OnboardingStreamRequest = {
+  endpoint: string;
+  requestId: string;
+  assistantMessageId: string;
+  body: {
+    role: "user";
+    content: string;
+    client_message_id: string;
+    user_id?: string;
+  };
+};
+
+const WELCOME_MESSAGE_TEXT = "你好！我是 Aearn 学习助手。想学什么编程语言或技术？告诉我你的目标，我来帮你制定学习计划。";
+const ONBOARDING_QUICK_REPLIES = ["学 Python 基础", "学 JavaScript 前端", "学 HTML/CSS 网页"];
+
 export function OnboardingPage({
   apiHealth,
   courses,
   existingUser,
-  messages,
   resetNonce,
   onUserChange,
   onPlanCreated,
 }: OnboardingPageProps) {
-  const [actionState, setActionState] = useState<AsyncActionState>({ status: "idle" });
-  const [displayName, setDisplayName] = useState("Pinking");
-  const [mode, setMode] = useState<LearningMode>("goal_based");
-  const [goalText, setGoalText] = useState("");
-  const [materialTitle, setMaterialTitle] = useState("已有学习材料");
-  const [materialContent, setMaterialContent] = useState("");
-  const [selectedCourseId, setSelectedCourseId] = useState("");
-  const [planDraft, setPlanDraft] = useState<PlanDraft | null>(null);
-  const deferredGoalText = useDeferredValue(goalText);
+  const store = useAppStore();
+  const onboardingMessages = store.onboardingMessages;
+  const onboardingPlanDraft = store.onboardingPlanDraft;
 
+  const [composerInput, setComposerInput] = useState("");
+  const [streamRequest, setStreamRequest] = useState<OnboardingStreamRequest | null>(null);
+  const [confirmingPlan, setConfirmingPlan] = useState(false);
+  const [displayName] = useState("Pinking");
+  const conversationScrollRef = useRef<HTMLElement | null>(null);
+
+  const isStreaming = streamRequest !== null;
+
+  // Show welcome message on mount (if no existing messages)
   useEffect(() => {
-    if (courses.length > 0 && !courses.some((course) => course.id === selectedCourseId)) {
-      setSelectedCourseId(courses[0].id);
+    if (onboardingMessages.length === 0) {
+      store.addOnboardingMessage(createMessage("agent", WELCOME_MESSAGE_TEXT, "Agent"));
     }
-  }, [courses, selectedCourseId]);
-
-  useEffect(() => {
-    setActionState({ status: "idle" });
-    setDisplayName(existingUser?.display_name ?? "Pinking");
-    setMode("goal_based");
-    setGoalText("");
-    setMaterialTitle("已有学习材料");
-    setMaterialContent("");
-    setSelectedCourseId("");
-    setPlanDraft(null);
   }, [resetNonce]);
 
-  const selectedCourse = courses.find((course) => course.id === selectedCourseId) ?? courses[0] ?? null;
-  const canGenerate =
-    apiHealth.status === "online" &&
-    selectedCourse !== null &&
-    displayName.trim().length > 0 &&
-    (mode === "goal_based" ? goalText.trim().length > 0 : materialContent.trim().length > 0);
-  const isBusy = actionState.status === "loading";
+  // Auto-scroll on new messages
+  useEffect(() => {
+    const scrollContainer = conversationScrollRef.current;
+    if (!scrollContainer) return;
+    const frame = window.requestAnimationFrame(() => {
+      scrollContainer.scrollTop = scrollContainer.scrollHeight;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [onboardingMessages.length]);
+
+  // SSE streaming for onboarding messages
+  useSSE(streamRequest?.endpoint ?? null, {
+    method: "POST",
+    body: streamRequest?.body,
+    requestId: streamRequest?.requestId,
+    onEvent: (streamEvent) => {
+      if (!streamRequest) return;
+      if (streamEvent.type === "agent_message") {
+        const incomingText = streamEvent.data.content || streamEvent.data.delta;
+        store.updateOnboardingMessage(streamRequest.assistantMessageId, {
+          text: streamEvent.data.content ? incomingText : undefined,
+          appendText: streamEvent.data.content ? undefined : incomingText,
+          status: "streaming",
+          statusText: "正在生成……",
+        });
+      }
+      if (streamEvent.type === "plan_draft") {
+        store.setOnboardingPlanDraft(streamEvent.data as SSEPlanDraft);
+      }
+    },
+    onDone: () => {
+      if (!streamRequest) return;
+      store.updateOnboardingMessage(streamRequest.assistantMessageId, {
+        status: "done",
+        statusText: undefined,
+      });
+      setStreamRequest(null);
+    },
+    onError: (error) => {
+      if (!streamRequest) return;
+      store.updateOnboardingMessage(streamRequest.assistantMessageId, {
+        text: `对话出错：${error.code}。${error.message}`,
+        status: "error",
+        statusText: "可以修改问题后重试。",
+      });
+      setStreamRequest(null);
+    },
+  });
 
   async function ensureUser(): Promise<UserProfile> {
-    if (existingUser) {
-      return existingUser;
-    }
+    if (existingUser) return existingUser;
     const created = await createUser(displayName.trim());
     onUserChange(created);
     return created;
   }
 
-  async function handleGenerate() {
-    if (!selectedCourse || !canGenerate) {
-      return;
-    }
-    setActionState({ status: "loading", label: "正在生成计划草稿" });
+  function handleComposerSubmit() {
+    const content = composerInput.trim();
+    if (content.length === 0 || isStreaming) return;
+
+    const assistantMessage: ConversationMessage = {
+      ...createMessage("agent", "", "Agent"),
+      status: "streaming",
+      statusText: "正在连接模型……",
+    };
+
+    store.addOnboardingMessage(createMessage("user", content));
+    store.addOnboardingMessage(assistantMessage);
+
+    const userId = existingUser?.id;
+
+    setStreamRequest({
+      endpoint: buildOnboardingMessageSSEUrl(),
+      requestId: createClientId("desktop_onboarding_req"),
+      assistantMessageId: assistantMessage.id,
+      body: {
+        role: "user",
+        content,
+        client_message_id: createClientId("desktop_onboarding_msg"),
+        ...(userId ? { user_id: userId } : {}),
+      },
+    });
+    setComposerInput("");
+  }
+
+  async function handleConfirmPlan() {
+    if (!onboardingPlanDraft || confirmingPlan) return;
+    setConfirmingPlan(true);
     try {
       const activeUser = await ensureUser();
-      const draft = await generatePlanDraft({
-        userId: activeUser.id,
-        mode,
-        courseId: selectedCourse.id,
-        language: selectedCourse.language,
-        goalText: deferredGoalText.trim(),
-        materialTitle: materialTitle.trim(),
-        materialContent: materialContent.trim(),
-      });
-      startTransition(() => {
-        setPlanDraft(draft);
-        setActionState({ status: "idle" });
-      });
+      // Build a PlanDraft-compatible object from the SSE plan_draft data
+      // The backend confirmPlan expects the full PlanDraft; the SSE event
+      // carries a summary. We pass the draft_id so the backend can look it up.
+      const planDraftPayload = {
+        draft_id: onboardingPlanDraft.draft_id,
+      } as unknown as PlanDraft;
+
+      const response = await confirmPlan(activeUser.id, planDraftPayload);
+      store.addOnboardingMessage(
+        createMessage("agent", "学习计划已确认！正在为你准备第一个学习会话……", "Agent"),
+      );
+      await onPlanCreated(response, activeUser);
     } catch (error) {
-      setActionState(toActionError(error));
+      store.addOnboardingMessage(
+        createMessage("agent", `确认计划时出错：${error instanceof Error ? error.message : "未知错误"}。请重试。`, "Agent"),
+      );
+    } finally {
+      setConfirmingPlan(false);
     }
   }
 
-  async function handleConfirm() {
-    if (!planDraft) {
-      await handleGenerate();
-      return;
-    }
-    setActionState({ status: "loading", label: "正在确认正式学习计划" });
-    try {
-      const activeUser = await ensureUser();
-      const response = await confirmPlan(activeUser.id, planDraft);
-      await onPlanCreated(response, activeUser);
-      startTransition(() => {
-        setActionState({ status: "idle" });
-      });
-    } catch (error) {
-      setActionState(toActionError(error));
-    }
+  function handleRevisePlan() {
+    // User wants to revise - just send a message asking for changes
+    setComposerInput("我想调整这个计划，");
   }
+
+  // Render inline plan card after the message that triggered it
+  const renderInlineCard = useCallback(
+    (message: ConversationMessage) => {
+      // Show plan card after the last agent message when a draft exists
+      if (!onboardingPlanDraft) return null;
+      const lastAgentMsg = [...onboardingMessages].reverse().find((m) => m.speaker === "agent" && m.status !== "streaming");
+      if (message.id !== lastAgentMsg?.id) return null;
+      return (
+        <InlinePlanCard
+          draft={onboardingPlanDraft}
+          confirming={confirmingPlan}
+          onConfirm={() => void handleConfirmPlan()}
+          onRevise={handleRevisePlan}
+        />
+      );
+    },
+    [onboardingPlanDraft, confirmingPlan, onboardingMessages],
+  );
+
+  const sessionActive = apiHealth.status === "online";
 
   return (
-    <div className="split-workspace">
-      <div className="split-pane">
-        <section className="conversation onboarding-conversation" aria-label="建档对话">
-          <div className="thread">
-            <AssistantThread messages={messages} />
-          </div>
+    <div className="onboarding-chat-layout">
+      <section className="conversation" aria-label="建档对话" ref={conversationScrollRef}>
+        <div className="thread">
+          <AssistantThread
+            messages={onboardingMessages}
+            renderInlineCard={renderInlineCard}
+          />
+        </div>
+      </section>
 
-          <div className="onboarding-setup">
-            <label className="inline-field">
-              <span>显示名称</span>
-              <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} disabled={isBusy} />
-            </label>
-
-            <div className="mode-tabs" role="tablist" aria-label="Onboarding mode">
-              <button
-                className={mode === "goal_based" ? "active" : ""}
-                type="button"
-                aria-selected={mode === "goal_based"}
-                onClick={() => setMode("goal_based")}
-              >
-                目标驱动
-              </button>
-              <button
-                className={mode === "material_based" ? "active" : ""}
-                type="button"
-                aria-selected={mode === "material_based"}
-                onClick={() => setMode("material_based")}
-              >
-                资料驱动
-              </button>
-            </div>
-
-            <div className="course-selector" aria-label="课程选择">
-              {courses.map((course) => (
-                <button
-                  className={course.id === selectedCourse?.id ? "course-option active" : "course-option"}
-                  key={course.id}
-                  type="button"
-                  disabled={isBusy}
-                  onClick={() => {
-                    setSelectedCourseId(course.id);
-                    setPlanDraft(null);
-                  }}
-                >
-                  <strong>{course.title}</strong>
-                  <span>{runtimeLabel(course.runtime_profile.runtime_tier)}</span>
-                </button>
-              ))}
-            </div>
-
-            {mode === "material_based" && (
-              <label className="inline-field">
-                <span>资料标题</span>
-                <input value={materialTitle} onChange={(event) => setMaterialTitle(event.target.value)} disabled={isBusy} />
-              </label>
-            )}
-          </div>
-
-          <div className="composer onboarding-composer">
-            <textarea
-              aria-label="建档输入"
-              value={mode === "goal_based" ? goalText : materialContent}
-              placeholder={mode === "goal_based" ? "描述你要学会的代码任务和时间边界" : "粘贴你已有的笔记、代码片段或知识点列表"}
-              onChange={(event) => {
-                if (mode === "goal_based") {
-                  setGoalText(event.target.value);
-                } else {
-                  setMaterialContent(event.target.value);
-                }
-              }}
-              disabled={isBusy}
-            />
-            <button className="btn primary" type="button" disabled={!canGenerate || isBusy} onClick={() => void (planDraft ? handleConfirm() : handleGenerate())}>
-              {actionState.status === "loading" ? "处理中" : planDraft ? "确认" : "生成草稿"}
-            </button>
-            <button
-              className="btn primary send-btn"
-              type="button"
-              aria-label={planDraft ? "确认建档结果" : "生成计划草稿"}
-              disabled={!canGenerate || isBusy}
-              onClick={() => void (planDraft ? handleConfirm() : handleGenerate())}
-            >
-              ↑
-            </button>
-          </div>
-        </section>
-      </div>
-
-      <div className="split-divider" aria-hidden="true"></div>
-
-      <div className="split-pane">
-        <PlanDraftPanel
-          actionState={actionState}
-          planDraft={planDraft}
-          selectedCourse={selectedCourse}
-          isBusy={isBusy}
-          onConfirm={() => void handleConfirm()}
-        />
-      </div>
+      <LearningComposer
+        value={composerInput}
+        onChange={setComposerInput}
+        onSubmit={handleComposerSubmit}
+        disabled={isStreaming}
+        streaming={isStreaming}
+        sessionActive={sessionActive}
+        hideNoteButton
+        quickReplies={onboardingMessages.length <= 1 ? ONBOARDING_QUICK_REPLIES : undefined}
+        placeholder={isStreaming ? "AI 正在回复……" : "描述你想学的内容、目标或时间安排……"}
+        ariaLabel="建档输入框"
+        guidanceText={apiHealth.status !== "online" ? "等待 API 连接后即可开始对话。" : undefined}
+      />
     </div>
   );
+}
+
+function createClientId(prefix: string): string {
+  const uuid = globalThis.crypto?.randomUUID?.();
+  return uuid ? `${prefix}_${uuid}` : `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2)}`;
 }
