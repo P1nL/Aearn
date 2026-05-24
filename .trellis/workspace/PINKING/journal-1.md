@@ -536,3 +536,36 @@ Completed SDK Note Assist, Review Coach, Onboarding Plan, and cross-agent QA rel
 ### Next Steps
 
 - None - task complete
+
+
+## Session 17: Dialogue-first desktop UI closeout
+
+**Date**: 2026-05-24
+**Task**: Dialogue-first desktop UI closeout
+**Branch**: `main`
+
+### Summary
+
+Rebuilt the desktop runtime around a dialogue-first learning workspace, removed prototype canned content and fake route cards, bound sidebar titles to generated plan knowledge points, added explicit no-plan empty states, kept streaming messages on the real learning-session endpoint, updated frontend quality guardrails, and archived the completed Trellis task after desktop build validation.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `08de55ddd7e232639df5570a4249a34f9db02a9b` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
