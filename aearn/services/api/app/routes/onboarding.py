@@ -1,21 +1,27 @@
 import asyncio
+import uuid
 from collections.abc import AsyncGenerator, Iterable
 
 from fastapi import APIRouter, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
-from app.core.errors import request_id_from
+from app.core.errors import error_response, request_id_from
 from app.db.connection import connect
 from app.services.onboarding_conversation import (
     OnboardingSessionNotFoundError,
+    build_deterministic_learning_route,
+    build_legacy_plan_draft_payload,
     create_onboarding_session,
+    detect_plan_proposal,
     deterministic_onboarding_generation,
+    list_onboarding_messages,
+    load_onboarding_context,
     prepare_onboarding_message,
     safe_generation_exceptions,
     start_onboarding_generation,
     store_onboarding_agent_message,
 )
-from app.services.sse import SSEWriter, stream_response, wants_stream
+from app.services.sse import SSEWriter, chunk_tool_call_arguments, stream_response
 
 
 router = APIRouter(prefix="/api/onboarding", tags=["onboarding"])
@@ -52,6 +58,28 @@ async def create_onboarding_message(
             request_id=request_id,
         )
     )
+
+
+@router.get("/sessions/{session_id}/messages", response_model=None)
+def read_onboarding_messages(
+    session_id: str, request: Request
+) -> dict[str, object] | JSONResponse:
+    """Return persisted onboarding messages so session resume can rehydrate cards."""
+    with connect() as conn:
+        try:
+            rows = list_onboarding_messages(conn, conversation_id=session_id)
+        except OnboardingSessionNotFoundError as exc:
+            return error_response(
+                request,
+                code=exc.code,
+                message=exc.message,
+                status_code=404,
+                details={"onboarding_session_id": session_id},
+            )
+    return {
+        "onboarding_session_id": session_id,
+        "messages": rows,
+    }
 
 
 async def _onboarding_message_stream(
@@ -183,12 +211,56 @@ async def _onboarding_message_stream(
                     ),
                 )
 
-        # Persist agent message
+        # Decide whether to emit a learning route tool call this turn.
+        tool_calls_for_metadata: list[dict[str, object]] = []
+        with connect() as conn_refresh:
+            refreshed = load_onboarding_context(
+                conn_refresh, conversation_id=prepared.conversation_id, user_id=user_id
+            )
+        if detect_plan_proposal(refreshed):
+            learning_route_args = build_deterministic_learning_route(refreshed)
+            tool_call_id = f"tc_{uuid.uuid4().hex[:12]}"
+
+            # Dual-emit legacy plan_draft for backward compat (Slice 1).
+            yield writer.event(
+                "plan_draft",
+                build_legacy_plan_draft_payload(
+                    learning_route_args,
+                    request_id=request_id,
+                    session_id=prepared.conversation_id,
+                ),
+            )
+
+            yield writer.tool_call_start(
+                tool_call_id=tool_call_id, name="show_learning_route"
+            )
+            for chunk in chunk_tool_call_arguments(learning_route_args):
+                yield writer.tool_call_delta(
+                    tool_call_id=tool_call_id, arguments_delta=chunk
+                )
+                await asyncio.sleep(0)
+            yield writer.tool_call_done(
+                tool_call_id=tool_call_id, arguments=learning_route_args
+            )
+
+            tool_calls_for_metadata.append(
+                {
+                    "id": tool_call_id,
+                    "name": "show_learning_route",
+                    "args": learning_route_args,
+                    "status": "done",
+                }
+            )
+
+        # Persist agent message (and any resolved tool calls in metadata)
         with connect() as conn:
             store_onboarding_agent_message(
                 conn,
                 conversation_id=prepared.conversation_id,
                 content=full_text.strip(),
+                metadata={"tool_calls": tool_calls_for_metadata}
+                if tool_calls_for_metadata
+                else None,
             )
             conn.commit()
 

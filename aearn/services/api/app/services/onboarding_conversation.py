@@ -163,6 +163,57 @@ def store_onboarding_agent_message(
     )
 
 
+def list_onboarding_messages(
+    conn: Connection[dict[str, object]],
+    *,
+    conversation_id: str,
+) -> list[dict[str, object]]:
+    """Return persisted messages with parsed `tool_calls` from metadata.
+
+    Used on session resume so the desktop app can re-render generative-ui
+    cards without replaying the live SSE stream.
+    """
+    conversation = conn.execute(
+        """
+        SELECT id
+        FROM onboarding_conversations
+        WHERE id = %s
+        """,
+        (conversation_id,),
+    ).fetchone()
+    if conversation is None:
+        raise OnboardingSessionNotFoundError("ONBOARDING_SESSION_NOT_FOUND", "建档会话不存在")
+
+    rows = conn.execute(
+        """
+        SELECT id, role, content, metadata, created_at
+        FROM onboarding_messages
+        WHERE conversation_id = %s
+        ORDER BY created_at
+        """,
+        (conversation_id,),
+    ).fetchall()
+
+    result: list[dict[str, object]] = []
+    for row in rows:
+        metadata = row.get("metadata") or {}
+        if not isinstance(metadata, Mapping):
+            metadata = {}
+        tool_calls = metadata.get("tool_calls") or []
+        if not isinstance(tool_calls, list):
+            tool_calls = []
+        result.append(
+            {
+                "id": str(row["id"]),
+                "role": str(row["role"]),
+                "content": str(row["content"]),
+                "tool_calls": tool_calls,
+                "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
+            }
+        )
+    return result
+
+
 def update_onboarding_status(
     conn: Connection[dict[str, object]],
     *,
@@ -262,6 +313,110 @@ def deterministic_onboarding_generation(
 
 def safe_generation_exceptions() -> tuple[type[Exception], ...]:
     return (LLMCallError, LLMConfigurationError, LLMInvalidResponseError, TypeError, ValueError)
+
+
+def detect_plan_proposal(context: OnboardingConversationContext) -> bool:
+    """Return True when the agent should propose a learning route this turn.
+
+    The deterministic onboarding flow proposes a plan after roughly four user
+    turns. We use the same heuristic for the LLM path so the front-end card
+    surfaces consistently in MVP smoke tests.
+    """
+    user_turns = sum(1 for msg in context.history if msg["role"] == "user")
+    return user_turns >= 4
+
+
+def build_deterministic_learning_route(
+    context: OnboardingConversationContext,
+) -> dict[str, object]:
+    """Construct a deterministic LearningRouteArgs object for SSE emission.
+
+    Without a confirmed plan yet, this is necessarily a stub. The shape mirrors
+    the frontend `LearningRouteArgs` type so the assistant-ui card renders.
+    Fields here MUST stay aligned with `LearningRouteArgs` in
+    `aearn/apps/desktop/src/components/generative-ui/types.ts`.
+    """
+    user_messages = [str(msg["content"]).strip() for msg in context.history if msg["role"] == "user"]
+    goal_text = (user_messages[0] if user_messages else "编程学习")[:80]
+    draft_id = f"draft_{context.conversation_id[:8]}"
+    return {
+        "plan_id": draft_id,
+        "goal_text": goal_text,
+        "language": "javascript",
+        "modules": [
+            {
+                "id": "module_basics",
+                "title": "基础语法",
+                "order_index": 0,
+                "status": "pending",
+                "estimated_sessions": 3,
+                "knowledge_points": [
+                    {
+                        "id": "kp_var",
+                        "title": "变量与数据类型",
+                        "status": "pending",
+                        "mastery_score": 0.0,
+                    },
+                    {
+                        "id": "kp_func",
+                        "title": "函数与作用域",
+                        "status": "pending",
+                        "mastery_score": 0.0,
+                    },
+                ],
+            },
+            {
+                "id": "module_practice",
+                "title": "动手练习",
+                "order_index": 1,
+                "status": "pending",
+                "estimated_sessions": 2,
+                "knowledge_points": [
+                    {
+                        "id": "kp_loops",
+                        "title": "循环与条件",
+                        "status": "pending",
+                        "mastery_score": 0.0,
+                    },
+                ],
+            },
+        ],
+    }
+
+
+def build_legacy_plan_draft_payload(
+    learning_route_args: dict[str, object],
+    *,
+    request_id: str,
+    session_id: str,
+) -> dict[str, object]:
+    """Produce the legacy `plan_draft` SSE event payload from learning route args.
+
+    Kept during Slice 1 for backward compatibility with the InlinePlanCard
+    flow. Frontend should consume the `show_learning_route` tool call once the
+    new pipeline is verified, at which point this helper can be removed.
+    """
+    modules = learning_route_args.get("modules") or []
+    legacy_modules: list[dict[str, object]] = []
+    if isinstance(modules, list):
+        for module in modules:
+            if not isinstance(module, dict):
+                continue
+            knowledge_points = module.get("knowledge_points") or []
+            kp_payload: list[dict[str, object]] = []
+            if isinstance(knowledge_points, list):
+                for kp in knowledge_points:
+                    if not isinstance(kp, dict):
+                        continue
+                    kp_payload.append({"title": kp.get("title", ""), "id": kp.get("id", "")})
+            legacy_modules.append({"title": module.get("title", ""), "knowledge_points": kp_payload})
+    return {
+        "request_id": request_id,
+        "session_id": session_id,
+        "draft_id": str(learning_route_args.get("plan_id") or ""),
+        "modules": legacy_modules,
+        "summary": f"为「{learning_route_args.get('goal_text', '')}」准备的学习路线",
+    }
 
 
 def _build_messages(
