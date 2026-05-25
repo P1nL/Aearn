@@ -1,0 +1,7 @@
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "Zustand store patterns and external store adapter conventions"}
+{"file": ".trellis/spec/frontend/hook-guidelines.md", "reason": "Hook composition rules for useExternalStoreRuntime adapter"}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "Component structure for AssistantUIThread and tool UI wrappers"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "Type mapping between ConversationMessage and ThreadMessage"}
+{"file": ".trellis/spec/frontend/directory-structure.md", "reason": "Where to place new hooks and components"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "SSE error event format for tool_call errors"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Frontend-backend contract for tool_call SSE events"}
