@@ -54,7 +54,6 @@ export type ConversationMessage = {
   speaker: "agent" | "user";
   text: string;
   label?: string;
-  toolCard?: string;
   status?: "streaming" | "error" | "done";
   statusText?: string;
   toolCalls?: ConversationToolCall[];
