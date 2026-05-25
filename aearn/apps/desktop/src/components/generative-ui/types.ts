@@ -1,4 +1,5 @@
 import type { Language, RuntimeTier, NextAction, FsrsRating, ForgetRisk } from "../../types";
+import type { LearningExercise, LearningHistoryResponse } from "../../types";
 
 export type ToolUIProps<T> = {
   args: T;
@@ -42,6 +43,18 @@ export type ExerciseCardArgs = {
   difficulty: number;
   estimated_minutes: number;
 };
+
+export type CodeExerciseToolArgs = {
+  session_id: string;
+  knowledge_point_id: string;
+  exercise: LearningExercise;
+  unlock_reason: "early_request" | "feynman_passed" | "legacy_session" | string | null;
+  learning_incomplete: boolean;
+  concept_summary: string;
+  notice: string;
+};
+
+export type LearningHistoryArgs = LearningHistoryResponse;
 
 export type SubmitResultArgs = {
   attempt_id: string;

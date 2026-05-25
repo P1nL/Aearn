@@ -234,6 +234,53 @@ def test_agents_sdk_learning_conversation_client_streams_text_deltas() -> None:
     assert client.model == "third-party-model"
 
 
+def test_agents_sdk_streaming_ignores_done_text_after_deltas() -> None:
+    class FakeDelta:
+        type = "response.output_text.delta"
+
+        def __init__(self, delta: str) -> None:
+            self.delta = delta
+
+    class FakeDone:
+        type = "response.output_text.done"
+
+        def __init__(self, text: str) -> None:
+            self.text = text
+
+    class FakeEvent:
+        type = "raw_response_event"
+
+        def __init__(self, data: FakeDelta | FakeDone) -> None:
+            self.data = data
+
+    class FakeStreamedRun:
+        final_output = None
+
+        async def stream_events(self):  # type: ignore[no-untyped-def]
+            yield FakeEvent(FakeDelta("先看状态变量"))
+            yield FakeEvent(FakeDelta("，再看事件回调。"))
+            yield FakeEvent(FakeDone("先看状态变量，再看事件回调。"))
+
+    class FakeRunner:
+        def run_streamed(self, starting_agent, input, **kwargs):  # type: ignore[no-untyped-def]
+            del starting_agent, input, kwargs
+            return FakeStreamedRun()
+
+    client = AgentsSDKLearningConversationClient(
+        Settings(
+            llm_type="openai",
+            openai_api_key="test-key",
+            openai_base_url="https://provider.example/v1",
+            openai_model="third-party-model",
+        ),
+        runner=FakeRunner(),
+    )
+
+    chunks = list(client.complete_text_stream(_teaching_messages()))
+
+    assert chunks == ["先看状态变量", "，再看事件回调。"]
+
+
 def test_agents_sdk_exercise_coach_client_streams_json_and_attaches_guardrails() -> None:
     captured: dict[str, object] = {}
 

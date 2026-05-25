@@ -35,6 +35,7 @@
 7. 前端 UI 不暴露 `Attempt(run)` / `Attempt(submit)` 两个内部概念，只展示运行、预览、测试结果和提交结果等自然操作；后端仍必须保留两类事实记录。
 8. 学习页的代码编辑器、预览和测试结果由对话中的生成式 UI 承载，不作为固定三栏页面或独立 `CodeDraftPage`。
 9. MVP 不包含独立复盘草稿、`publishDrawer` 或面试讲述草稿流程；Agent 只能在笔记页或笔记抽屉中辅助补全用户笔记。
+10. 学习页先走概念优先阶段；练习 UI 只能在费曼复述通过或用户明确提前练习后通过生成式工具调用出现。
 
 ## State Schema
 
@@ -48,6 +49,14 @@
   "session_id": "sess_001",
   "session_type": "learn",
   "entry_point": "start_learning",
+  "learning_stage": "concept_intro",
+  "learning_stage_state": {
+    "covered_subpoint_ids": [],
+    "feynman_status": "not_started",
+    "practice_unlock_reason": null,
+    "learning_incomplete": true,
+    "concept_summary": ""
+  },
   "current_stage": "DOM 事件",
   "language_course": {
     "id": "course_js_dom",
@@ -62,11 +71,9 @@
     "id": "kp_dom_event_state",
     "title": "事件监听与状态变量"
   },
-  "exercise": {
-    "id": "ex_dom_click_count",
-    "exercise_type": "code_blank",
-    "runtime_profile_id": "rt_browser_js"
-  },
+  "lesson_outline": [],
+  "lesson_sources": [],
+  "exercise": null,
   "attempt": {
     "id": "att_001",
     "attempt_type": "run",
@@ -106,8 +113,11 @@
 |---|---|---|
 | `request_id` | API 层 | 幂等、日志追踪 |
 | `session_type` | API 层 | 区分 `learn` / `review` |
+| `learning_stage` | `LearningSession` | 区分概念讲解、问答、费曼检查和练习支持 |
+| `learning_stage_state` | `LearningSession` | 精简保存子点覆盖、费曼状态、提前练习和概念小结 |
 | `language_course` | `LanguageCourse` | 判断运行能力分层 |
-| `exercise` | `Exercise` | 确定模板、空缺、测试和 runtime profile |
+| `lesson_outline` / `lesson_sources` | `KnowledgePoint` | 概念讲解提纲和官方文档来源归因 |
+| `exercise` | `Exercise` | 仅在 `practice_support` 后确定模板、空缺、测试和 runtime profile |
 | `attempt` | `Attempt` | 追踪运行/提交事实 |
 | `runtime_result` | runner service | 作为评分和错因解释输入 |
 | `code_completion_result` | `evaluate_attempt` | 统一评分结果 |
@@ -330,11 +340,16 @@ collect_goal
 
 ### 目标
 
-完成一次读代码、补全、运行、提示、解释、提交评分和状态写回闭环。
+完成一次概念讲解、子点问答、费曼式理解检查、生成式练习、运行、提示、解释、提交评分和状态写回闭环。
 
 ```text
 start_learning_session
   -> context_assembler
+  -> concept_intro
+  -> concept_qna
+  -> readiness_check
+       -> failed: show_learning_history -> concept_qna
+       -> passed or early_practice_request: select_exercise
   -> select_exercise
   -> present_exercise
   -> run_exercise
@@ -357,16 +372,76 @@ start_learning_session
 
 写入：
 
-- `LearningSession(session_type=learn, started_at, entry_point)`
+- `LearningSession(session_type=learn, started_at, entry_point, learning_stage=concept_intro, learning_stage_state_json)`
+- 首条 `LearningMessage(role=agent)`，内容为知识点概念介绍
 
 输出：
 
 - `session_id`
 - `session_state=learning`
+- `exercise=null`
+- `learning_stage=concept_intro`
+- `lesson_outline`
+- `lesson_sources`
 
 失败分支：
 
 - 已有未结束 session -> 返回原 `session_id`，进入 `context_assembler`
+
+### `concept_intro`
+
+职责：
+
+- 基于 `KnowledgePoint.lesson_outline_json` 和 `lesson_sources_json` 介绍知识点概念。
+- 只提出一个短互动问题，不展示题面、starter code 或参考答案。
+
+写入：
+
+- `learning_messages(role=agent)`
+- 必要时初始化 `learning_sessions.learning_stage_state_json`
+
+条件边：
+
+- 用户追问或回答 -> `concept_qna`
+- 用户明确要求提前练习 -> `select_exercise`，并记录 `practice_unlock_reason=early_request`
+
+### `concept_qna`
+
+职责：
+
+- 回答用户关于概念、原因和行为的问题。
+- 按本地提纲推进 `covered_subpoint_ids`，保持精简阶段状态。
+
+条件边：
+
+- 子点尚未覆盖完 -> `concept_qna`
+- 子点覆盖完 -> `readiness_check`
+- 用户明确要求提前练习 -> `select_exercise`
+
+### `readiness_check`
+
+职责：
+
+- 要求用户用费曼学习法整体复述知识点：它是什么、为什么重要、会如何影响代码行为。
+- 该检查独立于练习后的 `Attempt.explanation_check_result`，不得写入 Attempt。
+
+条件边：
+
+- 复述通过 -> `select_exercise`，记录 `practice_unlock_reason=feynman_passed`
+- 复述不完整或错误 -> `show_learning_history`
+- 用户明确要求提前练习 -> `select_exercise`，记录 `learning_incomplete=true`
+
+### `show_learning_history`
+
+职责：
+
+- 查询当前知识点所有 `session_type=learn` 的 `learning_messages`。
+- 返回生成式历史引用 UI，只包含学习页 AI/用户对话，不包含建档页或复习页对话。
+- 不自动补讲、不重放完整历史到恢复会话，只给用户可查看的引用。
+
+条件边：
+
+- 用户回看后继续复述或追问 -> `concept_qna` 或 `readiness_check`
 
 ### `select_exercise`
 
@@ -861,7 +936,13 @@ load_note_sources
 
 | 当前节点 | 条件 | 下一节点 |
 |---|---|---|
-| `context_assembler` | 缺少 exercise | `select_exercise` |
+| `context_assembler` | 学习会话处于概念阶段 | `concept_intro` / `concept_qna` / `readiness_check` |
+| `concept_intro` / `concept_qna` | 用户继续追问或子点未覆盖完 | `concept_qna` |
+| `concept_qna` | 子点已覆盖完 | `readiness_check` |
+| `readiness_check` | 费曼复述通过或用户明确提前练习 | `select_exercise` |
+| `readiness_check` | 费曼复述不完整或错误 | `show_learning_history` |
+| `show_learning_history` | 用户继续复述或追问 | `concept_qna` / `readiness_check` |
+| `context_assembler` | 练习已解锁但缺少 exercise | `select_exercise` |
 | `select_exercise` | 无可用 exercise | `generate_exercise_candidate` |
 | `run_exercise` | 运行成功且测试达标 | `check_explanation` |
 | `run_exercise` | 运行错误或测试失败 | `hint_or_explain_error` |
@@ -952,7 +1033,9 @@ load_note_sources
 
 | 时机 | 读取 | 写入 |
 |---|---|---|
-| 会话开始 | User、LearningPlan、PlanModule、KnowledgePoint、ReviewState、StageSummary | LearningSession |
+| 会话开始 | User、LearningPlan、PlanModule、KnowledgePoint、ReviewState、StageSummary | LearningSession、LearningMessage |
+| 概念问答 / 费曼检查 | LearningSession、KnowledgePoint、LearningMessage | LearningSession.learning_stage_state_json、LearningMessage |
+| 生成历史引用 | LearningSession、LearningMessage | 无 |
 | 展示练习 | Exercise、CodeBlank、TestCase、RuntimeProfile | 无 |
 | 运行或预览代码 | Exercise、RuntimeProfile | Attempt(attempt_type=run) |
 | 获取提示 | Attempt、runtime_result | Attempt.hint_usage_count |
@@ -1009,7 +1092,14 @@ load_note_sources
 stateDiagram-v2
     [*] --> StartLearningSession
     StartLearningSession --> ContextAssembler
-    ContextAssembler --> SelectExercise
+    ContextAssembler --> ConceptIntro
+    ConceptIntro --> ConceptQna
+    ConceptQna --> ConceptQna: follow-up or subpoints remaining
+    ConceptQna --> ReadinessCheck: subpoints covered
+    ReadinessCheck --> ShowLearningHistory: feynman incomplete
+    ShowLearningHistory --> ConceptQna
+    ReadinessCheck --> SelectExercise: feynman passed
+    ReadinessCheck --> SelectExercise: early practice request
     SelectExercise --> PresentExercise
     SelectExercise --> GenerateExerciseCandidate: no exercise
     GenerateExerciseCandidate --> PresentExercise

@@ -246,6 +246,27 @@ export type LearningExercise = {
   test_cases: ExerciseTestCase[];
 };
 
+export type LearningStage = "concept_intro" | "concept_qna" | "readiness_check" | "practice_support";
+
+export type LessonOutlineItem = {
+  id: string;
+  title: string;
+  note: string;
+};
+
+export type LessonSource = {
+  title: string;
+  url: string;
+};
+
+export type LearningStageState = {
+  covered_subpoint_ids?: string[];
+  feynman_status?: "not_started" | "pending" | "passed" | "failed" | "legacy";
+  practice_unlock_reason?: "early_request" | "feynman_passed" | "legacy_session" | null;
+  learning_incomplete?: boolean;
+  concept_summary?: string;
+};
+
 export type LearningSessionResponse = {
   session_id: string;
   session_type: "learn";
@@ -262,9 +283,31 @@ export type LearningSessionResponse = {
     };
     RuntimeProfile: RuntimeProfile;
   };
-  exercise: LearningExercise;
+  exercise: LearningExercise | null;
+  lesson_outline: LessonOutlineItem[];
+  lesson_sources: LessonSource[];
+  learning_stage: LearningStage;
+  learning_stage_state: LearningStageState;
   initial_agent_message: string;
   session_state: "learning";
+};
+
+export type LearningHistoryResponse = {
+  knowledge_point_id: string;
+  knowledge_point_title: string;
+  active_session_id: string | null;
+  sessions: Array<{
+    session_id: string;
+    is_active: boolean;
+    status: string;
+    started_at: string | null;
+    messages: Array<{
+      id: string;
+      role: "user" | "agent";
+      content: string;
+      created_at: string | null;
+    }>;
+  }>;
 };
 
 export type TestResult = {

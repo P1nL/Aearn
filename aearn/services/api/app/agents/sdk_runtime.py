@@ -155,7 +155,7 @@ async def stream_text_deltas(
 
     emitted = False
     async for event in streamed.stream_events():  # type: ignore[attr-defined]
-        delta = extract_text_delta(event)
+        delta = extract_text_delta(event, include_done_text=not emitted)
         if delta:
             emitted = True
             yield delta
@@ -168,7 +168,7 @@ async def stream_text_deltas(
                 yield text
 
 
-def extract_text_delta(event: object) -> str:
+def extract_text_delta(event: object, *, include_done_text: bool = True) -> str:
     data: object
     if isinstance(event, RawResponsesStreamEvent):
         data = event.data
@@ -181,7 +181,7 @@ def extract_text_delta(event: object) -> str:
     if event_type == "response.output_text.delta":
         delta = getattr(data, "delta", "")
         return delta if isinstance(delta, str) else ""
-    if event_type == "response.output_text.done":
+    if event_type == "response.output_text.done" and include_done_text:
         text = getattr(data, "text", "")
         return text if isinstance(text, str) else ""
     return ""

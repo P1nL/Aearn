@@ -22,6 +22,7 @@ from app.services.learning_conversation import (
     build_learning_message_response,
     create_learning_message_response,
     deterministic_learning_message_generation,
+    list_learning_history,
     prepare_learning_message,
     safe_generation_exceptions,
     start_learning_message_generation,
@@ -44,7 +45,7 @@ from app.services.dashboard_repository import (
     get_resume_context,
 )
 from app.services.plan_repository import IdempotencyConflictError
-from app.services.sse import SSEWriter, stream_response, wants_stream
+from app.services.sse import SSEWriter, chunk_tool_call_arguments, stream_response, wants_stream
 
 
 router = APIRouter(prefix="/api/learning-sessions", tags=["learning-sessions"])
@@ -102,6 +103,32 @@ def create_learning_session(
         status_code=status.HTTP_200_OK if reused else status.HTTP_201_CREATED,
         content=jsonable_encoder(response),
     )
+
+
+@router.get("/history", response_model=None)
+def read_learning_history(
+    request: Request,
+    user_id: str = Query(min_length=1),
+    knowledge_point_id: str = Query(min_length=1),
+    active_session_id: str | None = Query(default=None),
+) -> dict[str, object] | JSONResponse:
+    with connect() as conn:
+        try:
+            response = list_learning_history(
+                conn,
+                user_id=user_id,
+                knowledge_point_id=knowledge_point_id,
+                active_session_id=active_session_id,
+            )
+        except EntityNotFoundError as exc:
+            return error_response(
+                request,
+                code=exc.code,
+                message=exc.message,
+                status_code=status.HTTP_404_NOT_FOUND,
+                details={"user_id": user_id, "knowledge_point_id": knowledge_point_id},
+            )
+    return JSONResponse(status_code=status.HTTP_200_OK, content=jsonable_encoder(response))
 
 
 @router.post("/{session_id}/messages", response_model=None)
@@ -586,6 +613,7 @@ async def _learning_message_stream(
                 prepared = prepare_learning_message(
                     conn,
                     session_id=session_id,
+                    content=payload.content,
                     client_message_id=payload.client_message_id,
                     request_body=request_body,
                 )
@@ -608,6 +636,7 @@ async def _learning_message_stream(
                     recoverable=False,
                 )
                 return
+            conn.commit()
 
         if prepared.stored_response is not None:
             stored_message = prepared.stored_response.get("agent_message", {})
@@ -630,6 +659,8 @@ async def _learning_message_stream(
                     content=stored_content,
                 ),
             )
+            async for frame in _tool_call_events(writer, prepared.stored_response.get("tool_calls")):
+                yield frame
             yield _learning_message_done_event(
                 writer,
                 request_id=request_id,
@@ -709,9 +740,11 @@ async def _learning_message_stream(
                 generation_source=generation_source,
                 generation_model=generation_model,
             )
-            store_learning_message_response(conn, prepared, response)
+            response = store_learning_message_response(conn, prepared, response)
             conn.commit()
 
+        async for frame in _tool_call_events(writer, response.get("tool_calls")):
+            yield frame
         yield _learning_message_done_event(
             writer,
             request_id=request_id,
@@ -739,6 +772,24 @@ async def _iter_generation_chunks(request: Request, chunks: Iterable[str]) -> As
             continue
         yield delta
         await asyncio.sleep(0)
+
+
+async def _tool_call_events(writer: SSEWriter, tool_calls: object) -> AsyncGenerator[str, None]:
+    if not isinstance(tool_calls, list):
+        return
+    for tool_call in tool_calls:
+        if not isinstance(tool_call, Mapping):
+            continue
+        tool_call_id = str(tool_call.get("id") or "")
+        tool_name = str(tool_call.get("name") or "")
+        args = tool_call.get("args")
+        if not tool_call_id or not tool_name or not isinstance(args, Mapping):
+            continue
+        yield writer.tool_call_start(tool_call_id=tool_call_id, name=tool_name)
+        for chunk in chunk_tool_call_arguments(dict(args)):
+            yield writer.tool_call_delta(tool_call_id=tool_call_id, arguments_delta=chunk)
+            await asyncio.sleep(0)
+        yield writer.tool_call_done(tool_call_id=tool_call_id, arguments=dict(args))
 
 
 def _agent_message_event(

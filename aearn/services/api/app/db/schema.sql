@@ -112,6 +112,8 @@ CREATE TABLE IF NOT EXISTS knowledge_points (
   description text,
   order_index integer NOT NULL DEFAULT 0 CHECK (order_index >= 0),
   skill_tags_json jsonb NOT NULL DEFAULT '[]'::jsonb,
+  lesson_outline_json jsonb NOT NULL DEFAULT '[]'::jsonb,
+  lesson_sources_json jsonb NOT NULL DEFAULT '[]'::jsonb,
   status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'learning', 'reviewing', 'mastered')),
   mastery_score numeric(5,4) NOT NULL DEFAULT 0 CHECK (mastery_score >= 0 AND mastery_score <= 1),
   weak_points_json jsonb NOT NULL DEFAULT '[]'::jsonb,
@@ -189,6 +191,8 @@ CREATE TABLE IF NOT EXISTS learning_sessions (
   entry_point text NOT NULL,
   summary_text text,
   next_entry_point text,
+  learning_stage text CHECK (learning_stage IS NULL OR learning_stage IN ('concept_intro', 'concept_qna', 'readiness_check', 'practice_support')),
+  learning_stage_state_json jsonb NOT NULL DEFAULT '{}'::jsonb,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
@@ -286,8 +290,14 @@ ALTER TABLE exercises
   ADD COLUMN IF NOT EXISTS requires_explanation boolean NOT NULL DEFAULT false,
   ADD COLUMN IF NOT EXISTS metadata_json jsonb NOT NULL DEFAULT '{}'::jsonb;
 
+ALTER TABLE knowledge_points
+  ADD COLUMN IF NOT EXISTS lesson_outline_json jsonb NOT NULL DEFAULT '[]'::jsonb,
+  ADD COLUMN IF NOT EXISTS lesson_sources_json jsonb NOT NULL DEFAULT '[]'::jsonb;
+
 ALTER TABLE learning_sessions
-  ADD COLUMN IF NOT EXISTS request_id text;
+  ADD COLUMN IF NOT EXISTS request_id text,
+  ADD COLUMN IF NOT EXISTS learning_stage text,
+  ADD COLUMN IF NOT EXISTS learning_stage_state_json jsonb NOT NULL DEFAULT '{}'::jsonb;
 
 ALTER TABLE attempts
   ADD COLUMN IF NOT EXISTS test_results_json jsonb NOT NULL DEFAULT '[]'::jsonb,
@@ -306,6 +316,18 @@ ALTER TABLE review_states
   ADD COLUMN IF NOT EXISTS last_fsrs_rating text,
   ADD COLUMN IF NOT EXISTS scheduler_version text NOT NULL DEFAULT 'fsrs_v1_default',
   ADD COLUMN IF NOT EXISTS suspended_at timestamptz;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'learning_sessions_learning_stage_check'
+  ) THEN
+    ALTER TABLE learning_sessions
+      ADD CONSTRAINT learning_sessions_learning_stage_check
+      CHECK (learning_stage IS NULL OR learning_stage IN ('concept_intro', 'concept_qna', 'readiness_check', 'practice_support'));
+  END IF;
+END;
+$$;
 
 DO $$
 BEGIN
@@ -431,11 +453,24 @@ CREATE TABLE IF NOT EXISTS review_messages (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS learning_messages (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  session_id uuid NOT NULL REFERENCES learning_sessions(id) ON DELETE RESTRICT,
+  knowledge_point_id uuid NOT NULL REFERENCES knowledge_points(id) ON DELETE RESTRICT,
+  role text NOT NULL CHECK (role IN ('user', 'agent')),
+  content text NOT NULL,
+  client_message_id text,
+  metadata jsonb,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE INDEX IF NOT EXISTS idx_onboarding_conversations_user ON onboarding_conversations(user_id);
 CREATE INDEX IF NOT EXISTS idx_onboarding_messages_conversation ON onboarding_messages(conversation_id, created_at);
 CREATE UNIQUE INDEX IF NOT EXISTS uq_onboarding_messages_client_id ON onboarding_messages(client_message_id) WHERE client_message_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_review_messages_session ON review_messages(review_session_id, created_at);
 CREATE UNIQUE INDEX IF NOT EXISTS uq_review_messages_client_id ON review_messages(client_message_id) WHERE client_message_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_learning_messages_kp_session_created ON learning_messages(knowledge_point_id, session_id, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_learning_messages_client_id ON learning_messages(client_message_id) WHERE client_message_id IS NOT NULL;
 
 DROP TRIGGER IF EXISTS trg_onboarding_conversations_updated_at ON onboarding_conversations;
 CREATE TRIGGER trg_onboarding_conversations_updated_at BEFORE UPDATE ON onboarding_conversations

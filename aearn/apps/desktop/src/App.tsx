@@ -217,7 +217,7 @@ function App() {
           </header>
 
           <div className="workspace-shell">
-            {dashboard && visibleRoute !== "onboarding" && (
+            {dashboard && visibleRoute !== "onboarding" && visibleRoute !== "home" && (
               <section className={dashboard.next_entry_point.type === "review" ? "dashboard-banner warning" : "dashboard-banner"} aria-label="恢复与复习提示">
                 <div className="dashboard-banner-copy">
                   <strong>{dashboard.current_stage ?? "当前学习"}</strong>
@@ -260,6 +260,9 @@ function App() {
                 onCloseNoteDrawer={() => void closeDrawers()}
                 onAddMessage={app.addHomeMessage}
                 onUpdateMessage={app.updateHomeMessage}
+                onStartToolCall={app.startHomeToolCall}
+                onAppendToolCallDelta={app.appendHomeToolCallDelta}
+                onFinalizeToolCall={app.finalizeHomeToolCall}
               />
             </section>
 
@@ -328,7 +331,7 @@ function buildLearningNoteContext(session: LearningSessionResponse | null): Note
     knowledgePointTitle: session.context_snapshot.KnowledgePoint.title,
     source: "learning",
     sessionId: session.session_id,
-    language: session.exercise.runtime_profile.language,
+    language: session.context_snapshot.RuntimeProfile.language,
   };
 }
 

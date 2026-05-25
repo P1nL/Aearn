@@ -12,6 +12,7 @@ import type {
   Language,
   LanguageCourse,
   LearningExercise,
+  LearningHistoryResponse,
   LearningMode,
   LearningSessionResponse,
   NoteListResponse,
@@ -215,6 +216,28 @@ export async function startLearningSession(input: {
   });
   if (!isLearningSessionResponse(payload)) {
     throw new Error("Learning session start returned an invalid payload");
+  }
+  return payload;
+}
+
+export async function fetchLearningHistory(input: {
+  userId: string;
+  knowledgePointId: string;
+  activeSessionId?: string | null;
+  signal?: AbortSignal;
+}): Promise<LearningHistoryResponse> {
+  const query = new URLSearchParams({
+    user_id: input.userId,
+    knowledge_point_id: input.knowledgePointId,
+  });
+  if (input.activeSessionId) {
+    query.set("active_session_id", input.activeSessionId);
+  }
+  const payload = await requestJson(`${API_BASE_URL}/api/learning-sessions/history?${query.toString()}`, {
+    signal: input.signal,
+  });
+  if (!isLearningHistoryResponse(payload)) {
+    throw new Error("Learning history API returned an invalid payload");
   }
   return payload;
 }
@@ -633,8 +656,35 @@ function isLearningSessionResponse(payload: unknown): payload is LearningSession
     isRecord(payload.context_snapshot.KnowledgePoint) &&
     typeof payload.context_snapshot.KnowledgePoint.id === "string" &&
     isRuntimeProfile(payload.context_snapshot.RuntimeProfile) &&
-    isLearningExercise(payload.exercise) &&
+    (payload.exercise === null || isLearningExercise(payload.exercise)) &&
+    typeof payload.learning_stage === "string" &&
+    isRecord(payload.learning_stage_state) &&
+    Array.isArray(payload.lesson_outline) &&
+    Array.isArray(payload.lesson_sources) &&
     typeof payload.initial_agent_message === "string"
+  );
+}
+
+function isLearningHistoryResponse(payload: unknown): payload is LearningHistoryResponse {
+  return (
+    isRecord(payload) &&
+    typeof payload.knowledge_point_id === "string" &&
+    typeof payload.knowledge_point_title === "string" &&
+    Array.isArray(payload.sessions) &&
+    payload.sessions.every(
+      (session) =>
+        isRecord(session) &&
+        typeof session.session_id === "string" &&
+        typeof session.is_active === "boolean" &&
+        Array.isArray(session.messages) &&
+        session.messages.every(
+          (message) =>
+            isRecord(message) &&
+            typeof message.id === "string" &&
+            (message.role === "user" || message.role === "agent") &&
+            typeof message.content === "string",
+        ),
+    )
   );
 }
 

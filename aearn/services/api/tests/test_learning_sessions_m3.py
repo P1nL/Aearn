@@ -40,6 +40,7 @@ def disable_llm_generation(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(session_repository, "build_llm_error_explanation", lambda *args, **kwargs: None)
     monkeypatch.setattr(session_repository, "build_sdk_hint_response", lambda *args, **kwargs: None)
     monkeypatch.setattr(session_repository, "build_sdk_explanation_check_response", lambda *args, **kwargs: None)
+    monkeypatch.setattr(learning_conversation, "get_settings", lambda: Settings(llm_type="disabled"))
 
 
 def test_start_learning_session_creates_and_reuses_active_session(client: TestClient) -> None:
@@ -58,8 +59,12 @@ def test_start_learning_session_creates_and_reuses_active_session(client: TestCl
     created_body = created.json()
     assert created_body["session_type"] == "learn"
     assert created_body["session_state"] == "learning"
-    assert created_body["exercise"]["runtime_profile"]["runtime_tier"] == "browser_preview"
-    assert len(created_body["exercise"]["code_blanks"]) == 2
+    assert created_body["learning_stage"] == "concept_intro"
+    assert created_body["exercise"] is None
+    assert created_body["lesson_outline"]
+    assert created_body["lesson_sources"]
+    assert "Event listener placement" in created_body["initial_agent_message"]
+    assert "练习" not in created_body["initial_agent_message"]
 
     reused = client.post(
         "/api/learning-sessions/start",
@@ -72,7 +77,8 @@ def test_start_learning_session_creates_and_reuses_active_session(client: TestCl
     assert reused.status_code == 200
     reused_body = reused.json()
     assert reused_body["session_id"] == created_body["session_id"]
-    assert reused_body["exercise"]["id"] == created_body["exercise"]["id"]
+    assert reused_body["learning_stage"] == "concept_intro"
+    assert reused_body["exercise"] is None
 
     with connect() as conn:
         session_count = conn.execute(
@@ -85,6 +91,18 @@ def test_start_learning_session_creates_and_reuses_active_session(client: TestCl
         ).fetchone()
     assert session_count is not None
     assert session_count["count"] == 1
+
+    with connect() as conn:
+        message_count = conn.execute(
+            """
+            SELECT count(*) AS count
+            FROM learning_messages
+            WHERE session_id = %s AND role = 'agent'
+            """,
+            (created_body["session_id"],),
+        ).fetchone()
+    assert message_count is not None
+    assert message_count["count"] == 1
 
 
 def test_start_learning_session_keeps_distinct_knowledge_points_separate(client: TestClient) -> None:
@@ -123,6 +141,111 @@ def test_start_learning_session_keeps_distinct_knowledge_points_separate(client:
         ).fetchone()
     assert session_count is not None
     assert session_count["count"] == 2
+
+
+def test_learning_concept_stage_unlocks_practice_early_with_incomplete_notice(client: TestClient) -> None:
+    user, plan = _confirmed_plan(client, language="javascript")
+    session = _start_session(client, user, plan)
+
+    unlock = client.post(
+        f"/api/learning-sessions/{session['session_id']}/messages",
+        json={
+            "role": "user",
+            "content": "我想先开始练习，给我题。",
+            "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
+        },
+    )
+    assert unlock.status_code == 200
+    body = unlock.json()
+    assert body["session_state"]["learning_stage"] == "practice_support"
+    assert body["session_state"]["learning_stage_state"]["learning_incomplete"] is True
+    tool_call = body["tool_calls"][0]
+    assert tool_call["name"] == "show_code_exercise"
+    assert "当前学习进度尚未完成" in tool_call["args"]["notice"]
+    assert tool_call["args"]["exercise"]["runtime_profile"]["runtime_tier"] == "browser_preview"
+
+    resumed = _resume_session(client, user, plan)
+    assert resumed["learning_stage"] == "practice_support"
+    assert resumed["exercise"]["id"] == tool_call["args"]["exercise"]["id"]
+
+
+def test_learning_concept_stage_uses_feynman_check_before_normal_unlock(client: TestClient) -> None:
+    user, plan = _confirmed_plan(client, language="javascript")
+    session = _start_session(client, user, plan)
+
+    prompt_check = client.post(
+        f"/api/learning-sessions/{session['session_id']}/messages",
+        json={
+            "role": "user",
+            "content": "我理解了事件绑定会连接点击与更新，请检查我的理解。",
+            "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
+        },
+    )
+    assert prompt_check.status_code == 200
+    assert prompt_check.json()["session_state"]["learning_stage"] == "readiness_check"
+    assert "费曼" in prompt_check.json()["agent_message"]["content"]
+
+    feynman = client.post(
+        f"/api/learning-sessions/{session['session_id']}/messages",
+        json={
+            "role": "user",
+            "content": "我会向初学者解释：事件监听器把点击动作连接到回调函数，因为状态放在回调外部，多次点击会共享并累加同一个 count，然后再同步更新 DOM。",
+            "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
+        },
+    )
+    assert feynman.status_code == 200
+    result = feynman.json()
+    assert result["session_state"]["learning_stage"] == "practice_support"
+    assert result["session_state"]["learning_stage_state"]["learning_incomplete"] is False
+    assert result["tool_calls"][0]["name"] == "show_code_exercise"
+
+
+def test_learning_history_includes_only_learning_turns_across_sessions(client: TestClient) -> None:
+    user, plan = _confirmed_plan(client, language="javascript")
+    first = _start_session(client, user, plan)
+    first_reply = client.post(
+        f"/api/learning-sessions/{first['session_id']}/messages",
+        json={
+            "role": "user",
+            "content": "我先记录第一段学习对话。",
+            "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
+        },
+    )
+    assert first_reply.status_code == 200
+    with connect() as conn:
+        conn.execute("UPDATE learning_sessions SET status = 'finished' WHERE id = %s", (first["session_id"],))
+        conn.commit()
+
+    second = _start_session(client, user, plan)
+    failed_check = client.post(
+        f"/api/learning-sessions/{second['session_id']}/messages",
+        json={
+            "role": "user",
+            "content": "我不太清楚。",
+            "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
+        },
+    )
+    assert failed_check.status_code == 200
+    failed_check = client.post(
+        f"/api/learning-sessions/{second['session_id']}/messages",
+        json={
+            "role": "user",
+            "content": "还是不知道怎么解释。",
+            "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
+        },
+    )
+    assert failed_check.status_code == 200
+    assert failed_check.json()["tool_calls"][0]["name"] == "show_learning_history"
+
+    history = client.get(
+        f"/api/learning-sessions/history?user_id={user['id']}&knowledge_point_id={plan['knowledge_points'][0]['id']}&active_session_id={second['session_id']}",
+    )
+    assert history.status_code == 200
+    body = history.json()
+    assert [item["session_id"] for item in body["sessions"][:2]] == [second["session_id"], first["session_id"]]
+    serialized = json.dumps(body, ensure_ascii=False)
+    assert "第一段学习对话" in serialized
+    assert all(message["role"] in {"user", "agent"} for item in body["sessions"] for message in item["messages"])
 
 
 def test_learning_message_json_falls_back_and_is_idempotent(client: TestClient) -> None:
@@ -523,7 +646,7 @@ def test_javascript_run_and_submit_persist_attempts(client: TestClient) -> None:
     )
     assert start_response.status_code in {200, 201}
     session = start_response.json()
-    exercise = session["exercise"]
+    exercise = _unlock_practice_exercise(client, session)
     filled_blanks = {
         "blank_1": "addEventListener",
         "blank_2": "count += 1",
@@ -618,7 +741,7 @@ def test_run_endpoint_streams_sse_events(client: TestClient) -> None:
         },
     )
     session = start_response.json()
-    exercise = session["exercise"]
+    exercise = _unlock_practice_exercise(client, session)
 
     with client.stream(
         "POST",
@@ -660,7 +783,7 @@ def test_submit_endpoint_streams_runner_and_evaluation_events(client: TestClient
         },
     )
     session = start_response.json()
-    exercise = session["exercise"]
+    exercise = _unlock_practice_exercise(client, session)
     filled_blanks = {
         "blank_1": "addEventListener",
         "blank_2": "count += 1",
@@ -746,7 +869,7 @@ def test_hint_endpoint_is_idempotent_and_accumulates_hint_count(client: TestClie
         },
     )
     session = start_response.json()
-    exercise = session["exercise"]
+    exercise = _unlock_practice_exercise(client, session)
 
     run_response = client.post(
         f"/api/learning-sessions/{session['session_id']}/exercises/{exercise['id']}/run",
@@ -816,7 +939,7 @@ def test_hint_endpoint_uses_sdk_coach_without_changing_contract(
         },
     )
     session = start_response.json()
-    exercise = session["exercise"]
+    exercise = _unlock_practice_exercise(client, session)
 
     run_response = client.post(
         f"/api/learning-sessions/{session['session_id']}/exercises/{exercise['id']}/run",
@@ -877,7 +1000,7 @@ def test_hidden_failure_can_be_explained_without_leaking_hidden_source(client: T
         },
     )
     session = start_response.json()
-    exercise = session["exercise"]
+    exercise = _unlock_practice_exercise(client, session)
     flawed_code = (
         "const button = document.querySelector(\"#counter-button\");\n"
         "const output = document.querySelector(\"#counter-output\");\n\n"
@@ -941,7 +1064,7 @@ def test_explain_error_llm_generation_is_idempotent(client: TestClient, monkeypa
         },
     )
     session = start_response.json()
-    exercise = session["exercise"]
+    exercise = _unlock_practice_exercise(client, session)
     flawed_code = (
         "const button = document.querySelector(\"#counter-button\");\n"
         "const output = document.querySelector(\"#counter-output\");\n\n"
@@ -1025,7 +1148,7 @@ def test_check_explanation_endpoint_uses_sdk_coach_without_changing_contract(
         },
     )
     session = start_response.json()
-    exercise = session["exercise"]
+    exercise = _unlock_practice_exercise(client, session)
     run_response = client.post(
         f"/api/learning-sessions/{session['session_id']}/exercises/{exercise['id']}/run",
         json={
@@ -1085,7 +1208,7 @@ def test_python_runtime_error_can_be_explained(client: TestClient) -> None:
         },
     )
     session = start_response.json()
-    exercise = session["exercise"]
+    exercise = _unlock_practice_exercise(client, session)
     broken_code = "def summarize_scores(scores)\n    return total\n"
 
     run_response = client.post(
@@ -1127,7 +1250,7 @@ def test_explanation_round_limit_and_partial_submit(client: TestClient) -> None:
         },
     )
     session = start_response.json()
-    exercise = session["exercise"]
+    exercise = _unlock_practice_exercise(client, session)
 
     run_response = client.post(
         f"/api/learning-sessions/{session['session_id']}/exercises/{exercise['id']}/run",
@@ -1211,7 +1334,7 @@ def test_many_hints_degrade_fsrs_rating(client: TestClient) -> None:
         },
     )
     session = start_response.json()
-    exercise = session["exercise"]
+    exercise = _unlock_practice_exercise(client, session)
 
     run_response = client.post(
         f"/api/learning-sessions/{session['session_id']}/exercises/{exercise['id']}/run",
@@ -1284,7 +1407,7 @@ def test_core_blank_failure_stays_failed_even_with_explanation(client: TestClien
         },
     )
     session = start_response.json()
-    exercise = session["exercise"]
+    exercise = _unlock_practice_exercise(client, session)
     wrong_code = exercise["solution_reference"].replace("count += 1", "count = 1")
 
     run_response = client.post(
@@ -1347,7 +1470,7 @@ def test_submit_rolls_back_when_learning_record_write_fails(monkeypatch: pytest.
         },
     )
     session = start_response.json()
-    exercise = session["exercise"]
+    exercise = _unlock_practice_exercise(client, session)
 
     run_response = client.post(
         f"/api/learning-sessions/{session['session_id']}/exercises/{exercise['id']}/run",
@@ -1421,7 +1544,7 @@ def test_distinct_run_payloads_create_distinct_attempts(client: TestClient) -> N
     )
     assert start_response.status_code in {200, 201}
     session = start_response.json()
-    exercise = session["exercise"]
+    exercise = _unlock_practice_exercise(client, session)
 
     first_run = client.post(
         f"/api/learning-sessions/{session['session_id']}/exercises/{exercise['id']}/run",
@@ -1475,7 +1598,7 @@ def test_python_run_returns_stdout_and_test_summary(client: TestClient) -> None:
     )
     assert start_response.status_code in {200, 201}
     session = start_response.json()
-    exercise = session["exercise"]
+    exercise = _unlock_practice_exercise(client, session)
     filled_blanks = {"blank_1": "total"}
     code = exercise["solution_reference"]
 
@@ -1509,7 +1632,7 @@ def test_compiled_later_runtime_returns_unsupported_boundary(client: TestClient)
     )
     assert start_response.status_code in {200, 201}
     session = start_response.json()
-    exercise = session["exercise"]
+    exercise = _unlock_practice_exercise(client, session)
     assert exercise["runtime_profile"]["runtime_tier"] == "compiled_sandbox_later"
 
     run_response = client.post(
@@ -1538,6 +1661,52 @@ def test_compiled_later_runtime_returns_unsupported_boundary(client: TestClient)
         ).fetchone()
     assert knowledge_point is not None
     assert knowledge_point["last_exercise_result"] is None
+
+
+def _start_session(
+    client: TestClient,
+    user: dict[str, object],
+    plan: dict[str, object],
+) -> dict[str, object]:
+    response = client.post(
+        "/api/learning-sessions/start",
+        json={
+            "user_id": user["id"],
+            "plan_id": plan["LearningPlan"]["id"],
+            "knowledge_point_id": plan["knowledge_points"][0]["id"],
+        },
+    )
+    assert response.status_code in {200, 201}
+    session = response.json()
+    assert isinstance(session, dict)
+    return session
+
+
+def _resume_session(
+    client: TestClient,
+    user: dict[str, object],
+    plan: dict[str, object],
+) -> dict[str, object]:
+    return _start_session(client, user, plan)
+
+
+def _unlock_practice_exercise(client: TestClient, session: dict[str, object]) -> dict[str, object]:
+    response = client.post(
+        f"/api/learning-sessions/{session['session_id']}/messages",
+        json={
+            "role": "user",
+            "content": "开始练习，给我题。",
+            "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["session_state"]["learning_stage"] == "practice_support"
+    tool_calls = body["tool_calls"]
+    assert tool_calls and tool_calls[0]["name"] == "show_code_exercise"
+    exercise = tool_calls[0]["args"]["exercise"]
+    assert isinstance(exercise, dict)
+    return exercise
 
 
 def _confirmed_plan(client: TestClient, *, language: str) -> tuple[dict[str, object], dict[str, object]]:

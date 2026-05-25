@@ -51,6 +51,7 @@ V1 使用本地单用户或轻量用户机制，不强制登录态。所有需�
 | `LearningPlan.status` | `active` / `paused` / `completed` |
 | `PlanModule.status` | `pending` / `in_progress` / `completed` / `skipped` |
 | `KnowledgePoint.status` | `pending` / `learning` / `reviewing` / `mastered` |
+| `LearningSession.learning_stage` | `concept_intro` / `concept_qna` / `readiness_check` / `practice_support` |
 | `Exercise.exercise_type` | `code_blank` / `fix_bug` / `implement_function` / `explain_code` |
 | `Attempt.attempt_type` | `run` / `submit` / `review_submit` |
 | `Attempt.runtime_status` | `success` / `runtime_error` / `timeout` / `unsupported` |
@@ -247,6 +248,40 @@ data: {"request_id":"req_001","session_id":"sess_001","content":"先观察这段
 }
 ```
 
+#### `tool_call`
+
+用途：对话流中的生成式 UI 工具调用。学习页当前使用 `show_code_exercise` 生成练习卡片，使用 `show_learning_history` 引用当前知识点的学习页历史对话。
+
+```json
+{
+  "phase": "start",
+  "tool_call_id": "tc_001",
+  "name": "show_code_exercise"
+}
+```
+
+```json
+{
+  "phase": "delta",
+  "tool_call_id": "tc_001",
+  "arguments_delta": "{\"session_id\":\"sess_001\""
+}
+```
+
+```json
+{
+  "phase": "done",
+  "tool_call_id": "tc_001",
+  "arguments": {
+    "session_id": "sess_001",
+    "exercise": {
+      "id": "ex_dom_click_count"
+    },
+    "learning_incomplete": false
+  }
+}
+```
+
 #### `runner_result`
 
 用途：runner service 返回预览、stdout、stderr、测试结果。
@@ -347,7 +382,7 @@ data: {"request_id":"req_001","session_id":"sess_001","content":"先观察这段
 
 - 练习运行：`tool_status` -> `runner_result` -> `done`，失败时以 `error` 结束。
 - 提交评分：`tool_status` -> `runner_result` 可选 -> `evaluation_result` -> `done`。
-- Agent 讲解：可以多次发送 `agent_message`，最后必须发送 `done`。
+- Agent 讲解：可以多次发送 `agent_message`；若触发生成式 UI，发送 `tool_call start/delta/done`；最后必须发送 `done`。
 - `id` 必须单调递增，断线重连时后端可根据 `Last-Event-ID` 尽力补发最近事件；V1 不承诺完整事件回放。
 
 ## 核心对象响应片段
@@ -1082,7 +1117,7 @@ HTTP 状态码：
 
 #### `POST /api/learning-sessions/start`
 
-用途：开始一次学习会话，创建或恢复活动 `LearningSession(session_type=learn)`，并返回当前 `Exercise`。
+用途：开始一次学习会话，创建或恢复活动 `LearningSession(session_type=learn)`。新会话从概念优先阶段开始，默认不返回练习；只有已解锁练习的恢复会话才返回当前 `Exercise`。
 
 Request JSON 示例：
 
@@ -1119,13 +1154,34 @@ Response JSON 示例：
       "supports_tests": true
     }
   },
-  "exercise": {
-    "id": "ex_dom_click_count",
-    "exercise_type": "code_blank",
-    "title": "点击按钮后计数递增",
-    "starter_code": "let count = 0;\nbutton.__BLANK_1__('click', () => {\n  __BLANK_2__;\n});"
+  "exercise": null,
+  "lesson_outline": [
+    {
+      "id": "core_concept",
+      "title": "事件监听与状态变量",
+      "note": "理解事件监听如何触发回调，以及状态变量为什么需要跨点击保存。"
+    },
+    {
+      "id": "runtime_behavior",
+      "title": "事件与状态行为",
+      "note": "事件回调会在交互发生时运行；需要跨交互保留的状态应位于可复用的作用域。"
+    }
+  ],
+  "lesson_sources": [
+    {
+      "title": "MDN Web Docs: EventTarget.addEventListener()",
+      "url": "https://developer.mozilla.org/docs/Web/API/EventTarget/addEventListener"
+    }
+  ],
+  "learning_stage": "concept_intro",
+  "learning_stage_state": {
+    "covered_subpoint_ids": [],
+    "feynman_status": "not_started",
+    "practice_unlock_reason": null,
+    "learning_incomplete": true,
+    "concept_summary": "事件监听与状态变量：理解事件监听如何触发回调，以及状态变量为什么需要跨点击保存。"
   },
-  "initial_agent_message": "先读代码：count 为什么放在事件回调外层？",
+  "initial_agent_message": "今天先理解事件监听与状态变量，目标是能说明它如何影响程序行为，而不是立刻做题。",
   "session_state": "learning"
 }
 ```
@@ -1141,11 +1197,18 @@ HTTP 状态码：
 
 幂等/重试说明：幂等键为 `user_id + plan_id + knowledge_point_id + active_session`。重试不得创建多个活动会话。
 
-相关数据表/状态机节点：`LearningSession`、`LearningPlan`、`KnowledgePoint`、`Exercise`、`RuntimeProfile`；`start_learning_session`、`context_assembler`、`select_exercise`、`present_exercise`。
+相关数据表/状态机节点：`LearningSession`、`LearningPlan`、`KnowledgePoint`、`RuntimeProfile`、`LearningMessage`；`start_learning_session`、`context_assembler`、`concept_intro`。练习只在 `practice_support` 阶段进入 `select_exercise`、`present_exercise`。
 
 #### `POST /api/learning-sessions/{session_id}/messages`
 
 用途：发送学习对话消息，获取 Agent 讲解、追问或下一步建议。该接口不产生最终评分。
+
+阶段规则：
+
+- `concept_intro` / `concept_qna`：回答概念问题并推进本地课程提纲子点，不主动展示完整题面或 starter code。
+- `readiness_check`：要求一次费曼式整体复述。复述通过后进入 `practice_support`；复述不完整时返回 `show_learning_history` 工具调用。
+- `practice_support`：允许围绕真实练习、运行事实、hint 和错因解释继续对话。
+- 用户明确要求提前练习时可进入 `practice_support`，但 `show_code_exercise` 参数必须带 `learning_incomplete=true` 和概念小结。
 
 Request JSON 示例：
 
@@ -1169,8 +1232,16 @@ Response JSON 示例：
   "session_state": {
     "session_id": "sess_001",
     "next_action": "retry_same",
-    "current_stage": "DOM 事件"
-  }
+    "current_stage": "DOM 事件",
+    "learning_stage": "concept_qna",
+    "learning_stage_state": {
+      "covered_subpoint_ids": ["core_concept"],
+      "feynman_status": "pending",
+      "practice_unlock_reason": null,
+      "learning_incomplete": true
+    }
+  },
+  "tool_calls": []
 }
 ```
 
@@ -1183,9 +1254,68 @@ HTTP 状态码：
 
 错误码：`SESSION_NOT_FOUND`、`VALIDATION_ERROR`、`RATE_LIMITED`、`EVALUATION_INVALID_JSON`
 
-幂等/重试说明：使用 `client_message_id` 去重；SSE 模式可增量返回多个 `agent_message`。
+幂等/重试说明：使用 `client_message_id` 去重；SSE 模式可增量返回多个 `agent_message` 和 `tool_call` 事件。
 
-相关数据表/状态机节点：`LearningSession`；`context_assembler`、`teaching_prompt`。
+相关数据表/状态机节点：`LearningSession`、`LearningMessage`；`context_assembler`、`concept_qna`、`readiness_check`、`practice_support`、`teaching_prompt`。
+
+#### `GET /api/learning-sessions/history`
+
+用途：按知识点读取学习页对话历史，用于费曼检查失败后的生成式历史引用卡片。该接口只读取 `session_type=learn` 的 `learning_messages`，不包含建档页、复习页或笔记页对话。
+
+Request JSON 示例：
+
+```json
+{
+  "query": {
+    "user_id": "user_001",
+    "knowledge_point_id": "kp_dom_event_state",
+    "active_session_id": "sess_001"
+  }
+}
+```
+
+Response JSON 示例：
+
+```json
+{
+  "knowledge_point_id": "kp_dom_event_state",
+  "knowledge_point_title": "事件监听与状态变量",
+  "active_session_id": "sess_001",
+  "sessions": [
+    {
+      "session_id": "sess_001",
+      "is_active": true,
+      "status": "active",
+      "started_at": "2026-05-25T11:20:00Z",
+      "messages": [
+        {
+          "id": "msg_001",
+          "role": "agent",
+          "content": "今天先理解事件监听与状态变量...",
+          "created_at": "2026-05-25T11:20:01Z"
+        },
+        {
+          "id": "msg_002",
+          "role": "user",
+          "content": "我认为状态需要保存在回调外层。",
+          "created_at": "2026-05-25T11:21:02Z"
+        }
+      ]
+    }
+  ]
+}
+```
+
+HTTP 状态码：
+
+- `200`：查询成功
+- `404`：用户或知识点不存在
+
+错误码：`KNOWLEDGE_POINT_NOT_FOUND`
+
+幂等/重试说明：只读接口，可安全重试；默认按当前会话优先，其后按会话开始时间倒序返回。
+
+相关数据表/状态机节点：`LearningSession`、`LearningMessage`、`KnowledgePoint`；`show_learning_history`。
 
 #### `POST /api/learning-sessions/{session_id}/exercises/{exercise_id}/run`
 
@@ -1524,6 +1654,8 @@ HTTP 状态码：
 
 - 如果最近一次学习会话缺少 `summary_text`，服务端会基于当前知识点和最近一次 Attempt 合成摘要。
 - 如果不存在可恢复的有效学习会话，仍返回 `200`，但 `resume_available=false`，并给出回退到当前学习知识点的 `learning_session` 入口。
+- 学习页恢复不自动重放 `learning_messages`。概念进度、费曼检查和练习解锁状态由 `learning_stage` 与 `learning_stage_state` 随 `POST /api/learning-sessions/start` 返回。
+- 用户需要回看完整学习页历史时，前端显式调用 `GET /api/learning-sessions/history`。
 
 Request JSON 示例：
 
@@ -2222,7 +2354,7 @@ HTTP 状态码：
 - 统一错误结构和关键错误码分支。
 - 分页字段 `items`、`page_info.limit`、`page_info.next_cursor`、`page_info.has_more`。
 - 枚举字段非法时前端显示兜底文案，不崩溃。
-- SSE 事件顺序：`tool_status`、`runner_result`、`evaluation_result`、`done`、`error`。
+- SSE 事件顺序：`agent_message`、`tool_call`、`tool_status`、`runner_result`、`evaluation_result`、`done`、`error`。
 - `run` 重试不重复创建 Attempt。
 - `submit` 重试不重复推进 `ReviewState.due_at`。
 - `compiled_sandbox_later` 展示能力边界，不展示“可实时运行”。

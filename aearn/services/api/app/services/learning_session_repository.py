@@ -57,12 +57,8 @@ def start_learning_session(
     request_id: str | None,
 ) -> tuple[dict[str, object], bool]:
     context = _load_learning_context(conn, user_id=user_id, plan_id=plan_id, knowledge_point_id=knowledge_point_id)
+    context = _ensure_lesson_content(conn, context)
     runtime_profile = _serialize_runtime_profile(context)
-    exercise = get_or_create_exercise_for_knowledge_point(
-        conn,
-        knowledge_point=context,
-        runtime_profile=runtime_profile,
-    )
 
     reused = False
     session = conn.execute(
@@ -83,9 +79,10 @@ def start_learning_session(
         session = conn.execute(
             """
             INSERT INTO learning_sessions (
-              user_id, plan_id, session_type, status, entry_point, next_entry_point, request_id
+              user_id, plan_id, session_type, status, entry_point, next_entry_point, request_id,
+              learning_stage, learning_stage_state_json
             )
-            VALUES (%s, %s, 'learn', 'active', %s, %s, %s)
+            VALUES (%s, %s, 'learn', 'active', %s, %s, %s, 'concept_intro', %s::jsonb)
             RETURNING *
             """,
             (
@@ -94,12 +91,43 @@ def start_learning_session(
                 knowledge_point_id,
                 knowledge_point_id,
                 _request_id_or_none(request_id),
+                json.dumps(_initial_learning_stage_state(context)),
             ),
         ).fetchone()
         if session is None:
             raise RuntimeError("learning session insert returned no row")
+        initial_message = _initial_agent_message(context)
+        conn.execute(
+            """
+            INSERT INTO learning_messages (session_id, knowledge_point_id, role, content)
+            VALUES (%s, %s, 'agent', %s)
+            """,
+            (session["id"], knowledge_point_id, initial_message),
+        )
     else:
         reused = True
+        initial_message = _load_initial_learning_message(conn, str(session["id"])) or _initial_agent_message(context)
+        if session.get("learning_stage") is None:
+            legacy_state = {
+                "covered_subpoint_ids": _lesson_subpoint_ids(context),
+                "feynman_status": "legacy",
+                "practice_unlock_reason": "legacy_session",
+                "learning_incomplete": False,
+                "concept_summary": _concept_summary(context),
+            }
+            conn.execute(
+                """
+                UPDATE learning_sessions
+                SET learning_stage = 'practice_support',
+                    learning_stage_state_json = %s::jsonb
+                WHERE id = %s
+                """,
+                (json.dumps(legacy_state), session["id"]),
+            )
+            session = dict(session) | {
+                "learning_stage": "practice_support",
+                "learning_stage_state_json": legacy_state,
+            }
 
     conn.execute(
         """
@@ -118,6 +146,17 @@ def start_learning_session(
         (session["id"], knowledge_point_id),
     )
 
+    learning_stage = str(session.get("learning_stage") or "practice_support")
+    learning_stage_state = _stage_state(session.get("learning_stage_state_json"), context)
+    exercise = (
+        get_or_create_exercise_for_knowledge_point(
+            conn,
+            knowledge_point=context,
+            runtime_profile=runtime_profile,
+        )
+        if learning_stage == "practice_support"
+        else None
+    )
     response = {
         "session_id": str(session["id"]),
         "session_type": session["session_type"],
@@ -135,10 +174,63 @@ def start_learning_session(
             "RuntimeProfile": runtime_profile,
         },
         "exercise": exercise,
-        "initial_agent_message": _initial_agent_message(str(runtime_profile["runtime_tier"]), str(context["title"])),
+        "lesson_outline": _lesson_outline(context),
+        "lesson_sources": _lesson_sources(context),
+        "learning_stage": learning_stage,
+        "learning_stage_state": learning_stage_state,
+        "initial_agent_message": initial_message,
         "session_state": "learning",
     }
     return response, reused
+
+
+def unlock_learning_session_practice(
+    conn: Connection[dict[str, object]],
+    *,
+    session_id: str,
+    unlock_reason: str,
+    learning_incomplete: bool,
+) -> tuple[dict[str, object], dict[str, object]]:
+    session = _load_session(conn, session_id)
+    context = _load_learning_context(
+        conn,
+        user_id=str(session["user_id"]),
+        plan_id=str(session["plan_id"]),
+        knowledge_point_id=str(session["entry_point"]),
+    )
+    context = _ensure_lesson_content(conn, context)
+    exercise = get_or_create_exercise_for_knowledge_point(
+        conn,
+        knowledge_point=context,
+        runtime_profile=_serialize_runtime_profile(context),
+    )
+    state = {
+        "covered_subpoint_ids": _lesson_subpoint_ids(context),
+        "feynman_status": "passed" if unlock_reason == "feynman_passed" else "pending",
+        "practice_unlock_reason": unlock_reason,
+        "learning_incomplete": learning_incomplete,
+        "concept_summary": _concept_summary(context),
+    }
+    update_learning_session_stage(conn, session_id=session_id, learning_stage="practice_support", state=state)
+    return exercise, state
+
+
+def update_learning_session_stage(
+    conn: Connection[dict[str, object]],
+    *,
+    session_id: str,
+    learning_stage: str,
+    state: Mapping[str, object],
+) -> None:
+    conn.execute(
+        """
+        UPDATE learning_sessions
+        SET learning_stage = %s,
+            learning_stage_state_json = %s::jsonb
+        WHERE id = %s
+        """,
+        (learning_stage, json.dumps(dict(state)), session_id),
+    )
 
 
 def run_learning_session_exercise(
@@ -669,6 +761,12 @@ def _load_session_exercise(
     exercise_id: str,
     session: Mapping[str, object],
 ) -> dict[str, object]:
+    if (
+        str(session["session_type"]) == "learn"
+        and session.get("learning_stage") is not None
+        and str(session["learning_stage"]) != "practice_support"
+    ):
+        raise SessionStateConflictError("practice has not been unlocked for this learning session")
     exercise = get_exercise(conn, exercise_id)
     if exercise is None:
         raise EntityNotFoundError("EXERCISE_NOT_FOUND", "练习不存在")
@@ -829,12 +927,124 @@ def _serialize_review_state(row: Mapping[str, object]) -> dict[str, object]:
     }
 
 
-def _initial_agent_message(runtime_tier: str, knowledge_point_title: str) -> str:
-    if runtime_tier == "python_stdout_test":
-        return f"先看 {knowledge_point_title}：确认 stdout 和 return 各自负责什么。"
-    if runtime_tier == "compiled_sandbox_later":
-        return f"这次先做 {knowledge_point_title} 的静态补全，不进入完整编译运行。"
-    return f"先看 {knowledge_point_title}：关注事件绑定位置和共享状态更新。"
+def _initial_agent_message(context: Mapping[str, object]) -> str:
+    title = str(context["title"])
+    outline = _lesson_outline(context)
+    sources = _lesson_sources(context)
+    lines = [
+        f"今天先理解 {title}，目标是能说明它如何影响程序行为，而不是立刻做题。",
+        "这个知识点可拆成：",
+    ]
+    for item in outline:
+        lines.append(f"- {item['title']}：{item['note']}")
+    if sources:
+        lines.append(f"提纲依据：{'; '.join(str(item['title']) for item in sources)}。")
+    lines.append("先回答一个小问题：你认为这里最需要被保存或触发的行为是什么？")
+    return "\n".join(lines)
+
+
+def _load_initial_learning_message(conn: Connection[dict[str, object]], session_id: str) -> str | None:
+    row = conn.execute(
+        """
+        SELECT content
+        FROM learning_messages
+        WHERE session_id = %s AND role = 'agent'
+        ORDER BY created_at
+        LIMIT 1
+        """,
+        (session_id,),
+    ).fetchone()
+    return str(row["content"]) if row is not None else None
+
+
+def _ensure_lesson_content(
+    conn: Connection[dict[str, object]],
+    context: Mapping[str, object],
+) -> Mapping[str, object]:
+    if _lesson_outline(context):
+        return context
+    outline = [
+        {
+            "id": "core_concept",
+            "title": str(context["title"]),
+            "note": str(context.get("description") or f"理解 {context['title']} 的核心行为。"),
+        },
+        {
+            "id": "verification",
+            "title": "验证行为",
+            "note": "通过可见输入输出或断言观察这个概念是否按预期工作。",
+        },
+    ]
+    sources = [{"title": "当前本地课程提纲", "url": ""}]
+    conn.execute(
+        """
+        UPDATE knowledge_points
+        SET lesson_outline_json = %s::jsonb,
+            lesson_sources_json = %s::jsonb
+        WHERE id = %s
+        """,
+        (json.dumps(outline), json.dumps(sources), context["id"]),
+    )
+    return dict(context) | {
+        "lesson_outline_json": outline,
+        "lesson_sources_json": sources,
+    }
+
+
+def _initial_learning_stage_state(context: Mapping[str, object]) -> dict[str, object]:
+    return {
+        "covered_subpoint_ids": [],
+        "feynman_status": "not_started",
+        "practice_unlock_reason": None,
+        "learning_incomplete": True,
+        "concept_summary": _concept_summary(context),
+    }
+
+
+def _stage_state(value: object, context: Mapping[str, object]) -> dict[str, object]:
+    if isinstance(value, Mapping):
+        return dict(value)
+    return _initial_learning_stage_state(context)
+
+
+def _lesson_outline(context: Mapping[str, object]) -> list[dict[str, str]]:
+    value = context.get("lesson_outline_json") or []
+    if not isinstance(value, list):
+        return []
+    return [
+        {
+            "id": str(item.get("id") or ""),
+            "title": str(item.get("title") or ""),
+            "note": str(item.get("note") or ""),
+        }
+        for item in value
+        if isinstance(item, Mapping)
+    ]
+
+
+def _lesson_sources(context: Mapping[str, object]) -> list[dict[str, str]]:
+    value = context.get("lesson_sources_json") or []
+    if not isinstance(value, list):
+        return []
+    return [
+        {
+            "title": str(item.get("title") or ""),
+            "url": str(item.get("url") or ""),
+        }
+        for item in value
+        if isinstance(item, Mapping)
+    ]
+
+
+def _lesson_subpoint_ids(context: Mapping[str, object]) -> list[str]:
+    return [item["id"] for item in _lesson_outline(context) if item["id"]]
+
+
+def _concept_summary(context: Mapping[str, object]) -> str:
+    outline = _lesson_outline(context)
+    if not outline:
+        return str(context["title"])
+    return "；".join(f"{item['title']}：{item['note']}" for item in outline[:3])
 
 
 def _request_id_or_none(request_id: str | None) -> str | None:
