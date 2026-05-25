@@ -1,7 +1,21 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ApiError, CodeCompletionResult, NextAction, RuntimeStatus } from "../types";
 
-export type SSEEventType = "agent_message" | "tool_status" | "runner_result" | "evaluation_result" | "plan_draft" | "done" | "error";
+export type SSEEventType =
+  | "agent_message"
+  | "tool_status"
+  | "tool_call"
+  | "runner_result"
+  | "evaluation_result"
+  | "plan_draft"
+  | "session_created"
+  | "done"
+  | "error";
+
+export type SSESessionCreated = {
+  request_id: string;
+  onboarding_session_id: string;
+};
 
 export type SSEAgentMessage = {
   request_id: string;
@@ -55,6 +69,26 @@ export type SSEPlanDraft = {
   summary: string;
 };
 
+export type SSEToolCallStart = {
+  phase: "start";
+  tool_call_id: string;
+  name: string;
+};
+
+export type SSEToolCallDelta = {
+  phase: "delta";
+  tool_call_id: string;
+  arguments_delta: string;
+};
+
+export type SSEToolCallDone = {
+  phase: "done";
+  tool_call_id: string;
+  arguments: unknown;
+};
+
+export type SSEToolCall = SSEToolCallStart | SSEToolCallDelta | SSEToolCallDone;
+
 export type SSEDone = {
   request_id: string;
   session_id: string;
@@ -71,9 +105,11 @@ export type SSEError = {
 export type SSEEvent =
   | { type: "agent_message"; data: SSEAgentMessage }
   | { type: "tool_status"; data: SSEToolStatus }
+  | { type: "tool_call"; data: SSEToolCall }
   | { type: "runner_result"; data: SSERunnerResult }
   | { type: "evaluation_result"; data: SSEEvaluationResult }
   | { type: "plan_draft"; data: SSEPlanDraft }
+  | { type: "session_created"; data: SSESessionCreated }
   | { type: "done"; data: SSEDone }
   | { type: "error"; data: SSEError };
 
@@ -271,12 +307,20 @@ function toTypedSSEEvent(type: SSEEventType, data: unknown): SSEEvent | null {
       return { type, data: data as SSEAgentMessage };
     case "tool_status":
       return { type, data: data as SSEToolStatus };
+    case "tool_call": {
+      const phase = data.phase;
+      if (phase !== "start" && phase !== "delta" && phase !== "done") return null;
+      if (typeof data.tool_call_id !== "string") return null;
+      return { type, data: data as SSEToolCall };
+    }
     case "runner_result":
       return { type, data: data as SSERunnerResult };
     case "evaluation_result":
       return { type, data: data as SSEEvaluationResult };
     case "plan_draft":
       return { type, data: data as SSEPlanDraft };
+    case "session_created":
+      return { type, data: data as SSESessionCreated };
     case "done":
       return { type, data: data as SSEDone };
     case "error":
@@ -310,9 +354,11 @@ function isSSEEventType(value: string): value is SSEEventType {
   return (
     value === "agent_message" ||
     value === "tool_status" ||
+    value === "tool_call" ||
     value === "runner_result" ||
     value === "evaluation_result" ||
     value === "plan_draft" ||
+    value === "session_created" ||
     value === "done" ||
     value === "error"
   );

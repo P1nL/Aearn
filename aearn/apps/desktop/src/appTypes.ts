@@ -39,6 +39,16 @@ export type SettingsKey =
   | "diagnostics";
 export type NavGroupKey = "learn" | "review" | "notes" | "notes-python" | "notes-javascript" | "notes-sql";
 
+export type ToolCallStatus = "pending" | "running" | "done" | "error";
+
+export type ConversationToolCall = {
+  id: string;
+  name: string;
+  args: unknown;
+  argsBuffer: string;
+  status: ToolCallStatus;
+};
+
 export type ConversationMessage = {
   id: string;
   speaker: "agent" | "user";
@@ -47,6 +57,7 @@ export type ConversationMessage = {
   toolCard?: string;
   status?: "streaming" | "error" | "done";
   statusText?: string;
+  toolCalls?: ConversationToolCall[];
 };
 
 export type SettingsPanel = {

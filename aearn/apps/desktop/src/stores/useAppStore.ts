@@ -14,10 +14,12 @@ import type {
   ApiHealthState,
   AppRoute,
   ConversationMessage,
+  ConversationToolCall,
   NavGroupKey,
   SessionState,
 } from "../appTypes";
 import type { SSEPlanDraft } from "../hooks/useSSE";
+import { parsePartial } from "../lib/partialJson";
 import type {
   CreatedPlanResponse,
   DashboardResponse,
@@ -63,6 +65,7 @@ type AppStore = {
   // Onboarding conversation state
   onboardingMessages: ConversationMessage[];
   onboardingPlanDraft: SSEPlanDraft | null;
+  onboardingSessionId: string | null;
 
   // Simple setters
   setUser: (user: UserProfile | null) => void;
@@ -82,6 +85,12 @@ type AppStore = {
   addOnboardingMessage: (msg: ConversationMessage) => void;
   updateOnboardingMessage: (id: string, patch: ConversationMessagePatch) => void;
   setOnboardingPlanDraft: (draft: SSEPlanDraft | null) => void;
+  setOnboardingSessionId: (id: string | null) => void;
+
+  // Tool call state machine (currently scoped to onboarding messages)
+  startOnboardingToolCall: (messageId: string, toolCallId: string, name: string) => void;
+  appendOnboardingToolCallDelta: (messageId: string, toolCallId: string, delta: string) => void;
+  finalizeOnboardingToolCall: (messageId: string, toolCallId: string, args: unknown) => void;
 
   // Complex actions
   bootstrap: (signal?: AbortSignal) => Promise<void>;
@@ -113,6 +122,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   resetNonce: 0,
   onboardingMessages: [],
   onboardingPlanDraft: null,
+  onboardingSessionId: null,
 
   setUser: (user) => set({ user }),
   setCreatedPlan: (plan) => set({ createdPlan: plan }),
@@ -168,6 +178,64 @@ export const useAppStore = create<AppStore>((set, get) => ({
       }),
     })),
   setOnboardingPlanDraft: (draft) => set({ onboardingPlanDraft: draft }),
+  setOnboardingSessionId: (id) => set({ onboardingSessionId: id }),
+
+  startOnboardingToolCall: (messageId, toolCallId, name) =>
+    set((s) => ({
+      onboardingMessages: s.onboardingMessages.map((message) => {
+        if (message.id !== messageId) return message;
+        const existing = message.toolCalls ?? [];
+        if (existing.some((entry) => entry.id === toolCallId)) {
+          return message;
+        }
+        const toolCall: ConversationToolCall = {
+          id: toolCallId,
+          name,
+          args: null,
+          argsBuffer: "",
+          status: "pending",
+        };
+        return { ...message, toolCalls: [...existing, toolCall] };
+      }),
+    })),
+  appendOnboardingToolCallDelta: (messageId, toolCallId, delta) =>
+    set((s) => ({
+      onboardingMessages: s.onboardingMessages.map((message) => {
+        if (message.id !== messageId) return message;
+        const existing = message.toolCalls ?? [];
+        if (existing.length === 0) return message;
+        return {
+          ...message,
+          toolCalls: existing.map((entry) => {
+            if (entry.id !== toolCallId) return entry;
+            const nextBuffer = `${entry.argsBuffer}${delta}`;
+            const parsed = parsePartial(nextBuffer);
+            return {
+              ...entry,
+              argsBuffer: nextBuffer,
+              args: parsed ?? entry.args,
+              status: "running" as const,
+            };
+          }),
+        };
+      }),
+    })),
+  finalizeOnboardingToolCall: (messageId, toolCallId, args) =>
+    set((s) => ({
+      onboardingMessages: s.onboardingMessages.map((message) => {
+        if (message.id !== messageId) return message;
+        const existing = message.toolCalls ?? [];
+        if (existing.length === 0) return message;
+        return {
+          ...message,
+          toolCalls: existing.map((entry) =>
+            entry.id === toolCallId
+              ? { ...entry, args, status: "done" as const }
+              : entry,
+          ),
+        };
+      }),
+    })),
 
   bootstrap: async (signal) => {
     set({ bootstrapHydrated: false, apiHealth: { status: "loading" }, dashboardState: { status: "loading" } });
@@ -353,6 +421,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       reviewConversation: [],
       onboardingMessages: [],
       onboardingPlanDraft: null,
+      onboardingSessionId: null,
       composerInput: "",
       activeRoute: "onboarding",
       resetNonce: get().resetNonce + 1,
