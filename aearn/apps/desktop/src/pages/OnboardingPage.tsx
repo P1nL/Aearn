@@ -1,20 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { buildOnboardingMessageSSEUrl, confirmPlan, createUser, generatePlanDraft } from "../api";
+import { buildOnboardingMessageSSEUrl, confirmOnboardingPlan, createUser } from "../api";
 import type { ApiHealthState, ConversationMessage } from "../appTypes";
 import { AssistantUIThread } from "../components/AssistantUIThread";
-import { InlinePlanCard } from "../components/InlinePlanCard";
 import { useSSE } from "../hooks/useSSE";
-import type { SSEPlanDraft, SSEToolCall } from "../hooks/useSSE";
+import type { SSEToolCall } from "../hooks/useSSE";
 import { createMessage } from "../lib/learningHelpers";
 import { useAppStore } from "../stores/useAppStore";
-import type { CreatedPlanResponse, LanguageCourse, PlanDraft, UserProfile } from "../types";
+import type { CreatedPlanResponse, UserProfile } from "../types";
 
 type OnboardingPageProps = {
   apiHealth: ApiHealthState;
-  courses: LanguageCourse[];
   existingUser: UserProfile | null;
-  messages: ConversationMessage[];
   resetNonce: number;
   onUserChange: (user: UserProfile) => void;
   onPlanCreated: (plan: CreatedPlanResponse, user: UserProfile) => Promise<void> | void;
@@ -37,7 +34,6 @@ const WELCOME_MESSAGE_TEXT = "你好！我是 Aearn 学习助手。想学什么�
 
 export function OnboardingPage({
   apiHealth,
-  courses,
   existingUser,
   resetNonce,
   onUserChange,
@@ -45,15 +41,15 @@ export function OnboardingPage({
 }: OnboardingPageProps) {
   const store = useAppStore();
   const onboardingMessages = store.onboardingMessages;
-  const onboardingPlanDraft = store.onboardingPlanDraft;
   const onboardingSessionId = store.onboardingSessionId;
 
   const [streamRequest, setStreamRequest] = useState<OnboardingStreamRequest | null>(null);
+  const [preparingMessage, setPreparingMessage] = useState(false);
   const [confirmingPlan, setConfirmingPlan] = useState(false);
   const [displayName] = useState("Pinking");
   const conversationScrollRef = useRef<HTMLElement | null>(null);
 
-  const isStreaming = streamRequest !== null;
+  const isStreaming = streamRequest !== null || preparingMessage;
 
   useEffect(() => {
     if (useAppStore.getState().onboardingMessages.length === 0) {
@@ -86,9 +82,6 @@ export function OnboardingPage({
           status: "streaming",
           statusText: "正在生成……",
         });
-      }
-      if (streamEvent.type === "plan_draft") {
-        store.setOnboardingPlanDraft(streamEvent.data as SSEPlanDraft);
       }
       if (streamEvent.type === "session_created") {
         store.setOnboardingSessionId(streamEvent.data.onboarding_session_id);
@@ -141,7 +134,7 @@ export function OnboardingPage({
     return created;
   }
 
-  function handleComposerSubmit(content: string) {
+  async function handleComposerSubmit(content: string) {
     const trimmed = content.trim();
     if (trimmed.length === 0 || isStreaming) return;
 
@@ -154,7 +147,19 @@ export function OnboardingPage({
     store.addOnboardingMessage(createMessage("user", trimmed));
     store.addOnboardingMessage(assistantMessage);
 
-    const userId = existingUser?.id;
+    setPreparingMessage(true);
+    let activeUser: UserProfile;
+    try {
+      activeUser = await ensureUser();
+    } catch (error) {
+      store.updateOnboardingMessage(assistantMessage.id, {
+        text: `建档准备失败：${error instanceof Error ? error.message : "未知错误"}。请稍后重试。`,
+        status: "error",
+        statusText: "本轮消息尚未发送到 Agent。",
+      });
+      setPreparingMessage(false);
+      return;
+    }
 
     setStreamRequest({
       endpoint: buildOnboardingMessageSSEUrl(),
@@ -164,35 +169,25 @@ export function OnboardingPage({
         role: "user",
         content: trimmed,
         client_message_id: createClientId("desktop_onboarding_msg"),
-        ...(userId ? { user_id: userId } : {}),
+        user_id: activeUser.id,
         ...(onboardingSessionId ? { onboarding_session_id: onboardingSessionId } : {}),
       },
     });
+    setPreparingMessage(false);
   }
 
-  async function handleConfirmPlan() {
-    if (!onboardingPlanDraft || confirmingPlan) return;
+  const handleConfirmPlan = useCallback(async () => {
+    if (confirmingPlan) return;
+    if (!onboardingSessionId) {
+      store.addOnboardingMessage(
+        createMessage("agent", "暂时还没有可确认的学习计划，请先完成对话。", "Agent"),
+      );
+      return;
+    }
     setConfirmingPlan(true);
     try {
       const activeUser = await ensureUser();
-      const firstUserMessage = onboardingMessages.find((m) => m.speaker === "user");
-      const goalText = firstUserMessage?.text.trim() || onboardingPlanDraft.summary || "编程学习";
-      const course = courses[0];
-      if (!course) {
-        throw new Error("尚未加载课程目录，无法生成计划");
-      }
-
-      const fullDraft = await generatePlanDraft({
-        userId: activeUser.id,
-        mode: "goal_based",
-        courseId: course.id,
-        language: course.language,
-        goalText,
-        materialTitle: "",
-        materialContent: "",
-      });
-
-      const response = await confirmPlan(activeUser.id, fullDraft);
+      const response = await confirmOnboardingPlan(onboardingSessionId, activeUser.id);
       store.addOnboardingMessage(
         createMessage("agent", "学习计划已确认！正在为你准备第一个学习会话……", "Agent"),
       );
@@ -204,34 +199,27 @@ export function OnboardingPage({
     } finally {
       setConfirmingPlan(false);
     }
-  }
+  }, [confirmingPlan, onboardingSessionId, existingUser, onPlanCreated]);
 
-  function handleRevisePlan() {
-    // Notify the user that they can type a revision into the composer.
-    store.addOnboardingMessage(
-      createMessage("agent", "好的，请告诉我想调整的方向，我会重新生成。", "Agent"),
-    );
-  }
+  const handleRevisePlan = useCallback(() => {
+    void handleComposerSubmit("我想调整这份学习计划。");
+  }, [handleComposerSubmit]);
 
-  // Render inline plan card after the message that triggered it
-  const renderInlineCard = useCallback(
-    (message: ConversationMessage) => {
-      if (!onboardingPlanDraft) return null;
-      const lastAgentMsg = [...onboardingMessages]
-        .reverse()
-        .find((m) => m.speaker === "agent" && m.status !== "streaming");
-      if (message.id !== lastAgentMsg?.id) return null;
-      return (
-        <InlinePlanCard
-          draft={onboardingPlanDraft}
-          confirming={confirmingPlan}
-          onConfirm={() => void handleConfirmPlan()}
-          onRevise={handleRevisePlan}
-        />
-      );
-    },
-    [onboardingPlanDraft, confirmingPlan, onboardingMessages],
-  );
+  // Bridge tool-call card actions ("继续学习" / "调整计划") to onboarding flow.
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<{ action: string }>).detail;
+      if (!detail) return;
+      if (detail.action === "start_next") {
+        void handleConfirmPlan();
+      } else if (detail.action === "adjust_plan") {
+        handleRevisePlan();
+      }
+    };
+    window.addEventListener("aearn:learning-route-action", handler as EventListener);
+    return () =>
+      window.removeEventListener("aearn:learning-route-action", handler as EventListener);
+  }, [handleConfirmPlan, handleRevisePlan]);
 
   const sessionActive = apiHealth.status === "online";
 
@@ -253,8 +241,12 @@ export function OnboardingPage({
             }
             ariaLabel="建档输入框"
             guidanceText={apiHealth.status !== "online" ? "等待 API 连接后即可开始对话。" : undefined}
-            renderInlineCard={renderInlineCard}
           />
+          {confirmingPlan && (
+            <p className="onboarding-confirm-status" role="status">
+              正在确认学习计划……
+            </p>
+          )}
         </div>
       </section>
     </div>

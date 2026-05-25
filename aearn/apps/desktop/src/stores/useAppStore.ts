@@ -18,7 +18,6 @@ import type {
   NavGroupKey,
   SessionState,
 } from "../appTypes";
-import type { SSEPlanDraft } from "../hooks/useSSE";
 import { parsePartial } from "../lib/partialJson";
 import type {
   CreatedPlanResponse,
@@ -64,7 +63,6 @@ type AppStore = {
 
   // Onboarding conversation state
   onboardingMessages: ConversationMessage[];
-  onboardingPlanDraft: SSEPlanDraft | null;
   onboardingSessionId: string | null;
 
   // Simple setters
@@ -84,7 +82,6 @@ type AppStore = {
   // Onboarding conversation actions
   addOnboardingMessage: (msg: ConversationMessage) => void;
   updateOnboardingMessage: (id: string, patch: ConversationMessagePatch) => void;
-  setOnboardingPlanDraft: (draft: SSEPlanDraft | null) => void;
   setOnboardingSessionId: (id: string | null) => void;
 
   // Tool call state machine (currently scoped to onboarding messages)
@@ -121,7 +118,6 @@ export const useAppStore = create<AppStore>((set, get) => ({
   reviewConversation: [],
   resetNonce: 0,
   onboardingMessages: [],
-  onboardingPlanDraft: null,
   onboardingSessionId: null,
 
   setUser: (user) => set({ user }),
@@ -177,7 +173,6 @@ export const useAppStore = create<AppStore>((set, get) => ({
         };
       }),
     })),
-  setOnboardingPlanDraft: (draft) => set({ onboardingPlanDraft: draft }),
   setOnboardingSessionId: (id) => set({ onboardingSessionId: id }),
 
   startOnboardingToolCall: (messageId, toolCallId, name) =>
@@ -420,7 +415,6 @@ export const useAppStore = create<AppStore>((set, get) => ({
       homeConversation: [],
       reviewConversation: [],
       onboardingMessages: [],
-      onboardingPlanDraft: null,
       onboardingSessionId: null,
       composerInput: "",
       activeRoute: "onboarding",

@@ -85,11 +85,26 @@ function normalizeLearningRouteArgs(args: unknown): LearningRouteArgs {
   };
 }
 
+function dispatchLearningRouteAction(action: string, payload?: unknown) {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(
+    new CustomEvent("aearn:learning-route-action", {
+      detail: { action, payload },
+    }),
+  );
+}
+
 export const LearningRouteToolUI = makeAssistantToolUI<LearningRouteArgs, unknown>({
   toolName: "show_learning_route",
   render: ({ args, status }) => {
     const normalized = normalizeLearningRouteArgs(args);
     const cardStatus = mapStatusToToolStatus(status);
-    return <LearningRouteCard args={normalized} status={cardStatus} />;
+    return (
+      <LearningRouteCard
+        args={normalized}
+        status={cardStatus}
+        onAction={dispatchLearningRouteAction}
+      />
+    );
   },
 });

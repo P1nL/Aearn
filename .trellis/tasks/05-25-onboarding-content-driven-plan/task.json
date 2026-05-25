@@ -3,7 +3,7 @@
   "name": "onboarding-content-driven-plan",
   "title": "Content-driven onboarding plan generation",
   "description": "AI extracts structured slots from conversation and generates real PlanDraft when slots are filled, replacing the turn-count heuristic and hardcoded stub",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,
