@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 18
+- **Total Sessions**: 19
 - **Last Active**: 2026-05-25
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~604 | Active |
+| `journal-1.md` | ~637 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 19 | 2026-05-25 | Content-driven onboarding plan generation | `b937cd7` | `main` |
 | 18 | 2026-05-25 | Assistant-ui generative UI Slice 1 closeout | `057a809` | `main` |
 | 17 | 2026-05-24 | Dialogue-first desktop UI closeout | `08de55ddd7e232639df5570a4249a34f9db02a9b` | `main` |
 | 16 | 2026-05-24 | Complete SDK agent rollout | `733b132` | `main` |
