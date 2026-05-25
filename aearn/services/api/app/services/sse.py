@@ -69,6 +69,45 @@ class SSEWriter:
             error_payload["next_action"] = next_action
         return self.event("error", {"error": error_payload})
 
+    def tool_call_start(self, *, tool_call_id: str, name: str) -> str:
+        return self.event(
+            "tool_call",
+            {"phase": "start", "tool_call_id": tool_call_id, "name": name},
+        )
+
+    def tool_call_delta(self, *, tool_call_id: str, arguments_delta: str) -> str:
+        return self.event(
+            "tool_call",
+            {
+                "phase": "delta",
+                "tool_call_id": tool_call_id,
+                "arguments_delta": arguments_delta,
+            },
+        )
+
+    def tool_call_done(self, *, tool_call_id: str, arguments: dict[str, Any]) -> str:
+        return self.event(
+            "tool_call",
+            {"phase": "done", "tool_call_id": tool_call_id, "arguments": arguments},
+        )
+
+
+def chunk_tool_call_arguments(
+    arguments: dict[str, Any],
+    *,
+    chunk_size: int = 96,
+) -> list[str]:
+    """Serialize tool-call arguments into evenly-sized JSON delta chunks.
+
+    The frontend assembles deltas into a buffer and runs partial JSON parsing
+    progressively. Smaller chunks expose more progressive renders; larger
+    chunks reduce overhead. Default ~96 bytes is a balance for MVP traffic.
+    """
+    payload = json.dumps(arguments, ensure_ascii=False, separators=(",", ":"))
+    if not payload:
+        return []
+    return [payload[index : index + chunk_size] for index in range(0, len(payload), chunk_size)]
+
 
 def sse_event(event_type: str, data: dict[str, Any], *, event_id: str | None = None) -> str:
     payload = json.dumps(jsonable_encoder(data), ensure_ascii=False, separators=(",", ":"))
