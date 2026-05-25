@@ -635,3 +635,36 @@ Implemented content-driven onboarding plan generation: structured slot extractio
 ### Next Steps
 
 - None - task complete
+
+
+## Session 20: Concept-first learning flow
+
+**Date**: 2026-05-25
+**Task**: Concept-first learning flow
+**Branch**: `main`
+
+### Summary
+
+Implemented concept-first learning sessions with compact stage state, learning-message history, assistant-ui exercise/history tool cards, source-of-truth docs, targeted backend tests, desktop check, and local browser smoke.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `5306705` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
