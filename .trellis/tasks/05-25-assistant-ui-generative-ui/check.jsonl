@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Type check and build verification requirements"}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "Verify component structure follows conventions"}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "Verify Zustand remains single source of truth"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Backend SSE emission quality checks"}
