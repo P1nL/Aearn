@@ -569,3 +569,36 @@ Rebuilt the desktop runtime around a dialogue-first learning workspace, removed 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 18: Assistant-ui generative UI Slice 1 closeout
+
+**Date**: 2026-05-25
+**Task**: Assistant-ui generative UI Slice 1 closeout
+**Branch**: `main`
+
+### Summary
+
+Closed assistant-ui generative UI Slice 1 by standardizing onboarding, learning, and review conversations on the shared AssistantUIThread wrapper, removing the legacy custom AssistantThread and LearningComposer components, preserving existing SSE/Zustand ownership, and deferring learning/review tool-card Slice 2 until the content-driven onboarding plan path is stable. Verified desktop build, task validation, diff check, and local render smoke.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `057a809` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
