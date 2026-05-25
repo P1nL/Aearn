@@ -1,7 +1,7 @@
 import { useCallback, useEffect } from "react";
 
 import { API_BASE_URL } from "./api";
-import type { AppRoute, ConversationMessage, NoteContext } from "./appTypes";
+import type { AppRoute, NoteContext } from "./appTypes";
 import { ApiHealthChip } from "./components/ApiHealthChip";
 import { NoteDrawer } from "./components/NoteDrawer";
 import { SidebarNav } from "./components/SidebarNav";
@@ -20,8 +20,6 @@ import { OnboardingPage } from "./pages/OnboardingPage";
 import { ReviewPage } from "./pages/ReviewPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import type { LearningSessionResponse } from "./types";
-
-const EMPTY_MESSAGES: ConversationMessage[] = [];
 
 function App() {
   const app = useAppStore();
@@ -241,7 +239,7 @@ function App() {
             {app.dashboardState.status === "error" && <div className="tool-card dashboard-inline-error">提示：{app.dashboardState.message}</div>}
 
             <section className={screenClassName(visibleRoute === "onboarding")} aria-label="首次建档">
-              <OnboardingPage apiHealth={app.apiHealth} courses={app.courses} existingUser={app.user} messages={EMPTY_MESSAGES} resetNonce={app.resetNonce} onUserChange={app.setUser} onPlanCreated={app.handlePlanCreated} />
+              <OnboardingPage apiHealth={app.apiHealth} existingUser={app.user} resetNonce={app.resetNonce} onUserChange={app.setUser} onPlanCreated={app.handlePlanCreated} />
             </section>
 
             <section className={screenClassName(visibleRoute === "home")} aria-label="学习页">

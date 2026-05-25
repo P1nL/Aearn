@@ -1,15 +1,25 @@
+import json
 import uuid
 
 import psycopg
 import pytest
 from fastapi.testclient import TestClient
 
+import app.routes.onboarding as onboarding_route
 import app.routes.plans as plans_route
+from app.agents.onboarding_slot_extractor import ExtractedSlots, keyword_extract_slots
 from app.core.config import get_settings
 from app.db.bootstrap import bootstrap_database
 from app.db.connection import connect
 from app.main import app
 from app.models.onboarding import PlanDraft
+from app.services.onboarding_conversation import (
+    OnboardingConversationContext,
+    OnboardingMessageGeneration,
+    create_onboarding_session,
+    detect_plan_proposal,
+    stash_plan_draft,
+)
 
 
 def _database_available() -> bool:
@@ -31,6 +41,15 @@ pytestmark = pytest.mark.skipif(
 def client() -> TestClient:
     bootstrap_database()
     return TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def disable_live_onboarding_plan_agent(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        plans_route,
+        "build_sdk_onboarding_plan_response",
+        lambda *args, **kwargs: None,
+    )
 
 
 def test_user_create_get_and_preferences(client: TestClient) -> None:
@@ -247,6 +266,194 @@ def test_confirm_plan_invalid_draft_and_idempotency_conflict(client: TestClient)
     assert conflict.json()["error"]["code"] == "IDEMPOTENCY_CONFLICT"
 
 
+def test_onboarding_keyword_slots_are_content_driven() -> None:
+    vague_history = [{"role": "user", "content": "好的"} for _ in range(5)]
+    vague_slots = keyword_extract_slots(vague_history, ExtractedSlots())
+    vague_context = OnboardingConversationContext(
+        conversation_id="conv_vague",
+        user_id="user_vague",
+        status="active",
+        extracted_context=vague_slots.model_dump(mode="json"),
+        history=vague_history,
+    )
+
+    assert vague_slots.plan_ready is False
+    assert detect_plan_proposal(vague_context, vague_slots) is False
+
+    full_history = [
+        {
+            "role": "user",
+            "content": "我想学 Python Web 后端，零基础，每天 1 小时",
+        }
+    ]
+    full_slots = keyword_extract_slots(full_history, ExtractedSlots())
+    full_context = OnboardingConversationContext(
+        conversation_id="conv_ready",
+        user_id="user_ready",
+        status="active",
+        extracted_context=full_slots.model_dump(mode="json"),
+        history=full_history,
+    )
+
+    assert full_slots.language == "python"
+    assert full_slots.target_level == "beginner"
+    assert full_slots.time_budget is not None
+    assert full_slots.time_budget.minutes_per_day == 60
+    assert full_slots.time_budget.days_per_week == 7
+    assert full_slots.plan_ready is True
+    assert detect_plan_proposal(full_context, full_slots) is True
+
+    drip_history = [
+        {"role": "user", "content": "Python"},
+        {"role": "agent", "content": "你目前是什么水平？"},
+        {"role": "user", "content": "零基础"},
+        {"role": "agent", "content": "每天能学多久？"},
+        {"role": "user", "content": "每天 30 分钟"},
+        {"role": "agent", "content": "想重点做什么？"},
+        {"role": "user", "content": "Web 后端开发"},
+    ]
+    drip_slots = keyword_extract_slots(drip_history, ExtractedSlots())
+    assert drip_slots.language == "python"
+    assert drip_slots.target_level == "beginner"
+    assert drip_slots.time_budget is not None
+    assert drip_slots.time_budget.minutes_per_day == 30
+    assert drip_slots.focus == "Web"
+    assert drip_slots.plan_ready is True
+
+
+def test_confirm_onboarding_plan_uses_stashed_draft(client: TestClient) -> None:
+    user = _create_user(client)
+    course = _course_by_language(client, "python")
+    draft_response = client.post(
+        "/api/plans/generate",
+        json={
+            "user_id": user["id"],
+            "mode": "goal_based",
+            "goal_text": "学习 Python Web 后端，从零基础入门。",
+            "course_id": course["id"],
+            "target_level": "beginner",
+        },
+    )
+    assert draft_response.status_code == 200
+    plan_draft = PlanDraft.model_validate(draft_response.json()["plan_draft"])
+    slots = ExtractedSlots(
+        language="python",
+        target_level="beginner",
+        goal_text=plan_draft.goal_text,
+        time_budget={"minutes_per_day": 60, "days_per_week": 7},
+        focus="Web",
+        plan_ready=True,
+    )
+
+    with connect() as conn:
+        conversation_id = create_onboarding_session(conn, user_id=str(user["id"]))
+        stash_plan_draft(
+            conn,
+            conversation_id=conversation_id,
+            plan_draft=plan_draft,
+            slots=slots,
+        )
+        conn.commit()
+
+    confirm = client.post(
+        f"/api/onboarding/{conversation_id}/confirm_plan",
+        json={"user_id": user["id"]},
+    )
+    assert confirm.status_code == 201
+    body = confirm.json()
+    assert body["LearningPlan"]["goal_text"] == plan_draft.goal_text
+    assert body["LearningPlan"]["language"] == "python"
+
+    replay = client.post(
+        f"/api/onboarding/{conversation_id}/confirm_plan",
+        json={"user_id": user["id"]},
+    )
+    assert replay.status_code == 201
+    assert replay.json()["LearningPlan"]["id"] == body["LearningPlan"]["id"]
+    assert replay.json()["idempotency_replayed"] is True
+
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT status, extracted_context FROM onboarding_conversations WHERE id = %s",
+            (conversation_id,),
+        ).fetchone()
+    assert row is not None
+    assert row["status"] == "confirmed"
+    assert row["extracted_context"]["plan_draft"]["draft_id"] == plan_draft.draft_id
+
+
+def test_onboarding_message_stream_triggers_plan_from_first_complete_turn(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user = _create_user(client)
+    request_id = f"req_onboarding_sse_{uuid.uuid4().hex}"
+
+    def fake_start_generation(context, *, user_content, settings=None, client=None):  # type: ignore[no-untyped-def]
+        del context, user_content, settings, client
+        return OnboardingMessageGeneration(
+            chunks=["信息够了，我帮你生成一份学习路线。"],
+            generation_source="deterministic",
+            generation_model="fake-onboarding-model",
+        )
+
+    monkeypatch.setattr(onboarding_route, "start_onboarding_generation", fake_start_generation)
+    monkeypatch.setattr(
+        onboarding_route,
+        "extract_slots",
+        lambda context: keyword_extract_slots(context.history, ExtractedSlots()),
+    )
+
+    with client.stream(
+        "POST",
+        "/api/onboarding/messages",
+        headers={"Accept": "text/event-stream", "X-Request-Id": request_id},
+        json={
+            "user_id": user["id"],
+            "content": "我想学 Python Web 后端，零基础，每天 1 小时",
+            "client_message_id": f"desktop_onboarding_msg_{uuid.uuid4().hex}",
+        },
+    ) as response:
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/event-stream")
+        events = _parse_sse_events("".join(response.iter_text()))
+
+    event_types = [event["event"] for event in events]
+    assert "session_created" in event_types
+    assert "agent_message" in event_types
+    assert "tool_call" in event_types
+    assert "plan_draft" not in event_types
+    assert event_types[-1] == "done"
+
+    session_created = next(event for event in events if event["event"] == "session_created")
+    conversation_id = str(session_created["data"]["onboarding_session_id"])
+    tool_done = next(
+        event
+        for event in events
+        if event["event"] == "tool_call" and event["data"]["phase"] == "done"
+    )
+    route_args = tool_done["data"]["arguments"]
+    assert route_args["language"] == "python"
+    assert route_args["goal_text"] == "学习 Python，聚焦 Web，从零基础入门"
+    assert route_args["modules"][0]["title"] == "Functions, stdout, and tests"
+
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT extracted_context FROM onboarding_conversations WHERE id = %s",
+            (conversation_id,),
+        ).fetchone()
+    assert row is not None
+    assert row["extracted_context"]["language"] == "python"
+    assert row["extracted_context"]["plan_draft"]["draft_id"] == route_args["plan_id"]
+
+    confirm = client.post(
+        f"/api/onboarding/{conversation_id}/confirm_plan",
+        json={"user_id": user["id"]},
+    )
+    assert confirm.status_code == 201
+    assert confirm.json()["LearningPlan"]["goal_text"] == route_args["goal_text"]
+
+
 def _create_user(client: TestClient) -> dict[str, object]:
     response = client.post(
         "/api/users",
@@ -270,3 +477,19 @@ def _course_by_language(client: TestClient, language: str) -> dict[str, object]:
     course = items[0]
     assert isinstance(course, dict)
     return course
+
+
+def _parse_sse_events(raw: str) -> list[dict[str, object]]:
+    events: list[dict[str, object]] = []
+    for frame in raw.replace("\r\n", "\n").split("\n\n"):
+        event_type: str | None = None
+        data_lines: list[str] = []
+        for line in frame.splitlines():
+            if line.startswith("event:"):
+                event_type = line.removeprefix("event:").strip()
+            elif line.startswith("data:"):
+                data_lines.append(line.removeprefix("data:").strip())
+        if not event_type:
+            continue
+        events.append({"event": event_type, "data": json.loads("\n".join(data_lines))})
+    return events

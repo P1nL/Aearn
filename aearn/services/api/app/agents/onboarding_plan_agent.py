@@ -66,7 +66,7 @@ class OnboardingPlanClient(Protocol):
         self,
         context: OnboardingPlanContext,
         *,
-        temperature: float = 0.2,
+        temperature: float | None = None,
     ) -> OnboardingPlanJsonResponse: ...
 
 
@@ -89,7 +89,7 @@ class AgentsSDKOnboardingPlanClient:
         self,
         context: OnboardingPlanContext,
         *,
-        temperature: float = 0.2,
+        temperature: float | None = None,
     ) -> OnboardingPlanJsonResponse:
         messages = _build_messages(context)
         instructions, input_text = split_chat_messages(messages)
@@ -166,7 +166,7 @@ def build_sdk_onboarding_plan_response(
         return None
 
     try:
-        result = resolved_client.complete_json(context, temperature=0.2)
+        result = resolved_client.complete_json(context, temperature=None)
         response = _validate_onboarding_plan_response(result.content, context)
     except SAFE_GENERATION_EXCEPTIONS:
         return None

@@ -150,6 +150,23 @@ export async function confirmPlan(userId: string, planDraft: PlanDraft): Promise
   return payload;
 }
 
+export async function confirmOnboardingPlan(
+  conversationId: string,
+  userId: string,
+): Promise<CreatedPlanResponse> {
+  const payload = await requestJson(
+    `${API_BASE_URL}/api/onboarding/${encodeURIComponent(conversationId)}/confirm_plan`,
+    {
+      method: "POST",
+      body: JSON.stringify({ user_id: userId }),
+    },
+  );
+  if (!isCreatedPlanResponse(payload)) {
+    throw new Error("Onboarding plan confirmation returned an invalid payload");
+  }
+  return payload;
+}
+
 export async function fetchPlanDetail(planId: string, signal?: AbortSignal): Promise<CreatedPlanResponse> {
   const payload = await requestJson(`${API_BASE_URL}/api/plans/${encodeURIComponent(planId)}`, { signal });
   if (!isCreatedPlanResponse(payload)) {

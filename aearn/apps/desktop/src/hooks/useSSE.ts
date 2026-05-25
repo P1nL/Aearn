@@ -7,7 +7,6 @@ export type SSEEventType =
   | "tool_call"
   | "runner_result"
   | "evaluation_result"
-  | "plan_draft"
   | "session_created"
   | "done"
   | "error";
@@ -61,14 +60,6 @@ export type SSEEvaluationResult = {
   code_completion_result: CodeCompletionResult;
 };
 
-export type SSEPlanDraft = {
-  request_id: string;
-  session_id: string;
-  draft_id: string;
-  modules: Array<{ title: string; knowledge_points: Array<{ title: string; id: string }> }>;
-  summary: string;
-};
-
 export type SSEToolCallStart = {
   phase: "start";
   tool_call_id: string;
@@ -108,7 +99,6 @@ export type SSEEvent =
   | { type: "tool_call"; data: SSEToolCall }
   | { type: "runner_result"; data: SSERunnerResult }
   | { type: "evaluation_result"; data: SSEEvaluationResult }
-  | { type: "plan_draft"; data: SSEPlanDraft }
   | { type: "session_created"; data: SSESessionCreated }
   | { type: "done"; data: SSEDone }
   | { type: "error"; data: SSEError };
@@ -317,8 +307,6 @@ function toTypedSSEEvent(type: SSEEventType, data: unknown): SSEEvent | null {
       return { type, data: data as SSERunnerResult };
     case "evaluation_result":
       return { type, data: data as SSEEvaluationResult };
-    case "plan_draft":
-      return { type, data: data as SSEPlanDraft };
     case "session_created":
       return { type, data: data as SSESessionCreated };
     case "done":
@@ -357,7 +345,6 @@ function isSSEEventType(value: string): value is SSEEventType {
     value === "tool_call" ||
     value === "runner_result" ||
     value === "evaluation_result" ||
-    value === "plan_draft" ||
     value === "session_created" ||
     value === "done" ||
     value === "error"

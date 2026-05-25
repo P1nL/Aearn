@@ -2,24 +2,38 @@ import asyncio
 import uuid
 from collections.abc import AsyncGenerator, Iterable
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Header, Request, status
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.core.errors import error_response, request_id_from
 from app.db.connection import connect
 from app.services.onboarding_conversation import (
+    OnboardingPlanDraftError,
     OnboardingSessionNotFoundError,
-    build_deterministic_learning_route,
-    build_legacy_plan_draft_payload,
+    build_plan_draft_from_slots,
     create_onboarding_session,
     detect_plan_proposal,
     deterministic_onboarding_generation,
+    extract_slots,
+    learning_route_args_from_plan_draft,
     list_onboarding_messages,
     load_onboarding_context,
+    load_stashed_plan_draft,
+    persist_extracted_slots,
     prepare_onboarding_message,
     safe_generation_exceptions,
+    stash_plan_draft,
     start_onboarding_generation,
     store_onboarding_agent_message,
+    update_onboarding_status,
+)
+from app.services.plan_repository import (
+    EntityNotFoundError,
+    IdempotencyConflictError,
+    PlanDraftError,
+    confirm_plan,
+    default_confirm_key,
+    request_hash,
 )
 from app.services.sse import SSEWriter, chunk_tool_call_arguments, stream_response
 
@@ -80,6 +94,118 @@ def read_onboarding_messages(
         "onboarding_session_id": session_id,
         "messages": rows,
     }
+
+
+@router.post(
+    "/{conversation_id}/confirm_plan",
+    status_code=status.HTTP_201_CREATED,
+    response_model=None,
+)
+async def confirm_onboarding_plan(
+    conversation_id: str,
+    request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> dict[str, object] | JSONResponse:
+    """Persist the stashed PlanDraft for the given onboarding conversation."""
+
+    body = await request.json()
+    user_id = str(body.get("user_id") or "")
+    if not user_id:
+        return error_response(
+            request,
+            code="VALIDATION_ERROR",
+            message="缺少 user_id",
+            status_code=status.HTTP_400_BAD_REQUEST,
+            details={"conversation_id": conversation_id},
+        )
+
+    with connect() as conn:
+        try:
+            context = load_onboarding_context(
+                conn, conversation_id=conversation_id, user_id=user_id
+            )
+        except OnboardingSessionNotFoundError as exc:
+            return error_response(
+                request,
+                code=exc.code,
+                message=exc.message,
+                status_code=status.HTTP_404_NOT_FOUND,
+                details={"conversation_id": conversation_id},
+            )
+
+        if context.user_id != user_id:
+            return error_response(
+                request,
+                code="USER_MISMATCH",
+                message="该建档会话不属于当前用户",
+                status_code=status.HTTP_403_FORBIDDEN,
+                details={"conversation_id": conversation_id},
+            )
+
+        plan_draft = load_stashed_plan_draft(conn, conversation_id=conversation_id)
+        if plan_draft is None:
+            return error_response(
+                request,
+                code="PLAN_DRAFT_NOT_READY",
+                message="计划草稿尚未生成，请先完成对话流程",
+                status_code=status.HTTP_404_NOT_FOUND,
+                details={"conversation_id": conversation_id},
+            )
+
+        # Make sure the stashed draft belongs to the requesting user; rebuild
+        # under the right user_id if not, so confirm_plan accepts it.
+        if plan_draft.user_id != user_id:
+            plan_draft = plan_draft.model_copy(update={"user_id": user_id})
+
+        key = idempotency_key or default_confirm_key(user_id, plan_draft.draft_id)
+        body_hash = request_hash(
+            {"user_id": user_id, "plan_draft": plan_draft.model_dump(mode="json")}
+        )
+        try:
+            response, replayed = confirm_plan(
+                conn,
+                user_id=user_id,
+                plan_draft=plan_draft,
+                idempotency_key=key,
+                request_hash=body_hash,
+            )
+        except EntityNotFoundError as exc:
+            conn.rollback()
+            return error_response(
+                request,
+                code=exc.code,
+                message=exc.message,
+                status_code=status.HTTP_404_NOT_FOUND,
+                details={"user_id": user_id},
+            )
+        except PlanDraftError as exc:
+            conn.rollback()
+            return error_response(
+                request,
+                code="PLAN_DRAFT_INVALID",
+                message="plan_draft 未通过校验",
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                details={"reason": str(exc)},
+            )
+        except IdempotencyConflictError as exc:
+            conn.rollback()
+            return error_response(
+                request,
+                code="IDEMPOTENCY_CONFLICT",
+                message="同一幂等键对应不同请求体",
+                status_code=status.HTTP_409_CONFLICT,
+                details={"reason": str(exc)},
+                recoverable=False,
+            )
+
+        update_onboarding_status(
+            conn, conversation_id=conversation_id, status="confirmed"
+        )
+        conn.commit()
+
+    if replayed:
+        response["idempotency_replayed"] = True
+    return response
 
 
 async def _onboarding_message_stream(
@@ -211,45 +337,85 @@ async def _onboarding_message_stream(
                     ),
                 )
 
-        # Decide whether to emit a learning route tool call this turn.
-        tool_calls_for_metadata: list[dict[str, object]] = []
+        # Run the slot extractor on a refreshed context (now that the user
+        # message is committed). The extractor is best-effort; failures
+        # leave slots untouched and we fall back to deterministic behavior.
         with connect() as conn_refresh:
             refreshed = load_onboarding_context(
                 conn_refresh, conversation_id=prepared.conversation_id, user_id=user_id
             )
-        if detect_plan_proposal(refreshed):
-            learning_route_args = build_deterministic_learning_route(refreshed)
-            tool_call_id = f"tc_{uuid.uuid4().hex[:12]}"
 
-            # Dual-emit legacy plan_draft for backward compat (Slice 1).
-            yield writer.event(
-                "plan_draft",
-                build_legacy_plan_draft_payload(
-                    learning_route_args,
-                    request_id=request_id,
-                    session_id=prepared.conversation_id,
-                ),
+        slots = await asyncio.to_thread(extract_slots, refreshed)
+
+        with connect() as conn_persist:
+            persist_extracted_slots(
+                conn_persist,
+                conversation_id=prepared.conversation_id,
+                slots=slots,
+            )
+            conn_persist.commit()
+
+        # Reload so detect_plan_proposal sees the freshly persisted slots
+        # alongside any previously stashed plan_draft.
+        with connect() as conn_reload:
+            refreshed = load_onboarding_context(
+                conn_reload, conversation_id=prepared.conversation_id, user_id=user_id
             )
 
-            yield writer.tool_call_start(
-                tool_call_id=tool_call_id, name="show_learning_route"
-            )
-            for chunk in chunk_tool_call_arguments(learning_route_args):
-                yield writer.tool_call_delta(
-                    tool_call_id=tool_call_id, arguments_delta=chunk
-                )
-                await asyncio.sleep(0)
-            yield writer.tool_call_done(
-                tool_call_id=tool_call_id, arguments=learning_route_args
-            )
-
-            tool_calls_for_metadata.append(
-                {
-                    "id": tool_call_id,
-                    "name": "show_learning_route",
-                    "args": learning_route_args,
-                    "status": "done",
+        tool_calls_for_metadata: list[dict[str, object]] = []
+        plan_error_payload: dict[str, str] | None = None
+        if detect_plan_proposal(refreshed, slots):
+            try:
+                with connect() as conn_plan:
+                    plan_draft = build_plan_draft_from_slots(
+                        conn_plan, slots=slots, user_id=user_id
+                    )
+                    stash_plan_draft(
+                        conn_plan,
+                        conversation_id=prepared.conversation_id,
+                        plan_draft=plan_draft,
+                        slots=slots,
+                    )
+                    conn_plan.commit()
+            except OnboardingPlanDraftError as exc:
+                plan_error_payload = {"code": exc.code, "message": exc.message}
+            except Exception as exc:  # noqa: BLE001 - never crash the stream
+                plan_error_payload = {
+                    "code": "PLAN_DRAFT_INVALID",
+                    "message": f"无法生成计划草稿：{exc}",
                 }
+            else:
+                learning_route_args = learning_route_args_from_plan_draft(plan_draft)
+                tool_call_id = f"tc_{uuid.uuid4().hex[:12]}"
+
+                yield writer.tool_call_start(
+                    tool_call_id=tool_call_id, name="show_learning_route"
+                )
+                for chunk in chunk_tool_call_arguments(learning_route_args):
+                    yield writer.tool_call_delta(
+                        tool_call_id=tool_call_id, arguments_delta=chunk
+                    )
+                    await asyncio.sleep(0)
+                yield writer.tool_call_done(
+                    tool_call_id=tool_call_id, arguments=learning_route_args
+                )
+
+                tool_calls_for_metadata.append(
+                    {
+                        "id": tool_call_id,
+                        "name": "show_learning_route",
+                        "args": learning_route_args,
+                        "status": "done",
+                    }
+                )
+
+        if plan_error_payload is not None:
+            yield writer.error(
+                code=plan_error_payload["code"],
+                message=plan_error_payload["message"],
+                request_id=request_id,
+                details={"onboarding_session_id": prepared.conversation_id},
+                recoverable=True,
             )
 
         # Persist agent message (and any resolved tool calls in metadata)
