@@ -268,7 +268,7 @@ def test_run_attempt_does_not_update_review_state_and_scheduler_is_idempotent(cl
         },
     )
     session = start.json()
-    exercise = session["exercise"]
+    exercise = _unlock_practice_exercise(client, session)
     filled_blanks = _filled_blanks_for(exercise)
 
     run = client.post(
@@ -386,6 +386,23 @@ def _course_by_language(client: TestClient, language: str) -> dict[str, object]:
     course = items[0]
     assert isinstance(course, dict)
     return course
+
+
+def _unlock_practice_exercise(client: TestClient, session: dict[str, object]) -> dict[str, object]:
+    response = client.post(
+        f"/api/learning-sessions/{session['session_id']}/messages",
+        json={
+            "role": "user",
+            "content": "开始练习，给我题。",
+            "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
+        },
+    )
+    assert response.status_code == 200
+    tool_calls = response.json()["tool_calls"]
+    assert tool_calls and tool_calls[0]["name"] == "show_code_exercise"
+    exercise = tool_calls[0]["args"]["exercise"]
+    assert isinstance(exercise, dict)
+    return exercise
 
 
 def _mark_due(knowledge_point_id: str, *, reps: int = 1) -> None:

@@ -104,13 +104,18 @@ def confirm_plan(
         module_rows.append(module_row)
 
         for knowledge_point in module.knowledge_points:
+            lesson_outline, lesson_sources = _curated_lesson_content(
+                language=plan_draft.language,
+                title=knowledge_point.title,
+                description=knowledge_point.description,
+            )
             kp_row = conn.execute(
                 """
                 INSERT INTO knowledge_points (
                   module_id, language_course_id, title, description, order_index,
-                  skill_tags_json
+                  skill_tags_json, lesson_outline_json, lesson_sources_json
                 )
-                VALUES (%s, %s, %s, %s, %s, %s::jsonb)
+                VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb)
                 RETURNING *
                 """,
                 (
@@ -120,6 +125,8 @@ def confirm_plan(
                     knowledge_point.description,
                     len(knowledge_point_rows),
                     json.dumps(knowledge_point.skill_tags),
+                    json.dumps(lesson_outline),
+                    json.dumps(lesson_sources),
                 ),
             ).fetchone()
             if kp_row is None:
@@ -269,3 +276,85 @@ def _decimal_to_float(value: object) -> float:
     if isinstance(value, int | float):
         return float(value)
     return 0.0
+
+
+def _curated_lesson_content(
+    *,
+    language: str,
+    title: str,
+    description: str | None,
+) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    overview = description or f"理解 {title} 的基本行为，并能用自己的话说明原因。"
+    if language == "javascript":
+        return (
+            [
+                {
+                    "id": "core_concept",
+                    "title": title,
+                    "note": overview,
+                },
+                {
+                    "id": "runtime_behavior",
+                    "title": "事件与状态行为",
+                    "note": "事件回调会在交互发生时运行；需要跨交互保留的状态应位于可复用的作用域。",
+                },
+                {
+                    "id": "verification",
+                    "title": "可验证的结果",
+                    "note": "用可见 DOM 结果或测试断言确认事件是否绑定、状态是否按预期更新。",
+                },
+            ],
+            [
+                {
+                    "title": "MDN Web Docs: EventTarget.addEventListener()",
+                    "url": "https://developer.mozilla.org/docs/Web/API/EventTarget/addEventListener",
+                },
+                {
+                    "title": "MDN JavaScript Guide: Closures",
+                    "url": "https://developer.mozilla.org/docs/Web/JavaScript/Guide/Closures",
+                },
+            ],
+        )
+    if language == "python":
+        return (
+            [
+                {"id": "core_concept", "title": title, "note": overview},
+                {
+                    "id": "value_flow",
+                    "title": "返回值与输出",
+                    "note": "函数的返回值供调用方继续计算，stdout 只负责可见输出与调试观察。",
+                },
+                {
+                    "id": "verification",
+                    "title": "断言验证",
+                    "note": "通过可见测试比较输入和返回值，使用 stdout 辅助定位而不是替代结果。",
+                },
+            ],
+            [
+                {
+                    "title": "Python Documentation: Defining Functions",
+                    "url": "https://docs.python.org/3/tutorial/controlflow.html#defining-functions",
+                },
+            ],
+        )
+    return (
+        [
+            {"id": "core_concept", "title": title, "note": overview},
+            {
+                "id": "structure",
+                "title": "代码结构",
+                "note": "先读清类型、参数和返回值之间的约束，再判断代码行为。",
+            },
+            {
+                "id": "verification",
+                "title": "静态检查",
+                "note": "当前阶段以阅读和补全为主，不把尚未提供的运行能力当作验证事实。",
+            },
+        ],
+        [
+            {
+                "title": f"Official {language} language documentation",
+                "url": "",
+            },
+        ],
+    )

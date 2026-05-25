@@ -16,6 +16,10 @@ import type {
   SessionState,
 } from "../appTypes";
 import { AssistantUIThread } from "../components/AssistantUIThread";
+import {
+  LearningToolRuntimeProvider,
+} from "../components/generative-ui/assistantToolUIs";
+import type { CodeExerciseToolArgs } from "../components/generative-ui/types";
 import { SystemCard } from "../components/SystemCard";
 import { ExerciseWorkbench } from "../features/learning/ExerciseWorkbench";
 import {
@@ -25,6 +29,7 @@ import {
   toActionError,
 } from "../lib/learningHelpers";
 import { useSSE } from "../hooks/useSSE";
+import type { SSEToolCall } from "../hooks/useSSE";
 import type {
   CreatedPlanResponse,
   ExplainErrorResponse,
@@ -32,6 +37,7 @@ import type {
   ExplanationFocus,
   HintLevel,
   HintResponse,
+  LearningExercise,
   RunExerciseResponse,
   SubmitExerciseResponse,
 } from "../types";
@@ -64,6 +70,9 @@ type LearningWorkspacePageProps = {
   onCloseNoteDrawer: () => void;
   onAddMessage: (msg: ConversationMessage) => void;
   onUpdateMessage: (id: string, patch: { text?: string; appendText?: string; status?: ConversationMessage["status"]; statusText?: string }) => void;
+  onStartToolCall: (messageId: string, toolCallId: string, name: string) => void;
+  onAppendToolCallDelta: (messageId: string, toolCallId: string, delta: string) => void;
+  onFinalizeToolCall: (messageId: string, toolCallId: string, args: unknown) => void;
 };
 
 export function LearningWorkspacePage({
@@ -83,6 +92,9 @@ export function LearningWorkspacePage({
   onCloseNoteDrawer,
   onAddMessage,
   onUpdateMessage,
+  onStartToolCall,
+  onAppendToolCallDelta,
+  onFinalizeToolCall,
 }: LearningWorkspacePageProps) {
   const [exerciseActionState, setExerciseActionState] = useState<AsyncActionState>({ status: "idle" });
   const [editorCode, setEditorCode] = useState("");
@@ -101,12 +113,46 @@ export function LearningWorkspacePage({
   const [explanationRound, setExplanationRound] = useState(1);
   const [explanationCheckResult, setExplanationCheckResult] = useState<ExplanationCheckResponse | null>(null);
   const [composerStream, setComposerStream] = useState<ComposerStreamRequest | null>(null);
+  const [unlockedExercise, setUnlockedExercise] = useState<LearningExercise | null>(null);
   const conversationScrollRef = useRef<HTMLElement | null>(null);
 
   const session = sessionState.status === "ready" ? sessionState.data : null;
-  const activeExercise = session?.exercise ?? null;
+  const activeExercise = session?.exercise ?? unlockedExercise;
   const initialAgentMessage = session?.initial_agent_message.trim() ?? "";
   const composerStreaming = composerStream !== null;
+  const hasExerciseToolMessage = messages.some((message) =>
+    message.toolCalls?.some((toolCall) => toolCall.name === "show_code_exercise"),
+  );
+  const practiceUnlocked = session?.learning_stage === "practice_support" || Boolean(activeExercise) || hasExerciseToolMessage;
+  const resumeExerciseMessage: ConversationMessage | null =
+    session && session.exercise && !hasExerciseToolMessage
+      ? {
+          id: `resume-exercise-${session.session_id}-${session.exercise.id}`,
+          speaker: "agent",
+          text: "",
+          label: "Agent",
+          status: "done",
+          toolCalls: [
+            {
+              id: `tc_resume_${session.exercise.id}`,
+              name: "show_code_exercise",
+              args: {
+                session_id: session.session_id,
+                knowledge_point_id: session.context_snapshot.KnowledgePoint.id,
+                exercise: session.exercise,
+                unlock_reason: session.learning_stage_state.practice_unlock_reason ?? "legacy_session",
+                learning_incomplete: Boolean(session.learning_stage_state.learning_incomplete),
+                concept_summary: session.learning_stage_state.concept_summary ?? "",
+                notice: session.learning_stage_state.learning_incomplete
+                  ? `当前学习进度尚未完成。概念小结：${session.learning_stage_state.concept_summary ?? ""}`
+                  : `概念小结：${session.learning_stage_state.concept_summary ?? ""}`,
+              },
+              argsBuffer: "",
+              status: "done",
+            },
+          ],
+        }
+      : null;
 
   // Build thread messages with initialAgentMessage prepended as a proper message
   const threadMessages: ConversationMessage[] = session && initialAgentMessage
@@ -119,10 +165,14 @@ export function LearningWorkspacePage({
           status: "done" as const,
         },
         ...messages,
+        ...(resumeExerciseMessage ? [resumeExerciseMessage] : []),
       ]
-    : messages;
+    : [...messages, ...(resumeExerciseMessage ? [resumeExerciseMessage] : [])];
 
-  const LEARNING_QUICK_REPLIES = ["给我提示", "解释这个错误"];
+  const learningQuickReplies =
+    practiceUnlocked
+      ? ["给我提示", "解释这个错误"]
+      : ["我理解了，请检查", "开始练习", "查看历史对话"];
 
   // --- SSE streaming for composer messages ---
   useSSE(composerStream?.endpoint ?? null, {
@@ -130,14 +180,19 @@ export function LearningWorkspacePage({
     body: composerStream?.body,
     requestId: composerStream?.requestId,
     onEvent: (streamEvent) => {
-      if (!composerStream || streamEvent.type !== "agent_message") return;
-      const incomingText = streamEvent.data.content || streamEvent.data.delta;
-      onUpdateMessage(composerStream.assistantMessageId, {
-        text: streamEvent.data.content ? incomingText : undefined,
-        appendText: streamEvent.data.content ? undefined : incomingText,
-        status: "streaming",
-        statusText: "正在生成……",
-      });
+      if (!composerStream) return;
+      if (streamEvent.type === "agent_message") {
+        const incomingText = streamEvent.data.content || streamEvent.data.delta;
+        onUpdateMessage(composerStream.assistantMessageId, {
+          text: streamEvent.data.content ? incomingText : undefined,
+          appendText: streamEvent.data.content ? undefined : incomingText,
+          status: "streaming",
+          statusText: "正在生成……",
+        });
+      }
+      if (streamEvent.type === "tool_call") {
+        handleToolCallEvent(composerStream.assistantMessageId, streamEvent.data);
+      }
     },
     onDone: () => {
       if (!composerStream) return;
@@ -181,6 +236,24 @@ export function LearningWorkspacePage({
     });
   }
 
+  function handleToolCallEvent(messageId: string, payload: SSEToolCall) {
+    if (payload.phase === "start") {
+      onStartToolCall(messageId, payload.tool_call_id, payload.name);
+      return;
+    }
+    if (payload.phase === "delta") {
+      onAppendToolCallDelta(messageId, payload.tool_call_id, payload.arguments_delta);
+      return;
+    }
+    if (payload.phase === "done") {
+      const exercise = extractExerciseFromToolArgs(payload.arguments);
+      if (exercise) {
+        setUnlockedExercise(exercise);
+      }
+      onFinalizeToolCall(messageId, payload.tool_call_id, payload.arguments);
+    }
+  }
+
   function resetWorkbenchState(nextCode = "", nextBlanks: Record<string, string> = {}, nextSelectedBlankId = "") {
     setEditorCode(nextCode);
     setFilledBlanks(nextBlanks);
@@ -199,6 +272,10 @@ export function LearningWorkspacePage({
     setExplanationRound(1);
     setExplanationCheckResult(null);
   }
+
+  useEffect(() => {
+    setUnlockedExercise(session?.exercise ?? null);
+  }, [session?.session_id, session?.exercise?.id, resetNonce]);
 
   useEffect(() => {
     if (session && activeExercise) {
@@ -406,6 +483,63 @@ export function LearningWorkspacePage({
     }
   }
 
+  function renderCodeExerciseTool(args: CodeExerciseToolArgs | null) {
+    if (!session || !args) {
+      return <div className="tool-card">正在准备练习卡片…</div>;
+    }
+    const exercise = activeExercise ?? args.exercise;
+    return (
+      <div className="learning-tool-exercise">
+        {args.notice && <div className="draft-boundary early-practice-notice">{args.notice}</div>}
+        <ExerciseWorkbench
+          session={session}
+          exercise={exercise}
+          code={editorCode}
+          filledBlanks={filledBlanks}
+          lastRun={lastRun}
+          lastRunMode={lastRunMode}
+          lastSubmit={lastSubmit}
+          actionState={exerciseActionState}
+          isStale={isStale}
+          hintUsageCount={hintUsageCount}
+          errorCount={errorCount}
+          hintLevel={hintLevel}
+          selectedBlankId={selectedBlankId}
+          hintHistory={hintHistory}
+          explainErrorResult={explainErrorResult}
+          explanationText={explanationText}
+          explanationFocus={explanationFocus}
+          explanationRound={explanationRound}
+          explanationCheckResult={explanationCheckResult}
+          onCodeChange={(value) => {
+            setEditorCode(value);
+            if (lastRun || lastSubmit) {
+              setIsStale(true);
+            }
+          }}
+          onBlankChange={(blankKey, value) => {
+            setFilledBlanks((current) => ({ ...current, [blankKey]: value }));
+            if (lastRun || lastSubmit) {
+              setIsStale(true);
+            }
+          }}
+          onRunPreview={() => void handleRunExercise("preview")}
+          onRunVisibleTests={() => void handleRunExercise("visible_tests")}
+          onSubmit={() => void handleSubmitExercise()}
+          onHintLevelChange={setHintLevel}
+          onSelectedBlankChange={setSelectedBlankId}
+          onRequestHint={() => void handleRequestHint()}
+          onExplainError={() => void handleExplainError()}
+          onExplanationTextChange={setExplanationText}
+          onExplanationFocusChange={setExplanationFocus}
+          onCheckExplanation={() => void handleCheckExplanation()}
+          onRetryAction={handleRetryExerciseAction}
+          onOpenNoteDrawer={onOpenNoteDrawer}
+        />
+      </div>
+    );
+  }
+
   const emptyState = (
     <div className="empty-chat-state">
       <span className="empty-chat-kicker">Aearn Dialogue</span>
@@ -432,28 +566,32 @@ export function LearningWorkspacePage({
             </p>
           </div>
 
-          <AssistantUIThread
-            messages={session ? threadMessages : []}
-            isStreaming={composerStreaming}
-            sessionActive={Boolean(session)}
-            onSend={handleComposerSubmit}
-            emptyState={!session && sessionState.status === "idle" ? emptyState : undefined}
-            placeholder={
-              composerStreaming
-                ? "AI 正在回复……"
-                : !session
-                  ? "先从左侧路线进入一个知识点，再向 Agent 追问。"
-                  : "粘贴你的代码、运行输出、测试失败或请 Agent 解释错因……"
-            }
-            guidanceText={!session ? "先进入一个 active learning session，composer 才会调用模型流式回答。" : undefined}
-            canOpenNoteDrawer={canOpenNoteDrawer}
-            noteDrawerOpen={noteDrawerOpen}
-            onToggleNoteDrawer={() => {
-              noteDrawerOpen ? onCloseNoteDrawer() : onOpenNoteDrawer();
-            }}
-            hideNoteButton={false}
-            quickReplies={session && messages.length === 0 ? LEARNING_QUICK_REPLIES : undefined}
-          />
+          <LearningToolRuntimeProvider runtime={{ renderCodeExercise: renderCodeExerciseTool }}>
+            <AssistantUIThread
+              messages={session ? threadMessages : []}
+              isStreaming={composerStreaming}
+              sessionActive={Boolean(session)}
+              onSend={handleComposerSubmit}
+              emptyState={!session && sessionState.status === "idle" ? emptyState : undefined}
+              placeholder={
+                composerStreaming
+                  ? "AI 正在回复……"
+                  : !session
+                    ? "先从左侧路线进入一个知识点，再向 Agent 追问。"
+                    : practiceUnlocked
+                      ? "粘贴你的代码、运行输出、测试失败或请 Agent 解释错因……"
+                      : "先追问概念、尝试费曼复述，或输入“开始练习”提前进入练习……"
+              }
+              guidanceText={!session ? "先进入一个 active learning session，composer 才会调用模型流式回答。" : undefined}
+              canOpenNoteDrawer={canOpenNoteDrawer}
+              noteDrawerOpen={noteDrawerOpen}
+              onToggleNoteDrawer={() => {
+                noteDrawerOpen ? onCloseNoteDrawer() : onOpenNoteDrawer();
+              }}
+              hideNoteButton={false}
+              quickReplies={session && messages.length === 0 ? learningQuickReplies : undefined}
+            />
+          </LearningToolRuntimeProvider>
 
           {sessionState.status === "loading" && <SystemCard title="系统状态" body="正在启动当前知识点会话…" />}
           {sessionState.status === "error" && (
@@ -469,56 +607,6 @@ export function LearningWorkspacePage({
             />
           )}
 
-          {session && activeExercise && (
-            <>
-
-              <ExerciseWorkbench
-                session={session}
-                exercise={activeExercise}
-                code={editorCode}
-                filledBlanks={filledBlanks}
-                lastRun={lastRun}
-                lastRunMode={lastRunMode}
-                lastSubmit={lastSubmit}
-                actionState={exerciseActionState}
-                isStale={isStale}
-                hintUsageCount={hintUsageCount}
-                errorCount={errorCount}
-                hintLevel={hintLevel}
-                selectedBlankId={selectedBlankId}
-                hintHistory={hintHistory}
-                explainErrorResult={explainErrorResult}
-                explanationText={explanationText}
-                explanationFocus={explanationFocus}
-                explanationRound={explanationRound}
-                explanationCheckResult={explanationCheckResult}
-                onCodeChange={(value) => {
-                  setEditorCode(value);
-                  if (lastRun || lastSubmit) {
-                    setIsStale(true);
-                  }
-                }}
-                onBlankChange={(blankKey, value) => {
-                  setFilledBlanks((current) => ({ ...current, [blankKey]: value }));
-                  if (lastRun || lastSubmit) {
-                    setIsStale(true);
-                  }
-                }}
-                onRunPreview={() => void handleRunExercise("preview")}
-                onRunVisibleTests={() => void handleRunExercise("visible_tests")}
-                onSubmit={() => void handleSubmitExercise()}
-                onHintLevelChange={setHintLevel}
-                onSelectedBlankChange={setSelectedBlankId}
-                onRequestHint={() => void handleRequestHint()}
-                onExplainError={() => void handleExplainError()}
-                onExplanationTextChange={setExplanationText}
-                onExplanationFocusChange={setExplanationFocus}
-                onCheckExplanation={() => void handleCheckExplanation()}
-                onRetryAction={handleRetryExerciseAction}
-                onOpenNoteDrawer={onOpenNoteDrawer}
-              />
-            </>
-          )}
         </div>
       </section>
     </div>
@@ -528,4 +616,15 @@ export function LearningWorkspacePage({
 function createClientId(prefix: string): string {
   const uuid = globalThis.crypto?.randomUUID?.();
   return uuid ? `${prefix}_${uuid}` : `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+}
+
+function extractExerciseFromToolArgs(args: unknown): LearningExercise | null {
+  if (typeof args !== "object" || args === null || !("exercise" in args)) {
+    return null;
+  }
+  const exercise = (args as { exercise?: unknown }).exercise;
+  if (typeof exercise !== "object" || exercise === null || !("id" in exercise)) {
+    return null;
+  }
+  return exercise as LearningExercise;
 }

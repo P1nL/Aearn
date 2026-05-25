@@ -203,6 +203,8 @@ $$ LANGUAGE plpgsql;
 | `description` | `text` | NULL |  |
 | `order_index` | `integer` | NOT NULL DEFAULT `0` | 模块内排序 |
 | `skill_tags_json` | `jsonb` | NOT NULL DEFAULT `'[]'::jsonb` | 标签数组 |
+| `lesson_outline_json` | `jsonb` | NOT NULL DEFAULT `'[]'::jsonb` | 本地维护的概念子点提纲，来源于官方文档整理 |
+| `lesson_sources_json` | `jsonb` | NOT NULL DEFAULT `'[]'::jsonb` | 概念提纲的官方文档来源归因 |
 | `status` | `text` | NOT NULL DEFAULT `'pending'` | CHECK in `pending` / `learning` / `reviewing` / `mastered` |
 | `mastery_score` | `numeric(5,4)` | NOT NULL DEFAULT `0` | CHECK `0 <= mastery_score <= 1` |
 | `weak_points_json` | `jsonb` | NOT NULL DEFAULT `'[]'::jsonb` | 错因与薄弱点 |
@@ -321,6 +323,8 @@ $$ LANGUAGE plpgsql;
 | `summary_text` | `text` | NULL | 会话摘要 |
 | `next_entry_point` | `text` | NULL | 恢复学习入口 |
 | `request_id` | `text` | NULL | API 幂等键 |
+| `learning_stage` | `text` | NULL | CHECK in `concept_intro` / `concept_qna` / `readiness_check` / `practice_support`；仅 `session_type=learn` 使用 |
+| `learning_stage_state_json` | `jsonb` | NOT NULL DEFAULT `'{}'::jsonb` | 精简概念进度、费曼检查和练习解锁状态 |
 | `created_at` | `timestamptz` | NOT NULL DEFAULT `now()` |  |
 | `updated_at` | `timestamptz` | NOT NULL DEFAULT `now()` |  |
 
@@ -330,6 +334,26 @@ $$ LANGUAGE plpgsql;
 - UNIQUE (`user_id`, `plan_id`) WHERE `status = 'active'`
 - `idx_learning_sessions_user_started` on (`user_id`, `started_at DESC`)
 - `idx_learning_sessions_plan_type` on (`plan_id`, `session_type`, `status`)
+
+### `learning_messages`
+
+学习页专用对话历史。该表只由 `session_type=learn` 的学习会话路径写入，用于生成式历史引用卡片；不得混入建档页、复习页或笔记页对话。
+
+| 字段 | 类型 | 必填/默认值 | 约束与说明 |
+|---|---|---|---|
+| `id` | `uuid` | NOT NULL DEFAULT `gen_random_uuid()` | PK |
+| `session_id` | `uuid` | NOT NULL | FK -> `learning_sessions.id` |
+| `knowledge_point_id` | `uuid` | NOT NULL | FK -> `knowledge_points.id` |
+| `role` | `text` | NOT NULL | CHECK in `user` / `agent` |
+| `content` | `text` | NOT NULL | 用户或 Agent 在学习页中的可见文本 |
+| `client_message_id` | `text` | NULL | 用户消息幂等 ID |
+| `metadata` | `jsonb` | NULL | 可保存生成式 UI 工具调用元数据 |
+| `created_at` | `timestamptz` | NOT NULL DEFAULT `now()` |  |
+
+约束与索引：
+
+- UNIQUE (`client_message_id`) WHERE `client_message_id IS NOT NULL`
+- `idx_learning_messages_kp_session_created` on (`knowledge_point_id`, `session_id`, `created_at`)
 
 ### `attempts`
 
@@ -557,6 +581,52 @@ FSRS 更新的 append-only 日志。每次学习提交或复习提交只要更�
 ```json
 ["dom", "event", "state_scope"]
 ```
+
+### `knowledge_points.lesson_outline_json`
+
+```json
+[
+  {
+    "id": "core_concept",
+    "title": "事件监听与状态变量",
+    "note": "理解事件监听如何触发回调，以及状态变量为什么需要跨点击保存。"
+  },
+  {
+    "id": "runtime_behavior",
+    "title": "事件与状态行为",
+    "note": "事件回调会在交互发生时运行；需要跨交互保留的状态应位于可复用的作用域。"
+  }
+]
+```
+
+`id` 必须在同一知识点内稳定；`note` 是面向学习页概念讲解的短说明，不应包含练习答案或 hidden tests。
+
+### `knowledge_points.lesson_sources_json`
+
+```json
+[
+  {
+    "title": "MDN Web Docs: EventTarget.addEventListener()",
+    "url": "https://developer.mozilla.org/docs/Web/API/EventTarget/addEventListener"
+  }
+]
+```
+
+来源用于说明本地课程提纲的官方文档依据；运行时不实时抓取外部文档。
+
+### `learning_sessions.learning_stage_state_json`
+
+```json
+{
+  "covered_subpoint_ids": ["core_concept", "runtime_behavior"],
+  "feynman_status": "pending",
+  "practice_unlock_reason": null,
+  "learning_incomplete": true,
+  "concept_summary": "事件监听与状态变量：理解事件监听如何触发回调..."
+}
+```
+
+该 JSON 只保存可恢复的精简阶段状态；完整学习页对话历史保存在 `learning_messages`，并通过用户触发的历史引用 UI 读取。
 
 ### `knowledge_points.weak_points_json`
 
@@ -797,7 +867,7 @@ FSRS 更新的 append-only 日志。每次学习提交或复习提交只要更�
 
 ### `0004_knowledge_exercise_catalog`
 
-- 创建 `knowledge_points`，暂不添加 `last_session_id` FK。
+- 创建 `knowledge_points`，包含本地课程提纲 `lesson_outline_json` 和来源归因 `lesson_sources_json`，暂不添加 `last_session_id` FK。
 - 创建 `exercises`。
 - 创建 `code_blanks`。
 - 创建 `test_cases`。
@@ -808,12 +878,13 @@ FSRS 更新的 append-only 日志。每次学习提交或复习提交只要更�
 ### `0005_sessions_attempts_learning_results`
 
 - 创建 `learning_sessions`。
+- 创建 `learning_messages`，用于学习页 AI/用户对话历史引用。
 - 创建 `attempts`。
 - 创建 `session_knowledge_points`。
 - 添加 `knowledge_points.last_session_id -> learning_sessions.id` FK。
 - 创建幂等和查询索引。
 
-回滚：先 drop `knowledge_points.last_session_id` FK，再按 `session_knowledge_points`、`attempts`、`learning_sessions` 逆序删除。
+回滚：先 drop `knowledge_points.last_session_id` FK，再按 `session_knowledge_points`、`attempts`、`learning_messages`、`learning_sessions` 逆序删除。
 
 ### `0006_review_state_and_logs`
 
@@ -879,7 +950,8 @@ FSRS 更新的 append-only 日志。每次学习提交或复习提交只要更�
 |---|---|---|
 | `confirm_plan` | `learning_plans`、`plan_modules`、`knowledge_points`、可选 `exercises` | 只有用户确认后写正式计划 |
 | `initialize_review_state` | `review_states` | 为每个 `KnowledgePoint` 创建 `card_state=new`，`due_at=NULL` |
-| `start_learning_session` / `start_review_session` | `learning_sessions` | 使用 `request_id` 幂等 |
+| `start_learning_session` / `start_review_session` | `learning_sessions` | 使用 `request_id` 幂等；学习页新会话写入 `learning_stage=concept_intro` |
+| `concept_intro` / `concept_qna` / `readiness_check` | `learning_sessions`、`learning_messages` | 更新精简阶段状态并保存学习页可见对话 |
 | `run_exercise` / `run_review_exercise` | `attempts` | 保存运行事实，不更新 `ReviewState` |
 | `evaluate_attempt` | `attempts` | 写 `score`、`score_breakdown_json`、`code_completion_result`、`fsrs_rating` |
 | `update_learning_memory` | `session_knowledge_points`、`knowledge_points`、`review_states`、`review_logs` | 在同一事务内提交 |

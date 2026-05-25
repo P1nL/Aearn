@@ -1,7 +1,13 @@
 import { makeAssistantToolUI, type ToolCallMessagePartProps } from "@assistant-ui/react";
+import { createContext, useContext, type ReactNode } from "react";
 
 import { LearningRouteCard } from "./LearningRouteCard";
-import type { LearningRouteArgs, ToolUIProps } from "./types";
+import type {
+  CodeExerciseToolArgs,
+  LearningHistoryArgs,
+  LearningRouteArgs,
+  ToolUIProps,
+} from "./types";
 
 type ToolStatus = ToolUIProps<unknown>["status"];
 
@@ -26,6 +32,29 @@ const EMPTY_LEARNING_ROUTE: LearningRouteArgs = {
   language: "javascript",
   modules: [],
 };
+
+type LearningToolRuntime = {
+  renderCodeExercise?: (
+    args: CodeExerciseToolArgs | null,
+    status: ToolStatus,
+  ) => ReactNode;
+};
+
+const LearningToolRuntimeContext = createContext<LearningToolRuntime>({});
+
+export function LearningToolRuntimeProvider({
+  runtime,
+  children,
+}: {
+  runtime: LearningToolRuntime;
+  children: ReactNode;
+}) {
+  return (
+    <LearningToolRuntimeContext.Provider value={runtime}>
+      {children}
+    </LearningToolRuntimeContext.Provider>
+  );
+}
 
 function isPartialLearningRouteArgs(value: unknown): value is Partial<LearningRouteArgs> {
   return typeof value === "object" && value !== null;
@@ -108,3 +137,141 @@ export const LearningRouteToolUI = makeAssistantToolUI<LearningRouteArgs, unknow
     );
   },
 });
+
+export const CodeExerciseToolUI = makeAssistantToolUI<CodeExerciseToolArgs, unknown>({
+  toolName: "show_code_exercise",
+  render: ({ args, status }) => {
+    const runtime = useContext(LearningToolRuntimeContext);
+    const cardStatus = mapStatusToToolStatus(status);
+    const normalized = normalizeCodeExerciseArgs(args);
+    if (runtime.renderCodeExercise) {
+      return <>{runtime.renderCodeExercise(normalized, cardStatus)}</>;
+    }
+    if (!normalized) {
+      return <div className="tool-card">正在生成练习卡片…</div>;
+    }
+    return (
+      <article className="gen-card gen-exercise-card">
+        <header className="gen-card-header">
+          <span className="gen-card-kicker">练习已解锁</span>
+          <span className="gen-card-badge">{normalized.exercise.runtime_profile.language}</span>
+        </header>
+        <h3 className="gen-card-title">{normalized.exercise.title}</h3>
+        <p>{normalized.notice}</p>
+      </article>
+    );
+  },
+});
+
+export const LearningHistoryToolUI = makeAssistantToolUI<LearningHistoryArgs, unknown>({
+  toolName: "show_learning_history",
+  render: ({ args, status }) => (
+    <LearningHistoryCard
+      args={normalizeLearningHistoryArgs(args)}
+      status={mapStatusToToolStatus(status)}
+    />
+  ),
+});
+
+function normalizeCodeExerciseArgs(args: unknown): CodeExerciseToolArgs | null {
+  if (!isRecord(args) || !isRecord(args.exercise)) {
+    return null;
+  }
+  const exercise = args.exercise as CodeExerciseToolArgs["exercise"];
+  if (typeof exercise.id !== "string" || !isRecord(exercise.runtime_profile)) {
+    return null;
+  }
+  return {
+    session_id: typeof args.session_id === "string" ? args.session_id : "",
+    knowledge_point_id: typeof args.knowledge_point_id === "string" ? args.knowledge_point_id : "",
+    exercise,
+    unlock_reason: typeof args.unlock_reason === "string" ? args.unlock_reason : null,
+    learning_incomplete: Boolean(args.learning_incomplete),
+    concept_summary: typeof args.concept_summary === "string" ? args.concept_summary : "",
+    notice: typeof args.notice === "string" ? args.notice : "",
+  };
+}
+
+function normalizeLearningHistoryArgs(args: unknown): LearningHistoryArgs {
+  if (!isRecord(args)) {
+    return {
+      knowledge_point_id: "",
+      knowledge_point_title: "当前知识点",
+      active_session_id: null,
+      sessions: [],
+    };
+  }
+  const sessions = Array.isArray(args.sessions)
+    ? args.sessions
+        .filter((session): session is Record<string, unknown> => isRecord(session))
+        .map((session) => ({
+          session_id: typeof session.session_id === "string" ? session.session_id : "",
+          is_active: Boolean(session.is_active),
+          status: typeof session.status === "string" ? session.status : "",
+          started_at: typeof session.started_at === "string" ? session.started_at : null,
+          messages: Array.isArray(session.messages)
+            ? session.messages
+                .filter((message): message is Record<string, unknown> => isRecord(message))
+                .map((message) => ({
+                  id: typeof message.id === "string" ? message.id : "",
+                  role: message.role === "user" ? "user" as const : "agent" as const,
+                  content: typeof message.content === "string" ? message.content : "",
+                  created_at: typeof message.created_at === "string" ? message.created_at : null,
+                }))
+            : [],
+        }))
+    : [];
+  return {
+    knowledge_point_id: typeof args.knowledge_point_id === "string" ? args.knowledge_point_id : "",
+    knowledge_point_title:
+      typeof args.knowledge_point_title === "string" ? args.knowledge_point_title : "当前知识点",
+    active_session_id: typeof args.active_session_id === "string" ? args.active_session_id : null,
+    sessions,
+  };
+}
+
+function LearningHistoryCard({
+  args,
+  status,
+}: ToolUIProps<LearningHistoryArgs>) {
+  return (
+    <article className="gen-card learning-history-card" aria-label="相关学习对话">
+      <header className="gen-card-header">
+        <span className="gen-card-kicker">相关学习对话</span>
+        <span className="gen-card-badge">
+          {status === "running" ? "加载中" : `${args.sessions.length} 个会话`}
+        </span>
+      </header>
+      <h3 className="gen-card-title">{args.knowledge_point_title}</h3>
+      <p className="learning-history-intro">
+        这里只引用学习页 AI/用户对话，不包含建档页和复习页内容。先回看关键说法，再重新用费曼方式解释。
+      </p>
+      <div className="learning-history-sessions">
+        {args.sessions.length === 0 ? (
+          <div className="empty-block">当前知识点还没有可引用的学习对话。</div>
+        ) : (
+          args.sessions.map((session) => (
+            <details className="learning-history-session" key={session.session_id} open={session.is_active}>
+              <summary>
+                <span>{session.is_active ? "当前会话" : "历史会话"}</span>
+                <span>{session.started_at ? new Date(session.started_at).toLocaleString("zh-CN") : session.status}</span>
+              </summary>
+              <div className="learning-history-turns">
+                {session.messages.map((message) => (
+                  <blockquote className={`learning-history-turn ${message.role}`} key={message.id}>
+                    <strong>{message.role === "user" ? "你" : "AI"}</strong>
+                    <span>{message.content}</span>
+                  </blockquote>
+                ))}
+              </div>
+            </details>
+          ))
+        )}
+      </div>
+    </article>
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}

@@ -13,7 +13,11 @@ from app.agents.guardrails import assert_safe_teaching_output, check_teaching_re
 from app.agents.learning_conversation_agent import AgentsSDKLearningConversationClient
 from app.core.config import Settings, get_settings
 from app.services.exercise_repository import get_exercise
-from app.services.learning_session_repository import EntityNotFoundError
+from app.services.learning_session_repository import (
+    EntityNotFoundError,
+    unlock_learning_session_practice,
+    update_learning_session_stage,
+)
 from app.services.llm_client import (
     LLMCallError,
     LLMConfigurationError,
@@ -41,10 +45,23 @@ class TextCompletionClient(Protocol):
 @dataclass(frozen=True)
 class LearningConversationContext:
     session_id: str
+    user_id: str
+    knowledge_point_id: str
     current_stage: str
+    learning_stage: str
+    learning_stage_state: Mapping[str, object]
     knowledge_point: Mapping[str, object]
+    lesson_outline: Sequence[Mapping[str, object]]
+    lesson_sources: Sequence[Mapping[str, object]]
     exercise: Mapping[str, object] | None
     latest_attempt: Mapping[str, object] | None
+
+
+@dataclass(frozen=True)
+class LearningConversationTransition:
+    learning_stage: str
+    learning_stage_state: Mapping[str, object]
+    tool_name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -53,6 +70,7 @@ class PreparedLearningMessage:
     payload_hash: str
     message_id: str
     context: LearningConversationContext
+    transition: LearningConversationTransition
     stored_response: Mapping[str, object] | None
 
 
@@ -67,10 +85,13 @@ def prepare_learning_message(
     conn: Connection[dict[str, object]],
     *,
     session_id: str,
+    content: str,
     client_message_id: str,
     request_body: Mapping[str, object],
 ) -> PreparedLearningMessage:
     context = load_learning_conversation_context(conn, session_id=session_id)
+    transition = _determine_transition(context, content)
+    reply_context = _context_with_transition(context, transition)
     key = default_learning_message_key(session_id=session_id, client_message_id=client_message_id)
     payload_hash = request_hash(request_body)
     stored = conn.execute(
@@ -97,14 +118,33 @@ def prepare_learning_message(
             key=key,
             payload_hash=payload_hash,
             message_id=stored_message_id,
-            context=context,
+            context=reply_context,
+            transition=transition,
             stored_response=response,
+        )
+    user_message = conn.execute(
+        """
+        SELECT id
+        FROM learning_messages
+        WHERE client_message_id = %s
+        LIMIT 1
+        """,
+        (client_message_id,),
+    ).fetchone()
+    if user_message is None:
+        conn.execute(
+            """
+            INSERT INTO learning_messages (session_id, knowledge_point_id, role, content, client_message_id)
+            VALUES (%s, %s, 'user', %s, %s)
+            """,
+            (session_id, context.knowledge_point_id, content, client_message_id),
         )
     return PreparedLearningMessage(
         key=key,
         payload_hash=payload_hash,
         message_id=_message_id(session_id, client_message_id),
-        context=context,
+        context=reply_context,
+        transition=transition,
         stored_response=None,
     )
 
@@ -122,6 +162,7 @@ def create_learning_message_response(
     prepared = prepare_learning_message(
         conn,
         session_id=session_id,
+        content=content,
         client_message_id=client_message_id,
         request_body=request_body,
     )
@@ -140,8 +181,7 @@ def create_learning_message_response(
         generation_source=generation_source,
         generation_model=generation_model,
     )
-    store_learning_message_response(conn, prepared, response)
-    return response, False
+    return store_learning_message_response(conn, prepared, response), False
 
 
 def start_learning_message_generation(
@@ -229,7 +269,10 @@ def build_learning_message_response(
             "session_id": prepared.context.session_id,
             "next_action": "retry_same",
             "current_stage": prepared.context.current_stage,
+            "learning_stage": prepared.context.learning_stage,
+            "learning_stage_state": dict(prepared.context.learning_stage_state),
         },
+        "tool_calls": [],
         "generation_source": generation_source,
         "generation_model": generation_model,
     }
@@ -239,14 +282,40 @@ def store_learning_message_response(
     conn: Connection[dict[str, object]],
     prepared: PreparedLearningMessage,
     response: Mapping[str, object],
-) -> None:
+) -> dict[str, object]:
+    finalized = dict(response)
+    tool_calls = _apply_transition_and_build_tool_calls(conn, prepared)
+    if tool_calls:
+        finalized["tool_calls"] = tool_calls
+    finalized["session_state"] = {
+        "session_id": prepared.context.session_id,
+        "next_action": "retry_same",
+        "current_stage": prepared.context.current_stage,
+        "learning_stage": prepared.transition.learning_stage,
+        "learning_stage_state": dict(prepared.transition.learning_stage_state),
+    }
+    agent_message = finalized.get("agent_message", {})
+    content = str(agent_message.get("content") or "") if isinstance(agent_message, Mapping) else ""
+    conn.execute(
+        """
+        INSERT INTO learning_messages (session_id, knowledge_point_id, role, content, metadata)
+        VALUES (%s, %s, 'agent', %s, %s::jsonb)
+        """,
+        (
+            prepared.context.session_id,
+            prepared.context.knowledge_point_id,
+            content,
+            json.dumps({"tool_calls": tool_calls}) if tool_calls else None,
+        ),
+    )
     conn.execute(
         """
         INSERT INTO idempotency_records (key, operation, request_hash, response_json)
         VALUES (%s, %s, %s, %s::jsonb)
         """,
-        (prepared.key, LEARNING_MESSAGE_OPERATION, prepared.payload_hash, json.dumps(response)),
+        (prepared.key, LEARNING_MESSAGE_OPERATION, prepared.payload_hash, json.dumps(finalized)),
     )
+    return finalized
 
 
 def load_learning_conversation_context(
@@ -264,6 +333,10 @@ def load_learning_conversation_context(
     ).fetchone()
     if session is None:
         raise EntityNotFoundError("SESSION_NOT_FOUND", "学习会话不存在")
+    learning_stage = str(session.get("learning_stage") or "practice_support")
+    learning_stage_state = session.get("learning_stage_state_json") or {}
+    if not isinstance(learning_stage_state, Mapping):
+        learning_stage_state = {}
 
     knowledge_point = conn.execute(
         """
@@ -273,6 +346,8 @@ def load_learning_conversation_context(
           knowledge_points.description,
           knowledge_points.status,
           knowledge_points.weak_points_json,
+          knowledge_points.lesson_outline_json,
+          knowledge_points.lesson_sources_json,
           knowledge_points.last_exercise_result,
           knowledge_points.last_exercise_score,
           plan_modules.title AS module_title,
@@ -291,19 +366,21 @@ def load_learning_conversation_context(
     if knowledge_point is None:
         raise EntityNotFoundError("KNOWLEDGE_POINT_NOT_FOUND", "知识点不存在")
 
-    exercise_id_row = conn.execute(
-        """
-        SELECT id
-        FROM exercises
-        WHERE knowledge_point_id = %s
-          AND archived_at IS NULL
-          AND deleted_at IS NULL
-        ORDER BY created_at
-        LIMIT 1
-        """,
-        (session["entry_point"],),
-    ).fetchone()
-    exercise = get_exercise(conn, str(exercise_id_row["id"])) if exercise_id_row is not None else None
+    exercise = None
+    if learning_stage == "practice_support":
+        exercise_id_row = conn.execute(
+            """
+            SELECT id
+            FROM exercises
+            WHERE knowledge_point_id = %s
+              AND archived_at IS NULL
+              AND deleted_at IS NULL
+            ORDER BY created_at
+            LIMIT 1
+            """,
+            (session["entry_point"],),
+        ).fetchone()
+        exercise = get_exercise(conn, str(exercise_id_row["id"])) if exercise_id_row is not None else None
 
     latest_attempt = conn.execute(
         """
@@ -330,8 +407,14 @@ def load_learning_conversation_context(
 
     return LearningConversationContext(
         session_id=session_id,
+        user_id=str(session["user_id"]),
+        knowledge_point_id=str(session["entry_point"]),
         current_stage=str(knowledge_point.get("module_title") or knowledge_point["title"]),
+        learning_stage=learning_stage,
+        learning_stage_state=learning_stage_state,
         knowledge_point=_serialize_knowledge_point_context(knowledge_point),
+        lesson_outline=_serialize_lesson_outline(knowledge_point.get("lesson_outline_json")),
+        lesson_sources=_serialize_lesson_sources(knowledge_point.get("lesson_sources_json")),
         exercise=_sanitize_exercise_context(exercise) if exercise is not None else None,
         latest_attempt=_sanitize_attempt_context(latest_attempt) if latest_attempt is not None else None,
     )
@@ -351,25 +434,38 @@ def _build_messages(
     user_content: str,
 ) -> list[dict[str, str]]:
     evidence = {
-        "current_stage": context.current_stage,
-        "knowledge_point": context.knowledge_point,
-        "exercise": context.exercise,
+        "stage": context.learning_stage,
+        "learning_context": {
+            "current_stage": context.current_stage,
+            "knowledge_point": context.knowledge_point,
+        },
+        "lesson_outline": {
+            "subpoints": context.lesson_outline,
+            "sources": context.lesson_sources,
+        },
+        "concept_progress": context.learning_stage_state,
+        "exercise": context.exercise if context.learning_stage == "practice_support" else None,
         "latest_attempt": context.latest_attempt,
+        "runtime_boundary": {
+            "exercise_visible": context.learning_stage == "practice_support",
+        },
         "learner_message": _limit_text(user_content, 4000),
     }
     return [
         {
             "role": "system",
             "content": (
-                "你是 Aearn 的编程语言学习 Agent。只基于提供的学习上下文回答，使用简体中文，"
-                "优先帮助学习者定位概念、下一步调试动作和可验证的小步骤。不要直接给完整答案，"
-                "不要输出隐藏测试源码、隐藏 case id、参考答案、API key、provider 错误或原始 prompt。"
+                "你是 Aearn 的概念优先编程语言学习 Agent。先帮助学习者理解当前知识点，"
+                "再通过练习验证。只基于输入 JSON 回答；默认简体中文，代码标识符保留原文。"
+                "concept_intro/concept_qna/readiness_check 阶段不得展开完整题面、starter code 或答案；"
+                "practice_support 阶段才能围绕真实练习、运行结果和错误信息给下一步。"
+                "不要输出隐藏测试源码、隐藏用例标识、参考答案字段、API key、provider 错误或原始 prompt。"
             ),
         },
         {
             "role": "user",
             "content": (
-                "请回复学习者的问题。回复要短、具体、可执行；如果学习者要求直接答案，改为给下一步验证思路。\n"
+                "请按 stage 回复学习者。回复短、具体、可执行，并以一个下一步结束。\n"
                 f"{json.dumps(evidence, ensure_ascii=False, separators=(',', ':'))}"
             ),
         },
@@ -378,14 +474,34 @@ def _build_messages(
 
 def _deterministic_reply(context: LearningConversationContext, *, user_content: str) -> str:
     kp_title = str(context.knowledge_point.get("title") or "当前知识点")
-    exercise_title = str(context.exercise.get("title")) if context.exercise else kp_title
     latest_attempt = context.latest_attempt or {}
     runtime_status = str(latest_attempt.get("runtime_status") or "")
     pass_rate = latest_attempt.get("test_pass_rate")
 
+    if context.learning_stage == "readiness_check":
+        if str(context.learning_stage_state.get("feynman_status") or "") == "failed":
+            return (
+                f"这次对 {kp_title} 的复述还不够完整。"
+                "我不会在这里强制补讲，请先查看下面引用的相关学习对话，找出你之前关于概念、原因和行为的说法；"
+                "然后再用费曼方式重新解释一遍：它是什么、为什么重要、会如何影响代码。"
+            )
+        return (
+            f"我们已经覆盖了 {kp_title} 的核心子点。"
+            "请用费曼学习法复述一遍：假设你在教一个初学者，说明它是什么、为什么重要、以及代码行为会怎样变化。"
+        )
+
+    if context.learning_stage == "practice_support" and context.exercise is None:
+        if context.learning_stage_state.get("learning_incomplete") is True:
+            return (
+                f"可以提前进入练习，但 {kp_title} 的学习进度尚未完成。"
+                f"先记住小结：{context.learning_stage_state.get('concept_summary') or kp_title}。"
+                "下面的练习卡只用于验证当前理解，做完后仍建议回看概念对话。"
+            )
+        return f"你的费曼复述已经覆盖 {kp_title} 的关键概念，可以进入练习。下面先用练习卡验证。"
+
     if runtime_status in {"runtime_error", "timeout", "unsupported"}:
         return (
-            f"先把问题收窄到 {exercise_title} 的运行事实：当前状态是 {runtime_status}。"
+            f"先把问题收窄到 {kp_title} 的运行事实：当前状态是 {runtime_status}。"
             "下一步不要急着提交，先查看最近一次运行里的错误信息，修正后重新运行可见测试；"
             "如果仍失败，再用“解释错误”让 Agent 基于真实错误给出错因。"
         )
@@ -401,10 +517,279 @@ def _deterministic_reply(context: LearningConversationContext, *, user_content: 
             "如果你不确定该问什么，可以把当前代码、运行输出或失败信息贴进来；"
             "我会按“现象 -> 原因 -> 下一步验证”的顺序帮你拆。"
         )
+    subpoints = [str(item.get("title") or "") for item in context.lesson_outline if isinstance(item, Mapping)]
+    subpoint_text = "、".join(item for item in subpoints if item) or kp_title
     return (
-        f"当前学习会话已打开到 {kp_title}，但还没有可用练习上下文。"
-        "先从左侧路线重新进入该知识点，等练习卡片加载后再追问具体代码或运行结果。"
+        f"你问的是 {kp_title}。先把概念放回这几个子点：{subpoint_text}。"
+        "如果你是在追问概念，我会先回答问题；如果已经理解，请直接用自己的话解释它是什么、为什么重要、会怎样影响代码行为。"
     )
+
+
+def _determine_transition(
+    context: LearningConversationContext,
+    user_content: str,
+) -> LearningConversationTransition:
+    state = dict(context.learning_stage_state)
+    stage = context.learning_stage
+    if stage == "practice_support":
+        return LearningConversationTransition(stage, state)
+
+    if _requests_history(user_content):
+        return LearningConversationTransition(stage, state, tool_name="show_learning_history")
+
+    if _requests_practice(user_content):
+        state.update(
+            {
+                "covered_subpoint_ids": _lesson_subpoint_ids(context),
+                "feynman_status": "pending",
+                "practice_unlock_reason": "early_request",
+                "learning_incomplete": True,
+                "concept_summary": _concept_summary(context),
+            }
+        )
+        return LearningConversationTransition("practice_support", state, tool_name="show_code_exercise")
+
+    if stage in {"concept_intro", "concept_qna"}:
+        state.update(
+            {
+                "covered_subpoint_ids": _lesson_subpoint_ids(context),
+                "feynman_status": "pending",
+                "practice_unlock_reason": None,
+                "learning_incomplete": True,
+                "concept_summary": _concept_summary(context),
+            }
+        )
+        if _looks_like_question(user_content):
+            return LearningConversationTransition("concept_qna", state)
+        return LearningConversationTransition("readiness_check", state)
+
+    if stage == "readiness_check":
+        if _passes_feynman_check(context, user_content):
+            state.update(
+                {
+                    "covered_subpoint_ids": _lesson_subpoint_ids(context),
+                    "feynman_status": "passed",
+                    "practice_unlock_reason": "feynman_passed",
+                    "learning_incomplete": False,
+                    "concept_summary": _concept_summary(context),
+                }
+            )
+            return LearningConversationTransition("practice_support", state, tool_name="show_code_exercise")
+        state.update(
+            {
+                "feynman_status": "failed",
+                "learning_incomplete": True,
+                "concept_summary": _concept_summary(context),
+            }
+        )
+        return LearningConversationTransition("readiness_check", state, tool_name="show_learning_history")
+
+    return LearningConversationTransition(stage, state)
+
+
+def _context_with_transition(
+    context: LearningConversationContext,
+    transition: LearningConversationTransition,
+) -> LearningConversationContext:
+    return LearningConversationContext(
+        session_id=context.session_id,
+        user_id=context.user_id,
+        knowledge_point_id=context.knowledge_point_id,
+        current_stage=context.current_stage,
+        learning_stage=transition.learning_stage,
+        learning_stage_state=transition.learning_stage_state,
+        knowledge_point=context.knowledge_point,
+        lesson_outline=context.lesson_outline,
+        lesson_sources=context.lesson_sources,
+        exercise=context.exercise if transition.learning_stage == "practice_support" else None,
+        latest_attempt=context.latest_attempt,
+    )
+
+
+def _apply_transition_and_build_tool_calls(
+    conn: Connection[dict[str, object]],
+    prepared: PreparedLearningMessage,
+) -> list[dict[str, object]]:
+    transition = prepared.transition
+    tool_calls: list[dict[str, object]] = []
+    if transition.tool_name == "show_code_exercise":
+        exercise, state = unlock_learning_session_practice(
+            conn,
+            session_id=prepared.context.session_id,
+            unlock_reason=str(transition.learning_stage_state.get("practice_unlock_reason") or "early_request"),
+            learning_incomplete=bool(transition.learning_stage_state.get("learning_incomplete", True)),
+        )
+        transition_state = dict(state)
+        prepared_transition_state = dict(transition.learning_stage_state)
+        prepared_transition_state.update(transition_state)
+        args = {
+            "session_id": prepared.context.session_id,
+            "knowledge_point_id": prepared.context.knowledge_point_id,
+            "exercise": exercise,
+            "unlock_reason": prepared_transition_state.get("practice_unlock_reason"),
+            "learning_incomplete": prepared_transition_state.get("learning_incomplete"),
+            "concept_summary": prepared_transition_state.get("concept_summary"),
+            "notice": _practice_notice(prepared_transition_state),
+        }
+        tool_calls.append(_tool_call("show_code_exercise", args, prepared.message_id))
+        return tool_calls
+
+    update_learning_session_stage(
+        conn,
+        session_id=prepared.context.session_id,
+        learning_stage=transition.learning_stage,
+        state=transition.learning_stage_state,
+    )
+    if transition.tool_name == "show_learning_history":
+        args = list_learning_history(
+            conn,
+            user_id=prepared.context.user_id,
+            knowledge_point_id=prepared.context.knowledge_point_id,
+            active_session_id=prepared.context.session_id,
+        )
+        tool_calls.append(_tool_call("show_learning_history", args, prepared.message_id))
+    return tool_calls
+
+
+def list_learning_history(
+    conn: Connection[dict[str, object]],
+    *,
+    user_id: str,
+    knowledge_point_id: str,
+    active_session_id: str | None = None,
+) -> dict[str, object]:
+    knowledge_point = conn.execute(
+        """
+        SELECT knowledge_points.id, knowledge_points.title
+        FROM knowledge_points
+        JOIN plan_modules ON plan_modules.id = knowledge_points.module_id
+        JOIN learning_plans ON learning_plans.id = plan_modules.plan_id
+        WHERE knowledge_points.id = %s
+          AND learning_plans.user_id = %s
+          AND knowledge_points.deleted_at IS NULL
+          AND plan_modules.deleted_at IS NULL
+          AND learning_plans.deleted_at IS NULL
+        LIMIT 1
+        """,
+        (knowledge_point_id, user_id),
+    ).fetchone()
+    if knowledge_point is None:
+        raise EntityNotFoundError("KNOWLEDGE_POINT_NOT_FOUND", "知识点不存在")
+
+    rows = conn.execute(
+        """
+        SELECT
+          learning_sessions.id AS session_id,
+          learning_sessions.started_at,
+          learning_sessions.status AS session_status,
+          learning_messages.id AS message_id,
+          learning_messages.role,
+          learning_messages.content,
+          learning_messages.created_at
+        FROM learning_sessions
+        JOIN learning_messages ON learning_messages.session_id = learning_sessions.id
+        WHERE learning_sessions.user_id = %s
+          AND learning_sessions.entry_point = %s
+          AND learning_sessions.session_type = 'learn'
+        ORDER BY
+          CASE WHEN learning_sessions.id::text = %s THEN 0 ELSE 1 END,
+          learning_sessions.started_at DESC,
+          learning_messages.created_at
+        """,
+        (user_id, knowledge_point_id, active_session_id or ""),
+    ).fetchall()
+
+    sessions: list[dict[str, object]] = []
+    index_by_session: dict[str, dict[str, object]] = {}
+    for row in rows:
+        session_id = str(row["session_id"])
+        session = index_by_session.get(session_id)
+        if session is None:
+            session = {
+                "session_id": session_id,
+                "is_active": active_session_id is not None and session_id == active_session_id,
+                "status": str(row["session_status"]),
+                "started_at": row["started_at"].isoformat() if row.get("started_at") else None,
+                "messages": [],
+            }
+            index_by_session[session_id] = session
+            sessions.append(session)
+        messages = session["messages"]
+        if isinstance(messages, list):
+            messages.append(
+                {
+                    "id": str(row["message_id"]),
+                    "role": str(row["role"]),
+                    "content": _limit_text(str(row["content"]), 1200),
+                    "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
+                }
+            )
+    return {
+        "knowledge_point_id": str(knowledge_point["id"]),
+        "knowledge_point_title": str(knowledge_point["title"]),
+        "active_session_id": active_session_id,
+        "sessions": sessions,
+    }
+
+
+def _tool_call(name: str, args: Mapping[str, object], message_id: str) -> dict[str, object]:
+    suffix = hashlib.sha256(f"{message_id}:{name}".encode("utf-8")).hexdigest()[:12]
+    return {
+        "id": f"tc_{suffix}",
+        "name": name,
+        "args": dict(args),
+        "status": "done",
+    }
+
+
+def _requests_practice(text: str) -> bool:
+    lowered = text.lower()
+    triggers = ["开始练习", "给我题", "进入练习", "做题", "我准备好了", "直接练习", "practice", "exercise"]
+    return any(trigger in lowered for trigger in triggers)
+
+
+def _requests_history(text: str) -> bool:
+    lowered = text.lower()
+    triggers = ["历史对话", "学习对话", "回看", "查看对话", "history"]
+    return any(trigger in lowered for trigger in triggers)
+
+
+def _looks_like_question(text: str) -> bool:
+    lowered = text.lower()
+    return "?" in lowered or "？" in lowered or any(token in lowered for token in ["为什么", "怎么", "什么", "区别", "如何"])
+
+
+def _passes_feynman_check(context: LearningConversationContext, text: str) -> bool:
+    stripped = text.strip()
+    if len(stripped) < 28:
+        return False
+    reason_tokens = ["因为", "所以", "作用", "原因", "重要", "会", "影响", "共享", "保存", "触发", "because", "so"]
+    concept_tokens = [str(context.knowledge_point.get("title") or "")]
+    concept_tokens.extend(str(item.get("title") or "") for item in context.lesson_outline if isinstance(item, Mapping))
+    concept_tokens.extend(["事件", "状态", "回调", "DOM", "作用域", "返回值", "stdout", "函数", "断言"])
+    has_reason = any(token.lower() in stripped.lower() for token in reason_tokens)
+    has_concept = any(token and token.lower() in stripped.lower() for token in concept_tokens)
+    return has_reason and has_concept
+
+
+def _lesson_subpoint_ids(context: LearningConversationContext) -> list[str]:
+    return [str(item.get("id")) for item in context.lesson_outline if isinstance(item, Mapping) and item.get("id")]
+
+
+def _concept_summary(context: LearningConversationContext) -> str:
+    items = [
+        f"{item.get('title')}：{item.get('note')}"
+        for item in context.lesson_outline[:3]
+        if isinstance(item, Mapping)
+    ]
+    return "；".join(items) or str(context.knowledge_point.get("title") or "当前知识点")
+
+
+def _practice_notice(state: Mapping[str, object]) -> str:
+    summary = str(state.get("concept_summary") or "")
+    if state.get("learning_incomplete") is True:
+        return f"当前学习进度尚未完成。概念小结：{summary}"
+    return f"费曼复述已通过。概念小结：{summary}"
 
 
 def _sanitize_exercise_context(exercise: Mapping[str, object]) -> dict[str, object]:
@@ -503,6 +888,39 @@ def _serialize_knowledge_point_context(row: Mapping[str, object]) -> dict[str, o
         "last_exercise_result": row.get("last_exercise_result"),
         "last_exercise_score": row.get("last_exercise_score"),
     }
+
+
+def _serialize_lesson_outline(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return []
+    result: list[dict[str, object]] = []
+    for item in value:
+        if not isinstance(item, Mapping):
+            continue
+        result.append(
+            {
+                "id": str(item.get("id") or ""),
+                "title": _limit_text(str(item.get("title") or ""), 120),
+                "note": _limit_text(str(item.get("note") or ""), 500),
+            }
+        )
+    return result
+
+
+def _serialize_lesson_sources(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return []
+    result: list[dict[str, object]] = []
+    for item in value:
+        if not isinstance(item, Mapping):
+            continue
+        result.append(
+            {
+                "title": _limit_text(str(item.get("title") or ""), 160),
+                "url": _limit_text(str(item.get("url") or ""), 300),
+            }
+        )
+    return result
 
 
 def _chunk_text(text: str) -> Generator[str, None, None]:

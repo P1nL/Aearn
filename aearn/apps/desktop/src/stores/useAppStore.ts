@@ -88,6 +88,9 @@ type AppStore = {
   startOnboardingToolCall: (messageId: string, toolCallId: string, name: string) => void;
   appendOnboardingToolCallDelta: (messageId: string, toolCallId: string, delta: string) => void;
   finalizeOnboardingToolCall: (messageId: string, toolCallId: string, args: unknown) => void;
+  startHomeToolCall: (messageId: string, toolCallId: string, name: string) => void;
+  appendHomeToolCallDelta: (messageId: string, toolCallId: string, delta: string) => void;
+  finalizeHomeToolCall: (messageId: string, toolCallId: string, args: unknown) => void;
 
   // Complex actions
   bootstrap: (signal?: AbortSignal) => Promise<void>;
@@ -232,6 +235,63 @@ export const useAppStore = create<AppStore>((set, get) => ({
       }),
     })),
 
+  startHomeToolCall: (messageId, toolCallId, name) =>
+    set((s) => ({
+      homeConversation: s.homeConversation.map((message) => {
+        if (message.id !== messageId) return message;
+        const existing = message.toolCalls ?? [];
+        if (existing.some((entry) => entry.id === toolCallId)) {
+          return message;
+        }
+        const toolCall: ConversationToolCall = {
+          id: toolCallId,
+          name,
+          args: null,
+          argsBuffer: "",
+          status: "pending",
+        };
+        return { ...message, toolCalls: [...existing, toolCall] };
+      }),
+    })),
+  appendHomeToolCallDelta: (messageId, toolCallId, delta) =>
+    set((s) => ({
+      homeConversation: s.homeConversation.map((message) => {
+        if (message.id !== messageId) return message;
+        const existing = message.toolCalls ?? [];
+        if (existing.length === 0) return message;
+        return {
+          ...message,
+          toolCalls: existing.map((entry) => {
+            if (entry.id !== toolCallId) return entry;
+            const nextBuffer = `${entry.argsBuffer}${delta}`;
+            const parsed = parsePartial(nextBuffer);
+            return {
+              ...entry,
+              argsBuffer: nextBuffer,
+              args: parsed ?? entry.args,
+              status: "running" as const,
+            };
+          }),
+        };
+      }),
+    })),
+  finalizeHomeToolCall: (messageId, toolCallId, args) =>
+    set((s) => ({
+      homeConversation: s.homeConversation.map((message) => {
+        if (message.id !== messageId) return message;
+        const existing = message.toolCalls ?? [];
+        if (existing.length === 0) return message;
+        return {
+          ...message,
+          toolCalls: existing.map((entry) =>
+            entry.id === toolCallId
+              ? { ...entry, args, status: "done" as const }
+              : entry,
+          ),
+        };
+      }),
+    })),
+
   bootstrap: async (signal) => {
     set({ bootstrapHydrated: false, apiHealth: { status: "loading" }, dashboardState: { status: "loading" } });
 
@@ -332,6 +392,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       const response = await startLearningSession({ userId, planId: planResponse.LearningPlan.id, knowledgePointId });
       set({
         sessionState: { status: "ready", data: response },
+        homeConversation: [],
         createdPlan: markKnowledgePointLearning(get().createdPlan ?? planResponse, knowledgePointId),
         ...(activateHome ? { activeRoute: "home" as const } : {}),
       });

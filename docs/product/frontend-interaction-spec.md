@@ -137,6 +137,8 @@ LearningWorkspacePage
   ConversationTimeline
     KnowledgePointIntroMessage
     AgentMessage
+    FeynmanReadinessPrompt
+    GeneratedLearningHistoryCard
     GeneratedCodeExerciseCard
       ExercisePrompt
       CodeEditor
@@ -163,7 +165,8 @@ LearningWorkspacePage
 3. 仅当后端判断“最近一次学习活动距当前超过 72 小时，且至少存在一条 `forget_risk=high` 的到期复习”时，优先进入 `ReviewPage`。
 4. 如果 `resume_available=true`，展示恢复学习提示和 `next_entry_point`。
 5. 用户点击当前知识点后调用 `POST /api/learning-sessions/start`。
-6. 前端以 `session_id` 加载会话，并由 Agent 在对话中生成练习 UI。
+6. 前端以 `session_id` 加载会话；如果 `learning_stage` 不是 `practice_support`，只展示概念优先对话，不展示练习卡片。
+7. Agent 通过 `show_code_exercise` 工具调用在对话中生成练习 UI；通过 `show_learning_history` 工具调用展示知识点历史对话引用。
 
 ### `WorkspaceTopStatusBar`
 
@@ -207,11 +210,31 @@ LearningWorkspacePage
 | 替换模块 | 调用模块调整接口或进入计划草稿调整态 | 第一版只做按钮式替换 |
 | 调整模块 | 弹 confirm 后提交调整 | 风险提示必须说明可能破坏知识主干 |
 
+### 概念优先会话阶段
+
+职责：
+
+- `LearningWorkspacePage` 必须接受 `exercise=null` 的会话响应，并保持 composer 可用。
+- `concept_intro` 和 `concept_qna` 只展示知识点概念、官方文档来源提纲、子点问答和用户追问。
+- `readiness_check` 展示一次费曼式复述要求，不把它和练习后的解释检查混为同一个 UI。
+- `practice_support` 才能展示 `GeneratedCodeExerciseCard`；如果是提前练习，卡片说明内展示“当前学习进度尚未完成”和概念小结。
+- 费曼复述失败时展示 `GeneratedLearningHistoryCard`，只引用学习页 AI/用户对话，不引用建档页或复习页内容。
+
+状态来源：
+
+| 字段 | 前端用途 |
+|---|---|
+| `learning_stage` | 决定 placeholder、quick replies 和是否可渲染练习卡 |
+| `learning_stage_state.learning_incomplete` | 决定提前练习提示 |
+| `lesson_outline` / `lesson_sources` | 展示概念提纲和来源归因 |
+| `tool_calls[].name` | 选择 `show_code_exercise` 或 `show_learning_history` 组件 |
+
 ### `GeneratedCodeExerciseCard`
 
 职责：
 
 - 作为对话中的生成式 UI 卡片展示题面、`starter_code`、`CodeBlank`、当前 `filled_blanks`。
+- 只由 `show_code_exercise` 工具调用或已解锁的恢复状态创建，不由 `session.exercise` 在会话入口固定渲染。
 - 管理本地编辑状态：`pristine`、`dirty`、`running`、`submitted`。
 - 不计算最终 `result`、`score` 或 `fsrs_rating`。
 - 不在 UI 上显示 `Attempt(run)` / `Attempt(submit)` 内部类型。
@@ -417,6 +440,7 @@ SettingsPage
 ### API / 后端负责
 
 - `LearningPlan`、`KnowledgePoint`、`Exercise`、`Attempt`、`ReviewState` 的事实写入。
+- `learning_stage`、`learning_stage_state`、`learning_messages` 和学习历史过滤由后端负责。
 - LangGraph 状态机编排：Onboarding / Learning / Review / Resume / Notes Assist。
 - runner service：运行、测试、stdout/stderr、timeout、unsupported。
 - `code_completion_result` 评分、JSON 校验、FSRS Rating 映射。
@@ -449,7 +473,9 @@ SettingsPage
 | `POST /api/plans/generate` | `OnboardingPage` | 生成 `plan_draft` |
 | `POST /api/plans` | `OnboardingActionBar` | 确认正式计划 |
 | `PATCH /api/plans/{plan_id}/modules/{module_id}` | `RoutePanel` | 跳过、替换、调整模块 |
-| `POST /api/learning-sessions/start` | `LearningWorkspacePage` | 创建或恢复学习会话 |
+| `POST /api/learning-sessions/start` | `LearningWorkspacePage` | 创建或恢复学习会话；概念阶段允许 `exercise=null` |
+| `POST /api/learning-sessions/{session_id}/messages` | `ConversationTimeline`、`GeneratedCodeExerciseCard`、`GeneratedLearningHistoryCard` | 概念问答、费曼检查和学习页工具卡片 |
+| `GET /api/learning-sessions/history` | `GeneratedLearningHistoryCard` | 按知识点读取所有学习页会话历史，不包含建档页或复习页 |
 | `POST /api/learning-sessions/{session_id}/exercises/{exercise_id}/run` | `RunActionBar`、`GeneratedRuntimeFeedback` | 展示运行、预览或测试反馈；前端不暴露内部 Attempt 类型 |
 | `POST /api/learning-sessions/{session_id}/exercises/{exercise_id}/submit` | `RunActionBar`、`ExplanationCheckPanel` | 获取 `code_completion_result`；前端不暴露内部 Attempt 类型 |
 | `POST /api/learning-sessions/{session_id}/exercises/{exercise_id}/hint` | `AssistantSidePanel` | 获取分层提示 |

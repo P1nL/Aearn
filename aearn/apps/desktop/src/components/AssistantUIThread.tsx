@@ -10,7 +10,11 @@ import {
 
 import type { ConversationMessage } from "../appTypes";
 import { useAssistantRuntime } from "../hooks/useAssistantRuntime";
-import { LearningRouteToolUI } from "./generative-ui/assistantToolUIs";
+import {
+  CodeExerciseToolUI,
+  LearningHistoryToolUI,
+  LearningRouteToolUI,
+} from "./generative-ui/assistantToolUIs";
 
 type AssistantUIThreadProps = {
   messages: ConversationMessage[];
@@ -71,6 +75,8 @@ export function AssistantUIThread({
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       <LearningRouteToolUI />
+      <CodeExerciseToolUI />
+      <LearningHistoryToolUI />
       <ThreadPrimitive.Root className="assistant-ui-thread">
         <ThreadPrimitive.Viewport autoScroll className="assistant-ui-thread-viewport">
           {messages.length === 0 && emptyState ? (
