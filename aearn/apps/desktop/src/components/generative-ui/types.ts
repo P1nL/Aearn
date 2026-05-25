@@ -1,0 +1,83 @@
+import type { Language, RuntimeTier, NextAction, FsrsRating, ForgetRisk } from "../../types";
+
+export type ToolUIProps<T> = {
+  args: T;
+  status: "pending" | "running" | "done" | "error";
+  onAction?: (action: string, payload?: unknown) => void;
+};
+
+export type LearningRouteArgs = {
+  plan_id: string;
+  goal_text: string;
+  language: Language;
+  modules: Array<{
+    id: string;
+    title: string;
+    order_index: number;
+    status: "pending" | "in_progress" | "completed" | "skipped";
+    estimated_sessions: number;
+    knowledge_points: Array<{
+      id: string;
+      title: string;
+      status: "pending" | "learning" | "reviewing" | "mastered";
+      mastery_score: number;
+    }>;
+  }>;
+};
+
+export type ExerciseCardArgs = {
+  exercise_id: string;
+  session_id: string;
+  title: string;
+  exercise_type: "code_blank" | "fix_bug" | "implement_function" | "explain_code";
+  prompt_markdown: string;
+  starter_code: string;
+  language: Language;
+  runtime_tier: RuntimeTier;
+  blanks: Array<{
+    blank_key: string;
+    placeholder: string;
+    expected_concept: string;
+  }>;
+  difficulty: number;
+  estimated_minutes: number;
+};
+
+export type SubmitResultArgs = {
+  attempt_id: string;
+  result: "failed" | "partial" | "passed" | "easy";
+  score: number;
+  fsrs_rating: FsrsRating;
+  feedback: string;
+  weak_points: string[];
+  next_action: NextAction;
+  score_breakdown: {
+    completion_correctness: number;
+    runtime_and_tests: number;
+    error_diagnosis: number;
+    explanation_check: number;
+  };
+};
+
+export type ReviewRecallArgs = {
+  knowledge_point_id: string;
+  knowledge_point_title: string;
+  description: string | null;
+  last_review_at: string | null;
+  review_count: number;
+  forget_risk: ForgetRisk;
+  weak_points: string[];
+};
+
+export type ProgressSummaryArgs = {
+  plan_id: string;
+  overall_progress: number;
+  modules_completed: number;
+  modules_total: number;
+  points_mastered: number;
+  points_total: number;
+  today_sessions: number;
+  streak_days: number;
+  next_review_at: string | null;
+  next_action: NextAction;
+};
