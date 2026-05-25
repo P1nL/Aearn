@@ -602,3 +602,36 @@ Closed assistant-ui generative UI Slice 1 by standardizing onboarding, learning,
 ### Next Steps
 
 - None - task complete
+
+
+## Session 19: Content-driven onboarding plan generation
+
+**Date**: 2026-05-25
+**Task**: Content-driven onboarding plan generation
+**Branch**: `main`
+
+### Summary
+
+Implemented content-driven onboarding plan generation: structured slot extraction with keyword fallback, real PlanDraft stashing, assistant-ui route card confirmation via onboarding confirm endpoint, and regression/browser smoke coverage.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `b937cd7` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
