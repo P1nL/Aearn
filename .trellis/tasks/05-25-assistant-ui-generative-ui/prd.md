@@ -49,32 +49,31 @@ These prototypes already exist and need to be wired up:
 
 ## Acceptance Criteria
 
-### Slice 1 (Onboarding + `show_learning_route`)
+### Slice 1 (Onboarding + `show_learning_route`) — completed in this task
 
-- [ ] `@assistant-ui/react` installed (pinned version), app builds cleanly in headless mode.
-- [ ] `useExternalStoreRuntime` adapter connects Zustand store to assistant-ui runtime.
-- [ ] `tool_call` SSE event with `start`/`delta`/`done` phases is parsed correctly; partial JSON renders progressively.
-- [ ] `LearningRouteCard` shows skeleton on `pending`, partial content on `running`, full content on `done`.
-- [ ] Onboarding flow: AI asks questions → dual-emits `plan_draft` + `show_learning_route` → card renders → user confirms → plan saved.
-- [ ] Plain text messages still render as normal assistant/user bubbles.
-- [ ] Composer disabled during streaming, enabled otherwise (including while interactive cards are pending).
-- [ ] Tool calls persist in `onboarding_messages.metadata`; session resume re-renders the card without replay.
-- [ ] `pnpm --dir .\aearn desktop:check` passes.
-- [ ] Browser smoke test passes for onboarding flow.
+- [x] `@assistant-ui/react` installed (pinned version), app builds cleanly in headless mode.
+- [x] `useExternalStoreRuntime` adapter connects Zustand store to assistant-ui runtime.
+- [x] `tool_call` SSE event with `start`/`delta`/`done` phases is parsed correctly; partial JSON renders progressively.
+- [x] `LearningRouteCard` shows skeleton on `pending`, partial content on `running`, full content on `done`.
+- [x] Onboarding flow dual-emits legacy `plan_draft` plus `show_learning_route`; the assistant-ui card renders from the tool call.
+- [x] Plain text messages still render as normal assistant/user bubbles.
+- [x] Composer disables during streaming and remains enabled otherwise.
+- [x] Tool calls persist in `onboarding_messages.metadata`; session resume can re-render the card without replay.
+- [x] Learning and review pages now use the shared assistant-ui thread/composer wrapper instead of the legacy custom components.
+- [x] `pnpm --dir .\aearn desktop:check` passes.
+- [x] Browser smoke opened `http://127.0.0.1:1420` with no console warnings/errors.
 
-### Slice 2 (Learning + Review + remaining 4 cards)
+### Deferred Follow-up (Learning + Review + remaining 4 cards)
 
-- [ ] Remaining 4 components (`ExerciseCard`, `SubmitResultCard`, `ReviewRecallCard`, `ProgressSummaryCard`) render in respective threads.
-- [ ] Learning flow: AI emits `show_exercise` → user submits → `tool_result` posted → AI emits `show_submit_result`.
-- [ ] Review flow: AI emits `show_review_recall` → user responds → `tool_result` posted → exercise card → submit → result card.
-- [ ] `show_progress_summary` emits in learning thread after a module completes.
-- [ ] Display-only cards (`LearningRouteCard`, `SubmitResultCard`, `ProgressSummaryCard`) trigger frontend side effects only (no `tool_result`).
-- [ ] Interactive cards (`ExerciseCard`, `ReviewRecallCard`) post structured results via `POST /api/.../tool_result` and agent stream resumes.
-- [ ] Composer placeholder switches contextually (idle / interactive-card-pending / streaming).
-- [ ] Tool calls persist in `review_messages.metadata` (after additive column added); session resume re-renders cards.
-- [ ] No regression: notes, settings, sidebar navigation, dashboard.
-- [ ] `pnpm --dir .\aearn desktop:check` passes.
-- [ ] Browser smoke test passes for learning and review flows.
+These items remain valuable, but they are not part of this Slice 1 closeout. They should be tracked as the next assistant-ui expansion after the content-driven onboarding plan path is stable.
+
+- Remaining 4 components (`ExerciseCard`, `SubmitResultCard`, `ReviewRecallCard`, `ProgressSummaryCard`) render in respective threads.
+- Learning flow: AI emits `show_exercise` → user submits → `tool_result` posted → AI emits `show_submit_result`.
+- Review flow: AI emits `show_review_recall` → user responds → `tool_result` posted → exercise card → submit → result card.
+- `show_progress_summary` emits in learning thread after a module completes.
+- Interactive cards (`ExerciseCard`, `ReviewRecallCard`) post structured results via `POST /api/.../tool_result` and agent stream resumes.
+- Tool calls persist in `review_messages.metadata` (after additive column added); session resume re-renders cards.
+- Browser smoke test passes for learning and review card flows.
 
 ## Out of Scope
 

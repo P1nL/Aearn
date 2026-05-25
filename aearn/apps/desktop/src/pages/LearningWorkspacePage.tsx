@@ -15,8 +15,7 @@ import type {
   ExerciseRunMode,
   SessionState,
 } from "../appTypes";
-import { AssistantThread } from "../components/AssistantThread";
-import { LearningComposer } from "../components/LearningComposer";
+import { AssistantUIThread } from "../components/AssistantUIThread";
 import { SystemCard } from "../components/SystemCard";
 import { ExerciseWorkbench } from "../features/learning/ExerciseWorkbench";
 import {
@@ -101,7 +100,6 @@ export function LearningWorkspacePage({
   const [explanationFocus, setExplanationFocus] = useState<ExplanationFocus>("core_logic");
   const [explanationRound, setExplanationRound] = useState(1);
   const [explanationCheckResult, setExplanationCheckResult] = useState<ExplanationCheckResponse | null>(null);
-  const [composerInput, setComposerInput] = useState("");
   const [composerStream, setComposerStream] = useState<ComposerStreamRequest | null>(null);
   const conversationScrollRef = useRef<HTMLElement | null>(null);
 
@@ -118,7 +116,6 @@ export function LearningWorkspacePage({
           speaker: "agent" as const,
           text: initialAgentMessage,
           label: "Agent",
-          toolCard: activeExercise ? `当前练习：${activeExercise.title} · ${session.context_snapshot.KnowledgePoint.title}` : undefined,
           status: "done" as const,
         },
         ...messages,
@@ -161,8 +158,8 @@ export function LearningWorkspacePage({
     },
   });
 
-  function handleComposerSubmit() {
-    const content = composerInput.trim();
+  function handleComposerSubmit(input: string) {
+    const content = input.trim();
     if (content.length === 0 || composerStreaming || !session) return;
 
     const assistantMessage: ConversationMessage = {
@@ -182,7 +179,6 @@ export function LearningWorkspacePage({
         client_message_id: createClientId("desktop_msg"),
       },
     });
-    setComposerInput("");
   }
 
   function resetWorkbenchState(nextCode = "", nextBlanks: Record<string, string> = {}, nextSelectedBlankId = "") {
@@ -436,11 +432,28 @@ export function LearningWorkspacePage({
             </p>
           </div>
 
-          {!session && sessionState.status === "idle" && (
-            <AssistantThread messages={[]} emptyState={emptyState} />
-          )}
-
-          {session && <AssistantThread messages={threadMessages} />}
+          <AssistantUIThread
+            messages={session ? threadMessages : []}
+            isStreaming={composerStreaming}
+            sessionActive={Boolean(session)}
+            onSend={handleComposerSubmit}
+            emptyState={!session && sessionState.status === "idle" ? emptyState : undefined}
+            placeholder={
+              composerStreaming
+                ? "AI 正在回复……"
+                : !session
+                  ? "先从左侧路线进入一个知识点，再向 Agent 追问。"
+                  : "粘贴你的代码、运行输出、测试失败或请 Agent 解释错因……"
+            }
+            guidanceText={!session ? "先进入一个 active learning session，composer 才会调用模型流式回答。" : undefined}
+            canOpenNoteDrawer={canOpenNoteDrawer}
+            noteDrawerOpen={noteDrawerOpen}
+            onToggleNoteDrawer={() => {
+              noteDrawerOpen ? onCloseNoteDrawer() : onOpenNoteDrawer();
+            }}
+            hideNoteButton={false}
+            quickReplies={session && messages.length === 0 ? LEARNING_QUICK_REPLIES : undefined}
+          />
 
           {sessionState.status === "loading" && <SystemCard title="系统状态" body="正在启动当前知识点会话…" />}
           {sessionState.status === "error" && (
@@ -508,19 +521,6 @@ export function LearningWorkspacePage({
           )}
         </div>
       </section>
-
-      <LearningComposer
-        value={composerInput}
-        onChange={setComposerInput}
-        onSubmit={handleComposerSubmit}
-        disabled={composerStreaming}
-        streaming={composerStreaming}
-        sessionActive={Boolean(session)}
-        canOpenNoteDrawer={canOpenNoteDrawer}
-        noteDrawerOpen={noteDrawerOpen}
-        onToggleNoteDrawer={() => { noteDrawerOpen ? onCloseNoteDrawer() : onOpenNoteDrawer(); }}
-        quickReplies={session && messages.length === 0 ? LEARNING_QUICK_REPLIES : undefined}
-      />
     </div>
   );
 }

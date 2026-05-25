@@ -21,8 +21,11 @@ type AssistantUIThreadProps = {
   ariaLabel?: string;
   guidanceText?: string;
   emptyState?: ReactNode;
-  /** Render a side card after a specific message (e.g., InlinePlanCard). */
-  renderInlineCard?: (message: ConversationMessage) => ReactNode | null;
+  quickReplies?: string[];
+  canOpenNoteDrawer?: boolean;
+  noteDrawerOpen?: boolean;
+  onToggleNoteDrawer?: () => void;
+  hideNoteButton?: boolean;
 };
 
 /**
@@ -42,7 +45,11 @@ export function AssistantUIThread({
   ariaLabel = "代码练习输入框",
   guidanceText,
   emptyState,
-  renderInlineCard,
+  quickReplies,
+  canOpenNoteDrawer = false,
+  noteDrawerOpen = false,
+  onToggleNoteDrawer,
+  hideNoteButton = true,
 }: AssistantUIThreadProps) {
   const runtime = useAssistantRuntime({
     messages,
@@ -59,6 +66,7 @@ export function AssistantUIThread({
         : "向 AI 提问……");
 
   const composerDisabled = isStreaming || !sessionActive;
+  const quickReplyEnabled = !composerDisabled && quickReplies && quickReplies.length > 0;
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
@@ -69,17 +77,26 @@ export function AssistantUIThread({
             <>{emptyState}</>
           ) : (
             <ThreadPrimitive.Messages>
-              {() => (
-                <ConversationMessageRenderer
-                  source={messages}
-                  renderInlineCard={renderInlineCard}
-                />
-              )}
+              {() => <ConversationMessageRenderer source={messages} />}
             </ThreadPrimitive.Messages>
           )}
         </ThreadPrimitive.Viewport>
 
         <ComposerPrimitive.Root className="composer-wrap">
+          {quickReplyEnabled && (
+            <div className="quick-reply-chips" role="group" aria-label="快捷回复">
+              {quickReplies.map((chip) => (
+                <button
+                  className="quick-reply-chip"
+                  key={chip}
+                  type="button"
+                  onClick={() => onSend(chip)}
+                >
+                  {chip}
+                </button>
+              ))}
+            </div>
+          )}
           <div className="composer">
             <ComposerPrimitive.Input
               aria-label={ariaLabel}
@@ -88,9 +105,23 @@ export function AssistantUIThread({
               submitMode="enter"
               className="assistant-ui-composer-input"
             />
+            {!hideNoteButton && onToggleNoteDrawer && (
+              <button
+                className="btn primary send-btn note-inline-btn"
+                type="button"
+                aria-label={noteDrawerOpen ? "关闭知识点笔记" : "打开知识点笔记"}
+                aria-controls="noteDrawer"
+                aria-expanded={noteDrawerOpen}
+                disabled={!noteDrawerOpen && !canOpenNoteDrawer}
+                onClick={onToggleNoteDrawer}
+              >
+                <img src="/note.png" alt="" />
+              </button>
+            )}
             <ComposerPrimitive.Send
               className="btn primary send-btn"
               aria-label="发送"
+              disabled={composerDisabled}
             >
               ↑
             </ComposerPrimitive.Send>
@@ -106,36 +137,31 @@ export function AssistantUIThread({
 
 type RendererProps = {
   source: ConversationMessage[];
-  renderInlineCard?: (message: ConversationMessage) => ReactNode | null;
 };
 
-function ConversationMessageRenderer({ source, renderInlineCard }: RendererProps) {
+function ConversationMessageRenderer({ source }: RendererProps) {
   const message = useMessage();
   const original = source.find((entry) => entry.id === message.id);
   const speaker: "user" | "agent" = message.role === "user" ? "user" : "agent";
   const status = original?.status;
-  const inlineCard = original && renderInlineCard ? renderInlineCard(original) : null;
 
   return (
-    <>
-      <article
-        className={messageClassName(speaker, status)}
-        aria-live={status === "streaming" ? "polite" : undefined}
-      >
-        <div className="avatar">{speaker === "agent" ? "A" : "你"}</div>
-        <div className="bubble">
-          {original?.label && <div className="bubble-label">{original.label}</div>}
-          <MessagePrimitive.Parts
-            components={{
-              Text: TextPart,
-              tools: { Fallback: ToolCallFallback },
-            }}
-          />
-          {original?.statusText && <div className="bubble-status">{original.statusText}</div>}
-        </div>
-      </article>
-      {inlineCard}
-    </>
+    <article
+      className={messageClassName(speaker, status)}
+      aria-live={status === "streaming" ? "polite" : undefined}
+    >
+      <div className="avatar">{speaker === "agent" ? "A" : "你"}</div>
+      <div className="bubble">
+        {original?.label && <div className="bubble-label">{original.label}</div>}
+        <MessagePrimitive.Parts
+          components={{
+            Text: TextPart,
+            tools: { Fallback: ToolCallFallback },
+          }}
+        />
+        {original?.statusText && <div className="bubble-status">{original.statusText}</div>}
+      </div>
+    </article>
   );
 }
 

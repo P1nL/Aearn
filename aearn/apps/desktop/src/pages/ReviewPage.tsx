@@ -2,8 +2,7 @@ import { startTransition, useEffect, useRef, useState } from "react";
 
 import { buildReviewMessageSSEUrl, fetchTodayReviews, startReviewSession, submitReviewExerciseResult } from "../api";
 import type { ConversationMessage, NoteContext } from "../appTypes";
-import { AssistantThread } from "../components/AssistantThread";
-import { LearningComposer } from "../components/LearningComposer";
+import { AssistantUIThread } from "../components/AssistantUIThread";
 import { ReviewRecap } from "../components/ReviewRecap";
 import { useSSE } from "../hooks/useSSE";
 import { formatErrorMessage } from "../lib/errorMessages";
@@ -51,7 +50,6 @@ export function ReviewPage({ isActive, user, messages, lastSubmit, lastRun, onAc
   const [explanation, setExplanation] = useState("");
   const [submitState, setSubmitState] = useState<"idle" | "submitting" | "done" | "error">("idle");
   const [reviewResult, setReviewResult] = useState<ReviewExerciseResultResponse | null>(null);
-  const [composerInput, setComposerInput] = useState("");
   const [streamRequest, setStreamRequest] = useState<ReviewStreamRequest | null>(null);
   const conversationScrollRef = useRef<HTMLElement | null>(null);
 
@@ -101,8 +99,8 @@ export function ReviewPage({ isActive, user, messages, lastSubmit, lastRun, onAc
     return () => window.cancelAnimationFrame(frame);
   }, [messages.length, activeReview?.session_id, reviewResult?.attempt_id]);
 
-  function handleComposerSubmit() {
-    const content = composerInput.trim();
+  function handleComposerSubmit(input: string) {
+    const content = input.trim();
     if (content.length === 0 || isStreaming || !activeReview) return;
 
     const assistantMessage: ConversationMessage = {
@@ -124,7 +122,6 @@ export function ReviewPage({ isActive, user, messages, lastSubmit, lastRun, onAc
         client_message_id: createClientId("desktop_review_msg"),
       },
     });
-    setComposerInput("");
   }
 
   async function loadDueReviews(signal?: AbortSignal) {
@@ -246,7 +243,23 @@ export function ReviewPage({ isActive, user, messages, lastSubmit, lastRun, onAc
               </div>
             )}
 
-            <AssistantThread messages={messages} />
+            <AssistantUIThread
+              messages={messages}
+              isStreaming={isStreaming}
+              sessionActive={composerSessionActive}
+              onSend={handleComposerSubmit}
+              hideNoteButton
+              quickReplies={composerSessionActive && messages.length <= 1 ? REVIEW_QUICK_REPLIES : undefined}
+              placeholder={
+                isStreaming
+                  ? "AI 正在回复……"
+                  : !composerSessionActive
+                    ? "先开始一个复习会话……"
+                    : "用自己的话复述，或请求提示……"
+              }
+              ariaLabel="复习输入框"
+              guidanceText={!composerSessionActive ? "点击上方「开始复习」后，可以在这里和 AI 对话。" : undefined}
+            />
 
             <section className="exercise-workbench" aria-label="今日复习闭环">
               <div className="exercise-head">
@@ -374,20 +387,6 @@ export function ReviewPage({ isActive, user, messages, lastSubmit, lastRun, onAc
           </div>
         </section>
       </div>
-
-      <LearningComposer
-        value={composerInput}
-        onChange={setComposerInput}
-        onSubmit={handleComposerSubmit}
-        disabled={isStreaming}
-        streaming={isStreaming}
-        sessionActive={composerSessionActive}
-        hideNoteButton
-        quickReplies={composerSessionActive && messages.length <= 1 ? REVIEW_QUICK_REPLIES : undefined}
-        placeholder={isStreaming ? "AI 正在回复……" : !composerSessionActive ? "先开始一个复习会话……" : "用自己的话复述，或请求提示……"}
-        ariaLabel="复习输入框"
-        guidanceText={!composerSessionActive ? "点击上方「开始复习」后，可以在这里和 AI 对话。" : undefined}
-      />
     </div>
   );
 }
