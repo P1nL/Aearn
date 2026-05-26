@@ -668,3 +668,36 @@ Implemented concept-first learning sessions with compact stage state, learning-m
 ### Next Steps
 
 - None - task complete
+
+
+## Session 21: Onboarding route tool card generation
+
+**Date**: 2026-05-26
+**Task**: Onboarding route tool card generation
+**Branch**: `main`
+
+### Summary
+
+Implemented structured onboarding route cards with guided readiness, natural-language revisions, optional time-budget rhythm display, latest-card-only start behavior, idempotent tool-call replay, and synchronized product/API/Trellis specs. Verified focused backend tests, desktop build, and browser smoke.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `4861a43` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
