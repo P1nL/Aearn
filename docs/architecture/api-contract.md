@@ -801,6 +801,58 @@ HTTP 状态码：
 
 ### 3. 学习计划
 
+#### `POST /api/onboarding/messages`
+
+用途：以多轮建档对话收集语言、目标和当前水平；当必需信息齐备时，通过 SSE `tool_call` 事件生成对话内学习路线卡片，并暂存最新 `plan_draft`。
+
+Request JSON 示例：
+
+```json
+{
+  "user_id": "user_001",
+  "onboarding_session_id": "onboarding_001",
+  "role": "user",
+  "content": "我想用 Python 做自动化脚本，看过基础语法",
+  "client_message_id": "desktop_onboarding_msg_001"
+}
+```
+
+SSE 行为：
+
+- 信息不足时发送简短 `agent_message`，每轮只追问一个关键缺口。
+- `language`、`target_level`、`goal_text` 齐备时，先发送简短 `agent_message`，再发送 `tool_call(name="show_learning_route")`；完整路线内容只放在工具参数中。
+- `time_budget` 为可选字段；用户之后补充时间、方向或难度时，服务重新暂存草稿并发送新的 `show_learning_route` 工具调用，工具参数会携带新的节奏信息。
+- 同一建档会话只有最新暂存草稿可确认；前端必须将历史路线卡片的 `开始学习` 置为禁用。
+
+`show_learning_route` arguments 示例：
+
+```json
+{
+  "plan_id": "plan_draft_001",
+  "goal_text": "学习 Python，聚焦自动化，从入门到进阶",
+  "language": "python",
+  "time_budget": {
+    "minutes_per_day": 120,
+    "days_per_week": 1
+  },
+  "modules": []
+}
+```
+
+#### `POST /api/onboarding/{session_id}/confirm_plan`
+
+用途：确认建档会话中最新暂存的 `plan_draft`，创建正式 `LearningPlan` 后进入学习流程。该接口不接受历史卡片指定旧草稿。
+
+Request JSON 示例：
+
+```json
+{
+  "user_id": "user_001"
+}
+```
+
+错误码：`ONBOARDING_SESSION_NOT_FOUND`、`USER_MISMATCH`、`PLAN_DRAFT_NOT_READY`、`PLAN_DRAFT_INVALID`、`IDEMPOTENCY_CONFLICT`
+
 #### `POST /api/plans/generate`
 
 用途：根据目标、资料或澄清答案生成可确认的 `plan_draft`，不直接创建正式 `LearningPlan`。

@@ -226,7 +226,7 @@ def _draft_id(payload: PlanGenerateRequest, course: Mapping[str, object]) -> str
         "course_id": str(course["id"]),
         "materials": [material.model_dump() for material in payload.materials],
         "target_level": payload.target_level,
-        "deadline": payload.time_budget.deadline.isoformat() if payload.time_budget and payload.time_budget.deadline else None,
+        "time_budget": payload.time_budget.model_dump(mode="json") if payload.time_budget else None,
     }
     digest = hashlib.sha256(json.dumps(body, sort_keys=True).encode("utf-8")).hexdigest()[:16]
     return f"plan_draft_{digest}"

@@ -79,6 +79,7 @@ Every UI task must be checked against `docs/product/frontend-interaction-spec.md
 - Draft preview must show runtime capability metadata, source attribution, and non-skippable core modules.
 - Workspace after confirmation is only a route summary entry in M2; it must not show generated exercise cards, run/submit actions, Attempt types, score, FSRS rating, or due scheduling.
 - Java/C++ courses must display `compiled_sandbox_later` as unsupported/postponed execution capability.
+- Generated onboarding route cards render from `show_learning_route` tool args; the card exposes only `开始学习`, displays optional `time_budget` as user-facing rhythm copy, and disables historical cards by latest tool-call id.
 
 ### 4. Validation & Error Matrix
 
@@ -97,6 +98,7 @@ Every UI task must be checked against `docs/product/frontend-interaction-spec.md
 
 - Run `pnpm --dir .\aearn desktop:check`.
 - Browser smoke: open `http://127.0.0.1:1420`, verify API online, generate a JS draft, confirm it, and see workspace summary.
+- Browser smoke onboarding route revisions: generate one route card, send a time-budget-only revision, verify the old `开始学习` is disabled and the latest card remains startable.
 - Browser console should have no current errors after the latest reload and flow.
 
 ### 7. Wrong vs Correct

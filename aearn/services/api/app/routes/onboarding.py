@@ -263,6 +263,22 @@ async def _onboarding_message_stream(
                     content=prepared.stored_content,
                 ),
             )
+            for stored_tool_call in prepared.stored_tool_calls:
+                tool_call_id = stored_tool_call.get("id")
+                name = stored_tool_call.get("name")
+                arguments = stored_tool_call.get("args")
+                if (
+                    isinstance(tool_call_id, str)
+                    and isinstance(name, str)
+                    and isinstance(arguments, dict)
+                ):
+                    async for tool_event in _tool_call_events(
+                        writer,
+                        tool_call_id=tool_call_id,
+                        name=name,
+                        arguments=arguments,
+                    ):
+                        yield tool_event
             yield writer.event(
                 "done",
                 {
@@ -276,8 +292,76 @@ async def _onboarding_message_stream(
             )
             return
 
-        # Generate response
-        generation = start_onboarding_generation(prepared.context, user_content=content)
+        # Extract slots before generating user-visible text. If this turn is
+        # route-ready, the visible route must come from the tool call card.
+        with connect() as conn_refresh:
+            refreshed = load_onboarding_context(
+                conn_refresh, conversation_id=prepared.conversation_id, user_id=user_id
+            )
+
+        slots = await asyncio.to_thread(extract_slots, refreshed)
+
+        with connect() as conn_persist:
+            persist_extracted_slots(
+                conn_persist,
+                conversation_id=prepared.conversation_id,
+                slots=slots,
+            )
+            conn_persist.commit()
+
+        # Reload so detect_plan_proposal sees the freshly persisted slots
+        # alongside any previously stashed plan_draft.
+        with connect() as conn_reload:
+            refreshed = load_onboarding_context(
+                conn_reload, conversation_id=prepared.conversation_id, user_id=user_id
+            )
+
+        tool_calls_for_metadata: list[dict[str, object]] = []
+        plan_error_payload: dict[str, str] | None = None
+        learning_route_args: dict[str, object] | None = None
+        route_tool_call_id: str | None = None
+        if detect_plan_proposal(refreshed, slots):
+            try:
+                with connect() as conn_plan:
+                    plan_draft = build_plan_draft_from_slots(
+                        conn_plan, slots=slots, user_id=user_id
+                    )
+                    stash_plan_draft(
+                        conn_plan,
+                        conversation_id=prepared.conversation_id,
+                        plan_draft=plan_draft,
+                        slots=slots,
+                    )
+                    conn_plan.commit()
+            except OnboardingPlanDraftError as exc:
+                plan_error_payload = {"code": exc.code, "message": exc.message}
+            except Exception as exc:  # noqa: BLE001 - never crash the stream
+                plan_error_payload = {
+                    "code": "PLAN_DRAFT_INVALID",
+                    "message": f"无法生成计划草稿：{exc}",
+                }
+            else:
+                learning_route_args = learning_route_args_from_plan_draft(
+                    plan_draft,
+                    slots=slots,
+                )
+                route_tool_call_id = f"tc_{uuid.uuid4().hex[:12]}"
+
+        if plan_error_payload is not None:
+            yield writer.error(
+                code=plan_error_payload["code"],
+                message=plan_error_payload["message"],
+                request_id=request_id,
+                details={"onboarding_session_id": prepared.conversation_id},
+                recoverable=True,
+            )
+            return
+
+        generation = (
+            deterministic_onboarding_generation(refreshed, user_content=content)
+            if learning_route_args is not None
+            else start_onboarding_generation(refreshed, user_content=content)
+        )
         full_text = ""
         generation_source = generation.generation_source
         generation_model = generation.generation_model
@@ -304,7 +388,7 @@ async def _onboarding_message_stream(
                     recoverable=True,
                 )
                 return
-            fallback = deterministic_onboarding_generation(prepared.context, user_content=content)
+            fallback = deterministic_onboarding_generation(refreshed, user_content=content)
             generation_source = fallback.generation_source
             generation_model = fallback.generation_model
             async for delta in _iter_generation_chunks(request, fallback.chunks):
@@ -321,7 +405,7 @@ async def _onboarding_message_stream(
                 )
 
         if not full_text.strip():
-            fallback = deterministic_onboarding_generation(prepared.context, user_content=content)
+            fallback = deterministic_onboarding_generation(refreshed, user_content=content)
             generation_source = fallback.generation_source
             generation_model = fallback.generation_model
             async for delta in _iter_generation_chunks(request, fallback.chunks):
@@ -337,85 +421,21 @@ async def _onboarding_message_stream(
                     ),
                 )
 
-        # Run the slot extractor on a refreshed context (now that the user
-        # message is committed). The extractor is best-effort; failures
-        # leave slots untouched and we fall back to deterministic behavior.
-        with connect() as conn_refresh:
-            refreshed = load_onboarding_context(
-                conn_refresh, conversation_id=prepared.conversation_id, user_id=user_id
-            )
-
-        slots = await asyncio.to_thread(extract_slots, refreshed)
-
-        with connect() as conn_persist:
-            persist_extracted_slots(
-                conn_persist,
-                conversation_id=prepared.conversation_id,
-                slots=slots,
-            )
-            conn_persist.commit()
-
-        # Reload so detect_plan_proposal sees the freshly persisted slots
-        # alongside any previously stashed plan_draft.
-        with connect() as conn_reload:
-            refreshed = load_onboarding_context(
-                conn_reload, conversation_id=prepared.conversation_id, user_id=user_id
-            )
-
-        tool_calls_for_metadata: list[dict[str, object]] = []
-        plan_error_payload: dict[str, str] | None = None
-        if detect_plan_proposal(refreshed, slots):
-            try:
-                with connect() as conn_plan:
-                    plan_draft = build_plan_draft_from_slots(
-                        conn_plan, slots=slots, user_id=user_id
-                    )
-                    stash_plan_draft(
-                        conn_plan,
-                        conversation_id=prepared.conversation_id,
-                        plan_draft=plan_draft,
-                        slots=slots,
-                    )
-                    conn_plan.commit()
-            except OnboardingPlanDraftError as exc:
-                plan_error_payload = {"code": exc.code, "message": exc.message}
-            except Exception as exc:  # noqa: BLE001 - never crash the stream
-                plan_error_payload = {
-                    "code": "PLAN_DRAFT_INVALID",
-                    "message": f"无法生成计划草稿：{exc}",
+        if learning_route_args is not None and route_tool_call_id is not None:
+            async for tool_event in _tool_call_events(
+                writer,
+                tool_call_id=route_tool_call_id,
+                name="show_learning_route",
+                arguments=learning_route_args,
+            ):
+                yield tool_event
+            tool_calls_for_metadata.append(
+                {
+                    "id": route_tool_call_id,
+                    "name": "show_learning_route",
+                    "args": learning_route_args,
+                    "status": "done",
                 }
-            else:
-                learning_route_args = learning_route_args_from_plan_draft(plan_draft)
-                tool_call_id = f"tc_{uuid.uuid4().hex[:12]}"
-
-                yield writer.tool_call_start(
-                    tool_call_id=tool_call_id, name="show_learning_route"
-                )
-                for chunk in chunk_tool_call_arguments(learning_route_args):
-                    yield writer.tool_call_delta(
-                        tool_call_id=tool_call_id, arguments_delta=chunk
-                    )
-                    await asyncio.sleep(0)
-                yield writer.tool_call_done(
-                    tool_call_id=tool_call_id, arguments=learning_route_args
-                )
-
-                tool_calls_for_metadata.append(
-                    {
-                        "id": tool_call_id,
-                        "name": "show_learning_route",
-                        "args": learning_route_args,
-                        "status": "done",
-                    }
-                )
-
-        if plan_error_payload is not None:
-            yield writer.error(
-                code=plan_error_payload["code"],
-                message=plan_error_payload["message"],
-                request_id=request_id,
-                details={"onboarding_session_id": prepared.conversation_id},
-                recoverable=True,
             )
 
         # Persist agent message (and any resolved tool calls in metadata)
@@ -450,6 +470,20 @@ async def _onboarding_message_stream(
             request_id=request_id,
             recoverable=True,
         )
+
+
+async def _tool_call_events(
+    writer: SSEWriter,
+    *,
+    tool_call_id: str,
+    name: str,
+    arguments: dict[str, object],
+) -> AsyncGenerator[str, None]:
+    yield writer.tool_call_start(tool_call_id=tool_call_id, name=name)
+    for chunk in chunk_tool_call_arguments(arguments):
+        yield writer.tool_call_delta(tool_call_id=tool_call_id, arguments_delta=chunk)
+        await asyncio.sleep(0)
+    yield writer.tool_call_done(tool_call_id=tool_call_id, arguments=arguments)
 
 
 async def _error_stream(

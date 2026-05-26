@@ -30,6 +30,7 @@ const EMPTY_LEARNING_ROUTE: LearningRouteArgs = {
   plan_id: "",
   goal_text: "正在生成学习路线…",
   language: "javascript",
+  time_budget: null,
   modules: [],
 };
 
@@ -41,6 +42,14 @@ type LearningToolRuntime = {
 };
 
 const LearningToolRuntimeContext = createContext<LearningToolRuntime>({});
+
+type LearningRouteRuntime = {
+  latestToolCallId: string | null;
+};
+
+const LearningRouteRuntimeContext = createContext<LearningRouteRuntime>({
+  latestToolCallId: null,
+});
 
 export function LearningToolRuntimeProvider({
   runtime,
@@ -56,6 +65,20 @@ export function LearningToolRuntimeProvider({
   );
 }
 
+export function LearningRouteRuntimeProvider({
+  latestToolCallId,
+  children,
+}: {
+  latestToolCallId: string | null;
+  children: ReactNode;
+}) {
+  return (
+    <LearningRouteRuntimeContext.Provider value={{ latestToolCallId }}>
+      {children}
+    </LearningRouteRuntimeContext.Provider>
+  );
+}
+
 function isPartialLearningRouteArgs(value: unknown): value is Partial<LearningRouteArgs> {
   return typeof value === "object" && value !== null;
 }
@@ -64,10 +87,21 @@ function normalizeLearningRouteArgs(args: unknown): LearningRouteArgs {
   if (!isPartialLearningRouteArgs(args)) {
     return EMPTY_LEARNING_ROUTE;
   }
+  const rawTimeBudget = args.time_budget;
+  const timeBudget =
+    isRecord(rawTimeBudget) &&
+    typeof rawTimeBudget.minutes_per_day === "number" &&
+    typeof rawTimeBudget.days_per_week === "number"
+      ? {
+          minutes_per_day: rawTimeBudget.minutes_per_day,
+          days_per_week: rawTimeBudget.days_per_week,
+        }
+      : null;
   return {
     plan_id: typeof args.plan_id === "string" ? args.plan_id : EMPTY_LEARNING_ROUTE.plan_id,
     goal_text: typeof args.goal_text === "string" ? args.goal_text : EMPTY_LEARNING_ROUTE.goal_text,
     language: (args.language as LearningRouteArgs["language"]) ?? EMPTY_LEARNING_ROUTE.language,
+    time_budget: timeBudget,
     modules: Array.isArray(args.modules)
       ? args.modules
           .filter((module): module is Record<string, unknown> & LearningRouteArgs["modules"][number] =>
@@ -125,13 +159,17 @@ function dispatchLearningRouteAction(action: string, payload?: unknown) {
 
 export const LearningRouteToolUI = makeAssistantToolUI<LearningRouteArgs, unknown>({
   toolName: "show_learning_route",
-  render: ({ args, status }) => {
+  render: ({ args, status, toolCallId }) => {
+    const runtime = useContext(LearningRouteRuntimeContext);
     const normalized = normalizeLearningRouteArgs(args);
     const cardStatus = mapStatusToToolStatus(status);
+    const canStart =
+      runtime.latestToolCallId === null || runtime.latestToolCallId === toolCallId;
     return (
       <LearningRouteCard
         args={normalized}
         status={cardStatus}
+        canStart={canStart}
         onAction={dispatchLearningRouteAction}
       />
     );

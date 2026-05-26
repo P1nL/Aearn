@@ -320,6 +320,36 @@ def test_onboarding_keyword_slots_are_content_driven() -> None:
     assert drip_slots.focus == "Web"
     assert drip_slots.plan_ready is True
 
+    guided_history = [
+        {"role": "user", "content": "Python"},
+        {"role": "agent", "content": "你主要想用 Python 做什么？"},
+        {"role": "user", "content": "自动化脚本"},
+        {"role": "agent", "content": "你现在的基础大概是哪一档？"},
+        {"role": "user", "content": "看过基础语法"},
+    ]
+    guided_slots = keyword_extract_slots(guided_history, ExtractedSlots())
+    assert guided_slots.language == "python"
+    assert guided_slots.focus == "自动化"
+    assert guided_slots.target_level == "beginner_to_intermediate"
+    assert guided_slots.time_budget is None
+    assert guided_slots.plan_ready is True
+
+
+def test_onboarding_keyword_slots_treat_later_time_budget_as_revision() -> None:
+    initial_history = [
+        {"role": "user", "content": "我想学 Python 自动化脚本，看过基础语法"},
+    ]
+    initial_slots = keyword_extract_slots(initial_history, ExtractedSlots())
+    revised_slots = keyword_extract_slots(
+        [*initial_history, {"role": "user", "content": "每周只有 2 小时"}],
+        initial_slots,
+    )
+
+    assert revised_slots.revising is True
+    assert revised_slots.time_budget is not None
+    assert revised_slots.time_budget.minutes_per_day == 120
+    assert revised_slots.time_budget.days_per_week == 1
+
 
 def test_confirm_onboarding_plan_uses_stashed_draft(client: TestClient) -> None:
     user = _create_user(client)
@@ -392,7 +422,7 @@ def test_onboarding_message_stream_triggers_plan_from_first_complete_turn(
     def fake_start_generation(context, *, user_content, settings=None, client=None):  # type: ignore[no-untyped-def]
         del context, user_content, settings, client
         return OnboardingMessageGeneration(
-            chunks=["信息够了，我帮你生成一份学习路线。"],
+            chunks=["这是一段不应该在路线卡片前输出的长篇学习路线正文。"],
             generation_source="deterministic",
             generation_model="fake-onboarding-model",
         )
@@ -424,6 +454,10 @@ def test_onboarding_message_stream_triggers_plan_from_first_complete_turn(
     assert "tool_call" in event_types
     assert "plan_draft" not in event_types
     assert event_types[-1] == "done"
+    agent_text = str(
+        [event for event in events if event["event"] == "agent_message"][-1]["data"]["content"]
+    )
+    assert agent_text == "信息够了，我生成一份路线卡片。想改方向、时间或难度，直接回复我就行。"
 
     session_created = next(event for event in events if event["event"] == "session_created")
     conversation_id = str(session_created["data"]["onboarding_session_id"])
@@ -452,6 +486,160 @@ def test_onboarding_message_stream_triggers_plan_from_first_complete_turn(
     )
     assert confirm.status_code == 201
     assert confirm.json()["LearningPlan"]["goal_text"] == route_args["goal_text"]
+
+
+def test_onboarding_message_stream_generates_and_revises_route_from_guided_chat(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user = _create_user(client)
+    monkeypatch.setattr(
+        onboarding_route,
+        "start_onboarding_generation",
+        lambda context, *, user_content, settings=None, client=None: onboarding_route.deterministic_onboarding_generation(
+            context, user_content=user_content
+        ),
+    )
+    monkeypatch.setattr(
+        onboarding_route,
+        "extract_slots",
+        lambda context: keyword_extract_slots(context.history, ExtractedSlots()),
+    )
+
+    conversation_id: str | None = None
+    for content in ("Python", "自动化脚本"):
+        events = _send_onboarding_stream(
+            client,
+            user_id=str(user["id"]),
+            content=content,
+            conversation_id=conversation_id,
+        )
+        if conversation_id is None:
+            session_created = next(event for event in events if event["event"] == "session_created")
+            conversation_id = str(session_created["data"]["onboarding_session_id"])
+        assert all(event["event"] != "tool_call" for event in events)
+
+    assert conversation_id is not None
+    generated_events = _send_onboarding_stream(
+        client,
+        user_id=str(user["id"]),
+        content="看过基础语法",
+        conversation_id=conversation_id,
+    )
+    generated_tool = next(
+        event["data"]["arguments"]
+        for event in generated_events
+        if event["event"] == "tool_call" and event["data"]["phase"] == "done"
+    )
+    assert generated_tool["language"] == "python"
+    assert "自动化" in generated_tool["goal_text"]
+
+    revised_events = _send_onboarding_stream(
+        client,
+        user_id=str(user["id"]),
+        content="我想改成数据分析方向，每周只有 2 小时",
+        conversation_id=conversation_id,
+    )
+    revised_tool = next(
+        event["data"]["arguments"]
+        for event in revised_events
+        if event["event"] == "tool_call" and event["data"]["phase"] == "done"
+    )
+    assert "数据分析" in revised_tool["goal_text"]
+    assert revised_tool["plan_id"] != generated_tool["plan_id"]
+
+
+def test_onboarding_message_stream_revises_route_when_only_time_budget_changes(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user = _create_user(client)
+    monkeypatch.setattr(
+        onboarding_route,
+        "extract_slots",
+        lambda context: keyword_extract_slots(context.history, ExtractedSlots()),
+    )
+
+    generated_events = _send_onboarding_stream(
+        client,
+        user_id=str(user["id"]),
+        content="我想学 Python 自动化脚本，看过基础语法",
+        conversation_id=None,
+    )
+    session_created = next(event for event in generated_events if event["event"] == "session_created")
+    conversation_id = str(session_created["data"]["onboarding_session_id"])
+    generated_tool = next(
+        event["data"]["arguments"]
+        for event in generated_events
+        if event["event"] == "tool_call" and event["data"]["phase"] == "done"
+    )
+    assert generated_tool["time_budget"] is None
+
+    revised_events = _send_onboarding_stream(
+        client,
+        user_id=str(user["id"]),
+        content="每周只有 2 小时",
+        conversation_id=conversation_id,
+    )
+    revised_tool = next(
+        event["data"]["arguments"]
+        for event in revised_events
+        if event["event"] == "tool_call" and event["data"]["phase"] == "done"
+    )
+    assert revised_tool["time_budget"] == {"minutes_per_day": 120, "days_per_week": 1}
+    assert revised_tool["plan_id"] != generated_tool["plan_id"]
+
+
+def test_onboarding_message_stream_replays_stored_route_tool_call(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user = _create_user(client)
+    monkeypatch.setattr(
+        onboarding_route,
+        "extract_slots",
+        lambda context: keyword_extract_slots(context.history, ExtractedSlots()),
+    )
+    client_message_id = f"desktop_onboarding_msg_{uuid.uuid4().hex}"
+    first_events = _send_onboarding_stream(
+        client,
+        user_id=str(user["id"]),
+        content="我想学 Python 自动化脚本，看过基础语法",
+        conversation_id=None,
+        client_message_id=client_message_id,
+    )
+    session_created = next(event for event in first_events if event["event"] == "session_created")
+    conversation_id = str(session_created["data"]["onboarding_session_id"])
+    first_tool = next(
+        event["data"]
+        for event in first_events
+        if event["event"] == "tool_call" and event["data"]["phase"] == "done"
+    )
+
+    replay_events = _send_onboarding_stream(
+        client,
+        user_id=str(user["id"]),
+        content="我想学 Python 自动化脚本，看过基础语法",
+        conversation_id=conversation_id,
+        client_message_id=client_message_id,
+    )
+    replay_tool = next(
+        event["data"]
+        for event in replay_events
+        if event["event"] == "tool_call" and event["data"]["phase"] == "done"
+    )
+    done = next(event["data"] for event in replay_events if event["event"] == "done")
+
+    assert replay_tool == first_tool
+    assert done["generation_source"] == "replay"
+
+    with connect() as conn:
+        agent_count = conn.execute(
+            "SELECT count(*) AS count FROM onboarding_messages WHERE conversation_id = %s AND role = 'agent'",
+            (conversation_id,),
+        ).fetchone()
+    assert agent_count is not None
+    assert agent_count["count"] == 1
 
 
 def _create_user(client: TestClient) -> dict[str, object]:
@@ -493,3 +681,28 @@ def _parse_sse_events(raw: str) -> list[dict[str, object]]:
             continue
         events.append({"event": event_type, "data": json.loads("\n".join(data_lines))})
     return events
+
+
+def _send_onboarding_stream(
+    client: TestClient,
+    *,
+    user_id: str,
+    content: str,
+    conversation_id: str | None,
+    client_message_id: str | None = None,
+) -> list[dict[str, object]]:
+    payload: dict[str, object] = {
+        "user_id": user_id,
+        "content": content,
+        "client_message_id": client_message_id or f"desktop_onboarding_msg_{uuid.uuid4().hex}",
+    }
+    if conversation_id is not None:
+        payload["onboarding_session_id"] = conversation_id
+    with client.stream(
+        "POST",
+        "/api/onboarding/messages",
+        headers={"Accept": "text/event-stream", "X-Request-Id": f"req_{uuid.uuid4().hex}"},
+        json=payload,
+    ) as response:
+        assert response.status_code == 200
+        return _parse_sse_events("".join(response.iter_text()))

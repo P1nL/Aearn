@@ -2932,6 +2932,12 @@ img {
   margin: 12px 0;
 }
 
+.gen-route-pace {
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .gen-route-progress-bar {
   height: 6px;
   background: var(--panel-soft);
