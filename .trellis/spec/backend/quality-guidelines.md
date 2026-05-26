@@ -80,6 +80,9 @@ The dependency source for the API service is `aearn/services/api/pyproject.toml`
 - JS/HTML/CSS/Python drafts must expose `browser_preview` or `python_stdout_test`; Java/C++ drafts may be returned only with `compiled_sandbox_later` notices.
 - Confirmed plans normalize `target_level=beginner_to_intermediate` to the DB-supported `beginner` value.
 - Confirm plan default idempotency key is `confirm-plan:{user_id}:{plan_draft.draft_id}` unless `Idempotency-Key` is provided.
+- Onboarding conversation route-ready turns must emit a short `agent_message` plus a persisted `show_learning_route` tool call, not a long plain-text route body.
+- Onboarding message idempotency replay must re-emit stored `metadata.tool_calls` so desktop resume/retry rehydrates the same route card.
+- Time-budget-only onboarding revisions must update the route tool args and draft identity; missing time budget must not block initial route-card generation.
 
 ### 4. Validation & Error Matrix
 
@@ -104,6 +107,7 @@ The dependency source for the API service is `aearn/services/api/pyproject.toml`
 - Assert goal and material generation success, insufficient input, unknown user, and unknown course.
 - Assert confirm plan creates plan/module/knowledge point rows and one `review_states` row per knowledge point.
 - Assert idempotent replay returns the original plan and conflicting request body returns `IDEMPOTENCY_CONFLICT`.
+- Assert route-ready onboarding SSE stores and replays `show_learning_route` metadata, including time-budget-only revisions.
 
 ### 7. Wrong vs Correct
 

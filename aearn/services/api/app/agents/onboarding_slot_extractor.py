@@ -62,8 +62,9 @@ _EXTRACTOR_INSTRUCTIONS = (
     "7. focus 是重点方向自由文本（如 'Web 开发'、'数据分析'、'算法竞赛'）；不明确时返回 null。\n"
     "8. plan_ready: 仅当 language、target_level、goal_text 都已填上有意义的值时设为 true，否则 false。\n"
     "9. missing_slot_question: plan_ready=false 时给出下一轮最该追问的中文问题（按缺啥问啥），plan_ready=true 时返回 null。\n"
-    "10. revising: 如果用户最新一条消息表达了 '想调整 / 换语言 / 不对 / 改一下' 等修订计划的意图，设为 true，否则 false。\n"
+    "10. revising: 如果用户最新一条消息表达了调整方向、语言、水平或时间预算的意图（如 '想调整'、'改成数据分析'、'每周只有 2 小时'），设为 true，否则 false。\n"
     "11. 如果用户表达的语言不在支持范围内，language 保持 null，并在 missing_slot_question 中提示支持范围。\n"
+    "12. '学过一点'、'看过基础语法'、'会一点'、'接触过'、'写过一点' 通常归为 beginner_to_intermediate，除非用户同时给出更明确的水平。\n"
 )
 
 
@@ -165,11 +166,16 @@ _LANGUAGE_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
 _TARGET_LEVEL_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("beginner", re.compile(r"零基础|入门|从零|新手|完全没学过|什么都不会")),
     ("advanced", re.compile(r"高级|资深|多年经验|高阶")),
+    ("beginner_to_intermediate", re.compile(r"学过一点|看过(?:基础)?语法|会一点|接触过|写过一点|懂一点")),
     ("intermediate", re.compile(r"进阶|中级|有经验|有基础")),
 ]
-_REVISE_PATTERN = re.compile(r"调整|换一?个|不对|改一改|改一下|重新")
+_REVISE_PATTERN = re.compile(r"调整|换(?:一?个|成)?|不对|改(?:一改|一下|为|成)?|重新|只能|只有|每周|每[天日]")
 _FOCUS_PATTERN = re.compile(
     r"web|后端|前端|全栈|数据(?:分析|科学|挖掘)?|算法|爬虫|游戏|自动化|测试|机器学习|ai|脚本",
+    re.IGNORECASE,
+)
+_WEEKLY_TIME_HOUR_PATTERN = re.compile(
+    r"每?周\s*(?:只(?:有|能)\s*)?(\d+(?:\.\d+)?)\s*(?:个)?\s*(小时|h|hr)",
     re.IGNORECASE,
 )
 _TIME_HOUR_PATTERN = re.compile(r"(\d+(?:\.\d+)?)\s*(?:个)?\s*(小时|h|hr)", re.IGNORECASE)
@@ -200,54 +206,21 @@ def keyword_extract_slots(
             last_user_message = str(msg.get("content", ""))
             break
 
-    language: Language | None = prior_slots.language
-    for code, pattern in _LANGUAGE_PATTERNS:
-        if pattern.search(user_text):
-            language = cast(Language, code)
-            break
-
-    target_level: TargetLevel | None = prior_slots.target_level
-    for level, pattern in _TARGET_LEVEL_PATTERNS:
-        if pattern.search(user_text):
-            target_level = cast(TargetLevel, level)
-            break
+    language = _resolve_language(last_user_message, user_text, prior_slots.language)
+    target_level = _resolve_target_level(last_user_message, user_text, prior_slots.target_level)
 
     focus: str | None = prior_slots.focus
-    focus_match = _FOCUS_PATTERN.search(user_text)
-    if focus_match:
-        focus = focus_match.group(0)
+    latest_focus_match = _FOCUS_PATTERN.search(last_user_message)
+    if latest_focus_match:
+        focus = latest_focus_match.group(0)
+    elif focus is None:
+        focus_match = _FOCUS_PATTERN.search(user_text)
+        if focus_match:
+            focus = focus_match.group(0)
 
-    time_budget = prior_slots.time_budget
-    minutes_per_day: int | None = None
-    hour_match = _TIME_HOUR_PATTERN.search(user_text)
-    if hour_match:
-        try:
-            minutes_per_day = int(round(float(hour_match.group(1)) * 60))
-        except ValueError:
-            minutes_per_day = None
-    if minutes_per_day is None:
-        minute_match = _TIME_MINUTE_PATTERN.search(user_text)
-        if minute_match:
-            try:
-                minutes_per_day = int(minute_match.group(1))
-            except ValueError:
-                minutes_per_day = None
-
-    days_per_week: int | None = None
-    week_match = _DAYS_WEEK_PATTERN.search(user_text)
-    if week_match:
-        try:
-            days_per_week = max(1, min(7, int(week_match.group(1))))
-        except ValueError:
-            days_per_week = None
-    if days_per_week is None and _DAILY_PATTERN.search(user_text):
-        days_per_week = 7
-
-    if minutes_per_day and minutes_per_day > 0:
-        time_budget = TimeBudgetSlot(
-            minutes_per_day=minutes_per_day,
-            days_per_week=days_per_week or 5,
-        )
+    time_budget = _extract_time_budget(last_user_message)
+    if time_budget is None:
+        time_budget = prior_slots.time_budget or _extract_time_budget(user_text)
 
     goal_text: str | None = prior_slots.goal_text
     candidate_goal = _build_keyword_goal_text(
@@ -274,6 +247,74 @@ def keyword_extract_slots(
         plan_ready=plan_ready,
         missing_slot_question=missing_slot_question,
         revising=revising,
+    )
+
+
+def _resolve_language(
+    last_user_message: str,
+    user_text: str,
+    prior_language: Language | None,
+) -> Language | None:
+    for text in (last_user_message, user_text if prior_language is None else ""):
+        for code, pattern in _LANGUAGE_PATTERNS:
+            if pattern.search(text):
+                return cast(Language, code)
+    return prior_language
+
+
+def _resolve_target_level(
+    last_user_message: str,
+    user_text: str,
+    prior_level: TargetLevel | None,
+) -> TargetLevel | None:
+    for text in (last_user_message, user_text if prior_level is None else ""):
+        for level, pattern in _TARGET_LEVEL_PATTERNS:
+            if pattern.search(text):
+                return cast(TargetLevel, level)
+    return prior_level
+
+
+def _extract_time_budget(text: str) -> TimeBudgetSlot | None:
+    weekly_hour_match = _WEEKLY_TIME_HOUR_PATTERN.search(text)
+    if weekly_hour_match:
+        try:
+            return TimeBudgetSlot(
+                minutes_per_day=int(round(float(weekly_hour_match.group(1)) * 60)),
+                days_per_week=1,
+            )
+        except ValueError:
+            return None
+
+    minutes_per_day: int | None = None
+    hour_match = _TIME_HOUR_PATTERN.search(text)
+    if hour_match:
+        try:
+            minutes_per_day = int(round(float(hour_match.group(1)) * 60))
+        except ValueError:
+            minutes_per_day = None
+    if minutes_per_day is None:
+        minute_match = _TIME_MINUTE_PATTERN.search(text)
+        if minute_match:
+            try:
+                minutes_per_day = int(minute_match.group(1))
+            except ValueError:
+                minutes_per_day = None
+    if not minutes_per_day or minutes_per_day <= 0:
+        return None
+
+    days_per_week: int | None = None
+    week_match = _DAYS_WEEK_PATTERN.search(text)
+    if week_match:
+        try:
+            days_per_week = max(1, min(7, int(week_match.group(1))))
+        except ValueError:
+            days_per_week = None
+    if days_per_week is None and _DAILY_PATTERN.search(text):
+        days_per_week = 7
+
+    return TimeBudgetSlot(
+        minutes_per_day=minutes_per_day,
+        days_per_week=days_per_week or 5,
     )
 
 

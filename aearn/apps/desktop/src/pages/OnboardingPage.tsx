@@ -201,25 +201,19 @@ export function OnboardingPage({
     }
   }, [confirmingPlan, onboardingSessionId, existingUser, onPlanCreated]);
 
-  const handleRevisePlan = useCallback(() => {
-    void handleComposerSubmit("我想调整这份学习计划。");
-  }, [handleComposerSubmit]);
-
-  // Bridge tool-call card actions ("继续学习" / "调整计划") to onboarding flow.
+  // Bridge the latest route card action to onboarding confirmation.
   useEffect(() => {
     const handler = (event: Event) => {
       const detail = (event as CustomEvent<{ action: string }>).detail;
       if (!detail) return;
       if (detail.action === "start_next") {
         void handleConfirmPlan();
-      } else if (detail.action === "adjust_plan") {
-        handleRevisePlan();
       }
     };
     window.addEventListener("aearn:learning-route-action", handler as EventListener);
     return () =>
       window.removeEventListener("aearn:learning-route-action", handler as EventListener);
-  }, [handleConfirmPlan, handleRevisePlan]);
+  }, [handleConfirmPlan]);
 
   const sessionActive = apiHealth.status === "online";
 

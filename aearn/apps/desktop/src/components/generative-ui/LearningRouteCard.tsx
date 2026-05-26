@@ -1,6 +1,15 @@
 import type { ToolUIProps, LearningRouteArgs } from "./types";
 
-export function LearningRouteCard({ args, status, onAction }: ToolUIProps<LearningRouteArgs>) {
+type LearningRouteCardProps = ToolUIProps<LearningRouteArgs> & {
+  canStart?: boolean;
+};
+
+export function LearningRouteCard({
+  args,
+  status,
+  onAction,
+  canStart = true,
+}: LearningRouteCardProps) {
   const completedModules = args.modules.filter((m) => m.status === "completed").length;
   const totalPoints = args.modules.reduce((sum, m) => sum + m.knowledge_points.length, 0);
   const masteredPoints = args.modules.reduce(
@@ -21,6 +30,13 @@ export function LearningRouteCard({ args, status, onAction }: ToolUIProps<Learni
       </header>
 
       <h3 className="gen-card-title">{args.goal_text}</h3>
+
+      {args.time_budget && (
+        <p className="gen-route-pace">
+          学习节奏：每周 {args.time_budget.days_per_week} 天，每次约{" "}
+          {args.time_budget.minutes_per_day} 分钟
+        </p>
+      )}
 
       <div className="gen-route-progress">
         <div className="gen-route-progress-bar">
@@ -73,11 +89,13 @@ export function LearningRouteCard({ args, status, onAction }: ToolUIProps<Learni
 
       {status === "done" && (
         <div className="gen-card-actions">
-          <button className="btn primary" type="button" onClick={() => onAction?.("start_next")}>
-            继续学习
-          </button>
-          <button className="btn ghost" type="button" onClick={() => onAction?.("adjust_plan")}>
-            调整计划
+          <button
+            className="btn primary"
+            type="button"
+            disabled={!canStart}
+            onClick={() => onAction?.("start_next")}
+          >
+            开始学习
           </button>
         </div>
       )}

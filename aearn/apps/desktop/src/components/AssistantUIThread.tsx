@@ -13,6 +13,7 @@ import { useAssistantRuntime } from "../hooks/useAssistantRuntime";
 import {
   CodeExerciseToolUI,
   LearningHistoryToolUI,
+  LearningRouteRuntimeProvider,
   LearningRouteToolUI,
 } from "./generative-ui/assistantToolUIs";
 
@@ -71,72 +72,75 @@ export function AssistantUIThread({
 
   const composerDisabled = isStreaming || !sessionActive;
   const quickReplyEnabled = !composerDisabled && quickReplies && quickReplies.length > 0;
+  const latestRouteToolCallId = findLatestRouteToolCallId(messages);
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      <LearningRouteToolUI />
-      <CodeExerciseToolUI />
-      <LearningHistoryToolUI />
-      <ThreadPrimitive.Root className="assistant-ui-thread">
-        <ThreadPrimitive.Viewport autoScroll className="assistant-ui-thread-viewport">
-          {messages.length === 0 && emptyState ? (
-            <>{emptyState}</>
-          ) : (
-            <ThreadPrimitive.Messages>
-              {() => <ConversationMessageRenderer source={messages} />}
-            </ThreadPrimitive.Messages>
-          )}
-        </ThreadPrimitive.Viewport>
-
-        <ComposerPrimitive.Root className="composer-wrap">
-          {quickReplyEnabled && (
-            <div className="quick-reply-chips" role="group" aria-label="快捷回复">
-              {quickReplies.map((chip) => (
-                <button
-                  className="quick-reply-chip"
-                  key={chip}
-                  type="button"
-                  onClick={() => onSend(chip)}
-                >
-                  {chip}
-                </button>
-              ))}
-            </div>
-          )}
-          <div className="composer">
-            <ComposerPrimitive.Input
-              aria-label={ariaLabel}
-              placeholder={composerPlaceholder}
-              disabled={composerDisabled}
-              submitMode="enter"
-              className="assistant-ui-composer-input"
-            />
-            {!hideNoteButton && onToggleNoteDrawer && (
-              <button
-                className="btn primary send-btn note-inline-btn"
-                type="button"
-                aria-label={noteDrawerOpen ? "关闭知识点笔记" : "打开知识点笔记"}
-                aria-controls="noteDrawer"
-                aria-expanded={noteDrawerOpen}
-                disabled={!noteDrawerOpen && !canOpenNoteDrawer}
-                onClick={onToggleNoteDrawer}
-              >
-                <img src="/note.png" alt="" />
-              </button>
+      <LearningRouteRuntimeProvider latestToolCallId={latestRouteToolCallId}>
+        <LearningRouteToolUI />
+        <CodeExerciseToolUI />
+        <LearningHistoryToolUI />
+        <ThreadPrimitive.Root className="assistant-ui-thread">
+          <ThreadPrimitive.Viewport autoScroll className="assistant-ui-thread-viewport">
+            {messages.length === 0 && emptyState ? (
+              <>{emptyState}</>
+            ) : (
+              <ThreadPrimitive.Messages>
+                {() => <ConversationMessageRenderer source={messages} />}
+              </ThreadPrimitive.Messages>
             )}
-            <ComposerPrimitive.Send
-              className="btn primary send-btn"
-              aria-label="发送"
-              disabled={composerDisabled}
-            >
-              ↑
-            </ComposerPrimitive.Send>
-          </div>
-          {guidanceText && !sessionActive && (
-            <div className="composer-guidance">{guidanceText}</div>
-          )}
-        </ComposerPrimitive.Root>
-      </ThreadPrimitive.Root>
+          </ThreadPrimitive.Viewport>
+
+          <ComposerPrimitive.Root className="composer-wrap">
+            {quickReplyEnabled && (
+              <div className="quick-reply-chips" role="group" aria-label="快捷回复">
+                {quickReplies.map((chip) => (
+                  <button
+                    className="quick-reply-chip"
+                    key={chip}
+                    type="button"
+                    onClick={() => onSend(chip)}
+                  >
+                    {chip}
+                  </button>
+                ))}
+              </div>
+            )}
+            <div className="composer">
+              <ComposerPrimitive.Input
+                aria-label={ariaLabel}
+                placeholder={composerPlaceholder}
+                disabled={composerDisabled}
+                submitMode="enter"
+                className="assistant-ui-composer-input"
+              />
+              {!hideNoteButton && onToggleNoteDrawer && (
+                <button
+                  className="btn primary send-btn note-inline-btn"
+                  type="button"
+                  aria-label={noteDrawerOpen ? "关闭知识点笔记" : "打开知识点笔记"}
+                  aria-controls="noteDrawer"
+                  aria-expanded={noteDrawerOpen}
+                  disabled={!noteDrawerOpen && !canOpenNoteDrawer}
+                  onClick={onToggleNoteDrawer}
+                >
+                  <img src="/note.png" alt="" />
+                </button>
+              )}
+              <ComposerPrimitive.Send
+                className="btn primary send-btn"
+                aria-label="发送"
+                disabled={composerDisabled}
+              >
+                ↑
+              </ComposerPrimitive.Send>
+            </div>
+            {guidanceText && !sessionActive && (
+              <div className="composer-guidance">{guidanceText}</div>
+            )}
+          </ComposerPrimitive.Root>
+        </ThreadPrimitive.Root>
+      </LearningRouteRuntimeProvider>
     </AssistantRuntimeProvider>
   );
 }
@@ -201,4 +205,16 @@ function ToolCallFallback({ toolName, status }: ToolCallMessagePartProps) {
 
 function messageClassName(speaker: "agent" | "user", status?: ConversationMessage["status"]): string {
   return ["message", speaker, status].filter(Boolean).join(" ");
+}
+
+function findLatestRouteToolCallId(messages: ConversationMessage[]): string | null {
+  for (let messageIndex = messages.length - 1; messageIndex >= 0; messageIndex -= 1) {
+    const toolCalls = messages[messageIndex].toolCalls ?? [];
+    for (let toolIndex = toolCalls.length - 1; toolIndex >= 0; toolIndex -= 1) {
+      if (toolCalls[toolIndex].name === "show_learning_route") {
+        return toolCalls[toolIndex].id;
+      }
+    }
+  }
+  return null;
 }

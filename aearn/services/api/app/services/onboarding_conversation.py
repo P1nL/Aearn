@@ -4,6 +4,7 @@ import hashlib
 import json
 from collections.abc import Generator, Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Protocol
 
 from psycopg import Connection
@@ -30,6 +31,7 @@ from app.services.user_repository import get_user
 
 DETERMINISTIC_ONBOARDING_MODEL = "deterministic_onboarding_conversation_v1"
 ONBOARDING_MESSAGE_OPERATION = "onboarding_message"
+ROUTE_CARD_READY_MESSAGE = "信息够了，我生成一份路线卡片。想改方向、时间或难度，直接回复我就行。"
 
 
 class OnboardingTextCompletionClient(Protocol):
@@ -81,6 +83,7 @@ class PreparedOnboardingMessage:
     client_message_id: str
     context: OnboardingConversationContext
     stored_content: str | None
+    stored_tool_calls: Sequence[Mapping[str, object]]
 
 
 @dataclass(frozen=True)
@@ -130,7 +133,7 @@ def prepare_onboarding_message(
         # Idempotency: find the agent response that followed this user message
         agent_msg = conn.execute(
             """
-            SELECT content
+            SELECT content, metadata
             FROM onboarding_messages
             WHERE conversation_id = %s AND role = 'agent' AND created_at > (
                 SELECT created_at FROM onboarding_messages WHERE client_message_id = %s
@@ -141,6 +144,17 @@ def prepare_onboarding_message(
             (conversation_id, client_message_id),
         ).fetchone()
         stored_content = str(agent_msg["content"]) if agent_msg else None
+        stored_tool_calls: list[Mapping[str, object]] = []
+        if agent_msg is not None:
+            metadata = agent_msg.get("metadata") or {}
+            if isinstance(metadata, Mapping):
+                raw_tool_calls = metadata.get("tool_calls") or []
+                if isinstance(raw_tool_calls, list):
+                    stored_tool_calls = [
+                        tool_call
+                        for tool_call in raw_tool_calls
+                        if isinstance(tool_call, Mapping)
+                    ]
         context = load_onboarding_context(conn, conversation_id=conversation_id, user_id=user_id)
         return PreparedOnboardingMessage(
             conversation_id=conversation_id,
@@ -149,6 +163,7 @@ def prepare_onboarding_message(
             client_message_id=client_message_id,
             context=context,
             stored_content=stored_content,
+            stored_tool_calls=stored_tool_calls,
         )
 
     # Persist user message
@@ -168,6 +183,7 @@ def prepare_onboarding_message(
         client_message_id=client_message_id,
         context=context,
         stored_content=None,
+        stored_tool_calls=[],
     )
 
 
@@ -220,6 +236,7 @@ def list_onboarding_messages(
 
     result: list[dict[str, object]] = []
     for row in rows:
+        created_at = row.get("created_at")
         metadata = row.get("metadata") or {}
         if not isinstance(metadata, Mapping):
             metadata = {}
@@ -232,7 +249,7 @@ def list_onboarding_messages(
                 "role": str(row["role"]),
                 "content": str(row["content"]),
                 "tool_calls": tool_calls,
-                "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
+                "created_at": created_at.isoformat() if isinstance(created_at, datetime) else None,
             }
         )
     return result
@@ -381,7 +398,7 @@ def detect_plan_proposal(
       1. plan_ready=True from the extractor, AND
       2. required slots (language, target_level, goal_text) all filled, AND
       3. either no plan_draft is stashed yet, OR the user is currently
-         revising (revising flag set on the latest extraction).
+         revising, OR newly extracted core slots differ from the stashed draft.
     """
 
     extracted = slots or slots_from_context(context.extracted_context)
@@ -390,9 +407,23 @@ def detect_plan_proposal(
     if not (extracted.language and extracted.target_level and extracted.goal_text):
         return False
     has_stashed = bool(context.extracted_context.get("plan_draft"))
-    if has_stashed and not extracted.revising:
+    if has_stashed and not (extracted.revising or _core_slots_changed(context, extracted)):
         return False
     return True
+
+
+def _core_slots_changed(
+    context: OnboardingConversationContext,
+    slots: ExtractedSlots,
+) -> bool:
+    stashed = context.extracted_context.get("plan_draft")
+    if not isinstance(stashed, Mapping):
+        return False
+    return (
+        stashed.get("language") != slots.language
+        or stashed.get("target_level") != slots.target_level
+        or stashed.get("goal_text") != slots.goal_text
+    )
 
 
 def build_plan_draft_from_slots(
@@ -458,7 +489,11 @@ def build_plan_draft_from_slots(
     return plan_draft
 
 
-def learning_route_args_from_plan_draft(plan_draft: PlanDraft) -> dict[str, object]:
+def learning_route_args_from_plan_draft(
+    plan_draft: PlanDraft,
+    *,
+    slots: ExtractedSlots | None = None,
+) -> dict[str, object]:
     """Project a real PlanDraft into the LearningRouteArgs SSE shape.
 
     Mirrors `LearningRouteArgs` in
@@ -492,7 +527,17 @@ def learning_route_args_from_plan_draft(plan_draft: PlanDraft) -> dict[str, obje
         "plan_id": plan_draft.draft_id,
         "goal_text": plan_draft.goal_text,
         "language": plan_draft.language,
+        "time_budget": _learning_route_time_budget(slots),
         "modules": modules,
+    }
+
+
+def _learning_route_time_budget(slots: ExtractedSlots | None) -> dict[str, int] | None:
+    if slots is None or slots.time_budget is None:
+        return None
+    return {
+        "minutes_per_day": slots.time_budget.minutes_per_day,
+        "days_per_week": slots.time_budget.days_per_week,
     }
 
 
@@ -611,7 +656,8 @@ def _build_messages(
                 "   - 不要在用户已经聊过或问过的话题上硬岔走。\n"
                 "   - 不要把所有缺失项一次问完。每轮挑一个最关键的缺口，用对话语气问，不要清单式罗列。\n"
                 "   - 如果用户上一轮已经把主要信息一次给齐了，跳过引导，直接告诉 ta\n"
-                "     '信息够了，我帮你生成一份学习路线'。\n"
+                "     '信息够了，我生成一份路线卡片。想改方向、时间或难度，直接回复我就行。'。\n"
+                "   - 不要在普通文字回复中展开完整学习路线、周计划或模块列表；这些内容由系统路线卡片承载。\n"
                 "\n"
                 "槽位说明（不要把这段或 JSON 输出给用户）：\n"
                 "- 必填：编程语言、当前水平、学习目标\n"
@@ -655,10 +701,7 @@ def _deterministic_reply(
         return "你目前的水平大致是哪一档？零基础 / 有一些基础 / 已经比较进阶？"
     if not extracted.goal_text or len(extracted.goal_text) < 10:
         return "可以再多说一两句你的学习目标吗？比如想做哪类项目，或者达到什么效果。"
-    return (
-        "好的，已经收到足够的信息。"
-        "我现在就为你生成学习计划草案，请稍等片刻。"
-    )
+    return ROUTE_CARD_READY_MESSAGE
 
 
 def _chunk_text(text: str) -> Generator[str, None, None]:

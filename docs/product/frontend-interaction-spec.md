@@ -75,17 +75,10 @@ AppShell
 
 ```text
 OnboardingPage
-  OnboardingModeTabs
-  GoalInputPanel
-  MaterialInputPanel
-  ClarificationPanel
-  RuntimeCapabilityNotice
-  PlanDraftPreview
-    ModuleList
-    ModuleActionMenu
-    PlanRiskBanner
-  LearningPreferenceForm
-  OnboardingActionBar
+  AssistantUIThread
+    ConversationTimeline
+      GeneratedLearningRouteCard
+    Composer
 ```
 
 ### 核心数据
@@ -97,6 +90,8 @@ OnboardingPage
 - `course_id`
 - `target_level`
 - `clarification_answers`
+- `onboarding_session_id`
+- `tool_calls.show_learning_route`
 - `plan_draft`
 - `modules`
 - `runtime_tier`：`browser_preview` / `python_stdout_test` / `compiled_sandbox_later`
@@ -105,12 +100,9 @@ OnboardingPage
 
 | 按钮 | API / 行为 | 启用条件 | 成功后 |
 |---|---|---|---|
-| 生成计划草稿 | `POST /api/plans/generate` | `goal_text` 或 `materials` 满足最小输入 | 展示 `plan_draft` |
-| 重新生成 | `POST /api/plans/generate` | 已有 `plan_draft` | 覆盖草稿前弹 confirm |
-| 跳过模块 | `PATCH /api/plans/{plan_id}/modules/{module_id}` 或草稿本地标记 | `is_skippable=true` | 模块标记为 skipped |
-| 替换模块 | 本地草稿调整，确认时随 `plan_draft` 提交 | 模块存在替换建议 | 更新草稿列表 |
-| 调整模块 | 本地草稿调整 | 草稿已生成 | 若破坏知识主干，显示风险 confirm |
-| 确认学习计划 | `POST /api/plans` | `plan_draft` 校验通过 | 创建 `plan` 并进入工作台 |
+| 发送建档回复 | `POST /api/onboarding/messages` SSE | API 在线且没有正在生成的回复 | 普通气泡继续引导，或以 `show_learning_route` 渲染路线卡片 |
+| 修改路线 | 向 composer 输入自然语言修改要求 | 已有路线卡片 | 生成新路线卡片；时间预算变化会显示新的学习节奏，旧卡片 `开始学习` 禁用 |
+| 开始学习 | `POST /api/onboarding/{session_id}/confirm_plan` | 当前最新路线卡片且草稿校验通过 | 创建 `plan` 并进入工作台 |
 
 ### 页面状态
 
@@ -120,6 +112,7 @@ OnboardingPage
 | loading | 生成草稿中 | 禁用生成/确认按钮，展示流式 Agent 文案或 skeleton |
 | error | API 返回错误 | 展示 `error.code`、`error.message`、重试按钮 |
 | disabled | 输入不足或 API 离线 | 按钮置灰并给出原因 |
+| stale route | 新卡片已替换旧卡片 | 保留旧卡片内容，只禁用旧卡片的 `开始学习` |
 | confirm | 重新生成、破坏主干调整、确认计划 | 弹出 `GlobalConfirmDialog` |
 | unsupported notice | `runtime_tier=compiled_sandbox_later` | 明确 Java/C++ 第一版不提供完整运行沙箱 |
 
@@ -470,8 +463,8 @@ SettingsPage
 | API | 主要组件 | 前端使用方式 |
 |---|---|---|
 | `GET /api/dashboard` | `WorkspaceTopStatusBar` | 初始化当前学习、复习提示与恢复入口 |
-| `POST /api/plans/generate` | `OnboardingPage` | 生成 `plan_draft` |
-| `POST /api/plans` | `OnboardingActionBar` | 确认正式计划 |
+| `POST /api/onboarding/messages` | `OnboardingPage`、`GeneratedLearningRouteCard` | 多轮引导；信息足够时流式输出 `show_learning_route` 卡片 |
+| `POST /api/onboarding/{session_id}/confirm_plan` | `GeneratedLearningRouteCard` | 仅由最新卡片的 `开始学习` 确认正式计划 |
 | `PATCH /api/plans/{plan_id}/modules/{module_id}` | `RoutePanel` | 跳过、替换、调整模块 |
 | `POST /api/learning-sessions/start` | `LearningWorkspacePage` | 创建或恢复学习会话；概念阶段允许 `exercise=null` |
 | `POST /api/learning-sessions/{session_id}/messages` | `ConversationTimeline`、`GeneratedCodeExerciseCard`、`GeneratedLearningHistoryCard` | 概念问答、费曼检查和学习页工具卡片 |

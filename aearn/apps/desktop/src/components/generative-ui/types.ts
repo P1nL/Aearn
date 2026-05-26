@@ -11,6 +11,10 @@ export type LearningRouteArgs = {
   plan_id: string;
   goal_text: string;
   language: Language;
+  time_budget: {
+    minutes_per_day: number;
+    days_per_week: number;
+  } | null;
   modules: Array<{
     id: string;
     title: string;
