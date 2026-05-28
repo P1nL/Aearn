@@ -78,6 +78,10 @@ The dependency source for the API service is `aearn/services/api/pyproject.toml`
 - Preference updates must reject scoring, Attempt persistence, FSRS parameter, and `due_at` fields with `VALIDATION_ERROR`.
 - `POST /api/plans/generate` validates `goal_based.goal_text` or `material_based.materials[*].content`, then reads `users`, `language_courses`, and `runtime_profiles`.
 - JS/HTML/CSS/Python drafts must expose `browser_preview` or `python_stdout_test`; Java/C++ drafts may be returned only with `compiled_sandbox_later` notices.
+- JS/HTML/CSS/Python draft templates must be multi-module routes organized by official learning taxonomies, then adapted to Aearn's executable verification loop:
+  - Python follows Python Tutorial-style categories such as basics/value flow, control flow/functions, data structures, modules/I/O, errors/tests, and classes/code review.
+  - JavaScript follows MDN JavaScript Guide-style categories such as language basics, control flow/functions, objects/state, DOM events, async/modules, and generated-code verification.
+  - HTML/CSS follows MDN learning module-style categories such as HTML structure, forms/accessibility, selectors/cascade/box model, text styling, layout, and responsive review.
 - Confirmed plans normalize `target_level=beginner_to_intermediate` to the DB-supported `beginner` value.
 - Confirm plan default idempotency key is `confirm-plan:{user_id}:{plan_draft.draft_id}` unless `Idempotency-Key` is provided.
 - Onboarding conversation route-ready turns must emit a short `agent_message` plus a persisted `show_learning_route` tool call, not a long plain-text route body.
@@ -105,6 +109,7 @@ The dependency source for the API service is `aearn/services/api/pyproject.toml`
 - Assert forbidden preference fields return `VALIDATION_ERROR`.
 - Assert catalog includes Java/C++ `compiled_sandbox_later` entries.
 - Assert goal and material generation success, insufficient input, unknown user, and unknown course.
+- Assert supported MVP course templates keep the official-taxonomy module order and do not regress to one-module route cards.
 - Assert confirm plan creates plan/module/knowledge point rows and one `review_states` row per knowledge point.
 - Assert idempotent replay returns the original plan and conflicting request body returns `IDEMPOTENCY_CONFLICT`.
 - Assert route-ready onboarding SSE stores and replays `show_learning_route` metadata, including time-budget-only revisions.
@@ -455,7 +460,10 @@ The SDK layer only proposes validated coaching output; repository code still own
 - `agent_message` data must include `request_id`, `session_id`, `message_id`, `delta`, and accumulated `content`.
 - `done` data must include `request_id`, `session_id`, `message_id`, `generation_source`, `generation_model`, and a `result_ref`.
 - Provider configuration, raw provider errors, API keys, hidden test source, hidden case IDs, and reference answers must never be returned or logged.
-- The prompt context may include current knowledge point, safe exercise prompt/starter code, visible run summary, and learner message only.
+- The prompt context may include current knowledge point, lesson outline, sanitized current-stage state, safe exercise prompt/starter code, visible run summary, learner message, and safe conversation continuity only.
+- Safe conversation continuity is `conversation_context.safe_summary` plus the most recent bounded `recent_safe_messages`; it must be generated or reused after sanitizing stored `learning_messages`, not by injecting full raw chat history.
+- `conversation_summary` belongs under `learning_sessions.learning_stage_state_json` as versioned session state. It must include refresh metadata such as message count and stage so the service can avoid every-turn summary refresh.
+- Direct-answer requests from learners are not input-guardrail failures by default. Detect them separately and feed `response_policy.direct_answer_requested=true` so the tutor redirects to local hints or checks without giving a full answer.
 - Aearn-owned SDK modules may use SDK `Agent`, `Runner.run_streamed`, `ModelSettings`, and `OpenAIProvider`, but product API shapes and durable state remain in Aearn services/repositories.
 - Teaching-agent SDK tools may read only the already-sanitized learning evidence prepared by `learning_conversation.py`; they must return bounded summaries and must not read or write repositories directly.
 - Teaching-agent SDK tools must not return hidden case IDs, hidden test source, `solution_reference`, full submitted code, provider payloads, raw prompts, API keys, or full note bodies.
@@ -492,6 +500,7 @@ The SDK layer only proposes validated coaching output; repository code still own
 - API-test LLM-disabled or LLM-failure `MODEL_UNAVAILABLE` and assert provider raw details do not leak.
 - API-test guardrail-blocked JSON model output and assert `MODEL_UNAVAILABLE` without leaked hidden IDs, key-like tokens, or complete-answer wording.
 - API-test guardrail-blocked SSE output after a partial safe chunk and assert a recoverable `error` event with no stored successful idempotency response.
+- API-test safe summary generation, persisted summary reuse below refresh threshold, direct-answer request redirection, and prompt context redaction for hidden IDs, internal reference fields, provider errors, API-key-like tokens, and complete-answer wording.
 - Unit-test OpenAI-compatible streaming payload compatibility so unsupported `temperature` is omitted by default.
 - Unit-test the SDK-backed client with a fake SDK runner; tests must assert no live model call is required, tracing is disabled, text deltas are extracted, base URLs are normalized, SDK tools are attached, and guardrails are attached.
 - Unit-test SDK tool summary helpers and guardrail helpers directly; assert summaries omit hidden case IDs, `solution_reference`, full starter/submitted code, provider errors, and raw prompt content.

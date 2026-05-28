@@ -28,6 +28,7 @@ from app.services.learning_conversation import (
     create_learning_message_response,
     list_learning_history,
     prepare_learning_message,
+    prepare_learning_message_for_generation,
     safe_generation_exceptions,
     start_learning_message_generation,
     store_learning_message_response,
@@ -705,6 +706,14 @@ async def _learning_message_stream(
                 generation_model=str(prepared.stored_response.get("generation_model") or ""),
             )
             return
+
+        with connect() as conn:
+            prepared = prepare_learning_message_for_generation(
+                conn,
+                prepared,
+                user_content=payload.content,
+            )
+            conn.commit()
 
         full_text = ""
         try:

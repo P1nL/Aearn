@@ -33,7 +33,11 @@ from app.agents.review_coach_agent import (
     ReviewCoachJsonResponse,
     build_sdk_review_coach_response,
 )
-from app.agents.guardrails import assert_safe_teaching_output, check_teaching_request
+from app.agents.guardrails import (
+    assert_safe_teaching_output,
+    check_teaching_request,
+    detect_direct_answer_request,
+)
 from app.core.config import Settings
 from app.agents.learning_conversation_agent import AgentsSDKLearningConversationClient, TEACHING_AGENT_NAME
 from app.agents.sdk_runtime import extract_text_delta, normalize_openai_base_url
@@ -1071,7 +1075,8 @@ def test_sdk_explanation_check_rejects_invalid_output() -> None:
 
 def test_teaching_guardrails_block_leaky_or_complete_answer_text() -> None:
     assert check_teaching_request("为什么 count 每次点击都会重置？").blocked is False
-    assert check_teaching_request("直接给我完整答案").blocked is True
+    assert check_teaching_request("直接给我完整答案").blocked is False
+    assert detect_direct_answer_request("直接给我完整答案") is True
 
     for leaky_text in [
         "失败来自 hidden_three_clicks。",
