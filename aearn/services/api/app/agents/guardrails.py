@@ -21,11 +21,14 @@ from app.services.llm_client import LLMInvalidResponseError
 
 _HIDDEN_CASE_PATTERN = re.compile(r"\bhidden_(?!summary\b)[A-Za-z0-9][A-Za-z0-9_.-]*", re.IGNORECASE)
 _API_KEY_PATTERN = re.compile(r"\b(?:sk|sess|key)-[A-Za-z0-9_-]{12,}\b", re.IGNORECASE)
-_REFERENCE_TOKENS = (
+_INTERNAL_REFERENCE_TOKENS = (
     "solution_reference",
     "reference_answer",
-    "reference answer",
     "secret solution",
+)
+_REFERENCE_OUTPUT_TOKENS = (
+    *_INTERNAL_REFERENCE_TOKENS,
+    "reference answer",
     "参考答案",
     "标准答案",
 )
@@ -38,6 +41,7 @@ _PROVIDER_ERROR_TOKENS = (
 )
 _DIRECT_ANSWER_OUTPUT_PATTERNS = (
     re.compile(r"完整答案如下", re.IGNORECASE),
+    re.compile(r"完整代码如下", re.IGNORECASE),
     re.compile(r"直接答案如下", re.IGNORECASE),
     re.compile(r"最终答案如下", re.IGNORECASE),
     re.compile(r"here is the complete solution", re.IGNORECASE),
@@ -45,8 +49,10 @@ _DIRECT_ANSWER_OUTPUT_PATTERNS = (
 )
 _DIRECT_ANSWER_REQUEST_PATTERNS = (
     re.compile(r"直接.*(答案|完整代码|给我代码)"),
+    re.compile(r"给我.*(完整代码|完整答案|标准答案|参考答案)"),
     re.compile(r"(完整答案|标准答案|参考答案)"),
     re.compile(r"把.*(完整)?代码.*(写完|补完|给我)"),
+    re.compile(r"\b(?:complete|full)\s+(?:answer|solution|code)\b", re.IGNORECASE),
 )
 
 
@@ -58,17 +64,21 @@ class TeachingGuardrailCheck:
 
 
 def check_teaching_request(text: str) -> TeachingGuardrailCheck:
-    return _check_text(text, include_direct_answer_request=True)
+    return _check_text(text, include_direct_answer_request=False, include_reference_output_tokens=False)
 
 
 def check_teaching_output(text: str) -> TeachingGuardrailCheck:
-    check = _check_text(text, include_direct_answer_request=False)
+    check = _check_text(text, include_direct_answer_request=False, include_reference_output_tokens=True)
     if check.blocked:
         return check
     for pattern in _DIRECT_ANSWER_OUTPUT_PATTERNS:
         if pattern.search(text):
             return TeachingGuardrailCheck(True, "direct_answer", "model output appears to provide a complete answer")
     return TeachingGuardrailCheck(False, "", "")
+
+
+def detect_direct_answer_request(text: str) -> bool:
+    return any(pattern.search(text) for pattern in _DIRECT_ANSWER_REQUEST_PATTERNS)
 
 
 def assert_safe_teaching_request(text: str) -> None:
@@ -114,23 +124,31 @@ def build_teaching_guardrails() -> tuple[list[InputGuardrail[Any]], list[OutputG
     return [teaching_input_guardrail], [teaching_output_guardrail]
 
 
-def _check_text(text: str, *, include_direct_answer_request: bool) -> TeachingGuardrailCheck:
+def _check_text(
+    text: str,
+    *,
+    include_direct_answer_request: bool,
+    include_reference_output_tokens: bool,
+) -> TeachingGuardrailCheck:
     normalized = text.lower()
     hidden_match = _HIDDEN_CASE_PATTERN.search(text)
     if hidden_match is not None:
         return TeachingGuardrailCheck(True, "hidden_test", "hidden test identifier appeared in text")
-    for token in _REFERENCE_TOKENS:
+    for token in _INTERNAL_REFERENCE_TOKENS:
         if token.lower() in normalized:
             return TeachingGuardrailCheck(True, "reference_answer", "reference-answer wording appeared in text")
+    if include_reference_output_tokens:
+        for token in _REFERENCE_OUTPUT_TOKENS:
+            if token.lower() in normalized:
+                return TeachingGuardrailCheck(True, "reference_answer", "reference-answer wording appeared in text")
     for token in _PROVIDER_ERROR_TOKENS:
         if token.lower() in normalized:
             return TeachingGuardrailCheck(True, "provider_error", "provider or API-key wording appeared in text")
     if _API_KEY_PATTERN.search(text):
         return TeachingGuardrailCheck(True, "provider_error", "key-like token appeared in text")
     if include_direct_answer_request:
-        for pattern in _DIRECT_ANSWER_REQUEST_PATTERNS:
-            if pattern.search(text):
-                return TeachingGuardrailCheck(True, "direct_answer_request", "learner requested a complete answer")
+        if detect_direct_answer_request(text):
+            return TeachingGuardrailCheck(True, "direct_answer_request", "learner requested a complete answer")
     return TeachingGuardrailCheck(False, "", "")
 
 

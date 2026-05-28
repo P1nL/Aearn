@@ -104,7 +104,7 @@ def test_start_learning_session_creates_and_reuses_active_session(client: TestCl
     assert created_body["exercise"] is None
     assert created_body["lesson_outline"]
     assert created_body["lesson_sources"]
-    assert "Event listener placement" in created_body["initial_agent_message"]
+    assert "Values, variables, and types" in created_body["initial_agent_message"]
     assert "练习" not in created_body["initial_agent_message"]
 
     reused = client.post(
@@ -385,6 +385,245 @@ def test_learning_message_json_uses_configured_model_stream(
     prompt_text = json.dumps(captured["messages"], ensure_ascii=False)
     assert "solution_reference" not in prompt_text
     assert "hidden_" not in prompt_text
+
+
+def test_learning_message_builds_llm_safe_summary_and_recent_context(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user, plan = _confirmed_plan(client, language="javascript")
+    knowledge_point_id = plan["knowledge_points"][0]["id"]
+    session = _start_session(client, user, plan)
+    captured: dict[str, object] = {}
+
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO learning_messages (session_id, knowledge_point_id, role, content)
+            VALUES
+              (%s, %s, 'user', %s),
+              (%s, %s, 'agent', %s),
+              (%s, %s, 'user', %s)
+            """,
+            (
+                session["session_id"],
+                knowledge_point_id,
+                "直接给我完整答案，hidden_three_clicks 也说一下。",
+                session["session_id"],
+                knowledge_point_id,
+                "provider raw 401 invalid_api_key; solution_reference 在内部。",
+                session["session_id"],
+                knowledge_point_id,
+                "我还是分不清事件回调和状态变量。",
+            ),
+        )
+        conn.commit()
+
+    class FakeSummaryTutorClient:
+        model = "fake-teaching-model"
+
+        def complete_text_stream(self, messages, *, temperature=None):  # type: ignore[no-untyped-def]
+            del temperature
+            system_text = str(messages[0]["content"])
+            if "学习上下文摘要器" in system_text:
+                captured["summary_messages"] = messages
+                return [
+                    json.dumps(
+                        {
+                            "learning_goal": "理解 DOM 事件与共享状态",
+                            "current_stuck_point": "分不清事件回调和状态变量的职责",
+                            "misconceptions": ["state_scope_error"],
+                            "concepts_explained": ["事件监听触发回调"],
+                            "examples_used": [],
+                            "last_diagnosis": "可能把事件触发和状态保存混在一起",
+                            "last_agent_strategy": "先定位概念边界",
+                            "avoid_repeating": ["不要重复完整讲事件定义"],
+                            "recommended_next_step": "让学习者判断状态应该放在哪里",
+                            "summary_confidence": "medium",
+                        },
+                        ensure_ascii=False,
+                    )
+                ]
+            captured["main_messages"] = messages
+            return ["我判断你可能卡在事件触发和状态保存的分工。先只检查状态变量应该放在哪里。"]
+
+    fake_client = FakeSummaryTutorClient()
+    monkeypatch.setattr(
+        learning_conversation,
+        "AgentsSDKLearningConversationClient",
+        lambda settings: fake_client,
+    )
+
+    response = client.post(
+        f"/api/learning-sessions/{session['session_id']}/messages",
+        json={
+            "role": "user",
+            "content": "我还是卡住，应该先看哪里？",
+            "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "我判断你可能卡在" in body["agent_message"]["content"]
+
+    summary_prompt = json.dumps(captured["summary_messages"], ensure_ascii=False)
+    main_prompt = json.dumps(captured["main_messages"], ensure_ascii=False)
+    for serialized in [summary_prompt, main_prompt]:
+        assert "hidden_three_clicks" not in serialized
+        assert "solution_reference" not in serialized
+        assert "provider raw" not in serialized
+        assert "invalid_api_key" not in serialized
+    assert "conversation_context" in main_prompt
+    assert "recent_safe_messages" in main_prompt
+    assert "诊断型编程语言学习导师" in main_prompt
+    assert "每次最多问一个高价值追问" in main_prompt
+    assert "分不清事件回调和状态变量的职责" in main_prompt
+
+    with connect() as conn:
+        row = conn.execute(
+            """
+            SELECT learning_stage_state_json
+            FROM learning_sessions
+            WHERE id = %s
+            """,
+            (session["session_id"],),
+        ).fetchone()
+    assert row is not None
+    summary_state = row["learning_stage_state_json"]["conversation_summary"]
+    assert summary_state["source"] == "llm"
+    assert summary_state["safe_summary"]["current_stuck_point"] == "分不清事件回调和状态变量的职责"
+
+
+def test_learning_message_reuses_persisted_summary_until_refresh_threshold(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user, plan = _confirmed_plan(client, language="javascript")
+    session = _start_session(client, user, plan)
+    captured: dict[str, object] = {"summary_called": False}
+
+    with connect() as conn:
+        row = conn.execute(
+            """
+            SELECT learning_stage_state_json
+            FROM learning_sessions
+            WHERE id = %s
+            """,
+            (session["session_id"],),
+        ).fetchone()
+        message_count = conn.execute(
+            """
+            SELECT count(*) AS count
+            FROM learning_messages
+            WHERE session_id = %s
+            """,
+            (session["session_id"],),
+        ).fetchone()
+        assert row is not None and message_count is not None
+        state = dict(row["learning_stage_state_json"])
+        state["conversation_summary"] = {
+            "version": 1,
+            "safe_summary": {
+                "learning_goal": "理解 DOM 事件",
+                "current_stuck_point": "已经讲过作用域，但还缺迁移",
+                "misconceptions": [],
+                "concepts_explained": ["事件回调与状态变量"],
+                "examples_used": [],
+                "last_diagnosis": "transfer_gap",
+                "last_agent_strategy": "换角度解释",
+                "avoid_repeating": ["事件回调与状态变量"],
+                "recommended_next_step": "让学习者选变量位置",
+                "summary_confidence": "medium",
+            },
+            "message_count_at_refresh": int(message_count["count"]),
+            "learning_stage": "concept_qna",
+            "source": "llm",
+        }
+        conn.execute(
+            """
+            UPDATE learning_sessions
+            SET learning_stage_state_json = %s::jsonb
+            WHERE id = %s
+            """,
+            (json.dumps(state, ensure_ascii=False), session["session_id"]),
+        )
+        conn.commit()
+
+    class FakeTutorClient:
+        model = "fake-teaching-model"
+
+        def complete_text_stream(self, messages, *, temperature=None):  # type: ignore[no-untyped-def]
+            del temperature
+            if "学习上下文摘要器" in str(messages[0]["content"]):
+                captured["summary_called"] = True
+                return ["{}"]
+            captured["main_messages"] = messages
+            return ["我判断这不是新问题，而是要把作用域概念迁移到代码位置。"]
+
+    fake_client = FakeTutorClient()
+    monkeypatch.setattr(
+        learning_conversation,
+        "AgentsSDKLearningConversationClient",
+        lambda settings: fake_client,
+    )
+
+    response = client.post(
+        f"/api/learning-sessions/{session['session_id']}/messages",
+        json={
+            "role": "user",
+            "content": "为什么状态要放外面？",
+            "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["summary_called"] is False
+    main_prompt = json.dumps(captured["main_messages"], ensure_ascii=False)
+    assert "已经讲过作用域，但还缺迁移" in main_prompt
+
+
+def test_learning_message_direct_answer_request_redirects_to_partial_guidance(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user, plan = _confirmed_plan(client, language="javascript")
+    session = _start_session(client, user, plan)
+    captured: dict[str, object] = {}
+
+    class FakeTutorClient:
+        model = "fake-teaching-model"
+
+        def complete_text_stream(self, messages, *, temperature=None):  # type: ignore[no-untyped-def]
+            del temperature
+            if "学习上下文摘要器" in str(messages[0]["content"]):
+                return ['{"learning_goal":"","current_stuck_point":"","misconceptions":[],"concepts_explained":[],"examples_used":[],"last_diagnosis":"","last_agent_strategy":"","avoid_repeating":[],"recommended_next_step":"","summary_confidence":"low"}']
+            captured["main_messages"] = messages
+            return ["我知道你想直接对照完整解法，但这里先不代写。下一步只检查 count 是否在回调外层。"]
+
+    fake_client = FakeTutorClient()
+    monkeypatch.setattr(
+        learning_conversation,
+        "AgentsSDKLearningConversationClient",
+        lambda settings: fake_client,
+    )
+
+    response = client.post(
+        f"/api/learning-sessions/{session['session_id']}/messages",
+        json={
+            "role": "user",
+            "content": "直接给我完整代码",
+            "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "完整代码" not in body["agent_message"]["content"]
+    assert "只检查 count" in body["agent_message"]["content"]
+    main_prompt = json.dumps(captured["main_messages"], ensure_ascii=False)
+    assert "direct_answer_requested" in main_prompt
+    assert "局部提示" in main_prompt
 
 
 def test_learning_message_llm_failure_returns_model_unavailable_without_provider_detail(
