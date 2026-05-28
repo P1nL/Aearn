@@ -124,7 +124,13 @@ def test_generate_plan_goal_and_material_modes(client: TestClient) -> None:
         },
     )
     assert material_response.status_code == 200
-    assert "User materials" in material_response.json()["plan_draft"]["source_attribution"][1]
+    python_draft = material_response.json()["plan_draft"]
+    assert len(python_draft["modules"]) >= 2
+    assert [module["order_index"] for module in python_draft["modules"]] == list(
+        range(len(python_draft["modules"]))
+    )
+    assert "Official documentation taxonomy: Python Tutorial" in python_draft["source_attribution"]
+    assert any(source.startswith("User materials") for source in python_draft["source_attribution"])
 
 
 def test_generate_plan_uses_valid_sdk_candidate(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -377,6 +383,7 @@ def test_confirm_onboarding_plan_uses_stashed_draft(client: TestClient) -> None:
     body = confirm.json()
     assert body["LearningPlan"]["goal_text"] == plan_draft.goal_text
     assert body["LearningPlan"]["language"] == "python"
+    assert len(body["modules"]) == len(plan_draft.modules)
 
     replay = client.post(
         f"/api/onboarding/{conversation_id}/confirm_plan",
@@ -451,7 +458,8 @@ def test_onboarding_message_stream_triggers_plan_from_first_complete_turn(
     route_args = tool_done["data"]["arguments"]
     assert route_args["language"] == "python"
     assert route_args["goal_text"] == "学习 Python，聚焦 Web，从零基础入门"
-    assert route_args["modules"][0]["title"] == "Functions, stdout, and tests"
+    assert len(route_args["modules"]) >= 5
+    assert route_args["modules"][0]["title"] == "Python basics and value flow"
 
     with connect() as conn:
         row = conn.execute(
