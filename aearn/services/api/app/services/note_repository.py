@@ -10,10 +10,9 @@ from psycopg import Connection
 from app.agents.note_assist_agent import (
     NoteAssistContext,
     assert_safe_note_draft_output,
-    build_deterministic_note_draft,
     build_note_assist_client,
 )
-from app.services.llm_client import LLMCallError, LLMConfigurationError, LLMInvalidResponseError
+from app.services.llm_client import LLMConfigurationError, LLMInvalidResponseError
 from app.services.user_repository import get_user
 
 
@@ -243,20 +242,15 @@ def generate_agent_draft(
         attempt_id=attempt_id,
     )
     client = build_note_assist_client()
-    if client is not None:
-        try:
-            draft = client.complete_text(context, temperature=0.3)
-            if draft:
-                draft = draft.strip()
-                if draft:
-                    assert_safe_note_draft_output(draft)
-                    return draft
-        except (LLMCallError, LLMConfigurationError, LLMInvalidResponseError):
-            pass
-
-    fallback = build_deterministic_note_draft(context)
-    assert_safe_note_draft_output(fallback)
-    return fallback
+    if client is None:
+        raise LLMConfigurationError("Note Assist requires configured model API")
+    draft = client.complete_text(context, temperature=0.3)
+    if draft:
+        draft = draft.strip()
+        if draft:
+            assert_safe_note_draft_output(draft)
+            return draft
+    raise LLMInvalidResponseError("Note Assist model produced no draft")
 
 
 def generate_agent_draft_stream(
@@ -277,30 +271,20 @@ def generate_agent_draft_stream(
         attempt_id=attempt_id,
     )
     client = build_note_assist_client()
-    if client is not None:
-        emitted = False
-        try:
-            full_text = ""
-            for delta in client.complete_text_stream(context, temperature=0.3):
-                if not delta:
-                    continue
-                assert_safe_note_draft_output(delta)
-                emitted = True
-                full_text += delta
-                yield delta
-            full_text = full_text.strip()
-            if full_text:
-                assert_safe_note_draft_output(full_text)
-                return full_text
-        except (LLMCallError, LLMConfigurationError, LLMInvalidResponseError):
-            if emitted:
-                raise
-
-    fallback = build_deterministic_note_draft(context)
-    assert_safe_note_draft_output(fallback)
-    for chunk in _chunk_deterministic_draft(fallback):
-        yield chunk
-    return fallback
+    if client is None:
+        raise LLMConfigurationError("Note Assist requires configured model API")
+    full_text = ""
+    for delta in client.complete_text_stream(context, temperature=0.3):
+        if not delta:
+            continue
+        assert_safe_note_draft_output(delta)
+        full_text += delta
+        yield delta
+    full_text = full_text.strip()
+    if not full_text:
+        raise LLMInvalidResponseError("Note Assist model produced no draft")
+    assert_safe_note_draft_output(full_text)
+    return full_text
 
 
 def _ensure_user_exists(conn: Connection[dict[str, object]], user_id: str) -> None:
@@ -595,15 +579,6 @@ def _bounded_excerpt(text: str, max_length: int) -> str:
     if len(stripped) <= max_length:
         return stripped
     return f"{stripped[:max_length]}..."
-
-
-def _chunk_deterministic_draft(content: str) -> Generator[str, None, None]:
-    lines = content.splitlines(keepends=True)
-    if not lines:
-        yield content
-        return
-    for line in lines:
-        yield line
 
 
 def serialize_note(row: Mapping[str, object]) -> dict[str, object]:

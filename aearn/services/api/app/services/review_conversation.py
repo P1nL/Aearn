@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-import json
-from collections.abc import Generator, Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -13,7 +12,6 @@ from app.core.config import Settings, get_settings
 from app.services.llm_client import LLMCallError, LLMConfigurationError, LLMInvalidResponseError
 
 
-DETERMINISTIC_REVIEW_MODEL = "deterministic_review_conversation_v1"
 REVIEW_MESSAGE_OPERATION = "review_message"
 
 
@@ -198,29 +196,14 @@ def start_review_generation(
     effective_settings = settings or get_settings()
     if client is None:
         if not effective_settings.openai_compatible_configured:
-            return deterministic_review_generation(context, user_content=user_content)
-        try:
-            client = AgentsSDKReviewConversationClient(effective_settings)
-        except LLMConfigurationError:
-            return deterministic_review_generation(context, user_content=user_content)
+            raise LLMConfigurationError("Review conversation requires configured model API")
+        client = AgentsSDKReviewConversationClient(effective_settings)
 
     messages = _build_messages(context, user_content=user_content)
     return ReviewMessageGeneration(
         chunks=client.complete_text_stream(messages, temperature=0.6),
         generation_source="llm",
         generation_model=client.model,
-    )
-
-
-def deterministic_review_generation(
-    context: ReviewConversationContext,
-    *,
-    user_content: str,
-) -> ReviewMessageGeneration:
-    return ReviewMessageGeneration(
-        chunks=_chunk_text(_deterministic_reply(context, user_content=user_content)),
-        generation_source="deterministic",
-        generation_model=DETERMINISTIC_REVIEW_MODEL,
     )
 
 
@@ -258,49 +241,6 @@ def _build_messages(
         messages.append({"role": chat_role, "content": msg["content"]})
 
     return messages
-
-
-def _deterministic_reply(
-    context: ReviewConversationContext,
-    *,
-    user_content: str,
-) -> str:
-    turn_count = sum(1 for msg in context.history if msg["role"] == "user")
-    kp_title = context.knowledge_point_title
-
-    if turn_count <= 1:
-        return (
-            f"让我们来复习一下「{kp_title}」。"
-            "请先试着用自己的话描述一下这个概念的核心要点，不需要很完美，想到什么说什么。"
-        )
-    if turn_count == 2:
-        return (
-            "不错的回忆。让我再追问一下：这个概念在实际编码中最常见的应用场景是什么？"
-            "试着举一个具体的例子。"
-        )
-    if turn_count == 3:
-        return (
-            "很好。现在让我们进入练习环节，通过实际代码来巩固你的理解。"
-            "如果遇到困难，随时可以问我提示。"
-        )
-    return (
-        f"关于「{kp_title}」，你的理解已经比较到位了。"
-        "如果还有不确定的地方，可以继续问我；否则我们可以结束这次复习。"
-    )
-
-
-def _chunk_text(text: str) -> Generator[str, None, None]:
-    stripped = text.strip()
-    if not stripped:
-        return
-    current = ""
-    for char in stripped:
-        current += char
-        if char in "。！？\n" or len(current) >= 72:
-            yield current
-            current = ""
-    if current:
-        yield current
 
 
 def _message_id(session_id: str, client_message_id: str) -> str:

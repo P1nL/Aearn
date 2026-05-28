@@ -32,7 +32,6 @@ ALLOWED_ERROR_CAUSES = {
     "runtime_error",
 }
 ALLOWED_NEXT_ACTIONS = {"retry_same", "show_hint", "explain_error", "review_variant", "schedule_review", "advance_next"}
-DETERMINISTIC_GENERATION_MODEL = "deterministic_error_guidance_v1"
 
 
 class JsonCompletionClient(Protocol):
@@ -88,13 +87,6 @@ def build_llm_error_explanation(
     response["generation_source"] = "llm"
     response["generation_model"] = result.model
     return response
-
-
-def with_deterministic_generation_metadata(response: Mapping[str, object]) -> dict[str, object]:
-    enriched = dict(response)
-    enriched["generation_source"] = "deterministic"
-    enriched["generation_model"] = DETERMINISTIC_GENERATION_MODEL
-    return enriched
 
 
 def _build_messages(

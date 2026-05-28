@@ -182,8 +182,8 @@ LLM_TIMEOUT_SECONDS=20
 
 - `OPENAI_BASE_URL` 应填写 provider 的 OpenAI-compatible base URL。当前客户端会把 `https://<provider-host>` 或 `https://<provider-host>/v1` 统一归一到 `POST /v1/responses`。
 - 真实 key 只写入本机 `aearn/.env`，不要提交到 Git。
-- 未配置、配置不完整、模型超时、返回非法 JSON 或 schema 校验失败时，后端会自动回退到确定性错因解释。
-- 调用 `explain-error` 后可通过响应里的 `generation_source` 验证链路：`llm` 表示使用了模型，`deterministic` 表示走了规则兜底。
+- 未配置、配置不完整、模型超时、返回非法 JSON 或 schema 校验失败时，模型驱动接口返回 `MODEL_UNAVAILABLE`，不回退到确定性错因解释。
+- 调用 `explain-error` 成功后可通过响应里的 `generation_source=llm` 验证模型链路；失败时看错误信封里的 `error.code=MODEL_UNAVAILABLE`。
 
 LatteCode 中转站配置示例：
 

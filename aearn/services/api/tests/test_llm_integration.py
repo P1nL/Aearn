@@ -16,8 +16,8 @@ from app.agents.note_assist_agent import (
     AgentsSDKNoteAssistClient,
     NoteAssistContext,
     assert_safe_note_draft_output,
-    build_deterministic_note_draft,
 )
+from app.agents.onboarding_slot_extractor import ExtractedSlots, ResponsesOnboardingSlotExtractor
 from app.agents.onboarding_plan_agent import (
     ONBOARDING_PLAN_AGENT_NAME,
     AgentsSDKOnboardingPlanClient,
@@ -41,7 +41,7 @@ from app.agents.tools import build_teaching_tools, summarize_current_learning_co
 from app.models.onboarding import PlanDraft, PlanGenerateRequest
 from app.services.llm_client import LLMJsonResponse, OpenAICompatibleClient
 from app.services.llm_client import LLMInvalidResponseError
-from app.services.llm_explain_error import build_llm_error_explanation, with_deterministic_generation_metadata
+from app.services.llm_explain_error import build_llm_error_explanation
 from app.services.plan_generator import build_plan_draft
 
 
@@ -121,6 +121,129 @@ def test_openai_compatible_client_parses_responses_json_completion() -> None:
     assert captured["payload"]["text"] == {"format": {"type": "json_object"}}
     assert response.content["error_cause"] == "state_scope_error"
     assert response.model == "gpt-5.4"
+
+
+def test_openai_compatible_client_adds_json_mode_hint_when_input_omits_json() -> None:
+    captured: dict[str, object] = {}
+
+    def transport(
+        url: str,
+        headers: Mapping[str, str],
+        payload: Mapping[str, object],
+        timeout: float,
+    ) -> Mapping[str, object]:
+        del url, headers, timeout
+        captured["payload"] = dict(payload)
+        return {
+            "model": "gpt-5.5",
+            "output": [
+                {
+                    "type": "message",
+                    "status": "completed",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": '{"ok":true}',
+                        }
+                    ],
+                }
+            ],
+        }
+
+    client = OpenAICompatibleClient(
+        Settings(
+            llm_type="openai",
+            openai_api_key="test-key",
+            openai_base_url="https://provider.example",
+            openai_model="third-party-model",
+        ),
+        transport=transport,
+    )
+
+    response = client.complete_json([{"role": "user", "content": "return an object"}])
+
+    assert captured["payload"]["input"] == (
+        "return an object\n\nReturn the final answer as a JSON object."
+    )
+    assert response.content == {"ok": True}
+
+
+def test_onboarding_slot_extractor_uses_streaming_responses_json_client() -> None:
+    captured: dict[str, object] = {}
+
+    def transport(
+        url: str,
+        headers: Mapping[str, str],
+        payload: Mapping[str, object],
+        timeout: float,
+    ) -> Mapping[str, object]:
+        captured["url"] = url
+        captured["headers"] = dict(headers)
+        captured["payload"] = dict(payload)
+        captured["timeout"] = timeout
+        return {
+            "model": "gpt-5.5",
+            "output": [
+                {
+                    "type": "message",
+                    "status": "completed",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": json.dumps(
+                                {
+                                    "language": "python",
+                                    "target_level": "beginner",
+                                    "goal_text": "学习 Python Web 后端开发",
+                                    "time_budget": {"minutes_per_day": 60, "days_per_week": 7},
+                                    "focus": "Web 后端",
+                                    "plan_ready": True,
+                                    "missing_slot_question": None,
+                                    "revising": False,
+                                },
+                                ensure_ascii=False,
+                            ),
+                        }
+                    ],
+                }
+            ],
+        }
+
+    settings = Settings(
+        llm_type="openai",
+        openai_api_key="test-key",
+        openai_base_url="https://provider.example",
+        openai_model="third-party-model",
+        llm_timeout_seconds=11,
+    )
+    client = OpenAICompatibleClient(settings, transport=transport)
+    extractor = ResponsesOnboardingSlotExtractor(settings, client=client)
+
+    slots = extractor.extract(
+        [{"role": "user", "content": "我想学 Python Web 后端，零基础，每天 1 小时"}],
+        ExtractedSlots(),
+    )
+
+    assert captured["url"] == "https://provider.example/v1/responses"
+    assert captured["timeout"] == 11
+    assert captured["headers"] == {
+        "Authorization": "Bearer test-key",
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream",
+    }
+    assert captured["payload"]["model"] == "third-party-model"
+    assert captured["payload"]["stream"] is True
+    assert captured["payload"]["text"] == {"format": {"type": "json_object"}}
+    assert "建档槽位提取助手" in str(captured["payload"]["instructions"])
+    assert "对话历史" in str(captured["payload"]["input"])
+    assert slots.language == "python"
+    assert slots.target_level == "beginner"
+    assert slots.goal_text == "学习 Python Web 后端开发"
+    assert slots.time_budget is not None
+    assert slots.time_budget.minutes_per_day == 60
+    assert slots.time_budget.days_per_week == 7
+    assert slots.focus == "Web 后端"
+    assert slots.plan_ready is True
 
 
 def test_openai_compatible_client_streams_text_deltas() -> None:
@@ -424,7 +547,7 @@ def test_agents_sdk_note_assist_client_streams_text_deltas_and_attaches_guardrai
     assert client.model == "third-party-model"
 
 
-def test_note_assist_client_falls_back_when_output_leaks_code_draft_wording() -> None:
+def test_note_assist_client_rejects_output_that_leaks_code_draft_wording() -> None:
     class LeakingRunner:
         def run_streamed(self, starting_agent, input, **kwargs):  # type: ignore[no-untyped-def]
             del starting_agent, input, kwargs
@@ -576,7 +699,7 @@ def test_agents_sdk_review_coach_client_streams_text_deltas_and_attaches_guardra
     assert client.model == "third-party-model"
 
 
-def test_review_coach_sdk_response_falls_back_when_output_leaks_hidden_identifier() -> None:
+def test_review_coach_sdk_response_rejects_output_that_leaks_hidden_identifier() -> None:
     class LeakingCoachClient:
         model = "sdk-review-model"
 
@@ -715,7 +838,7 @@ def test_onboarding_plan_sdk_response_accepts_valid_template_candidate() -> None
     assert response["generation_model"] == "sdk-onboarding-model"
 
 
-def test_onboarding_plan_sdk_response_falls_back_when_draft_is_invalid() -> None:
+def test_onboarding_plan_sdk_response_rejects_invalid_draft() -> None:
     context, base_draft = _onboarding_plan_context()
     invalid = base_draft.model_dump(mode="json") | {"modules": []}
 
@@ -734,7 +857,7 @@ def test_onboarding_plan_sdk_response_falls_back_when_draft_is_invalid() -> None
     assert build_sdk_onboarding_plan_response(context, client=InvalidPlanClient()) is None
 
 
-def test_onboarding_plan_sdk_response_falls_back_on_unsupported_runtime_claim() -> None:
+def test_onboarding_plan_sdk_response_rejects_unsupported_runtime_claim() -> None:
     context, base_draft = _onboarding_plan_context()
     unsupported = base_draft.model_dump(mode="json")
     unsupported["runtime_boundary"] = {
@@ -756,35 +879,6 @@ def test_onboarding_plan_sdk_response_falls_back_on_unsupported_runtime_claim() 
             return OnboardingPlanJsonResponse(content={"plan_draft": unsupported}, model=self.model)
 
     assert build_sdk_onboarding_plan_response(context, client=UnsupportedRuntimeClient()) is None
-
-
-def test_note_assist_deterministic_draft_is_bounded_and_insertable() -> None:
-    context = NoteAssistContext(
-        note_id="note_001",
-        note_title="状态变量位置",
-        knowledge_point_title="事件监听与状态变量",
-        module_title="DOM 事件",
-        language="javascript",
-        note_excerpt="count 不能写在回调内部。",
-        style="detailed",
-        focus="mistake_summary",
-        session_id="sess_001",
-        session_summary="上次在点击计数上犯了作用域错误。",
-        latest_attempt={
-            "runtime_status": "success",
-            "test_pass_rate": 0.5,
-            "error_cause": "state_scope_error",
-            "explanation_text": "count 放在回调外层才能跨点击共享。",
-        },
-    )
-
-    draft = build_deterministic_note_draft(context)
-
-    assert "补充主题：DOM 事件 / 事件监听与状态变量" in draft
-    assert "当前正文摘要：count 不能写在回调内部。" in draft
-    assert "会话摘要：上次在点击计数上犯了作用域错误。" in draft
-    assert "CodeDraft" not in draft
-    assert "完整笔记" not in draft
 
 
 def test_note_assist_guardrails_block_code_draft_and_full_note_phrasing() -> None:
@@ -916,7 +1010,7 @@ def test_sdk_error_explanation_uses_server_knowledge_point_and_metadata() -> Non
     assert response["related_knowledge_points"] == [{"id": "kp_dom_event_state", "title": "事件监听与状态变量"}]
 
 
-def test_sdk_error_explanation_falls_back_when_output_leaks_hidden_identifier() -> None:
+def test_sdk_error_explanation_rejects_output_that_leaks_hidden_identifier() -> None:
     class LeakingCoachClient:
         model = "sdk-coach-model"
 
@@ -949,7 +1043,7 @@ def test_sdk_error_explanation_falls_back_when_output_leaks_hidden_identifier() 
     assert response is None
 
 
-def test_sdk_explanation_check_falls_back_when_output_is_invalid() -> None:
+def test_sdk_explanation_check_rejects_invalid_output() -> None:
     class InvalidCoachClient:
         model = "sdk-coach-model"
 
@@ -984,10 +1078,13 @@ def test_teaching_guardrails_block_leaky_or_complete_answer_text() -> None:
         "solution_reference 里已经有参考答案。",
         "provider raw 401 invalid_api_key",
         "完整答案如下：button.addEventListener(...)",
-        "```js\nbutton.addEventListener('click', () => {})\n```",
+        "完整答案如下：\n```js\nbutton.addEventListener('click', () => {})\n```",
     ]:
         with pytest.raises(LLMInvalidResponseError):
             assert_safe_teaching_output(leaky_text)
+
+    assert_safe_teaching_output("例如 `:hover` 表示鼠标移上去时的状态。")
+    assert_safe_teaching_output("```css\n.button:hover { color: red; }\n```")
 
 
 def test_llm_explain_error_uses_model_output_and_server_knowledge_point() -> None:
@@ -1033,7 +1130,7 @@ def test_llm_explain_error_uses_model_output_and_server_knowledge_point() -> Non
     assert "secret solution" not in fake_client.messages[1]["content"]
 
 
-def test_llm_explain_error_falls_back_when_output_leaks_hidden_identifier() -> None:
+def test_llm_explain_error_rejects_output_that_leaks_hidden_identifier() -> None:
     class LeakingClient:
         model = "third-party-model"
 
@@ -1065,21 +1162,6 @@ def test_llm_explain_error_falls_back_when_output_leaks_hidden_identifier() -> N
     )
 
     assert response is None
-
-
-def test_deterministic_generation_metadata_is_non_secret() -> None:
-    response = with_deterministic_generation_metadata(
-        {
-            "error_cause": "runtime_error",
-            "explanation": "运行失败。",
-            "fix_suggestion": "检查 stderr。",
-            "related_knowledge_points": [],
-            "next_action": "retry_same",
-        }
-    )
-
-    assert response["generation_source"] == "deterministic"
-    assert response["generation_model"] == "deterministic_error_guidance_v1"
 
 
 def _exercise() -> dict[str, object]:

@@ -214,13 +214,13 @@ uv --directory .\aearn\services\worker run celery -A aearn_worker.worker_app:cel
 
 ### 5.4 错因解释与解释检查
 
-运行失败后，用户可以请求 `explain-error`。后端会优先走配置好的 OpenAI-compatible 模型；未配置、超时、非法 JSON 或 guardrail 失败时，回退到确定性解释。
+运行失败后，用户可以请求 `explain-error`。后端必须走配置好的 OpenAI-compatible 模型；未配置、超时、非法 JSON 或 guardrail 失败时，返回 `MODEL_UNAVAILABLE`，不回退到确定性解释。
 
 关键约束：
 
 - 错因解释必须来自真实 runtime/test/error 事实。
 - 不得泄露隐藏测试、参考答案、真实 API key 或 provider 原始错误。
-- `generation_source=llm` 表示模型链路成功，`generation_source=deterministic` 表示规则兜底。
+- `generation_source=llm` 表示模型链路成功；失败时使用错误信封里的 `error.code=MODEL_UNAVAILABLE` 判断。
 
 ### 5.5 复习闭环
 
@@ -261,7 +261,7 @@ flowchart LR
   Desktop --> Api["FastAPI<br/>aearn/services/api"]
   Api --> Postgres["PostgreSQL<br/>业务表 + 状态"]
   Api --> Redis["Redis<br/>Celery broker / result"]
-  Api --> LLM["OpenAI-compatible Provider<br/>可选"]
+  Api --> LLM["OpenAI-compatible Provider<br/>AI endpoints required"]
   Api --> Runtime["Deterministic Runtime Runner<br/>browser/python/unsupported"]
   Worker["Celery Worker<br/>aearn/services/worker"] --> Redis
   Worker --> Postgres
@@ -273,7 +273,7 @@ flowchart LR
 - FastAPI CORS 允许 `http://127.0.0.1:1420`、`http://localhost:1420` 和 `tauri://localhost`。
 - 数据库 schema 当前由 `aearn/services/api/app/db/schema.sql` 和 `app.db.bootstrap` 初始化，不是 Alembic migration。
 - Docker compose 当前只提供依赖服务，不提供 API/worker 容器。
-- LLM 是可选能力，确定性 fallback 是 MVP 可测路径的一部分。
+- LLM 是 AI 驱动接口的必需能力；本地测试通过 fake client 覆盖模型成功路径，未配置或不可用时接口返回 `MODEL_UNAVAILABLE`。
 
 ## 7. 后端代码地图
 
@@ -314,7 +314,7 @@ flowchart LR
 |---|---|
 | `catalog.py` | 课程目录和 runtime capability 查询 |
 | `user_repository.py` | 用户和偏好读写，拒绝修改固定后端规则 |
-| `plan_generator.py` | 生成 deterministic 或 SDK backed `plan_draft` |
+| `plan_generator.py` | 基于服务端课程模板生成 `plan_draft`，可接受通过校验的 SDK 候选 |
 | `plan_repository.py` | 确认计划、写入 plan/module/knowledge point/review state |
 | `learning_session_repository.py` | 学习会话、练习上下文、Attempt 写入、会话状态 |
 | `learning_conversation.py` | 学习对话服务边界 |
@@ -322,7 +322,7 @@ flowchart LR
 | `evaluation.py` | submit 评分、hard gates、result、`fsrs_rating`、next action |
 | `exercise_guidance.py` | hint、错误解释、解释检查相关指导逻辑 |
 | `llm_client.py` | OpenAI-compatible provider client 边界 |
-| `llm_explain_error.py` | `explain-error` 的 LLM 调用、结构校验和 fallback |
+| `llm_explain_error.py` | `explain-error` 的 LLM 调用、结构校验和失败返回边界 |
 | `review_scheduler.py` | FSRS-like 调度计算与幂等更新 |
 | `review_repository.py` | due review、复习 session、复习提交 |
 | `dashboard_repository.py` | dashboard 与 resume 决策 |
@@ -483,7 +483,7 @@ Copy-Item .\aearn\.env.example .\aearn\.env
 
 ### 9.3 模型 API
 
-模型不是启动 MVP 的硬前提。没有模型配置时，错因解释、笔记辅助和部分 Agent 输出会走 deterministic fallback 或 mock path。真实模型路径主要用于验证：
+模型是 AI 驱动页面的硬前提。没有模型配置时，错因解释、笔记辅助、学习页/复习页对话和建档槽位提取必须返回 `MODEL_UNAVAILABLE`；本地自动化测试通过 fake client 覆盖成功路径，不依赖真实第三方 API key。真实模型路径主要用于验证：
 
 - OpenAI-compatible client。
 - `explain-error`。
@@ -646,7 +646,7 @@ git diff --check
 | `test_reviews_m4.py` | due review、review session、复习提交、scheduler 幂等 |
 | `test_notes_m5.py` | Note CRUD、note assist、SSE、guardrail |
 | `test_dashboard_resume_m6.py` | dashboard、resume、中断恢复和高风险复习入口 |
-| `test_llm_integration.py` | OpenAI-compatible client、Agents SDK stream、guardrails、deterministic fallback |
+| `test_llm_integration.py` | OpenAI-compatible client、Agents SDK stream、guardrails、`MODEL_UNAVAILABLE`/拒绝非法输出 |
 | `test_sse_utils.py` | SSE frame 格式和 event id |
 | `test_worker_import.py` | worker task 注册 |
 
@@ -725,7 +725,7 @@ git diff --check
 
 - 输出结构可解析。
 - 不泄露隐藏测试、答案、secret 或 provider 详情。
-- 失败时有 deterministic fallback。
+- 模型配置缺失、调用失败、输出非法或 guardrail 阻断时返回 `MODEL_UNAVAILABLE`。
 - 默认测试不能依赖真实第三方 API key。
 
 ### 13.5 改笔记功能
@@ -778,7 +778,7 @@ git diff --check
 | Desktop runtime | `aearn/apps/desktop/` |
 | Worker runtime | `aearn/services/worker/aearn_worker/worker_app.py` |
 | Shared package | `aearn/packages/shared/` 目前仍是 placeholder |
-| LLM | 可选，未配置时保留 deterministic fallback |
+| LLM | AI 驱动页面必需；未配置或不可用时返回 `MODEL_UNAVAILABLE` |
 | Java/C++ | 课程可见但 runtime 为 `compiled_sandbox_later`，不提供完整沙箱 |
 
 看到旧文档里的 `migrations/`、Alembic 或更深的 `infra/docker/` 目录时，要先对照当前 checkout，不要直接照旧路径执行。

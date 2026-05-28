@@ -9,6 +9,11 @@ from app.core.config import Settings, get_settings
 from app.db.bootstrap import bootstrap_database
 from app.db.connection import connect
 from app.main import app
+from app.services.exercise_guidance import (
+    build_error_explanation_response,
+    build_explanation_check_response,
+    build_hint_response,
+)
 from app.services import learning_conversation
 from app.services import learning_session_repository as session_repository
 from app.services.llm_client import LLMCallError
@@ -37,10 +42,46 @@ def client() -> TestClient:
 
 @pytest.fixture(autouse=True)
 def disable_llm_generation(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(session_repository, "build_llm_error_explanation", lambda *args, **kwargs: None)
-    monkeypatch.setattr(session_repository, "build_sdk_hint_response", lambda *args, **kwargs: None)
-    monkeypatch.setattr(session_repository, "build_sdk_explanation_check_response", lambda *args, **kwargs: None)
-    monkeypatch.setattr(learning_conversation, "get_settings", lambda: Settings(llm_type="disabled"))
+    class FakeLearningConversationClient:
+        model = "fake-teaching-model"
+
+        def complete_text_stream(self, messages, *, temperature=None):  # type: ignore[no-untyped-def]
+            del temperature
+            prompt_text = json.dumps(messages, ensure_ascii=False)
+            if "检查我的理解" in prompt_text or "理解了" in prompt_text:
+                return ["费曼检查：", "请用自己的话解释事件和状态的关系。"]
+            return ["我会根据当前阶段继续引导你，", "先说清一个最小下一步。"]
+
+    def fake_hint(*args, **kwargs) -> dict[str, object]:  # type: ignore[no-untyped-def]
+        return build_hint_response(*args, **kwargs)
+
+    def fake_error_explanation(*args, **kwargs) -> dict[str, object]:  # type: ignore[no-untyped-def]
+        response = build_error_explanation_response(*args, **kwargs)
+        response["generation_source"] = "llm"
+        response["generation_model"] = "fake-exercise-coach"
+        return response
+
+    def fake_explanation_check(*args, **kwargs) -> dict[str, object]:  # type: ignore[no-untyped-def]
+        return build_explanation_check_response(*args, **kwargs)
+
+    monkeypatch.setattr(session_repository, "build_llm_error_explanation", fake_error_explanation)
+    monkeypatch.setattr(session_repository, "build_sdk_hint_response", fake_hint)
+    monkeypatch.setattr(session_repository, "build_sdk_explanation_check_response", fake_explanation_check)
+    monkeypatch.setattr(
+        learning_conversation,
+        "get_settings",
+        lambda: Settings(
+            llm_type="openai",
+            openai_api_key="test-key",
+            openai_base_url="https://provider.example",
+            openai_model="fake-teaching-model",
+        ),
+    )
+    monkeypatch.setattr(
+        learning_conversation,
+        "AgentsSDKLearningConversationClient",
+        lambda settings: FakeLearningConversationClient(),
+    )
 
 
 def test_start_learning_session_creates_and_reuses_active_session(client: TestClient) -> None:
@@ -248,7 +289,7 @@ def test_learning_history_includes_only_learning_turns_across_sessions(client: T
     assert all(message["role"] in {"user", "agent"} for item in body["sessions"] for message in item["messages"])
 
 
-def test_learning_message_json_falls_back_and_is_idempotent(client: TestClient) -> None:
+def test_learning_message_json_uses_model_and_is_idempotent(client: TestClient) -> None:
     user, plan = _confirmed_plan(client, language="javascript")
     knowledge_point_id = plan["knowledge_points"][0]["id"]
     start_response = client.post(
@@ -274,7 +315,8 @@ def test_learning_message_json_falls_back_and_is_idempotent(client: TestClient) 
     assert first_body["agent_message"]["content"]
     assert first_body["session_state"]["session_id"] == session["session_id"]
     assert first_body["session_state"]["next_action"] == "retry_same"
-    assert first_body["generation_source"] == "deterministic"
+    assert first_body["generation_source"] == "llm"
+    assert first_body["generation_model"] == "fake-teaching-model"
     assert "solution_reference" not in json.dumps(first_body, ensure_ascii=False)
 
     replay = client.post(f"/api/learning-sessions/{session['session_id']}/messages", json=payload)
@@ -345,7 +387,7 @@ def test_learning_message_json_uses_configured_model_stream(
     assert "hidden_" not in prompt_text
 
 
-def test_learning_message_llm_failure_falls_back_without_provider_detail(
+def test_learning_message_llm_failure_returns_model_unavailable_without_provider_detail(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -396,14 +438,15 @@ def test_learning_message_llm_failure_falls_back_without_provider_detail(
         },
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 503
     body = response.json()
-    assert body["generation_source"] == "deterministic"
-    assert "provider raw" not in body["agent_message"]["content"]
-    assert "secret-key" not in body["agent_message"]["content"]
+    serialized = json.dumps(body, ensure_ascii=False)
+    assert body["error"]["code"] == "MODEL_UNAVAILABLE"
+    assert "provider raw" not in serialized
+    assert "secret-key" not in serialized
 
 
-def test_learning_message_json_guardrail_falls_back_when_model_output_leaks(
+def test_learning_message_json_guardrail_returns_model_unavailable_when_model_output_leaks(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -450,10 +493,10 @@ def test_learning_message_json_guardrail_falls_back_when_model_output_leaks(
         },
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 503
     body = response.json()
     serialized = json.dumps(body, ensure_ascii=False)
-    assert body["generation_source"] == "deterministic"
+    assert body["error"]["code"] == "MODEL_UNAVAILABLE"
     assert "hidden_three_clicks" not in serialized
     assert "sk-secret" not in serialized
     assert "完整答案如下" not in serialized
@@ -496,7 +539,7 @@ def test_learning_message_sse_streams_agent_message_and_done(client: TestClient)
     assert agent_events[0]["data"]["session_id"] == session["session_id"]
     assert agent_events[-1]["data"]["content"]
     assert events[-1]["data"]["message_id"] == agent_events[-1]["data"]["message_id"]
-    assert events[-1]["data"]["generation_source"] == "deterministic"
+    assert events[-1]["data"]["generation_source"] == "llm"
 
 
 def test_learning_message_sse_guardrail_error_after_partial_output(
@@ -553,7 +596,7 @@ def test_learning_message_sse_guardrail_error_after_partial_output(
         events = _parse_sse_events("".join(response.iter_text()))
 
     assert [event["event"] for event in events] == ["agent_message", "error"]
-    assert events[1]["data"]["error"]["code"] == "EVALUATION_INVALID_JSON"
+    assert events[1]["data"]["error"]["code"] == "MODEL_UNAVAILABLE"
     assert events[1]["data"]["error"]["recoverable"] is True
 
     with connect() as conn:
@@ -986,6 +1029,48 @@ def test_hint_endpoint_uses_sdk_coach_without_changing_contract(
     assert body["hint_usage_count"] == 1
     assert set(body) == {"hint", "hint_usage_count", "affected_score", "next_action"}
     assert calls["count"] == 1
+
+
+def test_hint_endpoint_returns_model_unavailable_when_model_output_is_missing(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user, plan = _confirmed_plan(client, language="javascript")
+    knowledge_point_id = plan["knowledge_points"][0]["id"]
+    start_response = client.post(
+        "/api/learning-sessions/start",
+        json={
+            "user_id": user["id"],
+            "plan_id": plan["LearningPlan"]["id"],
+            "knowledge_point_id": knowledge_point_id,
+        },
+    )
+    session = start_response.json()
+    exercise = _unlock_practice_exercise(client, session)
+    run_response = client.post(
+        f"/api/learning-sessions/{session['session_id']}/exercises/{exercise['id']}/run",
+        json={
+            "code": exercise["starter_code"],
+            "filled_blanks": {},
+            "runtime_profile_id": exercise["runtime_profile"]["id"],
+            "run_mode": "visible_tests",
+        },
+    )
+    run_body = run_response.json()
+    monkeypatch.setattr(session_repository, "build_sdk_hint_response", lambda *args, **kwargs: None)
+
+    response = client.post(
+        f"/api/learning-sessions/{session['session_id']}/exercises/{exercise['id']}/hint",
+        json={
+            "attempt_id": run_body["attempt_id"],
+            "current_code": exercise["starter_code"],
+            "blank_id": "blank_2",
+            "hint_level": "concept",
+        },
+    )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "MODEL_UNAVAILABLE"
 
 
 def test_hidden_failure_can_be_explained_without_leaking_hidden_source(client: TestClient) -> None:

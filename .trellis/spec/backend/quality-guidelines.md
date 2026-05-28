@@ -309,37 +309,37 @@ Only persisted submit facts can move `ReviewState`, and retries reuse `ReviewLog
   - optional `LLM_TIMEOUT_SECONDS`
 - First model-backed API path: `POST /api/learning-sessions/{session_id}/attempts/{attempt_id}/explain-error`.
 - Required response fields remain `error_cause`, `explanation`, `fix_suggestion`, `related_knowledge_points`, and `next_action`.
-- Optional diagnostics are `generation_source` (`llm` or `deterministic`) and `generation_model`.
+- Optional diagnostics on successful model responses are `generation_source=llm` and `generation_model`.
 
 ### 3. Contracts
 
 - Feature code must not read raw LLM environment variables directly; it must go through `Settings` and the LLM client boundary.
 - The LLM client owns provider URL construction, headers, timeout, and JSON parsing.
-- Feature wrappers own prompt construction, evidence minimization, response schema validation, and fallback decisions.
+- Feature wrappers own prompt construction, evidence minimization, response schema validation, and model-error mapping.
 - `related_knowledge_points` returned to the frontend must be server-controlled or reconciled against server-loaded rows, not blindly trusted from the model.
 - Real API keys, provider error bodies, raw prompts, full code submissions, and hidden test source must not be returned to the frontend or logged.
 
 ### 4. Validation & Error Matrix
 
-- `LLM_TYPE` blank/disabled/none/off -> deterministic fallback.
-- `LLM_TYPE=openai` with missing key, base URL, or model -> deterministic fallback.
-- Unsupported `LLM_TYPE` -> deterministic fallback unless a new adapter is explicitly implemented and tested.
-- Provider HTTP error, timeout, network error, invalid provider JSON, invalid model JSON, missing required fields, unsupported `error_cause`, unsupported `next_action`, code-fence/full-answer style output, or hidden case-id leakage -> deterministic fallback.
+- `LLM_TYPE` blank/disabled/none/off -> `MODEL_UNAVAILABLE`.
+- `LLM_TYPE=openai` with missing key, base URL, or model -> `MODEL_UNAVAILABLE`.
+- Unsupported `LLM_TYPE` -> `MODEL_UNAVAILABLE` unless a new adapter is explicitly implemented and tested.
+- Provider HTTP error, timeout, network error, invalid provider JSON, invalid model JSON, missing required fields, unsupported `error_cause`, unsupported `next_action`, complete-answer style output, or hidden case-id leakage -> `MODEL_UNAVAILABLE`.
 - Idempotency replay for the same `attempt_id` plus same error context -> return stored response and do not call the model again.
 
 ### 5. Good/Base/Bad Cases
 
 - Good: configured OpenAI-compatible provider returns valid JSON, backend validates it, stores the response once, and returns `generation_source=llm`.
-- Base: local developer has no key, endpoint still returns the deterministic response with `generation_source=deterministic`.
+- Base: local developer has no key, model-backed endpoints return `MODEL_UNAVAILABLE`; tests stay model-key-free through fake clients, not local rule-generated substitute content.
 - Bad: tests call a live model by default, feature code imports `os.getenv("OPENAI_API_KEY")`, or LLM output controls knowledge-point IDs.
 
 ### 6. Tests Required
 
 - Unit-test `Settings` configured/incomplete/disabled behavior without real secrets.
 - Unit-test the model client with a fake transport, including base URL to `/chat/completions` and JSON parsing.
-- Unit-test the feature wrapper for valid model output, invalid JSON/schema fallback, and hidden-test identifier rejection.
+- Unit-test the feature wrapper for valid model output, invalid JSON/schema rejection, and hidden-test identifier rejection.
 - API or repository test idempotency so a repeated `explain-error` request does not call the model twice.
-- Keep existing deterministic API tests isolated from live provider calls by mocking or disabling the LLM path.
+- Keep API tests isolated from live provider calls by injecting fake model clients.
 
 ### 7. Wrong vs Correct
 
@@ -351,17 +351,17 @@ response = call_provider(api_key, prompt)
 return response
 ```
 
-This leaks configuration into feature code and bypasses schema validation, fallback, and test isolation.
+This leaks configuration into feature code and bypasses schema validation, model-error mapping, and test isolation.
 
 #### Correct
 
 ```python
-response = build_llm_error_explanation(...) or with_deterministic_generation_metadata(
-    build_error_explanation_response(...)
-)
+response = build_llm_error_explanation(...)
+if response is None:
+    raise LLMCallError("model output is required")
 ```
 
-The feature tries the model only through a testable boundary and keeps deterministic fallback as the stable MVP path.
+The feature tries the model only through a testable boundary; missing or invalid output becomes `MODEL_UNAVAILABLE`.
 
 ## Scenario: SDK Exercise Coach Modules
 
@@ -385,28 +385,28 @@ The feature tries the model only through a testable boundary and keeps determini
 - Repository code owns session/exercise/attempt loading, idempotency lookup/storage, `Attempt.hint_usage_count`, `Attempt.error_cause`, `Attempt.explanation_text`, and `Attempt.explanation_check_result` writes.
 - SDK inputs must be safe summaries: bounded exercise metadata, blank metadata, visible-test summaries, bounded runtime/stderr facts, and bounded code excerpts only when needed.
 - SDK inputs and outputs must not expose hidden test ids, hidden test source, `solution_reference`, full submitted code, provider raw errors, SDK event names, API keys, or raw prompts.
-- SDK output must normalize back to the existing public response shapes from `exercise_guidance.py` and `llm_explain_error.py`.
-- Deterministic fallback is required when model config is disabled or incomplete, SDK execution fails, output validation fails, or guardrails block output.
+- SDK output must normalize back to the existing public response shapes.
+- `MODEL_UNAVAILABLE` is required when model config is disabled or incomplete, SDK execution fails, output validation fails, or guardrails block output.
 
 ### 4. Validation & Error Matrix
 
-- Model config disabled, incomplete, unsupported, or unavailable -> deterministic fallback.
-- SDK runner exception, invalid SDK event stream, invalid JSON, missing required fields, unsupported enum, or empty output -> deterministic fallback.
-- Guardrail-blocked learner input or model output -> deterministic fallback without leaking block internals.
-- Hidden test id/source, `solution_reference`, full answer, provider detail, SDK event name, or API key in output -> deterministic fallback.
+- Model config disabled, incomplete, unsupported, or unavailable -> `MODEL_UNAVAILABLE`.
+- SDK runner exception, invalid SDK event stream, invalid JSON, missing required fields, unsupported enum, or empty output -> `MODEL_UNAVAILABLE`.
+- Guardrail-blocked learner input or model output -> `MODEL_UNAVAILABLE` without leaking block internals.
+- Hidden test id/source, `solution_reference`, full answer, provider detail, SDK event name, or API key in output -> `MODEL_UNAVAILABLE`.
 - Idempotency replay for the same request key -> return the stored response and do not call the SDK again.
 - Idempotency key reused with a different request hash -> existing `IDEMPOTENCY_CONFLICT` behavior.
 
 ### 5. Good/Base/Bad Cases
 
 - Good: configured SDK returns valid structured coaching, repository stores the same `Attempt` fields as before, and response shape is unchanged.
-- Base: local developer has no model key; hint, explain-error, and check-explanation still return deterministic guidance and tests stay model-key-free.
+- Base: local developer has no model key; hint, explain-error, and check-explanation return `MODEL_UNAVAILABLE`, while tests stay model-key-free through fake SDK clients.
 - Bad: SDK code imports `psycopg.Connection`, writes `Attempt` rows, exposes hidden case ids, controls `related_knowledge_points`, or changes public response envelopes.
 
 ### 6. Tests Required
 
 - Unit-test fake SDK success for hint, explain-error, and explanation-check without live model credentials.
-- Unit-test invalid SDK output and guardrail-blocked leakage falling back to deterministic behavior.
+- Unit-test invalid SDK output and guardrail-blocked leakage returning `MODEL_UNAVAILABLE` at the owning route boundary.
 - API-test the learning-session endpoints for unchanged response envelopes, idempotent replay, and repository-owned `Attempt` writes.
 
 ### 7. Wrong vs Correct
@@ -425,7 +425,7 @@ This lets the SDK layer own durable product writes and bypasses repository idemp
 response = build_sdk_hint_response(...) or build_hint_response(...)
 ```
 
-The SDK layer only proposes validated coaching output; repository code still owns fallback, writes, and idempotency storage.
+The SDK layer only proposes validated coaching output; repository code still owns `MODEL_UNAVAILABLE` mapping, writes, and idempotency storage.
 
 ## Scenario: Learning Session Message Streaming Conversation
 
@@ -462,7 +462,7 @@ The SDK layer only proposes validated coaching output; repository code still own
 - Teaching-agent guardrails must exist at the SDK-agent boundary and at the public response boundary so fake clients and SDK clients both pass through the same leak checks before JSON or SSE output reaches the frontend.
 - SDK tracing must be disabled by default for this path unless a dedicated tracing configuration is explicitly designed.
 - SDK provider base URL handling must preserve existing `OPENAI_BASE_URL` behavior: both `https://provider.example` and `https://provider.example/v1` must resolve to the OpenAI client base URL ending in `/v1`.
-- When model configuration is disabled, incomplete, failing, or produces an invalid/empty stream before useful output, return deterministic teaching guidance.
+- When model configuration is disabled, incomplete, failing, or produces an invalid/empty stream, return `MODEL_UNAVAILABLE`.
 
 ### 4. Validation & Error Matrix
 
@@ -470,9 +470,9 @@ The SDK layer only proposes validated coaching output; repository code still own
 - Missing or inactive learning session -> `SESSION_NOT_FOUND` with 404 in JSON mode or one SSE `error` event in streaming mode.
 - Same idempotency key with a different request body -> `IDEMPOTENCY_CONFLICT`, `recoverable=false`.
 - Same idempotency key with the same request body -> replay the stored completed assistant message; SSE replay may send it as one `agent_message` plus `done`.
-- Model failure before useful output -> deterministic response with `generation_source=deterministic`.
-- SDK runner exception, invalid SDK event stream, or empty SDK output before useful output -> deterministic response with `generation_source=deterministic`.
-- Guardrail-blocked learner request or model output before useful output -> deterministic response with `generation_source=deterministic`.
+- Model failure before useful output -> `MODEL_UNAVAILABLE`.
+- SDK runner exception, invalid SDK event stream, or empty SDK output before useful output -> `MODEL_UNAVAILABLE`.
+- Guardrail-blocked learner request or model output before useful output -> `MODEL_UNAVAILABLE`.
 - Model stream interruption after partial output -> SSE `error` event with recoverable retry guidance and no stored successful response.
 - Guardrail-blocked model output after at least one public SSE `agent_message` chunk -> SSE `error` event with recoverable retry guidance and no stored successful idempotency response.
 - Unexpected server failure -> `INTERNAL_ERROR` without raw provider details, prompt text, code submissions, or secrets.
@@ -481,7 +481,7 @@ The SDK layer only proposes validated coaching output; repository code still own
 
 - Good: configured OpenAI-compatible provider streams deltas, the route accumulates safe content, stores the final response once, and replays the same `client_message_id` without calling the model again.
 - Good: SDK tools summarize current stage, knowledge point, exercise metadata, and visible latest-attempt facts without exposing raw code submissions or hidden identifiers.
-- Base: local development has no model key; the endpoint still returns deterministic guidance and all tests pass without live provider access.
+- Base: local development has no model key; the endpoint returns `MODEL_UNAVAILABLE` and all tests pass without live provider access via fake clients.
 - Bad: adding a durable chat-history table for this MVP, exposing hidden test data in prompt/response, using WebSocket/global chatbot behavior for active learning composer messages, exposing SDK event names directly through the public API, or letting an SDK tool mutate `Attempt`, `ReviewState`, `ReviewLog`, `Note`, `LearningSession`, or `idempotency_records`.
 
 ### 6. Tests Required
@@ -489,8 +489,8 @@ The SDK layer only proposes validated coaching output; repository code still own
 - API-test JSON success and idempotent replay for a real active learning session.
 - API-test SSE success with ordered `agent_message` chunks followed by terminal `done`.
 - API-test missing session and validation errors in both JSON and SSE modes.
-- API-test LLM-disabled or LLM-failure fallback and assert provider raw details do not leak.
-- API-test guardrail-blocked JSON model output and assert deterministic fallback without leaked hidden IDs, key-like tokens, or complete-answer wording.
+- API-test LLM-disabled or LLM-failure `MODEL_UNAVAILABLE` and assert provider raw details do not leak.
+- API-test guardrail-blocked JSON model output and assert `MODEL_UNAVAILABLE` without leaked hidden IDs, key-like tokens, or complete-answer wording.
 - API-test guardrail-blocked SSE output after a partial safe chunk and assert a recoverable `error` event with no stored successful idempotency response.
 - Unit-test OpenAI-compatible streaming payload compatibility so unsupported `temperature` is omitted by default.
 - Unit-test the SDK-backed client with a fake SDK runner; tests must assert no live model call is required, tracing is disabled, text deltas are extracted, base URLs are normalized, SDK tools are attached, and guardrails are attached.
@@ -506,7 +506,7 @@ agent = Agent(name="Teaching", instructions=prompt, model=model)
 return Runner.run_streamed(agent, input).stream_events()
 ```
 
-This leaks SDK event shapes through the feature layer and can bypass deterministic fallback, Aearn SSE framing, idempotency storage, and provider error redaction.
+This leaks SDK event shapes through the feature layer and can bypass `MODEL_UNAVAILABLE` handling, Aearn SSE framing, idempotency storage, and provider error redaction.
 
 #### Correct
 
@@ -517,7 +517,7 @@ chunks = AgentsSDKLearningConversationClient(settings).complete_text_stream(
 )
 ```
 
-The feature owns safe prompt construction, fallback, idempotency, and SSE framing while the SDK client remains behind the local `TextCompletionClient` boundary.
+The feature owns safe prompt construction, model-error mapping, idempotency, and SSE framing while the SDK client remains behind the local `TextCompletionClient` boundary.
 
 #### Wrong
 
@@ -614,7 +614,7 @@ The shared SSE writer serializes a compact one-line JSON frame and keeps the eve
 ### 2. Signatures
 
 - SDK modules live under `app/agents/`.
-- Feature services and repositories own public response normalization, fallback selection, idempotency, and durable writes.
+- Feature services and repositories own public response normalization, `MODEL_UNAVAILABLE` mapping, idempotency, and durable writes.
 - Release gate commands:
   - `uv --directory .\aearn\services\api run python -m pytest`
   - `uv --directory .\aearn\services\api run python -m mypy app`
@@ -627,28 +627,28 @@ The shared SSE writer serializes a compact one-line JSON frame and keeps the eve
 - SDK modules may build prompts, call SDK runners, attach tools or guardrails, validate candidate output, and return safe candidate text or structured data.
 - SDK modules must not import database connection types or mutate `Attempt`, `ReviewState`, `ReviewLog`, `Note`, `LearningPlan`, `LearningSession`, or `idempotency_records`.
 - Durable writes, retries, idempotency replay, transaction boundaries, and public response envelopes remain owned by Aearn services/repositories.
-- SDK inputs must be safe summaries: bounded exercise metadata, visible test summaries, sanitized latest-attempt facts, bounded learner notes, and deterministic plan templates.
+- SDK inputs must be safe summaries: bounded exercise metadata, visible test summaries, sanitized latest-attempt facts, bounded learner notes, and server-owned plan templates.
 - SDK inputs and outputs must not expose hidden test ids, hidden test source, `solution_reference`, full submitted code, raw provider errors, SDK event names, API keys, raw prompts, or full private notes.
-- Deterministic fallback is required when model config is disabled or incomplete, SDK execution fails, output validation fails, guardrails block input/output, or an SDK candidate claims unsupported runtime capabilities.
+- `MODEL_UNAVAILABLE` is required when model config is disabled or incomplete, SDK execution fails, output validation fails, guardrails block input/output, or an SDK candidate claims unsupported runtime capabilities.
 - Provider diagnostics are allowed only when they are secret-free and normalized; raw provider payloads, stack traces, prompts, submitted code, and API keys must never reach public JSON/SSE responses or logs.
 
 ### 4. Validation & Error Matrix
 
 - Fake SDK success -> existing public JSON/SSE contract stays unchanged.
-- SDK exception, invalid event stream, invalid JSON, missing required fields, unsupported enum, or empty output -> deterministic fallback.
-- Guardrail-blocked leakage -> deterministic fallback or recoverable SSE error according to the owning route contract, without exposing block internals.
+- SDK exception, invalid event stream, invalid JSON, missing required fields, unsupported enum, or empty output -> `MODEL_UNAVAILABLE`.
+- Guardrail-blocked leakage -> `MODEL_UNAVAILABLE` or recoverable SSE error according to the owning route contract, without exposing block internals.
 - Idempotency replay -> return the stored Aearn response and do not call the SDK again.
 - Idempotency key reused with a different request hash -> existing `IDEMPOTENCY_CONFLICT` behavior.
 
 ### 5. Good/Base/Bad Cases
 
 - Good: a configured SDK candidate improves coaching or draft wording while repositories still own `Attempt`, `ReviewState`, `ReviewLog`, `Note`, `LearningPlan`, and `idempotency_records` writes.
-- Base: local development has no model key; every SDK-backed path still passes model-key-free tests through deterministic fallback.
+- Base: local development has no model key; every SDK-backed path returns `MODEL_UNAVAILABLE` and still passes model-key-free tests through fake clients.
 - Bad: SDK code writes product rows, exposes SDK event names through SSE, logs raw prompts, returns provider error bodies, trusts model-provided knowledge point IDs, or promises Java/C++ execution for `compiled_sandbox_later`.
 
 ### 6. Tests Required
 
 - Maintain model-key-free fake runner coverage for each SDK-backed path.
-- Cover valid SDK output, SDK failure, invalid or malformed output, guardrail-blocked leakage, and deterministic fallback.
+- Cover valid SDK output, SDK failure, invalid or malformed output, guardrail-blocked leakage, and `MODEL_UNAVAILABLE`.
 - Keep route-level contract tests for learning JSON/SSE, exercise coach endpoints, note JSON/SSE draft updates, review start/rationale, onboarding plan generation, and dashboard/resume compatibility.
 - Before release, create or update a cross-agent SDK matrix and record exact command results plus residual risks in `docs/qa/`.

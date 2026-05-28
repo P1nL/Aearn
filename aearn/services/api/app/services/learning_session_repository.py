@@ -16,13 +16,10 @@ from app.services.evaluation import (
     build_code_completion_result,
 )
 from app.services.exercise_guidance import (
-    build_error_explanation_response,
-    build_explanation_check_response,
-    build_hint_response,
     resolve_blank,
 )
 from app.services.exercise_repository import get_exercise, get_or_create_exercise_for_knowledge_point
-from app.services.llm_explain_error import with_deterministic_generation_metadata
+from app.services.llm_client import LLMCallError, LLMInvalidResponseError
 from app.services.plan_repository import IdempotencyConflictError, request_hash
 from app.services.review_scheduler import apply_attempt_review_update
 from app.services.runtime_runner import RuntimeExecutionResult, run_exercise
@@ -204,7 +201,7 @@ def unlock_learning_session_practice(
         knowledge_point=context,
         runtime_profile=_serialize_runtime_profile(context),
     )
-    state = {
+    state: dict[str, object] = {
         "covered_subpoint_ids": _lesson_subpoint_ids(context),
         "feynman_status": "passed" if unlock_reason == "feynman_passed" else "pending",
         "practice_unlock_reason": unlock_reason,
@@ -499,20 +496,15 @@ def request_learning_hint(
         return response, True
 
     next_hint_count = _int_or_zero(attempt.get("hint_usage_count")) + 1
-    deterministic_response = build_hint_response(
-        exercise,
-        blank=blank,
-        hint_level=hint_level,
-        current_code=current_code,
-        hint_usage_count=next_hint_count,
-    )
     response = build_sdk_hint_response(
         exercise,
         blank=blank,
         hint_level=hint_level,
         current_code=current_code,
         hint_usage_count=next_hint_count,
-    ) or deterministic_response
+    )
+    if response is None:
+        raise LLMCallError("Exercise hint requires configured model API")
     conn.execute(
         """
         UPDATE attempts
@@ -561,14 +553,6 @@ def explain_learning_attempt_error(
         return response, True
 
     related_knowledge_points = [_load_knowledge_point_summary(conn, str(exercise["knowledge_point_id"]))]
-    deterministic_response = build_error_explanation_response(
-        exercise,
-        error_message=error_message,
-        stderr=stderr,
-        failed_tests=failed_tests,
-        current_code=current_code,
-        related_knowledge_points=related_knowledge_points,
-    )
     response = build_llm_error_explanation(
         exercise,
         error_message=error_message,
@@ -576,7 +560,9 @@ def explain_learning_attempt_error(
         failed_tests=failed_tests,
         current_code=current_code,
         related_knowledge_points=related_knowledge_points,
-    ) or with_deterministic_generation_metadata(deterministic_response)
+    )
+    if response is None:
+        raise LLMCallError("Error explanation requires configured model API")
     conn.execute(
         """
         UPDATE attempts
@@ -626,18 +612,17 @@ def check_learning_attempt_explanation(
             raise RuntimeError("stored explanation-check response is invalid")
         return response, True
 
-    deterministic_response = build_explanation_check_response(
-        exercise,
-        explanation=explanation,
-        focus=focus,
-        round_number=round_number,
-    )
     response = build_sdk_explanation_check_response(
         exercise,
         explanation=explanation,
         focus=focus,
         round_number=round_number,
-    ) or deterministic_response
+    )
+    if response is None:
+        raise LLMCallError("Explanation check requires configured model API")
+    if not isinstance(response, Mapping):
+        raise LLMInvalidResponseError("Explanation check model returned invalid response")
+    response_dict = dict(response)
     conn.execute(
         """
         UPDATE attempts
@@ -645,16 +630,16 @@ def check_learning_attempt_explanation(
             explanation_check_result = %s::jsonb
         WHERE id = %s
         """,
-        (explanation, json.dumps(response), attempt_id),
+        (explanation, json.dumps(response_dict), attempt_id),
     )
     conn.execute(
         """
         INSERT INTO idempotency_records (key, operation, request_hash, response_json)
         VALUES (%s, 'check_learning_attempt_explanation', %s, %s::jsonb)
         """,
-        (key, payload_hash, json.dumps(response)),
+        (key, payload_hash, json.dumps(response_dict)),
     )
-    return response, False
+    return response_dict, False
 
 
 def default_run_key(*, session_id: str, exercise_id: str, code_hash: str, run_mode: str) -> str:

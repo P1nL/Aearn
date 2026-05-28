@@ -1,27 +1,17 @@
 from __future__ import annotations
 
-import asyncio
 import json
-import queue
-import re
-import threading
 from collections.abc import Mapping, Sequence
-from typing import Any, cast
 
-from agents import Agent, ModelSettings
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
-from app.agents.sdk_runtime import AgentsSDKRunner, build_run_config
 from app.core.config import Settings, get_settings
 from app.models.onboarding import Language, TargetLevel
 from app.services.llm_client import (
-    LLMCallError,
     LLMConfigurationError,
     LLMInvalidResponseError,
+    OpenAICompatibleClient,
 )
-
-
-ONBOARDING_SLOT_EXTRACTOR_AGENT_NAME = "Aearn Onboarding Slot Extractor"
 
 
 class TimeBudgetSlot(BaseModel):
@@ -34,9 +24,8 @@ class ExtractedSlots(BaseModel):
 
     All fields are cumulative across turns: if a field was set on a prior
     turn and the new turn doesn't change it, the prior value should be
-    repeated. The agent (or keyword fallback) must judge `plan_ready` based
-    on whether the required slots (language, target_level, goal_text) are
-    filled with meaningful values.
+    repeated. The model must judge `plan_ready` based on whether the required
+    slots (language, target_level, goal_text) are filled with meaningful values.
     """
 
     language: Language | None = None
@@ -68,22 +57,20 @@ _EXTRACTOR_INSTRUCTIONS = (
 )
 
 
-class AgentsSDKOnboardingSlotExtractor:
-    """LLM-based slot extractor using the Agents SDK structured output."""
+class ResponsesOnboardingSlotExtractor:
+    """LLM-based slot extractor using the streaming Responses JSON path."""
 
     def __init__(
         self,
         settings: Settings,
         *,
-        runner: AgentsSDKRunner | None = None,
+        client: OpenAICompatibleClient | None = None,
     ) -> None:
-        self._settings = settings
-        self._run_config = build_run_config(settings)
-        self._runner = runner
+        self._client = client or OpenAICompatibleClient(settings)
 
     @property
     def model(self) -> str:
-        return str(self._settings.openai_model or "")
+        return self._client.model
 
     def extract(
         self,
@@ -92,230 +79,23 @@ class AgentsSDKOnboardingSlotExtractor:
     ) -> ExtractedSlots:
         """Run the extractor synchronously.
 
-        Internally spawns a worker thread that executes the async runner so
-        callers (sync or async) get a single ExtractedSlots instance back.
-        Raises LLMCallError / LLMInvalidResponseError on failure.
+        Raises LLMCallError / LLMInvalidResponseError on provider or schema
+        failures. The underlying client always requests streaming Responses
+        output and parses the final JSON object before returning.
         """
 
-        agent = Agent(
-            name=ONBOARDING_SLOT_EXTRACTOR_AGENT_NAME,
-            instructions=_EXTRACTOR_INSTRUCTIONS,
-            model=self.model,
-            model_settings=ModelSettings(temperature=None),
-            tools=[],
-            output_type=ExtractedSlots,
+        response = self._client.complete_json(
+            [
+                {"role": "system", "content": _EXTRACTOR_INSTRUCTIONS},
+                {"role": "user", "content": _format_extractor_input(history, prior_slots)},
+            ]
         )
-
-        runner = self._runner
-        if runner is None:
-            from agents import Runner
-
-            runner = cast(AgentsSDKRunner, Runner)
-
-        input_text = _format_extractor_input(history, prior_slots)
-
-        result_queue: queue.Queue[tuple[str, Any]] = queue.Queue()
-
-        async def consume() -> ExtractedSlots:
-            run_result = await runner.run(  # type: ignore[attr-defined]
-                agent,
-                input_text,
-                max_turns=2,
-                run_config=self._run_config,
-            )
-            final = getattr(run_result, "final_output", None)
-            if isinstance(final, ExtractedSlots):
-                return final
-            if isinstance(final, Mapping):
-                return ExtractedSlots.model_validate(final)
+        try:
+            return ExtractedSlots.model_validate(response.content)
+        except ValidationError as exc:
             raise LLMInvalidResponseError(
-                "Onboarding slot extractor returned no structured output"
-            )
-
-        def worker() -> None:
-            try:
-                result = asyncio.run(consume())
-                result_queue.put(("ok", result))
-            except BaseException as exc:  # noqa: BLE001 - bridge thread errors
-                result_queue.put(("err", exc))
-
-        thread = threading.Thread(
-            target=worker, name="aearn-slot-extractor", daemon=True
-        )
-        thread.start()
-        thread.join()
-
-        if result_queue.empty():
-            raise LLMCallError("Onboarding slot extractor produced no result")
-
-        status, payload = result_queue.get()
-        if status == "err":
-            if isinstance(payload, (LLMCallError, LLMConfigurationError, LLMInvalidResponseError)):
-                raise payload
-            raise LLMCallError("Onboarding slot extractor failed") from payload
-        return cast(ExtractedSlots, payload)
-
-
-_LANGUAGE_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
-    ("python", re.compile(r"\bpython\b|蟒蛇|派森", re.IGNORECASE)),
-    ("javascript", re.compile(r"\bjavascript\b|\bjs\b|node|前端", re.IGNORECASE)),
-    ("html_css", re.compile(r"\bhtml\b|\bcss\b|网页|静态页面", re.IGNORECASE)),
-    ("java", re.compile(r"\bjava\b(?!script)", re.IGNORECASE)),
-    ("cpp", re.compile(r"c\+\+|\bcpp\b", re.IGNORECASE)),
-]
-_TARGET_LEVEL_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
-    ("beginner", re.compile(r"零基础|入门|从零|新手|完全没学过|什么都不会")),
-    ("advanced", re.compile(r"高级|资深|多年经验|高阶")),
-    ("beginner_to_intermediate", re.compile(r"学过一点|看过(?:基础)?语法|会一点|接触过|写过一点|懂一点")),
-    ("intermediate", re.compile(r"进阶|中级|有经验|有基础")),
-]
-_REVISE_PATTERN = re.compile(r"调整|换(?:一?个|成)?|不对|改(?:一改|一下|为|成)?|重新|只能|只有|每周|每[天日]")
-_FOCUS_PATTERN = re.compile(
-    r"web|后端|前端|全栈|数据(?:分析|科学|挖掘)?|算法|爬虫|游戏|自动化|测试|机器学习|ai|脚本",
-    re.IGNORECASE,
-)
-_WEEKLY_TIME_HOUR_PATTERN = re.compile(
-    r"每?周\s*(?:只(?:有|能)\s*)?(\d+(?:\.\d+)?)\s*(?:个)?\s*(小时|h|hr)",
-    re.IGNORECASE,
-)
-_TIME_HOUR_PATTERN = re.compile(r"(\d+(?:\.\d+)?)\s*(?:个)?\s*(小时|h|hr)", re.IGNORECASE)
-_TIME_MINUTE_PATTERN = re.compile(r"(\d+)\s*(分钟|min)", re.IGNORECASE)
-_DAYS_WEEK_PATTERN = re.compile(r"每?周\s*(\d+)\s*(?:天|次)")
-_DAILY_PATTERN = re.compile(r"每[天日]")
-
-
-def keyword_extract_slots(
-    history: Sequence[Mapping[str, str]],
-    prior_slots: ExtractedSlots,
-) -> ExtractedSlots:
-    """Deterministic fallback when the LLM extractor is unavailable.
-
-    Scans the user-side messages with regex/substring rules and merges the
-    findings on top of the prior slots. Only sets a field when the latest
-    history clearly evidences it; otherwise prior values are preserved.
-    """
-
-    user_text = "\n".join(
-        str(msg.get("content", ""))
-        for msg in history
-        if str(msg.get("role", "")).lower() == "user"
-    )
-    last_user_message = ""
-    for msg in reversed(list(history)):
-        if str(msg.get("role", "")).lower() == "user":
-            last_user_message = str(msg.get("content", ""))
-            break
-
-    language = _resolve_language(last_user_message, user_text, prior_slots.language)
-    target_level = _resolve_target_level(last_user_message, user_text, prior_slots.target_level)
-
-    focus: str | None = prior_slots.focus
-    latest_focus_match = _FOCUS_PATTERN.search(last_user_message)
-    if latest_focus_match:
-        focus = latest_focus_match.group(0)
-    elif focus is None:
-        focus_match = _FOCUS_PATTERN.search(user_text)
-        if focus_match:
-            focus = focus_match.group(0)
-
-    time_budget = _extract_time_budget(last_user_message)
-    if time_budget is None:
-        time_budget = prior_slots.time_budget or _extract_time_budget(user_text)
-
-    goal_text: str | None = prior_slots.goal_text
-    candidate_goal = _build_keyword_goal_text(
-        language=language, focus=focus, target_level=target_level, history=history
-    )
-    if candidate_goal:
-        goal_text = candidate_goal
-
-    revising = bool(_REVISE_PATTERN.search(last_user_message))
-
-    plan_ready = bool(language and target_level and goal_text and len(goal_text) >= 10)
-    missing_slot_question = (
-        None if plan_ready else _next_missing_slot_question(
-            language=language, target_level=target_level, goal_text=goal_text
-        )
-    )
-
-    return ExtractedSlots(
-        language=language,
-        target_level=target_level,
-        goal_text=goal_text,
-        time_budget=time_budget,
-        focus=focus,
-        plan_ready=plan_ready,
-        missing_slot_question=missing_slot_question,
-        revising=revising,
-    )
-
-
-def _resolve_language(
-    last_user_message: str,
-    user_text: str,
-    prior_language: Language | None,
-) -> Language | None:
-    for text in (last_user_message, user_text if prior_language is None else ""):
-        for code, pattern in _LANGUAGE_PATTERNS:
-            if pattern.search(text):
-                return cast(Language, code)
-    return prior_language
-
-
-def _resolve_target_level(
-    last_user_message: str,
-    user_text: str,
-    prior_level: TargetLevel | None,
-) -> TargetLevel | None:
-    for text in (last_user_message, user_text if prior_level is None else ""):
-        for level, pattern in _TARGET_LEVEL_PATTERNS:
-            if pattern.search(text):
-                return cast(TargetLevel, level)
-    return prior_level
-
-
-def _extract_time_budget(text: str) -> TimeBudgetSlot | None:
-    weekly_hour_match = _WEEKLY_TIME_HOUR_PATTERN.search(text)
-    if weekly_hour_match:
-        try:
-            return TimeBudgetSlot(
-                minutes_per_day=int(round(float(weekly_hour_match.group(1)) * 60)),
-                days_per_week=1,
-            )
-        except ValueError:
-            return None
-
-    minutes_per_day: int | None = None
-    hour_match = _TIME_HOUR_PATTERN.search(text)
-    if hour_match:
-        try:
-            minutes_per_day = int(round(float(hour_match.group(1)) * 60))
-        except ValueError:
-            minutes_per_day = None
-    if minutes_per_day is None:
-        minute_match = _TIME_MINUTE_PATTERN.search(text)
-        if minute_match:
-            try:
-                minutes_per_day = int(minute_match.group(1))
-            except ValueError:
-                minutes_per_day = None
-    if not minutes_per_day or minutes_per_day <= 0:
-        return None
-
-    days_per_week: int | None = None
-    week_match = _DAYS_WEEK_PATTERN.search(text)
-    if week_match:
-        try:
-            days_per_week = max(1, min(7, int(week_match.group(1))))
-        except ValueError:
-            days_per_week = None
-    if days_per_week is None and _DAILY_PATTERN.search(text):
-        days_per_week = 7
-
-    return TimeBudgetSlot(
-        minutes_per_day=minutes_per_day,
-        days_per_week=days_per_week or 5,
-    )
+                "Onboarding slot extractor returned invalid structured output"
+            ) from exc
 
 
 def merge_slots(prior: ExtractedSlots, new: ExtractedSlots) -> ExtractedSlots:
@@ -390,71 +170,13 @@ def _format_extractor_input(
     return "\n".join(lines)
 
 
-def _build_keyword_goal_text(
-    *,
-    language: Language | None,
-    focus: str | None,
-    target_level: TargetLevel | None,
-    history: Sequence[Mapping[str, str]],
-) -> str | None:
-    if not language:
-        return None
-    parts: list[str] = []
-    parts.append(f"学习 {_language_display(language)}")
-    if focus:
-        parts.append(f"聚焦 {focus}")
-    if target_level == "beginner":
-        parts.append("从零基础入门")
-    elif target_level == "intermediate":
-        parts.append("从已有基础进阶")
-    elif target_level == "advanced":
-        parts.append("达到高级水平")
-    elif target_level == "beginner_to_intermediate":
-        parts.append("从入门到进阶")
-    base = "，".join(parts)
-    # If we still don't have ≥10 chars, append the last user message excerpt.
-    if len(base) < 10:
-        for msg in reversed(list(history)):
-            if str(msg.get("role", "")).lower() == "user":
-                snippet = str(msg.get("content", "")).strip()[:60]
-                if snippet:
-                    base = f"{base}（{snippet}）" if base else snippet
-                break
-    return base if len(base) >= 10 else None
-
-
-def _language_display(language: Language) -> str:
-    return {
-        "python": "Python",
-        "javascript": "JavaScript",
-        "java": "Java",
-        "cpp": "C++",
-        "html_css": "HTML / CSS",
-    }.get(language, str(language))
-
-
-def _next_missing_slot_question(
-    *,
-    language: Language | None,
-    target_level: TargetLevel | None,
-    goal_text: str | None,
-) -> str:
-    if not language:
-        return "你想学的是哪门编程语言？目前主要支持 Python、JavaScript、HTML / CSS。"
-    if not target_level:
-        return "你目前的水平大致是哪一档？零基础 / 有一些基础 / 已经比较进阶？"
-    if not goal_text or len(goal_text) < 10:
-        return "可以再多说一两句你的学习目标吗？比如想做哪类项目，或者达到什么效果。"
-    return "还想补充什么具体目标或时间安排吗？"
-
-
 def build_slot_extractor(
     settings: Settings | None = None,
-) -> AgentsSDKOnboardingSlotExtractor | None:
+) -> ResponsesOnboardingSlotExtractor | None:
     effective = settings or get_settings()
     if not effective.openai_compatible_configured:
         return None
     try:
-        return AgentsSDKOnboardingSlotExtractor(effective)
+        return ResponsesOnboardingSlotExtractor(effective)
     except LLMConfigurationError:
         return None

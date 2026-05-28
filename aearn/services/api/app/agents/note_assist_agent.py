@@ -168,40 +168,6 @@ def assert_safe_note_draft_output(text: str) -> None:
             raise LLMInvalidResponseError("Note Assist output leaked disallowed note-draft wording")
 
 
-def build_deterministic_note_draft(context: NoteAssistContext) -> str:
-    lines: list[str] = [
-        f"补充主题：{context.module_title} / {context.knowledge_point_title}",
-        f"当前笔记：{_bounded_text(context.note_title, 120)}",
-    ]
-    if context.note_excerpt:
-        lines.append(f"当前正文摘要：{_bounded_text(context.note_excerpt, 180)}")
-
-    if context.focus == "mistake_summary":
-        lines.extend(
-            [
-                "可补充：",
-                f"- 错因：{_latest_attempt_summary(context.latest_attempt) or '先写清触发条件和失败现象。'}",
-                "- 修正：只追加当前知识点相关部分，不覆盖已有正文。",
-                "- 复查：对照最近一次运行或测试结果再看一遍。",
-            ]
-        )
-    else:
-        lines.extend(
-            [
-                "可补充：",
-                "- 背景：这个知识点在哪些场景最容易出错。",
-                "- 正确写法：写出可复用的最小步骤。",
-                "- 复查：确认状态、边界条件和结果展示。",
-            ]
-        )
-
-    if context.session_summary:
-        lines.append(f"会话摘要：{_bounded_text(context.session_summary, 200)}")
-    if context.style == "detailed":
-        lines.append("建议再补一条：把最小反例和对应修正写出来。")
-    return "\n".join(line for line in lines if line).strip()
-
-
 def _build_messages(context: NoteAssistContext) -> list[dict[str, str]]:
     evidence = {
         "learner_message": "继续补全当前笔记，只写可插入的补充片段，不要覆盖现有正文。",
@@ -259,26 +225,6 @@ def _latest_attempt_evidence(latest_attempt: Mapping[str, object] | None) -> dic
         "hint_usage_count": latest_attempt.get("hint_usage_count"),
         "error_count": latest_attempt.get("error_count"),
     }
-
-
-def _latest_attempt_summary(latest_attempt: Mapping[str, object] | None) -> str:
-    if latest_attempt is None:
-        return ""
-
-    parts: list[str] = []
-    runtime_status = _bounded_text(latest_attempt.get("runtime_status"), 40)
-    if runtime_status:
-        parts.append(f"最近一次运行状态为 {runtime_status}")
-    test_pass_rate = latest_attempt.get("test_pass_rate")
-    if isinstance(test_pass_rate, (int, float)):
-        parts.append(f"通过率 {float(test_pass_rate):.2f}")
-    error_cause = _bounded_text(latest_attempt.get("error_cause"), 80)
-    if error_cause:
-        parts.append(f"错因 {error_cause}")
-    explanation_text = _bounded_text(latest_attempt.get("explanation_text"), 100)
-    if explanation_text:
-        parts.append(f"解释 {explanation_text}")
-    return "，".join(parts)
 
 
 def _bounded_text(value: object, max_length: int) -> str:

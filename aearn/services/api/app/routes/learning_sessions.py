@@ -6,7 +6,12 @@ from fastapi import APIRouter, Query, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from app.core.errors import error_response, request_id_from
+from app.core.errors import (
+    MODEL_UNAVAILABLE_MESSAGE,
+    error_response,
+    model_unavailable_response,
+    request_id_from,
+)
 from app.db.connection import connect
 from app.agents.guardrails import assert_safe_teaching_output
 from app.models.learning_sessions import (
@@ -21,7 +26,6 @@ from app.models.learning_sessions import (
 from app.services.learning_conversation import (
     build_learning_message_response,
     create_learning_message_response,
-    deterministic_learning_message_generation,
     list_learning_history,
     prepare_learning_message,
     safe_generation_exceptions,
@@ -40,6 +44,7 @@ from app.services.learning_session_repository import (
     start_learning_session,
     submit_learning_session_exercise,
 )
+from app.services.llm_client import LLMCallError, LLMConfigurationError, LLMInvalidResponseError
 from app.services.dashboard_repository import (
     EntityNotFoundError as ResumeEntityNotFoundError,
     get_resume_context,
@@ -197,6 +202,12 @@ async def create_learning_session_message(
                 details={"reason": str(exc)},
                 recoverable=False,
             )
+        except safe_generation_exceptions() as exc:
+            conn.rollback()
+            return model_unavailable_response(
+                request,
+                details={"reason": exc.__class__.__name__},
+            )
         conn.commit()
     if replayed:
         response["idempotency_replayed"] = True
@@ -286,6 +297,12 @@ async def run_learning_session(
                 details={"reason": str(exc)},
                 recoverable=False,
             )
+        except (LLMCallError, LLMConfigurationError, LLMInvalidResponseError) as exc:
+            conn.rollback()
+            return model_unavailable_response(
+                request,
+                details={"reason": exc.__class__.__name__},
+            )
         conn.commit()
     if replayed:
         response["idempotency_replayed"] = True
@@ -353,6 +370,12 @@ async def get_learning_hint(
                 details={"reason": str(exc)},
                 recoverable=False,
             )
+        except (LLMCallError, LLMConfigurationError, LLMInvalidResponseError) as exc:
+            conn.rollback()
+            return model_unavailable_response(
+                request,
+                details={"reason": exc.__class__.__name__},
+            )
         conn.commit()
     if replayed:
         response["idempotency_replayed"] = True
@@ -409,6 +432,12 @@ async def explain_learning_error(
                 message="错因解释缺少必要上下文",
                 status_code=status.HTTP_400_BAD_REQUEST,
                 details={"reason": str(exc)},
+            )
+        except (LLMCallError, LLMConfigurationError, LLMInvalidResponseError) as exc:
+            conn.rollback()
+            return model_unavailable_response(
+                request,
+                details={"reason": exc.__class__.__name__},
             )
         conn.commit()
     if replayed:
@@ -476,6 +505,12 @@ async def check_learning_explanation(
                 status_code=status.HTTP_409_CONFLICT,
                 details={"reason": str(exc)},
                 recoverable=False,
+            )
+        except (LLMCallError, LLMConfigurationError, LLMInvalidResponseError) as exc:
+            conn.rollback()
+            return model_unavailable_response(
+                request,
+                details={"reason": exc.__class__.__name__},
             )
         conn.commit()
     if replayed:
@@ -666,16 +701,16 @@ async def _learning_message_stream(
                 request_id=request_id,
                 session_id=session_id,
                 message_id=prepared.message_id,
-                generation_source=str(prepared.stored_response.get("generation_source") or "deterministic"),
+                generation_source=str(prepared.stored_response.get("generation_source") or "llm"),
                 generation_model=str(prepared.stored_response.get("generation_model") or ""),
             )
             return
 
-        generation = start_learning_message_generation(prepared.context, user_content=payload.content)
         full_text = ""
-        generation_source = generation.generation_source
-        generation_model = generation.generation_model
         try:
+            generation = start_learning_message_generation(prepared.context, user_content=payload.content)
+            generation_source = generation.generation_source
+            generation_model = generation.generation_model
             async for delta in _iter_generation_chunks(request, generation.chunks):
                 candidate_text = full_text + delta
                 assert_safe_teaching_output(candidate_text)
@@ -690,48 +725,27 @@ async def _learning_message_stream(
                         content=full_text,
                     ),
                 )
-        except safe_generation_exceptions():
-            if full_text:
-                yield writer.error(
-                    code="EVALUATION_INVALID_JSON",
-                    message="模型流式响应中断，请重试同一个问题",
-                    request_id=request_id,
-                    recoverable=True,
-                    next_action="retry_same",
-                )
-                return
-            fallback = deterministic_learning_message_generation(prepared.context, user_content=payload.content)
-            generation_source = fallback.generation_source
-            generation_model = fallback.generation_model
-            async for delta in _iter_generation_chunks(request, fallback.chunks):
-                full_text += delta
-                yield writer.event(
-                    "agent_message",
-                    _agent_message_event(
-                        request_id=request_id,
-                        session_id=session_id,
-                        message_id=prepared.message_id,
-                        delta=delta,
-                        content=full_text,
-                    ),
-                )
+        except safe_generation_exceptions() as exc:
+            yield writer.error(
+                code="MODEL_UNAVAILABLE",
+                message=MODEL_UNAVAILABLE_MESSAGE,
+                request_id=request_id,
+                details={"reason": exc.__class__.__name__},
+                recoverable=True,
+                next_action="retry_same",
+            )
+            return
 
         if not full_text.strip():
-            fallback = deterministic_learning_message_generation(prepared.context, user_content=payload.content)
-            generation_source = fallback.generation_source
-            generation_model = fallback.generation_model
-            async for delta in _iter_generation_chunks(request, fallback.chunks):
-                full_text += delta
-                yield writer.event(
-                    "agent_message",
-                    _agent_message_event(
-                        request_id=request_id,
-                        session_id=session_id,
-                        message_id=prepared.message_id,
-                        delta=delta,
-                        content=full_text,
-                    ),
-                )
+            yield writer.error(
+                code="MODEL_UNAVAILABLE",
+                message=MODEL_UNAVAILABLE_MESSAGE,
+                request_id=request_id,
+                details={"reason": "empty_model_output"},
+                recoverable=True,
+                next_action="retry_same",
+            )
+            return
 
         with connect() as conn:
             response = build_learning_message_response(
