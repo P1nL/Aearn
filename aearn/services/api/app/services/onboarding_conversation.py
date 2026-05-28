@@ -13,7 +13,6 @@ from app.agents.onboarding_conversation_agent import AgentsSDKOnboardingConversa
 from app.agents.onboarding_slot_extractor import (
     ExtractedSlots,
     build_slot_extractor,
-    keyword_extract_slots,
     merge_slots,
     slots_from_context,
 )
@@ -29,7 +28,6 @@ from app.services.plan_generator import build_plan_draft, has_supported_mvp_runt
 from app.services.user_repository import get_user
 
 
-DETERMINISTIC_ONBOARDING_MODEL = "deterministic_onboarding_conversation_v1"
 ONBOARDING_MESSAGE_OPERATION = "onboarding_message"
 ROUTE_CARD_READY_MESSAGE = "信息够了，我生成一份路线卡片。想改方向、时间或难度，直接回复我就行。"
 
@@ -326,11 +324,8 @@ def start_onboarding_generation(
     effective_settings = settings or get_settings()
     if client is None:
         if not effective_settings.openai_compatible_configured:
-            return deterministic_onboarding_generation(context, user_content=user_content)
-        try:
-            client = AgentsSDKOnboardingConversationClient(effective_settings)
-        except LLMConfigurationError:
-            return deterministic_onboarding_generation(context, user_content=user_content)
+            raise LLMConfigurationError("Onboarding conversation requires configured model API")
+        client = AgentsSDKOnboardingConversationClient(effective_settings)
 
     messages = _build_messages(context, user_content=user_content)
     return OnboardingMessageGeneration(
@@ -340,15 +335,14 @@ def start_onboarding_generation(
     )
 
 
-def deterministic_onboarding_generation(
-    context: OnboardingConversationContext,
-    *,
-    user_content: str,
+def route_card_ready_generation(
+    settings: Settings | None = None,
 ) -> OnboardingMessageGeneration:
+    effective_settings = settings or get_settings()
     return OnboardingMessageGeneration(
-        chunks=_chunk_text(_deterministic_reply(context, user_content=user_content)),
-        generation_source="deterministic",
-        generation_model=DETERMINISTIC_ONBOARDING_MODEL,
+        chunks=_chunk_text(ROUTE_CARD_READY_MESSAGE),
+        generation_source="llm",
+        generation_model=str(effective_settings.openai_model or ""),
     )
 
 
@@ -360,32 +354,27 @@ def extract_slots(
     context: OnboardingConversationContext,
     settings: Settings | None = None,
 ) -> ExtractedSlots:
-    """Run the LLM extractor (or keyword fallback) over the latest history.
+    """Run the LLM extractor over the latest history.
 
     Returns ExtractedSlots already merged on top of the prior turn's slots,
-    so callers can persist the result directly. On any failure the prior
-    slots are returned unchanged so the conversation never blocks.
+    so callers can persist the result directly. This project treats the model
+    API as required for onboarding; callers should turn LLM failures into a
+    user-visible error instead of silently filling slots from keywords.
     """
 
     prior = slots_from_context(context.extracted_context)
     effective = settings or get_settings()
     extractor = build_slot_extractor(effective)
     if extractor is None:
-        try:
-            return keyword_extract_slots(context.history, prior)
-        except Exception:  # noqa: BLE001 - defensive
-            return prior
+        raise LLMConfigurationError("Onboarding slot extraction requires configured model API")
 
     try:
         new = extractor.extract(context.history, prior)
         return merge_slots(prior, new)
     except (LLMCallError, LLMConfigurationError, LLMInvalidResponseError):
-        try:
-            return keyword_extract_slots(context.history, prior)
-        except Exception:  # noqa: BLE001 - defensive
-            return prior
-    except Exception:  # noqa: BLE001 - never break the conversation on slot extraction
-        return prior
+        raise
+    except Exception as exc:  # noqa: BLE001 - normalize SDK/runtime failures
+        raise LLMCallError("Onboarding slot extractor failed") from exc
 
 
 def detect_plan_proposal(
@@ -682,26 +671,6 @@ def _build_messages(
         messages.append({"role": chat_role, "content": msg["content"]})
 
     return messages
-
-
-def _deterministic_reply(
-    context: OnboardingConversationContext,
-    *,
-    user_content: str,
-) -> str:
-    extracted = slots_from_context(context.extracted_context)
-    if extracted.missing_slot_question:
-        return extracted.missing_slot_question
-    if not extracted.language:
-        return (
-            "你想学的是哪门编程语言？"
-            "目前主要支持 Python、JavaScript、HTML / CSS。"
-        )
-    if not extracted.target_level:
-        return "你目前的水平大致是哪一档？零基础 / 有一些基础 / 已经比较进阶？"
-    if not extracted.goal_text or len(extracted.goal_text) < 10:
-        return "可以再多说一两句你的学习目标吗？比如想做哪类项目，或者达到什么效果。"
-    return ROUTE_CARD_READY_MESSAGE
 
 
 def _chunk_text(text: str) -> Generator[str, None, None]:

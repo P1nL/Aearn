@@ -35,7 +35,42 @@ def client() -> TestClient:
 
 @pytest.fixture(autouse=True)
 def disable_note_assist_sdk(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(note_repository, "build_note_assist_client", lambda: None)
+    class FakeNoteAssistClient:
+        model = "fake-note-assist-model"
+
+        def complete_text(
+            self,
+            context: object,
+            *,
+            temperature: float = 0.3,
+        ) -> str:
+            del temperature
+            return _fake_note_draft(context)
+
+        def complete_text_stream(
+            self,
+            context: object,
+            *,
+            temperature: float = 0.3,
+        ):
+            del temperature
+            draft = _fake_note_draft(context)
+            for line in draft.splitlines(keepends=True):
+                yield line
+
+    monkeypatch.setattr(note_repository, "build_note_assist_client", lambda: FakeNoteAssistClient())
+
+
+def _fake_note_draft(context: object) -> str:
+    return "\n".join(
+        [
+            f"补充主题：{getattr(context, 'module_title')} / {getattr(context, 'knowledge_point_title')}",
+            f"当前笔记：{getattr(context, 'note_title')}",
+            "可补充：",
+            "- 错因：先写清触发条件和失败现象。",
+            "- 修正：只追加当前知识点相关部分，不覆盖已有正文。",
+        ]
+    )
 
 
 def test_note_create_get_patch_and_repeat_create_reuses_same_record(client: TestClient) -> None:
@@ -296,7 +331,7 @@ def test_agent_draft_streams_sse_and_updates_agent_field(
     assert stored["agent_draft_content"] == agent_messages[-1]["content"].strip()
 
 
-def test_agent_draft_falls_back_when_sdk_output_mentions_code_draft(
+def test_agent_draft_returns_model_unavailable_when_sdk_output_mentions_code_draft(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -348,12 +383,8 @@ def test_agent_draft_falls_back_when_sdk_output_mentions_code_draft(
             },
         },
     )
-    assert drafted.status_code == 200
-    drafted_note = drafted.json()["note"]
-    assert drafted_note["id"] == note["id"]
-    assert "CodeDraft" not in drafted_note["agent_draft_content"]
-    assert "/api/code-drafts" not in drafted_note["agent_draft_content"]
-    assert "补充主题：" in drafted_note["agent_draft_content"]
+    assert drafted.status_code == 503
+    assert drafted.json()["error"]["code"] == "MODEL_UNAVAILABLE"
 
 
 def _confirmed_plan(client: TestClient, *, language: str) -> tuple[dict[str, object], dict[str, object]]:

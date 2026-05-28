@@ -57,6 +57,7 @@ class OpenAICompatibleClient:
         temperature: float = 0.2,
     ) -> LLMJsonResponse:
         instructions, input_text = _messages_to_responses_input(messages)
+        input_text = _ensure_json_mode_hint(input_text)
         payload: dict[str, object] = {
             "model": self.model,
             "input": input_text,
@@ -371,6 +372,12 @@ def _messages_to_responses_input(messages: Sequence[Mapping[str, str]]) -> tuple
         raise LLMInvalidResponseError("LLM request has no user content")
     combined_instructions = "\n\n".join(instructions).strip() or None
     return combined_instructions, input_text
+
+
+def _ensure_json_mode_hint(input_text: str) -> str:
+    if "json" in input_text.lower():
+        return input_text
+    return f"{input_text}\n\nReturn the final answer as a JSON object."
 
 
 def _extract_message_content(provider_response: Mapping[str, object]) -> str:

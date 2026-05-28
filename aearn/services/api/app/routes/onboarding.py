@@ -13,7 +13,6 @@ from app.services.onboarding_conversation import (
     build_plan_draft_from_slots,
     create_onboarding_session,
     detect_plan_proposal,
-    deterministic_onboarding_generation,
     extract_slots,
     learning_route_args_from_plan_draft,
     list_onboarding_messages,
@@ -21,12 +20,14 @@ from app.services.onboarding_conversation import (
     load_stashed_plan_draft,
     persist_extracted_slots,
     prepare_onboarding_message,
+    route_card_ready_generation,
     safe_generation_exceptions,
     stash_plan_draft,
     start_onboarding_generation,
     store_onboarding_agent_message,
     update_onboarding_status,
 )
+from app.services.llm_client import LLMCallError, LLMConfigurationError, LLMInvalidResponseError
 from app.services.plan_repository import (
     EntityNotFoundError,
     IdempotencyConflictError,
@@ -299,7 +300,15 @@ async def _onboarding_message_stream(
                 conn_refresh, conversation_id=prepared.conversation_id, user_id=user_id
             )
 
-        slots = await asyncio.to_thread(extract_slots, refreshed)
+        try:
+            slots = await asyncio.to_thread(extract_slots, refreshed)
+        except (LLMCallError, LLMConfigurationError, LLMInvalidResponseError):
+            yield _model_unavailable_error(
+                writer,
+                request_id=request_id,
+                conversation_id=prepared.conversation_id,
+            )
+            return
 
         with connect() as conn_persist:
             persist_extracted_slots(
@@ -357,11 +366,19 @@ async def _onboarding_message_stream(
             )
             return
 
-        generation = (
-            deterministic_onboarding_generation(refreshed, user_content=content)
-            if learning_route_args is not None
-            else start_onboarding_generation(refreshed, user_content=content)
-        )
+        try:
+            generation = (
+                route_card_ready_generation()
+                if learning_route_args is not None
+                else start_onboarding_generation(refreshed, user_content=content)
+            )
+        except (LLMCallError, LLMConfigurationError, LLMInvalidResponseError):
+            yield _model_unavailable_error(
+                writer,
+                request_id=request_id,
+                conversation_id=prepared.conversation_id,
+            )
+            return
         full_text = ""
         generation_source = generation.generation_source
         generation_model = generation.generation_model
@@ -388,38 +405,20 @@ async def _onboarding_message_stream(
                     recoverable=True,
                 )
                 return
-            fallback = deterministic_onboarding_generation(refreshed, user_content=content)
-            generation_source = fallback.generation_source
-            generation_model = fallback.generation_model
-            async for delta in _iter_generation_chunks(request, fallback.chunks):
-                full_text += delta
-                yield writer.event(
-                    "agent_message",
-                    _agent_message_event(
-                        request_id=request_id,
-                        session_id=prepared.conversation_id,
-                        message_id=prepared.message_id,
-                        delta=delta,
-                        content=full_text,
-                    ),
-                )
+            yield _model_unavailable_error(
+                writer,
+                request_id=request_id,
+                conversation_id=prepared.conversation_id,
+            )
+            return
 
         if not full_text.strip():
-            fallback = deterministic_onboarding_generation(refreshed, user_content=content)
-            generation_source = fallback.generation_source
-            generation_model = fallback.generation_model
-            async for delta in _iter_generation_chunks(request, fallback.chunks):
-                full_text += delta
-                yield writer.event(
-                    "agent_message",
-                    _agent_message_event(
-                        request_id=request_id,
-                        session_id=prepared.conversation_id,
-                        message_id=prepared.message_id,
-                        delta=delta,
-                        content=full_text,
-                    ),
-                )
+            yield _model_unavailable_error(
+                writer,
+                request_id=request_id,
+                conversation_id=prepared.conversation_id,
+            )
+            return
 
         if learning_route_args is not None and route_tool_call_id is not None:
             async for tool_event in _tool_call_events(
@@ -484,6 +483,21 @@ async def _tool_call_events(
         yield writer.tool_call_delta(tool_call_id=tool_call_id, arguments_delta=chunk)
         await asyncio.sleep(0)
     yield writer.tool_call_done(tool_call_id=tool_call_id, arguments=arguments)
+
+
+def _model_unavailable_error(
+    writer: SSEWriter,
+    *,
+    request_id: str,
+    conversation_id: str,
+) -> str:
+    return writer.error(
+        code="MODEL_UNAVAILABLE",
+        message="模型服务暂时不可用，请检查模型配置或稍后重试。",
+        request_id=request_id,
+        details={"onboarding_session_id": conversation_id},
+        recoverable=True,
+    )
 
 
 async def _error_stream(

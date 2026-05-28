@@ -4,11 +4,11 @@ import psycopg
 import pytest
 from fastapi.testclient import TestClient
 
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.db.bootstrap import bootstrap_database
 from app.db.connection import connect
 from app.main import app
-from app.services import review_repository
+from app.services import learning_conversation, learning_session_repository, review_repository
 from app.services.review_scheduler import apply_attempt_review_update
 
 
@@ -35,7 +35,50 @@ def client() -> TestClient:
 
 @pytest.fixture(autouse=True)
 def disable_review_coach_sdk(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(review_repository, "build_sdk_review_coach_response", lambda context: None)
+    class FakeLearningConversationClient:
+        model = "fake-teaching-model"
+
+        def complete_text_stream(self, messages, *, temperature=None):  # type: ignore[no-untyped-def]
+            del messages, temperature
+            return ["我会生成当前练习，并保持讲解聚焦在可见题面。"]
+
+    monkeypatch.setattr(
+        review_repository,
+        "build_sdk_review_coach_response",
+        lambda context: {
+            "initial_agent_message": f"这次复习围绕 {context.knowledge_point_title}，先用变体题验证你是否真的能接管这类代码。",
+            "variant_reason": "本次不重复聊天问答，改用同构代码练习检查是否能独立验证。",
+            "generation_source": "llm",
+            "generation_model": "fake-review-coach",
+        },
+    )
+    monkeypatch.setattr(
+        learning_session_repository,
+        "build_sdk_explanation_check_response",
+        lambda *args, **kwargs: {
+            "result": "passed",
+            "score": 2,
+            "score_breakdown": {"explanation_check": 2},
+            "follow_up_required": False,
+            "feedback": "解释覆盖了状态作用域和连续点击行为。",
+            "next_action": "submit",
+        },
+    )
+    monkeypatch.setattr(
+        learning_conversation,
+        "get_settings",
+        lambda: Settings(
+            llm_type="openai",
+            openai_api_key="test-key",
+            openai_base_url="https://provider.example",
+            openai_model="fake-teaching-model",
+        ),
+    )
+    monkeypatch.setattr(
+        learning_conversation,
+        "AgentsSDKLearningConversationClient",
+        lambda settings: FakeLearningConversationClient(),
+    )
 
 
 def test_today_reviews_returns_empty_and_sorted_due_items(client: TestClient) -> None:
@@ -151,7 +194,7 @@ def test_review_start_uses_sdk_review_coach_text_when_available(
     assert created_body["variant_reason"] == "上次薄弱点是 state_scope_error。"
 
 
-def test_review_start_falls_back_when_sdk_review_text_leaks_answer(
+def test_review_start_returns_model_unavailable_when_sdk_review_text_leaks_answer(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -172,11 +215,9 @@ def test_review_start_falls_back_when_sdk_review_text_leaks_answer(
         "/api/reviews/start",
         json={"user_id": user["id"], "knowledge_point_id": knowledge_point_id},
     )
-    assert created.status_code == 201
-    created_body = created.json()
-    assert created_body["initial_agent_message"].startswith("这次复习围绕 ")
-    assert "完整答案" not in created_body["initial_agent_message"]
-    assert "hidden_three_clicks" not in created_body["variant_reason"]
+    assert created.status_code == 503
+    body = created.json()
+    assert body["error"]["code"] == "MODEL_UNAVAILABLE"
 
 
 def test_review_run_and_submit_updates_schedule_once(client: TestClient) -> None:

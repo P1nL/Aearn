@@ -16,7 +16,7 @@ from app.services.learning_session_repository import build_code_hash
 from app.services.plan_repository import IdempotencyConflictError, request_hash
 from app.services.review_scheduler import apply_attempt_review_update, forget_risk_for, serialize_review_state
 from app.services.runtime_runner import RuntimeExecutionResult, run_exercise
-from app.services.llm_client import LLMInvalidResponseError
+from app.services.llm_client import LLMCallError, LLMInvalidResponseError
 from app.services.user_repository import get_user
 
 
@@ -153,16 +153,12 @@ def start_review_session(
     }
     review_coach_context = _build_review_coach_context(context, exercise, conn)
     review_coach_response = build_sdk_review_coach_response(review_coach_context)
-    variant_reason = _variant_reason(context)
-    initial_agent_message = _initial_agent_message(context)
-    if review_coach_response is not None:
-        variant_reason = _safe_review_coach_text(review_coach_response.get("variant_reason"), variant_reason)
-        initial_agent_message = _safe_review_coach_text(
-            review_coach_response.get("initial_agent_message"),
-            initial_agent_message,
-        )
-    response["variant_reason"] = variant_reason
-    response["initial_agent_message"] = initial_agent_message
+    if review_coach_response is None:
+        raise LLMCallError("Review coach requires configured model API")
+    response["variant_reason"] = _safe_review_coach_text(review_coach_response.get("variant_reason"))
+    response["initial_agent_message"] = _safe_review_coach_text(
+        review_coach_response.get("initial_agent_message"),
+    )
     return response, reused
 
 
@@ -489,16 +485,13 @@ def _variant_reason(context: Mapping[str, object]) -> str:
     return "本次不重复聊天问答，改用同构代码练习检查是否能独立验证。"
 
 
-def _safe_review_coach_text(value: object, fallback: str) -> str:
+def _safe_review_coach_text(value: object) -> str:
     if not isinstance(value, str):
-        return fallback
+        raise LLMInvalidResponseError("Review coach response field must be a string")
     stripped = value.strip()
     if not stripped:
-        return fallback
-    try:
-        assert_safe_teaching_output(stripped)
-    except LLMInvalidResponseError:
-        return fallback
+        raise LLMInvalidResponseError("Review coach response field must not be blank")
+    assert_safe_teaching_output(stripped)
     return stripped
 
 

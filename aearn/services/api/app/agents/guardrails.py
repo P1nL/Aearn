@@ -65,8 +65,6 @@ def check_teaching_output(text: str) -> TeachingGuardrailCheck:
     check = _check_text(text, include_direct_answer_request=False)
     if check.blocked:
         return check
-    if "```" in text:
-        return TeachingGuardrailCheck(True, "direct_answer", "code fence output is not allowed in teaching messages")
     for pattern in _DIRECT_ANSWER_OUTPUT_PATTERNS:
         if pattern.search(text):
             return TeachingGuardrailCheck(True, "direct_answer", "model output appears to provide a complete answer")

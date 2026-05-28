@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Generator, Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal
 from typing import Any, Protocol, cast
 
@@ -26,7 +27,6 @@ from app.services.llm_client import (
 from app.services.plan_repository import IdempotencyConflictError, request_hash
 
 
-DETERMINISTIC_LEARNING_CONVERSATION_MODEL = "deterministic_learning_conversation_v1"
 LEARNING_MESSAGE_OPERATION = "learning_session_message"
 
 
@@ -193,32 +193,17 @@ def start_learning_message_generation(
 ) -> LearningMessageGeneration:
     effective_settings = settings or get_settings()
     if check_teaching_request(user_content).blocked:
-        return deterministic_learning_message_generation(context, user_content=user_content)
+        raise LLMInvalidResponseError("Learning conversation request was blocked by guardrails")
     if client is None:
         if not effective_settings.openai_compatible_configured:
-            return deterministic_learning_message_generation(context, user_content=user_content)
-        try:
-            client = AgentsSDKLearningConversationClient(effective_settings)
-        except LLMConfigurationError:
-            return deterministic_learning_message_generation(context, user_content=user_content)
+            raise LLMConfigurationError("Learning conversation requires configured model API")
+        client = AgentsSDKLearningConversationClient(effective_settings)
 
     messages = _build_messages(context, user_content=user_content)
     return LearningMessageGeneration(
         chunks=client.complete_text_stream(messages, temperature=None),
         generation_source="llm",
         generation_model=client.model,
-    )
-
-
-def deterministic_learning_message_generation(
-    context: LearningConversationContext,
-    *,
-    user_content: str,
-) -> LearningMessageGeneration:
-    return LearningMessageGeneration(
-        chunks=_chunk_text(_deterministic_reply(context, user_content=user_content)),
-        generation_source="deterministic",
-        generation_model=DETERMINISTIC_LEARNING_CONVERSATION_MODEL,
     )
 
 
@@ -236,19 +221,14 @@ def collect_learning_message_text(
         client=client,
     )
     chunks: list[str] = []
-    try:
-        for delta in generation.chunks:
-            if delta:
-                assert_safe_teaching_output("".join(chunks) + delta)
-                chunks.append(delta)
-    except (LLMCallError, LLMConfigurationError, LLMInvalidResponseError, TypeError, ValueError):
-        fallback = deterministic_learning_message_generation(context, user_content=user_content)
-        return "".join(fallback.chunks).strip(), fallback.generation_source, fallback.generation_model
+    for delta in generation.chunks:
+        if delta:
+            assert_safe_teaching_output("".join(chunks) + delta)
+            chunks.append(delta)
 
     text = "".join(chunks).strip()
     if not text:
-        fallback = deterministic_learning_message_generation(context, user_content=user_content)
-        return "".join(fallback.chunks).strip(), fallback.generation_source, fallback.generation_model
+        raise LLMInvalidResponseError("Learning conversation model produced no output")
     return text, generation.generation_source, generation.generation_model
 
 
@@ -458,6 +438,7 @@ def _build_messages(
                 "你是 Aearn 的概念优先编程语言学习 Agent。先帮助学习者理解当前知识点，"
                 "再通过练习验证。只基于输入 JSON 回答；默认简体中文，代码标识符保留原文。"
                 "concept_intro/concept_qna/readiness_check 阶段不得展开完整题面、starter code 或答案；"
+                "概念阶段尽量不用 Markdown 代码块；需要举例时用行内选择器或类名，例如 `:hover`、`.is-active`。"
                 "practice_support 阶段才能围绕真实练习、运行结果和错误信息给下一步。"
                 "不要输出隐藏测试源码、隐藏用例标识、参考答案字段、API key、provider 错误或原始 prompt。"
             ),
@@ -470,59 +451,6 @@ def _build_messages(
             ),
         },
     ]
-
-
-def _deterministic_reply(context: LearningConversationContext, *, user_content: str) -> str:
-    kp_title = str(context.knowledge_point.get("title") or "当前知识点")
-    latest_attempt = context.latest_attempt or {}
-    runtime_status = str(latest_attempt.get("runtime_status") or "")
-    pass_rate = latest_attempt.get("test_pass_rate")
-
-    if context.learning_stage == "readiness_check":
-        if str(context.learning_stage_state.get("feynman_status") or "") == "failed":
-            return (
-                f"这次对 {kp_title} 的复述还不够完整。"
-                "我不会在这里强制补讲，请先查看下面引用的相关学习对话，找出你之前关于概念、原因和行为的说法；"
-                "然后再用费曼方式重新解释一遍：它是什么、为什么重要、会如何影响代码。"
-            )
-        return (
-            f"我们已经覆盖了 {kp_title} 的核心子点。"
-            "请用费曼学习法复述一遍：假设你在教一个初学者，说明它是什么、为什么重要、以及代码行为会怎样变化。"
-        )
-
-    if context.learning_stage == "practice_support" and context.exercise is None:
-        if context.learning_stage_state.get("learning_incomplete") is True:
-            return (
-                f"可以提前进入练习，但 {kp_title} 的学习进度尚未完成。"
-                f"先记住小结：{context.learning_stage_state.get('concept_summary') or kp_title}。"
-                "下面的练习卡只用于验证当前理解，做完后仍建议回看概念对话。"
-            )
-        return f"你的费曼复述已经覆盖 {kp_title} 的关键概念，可以进入练习。下面先用练习卡验证。"
-
-    if runtime_status in {"runtime_error", "timeout", "unsupported"}:
-        return (
-            f"先把问题收窄到 {kp_title} 的运行事实：当前状态是 {runtime_status}。"
-            "下一步不要急着提交，先查看最近一次运行里的错误信息，修正后重新运行可见测试；"
-            "如果仍失败，再用“解释错误”让 Agent 基于真实错误给出错因。"
-        )
-    if isinstance(pass_rate, int | float) and pass_rate < 1:
-        return (
-            f"你现在问的是 {kp_title}。最近一次运行没有完全通过，建议先对照可见失败信息检查两个点："
-            "状态是否放在能跨多次调用保存的位置，以及输出是否在状态更新后同步。"
-            "先改最小一处，再重新运行可见测试验证。"
-        )
-    if context.exercise is not None:
-        return (
-            f"围绕 {kp_title}，先读题面里的目标，再只改一个最小补全点。"
-            "如果你不确定该问什么，可以把当前代码、运行输出或失败信息贴进来；"
-            "我会按“现象 -> 原因 -> 下一步验证”的顺序帮你拆。"
-        )
-    subpoints = [str(item.get("title") or "") for item in context.lesson_outline if isinstance(item, Mapping)]
-    subpoint_text = "、".join(item for item in subpoints if item) or kp_title
-    return (
-        f"你问的是 {kp_title}。先把概念放回这几个子点：{subpoint_text}。"
-        "如果你是在追问概念，我会先回答问题；如果已经理解，请直接用自己的话解释它是什么、为什么重要、会怎样影响代码行为。"
-    )
 
 
 def _determine_transition(
@@ -709,7 +637,7 @@ def list_learning_history(
                 "session_id": session_id,
                 "is_active": active_session_id is not None and session_id == active_session_id,
                 "status": str(row["session_status"]),
-                "started_at": row["started_at"].isoformat() if row.get("started_at") else None,
+                "started_at": _isoformat(row.get("started_at")),
                 "messages": [],
             }
             index_by_session[session_id] = session
@@ -721,7 +649,7 @@ def list_learning_history(
                     "id": str(row["message_id"]),
                     "role": str(row["role"]),
                     "content": _limit_text(str(row["content"]), 1200),
-                    "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
+                    "created_at": _isoformat(row.get("created_at")),
                 }
             )
     return {
@@ -740,6 +668,10 @@ def _tool_call(name: str, args: Mapping[str, object], message_id: str) -> dict[s
         "args": dict(args),
         "status": "done",
     }
+
+
+def _isoformat(value: object) -> str | None:
+    return value.isoformat() if isinstance(value, datetime) else None
 
 
 def _requests_practice(text: str) -> bool:
@@ -921,20 +853,6 @@ def _serialize_lesson_sources(value: object) -> list[dict[str, object]]:
             }
         )
     return result
-
-
-def _chunk_text(text: str) -> Generator[str, None, None]:
-    stripped = text.strip()
-    if not stripped:
-        return
-    current = ""
-    for char in stripped:
-        current += char
-        if char in "。！？\n" or len(current) >= 72:
-            yield current
-            current = ""
-    if current:
-        yield current
 
 
 def _message_id(session_id: str, client_message_id: str) -> str:

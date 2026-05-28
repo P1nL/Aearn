@@ -6,13 +6,17 @@ from fastapi import APIRouter, Query, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from app.core.errors import error_response, request_id_from
+from app.core.errors import (
+    MODEL_UNAVAILABLE_MESSAGE,
+    error_response,
+    model_unavailable_response,
+    request_id_from,
+)
 from app.db.connection import connect
 from app.models.reviews import StartReviewSessionRequest, SubmitReviewExerciseResultRequest
 from app.services.plan_repository import IdempotencyConflictError
 from app.services.review_conversation import (
     ReviewSessionNotFoundError,
-    deterministic_review_generation,
     prepare_review_message,
     safe_generation_exceptions,
     start_review_generation,
@@ -26,7 +30,8 @@ from app.services.review_repository import (
     start_review_session,
     submit_review_exercise_result,
 )
-from app.services.sse import SSEWriter, stream_response, wants_stream
+from app.services.llm_client import LLMCallError, LLMConfigurationError, LLMInvalidResponseError
+from app.services.sse import SSEWriter, stream_response
 
 
 router = APIRouter(prefix="/api/reviews", tags=["reviews"])
@@ -89,6 +94,12 @@ def create_review_session(
                 status_code=status.HTTP_409_CONFLICT,
                 details={"reason": str(exc), "knowledge_point_id": payload.knowledge_point_id},
                 recoverable=True,
+            )
+        except (LLMCallError, LLMConfigurationError, LLMInvalidResponseError) as exc:
+            conn.rollback()
+            return model_unavailable_response(
+                request,
+                details={"reason": exc.__class__.__name__},
             )
         conn.commit()
     return JSONResponse(
@@ -252,13 +263,12 @@ async def _review_message_stream(
             )
             return
 
-        # Generate response
-        generation = start_review_generation(prepared.context, user_content=content)
         full_text = ""
-        generation_source = generation.generation_source
-        generation_model = generation.generation_model
 
         try:
+            generation = start_review_generation(prepared.context, user_content=content)
+            generation_source = generation.generation_source
+            generation_model = generation.generation_model
             async for delta in _review_iter_chunks(request, generation.chunks):
                 full_text += delta
                 yield writer.event(
@@ -271,47 +281,25 @@ async def _review_message_stream(
                         content=full_text,
                     ),
                 )
-        except safe_generation_exceptions():
-            if full_text:
-                yield writer.error(
-                    code="GENERATION_INTERRUPTED",
-                    message="复习对话流式响应中断，请重试",
-                    request_id=request_id,
-                    recoverable=True,
-                )
-                return
-            fallback = deterministic_review_generation(prepared.context, user_content=content)
-            generation_source = fallback.generation_source
-            generation_model = fallback.generation_model
-            async for delta in _review_iter_chunks(request, fallback.chunks):
-                full_text += delta
-                yield writer.event(
-                    "agent_message",
-                    _review_agent_message_event(
-                        request_id=request_id,
-                        session_id=session_id,
-                        message_id=prepared.message_id,
-                        delta=delta,
-                        content=full_text,
-                    ),
-                )
+        except safe_generation_exceptions() as exc:
+            yield writer.error(
+                code="MODEL_UNAVAILABLE",
+                message=MODEL_UNAVAILABLE_MESSAGE,
+                request_id=request_id,
+                details={"reason": exc.__class__.__name__},
+                recoverable=True,
+            )
+            return
 
         if not full_text.strip():
-            fallback = deterministic_review_generation(prepared.context, user_content=content)
-            generation_source = fallback.generation_source
-            generation_model = fallback.generation_model
-            async for delta in _review_iter_chunks(request, fallback.chunks):
-                full_text += delta
-                yield writer.event(
-                    "agent_message",
-                    _review_agent_message_event(
-                        request_id=request_id,
-                        session_id=session_id,
-                        message_id=prepared.message_id,
-                        delta=delta,
-                        content=full_text,
-                    ),
-                )
+            yield writer.error(
+                code="MODEL_UNAVAILABLE",
+                message=MODEL_UNAVAILABLE_MESSAGE,
+                request_id=request_id,
+                details={"reason": "empty_model_output"},
+                recoverable=True,
+            )
+            return
 
         # Persist agent message
         with connect() as conn:

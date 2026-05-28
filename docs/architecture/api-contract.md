@@ -116,6 +116,7 @@ V1 使用本地单用户或轻量用户机制，不强制登录态。所有需�
 | `ATTEMPT_NOT_FOUND` | 404 | Attempt 不存在 |
 | `ATTEMPT_STATE_CONFLICT` | 409 | Attempt 状态不允许当前操作 |
 | `RUNTIME_UNSUPPORTED` | 422 | `RuntimeProfile.runtime_tier` 第一版不支持真实运行 |
+| `MODEL_UNAVAILABLE` | 503 | 模型 API 未配置、不可连接或返回不可用响应 |
 | `RUNNER_UNAVAILABLE` | 503 | runner service 不可用 |
 | `RUNNER_TIMEOUT` | 504 | 运行或测试超时 |
 | `EVALUATION_INVALID_JSON` | 502 | Agent 评分输出无法解析为 JSON |
@@ -125,6 +126,10 @@ V1 使用本地单用户或轻量用户机制，不强制登录态。所有需�
 | `IDEMPOTENCY_CONFLICT` | 409 | 同一幂等键对应不同请求体 |
 | `RATE_LIMITED` | 429 | 过于频繁请求提示、运行或 Agent 生成 |
 | `INTERNAL_ERROR` | 500 | 未分类服务端错误 |
+
+### 模型必需契约
+
+下列 AI 驱动接口必须依赖已配置且可用的模型 API：建档对话槽位提取和路线生成、学习页对话、练习提示/错因解释/解释检查、复习页教练文案和复习对话、笔记辅助补全。模型未配置、不可连接、调用失败、流式输出为空、输出不符合 schema，或 guardrail 判定输出不可安全展示时，接口必须返回 `MODEL_UNAVAILABLE`，不得退回关键词解析或确定性文案。已命中幂等记录的历史成功响应可直接回放；服务端课程模板和 runner/FSRS 等非 AI 判定逻辑仍可保持确定性，因为它们不是模型失败兜底。
 
 ## 分页、排序与过滤
 
@@ -823,6 +828,7 @@ SSE 行为：
 - `language`、`target_level`、`goal_text` 齐备时，先发送简短 `agent_message`，再发送 `tool_call(name="show_learning_route")`；完整路线内容只放在工具参数中。
 - `time_budget` 为可选字段；用户之后补充时间、方向或难度时，服务重新暂存草稿并发送新的 `show_learning_route` 工具调用，工具参数会携带新的节奏信息。
 - 同一建档会话只有最新暂存草稿可确认；前端必须将历史路线卡片的 `开始学习` 置为禁用。
+- 建档对话不提供关键词或确定性兜底解析；槽位提取和普通回复依赖模型 API。模型未配置、不可连接、流式中断前无有效输出，或结构化槽位输出非法时，SSE 返回 `error.code=MODEL_UNAVAILABLE`，不更新槽位、不生成路线卡片。
 
 `show_learning_route` arguments 示例：
 
@@ -1302,9 +1308,12 @@ HTTP 状态码：
 - `200`：响应成功
 - `400`：消息为空或角色非法
 - `404`：会话不存在
+- `503`：模型 API 未配置、不可连接、输出为空或输出不安全
 - `429`：对话过于频繁
 
-错误码：`SESSION_NOT_FOUND`、`VALIDATION_ERROR`、`RATE_LIMITED`、`EVALUATION_INVALID_JSON`
+错误码：`SESSION_NOT_FOUND`、`VALIDATION_ERROR`、`MODEL_UNAVAILABLE`、`RATE_LIMITED`
+
+模型说明：学习页对话不提供确定性教学文案兜底。模型失败或输出被 guardrail 拦截时，JSON 模式返回 `MODEL_UNAVAILABLE`；SSE 模式发送一个 `error.code=MODEL_UNAVAILABLE` 事件并终止，不写入成功的 assistant 响应或幂等成功记录。
 
 幂等/重试说明：使用 `client_message_id` 去重；SSE 模式可增量返回多个 `agent_message` 和 `tool_call` 事件。
 
@@ -1547,9 +1556,10 @@ HTTP 状态码：
 - `200`：提示生成成功
 - `400`：提示层级或空缺 ID 不合法
 - `404`：会话、练习或 Attempt 不存在
+- `503`：模型 API 未配置、不可连接、输出为空或输出不安全
 - `429`：提示请求过于频繁
 
-错误码：`SESSION_NOT_FOUND`、`EXERCISE_NOT_FOUND`、`ATTEMPT_NOT_FOUND`、`VALIDATION_ERROR`、`RATE_LIMITED`
+错误码：`SESSION_NOT_FOUND`、`EXERCISE_NOT_FOUND`、`ATTEMPT_NOT_FOUND`、`VALIDATION_ERROR`、`MODEL_UNAVAILABLE`、`RATE_LIMITED`
 
 幂等/重试说明：同一 `attempt_id + blank_id + hint_level` 在短时间重试应返回相同提示，不重复增加 `hint_usage_count`。
 
@@ -1598,10 +1608,11 @@ HTTP 状态码：
 - `200`：解释成功
 - `400`：错误上下文缺失
 - `404`：会话或 Attempt 不存在
+- `503`：模型 API 未配置、不可连接、输出为空或输出不安全
 
-错误码：`SESSION_NOT_FOUND`、`ATTEMPT_NOT_FOUND`、`VALIDATION_ERROR`、`EVALUATION_INVALID_JSON`
+错误码：`SESSION_NOT_FOUND`、`ATTEMPT_NOT_FOUND`、`VALIDATION_ERROR`、`MODEL_UNAVAILABLE`
 
-模型/兜底说明：`generation_source` 为可选非敏感诊断字段，取值为 `llm` 或 `deterministic`；`generation_model` 为可选模型标识。真实 API key、provider 原始错误和隐藏测试源码不得返回给前端。模型未配置、请求失败、超时、返回非法 JSON 或不符合 schema 时，后端必须回退到确定性错因解释。
+模型说明：`generation_source` 为可选非敏感诊断字段，成功生成时取值为 `llm`；`generation_model` 为可选模型标识。真实 API key、provider 原始错误和隐藏测试源码不得返回给前端。模型未配置、请求失败、超时、返回非法 JSON 或不符合 schema 时，后端必须返回 `MODEL_UNAVAILABLE`，不回退到确定性错因解释。
 
 幂等/重试说明：同一 Attempt 的相同错误上下文可安全重试；不重复增加 `error_count`，只更新 `Attempt.error_cause`。命中幂等记录时不得再次调用模型。
 
@@ -1642,8 +1653,9 @@ HTTP 状态码：
 - `400`：解释为空或 focus 非法
 - `404`：会话或 Attempt 不存在
 - `422`：超过解释检查轮次
+- `503`：模型 API 未配置、不可连接、输出为空或输出不安全
 
-错误码：`SESSION_NOT_FOUND`、`ATTEMPT_NOT_FOUND`、`VALIDATION_ERROR`、`EVALUATION_CONFLICT`
+错误码：`SESSION_NOT_FOUND`、`ATTEMPT_NOT_FOUND`、`VALIDATION_ERROR`、`EVALUATION_CONFLICT`、`MODEL_UNAVAILABLE`
 
 幂等/重试说明：同一 `attempt_id + round` 可安全重试；最多 2 轮，超过后必须进入 `evaluate_attempt`。
 
@@ -1857,8 +1869,11 @@ HTTP 状态码：
 - `201`：复习会话创建成功
 - `404`：用户或知识点不存在
 - `409`：当前知识点未到复习时间
+- `503`：模型 API 未配置、不可连接、输出为空或输出不安全
 
-错误码：`USER_NOT_FOUND`、`KNOWLEDGE_POINT_NOT_FOUND`、`REVIEW_NOT_DUE`、`SESSION_CONFLICT`
+错误码：`USER_NOT_FOUND`、`KNOWLEDGE_POINT_NOT_FOUND`、`REVIEW_NOT_DUE`、`SESSION_CONFLICT`、`MODEL_UNAVAILABLE`
+
+模型说明：复习页的 `variant_reason` 和 `initial_agent_message` 必须来自模型生成并通过安全校验。模型不可用或输出不安全时返回 `MODEL_UNAVAILABLE`，不得退回本地固定复习文案。
 
 幂等/重试说明：幂等键为 `user_id + knowledge_point_id + due_at`。同一到期项重试返回同一 `session_id`。
 
@@ -2105,9 +2120,11 @@ HTTP 状态码：
 
 - `200`：生成成功
 - `404`：笔记不存在
-- `502`：Agent 输出无效
+- `503`：模型 API 未配置、不可连接、输出为空或输出不安全
 
-错误码：`NOTE_NOT_FOUND`、`EVALUATION_INVALID_JSON`
+错误码：`NOTE_NOT_FOUND`、`MODEL_UNAVAILABLE`
+
+模型说明：笔记辅助补全不提供确定性草稿兜底。模型不可用、输出为空或输出包含 `CodeDraft` / 完整笔记重写等禁止语义时，JSON 模式返回 `MODEL_UNAVAILABLE`；SSE 模式发送 `error.code=MODEL_UNAVAILABLE`，不写入 `Note.agent_draft_content`。
 
 幂等/重试说明：幂等键为 `note_id + content_hash + style + focus`；SSE 模式可流式返回 `agent_message`。
 

@@ -5,7 +5,7 @@ from fastapi import APIRouter, Query, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from app.core.errors import error_response, request_id_from
+from app.core.errors import MODEL_UNAVAILABLE_MESSAGE, error_response, model_unavailable_response, request_id_from
 from app.db.connection import connect
 from app.models.notes import AgentDraftRequest, CreateNoteRequest, UpdateNoteRequest
 from app.services.note_repository import (
@@ -18,6 +18,7 @@ from app.services.note_repository import (
     update_agent_draft_content,
     update_note,
 )
+from app.services.llm_client import LLMCallError, LLMConfigurationError, LLMInvalidResponseError
 from app.services.sse import SSEWriter, stream_response, wants_stream
 
 
@@ -149,6 +150,12 @@ def post_note_agent_draft(
                 status_code=status.HTTP_404_NOT_FOUND,
                 details={"note_id": note_id, "user_id": payload.user_id},
             )
+        except (LLMCallError, LLMConfigurationError, LLMInvalidResponseError) as exc:
+            conn.rollback()
+            return model_unavailable_response(
+                request,
+                details={"reason": exc.__class__.__name__},
+            )
         conn.commit()
     return JSONResponse(status_code=status.HTTP_200_OK, content=jsonable_encoder({"note": note}))
 
@@ -207,6 +214,16 @@ async def _agent_draft_stream(
                     message=exc.message,
                     request_id=request_id,
                     details={"note_id": note_id, "user_id": payload.user_id},
+                )
+                return
+            except (LLMCallError, LLMConfigurationError, LLMInvalidResponseError) as exc:
+                conn.rollback()
+                yield writer.error(
+                    code="MODEL_UNAVAILABLE",
+                    message=MODEL_UNAVAILABLE_MESSAGE,
+                    request_id=request_id,
+                    details={"reason": exc.__class__.__name__},
+                    recoverable=True,
                 )
                 return
             conn.commit()

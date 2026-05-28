@@ -7,17 +7,19 @@ from fastapi.testclient import TestClient
 
 import app.routes.onboarding as onboarding_route
 import app.routes.plans as plans_route
-from app.agents.onboarding_slot_extractor import ExtractedSlots, keyword_extract_slots
-from app.core.config import get_settings
+from app.agents.onboarding_slot_extractor import ExtractedSlots
+from app.core.config import Settings, get_settings
 from app.db.bootstrap import bootstrap_database
 from app.db.connection import connect
 from app.main import app
 from app.models.onboarding import PlanDraft
+from app.services.llm_client import LLMCallError, LLMConfigurationError
 from app.services.onboarding_conversation import (
     OnboardingConversationContext,
     OnboardingMessageGeneration,
     create_onboarding_session,
     detect_plan_proposal,
+    extract_slots as extract_onboarding_slots,
     stash_plan_draft,
 )
 
@@ -266,9 +268,9 @@ def test_confirm_plan_invalid_draft_and_idempotency_conflict(client: TestClient)
     assert conflict.json()["error"]["code"] == "IDEMPOTENCY_CONFLICT"
 
 
-def test_onboarding_keyword_slots_are_content_driven() -> None:
+def test_onboarding_model_slots_drive_plan_readiness() -> None:
     vague_history = [{"role": "user", "content": "好的"} for _ in range(5)]
-    vague_slots = keyword_extract_slots(vague_history, ExtractedSlots())
+    vague_slots = ExtractedSlots(plan_ready=False)
     vague_context = OnboardingConversationContext(
         conversation_id="conv_vague",
         user_id="user_vague",
@@ -280,13 +282,15 @@ def test_onboarding_keyword_slots_are_content_driven() -> None:
     assert vague_slots.plan_ready is False
     assert detect_plan_proposal(vague_context, vague_slots) is False
 
-    full_history = [
-        {
-            "role": "user",
-            "content": "我想学 Python Web 后端，零基础，每天 1 小时",
-        }
-    ]
-    full_slots = keyword_extract_slots(full_history, ExtractedSlots())
+    full_history = [{"role": "user", "content": "我想学 Python Web 后端，零基础，每天 1 小时"}]
+    full_slots = ExtractedSlots(
+        language="python",
+        target_level="beginner",
+        goal_text="学习 Python，聚焦 Web，从零基础入门",
+        time_budget={"minutes_per_day": 60, "days_per_week": 7},
+        focus="Web",
+        plan_ready=True,
+    )
     full_context = OnboardingConversationContext(
         conversation_id="conv_ready",
         user_id="user_ready",
@@ -303,52 +307,32 @@ def test_onboarding_keyword_slots_are_content_driven() -> None:
     assert full_slots.plan_ready is True
     assert detect_plan_proposal(full_context, full_slots) is True
 
-    drip_history = [
-        {"role": "user", "content": "Python"},
-        {"role": "agent", "content": "你目前是什么水平？"},
-        {"role": "user", "content": "零基础"},
-        {"role": "agent", "content": "每天能学多久？"},
-        {"role": "user", "content": "每天 30 分钟"},
-        {"role": "agent", "content": "想重点做什么？"},
-        {"role": "user", "content": "Web 后端开发"},
-    ]
-    drip_slots = keyword_extract_slots(drip_history, ExtractedSlots())
-    assert drip_slots.language == "python"
-    assert drip_slots.target_level == "beginner"
-    assert drip_slots.time_budget is not None
-    assert drip_slots.time_budget.minutes_per_day == 30
-    assert drip_slots.focus == "Web"
-    assert drip_slots.plan_ready is True
-
-    guided_history = [
-        {"role": "user", "content": "Python"},
-        {"role": "agent", "content": "你主要想用 Python 做什么？"},
-        {"role": "user", "content": "自动化脚本"},
-        {"role": "agent", "content": "你现在的基础大概是哪一档？"},
-        {"role": "user", "content": "看过基础语法"},
-    ]
-    guided_slots = keyword_extract_slots(guided_history, ExtractedSlots())
-    assert guided_slots.language == "python"
-    assert guided_slots.focus == "自动化"
-    assert guided_slots.target_level == "beginner_to_intermediate"
-    assert guided_slots.time_budget is None
-    assert guided_slots.plan_ready is True
-
-
-def test_onboarding_keyword_slots_treat_later_time_budget_as_revision() -> None:
-    initial_history = [
-        {"role": "user", "content": "我想学 Python 自动化脚本，看过基础语法"},
-    ]
-    initial_slots = keyword_extract_slots(initial_history, ExtractedSlots())
-    revised_slots = keyword_extract_slots(
-        [*initial_history, {"role": "user", "content": "每周只有 2 小时"}],
-        initial_slots,
+    revised_slots = ExtractedSlots(
+        language="python",
+        target_level="beginner_to_intermediate",
+        goal_text="学习 Python，聚焦数据分析，从入门到进阶",
+        time_budget={"minutes_per_day": 120, "days_per_week": 1},
+        focus="数据分析",
+        plan_ready=True,
+        revising=True,
     )
-
     assert revised_slots.revising is True
     assert revised_slots.time_budget is not None
     assert revised_slots.time_budget.minutes_per_day == 120
     assert revised_slots.time_budget.days_per_week == 1
+
+
+def test_onboarding_extract_slots_requires_model_configuration() -> None:
+    context = OnboardingConversationContext(
+        conversation_id="conv_model_required",
+        user_id="user_model_required",
+        status="active",
+        extracted_context={},
+        history=[{"role": "user", "content": "我想学 Python"}],
+    )
+
+    with pytest.raises(LLMConfigurationError):
+        extract_onboarding_slots(context, settings=Settings(llm_type="disabled"))
 
 
 def test_confirm_onboarding_plan_uses_stashed_draft(client: TestClient) -> None:
@@ -419,19 +403,17 @@ def test_onboarding_message_stream_triggers_plan_from_first_complete_turn(
     user = _create_user(client)
     request_id = f"req_onboarding_sse_{uuid.uuid4().hex}"
 
-    def fake_start_generation(context, *, user_content, settings=None, client=None):  # type: ignore[no-untyped-def]
-        del context, user_content, settings, client
-        return OnboardingMessageGeneration(
-            chunks=["这是一段不应该在路线卡片前输出的长篇学习路线正文。"],
-            generation_source="deterministic",
-            generation_model="fake-onboarding-model",
-        )
-
-    monkeypatch.setattr(onboarding_route, "start_onboarding_generation", fake_start_generation)
     monkeypatch.setattr(
         onboarding_route,
         "extract_slots",
-        lambda context: keyword_extract_slots(context.history, ExtractedSlots()),
+        lambda context: ExtractedSlots(
+            language="python",
+            target_level="beginner",
+            goal_text="学习 Python，聚焦 Web，从零基础入门",
+            time_budget={"minutes_per_day": 60, "days_per_week": 7},
+            focus="Web",
+            plan_ready=True,
+        ),
     )
 
     with client.stream(
@@ -488,6 +470,34 @@ def test_onboarding_message_stream_triggers_plan_from_first_complete_turn(
     assert confirm.json()["LearningPlan"]["goal_text"] == route_args["goal_text"]
 
 
+def test_onboarding_message_stream_returns_error_when_model_unavailable(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user = _create_user(client)
+
+    def fail_extract_slots(context):  # type: ignore[no-untyped-def]
+        del context
+        raise LLMCallError("provider unavailable")
+
+    monkeypatch.setattr(onboarding_route, "extract_slots", fail_extract_slots)
+
+    events = _send_onboarding_stream(
+        client,
+        user_id=str(user["id"]),
+        content="我想学 Python 自动化脚本",
+        conversation_id=None,
+    )
+
+    event_types = [event["event"] for event in events]
+    assert "session_created" in event_types
+    assert "agent_message" not in event_types
+    assert "tool_call" not in event_types
+    error = next(event["data"]["error"] for event in events if event["event"] == "error")
+    assert error["code"] == "MODEL_UNAVAILABLE"
+    assert error["recoverable"] is True
+
+
 def test_onboarding_message_stream_generates_and_revises_route_from_guided_chat(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -496,14 +506,48 @@ def test_onboarding_message_stream_generates_and_revises_route_from_guided_chat(
     monkeypatch.setattr(
         onboarding_route,
         "start_onboarding_generation",
-        lambda context, *, user_content, settings=None, client=None: onboarding_route.deterministic_onboarding_generation(
-            context, user_content=user_content
+        lambda context, *, user_content, settings=None, client=None: OnboardingMessageGeneration(
+            chunks=["继续补充一个关键信息。"],
+            generation_source="llm",
+            generation_model="fake-onboarding-model",
         ),
+    )
+    slot_outputs = iter(
+        [
+            ExtractedSlots(
+                language="python",
+                missing_slot_question="你主要想用 Python 做什么？",
+                plan_ready=False,
+            ),
+            ExtractedSlots(
+                language="python",
+                focus="自动化",
+                goal_text="学习 Python，聚焦自动化脚本",
+                missing_slot_question="你现在的基础大概是哪一档？",
+                plan_ready=False,
+            ),
+            ExtractedSlots(
+                language="python",
+                target_level="beginner_to_intermediate",
+                goal_text="学习 Python，聚焦自动化脚本，从入门到进阶",
+                focus="自动化",
+                plan_ready=True,
+            ),
+            ExtractedSlots(
+                language="python",
+                target_level="beginner_to_intermediate",
+                goal_text="学习 Python，聚焦数据分析，从入门到进阶",
+                time_budget={"minutes_per_day": 120, "days_per_week": 1},
+                focus="数据分析",
+                plan_ready=True,
+                revising=True,
+            ),
+        ]
     )
     monkeypatch.setattr(
         onboarding_route,
         "extract_slots",
-        lambda context: keyword_extract_slots(context.history, ExtractedSlots()),
+        lambda context: next(slot_outputs),
     )
 
     conversation_id: str | None = None
@@ -523,7 +567,7 @@ def test_onboarding_message_stream_generates_and_revises_route_from_guided_chat(
     generated_events = _send_onboarding_stream(
         client,
         user_id=str(user["id"]),
-        content="看过基础语法",
+        content="基础过一点语法",
         conversation_id=conversation_id,
     )
     generated_tool = next(
@@ -554,10 +598,30 @@ def test_onboarding_message_stream_revises_route_when_only_time_budget_changes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     user = _create_user(client)
+    slot_outputs = iter(
+        [
+            ExtractedSlots(
+                language="python",
+                target_level="beginner_to_intermediate",
+                goal_text="学习 Python，聚焦自动化脚本，从入门到进阶",
+                focus="自动化",
+                plan_ready=True,
+            ),
+            ExtractedSlots(
+                language="python",
+                target_level="beginner_to_intermediate",
+                goal_text="学习 Python，聚焦自动化脚本，从入门到进阶",
+                time_budget={"minutes_per_day": 120, "days_per_week": 1},
+                focus="自动化",
+                plan_ready=True,
+                revising=True,
+            ),
+        ]
+    )
     monkeypatch.setattr(
         onboarding_route,
         "extract_slots",
-        lambda context: keyword_extract_slots(context.history, ExtractedSlots()),
+        lambda context: next(slot_outputs),
     )
 
     generated_events = _send_onboarding_stream(
@@ -598,7 +662,13 @@ def test_onboarding_message_stream_replays_stored_route_tool_call(
     monkeypatch.setattr(
         onboarding_route,
         "extract_slots",
-        lambda context: keyword_extract_slots(context.history, ExtractedSlots()),
+        lambda context: ExtractedSlots(
+            language="python",
+            target_level="beginner_to_intermediate",
+            goal_text="学习 Python，聚焦自动化脚本，从入门到进阶",
+            focus="自动化",
+            plan_ready=True,
+        ),
     )
     client_message_id = f"desktop_onboarding_msg_{uuid.uuid4().hex}"
     first_events = _send_onboarding_stream(
