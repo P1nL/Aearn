@@ -701,3 +701,36 @@ Implemented structured onboarding route cards with guided readiness, natural-lan
 ### Next Steps
 
 - None - task complete
+
+
+## Session 22: Require model for AI flows
+
+**Date**: 2026-05-28
+**Task**: Require model for AI flows
+**Branch**: `main`
+
+### Summary
+
+Replaced deterministic AI fallbacks with MODEL_UNAVAILABLE across onboarding, learning, notes, and reviews; moved onboarding slot extraction to streaming Responses JSON path; updated tests, docs, and backend quality guidelines.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `8f92669` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
