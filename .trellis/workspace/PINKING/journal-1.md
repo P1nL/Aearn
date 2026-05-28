@@ -734,3 +734,37 @@ Replaced deterministic AI fallbacks with MODEL_UNAVAILABLE across onboarding, le
 ### Next Steps
 
 - None - task complete
+
+
+## Session 23: Optimize learning tutor context and route templates
+
+**Date**: 2026-05-28
+**Task**: Optimize learning tutor context and route templates
+**Branch**: `main`
+
+### Summary
+
+Added diagnosis-first safe learning tutor context with persisted summaries, expanded onboarding route templates by official documentation taxonomy, and verified focused backend checks.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `a7aa02e` | (see git log) |
+| `182cb27` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
