@@ -78,7 +78,7 @@ class AgentsSDKExerciseCoachClient:
 
     @property
     def model(self) -> str:
-        return str(self._settings.openai_model or "")
+        return str(self._settings.llm_model or "")
 
     def complete_json(
         self,

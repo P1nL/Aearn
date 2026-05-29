@@ -11,6 +11,7 @@ from agents.models.openai_provider import OpenAIProvider
 
 from app.core.config import Settings
 from app.services.llm_client import LLMCallError, LLMConfigurationError, LLMInvalidResponseError
+from app.services.llm_urls import normalize_deepseek_base_url, normalize_openai_base_url
 
 
 class AgentsSDKRunner(Protocol):
@@ -35,29 +36,25 @@ def build_run_config(settings: Settings) -> RunConfig:
     if not settings.openai_compatible_configured:
         raise LLMConfigurationError("OpenAI-compatible LLM settings are incomplete")
 
+    if settings.llm_provider_type == "deepseek":
+        base_url = normalize_deepseek_base_url(str(settings.llm_base_url))
+        use_responses = False
+    else:
+        base_url = normalize_openai_base_url(str(settings.llm_base_url))
+        use_responses = True
+
     provider = OpenAIProvider(
-        api_key=settings.openai_api_key,
-        base_url=normalize_openai_base_url(str(settings.openai_base_url)),
-        use_responses=True,
+        api_key=str(settings.llm_api_key),
+        base_url=base_url,
+        use_responses=use_responses,
         strict_feature_validation=False,
     )
     return RunConfig(
-        model=settings.openai_model,
+        model=settings.llm_model,
         model_provider=provider,
         tracing_disabled=True,
         workflow_name="Aearn learning conversation",
     )
-
-
-def normalize_openai_base_url(base_url: str) -> str:
-    normalized = base_url.rstrip("/")
-    if normalized.endswith("/v1/responses"):
-        return normalized[: -len("/responses")]
-    if normalized.endswith("/responses"):
-        return normalized[: -len("/responses")]
-    if normalized.endswith("/v1"):
-        return normalized
-    return f"{normalized}/v1"
 
 
 def build_agent(

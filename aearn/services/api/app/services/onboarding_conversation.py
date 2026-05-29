@@ -343,7 +343,7 @@ def route_card_ready_generation(
     return OnboardingMessageGeneration(
         chunks=_chunk_text(ROUTE_CARD_READY_MESSAGE),
         generation_source="llm",
-        generation_model=str(effective_settings.openai_model or ""),
+        generation_model=str(effective_settings.llm_model or ""),
     )
 
 
