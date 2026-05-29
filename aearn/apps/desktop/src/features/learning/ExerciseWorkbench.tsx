@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type {
   AsyncActionState,
   ExerciseRunMode,
@@ -58,6 +59,8 @@ type ExerciseWorkbenchProps = {
   onOpenNoteDrawer: () => void;
 };
 
+type AssistTab = "hints" | "explain" | "check";
+
 export function ExerciseWorkbench({
   session,
   exercise,
@@ -93,6 +96,8 @@ export function ExerciseWorkbench({
   onRetryAction,
   onOpenNoteDrawer,
 }: ExerciseWorkbenchProps) {
+  const [assistTab, setAssistTab] = useState<AssistTab>("hints");
+
   const runtimeUnsupported = exercise.runtime_profile.runtime_tier === "compiled_sandbox_later";
   const hasFailedRun =
     lastRun !== null &&
@@ -116,175 +121,189 @@ export function ExerciseWorkbench({
           ? "dirty"
           : "pristine";
   const actionError = actionState.status === "error" ? actionState : null;
+  const isLoading = actionState.status === "loading";
 
   return (
     <section className="exercise-workbench">
-      <div className="exercise-head">
-        <div>
-          <div className="kicker">练习</div>
-          <h2>{exercise.title}</h2>
+      <div className="wb-header">
+        <div className="wb-header-left">
+          <span className="wb-kicker">{"练习"}</span>
+          <h2 className="wb-title">{exercise.title}</h2>
         </div>
-        <div className="workbench-head-meta">
-          <span className="runtime-pill">{runtimeLabel(exercise.runtime_profile.runtime_tier)}</span>
-          <span className={`editor-state editor-state-${workbenchState}`}>{workbenchStateLabel(workbenchState)}</span>
+        <div className="wb-header-right">
+          <span className="wb-meta-pill">{exercise.exercise_type}</span>
+          <span className="wb-meta-pill">{runtimeLabel(exercise.runtime_profile.runtime_tier)}</span>
+          <span className={`wb-state wb-state-${workbenchState}`}>{workbenchStateLabel(workbenchState)}</span>
         </div>
       </div>
 
-      <div className="thread-meta">
-        <span>阶段：{session.context_snapshot.current_stage}</span>
-        <span>知识点：{session.context_snapshot.KnowledgePoint.title}</span>
-        <span>题型：{exercise.exercise_type}</span>
-        <span>提示 {hintUsageCount} 次</span>
-        <span>错误 {errorCount} 次</span>
+      <div className="wb-context-bar">
+        <span>{session.context_snapshot.current_stage}</span>
+        <span className="wb-context-sep" />
+        <span>{session.context_snapshot.KnowledgePoint.title}</span>
+        <span className="wb-context-sep" />
+        <span>{"提示"} {hintUsageCount}</span>
+        <span className="wb-context-sep" />
+        <span>{"错误"} {errorCount}</span>
       </div>
 
-      <div className="exercise-grid">
-        <article className="panel pad stack exercise-panel">
-          <div className="tool-card">题面：{exercise.prompt_markdown}</div>
+      <div className="wb-split">
+        {/* Left: Editor pane */}
+        <div className="wb-editor-pane">
+          <div className="wb-prompt">{exercise.prompt_markdown}</div>
 
           {exercise.code_blanks.length > 0 && (
-            <div className="blank-grid">
+            <div className="wb-blanks">
               {exercise.code_blanks.map((blank) => (
-                <label className="blank-card" key={blank.id}>
-                  <span>{blank.blank_key}</span>
-                  <strong>{blank.expected_concept}</strong>
+                <label className="wb-blank" key={blank.id}>
+                  <span className="wb-blank-key">{blank.blank_key}</span>
                   <input
+                    className="wb-blank-input"
                     value={filledBlanks[blank.blank_key] ?? ""}
                     placeholder={blank.placeholder}
                     onChange={(event) => onBlankChange(blank.blank_key, event.target.value)}
-                    disabled={actionState.status === "loading"}
+                    disabled={isLoading}
                   />
                 </label>
               ))}
             </div>
           )}
 
-          <div className="exercise-editor">
-            <span>代码区</span>
+          <div className="wb-editor-frame">
+            <div className="wb-editor-toolbar">
+              <div className="wb-editor-toolbar-left">
+                <span className="wb-editor-lang">{exercise.runtime_profile.language}</span>
+              </div>
+              <div className="wb-editor-toolbar-right">
+                {exercise.runtime_profile.runtime_tier === "browser_preview" && (
+                  <button className="wb-toolbar-btn" type="button" disabled={runtimeUnsupported || isLoading} onClick={onRunPreview}>
+                    {"预览"}
+                  </button>
+                )}
+                <button className="wb-toolbar-btn wb-toolbar-btn-primary" type="button" disabled={runtimeUnsupported || isLoading} onClick={onRunVisibleTests}>
+                  {"运行"}
+                </button>
+                <button className="wb-toolbar-btn" type="button" disabled={submitDisabled || isLoading} onClick={onSubmit}>
+                  {"提交"}
+                </button>
+                <button className="wb-toolbar-btn" type="button" onClick={onOpenNoteDrawer}>
+                  {"笔记"}
+                </button>
+              </div>
+            </div>
             <CodeEditor
               language={exercise.runtime_profile.language}
               value={code}
               onChange={onCodeChange}
-              readOnly={actionState.status === "loading" || runtimeUnsupported}
-              height="280px"
+              readOnly={isLoading || runtimeUnsupported}
+              height="400px"
+              dark
             />
           </div>
-          <p className="meta">运行和提交前会自动将上方空缺填入代码对应位置。</p>
 
           {runtimeUnsupported && (
-            <div className="draft-boundary">当前课程暂不支持完整编译运行，只展示静态补全练习。</div>
+            <div className="wb-notice">{"当前课程暂不支持完整编译运行，只展示静态补全练习。"}</div>
           )}
-        </article>
 
-        <article className="panel pad stack exercise-panel">
-          <div className="action-row action-row-wrap">
-            {exercise.runtime_profile.runtime_tier === "browser_preview" && (
-              <button
-                className="btn primary"
-                type="button"
-                disabled={runtimeUnsupported || actionState.status === "loading"}
-                onClick={onRunPreview}
-              >
-                运行预览
+          {/* Assist tabs below editor */}
+          <div className="wb-assist">
+            <div className="wb-assist-tabs">
+              <button className={`wb-assist-tab ${assistTab === "hints" ? "active" : ""}`} type="button" onClick={() => setAssistTab("hints")}>
+                {"提示"}
               </button>
-            )}
-            <button
-              className="btn primary"
-              type="button"
-              disabled={runtimeUnsupported || actionState.status === "loading"}
-              onClick={onRunVisibleTests}
-            >
-              运行可见测试
-            </button>
-            <button className="btn primary ghost-btn" type="button" disabled={submitDisabled || actionState.status === "loading"} onClick={onSubmit}>
-              提交结果
-            </button>
-            <button className="btn primary ghost-btn" type="button" onClick={onOpenNoteDrawer}>
-              打开笔记
-            </button>
-          </div>
-
-          <div className="action-row action-row-wrap assist-row">
-            <label className="inline-select">
-              <span>提示目标</span>
-              <select
-                value={selectedBlankId}
-                disabled={hintDisabled || actionState.status === "loading"}
-                onChange={(event) => onSelectedBlankChange(event.target.value)}
-              >
-                {exercise.code_blanks.map((blank) => (
-                  <option key={blank.id} value={blank.blank_key}>
-                    {blank.blank_key}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="inline-select">
-              <span>提示层级</span>
-              <select value={hintLevel} disabled={hintDisabled || actionState.status === "loading"} onChange={(event) => onHintLevelChange(event.target.value as HintLevel)}>
-                <option value="nudge">轻推</option>
-                <option value="concept">概念</option>
-                <option value="code_shape">代码结构</option>
-              </select>
-            </label>
-            <button className="btn primary ghost-btn" type="button" disabled={hintDisabled || actionState.status === "loading"} onClick={onRequestHint}>
-              获取提示
-            </button>
-            <button className="btn primary ghost-btn" type="button" disabled={explainDisabled || actionState.status === "loading"} onClick={onExplainError}>
-              解释错误
-            </button>
-          </div>
-
-          <label className="exercise-editor explanation-editor">
-            <span>解释关键代码</span>
-            <textarea
-              className="drawer-editor explanation-textarea"
-              value={explanationText}
-              placeholder="用自己的话解释关键代码、边界条件，或为什么这次修改能修复错误。"
-              onChange={(event) => onExplanationTextChange(event.target.value)}
-            />
-          </label>
-
-          <div className="action-row action-row-wrap">
-            <label className="inline-select">
-              <span>检查焦点</span>
-              <select value={explanationFocus} disabled={runtimeUnsupported || actionState.status === "loading"} onChange={(event) => onExplanationFocusChange(event.target.value as ExplanationFocus)}>
-                <option value="core_logic">核心逻辑</option>
-                <option value="boundary_condition">边界条件</option>
-                <option value="ai_generated_change">AI 生成变更</option>
-              </select>
-            </label>
-            <div className="tool-chip">第 {explanationRound} / 2 轮</div>
-            <button className="btn primary ghost-btn" type="button" disabled={checkDisabled || actionState.status === "loading"} onClick={onCheckExplanation}>
-              检查解释
-            </button>
-          </div>
-
-          {actionState.status === "loading" && <div className="tool-card">{actionState.label}</div>}
-          {actionError && (
-            <div className="draft-boundary action-error">
-              <div>
-                {actionError.code}: {actionError.message}
-              </div>
-              {actionError.recoverable && (
-                <button className="btn primary ghost-btn" type="button" onClick={onRetryAction}>
-                  重试上一步
-                </button>
+              <button className={`wb-assist-tab ${assistTab === "explain" ? "active" : ""}`} type="button" onClick={() => setAssistTab("explain")}>
+                {"错因分析"}
+              </button>
+              <button className={`wb-assist-tab ${assistTab === "check" ? "active" : ""}`} type="button" onClick={() => setAssistTab("check")}>
+                {"解释检查"}
+              </button>
+            </div>
+            <div className="wb-assist-body">
+              {assistTab === "hints" && (
+                <div className="wb-assist-panel">
+                  <div className="wb-assist-controls">
+                    <select className="wb-select" value={selectedBlankId} disabled={hintDisabled || isLoading} onChange={(e) => onSelectedBlankChange(e.target.value)}>
+                      {exercise.code_blanks.map((blank) => (
+                        <option key={blank.id} value={blank.blank_key}>{blank.blank_key}</option>
+                      ))}
+                    </select>
+                    <select className="wb-select" value={hintLevel} disabled={hintDisabled || isLoading} onChange={(e) => onHintLevelChange(e.target.value as HintLevel)}>
+                      <option value="nudge">{"轻推"}</option>
+                      <option value="concept">{"概念"}</option>
+                      <option value="code_shape">{"代码结构"}</option>
+                    </select>
+                    <button className="wb-toolbar-btn wb-toolbar-btn-primary" type="button" disabled={hintDisabled || isLoading} onClick={onRequestHint}>
+                      {"获取提示"}
+                    </button>
+                  </div>
+                  {hintHistory.length > 0 && <HintHistoryCard items={hintHistory} />}
+                </div>
+              )}
+              {assistTab === "explain" && (
+                <div className="wb-assist-panel">
+                  <button className="wb-toolbar-btn wb-toolbar-btn-primary" type="button" disabled={explainDisabled || isLoading} onClick={onExplainError}>
+                    {"分析错误原因"}
+                  </button>
+                  {explainErrorResult && <ErrorFeedbackPane result={explainErrorResult} />}
+                </div>
+              )}
+              {assistTab === "check" && (
+                <div className="wb-assist-panel">
+                  <textarea
+                    className="wb-explanation-input"
+                    value={explanationText}
+                    placeholder={"用自己的话解释关键代码、边界条件，或为什么这次修改能修复错误。"}
+                    onChange={(e) => onExplanationTextChange(e.target.value)}
+                  />
+                  <div className="wb-assist-controls">
+                    <select className="wb-select" value={explanationFocus} disabled={runtimeUnsupported || isLoading} onChange={(e) => onExplanationFocusChange(e.target.value as ExplanationFocus)}>
+                      <option value="core_logic">{"核心逻辑"}</option>
+                      <option value="boundary_condition">{"边界条件"}</option>
+                      <option value="ai_generated_change">{"AI 生成变更"}</option>
+                    </select>
+                    <span className="wb-round-badge">{"第"} {explanationRound}/2 {"轮"}</span>
+                    <button className="wb-toolbar-btn wb-toolbar-btn-primary" type="button" disabled={checkDisabled || isLoading} onClick={onCheckExplanation}>
+                      {"检查解释"}
+                    </button>
+                  </div>
+                  {explanationCheckResult && <ExplanationCheckPanel result={explanationCheckResult} />}
+                </div>
               )}
             </div>
-          )}
-          {isStale && lastRun && <div className="draft-boundary">你已经修改了代码，下面的结果来自上一次运行，请先重新运行。</div>}
-          {submitDisabled && lastRunMode === "preview" && <div className="draft-boundary">提交前需要先跑一次“运行可见测试”，预览结果不会直接进入评分。</div>}
-          {submitDisabled && !lastRun && <div className="draft-boundary">先运行一次代码，才能提交结果、获取提示或检查解释。</div>}
+          </div>
+        </div>
 
-          {!lastRun && !lastSubmit && <div className="empty-block">先运行一次，右侧会出现预览、stdout、测试结果和提交摘要。</div>}
-
-          {hintHistory.length > 0 && <HintHistoryCard items={hintHistory} />}
-          {explainErrorResult && <ErrorFeedbackPane result={explainErrorResult} />}
-          {explanationCheckResult && <ExplanationCheckPanel result={explanationCheckResult} />}
-          {lastRun && <RuntimeFeedback result={lastRun} runMode={lastRunMode} />}
-          {lastSubmit && <SubmissionSummary result={lastSubmit} />}
-        </article>
+        {/* Right: Output pane — clean, only results */}
+        <div className="wb-output-pane">
+          <div className="wb-output-header">
+            <span className="wb-output-title">{"输出"}</span>
+            {lastRun && (
+              <span className={`wb-output-status ${lastRun.runtime_status === "success" && !hasFailedRun ? "success" : "error"}`}>
+                {lastRun.runtime_status === "success" && !hasFailedRun ? "PASS" : "FAIL"}
+              </span>
+            )}
+          </div>
+          <div className="wb-output-body">
+            {isLoading && <div className="wb-output-loading"><div className="wb-spinner" />{actionState.label}</div>}
+            {actionError && (
+              <div className="wb-output-error">
+                <span>{actionError.code}: {actionError.message}</span>
+                {actionError.recoverable && (
+                  <button className="wb-toolbar-btn" type="button" onClick={onRetryAction}>{"重试"}</button>
+                )}
+              </div>
+            )}
+            {isStale && lastRun && <div className="wb-output-stale">{"代码已修改，请重新运行"}</div>}
+            {!lastRun && !lastSubmit && !isLoading && (
+              <div className="wb-output-empty">
+                <div className="wb-output-empty-icon">{"▶"}</div>
+                <p>{"点击运行查看输出结果"}</p>
+              </div>
+            )}
+            {lastRun && <RuntimeFeedback result={lastRun} runMode={lastRunMode} />}
+            {lastSubmit && <SubmissionSummary result={lastSubmit} />}
+          </div>
+        </div>
       </div>
     </section>
   );
