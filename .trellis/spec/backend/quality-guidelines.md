@@ -87,6 +87,10 @@ The dependency source for the API service is `aearn/services/api/pyproject.toml`
 - Onboarding conversation route-ready turns must emit a short `agent_message` plus a persisted `show_learning_route` tool call, not a long plain-text route body.
 - Onboarding message idempotency replay must re-emit stored `metadata.tool_calls` so desktop resume/retry rehydrates the same route card.
 - Time-budget-only onboarding revisions must update the route tool args and draft identity; missing time budget must not block initial route-card generation.
+- Post-MVP dynamic plan generation may replace draft modules with `agent_generated` modules only after a deterministic `PlanDraft` has established user, course, runtime boundary, and draft identity.
+- `PLAN_GENERATION_ENABLED=false`, missing model configuration, missing dynamic client, invalid dynamic output, guardrail rejection, or web-tool failure must fall back to server-owned `COURSE_TEMPLATES` or a validated onboarding plan candidate without exposing raw provider/tool errors.
+- `EXA_API_KEY` is optional and only enables the web tools used by `plan_generation_agent`; real keys must stay in local `.env`, never in docs, tests, logs, or fixtures.
+- Adding a public language such as TypeScript, Rust, or Go requires updating the Pydantic `Language` literal, database CHECK constraints, catalog seed, runtime boundary, API examples, and acceptance tests. Adding an `AUTHORITATIVE_DOCS` URL alone is not sufficient.
 
 ### 4. Validation & Error Matrix
 
@@ -94,6 +98,8 @@ The dependency source for the API service is `aearn/services/api/pyproject.toml`
 - Unknown course -> `COURSE_NOT_FOUND` with 404.
 - Missing goal/material input -> `VALIDATION_ERROR` with 400.
 - Invalid `plan_draft` shape, user mismatch, no modules, or no non-skippable core module -> `PLAN_DRAFT_INVALID` with 422.
+- Invalid dynamic modules -> fallback; invalid dynamic modules plus no safe fallback -> `PLAN_DRAFT_INVALID` with 422.
+- Unsupported or unregistered language -> `COURSE_NOT_FOUND` / validation failure; do not synthesize a confirmable plan from web search alone.
 - Same idempotency key with a different request hash -> `IDEMPOTENCY_CONFLICT` with 409.
 - FastAPI/Pydantic validation errors must be normalized to the documented error envelope.
 
@@ -110,6 +116,10 @@ The dependency source for the API service is `aearn/services/api/pyproject.toml`
 - Assert catalog includes Java/C++ `compiled_sandbox_later` entries.
 - Assert goal and material generation success, insufficient input, unknown user, and unknown course.
 - Assert supported MVP course templates keep the official-taxonomy module order and do not regress to one-module route cards.
+- Assert `PLAN_GENERATION_ENABLED=false` preserves the template path and response shape.
+- Assert fake dynamic plan success swaps modules to `agent_generated` while preserving `PlanDraft` identity and runtime boundary.
+- Assert malformed dynamic output, unsafe output, missing web tools, and thrown SDK errors fall back without leaking provider/tool details.
+- Assert unregistered languages cannot become confirmable plans until language enum, DB constraints, catalog, runtime boundary, API docs, and acceptance tests are updated together.
 - Assert confirm plan creates plan/module/knowledge point rows and one `review_states` row per knowledge point.
 - Assert idempotent replay returns the original plan and conflicting request body returns `IDEMPOTENCY_CONFLICT`.
 - Assert route-ready onboarding SSE stores and replays `show_learning_route` metadata, including time-budget-only revisions.

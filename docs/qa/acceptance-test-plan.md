@@ -2,7 +2,7 @@
 
 日期：2026-05-13  
 状态：Draft V1.1  
-适用范围：Aearn MVP 的核心流程、API 契约、Agent 输出质量、FSRS 调度、代码补全验证和前端手工 QA
+适用范围：Aearn 第一版稳定基线、post-MVP / v1.1 增强、API 契约、Agent 输出质量、FSRS 调度、代码补全验证和前端手工 QA
 
 ## 目标
 
@@ -14,7 +14,7 @@
 
 | 优先级 | 含义 | 失败影响 |
 |---|---|---|
-| P0 | MVP 必须通过，失败会破坏主闭环或写错学习状态 | 阻塞发布 |
+| P0 | 第一版基线和当前发布必须通过，失败会破坏主闭环或写错学习状态 | 阻塞发布 |
 | P1 | 重要体验或稳定性，失败会造成明显误导或重复操作 | 发布前必须修复或明确降级 |
 | P2 | 优化项、边缘路径、文案和体验一致性 | 可带已知问题发布 |
 
@@ -42,7 +42,7 @@
 
 | ID | 优先级 | 流程 | 前置条件 | 步骤 | 通过标准 |
 |---|---|---|---|---|---|
-| UF-01 | P0 | 首次建档：模糊目标模式 | 无活动计划 | 输入目标 -> 每轮单一澄清 -> 生成路线卡片 -> 可直接输入修订 -> 最新卡片点击 `开始学习` | 普通回复不展开整段路线；创建正式 `plan`，进入工作台，左侧路线面板有模块；旧卡片按钮禁用 |
+| UF-01 | P0 | 首次建档：模糊目标模式 | 无活动计划 | 输入目标 -> 每轮单一澄清 -> 生成路线卡片 -> 可直接输入修订 -> 最新卡片点击 `开始学习` | 普通回复不展开整段路线；创建正式 `plan`，进入工作台，左侧路线面板有模块；旧卡片按钮禁用；`source_attribution` 可区分动态文档参考、用户资料或模板 fallback |
 | UF-02 | P1 | 首次建档：参考资料模式 | 有课程目录或代码片段 | 粘贴资料 -> 生成草稿 -> 标注来源与 Agent 补充 | 用户能区分资料来源和新增内容 |
 | UF-03 | P0 | 日常进入应用 | 已有活动计划 | 打开应用 -> 加载 dashboard | 5 秒内默认进入当前学习，展示当前阶段、今日任务、复习数量和复习提示 |
 | UF-04 | P0 | 学习闭环 | 有 `browser_preview` 或 `python_stdout_test` 练习 | 读代码 -> 对话中生成练习 UI -> 补全 -> 运行/预览/测试 -> 提交 -> 查看反馈 | 前端不暴露 run/submit 内部 Attempt 类型；后端生成可追溯 `Attempt`、`code_completion_result`，状态写回知识点 |
@@ -79,7 +79,7 @@
 
 | API | 必测内容 |
 |---|---|
-| `POST /api/plans/generate` | `goal_based`、`material_based`、缺少目标、runtime 能力提示 |
+| `POST /api/plans/generate` | `goal_based`、`material_based`、缺少目标、runtime 能力提示、动态路线生成成功、动态失败 fallback、`source_attribution` |
 | `POST /api/plans` | `plan_draft` 确认、重复提交、草稿无效 |
 | `GET /api/dashboard` | 活动目标、阶段、复习数量、恢复入口 |
 | `POST /api/learning-sessions/start` | 新会话、已有未结束会话幂等返回 |
@@ -101,6 +101,7 @@
 ### 契约通过标准
 
 - 每个 P0 API 至少有一个成功样例和一个失败样例。
+- 动态路线生成不得改变 `PlanDraft` 公共结构；fallback 成功时仍返回 2xx 和可确认草稿，fallback 失败时返回稳定错误码，不暴露 provider 原始错误。
 - `runtime_status` 只能是 `success` / `runtime_error` / `timeout` / `unsupported`。
 - `result` 只能是 `failed` / `partial` / `passed` / `easy`。
 - `fsrs_rating` 只能是 `Again` / `Hard` / `Good` / `Easy`。
@@ -193,6 +194,8 @@ LLM 输出质量单独用固定样例集评估，至少覆盖 JS/HTML/CSS、Pyth
 - [ ] 空输入不能生成计划。
 - [ ] 生成 `plan_draft` 时按钮进入 loading。
 - [ ] 已生成路线后补充时间预算会生成新版路线卡片并展示新的学习节奏。
+- [ ] 动态路线生成开启时，路线来源展示或诊断信息可区分 `agent_generated`、用户资料和模板 fallback。
+- [ ] 动态路线生成失败时可回退到已审核课程模板；没有已登记课程或安全 fallback 时展示可恢复错误，不承诺任意语言可运行。
 - [ ] `compiled_sandbox_later` 课程展示能力边界。
 - [ ] `is_skippable=false` 的模块不能跳过。
 - [ ] 确认计划后进入工作台。
@@ -258,7 +261,17 @@ LLM 输出质量单独用固定样例集评估，至少覆盖 JS/HTML/CSS、Pyth
 ### P2 门禁
 
 - 文案一致性、视觉 polish、边缘错误提示完成评估。
-- 未完成项不影响主闭环、不误写状态、不误导运行能力。
+
+## Post-MVP / v1.1 增强验收
+
+### 动态学习路线生成
+
+- [ ] `PLAN_GENERATION_ENABLED=false` 时，`POST /api/plans/generate` 走第一版模板路径，响应结构不变。
+- [ ] 模型配置完整且 fake plan generation client 返回合法 modules 时，响应中 modules 使用动态结果，`source_attribution` 标记动态生成来源。
+- [ ] 动态输出缺少 modules、数量越界、非中文标题、非法 `temp_id`、guardrail 命中或工具超时时，服务回退到模板或已校验 candidate，不暴露 raw provider error。
+- [ ] 未同步扩展 `Language`、数据库约束、课程 catalog 和 runtime boundary 的语言不能作为公开可确认计划。
+- [ ] 新增语言正式上线前必须补 API 示例、数据库约束、catalog seed、runtime boundary、前端展示、P0/P1 验收和回滚策略。
+- [ ] 未完成项不影响主闭环、不误写状态、不误导运行能力。
 
 ## 需要持续同步的字段与术语
 

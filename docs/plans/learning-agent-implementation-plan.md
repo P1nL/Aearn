@@ -1,14 +1,14 @@
-# Aearn 第一版任务级实施计划
+# Aearn 实施计划与 Post-MVP 路线
 
-日期：2026-05-13  
-状态：Draft V1.1  
+日期：2026-05-29
+状态：First-version baseline + Post-MVP Draft
 关联产品流程：`docs/product/user-flows.md`  
 前置配置：`docs/setup/development-environment.md`  
 验收依据：`docs/qa/acceptance-test-plan.md`
 
 ## 目标
 
-把当前 MVP 从“里程碑计划”升级为可以交给开发 Agent 执行和审查的任务级实施规格。
+把当前项目从“第一版 MVP 里程碑计划”升级为可以交给开发 Agent 执行和审查的版本化实施规格。第一版闭环已成为稳定基线；后续任务可以进入 post-MVP / v1.1 增强，但每个增强必须明确保留哪些第一版契约。
 
 第一版只交付一个窄闭环：
 
@@ -16,14 +16,31 @@
 语言选择 -> 生成 plan_draft -> 确认学习计划 -> 进入当前学习会话 -> 对话中生成代码练习 UI -> 运行/预览 -> 提交 -> 保存 Attempt -> 更新 ReviewState -> 记录笔记
 ```
 
+## 当前阶段判定
+
+- 第一版 release readiness 已完成，结论为 `ready to release`，证据见 `../../.trellis/tasks/archive/2026-05/05-18-05-18-release-readiness/release-report.md`。
+- 当前不再受“只能实现最小 MVP 切片”的限制；可以推进动态路线生成、模型 provider 替换、练习 UI 优化等 post-MVP / v1.1 增强。
+- 第一版基线仍是回归门禁：`PlanDraft` 公共结构、latest-card-wins、`Attempt(run)` / `Attempt(submit)` 后端事实记录、FSRS 后端决策、hidden tests 不泄露、模型失败不暴露 provider 细节。
+- post-MVP 文档必须区分“已发布基线”“正在实现”“后续保留草案”，不得把未完成增强写成已上线能力。
+
 ## 不变产品边界
 
 - 前端 UI 不暴露 `Attempt(run)` / `Attempt(submit)` 内部概念，只展示运行、预览、测试、提交结果。
 - 后端必须保留 `Attempt(attempt_type=run)`、`Attempt(attempt_type=submit)`、`Attempt(attempt_type=review_submit)` 三类事实记录。
-- MVP 不做独立复盘草稿流程、`publishDrawer`、`CodeDraftPage`、面试讲述草稿或自动对外发布。
-- MVP 只保留笔记页与笔记抽屉；Agent 只能辅助补全当前 Note，不自动生成完整笔记。
+- 第一版基线不做独立复盘草稿流程、`publishDrawer`、`CodeDraftPage`、面试讲述草稿或自动对外发布。
+- 第一版基线只保留笔记页与笔记抽屉；Agent 只能辅助补全当前 Note，不自动生成完整笔记。
 - 普通打开应用默认进入当前学习并提示复习；只有中断多日且复习高风险时才优先进入复习。
 - 设置页不能修改后端固定评分规则、Attempt 必填事实记录策略或 FSRS 调度规则。
+- 动态路线生成不得绕过课程 catalog、runtime boundary、`PlanDraft` validation 或 `source_attribution`。
+- 新增语言公开支持必须同步扩展 `Language` 枚举、数据库约束、课程 catalog、runtime boundary、API 契约、前端展示和验收用例；不能只靠权威文档 URL 或 prompt 承诺。
+
+## Post-MVP / v1.1 工作队列
+
+| 方向 | 当前状态 | 目标 | 必须保留的基线 |
+|---|---|---|---|
+| 动态学习路线生成 | `05-29-dynamic-plan-generation` in progress | 从固定 `COURSE_TEMPLATES` 扩展为模型参考权威文档和用户目标生成 modules | `PlanDraft` 结构不变、latest-card-wins、fallback 可解释、未登记语言不公开承诺 |
+| DeepSeek official Chat Completions provider | `05-29-deepseek-official-chat-completions-provider` planning | 用官方 DeepSeek Chat Completions 替代不稳定 relay 路径 | `MODEL_UNAVAILABLE` 映射、SSE/JSON 形状、无 raw provider error |
+| 练习卡 UI 直观性优化 | `05-29-exercise-card-ui-optimization` in progress | 优化编辑区、运行反馈和主/辅操作层次 | 操作数据流不变、前端不暴露内部 `Attempt` 类型、≤1180px 响应式 |
 
 ## 实施目录假设
 
@@ -38,7 +55,7 @@ aearn/
   infra/
 ```
 
-历史 `01_` 到 `07_` 教程子项目不作为最终应用目录；需要参考时只提取概念，不复用其目录结构作为 MVP 主代码。
+历史 `01_` 到 `07_` 教程子项目不作为最终应用目录；需要参考时只提取概念，不复用其目录结构作为正式 runtime 主代码。
 
 ## 任务分层
 
@@ -204,7 +221,7 @@ flowchart TD
 
 每完成一个 Milestone，按以下顺序审查，不跳级：
 
-1. 文档一致性审查：确认实现没有偏离 `user-flows.md` 的 MVP 边界，特别是 `CodeDraftPage`、`publishDrawer`、独立复盘草稿不得回流。
+1. 文档一致性审查：确认实现没有偏离 `user-flows.md` 的第一版基线和 post-MVP 标注，特别是 `CodeDraftPage`、`publishDrawer`、独立复盘草稿不得回流。
 2. API 契约审查：对照 `api-contract.md` 检查路径、字段、枚举、错误码、幂等键和响应示例。
 3. 数据写入审查：对照 `database-schema.md` 检查 `Attempt`、`ReviewState`、`ReviewLog`、`Note` 的写入时机和约束。
 4. Agent 状态机审查：对照 `langgraph-state-machine.md` 检查节点输入、输出、条件边、失败分支和重试行为。
@@ -268,4 +285,5 @@ Select-String -Path docs\**\*.md,docs\*.md -Pattern 'Attempt\(run\)|Attempt\(sub
 - 所有写 `Attempt`、`ReviewState`、`ReviewLog` 的路径都有幂等和失败恢复说明。
 - 前端没有暴露内部 Attempt 类型。
 - 设置页没有破坏后端评分、Attempt、FSRS 固定规则的入口。
-- 文档中旧草稿流程只允许出现在“非 MVP / 后置 / 已移除”语境。
+- 文档中旧草稿流程只允许出现在“非第一版基线 / 后置 / 已移除”语境。
+- post-MVP 增强有明确 fallback、回滚、source attribution 和未实现能力边界。
