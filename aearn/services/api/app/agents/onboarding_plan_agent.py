@@ -6,6 +6,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol, cast
 
+from app.agents.agent_domain_contexts import build_onboarding_plan_runtime_context
+from app.agents.agent_runtime_context import limit_text, parse_fenced_json_object, strip_json_fence
 from app.agents.guardrails import assert_safe_teaching_output, build_teaching_guardrails
 from app.agents.sdk_runtime import (
     AgentsSDKRunner,
@@ -220,6 +222,15 @@ def _build_messages(context: OnboardingPlanContext) -> list[dict[str, str]]:
         },
         "user_profile": _bounded_mapping(context.user_profile, 300),
         "course": context.course,
+        "runtime_context": build_onboarding_plan_runtime_context(
+            goal_text=context.goal_text,
+            mode=context.mode,
+            user_profile=context.user_profile,
+            course=context.course,
+            materials=context.materials,
+            clarification_answers=context.clarification_answers,
+            deterministic_plan_draft=context.deterministic_plan_draft,
+        ),
         "safe_base_plan_draft": context.deterministic_plan_draft,
         "output_schema": {
             "plan_draft": "PlanDraft JSON object using only supplied template module and knowledge_point temp_ids",
@@ -338,25 +349,15 @@ def _validate_agent_notes(value: object) -> list[str]:
 
 
 def _parse_json_object(content: str) -> dict[str, object]:
-    try:
-        parsed = json.loads(_strip_json_fence(content))
-    except json.JSONDecodeError as exc:
-        raise LLMInvalidResponseError("Onboarding plan output is not valid JSON") from exc
-    if not isinstance(parsed, dict):
-        raise LLMInvalidResponseError("Onboarding plan output must be a JSON object")
-    return parsed
+    return parse_fenced_json_object(
+        content,
+        invalid_message="Onboarding plan output is not valid JSON",
+        object_message="Onboarding plan output must be a JSON object",
+    )
 
 
 def _strip_json_fence(content: str) -> str:
-    stripped = content.strip()
-    if not stripped.startswith("```"):
-        return stripped
-    lines = stripped.splitlines()
-    if lines and lines[0].startswith("```"):
-        lines = lines[1:]
-    if lines and lines[-1].startswith("```"):
-        lines = lines[:-1]
-    return "\n".join(lines).strip()
+    return strip_json_fence(content)
 
 
 def _safe_user_profile(user: Mapping[str, object], payload: PlanGenerateRequest) -> dict[str, object]:
@@ -429,7 +430,4 @@ def _string_list(value: object) -> list[str]:
 
 
 def _bounded_text(value: object, max_length: int) -> str:
-    text = str(value or "").strip()
-    if len(text) <= max_length:
-        return text
-    return f"{text[:max_length]}..."
+    return limit_text(value, max_length)

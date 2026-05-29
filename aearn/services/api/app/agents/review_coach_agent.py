@@ -5,6 +5,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol, cast
 
+from app.agents.agent_domain_contexts import build_review_runtime_context
+from app.agents.agent_runtime_context import limit_text, parse_fenced_json_object, strip_json_fence
 from app.agents.guardrails import assert_safe_teaching_output, build_teaching_guardrails
 from app.agents.sdk_runtime import (
     AgentsSDKRunner,
@@ -187,6 +189,15 @@ def _build_messages(context: ReviewCoachContext) -> list[dict[str, str]]:
                 "last_fsrs_rating": context.last_fsrs_rating,
             }
         },
+        "runtime_context": build_review_runtime_context(
+            knowledge_point_id=context.knowledge_point_id,
+            knowledge_point_title=context.knowledge_point_title,
+            weak_points=context.weak_points_json,
+            due_at=context.due_at,
+            forget_risk=context.forget_risk,
+            last_fsrs_rating=context.last_fsrs_rating,
+            latest_attempt=context.latest_attempt,
+        ),
         "review_exercise": {
             "id": context.review_exercise_id,
             "title": _bounded_text(context.review_exercise_title, 160),
@@ -290,29 +301,16 @@ def _optional_str(payload: Mapping[str, object], key: str, *, max_length: int) -
 
 
 def _parse_json_object(content: str) -> dict[str, object]:
-    try:
-        parsed = json.loads(_strip_json_fence(content))
-    except json.JSONDecodeError as exc:
-        raise LLMInvalidResponseError("Review coach output is not valid JSON") from exc
-    if not isinstance(parsed, dict):
-        raise LLMInvalidResponseError("Review coach output must be a JSON object")
-    return parsed
+    return parse_fenced_json_object(
+        content,
+        invalid_message="Review coach output is not valid JSON",
+        object_message="Review coach output must be a JSON object",
+    )
 
 
 def _strip_json_fence(content: str) -> str:
-    stripped = content.strip()
-    if not stripped.startswith("```"):
-        return stripped
-    lines = stripped.splitlines()
-    if lines and lines[0].startswith("```"):
-        lines = lines[1:]
-    if lines and lines[-1].startswith("```"):
-        lines = lines[:-1]
-    return "\n".join(lines).strip()
+    return strip_json_fence(content)
 
 
 def _bounded_text(value: object, max_length: int) -> str:
-    text = str(value or "").strip()
-    if len(text) <= max_length:
-        return text
-    return f"{text[:max_length]}..."
+    return limit_text(value, max_length)

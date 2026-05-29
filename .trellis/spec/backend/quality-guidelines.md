@@ -661,3 +661,76 @@ The shared SSE writer serializes a compact one-line JSON frame and keeps the eve
 - Cover valid SDK output, SDK failure, invalid or malformed output, guardrail-blocked leakage, and `MODEL_UNAVAILABLE`.
 - Keep route-level contract tests for learning JSON/SSE, exercise coach endpoints, note JSON/SSE draft updates, review start/rationale, onboarding plan generation, and dashboard/resume compatibility.
 - Before release, create or update a cross-agent SDK matrix and record exact command results plus residual risks in `docs/qa/`.
+
+## Scenario: Shared Agent Runtime Context Layer
+
+### 1. Scope / Trigger
+
+- Trigger: adding or changing shared context, summary, sanitization, JSON parsing, or runtime-context helpers used by multiple SDK-backed domains.
+- Scope: `app/agents/agent_runtime_context.py`, `app/agents/agent_domain_contexts.py`, domain SDK clients under `app/agents/*_agent.py`, feature services that build prompt messages, and model-key-free LLM integration tests.
+
+### 2. Signatures
+
+- Shared safe-message conversion: `safe_messages_from_records(records) -> list[SafeMessage]`.
+- Shared summary refresh decision: `should_refresh_summary(state, message_count, stage, threshold) -> ContextRefreshDecision`.
+- Shared JSON extraction: `extract_json_object(text)` and `parse_fenced_json_object(content, invalid_message, object_message) -> dict[str, object]`.
+- Shared bounded text helpers: `limit_text(value, max_length)`, `sanitize_summary_text(...)`, and `sanitize_summary_list(...)`.
+- Runtime context block builder: `build_runtime_context_block(safe_summary, recent_safe_messages, current_diagnosis, response_policy)`.
+- Domain runtime context builders: `build_onboarding_plan_runtime_context(...)` and `build_review_runtime_context(...)`.
+
+### 3. Contracts
+
+- Shared runtime-context helpers may transform domain facts into safe prompt context, produce bounded summaries, normalize JSON, and expose domain-specific `runtime_context` dictionaries.
+- Shared runtime-context helpers must not import repository modules, open database connections, write `LearningPlan`, `LearningSession`, `LearningMessage`, `Attempt`, `ReviewState`, `ReviewLog`, `Note`, or `idempotency_records`.
+- Domain services remain responsible for loading facts, persisting summaries, mapping model failures to public errors, idempotency replay, and public JSON/SSE framing.
+- Domain adapters must keep domain-specific policy explicit. Learning, onboarding, and review contexts may share sanitization primitives, but must not collapse into one global summary schema.
+- Runtime context must contain bounded and sanitized summaries only: no hidden test ids/source, `solution_reference`, full submitted code, full private notes, raw prompts, provider payloads, SDK event names, or API keys.
+- Shared JSON helpers must raise `LLMInvalidResponseError` with domain-provided messages when output is invalid or not a JSON object.
+
+### 4. Validation & Error Matrix
+
+- Empty or fully redacted stored message -> skip it from recent safe messages.
+- Hidden identifiers, provider errors, API-key-like tokens, or direct complete-answer text in context candidates -> redact before prompt construction or reject at the guardrail boundary.
+- Missing or stale summary state -> refresh summary according to `message_count`, stage, and threshold.
+- Invalid fenced JSON or non-object JSON from an SDK candidate -> `LLMInvalidResponseError`, then the owning service maps to `MODEL_UNAVAILABLE`.
+- Shared helper accidentally starts owning durable writes or repository imports -> reject in review; move the write back to the feature service/repository.
+
+### 5. Good/Base/Bad Cases
+
+- Good: learning, onboarding, and review clients call shared sanitization/JSON/context helpers while their services still own persistence, idempotency, and public responses.
+- Base: a domain has no durable summary storage yet; it can still build an ephemeral bounded `runtime_context` from safe current facts and recent messages.
+- Bad: copying a learning-page summary schema into onboarding/review, injecting raw chat history into prompts, or letting the shared context layer mutate product rows.
+
+### 6. Tests Required
+
+- Unit-test shared helpers for bounded text, safe-message conversion, refresh decisions, JSON fence parsing, redaction, and confidence normalization.
+- Unit-test domain runtime context builders for onboarding and review, including bounded fields and no hidden/reference/provider/API-key leakage.
+- Keep fake SDK runner/client tests for learning, onboarding, and review paths; no live model credentials are required.
+- Route-level tests must continue asserting unchanged public response shapes, SSE event ordering, idempotency replay, and `MODEL_UNAVAILABLE` behavior.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+payload = {
+    "history": [dict(row) for row in learning_messages],
+    "summary": state_json,
+}
+```
+
+This injects raw stored messages and state into the prompt, bypassing bounded sanitization and cross-domain leakage checks.
+
+#### Correct
+
+```python
+safe_messages = safe_messages_from_records(rows)
+runtime_context = build_runtime_context_block(
+    safe_summary=safe_summary,
+    recent_safe_messages=[message.as_dict() for message in safe_messages],
+    current_diagnosis=current_diagnosis,
+    response_policy=response_policy,
+)
+```
+
+The feature service loads facts and owns persistence, while the shared layer only builds bounded safe context for SDK input.

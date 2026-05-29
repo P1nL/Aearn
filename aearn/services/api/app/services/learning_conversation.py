@@ -7,13 +7,25 @@ from dataclasses import dataclass
 from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any, Protocol, cast
+from typing import Protocol
 
 from psycopg import Connection
 
+from app.agents.agent_runtime_context import (
+    build_runtime_context_block,
+    extract_json_object,
+    int_or_zero,
+    limit_text,
+    normalize_summary_confidence,
+    redacted_context_text,
+    safe_messages_from_records,
+    sanitize_message_content,
+    sanitize_summary_list,
+    sanitize_summary_text,
+    should_refresh_summary,
+)
 from app.agents.guardrails import (
     assert_safe_teaching_output,
-    check_teaching_output,
     check_teaching_request,
     detect_direct_answer_request,
 )
@@ -696,20 +708,7 @@ def _load_safe_message_context(
         (session_id, SUMMARY_CANDIDATE_MESSAGE_LIMIT),
     ).fetchall()
 
-    safe_messages: list[dict[str, object]] = []
-    for row in reversed(rows):
-        role = str(row.get("role") or "")
-        content = _sanitize_message_for_context(role=role, content=str(row.get("content") or ""))
-        if not content:
-            continue
-        safe_messages.append(
-            {
-                "id": str(row["id"]),
-                "role": "assistant" if role == "agent" else "user",
-                "content": content,
-                "created_at": _isoformat(row.get("created_at")),
-            }
-        )
+    safe_messages = [message.as_dict() for message in safe_messages_from_records(list(reversed(rows)))]
     return safe_messages, total_message_count
 
 
@@ -729,15 +728,12 @@ def _summary_needs_refresh(
     message_count: int,
     learning_stage: str,
 ) -> bool:
-    if not state:
-        return True
-    if not isinstance(state.get("safe_summary"), Mapping):
-        return True
-    refreshed_count = _int_or_zero(state.get("message_count_at_refresh"))
-    if max(0, message_count - refreshed_count) >= SUMMARY_REFRESH_MESSAGE_THRESHOLD:
-        return True
-    refreshed_stage = state.get("learning_stage")
-    return bool(refreshed_stage and str(refreshed_stage) != learning_stage)
+    return should_refresh_summary(
+        state,
+        message_count=message_count,
+        stage=learning_stage,
+        threshold=SUMMARY_REFRESH_MESSAGE_THRESHOLD,
+    ).refresh
 
 
 def _build_refreshed_safe_summary(
@@ -906,13 +902,14 @@ def _conversation_context_from_summary(
 ) -> dict[str, object]:
     raw_summary = summary_state.get("safe_summary") if isinstance(summary_state, Mapping) else {}
     safe_summary = _normalize_safe_summary(raw_summary) if isinstance(raw_summary, Mapping) else _empty_safe_summary()
-    return {
-        "safe_summary": safe_summary,
-        "recent_safe_messages": [dict(message) for message in recent_messages],
-        "current_diagnosis": safe_summary.get("current_stuck_point") or safe_summary.get("last_diagnosis") or "",
-        "last_agent_strategy": safe_summary.get("last_agent_strategy") or "",
-        "avoid_repeating": safe_summary.get("avoid_repeating") or [],
-    }
+    return build_runtime_context_block(
+        safe_summary=safe_summary,
+        recent_messages=recent_messages,
+        current_focus_key="current_stuck_point",
+        fallback_focus_key="last_diagnosis",
+        strategy_key="last_agent_strategy",
+        avoid_key="avoid_repeating",
+    )
 
 
 def _empty_safe_summary() -> dict[str, object]:
@@ -960,61 +957,23 @@ def _response_policy(context: LearningConversationContext, user_content: str) ->
 
 
 def _sanitize_message_for_context(*, role: str, content: str) -> str:
-    limited = _limit_text(content, 1200)
-    if not limited:
-        return ""
-    if role == "user" and detect_direct_answer_request(limited):
-        return "学习者请求跳过过程，需要继续用局部提示引导。"
-    check = check_teaching_request(limited) if role == "user" else check_teaching_output(limited)
-    if check.blocked:
-        return _redacted_context_text(check.category)
-    if detect_direct_answer_request(limited):
-        return "学习者请求跳过过程，需要继续用局部提示引导。"
-    return limited
+    return sanitize_message_content(role=role, content=content, max_length=1200)
 
 
 def _redacted_context_text(category: str) -> str:
-    if category == "hidden_test":
-        return "存在不可展示的内部验证信息。"
-    if category == "reference_answer":
-        return "存在不可展示的内部解法信息。"
-    if category == "provider_error":
-        return "存在不可展示的模型服务或密钥信息。"
-    if category == "direct_answer":
-        return "存在不可展示的完整解法内容。"
-    return "存在不可展示的内部信息。"
+    return redacted_context_text(category)
 
 
 def _sanitize_summary_text(value: object, *, max_length: int = 240) -> str:
-    if value is None:
-        return ""
-    text = _limit_text(str(value), max_length)
-    if not text:
-        return ""
-    if detect_direct_answer_request(text):
-        return "学习者请求跳过过程，需要继续用局部提示引导。"
-    check = check_teaching_output(text)
-    if check.blocked:
-        return _redacted_context_text(check.category)
-    return text
+    return sanitize_summary_text(value, max_length=max_length)
 
 
 def _sanitize_summary_list(value: object) -> list[str]:
-    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
-        return []
-    result: list[str] = []
-    for item in value:
-        text = _sanitize_summary_text(item, max_length=160)
-        if text:
-            result.append(text)
-    return result[:8]
+    return sanitize_summary_list(value)
 
 
 def _normalize_summary_confidence(value: object) -> str:
-    text = str(value or "").lower()
-    if text in {"low", "medium", "high"}:
-        return text
-    return "low"
+    return normalize_summary_confidence(value)
 
 
 def _recommended_next_step_for_stage(stage: str) -> str:
@@ -1026,17 +985,7 @@ def _recommended_next_step_for_stage(stage: str) -> str:
 
 
 def _extract_json_object(content: str) -> dict[str, object] | None:
-    decoder = json.JSONDecoder()
-    for index, char in enumerate(content):
-        if char != "{":
-            continue
-        try:
-            payload, _ = decoder.raw_decode(content[index:])
-        except json.JSONDecodeError:
-            continue
-        if isinstance(payload, dict):
-            return payload
-    return None
+    return extract_json_object(content)
 
 
 def _build_messages(
@@ -1488,10 +1437,7 @@ def _message_id(session_id: str, client_message_id: str) -> str:
 
 
 def _limit_text(value: str, max_length: int) -> str:
-    stripped = value.strip()
-    if len(stripped) <= max_length:
-        return stripped
-    return f"{stripped[:max_length]}..."
+    return limit_text(value, max_length)
 
 
 def _decimal_to_float(value: object) -> float:
@@ -1503,9 +1449,4 @@ def _decimal_to_float(value: object) -> float:
 
 
 def _int_or_zero(value: object) -> int:
-    if value is None:
-        return 0
-    try:
-        return int(cast(Any, value))
-    except (TypeError, ValueError):
-        return 0
+    return int_or_zero(value)

@@ -9,6 +9,7 @@ from typing import Protocol
 
 from psycopg import Connection
 
+from app.agents.agent_domain_contexts import build_onboarding_conversation_runtime_context
 from app.agents.onboarding_conversation_agent import AgentsSDKOnboardingConversationClient
 from app.agents.onboarding_slot_extractor import (
     ExtractedSlots,
@@ -611,6 +612,10 @@ def _build_messages(
     user_content: str,
 ) -> list[dict[str, str]]:
     extracted = slots_from_context(context.extracted_context)
+    runtime_context = build_onboarding_conversation_runtime_context(
+        extracted_context=context.extracted_context,
+        history=context.history,
+    )
     slot_status = json.dumps(
         {
             "language": extracted.language,
@@ -652,6 +657,7 @@ def _build_messages(
                 "- 必填：编程语言、当前水平、学习目标\n"
                 "- 可选：每周时间预算、重点方向\n"
                 f"- 当前已抽取槽位：{slot_status}\n"
+                f"- 安全连续上下文：{json.dumps(runtime_context, ensure_ascii=False, separators=(',', ':'))}\n"
                 "- 已经填好的字段不要再追问。\n"
                 "\n"
                 "风格约束：\n"
@@ -664,11 +670,19 @@ def _build_messages(
         },
     ]
 
-    # Add conversation history
-    for msg in context.history:
-        role = msg["role"]
-        chat_role = "assistant" if role == "agent" else "user"
-        messages.append({"role": chat_role, "content": msg["content"]})
+    recent_messages = runtime_context.get("recent_safe_messages")
+    if not isinstance(recent_messages, list):
+        recent_messages = []
+    if recent_messages:
+        for msg in recent_messages:
+            if not isinstance(msg, Mapping):
+                continue
+            role = str(msg.get("role") or "user")
+            content = str(msg.get("content") or "").strip()
+            if content:
+                messages.append({"role": role, "content": content})
+    else:
+        messages.append({"role": "user", "content": user_content})
 
     return messages
 
