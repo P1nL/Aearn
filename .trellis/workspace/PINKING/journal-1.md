@@ -868,3 +868,36 @@ Closed out the exercise card UI optimization task after confirming the Flutter-s
 ### Next Steps
 
 - None - task complete
+
+
+## Session 27: DeepSeek official Chat Completions provider
+
+**Date**: 2026-05-29
+**Task**: DeepSeek official Chat Completions provider
+**Branch**: `main`
+
+### Summary
+
+Implemented explicit LLM_TYPE=deepseek configuration, official DeepSeek Chat Completions direct JSON and streaming paths, SDK OpenAIProvider(use_responses=False) selection, provider-neutral model wiring, model-key-free tests, and setup documentation for official DeepSeek versus legacy Responses providers.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `6740365` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
