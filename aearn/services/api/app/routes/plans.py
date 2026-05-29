@@ -2,6 +2,10 @@ from fastapi import APIRouter, Header, Request, status
 from fastapi.responses import JSONResponse
 
 from app.agents.onboarding_plan_agent import build_onboarding_plan_context, build_sdk_onboarding_plan_response
+from app.agents.plan_generation_agent import (
+    build_plan_generation_context,
+    build_sdk_plan_generation_response,
+)
 from app.core.errors import error_response
 from app.db.connection import connect
 from app.models.onboarding import PlanConfirmRequest, PlanDraft, PlanGenerateRequest
@@ -61,24 +65,45 @@ def generate_plan(payload: PlanGenerateRequest, request: Request) -> dict[str, o
     deterministic_plan_draft = build_plan_draft(payload, user, course)
     plan_draft = deterministic_plan_draft
     agent_notes = _deterministic_agent_notes(deterministic_plan_draft)
-    sdk_response = build_sdk_onboarding_plan_response(
-        build_onboarding_plan_context(payload, user, course, deterministic_plan_draft)
+
+    # 尝试动态生成学习路线
+    dynamic_modules = build_sdk_plan_generation_response(
+        build_plan_generation_context(payload, course)
     )
-    if sdk_response is not None:
-        sdk_plan_draft = sdk_response.get("plan_draft")
-        if isinstance(sdk_plan_draft, PlanDraft):
-            plan_draft = sdk_plan_draft.model_copy(
-                update={
-                    "source_attribution": _merge_unique_strings(
-                        deterministic_plan_draft.source_attribution,
-                        sdk_plan_draft.source_attribution,
-                    )
-                }
-            )
-            agent_notes = _merge_unique_strings(
-                _deterministic_agent_notes(deterministic_plan_draft),
-                _string_list(sdk_response.get("agent_notes")),
-            )
+    if dynamic_modules is not None:
+        plan_draft = deterministic_plan_draft.model_copy(
+            update={
+                "modules": dynamic_modules,
+                "source_attribution": [
+                    *deterministic_plan_draft.source_attribution,
+                    "Dynamic generation: agent_generated",
+                ],
+            }
+        )
+        agent_notes = [
+            deterministic_plan_draft.runtime_boundary.notice,
+            "学习路线已根据权威文档和用户目标动态生成。",
+        ]
+    else:
+        # Fallback: 使用现有 onboarding plan agent 微调静态模板
+        sdk_response = build_sdk_onboarding_plan_response(
+            build_onboarding_plan_context(payload, user, course, deterministic_plan_draft)
+        )
+        if sdk_response is not None:
+            sdk_plan_draft = sdk_response.get("plan_draft")
+            if isinstance(sdk_plan_draft, PlanDraft):
+                plan_draft = sdk_plan_draft.model_copy(
+                    update={
+                        "source_attribution": _merge_unique_strings(
+                            deterministic_plan_draft.source_attribution,
+                            sdk_plan_draft.source_attribution,
+                        )
+                    }
+                )
+                agent_notes = _merge_unique_strings(
+                    _deterministic_agent_notes(deterministic_plan_draft),
+                    _string_list(sdk_response.get("agent_notes")),
+                )
     if plan_draft.language in {"javascript", "html_css", "python"} and not has_supported_mvp_runtime(plan_draft):
         return error_response(
             request,

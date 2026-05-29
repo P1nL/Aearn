@@ -1,1 +1,5 @@
-{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": "aearn/services/api/app/agents/onboarding_plan_agent.py", "reason": "验证新 agent 是否遵循相同的 client/context/response 模式"}
+{"file": "aearn/services/api/app/models/onboarding.py", "reason": "验证输出是否符合 PlanDraft schema"}
+{"file": "aearn/services/api/app/routes/plans.py", "reason": "验证路由集成和 fallback 逻辑"}
+{"file": ".trellis/tasks/05-29-05-29-dynamic-plan-generation/prd.md", "reason": "需求和验收标准"}
+{"file": ".trellis/tasks/05-29-05-29-dynamic-plan-generation/design.md", "reason": "技术设计约束"}

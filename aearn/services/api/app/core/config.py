@@ -48,6 +48,10 @@ class Settings(BaseModel):
     openai_base_url: str | None = Field(default_factory=lambda: _env_optional("OPENAI_BASE_URL"))
     openai_model: str | None = Field(default_factory=lambda: _env_optional("OPENAI_MODEL"))
     llm_timeout_seconds: float = Field(default_factory=lambda: float(_env_str("LLM_TIMEOUT_SECONDS", "20")))
+    exa_api_key: str | None = Field(default_factory=lambda: _env_optional("EXA_API_KEY"))
+    plan_generation_enabled: bool = Field(
+        default_factory=lambda: _env_str("PLAN_GENERATION_ENABLED", "true").lower() in ("true", "1", "yes")
+    )
 
     @property
     def openai_compatible_configured(self) -> bool:
