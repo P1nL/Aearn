@@ -768,3 +768,36 @@ Added diagnosis-first safe learning tutor context with persisted summaries, expa
 ### Next Steps
 
 - None - task complete
+
+
+## Session 24: Shared Agent runtime context layer
+
+**Date**: 2026-05-29
+**Task**: Shared Agent runtime context layer
+**Branch**: `main`
+
+### Summary
+
+Implemented reusable Agent runtime/context helpers, reused them across learning, onboarding, and review SDK paths, added tests and backend code-spec guidance, and archived the completed Trellis task.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `432b26b` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

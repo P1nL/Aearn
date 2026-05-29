@@ -1,0 +1,6 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend pre-development checklist and source-of-truth expectations"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Preserve MODEL_UNAVAILABLE and public error envelope behavior"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Backend validation, testing, and LLM integration constraints"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Provider plumbing spans config, services, SDK wrappers, docs, and tests"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Provider helper refactor should avoid duplicated URL and parser logic"}
+{"file": ".trellis/tasks/05-29-deepseek-official-chat-completions-provider/research/deepseek-official-api.md", "reason": "Official DeepSeek API and current Aearn provider findings"}
