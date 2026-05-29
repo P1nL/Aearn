@@ -8,11 +8,12 @@ from fastapi.testclient import TestClient
 import app.routes.onboarding as onboarding_route
 import app.routes.plans as plans_route
 from app.agents.onboarding_slot_extractor import ExtractedSlots
+from app.agents.plan_generation_agent import PlanGenerationResult
 from app.core.config import Settings, get_settings
 from app.db.bootstrap import bootstrap_database
 from app.db.connection import connect
 from app.main import app
-from app.models.onboarding import PlanDraft
+from app.models.onboarding import DraftKnowledgePoint, DraftModule, PlanDraft
 from app.services.llm_client import LLMCallError, LLMConfigurationError
 from app.services.onboarding_conversation import (
     OnboardingConversationContext,
@@ -46,10 +47,15 @@ def client() -> TestClient:
 
 
 @pytest.fixture(autouse=True)
-def disable_live_onboarding_plan_agent(monkeypatch: pytest.MonkeyPatch) -> None:
+def disable_live_plan_agents(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         plans_route,
         "build_sdk_onboarding_plan_response",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        plans_route,
+        "build_sdk_plan_generation_response",
         lambda *args, **kwargs: None,
     )
 
@@ -112,6 +118,7 @@ def test_generate_plan_goal_and_material_modes(client: TestClient) -> None:
     goal_draft = goal_response.json()["plan_draft"]
     assert goal_draft["runtime_boundary"]["runtime_tier"] == "browser_preview"
     assert goal_draft["modules"][0]["is_skippable"] is False
+    assert "Fallback: static template" in goal_draft["source_attribution"]
 
     python_course = _course_by_language(client, "python")
     material_response = client.post(
@@ -161,6 +168,51 @@ def test_generate_plan_uses_valid_sdk_candidate(client: TestClient, monkeypatch:
     assert body["plan_draft"]["goal_text"] == "SDK refined DOM validation goal."
     assert "SDK note: keep deterministic DOM templates." in body["agent_notes"]
     assert body["plan_draft"]["runtime_boundary"]["runtime_tier"] == "browser_preview"
+
+
+def test_generate_plan_uses_dynamic_modules_and_source_attribution(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user = _create_user(client)
+    course = _course_by_language(client, "javascript")
+
+    dynamic_result = PlanGenerationResult(
+        modules=_dynamic_modules("javascript"),
+        source_attribution=[
+            "Dynamic generation: agent_generated",
+            "Dynamic source: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide",
+            "Dynamic notes: 参考 MDN JavaScript 指南和用户目标生成路线。",
+        ],
+        model="fake-plan-model",
+    )
+    monkeypatch.setattr(
+        plans_route,
+        "build_sdk_plan_generation_response",
+        lambda *args, **kwargs: dynamic_result,
+    )
+
+    response = client.post(
+        "/api/plans/generate",
+        json={
+            "user_id": user["id"],
+            "mode": "goal_based",
+            "goal_text": "学习 JavaScript DOM 交互。",
+            "course_id": course["id"],
+        },
+    )
+
+    assert response.status_code == 200
+    draft = response.json()["plan_draft"]
+    assert draft["user_id"] == user["id"]
+    assert draft["language_course_id"] == course["id"]
+    assert draft["runtime_boundary"]["runtime_tier"] == "browser_preview"
+    assert draft["modules"][0]["source"] == "agent_generated"
+    assert draft["modules"][0]["title"] == "动态模块1"
+    assert "Dynamic source: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide" in draft[
+        "source_attribution"
+    ]
+    assert "Fallback: static template" not in draft["source_attribution"]
 
 
 def test_generate_plan_failure_paths_and_java_notice(client: TestClient) -> None:
@@ -459,7 +511,7 @@ def test_onboarding_message_stream_triggers_plan_from_first_complete_turn(
     assert route_args["language"] == "python"
     assert route_args["goal_text"] == "学习 Python，聚焦 Web，从零基础入门"
     assert len(route_args["modules"]) >= 5
-    assert route_args["modules"][0]["title"] == "Python basics and value flow"
+    assert route_args["modules"][0]["title"] == "Python 基础与值流动"
 
     with connect() as conn:
         row = conn.execute(
@@ -743,6 +795,33 @@ def _course_by_language(client: TestClient, language: str) -> dict[str, object]:
     course = items[0]
     assert isinstance(course, dict)
     return course
+
+
+def _dynamic_modules(language: str) -> list[DraftModule]:
+    modules: list[DraftModule] = []
+    for index in range(4):
+        modules.append(
+            DraftModule(
+                temp_id=f"mod_draft_{language}_dynamic_{index}",
+                title=f"动态模块{index + 1}",
+                description=f"这是第{index + 1}个动态模块。",
+                order_index=index,
+                is_skippable=index >= 3,
+                estimated_sessions=3,
+                source="agent_generated",
+                knowledge_points=[
+                    DraftKnowledgePoint(
+                        temp_id=f"kp_draft_{language}_dynamic_{index}_{point}",
+                        title=f"动态知识点{index + 1}-{point + 1}",
+                        description=f"这是第{index + 1}个模块的动态知识点。",
+                        skill_tags=["dynamic", "practice"],
+                        source="agent_generated",
+                    )
+                    for point in range(2)
+                ],
+            )
+        )
+    return modules
 
 
 def _parse_sse_events(raw: str) -> list[dict[str, object]]:

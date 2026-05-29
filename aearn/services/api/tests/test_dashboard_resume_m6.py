@@ -5,6 +5,7 @@ import psycopg
 import pytest
 from fastapi.testclient import TestClient
 
+import app.routes.plans as plans_route
 from app.core.config import get_settings
 from app.db.bootstrap import bootstrap_database
 from app.db.connection import connect
@@ -30,6 +31,12 @@ pytestmark = pytest.mark.skipif(
 def client() -> TestClient:
     bootstrap_database()
     return TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def disable_live_plan_agents(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(plans_route, "build_sdk_plan_generation_response", lambda *args, **kwargs: None)
+    monkeypatch.setattr(plans_route, "build_sdk_onboarding_plan_response", lambda *args, **kwargs: None)
 
 
 def test_dashboard_returns_resume_entry_and_due_notice_without_forcing_review(client: TestClient) -> None:

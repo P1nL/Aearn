@@ -5,7 +5,7 @@ import logging
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Protocol, cast
+from typing import Any, Protocol, cast
 
 from agents import Runner
 
@@ -24,7 +24,6 @@ from app.core.config import Settings, get_settings
 from app.models.onboarding import (
     DraftKnowledgePoint,
     DraftModule,
-    Language,
     PlanGenerateRequest,
 )
 from app.services.llm_client import LLMCallError, LLMConfigurationError, LLMInvalidResponseError
@@ -139,6 +138,13 @@ class PlanGenerationJsonResponse:
     model: str
 
 
+@dataclass(frozen=True)
+class PlanGenerationResult:
+    modules: list[DraftModule]
+    source_attribution: list[str]
+    model: str
+
+
 class PlanGenerationClient(Protocol):
     @property
     def model(self) -> str: ...
@@ -212,6 +218,8 @@ def build_plan_generation_client(
         return None
     if not effective_settings.plan_generation_enabled:
         return None
+    if not effective_settings.exa_api_key:
+        return None
     try:
         return AgentsSDKPlanGenerationClient(effective_settings, runner=runner)
     except LLMConfigurationError:
@@ -224,10 +232,10 @@ def build_plan_generation_context(
 ) -> PlanGenerationContext:
     language = str(course.get("language") or payload.language or "")
     doc_urls = AUTHORITATIVE_DOCS.get(language, [])
-    goal_text = (payload.goal_text or "").strip()
+    goal_text = limit_text((payload.goal_text or "").strip(), 600)
     if not goal_text and payload.materials:
         titles = [m.title for m in payload.materials if m.title]
-        goal_text = f"学习提供的材料: {', '.join(titles)}" if titles else "学习编程材料"
+        goal_text = limit_text(f"学习提供的材料: {', '.join(titles)}" if titles else "学习编程材料", 600)
 
     time_budget = payload.time_budget.model_dump(mode="json") if payload.time_budget else None
 
@@ -237,7 +245,7 @@ def build_plan_generation_context(
         goal_text=goal_text,
         mode=payload.mode,
         time_budget=time_budget,
-        profession=payload.profession or "",
+        profession=limit_text(payload.profession or "", 120),
         doc_urls=doc_urls,
     )
 
@@ -247,7 +255,7 @@ def build_sdk_plan_generation_response(
     *,
     settings: Settings | None = None,
     client: PlanGenerationClient | None = None,
-) -> list[DraftModule] | None:
+) -> PlanGenerationResult | None:
     resolved_client = client
     if resolved_client is None:
         resolved_client = build_plan_generation_client(settings)
@@ -256,9 +264,8 @@ def build_sdk_plan_generation_response(
 
     for attempt in range(2):
         try:
-            result = resolved_client.complete_json(context, temperature=0.7)
-            modules = _validate_and_parse(result.content, context.language)
-            return modules
+            result = resolved_client.complete_json(context, temperature=None)
+            return _validate_and_parse(result.content, context.language, result.model)
         except SAFE_GENERATION_EXCEPTIONS as exc:
             if attempt == 0:
                 logger.warning("Plan generation attempt 1 failed, retrying: %s", exc)
@@ -292,7 +299,7 @@ def _build_messages(context: PlanGenerationContext) -> list[dict[str, str]]:
     ]
 
 
-def _validate_and_parse(payload: Mapping[str, object], language: str) -> list[DraftModule]:
+def _validate_and_parse(payload: Mapping[str, object], language: str, model: str) -> PlanGenerationResult:
     modules_raw = payload.get("modules")
     if not isinstance(modules_raw, list):
         raise LLMInvalidResponseError("输出缺少 modules 数组")
@@ -306,13 +313,22 @@ def _validate_and_parse(payload: Mapping[str, object], language: str) -> list[Dr
         module = _parse_module(mod_raw, i, language)
         modules.append(module)
 
-    return modules
+    source_urls = _validate_source_urls(payload.get("source_urls"))
+    generation_notes = _validate_generation_notes(payload.get("generation_notes"))
+    source_attribution = ["Dynamic generation: agent_generated"]
+    source_attribution.extend(f"Dynamic source: {url}" for url in source_urls)
+    if generation_notes:
+        source_attribution.append(f"Dynamic notes: {generation_notes}")
+
+    return PlanGenerationResult(modules=modules, source_attribution=source_attribution, model=model)
 
 
 def _parse_module(raw: Mapping[str, object], index: int, language: str) -> DraftModule:
     temp_id = str(raw.get("temp_id", ""))
     if not _TEMP_ID_MODULE_RE.match(temp_id):
         raise LLMInvalidResponseError(f"模块 temp_id 格式无效: {temp_id}")
+    if not temp_id.startswith(f"mod_draft_{language}_"):
+        raise LLMInvalidResponseError(f"模块 temp_id 必须以 mod_draft_{language}_ 开头")
 
     title = str(raw.get("title", ""))
     description = str(raw.get("description", ""))
@@ -331,25 +347,27 @@ def _parse_module(raw: Mapping[str, object], index: int, language: str) -> Draft
     for kp_raw in kps_raw:
         if not isinstance(kp_raw, Mapping):
             raise LLMInvalidResponseError(f"模块 {index} 知识点不是对象")
-        knowledge_points.append(_parse_knowledge_point(kp_raw, index))
+        knowledge_points.append(_parse_knowledge_point(kp_raw, index, language))
 
     return DraftModule(
         temp_id=temp_id,
         title=title,
         description=description,
-        order_index=int(raw.get("order_index", index)),
+        order_index=_int_or_default(raw.get("order_index"), index),
         is_skippable=bool(raw.get("is_skippable", True)),
         is_adjustable=True,
-        estimated_sessions=int(raw.get("estimated_sessions", 3)),
+        estimated_sessions=_int_or_default(raw.get("estimated_sessions"), 3),
         source="agent_generated",
         knowledge_points=knowledge_points,
     )
 
 
-def _parse_knowledge_point(raw: Mapping[str, object], module_index: int) -> DraftKnowledgePoint:
+def _parse_knowledge_point(raw: Mapping[str, object], module_index: int, language: str) -> DraftKnowledgePoint:
     temp_id = str(raw.get("temp_id", ""))
     if not _TEMP_ID_KP_RE.match(temp_id):
         raise LLMInvalidResponseError(f"知识点 temp_id 格式无效: {temp_id}")
+    if not temp_id.startswith(f"kp_draft_{language}_"):
+        raise LLMInvalidResponseError(f"知识点 temp_id 必须以 kp_draft_{language}_ 开头")
 
     title = str(raw.get("title", ""))
     description = str(raw.get("description", ""))
@@ -381,6 +399,39 @@ def _parse_knowledge_point(raw: Mapping[str, object], module_index: int) -> Draf
 def _assert_chinese(text: str, field_name: str) -> None:
     if not _CJK_RE.search(text):
         raise LLMInvalidResponseError(f"{field_name} 必须包含中文字符")
+
+
+def _validate_source_urls(value: object) -> list[str]:
+    if not isinstance(value, list) or not value:
+        raise LLMInvalidResponseError("Plan generation output must include source_urls")
+    urls: list[str] = []
+    for item in value[:8]:
+        url = str(item or "").strip()
+        if not url:
+            continue
+        if not url.startswith(("https://", "http://")):
+            raise LLMInvalidResponseError(f"source_urls contains invalid URL: {url}")
+        urls.append(url)
+    if not urls:
+        raise LLMInvalidResponseError("Plan generation output source_urls is empty")
+    return urls
+
+
+def _validate_generation_notes(value: object) -> str | None:
+    if value is None:
+        return None
+    note = limit_text(value, 260)
+    if not note:
+        return None
+    _assert_chinese(note, "generation_notes")
+    assert_safe_teaching_output(note)
+    return note
+
+
+def _int_or_default(value: object, default: int) -> int:
+    if value is None:
+        return default
+    return int(cast(Any, value))
 
 
 def _parse_json_object(content: str) -> dict[str, object]:

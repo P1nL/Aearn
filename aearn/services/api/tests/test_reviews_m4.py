@@ -4,6 +4,7 @@ import psycopg
 import pytest
 from fastapi.testclient import TestClient
 
+import app.routes.plans as plans_route
 from app.core.config import Settings, get_settings
 from app.db.bootstrap import bootstrap_database
 from app.db.connection import connect
@@ -52,6 +53,8 @@ def disable_review_coach_sdk(monkeypatch: pytest.MonkeyPatch) -> None:
             "generation_model": "fake-review-coach",
         },
     )
+    monkeypatch.setattr(plans_route, "build_sdk_plan_generation_response", lambda *args, **kwargs: None)
+    monkeypatch.setattr(plans_route, "build_sdk_onboarding_plan_response", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         learning_session_repository,
         "build_sdk_explanation_check_response",

@@ -25,12 +25,12 @@ class _HeadingExtractor(html.parser.HTMLParser):
         self._current_text: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag in ("h1", "h2", "h3", "h4"):
+        if tag in ("h1", "h2", "h3"):
             self._current_level = int(tag[1])
             self._current_text = []
 
     def handle_endtag(self, tag: str) -> None:
-        if tag in ("h1", "h2", "h3", "h4") and self._current_level is not None:
+        if tag in ("h1", "h2", "h3") and self._current_level is not None:
             text = " ".join(self._current_text).strip()
             if text:
                 self._headings.append((self._current_level, text))
@@ -88,10 +88,12 @@ def build_web_tools(settings: Settings | None = None) -> list[Any]:
     @function_tool(
         name_override="web_search",
         description_override="Search for authoritative programming documentation. Returns a list of titles and URLs.",
+        strict_mode=False,
     )
-    async def web_search(query: str) -> str:
+    async def web_search(query: str, max_results: int = _MAX_SEARCH_RESULTS) -> str:
         try:
-            results = await _exa_search(query, api_key, _MAX_SEARCH_RESULTS)
+            bounded_max_results = max(1, min(max_results, _MAX_SEARCH_RESULTS))
+            results = await _exa_search(query, api_key, bounded_max_results)
         except Exception as exc:
             logger.warning("web_search failed: %s", exc)
             return "搜索失败，请使用已知的文档 URL。"
