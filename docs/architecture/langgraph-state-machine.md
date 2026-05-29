@@ -34,7 +34,7 @@
 6. 长上下文不得无限累积，节点进入前必须由 `context_assembler` 组装最小上下文。
 7. 前端 UI 不暴露 `Attempt(run)` / `Attempt(submit)` 两个内部概念，只展示运行、预览、测试结果和提交结果等自然操作；后端仍必须保留两类事实记录。
 8. 学习页的代码编辑器、预览和测试结果由对话中的生成式 UI 承载，不作为固定三栏页面或独立 `CodeDraftPage`。
-9. MVP 不包含独立复盘草稿、`publishDrawer` 或面试讲述草稿流程；Agent 只能在笔记页或笔记抽屉中辅助补全用户笔记。
+9. 第一版基线不包含独立复盘草稿、`publishDrawer` 或面试讲述草稿流程；Agent 只能在笔记页或笔记抽屉中辅助补全用户笔记。
 10. 学习页先走概念优先阶段；练习 UI 只能在费曼复述通过或用户明确提前练习后通过生成式工具调用出现。
 
 ## State Schema
@@ -295,25 +295,30 @@ collect_goal
 - 每个模块必须能落到可练习的 `KnowledgePoint`
 - 通过结构化 `show_learning_route` 工具事件向建档对话展示路线卡片，不将完整路线写入普通 Agent 文本
 - 用户以自然语言提出修改时覆盖当前暂存草稿，仅最新路线卡片可确认
+- post-MVP 动态路线生成可参考权威文档目录和用户目标生成 modules，但不得绕过课程 catalog、runtime boundary、`PlanDraft` validation 或 fallback 归因
 
 输出：
 
 - `plan_draft`
 - `modules`
 - `agent_notes`
+- `source_attribution`
 
 #### `validate_plan_draft`
 
 校验规则：
 
 - 每个模块至少包含一个可练习知识点
-- MVP 中至少包含一个 `browser_preview` 或 `python_stdout_test` 练习
+- 第一版基线中至少包含一个 `browser_preview` 或 `python_stdout_test` 练习
 - 不允许把课程扩成泛化知识学习计划
+- 未登记到 `Language`、数据库约束、课程 catalog 和 runtime boundary 的语言不得作为可确认计划
 
 失败分支：
 
 - 练习不足 -> 回到 `generate_plan_draft`
 - runtime 承诺超出范围 -> 回到 `select_language_course`
+- 动态生成失败且有安全课程模板 -> 回退到模板并记录 fallback 来源
+- 动态生成失败且无安全 fallback -> 返回可恢复错误
 
 #### `confirm_plan`
 

@@ -6,7 +6,7 @@
 
 ## 目标
 
-本文件是第一版可实施 API 契约，承接产品流程、评分规则、状态机和数据库 Schema。
+本文件是第一版可实施 API 契约，承接产品流程、评分规则、状态机和数据库 Schema。第一版已经作为稳定基线；post-MVP / v1.1 增强必须复用或显式扩展本契约，不能通过隐式字段、前端本地判断或 provider 原始响应绕开公共 API。
 
 第一版 API 必须支撑核心闭环：
 
@@ -65,6 +65,7 @@ V1 使用本地单用户或轻量用户机制，不强制登录态。所有需�
 - `Attempt.attempt_type=run` / `submit` / `review_submit` 是后端事实枚举，用于运行留痕、评分、FSRS 和追溯。
 - 前端 UI 不把 `run` / `submit` 暴露为“Attempt 类型”，只展示“运行 / 预览 / 提交结果”等自然操作。
 - 设置页只允许修改用户偏好和模型配置，不提供修改评分规则、Attempt 必填字段或 FSRS 固定规则的 API。
+- `language` 仍是服务端拥有的公开枚举。动态路线生成可以裁剪已登记课程的模块内容，但新增 TypeScript、Rust、Go 等公开语言必须同步扩展 Pydantic `Language`、数据库 CHECK 约束、课程 catalog、runtime boundary、API 示例和验收用例。
 
 ## 统一错误结构
 
@@ -129,7 +130,9 @@ V1 使用本地单用户或轻量用户机制，不强制登录态。所有需�
 
 ### 模型必需契约
 
-下列 AI 驱动接口必须依赖已配置且可用的模型 API：建档对话槽位提取和路线生成、学习页对话、练习提示/错因解释/解释检查、复习页教练文案和复习对话、笔记辅助补全。模型未配置、不可连接、调用失败、流式输出为空、输出不符合 schema，或 guardrail 判定输出不可安全展示时，接口必须返回 `MODEL_UNAVAILABLE`，不得退回关键词解析或确定性文案。已命中幂等记录的历史成功响应可直接回放；服务端课程模板和 runner/FSRS 等非 AI 判定逻辑仍可保持确定性，因为它们不是模型失败兜底。
+下列 AI 驱动接口必须依赖已配置且可用的模型 API：建档对话槽位提取、学习页对话、练习提示/错因解释/解释检查、复习页教练文案和复习对话、笔记辅助补全。模型未配置、不可连接、调用失败、流式输出为空、输出不符合 schema，或 guardrail 判定输出不可安全展示时，接口必须返回 `MODEL_UNAVAILABLE`，不得退回关键词解析或确定性文案。
+
+动态路线生成是 post-MVP 增强，不改变上面的模型失败总则：槽位提取和普通对话仍不得关键词兜底。它允许在已验证用户、课程 catalog 和 runtime boundary 的前提下，从 agent-generated modules 回退到服务端拥有的 `COURSE_TEMPLATES` 或已校验 onboarding plan candidate；fallback 必须写入 `source_attribution` 或 `agent_notes`，且不得承诺未登记语言、未支持 runtime 或隐藏测试能力。已命中幂等记录的历史成功响应可直接回放；服务端课程模板和 runner/FSRS 等非 AI 判定逻辑仍可保持确定性，因为它们不是模型失败兜底。
 
 ## 分页、排序与过滤
 
@@ -861,7 +864,7 @@ Request JSON 示例：
 
 #### `POST /api/plans/generate`
 
-用途：根据目标、资料或澄清答案生成可确认的 `plan_draft`，不直接创建正式 `LearningPlan`。
+用途：根据目标、资料或澄清答案生成可确认的 `plan_draft`，不直接创建正式 `LearningPlan`。post-MVP 动态路线生成开启时，后端可先用 `plan_generation_agent` 参考权威文档目录和用户目标生成 modules；成功结果仍必须保持 `PlanDraft` 结构，失败则回退到服务端拥有的课程模板或已校验 SDK candidate。
 
 Request JSON 示例：
 
@@ -947,9 +950,9 @@ HTTP 状态码：
 
 错误码：`USER_NOT_FOUND`、`COURSE_NOT_FOUND`、`PLAN_DRAFT_INVALID`、`VALIDATION_ERROR`、`EVALUATION_INVALID_JSON`
 
-幂等/重试说明：建议幂等键为 `user_id + goal_text_hash + course_id + materials_hash`。流式模式可先发送 `agent_message` 澄清，再发送最终 `done`。
+幂等/重试说明：建议幂等键为 `user_id + goal_text_hash + course_id + materials_hash`。流式模式可先发送 `agent_message` 澄清，再发送最终 `done`。动态路线生成失败但 fallback 成功时不暴露 provider 原始错误；如果课程不存在、语言未登记、fallback 草稿也无法通过校验，则返回 `COURSE_NOT_FOUND` 或 `PLAN_DRAFT_INVALID`。
 
-相关数据表/状态机节点：读取 `User`、`LanguageCourse`、`RuntimeProfile`、`Exercise`；`collect_goal`、`clarify_profile`、`select_language_course`、`generate_plan_draft`、`validate_plan_draft`。
+相关数据表/状态机节点：读取 `User`、`LanguageCourse`、`RuntimeProfile`、`Exercise`；`collect_goal`、`clarify_profile`、`select_language_course`、`generate_plan_draft`、`validate_plan_draft`。动态增强额外使用 `plan_generation_agent`、`web_search`、`fetch_doc_toc`，但不拥有正式计划写入。
 
 #### `POST /api/plans`
 
@@ -1952,7 +1955,7 @@ HTTP 状态码：
 
 #### `GET /api/notes`
 
-用途：查询知识点相关笔记。MVP 的笔记入口只来自笔记页和笔记抽屉，不存在独立复盘草稿页。
+用途：查询知识点相关笔记。第一版基线的笔记入口只来自笔记页和笔记抽屉，不存在独立复盘草稿页。
 
 Request JSON 示例：
 
@@ -2130,9 +2133,9 @@ HTTP 状态码：
 
 相关数据表/状态机节点：`Note`；只进入笔记辅助补全链路，不进入独立复盘草稿持久化。
 
-### 7. 后置能力：代码复盘草稿（非 MVP）
+### 7. 后置能力：代码复盘草稿（非第一版基线）
 
-`CodeDraft` 与 `/api/code-drafts/*` 不属于 Draft V1.1 的主流程。MVP 已移除独立复盘草稿流程、`publishDrawer` 用户路径、`CodeDraftPage` 一级页面和面试讲述草稿；第一版不实现下列接口，也不将其纳入前端契约测试、SSE 白名单或 dashboard 入口。
+`CodeDraft` 与 `/api/code-drafts/*` 不属于 Draft V1.1 的主流程。第一版基线已移除独立复盘草稿流程、`publishDrawer` 用户路径、`CodeDraftPage` 一级页面和面试讲述草稿；第一版不实现下列接口，也不将其纳入前端契约测试、SSE 白名单或 dashboard 入口。
 
 以下契约仅作为后续版本的保留草案，若重新启用，必须先补产品流程、状态机和 schema migration，再进入实现。
 
@@ -2181,7 +2184,7 @@ HTTP 状态码：
 
 错误码：`NOTE_NOT_FOUND`、`ATTEMPT_NOT_FOUND`、`VALIDATION_ERROR`、`EVALUATION_INVALID_JSON`
 
-幂等/重试说明：后置草案暂按 `draft_type + attempt_id + note_id` 设计；不进入 MVP 幂等总则。
+幂等/重试说明：后置草案暂按 `draft_type + attempt_id + note_id` 设计；不进入第一版基线幂等总则。
 
 相关数据表/状态机节点：`CodeDraft`、`Note`、`Attempt`、`LearningSession`；`load_retrospective_sources`、`choose_draft_type`、`generate_code_draft`、`validate_code_draft`、`persist_code_draft`。
 
@@ -2444,6 +2447,7 @@ HTTP 状态码：
 字段变更必须同步检查：
 
 - `plan_draft` 结构变化必须同步 `POST /api/plans/generate`、`POST /api/plans`、`generate_plan_draft`、`validate_plan_draft`。
+- `source_attribution` 语义变化必须同步 onboarding route card、动态路线生成、fallback 文案和验收计划。
 - `LearningPlan`、`KnowledgePoint`、`Exercise`、`Attempt`、`ReviewState`、`RuntimeProfile` 字段变化必须同步响应示例。
 - `code_completion_result` 变化必须同步 `submit`、`review exercise-result`、SSE `evaluation_result`。
 - `fsrs_rating`、`due_at` 或 `next_action` 变化必须同步 dashboard、review metrics 和前端契约测试。
@@ -2454,6 +2458,7 @@ HTTP 状态码：
 
 - 账号注册、登录、权限组和外部分发 API。
 - 代码仓库级导入、视频解析和大型多文件项目运行。
+- 未同步扩展 `Language`、数据库约束、课程 catalog 和 runtime boundary 的任意语言公开支持。
 - Java / C++ 真实编译沙箱。
 - WebSocket 事件通道。V1 只使用 SSE。
 - OpenAPI 自动生成文件。本文先作为人工契约，后续再转 OpenAPI。

@@ -2,7 +2,7 @@
 
 日期：2026-05-24
 状态：Active V1.1
-适用范围：当前 `Aearn MVP` 的本机开发环境、服务依赖、版本边界、运行顺序和验收命令
+适用范围：当前 Aearn 第一版稳定基线和 post-MVP / v1.1 增强的本机开发环境、服务依赖、版本边界、运行顺序和验收命令
 
 ## 目标
 
@@ -28,7 +28,7 @@ aearn/
 ### 必须保留的当前输入
 
 - `docs/`：产品、架构、API、数据库、前端交互和验收规格的 source of truth。
-- `aearn/`：正式 MVP runtime、桌面端、API、worker、共享包和本地基础设施。
+- `aearn/`：正式 runtime、桌面端、API、worker、共享包和本地基础设施。
 
 ### 不再保留
 
@@ -88,8 +88,8 @@ corepack prepare pnpm@latest --activate
 |---|---|---|
 | Python | 3.11 或 3.12 | FastAPI、LangGraph、runner service |
 | uv | 建议使用 | Python 依赖与虚拟环境管理 |
-| LangChain | `1.2.0` | 当前 MVP 基线 |
-| LangGraph | `1.0.5` | 当前 MVP 基线 |
+| LangChain | `1.2.0` | 当前第一版基线 |
+| LangGraph | `1.0.5` | 当前第一版基线 |
 | FastAPI | `0.128.0` | API 服务 |
 | Redis client | `7.1.0` | session、Celery broker |
 | Celery | `5.5.3` | FSRS 调度与异步任务 |
@@ -155,6 +155,8 @@ OPENAI_API_KEY=
 OPENAI_BASE_URL=
 OPENAI_MODEL=
 LLM_TIMEOUT_SECONDS=20
+PLAN_GENERATION_ENABLED=true
+EXA_API_KEY=
 
 TZ=Asia/Shanghai
 FSRS_SCHEDULER_VERSION=fsrs_v1_default
@@ -168,7 +170,7 @@ RUNNER_COMPILED_SANDBOX_ENABLED=false
 
 ### 第三方 OpenAI-compatible 模型 API
 
-MVP 第一条真实模型路径是后端 `POST /api/learning-sessions/{session_id}/attempts/{attempt_id}/explain-error`。模型配置只从 `aearn/.env` 读取，不从桌面设置页或数据库读取。
+第一版第一条真实模型路径是后端 `POST /api/learning-sessions/{session_id}/attempts/{attempt_id}/explain-error`。模型配置只从 `aearn/.env` 读取，不从桌面设置页或数据库读取。
 
 ```env
 LLM_TYPE=openai
@@ -204,6 +206,22 @@ Invoke-RestMethod -Uri "https://api.lattecode.net/v1/models" -Headers $headers
 ```
 
 LatteCode `responses` 路径要求流式请求。后端客户端会自动发送 `stream=true`，并使用 `text.format=json_object` 约束 JSON 输出；不要改回非流式 `chat/completions`。
+
+### 动态学习路线生成
+
+post-MVP 动态路线生成复用后端模型配置，并额外读取：
+
+```env
+PLAN_GENERATION_ENABLED=true
+EXA_API_KEY=<optional-exa-api-key>
+```
+
+配置说明：
+
+- `PLAN_GENERATION_ENABLED=false` 会关闭动态路线生成，直接回到第一版课程模板 / 已校验 onboarding plan candidate 路径。
+- `EXA_API_KEY` 用于 `web_search` 工具。当前 `fetch_doc_toc` 和 `web_search` 作为同一组 web tools 注册；未配置 `EXA_API_KEY` 时，动态 agent 不能调用 web tools，应按 fallback 路径验证。
+- 动态路线生成仍必须保留 `PlanDraft` 响应结构、runtime boundary 和 `source_attribution`；失败时不得向用户暴露 raw provider error、API key 或工具返回原文。
+- 新语言公开支持不是只加权威文档 URL；还必须同步扩展 `Language` 枚举、数据库 CHECK、课程 catalog、runtime boundary、API 示例和验收用例。
 
 常见失败签名：
 

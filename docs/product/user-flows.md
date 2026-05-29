@@ -8,6 +8,8 @@
 
 本文件把桌面端原型中的用户路径升级为第一版可实施用户流程。它用于约束产品、前端、后端、Agent 状态机和验收用例之间的边界。
 
+当前阶段：第一版核心闭环已经作为稳定基线，后续可以进入 post-MVP / v1.1 增强。增强允许扩展路线生成、模型 provider 和练习 UI 体验，但必须继续遵守第一版基线契约：`PlanDraft` 可确认、latest-card-wins、运行能力边界可见、评分/FSRS 由后端决定、模型失败不泄露 provider 细节。
+
 第一版核心闭环：
 
 ```text
@@ -41,7 +43,7 @@
 ### 关键产品决定
 
 - `Attempt(run)` 和 `Attempt(submit)` 在前端 UI 上不暴露为两个概念，用户只看到“运行 / 预览 / 提交结果”这类自然操作；后端必须继续区分事实类型，用于评分、FSRS 和追溯。
-- MVP 不保留独立复盘草稿流程，不做 `publishDrawer` 用户路径；只保留“笔记页 + 笔记抽屉”。
+- 第一版基线不保留独立复盘草稿流程，不做 `publishDrawer` 用户路径；只保留“笔记页 + 笔记抽屉”。
 - 普通打开应用时默认进入当前学习，并在应用内提示复习。
 - 中断多日且复习风险高时，才优先进入复习。
 - 代码编辑器、预览和测试结果以生成式 UI 的形式出现在对话中，不作为固定三栏页面。
@@ -74,12 +76,15 @@
 - 每轮只追问一个关键缺失信息，让用户明确知道下一步如何回答。
 - 信息足够后用一句短提示引出学习路线卡片，不在普通文本回复中展开完整路线。
 - 用户继续输入调整需求时，重新生成最新学习路线卡片。
+- post-MVP 动态路线生成开启时，可参考权威文档目录和用户目标裁剪模块；关闭或失败时，仍可回退到已审核的课程模板。
 - 将“AI 生成代码理解”能力嵌入各练习点，而不是单独作为一条孤立路线。
 - 标注主干模块和可选模块。
 
 ### 系统后台动作
 
 - 所需槽位齐备后生成并暂存 `plan_draft`，通过 `show_learning_route` 工具事件渲染路线卡片。
+- 动态路线生成不得改变 `PlanDraft` 公共结构；生成内容必须通过服务端 schema、中文内容、安全输出、runtime boundary 和主干模块校验。
+- `source_attribution` 必须说明路线来自动态文档参考、用户资料、课程模板，或 fallback。
 - 时间预算不是首次生成卡片的必填项，后续补充时间会生成新版草稿并在卡片展示新的学习节奏。
 - 仅最新卡片可以确认当前暂存草稿；旧卡片的 `开始学习` 禁用。
 - 校验主干模块不可跳过。
@@ -114,6 +119,7 @@
 ### 失败 / 空状态
 
 - 输入过短时不生成草稿。
+- 动态路线生成、权威文档抓取或 LLM 输出校验失败时，允许回退到已审核 `COURSE_TEMPLATES`；没有安全模板或课程 catalog 时返回可恢复错误，不得承诺任意语言可运行。
 - 主干模块不可跳过。
 - API 离线时允许保留输入，但不可确认计划。
 - 生成失败时保留用户原始目标和澄清答案。
@@ -566,7 +572,7 @@
 
 ### 设置分类
 
-| 分类 | MVP 功能 |
+| 分类 | 第一版功能 |
 |---|---|
 | 外观 | 主题、视觉密度、侧栏、字号或动效 |
 | 模型设置 | 用户 API 配置、提示模型、错因解释模型、笔记辅助模型 |
@@ -692,7 +698,7 @@
 
 ## 已移除 / 后置流程
 
-### MVP 已移除
+### 第一版基线已移除
 
 - 独立复盘草稿流程。
 - `publishDrawer` 作为用户主流程。
@@ -703,6 +709,7 @@
 
 - 复杂资料导入。
 - 任意多语言运行。
+- 未扩展 `Language` 枚举、数据库约束、课程 catalog 和 runtime boundary 前的任意语言公开支持。
 - 外部分发和账号登录。
 - SQL 学习路径。
 
@@ -713,11 +720,11 @@
 | 文档 | 已同步的点 |
 |---|---|
 | `docs/product/frontend-interaction-spec.md` | 移除 `CodeDraftPage` 主流程，调整设置页分类，学习页改为生成式 UI |
-| `docs/architecture/api-contract.md` | 将独立 `code-drafts` API 降级为后置能力，保留 Note 辅助补全 |
-| `docs/architecture/langgraph-state-machine.md` | 将 MVP 主流程从 retrospective graph 改为 note assist graph |
-| `docs/qa/acceptance-test-plan.md` | 删除独立草稿生成验收，新增笔记抽屉和生成式 UI 验收 |
-| `docs/architecture/database-schema.md` | 将 `code_drafts` 降级为后置能力，MVP 只保留 Note 持久化 |
-| `docs/plans/learning-agent-implementation-plan.md` | 将里程碑改为生成式 UI、Attempt 事实记录和笔记辅助补全 |
+| `docs/architecture/api-contract.md` | 将独立 `code-drafts` API 降级为后置能力，保留 Note 辅助补全；补充动态路线生成和 fallback 契约 |
+| `docs/architecture/langgraph-state-machine.md` | 将第一版主流程从 retrospective graph 改为 note assist graph，并补充动态路线生成校验边界 |
+| `docs/qa/acceptance-test-plan.md` | 删除独立草稿生成验收，新增笔记抽屉、生成式 UI 和动态路线生成验收 |
+| `docs/architecture/database-schema.md` | 将 `code_drafts` 降级为后置能力，第一版基线只保留 Note 持久化 |
+| `docs/plans/learning-agent-implementation-plan.md` | 将里程碑改为生成式 UI、Attempt 事实记录、笔记辅助补全和 post-MVP 工作队列 |
 
 ## Mermaid 总览
 

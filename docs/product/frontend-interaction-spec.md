@@ -94,6 +94,7 @@ OnboardingPage
 - `tool_calls.show_learning_route`
 - `plan_draft`
 - `modules`
+- `source_attribution`
 - `runtime_tier`：`browser_preview` / `python_stdout_test` / `compiled_sandbox_later`
 
 ### 主要按钮行为
@@ -115,6 +116,7 @@ OnboardingPage
 | stale route | 新卡片已替换旧卡片 | 保留旧卡片内容，只禁用旧卡片的 `开始学习` |
 | confirm | 重新生成、破坏主干调整、确认计划 | 弹出 `GlobalConfirmDialog` |
 | unsupported notice | `runtime_tier=compiled_sandbox_later` | 明确 Java/C++ 第一版不提供完整运行沙箱 |
+| fallback notice | 动态路线生成失败但模板 fallback 成功 | 保持可确认路线卡片，展示简短来源说明，不暴露 provider 原始错误 |
 
 ## 页面 1：`LearningWorkspacePage`
 
@@ -393,7 +395,7 @@ SettingsPage
 
 ### 设置分类
 
-| 分类 | MVP 功能 |
+| 分类 | 第一版功能 |
 |---|---|
 | 外观 | 主题、视觉密度、侧栏、字号或动效 |
 | 模型设置 | 用户 API 配置、提示模型、错因解释模型、笔记辅助模型 |
