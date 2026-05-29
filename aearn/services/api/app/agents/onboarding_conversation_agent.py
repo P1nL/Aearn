@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 from typing import cast
 
+from app.agents.guardrails import build_teaching_guardrails
 from app.agents.sdk_runtime import (
     AgentsSDKRunner,
     build_agent,
@@ -39,12 +40,15 @@ class AgentsSDKOnboardingConversationClient:
         temperature: float | None = None,
     ) -> Iterable[str]:
         instructions, input_text = split_chat_messages(messages)
+        input_guardrails, output_guardrails = build_teaching_guardrails()
         agent = build_agent(
             name=ONBOARDING_CONVERSATION_AGENT_NAME,
             instructions=instructions,
             model=self.model,
             temperature=temperature,
             tools=[],
+            input_guardrails=input_guardrails,
+            output_guardrails=output_guardrails,
         )
         runner = self._runner
         if runner is None:

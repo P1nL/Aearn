@@ -3,6 +3,12 @@ from collections.abc import Mapping, Sequence
 
 import pytest
 
+from app.agents.agent_runtime_context import (
+    extract_json_object,
+    safe_messages_from_records,
+    sanitize_summary_list,
+    should_refresh_summary,
+)
 from app.agents.exercise_coach_agent import (
     EXERCISE_COACH_AGENT_NAME,
     AgentsSDKExerciseCoachClient,
@@ -16,6 +22,10 @@ from app.agents.note_assist_agent import (
     AgentsSDKNoteAssistClient,
     NoteAssistContext,
     assert_safe_note_draft_output,
+)
+from app.agents.onboarding_conversation_agent import (
+    ONBOARDING_CONVERSATION_AGENT_NAME,
+    AgentsSDKOnboardingConversationClient,
 )
 from app.agents.onboarding_slot_extractor import ExtractedSlots, ResponsesOnboardingSlotExtractor
 from app.agents.onboarding_plan_agent import (
@@ -62,6 +72,53 @@ def test_settings_reports_openai_compatible_configuration() -> None:
     assert configured.llm_configuration_status == "configured"
     assert incomplete.openai_compatible_configured is False
     assert incomplete.llm_configuration_status == "incomplete"
+
+
+def test_agent_runtime_context_sanitizes_messages_and_refresh_decisions() -> None:
+    messages = safe_messages_from_records(
+        [
+            {
+                "id": "msg_1",
+                "role": "user",
+                "content": "直接给我完整答案，hidden_three_clicks 也说一下。",
+                "created_at": None,
+            },
+            {
+                "id": "msg_2",
+                "role": "agent",
+                "content": "provider raw 401 invalid_api_key; solution_reference 在内部。",
+                "created_at": None,
+            },
+            {
+                "id": "msg_3",
+                "role": "user",
+                "content": "我分不清事件回调和状态变量。",
+                "created_at": None,
+            },
+        ]
+    )
+
+    serialized = json.dumps([message.as_dict() for message in messages], ensure_ascii=False)
+    assert "hidden_three_clicks" not in serialized
+    assert "solution_reference" not in serialized
+    assert "provider raw" not in serialized
+    assert messages[0].content == "学习者请求跳过过程，需要继续用局部提示引导。"
+    assert sanitize_summary_list(["hidden_three_clicks", "状态变量放在回调外层"]) == [
+        "存在不可展示的内部验证信息。",
+        "状态变量放在回调外层",
+    ]
+    assert extract_json_object("prefix ```json\n{\"ok\": true}\n```") == {"ok": True}
+
+    assert should_refresh_summary({}, message_count=1, stage="concept_qna", threshold=4).reason == "missing_state"
+    assert (
+        should_refresh_summary(
+            {"safe_summary": {}, "message_count_at_refresh": 1, "learning_stage": "concept_qna"},
+            message_count=5,
+            stage="concept_qna",
+            threshold=4,
+        ).reason
+        == "message_threshold"
+    )
 
 
 def test_openai_compatible_client_parses_responses_json_completion() -> None:
@@ -408,6 +465,67 @@ def test_agents_sdk_streaming_ignores_done_text_after_deltas() -> None:
     assert chunks == ["先看状态变量", "，再看事件回调。"]
 
 
+def test_agents_sdk_onboarding_conversation_client_attaches_guardrails() -> None:
+    captured: dict[str, object] = {}
+
+    class FakeDelta:
+        type = "response.output_text.delta"
+
+        def __init__(self, delta: str) -> None:
+            self.delta = delta
+
+    class FakeEvent:
+        type = "raw_response_event"
+
+        def __init__(self, delta: str) -> None:
+            self.data = FakeDelta(delta)
+
+    class FakeStreamedRun:
+        final_output = None
+
+        async def stream_events(self):  # type: ignore[no-untyped-def]
+            yield FakeEvent("先确认你想学 Python 还是 JavaScript。")
+
+    class FakeRunner:
+        def run_streamed(self, starting_agent, input, **kwargs):  # type: ignore[no-untyped-def]
+            captured["agent_name"] = starting_agent.name
+            captured["tool_names"] = [tool.name for tool in starting_agent.tools]
+            captured["input_guardrail_count"] = len(starting_agent.input_guardrails)
+            captured["output_guardrail_count"] = len(starting_agent.output_guardrails)
+            captured["input"] = input
+            captured["run_config"] = kwargs["run_config"]
+            captured["max_turns"] = kwargs["max_turns"]
+            return FakeStreamedRun()
+
+    client = AgentsSDKOnboardingConversationClient(
+        Settings(
+            llm_type="openai",
+            openai_api_key="test-key",
+            openai_base_url="https://provider.example/v1",
+            openai_model="third-party-model",
+        ),
+        runner=FakeRunner(),
+    )
+
+    chunks = list(
+        client.complete_text_stream(
+            [
+                {"role": "system", "content": "建档引导"},
+                {"role": "user", "content": '{"runtime_context":{"safe_summary":{"missing_slots":["language"]}}}'},
+            ]
+        )
+    )
+
+    assert chunks == ["先确认你想学 Python 还是 JavaScript。"]
+    assert captured["agent_name"] == ONBOARDING_CONVERSATION_AGENT_NAME
+    assert captured["tool_names"] == []
+    assert captured["input_guardrail_count"] == 1
+    assert captured["output_guardrail_count"] == 1
+    assert "runtime_context" in str(captured["input"])
+    assert captured["max_turns"] == 4
+    assert captured["run_config"].tracing_disabled is True
+
+
 def test_agents_sdk_exercise_coach_client_streams_json_and_attaches_guardrails() -> None:
     captured: dict[str, object] = {}
 
@@ -698,6 +816,8 @@ def test_agents_sdk_review_coach_client_streams_text_deltas_and_attaches_guardra
     assert captured["input_guardrail_count"] == 1
     assert captured["output_guardrail_count"] == 1
     assert "state_scope_error" in str(captured["input"])
+    assert "runtime_context" in str(captured["input"])
+    assert "latest_visible_attempt_facts" in str(captured["input"])
     assert captured["max_turns"] == 2
     assert captured["run_config"].tracing_disabled is True
     assert client.model == "third-party-model"
@@ -805,6 +925,8 @@ def test_agents_sdk_onboarding_plan_client_streams_json_and_attaches_guardrails(
     assert captured["input_guardrail_count"] == 1
     assert captured["output_guardrail_count"] == 1
     assert "safe_base_plan_draft" in str(captured["input"])
+    assert "runtime_context" in str(captured["input"])
+    assert "server_template_ready" in str(captured["input"])
     assert captured["max_turns"] == 2
     assert captured["run_config"].tracing_disabled is True
     assert client.model == "third-party-model"
