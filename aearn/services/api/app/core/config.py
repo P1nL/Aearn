@@ -47,6 +47,9 @@ class Settings(BaseModel):
     openai_api_key: str | None = Field(default_factory=lambda: _env_optional("OPENAI_API_KEY"))
     openai_base_url: str | None = Field(default_factory=lambda: _env_optional("OPENAI_BASE_URL"))
     openai_model: str | None = Field(default_factory=lambda: _env_optional("OPENAI_MODEL"))
+    deepseek_api_key: str | None = Field(default_factory=lambda: _env_optional("DEEPSEEK_API_KEY"))
+    deepseek_base_url: str | None = Field(default_factory=lambda: _env_optional("DEEPSEEK_BASE_URL"))
+    deepseek_model: str | None = Field(default_factory=lambda: _env_optional("DEEPSEEK_MODEL"))
     llm_timeout_seconds: float = Field(default_factory=lambda: float(_env_str("LLM_TIMEOUT_SECONDS", "20")))
     exa_api_key: str | None = Field(default_factory=lambda: _env_optional("EXA_API_KEY"))
     plan_generation_enabled: bool = Field(
@@ -54,23 +57,59 @@ class Settings(BaseModel):
     )
 
     @property
-    def openai_compatible_configured(self) -> bool:
+    def llm_provider_type(self) -> str:
+        return self.llm_type.strip().lower()
+
+    @property
+    def openai_configured(self) -> bool:
         return (
-            self.llm_type == "openai"
+            self.llm_provider_type == "openai"
             and _present(self.openai_api_key)
             and _present(self.openai_base_url)
             and _present(self.openai_model)
         )
 
     @property
+    def deepseek_configured(self) -> bool:
+        return (
+            self.llm_provider_type == "deepseek"
+            and _present(self.deepseek_api_key)
+            and _present(self.deepseek_base_url)
+            and _present(self.deepseek_model)
+        )
+
+    @property
+    def openai_compatible_configured(self) -> bool:
+        return self.openai_configured or self.deepseek_configured
+
+    @property
+    def llm_api_key(self) -> str | None:
+        if self.llm_provider_type == "deepseek":
+            return self.deepseek_api_key
+        return self.openai_api_key
+
+    @property
+    def llm_base_url(self) -> str | None:
+        if self.llm_provider_type == "deepseek":
+            return self.deepseek_base_url
+        return self.openai_base_url
+
+    @property
+    def llm_model(self) -> str | None:
+        if self.llm_provider_type == "deepseek":
+            return self.deepseek_model
+        return self.openai_model
+
+    @property
     def llm_configuration_status(self) -> str:
-        if self.llm_type in {"", "disabled", "none", "off"}:
+        provider_type = self.llm_provider_type
+        if provider_type in {"", "disabled", "none", "off"}:
             return "disabled"
-        if self.llm_type != "openai":
-            return "unsupported"
-        if not self.openai_compatible_configured:
-            return "incomplete"
-        return "configured"
+        if provider_type == "openai":
+            return "configured" if self.openai_configured else "incomplete"
+        if provider_type == "deepseek":
+            return "configured" if self.deepseek_configured else "incomplete"
+        return "unsupported"
 
 
 @lru_cache

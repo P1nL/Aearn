@@ -50,10 +50,15 @@ from app.agents.guardrails import (
 )
 from app.core.config import Settings
 from app.agents.learning_conversation_agent import AgentsSDKLearningConversationClient, TEACHING_AGENT_NAME
-from app.agents.sdk_runtime import extract_text_delta, normalize_openai_base_url
+from app.agents.sdk_runtime import (
+    build_run_config,
+    extract_text_delta,
+    normalize_deepseek_base_url,
+    normalize_openai_base_url,
+)
 from app.agents.tools import build_teaching_tools, summarize_current_learning_context, summarize_latest_visible_attempt
 from app.models.onboarding import PlanDraft, PlanGenerateRequest
-from app.services.llm_client import LLMJsonResponse, OpenAICompatibleClient
+from app.services.llm_client import LLMJsonResponse, OpenAICompatibleClient, _iter_response_text_deltas
 from app.services.llm_client import LLMInvalidResponseError
 from app.services.llm_explain_error import build_llm_error_explanation
 from app.services.plan_generator import build_plan_draft
@@ -70,6 +75,26 @@ def test_settings_reports_openai_compatible_configuration() -> None:
 
     assert configured.openai_compatible_configured is True
     assert configured.llm_configuration_status == "configured"
+    assert incomplete.openai_compatible_configured is False
+    assert incomplete.llm_configuration_status == "incomplete"
+
+
+def test_settings_reports_deepseek_configuration() -> None:
+    configured = Settings(
+        llm_type="deepseek",
+        deepseek_api_key="test-key",
+        deepseek_base_url="https://api.deepseek.com",
+        deepseek_model="deepseek-v4-flash",
+    )
+    incomplete = Settings(llm_type="deepseek", deepseek_api_key="", deepseek_base_url="", deepseek_model="")
+
+    assert configured.deepseek_configured is True
+    assert configured.openai_compatible_configured is True
+    assert configured.llm_configuration_status == "configured"
+    assert configured.llm_api_key == "test-key"
+    assert configured.llm_base_url == "https://api.deepseek.com"
+    assert configured.llm_model == "deepseek-v4-flash"
+    assert incomplete.deepseek_configured is False
     assert incomplete.openai_compatible_configured is False
     assert incomplete.llm_configuration_status == "incomplete"
 
@@ -229,6 +254,94 @@ def test_openai_compatible_client_adds_json_mode_hint_when_input_omits_json() ->
     assert response.content == {"ok": True}
 
 
+def test_deepseek_client_posts_chat_completions_json() -> None:
+    captured: dict[str, object] = {}
+
+    def transport(
+        url: str,
+        headers: Mapping[str, str],
+        payload: Mapping[str, object],
+        timeout: float,
+    ) -> Mapping[str, object]:
+        captured["url"] = url
+        captured["headers"] = dict(headers)
+        captured["payload"] = dict(payload)
+        captured["timeout"] = timeout
+        return {
+            "model": "deepseek-v4-flash",
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": '{"error_cause":"state_scope_error","next_action":"retry_same"}',
+                    }
+                }
+            ],
+        }
+
+    client = OpenAICompatibleClient(
+        Settings(
+            llm_type="deepseek",
+            deepseek_api_key="test-key",
+            deepseek_base_url="https://api.deepseek.com/v1/chat/completions",
+            deepseek_model="deepseek-v4-flash",
+            llm_timeout_seconds=13,
+        ),
+        transport=transport,
+    )
+
+    response = client.complete_json(
+        [
+            {"role": "system", "content": "system instructions"},
+            {"role": "user", "content": "return an object"},
+        ]
+    )
+
+    assert captured["url"] == "https://api.deepseek.com/chat/completions"
+    assert captured["timeout"] == 13
+    assert captured["headers"] == {
+        "Authorization": "Bearer test-key",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    assert captured["payload"]["model"] == "deepseek-v4-flash"
+    assert captured["payload"]["response_format"] == {"type": "json_object"}
+    assert "stream" not in captured["payload"]
+    messages = captured["payload"]["messages"]
+    assert isinstance(messages, list)
+    assert messages[0] == {"role": "system", "content": "system instructions"}
+    assert messages[1] == {
+        "role": "user",
+        "content": "return an object\n\nReturn the final answer as a JSON object.",
+    }
+    assert response.content["error_cause"] == "state_scope_error"
+    assert response.model == "deepseek-v4-flash"
+
+
+def test_deepseek_client_rejects_empty_json_message_content() -> None:
+    def transport(
+        url: str,
+        headers: Mapping[str, str],
+        payload: Mapping[str, object],
+        timeout: float,
+    ) -> Mapping[str, object]:
+        del url, headers, payload, timeout
+        return {"model": "deepseek-v4-flash", "choices": [{"message": {"content": ""}}]}
+
+    client = OpenAICompatibleClient(
+        Settings(
+            llm_type="deepseek",
+            deepseek_api_key="test-key",
+            deepseek_base_url="https://api.deepseek.com",
+            deepseek_model="deepseek-v4-flash",
+        ),
+        transport=transport,
+    )
+
+    with pytest.raises(LLMInvalidResponseError):
+        client.complete_json([{"role": "user", "content": "return JSON"}])
+
+
 def test_onboarding_slot_extractor_uses_streaming_responses_json_client() -> None:
     captured: dict[str, object] = {}
 
@@ -355,6 +468,79 @@ def test_openai_compatible_client_streams_text_deltas() -> None:
     assert captured["payload"]["stream"] is True
     assert "text" not in captured["payload"]
     assert "temperature" not in captured["payload"]
+
+
+def test_deepseek_client_streams_chat_completion_deltas() -> None:
+    captured: dict[str, object] = {}
+
+    def stream_transport(
+        url: str,
+        headers: Mapping[str, str],
+        payload: Mapping[str, object],
+        timeout: float,
+    ) -> Sequence[str]:
+        captured["url"] = url
+        captured["headers"] = dict(headers)
+        captured["payload"] = dict(payload)
+        captured["timeout"] = timeout
+        return [
+            "",
+            "先看状态变量",
+            "",
+            "，再看事件回调。",
+        ]
+
+    client = OpenAICompatibleClient(
+        Settings(
+            llm_type="deepseek",
+            deepseek_api_key="test-key",
+            deepseek_base_url="https://api.deepseek.com/chat/completions",
+            deepseek_model="deepseek-v4-flash",
+            llm_timeout_seconds=9,
+        ),
+        stream_transport=stream_transport,
+    )
+
+    chunks = list(
+        client.complete_text_stream(
+            [
+                {"role": "system", "content": "system instructions"},
+                {"role": "user", "content": "draft note"},
+            ]
+        )
+    )
+
+    assert chunks == ["先看状态变量", "，再看事件回调。"]
+    assert captured["url"] == "https://api.deepseek.com/chat/completions"
+    assert captured["timeout"] == 9
+    assert captured["headers"] == {
+        "Authorization": "Bearer test-key",
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream",
+    }
+    assert captured["payload"]["model"] == "deepseek-v4-flash"
+    assert captured["payload"]["stream"] is True
+    assert captured["payload"]["messages"] == [
+        {"role": "system", "content": "system instructions"},
+        {"role": "user", "content": "draft note"},
+    ]
+    assert "input" not in captured["payload"]
+    assert "temperature" not in captured["payload"]
+
+
+def test_deepseek_stream_parser_handles_choices_delta_and_done() -> None:
+    frames = [
+        b'data: {"choices":[{"delta":{"content":""}}]}\n',
+        b"\n",
+        b'data: {"choices":[{"delta":{"content":"hello"}}]}\n',
+        b"\n",
+        b'data: {"choices":[{"delta":{"content":" world"}}]}\n',
+        b"\n",
+        b"data: [DONE]\n",
+        b"\n",
+    ]
+
+    assert list(_iter_response_text_deltas(frames)) == ["hello", " world"]
 
 
 def test_agents_sdk_learning_conversation_client_streams_text_deltas() -> None:
@@ -1033,6 +1219,31 @@ def test_agents_sdk_normalizes_openai_base_url_for_client() -> None:
     assert normalize_openai_base_url("https://provider.example") == "https://provider.example/v1"
     assert normalize_openai_base_url("https://provider.example/v1") == "https://provider.example/v1"
     assert normalize_openai_base_url("https://provider.example/v1/responses") == "https://provider.example/v1"
+
+
+def test_agents_sdk_normalizes_deepseek_base_url_and_uses_chat_completions() -> None:
+    assert normalize_deepseek_base_url("https://api.deepseek.com") == "https://api.deepseek.com"
+    assert normalize_deepseek_base_url("https://api.deepseek.com/v1") == "https://api.deepseek.com"
+    assert (
+        normalize_deepseek_base_url("https://api.deepseek.com/v1/chat/completions")
+        == "https://api.deepseek.com"
+    )
+
+    run_config = build_run_config(
+        Settings(
+            llm_type="deepseek",
+            deepseek_api_key="test-key",
+            deepseek_base_url="https://api.deepseek.com/v1/chat/completions",
+            deepseek_model="deepseek-v4-flash",
+        )
+    )
+
+    provider = run_config.model_provider
+    assert run_config.model == "deepseek-v4-flash"
+    assert run_config.tracing_disabled is True
+    assert getattr(provider, "_stored_base_url") == "https://api.deepseek.com"
+    assert getattr(provider, "_use_responses") is False
+    assert getattr(provider, "_strict_feature_validation") is False
 
 
 def test_teaching_tools_return_safe_bounded_summaries() -> None:

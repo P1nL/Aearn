@@ -37,6 +37,7 @@ _PROVIDER_ERROR_TOKENS = (
     "invalid_api_key",
     "authorization: bearer",
     "openai_api_key",
+    "deepseek_api_key",
     "api key",
 )
 _DIRECT_ANSWER_OUTPUT_PATTERNS = (

@@ -8,6 +8,7 @@ from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 
 from app.core.config import Settings, get_settings
+from app.services.llm_urls import deepseek_chat_completions_url, responses_url
 
 
 class LLMConfigurationError(RuntimeError):
@@ -48,7 +49,7 @@ class OpenAICompatibleClient:
 
     @property
     def model(self) -> str:
-        return str(self._settings.openai_model)
+        return str(self._settings.llm_model or "")
 
     def complete_json(
         self,
@@ -56,6 +57,9 @@ class OpenAICompatibleClient:
         *,
         temperature: float = 0.2,
     ) -> LLMJsonResponse:
+        if self._settings.llm_provider_type == "deepseek":
+            return self._complete_deepseek_json(messages, temperature=temperature)
+
         instructions, input_text = _messages_to_responses_input(messages)
         input_text = _ensure_json_mode_hint(input_text)
         payload: dict[str, object] = {
@@ -67,7 +71,7 @@ class OpenAICompatibleClient:
         if instructions is not None:
             payload["instructions"] = instructions
         headers = {
-            "Authorization": f"Bearer {self._settings.openai_api_key}",
+            "Authorization": f"Bearer {self._settings.llm_api_key}",
             "Content-Type": "application/json",
             "Accept": "text/event-stream",
         }
@@ -82,22 +86,32 @@ class OpenAICompatibleClient:
         *,
         temperature: float | None = None,
     ) -> Generator[str, None, str]:
-        instructions, input_text = _messages_to_responses_input(messages)
-        payload: dict[str, object] = {
-            "model": self.model,
-            "input": input_text,
-            "stream": True,
-        }
-        if instructions is not None:
-            payload["instructions"] = instructions
-        if temperature is not None:
-            payload["temperature"] = temperature
+        if self._settings.llm_provider_type == "deepseek":
+            payload: dict[str, object] = {
+                "model": self.model,
+                "messages": _messages_to_chat_completions(messages),
+                "stream": True,
+            }
+            if temperature is not None:
+                payload["temperature"] = temperature
+            url = deepseek_chat_completions_url(str(self._settings.llm_base_url))
+        else:
+            instructions, input_text = _messages_to_responses_input(messages)
+            payload = {
+                "model": self.model,
+                "input": input_text,
+                "stream": True,
+            }
+            if instructions is not None:
+                payload["instructions"] = instructions
+            if temperature is not None:
+                payload["temperature"] = temperature
+            url = responses_url(str(self._settings.llm_base_url))
         headers = {
-            "Authorization": f"Bearer {self._settings.openai_api_key}",
+            "Authorization": f"Bearer {self._settings.llm_api_key}",
             "Content-Type": "application/json",
             "Accept": "text/event-stream",
         }
-        url = _responses_url(str(self._settings.openai_base_url))
         timeout = float(self._settings.llm_timeout_seconds)
         try:
             chunks = (
@@ -111,6 +125,8 @@ class OpenAICompatibleClient:
                     continue
                 full_text += delta
                 yield delta
+            if not full_text.strip():
+                raise LLMInvalidResponseError("LLM provider streaming response has no content")
             return full_text
         except (LLMCallError, LLMInvalidResponseError):
             raise
@@ -118,7 +134,7 @@ class OpenAICompatibleClient:
             raise LLMCallError("LLM provider streaming transport failed") from exc
 
     def _request_provider(self, payload: Mapping[str, object], headers: Mapping[str, str]) -> Mapping[str, object]:
-        url = _responses_url(str(self._settings.openai_base_url))
+        url = responses_url(str(self._settings.llm_base_url))
         timeout = float(self._settings.llm_timeout_seconds)
         if self._transport is not None:
             try:
@@ -129,14 +145,38 @@ class OpenAICompatibleClient:
                 raise LLMCallError("LLM provider transport failed") from exc
         return _post_json_stream(url, headers, payload, timeout)
 
-
-def _responses_url(base_url: str) -> str:
-    normalized = base_url.rstrip("/")
-    if normalized.endswith("/v1/responses") or normalized.endswith("/responses"):
-        return normalized
-    if normalized.endswith("/v1"):
-        return f"{normalized}/responses"
-    return f"{normalized}/v1/responses"
+    def _complete_deepseek_json(
+        self,
+        messages: Sequence[Mapping[str, str]],
+        *,
+        temperature: float,
+    ) -> LLMJsonResponse:
+        payload: dict[str, object] = {
+            "model": self.model,
+            "messages": _messages_to_chat_completions(messages, require_json_hint=True),
+            "response_format": {"type": "json_object"},
+        }
+        if temperature is not None:
+            payload["temperature"] = temperature
+        headers = {
+            "Authorization": f"Bearer {self._settings.llm_api_key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        url = deepseek_chat_completions_url(str(self._settings.llm_base_url))
+        timeout = float(self._settings.llm_timeout_seconds)
+        if self._transport is not None:
+            try:
+                provider_response = self._transport(url, headers, payload, timeout)
+            except (LLMCallError, LLMInvalidResponseError):
+                raise
+            except Exception as exc:
+                raise LLMCallError("LLM provider transport failed") from exc
+        else:
+            provider_response = _post_json(url, headers, payload, timeout)
+        content = _extract_message_content(provider_response)
+        model = _response_model(provider_response) or self.model
+        return LLMJsonResponse(content=_parse_json_object(content), model=model)
 
 
 def _post_json_stream(
@@ -158,6 +198,37 @@ def _post_json_stream(
         raise LLMCallError(f"LLM provider returned HTTP {exc.code}") from exc
     except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
         raise LLMCallError("LLM provider request failed") from exc
+
+
+def _post_json(
+    url: str,
+    headers: Mapping[str, str],
+    payload: Mapping[str, object],
+    timeout: float,
+) -> Mapping[str, object]:
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers=dict(headers),
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            body = response.read().decode("utf-8", "replace").strip()
+    except urllib.error.HTTPError as exc:
+        raise LLMCallError(f"LLM provider returned HTTP {exc.code}") from exc
+    except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
+        raise LLMCallError("LLM provider request failed") from exc
+
+    if not body:
+        raise LLMInvalidResponseError("LLM provider returned an empty response")
+    try:
+        parsed = json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise LLMInvalidResponseError("LLM provider returned invalid JSON") from exc
+    if not isinstance(parsed, Mapping):
+        raise LLMInvalidResponseError("LLM provider response must be a JSON object")
+    return parsed
 
 
 def _post_text_stream(
@@ -228,8 +299,10 @@ def _iter_response_text_deltas(response: Iterable[bytes]) -> Generator[str, None
                     continue
                 delta = choice.get("delta")
                 if isinstance(delta, Mapping) and isinstance(delta.get("content"), str):
-                    deltas.append(str(delta["content"]))
-                elif isinstance(choice.get("text"), str):
+                    content_delta = str(delta["content"])
+                    if content_delta:
+                        deltas.append(content_delta)
+                elif isinstance(choice.get("text"), str) and choice["text"]:
                     deltas.append(str(choice["text"]))
             if deltas:
                 yielded_delta = True
@@ -372,6 +445,37 @@ def _messages_to_responses_input(messages: Sequence[Mapping[str, str]]) -> tuple
         raise LLMInvalidResponseError("LLM request has no user content")
     combined_instructions = "\n\n".join(instructions).strip() or None
     return combined_instructions, input_text
+
+
+def _messages_to_chat_completions(
+    messages: Sequence[Mapping[str, str]],
+    *,
+    require_json_hint: bool = False,
+) -> list[dict[str, str]]:
+    chat_messages: list[dict[str, str]] = []
+    last_user_index: int | None = None
+    has_json_hint = False
+    for message in messages:
+        role = str(message.get("role", "")).strip().lower()
+        content = str(message.get("content", "")).strip()
+        if not content:
+            continue
+        if role not in {"system", "user", "assistant", "tool"}:
+            role = "user"
+        if "json" in content.lower():
+            has_json_hint = True
+        if role == "user":
+            last_user_index = len(chat_messages)
+        chat_messages.append({"role": role, "content": content})
+
+    if last_user_index is None:
+        raise LLMInvalidResponseError("LLM request has no user content")
+
+    if require_json_hint and not has_json_hint:
+        chat_messages[last_user_index]["content"] = (
+            f"{chat_messages[last_user_index]['content']}\n\nReturn the final answer as a JSON object."
+        )
+    return chat_messages
 
 
 def _ensure_json_mode_hint(input_text: str) -> str:

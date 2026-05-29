@@ -3,7 +3,7 @@
   "name": "deepseek-official-chat-completions-provider",
   "title": "DeepSeek official Chat Completions provider",
   "description": "Migrate Aearn LLM provider support from Responses-only OpenAI-compatible calls to official DeepSeek Chat Completions for SDK and direct client paths.",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,
