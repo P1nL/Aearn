@@ -4,6 +4,10 @@
 
 将学习路线生成从静态 `COURSE_TEMPLATES` 查表改为 LLM agent 实时参考权威文档动态生成，支持任意编程主题、个性化裁剪，并保持输出结构与现有 `PlanDraft` 模型完全兼容。
 
+## Scope Clarification — 2026-05-29
+
+当前可交付范围是 post-MVP / v1.1 的动态路线生成增强，不是取消第一版基线契约。实现必须保留现有 `Language`、数据库约束、课程 catalog、runtime boundary 和 `PlanDraft` validation。TypeScript、Rust、Go 等新语言可以作为后续扩展目标和测试样例设计，但在公开 API 可确认计划前，必须先补 `Language` 枚举、schema CHECK、catalog seed、runtime boundary、前端展示和验收用例。
+
 ## 现状问题
 
 1. **覆盖面有限**：`COURSE_TEMPLATES` 只有 5 种语言的固定模板，无法覆盖 TypeScript、Rust、Go 等用户可能选择的主题。
@@ -56,8 +60,9 @@
 
 - 不改变 `PlanDraft` 模型定义和下游消费方的接口
 - 不删除 `COURSE_TEMPLATES`，保留作为 fallback 和测试基准
+- 不绕过现有 `Language` 枚举、数据库约束、课程 catalog 和 runtime boundary；未登记语言不得被公开承诺为可确认计划
 - Agent 使用项目已有的 LLM 调用基础设施（`litellm` / 现有 agent 框架）
-- Web search 使用项目已集成或可快速集成的工具（MCP exa、tavily 等）
+- Web search 当前使用 Exa 工具配置（`EXA_API_KEY`）；替换为其他 provider 需要同步实现和文档
 
 ## Acceptance Criteria
 
@@ -65,6 +70,7 @@
 - [ ] 对新语言（如 Rust、Go），能生成合理的 6 模块学习路线
 - [ ] 用户目标不同时，同一语言生成的路线有明显差异
 - [ ] Web search 失败时自动回退到静态模板，不影响用户体验
+- [ ] 未登记语言在 schema/catalog/runtime 扩展前不会被误报为可运行或可确认计划
 - [ ] 生成延迟 P95 ≤ 15s
 - [ ] 输出结构 100% 符合 PlanDraft schema，下游无需任何适配
 - [ ] source_attribution 正确记录参考来源

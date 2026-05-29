@@ -1,1 +1,8 @@
-{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": "aearn/services/api/app/agents/onboarding_plan_agent.py", "reason": "现有 plan agent 模式参考，新 agent 需遵循相同架构"}
+{"file": "aearn/services/api/app/agents/sdk_runtime.py", "reason": "Agent SDK 运行时封装，build_agent/stream_text_deltas 接口"}
+{"file": "aearn/services/api/app/agents/tools.py", "reason": "现有 function_tool 模式参考，新增 web 工具需遵循相同模式"}
+{"file": "aearn/services/api/app/services/plan_generator.py", "reason": "现有静态模板和 build_plan_draft，需保留作为 fallback"}
+{"file": "aearn/services/api/app/routes/plans.py", "reason": "路由集成点，generate_plan 需调用动态生成"}
+{"file": "aearn/services/api/app/models/onboarding.py", "reason": "PlanDraft/DraftModule/DraftKnowledgePoint 模型定义"}
+{"file": "aearn/services/api/app/agents/guardrails.py", "reason": "安全检查 assert_safe_teaching_output 需复用"}
+{"file": ".trellis/tasks/05-29-05-29-dynamic-plan-generation/design.md", "reason": "技术设计文档"}
