@@ -5,6 +5,7 @@ import psycopg
 import pytest
 from fastapi.testclient import TestClient
 
+import app.routes.plans as plans_route
 from app.core.config import Settings, get_settings
 from app.db.bootstrap import bootstrap_database
 from app.db.connection import connect
@@ -67,6 +68,8 @@ def disable_llm_generation(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(session_repository, "build_llm_error_explanation", fake_error_explanation)
     monkeypatch.setattr(session_repository, "build_sdk_hint_response", fake_hint)
     monkeypatch.setattr(session_repository, "build_sdk_explanation_check_response", fake_explanation_check)
+    monkeypatch.setattr(plans_route, "build_sdk_plan_generation_response", lambda *args, **kwargs: None)
+    monkeypatch.setattr(plans_route, "build_sdk_onboarding_plan_response", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         learning_conversation,
         "get_settings",
@@ -104,7 +107,7 @@ def test_start_learning_session_creates_and_reuses_active_session(client: TestCl
     assert created_body["exercise"] is None
     assert created_body["lesson_outline"]
     assert created_body["lesson_sources"]
-    assert "Values, variables, and types" in created_body["initial_agent_message"]
+    assert "值、变量与类型" in created_body["initial_agent_message"]
     assert "练习" not in created_body["initial_agent_message"]
 
     reused = client.post(

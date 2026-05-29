@@ -67,17 +67,17 @@ def generate_plan(payload: PlanGenerateRequest, request: Request) -> dict[str, o
     agent_notes = _deterministic_agent_notes(deterministic_plan_draft)
 
     # 尝试动态生成学习路线
-    dynamic_modules = build_sdk_plan_generation_response(
+    dynamic_result = build_sdk_plan_generation_response(
         build_plan_generation_context(payload, course)
     )
-    if dynamic_modules is not None:
+    if dynamic_result is not None:
         plan_draft = deterministic_plan_draft.model_copy(
             update={
-                "modules": dynamic_modules,
-                "source_attribution": [
-                    *deterministic_plan_draft.source_attribution,
-                    "Dynamic generation: agent_generated",
-                ],
+                "modules": dynamic_result.modules,
+                "source_attribution": _merge_unique_strings(
+                    deterministic_plan_draft.source_attribution,
+                    dynamic_result.source_attribution,
+                ),
             }
         )
         agent_notes = [
@@ -104,6 +104,15 @@ def generate_plan(payload: PlanGenerateRequest, request: Request) -> dict[str, o
                     _deterministic_agent_notes(deterministic_plan_draft),
                     _string_list(sdk_response.get("agent_notes")),
                 )
+        else:
+            plan_draft = deterministic_plan_draft.model_copy(
+                update={
+                    "source_attribution": _merge_unique_strings(
+                        deterministic_plan_draft.source_attribution,
+                        ["Fallback: static template"],
+                    )
+                }
+            )
     if plan_draft.language in {"javascript", "html_css", "python"} and not has_supported_mvp_runtime(plan_draft):
         return error_response(
             request,

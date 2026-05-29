@@ -90,6 +90,7 @@ The dependency source for the API service is `aearn/services/api/pyproject.toml`
 - Post-MVP dynamic plan generation may replace draft modules with `agent_generated` modules only after a deterministic `PlanDraft` has established user, course, runtime boundary, and draft identity.
 - `PLAN_GENERATION_ENABLED=false`, missing model configuration, missing dynamic client, invalid dynamic output, guardrail rejection, or web-tool failure must fall back to server-owned `COURSE_TEMPLATES` or a validated onboarding plan candidate without exposing raw provider/tool errors.
 - `EXA_API_KEY` is optional and only enables the web tools used by `plan_generation_agent`; real keys must stay in local `.env`, never in docs, tests, logs, or fixtures.
+- Dynamic plan generation must use OpenAI-compatible SDK calls with `temperature=None` unless provider support for sampling parameters is explicitly tested; third-party Responses-compatible providers may reject `temperature` and must not turn route generation into a slow failure path.
 - Adding a public language such as TypeScript, Rust, or Go requires updating the Pydantic `Language` literal, database CHECK constraints, catalog seed, runtime boundary, API examples, and acceptance tests. Adding an `AUTHORITATIVE_DOCS` URL alone is not sufficient.
 
 ### 4. Validation & Error Matrix
@@ -119,6 +120,7 @@ The dependency source for the API service is `aearn/services/api/pyproject.toml`
 - Assert `PLAN_GENERATION_ENABLED=false` preserves the template path and response shape.
 - Assert fake dynamic plan success swaps modules to `agent_generated` while preserving `PlanDraft` identity and runtime boundary.
 - Assert malformed dynamic output, unsafe output, missing web tools, and thrown SDK errors fall back without leaking provider/tool details.
+- Tests that indirectly call `/api/plans/generate` through `_confirmed_plan()` must monkeypatch dynamic and onboarding plan clients to fake/offline responses; local `.env` may contain real `OPENAI_*` and `EXA_API_KEY`, but routine DB test batches must never call live providers.
 - Assert unregistered languages cannot become confirmable plans until language enum, DB constraints, catalog, runtime boundary, API docs, and acceptance tests are updated together.
 - Assert confirm plan creates plan/module/knowledge point rows and one `review_states` row per knowledge point.
 - Assert idempotent replay returns the original plan and conflicting request body returns `IDEMPOTENCY_CONFLICT`.

@@ -5,6 +5,7 @@ import psycopg
 import pytest
 from fastapi.testclient import TestClient
 
+import app.routes.plans as plans_route
 from app.core.config import get_settings
 from app.db.bootstrap import bootstrap_database
 from app.db.connection import connect
@@ -59,6 +60,8 @@ def disable_note_assist_sdk(monkeypatch: pytest.MonkeyPatch) -> None:
                 yield line
 
     monkeypatch.setattr(note_repository, "build_note_assist_client", lambda: FakeNoteAssistClient())
+    monkeypatch.setattr(plans_route, "build_sdk_plan_generation_response", lambda *args, **kwargs: None)
+    monkeypatch.setattr(plans_route, "build_sdk_onboarding_plan_response", lambda *args, **kwargs: None)
 
 
 def _fake_note_draft(context: object) -> str:

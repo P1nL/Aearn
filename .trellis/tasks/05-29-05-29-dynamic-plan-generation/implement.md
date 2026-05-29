@@ -11,19 +11,19 @@
 
 ### Phase 1: Web 工具层
 
-- [ ] 1.1 新建 `aearn/services/api/app/agents/tools_web.py`
+- [x] 1.1 新建 `aearn/services/api/app/agents/tools_web.py`
   - 实现 `web_search` function_tool（调用 exa API）
   - 实现 `fetch_doc_toc` function_tool（HTTP GET + BeautifulSoup 提取 h1-h3）
   - 添加超时控制（单次请求 5s）
   - 添加返回长度截断（≤ 2000 字符）
 
-- [ ] 1.2 `Settings` 新增配置项
+- [x] 1.2 `Settings` 新增配置项
   - `exa_api_key: str | None = None`
   - `plan_generation_enabled: bool = True`
 
 ### Phase 2: Agent 核心
 
-- [ ] 2.1 新建 `aearn/services/api/app/agents/plan_generation_agent.py`
+- [x] 2.1 新建 `aearn/services/api/app/agents/plan_generation_agent.py`
   - `PlanGenerationContext` dataclass
   - `AUTHORITATIVE_DOCS` 映射表
   - System prompt（结构约束 + 输出 schema + 中文要求）
@@ -33,7 +33,7 @@
   - `_validate_dynamic_plan_response()` schema 级验证
   - `_parse_dynamic_modules()` JSON → list[DraftModule] 转换
 
-- [ ] 2.2 验证逻辑
+- [x] 2.2 验证逻辑
   - modules 数组非空且 4-8 个
   - 每个 module 必填字段完整
   - temp_id 格式正则校验
@@ -43,13 +43,13 @@
 
 ### Phase 3: 路由集成
 
-- [ ] 3.1 修改 `aearn/services/api/app/routes/plans.py`
+- [x] 3.1 修改 `aearn/services/api/app/routes/plans.py`
   - 在 `generate_plan` 中调用动态生成
   - 成功时使用动态结果，失败时 fallback 到静态模板
   - `source` 字段标记为 `"agent_generated"`
   - `source_attribution` 追加参考 URL
 
-- [ ] 3.2 Fallback 逻辑
+- [x] 3.2 Fallback 逻辑
   - 捕获 `SAFE_GENERATION_EXCEPTIONS` + `TimeoutError`
   - 重试 1 次（附加错误提示）
   - 最终失败回退到 `COURSE_TEMPLATES`
@@ -57,22 +57,22 @@
 
 ### Phase 4: 测试
 
-- [ ] 4.1 单元测试 `tests/test_plan_generation_agent.py`
+- [x] 4.1 单元测试 `tests/test_plan_generation_agent.py`
   - Mock web_search / fetch_doc_toc 返回
   - 验证正常生成流程
   - 验证 fallback 流程（LLM 返回无效 JSON）
   - 验证 schema 验证拒绝不合格输出
   - 验证中文内容检查
 
-- [ ] 4.2 集成测试
+- [x] 4.2 集成测试
   - 端到端调用（需要 API key，CI 中 skip）
   - 验证生成延迟 ≤ 15s
 
 ### Phase 5: 清理
 
-- [ ] 5.1 更新 `__init__.py` 导出
-- [ ] 5.2 确认现有测试不受影响（`pytest aearn/services/api/tests/`）
-- [ ] 5.3 同步 source-of-truth docs：`docs/README.md`、`docs/product/user-flows.md`、`docs/architecture/api-contract.md`、`docs/qa/acceptance-test-plan.md`、`docs/setup/development-environment.md`、`docs/plans/learning-agent-implementation-plan.md`
+- [x] 5.1 确认 `__init__.py` 无需新增导出（当前 agents 通过模块路径直接导入）
+- [x] 5.2 确认现有测试不受影响（`pytest aearn/services/api/tests/`）
+- [x] 5.3 同步 source-of-truth docs：`docs/README.md`、`docs/product/user-flows.md`、`docs/architecture/api-contract.md`、`docs/qa/acceptance-test-plan.md`、`docs/setup/development-environment.md`、`docs/plans/learning-agent-implementation-plan.md`
 
 ## 验证命令
 
