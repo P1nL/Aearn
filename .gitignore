@@ -12,6 +12,7 @@
 .playwright-mcp/
 .omc/
 .claude/worktrees/
+docs/.obsidian/
 
 # Runtime dependencies and build outputs.
 **/node_modules/
