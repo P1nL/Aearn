@@ -834,3 +834,37 @@ Hardened dynamic plan generation validation, source attribution, Exa web tool ga
 ### Next Steps
 
 - None - task complete
+
+
+## Session 26: Exercise card UI optimization closeout
+
+**Date**: 2026-05-29
+**Task**: Exercise card UI optimization closeout
+**Branch**: `main`
+
+### Summary
+
+Closed out the exercise card UI optimization task after confirming the Flutter-style split layout, custom Monaco aearn-dark theme, compact fill-in row, toolbar/tab workbench organization, responsive CSS coverage, and desktop build gate.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `0f5b6bc` | (see git log) |
+| `1589543` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

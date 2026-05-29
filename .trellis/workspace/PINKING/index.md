@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 25
+- **Total Sessions**: 26
 - **Last Active**: 2026-05-29
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~836 | Active |
+| `journal-1.md` | ~870 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 26 | 2026-05-29 | Exercise card UI optimization closeout | `0f5b6bc`, `1589543` | `main` |
 | 25 | 2026-05-29 | Dynamic plan generation hardening | `807d253` | `main` |
 | 24 | 2026-05-29 | Shared Agent runtime context layer | `432b26b` | `main` |
 | 23 | 2026-05-28 | Optimize learning tutor context and route templates | `a7aa02e`, `182cb27` | `main` |
