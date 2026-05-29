@@ -801,3 +801,36 @@ Implemented reusable Agent runtime/context helpers, reused them across learning,
 ### Next Steps
 
 - None - task complete
+
+
+## Session 25: Dynamic plan generation hardening
+
+**Date**: 2026-05-29
+**Task**: Dynamic plan generation hardening
+**Branch**: `main`
+
+### Summary
+
+Hardened dynamic plan generation validation, source attribution, Exa web tool gating, offline test isolation, and verified backend plus desktop quality gates.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `807d253` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
