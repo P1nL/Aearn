@@ -1,5 +1,13 @@
 # CLAUDE.md
 
+## Language
+
+- 所有回复必须使用中文（简体），包括解释、确认、总结。
+- 思考链（thinking）也使用中文。
+- 代码注释保持英文，技术术语可用英文原文。
+
+---
+
 This repository is the Aearn MVP workspace for an AI programming language learning agent.
 
 ## Project Structure
