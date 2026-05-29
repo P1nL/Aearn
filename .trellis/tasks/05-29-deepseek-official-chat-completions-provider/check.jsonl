@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend checklist for review"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Verify provider failures do not leak and map to MODEL_UNAVAILABLE"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Verify tests, docs, and model-key-free behavior"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Review config-to-runtime-to-docs consistency"}
+{"file": ".trellis/tasks/05-29-deepseek-official-chat-completions-provider/research/deepseek-official-api.md", "reason": "Verify implementation follows official DeepSeek Chat Completions behavior"}
