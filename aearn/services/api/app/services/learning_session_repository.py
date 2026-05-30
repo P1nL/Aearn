@@ -917,14 +917,19 @@ def _initial_agent_message(context: Mapping[str, object]) -> str:
     outline = _lesson_outline(context)
     sources = _lesson_sources(context)
     lines = [
-        f"今天先理解 {title}，目标是能说明它如何影响程序行为，而不是立刻做题。",
-        "这个知识点可拆成：",
+        f"今天先理解 {title}，先看它会改变哪段程序行为；现在不用写代码或做题。",
+        "你可以直接回复一个编号开始：",
+        "1. 先用 30 秒讲清它到底在控制什么。",
+        "2. 给我一个最小例子，只看行为变化。",
+        f"3. 我猜 {title} 会影响 ___，因为 ___。",
+        "",
+        "我们会用这几个抓手来拆：",
     ]
     for item in outline:
         lines.append(f"- {item['title']}：{item['note']}")
     if sources:
         lines.append(f"提纲依据：{'; '.join(str(item['title']) for item in sources)}。")
-    lines.append("先回答一个小问题：你认为这里最需要被保存或触发的行为是什么？")
+    lines.append("如果拿不准，回复 1；如果已经有想法，直接按第 3 句补空。")
     return "\n".join(lines)
 
 

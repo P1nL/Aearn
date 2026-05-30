@@ -108,6 +108,8 @@ def test_start_learning_session_creates_and_reuses_active_session(client: TestCl
     assert created_body["lesson_outline"]
     assert created_body["lesson_sources"]
     assert "值、变量与类型" in created_body["initial_agent_message"]
+    assert "你可以直接回复一个编号" in created_body["initial_agent_message"]
+    assert "我猜" in created_body["initial_agent_message"]
     assert "练习" not in created_body["initial_agent_message"]
 
     reused = client.post(
@@ -147,6 +149,25 @@ def test_start_learning_session_creates_and_reuses_active_session(client: TestCl
         ).fetchone()
     assert message_count is not None
     assert message_count["count"] == 1
+
+
+def test_learning_intro_numbered_choice_stays_in_concept_qna(client: TestClient) -> None:
+    user, plan = _confirmed_plan(client, language="javascript")
+    session = _start_session(client, user, plan)
+    assert "你可以直接回复一个编号" in session["initial_agent_message"]
+
+    response = client.post(
+        f"/api/learning-sessions/{session['session_id']}/messages",
+        json={
+            "role": "user",
+            "content": "1",
+            "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["session_state"]["learning_stage"] == "concept_qna"
+    assert body["tool_calls"] == []
 
 
 def test_start_learning_session_keeps_distinct_knowledge_points_separate(client: TestClient) -> None:

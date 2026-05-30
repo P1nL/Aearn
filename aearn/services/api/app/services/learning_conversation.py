@@ -1062,7 +1062,7 @@ def _determine_transition(
                 "concept_summary": _concept_summary(context),
             }
         )
-        if _looks_like_question(user_content):
+        if _looks_like_question(user_content) or _requests_concept_help(user_content):
             return LearningConversationTransition("concept_qna", state)
         return LearningConversationTransition("readiness_check", state)
 
@@ -1259,6 +1259,25 @@ def _requests_practice(text: str) -> bool:
 def _requests_history(text: str) -> bool:
     lowered = text.lower()
     triggers = ["历史对话", "学习对话", "回看", "查看对话", "history"]
+    return any(trigger in lowered for trigger in triggers)
+
+
+def _requests_concept_help(text: str) -> bool:
+    lowered = text.lower().strip()
+    choice = lowered.strip(" \t\r\n。.!！?？、")
+    if choice in {"1", "2", "3", "一", "二", "三", "选1", "选2", "选3", "第1个", "第2个", "第3个"}:
+        return True
+    triggers = [
+        "30 秒",
+        "30秒",
+        "讲清",
+        "解释一下",
+        "最小例子",
+        "行为变化",
+        "举个例子",
+        "给我例子",
+        "不知道怎么开始",
+    ]
     return any(trigger in lowered for trigger in triggers)
 
 
