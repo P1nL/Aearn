@@ -901,3 +901,36 @@ Implemented explicit LLM_TYPE=deepseek configuration, official DeepSeek Chat Com
 ### Next Steps
 
 - None - task complete
+
+
+## Session 28: Learning concept checks and review seed banks
+
+**Date**: 2026-05-30
+**Task**: Learning concept checks and review seed banks
+**Branch**: `main`
+
+### Summary
+
+Completed the learning-page concept intro/check flow and the review-page warmup seed-bank variant flow. Added backend contracts, seed-bank generation/rescue, review_ai_patch scoring, desktop rendering, tests, and source-of-truth docs; validated backend, ruff, desktop build, task context, and whitespace checks.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `8a40074` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
