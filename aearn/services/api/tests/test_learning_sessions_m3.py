@@ -65,6 +65,70 @@ def disable_llm_generation(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_explanation_check(*args, **kwargs) -> dict[str, object]:  # type: ignore[no-untyped-def]
         return build_explanation_check_response(*args, **kwargs)
 
+    def fake_concept_intro(*args, **kwargs) -> dict[str, object]:  # type: ignore[no-untyped-def]
+        del args, kwargs
+        return {
+            "summary": "事件绑定会把一次用户动作连接到回调函数，状态变量决定多次动作之间是否共享记忆。",
+            "example": {
+                "title": "计数按钮",
+                "body": "count 放在回调外面时，每次点击都会基于同一个 count 继续累加。",
+                "takeaway": "先看状态放在哪里，再看事件什么时候触发回调。",
+            },
+            "check": {
+                "type": "single_choice",
+                "question": "如果 count 写在点击回调里面，每次点击最可能发生什么？",
+                "options": [
+                    {"id": "A", "text": "每次点击都重新从初始值开始。"},
+                    {"id": "B", "text": "每次点击都会复用上一次回调里的局部变量。"},
+                    {"id": "C", "text": "事件监听器不会再触发。"},
+                ],
+                "expected_focus": "回调作用域与跨点击状态共享的关系",
+            },
+        }
+
+    def fake_concept_check_result(*args, **kwargs) -> dict[str, object]:  # type: ignore[no-untyped-def]
+        del args
+        answer = str(kwargs.get("learner_answer") or "").lower()
+        if answer.strip() in {"a", "选a"} or "回调外" in answer or "共享" in answer or "重新从初始" in answer:
+            return {
+                "result": "correct",
+                "confidence": "high",
+                "explanation": "你的判断抓住了回调作用域和跨点击状态共享的关系。",
+                "next_prompt": "如果要继续，可以回复“开始练习”。",
+                "actions": [
+                    {"id": "start_practice", "label": "开始练习"},
+                    {"id": "show_another_example", "label": "再看一个例子"},
+                ],
+                "repair_check": None,
+            }
+        if answer.strip() in {"b", "选b"} or "局部变量" in answer or "错误" in answer:
+            return {
+                "result": "incorrect",
+                "confidence": "medium",
+                "explanation": "这里的误解是把回调里的局部变量当成了跨点击共享状态。",
+                "next_prompt": "再判断一次：如果变量每次回调都会重新创建，它能记住上次点击吗？",
+                "actions": [],
+                "repair_check": {
+                    "type": "single_choice",
+                    "question": "变量每次回调都会重新创建时，它能记住上次点击吗？",
+                    "options": [
+                        {"id": "A", "text": "不能，它会重新开始。"},
+                        {"id": "B", "text": "能，因为事件会保存它。"},
+                    ],
+                    "expected_focus": "局部变量生命周期",
+                },
+            }
+        return {
+            "result": "unclear",
+            "confidence": "low",
+            "explanation": "这次回答还不能判断你选的是哪种作用域关系。",
+            "next_prompt": "请直接回复 A/B/C，或说明 count 是否能跨点击共享。",
+            "actions": [],
+            "repair_check": None,
+        }
+
+    monkeypatch.setattr(session_repository, "build_sdk_concept_intro", fake_concept_intro)
+    monkeypatch.setattr(learning_conversation, "build_sdk_concept_check_result", fake_concept_check_result)
     monkeypatch.setattr(session_repository, "build_llm_error_explanation", fake_error_explanation)
     monkeypatch.setattr(session_repository, "build_sdk_hint_response", fake_hint)
     monkeypatch.setattr(session_repository, "build_sdk_explanation_check_response", fake_explanation_check)
@@ -103,13 +167,15 @@ def test_start_learning_session_creates_and_reuses_active_session(client: TestCl
     created_body = created.json()
     assert created_body["session_type"] == "learn"
     assert created_body["session_state"] == "learning"
-    assert created_body["learning_stage"] == "concept_intro"
+    assert created_body["learning_stage"] == "concept_check"
     assert created_body["exercise"] is None
     assert created_body["lesson_outline"]
     assert created_body["lesson_sources"]
+    assert created_body["initial_tool_calls"][0]["name"] == "show_concept_intro"
+    intro_args = created_body["initial_tool_calls"][0]["args"]
+    assert intro_args["summary"]
+    assert len(intro_args["check"]["options"]) == 3
     assert "值、变量与类型" in created_body["initial_agent_message"]
-    assert "你可以直接回复一个编号" in created_body["initial_agent_message"]
-    assert "我猜" in created_body["initial_agent_message"]
     assert "练习" not in created_body["initial_agent_message"]
 
     reused = client.post(
@@ -123,8 +189,9 @@ def test_start_learning_session_creates_and_reuses_active_session(client: TestCl
     assert reused.status_code == 200
     reused_body = reused.json()
     assert reused_body["session_id"] == created_body["session_id"]
-    assert reused_body["learning_stage"] == "concept_intro"
+    assert reused_body["learning_stage"] == "concept_check"
     assert reused_body["exercise"] is None
+    assert reused_body["initial_tool_calls"][0]["args"] == intro_args
 
     with connect() as conn:
         session_count = conn.execute(
@@ -151,23 +218,25 @@ def test_start_learning_session_creates_and_reuses_active_session(client: TestCl
     assert message_count["count"] == 1
 
 
-def test_learning_intro_numbered_choice_stays_in_concept_qna(client: TestClient) -> None:
+def test_learning_intro_answer_is_judged_and_enters_practice_offer(client: TestClient) -> None:
     user, plan = _confirmed_plan(client, language="javascript")
     session = _start_session(client, user, plan)
-    assert "你可以直接回复一个编号" in session["initial_agent_message"]
+    assert session["initial_tool_calls"][0]["name"] == "show_concept_intro"
 
     response = client.post(
         f"/api/learning-sessions/{session['session_id']}/messages",
         json={
             "role": "user",
-            "content": "1",
+            "content": "A",
             "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
         },
     )
     assert response.status_code == 200
     body = response.json()
-    assert body["session_state"]["learning_stage"] == "concept_qna"
-    assert body["tool_calls"] == []
+    assert body["session_state"]["learning_stage"] == "practice_offer"
+    assert body["session_state"]["learning_stage_state"]["concept_check_result"] == "correct"
+    assert body["tool_calls"][0]["name"] == "show_concept_check_result"
+    assert body["tool_calls"][0]["args"]["result"] == "correct"
 
 
 def test_start_learning_session_keeps_distinct_knowledge_points_separate(client: TestClient) -> None:
@@ -208,6 +277,38 @@ def test_start_learning_session_keeps_distinct_knowledge_points_separate(client:
     assert session_count["count"] == 2
 
 
+def test_start_learning_session_invalid_intro_returns_concept_intro_generation_failed(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user, plan = _confirmed_plan(client, language="javascript")
+    knowledge_point_id = plan["knowledge_points"][0]["id"]
+    monkeypatch.setattr(session_repository, "build_sdk_concept_intro", lambda *args, **kwargs: None)
+
+    response = client.post(
+        "/api/learning-sessions/start",
+        json={
+            "user_id": user["id"],
+            "plan_id": plan["LearningPlan"]["id"],
+            "knowledge_point_id": knowledge_point_id,
+        },
+    )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "CONCEPT_INTRO_GENERATION_FAILED"
+    with connect() as conn:
+        session_count = conn.execute(
+            """
+            SELECT count(*) AS count
+            FROM learning_sessions
+            WHERE user_id = %s AND plan_id = %s AND entry_point = %s
+            """,
+            (user["id"], plan["LearningPlan"]["id"], knowledge_point_id),
+        ).fetchone()
+    assert session_count is not None
+    assert session_count["count"] == 0
+
+
 def test_learning_concept_stage_unlocks_practice_early_with_incomplete_notice(client: TestClient) -> None:
     user, plan = _confirmed_plan(client, language="javascript")
     session = _start_session(client, user, plan)
@@ -224,9 +325,13 @@ def test_learning_concept_stage_unlocks_practice_early_with_incomplete_notice(cl
     body = unlock.json()
     assert body["session_state"]["learning_stage"] == "practice_support"
     assert body["session_state"]["learning_stage_state"]["learning_incomplete"] is True
-    tool_call = body["tool_calls"][0]
+    assert body["session_state"]["learning_stage_state"]["practice_unlock_reason"] == "concept_check_skipped"
+    assert body["tool_calls"][0]["name"] == "show_concept_check_result"
+    assert body["tool_calls"][0]["args"]["result"] == "skipped"
+    tool_call = body["tool_calls"][1]
     assert tool_call["name"] == "show_code_exercise"
-    assert "当前学习进度尚未完成" in tool_call["args"]["notice"]
+    assert tool_call["args"]["unlock_reason"] == "concept_check_skipped"
+    assert "概念检查会标记为未完成" in tool_call["args"]["notice"]
     assert tool_call["args"]["exercise"]["runtime_profile"]["runtime_tier"] == "browser_preview"
 
     resumed = _resume_session(client, user, plan)
@@ -234,7 +339,7 @@ def test_learning_concept_stage_unlocks_practice_early_with_incomplete_notice(cl
     assert resumed["exercise"]["id"] == tool_call["args"]["exercise"]["id"]
 
 
-def test_learning_concept_stage_uses_feynman_check_before_normal_unlock(client: TestClient) -> None:
+def test_learning_concept_stage_uses_check_offer_before_normal_unlock(client: TestClient) -> None:
     user, plan = _confirmed_plan(client, language="javascript")
     session = _start_session(client, user, plan)
 
@@ -242,27 +347,102 @@ def test_learning_concept_stage_uses_feynman_check_before_normal_unlock(client: 
         f"/api/learning-sessions/{session['session_id']}/messages",
         json={
             "role": "user",
-            "content": "我理解了事件绑定会连接点击与更新，请检查我的理解。",
+            "content": "状态放在回调外部，所以多次点击会共享并累加同一个 count。",
             "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
         },
     )
     assert prompt_check.status_code == 200
-    assert prompt_check.json()["session_state"]["learning_stage"] == "readiness_check"
-    assert "费曼" in prompt_check.json()["agent_message"]["content"]
+    assert prompt_check.json()["session_state"]["learning_stage"] == "practice_offer"
+    assert prompt_check.json()["tool_calls"][0]["args"]["result"] == "correct"
 
-    feynman = client.post(
+    unlock = client.post(
         f"/api/learning-sessions/{session['session_id']}/messages",
         json={
             "role": "user",
-            "content": "我会向初学者解释：事件监听器把点击动作连接到回调函数，因为状态放在回调外部，多次点击会共享并累加同一个 count，然后再同步更新 DOM。",
+            "content": "开始练习",
             "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
         },
     )
-    assert feynman.status_code == 200
-    result = feynman.json()
+    assert unlock.status_code == 200
+    result = unlock.json()
     assert result["session_state"]["learning_stage"] == "practice_support"
     assert result["session_state"]["learning_stage_state"]["learning_incomplete"] is False
+    assert result["session_state"]["learning_stage_state"]["practice_unlock_reason"] == "concept_check_passed"
     assert result["tool_calls"][0]["name"] == "show_code_exercise"
+
+
+def test_learning_concept_incorrect_unclear_and_repair_limit_paths(client: TestClient) -> None:
+    user, plan = _confirmed_plan(client, language="javascript")
+    unclear_session = _start_session(client, user, plan)
+
+    unclear = client.post(
+        f"/api/learning-sessions/{unclear_session['session_id']}/messages",
+        json={
+            "role": "user",
+            "content": "我不确定。",
+            "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
+        },
+    )
+    assert unclear.status_code == 200
+    unclear_body = unclear.json()
+    assert unclear_body["session_state"]["learning_stage"] == "concept_check"
+    assert unclear_body["tool_calls"][0]["name"] == "show_concept_check_result"
+    assert unclear_body["tool_calls"][0]["args"]["result"] == "unclear"
+    assert unclear_body["session_state"]["learning_stage_state"]["learning_incomplete"] is True
+    assert unclear_body["tool_calls"][0]["args"]["repair_check"] is None
+
+    with connect() as conn:
+        conn.execute("UPDATE learning_sessions SET status = 'finished' WHERE id = %s", (unclear_session["session_id"],))
+        conn.commit()
+
+    repair_session = _start_session(client, user, plan)
+    first_wrong = client.post(
+        f"/api/learning-sessions/{repair_session['session_id']}/messages",
+        json={
+            "role": "user",
+            "content": "B",
+            "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
+        },
+    )
+    assert first_wrong.status_code == 200
+    first_body = first_wrong.json()
+    assert first_body["session_state"]["learning_stage"] == "concept_repair"
+    assert first_body["session_state"]["learning_stage_state"]["concept_check_attempts"] == 1
+    assert first_body["tool_calls"][0]["args"]["result"] == "incorrect"
+    assert first_body["tool_calls"][0]["args"]["repair_check"]["options"]
+    assert first_body["tool_calls"] == [item for item in first_body["tool_calls"] if item["name"] != "show_code_exercise"]
+
+    second_wrong = client.post(
+        f"/api/learning-sessions/{repair_session['session_id']}/messages",
+        json={
+            "role": "user",
+            "content": "B",
+            "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
+        },
+    )
+    assert second_wrong.status_code == 200
+    second_body = second_wrong.json()
+    assert second_body["session_state"]["learning_stage"] == "concept_repair"
+    assert second_body["session_state"]["learning_stage_state"]["concept_check_attempts"] == 2
+    assert second_body["session_state"]["learning_stage_state"]["repair_limit_reached"] is True
+    assert second_body["tool_calls"][0]["args"]["repair_check"] is None
+    assert any(action["id"] == "guided_practice" for action in second_body["tool_calls"][0]["args"]["actions"])
+
+    guided = client.post(
+        f"/api/learning-sessions/{repair_session['session_id']}/messages",
+        json={
+            "role": "user",
+            "content": "进入引导练习",
+            "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
+        },
+    )
+    assert guided.status_code == 200
+    guided_body = guided.json()
+    assert guided_body["session_state"]["learning_stage"] == "practice_support"
+    assert guided_body["session_state"]["learning_stage_state"]["practice_unlock_reason"] == "concept_check_repair_limit"
+    assert guided_body["session_state"]["learning_stage_state"]["learning_incomplete"] is True
+    assert guided_body["tool_calls"][0]["name"] == "show_concept_check_result"
+    assert guided_body["tool_calls"][1]["name"] == "show_code_exercise"
 
 
 def test_learning_history_includes_only_learning_turns_across_sessions(client: TestClient) -> None:
@@ -282,25 +462,16 @@ def test_learning_history_includes_only_learning_turns_across_sessions(client: T
         conn.commit()
 
     second = _start_session(client, user, plan)
-    failed_check = client.post(
+    history_request = client.post(
         f"/api/learning-sessions/{second['session_id']}/messages",
         json={
             "role": "user",
-            "content": "我不太清楚。",
+            "content": "查看历史对话。",
             "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
         },
     )
-    assert failed_check.status_code == 200
-    failed_check = client.post(
-        f"/api/learning-sessions/{second['session_id']}/messages",
-        json={
-            "role": "user",
-            "content": "还是不知道怎么解释。",
-            "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
-        },
-    )
-    assert failed_check.status_code == 200
-    assert failed_check.json()["tool_calls"][0]["name"] == "show_learning_history"
+    assert history_request.status_code == 200
+    assert history_request.json()["tool_calls"][0]["name"] == "show_learning_history"
 
     history = client.get(
         f"/api/learning-sessions/history?user_id={user['id']}&knowledge_point_id={plan['knowledge_points'][0]['id']}&active_session_id={second['session_id']}",
@@ -348,6 +519,7 @@ def test_learning_message_json_uses_model_and_is_idempotent(client: TestClient) 
     replay_body = replay.json()
     assert replay_body["idempotency_replayed"] is True
     assert replay_body["agent_message"]["id"] == first_body["agent_message"]["id"]
+    assert replay_body["tool_calls"] == first_body["tool_calls"]
 
 
 def test_learning_message_json_uses_configured_model_stream(
@@ -561,7 +733,7 @@ def test_learning_message_reuses_persisted_summary_until_refresh_threshold(
                 "summary_confidence": "medium",
             },
             "message_count_at_refresh": int(message_count["count"]),
-            "learning_stage": "concept_qna",
+            "learning_stage": "concept_check",
             "source": "llm",
         }
         conn.execute(
@@ -795,9 +967,15 @@ def test_learning_message_sse_streams_agent_message_and_done(client: TestClient)
 
     assert events
     assert events[-1]["event"] == "done"
-    assert all(event["event"] in {"agent_message", "done"} for event in events)
+    assert all(event["event"] in {"agent_message", "tool_call", "done"} for event in events)
     agent_events = [event for event in events if event["event"] == "agent_message"]
     assert agent_events
+    assert any(
+        event["event"] == "tool_call"
+        and event["data"]["phase"] == "done"
+        and event["data"]["arguments"]["result"] in {"correct", "incorrect", "unclear"}
+        for event in events
+    )
     assert agent_events[0]["data"]["request_id"] == request_id
     assert agent_events[0]["data"]["session_id"] == session["session_id"]
     assert agent_events[-1]["data"]["content"]
@@ -2051,8 +2229,12 @@ def _unlock_practice_exercise(client: TestClient, session: dict[str, object]) ->
     body = response.json()
     assert body["session_state"]["learning_stage"] == "practice_support"
     tool_calls = body["tool_calls"]
-    assert tool_calls and tool_calls[0]["name"] == "show_code_exercise"
-    exercise = tool_calls[0]["args"]["exercise"]
+    exercise_tool_call = next(
+        (tool_call for tool_call in tool_calls if tool_call["name"] == "show_code_exercise"),
+        None,
+    )
+    assert exercise_tool_call is not None
+    exercise = exercise_tool_call["args"]["exercise"]
     assert isinstance(exercise, dict)
     return exercise
 

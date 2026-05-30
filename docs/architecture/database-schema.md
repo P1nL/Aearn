@@ -239,7 +239,7 @@ $$ LANGUAGE plpgsql;
 | `knowledge_point_id` | `uuid` | NOT NULL | FK -> `knowledge_points.id` |
 | `runtime_profile_id` | `uuid` | NOT NULL | FK -> `runtime_profiles.id` |
 | `title` | `text` | NOT NULL |  |
-| `exercise_type` | `text` | NOT NULL | CHECK in `code_blank` / `fix_bug` / `implement_function` / `explain_code` |
+| `exercise_type` | `text` | NOT NULL | CHECK in `code_blank` / `fix_bug` / `implement_function` / `explain_code` / `review_ai_patch` |
 | `prompt_markdown` | `text` | NOT NULL | 题面 |
 | `starter_code` | `text` | NOT NULL | 初始代码 |
 | `solution_reference` | `text` | NULL | 参考实现，API 默认不返回 |
@@ -323,8 +323,10 @@ $$ LANGUAGE plpgsql;
 | `summary_text` | `text` | NULL | 会话摘要 |
 | `next_entry_point` | `text` | NULL | 恢复学习入口 |
 | `request_id` | `text` | NULL | API 幂等键 |
-| `learning_stage` | `text` | NULL | CHECK in `concept_intro` / `concept_qna` / `readiness_check` / `practice_support`；仅 `session_type=learn` 使用 |
-| `learning_stage_state_json` | `jsonb` | NOT NULL DEFAULT `'{}'::jsonb` | 精简概念进度、费曼检查和练习解锁状态 |
+| `learning_stage` | `text` | NULL | CHECK in `concept_intro` / `concept_check` / `concept_repair` / `practice_offer` / `concept_qna` / `readiness_check` / `practice_support`；仅 `session_type=learn` 使用，`concept_qna` / `readiness_check` 为旧会话兼容 |
+| `learning_stage_state_json` | `jsonb` | NOT NULL DEFAULT `'{}'::jsonb` | 精简概念判断、修正、练习解锁和旧费曼检查状态 |
+| `review_stage` | `text` | NULL | CHECK in `warmup` / `warmup_repair` / `variant_practice` / `submitted`；仅 `session_type=review` 使用 |
+| `review_stage_state_json` | `jsonb` | NOT NULL DEFAULT `'{}'::jsonb` | 精简复习热身、seed、变体练习和提交阶段状态 |
 | `created_at` | `timestamptz` | NOT NULL DEFAULT `now()` |  |
 | `updated_at` | `timestamptz` | NOT NULL DEFAULT `now()` |  |
 
@@ -424,6 +426,40 @@ $$ LANGUAGE plpgsql;
 - UNIQUE (`session_id`, `knowledge_point_id`)
 - `idx_session_kp_knowledge_point` on (`knowledge_point_id`)
 - `idx_session_kp_attempt` on (`attempt_id`) WHERE `attempt_id IS NOT NULL`
+
+### `review_seed_banks`
+
+每个知识点的复习材料种子库。复习页不主要依赖短学习历史生成题目，而是先从官方 taxonomy、知识点目标、课程提纲、runtime 能力和常见误解生成完整 seed bank，再从中选择本轮变体。
+
+| 字段 | 类型 | 必填/默认值 | 约束与说明 |
+|---|---|---|---|
+| `id` | `uuid` | NOT NULL DEFAULT `gen_random_uuid()` | PK |
+| `user_id` | `uuid` | NOT NULL | FK -> `users.id` |
+| `plan_id` | `uuid` | NOT NULL | FK -> `learning_plans.id` |
+| `knowledge_point_id` | `uuid` | NOT NULL | FK -> `knowledge_points.id` |
+| `generator_version` | `text` | NOT NULL | 生成器版本，例如 `review_seed_bank_v1` |
+| `status` | `text` | NOT NULL DEFAULT `'generating'` | CHECK in `generating` / `ready` / `failed` |
+| `seed_count` | `integer` | NOT NULL DEFAULT `0` | CHECK `seed_count >= 0` |
+| `seeds_json` | `jsonb` | NOT NULL DEFAULT `'[]'::jsonb` | 完整复习 seed 列表，schema 见下文 |
+| `quality_report_json` | `jsonb` | NOT NULL DEFAULT `'{}'::jsonb` | 数量、类型覆盖、去重和安全校验结果 |
+| `failure_code` | `text` | NULL | 失败时记录稳定错误码 |
+| `failure_message` | `text` | NULL | 失败摘要，不保存 raw provider error 或 secrets |
+| `generated_at` | `timestamptz` | NULL | 成功生成时间 |
+| `created_at` | `timestamptz` | NOT NULL DEFAULT `now()` |  |
+| `updated_at` | `timestamptz` | NOT NULL DEFAULT `now()` |  |
+
+约束与索引：
+
+- UNIQUE (`user_id`, `knowledge_point_id`, `generator_version`)
+- `idx_review_seed_banks_status` on (`status`, `updated_at`)
+
+生成与安全规则：
+
+- 普通知识点要求 8-12 个 seed；核心或高风险知识点要求 12-16 个 seed。
+- 必须覆盖当前 runtime 支持的核心复习题型，并在支持时包含至少一个 `review_ai_patch`。
+- `review_ai_patch` seed 必须包含 requirement、original code、AI diff、review focus、expected risk 和 scoring rubric。
+- seed 不得包含 hidden tests、参考答案泄露、raw prompt、provider 原始错误、API key 或 secrets。
+- 异步生成和同步 rescue 必须共用同一 generator、schema、validation、安全检查和持久化路径；同步 rescue 失败时标记 `failed` 并返回 `REVIEW_SEED_BANK_GENERATION_FAILED`。
 
 ### `review_states`
 
@@ -560,7 +596,7 @@ FSRS 更新的 append-only 日志。每次学习提交或复习提交只要更�
 ### `language_courses.supported_exercise_types_json`
 
 ```json
-["code_blank", "fix_bug", "implement_function", "explain_code"]
+["code_blank", "fix_bug", "implement_function", "explain_code", "review_ai_patch"]
 ```
 
 数组值必须来自 `Exercise.exercise_type` 枚举。
@@ -622,11 +658,102 @@ FSRS 更新的 append-only 日志。每次学习提交或复习提交只要更�
   "feynman_status": "pending",
   "practice_unlock_reason": null,
   "learning_incomplete": true,
-  "concept_summary": "事件监听与状态变量：理解事件监听如何触发回调..."
+  "concept_summary": "事件监听与状态变量：理解事件监听如何触发回调...",
+  "active_concept_intro": {
+    "summary": "事件监听会把回调登记到按钮上...",
+    "example": {
+      "title": "点击计数",
+      "body": "按钮每次被点击都会执行同一个回调...",
+      "takeaway": "需要跨交互保留的状态不要放进每次都会重新执行的局部作用域。"
+    },
+    "check": {
+      "type": "single_choice",
+      "question": "count 放在 click 回调内部时，第二次点击会看到什么？",
+      "options": [
+        {"id": "A", "text": "从上次的 count 继续累加"},
+        {"id": "B", "text": "重新从 0 开始"}
+      ],
+      "expected_focus": "回调作用域与跨点击状态共享的关系"
+    }
+  },
+  "active_concept_check": {
+    "type": "single_choice",
+    "question": "count 放在 click 回调内部时，第二次点击会看到什么？",
+    "options": [
+      {"id": "A", "text": "从上次的 count 继续累加"},
+      {"id": "B", "text": "重新从 0 开始"}
+    ],
+    "expected_focus": "回调作用域与跨点击状态共享的关系"
+  },
+  "concept_check_attempts": 0,
+  "concept_check_result": null,
+  "previous_misconceptions": []
 }
 ```
 
-该 JSON 只保存可恢复的精简阶段状态；完整学习页对话历史保存在 `learning_messages`，并通过用户触发的历史引用 UI 读取。
+该 JSON 只保存可恢复的精简阶段状态；完整学习页对话历史和可重放工具调用保存在 `learning_messages.metadata.tool_calls`，并通过刷新、恢复、幂等重放或用户触发的历史引用 UI 读取。
+
+### `learning_sessions.review_stage_state_json`
+
+```json
+{
+  "review_stage": "warmup",
+  "knowledge_point_id": "uuid",
+  "seed_bank_id": "uuid",
+  "seed_id": "seed_review_ai_patch_01",
+  "warmup": {
+    "question": "先用一句话回忆：事件监听与状态变量最容易错在哪里？",
+    "expected_focus": "状态应位于能跨事件复用的作用域",
+    "keywords": ["state", "count", "作用域", "事件"],
+    "result": "pending",
+    "last_answer": null,
+    "repair_count": 0,
+    "feedback": null
+  },
+  "variant": {
+    "exercise_id": "uuid",
+    "exercise_type": "review_ai_patch",
+    "guided": false
+  }
+}
+```
+
+`review_stage` 只允许 `warmup`、`warmup_repair`、`variant_practice`、`submitted`。热身的 `correct`、`incorrect`、`unclear`、`skipped` 结果只写入该 JSON，用于刷新重放和诊断，不创建 `Attempt`，不写 `review_logs`，不更新 `ReviewState`。
+
+### `review_seed_banks.seeds_json`
+
+```json
+[
+  {
+    "id": "seed_review_ai_patch_01",
+    "knowledge_point_id": "uuid",
+    "exercise_type": "review_ai_patch",
+    "difficulty": 3,
+    "target_misconception": "state_scope_error",
+    "warmup_question": "先回忆：事件状态最容易错在哪里？",
+    "warmup_expected_focus": "状态变量作用域与连续事件行为",
+    "review_focus": "用需求、diff 与可见行为共同判断状态作用域风险",
+    "prompt_markdown": "审核 AI 对当前知识点代码的修改。",
+    "starter_code": "const button = document.querySelector('#counter-button');",
+    "metadata": {
+      "requirement": "连续点击时计数必须持续递增。",
+      "original_code": "let count = 0;",
+      "ai_diff": "-let count = 0;\n+  let count = 0;",
+      "expected_risk": "每次点击都会重新初始化 count",
+      "expected_verdict": "fail",
+      "expected_next_action": "request_change",
+      "rubric": {
+        "verdict_correctness": "0-2",
+        "evidence_grounding": "0-2",
+        "knowledge_point_alignment": "0-2",
+        "actionability": "0-2"
+      }
+    }
+  }
+]
+```
+
+同一 seed bank 内 seed `id` 必须唯一，题面和 starter code 需要做重复检测。`code_blank`、`fix_bug`、`implement_function` 和 `explain_code` seed 可以包含可见测试和 hidden summary，但不得泄露隐藏测试源码或标准答案。
 
 ### `knowledge_points.weak_points_json`
 
@@ -653,6 +780,40 @@ FSRS 更新的 append-only 日志。每次学习提交或复习提交只要更�
   "last_effective_error_explanation": "用状态生命周期解释更有效"
 }
 ```
+
+`review_ai_patch` 也写入同一字段，不新增专表：
+
+```json
+{
+  "result": "partial",
+  "score": 6,
+  "score_breakdown": {
+    "verdict_correctness": 2,
+    "evidence_grounding": 1,
+    "knowledge_point_alignment": 2,
+    "actionability": 1
+  },
+  "hard_gates": {
+    "runtime_gate": true,
+    "test_gate": false,
+    "core_blank_gate": true,
+    "explanation_gate": true
+  },
+  "weak_points": ["insufficient_test_or_diff_evidence"],
+  "feedback": "结论方向可以，但证据不足。需要引用需求、diff 或可见测试，而不是只说 tests passed。",
+  "next_action": "review_variant",
+  "fsrs_rating": "Hard",
+  "review_ai_patch_result": {
+    "verdict": "fail",
+    "expected_verdict": "fail",
+    "evidence_quality": "weak",
+    "expected_risk": "每次点击都会重新初始化 count",
+    "learner_next_action": "request_change"
+  }
+}
+```
+
+`review_ai_patch` 的 score breakdown 固定为 `verdict_correctness`、`evidence_grounding`、`knowledge_point_alignment`、`actionability`。只说 `tests passed` 属于弱证据，即使 verdict 正确也不得映射为 `Easy`。
 
 ### `code_blanks.acceptable_patterns_json`
 
@@ -877,7 +1038,7 @@ FSRS 更新的 append-only 日志。每次学习提交或复习提交只要更�
 
 ### `0005_sessions_attempts_learning_results`
 
-- 创建 `learning_sessions`。
+- 创建 `learning_sessions`，包含学习页 `learning_stage*` 和复习页 `review_stage*` 阶段字段。
 - 创建 `learning_messages`，用于学习页 AI/用户对话历史引用。
 - 创建 `attempts`。
 - 创建 `session_knowledge_points`。
@@ -889,10 +1050,11 @@ FSRS 更新的 append-only 日志。每次学习提交或复习提交只要更�
 ### `0006_review_state_and_logs`
 
 - 创建 `review_states`。
+- 创建 `review_seed_banks`。
 - 创建 `review_logs`。
 - 创建 `due_at` 查询索引。
 
-回滚：先 drop `review_logs`，再 drop `review_states`。回滚前必须确认调度 worker 已停止，避免任务读取空表。
+回滚：先 drop `review_logs`，再 drop `review_seed_banks`，最后 drop `review_states`。回滚前必须确认调度 worker 已停止，避免任务读取空表。
 
 ### `0007_notes_stage_summaries`
 
@@ -950,8 +1112,10 @@ FSRS 更新的 append-only 日志。每次学习提交或复习提交只要更�
 |---|---|---|
 | `confirm_plan` | `learning_plans`、`plan_modules`、`knowledge_points`、可选 `exercises` | 只有用户确认后写正式计划 |
 | `initialize_review_state` | `review_states` | 为每个 `KnowledgePoint` 创建 `card_state=new`，`due_at=NULL` |
-| `start_learning_session` / `start_review_session` | `learning_sessions` | 使用 `request_id` 幂等；学习页新会话写入 `learning_stage=concept_intro` |
-| `concept_intro` / `concept_qna` / `readiness_check` | `learning_sessions`、`learning_messages` | 更新精简阶段状态并保存学习页可见对话 |
+| `start_learning_session` / `start_review_session` | `learning_sessions` | 使用 `request_id` 幂等；学习页新会话写入 `learning_stage=concept_check` 并持久化 `show_concept_intro`；复习页新会话写入 `review_stage=warmup` 和完整 `review_stage_state_json` |
+| `concept_check` / `concept_repair` / `practice_offer` | `learning_sessions`、`learning_messages` | 更新精简阶段状态并保存学习页可见对话和 `show_concept_check_result` 工具调用 |
+| `ensure_review_seed_bank` | `review_seed_banks`、可选 `exercises` | 异步或同步 rescue 生成完整 seed bank，校验通过后持久化；rescue 失败记录 failed，不展示 fallback 题 |
+| `record_review_warmup_result` | `learning_sessions` | 只更新 `review_stage` / `review_stage_state_json`，不创建 `Attempt`，不更新 FSRS |
 | `run_exercise` / `run_review_exercise` | `attempts` | 保存运行事实，不更新 `ReviewState` |
 | `evaluate_attempt` | `attempts` | 写 `score`、`score_breakdown_json`、`code_completion_result`、`fsrs_rating` |
 | `update_learning_memory` | `session_knowledge_points`、`knowledge_points`、`review_states`、`review_logs` | 在同一事务内提交 |

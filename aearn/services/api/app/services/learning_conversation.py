@@ -30,6 +30,7 @@ from app.agents.guardrails import (
     detect_direct_answer_request,
 )
 from app.agents.learning_conversation_agent import AgentsSDKLearningConversationClient
+from app.agents.learning_concept_agent import build_sdk_concept_check_result
 from app.core.config import Settings, get_settings
 from app.services.exercise_repository import get_exercise
 from app.services.learning_session_repository import (
@@ -58,7 +59,7 @@ LEARNING_TUTOR_SYSTEM_PROMPT = """你是 Aearn 的诊断型编程语言学习导
 ## 你会收到的输入
 
 输入是一个 JSON，字段可能包括：
-- stage：当前学习阶段，可能是 concept_intro、concept_qna、readiness_check、practice_support。
+- stage：当前学习阶段，可能是 concept_intro、concept_check、concept_repair、practice_offer、practice_support。
 - learning_context：当前课程、模块、知识点和学习状态。
 - lesson_outline：当前知识点拆分出的子概念和来源。
 - concept_progress：阶段状态和已覆盖内容。
@@ -109,17 +110,19 @@ concept_intro：
 - 优先用短类比、反例和概念边界说明。
 - 适合的下一步是让学习者用自己的话解释一个关键关系，或回答一个很小的判断题。
 
-concept_qna：
-- 目标是围绕学习者的问题诊断误解。
-- 优先承接最近上下文，不要从头讲完整课程。
-- 如果学习者问题模糊，先给判断，再问一个具体问题。
-- 可以给最小例子，但例子必须是概念级或局部片段，不能变成完整练习答案。
+concept_check：
+- 目标是判断学习者是否理解当前概念卡里的关键关系。
+- 可以承接 `show_concept_check_result` 的结构化判断，但不要把选项当成强制按钮。
+- 如果答案模糊，先要求学习者用选项或一句更具体的话回答。
 
-readiness_check：
-- 目标是判断学习者是否可以进入练习。
-- 如果学习者复述足够，确认关键点并推进。
-- 如果复述不足，指出一个最关键缺口，并问一个补充问题。
-- 不要因为用户说“懂了”就自动判定理解；要看他是否说明了原因、作用或边界。
+concept_repair：
+- 目标是修正一个最关键误解。
+- 只给一个更窄的反例或判断题，不要连续盘问。
+- 两次仍未通过时停止循环，给“再看例子”或“引导练习”的选择。
+
+practice_offer：
+- 目标是确认是否进入真实练习。
+- 不再追加新的概念考试；如果学习者说开始练习，进入 practice_support。
 
 practice_support：
 - 目标是帮助学习者基于真实练习和可见结果定位问题。
@@ -245,6 +248,7 @@ class LearningConversationTransition:
     learning_stage: str
     learning_stage_state: Mapping[str, object]
     tool_name: str | None = None
+    learner_content: str = ""
 
 
 @dataclass(frozen=True)
@@ -485,15 +489,15 @@ def store_learning_message_response(
     response: Mapping[str, object],
 ) -> dict[str, object]:
     finalized = dict(response)
-    tool_calls = _apply_transition_and_build_tool_calls(conn, prepared)
+    tool_calls, final_stage, final_state = _apply_transition_and_build_tool_calls(conn, prepared)
     if tool_calls:
         finalized["tool_calls"] = tool_calls
     finalized["session_state"] = {
         "session_id": prepared.context.session_id,
         "next_action": "retry_same",
         "current_stage": prepared.context.current_stage,
-        "learning_stage": prepared.transition.learning_stage,
-        "learning_stage_state": dict(prepared.transition.learning_stage_state),
+        "learning_stage": final_stage,
+        "learning_stage_state": dict(final_state),
     }
     agent_message = finalized.get("agent_message", {})
     content = str(agent_message.get("content") or "") if isinstance(agent_message, Mapping) else ""
@@ -931,8 +935,9 @@ def _response_policy(context: LearningConversationContext, user_content: str) ->
     direct_answer_requested = detect_direct_answer_request(user_content)
     stage_strategy = {
         "concept_intro": "建立直觉和概念边界，不展开完整练习。",
-        "concept_qna": "承接上下文诊断误解，只解决本轮一个卡点。",
-        "readiness_check": "检查费曼式理解，不因一句懂了就直接放行。",
+        "concept_check": "围绕当前概念判断题判断学习者自然语言回答。",
+        "concept_repair": "修正一个误解，给更窄的反例或判断题。",
+        "practice_offer": "学习者已通过概念判断，确认是否进入真实练习。",
         "practice_support": "基于可见练习、运行结果和安全摘要定位下一处检查点。",
     }.get(context.learning_stage, "先诊断，再给一个可执行下一步。")
     return {
@@ -979,8 +984,10 @@ def _normalize_summary_confidence(value: object) -> str:
 def _recommended_next_step_for_stage(stage: str) -> str:
     if stage == "practice_support":
         return "先根据可见结果定位下一处代码检查点。"
-    if stage == "readiness_check":
-        return "请学习者用自己的话补上概念边界。"
+    if stage in {"concept_check", "concept_repair"}:
+        return "请学习者回答当前概念判断题或补上更具体的判断依据。"
+    if stage == "practice_offer":
+        return "请学习者选择是否开始练习。"
     return "先判断学习者卡点，再问一个能缩小范围的问题。"
 
 
@@ -1041,16 +1048,35 @@ def _determine_transition(
         return LearningConversationTransition(stage, state, tool_name="show_learning_history")
 
     if _requests_practice(user_content):
+        unlock_reason = _practice_unlock_reason_for_stage(stage, state)
         state.update(
             {
                 "covered_subpoint_ids": _lesson_subpoint_ids(context),
                 "feynman_status": "pending",
-                "practice_unlock_reason": "early_request",
+                "practice_unlock_reason": unlock_reason,
+                "learning_incomplete": unlock_reason != "concept_check_passed",
+                "concept_summary": _concept_summary(context),
+            }
+        )
+        if unlock_reason == "concept_check_skipped":
+            state["concept_check_result"] = "skipped"
+        return LearningConversationTransition("practice_support", state, tool_name="show_code_exercise")
+
+    if stage in {"concept_check", "concept_repair"}:
+        state.update(
+            {
+                "covered_subpoint_ids": _lesson_subpoint_ids(context),
+                "practice_unlock_reason": None,
                 "learning_incomplete": True,
                 "concept_summary": _concept_summary(context),
             }
         )
-        return LearningConversationTransition("practice_support", state, tool_name="show_code_exercise")
+        return LearningConversationTransition(
+            stage,
+            state,
+            tool_name="show_concept_check_result",
+            learner_content=user_content,
+        )
 
     if stage in {"concept_intro", "concept_qna"}:
         state.update(
@@ -1113,18 +1139,22 @@ def _context_with_transition(
 def _apply_transition_and_build_tool_calls(
     conn: Connection[dict[str, object]],
     prepared: PreparedLearningMessage,
-) -> list[dict[str, object]]:
+) -> tuple[list[dict[str, object]], str, Mapping[str, object]]:
     transition = prepared.transition
     tool_calls: list[dict[str, object]] = []
     if transition.tool_name == "show_code_exercise":
+        prepared_transition_state = dict(transition.learning_stage_state)
+        check_result_tool = _concept_check_result_for_practice_unlock(prepared.context, prepared_transition_state)
+        if check_result_tool is not None:
+            tool_calls.append(_tool_call("show_concept_check_result", check_result_tool, prepared.message_id))
         exercise, state = unlock_learning_session_practice(
             conn,
             session_id=prepared.context.session_id,
             unlock_reason=str(transition.learning_stage_state.get("practice_unlock_reason") or "early_request"),
             learning_incomplete=bool(transition.learning_stage_state.get("learning_incomplete", True)),
+            state_overrides=prepared_transition_state,
         )
         transition_state = dict(state)
-        prepared_transition_state = dict(transition.learning_stage_state)
         prepared_transition_state.update(transition_state)
         args = {
             "session_id": prepared.context.session_id,
@@ -1136,7 +1166,18 @@ def _apply_transition_and_build_tool_calls(
             "notice": _practice_notice(prepared_transition_state),
         }
         tool_calls.append(_tool_call("show_code_exercise", args, prepared.message_id))
-        return tool_calls
+        return tool_calls, "practice_support", prepared_transition_state
+
+    if transition.tool_name == "show_concept_check_result":
+        result_args, final_stage, final_state = _build_concept_check_result_tool(prepared.context, transition)
+        update_learning_session_stage(
+            conn,
+            session_id=prepared.context.session_id,
+            learning_stage=final_stage,
+            state=final_state,
+        )
+        tool_calls.append(_tool_call("show_concept_check_result", result_args, prepared.message_id))
+        return tool_calls, final_stage, final_state
 
     update_learning_session_stage(
         conn,
@@ -1152,7 +1193,169 @@ def _apply_transition_and_build_tool_calls(
             active_session_id=prepared.context.session_id,
         )
         tool_calls.append(_tool_call("show_learning_history", args, prepared.message_id))
-    return tool_calls
+    return tool_calls, transition.learning_stage, transition.learning_stage_state
+
+
+def _build_concept_check_result_tool(
+    context: LearningConversationContext,
+    transition: LearningConversationTransition,
+) -> tuple[dict[str, object], str, dict[str, object]]:
+    state = dict(transition.learning_stage_state)
+    active_intro = _mapping_or_empty(state.get("active_concept_intro"))
+    active_check = _mapping_or_empty(state.get("active_concept_check"))
+    attempt_count = _int_or_zero(state.get("concept_check_attempts"))
+    previous_misconceptions = _string_list(state.get("previous_misconceptions"))
+    candidate = build_sdk_concept_check_result(
+        knowledge_point=context.knowledge_point,
+        lesson_outline=context.lesson_outline,
+        lesson_sources=context.lesson_sources,
+        active_intro=active_intro,
+        active_check=active_check,
+        learner_answer=transition.learner_content,
+        attempt_count=attempt_count,
+        previous_misconceptions=previous_misconceptions,
+        conversation_context=context.conversation_context,
+    )
+    if candidate is None:
+        raise LLMCallError("Concept check requires configured model API")
+    result_args = _concept_check_result_tool_args(context, candidate)
+    result = str(result_args["result"])
+    final_stage = context.learning_stage
+    final_state = dict(state)
+    final_state["concept_check_result"] = result
+    final_state["concept_summary"] = _concept_summary(context)
+    final_state["learning_incomplete"] = result != "correct"
+
+    if result == "correct":
+        final_stage = "practice_offer"
+        final_state["practice_unlock_reason"] = None
+        result_args["actions"] = _ensure_actions(
+            result_args.get("actions"),
+            [
+                {"id": "start_practice", "label": "开始练习"},
+                {"id": "show_another_example", "label": "再看一个例子"},
+            ],
+        )
+        return result_args, final_stage, final_state
+
+    if result == "incorrect":
+        attempts = attempt_count + 1
+        final_stage = "concept_repair"
+        final_state["concept_check_attempts"] = attempts
+        final_state["previous_misconceptions"] = _append_unique(
+            previous_misconceptions,
+            str(result_args.get("explanation") or ""),
+            max_items=4,
+        )
+        repair_check = result_args.get("repair_check")
+        if attempts >= 2:
+            result_args["repair_check"] = None
+            result_args["actions"] = _ensure_actions(
+                result_args.get("actions"),
+                [
+                    {"id": "guided_practice", "label": "进入引导练习"},
+                    {"id": "show_another_example", "label": "再看一个例子"},
+                ],
+            )
+            result_args["next_prompt"] = (
+                str(result_args.get("next_prompt") or "").strip()
+                or "这轮先停止判断循环。你可以再看一个例子，或进入引导练习。"
+            )
+            final_state["repair_limit_reached"] = True
+            return result_args, final_stage, final_state
+        if not isinstance(repair_check, Mapping):
+            raise LLMInvalidResponseError("First incorrect concept check requires a repair_check")
+        final_state["active_concept_check"] = dict(repair_check)
+        return result_args, final_stage, final_state
+
+    if result == "unclear":
+        result_args["actions"] = _ensure_actions(result_args.get("actions"), [])
+        return result_args, final_stage, final_state
+
+    return result_args, final_stage, final_state
+
+
+def _concept_check_result_for_practice_unlock(
+    context: LearningConversationContext,
+    state: Mapping[str, object],
+) -> dict[str, object] | None:
+    reason = str(state.get("practice_unlock_reason") or "")
+    if reason == "concept_check_skipped":
+        return {
+            "session_id": context.session_id,
+            "knowledge_point_id": context.knowledge_point_id,
+            "result": "skipped",
+            "confidence": "high",
+            "explanation": "你选择先进入练习；我会把本轮标记为概念检查未完成。",
+            "next_prompt": "先做一个引导练习，遇到卡点时再回到概念关系上。",
+            "actions": [{"id": "start_practice", "label": "开始练习"}],
+            "repair_check": None,
+        }
+    if reason == "concept_check_repair_limit":
+        return {
+            "session_id": context.session_id,
+            "knowledge_point_id": context.knowledge_point_id,
+            "result": "incorrect",
+            "confidence": "medium",
+            "explanation": "前两次判断仍有误解，继续追问会变成循环。",
+            "next_prompt": "进入引导练习时，我会保留概念未完成标记，并在练习里继续提示关键关系。",
+            "actions": [{"id": "guided_practice", "label": "进入引导练习"}],
+            "repair_check": None,
+        }
+    return None
+
+
+def _concept_check_result_tool_args(
+    context: LearningConversationContext,
+    candidate: Mapping[str, object],
+) -> dict[str, object]:
+    actions = candidate.get("actions")
+    repair_check = candidate.get("repair_check")
+    return {
+        "session_id": context.session_id,
+        "knowledge_point_id": context.knowledge_point_id,
+        "result": str(candidate.get("result") or "unclear"),
+        "confidence": str(candidate.get("confidence") or "low"),
+        "explanation": str(candidate.get("explanation") or ""),
+        "next_prompt": str(candidate.get("next_prompt") or ""),
+        "actions": [dict(item) for item in actions if isinstance(item, Mapping)]
+        if isinstance(actions, Sequence) and not isinstance(actions, (str, bytes))
+        else [],
+        "repair_check": dict(repair_check) if isinstance(repair_check, Mapping) else None,
+    }
+
+
+def _practice_unlock_reason_for_stage(stage: str, state: Mapping[str, object]) -> str:
+    if stage == "practice_offer":
+        return "concept_check_passed"
+    if _int_or_zero(state.get("concept_check_attempts")) >= 2 or state.get("repair_limit_reached") is True:
+        return "concept_check_repair_limit"
+    if stage in {"concept_check", "concept_repair"}:
+        return "concept_check_skipped"
+    return "early_request"
+
+
+def _ensure_actions(value: object, defaults: Sequence[Mapping[str, str]]) -> list[dict[str, str]]:
+    actions = [dict(item) for item in value if isinstance(item, Mapping)] if isinstance(value, Sequence) and not isinstance(value, (str, bytes)) else []
+    existing = {str(item.get("id") or "") for item in actions}
+    for item in defaults:
+        if item["id"] not in existing:
+            actions.append(dict(item))
+    return actions
+
+
+def _string_list(value: object) -> list[str]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return []
+    return [str(item) for item in value if str(item).strip()]
+
+
+def _append_unique(items: Sequence[str], value: str, *, max_items: int) -> list[str]:
+    result = [item for item in items if item.strip()]
+    stripped = value.strip()
+    if stripped and stripped not in result:
+        result.append(stripped)
+    return result[-max_items:]
 
 
 def list_learning_history(
@@ -1252,7 +1455,7 @@ def _isoformat(value: object) -> str | None:
 
 def _requests_practice(text: str) -> bool:
     lowered = text.lower()
-    triggers = ["开始练习", "给我题", "进入练习", "做题", "我准备好了", "直接练习", "practice", "exercise"]
+    triggers = ["开始练习", "给我题", "进入练习", "引导练习", "做题", "我准备好了", "直接练习", "practice", "exercise"]
     return any(trigger in lowered for trigger in triggers)
 
 
@@ -1314,6 +1517,13 @@ def _concept_summary(context: LearningConversationContext) -> str:
 
 def _practice_notice(state: Mapping[str, object]) -> str:
     summary = str(state.get("concept_summary") or "")
+    reason = str(state.get("practice_unlock_reason") or "")
+    if reason == "concept_check_passed":
+        return f"概念判断已通过。概念小结：{summary}"
+    if reason == "concept_check_skipped":
+        return f"你选择先进入练习，概念检查会标记为未完成。概念小结：{summary}"
+    if reason == "concept_check_repair_limit":
+        return f"概念判断暂未完全通过，先进入引导练习。概念小结：{summary}"
     if state.get("learning_incomplete") is True:
         return f"当前学习进度尚未完成。概念小结：{summary}"
     return f"费曼复述已通过。概念小结：{summary}"
@@ -1469,3 +1679,9 @@ def _decimal_to_float(value: object) -> float:
 
 def _int_or_zero(value: object) -> int:
     return int_or_zero(value)
+
+
+def _mapping_or_empty(value: object) -> Mapping[str, object]:
+    if isinstance(value, Mapping):
+        return value
+    return {}

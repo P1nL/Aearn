@@ -63,6 +63,7 @@ type LearningWorkspacePageProps = {
   canOpenNoteDrawer: boolean;
   noteDrawerOpen: boolean;
   onOpenLearningSession: (planResponse: CreatedPlanResponse, knowledgePointId: string) => Promise<void> | void;
+  onReturnToRoute: () => void;
   onRunChange: (run: RunExerciseResponse | null) => void;
   onSubmitChange: (submit: SubmitExerciseResponse | null) => void;
   onKnowledgePointUpdate: (patch: SubmitExerciseResponse["KnowledgePoint"]) => void;
@@ -85,6 +86,7 @@ export function LearningWorkspacePage({
   canOpenNoteDrawer,
   noteDrawerOpen,
   onOpenLearningSession,
+  onReturnToRoute,
   onRunChange,
   onSubmitChange,
   onKnowledgePointUpdate,
@@ -119,6 +121,7 @@ export function LearningWorkspacePage({
   const session = sessionState.status === "ready" ? sessionState.data : null;
   const activeExercise = session?.exercise ?? unlockedExercise;
   const initialAgentMessage = session?.initial_agent_message.trim() ?? "";
+  const initialToolCalls = session?.initial_tool_calls ?? [];
   const composerStreaming = composerStream !== null;
   const hasExerciseToolMessage = messages.some((message) =>
     message.toolCalls?.some((toolCall) => toolCall.name === "show_code_exercise"),
@@ -154,16 +157,27 @@ export function LearningWorkspacePage({
         }
       : null;
 
-  // Build thread messages with initialAgentMessage prepended as a proper message
-  const threadMessages: ConversationMessage[] = session && initialAgentMessage
-    ? [
-        {
+  const initialMessage: ConversationMessage | null =
+    session && (initialAgentMessage || initialToolCalls.length > 0)
+      ? {
           id: `initial-${session.session_id}`,
           speaker: "agent" as const,
           text: initialAgentMessage,
           label: "Agent",
           status: "done" as const,
-        },
+          toolCalls: initialToolCalls.map((toolCall) => ({
+            id: toolCall.id,
+            name: toolCall.name,
+            args: toolCall.args,
+            argsBuffer: "",
+            status: toolCall.status === "done" ? "done" : "pending",
+          })),
+        }
+      : null;
+
+  const threadMessages: ConversationMessage[] = initialMessage
+    ? [
+        initialMessage,
         ...messages,
         ...(resumeExerciseMessage ? [resumeExerciseMessage] : []),
       ]
@@ -172,7 +186,7 @@ export function LearningWorkspacePage({
   const learningQuickReplies =
     practiceUnlocked
       ? ["给我提示", "解释这个错误"]
-      : ["我理解了，请检查", "开始练习", "查看历史对话"];
+      : ["A", "B", "我不确定", "开始练习"];
 
   // --- SSE streaming for composer messages ---
   useSSE(composerStream?.endpoint ?? null, {
@@ -595,16 +609,26 @@ export function LearningWorkspacePage({
 
           {sessionState.status === "loading" && <SystemCard title="系统状态" body="正在启动当前知识点会话…" />}
           {sessionState.status === "error" && (
-            <SystemCard
-              title="启动失败"
-              body={sessionState.message}
-              actionLabel="重试当前知识点"
-              onAction={() => {
-                if (createdPlan && sessionState.knowledgePointId) {
-                  void onOpenLearningSession(createdPlan, sessionState.knowledgePointId);
-                }
-              }}
-            />
+            <article className="system-card concept-start-error">
+              <h3>启动失败</h3>
+              <p>{sessionState.message}</p>
+              <div className="system-card-actions">
+                <button
+                  className="btn primary ghost-btn"
+                  type="button"
+                  onClick={() => {
+                    if (createdPlan && sessionState.knowledgePointId) {
+                      void onOpenLearningSession(createdPlan, sessionState.knowledgePointId);
+                    }
+                  }}
+                >
+                  重试生成
+                </button>
+                <button className="btn ghost-btn" type="button" onClick={onReturnToRoute}>
+                  返回路线
+                </button>
+              </div>
+            </article>
           )}
 
         </div>

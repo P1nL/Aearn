@@ -44,6 +44,77 @@ The formal MVP runtime lives under `aearn/`, not under the historical `01_` thro
 
 ---
 
+## Scenario: Review Warmup, Seed Bank, and Patch Review Contracts
+
+### 1. Scope / Trigger
+
+- Trigger: any review-page backend, worker, API, or migration change that touches warmup, review seed banks, review variants, or `review_ai_patch`.
+- Scope: `POST /api/reviews/start`, `POST /api/reviews/{session_id}/warmup-result`, `POST /api/reviews/{session_id}/exercise-result`, `review_seed_banks`, `learning_sessions.review_stage*`, materialized review `exercises`, `attempts`, `review_states`, and `review_logs`.
+
+### 2. Signatures
+
+- DB: `review_seed_banks(user_id, plan_id, knowledge_point_id, generator_version, status, seed_count, seeds_json, quality_report_json, failure_code, failure_message, generated_at)`.
+- DB: `learning_sessions.review_stage` in `warmup | warmup_repair | variant_practice | submitted`.
+- DB: `learning_sessions.review_stage_state_json` stores `seed_bank_id`, `seed_id`, `warmup`, and `variant`.
+- API: `POST /api/reviews/start` returns `warmup`, `review_stage`, `review_stage_state`, `selected_seed_id`, `review_exercise`, and optional `seed_bank`.
+- API: `POST /api/reviews/{session_id}/warmup-result` accepts `{ action: "answer", answer: string }` or `{ action: "skip" }`.
+- API: `POST /api/reviews/{session_id}/exercise-result` accepts normal code payloads or `review_ai_patch_answer`.
+
+### 3. Contracts
+
+- `reviews/start` must ensure a ready seed bank before selecting a seed. Async generation and sync rescue must share generator, validation, safety checks, and persistence helpers.
+- Sync rescue must persist the full ready seed bank before selecting a seed. If rescue fails, persist a failed bank row and return `REVIEW_SEED_BANK_GENERATION_FAILED`.
+- Warmup outcomes are review-session state only. They never create `Attempt`, never write `review_logs`, and never update `ReviewState`.
+- `review_ai_patch` is a first-class `Exercise.exercise_type`. It must require `verdict`, `evidence`, `knowledge_point_risk`, and `next_action`.
+- `review_ai_patch` scoring must write `verdict_correctness`, `evidence_grounding`, `knowledge_point_alignment`, and `actionability` into `Attempt.code_completion_result.score_breakdown`.
+
+### 4. Validation & Error Matrix
+
+- Missing user, knowledge point, session, or exercise -> map to documented 404 error codes.
+- Not due -> `REVIEW_NOT_DUE` with 409.
+- Seed bank invalid, empty, missing required type coverage, missing `review_ai_patch`, duplicate seeds, hidden tests, solution references, raw provider errors, or secrets -> `REVIEW_SEED_BANK_GENERATION_FAILED`.
+- Warmup `action=answer` without non-empty `answer` -> `VALIDATION_ERROR`.
+- `review_ai_patch` exercise without `review_ai_patch_answer` -> `VALIDATION_ERROR`.
+- Correct `review_ai_patch` verdict with weak evidence such as only `tests passed` -> `fsrs_rating=Hard`, never `Easy`.
+
+### 5. Good/Base/Bad Cases
+
+- Good: ready seed bank exists, `reviews/start` replays the same session state, warmup answer moves to `variant_practice`, `exercise-result` writes one `Attempt(review_submit)` and one `review_log`.
+- Base: seed bank missing, sync rescue generates and persists a full bank, then selects a seed and returns warmup plus variant.
+- Bad: rescue fails and backend fabricates a fallback question, warmup updates `ReviewState`, or frontend-provided patch-review score is trusted.
+
+### 6. Tests Required
+
+- API test: `reviews/start` returns warmup, selected seed, persisted exercise, and replay uses the same seed/state.
+- API test: rescue generation failure returns `REVIEW_SEED_BANK_GENERATION_FAILED` and persists `review_seed_banks.status=failed`.
+- API test: warmup `skip`, wrong answer, and repair-limit paths write no `Attempt`, no `review_logs`, and no `ReviewState` changes.
+- API test: `review_ai_patch` weak evidence maps to `Hard` and writes `review_ai_patch_result` under `Attempt.code_completion_result`.
+- Idempotency test: repeated review submit does not increment `review_count` twice.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+# Fallback question violates the product contract and hides seed-bank failure.
+if seed_bank_failed:
+    exercise = build_simple_question_from_title(knowledge_point["title"])
+    return {"review_exercise": exercise}
+```
+
+#### Correct
+
+```python
+if seed_bank_failed:
+    persist_failed_seed_bank(...)
+    raise ReviewSeedBankGenerationError(
+        "REVIEW_SEED_BANK_GENERATION_FAILED",
+        "review seed bank validation failed",
+    )
+```
+
+---
+
 ## Scenario: Local PostgreSQL and Redis Prerequisite Services
 
 ### 1. Scope / Trigger

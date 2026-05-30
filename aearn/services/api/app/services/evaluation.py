@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-
 from app.services.runtime_runner import RuntimeExecutionResult
 
 
@@ -66,6 +65,67 @@ def build_code_completion_result(
     service_fields: dict[str, object] = {
         "evaluation_status": evaluation_status,
         "explanation_check_result": explanation_result,
+    }
+    return response, service_fields
+
+
+def build_review_ai_patch_completion_result(
+    exercise: Mapping[str, object],
+    answer: Mapping[str, object],
+) -> tuple[dict[str, object], dict[str, object]]:
+    metadata = exercise.get("metadata_json")
+    if not isinstance(metadata, Mapping):
+        metadata = {}
+    expected_verdict = str(metadata.get("expected_verdict") or "fail")
+    expected_risk = str(metadata.get("expected_risk") or "")
+    expected_next_actions = metadata.get("expected_next_actions") or ["reject", "request_change"]
+    if not isinstance(expected_next_actions, Sequence) or isinstance(expected_next_actions, str):
+        expected_next_actions = ["reject", "request_change"]
+
+    verdict = str(answer.get("verdict") or "")
+    evidence = str(answer.get("evidence") or "")
+    knowledge_point_risk = str(answer.get("knowledge_point_risk") or "")
+    learner_next_action = str(answer.get("next_action") or "")
+    score_breakdown = {
+        "verdict_correctness": 2 if verdict == expected_verdict else 1 if verdict == "uncertain" else 0,
+        "evidence_grounding": _review_evidence_score(evidence),
+        "knowledge_point_alignment": _review_alignment_score(knowledge_point_risk, expected_risk),
+        "actionability": 2 if learner_next_action in {str(item) for item in expected_next_actions} else 1 if learner_next_action else 0,
+    }
+    score = sum(score_breakdown.values())
+    result, fsrs_rating, next_action = _review_ai_patch_outcome(score_breakdown)
+    weak_points = _review_ai_patch_weak_points(score_breakdown)
+    feedback = _review_ai_patch_feedback(result, score_breakdown, expected_risk)
+    hard_gates = {
+        "runtime_gate": True,
+        "test_gate": score_breakdown["evidence_grounding"] >= 2,
+        "core_blank_gate": score_breakdown["verdict_correctness"] >= 2,
+        "explanation_gate": score_breakdown["knowledge_point_alignment"] >= 2,
+    }
+    response: dict[str, object] = {
+        "result": result,
+        "score": score,
+        "score_breakdown": score_breakdown,
+        "hard_gates": hard_gates,
+        "test_pass_rate": 1.0 if score_breakdown["verdict_correctness"] >= 2 else 0.0,
+        "hint_usage_count": 0,
+        "error_count": 0 if score_breakdown["verdict_correctness"] >= 2 else 1,
+        "weak_points": weak_points,
+        "error_cause": weak_points[0] if weak_points else None,
+        "feedback": feedback,
+        "next_action": next_action,
+        "fsrs_rating": fsrs_rating,
+        "review_ai_patch_result": {
+            "verdict": verdict,
+            "expected_verdict": expected_verdict,
+            "evidence_quality": "strong" if score_breakdown["evidence_grounding"] >= 2 else "weak",
+            "expected_risk": expected_risk,
+            "learner_next_action": learner_next_action,
+        },
+    }
+    service_fields: dict[str, object] = {
+        "evaluation_status": "evaluated",
+        "explanation_check_result": response["review_ai_patch_result"],
     }
     return response, service_fields
 
@@ -240,6 +300,69 @@ def _is_valid_result(
     if (not bool(hard_gates["runtime_gate"]) or not bool(hard_gates["test_gate"]) or not bool(hard_gates["core_blank_gate"])) and result in {"passed", "easy"}:
         return False
     return True
+
+
+def _review_evidence_score(evidence: str) -> int:
+    normalized = evidence.lower()
+    grounded_markers = ("diff", "test", "requirement", "需求", "测试", "改动", "证据")
+    if len(evidence.strip()) >= 40 and any(marker in normalized for marker in grounded_markers):
+        return 2
+    if evidence.strip():
+        return 1
+    return 0
+
+
+def _review_alignment_score(knowledge_point_risk: str, expected_risk: str) -> int:
+    if not knowledge_point_risk.strip():
+        return 0
+    risk_tokens = [token for token in expected_risk.replace("，", " ").replace("。", " ").split() if len(token) >= 2]
+    if risk_tokens and any(token in knowledge_point_risk for token in risk_tokens[:6]):
+        return 2
+    aligned_markers = ("状态", "作用域", "返回", "stdout", "class", "selector", "风险", "知识点")
+    if any(marker in knowledge_point_risk for marker in aligned_markers):
+        return 2
+    return 1
+
+
+def _review_ai_patch_outcome(score_breakdown: Mapping[str, int]) -> tuple[str, str, str]:
+    if score_breakdown["verdict_correctness"] == 0:
+        return "failed", "Again", "review_variant"
+    if score_breakdown["evidence_grounding"] < 2:
+        return "partial", "Hard", "review_variant"
+    if all(score >= 2 for score in score_breakdown.values()):
+        return "easy", "Easy", "schedule_review"
+    if sum(score_breakdown.values()) >= 6:
+        return "passed", "Good", "schedule_review"
+    return "partial", "Hard", "review_variant"
+
+
+def _review_ai_patch_weak_points(score_breakdown: Mapping[str, int]) -> list[str]:
+    weak_points: list[str] = []
+    if score_breakdown["verdict_correctness"] < 2:
+        weak_points.append("incorrect_review_verdict")
+    if score_breakdown["evidence_grounding"] < 2:
+        weak_points.append("insufficient_test_or_diff_evidence")
+    if score_breakdown["knowledge_point_alignment"] < 2:
+        weak_points.append("knowledge_point_risk_not_aligned")
+    if score_breakdown["actionability"] < 2:
+        weak_points.append("next_action_not_actionable")
+    return weak_points
+
+
+def _review_ai_patch_feedback(
+    result: str,
+    score_breakdown: Mapping[str, int],
+    expected_risk: str,
+) -> str:
+    if result == "failed":
+        return "审查结论和当前知识点风险不一致，需要重新判断 AI 改动是否满足需求。"
+    if score_breakdown["evidence_grounding"] < 2:
+        return "结论方向可以，但证据不足。需要引用需求、diff 或可见测试，而不是只说 tests passed。"
+    if result == "easy":
+        return "审查结论、证据、知识点风险和下一步都清楚，可以进入复习调度。"
+    if expected_risk:
+        return f"审查基本成立。继续把证据和风险说得更具体：{expected_risk}"
+    return "审查基本成立，下一次继续强化证据链。"
 
 
 def _int_or_zero(value: object) -> int:

@@ -34,7 +34,7 @@ export type ExerciseCardArgs = {
   exercise_id: string;
   session_id: string;
   title: string;
-  exercise_type: "code_blank" | "fix_bug" | "implement_function" | "explain_code";
+  exercise_type: "code_blank" | "fix_bug" | "implement_function" | "explain_code" | "review_ai_patch";
   prompt_markdown: string;
   starter_code: string;
   language: Language;
@@ -52,13 +52,59 @@ export type CodeExerciseToolArgs = {
   session_id: string;
   knowledge_point_id: string;
   exercise: LearningExercise;
-  unlock_reason: "early_request" | "feynman_passed" | "legacy_session" | string | null;
+  unlock_reason:
+    | "early_request"
+    | "feynman_passed"
+    | "legacy_session"
+    | "concept_check_passed"
+    | "concept_check_skipped"
+    | "concept_check_repair_limit"
+    | string
+    | null;
   learning_incomplete: boolean;
   concept_summary: string;
   notice: string;
 };
 
 export type LearningHistoryArgs = LearningHistoryResponse;
+
+export type ConceptChoiceOption = {
+  id: string;
+  text: string;
+};
+
+export type ConceptCheck = {
+  type: "single_choice";
+  question: string;
+  options: ConceptChoiceOption[];
+  expected_focus: string;
+};
+
+export type ConceptIntroArgs = {
+  session_id: string;
+  knowledge_point_id: string;
+  summary: string;
+  example: {
+    title: string;
+    body: string;
+    takeaway: string;
+  };
+  check: ConceptCheck;
+};
+
+export type ConceptCheckResultArgs = {
+  session_id: string;
+  knowledge_point_id: string;
+  result: "correct" | "incorrect" | "unclear" | "skipped";
+  confidence: "high" | "medium" | "low";
+  explanation: string;
+  next_prompt: string;
+  actions: Array<{
+    id: string;
+    label: string;
+  }>;
+  repair_check: ConceptCheck | null;
+};
 
 export type SubmitResultArgs = {
   attempt_id: string;
@@ -68,12 +114,7 @@ export type SubmitResultArgs = {
   feedback: string;
   weak_points: string[];
   next_action: NextAction;
-  score_breakdown: {
-    completion_correctness: number;
-    runtime_and_tests: number;
-    error_diagnosis: number;
-    explanation_check: number;
-  };
+  score_breakdown: Record<string, number>;
 };
 
 export type ReviewRecallArgs = {

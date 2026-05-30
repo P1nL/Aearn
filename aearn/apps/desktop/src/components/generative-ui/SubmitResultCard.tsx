@@ -27,10 +27,10 @@ export function SubmitResultCard({ args, status, onAction }: ToolUIProps<SubmitR
       </div>
 
       <div className="gen-result-breakdown">
-        <ScoreBar label="补全正确性" value={args.score_breakdown.completion_correctness} />
-        <ScoreBar label="运行与测试" value={args.score_breakdown.runtime_and_tests} />
-        <ScoreBar label="错误诊断" value={args.score_breakdown.error_diagnosis} />
-        <ScoreBar label="解释检查" value={args.score_breakdown.explanation_check} />
+        <ScoreBar label="补全正确性" value={args.score_breakdown.completion_correctness ?? args.score_breakdown.verdict_correctness ?? 0} />
+        <ScoreBar label="运行与测试" value={args.score_breakdown.runtime_and_tests ?? args.score_breakdown.evidence_grounding ?? 0} />
+        <ScoreBar label="错误诊断" value={args.score_breakdown.error_diagnosis ?? args.score_breakdown.knowledge_point_alignment ?? 0} />
+        <ScoreBar label="解释检查" value={args.score_breakdown.explanation_check ?? args.score_breakdown.actionability ?? 0} />
       </div>
 
       {args.weak_points.length > 0 && (

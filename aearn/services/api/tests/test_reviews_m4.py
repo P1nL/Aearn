@@ -1,3 +1,4 @@
+import json
 import uuid
 
 import psycopg
@@ -9,7 +10,7 @@ from app.core.config import Settings, get_settings
 from app.db.bootstrap import bootstrap_database
 from app.db.connection import connect
 from app.main import app
-from app.services import learning_conversation, learning_session_repository, review_repository
+from app.services import learning_conversation, learning_session_repository, review_repository, review_seed_bank
 from app.services.review_scheduler import apply_attempt_review_update
 
 
@@ -156,6 +157,10 @@ def test_review_start_requires_due_state_and_reuses_active_session(client: TestC
     assert created_body["session_type"] == "review"
     assert created_body["knowledge_point"]["id"] == knowledge_point_id
     assert created_body["review_exercise"]["knowledge_point_id"] == knowledge_point_id
+    assert created_body["review_stage"] == "warmup"
+    assert created_body["warmup"]["result"] == "pending"
+    assert created_body["selected_seed_id"]
+    assert created_body["seed_bank"]["status"] == "ready"
     assert created_body["variant_reason"]
     assert created_body["initial_agent_message"].startswith("这次复习围绕 ")
 
@@ -164,7 +169,10 @@ def test_review_start_requires_due_state_and_reuses_active_session(client: TestC
         json={"user_id": user["id"], "knowledge_point_id": knowledge_point_id},
     )
     assert replayed.status_code == 200
-    assert replayed.json()["session_id"] == created_body["session_id"]
+    replayed_body = replayed.json()
+    assert replayed_body["session_id"] == created_body["session_id"]
+    assert replayed_body["selected_seed_id"] == created_body["selected_seed_id"]
+    assert replayed_body["warmup"] == created_body["warmup"]
 
 
 def test_review_start_uses_sdk_review_coach_text_when_available(
@@ -221,6 +229,170 @@ def test_review_start_returns_model_unavailable_when_sdk_review_text_leaks_answe
     assert created.status_code == 503
     body = created.json()
     assert body["error"]["code"] == "MODEL_UNAVAILABLE"
+
+
+def test_review_start_returns_seed_bank_generation_failed_without_fallback(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user, plan = _confirmed_plan(client, language="javascript")
+    knowledge_point_id = plan["knowledge_points"][0]["id"]
+    _mark_due(knowledge_point_id)
+
+    def raise_generation_failure(context: dict[str, object]) -> tuple[list[dict[str, object]], dict[str, object]]:
+        del context
+        raise review_seed_bank.ReviewSeedBankValidationError("unsafe generated payload")
+
+    monkeypatch.setattr(review_seed_bank, "build_review_seed_bank_payload", raise_generation_failure)
+
+    created = client.post(
+        "/api/reviews/start",
+        json={"user_id": user["id"], "knowledge_point_id": knowledge_point_id},
+    )
+    assert created.status_code == 503
+    body = created.json()
+    assert body["error"]["code"] == "REVIEW_SEED_BANK_GENERATION_FAILED"
+    assert "review_exercise" not in body
+
+    with connect() as conn:
+        bank = conn.execute(
+            """
+            SELECT status, seed_count, failure_code
+            FROM review_seed_banks
+            WHERE user_id = %s AND knowledge_point_id = %s
+            """,
+            (user["id"], knowledge_point_id),
+        ).fetchone()
+    assert bank is not None
+    assert bank["status"] == "failed"
+    assert bank["seed_count"] == 0
+    assert bank["failure_code"] == "REVIEW_SEED_BANK_GENERATION_FAILED"
+
+
+def test_review_warmup_branches_do_not_create_fsrs_evidence(client: TestClient) -> None:
+    user, plan = _confirmed_plan(client, language="javascript")
+    knowledge_point_id = plan["knowledge_points"][0]["id"]
+    _mark_due(knowledge_point_id, reps=4)
+
+    start = client.post(
+        "/api/reviews/start",
+        json={"user_id": user["id"], "knowledge_point_id": knowledge_point_id},
+    )
+    assert start.status_code == 201
+    session_id = start.json()["session_id"]
+
+    skipped = client.post(f"/api/reviews/{session_id}/warmup-result", json={"action": "skip"})
+    assert skipped.status_code == 200
+    skipped_body = skipped.json()
+    assert skipped_body["review_stage"] == "variant_practice"
+    assert skipped_body["warmup"]["result"] == "skipped"
+
+    with connect() as conn:
+        counts = conn.execute(
+            """
+            SELECT
+              (SELECT count(*) FROM attempts WHERE session_id = %s) AS attempt_count,
+              (SELECT count(*) FROM review_logs WHERE knowledge_point_id = %s) AS review_log_count,
+              (SELECT reps FROM review_states WHERE knowledge_point_id = %s) AS reps
+            """,
+            (session_id, knowledge_point_id, knowledge_point_id),
+        ).fetchone()
+    assert counts is not None
+    assert counts["attempt_count"] == 0
+    assert counts["review_log_count"] == 0
+    assert counts["reps"] == 4
+
+    with connect() as conn:
+        conn.execute("UPDATE learning_sessions SET status = 'finished' WHERE id = %s", (session_id,))
+        conn.commit()
+
+    again = client.post(
+        "/api/reviews/start",
+        json={"user_id": user["id"], "knowledge_point_id": knowledge_point_id},
+    )
+    assert again.status_code == 201
+    repair_session_id = again.json()["session_id"]
+
+    first_wrong = client.post(
+        f"/api/reviews/{repair_session_id}/warmup-result",
+        json={"action": "answer", "answer": "随便试一下"},
+    )
+    assert first_wrong.status_code == 200
+    assert first_wrong.json()["review_stage"] == "warmup_repair"
+    assert first_wrong.json()["warmup"]["repair_count"] == 1
+
+    second_wrong = client.post(
+        f"/api/reviews/{repair_session_id}/warmup-result",
+        json={"action": "answer", "answer": "还是随便猜"},
+    )
+    assert second_wrong.status_code == 200
+    second_body = second_wrong.json()
+    assert second_body["review_stage"] == "variant_practice"
+    assert second_body["review_stage_state"]["variant"]["guided"] is True
+
+
+def test_review_ai_patch_scoring_requires_grounded_evidence(client: TestClient) -> None:
+    user, plan = _confirmed_plan(client, language="javascript")
+    knowledge_point_id = plan["knowledge_points"][0]["id"]
+    _mark_due(knowledge_point_id, reps=1)
+    with connect() as conn:
+        conn.execute(
+            "UPDATE knowledge_points SET weak_points_json = %s::jsonb WHERE id = %s",
+            (json.dumps(["review_patch_evidence"]), knowledge_point_id),
+        )
+        conn.commit()
+
+    start = client.post(
+        "/api/reviews/start",
+        json={"user_id": user["id"], "knowledge_point_id": knowledge_point_id},
+    )
+    assert start.status_code == 201
+    review_session = start.json()
+    exercise = review_session["review_exercise"]
+    assert exercise["exercise_type"] == "review_ai_patch"
+    metadata = exercise["metadata_json"]
+    assert metadata["requirement"]
+    assert metadata["ai_diff"]
+    assert "rubric" in metadata
+    assert not exercise["solution_reference"]
+
+    payload = {
+        "exercise_id": exercise["id"],
+        "submit_version": 1,
+        "review_ai_patch_answer": {
+            "verdict": "fail",
+            "evidence": "tests passed",
+            "knowledge_point_risk": "状态作用域风险",
+            "next_action": "request_change",
+        },
+    }
+    submitted = client.post(f"/api/reviews/{review_session['session_id']}/exercise-result", json=payload)
+    assert submitted.status_code == 200
+    submit_body = submitted.json()
+    assert submit_body["score_breakdown"]["verdict_correctness"] == 2
+    assert submit_body["score_breakdown"]["evidence_grounding"] == 1
+    assert submit_body["fsrs_rating"] == "Hard"
+    assert submit_body["result"] == "partial"
+    assert submit_body["code_completion_result"]["review_ai_patch_result"]["evidence_quality"] == "weak"
+
+    replayed = client.post(f"/api/reviews/{review_session['session_id']}/exercise-result", json=payload)
+    assert replayed.status_code == 200
+    assert replayed.json()["idempotency_replayed"] is True
+    assert replayed.json()["ReviewState"]["review_count"] == 2
+
+    with connect() as conn:
+        attempt = conn.execute(
+            """
+            SELECT attempt_type, code_completion_result, fsrs_rating
+            FROM attempts
+            WHERE id = %s
+            """,
+            (submit_body["attempt_id"],),
+        ).fetchone()
+    assert attempt is not None
+    assert attempt["attempt_type"] == "review_submit"
+    assert attempt["fsrs_rating"] == "Hard"
+    assert attempt["code_completion_result"]["score_breakdown"]["actionability"] == 2
 
 
 def test_review_run_and_submit_updates_schedule_once(client: TestClient) -> None:
@@ -442,9 +614,15 @@ def _unlock_practice_exercise(client: TestClient, session: dict[str, object]) ->
         },
     )
     assert response.status_code == 200
-    tool_calls = response.json()["tool_calls"]
-    assert tool_calls and tool_calls[0]["name"] == "show_code_exercise"
-    exercise = tool_calls[0]["args"]["exercise"]
+    body = response.json()
+    assert body["session_state"]["learning_stage"] == "practice_support"
+    tool_calls = body["tool_calls"]
+    exercise_tool_call = next(
+        (tool_call for tool_call in tool_calls if tool_call["name"] == "show_code_exercise"),
+        None,
+    )
+    assert exercise_tool_call is not None
+    exercise = exercise_tool_call["args"]["exercise"]
     assert isinstance(exercise, dict)
     return exercise
 

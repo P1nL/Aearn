@@ -9,6 +9,7 @@ from psycopg import Connection
 from app.models.onboarding import PlanDraft
 from app.services.catalog import get_course
 from app.services.plan_generator import normalize_target_level
+from app.services.review_seed_bank import ensure_review_seed_bank_placeholders_for_plan
 from app.services.user_repository import get_user
 
 
@@ -139,6 +140,13 @@ def confirm_plan(
                 """,
                 (kp_row["id"], user_id, plan["id"]),
             )
+
+    ensure_review_seed_bank_placeholders_for_plan(
+        conn,
+        user_id=user_id,
+        plan_id=str(plan["id"]),
+        knowledge_point_rows=knowledge_point_rows,
+    )
 
     first_module_id = module_rows[0]["id"] if module_rows else None
     if first_module_id is not None:

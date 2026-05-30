@@ -13,7 +13,7 @@ from app.core.errors import (
     request_id_from,
 )
 from app.db.connection import connect
-from app.models.reviews import StartReviewSessionRequest, SubmitReviewExerciseResultRequest
+from app.models.reviews import ReviewWarmupResultRequest, StartReviewSessionRequest, SubmitReviewExerciseResultRequest
 from app.services.plan_repository import IdempotencyConflictError
 from app.services.review_conversation import (
     ReviewSessionNotFoundError,
@@ -24,12 +24,15 @@ from app.services.review_conversation import (
 )
 from app.services.review_repository import (
     EntityNotFoundError,
+    InvalidReviewRequestError,
     ReviewNotDueError,
     ReviewSessionConflictError,
     get_today_reviews,
+    record_review_warmup_result,
     start_review_session,
     submit_review_exercise_result,
 )
+from app.services.review_seed_bank import ReviewSeedBankGenerationError
 from app.services.llm_client import LLMCallError, LLMConfigurationError, LLMInvalidResponseError
 from app.services.sse import SSEWriter, stream_response
 
@@ -101,11 +104,69 @@ def create_review_session(
                 request,
                 details={"reason": exc.__class__.__name__},
             )
+        except ReviewSeedBankGenerationError:
+            conn.commit()
+            return error_response(
+                request,
+                code="REVIEW_SEED_BANK_GENERATION_FAILED",
+                message="无法生成安全的复习材料，请稍后重试",
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                details={"knowledge_point_id": payload.knowledge_point_id},
+                recoverable=True,
+            )
         conn.commit()
     return JSONResponse(
         status_code=status.HTTP_200_OK if reused else status.HTTP_201_CREATED,
         content=jsonable_encoder(response),
     )
+
+
+@router.post("/{session_id}/warmup-result", response_model=None)
+async def submit_review_warmup_result(
+    session_id: str,
+    request: Request,
+) -> dict[str, object] | JSONResponse:
+    body = await request.json()
+    try:
+        payload = ReviewWarmupResultRequest.model_validate(body)
+    except ValueError as exc:
+        return error_response(
+            request,
+            code="VALIDATION_ERROR",
+            message="复习热身请求结构不合法",
+            status_code=status.HTTP_400_BAD_REQUEST,
+            details={"reason": str(exc)},
+        )
+
+    with connect() as conn:
+        try:
+            response = record_review_warmup_result(
+                conn,
+                session_id=session_id,
+                action=payload.action,
+                answer=payload.answer,
+            )
+        except EntityNotFoundError as exc:
+            conn.rollback()
+            return error_response(
+                request,
+                code=exc.code,
+                message=exc.message,
+                status_code=status.HTTP_404_NOT_FOUND,
+                details={"session_id": session_id},
+            )
+        except ReviewSessionConflictError as exc:
+            conn.rollback()
+            return error_response(
+                request,
+                code="SESSION_CONFLICT",
+                message="复习会话状态冲突",
+                status_code=status.HTTP_409_CONFLICT,
+                details={"reason": str(exc)},
+                recoverable=False,
+            )
+        conn.commit()
+    return JSONResponse(status_code=status.HTTP_200_OK, content=jsonable_encoder(response))
 
 
 @router.post("/{session_id}/exercise-result", response_model=None)
@@ -139,6 +200,7 @@ async def submit_review_result(
                 hint_usage_count=payload.hint_usage_count,
                 error_count=payload.error_count,
                 explanation_check=payload.explanation_check,
+                review_ai_patch_answer=payload.review_ai_patch or payload.review_ai_patch_answer,
                 provided_code_hash=payload.code_hash,
                 request_id=request_id_from(request),
                 request_body=body,
@@ -171,6 +233,15 @@ async def submit_review_result(
                 status_code=status.HTTP_409_CONFLICT,
                 details={"reason": str(exc)},
                 recoverable=False,
+            )
+        except InvalidReviewRequestError as exc:
+            conn.rollback()
+            return error_response(
+                request,
+                code="VALIDATION_ERROR",
+                message="复习提交请求结构不合法",
+                status_code=status.HTTP_400_BAD_REQUEST,
+                details={"reason": str(exc)},
             )
         conn.commit()
     if replayed:

@@ -87,6 +87,7 @@ function exerciseTypeLabel(type: ExerciseCardArgs["exercise_type"]): string {
     case "fix_bug": return "修复 Bug";
     case "implement_function": return "实现函数";
     case "explain_code": return "解释代码";
+    case "review_ai_patch": return "AI 改动审查";
   }
 }
 

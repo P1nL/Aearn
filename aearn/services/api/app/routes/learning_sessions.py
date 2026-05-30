@@ -34,6 +34,7 @@ from app.services.learning_conversation import (
     store_learning_message_response,
 )
 from app.services.learning_session_repository import (
+    ConceptIntroGenerationError,
     EvaluationConflictError,
     EntityNotFoundError,
     InvalidLearningSessionRequestError,
@@ -103,6 +104,16 @@ def create_learning_session(
                     "plan_id": payload.plan_id,
                     "knowledge_point_id": payload.knowledge_point_id,
                 },
+            )
+        except ConceptIntroGenerationError:
+            conn.rollback()
+            return error_response(
+                request,
+                code="CONCEPT_INTRO_GENERATION_FAILED",
+                message="概念开场生成失败，请重试当前知识点。",
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                details={"reason": "concept_intro_generation_failed"},
+                recoverable=True,
             )
         conn.commit()
     return JSONResponse(

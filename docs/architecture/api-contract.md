@@ -51,8 +51,8 @@ V1 使用本地单用户或轻量用户机制，不强制登录态。所有需�
 | `LearningPlan.status` | `active` / `paused` / `completed` |
 | `PlanModule.status` | `pending` / `in_progress` / `completed` / `skipped` |
 | `KnowledgePoint.status` | `pending` / `learning` / `reviewing` / `mastered` |
-| `LearningSession.learning_stage` | `concept_intro` / `concept_qna` / `readiness_check` / `practice_support` |
-| `Exercise.exercise_type` | `code_blank` / `fix_bug` / `implement_function` / `explain_code` |
+| `LearningSession.learning_stage` | `concept_intro` / `concept_check` / `concept_repair` / `practice_offer` / `concept_qna` / `readiness_check` / `practice_support` |
+| `Exercise.exercise_type` | `code_blank` / `fix_bug` / `implement_function` / `explain_code` / `review_ai_patch` |
 | `Attempt.attempt_type` | `run` / `submit` / `review_submit` |
 | `Attempt.runtime_status` | `success` / `runtime_error` / `timeout` / `unsupported` |
 | `code_completion_result.result` | `failed` / `partial` / `passed` / `easy` |
@@ -123,6 +123,7 @@ V1 使用本地单用户或轻量用户机制，不强制登录态。所有需�
 | `EVALUATION_INVALID_JSON` | 502 | Agent 评分输出无法解析为 JSON |
 | `EVALUATION_CONFLICT` | 422 | 评分结果与硬门槛或 FSRS 映射冲突 |
 | `REVIEW_NOT_DUE` | 409 | 知识点未到复习时间 |
+| `REVIEW_SEED_BANK_GENERATION_FAILED` | 503 | 复习 seed bank 生成或校验失败，不能展示低质量 fallback 题 |
 | `NOTE_NOT_FOUND` | 404 | 笔记不存在 |
 | `IDEMPOTENCY_CONFLICT` | 409 | 同一幂等键对应不同请求体 |
 | `RATE_LIMITED` | 429 | 过于频繁请求提示、运行或 Agent 生成 |
@@ -209,8 +210,6 @@ V1 使用本地单用户或轻量用户机制，不强制登录态。所有需�
 - `POST /api/learning-sessions/{session_id}/messages`
 - `POST /api/learning-sessions/{session_id}/exercises/{exercise_id}/run`
 - `POST /api/learning-sessions/{session_id}/exercises/{exercise_id}/submit`
-- `POST /api/reviews/start`
-- `POST /api/reviews/{session_id}/exercise-result`
 - `POST /api/notes/{note_id}/agent-draft`
 
 ### 事件帧格式
@@ -258,13 +257,13 @@ data: {"request_id":"req_001","session_id":"sess_001","content":"先观察这段
 
 #### `tool_call`
 
-用途：对话流中的生成式 UI 工具调用。学习页当前使用 `show_code_exercise` 生成练习卡片，使用 `show_learning_history` 引用当前知识点的学习页历史对话。
+用途：对话流中的生成式 UI 工具调用。学习页当前使用 `show_concept_intro` 生成概念开场卡，使用 `show_concept_check_result` 展示概念判断结果，使用 `show_code_exercise` 生成练习卡片，使用 `show_learning_history` 引用当前知识点的学习页历史对话。
 
 ```json
 {
   "phase": "start",
   "tool_call_id": "tc_001",
-  "name": "show_code_exercise"
+  "name": "show_concept_intro"
 }
 ```
 
@@ -1178,7 +1177,7 @@ HTTP 状态码：
 
 #### `POST /api/learning-sessions/start`
 
-用途：开始一次学习会话，创建或恢复活动 `LearningSession(session_type=learn)`。新会话从概念优先阶段开始，默认不返回练习；只有已解锁练习的恢复会话才返回当前 `Exercise`。
+用途：开始一次学习会话，创建或恢复活动 `LearningSession(session_type=learn)`。新会话先生成并持久化 `show_concept_intro`，进入 `concept_check`，默认不返回练习；只有已解锁练习的恢复会话才返回当前 `Exercise`。
 
 Request JSON 示例：
 
@@ -1234,15 +1233,66 @@ Response JSON 示例：
       "url": "https://developer.mozilla.org/docs/Web/API/EventTarget/addEventListener"
     }
   ],
-  "learning_stage": "concept_intro",
+  "learning_stage": "concept_check",
   "learning_stage_state": {
     "covered_subpoint_ids": [],
-    "feynman_status": "not_started",
+    "feynman_status": "pending",
     "practice_unlock_reason": null,
     "learning_incomplete": true,
-    "concept_summary": "事件监听与状态变量：理解事件监听如何触发回调，以及状态变量为什么需要跨点击保存。"
+    "concept_summary": "事件监听与状态变量：理解事件监听如何触发回调，以及状态变量为什么需要跨点击保存。",
+    "active_concept_intro": {
+      "summary": "事件监听会把回调登记到按钮上，状态变量要放在能跨点击保留的位置。",
+      "example": {
+        "title": "点击计数",
+        "body": "按钮每次被点击都会执行同一个回调；如果 count 在回调外层，下一次点击能看到上一次的值。",
+        "takeaway": "需要跨交互保留的状态不要放进每次都会重新执行的局部作用域。"
+      },
+      "check": {
+        "question": "count 放在 click 回调内部时，第二次点击会看到什么？",
+        "options": [
+          {"id": "A", "text": "从上次的 count 继续累加"},
+          {"id": "B", "text": "重新从 0 开始"}
+        ],
+        "expected_focus": "回调作用域与跨点击状态共享的关系"
+      }
+    },
+    "active_concept_check": {
+      "question": "count 放在 click 回调内部时，第二次点击会看到什么？",
+      "options": [
+        {"id": "A", "text": "从上次的 count 继续累加"},
+        {"id": "B", "text": "重新从 0 开始"}
+      ],
+      "expected_focus": "回调作用域与跨点击状态共享的关系"
+    },
+    "concept_check_attempts": 0,
+    "concept_check_result": null
   },
   "initial_agent_message": "今天先理解事件监听与状态变量，目标是能说明它如何影响程序行为，而不是立刻做题。",
+  "initial_tool_calls": [
+    {
+      "id": "tc_001",
+      "name": "show_concept_intro",
+      "status": "done",
+      "args": {
+        "session_id": "sess_001",
+        "knowledge_point_id": "kp_dom_event_state",
+        "summary": "事件监听会把回调登记到按钮上，状态变量要放在能跨点击保留的位置。",
+        "example": {
+          "title": "点击计数",
+          "body": "按钮每次被点击都会执行同一个回调；如果 count 在回调外层，下一次点击能看到上一次的值。",
+          "takeaway": "需要跨交互保留的状态不要放进每次都会重新执行的局部作用域。"
+        },
+        "check": {
+          "question": "count 放在 click 回调内部时，第二次点击会看到什么？",
+          "options": [
+            {"id": "A", "text": "从上次的 count 继续累加"},
+            {"id": "B", "text": "重新从 0 开始"}
+          ],
+          "expected_focus": "回调作用域与跨点击状态共享的关系"
+        }
+      }
+    }
+  ],
   "session_state": "learning"
 }
 ```
@@ -1253,12 +1303,13 @@ HTTP 状态码：
 - `200`：复用已有活动会话
 - `404`：用户、计划或知识点不存在
 - `409`：会话冲突且无法复用
+- `503`：概念开场生成失败或输出校验失败
 
-错误码：`USER_NOT_FOUND`、`PLAN_NOT_FOUND`、`KNOWLEDGE_POINT_NOT_FOUND`、`SESSION_CONFLICT`
+错误码：`USER_NOT_FOUND`、`PLAN_NOT_FOUND`、`KNOWLEDGE_POINT_NOT_FOUND`、`SESSION_CONFLICT`、`CONCEPT_INTRO_GENERATION_FAILED`
 
-幂等/重试说明：幂等键为 `user_id + plan_id + knowledge_point_id + active_session`。重试不得创建多个活动会话。
+幂等/重试说明：幂等键为 `user_id + plan_id + knowledge_point_id + active_session`。重试不得创建多个活动会话；已创建会话必须重放持久化的 `initial_tool_calls`，不得重新生成漂移的概念开场。
 
-相关数据表/状态机节点：`LearningSession`、`LearningPlan`、`KnowledgePoint`、`RuntimeProfile`、`LearningMessage`；`start_learning_session`、`context_assembler`、`concept_intro`。练习只在 `practice_support` 阶段进入 `select_exercise`、`present_exercise`。
+相关数据表/状态机节点：`LearningSession`、`LearningPlan`、`KnowledgePoint`、`RuntimeProfile`、`LearningMessage`；`start_learning_session`、`context_assembler`、`concept_intro`、`concept_check`。练习只在 `practice_support` 阶段进入 `select_exercise`、`present_exercise`。
 
 #### `POST /api/learning-sessions/{session_id}/messages`
 
@@ -1266,17 +1317,18 @@ HTTP 状态码：
 
 阶段规则：
 
-- `concept_intro` / `concept_qna`：回答概念问题并推进本地课程提纲子点，不主动展示完整题面或 starter code。
-- `readiness_check`：要求一次费曼式整体复述。复述通过后进入 `practice_support`；复述不完整时返回 `show_learning_history` 工具调用。
+- `concept_check`：围绕 `show_concept_intro` 的判断题接收自然语言回答，返回持久化 `show_concept_check_result`；不主动展示完整题面或 starter code。
+- `concept_repair`：首次判断错误后只修正一个误解，返回更窄的 `repair_check`；两次失败后停止盘问，提供另一个例子或引导练习。
+- `practice_offer`：概念判断正确后等待用户确认是否开始练习；确认后进入 `practice_support`，`practice_unlock_reason=concept_check_passed`。
 - `practice_support`：允许围绕真实练习、运行事实、hint 和错因解释继续对话。
-- 用户明确要求提前练习时可进入 `practice_support`，但 `show_code_exercise` 参数必须带 `learning_incomplete=true` 和概念小结。
+- 用户在 `concept_check` / `concept_repair` 中明确要求提前练习时可进入 `practice_support`，但必须先持久化 `show_concept_check_result(result=skipped)`，且 `show_code_exercise` 参数必须带 `practice_unlock_reason=concept_check_skipped`、`learning_incomplete=true` 和概念小结。
 
 Request JSON 示例：
 
 ```json
 {
   "role": "user",
-  "content": "为什么 count 不能放到 click 回调里面？",
+  "content": "B，因为放在回调里面每次点击都会重新从 0 开始。",
   "client_message_id": "msg_client_001"
 }
 ```
@@ -1288,21 +1340,36 @@ Response JSON 示例：
   "agent_message": {
     "id": "msg_agent_001",
     "role": "assistant",
-    "content": "如果 count 放在回调内部，每次点击都会重新初始化为 0，状态不能跨点击保存。"
+    "content": "你的判断是对的。关键关系是：事件回调会重复执行，跨点击状态必须放在回调外层。要开始做一个小练习吗？"
   },
   "session_state": {
     "session_id": "sess_001",
     "next_action": "retry_same",
     "current_stage": "DOM 事件",
-    "learning_stage": "concept_qna",
+    "learning_stage": "practice_offer",
     "learning_stage_state": {
-      "covered_subpoint_ids": ["core_concept"],
+      "covered_subpoint_ids": [],
       "feynman_status": "pending",
       "practice_unlock_reason": null,
-      "learning_incomplete": true
+      "learning_incomplete": false,
+      "concept_check_result": "correct"
     }
   },
-  "tool_calls": []
+  "tool_calls": [
+    {
+      "name": "show_concept_check_result",
+      "args": {
+        "session_id": "sess_001",
+        "knowledge_point_id": "kp_dom_event_state",
+        "result": "correct",
+        "confidence": "high",
+        "explanation": "放在回调内部会导致每次点击重新初始化，不能跨点击保存状态。",
+        "next_prompt": "要开始做一个小练习吗？",
+        "actions": [{"id": "start_practice", "label": "开始练习"}],
+        "repair_check": null
+      }
+    }
+  ]
 }
 ```
 
@@ -1320,11 +1387,11 @@ HTTP 状态码：
 
 幂等/重试说明：使用 `client_message_id` 去重；SSE 模式可增量返回多个 `agent_message` 和 `tool_call` 事件。
 
-相关数据表/状态机节点：`LearningSession`、`LearningMessage`；`context_assembler`、`concept_qna`、`readiness_check`、`practice_support`、`teaching_prompt`。
+相关数据表/状态机节点：`LearningSession`、`LearningMessage`；`context_assembler`、`concept_check`、`concept_repair`、`practice_offer`、`practice_support`、`teaching_prompt`。
 
 #### `GET /api/learning-sessions/history`
 
-用途：按知识点读取学习页对话历史，用于费曼检查失败后的生成式历史引用卡片。该接口只读取 `session_type=learn` 的 `learning_messages`，不包含建档页、复习页或笔记页对话。
+用途：按知识点读取学习页对话历史，用于用户主动回看概念判断、修正或旧费曼检查相关对话。该接口只读取 `session_type=learn` 的 `learning_messages`，不包含建档页、复习页或笔记页对话。
 
 Request JSON 示例：
 
@@ -1721,7 +1788,7 @@ HTTP 状态码：
 
 - 如果最近一次学习会话缺少 `summary_text`，服务端会基于当前知识点和最近一次 Attempt 合成摘要。
 - 如果不存在可恢复的有效学习会话，仍返回 `200`，但 `resume_available=false`，并给出回退到当前学习知识点的 `learning_session` 入口。
-- 学习页恢复不自动重放 `learning_messages`。概念进度、费曼检查和练习解锁状态由 `learning_stage` 与 `learning_stage_state` 随 `POST /api/learning-sessions/start` 返回。
+- 学习页恢复不自动重放 `learning_messages`。概念判断、修正、旧费曼检查兼容状态和练习解锁状态由 `learning_stage` 与 `learning_stage_state` 随 `POST /api/learning-sessions/start` 返回。
 - 用户需要回看完整学习页历史时，前端显式调用 `GET /api/learning-sessions/history`。
 
 Request JSON 示例：
@@ -1834,7 +1901,7 @@ HTTP 状态码：
 
 #### `POST /api/reviews/start`
 
-用途：开始一条复习任务，创建 `LearningSession(session_type=review)`，返回复习变体练习。
+用途：开始一条复习任务，确保当前知识点有可用 `review_seed_bank`，创建或复用 `LearningSession(session_type=review)`，返回短热身、复习阶段状态和持久化变体练习。
 
 Request JSON 示例：
 
@@ -1858,9 +1925,59 @@ Response JSON 示例：
   },
   "review_exercise": {
     "id": "ex_dom_toggle_state_variant",
-    "exercise_type": "fix_bug",
+    "exercise_type": "review_ai_patch",
     "runtime_profile_id": "rt_browser_js",
-    "title": "修复开关按钮状态保存问题"
+    "title": "审核 AI 对事件状态代码的修改",
+    "metadata_json": {
+      "requirement": "连续点击时计数必须持续递增。",
+      "original_code": "let count = 0;\nbutton.addEventListener('click', () => { count += 1; });",
+      "ai_diff": "-let count = 0;\n button.addEventListener('click', () => {\n+  let count = 0;\n   count += 1;",
+      "review_focus": "用需求、diff 与可见行为共同判断状态作用域风险",
+      "expected_risk": "count 被移进回调后每次点击都会重新初始化",
+      "rubric": {
+        "verdict_correctness": "0-2",
+        "evidence_grounding": "0-2",
+        "knowledge_point_alignment": "0-2",
+        "actionability": "0-2"
+      }
+    }
+  },
+  "warmup": {
+    "question": "先用一句话回忆：事件监听与状态变量最容易错在哪里？",
+    "expected_focus": "状态应位于能跨事件复用的作用域",
+    "keywords": ["state", "count", "作用域", "事件"],
+    "result": "pending",
+    "repair_count": 0,
+    "last_answer": null,
+    "feedback": null
+  },
+  "review_stage": "warmup",
+  "review_stage_state": {
+    "review_stage": "warmup",
+    "knowledge_point_id": "kp_dom_event_state",
+    "seed_bank_id": "rsb_001",
+    "seed_id": "seed_review_ai_patch_01",
+    "warmup": {
+      "result": "pending",
+      "repair_count": 0
+    },
+    "variant": {
+      "exercise_id": "ex_dom_toggle_state_variant",
+      "exercise_type": "review_ai_patch",
+      "guided": false
+    }
+  },
+  "selected_seed_id": "seed_review_ai_patch_01",
+  "seed_bank": {
+    "id": "rsb_001",
+    "status": "ready",
+    "generator_version": "review_seed_bank_v1",
+    "seed_count": 12,
+    "generated_at": "2026-05-11T09:19:00Z",
+    "quality_report": {
+      "required_type_coverage": true,
+      "contains_review_ai_patch": true
+    }
   },
   "variant_reason": "上次错因是 state_scope_error，本次换成同构状态保存场景。",
   "initial_agent_message": "这次不重复原题，我们看一个开关按钮状态保存问题。"
@@ -1870,21 +1987,82 @@ Response JSON 示例：
 HTTP 状态码：
 
 - `201`：复习会话创建成功
+- `200`：同一到期复习会话幂等返回
 - `404`：用户或知识点不存在
 - `409`：当前知识点未到复习时间
-- `503`：模型 API 未配置、不可连接、输出为空或输出不安全
+- `503`：模型 API 未配置、不可连接、输出为空、输出不安全，或 seed bank rescue 生成失败
 
-错误码：`USER_NOT_FOUND`、`KNOWLEDGE_POINT_NOT_FOUND`、`REVIEW_NOT_DUE`、`SESSION_CONFLICT`、`MODEL_UNAVAILABLE`
+错误码：`USER_NOT_FOUND`、`KNOWLEDGE_POINT_NOT_FOUND`、`REVIEW_NOT_DUE`、`SESSION_CONFLICT`、`MODEL_UNAVAILABLE`、`REVIEW_SEED_BANK_GENERATION_FAILED`
 
-模型说明：复习页的 `variant_reason` 和 `initial_agent_message` 必须来自模型生成并通过安全校验。模型不可用或输出不安全时返回 `MODEL_UNAVAILABLE`，不得退回本地固定复习文案。
+Seed bank 说明：正常路径由 worker 在计划或知识点创建后预生成完整 seed bank；如果复习开始时缺失或失效，`POST /api/reviews/start` 可以同步 rescue 生成同一份完整 seed bank，并先持久化再选择 seed。异步生成和同步 rescue 必须共用 generator、schema、校验、安全检查和持久化路径。rescue 失败时返回 `REVIEW_SEED_BANK_GENERATION_FAILED`，不得展示低质量 fallback 问题。
+
+模型说明：复习页的 `variant_reason` 和 `initial_agent_message` 必须来自模型生成并通过安全校验。模型不可用或输出不安全时返回 `MODEL_UNAVAILABLE`，不得退回本地固定复习文案。Seed bank 中不得包含 hidden tests、`solution_reference`、raw prompt、provider 原始错误或 secrets。
 
 幂等/重试说明：幂等键为 `user_id + knowledge_point_id + due_at`。同一到期项重试返回同一 `session_id`。
 
-相关数据表/状态机节点：`LearningSession`、`ReviewState`、`KnowledgePoint`、`Exercise`；`start_review_session`、`load_due_review`、`select_review_variant`、`present_review_exercise`。
+相关数据表/状态机节点：`LearningSession`、`ReviewState`、`KnowledgePoint`、`ReviewSeedBank`、`Exercise`；`start_review_session`、`load_due_review`、`ensure_review_seed_bank`、`select_review_seed`、`present_review_warmup`、`present_review_exercise`。
+
+#### `POST /api/reviews/{session_id}/warmup-result`
+
+用途：提交或跳过短热身，只更新复习会话阶段状态，不创建 `Attempt`，不写 `review_logs`，不更新 `ReviewState`。
+
+Request JSON 示例：
+
+```json
+{
+  "action": "answer",
+  "answer": "count 要放在能跨多次点击复用的外层作用域，不能每次回调重新初始化。"
+}
+```
+
+跳过热身：
+
+```json
+{
+  "action": "skip"
+}
+```
+
+Response JSON 示例：
+
+```json
+{
+  "session_id": "sess_review_001",
+  "review_stage": "variant_practice",
+  "warmup": {
+    "question": "先用一句话回忆：事件监听与状态变量最容易错在哪里？",
+    "expected_focus": "状态应位于能跨事件复用的作用域",
+    "result": "correct",
+    "last_answer": "count 要放在能跨多次点击复用的外层作用域。",
+    "repair_count": 0,
+    "feedback": "热身通过，继续完成变体练习。"
+  },
+  "review_stage_state": {
+    "review_stage": "variant_practice",
+    "knowledge_point_id": "kp_dom_event_state",
+    "seed_bank_id": "rsb_001",
+    "seed_id": "seed_review_ai_patch_01"
+  },
+  "next_action": "start_variant"
+}
+```
+
+HTTP 状态码：
+
+- `200`：热身结果记录成功
+- `400`：字段不合法
+- `404`：复习会话不存在
+- `409`：复习会话状态冲突
+
+错误码：`SESSION_NOT_FOUND`、`SESSION_CONFLICT`、`VALIDATION_ERROR`
+
+阶段规则：`correct`、`skipped` 直接进入 `variant_practice`；`incorrect` 或 `unclear` 最多进入一次 `warmup_repair`，第二次仍不通过时进入带引导的 `variant_practice`。任何 warmup 分支都不得触发 FSRS。
+
+相关数据表/状态机节点：`LearningSession`；`record_review_warmup_result`、`present_review_exercise`。
 
 #### `POST /api/reviews/{session_id}/exercise-result`
 
-用途：提交复习变体练习结果，生成 `code_completion_result`，并更新 `ReviewState`。
+用途：提交复习变体练习结果，写入 `Attempt(attempt_type=review_submit)`，生成 `code_completion_result`，并更新 `ReviewState`。这是复习页唯一可以推进 FSRS 的写入。
 
 Request JSON 示例：
 
@@ -1900,6 +2078,20 @@ Request JSON 示例：
     "result": "passed",
     "score": 2,
     "feedback": "能解释状态为什么在回调外层。"
+  }
+}
+```
+
+`review_ai_patch` Request JSON 示例：
+
+```json
+{
+  "exercise_id": "ex_dom_ai_patch_review",
+  "review_ai_patch_answer": {
+    "verdict": "fail",
+    "evidence": "需求要求连续点击持续递增，但 diff 把 count 移进 click 回调；可见测试只覆盖一次点击，不能证明连续点击。",
+    "knowledge_point_risk": "状态变量作用域错误会导致每次事件回调重新初始化 count。",
+    "next_action": "request_change"
   }
 }
 ```
@@ -1936,6 +2128,8 @@ Response JSON 示例：
   "next_action": "advance_next"
 }
 ```
+
+`review_ai_patch` 的 `score_breakdown` 使用 `verdict_correctness`、`evidence_grounding`、`knowledge_point_alignment`、`actionability` 四项，并在 `code_completion_result.review_ai_patch_result` 中保存 learner verdict、expected verdict、evidence quality、expected risk 和 learner next action。只说 `tests passed` 属于弱证据；即使结论方向正确，也不得映射为 `Easy`。
 
 HTTP 状态码：
 

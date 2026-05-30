@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from decimal import Decimal
 from typing import Any
 
@@ -89,6 +89,92 @@ def get_or_create_exercise_for_knowledge_point(
     return _serialize_exercise(conn, created_row)
 
 
+def get_or_create_exercise_from_review_seed(
+    conn: Connection[dict[str, object]],
+    *,
+    knowledge_point: Mapping[str, object],
+    runtime_profile: Mapping[str, object],
+    seed: Mapping[str, object],
+) -> dict[str, object]:
+    existing = _load_exercise_row(
+        conn,
+        knowledge_point_id=str(knowledge_point["id"]),
+        review_seed_id=str(seed["id"]),
+    )
+    if existing is not None:
+        return _serialize_exercise(conn, existing)
+
+    template = _exercise_template_from_review_seed(knowledge_point, runtime_profile, seed)
+    created = conn.execute(
+        """
+        INSERT INTO exercises (
+          slug, knowledge_point_id, runtime_profile_id, title, exercise_type,
+          prompt_markdown, starter_code, solution_reference, visible_test_policy,
+          difficulty, estimated_minutes, requires_explanation, metadata_json
+        )
+        VALUES (
+          %(slug)s, %(knowledge_point_id)s, %(runtime_profile_id)s, %(title)s, %(exercise_type)s,
+          %(prompt_markdown)s, %(starter_code)s, %(solution_reference)s, %(visible_test_policy)s,
+          %(difficulty)s, %(estimated_minutes)s, %(requires_explanation)s, %(metadata_json)s::jsonb
+        )
+        RETURNING id
+        """,
+        {
+            **template,
+            "knowledge_point_id": str(knowledge_point["id"]),
+            "runtime_profile_id": str(runtime_profile["id"]),
+            "metadata_json": json.dumps(template["metadata_json"], ensure_ascii=False),
+        },
+    ).fetchone()
+    if created is None:
+        raise RuntimeError("review exercise insert returned no row")
+
+    exercise_id = str(created["id"])
+    for blank in template["code_blanks"]:
+        conn.execute(
+            """
+            INSERT INTO code_blanks (
+              exercise_id, blank_key, placeholder, expected_concept,
+              acceptable_patterns_json, is_core, order_index
+            )
+            VALUES (
+              %(exercise_id)s, %(blank_key)s, %(placeholder)s, %(expected_concept)s,
+              %(acceptable_patterns_json)s::jsonb, %(is_core)s, %(order_index)s
+            )
+            """,
+            {
+                **blank,
+                "exercise_id": exercise_id,
+                "acceptable_patterns_json": json.dumps(blank["acceptable_patterns_json"], ensure_ascii=False),
+            },
+        )
+
+    for test_case in template["test_cases"]:
+        conn.execute(
+            """
+            INSERT INTO test_cases (
+              exercise_id, case_type, input_json, expected_output_json, assertion_code,
+              weight, is_critical, timeout_ms, order_index
+            )
+            VALUES (
+              %(exercise_id)s, %(case_type)s, %(input_json)s::jsonb, %(expected_output_json)s::jsonb,
+              %(assertion_code)s, %(weight)s, %(is_critical)s, %(timeout_ms)s, %(order_index)s
+            )
+            """,
+            {
+                **test_case,
+                "exercise_id": exercise_id,
+                "input_json": json.dumps(test_case["input_json"], ensure_ascii=False),
+                "expected_output_json": json.dumps(test_case["expected_output_json"], ensure_ascii=False),
+            },
+        )
+
+    created_row = _load_exercise_row(conn, exercise_id=exercise_id)
+    if created_row is None:
+        raise RuntimeError("created review exercise could not be loaded")
+    return _serialize_exercise(conn, created_row)
+
+
 def get_exercise(
     conn: Connection[dict[str, object]],
     exercise_id: str,
@@ -104,6 +190,7 @@ def _load_exercise_row(
     *,
     exercise_id: str | None = None,
     knowledge_point_id: str | None = None,
+    review_seed_id: str | None = None,
 ) -> Mapping[str, object] | None:
     conditions = [
         "exercises.archived_at IS NULL",
@@ -116,6 +203,9 @@ def _load_exercise_row(
     if knowledge_point_id is not None:
         conditions.append("exercises.knowledge_point_id::text = %(knowledge_point_id)s")
         params["knowledge_point_id"] = knowledge_point_id
+    if review_seed_id is not None:
+        conditions.append("exercises.metadata_json->>'review_seed_id' = %(review_seed_id)s")
+        params["review_seed_id"] = review_seed_id
 
     if not params:
         return None
@@ -529,6 +619,79 @@ def _exercise_template(
             },
         ],
     }
+
+
+def _exercise_template_from_review_seed(
+    knowledge_point: Mapping[str, object],
+    runtime_profile: Mapping[str, object],
+    seed: Mapping[str, object],
+) -> dict[str, Any]:
+    knowledge_point_id = str(knowledge_point["id"])
+    seed_id = str(seed["id"])
+    exercise_type = str(seed["exercise_type"])
+    seed_metadata = seed.get("metadata") if isinstance(seed.get("metadata"), Mapping) else {}
+    metadata_json = {
+        **dict(seed_metadata),
+        "review_seed_id": seed_id,
+        "target_misconception": seed.get("target_misconception"),
+        "seed_generator_version": "review_seed_bank_v1",
+    }
+    starter_code = str(seed.get("starter_code") or "")
+    code_blanks = _review_seed_code_blanks(seed)
+    solution_reference = _solution_from_seed(starter_code, code_blanks)
+    if exercise_type == "review_ai_patch":
+        solution_reference = None
+        metadata_json["review_ai_patch"] = {
+            "requirement": metadata_json.get("requirement"),
+            "original_code": metadata_json.get("original_code"),
+            "ai_diff": metadata_json.get("ai_diff"),
+            "review_focus": metadata_json.get("review_focus"),
+            "expected_risk": metadata_json.get("expected_risk"),
+            "expected_verdict": metadata_json.get("expected_verdict"),
+            "expected_next_action": metadata_json.get("expected_next_action"),
+            "rubric": seed.get("rubric") if isinstance(seed.get("rubric"), Mapping) else {},
+        }
+    return {
+        "slug": f"review-{seed_id}-{knowledge_point_id}",
+        "title": f"{knowledge_point['title']}：复习变体",
+        "exercise_type": exercise_type,
+        "prompt_markdown": str(seed.get("prompt_markdown") or ""),
+        "starter_code": starter_code,
+        "solution_reference": solution_reference,
+        "visible_test_policy": "visible_only",
+        "difficulty": seed.get("difficulty") or 2,
+        "estimated_minutes": 10 if exercise_type == "review_ai_patch" else 8,
+        "requires_explanation": exercise_type in {"explain_code", "review_ai_patch"},
+        "metadata_json": metadata_json,
+        "code_blanks": code_blanks,
+        "test_cases": _review_seed_test_cases(seed),
+    }
+
+
+def _review_seed_code_blanks(seed: Mapping[str, object]) -> list[Mapping[str, object]]:
+    blanks = seed.get("code_blanks")
+    if not isinstance(blanks, list):
+        return []
+    return [blank for blank in blanks if isinstance(blank, Mapping)]
+
+
+def _review_seed_test_cases(seed: Mapping[str, object]) -> list[Mapping[str, object]]:
+    cases = seed.get("test_cases")
+    if not isinstance(cases, list):
+        return []
+    return [case for case in cases if isinstance(case, Mapping)]
+
+
+def _solution_from_seed(starter_code: str, code_blanks: Sequence[Mapping[str, object]]) -> str | None:
+    if not starter_code:
+        return None
+    solution = starter_code
+    for blank in code_blanks:
+        blank_key = str(blank.get("blank_key") or "")
+        placeholder = str(blank.get("placeholder") or "")
+        if blank_key and placeholder:
+            solution = solution.replace(f"__{blank_key.upper()}__", placeholder)
+    return solution
 
 
 def _decimal_to_float(value: object) -> float:

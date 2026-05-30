@@ -45,9 +45,9 @@
 | UF-01 | P0 | 首次建档：模糊目标模式 | 无活动计划 | 输入目标 -> 每轮单一澄清 -> 生成路线卡片 -> 可直接输入修订 -> 最新卡片点击 `开始学习` | 普通回复不展开整段路线；创建正式 `plan`，进入工作台，左侧路线面板有模块；旧卡片按钮禁用；`source_attribution` 可区分动态文档参考、用户资料或模板 fallback |
 | UF-02 | P1 | 首次建档：参考资料模式 | 有课程目录或代码片段 | 粘贴资料 -> 生成草稿 -> 标注来源与 Agent 补充 | 用户能区分资料来源和新增内容 |
 | UF-03 | P0 | 日常进入应用 | 已有活动计划 | 打开应用 -> 加载 dashboard | 5 秒内默认进入当前学习，展示当前阶段、今日任务、复习数量和复习提示 |
-| UF-04 | P0 | 学习闭环 | 有 `browser_preview` 或 `python_stdout_test` 练习 | 读代码 -> 对话中生成练习 UI -> 补全 -> 运行/预览/测试 -> 提交 -> 查看反馈 | 前端不暴露 run/submit 内部 Attempt 类型；后端生成可追溯 `Attempt`、`code_completion_result`，状态写回知识点 |
+| UF-04 | P0 | 学习闭环 | 有 `browser_preview` 或 `python_stdout_test` 练习 | 进入知识点 -> 查看 `show_concept_intro` -> 自然语言判断 -> `show_concept_check_result` -> 对话中生成练习 UI -> 补全 -> 运行/预览/测试 -> 提交 -> 查看反馈 | 前端不暴露 run/submit 内部 Attempt 类型；概念卡和判断结果可刷新重放；后端生成可追溯 `Attempt`、`code_completion_result`，状态写回知识点 |
 | UF-05 | P0 | 运行失败后错因解释 | 练习会产生失败测试或 runtime error | run 失败 -> 点击解释错误 -> 修改 -> rerun | 错因来自真实错误，旧结果标记 stale，新 Attempt 可追踪 |
-| UF-06 | P0 | 复习闭环 | `ReviewState.due_at` 到期 | 进入复习 -> 完成变体 -> submit | 更新 `fsrs_rating`、`due_at`、`forget_risk`，列表即时刷新 |
+| UF-06 | P0 | 复习闭环 | `ReviewState.due_at` 到期 | 进入复习 -> 短热身或跳过 -> 完成 seed bank 变体 -> submit | warmup 结果可刷新重放但不更新 FSRS；提交写入 `Attempt(review_submit)` 后更新 `fsrs_rating`、`due_at`、`forget_risk`，列表即时刷新 |
 | UF-07 | P1 | 笔记抽屉 | 学习或复习会话进行中 | 打开笔记抽屉 -> 输入错因和修正方式 -> 自动保存 -> 请求 Agent 辅助补全 | 笔记不打断代码练习，保存状态明确，Agent 不自动生成完整笔记 |
 | UF-08 | P1 | 笔记页 | 已有学习目标或知识点 | 进入笔记页 -> 按语言/知识点选择笔记 -> 编辑 Markdown -> 保存 | 笔记绑定知识点，复习和学习共用同一份笔记，不存在独立草稿生成流程 |
 | UF-09 | P0 | 恢复中断学习 | 有历史会话摘要 | 打开应用 -> 调用 dashboard/resume -> 展示上次停留点和复习提示 | 普通打开默认当前学习；仅中断多日且复习高风险时优先进入复习 |
@@ -82,15 +82,17 @@
 | `POST /api/plans/generate` | `goal_based`、`material_based`、缺少目标、runtime 能力提示、动态路线生成成功、动态失败 fallback、`source_attribution` |
 | `POST /api/plans` | `plan_draft` 确认、重复提交、草稿无效 |
 | `GET /api/dashboard` | 活动目标、阶段、复习数量、恢复入口 |
-| `POST /api/learning-sessions/start` | 新会话、已有未结束会话幂等返回 |
+| `POST /api/learning-sessions/start` | 新会话返回并持久化 `show_concept_intro`、已有未结束会话幂等返回、非法概念开场返回 `CONCEPT_INTRO_GENERATION_FAILED` |
+| `POST /api/learning-sessions/{session_id}/messages` | `correct`、`incorrect`、`unclear`、`skipped` 概念判断，`concept_repair` 上限，引导练习和 tool-call 幂等重放 |
 | `POST /api/learning-sessions/{session_id}/exercises/{exercise_id}/run` | `success`、`runtime_error`、`timeout`、`unsupported` |
 | `POST /api/learning-sessions/{session_id}/exercises/{exercise_id}/submit` | `passed`、`partial`、`failed`、`easy` 和硬门槛 |
 | `POST /api/learning-sessions/{session_id}/exercises/{exercise_id}/hint` | `nudge`、`concept`、`code_shape`、提示次数累加 |
 | `POST /api/learning-sessions/{session_id}/attempts/{attempt_id}/explain-error` | 错因分类、修复建议、关联知识点 |
 | `POST /api/learning-sessions/{session_id}/attempts/{attempt_id}/check-explanation` | 最多 2 轮、`follow_up_required` |
 | `GET /api/reviews/today` | 空复习、到期排序、`due_at` |
-| `POST /api/reviews/start` | 变体生成、`variant_reason` |
-| `POST /api/reviews/{session_id}/exercise-result` | FSRS Rating、`due_at`、`forget_risk` |
+| `POST /api/reviews/start` | `warmup`、`review_stage`、`review_stage_state`、`selected_seed_id`、seed bank ready/replay、同步 rescue 成功、`REVIEW_SEED_BANK_GENERATION_FAILED` 不返回 fallback 题、`variant_reason` |
+| `POST /api/reviews/{session_id}/warmup-result` | `correct`、`incorrect`、`unclear`、`skipped` 四类分支，最多一次 `warmup_repair`，不写 `Attempt` / `review_logs` / `ReviewState` |
+| `POST /api/reviews/{session_id}/exercise-result` | `code_blank`、`fix_bug`、`explain_code`、`implement_function`、`review_ai_patch`，FSRS Rating、`due_at`、`forget_risk`、幂等不重复增加 `review_count` |
 | `GET /api/learning-sessions/resume` | 最近摘要、`next_entry_point`、当前模块 |
 | `GET /api/notes` | 按语言或知识点读取笔记、空笔记状态 |
 | `POST /api/notes` | 创建知识点笔记、重复创建幂等或明确冲突 |
@@ -102,6 +104,8 @@
 
 - 每个 P0 API 至少有一个成功样例和一个失败样例。
 - 动态路线生成不得改变 `PlanDraft` 公共结构；fallback 成功时仍返回 2xx 和可确认草稿，fallback 失败时返回稳定错误码，不暴露 provider 原始错误。
+- 学习页概念开场和判断结果必须作为 `metadata.tool_calls` 持久化；刷新、恢复或 `client_message_id` 重放不得生成漂移内容。
+- `CONCEPT_INTRO_GENERATION_FAILED` 不得落库破损 `show_concept_intro`，也不得暴露 raw provider error、raw prompt、SDK internals 或 secrets。
 - `runtime_status` 只能是 `success` / `runtime_error` / `timeout` / `unsupported`。
 - `result` 只能是 `failed` / `partial` / `passed` / `easy`。
 - `fsrs_rating` 只能是 `Again` / `Hard` / `Good` / `Easy`。
@@ -122,6 +126,7 @@
 | CE-08 | P0 | Java/C++ unsupported | `runtime_tier=compiled_sandbox_later` | 前端禁用运行或 API 返回 `unsupported`，不写完成态 |
 | CE-09 | P1 | 运行结果 stale | run 后修改代码 | 旧测试结果标记 stale，提交前提示重新运行 |
 | CE-10 | P0 | runner 写库失败 | Attempt 写入后 ReviewState 写入失败 | 前端不显示复习完成，可重试且不重复运行 |
+| CE-11 | P0 | AI 补丁审核弱证据 | `review_ai_patch` verdict 正确但 evidence 只写 `tests passed` | `score_breakdown.evidence_grounding < 2`，结果不高于 `partial`，`fsrs_rating=Hard`，不得返回 `Easy` |
 
 ## FSRS 调度测试
 
@@ -132,9 +137,10 @@
 | FSRS-03 | P0 | `passed` 且低提示低错误 | `fsrs_rating=Good`，正常拉长间隔 |
 | FSRS-04 | P0 | `easy` 且无提示无错误 | `fsrs_rating=Easy`，明显拉长间隔 |
 | FSRS-05 | P0 | 仅 run 未 submit | 不更新 `ReviewState` |
-| FSRS-06 | P0 | 复习提交成功 | 写入 `last_review_at`、`review_count`、`last_attempt_id`、`last_fsrs_rating` |
-| FSRS-07 | P1 | 时区边界 | `due_at` 在用户本地日期展示正确 |
-| FSRS-08 | P1 | 恢复学习入口 | 普通打开只提示复习；仅中断多日且复习高风险时优先进入复习 |
+| FSRS-06 | P0 | 复习 warmup 正确、错误、不明确或跳过 | 只更新 `learning_sessions.review_stage_state_json`，不创建 `Attempt`，不写 `review_logs`，不更新 `ReviewState` |
+| FSRS-07 | P0 | 复习提交成功 | 写入 `last_review_at`、`review_count`、`last_attempt_id`、`last_fsrs_rating` |
+| FSRS-08 | P1 | 时区边界 | `due_at` 在用户本地日期展示正确 |
+| FSRS-09 | P1 | 恢复学习入口 | 普通打开只提示复习；仅中断多日且复习高风险时优先进入复习 |
 
 ## Agent 输出质量测试
 
@@ -149,6 +155,7 @@
 - 硬门槛失败时，`result` 不得为 `passed` 或 `easy`。
 - `result` 与 `fsrs_rating` 映射不得冲突。
 - `feedback` 不得虚构不存在的测试、stdout、stderr 或代码行为。
+- `review_ai_patch` 输出必须包含 `verdict_correctness`、`evidence_grounding`、`knowledge_point_alignment`、`actionability` 四项，且弱证据不得映射为 `Easy`。
 
 ### 质量 rubric
 
@@ -204,6 +211,11 @@ LLM 输出质量单独用固定样例集评估，至少覆盖 JS/HTML/CSS、Pyth
 
 - [ ] 顶部展示目标、阶段、语言、复习数量、恢复入口。
 - [ ] 左侧路线高亮当前模块和知识点。
+- [ ] 新会话入口显示 `show_concept_intro` 概念卡，包含总结、例子和 2-4 个文本选项；选项不是强制按钮，composer 保持可用。
+- [ ] `show_concept_check_result` 能展示正确、错误、模糊和跳过四类结果；错误路径展示更窄 `repair_check`，不直接解锁练习。
+- [ ] 概念判断通过后，`开始练习` 生成 `show_code_exercise`，`practice_unlock_reason=concept_check_passed` 且 `learning_incomplete=false`。
+- [ ] 用户直接要求练习或修正上限后进入引导练习时，练习卡明确显示概念未完成状态。
+- [ ] `CONCEPT_INTRO_GENERATION_FAILED` 页面显示重试和返回路线动作，不展示破损概念卡。
 - [ ] 代码编辑器、预览和测试结果出现在对话生成的练习 UI 中，而不是固定三栏页面。
 - [ ] 前端按钮和文案只展示运行、预览、测试、提交结果，不暴露 `Attempt(run)` / `Attempt(submit)` 内部类型。
 - [ ] JS/HTML/CSS 展示 `PreviewPane`，Python 展示 `StdoutPane`。
@@ -214,7 +226,10 @@ LLM 输出质量单独用固定样例集评估，至少覆盖 JS/HTML/CSS、Pyth
 ### 复习窗口
 
 - [ ] 无待复习项时展示空态和继续学习入口。
-- [ ] 开始复习后展示 `variant_reason`。
+- [ ] 开始复习后展示短热身、`review_stage`、`variant_reason` 和 seed 变体。
+- [ ] 热身正确、错误、不明确和跳过都能切换到正确阶段；热身不会显示 FSRS 变化。
+- [ ] seed bank rescue 失败展示 `REVIEW_SEED_BANK_GENERATION_FAILED` 和重试入口，不展示 fallback 题。
+- [ ] `review_ai_patch` 表单必须填写 verdict、evidence、knowledge point risk 和 next action，提交结果完全使用后端评分。
 - [ ] 提交成功后列表移除或标记完成。
 - [ ] 提交失败不得标记完成。
 - [ ] 右侧指标展示 `due_at`、`forget_risk`、上次复习时间和掌握度。

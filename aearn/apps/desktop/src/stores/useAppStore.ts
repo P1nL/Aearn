@@ -71,6 +71,7 @@ type AppStore = {
   setActiveRoute: (route: AppRoute) => void;
   setLastRun: (run: RunExerciseResponse | null) => void;
   setLastSubmit: (submit: SubmitExerciseResponse | null) => void;
+  clearLearningSession: () => void;
   setComposerInput: (input: string) => void;
   toggleSidebar: () => void;
   toggleGroup: (group: NavGroupKey) => void;
@@ -128,6 +129,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   setActiveRoute: (route) => set({ activeRoute: route }),
   setLastRun: (run) => set({ lastRun: run }),
   setLastSubmit: (submit) => set({ lastSubmit: submit }),
+  clearLearningSession: () => set({ sessionState: { status: "idle" }, lastRun: null, lastSubmit: null, homeConversation: [] }),
   setComposerInput: (input) => set({ composerInput: input }),
   toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
   toggleGroup: (group) => set((s) => ({ openGroups: { ...s.openGroups, [group]: !s.openGroups[group] } })),
@@ -399,7 +401,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       void get().refreshDashboard(userId);
     } catch (error) {
       set({
-        sessionState: { status: "error", knowledgePointId, message: error instanceof Error ? error.message : "无法启动学习会话" },
+        sessionState: { status: "error", knowledgePointId, message: formatErrorMessage(error, "无法启动学习会话") },
         ...(activateHome ? { activeRoute: "home" as const } : {}),
       });
     }

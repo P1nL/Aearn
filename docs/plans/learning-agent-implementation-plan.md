@@ -13,7 +13,7 @@
 第一版只交付一个窄闭环：
 
 ```text
-语言选择 -> 生成 plan_draft -> 确认学习计划 -> 进入当前学习会话 -> 对话中生成代码练习 UI -> 运行/预览 -> 提交 -> 保存 Attempt -> 更新 ReviewState -> 记录笔记
+语言选择 -> 生成 plan_draft -> 确认学习计划 -> 进入当前学习会话 -> 概念开场与自然语言判断 -> 对话中生成代码练习 UI -> 运行/预览 -> 提交 -> 保存 Attempt -> 更新 ReviewState -> 记录笔记
 ```
 
 ## 当前阶段判定
@@ -41,6 +41,7 @@
 | 动态学习路线生成 | `05-29-dynamic-plan-generation` in progress | 从固定 `COURSE_TEMPLATES` 扩展为模型参考权威文档和用户目标生成 modules | `PlanDraft` 结构不变、latest-card-wins、fallback 可解释、未登记语言不公开承诺 |
 | DeepSeek official Chat Completions provider | `05-29-deepseek-official-chat-completions-provider` planning | 用官方 DeepSeek Chat Completions 替代不稳定 relay 路径 | `MODEL_UNAVAILABLE` 映射、SSE/JSON 形状、无 raw provider error |
 | 练习卡 UI 直观性优化 | `05-29-exercise-card-ui-optimization` in progress | 优化编辑区、运行反馈和主/辅操作层次 | 操作数据流不变、前端不暴露内部 `Attempt` 类型、≤1180px 响应式 |
+| 学习页概念开场与判断流 | `05-30-learning-page-concept-intro-check-flow` in progress | 在学习会话入口生成 `show_concept_intro`，用自然语言判断进入 `show_concept_check_result` 和练习确认 | 不泄露 hidden tests、`solution_reference`、raw prompt、raw provider error；模型输出非法时返回 `CONCEPT_INTRO_GENERATION_FAILED` |
 
 ## 实施目录假设
 
@@ -136,7 +137,7 @@ flowchart TD
 
 | ID | 类型 | 任务 | 输入 | 输出 | 依赖 | 验收 |
 |---|---|---|---|---|---|---|
-| M3-BE-01 | Backend | 实现学习会话 API | `api-contract.md` | `POST /api/learning-sessions/start`、resume | M2-BE-03 | 普通打开进入当前学习 |
+| M3-BE-01 | Backend | 实现学习会话 API | `api-contract.md` | `POST /api/learning-sessions/start`、resume、`show_concept_intro` / `show_concept_check_result` 工具合同 | M2-BE-03 | 普通打开进入当前学习，概念开场/判断结果可持久化重放 |
 | M3-BE-02 | Runtime | 实现 run/preview runner 边界 | `code-completion-evaluation-spec.md` | browser_preview、python_stdout_test 初版 | M1-DATA-02 | `success`、`runtime_error`、`timeout`、`unsupported` 可区分 |
 | M3-BE-03 | Backend | 实现 run Attempt 写入 | `api-contract.md`、`database-schema.md` | `/run` 写 `Attempt(run)` | M3-BE-02 | run 不更新 ReviewState |
 | M3-BE-04 | Backend | 实现 submit/evaluate 写入 | `code-completion-evaluation-spec.md` | `/submit` 写 `Attempt(submit)`、code_completion_result | M3-BE-03 | result、score、fsrs_rating 符合规则 |
@@ -147,17 +148,17 @@ flowchart TD
 
 ## Milestone 4：FSRS 与复习闭环
 
-目标：提交结果能更新 ReviewState，系统能生成待复习队列并完成复习变体。
+目标：提交结果能更新 ReviewState，系统能生成待复习队列，并通过短热身、seed bank 变体和 `review_ai_patch` 完成复习闭环。
 
 | ID | 类型 | 任务 | 输入 | 输出 | 依赖 | 验收 |
 |---|---|---|---|---|---|---|
-| M4-DATA-01 | Data | 完成 review_logs 与索引 | `database-schema.md` | review_logs、due 查询索引 | M1-DATA-02 | 每次 ReviewState 更新有日志 |
+| M4-DATA-01 | Data | 完成 review_logs、review_seed_banks 与索引 | `database-schema.md` | review_logs、review_seed_banks、due 查询索引 | M1-DATA-02 | 每次 ReviewState 更新有日志；seed bank 可记录 ready/failed |
 | M4-BE-01 | Backend | 实现 FSRS 调度服务 | `fsrs-scheduling-spec.md` | scheduler、fallback、幂等键 | M3-BE-04、M4-DATA-01 | 重试不重复增加 review_count |
 | M4-WORKER-01 | Worker | 实现 due review 计算任务 | `fsrs-scheduling-spec.md` | Celery 定时任务 | M4-BE-01 | 到期任务可查询 |
-| M4-BE-02 | Backend | 实现复习 API | `api-contract.md` | `/reviews/today`、`/reviews/start`、`/reviews/{session_id}/exercise-result` | M4-BE-01 | due、未 due、空列表路径明确 |
-| M4-AGENT-01 | Agent | 实现 review graph | `langgraph-state-machine.md` | select_review_variant、update_review_state | M4-BE-02 | 复习变体保留同一错因 |
-| M4-FE-01 | Frontend | 实现 ReviewPage | `frontend-interaction-spec.md` | 队列、复习练习、FSRS 指标 | M4-BE-02 | due_at、forget_risk 来自后端 |
-| M4-QA-01 | Test | 覆盖 UF-06 / FSRS-01~FSRS-08 | `acceptance-test-plan.md` | FSRS 与复习集成测试 | M4-FE-01 | P0 复习用例全通过 |
+| M4-BE-02 | Backend | 实现复习 API | `api-contract.md` | `/reviews/today`、`/reviews/start`、`/reviews/{session_id}/warmup-result`、`/reviews/{session_id}/exercise-result` | M4-BE-01 | warmup 不更新 FSRS；due、未 due、seed rescue 失败路径明确 |
+| M4-AGENT-01 | Agent | 实现 review graph | `langgraph-state-machine.md` | ensure_review_seed_bank、select_review_seed、record_review_warmup_result、update_review_state | M4-BE-02 | 复习变体保留同一错因，`review_ai_patch` 弱证据不 Easy |
+| M4-FE-01 | Frontend | 实现 ReviewPage | `frontend-interaction-spec.md` | 队列、短热身、复习练习、`review_ai_patch` 表单、FSRS 指标 | M4-BE-02 | due_at、forget_risk、score 来自后端 |
+| M4-QA-01 | Test | 覆盖 UF-06 / FSRS-01~FSRS-09 | `acceptance-test-plan.md` | FSRS、warmup、seed rescue、review_ai_patch 集成测试 | M4-FE-01 | P0 复习用例全通过 |
 
 ## Milestone 5：笔记页、笔记抽屉与辅助补全
 

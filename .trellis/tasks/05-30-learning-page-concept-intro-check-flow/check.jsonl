@@ -1,0 +1,5 @@
+{"file":"docs/qa/acceptance-test-plan.md","reason":"Use to confirm learning-page acceptance gates and avoid regressing release baseline behavior."}
+{"file":"docs/product/frontend-interaction-spec.md","reason":"Review frontend rendering, loading, and generated tool UI behavior against product spec."}
+{"file":"docs/architecture/api-contract.md","reason":"Review API shape, stage names, error codes, and tool-call contracts."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Review backend tests, safe model behavior, idempotency, and no provider detail leaks."}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Review desktop checks, component boundaries, and frontend quality rules."}

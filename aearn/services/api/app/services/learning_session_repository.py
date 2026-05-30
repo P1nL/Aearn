@@ -12,6 +12,7 @@ from app.agents.exercise_coach_agent import (
     build_sdk_explanation_check_response,
     build_sdk_hint_response,
 )
+from app.agents.learning_concept_agent import build_sdk_concept_intro
 from app.services.evaluation import (
     build_code_completion_result,
 )
@@ -38,6 +39,10 @@ class SessionStateConflictError(ValueError):
 
 
 class InvalidLearningSessionRequestError(ValueError):
+    pass
+
+
+class ConceptIntroGenerationError(RuntimeError):
     pass
 
 
@@ -73,13 +78,21 @@ def start_learning_session(
         (user_id, plan_id, knowledge_point_id),
     ).fetchone()
     if session is None:
+        intro_payload = build_sdk_concept_intro(
+            knowledge_point=_knowledge_point_evidence(context),
+            lesson_outline=_lesson_outline(context),
+            lesson_sources=_lesson_sources(context),
+        )
+        if intro_payload is None:
+            raise ConceptIntroGenerationError("concept intro generation failed")
+
         session = conn.execute(
             """
             INSERT INTO learning_sessions (
               user_id, plan_id, session_type, status, entry_point, next_entry_point, request_id,
               learning_stage, learning_stage_state_json
             )
-            VALUES (%s, %s, 'learn', 'active', %s, %s, %s, 'concept_intro', %s::jsonb)
+            VALUES (%s, %s, 'learn', 'active', %s, %s, %s, 'concept_check', %s::jsonb)
             RETURNING *
             """,
             (
@@ -93,17 +106,48 @@ def start_learning_session(
         ).fetchone()
         if session is None:
             raise RuntimeError("learning session insert returned no row")
-        initial_message = _initial_agent_message(context)
+        intro_args = _concept_intro_tool_args(
+            session_id=str(session["id"]),
+            knowledge_point_id=knowledge_point_id,
+            intro_payload=intro_payload,
+        )
+        stage_state = _initial_learning_stage_state(context, active_concept_intro=intro_args)
         conn.execute(
             """
-            INSERT INTO learning_messages (session_id, knowledge_point_id, role, content)
-            VALUES (%s, %s, 'agent', %s)
+            UPDATE learning_sessions
+            SET learning_stage_state_json = %s::jsonb
+            WHERE id = %s
             """,
-            (session["id"], knowledge_point_id, initial_message),
+            (json.dumps(stage_state), session["id"]),
+        )
+        session = dict(session) | {"learning_stage_state_json": stage_state}
+        initial_message = _initial_concept_intro_message(context)
+        initial_tool_calls = [_tool_call("show_concept_intro", intro_args, f"{session['id']}:initial")]
+        conn.execute(
+            """
+            INSERT INTO learning_messages (session_id, knowledge_point_id, role, content, metadata)
+            VALUES (%s, %s, 'agent', %s, %s::jsonb)
+            """,
+            (
+                session["id"],
+                knowledge_point_id,
+                initial_message,
+                json.dumps({"tool_calls": initial_tool_calls}),
+            ),
         )
     else:
         reused = True
-        initial_message = _load_initial_learning_message(conn, str(session["id"])) or _initial_agent_message(context)
+        initial_record = _load_initial_learning_message(conn, str(session["id"]))
+        initial_message = (
+            str(initial_record.get("content") or "")
+            if initial_record is not None
+            else _initial_agent_message(context)
+        )
+        initial_tool_calls = (
+            _tool_calls_from_metadata(initial_record.get("metadata"))
+            if initial_record is not None
+            else []
+        )
         if session.get("learning_stage") is None:
             legacy_state = {
                 "covered_subpoint_ids": _lesson_subpoint_ids(context),
@@ -125,7 +169,6 @@ def start_learning_session(
                 "learning_stage": "practice_support",
                 "learning_stage_state_json": legacy_state,
             }
-
     conn.execute(
         """
         UPDATE learning_plans
@@ -176,6 +219,7 @@ def start_learning_session(
         "learning_stage": learning_stage,
         "learning_stage_state": learning_stage_state,
         "initial_agent_message": initial_message,
+        "initial_tool_calls": initial_tool_calls,
         "session_state": "learning",
     }
     return response, reused
@@ -187,6 +231,7 @@ def unlock_learning_session_practice(
     session_id: str,
     unlock_reason: str,
     learning_incomplete: bool,
+    state_overrides: Mapping[str, object] | None = None,
 ) -> tuple[dict[str, object], dict[str, object]]:
     session = _load_session(conn, session_id)
     context = _load_learning_context(
@@ -203,11 +248,13 @@ def unlock_learning_session_practice(
     )
     state: dict[str, object] = {
         "covered_subpoint_ids": _lesson_subpoint_ids(context),
-        "feynman_status": "passed" if unlock_reason == "feynman_passed" else "pending",
+        "feynman_status": "passed" if unlock_reason in {"feynman_passed", "concept_check_passed"} else "pending",
         "practice_unlock_reason": unlock_reason,
         "learning_incomplete": learning_incomplete,
         "concept_summary": _concept_summary(context),
     }
+    if state_overrides is not None:
+        state.update(dict(state_overrides))
     update_learning_session_stage(conn, session_id=session_id, learning_stage="practice_support", state=state)
     return exercise, state
 
@@ -933,10 +980,20 @@ def _initial_agent_message(context: Mapping[str, object]) -> str:
     return "\n".join(lines)
 
 
-def _load_initial_learning_message(conn: Connection[dict[str, object]], session_id: str) -> str | None:
+def _initial_concept_intro_message(context: Mapping[str, object]) -> str:
+    return (
+        f"我先为“{context['title']}”生成一张概念判断卡。"
+        "你可以回复 A、B、C，或直接用自己的话说出判断。"
+    )
+
+
+def _load_initial_learning_message(
+    conn: Connection[dict[str, object]],
+    session_id: str,
+) -> Mapping[str, object] | None:
     row = conn.execute(
         """
-        SELECT content
+        SELECT content, metadata
         FROM learning_messages
         WHERE session_id = %s AND role = 'agent'
         ORDER BY created_at
@@ -944,7 +1001,7 @@ def _load_initial_learning_message(conn: Connection[dict[str, object]], session_
         """,
         (session_id,),
     ).fetchone()
-    return str(row["content"]) if row is not None else None
+    return row
 
 
 def _ensure_lesson_content(
@@ -981,14 +1038,28 @@ def _ensure_lesson_content(
     }
 
 
-def _initial_learning_stage_state(context: Mapping[str, object]) -> dict[str, object]:
-    return {
+def _initial_learning_stage_state(
+    context: Mapping[str, object],
+    *,
+    active_concept_intro: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    state: dict[str, object] = {
         "covered_subpoint_ids": [],
         "feynman_status": "not_started",
         "practice_unlock_reason": None,
         "learning_incomplete": True,
         "concept_summary": _concept_summary(context),
+        "active_concept_intro": None,
+        "active_concept_check": None,
+        "concept_check_attempts": 0,
+        "concept_check_result": None,
+        "previous_misconceptions": [],
     }
+    if active_concept_intro is not None:
+        state["active_concept_intro"] = dict(active_concept_intro)
+        active_check = active_concept_intro.get("check")
+        state["active_concept_check"] = dict(active_check) if isinstance(active_check, Mapping) else None
+    return state
 
 
 def _stage_state(value: object, context: Mapping[str, object]) -> dict[str, object]:
@@ -1035,6 +1106,50 @@ def _concept_summary(context: Mapping[str, object]) -> str:
     if not outline:
         return str(context["title"])
     return "；".join(f"{item['title']}：{item['note']}" for item in outline[:3])
+
+
+def _concept_intro_tool_args(
+    *,
+    session_id: str,
+    knowledge_point_id: str,
+    intro_payload: Mapping[str, object],
+) -> dict[str, object]:
+    return {
+        "session_id": session_id,
+        "knowledge_point_id": knowledge_point_id,
+        "summary": intro_payload["summary"],
+        "example": intro_payload["example"],
+        "check": intro_payload["check"],
+    }
+
+
+def _tool_calls_from_metadata(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, Mapping):
+        return []
+    tool_calls = value.get("tool_calls")
+    if not isinstance(tool_calls, Sequence) or isinstance(tool_calls, (str, bytes)):
+        return []
+    return [dict(item) for item in tool_calls if isinstance(item, Mapping)]
+
+
+def _tool_call(name: str, args: Mapping[str, object], message_id: str) -> dict[str, object]:
+    suffix = hashlib.sha256(f"{message_id}:{name}".encode("utf-8")).hexdigest()[:12]
+    return {
+        "id": f"tc_{suffix}",
+        "name": name,
+        "args": dict(args),
+        "status": "done",
+    }
+
+
+def _knowledge_point_evidence(context: Mapping[str, object]) -> dict[str, object]:
+    return {
+        "id": str(context["id"]),
+        "title": str(context["title"]),
+        "description": str(context.get("description") or ""),
+        "module_title": str(context.get("module_title") or ""),
+        "course_title": str(context.get("course_title") or ""),
+    }
 
 
 def _request_id_or_none(request_id: str | None) -> str | None:

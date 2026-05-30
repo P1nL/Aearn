@@ -12,6 +12,8 @@ import type { ConversationMessage } from "../appTypes";
 import { useAssistantRuntime } from "../hooks/useAssistantRuntime";
 import {
   CodeExerciseToolUI,
+  ConceptCheckResultToolUI,
+  ConceptIntroToolUI,
   LearningHistoryToolUI,
   LearningRouteRuntimeProvider,
   LearningRouteToolUI,
@@ -78,6 +80,8 @@ export function AssistantUIThread({
     <AssistantRuntimeProvider runtime={runtime}>
       <LearningRouteRuntimeProvider latestToolCallId={latestRouteToolCallId}>
         <LearningRouteToolUI />
+        <ConceptIntroToolUI />
+        <ConceptCheckResultToolUI />
         <CodeExerciseToolUI />
         <LearningHistoryToolUI />
         <ThreadPrimitive.Root className="assistant-ui-thread">

@@ -135,7 +135,7 @@ CREATE TABLE IF NOT EXISTS exercises (
   knowledge_point_id uuid NOT NULL REFERENCES knowledge_points(id) ON DELETE RESTRICT,
   runtime_profile_id uuid NOT NULL REFERENCES runtime_profiles(id) ON DELETE RESTRICT,
   title text NOT NULL,
-  exercise_type text NOT NULL CHECK (exercise_type IN ('code_blank', 'fix_bug', 'implement_function', 'explain_code')),
+  exercise_type text NOT NULL CHECK (exercise_type IN ('code_blank', 'fix_bug', 'implement_function', 'explain_code', 'review_ai_patch')),
   prompt_markdown text NOT NULL,
   starter_code text NOT NULL,
   solution_reference text,
@@ -191,8 +191,10 @@ CREATE TABLE IF NOT EXISTS learning_sessions (
   entry_point text NOT NULL,
   summary_text text,
   next_entry_point text,
-  learning_stage text CHECK (learning_stage IS NULL OR learning_stage IN ('concept_intro', 'concept_qna', 'readiness_check', 'practice_support')),
+  learning_stage text CHECK (learning_stage IS NULL OR learning_stage IN ('concept_intro', 'concept_check', 'concept_repair', 'practice_offer', 'concept_qna', 'readiness_check', 'practice_support')),
   learning_stage_state_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  review_stage text CHECK (review_stage IS NULL OR review_stage IN ('warmup', 'warmup_repair', 'variant_practice', 'submitted')),
+  review_stage_state_json jsonb NOT NULL DEFAULT '{}'::jsonb,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
@@ -249,6 +251,23 @@ CREATE TABLE IF NOT EXISTS review_states (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS review_seed_banks (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  plan_id uuid NOT NULL REFERENCES learning_plans(id) ON DELETE RESTRICT,
+  knowledge_point_id uuid NOT NULL REFERENCES knowledge_points(id) ON DELETE RESTRICT,
+  generator_version text NOT NULL,
+  status text NOT NULL DEFAULT 'generating' CHECK (status IN ('generating', 'ready', 'failed')),
+  seed_count integer NOT NULL DEFAULT 0 CHECK (seed_count >= 0),
+  seeds_json jsonb NOT NULL DEFAULT '[]'::jsonb,
+  quality_report_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  failure_code text,
+  failure_message text,
+  generated_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS review_logs (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   knowledge_point_id uuid NOT NULL REFERENCES knowledge_points(id) ON DELETE RESTRICT,
@@ -297,7 +316,9 @@ ALTER TABLE knowledge_points
 ALTER TABLE learning_sessions
   ADD COLUMN IF NOT EXISTS request_id text,
   ADD COLUMN IF NOT EXISTS learning_stage text,
-  ADD COLUMN IF NOT EXISTS learning_stage_state_json jsonb NOT NULL DEFAULT '{}'::jsonb;
+  ADD COLUMN IF NOT EXISTS learning_stage_state_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  ADD COLUMN IF NOT EXISTS review_stage text,
+  ADD COLUMN IF NOT EXISTS review_stage_state_json jsonb NOT NULL DEFAULT '{}'::jsonb;
 
 ALTER TABLE attempts
   ADD COLUMN IF NOT EXISTS test_results_json jsonb NOT NULL DEFAULT '[]'::jsonb,
@@ -319,13 +340,31 @@ ALTER TABLE review_states
 
 DO $$
 BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint WHERE conname = 'learning_sessions_learning_stage_check'
-  ) THEN
-    ALTER TABLE learning_sessions
-      ADD CONSTRAINT learning_sessions_learning_stage_check
-      CHECK (learning_stage IS NULL OR learning_stage IN ('concept_intro', 'concept_qna', 'readiness_check', 'practice_support'));
-  END IF;
+  ALTER TABLE exercises
+    DROP CONSTRAINT IF EXISTS exercises_exercise_type_check;
+  ALTER TABLE exercises
+    ADD CONSTRAINT exercises_exercise_type_check
+    CHECK (exercise_type IN ('code_blank', 'fix_bug', 'implement_function', 'explain_code', 'review_ai_patch'));
+END;
+$$;
+
+DO $$
+BEGIN
+  ALTER TABLE learning_sessions
+    DROP CONSTRAINT IF EXISTS learning_sessions_learning_stage_check;
+  ALTER TABLE learning_sessions
+    ADD CONSTRAINT learning_sessions_learning_stage_check
+    CHECK (learning_stage IS NULL OR learning_stage IN ('concept_intro', 'concept_check', 'concept_repair', 'practice_offer', 'concept_qna', 'readiness_check', 'practice_support'));
+END;
+$$;
+
+DO $$
+BEGIN
+  ALTER TABLE learning_sessions
+    DROP CONSTRAINT IF EXISTS learning_sessions_review_stage_check;
+  ALTER TABLE learning_sessions
+    ADD CONSTRAINT learning_sessions_review_stage_check
+    CHECK (review_stage IS NULL OR review_stage IN ('warmup', 'warmup_repair', 'variant_practice', 'submitted'));
 END;
 $$;
 
@@ -372,6 +411,8 @@ DROP INDEX IF EXISTS uq_attempts_submit_identity;
 CREATE UNIQUE INDEX IF NOT EXISTS uq_attempts_request_id ON attempts(request_id) WHERE request_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_review_states_user_due ON review_states(user_id, due_at);
 CREATE INDEX IF NOT EXISTS idx_review_states_last_attempt ON review_states(last_attempt_id) WHERE last_attempt_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_review_seed_banks_scope ON review_seed_banks(user_id, knowledge_point_id, generator_version);
+CREATE INDEX IF NOT EXISTS idx_review_seed_banks_status ON review_seed_banks(status, updated_at);
 CREATE INDEX IF NOT EXISTS idx_review_logs_kp_reviewed ON review_logs(knowledge_point_id, reviewed_at DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS uq_review_logs_request_id ON review_logs(request_id);
 CREATE UNIQUE INDEX IF NOT EXISTS uq_review_logs_attempt_rating_source ON review_logs(attempt_id, rating, source);
@@ -418,6 +459,10 @@ FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
 DROP TRIGGER IF EXISTS trg_review_states_updated_at ON review_states;
 CREATE TRIGGER trg_review_states_updated_at BEFORE UPDATE ON review_states
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_review_seed_banks_updated_at ON review_seed_banks;
+CREATE TRIGGER trg_review_seed_banks_updated_at BEFORE UPDATE ON review_seed_banks
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
 DROP TRIGGER IF EXISTS trg_notes_updated_at ON notes;

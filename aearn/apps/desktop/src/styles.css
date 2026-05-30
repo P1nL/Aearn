@@ -2986,6 +2986,62 @@ img {
   line-height: 1.6;
 }
 
+.review-warmup-card textarea,
+.review-patch-grid textarea,
+.review-patch-grid select {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  color: var(--ink);
+  background: rgba(255, 255, 255, .82);
+}
+
+.review-warmup-card textarea,
+.review-patch-grid textarea {
+  min-height: 96px;
+  padding: 12px;
+  resize: vertical;
+}
+
+.review-patch-grid select {
+  min-height: 38px;
+  padding: 0 10px;
+}
+
+.warmup-actions,
+.button-row,
+.patch-evidence {
+  display: grid;
+  gap: 10px;
+}
+
+.button-row {
+  grid-template-columns: repeat(2, minmax(0, max-content));
+  align-items: center;
+}
+
+.review-patch-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(320px, .9fr);
+  gap: 16px;
+}
+
+.patch-evidence h3 {
+  margin: 6px 0 0;
+  font-size: 13px;
+}
+
+.patch-evidence pre {
+  max-height: 220px;
+  overflow: auto;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+  background: rgba(43, 35, 27, .06);
+  white-space: pre-wrap;
+}
+
 .route-card-button {
   width: 100%;
   border: 0;
@@ -3017,6 +3073,10 @@ img {
 }
 
 @media (max-width: 1180px) {
+  .review-patch-grid {
+    grid-template-columns: 1fr;
+  }
+
   .wb-split {
     grid-template-columns: 1fr;
     min-height: auto;
@@ -3245,6 +3305,121 @@ img {
   margin-top: 16px;
   padding-top: 12px;
   border-top: 1px solid var(--line-soft);
+}
+
+.concept-intro-card,
+.concept-result-card {
+  display: grid;
+  gap: 14px;
+}
+
+.concept-summary,
+.concept-result-card p {
+  margin: 0;
+  color: var(--ink);
+  line-height: 1.7;
+}
+
+.concept-example,
+.concept-check {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: linear-gradient(135deg, rgba(255, 255, 255, .86), rgba(245, 241, 231, .72));
+}
+
+.concept-example strong {
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.concept-example p,
+.concept-check p {
+  margin: 0;
+  color: var(--ink);
+  line-height: 1.65;
+}
+
+.concept-example span,
+.concept-check small {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.concept-options {
+  display: grid;
+  gap: 8px;
+}
+
+.concept-option {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, .7);
+}
+
+.concept-option span {
+  display: inline-grid;
+  place-items: center;
+  min-width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.concept-check.repair {
+  background: rgba(250, 247, 240, .9);
+}
+
+.concept-result-card.correct {
+  border-color: rgba(79, 130, 93, .35);
+}
+
+.concept-result-card.incorrect {
+  border-color: rgba(184, 132, 70, .4);
+}
+
+.concept-result-card.skipped,
+.concept-result-card.unclear {
+  border-color: rgba(84, 94, 112, .25);
+}
+
+.concept-next {
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  background: var(--accent-soft);
+}
+
+.concept-action-hints {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.concept-action-hints span {
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel-soft);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.system-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 12px;
 }
 
 .learning-tool-exercise {
