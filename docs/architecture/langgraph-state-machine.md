@@ -35,7 +35,7 @@
 7. 前端 UI 不暴露 `Attempt(run)` / `Attempt(submit)` 两个内部概念，只展示运行、预览、测试结果和提交结果等自然操作；后端仍必须保留两类事实记录。
 8. 学习页的代码编辑器、预览和测试结果由对话中的生成式 UI 承载，不作为固定三栏页面或独立 `CodeDraftPage`。
 9. 第一版基线不包含独立复盘草稿、`publishDrawer` 或面试讲述草稿流程；Agent 只能在笔记页或笔记抽屉中辅助补全用户笔记。
-10. 学习页先走概念优先阶段；练习 UI 只能在费曼复述通过或用户明确提前练习后通过生成式工具调用出现。
+10. 学习页先走概念优先阶段；练习 UI 只能在概念判断通过、修正上限后的引导练习或用户明确提前练习后通过生成式工具调用出现。
 
 ## State Schema
 
@@ -49,13 +49,18 @@
   "session_id": "sess_001",
   "session_type": "learn",
   "entry_point": "start_learning",
-  "learning_stage": "concept_intro",
+  "learning_stage": "concept_check",
   "learning_stage_state": {
     "covered_subpoint_ids": [],
-    "feynman_status": "not_started",
+    "feynman_status": "pending",
     "practice_unlock_reason": null,
     "learning_incomplete": true,
-    "concept_summary": ""
+    "concept_summary": "",
+    "active_concept_intro": null,
+    "active_concept_check": null,
+    "concept_check_attempts": 0,
+    "concept_check_result": null,
+    "previous_misconceptions": []
   },
   "current_stage": "DOM 事件",
   "language_course": {
@@ -113,8 +118,8 @@
 |---|---|---|
 | `request_id` | API 层 | 幂等、日志追踪 |
 | `session_type` | API 层 | 区分 `learn` / `review` |
-| `learning_stage` | `LearningSession` | 区分概念讲解、问答、费曼检查和练习支持 |
-| `learning_stage_state` | `LearningSession` | 精简保存子点覆盖、费曼状态、提前练习和概念小结 |
+| `learning_stage` | `LearningSession` | 区分概念判断、概念修正、练习确认、旧问答/费曼检查和练习支持 |
+| `learning_stage_state` | `LearningSession` | 精简保存概念卡、当前判断题、判断次数、误解、练习解锁和概念小结 |
 | `language_course` | `LanguageCourse` | 判断运行能力分层 |
 | `lesson_outline` / `lesson_sources` | `KnowledgePoint` | 概念讲解提纲和官方文档来源归因 |
 | `exercise` | `Exercise` | 仅在 `practice_support` 后确定模板、空缺、测试和 runtime profile |
@@ -348,16 +353,22 @@ collect_goal
 
 ### 目标
 
-完成一次概念讲解、子点问答、费曼式理解检查、生成式练习、运行、提示、解释、提交评分和状态写回闭环。
+完成一次概念开场、自然语言判断、必要时概念修正、生成式练习、运行、提示、解释、提交评分和状态写回闭环。
 
 ```text
 start_learning_session
   -> context_assembler
   -> concept_intro
-  -> concept_qna
-  -> readiness_check
-       -> failed: show_learning_history -> concept_qna
-       -> passed or early_practice_request: select_exercise
+  -> concept_check
+       -> correct: practice_offer
+       -> incorrect: concept_repair
+       -> unclear: concept_check
+       -> direct_practice_request: select_exercise
+  -> concept_repair
+       -> incorrect_limit: practice_offer
+       -> guided_practice_request: select_exercise
+  -> practice_offer
+       -> start_practice: select_exercise
   -> select_exercise
   -> present_exercise
   -> run_exercise
@@ -380,64 +391,70 @@ start_learning_session
 
 写入：
 
-- `LearningSession(session_type=learn, started_at, entry_point, learning_stage=concept_intro, learning_stage_state_json)`
-- 首条 `LearningMessage(role=agent)`，内容为知识点概念介绍
+- `LearningSession(session_type=learn, started_at, entry_point, learning_stage=concept_check, learning_stage_state_json)`
+- 首条 `LearningMessage(role=agent)`，内容为知识点概念介绍，`metadata.tool_calls` 持久化 `show_concept_intro`
 
 输出：
 
 - `session_id`
 - `session_state=learning`
 - `exercise=null`
-- `learning_stage=concept_intro`
+- `learning_stage=concept_check`
 - `lesson_outline`
 - `lesson_sources`
+- `initial_tool_calls`
 
 失败分支：
 
 - 已有未结束 session -> 返回原 `session_id`，进入 `context_assembler`
+- 概念开场模型生成失败、校验失败或 guardrail 拦截 -> `CONCEPT_INTRO_GENERATION_FAILED`，不写入破损 `LearningMessage`
 
 ### `concept_intro`
 
 职责：
 
-- 基于 `KnowledgePoint.lesson_outline_json` 和 `lesson_sources_json` 介绍知识点概念。
-- 只提出一个短互动问题，不展示题面、starter code 或参考答案。
+- 基于 `KnowledgePoint.lesson_outline_json` 和 `lesson_sources_json` 生成 `show_concept_intro`。
+- 输出必须包含概念总结、易懂例子和 2-4 个文本选项的单选判断题；不展示题面、starter code 或参考答案。
 
 写入：
 
-- `learning_messages(role=agent)`
-- 必要时初始化 `learning_sessions.learning_stage_state_json`
+- `learning_messages(role=agent, metadata.tool_calls=[show_concept_intro])`
+- 初始化 `learning_sessions.learning_stage_state_json.active_concept_intro`、`active_concept_check`、`concept_check_attempts=0`
 
 条件边：
 
-- 用户追问或回答 -> `concept_qna`
-- 用户明确要求提前练习 -> `select_exercise`，并记录 `practice_unlock_reason=early_request`
+- 用户回答判断题 -> `concept_check`
+- 用户明确要求提前练习 -> `select_exercise`，并记录 `practice_unlock_reason=concept_check_skipped`
 
-### `concept_qna`
+### `concept_check`
 
 职责：
 
-- 回答用户关于概念、原因和行为的问题。
-- 按本地提纲推进 `covered_subpoint_ids`，保持精简阶段状态。
+- 使用模型判断用户对当前 `active_concept_check` 的自然语言回答。
+- 返回并持久化 `show_concept_check_result(result=correct|incorrect|unclear)`。
+- 只使用安全最小上下文：知识点、lesson outline/sources、当前 intro/check、用户回答、attempt count、既有误解和 safe summary。
 
 条件边：
 
-- 子点尚未覆盖完 -> `concept_qna`
-- 子点覆盖完 -> `readiness_check`
-- 用户明确要求提前练习 -> `select_exercise`
+- `correct` -> `practice_offer`
+- `incorrect` 且未达上限 -> `concept_repair`
+- `unclear` -> `concept_check`
+- 用户明确要求提前练习 -> `select_exercise`，先写 `show_concept_check_result(result=skipped)`
 
-### `readiness_check`
+### `concept_repair`
 
 职责：
 
-- 要求用户用费曼学习法整体复述知识点：它是什么、为什么重要、会如何影响代码行为。
+- 修正一个最关键误解，给更简单反例和更窄判断题。
+- 两次失败后停止概念盘问，提供另一个例子或引导练习路径。
 - 该检查独立于练习后的 `Attempt.explanation_check_result`，不得写入 Attempt。
 
 条件边：
 
-- 复述通过 -> `select_exercise`，记录 `practice_unlock_reason=feynman_passed`
-- 复述不完整或错误 -> `show_learning_history`
-- 用户明确要求提前练习 -> `select_exercise`，记录 `learning_incomplete=true`
+- 修正后正确 -> `practice_offer`
+- 仍错误且达到上限 -> `practice_offer`，标记 `repair_limit_reached=true`
+- 用户选择引导练习 -> `select_exercise`，记录 `practice_unlock_reason=concept_check_repair_limit`、`learning_incomplete=true`
+- 用户仍模糊 -> `concept_repair`
 
 ### `show_learning_history`
 
@@ -449,7 +466,7 @@ start_learning_session
 
 条件边：
 
-- 用户回看后继续复述或追问 -> `concept_qna` 或 `readiness_check`
+- 用户回看后继续回答或追问 -> `concept_check` 或 `concept_repair`
 
 ### `select_exercise`
 
@@ -721,12 +738,15 @@ start_learning_session
 
 ### 目标
 
-对到期知识点生成或选择复习变体，完成复习 Attempt 并更新 FSRS。
+对到期知识点先做短热身，再从持久化 seed bank 选择变体练习，完成 `Attempt(review_submit)` 后更新 FSRS。复习页不做长教学，warmup 也不进入 FSRS。
 
 ```text
 start_review_session
   -> load_due_review
-  -> select_review_variant
+  -> ensure_review_seed_bank
+  -> select_review_seed
+  -> present_review_warmup
+  -> record_review_warmup_result
   -> present_review_exercise
   -> run_review_exercise
   -> check_explanation
@@ -740,6 +760,8 @@ start_review_session
 写入：
 
 - `LearningSession(session_type=review, started_at, entry_point=review)`
+- `LearningSession.review_stage=warmup`
+- `LearningSession.review_stage_state_json`
 
 ### `load_due_review`
 
@@ -764,8 +786,27 @@ start_review_session
 
 职责：
 
-- 选择同构变体或生成迁移题
-- 避免直接重复原题
+- 兼容旧节点名；新实现中由 `ensure_review_seed_bank` + `select_review_seed` 承担。
+
+### `ensure_review_seed_bank`
+
+职责：
+
+- 读取当前知识点的 `review_seed_banks`。
+- 如果没有 ready bank 或 bank 已失效，同步 rescue 生成完整 seed bank。
+- 正常异步生成和同步 rescue 复用同一 generator、schema、validation、安全检查和持久化路径。
+- rescue 必须先持久化完整 seed bank，再允许选 seed。
+
+失败分支：
+
+- 生成或校验失败 -> 标记 `review_seed_banks.status=failed`，返回 `REVIEW_SEED_BANK_GENERATION_FAILED`，不得展示 fallback 题。
+
+### `select_review_seed`
+
+职责：
+
+- 根据知识点、误解、ReviewState、runtime 能力和历史 Attempt 选择 seed，不按固定比例轮换。
+- 支持 `code_blank`、`fix_bug`、`explain_code`、`implement_function`、`review_ai_patch`。
 
 变体策略：
 
@@ -777,13 +818,43 @@ start_review_session
 输出：
 
 - `review_exercise`
+- `selected_seed_id`
+- `warmup`
+- `review_stage_state`
 - `variant_reason`
+
+### `present_review_warmup`
+
+职责：
+
+- 展示一句话短热身，唤醒当前知识点，不展开长教学。
+- 允许用户跳过；跳过写 `warmup.result=skipped`。
+
+### `record_review_warmup_result`
+
+写入：
+
+- `LearningSession.review_stage`
+- `LearningSession.review_stage_state_json.warmup`
+
+规则：
+
+- `correct` / `skipped` -> `variant_practice`
+- `incorrect` / `unclear` 且 `repair_count=0` -> `warmup_repair`
+- 第二次仍不正确或不明确 -> `variant_practice`，并把变体标记为 guided
+- 不创建 `Attempt`，不写 `ReviewLog`，不更新 `ReviewState`
 
 ### `run_review_exercise`
 
 等价于 `run_exercise`，但写入：
 
 - `Attempt.attempt_type=review_submit`
+
+补充：
+
+- `review_ai_patch` 不运行用户代码，而是把结构化审核答案写入 `submitted_code` / `code_completion_result`。
+- `review_ai_patch` 必须包含 `verdict`、`evidence`、`knowledge_point_risk`、`next_action`。
+- `review_ai_patch` 的评分维度为 `verdict_correctness`、`evidence_grounding`、`knowledge_point_alignment`、`actionability`；弱证据不得映射为 `Easy`。
 
 ### `update_review_state`
 
@@ -944,12 +1015,14 @@ load_note_sources
 
 | 当前节点 | 条件 | 下一节点 |
 |---|---|---|
-| `context_assembler` | 学习会话处于概念阶段 | `concept_intro` / `concept_qna` / `readiness_check` |
-| `concept_intro` / `concept_qna` | 用户继续追问或子点未覆盖完 | `concept_qna` |
-| `concept_qna` | 子点已覆盖完 | `readiness_check` |
-| `readiness_check` | 费曼复述通过或用户明确提前练习 | `select_exercise` |
-| `readiness_check` | 费曼复述不完整或错误 | `show_learning_history` |
-| `show_learning_history` | 用户继续复述或追问 | `concept_qna` / `readiness_check` |
+| `context_assembler` | 学习会话处于概念阶段 | `concept_intro` / `concept_check` / `concept_repair` / `practice_offer` |
+| `concept_intro` | 已生成并持久化概念卡 | `concept_check` |
+| `concept_check` | 用户判断正确 | `practice_offer` |
+| `concept_check` | 用户判断错误且未达上限 | `concept_repair` |
+| `concept_check` / `concept_repair` | 用户明确提前练习 | `select_exercise` |
+| `concept_repair` | 达到修正上限并选择引导练习 | `select_exercise` |
+| `practice_offer` | 用户确认开始练习 | `select_exercise` |
+| `show_learning_history` | 用户继续复述或追问旧会话内容 | `concept_check` / `concept_repair` |
 | `context_assembler` | 练习已解锁但缺少 exercise | `select_exercise` |
 | `select_exercise` | 无可用 exercise | `generate_exercise_candidate` |
 | `run_exercise` | 运行成功且测试达标 | `check_explanation` |
@@ -1041,8 +1114,8 @@ load_note_sources
 
 | 时机 | 读取 | 写入 |
 |---|---|---|
-| 会话开始 | User、LearningPlan、PlanModule、KnowledgePoint、ReviewState、StageSummary | LearningSession、LearningMessage |
-| 概念问答 / 费曼检查 | LearningSession、KnowledgePoint、LearningMessage | LearningSession.learning_stage_state_json、LearningMessage |
+| 会话开始 | User、LearningPlan、PlanModule、KnowledgePoint、ReviewState、StageSummary | LearningSession、LearningMessage、show_concept_intro metadata |
+| 概念判断 / 概念修正 / 练习确认 | LearningSession、KnowledgePoint、LearningMessage | LearningSession.learning_stage_state_json、LearningMessage、show_concept_check_result metadata |
 | 生成历史引用 | LearningSession、LearningMessage | 无 |
 | 展示练习 | Exercise、CodeBlank、TestCase、RuntimeProfile | 无 |
 | 运行或预览代码 | Exercise、RuntimeProfile | Attempt(attempt_type=run) |
@@ -1101,13 +1174,14 @@ stateDiagram-v2
     [*] --> StartLearningSession
     StartLearningSession --> ContextAssembler
     ContextAssembler --> ConceptIntro
-    ConceptIntro --> ConceptQna
-    ConceptQna --> ConceptQna: follow-up or subpoints remaining
-    ConceptQna --> ReadinessCheck: subpoints covered
-    ReadinessCheck --> ShowLearningHistory: feynman incomplete
-    ShowLearningHistory --> ConceptQna
-    ReadinessCheck --> SelectExercise: feynman passed
-    ReadinessCheck --> SelectExercise: early practice request
+    ConceptIntro --> ConceptCheck
+    ConceptCheck --> PracticeOffer: correct
+    ConceptCheck --> ConceptRepair: incorrect
+    ConceptCheck --> ConceptCheck: unclear
+    ConceptCheck --> SelectExercise: direct practice request
+    ConceptRepair --> ConceptCheck: narrower repair check
+    ConceptRepair --> PracticeOffer: repair limit
+    PracticeOffer --> SelectExercise: start practice
     SelectExercise --> PresentExercise
     SelectExercise --> GenerateExerciseCandidate: no exercise
     GenerateExerciseCandidate --> PresentExercise
@@ -1132,8 +1206,13 @@ stateDiagram-v2
 stateDiagram-v2
     [*] --> StartReviewSession
     StartReviewSession --> LoadDueReview
-    LoadDueReview --> SelectReviewVariant
-    SelectReviewVariant --> PresentReviewExercise
+    LoadDueReview --> EnsureReviewSeedBank
+    EnsureReviewSeedBank --> SelectReviewSeed
+    EnsureReviewSeedBank --> ErrorHandler: seed bank failed
+    SelectReviewSeed --> PresentReviewWarmup
+    PresentReviewWarmup --> RecordReviewWarmupResult
+    RecordReviewWarmupResult --> PresentReviewWarmup: repair once
+    RecordReviewWarmupResult --> PresentReviewExercise: correct, skipped, or repair limit
     PresentReviewExercise --> RunReviewExercise
     RunReviewExercise --> CheckExplanation
     CheckExplanation --> EvaluateAttempt

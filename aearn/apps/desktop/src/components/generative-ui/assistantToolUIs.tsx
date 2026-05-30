@@ -4,6 +4,9 @@ import { createContext, useContext, type ReactNode } from "react";
 import { LearningRouteCard } from "./LearningRouteCard";
 import type {
   CodeExerciseToolArgs,
+  ConceptCheck,
+  ConceptCheckResultArgs,
+  ConceptIntroArgs,
   LearningHistoryArgs,
   LearningRouteArgs,
   ToolUIProps,
@@ -201,6 +204,26 @@ export const CodeExerciseToolUI = makeAssistantToolUI<CodeExerciseToolArgs, unkn
   },
 });
 
+export const ConceptIntroToolUI = makeAssistantToolUI<ConceptIntroArgs, unknown>({
+  toolName: "show_concept_intro",
+  render: ({ args, status }) => (
+    <ConceptIntroCard
+      args={normalizeConceptIntroArgs(args)}
+      status={mapStatusToToolStatus(status)}
+    />
+  ),
+});
+
+export const ConceptCheckResultToolUI = makeAssistantToolUI<ConceptCheckResultArgs, unknown>({
+  toolName: "show_concept_check_result",
+  render: ({ args, status }) => (
+    <ConceptCheckResultCard
+      args={normalizeConceptCheckResultArgs(args)}
+      status={mapStatusToToolStatus(status)}
+    />
+  ),
+});
+
 export const LearningHistoryToolUI = makeAssistantToolUI<LearningHistoryArgs, unknown>({
   toolName: "show_learning_history",
   render: ({ args, status }) => (
@@ -308,6 +331,207 @@ function LearningHistoryCard({
       </div>
     </article>
   );
+}
+
+function normalizeConceptIntroArgs(args: unknown): ConceptIntroArgs {
+  if (!isRecord(args)) {
+    return EMPTY_CONCEPT_INTRO;
+  }
+  return {
+    session_id: typeof args.session_id === "string" ? args.session_id : "",
+    knowledge_point_id: typeof args.knowledge_point_id === "string" ? args.knowledge_point_id : "",
+    summary: typeof args.summary === "string" ? args.summary : "正在生成概念摘要…",
+    example: normalizeConceptExample(args.example),
+    check: normalizeConceptCheck(args.check),
+  };
+}
+
+function normalizeConceptCheckResultArgs(args: unknown): ConceptCheckResultArgs {
+  if (!isRecord(args)) {
+    return EMPTY_CONCEPT_CHECK_RESULT;
+  }
+  return {
+    session_id: typeof args.session_id === "string" ? args.session_id : "",
+    knowledge_point_id: typeof args.knowledge_point_id === "string" ? args.knowledge_point_id : "",
+    result: isConceptResult(args.result) ? args.result : "unclear",
+    confidence: isConfidence(args.confidence) ? args.confidence : "low",
+    explanation: typeof args.explanation === "string" ? args.explanation : "",
+    next_prompt: typeof args.next_prompt === "string" ? args.next_prompt : "",
+    actions: Array.isArray(args.actions)
+      ? args.actions
+          .filter((action): action is Record<string, unknown> => isRecord(action))
+          .map((action) => ({
+            id: typeof action.id === "string" ? action.id : "",
+            label: typeof action.label === "string" ? action.label : "",
+          }))
+          .filter((action) => action.id && action.label)
+      : [],
+    repair_check: isRecord(args.repair_check) ? normalizeConceptCheck(args.repair_check) : null,
+  };
+}
+
+const EMPTY_CONCEPT_CHECK: ConceptCheck = {
+  type: "single_choice",
+  question: "这个概念判断题还在生成中。",
+  options: [],
+  expected_focus: "",
+};
+
+const EMPTY_CONCEPT_INTRO: ConceptIntroArgs = {
+  session_id: "",
+  knowledge_point_id: "",
+  summary: "正在生成概念摘要…",
+  example: {
+    title: "例子生成中",
+    body: "稍等片刻，Agent 会给出一个更容易理解的小例子。",
+    takeaway: "先看概念关系，再进入练习。",
+  },
+  check: EMPTY_CONCEPT_CHECK,
+};
+
+const EMPTY_CONCEPT_CHECK_RESULT: ConceptCheckResultArgs = {
+  session_id: "",
+  knowledge_point_id: "",
+  result: "unclear",
+  confidence: "low",
+  explanation: "这次判断结果还在生成中。",
+  next_prompt: "请稍等或重新发送你的回答。",
+  actions: [],
+  repair_check: null,
+};
+
+function normalizeConceptExample(value: unknown): ConceptIntroArgs["example"] {
+  if (!isRecord(value)) {
+    return EMPTY_CONCEPT_INTRO.example;
+  }
+  return {
+    title: typeof value.title === "string" ? value.title : "小例子",
+    body: typeof value.body === "string" ? value.body : "",
+    takeaway: typeof value.takeaway === "string" ? value.takeaway : "",
+  };
+}
+
+function normalizeConceptCheck(value: unknown): ConceptCheck {
+  if (!isRecord(value)) {
+    return EMPTY_CONCEPT_CHECK;
+  }
+  return {
+    type: "single_choice",
+    question: typeof value.question === "string" ? value.question : EMPTY_CONCEPT_CHECK.question,
+    options: Array.isArray(value.options)
+      ? value.options
+          .filter((option): option is Record<string, unknown> => isRecord(option))
+          .map((option, index) => ({
+            id: typeof option.id === "string" ? option.id : String.fromCharCode(65 + index),
+            text: typeof option.text === "string" ? option.text : "",
+          }))
+          .filter((option) => option.text)
+      : [],
+    expected_focus: typeof value.expected_focus === "string" ? value.expected_focus : "",
+  };
+}
+
+function ConceptIntroCard({
+  args,
+  status,
+}: ToolUIProps<ConceptIntroArgs>) {
+  return (
+    <article className="gen-card concept-intro-card" aria-label="概念开场判断">
+      <header className="gen-card-header">
+        <span className="gen-card-kicker">概念先行</span>
+        <span className={status === "running" ? "gen-card-badge streaming" : "gen-card-badge"}>
+          {status === "running" ? "生成中" : "回答可直接打字"}
+        </span>
+      </header>
+      <h3 className="gen-card-title">先判断一个小关系</h3>
+      <p className="concept-summary">{args.summary}</p>
+      <section className="concept-example" aria-label="概念例子">
+        <strong>{args.example.title}</strong>
+        <p>{args.example.body}</p>
+        {args.example.takeaway && <span>{args.example.takeaway}</span>}
+      </section>
+      <section className="concept-check" aria-label="判断题">
+        <p>{args.check.question}</p>
+        <div className="concept-options">
+          {args.check.options.map((option) => (
+            <div className="concept-option" key={option.id}>
+              <span>{option.id}</span>
+              <p>{option.text}</p>
+            </div>
+          ))}
+        </div>
+        <small>你可以回复选项字母，也可以用自己的话说明判断。</small>
+      </section>
+    </article>
+  );
+}
+
+function ConceptCheckResultCard({
+  args,
+  status,
+}: ToolUIProps<ConceptCheckResultArgs>) {
+  const resultLabel = conceptResultLabel(args.result);
+  return (
+    <article className={`gen-card concept-result-card ${args.result}`} aria-label="概念判断结果">
+      <header className="gen-card-header">
+        <span className="gen-card-kicker">判断结果</span>
+        <span className={status === "running" ? "gen-card-badge streaming" : "gen-card-badge"}>
+          {status === "running" ? "判断中" : `${resultLabel} · ${confidenceLabel(args.confidence)}`}
+        </span>
+      </header>
+      <h3 className="gen-card-title">{resultLabel}</h3>
+      <p>{args.explanation}</p>
+      {args.repair_check && (
+        <section className="concept-check repair" aria-label="修复判断题">
+          <p>{args.repair_check.question}</p>
+          <div className="concept-options">
+            {args.repair_check.options.map((option) => (
+              <div className="concept-option" key={option.id}>
+                <span>{option.id}</span>
+                <p>{option.text}</p>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+      {args.next_prompt && <p className="concept-next">{args.next_prompt}</p>}
+      {args.actions.length > 0 && (
+        <div className="concept-action-hints" aria-label="可回复动作">
+          {args.actions.map((action) => (
+            <span key={action.id}>{action.label}</span>
+          ))}
+        </div>
+      )}
+    </article>
+  );
+}
+
+function conceptResultLabel(result: ConceptCheckResultArgs["result"]): string {
+  switch (result) {
+    case "correct":
+      return "理解基本到位";
+    case "incorrect":
+      return "先修正一个误解";
+    case "skipped":
+      return "已跳过概念检查";
+    case "unclear":
+    default:
+      return "还需要更具体一点";
+  }
+}
+
+function confidenceLabel(confidence: ConceptCheckResultArgs["confidence"]): string {
+  if (confidence === "high") return "高置信";
+  if (confidence === "medium") return "中置信";
+  return "低置信";
+}
+
+function isConceptResult(value: unknown): value is ConceptCheckResultArgs["result"] {
+  return value === "correct" || value === "incorrect" || value === "unclear" || value === "skipped";
+}
+
+function isConfidence(value: unknown): value is ConceptCheckResultArgs["confidence"] {
+  return value === "high" || value === "medium" || value === "low";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

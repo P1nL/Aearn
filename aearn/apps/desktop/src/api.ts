@@ -19,8 +19,10 @@ import type {
   NoteRecord,
   PlanDraft,
   ReviewDueItem,
+  ReviewAiPatchAnswer,
   ReviewExerciseResultResponse,
   ReviewSessionResponse,
+  ReviewWarmupResultResponse,
   ReviewStateSummary,
   ResumeContextResponse,
   RunExerciseResponse,
@@ -403,6 +405,24 @@ export async function startReviewSession(input: {
   return payload;
 }
 
+export async function submitReviewWarmupResult(input: {
+  sessionId: string;
+  action: "answer" | "skip";
+  answer?: string;
+}): Promise<ReviewWarmupResultResponse> {
+  const payload = await requestJson(`${API_BASE_URL}/api/reviews/${input.sessionId}/warmup-result`, {
+    method: "POST",
+    body: JSON.stringify({
+      action: input.action,
+      answer: input.answer,
+    }),
+  });
+  if (!isReviewWarmupResultResponse(payload)) {
+    throw new Error("Review warmup result API returned an invalid payload");
+  }
+  return payload;
+}
+
 export async function submitReviewExerciseResult(input: {
   sessionId: string;
   exerciseId: string;
@@ -411,6 +431,7 @@ export async function submitReviewExerciseResult(input: {
   explanation?: string;
   hintUsageCount?: number;
   errorCount?: number;
+  reviewAiPatchAnswer?: ReviewAiPatchAnswer;
 }): Promise<ReviewExerciseResultResponse> {
   const payload = await requestJson(`${API_BASE_URL}/api/reviews/${input.sessionId}/exercise-result`, {
     method: "POST",
@@ -421,6 +442,7 @@ export async function submitReviewExerciseResult(input: {
       explanation: input.explanation,
       hint_usage_count: input.hintUsageCount ?? 0,
       error_count: input.errorCount ?? 0,
+      review_ai_patch_answer: input.reviewAiPatchAnswer,
     }),
   });
   if (!isReviewExerciseResultResponse(payload)) {
@@ -796,8 +818,34 @@ function isReviewSessionResponse(payload: unknown): payload is ReviewSessionResp
     Array.isArray(payload.knowledge_point.weak_points_json) &&
     isLearningExercise(payload.review_exercise) &&
     isReviewStateSummary(payload.ReviewState) &&
+    typeof payload.review_stage === "string" &&
+    isReviewWarmupState(payload.warmup) &&
+    isRecord(payload.review_stage_state) &&
     typeof payload.variant_reason === "string" &&
     typeof payload.initial_agent_message === "string"
+  );
+}
+
+function isReviewWarmupResultResponse(payload: unknown): payload is ReviewWarmupResultResponse {
+  return (
+    isRecord(payload) &&
+    typeof payload.session_id === "string" &&
+    typeof payload.review_stage === "string" &&
+    isReviewWarmupState(payload.warmup) &&
+    isRecord(payload.review_stage_state) &&
+    payload.next_action === "start_variant"
+  );
+}
+
+function isReviewWarmupState(payload: unknown): payload is ReviewWarmupResultResponse["warmup"] {
+  return (
+    isRecord(payload) &&
+    typeof payload.question === "string" &&
+    typeof payload.expected_focus === "string" &&
+    typeof payload.result === "string" &&
+    typeof payload.repair_count === "number" &&
+    (typeof payload.last_answer === "string" || payload.last_answer === null) &&
+    (typeof payload.feedback === "string" || payload.feedback === null)
   );
 }
 

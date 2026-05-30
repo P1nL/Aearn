@@ -1,0 +1,8 @@
+{"file":"docs/product/frontend-interaction-spec.md","reason":"Defines ReviewPage UI ownership, review queue actions, loading/error states, and frontend scoring/FSRS boundaries."}
+{"file":"docs/architecture/api-contract.md","reason":"Defines review endpoints, Attempt(review_submit), fsrs_rating, SSE/error envelope, idempotency, and review metrics contracts."}
+{"file":"docs/architecture/database-schema.md","reason":"Defines learning_sessions, attempts, exercises, review_states, review_logs, review_messages, and schema migration expectations."}
+{"file":"docs/architecture/fsrs-scheduling-spec.md","reason":"Defines which Attempt types update ReviewState, FSRS mapping constraints, review logs, idempotency, and retry behavior."}
+{"file":"docs/architecture/code-completion-evaluation-spec.md","reason":"Defines result/score breakdown patterns and FSRS rating mapping style to extend for review_ai_patch scoring."}
+{"file":"docs/architecture/langgraph-state-machine.md","reason":"Defines Review graph nodes and state-machine ownership for review sessions and memory updates."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Backend safety, model output validation, persistence, idempotency, and no provider-detail leaks."}
+{"file":".trellis/spec/frontend/index.md","reason":"Frontend structure and quality entrypoint for desktop ReviewPage changes."}

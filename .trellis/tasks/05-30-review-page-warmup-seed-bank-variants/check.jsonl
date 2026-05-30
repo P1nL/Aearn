@@ -1,0 +1,7 @@
+{"file":"docs/qa/acceptance-test-plan.md","reason":"Use for end-to-end acceptance gates and release-regression alignment."}
+{"file":"docs/product/frontend-interaction-spec.md","reason":"Review warmup, variant exercise rendering, loading/error states, and no frontend FSRS scoring."}
+{"file":"docs/architecture/api-contract.md","reason":"Review endpoint shapes, error codes, idempotency, Attempt payloads, and response examples."}
+{"file":"docs/architecture/database-schema.md","reason":"Review additive schema changes, review_seed_bank persistence, exercise enum changes, and rollback notes."}
+{"file":"docs/architecture/fsrs-scheduling-spec.md","reason":"Review that only review_submit updates ReviewState and that FSRS/log idempotency remains intact."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Review backend tests, safe model behavior, validation failures, and persistence replay."}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Review desktop checks, component boundaries, loading/error states, and type-safe UI behavior."}

@@ -9,12 +9,19 @@ from psycopg import Connection
 
 from app.agents.guardrails import assert_safe_teaching_output
 from app.agents.review_coach_agent import ReviewCoachContext, build_sdk_review_coach_response
-from app.models.reviews import ReviewExplanationCheck
-from app.services.evaluation import build_code_completion_result
-from app.services.exercise_repository import get_exercise, get_or_create_exercise_for_knowledge_point
+from app.models.reviews import ReviewAIPatchAnswer, ReviewExplanationCheck
+from app.services.evaluation import build_code_completion_result, build_review_ai_patch_completion_result
+from app.services.exercise_repository import get_exercise
 from app.services.learning_session_repository import build_code_hash
 from app.services.plan_repository import IdempotencyConflictError, request_hash
 from app.services.review_scheduler import apply_attempt_review_update, forget_risk_for, serialize_review_state
+from app.services.review_seed_bank import (
+    build_review_warmup,
+    ensure_ready_review_seed_bank,
+    materialize_review_seed_exercise,
+    select_review_seed,
+    serialize_seed_bank,
+)
 from app.services.runtime_runner import RuntimeExecutionResult, run_exercise
 from app.services.llm_client import LLMCallError, LLMInvalidResponseError
 from app.services.user_repository import get_user
@@ -96,12 +103,6 @@ def start_review_session(
 ) -> tuple[dict[str, object], bool]:
     context = _load_due_review_context(conn, user_id=user_id, knowledge_point_id=knowledge_point_id)
     runtime_profile = _serialize_runtime_profile(context)
-    exercise = get_or_create_exercise_for_knowledge_point(
-        conn,
-        knowledge_point=context,
-        runtime_profile=runtime_profile,
-    )
-
     reused = False
     session = conn.execute(
         """
@@ -117,13 +118,44 @@ def start_review_session(
         """,
         (user_id, context["plan_id"], knowledge_point_id),
     ).fetchone()
+
+    state = _review_stage_state_from_session(session)
+    exercise: dict[str, object] | None = None
+    seed_bank_payload: dict[str, object] | None = None
+    selected_seed_id: str | None = None
+    if state is not None:
+        exercise_id = _state_exercise_id(state)
+        if exercise_id is not None:
+            exercise = get_exercise(conn, exercise_id)
+        selected_seed_id = _state_seed_id(state)
+
+    if exercise is None or state is None:
+        seed_bank = ensure_ready_review_seed_bank(conn, context=context, runtime_profile=runtime_profile)
+        seed = select_review_seed(seed_bank=seed_bank, context=context, runtime_profile=runtime_profile)
+        exercise = materialize_review_seed_exercise(
+            conn,
+            seed_bank=seed_bank,
+            seed=seed,
+            context=context,
+            runtime_profile=runtime_profile,
+        )
+        state = _initial_review_stage_state(
+            context=context,
+            seed_bank_id=str(seed_bank["id"]),
+            seed=seed,
+            exercise=exercise,
+        )
+        seed_bank_payload = serialize_seed_bank(seed_bank)
+        selected_seed_id = str(seed["id"])
+
     if session is None:
         session = conn.execute(
             """
             INSERT INTO learning_sessions (
-              user_id, plan_id, session_type, status, entry_point, next_entry_point, request_id
+              user_id, plan_id, session_type, status, entry_point, next_entry_point,
+              review_stage, review_stage_state_json, request_id
             )
-            VALUES (%s, %s, 'review', 'active', %s, %s, %s)
+            VALUES (%s, %s, 'review', 'active', %s, %s, %s, %s::jsonb, %s)
             RETURNING *
             """,
             (
@@ -131,6 +163,8 @@ def start_review_session(
                 context["plan_id"],
                 knowledge_point_id,
                 knowledge_point_id,
+                "warmup",
+                json.dumps(state),
                 _request_id_or_none(request_id),
             ),
         ).fetchone()
@@ -138,6 +172,18 @@ def start_review_session(
             raise RuntimeError("review session insert returned no row")
     else:
         reused = True
+        conn.execute(
+            """
+            UPDATE learning_sessions
+            SET review_stage = %s,
+                review_stage_state_json = %s::jsonb
+            WHERE id = %s
+            """,
+            (_stage_from_state(state), json.dumps(state), session["id"]),
+        )
+        session = dict(session)
+        session["review_stage"] = _stage_from_state(state)
+        session["review_stage_state_json"] = state
 
     response: dict[str, object] = {
         "session_id": str(session["id"]),
@@ -150,7 +196,13 @@ def start_review_session(
         },
         "review_exercise": exercise,
         "ReviewState": serialize_review_state(context),
+        "review_stage": _stage_from_state(state),
+        "review_stage_state": state,
+        "warmup": state["warmup"],
+        "selected_seed_id": selected_seed_id,
     }
+    if seed_bank_payload is not None:
+        response["seed_bank"] = seed_bank_payload
     review_coach_context = _build_review_coach_context(context, exercise, conn)
     review_coach_response = build_sdk_review_coach_response(review_coach_context)
     if review_coach_response is None:
@@ -175,11 +227,13 @@ def submit_review_exercise_result(
     hint_usage_count: int,
     error_count: int,
     explanation_check: ReviewExplanationCheck | None,
+    review_ai_patch_answer: ReviewAIPatchAnswer | None,
     provided_code_hash: str | None,
     request_id: str | None,
     request_body: Mapping[str, object],
 ) -> tuple[dict[str, object], bool]:
-    code_hash = provided_code_hash or build_code_hash(code, filled_blanks)
+    answer_payload = review_ai_patch_answer.model_dump() if review_ai_patch_answer is not None else None
+    code_hash = provided_code_hash or _review_submit_code_hash(code, filled_blanks, answer_payload)
     key = f"review-exercise-result:{session_id}:{exercise_id}:{attempt_id or code_hash}:{submit_version}"
     stored = conn.execute(
         "SELECT request_hash, response_json FROM idempotency_records WHERE key = %s",
@@ -196,26 +250,50 @@ def submit_review_exercise_result(
 
     session = _load_review_session(conn, session_id)
     exercise = _load_session_exercise(conn, exercise_id=exercise_id, session=session)
-    run_attempt = _load_review_run_attempt(
-        conn,
-        attempt_id=attempt_id,
-        session_id=session_id,
-        exercise_id=exercise_id,
-    )
-    if run_attempt is not None and code_hash == run_attempt["code_hash"] and filled_blanks == run_attempt["filled_blanks_json"]:
-        runtime_result = _runtime_result_from_attempt(run_attempt)
+    if exercise["exercise_type"] == "review_ai_patch":
+        if answer_payload is None:
+            raise InvalidReviewRequestError("review_ai_patch_answer is required")
+        submitted_code = code or json.dumps(answer_payload, ensure_ascii=False)
+        runtime_result = RuntimeExecutionResult(
+            runtime_status="success",
+            stdout="",
+            stderr="",
+            test_pass_rate=1.0,
+            passed_test_count=0,
+            total_test_count=0,
+            test_results=[],
+            error_message=None,
+            next_action="schedule_review",
+            preview_html=None,
+            core_blank_gate=True,
+            any_blank_passed=True,
+            logic_pass=True,
+        )
+        code_completion_result, service_fields = build_review_ai_patch_completion_result(exercise, answer_payload)
     else:
-        runtime_result = run_exercise(exercise, code, filled_blanks, "visible_tests")
+        if not code.strip():
+            raise InvalidReviewRequestError("code must not be blank")
+        submitted_code = code
+        run_attempt = _load_review_run_attempt(
+            conn,
+            attempt_id=attempt_id,
+            session_id=session_id,
+            exercise_id=exercise_id,
+        )
+        if run_attempt is not None and code_hash == run_attempt["code_hash"] and filled_blanks == run_attempt["filled_blanks_json"]:
+            runtime_result = _runtime_result_from_attempt(run_attempt)
+        else:
+            runtime_result = run_exercise(exercise, code, filled_blanks, "visible_tests")
 
-    explanation_check_payload = explanation_check.model_dump() if explanation_check is not None else None
-    code_completion_result, service_fields = build_code_completion_result(
-        exercise,
-        runtime_result,
-        hint_usage_count=hint_usage_count,
-        error_count=max(error_count, 0 if runtime_result.runtime_status == "success" and runtime_result.test_pass_rate >= 1.0 else 1),
-        explanation=explanation,
-        explanation_check_result=explanation_check_payload,
-    )
+        explanation_check_payload = explanation_check.model_dump() if explanation_check is not None else None
+        code_completion_result, service_fields = build_code_completion_result(
+            exercise,
+            runtime_result,
+            hint_usage_count=hint_usage_count,
+            error_count=max(error_count, 0 if runtime_result.runtime_status == "success" and runtime_result.test_pass_rate >= 1.0 else 1),
+            explanation=explanation,
+            explanation_check_result=explanation_check_payload,
+        )
     submit_attempt = conn.execute(
         """
         INSERT INTO attempts (
@@ -241,7 +319,7 @@ def submit_review_exercise_result(
             "exercise_id": exercise_id,
             "user_id": str(session["user_id"]),
             "submit_version": submit_version,
-            "submitted_code": code,
+            "submitted_code": submitted_code,
             "code_hash": code_hash,
             "filled_blanks_json": json.dumps(filled_blanks),
             "runtime_status": runtime_result.runtime_status,
@@ -275,15 +353,18 @@ def submit_review_exercise_result(
         source="review_submit",
         request_id=request_id,
     )
+    submitted_state = _mark_review_stage_submitted(session)
     conn.execute(
         """
         UPDATE learning_sessions
         SET status = 'finished',
             ended_at = now(),
-            next_entry_point = %s
+            next_entry_point = %s,
+            review_stage = 'submitted',
+            review_stage_state_json = %s::jsonb
         WHERE id = %s
         """,
-        (str(exercise["knowledge_point_id"]), session_id),
+        (str(exercise["knowledge_point_id"]), json.dumps(submitted_state), session_id),
     )
 
     response = {
@@ -304,6 +385,67 @@ def submit_review_exercise_result(
         (key, payload_hash, json.dumps(response)),
     )
     return response, False
+
+
+def record_review_warmup_result(
+    conn: Connection[dict[str, object]],
+    *,
+    session_id: str,
+    action: str,
+    answer: str | None,
+) -> dict[str, object]:
+    session = _load_review_session(conn, session_id)
+    state = _review_stage_state_from_session(session)
+    if state is None:
+        raise ReviewSessionConflictError("review session has no warmup state")
+    warmup = _mapping_or_empty(state.get("warmup"))
+    if action == "skip":
+        result = "skipped"
+    else:
+        result = _evaluate_warmup_answer(
+            answer=answer or "",
+            expected_focus=str(warmup.get("expected_focus") or ""),
+            question=str(warmup.get("question") or ""),
+        )
+    repair_count = _int_or_zero(warmup.get("repair_count"))
+    next_stage = "variant_practice"
+    feedback = _warmup_feedback(result)
+    if result in {"incorrect", "unclear"} and repair_count < 1:
+        next_stage = "warmup_repair"
+        repair_count += 1
+        feedback = "先做一次短修正：用一句话指出当前知识点里最容易出错的风险，然后进入变体题。"
+    elif result in {"incorrect", "unclear"}:
+        variant = _mapping_or_empty(state.get("variant"))
+        variant["guided"] = True
+        state["variant"] = variant
+
+    updated_warmup = dict(warmup)
+    updated_warmup.update(
+        {
+            "result": result,
+            "last_answer": answer,
+            "repair_count": repair_count,
+            "feedback": feedback,
+        }
+    )
+    state["warmup"] = updated_warmup
+    state["review_stage"] = next_stage
+    conn.execute(
+        """
+        UPDATE learning_sessions
+        SET review_stage = %s,
+            review_stage_state_json = %s::jsonb
+        WHERE id = %s
+        """,
+        (next_stage, json.dumps(state), session_id),
+    )
+    return {
+        "session_id": session_id,
+        "review_stage": next_stage,
+        "warmup": updated_warmup,
+        "review_stage_state": state,
+        "next_action": "start_variant",
+    }
 
 
 def due_review_counts(conn: Connection[dict[str, object]]) -> dict[str, int]:
@@ -609,6 +751,107 @@ def _string_list(value: object) -> list[str]:
     if not isinstance(value, list):
         return []
     return [str(item) for item in value if str(item).strip()]
+
+
+def _review_stage_state_from_session(session: Mapping[str, object] | None) -> dict[str, object] | None:
+    if session is None:
+        return None
+    state = session.get("review_stage_state_json")
+    if not isinstance(state, Mapping):
+        return None
+    if not isinstance(state.get("warmup"), Mapping) or not isinstance(state.get("variant"), Mapping):
+        return None
+    return dict(state)
+
+
+def _initial_review_stage_state(
+    *,
+    context: Mapping[str, object],
+    seed_bank_id: str,
+    seed: Mapping[str, object],
+    exercise: Mapping[str, object],
+) -> dict[str, object]:
+    return {
+        "review_stage": "warmup",
+        "knowledge_point_id": str(context["id"]),
+        "seed_bank_id": seed_bank_id,
+        "seed_id": str(seed["id"]),
+        "warmup": build_review_warmup(seed, context),
+        "variant": {
+            "exercise_id": str(exercise["id"]),
+            "exercise_type": str(exercise["exercise_type"]),
+            "guided": False,
+            "selection_reason": _variant_reason(context),
+        },
+    }
+
+
+def _state_exercise_id(state: Mapping[str, object]) -> str | None:
+    variant = state.get("variant")
+    if not isinstance(variant, Mapping):
+        return None
+    exercise_id = variant.get("exercise_id")
+    return str(exercise_id) if exercise_id else None
+
+
+def _state_seed_id(state: Mapping[str, object]) -> str | None:
+    seed_id = state.get("seed_id")
+    return str(seed_id) if seed_id else None
+
+
+def _stage_from_state(state: Mapping[str, object]) -> str:
+    stage = state.get("review_stage")
+    if stage in {"warmup", "warmup_repair", "variant_practice", "submitted"}:
+        return str(stage)
+    warmup = state.get("warmup")
+    if isinstance(warmup, Mapping) and warmup.get("result") in {"correct", "skipped"}:
+        return "variant_practice"
+    return "warmup"
+
+
+def _mark_review_stage_submitted(session: Mapping[str, object]) -> dict[str, object]:
+    state = _review_stage_state_from_session(session) or {}
+    state["review_stage"] = "submitted"
+    return state
+
+
+def _evaluate_warmup_answer(*, answer: str, expected_focus: str, question: str) -> str:
+    normalized = answer.strip().lower()
+    if not normalized or normalized in {"不太确定", "完全忘了", "不知道", "unclear", "not sure"}:
+        return "unclear"
+    focus_tokens = [token.lower() for token in expected_focus.replace("_", " ").split() if len(token) >= 2]
+    if focus_tokens and any(token in normalized for token in focus_tokens[:6]):
+        return "correct"
+    concept_markers = ("状态", "作用域", "返回", "stdout", "测试", "class", "selector", "state", "scope", "return", "test")
+    if any(marker in normalized for marker in concept_markers):
+        return "correct"
+    if len(answer.strip()) >= 20 and any(marker in question for marker in ("出错", "风险", "回忆")):
+        return "correct"
+    return "incorrect"
+
+
+def _warmup_feedback(result: str) -> str:
+    if result == "correct":
+        return "热身通过，继续完成变体练习。"
+    if result == "skipped":
+        return "已跳过热身，本轮 FSRS 仍只看变体练习提交。"
+    if result == "unclear":
+        return "回答还不够明确，先用一句话补充风险点。"
+    return "回答和当前知识点不匹配，先做一次短修正。"
+
+
+def _mapping_or_empty(value: object) -> dict[str, object]:
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _review_submit_code_hash(
+    code: str,
+    filled_blanks: Mapping[str, str],
+    review_ai_patch_answer: Mapping[str, object] | None,
+) -> str:
+    if review_ai_patch_answer is not None:
+        return build_code_hash(json.dumps(review_ai_patch_answer, sort_keys=True, ensure_ascii=False), {})
+    return build_code_hash(code, filled_blanks)
 
 
 def _iso_or_none(value: object) -> str | None:

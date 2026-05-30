@@ -253,6 +253,7 @@ function App() {
                 canOpenNoteDrawer={canOpenNoteDrawer}
                 noteDrawerOpen={notes.drawerOpen}
                 onOpenLearningSession={app.openLearningSession}
+                onReturnToRoute={app.clearLearningSession}
                 onRunChange={app.setLastRun}
                 onSubmitChange={app.setLastSubmit}
                 onKnowledgePointUpdate={app.handleKnowledgePointUpdate}

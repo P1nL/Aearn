@@ -26,8 +26,10 @@ const ERROR_MESSAGES: Record<string, string> = {
   MODULE_NOT_FOUND: "模块不存在",
   MODULE_NOT_SKIPPABLE: "该模块不允许跳过",
   REVIEW_NOT_DUE: "知识点未到复习时间",
+  REVIEW_SEED_BANK_GENERATION_FAILED: "复习材料生成失败，请稍后重试",
   SESSION_CONFLICT: "存在冲突的活动会话",
   EVALUATION_INVALID_JSON: "评分输出解析失败，请重试",
+  CONCEPT_INTRO_GENERATION_FAILED: "概念开场生成失败，请重试生成或返回路线选择其他知识点",
   RATE_LIMITED: "操作过于频繁，请稍后重试",
   INTERNAL_ERROR: "服务端错误，请稍后重试",
 };

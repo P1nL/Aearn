@@ -130,9 +130,9 @@ LearningWorkspacePage
     KnowledgePointList
     RouteActionMenu
   ConversationTimeline
-    KnowledgePointIntroMessage
+    GeneratedConceptIntroCard
+    GeneratedConceptCheckResultCard
     AgentMessage
-    FeynmanReadinessPrompt
     GeneratedLearningHistoryCard
     GeneratedCodeExerciseCard
       ExercisePrompt
@@ -161,7 +161,8 @@ LearningWorkspacePage
 4. 如果 `resume_available=true`，展示恢复学习提示和 `next_entry_point`。
 5. 用户点击当前知识点后调用 `POST /api/learning-sessions/start`。
 6. 前端以 `session_id` 加载会话；如果 `learning_stage` 不是 `practice_support`，只展示概念优先对话，不展示练习卡片。
-7. Agent 通过 `show_code_exercise` 工具调用在对话中生成练习 UI；通过 `show_learning_history` 工具调用展示知识点历史对话引用。
+7. 新会话入口必须渲染 `initial_tool_calls` 中持久化的 `show_concept_intro`；刷新或恢复时不得重新生成不同内容。
+8. Agent 通过 `show_concept_check_result` 展示自然语言判断结果，通过 `show_code_exercise` 工具调用在对话中生成练习 UI；通过 `show_learning_history` 工具调用展示知识点历史对话引用。
 
 ### `WorkspaceTopStatusBar`
 
@@ -210,10 +211,12 @@ LearningWorkspacePage
 职责：
 
 - `LearningWorkspacePage` 必须接受 `exercise=null` 的会话响应，并保持 composer 可用。
-- `concept_intro` 和 `concept_qna` 只展示知识点概念、官方文档来源提纲、子点问答和用户追问。
-- `readiness_check` 展示一次费曼式复述要求，不把它和练习后的解释检查混为同一个 UI。
-- `practice_support` 才能展示 `GeneratedCodeExerciseCard`；如果是提前练习，卡片说明内展示“当前学习进度尚未完成”和概念小结。
-- 费曼复述失败时展示 `GeneratedLearningHistoryCard`，只引用学习页 AI/用户对话，不引用建档页或复习页内容。
+- `show_concept_intro` 渲染概念总结、易懂例子和 2-4 个文本选项；选项只是可复制的回答提示，不是强制按钮。
+- `show_concept_check_result` 渲染 `correct` / `incorrect` / `unclear` / `skipped` 结果、解释、下一步提示、可选 `repair_check` 和文本 quick replies。
+- `concept_check`、`concept_repair` 和 `practice_offer` 只展示概念判断与修正，不直接固定展示练习卡片。
+- `practice_support` 才能展示 `GeneratedCodeExerciseCard`；如果是跳过或修正上限后的引导练习，卡片说明内展示“当前学习进度尚未完成”和概念小结。
+- `CONCEPT_INTRO_GENERATION_FAILED` 必须显示重试生成和返回路线动作，不展示破损 fallback 卡片。
+- 用户主动回看历史时展示 `GeneratedLearningHistoryCard`，只引用学习页 AI/用户对话，不引用建档页或复习页内容。
 
 状态来源：
 
@@ -222,7 +225,8 @@ LearningWorkspacePage
 | `learning_stage` | 决定 placeholder、quick replies 和是否可渲染练习卡 |
 | `learning_stage_state.learning_incomplete` | 决定提前练习提示 |
 | `lesson_outline` / `lesson_sources` | 展示概念提纲和来源归因 |
-| `tool_calls[].name` | 选择 `show_code_exercise` 或 `show_learning_history` 组件 |
+| `initial_tool_calls[]` | 新会话入口渲染持久化 `show_concept_intro` |
+| `tool_calls[].name` | 选择 `show_concept_intro`、`show_concept_check_result`、`show_code_exercise` 或 `show_learning_history` 组件 |
 
 ### `GeneratedCodeExerciseCard`
 
@@ -294,7 +298,9 @@ ReviewPage
   ReviewQueuePanel
   ReviewExercisePanel
     ReviewPromptCard
+    ReviewWarmupCard
     GeneratedCodeExerciseCard
+    ReviewAIPatchPanel
   ReviewMetricPanel
     ForgetRiskCard
     LastReviewCard
@@ -308,16 +314,23 @@ ReviewPage
 | 操作 | API | 成功后 |
 |---|---|---|
 | 加载今日复习 | `GET /api/reviews/today?user_id={user_id}` | 展示待复习列表 |
-| 开始复习 | `POST /api/reviews/start` | 展示 `review_exercise` 和 `variant_reason` |
+| 开始复习 | `POST /api/reviews/start` | 展示短热身、`review_stage`、`review_exercise`、`selected_seed_id` 和 `variant_reason` |
+| 提交热身答案 | `POST /api/reviews/{session_id}/warmup-result` | 更新 `warmup.result` 和 `review_stage`；不显示 FSRS 变化 |
+| 跳过热身 | `POST /api/reviews/{session_id}/warmup-result`，`action=skip` | 记录 `warmup_result=skipped`，直接进入变体练习 |
 | 运行复习练习 | 复用学习会话 `/run` 能力或 review runner | 展示运行结果 |
 | 提交复习结果 | `POST /api/reviews/{session_id}/exercise-result` | 更新 `fsrs_rating`、`due_at`、`forget_risk` |
 | 下一条 | 刷新列表 | 当前项完成后启用 |
 
+`review_ai_patch` 题型不展示代码编辑提交框，而展示结构化审核表单：`verdict`、`evidence`、`knowledge_point_risk`、`next_action`。提交前必须要求用户填写证据和风险说明；前端只做必填校验，不本地计算 `score_breakdown`、`fsrs_rating`、`due_at` 或 `forget_risk`。
+
 ### 状态
 
 - empty：今日无待复习项，提示继续学习或查看历史表现。
-- loading：列表加载、变体生成、提交评分均显示局部 skeleton。
-- error：队列加载失败不影响工作台；提交失败不得把复习项标记完成。
+- loading：列表加载、seed bank rescue、变体生成、热身提交和复习提交均显示局部 skeleton；首次加载可 skeleton，后台刷新保留旧卡片。
+- warmup：展示短热身问题、跳过按钮和一句话回答输入。
+- warmup_repair：热身错误或不明确后最多展示一次短修正提示，然后进入变体练习。
+- variant_practice：展示 `code_blank`、`fix_bug`、`explain_code`、`implement_function` 或 `review_ai_patch` 变体题。
+- error：队列加载失败不影响工作台；seed bank rescue 失败展示 `REVIEW_SEED_BANK_GENERATION_FAILED` 和重试入口；提交失败不得把复习项标记完成。
 - disabled：未选择复习项时禁用运行/提交。
 - confirm：退出未提交复习时确认是否保留当前编辑内容。
 
@@ -445,6 +458,7 @@ SettingsPage
 
 - 不直接调用 LLM API 生成最终评分。
 - 不本地修改 `fsrs_rating`、`due_at` 或 `ReviewState`。
+- 不根据 warmup 结果、本地测试通过或 `review_ai_patch` 表单内容本地计算 score、FSRS 或复习完成态。
 - 不把本地预览成功当作 `/submit` 通过。
 - 不在 Java/C++ 上展示“可运行”按钮，除非后端明确返回可用 `runtime_profile`。
 
@@ -468,8 +482,8 @@ SettingsPage
 | `POST /api/onboarding/messages` | `OnboardingPage`、`GeneratedLearningRouteCard` | 多轮引导；信息足够时流式输出 `show_learning_route` 卡片 |
 | `POST /api/onboarding/{session_id}/confirm_plan` | `GeneratedLearningRouteCard` | 仅由最新卡片的 `开始学习` 确认正式计划 |
 | `PATCH /api/plans/{plan_id}/modules/{module_id}` | `RoutePanel` | 跳过、替换、调整模块 |
-| `POST /api/learning-sessions/start` | `LearningWorkspacePage` | 创建或恢复学习会话；概念阶段允许 `exercise=null` |
-| `POST /api/learning-sessions/{session_id}/messages` | `ConversationTimeline`、`GeneratedCodeExerciseCard`、`GeneratedLearningHistoryCard` | 概念问答、费曼检查和学习页工具卡片 |
+| `POST /api/learning-sessions/start` | `LearningWorkspacePage`、`GeneratedConceptIntroCard` | 创建或恢复学习会话；概念阶段允许 `exercise=null`，新会话返回持久化 `initial_tool_calls` |
+| `POST /api/learning-sessions/{session_id}/messages` | `ConversationTimeline`、`GeneratedConceptCheckResultCard`、`GeneratedCodeExerciseCard`、`GeneratedLearningHistoryCard` | 概念判断、修正追问、练习确认和学习页工具卡片 |
 | `GET /api/learning-sessions/history` | `GeneratedLearningHistoryCard` | 按知识点读取所有学习页会话历史，不包含建档页或复习页 |
 | `POST /api/learning-sessions/{session_id}/exercises/{exercise_id}/run` | `RunActionBar`、`GeneratedRuntimeFeedback` | 展示运行、预览或测试反馈；前端不暴露内部 Attempt 类型 |
 | `POST /api/learning-sessions/{session_id}/exercises/{exercise_id}/submit` | `RunActionBar`、`ExplanationCheckPanel` | 获取 `code_completion_result`；前端不暴露内部 Attempt 类型 |
@@ -477,8 +491,9 @@ SettingsPage
 | `POST /api/learning-sessions/{session_id}/attempts/{attempt_id}/explain-error` | `ErrorFeedbackPane` | 获取错因解释 |
 | `POST /api/learning-sessions/{session_id}/attempts/{attempt_id}/check-explanation` | `ExplanationCheckPanel` | 检查用户解释 |
 | `GET /api/reviews/today` | `ReviewQueuePanel` | 获取待复习列表 |
-| `POST /api/reviews/start` | `ReviewExercisePanel` | 开始复习变体 |
-| `POST /api/reviews/{session_id}/exercise-result` | `ReviewMetricPanel` | 更新 FSRS 展示 |
+| `POST /api/reviews/start` | `ReviewWarmupCard`、`ReviewExercisePanel` | 创建或恢复复习会话；渲染热身、阶段状态、seed 变体和 rescue 错误 |
+| `POST /api/reviews/{session_id}/warmup-result` | `ReviewWarmupCard`、`ReviewExercisePanel` | 记录热身结果并切换到修正或变体练习；不更新 FSRS 展示 |
+| `POST /api/reviews/{session_id}/exercise-result` | `ReviewAIPatchPanel`、`ReviewMetricPanel` | 提交变体练习或 AI 补丁审核，使用后端返回更新 FSRS 展示 |
 | `GET /api/notes` | `NotesPage`、`NoteDrawer` | 读取知识点 Markdown 笔记 |
 | `POST /api/notes` | `NotesPage`、`NoteDrawer` | 创建知识点笔记 |
 | `PATCH /api/notes/{note_id}` | `NotesPage`、`NoteDrawer` | 保存知识点笔记 |
@@ -490,3 +505,4 @@ SettingsPage
 - JS/HTML/CSS、Python、Java/C++ 的运行能力分层不会误导用户。
 - loading、empty、error、disabled、confirm、stale、autosaving 状态均有统一处理。
 - 前端不会越权承担评分、FSRS 或 LangGraph 状态机职责。
+- 复习页能展示短热身、热身修正、seed rescue 失败、五类核心复习题型和 `review_ai_patch` 结构化提交。

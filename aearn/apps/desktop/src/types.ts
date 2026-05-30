@@ -10,6 +10,7 @@ export type RuntimeStatus = "success" | "runtime_error" | "timeout" | "unsupport
 export type NextAction = "retry_same" | "show_hint" | "explain_error" | "review_variant" | "schedule_review" | "advance_next";
 export type FsrsRating = "Again" | "Hard" | "Good" | "Easy";
 export type ForgetRisk = "low" | "normal" | "high";
+export type ExerciseType = "code_blank" | "fix_bug" | "implement_function" | "explain_code" | "review_ai_patch";
 export type HintLevel = "nudge" | "concept" | "code_shape";
 export type ExplanationFocus = "core_logic" | "boundary_condition" | "ai_generated_change";
 
@@ -232,7 +233,7 @@ export type LearningExercise = {
   knowledge_point_id: string;
   runtime_profile_id: string;
   title: string;
-  exercise_type: "code_blank" | "fix_bug" | "implement_function" | "explain_code";
+  exercise_type: ExerciseType;
   prompt_markdown: string;
   starter_code: string;
   solution_reference: string | null;
@@ -246,7 +247,14 @@ export type LearningExercise = {
   test_cases: ExerciseTestCase[];
 };
 
-export type LearningStage = "concept_intro" | "concept_qna" | "readiness_check" | "practice_support";
+export type LearningStage =
+  | "concept_intro"
+  | "concept_check"
+  | "concept_repair"
+  | "practice_offer"
+  | "concept_qna"
+  | "readiness_check"
+  | "practice_support";
 
 export type LessonOutlineItem = {
   id: string;
@@ -262,9 +270,26 @@ export type LessonSource = {
 export type LearningStageState = {
   covered_subpoint_ids?: string[];
   feynman_status?: "not_started" | "pending" | "passed" | "failed" | "legacy";
-  practice_unlock_reason?: "early_request" | "feynman_passed" | "legacy_session" | null;
+  practice_unlock_reason?:
+    | "early_request"
+    | "feynman_passed"
+    | "legacy_session"
+    | "concept_check_passed"
+    | "concept_check_skipped"
+    | "concept_check_repair_limit"
+    | null;
   learning_incomplete?: boolean;
   concept_summary?: string;
+  concept_check_attempts?: number;
+  concept_check_result?: "correct" | "incorrect" | "unclear" | "skipped" | null;
+  repair_limit_reached?: boolean;
+};
+
+export type LearningSessionInitialToolCall = {
+  id: string;
+  name: string;
+  args: unknown;
+  status: "done" | "running" | "error" | "pending";
 };
 
 export type LearningSessionResponse = {
@@ -289,6 +314,7 @@ export type LearningSessionResponse = {
   learning_stage: LearningStage;
   learning_stage_state: LearningStageState;
   initial_agent_message: string;
+  initial_tool_calls: LearningSessionInitialToolCall[];
   session_state: "learning";
 };
 
@@ -339,12 +365,7 @@ export type RunExerciseResponse = {
 export type CodeCompletionResult = {
   result: "failed" | "partial" | "passed" | "easy";
   score: number;
-  score_breakdown: {
-    completion_correctness: number;
-    runtime_and_tests: number;
-    error_diagnosis: number;
-    explanation_check: number;
-  };
+  score_breakdown: Record<string, number>;
   hard_gates: {
     runtime_gate: boolean;
     test_gate: boolean;
@@ -359,6 +380,13 @@ export type CodeCompletionResult = {
   feedback: string;
   next_action: NextAction;
   fsrs_rating: FsrsRating;
+  review_ai_patch_result?: {
+    verdict: "pass" | "fail" | "uncertain";
+    expected_verdict: "pass" | "fail" | "uncertain";
+    evidence_quality: "strong" | "weak";
+    expected_risk: string;
+    learner_next_action: "accept" | "reject" | "request_change" | "run_more_tests";
+  };
 };
 
 export type ReviewStateSummary = {
@@ -467,8 +495,58 @@ export type ReviewSessionResponse = {
   };
   review_exercise: LearningExercise;
   ReviewState: ReviewStateSummary;
+  review_stage: "warmup" | "warmup_repair" | "variant_practice" | "submitted";
+  review_stage_state: ReviewStageState;
+  warmup: ReviewWarmupState;
+  selected_seed_id: string | null;
+  seed_bank?: {
+    id: string;
+    status: "generating" | "ready" | "failed";
+    generator_version: string;
+    seed_count: number;
+    generated_at: string | null;
+    quality_report: Record<string, unknown>;
+  };
   variant_reason: string;
   initial_agent_message: string;
+};
+
+export type ReviewWarmupState = {
+  question: string;
+  expected_focus: string;
+  result: "pending" | "correct" | "incorrect" | "unclear" | "skipped";
+  repair_count: number;
+  last_answer: string | null;
+  feedback: string | null;
+};
+
+export type ReviewStageState = {
+  review_stage: ReviewSessionResponse["review_stage"];
+  knowledge_point_id: string;
+  seed_bank_id: string;
+  seed_id: string;
+  warmup: ReviewWarmupState;
+  variant: {
+    exercise_id: string;
+    exercise_type: ExerciseType;
+    guided: boolean;
+    selection_reason: string;
+  };
+};
+
+export type ReviewWarmupResultResponse = {
+  session_id: string;
+  review_stage: ReviewSessionResponse["review_stage"];
+  warmup: ReviewWarmupState;
+  review_stage_state: ReviewStageState;
+  next_action: "start_variant";
+};
+
+export type ReviewAiPatchAnswer = {
+  verdict: "pass" | "fail" | "uncertain";
+  evidence: string;
+  knowledge_point_risk: string;
+  next_action: "accept" | "reject" | "request_change" | "run_more_tests";
 };
 
 export type ReviewExerciseResultResponse = {

@@ -75,7 +75,7 @@ LANGUAGE_COURSE_SEEDS = [
         "title": "JavaScript DOM Beginner",
         "description": "Practice DOM events, state updates, and AI-generated code verification.",
         "level": "beginner",
-        "supported_exercise_types_json": ["code_blank", "fix_bug", "implement_function", "explain_code"],
+        "supported_exercise_types_json": ["code_blank", "fix_bug", "implement_function", "explain_code", "review_ai_patch"],
     },
     {
         "slug": "course_html_css_interaction_beginner",
@@ -84,7 +84,7 @@ LANGUAGE_COURSE_SEEDS = [
         "title": "HTML/CSS Interaction Beginner",
         "description": "Practice layout, interaction states, and DOM assertion basics.",
         "level": "beginner",
-        "supported_exercise_types_json": ["code_blank", "fix_bug", "explain_code"],
+        "supported_exercise_types_json": ["code_blank", "fix_bug", "explain_code", "review_ai_patch"],
     },
     {
         "slug": "course_python_basic_beginner",
@@ -93,7 +93,7 @@ LANGUAGE_COURSE_SEEDS = [
         "title": "Python Basic Beginner",
         "description": "Practice Python functions, stdout, tests, and debugging AI-generated code.",
         "level": "beginner",
-        "supported_exercise_types_json": ["code_blank", "fix_bug", "implement_function", "explain_code"],
+        "supported_exercise_types_json": ["code_blank", "fix_bug", "implement_function", "explain_code", "review_ai_patch"],
     },
     {
         "slug": "course_java_basic_placeholder",
@@ -102,7 +102,7 @@ LANGUAGE_COURSE_SEEDS = [
         "title": "Java Basic Placeholder",
         "description": "Catalog placeholder; full Java sandbox is outside the first MVP.",
         "level": "beginner",
-        "supported_exercise_types_json": ["explain_code"],
+        "supported_exercise_types_json": ["explain_code", "review_ai_patch"],
     },
     {
         "slug": "course_cpp_basic_placeholder",
@@ -111,6 +111,6 @@ LANGUAGE_COURSE_SEEDS = [
         "title": "C++ Basic Placeholder",
         "description": "Catalog placeholder; full C++ sandbox is outside the first MVP.",
         "level": "beginner",
-        "supported_exercise_types_json": ["explain_code"],
+        "supported_exercise_types_json": ["explain_code", "review_ai_patch"],
     },
 ]

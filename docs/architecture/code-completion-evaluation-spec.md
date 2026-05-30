@@ -328,9 +328,31 @@ Agent 评分必须输出可解析 JSON，禁止只输出自然语言。
 - `next_action`：`retry_same` / `show_hint` / `explain_error` / `review_variant` / `schedule_review` / `advance_next`
 - `fsrs_rating`：`Again` / `Hard` / `Good` / `Easy`
 
+### `review_ai_patch` 专用评分
+
+`review_ai_patch` 是复习页核心题型，不要求用户改写代码，而要求用户审核 AI diff。提交字段必须包含：
+
+- `verdict`：`pass` / `fail` / `uncertain`
+- `evidence`：来自需求、diff、可见测试或代码行为的证据
+- `knowledge_point_risk`：当前知识点相关风险
+- `next_action`：`accept` / `reject` / `request_change` / `run_more_tests`
+
+该题型仍写入 `Attempt(attempt_type=review_submit).code_completion_result`，但 `score_breakdown` 使用四个专用维度：
+
+```json
+{
+  "verdict_correctness": 2,
+  "evidence_grounding": 1,
+  "knowledge_point_alignment": 2,
+  "actionability": 1
+}
+```
+
+只说 `tests passed` 属于弱证据；如果 `evidence_grounding < 2`，即使 verdict 正确也必须映射为 `result=partial`、`fsrs_rating=Hard`、`next_action=review_variant`，不得给 `Easy`。
+
 ## JSON Schema
 
-后端必须用 schema 校验 Agent 输出，并在写入 `attempts.code_completion_result` 前补齐服务端可验证字段。
+后端必须用 schema 校验 Agent 输出，并在写入 `attempts.code_completion_result` 前补齐服务端可验证字段。下列 schema 适用于代码补全/修复/解释类练习；`review_ai_patch` 使用上方专用维度，但仍遵守 `result`、`score`、`hard_gates`、`weak_points`、`feedback`、`next_action`、`fsrs_rating` 的公共约束。
 
 ```json
 {
@@ -484,6 +506,9 @@ Agent 评分必须输出可解析 JSON，禁止只输出自然语言。
 | 测试通过、提示或错误次数过高 | `passed` | `Hard` | `review_variant` |
 | 测试通过、低提示低错误 | `passed` | `Good` | `schedule_review` |
 | 全部通过、无提示无错误、解释满分 | `easy` | `Easy` | `schedule_review` |
+| `review_ai_patch` verdict 错误 | `failed` | `Again` | `review_variant` |
+| `review_ai_patch` 证据不足 | `partial` | `Hard` | `review_variant` |
+| `review_ai_patch` 四项满分 | `easy` | `Easy` | `schedule_review` |
 
 兜底结果必须写入：
 

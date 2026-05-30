@@ -20,9 +20,10 @@ Attempt -> code_completion_result -> Attempt.fsrs_rating -> ReviewState -> due_a
 2. `Attempt.fsrs_rating` 是调度输入，取值只能是 `Again` / `Hard` / `Good` / `Easy`。
 3. 只有 `Attempt(attempt_type=submit)` 和 `Attempt(attempt_type=review_submit)` 可以更新 `ReviewState`。
 4. `Attempt(attempt_type=run)` 只保存运行事实，不进入 FSRS。
-5. `due_at` 使用 `timestamptz` 存储绝对时间点，数据库比较统一使用 `now()`。
-6. “今日复习”窗口按 `Asia/Shanghai` 计算，但不改变数据库 UTC 存储策略。
-7. 任何失败重试都不得重新运行用户代码，只能基于已保存的 `Attempt` 重放调度更新。
+5. 复习页 warmup 的 `correct`、`incorrect`、`unclear`、`skipped` 只写入 `learning_sessions.review_stage_state_json`，不创建 `Attempt`，不写 `ReviewLog`，不更新 FSRS。
+6. `due_at` 使用 `timestamptz` 存储绝对时间点，数据库比较统一使用 `now()`。
+7. “今日复习”窗口按 `Asia/Shanghai` 计算，但不改变数据库 UTC 存储策略。
+8. 任何失败重试都不得重新运行用户代码，只能基于已保存的 `Attempt` 重放调度更新。
 
 ## 术语映射
 
@@ -154,6 +155,8 @@ UNIQUE(request_id)
 | `passed` | 提示或错误次数较高 | `Hard` | `2` |
 | `easy` | `hint_usage_count = 0` 且 `error_count = 0` | `Easy` | `4` |
 | `easy` | 使用过轻提示 | `Good` | `3` |
+
+`review_ai_patch` 仍使用同一 `Attempt(attempt_type=review_submit)` 和 `code_completion_result` 证据字段，但 score breakdown 固定为 `verdict_correctness`、`evidence_grounding`、`knowledge_point_alignment`、`actionability`。其中 `evidence_grounding < 2` 必须降级为 `Hard`，即使 learner verdict 正确，也不得映射为 `Easy`。
 
 调度层校验规则：
 
@@ -498,6 +501,15 @@ FSRS_MIN_LAPSES=10
    - `Good`：增加 `0.05`。
    - `Easy`：增加 `0.08`，最高 `1`。
 4. `review_count >= 3` 且最近两次 `Good` / `Easy` 时，可将 `KnowledgePoint.status` 设为 `mastered`。
+
+### 复习热身
+
+当 `Review Graph` 记录 warmup 时：
+
+1. 写入 `LearningSession.review_stage` 和 `LearningSession.review_stage_state_json`。
+2. `correct`、`skipped` 进入 `variant_practice`；`incorrect` 或 `unclear` 最多进入一次 `warmup_repair`。
+3. 不创建 `Attempt`，不写 `ReviewLog`，不改变 `ReviewState.review_count`、`last_review_at`、`last_attempt_id`、`last_fsrs_rating` 或 `due_at`。
+4. 后续必须通过变体练习提交生成 `Attempt(review_submit)`，才能进入 `update_review_state`。
 
 ## API 输出规则
 

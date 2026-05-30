@@ -13,7 +13,7 @@
 第一版核心闭环：
 
 ```text
-建档生成学习路线 -> 进入当前学习 -> 概念讲解与费曼复述 -> 对话中生成练习 UI -> 编写/运行/预览 -> Agent hint / explain-error -> 记录笔记 -> FSRS 复习
+建档生成学习路线 -> 进入当前学习 -> 概念卡片与自然语言判断 -> 对话中生成练习 UI -> 编写/运行/预览 -> Agent hint / explain-error -> 记录笔记 -> FSRS 复习
 ```
 
 ## 全局规则
@@ -158,20 +158,20 @@
 
 ### Agent 自动动作
 
-- 先讲解当前知识点的核心概念、学习目标和本地维护的官方文档来源提纲。
-- 按提纲子点引导用户追问和回答，不在会话入口默认展示练习卡片。
-- 覆盖全部子点后要求用户用费曼学习法整体复述：它是什么、为什么重要、会如何影响代码行为。
-- 复述通过后，在对话中用生成式 UI 生成练习卡片。
-- 用户明确要求提前练习时允许生成练习卡片，但卡片说明必须包含“当前学习进度尚未完成”和概念小结。
-- 复述不完整或错误时不强制补讲，而是用生成式历史引用卡片引导用户查看该知识点的相关学习对话。
+- 会话开始时生成 `show_concept_intro`，用简短概念总结、易懂例子和 2-4 个文本选项的判断题引导用户。
+- 用户可以用 `A` / `B` 或自然语言回答；后端用模型判断并返回持久化的 `show_concept_check_result`。
+- 判断正确后进入 `practice_offer`，简短重述关键关系，并等待用户确认是否开始练习。
+- 首次判断错误时进入 `concept_repair`，指出一个误解、给更简单反例和更窄的后续判断；两次失败后不继续盘问，提供另一个例子或引导练习。
+- 用户未通过概念判断但明确要求练习时允许生成练习卡片，但卡片说明必须包含“当前学习进度尚未完成”和概念小结。
 - 进入练习后，根据用户输入选择 hint、继续练习或解释错因。
 
 ### 系统后台动作
 
 - 加载 dashboard。
-- 恢复当前学习会话或创建新学习会话；新学习会话从 `concept_intro` 开始，`exercise=null`。
-- 持久化 `learning_stage` 和精简 `learning_stage_state`，用于恢复概念讲解、费曼检查、正常练习或提前练习状态。
-- 持久化学习页 AI/用户对话到 `learning_messages`，只用于用户触发的知识点历史引用。
+- 恢复当前学习会话或创建新学习会话；新学习会话生成并持久化 `show_concept_intro` 后进入 `concept_check`，`exercise=null`。
+- 持久化 `learning_stage` 和精简 `learning_stage_state`，用于恢复 `concept_check`、`concept_repair`、`practice_offer`、正常练习或跳过概念检查状态。
+- 持久化学习页 AI/用户对话与 `metadata.tool_calls` 到 `learning_messages`，用于刷新、恢复和幂等重放同一张概念卡/判断结果卡。
+- 概念开场生成失败或校验失败时返回 `CONCEPT_INTRO_GENERATION_FAILED`，不展示破损 fallback 卡片。
 - 检查是否有到期复习。
 - 普通打开时不强制跳转复习，只在应用内提示。
 
@@ -181,7 +181,7 @@
 |---|---|
 | `GET /api/dashboard` | 获取当前计划、当前知识点、复习数量和恢复入口 |
 | `POST /api/learning-sessions/start` | 进入或恢复当前学习会话 |
-| `POST /api/learning-sessions/{session_id}/messages` | 概念问答、费曼检查和生成式 UI 工具调用 |
+| `POST /api/learning-sessions/{session_id}/messages` | 概念判断、修正追问、练习确认和生成式 UI 工具调用 |
 | `GET /api/learning-sessions/history` | 用户主动查看当前知识点的学习页历史对话 |
 | `GET /api/reviews/today` | 判断是否需要提示复习 |
 
@@ -199,9 +199,9 @@
 - `loading`：加载 dashboard。
 - `empty`：无活动计划，跳转建档。
 - `resume_available`：存在可恢复会话。
-- `concept_intro`：进入知识点后的默认状态，只展示概念说明和互动问题。
-- `concept_qna`：用户继续追问或回答子点问题。
-- `readiness_check`：等待用户完成一次费曼式整体复述。
+- `concept_check`：进入知识点后的默认状态，展示 `show_concept_intro` 并等待自然语言判断。
+- `concept_repair`：首次判断错误后的修正状态，展示误解反馈和更窄判断。
+- `practice_offer`：概念判断通过后等待用户确认开始练习。
 - `practice_support`：练习已正常解锁或提前解锁。
 - `review_notice`：有到期或高风险复习，但普通打开不强制跳转。
 - `error`：dashboard 或会话加载失败。
@@ -222,9 +222,11 @@
 
 - 普通打开应用时 5 秒内能看到当前学习入口。
 - 有复习时只提示，不默认抢占当前学习。
-- 新会话入口不展示练习卡片或固定练习入口。
+- 新会话入口不展示练习卡片或固定练习入口，只展示持久化的 `show_concept_intro`。
+- 判断正确后才以 `practice_unlock_reason=concept_check_passed` 正常解锁练习；直接要求练习时必须标记 `concept_check_skipped` 和 `learning_incomplete=true`。
+- 概念开场生成失败时前端展示重试或返回路线动作，不展示破损概念卡。
 - 默认恢复只恢复精简阶段状态，不自动重放完整历史对话。
-- 费曼检查失败时可通过生成式历史卡片查看该知识点所有学习页会话，不包含建档页或复习页对话。
+- 需要回看时可通过生成式历史卡片查看该知识点所有学习页会话，不包含建档页或复习页对话。
 
 ## 流程 3：生成式代码练习
 
@@ -239,7 +241,7 @@
 - 当前知识点绑定可用练习。
 - 当前语言的 `runtime_tier` 已明确。
 - API 和 runner service 可用，或可返回 `unsupported`。
-- 用户已通过费曼式概念检查，或用户明确要求提前练习且练习卡片包含未完成学习进度说明。
+- 用户已通过概念判断、选择修正上限后的引导练习，或用户明确要求提前练习且练习卡片包含未完成学习进度说明。
 
 ### 用户操作
 
@@ -406,23 +408,29 @@
 1. 用户进入复习页。
 2. 用户查看左侧复习概览。
 3. 用户开始当前最高优先级复习项。
-4. 用户完成复习变体题或解释关键概念。
-5. 用户运行或提交复习练习。
-6. 用户查看反馈。
+4. 用户先完成一句话短热身，或选择跳过热身。
+5. 如果热身错误或不明确，用户最多经历一次短修正提示。
+6. 用户完成后端选中的复习变体题；如果是 `review_ai_patch`，需要给出结论、证据、知识点风险和下一步动作。
+7. 用户运行或提交复习练习。
+8. 用户查看反馈。
 
 ### Agent 自动动作
 
 - 创建独立复习会话。
-- 给出同构或迁移变体题。
+- 给出短热身，只唤醒概念，不展开长教学。
+- 从持久化 seed bank 中选择同构或迁移变体题。
 - 复用学习页的生成式代码编辑器和测试区。
-- 根据准确性、因果链、例子质量和表达清晰度给出反馈。
+- 根据变体练习或 `review_ai_patch` 的真实提交结果给出反馈。
 - 当前项完成后自动进入下一条。
 
 ### 系统后台动作
 
 - 按遗忘风险和 `due_at` 排序复习项。
 - 今日未到期但即将到期的内容只在左侧面板展示为预告。
-- 提交成功后更新 `ReviewState` 和下一次 `due_at`。
+- 复习开始时确保存在完整 `review_seed_bank`；如果缺失，则同步 rescue 生成并先持久化完整 seed bank，再选择 seed。
+- seed bank 生成或校验失败时返回 `REVIEW_SEED_BANK_GENERATION_FAILED`，不得展示低质量 fallback 题。
+- warmup 的正确、错误、不明确和跳过结果只写入复习会话状态，不更新 FSRS。
+- 只有变体练习提交成功后才写入 `Attempt(attempt_type=review_submit)`，并更新 `ReviewState` 和下一次 `due_at`。
 - 提交失败不得标记完成。
 
 ### 依赖 API
@@ -430,7 +438,8 @@
 | API | 用途 |
 |---|---|
 | `GET /api/reviews/today` | 获取待复习和预告复习项 |
-| `POST /api/reviews/start` | 创建独立复习会话和变体题 |
+| `POST /api/reviews/start` | 创建独立复习会话、热身状态和 seed bank 变体题 |
+| `POST /api/reviews/{session_id}/warmup-result` | 记录热身答案或跳过，不更新 FSRS |
 | `POST /api/reviews/{session_id}/exercise-result` | 提交复习结果并更新 FSRS |
 
 ### 涉及数据对象
@@ -438,6 +447,7 @@
 - `ReviewState`
 - `ReviewLog`
 - `KnowledgePoint`
+- `ReviewSeedBank`
 - `Exercise`
 - `Attempt`
 - `LearningSession`
@@ -446,16 +456,18 @@
 
 - `empty`：无待复习项。
 - `queue`：展示待复习列表。
-- `reviewing`：正在复习当前项。
+- `warmup`：展示短热身问题。
+- `warmup_repair`：热身错误或不明确后的单轮短修正。
+- `reviewing`：正在完成当前变体题。
 - `submitting`：提交复习结果。
 - `completed`：当前项完成并进入下一条。
-- `error`：变体生成、运行或提交失败。
+- `error`：seed bank rescue、变体生成、运行或提交失败。
 
 ### 失败 / 空状态
 
 - 无待复习项时展示继续学习入口。
 - 复习提交失败时保留当前复习会话。
-- 变体生成失败时允许重试或换题。
+- seed bank rescue 失败时允许重试，但不展示 fallback 题。
 - 后端不可用时不更新 `due_at`。
 
 ### 后置状态
@@ -468,6 +480,8 @@
 
 - 复习页是独立会话。
 - 复习排序符合遗忘风险。
+- warmup 可以跳过，且任何 warmup 分支都不会更新 FSRS。
+- `review_ai_patch` 要求用户提交 verdict、evidence、knowledge point risk 和 next action，弱证据不能得到 `Easy`。
 - 完成一条后自动进入下一条。
 - 提交失败不会误写完成状态。
 
@@ -719,11 +733,11 @@
 
 | 文档 | 已同步的点 |
 |---|---|
-| `docs/product/frontend-interaction-spec.md` | 移除 `CodeDraftPage` 主流程，调整设置页分类，学习页改为生成式 UI |
-| `docs/architecture/api-contract.md` | 将独立 `code-drafts` API 降级为后置能力，保留 Note 辅助补全；补充动态路线生成和 fallback 契约 |
-| `docs/architecture/langgraph-state-machine.md` | 将第一版主流程从 retrospective graph 改为 note assist graph，并补充动态路线生成校验边界 |
-| `docs/qa/acceptance-test-plan.md` | 删除独立草稿生成验收，新增笔记抽屉、生成式 UI 和动态路线生成验收 |
-| `docs/architecture/database-schema.md` | 将 `code_drafts` 降级为后置能力，第一版基线只保留 Note 持久化 |
+| `docs/product/frontend-interaction-spec.md` | 移除 `CodeDraftPage` 主流程，调整设置页分类，学习页改为生成式 UI，并补充概念开场/判断卡片 |
+| `docs/architecture/api-contract.md` | 将独立 `code-drafts` API 降级为后置能力，保留 Note 辅助补全；补充动态路线生成、fallback 契约和学习页 concept-check 工具合同 |
+| `docs/architecture/langgraph-state-machine.md` | 将第一版主流程从 retrospective graph 改为 note assist graph，并补充动态路线生成校验边界和学习页 concept-check 状态 |
+| `docs/qa/acceptance-test-plan.md` | 删除独立草稿生成验收，新增笔记抽屉、生成式 UI、动态路线生成和学习页 concept-check 验收 |
+| `docs/architecture/database-schema.md` | 将 `code_drafts` 降级为后置能力，第一版基线只保留 Note 持久化，并同步学习页新阶段枚举 |
 | `docs/plans/learning-agent-implementation-plan.md` | 将里程碑改为生成式 UI、Attempt 事实记录、笔记辅助补全和 post-MVP 工作队列 |
 
 ## Mermaid 总览
@@ -737,11 +751,11 @@ flowchart TD
   B -->|是| F{"是否中断多日且复习高风险"}
   F -->|是| G["复习页"]
   F -->|否| E
-  E --> Q["概念讲解与子点问答"]
-  Q --> R{"费曼复述通过或提前练习"}
-  R -->|复述不完整| S["生成式历史引用卡片"]
+  E --> Q["概念卡片与自然语言判断"]
+  Q --> R{"判断通过、修正后引导或直接练习"}
+  R -->|错误且未达上限| S["概念修正卡片"]
   S --> Q
-  R -->|通过或提前进入| H["生成式代码练习 UI"]
+  R -->|通过、跳过或引导进入| H["生成式代码练习 UI"]
   H --> I["运行 / 预览 / 测试"]
   I --> J{"是否通过"}
   J -->|否| K["hint / explain-error"]
@@ -749,6 +763,8 @@ flowchart TD
   J -->|是| L["更新知识点与复习状态"]
   E --> M["笔记抽屉"]
   M --> N["保存知识点 Markdown 笔记"]
-  G --> O["复习变体题"]
-  O --> P["更新 due_at 并自动进入下一条"]
+  G --> O["短热身"]
+  O --> T{"热身通过、跳过或修正后"}
+  T --> U["seed bank 变体题 / AI 补丁审核"]
+  U --> P["提交 review_submit 并更新 due_at"]
 ```
