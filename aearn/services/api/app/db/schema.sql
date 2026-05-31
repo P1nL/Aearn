@@ -23,6 +23,20 @@ CREATE TABLE IF NOT EXISTS users (
   deleted_at timestamptz
 );
 
+CREATE TABLE IF NOT EXISTS learner_profiles (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  weak_points jsonb NOT NULL DEFAULT '[]'::jsonb,
+  error_patterns jsonb NOT NULL DEFAULT '[]'::jsonb,
+  learning_preferences jsonb NOT NULL DEFAULT '{}'::jsonb,
+  pace_indicators jsonb NOT NULL DEFAULT '{}'::jsonb,
+  observations jsonb NOT NULL DEFAULT '[]'::jsonb,
+  session_count integer NOT NULL DEFAULT 0,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT learner_profiles_user_id_key UNIQUE (user_id)
+);
+
 CREATE TABLE IF NOT EXISTS runtime_profiles (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   slug text NOT NULL UNIQUE,
@@ -413,6 +427,25 @@ CREATE INDEX IF NOT EXISTS idx_review_states_user_due ON review_states(user_id, 
 CREATE INDEX IF NOT EXISTS idx_review_states_last_attempt ON review_states(last_attempt_id) WHERE last_attempt_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS uq_review_seed_banks_scope ON review_seed_banks(user_id, knowledge_point_id, generator_version);
 CREATE INDEX IF NOT EXISTS idx_review_seed_banks_status ON review_seed_banks(status, updated_at);
+
+CREATE TABLE IF NOT EXISTS teaching_chunks (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  knowledge_point_id uuid NOT NULL REFERENCES knowledge_points(id) ON DELETE CASCADE,
+  chunk_type text NOT NULL CHECK (chunk_type IN ('outline', 'example', 'explanation', 'source_note')),
+  title text NOT NULL,
+  content text NOT NULL,
+  source_url text,
+  search_vector tsvector GENERATED ALWAYS AS (
+    setweight(to_tsvector('simple', coalesce(title, '')), 'A') ||
+    setweight(to_tsvector('simple', coalesce(content, '')), 'B')
+  ) STORED,
+  metadata_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_teaching_chunks_kp ON teaching_chunks(knowledge_point_id);
+CREATE INDEX IF NOT EXISTS idx_teaching_chunks_search ON teaching_chunks USING GIN(search_vector);
 CREATE INDEX IF NOT EXISTS idx_review_logs_kp_reviewed ON review_logs(knowledge_point_id, reviewed_at DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS uq_review_logs_request_id ON review_logs(request_id);
 CREATE UNIQUE INDEX IF NOT EXISTS uq_review_logs_attempt_rating_source ON review_logs(attempt_id, rating, source);

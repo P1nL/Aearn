@@ -18,6 +18,8 @@ from app.services.onboarding_conversation import (
     list_onboarding_messages,
     load_onboarding_context,
     load_stashed_plan_draft,
+    normalize_extracted_slots,
+    normalize_onboarding_agent_message,
     persist_extracted_slots,
     prepare_onboarding_message,
     route_card_ready_generation,
@@ -40,6 +42,9 @@ from app.services.sse import SSEWriter, chunk_tool_call_arguments, stream_respon
 
 
 router = APIRouter(prefix="/api/onboarding", tags=["onboarding"])
+
+SUPPORTED_ONBOARDING_LANGUAGES = ["python", "javascript", "html_css", "java", "cpp"]
+SUPPORTED_ONBOARDING_LANGUAGE_LABELS = "Python / JavaScript / HTML+CSS / Java / C++"
 
 
 @router.post("/messages", response_model=None)
@@ -302,6 +307,7 @@ async def _onboarding_message_stream(
 
         try:
             slots = await asyncio.to_thread(extract_slots, refreshed)
+            slots = normalize_extracted_slots(slots)
         except (LLMCallError, LLMConfigurationError, LLMInvalidResponseError):
             yield _model_unavailable_error(
                 writer,
@@ -317,6 +323,16 @@ async def _onboarding_message_stream(
                 slots=slots,
             )
             conn_persist.commit()
+
+        unsupported_language = (slots.unsupported_language or "").strip()
+        if unsupported_language:
+            yield _language_not_supported_error(
+                writer,
+                request_id=request_id,
+                conversation_id=prepared.conversation_id,
+                unsupported_language=unsupported_language,
+            )
+            return
 
         # Reload so detect_plan_proposal sees the freshly persisted slots
         # alongside any previously stashed plan_draft.
@@ -382,20 +398,25 @@ async def _onboarding_message_stream(
         full_text = ""
         generation_source = generation.generation_source
         generation_model = generation.generation_model
+        route_ready = learning_route_args is not None
 
         try:
-            async for delta in _iter_generation_chunks(request, generation.chunks):
-                full_text += delta
-                yield writer.event(
-                    "agent_message",
-                    _agent_message_event(
-                        request_id=request_id,
-                        session_id=prepared.conversation_id,
-                        message_id=prepared.message_id,
-                        delta=delta,
-                        content=full_text,
-                    ),
-                )
+            if route_ready:
+                async for delta in _iter_generation_chunks(request, generation.chunks):
+                    full_text += delta
+                    yield writer.event(
+                        "agent_message",
+                        _agent_message_event(
+                            request_id=request_id,
+                            session_id=prepared.conversation_id,
+                            message_id=prepared.message_id,
+                            delta=delta,
+                            content=full_text,
+                        ),
+                    )
+            else:
+                async for delta in _iter_generation_chunks(request, generation.chunks):
+                    full_text += delta
         except safe_generation_exceptions():
             if full_text:
                 yield writer.error(
@@ -412,6 +433,11 @@ async def _onboarding_message_stream(
             )
             return
 
+        full_text = normalize_onboarding_agent_message(
+            full_text,
+            slots=slots,
+            route_ready=route_ready,
+        )
         if not full_text.strip():
             yield _model_unavailable_error(
                 writer,
@@ -419,6 +445,18 @@ async def _onboarding_message_stream(
                 conversation_id=prepared.conversation_id,
             )
             return
+
+        if not route_ready:
+            yield writer.event(
+                "agent_message",
+                _agent_message_event(
+                    request_id=request_id,
+                    session_id=prepared.conversation_id,
+                    message_id=prepared.message_id,
+                    delta=full_text,
+                    content=full_text,
+                ),
+            )
 
         if learning_route_args is not None and route_tool_call_id is not None:
             async for tool_event in _tool_call_events(
@@ -496,6 +534,30 @@ def _model_unavailable_error(
         message="模型服务暂时不可用，请检查模型配置或稍后重试。",
         request_id=request_id,
         details={"onboarding_session_id": conversation_id},
+        recoverable=True,
+    )
+
+
+def _language_not_supported_error(
+    writer: SSEWriter,
+    *,
+    request_id: str,
+    conversation_id: str,
+    unsupported_language: str,
+) -> str:
+    return writer.error(
+        code="LANGUAGE_NOT_SUPPORTED",
+        message=(
+            f"当前还没有 {unsupported_language} 的独立建档路线模板。"
+            f"请改选 {SUPPORTED_ONBOARDING_LANGUAGE_LABELS}；"
+            "如果你想走 TypeScript，可以先选择 JavaScript 路线，再把目标写成后续过渡到 TypeScript。"
+        ),
+        request_id=request_id,
+        details={
+            "onboarding_session_id": conversation_id,
+            "unsupported_language": unsupported_language,
+            "supported_languages": SUPPORTED_ONBOARDING_LANGUAGES,
+        },
         recoverable=True,
     )
 

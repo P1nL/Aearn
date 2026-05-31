@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping, Sequence
 from decimal import Decimal
-from typing import Any
+from typing import Any, cast
 
 from psycopg import Connection
 
@@ -629,7 +629,8 @@ def _exercise_template_from_review_seed(
     knowledge_point_id = str(knowledge_point["id"])
     seed_id = str(seed["id"])
     exercise_type = str(seed["exercise_type"])
-    seed_metadata = seed.get("metadata") if isinstance(seed.get("metadata"), Mapping) else {}
+    seed_metadata_value = seed.get("metadata")
+    seed_metadata = cast(Mapping[str, object], seed_metadata_value) if isinstance(seed_metadata_value, Mapping) else {}
     metadata_json = {
         **dict(seed_metadata),
         "review_seed_id": seed_id,

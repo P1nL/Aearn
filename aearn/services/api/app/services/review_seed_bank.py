@@ -209,8 +209,8 @@ def materialize_review_seed_exercise(
             "starter_code": seed.get("starter_code") or "",
             "solution_reference": _seed_solution_reference(seed),
             "visible_test_policy": seed.get("visible_test_policy") or "visible_and_hidden_summary",
-            "difficulty": int(seed.get("difficulty") or 2),
-            "estimated_minutes": int(seed.get("estimated_minutes") or 8),
+            "difficulty": _as_int(seed.get("difficulty"), 2),
+            "estimated_minutes": _as_int(seed.get("estimated_minutes"), 8),
             "requires_explanation": bool(seed.get("requires_explanation", False)),
             "metadata_json": json.dumps(metadata),
         },
@@ -239,7 +239,7 @@ def materialize_review_seed_exercise(
                 "expected_concept": str(blank.get("expected_concept") or seed.get("review_focus") or "核心概念"),
                 "acceptable_patterns_json": json.dumps(blank.get("acceptable_patterns_json") or []),
                 "is_core": bool(blank.get("is_core", True)),
-                "order_index": int(blank.get("order_index", index)),
+                "order_index": _as_int(blank.get("order_index"), index),
             },
         )
 
@@ -262,10 +262,10 @@ def materialize_review_seed_exercise(
                 "input_json": json.dumps(test_case.get("input_json") or {}),
                 "expected_output_json": json.dumps(test_case.get("expected_output_json") or {}),
                 "assertion_code": test_case.get("assertion_code"),
-                "weight": float(test_case.get("weight") or 1),
+                "weight": _as_float(test_case.get("weight"), 1.0),
                 "is_critical": bool(test_case.get("is_critical", False)),
-                "timeout_ms": int(test_case.get("timeout_ms") or 5000),
-                "order_index": int(test_case.get("order_index", index)),
+                "timeout_ms": _as_int(test_case.get("timeout_ms"), 5000),
+                "order_index": _as_int(test_case.get("order_index"), index),
             },
         )
 
@@ -761,11 +761,33 @@ def _string_values(value: object) -> list[str]:
             result.extend(_string_values(item))
         return result
     if isinstance(value, list):
-        result: list[str] = []
+        list_result: list[str] = []
         for item in value:
-            result.extend(_string_values(item))
-        return result
+            list_result.extend(_string_values(item))
+        return list_result
     return []
+
+
+def _as_int(value: object, default: int) -> int:
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return default
+    return default
+
+
+def _as_float(value: object, default: float) -> float:
+    if isinstance(value, int | float):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return default
+    return default
 
 
 def _fingerprint(exercise_type: str, misconception: str, prompt: str, code: str) -> str:

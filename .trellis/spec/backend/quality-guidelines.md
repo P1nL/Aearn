@@ -674,6 +674,83 @@ The shared SSE writer serializes a compact one-line JSON frame and keeps the eve
 - Keep route-level contract tests for learning JSON/SSE, exercise coach endpoints, note JSON/SSE draft updates, review start/rationale, onboarding plan generation, and dashboard/resume compatibility.
 - Before release, create or update a cross-agent SDK matrix and record exact command results plus residual risks in `docs/qa/`.
 
+## Scenario: Agent Architecture Tools, Memory, Retrieval, Handoffs, And Graph Skeleton
+
+### 1. Scope / Trigger
+
+- Trigger: adding or changing agent-owned tools, side-effect queues, real code execution, learner profile memory, teaching-material retrieval, SDK handoffs, or LangGraph graph skeletons.
+- Scope: `app/agents/tools.py`, `app/agents/router.py`, `app/agents/sdk_runtime.py`, `app/agents/learning_graph.py`, `app/services/runtime_runner.py`, `app/services/sandbox*.py`, `app/services/learner_profile.py`, `app/services/teaching_chunks.py`, `app/core/config.py`, and `app/db/schema.sql`.
+
+### 2. Signatures
+
+- Tool context signature: `LearningToolContext(user_id, session_id, knowledge_point_id, exercise, latest_attempt, stage_state, run_code_fn, profile_summary)`.
+- Side-effect signature: `AgentSideEffects(code_runs, stage_transitions, diagnosis_updates, profile_updates)`.
+- Runtime feature flag: `REAL_EXECUTION_ENABLED`; when false, `runtime_runner` must preserve the deterministic path.
+- Memory DB signature: `learner_profiles(user_id unique, weak_points jsonb, error_patterns jsonb, learning_preferences jsonb, pace_indicators jsonb, observations jsonb, session_count)`.
+- Retrieval DB signature: `teaching_chunks(knowledge_point_id, chunk_type, title, content, source_url, search_vector, metadata_json)`.
+- Handoff builder signature: `build_agent(..., handoffs=None)`.
+- Graph entrypoint signature: `build_learning_graph()` returns a compiled/importable LangGraph graph using `AgentState`.
+
+### 3. Contracts
+
+- SDK tools may request product actions, but durable writes must be drained by Aearn services/repositories at transaction boundaries.
+- Agent tools must return bounded JSON-compatible payloads and must not expose hidden tests, `solution_reference`, full submitted code, raw prompts, provider payloads, secrets, or cross-user data.
+- Profile reads and writes are scoped by authenticated/current `user_id`; missing profile data is additive context absence, not a hard failure.
+- Teaching-material search is scoped to current `knowledge_point_id`; no tool may search arbitrary users, plans, or unrelated knowledge points.
+- Python execution sandbox must run out-of-process with timeout and restricted imports/builtins; never grant filesystem or network access.
+- LangGraph skeletons must run behind `LANGGRAPH_ENABLED` until they replace the service orchestration path with equivalent API/SSE behavior.
+
+### 4. Validation & Error Matrix
+
+- Disabled `REAL_EXECUTION_ENABLED` -> use deterministic runtime fallback and keep existing response shape.
+- Sandbox timeout or exception -> return bounded runtime error fields; do not leak stack traces or internal file paths.
+- Missing learner profile -> return an empty/compact profile summary and continue the agent turn.
+- Cross-user profile or chunk access attempt -> reject in service/repository review and cover with tests.
+- Empty retrieval query or no FTS hits -> return bounded fallback chunks for the same knowledge point only.
+- Handoff route has no match -> stay with the teaching/default agent, not a null agent.
+- LangGraph compile failure or missing dependency -> fail tests before rollout; do not enable the feature flag.
+
+### 5. Good/Base/Bad Cases
+
+- Good: the agent calls `trigger_code_run`, Aearn records/drains the side effect, real execution returns visible test facts, and the public SSE/API envelope stays unchanged.
+- Good: session 1 records a confirmed weak point, session 2 reads the learner profile summary for the same user only.
+- Base: local dev has no model key; tool unit tests and graph tests still pass through fake clients and pure node functions.
+- Bad: SDK tool writes `Attempt`, `LearningSession`, `ReviewState`, `learner_profiles`, or `teaching_chunks` directly, or returns raw sandbox/provider diagnostics to the frontend.
+
+### 6. Tests Required
+
+- Unit-test tool functions for side-effect accumulation without database writes.
+- Unit-test sandbox success, runtime error, timeout, restricted imports, and disabled fallback behavior.
+- Unit-test learner profile incremental merge, observation cap, confidence handling, and user scoping.
+- Unit-test teaching chunk indexing/search, fallback search, and knowledge-point scoping.
+- Unit-test handoff routing rules and `build_agent(..., handoffs=...)` plumbing.
+- Unit-test LangGraph node transitions and graph compilation behind `LANGGRAPH_ENABLED`.
+- Run backend `pytest`, `ruff check .`, `mypy app`, and `pnpm --dir .\aearn desktop:check` when the change touches cross-layer learning flow.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+@function_tool
+def update_learner_profile(user_id: str, observations: list[dict[str, object]]) -> dict[str, object]:
+    merge_observations(connect(), user_id, observations)
+    return {"ok": True}
+```
+
+This lets an SDK tool choose a user and write durable state outside Aearn's transaction/idempotency boundary.
+
+#### Correct
+
+```python
+@function_tool
+def update_learner_profile(observations: list[dict[str, object]], ctx: LearningToolContext) -> dict[str, object]:
+    ctx.side_effects.profile_updates.extend(observations)
+    return {"accepted": len(observations)}
+```
+
+The tool records intent against server-owned context; the feature service later drains the side effect for the authenticated user.
+
 ## Scenario: Shared Agent Runtime Context Layer
 
 ### 1. Scope / Trigger

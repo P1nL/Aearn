@@ -55,6 +55,12 @@ class Settings(BaseModel):
     plan_generation_enabled: bool = Field(
         default_factory=lambda: _env_str("PLAN_GENERATION_ENABLED", "true").lower() in ("true", "1", "yes")
     )
+    real_execution_enabled: bool = Field(
+        default_factory=lambda: _env_str("REAL_EXECUTION_ENABLED", "true").lower() in ("true", "1", "yes")
+    )
+    langgraph_enabled: bool = Field(
+        default_factory=lambda: _env_str("LANGGRAPH_ENABLED", "false").lower() in ("true", "1", "yes")
+    )
 
     @property
     def llm_provider_type(self) -> str:

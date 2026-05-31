@@ -21,6 +21,7 @@ from app.services.onboarding_conversation import (
     create_onboarding_session,
     detect_plan_proposal,
     extract_slots as extract_onboarding_slots,
+    normalize_extracted_slots,
     stash_plan_draft,
 )
 
@@ -380,6 +381,55 @@ def test_onboarding_model_slots_drive_plan_readiness() -> None:
     assert revised_slots.time_budget.days_per_week == 1
 
 
+def test_onboarding_slot_statuses_control_server_readiness() -> None:
+    ambiguous_level = normalize_extracted_slots(
+        ExtractedSlots(
+            language="python",
+            target_level="beginner_to_intermediate",
+            goal_text="学习 Python，聚焦自动化脚本，从入门到进阶",
+            plan_ready=True,
+            slot_statuses={
+                "language": {"status": "confirmed", "evidence": "Python"},
+                "goal_text": {"status": "confirmed", "evidence": "自动化脚本"},
+                "target_level": {
+                    "status": "ambiguous",
+                    "ambiguity_type": "level_uncertain",
+                    "evidence": "会一点",
+                    "ambiguity_reason": "无法判断是零基础偏上还是已经能独立写小项目",
+                    "clarification_question": "你现在是只看过语法，还是已经能独立写小项目？",
+                },
+            },
+        )
+    )
+
+    assert ambiguous_level.target_level is None
+    assert ambiguous_level.plan_ready is False
+    assert "独立写小项目" in str(ambiguous_level.missing_slot_question)
+
+    optional_missing = normalize_extracted_slots(
+        ExtractedSlots(
+            language="python",
+            target_level="beginner",
+            goal_text="学习 Python，聚焦自动化脚本，从零基础入门",
+            plan_ready=False,
+            slot_statuses={
+                "language": {"status": "confirmed", "evidence": "Python"},
+                "goal_text": {"status": "confirmed", "evidence": "自动化脚本"},
+                "target_level": {"status": "confirmed", "evidence": "零基础"},
+                "time_budget": {
+                    "status": "missing",
+                    "ambiguity_type": "value_missing",
+                    "clarification_question": "你每周能学多久？",
+                },
+            },
+        )
+    )
+
+    assert optional_missing.time_budget is None
+    assert optional_missing.plan_ready is True
+    assert optional_missing.missing_slot_question is None
+
+
 def test_onboarding_extract_slots_requires_model_configuration() -> None:
     context = OnboardingConversationContext(
         conversation_id="conv_model_required",
@@ -556,6 +606,204 @@ def test_onboarding_message_stream_returns_error_when_model_unavailable(
     error = next(event["data"]["error"] for event in events if event["event"] == "error")
     assert error["code"] == "MODEL_UNAVAILABLE"
     assert error["recoverable"] is True
+
+
+def test_onboarding_message_stream_returns_error_when_language_is_not_supported(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user = _create_user(client)
+
+    monkeypatch.setattr(
+        onboarding_route,
+        "extract_slots",
+        lambda context: ExtractedSlots(
+            target_level="beginner",
+            goal_text="学习 TypeScript，开发网页端科研助手",
+            unsupported_language="TypeScript",
+            missing_slot_question="请选择 Python / JavaScript / HTML+CSS / Java / C++。",
+            plan_ready=False,
+            slot_statuses={
+                "language": {
+                    "status": "unsupported",
+                    "ambiguity_type": "unsupported_or_alias",
+                    "evidence": "TypeScript",
+                    "ambiguity_reason": "TypeScript 还没有独立建档路线模板",
+                    "clarification_question": "请选择 Python / JavaScript / HTML+CSS / Java / C++。",
+                },
+            },
+        ),
+    )
+
+    events = _send_onboarding_stream(
+        client,
+        user_id=str(user["id"]),
+        content="我想用 TypeScript 做一个网页端科研助手",
+        conversation_id=None,
+    )
+
+    event_types = [event["event"] for event in events]
+    assert "session_created" in event_types
+    assert "agent_message" not in event_types
+    assert "tool_call" not in event_types
+    assert "done" not in event_types
+    error = next(event["data"]["error"] for event in events if event["event"] == "error")
+    assert error["code"] == "LANGUAGE_NOT_SUPPORTED"
+    assert error["recoverable"] is True
+    assert error["details"]["unsupported_language"] == "TypeScript"
+    assert "javascript" in error["details"]["supported_languages"]
+
+    conversation_id = next(
+        event["data"]["onboarding_session_id"] for event in events if event["event"] == "session_created"
+    )
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT extracted_context FROM onboarding_conversations WHERE id = %s",
+            (conversation_id,),
+        ).fetchone()
+    assert row is not None
+    assert row["extracted_context"]["unsupported_language"] == "TypeScript"
+    assert "plan_draft" not in row["extracted_context"]
+
+
+def test_onboarding_message_stream_blocks_route_ready_copy_when_slots_missing(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user = _create_user(client)
+    monkeypatch.setattr(
+        onboarding_route,
+        "extract_slots",
+        lambda context: ExtractedSlots(
+            language="python",
+            target_level="beginner_to_intermediate",
+            goal_text="学习 Python，聚焦自动化脚本，从入门到进阶",
+            time_budget={"minutes_per_day": 120, "days_per_week": 1},
+            missing_slot_question="你现在的基础大概是哪一档？",
+            plan_ready=True,
+            revising=True,
+            slot_statuses={
+                "language": {"status": "confirmed", "evidence": "Python"},
+                "goal_text": {"status": "confirmed", "evidence": "自动化脚本"},
+                "target_level": {
+                    "status": "ambiguous",
+                    "ambiguity_type": "level_uncertain",
+                    "evidence": "会一点语法",
+                    "ambiguity_reason": "无法确认用户是否已经能独立写小项目",
+                    "clarification_question": "你现在的基础大概是哪一档？",
+                },
+                "time_budget": {"status": "confirmed", "evidence": "每周两小时"},
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        onboarding_route,
+        "start_onboarding_generation",
+        lambda context, *, user_content, settings=None, client=None: OnboardingMessageGeneration(
+            chunks=["每周两小时够用。信息够了，我生成一份路线卡片。"],
+            generation_source="llm",
+            generation_model="fake-onboarding-model",
+        ),
+    )
+
+    events = _send_onboarding_stream(
+        client,
+        user_id=str(user["id"]),
+        content="会一点语法",
+        conversation_id=None,
+    )
+
+    assert all(event["event"] != "tool_call" for event in events)
+    agent_text = str(
+        [event for event in events if event["event"] == "agent_message"][-1]["data"]["content"]
+    )
+    assert "信息够" not in agent_text
+    assert "路线卡" not in agent_text
+    assert "你现在的基础大概是哪一档" in agent_text
+
+    conversation_id = next(
+        event["data"]["onboarding_session_id"] for event in events if event["event"] == "session_created"
+    )
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT extracted_context FROM onboarding_conversations WHERE id = %s",
+            (conversation_id,),
+        ).fetchone()
+    assert row is not None
+    assert row["extracted_context"]["target_level"] is None
+    assert row["extracted_context"]["plan_ready"] is False
+    assert "plan_draft" not in row["extracted_context"]
+
+
+def test_onboarding_message_stream_clarifies_ambiguous_slot_status_before_slotting(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user = _create_user(client)
+    monkeypatch.setattr(
+        onboarding_route,
+        "extract_slots",
+        lambda context: ExtractedSlots(
+            language="python",
+            target_level="beginner_to_intermediate",
+            goal_text="学习 Python，聚焦自动化脚本，从入门到进阶",
+            time_budget={"minutes_per_day": 120, "days_per_week": 1},
+            focus="自动化",
+            missing_slot_question="你说的“两小时”是每天两小时，还是每周总共两小时？",
+            plan_ready=True,
+            revising=True,
+            slot_statuses={
+                "language": {"status": "confirmed", "evidence": "Python"},
+                "goal_text": {"status": "confirmed", "evidence": "自动化脚本"},
+                "target_level": {"status": "confirmed", "evidence": "会一点语法"},
+                "time_budget": {
+                    "status": "ambiguous",
+                    "ambiguity_type": "scope_missing",
+                    "evidence": "两小时",
+                    "ambiguity_reason": "没有说明是每天两小时还是每周总共两小时",
+                    "clarification_question": "你说的“两小时”是每天两小时，还是每周总共两小时？",
+                },
+                "focus": {"status": "confirmed", "evidence": "自动化"},
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        onboarding_route,
+        "start_onboarding_generation",
+        lambda context, *, user_content, settings=None, client=None: OnboardingMessageGeneration(
+            chunks=["两小时这个节奏可以，我先记下。"],
+            generation_source="llm",
+            generation_model="fake-onboarding-model",
+        ),
+    )
+
+    events = _send_onboarding_stream(
+        client,
+        user_id=str(user["id"]),
+        content="两小时",
+        conversation_id=None,
+    )
+
+    assert all(event["event"] != "tool_call" for event in events)
+    agent_text = str(
+        [event for event in events if event["event"] == "agent_message"][-1]["data"]["content"]
+    )
+    assert "每天两小时" in agent_text
+    assert "每周总共两小时" in agent_text
+
+    conversation_id = next(
+        event["data"]["onboarding_session_id"] for event in events if event["event"] == "session_created"
+    )
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT extracted_context FROM onboarding_conversations WHERE id = %s",
+            (conversation_id,),
+        ).fetchone()
+    assert row is not None
+    assert row["extracted_context"]["time_budget"] is None
+    assert row["extracted_context"]["plan_ready"] is False
+    assert row["extracted_context"]["slot_statuses"]["time_budget"]["status"] == "ambiguous"
+    assert "plan_draft" not in row["extracted_context"]
 
 
 def test_onboarding_message_stream_generates_and_revises_route_from_guided_chat(

@@ -12,7 +12,7 @@ from app.agents.sdk_runtime import (
     split_chat_messages,
     stream_text_deltas,
 )
-from app.agents.tools import build_teaching_tools
+from app.agents.tools import AgentSideEffects, LearningToolContext, build_teaching_tools
 from app.core.config import Settings
 
 
@@ -25,10 +25,14 @@ class AgentsSDKLearningConversationClient:
         settings: Settings,
         *,
         runner: AgentsSDKRunner | None = None,
+        side_effects: AgentSideEffects | None = None,
+        tool_context: LearningToolContext | None = None,
     ) -> None:
         self._settings = settings
         self._run_config = build_run_config(settings)
         self._runner = runner
+        self._side_effects = side_effects
+        self._tool_context = tool_context
 
     @property
     def model(self) -> str:
@@ -47,7 +51,11 @@ class AgentsSDKLearningConversationClient:
             instructions=instructions,
             model=self.model,
             temperature=temperature,
-            tools=build_teaching_tools(messages),
+            tools=build_teaching_tools(
+                messages,
+                side_effects=self._side_effects,
+                context=self._tool_context,
+            ),
             input_guardrails=input_guardrails,
             output_guardrails=output_guardrails,
         )
