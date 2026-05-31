@@ -8,6 +8,7 @@ from decimal import Decimal
 from psycopg import Connection
 
 from app.agents.exercise_coach_agent import (
+    attach_explanation_check_judgement,
     build_sdk_error_explanation as build_llm_error_explanation,
     build_sdk_explanation_check_response,
     build_sdk_hint_response,
@@ -669,7 +670,18 @@ def check_learning_attempt_explanation(
         raise LLMCallError("Explanation check requires configured model API")
     if not isinstance(response, Mapping):
         raise LLMInvalidResponseError("Explanation check model returned invalid response")
-    response_dict = dict(response)
+    response_dict = attach_explanation_check_judgement(response)
+    if response_dict.get("judgement_ready") is False:
+        response_dict = _blocked_explanation_check_response(response_dict, round_number=round_number)
+        conn.execute(
+            """
+            INSERT INTO idempotency_records (key, operation, request_hash, response_json)
+            VALUES (%s, 'check_learning_attempt_explanation', %s, %s::jsonb)
+            """,
+            (key, payload_hash, json.dumps(response_dict)),
+        )
+        return response_dict, False
+    response_dict = _strip_explanation_judgement_metadata(response_dict)
     conn.execute(
         """
         UPDATE attempts
@@ -687,6 +699,47 @@ def check_learning_attempt_explanation(
         (key, payload_hash, json.dumps(response_dict)),
     )
     return response_dict, False
+
+
+def _strip_explanation_judgement_metadata(response: Mapping[str, object]) -> dict[str, object]:
+    hidden_keys = {
+        "judgements",
+        "judgement_ready",
+        "judgement_cleared_fields",
+        "judgement_blocking_fields",
+        "clarification_question",
+    }
+    return {key: value for key, value in response.items() if key not in hidden_keys}
+
+
+def _blocked_explanation_check_response(
+    response: Mapping[str, object],
+    *,
+    round_number: int,
+) -> dict[str, object]:
+    question = str(
+        response.get("clarification_question")
+        or response.get("feedback")
+        or "请再补一句能证明你理解关键代码行为的话。"
+    )
+    return {
+        "result": "failed",
+        "score": 0,
+        "score_breakdown": {"explanation_check": 0},
+        "follow_up_required": round_number < 2,
+        "feedback": question,
+        "next_action": "retry_same",
+        "judgement_ready": False,
+        "judgement_cleared_fields": _string_list(response.get("judgement_cleared_fields")),
+        "judgement_blocking_fields": _string_list(response.get("judgement_blocking_fields")),
+        "clarification_question": question,
+    }
+
+
+def _string_list(value: object) -> list[str]:
+    if isinstance(value, (list, tuple)):
+        return [str(item) for item in value]
+    return []
 
 
 def default_run_key(*, session_id: str, exercise_id: str, code_hash: str, run_mode: str) -> str:

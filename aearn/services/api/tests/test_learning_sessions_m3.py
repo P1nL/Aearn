@@ -247,6 +247,66 @@ def test_learning_intro_answer_is_judged_and_enters_practice_offer(client: TestC
     assert "概念判断已通过" in body["agent_message"]["content"]
 
 
+def test_learning_concept_blocked_judgement_does_not_unlock_practice(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user, plan = _confirmed_plan(client, language="javascript")
+    session = _start_session(client, user, plan)
+
+    def blocked_concept_check(*args, **kwargs) -> dict[str, object]:  # type: ignore[no-untyped-def]
+        del args, kwargs
+        return {
+            "result": "correct",
+            "confidence": "high",
+            "explanation": "答案看起来可能正确，但依据还不够明确。",
+            "next_prompt": "请补一句为什么 A 能说明状态没有跨点击共享。",
+            "actions": [{"id": "start_practice", "label": "开始练习"}],
+            "repair_check": None,
+            "judgements": {
+                "answer_correctness": {
+                    "status": "ambiguous",
+                    "clarification_question": "请补一句为什么 A 能说明状态没有跨点击共享。",
+                },
+                "confidence": {"status": "confirmed"},
+            },
+        }
+
+    monkeypatch.setattr(learning_conversation, "build_sdk_concept_check_result", blocked_concept_check)
+
+    response = client.post(
+        f"/api/learning-sessions/{session['session_id']}/messages",
+        json={
+            "role": "user",
+            "content": "A",
+            "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["session_state"]["learning_stage"] == "concept_check"
+    state = body["session_state"]["learning_stage_state"]
+    assert state["concept_check_result"] == "unclear"
+    assert state["learning_incomplete"] is True
+    assert state["blocked_concept_judgement"]["blocking_fields"] == ["answer_correctness"]
+    assert body["tool_calls"][0]["args"]["result"] == "unclear"
+    assert body["tool_calls"][0]["args"]["judgement_ready"] is False
+
+    with connect() as conn:
+        stored = conn.execute(
+            """
+            SELECT learning_stage, learning_stage_state_json
+            FROM learning_sessions
+            WHERE id = %s
+            """,
+            (session["session_id"],),
+        ).fetchone()
+    assert stored is not None
+    assert stored["learning_stage"] == "concept_check"
+    assert stored["learning_stage_state_json"]["concept_check_attempts"] == 0
+
+
 def test_start_learning_session_keeps_distinct_knowledge_points_separate(client: TestClient) -> None:
     user, plan = _confirmed_plan(client, language="javascript")
     assert len(plan["knowledge_points"]) >= 2
@@ -1984,6 +2044,79 @@ def test_explanation_round_limit_and_partial_submit(client: TestClient) -> None:
     assert submit_body["code_completion_result"]["result"] == "partial"
     assert submit_body["code_completion_result"]["hard_gates"]["explanation_gate"] is False
     assert submit_body["next_action"] == "review_variant"
+
+
+def test_explanation_check_blocked_judgement_does_not_update_attempt(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user, plan = _confirmed_plan(client, language="javascript")
+    session = _start_session(client, user, plan)
+    exercise = _unlock_practice_exercise(client, session)
+
+    run_response = client.post(
+        f"/api/learning-sessions/{session['session_id']}/exercises/{exercise['id']}/run",
+        json={
+            "code": exercise["solution_reference"],
+            "filled_blanks": {
+                "blank_1": "addEventListener",
+                "blank_2": "count += 1",
+            },
+            "runtime_profile_id": exercise["runtime_profile"]["id"],
+            "run_mode": "visible_tests",
+        },
+    )
+    assert run_response.status_code == 201
+    attempt_id = run_response.json()["attempt_id"]
+
+    def blocked_explanation_check(*args, **kwargs) -> dict[str, object]:  # type: ignore[no-untyped-def]
+        del args, kwargs
+        return {
+            "result": "passed",
+            "score": 2,
+            "score_breakdown": {"explanation_check": 2},
+            "follow_up_required": False,
+            "feedback": "看起来通过，但解释依据不够可靠。",
+            "next_action": "advance_next",
+            "judgements": {
+                "explanation_sufficiency": {
+                    "status": "ambiguous",
+                    "clarification_question": "请再说明 count 为什么必须放在回调外层。",
+                },
+                "feedback_grounding": {"status": "confirmed"},
+                "next_action": {"status": "confirmed"},
+            },
+        }
+
+    monkeypatch.setattr(session_repository, "build_sdk_explanation_check_response", blocked_explanation_check)
+
+    response = client.post(
+        f"/api/learning-sessions/{session['session_id']}/attempts/{attempt_id}/check-explanation",
+        json={
+            "explanation": "状态会共享。",
+            "focus": "core_logic",
+            "round": 1,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["judgement_ready"] is False
+    assert body["next_action"] == "retry_same"
+    assert body["judgement_blocking_fields"] == ["explanation_sufficiency"]
+
+    with connect() as conn:
+        attempt = conn.execute(
+            """
+            SELECT explanation_text, explanation_check_result
+            FROM attempts
+            WHERE id = %s
+            """,
+            (attempt_id,),
+        ).fetchone()
+    assert attempt is not None
+    assert attempt["explanation_text"] is None
+    assert attempt["explanation_check_result"] is None
 
 
 def test_many_hints_degrade_fsrs_rating(client: TestClient) -> None:

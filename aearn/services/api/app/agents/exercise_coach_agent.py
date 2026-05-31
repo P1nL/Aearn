@@ -14,6 +14,13 @@ from app.agents.sdk_runtime import (
     split_chat_messages,
     stream_text_deltas,
 )
+from app.agents.structured_judgement import (
+    FieldPolicy,
+    JudgementPolicy,
+    StructuredJudgement,
+    coerce_structured_judgements,
+    normalize_judgements,
+)
 from app.core.config import Settings, get_settings
 from app.services.llm_client import LLMCallError, LLMConfigurationError, LLMInvalidResponseError
 
@@ -38,6 +45,28 @@ ALLOWED_ERROR_CAUSES = {
 }
 ALLOWED_NEXT_ACTIONS = {"retry_same", "show_hint", "explain_error", "review_variant", "schedule_review", "advance_next"}
 EXPLANATION_RESULTS = {"passed", "partial", "failed"}
+EXPLANATION_CHECK_JUDGEMENT_POLICY = JudgementPolicy(
+    fields=[
+        FieldPolicy(
+            name="explanation_sufficiency",
+            required=True,
+            fallback_question="请再说明关键代码为什么要这样写。",
+        ),
+        FieldPolicy(
+            name="feedback_grounding",
+            required=False,
+            fallback_question="请把反馈和你刚才的解释对应起来。",
+            blocks_on=("ambiguous", "unsupported"),
+        ),
+        FieldPolicy(
+            name="next_action",
+            required=False,
+            fallback_question="请明确下一步是重试、补充解释还是进入变体复习。",
+            blocks_on=("ambiguous", "unsupported"),
+        ),
+    ],
+    default_fallback_question="请再补一句能证明你理解关键代码行为的话。",
+)
 SAFE_GENERATION_EXCEPTIONS = (
     LLMCallError,
     LLMConfigurationError,
@@ -315,11 +344,26 @@ def _build_explanation_check_messages(
         "output_schema": {
             "result": "passed, partial, or failed",
             "feedback": "short feedback grounded in the explanation",
+            "judgements": {
+                "explanation_sufficiency": {
+                    "status": "confirmed | ambiguous | missing | unsupported",
+                    "clarification_question": "question when not confirmed",
+                },
+                "feedback_grounding": {
+                    "status": "confirmed | ambiguous | missing | unsupported",
+                    "clarification_question": "optional question",
+                },
+                "next_action": {
+                    "status": "confirmed | ambiguous | missing | unsupported",
+                    "clarification_question": "optional question",
+                },
+            },
         },
     }
     return _json_messages(
         "你是 Aearn 的解释检查 Coach。只输出 JSON，不要 Markdown。"
-        "只判断学习者是否理解关键代码、边界条件或 AI 改动原因，不要给完整答案。",
+        "只判断学习者是否理解关键代码、边界条件或 AI 改动原因，不要给完整答案。"
+        "必须输出 judgements，逐字段说明 explanation_sufficiency、feedback_grounding、next_action 是否 confirmed、ambiguous、missing 或 unsupported。",
         evidence,
     )
 
@@ -444,13 +488,66 @@ def _validate_explanation_check_response(
     assert_safe_teaching_output(feedback)
     score = {"passed": 2, "partial": 1, "failed": 0}[result]
     follow_up_required = result != "passed" and round_number < 2
-    return {
+    response: dict[str, object] = {
         "result": result,
         "score": score,
         "score_breakdown": {"explanation_check": score},
         "follow_up_required": follow_up_required,
         "feedback": feedback,
         "next_action": "advance_next" if result == "passed" else "retry_same" if round_number < 2 else "review_variant",
+    }
+    return attach_explanation_check_judgement(response, payload.get("judgements"), require_explicit=True)
+
+
+def attach_explanation_check_judgement(
+    candidate: Mapping[str, object],
+    raw_judgements: object | None = None,
+    *,
+    require_explicit: bool = False,
+) -> dict[str, object]:
+    response = dict(candidate)
+    judgement_payload = raw_judgements if raw_judgements is not None else response.get("judgements")
+    if isinstance(judgement_payload, Mapping):
+        judgements = coerce_structured_judgements(judgement_payload, EXPLANATION_CHECK_JUDGEMENT_POLICY)
+    elif require_explicit:
+        judgements = coerce_structured_judgements({}, EXPLANATION_CHECK_JUDGEMENT_POLICY)
+    else:
+        judgements = _legacy_explanation_check_judgements()
+    normalized = normalize_judgements(
+        _explanation_check_judgement_values(response),
+        judgements,
+        EXPLANATION_CHECK_JUDGEMENT_POLICY,
+    )
+    response["judgements"] = _serialize_judgements(judgements)
+    response["judgement_ready"] = normalized.ready
+    response["judgement_cleared_fields"] = list(normalized.cleared_fields)
+    response["judgement_blocking_fields"] = list(normalized.blocking_fields)
+    response["clarification_question"] = normalized.clarification_question
+    return response
+
+
+def _explanation_check_judgement_values(candidate: Mapping[str, object]) -> dict[str, object]:
+    return {
+        "explanation_sufficiency": candidate.get("result"),
+        "feedback_grounding": candidate.get("feedback"),
+        "next_action": candidate.get("next_action"),
+    }
+
+
+def _legacy_explanation_check_judgements() -> dict[str, StructuredJudgement]:
+    return {
+        "explanation_sufficiency": StructuredJudgement(status="confirmed"),
+        "feedback_grounding": StructuredJudgement(status="confirmed"),
+        "next_action": StructuredJudgement(status="confirmed"),
+    }
+
+
+def _serialize_judgements(
+    judgements: Mapping[str, StructuredJudgement],
+) -> dict[str, dict[str, object]]:
+    return {
+        name: judgement.model_dump(exclude_none=True)
+        for name, judgement in judgements.items()
     }
 
 

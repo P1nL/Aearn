@@ -2,14 +2,14 @@
 
 ## Checklist
 
-- [ ] Inventory exact production judgement points in learning, explanation-check, review, and notes routes/services.
-- [ ] Add or co-locate page-specific `JudgementPolicy` definitions and small adapter functions for each target surface.
-- [ ] Update model prompts/output schemas for target LLM JSON flows to include `judgements` where the model makes a durable decision.
-- [ ] Apply `normalize_judgements` before learning-stage transitions, attempt explanation-check writes, review progress writes, and note draft persistence.
-- [ ] Return clarification/retry-safe responses for blocked judgements without leaking provider details.
-- [ ] Keep onboarding policy and behavior unchanged.
-- [ ] Add regression tests for confirmed, ambiguous, missing, unsupported, and invalid judgement payloads.
-- [ ] Run focused backend verification, lint, type-check, and Trellis validation.
+- [x] Inventory exact production judgement points in learning, explanation-check, review, and notes routes/services.
+- [x] Add or co-locate page-specific `JudgementPolicy` definitions and small adapter functions for each target surface.
+- [x] Update model prompts/output schemas for target LLM JSON flows to include `judgements` where the model makes a durable decision.
+- [x] Apply `normalize_judgements` before learning-stage transitions, attempt explanation-check writes, review progress writes, and note draft persistence.
+- [x] Return clarification/retry-safe responses for blocked judgements without leaking provider details.
+- [x] Keep onboarding policy and behavior unchanged.
+- [x] Add regression tests for confirmed, ambiguous, missing, unsupported, and invalid judgement payloads.
+- [x] Run focused backend verification, lint, type-check, and Trellis validation.
 
 ## Suggested File Order
 

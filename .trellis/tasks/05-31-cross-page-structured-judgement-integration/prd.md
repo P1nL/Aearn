@@ -38,13 +38,13 @@ If a surface is pure text generation with no durable decision, it should not be 
 
 ## Acceptance Criteria
 
-- [ ] Learning concept-check model output includes or is adapted into `StructuredJudgement` data, and blocked judgements leave the session in the current concept stage with a clarification prompt or safe retry response.
-- [ ] Practice explanation-check blocked judgements do not write a passing/partial/failed explanation result to the attempt and do not advance to the next exercise.
-- [ ] Review judgement gates block unsafe or unclear warmup/explanation decisions without updating review session progress or FSRS-facing results.
-- [ ] Note assist blocked judgements do not persist draft content and return a recoverable response/event the UI can show.
-- [ ] Existing onboarding judgement behavior and tests remain unchanged.
-- [ ] Tests cover confirmed, ambiguous, missing, unsupported, and invalid/missing judgement payload cases for the wired flows.
-- [ ] `python .\.trellis\scripts\task.py validate .\.trellis\tasks\05-31-cross-page-structured-judgement-integration` passes before the task is started.
+- [x] Learning concept-check model output includes or is adapted into `StructuredJudgement` data, and blocked judgements leave the session in the current concept stage with a clarification prompt or safe retry response.
+- [x] Practice explanation-check blocked judgements do not write a passing/partial/failed explanation result to the attempt and do not advance to the next exercise.
+- [x] Review judgement gates block unsafe or unclear warmup/explanation decisions without updating review session progress or FSRS-facing results.
+- [x] Note assist blocked judgements do not persist draft content and return a recoverable response/event the UI can show.
+- [x] Existing onboarding judgement behavior and tests remain unchanged.
+- [x] Tests cover confirmed, ambiguous, missing, unsupported, and invalid/missing judgement payload cases for the wired flows.
+- [x] `python .\.trellis\scripts\task.py validate .\.trellis\tasks\05-31-cross-page-structured-judgement-integration` passes before the task is started.
 
 ## Out of Scope
 

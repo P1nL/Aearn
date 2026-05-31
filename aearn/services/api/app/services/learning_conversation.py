@@ -30,7 +30,10 @@ from app.agents.guardrails import (
     detect_direct_answer_request,
 )
 from app.agents.learning_conversation_agent import AgentsSDKLearningConversationClient
-from app.agents.learning_concept_agent import build_sdk_concept_check_result
+from app.agents.learning_concept_agent import (
+    attach_concept_check_judgement,
+    build_sdk_concept_check_result,
+)
 from app.agents.tools import AgentSideEffects, LearningToolContext
 from app.core.config import Settings, get_settings
 from app.services.exercise_repository import get_exercise
@@ -1344,6 +1347,18 @@ def _build_concept_check_result_tool(
     )
     if candidate is None:
         raise LLMCallError("Concept check requires configured model API")
+    candidate = attach_concept_check_judgement(candidate)
+    if candidate.get("judgement_ready") is False:
+        result_args = _blocked_concept_check_result_tool_args(context, candidate)
+        final_state = dict(state)
+        final_state["concept_check_result"] = "unclear"
+        final_state["concept_summary"] = _concept_summary(context)
+        final_state["learning_incomplete"] = True
+        final_state["blocked_concept_judgement"] = {
+            "blocking_fields": _string_list(result_args.get("judgement_blocking_fields")),
+            "clarification_question": result_args["next_prompt"],
+        }
+        return result_args, context.learning_stage, final_state
     result_args = _concept_check_result_tool_args(context, candidate)
     result = str(result_args["result"])
     final_stage = context.learning_stage
@@ -1449,6 +1464,40 @@ def _concept_check_result_tool_args(
         else [],
         "repair_check": dict(repair_check) if isinstance(repair_check, Mapping) else None,
     }
+
+
+def _blocked_concept_check_result_tool_args(
+    context: LearningConversationContext,
+    candidate: Mapping[str, object],
+) -> dict[str, object]:
+    question = str(
+        candidate.get("clarification_question")
+        or candidate.get("next_prompt")
+        or "请再用一句更具体的话说明你的判断依据。"
+    )
+    result: dict[str, object] = {
+        "session_id": context.session_id,
+        "knowledge_point_id": context.knowledge_point_id,
+        "result": "unclear",
+        "confidence": "low",
+        "explanation": str(candidate.get("explanation") or "这次回答还不能可靠判断。"),
+        "next_prompt": question,
+        "actions": [],
+        "repair_check": None,
+    }
+    _copy_judgement_metadata(result, candidate)
+    return result
+
+
+def _copy_judgement_metadata(target: dict[str, object], source: Mapping[str, object]) -> None:
+    for key in (
+        "judgement_ready",
+        "judgement_cleared_fields",
+        "judgement_blocking_fields",
+        "clarification_question",
+    ):
+        if key in source:
+            target[key] = source[key]
 
 
 def _practice_unlock_reason_for_stage(stage: str, state: Mapping[str, object]) -> str:

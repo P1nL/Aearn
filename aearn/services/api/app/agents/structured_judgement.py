@@ -12,7 +12,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 
 JudgementStatus = Literal["confirmed", "ambiguous", "missing", "unsupported"]
@@ -69,6 +69,29 @@ class NormalizedJudgementResult:
     clarification_question: str | None
 
 
+def coerce_structured_judgements(
+    value: object,
+    policy: JudgementPolicy,
+) -> dict[str, StructuredJudgement]:
+    """Parse arbitrary model judgement payloads into policy-shaped judgements."""
+
+    payload = value if isinstance(value, Mapping) else {}
+    judgements: dict[str, StructuredJudgement] = {}
+    for field_policy in policy.fields:
+        raw = payload.get(field_policy.name)
+        if isinstance(raw, StructuredJudgement):
+            judgement = raw
+        elif isinstance(raw, Mapping):
+            try:
+                judgement = StructuredJudgement.model_validate(raw)
+            except ValidationError:
+                judgement = _unsupported_judgement(field_policy, policy)
+        else:
+            judgement = _missing_judgement(field_policy, policy)
+        judgements[field_policy.name] = judgement
+    return judgements
+
+
 def normalize_judgements(
     field_values: Mapping[str, object],
     judgements: Mapping[str, StructuredJudgement],
@@ -118,6 +141,28 @@ def normalize_judgements(
 
 
 ValuePresentFn = Callable[[str, object], bool]
+
+
+def _missing_judgement(
+    field_policy: FieldPolicy,
+    policy: JudgementPolicy,
+) -> StructuredJudgement:
+    return StructuredJudgement(
+        status="missing",
+        ambiguity_reason="judgement payload missing",
+        clarification_question=field_policy.fallback_question or policy.default_fallback_question,
+    )
+
+
+def _unsupported_judgement(
+    field_policy: FieldPolicy,
+    policy: JudgementPolicy,
+) -> StructuredJudgement:
+    return StructuredJudgement(
+        status="unsupported",
+        ambiguity_reason="judgement payload invalid",
+        clarification_question=field_policy.fallback_question or policy.default_fallback_question,
+    )
 
 
 def _default_value_present(field_name: str, value: object) -> bool:

@@ -4,6 +4,7 @@ from app.agents.structured_judgement import (
     FieldPolicy,
     JudgementPolicy,
     StructuredJudgement,
+    coerce_structured_judgements,
     normalize_judgements,
 )
 
@@ -183,6 +184,36 @@ class TestNormalizeJudgements:
         result = normalize_judgements(values, judgements, policy, value_present_fn=strict_present)
         assert result.ready is False
         assert "language" in result.blocking_fields
+
+
+class TestCoerceStructuredJudgements:
+    def test_missing_payload_marks_policy_fields_missing(self):
+        policy = _learning_policy()
+        judgements = coerce_structured_judgements({}, policy)
+        assert judgements["answer_correctness"].status == "missing"
+        assert judgements["confidence"].status == "missing"
+
+    def test_invalid_payload_marks_field_unsupported(self):
+        policy = _learning_policy()
+        judgements = coerce_structured_judgements(
+            {"answer_correctness": {"status": "maybe"}},
+            policy,
+        )
+        assert judgements["answer_correctness"].status == "unsupported"
+
+    def test_valid_payload_preserves_clarification_question(self):
+        policy = _learning_policy()
+        judgements = coerce_structured_judgements(
+            {
+                "answer_correctness": {
+                    "status": "ambiguous",
+                    "clarification_question": "你能再解释一下为什么这样？",
+                },
+            },
+            policy,
+        )
+        assert judgements["answer_correctness"].status == "ambiguous"
+        assert judgements["answer_correctness"].clarification_question == "你能再解释一下为什么这样？"
 
 
 class TestNonOnboardingPolicy:

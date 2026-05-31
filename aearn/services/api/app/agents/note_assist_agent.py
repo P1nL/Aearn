@@ -15,11 +15,43 @@ from app.agents.sdk_runtime import (
     split_chat_messages,
     stream_text_deltas,
 )
+from app.agents.structured_judgement import (
+    FieldPolicy,
+    JudgementPolicy,
+    StructuredJudgement,
+    normalize_judgements,
+)
 from app.core.config import Settings, get_settings
 from app.services.llm_client import LLMCallError, LLMConfigurationError, LLMInvalidResponseError
 
 
 NOTE_ASSIST_AGENT_NAME = "Aearn Note Assist"
+NOTE_ASSIST_JUDGEMENT_POLICY = JudgementPolicy(
+    fields=[
+        FieldPolicy(
+            name="insert_scope",
+            required=True,
+            fallback_question="请只生成能追加到当前笔记的补充片段，不要重写整篇笔记。",
+        ),
+        FieldPolicy(
+            name="source_grounding",
+            required=True,
+            fallback_question="请让补充内容明确贴合当前知识点或最近练习事实。",
+        ),
+        FieldPolicy(
+            name="content_safety",
+            required=True,
+            fallback_question="请删除隐藏测试、参考答案、provider 错误或完整代码。",
+        ),
+        FieldPolicy(
+            name="focus_clarity",
+            required=False,
+            fallback_question="请明确本次补充的焦点。",
+            blocks_on=("ambiguous", "unsupported"),
+        ),
+    ],
+    default_fallback_question="请生成一个安全、可追加、贴合当前知识点的笔记补充片段。",
+)
 
 _NOTE_REWRITE_PATTERNS = (
     re.compile(r"\bCodeDraft\b", re.IGNORECASE),
@@ -166,6 +198,71 @@ def assert_safe_note_draft_output(text: str) -> None:
     for pattern in _NOTE_REWRITE_PATTERNS:
         if pattern.search(text):
             raise LLMInvalidResponseError("Note Assist output leaked disallowed note-draft wording")
+
+
+def assert_note_assist_judgement_ready(text: str, context: NoteAssistContext) -> None:
+    normalized_text = text.strip()
+    judgements = _note_assist_judgements(normalized_text, context)
+    result = normalize_judgements(
+        {
+            "insert_scope": normalized_text,
+            "source_grounding": context.knowledge_point_title or context.note_title or context.module_title,
+            "content_safety": normalized_text,
+            "focus_clarity": context.focus,
+        },
+        judgements,
+        NOTE_ASSIST_JUDGEMENT_POLICY,
+    )
+    if not result.ready:
+        blocked = ", ".join(result.blocking_fields)
+        raise LLMInvalidResponseError(f"Note Assist structured judgement blocked draft: {blocked}")
+
+
+def _note_assist_judgements(
+    text: str,
+    context: NoteAssistContext,
+) -> dict[str, StructuredJudgement]:
+    if not text:
+        return {
+            "insert_scope": _missing_note_judgement("insert_scope"),
+            "source_grounding": _missing_note_judgement("source_grounding"),
+            "content_safety": _missing_note_judgement("content_safety"),
+            "focus_clarity": _missing_note_judgement("focus_clarity"),
+        }
+
+    rewrite_blocked = any(pattern.search(text) for pattern in _NOTE_REWRITE_PATTERNS)
+    try:
+        assert_safe_teaching_output(text)
+        content_safety = StructuredJudgement(status="confirmed")
+    except LLMInvalidResponseError:
+        content_safety = StructuredJudgement(
+            status="unsupported",
+            ambiguity_reason="draft failed teaching safety guardrail",
+            clarification_question=NOTE_ASSIST_JUDGEMENT_POLICY.default_fallback_question,
+        )
+
+    focus = context.focus.strip()
+    return {
+        "insert_scope": StructuredJudgement(
+            status="unsupported" if rewrite_blocked else "confirmed",
+            ambiguity_reason="draft tries to rewrite or replace the note" if rewrite_blocked else None,
+            clarification_question="请只生成能追加到当前笔记的补充片段，不要重写整篇笔记。"
+            if rewrite_blocked
+            else None,
+        ),
+        "source_grounding": StructuredJudgement(status="confirmed"),
+        "content_safety": content_safety,
+        "focus_clarity": StructuredJudgement(status="confirmed" if focus else "missing"),
+    }
+
+
+def _missing_note_judgement(field_name: str) -> StructuredJudgement:
+    field = NOTE_ASSIST_JUDGEMENT_POLICY.get_field(field_name)
+    return StructuredJudgement(
+        status="missing",
+        ambiguity_reason="note assist judgement input missing",
+        clarification_question=field.fallback_question if field is not None else NOTE_ASSIST_JUDGEMENT_POLICY.default_fallback_question,
+    )
 
 
 def _build_messages(context: NoteAssistContext) -> list[dict[str, str]]:

@@ -389,6 +389,18 @@ def test_agent_draft_returns_model_unavailable_when_sdk_output_mentions_code_dra
     assert drafted.status_code == 503
     assert drafted.json()["error"]["code"] == "MODEL_UNAVAILABLE"
 
+    with connect() as conn:
+        stored = conn.execute(
+            """
+            SELECT agent_draft_content
+            FROM notes
+            WHERE id = %s
+            """,
+            (note["id"],),
+        ).fetchone()
+    assert stored is not None
+    assert stored["agent_draft_content"] is None
+
 
 def _confirmed_plan(client: TestClient, *, language: str) -> tuple[dict[str, object], dict[str, object]]:
     user = _create_user(client)

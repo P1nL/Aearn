@@ -331,6 +331,56 @@ def test_review_warmup_branches_do_not_create_fsrs_evidence(client: TestClient) 
     assert second_body["review_stage_state"]["variant"]["guided"] is True
 
 
+def test_review_warmup_unclear_judgement_does_not_advance_stage(client: TestClient) -> None:
+    user, plan = _confirmed_plan(client, language="javascript")
+    knowledge_point_id = plan["knowledge_points"][0]["id"]
+    _mark_due(knowledge_point_id, reps=3)
+
+    start = client.post(
+        "/api/reviews/start",
+        json={"user_id": user["id"], "knowledge_point_id": knowledge_point_id},
+    )
+    assert start.status_code == 201
+    session_id = start.json()["session_id"]
+
+    unclear = client.post(
+        f"/api/reviews/{session_id}/warmup-result",
+        json={"action": "answer", "answer": "不知道"},
+    )
+    assert unclear.status_code == 200
+    body = unclear.json()
+    assert body["review_stage"] == "warmup"
+    assert body["warmup"]["result"] == "unclear"
+    assert body["warmup"]["judgement_ready"] is False
+    assert body["next_action"] == "retry_same"
+
+    with connect() as conn:
+        stored = conn.execute(
+            """
+            SELECT review_stage, review_stage_state_json
+            FROM learning_sessions
+            WHERE id = %s
+            """,
+            (session_id,),
+        ).fetchone()
+        counts = conn.execute(
+            """
+            SELECT
+              (SELECT count(*) FROM attempts WHERE session_id = %s) AS attempt_count,
+              (SELECT count(*) FROM review_logs WHERE knowledge_point_id = %s) AS review_log_count,
+              (SELECT reps FROM review_states WHERE knowledge_point_id = %s) AS reps
+            """,
+            (session_id, knowledge_point_id, knowledge_point_id),
+        ).fetchone()
+    assert stored is not None
+    assert stored["review_stage"] == "warmup"
+    assert stored["review_stage_state_json"]["warmup"]["result"] == "pending"
+    assert counts is not None
+    assert counts["attempt_count"] == 0
+    assert counts["review_log_count"] == 0
+    assert counts["reps"] == 3
+
+
 def test_review_ai_patch_scoring_requires_grounded_evidence(client: TestClient) -> None:
     user, plan = _confirmed_plan(client, language="javascript")
     knowledge_point_id = plan["knowledge_points"][0]["id"]
@@ -470,6 +520,80 @@ def test_review_run_and_submit_updates_schedule_once(client: TestClient) -> None
     assert str(state["last_attempt_id"]) == submit_body["attempt_id"]
     assert log_count is not None
     assert log_count["count"] == 1
+
+
+def test_review_submit_blocked_explanation_judgement_does_not_write_attempt(
+    client: TestClient,
+) -> None:
+    user, plan = _confirmed_plan(client, language="javascript")
+    knowledge_point_id = plan["knowledge_points"][0]["id"]
+    _mark_due(knowledge_point_id, reps=2)
+
+    start = client.post(
+        "/api/reviews/start",
+        json={"user_id": user["id"], "knowledge_point_id": knowledge_point_id},
+    )
+    assert start.status_code == 201
+    review_session = start.json()
+    exercise = review_session["review_exercise"]
+    filled_blanks = _filled_blanks_for(exercise)
+
+    run = client.post(
+        f"/api/learning-sessions/{review_session['session_id']}/exercises/{exercise['id']}/run",
+        json={
+            "code": exercise["solution_reference"],
+            "filled_blanks": filled_blanks,
+            "runtime_profile_id": exercise["runtime_profile"]["id"],
+            "run_mode": "visible_tests",
+        },
+    )
+    assert run.status_code == 201
+
+    payload = {
+        "exercise_id": exercise["id"],
+        "attempt_id": run.json()["attempt_id"],
+        "code": exercise["solution_reference"],
+        "filled_blanks": filled_blanks,
+        "submit_version": 1,
+        "explanation": "状态变量会共享。",
+        "hint_usage_count": 0,
+        "error_count": 0,
+        "explanation_check": {
+            "result": "passed",
+            "score": 2,
+            "feedback": "反馈不足以确认薄弱点。",
+            "judgements": {
+                "review_explanation_sufficiency": {
+                    "status": "ambiguous",
+                    "clarification_question": "请再补充这次提交为什么能覆盖状态作用域风险。",
+                },
+                "weak_point_signal": {"status": "confirmed"},
+                "repair_needed": {"status": "confirmed"},
+            },
+        },
+    }
+    submitted = client.post(f"/api/reviews/{review_session['session_id']}/exercise-result", json=payload)
+
+    assert submitted.status_code == 200
+    body = submitted.json()
+    assert body["judgement_ready"] is False
+    assert body["next_action"] == "retry_same"
+    assert "attempt_id" not in body
+
+    with connect() as conn:
+        counts = conn.execute(
+            """
+            SELECT
+              (SELECT count(*) FROM attempts WHERE session_id = %s) AS attempt_count,
+              (SELECT count(*) FROM review_logs WHERE knowledge_point_id = %s) AS review_log_count,
+              (SELECT reps FROM review_states WHERE knowledge_point_id = %s) AS reps
+            """,
+            (review_session["session_id"], knowledge_point_id, knowledge_point_id),
+        ).fetchone()
+    assert counts is not None
+    assert counts["attempt_count"] == 1
+    assert counts["review_log_count"] == 0
+    assert counts["reps"] == 2
 
 
 def test_run_attempt_does_not_update_review_state_and_scheduler_is_idempotent(client: TestClient) -> None:
