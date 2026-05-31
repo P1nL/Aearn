@@ -1133,3 +1133,36 @@ Connected learning message routing to the SDK learning client, passed safe hando
 ### Next Steps
 
 - None - task complete
+
+
+## Session 35: LangGraph runtime rollout
+
+**Date**: 2026-05-31
+**Task**: LangGraph runtime rollout
+**Branch**: `main`
+
+### Summary
+
+Added LANGGRAPH_ENABLED-gated learning graph invocation from the learning message service path, sanitized AgentState construction, safe fallback on graph failures, and flag on/off request-path tests.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `73e825d` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
