@@ -11,14 +11,10 @@
             "id": "445e6c3b7e98b90b",
             "type": "leaf",
             "state": {
-              "type": "markdown",
-              "state": {
-                "file": "05-29-exercise-card-ui-optimization/design.md",
-                "mode": "source",
-                "source": false
-              },
+              "type": "empty",
+              "state": {},
               "icon": "lucide-file",
-              "title": "design"
+              "title": "新标签页"
             }
           }
         ]
