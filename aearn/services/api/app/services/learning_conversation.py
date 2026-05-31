@@ -37,6 +37,7 @@ from app.agents.learning_concept_agent import (
 from app.agents.tools import AgentSideEffects, LearningToolContext
 from app.core.config import Settings, get_settings
 from app.services.exercise_repository import get_exercise
+from app.services.learner_profile import build_profile_summary, ensure_learner_profile, merge_observations
 from app.services.learning_session_repository import (
     EntityNotFoundError,
     unlock_learning_session_practice,
@@ -69,6 +70,7 @@ LEARNING_TUTOR_SYSTEM_PROMPT = """你是 Aearn 的诊断型编程语言学习导
 - lesson_outline：当前知识点拆分出的子概念和来源。
 - concept_progress：阶段状态和已覆盖内容。
 - conversation_context：安全摘要、最近安全消息、上一轮诊断、上一轮策略、避免重复的解释。
+- learner_profile：跨会话学习者画像的安全摘要，可能为空。
 - exercise：仅在 practice_support 阶段出现的安全练习上下文。
 - latest_attempt：最近一次运行、提交或解释检查的安全摘要。
 - runtime_boundary：当前是否允许展示练习相关内容。
@@ -246,6 +248,7 @@ class LearningConversationContext:
     lesson_sources: Sequence[Mapping[str, object]]
     exercise: Mapping[str, object] | None
     latest_attempt: Mapping[str, object] | None
+    learner_profile_summary: str
     conversation_context: Mapping[str, object]
 
 
@@ -585,7 +588,14 @@ def store_learning_message_response(
     metadata: dict[str, object] = {}
     if tool_calls:
         metadata["tool_calls"] = tool_calls
-    side_effect_metadata = serialize_agent_side_effects(side_effects)
+    profile_observations = profile_observations_from_side_effects(
+        side_effects,
+        session_id=prepared.context.session_id,
+    )
+    side_effect_metadata = serialize_agent_side_effects(
+        side_effects,
+        session_id=prepared.context.session_id,
+    )
     if side_effect_metadata:
         metadata["agent_side_effects"] = side_effect_metadata
     conn.execute(
@@ -600,6 +610,8 @@ def store_learning_message_response(
             json.dumps(metadata) if metadata else None,
         ),
     )
+    if profile_observations:
+        merge_observations(conn, prepared.context.user_id, profile_observations)
     conn.execute(
         """
         INSERT INTO idempotency_records (key, operation, request_hash, response_json)
@@ -626,13 +638,21 @@ def build_learning_tool_context(context: LearningConversationContext) -> Learnin
         session_id=context.session_id,
         exercise_id=exercise_id,
         current_stage=context.learning_stage,
+        user_id=context.user_id,
         knowledge_point_id=context.knowledge_point_id,
         exercise=context.exercise,
+        latest_attempt=context.latest_attempt,
+        stage_state=context.learning_stage_state,
+        profile_summary=context.learner_profile_summary,
         run_code_fn=_run_code_for_learning_tool if context.exercise is not None else None,
     )
 
 
-def serialize_agent_side_effects(side_effects: AgentSideEffects | None) -> dict[str, object]:
+def serialize_agent_side_effects(
+    side_effects: AgentSideEffects | None,
+    *,
+    session_id: str | None = None,
+) -> dict[str, object]:
     if side_effects is None:
         return {}
 
@@ -665,16 +685,51 @@ def serialize_agent_side_effects(side_effects: AgentSideEffects | None) -> dict[
             }
             for item in side_effects.attempt_records[:5]
         ]
-    if side_effects.profile_updates:
+    profile_updates: Sequence[Mapping[str, object]] = (
+        profile_observations_from_side_effects(side_effects, session_id=session_id)
+        if session_id is not None
+        else side_effects.profile_updates
+    )
+    if profile_updates:
         metadata["profile_updates"] = [
             {
                 key: _limit_text(str(value), 240)
                 for key, value in item.items()
                 if key in {"type", "content", "confidence", "session_id", "key", "value"}
             }
-            for item in side_effects.profile_updates[:5]
+            for item in profile_updates[:5]
         ]
     return metadata
+
+
+def profile_observations_from_side_effects(
+    side_effects: AgentSideEffects | None,
+    *,
+    session_id: str | None,
+) -> list[dict[str, object]]:
+    if side_effects is None or session_id is None:
+        return []
+
+    observations: list[dict[str, object]] = []
+    valid_types = {"weak_point", "error_pattern", "learning_preference", "pace_indicator"}
+    for item in side_effects.profile_updates[:10]:
+        obs_type = str(item.get("type") or "")
+        if obs_type not in valid_types:
+            continue
+        confidence = str(item.get("confidence") or "ambiguous")
+        if confidence not in {"confirmed", "ambiguous"}:
+            confidence = "ambiguous"
+        observation: dict[str, object] = {
+            "type": obs_type,
+            "content": _limit_text(str(item.get("content") or ""), 240),
+            "confidence": confidence,
+            "session_id": session_id,
+        }
+        if obs_type in {"learning_preference", "pace_indicator"}:
+            observation["key"] = _limit_text(str(item.get("key") or ""), 80)
+            observation["value"] = _limit_text(str(item.get("value") or ""), 160)
+        observations.append(observation)
+    return observations
 
 
 def _run_code_for_learning_tool(exercise: Mapping[str, object], code: str) -> dict[str, object]:
@@ -801,6 +856,7 @@ def load_learning_conversation_context(
         (session_id,),
     ).fetchone()
 
+    profile = ensure_learner_profile(conn, str(session["user_id"]))
     return LearningConversationContext(
         session_id=session_id,
         user_id=str(session["user_id"]),
@@ -813,6 +869,7 @@ def load_learning_conversation_context(
         lesson_sources=_serialize_lesson_sources(knowledge_point.get("lesson_sources_json")),
         exercise=_sanitize_exercise_context(exercise) if exercise is not None else None,
         latest_attempt=_sanitize_attempt_context(latest_attempt) if latest_attempt is not None else None,
+        learner_profile_summary=build_profile_summary(profile),
         conversation_context=_conversation_context_from_summary(
             _existing_summary_state(learning_stage_state),
             recent_messages=[],
@@ -1210,6 +1267,7 @@ def _build_messages(
         },
         "concept_progress": context.learning_stage_state,
         "conversation_context": context.conversation_context,
+        "learner_profile": {"summary": context.learner_profile_summary} if context.learner_profile_summary else {},
         "exercise": context.exercise if context.learning_stage == "practice_support" else None,
         "latest_attempt": context.latest_attempt,
         "runtime_boundary": {
@@ -1364,6 +1422,7 @@ def _context_with_transition(
         lesson_sources=context.lesson_sources,
         exercise=context.exercise if transition.learning_stage == "practice_support" else None,
         latest_attempt=context.latest_attempt,
+        learner_profile_summary=context.learner_profile_summary,
         conversation_context=context.conversation_context,
     )
 

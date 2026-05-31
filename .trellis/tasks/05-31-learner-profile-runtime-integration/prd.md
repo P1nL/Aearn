@@ -14,9 +14,9 @@ Wire `learner_profile.py` into real learning sessions so Aearn can ensure a per-
 
 ## Acceptance Criteria
 
-- [ ] Real learning session start ensures a profile for the current user.
-- [ ] Learning conversation context includes a compact profile summary.
-- [ ] Profile updates are merged from real learning observations or accepted side effects.
-- [ ] Cross-user profile access is impossible from route/service tests.
-- [ ] Model-free tests cover empty profile and incremental merge behavior.
-- [ ] Focused backend tests, lint, mypy, and task validation pass.
+- [x] Real learning session start ensures a profile for the current user.
+- [x] Learning conversation context includes a compact profile summary.
+- [x] Profile updates are merged from real learning observations or accepted side effects.
+- [x] Cross-user profile access is impossible from route/service tests.
+- [x] Model-free tests cover empty profile and incremental merge behavior.
+- [x] Focused backend tests, lint, mypy, and task validation pass.

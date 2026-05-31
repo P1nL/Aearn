@@ -21,6 +21,7 @@ from app.services.exercise_guidance import (
     resolve_blank,
 )
 from app.services.exercise_repository import get_exercise, get_or_create_exercise_for_knowledge_point
+from app.services.learner_profile import ensure_learner_profile
 from app.services.llm_client import LLMCallError, LLMInvalidResponseError
 from app.services.plan_repository import IdempotencyConflictError, request_hash
 from app.services.review_scheduler import apply_attempt_review_update
@@ -60,6 +61,7 @@ def start_learning_session(
     request_id: str | None,
 ) -> tuple[dict[str, object], bool]:
     context = _load_learning_context(conn, user_id=user_id, plan_id=plan_id, knowledge_point_id=knowledge_point_id)
+    ensure_learner_profile(conn, user_id)
     context = _ensure_lesson_content(conn, context)
     runtime_profile = _serialize_runtime_profile(context)
 
