@@ -3,7 +3,7 @@
   "name": "langgraph-orchestration-migration",
   "title": "LangGraph Orchestration Migration",
   "description": "Fully migrate the main Aearn agent-orchestrated flows to LangGraph-owned orchestration while preserving service/repository persistence boundaries and rollback flags.",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,

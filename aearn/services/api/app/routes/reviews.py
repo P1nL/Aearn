@@ -5,7 +5,10 @@ from datetime import datetime
 from fastapi import APIRouter, Query, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, StreamingResponse
+from psycopg import Connection
 
+from app.agents.review_graph import invoke_review_orchestration, review_result_to_run_result
+from app.core.config import get_settings
 from app.core.errors import (
     MODEL_UNAVAILABLE_MESSAGE,
     error_response,
@@ -38,6 +41,108 @@ from app.services.sse import SSEWriter, stream_response
 
 
 router = APIRouter(prefix="/api/reviews", tags=["reviews"])
+
+
+def _review_graph_decision(
+    *,
+    session_id: str = "",
+    user_id: str,
+    knowledge_point_id: str,
+    action: str,
+    is_due: bool = True,
+    has_active_session: bool = False,
+    attempt_result: str | None = None,
+    fsrs_rating: str | None = None,
+    explanation_ready: bool = False,
+    coach_feedback_requested: bool = False,
+) -> str | None:
+    if not get_settings().langgraph_enabled:
+        return None
+    try:
+        result = invoke_review_orchestration(
+            session_id=session_id,
+            user_id=user_id,
+            knowledge_point_id=knowledge_point_id,
+            action=action,
+            is_due=is_due,
+            has_active_session=has_active_session,
+            attempt_result=attempt_result,
+            fsrs_rating=fsrs_rating,
+            explanation_ready=explanation_ready,
+            coach_feedback_requested=coach_feedback_requested,
+        )
+    except Exception:
+        return None
+    return review_result_to_run_result(result).next_stage
+
+
+def _review_start_graph_facts(
+    conn: Connection[dict[str, object]],
+    *,
+    user_id: str,
+    knowledge_point_id: str,
+) -> dict[str, object] | None:
+    state = conn.execute(
+        """
+        SELECT
+          rs.plan_id::text AS plan_id,
+          (
+            rs.due_at IS NOT NULL
+            AND rs.due_at <= now()
+            AND rs.suspended_at IS NULL
+            AND lp.status = 'active'
+            AND lp.deleted_at IS NULL
+          ) AS is_due
+        FROM review_states rs
+        JOIN learning_plans lp ON lp.id = rs.plan_id
+        JOIN knowledge_points kp ON kp.id = rs.knowledge_point_id
+        WHERE rs.user_id = %s
+          AND rs.knowledge_point_id = %s
+          AND kp.deleted_at IS NULL
+        LIMIT 1
+        """,
+        (user_id, knowledge_point_id),
+    ).fetchone()
+    if state is None:
+        return None
+    session = conn.execute(
+        """
+        SELECT id::text AS id
+        FROM learning_sessions
+        WHERE user_id = %s
+          AND plan_id = %s
+          AND entry_point = %s
+          AND session_type = 'review'
+          AND status = 'active'
+        ORDER BY started_at DESC
+        LIMIT 1
+        """,
+        (user_id, state["plan_id"], knowledge_point_id),
+    ).fetchone()
+    return {
+        "is_due": bool(state["is_due"]),
+        "has_active_session": session is not None,
+        "session_id": str(session["id"]) if session is not None else "",
+    }
+
+
+def _review_session_graph_ids(
+    conn: Connection[dict[str, object]],
+    *,
+    session_id: str,
+) -> tuple[str, str] | None:
+    row = conn.execute(
+        """
+        SELECT user_id::text AS user_id, entry_point::text AS knowledge_point_id
+        FROM learning_sessions
+        WHERE id = %s AND session_type = 'review'
+        LIMIT 1
+        """,
+        (session_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return str(row["user_id"]), str(row["knowledge_point_id"])
 
 
 @router.get("/today", response_model=None)
@@ -73,6 +178,32 @@ def create_review_session(
 ) -> dict[str, object] | JSONResponse:
     with connect() as conn:
         try:
+            graph_facts = _review_start_graph_facts(
+                conn,
+                user_id=payload.user_id,
+                knowledge_point_id=payload.knowledge_point_id,
+            )
+            if graph_facts is not None:
+                graph_action = _review_graph_decision(
+                    session_id=str(graph_facts["session_id"]),
+                    user_id=payload.user_id,
+                    knowledge_point_id=payload.knowledge_point_id,
+                    action="start",
+                    is_due=bool(graph_facts["is_due"]),
+                    has_active_session=bool(graph_facts["has_active_session"]),
+                )
+                if graph_action == "reject_not_due":
+                    return error_response(
+                        request,
+                        code="REVIEW_NOT_DUE",
+                        message="当前知识点未到复习时间",
+                        status_code=status.HTTP_409_CONFLICT,
+                        details={
+                            "reason": "review is not due",
+                            "knowledge_point_id": payload.knowledge_point_id,
+                        },
+                        recoverable=True,
+                    )
             response, reused = start_review_session(
                 conn,
                 user_id=payload.user_id,
@@ -140,6 +271,15 @@ async def submit_review_warmup_result(
 
     with connect() as conn:
         try:
+            graph_ids = _review_session_graph_ids(conn, session_id=session_id)
+            if graph_ids is not None:
+                graph_user_id, graph_knowledge_point_id = graph_ids
+                _review_graph_decision(
+                    session_id=session_id,
+                    user_id=graph_user_id,
+                    knowledge_point_id=graph_knowledge_point_id,
+                    action="warmup",
+                )
             response = record_review_warmup_result(
                 conn,
                 session_id=session_id,
@@ -188,6 +328,16 @@ async def submit_review_result(
 
     with connect() as conn:
         try:
+            graph_ids = _review_session_graph_ids(conn, session_id=session_id)
+            if graph_ids is not None:
+                graph_user_id, graph_knowledge_point_id = graph_ids
+                _review_graph_decision(
+                    session_id=session_id,
+                    user_id=graph_user_id,
+                    knowledge_point_id=graph_knowledge_point_id,
+                    action="submit",
+                    explanation_ready=payload.explanation_check is not None,
+                )
             response, replayed = submit_review_exercise_result(
                 conn,
                 session_id=session_id,
@@ -337,6 +487,13 @@ async def _review_message_stream(
         full_text = ""
 
         try:
+            _review_graph_decision(
+                session_id=session_id,
+                user_id=prepared.context.user_id,
+                knowledge_point_id=prepared.context.knowledge_point_id,
+                action="message",
+                coach_feedback_requested=True,
+            )
             generation = start_review_generation(prepared.context, user_content=content)
             generation_source = generation.generation_source
             generation_model = generation.generation_model

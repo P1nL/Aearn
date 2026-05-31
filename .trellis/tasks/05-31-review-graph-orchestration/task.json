@@ -3,7 +3,7 @@
   "name": "review-graph-orchestration",
   "title": "Review Graph Orchestration",
   "description": "Migrate review start, review exercise result, FSRS update coordination, and review coach feedback orchestration to a review LangGraph flow.",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,

@@ -580,6 +580,84 @@ def test_onboarding_message_stream_triggers_plan_from_first_complete_turn(
     assert confirm.json()["LearningPlan"]["goal_text"] == route_args["goal_text"]
 
 
+def test_onboarding_message_langgraph_flag_on_invokes_graph_route_decision(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user = _create_user(client)
+    captured: list[dict[str, object]] = []
+
+    monkeypatch.setattr(onboarding_route, "get_settings", lambda: Settings(langgraph_enabled=True))
+    monkeypatch.setattr(
+        onboarding_route,
+        "extract_slots",
+        lambda context: ExtractedSlots(
+            language="python",
+            target_level="beginner",
+            goal_text="学习 Python，聚焦 Web，从零基础入门",
+            time_budget={"minutes_per_day": 60, "days_per_week": 7},
+            focus="Web",
+            plan_ready=True,
+        ),
+    )
+
+    def fake_invoke_onboarding_orchestration(**kwargs):  # type: ignore[no-untyped-def]
+        captured.append(dict(kwargs))
+        if kwargs["user_text"] == "confirm":
+            return {
+                "next_action": "confirm_plan",
+                "intent_type": "persistence",
+                "intent_payload": {"target": "confirm_plan"},
+            }
+        return {
+            "next_action": "generate_route",
+            "intent_type": "tool_call",
+            "intent_payload": {"tool": "build_plan_draft", "language": kwargs["language"]},
+        }
+
+    monkeypatch.setattr(
+        onboarding_route,
+        "invoke_onboarding_orchestration",
+        fake_invoke_onboarding_orchestration,
+    )
+
+    events = _send_onboarding_stream(
+        client,
+        user_id=str(user["id"]),
+        content="我想学 Python Web 后端，零基础，每天 1 小时",
+        conversation_id=None,
+    )
+
+    route_call = next(call for call in captured if call["user_text"] != "confirm")
+    assert route_call["conversation_id"]
+    assert route_call["user_id"] == user["id"]
+    assert route_call["plan_ready"] is True
+    assert route_call["language"] == "python"
+    session_created = next(event for event in events if event["event"] == "session_created")
+    conversation_id = str(session_created["data"]["onboarding_session_id"])
+    tool_start = next(
+        event
+        for event in events
+        if event["event"] == "tool_call" and event["data"]["phase"] == "start"
+    )
+    tool_done = next(
+        event
+        for event in events
+        if event["event"] == "tool_call" and event["data"]["phase"] == "done"
+    )
+    assert tool_start["data"]["name"] == "show_learning_route"
+    assert tool_done["data"]["arguments"]["language"] == "python"
+
+    confirm = client.post(
+        f"/api/onboarding/{conversation_id}/confirm_plan",
+        json={"user_id": user["id"]},
+    )
+    assert confirm.status_code == 201
+    confirm_call = next(call for call in captured if call["user_text"] == "confirm")
+    assert confirm_call["conversation_id"] == conversation_id
+    assert confirm_call["has_stashed_draft"] is True
+
+
 def test_onboarding_message_stream_returns_error_when_model_unavailable(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,

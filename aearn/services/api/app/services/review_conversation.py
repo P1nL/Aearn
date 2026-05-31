@@ -37,6 +37,8 @@ class ReviewSessionNotFoundError(ValueError):
 @dataclass(frozen=True)
 class ReviewConversationContext:
     session_id: str
+    user_id: str
+    knowledge_point_id: str
     knowledge_point_title: str
     knowledge_point_description: str
     history: Sequence[Mapping[str, str]]
@@ -141,7 +143,13 @@ def load_review_context(
 ) -> ReviewConversationContext:
     session = conn.execute(
         """
-        SELECT ls.id, ls.entry_point, ls.status, ls.session_type
+        SELECT
+          ls.id,
+          ls.user_id::text AS user_id,
+          ls.entry_point::text AS knowledge_point_id,
+          ls.entry_point,
+          ls.status,
+          ls.session_type
         FROM learning_sessions ls
         WHERE ls.id = %s AND ls.session_type = 'review'
         """,
@@ -180,6 +188,8 @@ def load_review_context(
 
     return ReviewConversationContext(
         session_id=session_id,
+        user_id=str(session["user_id"]),
+        knowledge_point_id=str(session["knowledge_point_id"]),
         knowledge_point_title=kp_title,
         knowledge_point_description=kp_description,
         history=history,

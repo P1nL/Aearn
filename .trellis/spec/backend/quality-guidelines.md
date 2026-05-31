@@ -751,6 +751,79 @@ def update_learner_profile(observations: list[dict[str, object]], ctx: LearningT
 
 The tool records intent against server-owned context; the feature service later drains the side effect for the authenticated user.
 
+## Scenario: LangGraph Production Orchestration
+
+### 1. Scope / Trigger
+
+- Trigger: promoting a LangGraph skeleton into the production request path for learning, onboarding, review, or another main page flow.
+- Scope: `app/agents/*_graph.py`, `app/agents/graph_runtime_contracts.py`, feature services under `app/services/`, route adapters under `app/routes/`, and route-level API/SSE tests.
+
+### 2. Signatures
+
+- Shared result signature: `GraphRunResult(next_stage, intents, diagnostics, safe_context)`.
+- Shared intent signature: `GraphIntent(intent_type, target, payload)`.
+- Learning entrypoint: `invoke_orchestration(...) -> {"next_stage", "tool_name", "learner_content", "next_state", "run_result"}`.
+- Onboarding entrypoint: `invoke_onboarding_orchestration(...) -> {"next_action", "intent_type", "intent_payload"}`.
+- Review entrypoint: `invoke_review_orchestration(...) -> {"next_action", "intent_type", "intent_payload"}`.
+- Feature flag: `LANGGRAPH_ENABLED`; when false, the previous stable service path must remain available until the migration task explicitly removes it.
+
+### 3. Contracts
+
+- Graph modules own routing decisions, stage transitions, next-action selection, and intent production.
+- Graph modules must return shared `GraphRunResult` or adapt raw graph output through a `*_result_to_run_result()` helper before service code consumes it.
+- Services and routes own durable writes, idempotency replay, transactions, public response envelopes, and SSE frame order.
+- Repository modules own SQL and persistence invariants; graph nodes must not open database connections or write product rows directly.
+- Route handlers may pre-load service-owned facts for graph input, but they must consume graph intents rather than call the graph only for telemetry.
+- Feature-flag fallback must be deterministic: disabled graph path or graph exception falls back to the last stable service logic without changing public response shape.
+- Graph context, diagnostics, and intent payloads must be bounded and redacted: no hidden tests, `solution_reference`, raw prompts, provider payloads, submitted code, stack traces, API keys, or secrets.
+
+### 4. Validation & Error Matrix
+
+- `LANGGRAPH_ENABLED=false` -> use the stable non-graph branch and keep existing status codes/SSE events.
+- Graph compile or invoke exception -> catch at the service/route boundary, produce a safe fallback, and do not leak raw graph errors.
+- Graph emits a persistence intent that does not match the route action -> reject or continue fallback; do not perform the write blindly.
+- Graph emits route-generation/tool intent -> service builds/stashes the plan or tool args, then emits the existing public `tool_call` contract.
+- Graph emits review not-due action -> route returns the same `REVIEW_NOT_DUE` envelope as repository validation.
+- Idempotency replay -> return stored Aearn response and do not re-run graph side-effect decisions that could drift stored tool calls.
+
+### 5. Good/Base/Bad Cases
+
+- Good: onboarding confirm calls the graph, verifies a `confirm_plan` persistence intent, then the service confirms the stashed draft in the existing transaction.
+- Good: review start/warmup/submit invoke the review graph from real route paths while repositories still own `ReviewState`, `ReviewLog`, and `Attempt` writes.
+- Base: local development keeps `LANGGRAPH_ENABLED=false`; all old-path route tests still pass with the same public contract.
+- Bad: graph nodes write `LearningSession`, `Attempt`, `ReviewState`, or `LearningPlan` rows directly, or routes call graphs but ignore their `GraphRunResult` intents.
+
+### 6. Tests Required
+
+- Unit-test graph node routing and `*_result_to_run_result()` adapters for each migrated flow.
+- Route-level tests must set `LANGGRAPH_ENABLED=true`, monkeypatch the graph entrypoint, and assert the production path consumes graph intents.
+- Route-level tests must keep flag-off fallback coverage for public response shape, idempotency replay, and SSE event ordering.
+- Add regression tests for graph error/fallback behavior and redaction of sensitive graph payload fields.
+- Run backend `pytest`, `ruff check .`, `mypy app`, and `pnpm --dir .\aearn desktop:check` before archiving a production graph migration.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+result = invoke_review_orchestration(...)
+submit_review_exercise_result(conn, ...)
+```
+
+This only observes the graph. The production route still ignores the graph's decision and can drift from the graph-owned orchestration contract.
+
+#### Correct
+
+```python
+result = invoke_review_orchestration(...)
+run_result = review_result_to_run_result(result)
+if run_result.next_stage == "reject_not_due":
+    return error_response(...)
+submit_review_exercise_result(conn, ...)
+```
+
+The graph owns the route decision; the route executes or rejects through the existing Aearn service/repository and public response contracts.
+
 ## Scenario: Shared Agent Runtime Context Layer
 
 ### 1. Scope / Trigger

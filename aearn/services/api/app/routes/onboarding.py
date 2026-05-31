@@ -1,13 +1,21 @@
 import asyncio
 import uuid
-from collections.abc import AsyncGenerator, Iterable
+from collections.abc import AsyncGenerator, Iterable, Mapping
 
 from fastapi import APIRouter, Header, Request, status
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from app.agents.graph_runtime_contracts import IntentType
+from app.agents.onboarding_graph import (
+    invoke_onboarding_orchestration,
+    onboarding_result_to_run_result,
+)
+from app.core.config import get_settings
 from app.core.errors import error_response, request_id_from
 from app.db.connection import connect
 from app.services.onboarding_conversation import (
+    ExtractedSlots,
+    OnboardingConversationContext,
     OnboardingPlanDraftError,
     OnboardingSessionNotFoundError,
     build_plan_draft_from_slots,
@@ -24,6 +32,7 @@ from app.services.onboarding_conversation import (
     prepare_onboarding_message,
     route_card_ready_generation,
     safe_generation_exceptions,
+    slots_from_context,
     stash_plan_draft,
     start_onboarding_generation,
     store_onboarding_agent_message,
@@ -45,6 +54,80 @@ router = APIRouter(prefix="/api/onboarding", tags=["onboarding"])
 
 SUPPORTED_ONBOARDING_LANGUAGES = ["python", "javascript", "html_css", "java", "cpp"]
 SUPPORTED_ONBOARDING_LANGUAGE_LABELS = "Python / JavaScript / HTML+CSS / Java / C++"
+
+
+def _onboarding_graph_decision(
+    context: OnboardingConversationContext,
+    slots: ExtractedSlots,
+    *,
+    user_text: str,
+) -> dict[str, object] | None:
+    if not get_settings().langgraph_enabled:
+        return None
+    stashed = context.extracted_context.get("plan_draft")
+    try:
+        return invoke_onboarding_orchestration(
+            conversation_id=context.conversation_id,
+            user_id=context.user_id,
+            status=context.status,
+            user_text=user_text,
+            plan_ready=slots.plan_ready,
+            has_stashed_draft=isinstance(stashed, Mapping),
+            revising=slots.revising,
+            language=slots.language,
+            target_level=slots.target_level,
+            goal_text=slots.goal_text,
+            missing_slot_question=slots.missing_slot_question,
+            core_slots_changed=_onboarding_core_slots_changed(context, slots),
+        )
+    except Exception:
+        return None
+
+
+def _should_generate_onboarding_route(
+    context: OnboardingConversationContext,
+    slots: ExtractedSlots,
+    *,
+    user_text: str,
+) -> bool:
+    decision = _onboarding_graph_decision(context, slots, user_text=user_text)
+    if decision is None:
+        return detect_plan_proposal(context, slots)
+    run_result = onboarding_result_to_run_result(decision)
+    return any(
+        intent.intent_type == IntentType.TOOL_CALL
+        and intent.target in {"build_plan_draft", "rebuild_plan_draft"}
+        for intent in run_result.intents
+    )
+
+
+def _onboarding_graph_allows_confirm(
+    context: OnboardingConversationContext,
+    slots: ExtractedSlots,
+) -> bool:
+    decision = _onboarding_graph_decision(context, slots, user_text="confirm")
+    if decision is None:
+        return True
+    run_result = onboarding_result_to_run_result(decision)
+    return any(
+        intent.intent_type == IntentType.PERSISTENCE
+        and intent.target == "confirm_plan"
+        for intent in run_result.intents
+    )
+
+
+def _onboarding_core_slots_changed(
+    context: OnboardingConversationContext,
+    slots: ExtractedSlots,
+) -> bool:
+    stashed = context.extracted_context.get("plan_draft")
+    if not isinstance(stashed, Mapping):
+        return False
+    return (
+        stashed.get("language") != slots.language
+        or stashed.get("target_level") != slots.target_level
+        or stashed.get("goal_text") != slots.goal_text
+    )
 
 
 @router.post("/messages", response_model=None)
@@ -162,6 +245,17 @@ async def confirm_onboarding_plan(
         # under the right user_id if not, so confirm_plan accepts it.
         if plan_draft.user_id != user_id:
             plan_draft = plan_draft.model_copy(update={"user_id": user_id})
+        if get_settings().langgraph_enabled:
+            slots = normalize_extracted_slots(slots_from_context(context.extracted_context))
+            if not _onboarding_graph_allows_confirm(context, slots):
+                return error_response(
+                    request,
+                    code="PLAN_DRAFT_NOT_READY",
+                    message="计划草稿尚未进入可确认状态，请先完成建档对话。",
+                    status_code=status.HTTP_409_CONFLICT,
+                    details={"conversation_id": conversation_id},
+                    recoverable=True,
+                )
 
         key = idempotency_key or default_confirm_key(user_id, plan_draft.draft_id)
         body_hash = request_hash(
@@ -345,7 +439,7 @@ async def _onboarding_message_stream(
         plan_error_payload: dict[str, str] | None = None
         learning_route_args: dict[str, object] | None = None
         route_tool_call_id: str | None = None
-        if detect_plan_proposal(refreshed, slots):
+        if _should_generate_onboarding_route(refreshed, slots, user_text=content):
             try:
                 with connect() as conn_plan:
                     plan_draft = build_plan_draft_from_slots(

@@ -1,6 +1,7 @@
 """Tests for LangGraph learning conversation state machine."""
 from __future__ import annotations
 
+from app.agents.graph_runtime_contracts import GraphRunResult, IntentType
 from app.agents.learning_graph import (
     AgentState,
     build_learning_graph,
@@ -9,6 +10,7 @@ from app.agents.learning_graph import (
     concept_intro,
     concept_repair,
     context_assembler,
+    invoke_orchestration,
     persist_side_effects,
     practice_offer,
     route_after_check,
@@ -127,3 +129,152 @@ class TestGraphStructure:
         result = compiled.invoke(initial_state)
         assert result["current_node"] == "persist_side_effects"
         assert result["side_effects"] == []
+
+
+class TestOrchestrationGraph:
+    """Tests for the orchestration graph that replaces _determine_transition."""
+
+    def _base_input(self, **overrides):
+        defaults = {
+            "session_id": "s1",
+            "user_id": "u1",
+            "learning_stage": "concept_check",
+            "learning_stage_state": {},
+            "user_text": "A",
+            "knowledge_point": {"id": "kp1", "title": "事件绑定"},
+            "lesson_outline": [
+                {"id": "sp1", "title": "事件监听", "note": "addEventListener"},
+                {"id": "sp2", "title": "状态共享", "note": "闭包变量"},
+            ],
+        }
+        defaults.update(overrides)
+        return defaults
+
+    def test_practice_support_stays(self):
+        result = invoke_orchestration(**self._base_input(
+            learning_stage="practice_support",
+            user_text="我的代码报错了",
+        ))
+        assert result["next_stage"] == "practice_support"
+        assert result["tool_name"] is None
+
+    def test_history_request(self):
+        result = invoke_orchestration(**self._base_input(
+            learning_stage="concept_intro",
+            user_text="我想看历史对话",
+        ))
+        assert result["tool_name"] == "show_learning_history"
+
+    def test_practice_request_from_concept_check(self):
+        result = invoke_orchestration(**self._base_input(
+            learning_stage="concept_check",
+            user_text="我想先开始练习",
+        ))
+        assert result["next_stage"] == "practice_support"
+        assert result["tool_name"] == "show_code_exercise"
+        assert result["next_state"]["practice_unlock_reason"] == "concept_check_skipped"
+        assert result["next_state"]["concept_check_result"] == "skipped"
+        run_result = result["run_result"]
+        assert isinstance(run_result, GraphRunResult)
+        assert run_result.next_stage == "practice_support"
+        assert any(
+            intent.intent_type == IntentType.STAGE_UPDATE
+            and intent.target == "learning_session"
+            for intent in run_result.intents
+        )
+        assert any(
+            intent.intent_type == IntentType.TOOL_CALL
+            and intent.target == "show_code_exercise"
+            for intent in run_result.intents
+        )
+
+    def test_practice_request_from_practice_offer(self):
+        result = invoke_orchestration(**self._base_input(
+            learning_stage="practice_offer",
+            user_text="开始练习",
+        ))
+        assert result["next_stage"] == "practice_support"
+        assert result["tool_name"] == "show_code_exercise"
+        assert result["next_state"]["practice_unlock_reason"] == "concept_check_passed"
+
+    def test_concept_check_answer(self):
+        result = invoke_orchestration(**self._base_input(
+            learning_stage="concept_check",
+            user_text="选A，因为变量在回调外面",
+        ))
+        assert result["next_stage"] == "concept_check"
+        assert result["tool_name"] == "show_concept_check_result"
+        assert result["learner_content"] == "选A，因为变量在回调外面"
+
+    def test_concept_repair_answer(self):
+        result = invoke_orchestration(**self._base_input(
+            learning_stage="concept_repair",
+            user_text="不能，它会重新开始",
+        ))
+        assert result["next_stage"] == "concept_repair"
+        assert result["tool_name"] == "show_concept_check_result"
+
+    def test_concept_intro_question(self):
+        result = invoke_orchestration(**self._base_input(
+            learning_stage="concept_intro",
+            user_text="为什么要用闭包？",
+        ))
+        assert result["next_stage"] == "concept_qna"
+        assert result["tool_name"] is None
+
+    def test_concept_intro_concept_help(self):
+        result = invoke_orchestration(**self._base_input(
+            learning_stage="concept_intro",
+            user_text="给我例子",
+        ))
+        assert result["next_stage"] == "concept_qna"
+        assert result["tool_name"] is None
+
+    def test_concept_intro_statement_goes_to_readiness(self):
+        result = invoke_orchestration(**self._base_input(
+            learning_stage="concept_intro",
+            user_text="我觉得事件绑定就是把函数挂到元素上",
+        ))
+        assert result["next_stage"] == "readiness_check"
+        assert result["tool_name"] is None
+
+    def test_readiness_check_feynman_pass(self):
+        result = invoke_orchestration(**self._base_input(
+            learning_stage="readiness_check",
+            user_text="因为事件绑定会把回调函数连接到 DOM 元素，状态变量放在回调外面所以多次触发会共享同一个值",
+        ))
+        assert result["next_stage"] == "practice_support"
+        assert result["tool_name"] == "show_code_exercise"
+        assert result["next_state"]["feynman_status"] == "passed"
+
+    def test_readiness_check_feynman_fail(self):
+        result = invoke_orchestration(**self._base_input(
+            learning_stage="readiness_check",
+            user_text="不太确定",
+        ))
+        assert result["next_stage"] == "readiness_check"
+        assert result["tool_name"] == "show_learning_history"
+        assert result["next_state"]["feynman_status"] == "failed"
+
+    def test_repair_limit_sets_correct_unlock_reason(self):
+        result = invoke_orchestration(**self._base_input(
+            learning_stage="concept_check",
+            learning_stage_state={"concept_check_attempts": 2, "repair_limit_reached": True},
+            user_text="开始练习",
+        ))
+        assert result["next_state"]["practice_unlock_reason"] == "concept_check_repair_limit"
+
+    def test_subpoint_ids_populated(self):
+        result = invoke_orchestration(**self._base_input(
+            learning_stage="concept_check",
+            user_text="A",
+        ))
+        assert result["next_state"]["covered_subpoint_ids"] == ["sp1", "sp2"]
+
+    def test_concept_summary_populated(self):
+        result = invoke_orchestration(**self._base_input(
+            learning_stage="concept_check",
+            user_text="A",
+        ))
+        assert "事件监听" in result["next_state"]["concept_summary"]
+        assert "状态共享" in result["next_state"]["concept_summary"]

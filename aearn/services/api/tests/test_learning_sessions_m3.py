@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app.routes.plans as plans_route
+from app.agents.graph_runtime_contracts import IntentType, build_run_result, make_intent
 from app.core.config import Settings, get_settings
 from app.db.bootstrap import bootstrap_database
 from app.db.connection import connect
@@ -792,6 +793,25 @@ def test_learning_message_langgraph_flag_on_invokes_graph_from_request_path(
     session = _start_session(client, user, plan)
     captured: dict[str, object] = {}
 
+    def fake_invoke_orchestration(**kwargs):  # type: ignore[no-untyped-def]
+        captured["orchestration"] = kwargs
+        return {
+            "run_result": build_run_result(
+                next_stage="concept_qna",
+                intents=[
+                    make_intent(
+                        IntentType.STAGE_UPDATE,
+                        "learning_session",
+                        {
+                            "learning_stage": "concept_qna",
+                            "learning_stage_state": {"graph_owned": True},
+                            "learner_content": "",
+                        },
+                    )
+                ],
+            )
+        }
+
     class FakeCompiledGraph:
         def invoke(self, state):  # type: ignore[no-untyped-def]
             captured["state"] = state
@@ -814,6 +834,11 @@ def test_learning_message_langgraph_flag_on_invokes_graph_from_request_path(
         ),
     )
     monkeypatch.setattr(learning_conversation, "compile_learning_graph", lambda: FakeCompiledGraph())
+    monkeypatch.setattr(
+        learning_conversation,
+        "invoke_orchestration",
+        fake_invoke_orchestration,
+    )
 
     response = client.post(
         f"/api/learning-sessions/{session['session_id']}/messages",
@@ -826,7 +851,12 @@ def test_learning_message_langgraph_flag_on_invokes_graph_from_request_path(
 
     assert response.status_code == 200
     state = captured["state"]
+    orchestration = captured["orchestration"]
     assert isinstance(state, dict)
+    assert isinstance(orchestration, dict)
+    assert orchestration["session_id"] == session["session_id"]
+    assert response.json()["session_state"]["learning_stage"] == "concept_qna"
+    assert response.json()["session_state"]["learning_stage_state"]["graph_owned"] is True
     assert state["user_id"] == user["id"]
     assert state["session_id"] == session["session_id"]
     assert state["session_type"] == "learning"
