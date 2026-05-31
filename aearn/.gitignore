@@ -6,6 +6,7 @@ node_modules/
 dist/
 .turbo/
 .vite/
+.logs/
 
 .venv/
 __pycache__/

@@ -21,6 +21,7 @@ const ERROR_MESSAGES: Record<string, string> = {
   PLAN_NOT_FOUND: "学习计划不存在",
   PLAN_DRAFT_INVALID: "计划草稿校验失败",
   COURSE_NOT_FOUND: "课程不存在",
+  LANGUAGE_NOT_SUPPORTED: "当前语言暂不支持，请选择支持的语言",
   KNOWLEDGE_POINT_NOT_FOUND: "知识点不存在",
   EXERCISE_NOT_FOUND: "练习不存在",
   MODULE_NOT_FOUND: "模块不存在",

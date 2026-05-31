@@ -19,10 +19,12 @@ import { AssistantUIThread } from "../components/AssistantUIThread";
 import {
   LearningToolRuntimeProvider,
 } from "../components/generative-ui/assistantToolUIs";
-import type { CodeExerciseToolArgs } from "../components/generative-ui/types";
+import type { CodeExerciseToolArgs, ConceptChoiceOption } from "../components/generative-ui/types";
 import { SystemCard } from "../components/SystemCard";
 import { ExerciseWorkbench } from "../features/learning/ExerciseWorkbench";
 import {
+  buildRunAgentFeedback,
+  buildSubmitAgentFeedback,
   createMessage,
   initialBlankState,
   materializeExerciseCode,
@@ -183,10 +185,9 @@ export function LearningWorkspacePage({
       ]
     : [...messages, ...(resumeExerciseMessage ? [resumeExerciseMessage] : [])];
 
-  const learningQuickReplies =
-    practiceUnlocked
-      ? ["给我提示", "解释这个错误"]
-      : ["A", "B", "我不确定", "开始练习"];
+  const learningQuickReplies = practiceUnlocked
+    ? ["给我提示", "解释这个错误"]
+    : quickRepliesForConceptCheck(threadMessages);
 
   // --- SSE streaming for composer messages ---
   useSSE(composerStream?.endpoint ?? null, {
@@ -343,6 +344,7 @@ export function LearningWorkspacePage({
         if (!response.idempotency_replayed && (response.runtime_status !== "success" || (runMode === "visible_tests" && response.test_pass_rate < 1))) {
           setErrorCount((current) => current + 1);
         }
+        onAddMessage(createMessage("agent", buildRunAgentFeedback(response, runMode), "Agent"));
       });
     } catch (error) {
       setExerciseActionState(toActionError(error));
@@ -380,6 +382,7 @@ export function LearningWorkspacePage({
         onKnowledgePointUpdate(response.KnowledgePoint);
         setExerciseActionState({ status: "idle" });
         setIsStale(false);
+        onAddMessage(createMessage("agent", buildSubmitAgentFeedback(response), "Agent"));
       });
     } catch (error) {
       setExerciseActionState(toActionError(error));
@@ -603,7 +606,7 @@ export function LearningWorkspacePage({
                 noteDrawerOpen ? onCloseNoteDrawer() : onOpenNoteDrawer();
               }}
               hideNoteButton={false}
-              quickReplies={session && messages.length === 0 ? learningQuickReplies : undefined}
+              quickReplies={session ? learningQuickReplies : undefined}
             />
           </LearningToolRuntimeProvider>
 
@@ -651,4 +654,71 @@ function extractExerciseFromToolArgs(args: unknown): LearningExercise | null {
     return null;
   }
   return exercise as LearningExercise;
+}
+
+function quickRepliesForConceptCheck(messages: ConversationMessage[]): string[] {
+  return latestConceptQuickReplies(messages) ?? ["我不确定", "开始练习"];
+}
+
+function latestConceptQuickReplies(messages: ConversationMessage[]): string[] | null {
+  for (let messageIndex = messages.length - 1; messageIndex >= 0; messageIndex -= 1) {
+    const toolCalls = messages[messageIndex].toolCalls ?? [];
+    for (let toolIndex = toolCalls.length - 1; toolIndex >= 0; toolIndex -= 1) {
+      const toolCall = toolCalls[toolIndex];
+      if (toolCall.name === "show_concept_check_result") {
+        const repairOptions = conceptOptionsFromPath(toolCall.args, ["repair_check", "options"]);
+        if (repairOptions.length > 0) {
+          return repairOptions.map((option) => option.id);
+        }
+        const actionLabels = conceptActionLabels(toolCall.args);
+        if (actionLabels.length > 0) {
+          return actionLabels;
+        }
+      }
+      if (toolCall.name === "show_concept_intro") {
+        const introOptions = conceptOptionsFromPath(toolCall.args, ["check", "options"]);
+        if (introOptions.length > 0) {
+          return introOptions.map((option) => option.id);
+        }
+      }
+      if (toolCall.name === "show_code_exercise") {
+        return null;
+      }
+    }
+  }
+  return null;
+}
+
+function conceptOptionsFromPath(value: unknown, path: string[]): ConceptChoiceOption[] {
+  let current = value;
+  for (const key of path) {
+    if (!isRecord(current)) {
+      return [];
+    }
+    current = current[key];
+  }
+  if (!Array.isArray(current)) {
+    return [];
+  }
+  return current
+    .filter((option): option is Record<string, unknown> => isRecord(option))
+    .map((option, index) => ({
+      id: typeof option.id === "string" && option.id.trim() ? option.id.trim() : String.fromCharCode(65 + index),
+      text: typeof option.text === "string" ? option.text : "",
+    }))
+    .filter((option) => option.text.trim().length > 0);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function conceptActionLabels(value: unknown): string[] {
+  if (!isRecord(value) || !Array.isArray(value.actions)) {
+    return [];
+  }
+  return value.actions
+    .filter((action): action is Record<string, unknown> => isRecord(action))
+    .map((action) => (typeof action.label === "string" ? action.label.trim() : ""))
+    .filter(Boolean);
 }

@@ -2,6 +2,7 @@ import type {
   AsyncActionState,
   ConversationMessage,
   DraftModuleCard,
+  ExerciseRunMode,
   LearnNavItem,
   ReviewCard,
   RouteCard,
@@ -15,7 +16,7 @@ import type {
   RunExerciseResponse,
   SubmitExerciseResponse,
 } from "../types";
-import { knowledgePointStatusLabel, runtimeLabel, runtimeStatusLabel } from "./desktopLabels";
+import { knowledgePointStatusLabel, nextActionLabel, runtimeLabel, runtimeStatusLabel } from "./desktopLabels";
 
 let messageCounter = 0;
 
@@ -124,6 +125,37 @@ export function buildAttemptDraft(
     lines.push("", "Attempt 1：先补全最小代码，再运行可见测试。");
   }
   return lines.join("\n");
+}
+
+export function buildRunAgentFeedback(result: RunExerciseResponse, runMode: ExerciseRunMode): string {
+  const actionLabel = nextActionLabel(result.next_action);
+  if (result.runtime_status === "unsupported") {
+    return "当前语言的运行能力还没有开放，先按题面做静态理解和补全；如果需要继续练习，我会引导你换到当前支持的运行环境。";
+  }
+
+  if (result.runtime_status !== "success") {
+    const errorSummary = result.error_message ? `\n\n错误摘要：${result.error_message}` : "";
+    return `这次${runMode === "preview" ? "预览" : "可见测试"}没有通过，先看右侧真实运行结果。你可以点“解释这个错误”，我会按 stderr 和失败测试拆解原因。${errorSummary}`;
+  }
+
+  if (runMode === "preview") {
+    return `预览已经运行成功。先确认输出是否符合题意；如果要进入评分，请再运行可见测试，然后提交结果。`;
+  }
+
+  if (result.total_test_count === 0) {
+    return `代码运行成功。下一步建议：${actionLabel}。`;
+  }
+
+  if (result.passed_test_count === result.total_test_count) {
+    return `可见测试全部通过：${result.passed_test_count}/${result.total_test_count}。当前结果可以提交；提交后我会根据评分结果安排下一步。`;
+  }
+
+  return `代码已经能运行，但可见测试只通过 ${result.passed_test_count}/${result.total_test_count}。先对照右侧失败项修正，也可以让我解释这个错误。`;
+}
+
+export function buildSubmitAgentFeedback(result: SubmitExerciseResponse): string {
+  const feedback = result.code_completion_result.feedback.trim() || "提交已记录，评分结果已经写回当前知识点。";
+  return `${feedback}\n\n本次得分 ${result.code_completion_result.score}/8，下一步建议：${nextActionLabel(result.next_action)}。`;
 }
 
 export function mergeAttemptIntoNote(currentNote: string, attempt: string): string {
