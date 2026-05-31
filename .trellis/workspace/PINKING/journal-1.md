@@ -1033,3 +1033,36 @@ Wired AgentSideEffects and LearningToolContext into JSON/SSE learning message ge
 ### Next Steps
 
 - None - task complete
+
+
+## Session 32: Learner profile runtime integration
+
+**Date**: 2026-05-31
+**Task**: Learner profile runtime integration
+**Branch**: `main`
+
+### Summary
+
+Ensured learner profiles on learning session start, injected compact profile summaries into learning agent context, and drained profile side effects for the authenticated user.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `33e3cc3` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
