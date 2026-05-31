@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 30
+- **Total Sessions**: 31
 - **Last Active**: 2026-05-31
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~1002 | Active |
+| `journal-1.md` | ~1035 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 31 | 2026-05-31 | Learning agent side effects wiring | `4f7d385` | `main` |
 | 30 | 2026-05-31 | Cross-page Structured Judgement Integration | `f67eb3b` | `main` |
 | 29 | 2026-05-31 | Agent architecture upgrade closeout | `3c04803` | `main` |
 | 28 | 2026-05-30 | Learning concept checks and review seed banks | `8a40074` | `main` |
