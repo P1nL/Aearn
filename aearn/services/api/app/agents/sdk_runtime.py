@@ -64,6 +64,7 @@ def build_agent(
     model: str,
     temperature: float | None,
     tools: Sequence[Tool] | None = None,
+    handoffs: Sequence[Agent[Any]] | None = None,
     input_guardrails: Sequence[InputGuardrail[object]] | None = None,
     output_guardrails: Sequence[OutputGuardrail[object]] | None = None,
 ) -> Agent[object]:
@@ -71,6 +72,7 @@ def build_agent(
         name=name,
         instructions=instructions,
         tools=list(tools or []),
+        handoffs=list(handoffs or []),
         model=model,
         model_settings=ModelSettings(temperature=temperature),
         input_guardrails=list(input_guardrails or []),

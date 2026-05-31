@@ -31,6 +31,7 @@ from app.agents.guardrails import (
 )
 from app.agents.learning_conversation_agent import AgentsSDKLearningConversationClient
 from app.agents.learning_concept_agent import build_sdk_concept_check_result
+from app.agents.tools import AgentSideEffects, LearningToolContext
 from app.core.config import Settings, get_settings
 from app.services.exercise_repository import get_exercise
 from app.services.learning_session_repository import (
@@ -180,6 +181,7 @@ LEARNING_TUTOR_USER_PROMPT_PREFIX = """请根据下面 JSON 回复学习者。�
 - 如果需要追问，只问一个高价值问题。
 - 如果学习者在要完整答案，转成具体局部提示或检查步骤，不给完整答案。
 - 承接 conversation_context，避免重复上一轮已经讲过的内容。
+- 如果 concept_progress.latest_concept_check_result 存在，它就是本轮概念判断事实；回复必须与其 result、repair_check 和 actions 对齐，不要再提出冲突的新判断题。
 - 回复要自然，像真人导师，不要像流程提示、测试断言或安全拒绝模板。
 
 """
@@ -252,6 +254,13 @@ class LearningConversationTransition:
 
 
 @dataclass(frozen=True)
+class PreparedLearningToolTransition:
+    tool_calls: tuple[dict[str, object], ...]
+    final_stage: str
+    final_state: Mapping[str, object]
+
+
+@dataclass(frozen=True)
 class PreparedLearningMessage:
     key: str
     payload_hash: str
@@ -259,6 +268,7 @@ class PreparedLearningMessage:
     context: LearningConversationContext
     transition: LearningConversationTransition
     stored_response: Mapping[str, object] | None
+    precomputed_transition: PreparedLearningToolTransition | None = None
 
 
 @dataclass(frozen=True)
@@ -365,12 +375,17 @@ def create_learning_message_response(
         settings=effective_settings,
         client=effective_client,
     )
-    text, generation_source, generation_model = collect_learning_message_text(
-        prepared.context,
-        user_content=content,
-        settings=effective_settings,
-        client=effective_client,
-    )
+    prepared = precompute_learning_message_transition(prepared)
+    deterministic = deterministic_learning_message_text(prepared)
+    if deterministic is None:
+        text, generation_source, generation_model = collect_learning_message_text(
+            prepared.context,
+            user_content=content,
+            settings=effective_settings,
+            client=effective_client,
+        )
+    else:
+        text, generation_source, generation_model = deterministic
     response = build_learning_message_response(
         prepared,
         content=text,
@@ -409,12 +424,58 @@ def prepare_learning_message_for_generation(
     return replace(prepared, context=updated_context, transition=updated_transition)
 
 
+def deterministic_learning_message_text(prepared: PreparedLearningMessage) -> tuple[str, str, str] | None:
+    if prepared.stored_response is not None:
+        return None
+    if prepared.transition.tool_name != "show_code_exercise":
+        return None
+
+    content = _deterministic_practice_unlock_message(prepared.transition.learning_stage_state)
+    assert_safe_teaching_output(content)
+    return content, "deterministic", ""
+
+
+def precompute_learning_message_transition(prepared: PreparedLearningMessage) -> PreparedLearningMessage:
+    if prepared.stored_response is not None or prepared.precomputed_transition is not None:
+        return prepared
+    if prepared.transition.tool_name != "show_concept_check_result":
+        return prepared
+
+    result_args, final_stage, final_state = _build_concept_check_result_tool(prepared.context, prepared.transition)
+    final_state_with_result = dict(final_state)
+    final_state_with_result["latest_concept_check_result"] = dict(result_args)
+    tool_call = _tool_call("show_concept_check_result", result_args, prepared.message_id)
+    final_context = replace(
+        prepared.context,
+        learning_stage=final_stage,
+        learning_stage_state=final_state_with_result,
+        exercise=None,
+    )
+    final_transition = replace(
+        prepared.transition,
+        learning_stage=final_stage,
+        learning_stage_state=final_state_with_result,
+    )
+    return replace(
+        prepared,
+        context=final_context,
+        transition=final_transition,
+        precomputed_transition=PreparedLearningToolTransition(
+            tool_calls=(tool_call,),
+            final_stage=final_stage,
+            final_state=final_state_with_result,
+        ),
+    )
+
+
 def start_learning_message_generation(
     context: LearningConversationContext,
     *,
     user_content: str,
     settings: Settings | None = None,
     client: TextCompletionClient | None = None,
+    side_effects: AgentSideEffects | None = None,
+    tool_context: LearningToolContext | None = None,
 ) -> LearningMessageGeneration:
     effective_settings = settings or get_settings()
     if check_teaching_request(user_content).blocked:
@@ -422,7 +483,14 @@ def start_learning_message_generation(
     if client is None:
         if not effective_settings.openai_compatible_configured:
             raise LLMConfigurationError("Learning conversation requires configured model API")
-        client = AgentsSDKLearningConversationClient(effective_settings)
+        if side_effects is not None or tool_context is not None:
+            client = AgentsSDKLearningConversationClient(
+                effective_settings,
+                side_effects=side_effects,
+                tool_context=tool_context,
+            )
+        else:
+            client = AgentsSDKLearningConversationClient(effective_settings)
 
     messages = _build_messages(context, user_content=user_content)
     return LearningMessageGeneration(
@@ -489,7 +557,7 @@ def store_learning_message_response(
     response: Mapping[str, object],
 ) -> dict[str, object]:
     finalized = dict(response)
-    tool_calls, final_stage, final_state = _apply_transition_and_build_tool_calls(conn, prepared)
+    tool_calls, final_stage, final_state = _apply_or_reuse_transition(conn, prepared)
     if tool_calls:
         finalized["tool_calls"] = tool_calls
     finalized["session_state"] = {
@@ -521,6 +589,23 @@ def store_learning_message_response(
         (prepared.key, LEARNING_MESSAGE_OPERATION, prepared.payload_hash, json.dumps(finalized)),
     )
     return finalized
+
+
+def _apply_or_reuse_transition(
+    conn: Connection[dict[str, object]],
+    prepared: PreparedLearningMessage,
+) -> tuple[list[dict[str, object]], str, Mapping[str, object]]:
+    precomputed = prepared.precomputed_transition
+    if precomputed is None:
+        return _apply_transition_and_build_tool_calls(conn, prepared)
+    if prepared.transition.tool_name == "show_concept_check_result":
+        update_learning_session_stage(
+            conn,
+            session_id=prepared.context.session_id,
+            learning_stage=precomputed.final_stage,
+            state=precomputed.final_state,
+        )
+    return [dict(tool_call) for tool_call in precomputed.tool_calls], precomputed.final_stage, precomputed.final_state
 
 
 def load_learning_conversation_context(
@@ -933,6 +1018,7 @@ def _empty_safe_summary() -> dict[str, object]:
 
 def _response_policy(context: LearningConversationContext, user_content: str) -> dict[str, object]:
     direct_answer_requested = detect_direct_answer_request(user_content)
+    concept_result = str(context.learning_stage_state.get("concept_check_result") or "")
     stage_strategy = {
         "concept_intro": "建立直觉和概念边界，不展开完整练习。",
         "concept_check": "围绕当前概念判断题判断学习者自然语言回答。",
@@ -940,6 +1026,12 @@ def _response_policy(context: LearningConversationContext, user_content: str) ->
         "practice_offer": "学习者已通过概念判断，确认是否进入真实练习。",
         "practice_support": "基于可见练习、运行结果和安全摘要定位下一处检查点。",
     }.get(context.learning_stage, "先诊断，再给一个可执行下一步。")
+    if context.learning_stage == "practice_offer" and concept_result == "correct":
+        stage_strategy = "概念判断已经通过；不要再追问新的概念题或变体，只用 1-3 句承接判断结果，并提示可以开始练习或再看一个例子。"
+    elif context.learning_stage == "concept_repair" and concept_result == "incorrect":
+        stage_strategy = "概念判断暂未通过；不要生成额外新题，只引导学习者回答结构化修复题或说明当前误解。"
+    elif context.learning_stage in {"concept_check", "concept_repair"} and concept_result == "unclear":
+        stage_strategy = "概念判断还不明确；不要换新变体，只要求学习者补充当前题的选项或一句具体依据。"
     return {
         "diagnosis_first": True,
         "max_follow_up_questions": 1,
@@ -1114,6 +1206,40 @@ def _determine_transition(
         return LearningConversationTransition("readiness_check", state, tool_name="show_learning_history")
 
     return LearningConversationTransition(stage, state)
+
+
+def _prepare_stage_state(
+    current_state: Mapping[str, object],
+    new_stage: str,
+    context: LearningConversationContext,
+) -> dict[str, object]:
+    """Prepare learning_stage_state for a given target stage.
+
+    This is the state-preparation logic extracted from _determine_transition,
+    used when the agent drives the transition via tool call.
+    """
+    state = dict(current_state)
+    state["covered_subpoint_ids"] = _lesson_subpoint_ids(context)
+    state["concept_summary"] = _concept_summary(context)
+
+    if new_stage == "practice_support":
+        state.setdefault("feynman_status", "pending")
+        state.setdefault(
+            "practice_unlock_reason",
+            _practice_unlock_reason_for_stage(context.learning_stage, current_state),
+        )
+        state.setdefault("learning_incomplete", True)
+
+    elif new_stage in ("concept_check", "concept_repair"):
+        state["practice_unlock_reason"] = None
+        state["learning_incomplete"] = True
+
+    elif new_stage in ("concept_intro", "concept_qna", "readiness_check"):
+        state["feynman_status"] = "pending"
+        state["practice_unlock_reason"] = None
+        state["learning_incomplete"] = True
+
+    return state
 
 
 def _context_with_transition(
@@ -1333,6 +1459,17 @@ def _practice_unlock_reason_for_stage(stage: str, state: Mapping[str, object]) -
     if stage in {"concept_check", "concept_repair"}:
         return "concept_check_skipped"
     return "early_request"
+
+
+def _deterministic_practice_unlock_message(state: Mapping[str, object]) -> str:
+    reason = str(state.get("practice_unlock_reason") or "early_request")
+    if reason == "concept_check_passed":
+        return "可以，概念判断已经通过。下面直接进入练习；先按练习卡片写代码，运行后把结果发给我。"
+    if reason == "concept_check_skipped":
+        return "可以先进入练习。我会把概念检查标记为未完成；先按练习卡片写代码，运行后把结果发给我。"
+    if reason == "concept_check_repair_limit":
+        return "我们先换到练习里定位问题。下面直接进入练习；运行后把结果发给我。"
+    return "可以先进入练习。下面直接展示练习卡片；运行后把结果发给我。"
 
 
 def _ensure_actions(value: object, defaults: Sequence[Mapping[str, str]]) -> list[dict[str, str]]:

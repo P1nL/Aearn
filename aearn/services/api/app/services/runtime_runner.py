@@ -5,6 +5,8 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
+from app.services.sandbox import SandboxExecutionResult, execute_python_with_tests
+
 
 @dataclass(slots=True)
 class RuntimeExecutionResult:
@@ -140,6 +142,8 @@ def run_exercise(
                 any_blank_passed=False,
                 logic_pass=False,
             )
+        if _real_execution_enabled():
+            return _run_real_python(exercise, code)
 
     if runtime_tier == "browser_preview" and _looks_like_browser_runtime_error(code):
         return RuntimeExecutionResult(
@@ -397,3 +401,120 @@ def _shared_state_pass(code: str, runtime_tier: str) -> bool:
         return False
     prefix = code[:listener_index]
     return "let count = 0" in prefix or "const count = 0" in prefix or "var count = 0" in prefix
+
+
+def _real_execution_enabled() -> bool:
+    from app.core.config import get_settings
+    return get_settings().real_execution_enabled
+
+
+def _run_real_python(exercise: Mapping[str, object], code: str) -> RuntimeExecutionResult:
+    test_cases = exercise.get("test_cases", [])
+    if not isinstance(test_cases, Sequence):
+        test_cases = []
+
+    metadata = exercise.get("metadata_json", {})
+    entry_function: str | None = None
+    if isinstance(metadata, Mapping):
+        ef = metadata.get("entry_function")
+        if ef:
+            entry_function = str(ef)
+
+    sandbox_result: SandboxExecutionResult = execute_python_with_tests(
+        code,
+        test_cases,
+        entry_function=entry_function,
+        timeout_s=10.0,
+    )
+
+    if sandbox_result.status == "timeout":
+        return RuntimeExecutionResult(
+            runtime_status="timeout",
+            stdout=sandbox_result.stdout,
+            stderr=sandbox_result.stderr,
+            test_pass_rate=0.0,
+            passed_test_count=0,
+            total_test_count=len(test_cases),
+            test_results=_build_failed_cases(exercise, "Execution timed out."),
+            error_message="Code execution timed out.",
+            next_action="retry_same",
+            preview_html=None,
+            core_blank_gate=False,
+            any_blank_passed=False,
+            logic_pass=False,
+        )
+
+    if sandbox_result.status == "sandbox_error":
+        return RuntimeExecutionResult(
+            runtime_status="sandbox_error",
+            stdout=sandbox_result.stdout,
+            stderr=sandbox_result.stderr,
+            test_pass_rate=0.0,
+            passed_test_count=0,
+            total_test_count=len(test_cases),
+            test_results=_build_failed_cases(exercise, sandbox_result.error or "Sandbox error"),
+            error_message=sandbox_result.error or "Sandbox execution failed.",
+            next_action="explain_error",
+            preview_html=None,
+            core_blank_gate=False,
+            any_blank_passed=False,
+            logic_pass=False,
+        )
+
+    if sandbox_result.status == "error":
+        return RuntimeExecutionResult(
+            runtime_status="runtime_error",
+            stdout=sandbox_result.stdout,
+            stderr=sandbox_result.stderr,
+            test_pass_rate=0.0,
+            passed_test_count=0,
+            total_test_count=len(test_cases),
+            test_results=_build_failed_cases(exercise, sandbox_result.error or "Runtime error"),
+            error_message=sandbox_result.error or "Code raised an error during execution.",
+            next_action="explain_error",
+            preview_html=None,
+            core_blank_gate=False,
+            any_blank_passed=False,
+            logic_pass=False,
+        )
+
+    test_results: list[dict[str, object]] = []
+    for tr in sandbox_result.test_results:
+        test_results.append({
+            "case_id": tr.case_id,
+            "case_type": tr.case_type,
+            "passed": tr.passed,
+            "weight": tr.weight,
+            "is_critical": tr.is_critical,
+            "duration_ms": tr.duration_ms,
+            "message": tr.message,
+        })
+
+    total_weight = sum(tr.weight for tr in sandbox_result.test_results)
+    passed_weight = sum(tr.weight for tr in sandbox_result.test_results if tr.passed)
+    passed_count = sum(1 for tr in sandbox_result.test_results if tr.passed)
+    total_count = len(sandbox_result.test_results) or len(test_cases)
+    test_pass_rate = 0.0 if total_weight == 0 else round(passed_weight / total_weight, 4)
+
+    logic_pass = test_pass_rate == 1.0
+    core_blank_gate = logic_pass
+    any_blank_passed = passed_count > 0
+
+    success = logic_pass
+    next_action = _next_action_for_run(test_results, success, "python_stdout_test")
+
+    return RuntimeExecutionResult(
+        runtime_status="success",
+        stdout=sandbox_result.stdout.rstrip("\n"),
+        stderr=sandbox_result.stderr,
+        test_pass_rate=test_pass_rate,
+        passed_test_count=passed_count,
+        total_test_count=total_count,
+        test_results=test_results,
+        error_message=None,
+        next_action=next_action,
+        preview_html=None,
+        core_blank_gate=core_blank_gate,
+        any_blank_passed=any_blank_passed,
+        logic_pass=logic_pass,
+    )

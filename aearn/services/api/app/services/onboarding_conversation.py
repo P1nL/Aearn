@@ -17,6 +17,11 @@ from app.agents.onboarding_slot_extractor import (
     merge_slots,
     slots_from_context,
 )
+from app.agents.structured_judgement import (
+    FieldPolicy,
+    JudgementPolicy,
+    normalize_judgements,
+)
 from app.core.config import Settings, get_settings
 from app.models.onboarding import (
     PlanDraft,
@@ -31,6 +36,52 @@ from app.services.user_repository import get_user
 
 ONBOARDING_MESSAGE_OPERATION = "onboarding_message"
 ROUTE_CARD_READY_MESSAGE = "信息够了，我生成一份路线卡片。想改方向、时间或难度，直接回复我就行。"
+REQUIRED_SLOT_PRIORITY = ("language", "goal_text", "target_level")
+OPTIONAL_CLARIFICATION_SLOT_PRIORITY = ("time_budget", "focus")
+CLARIFICATION_SLOT_PRIORITY = REQUIRED_SLOT_PRIORITY + OPTIONAL_CLARIFICATION_SLOT_PRIORITY
+
+ONBOARDING_JUDGEMENT_POLICY = JudgementPolicy(
+    fields=[
+        FieldPolicy(
+            name="language",
+            required=True,
+            fallback_question="你想主学哪门语言？目前支持 Python、JavaScript、HTML+CSS、Java 和 C++。",
+        ),
+        FieldPolicy(
+            name="goal_text",
+            required=True,
+            fallback_question="你最想用它做什么具体方向或项目？",
+        ),
+        FieldPolicy(
+            name="target_level",
+            required=True,
+            fallback_question="你现在大概是零基础、会一点语法，还是已经能独立写小项目？",
+        ),
+        FieldPolicy(
+            name="time_budget",
+            required=False,
+            fallback_question="你这次说的学习时间具体是每天多久、每周几天，还是每周总共多久？",
+            blocks_on=("ambiguous", "unsupported"),
+        ),
+        FieldPolicy(
+            name="focus",
+            required=False,
+            fallback_question="你想把重点方向放在哪里？比如 Web、数据分析、自动化或算法，选一个主线就行。",
+            blocks_on=("ambiguous", "unsupported"),
+        ),
+    ],
+    default_fallback_question="再补一句你的目标或当前基础，我再生成路线。",
+)
+ROUTE_READY_CLAIM_MARKERS = (
+    "信息够",
+    "路线卡",
+    "生成路线",
+    "生成一份路线",
+    "生成学习路线",
+    "学习计划已",
+    "可以开始学习",
+    "开始学习吧",
+)
 
 
 class OnboardingTextCompletionClient(Protocol):
@@ -347,6 +398,25 @@ def route_card_ready_generation(
     )
 
 
+def normalize_onboarding_agent_message(
+    content: str,
+    *,
+    slots: ExtractedSlots,
+    route_ready: bool,
+) -> str:
+    """Keep visible onboarding text aligned with server-owned slot readiness."""
+
+    text = content.strip()
+    if route_ready:
+        return text
+    question = (slots.missing_slot_question or "").strip()
+    if _claims_route_ready(text) or (
+        question and _has_structured_clarification(slots) and not _text_contains_phrase(text, question)
+    ):
+        return _missing_slot_followup_message(slots)
+    return text
+
+
 def safe_generation_exceptions() -> tuple[type[Exception], ...]:
     return (LLMCallError, LLMConfigurationError, LLMInvalidResponseError, TypeError, ValueError)
 
@@ -371,11 +441,34 @@ def extract_slots(
 
     try:
         new = extractor.extract(context.history, prior)
-        return merge_slots(prior, new)
+        return normalize_extracted_slots(merge_slots(prior, new))
     except (LLMCallError, LLMConfigurationError, LLMInvalidResponseError):
         raise
     except Exception as exc:  # noqa: BLE001 - normalize SDK/runtime failures
         raise LLMCallError("Onboarding slot extractor failed") from exc
+
+
+def normalize_extracted_slots(slots: ExtractedSlots) -> ExtractedSlots:
+    """Accept only confirmed slot judgements and recompute server readiness.
+
+    Delegates to the shared structured_judgement module with the onboarding
+    policy, then maps the result back to ExtractedSlots fields.
+    """
+
+    field_values: dict[str, object] = {
+        name: getattr(slots, name, None) for name in CLARIFICATION_SLOT_PRIORITY
+    }
+
+    result = normalize_judgements(
+        field_values,
+        slots.slot_statuses,
+        ONBOARDING_JUDGEMENT_POLICY,
+    )
+
+    updates: dict[str, object] = {name: None for name in result.cleared_fields}
+    updates["plan_ready"] = result.ready
+    updates["missing_slot_question"] = result.clarification_question
+    return slots.model_copy(update=updates)
 
 
 def detect_plan_proposal(
@@ -391,7 +484,7 @@ def detect_plan_proposal(
          revising, OR newly extracted core slots differ from the stashed draft.
     """
 
-    extracted = slots or slots_from_context(context.extracted_context)
+    extracted = normalize_extracted_slots(slots or slots_from_context(context.extracted_context))
     if not extracted.plan_ready:
         return False
     if not (extracted.language and extracted.target_level and extracted.goal_text):
@@ -624,6 +717,12 @@ def _build_messages(
             "time_budget": extracted.time_budget.model_dump() if extracted.time_budget else None,
             "focus": extracted.focus,
             "plan_ready": extracted.plan_ready,
+            "missing_slot_question": extracted.missing_slot_question,
+            "unsupported_language": extracted.unsupported_language,
+            "slot_statuses": {
+                name: judgement.model_dump(mode="json")
+                for name, judgement in extracted.slot_statuses.items()
+            },
         },
         ensure_ascii=False,
     )
@@ -649,6 +748,7 @@ def _build_messages(
                 "2. 再用一句自然的引导，让对话朝缺失的信息前进。\n"
                 "   - 不要在用户已经聊过或问过的话题上硬岔走。\n"
                 "   - 不要把所有缺失项一次问完。每轮挑一个最关键的缺口，用对话语气问，不要清单式罗列。\n"
+                "   - 如果当前已抽取槽位里的 plan_ready=false，必须围绕 missing_slot_question 追问，禁止说'信息够了'、'生成路线'或'路线卡片'。\n"
                 "   - 如果用户上一轮已经把主要信息一次给齐了，跳过引导，直接告诉 ta\n"
                 "     '信息够了，我生成一份路线卡片。想改方向、时间或难度，直接回复我就行。'。\n"
                 "   - 不要在普通文字回复中展开完整学习路线、周计划或模块列表；这些内容由系统路线卡片承载。\n"
@@ -685,6 +785,67 @@ def _build_messages(
         messages.append({"role": "user", "content": user_content})
 
     return messages
+
+
+def _claims_route_ready(text: str) -> bool:
+    return any(marker in text for marker in ROUTE_READY_CLAIM_MARKERS)
+
+
+def _text_contains_phrase(text: str, phrase: str) -> bool:
+    normalized_text = "".join(text.split())
+    normalized_phrase = "".join(phrase.split())
+    return bool(normalized_phrase and normalized_phrase in normalized_text)
+
+
+def _has_structured_clarification(slots: ExtractedSlots) -> bool:
+    for slot_name in REQUIRED_SLOT_PRIORITY:
+        judgement = slots.slot_statuses.get(slot_name)
+        if judgement is not None and judgement.status != "confirmed":
+            return True
+    for slot_name in OPTIONAL_CLARIFICATION_SLOT_PRIORITY:
+        judgement = slots.slot_statuses.get(slot_name)
+        if judgement is not None and judgement.status in {"ambiguous", "unsupported"}:
+            return True
+    return False
+
+
+def _missing_slot_followup_message(slots: ExtractedSlots) -> str:
+    question = (slots.missing_slot_question or _fallback_missing_slot_question(slots)).strip()
+    prefix = _slot_acknowledgement(slots)
+    if prefix:
+        return f"{prefix}还差一个关键信息：{question}"
+    return question
+
+
+def _slot_acknowledgement(slots: ExtractedSlots) -> str:
+    if slots.time_budget is not None:
+        return (
+            f"时间我记下了：每周 {slots.time_budget.days_per_week} 天，"
+            f"每次约 {slots.time_budget.minutes_per_day} 分钟。"
+        )
+    goal_text = (slots.goal_text or "").strip()
+    if goal_text:
+        return f"目标我先按“{_short_text(goal_text, 40)}”记录。"
+    if slots.language:
+        return f"{slots.language} 方向我先记下了。"
+    return ""
+
+
+def _fallback_missing_slot_question(slots: ExtractedSlots) -> str:
+    if not slots.language:
+        return "你想主学哪门语言？目前支持 Python、JavaScript、HTML+CSS、Java 和 C++。"
+    if not slots.goal_text:
+        return "你最想用它做什么具体方向或项目？"
+    if not slots.target_level:
+        return "你现在大概是零基础、会一点语法，还是已经能独立写小项目？"
+    return "再补一句你的目标或当前基础，我再生成路线。"
+
+
+def _short_text(text: str, limit: int) -> str:
+    stripped = text.strip()
+    if len(stripped) <= limit:
+        return stripped
+    return f"{stripped[:limit].rstrip()}…"
 
 
 def _chunk_text(text: str) -> Generator[str, None, None]:

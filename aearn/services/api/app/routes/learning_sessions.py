@@ -26,9 +26,11 @@ from app.models.learning_sessions import (
 from app.services.learning_conversation import (
     build_learning_message_response,
     create_learning_message_response,
+    deterministic_learning_message_text,
     list_learning_history,
     prepare_learning_message,
     prepare_learning_message_for_generation,
+    precompute_learning_message_transition,
     safe_generation_exceptions,
     start_learning_message_generation,
     store_learning_message_response,
@@ -728,11 +730,18 @@ async def _learning_message_stream(
 
         full_text = ""
         try:
-            generation = start_learning_message_generation(prepared.context, user_content=payload.content)
-            generation_source = generation.generation_source
-            generation_model = generation.generation_model
-            async for delta in _iter_generation_chunks(request, generation.chunks):
-                candidate_text = full_text + delta
+            prepared = precompute_learning_message_transition(prepared)
+            deterministic = deterministic_learning_message_text(prepared)
+            if deterministic is None:
+                generation = start_learning_message_generation(prepared.context, user_content=payload.content)
+                generation_source = generation.generation_source
+                generation_model = generation.generation_model
+                chunks = _iter_generation_chunks(request, generation.chunks)
+            else:
+                full_text, generation_source, generation_model = deterministic
+                chunks = _iter_generation_chunks(request, [full_text])
+            async for delta in chunks:
+                candidate_text = full_text + delta if deterministic is None else delta
                 assert_safe_teaching_output(candidate_text)
                 full_text = candidate_text
                 yield writer.event(

@@ -1,13 +1,56 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+import uuid
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field
 from typing import Any
 
 from agents import Tool, function_tool
 
 
-def build_teaching_tools(messages: Sequence[Mapping[str, str]]) -> list[Tool]:
+ALLOWED_TRANSITIONS: dict[str, list[str]] = {
+    "concept_intro": ["concept_qna", "readiness_check", "concept_check"],
+    "concept_qna": ["concept_intro", "readiness_check", "concept_check"],
+    "readiness_check": ["concept_check", "practice_support", "concept_qna"],
+    "concept_check": ["concept_repair", "practice_support"],
+    "concept_repair": ["concept_check", "practice_support"],
+    "practice_support": [],
+}
+
+
+@dataclass
+class LearningToolContext:
+    session_id: str
+    exercise_id: str | None
+    current_stage: str
+    knowledge_point_id: str | None = None
+    exercise: Mapping[str, object] | None = None
+    run_code_fn: Callable[[Mapping[str, object], str], dict[str, object]] | None = None
+
+
+@dataclass
+class AgentSideEffects:
+    stage_updates: list[dict[str, object]] = field(default_factory=list)
+    diagnosis_updates: list[dict[str, object]] = field(default_factory=list)
+    attempt_records: list[dict[str, object]] = field(default_factory=list)
+    profile_updates: list[dict[str, object]] = field(default_factory=list)
+
+    def has_stage_change(self) -> bool:
+        return len(self.stage_updates) > 0
+
+    def final_stage(self, current: str) -> str:
+        if not self.stage_updates:
+            return current
+        return str(self.stage_updates[-1].get("new_stage", current))
+
+
+def build_teaching_tools(
+    messages: Sequence[Mapping[str, str]],
+    *,
+    side_effects: AgentSideEffects | None = None,
+    context: LearningToolContext | None = None,
+) -> list[Tool]:
     evidence = extract_learning_evidence(messages)
     if evidence is None:
         return []
@@ -44,7 +87,236 @@ def build_teaching_tools(messages: Sequence[Mapping[str, str]]) -> list[Tool]:
 
         tools.append(get_current_note_summary)
 
+    if side_effects is not None and context is not None:
+        tools.extend(_build_write_tools(side_effects, context))
+
     return tools
+
+
+def _build_write_tools(
+    side_effects: AgentSideEffects,
+    ctx: LearningToolContext,
+) -> list[Tool]:
+    tools: list[Tool] = []
+
+    @function_tool(
+        name_override="update_learning_stage",
+        description_override=(
+            "Transition the learning session to a new stage. "
+            "Returns success or error if the transition is not allowed."
+        ),
+    )
+    def update_learning_stage(new_stage: str, reason: str) -> dict[str, object]:
+        return do_update_learning_stage(side_effects, ctx, new_stage, reason)
+
+    @function_tool(
+        name_override="record_diagnosis",
+        description_override=(
+            "Record a structured diagnosis of the learner's current state: "
+            "stuck points, misconceptions, and recommended next action."
+        ),
+    )
+    def record_diagnosis(
+        stuck_point: str = "",
+        misconceptions: str = "",
+        recommended_action: str = "",
+        concepts_explained: str = "",
+    ) -> dict[str, object]:
+        return do_record_diagnosis(
+            side_effects,
+            stuck_point=stuck_point,
+            misconceptions=misconceptions,
+            recommended_action=recommended_action,
+            concepts_explained=concepts_explained,
+        )
+
+    @function_tool(
+        name_override="trigger_code_run",
+        description_override=(
+            "Execute the learner's code against the current exercise and return "
+            "structured results including stdout, stderr, and test pass/fail."
+        ),
+    )
+    def trigger_code_run(code: str) -> dict[str, object]:
+        return do_trigger_code_run(ctx, code)
+
+    @function_tool(
+        name_override="record_attempt",
+        description_override=(
+            "Record a code attempt (run or submit) for the current exercise."
+        ),
+    )
+    def record_attempt(code: str, action: str = "run") -> dict[str, object]:
+        return do_record_attempt(side_effects, ctx, code, action)
+
+    tools.extend([update_learning_stage, record_diagnosis, trigger_code_run, record_attempt])
+
+    @function_tool(
+        name_override="update_learner_profile",
+        description_override=(
+            "Record a cross-session observation about the learner: weak points, "
+            "error patterns, or learning preferences. These persist across sessions."
+        ),
+    )
+    def update_learner_profile(
+        observation_type: str,
+        content: str,
+        confidence: str = "ambiguous",
+        key: str = "",
+        value: str = "",
+    ) -> dict[str, object]:
+        return do_update_learner_profile(
+            side_effects, ctx,
+            observation_type=observation_type,
+            content=content,
+            confidence=confidence,
+            key=key,
+            value=value,
+        )
+
+    tools.append(update_learner_profile)
+
+    if ctx.knowledge_point_id:
+        @function_tool(
+            name_override="search_teaching_materials",
+            description_override=(
+                "Search indexed teaching materials (outlines, examples, documentation) "
+                "for the current knowledge point. Returns relevant chunks with sources."
+            ),
+        )
+        def search_teaching_materials(query: str, top_k: int = 3) -> dict[str, object]:
+            return do_search_teaching_materials(ctx, query, top_k)
+
+        tools.append(search_teaching_materials)
+
+    return tools
+
+
+def do_update_learning_stage(
+    side_effects: AgentSideEffects,
+    ctx: LearningToolContext,
+    new_stage: str,
+    reason: str,
+) -> dict[str, object]:
+    current = side_effects.final_stage(ctx.current_stage)
+    allowed = ALLOWED_TRANSITIONS.get(current, [])
+    if new_stage not in allowed:
+        return {
+            "success": False,
+            "error": f"Cannot transition from '{current}' to '{new_stage}'",
+            "allowed_transitions": allowed,
+        }
+    side_effects.stage_updates.append({
+        "new_stage": new_stage,
+        "previous_stage": current,
+        "reason": reason,
+    })
+    return {"success": True, "previous_stage": current, "new_stage": new_stage}
+
+
+def do_record_diagnosis(
+    side_effects: AgentSideEffects,
+    *,
+    stuck_point: str = "",
+    misconceptions: str = "",
+    recommended_action: str = "",
+    concepts_explained: str = "",
+) -> dict[str, object]:
+    entry: dict[str, object] = {
+        k: v
+        for k, v in {
+            "stuck_point": stuck_point,
+            "misconceptions": misconceptions,
+            "recommended_action": recommended_action,
+            "concepts_explained": concepts_explained,
+        }.items()
+        if v
+    }
+    side_effects.diagnosis_updates.append(entry)
+    return {"recorded": True, "fields": list(entry.keys())}
+
+
+def do_trigger_code_run(
+    ctx: LearningToolContext,
+    code: str,
+) -> dict[str, object]:
+    if ctx.run_code_fn is None or ctx.exercise is None:
+        return {"success": False, "error": "Code execution not available for this session"}
+    result = ctx.run_code_fn(ctx.exercise, code)
+    return {
+        "success": True,
+        "runtime_status": result.get("runtime_status", "unknown"),
+        "stdout": result.get("stdout", ""),
+        "stderr": result.get("stderr", ""),
+        "test_pass_rate": result.get("test_pass_rate", 0.0),
+        "test_results": result.get("test_results", []),
+    }
+
+
+def do_record_attempt(
+    side_effects: AgentSideEffects,
+    ctx: LearningToolContext,
+    code: str,
+    action: str,
+) -> dict[str, object]:
+    if action not in ("run", "submit"):
+        return {"success": False, "error": f"Invalid action: {action}. Must be 'run' or 'submit'."}
+    attempt_id = str(uuid.uuid4())
+    side_effects.attempt_records.append({
+        "attempt_id": attempt_id,
+        "exercise_id": ctx.exercise_id,
+        "code": code,
+        "action": action,
+    })
+    return {"success": True, "attempt_id": attempt_id}
+
+
+def do_update_learner_profile(
+    side_effects: AgentSideEffects,
+    ctx: LearningToolContext,
+    *,
+    observation_type: str,
+    content: str,
+    confidence: str = "ambiguous",
+    key: str = "",
+    value: str = "",
+) -> dict[str, object]:
+    valid_types = {"weak_point", "error_pattern", "learning_preference", "pace_indicator"}
+    if observation_type not in valid_types:
+        return {"success": False, "error": f"Invalid type: {observation_type}. Must be one of {sorted(valid_types)}"}
+    valid_confidence = {"confirmed", "ambiguous"}
+    if confidence not in valid_confidence:
+        confidence = "ambiguous"
+    entry: dict[str, object] = {
+        "type": observation_type,
+        "content": content,
+        "confidence": confidence,
+        "session_id": ctx.session_id,
+    }
+    if key:
+        entry["key"] = key
+    if value:
+        entry["value"] = value
+    side_effects.profile_updates.append(entry)
+    return {"success": True, "recorded_type": observation_type}
+
+
+def do_search_teaching_materials(
+    ctx: LearningToolContext,
+    query: str,
+    top_k: int = 3,
+) -> dict[str, object]:
+    if not ctx.knowledge_point_id:
+        return {"success": False, "error": "No knowledge point context available"}
+    try:
+        from app.db.connection import connect
+        from app.services.teaching_chunks import search_chunks
+
+        with connect() as conn:
+            results = search_chunks(conn, ctx.knowledge_point_id, query, top_k=min(top_k, 5))
+        return {"success": True, "results": results, "count": len(results)}
+    except Exception as exc:
+        return {"success": False, "error": f"Search failed: {exc}", "results": []}
 
 
 def extract_learning_evidence(messages: Sequence[Mapping[str, str]]) -> dict[str, object] | None:

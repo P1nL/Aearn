@@ -106,6 +106,7 @@ V1 使用本地单用户或轻量用户机制，不强制登录态。所有需�
 | `FORBIDDEN` | 403 | 用户无权访问对象 |
 | `USER_NOT_FOUND` | 404 | 用户不存在 |
 | `COURSE_NOT_FOUND` | 404 | 课程不存在 |
+| `LANGUAGE_NOT_SUPPORTED` | 422 | 用户明确选择了未登记或无法映射到公开 `language` 枚举的语言 |
 | `PLAN_NOT_FOUND` | 404 | 学习计划不存在 |
 | `PLAN_DRAFT_INVALID` | 422 | `plan_draft` 无法转为 `LearningPlan` |
 | `MODULE_NOT_FOUND` | 404 | 模块不存在 |
@@ -830,6 +831,7 @@ SSE 行为：
 - `language`、`target_level`、`goal_text` 齐备时，先发送简短 `agent_message`，再发送 `tool_call(name="show_learning_route")`；完整路线内容只放在工具参数中。
 - `time_budget` 为可选字段；用户之后补充时间、方向或难度时，服务重新暂存草稿并发送新的 `show_learning_route` 工具调用，工具参数会携带新的节奏信息。
 - 同一建档会话只有最新暂存草稿可确认；前端必须将历史路线卡片的 `开始学习` 置为禁用。
+- 如果槽位提取明确返回未登记语言（如 TypeScript、Rust、Go），SSE 必须返回 `error.code=LANGUAGE_NOT_SUPPORTED`，`details.unsupported_language` 和 `details.supported_languages` 必须可用于前端展示/重试引导；不能继续输出“正在生成路线卡片”的普通 Agent 文案。
 - 建档对话不提供关键词或确定性兜底解析；槽位提取和普通回复依赖模型 API。模型未配置、不可连接、流式中断前无有效输出，或结构化槽位输出非法时，SSE 返回 `error.code=MODEL_UNAVAILABLE`，不更新槽位、不生成路线卡片。
 
 `show_learning_route` arguments 示例：

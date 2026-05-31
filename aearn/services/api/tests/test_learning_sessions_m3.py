@@ -49,6 +49,13 @@ def disable_llm_generation(monkeypatch: pytest.MonkeyPatch) -> None:
         def complete_text_stream(self, messages, *, temperature=None):  # type: ignore[no-untyped-def]
             del temperature
             prompt_text = json.dumps(messages, ensure_ascii=False)
+            normalized_prompt = prompt_text.replace("\\", "")
+            if '"concept_check_result":"correct"' in normalized_prompt and '"stage":"practice_offer"' in normalized_prompt:
+                return ["概念判断已通过，", "可以点击“开始练习”。"]
+            if '"concept_check_result":"incorrect"' in normalized_prompt and '"stage":"concept_repair"' in normalized_prompt:
+                return ["这个判断还不稳，", "请回答下面的修复题。"]
+            if '"concept_check_result":"unclear"' in normalized_prompt:
+                return ["这次回答还不够明确，", "请补充当前题的选项或一句依据。"]
             if "检查我的理解" in prompt_text or "理解了" in prompt_text:
                 return ["费曼检查：", "请用自己的话解释事件和状态的关系。"]
             return ["我会根据当前阶段继续引导你，", "先说清一个最小下一步。"]
@@ -237,6 +244,7 @@ def test_learning_intro_answer_is_judged_and_enters_practice_offer(client: TestC
     assert body["session_state"]["learning_stage_state"]["concept_check_result"] == "correct"
     assert body["tool_calls"][0]["name"] == "show_concept_check_result"
     assert body["tool_calls"][0]["args"]["result"] == "correct"
+    assert "概念判断已通过" in body["agent_message"]["content"]
 
 
 def test_start_learning_session_keeps_distinct_knowledge_points_separate(client: TestClient) -> None:
@@ -371,6 +379,105 @@ def test_learning_concept_stage_uses_check_offer_before_normal_unlock(client: Te
     assert result["tool_calls"][0]["name"] == "show_code_exercise"
 
 
+def test_practice_offer_start_unlocks_when_model_is_disabled(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user, plan = _confirmed_plan(client, language="javascript")
+    session = _start_session(client, user, plan)
+
+    prompt_check = client.post(
+        f"/api/learning-sessions/{session['session_id']}/messages",
+        json={
+            "role": "user",
+            "content": "状态放在回调外部，所以多次点击会共享并累加同一个 count。",
+            "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
+        },
+    )
+    assert prompt_check.status_code == 200
+    assert prompt_check.json()["session_state"]["learning_stage"] == "practice_offer"
+
+    monkeypatch.setattr(learning_conversation, "get_settings", lambda: Settings(llm_type="disabled"))
+
+    unlock = client.post(
+        f"/api/learning-sessions/{session['session_id']}/messages",
+        json={
+            "role": "user",
+            "content": "开始练习",
+            "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
+        },
+    )
+
+    assert unlock.status_code == 200
+    result = unlock.json()
+    assert result["generation_source"] == "deterministic"
+    assert "直接进入练习" in result["agent_message"]["content"]
+    assert result["session_state"]["learning_stage"] == "practice_support"
+    assert result["session_state"]["learning_stage_state"]["practice_unlock_reason"] == "concept_check_passed"
+    assert result["tool_calls"][0]["name"] == "show_code_exercise"
+
+
+def test_practice_offer_start_sse_unlocks_when_model_is_disabled(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request_id = f"req_practice_unlock_sse_{uuid.uuid4().hex}"
+    user, plan = _confirmed_plan(client, language="javascript")
+    session = _start_session(client, user, plan)
+
+    prompt_check = client.post(
+        f"/api/learning-sessions/{session['session_id']}/messages",
+        json={
+            "role": "user",
+            "content": "状态放在回调外部，所以多次点击会共享并累加同一个 count。",
+            "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
+        },
+    )
+    assert prompt_check.status_code == 200
+    assert prompt_check.json()["session_state"]["learning_stage"] == "practice_offer"
+
+    monkeypatch.setattr(learning_conversation, "get_settings", lambda: Settings(llm_type="disabled"))
+
+    with client.stream(
+        "POST",
+        f"/api/learning-sessions/{session['session_id']}/messages",
+        headers={"Accept": "text/event-stream", "X-Request-Id": request_id},
+        json={
+            "role": "user",
+            "content": "开始练习",
+            "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
+        },
+    ) as response:
+        assert response.status_code == 200
+        events = _parse_sse_events("".join(response.iter_text()))
+
+    event_names = [event["event"] for event in events]
+    assert "error" not in event_names
+    assert event_names[0] == "agent_message"
+    assert event_names[-1] == "done"
+    assert events[-1]["data"]["generation_source"] == "deterministic"
+    tool_call_starts = [
+        event
+        for event in events
+        if event["event"] == "tool_call" and event["data"].get("phase") == "start"
+    ]
+    assert any(event["data"].get("name") == "show_code_exercise" for event in tool_call_starts)
+    tool_call_dones = [
+        event
+        for event in events
+        if event["event"] == "tool_call" and event["data"].get("phase") == "done"
+    ]
+    exercise_call = next(
+        (
+            event
+            for event in tool_call_dones
+            if event["data"].get("arguments", {}).get("unlock_reason") == "concept_check_passed"
+        ),
+        None,
+    )
+    assert exercise_call is not None
+
+
 def test_learning_concept_incorrect_unclear_and_repair_limit_paths(client: TestClient) -> None:
     user, plan = _confirmed_plan(client, language="javascript")
     unclear_session = _start_session(client, user, plan)
@@ -388,6 +495,7 @@ def test_learning_concept_incorrect_unclear_and_repair_limit_paths(client: TestC
     assert unclear_body["session_state"]["learning_stage"] == "concept_check"
     assert unclear_body["tool_calls"][0]["name"] == "show_concept_check_result"
     assert unclear_body["tool_calls"][0]["args"]["result"] == "unclear"
+    assert "还不够明确" in unclear_body["agent_message"]["content"]
     assert unclear_body["session_state"]["learning_stage_state"]["learning_incomplete"] is True
     assert unclear_body["tool_calls"][0]["args"]["repair_check"] is None
 
@@ -409,6 +517,7 @@ def test_learning_concept_incorrect_unclear_and_repair_limit_paths(client: TestC
     assert first_body["session_state"]["learning_stage"] == "concept_repair"
     assert first_body["session_state"]["learning_stage_state"]["concept_check_attempts"] == 1
     assert first_body["tool_calls"][0]["args"]["result"] == "incorrect"
+    assert "判断还不稳" in first_body["agent_message"]["content"]
     assert first_body["tool_calls"][0]["args"]["repair_check"]["options"]
     assert first_body["tool_calls"] == [item for item in first_body["tool_calls"] if item["name"] != "show_code_exercise"]
 
@@ -981,6 +1090,35 @@ def test_learning_message_sse_streams_agent_message_and_done(client: TestClient)
     assert agent_events[-1]["data"]["content"]
     assert events[-1]["data"]["message_id"] == agent_events[-1]["data"]["message_id"]
     assert events[-1]["data"]["generation_source"] == "llm"
+
+
+def test_learning_message_sse_concept_check_reply_uses_judged_result(client: TestClient) -> None:
+    request_id = f"req_message_sse_concept_result_{uuid.uuid4().hex}"
+    user, plan = _confirmed_plan(client, language="javascript")
+    session = _start_session(client, user, plan)
+
+    with client.stream(
+        "POST",
+        f"/api/learning-sessions/{session['session_id']}/messages",
+        headers={"Accept": "text/event-stream", "X-Request-Id": request_id},
+        json={
+            "role": "user",
+            "content": "A",
+            "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
+        },
+    ) as response:
+        assert response.status_code == 200
+        events = _parse_sse_events("".join(response.iter_text()))
+
+    agent_events = [event for event in events if event["event"] == "agent_message"]
+    assert agent_events
+    assert "概念判断已通过" in agent_events[-1]["data"]["content"]
+    tool_done = next(
+        event
+        for event in events
+        if event["event"] == "tool_call" and event["data"]["phase"] == "done"
+    )
+    assert tool_done["data"]["arguments"]["result"] == "correct"
 
 
 def test_learning_message_sse_guardrail_error_after_partial_output(

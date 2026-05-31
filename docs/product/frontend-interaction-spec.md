@@ -115,6 +115,7 @@ OnboardingPage
 | disabled | 输入不足或 API 离线 | 按钮置灰并给出原因 |
 | stale route | 新卡片已替换旧卡片 | 保留旧卡片内容，只禁用旧卡片的 `开始学习` |
 | confirm | 重新生成、破坏主干调整、确认计划 | 弹出 `GlobalConfirmDialog` |
+| unsupported language | `POST /api/onboarding/messages` 返回 `LANGUAGE_NOT_SUPPORTED` | 展示后端 `error.message` 和支持语言列表，不渲染路线卡片 |
 | unsupported notice | `runtime_tier=compiled_sandbox_later` | 明确 Java/C++ 第一版不提供完整运行沙箱 |
 | fallback notice | 动态路线生成失败但模板 fallback 成功 | 保持可确认路线卡片，展示简短来源说明，不暴露 provider 原始错误 |
 
@@ -280,6 +281,8 @@ LearningWorkspacePage
 - runner 事实：`runtime_status`、`stdout`、`stderr`、`test_results`、`error_message`
 - Agent 解释：`error_cause`、`explanation`、`fix_suggestion`
 - 评分结果：`result`、`score_breakdown`、`weak_points`、`fsrs_rating`
+
+运行或提交接口成功返回后，桌面端必须基于后端返回的 `RunExerciseResponse` / `SubmitExerciseResponse` 追加一条短 Agent 对话反馈，避免练习卡片已更新但对话区停留在上一条提问。该反馈是确定性 UI 文案，不额外调用模型，也不能本地计算评分或调度结论。
 
 ### 语言运行能力分层
 
