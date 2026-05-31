@@ -967,3 +967,36 @@ Completed and closed out agent architecture upgrade: structured judgement, write
 ### Next Steps
 
 - None - task complete
+
+
+## Session 30: Cross-page Structured Judgement Integration
+
+**Date**: 2026-05-31
+**Task**: Cross-page Structured Judgement Integration
+**Branch**: `main`
+
+### Summary
+
+Integrated shared StructuredJudgement gates into learning concept checks, practice explanation checks, review warmup/submits, and note assist persistence; added blocked-judgement regressions and verified tests, ruff, mypy, and task validation.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `f67eb3b` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
