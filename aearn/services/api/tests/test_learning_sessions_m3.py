@@ -16,6 +16,7 @@ from app.services.exercise_guidance import (
     build_explanation_check_response,
     build_hint_response,
 )
+from app.services.learner_profile import ensure_learner_profile, get_learner_profile, merge_observations
 from app.services import learning_conversation
 from app.services import learning_session_repository as session_repository
 from app.services.llm_client import LLMCallError
@@ -805,6 +806,105 @@ def test_learning_message_routes_wire_agent_side_effects_and_tool_context(
         assert metadata["diagnosis_updates"][0]["stuck_point"] == "count scope confusion"
         assert metadata["attempt_records"][0]["code_length"] == len("SECRET_CODE_SHOULD_NOT_STORE")
         assert "SECRET_CODE_SHOULD_NOT_STORE" not in json.dumps(metadata, ensure_ascii=False)
+
+
+def test_learning_session_start_ensures_learner_profile(client: TestClient) -> None:
+    user, plan = _confirmed_plan(client, language="javascript")
+    with connect() as conn:
+        conn.execute("DELETE FROM learner_profiles WHERE user_id = %s", (user["id"],))
+        conn.commit()
+        assert get_learner_profile(conn, str(user["id"])) is None
+
+    _start_session(client, user, plan)
+
+    with connect() as conn:
+        profile = get_learner_profile(conn, str(user["id"]))
+    assert profile is not None
+    assert profile["user_id"] == user["id"]
+    assert profile["weak_points"] == []
+
+
+def test_learning_message_injects_profile_summary_and_drains_profile_side_effects(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user, plan = _confirmed_plan(client, language="javascript")
+    other_user = _create_user(client)
+    session = _start_session(client, user, plan)
+    captured: dict[str, object] = {}
+
+    with connect() as conn:
+        merge_observations(
+            conn,
+            str(user["id"]),
+            [{"type": "weak_point", "content": "closures", "confidence": "confirmed", "session_id": "seed"}],
+        )
+        ensure_learner_profile(conn, str(other_user["id"]))
+        conn.commit()
+
+    class FakeProfileAwareClient:
+        model = "fake-profile-aware-model"
+
+        def __init__(
+            self,
+            *,
+            side_effects: AgentSideEffects | None,
+            tool_context: LearningToolContext | None,
+        ) -> None:
+            self.side_effects = side_effects
+            self.tool_context = tool_context
+
+        def complete_text_stream(self, messages, *, temperature=None):  # type: ignore[no-untyped-def]
+            del temperature
+            if self.side_effects is not None and self.tool_context is not None:
+                captured["messages"] = messages
+                captured["profile_summary"] = self.tool_context.profile_summary
+                captured["tool_user_id"] = self.tool_context.user_id
+                self.side_effects.profile_updates.append(
+                    {
+                        "type": "error_pattern",
+                        "content": "off_by_one",
+                        "confidence": "confirmed",
+                        "session_id": "malicious-other-session",
+                        "user_id": other_user["id"],
+                    },
+                )
+            return ["我会结合你的历史薄弱点继续引导。"]
+
+    def fake_agent_factory(settings, **kwargs):  # type: ignore[no-untyped-def]
+        del settings
+        side_effects = kwargs.get("side_effects")
+        tool_context = kwargs.get("tool_context")
+        return FakeProfileAwareClient(
+            side_effects=side_effects if isinstance(side_effects, AgentSideEffects) else None,
+            tool_context=tool_context if isinstance(tool_context, LearningToolContext) else None,
+        )
+
+    monkeypatch.setattr(learning_conversation, "AgentsSDKLearningConversationClient", fake_agent_factory)
+
+    response = client.post(
+        f"/api/learning-sessions/{session['session_id']}/messages",
+        json={
+            "role": "user",
+            "content": "我还是不理解作用域边界。",
+            "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
+        },
+    )
+
+    assert response.status_code == 200
+    prompt_text = json.dumps(captured["messages"], ensure_ascii=False)
+    assert "closures" in prompt_text
+    assert "closures" in str(captured["profile_summary"])
+    assert captured["tool_user_id"] == user["id"]
+
+    with connect() as conn:
+        current_profile = get_learner_profile(conn, str(user["id"]))
+        other_profile = get_learner_profile(conn, str(other_user["id"]))
+    assert current_profile is not None
+    assert other_profile is not None
+    assert any(pattern["pattern"] == "off_by_one" for pattern in current_profile["error_patterns"])
+    assert other_profile["error_patterns"] == []
+    assert current_profile["observations"][-1]["session_id"] == session["session_id"]
 
 
 def test_learning_message_json_uses_configured_model_stream(

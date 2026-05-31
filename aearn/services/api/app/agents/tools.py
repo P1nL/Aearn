@@ -24,8 +24,12 @@ class LearningToolContext:
     session_id: str
     exercise_id: str | None
     current_stage: str
+    user_id: str | None = None
     knowledge_point_id: str | None = None
     exercise: Mapping[str, object] | None = None
+    latest_attempt: Mapping[str, object] | None = None
+    stage_state: Mapping[str, object] | None = None
+    profile_summary: str = ""
     run_code_fn: Callable[[Mapping[str, object], str], dict[str, object]] | None = None
 
 
