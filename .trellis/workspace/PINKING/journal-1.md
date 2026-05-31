@@ -1000,3 +1000,36 @@ Integrated shared StructuredJudgement gates into learning concept checks, practi
 ### Next Steps
 
 - None - task complete
+
+
+## Session 31: Learning agent side effects wiring
+
+**Date**: 2026-05-31
+**Task**: Learning agent side effects wiring
+**Branch**: `main`
+
+### Summary
+
+Wired AgentSideEffects and LearningToolContext into JSON/SSE learning message generation, persisted safe side-effect metadata, and added regression coverage.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `4f7d385` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
