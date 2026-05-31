@@ -9,6 +9,7 @@ import app.routes.plans as plans_route
 from app.core.config import Settings, get_settings
 from app.db.bootstrap import bootstrap_database
 from app.db.connection import connect
+from app.agents.tools import AgentSideEffects, LearningToolContext
 from app.main import app
 from app.services.exercise_guidance import (
     build_error_explanation_response,
@@ -154,7 +155,7 @@ def disable_llm_generation(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         learning_conversation,
         "AgentsSDKLearningConversationClient",
-        lambda settings: FakeLearningConversationClient(),
+        lambda settings, **kwargs: FakeLearningConversationClient(),
     )
 
 
@@ -691,6 +692,121 @@ def test_learning_message_json_uses_model_and_is_idempotent(client: TestClient) 
     assert replay_body["tool_calls"] == first_body["tool_calls"]
 
 
+def test_learning_message_routes_wire_agent_side_effects_and_tool_context(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user, plan = _confirmed_plan(client, language="javascript")
+    knowledge_point_id = plan["knowledge_points"][0]["id"]
+    session = _start_session(client, user, plan)
+    captured: list[dict[str, object]] = []
+
+    class FakeToolAwareClient:
+        model = "fake-tool-aware-model"
+
+        def __init__(
+            self,
+            *,
+            side_effects: AgentSideEffects | None,
+            tool_context: LearningToolContext | None,
+        ) -> None:
+            self.side_effects = side_effects
+            self.tool_context = tool_context
+
+        def complete_text_stream(self, messages, *, temperature=None):  # type: ignore[no-untyped-def]
+            del messages, temperature
+            if self.side_effects is not None and self.tool_context is not None:
+                self.side_effects.diagnosis_updates.append(
+                    {
+                        "stuck_point": "count scope confusion",
+                        "recommended_action": "inspect state lifetime",
+                    },
+                )
+                self.side_effects.attempt_records.append(
+                    {
+                        "attempt_id": "tool_attempt_1",
+                        "exercise_id": self.tool_context.exercise_id,
+                        "code": "SECRET_CODE_SHOULD_NOT_STORE",
+                        "action": "run",
+                    },
+                )
+            return ["工具上下文已接入。"]
+
+    def fake_agent_factory(settings, **kwargs):  # type: ignore[no-untyped-def]
+        del settings
+        side_effects = kwargs.get("side_effects")
+        tool_context = kwargs.get("tool_context")
+        if side_effects is not None or tool_context is not None:
+            captured.append({"side_effects": side_effects, "tool_context": tool_context})
+        return FakeToolAwareClient(
+            side_effects=side_effects if isinstance(side_effects, AgentSideEffects) else None,
+            tool_context=tool_context if isinstance(tool_context, LearningToolContext) else None,
+        )
+
+    monkeypatch.setattr(learning_conversation, "AgentsSDKLearningConversationClient", fake_agent_factory)
+
+    json_response = client.post(
+        f"/api/learning-sessions/{session['session_id']}/messages",
+        json={
+            "role": "user",
+            "content": "为什么 count 每次点击都会重置？",
+            "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
+        },
+    )
+    assert json_response.status_code == 200
+    assert "agent_side_effects" not in json.dumps(json_response.json(), ensure_ascii=False)
+
+    with client.stream(
+        "POST",
+        f"/api/learning-sessions/{session['session_id']}/messages",
+        headers={"Accept": "text/event-stream", "X-Request-Id": f"req_side_effects_{uuid.uuid4().hex}"},
+        json={
+            "role": "user",
+            "content": "我还是卡在 count 的作用域。",
+            "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
+        },
+    ) as stream_response:
+        assert stream_response.status_code == 200
+        events = _parse_sse_events("".join(stream_response.iter_text()))
+    assert "error" not in {event["event"] for event in events}
+    assert "agent_side_effects" not in json.dumps(events, ensure_ascii=False)
+
+    wired_contexts = [
+        item["tool_context"]
+        for item in captured
+        if isinstance(item.get("side_effects"), AgentSideEffects)
+        and isinstance(item.get("tool_context"), LearningToolContext)
+    ]
+    assert len(wired_contexts) >= 2
+    for tool_context in wired_contexts:
+        assert isinstance(tool_context, LearningToolContext)
+        assert tool_context.session_id == session["session_id"]
+        assert tool_context.knowledge_point_id == knowledge_point_id
+        assert tool_context.current_stage in {"concept_check", "concept_repair", "practice_offer"}
+
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT metadata
+            FROM learning_messages
+            WHERE session_id = %s AND role = 'agent'
+            ORDER BY created_at DESC
+            LIMIT 2
+            """,
+            (session["session_id"],),
+        ).fetchall()
+    side_effect_metadata = [
+        row["metadata"]["agent_side_effects"]
+        for row in rows
+        if isinstance(row.get("metadata"), dict) and "agent_side_effects" in row["metadata"]
+    ]
+    assert len(side_effect_metadata) == 2
+    for metadata in side_effect_metadata:
+        assert metadata["diagnosis_updates"][0]["stuck_point"] == "count scope confusion"
+        assert metadata["attempt_records"][0]["code_length"] == len("SECRET_CODE_SHOULD_NOT_STORE")
+        assert "SECRET_CODE_SHOULD_NOT_STORE" not in json.dumps(metadata, ensure_ascii=False)
+
+
 def test_learning_message_json_uses_configured_model_stream(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -729,7 +845,7 @@ def test_learning_message_json_uses_configured_model_stream(
     monkeypatch.setattr(
         learning_conversation,
         "AgentsSDKLearningConversationClient",
-        lambda settings: FakeStreamingClient(),
+        lambda settings, **kwargs: FakeStreamingClient(),
     )
 
     response = client.post(
@@ -816,7 +932,7 @@ def test_learning_message_builds_llm_safe_summary_and_recent_context(
     monkeypatch.setattr(
         learning_conversation,
         "AgentsSDKLearningConversationClient",
-        lambda settings: fake_client,
+        lambda settings, **kwargs: fake_client,
     )
 
     response = client.post(
@@ -930,7 +1046,7 @@ def test_learning_message_reuses_persisted_summary_until_refresh_threshold(
     monkeypatch.setattr(
         learning_conversation,
         "AgentsSDKLearningConversationClient",
-        lambda settings: fake_client,
+        lambda settings, **kwargs: fake_client,
     )
 
     response = client.post(
@@ -970,7 +1086,7 @@ def test_learning_message_direct_answer_request_redirects_to_partial_guidance(
     monkeypatch.setattr(
         learning_conversation,
         "AgentsSDKLearningConversationClient",
-        lambda settings: fake_client,
+        lambda settings, **kwargs: fake_client,
     )
 
     response = client.post(
@@ -1030,7 +1146,7 @@ def test_learning_message_llm_failure_returns_model_unavailable_without_provider
     monkeypatch.setattr(
         learning_conversation,
         "AgentsSDKLearningConversationClient",
-        lambda settings: FailingStreamingClient(),
+        lambda settings, **kwargs: FailingStreamingClient(),
     )
 
     response = client.post(
@@ -1085,7 +1201,7 @@ def test_learning_message_json_guardrail_returns_model_unavailable_when_model_ou
     monkeypatch.setattr(
         learning_conversation,
         "AgentsSDKLearningConversationClient",
-        lambda settings: LeakingStreamingClient(),
+        lambda settings, **kwargs: LeakingStreamingClient(),
     )
 
     response = client.post(
@@ -1218,7 +1334,7 @@ def test_learning_message_sse_guardrail_error_after_partial_output(
     monkeypatch.setattr(
         learning_conversation,
         "AgentsSDKLearningConversationClient",
-        lambda settings: PartiallyLeakingStreamingClient(),
+        lambda settings, **kwargs: PartiallyLeakingStreamingClient(),
     )
 
     with client.stream(
