@@ -39,13 +39,13 @@ Create future child task directories on demand as each preceding child reaches r
 
 ## Cross-Child Acceptance Criteria
 
-- [ ] Non-onboarding judgement flows use page-specific `StructuredJudgement` policies, and ambiguous/missing/unsupported judgement outcomes do not advance durable state.
-- [ ] Learning conversation write tools are built with real `AgentSideEffects` and `LearningToolContext` from the route layer.
-- [ ] Learner profiles are ensured at session start, summarized into agent context, and updated from real observed learning events.
-- [ ] Teaching materials are indexed from lesson outline/exercise content before retrieval tools are expected to search them.
-- [ ] Router and handoff targets participate in production conversation routing without breaking current endpoint contracts.
-- [ ] LangGraph can be enabled by feature flag for a real learning-session path and disabled for rollback.
-- [ ] Relevant backend tests, lint, type-check, and Trellis validation pass for each child before archival.
+- [x] Non-onboarding judgement flows use page-specific `StructuredJudgement` policies, and ambiguous/missing/unsupported judgement outcomes do not advance durable state.
+- [x] Learning conversation write tools are built with real `AgentSideEffects` and `LearningToolContext` from the route layer.
+- [x] Learner profiles are ensured at session start, summarized into agent context, and updated from real observed learning events.
+- [x] Teaching materials are indexed from lesson outline/exercise content before retrieval tools are expected to search them.
+- [x] Router and handoff targets participate in production conversation routing without breaking current endpoint contracts.
+- [x] LangGraph can be enabled by feature flag for a real learning-session path and disabled for rollback.
+- [x] Relevant backend tests, lint, type-check, and Trellis validation pass for each child before archival.
 
 ## Out of Scope
 
