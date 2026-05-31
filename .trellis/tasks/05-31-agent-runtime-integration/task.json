@@ -19,7 +19,12 @@
   "pr_url": null,
   "subtasks": [],
   "children": [
-    "05-31-cross-page-structured-judgement-integration"
+    "05-31-cross-page-structured-judgement-integration",
+    "05-31-learning-agent-side-effects-wiring",
+    "05-31-learner-profile-runtime-integration",
+    "05-31-teaching-chunks-indexing-runtime",
+    "05-31-agent-handoff-runtime-routing",
+    "05-31-langgraph-runtime-rollout"
   ],
   "parent": null,
   "relatedFiles": [],

@@ -48,6 +48,7 @@ from app.services.llm_client import (
     LLMInvalidResponseError,
 )
 from app.services.plan_repository import IdempotencyConflictError, request_hash
+from app.services.runtime_runner import run_exercise as run_runtime_exercise
 
 
 LEARNING_MESSAGE_OPERATION = "learning_session_message"
@@ -360,7 +361,7 @@ def create_learning_message_response(
     client: TextCompletionClient | None = None,
 ) -> tuple[dict[str, object], bool]:
     effective_settings = settings or get_settings()
-    effective_client = client or _optional_learning_client(effective_settings)
+    summary_client = client or _optional_learning_client(effective_settings)
     prepared = prepare_learning_message(
         conn,
         session_id=session_id,
@@ -376,16 +377,19 @@ def create_learning_message_response(
         prepared,
         user_content=content,
         settings=effective_settings,
-        client=effective_client,
+        client=summary_client,
     )
     prepared = precompute_learning_message_transition(prepared)
+    side_effects, tool_context = build_learning_agent_tool_runtime(prepared.context)
     deterministic = deterministic_learning_message_text(prepared)
     if deterministic is None:
         text, generation_source, generation_model = collect_learning_message_text(
             prepared.context,
             user_content=content,
             settings=effective_settings,
-            client=effective_client,
+            client=client,
+            side_effects=side_effects,
+            tool_context=tool_context,
         )
     else:
         text, generation_source, generation_model = deterministic
@@ -395,7 +399,7 @@ def create_learning_message_response(
         generation_source=generation_source,
         generation_model=generation_model,
     )
-    return store_learning_message_response(conn, prepared, response), False
+    return store_learning_message_response(conn, prepared, response, side_effects=side_effects), False
 
 
 def prepare_learning_message_for_generation(
@@ -509,12 +513,16 @@ def collect_learning_message_text(
     user_content: str,
     settings: Settings | None = None,
     client: TextCompletionClient | None = None,
+    side_effects: AgentSideEffects | None = None,
+    tool_context: LearningToolContext | None = None,
 ) -> tuple[str, str, str]:
     generation = start_learning_message_generation(
         context,
         user_content=user_content,
         settings=settings,
         client=client,
+        side_effects=side_effects,
+        tool_context=tool_context,
     )
     chunks: list[str] = []
     for delta in generation.chunks:
@@ -558,6 +566,8 @@ def store_learning_message_response(
     conn: Connection[dict[str, object]],
     prepared: PreparedLearningMessage,
     response: Mapping[str, object],
+    *,
+    side_effects: AgentSideEffects | None = None,
 ) -> dict[str, object]:
     finalized = dict(response)
     tool_calls, final_stage, final_state = _apply_or_reuse_transition(conn, prepared)
@@ -572,6 +582,12 @@ def store_learning_message_response(
     }
     agent_message = finalized.get("agent_message", {})
     content = str(agent_message.get("content") or "") if isinstance(agent_message, Mapping) else ""
+    metadata: dict[str, object] = {}
+    if tool_calls:
+        metadata["tool_calls"] = tool_calls
+    side_effect_metadata = serialize_agent_side_effects(side_effects)
+    if side_effect_metadata:
+        metadata["agent_side_effects"] = side_effect_metadata
     conn.execute(
         """
         INSERT INTO learning_messages (session_id, knowledge_point_id, role, content, metadata)
@@ -581,7 +597,7 @@ def store_learning_message_response(
             prepared.context.session_id,
             prepared.context.knowledge_point_id,
             content,
-            json.dumps({"tool_calls": tool_calls}) if tool_calls else None,
+            json.dumps(metadata) if metadata else None,
         ),
     )
     conn.execute(
@@ -592,6 +608,93 @@ def store_learning_message_response(
         (prepared.key, LEARNING_MESSAGE_OPERATION, prepared.payload_hash, json.dumps(finalized)),
     )
     return finalized
+
+
+def build_learning_agent_tool_runtime(
+    context: LearningConversationContext,
+) -> tuple[AgentSideEffects, LearningToolContext]:
+    side_effects = AgentSideEffects()
+    return side_effects, build_learning_tool_context(context)
+
+
+def build_learning_tool_context(context: LearningConversationContext) -> LearningToolContext:
+    exercise_id = None
+    if context.exercise is not None:
+        maybe_exercise_id = context.exercise.get("id")
+        exercise_id = str(maybe_exercise_id) if maybe_exercise_id else None
+    return LearningToolContext(
+        session_id=context.session_id,
+        exercise_id=exercise_id,
+        current_stage=context.learning_stage,
+        knowledge_point_id=context.knowledge_point_id,
+        exercise=context.exercise,
+        run_code_fn=_run_code_for_learning_tool if context.exercise is not None else None,
+    )
+
+
+def serialize_agent_side_effects(side_effects: AgentSideEffects | None) -> dict[str, object]:
+    if side_effects is None:
+        return {}
+
+    metadata: dict[str, object] = {}
+    if side_effects.stage_updates:
+        metadata["stage_updates"] = [
+            {
+                "previous_stage": _limit_text(str(item.get("previous_stage") or ""), 80),
+                "new_stage": _limit_text(str(item.get("new_stage") or ""), 80),
+                "reason": _limit_text(str(item.get("reason") or ""), 240),
+            }
+            for item in side_effects.stage_updates[:5]
+        ]
+    if side_effects.diagnosis_updates:
+        metadata["diagnosis_updates"] = [
+            {
+                key: _limit_text(str(value), 240)
+                for key, value in item.items()
+                if key in {"stuck_point", "misconceptions", "recommended_action", "concepts_explained"}
+            }
+            for item in side_effects.diagnosis_updates[:5]
+        ]
+    if side_effects.attempt_records:
+        metadata["attempt_records"] = [
+            {
+                "attempt_id": _limit_text(str(item.get("attempt_id") or ""), 80),
+                "exercise_id": _limit_text(str(item.get("exercise_id") or ""), 80),
+                "action": _limit_text(str(item.get("action") or ""), 20),
+                "code_length": len(str(item.get("code") or "")),
+            }
+            for item in side_effects.attempt_records[:5]
+        ]
+    if side_effects.profile_updates:
+        metadata["profile_updates"] = [
+            {
+                key: _limit_text(str(value), 240)
+                for key, value in item.items()
+                if key in {"type", "content", "confidence", "session_id", "key", "value"}
+            }
+            for item in side_effects.profile_updates[:5]
+        ]
+    return metadata
+
+
+def _run_code_for_learning_tool(exercise: Mapping[str, object], code: str) -> dict[str, object]:
+    result = run_runtime_exercise(
+        exercise,
+        code,
+        filled_blanks={},
+        run_mode="visible_tests",
+    )
+    return {
+        "runtime_status": result.runtime_status,
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+        "test_pass_rate": result.test_pass_rate,
+        "passed_test_count": result.passed_test_count,
+        "total_test_count": result.total_test_count,
+        "test_results": result.test_results,
+        "error_message": result.error_message,
+        "next_action": result.next_action,
+    }
 
 
 def _apply_or_reuse_transition(

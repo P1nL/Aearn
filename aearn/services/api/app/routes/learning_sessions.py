@@ -24,6 +24,7 @@ from app.models.learning_sessions import (
     SubmitExerciseRequest,
 )
 from app.services.learning_conversation import (
+    build_learning_agent_tool_runtime,
     build_learning_message_response,
     create_learning_message_response,
     deterministic_learning_message_text,
@@ -731,9 +732,15 @@ async def _learning_message_stream(
         full_text = ""
         try:
             prepared = precompute_learning_message_transition(prepared)
+            side_effects, tool_context = build_learning_agent_tool_runtime(prepared.context)
             deterministic = deterministic_learning_message_text(prepared)
             if deterministic is None:
-                generation = start_learning_message_generation(prepared.context, user_content=payload.content)
+                generation = start_learning_message_generation(
+                    prepared.context,
+                    user_content=payload.content,
+                    side_effects=side_effects,
+                    tool_context=tool_context,
+                )
                 generation_source = generation.generation_source
                 generation_model = generation.generation_model
                 chunks = _iter_generation_chunks(request, generation.chunks)
@@ -783,7 +790,7 @@ async def _learning_message_stream(
                 generation_source=generation_source,
                 generation_model=generation_model,
             )
-            response = store_learning_message_response(conn, prepared, response)
+            response = store_learning_message_response(conn, prepared, response, side_effects=side_effects)
             conn.commit()
 
         async for frame in _tool_call_events(writer, response.get("tool_calls")):
