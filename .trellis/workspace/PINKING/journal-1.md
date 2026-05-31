@@ -1200,3 +1200,36 @@ Completed and archived the remaining agent runtime integration children: product
 ### Next Steps
 
 - None - task complete
+
+
+## Session 37: LangGraph orchestration migration closeout
+
+**Date**: 2026-06-01
+**Task**: LangGraph orchestration migration closeout
+**Branch**: `main`
+
+### Summary
+
+Migrated learning, onboarding, and review production paths to LangGraph-backed orchestration behind LANGGRAPH_ENABLED; added shared graph runtime contracts, route/service intent consumption, tests, and backend code-spec guidance. Verification passed: backend pytest, ruff, mypy, and desktop build.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `ad0aee6` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
