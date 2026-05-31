@@ -14,8 +14,8 @@ Introduce `learning_graph.py` as an opt-in runtime orchestration path behind `LA
 
 ## Acceptance Criteria
 
-- [ ] Feature flag off preserves current learning message behavior.
-- [ ] Feature flag on invokes the compiled graph from a real request/service path.
-- [ ] Graph failures map to safe fallback or model-unavailable behavior without leaking internals.
-- [ ] Tests cover flag-off and flag-on routing.
-- [ ] Focused backend tests, lint, mypy, and task validation pass.
+- [x] Feature flag off preserves current learning message behavior.
+- [x] Feature flag on invokes the compiled graph from a real request/service path.
+- [x] Graph failures map to safe fallback or model-unavailable behavior without leaking internals.
+- [x] Tests cover flag-off and flag-on routing.
+- [x] Focused backend tests, lint, mypy, and task validation pass.
