@@ -30,6 +30,7 @@ from app.agents.guardrails import (
     detect_direct_answer_request,
 )
 from app.agents.learning_conversation_agent import AgentsSDKLearningConversationClient
+from app.agents.router import get_handoff_targets, route_message
 from app.agents.learning_concept_agent import (
     attach_concept_check_judgement,
     build_sdk_concept_check_result,
@@ -490,17 +491,28 @@ def start_learning_message_generation(
     effective_settings = settings or get_settings()
     if check_teaching_request(user_content).blocked:
         raise LLMInvalidResponseError("Learning conversation request was blocked by guardrails")
+    agent_name = route_message(
+        session_stage=context.learning_stage,
+        user_message=user_content,
+    )
+    handoff_targets = get_handoff_targets(agent_name)
     if client is None:
         if not effective_settings.openai_compatible_configured:
             raise LLMConfigurationError("Learning conversation requires configured model API")
         if side_effects is not None or tool_context is not None:
             client = AgentsSDKLearningConversationClient(
                 effective_settings,
+                agent_name=agent_name,
+                handoff_targets=handoff_targets,
                 side_effects=side_effects,
                 tool_context=tool_context,
             )
         else:
-            client = AgentsSDKLearningConversationClient(effective_settings)
+            client = AgentsSDKLearningConversationClient(
+                effective_settings,
+                agent_name=agent_name,
+                handoff_targets=handoff_targets,
+            )
 
     messages = _build_messages(context, user_content=user_content)
     return LearningMessageGeneration(

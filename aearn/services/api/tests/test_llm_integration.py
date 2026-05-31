@@ -604,6 +604,59 @@ def test_agents_sdk_learning_conversation_client_streams_text_deltas() -> None:
     assert client.model == "third-party-model"
 
 
+def test_agents_sdk_learning_conversation_client_builds_routed_handoffs() -> None:
+    captured: dict[str, object] = {}
+
+    class FakeDelta:
+        type = "response.output_text.delta"
+
+        def __init__(self, delta: str) -> None:
+            self.delta = delta
+
+    class FakeEvent:
+        type = "raw_response_event"
+
+        def __init__(self, delta: str) -> None:
+            self.data = FakeDelta(delta)
+
+    class FakeStreamedRun:
+        final_output = None
+
+        async def stream_events(self):  # type: ignore[no-untyped-def]
+            yield FakeEvent("先处理练习卡点。")
+
+    class FakeRunner:
+        def run_streamed(self, starting_agent, input, **kwargs):  # type: ignore[no-untyped-def]
+            del input, kwargs
+            captured["agent_name"] = starting_agent.name
+            captured["handoff_names"] = [
+                getattr(handoff, "name", getattr(handoff, "agent_name", ""))
+                for handoff in starting_agent.handoffs
+            ]
+            captured["instructions"] = starting_agent.instructions
+            return FakeStreamedRun()
+
+    client = AgentsSDKLearningConversationClient(
+        Settings(
+            llm_type="openai",
+            openai_api_key="test-key",
+            openai_base_url="https://provider.example/v1",
+            openai_model="third-party-model",
+        ),
+        runner=FakeRunner(),
+        agent_name="exercise_coach",
+        handoff_targets=["teaching", "diagnosis", "exercise_coach", "unknown", "teaching"],
+    )
+
+    chunks = list(client.complete_text_stream(_teaching_messages()))
+
+    assert chunks == ["先处理练习卡点。"]
+    assert captured["agent_name"] == "Aearn Exercise Coach"
+    assert captured["handoff_names"] == [TEACHING_AGENT_NAME, "Aearn Diagnosis Agent"]
+    assert "teaching" in str(captured["instructions"])
+    assert "diagnosis" in str(captured["instructions"])
+
+
 def test_agents_sdk_streaming_ignores_done_text_after_deltas() -> None:
     class FakeDelta:
         type = "response.output_text.delta"

@@ -693,6 +693,69 @@ def test_learning_message_json_uses_model_and_is_idempotent(client: TestClient) 
     assert replay_body["tool_calls"] == first_body["tool_calls"]
 
 
+def test_learning_message_routes_and_passes_handoffs_to_sdk_client(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user, plan = _confirmed_plan(client, language="javascript")
+    session = _start_session(client, user, plan)
+    captured: dict[str, object] = {}
+
+    class FakeRoutedClient:
+        model = "fake-routed-model"
+
+        def complete_text_stream(self, messages, *, temperature=None):  # type: ignore[no-untyped-def]
+            captured["messages"] = messages
+            captured["temperature"] = temperature
+            return ["路由接入完成。"]
+
+    def fake_route_message(*, session_stage: str, user_message: str, session_type: str = "learning") -> str:
+        captured["route_input"] = {
+            "session_stage": session_stage,
+            "user_message": user_message,
+            "session_type": session_type,
+        }
+        return "exercise_coach"
+
+    def fake_handoff_targets(agent_name: str) -> list[str]:
+        captured["handoff_agent"] = agent_name
+        return ["teaching", "diagnosis"]
+
+    def fake_agent_factory(settings, **kwargs):  # type: ignore[no-untyped-def]
+        del settings
+        captured["agent_name"] = kwargs.get("agent_name")
+        captured["handoff_targets"] = tuple(kwargs.get("handoff_targets") or ())
+        return FakeRoutedClient()
+
+    monkeypatch.setattr(learning_conversation, "route_message", fake_route_message)
+    monkeypatch.setattr(learning_conversation, "get_handoff_targets", fake_handoff_targets)
+    monkeypatch.setattr(learning_conversation, "AgentsSDKLearningConversationClient", fake_agent_factory)
+
+    response = client.post(
+        f"/api/learning-sessions/{session['session_id']}/messages",
+        json={
+            "role": "user",
+            "content": "为什么要用变量保存状态？",
+            "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["agent_message"]["content"] == "路由接入完成。"
+    assert body["generation_model"] == "fake-routed-model"
+    assert captured["route_input"] == {
+        "session_stage": "concept_check",
+        "user_message": "为什么要用变量保存状态？",
+        "session_type": "learning",
+    }
+    assert captured["handoff_agent"] == "exercise_coach"
+    assert captured["agent_name"] == "exercise_coach"
+    assert captured["handoff_targets"] == ("teaching", "diagnosis")
+    assert "handoff_targets" not in json.dumps(body, ensure_ascii=False)
+    assert "agent_name" not in json.dumps(body, ensure_ascii=False)
+
+
 def test_learning_message_routes_wire_agent_side_effects_and_tool_context(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,

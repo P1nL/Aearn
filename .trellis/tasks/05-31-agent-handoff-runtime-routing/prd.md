@@ -14,8 +14,8 @@ Use `router.py` and SDK handoff target construction in production conversation r
 
 ## Acceptance Criteria
 
-- [ ] Real learning message handling invokes route selection.
-- [ ] Matched routes pass handoff targets into SDK agent construction.
-- [ ] No-match routes preserve current behavior.
-- [ ] Tests prove routing/handoff plumbing is connected to production code.
-- [ ] Focused backend tests, lint, mypy, and task validation pass.
+- [x] Real learning message handling invokes route selection.
+- [x] Matched routes pass handoff targets into SDK agent construction.
+- [x] No-match routes preserve current behavior.
+- [x] Tests prove routing/handoff plumbing is connected to production code.
+- [x] Focused backend tests, lint, mypy, and task validation pass.

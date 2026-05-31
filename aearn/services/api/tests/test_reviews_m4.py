@@ -81,7 +81,7 @@ def disable_review_coach_sdk(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         learning_conversation,
         "AgentsSDKLearningConversationClient",
-        lambda settings: FakeLearningConversationClient(),
+        lambda settings, **kwargs: FakeLearningConversationClient(),
     )
 
 
