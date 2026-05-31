@@ -9,6 +9,7 @@ from psycopg import Connection
 
 from app.agents.note_assist_agent import (
     NoteAssistContext,
+    assert_note_assist_judgement_ready,
     assert_safe_note_draft_output,
     build_note_assist_client,
 )
@@ -248,6 +249,7 @@ def generate_agent_draft(
     if draft:
         draft = draft.strip()
         if draft:
+            assert_note_assist_judgement_ready(draft, context)
             assert_safe_note_draft_output(draft)
             return draft
     raise LLMInvalidResponseError("Note Assist model produced no draft")
@@ -283,6 +285,7 @@ def generate_agent_draft_stream(
     full_text = full_text.strip()
     if not full_text:
         raise LLMInvalidResponseError("Note Assist model produced no draft")
+    assert_note_assist_judgement_ready(full_text, context)
     assert_safe_note_draft_output(full_text)
     return full_text
 

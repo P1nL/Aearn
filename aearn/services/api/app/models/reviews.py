@@ -18,6 +18,7 @@ class ReviewExplanationCheck(BaseModel):
     result: ExplanationResult = "passed"
     score: int = Field(default=2, ge=0, le=2)
     feedback: str | None = None
+    judgements: dict[str, object] | None = None
 
 
 class ReviewWarmupResultRequest(BaseModel):

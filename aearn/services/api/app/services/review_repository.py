@@ -9,6 +9,13 @@ from psycopg import Connection
 
 from app.agents.guardrails import assert_safe_teaching_output
 from app.agents.review_coach_agent import ReviewCoachContext, build_sdk_review_coach_response
+from app.agents.structured_judgement import (
+    FieldPolicy,
+    JudgementPolicy,
+    StructuredJudgement,
+    coerce_structured_judgements,
+    normalize_judgements,
+)
 from app.models.reviews import ReviewAIPatchAnswer, ReviewExplanationCheck
 from app.services.evaluation import build_code_completion_result, build_review_ai_patch_completion_result
 from app.services.exercise_repository import get_exercise
@@ -25,6 +32,40 @@ from app.services.review_seed_bank import (
 from app.services.runtime_runner import RuntimeExecutionResult, run_exercise
 from app.services.llm_client import LLMCallError, LLMInvalidResponseError
 from app.services.user_repository import get_user
+
+
+REVIEW_WARMUP_JUDGEMENT_POLICY = JudgementPolicy(
+    fields=[
+        FieldPolicy(
+            name="warmup_correctness",
+            required=True,
+            fallback_question="请用一句话说明你记得的关键风险；如果不确定也可以跳过热身。",
+        ),
+    ],
+    default_fallback_question="请用一句话说明你记得的关键风险；如果不确定也可以跳过热身。",
+)
+REVIEW_EXPLANATION_JUDGEMENT_POLICY = JudgementPolicy(
+    fields=[
+        FieldPolicy(
+            name="review_explanation_sufficiency",
+            required=True,
+            fallback_question="请再补充这次复习提交为什么能覆盖当前知识点风险。",
+        ),
+        FieldPolicy(
+            name="weak_point_signal",
+            required=False,
+            fallback_question="请指出这次答案和薄弱点之间的关系。",
+            blocks_on=("ambiguous", "unsupported"),
+        ),
+        FieldPolicy(
+            name="repair_needed",
+            required=False,
+            fallback_question="请明确下一步是重试还是进入变体练习。",
+            blocks_on=("ambiguous", "unsupported"),
+        ),
+    ],
+    default_fallback_question="请再补一句这次提交为什么能覆盖当前知识点风险。",
+)
 
 
 class EntityNotFoundError(ValueError):
@@ -286,6 +327,16 @@ def submit_review_exercise_result(
             runtime_result = run_exercise(exercise, code, filled_blanks, "visible_tests")
 
         explanation_check_payload = explanation_check.model_dump() if explanation_check is not None else None
+        blocked_response = _blocked_review_explanation_check_response(explanation_check_payload)
+        if blocked_response is not None:
+            conn.execute(
+                """
+                INSERT INTO idempotency_records (key, operation, request_hash, response_json)
+                VALUES (%s, 'submit_review_exercise_result', %s, %s::jsonb)
+                """,
+                (key, payload_hash, json.dumps(blocked_response)),
+            )
+            return blocked_response, False
         code_completion_result, service_fields = build_code_completion_result(
             exercise,
             runtime_result,
@@ -407,6 +458,32 @@ def record_review_warmup_result(
             expected_focus=str(warmup.get("expected_focus") or ""),
             question=str(warmup.get("question") or ""),
         )
+    normalized_warmup = _normalize_review_warmup_judgement(result)
+    if not normalized_warmup["ready"]:
+        response_warmup = dict(warmup)
+        feedback = str(
+            normalized_warmup.get("clarification_question")
+            or _warmup_feedback(result)
+        )
+        response_warmup.update(
+            {
+                "result": result,
+                "last_answer": answer,
+                "feedback": feedback,
+                "judgement_ready": False,
+                "judgement_blocking_fields": normalized_warmup["blocking_fields"],
+                "clarification_question": feedback,
+            }
+        )
+        response_state = dict(state)
+        response_state["warmup"] = response_warmup
+        return {
+            "session_id": session_id,
+            "review_stage": str(session.get("review_stage") or _stage_from_state(state)),
+            "warmup": response_warmup,
+            "review_stage_state": response_state,
+            "next_action": "retry_same",
+        }
     repair_count = _int_or_zero(warmup.get("repair_count"))
     next_stage = "variant_practice"
     feedback = _warmup_feedback(result)
@@ -813,6 +890,99 @@ def _mark_review_stage_submitted(session: Mapping[str, object]) -> dict[str, obj
     state = _review_stage_state_from_session(session) or {}
     state["review_stage"] = "submitted"
     return state
+
+
+def _normalize_review_warmup_judgement(result: str) -> dict[str, object]:
+    if result in {"correct", "incorrect", "skipped"}:
+        judgement = StructuredJudgement(status="confirmed")
+    elif result == "unclear":
+        judgement = StructuredJudgement(
+            status="ambiguous",
+            ambiguity_type="answer_unclear",
+            clarification_question=REVIEW_WARMUP_JUDGEMENT_POLICY.default_fallback_question,
+        )
+    else:
+        judgement = StructuredJudgement(
+            status="unsupported",
+            ambiguity_reason="warmup result is unsupported",
+            clarification_question=REVIEW_WARMUP_JUDGEMENT_POLICY.default_fallback_question,
+        )
+    normalized = normalize_judgements(
+        {"warmup_correctness": result},
+        {"warmup_correctness": judgement},
+        REVIEW_WARMUP_JUDGEMENT_POLICY,
+    )
+    return {
+        "ready": normalized.ready,
+        "blocking_fields": list(normalized.blocking_fields),
+        "clarification_question": normalized.clarification_question,
+    }
+
+
+def _blocked_review_explanation_check_response(
+    explanation_check_payload: Mapping[str, object] | None,
+) -> dict[str, object] | None:
+    if explanation_check_payload is None:
+        return None
+    normalized = _normalize_review_explanation_check_judgement(explanation_check_payload)
+    if normalized["ready"]:
+        return None
+    question = str(
+        normalized.get("clarification_question")
+        or "请再补一句这次提交为什么能覆盖当前知识点风险。"
+    )
+    response = {
+        "result": "failed",
+        "score": 0,
+        "score_breakdown": {"explanation_check": 0},
+        "hard_gates": {
+            "runtime_gate": False,
+            "test_gate": False,
+            "core_blank_gate": False,
+            "explanation_gate": False,
+        },
+        "test_pass_rate": 0.0,
+        "hint_usage_count": 0,
+        "error_count": 0,
+        "weak_points": [],
+        "error_cause": None,
+        "feedback": question,
+        "next_action": "retry_same",
+        "fsrs_rating": "Again",
+        "judgement_ready": False,
+        "judgement_blocking_fields": normalized["blocking_fields"],
+        "clarification_question": question,
+    }
+    response["code_completion_result"] = dict(response)
+    return response
+
+
+def _normalize_review_explanation_check_judgement(
+    payload: Mapping[str, object],
+) -> dict[str, object]:
+    raw_judgements = payload.get("judgements")
+    if isinstance(raw_judgements, Mapping):
+        judgements = coerce_structured_judgements(raw_judgements, REVIEW_EXPLANATION_JUDGEMENT_POLICY)
+    else:
+        judgements = {
+            "review_explanation_sufficiency": StructuredJudgement(status="confirmed"),
+            "weak_point_signal": StructuredJudgement(status="confirmed"),
+            "repair_needed": StructuredJudgement(status="confirmed"),
+        }
+    normalized = normalize_judgements(
+        {
+            "review_explanation_sufficiency": payload.get("result"),
+            "weak_point_signal": payload.get("feedback"),
+            "repair_needed": payload.get("result") if str(payload.get("result") or "") != "passed" else None,
+        },
+        judgements,
+        REVIEW_EXPLANATION_JUDGEMENT_POLICY,
+    )
+    return {
+        "ready": normalized.ready,
+        "blocking_fields": list(normalized.blocking_fields),
+        "clarification_question": normalized.clarification_question,
+    }
 
 
 def _evaluate_warmup_answer(*, answer: str, expected_focus: str, question: str) -> str:

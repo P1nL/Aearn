@@ -33,3 +33,6 @@ package = false
 
 [tool.uv.sources]
 aearn-worker = { path = "../worker", editable = true }
+
+[tool.mypy]
+mypy_path = "../worker"

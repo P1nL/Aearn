@@ -15,6 +15,13 @@ from app.agents.sdk_runtime import (
     split_chat_messages,
     stream_text_deltas,
 )
+from app.agents.structured_judgement import (
+    FieldPolicy,
+    JudgementPolicy,
+    StructuredJudgement,
+    coerce_structured_judgements,
+    normalize_judgements,
+)
 from app.core.config import Settings, get_settings
 from app.services.llm_client import LLMCallError, LLMConfigurationError, LLMInvalidResponseError
 
@@ -22,6 +29,33 @@ from app.services.llm_client import LLMCallError, LLMConfigurationError, LLMInva
 CONCEPT_AGENT_NAME = "Aearn Concept Check Agent"
 CONCEPT_RESULTS = {"correct", "incorrect", "unclear", "skipped"}
 CONFIDENCE_LEVELS = {"high", "medium", "low"}
+CONCEPT_CHECK_JUDGEMENT_POLICY = JudgementPolicy(
+    fields=[
+        FieldPolicy(
+            name="answer_correctness",
+            required=True,
+            fallback_question="请直接说明你的选择，并补一句为什么。",
+        ),
+        FieldPolicy(
+            name="confidence",
+            required=True,
+            fallback_question="请再补一句判断依据，让我确认你不是在猜。",
+        ),
+        FieldPolicy(
+            name="misconception",
+            required=False,
+            fallback_question="请说明你觉得最容易混淆的点是什么。",
+            blocks_on=("ambiguous", "unsupported"),
+        ),
+        FieldPolicy(
+            name="repair_check",
+            required=False,
+            fallback_question="请再用一个更小的判断题确认当前概念。",
+            blocks_on=("ambiguous", "unsupported"),
+        ),
+    ],
+    default_fallback_question="请再用一句更具体的话说明你的判断依据。",
+)
 SAFE_GENERATION_EXCEPTIONS = (
     LLMCallError,
     LLMConfigurationError,
@@ -241,10 +275,28 @@ def _build_check_messages(
                 "options": [{"id": "A", "text": "option text"}],
                 "expected_focus": "optional focus",
             },
+            "judgements": {
+                "answer_correctness": {
+                    "status": "confirmed | ambiguous | missing | unsupported",
+                    "clarification_question": "question when not confirmed",
+                },
+                "confidence": {
+                    "status": "confirmed | ambiguous | missing | unsupported",
+                    "clarification_question": "question when not confirmed",
+                },
+                "misconception": {
+                    "status": "confirmed | ambiguous | missing | unsupported",
+                    "clarification_question": "optional question",
+                },
+                "repair_check": {
+                    "status": "confirmed | ambiguous | missing | unsupported",
+                    "clarification_question": "optional question",
+                },
+            },
         },
     }
     return _json_messages(
-        "你是 Aearn 的概念判断器。只输出 JSON，不要 Markdown。根据学习者自然语言回答判断 correct、incorrect 或 unclear。incorrect 时指出一个误解；如果仍需要修复，给出更窄的 2-4 选项判断题。不得解锁练习，不得输出完整答案、hidden tests、solution_reference、raw prompt、provider errors 或密钥。",
+        "你是 Aearn 的概念判断器。只输出 JSON，不要 Markdown。根据学习者自然语言回答判断 correct、incorrect 或 unclear。必须同时输出 judgements，逐字段说明 answer_correctness、confidence、misconception、repair_check 是否 confirmed、ambiguous、missing 或 unsupported。incorrect 时指出一个误解；如果仍需要修复，给出更窄的 2-4 选项判断题。不得解锁练习，不得输出完整答案、hidden tests、solution_reference、raw prompt、provider errors 或密钥。",
         evidence,
     )
 
@@ -296,7 +348,73 @@ def _validate_check_result_payload(payload: Mapping[str, object]) -> dict[str, o
     else:
         response["repair_check"] = None
     _assert_payload_safe(response)
+    return attach_concept_check_judgement(response, payload.get("judgements"), require_explicit=True)
+
+
+def attach_concept_check_judgement(
+    candidate: Mapping[str, object],
+    raw_judgements: object | None = None,
+    *,
+    require_explicit: bool = False,
+) -> dict[str, object]:
+    response = dict(candidate)
+    judgement_payload = raw_judgements if raw_judgements is not None else response.get("judgements")
+    if isinstance(judgement_payload, Mapping):
+        judgements = coerce_structured_judgements(judgement_payload, CONCEPT_CHECK_JUDGEMENT_POLICY)
+    elif require_explicit:
+        judgements = coerce_structured_judgements({}, CONCEPT_CHECK_JUDGEMENT_POLICY)
+    else:
+        judgements = _legacy_concept_check_judgements(response)
+    normalized = normalize_judgements(
+        _concept_check_judgement_values(response),
+        judgements,
+        CONCEPT_CHECK_JUDGEMENT_POLICY,
+    )
+    response["judgements"] = _serialize_judgements(judgements)
+    response["judgement_ready"] = normalized.ready
+    response["judgement_cleared_fields"] = list(normalized.cleared_fields)
+    response["judgement_blocking_fields"] = list(normalized.blocking_fields)
+    response["clarification_question"] = normalized.clarification_question
     return response
+
+
+def _concept_check_judgement_values(candidate: Mapping[str, object]) -> dict[str, object]:
+    result = str(candidate.get("result") or "")
+    return {
+        "answer_correctness": result,
+        "confidence": candidate.get("confidence"),
+        "misconception": candidate.get("explanation") if result == "incorrect" else None,
+        "repair_check": candidate.get("repair_check"),
+    }
+
+
+def _legacy_concept_check_judgements(
+    candidate: Mapping[str, object],
+) -> dict[str, StructuredJudgement]:
+    result = str(candidate.get("result") or "")
+    repair_check = candidate.get("repair_check")
+    repair_judgement = (
+        StructuredJudgement(status="confirmed")
+        if isinstance(repair_check, Mapping)
+        else StructuredJudgement(status="missing")
+    )
+    return {
+        "answer_correctness": StructuredJudgement(status="confirmed"),
+        "confidence": StructuredJudgement(status="confirmed"),
+        "misconception": StructuredJudgement(
+            status="confirmed" if result == "incorrect" else "missing",
+        ),
+        "repair_check": repair_judgement,
+    }
+
+
+def _serialize_judgements(
+    judgements: Mapping[str, StructuredJudgement],
+) -> dict[str, dict[str, object]]:
+    return {
+        name: judgement.model_dump(exclude_none=True)
+        for name, judgement in judgements.items()
+    }
 
 
 def _validate_single_choice_check(value: Mapping[str, object]) -> dict[str, object]:
