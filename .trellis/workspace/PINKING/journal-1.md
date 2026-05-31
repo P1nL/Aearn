@@ -1166,3 +1166,37 @@ Added LANGGRAPH_ENABLED-gated learning graph invocation from the learning messag
 ### Next Steps
 
 - None - task complete
+
+
+## Session 36: Agent runtime integration closeout
+
+**Date**: 2026-05-31
+**Task**: Agent runtime integration closeout
+**Branch**: `main`
+
+### Summary
+
+Completed and archived the remaining agent runtime integration children: production handoff routing and LANGGRAPH_ENABLED-gated learning graph rollout. Archived the parent integration task after all child acceptance criteria were met.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `4a3bdd9` | (see git log) |
+| `73e825d` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

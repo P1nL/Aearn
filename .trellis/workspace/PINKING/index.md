@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 35
+- **Total Sessions**: 36
 - **Last Active**: 2026-05-31
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~1168 | Active |
+| `journal-1.md` | ~1202 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 36 | 2026-05-31 | Agent runtime integration closeout | `4a3bdd9`, `73e825d` | `main` |
 | 35 | 2026-05-31 | LangGraph runtime rollout | `73e825d` | `main` |
 | 34 | 2026-05-31 | Agent handoff runtime routing | `4a3bdd9` | `main` |
 | 33 | 2026-05-31 | Teaching chunks indexing runtime | `69a1f4f`, `116e9fe` | `main` |
