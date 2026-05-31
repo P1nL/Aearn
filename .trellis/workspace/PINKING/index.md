@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 33
+- **Total Sessions**: 34
 - **Last Active**: 2026-05-31
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~1102 | Active |
+| `journal-1.md` | ~1135 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 34 | 2026-05-31 | Agent handoff runtime routing | `4a3bdd9` | `main` |
 | 33 | 2026-05-31 | Teaching chunks indexing runtime | `69a1f4f`, `116e9fe` | `main` |
 | 32 | 2026-05-31 | Learner profile runtime integration | `33e3cc3` | `main` |
 | 31 | 2026-05-31 | Learning agent side effects wiring | `4f7d385` | `main` |

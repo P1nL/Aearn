@@ -1100,3 +1100,36 @@ Wired teaching chunk indexing into confirmed plan, lesson fallback, and exercise
 ### Next Steps
 
 - None - task complete
+
+
+## Session 34: Agent handoff runtime routing
+
+**Date**: 2026-05-31
+**Task**: Agent handoff runtime routing
+**Branch**: `main`
+
+### Summary
+
+Connected learning message routing to the SDK learning client, passed safe handoff targets into agent construction, and added production-path and SDK plumbing tests.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `4a3bdd9` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
