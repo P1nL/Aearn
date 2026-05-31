@@ -2,12 +2,12 @@
 
 ## Checklist
 
-- [ ] Inspect `learning_graph.py`, settings, and learning message orchestration.
-- [ ] Add feature-flag branch at a real service boundary.
-- [ ] Build sanitized `AgentState` adapter and response adapter.
-- [ ] Preserve default path and failure handling.
-- [ ] Add tests for flag-off and flag-on invocation.
-- [ ] Run focused tests, ruff, mypy, and task validation.
+- [x] Inspect `learning_graph.py`, settings, and learning message orchestration.
+- [x] Add feature-flag branch at a real service boundary.
+- [x] Build sanitized `AgentState` adapter and response adapter.
+- [x] Preserve default path and failure handling.
+- [x] Add tests for flag-off and flag-on invocation.
+- [x] Run focused tests, ruff, mypy, and task validation.
 
 ## Verification
 
@@ -17,4 +17,3 @@ uv --directory .\aearn\services\api run ruff check .
 uv --directory .\aearn\services\api run python -m mypy app
 python .\.trellis\scripts\task.py validate .\.trellis\tasks\05-31-langgraph-runtime-rollout
 ```
-

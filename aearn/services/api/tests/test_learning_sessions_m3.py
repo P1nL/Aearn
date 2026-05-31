@@ -756,6 +756,124 @@ def test_learning_message_routes_and_passes_handoffs_to_sdk_client(
     assert "agent_name" not in json.dumps(body, ensure_ascii=False)
 
 
+def test_learning_message_langgraph_flag_off_does_not_invoke_graph(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user, plan = _confirmed_plan(client, language="javascript")
+    session = _start_session(client, user, plan)
+    captured = {"compiled": False}
+
+    def fail_compile_graph():  # type: ignore[no-untyped-def]
+        captured["compiled"] = True
+        raise AssertionError("LANGGRAPH_ENABLED=false should not compile the graph")
+
+    monkeypatch.setattr(learning_conversation, "compile_learning_graph", fail_compile_graph)
+
+    response = client.post(
+        f"/api/learning-sessions/{session['session_id']}/messages",
+        json={
+            "role": "user",
+            "content": "为什么要用变量保存状态？",
+            "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["generation_source"] == "llm"
+    assert captured["compiled"] is False
+
+
+def test_learning_message_langgraph_flag_on_invokes_graph_from_request_path(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user, plan = _confirmed_plan(client, language="javascript")
+    session = _start_session(client, user, plan)
+    captured: dict[str, object] = {}
+
+    class FakeCompiledGraph:
+        def invoke(self, state):  # type: ignore[no-untyped-def]
+            captured["state"] = state
+            return {
+                "current_node": "persist_side_effects",
+                "learning_stage": state["learning_stage"],
+                "next_action": "graph_checked",
+                "errors": [],
+            }
+
+    monkeypatch.setattr(
+        learning_conversation,
+        "get_settings",
+        lambda: Settings(
+            llm_type="openai",
+            openai_api_key="test-key",
+            openai_base_url="https://provider.example",
+            openai_model="fake-teaching-model",
+            langgraph_enabled=True,
+        ),
+    )
+    monkeypatch.setattr(learning_conversation, "compile_learning_graph", lambda: FakeCompiledGraph())
+
+    response = client.post(
+        f"/api/learning-sessions/{session['session_id']}/messages",
+        json={
+            "role": "user",
+            "content": "为什么要用变量保存状态？",
+            "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
+        },
+    )
+
+    assert response.status_code == 200
+    state = captured["state"]
+    assert isinstance(state, dict)
+    assert state["user_id"] == user["id"]
+    assert state["session_id"] == session["session_id"]
+    assert state["session_type"] == "learning"
+    assert state["messages"] == [{"role": "user", "content": "为什么要用变量保存状态？"}]
+    assert "solution_reference" not in json.dumps(state, ensure_ascii=False)
+    assert "langgraph_runtime" not in json.dumps(response.json(), ensure_ascii=False)
+
+
+def test_learning_message_langgraph_failure_falls_back_without_leaking_error(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user, plan = _confirmed_plan(client, language="javascript")
+    session = _start_session(client, user, plan)
+
+    monkeypatch.setattr(
+        learning_conversation,
+        "get_settings",
+        lambda: Settings(
+            llm_type="openai",
+            openai_api_key="test-key",
+            openai_base_url="https://provider.example",
+            openai_model="fake-teaching-model",
+            langgraph_enabled=True,
+        ),
+    )
+
+    def fail_compile_graph():  # type: ignore[no-untyped-def]
+        raise RuntimeError("raw graph failure should stay internal")
+
+    monkeypatch.setattr(learning_conversation, "compile_learning_graph", fail_compile_graph)
+
+    response = client.post(
+        f"/api/learning-sessions/{session['session_id']}/messages",
+        json={
+            "role": "user",
+            "content": "为什么要用变量保存状态？",
+            "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
+        },
+    )
+
+    assert response.status_code == 200
+    body_text = json.dumps(response.json(), ensure_ascii=False)
+    assert "raw graph failure" not in body_text
+    assert "langgraph_runtime" not in body_text
+
+
 def test_learning_message_routes_wire_agent_side_effects_and_tool_context(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,

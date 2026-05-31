@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Protocol
+from typing import Any, Protocol, cast
 
 from psycopg import Connection
 
@@ -29,6 +29,7 @@ from app.agents.guardrails import (
     check_teaching_request,
     detect_direct_answer_request,
 )
+from app.agents.learning_graph import AgentState, LearningStageState, compile_learning_graph
 from app.agents.learning_conversation_agent import AgentsSDKLearningConversationClient
 from app.agents.router import get_handoff_targets, route_message
 from app.agents.learning_concept_agent import (
@@ -431,8 +432,107 @@ def prepare_learning_message_for_generation(
         learning_stage_state=learning_stage_state,
         conversation_context=conversation_context,
     )
+    if effective_settings.langgraph_enabled:
+        updated_context = _context_with_langgraph_runtime(
+            updated_context,
+            user_content=user_content,
+        )
     updated_transition = replace(prepared.transition, learning_stage_state=learning_stage_state)
     return replace(prepared, context=updated_context, transition=updated_transition)
+
+
+def _context_with_langgraph_runtime(
+    context: LearningConversationContext,
+    *,
+    user_content: str,
+) -> LearningConversationContext:
+    try:
+        graph_state = build_learning_graph_state(context, user_content=user_content)
+        graph_result = compile_learning_graph().invoke(graph_state)
+    except Exception:
+        return context
+
+    graph_context = _graph_runtime_context(graph_result)
+    if not graph_context:
+        return context
+    conversation_context = dict(context.conversation_context)
+    conversation_context["langgraph_runtime"] = graph_context
+    return replace(context, conversation_context=conversation_context)
+
+
+def build_learning_graph_state(
+    context: LearningConversationContext,
+    *,
+    user_content: str,
+) -> AgentState:
+    memory_snapshot: dict[str, Any] = {}
+    if context.learner_profile_summary:
+        memory_snapshot["profile_summary"] = _limit_text(context.learner_profile_summary, 2000)
+    return {
+        "user_id": context.user_id,
+        "session_id": context.session_id,
+        "session_type": "learning",
+        "learning_stage": context.learning_stage,
+        "learning_stage_state": cast(LearningStageState, _safe_graph_mapping(context.learning_stage_state)),
+        "knowledge_point": _safe_graph_mapping(context.knowledge_point),
+        "lesson_outline": _safe_graph_mapping_list(context.lesson_outline),
+        "lesson_sources": _safe_graph_mapping_list(context.lesson_sources),
+        "exercise": _safe_graph_mapping(context.exercise) if context.exercise is not None else None,
+        "runtime_result": None,
+        "code_completion_result": None,
+        "hint_state": {},
+        "explanation_state": {},
+        "memory_snapshot": memory_snapshot,
+        "messages": [{"role": "user", "content": _limit_text(user_content, 4000)}],
+        "side_effects": [],
+        "next_action": None,
+        "errors": [],
+        "current_node": "service_entrypoint",
+    }
+
+
+def _graph_runtime_context(graph_result: object) -> dict[str, object]:
+    if not isinstance(graph_result, Mapping):
+        return {}
+    context: dict[str, object] = {
+        "current_node": _limit_text(str(graph_result.get("current_node") or ""), 80),
+        "learning_stage": _limit_text(str(graph_result.get("learning_stage") or ""), 80),
+    }
+    next_action = graph_result.get("next_action")
+    if next_action is not None:
+        context["next_action"] = _limit_text(str(next_action), 120)
+    errors = graph_result.get("errors")
+    if isinstance(errors, list):
+        context["errors"] = [_limit_text(str(item), 160) for item in errors[:3]]
+    return context
+
+
+def _safe_graph_mapping(value: Mapping[str, object]) -> dict[str, Any]:
+    safe_value = _safe_graph_value(value)
+    return safe_value if isinstance(safe_value, dict) else {}
+
+
+def _safe_graph_mapping_list(values: Sequence[Mapping[str, object]]) -> list[dict[str, Any]]:
+    safe_items: list[dict[str, Any]] = []
+    for item in values:
+        safe_items.append(_safe_graph_mapping(item))
+    return safe_items
+
+
+def _safe_graph_value(value: object) -> Any:
+    if isinstance(value, Mapping):
+        return {_limit_text(str(key), 80): _safe_graph_value(item) for key, item in value.items()}
+    if isinstance(value, str):
+        return _limit_text(value, 4000)
+    if isinstance(value, bool | int | float) or value is None:
+        return value
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, list | tuple):
+        return [_safe_graph_value(item) for item in value[:20]]
+    return _limit_text(str(value), 4000)
 
 
 def deterministic_learning_message_text(prepared: PreparedLearningMessage) -> tuple[str, str, str] | None:
