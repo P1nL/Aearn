@@ -14,8 +14,8 @@ Trigger `teaching_chunks` indexing from real lesson/exercise content creation so
 
 ## Acceptance Criteria
 
-- [ ] Confirmed plan creation or exercise material creation indexes teaching chunks.
-- [ ] Search tool returns indexed content for the same knowledge point.
-- [ ] Search cannot return chunks from another knowledge point.
-- [ ] Re-indexing does not duplicate stale chunk rows.
-- [ ] Focused tests, lint, mypy, and task validation pass.
+- [x] Confirmed plan creation or exercise material creation indexes teaching chunks.
+- [x] Search tool returns indexed content for the same knowledge point.
+- [x] Search cannot return chunks from another knowledge point.
+- [x] Re-indexing does not duplicate stale chunk rows.
+- [x] Focused tests, lint, mypy, and task validation pass.

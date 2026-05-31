@@ -26,6 +26,7 @@ from app.services.llm_client import LLMCallError, LLMInvalidResponseError
 from app.services.plan_repository import IdempotencyConflictError, request_hash
 from app.services.review_scheduler import apply_attempt_review_update
 from app.services.runtime_runner import RuntimeExecutionResult, run_exercise
+from app.services.teaching_chunks import ensure_current_knowledge_point_chunks, index_current_knowledge_point_chunks
 from app.services.user_repository import get_user
 
 
@@ -63,6 +64,7 @@ def start_learning_session(
     context = _load_learning_context(conn, user_id=user_id, plan_id=plan_id, knowledge_point_id=knowledge_point_id)
     ensure_learner_profile(conn, user_id)
     context = _ensure_lesson_content(conn, context)
+    ensure_current_knowledge_point_chunks(conn, knowledge_point_id)
     runtime_profile = _serialize_runtime_profile(context)
 
     reused = False
@@ -1087,10 +1089,12 @@ def _ensure_lesson_content(
         """,
         (json.dumps(outline), json.dumps(sources), context["id"]),
     )
-    return dict(context) | {
+    updated_context = dict(context) | {
         "lesson_outline_json": outline,
         "lesson_sources_json": sources,
     }
+    index_current_knowledge_point_chunks(conn, str(context["id"]))
+    return updated_context
 
 
 def _initial_learning_stage_state(
