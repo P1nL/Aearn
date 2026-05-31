@@ -3,7 +3,7 @@
   "name": "onboarding-graph-orchestration",
   "title": "Onboarding Graph Orchestration",
   "description": "Migrate onboarding slot collection, StructuredJudgement, route generation, route revision, and plan confirmation orchestration to an onboarding LangGraph flow.",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,

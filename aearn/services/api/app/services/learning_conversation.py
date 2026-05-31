@@ -29,7 +29,14 @@ from app.agents.guardrails import (
     check_teaching_request,
     detect_direct_answer_request,
 )
-from app.agents.learning_graph import AgentState, LearningStageState, compile_learning_graph
+from app.agents.graph_runtime_contracts import GraphRunResult, IntentType
+from app.agents.learning_graph import (
+    AgentState,
+    LearningStageState,
+    compile_learning_graph,
+    graph_result_to_run_result,
+    invoke_orchestration,
+)
 from app.agents.learning_conversation_agent import AgentsSDKLearningConversationClient
 from app.agents.router import get_handoff_targets, route_message
 from app.agents.learning_concept_agent import (
@@ -294,9 +301,14 @@ def prepare_learning_message(
     content: str,
     client_message_id: str,
     request_body: Mapping[str, object],
+    settings: Settings | None = None,
 ) -> PreparedLearningMessage:
+    effective_settings = settings or get_settings()
     context = load_learning_conversation_context(conn, session_id=session_id)
-    transition = _determine_transition(context, content)
+    if effective_settings.langgraph_enabled:
+        transition = _determine_transition_via_graph(context, content)
+    else:
+        transition = _determine_transition(context, content)
     reply_context = _context_with_transition(context, transition)
     key = default_learning_message_key(session_id=session_id, client_message_id=client_message_id)
     payload_hash = request_hash(request_body)
@@ -373,6 +385,7 @@ def create_learning_message_response(
         content=content,
         client_message_id=client_message_id,
         request_body=request_body,
+        settings=effective_settings,
     )
     if prepared.stored_response is not None:
         return dict(prepared.stored_response), True
@@ -1401,6 +1414,58 @@ def _build_messages(
             ),
         },
     ]
+
+
+def _determine_transition_via_graph(
+    context: LearningConversationContext,
+    user_content: str,
+) -> LearningConversationTransition:
+    """Use the orchestration graph to determine the next transition.
+
+    Falls back to the imperative path on any graph error.
+    """
+    try:
+        result = invoke_orchestration(
+            session_id=context.session_id,
+            user_id=context.user_id,
+            learning_stage=context.learning_stage,
+            learning_stage_state=context.learning_stage_state,
+            user_text=user_content,
+            knowledge_point=context.knowledge_point,
+            lesson_outline=context.lesson_outline,
+        )
+        run_result = result.get("run_result")
+        if not isinstance(run_result, GraphRunResult):
+            run_result = graph_result_to_run_result(result)
+        next_stage = run_result.next_stage or context.learning_stage
+        next_state = dict(context.learning_stage_state)
+        tool_name: str | None = None
+        learner_content = ""
+        for intent in run_result.intents:
+            payload = dict(intent.payload)
+            if intent.intent_type == IntentType.STAGE_UPDATE and intent.target == "learning_session":
+                stage = payload.get("learning_stage")
+                if isinstance(stage, str) and stage:
+                    next_stage = stage
+                state_payload = payload.get("learning_stage_state")
+                if isinstance(state_payload, Mapping):
+                    next_state = dict(state_payload)
+                content_payload = payload.get("learner_content")
+                if isinstance(content_payload, str):
+                    learner_content = content_payload
+            elif intent.intent_type == IntentType.TOOL_CALL:
+                tool_name = intent.target
+                content_payload = payload.get("learner_content")
+                if isinstance(content_payload, str):
+                    learner_content = content_payload
+        return LearningConversationTransition(
+            learning_stage=next_stage,
+            learning_stage_state=next_state,
+            tool_name=tool_name,
+            learner_content=learner_content,
+        )
+    except Exception:
+        return _determine_transition(context, user_content)
 
 
 def _determine_transition(

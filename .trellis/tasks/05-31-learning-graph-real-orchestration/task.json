@@ -3,7 +3,7 @@
   "name": "learning-graph-real-orchestration",
   "title": "Learning Graph Real Orchestration",
   "description": "Migrate learning-session stage orchestration to LangGraph for concept intro, concept check, repair, practice offer, and practice support.",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,

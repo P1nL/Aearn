@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app.routes.plans as plans_route
+import app.routes.reviews as reviews_route
 from app.core.config import Settings, get_settings
 from app.db.bootstrap import bootstrap_database
 from app.db.connection import connect
@@ -520,6 +521,99 @@ def test_review_run_and_submit_updates_schedule_once(client: TestClient) -> None
     assert str(state["last_attempt_id"]) == submit_body["attempt_id"]
     assert log_count is not None
     assert log_count["count"] == 1
+
+
+def test_review_routes_langgraph_flag_on_invokes_start_and_submit_graph(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user, plan = _confirmed_plan(client, language="javascript")
+    knowledge_point_id = plan["knowledge_points"][0]["id"]
+    _mark_due(knowledge_point_id, reps=2)
+    captured: list[dict[str, object]] = []
+
+    monkeypatch.setattr(reviews_route, "get_settings", lambda: Settings(langgraph_enabled=True))
+
+    def fake_invoke_review_orchestration(**kwargs):  # type: ignore[no-untyped-def]
+        captured.append(dict(kwargs))
+        action = kwargs["action"]
+        return {
+            "next_action": (
+                "submit_and_update"
+                if action == "submit"
+                else "warmup"
+                if action == "warmup"
+                else "start_session"
+            ),
+            "intent_type": "tool_call" if action == "warmup" else "persistence",
+            "intent_payload": {
+                "target": "attempt_and_fsrs" if action == "submit" else "review_session",
+                "tool": "evaluate_warmup" if action == "warmup" else "",
+            },
+        }
+
+    monkeypatch.setattr(
+        reviews_route,
+        "invoke_review_orchestration",
+        fake_invoke_review_orchestration,
+    )
+
+    start = client.post(
+        "/api/reviews/start",
+        json={"user_id": user["id"], "knowledge_point_id": knowledge_point_id},
+    )
+    assert start.status_code == 201
+    review_session = start.json()
+    exercise = review_session["review_exercise"]
+    filled_blanks = _filled_blanks_for(exercise)
+
+    warmup = client.post(
+        f"/api/reviews/{review_session['session_id']}/warmup-result",
+        json={"action": "skip"},
+    )
+    assert warmup.status_code == 200
+
+    run = client.post(
+        f"/api/learning-sessions/{review_session['session_id']}/exercises/{exercise['id']}/run",
+        json={
+            "code": exercise["solution_reference"],
+            "filled_blanks": filled_blanks,
+            "runtime_profile_id": exercise["runtime_profile"]["id"],
+            "run_mode": "visible_tests",
+        },
+    )
+    assert run.status_code == 201
+
+    submitted = client.post(
+        f"/api/reviews/{review_session['session_id']}/exercise-result",
+        json={
+            "exercise_id": exercise["id"],
+            "attempt_id": run.json()["attempt_id"],
+            "code": exercise["solution_reference"],
+            "filled_blanks": filled_blanks,
+            "submit_version": 1,
+            "explanation": "状态变量放在回调外层，所以多次点击会共享同一个 count。",
+            "hint_usage_count": 0,
+            "error_count": 0,
+            "explanation_check": {
+                "result": "passed",
+                "score": 2,
+                "feedback": "能解释状态共享原因。",
+            },
+        },
+    )
+    assert submitted.status_code == 200
+
+    start_call = next(call for call in captured if call["action"] == "start")
+    warmup_call = next(call for call in captured if call["action"] == "warmup")
+    submit_call = next(call for call in captured if call["action"] == "submit")
+    assert start_call["is_due"] is True
+    assert start_call["has_active_session"] is False
+    assert start_call["knowledge_point_id"] == knowledge_point_id
+    assert warmup_call["session_id"] == review_session["session_id"]
+    assert warmup_call["knowledge_point_id"] == knowledge_point_id
+    assert submit_call["session_id"] == review_session["session_id"]
+    assert submit_call["explanation_ready"] is True
 
 
 def test_review_submit_blocked_explanation_judgement_does_not_write_attempt(
