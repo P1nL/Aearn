@@ -1066,3 +1066,37 @@ Ensured learner profiles on learning session start, injected compact profile sum
 ### Next Steps
 
 - None - task complete
+
+
+## Session 33: Teaching chunks indexing runtime
+
+**Date**: 2026-05-31
+**Task**: Teaching chunks indexing runtime
+**Branch**: `main`
+
+### Summary
+
+Wired teaching chunk indexing into confirmed plan, lesson fallback, and exercise material creation; added scoped search and idempotent rebuild tests; verified focused backend tests, ruff, mypy, task validate, and diff check.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `69a1f4f` | (see git log) |
+| `116e9fe` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
