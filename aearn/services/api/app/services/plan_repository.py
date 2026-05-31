@@ -10,6 +10,7 @@ from app.models.onboarding import PlanDraft
 from app.services.catalog import get_course
 from app.services.plan_generator import normalize_target_level
 from app.services.review_seed_bank import ensure_review_seed_bank_placeholders_for_plan
+from app.services.teaching_chunks import index_knowledge_point_chunks
 from app.services.user_repository import get_user
 
 
@@ -133,6 +134,7 @@ def confirm_plan(
             if kp_row is None:
                 raise RuntimeError("knowledge point insert returned no row")
             knowledge_point_rows.append(kp_row)
+            index_knowledge_point_chunks(conn, str(kp_row["id"]), kp_row)
             conn.execute(
                 """
                 INSERT INTO review_states (knowledge_point_id, user_id, plan_id)

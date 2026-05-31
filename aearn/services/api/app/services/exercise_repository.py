@@ -7,6 +7,8 @@ from typing import Any, cast
 
 from psycopg import Connection
 
+from app.services.teaching_chunks import index_current_knowledge_point_chunks
+
 
 def get_or_create_exercise_for_knowledge_point(
     conn: Connection[dict[str, object]],
@@ -86,7 +88,9 @@ def get_or_create_exercise_for_knowledge_point(
     created_row = _load_exercise_row(conn, exercise_id=exercise_id)
     if created_row is None:
         raise RuntimeError("created exercise could not be loaded")
-    return _serialize_exercise(conn, created_row)
+    exercise = _serialize_exercise(conn, created_row)
+    index_current_knowledge_point_chunks(conn, str(knowledge_point["id"]))
+    return exercise
 
 
 def get_or_create_exercise_from_review_seed(
@@ -172,7 +176,9 @@ def get_or_create_exercise_from_review_seed(
     created_row = _load_exercise_row(conn, exercise_id=exercise_id)
     if created_row is None:
         raise RuntimeError("created review exercise could not be loaded")
-    return _serialize_exercise(conn, created_row)
+    exercise = _serialize_exercise(conn, created_row)
+    index_current_knowledge_point_chunks(conn, str(knowledge_point["id"]))
+    return exercise
 
 
 def get_exercise(

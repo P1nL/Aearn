@@ -18,6 +18,7 @@ from aearn_worker.review_seed_bank_core import (
 from psycopg import Connection
 
 from app.services.exercise_repository import get_exercise
+from app.services.teaching_chunks import index_current_knowledge_point_chunks
 
 
 REVIEW_CORE_TYPES = ("code_blank", "fix_bug", "explain_code", "implement_function", "review_ai_patch")
@@ -272,6 +273,7 @@ def materialize_review_seed_exercise(
     exercise = get_exercise(conn, exercise_id)
     if exercise is None:
         raise RuntimeError("created review exercise could not be loaded")
+    index_current_knowledge_point_chunks(conn, str(context["id"]))
     return exercise
 
 

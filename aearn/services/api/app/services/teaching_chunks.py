@@ -14,12 +14,10 @@ def index_knowledge_point_chunks(
     exercises: Sequence[Mapping[str, object]] | None = None,
 ) -> int:
     """Index teaching materials for a knowledge point. Returns number of chunks created."""
-    existing = conn.execute(
-        "SELECT count(*)::int AS cnt FROM teaching_chunks WHERE knowledge_point_id = %s",
+    conn.execute(
+        "DELETE FROM teaching_chunks WHERE knowledge_point_id = %s",
         (knowledge_point_id,),
-    ).fetchone()
-    if existing and _as_int(existing["cnt"], 0) > 0:
-        return 0
+    )
 
     chunks_created = 0
 
@@ -71,12 +69,10 @@ def index_knowledge_point_chunks(
                 continue
             ex_title = str(ex.get("title", "Exercise"))
             prompt = str(ex.get("prompt_markdown", ""))
-            solution = str(ex.get("solution_reference", ""))
             content = prompt
-            if solution:
-                content += f"\n\nSolution:\n{solution}"
             if content.strip():
-                _insert_chunk(conn, knowledge_point_id, "example", ex_title, content.strip())
+                metadata: dict[str, object] = {"exercise_id": str(ex.get("id", ""))}
+                _insert_chunk(conn, knowledge_point_id, "example", ex_title, content.strip(), metadata=metadata)
                 chunks_created += 1
 
     kp_title = str(knowledge_point.get("title", ""))
@@ -92,6 +88,52 @@ def index_knowledge_point_chunks(
     return chunks_created
 
 
+def index_current_knowledge_point_chunks(
+    conn: Connection[dict[str, object]],
+    knowledge_point_id: str,
+) -> int:
+    """Rebuild teaching chunks from the currently persisted knowledge point and exercises."""
+    knowledge_point = conn.execute(
+        """
+        SELECT *
+        FROM knowledge_points
+        WHERE id = %s
+          AND archived_at IS NULL
+          AND deleted_at IS NULL
+        """,
+        (knowledge_point_id,),
+    ).fetchone()
+    if knowledge_point is None:
+        return 0
+
+    exercises = conn.execute(
+        """
+        SELECT id, title, prompt_markdown, metadata_json
+        FROM exercises
+        WHERE knowledge_point_id = %s
+          AND archived_at IS NULL
+          AND deleted_at IS NULL
+        ORDER BY created_at
+        """,
+        (knowledge_point_id,),
+    ).fetchall()
+    return index_knowledge_point_chunks(conn, knowledge_point_id, knowledge_point, exercises)
+
+
+def ensure_current_knowledge_point_chunks(
+    conn: Connection[dict[str, object]],
+    knowledge_point_id: str,
+) -> int:
+    """Backfill chunks for already-persisted lesson content when no index exists yet."""
+    existing = conn.execute(
+        "SELECT count(*)::int AS cnt FROM teaching_chunks WHERE knowledge_point_id = %s",
+        (knowledge_point_id,),
+    ).fetchone()
+    if existing and _as_int(existing["cnt"], 0) > 0:
+        return 0
+    return index_current_knowledge_point_chunks(conn, knowledge_point_id)
+
+
 def search_chunks(
     conn: Connection[dict[str, object]],
     knowledge_point_id: str,
@@ -100,23 +142,21 @@ def search_chunks(
     top_k: int = 3,
 ) -> list[dict[str, object]]:
     """Search teaching chunks for a knowledge point using full-text search."""
-    search_terms = " & ".join(
-        f"{word}:*" for word in query.split() if word.strip()
-    )
-    if not search_terms:
+    normalized_query = " ".join(word for word in query.split() if word.strip())
+    if not normalized_query:
         return _fallback_chunks(conn, knowledge_point_id, top_k)
 
     rows = conn.execute(
         """
         SELECT id, chunk_type, title, content, source_url,
-               ts_rank(search_vector, to_tsquery('simple', %s)) AS rank
+               ts_rank(search_vector, plainto_tsquery('simple', %s)) AS rank
         FROM teaching_chunks
         WHERE knowledge_point_id = %s
-          AND search_vector @@ to_tsquery('simple', %s)
+          AND search_vector @@ plainto_tsquery('simple', %s)
         ORDER BY rank DESC
         LIMIT %s
         """,
-        (search_terms, knowledge_point_id, search_terms, top_k),
+        (normalized_query, knowledge_point_id, normalized_query, top_k),
     ).fetchall()
 
     if not rows:
