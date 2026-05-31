@@ -934,3 +934,36 @@ Completed the learning-page concept intro/check flow and the review-page warmup 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 29: Agent architecture upgrade closeout
+
+**Date**: 2026-05-31
+**Task**: Agent architecture upgrade closeout
+**Branch**: `main`
+
+### Summary
+
+Completed and closed out agent architecture upgrade: structured judgement, write tools, transition control, real Python execution, learner profile memory, teaching material retrieval, handoff routing, LangGraph skeleton, backend spec update, and validation.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `3c04803` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

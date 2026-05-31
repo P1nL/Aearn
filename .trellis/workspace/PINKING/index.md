@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 28
-- **Last Active**: 2026-05-30
+- **Total Sessions**: 29
+- **Last Active**: 2026-05-31
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~936 | Active |
+| `journal-1.md` | ~969 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 29 | 2026-05-31 | Agent architecture upgrade closeout | `3c04803` | `main` |
 | 28 | 2026-05-30 | Learning concept checks and review seed banks | `8a40074` | `main` |
 | 27 | 2026-05-29 | DeepSeek official Chat Completions provider | `6740365` | `main` |
 | 26 | 2026-05-29 | Exercise card UI optimization closeout | `0f5b6bc`, `1589543` | `main` |
