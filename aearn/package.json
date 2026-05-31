@@ -3,6 +3,10 @@
   "private": true,
   "version": "0.1.0",
   "scripts": {
+    "dev": "powershell -ExecutionPolicy Bypass -File ./scripts/start-dev.ps1",
+    "dev:restart": "powershell -ExecutionPolicy Bypass -File ./scripts/start-dev.ps1 -Restart",
+    "dev:stop": "powershell -ExecutionPolicy Bypass -File ./scripts/start-dev.ps1 -Stop",
+    "dev:status": "powershell -ExecutionPolicy Bypass -File ./scripts/start-dev.ps1 -Status",
     "desktop:dev": "pnpm --dir apps/desktop tauri dev",
     "desktop:build": "pnpm --dir apps/desktop tauri build",
     "desktop:check": "pnpm --dir apps/desktop build"

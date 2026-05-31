@@ -287,13 +287,30 @@ PostgreSQL / Redis
   -> Tauri desktop dev server
 ```
 
-建议命令形态：
+稳定启动脚本：
+
+```powershell
+.\aearn\scripts\start-dev.ps1
+```
+
+也可以通过 pnpm 调用：
+
+```powershell
+pnpm --dir .\aearn dev
+pnpm --dir .\aearn dev:status
+pnpm --dir .\aearn dev:restart
+pnpm --dir .\aearn dev:stop
+```
+
+脚本会自动启动 Docker 依赖、执行 schema bootstrap、拉起 API、Celery worker 和 Tauri desktop dev server，并把日志写入 `aearn/.logs/`。Windows 下不要直接调用 `uvicorn` / `celery` 可执行脚本；应使用 `python -m uvicorn` / `python -m celery`，避免 `uv trampoline failed to canonicalize script path`。当前 worker 通过 API venv 启动，因为 API venv 包含 `redis` transport 和 editable worker 依赖。
+
+手动等价命令：
 
 ```powershell
 docker compose -f .\aearn\infra\docker-compose.yml up -d
 uv --directory .\aearn\services\api run python -m app.db.bootstrap
-uv --directory .\aearn\services\api run uvicorn app.main:app --host 127.0.0.1 --port 8001 --reload
-uv --directory .\aearn\services\worker run celery -A aearn_worker.worker_app:celery_app worker --loglevel=info
+uv --directory .\aearn\services\api run python -m uvicorn app.main:app --host 127.0.0.1 --port 8001 --reload
+uv --directory .\aearn\services\api run python -m celery -A aearn_worker.worker_app:celery_app worker --loglevel=info --pool=solo
 pnpm --dir .\aearn desktop:dev
 ```
 
