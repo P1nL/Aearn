@@ -821,6 +821,7 @@ The tool records intent against server-owned context; the feature service later 
 
 - Unit-test graph node routing and `*_result_to_run_result()` adapters for each migrated flow.
 - Unit-test ordered graph tool-loop output so `tool_names` produces ordered `TOOL_CALL` intents.
+- Unit-test the learning service graph transition adapter so scoped `STAGE_UPDATE` / ordered `TOOL_CALL` intents are consumed, scoped human checkpoints stay internal, and unscoped persistence/profile/side-effect intents fall back before service execution.
 - Unit-test `graph_runtime_boundary_contract()`, `GraphIntentBoundaryRule`, and `validate_run_result_for_boundary()` for layer ownership and scoped intent rejection.
 - Unit-test `GraphCheckpointThreadState` for deterministic thread ids, session-type separation, bounded namespace/config serialization, and metadata redaction.
 - Unit-test `GraphHumanCheckpoint` and graph adapters for checkpoint bounding, redaction, scoped `FEEDBACK_REQUEST` conversion, and invalid-target rejection.

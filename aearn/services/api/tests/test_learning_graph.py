@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import app.agents.learning_graph as learning_graph_module
+import app.services.learning_conversation as learning_conversation_service
 from app.agents.graph_runtime_contracts import (
     GraphRunResult,
     IntentType,
+    build_run_result,
     build_graph_memory_snapshot,
     build_graph_rag_context,
+    make_intent,
 )
 from app.agents.learning_graph import (
     AgentState,
@@ -455,3 +458,167 @@ class TestOrchestrationGraph:
         assert checkpoint_intent.target == "human_checkpoint"
         assert "REDACTED" in checkpoint_intent.payload["prompt"]
         assert checkpoint_intent.payload["metadata"]["api_key"] == "[REDACTED]"
+
+
+class TestLearningServiceGraphBoundary:
+    def _context(self, **overrides):
+        defaults = {
+            "session_id": "s1",
+            "user_id": "u1",
+            "knowledge_point_id": "kp1",
+            "current_stage": "事件绑定",
+            "learning_stage": "concept_check",
+            "learning_stage_state": {"concept_check_attempts": 1},
+            "knowledge_point": {"id": "kp1", "title": "事件绑定"},
+            "lesson_outline": [{"id": "sp1", "title": "事件监听", "note": "addEventListener"}],
+            "lesson_sources": [],
+            "exercise": None,
+            "latest_attempt": None,
+            "learner_profile_summary": "",
+            "conversation_context": {},
+            "graph_memory_snapshot": {"available": True, "profile_summary": "prefers examples"},
+            "rag_context": {
+                "knowledge_point_id": "kp1",
+                "retrieval_status": "available",
+                "chunks": [{"chunk_id": "chunk1", "content": "Use event listeners."}],
+            },
+        }
+        defaults.update(overrides)
+        return LearningConversationContext(**defaults)
+
+    def test_service_consumes_ordered_graph_stage_and_tool_intents(self, monkeypatch):
+        next_state = {
+            "covered_subpoint_ids": ["sp1"],
+            "practice_unlock_reason": "concept_check_skipped",
+            "concept_check_result": "skipped",
+            "learning_incomplete": True,
+        }
+
+        def fake_invoke_orchestration(**kwargs):  # type: ignore[no-untyped-def]
+            del kwargs
+            return {
+                "run_result": build_run_result(
+                    next_stage="practice_support",
+                    intents=[
+                        make_intent(
+                            IntentType.STAGE_UPDATE,
+                            "learning_session",
+                            {
+                                "learning_stage": "practice_support",
+                                "learning_stage_state": next_state,
+                                "learner_content": "开始练习",
+                            },
+                        ),
+                        make_intent(
+                            IntentType.TOOL_CALL,
+                            "show_concept_check_result",
+                            {"learner_content": "开始练习"},
+                        ),
+                        make_intent(
+                            IntentType.FEEDBACK_REQUEST,
+                            "human_checkpoint",
+                            {"checkpoint_type": "approval", "reason": "concept_check_skipped"},
+                        ),
+                        make_intent(
+                            IntentType.TOOL_CALL,
+                            "show_code_exercise",
+                            {"learner_content": "开始练习"},
+                        ),
+                    ],
+                ),
+            }
+
+        monkeypatch.setattr(
+            learning_conversation_service,
+            "invoke_orchestration",
+            fake_invoke_orchestration,
+        )
+
+        transition = learning_conversation_service._determine_transition_via_graph(
+            self._context(),
+            "开始练习",
+        )
+
+        assert transition.learning_stage == "practice_support"
+        assert transition.learning_stage_state == next_state
+        assert transition.tool_names == ("show_concept_check_result", "show_code_exercise")
+        assert transition.tool_name == "show_code_exercise"
+        assert transition.learner_content == "开始练习"
+
+    def test_service_rejects_unscoped_graph_intent_and_uses_imperative_fallback(self, monkeypatch):
+        def fake_invoke_orchestration(**kwargs):  # type: ignore[no-untyped-def]
+            del kwargs
+            return {
+                "run_result": build_run_result(
+                    next_stage="practice_support",
+                    intents=[
+                        make_intent(
+                            IntentType.STAGE_UPDATE,
+                            "learning_session",
+                            {
+                                "learning_stage": "practice_support",
+                                "learning_stage_state": {"unsafe_graph_write": True},
+                            },
+                        ),
+                        make_intent(
+                            IntentType.PERSISTENCE,
+                            "attempts",
+                            {"unsafe_graph_write": True},
+                        ),
+                    ],
+                ),
+            }
+
+        monkeypatch.setattr(
+            learning_conversation_service,
+            "invoke_orchestration",
+            fake_invoke_orchestration,
+        )
+
+        transition = learning_conversation_service._determine_transition_via_graph(
+            self._context(learning_stage="concept_intro", learning_stage_state={}),
+            "我想看历史对话",
+        )
+
+        assert transition.learning_stage == "concept_intro"
+        assert transition.learning_stage_state == {}
+        assert transition.tool_name == "show_learning_history"
+        assert "unsafe_graph_write" not in transition.learning_stage_state
+
+    def test_service_passes_memory_and_rag_context_to_graph(self, monkeypatch):
+        captured: dict[str, object] = {}
+
+        def fake_invoke_orchestration(**kwargs):  # type: ignore[no-untyped-def]
+            captured.update(kwargs)
+            return {
+                "run_result": build_run_result(
+                    next_stage="concept_qna",
+                    intents=[
+                        make_intent(
+                            IntentType.STAGE_UPDATE,
+                            "learning_session",
+                            {
+                                "learning_stage": "concept_qna",
+                                "learning_stage_state": {"graph_owned": True},
+                            },
+                        ),
+                    ],
+                ),
+            }
+
+        context = self._context()
+        monkeypatch.setattr(
+            learning_conversation_service,
+            "invoke_orchestration",
+            fake_invoke_orchestration,
+        )
+
+        transition = learning_conversation_service._determine_transition_via_graph(
+            context,
+            "为什么要用事件监听？",
+        )
+
+        assert captured["memory_snapshot"] == context.graph_memory_snapshot
+        assert captured["rag_context"] == context.rag_context
+        assert transition.learning_stage == "concept_qna"
+        assert transition.learning_stage_state == {"graph_owned": True}
