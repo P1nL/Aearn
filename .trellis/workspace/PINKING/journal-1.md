@@ -1339,3 +1339,36 @@ Added bounded learner memory and current-knowledge-point RAG context for the lea
 ### Next Steps
 
 - None - task complete
+
+
+## Session 41: Graph human interrupt checkpoints
+
+**Date**: 2026-06-01
+**Task**: Graph human interrupt checkpoints
+**Branch**: `main`
+
+### Summary
+
+Added typed graph human checkpoints for learning-stage approval, clarification, and safety interrupts with scoped feedback-request boundary validation.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `65e9bce` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
