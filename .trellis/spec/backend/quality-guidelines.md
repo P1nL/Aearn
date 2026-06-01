@@ -833,6 +833,7 @@ The tool records intent against server-owned context; the feature service later 
 - Route-level tests must cover invalid/unscoped graph intents and assert the service does not blindly execute them.
 - Route-level tests must keep flag-off fallback coverage for public response shape, idempotency replay, and SSE event ordering.
 - Add regression tests for graph error/fallback behavior and redaction of sensitive graph payload fields.
+- Demo or interview docs for this graph slice must state that the learning page is the full graph runtime proof, while onboarding and review remain graph-assisted service flows with service/repository-owned persistence.
 - Run backend `pytest`, `ruff check .`, `mypy app`, and `pnpm --dir .\aearn desktop:check` before archiving a production graph migration.
 
 ### 7. Wrong vs Correct

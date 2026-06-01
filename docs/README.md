@@ -27,6 +27,7 @@
 | 新人接手指南 | `setup/newcomer-onboarding-guide.md` | 面向首次接手仓库或学习项目的人，串联项目定位、代码地图、运行命令、验证入口和常见坑；不替代 source of truth |
 | Claude 前端对接模板 | `setup/claude-frontend-handoff.md` | 给外部代码助手执行 desktop 前端改造时使用的任务入口；不替代上方 source of truth |
 | SDK Agent 发布门禁 | `qa/sdk-agent-release-readiness.md` | SDK Agent 收口矩阵、验证命令结果和剩余风险；不替代验收测试总计划 |
+| Learning Graph Runtime Demo | `qa/learning-graph-runtime-demo-story.md` | 学习页 LangGraph runtime vertical slice 的 demo 叙事、验证脚本和 cross-page 边界说明；不替代状态机、API 或验收规格 |
 
 ## 当前阶段
 
