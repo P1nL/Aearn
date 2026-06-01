@@ -4,6 +4,7 @@ import hashlib
 import json
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from dataclasses import field
 from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -33,6 +34,8 @@ from app.agents.graph_runtime_contracts import (
     GraphRunResult,
     IntentType,
     build_checkpoint_thread_state,
+    build_graph_memory_snapshot,
+    build_graph_rag_context,
     validate_run_result_for_boundary,
 )
 from app.agents.learning_graph import (
@@ -64,6 +67,7 @@ from app.services.llm_client import (
 )
 from app.services.plan_repository import IdempotencyConflictError, request_hash
 from app.services.runtime_runner import run_exercise as run_runtime_exercise
+from app.services.teaching_chunks import ensure_current_knowledge_point_chunks, search_chunks
 
 
 LEARNING_MESSAGE_OPERATION = "learning_session_message"
@@ -273,6 +277,8 @@ class LearningConversationContext:
     latest_attempt: Mapping[str, object] | None
     learner_profile_summary: str
     conversation_context: Mapping[str, object]
+    graph_memory_snapshot: Mapping[str, object] = field(default_factory=dict)
+    rag_context: Mapping[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -321,6 +327,7 @@ def prepare_learning_message(
     effective_settings = settings or get_settings()
     context = load_learning_conversation_context(conn, session_id=session_id)
     if effective_settings.langgraph_enabled:
+        context = _context_with_graph_memory_and_rag(conn, context, user_content=content)
         transition = _determine_transition_via_graph(context, content)
     else:
         transition = _determine_transition(context, content)
@@ -494,14 +501,67 @@ def _context_with_langgraph_runtime(
     return replace(context, conversation_context=conversation_context)
 
 
+def _context_with_graph_memory_and_rag(
+    conn: Connection[dict[str, object]],
+    context: LearningConversationContext,
+    *,
+    user_content: str,
+) -> LearningConversationContext:
+    return replace(
+        context,
+        graph_memory_snapshot=build_graph_memory_snapshot(
+            profile_summary=context.learner_profile_summary,
+        ).to_dict(),
+        rag_context=_build_graph_rag_context(conn, context, user_content=user_content),
+    )
+
+
+def _build_graph_rag_context(
+    conn: Connection[dict[str, object]],
+    context: LearningConversationContext,
+    *,
+    user_content: str,
+) -> dict[str, object]:
+    chunks: list[dict[str, object]] = []
+    retrieval_status = "empty"
+    try:
+        ensure_current_knowledge_point_chunks(conn, context.knowledge_point_id)
+        chunks = search_chunks(
+            conn,
+            context.knowledge_point_id,
+            user_content,
+            top_k=3,
+        )
+        if chunks:
+            retrieval_status = "fallback" if not user_content.strip() else "available"
+    except Exception:
+        retrieval_status = "unavailable"
+    return build_graph_rag_context(
+        knowledge_point_id=context.knowledge_point_id,
+        query=user_content,
+        chunks=chunks,
+        retrieval_status=retrieval_status,
+    ).to_dict()
+
+
 def build_learning_graph_state(
     context: LearningConversationContext,
     *,
     user_content: str,
 ) -> AgentState:
-    memory_snapshot: dict[str, Any] = {}
-    if context.learner_profile_summary:
-        memory_snapshot["profile_summary"] = _limit_text(context.learner_profile_summary, 2000)
+    memory_snapshot = _safe_graph_mapping(context.graph_memory_snapshot)
+    if not memory_snapshot:
+        memory_snapshot = build_graph_memory_snapshot(
+            profile_summary=context.learner_profile_summary,
+        ).to_dict()
+    rag_context = _safe_graph_mapping(context.rag_context)
+    if not rag_context:
+        rag_context = build_graph_rag_context(
+            knowledge_point_id=context.knowledge_point_id,
+            query=user_content,
+            chunks=(),
+            retrieval_status="empty",
+        ).to_dict()
     return {
         "user_id": context.user_id,
         "session_id": context.session_id,
@@ -517,6 +577,7 @@ def build_learning_graph_state(
         "hint_state": {},
         "explanation_state": {},
         "memory_snapshot": memory_snapshot,
+        "rag_context": rag_context,
         "messages": [{"role": "user", "content": _limit_text(user_content, 4000)}],
         "side_effects": [],
         "next_action": None,
@@ -1424,6 +1485,7 @@ def _build_messages(
         "concept_progress": context.learning_stage_state,
         "conversation_context": context.conversation_context,
         "learner_profile": {"summary": context.learner_profile_summary} if context.learner_profile_summary else {},
+        "rag_context": context.rag_context,
         "exercise": context.exercise if context.learning_stage == "practice_support" else None,
         "latest_attempt": context.latest_attempt,
         "runtime_boundary": {
@@ -1464,6 +1526,8 @@ def _determine_transition_via_graph(
             user_text=user_content,
             knowledge_point=context.knowledge_point,
             lesson_outline=context.lesson_outline,
+            memory_snapshot=context.graph_memory_snapshot,
+            rag_context=context.rag_context,
         )
         run_result = result.get("run_result")
         if not isinstance(run_result, GraphRunResult):
@@ -1641,6 +1705,8 @@ def _context_with_transition(
         latest_attempt=context.latest_attempt,
         learner_profile_summary=context.learner_profile_summary,
         conversation_context=context.conversation_context,
+        graph_memory_snapshot=context.graph_memory_snapshot,
+        rag_context=context.rag_context,
     )
 
 

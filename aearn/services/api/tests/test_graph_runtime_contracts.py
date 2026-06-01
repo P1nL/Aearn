@@ -4,16 +4,23 @@ from __future__ import annotations
 from app.agents.graph_runtime_contracts import (
     GraphFallback,
     GraphIntent,
+    GraphMemorySnapshot,
+    GraphRagContext,
     GraphRuntimeLayer,
     GraphRunResult,
     GraphRuntimeState,
     IntentType,
+    MAX_PROFILE_SUMMARY_LENGTH,
+    MAX_RAG_CHUNKS,
+    MAX_RAG_CHUNK_CONTENT_LENGTH,
     MAX_INTENTS_PER_RUN,
     MAX_THREAD_ID_LENGTH,
     MAX_USER_TEXT_LENGTH,
     boundary_rule_for_intent_type,
     build_checkpoint_thread_state,
     build_fallback,
+    build_graph_memory_snapshot,
+    build_graph_rag_context,
     build_run_result,
     build_runtime_state,
     graph_runtime_boundary_contract,
@@ -94,6 +101,67 @@ class TestBuildRuntimeState:
         assert state.context_summary == ""
         assert state.scoped_ids == {}
         assert state.session_facts == {}
+
+
+class TestBuildGraphContext:
+    def test_memory_snapshot_bounds_profile_summary(self):
+        snapshot = build_graph_memory_snapshot(profile_summary="x" * (MAX_PROFILE_SUMMARY_LENGTH + 10))
+
+        assert isinstance(snapshot, GraphMemorySnapshot)
+        assert len(snapshot.profile_summary) == MAX_PROFILE_SUMMARY_LENGTH
+        assert snapshot.available is True
+        assert snapshot.source == "learner_profile"
+
+    def test_memory_snapshot_redacts_sensitive_marker(self):
+        snapshot = build_graph_memory_snapshot(profile_summary="provider payload included api key")
+
+        assert "REDACTED" in snapshot.profile_summary
+
+    def test_rag_context_bounds_and_redacts_chunks(self):
+        context = build_graph_rag_context(
+            knowledge_point_id="kp1",
+            query="why closure state matters",
+            chunks=[
+                {
+                    "chunk_id": "chunk1",
+                    "chunk_type": "outline",
+                    "title": "Closure State",
+                    "content": "x" * (MAX_RAG_CHUNK_CONTENT_LENGTH + 20),
+                    "source_url": "https://docs.example/closure",
+                    "relevance_rank": "0.5",
+                },
+                {
+                    "chunk_id": "chunk2",
+                    "chunk_type": "example",
+                    "title": "Unsafe",
+                    "content": "solution_reference should not leak",
+                },
+            ],
+        )
+
+        assert isinstance(context, GraphRagContext)
+        assert context.knowledge_point_id == "kp1"
+        assert context.retrieval_status == "available"
+        assert context.source_scope == "knowledge_point"
+        assert len(context.chunks[0].content) == MAX_RAG_CHUNK_CONTENT_LENGTH
+        assert "REDACTED" in context.chunks[1].content
+        assert context.chunks[0].relevance_rank == 0.5
+
+    def test_rag_context_caps_chunk_count_and_serializes(self):
+        context = build_graph_rag_context(
+            knowledge_point_id="kp1",
+            query="",
+            chunks=[
+                {"chunk_id": f"chunk{i}", "chunk_type": "outline", "title": "T", "content": "C"}
+                for i in range(MAX_RAG_CHUNKS + 3)
+            ],
+            retrieval_status="fallback",
+        )
+
+        serialized = context.to_dict()
+        assert len(context.chunks) == MAX_RAG_CHUNKS
+        assert serialized["retrieval_status"] == "fallback"
+        assert len(serialized["chunks"]) == MAX_RAG_CHUNKS
 
 
 class TestBuildCheckpointThreadState:

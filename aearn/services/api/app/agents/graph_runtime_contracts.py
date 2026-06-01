@@ -23,6 +23,15 @@ MAX_DIAGNOSTICS_LENGTH = 500
 MAX_THREAD_ID_LENGTH = 120
 MAX_CHECKPOINT_NS_LENGTH = 80
 MAX_THREAD_METADATA_KEYS = 20
+MAX_PROFILE_SUMMARY_LENGTH = 2000
+MAX_MEMORY_SOURCE_LENGTH = 80
+MAX_RAG_QUERY_LENGTH = 500
+MAX_RAG_CHUNKS = 4
+MAX_RAG_CHUNK_TITLE_LENGTH = 160
+MAX_RAG_CHUNK_CONTENT_LENGTH = 1200
+MAX_RAG_CHUNK_TYPE_LENGTH = 40
+MAX_RAG_SOURCE_URL_LENGTH = 300
+MAX_RAG_STATUS_LENGTH = 40
 
 REDACTED_FIELDS = frozenset({
     "solution_reference",
@@ -109,6 +118,58 @@ class GraphRuntimeState:
             "context_summary": self.context_summary,
             "scoped_ids": dict(self.scoped_ids),
             "session_facts": dict(self.session_facts),
+        }
+
+
+@dataclass(frozen=True)
+class GraphMemorySnapshot:
+    profile_summary: str = ""
+    source: str = "learner_profile"
+    available: bool = False
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "profile_summary": self.profile_summary,
+            "source": self.source,
+            "available": self.available,
+        }
+
+
+@dataclass(frozen=True)
+class GraphRagChunk:
+    chunk_id: str
+    chunk_type: str
+    title: str
+    content: str
+    source_url: str | None = None
+    relevance_rank: float = 0.0
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "chunk_id": self.chunk_id,
+            "chunk_type": self.chunk_type,
+            "title": self.title,
+            "content": self.content,
+            "source_url": self.source_url,
+            "relevance_rank": self.relevance_rank,
+        }
+
+
+@dataclass(frozen=True)
+class GraphRagContext:
+    knowledge_point_id: str
+    query: str
+    retrieval_status: str
+    source_scope: str = "knowledge_point"
+    chunks: tuple[GraphRagChunk, ...] = ()
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "knowledge_point_id": self.knowledge_point_id,
+            "query": self.query,
+            "retrieval_status": self.retrieval_status,
+            "source_scope": self.source_scope,
+            "chunks": [chunk.to_dict() for chunk in self.chunks],
         }
 
 
@@ -345,6 +406,38 @@ def build_runtime_state(
     )
 
 
+def build_graph_memory_snapshot(
+    *,
+    profile_summary: str = "",
+    source: str = "learner_profile",
+) -> GraphMemorySnapshot:
+    safe_summary = _bound_text(str(redact_value(profile_summary)), MAX_PROFILE_SUMMARY_LENGTH)
+    return GraphMemorySnapshot(
+        profile_summary=safe_summary,
+        source=_bound_text(source, MAX_MEMORY_SOURCE_LENGTH),
+        available=bool(safe_summary),
+    )
+
+
+def build_graph_rag_context(
+    *,
+    knowledge_point_id: str,
+    query: str,
+    chunks: Sequence[Mapping[str, object]] = (),
+    retrieval_status: str | None = None,
+    source_scope: str = "knowledge_point",
+) -> GraphRagContext:
+    safe_chunks = tuple(_build_graph_rag_chunk(chunk) for chunk in chunks[:MAX_RAG_CHUNKS])
+    status = retrieval_status or ("available" if safe_chunks else "empty")
+    return GraphRagContext(
+        knowledge_point_id=_bound_id(knowledge_point_id),
+        query=_bound_text(str(redact_value(query)), MAX_RAG_QUERY_LENGTH),
+        retrieval_status=_bound_text(status, MAX_RAG_STATUS_LENGTH),
+        source_scope=_bound_text(source_scope, MAX_RAG_STATUS_LENGTH),
+        chunks=safe_chunks,
+    )
+
+
 def build_checkpoint_thread_state(
     *,
     session_id: str,
@@ -369,6 +462,18 @@ def build_checkpoint_thread_state(
         checkpoint_ns=_bound_text(checkpoint_ns, MAX_CHECKPOINT_NS_LENGTH),
         checkpoint_id=_bound_text(checkpoint_id, MAX_ID_LENGTH) if checkpoint_id else None,
         metadata=safe_metadata,
+    )
+
+
+def _build_graph_rag_chunk(chunk: Mapping[str, object]) -> GraphRagChunk:
+    source_url = chunk.get("source_url")
+    return GraphRagChunk(
+        chunk_id=_bound_id(str(chunk.get("chunk_id") or "")),
+        chunk_type=_bound_text(str(chunk.get("chunk_type") or ""), MAX_RAG_CHUNK_TYPE_LENGTH),
+        title=_bound_text(str(redact_value(str(chunk.get("title") or ""))), MAX_RAG_CHUNK_TITLE_LENGTH),
+        content=_bound_text(str(redact_value(str(chunk.get("content") or ""))), MAX_RAG_CHUNK_CONTENT_LENGTH),
+        source_url=_bound_text(str(source_url), MAX_RAG_SOURCE_URL_LENGTH) if source_url else None,
+        relevance_rank=_as_float(chunk.get("relevance_rank"), 0.0),
     )
 
 
@@ -558,3 +663,14 @@ def _bound_id_mapping(mapping: Mapping[str, str]) -> dict[str, str]:
         _bound_id(key): _bound_id(str(value))
         for key, value in list(mapping.items())[:20]
     }
+
+
+def _as_float(value: object, default: float) -> float:
+    if isinstance(value, int | float):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return default
+    return default

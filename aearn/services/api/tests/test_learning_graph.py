@@ -2,7 +2,12 @@
 from __future__ import annotations
 
 import app.agents.learning_graph as learning_graph_module
-from app.agents.graph_runtime_contracts import GraphRunResult, IntentType
+from app.agents.graph_runtime_contracts import (
+    GraphRunResult,
+    IntentType,
+    build_graph_memory_snapshot,
+    build_graph_rag_context,
+)
 from app.agents.learning_graph import (
     AgentState,
     build_learning_graph,
@@ -19,6 +24,7 @@ from app.agents.learning_graph import (
     route_after_repair,
     select_exercise,
 )
+from app.services.learning_conversation import LearningConversationContext, build_learning_graph_state
 
 
 class TestNodeFunctions:
@@ -130,6 +136,44 @@ class TestGraphStructure:
         result = compiled.invoke(initial_state)
         assert result["current_node"] == "persist_side_effects"
         assert result["side_effects"] == []
+
+    def test_service_state_builder_includes_memory_and_rag_context(self):
+        memory_snapshot = build_graph_memory_snapshot(profile_summary="已确认薄弱点: closures").to_dict()
+        rag_context = build_graph_rag_context(
+            knowledge_point_id="kp1",
+            query="closures",
+            chunks=[
+                {
+                    "chunk_id": "chunk1",
+                    "chunk_type": "outline",
+                    "title": "Closures",
+                    "content": "Use closures to keep shared state.",
+                }
+            ],
+        ).to_dict()
+        context = LearningConversationContext(
+            session_id="s1",
+            user_id="u1",
+            knowledge_point_id="kp1",
+            current_stage="DOM events",
+            learning_stage="concept_intro",
+            learning_stage_state={},
+            knowledge_point={"id": "kp1", "title": "事件监听"},
+            lesson_outline=[],
+            lesson_sources=[],
+            exercise=None,
+            latest_attempt=None,
+            learner_profile_summary="已确认薄弱点: closures",
+            conversation_context={},
+            graph_memory_snapshot=memory_snapshot,
+            rag_context=rag_context,
+        )
+
+        state = build_learning_graph_state(context, user_content="为什么要用闭包？")
+
+        assert state["memory_snapshot"] == memory_snapshot
+        assert state["rag_context"] == rag_context
+        assert state["rag_context"]["knowledge_point_id"] == "kp1"
 
 
 class TestOrchestrationGraph:
@@ -315,4 +359,52 @@ class TestOrchestrationGraph:
         assert config["configurable"]["thread_id"] == "aearn:learning:session-123"
         assert config["configurable"]["checkpoint_ns"] == "learning_orchestration"
         assert config["metadata"]["durable_state_owner"] == "service"
+        assert result["next_stage"] == "concept_qna"
+
+    def test_invoke_orchestration_passes_memory_and_rag_context(self, monkeypatch):
+        captured: dict[str, object] = {}
+        memory_snapshot = build_graph_memory_snapshot(profile_summary="已确认薄弱点: closures").to_dict()
+        rag_context = build_graph_rag_context(
+            knowledge_point_id="kp1",
+            query="closures",
+            chunks=[
+                {
+                    "chunk_id": "chunk1",
+                    "chunk_type": "outline",
+                    "title": "Closures",
+                    "content": "Closures keep access to outer state.",
+                }
+            ],
+        ).to_dict()
+
+        class FakeCompiledGraph:
+            def invoke(self, state, config=None):  # type: ignore[no-untyped-def]
+                del config
+                captured["state"] = state
+                return {
+                    "next_stage": "concept_qna",
+                    "tool_name": None,
+                    "learner_content": "",
+                    "next_state": state["learning_stage_state"],
+                }
+
+        monkeypatch.setattr(
+            learning_graph_module,
+            "compile_orchestration_graph",
+            lambda: FakeCompiledGraph(),
+        )
+
+        result = invoke_orchestration(
+            **self._base_input(
+                learning_stage="concept_intro",
+                user_text="为什么要用闭包？",
+            ),
+            memory_snapshot=memory_snapshot,
+            rag_context=rag_context,
+        )
+
+        state = captured["state"]
+        assert isinstance(state, dict)
+        assert state["memory_snapshot"] == memory_snapshot
+        assert state["rag_context"] == rag_context
         assert result["next_stage"] == "concept_qna"

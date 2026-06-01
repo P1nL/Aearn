@@ -3,7 +3,7 @@
   "name": "graph-memory-rag-context",
   "title": "Graph memory RAG context",
   "description": "Inject learner profile and retrieved teaching material into the learning graph context using typed contracts and predictable fallbacks.",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,
