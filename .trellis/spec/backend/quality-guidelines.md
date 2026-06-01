@@ -902,7 +902,7 @@ The feature service loads facts and owns persistence, while the shared layer onl
 ### 1. Scope / Trigger
 
 - Trigger: adding or changing allowlisted documentation sources or documentation fetch behavior for language-aware grounding.
-- Scope: `app/services/grounding_sources.py`, `app/services/grounding_fetcher.py`, `app/services/grounding_processing.py`, `app/services/grounding_retrieval.py`, `app/services/language_capabilities.py`, and grounding tests.
+- Scope: `app/services/grounding_sources.py`, `app/services/grounding_fetcher.py`, `app/services/grounding_processing.py`, `app/services/grounding_retrieval.py`, `app/services/grounding_citations.py`, `app/services/language_capabilities.py`, and grounding tests.
 
 ### 2. Signatures
 
@@ -914,6 +914,8 @@ The feature service loads facts and owns persistence, while the shared layer onl
 - Chunk signature: `GroundingChunk(chunk_id, source_id, language_id, title, section_path, canonical_url, source_type, source_trust_tier, fetched_at, content_hash, text, topic_tags)`.
 - Retrieval signature: `retrieve_grounding_chunks(chunks, GroundingRetrievalQuery(...)) -> tuple[GroundingRetrievalResult, ...]`.
 - Retrieval query fields: `language_id_or_alias`, `query_text`, `topic_tags`, `preferred_trust_tiers`, optional `knowledge_point_id`, optional `knowledge_point_title`, and `top_k`.
+- Agent citation signature: `grounding_results_for_agent(results, max_items=4, max_content_chars=800) -> tuple[AgentGroundingItem, ...]`.
+- Agent grounding item fields: bounded content snippet, `GroundingCitation`, relevance score, and match reasons.
 
 ### 3. Contracts
 
@@ -931,6 +933,8 @@ The feature service loads facts and owns persistence, while the shared layer onl
 - Retrieval must canonicalize language aliases through `LANGUAGE_CAPABILITIES` and filter by language before ranking.
 - Retrieval ranking must remain deterministic and return bounded same-language fallback chunks for empty/no-hit queries.
 - Retrieval results must retain chunk metadata plus match reasons so downstream agent citation formatting can stay transparent.
+- Agent-facing grounding adapters must bound snippets and carry source metadata explicitly; do not rely on the model to infer citations from prose.
+- Citation ids must be deterministic for the same canonical URL, section path, and content hash.
 
 ### 4. Validation & Error Matrix
 
@@ -946,6 +950,8 @@ The feature service loads facts and owns persistence, while the shared layer onl
 - Empty or unreadable document body -> empty chunk tuple, not an exception.
 - Unknown retrieval language -> empty result tuple.
 - Empty/no-hit retrieval query -> same-language fallback results with `match_reasons=('fallback',)`.
+- Empty citation input -> empty agent grounding tuple.
+- Non-positive `max_items` or `max_content_chars` -> empty agent grounding tuple.
 
 ### 5. Good/Base/Bad Cases
 
@@ -953,10 +959,12 @@ The feature service loads facts and owns persistence, while the shared layer onl
 - Good: fetching a registered Python seed URL through an injected fake client returns a document with canonical URL, final URL, fetched timestamp, content type, and content hash.
 - Good: cleaning fetched HTML returns section-aware chunks with canonical URL, trust tier, source type, fetched timestamp, topic tags, and stable hashes.
 - Good: a Python retrieval query never returns JavaScript chunks, even when the text matches.
+- Good: agent grounding context includes a bounded snippet plus citation id, URL, section path, trust tier, content hash, score, and match reasons.
 - Base: C++ uses `cppreference` with `trusted_de_facto` and a rationale note.
 - Bad: adding a docs URL changes public course language ids, runtime runner status, or lets agents browse arbitrary domains.
 - Bad: raw `<script>`, navigation, or footer text appears in grounded teaching context.
 - Bad: retrieval ranks before language filtering and leaks another language's same-topic chunk.
+- Bad: prompt code pastes a whole fetched page and asks the model to invent or summarize its own citations.
 
 ### 6. Tests Required
 
@@ -968,6 +976,7 @@ The feature service loads facts and owns persistence, while the shared layer onl
 - Assert fetcher success, blocked URL, HTTP status failure, client exception, cache hit, and language-level seed fetching through fake clients.
 - Assert HTML cleaning, metadata propagation, deterministic chunk ids/hashes, empty-content behavior, and bounded chunk splitting.
 - Assert retrieval language filtering, query/topic ranking, trust-tier preference, unknown language behavior, and same-language fallback behavior.
+- Assert agent citation metadata, deterministic citation ids, bounded snippets, score/reason preservation, max item limits, and empty input behavior.
 
 ### 7. Wrong vs Correct
 
