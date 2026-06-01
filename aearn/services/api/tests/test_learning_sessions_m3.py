@@ -813,8 +813,9 @@ def test_learning_message_langgraph_flag_on_invokes_graph_from_request_path(
         }
 
     class FakeCompiledGraph:
-        def invoke(self, state):  # type: ignore[no-untyped-def]
+        def invoke(self, state, config=None):  # type: ignore[no-untyped-def]
             captured["state"] = state
+            captured["config"] = config
             return {
                 "current_node": "persist_side_effects",
                 "learning_stage": state["learning_stage"],
@@ -851,10 +852,15 @@ def test_learning_message_langgraph_flag_on_invokes_graph_from_request_path(
 
     assert response.status_code == 200
     state = captured["state"]
+    config = captured["config"]
     orchestration = captured["orchestration"]
     assert isinstance(state, dict)
+    assert isinstance(config, dict)
     assert isinstance(orchestration, dict)
     assert orchestration["session_id"] == session["session_id"]
+    assert config["configurable"]["thread_id"] == f"aearn:learning:{session['session_id']}"
+    assert config["configurable"]["checkpoint_ns"] == "learning"
+    assert config["metadata"]["durable_state_owner"] == "service"
     assert response.json()["session_state"]["learning_stage"] == "concept_qna"
     assert response.json()["session_state"]["learning_stage_state"]["graph_owned"] is True
     assert state["user_id"] == user["id"]
@@ -892,8 +898,9 @@ def test_learning_message_langgraph_rejects_unscoped_intents(
         }
 
     class FakeCompiledGraph:
-        def invoke(self, state):  # type: ignore[no-untyped-def]
+        def invoke(self, state, config=None):  # type: ignore[no-untyped-def]
             captured["state"] = state
+            captured["config"] = config
             return {
                 "current_node": "persist_side_effects",
                 "learning_stage": state["learning_stage"],
@@ -931,6 +938,9 @@ def test_learning_message_langgraph_rejects_unscoped_intents(
     assert response.status_code == 200
     body = response.json()
     assert "orchestration" in captured
+    config = captured["config"]
+    assert isinstance(config, dict)
+    assert config["configurable"]["thread_id"] == f"aearn:learning:{session['session_id']}"
     assert body["session_state"]["learning_stage"] == "practice_offer"
     assert body["session_state"]["learning_stage"] != "practice_support"
     assert body["tool_calls"][0]["name"] == "show_concept_check_result"

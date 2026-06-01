@@ -6,6 +6,7 @@ intents; service layers execute them against repositories.
 """
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
@@ -19,6 +20,9 @@ MAX_INTENT_PAYLOAD_KEYS = 20
 MAX_INTENTS_PER_RUN = 10
 MAX_ERRORS_PER_RUN = 5
 MAX_DIAGNOSTICS_LENGTH = 500
+MAX_THREAD_ID_LENGTH = 120
+MAX_CHECKPOINT_NS_LENGTH = 80
+MAX_THREAD_METADATA_KEYS = 20
 
 REDACTED_FIELDS = frozenset({
     "solution_reference",
@@ -105,6 +109,34 @@ class GraphRuntimeState:
             "context_summary": self.context_summary,
             "scoped_ids": dict(self.scoped_ids),
             "session_facts": dict(self.session_facts),
+        }
+
+
+@dataclass(frozen=True)
+class GraphCheckpointThreadState:
+    thread_id: str
+    checkpoint_ns: str
+    checkpoint_id: str | None = None
+    metadata: Mapping[str, object] = field(default_factory=dict)
+
+    def to_config(self) -> dict[str, object]:
+        configurable: dict[str, object] = {
+            "thread_id": self.thread_id,
+            "checkpoint_ns": self.checkpoint_ns,
+        }
+        if self.checkpoint_id:
+            configurable["checkpoint_id"] = self.checkpoint_id
+        config: dict[str, object] = {"configurable": configurable}
+        if self.metadata:
+            config["metadata"] = dict(self.metadata)
+        return config
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "thread_id": self.thread_id,
+            "checkpoint_ns": self.checkpoint_ns,
+            "checkpoint_id": self.checkpoint_id,
+            "metadata": dict(self.metadata),
         }
 
 
@@ -313,6 +345,33 @@ def build_runtime_state(
     )
 
 
+def build_checkpoint_thread_state(
+    *,
+    session_id: str,
+    user_id: str,
+    session_type: str,
+    checkpoint_ns: str = "learning",
+    checkpoint_id: str | None = None,
+    metadata: Mapping[str, object] | None = None,
+) -> GraphCheckpointThreadState:
+    safe_session_id = _bound_id(session_id)
+    safe_user_id = _bound_id(user_id)
+    safe_session_type = _bound_id(session_type)
+    safe_metadata = _redact_mapping(metadata or {}, max_keys=MAX_THREAD_METADATA_KEYS)
+    safe_metadata.update({
+        "session_id": safe_session_id,
+        "session_type": safe_session_type,
+        "user_id": safe_user_id,
+        "durable_state_owner": GraphRuntimeLayer.SERVICE.value,
+    })
+    return GraphCheckpointThreadState(
+        thread_id=_stable_thread_id(session_type=safe_session_type, session_id=safe_session_id),
+        checkpoint_ns=_bound_text(checkpoint_ns, MAX_CHECKPOINT_NS_LENGTH),
+        checkpoint_id=_bound_text(checkpoint_id, MAX_ID_LENGTH) if checkpoint_id else None,
+        metadata=safe_metadata,
+    )
+
+
 # --- Intent construction ---
 
 
@@ -483,6 +542,15 @@ def _bound_text(value: str, max_length: int) -> str:
 
 def _bound_id(value: str) -> str:
     return _bound_text(value, MAX_ID_LENGTH)
+
+
+def _stable_thread_id(*, session_type: str, session_id: str) -> str:
+    raw_thread_id = f"aearn:{session_type}:{session_id}"
+    if len(raw_thread_id) <= MAX_THREAD_ID_LENGTH:
+        return raw_thread_id
+    digest = hashlib.sha256(raw_thread_id.encode("utf-8")).hexdigest()[:20]
+    prefix = _bound_text(f"aearn:{session_type}", MAX_THREAD_ID_LENGTH - len(digest) - 1)
+    return f"{prefix}:{digest}"
 
 
 def _bound_id_mapping(mapping: Mapping[str, str]) -> dict[str, str]:
