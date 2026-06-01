@@ -762,6 +762,7 @@ The tool records intent against server-owned context; the feature service later 
 
 - Shared result signature: `GraphRunResult(next_stage, intents, diagnostics, safe_context)`.
 - Shared intent signature: `GraphIntent(intent_type, target, payload)`.
+- Human checkpoint signature: `GraphHumanCheckpoint(checkpoint_id, checkpoint_type, reason, prompt, scope, metadata)` built by `build_graph_human_checkpoint(...)`.
 - Shared boundary contract signature: `graph_runtime_boundary_contract() -> GraphRuntimeBoundaryContract`.
 - Boundary validation signature: `validate_run_result_for_boundary(result, allowed_intent_targets={...}) -> list[str]`.
 - Checkpoint thread signature: `build_checkpoint_thread_state(session_id, user_id, session_type, checkpoint_ns, checkpoint_id=None, metadata=None) -> GraphCheckpointThreadState`.
@@ -777,7 +778,8 @@ The tool records intent against server-owned context; the feature service later 
 - Graph modules own routing decisions, stage transitions, next-action selection, and intent production.
 - Graph modules must return shared `GraphRunResult` or adapt raw graph output through a `*_result_to_run_result()` helper before service code consumes it.
 - The shared boundary contract must document ownership for `graph`, `service`, `repository`, `api`, and `sse` layers in code, not only prose.
-- Services must validate `GraphRunResult` against a service-scoped allowed intent-target map before applying intents. For the learning message path, allowed graph intents are `STAGE_UPDATE -> learning_session` and `TOOL_CALL -> show_code_exercise|show_concept_check_result|show_concept_intro|show_learning_history`.
+- Services must validate `GraphRunResult` against a service-scoped allowed intent-target map before applying intents. For the learning message path, allowed graph intents are `STAGE_UPDATE -> learning_session`, `TOOL_CALL -> show_code_exercise|show_concept_check_result|show_concept_intro|show_learning_history`, and `FEEDBACK_REQUEST -> human_checkpoint`.
+- Human checkpoints are soft graph interrupts for learner approval, clarification, or teaching-safety boundaries. They must be bounded/redacted, converted to scoped `FEEDBACK_REQUEST` intents, and consumed or ignored by services without graph-owned durable writes.
 - Graph thread ids must be service-derived and deterministic from durable Aearn session facts. The learning graph uses `checkpoint_ns=learning`; the single-step learning orchestration graph uses `checkpoint_ns=learning_orchestration`.
 - LangGraph checkpoints are not product persistence. Checkpoint config may resume graph execution details, but durable learning state remains in Aearn services/repositories and idempotency records.
 - Services and routes own durable writes, idempotency replay, transactions, public response envelopes, and SSE frame order.
@@ -796,6 +798,7 @@ The tool records intent against server-owned context; the feature service later 
 - Graph emits a persistence intent that does not match the route action -> reject or continue fallback; do not perform the write blindly.
 - Graph emits route-generation/tool intent -> service builds/stashes the plan or tool args, then emits the existing public `tool_call` contract.
 - Graph emits multiple learning tool intents -> service executes supported tools in graph intent order; unsupported targets are rejected by boundary validation before any partial application.
+- Graph emits a human checkpoint -> service accepts only scoped `FEEDBACK_REQUEST -> human_checkpoint` intents; unknown checkpoint targets fall back before any stage/tool side effect is applied.
 - Graph emits review not-due action -> route returns the same `REVIEW_NOT_DUE` envelope as repository validation.
 - Idempotency replay -> return stored Aearn response and do not re-run graph side-effect decisions that could drift stored tool calls.
 
@@ -815,6 +818,7 @@ The tool records intent against server-owned context; the feature service later 
 - Unit-test ordered graph tool-loop output so `tool_names` produces ordered `TOOL_CALL` intents.
 - Unit-test `graph_runtime_boundary_contract()`, `GraphIntentBoundaryRule`, and `validate_run_result_for_boundary()` for layer ownership and scoped intent rejection.
 - Unit-test `GraphCheckpointThreadState` for deterministic thread ids, session-type separation, bounded namespace/config serialization, and metadata redaction.
+- Unit-test `GraphHumanCheckpoint` and graph adapters for checkpoint bounding, redaction, scoped `FEEDBACK_REQUEST` conversion, and invalid-target rejection.
 - Route-level tests must set `LANGGRAPH_ENABLED=true`, monkeypatch the graph entrypoint, and assert the production path consumes graph intents.
 - Route-level tests must cover ordered learning tool-call payloads, including graph-owned `show_concept_check_result` before `show_code_exercise`.
 - Route-level tests must assert graph invocations receive the expected thread config when `LANGGRAPH_ENABLED=true`.

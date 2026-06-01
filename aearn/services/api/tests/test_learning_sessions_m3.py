@@ -987,6 +987,161 @@ def test_learning_message_langgraph_ordered_tool_loop_unlocks_practice(
     assert resumed["exercise"]["id"] == exercise_tool_call["args"]["exercise"]["id"]
 
 
+def test_learning_message_langgraph_accepts_scoped_human_checkpoint_without_public_leak(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user, plan = _confirmed_plan(client, language="javascript")
+    session = _start_session(client, user, plan)
+    captured: dict[str, object] = {}
+
+    def fake_invoke_orchestration(**kwargs):  # type: ignore[no-untyped-def]
+        captured["orchestration"] = kwargs
+        return {
+            "run_result": build_run_result(
+                next_stage="concept_qna",
+                intents=[
+                    make_intent(
+                        IntentType.STAGE_UPDATE,
+                        "learning_session",
+                        {
+                            "learning_stage": "concept_qna",
+                            "learning_stage_state": {"graph_checkpoint_accepted": True},
+                            "learner_content": "",
+                        },
+                    ),
+                    make_intent(
+                        IntentType.FEEDBACK_REQUEST,
+                        "human_checkpoint",
+                        {
+                            "checkpoint_id": "cp1",
+                            "checkpoint_type": "clarification",
+                            "reason": "feynman_readiness_unclear",
+                            "prompt": "请再具体说明原因。",
+                            "scope": "learning_stage_transition",
+                            "metadata": {
+                                "current_stage": "readiness_check",
+                                "api_key": "sk-secret",
+                            },
+                        },
+                    ),
+                ],
+            )
+        }
+
+    class FakeCompiledGraph:
+        def invoke(self, state, config=None):  # type: ignore[no-untyped-def]
+            captured["state"] = state
+            captured["config"] = config
+            return {
+                "current_node": "persist_side_effects",
+                "learning_stage": state["learning_stage"],
+                "next_action": "graph_checked",
+                "errors": [],
+            }
+
+    monkeypatch.setattr(
+        learning_conversation,
+        "get_settings",
+        lambda: Settings(
+            llm_type="openai",
+            openai_api_key="test-key",
+            openai_base_url="https://provider.example",
+            openai_model="fake-teaching-model",
+            langgraph_enabled=True,
+        ),
+    )
+    monkeypatch.setattr(learning_conversation, "compile_learning_graph", lambda: FakeCompiledGraph())
+    monkeypatch.setattr(learning_conversation, "invoke_orchestration", fake_invoke_orchestration)
+
+    response = client.post(
+        f"/api/learning-sessions/{session['session_id']}/messages",
+        json={
+            "role": "user",
+            "content": "为什么要用变量保存状态？",
+            "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "orchestration" in captured
+    assert body["session_state"]["learning_stage"] == "concept_qna"
+    assert body["session_state"]["learning_stage_state"]["graph_checkpoint_accepted"] is True
+    response_text = json.dumps(body, ensure_ascii=False)
+    assert "human_checkpoint" not in response_text
+    assert "api_key" not in response_text
+    assert "sk-secret" not in response_text
+
+
+def test_learning_message_langgraph_rejects_unscoped_human_checkpoint_intent(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user, plan = _confirmed_plan(client, language="javascript")
+    session = _start_session(client, user, plan)
+    captured: dict[str, object] = {}
+
+    def fake_invoke_orchestration(**kwargs):  # type: ignore[no-untyped-def]
+        captured["orchestration"] = kwargs
+        return {
+            "run_result": build_run_result(
+                next_stage="practice_support",
+                intents=[
+                    make_intent(
+                        IntentType.FEEDBACK_REQUEST,
+                        "unsafe_checkpoint",
+                        {
+                            "checkpoint_id": "cp_bad",
+                            "unsafe_graph_write": True,
+                        },
+                    )
+                ],
+            )
+        }
+
+    class FakeCompiledGraph:
+        def invoke(self, state, config=None):  # type: ignore[no-untyped-def]
+            captured["state"] = state
+            captured["config"] = config
+            return {
+                "current_node": "persist_side_effects",
+                "learning_stage": state["learning_stage"],
+                "next_action": "graph_checked",
+                "errors": [],
+            }
+
+    monkeypatch.setattr(
+        learning_conversation,
+        "get_settings",
+        lambda: Settings(
+            llm_type="openai",
+            openai_api_key="test-key",
+            openai_base_url="https://provider.example",
+            openai_model="fake-teaching-model",
+            langgraph_enabled=True,
+        ),
+    )
+    monkeypatch.setattr(learning_conversation, "compile_learning_graph", lambda: FakeCompiledGraph())
+    monkeypatch.setattr(learning_conversation, "invoke_orchestration", fake_invoke_orchestration)
+
+    response = client.post(
+        f"/api/learning-sessions/{session['session_id']}/messages",
+        json={
+            "role": "user",
+            "content": "状态放在回调外部，所以多次点击会共享并累加同一个 count。",
+            "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "orchestration" in captured
+    assert body["session_state"]["learning_stage"] == "practice_offer"
+    assert body["session_state"]["learning_stage"] != "practice_support"
+    assert "unsafe_checkpoint" not in json.dumps(body, ensure_ascii=False)
+
+
 def test_learning_message_langgraph_rejects_unscoped_intents(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,

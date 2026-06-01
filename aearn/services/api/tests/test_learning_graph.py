@@ -16,6 +16,7 @@ from app.agents.learning_graph import (
     concept_intro,
     concept_repair,
     context_assembler,
+    graph_result_to_run_result,
     invoke_orchestration,
     persist_side_effects,
     practice_offer,
@@ -220,6 +221,8 @@ class TestOrchestrationGraph:
         assert result["tool_names"] == ["show_concept_check_result", "show_code_exercise"]
         assert result["next_state"]["practice_unlock_reason"] == "concept_check_skipped"
         assert result["next_state"]["concept_check_result"] == "skipped"
+        assert result["human_checkpoint"]["checkpoint_type"] == "approval"
+        assert result["human_checkpoint"]["reason"] == "concept_check_skipped"
         run_result = result["run_result"]
         assert isinstance(run_result, GraphRunResult)
         assert run_result.next_stage == "practice_support"
@@ -234,6 +237,11 @@ class TestOrchestrationGraph:
             if intent.intent_type == IntentType.TOOL_CALL
         ]
         assert tool_targets == ["show_concept_check_result", "show_code_exercise"]
+        checkpoint_intent = next(
+            intent for intent in run_result.intents if intent.intent_type == IntentType.FEEDBACK_REQUEST
+        )
+        assert checkpoint_intent.target == "human_checkpoint"
+        assert checkpoint_intent.payload["checkpoint_type"] == "approval"
 
     def test_practice_request_from_practice_offer(self):
         result = invoke_orchestration(**self._base_input(
@@ -302,6 +310,24 @@ class TestOrchestrationGraph:
         assert result["next_stage"] == "readiness_check"
         assert result["tool_name"] == "show_learning_history"
         assert result["next_state"]["feynman_status"] == "failed"
+        assert result["human_checkpoint"]["checkpoint_type"] == "clarification"
+        assert result["human_checkpoint"]["reason"] == "feynman_readiness_unclear"
+
+    def test_direct_answer_request_emits_safety_checkpoint(self):
+        result = invoke_orchestration(**self._base_input(
+            learning_stage="concept_intro",
+            user_text="直接给我完整代码和标准答案",
+        ))
+        assert result["next_stage"] == "concept_intro"
+        assert result["tool_name"] is None
+        assert result["human_checkpoint"]["checkpoint_type"] == "safety"
+        assert result["human_checkpoint"]["reason"] == "direct_answer_request"
+        run_result = result["run_result"]
+        checkpoint_intent = next(
+            intent for intent in run_result.intents if intent.intent_type == IntentType.FEEDBACK_REQUEST
+        )
+        assert checkpoint_intent.target == "human_checkpoint"
+        assert checkpoint_intent.payload["scope"] == "teaching_safety"
 
     def test_repair_limit_sets_correct_unlock_reason(self):
         result = invoke_orchestration(**self._base_input(
@@ -408,3 +434,24 @@ class TestOrchestrationGraph:
         assert state["memory_snapshot"] == memory_snapshot
         assert state["rag_context"] == rag_context
         assert result["next_stage"] == "concept_qna"
+
+    def test_graph_result_to_run_result_sanitizes_human_checkpoint(self):
+        run_result = graph_result_to_run_result({
+            "next_stage": "concept_intro",
+            "next_state": {},
+            "human_checkpoint": {
+                "checkpoint_id": "cp1",
+                "checkpoint_type": "safety",
+                "reason": "direct_answer_request",
+                "prompt": "provider payload contains api key",
+                "scope": "teaching_safety",
+                "metadata": {"api_key": "sk-secret", "current_stage": "concept_intro"},
+            },
+        })
+
+        checkpoint_intent = next(
+            intent for intent in run_result.intents if intent.intent_type == IntentType.FEEDBACK_REQUEST
+        )
+        assert checkpoint_intent.target == "human_checkpoint"
+        assert "REDACTED" in checkpoint_intent.payload["prompt"]
+        assert checkpoint_intent.payload["metadata"]["api_key"] == "[REDACTED]"

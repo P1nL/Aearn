@@ -32,6 +32,11 @@ MAX_RAG_CHUNK_CONTENT_LENGTH = 1200
 MAX_RAG_CHUNK_TYPE_LENGTH = 40
 MAX_RAG_SOURCE_URL_LENGTH = 300
 MAX_RAG_STATUS_LENGTH = 40
+MAX_HUMAN_CHECKPOINT_TYPE_LENGTH = 40
+MAX_HUMAN_CHECKPOINT_REASON_LENGTH = 240
+MAX_HUMAN_CHECKPOINT_PROMPT_LENGTH = 500
+MAX_HUMAN_CHECKPOINT_SCOPE_LENGTH = 80
+MAX_HUMAN_CHECKPOINT_METADATA_KEYS = 10
 
 REDACTED_FIELDS = frozenset({
     "solution_reference",
@@ -170,6 +175,26 @@ class GraphRagContext:
             "retrieval_status": self.retrieval_status,
             "source_scope": self.source_scope,
             "chunks": [chunk.to_dict() for chunk in self.chunks],
+        }
+
+
+@dataclass(frozen=True)
+class GraphHumanCheckpoint:
+    checkpoint_id: str
+    checkpoint_type: str
+    reason: str
+    prompt: str
+    scope: str = "learning"
+    metadata: Mapping[str, object] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "checkpoint_id": self.checkpoint_id,
+            "checkpoint_type": self.checkpoint_type,
+            "reason": self.reason,
+            "prompt": self.prompt,
+            "scope": self.scope,
+            "metadata": dict(self.metadata),
         }
 
 
@@ -435,6 +460,31 @@ def build_graph_rag_context(
         retrieval_status=_bound_text(status, MAX_RAG_STATUS_LENGTH),
         source_scope=_bound_text(source_scope, MAX_RAG_STATUS_LENGTH),
         chunks=safe_chunks,
+    )
+
+
+def build_graph_human_checkpoint(
+    *,
+    checkpoint_id: str,
+    checkpoint_type: str,
+    reason: str,
+    prompt: str,
+    scope: str = "learning",
+    metadata: Mapping[str, object] | None = None,
+) -> GraphHumanCheckpoint:
+    return GraphHumanCheckpoint(
+        checkpoint_id=_bound_id(checkpoint_id),
+        checkpoint_type=_bound_text(
+            str(redact_value(checkpoint_type)),
+            MAX_HUMAN_CHECKPOINT_TYPE_LENGTH,
+        ),
+        reason=_bound_text(str(redact_value(reason)), MAX_HUMAN_CHECKPOINT_REASON_LENGTH),
+        prompt=_bound_text(str(redact_value(prompt)), MAX_HUMAN_CHECKPOINT_PROMPT_LENGTH),
+        scope=_bound_text(str(redact_value(scope)), MAX_HUMAN_CHECKPOINT_SCOPE_LENGTH),
+        metadata=_redact_mapping(
+            metadata or {},
+            max_keys=MAX_HUMAN_CHECKPOINT_METADATA_KEYS,
+        ),
     )
 
 
