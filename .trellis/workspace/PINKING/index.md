@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 42
+- **Total Sessions**: 43
 - **Last Active**: 2026-06-01
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~1408 | Active |
+| `journal-1.md` | ~1442 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 43 | 2026-06-01 | Graph cross-page experience parity | `a8e2bbf`, `45c3fea` | `main` |
 | 42 | 2026-06-01 | Graph event stream adapter | `272adde`, `6eab825` | `main` |
 | 41 | 2026-06-01 | Graph human interrupt checkpoints | `65e9bce` | `main` |
 | 40 | 2026-06-01 | Graph memory RAG context | `616560a` | `main` |
