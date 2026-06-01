@@ -17,6 +17,7 @@ from app.agents.graph_runtime_contracts import (
     GraphRunResult,
     IntentType,
     build_fallback,
+    build_checkpoint_thread_state,
     build_run_result,
     make_intent,
 )
@@ -612,7 +613,13 @@ def invoke_orchestration(
         "knowledge_point": dict(knowledge_point) if isinstance(knowledge_point, Mapping) else {},
         "lesson_outline": [dict(item) for item in lesson_outline if isinstance(item, Mapping)],
     }
-    result = compiled.invoke(input_state)
+    thread_state = build_checkpoint_thread_state(
+        session_id=session_id,
+        user_id=user_id,
+        session_type="learning",
+        checkpoint_ns="learning_orchestration",
+    )
+    result = compiled.invoke(input_state, thread_state.to_config())
     raw_result = {
         "next_stage": result.get("next_stage", learning_stage),
         "tool_name": result.get("tool_name"),

@@ -764,6 +764,8 @@ The tool records intent against server-owned context; the feature service later 
 - Shared intent signature: `GraphIntent(intent_type, target, payload)`.
 - Shared boundary contract signature: `graph_runtime_boundary_contract() -> GraphRuntimeBoundaryContract`.
 - Boundary validation signature: `validate_run_result_for_boundary(result, allowed_intent_targets={...}) -> list[str]`.
+- Checkpoint thread signature: `build_checkpoint_thread_state(session_id, user_id, session_type, checkpoint_ns, checkpoint_id=None, metadata=None) -> GraphCheckpointThreadState`.
+- LangGraph invoke config shape: `{"configurable": {"thread_id": "aearn:<session_type>:<session_id>", "checkpoint_ns": "<graph_namespace>"}, "metadata": {...}}`.
 - Learning entrypoint: `invoke_orchestration(...) -> {"next_stage", "tool_name", "learner_content", "next_state", "run_result"}`.
 - Onboarding entrypoint: `invoke_onboarding_orchestration(...) -> {"next_action", "intent_type", "intent_payload"}`.
 - Review entrypoint: `invoke_review_orchestration(...) -> {"next_action", "intent_type", "intent_payload"}`.
@@ -775,6 +777,8 @@ The tool records intent against server-owned context; the feature service later 
 - Graph modules must return shared `GraphRunResult` or adapt raw graph output through a `*_result_to_run_result()` helper before service code consumes it.
 - The shared boundary contract must document ownership for `graph`, `service`, `repository`, `api`, and `sse` layers in code, not only prose.
 - Services must validate `GraphRunResult` against a service-scoped allowed intent-target map before applying intents. For the learning message path, allowed graph intents are `STAGE_UPDATE -> learning_session` and `TOOL_CALL -> show_code_exercise|show_concept_check_result|show_concept_intro|show_learning_history`.
+- Graph thread ids must be service-derived and deterministic from durable Aearn session facts. The learning graph uses `checkpoint_ns=learning`; the single-step learning orchestration graph uses `checkpoint_ns=learning_orchestration`.
+- LangGraph checkpoints are not product persistence. Checkpoint config may resume graph execution details, but durable learning state remains in Aearn services/repositories and idempotency records.
 - Services and routes own durable writes, idempotency replay, transactions, public response envelopes, and SSE frame order.
 - Repository modules own SQL and persistence invariants; graph nodes must not open database connections or write product rows directly.
 - Route handlers may pre-load service-owned facts for graph input, but they must consume graph intents rather than call the graph only for telemetry.
@@ -786,6 +790,7 @@ The tool records intent against server-owned context; the feature service later 
 - `LANGGRAPH_ENABLED=false` -> use the stable non-graph branch and keep existing status codes/SSE events.
 - Graph compile or invoke exception -> catch at the service/route boundary, produce a safe fallback, and do not leak raw graph errors.
 - Boundary validation error -> reject the graph output for that service scope and use the stable fallback or existing public error path; do not partially apply intents.
+- Missing checkpointer or graph checkpoint storage -> continue with deterministic `configurable.thread_id`; do not create ad-hoc graph-owned database writes.
 - Graph emits a persistence intent that does not match the route action -> reject or continue fallback; do not perform the write blindly.
 - Graph emits route-generation/tool intent -> service builds/stashes the plan or tool args, then emits the existing public `tool_call` contract.
 - Graph emits review not-due action -> route returns the same `REVIEW_NOT_DUE` envelope as repository validation.
@@ -796,14 +801,17 @@ The tool records intent against server-owned context; the feature service later 
 - Good: onboarding confirm calls the graph, verifies a `confirm_plan` persistence intent, then the service confirms the stashed draft in the existing transaction.
 - Good: review start/warmup/submit invoke the review graph from real route paths while repositories still own `ReviewState`, `ReviewLog`, and `Attempt` writes.
 - Good: learning message graph output is validated with `validate_run_result_for_boundary()` before the service applies stage/tool intents.
+- Good: learning graph invocations pass `configurable.thread_id=aearn:learning:<session_id>` and bounded metadata while `LearningSession` remains the service-owned durable state.
 - Base: local development keeps `LANGGRAPH_ENABLED=false`; all old-path route tests still pass with the same public contract.
-- Bad: graph nodes write `LearningSession`, `Attempt`, `ReviewState`, or `LearningPlan` rows directly, routes call graphs but ignore their `GraphRunResult` intents, or services execute unknown graph intent types without boundary validation.
+- Bad: graph nodes write `LearningSession`, `Attempt`, `ReviewState`, or `LearningPlan` rows directly, routes call graphs but ignore their `GraphRunResult` intents, services execute unknown graph intent types without boundary validation, or graph checkpointing becomes a second product-state store.
 
 ### 6. Tests Required
 
 - Unit-test graph node routing and `*_result_to_run_result()` adapters for each migrated flow.
 - Unit-test `graph_runtime_boundary_contract()`, `GraphIntentBoundaryRule`, and `validate_run_result_for_boundary()` for layer ownership and scoped intent rejection.
+- Unit-test `GraphCheckpointThreadState` for deterministic thread ids, session-type separation, bounded namespace/config serialization, and metadata redaction.
 - Route-level tests must set `LANGGRAPH_ENABLED=true`, monkeypatch the graph entrypoint, and assert the production path consumes graph intents.
+- Route-level tests must assert graph invocations receive the expected thread config when `LANGGRAPH_ENABLED=true`.
 - Route-level tests must cover invalid/unscoped graph intents and assert the service does not blindly execute them.
 - Route-level tests must keep flag-off fallback coverage for public response shape, idempotency replay, and SSE event ordering.
 - Add regression tests for graph error/fallback behavior and redaction of sensitive graph payload fields.

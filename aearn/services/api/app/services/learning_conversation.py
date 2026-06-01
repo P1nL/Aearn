@@ -29,7 +29,12 @@ from app.agents.guardrails import (
     check_teaching_request,
     detect_direct_answer_request,
 )
-from app.agents.graph_runtime_contracts import GraphRunResult, IntentType, validate_run_result_for_boundary
+from app.agents.graph_runtime_contracts import (
+    GraphRunResult,
+    IntentType,
+    build_checkpoint_thread_state,
+    validate_run_result_for_boundary,
+)
 from app.agents.learning_graph import (
     AgentState,
     LearningStageState,
@@ -470,7 +475,13 @@ def _context_with_langgraph_runtime(
 ) -> LearningConversationContext:
     try:
         graph_state = build_learning_graph_state(context, user_content=user_content)
-        graph_result = compile_learning_graph().invoke(graph_state)
+        thread_state = build_checkpoint_thread_state(
+            session_id=context.session_id,
+            user_id=context.user_id,
+            session_type="learning",
+            checkpoint_ns="learning",
+        )
+        graph_result = compile_learning_graph().invoke(graph_state, thread_state.to_config())
     except Exception:
         return context
 

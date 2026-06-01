@@ -9,8 +9,10 @@ from app.agents.graph_runtime_contracts import (
     GraphRuntimeState,
     IntentType,
     MAX_INTENTS_PER_RUN,
+    MAX_THREAD_ID_LENGTH,
     MAX_USER_TEXT_LENGTH,
     boundary_rule_for_intent_type,
+    build_checkpoint_thread_state,
     build_fallback,
     build_run_result,
     build_runtime_state,
@@ -92,6 +94,71 @@ class TestBuildRuntimeState:
         assert state.context_summary == ""
         assert state.scoped_ids == {}
         assert state.session_facts == {}
+
+
+class TestBuildCheckpointThreadState:
+    def test_builds_deterministic_thread_config(self):
+        state = build_checkpoint_thread_state(
+            session_id="s1",
+            user_id="u1",
+            session_type="learning",
+            checkpoint_ns="learning",
+        )
+        assert state.thread_id == "aearn:learning:s1"
+        assert state.checkpoint_ns == "learning"
+        assert state.metadata["session_id"] == "s1"
+        assert state.metadata["durable_state_owner"] == "service"
+        assert state.to_config()["configurable"] == {
+            "thread_id": "aearn:learning:s1",
+            "checkpoint_ns": "learning",
+        }
+
+    def test_thread_id_includes_session_type(self):
+        learning = build_checkpoint_thread_state(
+            session_id="same-session",
+            user_id="u1",
+            session_type="learning",
+        )
+        review = build_checkpoint_thread_state(
+            session_id="same-session",
+            user_id="u1",
+            session_type="review",
+        )
+        assert learning.thread_id != review.thread_id
+
+    def test_includes_optional_checkpoint_id(self):
+        state = build_checkpoint_thread_state(
+            session_id="s1",
+            user_id="u1",
+            session_type="learning",
+            checkpoint_id="cp1",
+        )
+        assert state.checkpoint_id == "cp1"
+        assert state.to_config()["configurable"]["checkpoint_id"] == "cp1"
+
+    def test_redacts_metadata(self):
+        state = build_checkpoint_thread_state(
+            session_id="s1",
+            user_id="u1",
+            session_type="learning",
+            metadata={
+                "reason": "safe",
+                "api_key": "sk-secret",
+                "raw_prompt": "system prompt content",
+            },
+        )
+        assert state.metadata["reason"] == "safe"
+        assert state.metadata["api_key"] == "[REDACTED]"
+        assert state.metadata["raw_prompt"] == "[REDACTED]"
+
+    def test_bounds_long_thread_id_with_hash_suffix(self):
+        state = build_checkpoint_thread_state(
+            session_id="s" * 400,
+            user_id="u1",
+            session_type="learning",
+        )
+        assert len(state.thread_id) <= MAX_THREAD_ID_LENGTH
+        assert state.thread_id.startswith("aearn:learning")
 
 
 class TestMakeIntent:

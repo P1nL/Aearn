@@ -1,6 +1,7 @@
 """Tests for LangGraph learning conversation state machine."""
 from __future__ import annotations
 
+import app.agents.learning_graph as learning_graph_module
 from app.agents.graph_runtime_contracts import GraphRunResult, IntentType
 from app.agents.learning_graph import (
     AgentState,
@@ -278,3 +279,37 @@ class TestOrchestrationGraph:
         ))
         assert "事件监听" in result["next_state"]["concept_summary"]
         assert "状态共享" in result["next_state"]["concept_summary"]
+
+    def test_invoke_orchestration_passes_thread_config(self, monkeypatch):
+        captured: dict[str, object] = {}
+
+        class FakeCompiledGraph:
+            def invoke(self, state, config=None):  # type: ignore[no-untyped-def]
+                captured["state"] = state
+                captured["config"] = config
+                return {
+                    "next_stage": "concept_qna",
+                    "tool_name": None,
+                    "learner_content": "",
+                    "next_state": state["learning_stage_state"],
+                }
+
+        monkeypatch.setattr(
+            learning_graph_module,
+            "compile_orchestration_graph",
+            lambda: FakeCompiledGraph(),
+        )
+
+        result = invoke_orchestration(**self._base_input(
+            session_id="session-123",
+            user_id="user-456",
+            learning_stage="concept_intro",
+            user_text="为什么要用闭包？",
+        ))
+
+        config = captured["config"]
+        assert isinstance(config, dict)
+        assert config["configurable"]["thread_id"] == "aearn:learning:session-123"
+        assert config["configurable"]["checkpoint_ns"] == "learning_orchestration"
+        assert config["metadata"]["durable_state_owner"] == "service"
+        assert result["next_stage"] == "concept_qna"
