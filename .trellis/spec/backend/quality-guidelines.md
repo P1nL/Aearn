@@ -902,7 +902,7 @@ The feature service loads facts and owns persistence, while the shared layer onl
 ### 1. Scope / Trigger
 
 - Trigger: adding or changing allowlisted documentation sources or documentation fetch behavior for language-aware grounding.
-- Scope: `app/services/grounding_sources.py`, `app/services/grounding_fetcher.py`, `app/services/grounding_processing.py`, `app/services/grounding_retrieval.py`, `app/services/grounding_citations.py`, `app/services/grounding_fixtures.py`, `app/services/language_capabilities.py`, and grounding tests.
+- Scope: `app/services/grounding_sources.py`, `app/services/grounding_fetcher.py`, `app/services/grounding_processing.py`, `app/services/grounding_retrieval.py`, `app/services/grounding_citations.py`, `app/services/grounding_fixtures.py`, `app/services/grounding_reindex.py`, `app/services/language_capabilities.py`, and grounding tests.
 
 ### 2. Signatures
 
@@ -917,6 +917,8 @@ The feature service loads facts and owns persistence, while the shared layer onl
 - Agent citation signature: `grounding_results_for_agent(results, max_items=4, max_content_chars=800) -> tuple[AgentGroundingItem, ...]`.
 - Agent grounding item fields: bounded content snippet, `GroundingCitation`, relevance score, and match reasons.
 - Fixture signatures: `mainstream_grounding_fixture_documents(fetched_at=None)` and `fixture_documents_for_language(language_id_or_alias, fetched_at=None)`.
+- Reindex signatures: `run_grounding_reindex(fetcher, source_ids=None) -> GroundingReindexReport` and `run_fixture_grounding_reindex() -> GroundingReindexReport`.
+- Reindex report fields: status, total sources, total documents, total chunks, total failures, per-source reports, and chunks.
 
 ### 3. Contracts
 
@@ -938,6 +940,8 @@ The feature service loads facts and owns persistence, while the shared layer onl
 - Citation ids must be deterministic for the same canonical URL, section path, and content hash.
 - Mainstream language fixtures must be offline, deterministic, and built from registered source ids and seed URLs.
 - Fixtures must cover every `LANGUAGE_CAPABILITIES` id without implying runtime execution or public selection.
+- Reindex service code must isolate per-source failures and return structured status instead of raising for expected source/fetch failures.
+- Reindex observability may expose service-level reports, but must not add route, worker schedule, or startup hook until an explicit task owns that rollout.
 
 ### 4. Validation & Error Matrix
 
@@ -956,6 +960,9 @@ The feature service loads facts and owns persistence, while the shared layer onl
 - Empty citation input -> empty agent grounding tuple.
 - Non-positive `max_items` or `max_content_chars` -> empty agent grounding tuple.
 - Unknown fixture language -> empty fixture tuple.
+- Unknown reindex source id -> per-source `failed` report with `SOURCE_NOT_REGISTERED`.
+- Mixed reindex success and failures -> top-level `completed_with_failures` with successful chunks preserved.
+- No successful documents or chunks -> top-level `failed`.
 
 ### 5. Good/Base/Bad Cases
 
@@ -965,11 +972,13 @@ The feature service loads facts and owns persistence, while the shared layer onl
 - Good: a Python retrieval query never returns JavaScript chunks, even when the text matches.
 - Good: agent grounding context includes a bounded snippet plus citation id, URL, section path, trust tier, content hash, score, and match reasons.
 - Good: every mainstream language fixture can chunk, retrieve, and convert to an agent citation without network access.
+- Good: a reindex run with one failed source and one successful source returns `completed_with_failures` and keeps the successful chunks.
 - Base: C++ uses `cppreference` with `trusted_de_facto` and a rationale note.
 - Bad: adding a docs URL changes public course language ids, runtime runner status, or lets agents browse arbitrary domains.
 - Bad: raw `<script>`, navigation, or footer text appears in grounded teaching context.
 - Bad: retrieval ranks before language filtering and leaks another language's same-topic chunk.
 - Bad: prompt code pastes a whole fetched page and asks the model to invent or summarize its own citations.
+- Bad: source fetch failure raises out of reindex and blocks normal learning/session startup.
 
 ### 6. Tests Required
 
@@ -983,6 +992,7 @@ The feature service loads facts and owns persistence, while the shared layer onl
 - Assert retrieval language filtering, query/topic ranking, trust-tier preference, unknown language behavior, and same-language fallback behavior.
 - Assert agent citation metadata, deterministic citation ids, bounded snippets, score/reason preservation, max item limits, and empty input behavior.
 - Assert fixture coverage for every mainstream language id and smoke the offline chunk/retrieve/citation pipeline.
+- Assert successful reindex, mixed failure reindex, unknown source handling, and fixture reindex smoke status/counts.
 
 ### 7. Wrong vs Correct
 
