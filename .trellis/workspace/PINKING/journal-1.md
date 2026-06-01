@@ -1406,3 +1406,37 @@ Added a bounded graph runtime SSE adapter that emits existing tool_status frames
 ### Next Steps
 
 - None - task complete
+
+
+## Session 43: Graph cross-page experience parity
+
+**Date**: 2026-06-01
+**Task**: Graph cross-page experience parity
+**Branch**: `main`
+
+### Summary
+
+Added onboarding/review graph boundary validation so invalid cross-page graph outputs fall back to service-owned behavior, with focused fallback and non-leakage tests.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `a8e2bbf` | (see git log) |
+| `45c3fea` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
