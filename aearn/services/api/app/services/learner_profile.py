@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping, Sequence
 from datetime import date
+from decimal import Decimal
 
 from psycopg import Connection
 
@@ -11,6 +12,20 @@ from psycopg import Connection
 MAX_OBSERVATIONS = 50
 MAX_WEAK_POINTS = 20
 MAX_ERROR_PATTERNS = 20
+MAX_SIGNAL_TEXT_LENGTH = 160
+REVIEW_FAILURE_RATINGS = {"Again", "Hard"}
+REVIEW_SUCCESS_RATINGS = {"Good", "Easy"}
+SENSITIVE_SIGNAL_MARKERS = (
+    "api_key",
+    "auth_token",
+    "secret",
+    "sk-",
+    "stack_trace",
+    "traceback",
+    "provider payload",
+    "hidden_test",
+    "solution_reference",
+)
 
 
 def get_learner_profile(conn: Connection[dict[str, object]], user_id: str) -> dict[str, object] | None:
@@ -121,6 +136,110 @@ def merge_observations(
 
     updated = get_learner_profile(conn, user_id)
     return updated or {}
+
+
+def merge_stable_profile_signals(
+    conn: Connection[dict[str, object]],
+    user_id: str,
+    *,
+    attempt: Mapping[str, object],
+    knowledge_point: Mapping[str, object] | None = None,
+    session_id: str | None = None,
+    source: str = "",
+) -> dict[str, object]:
+    observations = derive_stable_profile_observations(
+        attempt=attempt,
+        knowledge_point=knowledge_point,
+        session_id=session_id,
+        source=source,
+    )
+    if not observations:
+        return get_learner_profile(conn, user_id) or ensure_learner_profile(conn, user_id)
+    return merge_observations(conn, user_id, observations)
+
+
+def derive_stable_profile_observations(
+    *,
+    attempt: Mapping[str, object],
+    knowledge_point: Mapping[str, object] | None = None,
+    session_id: str | None = None,
+    source: str = "",
+) -> list[dict[str, object]]:
+    """Convert evaluated attempt/review facts into bounded learner profile observations."""
+    attempt_type = _signal_text(attempt.get("attempt_type"), max_length=40)
+    runtime_status = _signal_text(attempt.get("runtime_status"), max_length=40)
+    fsrs_rating = _signal_text(attempt.get("fsrs_rating"), max_length=20)
+    test_pass_rate = _as_float(attempt.get("test_pass_rate"), 0.0)
+    score = _optional_int(attempt.get("score"))
+    hint_usage_count = _as_int(attempt.get("hint_usage_count"), 0)
+    error_count = _as_int(attempt.get("error_count"), 0)
+    profile_session_id = _signal_text(session_id or attempt.get("session_id"), max_length=80)
+    signal_source = _signal_text(source or attempt_type, max_length=80)
+    observations: list[dict[str, object]] = []
+
+    weak_point = _knowledge_point_label(knowledge_point)
+    if weak_point and _is_weak_attempt_signal(
+        runtime_status=runtime_status,
+        test_pass_rate=test_pass_rate,
+        score=score,
+        fsrs_rating=fsrs_rating,
+        error_count=error_count,
+    ):
+        observations.append(_observation(
+            "weak_point",
+            weak_point,
+            session_id=profile_session_id,
+            confidence="confirmed",
+        ))
+
+    error_pattern = _stable_error_pattern(attempt, runtime_status=runtime_status)
+    if error_pattern and (error_count > 0 or runtime_status not in {"", "success"}):
+        observations.append(_observation(
+            "error_pattern",
+            error_pattern,
+            session_id=profile_session_id,
+            confidence="confirmed" if error_count > 0 else "ambiguous",
+        ))
+
+    outcome = _attempt_outcome(
+        runtime_status=runtime_status,
+        test_pass_rate=test_pass_rate,
+        score=score,
+        fsrs_rating=fsrs_rating,
+        error_count=error_count,
+    )
+    observations.append(_pace_observation(
+        "last_attempt_outcome",
+        outcome,
+        session_id=profile_session_id,
+        source=signal_source,
+    ))
+    observations.append(_pace_observation(
+        "hint_load",
+        _hint_load(hint_usage_count),
+        session_id=profile_session_id,
+        source=signal_source,
+    ))
+    if fsrs_rating:
+        observations.append(_pace_observation(
+            "last_review_rating",
+            fsrs_rating,
+            session_id=profile_session_id,
+            source=signal_source,
+        ))
+    mastery_signal = _mastery_signal(
+        attempt_type=attempt_type,
+        fsrs_rating=fsrs_rating,
+        outcome=outcome,
+    )
+    if mastery_signal:
+        observations.append(_pace_observation(
+            "mastery_signal",
+            mastery_signal,
+            session_id=profile_session_id,
+            source=signal_source,
+        ))
+    return observations
 
 
 def build_profile_summary(profile: Mapping[str, object] | None) -> str:
@@ -235,6 +354,135 @@ def _serialize_profile(row: Mapping[str, object]) -> dict[str, object]:
     }
 
 
+def _observation(
+    obs_type: str,
+    content: str,
+    *,
+    session_id: str,
+    confidence: str,
+) -> dict[str, object]:
+    return {
+        "type": obs_type,
+        "content": _signal_text(content),
+        "confidence": confidence if confidence in {"confirmed", "ambiguous"} else "ambiguous",
+        "session_id": session_id,
+    }
+
+
+def _pace_observation(
+    key: str,
+    value: str,
+    *,
+    session_id: str,
+    source: str,
+) -> dict[str, object]:
+    return {
+        "type": "pace_indicator",
+        "content": f"{key}:{value}",
+        "confidence": "confirmed",
+        "session_id": session_id,
+        "key": _signal_text(key, max_length=80),
+        "value": _signal_text(value, max_length=80),
+        "source": source,
+    }
+
+
+def _knowledge_point_label(knowledge_point: Mapping[str, object] | None) -> str:
+    if not isinstance(knowledge_point, Mapping):
+        return ""
+    return _signal_text(
+        knowledge_point.get("title")
+        or knowledge_point.get("knowledge_point_title")
+        or knowledge_point.get("name"),
+    )
+
+
+def _is_weak_attempt_signal(
+    *,
+    runtime_status: str,
+    test_pass_rate: float,
+    score: int | None,
+    fsrs_rating: str,
+    error_count: int,
+) -> bool:
+    if fsrs_rating in REVIEW_FAILURE_RATINGS:
+        return True
+    if runtime_status and runtime_status not in {"success", "unsupported"}:
+        return True
+    if error_count > 0:
+        return True
+    if score is not None and score <= 4:
+        return True
+    return test_pass_rate < 0.6
+
+
+def _stable_error_pattern(attempt: Mapping[str, object], *, runtime_status: str) -> str:
+    raw_cause = _signal_text(attempt.get("error_cause"), max_length=80)
+    if raw_cause and not _has_sensitive_marker(raw_cause):
+        return _normalize_pattern(raw_cause)
+    if runtime_status and runtime_status != "success":
+        return _normalize_pattern(runtime_status)
+    return ""
+
+
+def _attempt_outcome(
+    *,
+    runtime_status: str,
+    test_pass_rate: float,
+    score: int | None,
+    fsrs_rating: str,
+    error_count: int,
+) -> str:
+    if fsrs_rating in REVIEW_FAILURE_RATINGS:
+        return "needs_repair"
+    if runtime_status and runtime_status not in {"success", "unsupported"}:
+        return "needs_repair"
+    if error_count > 0:
+        return "needs_repair"
+    if fsrs_rating in REVIEW_SUCCESS_RATINGS or (score is not None and score >= 7) or test_pass_rate >= 1.0:
+        return "mastered"
+    if test_pass_rate >= 0.6:
+        return "partial"
+    return "needs_repair"
+
+
+def _hint_load(hint_usage_count: int) -> str:
+    if hint_usage_count >= 3:
+        return "heavy"
+    if hint_usage_count > 0:
+        return "used"
+    return "none"
+
+
+def _mastery_signal(*, attempt_type: str, fsrs_rating: str, outcome: str) -> str:
+    if attempt_type == "review_submit" and fsrs_rating in REVIEW_SUCCESS_RATINGS:
+        return "review_recovered"
+    if outcome == "mastered":
+        return "mastered"
+    return ""
+
+
+def _signal_text(value: object, max_length: int = MAX_SIGNAL_TEXT_LENGTH) -> str:
+    text = str(value or "").strip()
+    if _has_sensitive_marker(text):
+        return ""
+    if len(text) <= max_length:
+        return text
+    return text[:max_length].rstrip()
+
+
+def _normalize_pattern(value: str) -> str:
+    normalized = "".join(char.lower() if char.isalnum() else "_" for char in value.strip())
+    while "__" in normalized:
+        normalized = normalized.replace("__", "_")
+    return normalized.strip("_")[:80]
+
+
+def _has_sensitive_marker(value: str) -> bool:
+    lowered = value.lower()
+    return any(marker in lowered for marker in SENSITIVE_SIGNAL_MARKERS)
+
+
 def _as_list(value: object) -> list[dict[str, object]]:
     if isinstance(value, list):
         return value
@@ -250,9 +498,28 @@ def _as_dict(value: object) -> dict[str, object]:
 def _as_int(value: object, default: int) -> int:
     if isinstance(value, int):
         return value
+    if isinstance(value, Decimal):
+        return int(value)
     if isinstance(value, str):
         try:
             return int(value)
+        except ValueError:
+            return default
+    return default
+
+
+def _optional_int(value: object) -> int | None:
+    if value is None:
+        return None
+    return _as_int(value, 0)
+
+
+def _as_float(value: object, default: float) -> float:
+    if isinstance(value, int | float | Decimal):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
         except ValueError:
             return default
     return default

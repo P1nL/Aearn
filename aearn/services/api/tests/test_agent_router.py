@@ -34,9 +34,33 @@ class TestRouteMessage:
         result = route_message(session_stage="practice_support", user_message="为什么要用return？")
         assert result == "teaching"
 
+    def test_practice_with_repeated_runtime_error_routes_to_diagnosis(self):
+        result = route_message(
+            session_stage="practice_support",
+            user_message="这个错误为什么一直出现？",
+            latest_attempt={"runtime_status": "runtime_error", "error_count": 2},
+        )
+        assert result == "diagnosis"
+
     def test_teaching_with_practice_keyword_routes_to_exercise(self):
         result = route_message(session_stage="concept_intro", user_message="我想做练习")
         assert result == "exercise_coach"
+
+    def test_explicit_code_request_with_tool_context_routes_to_exercise(self):
+        result = route_message(
+            session_stage="concept_qna",
+            user_message="我想直接写代码试一下",
+            tool_context={"exercise_available": True},
+        )
+        assert result == "exercise_coach"
+
+    def test_repeated_confusion_with_profile_weak_signal_routes_to_diagnosis(self):
+        result = route_message(
+            session_stage="concept_qna",
+            user_message="我又卡在这里了",
+            learner_profile_summary="【学习者画像】已确认薄弱点: closures | 常见错误模式: off_by_one(×3)",
+        )
+        assert result == "diagnosis"
 
     def test_review_session_routes_to_review_coach(self):
         result = route_message(session_stage="concept_intro", user_message="hello", session_type="review")

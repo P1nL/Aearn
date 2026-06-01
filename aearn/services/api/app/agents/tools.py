@@ -8,6 +8,8 @@ from typing import Any
 
 from agents import Tool, function_tool
 
+from app.agents.graph_runtime_contracts import GraphIntent, IntentType, make_intent
+
 
 ALLOWED_TRANSITIONS: dict[str, list[str]] = {
     "concept_intro": ["concept_qna", "readiness_check", "concept_check"],
@@ -17,6 +19,7 @@ ALLOWED_TRANSITIONS: dict[str, list[str]] = {
     "concept_repair": ["concept_check", "practice_support"],
     "practice_support": [],
 }
+MAX_TOOL_INTENTS = 20
 
 
 @dataclass
@@ -39,6 +42,7 @@ class AgentSideEffects:
     diagnosis_updates: list[dict[str, object]] = field(default_factory=list)
     attempt_records: list[dict[str, object]] = field(default_factory=list)
     profile_updates: list[dict[str, object]] = field(default_factory=list)
+    typed_intents: list[GraphIntent] = field(default_factory=list)
 
     def has_stage_change(self) -> bool:
         return len(self.stage_updates) > 0
@@ -142,7 +146,7 @@ def _build_write_tools(
         ),
     )
     def trigger_code_run(code: str) -> dict[str, object]:
-        return do_trigger_code_run(ctx, code)
+        return do_trigger_code_run(ctx, code, side_effects=side_effects)
 
     @function_tool(
         name_override="record_attempt",
@@ -215,6 +219,16 @@ def do_update_learning_stage(
         "previous_stage": current,
         "reason": reason,
     })
+    _append_tool_intent(
+        side_effects,
+        IntentType.STAGE_UPDATE,
+        "learning_session",
+        {
+            "previous_stage": current,
+            "new_stage": new_stage,
+            "reason": reason,
+        },
+    )
     return {"success": True, "previous_stage": current, "new_stage": new_stage}
 
 
@@ -237,16 +251,42 @@ def do_record_diagnosis(
         if v
     }
     side_effects.diagnosis_updates.append(entry)
+    _append_tool_intent(side_effects, IntentType.SIDE_EFFECT, "diagnosis", entry)
     return {"recorded": True, "fields": list(entry.keys())}
 
 
 def do_trigger_code_run(
     ctx: LearningToolContext,
     code: str,
+    *,
+    side_effects: AgentSideEffects | None = None,
 ) -> dict[str, object]:
     if ctx.run_code_fn is None or ctx.exercise is None:
+        if side_effects is not None:
+            _append_tool_intent(
+                side_effects,
+                IntentType.TOOL_CALL,
+                "trigger_code_run",
+                {
+                    "success": False,
+                    "code_length": len(code),
+                    "reason": "unavailable",
+                },
+            )
         return {"success": False, "error": "Code execution not available for this session"}
     result = ctx.run_code_fn(ctx.exercise, code)
+    if side_effects is not None:
+        _append_tool_intent(
+            side_effects,
+            IntentType.TOOL_CALL,
+            "trigger_code_run",
+            {
+                "success": True,
+                "code_length": len(code),
+                "runtime_status": result.get("runtime_status", "unknown"),
+                "test_pass_rate": result.get("test_pass_rate", 0.0),
+            },
+        )
     return {
         "success": True,
         "runtime_status": result.get("runtime_status", "unknown"),
@@ -272,6 +312,17 @@ def do_record_attempt(
         "code": code,
         "action": action,
     })
+    _append_tool_intent(
+        side_effects,
+        IntentType.PERSISTENCE,
+        "attempt",
+        {
+            "attempt_id": attempt_id,
+            "exercise_id": ctx.exercise_id or "",
+            "action": action,
+            "code_length": len(code),
+        },
+    )
     return {"success": True, "attempt_id": attempt_id}
 
 
@@ -302,7 +353,31 @@ def do_update_learner_profile(
     if value:
         entry["value"] = value
     side_effects.profile_updates.append(entry)
+    _append_tool_intent(
+        side_effects,
+        IntentType.PROFILE_UPDATE,
+        "learner_profile",
+        {
+            "type": observation_type,
+            "content": content,
+            "confidence": confidence,
+            "key": key,
+            "value": value,
+            "session_id": ctx.session_id,
+        },
+    )
     return {"success": True, "recorded_type": observation_type}
+
+
+def _append_tool_intent(
+    side_effects: AgentSideEffects,
+    intent_type: IntentType,
+    target: str,
+    payload: Mapping[str, object],
+) -> None:
+    if len(side_effects.typed_intents) >= MAX_TOOL_INTENTS:
+        return
+    side_effects.typed_intents.append(make_intent(intent_type, target, payload))
 
 
 def do_search_teaching_materials(

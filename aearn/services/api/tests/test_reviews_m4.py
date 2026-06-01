@@ -12,6 +12,7 @@ from app.db.bootstrap import bootstrap_database
 from app.db.connection import connect
 from app.main import app
 from app.services import learning_conversation, learning_session_repository, review_repository, review_seed_bank
+from app.services.learner_profile import get_learner_profile
 from app.services.review_scheduler import apply_attempt_review_update
 
 
@@ -516,11 +517,15 @@ def test_review_run_and_submit_updates_schedule_once(client: TestClient) -> None
             """,
             (submit_body["attempt_id"],),
         ).fetchone()
+        profile = get_learner_profile(conn, str(user["id"]))
     assert state is not None
     assert state["reps"] == 3
     assert str(state["last_attempt_id"]) == submit_body["attempt_id"]
     assert log_count is not None
     assert log_count["count"] == 1
+    assert profile is not None
+    assert profile["pace_indicators"]["last_review_rating"] == submit_body["fsrs_rating"]
+    assert profile["pace_indicators"]["mastery_signal"] == "review_recovered"
 
 
 def test_review_routes_langgraph_flag_on_invokes_start_and_submit_graph(

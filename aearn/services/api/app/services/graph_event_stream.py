@@ -45,6 +45,11 @@ def build_learning_graph_stream_events(
         "tool": GRAPH_STREAM_TOOL,
         "status": "completed",
         "message": _graph_status_message(runtime_context),
+        "observability": _graph_observability(
+            runtime_context,
+            graph_memory_snapshot=graph_memory_snapshot,
+            rag_context=rag_context,
+        ),
     }
     return (GraphStreamEvent(event_type="tool_status", payload=payload),)
 
@@ -68,6 +73,30 @@ def _graph_status_message(runtime_context: Mapping[str, object]) -> str:
     if _safe_text(runtime_context.get("next_action"), max_length=MAX_GRAPH_STREAM_FIELD_LENGTH):
         return "Learning graph selected the next teaching step."
     return "Learning graph context is ready."
+
+
+def _graph_observability(
+    runtime_context: Mapping[str, object],
+    *,
+    graph_memory_snapshot: Mapping[str, object] | None,
+    rag_context: Mapping[str, object] | None,
+) -> dict[str, object]:
+    memory = _safe_mapping(graph_memory_snapshot)
+    rag = _safe_mapping(rag_context)
+    next_action = _safe_text(
+        runtime_context.get("next_action"),
+        max_length=MAX_GRAPH_STREAM_FIELD_LENGTH,
+    )
+    return {
+        "memory_available": bool(memory.get("available") or memory.get("profile_summary")),
+        "rag_retrieval_status": _safe_text(
+            rag.get("retrieval_status") or "empty",
+            max_length=MAX_GRAPH_STREAM_FIELD_LENGTH,
+        ),
+        "rag_chunk_count": len(_safe_list(rag.get("chunks"))),
+        "fallback_used": bool(_safe_list(runtime_context.get("errors"))),
+        "next_action": "" if next_action.startswith("[REDACTED") else next_action,
+    }
 
 
 def _safe_mapping(value: object) -> dict[str, object]:

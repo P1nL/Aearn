@@ -18,13 +18,13 @@ Umbrella task for hardening Aearn's agent capabilities across language support, 
 
 ## Acceptance Criteria
 
-- [ ] The task tree below exists in Trellis and each child has independently verifiable acceptance criteria before implementation starts.
-- [ ] The project has an explicit language capability matrix covering lesson generation, RAG grounding, exercise generation, execution, tests, static analysis, review feedback, and UX disclosure.
-- [ ] Runtime execution is routed through a language runner registry, with Python using the existing sandbox and unsupported languages returning explicit capability-aware responses.
-- [ ] Learning page LangGraph runtime responsibilities are separated from service persistence responsibilities.
-- [ ] RAG grounding supports mainstream language source registration and can retrieve cited material by language/topic.
-- [ ] Learner profile, tools, handoffs, and observability changes are covered by tests and do not regress existing onboarding, learning, or review flows.
-- [ ] Documentation explains what is fully supported now, what is scaffolded for later, and why those tradeoffs are intentional.
+- [x] The task tree below exists in Trellis and each child has independently verifiable acceptance criteria before implementation starts.
+- [x] The project has an explicit language capability matrix covering lesson generation, RAG grounding, exercise generation, execution, tests, static analysis, review feedback, and UX disclosure.
+- [x] Runtime execution is routed through a language runner registry, with Python using the existing sandbox and unsupported languages returning explicit capability-aware responses.
+- [x] Learning page LangGraph runtime responsibilities are separated from service persistence responsibilities.
+- [x] RAG grounding supports mainstream language source registration and can retrieve cited material by language/topic.
+- [x] Learner profile, tools, handoffs, and observability changes are covered by tests and do not regress existing onboarding, learning, or review flows.
+- [x] Documentation explains what is fully supported now, what is scaffolded for later, and why those tradeoffs are intentional.
 
 ## Task Tree
 

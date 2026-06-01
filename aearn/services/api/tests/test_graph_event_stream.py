@@ -30,6 +30,13 @@ def test_learning_graph_stream_event_uses_existing_tool_status_payload() -> None
         "tool": GRAPH_STREAM_TOOL,
         "status": "completed",
         "message": "Learning graph selected the next teaching step.",
+        "observability": {
+            "memory_available": False,
+            "rag_retrieval_status": "empty",
+            "rag_chunk_count": 0,
+            "fallback_used": False,
+            "next_action": "graph_checked",
+        },
     }
     assert "internal_graph_node" not in json.dumps(event.payload)
 
@@ -57,6 +64,8 @@ def test_learning_graph_stream_event_redacts_and_bounds_public_fields() -> None:
     assert len(str(payload["request_id"])) <= MAX_GRAPH_STREAM_FIELD_LENGTH
     assert len(str(payload["session_id"])) <= MAX_GRAPH_STREAM_FIELD_LENGTH
     assert payload["message"] == "Learning graph context prepared with safe fallback."
+    assert payload["observability"]["fallback_used"] is True
+    assert payload["observability"]["next_action"] == ""
 
 
 def test_learning_graph_stream_event_skips_non_graph_context() -> None:
@@ -76,8 +85,15 @@ def test_learning_graph_stream_event_accepts_graph_prepared_context_without_runt
         session_id="session_001",
         conversation_context={},
         graph_memory_snapshot={"available": True, "profile_summary": "prefers examples"},
-        rag_context={"retrieval_status": "available"},
+        rag_context={"retrieval_status": "available", "chunks": [{"chunk_id": "c1"}, {"chunk_id": "c2"}]},
     )
 
     assert len(events) == 1
     assert events[0].payload["message"] == "Learning graph context is ready."
+    assert events[0].payload["observability"] == {
+        "memory_available": True,
+        "rag_retrieval_status": "available",
+        "rag_chunk_count": 2,
+        "fallback_used": False,
+        "next_action": "",
+    }
