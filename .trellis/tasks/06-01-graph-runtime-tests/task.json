@@ -3,7 +3,7 @@
   "name": "graph-runtime-tests",
   "title": "Graph runtime tests",
   "description": "Add focused tests for graph runtime branches, fallbacks, event mapping, memory/RAG context, and service intent execution.",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,
