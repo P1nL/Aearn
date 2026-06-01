@@ -281,6 +281,7 @@ class LearningConversationTransition:
     learning_stage_state: Mapping[str, object]
     tool_name: str | None = None
     learner_content: str = ""
+    tool_names: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -571,7 +572,7 @@ def _safe_graph_value(value: object) -> Any:
 def deterministic_learning_message_text(prepared: PreparedLearningMessage) -> tuple[str, str, str] | None:
     if prepared.stored_response is not None:
         return None
-    if prepared.transition.tool_name != "show_code_exercise":
+    if not _transition_has_tool(prepared.transition, "show_code_exercise"):
         return None
 
     content = _deterministic_practice_unlock_message(prepared.transition.learning_stage_state)
@@ -579,10 +580,20 @@ def deterministic_learning_message_text(prepared: PreparedLearningMessage) -> tu
     return content, "deterministic", ""
 
 
+def _transition_tool_names(transition: LearningConversationTransition) -> tuple[str, ...]:
+    if transition.tool_names:
+        return transition.tool_names
+    return (transition.tool_name,) if transition.tool_name else ()
+
+
+def _transition_has_tool(transition: LearningConversationTransition, tool_name: str) -> bool:
+    return tool_name in _transition_tool_names(transition)
+
+
 def precompute_learning_message_transition(prepared: PreparedLearningMessage) -> PreparedLearningMessage:
     if prepared.stored_response is not None or prepared.precomputed_transition is not None:
         return prepared
-    if prepared.transition.tool_name != "show_concept_check_result":
+    if _transition_tool_names(prepared.transition) != ("show_concept_check_result",):
         return prepared
 
     result_args, final_stage, final_state = _build_concept_check_result_tool(prepared.context, prepared.transition)
@@ -904,7 +915,7 @@ def _apply_or_reuse_transition(
     precomputed = prepared.precomputed_transition
     if precomputed is None:
         return _apply_transition_and_build_tool_calls(conn, prepared)
-    if prepared.transition.tool_name == "show_concept_check_result":
+    if _transition_tool_names(prepared.transition) == ("show_concept_check_result",):
         update_learning_session_stage(
             conn,
             session_id=prepared.context.session_id,
@@ -1466,6 +1477,7 @@ def _determine_transition_via_graph(
         next_stage = run_result.next_stage or context.learning_stage
         next_state = dict(context.learning_stage_state)
         tool_name: str | None = None
+        tool_names: list[str] = []
         learner_content = ""
         for intent in run_result.intents:
             payload = dict(intent.payload)
@@ -1481,6 +1493,7 @@ def _determine_transition_via_graph(
                     learner_content = content_payload
             elif intent.intent_type == IntentType.TOOL_CALL:
                 tool_name = intent.target
+                tool_names.append(intent.target)
                 content_payload = payload.get("learner_content")
                 if isinstance(content_payload, str):
                     learner_content = content_payload
@@ -1489,6 +1502,7 @@ def _determine_transition_via_graph(
             learning_stage_state=next_state,
             tool_name=tool_name,
             learner_content=learner_content,
+            tool_names=tuple(tool_names),
         )
     except Exception:
         return _determine_transition(context, user_content)
@@ -1635,34 +1649,16 @@ def _apply_transition_and_build_tool_calls(
     prepared: PreparedLearningMessage,
 ) -> tuple[list[dict[str, object]], str, Mapping[str, object]]:
     transition = prepared.transition
-    tool_calls: list[dict[str, object]] = []
-    if transition.tool_name == "show_code_exercise":
-        prepared_transition_state = dict(transition.learning_stage_state)
-        check_result_tool = _concept_check_result_for_practice_unlock(prepared.context, prepared_transition_state)
-        if check_result_tool is not None:
-            tool_calls.append(_tool_call("show_concept_check_result", check_result_tool, prepared.message_id))
-        exercise, state = unlock_learning_session_practice(
+    tool_names = _transition_tool_names(transition)
+    if "show_code_exercise" in tool_names:
+        return _apply_practice_tool_loop(
             conn,
-            session_id=prepared.context.session_id,
-            unlock_reason=str(transition.learning_stage_state.get("practice_unlock_reason") or "early_request"),
-            learning_incomplete=bool(transition.learning_stage_state.get("learning_incomplete", True)),
-            state_overrides=prepared_transition_state,
+            prepared,
+            tool_names=tool_names,
+            explicit_order=bool(transition.tool_names),
         )
-        transition_state = dict(state)
-        prepared_transition_state.update(transition_state)
-        args = {
-            "session_id": prepared.context.session_id,
-            "knowledge_point_id": prepared.context.knowledge_point_id,
-            "exercise": exercise,
-            "unlock_reason": prepared_transition_state.get("practice_unlock_reason"),
-            "learning_incomplete": prepared_transition_state.get("learning_incomplete"),
-            "concept_summary": prepared_transition_state.get("concept_summary"),
-            "notice": _practice_notice(prepared_transition_state),
-        }
-        tool_calls.append(_tool_call("show_code_exercise", args, prepared.message_id))
-        return tool_calls, "practice_support", prepared_transition_state
 
-    if transition.tool_name == "show_concept_check_result":
+    if tool_names == ("show_concept_check_result",):
         result_args, final_stage, final_state = _build_concept_check_result_tool(prepared.context, transition)
         update_learning_session_stage(
             conn,
@@ -1670,8 +1666,8 @@ def _apply_transition_and_build_tool_calls(
             learning_stage=final_stage,
             state=final_state,
         )
-        tool_calls.append(_tool_call("show_concept_check_result", result_args, prepared.message_id))
-        return tool_calls, final_stage, final_state
+        tool_call = _tool_call("show_concept_check_result", result_args, prepared.message_id)
+        return [tool_call], final_stage, final_state
 
     update_learning_session_stage(
         conn,
@@ -1679,7 +1675,8 @@ def _apply_transition_and_build_tool_calls(
         learning_stage=transition.learning_stage,
         state=transition.learning_stage_state,
     )
-    if transition.tool_name == "show_learning_history":
+    tool_calls: list[dict[str, object]] = []
+    if "show_learning_history" in tool_names:
         args = list_learning_history(
             conn,
             user_id=prepared.context.user_id,
@@ -1688,6 +1685,58 @@ def _apply_transition_and_build_tool_calls(
         )
         tool_calls.append(_tool_call("show_learning_history", args, prepared.message_id))
     return tool_calls, transition.learning_stage, transition.learning_stage_state
+
+
+def _apply_practice_tool_loop(
+    conn: Connection[dict[str, object]],
+    prepared: PreparedLearningMessage,
+    *,
+    tool_names: tuple[str, ...],
+    explicit_order: bool,
+) -> tuple[list[dict[str, object]], str, Mapping[str, object]]:
+    transition = prepared.transition
+    transition_state = dict(transition.learning_stage_state)
+    tool_calls: list[dict[str, object]] = []
+    exercise_appended = False
+    ordered_tool_names = tool_names
+    if not explicit_order:
+        ordered_tool_names = ("show_concept_check_result", *tool_names)
+
+    for tool_name in ordered_tool_names:
+        if tool_name == "show_concept_check_result":
+            result_args = _concept_check_result_for_practice_unlock(prepared.context, transition_state)
+            if result_args is not None:
+                tool_calls.append(_tool_call("show_concept_check_result", result_args, prepared.message_id))
+        elif tool_name == "show_code_exercise" and not exercise_appended:
+            exercise, state = unlock_learning_session_practice(
+                conn,
+                session_id=prepared.context.session_id,
+                unlock_reason=str(transition_state.get("practice_unlock_reason") or "early_request"),
+                learning_incomplete=bool(transition_state.get("learning_incomplete", True)),
+                state_overrides=transition_state,
+            )
+            transition_state.update(dict(state))
+            args = {
+                "session_id": prepared.context.session_id,
+                "knowledge_point_id": prepared.context.knowledge_point_id,
+                "exercise": exercise,
+                "unlock_reason": transition_state.get("practice_unlock_reason"),
+                "learning_incomplete": transition_state.get("learning_incomplete"),
+                "concept_summary": transition_state.get("concept_summary"),
+                "notice": _practice_notice(transition_state),
+            }
+            tool_calls.append(_tool_call("show_code_exercise", args, prepared.message_id))
+            exercise_appended = True
+        elif tool_name == "show_learning_history":
+            args = list_learning_history(
+                conn,
+                user_id=prepared.context.user_id,
+                knowledge_point_id=prepared.context.knowledge_point_id,
+                active_session_id=prepared.context.session_id,
+            )
+            tool_calls.append(_tool_call("show_learning_history", args, prepared.message_id))
+
+    return tool_calls, "practice_support", transition_state
 
 
 def _build_concept_check_result_tool(

@@ -240,6 +240,7 @@ class OrchestrationInput(TypedDict, total=False):
     # Output fields set by nodes
     next_stage: str
     tool_name: str | None
+    tool_names: list[str]
     learner_content: str
     next_state: dict[str, Any]
 
@@ -366,6 +367,7 @@ def _orch_history(state: OrchestrationInput) -> dict[str, Any]:
     return {
         "next_stage": state.get("learning_stage", "concept_intro"),
         "tool_name": "show_learning_history",
+        "tool_names": ["show_learning_history"],
         "learner_content": "",
         "next_state": current_state,
     }
@@ -387,9 +389,13 @@ def _orch_practice_request(state: OrchestrationInput) -> dict[str, Any]:
     })
     if unlock_reason == "concept_check_skipped":
         current_state["concept_check_result"] = "skipped"
+    tool_names = ["show_code_exercise"]
+    if unlock_reason in {"concept_check_skipped", "concept_check_repair_limit"}:
+        tool_names = ["show_concept_check_result", "show_code_exercise"]
     return {
         "next_stage": "practice_support",
         "tool_name": "show_code_exercise",
+        "tool_names": tool_names,
         "learner_content": "",
         "next_state": current_state,
     }
@@ -410,6 +416,7 @@ def _orch_concept_check_answer(state: OrchestrationInput) -> dict[str, Any]:
     return {
         "next_stage": stage,
         "tool_name": "show_concept_check_result",
+        "tool_names": ["show_concept_check_result"],
         "learner_content": state.get("user_text", ""),
         "next_state": current_state,
     }
@@ -470,6 +477,7 @@ def _orch_feynman_pass(state: OrchestrationInput) -> dict[str, Any]:
     return {
         "next_stage": "practice_support",
         "tool_name": "show_code_exercise",
+        "tool_names": ["show_code_exercise"],
         "learner_content": "",
         "next_state": current_state,
     }
@@ -488,6 +496,7 @@ def _orch_feynman_fail(state: OrchestrationInput) -> dict[str, Any]:
     return {
         "next_stage": "readiness_check",
         "tool_name": "show_learning_history",
+        "tool_names": ["show_learning_history"],
         "learner_content": "",
         "next_state": current_state,
     }
@@ -623,6 +632,7 @@ def invoke_orchestration(
     raw_result = {
         "next_stage": result.get("next_stage", learning_stage),
         "tool_name": result.get("tool_name"),
+        "tool_names": result.get("tool_names", []),
         "learner_content": result.get("learner_content", ""),
         "next_state": result.get("next_state", dict(learning_stage_state)),
     }
@@ -656,8 +666,8 @@ def graph_result_to_run_result(result: Mapping[str, Any]) -> GraphRunResult:
                 "learner_content": learner_content,
             },
         ))
-    tool_name = result.get("tool_name")
-    if tool_name:
+    tool_names = _result_tool_names(result)
+    for tool_name in tool_names:
         intents.append(make_intent(
             IntentType.TOOL_CALL,
             str(tool_name),
@@ -688,3 +698,11 @@ def graph_error_to_fallback(error: Exception, *, fallback_stage: str) -> GraphFa
         safe_message="图执行异常，回退到服务层编排。",
         recoverable=True,
     )
+
+
+def _result_tool_names(result: Mapping[str, Any]) -> list[str]:
+    tool_names = result.get("tool_names")
+    if isinstance(tool_names, Sequence) and not isinstance(tool_names, (str, bytes)):
+        return [str(item) for item in tool_names if str(item).strip()]
+    tool_name = result.get("tool_name")
+    return [str(tool_name)] if tool_name else []

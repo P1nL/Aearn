@@ -173,6 +173,7 @@ class TestOrchestrationGraph:
         ))
         assert result["next_stage"] == "practice_support"
         assert result["tool_name"] == "show_code_exercise"
+        assert result["tool_names"] == ["show_concept_check_result", "show_code_exercise"]
         assert result["next_state"]["practice_unlock_reason"] == "concept_check_skipped"
         assert result["next_state"]["concept_check_result"] == "skipped"
         run_result = result["run_result"]
@@ -183,11 +184,12 @@ class TestOrchestrationGraph:
             and intent.target == "learning_session"
             for intent in run_result.intents
         )
-        assert any(
-            intent.intent_type == IntentType.TOOL_CALL
-            and intent.target == "show_code_exercise"
+        tool_targets = [
+            intent.target
             for intent in run_result.intents
-        )
+            if intent.intent_type == IntentType.TOOL_CALL
+        ]
+        assert tool_targets == ["show_concept_check_result", "show_code_exercise"]
 
     def test_practice_request_from_practice_offer(self):
         result = invoke_orchestration(**self._base_input(
@@ -264,6 +266,7 @@ class TestOrchestrationGraph:
             user_text="开始练习",
         ))
         assert result["next_state"]["practice_unlock_reason"] == "concept_check_repair_limit"
+        assert result["tool_names"] == ["show_concept_check_result", "show_code_exercise"]
 
     def test_subpoint_ids_populated(self):
         result = invoke_orchestration(**self._base_input(
