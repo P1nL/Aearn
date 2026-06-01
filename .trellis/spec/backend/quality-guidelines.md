@@ -902,7 +902,7 @@ The feature service loads facts and owns persistence, while the shared layer onl
 ### 1. Scope / Trigger
 
 - Trigger: adding or changing allowlisted documentation sources or documentation fetch behavior for language-aware grounding.
-- Scope: `app/services/grounding_sources.py`, `app/services/grounding_fetcher.py`, `app/services/grounding_processing.py`, `app/services/language_capabilities.py`, and grounding tests.
+- Scope: `app/services/grounding_sources.py`, `app/services/grounding_fetcher.py`, `app/services/grounding_processing.py`, `app/services/grounding_retrieval.py`, `app/services/language_capabilities.py`, and grounding tests.
 
 ### 2. Signatures
 
@@ -912,6 +912,8 @@ The feature service loads facts and owns persistence, while the shared layer onl
 - Fetch result signature: `GroundingFetchResult(status='ok'|'blocked'|'failed', document?, error_code?, error_message?, cache_hit)`.
 - Processing signature: `clean_and_chunk_document(document, max_chars=1200) -> tuple[GroundingChunk, ...]`.
 - Chunk signature: `GroundingChunk(chunk_id, source_id, language_id, title, section_path, canonical_url, source_type, source_trust_tier, fetched_at, content_hash, text, topic_tags)`.
+- Retrieval signature: `retrieve_grounding_chunks(chunks, GroundingRetrievalQuery(...)) -> tuple[GroundingRetrievalResult, ...]`.
+- Retrieval query fields: `language_id_or_alias`, `query_text`, `topic_tags`, `preferred_trust_tiers`, optional `knowledge_point_id`, optional `knowledge_point_title`, and `top_k`.
 
 ### 3. Contracts
 
@@ -926,6 +928,9 @@ The feature service loads facts and owns persistence, while the shared layer onl
 - Documentation cleaning must be deterministic and dependency-light; script/style/head/nav/footer/aside content must not enter chunks.
 - Chunks must carry enough metadata for later retrieval and citation without rereading the source registry.
 - Chunk ids and content hashes must be stable for the same source URL, section path, chunk index, and text.
+- Retrieval must canonicalize language aliases through `LANGUAGE_CAPABILITIES` and filter by language before ranking.
+- Retrieval ranking must remain deterministic and return bounded same-language fallback chunks for empty/no-hit queries.
+- Retrieval results must retain chunk metadata plus match reasons so downstream agent citation formatting can stay transparent.
 
 ### 4. Validation & Error Matrix
 
@@ -939,15 +944,19 @@ The feature service loads facts and owns persistence, while the shared layer onl
 - HTTP client exception -> `GroundingFetchResult(status='failed', error_code='FETCH_FAILED')` with bounded safe message.
 - Unknown source for a fetched document -> no chunks.
 - Empty or unreadable document body -> empty chunk tuple, not an exception.
+- Unknown retrieval language -> empty result tuple.
+- Empty/no-hit retrieval query -> same-language fallback results with `match_reasons=('fallback',)`.
 
 ### 5. Good/Base/Bad Cases
 
 - Good: TypeScript has official docs grounding but remains `enabled_for_public_selection=False` and `supports_execution=False`.
 - Good: fetching a registered Python seed URL through an injected fake client returns a document with canonical URL, final URL, fetched timestamp, content type, and content hash.
 - Good: cleaning fetched HTML returns section-aware chunks with canonical URL, trust tier, source type, fetched timestamp, topic tags, and stable hashes.
+- Good: a Python retrieval query never returns JavaScript chunks, even when the text matches.
 - Base: C++ uses `cppreference` with `trusted_de_facto` and a rationale note.
 - Bad: adding a docs URL changes public course language ids, runtime runner status, or lets agents browse arbitrary domains.
 - Bad: raw `<script>`, navigation, or footer text appears in grounded teaching context.
+- Bad: retrieval ranks before language filtering and leaks another language's same-topic chunk.
 
 ### 6. Tests Required
 
@@ -958,6 +967,7 @@ The feature service loads facts and owns persistence, while the shared layer onl
 - Assert planned languages gain docs without runtime/public-selection side effects.
 - Assert fetcher success, blocked URL, HTTP status failure, client exception, cache hit, and language-level seed fetching through fake clients.
 - Assert HTML cleaning, metadata propagation, deterministic chunk ids/hashes, empty-content behavior, and bounded chunk splitting.
+- Assert retrieval language filtering, query/topic ranking, trust-tier preference, unknown language behavior, and same-language fallback behavior.
 
 ### 7. Wrong vs Correct
 

@@ -3,7 +3,7 @@
   "name": "language-aware-retrieval",
   "title": "Language aware retrieval",
   "description": "Filter and rank RAG results by language, topic, knowledge point, source trust, and current learning context.",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,
