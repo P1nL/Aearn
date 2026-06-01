@@ -3,7 +3,7 @@
   "name": "grounding-source-registry",
   "title": "Grounding source registry",
   "description": "Define mainstream language source providers, allowlisted domains, seed URL policies, source trust tiers, and language/topic metadata.",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,
