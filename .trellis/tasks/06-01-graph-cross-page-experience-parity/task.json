@@ -3,7 +3,7 @@
   "name": "graph-cross-page-experience-parity",
   "title": "Graph cross page experience parity",
   "description": "Keep onboarding and review experiences consistent with learning runtime while avoiding unnecessary full graph runtime migration for those pages.",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,

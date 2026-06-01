@@ -616,6 +616,47 @@ def test_review_routes_langgraph_flag_on_invokes_start_and_submit_graph(
     assert submit_call["explanation_ready"] is True
 
 
+def test_review_start_invalid_graph_intent_falls_back_to_service_path(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user, plan = _confirmed_plan(client, language="javascript")
+    knowledge_point_id = plan["knowledge_points"][0]["id"]
+    _mark_due(knowledge_point_id, reps=2)
+    captured: list[dict[str, object]] = []
+
+    monkeypatch.setattr(reviews_route, "get_settings", lambda: Settings(langgraph_enabled=True))
+
+    def fake_invoke_review_orchestration(**kwargs):  # type: ignore[no-untyped-def]
+        captured.append(dict(kwargs))
+        return {
+            "next_action": "reject_not_due",
+            "intent_type": "persistence",
+            "intent_payload": {
+                "target": "delete_review_state",
+                "stack_trace": "provider payload sk-secret",
+            },
+        }
+
+    monkeypatch.setattr(
+        reviews_route,
+        "invoke_review_orchestration",
+        fake_invoke_review_orchestration,
+    )
+
+    start = client.post(
+        "/api/reviews/start",
+        json={"user_id": user["id"], "knowledge_point_id": knowledge_point_id},
+    )
+
+    assert start.status_code == 201
+    assert captured
+    payload = json.dumps(start.json(), ensure_ascii=False)
+    assert "delete_review_state" not in payload
+    assert "provider payload" not in payload
+    assert "sk-secret" not in payload
+
+
 def test_review_submit_blocked_explanation_judgement_does_not_write_attempt(
     client: TestClient,
 ) -> None:
