@@ -14,14 +14,14 @@ Turn the learning page LangGraph path into the primary runtime orchestration sli
 
 ## Acceptance Criteria
 
-- [ ] Graph runtime boundary is documented and accepted before implementation starts.
-- [ ] Checkpoint/thread state strategy is explicit and does not move durable service persistence into graph nodes.
-- [ ] Tool-loop ownership is graph-driven where appropriate and still emits typed service actions for writes.
-- [ ] Learner profile and teaching material retrieval can be injected into graph context with safe fallbacks.
-- [ ] Human interrupt points are modeled for ambiguous stage transitions or unsafe actions.
-- [ ] Graph events adapt to the existing learning page streaming/API contract.
-- [ ] Onboarding and review remain behaviorally consistent without being forced into full runtime migration.
-- [ ] Runtime branches, fallbacks, event mapping, and graph/service action execution are covered by focused tests.
+- [x] Graph runtime boundary is documented and accepted before implementation starts.
+- [x] Checkpoint/thread state strategy is explicit and does not move durable service persistence into graph nodes.
+- [x] Tool-loop ownership is graph-driven where appropriate and still emits typed service actions for writes.
+- [x] Learner profile and teaching material retrieval can be injected into graph context with safe fallbacks.
+- [x] Human interrupt points are modeled for ambiguous stage transitions or unsafe actions.
+- [x] Graph events adapt to the existing learning page streaming/API contract.
+- [x] Onboarding and review remain behaviorally consistent without being forced into full runtime migration.
+- [x] Runtime branches, fallbacks, event mapping, and graph/service action execution are covered by focused tests.
 
 ## Task Tree
 
@@ -40,6 +40,5 @@ learning-graph-runtime-hardening
 
 ## Notes
 
-- Keep `prd.md` focused on requirements, constraints, and acceptance criteria.
-- Lightweight tasks can remain PRD-only.
-- For complex tasks, add `design.md` for technical design and `implement.md` for execution planning before `task.py start`.
+- All child tasks are archived under `.trellis/tasks/archive/2026-06/`.
+- Demo evidence is documented in `docs/qa/learning-graph-runtime-demo-story.md`.
