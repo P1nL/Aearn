@@ -897,17 +897,19 @@ runtime_context = build_runtime_context_block(
 
 The feature service loads facts and owns persistence, while the shared layer only builds bounded safe context for SDK input.
 
-## Scenario: Language Grounding Source Registry
+## Scenario: Language Grounding Sources And Fetching
 
 ### 1. Scope / Trigger
 
-- Trigger: adding or changing allowlisted documentation sources for language-aware grounding.
-- Scope: `app/services/grounding_sources.py`, `app/services/language_capabilities.py`, and source-registry tests.
+- Trigger: adding or changing allowlisted documentation sources or documentation fetch behavior for language-aware grounding.
+- Scope: `app/services/grounding_sources.py`, `app/services/grounding_fetcher.py`, `app/services/language_capabilities.py`, and grounding tests.
 
 ### 2. Signatures
 
 - Source descriptor: `GroundingSource(source_id, language_id, display_name, provider, trust_tier, seed_policy, content_type, allowlisted_domains, seed_urls, topic_tags, notes)`.
 - Helper signatures: `all_grounding_sources()`, `sources_for_language(language_id_or_alias)`, `get_grounding_source(source_id)`, `allowlisted_domains_for_source(source_id)`, `seed_urls_for_language(language_id_or_alias)`, and `validate_grounding_source_registry()`.
+- Fetcher signatures: `GroundingDocsFetcher.fetch(source_id, url)`, `fetch_source_seed_documents(source_id)`, and `fetch_language_seed_documents(language_id_or_alias)`.
+- Fetch result signature: `GroundingFetchResult(status='ok'|'blocked'|'failed', document?, error_code?, error_message?, cache_hit)`.
 
 ### 3. Contracts
 
@@ -916,6 +918,9 @@ The feature service loads facts and owns persistence, while the shared layer onl
 - Documentation grounding readiness is separate from runtime readiness: planned languages may have docs sources while still being unavailable for public selection or execution.
 - C++ and SQL require explicit trust disclosure because they use trusted/de facto or vendor documentation rather than a single official beginner source.
 - Seed URLs must stay under declared allowlisted domains and use `http` or `https`.
+- Documentation fetchers must use the registry allowlist before HTTP and return typed blocked/failed results instead of raising for expected fetch failures.
+- HTTP clients must be injectable for tests and future worker integration; tests must not call live documentation sites.
+- Fetch cache is scoped to one fetcher/reindex run and must not become durable storage.
 
 ### 4. Validation & Error Matrix
 
@@ -924,10 +929,14 @@ The feature service loads facts and owns persistence, while the shared layer onl
 - Missing seed URLs or domains -> registry validation error.
 - Seed URL outside declared allowlist -> registry validation error.
 - No source matching a language's `source_trust_policy` -> registry validation error.
+- URL outside a source allowlist -> `GroundingFetchResult(status='blocked', error_code='URL_NOT_ALLOWLISTED')` before any HTTP call.
+- Non-2xx HTTP response -> `GroundingFetchResult(status='failed', error_code='HTTP_STATUS')`.
+- HTTP client exception -> `GroundingFetchResult(status='failed', error_code='FETCH_FAILED')` with bounded safe message.
 
 ### 5. Good/Base/Bad Cases
 
 - Good: TypeScript has official docs grounding but remains `enabled_for_public_selection=False` and `supports_execution=False`.
+- Good: fetching a registered Python seed URL through an injected fake client returns a document with canonical URL, final URL, fetched timestamp, content type, and content hash.
 - Base: C++ uses `cppreference` with `trusted_de_facto` and a rationale note.
 - Bad: adding a docs URL changes public course language ids, runtime runner status, or lets agents browse arbitrary domains.
 
@@ -938,6 +947,7 @@ The feature service loads facts and owns persistence, while the shared layer onl
 - Assert alias lookup works through `sources_for_language()`.
 - Assert seed URLs remain under allowlisted domains.
 - Assert planned languages gain docs without runtime/public-selection side effects.
+- Assert fetcher success, blocked URL, HTTP status failure, client exception, cache hit, and language-level seed fetching through fake clients.
 
 ### 7. Wrong vs Correct
 

@@ -3,7 +3,7 @@
   "name": "official-docs-fetcher",
   "title": "Official docs fetcher",
   "description": "Fetch allowlisted official documentation pages from lesson sources or configured seeds with caching, failure isolation, and no runtime web search.",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,
