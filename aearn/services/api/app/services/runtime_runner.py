@@ -3,26 +3,9 @@ from __future__ import annotations
 import ast
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
 
-from app.services.sandbox import SandboxExecutionResult, execute_python_with_tests
-
-
-@dataclass(slots=True)
-class RuntimeExecutionResult:
-    runtime_status: str
-    stdout: str
-    stderr: str
-    test_pass_rate: float
-    passed_test_count: int
-    total_test_count: int
-    test_results: list[dict[str, object]]
-    error_message: str | None
-    next_action: str
-    preview_html: str | None
-    core_blank_gate: bool
-    any_blank_passed: bool
-    logic_pass: bool
+from app.services.runner_registry import get_runner_registry
+from app.services.runtime_contracts import RuntimeExecutionResult
 
 
 def inspect_submission(
@@ -89,22 +72,11 @@ def run_exercise(
     if isinstance(runtime_profile, Mapping):
         runtime_tier = str(runtime_profile.get("runtime_tier", ""))
 
+    registry = get_runner_registry()
+    runner_capability = registry.select(runtime_profile if isinstance(runtime_profile, Mapping) else {})
+
     if runtime_tier == "compiled_sandbox_later":
-        return RuntimeExecutionResult(
-            runtime_status="unsupported",
-            stdout="",
-            stderr="",
-            test_pass_rate=0.0,
-            passed_test_count=0,
-            total_test_count=_case_count(exercise),
-            test_results=_build_failed_cases(exercise, "当前语言的编译运行沙箱在第一版中尚未开放。"),
-            error_message="Current runtime tier is not executable in the first MVP.",
-            next_action="retry_same",
-            preview_html=None,
-            core_blank_gate=False,
-            any_blank_passed=False,
-            logic_pass=False,
-        )
+        return registry.unsupported_result(exercise, runner_capability)
 
     if _looks_like_timeout(code, runtime_tier):
         return RuntimeExecutionResult(
@@ -143,7 +115,7 @@ def run_exercise(
                 logic_pass=False,
             )
         if _real_execution_enabled():
-            return _run_real_python(exercise, code)
+            return registry.run_python(exercise, code)
 
     if runtime_tier == "browser_preview" and _looks_like_browser_runtime_error(code):
         return RuntimeExecutionResult(
@@ -407,114 +379,3 @@ def _real_execution_enabled() -> bool:
     from app.core.config import get_settings
     return get_settings().real_execution_enabled
 
-
-def _run_real_python(exercise: Mapping[str, object], code: str) -> RuntimeExecutionResult:
-    test_cases = exercise.get("test_cases", [])
-    if not isinstance(test_cases, Sequence):
-        test_cases = []
-
-    metadata = exercise.get("metadata_json", {})
-    entry_function: str | None = None
-    if isinstance(metadata, Mapping):
-        ef = metadata.get("entry_function")
-        if ef:
-            entry_function = str(ef)
-
-    sandbox_result: SandboxExecutionResult = execute_python_with_tests(
-        code,
-        test_cases,
-        entry_function=entry_function,
-        timeout_s=10.0,
-    )
-
-    if sandbox_result.status == "timeout":
-        return RuntimeExecutionResult(
-            runtime_status="timeout",
-            stdout=sandbox_result.stdout,
-            stderr=sandbox_result.stderr,
-            test_pass_rate=0.0,
-            passed_test_count=0,
-            total_test_count=len(test_cases),
-            test_results=_build_failed_cases(exercise, "Execution timed out."),
-            error_message="Code execution timed out.",
-            next_action="retry_same",
-            preview_html=None,
-            core_blank_gate=False,
-            any_blank_passed=False,
-            logic_pass=False,
-        )
-
-    if sandbox_result.status == "sandbox_error":
-        return RuntimeExecutionResult(
-            runtime_status="sandbox_error",
-            stdout=sandbox_result.stdout,
-            stderr=sandbox_result.stderr,
-            test_pass_rate=0.0,
-            passed_test_count=0,
-            total_test_count=len(test_cases),
-            test_results=_build_failed_cases(exercise, sandbox_result.error or "Sandbox error"),
-            error_message=sandbox_result.error or "Sandbox execution failed.",
-            next_action="explain_error",
-            preview_html=None,
-            core_blank_gate=False,
-            any_blank_passed=False,
-            logic_pass=False,
-        )
-
-    if sandbox_result.status == "error":
-        return RuntimeExecutionResult(
-            runtime_status="runtime_error",
-            stdout=sandbox_result.stdout,
-            stderr=sandbox_result.stderr,
-            test_pass_rate=0.0,
-            passed_test_count=0,
-            total_test_count=len(test_cases),
-            test_results=_build_failed_cases(exercise, sandbox_result.error or "Runtime error"),
-            error_message=sandbox_result.error or "Code raised an error during execution.",
-            next_action="explain_error",
-            preview_html=None,
-            core_blank_gate=False,
-            any_blank_passed=False,
-            logic_pass=False,
-        )
-
-    test_results: list[dict[str, object]] = []
-    for tr in sandbox_result.test_results:
-        test_results.append({
-            "case_id": tr.case_id,
-            "case_type": tr.case_type,
-            "passed": tr.passed,
-            "weight": tr.weight,
-            "is_critical": tr.is_critical,
-            "duration_ms": tr.duration_ms,
-            "message": tr.message,
-        })
-
-    total_weight = sum(tr.weight for tr in sandbox_result.test_results)
-    passed_weight = sum(tr.weight for tr in sandbox_result.test_results if tr.passed)
-    passed_count = sum(1 for tr in sandbox_result.test_results if tr.passed)
-    total_count = len(sandbox_result.test_results) or len(test_cases)
-    test_pass_rate = 0.0 if total_weight == 0 else round(passed_weight / total_weight, 4)
-
-    logic_pass = test_pass_rate == 1.0
-    core_blank_gate = logic_pass
-    any_blank_passed = passed_count > 0
-
-    success = logic_pass
-    next_action = _next_action_for_run(test_results, success, "python_stdout_test")
-
-    return RuntimeExecutionResult(
-        runtime_status="success",
-        stdout=sandbox_result.stdout.rstrip("\n"),
-        stderr=sandbox_result.stderr,
-        test_pass_rate=test_pass_rate,
-        passed_test_count=passed_count,
-        total_test_count=total_count,
-        test_results=test_results,
-        error_message=None,
-        next_action=next_action,
-        preview_html=None,
-        core_blank_gate=core_blank_gate,
-        any_blank_passed=any_blank_passed,
-        logic_pass=logic_pass,
-    )
