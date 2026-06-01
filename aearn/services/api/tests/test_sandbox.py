@@ -165,3 +165,10 @@ def test_kwargs_support():
     result = execute_python_with_tests(code, test_cases, entry_function="greet")
     assert result.status == "success"
     assert result.test_results[0].passed is True
+
+
+def test_stdout_output_is_capped():
+    code = "print('x' * 10000)\n"
+    result = execute_python_with_tests(code, [], entry_function="main")
+    assert result.status == "success"
+    assert len(result.stdout) == 4000
