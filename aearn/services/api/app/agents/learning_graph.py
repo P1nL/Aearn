@@ -18,6 +18,7 @@ from app.agents.graph_runtime_contracts import (
     IntentType,
     build_fallback,
     build_checkpoint_thread_state,
+    build_graph_human_checkpoint,
     build_run_result,
     make_intent,
 )
@@ -54,6 +55,7 @@ class AgentState(TypedDict, total=False):
     explanation_state: dict[str, Any]
     memory_snapshot: dict[str, Any]
     rag_context: dict[str, Any]
+    human_checkpoint: dict[str, Any]
     messages: list[dict[str, str]]
     side_effects: list[dict[str, Any]]
     next_action: str | None
@@ -240,6 +242,7 @@ class OrchestrationInput(TypedDict, total=False):
     lesson_outline: list[dict[str, Any]]
     memory_snapshot: dict[str, Any]
     rag_context: dict[str, Any]
+    human_checkpoint: dict[str, Any]
     # Output fields set by nodes
     next_stage: str
     tool_name: str | None
@@ -267,6 +270,21 @@ _CONCEPT_HELP_CHOICES = {
     "选1", "选2", "选3", "第1个", "第2个", "第3个",
 }
 
+_DIRECT_ANSWER_TRIGGERS = [
+    "直接给答案",
+    "给我答案",
+    "给答案",
+    "完整答案",
+    "完整代码",
+    "标准答案",
+    "参考答案",
+    "直接写代码",
+    "帮我写完",
+    "full code",
+    "complete solution",
+    "solution code",
+]
+
 _REASON_TOKENS = [
     "因为", "所以", "作用", "原因", "重要", "会",
     "影响", "共享", "保存", "触发", "because", "so",
@@ -292,6 +310,10 @@ def _is_concept_help(text: str) -> bool:
     if choice in _CONCEPT_HELP_CHOICES:
         return True
     return _text_matches(text, _CONCEPT_HELP_TRIGGERS)
+
+
+def _is_direct_answer_request(text: str) -> bool:
+    return _text_matches(text, _DIRECT_ANSWER_TRIGGERS)
 
 
 def _passes_feynman(
@@ -345,6 +367,25 @@ def _practice_unlock_reason(stage: str, state: Mapping[str, Any]) -> str:
     return "early_request"
 
 
+def _human_checkpoint(
+    *,
+    checkpoint_id: str,
+    checkpoint_type: str,
+    reason: str,
+    prompt: str,
+    scope: str,
+    metadata: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    return build_graph_human_checkpoint(
+        checkpoint_id=checkpoint_id,
+        checkpoint_type=checkpoint_type,
+        reason=reason,
+        prompt=prompt,
+        scope=scope,
+        metadata=metadata,
+    ).to_dict()
+
+
 # --- Orchestration node functions ---
 
 
@@ -395,13 +436,27 @@ def _orch_practice_request(state: OrchestrationInput) -> dict[str, Any]:
     tool_names = ["show_code_exercise"]
     if unlock_reason in {"concept_check_skipped", "concept_check_repair_limit"}:
         tool_names = ["show_concept_check_result", "show_code_exercise"]
-    return {
+    result: dict[str, Any] = {
         "next_stage": "practice_support",
         "tool_name": "show_code_exercise",
         "tool_names": tool_names,
         "learner_content": "",
         "next_state": current_state,
     }
+    if unlock_reason != "concept_check_passed":
+        result["human_checkpoint"] = _human_checkpoint(
+            checkpoint_id=f"learning:{stage}:practice_unlock",
+            checkpoint_type="approval",
+            reason=unlock_reason,
+            prompt="学习者请求提前进入练习；服务层需要保留概念检查未完成或修正上限的状态。",
+            scope="learning_stage_transition",
+            metadata={
+                "current_stage": stage,
+                "requested_stage": "practice_support",
+                "knowledge_point_id": str(kp.get("id") or ""),
+            },
+        )
+    return result
 
 
 def _orch_concept_check_answer(state: OrchestrationInput) -> dict[str, Any]:
@@ -502,6 +557,41 @@ def _orch_feynman_fail(state: OrchestrationInput) -> dict[str, Any]:
         "tool_names": ["show_learning_history"],
         "learner_content": "",
         "next_state": current_state,
+        "human_checkpoint": _human_checkpoint(
+            checkpoint_id="learning:readiness_check:clarify",
+            checkpoint_type="clarification",
+            reason="feynman_readiness_unclear",
+            prompt="请学习者用更具体的一句话说明原因、影响或和当前知识点的关系。",
+            scope="learning_stage_transition",
+            metadata={
+                "current_stage": "readiness_check",
+                "knowledge_point_id": str(kp.get("id") or ""),
+            },
+        ),
+    }
+
+
+def _orch_safety_checkpoint(state: OrchestrationInput) -> dict[str, Any]:
+    """Direct answer requests stay in the current stage and become a safety checkpoint."""
+    current_state = dict(state.get("learning_stage_state") or {})
+    stage = state.get("learning_stage", "concept_intro")
+    kp = state.get("knowledge_point") or {}
+    return {
+        "next_stage": stage,
+        "tool_name": None,
+        "learner_content": "",
+        "next_state": current_state,
+        "human_checkpoint": _human_checkpoint(
+            checkpoint_id=f"learning:{stage}:direct_answer",
+            checkpoint_type="safety",
+            reason="direct_answer_request",
+            prompt="学习者请求完整答案；服务层应保持教学边界，只给局部提示或检查方向。",
+            scope="teaching_safety",
+            metadata={
+                "current_stage": stage,
+                "knowledge_point_id": str(kp.get("id") or ""),
+            },
+        ),
     }
 
 
@@ -523,6 +613,9 @@ def _route_orchestration(state: OrchestrationInput) -> str:
     """Main routing decision for the orchestration graph."""
     stage = state.get("learning_stage", "concept_intro")
     user_text = state.get("user_text", "")
+
+    if _is_direct_answer_request(user_text):
+        return "safety_checkpoint"
 
     if stage == "practice_support":
         return "practice_support"
@@ -567,6 +660,7 @@ def build_orchestration_graph() -> StateGraph:
     graph.add_node("readiness_check", _orch_readiness_check)
     graph.add_node("feynman_pass", _orch_feynman_pass)
     graph.add_node("feynman_fail", _orch_feynman_fail)
+    graph.add_node("safety_checkpoint", _orch_safety_checkpoint)
     graph.add_node("passthrough", _orch_passthrough)
 
     graph.set_entry_point("classify")
@@ -580,13 +674,14 @@ def build_orchestration_graph() -> StateGraph:
         "readiness_check": "readiness_check",
         "feynman_pass": "feynman_pass",
         "feynman_fail": "feynman_fail",
+        "safety_checkpoint": "safety_checkpoint",
         "passthrough": "passthrough",
     })
 
     for node in (
         "practice_support", "history", "practice_request",
         "concept_check_answer", "concept_qna", "readiness_check",
-        "feynman_pass", "feynman_fail", "passthrough",
+        "feynman_pass", "feynman_fail", "safety_checkpoint", "passthrough",
     ):
         graph.add_edge(node, END)
 
@@ -642,6 +737,7 @@ def invoke_orchestration(
         "tool_names": result.get("tool_names", []),
         "learner_content": result.get("learner_content", ""),
         "next_state": result.get("next_state", dict(learning_stage_state)),
+        "human_checkpoint": result.get("human_checkpoint", {}),
     }
     return {
         **raw_result,
@@ -683,6 +779,13 @@ def graph_result_to_run_result(result: Mapping[str, Any]) -> GraphRunResult:
                 "learner_content": learner_content,
             },
         ))
+    human_checkpoint = _safe_human_checkpoint(result.get("human_checkpoint"))
+    if human_checkpoint:
+        intents.append(make_intent(
+            IntentType.FEEDBACK_REQUEST,
+            "human_checkpoint",
+            human_checkpoint,
+        ))
     next_action = result.get("next_action")
     if next_action:
         intents.append(make_intent(IntentType.STAGE_UPDATE, "learning_session", {"next_action": next_action}))
@@ -713,3 +816,17 @@ def _result_tool_names(result: Mapping[str, Any]) -> list[str]:
         return [str(item) for item in tool_names if str(item).strip()]
     tool_name = result.get("tool_name")
     return [str(tool_name)] if tool_name else []
+
+
+def _safe_human_checkpoint(value: object) -> dict[str, object]:
+    if not isinstance(value, Mapping):
+        return {}
+    checkpoint = build_graph_human_checkpoint(
+        checkpoint_id=str(value.get("checkpoint_id") or "learning:human_checkpoint"),
+        checkpoint_type=str(value.get("checkpoint_type") or "clarification"),
+        reason=str(value.get("reason") or ""),
+        prompt=str(value.get("prompt") or ""),
+        scope=str(value.get("scope") or "learning"),
+        metadata=value.get("metadata") if isinstance(value.get("metadata"), Mapping) else {},
+    )
+    return checkpoint.to_dict()

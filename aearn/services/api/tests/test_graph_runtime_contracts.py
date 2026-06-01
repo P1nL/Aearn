@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from app.agents.graph_runtime_contracts import (
     GraphFallback,
+    GraphHumanCheckpoint,
     GraphIntent,
     GraphMemorySnapshot,
     GraphRagContext,
@@ -10,6 +11,7 @@ from app.agents.graph_runtime_contracts import (
     GraphRunResult,
     GraphRuntimeState,
     IntentType,
+    MAX_HUMAN_CHECKPOINT_PROMPT_LENGTH,
     MAX_PROFILE_SUMMARY_LENGTH,
     MAX_RAG_CHUNKS,
     MAX_RAG_CHUNK_CONTENT_LENGTH,
@@ -19,6 +21,7 @@ from app.agents.graph_runtime_contracts import (
     boundary_rule_for_intent_type,
     build_checkpoint_thread_state,
     build_fallback,
+    build_graph_human_checkpoint,
     build_graph_memory_snapshot,
     build_graph_rag_context,
     build_run_result,
@@ -162,6 +165,42 @@ class TestBuildGraphContext:
         assert len(context.chunks) == MAX_RAG_CHUNKS
         assert serialized["retrieval_status"] == "fallback"
         assert len(serialized["chunks"]) == MAX_RAG_CHUNKS
+
+    def test_human_checkpoint_bounds_and_redacts(self):
+        checkpoint = build_graph_human_checkpoint(
+            checkpoint_id="cp1",
+            checkpoint_type="safety",
+            reason="direct_answer_request",
+            prompt="x" * (MAX_HUMAN_CHECKPOINT_PROMPT_LENGTH + 20),
+            scope="teaching_safety",
+            metadata={
+                "current_stage": "concept_intro",
+                "api_key": "sk-secret",
+                "raw_prompt": "system prompt content",
+            },
+        )
+
+        assert isinstance(checkpoint, GraphHumanCheckpoint)
+        assert checkpoint.checkpoint_id == "cp1"
+        assert checkpoint.checkpoint_type == "safety"
+        assert len(checkpoint.prompt) == MAX_HUMAN_CHECKPOINT_PROMPT_LENGTH
+        assert checkpoint.metadata["current_stage"] == "concept_intro"
+        assert checkpoint.metadata["api_key"] == "[REDACTED]"
+        assert checkpoint.metadata["raw_prompt"] == "[REDACTED]"
+
+    def test_human_checkpoint_serializes(self):
+        checkpoint = build_graph_human_checkpoint(
+            checkpoint_id="cp2",
+            checkpoint_type="clarification",
+            reason="feynman_readiness_unclear",
+            prompt="请再具体说明原因。",
+            metadata={"solution_reference": "do not leak"},
+        )
+
+        serialized = checkpoint.to_dict()
+        assert serialized["checkpoint_id"] == "cp2"
+        assert serialized["checkpoint_type"] == "clarification"
+        assert serialized["metadata"]["solution_reference"] == "[REDACTED]"
 
 
 class TestBuildCheckpointThreadState:

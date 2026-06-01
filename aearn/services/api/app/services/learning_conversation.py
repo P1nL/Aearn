@@ -83,6 +83,7 @@ LEARNING_GRAPH_ALLOWED_INTENT_TARGETS: dict[IntentType, tuple[str, ...]] = {
         "show_concept_intro",
         "show_learning_history",
     ),
+    IntentType.FEEDBACK_REQUEST: ("human_checkpoint",),
 }
 
 LEARNING_TUTOR_SYSTEM_PROMPT = """你是 Aearn 的诊断型编程语言学习导师。你的目标不是快速给答案，也不是把规则机械复述给学习者，而是像真人导师一样先判断学习者当前卡点，再选择最合适的一步帮助他建立理解、修正误解或进入练习。
