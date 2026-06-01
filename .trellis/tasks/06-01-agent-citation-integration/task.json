@@ -3,7 +3,7 @@
   "name": "agent-citation-integration",
   "title": "Agent citation integration",
   "description": "Expose retrieved official docs to agents and require clear source attribution without over-quoting or hiding uncertainty.",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,
