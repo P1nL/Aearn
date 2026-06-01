@@ -16,13 +16,13 @@ Upgrade RAG from internal lesson chunks to language-aware official documentation
 
 ## Acceptance Criteria
 
-- [ ] Source registry defines allowlisted providers, source trust tiers, seed policy, and mainstream language coverage.
-- [ ] Fetcher can index configured source pages without letting agents browse arbitrary web content at runtime.
-- [ ] Chunks include title, section path, canonical URL, language, source type, fetched timestamp, and content hash.
-- [ ] Retrieval filters/ranks by language and topic and degrades gracefully when no official chunk exists.
-- [ ] Agent-facing retrieval results include enough citation metadata for transparent sourced answers.
-- [ ] Fixtures and tests cover all target mainstream languages at smoke level.
-- [ ] Reindex command or service path exposes useful status and does not block normal lesson/session startup on external fetch failures.
+- [x] Source registry defines allowlisted providers, source trust tiers, seed policy, and mainstream language coverage.
+- [x] Fetcher can index configured source pages without letting agents browse arbitrary web content at runtime.
+- [x] Chunks include title, section path, canonical URL, language, source type, fetched timestamp, and content hash.
+- [x] Retrieval filters/ranks by language and topic and degrades gracefully when no official chunk exists.
+- [x] Agent-facing retrieval results include enough citation metadata for transparent sourced answers.
+- [x] Fixtures and tests cover all target mainstream languages at smoke level.
+- [x] Reindex command or service path exposes useful status and does not block normal lesson/session startup on external fetch failures.
 
 ## Task Tree
 
@@ -39,6 +39,11 @@ language-knowledge-grounding
 
 ## Notes
 
-- Keep `prd.md` focused on requirements, constraints, and acceptance criteria.
-- Lightweight tasks can remain PRD-only.
-- For complex tasks, add `design.md` for technical design and `implement.md` for execution planning before `task.py start`.
+- Completed through archived child tasks:
+  - `grounding-source-registry`
+  - `official-docs-fetcher`
+  - `docs-cleaning-and-chunking`
+  - `language-aware-retrieval`
+  - `agent-citation-integration`
+  - `mainstream-language-fixtures`
+  - `grounding-reindex-observability`
