@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 40
+- **Total Sessions**: 41
 - **Last Active**: 2026-06-01
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~1341 | Active |
+| `journal-1.md` | ~1374 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 41 | 2026-06-01 | Graph human interrupt checkpoints | `65e9bce` | `main` |
 | 40 | 2026-06-01 | Graph memory RAG context | `616560a` | `main` |
 | 39 | 2026-06-01 | Complete language knowledge grounding | `36f986f`, `6f4bac8`, `1b5f330`, `5b76bc9`, `627466f`, `4757c6e`, `11b595c`, `28874a8` | `main` |
 | 38 | 2026-06-01 | Language capability and runner registry hardening | `491868b` | `main` |
