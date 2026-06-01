@@ -607,7 +607,10 @@ def test_onboarding_message_langgraph_flag_on_invokes_graph_route_decision(
             return {
                 "next_action": "confirm_plan",
                 "intent_type": "persistence",
-                "intent_payload": {"target": "confirm_plan"},
+                "intent_payload": {
+                    "target": "delete_plan",
+                    "provider_payload": "sk-secret",
+                },
             }
         return {
             "next_action": "generate_route",
@@ -653,6 +656,9 @@ def test_onboarding_message_langgraph_flag_on_invokes_graph_route_decision(
         json={"user_id": user["id"]},
     )
     assert confirm.status_code == 201
+    confirm_payload = json.dumps(confirm.json(), ensure_ascii=False)
+    assert "delete_plan" not in confirm_payload
+    assert "sk-secret" not in confirm_payload
     confirm_call = next(call for call in captured if call["user_text"] == "confirm")
     assert confirm_call["conversation_id"] == conversation_id
     assert confirm_call["has_stashed_draft"] is True

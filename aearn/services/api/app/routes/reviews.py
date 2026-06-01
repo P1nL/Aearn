@@ -7,6 +7,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, StreamingResponse
 from psycopg import Connection
 
+from app.agents.graph_runtime_contracts import GraphRunResult, IntentType, validate_run_result_for_boundary
 from app.agents.review_graph import invoke_review_orchestration, review_result_to_run_result
 from app.core.config import get_settings
 from app.core.errors import (
@@ -42,6 +43,11 @@ from app.services.sse import SSEWriter, stream_response
 
 router = APIRouter(prefix="/api/reviews", tags=["reviews"])
 
+REVIEW_GRAPH_ALLOWED_INTENT_TARGETS = {
+    IntentType.PERSISTENCE: ("review_session", "attempt_and_fsrs"),
+    IntentType.TOOL_CALL: ("review_coach", "evaluate_warmup"),
+}
+
 
 def _review_graph_decision(
     *,
@@ -56,6 +62,34 @@ def _review_graph_decision(
     explanation_ready: bool = False,
     coach_feedback_requested: bool = False,
 ) -> str | None:
+    run_result = _review_graph_run_result(
+        session_id=session_id,
+        user_id=user_id,
+        knowledge_point_id=knowledge_point_id,
+        action=action,
+        is_due=is_due,
+        has_active_session=has_active_session,
+        attempt_result=attempt_result,
+        fsrs_rating=fsrs_rating,
+        explanation_ready=explanation_ready,
+        coach_feedback_requested=coach_feedback_requested,
+    )
+    return run_result.next_stage if run_result is not None else None
+
+
+def _review_graph_run_result(
+    *,
+    session_id: str = "",
+    user_id: str,
+    knowledge_point_id: str,
+    action: str,
+    is_due: bool = True,
+    has_active_session: bool = False,
+    attempt_result: str | None = None,
+    fsrs_rating: str | None = None,
+    explanation_ready: bool = False,
+    coach_feedback_requested: bool = False,
+) -> GraphRunResult | None:
     if not get_settings().langgraph_enabled:
         return None
     try:
@@ -73,7 +107,13 @@ def _review_graph_decision(
         )
     except Exception:
         return None
-    return review_result_to_run_result(result).next_stage
+    run_result = review_result_to_run_result(result)
+    if validate_run_result_for_boundary(
+        run_result,
+        allowed_intent_targets=REVIEW_GRAPH_ALLOWED_INTENT_TARGETS,
+    ):
+        return None
+    return run_result
 
 
 def _review_start_graph_facts(

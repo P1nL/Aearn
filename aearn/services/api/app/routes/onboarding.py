@@ -5,7 +5,11 @@ from collections.abc import AsyncGenerator, Iterable, Mapping
 from fastapi import APIRouter, Header, Request, status
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from app.agents.graph_runtime_contracts import IntentType
+from app.agents.graph_runtime_contracts import (
+    GraphRunResult,
+    IntentType,
+    validate_run_result_for_boundary,
+)
 from app.agents.onboarding_graph import (
     invoke_onboarding_orchestration,
     onboarding_result_to_run_result,
@@ -54,6 +58,11 @@ router = APIRouter(prefix="/api/onboarding", tags=["onboarding"])
 
 SUPPORTED_ONBOARDING_LANGUAGES = ["python", "javascript", "html_css", "java", "cpp"]
 SUPPORTED_ONBOARDING_LANGUAGE_LABELS = "Python / JavaScript / HTML+CSS / Java / C++"
+ONBOARDING_GRAPH_ALLOWED_INTENT_TARGETS = {
+    IntentType.TOOL_CALL: ("build_plan_draft", "rebuild_plan_draft"),
+    IntentType.PERSISTENCE: ("confirm_plan",),
+    IntentType.FEEDBACK_REQUEST: ("onboarding_clarification",),
+}
 
 
 def _onboarding_graph_decision(
@@ -90,10 +99,9 @@ def _should_generate_onboarding_route(
     *,
     user_text: str,
 ) -> bool:
-    decision = _onboarding_graph_decision(context, slots, user_text=user_text)
-    if decision is None:
+    run_result = _onboarding_graph_run_result(context, slots, user_text=user_text)
+    if run_result is None:
         return detect_plan_proposal(context, slots)
-    run_result = onboarding_result_to_run_result(decision)
     return any(
         intent.intent_type == IntentType.TOOL_CALL
         and intent.target in {"build_plan_draft", "rebuild_plan_draft"}
@@ -105,15 +113,32 @@ def _onboarding_graph_allows_confirm(
     context: OnboardingConversationContext,
     slots: ExtractedSlots,
 ) -> bool:
-    decision = _onboarding_graph_decision(context, slots, user_text="confirm")
-    if decision is None:
+    run_result = _onboarding_graph_run_result(context, slots, user_text="confirm")
+    if run_result is None:
         return True
-    run_result = onboarding_result_to_run_result(decision)
     return any(
         intent.intent_type == IntentType.PERSISTENCE
         and intent.target == "confirm_plan"
         for intent in run_result.intents
     )
+
+
+def _onboarding_graph_run_result(
+    context: OnboardingConversationContext,
+    slots: ExtractedSlots,
+    *,
+    user_text: str,
+) -> GraphRunResult | None:
+    decision = _onboarding_graph_decision(context, slots, user_text=user_text)
+    if decision is None:
+        return None
+    run_result = onboarding_result_to_run_result(decision)
+    if validate_run_result_for_boundary(
+        run_result,
+        allowed_intent_targets=ONBOARDING_GRAPH_ALLOWED_INTENT_TARGETS,
+    ):
+        return None
+    return run_result
 
 
 def _onboarding_core_slots_changed(
