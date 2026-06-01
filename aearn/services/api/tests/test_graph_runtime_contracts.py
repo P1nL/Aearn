@@ -4,18 +4,23 @@ from __future__ import annotations
 from app.agents.graph_runtime_contracts import (
     GraphFallback,
     GraphIntent,
+    GraphRuntimeLayer,
     GraphRunResult,
     GraphRuntimeState,
     IntentType,
     MAX_INTENTS_PER_RUN,
     MAX_USER_TEXT_LENGTH,
+    boundary_rule_for_intent_type,
     build_fallback,
     build_run_result,
     build_runtime_state,
+    graph_runtime_boundary_contract,
     make_intent,
     redact_value,
+    validate_boundary_intents,
     validate_intents,
     validate_run_result,
+    validate_run_result_for_boundary,
 )
 
 
@@ -139,6 +144,60 @@ class TestValidateIntents:
         intent = GraphIntent(intent_type=IntentType.PERSISTENCE, target="", payload={})
         errors = validate_intents([intent])
         assert any("empty target" in e for e in errors)
+
+
+class TestGraphRuntimeBoundaryContract:
+    def test_contract_documents_all_runtime_layers(self):
+        contract = graph_runtime_boundary_contract()
+        layers = {item.layer for item in contract.responsibilities}
+        assert layers == {
+            GraphRuntimeLayer.GRAPH,
+            GraphRuntimeLayer.SERVICE,
+            GraphRuntimeLayer.REPOSITORY,
+            GraphRuntimeLayer.API,
+            GraphRuntimeLayer.SSE,
+        }
+        graph = next(item for item in contract.responsibilities if item.layer == GraphRuntimeLayer.GRAPH)
+        service = next(item for item in contract.responsibilities if item.layer == GraphRuntimeLayer.SERVICE)
+        assert "typed_intent_production" in graph.owns
+        assert "repository_writes" in graph.does_not_own
+        assert "intent_execution" in service.owns
+
+    def test_contract_documents_intent_consumption_owner(self):
+        rule = boundary_rule_for_intent_type(IntentType.PERSISTENCE)
+        assert rule is not None
+        assert rule.produced_by == GraphRuntimeLayer.GRAPH
+        assert rule.consumed_by == GraphRuntimeLayer.SERVICE
+        assert rule.durable_write_request is True
+
+    def test_contract_serializes_without_enums(self):
+        d = graph_runtime_boundary_contract().to_dict()
+        assert d["responsibilities"][0]["layer"] == "graph"
+        assert any(item["intent_type"] == "tool_call" for item in d["intent_rules"])
+
+    def test_boundary_validation_accepts_scoped_learning_intents(self):
+        errors = validate_boundary_intents(
+            [make_intent(IntentType.STAGE_UPDATE, "learning_session")],
+            allowed_intent_targets={IntentType.STAGE_UPDATE: ("learning_session",)},
+        )
+        assert errors == []
+
+    def test_boundary_validation_rejects_unscoped_intent_type(self):
+        errors = validate_boundary_intents(
+            [make_intent(IntentType.PERSISTENCE, "learning_session")],
+            allowed_intent_targets={IntentType.STAGE_UPDATE: ("learning_session",)},
+        )
+        assert any("type persistence is not allowed" in error for error in errors)
+
+    def test_boundary_validation_rejects_unknown_target_for_scope(self):
+        errors = validate_run_result_for_boundary(
+            build_run_result(
+                next_stage="practice_support",
+                intents=[make_intent(IntentType.STAGE_UPDATE, "attempts")],
+            ),
+            allowed_intent_targets={IntentType.STAGE_UPDATE: ("learning_session",)},
+        )
+        assert any("target 'attempts' is not allowed" in error for error in errors)
 
 
 class TestBuildRunResult:

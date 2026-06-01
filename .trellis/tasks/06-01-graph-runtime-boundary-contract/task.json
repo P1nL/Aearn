@@ -3,7 +3,7 @@
   "name": "graph-runtime-boundary-contract",
   "title": "Graph runtime boundary contract",
   "description": "Define the exact boundary between LangGraph orchestration, services, repositories, SSE, and API contracts for the learning page runtime.",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,
