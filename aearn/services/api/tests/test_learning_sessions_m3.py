@@ -1,5 +1,6 @@
 import json
 import uuid
+from collections.abc import Mapping
 
 import psycopg
 import pytest
@@ -710,11 +711,22 @@ def test_learning_message_routes_and_passes_handoffs_to_sdk_client(
             captured["temperature"] = temperature
             return ["路由接入完成。"]
 
-    def fake_route_message(*, session_stage: str, user_message: str, session_type: str = "learning") -> str:
+    def fake_route_message(
+        *,
+        session_stage: str,
+        user_message: str,
+        session_type: str = "learning",
+        latest_attempt: Mapping[str, object] | None = None,
+        learner_profile_summary: str = "",
+        tool_context: Mapping[str, object] | None = None,
+    ) -> str:
         captured["route_input"] = {
             "session_stage": session_stage,
             "user_message": user_message,
             "session_type": session_type,
+            "latest_attempt": latest_attempt,
+            "learner_profile_summary": learner_profile_summary,
+            "tool_context": dict(tool_context or {}),
         }
         return "exercise_coach"
 
@@ -745,10 +757,16 @@ def test_learning_message_routes_and_passes_handoffs_to_sdk_client(
     body = response.json()
     assert body["agent_message"]["content"] == "路由接入完成。"
     assert body["generation_model"] == "fake-routed-model"
-    assert captured["route_input"] == {
-        "session_stage": "concept_check",
-        "user_message": "为什么要用变量保存状态？",
-        "session_type": "learning",
+    route_input = captured["route_input"]
+    assert route_input["session_stage"] == "concept_check"
+    assert route_input["user_message"] == "为什么要用变量保存状态？"
+    assert route_input["session_type"] == "learning"
+    assert route_input["latest_attempt"] is None
+    assert isinstance(route_input["learner_profile_summary"], str)
+    assert route_input["tool_context"] == {
+        "exercise_available": False,
+        "exercise_id": "",
+        "knowledge_point_id": plan["knowledge_points"][0]["id"],
     }
     assert captured["handoff_agent"] == "exercise_coach"
     assert captured["agent_name"] == "exercise_coach"
@@ -2008,6 +2026,13 @@ def test_learning_message_sse_emits_graph_tool_status_before_agent_message(
         "tool": "graph_runtime",
         "status": "completed",
         "message": "Learning graph context prepared with safe fallback.",
+        "observability": {
+            "fallback_used": True,
+            "memory_available": False,
+            "next_action": "",
+            "rag_chunk_count": 3,
+            "rag_retrieval_status": "available",
+        },
     }
     serialized = json.dumps(events, ensure_ascii=False)
     assert "persist_side_effects" not in serialized
@@ -2268,11 +2293,15 @@ def test_javascript_run_and_submit_persist_attempts(client: TestClient) -> None:
             """,
             (knowledge_point_id,),
         ).fetchone()
+        profile = get_learner_profile(conn, str(user["id"]))
     assert [row["attempt_type"] for row in attempt_rows] == ["run", "submit"]
     assert attempt_rows[1]["score"] >= 6
     assert attempt_rows[1]["fsrs_rating"] in {"Good", "Easy"}
     assert review_state is not None
     assert str(review_state["last_attempt_id"]) == submit_body["attempt_id"]
+    assert profile is not None
+    assert profile["pace_indicators"]["last_attempt_outcome"] == "mastered"
+    assert profile["pace_indicators"]["mastery_signal"] == "mastered"
 
 
 def test_run_endpoint_streams_sse_events(client: TestClient) -> None:

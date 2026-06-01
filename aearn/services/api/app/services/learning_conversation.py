@@ -700,6 +700,13 @@ def start_learning_message_generation(
     agent_name = route_message(
         session_stage=context.learning_stage,
         user_message=user_content,
+        latest_attempt=context.latest_attempt,
+        learner_profile_summary=context.learner_profile_summary,
+        tool_context={
+            "exercise_available": context.exercise is not None,
+            "exercise_id": str(context.exercise.get("id")) if context.exercise else "",
+            "knowledge_point_id": context.knowledge_point_id,
+        },
     )
     handoff_targets = get_handoff_targets(agent_name)
     if client is None:
@@ -902,6 +909,11 @@ def serialize_agent_side_effects(
                 "code_length": len(str(item.get("code") or "")),
             }
             for item in side_effects.attempt_records[:5]
+        ]
+    if side_effects.typed_intents:
+        metadata["typed_intents"] = [
+            intent.to_dict()
+            for intent in side_effects.typed_intents[:10]
         ]
     profile_updates: Sequence[Mapping[str, object]] = (
         profile_observations_from_side_effects(side_effects, session_id=session_id)

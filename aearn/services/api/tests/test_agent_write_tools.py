@@ -7,7 +7,9 @@ from app.agents.tools import (
     do_record_diagnosis,
     do_trigger_code_run,
     do_update_learning_stage,
+    do_update_learner_profile,
 )
+from app.services.learning_conversation import serialize_agent_side_effects
 
 
 def _make_context(**overrides) -> LearningToolContext:
@@ -32,6 +34,8 @@ class TestUpdateLearningStage:
         assert result["new_stage"] == "concept_qna"
         assert len(effects.stage_updates) == 1
         assert effects.final_stage("concept_intro") == "concept_qna"
+        assert effects.typed_intents[0].intent_type.value == "stage_update"
+        assert effects.typed_intents[0].target == "learning_session"
 
     def test_invalid_transition_returns_error(self):
         effects = AgentSideEffects()
@@ -89,10 +93,14 @@ class TestTriggerCodeRun:
             }
 
         ctx = _make_context(run_code_fn=fake_runner)
-        result = do_trigger_code_run(ctx, "print('hello')")
+        effects = AgentSideEffects()
+        result = do_trigger_code_run(ctx, "print('hello')", side_effects=effects)
         assert result["success"] is True
         assert result["stdout"] == "hello"
         assert result["test_pass_rate"] == 1.0
+        assert effects.typed_intents[0].intent_type.value == "tool_call"
+        assert effects.typed_intents[0].target == "trigger_code_run"
+        assert effects.typed_intents[0].payload["runtime_status"] == "success"
 
     def test_unavailable_when_no_runner(self):
         ctx = _make_context(run_code_fn=None)
@@ -110,6 +118,10 @@ class TestRecordAttempt:
         assert "attempt_id" in result
         assert len(effects.attempt_records) == 1
         assert effects.attempt_records[0]["action"] == "run"
+        assert effects.typed_intents[0].intent_type.value == "persistence"
+        assert effects.typed_intents[0].target == "attempt"
+        assert effects.typed_intents[0].payload["code_length"] == 5
+        assert "x = 1" not in str(effects.typed_intents[0].to_dict())
 
     def test_invalid_action(self):
         effects = AgentSideEffects()
@@ -130,3 +142,37 @@ class TestAgentSideEffects:
         effects.stage_updates.append({"new_stage": "readiness_check"})
         assert effects.final_stage("concept_intro") == "readiness_check"
         assert effects.has_stage_change() is True
+
+
+class TestTypedToolIntents:
+    def test_record_diagnosis_emits_side_effect_intent(self):
+        effects = AgentSideEffects()
+        do_record_diagnosis(effects, stuck_point="loops")
+        assert effects.typed_intents[0].intent_type.value == "side_effect"
+        assert effects.typed_intents[0].target == "diagnosis"
+
+    def test_update_learner_profile_emits_profile_update_intent(self):
+        effects = AgentSideEffects()
+        ctx = _make_context()
+        result = do_update_learner_profile(
+            effects,
+            ctx,
+            observation_type="weak_point",
+            content="closures",
+            confidence="confirmed",
+        )
+        assert result["success"] is True
+        assert effects.typed_intents[0].intent_type.value == "profile_update"
+        assert effects.typed_intents[0].target == "learner_profile"
+
+    def test_serialize_side_effects_includes_typed_intents(self):
+        effects = AgentSideEffects()
+        ctx = _make_context()
+        do_record_attempt(effects, ctx, "print('secret stays out')", "run")
+
+        metadata = serialize_agent_side_effects(effects, session_id="sess-1")
+
+        assert metadata["typed_intents"][0]["intent_type"] == "persistence"
+        assert metadata["typed_intents"][0]["target"] == "attempt"
+        assert metadata["typed_intents"][0]["payload"]["code_length"] == 25
+        assert "print('secret stays out')" not in str(metadata["typed_intents"])

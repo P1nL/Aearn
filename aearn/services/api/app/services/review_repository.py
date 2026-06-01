@@ -19,6 +19,7 @@ from app.agents.structured_judgement import (
 from app.models.reviews import ReviewAIPatchAnswer, ReviewExplanationCheck
 from app.services.evaluation import build_code_completion_result, build_review_ai_patch_completion_result
 from app.services.exercise_repository import get_exercise
+from app.services.learner_profile import merge_stable_profile_signals
 from app.services.learning_session_repository import build_code_hash
 from app.services.plan_repository import IdempotencyConflictError, request_hash
 from app.services.review_scheduler import apply_attempt_review_update, forget_risk_for, serialize_review_state
@@ -403,6 +404,14 @@ def submit_review_exercise_result(
         attempt_id=str(submit_attempt["id"]),
         source="review_submit",
         request_id=request_id,
+    )
+    merge_stable_profile_signals(
+        conn,
+        str(session["user_id"]),
+        attempt=submit_attempt,
+        knowledge_point={"id": str(exercise["knowledge_point_id"]), "title": str(exercise.get("knowledge_point_title") or exercise.get("title") or "")},
+        session_id=session_id,
+        source="review_submit",
     )
     submitted_state = _mark_review_stage_submitted(session)
     conn.execute(

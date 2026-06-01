@@ -23,6 +23,7 @@ from app.services.exercise_guidance import (
 from app.services.exercise_repository import get_exercise, get_or_create_exercise_for_knowledge_point
 from app.services.learner_profile import ensure_learner_profile
 from app.services.llm_client import LLMCallError, LLMInvalidResponseError
+from app.services.learner_profile import merge_stable_profile_signals
 from app.services.plan_repository import IdempotencyConflictError, request_hash
 from app.services.review_scheduler import apply_attempt_review_update
 from app.services.runtime_runner import RuntimeExecutionResult, run_exercise
@@ -497,6 +498,14 @@ def submit_learning_session_exercise(
         code_completion_result=code_completion_result,
         explanation_check_result=explanation_check_result,
         request_id=request_id,
+    )
+    merge_stable_profile_signals(
+        conn,
+        str(session["user_id"]),
+        attempt=submit_attempt,
+        knowledge_point=_load_knowledge_point_summary(conn, str(exercise["knowledge_point_id"])),
+        session_id=session_id,
+        source="learn_submit",
     )
     response = {
         "attempt_id": str(submit_attempt["id"]),

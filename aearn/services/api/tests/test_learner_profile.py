@@ -5,6 +5,7 @@ import pytest
 
 from app.services.learner_profile import (
     build_profile_summary,
+    derive_stable_profile_observations,
     ensure_learner_profile,
     get_learner_profile,
     merge_observations,
@@ -151,6 +152,89 @@ class TestProfileSummary:
         summary = build_profile_summary(profile)
         assert "off_by_one" in summary
         assert "×5" in summary
+
+
+class TestStableProfileSignals:
+    def test_submit_failure_derives_weak_point_error_pattern_and_pace(self):
+        observations = derive_stable_profile_observations(
+            attempt={
+                "attempt_type": "submit",
+                "runtime_status": "runtime_error",
+                "test_pass_rate": 0.25,
+                "score": 2,
+                "fsrs_rating": "Again",
+                "error_cause": "missing_base_case",
+                "hint_usage_count": 4,
+                "error_count": 2,
+            },
+            knowledge_point={"id": "kp1", "title": "Recursion base cases"},
+            session_id="s1",
+            source="learn_submit",
+        )
+
+        assert {"type": "weak_point", "content": "Recursion base cases", "confidence": "confirmed", "session_id": "s1"} in observations
+        assert any(
+            item["type"] == "error_pattern" and item["content"] == "missing_base_case"
+            for item in observations
+        )
+        assert any(
+            item["type"] == "pace_indicator"
+            and item["key"] == "last_attempt_outcome"
+            and item["value"] == "needs_repair"
+            for item in observations
+        )
+        assert "submitted_code" not in str(observations)
+
+    def test_review_success_derives_mastery_signal_without_weak_point(self):
+        observations = derive_stable_profile_observations(
+            attempt={
+                "attempt_type": "review_submit",
+                "runtime_status": "success",
+                "test_pass_rate": 1.0,
+                "score": 8,
+                "fsrs_rating": "Easy",
+                "hint_usage_count": 0,
+                "error_count": 0,
+            },
+            knowledge_point={"id": "kp1", "title": "Closures"},
+            session_id="review-s1",
+            source="review_submit",
+        )
+
+        assert not any(item["type"] == "weak_point" for item in observations)
+        assert any(
+            item["type"] == "pace_indicator"
+            and item["key"] == "mastery_signal"
+            and item["value"] == "review_recovered"
+            for item in observations
+        )
+        assert any(
+            item["type"] == "pace_indicator"
+            and item["key"] == "last_review_rating"
+            and item["value"] == "Easy"
+            for item in observations
+        )
+
+    def test_sensitive_error_cause_falls_back_to_runtime_status(self):
+        observations = derive_stable_profile_observations(
+            attempt={
+                "attempt_type": "submit",
+                "runtime_status": "runtime_error",
+                "test_pass_rate": 0.0,
+                "score": 0,
+                "error_cause": "Traceback with api_key=sk-secret",
+                "error_count": 1,
+            },
+            knowledge_point={"title": "Functions"},
+            session_id="s1",
+            source="learn_submit",
+        )
+
+        assert any(
+            item["type"] == "error_pattern" and item["content"] == "runtime_error"
+            for item in observations
+        )
+        assert "sk-secret" not in str(observations)
 
 
 class TestProfileTool:
