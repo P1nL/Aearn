@@ -1474,3 +1474,37 @@ Added focused graph runtime boundary tests covering ordered learning service int
 ### Next Steps
 
 - None - task complete
+
+
+## Session 45: Graph demo story
+
+**Date**: 2026-06-01
+**Task**: Graph demo story
+**Branch**: `main`
+
+### Summary
+
+Documented the learning graph runtime vertical slice in docs/qa/learning-graph-runtime-demo-story.md, linked it from docs/README.md, captured fallback/redaction/idempotency evidence, clarified onboarding and review as graph-assisted service flows, and archived the final 02 child task.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `8cae4ec` | (see git log) |
+| `5325c05` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
