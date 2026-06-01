@@ -1372,3 +1372,37 @@ Added typed graph human checkpoints for learning-stage approval, clarification, 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 42: Graph event stream adapter
+
+**Date**: 2026-06-01
+**Task**: Graph event stream adapter
+**Branch**: `main`
+
+### Summary
+
+Added a bounded graph runtime SSE adapter that emits existing tool_status frames for graph-enabled learning message streams, with route/unit coverage and backend spec updates.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `272adde` | (see git log) |
+| `6eab825` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
