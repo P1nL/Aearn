@@ -1508,3 +1508,37 @@ Documented the learning graph runtime vertical slice in docs/qa/learning-graph-r
 ### Next Steps
 
 - None - task complete
+
+
+## Session 46: Learning graph runtime hardening closeout
+
+**Date**: 2026-06-01
+**Task**: Learning graph runtime hardening closeout
+**Branch**: `main`
+
+### Summary
+
+Closed the 02 learning graph runtime hardening parent after all 9 children were archived. Marked parent acceptance criteria complete, archived the parent task, and confirmed active task count moved to agent-capability-hardening [4/9 done].
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `0b0038c` | (see git log) |
+| `9f1d06b` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
