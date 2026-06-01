@@ -1917,6 +1917,7 @@ def test_learning_message_sse_streams_agent_message_and_done(client: TestClient)
     assert events
     assert events[-1]["event"] == "done"
     assert all(event["event"] in {"agent_message", "tool_call", "done"} for event in events)
+    assert "tool_status" not in {event["event"] for event in events}
     agent_events = [event for event in events if event["event"] == "agent_message"]
     assert agent_events
     assert any(
@@ -1930,6 +1931,90 @@ def test_learning_message_sse_streams_agent_message_and_done(client: TestClient)
     assert agent_events[-1]["data"]["content"]
     assert events[-1]["data"]["message_id"] == agent_events[-1]["data"]["message_id"]
     assert events[-1]["data"]["generation_source"] == "llm"
+
+
+def test_learning_message_sse_emits_graph_tool_status_before_agent_message(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request_id = f"req_graph_stream_{uuid.uuid4().hex}"
+    user, plan = _confirmed_plan(client, language="javascript")
+    session = _start_session(client, user, plan)
+
+    class FakeCompiledGraph:
+        def invoke(self, state, config=None):  # type: ignore[no-untyped-def]
+            del config
+            return {
+                "current_node": "persist_side_effects",
+                "learning_stage": state["learning_stage"],
+                "next_action": "provider payload sk-secret",
+                "errors": ["stack_trace sk-secret"],
+            }
+
+    def fake_invoke_orchestration(**kwargs):  # type: ignore[no-untyped-def]
+        del kwargs
+        return {
+            "run_result": build_run_result(
+                next_stage="concept_qna",
+                intents=[
+                    make_intent(
+                        IntentType.STAGE_UPDATE,
+                        "learning_session",
+                        {
+                            "learning_stage": "concept_qna",
+                            "learning_stage_state": {"graph_stream": True},
+                            "learner_content": "",
+                        },
+                    )
+                ],
+            )
+        }
+
+    monkeypatch.setattr(
+        learning_conversation,
+        "get_settings",
+        lambda: Settings(
+            llm_type="openai",
+            openai_api_key="test-key",
+            openai_base_url="https://provider.example",
+            openai_model="fake-teaching-model",
+            langgraph_enabled=True,
+        ),
+    )
+    monkeypatch.setattr(learning_conversation, "compile_learning_graph", lambda: FakeCompiledGraph())
+    monkeypatch.setattr(learning_conversation, "invoke_orchestration", fake_invoke_orchestration)
+
+    with client.stream(
+        "POST",
+        f"/api/learning-sessions/{session['session_id']}/messages",
+        headers={"Accept": "text/event-stream", "X-Request-Id": request_id},
+        json={
+            "role": "user",
+            "content": "为什么要用变量保存状态？",
+            "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
+        },
+    ) as response:
+        assert response.status_code == 200
+        events = _parse_sse_events("".join(response.iter_text()))
+
+    event_names = [event["event"] for event in events]
+    assert event_names[0] == "tool_status"
+    assert event_names.index("tool_status") < event_names.index("agent_message")
+    graph_status = events[0]["data"]
+    assert graph_status == {
+        "request_id": request_id,
+        "session_id": session["session_id"],
+        "node": "learning_graph",
+        "tool": "graph_runtime",
+        "status": "completed",
+        "message": "Learning graph context prepared with safe fallback.",
+    }
+    serialized = json.dumps(events, ensure_ascii=False)
+    assert "persist_side_effects" not in serialized
+    assert "langgraph_runtime" not in serialized
+    assert "human_checkpoint" not in serialized
+    assert "provider payload" not in serialized
+    assert "sk-secret" not in serialized
 
 
 def test_learning_message_sse_concept_check_reply_uses_judged_result(client: TestClient) -> None:
