@@ -896,3 +896,66 @@ runtime_context = build_runtime_context_block(
 ```
 
 The feature service loads facts and owns persistence, while the shared layer only builds bounded safe context for SDK input.
+
+## Scenario: Language Grounding Source Registry
+
+### 1. Scope / Trigger
+
+- Trigger: adding or changing allowlisted documentation sources for language-aware grounding.
+- Scope: `app/services/grounding_sources.py`, `app/services/language_capabilities.py`, and source-registry tests.
+
+### 2. Signatures
+
+- Source descriptor: `GroundingSource(source_id, language_id, display_name, provider, trust_tier, seed_policy, content_type, allowlisted_domains, seed_urls, topic_tags, notes)`.
+- Helper signatures: `all_grounding_sources()`, `sources_for_language(language_id_or_alias)`, `get_grounding_source(source_id)`, `allowlisted_domains_for_source(source_id)`, `seed_urls_for_language(language_id_or_alias)`, and `validate_grounding_source_registry()`.
+
+### 3. Contracts
+
+- Use canonical ids from `LANGUAGE_CAPABILITIES`; do not introduce a parallel language taxonomy.
+- Registry entries are static and side-effect free; importing the module must not fetch network content or expose runtime agent web search.
+- Documentation grounding readiness is separate from runtime readiness: planned languages may have docs sources while still being unavailable for public selection or execution.
+- C++ and SQL require explicit trust disclosure because they use trusted/de facto or vendor documentation rather than a single official beginner source.
+- Seed URLs must stay under declared allowlisted domains and use `http` or `https`.
+
+### 4. Validation & Error Matrix
+
+- Unknown language id in a source -> registry validation error.
+- Duplicate `source_id` -> registry validation error.
+- Missing seed URLs or domains -> registry validation error.
+- Seed URL outside declared allowlist -> registry validation error.
+- No source matching a language's `source_trust_policy` -> registry validation error.
+
+### 5. Good/Base/Bad Cases
+
+- Good: TypeScript has official docs grounding but remains `enabled_for_public_selection=False` and `supports_execution=False`.
+- Base: C++ uses `cppreference` with `trusted_de_facto` and a rationale note.
+- Bad: adding a docs URL changes public course language ids, runtime runner status, or lets agents browse arbitrary domains.
+
+### 6. Tests Required
+
+- Assert every `LANGUAGE_CAPABILITIES` id has at least one grounding source.
+- Assert source ids are unique and registry validation returns no errors.
+- Assert alias lookup works through `sources_for_language()`.
+- Assert seed URLs remain under allowlisted domains.
+- Assert planned languages gain docs without runtime/public-selection side effects.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+GROUNDING_SOURCES = {"typescript": ["https://example.com/typescript"]}
+LANGUAGE_CAPABILITIES["typescript"].enabled_for_public_selection = True
+```
+
+This mixes documentation readiness with product/runtime availability.
+
+#### Correct
+
+```python
+sources = sources_for_language("typescript")
+assert sources
+assert require_language_capability("typescript").supports_execution is False
+```
+
+Grounding can be prepared before the runtime runner or public course contract exists.
