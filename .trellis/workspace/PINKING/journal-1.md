@@ -1233,3 +1233,36 @@ Migrated learning, onboarding, and review production paths to LangGraph-backed o
 ### Next Steps
 
 - None - task complete
+
+
+## Session 38: Language capability and runner registry hardening
+
+**Date**: 2026-06-01
+**Task**: Language capability and runner registry hardening
+**Branch**: `main`
+
+### Summary
+
+Implemented the language capability matrix, runner registry contracts, Python sandbox adapter wiring, planned-runner unsupported fallbacks, and focused tests; archived completed 00 and 01 task tree.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `491868b` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
