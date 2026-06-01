@@ -865,6 +865,78 @@ def test_learning_message_langgraph_flag_on_invokes_graph_from_request_path(
     assert "langgraph_runtime" not in json.dumps(response.json(), ensure_ascii=False)
 
 
+def test_learning_message_langgraph_rejects_unscoped_intents(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user, plan = _confirmed_plan(client, language="javascript")
+    session = _start_session(client, user, plan)
+    captured: dict[str, object] = {}
+
+    def fake_invoke_orchestration(**kwargs):  # type: ignore[no-untyped-def]
+        captured["orchestration"] = kwargs
+        return {
+            "run_result": build_run_result(
+                next_stage="practice_support",
+                intents=[
+                    make_intent(
+                        IntentType.PERSISTENCE,
+                        "learning_session",
+                        {
+                            "learning_stage": "practice_support",
+                            "unsafe_graph_write": True,
+                        },
+                    )
+                ],
+            )
+        }
+
+    class FakeCompiledGraph:
+        def invoke(self, state):  # type: ignore[no-untyped-def]
+            captured["state"] = state
+            return {
+                "current_node": "persist_side_effects",
+                "learning_stage": state["learning_stage"],
+                "next_action": "graph_checked",
+                "errors": [],
+            }
+
+    monkeypatch.setattr(
+        learning_conversation,
+        "get_settings",
+        lambda: Settings(
+            llm_type="openai",
+            openai_api_key="test-key",
+            openai_base_url="https://provider.example",
+            openai_model="fake-teaching-model",
+            langgraph_enabled=True,
+        ),
+    )
+    monkeypatch.setattr(learning_conversation, "compile_learning_graph", lambda: FakeCompiledGraph())
+    monkeypatch.setattr(
+        learning_conversation,
+        "invoke_orchestration",
+        fake_invoke_orchestration,
+    )
+
+    response = client.post(
+        f"/api/learning-sessions/{session['session_id']}/messages",
+        json={
+            "role": "user",
+            "content": "我觉得应该选 A，因为状态变量在回调外面共享",
+            "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "orchestration" in captured
+    assert body["session_state"]["learning_stage"] == "practice_offer"
+    assert body["session_state"]["learning_stage"] != "practice_support"
+    assert body["tool_calls"][0]["name"] == "show_concept_check_result"
+    assert "unsafe_graph_write" not in json.dumps(body, ensure_ascii=False)
+
+
 def test_learning_message_langgraph_failure_falls_back_without_leaking_error(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,

@@ -29,7 +29,7 @@ from app.agents.guardrails import (
     check_teaching_request,
     detect_direct_answer_request,
 )
-from app.agents.graph_runtime_contracts import GraphRunResult, IntentType
+from app.agents.graph_runtime_contracts import GraphRunResult, IntentType, validate_run_result_for_boundary
 from app.agents.learning_graph import (
     AgentState,
     LearningStageState,
@@ -66,6 +66,15 @@ CONVERSATION_SUMMARY_VERSION = 1
 RECENT_SAFE_MESSAGE_LIMIT = 4
 SUMMARY_REFRESH_MESSAGE_THRESHOLD = 4
 SUMMARY_CANDIDATE_MESSAGE_LIMIT = 16
+LEARNING_GRAPH_ALLOWED_INTENT_TARGETS: dict[IntentType, tuple[str, ...]] = {
+    IntentType.STAGE_UPDATE: ("learning_session",),
+    IntentType.TOOL_CALL: (
+        "show_code_exercise",
+        "show_concept_check_result",
+        "show_concept_intro",
+        "show_learning_history",
+    ),
+}
 
 LEARNING_TUTOR_SYSTEM_PROMPT = """你是 Aearn 的诊断型编程语言学习导师。你的目标不是快速给答案，也不是把规则机械复述给学习者，而是像真人导师一样先判断学习者当前卡点，再选择最合适的一步帮助他建立理解、修正误解或进入练习。
 
@@ -1437,6 +1446,12 @@ def _determine_transition_via_graph(
         run_result = result.get("run_result")
         if not isinstance(run_result, GraphRunResult):
             run_result = graph_result_to_run_result(result)
+        boundary_errors = validate_run_result_for_boundary(
+            run_result,
+            allowed_intent_targets=LEARNING_GRAPH_ALLOWED_INTENT_TARGETS,
+        )
+        if boundary_errors:
+            raise ValueError("graph boundary validation failed")
         next_stage = run_result.next_stage or context.learning_stage
         next_state = dict(context.learning_stage_state)
         tool_name: str | None = None

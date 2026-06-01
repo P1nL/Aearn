@@ -62,6 +62,14 @@ class IntentType(str, Enum):
     SIDE_EFFECT = "side_effect"
 
 
+class GraphRuntimeLayer(str, Enum):
+    GRAPH = "graph"
+    SERVICE = "service"
+    REPOSITORY = "repository"
+    API = "api"
+    SSE = "sse"
+
+
 @dataclass(frozen=True)
 class GraphIntent:
     intent_type: IntentType
@@ -130,6 +138,153 @@ class GraphFallback:
             "safe_message": self.safe_message,
             "recoverable": self.recoverable,
         }
+
+
+@dataclass(frozen=True)
+class GraphLayerResponsibility:
+    layer: GraphRuntimeLayer
+    owns: tuple[str, ...]
+    does_not_own: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "layer": self.layer.value,
+            "owns": list(self.owns),
+            "does_not_own": list(self.does_not_own),
+        }
+
+
+@dataclass(frozen=True)
+class GraphIntentBoundaryRule:
+    intent_type: IntentType
+    produced_by: GraphRuntimeLayer
+    consumed_by: GraphRuntimeLayer
+    durable_write_request: bool = False
+    public_api_visible: bool = False
+    sse_visible: bool = False
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "intent_type": self.intent_type.value,
+            "produced_by": self.produced_by.value,
+            "consumed_by": self.consumed_by.value,
+            "durable_write_request": self.durable_write_request,
+            "public_api_visible": self.public_api_visible,
+            "sse_visible": self.sse_visible,
+        }
+
+
+@dataclass(frozen=True)
+class GraphRuntimeBoundaryContract:
+    responsibilities: tuple[GraphLayerResponsibility, ...]
+    intent_rules: tuple[GraphIntentBoundaryRule, ...]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "responsibilities": [item.to_dict() for item in self.responsibilities],
+            "intent_rules": [item.to_dict() for item in self.intent_rules],
+        }
+
+
+GRAPH_RUNTIME_BOUNDARY_CONTRACT = GraphRuntimeBoundaryContract(
+    responsibilities=(
+        GraphLayerResponsibility(
+            layer=GraphRuntimeLayer.GRAPH,
+            owns=(
+                "routing_decisions",
+                "stage_transitions",
+                "next_action_selection",
+                "typed_intent_production",
+            ),
+            does_not_own=(
+                "database_connections",
+                "repository_writes",
+                "idempotency_records",
+                "public_api_envelopes",
+                "sse_frame_order",
+            ),
+        ),
+        GraphLayerResponsibility(
+            layer=GraphRuntimeLayer.SERVICE,
+            owns=(
+                "graph_invocation",
+                "boundary_validation",
+                "intent_execution",
+                "durable_write_orchestration",
+                "idempotency_replay",
+                "stable_fallback",
+            ),
+            does_not_own=("sql_invariants", "raw_sse_frames"),
+        ),
+        GraphLayerResponsibility(
+            layer=GraphRuntimeLayer.REPOSITORY,
+            owns=("sql", "transactions", "persistence_invariants"),
+            does_not_own=("graph_routing", "public_response_rendering"),
+        ),
+        GraphLayerResponsibility(
+            layer=GraphRuntimeLayer.API,
+            owns=("request_validation", "response_envelopes", "http_mode_selection"),
+            does_not_own=("graph_internals", "repository_writes"),
+        ),
+        GraphLayerResponsibility(
+            layer=GraphRuntimeLayer.SSE,
+            owns=("event_names", "frame_order", "bounded_public_payloads"),
+            does_not_own=("graph_diagnostics", "raw_provider_errors"),
+        ),
+    ),
+    intent_rules=(
+        GraphIntentBoundaryRule(
+            intent_type=IntentType.STAGE_UPDATE,
+            produced_by=GraphRuntimeLayer.GRAPH,
+            consumed_by=GraphRuntimeLayer.SERVICE,
+            durable_write_request=True,
+            public_api_visible=True,
+        ),
+        GraphIntentBoundaryRule(
+            intent_type=IntentType.TOOL_CALL,
+            produced_by=GraphRuntimeLayer.GRAPH,
+            consumed_by=GraphRuntimeLayer.SERVICE,
+            public_api_visible=True,
+            sse_visible=True,
+        ),
+        GraphIntentBoundaryRule(
+            intent_type=IntentType.FEEDBACK_REQUEST,
+            produced_by=GraphRuntimeLayer.GRAPH,
+            consumed_by=GraphRuntimeLayer.SERVICE,
+            public_api_visible=True,
+            sse_visible=True,
+        ),
+        GraphIntentBoundaryRule(
+            intent_type=IntentType.PERSISTENCE,
+            produced_by=GraphRuntimeLayer.GRAPH,
+            consumed_by=GraphRuntimeLayer.SERVICE,
+            durable_write_request=True,
+        ),
+        GraphIntentBoundaryRule(
+            intent_type=IntentType.PROFILE_UPDATE,
+            produced_by=GraphRuntimeLayer.GRAPH,
+            consumed_by=GraphRuntimeLayer.SERVICE,
+            durable_write_request=True,
+        ),
+        GraphIntentBoundaryRule(
+            intent_type=IntentType.SIDE_EFFECT,
+            produced_by=GraphRuntimeLayer.GRAPH,
+            consumed_by=GraphRuntimeLayer.SERVICE,
+            durable_write_request=True,
+        ),
+    ),
+)
+
+
+def graph_runtime_boundary_contract() -> GraphRuntimeBoundaryContract:
+    return GRAPH_RUNTIME_BOUNDARY_CONTRACT
+
+
+def boundary_rule_for_intent_type(intent_type: IntentType) -> GraphIntentBoundaryRule | None:
+    for rule in GRAPH_RUNTIME_BOUNDARY_CONTRACT.intent_rules:
+        if rule.intent_type == intent_type:
+            return rule
+    return None
 
 
 # --- State construction ---
@@ -231,6 +386,43 @@ def validate_run_result(result: GraphRunResult) -> list[str]:
     if not result.next_stage:
         errors.append("run result has empty next_stage")
     errors.extend(validate_intents(result.intents))
+    return errors
+
+
+def validate_run_result_for_boundary(
+    result: GraphRunResult,
+    *,
+    allowed_intent_targets: Mapping[IntentType, Sequence[str]] | None = None,
+) -> list[str]:
+    errors = validate_run_result(result)
+    errors.extend(validate_boundary_intents(result.intents, allowed_intent_targets=allowed_intent_targets))
+    return errors
+
+
+def validate_boundary_intents(
+    intents: Sequence[GraphIntent],
+    *,
+    allowed_intent_targets: Mapping[IntentType, Sequence[str]] | None = None,
+) -> list[str]:
+    errors: list[str] = []
+    allowed_targets = allowed_intent_targets or {}
+    for i, intent in enumerate(intents):
+        rule = boundary_rule_for_intent_type(intent.intent_type)
+        if rule is None:
+            errors.append(f"intent[{i}] has no boundary rule for {intent.intent_type}")
+            continue
+        if rule.produced_by != GraphRuntimeLayer.GRAPH:
+            errors.append(f"intent[{i}] is not graph-produced")
+        if rule.consumed_by != GraphRuntimeLayer.SERVICE:
+            errors.append(f"intent[{i}] is not service-consumed")
+        if allowed_intent_targets is not None and intent.intent_type not in allowed_targets:
+            errors.append(f"intent[{i}] type {intent.intent_type.value} is not allowed in this service scope")
+            continue
+        targets = allowed_targets.get(intent.intent_type)
+        if targets is not None and intent.target not in set(targets):
+            errors.append(
+                f"intent[{i}] target {intent.target!r} is not allowed for {intent.intent_type.value}",
+            )
     return errors
 
 
