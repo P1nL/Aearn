@@ -902,7 +902,7 @@ The feature service loads facts and owns persistence, while the shared layer onl
 ### 1. Scope / Trigger
 
 - Trigger: adding or changing allowlisted documentation sources or documentation fetch behavior for language-aware grounding.
-- Scope: `app/services/grounding_sources.py`, `app/services/grounding_fetcher.py`, `app/services/language_capabilities.py`, and grounding tests.
+- Scope: `app/services/grounding_sources.py`, `app/services/grounding_fetcher.py`, `app/services/grounding_processing.py`, `app/services/language_capabilities.py`, and grounding tests.
 
 ### 2. Signatures
 
@@ -910,6 +910,8 @@ The feature service loads facts and owns persistence, while the shared layer onl
 - Helper signatures: `all_grounding_sources()`, `sources_for_language(language_id_or_alias)`, `get_grounding_source(source_id)`, `allowlisted_domains_for_source(source_id)`, `seed_urls_for_language(language_id_or_alias)`, and `validate_grounding_source_registry()`.
 - Fetcher signatures: `GroundingDocsFetcher.fetch(source_id, url)`, `fetch_source_seed_documents(source_id)`, and `fetch_language_seed_documents(language_id_or_alias)`.
 - Fetch result signature: `GroundingFetchResult(status='ok'|'blocked'|'failed', document?, error_code?, error_message?, cache_hit)`.
+- Processing signature: `clean_and_chunk_document(document, max_chars=1200) -> tuple[GroundingChunk, ...]`.
+- Chunk signature: `GroundingChunk(chunk_id, source_id, language_id, title, section_path, canonical_url, source_type, source_trust_tier, fetched_at, content_hash, text, topic_tags)`.
 
 ### 3. Contracts
 
@@ -921,6 +923,9 @@ The feature service loads facts and owns persistence, while the shared layer onl
 - Documentation fetchers must use the registry allowlist before HTTP and return typed blocked/failed results instead of raising for expected fetch failures.
 - HTTP clients must be injectable for tests and future worker integration; tests must not call live documentation sites.
 - Fetch cache is scoped to one fetcher/reindex run and must not become durable storage.
+- Documentation cleaning must be deterministic and dependency-light; script/style/head/nav/footer/aside content must not enter chunks.
+- Chunks must carry enough metadata for later retrieval and citation without rereading the source registry.
+- Chunk ids and content hashes must be stable for the same source URL, section path, chunk index, and text.
 
 ### 4. Validation & Error Matrix
 
@@ -932,13 +937,17 @@ The feature service loads facts and owns persistence, while the shared layer onl
 - URL outside a source allowlist -> `GroundingFetchResult(status='blocked', error_code='URL_NOT_ALLOWLISTED')` before any HTTP call.
 - Non-2xx HTTP response -> `GroundingFetchResult(status='failed', error_code='HTTP_STATUS')`.
 - HTTP client exception -> `GroundingFetchResult(status='failed', error_code='FETCH_FAILED')` with bounded safe message.
+- Unknown source for a fetched document -> no chunks.
+- Empty or unreadable document body -> empty chunk tuple, not an exception.
 
 ### 5. Good/Base/Bad Cases
 
 - Good: TypeScript has official docs grounding but remains `enabled_for_public_selection=False` and `supports_execution=False`.
 - Good: fetching a registered Python seed URL through an injected fake client returns a document with canonical URL, final URL, fetched timestamp, content type, and content hash.
+- Good: cleaning fetched HTML returns section-aware chunks with canonical URL, trust tier, source type, fetched timestamp, topic tags, and stable hashes.
 - Base: C++ uses `cppreference` with `trusted_de_facto` and a rationale note.
 - Bad: adding a docs URL changes public course language ids, runtime runner status, or lets agents browse arbitrary domains.
+- Bad: raw `<script>`, navigation, or footer text appears in grounded teaching context.
 
 ### 6. Tests Required
 
@@ -948,6 +957,7 @@ The feature service loads facts and owns persistence, while the shared layer onl
 - Assert seed URLs remain under allowlisted domains.
 - Assert planned languages gain docs without runtime/public-selection side effects.
 - Assert fetcher success, blocked URL, HTTP status failure, client exception, cache hit, and language-level seed fetching through fake clients.
+- Assert HTML cleaning, metadata propagation, deterministic chunk ids/hashes, empty-content behavior, and bounded chunk splitting.
 
 ### 7. Wrong vs Correct
 

@@ -3,7 +3,7 @@
   "name": "docs-cleaning-and-chunking",
   "title": "Docs cleaning and chunking",
   "description": "Normalize fetched documentation into stable chunks with titles, section paths, canonical URLs, content hashes, and source metadata.",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,
