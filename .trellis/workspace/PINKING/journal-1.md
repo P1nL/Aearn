@@ -1266,3 +1266,43 @@ Implemented the language capability matrix, runner registry contracts, Python sa
 ### Next Steps
 
 - None - task complete
+
+
+## Session 39: Complete language knowledge grounding
+
+**Date**: 2026-06-01
+**Task**: Complete language knowledge grounding
+**Branch**: `main`
+
+### Summary
+
+Implemented and archived the 03 language knowledge grounding subtree: source registry, allowlisted fetcher, document processing, language-aware retrieval, agent citation payloads, mainstream fixtures, and reindex observability with full backend and desktop validation.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `36f986f` | (see git log) |
+| `6f4bac8` | (see git log) |
+| `1b5f330` | (see git log) |
+| `5b76bc9` | (see git log) |
+| `627466f` | (see git log) |
+| `4757c6e` | (see git log) |
+| `11b595c` | (see git log) |
+| `28874a8` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
