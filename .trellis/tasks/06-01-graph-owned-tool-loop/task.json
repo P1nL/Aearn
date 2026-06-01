@@ -3,7 +3,7 @@
   "name": "graph-owned-tool-loop",
   "title": "Graph owned tool loop",
   "description": "Move learning-page tool selection and repeated tool-call decisions into the graph runtime while keeping service persistence explicit.",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,

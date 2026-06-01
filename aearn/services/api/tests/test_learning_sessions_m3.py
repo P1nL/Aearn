@@ -871,6 +871,98 @@ def test_learning_message_langgraph_flag_on_invokes_graph_from_request_path(
     assert "langgraph_runtime" not in json.dumps(response.json(), ensure_ascii=False)
 
 
+def test_learning_message_langgraph_ordered_tool_loop_unlocks_practice(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user, plan = _confirmed_plan(client, language="javascript")
+    session = _start_session(client, user, plan)
+    captured: dict[str, object] = {}
+
+    def fake_invoke_orchestration(**kwargs):  # type: ignore[no-untyped-def]
+        captured["orchestration"] = kwargs
+        next_state = {
+            "covered_subpoint_ids": ["graph-sp1"],
+            "feynman_status": "pending",
+            "practice_unlock_reason": "concept_check_skipped",
+            "learning_incomplete": True,
+            "concept_summary": "graph-selected early practice",
+            "concept_check_result": "skipped",
+        }
+        return {
+            "run_result": build_run_result(
+                next_stage="practice_support",
+                intents=[
+                    make_intent(
+                        IntentType.STAGE_UPDATE,
+                        "learning_session",
+                        {
+                            "learning_stage": "practice_support",
+                            "learning_stage_state": next_state,
+                            "learner_content": "",
+                        },
+                    ),
+                    make_intent(IntentType.TOOL_CALL, "show_concept_check_result", {"name": "show_concept_check_result"}),
+                    make_intent(IntentType.TOOL_CALL, "show_code_exercise", {"name": "show_code_exercise"}),
+                ],
+            )
+        }
+
+    class FakeCompiledGraph:
+        def invoke(self, state, config=None):  # type: ignore[no-untyped-def]
+            captured["state"] = state
+            captured["config"] = config
+            return {
+                "current_node": "persist_side_effects",
+                "learning_stage": state["learning_stage"],
+                "next_action": "graph_checked",
+                "errors": [],
+            }
+
+    monkeypatch.setattr(
+        learning_conversation,
+        "get_settings",
+        lambda: Settings(
+            llm_type="openai",
+            openai_api_key="test-key",
+            openai_base_url="https://provider.example",
+            openai_model="fake-teaching-model",
+            langgraph_enabled=True,
+        ),
+    )
+    monkeypatch.setattr(learning_conversation, "compile_learning_graph", lambda: FakeCompiledGraph())
+    monkeypatch.setattr(learning_conversation, "invoke_orchestration", fake_invoke_orchestration)
+
+    response = client.post(
+        f"/api/learning-sessions/{session['session_id']}/messages",
+        json={
+            "role": "user",
+            "content": "我想先开始练习，给我题。",
+            "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "orchestration" in captured
+    assert body["generation_source"] == "deterministic"
+    assert body["session_state"]["learning_stage"] == "practice_support"
+    assert body["session_state"]["learning_stage_state"]["practice_unlock_reason"] == "concept_check_skipped"
+    assert [tool_call["name"] for tool_call in body["tool_calls"]] == [
+        "show_concept_check_result",
+        "show_code_exercise",
+    ]
+    assert body["tool_calls"][0]["args"]["result"] == "skipped"
+    exercise_tool_call = body["tool_calls"][1]
+    assert exercise_tool_call["args"]["unlock_reason"] == "concept_check_skipped"
+    assert exercise_tool_call["args"]["concept_summary"] == "graph-selected early practice"
+    assert exercise_tool_call["args"]["exercise"]["runtime_profile"]["runtime_tier"] == "browser_preview"
+
+    resumed = _resume_session(client, user, plan)
+    assert resumed["learning_stage"] == "practice_support"
+    assert resumed["exercise"]["id"] == exercise_tool_call["args"]["exercise"]["id"]
+
+
 def test_learning_message_langgraph_rejects_unscoped_intents(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
