@@ -1440,3 +1440,37 @@ Added onboarding/review graph boundary validation so invalid cross-page graph ou
 ### Next Steps
 
 - None - task complete
+
+
+## Session 44: Graph runtime tests
+
+**Date**: 2026-06-01
+**Task**: Graph runtime tests
+**Branch**: `main`
+
+### Summary
+
+Added focused graph runtime boundary tests covering ordered learning service intents, invalid graph fallback, memory/RAG graph arguments, safe graph SSE mapping coverage, and updated backend graph test guidance. Verified focused graph tests, M3/M2/M4 route regressions, ruff, and mypy.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `2482a42` | (see git log) |
+| `873413b` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
