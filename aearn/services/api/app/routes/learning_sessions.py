@@ -36,6 +36,7 @@ from app.services.learning_conversation import (
     start_learning_message_generation,
     store_learning_message_response,
 )
+from app.services.graph_event_stream import build_learning_graph_stream_events
 from app.services.learning_session_repository import (
     ConceptIntroGenerationError,
     EvaluationConflictError,
@@ -728,6 +729,15 @@ async def _learning_message_stream(
                 user_content=payload.content,
             )
             conn.commit()
+
+        for event in build_learning_graph_stream_events(
+            request_id=request_id,
+            session_id=session_id,
+            conversation_context=prepared.context.conversation_context,
+            graph_memory_snapshot=prepared.context.graph_memory_snapshot,
+            rag_context=prepared.context.rag_context,
+        ):
+            yield writer.event(event.event_type, dict(event.payload))
 
         full_text = ""
         try:

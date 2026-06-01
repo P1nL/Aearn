@@ -767,6 +767,7 @@ The tool records intent against server-owned context; the feature service later 
 - Boundary validation signature: `validate_run_result_for_boundary(result, allowed_intent_targets={...}) -> list[str]`.
 - Checkpoint thread signature: `build_checkpoint_thread_state(session_id, user_id, session_type, checkpoint_ns, checkpoint_id=None, metadata=None) -> GraphCheckpointThreadState`.
 - LangGraph invoke config shape: `{"configurable": {"thread_id": "aearn:<session_type>:<session_id>", "checkpoint_ns": "<graph_namespace>"}, "metadata": {...}}`.
+- Graph stream event signature: `GraphStreamEvent(event_type="tool_status", payload={...})`.
 - Learning entrypoint: `invoke_orchestration(...) -> {"next_stage", "tool_name", "tool_names", "learner_content", "next_state", "run_result"}`.
 - Learning tool-loop adapter: `graph_result_to_run_result()` converts ordered `tool_names` into ordered `IntentType.TOOL_CALL` intents while keeping legacy `tool_name` fallback compatibility.
 - Onboarding entrypoint: `invoke_onboarding_orchestration(...) -> {"next_action", "intent_type", "intent_payload"}`.
@@ -783,10 +784,11 @@ The tool records intent against server-owned context; the feature service later 
 - Graph thread ids must be service-derived and deterministic from durable Aearn session facts. The learning graph uses `checkpoint_ns=learning`; the single-step learning orchestration graph uses `checkpoint_ns=learning_orchestration`.
 - LangGraph checkpoints are not product persistence. Checkpoint config may resume graph execution details, but durable learning state remains in Aearn services/repositories and idempotency records.
 - Services and routes own durable writes, idempotency replay, transactions, public response envelopes, and SSE frame order.
+- Graph runtime stream adapters must map graph progress only to existing SSE event types, currently `tool_status`, with bounded/redacted payloads and stable public node/tool names.
 - Repository modules own SQL and persistence invariants; graph nodes must not open database connections or write product rows directly.
 - Route handlers may pre-load service-owned facts for graph input, but they must consume graph intents rather than call the graph only for telemetry.
 - Feature-flag fallback must be deterministic: disabled graph path or graph exception falls back to the last stable service logic without changing public response shape.
-- Graph context, diagnostics, and intent payloads must be bounded and redacted: no hidden tests, `solution_reference`, raw prompts, provider payloads, submitted code, stack traces, API keys, or secrets.
+- Graph context, diagnostics, node names, checkpoints, and intent payloads must be bounded and redacted: no hidden tests, `solution_reference`, raw prompts, provider payloads, submitted code, stack traces, API keys, or secrets.
 - Learning-page graphs may own ordered repeated tool-call decisions, but feature services must execute the tools, build public payloads, update `LearningSession`, load exercises, and persist idempotency records.
 
 ### 4. Validation & Error Matrix
@@ -800,6 +802,7 @@ The tool records intent against server-owned context; the feature service later 
 - Graph emits multiple learning tool intents -> service executes supported tools in graph intent order; unsupported targets are rejected by boundary validation before any partial application.
 - Graph emits a human checkpoint -> service accepts only scoped `FEEDBACK_REQUEST -> human_checkpoint` intents; unknown checkpoint targets fall back before any stage/tool side effect is applied.
 - Graph emits review not-due action -> route returns the same `REVIEW_NOT_DUE` envelope as repository validation.
+- Graph-enabled learning message SSE -> may emit bounded `tool_status` frames before normal `agent_message` frames; flag-off and idempotency replay must not synthesize graph status frames.
 - Idempotency replay -> return stored Aearn response and do not re-run graph side-effect decisions that could drift stored tool calls.
 
 ### 5. Good/Base/Bad Cases
@@ -819,7 +822,9 @@ The tool records intent against server-owned context; the feature service later 
 - Unit-test `graph_runtime_boundary_contract()`, `GraphIntentBoundaryRule`, and `validate_run_result_for_boundary()` for layer ownership and scoped intent rejection.
 - Unit-test `GraphCheckpointThreadState` for deterministic thread ids, session-type separation, bounded namespace/config serialization, and metadata redaction.
 - Unit-test `GraphHumanCheckpoint` and graph adapters for checkpoint bounding, redaction, scoped `FEEDBACK_REQUEST` conversion, and invalid-target rejection.
+- Unit-test graph stream adapters for existing SSE vocabulary, payload bounding, redaction, and disabled/empty graph context behavior.
 - Route-level tests must set `LANGGRAPH_ENABLED=true`, monkeypatch the graph entrypoint, and assert the production path consumes graph intents.
+- Route-level learning message SSE tests must assert graph `tool_status` ordering before `agent_message`, no raw graph diagnostics leakage, and flag-off compatibility.
 - Route-level tests must cover ordered learning tool-call payloads, including graph-owned `show_concept_check_result` before `show_code_exercise`.
 - Route-level tests must assert graph invocations receive the expected thread config when `LANGGRAPH_ENABLED=true`.
 - Route-level tests must cover invalid/unscoped graph intents and assert the service does not blindly execute them.
