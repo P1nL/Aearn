@@ -1306,3 +1306,36 @@ Implemented and archived the 03 language knowledge grounding subtree: source reg
 ### Next Steps
 
 - None - task complete
+
+
+## Session 40: Graph memory RAG context
+
+**Date**: 2026-06-01
+**Task**: Graph memory RAG context
+**Branch**: `main`
+
+### Summary
+
+Added bounded learner memory and current-knowledge-point RAG context for the learning graph runtime while preserving service-owned durable writes and public API shape.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `616560a` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
