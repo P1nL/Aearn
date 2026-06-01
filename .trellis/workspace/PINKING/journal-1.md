@@ -1542,3 +1542,36 @@ Closed the 02 learning graph runtime hardening parent after all 9 children were 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 47: Agent capability hardening closeout
+
+**Date**: 2026-06-01
+**Task**: Agent capability hardening closeout
+**Branch**: `main`
+
+### Summary
+
+Completed the remaining agent capability hardening children, archived the 9/9 parent task, added the interview demo story, and verified backend/desktop quality gates.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `6ab383a` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
