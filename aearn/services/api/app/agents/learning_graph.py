@@ -53,6 +53,7 @@ class AgentState(TypedDict, total=False):
     hint_state: dict[str, Any]
     explanation_state: dict[str, Any]
     memory_snapshot: dict[str, Any]
+    rag_context: dict[str, Any]
     messages: list[dict[str, str]]
     side_effects: list[dict[str, Any]]
     next_action: str | None
@@ -237,6 +238,8 @@ class OrchestrationInput(TypedDict, total=False):
     user_text: str
     knowledge_point: dict[str, Any]
     lesson_outline: list[dict[str, Any]]
+    memory_snapshot: dict[str, Any]
+    rag_context: dict[str, Any]
     # Output fields set by nodes
     next_stage: str
     tool_name: str | None
@@ -610,6 +613,8 @@ def invoke_orchestration(
     user_text: str,
     knowledge_point: Mapping[str, Any],
     lesson_outline: Sequence[Mapping[str, Any]],
+    memory_snapshot: Mapping[str, Any] | None = None,
+    rag_context: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Invoke the orchestration graph and return the decision."""
     compiled = compile_orchestration_graph()
@@ -621,6 +626,8 @@ def invoke_orchestration(
         "user_text": user_text,
         "knowledge_point": dict(knowledge_point) if isinstance(knowledge_point, Mapping) else {},
         "lesson_outline": [dict(item) for item in lesson_outline if isinstance(item, Mapping)],
+        "memory_snapshot": dict(memory_snapshot or {}),
+        "rag_context": dict(rag_context or {}),
     }
     thread_state = build_checkpoint_thread_state(
         session_id=session_id,

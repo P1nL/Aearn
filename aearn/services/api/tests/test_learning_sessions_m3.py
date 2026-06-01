@@ -793,6 +793,21 @@ def test_learning_message_langgraph_flag_on_invokes_graph_from_request_path(
     session = _start_session(client, user, plan)
     captured: dict[str, object] = {}
 
+    with connect() as conn:
+        merge_observations(
+            conn,
+            str(user["id"]),
+            [
+                {
+                    "type": "weak_point",
+                    "content": "closures",
+                    "confidence": "confirmed",
+                    "session_id": "seed",
+                }
+            ],
+        )
+        conn.commit()
+
     def fake_invoke_orchestration(**kwargs):  # type: ignore[no-untyped-def]
         captured["orchestration"] = kwargs
         return {
@@ -867,8 +882,17 @@ def test_learning_message_langgraph_flag_on_invokes_graph_from_request_path(
     assert state["session_id"] == session["session_id"]
     assert state["session_type"] == "learning"
     assert state["messages"] == [{"role": "user", "content": "为什么要用变量保存状态？"}]
+    assert state["memory_snapshot"]["available"] is True
+    assert "closures" in state["memory_snapshot"]["profile_summary"]
+    assert state["rag_context"]["knowledge_point_id"] == plan["knowledge_points"][0]["id"]
+    assert state["rag_context"]["source_scope"] == "knowledge_point"
+    assert orchestration["memory_snapshot"] == state["memory_snapshot"]
+    assert orchestration["rag_context"] == state["rag_context"]
     assert "solution_reference" not in json.dumps(state, ensure_ascii=False)
-    assert "langgraph_runtime" not in json.dumps(response.json(), ensure_ascii=False)
+    response_text = json.dumps(response.json(), ensure_ascii=False)
+    assert "langgraph_runtime" not in response_text
+    assert "memory_snapshot" not in response_text
+    assert "rag_context" not in response_text
 
 
 def test_learning_message_langgraph_ordered_tool_loop_unlocks_practice(
