@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "06-02-local-product-completion/implement.md",
+                "file": "06-02-local-product-completion/prd.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "implement"
+              "title": "prd"
             }
           }
         ]
@@ -181,27 +181,8 @@
       "translate:Open translation view": false
     }
   },
-  "active": "6360c39f5a5f3bfa",
+  "active": "795ab725a9f9407c",
   "lastOpenFiles": [
-    "archive/2026-06/06-02-02-local-user-data-boundary/review.zh.md",
-    "archive/2026-06/06-02-02-local-user-data-boundary/task.json",
-    "archive/2026-06/06-02-02-local-user-data-boundary/prd.md",
-    "archive/2026-06/06-02-02-local-user-data-boundary/implement.md",
-    "archive/2026-06/06-02-02-local-user-data-boundary/implement.jsonl",
-    "archive/2026-06/06-02-02-local-user-data-boundary/design.md",
-    "archive/2026-06/06-02-02-local-user-data-boundary/check.jsonl",
-    "archive/2026-06/06-02-02-local-user-data-boundary",
-    "06-02-local-product-completion/implement.md",
-    "06-02-02-local-user-data-boundary/review.zh.md",
-    "06-02-02-local-user-data-boundary/implement.md",
-    "06-02-02-local-user-data-boundary/design.md",
-    "06-02-02-local-user-data-boundary/check.jsonl",
-    "06-02-02-local-user-data-boundary/implement.jsonl",
-    "06-02-02-local-user-data-boundary/prd.md",
-    "06-02-02-local-user-data-boundary/task.json",
-    "06-02-02-local-user-data-boundary",
-    "06-02-local-product-completion/design.md",
-    "06-02-local-product-completion/prd.md",
     "06-02-browser-html-css-runner/review.zh.md",
     "archive/2026-06/06-02-browser-html-css-runner/task.json",
     "archive/2026-06/06-02-browser-html-css-runner/review.zh.md",
@@ -209,15 +190,33 @@
     "archive/2026-06/06-02-browser-html-css-runner/design.md",
     "archive/2026-06/06-02-browser-html-css-runner/implement.jsonl",
     "archive/2026-06/06-02-browser-html-css-runner/implement.md",
+    "archive/2026-06/06-02-browser-html-css-runner/check.jsonl",
+    "archive/2026-06/06-02-browser-html-css-runner",
+    "06-02-local-product-completion/prd.md",
     "06-02-browser-html-css-runner/implement.md",
     "06-02-browser-html-css-runner/design.md",
+    "06-02-browser-html-css-runner/check.jsonl",
+    "06-02-browser-html-css-runner/implement.jsonl",
     "06-02-browser-html-css-runner/prd.md",
+    "06-02-browser-html-css-runner/task.json",
+    "06-02-browser-html-css-runner",
+    "archive/2026-06/06-02-node-typescript-runner/task.json",
     "archive/2026-06/06-02-node-typescript-runner/review.zh.md",
     "archive/2026-06/06-02-node-typescript-runner/prd.md",
+    "archive/2026-06/06-02-node-typescript-runner/check.jsonl",
     "archive/2026-06/06-02-node-typescript-runner/implement.md",
     "archive/2026-06/06-02-node-typescript-runner/design.md",
     "06-02-node-typescript-runner/review.zh.md",
     "06-02-node-typescript-runner/implement.md",
-    "06-02-node-typescript-runner/design.md"
+    "06-02-node-typescript-runner/design.md",
+    "06-02-node-typescript-runner/prd.md",
+    "archive/2026-06/06-02-python-runner-hardening/review.zh.md",
+    "archive/2026-06/06-02-python-runner-hardening/prd.md",
+    "archive/2026-06/06-02-python-runner-hardening/implement.md",
+    "archive/2026-06/06-02-python-runner-hardening/design.md",
+    "06-02-python-runner-hardening/review.zh.md",
+    "06-02-python-runner-hardening/implement.md",
+    "06-02-python-runner-hardening/design.md",
+    "06-02-python-runner-hardening/prd.md"
   ]
 }
