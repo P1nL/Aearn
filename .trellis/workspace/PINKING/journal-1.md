@@ -1808,3 +1808,36 @@ Productized the browser_preview runner boundary with a dedicated deterministic a
 ### Next Steps
 
 - None - task complete
+
+
+## Session 55: Browser runner code-spec update
+
+**Date**: 2026-06-02
+**Task**: Browser runner code-spec update
+**Branch**: `main`
+
+### Summary
+
+Captured the browser_preview runner contract in backend quality guidelines, including JS event-flow vs HTML/CSS static preview rule families, public result redaction, error mapping, and required tests; also corrected TypeScript grounding wording after the Node/TypeScript runner became executable but public-disabled.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `0732051` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
