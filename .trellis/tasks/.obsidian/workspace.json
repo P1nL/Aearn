@@ -11,10 +11,14 @@
             "id": "795ab725a9f9407c",
             "type": "leaf",
             "state": {
-              "type": "empty",
-              "state": {},
+              "type": "markdown",
+              "state": {
+                "file": "06-02-local-product-completion/prd.md",
+                "mode": "source",
+                "source": false
+              },
               "icon": "lucide-file",
-              "title": "新标签页"
+              "title": "prd"
             }
           }
         ]
@@ -177,8 +181,25 @@
       "translate:Open translation view": false
     }
   },
-  "active": "6360c39f5a5f3bfa",
+  "active": "795ab725a9f9407c",
   "lastOpenFiles": [
+    "archive/2026-06/06-02-03-desktop-learning-experience-completion/task.json",
+    "archive/2026-06/06-02-03-desktop-learning-experience-completion/review.zh.md",
+    "archive/2026-06/06-02-03-desktop-learning-experience-completion/prd.md",
+    "archive/2026-06/06-02-03-desktop-learning-experience-completion/implement.md",
+    "archive/2026-06/06-02-03-desktop-learning-experience-completion/design.md",
+    "archive/2026-06/06-02-03-desktop-learning-experience-completion/check.jsonl",
+    "archive/2026-06/06-02-03-desktop-learning-experience-completion/implement.jsonl",
+    "archive/2026-06/06-02-03-desktop-learning-experience-completion",
+    "06-02-03-desktop-learning-experience-completion/review.zh.md",
+    "06-02-03-desktop-learning-experience-completion/implement.md",
+    "06-02-03-desktop-learning-experience-completion/design.md",
+    "06-02-01-local-stable-startup/review.zh.md",
+    "06-02-03-desktop-learning-experience-completion/check.jsonl",
+    "06-02-03-desktop-learning-experience-completion/implement.jsonl",
+    "06-02-03-desktop-learning-experience-completion/prd.md",
+    "06-02-03-desktop-learning-experience-completion/task.json",
+    "06-02-03-desktop-learning-experience-completion",
     "archive/2026-06/06-02-01-local-stable-startup/review.zh.md",
     "archive/2026-06/06-02-01-local-stable-startup/design.md",
     "archive/2026-06/06-02-01-local-stable-startup/prd.md",
@@ -186,27 +207,17 @@
     "archive/2026-06/06-02-01-local-stable-startup/implement.md",
     "archive/2026-06/06-02-01-local-stable-startup/implement.jsonl",
     "archive/2026-06/06-02-01-local-stable-startup/check.jsonl",
-    "archive/2026-06/06-02-01-local-stable-startup",
     "06-02-01-local-stable-startup/design.md",
-    "06-02-01-local-stable-startup/review.zh.md",
     "06-02-local-product-completion/prd.md",
     "06-02-local-product-completion/implement.md",
     "06-02-local-product-completion/design.md",
     "05-25-onboarding-content-driven-plan/prd.md",
-    "archive/2026-05/05-25-onboarding-content-driven-plan/task.json",
     "archive/2026-05/05-25-onboarding-content-driven-plan/prd.md",
-    "archive/2026-05/05-25-onboarding-content-driven-plan/implement.jsonl",
     "archive/2026-05/05-25-onboarding-content-driven-plan/implement.md",
     "archive/2026-05/05-25-onboarding-content-driven-plan/design.md",
-    "archive/2026-05/05-25-onboarding-content-driven-plan/check.jsonl",
-    "archive/2026-05/05-25-onboarding-content-driven-plan",
     "05-25-assistant-ui-generative-ui/prd.md",
     "archive/2026-05/05-25-assistant-ui-generative-ui/prd.md",
-    "archive/2026-05/05-25-assistant-ui-generative-ui/task.json",
-    "archive/2026-05/05-25-assistant-ui-generative-ui/implement.jsonl",
     "archive/2026-05/05-25-assistant-ui-generative-ui/implement.md",
-    "archive/2026-05/05-25-assistant-ui-generative-ui/design.md",
-    "05-25-onboarding-content-driven-plan/implement.md",
-    "05-25-onboarding-content-driven-plan/design.md"
+    "archive/2026-05/05-25-assistant-ui-generative-ui/design.md"
   ]
 }
