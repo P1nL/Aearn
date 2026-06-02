@@ -1940,3 +1940,40 @@ Implemented teaching-grade managed compiled runners for Java, Go, and C# with ho
 ### Next Steps
 
 - None - task complete
+
+
+## Session 59: Backend module organization refactor
+
+**Date**: 2026-06-03
+**Task**: Backend module organization refactor
+**Branch**: `main`
+
+### Summary
+
+Organized backend services and agents into domain subpackages while preserving behavior and validation gates.
+
+### Main Changes
+
+- Reorganized app/services and app/agents into domain subpackages with no long-lived root compatibility shims.
+- Updated app/tests imports plus backend directory-structure spec.
+- Verified: backend pytest -q (472 passed), ruff check ., mypy app, desktop:check, task validate, and diff checks.
+- Archived child task 06-03-backend-module-organization-refactor; parent remains planning.
+
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `85a5934` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
