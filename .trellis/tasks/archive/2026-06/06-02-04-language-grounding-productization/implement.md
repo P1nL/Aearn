@@ -10,7 +10,7 @@
 - [x] Add citation/grounding metadata to the built learning response and stored agent message metadata.
 - [x] Add focused tests for persistence, fixture seed, replacement/idempotency, retrieval, no-index fallback, citation metadata, and learning-message integration.
 - [x] Run focused backend tests and desktop check if API response types affect frontend compilation.
-- [ ] Validate and archive the Trellis child after implementation verification passes.
+- [x] Validate and archive the Trellis child after implementation verification passes.
 
 ## Validation Commands
 
