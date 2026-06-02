@@ -54,6 +54,82 @@ The dependency source for the API service is `aearn/services/api/pyproject.toml`
 - User content, code submissions, notes, and secrets are not logged.
 - P0 acceptance cases from `docs/qa/acceptance-test-plan.md` remain satisfied for the touched flow.
 
+## Scenario: Local Dev Startup Lifecycle
+
+### 1. Scope / Trigger
+
+- Trigger: changing the repo-local Aearn startup/status/restart/stop workflow, especially `aearn/scripts/start-dev.ps1`, `aearn/package.json` `dev*` scripts, or `docs/setup/development-environment.md`.
+- Scope: local development lifecycle for Docker PostgreSQL/Redis, schema bootstrap, FastAPI, Celery worker, Tauri desktop dev server, and `aearn/.logs/dev-processes.json`.
+
+### 2. Signatures
+
+- `pnpm --dir .\aearn dev`
+- `pnpm --dir .\aearn dev:status`
+- `pnpm --dir .\aearn dev:restart`
+- `pnpm --dir .\aearn dev:stop`
+- API readiness endpoint: `GET http://127.0.0.1:8001/health`
+- Desktop readiness URL: `http://127.0.0.1:1420`
+- Tracked state file: `aearn/.logs/dev-processes.json`
+
+### 3. Contracts
+
+- Startup order remains Docker PostgreSQL/Redis -> schema bootstrap -> API -> Celery worker -> Tauri desktop dev server.
+- Backend processes must use `python -m uvicorn` and `python -m celery` through `uv --directory .\aearn\services\api`; do not call bare `uvicorn` or `celery` executables on Windows.
+- `dev:status` must report Docker service state, API readiness, desktop readiness, and tracked process state.
+- Tracked process state must distinguish `alive`, `stale`, and `untrusted`.
+- `dev:stop` and `dev:restart` may stop only tracked Aearn processes whose command line matches the expected startup command.
+- Stale or untrusted tracked PIDs must be skipped and then cleared from the state file; never kill a process only because its PID appears in old state.
+- Runtime logs and `dev-processes.json` live under `aearn/.logs/` and must not be committed.
+
+### 4. Validation & Error Matrix
+
+- Missing `uv`, `pnpm`, or `docker` -> fail with the missing command name.
+- Docker compose failure -> `docker compose startup failed`.
+- Database bootstrap failure -> `database bootstrap failed`.
+- API readiness timeout -> component-specific API readiness failure.
+- Worker readiness timeout -> component-specific worker log readiness failure.
+- Desktop readiness timeout -> component-specific desktop readiness failure.
+- Tracked PID missing -> `stale`, skip stop.
+- Tracked PID exists but command line mismatch -> `untrusted`, skip stop.
+
+### 5. Good/Base/Bad Cases
+
+- Good: old `dev-processes.json` contains stale PIDs; `dev:status` reports them as `stale`, and `dev:stop` skips them without killing unrelated processes.
+- Good: `dev` starts API, worker, and desktop, then `dev:status` reports tracked PIDs as `alive, command verified`.
+- Base: Docker dependencies are healthy but API/desktop are stopped; `dev:status` reports Docker healthy, API not ready, desktop not ready, and no tracked PIDs.
+- Bad: `dev:stop` calls `Stop-Process` on a PID from old state without checking the command line.
+- Bad: status prints raw JSON only, forcing users to infer whether a tracked PID is live or stale.
+
+### 6. Tests Required
+
+- Run `pnpm --dir .\aearn dev:status`.
+- Run `pnpm --dir .\aearn dev`, then confirm `dev:status` shows API and desktop ready with verified tracked PIDs.
+- Run `pnpm --dir .\aearn dev:restart`, then confirm the same readiness and tracked PID behavior.
+- Run `pnpm --dir .\aearn dev:stop`, then confirm API and desktop are not ready and tracked PIDs are `none`.
+- Run focused backend smoke tests: `uv --directory .\aearn\services\api run python -m pytest tests/test_health.py tests/test_db_bootstrap.py tests/test_worker_import.py -q`.
+- Run `pnpm --dir .\aearn desktop:check`.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```powershell
+Stop-Process -Id $state.apiPid -Force
+```
+
+This trusts stale state and can kill an unrelated process if Windows has reused the PID.
+
+#### Correct
+
+```powershell
+$tracked = Get-TrackedProcessStatus -Key "apiPid" -ProcessId $state.apiPid
+if ($tracked.status -eq "alive") {
+  Stop-ProcessTree -ProcessId $state.apiPid
+}
+```
+
+Stop only script-managed Aearn processes whose current command line still matches the expected startup command.
+
 ## Scenario: M2 Onboarding Plan APIs
 
 ### 1. Scope / Trigger
