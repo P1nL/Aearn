@@ -6,8 +6,10 @@ in an isolated environment with restricted globals and timeout.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -56,13 +58,16 @@ def execute_python_with_tests(
 
     start = time.perf_counter()
     try:
-        proc = subprocess.run(
-            [sys.executable, str(SANDBOX_RUNNER_PATH)],
-            input=payload,
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
-        )
+        with tempfile.TemporaryDirectory(prefix="aearn-python-") as temp_dir:
+            proc = subprocess.run(
+                [sys.executable, str(SANDBOX_RUNNER_PATH)],
+                input=payload,
+                capture_output=True,
+                text=True,
+                timeout=timeout_s,
+                cwd=temp_dir,
+                env=_sandbox_env(),
+            )
     except subprocess.TimeoutExpired:
         elapsed = int((time.perf_counter() - start) * 1000)
         return SandboxExecutionResult(
@@ -136,3 +141,15 @@ def execute_python_with_tests(
         test_results=test_results,
         total_duration_ms=elapsed,
     )
+
+
+def _sandbox_env() -> dict[str, str]:
+    env: dict[str, str] = {
+        "PYTHONIOENCODING": "utf-8",
+        "PYTHONUTF8": "1",
+    }
+    for key in ("PATH", "SYSTEMROOT", "SystemRoot", "WINDIR", "TEMP", "TMP"):
+        value = os.environ.get(key)
+        if value:
+            env[key] = value
+    return env

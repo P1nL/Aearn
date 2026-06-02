@@ -179,16 +179,28 @@ def _build_failed_cases(exercise: Mapping[str, object], message: str) -> list[di
             continue
         failed_cases.append(
             {
-                "case_id": str(case.get("id") or f"case_{index + 1}"),
+                "case_id": _public_case_id(case, index),
                 "case_type": str(case.get("case_type", "visible")),
                 "passed": False,
                 "weight": float(case.get("weight", 1)),
                 "is_critical": bool(case.get("is_critical", False)),
                 "duration_ms": 0,
-                "message": message,
+                "message": _public_case_message(case, message),
             },
         )
     return failed_cases
+
+
+def _public_case_id(case: Mapping[str, object], index: int) -> str:
+    if str(case.get("case_type", "visible")) == "hidden":
+        return f"hidden_case_{index + 1}"
+    return str(case.get("id") or f"case_{index + 1}")
+
+
+def _public_case_message(case: Mapping[str, object], message: str) -> str:
+    if str(case.get("case_type", "visible")) == "hidden":
+        return "A hidden test failed. Recheck edge cases and boundary behavior."
+    return message
 
 
 def _evaluate_cases(
@@ -378,4 +390,3 @@ def _shared_state_pass(code: str, runtime_tier: str) -> bool:
 def _real_execution_enabled() -> bool:
     from app.core.config import get_settings
     return get_settings().real_execution_enabled
-
