@@ -4,11 +4,11 @@
     "type": "split",
     "children": [
       {
-        "id": "c03725ee41df1385",
+        "id": "ec88afe94eaa8e7d",
         "type": "tabs",
         "children": [
           {
-            "id": "445e6c3b7e98b90b",
+            "id": "795ab725a9f9407c",
             "type": "leaf",
             "state": {
               "type": "empty",
@@ -74,7 +74,7 @@
       }
     ],
     "direction": "horizontal",
-    "width": 284.5
+    "width": 249.5
   },
   "right": {
     "id": "85123ca16ca7ed4f",
@@ -173,11 +173,25 @@
       "daily-notes:打开/创建今天的日记": false,
       "templates:插入模板": false,
       "command-palette:打开命令面板": false,
-      "bases:新建数据库": false
+      "bases:新建数据库": false,
+      "translate:Open translation view": false
     }
   },
-  "active": "445e6c3b7e98b90b",
+  "active": "6360c39f5a5f3bfa",
   "lastOpenFiles": [
+    "archive/2026-06/06-02-01-local-stable-startup/review.zh.md",
+    "archive/2026-06/06-02-01-local-stable-startup/design.md",
+    "archive/2026-06/06-02-01-local-stable-startup/prd.md",
+    "archive/2026-06/06-02-01-local-stable-startup/task.json",
+    "archive/2026-06/06-02-01-local-stable-startup/implement.md",
+    "archive/2026-06/06-02-01-local-stable-startup/implement.jsonl",
+    "archive/2026-06/06-02-01-local-stable-startup/check.jsonl",
+    "archive/2026-06/06-02-01-local-stable-startup",
+    "06-02-01-local-stable-startup/design.md",
+    "06-02-01-local-stable-startup/review.zh.md",
+    "06-02-local-product-completion/prd.md",
+    "06-02-local-product-completion/implement.md",
+    "06-02-local-product-completion/design.md",
     "05-25-onboarding-content-driven-plan/prd.md",
     "archive/2026-05/05-25-onboarding-content-driven-plan/task.json",
     "archive/2026-05/05-25-onboarding-content-driven-plan/prd.md",
@@ -192,8 +206,6 @@
     "archive/2026-05/05-25-assistant-ui-generative-ui/implement.jsonl",
     "archive/2026-05/05-25-assistant-ui-generative-ui/implement.md",
     "archive/2026-05/05-25-assistant-ui-generative-ui/design.md",
-    "archive/2026-05/05-25-assistant-ui-generative-ui/check.jsonl",
-    "archive/2026-05/05-25-assistant-ui-generative-ui",
     "05-25-onboarding-content-driven-plan/implement.md",
     "05-25-onboarding-content-driven-plan/design.md"
   ]
