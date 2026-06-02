@@ -23,6 +23,7 @@ class CreateNoteRequest(BaseModel):
 
 
 class UpdateNoteRequest(BaseModel):
+    user_id: str = Field(min_length=1)
     title: str | None = None
     content_markdown: str | None = None
     is_user_edited: bool = True

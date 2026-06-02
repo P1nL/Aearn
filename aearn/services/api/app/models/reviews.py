@@ -22,6 +22,7 @@ class ReviewExplanationCheck(BaseModel):
 
 
 class ReviewWarmupResultRequest(BaseModel):
+    user_id: str | None = Field(default=None, min_length=1)
     action: ReviewWarmupAction = "answer"
     answer: str | None = None
 
@@ -58,6 +59,7 @@ class ReviewAIPatchAnswer(BaseModel):
 
 
 class SubmitReviewExerciseResultRequest(BaseModel):
+    user_id: str | None = Field(default=None, min_length=1)
     exercise_id: str = Field(min_length=1)
     attempt_id: str | None = Field(default=None, min_length=1)
     code: str = ""

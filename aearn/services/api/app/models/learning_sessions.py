@@ -19,6 +19,7 @@ class StartLearningSessionRequest(BaseModel):
 
 
 class LearningMessageRequest(BaseModel):
+    user_id: str | None = Field(default=None, min_length=1)
     role: LearningMessageRole
     content: str = Field(min_length=1, max_length=4000)
     client_message_id: str = Field(min_length=1, max_length=160)
@@ -33,6 +34,7 @@ class LearningMessageRequest(BaseModel):
 
 
 class RunExerciseRequest(BaseModel):
+    user_id: str | None = Field(default=None, min_length=1)
     code: str = Field(min_length=1)
     filled_blanks: dict[str, str] = Field(default_factory=dict)
     runtime_profile_id: str | None = None
@@ -49,6 +51,7 @@ class RunExerciseRequest(BaseModel):
 
 
 class SubmitExerciseRequest(BaseModel):
+    user_id: str | None = Field(default=None, min_length=1)
     attempt_id: str = Field(min_length=1)
     code: str = Field(min_length=1)
     filled_blanks: dict[str, str] = Field(default_factory=dict)
@@ -68,6 +71,7 @@ class SubmitExerciseRequest(BaseModel):
 
 
 class HintRequest(BaseModel):
+    user_id: str | None = Field(default=None, min_length=1)
     attempt_id: str = Field(min_length=1)
     current_code: str = Field(min_length=1)
     blank_id: str = Field(min_length=1)
@@ -89,6 +93,7 @@ class ExplainErrorFailedTest(BaseModel):
 
 
 class ExplainErrorRequest(BaseModel):
+    user_id: str | None = Field(default=None, min_length=1)
     error_message: str | None = None
     stderr: str | None = None
     failed_tests: list[ExplainErrorFailedTest] = Field(default_factory=list)
@@ -109,6 +114,7 @@ class ExplainErrorRequest(BaseModel):
 
 
 class CheckExplanationRequest(BaseModel):
+    user_id: str | None = Field(default=None, min_length=1)
     explanation: str = Field(min_length=1)
     focus: ExplanationFocus = "core_logic"
     round: int = Field(default=1, ge=1)

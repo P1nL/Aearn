@@ -66,6 +66,7 @@ AppShell
 | 无用户 | `user_state=empty` | 跳转 Onboarding |
 | 有活动计划 | `active_plan_id` | 默认进入 LearningWorkspace |
 | API 离线 | `api_status=offline` | 顶部警告，运行/提交/生成禁用 |
+| 切换本地用户 | `active_user_id` 变化 | 先清空 plan/session/review/notes/dashboard 等旧状态，再写入 bootstrap 并重新拉取新用户事实 |
 
 ## 页面组件规格
 
@@ -264,6 +265,8 @@ LearningWorkspacePage
 | 打开笔记 | 打开 `NoteDrawer` | 当前会话可追溯到知识点 | 当前知识点 Markdown 笔记 |
 | 结束会话 | `POST /api/learning-sessions/{session_id}/finish` | 有 active session | 返回摘要与 `next_entry_point` |
 
+学习页所有会话写入请求（message、run、submit、hint、explain-error、check-explanation）都必须在 JSON body 中携带当前 active `user_id`；跨用户 session mismatch 由后端返回 `SESSION_NOT_FOUND`，桌面端只展示稳定错误码和消息。
+
 ### 生成式运行反馈边界
 
 `GeneratedRuntimeFeedback` 位于对话生成的练习卡片内，必须把不同反馈拆开：
@@ -323,6 +326,8 @@ ReviewPage
 | 运行复习练习 | 复用学习会话 `/run` 能力或 review runner | 展示运行结果 |
 | 提交复习结果 | `POST /api/reviews/{session_id}/exercise-result` | 更新 `fsrs_rating`、`due_at`、`forget_risk` |
 | 下一条 | 刷新列表 | 当前项完成后启用 |
+
+复习页所有 session 写入请求（message、warmup-result、exercise-result）都必须在 JSON body 中携带当前 active `user_id`；跨用户 session mismatch 由后端返回 `SESSION_NOT_FOUND`，不得复用旧用户的 warmup、exercise 或 review conversation 状态。
 
 `review_ai_patch` 题型不展示代码编辑提交框，而展示结构化审核表单：`verdict`、`evidence`、`knowledge_point_risk`、`next_action`。提交前必须要求用户填写证据和风险说明；前端只做必填校验，不本地计算 `score_breakdown`、`fsrs_rating`、`due_at` 或 `forget_risk`。
 
@@ -425,6 +430,11 @@ SettingsPage
 
 - 读取：`GET /api/users/{user_id}`
 - 保存：`PATCH /api/users/{user_id}/preferences`
+- 本地用户列表：`GET /api/users`
+- 数据摘要：`GET /api/users/{user_id}/data-summary`
+- 导出：`GET /api/users/{user_id}/export`
+- 重置学习数据：`POST /api/users/{user_id}/reset-data`
+- 删除本地用户：`DELETE /api/users/{user_id}`
 
 ### 禁止配置
 
@@ -438,6 +448,20 @@ SettingsPage
 - saving：保存中禁用重复提交。
 - saved：展示保存成功时间。
 - error：字段级错误优先展示，未知错误进入全局 toast。
+- local_users_loading：加载可切换本地用户列表。
+- data_summary_loading：刷新当前用户本地数据摘要。
+- exporting：导出 learner-safe JSON，导出前后不修改后端数据。
+- resetting：reset 进行中，成功后保留 `userId`、清空 `planId`、清空旧 store 并回到 Onboarding。
+- deleting：delete 进行中，成功后清空当前 bootstrap/store 并回到本地用户选择或 Onboarding。
+
+### `RecordsPrivacyPanel`
+
+- 必须展示当前本地用户、`user_id`、活动计划、最近活动时间和数据摘要计数。
+- 本地用户列表只展示未删除用户；切换用户时先清空当前内存状态，再调用 `GET /api/users/{user_id}`、`GET /api/plans/{plan_id}?user_id={user_id}`、dashboard、resume、notes/review 等事实接口。
+- `export` 通过 `GET /api/users/{user_id}/export` 输出 learner-safe JSON；UI 不显示 hidden tests、solution references、raw prompts 或 provider payloads。
+- `reset` 必须先展示 `data-summary` 预览并二次确认；成功后保留当前用户画像和偏好，清除 `localStorage["aearn.bootstrap"].planId`，回到 onboarding。
+- `delete` 必须先展示 `data-summary` 预览、建议先导出并二次确认；成功后如果删除的是当前用户，清空 `localStorage["aearn.bootstrap"]`。
+- 错误展示必须使用稳定 `error.code` 和 `error.message`，不得以 free-form message 作为业务分支。
 
 ## Tauri 与 API 边界
 
@@ -500,6 +524,8 @@ SettingsPage
 | `GET /api/notes` | `NotesPage`、`NoteDrawer` | 读取知识点 Markdown 笔记 |
 | `POST /api/notes` | `NotesPage`、`NoteDrawer` | 创建知识点笔记 |
 | `PATCH /api/notes/{note_id}` | `NotesPage`、`NoteDrawer` | 保存知识点笔记 |
+
+除明确只读查询外，所有用户上下文 API helper 必须从当前 app store 读取 active `user.id` 并传入请求；切换本地用户时先清空旧 store，再用新 `user_id` 重新拉取事实，不能只依赖旧 `session_id`、`plan_id` 或 `note_id`。
 
 ## 完成标准
 

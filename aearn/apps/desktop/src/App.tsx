@@ -19,7 +19,7 @@ import { NotesPage } from "./pages/NotesPage";
 import { OnboardingPage } from "./pages/OnboardingPage";
 import { ReviewPage } from "./pages/ReviewPage";
 import { SettingsPage } from "./pages/SettingsPage";
-import type { LearningSessionResponse } from "./types";
+import type { LearningSessionResponse, LocalUserListItem } from "./types";
 
 function App() {
   const app = useAppStore();
@@ -114,6 +114,37 @@ function App() {
     notes.reset();
   }
 
+  async function handleSwitchLocalUser(item: LocalUserListItem) {
+    const closed = await closeDrawers();
+    if (!closed) return;
+    notes.reset();
+    await app.switchLocalUser(item);
+  }
+
+  async function handleExportUserData() {
+    await app.exportActiveUserData();
+  }
+
+  async function handleResetUserData() {
+    const closed = await closeDrawers();
+    if (!closed) return;
+    const ok = await app.resetActiveUserData();
+    if (ok) {
+      notes.reset();
+      settings.setTab("learning");
+    }
+  }
+
+  async function handleDeleteUserData() {
+    const closed = await closeDrawers();
+    if (!closed) return;
+    const ok = await app.deleteActiveUser();
+    if (ok) {
+      notes.reset();
+      settings.setTab("privacy");
+    }
+  }
+
   const refreshEnvironmentDoctor = useCallback(async (signal?: AbortSignal) => {
     setEnvironmentDoctor({ status: "loading" });
     try {
@@ -165,6 +196,16 @@ function App() {
     }
     void refreshEnvironmentDoctor();
   }, [visibleRoute, settings.settingsTab, environmentDoctor.status, refreshEnvironmentDoctor]);
+
+  useEffect(() => {
+    if (visibleRoute !== "settings" || settings.settingsTab !== "privacy") {
+      return;
+    }
+    const controller = new AbortController();
+    void app.loadLocalUsers(controller.signal);
+    void app.loadUserDataSummary(undefined, controller.signal);
+    return () => controller.abort();
+  }, [visibleRoute, settings.settingsTab, app.user?.id]);
 
   useEffect(() => {
     if (!notes.drawerOpen || !notes.drawerContext) return;
@@ -266,6 +307,7 @@ function App() {
 
             <section className={screenClassName(visibleRoute === "home")} aria-label="学习页">
               <LearningWorkspacePage
+                user={app.user}
                 createdPlan={app.createdPlan}
                 sessionState={app.sessionState}
                 messages={homeMessages}
@@ -329,10 +371,22 @@ function App() {
                 userLoaded={Boolean(app.user)}
                 diagnostics={{ apiBaseUrl: API_BASE_URL, apiStatus: apiStatusLabel, userId: app.user?.id ?? null, planId: currentPlanId, currentStage: dashboard?.current_stage ?? session?.context_snapshot.current_stage ?? null, todayReviewCount: dashboard?.today_review_count ?? 0, resumeAvailable: dashboard?.resume_available ?? false }}
                 environmentDoctor={environmentDoctor}
+                localUsersState={app.localUsersState}
+                userDataSummaryState={app.userDataSummaryState}
+                dataActionState={app.dataActionState}
+                dataActionMessage={app.dataActionMessage}
                 onSettingsTabChange={settings.setTab}
                 onFieldChange={settings.updateField}
                 onSave={() => void handleSaveSettings()}
                 onRefreshEnvironmentDoctor={() => void refreshEnvironmentDoctor()}
+                onRefreshLocalData={() => {
+                  void app.loadLocalUsers();
+                  void app.loadUserDataSummary();
+                }}
+                onSwitchLocalUser={(item) => void handleSwitchLocalUser(item)}
+                onExportUserData={() => void handleExportUserData()}
+                onResetUserData={() => void handleResetUserData()}
+                onDeleteUserData={() => void handleDeleteUserData()}
               />
             </section>
           </div>

@@ -316,8 +316,14 @@ CREATE TABLE IF NOT EXISTS idempotency_records (
   operation text NOT NULL,
   request_hash text NOT NULL,
   response_json jsonb NOT NULL,
+  user_id uuid REFERENCES users(id) ON DELETE SET NULL,
+  invalidated_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now()
 );
+
+ALTER TABLE idempotency_records
+  ADD COLUMN IF NOT EXISTS user_id uuid REFERENCES users(id) ON DELETE SET NULL,
+  ADD COLUMN IF NOT EXISTS invalidated_at timestamptz;
 
 ALTER TABLE exercises
   ADD COLUMN IF NOT EXISTS requires_explanation boolean NOT NULL DEFAULT false,
@@ -492,6 +498,7 @@ CREATE INDEX IF NOT EXISTS idx_notes_user_updated ON notes(user_id, updated_at D
 CREATE INDEX IF NOT EXISTS idx_notes_knowledge_point ON notes(knowledge_point_id) WHERE deleted_at IS NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS uq_notes_user_knowledge_point_active ON notes(user_id, knowledge_point_id) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_idempotency_records_operation ON idempotency_records(operation);
+CREATE INDEX IF NOT EXISTS idx_idempotency_records_user_active ON idempotency_records(user_id) WHERE invalidated_at IS NULL;
 
 DROP TRIGGER IF EXISTS trg_users_updated_at ON users;
 CREATE TRIGGER trg_users_updated_at BEFORE UPDATE ON users

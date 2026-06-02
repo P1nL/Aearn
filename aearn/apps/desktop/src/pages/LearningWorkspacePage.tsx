@@ -42,6 +42,7 @@ import type {
   LearningExercise,
   RunExerciseResponse,
   SubmitExerciseResponse,
+  UserProfile,
 } from "../types";
 
 type ComposerStreamRequest = {
@@ -49,6 +50,7 @@ type ComposerStreamRequest = {
   requestId: string;
   assistantMessageId: string;
   body: {
+    user_id: string;
     role: "user";
     content: string;
     client_message_id: string;
@@ -56,6 +58,7 @@ type ComposerStreamRequest = {
 };
 
 type LearningWorkspacePageProps = {
+  user: UserProfile | null;
   createdPlan: CreatedPlanResponse | null;
   sessionState: SessionState;
   messages: ConversationMessage[];
@@ -79,6 +82,7 @@ type LearningWorkspacePageProps = {
 };
 
 export function LearningWorkspacePage({
+  user,
   createdPlan,
   sessionState,
   messages,
@@ -230,7 +234,7 @@ export function LearningWorkspacePage({
 
   function handleComposerSubmit(input: string) {
     const content = input.trim();
-    if (content.length === 0 || composerStreaming || !session) return;
+    if (content.length === 0 || composerStreaming || !session || !user) return;
 
     const assistantMessage: ConversationMessage = {
       ...createMessage("agent", "", "Agent"),
@@ -244,6 +248,7 @@ export function LearningWorkspacePage({
       requestId: createClientId("desktop_req"),
       assistantMessageId: assistantMessage.id,
       body: {
+        user_id: user.id,
         role: "user",
         content,
         client_message_id: createClientId("desktop_msg"),
@@ -314,7 +319,7 @@ export function LearningWorkspacePage({
   }, [messages.length, session?.session_id, activeExercise?.id, exerciseActionState.status, lastRun?.attempt_id, lastSubmit?.attempt_id]);
 
   async function handleRunExercise(runMode: ExerciseRunMode) {
-    if (!session || !activeExercise) {
+    if (!session || !activeExercise || !user) {
       return;
     }
     setLastExerciseAction(runMode === "preview" ? "run_preview" : "run_tests");
@@ -325,6 +330,7 @@ export function LearningWorkspacePage({
     });
     try {
       const response = await runLearningExercise({
+        userId: user.id,
         sessionId: session.session_id,
         exerciseId: activeExercise.id,
         code: materializedCode,
@@ -355,6 +361,7 @@ export function LearningWorkspacePage({
     if (
       !session ||
       !activeExercise ||
+      !user ||
       !lastRun ||
       isStale ||
       lastRun.runtime_status === "unsupported" ||
@@ -367,6 +374,7 @@ export function LearningWorkspacePage({
     setExerciseActionState({ status: "loading", label: "正在提交结果并写回知识点状态" });
     try {
       const response = await submitLearningExercise({
+        userId: user.id,
         sessionId: session.session_id,
         exerciseId: activeExercise.id,
         attemptId: lastRun.attempt_id,
@@ -390,13 +398,14 @@ export function LearningWorkspacePage({
   }
 
   async function handleRequestHint() {
-    if (!session || !activeExercise || !lastRun || isStale || !selectedBlankId) {
+    if (!session || !activeExercise || !user || !lastRun || isStale || !selectedBlankId) {
       return;
     }
     setLastExerciseAction("hint");
     setExerciseActionState({ status: "loading", label: "正在生成分层提示" });
     try {
       const response = await requestLearningHint({
+        userId: user.id,
         sessionId: session.session_id,
         exerciseId: activeExercise.id,
         attemptId: lastRun.attempt_id,
@@ -415,7 +424,7 @@ export function LearningWorkspacePage({
   }
 
   async function handleExplainError() {
-    if (!session || !lastRun || isStale) {
+    if (!session || !user || !lastRun || isStale) {
       return;
     }
     const failedTests = lastRun.test_results
@@ -432,6 +441,7 @@ export function LearningWorkspacePage({
     setExerciseActionState({ status: "loading", label: "正在解释真实错误上下文" });
     try {
       const response = await explainLearningError({
+        userId: user.id,
         sessionId: session.session_id,
         attemptId: lastRun.attempt_id,
         errorMessage: lastRun.error_message,
@@ -449,13 +459,14 @@ export function LearningWorkspacePage({
   }
 
   async function handleCheckExplanation() {
-    if (!session || !lastRun || isStale || explanationText.trim().length === 0) {
+    if (!session || !user || !lastRun || isStale || explanationText.trim().length === 0) {
       return;
     }
     setLastExerciseAction("check_explanation");
     setExerciseActionState({ status: "loading", label: "正在检查你对关键代码的解释" });
     try {
       const response = await checkLearningExplanation({
+        userId: user.id,
         sessionId: session.session_id,
         attemptId: lastRun.attempt_id,
         explanation: explanationText.trim(),

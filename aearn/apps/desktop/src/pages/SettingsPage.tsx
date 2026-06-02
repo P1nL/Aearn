@@ -1,9 +1,11 @@
-import type { EnvironmentDoctorState, SettingsKey, SettingsPanel } from "../appTypes";
+import type { EnvironmentDoctorState, LocalUsersState, SettingsKey, SettingsPanel, UserDataSummaryState } from "../appTypes";
 import { SETTING_PANELS } from "../lib/appContent";
 import type {
   EnvironmentComponentStatus,
   EnvironmentOverallStatus,
   EnvironmentProductStatus,
+  LocalUserDataSummary,
+  LocalUserListItem,
 } from "../types";
 
 type SettingsFormValue = {
@@ -40,10 +42,19 @@ type SettingsPageProps = {
     resumeAvailable: boolean;
   };
   environmentDoctor: EnvironmentDoctorState;
+  localUsersState: LocalUsersState;
+  userDataSummaryState: UserDataSummaryState;
+  dataActionState: "idle" | "loading" | "success" | "error";
+  dataActionMessage: string | null;
   onSettingsTabChange: (value: SettingsKey) => void;
   onFieldChange: (field: keyof SettingsFormValue, value: string | boolean) => void;
   onSave: () => void;
   onRefreshEnvironmentDoctor: () => void;
+  onRefreshLocalData: () => void;
+  onSwitchLocalUser: (item: LocalUserListItem) => void;
+  onExportUserData: () => void;
+  onResetUserData: () => void;
+  onDeleteUserData: () => void;
 };
 
 export function SettingsPage({
@@ -56,10 +67,19 @@ export function SettingsPage({
   userLoaded,
   diagnostics,
   environmentDoctor,
+  localUsersState,
+  userDataSummaryState,
+  dataActionState,
+  dataActionMessage,
   onSettingsTabChange,
   onFieldChange,
   onSave,
   onRefreshEnvironmentDoctor,
+  onRefreshLocalData,
+  onSwitchLocalUser,
+  onExportUserData,
+  onResetUserData,
+  onDeleteUserData,
 }: SettingsPageProps) {
   const currentPanel = SETTING_PANELS[settingsTab];
   const editableTab = settingsTab === "learning" || settingsTab === "notifications";
@@ -109,7 +129,20 @@ export function SettingsPage({
         {settingsTab === "learning" && renderLearningPanel(form, onFieldChange)}
         {settingsTab === "review" && renderReviewPanel(currentPanel)}
         {settingsTab === "notifications" && renderNotificationsPanel(form, onFieldChange)}
-        {settingsTab === "privacy" && renderPrivacyPanel(currentPanel, diagnostics)}
+        {settingsTab === "privacy" &&
+          renderPrivacyPanel({
+            panel: currentPanel,
+            diagnostics,
+            localUsersState,
+            userDataSummaryState,
+            dataActionState,
+            dataActionMessage,
+            onRefreshLocalData,
+            onSwitchLocalUser,
+            onExportUserData,
+            onResetUserData,
+            onDeleteUserData,
+          })}
         {settingsTab === "diagnostics" && renderDiagnosticsPanel(diagnostics, environmentDoctor, onRefreshEnvironmentDoctor)}
       </section>
     </div>
@@ -289,15 +322,44 @@ function renderReviewPanel(panel: SettingsPanel) {
   );
 }
 
-function renderPrivacyPanel(
-  panel: SettingsPanel,
-  diagnostics: SettingsPageProps["diagnostics"],
-) {
+function renderPrivacyPanel({
+  panel,
+  diagnostics,
+  localUsersState,
+  userDataSummaryState,
+  dataActionState,
+  dataActionMessage,
+  onRefreshLocalData,
+  onSwitchLocalUser,
+  onExportUserData,
+  onResetUserData,
+  onDeleteUserData,
+}: {
+  panel: SettingsPanel;
+  diagnostics: SettingsPageProps["diagnostics"];
+  localUsersState: LocalUsersState;
+  userDataSummaryState: UserDataSummaryState;
+  dataActionState: SettingsPageProps["dataActionState"];
+  dataActionMessage: string | null;
+  onRefreshLocalData: () => void;
+  onSwitchLocalUser: (item: LocalUserListItem) => void;
+  onExportUserData: () => void;
+  onResetUserData: () => void;
+  onDeleteUserData: () => void;
+}) {
+  const actionBusy = dataActionState === "loading";
+  const summary = userDataSummaryState.status === "ready" ? userDataSummaryState.data : null;
+
   return (
     <>
       <div className="tool-card settings-callout">
-        当前用户{diagnostics.userId ? "已建立学习身份" : "尚未完成建档"}。这里仅展示恢复状态和本地记录边界，不提供一键清空、导出或删除。
+        当前用户{diagnostics.userId ? "已建立学习身份" : "尚未完成建档"}。这里可以查看本地记录摘要、导出学习数据、重置学习数据、删除本地用户，或切换到另一个本地用户。
       </div>
+      {dataActionMessage && (
+        <div className={dataActionState === "error" ? "tool-card settings-callout error" : "tool-card settings-callout"}>
+          {dataActionMessage}
+        </div>
+      )}
       <div className="settings-grid">
         {panel.cards.map(([title, body]) => (
           <article className="setting-card" key={title}>
@@ -314,7 +376,142 @@ function renderPrivacyPanel(
           <p>{diagnostics.resumeAvailable ? "存在可恢复学习会话" : "当前没有待恢复会话"}</p>
         </article>
       </div>
+      <section className="doctor-section" aria-label="本地用户数据边界">
+        <div className="settings-section-title">
+          <div>
+            <h3>本地用户与记录</h3>
+            <p>用户、路线、会话、复习、笔记和设置按本地用户隔离。</p>
+          </div>
+          <button className="btn ghost" type="button" onClick={onRefreshLocalData}>
+            刷新
+          </button>
+        </div>
+
+        {renderSummaryCards(userDataSummaryState, summary)}
+        {renderLocalUserList(localUsersState, diagnostics.userId, actionBusy, onSwitchLocalUser)}
+
+        <div className="settings-section-title compact">
+          <h3>导出、重置、删除</h3>
+        </div>
+        <div className="settings-grid">
+          <article className="setting-card">
+            <h3>导出当前用户</h3>
+            <p>生成 learner-safe JSON，不包含 hidden tests、solution references、raw prompts、provider payloads 或 secrets。</p>
+            <div className="settings-button-row">
+              <button className="btn ghost" type="button" disabled={!diagnostics.userId || actionBusy} onClick={onExportUserData}>
+                导出 JSON
+              </button>
+            </div>
+          </article>
+          <article className="setting-card danger-zone">
+            <h3>重置学习数据</h3>
+            <p>保留当前用户资料和偏好，清空路线、学习会话、复习、笔记和对话记录。</p>
+            <div className="settings-button-row">
+              <button
+                className="btn ghost"
+                type="button"
+                disabled={!diagnostics.userId || actionBusy}
+                onClick={() => {
+                  if (window.confirm("确定重置当前用户的学习数据？用户资料和偏好会保留，学习路线与记录会清空。")) {
+                    onResetUserData();
+                  }
+                }}
+              >
+                重置学习数据
+              </button>
+            </div>
+          </article>
+          <article className="setting-card danger-zone">
+            <h3>删除本地用户</h3>
+            <p>建议先导出。删除后当前用户和拥有的学习数据不再通过普通 API 可见。</p>
+            <div className="settings-button-row">
+              <button
+                className="btn ghost danger"
+                type="button"
+                disabled={!diagnostics.userId || actionBusy}
+                onClick={() => {
+                  if (window.confirm("确定删除当前本地用户？请确认已经完成导出或不再需要这些数据。")) {
+                    onDeleteUserData();
+                  }
+                }}
+              >
+                删除本地用户
+              </button>
+            </div>
+          </article>
+        </div>
+      </section>
     </>
+  );
+}
+
+function renderSummaryCards(state: UserDataSummaryState, summary: LocalUserDataSummary | null) {
+  if (state.status === "loading") {
+    return <div className="tool-card settings-callout">正在读取当前用户本地记录摘要...</div>;
+  }
+  if (state.status === "error") {
+    return <div className="tool-card settings-callout error">记录摘要读取失败：{state.message}</div>;
+  }
+  if (!summary) {
+    return <div className="tool-card settings-callout">当前没有已加载的本地用户记录。</div>;
+  }
+
+  return (
+    <div className="settings-grid privacy-summary-grid">
+      <article className="setting-card">
+        <h3>路线</h3>
+        <p>{summary.counts.active_plans} 个 active · {summary.counts.archived_or_deleted_plans} 个归档/删除</p>
+      </article>
+      <article className="setting-card">
+        <h3>学习记录</h3>
+        <p>{summary.counts.learning_sessions} 个会话 · {summary.counts.attempts} 次运行/提交</p>
+      </article>
+      <article className="setting-card">
+        <h3>复习记录</h3>
+        <p>{summary.counts.review_states} 个状态 · {summary.counts.review_logs} 条日志 · {summary.counts.review_seed_banks} 个 seed bank</p>
+      </article>
+      <article className="setting-card">
+        <h3>笔记与对话</h3>
+        <p>{summary.counts.notes} 条笔记 · {summary.counts.learning_messages + summary.counts.review_messages + summary.counts.onboarding_messages} 条对话消息</p>
+      </article>
+    </div>
+  );
+}
+
+function renderLocalUserList(
+  state: LocalUsersState,
+  activeUserId: string | null,
+  actionBusy: boolean,
+  onSwitchLocalUser: (item: LocalUserListItem) => void,
+) {
+  if (state.status === "loading") {
+    return <div className="tool-card settings-callout">正在读取本地用户列表...</div>;
+  }
+  if (state.status === "error") {
+    return <div className="tool-card settings-callout error">本地用户列表读取失败：{state.message}</div>;
+  }
+  if (state.status !== "ready" || state.items.length === 0) {
+    return <div className="tool-card settings-callout">还没有可切换的本地用户。</div>;
+  }
+
+  return (
+    <div className="local-user-list" aria-label="本地用户列表">
+      {state.items.map((item) => {
+        const active = item.id === activeUserId;
+        return (
+          <article className={active ? "setting-card local-user-card active" : "setting-card local-user-card"} key={item.id}>
+            <div>
+              <h3>{item.display_name}</h3>
+              <p>{item.active_goal ?? "暂无 active 学习路线"}</p>
+              <span>{item.plan_count} 条路线 · 最近活动 {formatMaybeDate(item.last_activity_at)}</span>
+            </div>
+            <button className="btn ghost" type="button" disabled={active || actionBusy} onClick={() => onSwitchLocalUser(item)}>
+              {active ? "当前用户" : "切换"}
+            </button>
+          </article>
+        );
+      })}
+    </div>
   );
 }
 
@@ -520,6 +717,18 @@ function productStatusLabel(status: EnvironmentProductStatus) {
   if (status === "static_review") return "仅静态讲解/复习";
   if (status === "unsupported") return "不支持";
   return "Runner 计划中";
+}
+
+function formatMaybeDate(value: string | null): string {
+  if (!value) {
+    return "暂无";
+  }
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(value));
 }
 
 function saveStateLabel(value: SettingsPageProps["saveState"], isDirty: boolean) {

@@ -98,6 +98,7 @@ def patch_note(
             note = update_note(
                 conn,
                 note_id=note_id,
+                user_id=payload.user_id,
                 title=payload.title,
                 content_markdown=payload.content_markdown,
                 is_user_edited=payload.is_user_edited,

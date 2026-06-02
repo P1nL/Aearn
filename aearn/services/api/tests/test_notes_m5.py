@@ -113,6 +113,7 @@ def test_note_create_get_patch_and_repeat_create_reuses_same_record(client: Test
     updated = client.patch(
         f"/api/notes/{created_note['id']}",
         json={
+            "user_id": user["id"],
             "title": "事件状态变量位置",
             "content_markdown": "状态变量放在回调外层，回调内部只做更新。",
             "is_user_edited": True,

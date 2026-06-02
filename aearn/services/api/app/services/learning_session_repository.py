@@ -286,6 +286,7 @@ def update_learning_session_stage(
 def run_learning_session_exercise(
     conn: Connection[dict[str, object]],
     *,
+    user_id: str | None = None,
     session_id: str,
     exercise_id: str,
     code: str,
@@ -296,7 +297,7 @@ def run_learning_session_exercise(
     request_id: str | None,
     request_body: Mapping[str, object],
 ) -> tuple[dict[str, object], bool]:
-    session = _load_session(conn, session_id, allowed_session_types={"learn", "review"})
+    session = _load_session(conn, session_id, user_id=user_id, allowed_session_types={"learn", "review"})
     exercise = _load_session_exercise(conn, exercise_id=exercise_id, session=session)
     runtime_profile = _mapping_or_empty(exercise.get("runtime_profile"))
     if runtime_profile_id is not None and runtime_profile_id != str(runtime_profile.get("id")):
@@ -304,10 +305,7 @@ def run_learning_session_exercise(
 
     code_hash = provided_code_hash or build_code_hash(code, filled_blanks)
     key = default_run_key(session_id=session_id, exercise_id=exercise_id, code_hash=code_hash, run_mode=run_mode)
-    stored = conn.execute(
-        "SELECT request_hash, response_json FROM idempotency_records WHERE key = %s",
-        (key,),
-    ).fetchone()
+    stored = _load_idempotency_record(conn, key, user_id=user_id)
     payload_hash = request_hash(request_body)
     if stored is not None:
         if stored["request_hash"] != payload_hash:
@@ -361,10 +359,10 @@ def run_learning_session_exercise(
     response = _serialize_run_response(attempt, runtime_result)
     conn.execute(
         """
-        INSERT INTO idempotency_records (key, operation, request_hash, response_json)
-        VALUES (%s, 'run_learning_session_exercise', %s, %s::jsonb)
+        INSERT INTO idempotency_records (key, operation, request_hash, response_json, user_id)
+        VALUES (%s, 'run_learning_session_exercise', %s, %s::jsonb, %s)
         """,
-        (key, payload_hash, json.dumps(response)),
+        (key, payload_hash, json.dumps(response), str(session["user_id"])),
     )
     return response, False
 
@@ -372,6 +370,7 @@ def run_learning_session_exercise(
 def submit_learning_session_exercise(
     conn: Connection[dict[str, object]],
     *,
+    user_id: str | None = None,
     session_id: str,
     exercise_id: str,
     attempt_id: str,
@@ -385,7 +384,7 @@ def submit_learning_session_exercise(
     request_id: str | None,
     request_body: Mapping[str, object],
 ) -> tuple[dict[str, object], bool]:
-    session = _load_session(conn, session_id)
+    session = _load_session(conn, session_id, user_id=user_id)
     exercise = _load_session_exercise(conn, exercise_id=exercise_id, session=session)
     run_attempt = _load_run_attempt(conn, attempt_id=attempt_id, session_id=session_id, exercise_id=exercise_id)
     if run_attempt["runtime_status"] == "unsupported":
@@ -398,10 +397,7 @@ def submit_learning_session_exercise(
         attempt_id=attempt_id,
         submit_version=actual_submit_version,
     )
-    stored = conn.execute(
-        "SELECT request_hash, response_json FROM idempotency_records WHERE key = %s",
-        (key,),
-    ).fetchone()
+    stored = _load_idempotency_record(conn, key, user_id=user_id)
     payload_hash = request_hash(request_body)
     if stored is not None:
         if stored["request_hash"] != payload_hash:
@@ -516,10 +512,10 @@ def submit_learning_session_exercise(
     }
     conn.execute(
         """
-        INSERT INTO idempotency_records (key, operation, request_hash, response_json)
-        VALUES (%s, 'submit_learning_session_exercise', %s, %s::jsonb)
+        INSERT INTO idempotency_records (key, operation, request_hash, response_json, user_id)
+        VALUES (%s, 'submit_learning_session_exercise', %s, %s::jsonb, %s)
         """,
-        (key, payload_hash, json.dumps(response)),
+        (key, payload_hash, json.dumps(response), str(session["user_id"])),
     )
     return response, False
 
@@ -527,6 +523,7 @@ def submit_learning_session_exercise(
 def request_learning_hint(
     conn: Connection[dict[str, object]],
     *,
+    user_id: str | None = None,
     session_id: str,
     exercise_id: str,
     attempt_id: str,
@@ -535,7 +532,7 @@ def request_learning_hint(
     hint_level: str,
     request_body: Mapping[str, object],
 ) -> tuple[dict[str, object], bool]:
-    session = _load_session(conn, session_id)
+    session = _load_session(conn, session_id, user_id=user_id)
     exercise = _load_session_exercise(conn, exercise_id=exercise_id, session=session)
     attempt = _load_run_attempt(conn, attempt_id=attempt_id, session_id=session_id, exercise_id=exercise_id)
     blank = resolve_blank(exercise, blank_id)
@@ -543,10 +540,7 @@ def request_learning_hint(
         raise InvalidLearningSessionRequestError("blank_id does not match the current exercise")
 
     key = f"hint:{attempt_id}:{blank['blank_key']}:{hint_level}"
-    stored = conn.execute(
-        "SELECT request_hash, response_json FROM idempotency_records WHERE key = %s",
-        (key,),
-    ).fetchone()
+    stored = _load_idempotency_record(conn, key, user_id=user_id)
     payload_hash = request_hash(request_body)
     if stored is not None:
         if stored["request_hash"] != payload_hash:
@@ -576,10 +570,10 @@ def request_learning_hint(
     )
     conn.execute(
         """
-        INSERT INTO idempotency_records (key, operation, request_hash, response_json)
-        VALUES (%s, 'request_learning_hint', %s, %s::jsonb)
+        INSERT INTO idempotency_records (key, operation, request_hash, response_json, user_id)
+        VALUES (%s, 'request_learning_hint', %s, %s::jsonb, %s)
         """,
-        (key, payload_hash, json.dumps(response)),
+        (key, payload_hash, json.dumps(response), str(session["user_id"])),
     )
     return response, False
 
@@ -587,6 +581,7 @@ def request_learning_hint(
 def explain_learning_attempt_error(
     conn: Connection[dict[str, object]],
     *,
+    user_id: str | None = None,
     session_id: str,
     attempt_id: str,
     error_message: str,
@@ -595,7 +590,7 @@ def explain_learning_attempt_error(
     current_code: str,
     request_body: Mapping[str, object],
 ) -> tuple[dict[str, object], bool]:
-    session = _load_session(conn, session_id)
+    session = _load_session(conn, session_id, user_id=user_id)
     attempt = _load_session_attempt(conn, attempt_id=attempt_id, session_id=session_id, attempt_type="run")
     exercise = _load_session_exercise(conn, exercise_id=str(attempt["exercise_id"]), session=session)
     if not error_message and not stderr and not failed_tests:
@@ -603,10 +598,7 @@ def explain_learning_attempt_error(
 
     payload_hash = request_hash(request_body)
     key = f"explain-error:{attempt_id}:{payload_hash}"
-    stored = conn.execute(
-        "SELECT response_json FROM idempotency_records WHERE key = %s",
-        (key,),
-    ).fetchone()
+    stored = _load_idempotency_record(conn, key, user_id=user_id)
     if stored is not None:
         response = stored["response_json"]
         if not isinstance(response, dict):
@@ -634,10 +626,10 @@ def explain_learning_attempt_error(
     )
     conn.execute(
         """
-        INSERT INTO idempotency_records (key, operation, request_hash, response_json)
-        VALUES (%s, 'explain_learning_attempt_error', %s, %s::jsonb)
+        INSERT INTO idempotency_records (key, operation, request_hash, response_json, user_id)
+        VALUES (%s, 'explain_learning_attempt_error', %s, %s::jsonb, %s)
         """,
-        (key, payload_hash, json.dumps(response)),
+        (key, payload_hash, json.dumps(response), str(session["user_id"])),
     )
     return response, False
 
@@ -645,6 +637,7 @@ def explain_learning_attempt_error(
 def check_learning_attempt_explanation(
     conn: Connection[dict[str, object]],
     *,
+    user_id: str | None = None,
     session_id: str,
     attempt_id: str,
     explanation: str,
@@ -655,15 +648,12 @@ def check_learning_attempt_explanation(
     if round_number > 2:
         raise EvaluationConflictError("explanation checks are limited to two rounds")
 
-    session = _load_session(conn, session_id)
+    session = _load_session(conn, session_id, user_id=user_id)
     attempt = _load_session_attempt(conn, attempt_id=attempt_id, session_id=session_id, attempt_type="run")
     exercise = _load_session_exercise(conn, exercise_id=str(attempt["exercise_id"]), session=session)
 
     key = f"check-explanation:{attempt_id}:{round_number}"
-    stored = conn.execute(
-        "SELECT request_hash, response_json FROM idempotency_records WHERE key = %s",
-        (key,),
-    ).fetchone()
+    stored = _load_idempotency_record(conn, key, user_id=user_id)
     payload_hash = request_hash(request_body)
     if stored is not None:
         if stored["request_hash"] != payload_hash:
@@ -688,10 +678,10 @@ def check_learning_attempt_explanation(
         response_dict = _blocked_explanation_check_response(response_dict, round_number=round_number)
         conn.execute(
             """
-            INSERT INTO idempotency_records (key, operation, request_hash, response_json)
-            VALUES (%s, 'check_learning_attempt_explanation', %s, %s::jsonb)
+            INSERT INTO idempotency_records (key, operation, request_hash, response_json, user_id)
+            VALUES (%s, 'check_learning_attempt_explanation', %s, %s::jsonb, %s)
             """,
-            (key, payload_hash, json.dumps(response_dict)),
+            (key, payload_hash, json.dumps(response_dict), str(session["user_id"])),
         )
         return response_dict, False
     response_dict = _strip_explanation_judgement_metadata(response_dict)
@@ -706,10 +696,10 @@ def check_learning_attempt_explanation(
     )
     conn.execute(
         """
-        INSERT INTO idempotency_records (key, operation, request_hash, response_json)
-        VALUES (%s, 'check_learning_attempt_explanation', %s, %s::jsonb)
+        INSERT INTO idempotency_records (key, operation, request_hash, response_json, user_id)
+        VALUES (%s, 'check_learning_attempt_explanation', %s, %s::jsonb, %s)
         """,
-        (key, payload_hash, json.dumps(response_dict)),
+        (key, payload_hash, json.dumps(response_dict), str(session["user_id"])),
     )
     return response_dict, False
 
@@ -837,6 +827,7 @@ def _load_session(
     conn: Connection[dict[str, object]],
     session_id: str,
     *,
+    user_id: str | None = None,
     allowed_session_types: set[str] | None = None,
 ) -> Mapping[str, object]:
     expected_types = allowed_session_types or {"learn"}
@@ -850,7 +841,37 @@ def _load_session(
     ).fetchone()
     if session is None or str(session["session_type"]) not in expected_types:
         raise EntityNotFoundError("SESSION_NOT_FOUND", "学习会话不存在")
+    if user_id is not None and str(session["user_id"]) != user_id:
+        raise EntityNotFoundError("SESSION_NOT_FOUND", "学习会话不存在")
     return session
+
+
+def _load_idempotency_record(
+    conn: Connection[dict[str, object]],
+    key: str,
+    *,
+    user_id: str | None,
+) -> Mapping[str, object] | None:
+    if user_id is None:
+        return conn.execute(
+            """
+            SELECT request_hash, response_json
+            FROM idempotency_records
+            WHERE key = %s
+              AND invalidated_at IS NULL
+            """,
+            (key,),
+        ).fetchone()
+    return conn.execute(
+        """
+        SELECT request_hash, response_json
+        FROM idempotency_records
+        WHERE key = %s
+          AND user_id = %s
+          AND invalidated_at IS NULL
+        """,
+        (key, user_id),
+    ).fetchone()
 
 
 def _load_session_exercise(

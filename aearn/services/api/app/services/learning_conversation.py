@@ -325,6 +325,7 @@ class LearningMessageGeneration:
 def prepare_learning_message(
     conn: Connection[dict[str, object]],
     *,
+    user_id: str | None = None,
     session_id: str,
     content: str,
     client_message_id: str,
@@ -332,7 +333,7 @@ def prepare_learning_message(
     settings: Settings | None = None,
 ) -> PreparedLearningMessage:
     effective_settings = settings or get_settings()
-    context = load_learning_conversation_context(conn, session_id=session_id)
+    context = load_learning_conversation_context(conn, session_id=session_id, user_id=user_id)
     if effective_settings.langgraph_enabled:
         context = _context_with_graph_memory_and_rag(conn, context, user_content=content)
         transition = _determine_transition_via_graph(context, content)
@@ -341,14 +342,7 @@ def prepare_learning_message(
     reply_context = _context_with_transition(context, transition)
     key = default_learning_message_key(session_id=session_id, client_message_id=client_message_id)
     payload_hash = request_hash(request_body)
-    stored = conn.execute(
-        """
-        SELECT request_hash, response_json
-        FROM idempotency_records
-        WHERE key = %s
-        """,
-        (key,),
-    ).fetchone()
+    stored = _load_idempotency_record(conn, key, user_id=user_id)
     if stored is not None:
         if stored["request_hash"] != payload_hash:
             raise IdempotencyConflictError("same learning message key was used with a different request body")
@@ -399,6 +393,7 @@ def prepare_learning_message(
 def create_learning_message_response(
     conn: Connection[dict[str, object]],
     *,
+    user_id: str | None = None,
     session_id: str,
     content: str,
     client_message_id: str,
@@ -410,6 +405,7 @@ def create_learning_message_response(
     summary_client = client or _optional_learning_client(effective_settings)
     prepared = prepare_learning_message(
         conn,
+        user_id=user_id,
         session_id=session_id,
         content=content,
         client_message_id=client_message_id,
@@ -896,10 +892,16 @@ def store_learning_message_response(
         merge_observations(conn, prepared.context.user_id, profile_observations)
     conn.execute(
         """
-        INSERT INTO idempotency_records (key, operation, request_hash, response_json)
-        VALUES (%s, %s, %s, %s::jsonb)
+        INSERT INTO idempotency_records (key, operation, request_hash, response_json, user_id)
+        VALUES (%s, %s, %s, %s::jsonb, %s)
         """,
-        (prepared.key, LEARNING_MESSAGE_OPERATION, prepared.payload_hash, json.dumps(finalized)),
+        (
+            prepared.key,
+            LEARNING_MESSAGE_OPERATION,
+            prepared.payload_hash,
+            json.dumps(finalized),
+            prepared.context.user_id,
+        ),
     )
     return finalized
 
@@ -1060,6 +1062,7 @@ def load_learning_conversation_context(
     conn: Connection[dict[str, object]],
     *,
     session_id: str,
+    user_id: str | None = None,
 ) -> LearningConversationContext:
     session = conn.execute(
         """
@@ -1070,6 +1073,8 @@ def load_learning_conversation_context(
         (session_id,),
     ).fetchone()
     if session is None:
+        raise EntityNotFoundError("SESSION_NOT_FOUND", "学习会话不存在")
+    if user_id is not None and str(session["user_id"]) != user_id:
         raise EntityNotFoundError("SESSION_NOT_FOUND", "学习会话不存在")
     learning_stage = str(session.get("learning_stage") or "practice_support")
     learning_stage_state = session.get("learning_stage_state_json") or {}
@@ -1168,6 +1173,34 @@ def load_learning_conversation_context(
 
 def default_learning_message_key(*, session_id: str, client_message_id: str) -> str:
     return f"learning-message:{session_id}:{client_message_id}"
+
+
+def _load_idempotency_record(
+    conn: Connection[dict[str, object]],
+    key: str,
+    *,
+    user_id: str | None,
+) -> Mapping[str, object] | None:
+    if user_id is None:
+        return conn.execute(
+            """
+            SELECT request_hash, response_json
+            FROM idempotency_records
+            WHERE key = %s
+              AND invalidated_at IS NULL
+            """,
+            (key,),
+        ).fetchone()
+    return conn.execute(
+        """
+        SELECT request_hash, response_json
+        FROM idempotency_records
+        WHERE key = %s
+          AND user_id = %s
+          AND invalidated_at IS NULL
+        """,
+        (key, user_id),
+    ).fetchone()
 
 
 def safe_generation_exceptions() -> tuple[type[Exception], ...]:

@@ -208,6 +208,7 @@ export const useNotesStore = create<NotesStore>((set, get) => ({
     try {
       const updated = await updateNote({
         noteId: note.id,
+        userId: note.user_id,
         title: draft.title,
         contentMarkdown: draft.content,
         isUserEdited: true,

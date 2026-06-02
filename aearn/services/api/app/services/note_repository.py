@@ -129,12 +129,14 @@ def update_note(
     conn: Connection[dict[str, object]],
     *,
     note_id: str,
+    user_id: str,
     title: str | None,
     content_markdown: str | None,
     is_user_edited: bool,
 ) -> dict[str, object]:
+    _ensure_user_exists(conn, user_id)
     current = _load_note_row_by_id(conn, note_id)
-    if current is None:
+    if current is None or str(current["user_id"]) != user_id:
         raise EntityNotFoundError("NOTE_NOT_FOUND", "笔记不存在")
 
     next_title = title if title is not None else str(current["title"] or "")
@@ -146,6 +148,7 @@ def update_note(
             content_markdown = %s,
             is_user_edited = %s
         WHERE id = %s
+          AND user_id = %s
           AND deleted_at IS NULL
         RETURNING *
         """,
@@ -154,6 +157,7 @@ def update_note(
             next_content,
             is_user_edited,
             note_id,
+            user_id,
         ),
     ).fetchone()
     if updated is None:

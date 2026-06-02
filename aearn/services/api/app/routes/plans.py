@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Header, Request, status
+from fastapi import APIRouter, Header, Query, Request, status
 from fastapi.responses import JSONResponse
 
 from app.agents.onboarding_plan_agent import build_onboarding_plan_context, build_sdk_onboarding_plan_response
@@ -192,9 +192,13 @@ async def create_plan(
 
 
 @router.get("/{plan_id}", response_model=None)
-def read_plan(plan_id: str, request: Request) -> dict[str, object] | JSONResponse:
+def read_plan(
+    plan_id: str,
+    request: Request,
+    user_id: str | None = Query(default=None, min_length=1),
+) -> dict[str, object] | JSONResponse:
     with connect() as conn:
-        plan = get_plan_detail(conn, plan_id)
+        plan = get_plan_detail(conn, plan_id, user_id=user_id)
     if plan is None:
         return error_response(
             request,
