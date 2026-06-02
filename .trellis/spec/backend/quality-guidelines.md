@@ -1080,7 +1080,7 @@ The feature service loads facts and owns persistence, while the shared layer onl
 
 ### 5. Good/Base/Bad Cases
 
-- Good: TypeScript has official docs grounding but remains `enabled_for_public_selection=False` and `supports_execution=False`.
+- Good: TypeScript may have official docs grounding and a validated Node/TypeScript runner while still remaining `enabled_for_public_selection=False` until route/content/UI work explicitly enables public selection.
 - Good: fetching a registered Python seed URL through an injected fake client returns a document with canonical URL, final URL, fetched timestamp, content type, and content hash.
 - Good: cleaning fetched HTML returns section-aware chunks with canonical URL, trust tier, source type, fetched timestamp, topic tags, and stable hashes.
 - Good: a Python retrieval query never returns JavaScript chunks, even when the text matches.
@@ -1124,7 +1124,78 @@ This mixes documentation readiness with product/runtime availability.
 ```python
 sources = sources_for_language("typescript")
 assert sources
-assert require_language_capability("typescript").supports_execution is False
+assert require_language_capability("typescript").enabled_for_public_selection is False
 ```
 
-Grounding can be prepared before the runtime runner or public course contract exists.
+Grounding can be prepared before the public course contract exists, but it must not silently change language selection or runner availability.
+
+## Scenario: Browser Preview Runner Boundary
+
+### 1. Scope / Trigger
+
+- Trigger: adding or changing `browser_preview` runner behavior for JavaScript, HTML, or CSS exercises.
+- Scope: `app/services/browser_preview_runner.py`, `app/services/runner_registry.py`, `app/services/runtime_runner.py`, `app/services/language_capabilities.py`, exercise/review seed metadata, and browser runner tests.
+
+### 2. Signatures
+
+- Service signature: `execute_browser_preview_with_tests(exercise, code, filled_blanks) -> BrowserPreviewExecutionResult`.
+- Runtime dispatch signature: `RunnerRegistry.run_browser_preview(exercise, code, filled_blanks) -> RuntimeExecutionResult`.
+- Runtime profile signature: `runtime_profile.runtime_tier="browser_preview"` with `language` in `javascript`, `html_css`, `html`, or `css`.
+- Metadata fields: `metadata_json.required_patterns`, optional `metadata_json.preview_html.success`, optional `metadata_json.preview_html.failure`, optional `metadata_json.browser_rule_family`.
+- Test case fields: `case_type` may be `visible`, `hidden`, or `preview_assertion`.
+
+### 3. Contracts
+
+- Browser preview is a deterministic teaching runner, not a real headless browser or arbitrary JS project runner.
+- The runner must not install npm packages, execute arbitrary `assertion_code`, fetch network resources, or write project files.
+- JavaScript event-flow exercises use the `js_event_flow` rule family: event binding, output sync, blank gates, and shared state before the event listener.
+- HTML/CSS static preview exercises use the `static_preview` rule family: blank gates and required patterns without requiring `addEventListener` or `output.textContent`.
+- `BROWSER_PREVIEW_RUNNER` must disclose `supports_execution=True`, `supports_tests=True`, `supports_stdout=True`, and `supports_preview=True`.
+- Public `RuntimeExecutionResult.test_results` must redact hidden case ids, hidden expected values, and hidden failure messages.
+
+### 4. Validation & Error Matrix
+
+- `while (true)` or `for (;;)` in browser-preview code -> `runtime_status=timeout`, failed public test cases, retry same.
+- Browser runtime-error signature such as `throw new Error` or `undefinedVariable` -> `runtime_status=runtime_error`, failed public test cases, explain error.
+- JavaScript event-flow code missing event binding or output sync -> `runtime_status=success` with failing tests, not a runner crash.
+- HTML/CSS static preview missing required patterns -> `runtime_status=success` with failing tests and failure preview HTML when available.
+- Hidden test failure -> public hidden case id such as `hidden_case_3` and generic hidden failure message.
+
+### 5. Good/Base/Bad Cases
+
+- Good: a JavaScript counter exercise with shared `count` state before `addEventListener` passes visible and preview assertion tests.
+- Good: an HTML/CSS static exercise with `.pill.active` and required CSS patterns passes without any JavaScript event code.
+- Base: preview assertions remain deterministic server-owned checks; `assertion_code` is stored but not executed.
+- Bad: applying JavaScript event-flow requirements to HTML/CSS static preview exercises.
+- Bad: exposing hidden ids such as `hidden_secret_case` or expected values such as `999` in public test output.
+
+### 6. Tests Required
+
+- Assert browser runner capability selects `runner_key="browser"` and discloses execution/tests/stdout/preview support.
+- Assert JavaScript event-flow success covers event binding, output sync, shared state, stdout, and preview HTML.
+- Assert HTML/CSS static preview can pass without `addEventListener` or `output.textContent`.
+- Assert runtime error and timeout return stable public categories.
+- Assert hidden browser failures redact case ids and expected values.
+- Run M3/M4 regression tests after dispatch changes because learning and review write `Attempt(run)` records from `RuntimeExecutionResult`.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+if runtime_tier == "browser_preview":
+    logic_pass = logic_pass and "addEventListener" in code and "output.textContent" in code
+```
+
+This forces HTML/CSS static preview exercises to satisfy JavaScript counter-exercise rules.
+
+#### Correct
+
+```python
+if language in {"html_css", "html", "css"}:
+    rule_family = "static_preview"
+else:
+    rule_family = "js_event_flow"
+```
+
+Browser preview exercises share the same runtime tier, but JavaScript event-flow and HTML/CSS static preview have different deterministic validation rules.
