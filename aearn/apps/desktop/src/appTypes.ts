@@ -1,10 +1,16 @@
-import type { ApiHealth, LearningSessionResponse } from "./types";
+import type { ApiHealth, EnvironmentDoctorReport, LearningSessionResponse } from "./types";
 import type { Language } from "./types";
 
 export type ApiHealthState =
   | { status: "loading" }
   | { status: "online"; data: ApiHealth }
   | { status: "offline"; message: string };
+
+export type EnvironmentDoctorState =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "ready"; data: EnvironmentDoctorReport }
+  | { status: "error"; message: string };
 
 export type AsyncActionState =
   | { status: "idle" }

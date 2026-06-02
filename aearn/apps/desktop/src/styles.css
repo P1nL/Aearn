@@ -1567,6 +1567,11 @@
       font-weight: 600;
     }
 
+    .setting-card .status-warn {
+      color: var(--accent-dark);
+      font-weight: 600;
+    }
+
     .dashboard-banner {
       display: flex;
       align-items: flex-start;
@@ -1764,6 +1769,65 @@
       font-size: 13px;
       color: var(--muted);
       line-height: 1.5;
+    }
+
+    .setting-card span,
+    .setting-card small {
+      display: block;
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+      overflow-wrap: anywhere;
+    }
+
+    .doctor-section {
+      display: grid;
+      gap: 14px;
+      margin-top: 22px;
+    }
+
+    .settings-section-title {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 14px;
+      margin-top: 4px;
+    }
+
+    .settings-section-title.compact {
+      margin-top: 8px;
+    }
+
+    .settings-section-title h3 {
+      margin: 0;
+      font-size: 14px;
+      font-weight: 850;
+      color: var(--ink);
+    }
+
+    .settings-section-title p {
+      margin: 4px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .doctor-grid {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .doctor-guidance-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .doctor-summary {
+      background: linear-gradient(135deg, rgba(255, 250, 242, .96), rgba(243, 234, 220, .84));
+    }
+
+    .doctor-guidance {
+      border-color: rgba(143, 79, 50, .2);
+      background: rgba(255, 250, 242, .74);
     }
 
     .drawer-scrim {

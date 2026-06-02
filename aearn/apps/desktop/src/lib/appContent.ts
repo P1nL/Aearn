@@ -91,12 +91,12 @@ export const SETTING_PANELS: Record<SettingsKey, SettingsPanel> = {
   },
   diagnostics: {
     title: "关于与诊断",
-    meta: "版本信息与连接状态",
+    meta: "版本信息、连接状态与本机环境医生",
     cards: [
       ["版本", "V1 桌面端"],
       ["定位", "代码补全、运行预览、测试判定、复习闭环"],
       ["技术形态", "React + Vite + Tauri"],
-      ["状态", "查看当前连接和恢复状态；环境医生和 runner 矩阵由后续任务接入。"],
+      ["状态", "查看当前连接、恢复状态、环境医生和 runner 矩阵。"],
     ],
   },
 };

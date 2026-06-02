@@ -4,6 +4,14 @@ import type {
   CodeCompletionResult,
   CreatedPlanResponse,
   DashboardResponse,
+  EnvironmentComponent,
+  EnvironmentComponentStatus,
+  EnvironmentDoctorReport,
+  EnvironmentGuidance,
+  EnvironmentGuidanceSeverity,
+  EnvironmentLanguageRunner,
+  EnvironmentOverallStatus,
+  EnvironmentProductStatus,
   ExplainErrorResponse,
   ExplanationFocus,
   ExplanationCheckResponse,
@@ -43,6 +51,14 @@ export async function fetchApiHealth(signal?: AbortSignal): Promise<ApiHealth> {
   const payload = await requestJson(`${API_BASE_URL}/health`, { signal });
   if (!isApiHealth(payload)) {
     throw new Error("Health check returned an invalid payload");
+  }
+  return payload;
+}
+
+export async function fetchEnvironmentDoctor(signal?: AbortSignal): Promise<EnvironmentDoctorReport> {
+  const payload = await requestJson(`${API_BASE_URL}/api/environment/doctor`, { signal });
+  if (!isEnvironmentDoctorReport(payload)) {
+    throw new Error("Environment doctor returned an invalid payload");
   }
   return payload;
 }
@@ -576,6 +592,102 @@ async function requestJson(url: string, init: RequestInit = {}): Promise<unknown
 
 function isApiHealth(payload: unknown): payload is ApiHealth {
   return isRecord(payload) && payload.status === "ok" && typeof payload.service === "string";
+}
+
+function isEnvironmentDoctorReport(payload: unknown): payload is EnvironmentDoctorReport {
+  return (
+    isRecord(payload) &&
+    typeof payload.generated_at === "string" &&
+    isRecord(payload.platform) &&
+    typeof payload.platform.system === "string" &&
+    typeof payload.platform.release === "string" &&
+    typeof payload.platform.python_executable === "string" &&
+    isRecord(payload.summary) &&
+    isEnvironmentOverallStatus(payload.summary.overall_status) &&
+    typeof payload.summary.ready_count === "number" &&
+    typeof payload.summary.missing_required_count === "number" &&
+    typeof payload.summary.planned_runner_count === "number" &&
+    Array.isArray(payload.components) &&
+    payload.components.every(isEnvironmentComponent) &&
+    Array.isArray(payload.language_runners) &&
+    payload.language_runners.every(isEnvironmentLanguageRunner) &&
+    Array.isArray(payload.guidance) &&
+    payload.guidance.every(isEnvironmentGuidance)
+  );
+}
+
+function isEnvironmentComponent(payload: unknown): payload is EnvironmentComponent {
+  return (
+    isRecord(payload) &&
+    typeof payload.component_id === "string" &&
+    typeof payload.label === "string" &&
+    typeof payload.kind === "string" &&
+    isEnvironmentComponentStatus(payload.status) &&
+    (typeof payload.version === "string" || payload.version === null) &&
+    (typeof payload.executable_path === "string" || payload.executable_path === null) &&
+    Array.isArray(payload.required_for) &&
+    payload.required_for.every((item) => typeof item === "string") &&
+    (typeof payload.guidance_id === "string" || payload.guidance_id === null) &&
+    typeof payload.message === "string" &&
+    isRecord(payload.diagnostic) &&
+    (typeof payload.diagnostic.command === "string" || payload.diagnostic.command === null) &&
+    Array.isArray(payload.diagnostic.args) &&
+    payload.diagnostic.args.every((item) => typeof item === "string") &&
+    (typeof payload.diagnostic.exit_code === "number" || payload.diagnostic.exit_code === null) &&
+    typeof payload.diagnostic.stdout === "string" &&
+    typeof payload.diagnostic.stderr === "string"
+  );
+}
+
+function isEnvironmentLanguageRunner(payload: unknown): payload is EnvironmentLanguageRunner {
+  return (
+    isRecord(payload) &&
+    typeof payload.language_id === "string" &&
+    typeof payload.display_name === "string" &&
+    typeof payload.runner_key === "string" &&
+    typeof payload.execution === "string" &&
+    typeof payload.capability_state === "string" &&
+    typeof payload.supports_execution === "boolean" &&
+    isEnvironmentComponentStatus(payload.toolchain_status) &&
+    isEnvironmentProductStatus(payload.product_status) &&
+    (typeof payload.guidance_id === "string" || payload.guidance_id === null) &&
+    typeof payload.disclosure === "string"
+  );
+}
+
+function isEnvironmentGuidance(payload: unknown): payload is EnvironmentGuidance {
+  return (
+    isRecord(payload) &&
+    typeof payload.guidance_id === "string" &&
+    typeof payload.title === "string" &&
+    Array.isArray(payload.applies_to) &&
+    payload.applies_to.every((item) => typeof item === "string") &&
+    isEnvironmentGuidanceSeverity(payload.severity) &&
+    typeof payload.summary === "string" &&
+    Array.isArray(payload.windows_steps) &&
+    payload.windows_steps.every((item) => typeof item === "string") &&
+    Array.isArray(payload.verification_commands) &&
+    payload.verification_commands.every((item) => typeof item === "string") &&
+    Array.isArray(payload.safety_notes) &&
+    payload.safety_notes.every((item) => typeof item === "string") &&
+    payload.source === "static_template"
+  );
+}
+
+function isEnvironmentComponentStatus(payload: unknown): payload is EnvironmentComponentStatus {
+  return payload === "ready" || payload === "missing" || payload === "error" || payload === "planned";
+}
+
+function isEnvironmentOverallStatus(payload: unknown): payload is EnvironmentOverallStatus {
+  return payload === "ready" || payload === "needs_attention" || payload === "blocked";
+}
+
+function isEnvironmentProductStatus(payload: unknown): payload is EnvironmentProductStatus {
+  return payload === "executable" || payload === "planned" || payload === "static_review" || payload === "unsupported";
+}
+
+function isEnvironmentGuidanceSeverity(payload: unknown): payload is EnvironmentGuidanceSeverity {
+  return payload === "required" || payload === "recommended" || payload === "optional";
 }
 
 function isLanguageCourse(payload: unknown): payload is LanguageCourse {
