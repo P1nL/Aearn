@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from app.services.grounding_citations import grounding_results_for_agent
-from app.services.grounding_processing import GroundingChunk
-from app.services.grounding_retrieval import GroundingRetrievalResult
+from app.services.grounding.grounding_citations import grounding_results_for_agent
+from app.services.grounding.grounding_processing import GroundingChunk
+from app.services.grounding.grounding_retrieval import GroundingRetrievalResult
 
 
 def _result(text: str = "Functions group reusable behavior for clear programs.") -> GroundingRetrievalResult:

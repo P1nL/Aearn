@@ -5,7 +5,7 @@ from fastapi.responses import JSONResponse
 from app.core.errors import error_response
 from app.db.connection import connect
 from app.models.onboarding import UserCreateRequest
-from app.services.local_user_data_repository import (
+from app.services.repositories.local_user_data_repository import (
     EntityNotFoundError as LocalUserDataNotFoundError,
     delete_user_data,
     export_user_data,
@@ -13,7 +13,7 @@ from app.services.local_user_data_repository import (
     list_local_users,
     reset_user_data,
 )
-from app.services.user_repository import create_user, get_user, update_preferences
+from app.services.repositories.user_repository import create_user, get_user, update_preferences
 
 
 router = APIRouter(prefix="/api/users", tags=["users"])

@@ -4,7 +4,7 @@ from fastapi.responses import JSONResponse
 
 from app.core.errors import error_response
 from app.db.connection import connect
-from app.services.dashboard_repository import EntityNotFoundError, get_dashboard
+from app.services.repositories.dashboard_repository import EntityNotFoundError, get_dashboard
 
 
 router = APIRouter(prefix="/api", tags=["dashboard"])

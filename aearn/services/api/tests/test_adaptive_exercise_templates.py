@@ -10,10 +10,10 @@ import pytest
 from app.core.config import get_settings
 from app.db.bootstrap import bootstrap_database
 from app.db.connection import connect
-from app.services import adaptive_exercise_service
-from app.services.adaptive_exercise_service import GeneratedAdaptiveCandidate, build_adaptive_exercise_template
-from app.services.exercise_repository import _exercise_template, get_or_create_exercise_for_knowledge_point
-from app.services.local_user_data_repository import export_user_data, get_user_data_summary, reset_user_data
+from app.services.exercises import adaptive_exercise_service
+from app.services.exercises.adaptive_exercise_service import GeneratedAdaptiveCandidate, build_adaptive_exercise_template
+from app.services.exercises.exercise_repository import _exercise_template, get_or_create_exercise_for_knowledge_point
+from app.services.repositories.local_user_data_repository import export_user_data, get_user_data_summary, reset_user_data
 
 
 def _database_available() -> bool:
@@ -179,13 +179,16 @@ def test_invalid_model_output_validation_failure_and_unsupported_runner_fall_bac
         assert validation_meta["validation_status"] == "fallback"
         assert validation_meta["fallback_reason"] == "validation_failed"
 
-        java_context = _learning_context(conn, language="java")
-        java_fallback = _exercise_template(java_context["knowledge_point"], java_context["runtime_profile"])
+        unsupported_context = _learning_context(conn, language="cpp")
+        unsupported_fallback = _exercise_template(
+            unsupported_context["knowledge_point"],
+            unsupported_context["runtime_profile"],
+        )
         unsupported = build_adaptive_exercise_template(
             conn,
-            knowledge_point=java_context["knowledge_point"],
-            runtime_profile=java_context["runtime_profile"],
-            fallback_template=java_fallback,
+            knowledge_point=unsupported_context["knowledge_point"],
+            runtime_profile=unsupported_context["runtime_profile"],
+            fallback_template=unsupported_fallback,
             candidate_generator=lambda _context, _template: pytest.fail("unsupported runner should not call model"),
         )
         conn.commit()

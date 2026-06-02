@@ -1,9 +1,9 @@
 """Tests for LangGraph learning conversation state machine."""
 from __future__ import annotations
 
-import app.agents.learning_graph as learning_graph_module
-import app.services.learning_conversation as learning_conversation_service
-from app.agents.graph_runtime_contracts import (
+import app.agents.graphs.learning_graph as learning_graph_module
+import app.services.conversations.learning_conversation as learning_conversation_service
+from app.agents.graphs.graph_runtime_contracts import (
     GraphRunResult,
     IntentType,
     build_run_result,
@@ -11,7 +11,7 @@ from app.agents.graph_runtime_contracts import (
     build_graph_rag_context,
     make_intent,
 )
-from app.agents.learning_graph import (
+from app.agents.graphs.learning_graph import (
     AgentState,
     build_learning_graph,
     compile_learning_graph,
@@ -28,7 +28,7 @@ from app.agents.learning_graph import (
     route_after_repair,
     select_exercise,
 )
-from app.services.learning_conversation import LearningConversationContext, build_learning_graph_state
+from app.services.conversations.learning_conversation import LearningConversationContext, build_learning_graph_state
 
 
 class TestNodeFunctions:

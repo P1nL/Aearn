@@ -3,14 +3,14 @@ from __future__ import annotations
 
 import pytest
 
-from app.services.learner_profile import (
+from app.services.repositories.learner_profile import (
     build_profile_summary,
     derive_stable_profile_observations,
     ensure_learner_profile,
     get_learner_profile,
     merge_observations,
 )
-from app.agents.tools import AgentSideEffects, LearningToolContext, do_update_learner_profile
+from app.agents.tooling.tools import AgentSideEffects, LearningToolContext, do_update_learner_profile
 
 
 @pytest.fixture()

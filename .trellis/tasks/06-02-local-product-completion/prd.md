@@ -67,6 +67,7 @@ local-product-completion
 │  └─ managed-compiled-runners-java-go-csharp
 ├─ 07-adaptive-exercise-template-system
 ├─ 08-agent-quality-eval-gates
+├─ backend-module-organization-refactor
 └─ 09-local-product-final-integration-review
 ```
 
@@ -80,6 +81,7 @@ local-product-completion
 - `06-language-l3-runner-contracts` owns execution capability expansion and stable runner result contracts for supported teaching exercises.
 - `07-adaptive-exercise-template-system` owns canonical templates, dynamic variants, runner validation, versioning, and fallback behavior.
 - `08-agent-quality-eval-gates` owns prompt/graph/router/eval regression gates across product boundaries.
+- `backend-module-organization-refactor` owns backend `app/services` and `app/agents` module organization after runner, grounding, adaptive exercise, and data-boundary work have added enough files to justify structural cleanup.
 - `09-local-product-final-integration-review` owns cross-child integration checks and final local-product readiness verdict.
 
 ## Dependency Contracts
@@ -89,6 +91,7 @@ local-product-completion
 - `06-language-l3-runner-contracts` depends on language capability and runner registry contracts. Each runner child must write its own missing-toolchain and safety-boundary behavior.
 - `07-adaptive-exercise-template-system` depends on at least one stable runner validation path for each target language family it generates exercises for.
 - `08-agent-quality-eval-gates` depends on grounding integration, runner contracts, and adaptive exercise contracts being explicit enough to write bad-case regressions.
+- `backend-module-organization-refactor` depends on completed runner, grounding, adaptive exercise, and local data-boundary modules being present, and must preserve all existing API, database, runner, graph, and Agent contracts.
 - `09-local-product-final-integration-review` depends on all selected child tasks being archived or explicitly deferred with a documented reason.
 
 ## Phased Delivery
@@ -96,7 +99,7 @@ local-product-completion
 - Phase 1: stabilize local startup, complete core desktop learning loop, productize language grounding, add environment doctor/guidance, and harden Python/JavaScript/HTML/CSS L3 baselines.
 - Phase 2: add local user/data management, SQL L3 runner, and adaptive exercise template validation.
 - Phase 3: add managed compiled runner support for Java, Go, and C# teaching exercises.
-- Phase 4: harden Agent eval gates and complete final local-product integration review.
+- Phase 4: harden Agent eval gates, organize backend modules for maintainability, and complete final local-product integration review.
 
 ## Phase 1 Task Order
 
@@ -122,6 +125,7 @@ local-product-completion
 - [ ] Hidden tests, solution references, provider payloads, raw prompts, and internal runner details are not exposed to learners.
 - [ ] Adaptive exercise variants are validated before use and fall back to stable canonical templates when validation fails.
 - [ ] Prompt/graph/router/eval regression gates cover bad cases for direct-answer requests, capability overclaims, missing citations, repeated confusion, runner failures, and dynamic exercise safety.
+- [ ] Backend `app/services` and `app/agents` module organization is readable enough for final integration review, with domain subpackages and no behavior changes.
 - [ ] Existing onboarding, learning, review, note, graph, and FSRS flows keep passing their focused regression tests.
 
 ## Out of Scope

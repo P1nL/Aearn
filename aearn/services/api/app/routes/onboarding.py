@@ -5,19 +5,19 @@ from collections.abc import AsyncGenerator, Iterable, Mapping
 from fastapi import APIRouter, Header, Request, status
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from app.agents.graph_runtime_contracts import (
+from app.agents.graphs.graph_runtime_contracts import (
     GraphRunResult,
     IntentType,
     validate_run_result_for_boundary,
 )
-from app.agents.onboarding_graph import (
+from app.agents.graphs.onboarding_graph import (
     invoke_onboarding_orchestration,
     onboarding_result_to_run_result,
 )
 from app.core.config import get_settings
 from app.core.errors import error_response, request_id_from
 from app.db.connection import connect
-from app.services.onboarding_conversation import (
+from app.services.conversations.onboarding_conversation import (
     ExtractedSlots,
     OnboardingConversationContext,
     OnboardingPlanDraftError,
@@ -42,8 +42,8 @@ from app.services.onboarding_conversation import (
     store_onboarding_agent_message,
     update_onboarding_status,
 )
-from app.services.llm_client import LLMCallError, LLMConfigurationError, LLMInvalidResponseError
-from app.services.plan_repository import (
+from app.services.llm.llm_client import LLMCallError, LLMConfigurationError, LLMInvalidResponseError
+from app.services.repositories.plan_repository import (
     EntityNotFoundError,
     IdempotencyConflictError,
     PlanDraftError,
@@ -51,7 +51,7 @@ from app.services.plan_repository import (
     default_confirm_key,
     request_hash,
 )
-from app.services.sse import SSEWriter, chunk_tool_call_arguments, stream_response
+from app.services.streaming.sse import SSEWriter, chunk_tool_call_arguments, stream_response
 
 
 router = APIRouter(prefix="/api/onboarding", tags=["onboarding"])

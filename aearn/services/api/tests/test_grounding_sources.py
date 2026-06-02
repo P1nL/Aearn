@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.services.grounding_sources import (
+from app.services.grounding.grounding_sources import (
     all_grounding_sources,
     allowlisted_domains_for_source,
     get_grounding_source,
@@ -8,7 +8,7 @@ from app.services.grounding_sources import (
     sources_for_language,
     validate_grounding_source_registry,
 )
-from app.services.language_capabilities import all_language_capabilities, require_language_capability
+from app.services.runners.language_capabilities import all_language_capabilities, require_language_capability
 
 
 def test_grounding_sources_cover_all_language_capabilities() -> None:
@@ -57,11 +57,18 @@ def test_cpp_uses_trusted_de_facto_source_with_disclosure() -> None:
     assert "no single official" in cppreference.notes
 
 
-def test_planned_languages_gain_docs_without_runtime_or_public_selection_side_effects() -> None:
-    for language_id in ("typescript", "go", "csharp", "rust", "sql"):
+def test_non_public_languages_gain_docs_without_public_selection_side_effects() -> None:
+    expected_execution_support = {
+        "typescript": True,
+        "go": True,
+        "csharp": True,
+        "rust": False,
+        "sql": True,
+    }
+
+    for language_id, supports_execution in expected_execution_support.items():
         capability = require_language_capability(language_id)
 
         assert sources_for_language(language_id)
         assert capability.enabled_for_public_selection is False
-        assert capability.supports_execution is False
-
+        assert capability.supports_execution is supports_execution

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from app.services.grounding_fetcher import GroundingFetchDocument
-from app.services.grounding_processing import clean_and_chunk_document
+from app.services.grounding.grounding_fetcher import GroundingFetchDocument
+from app.services.grounding.grounding_processing import clean_and_chunk_document
 
 
 def _document(raw_content: str) -> GroundingFetchDocument:

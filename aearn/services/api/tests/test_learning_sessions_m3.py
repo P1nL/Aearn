@@ -7,22 +7,22 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app.routes.plans as plans_route
-from app.agents.graph_runtime_contracts import IntentType, build_run_result, make_intent
+from app.agents.graphs.graph_runtime_contracts import IntentType, build_run_result, make_intent
 from app.core.config import Settings, get_settings
 from app.db.bootstrap import bootstrap_database
 from app.db.connection import connect
-from app.agents.tools import AgentSideEffects, LearningToolContext
+from app.agents.tooling.tools import AgentSideEffects, LearningToolContext
 from app.main import app
-from app.services.exercise_guidance import (
+from app.services.exercises.exercise_guidance import (
     build_error_explanation_response,
     build_explanation_check_response,
     build_hint_response,
 )
-from app.services.grounding_index_repository import run_and_persist_fixture_grounding_reindex
-from app.services.learner_profile import ensure_learner_profile, get_learner_profile, merge_observations
-from app.services import learning_conversation
-from app.services import learning_session_repository as session_repository
-from app.services.llm_client import LLMCallError
+from app.services.grounding.grounding_index_repository import run_and_persist_fixture_grounding_reindex
+from app.services.repositories.learner_profile import ensure_learner_profile, get_learner_profile, merge_observations
+from app.services.conversations import learning_conversation
+from app.services.repositories import learning_session_repository as session_repository
+from app.services.llm.llm_client import LLMCallError
 
 
 def _database_available() -> bool:
@@ -3369,8 +3369,8 @@ def test_managed_java_runtime_statuses_are_public_and_persisted(
     runtime_status: str,
     expected_next_action: str,
 ) -> None:
-    from app.services import runner_registry
-    from app.services.managed_compiled_runner import ManagedCompiledExecutionResult, ManagedCompiledTestCaseResult
+    from app.services.runners import runner_registry
+    from app.services.runners.managed_compiled_runner import ManagedCompiledExecutionResult, ManagedCompiledTestCaseResult
 
     def fake_execute(*args, **kwargs):  # type: ignore[no-untyped-def]
         del args, kwargs

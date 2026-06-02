@@ -1,7 +1,7 @@
 """Tests for agent routing and handoff logic."""
 from __future__ import annotations
 
-from app.agents.router import (
+from app.agents.graphs.router import (
     build_routing_context,
     get_agent_description,
     get_handoff_targets,

@@ -1,7 +1,7 @@
 """Tests for review graph orchestration."""
 from __future__ import annotations
 
-from app.agents.review_graph import (
+from app.agents.graphs.review_graph import (
     invoke_review_orchestration,
     review_error_to_fallback,
     review_result_to_run_result,

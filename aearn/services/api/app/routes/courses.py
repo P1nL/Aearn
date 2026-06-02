@@ -3,7 +3,7 @@ from fastapi.responses import JSONResponse
 
 from app.core.errors import error_response
 from app.db.connection import connect
-from app.services.catalog import list_courses
+from app.services.curriculum.catalog import list_courses
 
 
 router = APIRouter(prefix="/api/language-courses", tags=["language-courses"])

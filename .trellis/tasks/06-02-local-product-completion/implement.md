@@ -18,7 +18,8 @@
 6. Create `02-local-user-data-boundary` before final data-management polish.
 7. Create `07-adaptive-exercise-template-system` after at least one target runner validation path is stable.
 8. Create `08-agent-quality-eval-gates` after grounding, runner, and adaptive-exercise contracts are concrete.
-9. Create or start `09-local-product-final-integration-review` only when selected child work is complete.
+9. Create `backend-module-organization-refactor` after enough backend modules exist to justify structural cleanup, and before final integration review.
+10. Create or start `09-local-product-final-integration-review` only when selected child work is complete.
 
 ## Phase 1 Execution Checklist
 
@@ -46,6 +47,7 @@
 ## Phase 4 Execution Checklist
 
 - [ ] Add agent eval gates for answer-seeking, repeated confusion, capability overclaims, missing citations, runner failures, grounding failures, and dynamic exercise safety.
+- [ ] Reorganize backend `app/services` and `app/agents` modules into domain subpackages without behavior changes.
 - [ ] Run cross-child integration checks.
 - [ ] Produce final local-product readiness verdict.
 - [ ] Archive completed children before archiving the parent.

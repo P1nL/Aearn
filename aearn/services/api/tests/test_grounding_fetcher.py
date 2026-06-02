@@ -3,8 +3,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import UTC, datetime
 
-from app.services.grounding_fetcher import GroundingDocsFetcher, GroundingHttpResponse
-from app.services.grounding_sources import seed_urls_for_language
+from app.services.grounding.grounding_fetcher import GroundingDocsFetcher, GroundingHttpResponse
+from app.services.grounding.grounding_sources import seed_urls_for_language
 
 
 class FakeHttpClient:

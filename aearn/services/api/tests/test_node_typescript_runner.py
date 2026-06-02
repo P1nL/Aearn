@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.services.node_typescript_runner import execute_node_typescript_with_tests
+from app.services.runners.node_typescript_runner import execute_node_typescript_with_tests
 
 
 def test_node_typescript_runner_executes_function_tests() -> None:

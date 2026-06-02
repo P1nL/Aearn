@@ -1,6 +1,6 @@
 import json
 
-from app.services.graph_event_stream import (
+from app.services.streaming.graph_event_stream import (
     GRAPH_STREAM_NODE,
     GRAPH_STREAM_TOOL,
     MAX_GRAPH_STREAM_FIELD_LENGTH,

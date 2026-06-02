@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from app.services.grounding_processing import GroundingChunk
-from app.services.grounding_retrieval import GroundingRetrievalQuery, retrieve_grounding_chunks
+from app.services.grounding.grounding_processing import GroundingChunk
+from app.services.grounding.grounding_retrieval import GroundingRetrievalQuery, retrieve_grounding_chunks
 
 
 def _chunk(

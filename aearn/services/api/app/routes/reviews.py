@@ -7,8 +7,8 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, StreamingResponse
 from psycopg import Connection
 
-from app.agents.graph_runtime_contracts import GraphRunResult, IntentType, validate_run_result_for_boundary
-from app.agents.review_graph import invoke_review_orchestration, review_result_to_run_result
+from app.agents.graphs.graph_runtime_contracts import GraphRunResult, IntentType, validate_run_result_for_boundary
+from app.agents.graphs.review_graph import invoke_review_orchestration, review_result_to_run_result
 from app.core.config import get_settings
 from app.core.errors import (
     MODEL_UNAVAILABLE_MESSAGE,
@@ -18,15 +18,15 @@ from app.core.errors import (
 )
 from app.db.connection import connect
 from app.models.reviews import ReviewWarmupResultRequest, StartReviewSessionRequest, SubmitReviewExerciseResultRequest
-from app.services.plan_repository import IdempotencyConflictError
-from app.services.review_conversation import (
+from app.services.repositories.plan_repository import IdempotencyConflictError
+from app.services.conversations.review_conversation import (
     ReviewSessionNotFoundError,
     prepare_review_message,
     safe_generation_exceptions,
     start_review_generation,
     store_review_agent_message,
 )
-from app.services.review_repository import (
+from app.services.repositories.review_repository import (
     EntityNotFoundError,
     InvalidReviewRequestError,
     ReviewNotDueError,
@@ -36,9 +36,9 @@ from app.services.review_repository import (
     start_review_session,
     submit_review_exercise_result,
 )
-from app.services.review_seed_bank import ReviewSeedBankGenerationError
-from app.services.llm_client import LLMCallError, LLMConfigurationError, LLMInvalidResponseError
-from app.services.sse import SSEWriter, stream_response
+from app.services.repositories.review_seed_bank import ReviewSeedBankGenerationError
+from app.services.llm.llm_client import LLMCallError, LLMConfigurationError, LLMInvalidResponseError
+from app.services.streaming.sse import SSEWriter, stream_response
 
 
 router = APIRouter(prefix="/api/reviews", tags=["reviews"])

@@ -5,7 +5,7 @@ import json
 import subprocess
 from pathlib import Path
 
-from app.services.sandbox import execute_python_with_tests
+from app.services.runners.sandbox import execute_python_with_tests
 
 
 def test_simple_function_returns_correct_result():
@@ -191,7 +191,7 @@ def test_subprocess_runs_from_temporary_workspace(monkeypatch):
             stderr="",
         )
 
-    monkeypatch.setattr("app.services.sandbox.subprocess.run", fake_run)
+    monkeypatch.setattr("app.services.runners.sandbox.subprocess.run", fake_run)
 
     result = execute_python_with_tests("print('ok')\n", [], entry_function="main")
 

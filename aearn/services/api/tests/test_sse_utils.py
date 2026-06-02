@@ -1,6 +1,6 @@
 import json
 
-from app.services.sse import SSEWriter, sse_event
+from app.services.streaming.sse import SSEWriter, sse_event
 
 
 def test_sse_event_uses_single_line_json_data() -> None:
