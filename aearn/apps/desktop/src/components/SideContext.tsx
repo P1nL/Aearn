@@ -1,12 +1,11 @@
 import type { AppRoute } from "../appTypes";
-import type { CreatedPlanResponse, SubmitExerciseResponse } from "../types";
-import { buildReviewCards, buildRouteCards } from "../lib/learningHelpers";
+import type { CreatedPlanResponse } from "../types";
+import { buildRouteCards } from "../lib/learningHelpers";
 
 type SideContextProps = {
   route: AppRoute;
   createdPlan: CreatedPlanResponse | null;
   activeKnowledgePointId: string;
-  lastSubmit: SubmitExerciseResponse | null;
   onSelectKnowledgePoint: (knowledgePointId: string) => void;
 };
 
@@ -14,7 +13,6 @@ export function SideContext({
   route,
   createdPlan,
   activeKnowledgePointId,
-  lastSubmit,
   onSelectKnowledgePoint,
 }: SideContextProps) {
   if (route === "settings") {
@@ -53,17 +51,22 @@ export function SideContext({
   }
 
   if (route === "review") {
-    const reviewCards = buildReviewCards(lastSubmit);
     return (
       <section className="side-context" aria-live="polite">
         <h2>复习概览</h2>
         <div className="context-stack">
-          {reviewCards.map((card, index) => (
-            <article className={index === 0 ? "review-mini active" : "review-mini"} key={card.title}>
-              <h3 className="mini-title">{card.title}</h3>
-              <p className="mini-body">{card.body}</p>
-            </article>
-          ))}
+          <article className="review-mini active">
+            <h3 className="mini-title">今日队列</h3>
+            <p className="mini-body">复习页会从后端读取到期知识点；没有用户或没有到期项时保持空态。</p>
+          </article>
+          <article className="review-mini">
+            <h3 className="mini-title">先热身</h3>
+            <p className="mini-body">热身只帮助唤醒记忆，不会提前更新掌握程度或复习计划。</p>
+          </article>
+          <article className="review-mini">
+            <h3 className="mini-title">提交后更新</h3>
+            <p className="mini-body">只有变体练习提交成功后，页面才展示后端返回的掌握程度、下次复习和遗忘风险。</p>
+          </article>
         </div>
       </section>
     );

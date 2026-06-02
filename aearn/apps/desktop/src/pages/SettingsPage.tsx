@@ -287,7 +287,7 @@ function renderPrivacyPanel(
   return (
     <>
       <div className="tool-card settings-callout">
-        当前用户{diagnostics.userId ? "已建立学习身份" : "尚未完成建档"}。这里展示恢复状态和数据入口，不直接清空学习记录。
+        当前用户{diagnostics.userId ? "已建立学习身份" : "尚未完成建档"}。这里仅展示恢复状态和本地记录边界，不提供一键清空、导出或删除。
       </div>
       <div className="settings-grid">
         {panel.cards.map(([title, body]) => (
@@ -313,40 +313,45 @@ function renderDiagnosticsPanel(diagnostics: SettingsPageProps["diagnostics"]) {
   const apiOnline = diagnostics.apiStatus === "在线";
 
   return (
-    <div className="settings-grid">
-      <article className="setting-card">
-        <h3>连接状态</h3>
-        <p className={apiOnline ? "status-ok" : "status-error"}>{diagnostics.apiStatus}</p>
-      </article>
-      <article className="setting-card">
-        <h3>用户</h3>
-        <p>{diagnostics.userId ? "已登录" : "未登录"}</p>
-      </article>
-      <article className="setting-card">
-        <h3>学习计划</h3>
-        <p>{diagnostics.planId ? "已创建" : "未创建"}</p>
-      </article>
-      <article className="setting-card">
-        <h3>API Base URL</h3>
-        <p>{diagnostics.apiBaseUrl}</p>
-      </article>
-      <article className="setting-card">
-        <h3>当前阶段</h3>
-        <p>{diagnostics.currentStage ?? "暂无"}</p>
-      </article>
-      <article className="setting-card">
-        <h3>今日待复习</h3>
-        <p>{diagnostics.todayReviewCount} 项</p>
-      </article>
-      <article className="setting-card">
-        <h3>恢复状态</h3>
-        <p>{diagnostics.resumeAvailable ? "可恢复上次学习" : "当前没有待恢复会话"}</p>
-      </article>
-      <article className="setting-card">
-        <h3>版本</h3>
-        <p>Aearn Desktop V1</p>
-      </article>
-    </div>
+    <>
+      <div className="tool-card settings-callout">
+        这里显示桌面端能直接确认的连接、用户、计划和恢复状态。语言运行环境检测、安装指导和 runner 矩阵会在后续环境医生任务中接入。
+      </div>
+      <div className="settings-grid">
+        <article className="setting-card">
+          <h3>连接状态</h3>
+          <p className={apiOnline ? "status-ok" : "status-error"}>{diagnostics.apiStatus}</p>
+        </article>
+        <article className="setting-card">
+          <h3>用户</h3>
+          <p>{diagnostics.userId ? "已登录" : "未登录"}</p>
+        </article>
+        <article className="setting-card">
+          <h3>学习计划</h3>
+          <p>{diagnostics.planId ? "已创建" : "未创建"}</p>
+        </article>
+        <article className="setting-card">
+          <h3>API Base URL</h3>
+          <p>{diagnostics.apiBaseUrl}</p>
+        </article>
+        <article className="setting-card">
+          <h3>当前阶段</h3>
+          <p>{diagnostics.currentStage ?? "暂无"}</p>
+        </article>
+        <article className="setting-card">
+          <h3>今日待复习</h3>
+          <p>{diagnostics.todayReviewCount} 项</p>
+        </article>
+        <article className="setting-card">
+          <h3>恢复状态</h3>
+          <p>{diagnostics.resumeAvailable ? "可恢复上次学习" : "当前没有待恢复会话"}</p>
+        </article>
+        <article className="setting-card">
+          <h3>版本</h3>
+          <p>Aearn Desktop V1</p>
+        </article>
+      </div>
+    </>
   );
 }
 

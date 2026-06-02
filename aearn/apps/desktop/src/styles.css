@@ -3314,10 +3314,17 @@ img {
 
 .gen-card-actions {
   display: flex;
+  align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   margin-top: 16px;
   padding-top: 12px;
   border-top: 1px solid var(--line-soft);
+}
+
+.gen-card-action-note {
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .concept-intro-card,

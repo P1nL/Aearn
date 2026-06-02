@@ -1,4 +1,5 @@
 import type { ToolUIProps, SubmitResultArgs } from "./types";
+import { completionResultLabel, fsrsRatingLabel, nextActionLabel } from "../../lib/desktopLabels";
 
 export function SubmitResultCard({ args, status, onAction }: ToolUIProps<SubmitResultArgs>) {
   const resultColor = args.result === "passed" || args.result === "easy"
@@ -12,7 +13,7 @@ export function SubmitResultCard({ args, status, onAction }: ToolUIProps<SubmitR
       <header className="gen-card-header">
         <span className="gen-card-kicker">练习结果</span>
         <span className="gen-card-badge" style={{ color: resultColor }}>
-          {resultLabel(args.result)}
+          {completionResultLabel(args.result)}
         </span>
       </header>
 
@@ -21,7 +22,7 @@ export function SubmitResultCard({ args, status, onAction }: ToolUIProps<SubmitR
           <span className="gen-result-score-value">{args.score}</span>
         </div>
         <div className="gen-result-score-detail">
-          <span>FSRS 评级：{fsrsLabel(args.fsrs_rating)}</span>
+          <span>掌握程度：{fsrsRatingLabel(args.fsrs_rating)}</span>
           <p className="gen-result-feedback">{args.feedback}</p>
         </div>
       </div>
@@ -65,35 +66,4 @@ function ScoreBar({ label, value }: { label: string; value: number }) {
       <span className="gen-result-bar-value">{Math.round(value * 100)}</span>
     </div>
   );
-}
-
-function resultLabel(result: SubmitResultArgs["result"]): string {
-  switch (result) {
-    case "easy": return "轻松掌握";
-    case "passed": return "通过";
-    case "partial": return "部分通过";
-    case "failed": return "未通过";
-  }
-}
-
-function fsrsLabel(rating: string): string {
-  switch (rating) {
-    case "Again": return "需要重学";
-    case "Hard": return "较困难";
-    case "Good": return "良好";
-    case "Easy": return "轻松";
-    default: return rating;
-  }
-}
-
-function nextActionLabel(action: string): string {
-  switch (action) {
-    case "advance_next": return "继续下一步";
-    case "retry_same": return "重新尝试";
-    case "show_hint": return "获取提示";
-    case "explain_error": return "解释错误";
-    case "review_variant": return "复习变体";
-    case "schedule_review": return "安排复习";
-    default: return "继续";
-  }
 }

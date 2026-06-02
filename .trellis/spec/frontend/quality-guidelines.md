@@ -18,6 +18,7 @@ Every UI task must be checked against `docs/product/frontend-interaction-spec.md
 - Do not expose `Attempt(run)`, `Attempt(submit)`, `review_submit`, or FSRS internals as ordinary user labels.
 - Do not paste spec/runbook wording into the UI. Settings and diagnostics copy must use product-facing language such as "当前状态" and "复习节奏", not implementation terms like `Source of truth`, `MVP`, `ReviewState`, `due_at`, or "fixed backend rules".
 - Do not calculate final score, result, `fsrs_rating`, `due_at`, or review scheduling in the frontend.
+- Do not reuse learning-page `lastRun` / `lastSubmit` as review-page recap data. Review UI should render review queue/session/result state from the review endpoints only.
 - Do not show unsupported Java/C++ sandbox capabilities as runnable.
 - Do not add new UI libraries, routers, or state managers without task scope and verification.
 - Do not rely on console output as the only user feedback.
@@ -52,6 +53,7 @@ Every UI task must be checked against `docs/product/frontend-interaction-spec.md
 - The initial runtime conversation is empty until real user/session events exist; no demo `ConversationMessage` arrays or placeholder Agent bubbles are injected.
 - Sidebar learning and note entries come from `CreatedPlanResponse.knowledge_points` or a visible empty state, not fixed DOM/Python example titles.
 - UI labels avoid backend-internal Attempt and FSRS implementation terms.
+- Result, rating, next-action, and hard-gate enums use shared user-facing label helpers instead of local one-off switch statements.
 - Settings page copy preserves the documented category boundary while staying user-facing rather than spec-facing.
 - Async operations have user-visible state and do not allow duplicate writes while pending.
 - Old run output cannot masquerade as current output after code changes.
@@ -342,13 +344,14 @@ Keep the shell responsible for orchestration and let the page own the workbench 
 - `fetchTodayReviews(userId)` calls `GET /api/reviews/today?user_id=...`.
 - `startReviewSession({ userId, knowledgePointId })` calls `POST /api/reviews/start`.
 - `submitReviewExerciseResult({ sessionId, exerciseId, code, filledBlanks, explanation })` calls `POST /api/reviews/{session_id}/exercise-result`.
-- `ReviewPage` receives `isActive`, `user`, `messages`, `lastSubmit`, and `lastRun`; it owns review-page queue/session/editor/result state.
+- `ReviewPage` receives `isActive`, `user`, and review conversation `messages`; it owns review-page queue/session/editor/result state.
 
 ### 3. Contracts
 
 - Frontend may own queue loading/error state, selected review session, editor text, blank inputs, explanation draft, and submit button state.
 - Backend remains source of truth for due queue membership, `ReviewState`, final result, `fsrs_rating`, `due_at`, `forget_risk`, and next action.
 - ReviewPage must not compute final score, `fsrs_rating`, `due_at`, `forget_risk`, or review counters locally.
+- ReviewPage must not read learning-page `lastSubmit` / `lastRun` for recap cards; those belong to the learning workspace and can make stale learning results look like review results.
 - API guards must validate `ReviewState.review_count` / `lapse_count` and still accept compatibility fields `reps` / `lapses`.
 - ReviewPage should not fetch due reviews before a user exists or while the page is inactive.
 - UI labels should use natural product language such as "开始复习" and "提交复习结果", not `review_submit` or internal Attempt labels.

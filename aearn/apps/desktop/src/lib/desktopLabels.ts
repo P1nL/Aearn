@@ -63,6 +63,57 @@ export function nextActionLabel(nextAction: string): string {
   return "重新运行";
 }
 
+export function completionResultLabel(result: string): string {
+  if (result === "easy") {
+    return "轻松掌握";
+  }
+  if (result === "passed") {
+    return "通过";
+  }
+  if (result === "partial") {
+    return "部分通过";
+  }
+  if (result === "failed") {
+    return "未通过";
+  }
+  return result;
+}
+
+export function fsrsRatingLabel(rating: string | number | null): string {
+  if (rating === null) {
+    return "未安排";
+  }
+  if (rating === "again" || rating === "Again" || rating === 1) {
+    return "需要重学";
+  }
+  if (rating === "hard" || rating === "Hard" || rating === 2) {
+    return "较困难";
+  }
+  if (rating === "good" || rating === "Good" || rating === 3) {
+    return "良好";
+  }
+  if (rating === "easy" || rating === "Easy" || rating === 4) {
+    return "轻松掌握";
+  }
+  return String(rating);
+}
+
+export function hardGateLabel(gate: string): string {
+  if (gate === "runtime_gate") {
+    return "运行边界";
+  }
+  if (gate === "test_gate") {
+    return "测试通过";
+  }
+  if (gate === "core_blank_gate") {
+    return "核心空缺";
+  }
+  if (gate === "explanation_gate") {
+    return "解释检查";
+  }
+  return gate;
+}
+
 export function workbenchStateLabel(state: WorkbenchState): string {
   if (state === "dirty") {
     return "已修改";

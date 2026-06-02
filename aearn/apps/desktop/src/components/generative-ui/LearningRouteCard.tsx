@@ -97,6 +97,11 @@ export function LearningRouteCard({
           >
             开始学习
           </button>
+          {!canStart && (
+            <span className="gen-card-action-note">
+              已生成新版路线，请使用最新卡片开始学习。
+            </span>
+          )}
         </div>
       )}
     </article>
