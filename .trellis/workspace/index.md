@@ -122,4 +122,4 @@ Use this template when recording sessions:
 
 ---
 
-**Language**: All documentation must be written in **English**.
+**Language**: Canonical Trellis artifacts may remain in English or the repository's established source-of-truth language. When a planning artifact needs user review, create or update `review.zh.md` in the same task directory with a Simplified Chinese review summary. Keep code identifiers, commands, paths, API fields, model names, error codes, test names, and config keys in their original form.
