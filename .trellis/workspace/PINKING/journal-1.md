@@ -1709,3 +1709,36 @@ Implemented the 05 environment doctor child task: added a read-only backend envi
 ### Next Steps
 
 - None - task complete
+
+
+## Session 52: Python runner hardening
+
+**Date**: 2026-06-02
+**Task**: Python runner hardening
+**Branch**: `main`
+
+### Summary
+
+Hardened the Python teaching runner by running sandbox subprocesses from temporary workspaces, bounding public runner output, mapping function-call exceptions to runtime_error, redacting hidden test ids/messages from learner-facing results, and preserving visible failure feedback with focused sandbox and runner regressions.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `f776a02` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
