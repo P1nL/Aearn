@@ -170,6 +170,7 @@ def _review_session_graph_ids(
     conn: Connection[dict[str, object]],
     *,
     session_id: str,
+    user_id: str | None = None,
 ) -> tuple[str, str] | None:
     row = conn.execute(
         """
@@ -182,6 +183,8 @@ def _review_session_graph_ids(
     ).fetchone()
     if row is None:
         return None
+    if user_id is not None and str(row["user_id"]) != user_id:
+        raise EntityNotFoundError("SESSION_NOT_FOUND", "复习会话不存在")
     return str(row["user_id"]), str(row["knowledge_point_id"])
 
 
@@ -311,7 +314,7 @@ async def submit_review_warmup_result(
 
     with connect() as conn:
         try:
-            graph_ids = _review_session_graph_ids(conn, session_id=session_id)
+            graph_ids = _review_session_graph_ids(conn, session_id=session_id, user_id=payload.user_id)
             if graph_ids is not None:
                 graph_user_id, graph_knowledge_point_id = graph_ids
                 _review_graph_decision(
@@ -322,6 +325,7 @@ async def submit_review_warmup_result(
                 )
             response = record_review_warmup_result(
                 conn,
+                user_id=payload.user_id,
                 session_id=session_id,
                 action=payload.action,
                 answer=payload.answer,
@@ -368,7 +372,7 @@ async def submit_review_result(
 
     with connect() as conn:
         try:
-            graph_ids = _review_session_graph_ids(conn, session_id=session_id)
+            graph_ids = _review_session_graph_ids(conn, session_id=session_id, user_id=payload.user_id)
             if graph_ids is not None:
                 graph_user_id, graph_knowledge_point_id = graph_ids
                 _review_graph_decision(
@@ -380,6 +384,7 @@ async def submit_review_result(
                 )
             response, replayed = submit_review_exercise_result(
                 conn,
+                user_id=payload.user_id,
                 session_id=session_id,
                 exercise_id=payload.exercise_id,
                 attempt_id=payload.attempt_id,
@@ -449,6 +454,7 @@ async def create_review_message(
 
     content = str(body.get("content") or "")
     client_message_id = str(body.get("client_message_id") or "")
+    user_id = str(body.get("user_id") or "") or None
 
     if not content or not client_message_id:
         return stream_response(
@@ -465,6 +471,7 @@ async def create_review_message(
             session_id=session_id,
             content=content,
             client_message_id=client_message_id,
+            user_id=user_id,
             request_id=request_id,
         )
     )
@@ -476,6 +483,7 @@ async def _review_message_stream(
     session_id: str,
     content: str,
     client_message_id: str,
+    user_id: str | None,
     request_id: str,
 ) -> AsyncGenerator[str, None]:
     writer = SSEWriter()
@@ -487,6 +495,7 @@ async def _review_message_stream(
                     session_id=session_id,
                     content=content,
                     client_message_id=client_message_id,
+                    user_id=user_id,
                 )
             except ReviewSessionNotFoundError as exc:
                 conn.rollback()

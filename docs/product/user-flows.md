@@ -310,6 +310,7 @@
 - 成功提交后写入 `Attempt` 和 `code_completion_result`。
 - 学习结果更新当前知识点状态。
 - 需要复习时写入或更新 `ReviewState`。
+- 学习页 message/run/submit/hint/explain/check 请求都必须携带当前 active `user_id`；如果 `session_id` 不属于该用户，后端返回 `SESSION_NOT_FOUND`，前端不能继续复用旧会话状态。
 
 ### 验收标准
 
@@ -432,6 +433,7 @@
 - warmup 的正确、错误、不明确和跳过结果只写入复习会话状态，不更新 FSRS。
 - 只有变体练习提交成功后才写入 `Attempt(attempt_type=review_submit)`，并更新 `ReviewState` 和下一次 `due_at`。
 - 提交失败不得标记完成。
+- 复习页 warmup、exercise-result 和 review message 请求都必须携带当前 active `user_id`；跨用户 session mismatch 返回 `SESSION_NOT_FOUND`，不读取或推进其他本地用户的复习状态。
 
 ### 依赖 API
 
@@ -583,6 +585,7 @@
 - 保存用户偏好。
 - 不允许用户通过设置页修改后端固定评分规则、Attempt 必填字段或 FSRS 规则。
 - 支持用户通过 API 配置模型。
+- 记录与隐私页可列出本地用户、刷新数据摘要、导出 learner-safe JSON、reset 当前用户学习数据、delete 本地用户。
 
 ### 设置分类
 
@@ -602,11 +605,22 @@
 |---|---|
 | `GET /api/users/{user_id}` | 读取用户偏好 |
 | `PATCH /api/users/{user_id}/preferences` | 保存用户偏好 |
+| `GET /api/users` | 读取可切换的未删除本地用户 |
+| `GET /api/users/{user_id}/data-summary` | 读取 reset/delete 预览和记录摘要 |
+| `GET /api/users/{user_id}/export` | 导出 learner-safe 本地用户数据 |
+| `POST /api/users/{user_id}/reset-data` | 保留用户画像和偏好，清空 owned learning data |
+| `DELETE /api/users/{user_id}` | 删除本地用户并清空 owned learning data |
 
 ### 涉及数据对象
 
 - `User`
 - `UserPreference`
+- `LearningPlan`
+- `LearningSession`
+- `Attempt`
+- `ReviewState`
+- `ReviewLog`
+- `Note`
 - 本地配置
 
 ### 页面状态
@@ -616,23 +630,35 @@
 - `saved`：保存成功。
 - `error`：字段级错误或保存失败。
 - `diagnostic_error`：后端、runner 或模型连接异常。
+- `local_users_loading`：加载本地用户列表。
+- `data_summary_loading`：刷新本地数据摘要。
+- `exporting`：导出本地用户数据。
+- `resetting`：reset 当前用户学习数据。
+- `deleting`：delete 当前本地用户。
 
 ### 失败 / 空状态
 
 - 模型配置无效时不得保存为可用状态。
 - API 离线时允许查看本地设置，但不能确认远端配置。
 - 清理记录需要二次确认。
+- reset/delete 前必须展示最新 `data-summary`；delete 前应提示先 export。
+- export 不得包含 hidden tests、solution references、raw prompts、provider payloads、API keys 或 runner secrets。
 
 ### 后置状态
 
 - 用户偏好保存并可重新读取。
 - 后端固定规则不受用户偏好破坏。
+- reset 后同一 `userId` 保留，`localStorage["aearn.bootstrap"].planId` 清空，用户回到 Onboarding。
+- delete 后如果删除的是当前用户，`localStorage["aearn.bootstrap"]` 清空，normal product API 不能再读取该用户。
+- 切换本地用户时，route/session/review/notes/dashboard store 先清空，再按新 active `user_id` 重新拉取事实。
 
 ### 验收标准
 
 - 普通用户可以配置模型 API。
 - 设置页不会暴露会破坏评分、Attempt 或 FSRS 的规则开关。
 - 诊断状态能帮助用户判断 API、模型和 runner 是否可用。
+- 本地多用户切换不会展示另一个用户的路线、复习、笔记或恢复状态。
+- reset/delete/export 都使用 learner-safe 数据边界，并且 destructive action 需要确认。
 
 ## 流程 8：恢复中断学习
 

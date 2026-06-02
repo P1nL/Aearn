@@ -1750,6 +1750,45 @@
       background: rgba(255, 235, 235, .6);
     }
 
+    .settings-button-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .privacy-summary-grid {
+      margin-bottom: 14px;
+    }
+
+    .local-user-list {
+      display: grid;
+      gap: 10px;
+      margin: 14px 0;
+    }
+
+    .local-user-card {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .local-user-card.active {
+      border-color: rgba(74, 140, 92, .32);
+      background: rgba(236, 248, 239, .66);
+    }
+
+    .danger-zone {
+      border-color: rgba(196, 74, 74, .22);
+    }
+
+    .btn.danger {
+      color: var(--accent-dark);
+      border-color: rgba(196, 74, 74, .34);
+      background: rgba(255, 235, 235, .78);
+    }
+
     .setting-card {
       padding: 16px;
       border: 1px solid var(--line);

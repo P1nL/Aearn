@@ -23,7 +23,8 @@
     "06-02-03-desktop-learning-experience-completion",
     "06-02-04-language-grounding-productization",
     "06-02-05-environment-doctor-and-install-guidance",
-    "06-02-06-language-l3-runner-contracts"
+    "06-02-06-language-l3-runner-contracts",
+    "06-02-02-local-user-data-boundary"
   ],
   "parent": null,
   "relatedFiles": [],

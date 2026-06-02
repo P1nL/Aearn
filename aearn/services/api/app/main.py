@@ -23,7 +23,7 @@ app.add_middleware(
         "http://localhost:1420",
         "tauri://localhost",
     ],
-    allow_methods=["GET", "POST", "PATCH", "OPTIONS"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 app.include_router(health_router)

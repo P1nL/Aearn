@@ -259,6 +259,7 @@ def start_review_session(
 def submit_review_exercise_result(
     conn: Connection[dict[str, object]],
     *,
+    user_id: str | None = None,
     session_id: str,
     exercise_id: str,
     attempt_id: str | None,
@@ -277,11 +278,8 @@ def submit_review_exercise_result(
     answer_payload = review_ai_patch_answer.model_dump() if review_ai_patch_answer is not None else None
     code_hash = provided_code_hash or _review_submit_code_hash(code, filled_blanks, answer_payload)
     key = f"review-exercise-result:{session_id}:{exercise_id}:{attempt_id or code_hash}:{submit_version}"
-    stored = conn.execute(
-        "SELECT request_hash, response_json FROM idempotency_records WHERE key = %s",
-        (key,),
-    ).fetchone()
     payload_hash = request_hash(request_body)
+    stored = _load_idempotency_record(conn, key, user_id=user_id)
     if stored is not None:
         if stored["request_hash"] != payload_hash:
             raise IdempotencyConflictError("same review result key was used with a different request body")
@@ -290,8 +288,9 @@ def submit_review_exercise_result(
             raise RuntimeError("stored review result response is invalid")
         return response, True
 
-    session = _load_review_session(conn, session_id)
+    session = _load_review_session(conn, session_id, user_id=user_id)
     exercise = _load_session_exercise(conn, exercise_id=exercise_id, session=session)
+
     if exercise["exercise_type"] == "review_ai_patch":
         if answer_payload is None:
             raise InvalidReviewRequestError("review_ai_patch_answer is required")
@@ -332,10 +331,10 @@ def submit_review_exercise_result(
         if blocked_response is not None:
             conn.execute(
                 """
-                INSERT INTO idempotency_records (key, operation, request_hash, response_json)
-                VALUES (%s, 'submit_review_exercise_result', %s, %s::jsonb)
+                INSERT INTO idempotency_records (key, operation, request_hash, response_json, user_id)
+                VALUES (%s, 'submit_review_exercise_result', %s, %s::jsonb, %s)
                 """,
-                (key, payload_hash, json.dumps(blocked_response)),
+                (key, payload_hash, json.dumps(blocked_response), str(session["user_id"])),
             )
             return blocked_response, False
         code_completion_result, service_fields = build_code_completion_result(
@@ -439,10 +438,10 @@ def submit_review_exercise_result(
     }
     conn.execute(
         """
-        INSERT INTO idempotency_records (key, operation, request_hash, response_json)
-        VALUES (%s, 'submit_review_exercise_result', %s, %s::jsonb)
+        INSERT INTO idempotency_records (key, operation, request_hash, response_json, user_id)
+        VALUES (%s, 'submit_review_exercise_result', %s, %s::jsonb, %s)
         """,
-        (key, payload_hash, json.dumps(response)),
+        (key, payload_hash, json.dumps(response), str(session["user_id"])),
     )
     return response, False
 
@@ -450,11 +449,12 @@ def submit_review_exercise_result(
 def record_review_warmup_result(
     conn: Connection[dict[str, object]],
     *,
+    user_id: str | None = None,
     session_id: str,
     action: str,
     answer: str | None,
 ) -> dict[str, object]:
-    session = _load_review_session(conn, session_id)
+    session = _load_review_session(conn, session_id, user_id=user_id)
     state = _review_stage_state_from_session(session)
     if state is None:
         raise ReviewSessionConflictError("review session has no warmup state")
@@ -598,7 +598,12 @@ def _load_due_review_context(
     return context
 
 
-def _load_review_session(conn: Connection[dict[str, object]], session_id: str) -> Mapping[str, object]:
+def _load_review_session(
+    conn: Connection[dict[str, object]],
+    session_id: str,
+    *,
+    user_id: str | None = None,
+) -> Mapping[str, object]:
     session = conn.execute(
         """
         SELECT *
@@ -609,7 +614,37 @@ def _load_review_session(conn: Connection[dict[str, object]], session_id: str) -
     ).fetchone()
     if session is None:
         raise EntityNotFoundError("SESSION_NOT_FOUND", "复习会话不存在")
+    if user_id is not None and str(session["user_id"]) != user_id:
+        raise EntityNotFoundError("SESSION_NOT_FOUND", "复习会话不存在")
     return session
+
+
+def _load_idempotency_record(
+    conn: Connection[dict[str, object]],
+    key: str,
+    *,
+    user_id: str | None,
+) -> Mapping[str, object] | None:
+    if user_id is None:
+        return conn.execute(
+            """
+            SELECT request_hash, response_json
+            FROM idempotency_records
+            WHERE key = %s
+              AND invalidated_at IS NULL
+            """,
+            (key,),
+        ).fetchone()
+    return conn.execute(
+        """
+        SELECT request_hash, response_json
+        FROM idempotency_records
+        WHERE key = %s
+          AND user_id = %s
+          AND invalidated_at IS NULL
+        """,
+        (key, user_id),
+    ).fetchone()
 
 
 def _load_session_exercise(

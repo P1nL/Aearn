@@ -75,7 +75,7 @@ $$ LANGUAGE plpgsql;
 | `reminder_preference` | `jsonb` | NOT NULL DEFAULT `'{}'::jsonb` | JSONB schema 见下文 |
 | `created_at` | `timestamptz` | NOT NULL DEFAULT `now()` |  |
 | `updated_at` | `timestamptz` | NOT NULL DEFAULT `now()` |  |
-| `deleted_at` | `timestamptz` | NULL | 用户删除或本地重置 |
+| `deleted_at` | `timestamptz` | NULL | 本地用户删除；reset 不写该字段 |
 
 索引：
 
@@ -539,6 +539,26 @@ FSRS 更新的 append-only 日志。每次学习提交或复习提交只要更�
 
 - `idx_notes_user_updated` on (`user_id`, `updated_at DESC`) WHERE `deleted_at IS NULL`
 - `idx_notes_knowledge_point` on (`knowledge_point_id`) WHERE `deleted_at IS NULL`
+- UNIQUE (`user_id`, `knowledge_point_id`) WHERE `deleted_at IS NULL`
+
+### `idempotency_records`
+
+写接口幂等记录。reset/delete 必须使该用户相关记录失效或删除，防止旧响应回放已清空的 plan/session/note 数据。
+
+| 字段 | 类型 | 必填/默认值 | 约束与说明 |
+|---|---|---|---|
+| `key` | `text` | NOT NULL | PK，客户端或后端生成的幂等键 |
+| `operation` | `text` | NOT NULL | 业务操作名，例如 `confirm_plan`、`run_learning_session_exercise` |
+| `request_hash` | `text` | NOT NULL | 请求体稳定 hash |
+| `response_json` | `jsonb` | NOT NULL | 可回放的 learner-safe 响应 |
+| `user_id` | `uuid` | NULL | FK -> `users.id` ON DELETE SET NULL；用户级 reset/delete 使用 |
+| `invalidated_at` | `timestamptz` | NULL | 非 NULL 表示该记录不得再回放 |
+| `created_at` | `timestamptz` | NOT NULL DEFAULT `now()` |  |
+
+约束与索引：
+
+- `idx_idempotency_records_operation` on (`operation`)
+- `idx_idempotency_records_user_active` on (`user_id`) WHERE `invalidated_at IS NULL`
 
 ### `stage_summaries`
 
@@ -989,6 +1009,7 @@ FSRS 更新的 append-only 日志。每次学习提交或复习提交只要更�
 - `exercises`、`test_cases`、`code_blanks` 被 `attempts` 引用后不得硬删，只能归档或软删除。
 - `attempts` 和 `review_logs` 是事实日志，外键使用 `ON DELETE RESTRICT`。
 - `notes` 可软删除；如果知识点被归档，笔记仍保留。
+- local reset/delete 是专门隐私擦除流程：reset 保留 `users` 与偏好字段，delete 最后写 `users.deleted_at`，两者都必须先清空用户 owned learning data 并使相关 `idempotency_records` 不可回放。
 
 ### 软删除与归档
 
@@ -997,6 +1018,13 @@ FSRS 更新的 append-only 日志。每次学习提交或复习提交只要更�
 - 计划暂停不等于归档，使用 `LearningPlan.status=paused`。
 - 完成计划不写 `deleted_at`，使用 `LearningPlan.status=completed` 和 `completed_at`。
 - `Attempt` 写错时不得更新旧记录掩盖事实，应新增 `Attempt` 或将 `evaluation_status` 标为 `needs_manual_review`。
+
+### 本地用户 reset/delete 顺序
+
+- reset：保留 `users` 行与偏好设置；删除或清空 `learner_profiles`、`learning_plans`、`plan_modules`、`knowledge_points`、`exercises`、`code_blanks`、`test_cases`、`teaching_chunks`、`learning_sessions`、`attempts`、`review_states`、`review_logs`、`review_seed_banks`、`notes`、onboarding/learning/review messages 和 conversations。
+- delete：执行与 reset 相同的 owned learning data 清理，然后设置 `users.deleted_at=now()`。normal product API 必须过滤 `users.deleted_at IS NULL`。
+- 两者都必须先处理依赖顺序，避免 `ON DELETE RESTRICT` 约束失败；`attempts`、`review_logs` 在该隐私擦除流程中可硬删，因为它们属于被删除本地用户的 owned learning data。
+- 两者都必须删除或失效该用户相关 `idempotency_records`，包括 `user_id` 匹配、key 或 stored response 中引用该用户 owned ids 的旧记录。
 
 ## Migration 顺序
 

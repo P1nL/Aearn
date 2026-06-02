@@ -122,6 +122,80 @@ export type UserProfile = {
   updated_at: string;
 };
 
+export type LocalUserListItem = UserProfile & {
+  plan_count: number;
+  active_plan_id: string | null;
+  active_goal: string | null;
+  last_activity_at: string | null;
+};
+
+export type LocalUserListResponse = {
+  items: LocalUserListItem[];
+  page_info: {
+    limit: number;
+    next_cursor: string | null;
+    has_more: boolean;
+  };
+};
+
+export type LocalUserDataSummary = {
+  user: {
+    id: string;
+    display_name: string;
+    created_at: string;
+    updated_at: string;
+  };
+  counts: {
+    active_plans: number;
+    archived_or_deleted_plans: number;
+    modules: number;
+    knowledge_points: number;
+    exercises: number;
+    learning_sessions: number;
+    attempts: number;
+    review_states: number;
+    review_logs: number;
+    review_seed_banks: number;
+    notes: number;
+    onboarding_conversations: number;
+    onboarding_messages: number;
+    learning_messages: number;
+    review_messages: number;
+  };
+  last_activity_at: string | null;
+};
+
+export type LocalUserResetResponse = {
+  user: UserProfile;
+  before_summary: LocalUserDataSummary;
+  summary: LocalUserDataSummary;
+  next_action: "return_to_onboarding";
+};
+
+export type LocalUserDeleteResponse = {
+  deleted_user_id: string;
+  before_summary: LocalUserDataSummary;
+  next_action: "select_local_profile";
+};
+
+export type LocalUserExportPayload = {
+  export_version: string;
+  exported_at: string;
+  user: LocalUserDataSummary["user"];
+  preferences: Record<string, unknown>;
+  summary: LocalUserDataSummary;
+  plans: Record<string, unknown>[];
+  modules: Record<string, unknown>[];
+  knowledge_points: Record<string, unknown>[];
+  learning_sessions: Record<string, unknown>[];
+  attempt_summaries: Record<string, unknown>[];
+  review_state_summaries: Record<string, unknown>[];
+  review_log_summaries: Record<string, unknown>[];
+  notes: Record<string, unknown>[];
+  conversation_summaries: Record<string, unknown>;
+  redaction: Record<string, string>;
+};
+
 export type DraftKnowledgePoint = {
   temp_id: string;
   title: string;

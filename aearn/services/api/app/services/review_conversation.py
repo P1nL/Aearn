@@ -66,16 +66,19 @@ def prepare_review_message(
     session_id: str,
     content: str,
     client_message_id: str,
+    user_id: str | None = None,
 ) -> PreparedReviewMessage:
+    context = load_review_context(conn, session_id=session_id, user_id=user_id)
     # Check idempotency
     existing = conn.execute(
         """
         SELECT id, content, role
         FROM review_messages
-        WHERE client_message_id = %s
+        WHERE review_session_id = %s
+          AND client_message_id = %s
         LIMIT 1
         """,
-        (client_message_id,),
+        (session_id, client_message_id),
     ).fetchone()
 
     if existing is not None:
@@ -93,7 +96,6 @@ def prepare_review_message(
             (session_id, client_message_id),
         ).fetchone()
         stored_content = str(agent_msg["content"]) if agent_msg else None
-        context = load_review_context(conn, session_id=session_id)
         return PreparedReviewMessage(
             session_id=session_id,
             message_id=_message_id(session_id, client_message_id),
@@ -111,7 +113,6 @@ def prepare_review_message(
         (session_id, content, client_message_id),
     )
 
-    context = load_review_context(conn, session_id=session_id)
     return PreparedReviewMessage(
         session_id=session_id,
         message_id=_message_id(session_id, client_message_id),
@@ -140,6 +141,7 @@ def load_review_context(
     conn: Connection[dict[str, object]],
     *,
     session_id: str,
+    user_id: str | None = None,
 ) -> ReviewConversationContext:
     session = conn.execute(
         """
@@ -151,12 +153,14 @@ def load_review_context(
           ls.status,
           ls.session_type
         FROM learning_sessions ls
-        WHERE ls.id = %s AND ls.session_type = 'review'
+        WHERE ls.id = %s AND ls.session_type = 'review' AND ls.status = 'active'
         """,
         (session_id,),
     ).fetchone()
     if session is None:
-        raise ReviewSessionNotFoundError("REVIEW_SESSION_NOT_FOUND", "复习会话不存在")
+        raise ReviewSessionNotFoundError("SESSION_NOT_FOUND", "复习会话不存在")
+    if user_id is not None and str(session["user_id"]) != user_id:
+        raise ReviewSessionNotFoundError("SESSION_NOT_FOUND", "复习会话不存在")
 
     # Load knowledge point info
     kp = conn.execute(

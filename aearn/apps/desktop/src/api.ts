@@ -19,6 +19,11 @@ import type {
   HintResponse,
   Language,
   LanguageCourse,
+  LocalUserDataSummary,
+  LocalUserDeleteResponse,
+  LocalUserExportPayload,
+  LocalUserListResponse,
+  LocalUserResetResponse,
   LearningExercise,
   LearningHistoryResponse,
   LearningMode,
@@ -94,6 +99,52 @@ export async function fetchUserProfile(userId: string, signal?: AbortSignal): Pr
     throw new Error("User profile API returned an invalid payload");
   }
   return payload.user;
+}
+
+export async function fetchLocalUsers(signal?: AbortSignal): Promise<LocalUserListResponse> {
+  const payload = await requestJson(`${API_BASE_URL}/api/users`, { signal });
+  if (!isLocalUserListResponse(payload)) {
+    throw new Error("Local users API returned an invalid payload");
+  }
+  return payload;
+}
+
+export async function fetchUserDataSummary(userId: string, signal?: AbortSignal): Promise<LocalUserDataSummary> {
+  const payload = await requestJson(`${API_BASE_URL}/api/users/${encodeURIComponent(userId)}/data-summary`, { signal });
+  if (!isRecord(payload) || !isLocalUserDataSummary(payload.summary)) {
+    throw new Error("User data summary API returned an invalid payload");
+  }
+  return payload.summary;
+}
+
+export async function exportLocalUserData(userId: string): Promise<LocalUserExportPayload> {
+  const payload = await requestJson(`${API_BASE_URL}/api/users/${encodeURIComponent(userId)}/export`);
+  if (!isLocalUserExportPayload(payload)) {
+    throw new Error("User export API returned an invalid payload");
+  }
+  return payload;
+}
+
+export async function resetLocalUserData(userId: string): Promise<LocalUserResetResponse> {
+  const payload = await requestJson(`${API_BASE_URL}/api/users/${encodeURIComponent(userId)}/reset-data`, {
+    method: "POST",
+    body: JSON.stringify({ confirm: true }),
+  });
+  if (!isLocalUserResetResponse(payload)) {
+    throw new Error("User reset API returned an invalid payload");
+  }
+  return payload;
+}
+
+export async function deleteLocalUser(userId: string): Promise<LocalUserDeleteResponse> {
+  const payload = await requestJson(`${API_BASE_URL}/api/users/${encodeURIComponent(userId)}`, {
+    method: "DELETE",
+    body: JSON.stringify({ confirm: true }),
+  });
+  if (!isLocalUserDeleteResponse(payload)) {
+    throw new Error("User delete API returned an invalid payload");
+  }
+  return payload;
 }
 
 export async function updateUserPreferences(
@@ -186,8 +237,9 @@ export async function confirmOnboardingPlan(
   return payload;
 }
 
-export async function fetchPlanDetail(planId: string, signal?: AbortSignal): Promise<CreatedPlanResponse> {
-  const payload = await requestJson(`${API_BASE_URL}/api/plans/${encodeURIComponent(planId)}`, { signal });
+export async function fetchPlanDetail(planId: string, userId: string, signal?: AbortSignal): Promise<CreatedPlanResponse> {
+  const query = new URLSearchParams({ user_id: userId });
+  const payload = await requestJson(`${API_BASE_URL}/api/plans/${encodeURIComponent(planId)}?${query.toString()}`, { signal });
   if (!isCreatedPlanResponse(payload)) {
     throw new Error("Plan detail API returned an invalid payload");
   }
@@ -261,6 +313,7 @@ export async function fetchLearningHistory(input: {
 }
 
 export async function runLearningExercise(input: {
+  userId: string;
   sessionId: string;
   exerciseId: string;
   code: string;
@@ -273,6 +326,7 @@ export async function runLearningExercise(input: {
     {
       method: "POST",
       body: JSON.stringify({
+        user_id: input.userId,
         code: input.code,
         filled_blanks: input.filledBlanks,
         runtime_profile_id: input.runtimeProfileId,
@@ -287,6 +341,7 @@ export async function runLearningExercise(input: {
 }
 
 export async function submitLearningExercise(input: {
+  userId: string;
   sessionId: string;
   exerciseId: string;
   attemptId: string;
@@ -302,6 +357,7 @@ export async function submitLearningExercise(input: {
     {
       method: "POST",
       body: JSON.stringify({
+        user_id: input.userId,
         attempt_id: input.attemptId,
         code: input.code,
         filled_blanks: input.filledBlanks,
@@ -319,6 +375,7 @@ export async function submitLearningExercise(input: {
 }
 
 export async function requestLearningHint(input: {
+  userId: string;
   sessionId: string;
   exerciseId: string;
   attemptId: string;
@@ -331,6 +388,7 @@ export async function requestLearningHint(input: {
     {
       method: "POST",
       body: JSON.stringify({
+        user_id: input.userId,
         attempt_id: input.attemptId,
         current_code: input.currentCode,
         blank_id: input.blankId,
@@ -345,6 +403,7 @@ export async function requestLearningHint(input: {
 }
 
 export async function explainLearningError(input: {
+  userId: string;
   sessionId: string;
   attemptId: string;
   errorMessage: string | null;
@@ -357,6 +416,7 @@ export async function explainLearningError(input: {
     {
       method: "POST",
       body: JSON.stringify({
+        user_id: input.userId,
         error_message: input.errorMessage,
         stderr: input.stderr,
         failed_tests: input.failedTests,
@@ -371,6 +431,7 @@ export async function explainLearningError(input: {
 }
 
 export async function checkLearningExplanation(input: {
+  userId: string;
   sessionId: string;
   attemptId: string;
   explanation: string;
@@ -382,6 +443,7 @@ export async function checkLearningExplanation(input: {
     {
       method: "POST",
       body: JSON.stringify({
+        user_id: input.userId,
         explanation: input.explanation,
         focus: input.focus,
         round: input.round,
@@ -422,6 +484,7 @@ export async function startReviewSession(input: {
 }
 
 export async function submitReviewWarmupResult(input: {
+  userId: string;
   sessionId: string;
   action: "answer" | "skip";
   answer?: string;
@@ -429,6 +492,7 @@ export async function submitReviewWarmupResult(input: {
   const payload = await requestJson(`${API_BASE_URL}/api/reviews/${input.sessionId}/warmup-result`, {
     method: "POST",
     body: JSON.stringify({
+      user_id: input.userId,
       action: input.action,
       answer: input.answer,
     }),
@@ -440,6 +504,7 @@ export async function submitReviewWarmupResult(input: {
 }
 
 export async function submitReviewExerciseResult(input: {
+  userId: string;
   sessionId: string;
   exerciseId: string;
   code: string;
@@ -452,6 +517,7 @@ export async function submitReviewExerciseResult(input: {
   const payload = await requestJson(`${API_BASE_URL}/api/reviews/${input.sessionId}/exercise-result`, {
     method: "POST",
     body: JSON.stringify({
+      user_id: input.userId,
       exercise_id: input.exerciseId,
       code: input.code,
       filled_blanks: input.filledBlanks,
@@ -522,6 +588,7 @@ export async function createNote(input: {
 
 export async function updateNote(input: {
   noteId: string;
+  userId: string;
   title?: string;
   contentMarkdown?: string;
   isUserEdited?: boolean;
@@ -529,6 +596,7 @@ export async function updateNote(input: {
   const payload = await requestJson(`${API_BASE_URL}/api/notes/${input.noteId}`, {
     method: "PATCH",
     body: JSON.stringify({
+      user_id: input.userId,
       title: input.title,
       content_markdown: input.contentMarkdown,
       is_user_edited: input.isUserEdited ?? true,
@@ -702,6 +770,87 @@ function isLanguageCourse(payload: unknown): payload is LanguageCourse {
 
 function isUserProfile(payload: unknown): payload is UserProfile {
   return isRecord(payload) && typeof payload.id === "string" && typeof payload.display_name === "string";
+}
+
+function isLocalUserListResponse(payload: unknown): payload is LocalUserListResponse {
+  return (
+    isRecord(payload) &&
+    Array.isArray(payload.items) &&
+    payload.items.every(isLocalUserListItem) &&
+    isRecord(payload.page_info) &&
+    typeof payload.page_info.limit === "number" &&
+    typeof payload.page_info.has_more === "boolean"
+  );
+}
+
+function isLocalUserListItem(payload: unknown): boolean {
+  if (!isRecord(payload)) {
+    return false;
+  }
+  return (
+    typeof payload.id === "string" &&
+    typeof payload.display_name === "string" &&
+    (typeof payload.learning_style === "string" || payload.learning_style === null) &&
+    (typeof payload.teaching_preference === "string" || payload.teaching_preference === null) &&
+    (typeof payload.encouragement_preference === "string" || payload.encouragement_preference === null) &&
+    (typeof payload.profession === "string" || payload.profession === null) &&
+    (typeof payload.background_context === "string" || payload.background_context === null) &&
+    Array.isArray(payload.preferred_time_slots) &&
+    isRecord(payload.reminder_preference) &&
+    typeof payload.created_at === "string" &&
+    typeof payload.updated_at === "string" &&
+    typeof payload.plan_count === "number" &&
+    (typeof payload.active_plan_id === "string" || payload.active_plan_id === null) &&
+    (typeof payload.active_goal === "string" || payload.active_goal === null) &&
+    (typeof payload.last_activity_at === "string" || payload.last_activity_at === null)
+  );
+}
+
+function isLocalUserDataSummary(payload: unknown): payload is LocalUserDataSummary {
+  return (
+    isRecord(payload) &&
+    isRecord(payload.user) &&
+    typeof payload.user.id === "string" &&
+    typeof payload.user.display_name === "string" &&
+    isRecord(payload.counts) &&
+    typeof payload.counts.active_plans === "number" &&
+    typeof payload.counts.learning_sessions === "number" &&
+    typeof payload.counts.attempts === "number" &&
+    typeof payload.counts.notes === "number" &&
+    (typeof payload.last_activity_at === "string" || payload.last_activity_at === null)
+  );
+}
+
+function isLocalUserResetResponse(payload: unknown): payload is LocalUserResetResponse {
+  return (
+    isRecord(payload) &&
+    isUserProfile(payload.user) &&
+    isLocalUserDataSummary(payload.before_summary) &&
+    isLocalUserDataSummary(payload.summary) &&
+    payload.next_action === "return_to_onboarding"
+  );
+}
+
+function isLocalUserDeleteResponse(payload: unknown): payload is LocalUserDeleteResponse {
+  return (
+    isRecord(payload) &&
+    typeof payload.deleted_user_id === "string" &&
+    isLocalUserDataSummary(payload.before_summary) &&
+    payload.next_action === "select_local_profile"
+  );
+}
+
+function isLocalUserExportPayload(payload: unknown): payload is LocalUserExportPayload {
+  return (
+    isRecord(payload) &&
+    typeof payload.export_version === "string" &&
+    typeof payload.exported_at === "string" &&
+    isRecord(payload.user) &&
+    isLocalUserDataSummary(payload.summary) &&
+    Array.isArray(payload.plans) &&
+    Array.isArray(payload.notes) &&
+    isRecord(payload.redaction)
+  );
 }
 
 function isPlanDraft(payload: unknown): payload is PlanDraft {

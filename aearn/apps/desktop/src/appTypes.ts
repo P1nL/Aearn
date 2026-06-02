@@ -1,4 +1,4 @@
-import type { ApiHealth, EnvironmentDoctorReport, LearningSessionResponse } from "./types";
+import type { ApiHealth, EnvironmentDoctorReport, LearningSessionResponse, LocalUserDataSummary, LocalUserListItem } from "./types";
 import type { Language } from "./types";
 
 export type ApiHealthState =
@@ -10,6 +10,18 @@ export type EnvironmentDoctorState =
   | { status: "idle" }
   | { status: "loading" }
   | { status: "ready"; data: EnvironmentDoctorReport }
+  | { status: "error"; message: string };
+
+export type LocalUsersState =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "ready"; items: LocalUserListItem[] }
+  | { status: "error"; message: string };
+
+export type UserDataSummaryState =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "ready"; data: LocalUserDataSummary }
   | { status: "error"; message: string };
 
 export type AsyncActionState =

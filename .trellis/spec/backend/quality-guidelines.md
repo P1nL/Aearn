@@ -54,6 +54,85 @@ The dependency source for the API service is `aearn/services/api/pyproject.toml`
 - User content, code submissions, notes, and secrets are not logged.
 - P0 acceptance cases from `docs/qa/acceptance-test-plan.md` remain satisfied for the touched flow.
 
+## Scenario: Local User Data Boundary APIs
+
+### 1. Scope / Trigger
+
+- Trigger: adding or changing local-only profile switching, user data summary/export/reset/delete, or user-scoped plan/note/session/review mutation behavior.
+- Scope: `routes/users.py`, `routes/plans.py`, `routes/notes.py`, `routes/learning_sessions.py`, `routes/reviews.py`, `local_user_data_repository.py`, owned-data repositories, `idempotency_records`, and user-boundary tests.
+
+### 2. Signatures
+
+- API: `GET /api/users`
+- API: `GET /api/users/{user_id}/data-summary`
+- API: `GET /api/users/{user_id}/export`
+- API: `POST /api/users/{user_id}/reset-data` with `{ "confirm": true }`
+- API: `DELETE /api/users/{user_id}` with `{ "confirm": true }`
+- User-scoped read: `GET /api/plans/{plan_id}?user_id=...`
+- User-scoped mutations: learning message/run/hint/explain/check/submit and review warmup/exercise-result/message payloads include optional compatibility `user_id`.
+- DB: `idempotency_records(user_id uuid, invalidated_at timestamptz)` for user-owned write replay boundaries.
+
+### 3. Contracts
+
+- This is a local product isolation boundary, not public auth, RBAC, or a hostile-local-attacker model.
+- When a request supplies `user_id`, every plan, note, learning session, review session, attempt, and idempotency replay must match that user before reading or mutating data.
+- Cross-user mismatches return the same not-found family used for missing objects: `PLAN_NOT_FOUND`, `NOTE_NOT_FOUND`, `SESSION_NOT_FOUND`, or `USER_NOT_FOUND`.
+- New user-owned idempotency records must store `user_id`; replay lookups with explicit `user_id` must filter by `idempotency_records.user_id` and `invalidated_at IS NULL`.
+- Export is learner-safe: include visible learner data and summaries only; omit hidden test bodies/expected values, solution references, raw prompts, provider payloads, API keys, runner temp paths, and internal secrets.
+- Reset preserves the user row and preferences, deletes owned learning data, invalidates/deletes user-owned idempotency records, and returns a zeroed post-reset summary.
+- Delete removes or soft-deletes the user after clearing owned data and must make normal product APIs treat the user as not found.
+
+### 4. Validation & Error Matrix
+
+- Unknown or deleted user -> `USER_NOT_FOUND`.
+- Plan id belongs to another user when `user_id` is supplied -> `PLAN_NOT_FOUND`.
+- Note id belongs to another user -> `NOTE_NOT_FOUND`.
+- Learning or review session belongs to another user -> `SESSION_NOT_FOUND`, including SSE message endpoints.
+- Destructive request missing `{ "confirm": true }` -> `VALIDATION_ERROR` with `recoverable=false`.
+- Same idempotency key with different request body -> `IDEMPOTENCY_CONFLICT`.
+- Reset/delete followed by old confirm-plan or session idempotency replay -> no stale replay; return a fresh result or the correct not-found error.
+
+### 5. Good/Base/Bad Cases
+
+- Good: two local users can hold separate plans, notes, sessions, reviews, and settings; switching `user_id` cannot read or mutate the other user's rows.
+- Good: reset keeps `users.profession` and preferences but clears plans, sessions, attempts, review state/logs/seed banks, notes, conversations, and user-owned idempotency records.
+- Base: legacy internal tests may omit `user_id` for compatibility, but desktop-facing calls must pass the active user.
+- Bad: loading an idempotency record by key only before checking the session owner lets a wrong user replay another user's prior response.
+- Bad: exporting `test_cases`, `solution_reference`, raw graph/provider payloads, or hidden expected values directly.
+
+### 6. Tests Required
+
+- Assert `GET /api/users` lists only non-deleted users with switchable summary fields.
+- Assert data summary counts plans, sessions, attempts, review states/logs/seed banks, notes, and conversations for the target user only.
+- Assert export contains learner-visible notes/attempt summaries and excludes hidden tests, solution references, raw prompts, provider payloads, and secrets.
+- Assert cross-user plan detail, note update, learning message/run, review warmup/exercise-result/message return stable not-found errors.
+- Assert reset preserves user preferences, clears owned learning data, clears stale plan visibility, and prevents stale idempotency replay.
+- Assert delete hides the user from read/list APIs, hides old owned data, and prevents stale idempotency replay.
+- Run M3/M4 DB tests sequentially with other bootstrap-heavy batches; parallel runs can deadlock on schema bootstrap.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+stored = conn.execute(
+    "SELECT request_hash, response_json FROM idempotency_records WHERE key = %s",
+    (key,),
+).fetchone()
+session = _load_session(conn, session_id)
+```
+
+This can replay another local user's response before the session owner is checked.
+
+#### Correct
+
+```python
+session = _load_session(conn, session_id, user_id=payload.user_id)
+stored = _load_idempotency_record(conn, key, user_id=payload.user_id)
+```
+
+The object owner and idempotency owner are both checked before replay or mutation.
+
 ## Scenario: Local Dev Startup Lifecycle
 
 ### 1. Scope / Trigger

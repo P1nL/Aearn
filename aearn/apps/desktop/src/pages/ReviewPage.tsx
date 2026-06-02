@@ -28,6 +28,7 @@ type ReviewStreamRequest = {
   requestId: string;
   assistantMessageId: string;
   body: {
+    user_id: string;
     role: "user";
     content: string;
     client_message_id: string;
@@ -107,7 +108,7 @@ export function ReviewPage({ isActive, user, messages, onActiveNoteContextChange
 
   function handleComposerSubmit(input: string) {
     const content = input.trim();
-    if (content.length === 0 || isStreaming || !activeReview) return;
+    if (content.length === 0 || isStreaming || !activeReview || !user) return;
 
     const assistantMessage: ConversationMessage = {
       ...createMessage("agent", "", "Agent"),
@@ -123,6 +124,7 @@ export function ReviewPage({ isActive, user, messages, onActiveNoteContextChange
       requestId: createClientId("desktop_review_req"),
       assistantMessageId: assistantMessage.id,
       body: {
+        user_id: user.id,
         role: "user",
         content,
         client_message_id: createClientId("desktop_review_msg"),
@@ -187,13 +189,14 @@ export function ReviewPage({ isActive, user, messages, onActiveNoteContextChange
   }
 
   async function handleWarmupSubmit(action: "answer" | "skip") {
-    if (!activeReview || warmupState === "submitting") {
+    if (!activeReview || !user || warmupState === "submitting") {
       return;
     }
     setWarmupState("submitting");
     setErrorMessage(null);
     try {
       const response = await submitReviewWarmupResult({
+        userId: user.id,
         sessionId: activeReview.session_id,
         action,
         answer: action === "skip" ? undefined : warmupAnswer,
@@ -219,7 +222,7 @@ export function ReviewPage({ isActive, user, messages, onActiveNoteContextChange
   }
 
   async function handleSubmitReview() {
-    if (!activeReview || submitState === "submitting") {
+    if (!activeReview || !user || submitState === "submitting") {
       return;
     }
     setSubmitState("submitting");
@@ -227,6 +230,7 @@ export function ReviewPage({ isActive, user, messages, onActiveNoteContextChange
     try {
       const exercise = activeReview.review_exercise;
       const result = await submitReviewExerciseResult({
+        userId: user.id,
         sessionId: activeReview.session_id,
         exerciseId: exercise.id,
         code: exercise.exercise_type === "review_ai_patch" ? editorCode || patchOriginalCode(exercise.metadata_json) : buildSubmittedCode(editorCode, filledBlanks),

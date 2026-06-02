@@ -618,6 +618,307 @@ HTTP 状态码：
 
 相关数据表/状态机节点：`User`；`context_assembler` 读取用户画像。
 
+#### `GET /api/users`
+
+用途：列出当前本机未删除的本地用户画像，用于 desktop profile switching。该接口只服务 local-only 产品隔离，不表示公网认证或 RBAC。
+
+Request JSON 示例：
+
+```json
+{
+  "query": {}
+}
+```
+
+Response JSON 示例：
+
+```json
+{
+  "items": [
+    {
+      "id": "user_001",
+      "display_name": "Pinking",
+      "learning_style": "practice_first",
+      "teaching_preference": "step_by_step",
+      "encouragement_preference": "direct",
+      "profession": "frontend_developer",
+      "background_context": "有 Vue 经验。",
+      "preferred_time_slots": [],
+      "reminder_preference": {
+        "enabled": true,
+        "channel": "desktop"
+      },
+      "created_at": "2026-05-11T08:00:00Z",
+      "updated_at": "2026-05-11T08:10:00Z",
+      "plan_count": 1,
+      "active_plan_id": "plan_001",
+      "active_goal": "两周内掌握 JavaScript DOM 事件，并能验证 AI 生成代码。",
+      "last_activity_at": "2026-05-11T09:40:00Z"
+    }
+  ],
+  "page_info": {
+    "limit": 1,
+    "next_cursor": null,
+    "has_more": false
+  }
+}
+```
+
+HTTP 状态码：
+
+- `200`：查询成功
+
+错误码：`INTERNAL_ERROR`
+
+幂等/重试说明：安全可重试；desktop 切换用户前应重新拉取，避免展示已删除用户。
+
+相关数据表/状态机节点：`User`、`LearningPlan`、`LearningSession`、`Attempt`、`Note`；无 Agent 节点。
+
+#### `GET /api/users/{user_id}/data-summary`
+
+用途：返回本地用户的 learner-safe 数据摘要，用于 reset/delete 预览和 Settings 记录可见性。
+
+Request JSON 示例：
+
+```json
+{
+  "path_params": {
+    "user_id": "user_001"
+  }
+}
+```
+
+Response JSON 示例：
+
+```json
+{
+  "summary": {
+    "user": {
+      "id": "user_001",
+      "display_name": "Pinking",
+      "created_at": "2026-05-11T08:00:00Z",
+      "updated_at": "2026-05-11T08:10:00Z"
+    },
+    "counts": {
+      "active_plans": 1,
+      "archived_or_deleted_plans": 0,
+      "modules": 6,
+      "knowledge_points": 24,
+      "exercises": 24,
+      "learning_sessions": 3,
+      "attempts": 8,
+      "review_states": 24,
+      "review_logs": 2,
+      "review_seed_banks": 24,
+      "notes": 4,
+      "onboarding_conversations": 1,
+      "onboarding_messages": 8,
+      "learning_messages": 12,
+      "review_messages": 3
+    },
+    "last_activity_at": "2026-05-11T09:40:00Z"
+  }
+}
+```
+
+HTTP 状态码：
+
+- `200`：查询成功
+- `404`：用户不存在或已删除
+
+错误码：`USER_NOT_FOUND`
+
+幂等/重试说明：安全可重试；reset/delete 前端确认弹窗必须使用最新摘要。
+
+相关数据表/状态机节点：`User` 及该用户 owned learning data；无 Agent 节点。
+
+#### `GET /api/users/{user_id}/export`
+
+用途：导出该本地用户的 learner-safe JSON。导出可包含用户画像、偏好、学习计划、模块、知识点、学习会话、尝试摘要、复习摘要、笔记和 conversation summaries，但不得导出 hidden tests、hidden expected values、solution references、raw prompts、provider payloads、API keys 或 runner secrets。
+
+Response JSON 示例：
+
+```json
+{
+  "export_version": "local_user_data_v1",
+  "exported_at": "2026-05-11T10:00:00Z",
+  "user": {
+    "id": "user_001",
+    "display_name": "Pinking",
+    "created_at": "2026-05-11T08:00:00Z",
+    "updated_at": "2026-05-11T08:10:00Z"
+  },
+  "preferences": {
+    "learning_style": "practice_first",
+    "teaching_preference": "step_by_step",
+    "encouragement_preference": "direct",
+    "profession": "frontend_developer",
+    "background_context": "有 Vue 经验。",
+    "preferred_time_slots": [],
+    "reminder_preference": {}
+  },
+  "summary": {
+    "user": {
+      "id": "user_001",
+      "display_name": "Pinking",
+      "created_at": "2026-05-11T08:00:00Z",
+      "updated_at": "2026-05-11T08:10:00Z"
+    },
+    "counts": {
+      "active_plans": 1,
+      "notes": 4
+    },
+    "last_activity_at": "2026-05-11T09:40:00Z"
+  },
+  "plans": [],
+  "modules": [],
+  "knowledge_points": [],
+  "learning_sessions": [],
+  "attempt_summaries": [],
+  "review_state_summaries": [],
+  "review_log_summaries": [],
+  "notes": [],
+  "conversation_summaries": {
+    "onboarding": [],
+    "learning": [],
+    "review": []
+  },
+  "redaction": {
+    "hidden_tests": "omitted",
+    "solution_references": "omitted",
+    "raw_prompts": "omitted",
+    "provider_payloads": "omitted",
+    "secrets": "omitted"
+  }
+}
+```
+
+HTTP 状态码：
+
+- `200`：导出成功
+- `404`：用户不存在或已删除
+
+错误码：`USER_NOT_FOUND`
+
+幂等/重试说明：安全可重试；`exported_at` 会随请求变化，其余内容应按稳定排序输出。
+
+相关数据表/状态机节点：用户 owned learning data；无 Agent 节点。
+
+#### `POST /api/users/{user_id}/reset-data`
+
+用途：保留本地用户画像和偏好设置，清空该用户 owned learning data，并使 stale bootstrap `planId` 和相关幂等回放失效。成功后 desktop 应保留 `userId`、清空 `planId` 并回到 onboarding。
+
+Request JSON 示例：
+
+```json
+{
+  "confirm": true
+}
+```
+
+Response JSON 示例：
+
+```json
+{
+  "user": {
+    "id": "user_001",
+    "display_name": "Pinking",
+    "preferred_time_slots": [],
+    "reminder_preference": {},
+    "created_at": "2026-05-11T08:00:00Z",
+    "updated_at": "2026-05-11T10:05:00Z"
+  },
+  "before_summary": {
+    "user": {
+      "id": "user_001",
+      "display_name": "Pinking",
+      "created_at": "2026-05-11T08:00:00Z",
+      "updated_at": "2026-05-11T08:10:00Z"
+    },
+    "counts": {
+      "active_plans": 1,
+      "learning_sessions": 3,
+      "notes": 4
+    },
+    "last_activity_at": "2026-05-11T09:40:00Z"
+  },
+  "summary": {
+    "user": {
+      "id": "user_001",
+      "display_name": "Pinking",
+      "created_at": "2026-05-11T08:00:00Z",
+      "updated_at": "2026-05-11T10:05:00Z"
+    },
+    "counts": {
+      "active_plans": 0,
+      "learning_sessions": 0,
+      "notes": 0
+    },
+    "last_activity_at": null
+  },
+  "next_action": "return_to_onboarding"
+}
+```
+
+HTTP 状态码：
+
+- `200`：reset 成功
+- `400`：缺少确认
+- `404`：用户不存在或已删除
+
+错误码：`VALIDATION_ERROR`、`USER_NOT_FOUND`
+
+幂等/重试说明：reset 后旧 `idempotency_records` 不得回放已删除 plan/session/note 响应；重复 reset 可返回空摘要。
+
+相关数据表/状态机节点：用户 owned learning data；无 Agent 节点。
+
+#### `DELETE /api/users/{user_id}`
+
+用途：删除本地用户画像并清空该用户 owned learning data。成功后 normal product API 必须把该用户视为不存在；如果 desktop 当前激活的是该用户，必须清空 `localStorage["aearn.bootstrap"]` 并回到本地用户选择或 onboarding。
+
+Request JSON 示例：
+
+```json
+{
+  "confirm": true
+}
+```
+
+Response JSON 示例：
+
+```json
+{
+  "deleted_user_id": "user_001",
+  "before_summary": {
+    "user": {
+      "id": "user_001",
+      "display_name": "Pinking",
+      "created_at": "2026-05-11T08:00:00Z",
+      "updated_at": "2026-05-11T08:10:00Z"
+    },
+    "counts": {
+      "active_plans": 1,
+      "learning_sessions": 3,
+      "notes": 4
+    },
+    "last_activity_at": "2026-05-11T09:40:00Z"
+  },
+  "next_action": "select_local_profile"
+}
+```
+
+HTTP 状态码：
+
+- `200`：delete 成功
+- `400`：缺少确认
+- `404`：用户不存在或已删除
+
+错误码：`VALIDATION_ERROR`、`USER_NOT_FOUND`
+
+幂等/重试说明：delete 后旧 `idempotency_records` 不得回放已删除用户的数据；重复 delete 视为 `USER_NOT_FOUND`。
+
+相关数据表/状态机节点：`User` 及该用户 owned learning data；无 Agent 节点。
+
 #### `PATCH /api/users/{user_id}/preferences`
 
 用途：更新学习偏好、提醒偏好、职业与背景信息。该接口不接受评分规则、Attempt 写入策略或 FSRS 固定规则配置。
@@ -1067,7 +1368,7 @@ Request JSON 示例：
     "plan_id": "plan_001"
   },
   "query": {
-    "include": "modules,knowledge_points,review_state"
+    "user_id": "user_001"
   }
 }
 ```
@@ -1121,9 +1422,9 @@ HTTP 状态码：
 - `200`：查询成功
 - `404`：计划不存在
 
-错误码：`PLAN_NOT_FOUND`、`FORBIDDEN`
+错误码：`PLAN_NOT_FOUND`
 
-幂等/重试说明：只读接口，可安全重试。
+幂等/重试说明：只读接口，可安全重试。desktop 必须带当前 active `user_id`；跨用户或已删除用户/计划 mismatch 返回 `PLAN_NOT_FOUND`，避免通过错误信息暴露其他本地用户数据。
 
 相关数据表/状态机节点：`LearningPlan`、`PlanModule`、`KnowledgePoint`、`ReviewState`；`load_resume_context` 可读取该结构。
 
@@ -1329,6 +1630,7 @@ Request JSON 示例：
 
 ```json
 {
+  "user_id": "user_001",
   "role": "user",
   "content": "B，因为放在回调里面每次点击都会重新从 0 开始。",
   "client_message_id": "msg_client_001"
@@ -1458,6 +1760,7 @@ Request JSON 示例：
 
 ```json
 {
+  "user_id": "user_001",
   "code": "let count = 0;\nbutton.addEventListener('click', () => {\n  count += 1;\n  output.textContent = count;\n});",
   "filled_blanks": {
     "blank_1": "addEventListener",
@@ -1519,6 +1822,7 @@ Request JSON 示例：
 
 ```json
 {
+  "user_id": "user_001",
   "attempt_id": "att_run_001",
   "submit_version": 1,
   "code": "let count = 0;\nbutton.addEventListener('click', () => {\n  count += 1;\n  output.textContent = count;\n});",
@@ -1597,6 +1901,7 @@ Request JSON 示例：
 
 ```json
 {
+  "user_id": "user_001",
   "attempt_id": "att_run_001",
   "current_code": "let count = 0;\nbutton.addEventListener('click', () => {\n  output.textContent = count;\n});",
   "blank_id": "blank_2",
@@ -1645,6 +1950,7 @@ Request JSON 示例：
 
 ```json
 {
+  "user_id": "user_001",
   "error_message": "Expected textContent to be '3' after three clicks, got '1'.",
   "stderr": "",
   "failed_tests": [
@@ -1698,6 +2004,7 @@ Request JSON 示例：
 
 ```json
 {
+  "user_id": "user_001",
   "explanation": "状态变量在回调外层，所以多次点击会累加；如果写在回调里，每次点击都会重新初始化。",
   "focus": "core_logic",
   "round": 1
@@ -2012,6 +2319,7 @@ Request JSON 示例：
 
 ```json
 {
+  "user_id": "user_001",
   "action": "answer",
   "answer": "count 要放在能跨多次点击复用的外层作用域，不能每次回调重新初始化。"
 }
@@ -2021,6 +2329,7 @@ Request JSON 示例：
 
 ```json
 {
+  "user_id": "user_001",
   "action": "skip"
 }
 ```
@@ -2070,6 +2379,7 @@ Request JSON 示例：
 
 ```json
 {
+  "user_id": "user_001",
   "exercise_id": "ex_dom_toggle_state_variant",
   "attempt_id": "att_review_run_001",
   "code": "let enabled = false;\nbutton.addEventListener('click', () => {\n  enabled = !enabled;\n  output.textContent = enabled ? 'on' : 'off';\n});",
@@ -2088,6 +2398,7 @@ Request JSON 示例：
 
 ```json
 {
+  "user_id": "user_001",
   "exercise_id": "ex_dom_ai_patch_review",
   "review_ai_patch_answer": {
     "verdict": "fail",
@@ -2258,6 +2569,7 @@ Request JSON 示例：
 
 ```json
 {
+  "user_id": "user_001",
   "title": "事件状态变量位置",
   "content_markdown": "状态变量放在回调外层，事件回调里只做更新。",
   "is_user_edited": true
@@ -2287,7 +2599,7 @@ HTTP 状态码：
 
 错误码：`NOTE_NOT_FOUND`、`VALIDATION_ERROR`
 
-幂等/重试说明：同一请求体可安全重试；后续可扩展 `If-Match` 乐观锁。
+幂等/重试说明：同一请求体可安全重试；请求体必须包含当前 active `user_id`。跨用户 mismatch 返回 `NOTE_NOT_FOUND`，避免通过 `note_id` 读取或修改其他本地用户笔记。后续可扩展 `If-Match` 乐观锁。
 
 相关数据表/状态机节点：`Note`；无 Agent 必经节点。
 

@@ -194,6 +194,7 @@ async def create_learning_session_message(
         try:
             response, replayed = create_learning_message_response(
                 conn,
+                user_id=payload.user_id,
                 session_id=session_id,
                 content=payload.content,
                 client_message_id=payload.client_message_id,
@@ -274,6 +275,7 @@ async def run_learning_session(
         try:
             response, replayed = run_learning_session_exercise(
                 conn,
+                user_id=payload.user_id,
                 session_id=session_id,
                 exercise_id=exercise_id,
                 code=payload.code,
@@ -350,6 +352,7 @@ async def get_learning_hint(
         try:
             response, replayed = request_learning_hint(
                 conn,
+                user_id=payload.user_id,
                 session_id=session_id,
                 exercise_id=exercise_id,
                 attempt_id=payload.attempt_id,
@@ -423,6 +426,7 @@ async def explain_learning_error(
         try:
             response, replayed = explain_learning_attempt_error(
                 conn,
+                user_id=payload.user_id,
                 session_id=session_id,
                 attempt_id=attempt_id,
                 error_message=payload.error_message or "",
@@ -486,6 +490,7 @@ async def check_learning_explanation(
         try:
             response, replayed = check_learning_attempt_explanation(
                 conn,
+                user_id=payload.user_id,
                 session_id=session_id,
                 attempt_id=attempt_id,
                 explanation=payload.explanation,
@@ -581,6 +586,7 @@ async def submit_learning_session(
         try:
             response, replayed = submit_learning_session_exercise(
                 conn,
+                user_id=payload.user_id,
                 session_id=session_id,
                 exercise_id=exercise_id,
                 attempt_id=payload.attempt_id,
@@ -663,6 +669,7 @@ async def _learning_message_stream(
             try:
                 prepared = prepare_learning_message(
                     conn,
+                    user_id=payload.user_id,
                     session_id=session_id,
                     content=payload.content,
                     client_message_id=payload.client_message_id,
@@ -925,6 +932,7 @@ async def _run_learning_session_stream(
             try:
                 response, replayed = run_learning_session_exercise(
                     conn,
+                    user_id=payload.user_id,
                     session_id=session_id,
                     exercise_id=exercise_id,
                     code=payload.code,
@@ -1014,6 +1022,7 @@ async def _submit_learning_session_stream(
             try:
                 response, replayed = submit_learning_session_exercise(
                     conn,
+                    user_id=payload.user_id,
                     session_id=session_id,
                     exercise_id=exercise_id,
                     attempt_id=payload.attempt_id,

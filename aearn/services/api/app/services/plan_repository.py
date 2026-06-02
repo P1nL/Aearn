@@ -37,8 +37,14 @@ def confirm_plan(
     idempotency_key: str,
     request_hash: str,
 ) -> tuple[dict[str, object], bool]:
+    if get_user(conn, user_id) is None:
+        raise EntityNotFoundError("USER_NOT_FOUND", "用户不存在")
     existing = conn.execute(
-        "SELECT request_hash, response_json FROM idempotency_records WHERE key = %s",
+        """
+        SELECT request_hash, response_json
+        FROM idempotency_records
+        WHERE key = %s AND invalidated_at IS NULL
+        """,
         (idempotency_key,),
     ).fetchone()
     if existing is not None:
@@ -50,8 +56,6 @@ def confirm_plan(
         return response, True
 
     _validate_plan_draft(plan_draft, user_id)
-    if get_user(conn, user_id) is None:
-        raise EntityNotFoundError("USER_NOT_FOUND", "用户不存在")
     course = get_course(conn, plan_draft.language_course_id)
     if course is None:
         raise EntityNotFoundError("COURSE_NOT_FOUND", "课程不存在")
@@ -161,18 +165,36 @@ def confirm_plan(
     response = _build_plan_response(plan, module_rows, knowledge_point_rows)
     conn.execute(
         """
-        INSERT INTO idempotency_records (key, operation, request_hash, response_json)
-        VALUES (%s, 'confirm_plan', %s, %s::jsonb)
+        INSERT INTO idempotency_records (key, operation, request_hash, response_json, user_id)
+        VALUES (%s, 'confirm_plan', %s, %s::jsonb, %s)
         """,
-        (idempotency_key, request_hash, json.dumps(response, default=str)),
+        (idempotency_key, request_hash, json.dumps(response, default=str), user_id),
     )
     return response, False
 
 
-def get_plan_detail(conn: Connection[dict[str, object]], plan_id: str) -> dict[str, object] | None:
+def get_plan_detail(
+    conn: Connection[dict[str, object]],
+    plan_id: str,
+    *,
+    user_id: str | None = None,
+) -> dict[str, object] | None:
+    params: tuple[object, ...]
+    user_clause = ""
+    if user_id is not None:
+        user_clause = "AND user_id = %s"
+        params = (plan_id, user_id)
+    else:
+        params = (plan_id,)
     plan = conn.execute(
-        "SELECT * FROM learning_plans WHERE id = %s AND deleted_at IS NULL",
-        (plan_id,),
+        f"""
+        SELECT *
+        FROM learning_plans
+        WHERE id = %s
+          AND deleted_at IS NULL
+          {user_clause}
+        """,
+        params,
     ).fetchone()
     if plan is None:
         return None
