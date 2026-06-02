@@ -3,6 +3,10 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
+from app.services.browser_preview_runner import (
+    BrowserPreviewExecutionResult,
+    execute_browser_preview_with_tests,
+)
 from app.services.language_capabilities import ExecutionMode, RunnerKey
 from app.services.node_typescript_runner import NodeExecutionResult, execute_node_typescript_with_tests
 from app.services.runtime_contracts import RuntimeExecutionResult
@@ -88,6 +92,9 @@ class RunnerRegistry:
     def run_python(self, exercise: Mapping[str, object], code: str) -> RuntimeExecutionResult:
         return _run_python_sandbox(exercise, code)
 
+    def run_browser_preview(self, exercise: Mapping[str, object], code: str, filled_blanks: Mapping[str, str]) -> RuntimeExecutionResult:
+        return _run_browser_preview(exercise, code, filled_blanks)
+
     def run_node_typescript(self, exercise: Mapping[str, object], code: str) -> RuntimeExecutionResult:
         return _run_node_typescript(exercise, code)
 
@@ -117,7 +124,7 @@ BROWSER_PREVIEW_RUNNER = RunnerCapability(
     runtime_tiers=("browser_preview",),
     supports_execution=True,
     supports_tests=True,
-    supports_stdout=False,
+    supports_stdout=True,
     supports_preview=True,
     compile_required=False,
     timeout_ms=5000,
@@ -304,6 +311,79 @@ def _run_python_sandbox(exercise: Mapping[str, object], code: str) -> RuntimeExe
         core_blank_gate=logic_pass,
         any_blank_passed=passed_count > 0,
         logic_pass=logic_pass,
+    )
+
+
+def _run_browser_preview(exercise: Mapping[str, object], code: str, filled_blanks: Mapping[str, str]) -> RuntimeExecutionResult:
+    browser_result = execute_browser_preview_with_tests(exercise, code, filled_blanks)
+    return _browser_result_to_runtime_result(exercise, browser_result)
+
+
+def _browser_result_to_runtime_result(
+    exercise: Mapping[str, object],
+    browser_result: BrowserPreviewExecutionResult,
+) -> RuntimeExecutionResult:
+    test_cases = exercise.get("test_cases", [])
+    if not isinstance(test_cases, Sequence):
+        test_cases = []
+
+    test_results = [_public_test_result(result, index) for index, result in enumerate(browser_result.test_results)]
+    total_weight = sum(result.weight for result in browser_result.test_results)
+    passed_weight = sum(result.weight for result in browser_result.test_results if result.passed)
+    passed_count = sum(1 for result in browser_result.test_results if result.passed)
+    total_count = len(browser_result.test_results) or len(test_cases)
+    test_pass_rate = 0.0 if total_weight == 0 else round(passed_weight / total_weight, 4)
+
+    if browser_result.status == "timeout":
+        return RuntimeExecutionResult(
+            runtime_status="timeout",
+            stdout=_bound_text(browser_result.stdout, MAX_RUNNER_STDOUT_CHARS),
+            stderr=_bound_text(browser_result.stderr, MAX_RUNNER_STDERR_CHARS),
+            test_pass_rate=0.0,
+            passed_test_count=0,
+            total_test_count=total_count,
+            test_results=test_results,
+            error_message="Browser preview runner timed out.",
+            next_action="retry_same",
+            preview_html=browser_result.preview_html,
+            core_blank_gate=False,
+            any_blank_passed=False,
+            logic_pass=False,
+        )
+
+    if browser_result.status == "runtime_error":
+        return RuntimeExecutionResult(
+            runtime_status="runtime_error",
+            stdout=_bound_text(browser_result.stdout, MAX_RUNNER_STDOUT_CHARS),
+            stderr=_bound_text(browser_result.stderr, MAX_RUNNER_STDERR_CHARS),
+            test_pass_rate=0.0,
+            passed_test_count=0,
+            total_test_count=total_count,
+            test_results=test_results,
+            error_message=_bound_text(browser_result.error or "Browser preview raised a runtime error.", MAX_RUNNER_ERROR_CHARS),
+            next_action="explain_error",
+            preview_html=browser_result.preview_html,
+            core_blank_gate=False,
+            any_blank_passed=False,
+            logic_pass=False,
+        )
+
+    logic_pass = browser_result.logic_pass and test_pass_rate == 1.0
+    next_action = _next_action_for_run(test_results, logic_pass, "browser_preview")
+    return RuntimeExecutionResult(
+        runtime_status="success",
+        stdout=_bound_text(browser_result.stdout, MAX_RUNNER_STDOUT_CHARS),
+        stderr=_bound_text(browser_result.stderr, MAX_RUNNER_STDERR_CHARS),
+        test_pass_rate=test_pass_rate,
+        passed_test_count=passed_count,
+        total_test_count=total_count,
+        test_results=test_results,
+        error_message=None,
+        next_action=next_action,
+        preview_html=browser_result.preview_html,
+        core_blank_gate=browser_result.core_blank_gate,
+        any_blank_passed=browser_result.any_blank_passed,
+        logic_pass=browser_result.logic_pass,
     )
 
 
