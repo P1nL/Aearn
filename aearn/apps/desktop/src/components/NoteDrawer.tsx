@@ -12,6 +12,8 @@ type NoteDrawerProps = {
 
 export function NoteDrawer({ drawerKnowledgePointId, drawerNote, drawerDraft, userId, lastAttemptId }: NoteDrawerProps) {
   const notes = useNotesStore();
+  const noteBusy = drawerDraft?.status === "保存中" || drawerDraft?.status === "加载中";
+  const canSave = Boolean(drawerKnowledgePointId && drawerNote && drawerDraft && !noteBusy);
 
   return (
     <section id="noteDrawer" className="drawer open" aria-label="知识点笔记抽屉">
@@ -30,6 +32,7 @@ export function NoteDrawer({ drawerKnowledgePointId, drawerNote, drawerDraft, us
             className="icon-btn"
             type="button"
             aria-label="保存笔记"
+            disabled={!canSave}
             onClick={() => drawerKnowledgePointId && void notes.saveByKnowledgePointId(drawerKnowledgePointId)}
           >
             ✓
@@ -37,7 +40,7 @@ export function NoteDrawer({ drawerKnowledgePointId, drawerNote, drawerDraft, us
           <button
             className="btn primary ghost-btn"
             type="button"
-            disabled={!drawerKnowledgePointId || Boolean(drawerKnowledgePointId && notes.assistBusy[drawerKnowledgePointId])}
+            disabled={!drawerKnowledgePointId || !userId || Boolean(drawerKnowledgePointId && notes.assistBusy[drawerKnowledgePointId])}
             onClick={() =>
               drawerKnowledgePointId &&
               userId &&
@@ -83,6 +86,14 @@ export function NoteDrawer({ drawerKnowledgePointId, drawerNote, drawerDraft, us
               <div className="tool-card">
                 <strong>保存错误</strong>
                 <p>{drawerDraft.errorMessage}</p>
+                <button
+                  className="btn small primary"
+                  type="button"
+                  disabled={!canSave}
+                  onClick={() => drawerKnowledgePointId && void notes.saveByKnowledgePointId(drawerKnowledgePointId)}
+                >
+                  重试保存
+                </button>
               </div>
             )}
           </aside>

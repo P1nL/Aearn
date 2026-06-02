@@ -122,6 +122,14 @@ export function ExerciseWorkbench({
           : "pristine";
   const actionError = actionState.status === "error" ? actionState : null;
   const isLoading = actionState.status === "loading";
+  const actionHint = buildActionHint({
+    runtimeUnsupported,
+    isLoading,
+    lastRun,
+    lastRunMode,
+    isStale,
+    selectedBlankId,
+  });
 
   return (
     <section className="exercise-workbench">
@@ -191,6 +199,7 @@ export function ExerciseWorkbench({
                 </button>
               </div>
             </div>
+            {actionHint && <div className="wb-notice">{actionHint}</div>}
             <CodeEditor
               language={exercise.runtime_profile.language}
               value={code}
@@ -307,4 +316,43 @@ export function ExerciseWorkbench({
       </div>
     </section>
   );
+}
+
+function buildActionHint({
+  runtimeUnsupported,
+  isLoading,
+  lastRun,
+  lastRunMode,
+  isStale,
+  selectedBlankId,
+}: {
+  runtimeUnsupported: boolean;
+  isLoading: boolean;
+  lastRun: RunExerciseResponse | null;
+  lastRunMode: ExerciseRunMode | null;
+  isStale: boolean;
+  selectedBlankId: string;
+}): string | null {
+  if (runtimeUnsupported) {
+    return "当前练习只支持静态阅读和补全，运行、提交和错因分析暂不开放。";
+  }
+  if (isLoading) {
+    return "当前操作正在处理中，请等待结果返回后再继续。";
+  }
+  if (isStale) {
+    return "代码或空缺已修改，旧输出仅供参考；请重新运行可见测试后再提交、请求提示或检查解释。";
+  }
+  if (!lastRun) {
+    return "先运行预览或可见测试。提交、提示、错因分析和解释检查都需要后端返回的真实运行结果。";
+  }
+  if (lastRun.runtime_status === "unsupported") {
+    return "后端返回当前 runtime 未开放，无法提交或继续生成运行相关反馈。";
+  }
+  if (lastRunMode === "preview") {
+    return "预览只用于观察效果；如果要提交评分，请再运行一次可见测试。";
+  }
+  if (!selectedBlankId) {
+    return "选择一个空缺后才能请求分层提示。";
+  }
+  return null;
 }

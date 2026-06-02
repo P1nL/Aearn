@@ -4,7 +4,6 @@ import type { Dispatch, SetStateAction } from "react";
 import { buildReviewMessageSSEUrl, fetchTodayReviews, startReviewSession, submitReviewExerciseResult, submitReviewWarmupResult } from "../api";
 import type { ConversationMessage, NoteContext } from "../appTypes";
 import { AssistantUIThread } from "../components/AssistantUIThread";
-import { ReviewRecap } from "../components/ReviewRecap";
 import { useSSE } from "../hooks/useSSE";
 import { formatErrorMessage } from "../lib/errorMessages";
 import { createMessage } from "../lib/learningHelpers";
@@ -14,8 +13,6 @@ import type {
   ReviewAiPatchAnswer,
   ReviewExerciseResultResponse,
   ReviewSessionResponse,
-  RunExerciseResponse,
-  SubmitExerciseResponse,
   UserProfile,
 } from "../types";
 
@@ -23,8 +20,6 @@ type ReviewPageProps = {
   isActive: boolean;
   user: UserProfile | null;
   messages: ConversationMessage[];
-  lastSubmit: SubmitExerciseResponse | null;
-  lastRun: RunExerciseResponse | null;
   onActiveNoteContextChange: (context: NoteContext | null) => void;
 };
 
@@ -41,7 +36,7 @@ type ReviewStreamRequest = {
 
 const REVIEW_QUICK_REPLIES = ["我记得", "不太确定", "完全忘了"];
 
-export function ReviewPage({ isActive, user, messages, lastSubmit, lastRun, onActiveNoteContextChange }: ReviewPageProps) {
+export function ReviewPage({ isActive, user, messages, onActiveNoteContextChange }: ReviewPageProps) {
   const store = useAppStore();
   const [dueItems, setDueItems] = useState<ReviewDueItem[]>([]);
   const [loadState, setLoadState] = useState<"idle" | "loading" | "ready" | "error">("idle");
@@ -241,6 +236,19 @@ export function ReviewPage({ isActive, user, messages, lastSubmit, lastRun, onAc
       });
       startTransition(() => {
         setReviewResult(result);
+        setActiveReview((current) =>
+          current
+            ? {
+                ...current,
+                review_stage: "submitted",
+                ReviewState: result.ReviewState,
+                knowledge_point: {
+                  ...current.knowledge_point,
+                  status: result.KnowledgePoint.status,
+                },
+              }
+            : current,
+        );
         setSubmitState("done");
       });
       // Add AI feedback as a message in the thread
@@ -383,7 +391,7 @@ export function ReviewPage({ isActive, user, messages, lastSubmit, lastRun, onAc
                       </div>
                     </div>
                   ) : (
-                    <p>热身结果：{warmupResultLabel(activeReview.warmup.result)}。FSRS 会在你提交下面的变体练习后更新。</p>
+                    <p>热身结果：{warmupResultLabel(activeReview.warmup.result)}。掌握程度和复习安排会在你提交下面的变体练习后更新。</p>
                   )}
                 </article>
               )}
@@ -474,20 +482,6 @@ export function ReviewPage({ isActive, user, messages, lastSubmit, lastRun, onAc
               )}
             </section>
 
-            {lastSubmit && (
-              <article className="message agent">
-                <div className="avatar">A</div>
-                <div className="bubble">
-                  <div className="bubble-label">Agent</div>
-                  <p>复习已完成。下一轮会重点巩固「{lastSubmit.code_completion_result.weak_points[0] ?? "状态变量生命周期"}」。</p>
-                  <div className="tool-card">
-                    掌握程度：{fsrsRatingLabel(lastSubmit.code_completion_result.fsrs_rating)} · 建议：{nextActionLabel(lastSubmit.next_action)}
-                  </div>
-                </div>
-              </article>
-            )}
-
-            <ReviewRecap lastSubmit={lastSubmit} lastRun={lastRun} />
           </div>
         </section>
       </div>
@@ -693,25 +687,6 @@ function fsrsRatingLabel(rating: string | number): string {
     return "轻松掌握";
   }
   return String(rating);
-}
-
-function nextActionLabel(action: string): string {
-  if (action === "show_hint") {
-    return "获取提示";
-  }
-  if (action === "explain_error") {
-    return "解释错误";
-  }
-  if (action === "review_variant") {
-    return "复习变体";
-  }
-  if (action === "schedule_review") {
-    return "安排复习";
-  }
-  if (action === "advance_next") {
-    return "继续下一步";
-  }
-  return "重新运行";
 }
 
 function createClientId(prefix: string): string {

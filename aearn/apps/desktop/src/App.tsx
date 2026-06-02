@@ -201,7 +201,6 @@ function App() {
             route={visibleRoute}
             createdPlan={app.createdPlan}
             activeKnowledgePointId={activeKnowledgePointId}
-            lastSubmit={app.lastSubmit}
             onSelectKnowledgePoint={(id) => { if (app.createdPlan) void app.openLearningSession(app.createdPlan, id); }}
           />
           <footer className="sidebar-footer">
@@ -268,7 +267,7 @@ function App() {
             </section>
 
             <section className={screenClassName(visibleRoute === "review")} aria-label="复习页">
-              <ReviewPage isActive={visibleRoute === "review"} user={app.user} messages={reviewMessages} lastSubmit={app.lastSubmit} lastRun={app.lastRun} onActiveNoteContextChange={notes.setReviewNoteContext} />
+              <ReviewPage isActive={visibleRoute === "review"} user={app.user} messages={reviewMessages} onActiveNoteContextChange={notes.setReviewNoteContext} />
             </section>
 
             <section className={screenClassName(visibleRoute === "notes")} aria-label="笔记页">

@@ -16,7 +16,14 @@ import type {
   RunExerciseResponse,
   SubmitExerciseResponse,
 } from "../types";
-import { knowledgePointStatusLabel, nextActionLabel, runtimeLabel, runtimeStatusLabel } from "./desktopLabels";
+import {
+  completionResultLabel,
+  fsrsRatingLabel,
+  knowledgePointStatusLabel,
+  nextActionLabel,
+  runtimeLabel,
+  runtimeStatusLabel,
+} from "./desktopLabels";
 
 let messageCounter = 0;
 
@@ -62,7 +69,7 @@ export function buildReviewCards(
   return [
     {
       title: lastSubmit.code_completion_result.weak_points[0] ?? "状态变量生命周期",
-      body: `最新评分 ${lastSubmit.code_completion_result.score} / 8，复习等级 ${lastSubmit.code_completion_result.fsrs_rating}。`,
+      body: `最新评分 ${lastSubmit.code_completion_result.score} / 8，掌握程度 ${fsrsRatingLabel(lastSubmit.code_completion_result.fsrs_rating)}。`,
     },
     {
       title: "运行结果",
@@ -70,7 +77,7 @@ export function buildReviewCards(
     },
     {
       title: "下一步",
-      body: `调度建议：${lastSubmit.next_action}，知识点状态已更新为 ${knowledgePointStatusLabel(lastSubmit.KnowledgePoint.status)}。`,
+      body: `建议：${nextActionLabel(lastSubmit.next_action)}，知识点状态已更新为 ${knowledgePointStatusLabel(lastSubmit.KnowledgePoint.status)}。`,
     },
   ];
 }
@@ -100,7 +107,7 @@ export function buildSessionNote(session: LearningSessionResponse, exercise: Lea
 题面：
 ${exercise.prompt_markdown}
 
-Attempt 记录：
+练习记录：
 - 先运行最小修改，再根据可见测试决定是否提交。
 - 如果失败，记录错因、修改位置和下一步问题。`;
 }
@@ -112,17 +119,17 @@ export function buildAttemptDraft(
 ): string {
   const lines = [`${exercise.title}`];
   if (lastRun) {
-    lines.push("", `Run: ${runtimeStatusLabel(lastRun.runtime_status)}，通过 ${lastRun.passed_test_count}/${lastRun.total_test_count}。`);
+    lines.push("", `运行结果：${runtimeStatusLabel(lastRun.runtime_status)}，通过 ${lastRun.passed_test_count}/${lastRun.total_test_count}。`);
     if (lastRun.error_message) {
       lines.push(`错误：${lastRun.error_message}`);
     }
   }
   if (lastSubmit) {
-    lines.push("", `Submit: ${lastSubmit.code_completion_result.result}，评分 ${lastSubmit.code_completion_result.score}/8。`);
+    lines.push("", `提交结果：${completionResultLabel(lastSubmit.code_completion_result.result)}，评分 ${lastSubmit.code_completion_result.score}/8。`);
     lines.push(`反馈：${lastSubmit.code_completion_result.feedback}`);
   }
   if (!lastRun && !lastSubmit) {
-    lines.push("", "Attempt 1：先补全最小代码，再运行可见测试。");
+    lines.push("", "练习记录：先补全最小代码，再运行可见测试。");
   }
   return lines.join("\n");
 }

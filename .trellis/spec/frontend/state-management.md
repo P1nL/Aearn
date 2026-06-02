@@ -61,5 +61,6 @@ Toast notifications use **sonner** (`<Toaster>` in `main.tsx`); stores call `toa
 
 - Duplicating backend scheduling or scoring rules in the desktop app.
 - Showing old stdout/preview/test output after the code changed without a stale marker.
+- Showing learning-page run/submit state inside ReviewPage. Review route state should come from `/api/reviews/*` responses and its own local `reviewResult`.
 - Treating "today review count > 0" as automatic navigation to review. Product flow says normal open defaults to current learning unless backend flags high-risk resume.
 - Making settings toggles for fixed backend rules such as Attempt persistence, scoring dimensions, or FSRS mapping.
