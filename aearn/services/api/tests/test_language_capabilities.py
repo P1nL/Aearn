@@ -47,14 +47,21 @@ def test_python_capability_discloses_subprocess_not_container_sandbox() -> None:
     assert "not OS-container isolation" in capability.ux_disclosure
 
 
-def test_planned_languages_do_not_claim_execution() -> None:
+def test_typescript_is_executable_but_not_public_selectable() -> None:
     typescript = require_language_capability("typescript")
+
+    assert typescript.enabled_for_public_selection is False
+    assert typescript.execution == "node_typescript_test"
+    assert typescript.supports_execution is True
+    assert typescript.supports_tests is True
+    assert typescript.runner_key == "node"
+    assert typescript.sandbox_boundary == "node_vm_restricted_not_container"
+
+
+def test_planned_languages_do_not_claim_execution() -> None:
     sql = require_language_capability("sql")
     rust = require_language_capability("rust")
 
-    assert typescript.enabled_for_public_selection is False
-    assert typescript.execution == "node_later"
-    assert typescript.supports_execution is False
     assert sql.execution == "sql_later"
     assert sql.supports_execution is False
     assert rust.execution == "compiled_later"
