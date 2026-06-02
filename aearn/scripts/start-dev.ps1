@@ -111,6 +111,44 @@ function Find-ProcessIdByCommand([string]$Regex) {
   return $null
 }
 
+function Get-TrackedProcessPattern([string]$Key) {
+  switch ($Key) {
+    "apiPid" { return "uv --directory .*python -m uvicorn app\.main:app" }
+    "workerPid" { return "aearn_worker\.worker_app:celery_app" }
+    "desktopPid" { return "pnpm --dir .*desktop:dev" }
+    default { return $null }
+  }
+}
+
+function Get-TrackedProcessStatus {
+  param(
+    [string]$Key,
+    [int]$ProcessId
+  )
+  $process = Get-CimInstance Win32_Process -Filter "ProcessId = $ProcessId" -ErrorAction SilentlyContinue
+  if (-not $process) {
+    return [ordered]@{
+      status = "stale"
+      reason = "process not found"
+    }
+  }
+
+  $pattern = Get-TrackedProcessPattern -Key $Key
+  if ($pattern -and (-not $process.CommandLine -or $process.CommandLine -notmatch $pattern)) {
+    return [ordered]@{
+      status = "untrusted"
+      reason = "command mismatch"
+      name = $process.Name
+    }
+  }
+
+  return [ordered]@{
+    status = "alive"
+    reason = "command verified"
+    name = $process.Name
+  }
+}
+
 function Stop-ProcessTree([int]$ProcessId) {
   $children = Get-CimInstance Win32_Process |
     Where-Object { $_.ParentProcessId -eq $ProcessId } |
@@ -128,8 +166,14 @@ function Stop-TrackedProcesses {
   $state = Read-State
   foreach ($key in @("apiPid", "workerPid", "desktopPid")) {
     if ($state.Contains($key) -and $state[$key]) {
-      Write-Step "Stopping $key=$($state[$key])"
-      Stop-ProcessTree -ProcessId ([int]$state[$key])
+      $processId = [int]$state[$key]
+      $tracked = Get-TrackedProcessStatus -Key $key -ProcessId $processId
+      if ($tracked.status -eq "alive") {
+        Write-Step "Stopping $key=$processId"
+        Stop-ProcessTree -ProcessId $processId
+      } else {
+        Write-Step "Skipping $key=$processId ($($tracked.status): $($tracked.reason))"
+      }
     }
   }
   Remove-Item -LiteralPath $StateFile -ErrorAction SilentlyContinue
@@ -183,7 +227,26 @@ function Show-Status {
   $desktopStatus = if (Test-Http "http://127.0.0.1:$DesktopPort") { "ready http://127.0.0.1:$DesktopPort" } else { "not ready" }
   Write-Host "  api:     $apiStatus"
   Write-Host "  desktop: $desktopStatus"
-  Write-Host "  tracked pids: $($state | ConvertTo-Json -Compress)"
+  Write-Host "  tracked pids:"
+  if ($state.Contains("startedAt") -and $state.startedAt) {
+    Write-Host "    startedAt: $($state.startedAt)"
+  }
+  $printedPid = $false
+  foreach ($key in @("apiPid", "workerPid", "desktopPid")) {
+    if ($state.Contains($key) -and $state[$key]) {
+      $printedPid = $true
+      $processId = [int]$state[$key]
+      $tracked = Get-TrackedProcessStatus -Key $key -ProcessId $processId
+      $details = "$($tracked.status), $($tracked.reason)"
+      if ($tracked.Contains("name") -and $tracked.name) {
+        $details = "$details, $($tracked.name)"
+      }
+      Write-Host "    ${key}: $processId ($details)"
+    }
+  }
+  if (-not $printedPid) {
+    Write-Host "    none"
+  }
 }
 
 if ($Stop) {
