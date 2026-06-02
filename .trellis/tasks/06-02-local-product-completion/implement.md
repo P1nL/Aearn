@@ -32,9 +32,9 @@
 
 ## Phase 2 Execution Checklist
 
-- [ ] Implement local user/data management boundaries.
-- [ ] Implement SQL runner contract with dialect disclosure and safe local execution boundary.
-- [ ] Implement adaptive exercise templates, validation, versioning, caching, and fallback behavior for available runners.
+- [x] Implement local user/data management boundaries.
+- [x] Implement SQL runner contract with dialect disclosure and safe local execution boundary.
+- [x] Implement adaptive exercise templates, validation, versioning, caching, and fallback behavior for available runners.
 
 ## Phase 3 Execution Checklist
 

@@ -66,6 +66,7 @@ def test_runner_registry_selects_current_runtime_tiers() -> None:
     assert registry.select({"runtime_tier": "python_stdout_test"}).runner_key == "python"
     assert registry.select({"runtime_tier": "browser_preview"}).runner_key == "browser"
     assert registry.select({"runtime_tier": "node_typescript_test"}).runner_key == "node"
+    assert registry.select({"runtime_tier": "sql_query_test"}).runner_key == "sql"
     assert registry.select({"runtime_tier": "compiled_sandbox_later"}).runner_key == "compiled"
     assert registry.select({"language": "typescript"}).runner_key == "node"
     assert registry.select({"language": "sql"}).runner_key == "sql"
@@ -132,11 +133,13 @@ def test_planned_compiled_runner_returns_unsupported_fallback() -> None:
 def test_sql_runner_does_not_claim_execution() -> None:
     registry = get_runner_registry()
 
-    sql = registry.select({"language": "sql"})
+    sql = registry.select({"runtime_tier": "sql_query_test", "language": "sql"})
 
-    assert sql.supports_execution is False
-    assert sql.execution == "sql_later"
-    assert "isolated query runner" in (sql.unavailable_message or "")
+    assert sql.supports_execution is True
+    assert sql.execution == "sql_query_test"
+    assert sql.supports_tests is True
+    assert sql.sandbox_policy["dialect"] == "sqlite"
+    assert "SQLite teaching dialect" in (sql.unavailable_message or "")
 
 
 def test_node_typescript_runner_capability_is_executable_but_not_container_grade() -> None:

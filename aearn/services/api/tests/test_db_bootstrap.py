@@ -33,8 +33,23 @@ def test_bootstrap_is_repeatable_and_seeds_catalog() -> None:
 
     assert runtime_count is not None
     assert course_count is not None
-    assert runtime_count["count"] >= 5
+    assert runtime_count["count"] >= 6
     assert course_count["count"] >= 5
+
+    with connect() as conn:
+        sql_runtime = conn.execute(
+            """
+            SELECT runtime_tier, language, runner, sandbox_policy
+            FROM runtime_profiles
+            WHERE slug = 'rt_sql_sqlite_query'
+            """,
+        ).fetchone()
+
+    assert sql_runtime is not None
+    assert sql_runtime["runtime_tier"] == "sql_query_test"
+    assert sql_runtime["language"] == "sql"
+    assert sql_runtime["runner"] == "sql"
+    assert sql_runtime["sandbox_policy"]["dialect"] == "sqlite"
 
 
 def test_core_learning_relationships_can_be_inserted() -> None:

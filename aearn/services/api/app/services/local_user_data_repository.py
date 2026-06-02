@@ -119,6 +119,7 @@ def export_user_data(conn: Connection[dict[str, object]], user_id: str) -> dict[
         "attempt_summaries": _export_attempts(conn, user_id),
         "review_state_summaries": _export_review_states(conn, user_id),
         "review_log_summaries": _export_review_logs(conn, user_id),
+        "adaptive_variant_summaries": _export_adaptive_variant_summaries(conn, user_id),
         "notes": _export_notes(conn, user_id),
         "conversation_summaries": _export_conversation_summaries(conn, user_id),
         "redaction": {
@@ -174,8 +175,8 @@ def _summary_user(user: Mapping[str, object]) -> dict[str, object]:
     return {
         "id": str(user["id"]),
         "display_name": user["display_name"],
-        "created_at": user.get("created_at"),
-        "updated_at": user.get("updated_at"),
+        "created_at": _iso_or_none(user.get("created_at")),
+        "updated_at": _iso_or_none(user.get("updated_at")),
     }
 
 
@@ -191,6 +192,7 @@ def _summary_counts(conn: Connection[dict[str, object]], user_id: str) -> dict[s
         "review_states": _count(conn, "SELECT count(*) AS count FROM review_states WHERE user_id = %s", user_id),
         "review_logs": _count(conn, "SELECT count(*) AS count FROM review_logs WHERE user_id = %s", user_id),
         "review_seed_banks": _count(conn, "SELECT count(*) AS count FROM review_seed_banks WHERE user_id = %s", user_id),
+        "exercise_variant_cache": _count(conn, "SELECT count(*) AS count FROM exercise_variant_cache WHERE user_id = %s AND deleted_at IS NULL", user_id),
         "notes": _count(conn, "SELECT count(*) AS count FROM notes WHERE user_id = %s AND deleted_at IS NULL", user_id),
         "onboarding_conversations": _count(conn, "SELECT count(*) AS count FROM onboarding_conversations WHERE user_id = %s", user_id),
         "onboarding_messages": _count(
@@ -411,6 +413,21 @@ def _export_review_logs(conn: Connection[dict[str, object]], user_id: str) -> li
     return [_safe_row(row, exclude=()) for row in rows]
 
 
+def _export_adaptive_variant_summaries(conn: Connection[dict[str, object]], user_id: str) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """
+        SELECT id, knowledge_point_id, template_id, template_version,
+               generator_version, runner_key, runtime_tier, status,
+               failure_code, created_at, last_used_at
+        FROM exercise_variant_cache
+        WHERE user_id = %s AND deleted_at IS NULL
+        ORDER BY last_used_at DESC, created_at DESC
+        """,
+        (user_id,),
+    ).fetchall()
+    return [_safe_row(row, exclude=()) for row in rows]
+
+
 def _export_notes(conn: Connection[dict[str, object]], user_id: str) -> list[dict[str, object]]:
     rows = conn.execute(
         """
@@ -508,6 +525,7 @@ def _delete_user_owned_learning_data(conn: Connection[dict[str, object]], user_i
     conn.execute("DELETE FROM review_logs WHERE user_id = %s", (user_id,))
     conn.execute("DELETE FROM review_states WHERE user_id = %s", (user_id,))
     conn.execute("DELETE FROM review_seed_banks WHERE user_id = %s", (user_id,))
+    conn.execute("DELETE FROM exercise_variant_cache WHERE user_id = %s", (user_id,))
     conn.execute("DELETE FROM notes WHERE user_id = %s", (user_id,))
     conn.execute("DELETE FROM attempts WHERE user_id = %s", (user_id,))
     conn.execute(

@@ -62,8 +62,10 @@ def test_planned_languages_do_not_claim_execution() -> None:
     sql = require_language_capability("sql")
     rust = require_language_capability("rust")
 
-    assert sql.execution == "sql_later"
-    assert sql.supports_execution is False
+    assert sql.execution == "sql_query_test"
+    assert sql.supports_execution is True
+    assert sql.enabled_for_public_selection is False
+    assert "SQLite teaching dialect" in sql.ux_disclosure
     assert rust.execution == "compiled_later"
     assert rust.supports_execution is False
 

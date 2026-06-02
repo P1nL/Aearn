@@ -791,6 +791,7 @@ def _load_learning_context(
         """
         SELECT
           knowledge_points.*,
+          learning_plans.user_id,
           plan_modules.plan_id,
           plan_modules.title AS module_title,
           language_courses.title AS course_title,
@@ -808,15 +809,18 @@ def _load_learning_context(
           runtime_profiles.sandbox_policy
         FROM knowledge_points
         JOIN plan_modules ON plan_modules.id = knowledge_points.module_id
+        JOIN learning_plans ON learning_plans.id = plan_modules.plan_id
         JOIN language_courses ON language_courses.id = knowledge_points.language_course_id
         JOIN runtime_profiles ON runtime_profiles.id = language_courses.runtime_profile_id
         WHERE knowledge_points.id = %s
           AND plan_modules.plan_id = %s
+          AND learning_plans.user_id = %s
           AND knowledge_points.deleted_at IS NULL
           AND plan_modules.deleted_at IS NULL
+          AND learning_plans.deleted_at IS NULL
         LIMIT 1
         """,
-        (knowledge_point_id, plan_id),
+        (knowledge_point_id, plan_id, user_id),
     ).fetchone()
     if context is None:
         raise EntityNotFoundError("KNOWLEDGE_POINT_NOT_FOUND", "知识点不存在")

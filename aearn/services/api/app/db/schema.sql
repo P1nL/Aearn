@@ -40,9 +40,9 @@ CREATE TABLE IF NOT EXISTS learner_profiles (
 CREATE TABLE IF NOT EXISTS runtime_profiles (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   slug text NOT NULL UNIQUE,
-  runtime_tier text NOT NULL CHECK (runtime_tier IN ('browser_preview', 'python_stdout_test', 'compiled_sandbox_later')),
-  language text NOT NULL CHECK (language IN ('javascript', 'python', 'java', 'cpp', 'html_css')),
-  runner text NOT NULL CHECK (runner IN ('browser', 'python', 'sandbox')),
+  runtime_tier text NOT NULL CHECK (runtime_tier IN ('browser_preview', 'python_stdout_test', 'node_typescript_test', 'sql_query_test', 'compiled_sandbox_later')),
+  language text NOT NULL CHECK (language IN ('javascript', 'python', 'typescript', 'sql', 'java', 'cpp', 'html_css')),
+  runner text NOT NULL CHECK (runner IN ('browser', 'python', 'node', 'sql', 'sandbox')),
   supports_realtime_preview boolean NOT NULL DEFAULT false,
   supports_stdout boolean NOT NULL DEFAULT false,
   supports_tests boolean NOT NULL DEFAULT false,
@@ -282,6 +282,25 @@ CREATE TABLE IF NOT EXISTS review_seed_banks (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS exercise_variant_cache (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  knowledge_point_id uuid NOT NULL REFERENCES knowledge_points(id) ON DELETE CASCADE,
+  template_id text NOT NULL,
+  template_version text NOT NULL,
+  generator_version text NOT NULL,
+  runner_key text NOT NULL,
+  runtime_tier text NOT NULL,
+  variant_hash text NOT NULL,
+  status text NOT NULL CHECK (status IN ('validated')),
+  exercise_payload_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  validation_report_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  failure_code text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  last_used_at timestamptz NOT NULL DEFAULT now(),
+  deleted_at timestamptz
+);
+
 CREATE TABLE IF NOT EXISTS review_logs (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   knowledge_point_id uuid NOT NULL REFERENCES knowledge_points(id) ON DELETE RESTRICT,
@@ -360,6 +379,24 @@ ALTER TABLE review_states
 
 DO $$
 BEGIN
+  ALTER TABLE runtime_profiles
+    DROP CONSTRAINT IF EXISTS runtime_profiles_runtime_tier_check;
+  ALTER TABLE runtime_profiles
+    ADD CONSTRAINT runtime_profiles_runtime_tier_check
+    CHECK (runtime_tier IN ('browser_preview', 'python_stdout_test', 'node_typescript_test', 'sql_query_test', 'compiled_sandbox_later'));
+
+  ALTER TABLE runtime_profiles
+    DROP CONSTRAINT IF EXISTS runtime_profiles_language_check;
+  ALTER TABLE runtime_profiles
+    ADD CONSTRAINT runtime_profiles_language_check
+    CHECK (language IN ('javascript', 'python', 'typescript', 'sql', 'java', 'cpp', 'html_css'));
+
+  ALTER TABLE runtime_profiles
+    DROP CONSTRAINT IF EXISTS runtime_profiles_runner_check;
+  ALTER TABLE runtime_profiles
+    ADD CONSTRAINT runtime_profiles_runner_check
+    CHECK (runner IN ('browser', 'python', 'node', 'sql', 'sandbox'));
+
   ALTER TABLE exercises
     DROP CONSTRAINT IF EXISTS exercises_exercise_type_check;
   ALTER TABLE exercises
@@ -433,6 +470,8 @@ CREATE INDEX IF NOT EXISTS idx_review_states_user_due ON review_states(user_id, 
 CREATE INDEX IF NOT EXISTS idx_review_states_last_attempt ON review_states(last_attempt_id) WHERE last_attempt_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS uq_review_seed_banks_scope ON review_seed_banks(user_id, knowledge_point_id, generator_version);
 CREATE INDEX IF NOT EXISTS idx_review_seed_banks_status ON review_seed_banks(status, updated_at);
+CREATE INDEX IF NOT EXISTS idx_exercise_variant_cache_scope ON exercise_variant_cache(user_id, knowledge_point_id, template_id, template_version, status) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_exercise_variant_cache_last_used ON exercise_variant_cache(user_id, last_used_at DESC) WHERE deleted_at IS NULL;
 
 CREATE TABLE IF NOT EXISTS teaching_chunks (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
