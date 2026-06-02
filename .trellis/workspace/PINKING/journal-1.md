@@ -1742,3 +1742,36 @@ Hardened the Python teaching runner by running sandbox subprocesses from tempora
 ### Next Steps
 
 - None - task complete
+
+
+## Session 53: Node TypeScript runner
+
+**Date**: 2026-06-02
+**Task**: Node TypeScript runner
+**Branch**: `main`
+
+### Summary
+
+Implemented the local Node/TypeScript teaching runner, wired capability/registry/runtime dispatch, kept public TypeScript selection disabled, and verified focused runner, sandbox, M3/M4, ruff, mypy, desktop, Trellis, and diff checks.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `dcd9922` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
