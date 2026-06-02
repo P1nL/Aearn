@@ -205,7 +205,7 @@ COMMAND_CHECKS: tuple[ComponentDefinition, ...] = (
         kind="compiled_toolchain",
         command="javac",
         args=("-version",),
-        required_for=("java_runner_planned",),
+        required_for=("java_managed_compiled_runner",),
         guidance_id="jdk_windows",
     ),
     ComponentDefinition(
@@ -214,7 +214,7 @@ COMMAND_CHECKS: tuple[ComponentDefinition, ...] = (
         kind="compiled_toolchain",
         command="go",
         args=("version",),
-        required_for=("go_runner_planned",),
+        required_for=("go_managed_compiled_runner",),
         guidance_id="go_windows",
     ),
     ComponentDefinition(
@@ -223,7 +223,7 @@ COMMAND_CHECKS: tuple[ComponentDefinition, ...] = (
         kind="compiled_toolchain",
         command="dotnet",
         args=("--version",),
-        required_for=("csharp_runner_planned",),
+        required_for=("csharp_managed_compiled_runner",),
         guidance_id="dotnet_windows",
     ),
     ComponentDefinition(
@@ -305,33 +305,33 @@ GUIDANCE_TEMPLATES: tuple[GuidanceTemplate, ...] = (
     ),
     GuidanceTemplate(
         guidance_id="jdk_windows",
-        title="Install a JDK for planned Java exercises",
+        title="Install a JDK for managed Java exercises",
         applies_to=("jdk", "java"),
         severity="recommended",
-        summary="Java execution is planned and still static-review only in the current Aearn runner contract.",
+        summary="Java managed compiled exercises require a local JDK; Aearn detects it but never installs it automatically.",
         windows_steps=("Install a current LTS JDK such as Temurin 21.", "Restart PowerShell before checking javac."),
         verification_commands=("java --version", "javac -version"),
-        safety_notes=("Detected JDK does not make Java execution available until the compiled runner task is complete.",),
+        safety_notes=("Aearn supports single-file teaching exercises only; Maven, Gradle, external dependencies, and arbitrary projects are not supported.",),
     ),
     GuidanceTemplate(
         guidance_id="go_windows",
-        title="Install Go for planned Go exercises",
+        title="Install Go for managed Go exercises",
         applies_to=("go",),
         severity="recommended",
-        summary="Go execution is planned and not yet available in Aearn.",
+        summary="Go managed compiled exercises require a local Go toolchain; public Go course selection is still disabled.",
         windows_steps=("Install Go from the official installer or trusted package manager.", "Restart PowerShell before checking go."),
         verification_commands=("go version",),
-        safety_notes=("Detected Go does not make Go execution available until the compiled runner task is complete.",),
+        safety_notes=("Aearn supports single-package teaching exercises only; Go modules, go get, external imports, and arbitrary projects are not supported.",),
     ),
     GuidanceTemplate(
         guidance_id="dotnet_windows",
-        title="Install .NET SDK for planned C# exercises",
+        title="Install .NET SDK for managed C# exercises",
         applies_to=("dotnet", "csharp"),
         severity="recommended",
-        summary="C# execution is planned and not yet available in Aearn.",
+        summary="C# managed compiled exercises require a local .NET SDK; public C# course selection is still disabled.",
         windows_steps=("Install a supported .NET SDK.", "Restart PowerShell before checking dotnet."),
         verification_commands=("dotnet --version",),
-        safety_notes=("Detected .NET SDK does not make C# execution available until the compiled runner task is complete.",),
+        safety_notes=("Aearn supports single-file teaching exercises only; NuGet packages, .sln files, SDK workloads, and arbitrary projects are not supported.",),
     ),
     GuidanceTemplate(
         guidance_id="sql_database_windows",
@@ -588,7 +588,7 @@ def _build_language_runners(component_by_id: dict[str, EnvironmentComponent]) ->
 
 
 def _product_status_for(exercise_generation: str, execution: str) -> ProductStatus:
-    if execution in {"browser_preview", "python_stdout_test", "node_typescript_test", "sql_query_test"}:
+    if execution in {"browser_preview", "python_stdout_test", "node_typescript_test", "sql_query_test", "managed_compiled_test"}:
         return "executable"
     if exercise_generation == "static_review":
         return "static_review"

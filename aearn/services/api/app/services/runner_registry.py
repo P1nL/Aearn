@@ -8,6 +8,10 @@ from app.services.browser_preview_runner import (
     execute_browser_preview_with_tests,
 )
 from app.services.language_capabilities import ExecutionMode, RunnerKey
+from app.services.managed_compiled_runner import (
+    ManagedCompiledExecutionResult,
+    execute_managed_compiled_with_tests,
+)
 from app.services.node_typescript_runner import NodeExecutionResult, execute_node_typescript_with_tests
 from app.services.runtime_contracts import RuntimeExecutionResult
 from app.services.sandbox import SandboxExecutionResult, execute_python_with_tests
@@ -16,6 +20,8 @@ from app.services.sql_query_runner import SqlExecutionResult, execute_sql_query_
 MAX_RUNNER_STDOUT_CHARS = 4000
 MAX_RUNNER_STDERR_CHARS = 2000
 MAX_RUNNER_ERROR_CHARS = 500
+MANAGED_COMPILED_LANGUAGE_IDS = {"java", "go", "csharp", "c#"}
+STATIC_COMPILED_LANGUAGE_IDS = {"rust", "cpp", "c++"}
 
 RUNTIME_EXCEPTION_PREFIXES = (
     "ArithmeticError:",
@@ -59,16 +65,22 @@ class RunnerRegistry:
 
     def select(self, runtime_profile: Mapping[str, object]) -> RunnerCapability:
         runtime_tier = str(runtime_profile.get("runtime_tier", ""))
+        language = str(runtime_profile.get("language", "")).lower()
+        if runtime_tier == "managed_compiled_test" and language and language not in MANAGED_COMPILED_LANGUAGE_IDS:
+            if language in STATIC_COMPILED_LANGUAGE_IDS:
+                return COMPILED_LANGUAGE_RUNNER
+            return UNSUPPORTED_RUNNER
         capability = self._by_runtime_tier.get(runtime_tier) if runtime_tier else None
         if capability is not None and capability is not UNSUPPORTED_RUNNER:
             return capability
 
-        language = str(runtime_profile.get("language", "")).lower()
         if language in {"typescript", "ts"}:
             return NODE_TYPESCRIPT_RUNNER
         if language == "sql":
             return SQL_RUNNER
-        if language in {"java", "go", "csharp", "c#", "rust", "cpp", "c++"}:
+        if language in MANAGED_COMPILED_LANGUAGE_IDS:
+            return MANAGED_COMPILED_RUNNER
+        if language in STATIC_COMPILED_LANGUAGE_IDS:
             return COMPILED_LANGUAGE_RUNNER
         return UNSUPPORTED_RUNNER
 
@@ -101,6 +113,9 @@ class RunnerRegistry:
 
     def run_sql_query(self, exercise: Mapping[str, object], query: str) -> RuntimeExecutionResult:
         return _run_sql_query(exercise, query)
+
+    def run_managed_compiled(self, exercise: Mapping[str, object], code: str) -> RuntimeExecutionResult:
+        return _run_managed_compiled(exercise, code)
 
 
 PYTHON_RUNNER = RunnerCapability(
@@ -178,6 +193,28 @@ SQL_RUNNER = RunnerCapability(
     unavailable_message="SQL runs through the SQLite teaching dialect in an isolated per-run local database.",
 )
 
+MANAGED_COMPILED_RUNNER = RunnerCapability(
+    runner_key="compiled",
+    execution="managed_compiled_test",
+    runtime_tiers=("managed_compiled_test",),
+    supports_execution=True,
+    supports_tests=True,
+    supports_stdout=True,
+    supports_preview=False,
+    compile_required=True,
+    timeout_ms=10000,
+    memory_limit_mb=256,
+    sandbox_policy={
+        "network": "disabled",
+        "filesystem": "temporary_workspace",
+        "max_processes": 1,
+        "package_managers": "disabled",
+        "external_dependencies": "disabled",
+        "is_container_grade": False,
+    },
+    unavailable_message="Java, Go, and C# use local teaching-grade managed compiled runners when the matching toolchain is installed.",
+)
+
 COMPILED_LANGUAGE_RUNNER = RunnerCapability(
     runner_key="compiled",
     execution="compiled_later",
@@ -215,6 +252,7 @@ DEFAULT_RUNNER_REGISTRY = RunnerRegistry(
         BROWSER_PREVIEW_RUNNER,
         NODE_TYPESCRIPT_RUNNER,
         SQL_RUNNER,
+        MANAGED_COMPILED_RUNNER,
         COMPILED_LANGUAGE_RUNNER,
         UNSUPPORTED_RUNNER,
     )
@@ -263,7 +301,7 @@ def _run_python_sandbox(exercise: Mapping[str, object], code: str) -> RuntimeExe
 
     if sandbox_result.status == "sandbox_error":
         return RuntimeExecutionResult(
-            runtime_status="sandbox_error",
+            runtime_status="runtime_error",
             stdout=_bound_text(sandbox_result.stdout, MAX_RUNNER_STDOUT_CHARS),
             stderr=_bound_text(sandbox_result.stderr, MAX_RUNNER_STDERR_CHARS),
             test_pass_rate=0.0,
@@ -434,6 +472,104 @@ def _run_sql_query(exercise: Mapping[str, object], query: str) -> RuntimeExecuti
     return _sql_result_to_runtime_result(exercise, sql_result)
 
 
+def _run_managed_compiled(exercise: Mapping[str, object], code: str) -> RuntimeExecutionResult:
+    test_cases = exercise.get("test_cases", [])
+    if not isinstance(test_cases, Sequence):
+        test_cases = []
+
+    runtime_profile = exercise.get("runtime_profile", {})
+    language = ""
+    if isinstance(runtime_profile, Mapping):
+        language = str(runtime_profile.get("language") or "")
+
+    metadata = exercise.get("metadata_json", {})
+    entry_function: str | None = None
+    if isinstance(metadata, Mapping):
+        ef = metadata.get("entry_function")
+        if ef:
+            entry_function = str(ef)
+
+    compiled_result = execute_managed_compiled_with_tests(
+        code,
+        test_cases,
+        language=language,
+        entry_function=entry_function,
+        timeout_s=10.0,
+    )
+    return _managed_compiled_result_to_runtime_result(exercise, compiled_result)
+
+
+def _managed_compiled_result_to_runtime_result(
+    exercise: Mapping[str, object],
+    compiled_result: ManagedCompiledExecutionResult,
+) -> RuntimeExecutionResult:
+    test_cases = exercise.get("test_cases", [])
+    if not isinstance(test_cases, Sequence):
+        test_cases = []
+
+    if compiled_result.status == "timeout":
+        return RuntimeExecutionResult(
+            runtime_status="timeout",
+            stdout=_bound_text(compiled_result.stdout, MAX_RUNNER_STDOUT_CHARS),
+            stderr=_bound_text(compiled_result.stderr, MAX_RUNNER_STDERR_CHARS),
+            test_pass_rate=0.0,
+            passed_test_count=0,
+            total_test_count=len(test_cases),
+            test_results=_build_failed_cases(exercise, "Managed compiled execution timed out."),
+            error_message="Managed compiled execution timed out.",
+            next_action="retry_same",
+            preview_html=None,
+            core_blank_gate=False,
+            any_blank_passed=False,
+            logic_pass=False,
+        )
+
+    if compiled_result.status in {"missing_toolchain", "unsupported", "compile_error", "runtime_error"}:
+        message = compiled_result.error or "Managed compiled execution failed."
+        next_action = "retry_same" if compiled_result.status in {"missing_toolchain", "unsupported"} else "explain_error"
+        return RuntimeExecutionResult(
+            runtime_status=compiled_result.status,
+            stdout=_bound_text(compiled_result.stdout, MAX_RUNNER_STDOUT_CHARS),
+            stderr=_bound_text(compiled_result.stderr, MAX_RUNNER_STDERR_CHARS),
+            test_pass_rate=0.0,
+            passed_test_count=0,
+            total_test_count=len(test_cases),
+            test_results=_build_failed_cases(exercise, message),
+            error_message=_bound_text(message, MAX_RUNNER_ERROR_CHARS),
+            next_action=next_action,
+            preview_html=None,
+            core_blank_gate=False,
+            any_blank_passed=False,
+            logic_pass=False,
+        )
+
+    test_results = [_public_test_result(result, index) for index, result in enumerate(compiled_result.test_results)]
+    total_weight = sum(result.weight for result in compiled_result.test_results)
+    passed_weight = sum(result.weight for result in compiled_result.test_results if result.passed)
+    passed_count = sum(1 for result in compiled_result.test_results if result.passed)
+    total_count = len(compiled_result.test_results) or len(test_cases)
+    test_pass_rate = 0.0 if total_weight == 0 else round(passed_weight / total_weight, 4)
+    logic_pass = compiled_result.status == "success" and test_pass_rate == 1.0
+    runtime_status = "success" if logic_pass else "test_failure"
+    next_action = _next_action_for_run(test_results, logic_pass, "managed_compiled_test")
+
+    return RuntimeExecutionResult(
+        runtime_status=runtime_status,
+        stdout=_bound_text(compiled_result.stdout.rstrip("\n"), MAX_RUNNER_STDOUT_CHARS),
+        stderr=_bound_text(compiled_result.stderr, MAX_RUNNER_STDERR_CHARS),
+        test_pass_rate=test_pass_rate,
+        passed_test_count=passed_count,
+        total_test_count=total_count,
+        test_results=test_results,
+        error_message=compiled_result.error,
+        next_action=next_action,
+        preview_html=None,
+        core_blank_gate=logic_pass,
+        any_blank_passed=passed_count > 0,
+        logic_pass=logic_pass,
+    )
+
+
 def _sql_result_to_runtime_result(exercise: Mapping[str, object], sql_result: SqlExecutionResult) -> RuntimeExecutionResult:
     test_cases = exercise.get("test_cases", [])
     if not isinstance(test_cases, Sequence):
@@ -559,7 +695,7 @@ def _node_result_to_runtime_result(exercise: Mapping[str, object], node_result: 
 
     if node_result.status in {"compile_error", "sandbox_error"}:
         return RuntimeExecutionResult(
-            runtime_status="runtime_error" if node_result.status == "compile_error" else "sandbox_error",
+            runtime_status="runtime_error",
             stdout=_bound_text(node_result.stdout, MAX_RUNNER_STDOUT_CHARS),
             stderr=_bound_text(node_result.stderr, MAX_RUNNER_STDERR_CHARS),
             test_pass_rate=0.0,

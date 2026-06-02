@@ -41,9 +41,14 @@
 |---|---|---|---|
 | `browser_preview` | JS / HTML / CSS | 浏览器内实时预览、DOM 断言、console 输出 | 是 |
 | `python_stdout_test` | Python | stdout、函数测试、简单单元测试 | 是，可先 mock 判定 |
-| `compiled_sandbox_later` | Java / C++ | 编译、运行、资源限制、沙箱隔离 | 否，保留扩展位 |
+| `node_typescript_test` | TypeScript | 本机 Node / TypeScript 单文件函数测试 | 否，非公开选课，runner 通过后可用于验证 |
+| `sql_query_test` | SQL | SQLite 教学方言、每次运行独立临时数据库 | 否，非公开选课，runner 通过后可用于验证 |
+| `managed_compiled_test` | Java / Go / C# | 本机 toolchain + 单文件/服务端 harness 编译运行、可见/隐藏测试 | 否，Phase 3 教学级执行 |
+| `compiled_sandbox_later` | Rust / C++ | 静态阅读、补全或文档 grounding；真实编译执行后置 | 否，保留扩展位 |
 
 如果 `runtime_tier` 为 `compiled_sandbox_later`，第一版只能展示课程和静态练习，不得承诺完整实时运行。
+
+`managed_compiled_test` 不是通用项目/IDE 执行。它只允许 Java / Go / C# 的单练习临时目录执行，不自动安装 JDK / Go / .NET，不支持 Maven / Gradle / Go modules / NuGet / `.sln`、外部依赖或任意项目文件夹。公开 `runtime_status` 必须稳定区分：`missing_toolchain`、`unsupported`、`compile_error`、`runtime_error`、`timeout`、`test_failure`、`success`。
 
 ## 验证流程
 
@@ -188,7 +193,7 @@
 通过条件：
 
 - `runtime_status = success`
-- 或当前 `runtime_tier` 不支持真实运行，但 mock 判定明确为可通过
+- 或当前静态/计划态 `runtime_tier` 不支持真实运行，但明确进入静态 review/mock 判定路径
 
 失败后果：
 
@@ -650,4 +655,4 @@ Agent 评分必须输出可解析 JSON，禁止只输出自然语言。
 - 评分 Prompt、JSON Schema 和规则引擎兜底足够直接落到后端实现。
 - `result` 到 FSRS Rating 的映射无歧义。
 - LLM 输出有校验和重试策略。
-- JS/HTML/CSS、Python、Java/C++ 的运行能力边界清晰。
+- JS/HTML/CSS、Python、TypeScript、SQL、Java/Go/C#、Rust/C++ 的运行能力边界清晰。

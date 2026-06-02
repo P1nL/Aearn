@@ -5,6 +5,7 @@ import { buildReviewMessageSSEUrl, fetchTodayReviews, startReviewSession, submit
 import type { ConversationMessage, NoteContext } from "../appTypes";
 import { AssistantUIThread } from "../components/AssistantUIThread";
 import { useSSE } from "../hooks/useSSE";
+import { runtimeLabel } from "../lib/desktopLabels";
 import { formatErrorMessage } from "../lib/errorMessages";
 import { createMessage } from "../lib/learningHelpers";
 import { useAppStore } from "../stores/useAppStore";
@@ -407,7 +408,7 @@ export function ReviewPage({ isActive, user, messages, onActiveNoteContextChange
                       <span className="eyebrow">变体练习</span>
                       <h2>{activeExercise.title}</h2>
                     </div>
-                    <span className="runtime-pill">{runtimeTierLabel(activeExercise.runtime_profile.runtime_tier)}</span>
+                    <span className="runtime-pill">{runtimeLabel(activeExercise.runtime_profile.runtime_tier)}</span>
                   </div>
                   <p>{activeReview.variant_reason}</p>
 
@@ -665,16 +666,6 @@ function riskLabel(value: ReviewDueItem["forget_risk"]): string {
     return "高";
   }
   return "正常";
-}
-
-function runtimeTierLabel(tier: string): string {
-  if (tier === "browser_preview") {
-    return "浏览器预览";
-  }
-  if (tier === "python_stdout_test") {
-    return "Python 测试";
-  }
-  return "静态补全";
 }
 
 function fsrsRatingLabel(rating: string | number): string {

@@ -1233,7 +1233,15 @@ function isReviewStateSummary(payload: unknown): payload is ReviewStateSummary {
 }
 
 function isRuntimeStatus(payload: unknown): payload is RuntimeStatus {
-  return payload === "success" || payload === "runtime_error" || payload === "timeout" || payload === "unsupported";
+  return (
+    payload === "success" ||
+    payload === "missing_toolchain" ||
+    payload === "unsupported" ||
+    payload === "compile_error" ||
+    payload === "runtime_error" ||
+    payload === "timeout" ||
+    payload === "test_failure"
+  );
 }
 
 function isApiErrorEnvelope(payload: unknown): payload is { error: ApiError } {

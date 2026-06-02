@@ -364,7 +364,7 @@ export function LearningWorkspacePage({
       !user ||
       !lastRun ||
       isStale ||
-      lastRun.runtime_status === "unsupported" ||
+      lastRun.runtime_status !== "success" ||
       lastRunMode !== "visible_tests"
     ) {
       return;

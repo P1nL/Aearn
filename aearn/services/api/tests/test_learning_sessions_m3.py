@@ -3351,8 +3351,139 @@ def test_python_run_returns_stdout_and_test_summary(client: TestClient) -> None:
     assert body["total_test_count"] == 2
 
 
-def test_compiled_later_runtime_returns_unsupported_boundary(client: TestClient) -> None:
+@pytest.mark.parametrize(
+    ("runtime_status", "expected_next_action"),
+    [
+        ("missing_toolchain", "retry_same"),
+        ("unsupported", "retry_same"),
+        ("compile_error", "explain_error"),
+        ("runtime_error", "explain_error"),
+        ("timeout", "retry_same"),
+        ("test_failure", "explain_error"),
+        ("success", "advance_next"),
+    ],
+)
+def test_managed_java_runtime_statuses_are_public_and_persisted(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    runtime_status: str,
+    expected_next_action: str,
+) -> None:
+    from app.services import runner_registry
+    from app.services.managed_compiled_runner import ManagedCompiledExecutionResult, ManagedCompiledTestCaseResult
+
+    def fake_execute(*args, **kwargs):  # type: ignore[no-untyped-def]
+        del args, kwargs
+        if runtime_status == "success":
+            return ManagedCompiledExecutionResult(
+                status="success",
+                stdout="compiled stdout",
+                stderr="",
+                error=None,
+                test_results=[
+                    ManagedCompiledTestCaseResult(
+                        case_id="visible_increment",
+                        case_type="visible",
+                        passed=True,
+                        weight=1,
+                        is_critical=True,
+                        message="Passed",
+                        duration_ms=1,
+                    ),
+                    ManagedCompiledTestCaseResult(
+                        case_id="hidden_increment",
+                        case_type="hidden",
+                        passed=True,
+                        weight=1,
+                        is_critical=False,
+                        message="Hidden passed",
+                        duration_ms=1,
+                    ),
+                ],
+                total_duration_ms=2,
+            )
+        if runtime_status == "test_failure":
+            return ManagedCompiledExecutionResult(
+                status="test_failure",
+                stdout="",
+                stderr="",
+                error=None,
+                test_results=[
+                    ManagedCompiledTestCaseResult(
+                        case_id="visible_increment",
+                        case_type="visible",
+                        passed=False,
+                        weight=1,
+                        is_critical=True,
+                        message="Expected 2, got 1",
+                        duration_ms=1,
+                    ),
+                    ManagedCompiledTestCaseResult(
+                        case_id="hidden_secret_case",
+                        case_type="hidden",
+                        passed=False,
+                        weight=1,
+                        is_critical=False,
+                        message="Expected 999, got 1",
+                        duration_ms=1,
+                    ),
+                ],
+                total_duration_ms=2,
+            )
+        return ManagedCompiledExecutionResult(
+            status=runtime_status,
+            stdout="",
+            stderr=f"{runtime_status} stderr",
+            error=f"{runtime_status} public error",
+            test_results=[],
+            total_duration_ms=1,
+        )
+
+    monkeypatch.setattr(runner_registry, "execute_managed_compiled_with_tests", fake_execute)
+
     user, plan = _confirmed_plan(client, language="java")
+    session = _start_session(client, user, plan)
+    exercise = _unlock_practice_exercise(client, session)
+    assert exercise["runtime_profile"]["runtime_tier"] == "managed_compiled_test"
+
+    run_response = client.post(
+        f"/api/learning-sessions/{session['session_id']}/exercises/{exercise['id']}/run",
+        json={
+            "code": exercise["solution_reference"],
+            "filled_blanks": {"blank_1": "value + 1"},
+            "runtime_profile_id": exercise["runtime_profile"]["id"],
+            "run_mode": "visible_tests",
+        },
+    )
+
+    assert run_response.status_code == 201
+    body = run_response.json()
+    assert body["runtime_status"] == runtime_status
+    assert body["next_action"] == expected_next_action
+    if runtime_status == "success":
+        assert body["test_pass_rate"] == 1.0
+        assert body["stdout"] == "compiled stdout"
+    if runtime_status == "test_failure":
+        serialized = repr(body["test_results"])
+        assert body["test_pass_rate"] < 1.0
+        assert "hidden_secret_case" not in serialized
+        assert "999" not in serialized
+
+    with connect() as conn:
+        attempt = conn.execute(
+            """
+            SELECT runtime_status
+            FROM attempts
+            WHERE id = %s
+            """,
+            (body["attempt_id"],),
+        ).fetchone()
+    assert attempt is not None
+    assert attempt["runtime_status"] == runtime_status
+
+
+def test_compiled_later_runtime_returns_unsupported_boundary(client: TestClient) -> None:
+    user, plan = _confirmed_plan(client, language="cpp")
     knowledge_point_id = plan["knowledge_points"][0]["id"]
     start_response = client.post(
         "/api/learning-sessions/start",

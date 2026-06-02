@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 Language = Literal["javascript", "python", "java", "cpp", "html_css"]
 LearningMode = Literal["goal_based", "material_based"]
-RuntimeTier = Literal["browser_preview", "python_stdout_test", "compiled_sandbox_later"]
+RuntimeTier = Literal["browser_preview", "python_stdout_test", "managed_compiled_test", "compiled_sandbox_later"]
 TargetLevel = Literal["beginner", "intermediate", "advanced", "beginner_to_intermediate"]
 
 
@@ -127,4 +127,3 @@ class ApiErrorEnvelope(BaseModel):
 
 class FlexiblePreferencePayload(BaseModel):
     model_config = ConfigDict(extra="allow")
-

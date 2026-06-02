@@ -60,14 +60,29 @@ def test_typescript_is_executable_but_not_public_selectable() -> None:
 
 def test_planned_languages_do_not_claim_execution() -> None:
     sql = require_language_capability("sql")
+    java = require_language_capability("java")
+    go = require_language_capability("go")
+    csharp = require_language_capability("csharp")
     rust = require_language_capability("rust")
+    cpp = require_language_capability("cpp")
 
     assert sql.execution == "sql_query_test"
     assert sql.supports_execution is True
     assert sql.enabled_for_public_selection is False
     assert "SQLite teaching dialect" in sql.ux_disclosure
+    assert java.execution == "managed_compiled_test"
+    assert java.supports_execution is True
+    assert java.enabled_for_public_selection is True
+    assert go.execution == "managed_compiled_test"
+    assert go.supports_execution is True
+    assert go.enabled_for_public_selection is False
+    assert csharp.execution == "managed_compiled_test"
+    assert csharp.supports_execution is True
+    assert csharp.enabled_for_public_selection is False
     assert rust.execution == "compiled_later"
     assert rust.supports_execution is False
+    assert cpp.execution == "compiled_later"
+    assert cpp.supports_execution is False
 
 
 def test_alias_lookup_normalizes_common_language_names() -> None:

@@ -46,15 +46,15 @@ V1 使用本地单用户或轻量用户机制，不强制登录态。所有需�
 | 字段 | 枚举 |
 |---|---|
 | `language` | `javascript` / `python` / `java` / `cpp` / `html_css` |
-| `runtime_tier` | `browser_preview` / `python_stdout_test` / `compiled_sandbox_later` |
-| `runner` | `browser` / `python` / `sandbox` |
+| `runtime_tier` | `browser_preview` / `python_stdout_test` / `node_typescript_test` / `sql_query_test` / `managed_compiled_test` / `compiled_sandbox_later` |
+| `runner` | `browser` / `python` / `node` / `sql` / `compiled` / `sandbox` |
 | `LearningPlan.status` | `active` / `paused` / `completed` |
 | `PlanModule.status` | `pending` / `in_progress` / `completed` / `skipped` |
 | `KnowledgePoint.status` | `pending` / `learning` / `reviewing` / `mastered` |
 | `LearningSession.learning_stage` | `concept_intro` / `concept_check` / `concept_repair` / `practice_offer` / `concept_qna` / `readiness_check` / `practice_support` |
 | `Exercise.exercise_type` | `code_blank` / `fix_bug` / `implement_function` / `explain_code` / `review_ai_patch` |
 | `Attempt.attempt_type` | `run` / `submit` / `review_submit` |
-| `Attempt.runtime_status` | `success` / `runtime_error` / `timeout` / `unsupported` |
+| `Attempt.runtime_status` | `success` / `missing_toolchain` / `unsupported` / `compile_error` / `runtime_error` / `timeout` / `test_failure` |
 | `code_completion_result.result` | `failed` / `partial` / `passed` / `easy` |
 | `next_action` | `retry_same` / `show_hint` / `explain_error` / `review_variant` / `schedule_review` / `advance_next` |
 | `fsrs_rating` | `Again` / `Hard` / `Good` / `Easy` |
@@ -66,6 +66,8 @@ V1 使用本地单用户或轻量用户机制，不强制登录态。所有需�
 - 前端 UI 不把 `run` / `submit` 暴露为“Attempt 类型”，只展示“运行 / 预览 / 提交结果”等自然操作。
 - 设置页只允许修改用户偏好和模型配置，不提供修改评分规则、Attempt 必填字段或 FSRS 固定规则的 API。
 - `language` 仍是服务端拥有的公开枚举。动态路线生成可以裁剪已登记课程的模块内容，但新增 TypeScript、Rust、Go 等公开语言必须同步扩展 Pydantic `Language`、数据库 CHECK 约束、课程 catalog、runtime boundary、API 示例和验收用例。
+- `managed_compiled_test` 是 Java / Go / C# 的本机 teaching-grade 单练习执行层：只检测本机 JDK / Go / .NET，不自动安装，不支持 Maven / Gradle / Go modules / NuGet / `.sln` 或任意项目目录。Java 可在课程/runtime/profile 同步后公开；Go / C# runner profile 可存在，但公开选课仍必须等 catalog/content/onboarding/API/UI 验收全部同步。
+- Rust / C++ 仍不进入 L3 execution；即使本机 toolchain 存在，也不能通过 `managed_compiled_test` 或 `compiled_sandbox_later` 宣称可执行。
 
 ## 统一错误结构
 
@@ -412,6 +414,8 @@ data: {"request_id":"req_001","session_id":"sess_001","content":"先观察这段
   "sandbox_policy": "dom_preview_only"
 }
 ```
+
+`managed_compiled_test` 的 `RuntimeProfile` 使用 `runner="compiled"`、`compile_required=true`、`supports_tests=true`，但只表示单文件/服务端 harness 教学练习可由本机工具链尝试运行。`compiled_sandbox_later` 仍用于 Rust / C++ 和静态/计划态 compiled disclosure，并返回 `runtime_status=unsupported` 或禁用运行入口。
 
 ### `KnowledgePoint`
 
@@ -1132,7 +1136,7 @@ SSE 行为：
 - `language`、`target_level`、`goal_text` 齐备时，先发送简短 `agent_message`，再发送 `tool_call(name="show_learning_route")`；完整路线内容只放在工具参数中。
 - `time_budget` 为可选字段；用户之后补充时间、方向或难度时，服务重新暂存草稿并发送新的 `show_learning_route` 工具调用，工具参数会携带新的节奏信息。
 - 同一建档会话只有最新暂存草稿可确认；前端必须将历史路线卡片的 `开始学习` 置为禁用。
-- 如果槽位提取明确返回未登记语言（如 TypeScript、Rust、Go），SSE 必须返回 `error.code=LANGUAGE_NOT_SUPPORTED`，`details.unsupported_language` 和 `details.supported_languages` 必须可用于前端展示/重试引导；不能继续输出“正在生成路线卡片”的普通 Agent 文案。
+- 如果槽位提取明确返回未登记公开课程语言（如 TypeScript、Rust、Go、C#），SSE 必须返回 `error.code=LANGUAGE_NOT_SUPPORTED`，`details.unsupported_language` 和 `details.supported_languages` 必须可用于前端展示/重试引导；不能继续输出“正在生成路线卡片”的普通 Agent 文案。Go / C# 可以有非公开 runner/runtime profile，但在课程 catalog、路线内容、onboarding、API 示例和验收测试同步前仍不是公开选课语言。
 - 建档对话不提供关键词或确定性兜底解析；槽位提取和普通回复依赖模型 API。模型未配置、不可连接、流式中断前无有效输出，或结构化槽位输出非法时，SSE 返回 `error.code=MODEL_UNAVAILABLE`，不更新槽位、不生成路线卡片。
 
 `show_learning_route` arguments 示例：
@@ -1233,7 +1237,7 @@ Response JSON 示例：
     ],
     "runtime_boundary": {
       "runtime_tier": "browser_preview",
-      "unsupported_languages": ["java", "cpp"]
+      "unsupported_languages": ["cpp"]
     }
   },
   "agent_notes": [
@@ -1802,7 +1806,7 @@ Response JSON 示例：
 HTTP 状态码：
 
 - `200`：命中相同代码的已有 Attempt
-- `201`：运行完成并创建 Attempt；M3 最小切片下 `compiled_sandbox_later` 也写入 `Attempt(run)`，并返回 `runtime_status=unsupported`
+- `201`：运行完成并创建 Attempt；`managed_compiled_test` 可能返回 `success`、`missing_toolchain`、`compile_error`、`runtime_error`、`timeout` 或 `test_failure`；`compiled_sandbox_later` 也写入 `Attempt(run)`，并返回 `runtime_status=unsupported`
 - `400`：请求字段不合法
 - `404`：会话或练习不存在
 - `503`：runner 不可用
@@ -2904,6 +2908,8 @@ HTTP 状态码：
 | `partial_with_hint` | 测试通过但提示依赖高，`next_action=review_variant` |
 | `runtime_error` | runner 返回 `runtime_error`，可进入 `explain_error` |
 | `unsupported_runtime` | `compiled_sandbox_later` 返回 `runtime_status=unsupported` |
+| `managed_compiled_missing_toolchain` | Java / Go / C# 本机 toolchain 缺失时返回 `runtime_status=missing_toolchain` |
+| `managed_compiled_compile_error` | Java / Go / C# 编译失败时返回 `runtime_status=compile_error` |
 | `due_review` | 今日有待复习项 |
 | `empty_dashboard` | 无活动计划、无复习 |
 
@@ -2923,6 +2929,7 @@ HTTP 状态码：
 
 - 不得返回不在枚举表中的值。
 - 不得把 `RuntimeProfile.runtime_tier=compiled_sandbox_later` mock 成真实运行成功。
+- 不得把 Rust / C++ mock 成 `managed_compiled_test` 真实运行成功；Java / Go / C# 的 managed compiled mock 必须覆盖缺 toolchain、编译错误、运行错误、超时、测试失败和成功。
 - 不得在同一幂等键下返回不同 `attempt_id`。
 - 不得省略错误结构中的 `error.code`、`error.message`、`error.request_id`。
 
@@ -2937,7 +2944,7 @@ HTTP 状态码：
 - SSE 事件顺序：`agent_message`、`tool_call`、`tool_status`、`runner_result`、`evaluation_result`、`done`、`error`。
 - `run` 重试不重复创建 Attempt。
 - `submit` 重试不重复推进 `ReviewState.due_at`。
-- `compiled_sandbox_later` 展示能力边界，不展示“可实时运行”。
+- `compiled_sandbox_later` 展示能力边界，不展示“可实时运行”；`managed_compiled_test` 只展示为本机教学级单练习执行，不展示 Maven / Gradle / Go modules / NuGet / `.sln` / 任意项目执行能力。
 - `code_completion_result.next_action` 能驱动按钮状态和下一步入口。
 - `ReviewState.due_at` 到期和未到期两种 dashboard 状态。
 - `POST /api/notes/{note_id}/agent-draft` 只回写 Note 辅助内容，不触发独立复盘草稿对象。
@@ -2967,7 +2974,8 @@ HTTP 状态码：
 - 账号注册、登录、权限组和外部分发 API。
 - 代码仓库级导入、视频解析和大型多文件项目运行。
 - 未同步扩展 `Language`、数据库约束、课程 catalog 和 runtime boundary 的任意语言公开支持。
-- Java / C++ 真实编译沙箱。
+- Rust / C++ L3 execution。
+- Java / Go / C# 任意项目执行、包管理器执行、自动安装 toolchain 或完整 IDE/在线编译沙箱。
 - WebSocket 事件通道。V1 只使用 SSE。
 - OpenAPI 自动生成文件。本文先作为人工契约，后续再转 OpenAPI。
 - 独立 `CodeDraft` / `/api/code-drafts/*` 主流程、`publishDrawer` 用户路径、`CodeDraftPage` 一级页面和面试讲述草稿。

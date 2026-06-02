@@ -67,9 +67,14 @@ def test_runner_registry_selects_current_runtime_tiers() -> None:
     assert registry.select({"runtime_tier": "browser_preview"}).runner_key == "browser"
     assert registry.select({"runtime_tier": "node_typescript_test"}).runner_key == "node"
     assert registry.select({"runtime_tier": "sql_query_test"}).runner_key == "sql"
+    assert registry.select({"runtime_tier": "managed_compiled_test"}).runner_key == "compiled"
     assert registry.select({"runtime_tier": "compiled_sandbox_later"}).runner_key == "compiled"
     assert registry.select({"language": "typescript"}).runner_key == "node"
     assert registry.select({"language": "sql"}).runner_key == "sql"
+    assert registry.select({"language": "java"}).supports_execution is True
+    assert registry.select({"language": "rust"}).supports_execution is False
+    assert registry.select({"runtime_tier": "managed_compiled_test", "language": "rust"}).supports_execution is False
+    assert registry.select({"runtime_tier": "managed_compiled_test", "language": "cpp"}).supports_execution is False
     assert registry.select({"language": "unknown"}).runner_key == "none"
 
 
@@ -128,6 +133,43 @@ def test_planned_compiled_runner_returns_unsupported_fallback() -> None:
     assert result.next_action == "retry_same"
     assert "planned later" in (result.error_message or "")
     assert result.test_results[0]["passed"] is False
+
+
+def test_managed_compiled_runner_capability_is_teaching_grade_not_container_grade() -> None:
+    capability = get_runner_registry().select({"runtime_tier": "managed_compiled_test", "language": "java"})
+
+    assert capability.runner_key == "compiled"
+    assert capability.execution == "managed_compiled_test"
+    assert capability.supports_execution is True
+    assert capability.supports_tests is True
+    assert capability.supports_stdout is True
+    assert capability.compile_required is True
+    assert capability.sandbox_policy["filesystem"] == "temporary_workspace"
+    assert capability.sandbox_policy["is_container_grade"] is False
+
+
+def test_static_compiled_languages_do_not_dispatch_to_managed_compiled_runner(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail_if_called(*args, **kwargs):  # type: ignore[no-untyped-def]
+        pytest.fail("Rust/C++ must not dispatch through the managed compiled adapter")
+
+    monkeypatch.setattr(runner_registry, "execute_managed_compiled_with_tests", fail_if_called)
+
+    result = run_exercise(
+        {
+            "runtime_profile": {
+                "runtime_tier": "managed_compiled_test",
+                "language": "rust",
+                "runner": "compiled",
+            },
+            "test_cases": [],
+        },
+        "fn main() {}",
+        {},
+        "visible_tests",
+    )
+
+    assert result.runtime_status == "unsupported"
+    assert "planned later" in (result.error_message or "")
 
 
 def test_sql_runner_does_not_claim_execution() -> None:
@@ -360,3 +402,34 @@ def test_node_typescript_missing_toolchain_maps_to_unsupported(monkeypatch: pyte
     assert result.runtime_status == "unsupported"
     assert result.next_action == "retry_same"
     assert "required" in (result.error_message or "")
+
+
+def test_node_typescript_internal_sandbox_error_maps_to_public_runtime_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_execute(
+        code: str,
+        test_cases: Sequence[Mapping[str, object]],
+        *,
+        entry_function: str | None = None,
+        timeout_s: float = 10.0,
+    ) -> NodeExecutionResult:
+        return NodeExecutionResult(
+            status="sandbox_error",
+            stdout="",
+            stderr="",
+            error="Node/TypeScript harness failed internally.",
+            test_results=[],
+            total_duration_ms=0,
+        )
+
+    monkeypatch.setattr(runner_registry, "execute_node_typescript_with_tests", fake_execute)
+
+    result = run_exercise(
+        _typescript_exercise(),
+        "function add(a: number, b: number): number {\n  return a + b;\n}\n",
+        {},
+        "visible_tests",
+    )
+
+    assert result.runtime_status == "runtime_error"
+    assert result.next_action == "explain_error"
+    assert "harness failed" in (result.error_message or "")

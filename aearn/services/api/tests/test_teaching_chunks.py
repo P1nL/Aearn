@@ -309,6 +309,8 @@ def _chunk_count(conn, knowledge_point_id: str) -> int:
 def _runtime_tier(language: str) -> str:
     if language == "python":
         return "python_stdout_test"
-    if language in {"java", "cpp"}:
+    if language == "java":
+        return "managed_compiled_test"
+    if language == "cpp":
         return "compiled_sandbox_later"
     return "browser_preview"

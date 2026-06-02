@@ -143,9 +143,47 @@ def test_environment_doctor_does_not_turn_detected_planned_tools_into_execution(
     assert runners["sql"]["product_status"] == "executable"
     assert runners["sql"]["toolchain_status"] == "ready"
     assert "SQLite teaching dialect" in runners["sql"]["disclosure"]
-    assert runners["java"]["product_status"] == "static_review"
-    assert runners["go"]["product_status"] == "planned"
-    assert runners["csharp"]["product_status"] == "planned"
+    assert runners["java"]["product_status"] == "executable"
+    assert runners["java"]["supports_execution"] is True
+    assert runners["go"]["product_status"] == "executable"
+    assert runners["go"]["supports_execution"] is True
+    assert runners["csharp"]["product_status"] == "executable"
+    assert runners["csharp"]["supports_execution"] is True
+    assert runners["rust"]["product_status"] == "planned"
+    assert runners["cpp"]["product_status"] == "static_review"
+
+
+def test_environment_doctor_distinguishes_toolchain_missing_from_product_support(tmp_path: Path) -> None:
+    def runner(command: str, args: tuple[str, ...], timeout_s: float) -> CommandProbeResult:
+        del args, timeout_s
+        if command in {"javac", "go", "dotnet"}:
+            return CommandProbeResult(
+                status="missing",
+                version=None,
+                executable_path=None,
+                message=f"{command} was not found on PATH.",
+            )
+        return CommandProbeResult(
+            status="ready",
+            version=f"{command} version",
+            executable_path=f"C:/tools/{command}.exe",
+            message=f"{command} is available.",
+            exit_code=0,
+        )
+
+    report = build_environment_doctor_report(
+        command_runner=runner,
+        aearn_root=_aearn_root(tmp_path),
+    )
+
+    runners = {item["language_id"]: item for item in report["language_runners"]}
+
+    assert runners["java"]["product_status"] == "executable"
+    assert runners["java"]["toolchain_status"] == "missing"
+    assert runners["go"]["product_status"] == "executable"
+    assert runners["go"]["toolchain_status"] == "missing"
+    assert runners["csharp"]["product_status"] == "executable"
+    assert runners["csharp"]["toolchain_status"] == "missing"
     assert runners["rust"]["product_status"] == "planned"
     assert runners["cpp"]["product_status"] == "static_review"
 

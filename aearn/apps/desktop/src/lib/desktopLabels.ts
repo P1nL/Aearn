@@ -28,15 +28,33 @@ export function runtimeLabel(runtimeTier: string): string {
   if (runtimeTier === "python_stdout_test") {
     return "Python stdout + 可见测试";
   }
+  if (runtimeTier === "node_typescript_test") {
+    return "TypeScript 单文件函数测试";
+  }
+  if (runtimeTier === "sql_query_test") {
+    return "SQLite 教学查询测试";
+  }
+  if (runtimeTier === "managed_compiled_test") {
+    return "本机编译工具链 + 可见/隐藏测试";
+  }
   return "编译沙箱后置";
 }
 
 export function runtimeStatusLabel(runtimeStatus: string): string {
+  if (runtimeStatus === "missing_toolchain") {
+    return "缺少本机工具链";
+  }
+  if (runtimeStatus === "compile_error") {
+    return "编译错误";
+  }
   if (runtimeStatus === "runtime_error") {
     return "运行错误";
   }
   if (runtimeStatus === "timeout") {
     return "执行超时";
+  }
+  if (runtimeStatus === "test_failure") {
+    return "测试未通过";
   }
   if (runtimeStatus === "unsupported") {
     return "能力未开放";
