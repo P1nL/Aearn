@@ -107,7 +107,7 @@ export function ExerciseWorkbench({
     lastRun === null ||
     lastRunMode !== "visible_tests" ||
     isStale ||
-    lastRun.runtime_status === "unsupported";
+    lastRun.runtime_status !== "success";
   const hintDisabled = runtimeUnsupported || lastRun === null || isStale || selectedBlankId.length === 0;
   const explainDisabled = runtimeUnsupported || lastRun === null || isStale || !hasFailedRun;
   const checkDisabled = runtimeUnsupported || lastRun === null || isStale || explanationText.trim().length === 0;
@@ -347,6 +347,9 @@ function buildActionHint({
   }
   if (lastRun.runtime_status === "unsupported") {
     return "后端返回当前 runtime 未开放，无法提交或继续生成运行相关反馈。";
+  }
+  if (lastRun.runtime_status !== "success") {
+    return "这次运行还没有成功，请先根据真实错误结果修正并重新运行可见测试。";
   }
   if (lastRunMode === "preview") {
     return "预览只用于观察效果；如果要提交评分，请再运行一次可见测试。";

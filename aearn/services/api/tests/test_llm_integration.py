@@ -1227,8 +1227,8 @@ def test_onboarding_plan_sdk_response_rejects_unsupported_runtime_claim() -> Non
     unsupported = base_draft.model_dump(mode="json")
     unsupported["runtime_boundary"] = {
         "runtime_tier": "compiled_sandbox_later",
-        "unsupported_languages": ["java", "cpp"],
-        "notice": "Java/C++ can run in the first MVP.",
+        "unsupported_languages": ["cpp"],
+        "notice": "C++ can run in the first MVP.",
     }
 
     class UnsupportedRuntimeClient:

@@ -14,7 +14,7 @@ from app.models.onboarding import (
 )
 
 
-UNSUPPORTED_LANGUAGES: list[Language] = ["java", "cpp"]
+UNSUPPORTED_LANGUAGES: list[Language] = ["cpp"]
 
 
 def _kp(
@@ -495,9 +495,9 @@ COURSE_TEMPLATES: dict[str, list[DraftModule]] = {
     ],
     "java": [
         _module(
-            temp_id="mod_draft_java_static_reading",
-            title="Java 静态代码阅读",
-            description="首版将 Java 作为阅读和补全的占位课程。",
+            temp_id="mod_draft_java_managed_functions",
+            title="Java 单文件函数练习",
+            description="使用本机 JDK 支持的 teaching-grade managed compiled runner 练习 Java 方法。",
             order_index=0,
             is_skippable=False,
             estimated_sessions=1,
@@ -505,8 +505,9 @@ COURSE_TEMPLATES: dict[str, list[DraftModule]] = {
                 _kp(
                     "kp_draft_java_method_shape",
                     "方法形状与类型签名",
-                    "在没有 Java 沙箱的情况下阅读方法签名。",
+                    "通过 `Main` 类中的静态方法练习参数、返回值和类型签名。",
                     ["java", "types"],
+                    ["ex_java_method_shape"],
                 ),
             ],
         ),
@@ -578,7 +579,7 @@ def build_plan_draft(
 
 
 def has_supported_mvp_runtime(plan_draft: PlanDraft) -> bool:
-    return plan_draft.runtime_boundary.runtime_tier in {"browser_preview", "python_stdout_test"}
+    return plan_draft.runtime_boundary.runtime_tier in {"browser_preview", "python_stdout_test", "managed_compiled_test"}
 
 
 def normalize_target_level(target_level: str) -> str:
@@ -617,7 +618,9 @@ def _runtime_notice(runtime_tier: str) -> str:
         return "This course can use browser preview and DOM assertions in the first MVP."
     if runtime_tier == "python_stdout_test":
         return "This course can use Python stdout and visible tests in the first MVP."
-    return "Java/C++ compile-and-run sandbox is planned later; first MVP shows static reading and completion boundaries only."
+    if runtime_tier == "managed_compiled_test":
+        return "This course can use a local teaching-grade managed compiled runner for single-file exercises when the matching toolchain is installed."
+    return "C++ compile-and-run sandbox is planned later; first MVP shows static reading and completion boundaries only."
 
 
 def _source_attribution(payload: PlanGenerateRequest, course: Mapping[str, object]) -> list[str]:

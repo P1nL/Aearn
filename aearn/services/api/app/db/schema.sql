@@ -40,9 +40,9 @@ CREATE TABLE IF NOT EXISTS learner_profiles (
 CREATE TABLE IF NOT EXISTS runtime_profiles (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   slug text NOT NULL UNIQUE,
-  runtime_tier text NOT NULL CHECK (runtime_tier IN ('browser_preview', 'python_stdout_test', 'node_typescript_test', 'sql_query_test', 'compiled_sandbox_later')),
-  language text NOT NULL CHECK (language IN ('javascript', 'python', 'typescript', 'sql', 'java', 'cpp', 'html_css')),
-  runner text NOT NULL CHECK (runner IN ('browser', 'python', 'node', 'sql', 'sandbox')),
+  runtime_tier text NOT NULL CHECK (runtime_tier IN ('browser_preview', 'python_stdout_test', 'node_typescript_test', 'sql_query_test', 'managed_compiled_test', 'compiled_sandbox_later')),
+  language text NOT NULL CHECK (language IN ('javascript', 'python', 'typescript', 'sql', 'java', 'go', 'csharp', 'cpp', 'html_css')),
+  runner text NOT NULL CHECK (runner IN ('browser', 'python', 'node', 'sql', 'compiled', 'sandbox')),
   supports_realtime_preview boolean NOT NULL DEFAULT false,
   supports_stdout boolean NOT NULL DEFAULT false,
   supports_tests boolean NOT NULL DEFAULT false,
@@ -235,7 +235,7 @@ CREATE TABLE IF NOT EXISTS attempts (
   submitted_code text NOT NULL,
   code_hash text NOT NULL,
   filled_blanks_json jsonb NOT NULL DEFAULT '{}'::jsonb,
-  runtime_status text NOT NULL CHECK (runtime_status IN ('success', 'runtime_error', 'timeout', 'unsupported')),
+  runtime_status text NOT NULL CHECK (runtime_status IN ('success', 'missing_toolchain', 'unsupported', 'compile_error', 'runtime_error', 'timeout', 'test_failure')),
   test_pass_rate numeric(5,4) NOT NULL DEFAULT 0 CHECK (test_pass_rate >= 0 AND test_pass_rate <= 1),
   passed_test_count integer NOT NULL DEFAULT 0 CHECK (passed_test_count >= 0),
   total_test_count integer NOT NULL DEFAULT 0 CHECK (total_test_count >= 0),
@@ -383,19 +383,19 @@ BEGIN
     DROP CONSTRAINT IF EXISTS runtime_profiles_runtime_tier_check;
   ALTER TABLE runtime_profiles
     ADD CONSTRAINT runtime_profiles_runtime_tier_check
-    CHECK (runtime_tier IN ('browser_preview', 'python_stdout_test', 'node_typescript_test', 'sql_query_test', 'compiled_sandbox_later'));
+    CHECK (runtime_tier IN ('browser_preview', 'python_stdout_test', 'node_typescript_test', 'sql_query_test', 'managed_compiled_test', 'compiled_sandbox_later'));
 
   ALTER TABLE runtime_profiles
     DROP CONSTRAINT IF EXISTS runtime_profiles_language_check;
   ALTER TABLE runtime_profiles
     ADD CONSTRAINT runtime_profiles_language_check
-    CHECK (language IN ('javascript', 'python', 'typescript', 'sql', 'java', 'cpp', 'html_css'));
+    CHECK (language IN ('javascript', 'python', 'typescript', 'sql', 'java', 'go', 'csharp', 'cpp', 'html_css'));
 
   ALTER TABLE runtime_profiles
     DROP CONSTRAINT IF EXISTS runtime_profiles_runner_check;
   ALTER TABLE runtime_profiles
     ADD CONSTRAINT runtime_profiles_runner_check
-    CHECK (runner IN ('browser', 'python', 'node', 'sql', 'sandbox'));
+    CHECK (runner IN ('browser', 'python', 'node', 'sql', 'compiled', 'sandbox'));
 
   ALTER TABLE exercises
     DROP CONSTRAINT IF EXISTS exercises_exercise_type_check;
@@ -422,6 +422,16 @@ BEGIN
   ALTER TABLE learning_sessions
     ADD CONSTRAINT learning_sessions_review_stage_check
     CHECK (review_stage IS NULL OR review_stage IN ('warmup', 'warmup_repair', 'variant_practice', 'submitted'));
+END;
+$$;
+
+DO $$
+BEGIN
+  ALTER TABLE attempts
+    DROP CONSTRAINT IF EXISTS attempts_runtime_status_check;
+  ALTER TABLE attempts
+    ADD CONSTRAINT attempts_runtime_status_check
+    CHECK (runtime_status IN ('success', 'missing_toolchain', 'unsupported', 'compile_error', 'runtime_error', 'timeout', 'test_failure'));
 END;
 $$;
 

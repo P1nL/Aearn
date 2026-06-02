@@ -70,10 +70,23 @@ export type EnvironmentDoctorReport = {
   guidance: EnvironmentGuidance[];
 };
 
-export type RuntimeTier = "browser_preview" | "python_stdout_test" | "compiled_sandbox_later";
+export type RuntimeTier =
+  | "browser_preview"
+  | "python_stdout_test"
+  | "node_typescript_test"
+  | "sql_query_test"
+  | "managed_compiled_test"
+  | "compiled_sandbox_later";
 export type LearningMode = "goal_based" | "material_based";
 export type Language = "javascript" | "python" | "java" | "cpp" | "html_css";
-export type RuntimeStatus = "success" | "runtime_error" | "timeout" | "unsupported";
+export type RuntimeStatus =
+  | "success"
+  | "missing_toolchain"
+  | "unsupported"
+  | "compile_error"
+  | "runtime_error"
+  | "timeout"
+  | "test_failure";
 export type NextAction = "retry_same" | "show_hint" | "explain_error" | "review_variant" | "schedule_review" | "advance_next";
 export type FsrsRating = "Again" | "Hard" | "Good" | "Easy";
 export type ForgetRisk = "low" | "normal" | "high";
@@ -86,7 +99,7 @@ export type RuntimeProfile = {
   slug: string;
   runtime_tier: RuntimeTier;
   language: Language;
-  runner: "browser" | "python" | "sandbox";
+  runner: "browser" | "python" | "node" | "sql" | "compiled" | "sandbox";
   supports_realtime_preview: boolean;
   supports_stdout: boolean;
   supports_tests: boolean;

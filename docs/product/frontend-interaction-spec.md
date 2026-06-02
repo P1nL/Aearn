@@ -18,7 +18,7 @@
 
 1. 代码编辑器、预览和测试结果以对话中的生成式 UI 呈现，不做固定三栏工作台。
 2. 所有能影响 `Attempt`、`code_completion_result`、`ReviewState` 的操作必须走 API，不允许前端本地伪造完成状态。
-3. JS/HTML/CSS、Python、Java/C++ 按运行能力分层展示，不把“课程可见”误导成“实时运行可用”。
+3. JS/HTML/CSS、Python、TypeScript、SQL、Java/Go/C#、Rust/C++ 按运行能力分层展示，不把“课程可见”或“本机 toolchain 已检测到”误导成“公开课程/完整项目执行可用”。
 4. 前端 UI 不暴露 `Attempt(run)` 和 `Attempt(submit)` 两类内部概念，只展示运行、预览、测试和提交结果；后端仍保留两类事实记录。
 5. 所有长耗时状态都必须有 loading、error、disabled、retry 或 confirm 反馈。
 
@@ -27,7 +27,7 @@
 - 不做复杂拖拽式路线编辑，只允许按钮式 `skip`、`replace`、`adjust`。
 - 不做多窗口自由停靠或复杂 dock layout。
 - 不做外部渠道一键分发、账号登录、社区发布或平台适配改写。
-- 不做 Java / C++ 完整在线编译沙箱，仅保留 `compiled_sandbox_later` 能力提示和禁用态。
+- 不做完整在线编译沙箱或通用 IDE；Java / Go / C# 仅允许 `managed_compiled_test` 的本机 teaching-grade 单练习执行，Rust / C++ 继续只展示 `compiled_sandbox_later` 能力提示和禁用态。
 - 不做项目级多文件调试、任意依赖安装、真实代码仓库深度导入。
 - 不做独立复盘草稿流程、`publishDrawer` 用户路径、`CodeDraftPage` 一级页面或面试讲述草稿。
 
@@ -96,7 +96,7 @@ OnboardingPage
 - `plan_draft`
 - `modules`
 - `source_attribution`
-- `runtime_tier`：`browser_preview` / `python_stdout_test` / `compiled_sandbox_later`
+- `runtime_tier`：`browser_preview` / `python_stdout_test` / `node_typescript_test` / `sql_query_test` / `managed_compiled_test` / `compiled_sandbox_later`
 
 ### 主要按钮行为
 
@@ -117,7 +117,7 @@ OnboardingPage
 | stale route | 新卡片已替换旧卡片 | 保留旧卡片内容，只禁用旧卡片的 `开始学习` |
 | confirm | 重新生成、破坏主干调整、确认计划 | 弹出 `GlobalConfirmDialog` |
 | unsupported language | `POST /api/onboarding/messages` 返回 `LANGUAGE_NOT_SUPPORTED` | 展示后端 `error.message` 和支持语言列表，不渲染路线卡片 |
-| unsupported notice | `runtime_tier=compiled_sandbox_later` | 明确 Java/C++ 第一版不提供完整运行沙箱 |
+| unsupported notice | `runtime_tier=compiled_sandbox_later` | 明确 Rust/C++ 或静态 compiled disclosure 不提供 L3 执行 |
 | fallback notice | 动态路线生成失败但模板 fallback 成功 | 保持可确认路线卡片，展示简短来源说明，不暴露 provider 原始错误 |
 
 ## 页面 1：`LearningWorkspacePage`
@@ -247,7 +247,7 @@ LearningWorkspacePage
 | `pristine` | 初次加载 | Run 可用，Submit 需先 run 或解释检查 |
 | `dirty` | 用户修改代码 | 显示未运行变更，旧测试结果标记为 stale |
 | `running` | 调用 `/run` 中 | 编辑器可读，运行按钮 loading |
-| `unsupported` | `runtime_tier=compiled_sandbox_later` | 运行按钮禁用，展示能力边界 |
+| `unsupported` | `runtime_tier=compiled_sandbox_later` 或后端返回 `runtime_status=unsupported` | 运行/提交按钮禁用，展示能力边界 |
 | `submitted` | `/submit` 返回 | 展示提交结果摘要，可继续开新一次练习尝试 |
 
 ### `RunActionBar`
@@ -258,7 +258,7 @@ LearningWorkspacePage
 |---|---|---|---|
 | 运行预览 | `POST /api/learning-sessions/{session_id}/exercises/{exercise_id}/run`，`run_mode=preview` | `runtime_tier=browser_preview` | `PreviewPane`、console、运行结果摘要 |
 | 运行可见测试 | 同上，`run_mode=visible_tests` | `supports_tests=true` | `TestResultPane`、stdout/stderr |
-| 提交答案 | `POST /api/learning-sessions/{session_id}/exercises/{exercise_id}/submit` | 有 `attempt_id`，或后端允许 submit 时自动 run | `code_completion_result` |
+| 提交答案 | `POST /api/learning-sessions/{session_id}/exercises/{exercise_id}/submit` | 有 `attempt_id`、最近一次 `run_mode=visible_tests`、`runtime_status=success` 且结果未 stale，或后端允许 submit 时自动 run | `code_completion_result` |
 | 获取提示 | `POST /api/learning-sessions/{session_id}/exercises/{exercise_id}/hint` | 有当前代码，未超过提示策略限制 | `HintHistoryCard` |
 | 解释错误 | `POST /api/learning-sessions/{session_id}/attempts/{attempt_id}/explain-error` | 最近 Attempt 有错误或失败测试 | `ErrorFeedbackPane` |
 | 检查解释 | `POST /api/learning-sessions/{session_id}/attempts/{attempt_id}/check-explanation` | 有 `attempt_id` 和用户解释 | `ExplanationCheckPanel` |
@@ -276,7 +276,7 @@ LearningWorkspacePage
 | `PreviewPane` | JS/HTML/CSS 实时预览、DOM 断言摘要、console 输出 | Python stdout、隐藏测试细节 |
 | `StdoutPane` | Python stdout、stderr、进程退出状态 | DOM 预览 |
 | `TestResultPane` | 可见测试、隐藏测试数量摘要、通过率、失败用例名称 | 隐藏测试源码或完整答案 |
-| `ErrorFeedbackPane` | `runtime_error`、`timeout`、`unsupported`、`error_cause`、`fix_suggestion` | 最终评分替代品 |
+| `ErrorFeedbackPane` | `missing_toolchain`、`compile_error`、`runtime_error`、`timeout`、`test_failure`、`unsupported`、`error_cause`、`fix_suggestion` | 最终评分替代品 |
 | `ExplanationCheckPanel` | 用户解释输入、`result`、`follow_up_required`、反馈 | 长篇聊天式追问 |
 
 错误反馈区必须区分三类来源：
@@ -293,7 +293,10 @@ LearningWorkspacePage
 |---|---|---|---|---|
 | `browser_preview` | JS / HTML / CSS | 实时预览、console 捕获、DOM 断言摘要、可见测试反馈 | `/run`、`/submit`、`/hint`、`/explain-error` | 不支持任意 npm 依赖、不支持多文件项目调试 |
 | `python_stdout_test` | Python | 代码编辑、stdout/stderr、函数测试和可见测试结果 | `/run`、`/submit`、`/hint`、`/explain-error` | 不承诺本地 GUI、网络访问或任意第三方包 |
-| `compiled_sandbox_later` | Java / C++ | 静态阅读、补全练习、能力边界提示 | `/run` 返回 `runtime_status=unsupported` 或不展示运行按钮 | 不提供完整编译、运行、资源隔离沙箱 |
+| `node_typescript_test` | TypeScript | 代码编辑、stdout/stderr、单文件函数测试 | `/run`、`/submit`、`/hint`、`/explain-error` | 当前不公开选课，不支持任意 npm 依赖或多文件项目 |
+| `sql_query_test` | SQL | 查询编辑、SQLite 教学方言测试、stdout/stderr 摘要 | `/run`、`/submit`、`/hint`、`/explain-error` | 当前不公开选课，不连接 Aearn PostgreSQL app database |
+| `managed_compiled_test` | Java / Go / C# | 本机 toolchain 状态、编译/运行/测试结果、缺 toolchain/编译错误提示 | `/run`、`/submit`、`/hint`、`/explain-error` | 只支持单文件或服务端 harness 教学练习；不支持 Maven / Gradle / Go modules / NuGet / `.sln` / 任意项目执行；Go/C# 不公开选课 |
+| `compiled_sandbox_later` | Rust / C++ | 静态阅读、补全练习、能力边界提示 | `/run` 返回 `runtime_status=unsupported` 或不展示运行按钮 | 不提供 L3 编译运行或资源隔离沙箱 |
 
 ## 页面 2：`ReviewPage`
 
@@ -487,7 +490,7 @@ SettingsPage
 - 不本地修改 `fsrs_rating`、`due_at` 或 `ReviewState`。
 - 不根据 warmup 结果、本地测试通过或 `review_ai_patch` 表单内容本地计算 score、FSRS 或复习完成态。
 - 不把本地预览成功当作 `/submit` 通过。
-- 不在 Java/C++ 上展示“可运行”按钮，除非后端明确返回可用 `runtime_profile`。
+- 不在 `compiled_sandbox_later`、Rust/C++ 或后端返回 `unsupported` 的练习上展示“可运行/可提交”状态；Java 只有在后端返回 `managed_compiled_test` 且运行状态成功时才可提交，Go/C# 即使 runner 可用也不能作为公开课程选择出现。
 
 ## 全局状态与错误处理
 
@@ -531,7 +534,7 @@ SettingsPage
 
 - 五个一级页面均有组件树、核心按钮、状态与 API 边界：Onboarding、Learning、Review、Notes、Settings。
 - 工作台明确对话生成式代码编辑器、实时预览、stdout/test、错误反馈区边界。
-- JS/HTML/CSS、Python、Java/C++ 的运行能力分层不会误导用户。
+- JS/HTML/CSS、Python、TypeScript、SQL、Java/Go/C#、Rust/C++ 的运行能力分层不会误导用户。
 - loading、empty、error、disabled、confirm、stale、autosaving 状态均有统一处理。
 - 前端不会越权承担评分、FSRS 或 LangGraph 状态机职责。
 - 复习页能展示短热身、热身修正、seed rescue 失败、五类核心复习题型和 `review_ai_patch` 结构化提交。

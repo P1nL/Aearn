@@ -81,6 +81,11 @@ def run_exercise(
     if runner_capability.runner_key == "sql":
         return registry.run_sql_query(exercise, code)
 
+    if runner_capability.runner_key == "compiled":
+        if runtime_tier == "managed_compiled_test" and runner_capability.execution == "managed_compiled_test":
+            return registry.run_managed_compiled(exercise, code)
+        return registry.unsupported_result(exercise, runner_capability)
+
     if runtime_tier == "compiled_sandbox_later":
         return registry.unsupported_result(exercise, runner_capability)
 

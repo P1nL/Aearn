@@ -92,13 +92,13 @@ def test_preference_update_rejects_fixed_backend_rules(client: TestClient) -> No
     ]
 
 
-def test_language_courses_include_compiled_later_placeholders(client: TestClient) -> None:
+def test_language_courses_disclose_managed_java_and_compiled_later_cpp(client: TestClient) -> None:
     response = client.get("/api/language-courses")
 
     assert response.status_code == 200
     items = response.json()["items"]
     runtime_tiers = {item["language"]: item["runtime_profile"]["runtime_tier"] for item in items}
-    assert runtime_tiers["java"] == "compiled_sandbox_later"
+    assert runtime_tiers["java"] == "managed_compiled_test"
     assert runtime_tiers["cpp"] == "compiled_sandbox_later"
 
 
@@ -252,8 +252,8 @@ def test_generate_plan_failure_paths_and_java_notice(client: TestClient) -> None
     )
     assert java_response.status_code == 200
     draft = java_response.json()["plan_draft"]
-    assert draft["runtime_boundary"]["runtime_tier"] == "compiled_sandbox_later"
-    assert "planned later" in draft["runtime_boundary"]["notice"]
+    assert draft["runtime_boundary"]["runtime_tier"] == "managed_compiled_test"
+    assert "managed compiled runner" in draft["runtime_boundary"]["notice"]
 
 
 def test_confirm_plan_persists_review_states_and_is_idempotent(client: TestClient) -> None:

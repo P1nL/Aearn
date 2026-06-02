@@ -4,7 +4,15 @@ from pydantic import BaseModel, Field, field_validator
 
 
 RunMode = Literal["preview", "visible_tests"]
-RuntimeStatus = Literal["success", "runtime_error", "timeout", "unsupported"]
+RuntimeStatus = Literal[
+    "success",
+    "missing_toolchain",
+    "unsupported",
+    "compile_error",
+    "runtime_error",
+    "timeout",
+    "test_failure",
+]
 NextAction = Literal["retry_same", "show_hint", "explain_error", "review_variant", "schedule_review", "advance_next"]
 FsrsRating = Literal["Again", "Hard", "Good", "Easy"]
 HintLevel = Literal["nudge", "concept", "code_shape"]

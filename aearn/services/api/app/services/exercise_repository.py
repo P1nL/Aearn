@@ -472,32 +472,96 @@ def _exercise_template(
             ],
         }
 
-    if language in {"java", "cpp"}:
-        language_label = "Java" if language == "java" else "C++"
+    if language == "java":
+        return {
+            "slug": f"m3-java-{knowledge_point_id}",
+            "title": f"{title}：Java 方法返回值",
+            "exercise_type": "code_blank",
+            "prompt_markdown": (
+                f"围绕知识点 **{title}** 完成一个最小 Java 方法练习。\n\n"
+                "要求：保留 `public class Main` 和 `public static int increment(int value)`，让方法返回加一后的结果。"
+            ),
+            "starter_code": (
+                "public class Main {\n"
+                "    public static int increment(int value) {\n"
+                "        return __BLANK_1__;\n"
+                "    }\n"
+                "}\n"
+            ),
+            "solution_reference": (
+                "public class Main {\n"
+                "    public static int increment(int value) {\n"
+                "        return value + 1;\n"
+                "    }\n"
+                "}\n"
+            ),
+            "visible_test_policy": "visible_and_hidden_summary",
+            "difficulty": 1,
+            "estimated_minutes": 8,
+            "requires_explanation": False,
+            "metadata_json": {
+                "entry_function": "increment",
+                "required_patterns": ["public class Main", "public static int increment", "return value + 1"],
+                "managed_compiled": {
+                    "source_file": "Main.java",
+                    "class_name": "Main",
+                    "unsupported": ["maven", "gradle", "external_dependencies", "arbitrary_project"],
+                },
+            },
+            "code_blanks": [
+                {
+                    "blank_key": "blank_1",
+                    "placeholder": "value + 1",
+                    "expected_concept": "返回加一后的结果。",
+                    "acceptable_patterns_json": [
+                        {"type": "literal", "value": "value + 1"},
+                        {"type": "regex", "value": r"value\s*\+\s*1"},
+                    ],
+                    "is_core": True,
+                    "order_index": 0,
+                },
+            ],
+            "test_cases": [
+                {
+                    "case_type": "visible",
+                    "input_json": {"args": [1]},
+                    "expected_output_json": {"return": 2},
+                    "assertion_code": None,
+                    "weight": 1,
+                    "is_critical": True,
+                    "timeout_ms": 5000,
+                    "order_index": 0,
+                },
+                {
+                    "case_type": "hidden",
+                    "input_json": {"args": [-2]},
+                    "expected_output_json": {"return": -1},
+                    "assertion_code": None,
+                    "weight": 1,
+                    "is_critical": False,
+                    "timeout_ms": 5000,
+                    "order_index": 1,
+                },
+            ],
+        }
+
+    if language == "cpp":
         starter_code = (
-            "public class Counter {\n"
-            "    public static int increment(int value) {\n"
-            "        return __BLANK_1__;\n"
-            "    }\n"
-            "}\n"
-            if language == "java"
-            else
             "#include <iostream>\n\n"
             "int increment(int value) {\n"
             "    return __BLANK_1__;\n"
             "}\n"
         )
-        solution_reference = starter_code.replace("__BLANK_1__", "value + 1")
         return {
-            "slug": f"m3-{language}-{knowledge_point_id}",
-            "title": f"{title}：{language_label} 静态补全占位题",
+            "slug": f"m3-cpp-{knowledge_point_id}",
+            "title": f"{title}：C++ 静态补全占位题",
             "exercise_type": "code_blank",
             "prompt_markdown": (
                 f"围绕知识点 **{title}** 做一次静态补全。\n\n"
-                f"{language_label} 的完整编译运行沙箱不在第一版范围内，此题只用于展示能力边界。"
+                "C++ 的完整编译运行沙箱不在当前范围内，此题只用于展示能力边界。"
             ),
             "starter_code": starter_code,
-            "solution_reference": solution_reference,
+            "solution_reference": starter_code.replace("__BLANK_1__", "value + 1"),
             "visible_test_policy": "visible_only",
             "difficulty": 1,
             "estimated_minutes": 5,
