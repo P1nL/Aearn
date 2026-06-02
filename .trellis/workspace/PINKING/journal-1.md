@@ -1642,3 +1642,37 @@ Completed 03 desktop learning experience child: added planning and Chinese revie
 ### Next Steps
 
 - None - task complete
+
+
+## Session 50: Productize language grounding
+
+**Date**: 2026-06-02
+**Task**: Productize language grounding
+**Branch**: `main`
+
+### Summary
+
+Completed 04 language grounding productization: added persisted official/trusted docs grounding chunks and reindex run storage, fixture seed/replacement/search repository, learning-message grounding context and safe citation metadata, plus focused persistence and learning integration tests. Verification passed: grounding focused pytest 98 passed, learning_sessions_m3 55 passed, ruff, mypy, desktop:check, task validate, git diff --check; Vite retained the existing chunk-size warning.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `ab60b7b` | (see git log) |
+| `2a98def` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
