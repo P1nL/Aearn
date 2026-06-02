@@ -150,6 +150,16 @@ def test_node_typescript_runner_capability_is_executable_but_not_container_grade
     assert capability.sandbox_policy["is_container_grade"] is False
 
 
+def test_browser_runner_capability_discloses_preview_and_stdout_support() -> None:
+    capability = get_runner_registry().select({"runtime_tier": "browser_preview"})
+
+    assert capability.supports_execution is True
+    assert capability.supports_tests is True
+    assert capability.supports_stdout is True
+    assert capability.supports_preview is True
+    assert capability.sandbox_policy["dom_access"] is True
+
+
 def test_python_runner_capability_discloses_non_container_sandbox() -> None:
     capability = get_runner_registry().select({"runtime_tier": "python_stdout_test"})
 

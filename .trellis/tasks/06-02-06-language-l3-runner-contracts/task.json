@@ -20,7 +20,8 @@
   "subtasks": [],
   "children": [
     "06-02-python-runner-hardening",
-    "06-02-node-typescript-runner"
+    "06-02-node-typescript-runner",
+    "06-02-browser-html-css-runner"
   ],
   "parent": "06-02-local-product-completion",
   "relatedFiles": [],

@@ -75,6 +75,9 @@ def run_exercise(
     registry = get_runner_registry()
     runner_capability = registry.select(runtime_profile if isinstance(runtime_profile, Mapping) else {})
 
+    if runner_capability.runner_key == "browser":
+        return registry.run_browser_preview(exercise, code, filled_blanks)
+
     if runtime_tier == "compiled_sandbox_later":
         return registry.unsupported_result(exercise, runner_capability)
 
