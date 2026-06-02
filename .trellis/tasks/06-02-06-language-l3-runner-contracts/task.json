@@ -19,7 +19,8 @@
   "pr_url": null,
   "subtasks": [],
   "children": [
-    "06-02-python-runner-hardening"
+    "06-02-python-runner-hardening",
+    "06-02-node-typescript-runner"
   ],
   "parent": "06-02-local-product-completion",
   "relatedFiles": [],

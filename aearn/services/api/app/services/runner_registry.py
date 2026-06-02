@@ -4,6 +4,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from app.services.language_capabilities import ExecutionMode, RunnerKey
+from app.services.node_typescript_runner import NodeExecutionResult, execute_node_typescript_with_tests
 from app.services.runtime_contracts import RuntimeExecutionResult
 from app.services.sandbox import SandboxExecutionResult, execute_python_with_tests
 
@@ -87,6 +88,9 @@ class RunnerRegistry:
     def run_python(self, exercise: Mapping[str, object], code: str) -> RuntimeExecutionResult:
         return _run_python_sandbox(exercise, code)
 
+    def run_node_typescript(self, exercise: Mapping[str, object], code: str) -> RuntimeExecutionResult:
+        return _run_node_typescript(exercise, code)
+
 
 PYTHON_RUNNER = RunnerCapability(
     runner_key="python",
@@ -123,17 +127,22 @@ BROWSER_PREVIEW_RUNNER = RunnerCapability(
 
 NODE_TYPESCRIPT_RUNNER = RunnerCapability(
     runner_key="node",
-    execution="node_later",
-    runtime_tiers=("node_later",),
-    supports_execution=False,
-    supports_tests=False,
-    supports_stdout=False,
+    execution="node_typescript_test",
+    runtime_tiers=("node_typescript_test", "node_later"),
+    supports_execution=True,
+    supports_tests=True,
+    supports_stdout=True,
     supports_preview=False,
-    compile_required=False,
-    timeout_ms=5000,
+    compile_required=True,
+    timeout_ms=10000,
     memory_limit_mb=128,
-    sandbox_policy={"status": "planned", "network": "disabled"},
-    unavailable_message="Node/TypeScript execution is planned later and is not available in this runtime.",
+    sandbox_policy={
+        "network": "disabled",
+        "filesystem": "temporary_workspace",
+        "max_processes": 1,
+        "is_container_grade": False,
+    },
+    unavailable_message="Node/TypeScript execution requires local Node.js and TypeScript tooling.",
 )
 
 SQL_RUNNER = RunnerCapability(
@@ -298,6 +307,113 @@ def _run_python_sandbox(exercise: Mapping[str, object], code: str) -> RuntimeExe
     )
 
 
+def _run_node_typescript(exercise: Mapping[str, object], code: str) -> RuntimeExecutionResult:
+    test_cases = exercise.get("test_cases", [])
+    if not isinstance(test_cases, Sequence):
+        test_cases = []
+
+    metadata = exercise.get("metadata_json", {})
+    entry_function: str | None = None
+    if isinstance(metadata, Mapping):
+        ef = metadata.get("entry_function")
+        if ef:
+            entry_function = str(ef)
+
+    node_result = execute_node_typescript_with_tests(
+        code,
+        test_cases,
+        entry_function=entry_function,
+        timeout_s=10.0,
+    )
+    return _node_result_to_runtime_result(exercise, node_result)
+
+
+def _node_result_to_runtime_result(exercise: Mapping[str, object], node_result: NodeExecutionResult) -> RuntimeExecutionResult:
+    test_cases = exercise.get("test_cases", [])
+    if not isinstance(test_cases, Sequence):
+        test_cases = []
+
+    if node_result.status == "timeout":
+        return RuntimeExecutionResult(
+            runtime_status="timeout",
+            stdout=_bound_text(node_result.stdout, MAX_RUNNER_STDOUT_CHARS),
+            stderr=_bound_text(node_result.stderr, MAX_RUNNER_STDERR_CHARS),
+            test_pass_rate=0.0,
+            passed_test_count=0,
+            total_test_count=len(test_cases),
+            test_results=_build_failed_cases(exercise, "Node/TypeScript execution timed out."),
+            error_message="Node/TypeScript execution timed out.",
+            next_action="retry_same",
+            preview_html=None,
+            core_blank_gate=False,
+            any_blank_passed=False,
+            logic_pass=False,
+        )
+
+    if node_result.status == "missing_toolchain":
+        message = node_result.error or "Node.js and TypeScript compiler are required for this exercise."
+        return RuntimeExecutionResult(
+            runtime_status="unsupported",
+            stdout="",
+            stderr="",
+            test_pass_rate=0.0,
+            passed_test_count=0,
+            total_test_count=len(test_cases),
+            test_results=_build_failed_cases(exercise, message),
+            error_message=_bound_text(message, MAX_RUNNER_ERROR_CHARS),
+            next_action="retry_same",
+            preview_html=None,
+            core_blank_gate=False,
+            any_blank_passed=False,
+            logic_pass=False,
+        )
+
+    if node_result.status in {"compile_error", "sandbox_error"}:
+        return RuntimeExecutionResult(
+            runtime_status="runtime_error" if node_result.status == "compile_error" else "sandbox_error",
+            stdout=_bound_text(node_result.stdout, MAX_RUNNER_STDOUT_CHARS),
+            stderr=_bound_text(node_result.stderr, MAX_RUNNER_STDERR_CHARS),
+            test_pass_rate=0.0,
+            passed_test_count=0,
+            total_test_count=len(test_cases),
+            test_results=_build_failed_cases(exercise, node_result.error or "Node/TypeScript execution failed."),
+            error_message=_bound_text(node_result.error or "Node/TypeScript execution failed.", MAX_RUNNER_ERROR_CHARS),
+            next_action="explain_error",
+            preview_html=None,
+            core_blank_gate=False,
+            any_blank_passed=False,
+            logic_pass=False,
+        )
+
+    test_results = [_public_test_result(result, index) for index, result in enumerate(node_result.test_results)]
+    total_weight = sum(result.weight for result in node_result.test_results)
+    passed_weight = sum(result.weight for result in node_result.test_results if result.passed)
+    passed_count = sum(1 for result in node_result.test_results if result.passed)
+    total_count = len(node_result.test_results) or len(test_cases)
+    test_pass_rate = 0.0 if total_weight == 0 else round(passed_weight / total_weight, 4)
+    runtime_error_message = _node_runtime_error_message(node_result)
+    has_runtime_error = node_result.status == "runtime_error" or runtime_error_message is not None
+
+    logic_pass = not has_runtime_error and test_pass_rate == 1.0
+    next_action = "explain_error" if has_runtime_error else _next_action_for_run(test_results, logic_pass, "node_typescript_test")
+
+    return RuntimeExecutionResult(
+        runtime_status="runtime_error" if has_runtime_error else "success",
+        stdout=_bound_text(node_result.stdout.rstrip("\n"), MAX_RUNNER_STDOUT_CHARS),
+        stderr=_bound_text(node_result.stderr, MAX_RUNNER_STDERR_CHARS),
+        test_pass_rate=test_pass_rate,
+        passed_test_count=passed_count,
+        total_test_count=total_count,
+        test_results=test_results,
+        error_message=runtime_error_message,
+        next_action=next_action,
+        preview_html=None,
+        core_blank_gate=logic_pass,
+        any_blank_passed=passed_count > 0,
+        logic_pass=logic_pass,
+    )
+
+
 def _case_count(exercise: Mapping[str, object]) -> int:
     test_cases = exercise.get("test_cases", [])
     return len(test_cases) if isinstance(test_cases, Sequence) else 0
@@ -348,6 +464,18 @@ def _function_runtime_error_message(results: Sequence[object]) -> str | None:
                 return "A hidden Python test raised a runtime error."
             error_name = message.split(":", 1)[0]
             return f"Python code raised {error_name} during visible tests."
+    return None
+
+
+def _node_runtime_error_message(result: NodeExecutionResult) -> str | None:
+    if result.error:
+        return _bound_text(result.error, MAX_RUNNER_ERROR_CHARS)
+    for test_result in result.test_results:
+        if not test_result.passed and ":" in test_result.message:
+            if test_result.case_type == "hidden":
+                return "A hidden TypeScript test raised a runtime error."
+            error_name = test_result.message.split(":", 1)[0]
+            return f"TypeScript code raised {error_name} during visible tests."
     return None
 
 

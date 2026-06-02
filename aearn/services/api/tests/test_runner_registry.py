@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
+
+import pytest
+
+from app.services import runner_registry
+from app.services.node_typescript_runner import NodeExecutionResult
 from app.services.runner_registry import get_runner_registry
 from app.services.runtime_runner import run_exercise
 
@@ -25,11 +31,41 @@ def _python_exercise() -> dict[str, object]:
     }
 
 
+def _typescript_exercise() -> dict[str, object]:
+    return {
+        "runtime_profile": {
+            "runtime_tier": "node_typescript_test",
+            "language": "typescript",
+            "runner": "node",
+        },
+        "metadata_json": {"entry_function": "add"},
+        "test_cases": [
+            {
+                "id": "visible_add",
+                "case_type": "visible",
+                "input_json": {"args": [2, 3]},
+                "expected_output_json": {"return": 5},
+                "weight": 1,
+                "is_critical": True,
+            },
+            {
+                "id": "hidden_negative",
+                "case_type": "hidden",
+                "input_json": {"args": [-2, 3]},
+                "expected_output_json": {"return": 1},
+                "weight": 2,
+                "is_critical": True,
+            },
+        ],
+    }
+
+
 def test_runner_registry_selects_current_runtime_tiers() -> None:
     registry = get_runner_registry()
 
     assert registry.select({"runtime_tier": "python_stdout_test"}).runner_key == "python"
     assert registry.select({"runtime_tier": "browser_preview"}).runner_key == "browser"
+    assert registry.select({"runtime_tier": "node_typescript_test"}).runner_key == "node"
     assert registry.select({"runtime_tier": "compiled_sandbox_later"}).runner_key == "compiled"
     assert registry.select({"language": "typescript"}).runner_key == "node"
     assert registry.select({"language": "sql"}).runner_key == "sql"
@@ -93,18 +129,25 @@ def test_planned_compiled_runner_returns_unsupported_fallback() -> None:
     assert result.test_results[0]["passed"] is False
 
 
-def test_planned_sql_and_node_runners_do_not_claim_execution() -> None:
+def test_sql_runner_does_not_claim_execution() -> None:
     registry = get_runner_registry()
 
-    node = registry.select({"language": "typescript"})
     sql = registry.select({"language": "sql"})
 
-    assert node.supports_execution is False
-    assert node.execution == "node_later"
-    assert "not available" in (node.unavailable_message or "")
     assert sql.supports_execution is False
     assert sql.execution == "sql_later"
     assert "isolated query runner" in (sql.unavailable_message or "")
+
+
+def test_node_typescript_runner_capability_is_executable_but_not_container_grade() -> None:
+    capability = get_runner_registry().select({"runtime_tier": "node_typescript_test"})
+
+    assert capability.supports_execution is True
+    assert capability.supports_tests is True
+    assert capability.supports_stdout is True
+    assert capability.execution == "node_typescript_test"
+    assert capability.compile_required is True
+    assert capability.sandbox_policy["is_container_grade"] is False
 
 
 def test_python_runner_capability_discloses_non_container_sandbox() -> None:
@@ -197,3 +240,110 @@ def test_python_public_stdout_is_bounded() -> None:
 
     assert result.runtime_status == "success"
     assert len(result.stdout) == 4000
+
+
+def test_node_typescript_runner_adapter_executes_visible_and_hidden_tests() -> None:
+    result = run_exercise(
+        _typescript_exercise(),
+        "function add(a: number, b: number): number {\n  return a + b;\n}\n",
+        {},
+        "visible_tests",
+    )
+
+    assert result.runtime_status == "success"
+    assert result.test_pass_rate == 1.0
+    assert result.passed_test_count == 2
+    assert result.next_action == "advance_next"
+
+
+def test_node_typescript_compile_error_maps_to_runtime_error() -> None:
+    result = run_exercise(
+        _typescript_exercise(),
+        "function add(a: number, b: number): number {\n  return a + ;\n}\n",
+        {},
+        "visible_tests",
+    )
+
+    assert result.runtime_status == "runtime_error"
+    assert result.test_pass_rate == 0.0
+    assert result.next_action == "explain_error"
+    assert result.error_message
+
+
+def test_node_typescript_function_exception_maps_to_runtime_error() -> None:
+    exercise = _typescript_exercise()
+    exercise["metadata_json"] = {"entry_function": "explode"}
+    result = run_exercise(
+        exercise,
+        "function explode(): number {\n  throw new Error('boom');\n}\n",
+        {},
+        "visible_tests",
+    )
+
+    assert result.runtime_status == "runtime_error"
+    assert result.test_pass_rate == 0.0
+    assert result.next_action == "explain_error"
+    assert "Error" in (result.error_message or "")
+
+
+def test_node_typescript_hidden_test_results_are_redacted_in_public_runner_output() -> None:
+    exercise = _typescript_exercise()
+    exercise["test_cases"] = [
+        {
+            "id": "visible_increment",
+            "case_type": "visible",
+            "input_json": {"args": [1, 1]},
+            "expected_output_json": {"return": 2},
+            "weight": 1,
+            "is_critical": True,
+        },
+        {
+            "id": "hidden_secret_edge_case",
+            "case_type": "hidden",
+            "input_json": {"args": [2, 2]},
+            "expected_output_json": {"return": 999},
+            "weight": 2,
+            "is_critical": True,
+        },
+    ]
+
+    result = run_exercise(exercise, "function add(a: number, b: number): number {\n  return a + b;\n}\n", {}, "visible_tests")
+    serialized = repr(result.test_results)
+
+    assert result.runtime_status == "success"
+    assert result.test_pass_rate < 1.0
+    assert "hidden_secret_edge_case" not in serialized
+    assert "999" not in serialized
+    assert any(item["case_id"] == "hidden_case_2" for item in result.test_results)
+    assert any(item["message"] == "A hidden test failed. Recheck edge cases and boundary behavior." for item in result.test_results)
+
+
+def test_node_typescript_missing_toolchain_maps_to_unsupported(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_execute(
+        code: str,
+        test_cases: Sequence[Mapping[str, object]],
+        *,
+        entry_function: str | None = None,
+        timeout_s: float = 10.0,
+    ) -> NodeExecutionResult:
+        return NodeExecutionResult(
+            status="missing_toolchain",
+            stdout="",
+            stderr="",
+            error="Node.js and TypeScript compiler are required.",
+            test_results=[],
+            total_duration_ms=0,
+        )
+
+    monkeypatch.setattr(runner_registry, "execute_node_typescript_with_tests", fake_execute)
+
+    result = run_exercise(
+        _typescript_exercise(),
+        "function add(a: number, b: number): number {\n  return a + b;\n}\n",
+        {},
+        "visible_tests",
+    )
+
+    assert result.runtime_status == "unsupported"
+    assert result.next_action == "retry_same"
+    assert "required" in (result.error_message or "")

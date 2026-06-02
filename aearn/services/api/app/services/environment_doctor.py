@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import platform
 import shutil
 import subprocess
@@ -260,7 +261,7 @@ GUIDANCE_TEMPLATES: tuple[GuidanceTemplate, ...] = (
         title="Install Node.js and TypeScript tooling on Windows",
         applies_to=("node", "typescript", "javascript", "html", "css"),
         severity="required",
-        summary="The desktop app and browser-style exercises require Node.js; TypeScript execution remains planned until the runner task is complete.",
+        summary="The desktop app, browser-style exercises, and TypeScript function runner require Node.js and local TypeScript tooling.",
         windows_steps=(
             "Install the Node.js LTS release.",
             "Enable or install pnpm for the Aearn workspace.",
@@ -268,7 +269,7 @@ GUIDANCE_TEMPLATES: tuple[GuidanceTemplate, ...] = (
         ),
         verification_commands=("node --version", "pnpm --version", "tsc --version"),
         safety_notes=(
-            "Detected Node.js does not make TypeScript execution available until the Node/TypeScript runner is implemented.",
+            "Detected Node.js alone is not enough for TypeScript execution; the local TypeScript compiler must also be available.",
             "Do not run npm, pnpm, or corepack mutation commands automatically from the doctor.",
         ),
     ),
@@ -407,6 +408,10 @@ def build_environment_doctor_report(
 
 def run_version_probe(command: str, args: tuple[str, ...], timeout_s: float) -> CommandProbeResult:
     executable = shutil.which(command)
+    if executable is None and _is_path_command(command):
+        candidate = Path(command)
+        if candidate.exists():
+            executable = str(candidate)
     if executable is None:
         return CommandProbeResult(
             status="missing",
@@ -468,6 +473,7 @@ def _build_components(command_runner: CommandRunner, aearn_root: Path) -> list[E
         _python_runtime_component(),
     ]
     components.extend(_component_from_probe(definition, command_runner(definition.command, definition.args, 3.0)) for definition in COMMAND_CHECKS)
+    components.append(_typescript_compiler_component(command_runner, aearn_root))
     return components
 
 
@@ -539,6 +545,19 @@ def _component_from_probe(definition: ComponentDefinition, probe: CommandProbeRe
     }
 
 
+def _typescript_compiler_component(command_runner: CommandRunner, aearn_root: Path) -> EnvironmentComponent:
+    definition = ComponentDefinition(
+        component_id="typescript_compiler",
+        label="TypeScript compiler",
+        kind="runtime",
+        command=_typescript_compiler_command(aearn_root),
+        args=("--version",),
+        required_for=("node_typescript_runner",),
+        guidance_id="node_typescript_windows",
+    )
+    return _component_from_probe(definition, command_runner(definition.command, definition.args, 3.0))
+
+
 def _build_language_runners(component_by_id: dict[str, EnvironmentComponent]) -> list[LanguageRunnerStatus]:
     registry = get_runner_registry()
     statuses: list[LanguageRunnerStatus] = []
@@ -549,10 +568,7 @@ def _build_language_runners(component_by_id: dict[str, EnvironmentComponent]) ->
                 "language": capability.language_id,
             },
         )
-        toolchain_component_id = LANGUAGE_TOOLCHAINS.get(capability.language_id)
-        toolchain_status: ComponentStatus = "planned"
-        if toolchain_component_id:
-            toolchain_status = component_by_id.get(toolchain_component_id, _planned_component())["status"]
+        toolchain_status = _toolchain_status_for(capability.language_id, component_by_id)
         statuses.append(
             {
                 "language_id": capability.language_id,
@@ -571,13 +587,33 @@ def _build_language_runners(component_by_id: dict[str, EnvironmentComponent]) ->
 
 
 def _product_status_for(exercise_generation: str, execution: str) -> ProductStatus:
-    if execution in {"browser_preview", "python_stdout_test"}:
+    if execution in {"browser_preview", "python_stdout_test", "node_typescript_test"}:
         return "executable"
     if exercise_generation == "static_review":
         return "static_review"
     if execution == "none":
         return "unsupported"
     return "planned"
+
+
+def _toolchain_status_for(language_id: str, component_by_id: dict[str, EnvironmentComponent]) -> ComponentStatus:
+    if language_id == "typescript":
+        return _combined_component_status(("node", "typescript_compiler"), component_by_id)
+    toolchain_component_id = LANGUAGE_TOOLCHAINS.get(language_id)
+    if not toolchain_component_id:
+        return "planned"
+    return component_by_id.get(toolchain_component_id, _planned_component())["status"]
+
+
+def _combined_component_status(component_ids: Sequence[str], component_by_id: dict[str, EnvironmentComponent]) -> ComponentStatus:
+    statuses = [component_by_id.get(component_id, _planned_component())["status"] for component_id in component_ids]
+    if any(status == "error" for status in statuses):
+        return "error"
+    if any(status == "missing" for status in statuses):
+        return "missing"
+    if any(status == "planned" for status in statuses):
+        return "planned"
+    return "ready"
 
 
 def _build_summary(
@@ -625,6 +661,28 @@ def _planned_component() -> EnvironmentComponent:
 
 def _default_aearn_root() -> Path:
     return Path(__file__).resolve().parents[4]
+
+
+def _typescript_compiler_command(aearn_root: Path) -> str:
+    found = shutil.which("tsc")
+    if found:
+        return "tsc"
+    for candidate in _local_tsc_candidates(aearn_root):
+        if candidate.exists():
+            return str(candidate)
+    return "tsc"
+
+
+def _local_tsc_candidates(aearn_root: Path) -> tuple[Path, ...]:
+    suffix = "tsc.CMD" if os.name == "nt" else "tsc"
+    return (
+        aearn_root / "node_modules" / ".pnpm" / "node_modules" / ".bin" / suffix,
+        aearn_root / "apps" / "desktop" / "node_modules" / ".bin" / suffix,
+    )
+
+
+def _is_path_command(command: str) -> bool:
+    return os.sep in command or (os.altsep is not None and os.altsep in command)
 
 
 def _first_line(value: str) -> str | None:

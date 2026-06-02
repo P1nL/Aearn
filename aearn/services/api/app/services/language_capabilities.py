@@ -10,6 +10,7 @@ ExerciseGenerationState = Literal["executable", "static_review", "planned", "uns
 ExecutionMode = Literal[
     "browser_preview",
     "python_stdout_test",
+    "node_typescript_test",
     "node_later",
     "sql_later",
     "compiled_later",
@@ -46,7 +47,7 @@ class LanguageCapability:
 
     @property
     def supports_execution(self) -> bool:
-        return self.execution in {"browser_preview", "python_stdout_test"}
+        return self.execution in {"browser_preview", "python_stdout_test", "node_typescript_test"}
 
     @property
     def supports_tests(self) -> bool:
@@ -98,19 +99,20 @@ LANGUAGE_CAPABILITIES: dict[str, LanguageCapability] = {
         display_name="TypeScript",
         aliases=("ts",),
         current_public_course_language=None,
-        capability_state="planned",
-        lesson_generation="planned",
+        capability_state="partial",
+        lesson_generation="partial",
         grounding="planned",
-        exercise_generation="planned",
-        execution="node_later",
-        tests="none",
-        static_analysis="planned",
-        review_feedback="planned",
-        presentation="static_feedback",
-        ux_disclosure="TypeScript execution is planned for a later Node/TypeScript runner and is not runnable yet.",
+        exercise_generation="executable",
+        execution="node_typescript_test",
+        tests="visible_hidden",
+        static_analysis="syntax_only",
+        review_feedback="full",
+        presentation="stdout",
+        ux_disclosure="TypeScript can run single-file function exercises through the local Node/TypeScript runner, but public course selection remains disabled until course content is ready.",
         runner_key="node",
         source_trust_policy="official",
         enabled_for_public_selection=False,
+        sandbox_boundary="node_vm_restricted_not_container",
     ),
     "java": LanguageCapability(
         language_id="java",

@@ -51,6 +51,7 @@ def test_environment_doctor_reports_ready_components_and_static_guidance(tmp_pat
     assert components["startup_script"]["status"] == "ready"
     assert components["python_runtime"]["status"] == "ready"
     assert components["node"]["status"] == "ready"
+    assert components["typescript_compiler"]["status"] == "ready"
     assert components["docker"]["status"] == "ready"
     assert report["summary"]["missing_required_count"] == 0
     assert all(item["source"] == "static_template" for item in guidance.values())
@@ -92,8 +93,8 @@ def test_environment_doctor_reports_missing_required_tooling(tmp_path: Path) -> 
     assert components["node"]["status"] == "missing"
     assert components["docker"]["status"] == "missing"
     assert runners["typescript"]["toolchain_status"] == "missing"
-    assert runners["typescript"]["product_status"] == "planned"
-    assert runners["typescript"]["supports_execution"] is False
+    assert runners["typescript"]["product_status"] == "executable"
+    assert runners["typescript"]["supports_execution"] is True
 
 
 def test_environment_doctor_preserves_command_errors(tmp_path: Path) -> None:
@@ -137,7 +138,8 @@ def test_environment_doctor_does_not_turn_detected_planned_tools_into_execution(
 
     assert runners["python"]["product_status"] == "executable"
     assert runners["typescript"]["toolchain_status"] == "ready"
-    assert runners["typescript"]["product_status"] == "planned"
+    assert runners["typescript"]["product_status"] == "executable"
+    assert runners["typescript"]["supports_execution"] is True
     assert runners["sql"]["product_status"] == "planned"
     assert runners["java"]["product_status"] == "static_review"
     assert runners["go"]["product_status"] == "planned"

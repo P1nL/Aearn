@@ -117,6 +117,9 @@ def run_exercise(
         if _real_execution_enabled():
             return registry.run_python(exercise, code)
 
+    if runner_capability.runner_key == "node":
+        return registry.run_node_typescript(exercise, code)
+
     if runtime_tier == "browser_preview" and _looks_like_browser_runtime_error(code):
         return RuntimeExecutionResult(
             runtime_status="runtime_error",
