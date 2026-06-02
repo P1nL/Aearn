@@ -1,5 +1,10 @@
-import type { SettingsKey, SettingsPanel } from "../appTypes";
+import type { EnvironmentDoctorState, SettingsKey, SettingsPanel } from "../appTypes";
 import { SETTING_PANELS } from "../lib/appContent";
+import type {
+  EnvironmentComponentStatus,
+  EnvironmentOverallStatus,
+  EnvironmentProductStatus,
+} from "../types";
 
 type SettingsFormValue = {
   displayName: string;
@@ -34,9 +39,11 @@ type SettingsPageProps = {
     todayReviewCount: number;
     resumeAvailable: boolean;
   };
+  environmentDoctor: EnvironmentDoctorState;
   onSettingsTabChange: (value: SettingsKey) => void;
   onFieldChange: (field: keyof SettingsFormValue, value: string | boolean) => void;
   onSave: () => void;
+  onRefreshEnvironmentDoctor: () => void;
 };
 
 export function SettingsPage({
@@ -48,9 +55,11 @@ export function SettingsPage({
   saveErrorMessage,
   userLoaded,
   diagnostics,
+  environmentDoctor,
   onSettingsTabChange,
   onFieldChange,
   onSave,
+  onRefreshEnvironmentDoctor,
 }: SettingsPageProps) {
   const currentPanel = SETTING_PANELS[settingsTab];
   const editableTab = settingsTab === "learning" || settingsTab === "notifications";
@@ -101,7 +110,7 @@ export function SettingsPage({
         {settingsTab === "review" && renderReviewPanel(currentPanel)}
         {settingsTab === "notifications" && renderNotificationsPanel(form, onFieldChange)}
         {settingsTab === "privacy" && renderPrivacyPanel(currentPanel, diagnostics)}
-        {settingsTab === "diagnostics" && renderDiagnosticsPanel(diagnostics)}
+        {settingsTab === "diagnostics" && renderDiagnosticsPanel(diagnostics, environmentDoctor, onRefreshEnvironmentDoctor)}
       </section>
     </div>
   );
@@ -309,13 +318,17 @@ function renderPrivacyPanel(
   );
 }
 
-function renderDiagnosticsPanel(diagnostics: SettingsPageProps["diagnostics"]) {
+function renderDiagnosticsPanel(
+  diagnostics: SettingsPageProps["diagnostics"],
+  environmentDoctor: EnvironmentDoctorState,
+  onRefreshEnvironmentDoctor: () => void,
+) {
   const apiOnline = diagnostics.apiStatus === "在线";
 
   return (
     <>
       <div className="tool-card settings-callout">
-        这里显示桌面端能直接确认的连接、用户、计划和恢复状态。语言运行环境检测、安装指导和 runner 矩阵会在后续环境医生任务中接入。
+        这里显示桌面端连接状态和后端环境医生检测结果。环境医生只读取本机事实和静态指导模板，不会自动安装工具或修改系统配置。
       </div>
       <div className="settings-grid">
         <article className="setting-card">
@@ -351,8 +364,162 @@ function renderDiagnosticsPanel(diagnostics: SettingsPageProps["diagnostics"]) {
           <p>Aearn Desktop V1</p>
         </article>
       </div>
+      {renderEnvironmentDoctorPanel(environmentDoctor, onRefreshEnvironmentDoctor)}
     </>
   );
+}
+
+function renderEnvironmentDoctorPanel(
+  environmentDoctor: EnvironmentDoctorState,
+  onRefreshEnvironmentDoctor: () => void,
+) {
+  if (environmentDoctor.status === "idle" || environmentDoctor.status === "loading") {
+    return (
+      <section className="doctor-section" aria-label="环境医生">
+        <div className="settings-section-title">
+          <div>
+            <h3>环境医生</h3>
+            <p>检测本地工具链、runner 可用性和静态安装指导。</p>
+          </div>
+          <button className="btn ghost" type="button" disabled={environmentDoctor.status === "loading"} onClick={onRefreshEnvironmentDoctor}>
+            {environmentDoctor.status === "loading" ? "检测中..." : "刷新检测"}
+          </button>
+        </div>
+        <div className="tool-card settings-callout">正在读取本机环境事实...</div>
+      </section>
+    );
+  }
+
+  if (environmentDoctor.status === "error") {
+    return (
+      <section className="doctor-section" aria-label="环境医生">
+        <div className="settings-section-title">
+          <div>
+            <h3>环境医生</h3>
+            <p>检测本地工具链、runner 可用性和静态安装指导。</p>
+          </div>
+          <button className="btn ghost" type="button" onClick={onRefreshEnvironmentDoctor}>重试</button>
+        </div>
+        <div className="tool-card settings-callout error">环境检测失败：{environmentDoctor.message}</div>
+      </section>
+    );
+  }
+
+  const report = environmentDoctor.data;
+  const visibleGuidance = report.guidance.filter(
+    (guidance) =>
+      guidance.severity === "required" ||
+      report.components.some((component) => component.guidance_id === guidance.guidance_id && component.status !== "ready") ||
+      report.language_runners.some((runner) => runner.guidance_id === guidance.guidance_id && runner.product_status !== "executable"),
+  );
+
+  return (
+    <section className="doctor-section" aria-label="环境医生">
+      <div className="settings-section-title">
+        <div>
+          <h3>环境医生</h3>
+          <p>最近检测：{report.generated_at}</p>
+        </div>
+        <button className="btn ghost" type="button" onClick={onRefreshEnvironmentDoctor}>刷新检测</button>
+      </div>
+
+      <div className="settings-grid">
+        <article className="setting-card doctor-summary">
+          <h3>总体状态</h3>
+          <p className={statusClassForOverall(report.summary.overall_status)}>
+            {overallStatusLabel(report.summary.overall_status)}
+          </p>
+          <span>{report.summary.ready_count} 项 ready · {report.summary.missing_required_count} 项启动必需缺失 · {report.summary.planned_runner_count} 个 planned runner</span>
+        </article>
+        <article className="setting-card doctor-summary">
+          <h3>平台</h3>
+          <p>{report.platform.system} {report.platform.release}</p>
+          <span>{report.platform.python_executable}</span>
+        </article>
+      </div>
+
+      <div className="settings-section-title compact">
+        <h3>本机组件</h3>
+      </div>
+      <div className="settings-grid doctor-grid">
+        {report.components.map((component) => (
+          <article className="setting-card" key={component.component_id}>
+            <h3>{component.label}</h3>
+            <p className={statusClassForComponent(component.status)}>{componentStatusLabel(component.status)}</p>
+            <span>{component.version ?? component.message}</span>
+            {component.required_for.length > 0 && <small>用于：{component.required_for.join(", ")}</small>}
+          </article>
+        ))}
+      </div>
+
+      <div className="settings-section-title compact">
+        <h3>语言 Runner 矩阵</h3>
+      </div>
+      <div className="settings-grid doctor-grid">
+        {report.language_runners.map((runner) => (
+          <article className="setting-card" key={runner.language_id}>
+            <h3>{runner.display_name}</h3>
+            <p className={statusClassForProduct(runner.product_status)}>{productStatusLabel(runner.product_status)}</p>
+            <span>runner: {runner.runner_key} · toolchain: {componentStatusLabel(runner.toolchain_status)}</span>
+            <small>{runner.disclosure}</small>
+          </article>
+        ))}
+      </div>
+
+      <div className="settings-section-title compact">
+        <h3>静态安装指导</h3>
+      </div>
+      <div className="settings-grid doctor-guidance-grid">
+        {visibleGuidance.map((guidance) => (
+          <article className="setting-card doctor-guidance" key={guidance.guidance_id}>
+            <h3>{guidance.title}</h3>
+            <p>{guidance.summary}</p>
+            <span>来源：{guidance.source} · 严重度：{guidance.severity}</span>
+            <small>验证：{guidance.verification_commands.join(" / ")}</small>
+            <small>安全边界：{guidance.safety_notes.join(" ")}</small>
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function statusClassForComponent(status: EnvironmentComponentStatus) {
+  if (status === "ready") return "status-ok";
+  if (status === "missing" || status === "error") return "status-error";
+  return "status-warn";
+}
+
+function statusClassForOverall(status: EnvironmentOverallStatus) {
+  if (status === "ready") return "status-ok";
+  if (status === "blocked") return "status-error";
+  return "status-warn";
+}
+
+function statusClassForProduct(status: EnvironmentProductStatus) {
+  if (status === "executable") return "status-ok";
+  if (status === "unsupported") return "status-error";
+  return "status-warn";
+}
+
+function componentStatusLabel(status: EnvironmentComponentStatus) {
+  if (status === "ready") return "可用";
+  if (status === "missing") return "缺失";
+  if (status === "error") return "检测失败";
+  return "计划中";
+}
+
+function overallStatusLabel(status: EnvironmentOverallStatus) {
+  if (status === "ready") return "本地基线可用";
+  if (status === "blocked") return "启动必需项缺失";
+  return "需要关注";
+}
+
+function productStatusLabel(status: EnvironmentProductStatus) {
+  if (status === "executable") return "当前可执行";
+  if (status === "static_review") return "仅静态讲解/复习";
+  if (status === "unsupported") return "不支持";
+  return "Runner 计划中";
 }
 
 function saveStateLabel(value: SettingsPageProps["saveState"], isDirty: boolean) {

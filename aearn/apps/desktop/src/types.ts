@@ -3,6 +3,73 @@ export type ApiHealth = {
   service: string;
 };
 
+export type EnvironmentComponentStatus = "ready" | "missing" | "error" | "planned";
+export type EnvironmentOverallStatus = "ready" | "needs_attention" | "blocked";
+export type EnvironmentProductStatus = "executable" | "planned" | "static_review" | "unsupported";
+export type EnvironmentGuidanceSeverity = "required" | "recommended" | "optional";
+
+export type EnvironmentComponent = {
+  component_id: string;
+  label: string;
+  kind: string;
+  status: EnvironmentComponentStatus;
+  version: string | null;
+  executable_path: string | null;
+  required_for: string[];
+  guidance_id: string | null;
+  message: string;
+  diagnostic: {
+    command: string | null;
+    args: string[];
+    exit_code: number | null;
+    stdout: string;
+    stderr: string;
+  };
+};
+
+export type EnvironmentLanguageRunner = {
+  language_id: string;
+  display_name: string;
+  runner_key: string;
+  execution: string;
+  capability_state: string;
+  supports_execution: boolean;
+  toolchain_status: EnvironmentComponentStatus;
+  product_status: EnvironmentProductStatus;
+  guidance_id: string | null;
+  disclosure: string;
+};
+
+export type EnvironmentGuidance = {
+  guidance_id: string;
+  title: string;
+  applies_to: string[];
+  severity: EnvironmentGuidanceSeverity;
+  summary: string;
+  windows_steps: string[];
+  verification_commands: string[];
+  safety_notes: string[];
+  source: "static_template";
+};
+
+export type EnvironmentDoctorReport = {
+  generated_at: string;
+  platform: {
+    system: string;
+    release: string;
+    python_executable: string;
+  };
+  summary: {
+    overall_status: EnvironmentOverallStatus;
+    ready_count: number;
+    missing_required_count: number;
+    planned_runner_count: number;
+  };
+  components: EnvironmentComponent[];
+  language_runners: EnvironmentLanguageRunner[];
+  guidance: EnvironmentGuidance[];
+};
+
 export type RuntimeTier = "browser_preview" | "python_stdout_test" | "compiled_sandbox_later";
 export type LearningMode = "goal_based" | "material_based";
 export type Language = "javascript" | "python" | "java" | "cpp" | "html_css";

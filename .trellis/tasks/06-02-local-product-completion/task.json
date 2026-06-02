@@ -21,7 +21,8 @@
   "children": [
     "06-02-01-local-stable-startup",
     "06-02-03-desktop-learning-experience-completion",
-    "06-02-04-language-grounding-productization"
+    "06-02-04-language-grounding-productization",
+    "06-02-05-environment-doctor-and-install-guidance"
   ],
   "parent": null,
   "relatedFiles": [],

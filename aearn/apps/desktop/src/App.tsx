@@ -1,7 +1,7 @@
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 
-import { API_BASE_URL } from "./api";
-import type { AppRoute, NoteContext } from "./appTypes";
+import { API_BASE_URL, fetchEnvironmentDoctor } from "./api";
+import type { AppRoute, EnvironmentDoctorState, NoteContext } from "./appTypes";
 import { ApiHealthChip } from "./components/ApiHealthChip";
 import { NoteDrawer } from "./components/NoteDrawer";
 import { SidebarNav } from "./components/SidebarNav";
@@ -25,6 +25,7 @@ function App() {
   const app = useAppStore();
   const notes = useNotesStore();
   const settings = useSettingsStore();
+  const [environmentDoctor, setEnvironmentDoctor] = useState<EnvironmentDoctorState>({ status: "idle" });
 
   const dashboard = app.dashboardState.status === "ready" ? app.dashboardState.data : null;
   const session = app.sessionState.status === "ready" ? app.sessionState.data : null;
@@ -113,6 +114,21 @@ function App() {
     notes.reset();
   }
 
+  const refreshEnvironmentDoctor = useCallback(async (signal?: AbortSignal) => {
+    setEnvironmentDoctor({ status: "loading" });
+    try {
+      const data = await fetchEnvironmentDoctor(signal);
+      if (signal?.aborted) return;
+      setEnvironmentDoctor({ status: "ready", data });
+    } catch (error) {
+      if (signal?.aborted) return;
+      setEnvironmentDoctor({
+        status: "error",
+        message: error instanceof Error ? error.message : "环境检测失败",
+      });
+    }
+  }, []);
+
   // --- Effects ---
   useEffect(() => {
     if (app.user) settings.syncFromUser(app.user);
@@ -142,6 +158,13 @@ function App() {
     if (notes.pageSelection && notes.notesByKnowledgePointId[notes.pageSelection]) return;
     notes.setPageSelection(notes.notesList[0]?.knowledge_point_id ?? null);
   }, [notes.notesList, notes.notesByKnowledgePointId]);
+
+  useEffect(() => {
+    if (visibleRoute !== "settings" || settings.settingsTab !== "diagnostics" || environmentDoctor.status !== "idle") {
+      return;
+    }
+    void refreshEnvironmentDoctor();
+  }, [visibleRoute, settings.settingsTab, environmentDoctor.status, refreshEnvironmentDoctor]);
 
   useEffect(() => {
     if (!notes.drawerOpen || !notes.drawerContext) return;
@@ -305,9 +328,11 @@ function App() {
                 saveErrorMessage={settings.saveErrorMessage}
                 userLoaded={Boolean(app.user)}
                 diagnostics={{ apiBaseUrl: API_BASE_URL, apiStatus: apiStatusLabel, userId: app.user?.id ?? null, planId: currentPlanId, currentStage: dashboard?.current_stage ?? session?.context_snapshot.current_stage ?? null, todayReviewCount: dashboard?.today_review_count ?? 0, resumeAvailable: dashboard?.resume_available ?? false }}
+                environmentDoctor={environmentDoctor}
                 onSettingsTabChange={settings.setTab}
                 onFieldChange={settings.updateField}
                 onSave={() => void handleSaveSettings()}
+                onRefreshEnvironmentDoctor={() => void refreshEnvironmentDoctor()}
               />
             </section>
           </div>
