@@ -730,14 +730,15 @@ async def _learning_message_stream(
             )
             conn.commit()
 
-        for event in build_learning_graph_stream_events(
-            request_id=request_id,
-            session_id=session_id,
-            conversation_context=prepared.context.conversation_context,
-            graph_memory_snapshot=prepared.context.graph_memory_snapshot,
-            rag_context=prepared.context.rag_context,
-        ):
-            yield writer.event(event.event_type, dict(event.payload))
+        if prepared.context.graph_memory_snapshot or "langgraph_runtime" in prepared.context.conversation_context:
+            for event in build_learning_graph_stream_events(
+                request_id=request_id,
+                session_id=session_id,
+                conversation_context=prepared.context.conversation_context,
+                graph_memory_snapshot=prepared.context.graph_memory_snapshot,
+                rag_context=prepared.context.rag_context,
+            ):
+                yield writer.event(event.event_type, dict(event.payload))
 
         full_text = ""
         try:

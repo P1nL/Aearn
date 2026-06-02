@@ -446,6 +446,45 @@ CREATE TABLE IF NOT EXISTS teaching_chunks (
 
 CREATE INDEX IF NOT EXISTS idx_teaching_chunks_kp ON teaching_chunks(knowledge_point_id);
 CREATE INDEX IF NOT EXISTS idx_teaching_chunks_search ON teaching_chunks USING GIN(search_vector);
+
+CREATE TABLE IF NOT EXISTS grounding_chunks (
+  chunk_id text PRIMARY KEY,
+  source_id text NOT NULL,
+  language_id text NOT NULL,
+  title text NOT NULL,
+  section_path_json jsonb NOT NULL DEFAULT '[]'::jsonb,
+  canonical_url text NOT NULL,
+  source_type text NOT NULL CHECK (source_type IN ('tutorial', 'reference', 'spec', 'platform_docs', 'vendor_docs')),
+  source_trust_tier text NOT NULL CHECK (source_trust_tier IN ('official', 'trusted_de_facto', 'internal')),
+  fetched_at timestamptz NOT NULL,
+  content_hash text NOT NULL,
+  content text NOT NULL,
+  topic_tags_json jsonb NOT NULL DEFAULT '[]'::jsonb,
+  search_vector tsvector GENERATED ALWAYS AS (
+    setweight(to_tsvector('simple', coalesce(title, '')), 'A') ||
+    setweight(to_tsvector('simple', coalesce(content, '')), 'B')
+  ) STORED,
+  metadata_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS grounding_reindex_runs (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  mode text NOT NULL CHECK (mode IN ('fixture', 'fetch')),
+  status text NOT NULL CHECK (status IN ('completed', 'completed_with_failures', 'failed')),
+  total_sources integer NOT NULL DEFAULT 0 CHECK (total_sources >= 0),
+  total_documents integer NOT NULL DEFAULT 0 CHECK (total_documents >= 0),
+  total_chunks integer NOT NULL DEFAULT 0 CHECK (total_chunks >= 0),
+  total_failures integer NOT NULL DEFAULT 0 CHECK (total_failures >= 0),
+  source_reports_json jsonb NOT NULL DEFAULT '[]'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_grounding_chunks_language ON grounding_chunks(language_id);
+CREATE INDEX IF NOT EXISTS idx_grounding_chunks_source ON grounding_chunks(source_id);
+CREATE INDEX IF NOT EXISTS idx_grounding_chunks_search ON grounding_chunks USING GIN(search_vector);
+CREATE INDEX IF NOT EXISTS idx_grounding_reindex_runs_created ON grounding_reindex_runs(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_review_logs_kp_reviewed ON review_logs(knowledge_point_id, reviewed_at DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS uq_review_logs_request_id ON review_logs(request_id);
 CREATE UNIQUE INDEX IF NOT EXISTS uq_review_logs_attempt_rating_source ON review_logs(attempt_id, rating, source);
@@ -500,6 +539,10 @@ FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
 DROP TRIGGER IF EXISTS trg_notes_updated_at ON notes;
 CREATE TRIGGER trg_notes_updated_at BEFORE UPDATE ON notes
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_grounding_chunks_updated_at ON grounding_chunks;
+CREATE TRIGGER trg_grounding_chunks_updated_at BEFORE UPDATE ON grounding_chunks
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
 -- Onboarding conversation tables
