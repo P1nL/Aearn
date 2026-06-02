@@ -114,3 +114,86 @@ def test_python_runner_capability_discloses_non_container_sandbox() -> None:
     assert capability.supports_stdout is True
     assert capability.supports_preview is False
     assert capability.sandbox_policy["is_container_grade"] is False
+
+
+def test_python_function_runtime_error_maps_to_runtime_error() -> None:
+    result = run_exercise(
+        _python_exercise(),
+        "def add(a, b):\n    return a / 0\n",
+        {},
+        "visible_tests",
+    )
+
+    assert result.runtime_status == "runtime_error"
+    assert result.test_pass_rate == 0.0
+    assert result.next_action == "explain_error"
+    assert "ZeroDivisionError" in (result.error_message or "")
+
+
+def test_python_hidden_test_results_are_redacted_in_public_runner_output() -> None:
+    exercise = {
+        "runtime_profile": {
+            "runtime_tier": "python_stdout_test",
+            "language": "python",
+            "runner": "python",
+        },
+        "metadata_json": {"entry_function": "solve"},
+        "test_cases": [
+            {
+                "id": "visible_increment",
+                "case_type": "visible",
+                "input_json": {"args": [1]},
+                "expected_output_json": {"return": 2},
+                "weight": 1,
+                "is_critical": True,
+            },
+            {
+                "id": "hidden_secret_edge_case",
+                "case_type": "hidden",
+                "input_json": {"args": [2]},
+                "expected_output_json": {"return": 999},
+                "weight": 2,
+                "is_critical": True,
+            },
+        ],
+    }
+
+    result = run_exercise(exercise, "def solve(value):\n    return value + 1\n", {}, "visible_tests")
+    serialized = repr(result.test_results)
+
+    assert result.runtime_status == "success"
+    assert result.test_pass_rate < 1.0
+    assert "hidden_secret_edge_case" not in serialized
+    assert "999" not in serialized
+    assert any(item["case_id"] == "hidden_case_2" for item in result.test_results)
+    assert any(item["message"] == "A hidden test failed. Recheck edge cases and boundary behavior." for item in result.test_results)
+
+
+def test_python_visible_test_failure_keeps_useful_public_message() -> None:
+    result = run_exercise(
+        _python_exercise(),
+        "def add(a, b):\n    return a - b\n",
+        {},
+        "visible_tests",
+    )
+
+    assert result.runtime_status == "success"
+    assert result.test_results[0]["case_id"] == "visible_add"
+    assert "Expected 5" in str(result.test_results[0]["message"])
+
+
+def test_python_public_stdout_is_bounded() -> None:
+    exercise = {
+        "runtime_profile": {
+            "runtime_tier": "python_stdout_test",
+            "language": "python",
+            "runner": "python",
+        },
+        "metadata_json": {"entry_function": "main"},
+        "test_cases": [],
+    }
+
+    result = run_exercise(exercise, "print('x' * 10000)\n", {}, "visible_tests")
+
+    assert result.runtime_status == "success"
+    assert len(result.stdout) == 4000

@@ -7,6 +7,24 @@ from app.services.language_capabilities import ExecutionMode, RunnerKey
 from app.services.runtime_contracts import RuntimeExecutionResult
 from app.services.sandbox import SandboxExecutionResult, execute_python_with_tests
 
+MAX_RUNNER_STDOUT_CHARS = 4000
+MAX_RUNNER_STDERR_CHARS = 2000
+MAX_RUNNER_ERROR_CHARS = 500
+
+RUNTIME_EXCEPTION_PREFIXES = (
+    "ArithmeticError:",
+    "AttributeError:",
+    "IndexError:",
+    "KeyError:",
+    "NameError:",
+    "RecursionError:",
+    "RuntimeError:",
+    "StopIteration:",
+    "TypeError:",
+    "ValueError:",
+    "ZeroDivisionError:",
+)
+
 
 @dataclass(frozen=True, slots=True)
 class RunnerCapability:
@@ -202,8 +220,8 @@ def _run_python_sandbox(exercise: Mapping[str, object], code: str) -> RuntimeExe
     if sandbox_result.status == "timeout":
         return RuntimeExecutionResult(
             runtime_status="timeout",
-            stdout=sandbox_result.stdout,
-            stderr=sandbox_result.stderr,
+            stdout=_bound_text(sandbox_result.stdout, MAX_RUNNER_STDOUT_CHARS),
+            stderr=_bound_text(sandbox_result.stderr, MAX_RUNNER_STDERR_CHARS),
             test_pass_rate=0.0,
             passed_test_count=0,
             total_test_count=len(test_cases),
@@ -219,13 +237,13 @@ def _run_python_sandbox(exercise: Mapping[str, object], code: str) -> RuntimeExe
     if sandbox_result.status == "sandbox_error":
         return RuntimeExecutionResult(
             runtime_status="sandbox_error",
-            stdout=sandbox_result.stdout,
-            stderr=sandbox_result.stderr,
+            stdout=_bound_text(sandbox_result.stdout, MAX_RUNNER_STDOUT_CHARS),
+            stderr=_bound_text(sandbox_result.stderr, MAX_RUNNER_STDERR_CHARS),
             test_pass_rate=0.0,
             passed_test_count=0,
             total_test_count=len(test_cases),
             test_results=_build_failed_cases(exercise, sandbox_result.error or "Sandbox error"),
-            error_message=sandbox_result.error or "Sandbox execution failed.",
+            error_message=_bound_text(sandbox_result.error or "Sandbox execution failed.", MAX_RUNNER_ERROR_CHARS),
             next_action="explain_error",
             preview_html=None,
             core_blank_gate=False,
@@ -236,13 +254,13 @@ def _run_python_sandbox(exercise: Mapping[str, object], code: str) -> RuntimeExe
     if sandbox_result.status == "error":
         return RuntimeExecutionResult(
             runtime_status="runtime_error",
-            stdout=sandbox_result.stdout,
-            stderr=sandbox_result.stderr,
+            stdout=_bound_text(sandbox_result.stdout, MAX_RUNNER_STDOUT_CHARS),
+            stderr=_bound_text(sandbox_result.stderr, MAX_RUNNER_STDERR_CHARS),
             test_pass_rate=0.0,
             passed_test_count=0,
             total_test_count=len(test_cases),
             test_results=_build_failed_cases(exercise, sandbox_result.error or "Runtime error"),
-            error_message=sandbox_result.error or "Code raised an error during execution.",
+            error_message=_bound_text(sandbox_result.error or "Code raised an error during execution.", MAX_RUNNER_ERROR_CHARS),
             next_action="explain_error",
             preview_html=None,
             core_blank_gate=False,
@@ -250,37 +268,28 @@ def _run_python_sandbox(exercise: Mapping[str, object], code: str) -> RuntimeExe
             logic_pass=False,
         )
 
-    test_results = [
-        {
-            "case_id": tr.case_id,
-            "case_type": tr.case_type,
-            "passed": tr.passed,
-            "weight": tr.weight,
-            "is_critical": tr.is_critical,
-            "duration_ms": tr.duration_ms,
-            "message": tr.message,
-        }
-        for tr in sandbox_result.test_results
-    ]
+    test_results = [_public_test_result(tr, index) for index, tr in enumerate(sandbox_result.test_results)]
 
     total_weight = sum(tr.weight for tr in sandbox_result.test_results)
     passed_weight = sum(tr.weight for tr in sandbox_result.test_results if tr.passed)
     passed_count = sum(1 for tr in sandbox_result.test_results if tr.passed)
     total_count = len(sandbox_result.test_results) or len(test_cases)
     test_pass_rate = 0.0 if total_weight == 0 else round(passed_weight / total_weight, 4)
+    runtime_error_message = _function_runtime_error_message(sandbox_result.test_results)
+    has_runtime_error = runtime_error_message is not None
 
-    logic_pass = test_pass_rate == 1.0
-    next_action = _next_action_for_run(test_results, logic_pass, "python_stdout_test")
+    logic_pass = not has_runtime_error and test_pass_rate == 1.0
+    next_action = "explain_error" if has_runtime_error else _next_action_for_run(test_results, logic_pass, "python_stdout_test")
 
     return RuntimeExecutionResult(
-        runtime_status="success",
-        stdout=sandbox_result.stdout.rstrip("\n"),
-        stderr=sandbox_result.stderr,
+        runtime_status="runtime_error" if has_runtime_error else "success",
+        stdout=_bound_text(sandbox_result.stdout.rstrip("\n"), MAX_RUNNER_STDOUT_CHARS),
+        stderr=_bound_text(sandbox_result.stderr, MAX_RUNNER_STDERR_CHARS),
         test_pass_rate=test_pass_rate,
         passed_test_count=passed_count,
         total_test_count=total_count,
         test_results=test_results,
-        error_message=None,
+        error_message=runtime_error_message,
         next_action=next_action,
         preview_html=None,
         core_blank_gate=logic_pass,
@@ -304,16 +313,68 @@ def _build_failed_cases(exercise: Mapping[str, object], message: str) -> list[di
             continue
         failed_cases.append(
             {
-                "case_id": str(case.get("id") or f"case_{index + 1}"),
+                "case_id": _public_case_id(case, index),
                 "case_type": str(case.get("case_type", "visible")),
                 "passed": False,
                 "weight": float(case.get("weight", 1)),
                 "is_critical": bool(case.get("is_critical", False)),
                 "duration_ms": 0,
-                "message": message,
+                "message": _public_case_message(case, message),
             },
         )
     return failed_cases
+
+
+def _public_test_result(result: object, index: int) -> dict[str, object]:
+    case_type = str(getattr(result, "case_type", "visible"))
+    passed = bool(getattr(result, "passed", False))
+    raw_message = str(getattr(result, "message", ""))
+    return {
+        "case_id": f"hidden_case_{index + 1}" if case_type == "hidden" else str(getattr(result, "case_id", f"case_{index + 1}")),
+        "case_type": case_type,
+        "passed": passed,
+        "weight": float(getattr(result, "weight", 1)),
+        "is_critical": bool(getattr(result, "is_critical", False)),
+        "duration_ms": int(getattr(result, "duration_ms", 0)),
+        "message": _hidden_message(passed) if case_type == "hidden" else _bound_text(raw_message, MAX_RUNNER_ERROR_CHARS),
+    }
+
+
+def _function_runtime_error_message(results: Sequence[object]) -> str | None:
+    for result in results:
+        message = str(getattr(result, "message", ""))
+        if message.startswith(RUNTIME_EXCEPTION_PREFIXES):
+            if str(getattr(result, "case_type", "")) == "hidden":
+                return "A hidden Python test raised a runtime error."
+            error_name = message.split(":", 1)[0]
+            return f"Python code raised {error_name} during visible tests."
+    return None
+
+
+def _public_case_id(case: Mapping[str, object], index: int) -> str:
+    case_type = str(case.get("case_type", "visible"))
+    if case_type == "hidden":
+        return f"hidden_case_{index + 1}"
+    return str(case.get("id") or f"case_{index + 1}")
+
+
+def _public_case_message(case: Mapping[str, object], message: str) -> str:
+    case_type = str(case.get("case_type", "visible"))
+    if case_type == "hidden":
+        return _hidden_message(False)
+    return _bound_text(message, MAX_RUNNER_ERROR_CHARS)
+
+
+def _hidden_message(passed: bool) -> str:
+    if passed:
+        return "Hidden test passed."
+    return "A hidden test failed. Recheck edge cases and boundary behavior."
+
+
+def _bound_text(value: str, max_chars: int) -> str:
+    if len(value) <= max_chars:
+        return value
+    return value[: max_chars - 3] + "..."
 
 
 def _next_action_for_run(

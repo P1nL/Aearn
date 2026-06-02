@@ -1,6 +1,10 @@
 """Tests for the real code execution sandbox."""
 from __future__ import annotations
 
+import json
+import subprocess
+from pathlib import Path
+
 from app.services.sandbox import execute_python_with_tests
 
 
@@ -172,3 +176,26 @@ def test_stdout_output_is_capped():
     result = execute_python_with_tests(code, [], entry_function="main")
     assert result.status == "success"
     assert len(result.stdout) == 4000
+
+
+def test_subprocess_runs_from_temporary_workspace(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        captured["cwd"] = kwargs.get("cwd")
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps({"status": "success", "stdout": "", "stderr": "", "error": None, "test_results": []}),
+            stderr="",
+        )
+
+    monkeypatch.setattr("app.services.sandbox.subprocess.run", fake_run)
+
+    result = execute_python_with_tests("print('ok')\n", [], entry_function="main")
+
+    assert result.status == "success"
+    assert captured["cwd"] is not None
+    assert Path(str(captured["cwd"])).name.startswith("aearn-python-")
+    assert Path(str(captured["cwd"])) != Path.cwd()
