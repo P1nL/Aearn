@@ -1907,3 +1907,36 @@ Completed Phase 2 local product boundaries: local user data boundary, SQL teachi
 ### Next Steps
 
 - None - task complete
+
+
+## Session 58: P3 managed compiled runners closeout
+
+**Date**: 2026-06-02
+**Task**: P3 managed compiled runners closeout
+**Branch**: `main`
+
+### Summary
+
+Implemented teaching-grade managed compiled runners for Java, Go, and C# with honest runtime disclosure, environment doctor guidance, frontend/API contract updates, docs, tests, and child task archival.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `cdabc02` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
