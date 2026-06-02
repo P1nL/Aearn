@@ -1676,3 +1676,36 @@ Completed 04 language grounding productization: added persisted official/trusted
 ### Next Steps
 
 - None - task complete
+
+
+## Session 51: Environment doctor and install guidance
+
+**Date**: 2026-06-02
+**Task**: Environment doctor and install guidance
+**Branch**: `main`
+
+### Summary
+
+Implemented the 05 environment doctor child task: added a read-only backend environment doctor API, static Windows-first install guidance templates, language runner capability/status matrix, settings diagnostics integration, focused backend tests, and browser smoke verification.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `3bde0bd` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

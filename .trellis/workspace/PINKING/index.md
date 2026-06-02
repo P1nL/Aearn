@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 50
+- **Total Sessions**: 51
 - **Last Active**: 2026-06-02
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~1678 | Active |
+| `journal-1.md` | ~1711 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 51 | 2026-06-02 | Environment doctor and install guidance | `3bde0bd` | `main` |
 | 50 | 2026-06-02 | Productize language grounding | `ab60b7b`, `2a98def` | `main` |
 | 49 | 2026-06-02 | Complete desktop learning experience boundaries | `589753f` | `main` |
 | 48 | 2026-06-02 | Complete local stable startup | `67d8fd3`, `b98beda` | `main` |
