@@ -1841,3 +1841,36 @@ Captured the browser_preview runner contract in backend quality guidelines, incl
 ### Next Steps
 
 - None - task complete
+
+
+## Session 56: Local user data boundary
+
+**Date**: 2026-06-02
+**Task**: Local user data boundary
+**Branch**: `main`
+
+### Summary
+
+Implemented local-only user data isolation, user list/summary/export/reset/delete, active user ownership checks, desktop settings data actions, regression tests, and related code-spec updates.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `30cb518` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
