@@ -1575,3 +1575,37 @@ Completed the remaining agent capability hardening children, archived the 9/9 pa
 ### Next Steps
 
 - None - task complete
+
+
+## Session 48: Complete local stable startup
+
+**Date**: 2026-06-02
+**Task**: Complete local stable startup
+**Branch**: `main`
+
+### Summary
+
+Added a Chinese review companion rule for Trellis planning artifacts, hardened the local Aearn startup lifecycle against stale or untrusted tracked PIDs, updated setup docs and backend quality spec, verified backend smoke tests, desktop build, dev/status/restart/stop lifecycle, task validation, and whitespace checks.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `67d8fd3` | (see git log) |
+| `b98beda` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

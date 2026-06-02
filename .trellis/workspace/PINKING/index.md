@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 47
-- **Last Active**: 2026-06-01
+- **Total Sessions**: 48
+- **Last Active**: 2026-06-02
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~1577 | Active |
+| `journal-1.md` | ~1611 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 48 | 2026-06-02 | Complete local stable startup | `67d8fd3`, `b98beda` | `main` |
 | 47 | 2026-06-01 | Agent capability hardening closeout | `6ab383a` | `main` |
 | 46 | 2026-06-01 | Learning graph runtime hardening closeout | `0b0038c`, `9f1d06b` | `main` |
 | 45 | 2026-06-01 | Graph demo story | `8cae4ec`, `5325c05` | `main` |
