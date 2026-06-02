@@ -1,7 +1,7 @@
 """Tests for shared graph runtime contracts."""
 from __future__ import annotations
 
-from app.agents.graph_runtime_contracts import (
+from app.agents.graphs.graph_runtime_contracts import (
     GraphFallback,
     GraphHumanCheckpoint,
     GraphIntent,

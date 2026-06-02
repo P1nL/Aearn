@@ -1,21 +1,21 @@
 from fastapi import APIRouter, Header, Query, Request, status
 from fastapi.responses import JSONResponse
 
-from app.agents.onboarding_plan_agent import build_onboarding_plan_context, build_sdk_onboarding_plan_response
-from app.agents.plan_generation_agent import (
+from app.agents.onboarding.onboarding_plan_agent import build_onboarding_plan_context, build_sdk_onboarding_plan_response
+from app.agents.onboarding.plan_generation_agent import (
     build_plan_generation_context,
     build_sdk_plan_generation_response,
 )
 from app.core.errors import error_response
 from app.db.connection import connect
 from app.models.onboarding import PlanConfirmRequest, PlanDraft, PlanGenerateRequest
-from app.services.catalog import get_course
-from app.services.plan_generator import (
+from app.services.curriculum.catalog import get_course
+from app.services.curriculum.plan_generator import (
     build_plan_draft,
     has_supported_mvp_runtime,
     validate_generation_input,
 )
-from app.services.plan_repository import (
+from app.services.repositories.plan_repository import (
     EntityNotFoundError,
     IdempotencyConflictError,
     PlanDraftError,
@@ -24,7 +24,7 @@ from app.services.plan_repository import (
     get_plan_detail,
     request_hash,
 )
-from app.services.user_repository import get_user
+from app.services.repositories.user_repository import get_user
 
 
 router = APIRouter(prefix="/api/plans", tags=["plans"])

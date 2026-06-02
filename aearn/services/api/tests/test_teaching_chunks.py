@@ -5,7 +5,7 @@ import uuid
 
 import pytest
 
-from app.agents.tools import LearningToolContext, do_search_teaching_materials
+from app.agents.tooling.tools import LearningToolContext, do_search_teaching_materials
 from app.db.bootstrap import bootstrap_database
 from app.models.onboarding import (
     DraftKnowledgePoint,
@@ -14,14 +14,14 @@ from app.models.onboarding import (
     RuntimeBoundary,
     UserCreateRequest,
 )
-from app.services.exercise_repository import get_or_create_exercise_for_knowledge_point
-from app.services.plan_repository import confirm_plan, request_hash
-from app.services.teaching_chunks import (
+from app.services.exercises.exercise_repository import get_or_create_exercise_for_knowledge_point
+from app.services.repositories.plan_repository import confirm_plan, request_hash
+from app.services.curriculum.teaching_chunks import (
     index_current_knowledge_point_chunks,
     index_knowledge_point_chunks,
     search_chunks,
 )
-from app.services.user_repository import create_user
+from app.services.repositories.user_repository import create_user
 
 
 @pytest.fixture()

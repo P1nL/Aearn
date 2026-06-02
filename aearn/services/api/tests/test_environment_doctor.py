@@ -6,7 +6,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from app.main import app
-from app.services.environment_doctor import (
+from app.services.environment.environment_doctor import (
     CommandProbeResult,
     build_environment_doctor_report,
 )

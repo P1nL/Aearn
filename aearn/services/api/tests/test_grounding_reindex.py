@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from app.services.grounding_fetcher import GroundingDocsFetcher, GroundingHttpResponse
-from app.services.grounding_reindex import run_fixture_grounding_reindex, run_grounding_reindex
-from app.services.language_capabilities import all_language_capabilities
+from app.services.grounding.grounding_fetcher import GroundingDocsFetcher, GroundingHttpResponse
+from app.services.grounding.grounding_reindex import run_fixture_grounding_reindex, run_grounding_reindex
+from app.services.runners.language_capabilities import all_language_capabilities
 
 
 class FakeHttpClient:

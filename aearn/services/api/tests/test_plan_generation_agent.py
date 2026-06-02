@@ -2,14 +2,14 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from app.agents.plan_generation_agent import (
+from app.agents.onboarding.plan_generation_agent import (
     PlanGenerationContext,
     PlanGenerationJsonResponse,
     build_plan_generation_client,
     build_plan_generation_context,
     build_sdk_plan_generation_response,
 )
-from app.agents.tools_web import build_web_tools
+from app.agents.tooling.tools_web import build_web_tools
 from app.core.config import Settings
 from app.models.onboarding import PlanGenerateRequest
 

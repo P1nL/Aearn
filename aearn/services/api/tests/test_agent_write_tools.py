@@ -1,6 +1,6 @@
 """Unit tests for agent write tools."""
 
-from app.agents.tools import (
+from app.agents.tooling.tools import (
     AgentSideEffects,
     LearningToolContext,
     do_record_attempt,
@@ -9,7 +9,7 @@ from app.agents.tools import (
     do_update_learning_stage,
     do_update_learner_profile,
 )
-from app.services.learning_conversation import serialize_agent_side_effects
+from app.services.conversations.learning_conversation import serialize_agent_side_effects
 
 
 def _make_context(**overrides) -> LearningToolContext:

@@ -4,11 +4,11 @@ import json
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-from app.services.managed_compiled_runner import (
+from app.services.runners.managed_compiled_runner import (
     ManagedCompiledCommandResult,
     execute_managed_compiled_with_tests,
 )
-from app.services.runtime_runner import run_exercise
+from app.services.runners.runtime_runner import run_exercise
 
 
 def _cases() -> list[dict[str, object]]:
@@ -224,8 +224,8 @@ def test_managed_compiled_runner_reports_runtime_error_timeout_and_unsupported()
 
 
 def test_managed_compiled_runtime_adapter_redacts_hidden_results(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    from app.services import runner_registry
-    from app.services.managed_compiled_runner import ManagedCompiledExecutionResult, ManagedCompiledTestCaseResult
+    from app.services.runners import runner_registry
+    from app.services.runners.managed_compiled_runner import ManagedCompiledExecutionResult, ManagedCompiledTestCaseResult
 
     def fake_execute(*args, **kwargs):  # type: ignore[no-untyped-def]
         return ManagedCompiledExecutionResult(

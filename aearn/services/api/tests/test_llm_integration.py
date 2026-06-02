@@ -3,13 +3,13 @@ from collections.abc import Mapping, Sequence
 
 import pytest
 
-from app.agents.agent_runtime_context import (
+from app.agents.runtime.agent_runtime_context import (
     extract_json_object,
     safe_messages_from_records,
     sanitize_summary_list,
     should_refresh_summary,
 )
-from app.agents.exercise_coach_agent import (
+from app.agents.learning.exercise_coach_agent import (
     EXERCISE_COACH_AGENT_NAME,
     AgentsSDKExerciseCoachClient,
     ExerciseCoachJsonResponse,
@@ -17,18 +17,18 @@ from app.agents.exercise_coach_agent import (
     build_sdk_explanation_check_response,
     build_sdk_hint_response,
 )
-from app.agents.note_assist_agent import (
+from app.agents.notes.note_assist_agent import (
     NOTE_ASSIST_AGENT_NAME,
     AgentsSDKNoteAssistClient,
     NoteAssistContext,
     assert_safe_note_draft_output,
 )
-from app.agents.onboarding_conversation_agent import (
+from app.agents.onboarding.onboarding_conversation_agent import (
     ONBOARDING_CONVERSATION_AGENT_NAME,
     AgentsSDKOnboardingConversationClient,
 )
-from app.agents.onboarding_slot_extractor import ExtractedSlots, ResponsesOnboardingSlotExtractor
-from app.agents.onboarding_plan_agent import (
+from app.agents.onboarding.onboarding_slot_extractor import ExtractedSlots, ResponsesOnboardingSlotExtractor
+from app.agents.onboarding.onboarding_plan_agent import (
     ONBOARDING_PLAN_AGENT_NAME,
     AgentsSDKOnboardingPlanClient,
     OnboardingPlanContext,
@@ -36,32 +36,32 @@ from app.agents.onboarding_plan_agent import (
     build_onboarding_plan_context,
     build_sdk_onboarding_plan_response,
 )
-from app.agents.review_coach_agent import (
+from app.agents.review.review_coach_agent import (
     REVIEW_COACH_AGENT_NAME,
     AgentsSDKReviewCoachClient,
     ReviewCoachContext,
     ReviewCoachJsonResponse,
     build_sdk_review_coach_response,
 )
-from app.agents.guardrails import (
+from app.agents.runtime.guardrails import (
     assert_safe_teaching_output,
     check_teaching_request,
     detect_direct_answer_request,
 )
 from app.core.config import Settings
-from app.agents.learning_conversation_agent import AgentsSDKLearningConversationClient, TEACHING_AGENT_NAME
-from app.agents.sdk_runtime import (
+from app.agents.learning.learning_conversation_agent import AgentsSDKLearningConversationClient, TEACHING_AGENT_NAME
+from app.agents.runtime.sdk_runtime import (
     build_run_config,
     extract_text_delta,
     normalize_deepseek_base_url,
     normalize_openai_base_url,
 )
-from app.agents.tools import build_teaching_tools, summarize_current_learning_context, summarize_latest_visible_attempt
+from app.agents.tooling.tools import build_teaching_tools, summarize_current_learning_context, summarize_latest_visible_attempt
 from app.models.onboarding import PlanDraft, PlanGenerateRequest
-from app.services.llm_client import LLMJsonResponse, OpenAICompatibleClient, _iter_response_text_deltas
-from app.services.llm_client import LLMInvalidResponseError
-from app.services.llm_explain_error import build_llm_error_explanation
-from app.services.plan_generator import build_plan_draft
+from app.services.llm.llm_client import LLMJsonResponse, OpenAICompatibleClient, _iter_response_text_deltas
+from app.services.llm.llm_client import LLMInvalidResponseError
+from app.services.llm.llm_explain_error import build_llm_error_explanation
+from app.services.curriculum.plan_generator import build_plan_draft
 
 
 def test_settings_reports_openai_compatible_configuration() -> None:

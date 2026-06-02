@@ -1,7 +1,7 @@
 """Tests for onboarding graph orchestration."""
 from __future__ import annotations
 
-from app.agents.onboarding_graph import (
+from app.agents.graphs.onboarding_graph import (
     invoke_onboarding_orchestration,
     onboarding_error_to_fallback,
     onboarding_result_to_run_result,

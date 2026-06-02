@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.services.language_capabilities import (
+from app.services.runners.language_capabilities import (
     all_language_capabilities,
     capabilities_for_public_course_language,
     get_language_capability,

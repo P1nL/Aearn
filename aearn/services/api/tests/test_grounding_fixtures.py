@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from app.services.grounding_citations import grounding_results_for_agent
-from app.services.grounding_fixtures import fixture_documents_for_language, mainstream_grounding_fixture_documents
-from app.services.grounding_processing import clean_and_chunk_document
-from app.services.grounding_retrieval import GroundingRetrievalQuery, retrieve_grounding_chunks
-from app.services.grounding_sources import get_grounding_source
-from app.services.language_capabilities import all_language_capabilities, require_language_capability
+from app.services.grounding.grounding_citations import grounding_results_for_agent
+from app.services.grounding.grounding_fixtures import fixture_documents_for_language, mainstream_grounding_fixture_documents
+from app.services.grounding.grounding_processing import clean_and_chunk_document
+from app.services.grounding.grounding_retrieval import GroundingRetrievalQuery, retrieve_grounding_chunks
+from app.services.grounding.grounding_sources import get_grounding_source
+from app.services.runners.language_capabilities import all_language_capabilities, require_language_capability
 
 
 def test_mainstream_fixtures_cover_all_language_capabilities() -> None:
@@ -44,11 +44,18 @@ def test_fixture_documents_for_language_supports_aliases_and_unknowns() -> None:
     assert fixture_documents_for_language("unknown") == ()
 
 
-def test_planned_language_fixtures_do_not_change_runtime_capabilities() -> None:
-    for language_id in ("typescript", "go", "csharp", "rust", "sql"):
+def test_non_public_language_fixtures_do_not_change_runtime_capabilities() -> None:
+    expected_execution_support = {
+        "typescript": True,
+        "go": True,
+        "csharp": True,
+        "rust": False,
+        "sql": True,
+    }
+
+    for language_id, supports_execution in expected_execution_support.items():
         capability = require_language_capability(language_id)
 
         assert fixture_documents_for_language(language_id)
         assert capability.enabled_for_public_selection is False
-        assert capability.supports_execution is False
-
+        assert capability.supports_execution is supports_execution

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 
-from app.services.runtime_runner import run_exercise
-from app.services.sql_query_runner import execute_sql_query_with_tests
+from app.services.runners.runtime_runner import run_exercise
+from app.services.runners.sql_query_runner import execute_sql_query_with_tests
 
 
 def _sql_exercise() -> dict[str, object]:
@@ -134,7 +134,7 @@ def test_sql_query_runner_times_out_recursive_queries() -> None:
 
 
 def test_sql_query_runner_missing_sqlite_maps_to_unsupported(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    from app.services import sql_query_runner
+    from app.services.runners import sql_query_runner
 
     monkeypatch.setattr(sql_query_runner, "sqlite3", None)
 

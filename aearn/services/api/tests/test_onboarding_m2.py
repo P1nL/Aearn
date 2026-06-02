@@ -7,15 +7,15 @@ from fastapi.testclient import TestClient
 
 import app.routes.onboarding as onboarding_route
 import app.routes.plans as plans_route
-from app.agents.onboarding_slot_extractor import ExtractedSlots
-from app.agents.plan_generation_agent import PlanGenerationResult
+from app.agents.onboarding.onboarding_slot_extractor import ExtractedSlots
+from app.agents.onboarding.plan_generation_agent import PlanGenerationResult
 from app.core.config import Settings, get_settings
 from app.db.bootstrap import bootstrap_database
 from app.db.connection import connect
 from app.main import app
 from app.models.onboarding import DraftKnowledgePoint, DraftModule, PlanDraft
-from app.services.llm_client import LLMCallError, LLMConfigurationError
-from app.services.onboarding_conversation import (
+from app.services.llm.llm_client import LLMCallError, LLMConfigurationError
+from app.services.conversations.onboarding_conversation import (
     OnboardingConversationContext,
     OnboardingMessageGeneration,
     create_onboarding_session,

@@ -1,0 +1,675 @@
+from __future__ import annotations
+
+from collections.abc import Mapping, Sequence
+from datetime import UTC, date, datetime
+from decimal import Decimal
+from uuid import UUID
+
+from psycopg import Connection
+
+from app.services.repositories.user_repository import get_user, serialize_user
+
+
+class EntityNotFoundError(ValueError):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+def list_local_users(conn: Connection[dict[str, object]]) -> dict[str, object]:
+    rows = conn.execute(
+        """
+        SELECT
+          users.*,
+          count(DISTINCT learning_plans.id) FILTER (WHERE learning_plans.deleted_at IS NULL) AS plan_count,
+          (
+            SELECT lp.id::text
+            FROM learning_plans lp
+            WHERE lp.user_id = users.id
+              AND lp.deleted_at IS NULL
+              AND lp.status = 'active'
+            ORDER BY lp.updated_at DESC, lp.created_at DESC
+            LIMIT 1
+          ) AS active_plan_id,
+          (
+            SELECT lp.goal_text
+            FROM learning_plans lp
+            WHERE lp.user_id = users.id
+              AND lp.deleted_at IS NULL
+              AND lp.status = 'active'
+            ORDER BY lp.updated_at DESC, lp.created_at DESC
+            LIMIT 1
+          ) AS active_goal,
+          max(
+            GREATEST(
+              COALESCE(learning_plans.updated_at, 'epoch'::timestamptz),
+              COALESCE(learning_sessions.started_at, 'epoch'::timestamptz),
+              COALESCE(learning_sessions.ended_at, 'epoch'::timestamptz),
+              COALESCE(attempts.created_at, 'epoch'::timestamptz),
+              COALESCE(notes.updated_at, 'epoch'::timestamptz)
+            )
+          ) AS last_activity_at
+        FROM users
+        LEFT JOIN learning_plans
+          ON learning_plans.user_id = users.id
+         AND learning_plans.deleted_at IS NULL
+        LEFT JOIN learning_sessions
+          ON learning_sessions.user_id = users.id
+        LEFT JOIN attempts
+          ON attempts.user_id = users.id
+        LEFT JOIN notes
+          ON notes.user_id = users.id
+         AND notes.deleted_at IS NULL
+        WHERE users.deleted_at IS NULL
+        GROUP BY users.id
+        ORDER BY users.updated_at DESC, users.created_at DESC
+        """
+    ).fetchall()
+    return {
+        "items": [
+            {
+                **serialize_user(row),
+                "plan_count": _int_or_zero(row.get("plan_count")),
+                "active_plan_id": row.get("active_plan_id"),
+                "active_goal": row.get("active_goal"),
+                "last_activity_at": _iso_or_none(_none_if_epoch(row.get("last_activity_at"))),
+            }
+            for row in rows
+        ],
+        "page_info": {
+            "limit": len(rows),
+            "next_cursor": None,
+            "has_more": False,
+        },
+    }
+
+
+def get_user_data_summary(conn: Connection[dict[str, object]], user_id: str) -> dict[str, object]:
+    user = _ensure_user(conn, user_id)
+    counts = _summary_counts(conn, user_id)
+    return {
+        "user": _summary_user(user),
+        "counts": counts,
+        "last_activity_at": _iso_or_none(_last_activity_at(conn, user_id)),
+    }
+
+
+def export_user_data(conn: Connection[dict[str, object]], user_id: str) -> dict[str, object]:
+    user = _ensure_user(conn, user_id)
+    summary = get_user_data_summary(conn, user_id)
+    return {
+        "export_version": "local_user_data_v1",
+        "exported_at": datetime.now(UTC).isoformat(),
+        "user": _summary_user(user),
+        "preferences": {
+            "learning_style": user.get("learning_style"),
+            "teaching_preference": user.get("teaching_preference"),
+            "encouragement_preference": user.get("encouragement_preference"),
+            "profession": user.get("profession"),
+            "background_context": user.get("background_context"),
+            "preferred_time_slots": user.get("preferred_time_slots") or [],
+            "reminder_preference": user.get("reminder_preference") or {},
+        },
+        "summary": summary,
+        "plans": _export_plans(conn, user_id),
+        "modules": _export_modules(conn, user_id),
+        "knowledge_points": _export_knowledge_points(conn, user_id),
+        "learning_sessions": _export_learning_sessions(conn, user_id),
+        "attempt_summaries": _export_attempts(conn, user_id),
+        "review_state_summaries": _export_review_states(conn, user_id),
+        "review_log_summaries": _export_review_logs(conn, user_id),
+        "adaptive_variant_summaries": _export_adaptive_variant_summaries(conn, user_id),
+        "notes": _export_notes(conn, user_id),
+        "conversation_summaries": _export_conversation_summaries(conn, user_id),
+        "redaction": {
+            "hidden_tests": "omitted",
+            "solution_references": "omitted",
+            "raw_prompts": "omitted",
+            "provider_payloads": "omitted",
+            "secrets": "omitted",
+        },
+    }
+
+
+def reset_user_data(conn: Connection[dict[str, object]], user_id: str) -> dict[str, object]:
+    _ensure_user(conn, user_id)
+    before = get_user_data_summary(conn, user_id)
+    _delete_user_owned_learning_data(conn, user_id)
+    user = _ensure_user(conn, user_id)
+    return {
+        "user": user,
+        "before_summary": before,
+        "summary": get_user_data_summary(conn, user_id),
+        "next_action": "return_to_onboarding",
+    }
+
+
+def delete_user_data(conn: Connection[dict[str, object]], user_id: str) -> dict[str, object]:
+    _ensure_user(conn, user_id)
+    before = get_user_data_summary(conn, user_id)
+    _delete_user_owned_learning_data(conn, user_id)
+    conn.execute(
+        """
+        UPDATE users
+        SET deleted_at = now()
+        WHERE id = %s AND deleted_at IS NULL
+        """,
+        (user_id,),
+    )
+    return {
+        "deleted_user_id": user_id,
+        "before_summary": before,
+        "next_action": "select_local_profile",
+    }
+
+
+def _ensure_user(conn: Connection[dict[str, object]], user_id: str) -> dict[str, object]:
+    user = get_user(conn, user_id)
+    if user is None:
+        raise EntityNotFoundError("USER_NOT_FOUND", "用户不存在")
+    return user
+
+
+def _summary_user(user: Mapping[str, object]) -> dict[str, object]:
+    return {
+        "id": str(user["id"]),
+        "display_name": user["display_name"],
+        "created_at": _iso_or_none(user.get("created_at")),
+        "updated_at": _iso_or_none(user.get("updated_at")),
+    }
+
+
+def _summary_counts(conn: Connection[dict[str, object]], user_id: str) -> dict[str, int]:
+    return {
+        "active_plans": _count(conn, "SELECT count(*) AS count FROM learning_plans WHERE user_id = %s AND deleted_at IS NULL AND status = 'active'", user_id),
+        "archived_or_deleted_plans": _count(conn, "SELECT count(*) AS count FROM learning_plans WHERE user_id = %s AND (deleted_at IS NOT NULL OR status = 'archived')", user_id),
+        "modules": _count(conn, _owned_count_sql("plan_modules"), user_id),
+        "knowledge_points": _count(conn, _owned_count_sql("knowledge_points"), user_id),
+        "exercises": _count(conn, _owned_count_sql("exercises"), user_id),
+        "learning_sessions": _count(conn, "SELECT count(*) AS count FROM learning_sessions WHERE user_id = %s", user_id),
+        "attempts": _count(conn, "SELECT count(*) AS count FROM attempts WHERE user_id = %s", user_id),
+        "review_states": _count(conn, "SELECT count(*) AS count FROM review_states WHERE user_id = %s", user_id),
+        "review_logs": _count(conn, "SELECT count(*) AS count FROM review_logs WHERE user_id = %s", user_id),
+        "review_seed_banks": _count(conn, "SELECT count(*) AS count FROM review_seed_banks WHERE user_id = %s", user_id),
+        "exercise_variant_cache": _count(conn, "SELECT count(*) AS count FROM exercise_variant_cache WHERE user_id = %s AND deleted_at IS NULL", user_id),
+        "notes": _count(conn, "SELECT count(*) AS count FROM notes WHERE user_id = %s AND deleted_at IS NULL", user_id),
+        "onboarding_conversations": _count(conn, "SELECT count(*) AS count FROM onboarding_conversations WHERE user_id = %s", user_id),
+        "onboarding_messages": _count(
+            conn,
+            """
+            SELECT count(*) AS count
+            FROM onboarding_messages
+            JOIN onboarding_conversations ON onboarding_conversations.id = onboarding_messages.conversation_id
+            WHERE onboarding_conversations.user_id = %s
+            """,
+            user_id,
+        ),
+        "learning_messages": _count(
+            conn,
+            """
+            SELECT count(*) AS count
+            FROM learning_messages
+            JOIN learning_sessions ON learning_sessions.id = learning_messages.session_id
+            WHERE learning_sessions.user_id = %s
+            """,
+            user_id,
+        ),
+        "review_messages": _count(
+            conn,
+            """
+            SELECT count(*) AS count
+            FROM review_messages
+            JOIN learning_sessions ON learning_sessions.id = review_messages.review_session_id
+            WHERE learning_sessions.user_id = %s
+            """,
+            user_id,
+        ),
+    }
+
+
+def _owned_count_sql(table_name: str) -> str:
+    if table_name == "plan_modules":
+        return """
+        SELECT count(*) AS count
+        FROM plan_modules
+        JOIN learning_plans ON learning_plans.id = plan_modules.plan_id
+        WHERE learning_plans.user_id = %s AND plan_modules.deleted_at IS NULL AND learning_plans.deleted_at IS NULL
+        """
+    if table_name == "knowledge_points":
+        return """
+        SELECT count(*) AS count
+        FROM knowledge_points
+        JOIN plan_modules ON plan_modules.id = knowledge_points.module_id
+        JOIN learning_plans ON learning_plans.id = plan_modules.plan_id
+        WHERE learning_plans.user_id = %s AND knowledge_points.deleted_at IS NULL AND plan_modules.deleted_at IS NULL AND learning_plans.deleted_at IS NULL
+        """
+    if table_name == "exercises":
+        return """
+        SELECT count(*) AS count
+        FROM exercises
+        JOIN knowledge_points ON knowledge_points.id = exercises.knowledge_point_id
+        JOIN plan_modules ON plan_modules.id = knowledge_points.module_id
+        JOIN learning_plans ON learning_plans.id = plan_modules.plan_id
+        WHERE learning_plans.user_id = %s AND exercises.deleted_at IS NULL AND knowledge_points.deleted_at IS NULL AND plan_modules.deleted_at IS NULL AND learning_plans.deleted_at IS NULL
+        """
+    raise ValueError(f"unsupported owned count table: {table_name}")
+
+
+def _count(conn: Connection[dict[str, object]], query: str, user_id: str) -> int:
+    row = conn.execute(query, (user_id,)).fetchone()
+    return _int_or_zero(row.get("count") if row is not None else 0)
+
+
+def _last_activity_at(conn: Connection[dict[str, object]], user_id: str) -> datetime | None:
+    row = conn.execute(
+        """
+        SELECT GREATEST(
+          COALESCE((SELECT max(updated_at) FROM learning_plans WHERE user_id = %s), 'epoch'::timestamptz),
+          COALESCE((SELECT max(started_at) FROM learning_sessions WHERE user_id = %s), 'epoch'::timestamptz),
+          COALESCE((SELECT max(ended_at) FROM learning_sessions WHERE user_id = %s), 'epoch'::timestamptz),
+          COALESCE((SELECT max(created_at) FROM attempts WHERE user_id = %s), 'epoch'::timestamptz),
+          COALESCE((SELECT max(updated_at) FROM notes WHERE user_id = %s AND deleted_at IS NULL), 'epoch'::timestamptz)
+        ) AS last_activity_at
+        """,
+        (user_id, user_id, user_id, user_id, user_id),
+    ).fetchone()
+    if row is None:
+        return None
+    return _none_if_epoch(row.get("last_activity_at"))
+
+
+def _export_plans(conn: Connection[dict[str, object]], user_id: str) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """
+        SELECT id, language_course_id, goal_text, language, target_level, mode, status,
+               overall_progress, current_module_id, created_at, updated_at, completed_at, archived_at
+        FROM learning_plans
+        WHERE user_id = %s AND deleted_at IS NULL
+        ORDER BY created_at, id
+        """,
+        (user_id,),
+    ).fetchall()
+    return [
+        {
+            "id": str(row["id"]),
+            "language_course_id": str(row["language_course_id"]),
+            "goal_text": row["goal_text"],
+            "language": row["language"],
+            "target_level": row["target_level"],
+            "mode": row["mode"],
+            "status": row["status"],
+            "overall_progress": _number(row.get("overall_progress")),
+            "current_module_id": _str_or_none(row.get("current_module_id")),
+            "created_at": _iso_or_none(row.get("created_at")),
+            "updated_at": _iso_or_none(row.get("updated_at")),
+            "completed_at": _iso_or_none(row.get("completed_at")),
+            "archived_at": _iso_or_none(row.get("archived_at")),
+        }
+        for row in rows
+    ]
+
+
+def _export_modules(conn: Connection[dict[str, object]], user_id: str) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """
+        SELECT plan_modules.id, plan_modules.plan_id, plan_modules.title, plan_modules.description,
+               plan_modules.order_index, plan_modules.status, plan_modules.is_skippable,
+               plan_modules.is_adjustable, plan_modules.estimated_sessions
+        FROM plan_modules
+        JOIN learning_plans ON learning_plans.id = plan_modules.plan_id
+        WHERE learning_plans.user_id = %s
+          AND learning_plans.deleted_at IS NULL
+          AND plan_modules.deleted_at IS NULL
+        ORDER BY learning_plans.created_at, plan_modules.order_index, plan_modules.id
+        """,
+        (user_id,),
+    ).fetchall()
+    return [_safe_row(row, exclude=()) for row in rows]
+
+
+def _export_knowledge_points(conn: Connection[dict[str, object]], user_id: str) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """
+        SELECT knowledge_points.id, knowledge_points.module_id, knowledge_points.language_course_id,
+               knowledge_points.title, knowledge_points.description, knowledge_points.order_index,
+               knowledge_points.skill_tags_json, knowledge_points.lesson_outline_json,
+               knowledge_points.lesson_sources_json, knowledge_points.status,
+               knowledge_points.mastery_score, knowledge_points.weak_points_json,
+               knowledge_points.last_exercise_result, knowledge_points.last_exercise_score
+        FROM knowledge_points
+        JOIN plan_modules ON plan_modules.id = knowledge_points.module_id
+        JOIN learning_plans ON learning_plans.id = plan_modules.plan_id
+        WHERE learning_plans.user_id = %s
+          AND learning_plans.deleted_at IS NULL
+          AND plan_modules.deleted_at IS NULL
+          AND knowledge_points.deleted_at IS NULL
+        ORDER BY plan_modules.order_index, knowledge_points.order_index, knowledge_points.id
+        """,
+        (user_id,),
+    ).fetchall()
+    return [_safe_row(row, exclude=()) for row in rows]
+
+
+def _export_learning_sessions(conn: Connection[dict[str, object]], user_id: str) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """
+        SELECT id, plan_id, session_type, status, started_at, ended_at, duration_seconds,
+               entry_point, summary_text, next_entry_point, learning_stage, review_stage
+        FROM learning_sessions
+        WHERE user_id = %s
+        ORDER BY started_at, id
+        """,
+        (user_id,),
+    ).fetchall()
+    return [_safe_row(row, exclude=()) for row in rows]
+
+
+def _export_attempts(conn: Connection[dict[str, object]], user_id: str) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """
+        SELECT id, session_id, exercise_id, attempt_type, submit_version,
+               submitted_code, code_hash, filled_blanks_json, runtime_status,
+               test_pass_rate, passed_test_count, total_test_count, score,
+               score_breakdown_json, code_completion_result, fsrs_rating,
+               test_results_json, stdout, stderr, error_message, error_cause,
+               hint_usage_count, error_count, explanation_text,
+               explanation_check_result, evaluation_status, created_at
+        FROM attempts
+        WHERE user_id = %s
+        ORDER BY created_at, id
+        """,
+        (user_id,),
+    ).fetchall()
+    return [_safe_row(row, exclude=()) for row in rows]
+
+
+def _export_review_states(conn: Connection[dict[str, object]], user_id: str) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """
+        SELECT knowledge_point_id, plan_id, card_state, stability, difficulty, due_at,
+               elapsed_days, scheduled_days, reps, lapses, last_review_at,
+               last_attempt_id, last_fsrs_rating, scheduler_version, suspended_at
+        FROM review_states
+        WHERE user_id = %s
+        ORDER BY due_at NULLS LAST, knowledge_point_id
+        """,
+        (user_id,),
+    ).fetchall()
+    return [_safe_row(row, exclude=()) for row in rows]
+
+
+def _export_review_logs(conn: Connection[dict[str, object]], user_id: str) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """
+        SELECT id, knowledge_point_id, plan_id, attempt_id, rating,
+               scheduled_due_at, reviewed_at, source, created_at
+        FROM review_logs
+        WHERE user_id = %s
+        ORDER BY reviewed_at, id
+        """,
+        (user_id,),
+    ).fetchall()
+    return [_safe_row(row, exclude=()) for row in rows]
+
+
+def _export_adaptive_variant_summaries(conn: Connection[dict[str, object]], user_id: str) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """
+        SELECT id, knowledge_point_id, template_id, template_version,
+               generator_version, runner_key, runtime_tier, status,
+               failure_code, created_at, last_used_at
+        FROM exercise_variant_cache
+        WHERE user_id = %s AND deleted_at IS NULL
+        ORDER BY last_used_at DESC, created_at DESC
+        """,
+        (user_id,),
+    ).fetchall()
+    return [_safe_row(row, exclude=()) for row in rows]
+
+
+def _export_notes(conn: Connection[dict[str, object]], user_id: str) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """
+        SELECT id, knowledge_point_id, title, content_markdown, agent_draft_content,
+               is_user_edited, created_at, updated_at
+        FROM notes
+        WHERE user_id = %s AND deleted_at IS NULL
+        ORDER BY updated_at, id
+        """,
+        (user_id,),
+    ).fetchall()
+    return [_safe_row(row, exclude=()) for row in rows]
+
+
+def _export_conversation_summaries(conn: Connection[dict[str, object]], user_id: str) -> dict[str, object]:
+    onboarding = conn.execute(
+        """
+        SELECT onboarding_conversations.id, onboarding_conversations.status,
+               count(onboarding_messages.id) AS message_count,
+               min(onboarding_messages.created_at) AS first_message_at,
+               max(onboarding_messages.created_at) AS last_message_at
+        FROM onboarding_conversations
+        LEFT JOIN onboarding_messages ON onboarding_messages.conversation_id = onboarding_conversations.id
+        WHERE onboarding_conversations.user_id = %s
+        GROUP BY onboarding_conversations.id
+        ORDER BY onboarding_conversations.created_at, onboarding_conversations.id
+        """,
+        (user_id,),
+    ).fetchall()
+    learning = conn.execute(
+        """
+        SELECT learning_sessions.id AS session_id, learning_sessions.entry_point AS knowledge_point_id,
+               count(learning_messages.id) AS message_count,
+               min(learning_messages.created_at) AS first_message_at,
+               max(learning_messages.created_at) AS last_message_at
+        FROM learning_sessions
+        LEFT JOIN learning_messages ON learning_messages.session_id = learning_sessions.id
+        WHERE learning_sessions.user_id = %s
+        GROUP BY learning_sessions.id
+        ORDER BY learning_sessions.started_at, learning_sessions.id
+        """,
+        (user_id,),
+    ).fetchall()
+    review = conn.execute(
+        """
+        SELECT learning_sessions.id AS session_id, learning_sessions.entry_point AS knowledge_point_id,
+               count(review_messages.id) AS message_count,
+               min(review_messages.created_at) AS first_message_at,
+               max(review_messages.created_at) AS last_message_at
+        FROM learning_sessions
+        LEFT JOIN review_messages ON review_messages.review_session_id = learning_sessions.id
+        WHERE learning_sessions.user_id = %s
+          AND learning_sessions.session_type = 'review'
+        GROUP BY learning_sessions.id
+        ORDER BY learning_sessions.started_at, learning_sessions.id
+        """,
+        (user_id,),
+    ).fetchall()
+    return {
+        "onboarding": [_safe_row(row, exclude=()) for row in onboarding],
+        "learning": [_safe_row(row, exclude=()) for row in learning],
+        "review": [_safe_row(row, exclude=()) for row in review],
+    }
+
+
+def _delete_user_owned_learning_data(conn: Connection[dict[str, object]], user_id: str) -> None:
+    conn.execute("DELETE FROM idempotency_records WHERE user_id = %s OR key LIKE %s OR response_json::text LIKE %s", (user_id, f"%{user_id}%", f"%{user_id}%"))
+    conn.execute(
+        """
+        DELETE FROM learning_messages
+        USING learning_sessions
+        WHERE learning_messages.session_id = learning_sessions.id
+          AND learning_sessions.user_id = %s
+        """,
+        (user_id,),
+    )
+    conn.execute(
+        """
+        DELETE FROM review_messages
+        USING learning_sessions
+        WHERE review_messages.review_session_id = learning_sessions.id
+          AND learning_sessions.user_id = %s
+        """,
+        (user_id,),
+    )
+    conn.execute(
+        """
+        DELETE FROM onboarding_messages
+        USING onboarding_conversations
+        WHERE onboarding_messages.conversation_id = onboarding_conversations.id
+          AND onboarding_conversations.user_id = %s
+        """,
+        (user_id,),
+    )
+    conn.execute("DELETE FROM review_logs WHERE user_id = %s", (user_id,))
+    conn.execute("DELETE FROM review_states WHERE user_id = %s", (user_id,))
+    conn.execute("DELETE FROM review_seed_banks WHERE user_id = %s", (user_id,))
+    conn.execute("DELETE FROM exercise_variant_cache WHERE user_id = %s", (user_id,))
+    conn.execute("DELETE FROM notes WHERE user_id = %s", (user_id,))
+    conn.execute("DELETE FROM attempts WHERE user_id = %s", (user_id,))
+    conn.execute(
+        """
+        UPDATE knowledge_points
+        SET last_session_id = NULL
+        FROM plan_modules, learning_plans
+        WHERE knowledge_points.module_id = plan_modules.id
+          AND plan_modules.plan_id = learning_plans.id
+          AND learning_plans.user_id = %s
+        """,
+        (user_id,),
+    )
+    conn.execute("DELETE FROM learning_sessions WHERE user_id = %s", (user_id,))
+    conn.execute(
+        """
+        DELETE FROM teaching_chunks
+        USING knowledge_points, plan_modules, learning_plans
+        WHERE teaching_chunks.knowledge_point_id = knowledge_points.id
+          AND knowledge_points.module_id = plan_modules.id
+          AND plan_modules.plan_id = learning_plans.id
+          AND learning_plans.user_id = %s
+        """,
+        (user_id,),
+    )
+    conn.execute(
+        """
+        DELETE FROM test_cases
+        USING exercises, knowledge_points, plan_modules, learning_plans
+        WHERE test_cases.exercise_id = exercises.id
+          AND exercises.knowledge_point_id = knowledge_points.id
+          AND knowledge_points.module_id = plan_modules.id
+          AND plan_modules.plan_id = learning_plans.id
+          AND learning_plans.user_id = %s
+        """,
+        (user_id,),
+    )
+    conn.execute(
+        """
+        DELETE FROM code_blanks
+        USING exercises, knowledge_points, plan_modules, learning_plans
+        WHERE code_blanks.exercise_id = exercises.id
+          AND exercises.knowledge_point_id = knowledge_points.id
+          AND knowledge_points.module_id = plan_modules.id
+          AND plan_modules.plan_id = learning_plans.id
+          AND learning_plans.user_id = %s
+        """,
+        (user_id,),
+    )
+    conn.execute(
+        """
+        DELETE FROM exercises
+        USING knowledge_points, plan_modules, learning_plans
+        WHERE exercises.knowledge_point_id = knowledge_points.id
+          AND knowledge_points.module_id = plan_modules.id
+          AND plan_modules.plan_id = learning_plans.id
+          AND learning_plans.user_id = %s
+        """,
+        (user_id,),
+    )
+    conn.execute("UPDATE learning_plans SET current_module_id = NULL WHERE user_id = %s", (user_id,))
+    conn.execute(
+        """
+        DELETE FROM knowledge_points
+        USING plan_modules, learning_plans
+        WHERE knowledge_points.module_id = plan_modules.id
+          AND plan_modules.plan_id = learning_plans.id
+          AND learning_plans.user_id = %s
+        """,
+        (user_id,),
+    )
+    conn.execute(
+        """
+        DELETE FROM plan_modules
+        USING learning_plans
+        WHERE plan_modules.plan_id = learning_plans.id
+          AND learning_plans.user_id = %s
+        """,
+        (user_id,),
+    )
+    conn.execute("DELETE FROM learning_plans WHERE user_id = %s", (user_id,))
+    conn.execute("DELETE FROM learner_profiles WHERE user_id = %s", (user_id,))
+    conn.execute("DELETE FROM onboarding_conversations WHERE user_id = %s", (user_id,))
+
+
+def _safe_row(row: Mapping[str, object], *, exclude: Sequence[str]) -> dict[str, object]:
+    excluded = set(exclude)
+    return {
+        key: _safe_value(value)
+        for key, value in row.items()
+        if key not in excluded
+    }
+
+
+def _safe_value(value: object) -> object:
+    if isinstance(value, datetime | date):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, Mapping):
+        return {str(key): _safe_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_safe_value(item) for item in value]
+    if value is None:
+        return None
+    if isinstance(value, UUID):
+        return str(value)
+    return value
+
+
+def _iso_or_none(value: object) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime | date):
+        return value.isoformat()
+    return str(value)
+
+
+def _none_if_epoch(value: object) -> datetime | None:
+    if not isinstance(value, datetime):
+        return None
+    epoch = datetime(1970, 1, 1, tzinfo=UTC)
+    aware = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    return None if aware <= epoch else aware
+
+
+def _int_or_zero(value: object) -> int:
+    if not isinstance(value, int | float | str | bytes | bytearray):
+        return 0
+    try:
+        return int(value)
+    except ValueError:
+        return 0
+
+
+def _number(value: object) -> float:
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, int | float):
+        return float(value)
+    return 0.0
+
+
+def _str_or_none(value: object) -> str | None:
+    if value in {None, ""}:
+        return None
+    return str(value)

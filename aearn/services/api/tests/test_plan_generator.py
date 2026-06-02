@@ -1,4 +1,4 @@
-from app.services.plan_generator import COURSE_TEMPLATES
+from app.services.curriculum.plan_generator import COURSE_TEMPLATES
 
 
 EXPECTED_MODULE_TITLES = {

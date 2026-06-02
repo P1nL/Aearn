@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from app.services.browser_preview_runner import execute_browser_preview_with_tests
-from app.services.runtime_runner import run_exercise
+from app.services.runners.browser_preview_runner import execute_browser_preview_with_tests
+from app.services.runners.runtime_runner import run_exercise
 
 
 def _javascript_event_exercise() -> dict[str, object]:

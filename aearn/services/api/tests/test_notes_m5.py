@@ -10,7 +10,7 @@ from app.core.config import get_settings
 from app.db.bootstrap import bootstrap_database
 from app.db.connection import connect
 from app.main import app
-from app.services import note_repository
+from app.services.repositories import note_repository
 
 
 def _database_available() -> bool:

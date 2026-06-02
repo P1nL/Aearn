@@ -13,7 +13,7 @@ from app.core.errors import (
     request_id_from,
 )
 from app.db.connection import connect
-from app.agents.guardrails import assert_safe_teaching_output
+from app.agents.runtime.guardrails import assert_safe_teaching_output
 from app.models.learning_sessions import (
     CheckExplanationRequest,
     ExplainErrorRequest,
@@ -23,7 +23,7 @@ from app.models.learning_sessions import (
     StartLearningSessionRequest,
     SubmitExerciseRequest,
 )
-from app.services.learning_conversation import (
+from app.services.conversations.learning_conversation import (
     build_learning_agent_tool_runtime,
     build_learning_message_response,
     create_learning_message_response,
@@ -36,8 +36,8 @@ from app.services.learning_conversation import (
     start_learning_message_generation,
     store_learning_message_response,
 )
-from app.services.graph_event_stream import build_learning_graph_stream_events
-from app.services.learning_session_repository import (
+from app.services.streaming.graph_event_stream import build_learning_graph_stream_events
+from app.services.repositories.learning_session_repository import (
     ConceptIntroGenerationError,
     EvaluationConflictError,
     EntityNotFoundError,
@@ -50,13 +50,13 @@ from app.services.learning_session_repository import (
     start_learning_session,
     submit_learning_session_exercise,
 )
-from app.services.llm_client import LLMCallError, LLMConfigurationError, LLMInvalidResponseError
-from app.services.dashboard_repository import (
+from app.services.llm.llm_client import LLMCallError, LLMConfigurationError, LLMInvalidResponseError
+from app.services.repositories.dashboard_repository import (
     EntityNotFoundError as ResumeEntityNotFoundError,
     get_resume_context,
 )
-from app.services.plan_repository import IdempotencyConflictError
-from app.services.sse import SSEWriter, chunk_tool_call_arguments, stream_response, wants_stream
+from app.services.repositories.plan_repository import IdempotencyConflictError
+from app.services.streaming.sse import SSEWriter, chunk_tool_call_arguments, stream_response, wants_stream
 
 
 router = APIRouter(prefix="/api/learning-sessions", tags=["learning-sessions"])

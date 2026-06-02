@@ -29,6 +29,7 @@ Existing ownership boundaries should be preserved:
 - Desktop UI displays state and invokes APIs; it should not duplicate backend capability decisions.
 - Runner adapters own toolchain-specific execution, safety boundaries, and failure mapping.
 - Grounding services own trusted source registry, indexing, retrieval, citation packaging, and observability.
+- Backend module organization work may add domain subpackages under `app/services` and `app/agents`, but must keep the same top-level ownership boundaries and public contracts.
 
 ## Product Capability Domains
 
@@ -75,6 +76,12 @@ Dynamic exercise variants must be generated from canonical templates and validat
 
 Agent quality gates should cover the full product contract: answer-seeking behavior, repeated confusion, capability overclaims, missing citations, runner failures, grounding failures, and adaptive exercise safety.
 
+### Backend Module Organization
+
+Backend structure cleanup should happen after the main runner, grounding, data-boundary, and adaptive exercise modules exist. Its goal is to make final integration review and future maintenance easier, not to change behavior.
+
+The cleanup should group flat `app/services` and `app/agents` modules into domain subpackages while preserving route, API, database, runner, graph, and Agent behavior.
+
 ## Data Flow Contracts
 
 ### Learning Grounding Flow
@@ -119,6 +126,7 @@ Agent quality gates should cover the full product contract: answer-seeking behav
 - Grounding failures should degrade to internal lesson context or no docs citations, not crash learning chat.
 - Runner failures should return stable error categories, not raw subprocess internals.
 - Adaptive exercise validation failures should fall back to canonical templates.
+- Backend module moves should be batched and behavior-preserving; stale imports or circular imports should fail fast in focused tests before broader changes continue.
 - Each child task must list rollback points for schema, scripts, runner adapters, and UI changes it owns.
 
 ## Trade-Offs

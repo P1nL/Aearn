@@ -1,6 +1,6 @@
 """Unit tests for the shared structured judgement module."""
 
-from app.agents.structured_judgement import (
+from app.agents.runtime.structured_judgement import (
     FieldPolicy,
     JudgementPolicy,
     StructuredJudgement,

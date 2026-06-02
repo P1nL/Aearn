@@ -26,7 +26,8 @@
     "06-02-06-language-l3-runner-contracts",
     "06-02-02-local-user-data-boundary",
     "06-02-adaptive-exercise-template-system",
-    "06-02-managed-compiled-runners-java-go-csharp"
+    "06-02-managed-compiled-runners-java-go-csharp",
+    "06-03-backend-module-organization-refactor"
   ],
   "parent": null,
   "relatedFiles": [],

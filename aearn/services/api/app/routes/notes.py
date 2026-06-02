@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from app.core.errors import MODEL_UNAVAILABLE_MESSAGE, error_response, model_unavailable_response, request_id_from
 from app.db.connection import connect
 from app.models.notes import AgentDraftRequest, CreateNoteRequest, UpdateNoteRequest
-from app.services.note_repository import (
+from app.services.repositories.note_repository import (
     EntityNotFoundError,
     create_note,
     generate_agent_draft_stream,
@@ -18,8 +18,8 @@ from app.services.note_repository import (
     update_agent_draft_content,
     update_note,
 )
-from app.services.llm_client import LLMCallError, LLMConfigurationError, LLMInvalidResponseError
-from app.services.sse import SSEWriter, stream_response, wants_stream
+from app.services.llm.llm_client import LLMCallError, LLMConfigurationError, LLMInvalidResponseError
+from app.services.streaming.sse import SSEWriter, stream_response, wants_stream
 
 
 router = APIRouter(prefix="/api/notes", tags=["notes"])

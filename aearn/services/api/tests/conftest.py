@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.services import adaptive_exercise_service
+from app.services.exercises import adaptive_exercise_service
 
 
 @pytest.fixture(autouse=True)

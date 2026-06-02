@@ -11,9 +11,10 @@ from app.core.config import Settings, get_settings
 from app.db.bootstrap import bootstrap_database
 from app.db.connection import connect
 from app.main import app
-from app.services import learning_conversation, learning_session_repository, review_repository, review_seed_bank
-from app.services.learner_profile import get_learner_profile
-from app.services.review_scheduler import apply_attempt_review_update
+from app.services.conversations import learning_conversation
+from app.services.repositories import learning_session_repository, review_repository, review_seed_bank
+from app.services.repositories.learner_profile import get_learner_profile
+from app.services.repositories.review_scheduler import apply_attempt_review_update
 
 
 def _database_available() -> bool:

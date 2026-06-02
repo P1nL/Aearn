@@ -4,10 +4,10 @@ from collections.abc import Mapping, Sequence
 
 import pytest
 
-from app.services import runner_registry
-from app.services.node_typescript_runner import NodeExecutionResult
-from app.services.runner_registry import get_runner_registry
-from app.services.runtime_runner import run_exercise
+from app.services.runners import runner_registry
+from app.services.runners.node_typescript_runner import NodeExecutionResult
+from app.services.runners.runner_registry import get_runner_registry
+from app.services.runners.runtime_runner import run_exercise
 
 
 def _python_exercise() -> dict[str, object]:

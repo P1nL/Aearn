@@ -7,14 +7,14 @@ import pytest
 
 from app.core.config import get_settings
 from app.db.bootstrap import bootstrap_database
-from app.services.grounding_index_repository import (
+from app.services.grounding.grounding_index_repository import (
     build_official_docs_grounding_context,
     replace_grounding_chunks,
     run_and_persist_fixture_grounding_reindex,
     search_persisted_grounding_chunks,
 )
-from app.services.grounding_processing import GroundingChunk
-from app.services.grounding_retrieval import GroundingRetrievalQuery
+from app.services.grounding.grounding_processing import GroundingChunk
+from app.services.grounding.grounding_retrieval import GroundingRetrievalQuery
 
 
 def _database_available() -> bool:
