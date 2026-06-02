@@ -18,6 +18,7 @@ from app.services.exercise_guidance import (
     build_explanation_check_response,
     build_hint_response,
 )
+from app.services.grounding_index_repository import run_and_persist_fixture_grounding_reindex
 from app.services.learner_profile import ensure_learner_profile, get_learner_profile, merge_observations
 from app.services import learning_conversation
 from app.services import learning_session_repository as session_repository
@@ -693,6 +694,46 @@ def test_learning_message_json_uses_model_and_is_idempotent(client: TestClient) 
     assert replay_body["idempotency_replayed"] is True
     assert replay_body["agent_message"]["id"] == first_body["agent_message"]["id"]
     assert replay_body["tool_calls"] == first_body["tool_calls"]
+
+
+def test_learning_message_returns_and_stores_official_docs_grounding_metadata(client: TestClient) -> None:
+    user, plan = _confirmed_plan(client, language="python")
+    session = _start_session(client, user, plan)
+    with connect() as conn:
+        run_and_persist_fixture_grounding_reindex(conn)
+        conn.commit()
+
+    response = client.post(
+        f"/api/learning-sessions/{session['session_id']}/messages",
+        json={
+            "role": "user",
+            "content": "Python functions 为什么需要 return？",
+            "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["grounding"]["status"] == "used"
+    assert body["grounding"]["source_mode"] == "persisted_index"
+    assert body["grounding"]["citation_count"] > 0
+    assert body["grounding"]["citations"][0]["source_trust_tier"] == "official"
+    assert "content" not in body["grounding"]["citations"][0]
+
+    with connect() as conn:
+        row = conn.execute(
+            """
+            SELECT metadata
+            FROM learning_messages
+            WHERE session_id = %s AND role = 'agent'
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (session["session_id"],),
+        ).fetchone()
+    assert row is not None
+    assert row["metadata"]["grounding"]["status"] == "used"
+    assert row["metadata"]["grounding"]["citation_count"] == body["grounding"]["citation_count"]
 
 
 def test_learning_message_routes_and_passes_handoffs_to_sdk_client(

@@ -66,6 +66,10 @@ from app.services.llm_client import (
     LLMInvalidResponseError,
 )
 from app.services.plan_repository import IdempotencyConflictError, request_hash
+from app.services.grounding_index_repository import (
+    build_official_docs_grounding_context,
+    grounding_response_metadata,
+)
 from app.services.runtime_runner import run_exercise as run_runtime_exercise
 from app.services.teaching_chunks import ensure_current_knowledge_point_chunks, search_chunks
 
@@ -96,6 +100,7 @@ LEARNING_TUTOR_SYSTEM_PROMPT = """你是 Aearn 的诊断型编程语言学习导
 - stage：当前学习阶段，可能是 concept_intro、concept_check、concept_repair、practice_offer、practice_support。
 - learning_context：当前课程、模块、知识点和学习状态。
 - lesson_outline：当前知识点拆分出的子概念和来源。
+- rag_context：课程内 lesson_rag_context 和本地已索引的 official_docs_grounding。只有 official_docs_grounding.status 为 used 时，才表示有可引用的官方/可信文档证据。
 - concept_progress：阶段状态和已覆盖内容。
 - conversation_context：安全摘要、最近安全消息、上一轮诊断、上一轮策略、避免重复的解释。
 - learner_profile：跨会话学习者画像的安全摘要，可能为空。
@@ -106,6 +111,7 @@ LEARNING_TUTOR_SYSTEM_PROMPT = """你是 Aearn 的诊断型编程语言学习导
 - response_policy：本轮允许和禁止的行为。
 
 只使用这些输入里允许的信息。不要补造题面、starter code、答案、测试细节或学习者没有提供的代码。
+不要声称进行了实时网页搜索。官方/可信文档只能来自 official_docs_grounding 中已经提供的本地索引片段和 citation metadata。
 
 ## 工作循环
 
@@ -468,6 +474,7 @@ def prepare_learning_message_for_generation(
         learning_stage_state=learning_stage_state,
         conversation_context=conversation_context,
     )
+    updated_context = _context_with_learning_rag(conn, updated_context, user_content=user_content)
     if effective_settings.langgraph_enabled:
         updated_context = _context_with_langgraph_runtime(
             updated_context,
@@ -513,11 +520,20 @@ def _context_with_graph_memory_and_rag(
         graph_memory_snapshot=build_graph_memory_snapshot(
             profile_summary=context.learner_profile_summary,
         ).to_dict(),
-        rag_context=_build_graph_rag_context(conn, context, user_content=user_content),
+        rag_context=_build_learning_rag_context(conn, context, user_content=user_content),
     )
 
 
-def _build_graph_rag_context(
+def _context_with_learning_rag(
+    conn: Connection[dict[str, object]],
+    context: LearningConversationContext,
+    *,
+    user_content: str,
+) -> LearningConversationContext:
+    return replace(context, rag_context=_build_learning_rag_context(conn, context, user_content=user_content))
+
+
+def _build_learning_rag_context(
     conn: Connection[dict[str, object]],
     context: LearningConversationContext,
     *,
@@ -537,12 +553,45 @@ def _build_graph_rag_context(
             retrieval_status = "fallback" if not user_content.strip() else "available"
     except Exception:
         retrieval_status = "unavailable"
-    return build_graph_rag_context(
+    lesson_rag_context = build_graph_rag_context(
         knowledge_point_id=context.knowledge_point_id,
         query=user_content,
         chunks=chunks,
         retrieval_status=retrieval_status,
     ).to_dict()
+    official_docs_grounding = build_official_docs_grounding_context(
+        conn,
+        language_id_or_alias=_grounding_language_for_context(context),
+        query_text=user_content,
+        topic_tags=_grounding_topic_tags_for_context(context),
+        knowledge_point_id=context.knowledge_point_id,
+        knowledge_point_title=str(context.knowledge_point.get("title") or ""),
+        top_k=4,
+    )
+    return {
+        **lesson_rag_context,
+        "lesson_rag_context": lesson_rag_context,
+        "official_docs_grounding": official_docs_grounding,
+    }
+
+
+def _grounding_language_for_context(context: LearningConversationContext) -> str:
+    language = str(context.knowledge_point.get("language") or "").strip()
+    if language:
+        return language
+    runtime_language = ""
+    if context.exercise is not None:
+        runtime_profile = context.exercise.get("runtime_profile")
+        if isinstance(runtime_profile, Mapping):
+            runtime_language = str(runtime_profile.get("language") or "").strip()
+    return runtime_language
+
+
+def _grounding_topic_tags_for_context(context: LearningConversationContext) -> tuple[str, ...]:
+    tags = context.knowledge_point.get("skill_tags")
+    if not isinstance(tags, Sequence) or isinstance(tags, (str, bytes)):
+        return ()
+    return tuple(str(item) for item in tags if str(item).strip())[:8]
 
 
 def build_learning_graph_state(
@@ -771,7 +820,7 @@ def build_learning_message_response(
     generation_source: str,
     generation_model: str,
 ) -> dict[str, object]:
-    return {
+    response: dict[str, object] = {
         "agent_message": {
             "id": prepared.message_id,
             "role": "assistant",
@@ -788,6 +837,10 @@ def build_learning_message_response(
         "generation_source": generation_source,
         "generation_model": generation_model,
     }
+    grounding_metadata = grounding_response_metadata(prepared.context.rag_context)
+    if grounding_metadata:
+        response["grounding"] = grounding_metadata
+    return response
 
 
 def store_learning_message_response(
@@ -813,6 +866,10 @@ def store_learning_message_response(
     metadata: dict[str, object] = {}
     if tool_calls:
         metadata["tool_calls"] = tool_calls
+    grounding_metadata = grounding_response_metadata(prepared.context.rag_context)
+    if grounding_metadata:
+        metadata["grounding"] = grounding_metadata
+        finalized["grounding"] = grounding_metadata
     profile_observations = profile_observations_from_side_effects(
         side_effects,
         session_id=prepared.context.session_id,
@@ -1026,13 +1083,15 @@ def load_learning_conversation_context(
           knowledge_points.title,
           knowledge_points.description,
           knowledge_points.status,
+          knowledge_points.skill_tags_json,
           knowledge_points.weak_points_json,
           knowledge_points.lesson_outline_json,
           knowledge_points.lesson_sources_json,
           knowledge_points.last_exercise_result,
           knowledge_points.last_exercise_score,
           plan_modules.title AS module_title,
-          language_courses.title AS course_title
+          language_courses.title AS course_title,
+          language_courses.language AS course_language
         FROM knowledge_points
         JOIN plan_modules ON plan_modules.id = knowledge_points.module_id
         JOIN language_courses ON language_courses.id = knowledge_points.language_course_id
@@ -2293,6 +2352,9 @@ def _serialize_knowledge_point_context(row: Mapping[str, object]) -> dict[str, o
     weak_points = row.get("weak_points_json") or []
     if not isinstance(weak_points, Sequence) or isinstance(weak_points, (str, bytes)):
         weak_points = []
+    skill_tags = row.get("skill_tags_json") or []
+    if not isinstance(skill_tags, Sequence) or isinstance(skill_tags, (str, bytes)):
+        skill_tags = []
     return {
         "id": str(row["id"]),
         "title": str(row["title"]),
@@ -2300,6 +2362,8 @@ def _serialize_knowledge_point_context(row: Mapping[str, object]) -> dict[str, o
         "status": str(row.get("status") or ""),
         "module_title": str(row.get("module_title") or ""),
         "course_title": str(row.get("course_title") or ""),
+        "language": str(row.get("course_language") or ""),
+        "skill_tags": [str(item) for item in skill_tags[:8]],
         "weak_points": [str(item) for item in weak_points[:8]],
         "last_exercise_result": row.get("last_exercise_result"),
         "last_exercise_score": row.get("last_exercise_score"),
