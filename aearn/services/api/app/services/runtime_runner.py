@@ -78,6 +78,9 @@ def run_exercise(
     if runner_capability.runner_key == "browser":
         return registry.run_browser_preview(exercise, code, filled_blanks)
 
+    if runner_capability.runner_key == "sql":
+        return registry.run_sql_query(exercise, code)
+
     if runtime_tier == "compiled_sandbox_later":
         return registry.unsupported_result(exercise, runner_capability)
 

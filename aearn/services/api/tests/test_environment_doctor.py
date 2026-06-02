@@ -140,7 +140,9 @@ def test_environment_doctor_does_not_turn_detected_planned_tools_into_execution(
     assert runners["typescript"]["toolchain_status"] == "ready"
     assert runners["typescript"]["product_status"] == "executable"
     assert runners["typescript"]["supports_execution"] is True
-    assert runners["sql"]["product_status"] == "planned"
+    assert runners["sql"]["product_status"] == "executable"
+    assert runners["sql"]["toolchain_status"] == "ready"
+    assert "SQLite teaching dialect" in runners["sql"]["disclosure"]
     assert runners["java"]["product_status"] == "static_review"
     assert runners["go"]["product_status"] == "planned"
     assert runners["csharp"]["product_status"] == "planned"

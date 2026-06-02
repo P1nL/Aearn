@@ -7,6 +7,7 @@ from typing import Any, cast
 
 from psycopg import Connection
 
+from app.services import adaptive_exercise_service
 from app.services.teaching_chunks import index_current_knowledge_point_chunks
 
 
@@ -21,6 +22,15 @@ def get_or_create_exercise_for_knowledge_point(
         return _serialize_exercise(conn, existing)
 
     template = _exercise_template(knowledge_point, runtime_profile)
+    template = cast(
+        dict[str, Any],
+        adaptive_exercise_service.build_adaptive_exercise_template(
+            conn,
+            knowledge_point=knowledge_point,
+            runtime_profile=runtime_profile,
+            fallback_template=template,
+        ),
+    )
     created = conn.execute(
         """
         INSERT INTO exercises (

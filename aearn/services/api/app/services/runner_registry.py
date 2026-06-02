@@ -11,6 +11,7 @@ from app.services.language_capabilities import ExecutionMode, RunnerKey
 from app.services.node_typescript_runner import NodeExecutionResult, execute_node_typescript_with_tests
 from app.services.runtime_contracts import RuntimeExecutionResult
 from app.services.sandbox import SandboxExecutionResult, execute_python_with_tests
+from app.services.sql_query_runner import SqlExecutionResult, execute_sql_query_with_tests
 
 MAX_RUNNER_STDOUT_CHARS = 4000
 MAX_RUNNER_STDERR_CHARS = 2000
@@ -98,6 +99,9 @@ class RunnerRegistry:
     def run_node_typescript(self, exercise: Mapping[str, object], code: str) -> RuntimeExecutionResult:
         return _run_node_typescript(exercise, code)
 
+    def run_sql_query(self, exercise: Mapping[str, object], query: str) -> RuntimeExecutionResult:
+        return _run_sql_query(exercise, query)
+
 
 PYTHON_RUNNER = RunnerCapability(
     runner_key="python",
@@ -154,17 +158,24 @@ NODE_TYPESCRIPT_RUNNER = RunnerCapability(
 
 SQL_RUNNER = RunnerCapability(
     runner_key="sql",
-    execution="sql_later",
-    runtime_tiers=("sql_later",),
-    supports_execution=False,
-    supports_tests=False,
-    supports_stdout=False,
+    execution="sql_query_test",
+    runtime_tiers=("sql_query_test",),
+    supports_execution=True,
+    supports_tests=True,
+    supports_stdout=True,
     supports_preview=False,
     compile_required=False,
     timeout_ms=5000,
     memory_limit_mb=128,
-    sandbox_policy={"status": "planned", "database": "ephemeral_required"},
-    unavailable_message="SQL execution requires an isolated query runner and is not available in this runtime.",
+    sandbox_policy={
+        "dialect": "sqlite",
+        "database": "per_run_ephemeral",
+        "network": "disabled",
+        "filesystem": "none",
+        "app_database_access": False,
+        "is_container_grade": False,
+    },
+    unavailable_message="SQL runs through the SQLite teaching dialect in an isolated per-run local database.",
 )
 
 COMPILED_LANGUAGE_RUNNER = RunnerCapability(
@@ -406,6 +417,104 @@ def _run_node_typescript(exercise: Mapping[str, object], code: str) -> RuntimeEx
         timeout_s=10.0,
     )
     return _node_result_to_runtime_result(exercise, node_result)
+
+
+def _run_sql_query(exercise: Mapping[str, object], query: str) -> RuntimeExecutionResult:
+    test_cases = exercise.get("test_cases", [])
+    if not isinstance(test_cases, Sequence):
+        test_cases = []
+
+    metadata = exercise.get("metadata_json", {})
+    sql_result = execute_sql_query_with_tests(
+        query,
+        test_cases,
+        metadata=metadata if isinstance(metadata, Mapping) else {},
+        timeout_s=5.0,
+    )
+    return _sql_result_to_runtime_result(exercise, sql_result)
+
+
+def _sql_result_to_runtime_result(exercise: Mapping[str, object], sql_result: SqlExecutionResult) -> RuntimeExecutionResult:
+    test_cases = exercise.get("test_cases", [])
+    if not isinstance(test_cases, Sequence):
+        test_cases = []
+
+    if sql_result.status == "timeout":
+        return RuntimeExecutionResult(
+            runtime_status="timeout",
+            stdout=_bound_text(sql_result.stdout, MAX_RUNNER_STDOUT_CHARS),
+            stderr=_bound_text(sql_result.stderr, MAX_RUNNER_STDERR_CHARS),
+            test_pass_rate=0.0,
+            passed_test_count=0,
+            total_test_count=len(test_cases),
+            test_results=_build_failed_cases(exercise, "SQL query timed out."),
+            error_message="SQL query timed out.",
+            next_action="retry_same",
+            preview_html=None,
+            core_blank_gate=False,
+            any_blank_passed=False,
+            logic_pass=False,
+        )
+
+    if sql_result.status in {"missing_toolchain", "unsupported"}:
+        message = sql_result.error or "SQLite support is required for SQL exercises."
+        return RuntimeExecutionResult(
+            runtime_status="unsupported",
+            stdout="",
+            stderr="",
+            test_pass_rate=0.0,
+            passed_test_count=0,
+            total_test_count=len(test_cases),
+            test_results=_build_failed_cases(exercise, message),
+            error_message=_bound_text(message, MAX_RUNNER_ERROR_CHARS),
+            next_action="retry_same",
+            preview_html=None,
+            core_blank_gate=False,
+            any_blank_passed=False,
+            logic_pass=False,
+        )
+
+    if sql_result.status == "runtime_error":
+        return RuntimeExecutionResult(
+            runtime_status="runtime_error",
+            stdout=_bound_text(sql_result.stdout, MAX_RUNNER_STDOUT_CHARS),
+            stderr=_bound_text(sql_result.stderr, MAX_RUNNER_STDERR_CHARS),
+            test_pass_rate=0.0,
+            passed_test_count=0,
+            total_test_count=len(test_cases),
+            test_results=_build_failed_cases(exercise, sql_result.error or "SQL query failed."),
+            error_message=_bound_text(sql_result.error or "SQL query failed.", MAX_RUNNER_ERROR_CHARS),
+            next_action="explain_error",
+            preview_html=None,
+            core_blank_gate=False,
+            any_blank_passed=False,
+            logic_pass=False,
+        )
+
+    test_results = [_public_test_result(result, index) for index, result in enumerate(sql_result.test_results)]
+    total_weight = sum(result.weight for result in sql_result.test_results)
+    passed_weight = sum(result.weight for result in sql_result.test_results if result.passed)
+    passed_count = sum(1 for result in sql_result.test_results if result.passed)
+    total_count = len(sql_result.test_results) or len(test_cases)
+    test_pass_rate = 0.0 if total_weight == 0 else round(passed_weight / total_weight, 4)
+    logic_pass = test_pass_rate == 1.0
+    next_action = _next_action_for_run(test_results, logic_pass, "sql_query_test")
+
+    return RuntimeExecutionResult(
+        runtime_status="success",
+        stdout=_bound_text(sql_result.stdout.rstrip("\n"), MAX_RUNNER_STDOUT_CHARS),
+        stderr=_bound_text(sql_result.stderr, MAX_RUNNER_STDERR_CHARS),
+        test_pass_rate=test_pass_rate,
+        passed_test_count=passed_count,
+        total_test_count=total_count,
+        test_results=test_results,
+        error_message=None,
+        next_action=next_action,
+        preview_html=None,
+        core_blank_gate=logic_pass,
+        any_blank_passed=passed_count > 0,
+        logic_pass=logic_pass,
+    )
 
 
 def _node_result_to_runtime_result(exercise: Mapping[str, object], node_result: NodeExecutionResult) -> RuntimeExecutionResult:

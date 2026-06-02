@@ -12,6 +12,7 @@ ExecutionMode = Literal[
     "python_stdout_test",
     "node_typescript_test",
     "node_later",
+    "sql_query_test",
     "sql_later",
     "compiled_later",
     "none",
@@ -47,7 +48,7 @@ class LanguageCapability:
 
     @property
     def supports_execution(self) -> bool:
-        return self.execution in {"browser_preview", "python_stdout_test", "node_typescript_test"}
+        return self.execution in {"browser_preview", "python_stdout_test", "node_typescript_test", "sql_query_test"}
 
     @property
     def supports_tests(self) -> bool:
@@ -214,19 +215,20 @@ LANGUAGE_CAPABILITIES: dict[str, LanguageCapability] = {
         display_name="SQL",
         aliases=(),
         current_public_course_language=None,
-        capability_state="planned",
+        capability_state="partial",
         lesson_generation="planned",
         grounding="planned",
-        exercise_generation="planned",
-        execution="sql_later",
-        tests="none",
+        exercise_generation="executable",
+        execution="sql_query_test",
+        tests="visible_hidden",
         static_analysis="planned",
-        review_feedback="planned",
-        presentation="static_feedback",
-        ux_disclosure="SQL execution requires an isolated query runner and is not runnable yet.",
+        review_feedback="full",
+        presentation="stdout",
+        ux_disclosure="SQL query exercises run in an isolated per-run SQLite teaching dialect database, not against Aearn's PostgreSQL app database.",
         runner_key="sql",
         source_trust_policy="trusted_de_facto",
         enabled_for_public_selection=False,
+        sandbox_boundary="sqlite_ephemeral_not_app_database",
     ),
     "html": LanguageCapability(
         language_id="html",

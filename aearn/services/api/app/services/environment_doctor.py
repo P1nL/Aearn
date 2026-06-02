@@ -232,7 +232,7 @@ COMMAND_CHECKS: tuple[ComponentDefinition, ...] = (
         kind="database_tooling",
         command="psql",
         args=("--version",),
-        required_for=("sql_runner_planned", "database_debug"),
+        required_for=("database_debug",),
         guidance_id="sql_database_windows",
     ),
 )
@@ -335,16 +335,17 @@ GUIDANCE_TEMPLATES: tuple[GuidanceTemplate, ...] = (
     ),
     GuidanceTemplate(
         guidance_id="sql_database_windows",
-        title="Prepare SQL/database tooling for planned SQL exercises",
+        title="Understand the SQLite teaching dialect for SQL exercises",
         applies_to=("sql", "postgres_client", "database_debug"),
-        severity="recommended",
-        summary="SQL execution requires a future isolated query runner; psql is useful for local database debugging only.",
+        severity="optional",
+        summary="SQL exercises use Python's bundled SQLite module in an isolated per-run teaching database; psql is only useful for debugging Aearn's PostgreSQL app database.",
         windows_steps=(
-            "Use Docker Desktop for the Aearn PostgreSQL service.",
+            "No separate SQL server is required for SQL exercises.",
+            "Use Docker Desktop for the Aearn PostgreSQL service only when running the app database.",
             "Install PostgreSQL client tools only if you need local database debugging.",
         ),
-        verification_commands=("psql --version", "docker compose -f .\\aearn\\infra\\docker-compose.yml ps"),
-        safety_notes=("Detected psql does not make SQL exercises executable until the SQL runner task is complete.",),
+        verification_commands=("python -c \"import sqlite3; print(sqlite3.sqlite_version)\"", "docker compose -f .\\aearn\\infra\\docker-compose.yml ps"),
+        safety_notes=("SQL exercises must not run learner queries against Aearn's PostgreSQL app database.",),
     ),
 )
 
@@ -355,7 +356,7 @@ LANGUAGE_TOOLCHAINS: dict[str, str | None] = {
     "typescript": "node",
     "html": "node",
     "css": "node",
-    "sql": "postgres_client",
+    "sql": "python_runtime",
     "java": "jdk",
     "go": "go",
     "csharp": "dotnet",
@@ -587,7 +588,7 @@ def _build_language_runners(component_by_id: dict[str, EnvironmentComponent]) ->
 
 
 def _product_status_for(exercise_generation: str, execution: str) -> ProductStatus:
-    if execution in {"browser_preview", "python_stdout_test", "node_typescript_test"}:
+    if execution in {"browser_preview", "python_stdout_test", "node_typescript_test", "sql_query_test"}:
         return "executable"
     if exercise_generation == "static_review":
         return "static_review"
