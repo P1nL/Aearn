@@ -71,3 +71,36 @@ Completed chat-first onboarding normalization, expanded public route language bo
 ### Next Steps
 
 - None - task complete
+
+
+## Session 62: Dynamic onboarding route generation
+
+**Date**: 2026-06-03
+**Task**: Dynamic onboarding route generation
+**Branch**: `main`
+
+### Summary
+
+Implemented no-fallback dynamic onboarding route generation, fixed DeepSeek plan generation by prefetching authoritative doc TOCs before direct JSON calls, updated tests/docs/specs, and verified backend/frontend quality gates.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `0245827` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
