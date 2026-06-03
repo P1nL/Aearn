@@ -286,11 +286,15 @@ collect_goal
 
 - JS / HTML / CSS -> `browser_preview`
 - Python -> `python_stdout_test`
-- Java / C++ -> `compiled_sandbox_later`
+- TypeScript -> `node_typescript_test`
+- SQL -> `sql_query_test`
+- Java / Go / C# -> `managed_compiled_test`
+- C++ / Rust -> unsupported public route; internal/planned profiles may disclose `compiled_sandbox_later` but must not generate a public course
 
 失败分支：
 
-- 用户要求第一版完整运行 Java / C++ -> 返回能力边界说明，继续生成静态课程草稿
+- 用户要求完整项目级 Java / Go / C# 执行或包管理器工作流 -> 返回 `managed_compiled_test` 的 teaching-grade 单练习边界说明。
+- 用户要求 C++ / Rust 公开路线或第一版完整运行 -> 返回暂不支持说明，不生成公开课程草稿或可运行练习。
 
 #### `generate_plan_draft`
 
@@ -508,7 +512,10 @@ start_learning_session
 
 - JS / HTML / CSS 必须有可见预览或 DOM 断言
 - Python 必须有函数输入输出或 stdout 判定
-- Java / C++ 只能标记为 `compiled_sandbox_later`
+- TypeScript 必须有单文件函数测试或 stdout 判定
+- SQL 必须有 SQLite 教学方言查询判定
+- Java / Go / C# 可标记为 `managed_compiled_test`，但只能生成单文件或服务端 harness 教学练习
+- C++ / Rust 不能生成公开路线练习；内部/计划态 profile 只能标记为 `compiled_sandbox_later`
 
 写入：
 
@@ -1224,7 +1231,7 @@ stateDiagram-v2
 ## 第一版不做
 
 - 多 Agent 协同教学图
-- Java / C++ 真实编译沙箱编排
+- 完整在线编译沙箱、项目级 Java / Go / C# 编排、包管理器执行、C++ / Rust 真实编译运行
 - 项目级多文件调试状态机
 - 对外分发工作流
 - 独立复盘草稿、`publishDrawer`、`CodeDraftPage`、面试讲述草稿

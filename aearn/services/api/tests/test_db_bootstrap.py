@@ -33,10 +33,17 @@ def test_bootstrap_is_repeatable_and_seeds_catalog() -> None:
 
     assert runtime_count is not None
     assert course_count is not None
-    assert runtime_count["count"] >= 6
-    assert course_count["count"] >= 5
+    assert runtime_count["count"] >= 9
+    assert course_count["count"] >= 8
 
     with connect() as conn:
+        ts_runtime = conn.execute(
+            """
+            SELECT runtime_tier, language, runner
+            FROM runtime_profiles
+            WHERE slug = 'rt_node_typescript'
+            """,
+        ).fetchone()
         sql_runtime = conn.execute(
             """
             SELECT runtime_tier, language, runner, sandbox_policy
@@ -44,12 +51,24 @@ def test_bootstrap_is_repeatable_and_seeds_catalog() -> None:
             WHERE slug = 'rt_sql_sqlite_query'
             """,
         ).fetchone()
+        active_cpp_course = conn.execute(
+            """
+            SELECT id
+            FROM language_courses
+            WHERE language = 'cpp' AND archived_at IS NULL
+            """,
+        ).fetchone()
 
+    assert ts_runtime is not None
+    assert ts_runtime["runtime_tier"] == "node_typescript_test"
+    assert ts_runtime["language"] == "typescript"
+    assert ts_runtime["runner"] == "node"
     assert sql_runtime is not None
     assert sql_runtime["runtime_tier"] == "sql_query_test"
     assert sql_runtime["language"] == "sql"
     assert sql_runtime["runner"] == "sql"
     assert sql_runtime["sandbox_policy"]["dialect"] == "sqlite"
+    assert active_cpp_course is None
 
 
 def test_core_learning_relationships_can_be_inserted() -> None:

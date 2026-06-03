@@ -78,7 +78,15 @@ export type RuntimeTier =
   | "managed_compiled_test"
   | "compiled_sandbox_later";
 export type LearningMode = "goal_based" | "material_based";
-export type Language = "javascript" | "python" | "java" | "cpp" | "html_css";
+export type Language =
+  | "javascript"
+  | "python"
+  | "typescript"
+  | "sql"
+  | "java"
+  | "go"
+  | "csharp"
+  | "html_css";
 export type RuntimeStatus =
   | "success"
   | "missing_toolchain"
@@ -242,7 +250,7 @@ export type PlanDraft = {
   modules: DraftModule[];
   runtime_boundary: {
     runtime_tier: RuntimeTier;
-    unsupported_languages: Language[];
+    unsupported_languages: string[];
     notice: string;
   };
   source_attribution: string[];

@@ -57,7 +57,7 @@ docs/design/learning-agent-claude-desktop-framework.html
 - 不要在前端计算最终评分、FSRS Rating、`due_at` 或 ReviewState。
 - 不要向用户暴露 `Attempt(run)`、`Attempt(submit)`、`review_submit` 这类内部事实标签。
 - 不要给 Settings 增加修改评分规则、Attempt 必填事实、FSRS 参数或 raw `due_at` 的控件。
-- 不要在 Java/C++ 上展示“可运行”能力，除非后端明确提供可用 runtime。
+- 不要把 compiled 语言统一展示为“可完整运行”：Java / Go / C# 只有 `managed_compiled_test` teaching-grade 单练习能力；C++ / Rust 暂不支持公开路线。
 - 不要持久化真实模型 API key 到前端、数据库或仓库文件。
 - 不要把 API-only 成功当成前端通过；必须看真实渲染 UI。
 

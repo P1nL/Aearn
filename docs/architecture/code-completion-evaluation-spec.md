@@ -41,12 +41,12 @@
 |---|---|---|---|
 | `browser_preview` | JS / HTML / CSS | 浏览器内实时预览、DOM 断言、console 输出 | 是 |
 | `python_stdout_test` | Python | stdout、函数测试、简单单元测试 | 是，可先 mock 判定 |
-| `node_typescript_test` | TypeScript | 本机 Node / TypeScript 单文件函数测试 | 否，非公开选课，runner 通过后可用于验证 |
-| `sql_query_test` | SQL | SQLite 教学方言、每次运行独立临时数据库 | 否，非公开选课，runner 通过后可用于验证 |
-| `managed_compiled_test` | Java / Go / C# | 本机 toolchain + 单文件/服务端 harness 编译运行、可见/隐藏测试 | 否，Phase 3 教学级执行 |
+| `node_typescript_test` | TypeScript | 本机 Node / TypeScript 单文件函数测试 | 公开路线可用，教学级单文件 runner |
+| `sql_query_test` | SQL | SQLite 教学方言、每次运行独立临时数据库 | 公开路线可用，不连接 Aearn PostgreSQL app database |
+| `managed_compiled_test` | Java / Go / C# | 本机 toolchain + 单文件/服务端 harness 编译运行、可见/隐藏测试 | 公开路线可用，教学级单练习 runner |
 | `compiled_sandbox_later` | Rust / C++ | 静态阅读、补全或文档 grounding；真实编译执行后置 | 否，保留扩展位 |
 
-如果 `runtime_tier` 为 `compiled_sandbox_later`，第一版只能展示课程和静态练习，不得承诺完整实时运行。
+如果 `runtime_tier` 为 `compiled_sandbox_later`，第一版只能展示内部/计划态能力边界或静态练习，不得作为公开路线承诺完整实时运行。
 
 `managed_compiled_test` 不是通用项目/IDE 执行。它只允许 Java / Go / C# 的单练习临时目录执行，不自动安装 JDK / Go / .NET，不支持 Maven / Gradle / Go modules / NuGet / `.sln`、外部依赖或任意项目文件夹。公开 `runtime_status` 必须稳定区分：`missing_toolchain`、`unsupported`、`compile_error`、`runtime_error`、`timeout`、`test_failure`、`success`。
 

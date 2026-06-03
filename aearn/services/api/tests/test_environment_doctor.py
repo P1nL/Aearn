@@ -150,7 +150,7 @@ def test_environment_doctor_does_not_turn_detected_planned_tools_into_execution(
     assert runners["csharp"]["product_status"] == "executable"
     assert runners["csharp"]["supports_execution"] is True
     assert runners["rust"]["product_status"] == "planned"
-    assert runners["cpp"]["product_status"] == "static_review"
+    assert runners["cpp"]["product_status"] == "planned"
 
 
 def test_environment_doctor_distinguishes_toolchain_missing_from_product_support(tmp_path: Path) -> None:
@@ -185,7 +185,7 @@ def test_environment_doctor_distinguishes_toolchain_missing_from_product_support
     assert runners["csharp"]["product_status"] == "executable"
     assert runners["csharp"]["toolchain_status"] == "missing"
     assert runners["rust"]["product_status"] == "planned"
-    assert runners["cpp"]["product_status"] == "static_review"
+    assert runners["cpp"]["product_status"] == "planned"
 
 
 def test_environment_doctor_route_returns_contract() -> None:

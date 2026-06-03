@@ -232,7 +232,7 @@ Stop only script-managed Aearn processes whose current command line still matche
 - Preference updates allow only `display_name`, `learning_style`, `teaching_preference`, `encouragement_preference`, `profession`, `background_context`, `preferred_time_slots`, and `reminder_preference`.
 - Preference updates must reject scoring, Attempt persistence, FSRS parameter, and `due_at` fields with `VALIDATION_ERROR`.
 - `POST /api/plans/generate` validates `goal_based.goal_text` or `material_based.materials[*].content`, then reads `users`, `language_courses`, and `runtime_profiles`.
-- JS/HTML/CSS/Python drafts must expose `browser_preview` or `python_stdout_test`; Java/C++ drafts may be returned only with `compiled_sandbox_later` notices.
+- Public drafts for JS/HTML/CSS/Python/TypeScript/SQL/Java/Go/C# must expose the matching teaching-grade runtime tier; C++ and Rust are not public route languages.
 - JS/HTML/CSS/Python draft templates must be multi-module routes organized by official learning taxonomies, then adapted to Aearn's executable verification loop:
   - Python follows Python Tutorial-style categories such as basics/value flow, control flow/functions, data structures, modules/I/O, errors/tests, and classes/code review.
   - JavaScript follows MDN JavaScript Guide-style categories such as language basics, control flow/functions, objects/state, DOM events, async/modules, and generated-code verification.
@@ -246,7 +246,7 @@ Stop only script-managed Aearn processes whose current command line still matche
 - `PLAN_GENERATION_ENABLED=false`, missing model configuration, missing dynamic client, invalid dynamic output, guardrail rejection, or web-tool failure must fall back to server-owned `COURSE_TEMPLATES` or a validated onboarding plan candidate without exposing raw provider/tool errors.
 - `EXA_API_KEY` is optional and only enables the web tools used by `plan_generation_agent`; real keys must stay in local `.env`, never in docs, tests, logs, or fixtures.
 - Dynamic plan generation must use OpenAI-compatible SDK calls with `temperature=None` unless provider support for sampling parameters is explicitly tested; third-party Responses-compatible providers may reject `temperature` and must not turn route generation into a slow failure path.
-- Adding a public language such as TypeScript, Rust, or Go requires updating the Pydantic `Language` literal, database CHECK constraints, catalog seed, runtime boundary, API examples, and acceptance tests. Adding an `AUTHORITATIVE_DOCS` URL alone is not sufficient.
+- Adding a new public language such as C++ or Rust requires updating the Pydantic `Language` literal, database CHECK constraints, catalog seed, runtime boundary, API examples, and acceptance tests. Adding an `AUTHORITATIVE_DOCS` URL alone is not sufficient.
 
 ### 4. Validation & Error Matrix
 
@@ -262,14 +262,14 @@ Stop only script-managed Aearn processes whose current command line still matche
 ### 5. Good/Base/Bad Cases
 
 - Good: generate draft, confirm once, replay same request, and receive the existing plan without duplicate modules or review states.
-- Base: Java/C++ course is visible in catalog and draft generation returns an unsupported runtime notice without promising execution.
+- Base: Java/Go/C# courses are visible with `managed_compiled_test` teaching-grade boundaries, TypeScript is visible with `node_typescript_test`, SQL is visible with `sql_query_test`, and C++/Rust are absent from public course selection.
 - Bad: a settings request modifies `fsrs_parameters`, a plan draft creates `Attempt` rows, or `POST /api/plans/generate` writes formal plan rows.
 
 ### 6. Tests Required
 
 - Assert user create/get/preference update success.
 - Assert forbidden preference fields return `VALIDATION_ERROR`.
-- Assert catalog includes Java/C++ `compiled_sandbox_later` entries.
+- Assert catalog includes TypeScript `node_typescript_test`, SQL `sql_query_test`, Java/Go/C# `managed_compiled_test`, and no active C++/Rust course entries.
 - Assert goal and material generation success, insufficient input, unknown user, and unknown course.
 - Assert supported MVP course templates keep the official-taxonomy module order and do not regress to one-module route cards.
 - Assert `PLAN_GENERATION_ENABLED=false` preserves the template path and response shape.
@@ -820,7 +820,7 @@ The shared SSE writer serializes a compact one-line JSON frame and keeps the eve
 
 - Good: a configured SDK candidate improves coaching or draft wording while repositories still own `Attempt`, `ReviewState`, `ReviewLog`, `Note`, `LearningPlan`, and `idempotency_records` writes.
 - Base: local development has no model key; every SDK-backed path returns `MODEL_UNAVAILABLE` and still passes model-key-free tests through fake clients.
-- Bad: SDK code writes product rows, exposes SDK event names through SSE, logs raw prompts, returns provider error bodies, trusts model-provided knowledge point IDs, or promises Java/C++ execution for `compiled_sandbox_later`.
+- Bad: SDK code writes product rows, exposes SDK event names through SSE, logs raw prompts, returns provider error bodies, trusts model-provided knowledge point IDs, presents Java `managed_compiled_test` as full project execution, or promises C++ execution for `compiled_sandbox_later`.
 
 ### 6. Tests Required
 
@@ -1159,7 +1159,7 @@ The feature service loads facts and owns persistence, while the shared layer onl
 
 ### 5. Good/Base/Bad Cases
 
-- Good: TypeScript may have official docs grounding and a validated Node/TypeScript runner while still remaining `enabled_for_public_selection=False` until route/content/UI work explicitly enables public selection.
+- Good: TypeScript may have official docs grounding, a validated Node/TypeScript runner, and `enabled_for_public_selection=True` because the route/content/UI contract explicitly enables public selection.
 - Good: fetching a registered Python seed URL through an injected fake client returns a document with canonical URL, final URL, fetched timestamp, content type, and content hash.
 - Good: cleaning fetched HTML returns section-aware chunks with canonical URL, trust tier, source type, fetched timestamp, topic tags, and stable hashes.
 - Good: a Python retrieval query never returns JavaScript chunks, even when the text matches.
@@ -1278,3 +1278,78 @@ else:
 ```
 
 Browser preview exercises share the same runtime tier, but JavaScript event-flow and HTML/CSS static preview have different deterministic validation rules.
+
+## Scenario: Onboarding Chat-First Message Normalization
+
+### 1. Scope / Trigger
+
+- Trigger: adding or changing Onboarding conversation generation, visible message normalization, slot extraction readiness, or route-card generation.
+- Scope: `app/services/conversations/onboarding_conversation.py`, `app/routes/onboarding.py`, `app/agents/onboarding/onboarding_slot_extractor.py`, and Onboarding tests.
+
+### 2. Signatures
+
+- Visible message normalizer: `normalize_onboarding_agent_message(content, *, slots, route_ready) -> str`.
+- Route tool event: `show_learning_route` may be emitted only after required slots are confirmed.
+- Public SSE errors: `MODEL_UNAVAILABLE` and `LANGUAGE_NOT_SUPPORTED`.
+
+### 3. Contracts
+
+- Onboarding is chat-first and workflow-aware: answer or acknowledge the user's latest intent before asking for route-building details.
+- Slot extraction, `missing_slot_question`, and `plan_ready` are private workflow state, not a reason to erase valid advisory, comparison, or capability answers.
+- If `route_ready=false`, visible text must not claim "information is enough", route-card generation, or route readiness.
+- If required slots are missing or ambiguous, do not emit `show_learning_route` and do not persist `extracted_context.plan_draft`.
+- Explicit C++ or Rust route choices keep the `LANGUAGE_NOT_SUPPORTED` path.
+- Model failure keeps the `MODEL_UNAVAILABLE` path; do not add keyword slot parsing or deterministic conversation fallback.
+- Language support has separate layers:
+  - Public course / route selection: `python`, `javascript`, `typescript`, `sql`, `html_css`, `java`, `go`, and `csharp`.
+  - Teaching-grade executable runners: TypeScript / TS, SQL, Go, and C# may be public routes while still being limited to single-file, query, or harness-based execution.
+  - Unsupported route languages: C++ and Rust remain `LANGUAGE_NOT_SUPPORTED` until a task updates catalog, content, UI, API examples, and tests together.
+- TypeScript / TS is executable through the Node/TypeScript runner and is an independent public route.
+- Agent language advice may mention Python first for tooling, automation, backend, and local scripts, and JavaScript/TypeScript for web-product agents; TypeScript must not be bridged to JavaScript.
+
+### 4. Validation & Error Matrix
+
+- Valid advisory/comparison/capability answer with missing required slot -> preserve answer and append or keep at most one natural follow-up.
+- Model text claims route readiness while `route_ready=false` -> replace with the missing-slot follow-up.
+- Empty generated model text -> keep empty so the route can return `MODEL_UNAVAILABLE`.
+- Required slot status is `missing`, `ambiguous`, or `unsupported` -> `plan_ready=false`; no route tool and no stashed draft.
+- TypeScript / TS selected with all required slots confirmed -> generate `language=typescript`; no `LANGUAGE_NOT_SUPPORTED`.
+- TypeScript / TS selected with missing or ambiguous required slots -> no `show_learning_route` and no stashed `plan_draft`.
+- Explicit C++ or Rust as the selected route -> `LANGUAGE_NOT_SUPPORTED`.
+
+### 5. Good/Base/Bad Cases
+
+- Good: "agent 一般用什么语言" receives a recommendation such as Python for tooling/automation and JavaScript/TypeScript for web products before any route-building follow-up.
+- Good: "我想用 TypeScript 做网页端科研助手，零基础" can create a TypeScript public route instead of reporting `LANGUAGE_NOT_SUPPORTED` or bridging to JavaScript.
+- Good: "Python 和 JavaScript 哪个更适合做 agent" receives a recommended first path with reasoning, then one follow-up at most.
+- Base: a direct slot answer such as "Python" can advance to the next missing route-building question.
+- Bad: replacing a valid answer with only "你想主学哪门语言？目前支持 ..." when the user asked an advisory or capability question.
+- Bad: synthesizing a route card or stashing `plan_draft` while required slots remain ambiguous.
+
+### 6. Tests Required
+
+- Unit-test normalization for advisory, capability, comparison, duplicate-follow-up avoidance, route-ready claim blocking, and empty model text.
+- Route/SSE tests must cover direct slot progression, independent TypeScript route generation, ambiguous required and optional slots, C++/Rust unsupported-language behavior, `MODEL_UNAVAILABLE`, and route-card generation/replay.
+- Assert ambiguous required slots leave persisted `extracted_context.plan_ready=false` and omit `plan_draft`.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+if question and not _text_contains_phrase(text, question):
+    return _missing_slot_followup_message(slots)
+```
+
+This erases useful chat-first answers and makes Onboarding feel like a form.
+
+#### Correct
+
+```python
+if _claims_route_ready(text):
+    return _missing_slot_followup_message(slots)
+if question and _has_structured_clarification(slots):
+    return _append_missing_slot_followup_message(text, slots)
+```
+
+Safety blocking remains strict, while valid conversational answers stay visible.

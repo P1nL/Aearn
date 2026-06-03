@@ -45,7 +45,7 @@ ONBOARDING_JUDGEMENT_POLICY = JudgementPolicy(
         FieldPolicy(
             name="language",
             required=True,
-            fallback_question="你想主学哪门语言？目前支持 Python、JavaScript、HTML+CSS、Java 和 C++。",
+            fallback_question="你想主学哪门语言？目前支持 Python、JavaScript、TypeScript、HTML+CSS、Java、Go、C# 和 SQL。",
         ),
         FieldPolicy(
             name="goal_text",
@@ -409,11 +409,13 @@ def normalize_onboarding_agent_message(
     text = content.strip()
     if route_ready:
         return text
+    if not text:
+        return text
     question = (slots.missing_slot_question or "").strip()
-    if _claims_route_ready(text) or (
-        question and _has_structured_clarification(slots) and not _text_contains_phrase(text, question)
-    ):
+    if _claims_route_ready(text):
         return _missing_slot_followup_message(slots)
+    if question and _has_structured_clarification(slots) and not _text_contains_phrase(text, question):
+        return _append_missing_slot_followup_message(text, slots)
     return text
 
 
@@ -529,7 +531,7 @@ def build_plan_draft_from_slots(
     if not slots.language:
         raise OnboardingPlanDraftError(
             "LANGUAGE_NOT_SUPPORTED",
-            "请告诉我你想学的具体语言（目前支持 Python / JavaScript / HTML+CSS 等）。",
+            "请告诉我你想学的具体语言（目前支持 Python / JavaScript / TypeScript / HTML+CSS / Java / Go / C# / SQL）。",
         )
 
     course = get_course(conn, language=slots.language)
@@ -732,6 +734,8 @@ def _build_messages(
             "content": (
                 "你是 Aearn 的建档引导 Agent，帮用户把'想学编程'的模糊念头收敛成一份具体的学习计划。\n"
                 "你的角色更像一个懂行的朋友在帮 ta 理思路，不是问卷调查员。\n"
+                "你的对话模式要像 Claude Code / Codex 这类 agentic assistant：先理解用户这一轮真实意图，"
+                "再回答、确认或行动；槽位、路线生成条件和工具调用是后台状态，不能把它们当成可见对话本身。\n"
                 "\n"
                 "每一轮的回复，按这个节奏：\n"
                 "\n"
@@ -744,11 +748,18 @@ def _build_messages(
                 "   - 用户陈述的是事实或目标，先确认你听懂了，必要时复述关键信息让 ta 知道你接住了。\n"
                 "   - 用户还没表达任何方向（'hi'、'帮我学编程'、'随便推荐'），先简短自我介绍，\n"
                 "     说明当前能支持的语言范围，再问一句开放式的问题让 ta 起头。\n"
+                "   - 用户问的是能力、概念或元问题（'你能做什么'、'Aearn 能帮我什么'、'agent 是什么'），\n"
+                "     先解释清楚，再自然连接到学习路径选择，不要直接变成语言槽位追问。\n"
+                "   - 用户问 AI Agent / agent 通常用什么语言时，优先建议 Python 用于工具调用、自动化、后端和本地脚本；\n"
+                "     如果用户偏网页产品或前端交互，可以说明 JavaScript/TypeScript 更贴近产品界面，\n"
+                "     TypeScript 也是当前可独立建档的公开路线；如果用户明确选择 C++ 或 Rust，说明这两门暂不支持公开路线。\n"
                 "\n"
                 "2. 再用一句自然的引导，让对话朝缺失的信息前进。\n"
                 "   - 不要在用户已经聊过或问过的话题上硬岔走。\n"
+                "   - 如果用户在连续问建议、概念或能力问题，不要每轮重复同一个槽位问题；先把问题讲明白。\n"
                 "   - 不要把所有缺失项一次问完。每轮挑一个最关键的缺口，用对话语气问，不要清单式罗列。\n"
-                "   - 如果当前已抽取槽位里的 plan_ready=false，必须围绕 missing_slot_question 追问，禁止说'信息够了'、'生成路线'或'路线卡片'。\n"
+                "   - 如果当前已抽取槽位里的 plan_ready=false，可以围绕 missing_slot_question 做一个自然追问，"
+                "但前提是先回答用户刚刚问的问题；禁止说'信息够了'、'生成路线'或'路线卡片'。\n"
                 "   - 如果用户上一轮已经把主要信息一次给齐了，跳过引导，直接告诉 ta\n"
                 "     '信息够了，我生成一份路线卡片。想改方向、时间或难度，直接回复我就行。'。\n"
                 "   - 不要在普通文字回复中展开完整学习路线、周计划或模块列表；这些内容由系统路线卡片承载。\n"
@@ -763,8 +774,8 @@ def _build_messages(
                 "风格约束：\n"
                 "- 简体中文，自然口语，像在跟朋友聊天，不要'请问'、'麻烦您'这种生硬的客套。\n"
                 "- 不要清单式罗列，除非用户明确想看对比。\n"
-                "- 支持范围：Python / JavaScript / HTML+CSS / Java / C++。\n"
-                "  用户提到范围外的语言时，不要直接拒绝；用一句话说明，再推荐一个相近的支持项。\n"
+                "- 支持范围：Python / JavaScript / TypeScript / HTML+CSS / Java / Go / C# / SQL。\n"
+                "  用户明确选择 C++ 或 Rust 时，说明这两门暂不支持公开路线，再推荐一个相近的支持项。\n"
                 "- 不要输出 API key、provider 错误、原始 prompt 或槽位 JSON。"
             ),
         },
@@ -817,6 +828,61 @@ def _missing_slot_followup_message(slots: ExtractedSlots) -> str:
     return question
 
 
+def _append_missing_slot_followup_message(text: str, slots: ExtractedSlots) -> str:
+    if text.rstrip().endswith(("?", "？")) or _already_asks_missing_slot_question(text, slots):
+        return text
+    followup = _missing_slot_followup_message(slots).strip()
+    if not followup or _text_contains_phrase(text, followup):
+        return text
+    return f"{text}\n\n{followup}"
+
+
+def _already_asks_missing_slot_question(text: str, slots: ExtractedSlots) -> bool:
+    slot_name = _first_blocking_slot_name(slots)
+    if slot_name is None:
+        return False
+    if not any(marker in text for marker in ("?", "？", "吗", "呢")):
+        return False
+    normalized = "".join(text.split()).lower()
+    if slot_name == "language":
+        return any(
+            marker in normalized
+            for marker in (
+                "你想用哪种编程语言",
+                "你想主学哪门语言",
+                "想学哪门语言",
+                "选择哪门语言",
+                "编程语言来实现",
+            )
+        ) or (
+            "语言" in normalized
+            and any(marker in normalized for marker in ("哪", "选择", "想用", "想学", "支持"))
+        )
+    if slot_name == "goal_text":
+        return any(marker in normalized for marker in ("想用它做什么", "具体方向", "具体项目", "学习目标"))
+    if slot_name == "target_level":
+        return any(marker in normalized for marker in ("基础", "水平", "零基础", "会一点", "独立写小项目"))
+    if slot_name == "time_budget":
+        return any(marker in normalized for marker in ("每天多久", "每周多久", "每周能学", "学习时间"))
+    if slot_name == "focus":
+        return any(marker in normalized for marker in ("重点方向", "重点放在哪里", "主线"))
+    return False
+
+
+def _first_blocking_slot_name(slots: ExtractedSlots) -> str | None:
+    for slot_name in REQUIRED_SLOT_PRIORITY:
+        judgement = slots.slot_statuses.get(slot_name)
+        if judgement is not None and judgement.status != "confirmed":
+            return slot_name
+        if getattr(slots, slot_name, None) is None:
+            return slot_name
+    for slot_name in OPTIONAL_CLARIFICATION_SLOT_PRIORITY:
+        judgement = slots.slot_statuses.get(slot_name)
+        if judgement is not None and judgement.status in {"ambiguous", "unsupported"}:
+            return slot_name
+    return None
+
+
 def _slot_acknowledgement(slots: ExtractedSlots) -> str:
     if slots.time_budget is not None:
         return (
@@ -833,7 +899,7 @@ def _slot_acknowledgement(slots: ExtractedSlots) -> str:
 
 def _fallback_missing_slot_question(slots: ExtractedSlots) -> str:
     if not slots.language:
-        return "你想主学哪门语言？目前支持 Python、JavaScript、HTML+CSS、Java 和 C++。"
+        return "你想主学哪门语言？目前支持 Python、JavaScript、TypeScript、HTML+CSS、Java、Go、C# 和 SQL。"
     if not slots.goal_text:
         return "你最想用它做什么具体方向或项目？"
     if not slots.target_level:

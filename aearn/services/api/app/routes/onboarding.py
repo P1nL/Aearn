@@ -56,8 +56,17 @@ from app.services.streaming.sse import SSEWriter, chunk_tool_call_arguments, str
 
 router = APIRouter(prefix="/api/onboarding", tags=["onboarding"])
 
-SUPPORTED_ONBOARDING_LANGUAGES = ["python", "javascript", "html_css", "java", "cpp"]
-SUPPORTED_ONBOARDING_LANGUAGE_LABELS = "Python / JavaScript / HTML+CSS / Java / C++"
+SUPPORTED_ONBOARDING_LANGUAGES = [
+    "python",
+    "javascript",
+    "typescript",
+    "html_css",
+    "java",
+    "go",
+    "csharp",
+    "sql",
+]
+SUPPORTED_ONBOARDING_LANGUAGE_LABELS = "Python / JavaScript / TypeScript / HTML+CSS / Java / Go / C# / SQL"
 ONBOARDING_GRAPH_ALLOWED_INTENT_TARGETS = {
     IntentType.TOOL_CALL: ("build_plan_draft", "rebuild_plan_draft"),
     IntentType.PERSISTENCE: ("confirm_plan",),
@@ -668,8 +677,7 @@ def _language_not_supported_error(
         code="LANGUAGE_NOT_SUPPORTED",
         message=(
             f"当前还没有 {unsupported_language} 的独立建档路线模板。"
-            f"请改选 {SUPPORTED_ONBOARDING_LANGUAGE_LABELS}；"
-            "如果你想走 TypeScript，可以先选择 JavaScript 路线，再把目标写成后续过渡到 TypeScript。"
+            f"请改选 {SUPPORTED_ONBOARDING_LANGUAGE_LABELS}。"
         ),
         request_id=request_id,
         details={

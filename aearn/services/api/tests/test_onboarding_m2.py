@@ -92,14 +92,65 @@ def test_preference_update_rejects_fixed_backend_rules(client: TestClient) -> No
     ]
 
 
-def test_language_courses_disclose_managed_java_and_compiled_later_cpp(client: TestClient) -> None:
+def test_language_courses_disclose_public_mainstream_languages_and_archive_cpp(client: TestClient) -> None:
     response = client.get("/api/language-courses")
 
     assert response.status_code == 200
     items = response.json()["items"]
     runtime_tiers = {item["language"]: item["runtime_profile"]["runtime_tier"] for item in items}
+    expected_public_languages = {
+        "javascript",
+        "python",
+        "typescript",
+        "sql",
+        "java",
+        "go",
+        "csharp",
+        "html_css",
+    }
+    assert expected_public_languages.issubset(runtime_tiers)
+    assert "cpp" not in runtime_tiers
+    assert runtime_tiers["typescript"] == "node_typescript_test"
+    assert runtime_tiers["sql"] == "sql_query_test"
     assert runtime_tiers["java"] == "managed_compiled_test"
-    assert runtime_tiers["cpp"] == "compiled_sandbox_later"
+    assert runtime_tiers["go"] == "managed_compiled_test"
+    assert runtime_tiers["csharp"] == "managed_compiled_test"
+
+
+@pytest.mark.parametrize(
+    ("language", "runtime_tier"),
+    [
+        ("typescript", "node_typescript_test"),
+        ("sql", "sql_query_test"),
+        ("go", "managed_compiled_test"),
+        ("csharp", "managed_compiled_test"),
+    ],
+)
+def test_generate_plan_supports_added_public_language_templates(
+    client: TestClient,
+    language: str,
+    runtime_tier: str,
+) -> None:
+    user = _create_user(client)
+    course = _course_by_language(client, language)
+
+    response = client.post(
+        "/api/plans/generate",
+        json={
+            "user_id": user["id"],
+            "mode": "goal_based",
+            "goal_text": f"Learn {language} through generated-code verification.",
+            "course_id": course["id"],
+            "target_level": "beginner",
+        },
+    )
+
+    assert response.status_code == 200
+    draft = response.json()["plan_draft"]
+    assert draft["language"] == language
+    assert draft["runtime_boundary"]["runtime_tier"] == runtime_tier
+    assert draft["modules"][0]["is_skippable"] is False
+    assert len(draft["modules"]) >= 1
 
 
 def test_generate_plan_goal_and_material_modes(client: TestClient) -> None:
@@ -692,7 +743,7 @@ def test_onboarding_message_stream_returns_error_when_model_unavailable(
     assert error["recoverable"] is True
 
 
-def test_onboarding_message_stream_returns_error_when_language_is_not_supported(
+def test_onboarding_message_stream_generates_typescript_route(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -702,18 +753,22 @@ def test_onboarding_message_stream_returns_error_when_language_is_not_supported(
         onboarding_route,
         "extract_slots",
         lambda context: ExtractedSlots(
+            language="typescript",
             target_level="beginner",
             goal_text="学习 TypeScript，开发网页端科研助手",
-            unsupported_language="TypeScript",
-            missing_slot_question="请选择 Python / JavaScript / HTML+CSS / Java / C++。",
-            plan_ready=False,
+            plan_ready=True,
             slot_statuses={
                 "language": {
-                    "status": "unsupported",
-                    "ambiguity_type": "unsupported_or_alias",
+                    "status": "confirmed",
                     "evidence": "TypeScript",
-                    "ambiguity_reason": "TypeScript 还没有独立建档路线模板",
-                    "clarification_question": "请选择 Python / JavaScript / HTML+CSS / Java / C++。",
+                },
+                "target_level": {
+                    "status": "confirmed",
+                    "evidence": "beginner",
+                },
+                "goal_text": {
+                    "status": "confirmed",
+                    "evidence": "学习 TypeScript，开发网页端科研助手",
                 },
             },
         ),
@@ -728,14 +783,21 @@ def test_onboarding_message_stream_returns_error_when_language_is_not_supported(
 
     event_types = [event["event"] for event in events]
     assert "session_created" in event_types
-    assert "agent_message" not in event_types
-    assert "tool_call" not in event_types
-    assert "done" not in event_types
-    error = next(event["data"]["error"] for event in events if event["event"] == "error")
-    assert error["code"] == "LANGUAGE_NOT_SUPPORTED"
-    assert error["recoverable"] is True
-    assert error["details"]["unsupported_language"] == "TypeScript"
-    assert "javascript" in error["details"]["supported_languages"]
+    assert "agent_message" in event_types
+    assert "tool_call" in event_types
+    assert event_types[-1] == "done"
+    assert all(event["event"] != "error" for event in events)
+    agent_text = str(
+        [event for event in events if event["event"] == "agent_message"][-1]["data"]["content"]
+    )
+    assert "路线卡片" in agent_text
+    route_args = next(
+        event["data"]["arguments"]
+        for event in events
+        if event["event"] == "tool_call" and event["data"]["phase"] == "done"
+    )
+    assert route_args["language"] == "typescript"
+    assert "TypeScript" in route_args["goal_text"]
 
     conversation_id = next(
         event["data"]["onboarding_session_id"] for event in events if event["event"] == "session_created"
@@ -746,7 +808,150 @@ def test_onboarding_message_stream_returns_error_when_language_is_not_supported(
             (conversation_id,),
         ).fetchone()
     assert row is not None
-    assert row["extracted_context"]["unsupported_language"] == "TypeScript"
+    assert row["extracted_context"]["language"] == "typescript"
+    assert row["extracted_context"].get("unsupported_language") is None
+    assert row["extracted_context"]["slot_statuses"]["language"]["status"] == "confirmed"
+    assert row["extracted_context"]["slot_statuses"]["language"]["evidence"] == "TypeScript"
+    assert row["extracted_context"]["plan_draft"]["language"] == "typescript"
+
+
+def test_onboarding_message_stream_blocks_typescript_route_when_required_slots_missing(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user = _create_user(client)
+
+    monkeypatch.setattr(
+        onboarding_route,
+        "extract_slots",
+        lambda context: ExtractedSlots(
+            language="typescript",
+            goal_text="学习 TypeScript，开发网页端科研助手",
+            missing_slot_question="你现在大概是零基础、会一点语法，还是已经能独立写小项目？",
+            plan_ready=False,
+            slot_statuses={
+                "language": {
+                    "status": "confirmed",
+                    "evidence": "TypeScript",
+                },
+                "target_level": {
+                    "status": "missing",
+                    "ambiguity_type": "value_missing",
+                    "clarification_question": "你现在大概是零基础、会一点语法，还是已经能独立写小项目？",
+                },
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        onboarding_route,
+        "start_onboarding_generation",
+        lambda context, *, user_content, settings=None, client=None: OnboardingMessageGeneration(
+            chunks=["TypeScript 可以作为独立路线学习，先确认你现在的基础。"],
+            generation_source="llm",
+            generation_model="fake-onboarding-model",
+        ),
+    )
+
+    events = _send_onboarding_stream(
+        client,
+        user_id=str(user["id"]),
+        content="我想用 TypeScript 做一个网页端科研助手",
+        conversation_id=None,
+    )
+
+    event_types = [event["event"] for event in events]
+    assert "session_created" in event_types
+    assert "agent_message" in event_types
+    assert "tool_call" not in event_types
+    assert event_types[-1] == "done"
+    assert all(event["event"] != "error" for event in events)
+    agent_text = str(
+        [event for event in events if event["event"] == "agent_message"][-1]["data"]["content"]
+    )
+    assert "独立写小项目" in agent_text
+
+    conversation_id = next(
+        event["data"]["onboarding_session_id"] for event in events if event["event"] == "session_created"
+    )
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT extracted_context FROM onboarding_conversations WHERE id = %s",
+            (conversation_id,),
+        ).fetchone()
+    assert row is not None
+    assert row["extracted_context"]["language"] == "typescript"
+    assert row["extracted_context"].get("unsupported_language") is None
+    assert row["extracted_context"]["plan_ready"] is False
+    assert "plan_draft" not in row["extracted_context"]
+
+
+@pytest.mark.parametrize(
+    ("unsupported_language", "goal_text", "content"),
+    [
+        ("Rust", "学习 Rust，编写命令行工具", "我想用 Rust 做一个命令行工具"),
+        ("C++", "学习 C++，做算法练习", "我想用 C++ 做算法练习"),
+    ],
+)
+def test_onboarding_message_stream_returns_error_when_language_is_not_supported(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    unsupported_language: str,
+    goal_text: str,
+    content: str,
+) -> None:
+    user = _create_user(client)
+
+    monkeypatch.setattr(
+        onboarding_route,
+        "extract_slots",
+        lambda context: ExtractedSlots(
+            target_level="beginner",
+            goal_text=goal_text,
+            unsupported_language=unsupported_language,
+            missing_slot_question="请选择 Python / JavaScript / TypeScript / HTML+CSS / Java / Go / C# / SQL。",
+            plan_ready=False,
+            slot_statuses={
+                "language": {
+                    "status": "unsupported",
+                    "ambiguity_type": "unsupported_or_alias",
+                    "evidence": unsupported_language,
+                    "ambiguity_reason": f"{unsupported_language} 还没有独立建档路线模板",
+                    "clarification_question": "请选择 Python / JavaScript / TypeScript / HTML+CSS / Java / Go / C# / SQL。",
+                },
+            },
+        ),
+    )
+
+    events = _send_onboarding_stream(
+        client,
+        user_id=str(user["id"]),
+        content=content,
+        conversation_id=None,
+    )
+
+    event_types = [event["event"] for event in events]
+    assert "session_created" in event_types
+    assert "agent_message" not in event_types
+    assert "tool_call" not in event_types
+    assert "done" not in event_types
+    error = next(event["data"]["error"] for event in events if event["event"] == "error")
+    assert error["code"] == "LANGUAGE_NOT_SUPPORTED"
+    assert error["recoverable"] is True
+    assert error["details"]["unsupported_language"] == unsupported_language
+    assert "javascript" in error["details"]["supported_languages"]
+    assert "typescript" in error["details"]["supported_languages"]
+    assert "cpp" not in error["details"]["supported_languages"]
+
+    conversation_id = next(
+        event["data"]["onboarding_session_id"] for event in events if event["event"] == "session_created"
+    )
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT extracted_context FROM onboarding_conversations WHERE id = %s",
+            (conversation_id,),
+        ).fetchone()
+    assert row is not None
+    assert row["extracted_context"]["unsupported_language"] == unsupported_language
     assert "plan_draft" not in row["extracted_context"]
 
 
