@@ -23,13 +23,13 @@
 
 ## Phase 1 Execution Checklist
 
-- [ ] Plan and implement stable local startup/check entrypoint.
-- [ ] Verify desktop learning loop gaps and close the highest-impact route/learning/exercise/review/note/settings holes.
-- [ ] Plan and implement `language-grounding-productization`: persisted grounding index, reindex/fixture path, learning-agent integration, citations, and grounding evals.
-- [ ] Plan and implement environment doctor/toolchain detection and allowlisted guidance templates.
-- [ ] Harden Python runner behavior and result mapping.
-- [ ] Implement Node/TypeScript runner contract without overclaiming TypeScript support before validation passes.
-- [ ] Harden browser HTML/CSS runner behavior and preview/test boundaries.
+- [x] Plan and implement stable local startup/check entrypoint.
+- [x] Verify desktop learning loop gaps and close the highest-impact route/learning/exercise/review/note/settings holes.
+- [x] Plan and implement `language-grounding-productization`: persisted grounding index, reindex/fixture path, learning-agent integration, citations, and grounding evals.
+- [x] Plan and implement environment doctor/toolchain detection and allowlisted guidance templates.
+- [x] Harden Python runner behavior and result mapping.
+- [x] Implement Node/TypeScript runner contract without overclaiming TypeScript support before validation passes.
+- [x] Harden browser HTML/CSS runner behavior and preview/test boundaries.
 
 ## Phase 2 Execution Checklist
 
@@ -39,18 +39,25 @@
 
 ## Phase 3 Execution Checklist
 
-- [ ] Implement Java runner contract.
-- [ ] Implement Go runner contract.
-- [ ] Implement C# runner contract.
-- [ ] Ensure compiled runner failures map to stable learner-safe categories.
+- [x] Implement Java runner contract.
+- [x] Implement Go runner contract.
+- [x] Implement C# runner contract.
+- [x] Ensure compiled runner failures map to stable learner-safe categories.
 
 ## Phase 4 Execution Checklist
 
-- [ ] Add agent eval gates for answer-seeking, repeated confusion, capability overclaims, missing citations, runner failures, grounding failures, and dynamic exercise safety.
-- [ ] Reorganize backend `app/services` and `app/agents` modules into domain subpackages without behavior changes.
-- [ ] Run cross-child integration checks.
-- [ ] Produce final local-product readiness verdict.
-- [ ] Archive completed children before archiving the parent.
+- [x] Add agent eval gates for answer-seeking, repeated confusion, capability overclaims, missing citations, runner failures, grounding failures, and dynamic exercise safety.
+- [x] Reorganize backend `app/services` and `app/agents` modules into domain subpackages without behavior changes.
+- [x] Run cross-child integration checks.
+- [x] Produce final local-product readiness verdict.
+- [x] Archive completed children before archiving the parent.
+
+## Phase 4 Evidence Notes
+
+- Agent eval gates are covered by existing deterministic regression tests instead of a separate `08-agent-quality-eval-gates` child: direct-answer guardrails and provider leak handling in `tests/test_learning_sessions_m3.py`, repeated-confusion routing in `tests/test_agent_router.py`, capability overclaim rejection in `tests/test_llm_integration.py`, citation metadata/fallback behavior in grounding tests, runner failure/redaction contracts in runner and learning-session tests, and dynamic exercise validation/fallback in `tests/test_adaptive_exercise_templates.py`.
+- Backend module organization is complete via `06-03-backend-module-organization-refactor`, implementation commit `85a5934`, and archive commit `c914f7e`.
+- Cross-child integration checks passed on 2026-06-03 with `uv --directory .\aearn\services\api run python -m pytest -q` (`472 passed`), `uv --directory .\aearn\services\api run ruff check .`, `uv --directory .\aearn\services\api run python -m mypy app`, and `pnpm --dir .\aearn desktop:check`. The desktop build still reports the existing Vite chunk-size warning.
+- Final local-product readiness verdict: ready for parent archive/closeout once the user explicitly approves the archive/commit step. All created child tasks are already archived; no new `08-agent-quality-eval-gates` child was created because equivalent deterministic coverage is present and verified.
 
 ## Validation Command Matrix
 
