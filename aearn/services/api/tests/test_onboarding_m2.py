@@ -466,6 +466,36 @@ def test_onboarding_slot_statuses_control_server_readiness() -> None:
     assert ambiguous_level.plan_ready is False
     assert "独立写小项目" in str(ambiguous_level.missing_slot_question)
 
+    mysql_alias = normalize_extracted_slots(
+        ExtractedSlots(
+            target_level="beginner",
+            goal_text="学习 MySQL 查询，聚焦数据分析入门",
+            unsupported_language="MySQL",
+            plan_ready=False,
+            slot_statuses={
+                "language": {
+                    "status": "unsupported",
+                    "ambiguity_type": "unsupported_or_alias",
+                    "evidence": "MySQL",
+                    "ambiguity_reason": "MySQL 被误判为未支持语言",
+                    "clarification_question": "请选择 Python / JavaScript / TypeScript / HTML+CSS / Java / Go / C# / SQL。",
+                },
+                "goal_text": {
+                    "status": "confirmed",
+                    "evidence": "学习 MySQL 查询，聚焦数据分析入门",
+                },
+                "target_level": {
+                    "status": "confirmed",
+                    "evidence": "beginner",
+                },
+            },
+        )
+    )
+
+    assert mysql_alias.language == "sql"
+    assert mysql_alias.unsupported_language is None
+    assert mysql_alias.slot_statuses["language"].status == "confirmed"
+
     optional_missing = normalize_extracted_slots(
         ExtractedSlots(
             language="python",
@@ -883,6 +913,77 @@ def test_onboarding_message_stream_generates_typescript_route(
     assert row["extracted_context"]["slot_statuses"]["language"]["evidence"] == "TypeScript"
     assert row["extracted_context"]["plan_draft"]["language"] == "typescript"
     assert row["extracted_context"]["plan_draft"]["modules"][0]["source"] == "agent_generated"
+
+
+def test_onboarding_message_stream_maps_mysql_alias_to_sql_route(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user = _create_user(client)
+
+    monkeypatch.setattr(
+        onboarding_route,
+        "extract_slots",
+        lambda context: ExtractedSlots(
+            target_level="beginner",
+            goal_text="学习 MySQL 查询，聚焦数据分析入门",
+            unsupported_language="MySQL",
+            plan_ready=False,
+            slot_statuses={
+                "language": {
+                    "status": "unsupported",
+                    "ambiguity_type": "unsupported_or_alias",
+                    "evidence": "MySQL",
+                    "ambiguity_reason": "MySQL 被误判为未支持语言",
+                    "clarification_question": "请选择 Python / JavaScript / TypeScript / HTML+CSS / Java / Go / C# / SQL。",
+                },
+                "target_level": {
+                    "status": "confirmed",
+                    "evidence": "beginner",
+                },
+                "goal_text": {
+                    "status": "confirmed",
+                    "evidence": "学习 MySQL 查询，聚焦数据分析入门",
+                },
+            },
+        ),
+    )
+
+    events = _send_onboarding_stream(
+        client,
+        user_id=str(user["id"]),
+        content="MySQL",
+        conversation_id=None,
+    )
+
+    event_types = [event["event"] for event in events]
+    assert "session_created" in event_types
+    assert "agent_message" in event_types
+    assert "tool_call" in event_types
+    assert event_types[-1] == "done"
+    assert all(event["event"] != "error" for event in events)
+
+    route_args = next(
+        event["data"]["arguments"]
+        for event in events
+        if event["event"] == "tool_call" and event["data"]["phase"] == "done"
+    )
+    assert route_args["language"] == "sql"
+
+    conversation_id = next(
+        event["data"]["onboarding_session_id"] for event in events if event["event"] == "session_created"
+    )
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT extracted_context FROM onboarding_conversations WHERE id = %s",
+            (conversation_id,),
+        ).fetchone()
+    assert row is not None
+    assert row["extracted_context"]["language"] == "sql"
+    assert row["extracted_context"].get("unsupported_language") is None
+    assert row["extracted_context"]["slot_statuses"]["language"]["status"] == "confirmed"
+    assert row["extracted_context"]["slot_statuses"]["language"]["evidence"] == "MySQL"
+    assert row["extracted_context"]["plan_draft"]["language"] == "sql"
 
 
 def test_onboarding_message_stream_blocks_typescript_route_when_required_slots_missing(

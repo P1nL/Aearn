@@ -119,6 +119,12 @@ def create_learning_session(
                 details={"reason": "concept_intro_generation_failed"},
                 recoverable=True,
             )
+        except (LLMCallError, LLMConfigurationError, LLMInvalidResponseError) as exc:
+            conn.rollback()
+            return model_unavailable_response(
+                request,
+                details={"reason": exc.__class__.__name__},
+            )
         conn.commit()
     return JSONResponse(
         status_code=status.HTTP_200_OK if reused else status.HTTP_201_CREATED,

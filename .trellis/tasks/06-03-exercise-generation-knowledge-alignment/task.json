@@ -3,7 +3,7 @@
   "name": "exercise-generation-knowledge-alignment",
   "title": "Exercise generation knowledge alignment",
   "description": "Plan model-first bounded freeform exercise generation so generated practice aligns with learning-route skill tags, retries invalid candidates, and fails honestly instead of showing hard-coded fallback exercises.",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,

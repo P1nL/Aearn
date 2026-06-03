@@ -20,6 +20,7 @@ from app.agents.onboarding.onboarding_slot_extractor import (
 from app.agents.runtime.structured_judgement import (
     FieldPolicy,
     JudgementPolicy,
+    StructuredJudgement,
     normalize_judgements,
 )
 from app.core.config import Settings, get_settings
@@ -75,6 +76,32 @@ ONBOARDING_JUDGEMENT_POLICY = JudgementPolicy(
     ],
     default_fallback_question="再补一句你的目标或当前基础，我再生成路线。",
 )
+SUPPORTED_LANGUAGE_ALIASES = {
+    "python": "python",
+    "py": "python",
+    "javascript": "javascript",
+    "js": "javascript",
+    "typescript": "typescript",
+    "ts": "typescript",
+    "java": "java",
+    "go": "go",
+    "golang": "go",
+    "c#": "csharp",
+    "csharp": "csharp",
+    "cs": "csharp",
+    "html+css": "html_css",
+    "htmlcss": "html_css",
+    "html和css": "html_css",
+    "sql": "sql",
+    "mysql": "sql",
+    "postgresql": "sql",
+    "postgres": "sql",
+    "sqlite": "sql",
+    "sqlite3": "sql",
+    "sqlserver": "sql",
+    "mssql": "sql",
+    "mariadb": "sql",
+}
 ROUTE_READY_CLAIM_MARKERS = (
     "信息够",
     "路线卡",
@@ -461,6 +488,7 @@ def normalize_extracted_slots(slots: ExtractedSlots) -> ExtractedSlots:
     policy, then maps the result back to ExtractedSlots fields.
     """
 
+    slots = _normalize_supported_language_alias(slots)
     field_values: dict[str, object] = {
         name: getattr(slots, name, None) for name in CLARIFICATION_SLOT_PRIORITY
     }
@@ -475,6 +503,40 @@ def normalize_extracted_slots(slots: ExtractedSlots) -> ExtractedSlots:
     updates["plan_ready"] = result.ready
     updates["missing_slot_question"] = result.clarification_question
     return slots.model_copy(update=updates)
+
+
+def _normalize_supported_language_alias(slots: ExtractedSlots) -> ExtractedSlots:
+    alias = _language_alias_to_supported_id(slots.unsupported_language)
+    if alias is None:
+        return slots
+
+    slot_statuses = dict(slots.slot_statuses)
+    slot_statuses["language"] = StructuredJudgement(
+        status="confirmed",
+        evidence=slots.unsupported_language or slots.language or alias,
+    )
+    return slots.model_copy(
+        update={
+            "language": alias,
+            "unsupported_language": None,
+            "slot_statuses": slot_statuses,
+        }
+    )
+
+
+def _language_alias_to_supported_id(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    key = _language_alias_key(value)
+    return SUPPORTED_LANGUAGE_ALIASES.get(key)
+
+
+def _language_alias_key(value: str) -> str:
+    text = value.strip().lower()
+    text = text.replace("数据库", "")
+    text = text.replace("database", "")
+    text = text.replace("＋", "+")
+    return "".join(ch for ch in text if ch.isalnum() or ch in {"#", "+"})
 
 
 def detect_plan_proposal(

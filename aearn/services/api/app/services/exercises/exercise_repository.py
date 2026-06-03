@@ -21,12 +21,13 @@ def get_or_create_exercise_for_knowledge_point(
     if existing is not None:
         return _serialize_exercise(conn, existing)
 
-    template = _exercise_template(knowledge_point, runtime_profile)
+    generation_context = _exercise_generation_context(conn, knowledge_point)
+    template = _exercise_template(generation_context, runtime_profile)
     template = cast(
         dict[str, Any],
         adaptive_exercise_service.build_adaptive_exercise_template(
             conn,
-            knowledge_point=knowledge_point,
+            knowledge_point=generation_context,
             runtime_profile=runtime_profile,
             fallback_template=template,
         ),
@@ -101,6 +102,36 @@ def get_or_create_exercise_for_knowledge_point(
     exercise = _serialize_exercise(conn, created_row)
     index_current_knowledge_point_chunks(conn, str(knowledge_point["id"]))
     return exercise
+
+
+def _exercise_generation_context(
+    conn: Connection[dict[str, object]],
+    knowledge_point: Mapping[str, object],
+) -> dict[str, object]:
+    context = dict(knowledge_point)
+    row = conn.execute(
+        """
+        SELECT
+          learning_plans.user_id,
+          plan_modules.plan_id,
+          plan_modules.title AS module_title,
+          plan_modules.description AS module_description,
+          language_courses.title AS course_title
+        FROM knowledge_points
+        JOIN plan_modules ON plan_modules.id = knowledge_points.module_id
+        JOIN learning_plans ON learning_plans.id = plan_modules.plan_id
+        JOIN language_courses ON language_courses.id = knowledge_points.language_course_id
+        WHERE knowledge_points.id = %s
+          AND knowledge_points.deleted_at IS NULL
+          AND plan_modules.deleted_at IS NULL
+          AND learning_plans.deleted_at IS NULL
+        LIMIT 1
+        """,
+        (str(knowledge_point["id"]),),
+    ).fetchone()
+    if row is None:
+        return context
+    return context | dict(row)
 
 
 def get_or_create_exercise_from_review_seed(
@@ -513,6 +544,220 @@ def _exercise_template(
                     "blank_key": "blank_1",
                     "placeholder": "value + 1",
                     "expected_concept": "返回加一后的结果。",
+                    "acceptable_patterns_json": [
+                        {"type": "literal", "value": "value + 1"},
+                        {"type": "regex", "value": r"value\s*\+\s*1"},
+                    ],
+                    "is_core": True,
+                    "order_index": 0,
+                },
+            ],
+            "test_cases": [
+                {
+                    "case_type": "visible",
+                    "input_json": {"args": [1]},
+                    "expected_output_json": {"return": 2},
+                    "assertion_code": None,
+                    "weight": 1,
+                    "is_critical": True,
+                    "timeout_ms": 5000,
+                    "order_index": 0,
+                },
+                {
+                    "case_type": "hidden",
+                    "input_json": {"args": [-2]},
+                    "expected_output_json": {"return": -1},
+                    "assertion_code": None,
+                    "weight": 1,
+                    "is_critical": False,
+                    "timeout_ms": 5000,
+                    "order_index": 1,
+                },
+            ],
+        }
+
+    if language == "typescript":
+        return {
+            "slug": f"m3-typescript-{knowledge_point_id}",
+            "title": f"{title}：TypeScript 函数契约",
+            "exercise_type": "code_blank",
+            "prompt_markdown": (
+                f"围绕知识点 **{title}** 完成一个最小 TypeScript 函数练习。\n\n"
+                "要求：保留 `increment(value: number): number` 的类型契约，让函数返回加一后的结果。"
+                f"{' 当前知识点提示：' + description if description else ''}"
+            ),
+            "starter_code": (
+                "export function increment(value: number): number {\n"
+                "  return __BLANK_1__;\n"
+                "}\n"
+            ),
+            "solution_reference": (
+                "export function increment(value: number): number {\n"
+                "  return value + 1;\n"
+                "}\n"
+            ),
+            "visible_test_policy": "visible_and_hidden_summary",
+            "difficulty": 1,
+            "estimated_minutes": 8,
+            "requires_explanation": False,
+            "metadata_json": {
+                "entry_function": "increment",
+                "required_patterns": ["export function increment", ": number", "return value + 1"],
+            },
+            "code_blanks": [
+                {
+                    "blank_key": "blank_1",
+                    "placeholder": "value + 1",
+                    "expected_concept": "保持类型签名，并返回加一后的 number。",
+                    "acceptable_patterns_json": [
+                        {"type": "literal", "value": "value + 1"},
+                        {"type": "regex", "value": r"value\s*\+\s*1"},
+                    ],
+                    "is_core": True,
+                    "order_index": 0,
+                },
+            ],
+            "test_cases": [
+                {
+                    "case_type": "visible",
+                    "input_json": {"args": [1]},
+                    "expected_output_json": {"return": 2},
+                    "assertion_code": None,
+                    "weight": 1,
+                    "is_critical": True,
+                    "timeout_ms": 5000,
+                    "order_index": 0,
+                },
+                {
+                    "case_type": "hidden",
+                    "input_json": {"args": [-2]},
+                    "expected_output_json": {"return": -1},
+                    "assertion_code": None,
+                    "weight": 1,
+                    "is_critical": False,
+                    "timeout_ms": 5000,
+                    "order_index": 1,
+                },
+            ],
+        }
+
+    if language == "go":
+        return {
+            "slug": f"m3-go-{knowledge_point_id}",
+            "title": f"{title}：Go 函数返回值",
+            "exercise_type": "code_blank",
+            "prompt_markdown": (
+                f"围绕知识点 **{title}** 完成一个最小 Go 函数练习。\n\n"
+                "要求：保留 `package main` 和 `func Increment(value int) int`，让函数返回加一后的结果。"
+                f"{' 当前知识点提示：' + description if description else ''}"
+            ),
+            "starter_code": (
+                "package main\n\n"
+                "func Increment(value int) int {\n"
+                "    return __BLANK_1__\n"
+                "}\n"
+            ),
+            "solution_reference": (
+                "package main\n\n"
+                "func Increment(value int) int {\n"
+                "    return value + 1\n"
+                "}\n"
+            ),
+            "visible_test_policy": "visible_and_hidden_summary",
+            "difficulty": 1,
+            "estimated_minutes": 8,
+            "requires_explanation": False,
+            "metadata_json": {
+                "entry_function": "Increment",
+                "required_patterns": ["package main", "func Increment", "return value + 1"],
+                "managed_compiled": {
+                    "source_file": "submission.go",
+                    "unsupported": ["modules", "external_dependencies", "arbitrary_project"],
+                },
+            },
+            "code_blanks": [
+                {
+                    "blank_key": "blank_1",
+                    "placeholder": "value + 1",
+                    "expected_concept": "返回加一后的 int。",
+                    "acceptable_patterns_json": [
+                        {"type": "literal", "value": "value + 1"},
+                        {"type": "regex", "value": r"value\s*\+\s*1"},
+                    ],
+                    "is_core": True,
+                    "order_index": 0,
+                },
+            ],
+            "test_cases": [
+                {
+                    "case_type": "visible",
+                    "input_json": {"args": [1]},
+                    "expected_output_json": {"return": 2},
+                    "assertion_code": None,
+                    "weight": 1,
+                    "is_critical": True,
+                    "timeout_ms": 5000,
+                    "order_index": 0,
+                },
+                {
+                    "case_type": "hidden",
+                    "input_json": {"args": [-2]},
+                    "expected_output_json": {"return": -1},
+                    "assertion_code": None,
+                    "weight": 1,
+                    "is_critical": False,
+                    "timeout_ms": 5000,
+                    "order_index": 1,
+                },
+            ],
+        }
+
+    if language == "csharp":
+        return {
+            "slug": f"m3-csharp-{knowledge_point_id}",
+            "title": f"{title}：C# 方法返回值",
+            "exercise_type": "code_blank",
+            "prompt_markdown": (
+                f"围绕知识点 **{title}** 完成一个最小 C# 方法练习。\n\n"
+                "要求：保留 `Submission.Increment(int value)`，让方法返回加一后的结果。"
+                f"{' 当前知识点提示：' + description if description else ''}"
+            ),
+            "starter_code": (
+                "public static class Submission\n"
+                "{\n"
+                "    public static int Increment(int value)\n"
+                "    {\n"
+                "        return __BLANK_1__;\n"
+                "    }\n"
+                "}\n"
+            ),
+            "solution_reference": (
+                "public static class Submission\n"
+                "{\n"
+                "    public static int Increment(int value)\n"
+                "    {\n"
+                "        return value + 1;\n"
+                "    }\n"
+                "}\n"
+            ),
+            "visible_test_policy": "visible_and_hidden_summary",
+            "difficulty": 1,
+            "estimated_minutes": 8,
+            "requires_explanation": False,
+            "metadata_json": {
+                "entry_function": "Increment",
+                "required_patterns": ["public static class Submission", "public static int Increment", "return value + 1"],
+                "managed_compiled": {
+                    "source_file": "Program.cs",
+                    "class_name": "Submission",
+                    "unsupported": ["nuget_packages", "external_dependencies", "arbitrary_project"],
+                },
+            },
+            "code_blanks": [
+                {
+                    "blank_key": "blank_1",
+                    "placeholder": "value + 1",
+                    "expected_concept": "返回加一后的 int。",
                     "acceptable_patterns_json": [
                         {"type": "literal", "value": "value + 1"},
                         {"type": "regex", "value": r"value\s*\+\s*1"},
