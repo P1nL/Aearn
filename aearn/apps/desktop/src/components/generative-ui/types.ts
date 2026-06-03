@@ -15,6 +15,7 @@ export type LearningRouteArgs = {
     minutes_per_day: number;
     days_per_week: number;
   } | null;
+  source_attribution: string[];
   modules: Array<{
     id: string;
     title: string;

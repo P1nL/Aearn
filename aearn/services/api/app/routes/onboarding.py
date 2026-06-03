@@ -470,7 +470,7 @@ async def _onboarding_message_stream(
             )
 
         tool_calls_for_metadata: list[dict[str, object]] = []
-        plan_error_payload: dict[str, str] | None = None
+        plan_error_payload: dict[str, object] | None = None
         learning_route_args: dict[str, object] | None = None
         route_tool_call_id: str | None = None
         if _should_generate_onboarding_route(refreshed, slots, user_text=content):
@@ -487,11 +487,16 @@ async def _onboarding_message_stream(
                     )
                     conn_plan.commit()
             except OnboardingPlanDraftError as exc:
-                plan_error_payload = {"code": exc.code, "message": exc.message}
+                plan_error_payload = {
+                    "code": exc.code,
+                    "message": exc.message,
+                    "details": exc.details,
+                }
             except Exception as exc:  # noqa: BLE001 - never crash the stream
                 plan_error_payload = {
                     "code": "PLAN_DRAFT_INVALID",
                     "message": f"无法生成计划草稿：{exc}",
+                    "details": {},
                 }
             else:
                 learning_route_args = learning_route_args_from_plan_draft(
@@ -502,10 +507,13 @@ async def _onboarding_message_stream(
 
         if plan_error_payload is not None:
             yield writer.error(
-                code=plan_error_payload["code"],
-                message=plan_error_payload["message"],
+                code=str(plan_error_payload["code"]),
+                message=str(plan_error_payload["message"]),
                 request_id=request_id,
-                details={"onboarding_session_id": prepared.conversation_id},
+                details={
+                    "onboarding_session_id": prepared.conversation_id,
+                    **_dict_or_empty(plan_error_payload.get("details")),
+                },
                 recoverable=True,
             )
             return
@@ -648,7 +656,13 @@ async def _tool_call_events(
     for chunk in chunk_tool_call_arguments(arguments):
         yield writer.tool_call_delta(tool_call_id=tool_call_id, arguments_delta=chunk)
         await asyncio.sleep(0)
-    yield writer.tool_call_done(tool_call_id=tool_call_id, arguments=arguments)
+        yield writer.tool_call_done(tool_call_id=tool_call_id, arguments=arguments)
+
+
+def _dict_or_empty(value: object) -> dict[str, object]:
+    if isinstance(value, dict):
+        return value
+    return {}
 
 
 def _model_unavailable_error(

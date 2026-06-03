@@ -672,14 +672,32 @@ def build_plan_draft(
     user: Mapping[str, object],
     course: Mapping[str, object],
 ) -> PlanDraft:
+    return build_plan_draft_with_modules(
+        payload,
+        user,
+        course,
+        COURSE_TEMPLATES[str(course["language"])],
+    )
+
+
+def build_plan_draft_with_modules(
+    payload: PlanGenerateRequest,
+    user: Mapping[str, object],
+    course: Mapping[str, object],
+    modules: list[DraftModule],
+    *,
+    extra_source_attribution: list[str] | None = None,
+) -> PlanDraft:
     language = str(course["language"])
     runtime_profile = course["runtime_profile"]
     if not isinstance(runtime_profile, Mapping):
         raise TypeError("runtime_profile must be a mapping")
 
-    modules = COURSE_TEMPLATES[language]
     goal_text = _goal_text(payload)
-    source_attribution = _source_attribution(payload, course)
+    source_attribution = _merge_unique_strings(
+        _source_attribution(payload, course),
+        extra_source_attribution or [],
+    )
     draft_id = _draft_id(payload, course)
     runtime_tier = str(runtime_profile["runtime_tier"])
 
@@ -700,6 +718,15 @@ def build_plan_draft(
         ),
         source_attribution=source_attribution,
     )
+
+
+def _merge_unique_strings(primary: list[str], secondary: list[str]) -> list[str]:
+    merged: list[str] = []
+    for item in [*primary, *secondary]:
+        text = str(item or "").strip()
+        if text and text not in merged:
+            merged.append(text)
+    return merged
 
 
 def has_supported_mvp_runtime(plan_draft: PlanDraft) -> bool:

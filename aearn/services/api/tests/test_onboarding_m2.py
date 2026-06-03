@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 import app.routes.onboarding as onboarding_route
 import app.routes.plans as plans_route
+import app.services.conversations.onboarding_conversation as onboarding_conversation
 from app.agents.onboarding.onboarding_slot_extractor import ExtractedSlots
 from app.agents.onboarding.plan_generation_agent import PlanGenerationResult
 from app.core.config import Settings, get_settings
@@ -14,6 +15,11 @@ from app.db.bootstrap import bootstrap_database
 from app.db.connection import connect
 from app.main import app
 from app.models.onboarding import DraftKnowledgePoint, DraftModule, PlanDraft
+from app.services.curriculum.dynamic_plan_generation import (
+    DynamicPlanDraftResult,
+    DynamicPlanGenerationError,
+)
+from app.services.curriculum.plan_generator import build_plan_draft_with_modules
 from app.services.llm.llm_client import LLMCallError, LLMConfigurationError
 from app.services.conversations.onboarding_conversation import (
     OnboardingConversationContext,
@@ -51,13 +57,13 @@ def client() -> TestClient:
 def disable_live_plan_agents(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         plans_route,
-        "build_sdk_onboarding_plan_response",
-        lambda *args, **kwargs: None,
+        "build_dynamic_plan_draft",
+        _fake_dynamic_plan_draft,
     )
     monkeypatch.setattr(
-        plans_route,
-        "build_sdk_plan_generation_response",
-        lambda *args, **kwargs: None,
+        onboarding_conversation,
+        "build_dynamic_plan_draft",
+        _fake_dynamic_plan_draft,
     )
 
 
@@ -150,6 +156,7 @@ def test_generate_plan_supports_added_public_language_templates(
     assert draft["language"] == language
     assert draft["runtime_boundary"]["runtime_tier"] == runtime_tier
     assert draft["modules"][0]["is_skippable"] is False
+    assert draft["modules"][0]["source"] == "agent_generated"
     assert len(draft["modules"]) >= 1
 
 
@@ -170,7 +177,8 @@ def test_generate_plan_goal_and_material_modes(client: TestClient) -> None:
     goal_draft = goal_response.json()["plan_draft"]
     assert goal_draft["runtime_boundary"]["runtime_tier"] == "browser_preview"
     assert goal_draft["modules"][0]["is_skippable"] is False
-    assert "Fallback: static template" in goal_draft["source_attribution"]
+    assert goal_draft["modules"][0]["source"] == "agent_generated"
+    assert any(source.startswith("Dynamic source:") for source in goal_draft["source_attribution"])
 
     python_course = _course_by_language(client, "python")
     material_response = client.post(
@@ -184,26 +192,31 @@ def test_generate_plan_goal_and_material_modes(client: TestClient) -> None:
     )
     assert material_response.status_code == 200
     python_draft = material_response.json()["plan_draft"]
-    assert len(python_draft["modules"]) >= 2
+    assert len(python_draft["modules"]) >= 4
     assert [module["order_index"] for module in python_draft["modules"]] == list(
         range(len(python_draft["modules"]))
     )
     assert "Official documentation taxonomy: Python Tutorial" in python_draft["source_attribution"]
     assert any(source.startswith("User materials") for source in python_draft["source_attribution"])
+    assert any(source.startswith("Dynamic notes:") for source in python_draft["source_attribution"])
 
 
-def test_generate_plan_uses_valid_sdk_candidate(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_generate_plan_returns_error_when_dynamic_generation_unavailable(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     user = _create_user(client)
     course = _course_by_language(client, "javascript")
 
-    def fake_sdk_response(context, **kwargs):  # type: ignore[no-untyped-def]
-        del kwargs
-        candidate = PlanDraft.model_validate(context.deterministic_plan_draft).model_copy(
-            update={"goal_text": "SDK refined DOM validation goal."}
+    def fail_dynamic_plan(*args, **kwargs):  # type: ignore[no-untyped-def]
+        del args, kwargs
+        raise DynamicPlanGenerationError(
+            "PLAN_GENERATION_UNAVAILABLE",
+            "动态路线生成不可用，请检查模型和文档检索配置。",
+            {"reason": "test_dynamic_unavailable"},
         )
-        return {"plan_draft": candidate, "agent_notes": ["SDK note: keep deterministic DOM templates."]}
 
-    monkeypatch.setattr(plans_route, "build_sdk_onboarding_plan_response", fake_sdk_response)
+    monkeypatch.setattr(plans_route, "build_dynamic_plan_draft", fail_dynamic_plan)
 
     response = client.post(
         "/api/plans/generate",
@@ -215,11 +228,11 @@ def test_generate_plan_uses_valid_sdk_candidate(client: TestClient, monkeypatch:
         },
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 503
     body = response.json()
-    assert body["plan_draft"]["goal_text"] == "SDK refined DOM validation goal."
-    assert "SDK note: keep deterministic DOM templates." in body["agent_notes"]
-    assert body["plan_draft"]["runtime_boundary"]["runtime_tier"] == "browser_preview"
+    assert body["error"]["code"] == "PLAN_GENERATION_UNAVAILABLE"
+    assert body["error"]["details"]["reason"] == "test_dynamic_unavailable"
+    assert "plan_draft" not in body
 
 
 def test_generate_plan_uses_dynamic_modules_and_source_attribution(
@@ -234,15 +247,11 @@ def test_generate_plan_uses_dynamic_modules_and_source_attribution(
         source_attribution=[
             "Dynamic generation: agent_generated",
             "Dynamic source: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide",
-            "Dynamic notes: 参考 MDN JavaScript 指南和用户目标生成路线。",
+            "Dynamic notes: 根据 beginner 水平、JavaScript DOM 交互目标和 MDN 指南生成路线。",
         ],
         model="fake-plan-model",
     )
-    monkeypatch.setattr(
-        plans_route,
-        "build_sdk_plan_generation_response",
-        lambda *args, **kwargs: dynamic_result,
-    )
+    monkeypatch.setattr(plans_route, "build_dynamic_plan_draft", _fake_dynamic_plan_draft_from(dynamic_result))
 
     response = client.post(
         "/api/plans/generate",
@@ -611,8 +620,9 @@ def test_onboarding_message_stream_triggers_plan_from_first_complete_turn(
     route_args = tool_done["data"]["arguments"]
     assert route_args["language"] == "python"
     assert route_args["goal_text"] == "学习 Python，聚焦 Web，从零基础入门"
-    assert len(route_args["modules"]) >= 5
-    assert route_args["modules"][0]["title"] == "Python 基础与值流动"
+    assert len(route_args["modules"]) >= 4
+    assert route_args["modules"][0]["title"] == "动态模块1"
+    assert any(source.startswith("Dynamic source:") for source in route_args["source_attribution"])
 
     with connect() as conn:
         row = conn.execute(
@@ -701,6 +711,7 @@ def test_onboarding_message_langgraph_flag_on_invokes_graph_route_decision(
     )
     assert tool_start["data"]["name"] == "show_learning_route"
     assert tool_done["data"]["arguments"]["language"] == "python"
+    assert tool_done["data"]["arguments"]["modules"][0]["title"] == "动态模块1"
 
     confirm = client.post(
         f"/api/onboarding/{conversation_id}/confirm_plan",
@@ -741,6 +752,64 @@ def test_onboarding_message_stream_returns_error_when_model_unavailable(
     error = next(event["data"]["error"] for event in events if event["event"] == "error")
     assert error["code"] == "MODEL_UNAVAILABLE"
     assert error["recoverable"] is True
+
+
+def test_onboarding_message_stream_returns_error_when_dynamic_route_unavailable(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user = _create_user(client)
+    monkeypatch.setattr(
+        onboarding_route,
+        "extract_slots",
+        lambda context: ExtractedSlots(
+            language="python",
+            target_level="beginner",
+            goal_text="学习 Python 自动化脚本",
+            plan_ready=True,
+            slot_statuses={
+                "language": {"status": "confirmed", "evidence": "Python"},
+                "target_level": {"status": "confirmed", "evidence": "beginner"},
+                "goal_text": {"status": "confirmed", "evidence": "自动化脚本"},
+            },
+        ),
+    )
+
+    def fail_dynamic_plan(*args, **kwargs):  # type: ignore[no-untyped-def]
+        del args, kwargs
+        raise DynamicPlanGenerationError(
+            "PLAN_GENERATION_UNAVAILABLE",
+            "动态路线生成不可用，请检查模型和文档检索配置。",
+            {"reason": "test_dynamic_unavailable"},
+        )
+
+    monkeypatch.setattr(onboarding_conversation, "build_dynamic_plan_draft", fail_dynamic_plan)
+
+    events = _send_onboarding_stream(
+        client,
+        user_id=str(user["id"]),
+        content="我想学 Python 自动化脚本",
+        conversation_id=None,
+    )
+
+    event_types = [event["event"] for event in events]
+    assert "session_created" in event_types
+    assert "tool_call" not in event_types
+    assert "done" not in event_types
+    error = next(event["data"]["error"] for event in events if event["event"] == "error")
+    assert error["code"] == "PLAN_GENERATION_UNAVAILABLE"
+
+    conversation_id = next(
+        event["data"]["onboarding_session_id"] for event in events if event["event"] == "session_created"
+    )
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT extracted_context FROM onboarding_conversations WHERE id = %s",
+            (conversation_id,),
+        ).fetchone()
+    assert row is not None
+    assert row["extracted_context"]["language"] == "python"
+    assert "plan_draft" not in row["extracted_context"]
 
 
 def test_onboarding_message_stream_generates_typescript_route(
@@ -813,6 +882,7 @@ def test_onboarding_message_stream_generates_typescript_route(
     assert row["extracted_context"]["slot_statuses"]["language"]["status"] == "confirmed"
     assert row["extracted_context"]["slot_statuses"]["language"]["evidence"] == "TypeScript"
     assert row["extracted_context"]["plan_draft"]["language"] == "typescript"
+    assert row["extracted_context"]["plan_draft"]["modules"][0]["source"] == "agent_generated"
 
 
 def test_onboarding_message_stream_blocks_typescript_route_when_required_slots_missing(
@@ -1359,6 +1429,55 @@ def _dynamic_modules(language: str) -> list[DraftModule]:
             )
         )
     return modules
+
+
+def _fake_dynamic_plan_draft(payload, user, course, **kwargs):  # type: ignore[no-untyped-def]
+    del kwargs
+    language = str(course["language"])
+    dynamic_result = PlanGenerationResult(
+        modules=_dynamic_modules(language),
+        source_attribution=[
+            "Dynamic generation: agent_generated",
+            f"Dynamic source: {_dynamic_source_url(language)}",
+            f"Dynamic notes: 根据 {payload.target_level} 水平、目标“{payload.goal_text or '学习材料'}”和权威文档生成路线。",
+        ],
+        model="fake-plan-model",
+    )
+    return _fake_dynamic_plan_draft_from(dynamic_result)(payload, user, course)
+
+
+def _fake_dynamic_plan_draft_from(dynamic_result: PlanGenerationResult):  # type: ignore[no-untyped-def]
+    def fake(payload, user, course, **kwargs):  # type: ignore[no-untyped-def]
+        del kwargs
+        plan_draft = build_plan_draft_with_modules(
+            payload,
+            user,
+            course,
+            dynamic_result.modules,
+            extra_source_attribution=dynamic_result.source_attribution,
+        )
+        return DynamicPlanDraftResult(
+            plan_draft=plan_draft,
+            agent_notes=[
+                plan_draft.runtime_boundary.notice,
+                "学习路线已根据权威文档和用户目标动态生成。",
+            ],
+        )
+
+    return fake
+
+
+def _dynamic_source_url(language: str) -> str:
+    return {
+        "python": "https://docs.python.org/3/tutorial/",
+        "javascript": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide",
+        "typescript": "https://www.typescriptlang.org/docs/handbook/",
+        "html_css": "https://developer.mozilla.org/en-US/docs/Learn/HTML",
+        "java": "https://docs.oracle.com/javase/tutorial/",
+        "go": "https://go.dev/tour/",
+        "csharp": "https://learn.microsoft.com/en-us/dotnet/csharp/",
+        "sql": "https://www.postgresql.org/docs/current/tutorial.html",
+    }[language]
 
 
 def _parse_sse_events(raw: str) -> list[dict[str, object]]:

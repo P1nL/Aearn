@@ -242,10 +242,11 @@ Stop only script-managed Aearn processes whose current command line still matche
 - Onboarding conversation route-ready turns must emit a short `agent_message` plus a persisted `show_learning_route` tool call, not a long plain-text route body.
 - Onboarding message idempotency replay must re-emit stored `metadata.tool_calls` so desktop resume/retry rehydrates the same route card.
 - Time-budget-only onboarding revisions must update the route tool args and draft identity; missing time budget must not block initial route-card generation.
-- Post-MVP dynamic plan generation may replace draft modules with `agent_generated` modules only after a deterministic `PlanDraft` has established user, course, runtime boundary, and draft identity.
-- `PLAN_GENERATION_ENABLED=false`, missing model configuration, missing dynamic client, invalid dynamic output, guardrail rejection, or web-tool failure must fall back to server-owned `COURSE_TEMPLATES` or a validated onboarding plan candidate without exposing raw provider/tool errors.
-- `EXA_API_KEY` is optional and only enables the web tools used by `plan_generation_agent`; real keys must stay in local `.env`, never in docs, tests, logs, or fixtures.
-- Dynamic plan generation must use OpenAI-compatible SDK calls with `temperature=None` unless provider support for sampling parameters is explicitly tested; third-party Responses-compatible providers may reject `temperature` and must not turn route generation into a slow failure path.
+- Dynamic route generation for public onboarding languages must use the shared dynamic plan service; `COURSE_TEMPLATES` must not be used as a hidden fallback after route-ready onboarding or `/api/plans/generate` dynamic failure.
+- Dynamic generation must first establish user, course, runtime boundary, draft identity, and authoritative docs coverage, then merge only validated `agent_generated` modules into the `PlanDraft`.
+- `PLAN_GENERATION_ENABLED=false`, missing OpenAI-compatible model configuration, missing dynamic client, missing `EXA_API_KEY`, missing authoritative docs mapping, invalid dynamic output, guardrail rejection, or provider failure must surface as `PLAN_GENERATION_UNAVAILABLE` or `PLAN_DRAFT_INVALID` without exposing raw provider/tool errors.
+- `EXA_API_KEY` is required by the dynamic-generation gate and real keys must stay in local `.env`, never in docs, tests, logs, or fixtures.
+- DeepSeek / Chat Completions route generation must not use the OpenAI Agents SDK tool-call flow. Prefetch authoritative doc TOCs in backend code, inject them as ordinary `authoritative_doc_tocs` prompt evidence, and call the OpenAI-compatible JSON client with normal `system`/`user` messages and `temperature=None` unless provider support for sampling parameters is explicitly tested.
 - Adding a new public language such as C++ or Rust requires updating the Pydantic `Language` literal, database CHECK constraints, catalog seed, runtime boundary, API examples, and acceptance tests. Adding an `AUTHORITATIVE_DOCS` URL alone is not sufficient.
 
 ### 4. Validation & Error Matrix
@@ -254,7 +255,7 @@ Stop only script-managed Aearn processes whose current command line still matche
 - Unknown course -> `COURSE_NOT_FOUND` with 404.
 - Missing goal/material input -> `VALIDATION_ERROR` with 400.
 - Invalid `plan_draft` shape, user mismatch, no modules, or no non-skippable core module -> `PLAN_DRAFT_INVALID` with 422.
-- Invalid dynamic modules -> fallback; invalid dynamic modules plus no safe fallback -> `PLAN_DRAFT_INVALID` with 422.
+- Invalid dynamic modules -> `PLAN_DRAFT_INVALID` with 422; dynamic unavailability or missing generation config -> `PLAN_GENERATION_UNAVAILABLE` with 503/no-route SSE.
 - Unsupported or unregistered language -> `COURSE_NOT_FOUND` / validation failure; do not synthesize a confirmable plan from web search alone.
 - Same idempotency key with a different request hash -> `IDEMPOTENCY_CONFLICT` with 409.
 - FastAPI/Pydantic validation errors must be normalized to the documented error envelope.
@@ -262,8 +263,11 @@ Stop only script-managed Aearn processes whose current command line still matche
 ### 5. Good/Base/Bad Cases
 
 - Good: generate draft, confirm once, replay same request, and receive the existing plan without duplicate modules or review states.
+- Good: route-ready onboarding with valid dynamic output emits `show_learning_route`, stashes the same dynamic draft, and includes authoritative `source_attribution`.
+- Good: DeepSeek route generation receives only normal chat messages plus backend-prefetched doc TOCs, so no assistant `tool_calls` message needs a matching tool response.
 - Base: Java/Go/C# courses are visible with `managed_compiled_test` teaching-grade boundaries, TypeScript is visible with `node_typescript_test`, SQL is visible with `sql_query_test`, and C++/Rust are absent from public course selection.
 - Bad: a settings request modifies `fsrs_parameters`, a plan draft creates `Attempt` rows, or `POST /api/plans/generate` writes formal plan rows.
+- Bad: dynamic generation failure silently produces template modules, or DeepSeek receives an Agents SDK tool-call conversation and returns `invalid_request_error`.
 
 ### 6. Tests Required
 
@@ -271,10 +275,11 @@ Stop only script-managed Aearn processes whose current command line still matche
 - Assert forbidden preference fields return `VALIDATION_ERROR`.
 - Assert catalog includes TypeScript `node_typescript_test`, SQL `sql_query_test`, Java/Go/C# `managed_compiled_test`, and no active C++/Rust course entries.
 - Assert goal and material generation success, insufficient input, unknown user, and unknown course.
-- Assert supported MVP course templates keep the official-taxonomy module order and do not regress to one-module route cards.
-- Assert `PLAN_GENERATION_ENABLED=false` preserves the template path and response shape.
-- Assert fake dynamic plan success swaps modules to `agent_generated` while preserving `PlanDraft` identity and runtime boundary.
-- Assert malformed dynamic output, unsafe output, missing web tools, and thrown SDK errors fall back without leaking provider/tool details.
+- Assert supported public route languages have `AUTHORITATIVE_DOCS` coverage.
+- Assert `PLAN_GENERATION_ENABLED=false`, missing model config, missing `EXA_API_KEY`, invalid dynamic output, and provider failures return no-fallback dynamic errors without stashing a route card.
+- Assert fake dynamic plan success swaps modules to `agent_generated` while preserving `PlanDraft` identity, runtime boundary, and source attribution.
+- Assert malformed dynamic output, unsafe output, missing authoritative source coverage, and thrown provider errors do not leak provider/tool details.
+- Assert DeepSeek-compatible dynamic generation prefetches authoritative doc TOCs and calls the direct JSON client with only normal `system`/`user` messages.
 - Tests that indirectly call `/api/plans/generate` through `_confirmed_plan()` must monkeypatch dynamic and onboarding plan clients to fake/offline responses; local `.env` may contain real `OPENAI_*` and `EXA_API_KEY`, but routine DB test batches must never call live providers.
 - Assert unregistered languages cannot become confirmable plans until language enum, DB constraints, catalog, runtime boundary, API docs, and acceptance tests are updated together.
 - Assert confirm plan creates plan/module/knowledge point rows and one `review_states` row per knowledge point.
@@ -302,6 +307,25 @@ def route() -> dict[str, object] | JSONResponse:
 ```
 
 When a route may return both normal JSON and `JSONResponse` error envelopes, disable response model inference explicitly.
+
+#### Wrong
+
+```python
+agent = build_agent(tools=build_web_tools(settings), model=settings.llm_model)
+streamed = Runner.run_streamed(agent, input_text, run_config=deepseek_run_config)
+```
+
+DeepSeek Chat Completions can reject an Agents SDK tool-call transcript when an assistant `tool_calls` message is not followed by matching tool messages.
+
+#### Correct
+
+```python
+doc_tocs = prefetch_authoritative_doc_tocs(context.doc_urls)
+messages = build_plan_messages(context, authoritative_doc_tocs=doc_tocs)
+result = OpenAICompatibleClient(settings).complete_json(messages, temperature=None)
+```
+
+Route generation keeps documentation grounding in backend code and sends the model a normal JSON request, so provider incompatibility surfaces as a stable dynamic-generation error rather than a broken route card.
 
 ## Scenario: M3 Learning Session Start, Run, Hint, Explain, Check, and Submit
 

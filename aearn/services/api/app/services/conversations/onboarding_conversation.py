@@ -29,8 +29,11 @@ from app.models.onboarding import (
     TimeBudget,
 )
 from app.services.curriculum.catalog import get_course
+from app.services.curriculum.dynamic_plan_generation import (
+    DynamicPlanGenerationError,
+    build_dynamic_plan_draft,
+)
 from app.services.llm.llm_client import LLMCallError, LLMConfigurationError, LLMInvalidResponseError
-from app.services.curriculum.plan_generator import build_plan_draft, has_supported_mvp_runtime
 from app.services.repositories.user_repository import get_user
 
 
@@ -110,10 +113,11 @@ class OnboardingIdempotencyConflictError(ValueError):
 class OnboardingPlanDraftError(ValueError):
     """Raised when the stashed plan draft cannot be built or hydrated."""
 
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(self, code: str, message: str, details: dict[str, object] | None = None) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
+        self.details = details or {}
 
 
 @dataclass(frozen=True)
@@ -519,9 +523,9 @@ def build_plan_draft_from_slots(
 ) -> PlanDraft:
     """Hydrate a real PlanDraft from extracted slots.
 
-    Looks up the user and the course matching the extracted language, then
-    delegates to plan_generator.build_plan_draft so the resulting draft uses
-    the existing course templates without any onboarding-specific logic.
+    Looks up the user and course matching the extracted language, then
+    delegates to the shared dynamic generation service. Supported public
+    languages must not silently fall back to deterministic templates.
     """
 
     user = get_user(conn, user_id)
@@ -564,14 +568,18 @@ def build_plan_draft_from_slots(
         language=slots.language,
         target_level=target_level,
         time_budget=time_budget,
+        profession=slots.focus,
     )
 
-    plan_draft = build_plan_draft(payload, user, course)
-    if not has_supported_mvp_runtime(plan_draft):
+    try:
+        dynamic_plan = build_dynamic_plan_draft(payload, user, course)
+    except DynamicPlanGenerationError as exc:
         raise OnboardingPlanDraftError(
-            "PLAN_DRAFT_INVALID", "该课程当前的运行时还不在 MVP 支持范围。"
-        )
-    return plan_draft
+            exc.code,
+            exc.message,
+            exc.details,
+        ) from exc
+    return dynamic_plan.plan_draft
 
 
 def learning_route_args_from_plan_draft(
@@ -613,6 +621,7 @@ def learning_route_args_from_plan_draft(
         "goal_text": plan_draft.goal_text,
         "language": plan_draft.language,
         "time_budget": _learning_route_time_budget(slots),
+        "source_attribution": plan_draft.source_attribution,
         "modules": modules,
     }
 
