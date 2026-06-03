@@ -137,3 +137,36 @@ Completed DeepSeek direct Chat Completions learning flow, SQL practice template 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 64: Exercise generation knowledge alignment closeout
+
+**Date**: 2026-06-04
+**Task**: Exercise generation knowledge alignment closeout
+**Branch**: `main`
+
+### Summary
+
+Implemented model-first bounded freeform adaptive exercise generation with enriched route skill context, bounded retry feedback, honest unavailable failures, semantic validators across public languages, SQL alias normalization, cache versioning, and regression coverage.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `9ec26e3` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
