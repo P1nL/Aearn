@@ -88,4 +88,13 @@
 
 ## 当前状态
 
-已创建 Trellis planning task，但还没有 start，也没有进入实现。下一步应先 review 本规划；如果确认，再 start task 并按 Phase 0 开始做覆盖矩阵。
+已按用户确认进入实施并完成当前规划范围。
+
+- Phase 0 覆盖矩阵已写入 `research/coverage-matrix.md`。
+- Phase 1 已把 `required_skill_tags`、module/lesson context、source/taxonomy hints、runtime policy 和 retry policy 传入模型上下文。
+- Phase 2 已改为 model-first bounded retry，最多 3 轮；多轮失败返回 `MODEL_UNAVAILABLE`，不展示 deterministic template 作为用户可见兜底。
+- Phase 3 已实现 Python/SQL/JavaScript/TypeScript 首批 validator，并扩展轻量 validator 到 `html_css`、`java`、`go`、`csharp`。
+- `cpp` 仍保持非公开静态占位；没有把 C++ 或 Rust 做成公开可执行语言。
+- 已通过 focused backend tests、`ruff`、`mypy`、Trellis validate、`desktop:check` 和 `git diff --check`。
+
+当前未执行 commit/archive；如需收尾，可在后续按项目流程提交并归档。

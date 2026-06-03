@@ -19,8 +19,8 @@ The desired product direction is model-first bounded freeform generation: the mo
 - `cpp` is a placeholder/static-template language only and must not be presented as executable.
 - `docs/architecture/api-contract.md` defines public language/runtime boundaries, including `python_stdout_test`, `browser_preview`, `node_typescript_test`, `sql_query_test`, and `managed_compiled_test`.
 - `aearn/services/api/app/services/curriculum/plan_generator.py` stores route knowledge points with `skill_tags`.
-- `aearn/services/api/app/services/exercises/exercise_repository.py::_exercise_template()` currently provides deterministic templates used as fallbacks. It now has explicit branches for `python`, `html_css`, `java`, and `sql`; JavaScript still relies on the browser fallback; `typescript`, `go`, and `csharp` need internal seed/harness coverage or a model-first path that is proven safe.
-- `aearn/services/api/app/services/exercises/adaptive_exercise_service.py::_model_context()` currently sends `knowledge_point_title`, a 500-character `knowledge_point_description`, `weak_points`, and runtime metadata, but does not pass full `skill_tags` or route lesson context to the model.
+- `aearn/services/api/app/services/exercises/exercise_repository.py::_exercise_template()` provides deterministic internal seed/harness templates. It now has explicit branches for `python`, `html_css`, `java`, `typescript`, `go`, `csharp`, and `sql`; JavaScript uses the browser-preview seed path.
+- `aearn/services/api/app/services/exercises/adaptive_exercise_service.py::_model_context()` now sends `required_skill_tags`, bounded lesson/module context, source/taxonomy hints, `weak_points`, runtime metadata, and retry policy to the model.
 - `adaptive_exercise_service.py` already lets a model candidate replace `title`, `prompt_markdown`, `starter_code`, `solution_reference`, `metadata_json`, and `code_blanks`.
 - Model candidates are runner-validated through `_validate_candidate()` and `run_exercise()` before caching.
 - Model candidates cannot currently own `test_cases`; unsupported fields currently force deterministic fallback.
@@ -45,18 +45,18 @@ The desired product direction is model-first bounded freeform generation: the mo
 
 ## Acceptance Criteria
 
-- [ ] A coverage matrix exists for all 8 executable languages and `cpp` static placeholder, showing route knowledge points, `skill_tags`, internal seed/harness coverage, runner tier, and validator coverage.
-- [ ] `_model_context()` includes bounded structured `skill_tags` and route/lesson context, with tests proving these fields reach the candidate generator.
-- [ ] The model prompt explicitly asks candidates to align exercise intent with required `skill_tags` and to avoid generic language drills when a specific concept is present.
-- [ ] Model candidates can freely change `starter_code`, `solution_reference`, prompt, and blanks without preserving the deterministic seed skeleton.
-- [ ] Model candidates cannot change `language`, `runtime_tier`, `runner`, or own final grading/runtime authority.
-- [ ] A generated candidate that passes runtime tests but misses required syntax/semantic alignment is rejected, then retried with safe feedback.
-- [ ] When the retry cap is exhausted, the API returns an honest unavailable/error result and does not show a deterministic template as a generated exercise.
-- [ ] At least Python has a strict validator for one high-value skill such as `list_comprehension` using `ast`.
-- [ ] At least JavaScript/TypeScript and SQL have initial lightweight validators for selected high-value skill tags.
-- [ ] Existing runner validation, hidden-output redaction, safe metadata handling, and user-scoped cache behavior remain intact.
-- [ ] Focused backend tests cover model context enrichment, model-first candidate shape, semantic validation failure, bounded retry, honest unavailable failure, and cache invalidation/versioning.
-- [ ] `ruff`, `mypy`, focused pytest, Trellis task validation, and `pnpm --dir .\aearn desktop:check` pass or exact blockers are documented.
+- [x] A coverage matrix exists for all 8 executable languages and `cpp` static placeholder, showing route knowledge points, `skill_tags`, internal seed/harness coverage, runner tier, and validator coverage.
+- [x] `_model_context()` includes bounded structured `skill_tags` and route/lesson context, with tests proving these fields reach the candidate generator.
+- [x] The model prompt explicitly asks candidates to align exercise intent with required `skill_tags` and to avoid generic language drills when a specific concept is present.
+- [x] Model candidates can freely change `starter_code`, `solution_reference`, prompt, and blanks without preserving the deterministic seed skeleton.
+- [x] Model candidates cannot change `language`, `runtime_tier`, `runner`, or own final grading/runtime authority.
+- [x] A generated candidate that passes runtime tests but misses required syntax/semantic alignment is rejected, then retried with safe feedback.
+- [x] When the retry cap is exhausted, the API returns an honest unavailable/error result and does not show a deterministic template as a generated exercise.
+- [x] At least Python has a strict validator for one high-value skill such as `list_comprehension` using `ast`.
+- [x] At least JavaScript/TypeScript and SQL have initial lightweight validators for selected high-value skill tags.
+- [x] Existing runner validation, hidden-output redaction, safe metadata handling, and user-scoped cache behavior remain intact.
+- [x] Focused backend tests cover model context enrichment, model-first candidate shape, semantic validation failure, bounded retry, honest unavailable failure, and cache invalidation/versioning.
+- [x] `ruff`, `mypy`, focused pytest, Trellis task validation, and `pnpm --dir .\aearn desktop:check` pass or exact blockers are documented.
 
 ## Phased Scope
 

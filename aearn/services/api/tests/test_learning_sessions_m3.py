@@ -13,6 +13,7 @@ from app.db.bootstrap import bootstrap_database
 from app.db.connection import connect
 from app.agents.tooling.tools import AgentSideEffects, LearningToolContext
 from app.main import app
+from app.services.exercises import adaptive_exercise_service
 from app.services.exercises.exercise_guidance import (
     build_error_explanation_response,
     build_explanation_check_response,
@@ -452,6 +453,42 @@ def test_learning_concept_stage_uses_check_offer_before_normal_unlock(client: Te
     assert result["session_state"]["learning_stage_state"]["learning_incomplete"] is False
     assert result["session_state"]["learning_stage_state"]["practice_unlock_reason"] == "concept_check_passed"
     assert result["tool_calls"][0]["name"] == "show_code_exercise"
+
+
+def test_practice_unlock_returns_model_unavailable_when_adaptive_generation_is_unavailable(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user, plan = _confirmed_plan(client, language="javascript")
+    session = _start_session(client, user, plan)
+
+    prompt_check = client.post(
+        f"/api/learning-sessions/{session['session_id']}/messages",
+        json={
+            "role": "user",
+            "content": "状态放在回调外部，所以多次点击会共享并累加同一个 count。",
+            "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
+        },
+    )
+    assert prompt_check.status_code == 200
+    assert prompt_check.json()["session_state"]["learning_stage"] == "practice_offer"
+
+    monkeypatch.setattr(adaptive_exercise_service, "build_model_candidate", lambda _context, _template: None)
+
+    unlock = client.post(
+        f"/api/learning-sessions/{session['session_id']}/messages",
+        json={
+            "role": "user",
+            "content": "开始练习",
+            "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
+        },
+    )
+
+    assert unlock.status_code == 503
+    body = unlock.json()
+    assert body["error"]["code"] == "MODEL_UNAVAILABLE"
+    assert body["error"]["recoverable"] is True
+    assert body["error"]["details"] == {"reason": "LLMInvalidResponseError"}
 
 
 def test_practice_offer_start_unlocks_when_model_is_disabled(
@@ -3556,36 +3593,40 @@ def test_managed_java_runtime_statuses_are_public_and_persisted(
     from app.services.runners import runner_registry
     from app.services.runners.managed_compiled_runner import ManagedCompiledExecutionResult, ManagedCompiledTestCaseResult
 
+    def successful_execute(*args, **kwargs):  # type: ignore[no-untyped-def]
+        del args, kwargs
+        return ManagedCompiledExecutionResult(
+            status="success",
+            stdout="compiled stdout",
+            stderr="",
+            error=None,
+            test_results=[
+                ManagedCompiledTestCaseResult(
+                    case_id="visible_increment",
+                    case_type="visible",
+                    passed=True,
+                    weight=1,
+                    is_critical=True,
+                    message="Passed",
+                    duration_ms=1,
+                ),
+                ManagedCompiledTestCaseResult(
+                    case_id="hidden_increment",
+                    case_type="hidden",
+                    passed=True,
+                    weight=1,
+                    is_critical=False,
+                    message="Hidden passed",
+                    duration_ms=1,
+                ),
+            ],
+            total_duration_ms=2,
+        )
+
     def fake_execute(*args, **kwargs):  # type: ignore[no-untyped-def]
         del args, kwargs
         if runtime_status == "success":
-            return ManagedCompiledExecutionResult(
-                status="success",
-                stdout="compiled stdout",
-                stderr="",
-                error=None,
-                test_results=[
-                    ManagedCompiledTestCaseResult(
-                        case_id="visible_increment",
-                        case_type="visible",
-                        passed=True,
-                        weight=1,
-                        is_critical=True,
-                        message="Passed",
-                        duration_ms=1,
-                    ),
-                    ManagedCompiledTestCaseResult(
-                        case_id="hidden_increment",
-                        case_type="hidden",
-                        passed=True,
-                        weight=1,
-                        is_critical=False,
-                        message="Hidden passed",
-                        duration_ms=1,
-                    ),
-                ],
-                total_duration_ms=2,
-            )
+            return successful_execute()
         if runtime_status == "test_failure":
             return ManagedCompiledExecutionResult(
                 status="test_failure",
@@ -3623,12 +3664,13 @@ def test_managed_java_runtime_statuses_are_public_and_persisted(
             total_duration_ms=1,
         )
 
-    monkeypatch.setattr(runner_registry, "execute_managed_compiled_with_tests", fake_execute)
+    monkeypatch.setattr(runner_registry, "execute_managed_compiled_with_tests", successful_execute)
 
     user, plan = _confirmed_plan(client, language="java")
     session = _start_session(client, user, plan)
     exercise = _unlock_practice_exercise(client, session)
     assert exercise["runtime_profile"]["runtime_tier"] == "managed_compiled_test"
+    monkeypatch.setattr(runner_registry, "execute_managed_compiled_with_tests", fake_execute)
 
     run_response = client.post(
         f"/api/learning-sessions/{session['session_id']}/exercises/{exercise['id']}/run",

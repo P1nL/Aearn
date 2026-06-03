@@ -233,6 +233,7 @@ Stop only script-managed Aearn processes whose current command line still matche
 - Preference updates must reject scoring, Attempt persistence, FSRS parameter, and `due_at` fields with `VALIDATION_ERROR`.
 - `POST /api/plans/generate` validates `goal_based.goal_text` or `material_based.materials[*].content`, then reads `users`, `language_courses`, and `runtime_profiles`.
 - Public drafts for JS/HTML/CSS/Python/TypeScript/SQL/Java/Go/C# must expose the matching teaching-grade runtime tier; C++ and Rust are not public route languages.
+- Onboarding slot normalization must map supported aliases before emitting unsupported-language errors: `MySQL`, `PostgreSQL`/`Postgres`, `SQLite`, `SQL Server`/`MSSQL`, and `MariaDB` are SQL dialect/product aliases and must persist as `language="sql"`, not `unsupported_language`.
 - JS/HTML/CSS/Python draft templates must be multi-module routes organized by official learning taxonomies, then adapted to Aearn's executable verification loop:
   - Python follows Python Tutorial-style categories such as basics/value flow, control flow/functions, data structures, modules/I/O, errors/tests, and classes/code review.
   - JavaScript follows MDN JavaScript Guide-style categories such as language basics, control flow/functions, objects/state, DOM events, async/modules, and generated-code verification.
@@ -256,6 +257,7 @@ Stop only script-managed Aearn processes whose current command line still matche
 - Missing goal/material input -> `VALIDATION_ERROR` with 400.
 - Invalid `plan_draft` shape, user mismatch, no modules, or no non-skippable core module -> `PLAN_DRAFT_INVALID` with 422.
 - Invalid dynamic modules -> `PLAN_DRAFT_INVALID` with 422; dynamic unavailability or missing generation config -> `PLAN_GENERATION_UNAVAILABLE` with 503/no-route SSE.
+- SQL dialect aliases such as `MySQL` returned by the extractor as `unsupported_language` -> normalize to `language="sql"` and continue route generation; do not emit `LANGUAGE_NOT_SUPPORTED`.
 - Unsupported or unregistered language -> `COURSE_NOT_FOUND` / validation failure; do not synthesize a confirmable plan from web search alone.
 - Same idempotency key with a different request hash -> `IDEMPOTENCY_CONFLICT` with 409.
 - FastAPI/Pydantic validation errors must be normalized to the documented error envelope.
@@ -285,6 +287,7 @@ Stop only script-managed Aearn processes whose current command line still matche
 - Assert confirm plan creates plan/module/knowledge point rows and one `review_states` row per knowledge point.
 - Assert idempotent replay returns the original plan and conflicting request body returns `IDEMPOTENCY_CONFLICT`.
 - Assert route-ready onboarding SSE stores and replays `show_learning_route` metadata, including time-budget-only revisions.
+- Assert route-ready onboarding maps `MySQL`/database product aliases to the SQL route and still returns `LANGUAGE_NOT_SUPPORTED` for truly unsupported languages such as C++ and Rust.
 
 ### 7. Wrong vs Correct
 
@@ -1334,12 +1337,12 @@ Browser preview exercises share the same runtime tier, but JavaScript event-flow
 
 ### 1. Scope / Trigger
 
-- Trigger: adding or changing deterministic exercise templates, adaptive exercise seed envelopes, language-course runtime profiles, or practice unlock behavior.
+- Trigger: adding or changing internal exercise seed/harness templates, adaptive exercise generation, semantic validators, language-course runtime profiles, or practice unlock behavior.
 - Scope: `app/services/exercises/exercise_repository.py`, `app/services/exercises/exercise_templates.py`, `app/services/exercises/adaptive_exercise_service.py`, `app/services/runners/runtime_runner.py`, `app/services/runners/runner_registry.py`, `app/services/curriculum/plan_generator.py`, and M3 exercise/session tests.
 
 ### 2. Signatures
 
-- Deterministic fallback signature: `_exercise_template(knowledge_point, runtime_profile) -> dict[str, object]`.
+- Internal seed/harness signature: `_exercise_template(knowledge_point, runtime_profile) -> dict[str, object]`.
 - Canonical template signature: `select_canonical_exercise_template(knowledge_point=..., runtime_profile=..., fallback_template=...) -> CanonicalExerciseTemplate`.
 - Adaptive generation signature: `build_adaptive_exercise_template(conn, knowledge_point=..., runtime_profile=..., fallback_template=..., candidate_generator=...) -> dict[str, object]`.
 - Runtime profile fields: `language`, `runtime_tier`, `runner`, `supports_tests`.
@@ -1348,12 +1351,13 @@ Browser preview exercises share the same runtime tier, but JavaScript event-flow
 
 ### 3. Contracts
 
-- A deterministic fallback template must match the current `runtime_profile.language`, `runtime_tier`, and runner capability before adaptive generation begins.
-- Adaptive model generation may rewrite learner-facing fields, but the canonical seed and fallback must not point to a different language or runtime tier.
+- An internal seed/harness template must match the current `runtime_profile.language`, `runtime_tier`, and runner capability before adaptive generation begins.
+- Adaptive model generation may rewrite learner-facing fields, but the canonical seed must not point to a different language or runtime tier.
 - SQL exercises must use SQL starter/solution code, SQLite teaching metadata, and `sql_query_test`; they must not fall through to browser/JavaScript event templates.
-- Browser fallback templates are valid only for browser-preview languages and must not be used as the generic fallback for every unhandled public language.
+- Browser seed templates are valid only for browser-preview languages and must not be used as the generic seed for every unhandled public language.
 - `cpp` and Rust must not be promoted to executable templates unless the public language enum, DB constraints, catalog, runtime profile, docs, and tests are updated together.
-- Model candidate validation must run the candidate through the selected runner before caching; fallback remains deterministic when the runner is unsupported or validation fails.
+- Model candidate validation must run semantic alignment checks and the selected runner before caching.
+- Provider, schema, semantic, runner, or unsupported-runner failure must retry with safe feedback up to the configured cap, then surface `MODEL_UNAVAILABLE` or the documented unavailable family without presenting the internal seed as a user-visible adaptive exercise.
 - Public exercise payloads must not expose hidden test bodies, hidden expected values, `solution_reference` except where the API contract explicitly returns it for local teaching flows, provider payloads, or raw prompts.
 
 ### 4. Validation & Error Matrix
@@ -1361,24 +1365,25 @@ Browser preview exercises share the same runtime tier, but JavaScript event-flow
 - `language=sql` and `runtime_tier=sql_query_test` -> SQL `SELECT` starter code, SQLite metadata, and SQL runner validation.
 - `language=html_css` and `runtime_tier=browser_preview` -> static preview/browser metadata, not JavaScript event-flow-only requirements.
 - `language=javascript` and `runtime_tier=browser_preview` -> JavaScript/browser event-flow-compatible template.
-- Public language with missing deterministic template branch -> add an explicit template or prove the selected fallback matches the language/runtime through tests before exposing the course.
-- Unsupported runner capability -> return deterministic fallback with `fallback_reason=runner_unsupported`.
-- Model candidate runner failure -> return deterministic fallback with `fallback_reason=validation_failed`.
+- Public language with missing internal seed branch -> add an explicit seed/harness template or prove the selected seed matches the language/runtime through tests before exposing the course.
+- Unsupported runner capability -> return an unavailable generation error; do not show the internal seed as a learner-visible adaptive exercise.
+- Model candidate schema, semantic, or runner failure -> retry with safe feedback; retry-cap exhaustion returns an honest unavailable error.
 
 ### 5. Good/Base/Bad Cases
 
 - Good: SQL practice unlock materializes an exercise whose `starter_code` starts with `SELECT`, has `metadata_json.sql.dialect="sqlite"`, and passes `sql_query_test`.
 - Good: browser-preview HTML/CSS exercises can pass static preview checks without requiring `document.querySelector` or `addEventListener`.
-- Base: model generation is unavailable; the deterministic fallback still creates a language/runtime-correct exercise.
+- Base: model generation is unavailable; the API returns a recoverable unavailable error instead of presenting a deterministic seed as adaptive practice.
 - Bad: a SQL route unlocks a practice card containing `document.querySelector`, `addEventListener`, or `count += 1`.
-- Bad: adding a public language route without a matching runtime profile, fallback template, runner validation, and regression test.
+- Bad: adding a public language route without a matching runtime profile, seed/harness template, runner validation, and regression test.
 
 ### 6. Tests Required
 
-- Unit-test `_exercise_template()` or adaptive fallback selection for each public language/runtime pair touched by the task.
+- Unit-test `_exercise_template()` seed/harness selection and adaptive generation behavior for each public language/runtime pair touched by the task.
 - API-test learning-session practice unlock for changed languages, including `runtime_profile.language`, `runtime_profile.runtime_tier`, starter code shape, and metadata.
 - Runner-test the generated solution for SQL, Python, browser preview, Node/TypeScript, or managed compiled paths as appropriate.
-- Regression-test that SQL does not fall through to browser/JavaScript fallback strings.
+- Regression-test that SQL does not fall through to browser/JavaScript seed strings.
+- Regression-test that provider, schema, semantic, or runner failure does not present an internal deterministic seed as adaptive practice.
 - Keep routine DB tests offline/fake for adaptive model generation unless the test explicitly opts into a live provider.
 
 ### 7. Wrong vs Correct
@@ -1392,7 +1397,7 @@ return {
 }
 ```
 
-Using browser fallback as the final catch-all makes non-browser public routes show the wrong language syntax.
+Using a browser seed as the final catch-all makes non-browser public routes show the wrong language syntax.
 
 #### Correct
 
@@ -1404,7 +1409,7 @@ if language == "sql":
     }
 ```
 
-The deterministic fallback is language/runtime-correct before adaptive generation, so model failure or validation fallback still gives the learner the right kind of exercise.
+The internal seed/harness is language/runtime-correct before adaptive generation. If model generation fails validation, retry and then return an honest unavailable error instead of showing this seed as adaptive practice.
 
 ## Scenario: Onboarding Chat-First Message Normalization
 
