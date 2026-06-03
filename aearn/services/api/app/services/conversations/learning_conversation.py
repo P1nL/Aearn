@@ -45,7 +45,10 @@ from app.agents.graphs.learning_graph import (
     graph_result_to_run_result,
     invoke_orchestration,
 )
-from app.agents.learning.learning_conversation_agent import AgentsSDKLearningConversationClient
+from app.agents.learning.learning_conversation_agent import (
+    AgentsSDKLearningConversationClient,
+    DirectLearningConversationClient,
+)
 from app.agents.graphs.router import get_handoff_targets, route_message
 from app.agents.learning.learning_concept_agent import (
     attach_concept_check_judgement,
@@ -757,7 +760,9 @@ def start_learning_message_generation(
     if client is None:
         if not effective_settings.openai_compatible_configured:
             raise LLMConfigurationError("Learning conversation requires configured model API")
-        if side_effects is not None or tool_context is not None:
+        if effective_settings.llm_provider_type == "deepseek":
+            client = DirectLearningConversationClient(effective_settings)
+        elif side_effects is not None or tool_context is not None:
             client = AgentsSDKLearningConversationClient(
                 effective_settings,
                 agent_name=agent_name,
@@ -1210,6 +1215,8 @@ def safe_generation_exceptions() -> tuple[type[Exception], ...]:
 def _optional_learning_client(settings: Settings) -> TextCompletionClient | None:
     if not settings.openai_compatible_configured:
         return None
+    if settings.llm_provider_type == "deepseek":
+        return DirectLearningConversationClient(settings)
     return AgentsSDKLearningConversationClient(settings)
 
 

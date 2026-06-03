@@ -628,7 +628,7 @@ The SDK layer only proposes validated coaching output; repository code still own
 ### 1. Scope / Trigger
 
 - Trigger: implementing or changing model-backed learning conversation messages for the active learning workspace.
-- Scope: `POST /api/learning-sessions/{session_id}/messages`, `LearningMessageRequest`, `app/services/learning_conversation.py`, `app/services/llm_client.py`, `idempotency_records`, and API tests for JSON and SSE modes.
+- Scope: `POST /api/learning-sessions/{session_id}/messages`, `LearningMessageRequest`, `app/services/conversations/learning_conversation.py`, `app/agents/learning/learning_conversation_agent.py`, `app/agents/learning/learning_concept_agent.py`, `app/services/llm/llm_client.py`, `idempotency_records`, and API tests for JSON and SSE modes.
 - SDK-backed Agent modules for this flow belong under `app/agents/`, for example `app/agents/learning_conversation_agent.py` and `app/agents/sdk_runtime.py`.
 
 ### 2. Signatures
@@ -640,6 +640,8 @@ The SDK layer only proposes validated coaching output; repository code still own
 - Idempotency key: `learning-message:{session_id}:{client_message_id}`
 - Local protocol boundary: `TextCompletionClient.complete_text_stream(messages, temperature=None)`.
 - Default configured model path: `AgentsSDKLearningConversationClient.complete_text_stream(...)`, backed by `openai-agents`.
+- DeepSeek learning text path: `DirectLearningConversationClient.complete_text_stream(...)`, backed by `OpenAICompatibleClient.complete_text_stream(...)` and Chat Completions `stream=true`.
+- DeepSeek concept JSON path: `DirectConceptClient.complete_json(...)`, backed by `OpenAICompatibleClient.complete_json(...)` and Chat Completions `response_format={"type":"json_object"}`.
 - Dependency signature: `openai-agents==0.17.3` in `aearn/services/api/pyproject.toml`.
 - SDK tool factory signature: `app/agents/tools.py::build_teaching_tools(messages) -> list[Tool]`.
 - SDK guardrail factory signature: `app/agents/guardrails.py::build_teaching_guardrails() -> tuple[list[InputGuardrail], list[OutputGuardrail]]`.
@@ -661,6 +663,8 @@ The SDK layer only proposes validated coaching output; repository code still own
 - Teaching-agent guardrails must exist at the SDK-agent boundary and at the public response boundary so fake clients and SDK clients both pass through the same leak checks before JSON or SSE output reaches the frontend.
 - SDK tracing must be disabled by default for this path unless a dedicated tracing configuration is explicitly designed.
 - SDK provider base URL handling must preserve existing `OPENAI_BASE_URL` behavior: both `https://provider.example` and `https://provider.example/v1` must resolve to the OpenAI client base URL ending in `/v1`.
+- `llm_provider_type="deepseek"` must use the direct OpenAI-compatible Chat Completions path for learning text and concept JSON. Do not instantiate OpenAI Agents SDK clients, tools, or handoffs for DeepSeek learning-session generation unless a task explicitly implements the official Chat Completions `tools` / `tool_calls` / `role:"tool"` loop.
+- `show_code_exercise` remains a backend deterministic tool event. The model may explain or coach, but it must not be required to generate the practice-card payload.
 - When model configuration is disabled, incomplete, failing, or produces an invalid/empty stream, return `MODEL_UNAVAILABLE`.
 
 ### 4. Validation & Error Matrix
@@ -670,6 +674,7 @@ The SDK layer only proposes validated coaching output; repository code still own
 - Same idempotency key with a different request body -> `IDEMPOTENCY_CONFLICT`, `recoverable=false`.
 - Same idempotency key with the same request body -> replay the stored completed assistant message; SSE replay may send it as one `agent_message` plus `done`.
 - Model failure before useful output -> `MODEL_UNAVAILABLE`.
+- DeepSeek direct Chat Completions failure, invalid JSON, or empty direct stream before useful output -> `MODEL_UNAVAILABLE`.
 - SDK runner exception, invalid SDK event stream, or empty SDK output before useful output -> `MODEL_UNAVAILABLE`.
 - Guardrail-blocked learner request or model output before useful output -> `MODEL_UNAVAILABLE`.
 - Model stream interruption after partial output -> SSE `error` event with recoverable retry guidance and no stored successful response.
@@ -679,9 +684,10 @@ The SDK layer only proposes validated coaching output; repository code still own
 ### 5. Good/Base/Bad Cases
 
 - Good: configured OpenAI-compatible provider streams deltas, the route accumulates safe content, stores the final response once, and replays the same `client_message_id` without calling the model again.
+- Good: DeepSeek learning messages and concept checks use direct Chat Completions clients while OpenAI can continue using the Agents SDK path.
 - Good: SDK tools summarize current stage, knowledge point, exercise metadata, and visible latest-attempt facts without exposing raw code submissions or hidden identifiers.
 - Base: local development has no model key; the endpoint returns `MODEL_UNAVAILABLE` and all tests pass without live provider access via fake clients.
-- Bad: adding a durable chat-history table for this MVP, exposing hidden test data in prompt/response, using WebSocket/global chatbot behavior for active learning composer messages, exposing SDK event names directly through the public API, or letting an SDK tool mutate `Attempt`, `ReviewState`, `ReviewLog`, `Note`, `LearningSession`, or `idempotency_records`.
+- Bad: adding a durable chat-history table for this MVP, exposing hidden test data in prompt/response, using WebSocket/global chatbot behavior for active learning composer messages, exposing SDK event names directly through the public API, sending DeepSeek through Agents SDK handoff/tool orchestration, or letting an SDK tool mutate `Attempt`, `ReviewState`, `ReviewLog`, `Note`, `LearningSession`, or `idempotency_records`.
 
 ### 6. Tests Required
 
@@ -693,6 +699,8 @@ The SDK layer only proposes validated coaching output; repository code still own
 - API-test guardrail-blocked SSE output after a partial safe chunk and assert a recoverable `error` event with no stored successful idempotency response.
 - API-test safe summary generation, persisted summary reuse below refresh threshold, direct-answer request redirection, and prompt context redaction for hidden IDs, internal reference fields, provider errors, API-key-like tokens, and complete-answer wording.
 - Unit-test OpenAI-compatible streaming payload compatibility so unsupported `temperature` is omitted by default.
+- Unit-test DeepSeek direct learning text streaming and direct concept JSON clients with fake transports; assert they call Chat Completions and do not instantiate Agents SDK clients.
+- API-test DeepSeek concept repair and practice-unlock flows with fake direct clients; assert there is no `MODEL_UNAVAILABLE` caused by Agents SDK handoff/tool orchestration.
 - Unit-test the SDK-backed client with a fake SDK runner; tests must assert no live model call is required, tracing is disabled, text deltas are extracted, base URLs are normalized, SDK tools are attached, and guardrails are attached.
 - Unit-test SDK tool summary helpers and guardrail helpers directly; assert summaries omit hidden case IDs, `solution_reference`, full starter/submitted code, provider errors, and raw prompt content.
 - Run the full backend pytest suite and `pnpm --dir .\aearn desktop:check` for cross-layer composer changes.
@@ -718,6 +726,25 @@ chunks = AgentsSDKLearningConversationClient(settings).complete_text_stream(
 ```
 
 The feature owns safe prompt construction, model-error mapping, idempotency, and SSE framing while the SDK client remains behind the local `TextCompletionClient` boundary.
+
+#### Wrong
+
+```python
+client = AgentsSDKLearningConversationClient(settings, side_effects=side_effects)
+```
+
+This sends DeepSeek learning sessions through SDK tools/handoffs even though the provider contract is Chat Completions-compatible, not Agents SDK orchestration-compatible.
+
+#### Correct
+
+```python
+if settings.llm_provider_type == "deepseek":
+    client = DirectLearningConversationClient(settings)
+else:
+    client = AgentsSDKLearningConversationClient(settings, side_effects=side_effects)
+```
+
+DeepSeek uses the documented Chat Completions surface while the service keeps deterministic stage transitions and `show_code_exercise` tool events under Aearn ownership.
 
 #### Wrong
 
@@ -1302,6 +1329,82 @@ else:
 ```
 
 Browser preview exercises share the same runtime tier, but JavaScript event-flow and HTML/CSS static preview have different deterministic validation rules.
+
+## Scenario: Exercise Template Runtime Alignment
+
+### 1. Scope / Trigger
+
+- Trigger: adding or changing deterministic exercise templates, adaptive exercise seed envelopes, language-course runtime profiles, or practice unlock behavior.
+- Scope: `app/services/exercises/exercise_repository.py`, `app/services/exercises/exercise_templates.py`, `app/services/exercises/adaptive_exercise_service.py`, `app/services/runners/runtime_runner.py`, `app/services/runners/runner_registry.py`, `app/services/curriculum/plan_generator.py`, and M3 exercise/session tests.
+
+### 2. Signatures
+
+- Deterministic fallback signature: `_exercise_template(knowledge_point, runtime_profile) -> dict[str, object]`.
+- Canonical template signature: `select_canonical_exercise_template(knowledge_point=..., runtime_profile=..., fallback_template=...) -> CanonicalExerciseTemplate`.
+- Adaptive generation signature: `build_adaptive_exercise_template(conn, knowledge_point=..., runtime_profile=..., fallback_template=..., candidate_generator=...) -> dict[str, object]`.
+- Runtime profile fields: `language`, `runtime_tier`, `runner`, `supports_tests`.
+- SQL metadata fields: `metadata_json.sql.dialect`, `metadata_json.sql.setup_sql`, `metadata_json.sql.comparison`, and `metadata_json.sql.max_rows`.
+- Public executable language/runtime pairs include `python`/`python_stdout_test`, `javascript`/`browser_preview`, `html_css`/`browser_preview`, `typescript`/`node_typescript_test`, `sql`/`sql_query_test`, and `java`/`go`/`csharp` with `managed_compiled_test`.
+
+### 3. Contracts
+
+- A deterministic fallback template must match the current `runtime_profile.language`, `runtime_tier`, and runner capability before adaptive generation begins.
+- Adaptive model generation may rewrite learner-facing fields, but the canonical seed and fallback must not point to a different language or runtime tier.
+- SQL exercises must use SQL starter/solution code, SQLite teaching metadata, and `sql_query_test`; they must not fall through to browser/JavaScript event templates.
+- Browser fallback templates are valid only for browser-preview languages and must not be used as the generic fallback for every unhandled public language.
+- `cpp` and Rust must not be promoted to executable templates unless the public language enum, DB constraints, catalog, runtime profile, docs, and tests are updated together.
+- Model candidate validation must run the candidate through the selected runner before caching; fallback remains deterministic when the runner is unsupported or validation fails.
+- Public exercise payloads must not expose hidden test bodies, hidden expected values, `solution_reference` except where the API contract explicitly returns it for local teaching flows, provider payloads, or raw prompts.
+
+### 4. Validation & Error Matrix
+
+- `language=sql` and `runtime_tier=sql_query_test` -> SQL `SELECT` starter code, SQLite metadata, and SQL runner validation.
+- `language=html_css` and `runtime_tier=browser_preview` -> static preview/browser metadata, not JavaScript event-flow-only requirements.
+- `language=javascript` and `runtime_tier=browser_preview` -> JavaScript/browser event-flow-compatible template.
+- Public language with missing deterministic template branch -> add an explicit template or prove the selected fallback matches the language/runtime through tests before exposing the course.
+- Unsupported runner capability -> return deterministic fallback with `fallback_reason=runner_unsupported`.
+- Model candidate runner failure -> return deterministic fallback with `fallback_reason=validation_failed`.
+
+### 5. Good/Base/Bad Cases
+
+- Good: SQL practice unlock materializes an exercise whose `starter_code` starts with `SELECT`, has `metadata_json.sql.dialect="sqlite"`, and passes `sql_query_test`.
+- Good: browser-preview HTML/CSS exercises can pass static preview checks without requiring `document.querySelector` or `addEventListener`.
+- Base: model generation is unavailable; the deterministic fallback still creates a language/runtime-correct exercise.
+- Bad: a SQL route unlocks a practice card containing `document.querySelector`, `addEventListener`, or `count += 1`.
+- Bad: adding a public language route without a matching runtime profile, fallback template, runner validation, and regression test.
+
+### 6. Tests Required
+
+- Unit-test `_exercise_template()` or adaptive fallback selection for each public language/runtime pair touched by the task.
+- API-test learning-session practice unlock for changed languages, including `runtime_profile.language`, `runtime_profile.runtime_tier`, starter code shape, and metadata.
+- Runner-test the generated solution for SQL, Python, browser preview, Node/TypeScript, or managed compiled paths as appropriate.
+- Regression-test that SQL does not fall through to browser/JavaScript fallback strings.
+- Keep routine DB tests offline/fake for adaptive model generation unless the test explicitly opts into a live provider.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+return {
+    "slug": f"m3-browser-{knowledge_point_id}",
+    "starter_code": "const button = document.querySelector('#run')",
+}
+```
+
+Using browser fallback as the final catch-all makes non-browser public routes show the wrong language syntax.
+
+#### Correct
+
+```python
+if language == "sql":
+    return {
+        "starter_code": "SELECT name\nFROM learners\nWHERE __BLANK_1__\nORDER BY id;\n",
+        "metadata_json": {"sql": {"dialect": "sqlite", "setup_sql": [...]}},
+    }
+```
+
+The deterministic fallback is language/runtime-correct before adaptive generation, so model failure or validation fallback still gives the learner the right kind of exercise.
 
 ## Scenario: Onboarding Chat-First Message Normalization
 
