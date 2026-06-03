@@ -545,6 +545,98 @@ def _exercise_template(
             ],
         }
 
+    if language == "sql":
+        return {
+            "slug": f"m3-sql-{knowledge_point_id}",
+            "title": f"{title}：SQLite SELECT 查询",
+            "exercise_type": "code_blank",
+            "prompt_markdown": (
+                f"围绕知识点 **{title}** 完成一个只读 SQL 查询练习。\n\n"
+                "要求：从 `learners` 表中筛选 `track` 为 `sql` 的学习者，并按 `id` 排序返回 `name` 列。"
+                f"{' 当前知识点提示：' + description if description else ''}"
+            ),
+            "starter_code": (
+                "SELECT name\n"
+                "FROM learners\n"
+                "WHERE __BLANK_1__\n"
+                "ORDER BY id;\n"
+            ),
+            "solution_reference": (
+                "SELECT name\n"
+                "FROM learners\n"
+                "WHERE track = 'sql'\n"
+                "ORDER BY id;\n"
+            ),
+            "visible_test_policy": "visible_and_hidden_summary",
+            "difficulty": 1,
+            "estimated_minutes": 7,
+            "requires_explanation": False,
+            "metadata_json": {
+                "required_patterns": ["SELECT name", "FROM learners", "WHERE", "ORDER BY id"],
+                "sql": {
+                    "dialect": "sqlite",
+                    "comparison": "ordered",
+                    "max_rows": 20,
+                    "setup_sql": [
+                        (
+                            "CREATE TABLE learners ("
+                            "id INTEGER PRIMARY KEY, "
+                            "name TEXT NOT NULL, "
+                            "track TEXT NOT NULL"
+                            ");"
+                        ),
+                        (
+                            "INSERT INTO learners (name, track) VALUES "
+                            "('Ada', 'python'), "
+                            "('Grace', 'sql'), "
+                            "('Linus', 'systems');"
+                        ),
+                    ],
+                },
+            },
+            "code_blanks": [
+                {
+                    "blank_key": "blank_1",
+                    "placeholder": "track = 'sql'",
+                    "expected_concept": "用 WHERE 条件筛选 track 为 sql 的记录。",
+                    "acceptable_patterns_json": [
+                        {"type": "literal", "value": "track = 'sql'"},
+                        {"type": "regex", "value": r"track\s*=\s*'sql'"},
+                    ],
+                    "is_core": True,
+                    "order_index": 0,
+                },
+            ],
+            "test_cases": [
+                {
+                    "case_type": "visible",
+                    "input_json": {},
+                    "expected_output_json": {
+                        "columns": ["name"],
+                        "rows": [{"name": "Grace"}],
+                    },
+                    "assertion_code": None,
+                    "weight": 1,
+                    "is_critical": True,
+                    "timeout_ms": 5000,
+                    "order_index": 0,
+                },
+                {
+                    "case_type": "hidden",
+                    "input_json": {},
+                    "expected_output_json": {
+                        "columns": ["name"],
+                        "rows": [{"name": "Grace"}],
+                    },
+                    "assertion_code": None,
+                    "weight": 1,
+                    "is_critical": False,
+                    "timeout_ms": 5000,
+                    "order_index": 1,
+                },
+            ],
+        }
+
     if language == "cpp":
         starter_code = (
             "#include <iostream>\n\n"

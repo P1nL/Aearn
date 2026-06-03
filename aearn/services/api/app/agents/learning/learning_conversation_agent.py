@@ -15,6 +15,7 @@ from app.agents.runtime.sdk_runtime import (
 )
 from app.agents.tooling.tools import AgentSideEffects, LearningToolContext, build_teaching_tools
 from app.core.config import Settings
+from app.services.llm.llm_client import OpenAICompatibleClient
 
 
 TEACHING_AGENT_NAME = "Aearn Teaching Agent"
@@ -98,6 +99,29 @@ class AgentsSDKLearningConversationClient:
                 run_config=self._run_config,
             )
         )
+
+
+class DirectLearningConversationClient:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        text_client: OpenAICompatibleClient | None = None,
+    ) -> None:
+        self._settings = settings
+        self._text_client = text_client or OpenAICompatibleClient(settings)
+
+    @property
+    def model(self) -> str:
+        return str(self._text_client.model or self._settings.llm_model or "")
+
+    def complete_text_stream(
+        self,
+        messages: Sequence[Mapping[str, str]],
+        *,
+        temperature: float | None = None,
+    ) -> Iterable[str]:
+        return self._text_client.complete_text_stream(messages, temperature=temperature)
 
 
 def _safe_handoff_targets(agent_name: str, targets: Sequence[str]) -> tuple[str, ...]:

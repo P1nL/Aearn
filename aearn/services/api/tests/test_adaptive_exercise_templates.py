@@ -85,6 +85,33 @@ def test_model_candidate_is_runner_validated_and_cached(language: str) -> None:
     assert calls == 1
 
 
+def test_sql_template_uses_query_exercise_not_browser_fallback() -> None:
+    bootstrap_database()
+    with connect() as conn:
+        context = _learning_context(conn, language="sql")
+        fallback = _exercise_template(context["knowledge_point"], context["runtime_profile"])
+        exercise = build_adaptive_exercise_template(
+            conn,
+            knowledge_point=context["knowledge_point"],
+            runtime_profile=context["runtime_profile"],
+            fallback_template=fallback,
+            candidate_generator=lambda _context, _template: None,
+        )
+        conn.commit()
+
+    starter_code = str(exercise["starter_code"])
+    metadata = exercise["metadata_json"]
+    adaptive_meta = metadata["adaptive_variant"]
+
+    assert starter_code.lstrip().upper().startswith("SELECT")
+    assert "document.querySelector" not in starter_code
+    assert "addEventListener" not in starter_code
+    assert "count += 1" not in starter_code
+    assert metadata["sql"]["dialect"] == "sqlite"
+    assert adaptive_meta["validation_status"] == "validated"
+    assert adaptive_meta["runtime_tier"] == "sql_query_test"
+
+
 def test_exercise_repository_materializes_validated_model_variant(monkeypatch: pytest.MonkeyPatch) -> None:
     bootstrap_database()
     with connect() as conn:

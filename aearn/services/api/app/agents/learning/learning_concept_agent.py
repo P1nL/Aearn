@@ -23,7 +23,13 @@ from app.agents.runtime.structured_judgement import (
     normalize_judgements,
 )
 from app.core.config import Settings, get_settings
-from app.services.llm.llm_client import LLMCallError, LLMConfigurationError, LLMInvalidResponseError
+from app.services.llm.llm_client import (
+    LLMCallError,
+    LLMConfigurationError,
+    LLMInvalidResponseError,
+    LLMJsonResponse,
+    OpenAICompatibleClient,
+)
 
 
 CONCEPT_AGENT_NAME = "Aearn Concept Check Agent"
@@ -81,6 +87,44 @@ class ConceptClient(Protocol):
         *,
         temperature: float = 0.2,
     ) -> ConceptJsonResponse: ...
+
+
+class LLMJsonConceptClient(Protocol):
+    @property
+    def model(self) -> str: ...
+
+    def complete_json(
+        self,
+        messages: Sequence[Mapping[str, str]],
+        *,
+        temperature: float | None = None,
+    ) -> LLMJsonResponse: ...
+
+
+class DirectConceptClient:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        json_client: LLMJsonConceptClient | None = None,
+        runner: object | None = None,
+    ) -> None:
+        del runner
+        self._settings = settings
+        self._json_client = json_client or OpenAICompatibleClient(settings)
+
+    @property
+    def model(self) -> str:
+        return str(self._json_client.model or self._settings.llm_model or "")
+
+    def complete_json(
+        self,
+        messages: Sequence[Mapping[str, str]],
+        *,
+        temperature: float = 0.2,
+    ) -> ConceptJsonResponse:
+        result = self._json_client.complete_json(messages, temperature=temperature)
+        return ConceptJsonResponse(content=result.content, model=result.model or self.model)
 
 
 class AgentsSDKConceptClient:
@@ -203,6 +247,8 @@ def _resolve_client(
     if not effective_settings.openai_compatible_configured:
         return None
     try:
+        if effective_settings.llm_provider_type == "deepseek":
+            return DirectConceptClient(effective_settings)
         return AgentsSDKConceptClient(effective_settings)
     except LLMConfigurationError:
         return None

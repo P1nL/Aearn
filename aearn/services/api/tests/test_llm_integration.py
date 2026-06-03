@@ -9,6 +9,7 @@ from app.agents.runtime.agent_runtime_context import (
     sanitize_summary_list,
     should_refresh_summary,
 )
+import app.agents.learning.learning_concept_agent as learning_concept_agent
 from app.agents.learning.exercise_coach_agent import (
     EXERCISE_COACH_AGENT_NAME,
     AgentsSDKExerciseCoachClient,
@@ -49,7 +50,12 @@ from app.agents.runtime.guardrails import (
     detect_direct_answer_request,
 )
 from app.core.config import Settings
-from app.agents.learning.learning_conversation_agent import AgentsSDKLearningConversationClient, TEACHING_AGENT_NAME
+from app.agents.learning.learning_concept_agent import DirectConceptClient
+from app.agents.learning.learning_conversation_agent import (
+    AgentsSDKLearningConversationClient,
+    DirectLearningConversationClient,
+    TEACHING_AGENT_NAME,
+)
 from app.agents.runtime.sdk_runtime import (
     build_run_config,
     extract_text_delta,
@@ -526,6 +532,200 @@ def test_deepseek_client_streams_chat_completion_deltas() -> None:
     ]
     assert "input" not in captured["payload"]
     assert "temperature" not in captured["payload"]
+
+
+def test_deepseek_learning_conversation_client_uses_direct_streaming_chat_completion() -> None:
+    captured: dict[str, object] = {}
+
+    def stream_transport(
+        url: str,
+        headers: Mapping[str, str],
+        payload: Mapping[str, object],
+        timeout: float,
+    ) -> Sequence[str]:
+        captured["url"] = url
+        captured["headers"] = dict(headers)
+        captured["payload"] = dict(payload)
+        captured["timeout"] = timeout
+        return ["先判断你卡在状态共享，", "再看点击回调。"]
+
+    client = DirectLearningConversationClient(
+        Settings(
+            llm_type="deepseek",
+            deepseek_api_key="test-key",
+            deepseek_base_url="https://api.deepseek.com",
+            deepseek_model="deepseek-chat",
+            llm_timeout_seconds=7,
+        ),
+        text_client=OpenAICompatibleClient(
+            Settings(
+                llm_type="deepseek",
+                deepseek_api_key="test-key",
+                deepseek_base_url="https://api.deepseek.com",
+                deepseek_model="deepseek-chat",
+                llm_timeout_seconds=7,
+            ),
+            stream_transport=stream_transport,
+        ),
+    )
+
+    chunks = list(
+        client.complete_text_stream(
+            [
+                {"role": "system", "content": "导师提示词"},
+                {"role": "user", "content": "我不懂为什么要把 count 放外面"},
+            ],
+            temperature=0.2,
+        )
+    )
+
+    assert chunks == ["先判断你卡在状态共享，", "再看点击回调。"]
+    assert captured["url"] == "https://api.deepseek.com/chat/completions"
+    assert captured["timeout"] == 7
+    assert captured["payload"] == {
+        "model": "deepseek-chat",
+        "messages": [
+            {"role": "system", "content": "导师提示词"},
+            {"role": "user", "content": "我不懂为什么要把 count 放外面"},
+        ],
+        "stream": True,
+        "temperature": 0.2,
+    }
+
+
+def test_deepseek_concept_client_uses_direct_json_chat_completion() -> None:
+    captured: dict[str, object] = {}
+
+    def transport(
+        url: str,
+        headers: Mapping[str, str],
+        payload: Mapping[str, object],
+        timeout: float,
+    ) -> Mapping[str, object]:
+        captured["url"] = url
+        captured["headers"] = dict(headers)
+        captured["payload"] = dict(payload)
+        captured["timeout"] = timeout
+        return {
+            "model": "deepseek-chat",
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": '{"result":"correct","confidence":"high"}',
+                    }
+                }
+            ],
+        }
+
+    client = DirectConceptClient(
+        Settings(
+            llm_type="deepseek",
+            deepseek_api_key="test-key",
+            deepseek_base_url="https://api.deepseek.com",
+            deepseek_model="deepseek-chat",
+            llm_timeout_seconds=5,
+        ),
+        json_client=OpenAICompatibleClient(
+            Settings(
+                llm_type="deepseek",
+                deepseek_api_key="test-key",
+                deepseek_base_url="https://api.deepseek.com",
+                deepseek_model="deepseek-chat",
+                llm_timeout_seconds=5,
+            ),
+            transport=transport,
+        ),
+    )
+
+    response = client.complete_json(
+        [
+            {"role": "system", "content": "只输出 JSON"},
+            {"role": "user", "content": "判断学习者回答"},
+        ],
+        temperature=0.1,
+    )
+
+    assert response.content == {"result": "correct", "confidence": "high"}
+    assert response.model == "deepseek-chat"
+    assert captured["url"] == "https://api.deepseek.com/chat/completions"
+    assert captured["timeout"] == 5
+    assert captured["payload"]["response_format"] == {"type": "json_object"}
+    assert captured["payload"]["messages"] == [
+        {"role": "system", "content": "只输出 JSON"},
+        {"role": "user", "content": "判断学习者回答"},
+    ]
+
+
+def test_deepseek_concept_generation_resolves_direct_json_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeJsonClient:
+        model = "deepseek-chat"
+
+        def __init__(self, settings: Settings) -> None:
+            captured["provider"] = settings.llm_provider_type
+
+        def complete_json(
+            self,
+            messages: Sequence[Mapping[str, str]],
+            *,
+            temperature: float | None = None,
+        ) -> LLMJsonResponse:
+            captured["messages"] = list(messages)
+            captured["temperature"] = temperature
+            return LLMJsonResponse(
+                content={
+                    "result": "correct",
+                    "confidence": "high",
+                    "explanation": "你的判断抓住了状态变量共享关系。",
+                    "next_prompt": "可以回复开始练习。",
+                    "actions": [{"id": "start_practice", "label": "开始练习"}],
+                    "repair_check": None,
+                    "judgements": {
+                        "answer_correctness": {"status": "confirmed"},
+                        "confidence": {"status": "confirmed"},
+                        "misconception": {"status": "missing"},
+                        "repair_check": {"status": "missing"},
+                    },
+                },
+                model="deepseek-chat",
+            )
+
+    def fail_agents_sdk_client(settings, **kwargs):  # type: ignore[no-untyped-def]
+        del settings, kwargs
+        raise AssertionError("DeepSeek concept checks must not instantiate Agents SDK clients")
+
+    monkeypatch.setattr(learning_concept_agent, "OpenAICompatibleClient", FakeJsonClient)
+    monkeypatch.setattr(learning_concept_agent, "AgentsSDKConceptClient", fail_agents_sdk_client)
+
+    result = learning_concept_agent.build_sdk_concept_check_result(
+        knowledge_point={"id": "kp_dom_event_state", "title": "事件状态变量"},
+        lesson_outline=[],
+        lesson_sources=[],
+        active_intro={"summary": "状态变量放在回调外可以跨点击共享。"},
+        active_check={
+            "type": "single_choice",
+            "question": "count 放在回调外会怎样？",
+            "options": [{"id": "A", "text": "跨点击共享"}],
+            "expected_focus": "状态共享",
+        },
+        learner_answer="A，因为它会跨点击共享",
+        attempt_count=1,
+        previous_misconceptions=[],
+        conversation_context={},
+        settings=Settings(
+            llm_type="deepseek",
+            deepseek_api_key="test-key",
+            deepseek_base_url="https://api.deepseek.com",
+            deepseek_model="deepseek-chat",
+        ),
+    )
+
+    assert result is not None
+    assert result["result"] == "correct"
+    assert captured["provider"] == "deepseek"
+    assert captured["temperature"] == 0.1
 
 
 def test_deepseek_stream_parser_handles_choices_delta_and_done() -> None:

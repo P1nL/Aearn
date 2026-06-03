@@ -826,6 +826,180 @@ def test_learning_message_routes_and_passes_handoffs_to_sdk_client(
     assert "agent_name" not in json.dumps(body, ensure_ascii=False)
 
 
+def test_deepseek_learning_message_uses_direct_client_without_agents_sdk(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user, plan = _confirmed_plan(client, language="javascript")
+    session = _start_session(client, user, plan)
+    captured: dict[str, object] = {"direct_calls": 0}
+
+    class FakeDirectDeepSeekClient:
+        model = "deepseek-chat"
+
+        def complete_text_stream(self, messages, *, temperature=None):  # type: ignore[no-untyped-def]
+            captured["direct_calls"] = int(captured["direct_calls"]) + 1
+            prompt_text = json.dumps(messages, ensure_ascii=False)
+            if "学习上下文摘要器" in prompt_text:
+                return [
+                    json.dumps(
+                        {
+                            "learning_goal": "理解 DOM 事件状态",
+                            "current_stuck_point": "状态变量共享",
+                            "misconceptions": [],
+                            "concepts_explained": ["事件回调"],
+                            "examples_used": [],
+                            "last_diagnosis": "",
+                            "last_agent_strategy": "",
+                            "avoid_repeating": [],
+                            "recommended_next_step": "继续解释",
+                            "summary_confidence": "medium",
+                        },
+                        ensure_ascii=False,
+                    )
+                ]
+            captured["learning_messages"] = messages
+            captured["temperature"] = temperature
+            return ["DeepSeek direct path 正常，", "不会创建 handoff。"]
+
+    def fail_agents_sdk_factory(settings, **kwargs):  # type: ignore[no-untyped-def]
+        del settings, kwargs
+        raise AssertionError("DeepSeek learning messages must not instantiate Agents SDK clients")
+
+    def fake_direct_factory(settings, **kwargs):  # type: ignore[no-untyped-def]
+        captured["provider"] = settings.llm_provider_type
+        captured["direct_kwargs"] = dict(kwargs)
+        return FakeDirectDeepSeekClient()
+
+    monkeypatch.setattr(
+        learning_conversation,
+        "get_settings",
+        lambda: Settings(
+            llm_type="deepseek",
+            deepseek_api_key="test-key",
+            deepseek_base_url="https://api.deepseek.com",
+            deepseek_model="deepseek-chat",
+        ),
+    )
+    monkeypatch.setattr(learning_conversation, "AgentsSDKLearningConversationClient", fail_agents_sdk_factory)
+    monkeypatch.setattr(learning_conversation, "DirectLearningConversationClient", fake_direct_factory)
+
+    response = client.post(
+        f"/api/learning-sessions/{session['session_id']}/messages",
+        json={
+            "role": "user",
+            "content": "为什么要把 count 放在回调外面？",
+            "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["agent_message"]["content"] == "DeepSeek direct path 正常，不会创建 handoff。"
+    assert body["generation_model"] == "deepseek-chat"
+    assert captured["provider"] == "deepseek"
+    assert captured["direct_calls"] >= 1
+    assert "handoff_targets" not in captured["direct_kwargs"]
+    assert "side_effects" not in captured["direct_kwargs"]
+    assert "MODEL_UNAVAILABLE" not in json.dumps(body, ensure_ascii=False)
+
+
+def test_deepseek_concept_repair_stream_progresses_without_model_unavailable(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user, plan = _confirmed_plan(client, language="javascript")
+    session = _start_session(client, user, plan)
+
+    class FakeDirectDeepSeekClient:
+        model = "deepseek-chat"
+
+        def complete_text_stream(self, messages, *, temperature=None):  # type: ignore[no-untyped-def]
+            del temperature
+            prompt_text = json.dumps(messages, ensure_ascii=False)
+            if "学习上下文摘要器" in prompt_text:
+                return [
+                    json.dumps(
+                        {
+                            "learning_goal": "理解 DOM 事件状态",
+                            "current_stuck_point": "状态变量共享",
+                            "misconceptions": ["把局部变量误认为跨点击共享"],
+                            "concepts_explained": ["事件回调"],
+                            "examples_used": [],
+                            "last_diagnosis": "状态作用域混淆",
+                            "last_agent_strategy": "修复判断题",
+                            "avoid_repeating": [],
+                            "recommended_next_step": "继续修复判断",
+                            "summary_confidence": "medium",
+                        },
+                        ensure_ascii=False,
+                    )
+                ]
+            return ["这个修复判断已经更接近了，", "下一步可以进入练习。"]
+
+    def fail_agents_sdk_factory(settings, **kwargs):  # type: ignore[no-untyped-def]
+        del settings, kwargs
+        raise AssertionError("DeepSeek concept repair streams must not instantiate Agents SDK clients")
+
+    monkeypatch.setattr(
+        learning_conversation,
+        "get_settings",
+        lambda: Settings(
+            llm_type="deepseek",
+            deepseek_api_key="test-key",
+            deepseek_base_url="https://api.deepseek.com",
+            deepseek_model="deepseek-chat",
+        ),
+    )
+    monkeypatch.setattr(learning_conversation, "AgentsSDKLearningConversationClient", fail_agents_sdk_factory)
+    monkeypatch.setattr(
+        learning_conversation,
+        "DirectLearningConversationClient",
+        lambda settings, **kwargs: FakeDirectDeepSeekClient(),
+    )
+
+    first_wrong = client.post(
+        f"/api/learning-sessions/{session['session_id']}/messages",
+        json={
+            "role": "user",
+            "content": "B",
+            "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
+        },
+    )
+    assert first_wrong.status_code == 200
+    assert first_wrong.json()["session_state"]["learning_stage"] == "concept_repair"
+
+    with client.stream(
+        "POST",
+        f"/api/learning-sessions/{session['session_id']}/messages",
+        headers={"Accept": "text/event-stream"},
+        json={
+            "role": "user",
+            "content": "A",
+            "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
+        },
+    ) as response:
+        assert response.status_code == 200
+        events = _parse_sse_events("".join(response.iter_text()))
+
+    event_names = [event["event"] for event in events]
+    assert "error" not in event_names
+    assert event_names[0] == "agent_message"
+    assert event_names[-1] == "done"
+    assert events[-1]["data"]["generation_model"] == "deepseek-chat"
+    serialized_events = json.dumps(events, ensure_ascii=False)
+    assert "MODEL_UNAVAILABLE" not in serialized_events
+    tool_done = [
+        event
+        for event in events
+        if event["event"] == "tool_call" and event["data"].get("phase") == "done"
+    ]
+    assert any(
+        event["data"].get("arguments", {}).get("result") == "correct"
+        for event in tool_done
+    )
+
+
 def test_learning_message_langgraph_flag_off_does_not_invoke_graph(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -3490,6 +3664,39 @@ def test_managed_java_runtime_statuses_are_public_and_persisted(
         ).fetchone()
     assert attempt is not None
     assert attempt["runtime_status"] == runtime_status
+
+
+def test_sql_learning_session_unlocks_query_exercise(client: TestClient) -> None:
+    user, plan = _confirmed_plan(client, language="sql")
+    session = _start_session(client, user, plan)
+    exercise = _unlock_practice_exercise(client, session)
+
+    starter_code = str(exercise["starter_code"])
+    metadata = exercise["metadata_json"]
+
+    assert exercise["runtime_profile"]["runtime_tier"] == "sql_query_test"
+    assert exercise["runtime_profile"]["language"] == "sql"
+    assert starter_code.lstrip().upper().startswith("SELECT")
+    assert "document.querySelector" not in starter_code
+    assert "addEventListener" not in starter_code
+    assert "count += 1" not in starter_code
+    assert metadata["sql"]["dialect"] == "sqlite"
+
+    run_response = client.post(
+        f"/api/learning-sessions/{session['session_id']}/exercises/{exercise['id']}/run",
+        json={
+            "code": exercise["solution_reference"],
+            "filled_blanks": {"blank_1": "track = 'sql'"},
+            "runtime_profile_id": exercise["runtime_profile"]["id"],
+            "run_mode": "visible_tests",
+        },
+    )
+
+    assert run_response.status_code == 201
+    body = run_response.json()
+    assert body["runtime_status"] == "success"
+    assert body["test_pass_rate"] == 1.0
+    assert body["stdout"] == "1 row"
 
 
 def test_cpp_is_not_a_public_route_language(client: TestClient) -> None:
