@@ -34,6 +34,7 @@ const EMPTY_LEARNING_ROUTE: LearningRouteArgs = {
   goal_text: "正在生成学习路线…",
   language: "javascript",
   time_budget: null,
+  source_attribution: [],
   modules: [],
 };
 
@@ -105,6 +106,9 @@ function normalizeLearningRouteArgs(args: unknown): LearningRouteArgs {
     goal_text: typeof args.goal_text === "string" ? args.goal_text : EMPTY_LEARNING_ROUTE.goal_text,
     language: (args.language as LearningRouteArgs["language"]) ?? EMPTY_LEARNING_ROUTE.language,
     time_budget: timeBudget,
+    source_attribution: Array.isArray(args.source_attribution)
+      ? args.source_attribution.filter((source): source is string => typeof source === "string")
+      : [],
     modules: Array.isArray(args.modules)
       ? args.modules
           .filter((module): module is Record<string, unknown> & LearningRouteArgs["modules"][number] =>

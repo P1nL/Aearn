@@ -12,6 +12,8 @@ from app.db.bootstrap import bootstrap_database
 from app.db.connection import connect
 from app.main import app
 from app.services.conversations import learning_conversation
+from app.services.curriculum.dynamic_plan_generation import DynamicPlanDraftResult
+from app.services.curriculum.plan_generator import build_plan_draft
 from app.services.repositories import learning_session_repository, review_repository, review_seed_bank
 from app.services.repositories.learner_profile import get_learner_profile
 from app.services.repositories.review_scheduler import apply_attempt_review_update
@@ -79,8 +81,7 @@ def disable_review_coach_sdk(monkeypatch: pytest.MonkeyPatch) -> None:
             "generation_model": "fake-review-coach",
         },
     )
-    monkeypatch.setattr(plans_route, "build_sdk_plan_generation_response", lambda *args, **kwargs: None)
-    monkeypatch.setattr(plans_route, "build_sdk_onboarding_plan_response", lambda *args, **kwargs: None)
+    monkeypatch.setattr(plans_route, "build_dynamic_plan_draft", _fake_dynamic_plan_draft)
     monkeypatch.setattr(
         learning_session_repository,
         "build_sdk_explanation_check_response",
@@ -107,6 +108,15 @@ def disable_review_coach_sdk(monkeypatch: pytest.MonkeyPatch) -> None:
         learning_conversation,
         "AgentsSDKLearningConversationClient",
         lambda settings, **kwargs: FakeLearningConversationClient(),
+    )
+
+
+def _fake_dynamic_plan_draft(payload, user, course, **kwargs):  # type: ignore[no-untyped-def]
+    del kwargs
+    plan_draft = build_plan_draft(payload, user, course)
+    return DynamicPlanDraftResult(
+        plan_draft=plan_draft,
+        agent_notes=[plan_draft.runtime_boundary.notice, "Test fake dynamic plan."],
     )
 
 

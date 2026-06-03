@@ -18,6 +18,8 @@ from app.services.exercises.exercise_guidance import (
     build_explanation_check_response,
     build_hint_response,
 )
+from app.services.curriculum.dynamic_plan_generation import DynamicPlanDraftResult
+from app.services.curriculum.plan_generator import build_plan_draft
 from app.services.grounding.grounding_index_repository import run_and_persist_fixture_grounding_reindex
 from app.services.repositories.learner_profile import ensure_learner_profile, get_learner_profile, merge_observations
 from app.services.conversations import learning_conversation
@@ -144,8 +146,7 @@ def disable_llm_generation(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(session_repository, "build_llm_error_explanation", fake_error_explanation)
     monkeypatch.setattr(session_repository, "build_sdk_hint_response", fake_hint)
     monkeypatch.setattr(session_repository, "build_sdk_explanation_check_response", fake_explanation_check)
-    monkeypatch.setattr(plans_route, "build_sdk_plan_generation_response", lambda *args, **kwargs: None)
-    monkeypatch.setattr(plans_route, "build_sdk_onboarding_plan_response", lambda *args, **kwargs: None)
+    monkeypatch.setattr(plans_route, "build_dynamic_plan_draft", _fake_dynamic_plan_draft)
     monkeypatch.setattr(
         learning_conversation,
         "get_settings",
@@ -160,6 +161,15 @@ def disable_llm_generation(monkeypatch: pytest.MonkeyPatch) -> None:
         learning_conversation,
         "AgentsSDKLearningConversationClient",
         lambda settings, **kwargs: FakeLearningConversationClient(),
+    )
+
+
+def _fake_dynamic_plan_draft(payload, user, course, **kwargs):  # type: ignore[no-untyped-def]
+    del kwargs
+    plan_draft = build_plan_draft(payload, user, course)
+    return DynamicPlanDraftResult(
+        plan_draft=plan_draft,
+        agent_notes=[plan_draft.runtime_boundary.notice, "Test fake dynamic plan."],
     )
 
 
@@ -3482,48 +3492,11 @@ def test_managed_java_runtime_statuses_are_public_and_persisted(
     assert attempt["runtime_status"] == runtime_status
 
 
-def test_compiled_later_runtime_returns_unsupported_boundary(client: TestClient) -> None:
-    user, plan = _confirmed_plan(client, language="cpp")
-    knowledge_point_id = plan["knowledge_points"][0]["id"]
-    start_response = client.post(
-        "/api/learning-sessions/start",
-        json={
-            "user_id": user["id"],
-            "plan_id": plan["LearningPlan"]["id"],
-            "knowledge_point_id": knowledge_point_id,
-        },
-    )
-    assert start_response.status_code in {200, 201}
-    session = start_response.json()
-    exercise = _unlock_practice_exercise(client, session)
-    assert exercise["runtime_profile"]["runtime_tier"] == "compiled_sandbox_later"
+def test_cpp_is_not_a_public_route_language(client: TestClient) -> None:
+    response = client.get("/api/language-courses?language=cpp")
 
-    run_response = client.post(
-        f"/api/learning-sessions/{session['session_id']}/exercises/{exercise['id']}/run",
-        json={
-            "code": exercise["solution_reference"],
-            "filled_blanks": {"blank_1": "value + 1"},
-            "runtime_profile_id": exercise["runtime_profile"]["id"],
-            "run_mode": "visible_tests",
-        },
-    )
-    assert run_response.status_code == 201
-    body = run_response.json()
-    assert body["runtime_status"] == "unsupported"
-    assert body["test_pass_rate"] == 0.0
-    assert body["next_action"] == "retry_same"
-
-    with connect() as conn:
-        knowledge_point = conn.execute(
-            """
-            SELECT last_exercise_result
-            FROM knowledge_points
-            WHERE id = %s
-            """,
-            (knowledge_point_id,),
-        ).fetchone()
-    assert knowledge_point is not None
-    assert knowledge_point["last_exercise_result"] is None
+    assert response.status_code == 200
+    assert response.json()["items"] == []
 
 
 def _start_session(

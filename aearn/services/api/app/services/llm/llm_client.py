@@ -55,7 +55,7 @@ class OpenAICompatibleClient:
         self,
         messages: Sequence[Mapping[str, str]],
         *,
-        temperature: float = 0.2,
+        temperature: float | None = 0.2,
     ) -> LLMJsonResponse:
         if self._settings.llm_provider_type == "deepseek":
             return self._complete_deepseek_json(messages, temperature=temperature)
@@ -149,7 +149,7 @@ class OpenAICompatibleClient:
         self,
         messages: Sequence[Mapping[str, str]],
         *,
-        temperature: float,
+        temperature: float | None,
     ) -> LLMJsonResponse:
         payload: dict[str, object] = {
             "model": self.model,

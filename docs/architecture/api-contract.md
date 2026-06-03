@@ -121,6 +121,7 @@ V1 使用本地单用户或轻量用户机制，不强制登录态。所有需�
 | `ATTEMPT_STATE_CONFLICT` | 409 | Attempt 状态不允许当前操作 |
 | `RUNTIME_UNSUPPORTED` | 422 | `RuntimeProfile.runtime_tier` 第一版不支持真实运行 |
 | `MODEL_UNAVAILABLE` | 503 | 模型 API 未配置、不可连接或返回不可用响应 |
+| `PLAN_GENERATION_UNAVAILABLE` | 503 | 动态路线生成缺少配置、权威文档或输出未通过质量门禁 |
 | `RUNNER_UNAVAILABLE` | 503 | runner service 不可用 |
 | `RUNNER_TIMEOUT` | 504 | 运行或测试超时 |
 | `EVALUATION_INVALID_JSON` | 502 | Agent 评分输出无法解析为 JSON |
@@ -136,7 +137,7 @@ V1 使用本地单用户或轻量用户机制，不强制登录态。所有需�
 
 下列 AI 驱动接口必须依赖已配置且可用的模型 API：建档对话槽位提取、学习页对话、练习提示/错因解释/解释检查、复习页教练文案和复习对话、笔记辅助补全。模型未配置、不可连接、调用失败、流式输出为空、输出不符合 schema，或 guardrail 判定输出不可安全展示时，接口必须返回 `MODEL_UNAVAILABLE`，不得退回关键词解析或确定性文案。
 
-动态路线生成是 post-MVP 增强，不改变上面的模型失败总则：槽位提取和普通对话仍不得关键词兜底。它允许在已验证用户、课程 catalog 和 runtime boundary 的前提下，从 agent-generated modules 回退到服务端拥有的 `COURSE_TEMPLATES` 或已校验 onboarding plan candidate；fallback 必须写入 `source_attribution` 或 `agent_notes`，且不得承诺未登记语言、未支持 runtime 或隐藏测试能力。已命中幂等记录的历史成功响应可直接回放；服务端课程模板和 runner/FSRS 等非 AI 判定逻辑仍可保持确定性，因为它们不是模型失败兜底。
+动态路线生成是 post-MVP 增强，不改变上面的模型失败总则：槽位提取和普通对话仍不得关键词兜底。公开路线语言的 `plan_draft` modules 必须来自已通过校验的 agent-generated modules；缺少模型配置、`PLAN_GENERATION_ENABLED`、`EXA_API_KEY`、权威文档映射或生成输出未覆盖用户目标/水平/时间/权威来源时，接口必须返回 `PLAN_GENERATION_UNAVAILABLE` 或 `PLAN_DRAFT_INVALID`，不得回退到 `COURSE_TEMPLATES` 或 onboarding plan candidate。已命中幂等记录的历史成功响应可直接回放；服务端 runner/FSRS 等非 AI 判定逻辑仍可保持确定性，因为它们不是模型失败兜底。
 
 ## 分页、排序与过滤
 
@@ -1138,6 +1139,7 @@ SSE 行为：
 - 同一建档会话只有最新暂存草稿可确认；前端必须将历史路线卡片的 `开始学习` 置为禁用。
 - 如果槽位提取明确返回 C++ 或 Rust，SSE 必须返回 `error.code=LANGUAGE_NOT_SUPPORTED`，`details.unsupported_language` 和 `details.supported_languages` 必须可用于前端展示/重试引导；不能继续输出“正在生成路线卡片”的普通 Agent 文案。TypeScript / TS、SQL、Go、C# 都是公开路线；必填槽位缺失或模糊时仍不得生成 `show_learning_route` 或暂存 `plan_draft`。
 - 建档对话不提供关键词或确定性兜底解析；槽位提取和普通回复依赖模型 API。模型未配置、不可连接、流式中断前无有效输出，或结构化槽位输出非法时，SSE 返回 `error.code=MODEL_UNAVAILABLE`，不更新槽位、不生成路线卡片。
+- 路线卡生成依赖动态路线生成；动态生成不可用、权威文档缺失或输出质量门禁失败时，SSE 返回 `error.code=PLAN_GENERATION_UNAVAILABLE` 或 `PLAN_DRAFT_INVALID`，不得发送 `show_learning_route`，不得暂存 `plan_draft`。
 
 `show_learning_route` arguments 示例：
 
@@ -1150,6 +1152,10 @@ SSE 行为：
     "minutes_per_day": 120,
     "days_per_week": 1
   },
+  "source_attribution": [
+    "Dynamic generation: agent_generated",
+    "Dynamic source: https://docs.python.org/3/tutorial/"
+  ],
   "modules": []
 }
 ```
@@ -1170,7 +1176,7 @@ Request JSON 示例：
 
 #### `POST /api/plans/generate`
 
-用途：根据目标、资料或澄清答案生成可确认的 `plan_draft`，不直接创建正式 `LearningPlan`。post-MVP 动态路线生成开启时，后端可先用 `plan_generation_agent` 参考权威文档目录和用户目标生成 modules；成功结果仍必须保持 `PlanDraft` 结构，失败则回退到服务端拥有的课程模板或已校验 SDK candidate。
+用途：根据目标、资料或澄清答案生成可确认的 `plan_draft`，不直接创建正式 `LearningPlan`。后端使用 `plan_generation_agent` 参考权威文档目录和用户目标生成 modules；成功结果仍必须保持 `PlanDraft` 结构。动态路线生成失败、缺少配置或输出未通过质量门禁时必须返回错误，不得回退到服务端课程模板或已校验 SDK candidate。
 
 Request JSON 示例：
 
@@ -1253,10 +1259,11 @@ HTTP 状态码：
 - `400`：目标或课程参数不合法
 - `404`：用户或课程不存在
 - `422`：无法生成可练习计划
+- `503`：动态路线生成不可用或输出未通过动态质量门禁
 
-错误码：`USER_NOT_FOUND`、`COURSE_NOT_FOUND`、`PLAN_DRAFT_INVALID`、`VALIDATION_ERROR`、`EVALUATION_INVALID_JSON`
+错误码：`USER_NOT_FOUND`、`COURSE_NOT_FOUND`、`PLAN_DRAFT_INVALID`、`PLAN_GENERATION_UNAVAILABLE`、`VALIDATION_ERROR`、`EVALUATION_INVALID_JSON`
 
-幂等/重试说明：建议幂等键为 `user_id + goal_text_hash + course_id + materials_hash`。流式模式可先发送 `agent_message` 澄清，再发送最终 `done`。动态路线生成失败但 fallback 成功时不暴露 provider 原始错误；如果课程不存在、语言未登记、fallback 草稿也无法通过校验，则返回 `COURSE_NOT_FOUND` 或 `PLAN_DRAFT_INVALID`。
+幂等/重试说明：建议幂等键为 `user_id + goal_text_hash + course_id + materials_hash`。流式模式可先发送 `agent_message` 澄清，再发送最终 `done`。动态路线生成失败时不暴露 provider 原始错误，也不回退到模板；如果课程不存在或语言未登记，则返回 `COURSE_NOT_FOUND`；如果动态草稿无法通过结构或 runtime 校验，则返回 `PLAN_DRAFT_INVALID`。
 
 相关数据表/状态机节点：读取 `User`、`LanguageCourse`、`RuntimeProfile`、`Exercise`；`collect_goal`、`clarify_profile`、`select_language_course`、`generate_plan_draft`、`validate_plan_draft`。动态增强额外使用 `plan_generation_agent`、`web_search`、`fetch_doc_toc`，但不拥有正式计划写入。
 

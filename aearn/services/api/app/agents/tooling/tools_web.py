@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import html.parser
 import logging
 from typing import Any
@@ -59,6 +60,20 @@ def _extract_headings(html_content: str) -> str:
     return result
 
 
+def fetch_doc_toc_text(url: str, *, timeout: float = _REQUEST_TIMEOUT) -> str:
+    try:
+        with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+            response = client.get(url)
+            response.raise_for_status()
+    except Exception as exc:
+        logger.warning("fetch_doc_toc failed for %s: %s", url, exc)
+        return f"无法获取页面内容: {url}"
+    toc = _extract_headings(response.text)
+    if not toc:
+        return f"未能从页面提取到目录结构: {url}"
+    return toc
+
+
 async def _exa_search(query: str, api_key: str, max_results: int) -> list[dict[str, str]]:
     async with httpx.AsyncClient(timeout=_REQUEST_TIMEOUT) as client:
         response = await client.post(
@@ -107,16 +122,6 @@ def build_web_tools(settings: Settings | None = None) -> list[Any]:
         description_override="Fetch the table of contents (heading structure) from a documentation page URL.",
     )
     async def fetch_doc_toc(url: str) -> str:
-        try:
-            async with httpx.AsyncClient(timeout=_REQUEST_TIMEOUT, follow_redirects=True) as client:
-                response = await client.get(url)
-                response.raise_for_status()
-        except Exception as exc:
-            logger.warning("fetch_doc_toc failed for %s: %s", url, exc)
-            return f"无法获取页面内容: {url}"
-        toc = _extract_headings(response.text)
-        if not toc:
-            return f"未能从页面提取到目录结构: {url}"
-        return toc
+        return await asyncio.to_thread(fetch_doc_toc_text, url)
 
     return [web_search, fetch_doc_toc]

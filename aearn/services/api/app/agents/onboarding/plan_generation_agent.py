@@ -3,35 +3,29 @@ from __future__ import annotations
 import json
 import logging
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol, cast
 
-from agents import Runner
-
-from app.agents.runtime.agent_runtime_context import limit_text, parse_fenced_json_object
-from app.agents.runtime.guardrails import assert_safe_teaching_output, build_teaching_guardrails
-from app.agents.runtime.sdk_runtime import (
-    AgentsSDKRunner,
-    build_agent,
-    build_run_config,
-    iter_streamed_text,
-    split_chat_messages,
-    stream_text_deltas,
-)
-from app.agents.tooling.tools_web import build_web_tools
+from app.agents.runtime.agent_runtime_context import limit_text
+from app.agents.runtime.guardrails import assert_safe_teaching_output
+from app.agents.tooling.tools_web import fetch_doc_toc_text
 from app.core.config import Settings, get_settings
 from app.models.onboarding import (
     DraftKnowledgePoint,
     DraftModule,
     PlanGenerateRequest,
 )
-from app.services.llm.llm_client import LLMCallError, LLMConfigurationError, LLMInvalidResponseError
+from app.services.llm.llm_client import (
+    LLMCallError,
+    LLMConfigurationError,
+    LLMInvalidResponseError,
+    LLMJsonResponse,
+    OpenAICompatibleClient,
+)
 
 
 logger = logging.getLogger(__name__)
-
-PLAN_GENERATION_AGENT_NAME = "Aearn Plan Generation"
 
 AUTHORITATIVE_DOCS: dict[str, list[str]] = {
     "python": ["https://docs.python.org/3/tutorial/"],
@@ -45,16 +39,35 @@ AUTHORITATIVE_DOCS: dict[str, list[str]] = {
     "go": ["https://go.dev/tour/", "https://go.dev/doc/effective_go"],
     "java": ["https://docs.oracle.com/javase/tutorial/"],
     "cpp": ["https://en.cppreference.com/w/cpp/language"],
+    "csharp": ["https://learn.microsoft.com/en-us/dotnet/csharp/"],
+    "sql": [
+        "https://www.postgresql.org/docs/current/tutorial.html",
+        "https://www.sqlite.org/lang.html",
+    ],
 }
+
+PUBLIC_SUPPORTED_PLAN_LANGUAGES = (
+    "python",
+    "javascript",
+    "typescript",
+    "html_css",
+    "java",
+    "go",
+    "csharp",
+    "sql",
+)
 
 _TEMP_ID_MODULE_RE = re.compile(r"^mod_draft_[a-z][a-z0-9_]*_[a-z][a-z0-9_]*$")
 _TEMP_ID_KP_RE = re.compile(r"^kp_draft_[a-z][a-z0-9_]*_[a-z][a-z0-9_]*$")
 _CJK_RE = re.compile(r"[一-鿿㐀-䶿]")
+_COVERAGE_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9+#.]{1,}|[\u4e00-\u9fff]{2,}")
 
 _MIN_MODULES = 4
 _MAX_MODULES = 8
 _MIN_KPS = 2
 _MAX_KPS = 4
+_MAX_DOC_TOCS = 6
+_MAX_DOC_TOC_CHARS = 2000
 
 SAFE_GENERATION_EXCEPTIONS = (
     LLMCallError,
@@ -70,9 +83,9 @@ _SYSTEM_PROMPT = """\
 
 ## 工作流程
 
-1. 如果提供了权威文档 URL，使用 fetch_doc_toc 获取文档目录结构
-2. 如果没有提供 URL 或获取失败，使用 web_search 搜索该语言的权威教程文档
-3. 基于文档目录结构和用户上下文，生成学习模块
+1. 使用用户输入和后端提供的 authoritative_doc_tocs / authoritative_doc_urls
+2. 基于权威文档目录结构和用户上下文，生成学习模块
+3. 如果某个文档目录获取失败，仍可参考对应 authoritative_doc_urls，但不得编造非权威来源
 
 ## 输出要求
 
@@ -81,6 +94,7 @@ _SYSTEM_PROMPT = """\
 - 每个路线 4-8 个模块，每个模块 2-4 个知识点
 - 模块顺序应参考官方文档的教学顺序
 - 根据用户水平调整深度：beginner 侧重基础语法，intermediate 加入进阶概念
+- generation_notes 必须说明 goal_text、target_level、profession/time_budget（如果提供）和权威文档如何影响路线
 
 ## 输出 JSON Schema
 
@@ -106,7 +120,7 @@ _SYSTEM_PROMPT = """\
     }
   ],
   "source_urls": ["实际参考的文档 URL"],
-  "generation_notes": "简要说明参考了哪些文档章节"
+  "generation_notes": "简要说明用户目标、水平、时间/职业背景和参考文档如何影响路线"
 }
 ```
 
@@ -118,6 +132,7 @@ _SYSTEM_PROMPT = """\
 - skill_tags: 使用英文小写标签
 - 不得承诺 Java/C++ 的完整编译运行沙箱
 - 不得输出参考答案或隐藏测试内容
+- 不得输出没有覆盖用户目标、水平、时间/职业背景或权威来源的泛化路线
 """
 
 
@@ -157,20 +172,38 @@ class PlanGenerationClient(Protocol):
     ) -> PlanGenerationJsonResponse: ...
 
 
-class AgentsSDKPlanGenerationClient:
+class LLMJsonPlanClient(Protocol):
+    @property
+    def model(self) -> str: ...
+
+    def complete_json(
+        self,
+        messages: Sequence[Mapping[str, str]],
+        *,
+        temperature: float | None = None,
+    ) -> LLMJsonResponse: ...
+
+
+DocTocProvider = Callable[[str], str]
+
+
+class DirectPlanGenerationClient:
     def __init__(
         self,
         settings: Settings,
         *,
-        runner: AgentsSDKRunner | None = None,
+        json_client: LLMJsonPlanClient | None = None,
+        doc_toc_provider: DocTocProvider = fetch_doc_toc_text,
+        runner: object | None = None,
     ) -> None:
+        del runner
         self._settings = settings
-        self._run_config = build_run_config(settings)
-        self._runner = runner
+        self._json_client = json_client or OpenAICompatibleClient(settings)
+        self._doc_toc_provider = doc_toc_provider
 
     @property
     def model(self) -> str:
-        return str(self._settings.llm_model or "")
+        return str(self._json_client.model or self._settings.llm_model or "")
 
     def complete_json(
         self,
@@ -178,40 +211,24 @@ class AgentsSDKPlanGenerationClient:
         *,
         temperature: float | None = None,
     ) -> PlanGenerationJsonResponse:
-        messages = _build_messages(context)
-        instructions, input_text = split_chat_messages(messages)
-        input_guardrails, output_guardrails = build_teaching_guardrails()
-        tools = build_web_tools(self._settings)
-        agent = build_agent(
-            name=PLAN_GENERATION_AGENT_NAME,
-            instructions=instructions,
-            model=self.model,
+        doc_tocs = _prefetch_authoritative_doc_tocs(
+            context.doc_urls,
+            doc_toc_provider=self._doc_toc_provider,
+        )
+        result = self._json_client.complete_json(
+            _build_messages(context, authoritative_doc_tocs=doc_tocs),
             temperature=temperature,
-            tools=tools,
-            input_guardrails=input_guardrails,
-            output_guardrails=output_guardrails,
         )
-        runner = self._runner
-        if runner is None:
-            runner = cast(AgentsSDKRunner, Runner)
+        return PlanGenerationJsonResponse(content=result.content, model=result.model or self.model)
 
-        chunks = iter_streamed_text(
-            lambda: stream_text_deltas(
-                runner=runner,
-                agent=agent,
-                input_text=input_text,
-                run_config=self._run_config,
-                max_turns=6,
-            )
-        )
-        content = "".join(chunks).strip()
-        return PlanGenerationJsonResponse(content=_parse_json_object(content), model=self.model)
+
+AgentsSDKPlanGenerationClient = DirectPlanGenerationClient
 
 
 def build_plan_generation_client(
     settings: Settings | None = None,
     *,
-    runner: AgentsSDKRunner | None = None,
+    runner: object | None = None,
 ) -> PlanGenerationClient | None:
     effective_settings = settings or get_settings()
     if not effective_settings.openai_compatible_configured:
@@ -221,7 +238,7 @@ def build_plan_generation_client(
     if not effective_settings.exa_api_key:
         return None
     try:
-        return AgentsSDKPlanGenerationClient(effective_settings, runner=runner)
+        return DirectPlanGenerationClient(effective_settings, runner=runner)
     except LLMConfigurationError:
         return None
 
@@ -265,18 +282,22 @@ def build_sdk_plan_generation_response(
     for attempt in range(2):
         try:
             result = resolved_client.complete_json(context, temperature=None)
-            return _validate_and_parse(result.content, context.language, result.model)
+            return _validate_and_parse(result.content, context, result.model)
         except SAFE_GENERATION_EXCEPTIONS as exc:
             if attempt == 0:
                 logger.warning("Plan generation attempt 1 failed, retrying: %s", exc)
                 continue
-            logger.warning("Plan generation attempt 2 failed, falling back: %s", exc)
+            logger.warning("Plan generation attempt 2 failed: %s", exc)
             return None
 
     return None
 
 
-def _build_messages(context: PlanGenerationContext) -> list[dict[str, str]]:
+def _build_messages(
+    context: PlanGenerationContext,
+    *,
+    authoritative_doc_tocs: Sequence[Mapping[str, str]] | None = None,
+) -> list[dict[str, str]]:
     evidence: dict[str, object] = {
         "task": "generate_learning_plan",
         "language": context.language,
@@ -289,9 +310,16 @@ def _build_messages(context: PlanGenerationContext) -> list[dict[str, str]]:
         evidence["time_budget"] = context.time_budget
     if context.doc_urls:
         evidence["authoritative_doc_urls"] = context.doc_urls
-        evidence["instruction"] = "请先使用 fetch_doc_toc 获取这些文档的目录结构，然后基于目录结构生成学习模块。"
+        if authoritative_doc_tocs:
+            evidence["authoritative_doc_tocs"] = list(authoritative_doc_tocs)
+        evidence["instruction"] = (
+            "后端已经预取 authoritative_doc_tocs；请基于这些目录结构和用户目标生成学习模块。"
+            "source_urls 必须包含 authoritative_doc_urls 中实际参考的权威文档。"
+        )
     else:
-        evidence["instruction"] = f"请使用 web_search 搜索 '{context.language} official tutorial documentation'，找到权威文档后用 fetch_doc_toc 获取目录结构，然后生成学习模块。"
+        evidence["instruction"] = (
+            f"缺少 {context.language} 的 authoritative_doc_urls；不要编造非权威来源。"
+        )
 
     return [
         {"role": "system", "content": _SYSTEM_PROMPT},
@@ -299,7 +327,27 @@ def _build_messages(context: PlanGenerationContext) -> list[dict[str, str]]:
     ]
 
 
-def _validate_and_parse(payload: Mapping[str, object], language: str, model: str) -> PlanGenerationResult:
+def _prefetch_authoritative_doc_tocs(
+    doc_urls: Sequence[str],
+    *,
+    doc_toc_provider: DocTocProvider,
+) -> list[dict[str, str]]:
+    doc_tocs: list[dict[str, str]] = []
+    for url in doc_urls[:_MAX_DOC_TOCS]:
+        try:
+            toc = doc_toc_provider(url)
+        except Exception as exc:
+            logger.warning("authoritative doc toc prefetch failed for %s: %s", url, exc)
+            toc = f"无法获取页面内容: {url}"
+        doc_tocs.append({"url": url, "toc": limit_text(str(toc or ""), _MAX_DOC_TOC_CHARS)})
+    return doc_tocs
+
+
+def _validate_and_parse(
+    payload: Mapping[str, object],
+    context: PlanGenerationContext,
+    model: str,
+) -> PlanGenerationResult:
     modules_raw = payload.get("modules")
     if not isinstance(modules_raw, list):
         raise LLMInvalidResponseError("输出缺少 modules 数组")
@@ -310,11 +358,14 @@ def _validate_and_parse(payload: Mapping[str, object], language: str, model: str
     for i, mod_raw in enumerate(modules_raw):
         if not isinstance(mod_raw, Mapping):
             raise LLMInvalidResponseError(f"模块 {i} 不是对象")
-        module = _parse_module(mod_raw, i, language)
+        module = _parse_module(mod_raw, i, context.language)
+        if module.order_index != i:
+            raise LLMInvalidResponseError("模块 order_index 必须从 0 开始连续递增")
         modules.append(module)
 
-    source_urls = _validate_source_urls(payload.get("source_urls"))
+    source_urls = _validate_source_urls(payload.get("source_urls"), context.language)
     generation_notes = _validate_generation_notes(payload.get("generation_notes"))
+    _validate_user_need_coverage(context, modules, generation_notes)
     source_attribution = ["Dynamic generation: agent_generated"]
     source_attribution.extend(f"Dynamic source: {url}" for url in source_urls)
     if generation_notes:
@@ -401,7 +452,7 @@ def _assert_chinese(text: str, field_name: str) -> None:
         raise LLMInvalidResponseError(f"{field_name} 必须包含中文字符")
 
 
-def _validate_source_urls(value: object) -> list[str]:
+def _validate_source_urls(value: object, language: str) -> list[str]:
     if not isinstance(value, list) or not value:
         raise LLMInvalidResponseError("Plan generation output must include source_urls")
     urls: list[str] = []
@@ -414,29 +465,117 @@ def _validate_source_urls(value: object) -> list[str]:
         urls.append(url)
     if not urls:
         raise LLMInvalidResponseError("Plan generation output source_urls is empty")
+    authoritative = AUTHORITATIVE_DOCS.get(language, [])
+    if authoritative and not any(
+        _matches_authoritative_url(url, authoritative_url)
+        for url in urls
+        for authoritative_url in authoritative
+    ):
+        raise LLMInvalidResponseError(f"source_urls must include authoritative docs for {language}")
     return urls
 
 
-def _validate_generation_notes(value: object) -> str | None:
+def _validate_generation_notes(value: object) -> str:
     if value is None:
-        return None
+        raise LLMInvalidResponseError("generation_notes is required")
     note = limit_text(value, 260)
     if not note:
-        return None
+        raise LLMInvalidResponseError("generation_notes is empty")
     _assert_chinese(note, "generation_notes")
     assert_safe_teaching_output(note)
     return note
+
+
+def _matches_authoritative_url(url: str, authoritative_url: str) -> bool:
+    normalized_url = url.rstrip("/")
+    normalized_authoritative = authoritative_url.rstrip("/")
+    return normalized_url == normalized_authoritative or normalized_url.startswith(
+        f"{normalized_authoritative}/"
+    )
+
+
+def _validate_user_need_coverage(
+    context: PlanGenerationContext,
+    modules: list[DraftModule],
+    generation_notes: str,
+) -> None:
+    coverage_text = _coverage_text(context, modules, generation_notes)
+    if context.goal_text and not _has_any_coverage_term(context.goal_text, coverage_text):
+        raise LLMInvalidResponseError("生成路线未覆盖用户目标")
+    if not _target_level_covered(context.target_level, coverage_text):
+        raise LLMInvalidResponseError("生成路线未覆盖用户水平")
+    if context.profession and not _has_any_coverage_term(context.profession, coverage_text):
+        raise LLMInvalidResponseError("生成路线未覆盖用户方向或职业背景")
+    if context.time_budget is not None:
+        _assert_time_budget_covered(context.time_budget, coverage_text)
+
+
+def _coverage_text(
+    context: PlanGenerationContext,
+    modules: list[DraftModule],
+    generation_notes: str,
+) -> str:
+    parts: list[str] = [generation_notes]
+    for module in modules:
+        parts.extend([module.title, module.description or ""])
+        for kp in module.knowledge_points:
+            parts.extend([kp.title, kp.description or ""])
+    return _normalize_coverage_text(" ".join(parts))
+
+
+def _normalize_coverage_text(text: str) -> str:
+    return re.sub(r"\s+", "", text).lower()
+
+
+def _has_any_coverage_term(source_text: str, coverage_text: str) -> bool:
+    for term in _coverage_terms(source_text):
+        if _normalize_coverage_text(term) in coverage_text:
+            return True
+    return False
+
+
+def _coverage_terms(source_text: str) -> list[str]:
+    generic_terms = {
+        "learn",
+        "learning",
+        "study",
+        "programming",
+        "我想学习",
+        "学习",
+        "目标",
+        "路线",
+    }
+    terms: list[str] = []
+    for match in _COVERAGE_TOKEN_RE.finditer(source_text):
+        term = match.group(0).strip()
+        normalized = _normalize_coverage_text(term)
+        if len(normalized) < 2 or normalized in generic_terms:
+            continue
+        terms.append(term)
+    return terms
+
+
+def _target_level_covered(target_level: str, coverage_text: str) -> bool:
+    markers = {
+        "beginner": ("beginner", "入门", "零基础", "基础"),
+        "intermediate": ("intermediate", "进阶", "中级"),
+        "advanced": ("advanced", "高级", "深入"),
+        "beginner_to_intermediate": ("beginner_to_intermediate", "入门", "进阶", "基础"),
+    }.get(target_level, (target_level,))
+    return any(_normalize_coverage_text(marker) in coverage_text for marker in markers)
+
+
+def _assert_time_budget_covered(time_budget: Mapping[str, object], coverage_text: str) -> None:
+    required_values = [
+        str(value)
+        for key in ("minutes_per_day", "days_per_week", "deadline")
+        if (value := time_budget.get(key)) is not None
+    ]
+    if required_values and not all(value in coverage_text for value in required_values):
+        raise LLMInvalidResponseError("生成路线未覆盖用户时间安排")
 
 
 def _int_or_default(value: object, default: int) -> int:
     if value is None:
         return default
     return int(cast(Any, value))
-
-
-def _parse_json_object(content: str) -> dict[str, object]:
-    return parse_fenced_json_object(
-        content,
-        invalid_message="Plan generation output is not valid JSON",
-        object_message="Plan generation output must be a JSON object",
-    )

@@ -10,6 +10,8 @@ from app.core.config import get_settings
 from app.db.bootstrap import bootstrap_database
 from app.db.connection import connect
 from app.main import app
+from app.services.curriculum.dynamic_plan_generation import DynamicPlanDraftResult
+from app.services.curriculum.plan_generator import build_plan_draft
 from app.services.repositories import note_repository
 
 
@@ -60,8 +62,16 @@ def disable_note_assist_sdk(monkeypatch: pytest.MonkeyPatch) -> None:
                 yield line
 
     monkeypatch.setattr(note_repository, "build_note_assist_client", lambda: FakeNoteAssistClient())
-    monkeypatch.setattr(plans_route, "build_sdk_plan_generation_response", lambda *args, **kwargs: None)
-    monkeypatch.setattr(plans_route, "build_sdk_onboarding_plan_response", lambda *args, **kwargs: None)
+    monkeypatch.setattr(plans_route, "build_dynamic_plan_draft", _fake_dynamic_plan_draft)
+
+
+def _fake_dynamic_plan_draft(payload, user, course, **kwargs):  # type: ignore[no-untyped-def]
+    del kwargs
+    plan_draft = build_plan_draft(payload, user, course)
+    return DynamicPlanDraftResult(
+        plan_draft=plan_draft,
+        agent_notes=[plan_draft.runtime_boundary.notice, "Test fake dynamic plan."],
+    )
 
 
 def _fake_note_draft(context: object) -> str:
