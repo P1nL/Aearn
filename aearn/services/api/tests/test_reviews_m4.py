@@ -47,6 +47,28 @@ def disable_review_coach_sdk(monkeypatch: pytest.MonkeyPatch) -> None:
             del messages, temperature
             return ["我会生成当前练习，并保持讲解聚焦在可见题面。"]
 
+    def fake_concept_intro(*args, **kwargs) -> dict[str, object]:  # type: ignore[no-untyped-def]
+        del args, kwargs
+        return {
+            "summary": "事件绑定会把一次用户动作连接到回调函数，状态变量决定多次动作之间是否共享记忆。",
+            "example": {
+                "title": "计数按钮",
+                "body": "count 放在回调外面时，每次点击都会基于同一个 count 继续累加。",
+                "takeaway": "先看状态放在哪里，再看事件什么时候触发回调。",
+            },
+            "check": {
+                "type": "single_choice",
+                "question": "如果 count 写在点击回调里面，每次点击最可能发生什么？",
+                "options": [
+                    {"id": "A", "text": "每次点击都重新从初始值开始。"},
+                    {"id": "B", "text": "每次点击都会复用上一次回调里的局部变量。"},
+                    {"id": "C", "text": "事件监听器不会再触发。"},
+                ],
+                "expected_focus": "回调作用域与跨点击状态共享的关系",
+            },
+        }
+
+    monkeypatch.setattr(learning_session_repository, "build_sdk_concept_intro", fake_concept_intro)
     monkeypatch.setattr(
         review_repository,
         "build_sdk_review_coach_response",
