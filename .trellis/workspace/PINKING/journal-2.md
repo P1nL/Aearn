@@ -38,3 +38,36 @@ Completed P4 parent readiness for local-product-completion, documented equivalen
 ### Next Steps
 
 - None - task complete
+
+
+## Session 61: Chat-first conversation experience
+
+**Date**: 2026-06-03
+**Task**: Chat-first conversation experience
+**Branch**: `main`
+
+### Summary
+
+Completed chat-first onboarding normalization, expanded public route language boundaries, updated learning composer error copy, and verified backend/frontend gates.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `8c2c58d` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
