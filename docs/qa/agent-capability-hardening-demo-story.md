@@ -21,7 +21,7 @@ Aearn 现在可以演示一个边界清晰的 AI 编程学习 Agent：学习页�
 3. 发送困惑消息：router 不只看关键词，还使用 stage、recent runtime error、learner profile weak signals、exercise/tool availability，选择 `teaching`、`exercise_coach` 或 `diagnosis`，并只暴露 bounded handoff targets。
 4. Graph 决策学习动作：LangGraph 返回 scoped `STAGE_UPDATE` / `TOOL_CALL` intents；service 先做 boundary validation，再执行允许的 stage/tool side effects。
 5. 展示有序 UI 工具：graph-owned tool loop 可以保持 `show_concept_check_result` 在 `show_code_exercise` 之前，旧的 public `tool_call` / `tool_status` / `agent_message` / `done` SSE vocabulary 不变。
-6. 运行或提交练习：Python 使用真实 stdout/test runner 路径；JavaScript / HTML / CSS 使用 browser-preview course boundary；Java / C++ 是静态/计划中 runner fallback；TypeScript / Go / C# / Rust / SQL 只能做 docs grounding、static review 或 planned runner fallback，不能宣称当前可执行。
+6. 运行或提交练习：Python 使用真实 stdout/test runner 路径；JavaScript / HTML / CSS 使用 browser-preview course boundary；TypeScript 使用 Node/TypeScript 单文件 runner；SQL 使用 SQLite 教学方言 runner；Java / Go / C# 使用本机 teaching-grade `managed_compiled_test` 单练习 runner；C++ / Rust 暂不支持公开路线，不能宣称完整项目级执行。
 7. 进入 review：review graph 可以决定 not-due / warmup / submit 路径，但 `Attempt(review_submit)`、`ReviewState`、`ReviewLog`、FSRS update 和 replay protection 仍由 review service / repository 拥有。
 
 ## Responsibility Boundaries
@@ -42,8 +42,9 @@ Aearn 现在可以演示一个边界清晰的 AI 编程学习 Agent：学习页�
 |---|---|---|
 | Python execution | Real `python_stdout_test` runner path, visible/hidden tests, subprocess-restricted not container-grade sandbox | “Python exercises are actually runnable, with explicit sandbox limits.” |
 | JavaScript / HTML / CSS | Browser-preview learning/runtime boundary with visible/hidden style checks | “Browser-side learning flows are supported through preview/assertion style checks, not a Node runner.” |
-| Java / C++ | Public course languages with static/planned compiled sandbox fallback | “They are available as learning tracks with static review limits; compiled execution is future work.” |
-| TypeScript / Go / C# / Rust / SQL | Grounding/scaffolded or planned only; not enabled for public execution | “Docs grounding can exist before public runtime support; no current executable claim.” |
+| Java | Public course language with teaching-grade `managed_compiled_test` | “Java exercises can run as single-file local JDK-backed teaching tasks, not Maven/Gradle projects or a container sandbox.” |
+| TypeScript / SQL / Go / C# | Public teaching-grade runner layer | “These are independent public course selections, but they are still limited to single-file, query, or harness-based teaching execution.” |
+| C++ / Rust | Unsupported public route / planned internal boundary | “C++ and Rust are not public course selections yet, and neither has current compile-run execution.” |
 | Graph runtime | Full vertical slice on learning page | “Learning page proves graph orchestration end-to-end while service still owns writes.” |
 | Onboarding / review graphs | Graph-assisted service flows | “They consume decisions but intentionally keep persistence and replay protection outside graph nodes.” |
 

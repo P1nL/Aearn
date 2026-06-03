@@ -179,15 +179,18 @@ def test_invalid_model_output_validation_failure_and_unsupported_runner_fall_bac
         assert validation_meta["validation_status"] == "fallback"
         assert validation_meta["fallback_reason"] == "validation_failed"
 
-        unsupported_context = _learning_context(conn, language="cpp")
+        cpp_runtime = conn.execute(
+            "SELECT * FROM runtime_profiles WHERE language = 'cpp' LIMIT 1",
+        ).fetchone()
+        assert cpp_runtime is not None
         unsupported_fallback = _exercise_template(
-            unsupported_context["knowledge_point"],
-            unsupported_context["runtime_profile"],
+            validation_context["knowledge_point"],
+            cpp_runtime,
         )
         unsupported = build_adaptive_exercise_template(
             conn,
-            knowledge_point=unsupported_context["knowledge_point"],
-            runtime_profile=unsupported_context["runtime_profile"],
+            knowledge_point=validation_context["knowledge_point"],
+            runtime_profile=cpp_runtime,
             fallback_template=unsupported_fallback,
             candidate_generator=lambda _context, _template: pytest.fail("unsupported runner should not call model"),
         )

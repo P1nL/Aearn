@@ -51,7 +51,7 @@
 | UF-07 | P1 | 笔记抽屉 | 学习或复习会话进行中 | 打开笔记抽屉 -> 输入错因和修正方式 -> 自动保存 -> 请求 Agent 辅助补全 | 笔记不打断代码练习，保存状态明确，Agent 不自动生成完整笔记 |
 | UF-08 | P1 | 笔记页 | 已有学习目标或知识点 | 进入笔记页 -> 按语言/知识点选择笔记 -> 编辑 Markdown -> 保存 | 笔记绑定知识点，复习和学习共用同一份笔记，不存在独立草稿生成流程 |
 | UF-09 | P0 | 恢复中断学习 | 有历史会话摘要 | 打开应用 -> 调用 dashboard/resume -> 展示上次停留点和复习提示 | 普通打开默认当前学习；仅中断多日且复习高风险时优先进入复习 |
-| UF-10 | P1 | Java/C++ 能力边界 | 选择 `compiled_sandbox_later` 课程 | 进入练习页 | 运行按钮禁用或 `/run` 返回 `unsupported`，不承诺完整沙箱 |
+| UF-10 | P1 | Compiled language 能力边界 | 选择 Java / Go / C# 课程或尝试 C++ / Rust | 进入练习页或 Onboarding 错误 | Java / Go / C# 只展示 `managed_compiled_test` teaching-grade 单练习能力；C++ / Rust 返回 unsupported，不承诺完整项目/在线编译沙箱 |
 | UF-11 | P1 | 设置页分类与边界 | 应用已完成初始化 | 进入设置 -> 切换外观、模型设置、学习偏好、复习、通知设置、记录与隐私、关于与诊断 | 分类完整；不能修改后端评分、Attempt 必填事实记录或 FSRS 固定规则 |
 
 ## API 契约测试
@@ -123,7 +123,7 @@
 | CE-05 | P0 | 核心空缺错误 | `CodeBlank` 核心项错误 | `core_blank_gate=false`，结果为 `failed` |
 | CE-06 | P0 | 测试全过但解释失败 | `test_pass_rate=1.0`，解释矛盾 | 最高 `partial`，触发追问或重点复习 |
 | CE-07 | P1 | 使用多次提示后通过 | `hint_usage_count > 2` | `fsrs_rating` 降级为 `Hard` 或不高于 `Good` |
-| CE-08 | P0 | Java/C++ unsupported | `runtime_tier=compiled_sandbox_later` | 前端禁用运行或 API 返回 `unsupported`，不写完成态 |
+| CE-08 | P0 | C++/Rust unsupported / compiled managed languages | C++ / Rust 不出现在公开课程；Java / Go / C# 为 `managed_compiled_test` | C++ / Rust 选择返回不支持；Java / Go / C# 覆盖 `missing_toolchain`、`compile_error`、`runtime_error`、`timeout`、`test_failure`、`success`，不把缺 toolchain 写成完成态 |
 | CE-09 | P1 | 运行结果 stale | run 后修改代码 | 旧测试结果标记 stale，提交前提示重新运行 |
 | CE-10 | P0 | runner 写库失败 | Attempt 写入后 ReviewState 写入失败 | 前端不显示复习完成，可重试且不重复运行 |
 | CE-11 | P0 | AI 补丁审核弱证据 | `review_ai_patch` verdict 正确但 evidence 只写 `tests passed` | `score_breakdown.evidence_grounding < 2`，结果不高于 `partial`，`fsrs_rating=Hard`，不得返回 `Easy` |
@@ -219,7 +219,7 @@ LLM 输出质量单独用固定样例集评估，至少覆盖 JS/HTML/CSS、Pyth
 - [ ] 代码编辑器、预览和测试结果出现在对话生成的练习 UI 中，而不是固定三栏页面。
 - [ ] 前端按钮和文案只展示运行、预览、测试、提交结果，不暴露 `Attempt(run)` / `Attempt(submit)` 内部类型。
 - [ ] JS/HTML/CSS 展示 `PreviewPane`，Python 展示 `StdoutPane`。
-- [ ] Java/C++ 运行按钮禁用或展示 unsupported。
+- [ ] C++ / Rust 返回 unsupported；Java / Go / C# managed compiled 状态按后端 `runtime_status` 展示。
 - [ ] `run`、`submit`、`hint`、`explain-error`、`check-explanation` 的 loading 与错误互不覆盖。
 - [ ] `score_breakdown`、`weak_points`、`next_action` 清晰展示。
 
@@ -265,7 +265,7 @@ LLM 输出质量单独用固定样例集评估，至少覆盖 JS/HTML/CSS、Pyth
 - `/run`、`/submit`、`/exercise-result` 契约测试全部通过。
 - `code_completion_result` 自动校验全部通过。
 - FSRS 映射和 `ReviewState` 写入时机全部通过。
-- Java/C++ 第一版能力边界没有误导性入口。
+- TypeScript/SQL/Java/Go/C# 公开路线的 teaching-grade runner 边界清晰，C++/Rust 暂不支持公开路线且没有误导性入口。
 
 ### P1 门禁
 

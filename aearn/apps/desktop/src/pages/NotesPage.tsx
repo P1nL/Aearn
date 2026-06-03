@@ -167,11 +167,20 @@ function languageLabel(language: NoteRecord["language"]): string {
   if (language === "python") {
     return "Python";
   }
+  if (language === "typescript") {
+    return "TypeScript";
+  }
+  if (language === "sql") {
+    return "SQL";
+  }
   if (language === "html_css") {
     return "HTML / CSS";
   }
-  if (language === "cpp") {
-    return "C++";
+  if (language === "go") {
+    return "Go";
+  }
+  if (language === "csharp") {
+    return "C#";
   }
   return "Java";
 }

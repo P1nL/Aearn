@@ -172,7 +172,7 @@ def test_static_compiled_languages_do_not_dispatch_to_managed_compiled_runner(mo
     assert "planned later" in (result.error_message or "")
 
 
-def test_sql_runner_does_not_claim_execution() -> None:
+def test_sql_runner_claims_teaching_execution() -> None:
     registry = get_runner_registry()
 
     sql = registry.select({"runtime_tier": "sql_query_test", "language": "sql"})

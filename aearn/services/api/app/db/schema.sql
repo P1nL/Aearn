@@ -58,7 +58,7 @@ CREATE TABLE IF NOT EXISTS runtime_profiles (
 CREATE TABLE IF NOT EXISTS language_courses (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   slug text NOT NULL UNIQUE,
-  language text NOT NULL CHECK (language IN ('javascript', 'python', 'java', 'cpp', 'html_css')),
+  language text NOT NULL CHECK (language IN ('javascript', 'python', 'typescript', 'sql', 'java', 'go', 'csharp', 'html_css')),
   title text NOT NULL,
   description text,
   level text NOT NULL CHECK (level IN ('beginner', 'intermediate', 'advanced')),
@@ -74,7 +74,7 @@ CREATE TABLE IF NOT EXISTS learning_plans (
   user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
   language_course_id uuid NOT NULL REFERENCES language_courses(id) ON DELETE RESTRICT,
   goal_text text NOT NULL,
-  language text NOT NULL CHECK (language IN ('javascript', 'python', 'java', 'cpp', 'html_css')),
+  language text NOT NULL CHECK (language IN ('javascript', 'python', 'typescript', 'sql', 'java', 'go', 'csharp', 'html_css')),
   target_level text NOT NULL CHECK (target_level IN ('beginner', 'intermediate', 'advanced')),
   mode text NOT NULL CHECK (mode IN ('goal_based', 'material_based')),
   deadline date,
@@ -396,6 +396,23 @@ BEGIN
   ALTER TABLE runtime_profiles
     ADD CONSTRAINT runtime_profiles_runner_check
     CHECK (runner IN ('browser', 'python', 'node', 'sql', 'compiled', 'sandbox'));
+
+  UPDATE language_courses
+    SET archived_at = COALESCE(archived_at, now())
+    WHERE archived_at IS NULL
+      AND (slug IN ('course_cpp_basic_placeholder') OR language IN ('cpp', 'rust'));
+
+  ALTER TABLE language_courses
+    DROP CONSTRAINT IF EXISTS language_courses_language_check;
+  ALTER TABLE language_courses
+    ADD CONSTRAINT language_courses_language_check
+    CHECK (language IN ('javascript', 'python', 'typescript', 'sql', 'java', 'go', 'csharp', 'html_css')) NOT VALID;
+
+  ALTER TABLE learning_plans
+    DROP CONSTRAINT IF EXISTS learning_plans_language_check;
+  ALTER TABLE learning_plans
+    ADD CONSTRAINT learning_plans_language_check
+    CHECK (language IN ('javascript', 'python', 'typescript', 'sql', 'java', 'go', 'csharp', 'html_css')) NOT VALID;
 
   ALTER TABLE exercises
     DROP CONSTRAINT IF EXISTS exercises_exercise_type_check;

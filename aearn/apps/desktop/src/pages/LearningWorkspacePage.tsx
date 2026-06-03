@@ -40,6 +40,7 @@ import type {
   HintLevel,
   HintResponse,
   LearningExercise,
+  ApiError,
   RunExerciseResponse,
   SubmitExerciseResponse,
   UserProfile,
@@ -55,6 +56,11 @@ type ComposerStreamRequest = {
     content: string;
     client_message_id: string;
   };
+};
+
+type LearningComposerErrorCopy = {
+  text: string;
+  statusText: string;
 };
 
 type LearningWorkspacePageProps = {
@@ -123,6 +129,7 @@ export function LearningWorkspacePage({
   const [composerStream, setComposerStream] = useState<ComposerStreamRequest | null>(null);
   const [unlockedExercise, setUnlockedExercise] = useState<LearningExercise | null>(null);
   const conversationScrollRef = useRef<HTMLElement | null>(null);
+  const composerBusyRef = useRef(false);
 
   const session = sessionState.status === "ready" ? sessionState.data : null;
   const activeExercise = session?.exercise ?? unlockedExercise;
@@ -214,6 +221,7 @@ export function LearningWorkspacePage({
       }
     },
     onDone: () => {
+      composerBusyRef.current = false;
       if (!composerStream) return;
       onUpdateMessage(composerStream.assistantMessageId, {
         status: "done",
@@ -222,11 +230,13 @@ export function LearningWorkspacePage({
       setComposerStream(null);
     },
     onError: (error) => {
+      composerBusyRef.current = false;
       if (!composerStream) return;
+      const errorCopy = learningComposerErrorMessage(error);
       onUpdateMessage(composerStream.assistantMessageId, {
-        text: `这次回答没有完成：${error.code}。${error.message}`,
+        text: errorCopy.text,
         status: "error",
-        statusText: "可以修改问题后重试。",
+        statusText: errorCopy.statusText,
       });
       setComposerStream(null);
     },
@@ -234,7 +244,8 @@ export function LearningWorkspacePage({
 
   function handleComposerSubmit(input: string) {
     const content = input.trim();
-    if (content.length === 0 || composerStreaming || !session || !user) return;
+    if (content.length === 0 || composerBusyRef.current || composerStreaming || !session || !user) return;
+    composerBusyRef.current = true;
 
     const assistantMessage: ConversationMessage = {
       ...createMessage("agent", "", "Agent"),
@@ -296,6 +307,11 @@ export function LearningWorkspacePage({
   useEffect(() => {
     setUnlockedExercise(session?.exercise ?? null);
   }, [session?.session_id, session?.exercise?.id, resetNonce]);
+
+  useEffect(() => {
+    composerBusyRef.current = false;
+    setComposerStream(null);
+  }, [session?.session_id, resetNonce]);
 
   useEffect(() => {
     if (session && activeExercise) {
@@ -649,6 +665,37 @@ export function LearningWorkspacePage({
       </section>
     </div>
   );
+}
+
+function learningComposerErrorMessage(error: ApiError): LearningComposerErrorCopy {
+  switch (error.code) {
+    case "MODEL_UNAVAILABLE":
+      return {
+        text: `模型服务暂时不可用或配置未完成，所以学习页没有生成新的 Agent 回复。错误码：${error.code}。${error.message}`,
+        statusText: "检查模型配置后重试，或稍后再问。",
+      };
+    case "STREAM_INCOMPLETE":
+      return {
+        text: `连接提前结束，后端没有发出 done 或 error 终止事件。错误码：${error.code}。${error.message}`,
+        statusText: "可以直接重试；如果反复出现，需要检查后端流式接口。",
+      };
+    case "STREAM_ERROR":
+      return {
+        text: `连接学习对话流时失败。错误码：${error.code}。${error.message}`,
+        statusText: "确认 API 服务在线后重试。",
+      };
+    case "STREAM_UNAVAILABLE":
+    case "STREAM_HTTP_ERROR":
+      return {
+        text: `学习对话流不可用。错误码：${error.code}。${error.message}`,
+        statusText: "确认后端 SSE 接口可访问后重试。",
+      };
+    default:
+      return {
+        text: `学习对话请求失败。错误码：${error.code}。${error.message}`,
+        statusText: error.recoverable ? "可以修改问题或稍后重试。" : "这个错误不可直接重试，请先调整请求。",
+      };
+  }
 }
 
 function createClientId(prefix: string): string {

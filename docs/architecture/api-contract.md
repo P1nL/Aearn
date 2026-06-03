@@ -45,7 +45,7 @@ V1 使用本地单用户或轻量用户机制，不强制登录态。所有需�
 
 | 字段 | 枚举 |
 |---|---|
-| `language` | `javascript` / `python` / `java` / `cpp` / `html_css` |
+| `language` | `javascript` / `python` / `typescript` / `sql` / `java` / `go` / `csharp` / `html_css` |
 | `runtime_tier` | `browser_preview` / `python_stdout_test` / `node_typescript_test` / `sql_query_test` / `managed_compiled_test` / `compiled_sandbox_later` |
 | `runner` | `browser` / `python` / `node` / `sql` / `compiled` / `sandbox` |
 | `LearningPlan.status` | `active` / `paused` / `completed` |
@@ -65,9 +65,9 @@ V1 使用本地单用户或轻量用户机制，不强制登录态。所有需�
 - `Attempt.attempt_type=run` / `submit` / `review_submit` 是后端事实枚举，用于运行留痕、评分、FSRS 和追溯。
 - 前端 UI 不把 `run` / `submit` 暴露为“Attempt 类型”，只展示“运行 / 预览 / 提交结果”等自然操作。
 - 设置页只允许修改用户偏好和模型配置，不提供修改评分规则、Attempt 必填字段或 FSRS 固定规则的 API。
-- `language` 仍是服务端拥有的公开枚举。动态路线生成可以裁剪已登记课程的模块内容，但新增 TypeScript、Rust、Go 等公开语言必须同步扩展 Pydantic `Language`、数据库 CHECK 约束、课程 catalog、runtime boundary、API 示例和验收用例。
-- `managed_compiled_test` 是 Java / Go / C# 的本机 teaching-grade 单练习执行层：只检测本机 JDK / Go / .NET，不自动安装，不支持 Maven / Gradle / Go modules / NuGet / `.sln` 或任意项目目录。Java 可在课程/runtime/profile 同步后公开；Go / C# runner profile 可存在，但公开选课仍必须等 catalog/content/onboarding/API/UI 验收全部同步。
-- Rust / C++ 仍不进入 L3 execution；即使本机 toolchain 存在，也不能通过 `managed_compiled_test` 或 `compiled_sandbox_later` 宣称可执行。
+- `language` 仍是服务端拥有的公开课程枚举。当前公开路线语言是 `javascript`、`python`、`typescript`、`sql`、`java`、`go`、`csharp`、`html_css`；动态路线生成可以裁剪已登记课程的模块内容，但新增独立公开语言（例如 C++ 或 Rust）必须同步扩展 Pydantic `Language`、数据库 CHECK 约束、课程 catalog、runtime boundary、API 示例和验收用例。
+- runner/runtime 能力不等于完整项目执行能力。TypeScript / TS 使用 `node_typescript_test` 单文件教学 runner；SQL 使用 `sql_query_test` SQLite 教学方言；Java / Go / C# 使用 `managed_compiled_test` 本机 teaching-grade 单练习执行层。这些语言是公开路线，但都不能宣称支持任意项目、包管理器工作流、依赖安装或容器级沙箱。
+- Rust / C++ 仍不进入公开路线或 L3 execution；即使本机 toolchain 存在，也不能通过 `managed_compiled_test` 或 `compiled_sandbox_later` 宣称可执行。
 
 ## 统一错误结构
 
@@ -1136,7 +1136,7 @@ SSE 行为：
 - `language`、`target_level`、`goal_text` 齐备时，先发送简短 `agent_message`，再发送 `tool_call(name="show_learning_route")`；完整路线内容只放在工具参数中。
 - `time_budget` 为可选字段；用户之后补充时间、方向或难度时，服务重新暂存草稿并发送新的 `show_learning_route` 工具调用，工具参数会携带新的节奏信息。
 - 同一建档会话只有最新暂存草稿可确认；前端必须将历史路线卡片的 `开始学习` 置为禁用。
-- 如果槽位提取明确返回未登记公开课程语言（如 TypeScript、Rust、Go、C#），SSE 必须返回 `error.code=LANGUAGE_NOT_SUPPORTED`，`details.unsupported_language` 和 `details.supported_languages` 必须可用于前端展示/重试引导；不能继续输出“正在生成路线卡片”的普通 Agent 文案。Go / C# 可以有非公开 runner/runtime profile，但在课程 catalog、路线内容、onboarding、API 示例和验收测试同步前仍不是公开选课语言。
+- 如果槽位提取明确返回 C++ 或 Rust，SSE 必须返回 `error.code=LANGUAGE_NOT_SUPPORTED`，`details.unsupported_language` 和 `details.supported_languages` 必须可用于前端展示/重试引导；不能继续输出“正在生成路线卡片”的普通 Agent 文案。TypeScript / TS、SQL、Go、C# 都是公开路线；必填槽位缺失或模糊时仍不得生成 `show_learning_route` 或暂存 `plan_draft`。
 - 建档对话不提供关键词或确定性兜底解析；槽位提取和普通回复依赖模型 API。模型未配置、不可连接、流式中断前无有效输出，或结构化槽位输出非法时，SSE 返回 `error.code=MODEL_UNAVAILABLE`，不更新槽位、不生成路线卡片。
 
 `show_learning_route` arguments 示例：

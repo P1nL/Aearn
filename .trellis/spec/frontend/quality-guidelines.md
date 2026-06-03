@@ -19,7 +19,7 @@ Every UI task must be checked against `docs/product/frontend-interaction-spec.md
 - Do not paste spec/runbook wording into the UI. Settings and diagnostics copy must use product-facing language such as "当前状态" and "复习节奏", not implementation terms like `Source of truth`, `MVP`, `ReviewState`, `due_at`, or "fixed backend rules".
 - Do not calculate final score, result, `fsrs_rating`, `due_at`, or review scheduling in the frontend.
 - Do not reuse learning-page `lastRun` / `lastSubmit` as review-page recap data. Review UI should render review queue/session/result state from the review endpoints only.
-- Do not show unsupported Java/C++ sandbox capabilities as runnable.
+- Do not show unsupported compiled-language capabilities as runnable. Java/Go/C# are only `managed_compiled_test` teaching-grade single-exercise execution; C++ / Rust public routes stay disabled/unsupported.
 - Do not add new UI libraries, routers, or state managers without task scope and verification.
 - Do not rely on console output as the only user feedback.
 
@@ -80,7 +80,7 @@ Every UI task must be checked against `docs/product/frontend-interaction-spec.md
 - The backend remains source of truth for user IDs, plan IDs, persisted modules, knowledge points, and review initialization.
 - Draft preview must show runtime capability metadata, source attribution, and non-skippable core modules.
 - Workspace after confirmation is only a route summary entry in M2; it must not show generated exercise cards, run/submit actions, Attempt types, score, FSRS rating, or due scheduling.
-- Java/C++ courses must display `compiled_sandbox_later` as unsupported/postponed execution capability.
+- Java/Go/C# courses must display `managed_compiled_test` as local teaching-grade single-exercise capability; C++ and Rust must not appear as public course choices.
 - Generated onboarding route cards render from `show_learning_route` tool args; the card exposes only `开始学习`, displays optional `time_budget` as user-facing rhythm copy, and disables historical cards by latest tool-call id.
 
 ### 4. Validation & Error Matrix
@@ -93,8 +93,8 @@ Every UI task must be checked against `docs/product/frontend-interaction-spec.md
 ### 5. Good/Base/Bad Cases
 
 - Good: select JavaScript, generate draft, inspect source attribution and core module lock, confirm, and see workspace route panel.
-- Base: select Java or C++ and see the compile sandbox later notice.
-- Bad: exposing `Attempt(run)` / `Attempt(submit)` labels, showing a Java/C++ run button, or locally marking review scheduling as complete.
+- Base: select Java and see the managed compiled teaching-grade notice; select C++ and see the compile sandbox later notice.
+- Bad: exposing `Attempt(run)` / `Attempt(submit)` labels, showing a runnable C++ button, presenting Java as Maven/Gradle/project execution, or locally marking review scheduling as complete.
 
 ### 6. Tests Required
 
@@ -116,7 +116,7 @@ This implies Java execution exists in M2.
 #### Correct
 
 ```tsx
-<div>Java/C++ 第一版只展示静态阅读和补全边界，不提供完整编译运行沙箱。</div>
+<div>Java / Go / C# 只支持本机教学级单练习运行；C++ / Rust 当前不支持公开路线。</div>
 ```
 
 M2 keeps course visibility separate from real runtime availability.
@@ -222,6 +222,7 @@ Submit follows the actual M3 contract instead of a single optimistic condition.
 - `agent_message` event -> update the existing assistant bubble, not append a new assistant bubble per delta.
 - `done` event -> mark the assistant bubble `done` and clear busy state.
 - `error` event or incomplete close -> mark the assistant bubble `error`, show stable error copy, and allow retry.
+- Error copy must branch on stable `error.code`: `MODEL_UNAVAILABLE` explains model service/config unavailability, `STREAM_INCOMPLETE` explains a stream that ended without `done` or `error`, and synthetic stream errors explain connection/SSE availability instead of using one generic "answer incomplete" message.
 - API offline or backend envelope error -> show visible state; do not rely on console output alone.
 
 ### 5. Good/Base/Bad Cases

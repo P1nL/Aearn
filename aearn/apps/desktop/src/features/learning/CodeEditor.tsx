@@ -16,9 +16,12 @@ type CodeEditorProps = {
 const LANGUAGE_MAP: Record<Language, string> = {
   javascript: "javascript",
   python: "python",
+  typescript: "typescript",
+  sql: "sql",
   html_css: "html",
   java: "java",
-  cpp: "cpp",
+  go: "go",
+  csharp: "csharp",
 };
 
 function handleBeforeMount(monaco: Monaco) {

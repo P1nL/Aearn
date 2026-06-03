@@ -18,7 +18,7 @@
 
 1. 代码编辑器、预览和测试结果以对话中的生成式 UI 呈现，不做固定三栏工作台。
 2. 所有能影响 `Attempt`、`code_completion_result`、`ReviewState` 的操作必须走 API，不允许前端本地伪造完成状态。
-3. JS/HTML/CSS、Python、TypeScript、SQL、Java/Go/C#、Rust/C++ 按运行能力分层展示，不把“课程可见”或“本机 toolchain 已检测到”误导成“公开课程/完整项目执行可用”。
+3. JS/HTML/CSS、Python、TypeScript、SQL、Java/Go/C# 按公开路线和运行能力分层展示；C++/Rust 明确暂不支持，不把“本机 toolchain 已检测到”误导成“公开课程/完整项目执行可用”。
 4. 前端 UI 不暴露 `Attempt(run)` 和 `Attempt(submit)` 两类内部概念，只展示运行、预览、测试和提交结果；后端仍保留两类事实记录。
 5. 所有长耗时状态都必须有 loading、error、disabled、retry 或 confirm 反馈。
 
@@ -27,7 +27,7 @@
 - 不做复杂拖拽式路线编辑，只允许按钮式 `skip`、`replace`、`adjust`。
 - 不做多窗口自由停靠或复杂 dock layout。
 - 不做外部渠道一键分发、账号登录、社区发布或平台适配改写。
-- 不做完整在线编译沙箱或通用 IDE；Java / Go / C# 仅允许 `managed_compiled_test` 的本机 teaching-grade 单练习执行，Rust / C++ 继续只展示 `compiled_sandbox_later` 能力提示和禁用态。
+- 不做完整在线编译沙箱或通用 IDE；Java / Go / C# 仅允许 `managed_compiled_test` 的本机 teaching-grade 单练习执行，Rust / C++ 继续作为暂不支持公开路线处理。
 - 不做项目级多文件调试、任意依赖安装、真实代码仓库深度导入。
 - 不做独立复盘草稿流程、`publishDrawer` 用户路径、`CodeDraftPage` 一级页面或面试讲述草稿。
 
@@ -218,6 +218,7 @@ LearningWorkspacePage
 - `concept_check`、`concept_repair` 和 `practice_offer` 只展示概念判断与修正，不直接固定展示练习卡片。
 - `practice_support` 才能展示 `GeneratedCodeExerciseCard`；如果是跳过或修正上限后的引导练习，卡片说明内展示“当前学习进度尚未完成”和概念小结。
 - `CONCEPT_INTRO_GENERATION_FAILED` 必须显示重试生成和返回路线动作，不展示破损 fallback 卡片。
+- 学习页 composer SSE 错误必须按稳定 `error.code` 解释原因：`MODEL_UNAVAILABLE` 展示模型服务或配置不可用，`STREAM_INCOMPLETE` 展示流没有收到 `done` / `error` 终止事件，`STREAM_ERROR` / `STREAM_UNAVAILABLE` / `STREAM_HTTP_ERROR` 展示连接或 SSE 可用性问题；不能把所有错误都包成同一句泛化“回答没有完成”。
 - 用户主动回看历史时展示 `GeneratedLearningHistoryCard`，只引用学习页 AI/用户对话，不引用建档页或复习页内容。
 
 状态来源：
@@ -293,9 +294,9 @@ LearningWorkspacePage
 |---|---|---|---|---|
 | `browser_preview` | JS / HTML / CSS | 实时预览、console 捕获、DOM 断言摘要、可见测试反馈 | `/run`、`/submit`、`/hint`、`/explain-error` | 不支持任意 npm 依赖、不支持多文件项目调试 |
 | `python_stdout_test` | Python | 代码编辑、stdout/stderr、函数测试和可见测试结果 | `/run`、`/submit`、`/hint`、`/explain-error` | 不承诺本地 GUI、网络访问或任意第三方包 |
-| `node_typescript_test` | TypeScript | 代码编辑、stdout/stderr、单文件函数测试 | `/run`、`/submit`、`/hint`、`/explain-error` | 当前不公开选课，不支持任意 npm 依赖或多文件项目 |
-| `sql_query_test` | SQL | 查询编辑、SQLite 教学方言测试、stdout/stderr 摘要 | `/run`、`/submit`、`/hint`、`/explain-error` | 当前不公开选课，不连接 Aearn PostgreSQL app database |
-| `managed_compiled_test` | Java / Go / C# | 本机 toolchain 状态、编译/运行/测试结果、缺 toolchain/编译错误提示 | `/run`、`/submit`、`/hint`、`/explain-error` | 只支持单文件或服务端 harness 教学练习；不支持 Maven / Gradle / Go modules / NuGet / `.sln` / 任意项目执行；Go/C# 不公开选课 |
+| `node_typescript_test` | TypeScript | 代码编辑、stdout/stderr、单文件函数测试 | `/run`、`/submit`、`/hint`、`/explain-error` | 公开路线可用，不支持任意 npm 依赖或多文件项目 |
+| `sql_query_test` | SQL | 查询编辑、SQLite 教学方言测试、stdout/stderr 摘要 | `/run`、`/submit`、`/hint`、`/explain-error` | 公开路线可用，不连接 Aearn PostgreSQL app database |
+| `managed_compiled_test` | Java / Go / C# | 本机 toolchain 状态、编译/运行/测试结果、缺 toolchain/编译错误提示 | `/run`、`/submit`、`/hint`、`/explain-error` | 公开路线可用，只支持单文件或服务端 harness 教学练习；不支持 Maven / Gradle / Go modules / NuGet / `.sln` / 任意项目执行 |
 | `compiled_sandbox_later` | Rust / C++ | 静态阅读、补全练习、能力边界提示 | `/run` 返回 `runtime_status=unsupported` 或不展示运行按钮 | 不提供 L3 编译运行或资源隔离沙箱 |
 
 ## 页面 2：`ReviewPage`
@@ -490,7 +491,7 @@ SettingsPage
 - 不本地修改 `fsrs_rating`、`due_at` 或 `ReviewState`。
 - 不根据 warmup 结果、本地测试通过或 `review_ai_patch` 表单内容本地计算 score、FSRS 或复习完成态。
 - 不把本地预览成功当作 `/submit` 通过。
-- 不在 `compiled_sandbox_later`、Rust/C++ 或后端返回 `unsupported` 的练习上展示“可运行/可提交”状态；Java 只有在后端返回 `managed_compiled_test` 且运行状态成功时才可提交，Go/C# 即使 runner 可用也不能作为公开课程选择出现。
+- 不在 `compiled_sandbox_later`、Rust/C++ 或后端返回 `unsupported` 的练习上展示“可运行/可提交”状态；Java/Go/C# 只有在后端返回 `managed_compiled_test` 且运行状态成功时才可提交。
 
 ## 全局状态与错误处理
 
@@ -534,7 +535,7 @@ SettingsPage
 
 - 五个一级页面均有组件树、核心按钮、状态与 API 边界：Onboarding、Learning、Review、Notes、Settings。
 - 工作台明确对话生成式代码编辑器、实时预览、stdout/test、错误反馈区边界。
-- JS/HTML/CSS、Python、TypeScript、SQL、Java/Go/C#、Rust/C++ 的运行能力分层不会误导用户。
+- JS/HTML/CSS、Python、TypeScript、SQL、Java/Go/C# 的公开路线和运行能力分层不会误导用户，C++/Rust 会明确显示暂不支持。
 - loading、empty、error、disabled、confirm、stale、autosaving 状态均有统一处理。
 - 前端不会越权承担评分、FSRS 或 LangGraph 状态机职责。
 - 复习页能展示短热身、热身修正、seed rescue 失败、五类核心复习题型和 `review_ai_patch` 结构化提交。

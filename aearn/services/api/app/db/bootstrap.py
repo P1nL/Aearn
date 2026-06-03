@@ -4,7 +4,7 @@ from pathlib import Path
 from psycopg import Connection
 
 from app.db.connection import connect
-from app.db.seeds import LANGUAGE_COURSE_SEEDS, RUNTIME_PROFILE_SEEDS
+from app.db.seeds import ARCHIVED_LANGUAGE_COURSE_SLUGS, LANGUAGE_COURSE_SEEDS, RUNTIME_PROFILE_SEEDS
 
 
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
@@ -15,6 +15,7 @@ def bootstrap_database() -> None:
         apply_schema(conn)
         seed_runtime_profiles(conn)
         seed_language_courses(conn)
+        archive_language_courses(conn)
         conn.commit()
 
 
@@ -83,6 +84,20 @@ def seed_language_courses(conn: Connection[dict[str, object]]) -> None:
                 ),
             },
         )
+
+
+def archive_language_courses(conn: Connection[dict[str, object]]) -> None:
+    if not ARCHIVED_LANGUAGE_COURSE_SLUGS:
+        return
+    conn.execute(
+        """
+        UPDATE language_courses
+        SET archived_at = COALESCE(archived_at, now())
+        WHERE slug = ANY(%s)
+          AND archived_at IS NULL
+        """,
+        (list(ARCHIVED_LANGUAGE_COURSE_SLUGS),),
+    )
 
 
 if __name__ == "__main__":

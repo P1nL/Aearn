@@ -80,8 +80,9 @@ This demo story does not add language runtime support.
 
 - Python execution is available through the runner registry path.
 - JavaScript / HTML / CSS remain browser-preview style learning runtimes.
-- Java / C++ currently use unsupported/planned runner fallback behavior and must not be described as executable.
-- TypeScript / Go / C# / Rust / SQL may be prepared for docs grounding or static review in later tasks, but they are not executable in the current runtime.
+- Java uses the teaching-grade `managed_compiled_test` path when a generated exercise has the matching runtime profile, but it must not be described as Maven/Gradle or arbitrary project execution.
+- TypeScript, SQL, Go, and C# are independent public course selections with teaching-grade runner/runtime limits.
+- C++ and Rust are not public course selections and must not be described as currently compile-run executable.
 
 ## Short Interview Story
 

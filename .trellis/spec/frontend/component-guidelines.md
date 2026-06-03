@@ -54,4 +54,4 @@ Future components must follow `docs/product/frontend-interaction-spec.md`, espec
 
 - Showing backend fact enums such as `Attempt(run)` or `Attempt(submit)` directly to users.
 - Letting the frontend calculate final `result`, `score`, or `fsrs_rating`; these must come from backend APIs.
-- Treating Java/C++ course availability as full sandbox availability. First version shows `compiled_sandbox_later` as disabled/unsupported capability.
+- Treating compiled-language course or runner availability as full sandbox availability. Java/Go/C# are only `managed_compiled_test` teaching-grade single-exercise execution; C++ and Rust remain unsupported for public routes.

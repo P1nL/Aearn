@@ -190,7 +190,7 @@ uv --directory .\aearn\services\worker run celery -A aearn_worker.worker_app:cel
 
 - `plan_draft` 生成不应直接写正式 `learning_plans`。
 - 确认计划要写入 `learning_plans`、`plan_modules`、`knowledge_points` 和初始 `review_states`。
-- Java/C++ 目前只能作为 `compiled_sandbox_later` 占位能力，不承诺完整编译沙箱。
+- TypeScript、SQL、Java、Go、C# 都是公开课程路线，但只提供 teaching-grade runner/runtime 能力；C++ 和 Rust 暂不支持公开路线。
 
 ### 5.2 日常进入当前学习
 
@@ -318,7 +318,7 @@ flowchart LR
 | `plan_repository.py` | 确认计划、写入 plan/module/knowledge point/review state |
 | `learning_session_repository.py` | 学习会话、练习上下文、Attempt 写入、会话状态 |
 | `learning_conversation.py` | 学习对话服务边界 |
-| `runtime_runner.py` | 确定性运行器，处理 `browser_preview`、`python_stdout_test`、`compiled_sandbox_later` |
+| `runtime_runner.py` | 确定性运行器，处理 `browser_preview`、`python_stdout_test`、`node_typescript_test`、`sql_query_test`、`managed_compiled_test`、`compiled_sandbox_later` |
 | `evaluation.py` | submit 评分、hard gates、result、`fsrs_rating`、next action |
 | `exercise_guidance.py` | hint、错误解释、解释检查相关指导逻辑 |
 | `llm_client.py` | OpenAI-compatible provider client 边界 |
@@ -477,7 +477,7 @@ Copy-Item .\aearn\.env.example .\aearn\.env
 | `LLM_TIMEOUT_SECONDS` | LLM 超时 |
 | `RUNNER_BROWSER_ENABLED` | browser preview runner 开关 |
 | `RUNNER_PYTHON_ENABLED` | Python stdout runner 开关 |
-| `RUNNER_COMPILED_SANDBOX_ENABLED` | Java/C++ 编译沙箱开关，MVP 默认 false |
+| `RUNNER_COMPILED_SANDBOX_ENABLED` | 历史 compiled sandbox 开关；当前真实边界以 `runtime_profiles.runtime_tier` 和 runner registry 为准 |
 
 不要把真实 `.env`、API key、provider 错误详情或数据库密码提交到 Git。
 
@@ -709,7 +709,7 @@ git diff --check
 - `runtime_status` 只在允许枚举内。
 - `result` 与 `fsrs_rating` 映射合法。
 - hard gates 失败时不能返回 `passed` 或 `easy`。
-- Java/C++ 仍是 unsupported 或禁用边界。
+- C++ / Rust 仍是 unsupported 或禁用边界；Java / Go / C# managed compiled 必须覆盖缺 toolchain、编译错误、运行错误、超时、测试失败和成功。
 
 ### 13.4 改 LLM 或 Agent 输出
 
@@ -757,7 +757,7 @@ git diff --check
 - 不要在仓库根目录新增 Python 虚拟环境、`requirements.txt` 或散装依赖文件。
 - 不要把真实 `.env`、API key、provider key、数据库密码提交。
 - 不要把 `docs/design/` 当成运行时代码目录。
-- 不要把 Java/C++ 编译沙箱描述成已完成。
+- 不要把 Java / Go / C# teaching-grade 单练习 runner 描述成完整项目/包管理器/在线编译沙箱；不要把 C++ / Rust 描述成当前可真实编译运行。
 - 不要在桌面端展示 `Attempt(run)`、`Attempt(submit)`、`ReviewState`、`due_at` 这类内部术语。
 - 不要让设置页修改评分、Attempt 持久化或 FSRS 调度规则。
 - 不要在前端计算最终成绩、复习日期或 FSRS rating。
@@ -779,7 +779,10 @@ git diff --check
 | Worker runtime | `aearn/services/worker/aearn_worker/worker_app.py` |
 | Shared package | `aearn/packages/shared/` 目前仍是 placeholder |
 | LLM | AI 驱动页面必需；未配置或不可用时返回 `MODEL_UNAVAILABLE` |
-| Java/C++ | 课程可见但 runtime 为 `compiled_sandbox_later`，不提供完整沙箱 |
+| TypeScript | 公开课程，runtime 为 `node_typescript_test`，只支持 Node/TypeScript 单文件教学练习 |
+| SQL | 公开课程，runtime 为 `sql_query_test`，使用 SQLite 教学方言，不连接 Aearn PostgreSQL app database |
+| Java / Go / C# | 公开课程，runtime 为 `managed_compiled_test`，只支持本机 toolchain 单练习教学执行 |
+| C++ / Rust | 暂不支持公开路线，不提供真实编译运行 |
 
 看到旧文档里的 `migrations/`、Alembic 或更深的 `infra/docker/` 目录时，要先对照当前 checkout，不要直接照旧路径执行。
 

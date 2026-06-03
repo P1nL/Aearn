@@ -6,6 +6,21 @@ from app.agents.graphs.onboarding_graph import (
     onboarding_error_to_fallback,
     onboarding_result_to_run_result,
 )
+from app.agents.onboarding.onboarding_slot_extractor import ExtractedSlots
+from app.services.conversations.onboarding_conversation import normalize_onboarding_agent_message
+
+
+def _missing_language_slots(question: str = "你想主学哪门语言？") -> ExtractedSlots:
+    return ExtractedSlots(
+        missing_slot_question=question,
+        plan_ready=False,
+        slot_statuses={
+            "language": {
+                "status": "missing",
+                "clarification_question": question,
+            },
+        },
+    )
 
 
 class TestOnboardingOrchestration:
@@ -175,3 +190,94 @@ class TestOnboardingContractAdapters:
         assert "internal error" in fb.reason
         assert "api_key" not in fb.reason
         assert fb.recoverable is True
+
+
+class TestOnboardingChatFirstMessageNormalization:
+    def test_preserves_advisory_answer_before_missing_slot_followup(self):
+        answer = (
+            "做 AI Agent 通常优先用 Python，因为工具调用、自动化和后端生态更成熟。"
+            "如果偏网页产品，再考虑 JavaScript/TypeScript。"
+        )
+
+        result = normalize_onboarding_agent_message(
+            answer,
+            slots=_missing_language_slots(),
+            route_ready=False,
+        )
+
+        assert result.startswith(answer)
+        assert "你想主学哪门语言" in result
+        assert result != "你想主学哪门语言？"
+
+    def test_preserves_capability_answer_without_turning_it_into_a_form_prompt(self):
+        answer = "Aearn 可以先帮你选学习方向，再把目标拆成路线、练习和复习节奏。"
+
+        result = normalize_onboarding_agent_message(
+            answer,
+            slots=_missing_language_slots("你更想先学哪类编程方向？"),
+            route_ready=False,
+        )
+
+        assert result.startswith(answer)
+        assert "你更想先学哪类编程方向" in result
+
+    def test_preserves_comparison_answer_before_missing_slot_followup(self):
+        answer = (
+            "如果目标是先做可运行的工具型 Agent，我建议先选 Python；"
+            "如果更偏网页产品和界面交互，JavaScript 会更贴近。"
+        )
+
+        result = normalize_onboarding_agent_message(
+            answer,
+            slots=_missing_language_slots(),
+            route_ready=False,
+        )
+
+        assert result.startswith(answer)
+        assert "你想主学哪门语言" in result
+
+    def test_does_not_duplicate_followup_when_answer_already_contains_question(self):
+        answer = "Python 适合先做工具型 Agent。你想主学哪门语言？"
+
+        result = normalize_onboarding_agent_message(
+            answer,
+            slots=_missing_language_slots(),
+            route_ready=False,
+        )
+
+        assert result == answer
+
+    def test_does_not_duplicate_semantic_language_followup(self):
+        answer = (
+            "做 AI Agent 通常优先用 Python，因为工具调用和自动化生态更成熟。"
+            "你想用哪种编程语言来实现 agent 呢？我们目前支持 JavaScript、Python、Java、C++和HTML/CSS。"
+        )
+
+        result = normalize_onboarding_agent_message(
+            answer,
+            slots=_missing_language_slots(),
+            route_ready=False,
+        )
+
+        assert result == answer
+        assert "你想主学哪门语言" not in result
+
+    def test_still_blocks_route_ready_claim_when_required_slot_is_missing(self):
+        result = normalize_onboarding_agent_message(
+            "信息够了，我生成一份路线卡片。",
+            slots=_missing_language_slots(),
+            route_ready=False,
+        )
+
+        assert "信息够" not in result
+        assert "路线卡" not in result
+        assert "你想主学哪门语言" in result
+
+    def test_empty_model_text_stays_empty_so_route_can_return_model_unavailable(self):
+        result = normalize_onboarding_agent_message(
+            "   ",
+            slots=_missing_language_slots(),
+            route_ready=False,
+        )
+
+        assert result == ""

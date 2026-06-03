@@ -7,14 +7,13 @@ from collections.abc import Mapping
 from app.models.onboarding import (
     DraftKnowledgePoint,
     DraftModule,
-    Language,
     PlanDraft,
     PlanGenerateRequest,
     RuntimeBoundary,
 )
 
 
-UNSUPPORTED_LANGUAGES: list[Language] = ["cpp"]
+UNSUPPORTED_LANGUAGES: list[str] = ["cpp", "rust"]
 
 
 def _kp(
@@ -52,6 +51,121 @@ def _module(
         estimated_sessions=estimated_sessions,
         knowledge_points=knowledge_points,
     )
+
+
+def _single_file_language_template(
+    *,
+    language_id: str,
+    display_name: str,
+    first_title: str,
+    first_description: str,
+    second_title: str,
+    second_description: str,
+    exercise_prefix: str,
+) -> list[DraftModule]:
+    return [
+        _module(
+            temp_id=f"mod_draft_{language_id}_core_functions",
+            title=first_title,
+            description=first_description,
+            order_index=0,
+            is_skippable=False,
+            estimated_sessions=2,
+            knowledge_points=[
+                _kp(
+                    f"kp_draft_{language_id}_function_contract",
+                    "函数契约与类型",
+                    f"用 {display_name} 的类型签名、参数和返回值描述单文件练习的可验证行为。",
+                    [language_id, "functions", "types"],
+                    [f"{exercise_prefix}_function_contract"],
+                ),
+                _kp(
+                    f"kp_draft_{language_id}_control_flow",
+                    "控制流与边界输入",
+                    "用分支、循环和边界示例解释可见测试为什么通过或失败。",
+                    [language_id, "control_flow", "testing"],
+                    [f"{exercise_prefix}_control_flow"],
+                ),
+            ],
+        ),
+        _module(
+            temp_id=f"mod_draft_{language_id}_runner_feedback",
+            title=second_title,
+            description=second_description,
+            order_index=1,
+            is_skippable=True,
+            estimated_sessions=2,
+            knowledge_points=[
+                _kp(
+                    f"kp_draft_{language_id}_runner_output",
+                    "运行反馈阅读",
+                    "把 stdout、编译错误或断言失败映射回代码里的具体假设。",
+                    [language_id, "runner", "debugging"],
+                    [f"{exercise_prefix}_runner_feedback"],
+                ),
+                _kp(
+                    f"kp_draft_{language_id}_generated_code_review",
+                    "生成代码审查",
+                    f"在提交前检查 AI 生成的 {display_name} 代码是否满足题目、类型和测试边界。",
+                    [language_id, "ai_review", "verification"],
+                    [f"{exercise_prefix}_generated_code_review"],
+                ),
+            ],
+        ),
+    ]
+
+
+def _sql_template() -> list[DraftModule]:
+    return [
+        _module(
+            temp_id="mod_draft_sql_select_filter",
+            title="SQL 查询基础",
+            description="在每次运行独立的 SQLite 教学数据库中练习 SELECT、WHERE 和排序。",
+            order_index=0,
+            is_skippable=False,
+            estimated_sessions=2,
+            knowledge_points=[
+                _kp(
+                    "kp_draft_sql_select_projection",
+                    "SELECT 与列投影",
+                    "选择需要的列并理解结果集的结构。",
+                    ["sql", "select"],
+                    ["ex_sql_select_projection"],
+                ),
+                _kp(
+                    "kp_draft_sql_filter_order",
+                    "过滤与排序",
+                    "使用 WHERE 和 ORDER BY 让查询结果匹配可见测试。",
+                    ["sql", "filtering", "sorting"],
+                    ["ex_sql_filter_order"],
+                ),
+            ],
+        ),
+        _module(
+            temp_id="mod_draft_sql_join_aggregate",
+            title="关联、聚合与结果验证",
+            description="练习 JOIN、GROUP BY 和聚合结果，并阅读测试反馈。",
+            order_index=1,
+            is_skippable=True,
+            estimated_sessions=2,
+            knowledge_points=[
+                _kp(
+                    "kp_draft_sql_join_shape",
+                    "JOIN 结果形状",
+                    "解释表关联后行数和列值如何变化。",
+                    ["sql", "joins"],
+                    ["ex_sql_join_shape"],
+                ),
+                _kp(
+                    "kp_draft_sql_aggregate_assertions",
+                    "聚合结果断言",
+                    "用 COUNT、SUM 或 GROUP BY 生成可检查的摘要结果。",
+                    ["sql", "aggregation", "testing"],
+                    ["ex_sql_aggregate_assertions"],
+                ),
+            ],
+        ),
+    ]
 
 
 COURSE_TEMPLATES: dict[str, list[DraftModule]] = {
@@ -512,24 +626,34 @@ COURSE_TEMPLATES: dict[str, list[DraftModule]] = {
             ],
         ),
     ],
-    "cpp": [
-        _module(
-            temp_id="mod_draft_cpp_static_reading",
-            title="C++ 静态代码阅读",
-            description="首版将 C++ 作为阅读和补全的占位课程。",
-            order_index=0,
-            is_skippable=False,
-            estimated_sessions=1,
-            knowledge_points=[
-                _kp(
-                    "kp_draft_cpp_function_shape",
-                    "函数形状与标准输出",
-                    "在没有编译器沙箱的情况下阅读 C++ 函数结构。",
-                    ["cpp", "types"],
-                ),
-            ],
-        ),
-    ],
+    "typescript": _single_file_language_template(
+        language_id="typescript",
+        display_name="TypeScript",
+        first_title="TypeScript 类型与函数契约",
+        first_description="使用本地 Node/TypeScript runner 练习类型标注、函数返回和可见测试。",
+        second_title="TypeScript 运行反馈与生成代码审查",
+        second_description="阅读 tsc/Node 输出和断言失败，修正 AI 生成的 TypeScript 单文件代码。",
+        exercise_prefix="ex_ts",
+    ),
+    "sql": _sql_template(),
+    "go": _single_file_language_template(
+        language_id="go",
+        display_name="Go",
+        first_title="Go 函数、类型与控制流",
+        first_description="使用本机 Go toolchain 的 managed compiled runner 练习单包函数。",
+        second_title="Go 测试反馈与生成代码审查",
+        second_description="阅读 Go 编译错误、stdout 和测试失败，定位函数契约问题。",
+        exercise_prefix="ex_go",
+    ),
+    "csharp": _single_file_language_template(
+        language_id="csharp",
+        display_name="C#",
+        first_title="C# 方法、类型与控制流",
+        first_description="使用本机 .NET managed compiled runner 练习单文件 C# 方法。",
+        second_title="C# 运行反馈与生成代码审查",
+        second_description="阅读 .NET 编译错误、stdout 和断言反馈，修正生成代码。",
+        exercise_prefix="ex_csharp",
+    ),
 }
 
 
@@ -579,7 +703,13 @@ def build_plan_draft(
 
 
 def has_supported_mvp_runtime(plan_draft: PlanDraft) -> bool:
-    return plan_draft.runtime_boundary.runtime_tier in {"browser_preview", "python_stdout_test", "managed_compiled_test"}
+    return plan_draft.runtime_boundary.runtime_tier in {
+        "browser_preview",
+        "python_stdout_test",
+        "node_typescript_test",
+        "sql_query_test",
+        "managed_compiled_test",
+    }
 
 
 def normalize_target_level(target_level: str) -> str:
@@ -618,9 +748,13 @@ def _runtime_notice(runtime_tier: str) -> str:
         return "This course can use browser preview and DOM assertions in the first MVP."
     if runtime_tier == "python_stdout_test":
         return "This course can use Python stdout and visible tests in the first MVP."
+    if runtime_tier == "node_typescript_test":
+        return "This course can use the local Node/TypeScript teaching runner for single-file exercises."
+    if runtime_tier == "sql_query_test":
+        return "This course can use an isolated SQLite teaching database for SQL query exercises."
     if runtime_tier == "managed_compiled_test":
         return "This course can use a local teaching-grade managed compiled runner for single-file exercises when the matching toolchain is installed."
-    return "C++ compile-and-run sandbox is planned later; first MVP shows static reading and completion boundaries only."
+    return "C++ and Rust compile-and-run support is planned later and is not part of public course selection yet."
 
 
 def _source_attribution(payload: PlanGenerateRequest, course: Mapping[str, object]) -> list[str]:
@@ -642,6 +776,16 @@ def _official_taxonomy_source(language: str) -> str | None:
         return "Official documentation taxonomy: Python Tutorial"
     if language == "javascript":
         return "Official documentation taxonomy: MDN JavaScript Guide"
+    if language == "typescript":
+        return "Official documentation taxonomy: TypeScript Handbook"
+    if language == "sql":
+        return "Trusted documentation taxonomy: SQLite SELECT and query language docs"
+    if language == "java":
+        return "Official documentation taxonomy: Java language basics"
+    if language == "go":
+        return "Official documentation taxonomy: Go language specification and tutorial basics"
+    if language == "csharp":
+        return "Official documentation taxonomy: Microsoft C# language guide"
     if language == "html_css":
         return "Official documentation taxonomy: MDN HTML/CSS learning modules"
     return None

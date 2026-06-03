@@ -103,6 +103,7 @@ export function AssistantUIThread({
                     className="quick-reply-chip"
                     key={chip}
                     type="button"
+                    disabled={composerDisabled}
                     onClick={() => onSend(chip)}
                   >
                     {chip}

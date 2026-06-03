@@ -4,9 +4,16 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
-Language = Literal["javascript", "python", "java", "cpp", "html_css"]
+Language = Literal["javascript", "python", "typescript", "sql", "java", "go", "csharp", "html_css"]
 LearningMode = Literal["goal_based", "material_based"]
-RuntimeTier = Literal["browser_preview", "python_stdout_test", "managed_compiled_test", "compiled_sandbox_later"]
+RuntimeTier = Literal[
+    "browser_preview",
+    "python_stdout_test",
+    "node_typescript_test",
+    "sql_query_test",
+    "managed_compiled_test",
+    "compiled_sandbox_later",
+]
 TargetLevel = Literal["beginner", "intermediate", "advanced", "beginner_to_intermediate"]
 
 
@@ -90,7 +97,7 @@ class DraftModule(BaseModel):
 
 class RuntimeBoundary(BaseModel):
     runtime_tier: RuntimeTier
-    unsupported_languages: list[Language] = Field(default_factory=list)
+    unsupported_languages: list[str] = Field(default_factory=list)
     notice: str
 
 

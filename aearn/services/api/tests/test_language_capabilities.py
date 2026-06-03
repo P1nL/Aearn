@@ -28,11 +28,23 @@ def test_language_capability_matrix_covers_target_mainstream_languages() -> None
 
 
 def test_current_public_course_languages_map_to_capabilities() -> None:
-    assert public_course_language_ids() == ("javascript", "python", "java", "cpp", "html_css")
+    assert public_course_language_ids() == (
+        "javascript",
+        "python",
+        "typescript",
+        "sql",
+        "java",
+        "go",
+        "csharp",
+        "html_css",
+    )
     assert [cap.language_id for cap in capabilities_for_public_course_language("javascript")] == ["javascript"]
     assert [cap.language_id for cap in capabilities_for_public_course_language("python")] == ["python"]
+    assert [cap.language_id for cap in capabilities_for_public_course_language("typescript")] == ["typescript"]
+    assert [cap.language_id for cap in capabilities_for_public_course_language("sql")] == ["sql"]
     assert [cap.language_id for cap in capabilities_for_public_course_language("java")] == ["java"]
-    assert [cap.language_id for cap in capabilities_for_public_course_language("cpp")] == ["cpp"]
+    assert [cap.language_id for cap in capabilities_for_public_course_language("go")] == ["go"]
+    assert [cap.language_id for cap in capabilities_for_public_course_language("csharp")] == ["csharp"]
     assert [cap.language_id for cap in capabilities_for_public_course_language("html_css")] == ["html", "css"]
 
 
@@ -47,10 +59,11 @@ def test_python_capability_discloses_subprocess_not_container_sandbox() -> None:
     assert "not OS-container isolation" in capability.ux_disclosure
 
 
-def test_typescript_is_executable_but_not_public_selectable() -> None:
+def test_typescript_is_executable_and_public_selectable() -> None:
     typescript = require_language_capability("typescript")
 
-    assert typescript.enabled_for_public_selection is False
+    assert typescript.current_public_course_language == "typescript"
+    assert typescript.enabled_for_public_selection is True
     assert typescript.execution == "node_typescript_test"
     assert typescript.supports_execution is True
     assert typescript.supports_tests is True
@@ -58,31 +71,37 @@ def test_typescript_is_executable_but_not_public_selectable() -> None:
     assert typescript.sandbox_boundary == "node_vm_restricted_not_container"
 
 
-def test_planned_languages_do_not_claim_execution() -> None:
+def test_supported_runner_languages_are_public_selectable() -> None:
     sql = require_language_capability("sql")
     java = require_language_capability("java")
     go = require_language_capability("go")
     csharp = require_language_capability("csharp")
-    rust = require_language_capability("rust")
-    cpp = require_language_capability("cpp")
 
     assert sql.execution == "sql_query_test"
     assert sql.supports_execution is True
-    assert sql.enabled_for_public_selection is False
+    assert sql.enabled_for_public_selection is True
     assert "SQLite teaching dialect" in sql.ux_disclosure
     assert java.execution == "managed_compiled_test"
     assert java.supports_execution is True
     assert java.enabled_for_public_selection is True
     assert go.execution == "managed_compiled_test"
     assert go.supports_execution is True
-    assert go.enabled_for_public_selection is False
+    assert go.enabled_for_public_selection is True
     assert csharp.execution == "managed_compiled_test"
     assert csharp.supports_execution is True
-    assert csharp.enabled_for_public_selection is False
+    assert csharp.enabled_for_public_selection is True
+
+
+def test_cpp_and_rust_are_not_public_selectable_or_executable() -> None:
+    rust = require_language_capability("rust")
+    cpp = require_language_capability("cpp")
+
     assert rust.execution == "compiled_later"
     assert rust.supports_execution is False
+    assert rust.enabled_for_public_selection is False
     assert cpp.execution == "compiled_later"
     assert cpp.supports_execution is False
+    assert cpp.enabled_for_public_selection is False
 
 
 def test_alias_lookup_normalizes_common_language_names() -> None:

@@ -334,7 +334,7 @@ pnpm --dir .\aearn desktop:dev
 - 不实现业务 API。
 - 不写正式 Agent prompt。
 - 不接真实 runner sandbox。
-- 不做 Java / C++ 编译沙箱。
+- 不做完整在线编译沙箱或项目级 compiled runner；Java / Go / C# 只允许本机 teaching-grade `managed_compiled_test` 单练习路径，C++ / Rust 暂不支持公开路线或真实编译运行。
 - 不把历史教程目录重新引入正式项目。
 - 不提交真实 API key、数据库密码或生产配置。
 

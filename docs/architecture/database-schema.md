@@ -89,9 +89,9 @@ $$ LANGUAGE plpgsql;
 |---|---|---|---|
 | `id` | `uuid` | NOT NULL DEFAULT `gen_random_uuid()` | PK |
 | `slug` | `text` | NOT NULL | UNIQUE，例如 `rt_browser_js` |
-| `runtime_tier` | `text` | NOT NULL | CHECK in `browser_preview` / `python_stdout_test` / `compiled_sandbox_later` |
-| `language` | `text` | NOT NULL | `javascript` / `python` / `java` / `cpp` / `html_css` |
-| `runner` | `text` | NOT NULL | CHECK in `browser` / `python` / `sandbox` |
+| `runtime_tier` | `text` | NOT NULL | CHECK in `browser_preview` / `python_stdout_test` / `node_typescript_test` / `sql_query_test` / `managed_compiled_test` / `compiled_sandbox_later` |
+| `language` | `text` | NOT NULL | `javascript` / `python` / `typescript` / `sql` / `java` / `go` / `csharp` / `cpp` / `html_css` |
+| `runner` | `text` | NOT NULL | CHECK in `browser` / `python` / `node` / `sql` / `compiled` / `sandbox` |
 | `supports_realtime_preview` | `boolean` | NOT NULL DEFAULT `false` |  |
 | `supports_stdout` | `boolean` | NOT NULL DEFAULT `false` |  |
 | `supports_tests` | `boolean` | NOT NULL DEFAULT `false` |  |
@@ -1117,14 +1117,21 @@ FSRS 更新的 append-only 日志。每次学习提交或复习提交只要更�
   - `rt_browser_js`：`runtime_tier=browser_preview`，`language=javascript`，`runner=browser`，支持 preview 和 tests。
   - `rt_browser_html_css`：`runtime_tier=browser_preview`，`language=html_css`，`runner=browser`，支持 preview 和 DOM assertions。
   - `rt_python_stdout`：`runtime_tier=python_stdout_test`，`language=python`，`runner=python`，支持 stdout 和 tests。
-  - `rt_compiled_later_java`：`runtime_tier=compiled_sandbox_later`，`language=java`，`runner=sandbox`，`compile_required=true`，默认归档或标记非 MVP。
-  - `rt_compiled_later_cpp`：`runtime_tier=compiled_sandbox_later`，`language=cpp`，`runner=sandbox`，`compile_required=true`，默认归档或标记非 MVP。
+  - `rt_sql_sqlite_query`：`runtime_tier=sql_query_test`，`language=sql`，`runner=sql`，使用每次运行独立的 SQLite 教学数据库。
+  - `rt_managed_compiled_java`：`runtime_tier=managed_compiled_test`，`language=java`，`runner=compiled`，支持本机 JDK 单文件教学练习。
+  - `rt_managed_compiled_go`：`runtime_tier=managed_compiled_test`，`language=go`，`runner=compiled`，支持本机 Go 单包教学练习。
+  - `rt_managed_compiled_csharp`：`runtime_tier=managed_compiled_test`，`language=csharp`，`runner=compiled`，支持本机 .NET 单文件教学练习。
+  - `rt_compiled_later_cpp`：`runtime_tier=compiled_sandbox_later`，`language=cpp`，`runner=sandbox`，`compile_required=true`，只表示 C++ 内部/计划态执行边界，不是公开课程。
 - `language_courses`：
   - JavaScript DOM beginner。
   - Python basic beginner。
   - HTML/CSS interaction beginner。
-  - Java basic placeholder。
-  - C++ basic placeholder。
+  - TypeScript Node beginner。
+  - SQL query beginner。
+  - Java managed compiled beginner。
+  - Go basic beginner。
+  - C# basic beginner。
+  - 历史 `course_cpp_basic_placeholder` 需要归档，不作为 active public course。
 - dev/test 环境可额外提供：
   - 1 个 demo user。
   - 1 个 `LearningPlan`。
