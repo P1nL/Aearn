@@ -26,6 +26,39 @@ class StartLearningSessionRequest(BaseModel):
     knowledge_point_id: str = Field(min_length=1)
 
 
+class DocumentationCodeBlock(BaseModel):
+    language: str = Field(min_length=1)
+    code: str = Field(min_length=1)
+    caption: str
+
+
+class DocumentationSection(BaseModel):
+    id: str = Field(min_length=1)
+    type: str = Field(min_length=1)
+    title: str = Field(min_length=1)
+    content_markdown: str = Field(min_length=1)
+    code_blocks: list[DocumentationCodeBlock] = Field(default_factory=list)
+
+
+class DocumentationReference(BaseModel):
+    title: str = Field(min_length=1)
+    url: str
+
+
+class KnowledgePointDocumentationResponse(BaseModel):
+    knowledge_point_id: str = Field(min_length=1)
+    title: str = Field(min_length=1)
+    summary: str = Field(min_length=1)
+    sections: list[DocumentationSection] = Field(min_length=1)
+    references: list[DocumentationReference] = Field(default_factory=list)
+    generated_at: str = Field(min_length=1)
+    cache_hit: bool = False
+
+
+class TriggerConceptCheckRequest(BaseModel):
+    user_id: str = Field(min_length=1)
+
+
 class LearningMessageRequest(BaseModel):
     user_id: str | None = Field(default=None, min_length=1)
     role: LearningMessageRole

@@ -190,16 +190,32 @@ def test_start_learning_session_creates_and_reuses_active_session(client: TestCl
     created_body = created.json()
     assert created_body["session_type"] == "learn"
     assert created_body["session_state"] == "learning"
-    assert created_body["learning_stage"] == "concept_check"
+    assert created_body["learning_stage"] == "documentation_reading"
     assert created_body["exercise"] is None
     assert created_body["lesson_outline"]
     assert created_body["lesson_sources"]
-    assert created_body["initial_tool_calls"][0]["name"] == "show_concept_intro"
-    intro_args = created_body["initial_tool_calls"][0]["args"]
+    assert created_body["initial_tool_calls"] == []
+    assert "右侧" in created_body["initial_agent_message"]
+    assert "开始概念检验" in created_body["initial_agent_message"]
+
+    trigger = client.post(
+        f"/api/learning-sessions/{created_body['session_id']}/trigger-concept-check",
+        json={"user_id": user["id"]},
+    )
+    assert trigger.status_code == 200
+    trigger_body = trigger.json()
+    assert trigger_body["learning_stage"] == "concept_check"
+    assert trigger_body["tool_call"]["name"] == "show_concept_intro"
+    intro_args = trigger_body["tool_call"]["args"]
     assert intro_args["summary"]
     assert len(intro_args["check"]["options"]) == 3
-    assert "值、变量与类型" in created_body["initial_agent_message"]
-    assert "练习" not in created_body["initial_agent_message"]
+
+    second_trigger = client.post(
+        f"/api/learning-sessions/{created_body['session_id']}/trigger-concept-check",
+        json={"user_id": user["id"]},
+    )
+    assert second_trigger.status_code == 200
+    assert second_trigger.json()["tool_call"]["args"] == intro_args
 
     reused = client.post(
         "/api/learning-sessions/start",
@@ -238,7 +254,132 @@ def test_start_learning_session_creates_and_reuses_active_session(client: TestCl
             (created_body["session_id"],),
         ).fetchone()
     assert message_count is not None
-    assert message_count["count"] == 1
+    assert message_count["count"] == 2
+
+
+def test_trigger_concept_check_uses_recent_user_questions(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_concept_intro(*args, **kwargs) -> dict[str, object]:  # type: ignore[no-untyped-def]
+        del args
+        captured["learner_questions"] = kwargs.get("learner_questions")
+        return {
+            "summary": "概念检验会围绕刚才的提问生成。",
+            "example": {
+                "title": "引用后的卡点",
+                "body": "用户引用文档后，题目优先检查这段理解。",
+                "takeaway": "概念题应覆盖刚才问过的薄弱点。",
+            },
+            "check": {
+                "type": "single_choice",
+                "question": "刚才的引用最适合检查哪类理解？",
+                "options": [
+                    {"id": "A", "text": "用户刚才问过或引用过的卡点。"},
+                    {"id": "B", "text": "完全无关的新主题。"},
+                ],
+                "expected_focus": "recent learner questions",
+            },
+        }
+
+    monkeypatch.setattr(session_repository, "build_sdk_concept_intro", fake_concept_intro)
+
+    user, plan = _confirmed_plan(client, language="javascript")
+    knowledge_point_id = plan["knowledge_points"][0]["id"]
+    start = client.post(
+        "/api/learning-sessions/start",
+        json={
+            "user_id": user["id"],
+            "plan_id": plan["LearningPlan"]["id"],
+            "knowledge_point_id": knowledge_point_id,
+        },
+    )
+    assert start.status_code == 201
+    session_id = start.json()["session_id"]
+
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO learning_messages (session_id, knowledge_point_id, role, content, created_at)
+            VALUES
+              (%s, %s, 'user', %s, now() - interval '2 seconds'),
+              (%s, %s, 'agent', %s, now() - interval '1 second'),
+              (%s, %s, 'user', %s, now())
+            """,
+            (
+                session_id,
+                knowledge_point_id,
+                "引用文档：状态变量为什么要放在回调外？",
+                session_id,
+                knowledge_point_id,
+                "这是关于跨点击共享状态的问题。",
+                session_id,
+                knowledge_point_id,
+                "如果 count 写在回调里会发生什么？",
+            ),
+        )
+        conn.execute("UPDATE learning_sessions SET learning_stage = 'concept_qna' WHERE id = %s", (session_id,))
+        conn.commit()
+
+    trigger = client.post(
+        f"/api/learning-sessions/{session_id}/trigger-concept-check",
+        json={"user_id": user["id"]},
+    )
+
+    assert trigger.status_code == 200
+    assert captured["learner_questions"] == [
+        "引用文档：状态变量为什么要放在回调外？",
+        "如果 count 写在回调里会发生什么？",
+    ]
+
+
+def test_trigger_concept_check_rejects_later_stage_without_resetting_session(client: TestClient) -> None:
+    user, plan = _confirmed_plan(client, language="javascript")
+    knowledge_point_id = plan["knowledge_points"][0]["id"]
+    start = client.post(
+        "/api/learning-sessions/start",
+        json={
+            "user_id": user["id"],
+            "plan_id": plan["LearningPlan"]["id"],
+            "knowledge_point_id": knowledge_point_id,
+        },
+    )
+    assert start.status_code == 201
+    session_id = start.json()["session_id"]
+
+    with connect() as conn:
+        conn.execute(
+            """
+            UPDATE learning_sessions
+            SET learning_stage = 'practice_support',
+                learning_stage_state_json = %s::jsonb
+            WHERE id = %s
+            """,
+            (json.dumps({"learning_incomplete": False, "practice_unlock_reason": "concept_check_passed"}), session_id),
+        )
+        conn.commit()
+
+    trigger = client.post(
+        f"/api/learning-sessions/{session_id}/trigger-concept-check",
+        json={"user_id": user["id"]},
+    )
+    assert trigger.status_code == 409
+    assert trigger.json()["error"]["code"] == "SESSION_CONFLICT"
+
+    with connect() as conn:
+        stored = conn.execute(
+            """
+            SELECT learning_stage, learning_stage_state_json
+            FROM learning_sessions
+            WHERE id = %s
+            """,
+            (session_id,),
+        ).fetchone()
+    assert stored is not None
+    assert stored["learning_stage"] == "practice_support"
+    assert stored["learning_stage_state_json"]["practice_unlock_reason"] == "concept_check_passed"
 
 
 def test_learning_intro_answer_is_judged_and_enters_practice_offer(client: TestClient) -> None:
@@ -361,7 +502,7 @@ def test_start_learning_session_keeps_distinct_knowledge_points_separate(client:
     assert session_count["count"] == 2
 
 
-def test_start_learning_session_invalid_intro_returns_concept_intro_generation_failed(
+def test_trigger_concept_check_invalid_intro_returns_concept_intro_generation_failed(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -378,8 +519,15 @@ def test_start_learning_session_invalid_intro_returns_concept_intro_generation_f
         },
     )
 
-    assert response.status_code == 503
-    assert response.json()["error"]["code"] == "CONCEPT_INTRO_GENERATION_FAILED"
+    assert response.status_code == 201
+    session_id = response.json()["session_id"]
+    trigger = client.post(
+        f"/api/learning-sessions/{session_id}/trigger-concept-check",
+        json={"user_id": user["id"]},
+    )
+
+    assert trigger.status_code == 503
+    assert trigger.json()["error"]["code"] == "CONCEPT_INTRO_GENERATION_FAILED"
     with connect() as conn:
         session_count = conn.execute(
             """
@@ -390,7 +538,7 @@ def test_start_learning_session_invalid_intro_returns_concept_intro_generation_f
             (user["id"], plan["LearningPlan"]["id"], knowledge_point_id),
         ).fetchone()
     assert session_count is not None
-    assert session_count["count"] == 0
+    assert session_count["count"] == 1
 
 
 def test_learning_concept_stage_unlocks_practice_early_with_incomplete_notice(client: TestClient) -> None:
@@ -2179,6 +2327,11 @@ def test_learning_message_sse_streams_agent_message_and_done(client: TestClient)
         },
     )
     session = start_response.json()
+    trigger_response = client.post(
+        f"/api/learning-sessions/{session['session_id']}/trigger-concept-check",
+        json={"user_id": user["id"]},
+    )
+    assert trigger_response.status_code == 200
 
     with client.stream(
         "POST",
@@ -3748,6 +3901,85 @@ def test_cpp_is_not_a_public_route_language(client: TestClient) -> None:
     assert response.json()["items"] == []
 
 
+def test_knowledge_point_documentation_returns_sections_and_enforces_user_boundary(client: TestClient) -> None:
+    user, plan = _confirmed_plan(client, language="javascript")
+    knowledge_point_id = plan["knowledge_points"][0]["id"]
+
+    response = client.get(
+        f"/api/learning-sessions/knowledge-points/{knowledge_point_id}/documentation?user_id={user['id']}"
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["knowledge_point_id"] == knowledge_point_id
+    assert body["title"] == plan["knowledge_points"][0]["title"]
+    assert body["cache_hit"] is False
+    assert [section["id"] for section in body["sections"]] == [
+        "core_concept",
+        "syntax",
+        "examples",
+        "common_mistakes",
+        "best_practices",
+    ]
+    assert body["sections"][1]["code_blocks"][0]["language"] == "javascript"
+
+    serialized = json.dumps(body, ensure_ascii=False)
+    assert "solution_reference" not in serialized
+    assert "provider_payload" not in serialized
+    assert "hidden_tests" not in serialized
+
+    other_user = _create_user(client)
+    cross_user = client.get(
+        f"/api/learning-sessions/knowledge-points/{knowledge_point_id}/documentation?user_id={other_user['id']}"
+    )
+    assert cross_user.status_code == 404
+    assert cross_user.json()["error"]["code"] == "KNOWLEDGE_POINT_NOT_FOUND"
+
+
+def test_knowledge_point_documentation_uses_user_scoped_redis_cache(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store: dict[str, str] = {}
+    expirations: dict[str, int] = {}
+
+    class FakeRedis:
+        @classmethod
+        def from_url(cls, *args, **kwargs):  # type: ignore[no-untyped-def]
+            del args, kwargs
+            return cls()
+
+        def get(self, key: str) -> str | None:
+            return store.get(key)
+
+        def setex(self, key: str, ttl: int, value: str) -> None:
+            expirations[key] = ttl
+            store[key] = value
+
+    monkeypatch.setattr(session_repository, "Redis", FakeRedis)
+
+    user, plan = _confirmed_plan(client, language="javascript")
+    knowledge_point_id = plan["knowledge_points"][0]["id"]
+
+    first = client.get(
+        f"/api/learning-sessions/knowledge-points/{knowledge_point_id}/documentation?user_id={user['id']}"
+    )
+    assert first.status_code == 200
+    assert first.json()["cache_hit"] is False
+
+    second = client.get(
+        f"/api/learning-sessions/knowledge-points/{knowledge_point_id}/documentation?user_id={user['id']}"
+    )
+    assert second.status_code == 200
+    assert second.json()["cache_hit"] is True
+    assert second.json()["sections"] == first.json()["sections"]
+
+    assert len(store) == 1
+    cache_key = next(iter(store))
+    assert user["id"] in cache_key
+    assert knowledge_point_id in cache_key
+    assert expirations[cache_key] == 24 * 60 * 60
+
+
 def _start_session(
     client: TestClient,
     user: dict[str, object],
@@ -3764,6 +3996,17 @@ def _start_session(
     assert response.status_code in {200, 201}
     session = response.json()
     assert isinstance(session, dict)
+    if session["learning_stage"] == "documentation_reading":
+        trigger = client.post(
+            f"/api/learning-sessions/{session['session_id']}/trigger-concept-check",
+            json={"user_id": user["id"]},
+        )
+        assert trigger.status_code == 200
+        trigger_body = trigger.json()
+        session["learning_stage"] = trigger_body["learning_stage"]
+        session["learning_stage_state"] = trigger_body["learning_stage_state"]
+        session["initial_agent_message"] = trigger_body["agent_message"]
+        session["initial_tool_calls"] = [trigger_body["tool_call"]]
     return session
 
 

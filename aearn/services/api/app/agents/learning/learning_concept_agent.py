@@ -183,6 +183,7 @@ def build_sdk_concept_intro(
     knowledge_point: Mapping[str, object],
     lesson_outline: Sequence[Mapping[str, object]],
     lesson_sources: Sequence[Mapping[str, object]],
+    learner_questions: Sequence[str] | None = None,
     settings: Settings | None = None,
     client: ConceptClient | None = None,
 ) -> dict[str, object] | None:
@@ -193,6 +194,7 @@ def build_sdk_concept_intro(
         knowledge_point=knowledge_point,
         lesson_outline=lesson_outline,
         lesson_sources=lesson_sources,
+        learner_questions=learner_questions or [],
     )
     try:
         result = resolved_client.complete_json(messages, temperature=0.2)
@@ -259,12 +261,14 @@ def _build_intro_messages(
     knowledge_point: Mapping[str, object],
     lesson_outline: Sequence[Mapping[str, object]],
     lesson_sources: Sequence[Mapping[str, object]],
+    learner_questions: Sequence[str],
 ) -> list[dict[str, str]]:
     evidence = {
         "task": "generate_concept_intro",
         "knowledge_point": _knowledge_point_evidence(knowledge_point),
         "lesson_outline": [_outline_item(item) for item in lesson_outline[:6]],
         "lesson_sources": [_source_item(item) for item in lesson_sources[:4]],
+        "learner_questions": [limit_text(item, 240) for item in learner_questions[:6] if item.strip()],
         "output_schema": {
             "summary": "1-2 sentence concept summary",
             "example": {
@@ -281,7 +285,7 @@ def _build_intro_messages(
         },
     }
     return _json_messages(
-        "你是 Aearn 的概念开场卡生成器。只输出 JSON，不要 Markdown。必须生成简短概念摘要、一个低门槛例子和一个 2-4 选项的单选判断题。不得暴露完整练习答案、hidden tests、solution_reference、raw prompt、provider errors 或密钥。",
+        "你是 Aearn 的概念开场卡生成器。只输出 JSON，不要 Markdown。必须生成简短概念摘要、一个低门槛例子和一个 2-4 选项的单选判断题。如 learner_questions 不为空，判断题要优先覆盖学习者刚才问过或引用过的卡点。不得暴露完整练习答案、hidden tests、solution_reference、raw prompt、provider errors 或密钥。",
         evidence,
     )
 

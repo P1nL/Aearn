@@ -268,6 +268,12 @@ export type CreatedModule = {
   estimated_sessions: number;
 };
 
+export type CreatedKnowledgePointReviewStatePreview = {
+  due_at: string | null;
+  is_due: boolean;
+  label: string;
+};
+
 export type CreatedKnowledgePoint = {
   id: string;
   module_id: string;
@@ -278,6 +284,7 @@ export type CreatedKnowledgePoint = {
   skill_tags_json: string[];
   status: "pending" | "learning" | "reviewing" | "mastered";
   mastery_score: number;
+  review_state?: CreatedKnowledgePointReviewStatePreview;
 };
 
 export type CreatedPlanResponse = {
@@ -410,6 +417,7 @@ export type LearningExercise = {
 };
 
 export type LearningStage =
+  | "documentation_reading"
   | "concept_intro"
   | "concept_check"
   | "concept_repair"
@@ -478,6 +486,43 @@ export type LearningSessionResponse = {
   initial_agent_message: string;
   initial_tool_calls: LearningSessionInitialToolCall[];
   session_state: "learning";
+};
+
+export type DocumentationCodeBlock = {
+  language: string;
+  code: string;
+  caption: string;
+};
+
+export type DocumentationSection = {
+  id: "core_concept" | "syntax" | "examples" | "common_mistakes" | "best_practices" | string;
+  type: string;
+  title: string;
+  content_markdown: string;
+  code_blocks: DocumentationCodeBlock[];
+};
+
+export type DocumentationReference = {
+  title: string;
+  url: string;
+};
+
+export type KnowledgePointDocumentationResponse = {
+  knowledge_point_id: string;
+  title: string;
+  summary: string;
+  sections: DocumentationSection[];
+  references: DocumentationReference[];
+  generated_at: string;
+  cache_hit: boolean;
+};
+
+export type TriggerConceptCheckResponse = {
+  session_id: string;
+  learning_stage: "concept_check";
+  learning_stage_state: LearningStageState;
+  agent_message: string;
+  tool_call: LearningSessionInitialToolCall;
 };
 
 export type LearningHistoryResponse = {

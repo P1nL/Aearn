@@ -626,6 +626,74 @@ response = build_sdk_hint_response(...) or build_hint_response(...)
 
 The SDK layer only proposes validated coaching output; repository code still owns `MODEL_UNAVAILABLE` mapping, writes, and idempotency storage.
 
+## Scenario: Learning Documentation Reading Flow
+
+### 1. Scope / Trigger
+
+- Trigger: implementing or changing the pre-concept-check documentation reading stage, knowledge-point documentation endpoint, concept-check trigger endpoint, or plan-detail review preview fields.
+- Scope: `routes/learning_sessions.py`, `models/learning_sessions.py`, `learning_session_repository.py`, `plan_repository.py`, `learning_concept_agent.py`, learning graph/router/tool transitions, `schema.sql`, and M2/M3/M4 API tests.
+
+### 2. Signatures
+
+- API: `GET /api/learning-sessions/knowledge-points/{knowledge_point_id}/documentation?user_id=...`.
+- API: `POST /api/learning-sessions/{session_id}/trigger-concept-check` with `{ "user_id": string }`.
+- API extension: `GET /api/plans/{plan_id}` knowledge points may include `review_state: { due_at, is_due, label }`.
+- DB: `learning_sessions.learning_stage` includes `documentation_reading` when new sessions start in document-reading mode.
+- Cache: Redis documentation cache keys must include both `user_id` and `knowledge_point_id`, with a 24 hour TTL.
+
+### 3. Contracts
+
+- Starting a new learning session in `documentation_reading` must not persist or return an initial `show_concept_intro` tool call.
+- Documentation payloads are structured JSON with stable section ids, titles, markdown content, code blocks, references, `generated_at`, and `cache_hit`.
+- Documentation generation may use persisted outline/source/chunk data and may best-effort cache the result, but Redis unavailability must not block the learning flow.
+- `trigger-concept-check` must validate session ownership, accept first trigger from `documentation_reading` or `concept_qna`, and move the session to `concept_check`.
+- Trigger replay is idempotent only when the session is already in `concept_check` with an active concept intro; later stages must return `SESSION_CONFLICT` instead of resetting progress.
+- Concept intro generation may include recent learner questions from the same session, bounded and sanitized, as `learner_questions`.
+- `review_state.is_due` is computed by the backend. The frontend must not infer due status from `knowledge_points.status`.
+
+### 4. Validation & Error Matrix
+
+- Unknown user or knowledge point -> documented not-found family without leaking other users' data.
+- Session belongs to another user -> `SESSION_NOT_FOUND`.
+- Trigger from `practice_support`, submitted, or another later stage -> `SESSION_CONFLICT` with 409.
+- Redis get/set failure -> continue without cache and return a fresh payload with `cache_hit=false`.
+- Missing `due_at` for a reviewing/mastered point -> return no `review_state` or a non-due preview; never mark it due optimistically.
+
+### 5. Good/Base/Bad Cases
+
+- Good: start session returns a documentation-reading guide message, documentation endpoint returns five learner-safe sections, and trigger returns one `show_concept_intro`.
+- Good: a previously triggered concept check can replay the same active concept intro without duplicate stage reset.
+- Base: Redis is down; documentation still returns from persisted lesson content and tests remain offline.
+- Bad: starting a learning session still auto-sends `show_concept_intro`, trigger resets a practice-stage session, or cache keys omit `user_id`.
+
+### 6. Tests Required
+
+- API-test new session start with `learning_stage=documentation_reading` and no initial concept tool call.
+- API-test documentation success, ownership failure, learner-safe payload shape, and Redis cache hit/miss behavior with fake cache clients.
+- API-test `trigger-concept-check` first trigger, concept-check replay, later-stage conflict, and learner-question input to concept generation.
+- API-test plan detail review preview for due, future due, and missing review state.
+- Run bootstrap-heavy M2/M3/M4 pytest batches sequentially, not in parallel.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+cache_key = f"kp-doc:{knowledge_point_id}"
+session["learning_stage"] = "concept_check"
+```
+
+This can leak user-specific documentation cache content and skips the required reading stage.
+
+#### Correct
+
+```python
+cache_key = f"kp-doc:{user_id}:{knowledge_point_id}"
+session["learning_stage"] = "documentation_reading"
+```
+
+The cache boundary is user-scoped and concept checks are created only after the explicit trigger.
+
 ## Scenario: Learning Session Message Streaming Conversation
 
 ### 1. Scope / Trigger

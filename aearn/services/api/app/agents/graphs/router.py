@@ -8,7 +8,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 
 
-TEACHING_STAGES = {"concept_intro", "concept_qna", "readiness_check"}
+TEACHING_STAGES = {"documentation_reading", "concept_intro", "concept_qna", "readiness_check"}
 DIAGNOSIS_STAGES = {"concept_check", "concept_repair"}
 PRACTICE_STAGES = {"practice_support"}
 

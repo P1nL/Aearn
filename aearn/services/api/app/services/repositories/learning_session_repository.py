@@ -3,9 +3,12 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime
 from decimal import Decimal
+from typing import cast
 
 from psycopg import Connection
+from redis import Redis
 
 from app.agents.learning.exercise_coach_agent import (
     attach_explanation_check_judgement,
@@ -14,6 +17,7 @@ from app.agents.learning.exercise_coach_agent import (
     build_sdk_hint_response,
 )
 from app.agents.learning.learning_concept_agent import build_sdk_concept_intro
+from app.core.config import get_settings
 from app.services.exercises.evaluation import (
     build_code_completion_result,
 )
@@ -27,7 +31,11 @@ from app.services.repositories.learner_profile import merge_stable_profile_signa
 from app.services.repositories.plan_repository import IdempotencyConflictError, request_hash
 from app.services.repositories.review_scheduler import apply_attempt_review_update
 from app.services.runners.runtime_runner import RuntimeExecutionResult, run_exercise
-from app.services.curriculum.teaching_chunks import ensure_current_knowledge_point_chunks, index_current_knowledge_point_chunks
+from app.services.curriculum.teaching_chunks import (
+    ensure_current_knowledge_point_chunks,
+    index_current_knowledge_point_chunks,
+    search_chunks,
+)
 from app.services.repositories.user_repository import get_user
 
 
@@ -52,6 +60,42 @@ class ConceptIntroGenerationError(RuntimeError):
 
 class EvaluationConflictError(ValueError):
     pass
+
+
+DOCUMENTATION_CACHE_TTL_SECONDS = 24 * 60 * 60
+DOCUMENTATION_CACHE_VERSION = "v1"
+
+
+def get_knowledge_point_documentation(
+    conn: Connection[dict[str, object]],
+    *,
+    user_id: str,
+    knowledge_point_id: str,
+) -> dict[str, object]:
+    context = _load_learning_documentation_context(conn, user_id=user_id, knowledge_point_id=knowledge_point_id)
+    context = _ensure_lesson_content(conn, context)
+    cached = _load_documentation_cache(user_id=user_id, knowledge_point_id=knowledge_point_id)
+    if cached is not None:
+        return cached
+    ensure_current_knowledge_point_chunks(conn, knowledge_point_id)
+    chunks = search_chunks(
+        conn,
+        knowledge_point_id,
+        f"{context['title']} {context.get('description') or ''}",
+        top_k=3,
+    )
+    sections = _documentation_sections(context, chunks)
+    response = {
+        "knowledge_point_id": str(context["id"]),
+        "title": str(context["title"]),
+        "summary": _documentation_summary(context),
+        "sections": sections,
+        "references": _documentation_references(context),
+        "generated_at": datetime.now(UTC).isoformat(),
+        "cache_hit": False,
+    }
+    _store_documentation_cache(user_id=user_id, knowledge_point_id=knowledge_point_id, response=response)
+    return response
 
 
 def start_learning_session(
@@ -84,21 +128,13 @@ def start_learning_session(
         (user_id, plan_id, knowledge_point_id),
     ).fetchone()
     if session is None:
-        intro_payload = build_sdk_concept_intro(
-            knowledge_point=_knowledge_point_evidence(context),
-            lesson_outline=_lesson_outline(context),
-            lesson_sources=_lesson_sources(context),
-        )
-        if intro_payload is None:
-            raise ConceptIntroGenerationError("concept intro generation failed")
-
         session = conn.execute(
             """
             INSERT INTO learning_sessions (
               user_id, plan_id, session_type, status, entry_point, next_entry_point, request_id,
               learning_stage, learning_stage_state_json
             )
-            VALUES (%s, %s, 'learn', 'active', %s, %s, %s, 'concept_check', %s::jsonb)
+            VALUES (%s, %s, 'learn', 'active', %s, %s, %s, 'documentation_reading', %s::jsonb)
             RETURNING *
             """,
             (
@@ -112,23 +148,8 @@ def start_learning_session(
         ).fetchone()
         if session is None:
             raise RuntimeError("learning session insert returned no row")
-        intro_args = _concept_intro_tool_args(
-            session_id=str(session["id"]),
-            knowledge_point_id=knowledge_point_id,
-            intro_payload=intro_payload,
-        )
-        stage_state = _initial_learning_stage_state(context, active_concept_intro=intro_args)
-        conn.execute(
-            """
-            UPDATE learning_sessions
-            SET learning_stage_state_json = %s::jsonb
-            WHERE id = %s
-            """,
-            (json.dumps(stage_state), session["id"]),
-        )
-        session = dict(session) | {"learning_stage_state_json": stage_state}
-        initial_message = _initial_concept_intro_message(context)
-        initial_tool_calls = [_tool_call("show_concept_intro", intro_args, f"{session['id']}:initial")]
+        initial_message = _initial_agent_message(context)
+        initial_tool_calls: list[dict[str, object]] = []
         conn.execute(
             """
             INSERT INTO learning_messages (session_id, knowledge_point_id, role, content, metadata)
@@ -138,7 +159,7 @@ def start_learning_session(
                 session["id"],
                 knowledge_point_id,
                 initial_message,
-                json.dumps({"tool_calls": initial_tool_calls}),
+                json.dumps({"tool_calls": []}),
             ),
         )
     else:
@@ -154,6 +175,17 @@ def start_learning_session(
             if initial_record is not None
             else []
         )
+        stage_state = _stage_state(session.get("learning_stage_state_json"), context)
+        active_concept_intro = stage_state.get("active_concept_intro")
+        if (
+            str(session.get("learning_stage")) in {"concept_check", "concept_repair", "practice_offer"}
+            and isinstance(active_concept_intro, Mapping)
+            and not initial_tool_calls
+        ):
+            initial_message = _initial_concept_intro_message(context)
+            initial_tool_calls = [
+                _tool_call("show_concept_intro", active_concept_intro, f"{session['id']}:concept-check")
+            ]
         if session.get("learning_stage") is None:
             legacy_state = {
                 "covered_subpoint_ids": _lesson_subpoint_ids(context),
@@ -229,6 +261,169 @@ def start_learning_session(
         "session_state": "learning",
     }
     return response, reused
+
+
+def trigger_learning_session_concept_check(
+    conn: Connection[dict[str, object]],
+    *,
+    session_id: str,
+    user_id: str,
+) -> dict[str, object]:
+    session = _load_session(conn, session_id, user_id=user_id, allowed_session_types={"learn"})
+    context = _load_learning_context(
+        conn,
+        user_id=user_id,
+        plan_id=str(session["plan_id"]),
+        knowledge_point_id=str(session["entry_point"]),
+    )
+    context = _ensure_lesson_content(conn, context)
+    state = _stage_state(session.get("learning_stage_state_json"), context)
+    learning_stage = str(session.get("learning_stage") or "")
+    active_concept_intro = state.get("active_concept_intro")
+    if learning_stage == "concept_check" and isinstance(active_concept_intro, Mapping):
+        intro_args = dict(active_concept_intro)
+    elif learning_stage in {"documentation_reading", "concept_qna"}:
+        learner_questions = _recent_learner_questions(conn, session_id=session_id)
+        intro_payload = build_sdk_concept_intro(
+            knowledge_point=_knowledge_point_evidence(context),
+            lesson_outline=_lesson_outline(context),
+            lesson_sources=_lesson_sources(context),
+            learner_questions=learner_questions,
+        )
+        if intro_payload is None:
+            raise ConceptIntroGenerationError("concept intro generation failed")
+        intro_args = _concept_intro_tool_args(
+            session_id=session_id,
+            knowledge_point_id=str(session["entry_point"]),
+            intro_payload=intro_payload,
+        )
+        active_concept_check = intro_args.get("check")
+        state.update(
+            {
+                "active_concept_intro": dict(intro_args),
+                "active_concept_check": (
+                    dict(active_concept_check) if isinstance(active_concept_check, Mapping) else None
+                ),
+                "concept_check_attempts": 0,
+                "concept_check_result": None,
+                "learning_incomplete": True,
+            }
+        )
+        conn.execute(
+            """
+            UPDATE learning_sessions
+            SET learning_stage = 'concept_check',
+                learning_stage_state_json = %s::jsonb
+            WHERE id = %s
+            """,
+            (json.dumps(state), session_id),
+        )
+        tool_call = _tool_call("show_concept_intro", intro_args, f"{session_id}:concept-check")
+        conn.execute(
+            """
+            INSERT INTO learning_messages (session_id, knowledge_point_id, role, content, metadata)
+            VALUES (%s, %s, 'agent', %s, %s::jsonb)
+            """,
+            (
+                session_id,
+                session["entry_point"],
+                _initial_concept_intro_message(context),
+                json.dumps({"tool_calls": [tool_call]}),
+            ),
+        )
+        return {
+            "session_id": session_id,
+            "learning_stage": "concept_check",
+            "learning_stage_state": state,
+            "agent_message": _initial_concept_intro_message(context),
+            "tool_call": tool_call,
+        }
+    else:
+        raise SessionStateConflictError(f"cannot trigger concept check from stage {learning_stage or 'unknown'}")
+
+    tool_call = _tool_call("show_concept_intro", intro_args, f"{session_id}:concept-check")
+    return {
+        "session_id": session_id,
+        "learning_stage": "concept_check",
+        "learning_stage_state": state,
+        "agent_message": _initial_concept_intro_message(context),
+        "tool_call": tool_call,
+    }
+
+
+def _recent_learner_questions(
+    conn: Connection[dict[str, object]],
+    *,
+    session_id: str,
+) -> list[str]:
+    rows = conn.execute(
+        """
+        SELECT content
+        FROM learning_messages
+        WHERE session_id = %s
+          AND role = 'user'
+        ORDER BY created_at DESC
+        LIMIT 6
+        """,
+        (session_id,),
+    ).fetchall()
+    return [str(row["content"])[:600] for row in reversed(rows) if str(row.get("content") or "").strip()]
+
+
+def _documentation_cache_key(*, user_id: str, knowledge_point_id: str) -> str:
+    return f"aearn:knowledge-doc:{DOCUMENTATION_CACHE_VERSION}:{user_id}:{knowledge_point_id}"
+
+
+def _load_documentation_cache(
+    *,
+    user_id: str,
+    knowledge_point_id: str,
+) -> dict[str, object] | None:
+    try:
+        client = Redis.from_url(
+            get_settings().redis_url,
+            decode_responses=True,
+            socket_connect_timeout=0.2,
+            socket_timeout=0.5,
+        )
+        raw = cast("str | None", client.get(_documentation_cache_key(user_id=user_id, knowledge_point_id=knowledge_point_id)))
+    except Exception:  # noqa: BLE001 - documentation cache is best-effort only
+        return None
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, Mapping):
+        return None
+    response = dict(payload)
+    response["cache_hit"] = True
+    return response
+
+
+def _store_documentation_cache(
+    *,
+    user_id: str,
+    knowledge_point_id: str,
+    response: Mapping[str, object],
+) -> None:
+    cache_payload = dict(response)
+    cache_payload["cache_hit"] = False
+    try:
+        client = Redis.from_url(
+            get_settings().redis_url,
+            decode_responses=True,
+            socket_connect_timeout=0.2,
+            socket_timeout=0.5,
+        )
+        client.setex(
+            _documentation_cache_key(user_id=user_id, knowledge_point_id=knowledge_point_id),
+            DOCUMENTATION_CACHE_TTL_SECONDS,
+            json.dumps(cache_payload, ensure_ascii=False),
+        )
+    except Exception:  # noqa: BLE001 - cache write failure must not block learning
+        return
 
 
 def unlock_learning_session_practice(
@@ -827,6 +1022,44 @@ def _load_learning_context(
     return context
 
 
+def _load_learning_documentation_context(
+    conn: Connection[dict[str, object]],
+    *,
+    user_id: str,
+    knowledge_point_id: str,
+) -> Mapping[str, object]:
+    if get_user(conn, user_id) is None:
+        raise EntityNotFoundError("USER_NOT_FOUND", "用户不存在")
+
+    context = conn.execute(
+        """
+        SELECT
+          knowledge_points.*,
+          learning_plans.user_id,
+          plan_modules.plan_id,
+          plan_modules.title AS module_title,
+          language_courses.title AS course_title,
+          runtime_profiles.language AS runtime_language,
+          runtime_profiles.runtime_tier
+        FROM knowledge_points
+        JOIN plan_modules ON plan_modules.id = knowledge_points.module_id
+        JOIN learning_plans ON learning_plans.id = plan_modules.plan_id
+        JOIN language_courses ON language_courses.id = knowledge_points.language_course_id
+        JOIN runtime_profiles ON runtime_profiles.id = language_courses.runtime_profile_id
+        WHERE knowledge_points.id = %s
+          AND learning_plans.user_id = %s
+          AND knowledge_points.deleted_at IS NULL
+          AND plan_modules.deleted_at IS NULL
+          AND learning_plans.deleted_at IS NULL
+        LIMIT 1
+        """,
+        (knowledge_point_id, user_id),
+    ).fetchone()
+    if context is None:
+        raise EntityNotFoundError("KNOWLEDGE_POINT_NOT_FOUND", "知识点不存在")
+    return context
+
+
 def _load_session(
     conn: Connection[dict[str, object]],
     session_id: str,
@@ -1050,24 +1283,182 @@ def _serialize_review_state(row: Mapping[str, object]) -> dict[str, object]:
     }
 
 
+def _documentation_summary(context: Mapping[str, object]) -> str:
+    description = str(context.get("description") or "").strip()
+    if description:
+        return description
+    outline = _lesson_outline(context)
+    if outline:
+        return "；".join(item["note"] for item in outline[:2] if item["note"])
+    return f"围绕 {context['title']} 的核心概念、语法、示例和常见错误。"
+
+
+def _documentation_sections(
+    context: Mapping[str, object],
+    chunks: Sequence[Mapping[str, object]],
+) -> list[dict[str, object]]:
+    language = str(context.get("runtime_language") or "text")
+    title = str(context["title"])
+    outline = _lesson_outline(context)
+    outline_text = _outline_markdown(outline)
+    chunk_text = _chunk_markdown(chunks)
+    syntax_example = _documentation_code_example(language, title)
+    mistake_example = _documentation_mistake_example(language)
+    return [
+        {
+            "id": "core_concept",
+            "type": "core_concept",
+            "title": "核心概念",
+            "content_markdown": (
+                f"{title} 的学习目标是先建立稳定心智模型，再进入代码验证。"
+                f"{_documentation_summary(context)}\n\n"
+                f"它位于「{context.get('module_title') or '当前模块'}」中，和本模块的其他知识点一起服务于"
+                "可解释、可验证的 AI 编程练习。阅读时先确认它解决什么问题，再观察它会改变程序的哪一段行为。"
+            ),
+            "code_blocks": [],
+        },
+        {
+            "id": "syntax",
+            "type": "syntax",
+            "title": "语法结构",
+            "content_markdown": (
+                "先看最小结构，再看每个组成部分的职责。不要急着记完整代码，先分清输入、状态变化和输出。"
+                f"\n\n{outline_text}"
+            ),
+            "code_blocks": [syntax_example],
+        },
+        {
+            "id": "examples",
+            "type": "examples",
+            "title": "实战示例",
+            "content_markdown": (
+                "下面的示例用于把概念落到可观察行为。你可以先读注释，再尝试解释为什么输出会变化。"
+                f"\n\n{chunk_text}"
+            ),
+            "code_blocks": [syntax_example],
+        },
+        {
+            "id": "common_mistakes",
+            "type": "common_mistakes",
+            "title": "常见错误",
+            "content_markdown": (
+                "- 只记住写法，没有说明它控制的行为。\n"
+                "- 把一次性的示例当成通用规则，没有检查边界条件。\n"
+                "- 遇到 AI 生成代码时只看能否运行，没有追踪输入、状态和输出。\n"
+                "- 复述概念时跳过关键术语，导致后续练习无法定位错误。"
+            ),
+            "code_blocks": [mistake_example],
+        },
+        {
+            "id": "best_practices",
+            "type": "best_practices",
+            "title": "最佳实践",
+            "content_markdown": (
+                "- 用一句话说明这个知识点解决的问题。\n"
+                "- 给出一个最小示例，并指出输入、处理和输出。\n"
+                "- 在练习前先预测结果，再运行验证。\n"
+                "- 如果引用 AI 生成代码，必须能指出关键判断依据，而不是只接受最终答案。"
+            ),
+            "code_blocks": [],
+        },
+    ]
+
+
+def _documentation_references(context: Mapping[str, object]) -> list[dict[str, str]]:
+    references = [
+        {"title": source["title"] or "课程来源", "url": source["url"]}
+        for source in _lesson_sources(context)
+        if source["title"] or source["url"]
+    ]
+    if references:
+        return references
+    return [{"title": "当前本地课程提纲", "url": ""}]
+
+
+def _outline_markdown(outline: Sequence[Mapping[str, str]]) -> str:
+    if not outline:
+        return "- 当前知识点还没有更细的提纲，先围绕标题和描述建立最小理解。"
+    return "\n".join(f"- {item['title']}：{item['note']}" for item in outline if item.get("title") or item.get("note"))
+
+
+def _chunk_markdown(chunks: Sequence[Mapping[str, object]]) -> str:
+    if not chunks:
+        return "当前没有更多材料片段。先用上方语法结构完成一次最小解释。"
+    lines = []
+    for chunk in chunks:
+        title = str(chunk.get("title") or "材料片段")
+        content = str(chunk.get("content") or "").strip()
+        if content:
+            lines.append(f"- {title}：{content[:260]}")
+    return "\n".join(lines) if lines else "当前没有更多材料片段。先用上方语法结构完成一次最小解释。"
+
+
+def _documentation_code_example(language: str, title: str) -> dict[str, str]:
+    normalized = language.lower()
+    if normalized in {"javascript", "typescript"}:
+        return {
+            "language": normalized,
+            "code": (
+                "const input = \"观察输入\";\n"
+                f"const concept = \"{title}\";\n"
+                "console.log(`${concept}: ${input}`);"
+            ),
+            "caption": "把知识点绑定到一个可观察输出，方便验证理解。",
+        }
+    if normalized == "python":
+        return {
+            "language": "python",
+            "code": f"concept = \"{title}\"\nprint(f\"理解 {{concept}} 的输入、处理和输出\")",
+            "caption": "用最小输出先说明行为，再进入练习。",
+        }
+    if normalized == "sql":
+        return {
+            "language": "sql",
+            "code": "SELECT name\nFROM learning_items\nWHERE status = 'ready'\nORDER BY id;",
+            "caption": "先看 SELECT 如何表达读取目标、过滤条件和排序规则。",
+        }
+    if normalized == "html_css":
+        return {
+            "language": "html",
+            "code": "<section class=\"concept-card\">\n  <h2>核心概念</h2>\n  <p>用结构和样式表达含义。</p>\n</section>",
+            "caption": "先区分结构语义和视觉样式，再验证页面行为。",
+        }
+    return {
+        "language": normalized or "text",
+        "code": f"// {title}\n// 先写出输入、处理、输出，再补充具体语法。",
+        "caption": "通用阅读模板：先解释行为，再写具体代码。",
+    }
+
+
+def _documentation_mistake_example(language: str) -> dict[str, str]:
+    normalized = language.lower()
+    if normalized == "sql":
+        code = "-- 错误：只写查询但不说明过滤条件\nSELECT * FROM learning_items;\n\n-- 更好：明确需要的列和条件\nSELECT name FROM learning_items WHERE status = 'ready';"
+        return {"language": "sql", "code": code, "caption": "避免用过宽查询掩盖真实意图。"}
+    if normalized == "python":
+        code = "# 错误：只看结果，不说明中间状态\nresult = transform(value)\n\n# 更好：说明输入和转换规则\nprint(\"input\", value)\nprint(\"result\", transform(value))"
+        return {"language": "python", "code": code, "caption": "调试时先暴露输入和输出。"}
+    code = "// 错误：只看代码能否运行\nrunGeneratedCode();\n\n// 更好：先预测关键输出，再运行验证\nconst expected = \"可解释的结果\";\nconsole.log(expected);"
+    return {"language": normalized or "text", "code": code, "caption": "不要把运行成功等同于真正理解。"}
+
+
 def _initial_agent_message(context: Mapping[str, object]) -> str:
     title = str(context["title"])
     outline = _lesson_outline(context)
     sources = _lesson_sources(context)
     lines = [
-        f"今天先理解 {title}，先看它会改变哪段程序行为；现在不用写代码或做题。",
-        "你可以直接回复一个编号开始：",
-        "1. 先用 30 秒讲清它到底在控制什么。",
-        "2. 给我一个最小例子，只看行为变化。",
-        f"3. 我猜 {title} 会影响 ___，因为 ___。",
+        f"先阅读右侧「{title}」文档，再决定是否进入概念检验。",
+        "文档里包含核心概念、语法结构、实战示例、常见错误和最佳实践。",
+        "阅读过程中可以选中文字或代码块并点击「引用到对话」，我会围绕引用内容解释。",
+        "准备好后，点击下方「开始概念检验」，我会生成几道题检查你的理解。",
         "",
-        "我们会用这几个抓手来拆：",
+        "本节阅读抓手：",
     ]
     for item in outline:
         lines.append(f"- {item['title']}：{item['note']}")
     if sources:
         lines.append(f"提纲依据：{'; '.join(str(item['title']) for item in sources)}。")
-    lines.append("如果拿不准，回复 1；如果已经有想法，直接按第 3 句补空。")
+    lines.append("如果有不懂的句子，先引用文档再提问；不用急着做题。")
     return "\n".join(lines)
 
 

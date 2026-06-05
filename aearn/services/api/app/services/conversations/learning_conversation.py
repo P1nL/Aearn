@@ -1727,7 +1727,7 @@ def _determine_transition(
             learner_content=user_content,
         )
 
-    if stage in {"concept_intro", "concept_qna"}:
+    if stage in {"documentation_reading", "concept_intro", "concept_qna"}:
         state.update(
             {
                 "covered_subpoint_ids": _lesson_subpoint_ids(context),
@@ -1791,7 +1791,7 @@ def _prepare_stage_state(
         state["practice_unlock_reason"] = None
         state["learning_incomplete"] = True
 
-    elif new_stage in ("concept_intro", "concept_qna", "readiness_check"):
+    elif new_stage in ("documentation_reading", "concept_intro", "concept_qna", "readiness_check"):
         state["feynman_status"] = "pending"
         state["practice_unlock_reason"] = None
         state["learning_incomplete"] = True

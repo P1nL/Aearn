@@ -189,6 +189,72 @@ const submitDisabled =
 
 Submit follows the actual M3 contract instead of a single optimistic condition.
 
+## Scenario: Learning Documentation Panel and Concept Trigger
+
+### 1. Scope / Trigger
+
+- Trigger: implementing or changing the learning-page documentation panel, `documentation_reading` display flow, document-to-composer references, or concept-check trigger card.
+- Scope: `LearningWorkspacePage.tsx`, `DocumentationPanel.tsx`, `DocSection.tsx`, `ConceptCheckTrigger.tsx`, `AssistantUIThread.tsx`, `SidebarNav.tsx`, `api.ts`, `types.ts`, and `styles.css`.
+
+### 2. Signatures
+
+- `fetchKnowledgePointDocumentation(userId, knowledgePointId, signal?)` calls `GET /api/learning-sessions/knowledge-points/{knowledge_point_id}/documentation?user_id=...`.
+- `triggerLearningConceptCheck({ sessionId, userId })` calls `POST /api/learning-sessions/{session_id}/trigger-concept-check`.
+- `LearningStage` includes `documentation_reading`.
+- `CreatedKnowledgePoint.review_state` is optional and contains backend-computed `due_at`, `is_due`, and `label`.
+- Composer prefill must use the assistant-ui composer runtime, for example `useComposerRuntime().setText(...)`, not raw DOM value mutation.
+
+### 3. Contracts
+
+- A documentation-reading session shows the right-side document panel and an in-conversation concept-check trigger instead of auto-rendering the concept intro card.
+- The documentation panel owns loading/error/retry/collapsed state locally and must not block normal conversation rendering on a documentation fetch error.
+- Code-block and selected-text references prefill the composer with an editable quote template and must not auto-send the message.
+- The concept-check trigger is disabled until documentation is loaded and while the trigger request is pending.
+- Sidebar review entries are clickable only when `review_state.is_due === true`; future or unknown review states render as disabled preview rows.
+- Exercise resume cards are injected only before real conversation messages exist, so run/submit feedback remains below the exercise card.
+
+### 4. Validation & Error Matrix
+
+- Documentation loading -> visible panel skeleton and disabled concept trigger.
+- Documentation error -> panel-level error and retry without clearing the active learning session.
+- Trigger API error -> visible inline error on the trigger card; do not synthesize a concept tool call locally.
+- Future `review_state.due_at` -> disabled sidebar item with backend label and no route change.
+- Missing `review_state` on a reviewing/mastered point -> disabled sidebar item; never infer due status in TypeScript.
+- Composer runtime unavailable -> reference action should fail visibly or no-op safely; do not write brittle DOM selectors as the primary path.
+
+### 5. Good/Base/Bad Cases
+
+- Good: entering a knowledge point opens documentation, references code into the composer, then clicking the trigger renders the backend `show_concept_intro` tool call.
+- Good: collapsing the documentation panel frees layout space while keeping a clear reopen affordance.
+- Base: documentation fetch fails; the learner can still ask in the normal composer and retry the panel.
+- Bad: `document.querySelector("textarea").value = ...`, local due-date computation, or an enabled future review item that navigates to an empty review queue.
+
+### 6. Tests Required
+
+- Run `pnpm --dir .\aearn desktop:check`.
+- Browser smoke the learning page at the current local target when practical: document panel visible, disabled future review item, reference prefill, trigger concept check, collapse/reopen.
+- Backend M3 tests must pass for `LearningStage` and trigger payload shape; M2/M4 tests must pass for plan-detail review state and review not-due behavior.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```tsx
+textarea.value = referenceText;
+knowledgePoint.status === "reviewing" && onRouteChange("review");
+```
+
+This bypasses assistant-ui state and makes future review items look startable.
+
+#### Correct
+
+```tsx
+composer.setText(referenceText);
+if (knowledgePoint.review_state?.is_due) onRouteChange("review");
+```
+
+Composer state stays controlled by assistant-ui and review navigation follows the backend-computed due flag.
+
 ## Scenario: Active Learning Composer SSE Assistant Bubble
 
 ### 1. Scope / Trigger

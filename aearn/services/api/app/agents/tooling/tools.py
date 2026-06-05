@@ -12,6 +12,7 @@ from app.agents.graphs.graph_runtime_contracts import GraphIntent, IntentType, m
 
 
 ALLOWED_TRANSITIONS: dict[str, list[str]] = {
+    "documentation_reading": ["concept_qna", "readiness_check", "concept_check"],
     "concept_intro": ["concept_qna", "readiness_check", "concept_check"],
     "concept_qna": ["concept_intro", "readiness_check", "concept_check"],
     "readiness_check": ["concept_check", "practice_support", "concept_qna"],

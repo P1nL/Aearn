@@ -351,6 +351,93 @@ def test_confirm_plan_persists_review_states_and_is_idempotent(client: TestClien
     assert review_count["count"] == len(body["knowledge_points"])
 
 
+def test_plan_detail_exposes_review_due_preview_consistent_with_today_queue(client: TestClient) -> None:
+    user = _create_user(client)
+    course = _course_by_language(client, "javascript")
+    draft_response = client.post(
+        "/api/plans/generate",
+        json={
+            "user_id": user["id"],
+            "mode": "goal_based",
+            "goal_text": "Review due preview for the sidebar.",
+            "course_id": course["id"],
+        },
+    )
+    assert draft_response.status_code == 200
+    draft = draft_response.json()["plan_draft"]
+
+    confirm = client.post("/api/plans", json={"user_id": user["id"], "plan_draft": draft})
+    assert confirm.status_code == 201
+    body = confirm.json()
+    plan_id = body["LearningPlan"]["id"]
+    knowledge_point_id = body["knowledge_points"][0]["id"]
+
+    with connect() as conn:
+        conn.execute(
+            """
+            UPDATE review_states
+            SET due_at = now() + interval '1 day'
+            WHERE knowledge_point_id = %s
+            """,
+            (knowledge_point_id,),
+        )
+        conn.execute(
+            "UPDATE knowledge_points SET status = 'reviewing' WHERE id = %s",
+            (knowledge_point_id,),
+        )
+        conn.commit()
+
+    future_detail = client.get(f"/api/plans/{plan_id}?user_id={user['id']}")
+    assert future_detail.status_code == 200
+    future_kp = future_detail.json()["knowledge_points"][0]
+    assert future_kp["review_state"]["due_at"] is not None
+    assert future_kp["review_state"]["is_due"] is False
+    assert future_kp["review_state"]["label"].startswith("未到期 · 下次 ")
+
+    future_reviews = client.get(f"/api/reviews/today?user_id={user['id']}")
+    assert future_reviews.status_code == 200
+    assert all(item["KnowledgePoint"]["id"] != knowledge_point_id for item in future_reviews.json()["items"])
+
+    with connect() as conn:
+        conn.execute(
+            """
+            UPDATE review_states
+            SET suspended_at = now()
+            WHERE knowledge_point_id = %s
+            """,
+            (knowledge_point_id,),
+        )
+        conn.commit()
+
+    suspended_detail = client.get(f"/api/plans/{plan_id}?user_id={user['id']}")
+    assert suspended_detail.status_code == 200
+    suspended_kp = suspended_detail.json()["knowledge_points"][0]
+    assert suspended_kp["review_state"]["is_due"] is False
+    assert suspended_kp["review_state"]["label"] == "已安排，当前不可复习"
+
+    with connect() as conn:
+        conn.execute(
+            """
+            UPDATE review_states
+            SET due_at = now() - interval '5 minutes',
+                suspended_at = NULL
+            WHERE knowledge_point_id = %s
+            """,
+            (knowledge_point_id,),
+        )
+        conn.commit()
+
+    due_detail = client.get(f"/api/plans/{plan_id}?user_id={user['id']}")
+    assert due_detail.status_code == 200
+    due_kp = due_detail.json()["knowledge_points"][0]
+    assert due_kp["review_state"]["is_due"] is True
+    assert due_kp["review_state"]["label"] == "已到期"
+
+    due_reviews = client.get(f"/api/reviews/today?user_id={user['id']}")
+    assert due_reviews.status_code == 200
+    assert any(item["KnowledgePoint"]["id"] == knowledge_point_id for item in due_reviews.json()["items"])
+
+
 def test_confirm_plan_invalid_draft_and_idempotency_conflict(client: TestClient) -> None:
     user = _create_user(client)
     course = _course_by_language(client, "javascript")
