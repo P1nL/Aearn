@@ -180,7 +180,7 @@ LLM_TYPE=deepseek
 DEEPSEEK_API_KEY=<your-deepseek-api-key>
 DEEPSEEK_BASE_URL=https://api.deepseek.com
 DEEPSEEK_MODEL=deepseek-v4-flash
-LLM_TIMEOUT_SECONDS=20
+LLM_TIMEOUT_SECONDS=60
 ```
 
 配置说明：
@@ -188,6 +188,7 @@ LLM_TIMEOUT_SECONDS=20
 - `DEEPSEEK_BASE_URL` 应填写官方 API root。后端会把 `https://api.deepseek.com`、`https://api.deepseek.com/v1` 或误填的 `/chat/completions` endpoint 归一到 `POST /chat/completions`。
 - Direct JSON client 会发送 Chat Completions `messages`，并使用 `response_format={"type":"json_object"}` 约束 JSON 输出。
 - Direct streaming client 会发送 `stream=true`，解析 `choices[].delta.content`，并把 `[DONE]` 作为终止帧处理。
+- 动态学习路线生成会对 JSON completion 设置 `max_tokens=6000`，并保证该路径至少使用 60 秒超时；普通短 JSON/流式调用仍可按 `LLM_TIMEOUT_SECONDS` 控制。
 - 真实 key 只写入本机 `aearn/.env`，不要提交到 Git。
 - 未配置、配置不完整、模型超时、返回非法 JSON 或 schema 校验失败时，模型驱动接口返回 `MODEL_UNAVAILABLE`，不回退到确定性错因解释。
 - 调用 `explain-error` 成功后可通过响应里的 `generation_source=llm` 验证模型链路；失败时看错误信封里的 `error.code=MODEL_UNAVAILABLE`。

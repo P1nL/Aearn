@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 
 ADAPTIVE_TEMPLATE_GENERATOR_VERSION = "adaptive_template_v2"
-ADAPTIVE_TEMPLATE_PROMPT_VERSION = "adaptive_template_prompt_v2"
+ADAPTIVE_TEMPLATE_PROMPT_VERSION = "adaptive_template_prompt_v3"
 
 
 @dataclass(frozen=True, slots=True)

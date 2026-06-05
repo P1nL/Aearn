@@ -639,6 +639,46 @@ def test_practice_unlock_returns_model_unavailable_when_adaptive_generation_is_u
     assert body["error"]["details"] == {"reason": "LLMInvalidResponseError"}
 
 
+def test_practice_unlock_sse_returns_model_unavailable_when_adaptive_generation_is_unavailable(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request_id = f"req_practice_unlock_sse_model_unavailable_{uuid.uuid4().hex}"
+    user, plan = _confirmed_plan(client, language="javascript")
+    session = _start_session(client, user, plan)
+
+    prompt_check = client.post(
+        f"/api/learning-sessions/{session['session_id']}/messages",
+        json={
+            "role": "user",
+            "content": "状态放在回调外部，所以多次点击会共享并累加同一个 count。",
+            "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
+        },
+    )
+    assert prompt_check.status_code == 200
+    assert prompt_check.json()["session_state"]["learning_stage"] == "practice_offer"
+
+    monkeypatch.setattr(adaptive_exercise_service, "build_model_candidate", lambda _context, _template: None)
+
+    with client.stream(
+        "POST",
+        f"/api/learning-sessions/{session['session_id']}/messages",
+        headers={"Accept": "text/event-stream", "X-Request-Id": request_id},
+        json={
+            "role": "user",
+            "content": "开始练习",
+            "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
+        },
+    ) as response:
+        assert response.status_code == 200
+        events = _parse_sse_events("".join(response.iter_text()))
+
+    assert events[-1]["event"] == "error"
+    assert events[-1]["data"]["error"]["code"] == "MODEL_UNAVAILABLE"
+    assert events[-1]["data"]["error"]["details"] == {"reason": "LLMInvalidResponseError"}
+    assert "INTERNAL_ERROR" not in json.dumps(events, ensure_ascii=False)
+
+
 def test_practice_offer_start_unlocks_when_model_is_disabled(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -1087,6 +1127,91 @@ def test_deepseek_learning_message_uses_direct_client_without_agents_sdk(
     assert "handoff_targets" not in captured["direct_kwargs"]
     assert "side_effects" not in captured["direct_kwargs"]
     assert "MODEL_UNAVAILABLE" not in json.dumps(body, ensure_ascii=False)
+
+
+def test_deepseek_learning_message_policy_leak_returns_model_unavailable(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user, plan = _confirmed_plan(client, language="javascript")
+    session = _start_session(client, user, plan)
+    client_message_id = f"desktop_msg_{uuid.uuid4().hex}"
+
+    class LeakingDirectDeepSeekClient:
+        model = "deepseek-chat"
+
+        def complete_text_stream(self, messages, *, temperature=None):  # type: ignore[no-untyped-def]
+            del temperature
+            prompt_text = json.dumps(messages, ensure_ascii=False)
+            if "学习上下文摘要器" in prompt_text:
+                return [
+                    json.dumps(
+                        {
+                            "learning_goal": "理解 DOM 事件状态",
+                            "current_stuck_point": "状态变量共享",
+                            "misconceptions": [],
+                            "concepts_explained": [],
+                            "examples_used": [],
+                            "last_diagnosis": "",
+                            "last_agent_strategy": "",
+                            "avoid_repeating": [],
+                            "recommended_next_step": "继续解释",
+                            "summary_confidence": "medium",
+                        },
+                        ensure_ascii=False,
+                    )
+                ]
+            return ['我先判断你的卡点。\nresponse_policy: {"diagnosis_first": true, "forbidden_outputs": []}']
+
+    def fail_agents_sdk_factory(settings, **kwargs):  # type: ignore[no-untyped-def]
+        del settings, kwargs
+        raise AssertionError("DeepSeek learning messages must not instantiate Agents SDK clients")
+
+    monkeypatch.setattr(
+        learning_conversation,
+        "get_settings",
+        lambda: Settings(
+            llm_type="deepseek",
+            deepseek_api_key="test-key",
+            deepseek_base_url="https://api.deepseek.com",
+            deepseek_model="deepseek-chat",
+        ),
+    )
+    monkeypatch.setattr(learning_conversation, "AgentsSDKLearningConversationClient", fail_agents_sdk_factory)
+    monkeypatch.setattr(
+        learning_conversation,
+        "DirectLearningConversationClient",
+        lambda settings, **kwargs: LeakingDirectDeepSeekClient(),
+    )
+
+    response = client.post(
+        f"/api/learning-sessions/{session['session_id']}/messages",
+        json={
+            "role": "user",
+            "content": "为什么 count 每次点击都会重置？",
+            "client_message_id": client_message_id,
+        },
+    )
+
+    assert response.status_code == 503
+    body = response.json()
+    serialized = json.dumps(body, ensure_ascii=False)
+    assert body["error"]["code"] == "MODEL_UNAVAILABLE"
+    assert "response_policy" not in serialized
+    assert "diagnosis_first" not in serialized
+
+    with connect() as conn:
+        stored = conn.execute(
+            """
+            SELECT count(*) AS count
+            FROM learning_messages
+            WHERE session_id = %s
+              AND content LIKE %s
+            """,
+            (session["session_id"], "%response_policy%"),
+        ).fetchone()
+    assert stored is not None
+    assert stored["count"] == 0
 
 
 def test_deepseek_concept_repair_stream_progresses_without_model_unavailable(
