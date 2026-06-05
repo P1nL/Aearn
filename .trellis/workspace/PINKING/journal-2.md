@@ -170,3 +170,36 @@ Implemented model-first bounded freeform adaptive exercise generation with enric
 ### Next Steps
 
 - None - task complete
+
+
+## Session 65: Learning documentation panel flow closeout
+
+**Date**: 2026-06-05
+**Task**: Learning documentation panel flow closeout
+**Branch**: `main`
+
+### Summary
+
+Implemented the learning documentation reading flow, right-side documentation panel, explicit concept-check trigger, review sidebar due-state handling, composer reference prefill, tests, docs, and code-spec updates.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `babe2b6` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
