@@ -64,10 +64,11 @@ _COVERAGE_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9+#.]{1,}|[\u4e00-\u9fff]{2,}
 
 _MIN_MODULES = 4
 _MAX_MODULES = 8
-_MIN_KPS = 2
-_MAX_KPS = 4
+_MIN_KPS = 1
 _MAX_DOC_TOCS = 6
 _MAX_DOC_TOC_CHARS = 2000
+_PLAN_GENERATION_MAX_TOKENS = 6000
+_PLAN_GENERATION_MIN_TIMEOUT_SECONDS = 60.0
 
 SAFE_GENERATION_EXCEPTIONS = (
     LLMCallError,
@@ -91,7 +92,7 @@ _SYSTEM_PROMPT = """\
 
 - 输出严格 JSON，不要包含任何其他文本
 - title 和 description 必须为中文
-- 每个路线 4-8 个模块，每个模块 2-4 个知识点
+- 每个路线 4-8 个模块，每个模块至少 1 个知识点；知识点数量应由模块内容复杂度决定
 - 模块顺序应参考官方文档的教学顺序
 - 根据用户水平调整深度：beginner 侧重基础语法，intermediate 加入进阶概念
 - generation_notes 必须说明 goal_text、target_level、profession/time_budget（如果提供）和权威文档如何影响路线
@@ -181,6 +182,8 @@ class LLMJsonPlanClient(Protocol):
         messages: Sequence[Mapping[str, str]],
         *,
         temperature: float | None = None,
+        max_tokens: int | None = None,
+        timeout_seconds: float | None = None,
     ) -> LLMJsonResponse: ...
 
 
@@ -197,8 +200,8 @@ class DirectPlanGenerationClient:
         runner: object | None = None,
     ) -> None:
         del runner
-        self._settings = settings
-        self._json_client = json_client or OpenAICompatibleClient(settings)
+        self._settings = _settings_with_plan_generation_timeout(settings)
+        self._json_client = json_client or OpenAICompatibleClient(self._settings)
         self._doc_toc_provider = doc_toc_provider
 
     @property
@@ -218,6 +221,8 @@ class DirectPlanGenerationClient:
         result = self._json_client.complete_json(
             _build_messages(context, authoritative_doc_tocs=doc_tocs),
             temperature=temperature,
+            max_tokens=_PLAN_GENERATION_MAX_TOKENS,
+            timeout_seconds=_PLAN_GENERATION_MIN_TIMEOUT_SECONDS,
         )
         return PlanGenerationJsonResponse(content=result.content, model=result.model or self.model)
 
@@ -391,8 +396,8 @@ def _parse_module(raw: Mapping[str, object], index: int, language: str) -> Draft
     kps_raw = raw.get("knowledge_points")
     if not isinstance(kps_raw, list):
         raise LLMInvalidResponseError(f"模块 {index} 缺少 knowledge_points")
-    if not (_MIN_KPS <= len(kps_raw) <= _MAX_KPS):
-        raise LLMInvalidResponseError(f"模块 {index} 知识点数量必须在 {_MIN_KPS}-{_MAX_KPS} 之间")
+    if len(kps_raw) < _MIN_KPS:
+        raise LLMInvalidResponseError(f"模块 {index} 至少需要 {_MIN_KPS} 个知识点")
 
     knowledge_points: list[DraftKnowledgePoint] = []
     for kp_raw in kps_raw:
@@ -450,6 +455,12 @@ def _parse_knowledge_point(raw: Mapping[str, object], module_index: int, languag
 def _assert_chinese(text: str, field_name: str) -> None:
     if not _CJK_RE.search(text):
         raise LLMInvalidResponseError(f"{field_name} 必须包含中文字符")
+
+
+def _settings_with_plan_generation_timeout(settings: Settings) -> Settings:
+    if settings.llm_timeout_seconds >= _PLAN_GENERATION_MIN_TIMEOUT_SECONDS:
+        return settings
+    return settings.model_copy(update={"llm_timeout_seconds": _PLAN_GENERATION_MIN_TIMEOUT_SECONDS})
 
 
 def _validate_source_urls(value: object, language: str) -> list[str]:

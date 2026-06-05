@@ -1,4 +1,5 @@
 import json
+import logging
 from collections.abc import Mapping, Sequence
 
 import pytest
@@ -64,7 +65,8 @@ from app.agents.runtime.sdk_runtime import (
 )
 from app.agents.tooling.tools import build_teaching_tools, summarize_current_learning_context, summarize_latest_visible_attempt
 from app.models.onboarding import PlanDraft, PlanGenerateRequest
-from app.services.llm.llm_client import LLMJsonResponse, OpenAICompatibleClient, _iter_response_text_deltas
+import app.services.llm.llm_client as llm_client_module
+from app.services.llm.llm_client import LLMCallError, LLMJsonResponse, OpenAICompatibleClient, _iter_response_text_deltas
 from app.services.llm.llm_client import LLMInvalidResponseError
 from app.services.llm.llm_explain_error import build_llm_error_explanation
 from app.services.curriculum.plan_generator import build_plan_draft
@@ -196,7 +198,8 @@ def test_openai_compatible_client_parses_responses_json_completion() -> None:
         [
             {"role": "system", "content": "system instructions"},
             {"role": "user", "content": "return JSON"},
-        ]
+        ],
+        max_tokens=1234,
     )
 
     assert captured["url"] == "https://provider.example/v1/responses"
@@ -211,8 +214,85 @@ def test_openai_compatible_client_parses_responses_json_completion() -> None:
     assert captured["payload"]["input"] == "return JSON"
     assert captured["payload"]["stream"] is True
     assert captured["payload"]["text"] == {"format": {"type": "json_object"}}
+    assert captured["payload"]["max_output_tokens"] == 1234
     assert response.content["error_cause"] == "state_scope_error"
     assert response.model == "gpt-5.4"
+
+
+def test_openai_compatible_client_json_timeout_override_uses_minimum_budget() -> None:
+    captured: dict[str, object] = {}
+
+    def transport(
+        url: str,
+        headers: Mapping[str, str],
+        payload: Mapping[str, object],
+        timeout: float,
+    ) -> Mapping[str, object]:
+        del url, headers, payload
+        captured["timeout"] = timeout
+        return {
+            "model": "gpt-5.4",
+            "output": [
+                {
+                    "type": "message",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": '{"ok":true}'}],
+                }
+            ],
+        }
+
+    client = OpenAICompatibleClient(
+        Settings(
+            llm_type="openai",
+            openai_api_key="test-key",
+            openai_base_url="https://provider.example",
+            openai_model="third-party-model",
+            llm_timeout_seconds=7,
+        ),
+        transport=transport,
+    )
+
+    client.complete_json([{"role": "user", "content": "return JSON"}], timeout_seconds=60)
+
+    assert captured["timeout"] == 60
+
+
+def test_openai_compatible_client_json_timeout_override_does_not_lower_configured_timeout() -> None:
+    captured: dict[str, object] = {}
+
+    def transport(
+        url: str,
+        headers: Mapping[str, str],
+        payload: Mapping[str, object],
+        timeout: float,
+    ) -> Mapping[str, object]:
+        del url, headers, payload
+        captured["timeout"] = timeout
+        return {
+            "model": "gpt-5.4",
+            "output": [
+                {
+                    "type": "message",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": '{"ok":true}'}],
+                }
+            ],
+        }
+
+    client = OpenAICompatibleClient(
+        Settings(
+            llm_type="openai",
+            openai_api_key="test-key",
+            openai_base_url="https://provider.example",
+            openai_model="third-party-model",
+            llm_timeout_seconds=90,
+        ),
+        transport=transport,
+    )
+
+    client.complete_json([{"role": "user", "content": "return JSON"}], timeout_seconds=60)
+
+    assert captured["timeout"] == 90
 
 
 def test_openai_compatible_client_adds_json_mode_hint_when_input_omits_json() -> None:
@@ -300,7 +380,8 @@ def test_deepseek_client_posts_chat_completions_json() -> None:
         [
             {"role": "system", "content": "system instructions"},
             {"role": "user", "content": "return an object"},
-        ]
+        ],
+        max_tokens=4096,
     )
 
     assert captured["url"] == "https://api.deepseek.com/chat/completions"
@@ -312,6 +393,7 @@ def test_deepseek_client_posts_chat_completions_json() -> None:
     }
     assert captured["payload"]["model"] == "deepseek-v4-flash"
     assert captured["payload"]["response_format"] == {"type": "json_object"}
+    assert captured["payload"]["max_tokens"] == 4096
     assert "stream" not in captured["payload"]
     messages = captured["payload"]["messages"]
     assert isinstance(messages, list)
@@ -322,6 +404,38 @@ def test_deepseek_client_posts_chat_completions_json() -> None:
     }
     assert response.content["error_cause"] == "state_scope_error"
     assert response.model == "deepseek-v4-flash"
+
+
+def test_deepseek_client_json_timeout_override_uses_minimum_budget() -> None:
+    captured: dict[str, object] = {}
+
+    def transport(
+        url: str,
+        headers: Mapping[str, str],
+        payload: Mapping[str, object],
+        timeout: float,
+    ) -> Mapping[str, object]:
+        del url, headers, payload
+        captured["timeout"] = timeout
+        return {
+            "model": "deepseek-v4-flash",
+            "choices": [{"message": {"role": "assistant", "content": '{"ok":true}'}}],
+        }
+
+    client = OpenAICompatibleClient(
+        Settings(
+            llm_type="deepseek",
+            deepseek_api_key="test-key",
+            deepseek_base_url="https://api.deepseek.com",
+            deepseek_model="deepseek-v4-flash",
+            llm_timeout_seconds=13,
+        ),
+        transport=transport,
+    )
+
+    client.complete_json([{"role": "user", "content": "return JSON"}], timeout_seconds=60)
+
+    assert captured["timeout"] == 60
 
 
 def test_deepseek_client_rejects_empty_json_message_content() -> None:
@@ -346,6 +460,32 @@ def test_deepseek_client_rejects_empty_json_message_content() -> None:
 
     with pytest.raises(LLMInvalidResponseError):
         client.complete_json([{"role": "user", "content": "return JSON"}])
+
+
+def test_json_transport_logs_safe_network_reason(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    def fail_urlopen(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr(llm_client_module.urllib.request, "urlopen", fail_urlopen)
+    caplog.set_level(logging.WARNING, logger="app.services.llm.llm_client")
+
+    with pytest.raises(LLMCallError):
+        llm_client_module._post_json(
+            "https://api.deepseek.com/chat/completions",
+            {"Authorization": "Bearer secret-key", "Content-Type": "application/json"},
+            {"prompt": "private learner goal"},
+            1,
+        )
+
+    log_text = caplog.text
+    assert "TimeoutError" in log_text
+    assert "timed out" in log_text
+    assert "secret-key" not in log_text
+    assert "private learner goal" not in log_text
 
 
 def test_onboarding_slot_extractor_uses_streaming_responses_json_client() -> None:
@@ -741,6 +881,19 @@ def test_deepseek_stream_parser_handles_choices_delta_and_done() -> None:
     ]
 
     assert list(_iter_response_text_deltas(frames)) == ["hello", " world"]
+
+
+def test_deepseek_stream_parser_ignores_reasoning_content() -> None:
+    frames = [
+        b'data: {"choices":[{"delta":{"reasoning_content":"hidden chain of thought"}}]}\n',
+        b"\n",
+        b'data: {"choices":[{"delta":{"content":"visible answer"}}]}\n',
+        b"\n",
+        b"data: [DONE]\n",
+        b"\n",
+    ]
+
+    assert list(_iter_response_text_deltas(frames)) == ["visible answer"]
 
 
 def test_agents_sdk_learning_conversation_client_streams_text_deltas() -> None:
@@ -1668,6 +1821,7 @@ def test_teaching_guardrails_block_leaky_or_complete_answer_text() -> None:
         "失败来自 hidden_three_clicks。",
         "solution_reference 里已经有参考答案。",
         "provider raw 401 invalid_api_key",
+        'response_policy: {"diagnosis_first": true, "forbidden_outputs": []}',
         "完整答案如下：button.addEventListener(...)",
         "完整答案如下：\n```js\nbutton.addEventListener('click', () => {})\n```",
     ]:

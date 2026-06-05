@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import socket
 import urllib.error
 import urllib.request
@@ -9,6 +10,9 @@ from dataclasses import dataclass
 
 from app.core.config import Settings, get_settings
 from app.services.llm.llm_urls import deepseek_chat_completions_url, responses_url
+
+
+logger = logging.getLogger(__name__)
 
 
 class LLMConfigurationError(RuntimeError):
@@ -56,9 +60,16 @@ class OpenAICompatibleClient:
         messages: Sequence[Mapping[str, str]],
         *,
         temperature: float | None = 0.2,
+        max_tokens: int | None = None,
+        timeout_seconds: float | None = None,
     ) -> LLMJsonResponse:
         if self._settings.llm_provider_type == "deepseek":
-            return self._complete_deepseek_json(messages, temperature=temperature)
+            return self._complete_deepseek_json(
+                messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                timeout_seconds=timeout_seconds,
+            )
 
         instructions, input_text = _messages_to_responses_input(messages)
         input_text = _ensure_json_mode_hint(input_text)
@@ -70,12 +81,14 @@ class OpenAICompatibleClient:
         }
         if instructions is not None:
             payload["instructions"] = instructions
+        if max_tokens is not None:
+            payload["max_output_tokens"] = max_tokens
         headers = {
             "Authorization": f"Bearer {self._settings.llm_api_key}",
             "Content-Type": "application/json",
             "Accept": "text/event-stream",
         }
-        provider_response = self._request_provider(payload, headers)
+        provider_response = self._request_provider(payload, headers, timeout_seconds=timeout_seconds)
         content = _extract_message_content(provider_response)
         model = _response_model(provider_response) or self.model
         return LLMJsonResponse(content=_parse_json_object(content), model=model)
@@ -133,9 +146,15 @@ class OpenAICompatibleClient:
         except Exception as exc:
             raise LLMCallError("LLM provider streaming transport failed") from exc
 
-    def _request_provider(self, payload: Mapping[str, object], headers: Mapping[str, str]) -> Mapping[str, object]:
+    def _request_provider(
+        self,
+        payload: Mapping[str, object],
+        headers: Mapping[str, str],
+        *,
+        timeout_seconds: float | None = None,
+    ) -> Mapping[str, object]:
         url = responses_url(str(self._settings.llm_base_url))
-        timeout = float(self._settings.llm_timeout_seconds)
+        timeout = _resolve_timeout_seconds(self._settings.llm_timeout_seconds, timeout_seconds)
         if self._transport is not None:
             try:
                 return self._transport(url, headers, payload, timeout)
@@ -150,6 +169,8 @@ class OpenAICompatibleClient:
         messages: Sequence[Mapping[str, str]],
         *,
         temperature: float | None,
+        max_tokens: int | None,
+        timeout_seconds: float | None,
     ) -> LLMJsonResponse:
         payload: dict[str, object] = {
             "model": self.model,
@@ -158,13 +179,15 @@ class OpenAICompatibleClient:
         }
         if temperature is not None:
             payload["temperature"] = temperature
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
         headers = {
             "Authorization": f"Bearer {self._settings.llm_api_key}",
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
         url = deepseek_chat_completions_url(str(self._settings.llm_base_url))
-        timeout = float(self._settings.llm_timeout_seconds)
+        timeout = _resolve_timeout_seconds(self._settings.llm_timeout_seconds, timeout_seconds)
         if self._transport is not None:
             try:
                 provider_response = self._transport(url, headers, payload, timeout)
@@ -197,6 +220,7 @@ def _post_json_stream(
     except urllib.error.HTTPError as exc:
         raise LLMCallError(f"LLM provider returned HTTP {exc.code}") from exc
     except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
+        logger.warning("LLM provider JSON stream request failed: %s", _safe_transport_error(exc))
         raise LLMCallError("LLM provider request failed") from exc
 
 
@@ -218,6 +242,7 @@ def _post_json(
     except urllib.error.HTTPError as exc:
         raise LLMCallError(f"LLM provider returned HTTP {exc.code}") from exc
     except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
+        logger.warning("LLM provider JSON request failed: %s", _safe_transport_error(exc))
         raise LLMCallError("LLM provider request failed") from exc
 
     if not body:
@@ -229,6 +254,19 @@ def _post_json(
     if not isinstance(parsed, Mapping):
         raise LLMInvalidResponseError("LLM provider response must be a JSON object")
     return parsed
+
+
+def _safe_transport_error(exc: BaseException) -> str:
+    if isinstance(exc, urllib.error.URLError):
+        reason = exc.reason
+        return f"{type(reason).__name__}: {reason}"
+    return f"{type(exc).__name__}: {exc}"
+
+
+def _resolve_timeout_seconds(configured_timeout: float, timeout_seconds: float | None) -> float:
+    if timeout_seconds is None:
+        return float(configured_timeout)
+    return max(float(configured_timeout), float(timeout_seconds))
 
 
 def _post_text_stream(

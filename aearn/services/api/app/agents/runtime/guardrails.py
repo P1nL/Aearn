@@ -40,6 +40,31 @@ _PROVIDER_ERROR_TOKENS = (
     "deepseek_api_key",
     "api key",
 )
+_PROMPT_LEAK_OUTPUT_TOKENS = (
+    "raw prompt",
+    "system prompt",
+    "developer prompt",
+    "sdk/internal event name",
+    "response_policy",
+    "diagnosis_first",
+    "max_follow_up_questions",
+    "direct_answer_requested",
+    "direct_answer_handling",
+    "stage_strategy",
+    "forbidden_outputs",
+    "allowed_outputs",
+    "learner_message",
+    "learning_context",
+    "lesson_outline",
+    "concept_progress",
+    "conversation_context",
+    "recent_safe_messages",
+    "rag_context",
+    "runtime_boundary",
+    "latest_attempt",
+    "learner_profile",
+    "official_docs_grounding",
+)
 _DIRECT_ANSWER_OUTPUT_PATTERNS = (
     re.compile(r"完整答案如下", re.IGNORECASE),
     re.compile(r"完整代码如下", re.IGNORECASE),
@@ -72,6 +97,10 @@ def check_teaching_output(text: str) -> TeachingGuardrailCheck:
     check = _check_text(text, include_direct_answer_request=False, include_reference_output_tokens=True)
     if check.blocked:
         return check
+    normalized = text.lower()
+    for token in _PROMPT_LEAK_OUTPUT_TOKENS:
+        if token in normalized:
+            return TeachingGuardrailCheck(True, "prompt_leak", "prompt or internal-context marker appeared in text")
     for pattern in _DIRECT_ANSWER_OUTPUT_PATTERNS:
         if pattern.search(text):
             return TeachingGuardrailCheck(True, "direct_answer", "model output appears to provide a complete answer")

@@ -45,6 +45,8 @@ class FakeJsonPlanClient:
         self.calls = 0
         self.messages: list[list[dict[str, str]]] = []
         self.temperatures: list[float | None] = []
+        self.max_tokens: list[int | None] = []
+        self.timeout_seconds: list[float | None] = []
 
     @property
     def model(self) -> str:
@@ -55,10 +57,14 @@ class FakeJsonPlanClient:
         messages: list[dict[str, str]],
         *,
         temperature: float | None = None,
+        max_tokens: int | None = None,
+        timeout_seconds: float | None = None,
     ) -> LLMJsonResponse:
         self.calls += 1
         self.messages.append([dict(message) for message in messages])
         self.temperatures.append(temperature)
+        self.max_tokens.append(max_tokens)
+        self.timeout_seconds.append(timeout_seconds)
         return LLMJsonResponse(content=dict(self.output), model=self.model)
 
 
@@ -101,6 +107,8 @@ def test_direct_plan_generation_client_prefetches_docs_without_tool_calls() -> N
     assert captured_urls == ["https://docs.python.org/3/tutorial/"]
     assert json_client.calls == 1
     assert json_client.temperatures == [None]
+    assert json_client.max_tokens == [6000]
+    assert json_client.timeout_seconds == [60.0]
     messages = json_client.messages[0]
     assert [message["role"] for message in messages] == ["system", "user"]
     user_payload = json.loads(messages[1]["content"])
@@ -135,6 +143,23 @@ def test_dynamic_plan_response_parses_modules_and_source_attribution() -> None:
     assert "Dynamic generation: agent_generated" in result.source_attribution
     assert "Dynamic source: https://docs.python.org/3/tutorial/" in result.source_attribution
     assert any(item.startswith("Dynamic notes:") for item in result.source_attribution)
+
+
+def test_dynamic_plan_allows_variable_knowledge_point_counts() -> None:
+    payload = _valid_payload("python")
+    modules_raw = payload["modules"]
+    assert isinstance(modules_raw, list)
+    modules = list(modules_raw)
+    modules[0] = _module("python", 0, knowledge_point_count=1)
+    modules[1] = _module("python", 1, knowledge_point_count=5)
+    payload["modules"] = modules
+    client = FakePlanGenerationClient(payload)
+
+    result = build_sdk_plan_generation_response(_context("python"), client=client)
+
+    assert result is not None
+    assert len(result.modules[0].knowledge_points) == 1
+    assert len(result.modules[1].knowledge_points) == 5
 
 
 def test_dynamic_plan_generation_retries_once_after_invalid_output() -> None:
@@ -262,7 +287,7 @@ def _valid_payload(
     }
 
 
-def _module(language: str, index: int) -> dict[str, object]:
+def _module(language: str, index: int, *, knowledge_point_count: int = 2) -> dict[str, object]:
     return {
         "temp_id": f"mod_draft_{language}_module_{index}",
         "title": f"模块{index + 1}",
@@ -278,6 +303,6 @@ def _module(language: str, index: int) -> dict[str, object]:
                 "skill_tags": ["syntax", "practice"],
                 "exercise_refs": [],
             }
-            for point in range(2)
+            for point in range(knowledge_point_count)
         ],
     }

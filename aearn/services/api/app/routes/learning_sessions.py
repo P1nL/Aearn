@@ -889,15 +889,26 @@ async def _learning_message_stream(
             )
             return
 
-        with connect() as conn:
-            response = build_learning_message_response(
-                prepared,
-                content=full_text.strip(),
-                generation_source=generation_source,
-                generation_model=generation_model,
+        try:
+            with connect() as conn:
+                response = build_learning_message_response(
+                    prepared,
+                    content=full_text.strip(),
+                    generation_source=generation_source,
+                    generation_model=generation_model,
+                )
+                response = store_learning_message_response(conn, prepared, response, side_effects=side_effects)
+                conn.commit()
+        except safe_generation_exceptions() as exc:
+            yield writer.error(
+                code="MODEL_UNAVAILABLE",
+                message=MODEL_UNAVAILABLE_MESSAGE,
+                request_id=request_id,
+                details={"reason": exc.__class__.__name__},
+                recoverable=True,
+                next_action="retry_same",
             )
-            response = store_learning_message_response(conn, prepared, response, side_effects=side_effects)
-            conn.commit()
+            return
 
         async for frame in _tool_call_events(writer, response.get("tool_calls")):
             yield frame

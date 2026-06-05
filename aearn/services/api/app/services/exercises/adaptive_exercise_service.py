@@ -16,10 +16,16 @@ from app.services.exercises.exercise_templates import (
 from app.services.exercises.syntax_validators import SemanticValidationReport, validate_exercise_semantics
 from app.services.llm.llm_client import LLMCallError, LLMConfigurationError, LLMInvalidResponseError, OpenAICompatibleClient
 from app.services.runners.runner_registry import get_runner_registry
+from app.services.runners.runtime_contracts import RuntimeExecutionResult
 from app.services.runners.runtime_runner import run_exercise
 
 
 MAX_ADAPTIVE_GENERATION_ATTEMPTS = 3
+_ADAPTIVE_EXERCISE_MAX_TOKENS = 5000
+_ADAPTIVE_EXERCISE_MIN_TIMEOUT_SECONDS = 60.0
+_RUNNER_FEEDBACK_TEXT_CHARS = 360
+_RUNNER_FEEDBACK_STDIO_CHARS = 500
+_RUNNER_FEEDBACK_FAILED_TEST_LIMIT = 2
 SAFE_GENERATION_EXCEPTIONS = (
     LLMCallError,
     LLMConfigurationError,
@@ -79,16 +85,36 @@ class ValidationReport:
     test_pass_rate: float
     runner_key: str
     runtime_tier: str
+    passed_test_count: int = 0
+    total_test_count: int = 0
+    error_message: str | None = None
+    stdout_excerpt: str | None = None
+    stderr_excerpt: str | None = None
+    failed_test_summaries: tuple[dict[str, object], ...] = ()
+    repair_hints: tuple[str, ...] = ()
 
     def as_safe_payload(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "passed": self.passed,
             "failure_code": self.failure_code,
             "runtime_status": self.runtime_status,
             "test_pass_rate": self.test_pass_rate,
             "runner_key": self.runner_key,
             "runtime_tier": self.runtime_tier,
+            "passed_test_count": self.passed_test_count,
+            "total_test_count": self.total_test_count,
         }
+        if self.error_message:
+            payload["error_message"] = self.error_message
+        if self.stdout_excerpt:
+            payload["stdout_excerpt"] = self.stdout_excerpt
+        if self.stderr_excerpt:
+            payload["stderr_excerpt"] = self.stderr_excerpt
+        if self.failed_test_summaries:
+            payload["failed_test_summaries"] = [dict(summary) for summary in self.failed_test_summaries]
+        if self.repair_hints:
+            payload["repair_hints"] = list(self.repair_hints)
+        return payload
 
 
 AdaptiveCandidateGenerator = Callable[[Mapping[str, object], CanonicalExerciseTemplate], GeneratedAdaptiveCandidate | None]
@@ -256,7 +282,11 @@ def build_model_candidate(
         client = OpenAICompatibleClient()
     except LLMConfigurationError:
         return None
-    result = client.complete_json(_model_messages(context, template))
+    result = client.complete_json(
+        _model_messages(context, template),
+        max_tokens=_ADAPTIVE_EXERCISE_MAX_TOKENS,
+        timeout_seconds=_ADAPTIVE_EXERCISE_MIN_TIMEOUT_SECONDS,
+    )
     return GeneratedAdaptiveCandidate(content=result.content, model=result.model)
 
 
@@ -265,6 +295,7 @@ def _model_messages(
     template: CanonicalExerciseTemplate,
 ) -> list[dict[str, str]]:
     fallback = template.fallback_payload
+    runner_contract = _runner_contract(template)
     safe_envelope = {
         "template_id": template.template_id,
         "template_version": template.template_version,
@@ -275,6 +306,7 @@ def _model_messages(
         "internal_seed_starter_code": str(fallback.get("starter_code") or "")[:1200],
         "code_blanks": fallback.get("code_blanks") if isinstance(fallback.get("code_blanks"), list) else [],
         "metadata_json": _safe_model_metadata(fallback.get("metadata_json")),
+        "runner_contract": runner_contract,
     }
     return [
         {
@@ -282,7 +314,9 @@ def _model_messages(
             "content": (
                 "You generate Aearn programming exercises with model-first bounded freeform design. "
                 "The canonical template is only an internal seed, runner harness reference, and safety envelope; "
-                "do not preserve its code skeleton unless that is the best way to teach the required skills. "
+                "you may redesign learner-facing wording and code bodies, but every runner_contract field is a hard constraint. "
+                "For managed_compiled_test, starter_code and solution_reference must compile as a single file under "
+                "Aearn's server harness and must preserve the harness-facing class/function signature. "
                 "Return JSON only. Do not invent test cases, runtime tiers, hidden data, provider payloads, or unsupported fields."
             ),
         },
@@ -295,7 +329,9 @@ def _model_messages(
                         "Create a learner-visible exercise that directly practices required_skill_tags. "
                         "Avoid generic language drills when a specific concept is present. "
                         "You may redesign title, prompt, starter_code, solution_reference, blanks, and safe metadata. "
-                        "You must not change language_id, runtime_tier, runner_key, or final grading authority."
+                        "You must not change language_id, runtime_tier, runner_key, runner_contract, test_cases, "
+                        "or final grading authority. For managed_compiled_test, do not add packages, project files, "
+                        "external dependencies, stdin-only/main-only solutions, or renamed harness entry points."
                     ),
                     "bounded_learner_context": context,
                     "canonical_template_envelope": safe_envelope,
@@ -402,7 +438,16 @@ def _validate_candidate(
     runner_capability = get_runner_registry().select(runtime_profile)
     solution = str(candidate_payload.get("solution_reference") or "").strip()
     if not solution:
-        return _validation_report(False, "missing_solution_reference", "runtime_error", 0.0, runner_capability, runtime_profile)
+        return _validation_report(
+            False,
+            "missing_solution_reference",
+            "runtime_error",
+            0.0,
+            runner_capability,
+            runtime_profile,
+            candidate_payload=candidate_payload,
+            error_message="candidate.solution_reference must be non-empty so the runner can validate the exercise.",
+        )
 
     exercise = {
         "runtime_profile": dict(runtime_profile),
@@ -412,12 +457,49 @@ def _validate_candidate(
     }
     result = run_exercise(exercise, solution, _filled_blanks(candidate_payload), "visible_tests")
     if result.runtime_status != "success":
-        return _validation_report(False, str(result.runtime_status), result.runtime_status, result.test_pass_rate, runner_capability, runtime_profile)
+        return _validation_report(
+            False,
+            str(result.runtime_status),
+            result.runtime_status,
+            result.test_pass_rate,
+            runner_capability,
+            runtime_profile,
+            result=result,
+            candidate_payload=candidate_payload,
+        )
     if result.test_pass_rate < 1.0:
-        return _validation_report(False, "tests_failed", result.runtime_status, result.test_pass_rate, runner_capability, runtime_profile)
+        return _validation_report(
+            False,
+            "tests_failed",
+            result.runtime_status,
+            result.test_pass_rate,
+            runner_capability,
+            runtime_profile,
+            result=result,
+            candidate_payload=candidate_payload,
+        )
     if _hidden_output_leaked(result.test_results, candidate_payload):
-        return _validation_report(False, "hidden_redaction_failed", result.runtime_status, result.test_pass_rate, runner_capability, runtime_profile)
-    return _validation_report(True, None, result.runtime_status, result.test_pass_rate, runner_capability, runtime_profile)
+        return _validation_report(
+            False,
+            "hidden_redaction_failed",
+            result.runtime_status,
+            result.test_pass_rate,
+            runner_capability,
+            runtime_profile,
+            result=result,
+            candidate_payload=candidate_payload,
+            error_message="runner output exposed hidden test data and must be redacted before retrying.",
+        )
+    return _validation_report(
+        True,
+        None,
+        result.runtime_status,
+        result.test_pass_rate,
+        runner_capability,
+        runtime_profile,
+        result=result,
+        candidate_payload=candidate_payload,
+    )
 
 
 def _validation_report(
@@ -427,7 +509,14 @@ def _validation_report(
     test_pass_rate: float,
     runner_capability: object,
     runtime_profile: Mapping[str, object],
+    *,
+    result: RuntimeExecutionResult | None = None,
+    candidate_payload: Mapping[str, object] | None = None,
+    error_message: str | None = None,
 ) -> ValidationReport:
+    payload = candidate_payload or {}
+    hidden_markers = _hidden_markers(payload)
+    total_test_count = _test_case_count(payload)
     return ValidationReport(
         passed=passed,
         failure_code=failure_code,
@@ -435,6 +524,22 @@ def _validation_report(
         test_pass_rate=test_pass_rate,
         runner_key=str(getattr(runner_capability, "runner_key", "none")),
         runtime_tier=str(runtime_profile.get("runtime_tier") or ""),
+        passed_test_count=int(result.passed_test_count) if result is not None else 0,
+        total_test_count=int(result.total_test_count) if result is not None else total_test_count,
+        error_message=_safe_runner_text(error_message or (result.error_message if result else None), _RUNNER_FEEDBACK_TEXT_CHARS, hidden_markers),
+        stdout_excerpt=_safe_runner_text(result.stdout if result else None, _RUNNER_FEEDBACK_STDIO_CHARS, hidden_markers),
+        stderr_excerpt=_safe_runner_text(result.stderr if result else None, _RUNNER_FEEDBACK_STDIO_CHARS, hidden_markers),
+        failed_test_summaries=tuple(_failed_test_summaries(result, hidden_markers)),
+        repair_hints=tuple(
+            _runner_repair_hints(
+                runtime_profile=runtime_profile,
+                candidate_payload=payload,
+                failure_code=failure_code,
+                runtime_status=runtime_status,
+            )
+            if not passed
+            else ()
+        ),
     )
 
 
@@ -483,6 +588,119 @@ def _hidden_markers(candidate_payload: Mapping[str, object]) -> set[str]:
             if len(value) >= 3 and value not in visible_strings
         )
     return markers
+
+
+def _test_case_count(candidate_payload: Mapping[str, object]) -> int:
+    test_cases = candidate_payload.get("test_cases")
+    if not isinstance(test_cases, Sequence) or isinstance(test_cases, str | bytes | bytearray):
+        return 0
+    return sum(1 for test_case in test_cases if isinstance(test_case, Mapping))
+
+
+def _safe_runner_text(value: object, max_chars: int, hidden_markers: set[str]) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    for marker in sorted(hidden_markers, key=len, reverse=True):
+        if marker:
+            text = text.replace(marker, "[redacted_hidden]")
+    return _bounded_text(text, max_chars)
+
+
+def _failed_test_summaries(
+    result: RuntimeExecutionResult | None,
+    hidden_markers: set[str],
+) -> list[dict[str, object]]:
+    if result is None:
+        return []
+    summaries: list[dict[str, object]] = []
+    for test_result in result.test_results:
+        if not isinstance(test_result, Mapping) or bool(test_result.get("passed")):
+            continue
+        case_type = str(test_result.get("case_type") or "visible")
+        summary: dict[str, object] = {
+            "case_type": case_type,
+            "passed": False,
+            "is_critical": bool(test_result.get("is_critical")),
+        }
+        if case_type == "hidden":
+            summary["case_id"] = _safe_hidden_case_id(str(test_result.get("case_id") or "hidden_case"))
+            summary["message"] = "A hidden test failed. Recheck edge cases and boundary behavior."
+        else:
+            summary["case_id"] = _safe_runner_text(test_result.get("case_id"), 120, hidden_markers) or "case"
+            summary["message"] = _safe_runner_text(test_result.get("message"), _RUNNER_FEEDBACK_TEXT_CHARS, hidden_markers) or "Visible test failed."
+        summaries.append(summary)
+        if len(summaries) >= _RUNNER_FEEDBACK_FAILED_TEST_LIMIT:
+            break
+    return summaries
+
+
+def _safe_hidden_case_id(case_id: str) -> str:
+    if case_id.startswith("hidden_case_"):
+        return _bounded_text(case_id, 120)
+    return "hidden_case"
+
+
+def _runner_repair_hints(
+    *,
+    runtime_profile: Mapping[str, object],
+    candidate_payload: Mapping[str, object],
+    failure_code: str | None,
+    runtime_status: str,
+) -> list[str]:
+    hints: list[str] = []
+    runtime_tier = str(runtime_profile.get("runtime_tier") or "")
+    language = str(runtime_profile.get("language") or "").lower()
+    metadata = candidate_payload.get("metadata_json")
+    metadata_map = metadata if isinstance(metadata, Mapping) else {}
+    entry_function = _bounded_text(str(metadata_map.get("entry_function") or "metadata_json.entry_function"), 120)
+
+    if failure_code == "missing_solution_reference":
+        hints.append("Return a non-empty solution_reference that the runner can execute as the reference answer.")
+
+    if runtime_tier == "managed_compiled_test":
+        if language == "java":
+            hints.append(
+                f"Keep Java as one Main.java file with public class Main; AearnHarness calls Main.{entry_function}(...), "
+                "so starter_code and solution_reference must expose that static method."
+            )
+            hints.append(
+                "Do not add package declarations, Maven/Gradle files, external dependencies, stdin-only main behavior, "
+                "or rename Main/the entry method."
+            )
+        elif language == "go":
+            hints.append(
+                f"Keep Go as one package main source file; aearn_harness.go calls {entry_function}(...), "
+                "so preserve the exported function signature."
+            )
+            hints.append("Do not add Go modules, external dependencies, project files, or stdin-only main behavior.")
+        elif language == "csharp":
+            hints.append(
+                f"Keep C# as a single Submission class method; AearnHarness calls Submission.{entry_function}(...), "
+                "so preserve the static method signature."
+            )
+            hints.append("Do not add NuGet packages, external dependencies, arbitrary project files, or stdin-only Main behavior.")
+
+    if runtime_status in {"compile_error", "runtime_error"}:
+        hints.append("Make starter_code and solution_reference compile and run under the selected single-file runner before changing learner wording.")
+    if runtime_status == "timeout":
+        hints.append("Remove unbounded loops or blocking I/O; the managed runner must finish within the exercise timeout.")
+    if failure_code == "tests_failed" or runtime_status == "test_failure":
+        hints.append("Fix solution_reference to satisfy the existing server-owned test_cases; do not change test_cases or expected outputs.")
+    if failure_code == "hidden_redaction_failed":
+        hints.append("Do not echo hidden test ids, hidden expected values, or hidden failure details in learner-visible text or runner output.")
+
+    if not hints:
+        hints.append("Regenerate a candidate that preserves runtime_tier, runner_key, existing test_cases, and the runner-facing entry signature.")
+
+    deduped: list[str] = []
+    for hint in hints:
+        bounded = _bounded_text(hint, _RUNNER_FEEDBACK_TEXT_CHARS)
+        if bounded not in deduped:
+            deduped.append(bounded)
+        if len(deduped) >= 5:
+            break
+    return deduped
 
 
 def _assert_candidate_safe(payload: Mapping[str, object], canonical: CanonicalExerciseTemplate) -> None:
@@ -593,15 +811,99 @@ def _model_context(
         "language_id": canonical.language_id,
         "runtime_tier": canonical.runtime_tier,
         "runner_key": canonical.runner_key,
+        "runner_contract": _runner_contract(canonical),
         "exercise_type": canonical.exercise_type,
         "allowed_exercise_types": [canonical.exercise_type],
         "generation_policy": {
             "model_may_redesign_exercise_shape": True,
             "deterministic_template_role": "internal_seed_runner_harness_safety_envelope_only",
-            "model_must_not_change": ["language_id", "runtime_tier", "runner_key", "test_cases", "grading_authority"],
+            "model_must_not_change": ["language_id", "runtime_tier", "runner_key", "runner_contract", "test_cases", "grading_authority"],
+            "model_must_preserve_runner_contract": True,
             "retry_policy": {"max_attempts": MAX_ADAPTIVE_GENERATION_ATTEMPTS},
         },
     }
+
+
+def _runner_contract(canonical: CanonicalExerciseTemplate) -> dict[str, object]:
+    if canonical.runtime_tier != "managed_compiled_test":
+        return {}
+
+    metadata = _safe_model_metadata(canonical.fallback_payload.get("metadata_json"))
+    managed = metadata.get("managed_compiled")
+    managed_metadata = managed if isinstance(managed, Mapping) else {}
+    entry_function = _bounded_text(str(metadata.get("entry_function") or ""), 120)
+    language = canonical.language_id.lower()
+    starter_code = str(canonical.fallback_payload.get("starter_code") or "")
+    signature_hint = _signature_hint(starter_code, entry_function)
+    common_must_preserve = ["source_file", "entry_function", "method arity", "return type", "server-owned test_cases"]
+    common_forbidden = ["external dependencies", "project layout", "renaming entry_function", "changing test_cases", "changing expected outputs"]
+
+    base: dict[str, object] = {
+        "type": "managed_compiled_harness",
+        "language_id": canonical.language_id,
+        "runtime_tier": canonical.runtime_tier,
+        "runner_key": canonical.runner_key,
+        "entry_function": entry_function,
+        "required_signature_hint": signature_hint,
+        "test_authority": "server_owned_existing_test_cases",
+        "must_preserve": common_must_preserve,
+        "forbidden": common_forbidden,
+    }
+
+    if language == "java":
+        source_file = _bounded_text(str(managed_metadata.get("source_file") or "Main.java"), 120)
+        class_name = _bounded_text(str(managed_metadata.get("class_name") or "Main"), 120)
+        return base | {
+            "source_file": source_file,
+            "harness_file": "AearnHarness.java",
+            "required_class": class_name,
+            "harness_call_shape": f"AearnHarness calls {class_name}.{entry_function}(...)",
+            "must_preserve": [*common_must_preserve, "required_class"],
+            "forbidden": [
+                "package declarations",
+                "Maven or Gradle files",
+                "external dependencies",
+                "arbitrary project files",
+                "stdin-only or main-only behavior",
+                "renaming public class Main",
+                "renaming entry_function",
+                "changing test_cases or expected outputs",
+            ],
+        }
+
+    if language == "go":
+        return base | {
+            "source_file": _bounded_text(str(managed_metadata.get("source_file") or "submission.go"), 120),
+            "harness_file": "aearn_harness.go",
+            "required_package": "main",
+            "harness_call_shape": f"aearn_harness.go calls {entry_function}(...)",
+            "must_preserve": [*common_must_preserve, "required_package"],
+            "forbidden": ["Go modules", "external dependencies", "arbitrary project files", "stdin-only main behavior", "renaming entry_function"],
+        }
+
+    if language == "csharp":
+        class_name = _bounded_text(str(managed_metadata.get("class_name") or "Submission"), 120)
+        return base | {
+            "source_file": _bounded_text(str(managed_metadata.get("source_file") or "Program.cs"), 120),
+            "harness_class": "AearnHarness",
+            "required_class": class_name,
+            "harness_call_shape": f"AearnHarness calls {class_name}.{entry_function}(...)",
+            "must_preserve": [*common_must_preserve, "required_class"],
+            "forbidden": ["NuGet packages", "external dependencies", "arbitrary project files", "stdin-only Main behavior", "renaming entry_function"],
+        }
+
+    return base
+
+
+def _signature_hint(starter_code: str, entry_function: str) -> str:
+    if not entry_function:
+        return ""
+    needle = f"{entry_function}("
+    for line in starter_code.splitlines():
+        stripped = line.strip()
+        if needle in stripped:
+            return _bounded_text(stripped.rstrip("{").strip(), 180)
+    return ""
 
 
 def _attempt_model_context(
@@ -674,8 +976,15 @@ def _runner_feedback(
         extra={
             "runner_status": report.runtime_status,
             "test_pass_rate": report.test_pass_rate,
+            "passed_test_count": report.passed_test_count,
+            "total_test_count": report.total_test_count,
             "runner_key": report.runner_key,
             "runtime_tier": report.runtime_tier,
+            "error_message": report.error_message,
+            "stdout_excerpt": report.stdout_excerpt,
+            "stderr_excerpt": report.stderr_excerpt,
+            "failed_test_summaries": list(report.failed_test_summaries),
+            "repair_hints": list(report.repair_hints),
         },
     )
 
@@ -691,8 +1000,15 @@ def _safe_feedback_extra(extra: Mapping[str, object]) -> dict[str, object]:
         "validator_version",
         "runner_status",
         "test_pass_rate",
+        "passed_test_count",
+        "total_test_count",
         "runner_key",
         "runtime_tier",
+        "error_message",
+        "stdout_excerpt",
+        "stderr_excerpt",
+        "failed_test_summaries",
+        "repair_hints",
     }
     return {
         key: _json_safe(value)
