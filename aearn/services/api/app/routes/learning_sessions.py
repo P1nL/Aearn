@@ -18,10 +18,12 @@ from app.models.learning_sessions import (
     CheckExplanationRequest,
     ExplainErrorRequest,
     HintRequest,
+    KnowledgePointDocumentationResponse,
     LearningMessageRequest,
     RunExerciseRequest,
     StartLearningSessionRequest,
     SubmitExerciseRequest,
+    TriggerConceptCheckRequest,
 )
 from app.services.conversations.learning_conversation import (
     build_learning_agent_tool_runtime,
@@ -45,10 +47,12 @@ from app.services.repositories.learning_session_repository import (
     SessionStateConflictError,
     check_learning_attempt_explanation,
     explain_learning_attempt_error,
+    get_knowledge_point_documentation,
     request_learning_hint,
     run_learning_session_exercise,
     start_learning_session,
     submit_learning_session_exercise,
+    trigger_learning_session_concept_check,
 )
 from app.services.llm.llm_client import LLMCallError, LLMConfigurationError, LLMInvalidResponseError
 from app.services.repositories.dashboard_repository import (
@@ -130,6 +134,84 @@ def create_learning_session(
         status_code=status.HTTP_200_OK if reused else status.HTTP_201_CREATED,
         content=jsonable_encoder(response),
     )
+
+
+@router.get("/knowledge-points/{knowledge_point_id}/documentation", response_model=None)
+def read_knowledge_point_documentation(
+    knowledge_point_id: str,
+    request: Request,
+    user_id: str = Query(min_length=1),
+) -> dict[str, object] | JSONResponse:
+    with connect() as conn:
+        try:
+            response = get_knowledge_point_documentation(
+                conn,
+                user_id=user_id,
+                knowledge_point_id=knowledge_point_id,
+            )
+        except EntityNotFoundError as exc:
+            return error_response(
+                request,
+                code=exc.code,
+                message=exc.message,
+                status_code=status.HTTP_404_NOT_FOUND,
+                details={"user_id": user_id, "knowledge_point_id": knowledge_point_id},
+            )
+        conn.commit()
+    validated = KnowledgePointDocumentationResponse.model_validate(response)
+    return JSONResponse(status_code=status.HTTP_200_OK, content=jsonable_encoder(validated.model_dump(mode="json")))
+
+
+@router.post("/{session_id}/trigger-concept-check", response_model=None)
+def trigger_concept_check(
+    session_id: str,
+    payload: TriggerConceptCheckRequest,
+    request: Request,
+) -> dict[str, object] | JSONResponse:
+    with connect() as conn:
+        try:
+            response = trigger_learning_session_concept_check(
+                conn,
+                session_id=session_id,
+                user_id=payload.user_id,
+            )
+        except EntityNotFoundError as exc:
+            conn.rollback()
+            return error_response(
+                request,
+                code=exc.code,
+                message=exc.message,
+                status_code=status.HTTP_404_NOT_FOUND,
+                details={"session_id": session_id, "user_id": payload.user_id},
+            )
+        except ConceptIntroGenerationError:
+            conn.rollback()
+            return error_response(
+                request,
+                code="CONCEPT_INTRO_GENERATION_FAILED",
+                message="概念开场生成失败，请重试当前知识点。",
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                details={"reason": "concept_intro_generation_failed"},
+                recoverable=True,
+            )
+        except SessionStateConflictError as exc:
+            conn.rollback()
+            return error_response(
+                request,
+                code="SESSION_CONFLICT",
+                message="当前学习阶段不能重新触发概念检验",
+                status_code=status.HTTP_409_CONFLICT,
+                details={"session_id": session_id, "reason": str(exc)},
+                recoverable=False,
+            )
+        except (LLMCallError, LLMConfigurationError, LLMInvalidResponseError) as exc:
+            conn.rollback()
+            return model_unavailable_response(
+                request,
+                details={"reason": exc.__class__.__name__},
+            )
+        conn.commit()
+    return JSONResponse(status_code=status.HTTP_200_OK, content=jsonable_encoder(response))
 
 
 @router.get("/history", response_model=None)

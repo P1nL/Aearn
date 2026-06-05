@@ -51,7 +51,7 @@ V1 使用本地单用户或轻量用户机制，不强制登录态。所有需�
 | `LearningPlan.status` | `active` / `paused` / `completed` |
 | `PlanModule.status` | `pending` / `in_progress` / `completed` / `skipped` |
 | `KnowledgePoint.status` | `pending` / `learning` / `reviewing` / `mastered` |
-| `LearningSession.learning_stage` | `concept_intro` / `concept_check` / `concept_repair` / `practice_offer` / `concept_qna` / `readiness_check` / `practice_support` |
+| `LearningSession.learning_stage` | `documentation_reading` / `concept_intro` / `concept_check` / `concept_repair` / `practice_offer` / `concept_qna` / `readiness_check` / `practice_support` |
 | `Exercise.exercise_type` | `code_blank` / `fix_bug` / `implement_function` / `explain_code` / `review_ai_patch` |
 | `Attempt.attempt_type` | `run` / `submit` / `review_submit` |
 | `Attempt.runtime_status` | `success` / `missing_toolchain` / `unsupported` / `compile_error` / `runtime_error` / `timeout` / `test_failure` |
@@ -116,7 +116,7 @@ V1 使用本地单用户或轻量用户机制，不强制登录态。所有需�
 | `KNOWLEDGE_POINT_NOT_FOUND` | 404 | 知识点不存在 |
 | `EXERCISE_NOT_FOUND` | 404 | 练习不存在 |
 | `SESSION_NOT_FOUND` | 404 | 学习会话不存在 |
-| `SESSION_CONFLICT` | 409 | 存在同一用户同一知识点的活动会话 |
+| `SESSION_CONFLICT` | 409 | 存在同一用户同一知识点的活动会话，或会话当前阶段不允许该操作 |
 | `ATTEMPT_NOT_FOUND` | 404 | Attempt 不存在 |
 | `ATTEMPT_STATE_CONFLICT` | 409 | Attempt 状态不允许当前操作 |
 | `RUNTIME_UNSUPPORTED` | 422 | `RuntimeProfile.runtime_tier` 第一版不支持真实运行 |
@@ -1404,26 +1404,38 @@ Response JSON 示例：
   "modules": [
     {
       "id": "mod_dom",
+      "plan_id": "plan_001",
+      "title": "DOM 事件与状态",
+      "description": "用按钮计数练习状态更新。",
+      "order_index": 1,
       "status": "in_progress",
-      "knowledge_points": [
-        {
-          "id": "kp_dom_event_state",
-          "title": "事件监听与状态变量",
-          "status": "reviewing",
-          "mastery_score": 0.62,
-          "ReviewState": {
-            "knowledge_point_id": "kp_dom_event_state",
-            "due_at": "2026-05-12T08:00:00Z",
-            "last_fsrs_rating": "Good"
-          }
-        }
-      ]
+      "is_skippable": false,
+      "is_adjustable": true,
+      "estimated_sessions": 3
+    }
+  ],
+  "knowledge_points": [
+    {
+      "id": "kp_dom_event_state",
+      "module_id": "mod_dom",
+      "language_course_id": "course_js_dom",
+      "title": "事件监听与状态变量",
+      "description": "理解事件回调和外层状态变量的关系。",
+      "order_index": 1,
+      "skill_tags_json": ["dom", "event", "state"],
+      "status": "reviewing",
+      "mastery_score": 0.62,
+      "review_state": {
+        "due_at": "2026-05-12T08:00:00Z",
+        "is_due": false,
+        "label": "未到期 · 下次 05-12 16:00"
+      }
     }
   ],
   "next_entry_point": {
-    "type": "resume",
-    "session_id": "sess_001",
-    "next_action": "advance_next"
+    "type": "learning_session",
+    "plan_id": "plan_001",
+    "knowledge_point_id": "kp_dom_event_state"
   }
 }
 ```
@@ -1436,6 +1448,8 @@ HTTP 状态码：
 错误码：`PLAN_NOT_FOUND`
 
 幂等/重试说明：只读接口，可安全重试。desktop 必须带当前 active `user_id`；跨用户或已删除用户/计划 mismatch 返回 `PLAN_NOT_FOUND`，避免通过错误信息暴露其他本地用户数据。
+
+`review_state` 是计划详情里的轻量侧栏预览字段：`is_due=true` 必须与 `GET /api/reviews/today` 的到期队列语义一致；`is_due=false` 或缺少 `review_state` 时，desktop 只能把复习侧栏项渲染为禁用/预告态，不得调用 `POST /api/reviews/start`。
 
 相关数据表/状态机节点：`LearningPlan`、`PlanModule`、`KnowledgePoint`、`ReviewState`；`load_resume_context` 可读取该结构。
 
@@ -1491,7 +1505,7 @@ HTTP 状态码：
 
 #### `POST /api/learning-sessions/start`
 
-用途：开始一次学习会话，创建或恢复活动 `LearningSession(session_type=learn)`。新会话先生成并持久化 `show_concept_intro`，进入 `concept_check`，默认不返回练习；只有已解锁练习的恢复会话才返回当前 `Exercise`。
+用途：开始一次学习会话，创建或恢复活动 `LearningSession(session_type=learn)`。新会话先进入 `documentation_reading`，返回引导性开场白和右侧文档面板所需上下文，不自动下发 `show_concept_intro`；只有用户显式触发概念检验后才进入 `concept_check`。已解锁练习的恢复会话才返回当前 `Exercise`。
 
 Request JSON 示例：
 
@@ -1547,66 +1561,20 @@ Response JSON 示例：
       "url": "https://developer.mozilla.org/docs/Web/API/EventTarget/addEventListener"
     }
   ],
-  "learning_stage": "concept_check",
+  "learning_stage": "documentation_reading",
   "learning_stage_state": {
     "covered_subpoint_ids": [],
     "feynman_status": "pending",
     "practice_unlock_reason": null,
     "learning_incomplete": true,
     "concept_summary": "事件监听与状态变量：理解事件监听如何触发回调，以及状态变量为什么需要跨点击保存。",
-    "active_concept_intro": {
-      "summary": "事件监听会把回调登记到按钮上，状态变量要放在能跨点击保留的位置。",
-      "example": {
-        "title": "点击计数",
-        "body": "按钮每次被点击都会执行同一个回调；如果 count 在回调外层，下一次点击能看到上一次的值。",
-        "takeaway": "需要跨交互保留的状态不要放进每次都会重新执行的局部作用域。"
-      },
-      "check": {
-        "question": "count 放在 click 回调内部时，第二次点击会看到什么？",
-        "options": [
-          {"id": "A", "text": "从上次的 count 继续累加"},
-          {"id": "B", "text": "重新从 0 开始"}
-        ],
-        "expected_focus": "回调作用域与跨点击状态共享的关系"
-      }
-    },
-    "active_concept_check": {
-      "question": "count 放在 click 回调内部时，第二次点击会看到什么？",
-      "options": [
-        {"id": "A", "text": "从上次的 count 继续累加"},
-        {"id": "B", "text": "重新从 0 开始"}
-      ],
-      "expected_focus": "回调作用域与跨点击状态共享的关系"
-    },
+    "active_concept_intro": null,
+    "active_concept_check": null,
     "concept_check_attempts": 0,
     "concept_check_result": null
   },
-  "initial_agent_message": "今天先理解事件监听与状态变量，目标是能说明它如何影响程序行为，而不是立刻做题。",
-  "initial_tool_calls": [
-    {
-      "id": "tc_001",
-      "name": "show_concept_intro",
-      "status": "done",
-      "args": {
-        "session_id": "sess_001",
-        "knowledge_point_id": "kp_dom_event_state",
-        "summary": "事件监听会把回调登记到按钮上，状态变量要放在能跨点击保留的位置。",
-        "example": {
-          "title": "点击计数",
-          "body": "按钮每次被点击都会执行同一个回调；如果 count 在回调外层，下一次点击能看到上一次的值。",
-          "takeaway": "需要跨交互保留的状态不要放进每次都会重新执行的局部作用域。"
-        },
-        "check": {
-          "question": "count 放在 click 回调内部时，第二次点击会看到什么？",
-          "options": [
-            {"id": "A", "text": "从上次的 count 继续累加"},
-            {"id": "B", "text": "重新从 0 开始"}
-          ],
-          "expected_focus": "回调作用域与跨点击状态共享的关系"
-        }
-      }
-    }
-  ],
+  "initial_agent_message": "先阅读右侧「事件监听与状态变量」文档，再决定是否进入概念检验。阅读过程中可以选中文字或代码块并点击「引用到对话」。准备好后，点击「开始概念检验」。",
+  "initial_tool_calls": [],
   "session_state": "learning"
 }
 ```
@@ -1617,13 +1585,110 @@ HTTP 状态码：
 - `200`：复用已有活动会话
 - `404`：用户、计划或知识点不存在
 - `409`：会话冲突且无法复用
-- `503`：概念开场生成失败或输出校验失败
+- `503`：模型相关恢复路径不可用（仅恢复已有概念阶段或后续显式触发概念检验时可能出现）
 
-错误码：`USER_NOT_FOUND`、`PLAN_NOT_FOUND`、`KNOWLEDGE_POINT_NOT_FOUND`、`SESSION_CONFLICT`、`CONCEPT_INTRO_GENERATION_FAILED`
+错误码：`USER_NOT_FOUND`、`PLAN_NOT_FOUND`、`KNOWLEDGE_POINT_NOT_FOUND`、`SESSION_CONFLICT`、`MODEL_UNAVAILABLE`
 
-幂等/重试说明：幂等键为 `user_id + plan_id + knowledge_point_id + active_session`。重试不得创建多个活动会话；已创建会话必须重放持久化的 `initial_tool_calls`，不得重新生成漂移的概念开场。
+幂等/重试说明：幂等键为 `user_id + plan_id + knowledge_point_id + active_session`。重试不得创建多个活动会话；已触发概念检验的恢复会话必须重放持久化的 `show_concept_intro`，不得重新生成漂移的概念开场。
 
-相关数据表/状态机节点：`LearningSession`、`LearningPlan`、`KnowledgePoint`、`RuntimeProfile`、`LearningMessage`；`start_learning_session`、`context_assembler`、`concept_intro`、`concept_check`。练习只在 `practice_support` 阶段进入 `select_exercise`、`present_exercise`。
+相关数据表/状态机节点：`LearningSession`、`LearningPlan`、`KnowledgePoint`、`RuntimeProfile`、`LearningMessage`；`start_learning_session`、`context_assembler`、`documentation_reading`。练习只在 `practice_support` 阶段进入 `select_exercise`、`present_exercise`。
+
+#### `GET /api/learning-sessions/knowledge-points/{knowledge_point_id}/documentation`
+
+用途：读取当前知识点的右侧文档面板内容。MVP 从已持久化的 `lesson_outline_json`、`lesson_sources_json` 和 `teaching_chunks` 组装结构化文档，不暴露 hidden tests、solution references、provider payload 或 raw prompts。响应按 `user_id + knowledge_point_id` 写入 Redis 24 小时 best-effort 缓存；缓存不可用时无缓存继续生成，`cache_hit` 标识本次是否命中。
+
+Response JSON 示例：
+
+```json
+{
+  "knowledge_point_id": "kp_dom_event_state",
+  "title": "事件监听与状态变量",
+  "summary": "理解事件监听如何触发回调，以及状态变量为什么需要跨点击保存。",
+  "sections": [
+    {
+      "id": "core_concept",
+      "type": "core_concept",
+      "title": "核心概念",
+      "content_markdown": "事件监听与状态变量的学习目标是先建立稳定心智模型，再进入代码验证。",
+      "code_blocks": []
+    },
+    {
+      "id": "syntax",
+      "type": "syntax",
+      "title": "语法结构",
+      "content_markdown": "先看最小结构，再看每个组成部分的职责。",
+      "code_blocks": [
+        {
+          "language": "javascript",
+          "code": "const input = \"观察输入\";\nconsole.log(input);",
+          "caption": "把知识点绑定到一个可观察输出，方便验证理解。"
+        }
+      ]
+    }
+  ],
+  "references": [
+    {
+      "title": "MDN Web Docs: EventTarget.addEventListener()",
+      "url": "https://developer.mozilla.org/docs/Web/API/EventTarget/addEventListener"
+    }
+  ],
+  "generated_at": "2026-06-04T08:00:00Z",
+  "cache_hit": false
+}
+```
+
+HTTP 状态码：`200`、`404`
+
+错误码：`USER_NOT_FOUND`、`KNOWLEDGE_POINT_NOT_FOUND`
+
+#### `POST /api/learning-sessions/{session_id}/trigger-concept-check`
+
+用途：用户阅读文档或围绕文档提问后主动点击「开始概念检验」，结合当前知识点提纲、来源和最近用户提问/引用，生成并持久化 `show_concept_intro`，将 `LearningSession.learning_stage` 推进到 `concept_check`。
+
+Request JSON 示例：
+
+```json
+{
+  "user_id": "user_001"
+}
+```
+
+Response JSON 示例：
+
+```json
+{
+  "session_id": "sess_001",
+  "learning_stage": "concept_check",
+  "learning_stage_state": {
+    "active_concept_intro": {
+      "summary": "事件监听会把回调登记到按钮上。",
+      "check": {
+        "question": "count 放在 click 回调内部时，第二次点击会看到什么？",
+        "options": [
+          {"id": "A", "text": "从上次的 count 继续累加"},
+          {"id": "B", "text": "重新从 0 开始"}
+        ]
+      }
+    }
+  },
+  "agent_message": "我先为“事件监听与状态变量”生成一张概念判断卡。你可以回复 A、B、C，或直接用自己的话说出判断。",
+  "tool_call": {
+    "id": "tc_001",
+    "name": "show_concept_intro",
+    "status": "done",
+    "args": {
+      "session_id": "sess_001",
+      "knowledge_point_id": "kp_dom_event_state"
+    }
+  }
+}
+```
+
+HTTP 状态码：`200`、`404`、`409`、`503`
+
+错误码：`SESSION_NOT_FOUND`、`SESSION_CONFLICT`、`CONCEPT_INTRO_GENERATION_FAILED`、`MODEL_UNAVAILABLE`
+
+状态规则：只有 `documentation_reading` 或 `concept_qna` 阶段允许首次触发概念检验；`concept_check` 且已有持久化 `active_concept_intro` 时只做幂等重放。`concept_repair`、`practice_offer`、`practice_support` 等后续阶段不得被该端点重置回 `concept_check`。
 
 #### `POST /api/learning-sessions/{session_id}/messages`
 

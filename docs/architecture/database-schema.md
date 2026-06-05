@@ -323,7 +323,7 @@ $$ LANGUAGE plpgsql;
 | `summary_text` | `text` | NULL | 会话摘要 |
 | `next_entry_point` | `text` | NULL | 恢复学习入口 |
 | `request_id` | `text` | NULL | API 幂等键 |
-| `learning_stage` | `text` | NULL | CHECK in `concept_intro` / `concept_check` / `concept_repair` / `practice_offer` / `concept_qna` / `readiness_check` / `practice_support`；仅 `session_type=learn` 使用，`concept_qna` / `readiness_check` 为旧会话兼容 |
+| `learning_stage` | `text` | NULL | CHECK in `documentation_reading` / `concept_intro` / `concept_check` / `concept_repair` / `practice_offer` / `concept_qna` / `readiness_check` / `practice_support`；仅 `session_type=learn` 使用，`concept_qna` / `readiness_check` 为旧会话兼容 |
 | `learning_stage_state_json` | `jsonb` | NOT NULL DEFAULT `'{}'::jsonb` | 精简概念判断、修正、练习解锁和旧费曼检查状态 |
 | `review_stage` | `text` | NULL | CHECK in `warmup` / `warmup_repair` / `variant_practice` / `submitted`；仅 `session_type=review` 使用 |
 | `review_stage_state_json` | `jsonb` | NOT NULL DEFAULT `'{}'::jsonb` | 精简复习热身、seed、变体练习和提交阶段状态 |
@@ -1147,7 +1147,7 @@ FSRS 更新的 append-only 日志。每次学习提交或复习提交只要更�
 |---|---|---|
 | `confirm_plan` | `learning_plans`、`plan_modules`、`knowledge_points`、可选 `exercises` | 只有用户确认后写正式计划 |
 | `initialize_review_state` | `review_states` | 为每个 `KnowledgePoint` 创建 `card_state=new`，`due_at=NULL` |
-| `start_learning_session` / `start_review_session` | `learning_sessions` | 使用 `request_id` 幂等；学习页新会话写入 `learning_stage=concept_check` 并持久化 `show_concept_intro`；复习页新会话写入 `review_stage=warmup` 和完整 `review_stage_state_json` |
+| `start_learning_session` / `start_review_session` | `learning_sessions` | 使用 `request_id` 幂等；学习页新会话写入 `learning_stage=documentation_reading`，不自动持久化 `show_concept_intro`；复习页新会话写入 `review_stage=warmup` 和完整 `review_stage_state_json` |
 | `concept_check` / `concept_repair` / `practice_offer` | `learning_sessions`、`learning_messages` | 更新精简阶段状态并保存学习页可见对话和 `show_concept_check_result` 工具调用 |
 | `ensure_review_seed_bank` | `review_seed_banks`、可选 `exercises` | 异步或同步 rescue 生成完整 seed bank，校验通过后持久化；rescue 失败记录 failed，不展示 fallback 题 |
 | `record_review_warmup_result` | `learning_sessions` | 只更新 `review_stage` / `review_stage_state_json`，不创建 `Attempt`，不更新 FSRS |

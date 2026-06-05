@@ -2,6 +2,7 @@ import hashlib
 import json
 from collections.abc import Mapping
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from psycopg import Connection
@@ -9,8 +10,9 @@ from psycopg import Connection
 from app.models.onboarding import PlanDraft
 from app.services.curriculum.catalog import get_course
 from app.services.curriculum.plan_generator import normalize_target_level
-from app.services.repositories.review_seed_bank import ensure_review_seed_bank_placeholders_for_plan
 from app.services.curriculum.teaching_chunks import index_knowledge_point_chunks
+from app.services.repositories.review_seed_bank import ensure_review_seed_bank_placeholders_for_plan
+from app.services.repositories.review_scheduler import LOCAL_TIMEZONE
 from app.services.repositories.user_repository import get_user
 
 
@@ -208,13 +210,25 @@ def get_plan_detail(
     ).fetchall()
     knowledge_points = conn.execute(
         """
-        SELECT knowledge_points.*
+        SELECT
+          knowledge_points.*,
+          review_states.knowledge_point_id AS review_state_knowledge_point_id,
+          review_states.due_at AS review_state_due_at,
+          review_states.suspended_at AS review_state_suspended_at,
+          (
+            review_states.due_at IS NOT NULL
+            AND review_states.due_at <= now()
+            AND review_states.suspended_at IS NULL
+          ) AS review_state_is_due
         FROM knowledge_points
         JOIN plan_modules ON plan_modules.id = knowledge_points.module_id
+        LEFT JOIN review_states
+          ON review_states.knowledge_point_id = knowledge_points.id
+         AND review_states.plan_id = %s
         WHERE plan_modules.plan_id = %s AND knowledge_points.deleted_at IS NULL
         ORDER BY plan_modules.order_index, knowledge_points.order_index
         """,
-        (plan_id,),
+        (plan_id, plan_id),
     ).fetchall()
     return _build_plan_response(plan, modules, knowledge_points)
 
@@ -246,10 +260,11 @@ def _build_plan_response(
     knowledge_points: Sequence[Mapping[str, object]],
 ) -> dict[str, object]:
     first_knowledge_point = knowledge_points[0] if knowledge_points else None
+    plan_status = str(plan["status"])
     return {
         "LearningPlan": _serialize_plan(plan),
         "modules": [_serialize_module(module) for module in modules],
-        "knowledge_points": [_serialize_knowledge_point(kp) for kp in knowledge_points],
+        "knowledge_points": [_serialize_knowledge_point(kp, plan_status=plan_status) for kp in knowledge_points],
         "next_entry_point": {
             "type": "learning_session",
             "plan_id": str(plan["id"]),
@@ -288,8 +303,8 @@ def _serialize_module(row: Mapping[str, object]) -> dict[str, object]:
     }
 
 
-def _serialize_knowledge_point(row: Mapping[str, object]) -> dict[str, object]:
-    return {
+def _serialize_knowledge_point(row: Mapping[str, object], *, plan_status: str = "active") -> dict[str, object]:
+    payload = {
         "id": str(row["id"]),
         "module_id": str(row["module_id"]),
         "language_course_id": str(row["language_course_id"]),
@@ -300,6 +315,45 @@ def _serialize_knowledge_point(row: Mapping[str, object]) -> dict[str, object]:
         "status": row["status"],
         "mastery_score": _decimal_to_float(row["mastery_score"]),
     }
+    if row.get("review_state_knowledge_point_id") is not None:
+        payload["review_state"] = _serialize_review_state_preview(row, plan_status=plan_status)
+    return payload
+
+
+def _serialize_review_state_preview(row: Mapping[str, object], *, plan_status: str) -> dict[str, object]:
+    due_at = row.get("review_state_due_at")
+    unavailable = plan_status != "active" or row.get("review_state_suspended_at") is not None
+    is_due = bool(row.get("review_state_is_due")) and not unavailable
+    return {
+        "due_at": _iso_or_none(due_at),
+        "is_due": is_due,
+        "label": "已安排，当前不可复习" if unavailable else _review_state_label(due_at, is_due=is_due),
+    }
+
+
+def _review_state_label(due_at: object, *, is_due: bool) -> str:
+    if due_at is None:
+        return "已安排，等待同步"
+    if is_due:
+        return "已到期"
+    if not isinstance(due_at, datetime):
+        return "已安排，未到期"
+    local_due_at = _aware_datetime(due_at).astimezone(LOCAL_TIMEZONE)
+    return f"未到期 · 下次 {local_due_at:%m-%d %H:%M}"
+
+
+def _iso_or_none(value: object) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return _aware_datetime(value).isoformat()
+    return str(value)
+
+
+def _aware_datetime(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def _decimal_to_float(value: object) -> float:

@@ -36,11 +36,17 @@ export function SidebarNav({
   const reviewItems =
     createdPlan?.knowledge_points
       .filter((knowledgePoint) => knowledgePoint.status === "reviewing" || knowledgePoint.status === "mastered")
-      .map((knowledgePoint) => ({
-        id: knowledgePoint.id,
-        title: knowledgePoint.title,
-        active: activeRoute === "review" && knowledgePoint.id === activeKnowledgePointId,
-      })) ?? [];
+      .map((knowledgePoint) => {
+        const reviewState = knowledgePoint.review_state;
+        const isDue = reviewState?.is_due === true;
+        return {
+          id: knowledgePoint.id,
+          title: knowledgePoint.title,
+          active: isDue && activeRoute === "review" && knowledgePoint.id === activeKnowledgePointId,
+          disabled: !isDue,
+          label: reviewState?.label ?? "已安排，等待同步",
+        };
+      }) ?? [];
   const noteItems =
     createdPlan?.knowledge_points.map((knowledgePoint, index) => ({
       id: knowledgePoint.id,
@@ -118,13 +124,27 @@ export function SidebarNav({
             {reviewItems.length > 0 ? (
               visibleReviewItems.map((item) => (
                 <button
-                  className={item.active ? "nav-link active" : "nav-link"}
+                  className={[
+                    "nav-link",
+                    "nav-review-item",
+                    item.active ? "active" : "",
+                    item.disabled ? "disabled" : "",
+                  ]
+                    .filter(Boolean)
+                    .join(" ")}
                   key={item.id}
                   type="button"
-                  onClick={() => onRouteChange("review")}
+                  disabled={item.disabled}
+                  title={item.label}
+                  onClick={() => {
+                    if (!item.disabled) onRouteChange("review");
+                  }}
                 >
                   <span className="nav-dot"></span>
-                  <span>{item.title}</span>
+                  <span className="nav-review-copy">
+                    <span>{item.title}</span>
+                    <span className="nav-review-status">{item.label}</span>
+                  </span>
                 </button>
               ))
             ) : (

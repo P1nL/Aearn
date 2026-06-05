@@ -1,9 +1,10 @@
-import { type ReactNode } from "react";
+import { type ReactNode, useEffect } from "react";
 import {
   AssistantRuntimeProvider,
   ComposerPrimitive,
   MessagePrimitive,
   ThreadPrimitive,
+  useComposerRuntime,
   useMessage,
   type ToolCallMessagePartProps,
 } from "@assistant-ui/react";
@@ -28,6 +29,9 @@ type AssistantUIThreadProps = {
   ariaLabel?: string;
   guidanceText?: string;
   emptyState?: ReactNode;
+  beforeComposer?: ReactNode;
+  composerPrefillText?: string | null;
+  onComposerPrefillConsumed?: () => void;
   quickReplies?: string[];
   canOpenNoteDrawer?: boolean;
   noteDrawerOpen?: boolean;
@@ -52,6 +56,9 @@ export function AssistantUIThread({
   ariaLabel = "代码练习输入框",
   guidanceText,
   emptyState,
+  beforeComposer,
+  composerPrefillText,
+  onComposerPrefillConsumed,
   quickReplies,
   canOpenNoteDrawer = false,
   noteDrawerOpen = false,
@@ -79,6 +86,7 @@ export function AssistantUIThread({
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       <LearningRouteRuntimeProvider latestToolCallId={latestRouteToolCallId}>
+        <ComposerPrefillBridge text={composerPrefillText ?? null} onConsumed={onComposerPrefillConsumed} />
         <LearningRouteToolUI />
         <ConceptIntroToolUI />
         <ConceptCheckResultToolUI />
@@ -94,6 +102,8 @@ export function AssistantUIThread({
               </ThreadPrimitive.Messages>
             )}
           </ThreadPrimitive.Viewport>
+
+          {beforeComposer}
 
           <ComposerPrimitive.Root className="composer-wrap">
             {quickReplyEnabled && (
@@ -148,6 +158,28 @@ export function AssistantUIThread({
       </LearningRouteRuntimeProvider>
     </AssistantRuntimeProvider>
   );
+}
+
+function ComposerPrefillBridge({
+  text,
+  onConsumed,
+}: {
+  text: string | null;
+  onConsumed?: () => void;
+}) {
+  const composer = useComposerRuntime({ optional: true });
+
+  useEffect(() => {
+    if (!text || !composer) return;
+    const existing = composer.getState().text.trim();
+    composer.setText(existing ? `${existing}\n\n${text}` : text);
+    onConsumed?.();
+    window.requestAnimationFrame(() => {
+      document.querySelector<HTMLElement>(".assistant-ui-composer-input")?.focus();
+    });
+  }, [composer, onConsumed, text]);
+
+  return null;
 }
 
 type RendererProps = {

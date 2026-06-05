@@ -629,7 +629,7 @@ def _route_orchestration(state: OrchestrationInput) -> str:
     if stage in {"concept_check", "concept_repair"}:
         return "concept_check_answer"
 
-    if stage in {"concept_intro", "concept_qna"}:
+    if stage in {"documentation_reading", "concept_intro", "concept_qna"}:
         if _is_question(user_text) or _is_concept_help(user_text):
             return "concept_qna"
         return "readiness_check"

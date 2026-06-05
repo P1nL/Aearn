@@ -162,9 +162,10 @@ LearningWorkspacePage
 3. 仅当后端判断“最近一次学习活动距当前超过 72 小时，且至少存在一条 `forget_risk=high` 的到期复习”时，优先进入 `ReviewPage`。
 4. 如果 `resume_available=true`，展示恢复学习提示和 `next_entry_point`。
 5. 用户点击当前知识点后调用 `POST /api/learning-sessions/start`。
-6. 前端以 `session_id` 加载会话；如果 `learning_stage` 不是 `practice_support`，只展示概念优先对话，不展示练习卡片。
-7. 新会话入口必须渲染 `initial_tool_calls` 中持久化的 `show_concept_intro`；刷新或恢复时不得重新生成不同内容。
-8. Agent 通过 `show_concept_check_result` 展示自然语言判断结果，通过 `show_code_exercise` 工具调用在对话中生成练习 UI；通过 `show_learning_history` 工具调用展示知识点历史对话引用。
+6. 前端以 `session_id` 加载会话；如果 `learning_stage` 不是 `practice_support`，只展示阅读/概念优先对话，不展示练习卡片。
+7. 新会话入口进入 `documentation_reading`，右侧自动加载知识点文档，`initial_tool_calls=[]`；只有用户点击「开始概念检验」后才调用 `POST /api/learning-sessions/{session_id}/trigger-concept-check` 并渲染 `show_concept_intro`。
+8. 已触发概念检验的恢复会话必须重放持久化的 `show_concept_intro`，不得重新生成不同内容。
+9. Agent 通过 `show_concept_check_result` 展示自然语言判断结果，通过 `show_code_exercise` 工具调用在对话中生成练习 UI；通过 `show_learning_history` 工具调用展示知识点历史对话引用。
 
 ### `WorkspaceTopStatusBar`
 
@@ -188,6 +189,13 @@ LearningWorkspacePage
 | 今日复习 | 跳转 `ReviewPage` | `today_review_count=0` 时仍可进入空态 |
 | 设置 | 跳转 `SettingsPage` | 无 |
 | 恢复上次 | `GET /api/learning-sessions/resume` | `resume_available=false` |
+
+### 左侧复习分组
+
+- 左侧「复习」分组可以展示 `status=reviewing/mastered` 的知识点，但不能只凭 `status` 判断可点击。
+- `GET /api/plans/{plan_id}` 返回的 `knowledge_points[].review_state.is_due === true` 是侧栏项可点击的唯一事实来源。
+- `is_due=false` 或缺少 `review_state` 时，侧栏项必须渲染为禁用预告态，显示 `review_state.label` 或「已安排，等待同步」，不跳转 `ReviewPage`，不触发 `POST /api/reviews/start`，不显示错误 toast。
+- 可点击的到期项必须与 `GET /api/reviews/today` 的到期队列语义一致；进入复习页后不能出现“侧栏可点击但今日队列为空”的不一致状态。
 
 ### `RoutePanel`
 
@@ -213,6 +221,8 @@ LearningWorkspacePage
 职责：
 
 - `LearningWorkspacePage` 必须接受 `exercise=null` 的会话响应，并保持 composer 可用。
+- `documentation_reading` / `concept_qna` 阶段必须显示右侧文档面板和「开始概念检验」按钮；文档未加载完成时按钮禁用。
+- 文档面板支持目录跳转、章节折叠、选中文字引用到对话和代码块引用到对话；引用只填充 composer，不自动发送。
 - `show_concept_intro` 渲染概念总结、易懂例子和 2-4 个文本选项；选项只是可复制的回答提示，不是强制按钮。
 - `show_concept_check_result` 渲染 `correct` / `incorrect` / `unclear` / `skipped` 结果、解释、下一步提示、可选 `repair_check` 和文本 quick replies。
 - `concept_check`、`concept_repair` 和 `practice_offer` 只展示概念判断与修正，不直接固定展示练习卡片。
@@ -228,7 +238,7 @@ LearningWorkspacePage
 | `learning_stage` | 决定 placeholder、quick replies 和是否可渲染练习卡 |
 | `learning_stage_state.learning_incomplete` | 决定提前练习提示 |
 | `lesson_outline` / `lesson_sources` | 展示概念提纲和来源归因 |
-| `initial_tool_calls[]` | 新会话入口渲染持久化 `show_concept_intro` |
+| `initial_tool_calls[]` | 已触发概念检验的恢复会话重放持久化 `show_concept_intro`；新 `documentation_reading` 会话为空数组 |
 | `tool_calls[].name` | 选择 `show_concept_intro`、`show_concept_check_result`、`show_code_exercise` 或 `show_learning_history` 组件 |
 
 ### `GeneratedCodeExerciseCard`

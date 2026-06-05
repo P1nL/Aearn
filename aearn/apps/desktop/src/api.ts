@@ -2,6 +2,8 @@ import type {
   ApiError,
   ApiHealth,
   CodeCompletionResult,
+  CreatedKnowledgePoint,
+  CreatedModule,
   CreatedPlanResponse,
   DashboardResponse,
   EnvironmentComponent,
@@ -17,6 +19,7 @@ import type {
   ExplanationCheckResponse,
   HintLevel,
   HintResponse,
+  KnowledgePointDocumentationResponse,
   Language,
   LanguageCourse,
   LocalUserDataSummary,
@@ -44,6 +47,7 @@ import type {
   SubmitExerciseResponse,
   TestResult,
   TodayReviewsResponse,
+  TriggerConceptCheckResponse,
   UserPreferencesUpdate,
   UserProfile,
 } from "./types";
@@ -286,6 +290,39 @@ export async function startLearningSession(input: {
   });
   if (!isLearningSessionResponse(payload)) {
     throw new Error("Learning session start returned an invalid payload");
+  }
+  return payload;
+}
+
+export async function fetchKnowledgePointDocumentation(input: {
+  userId: string;
+  knowledgePointId: string;
+  signal?: AbortSignal;
+}): Promise<KnowledgePointDocumentationResponse> {
+  const query = new URLSearchParams({ user_id: input.userId });
+  const payload = await requestJson(
+    `${API_BASE_URL}/api/learning-sessions/knowledge-points/${encodeURIComponent(input.knowledgePointId)}/documentation?${query.toString()}`,
+    { signal: input.signal },
+  );
+  if (!isKnowledgePointDocumentationResponse(payload)) {
+    throw new Error("Knowledge point documentation API returned an invalid payload");
+  }
+  return payload;
+}
+
+export async function triggerConceptCheck(input: {
+  userId: string;
+  sessionId: string;
+}): Promise<TriggerConceptCheckResponse> {
+  const payload = await requestJson(
+    `${API_BASE_URL}/api/learning-sessions/${encodeURIComponent(input.sessionId)}/trigger-concept-check`,
+    {
+      method: "POST",
+      body: JSON.stringify({ user_id: input.userId }),
+    },
+  );
+  if (!isTriggerConceptCheckResponse(payload)) {
+    throw new Error("Concept check trigger API returned an invalid payload");
   }
   return payload;
 }
@@ -868,9 +905,68 @@ function isCreatedPlanResponse(payload: unknown): payload is CreatedPlanResponse
     isRecord(payload) &&
     isRecord(payload.LearningPlan) &&
     typeof payload.LearningPlan.id === "string" &&
+    typeof payload.LearningPlan.user_id === "string" &&
+    typeof payload.LearningPlan.language_course_id === "string" &&
+    typeof payload.LearningPlan.goal_text === "string" &&
+    typeof payload.LearningPlan.language === "string" &&
+    typeof payload.LearningPlan.target_level === "string" &&
+    typeof payload.LearningPlan.mode === "string" &&
+    (typeof payload.LearningPlan.deadline === "string" || payload.LearningPlan.deadline === null) &&
+    typeof payload.LearningPlan.status === "string" &&
+    typeof payload.LearningPlan.overall_progress === "number" &&
+    (typeof payload.LearningPlan.current_module_id === "string" || payload.LearningPlan.current_module_id === null) &&
     Array.isArray(payload.modules) &&
+    payload.modules.every(isCreatedModule) &&
     Array.isArray(payload.knowledge_points) &&
-    isRecord(payload.next_entry_point)
+    payload.knowledge_points.every(isCreatedKnowledgePoint) &&
+    isRecord(payload.next_entry_point) &&
+    payload.next_entry_point.type === "learning_session" &&
+    typeof payload.next_entry_point.plan_id === "string" &&
+    (typeof payload.next_entry_point.knowledge_point_id === "string" ||
+      payload.next_entry_point.knowledge_point_id === null)
+  );
+}
+
+function isCreatedModule(payload: unknown): payload is CreatedModule {
+  return (
+    isRecord(payload) &&
+    typeof payload.id === "string" &&
+    typeof payload.plan_id === "string" &&
+    typeof payload.title === "string" &&
+    (typeof payload.description === "string" || payload.description === null) &&
+    typeof payload.order_index === "number" &&
+    typeof payload.status === "string" &&
+    typeof payload.is_skippable === "boolean" &&
+    typeof payload.is_adjustable === "boolean" &&
+    typeof payload.estimated_sessions === "number"
+  );
+}
+
+function isCreatedKnowledgePoint(payload: unknown): payload is CreatedKnowledgePoint {
+  return (
+    isRecord(payload) &&
+    typeof payload.id === "string" &&
+    typeof payload.module_id === "string" &&
+    typeof payload.language_course_id === "string" &&
+    typeof payload.title === "string" &&
+    (typeof payload.description === "string" || payload.description === null) &&
+    typeof payload.order_index === "number" &&
+    Array.isArray(payload.skill_tags_json) &&
+    payload.skill_tags_json.every((tag) => typeof tag === "string") &&
+    typeof payload.status === "string" &&
+    typeof payload.mastery_score === "number" &&
+    (payload.review_state === undefined || isCreatedKnowledgePointReviewStatePreview(payload.review_state))
+  );
+}
+
+function isCreatedKnowledgePointReviewStatePreview(
+  payload: unknown,
+): payload is CreatedKnowledgePoint["review_state"] {
+  return (
+    isRecord(payload) &&
+    (typeof payload.due_at === "string" || payload.due_at === null) &&
+    typeof payload.is_due === "boolean" &&
+    typeof payload.label === "string"
   );
 }
 
@@ -945,6 +1041,59 @@ function isLearningSessionResponse(payload: unknown): payload is LearningSession
     Array.isArray(payload.lesson_outline) &&
     Array.isArray(payload.lesson_sources) &&
     typeof payload.initial_agent_message === "string"
+  );
+}
+
+function isKnowledgePointDocumentationResponse(payload: unknown): payload is KnowledgePointDocumentationResponse {
+  return (
+    isRecord(payload) &&
+    typeof payload.knowledge_point_id === "string" &&
+    typeof payload.title === "string" &&
+    typeof payload.summary === "string" &&
+    Array.isArray(payload.sections) &&
+    payload.sections.every(isDocumentationSection) &&
+    Array.isArray(payload.references) &&
+    payload.references.every(
+      (reference) =>
+        isRecord(reference) &&
+        typeof reference.title === "string" &&
+        typeof reference.url === "string",
+    ) &&
+    typeof payload.generated_at === "string" &&
+    typeof payload.cache_hit === "boolean"
+  );
+}
+
+function isDocumentationSection(payload: unknown): payload is KnowledgePointDocumentationResponse["sections"][number] {
+  return (
+    isRecord(payload) &&
+    typeof payload.id === "string" &&
+    typeof payload.type === "string" &&
+    typeof payload.title === "string" &&
+    typeof payload.content_markdown === "string" &&
+    Array.isArray(payload.code_blocks) &&
+    payload.code_blocks.every(
+      (block) =>
+        isRecord(block) &&
+        typeof block.language === "string" &&
+        typeof block.code === "string" &&
+        typeof block.caption === "string",
+    )
+  );
+}
+
+function isTriggerConceptCheckResponse(payload: unknown): payload is TriggerConceptCheckResponse {
+  return (
+    isRecord(payload) &&
+    typeof payload.session_id === "string" &&
+    payload.learning_stage === "concept_check" &&
+    isRecord(payload.learning_stage_state) &&
+    typeof payload.agent_message === "string" &&
+    isRecord(payload.tool_call) &&
+    typeof payload.tool_call.id === "string" &&
+    payload.tool_call.name === "show_concept_intro" &&
+    payload.tool_call.args !== undefined &&
+    typeof payload.tool_call.status === "string"
   );
 }
 

@@ -4,9 +4,11 @@ import {
   buildLearningMessageSSEUrl,
   checkLearningExplanation,
   explainLearningError,
+  fetchKnowledgePointDocumentation,
   requestLearningHint,
   runLearningExercise,
   submitLearningExercise,
+  triggerConceptCheck,
 } from "../api";
 import type {
   AsyncActionState,
@@ -16,6 +18,8 @@ import type {
   SessionState,
 } from "../appTypes";
 import { AssistantUIThread } from "../components/AssistantUIThread";
+import { ConceptCheckTrigger } from "../components/ConceptCheckTrigger";
+import { DocumentationPanel, type DocumentationPanelState } from "../components/DocumentationPanel";
 import {
   LearningToolRuntimeProvider,
 } from "../components/generative-ui/assistantToolUIs";
@@ -62,6 +66,12 @@ type LearningComposerErrorCopy = {
   text: string;
   statusText: string;
 };
+
+type ConceptTriggerState =
+  | { status: "idle"; message: null }
+  | { status: "loading"; message: null }
+  | { status: "triggered"; message: null }
+  | { status: "error"; message: string };
 
 type LearningWorkspacePageProps = {
   user: UserProfile | null;
@@ -128,6 +138,10 @@ export function LearningWorkspacePage({
   const [explanationCheckResult, setExplanationCheckResult] = useState<ExplanationCheckResponse | null>(null);
   const [composerStream, setComposerStream] = useState<ComposerStreamRequest | null>(null);
   const [unlockedExercise, setUnlockedExercise] = useState<LearningExercise | null>(null);
+  const [documentationState, setDocumentationState] = useState<DocumentationPanelState>({ status: "idle" });
+  const [documentationCollapsed, setDocumentationCollapsed] = useState(false);
+  const [conceptTriggerState, setConceptTriggerState] = useState<ConceptTriggerState>({ status: "idle", message: null });
+  const [composerPrefillText, setComposerPrefillText] = useState<string | null>(null);
   const conversationScrollRef = useRef<HTMLElement | null>(null);
   const composerBusyRef = useRef(false);
 
@@ -141,7 +155,7 @@ export function LearningWorkspacePage({
   );
   const practiceUnlocked = session?.learning_stage === "practice_support" || Boolean(activeExercise) || hasExerciseToolMessage;
   const resumeExerciseMessage: ConversationMessage | null =
-    session && session.exercise && !hasExerciseToolMessage
+    session && session.exercise && !hasExerciseToolMessage && messages.length === 0
       ? {
           id: `resume-exercise-${session.session_id}-${session.exercise.id}`,
           speaker: "agent",
@@ -199,6 +213,21 @@ export function LearningWorkspacePage({
   const learningQuickReplies = practiceUnlocked
     ? ["给我提示", "解释这个错误"]
     : quickRepliesForConceptCheck(threadMessages);
+  const canTriggerConceptCheck =
+    session?.learning_stage === "documentation_reading" || session?.learning_stage === "concept_qna";
+  const conceptCheckStarted =
+    !canTriggerConceptCheck ||
+    threadMessages.some((message) =>
+      message.toolCalls?.some((toolCall) => toolCall.name === "show_concept_intro"),
+    );
+  const conceptTriggerDisabled = documentationState.status !== "ready";
+  const layoutClassName = [
+    "learning-workspace-layout",
+    session ? "has-documentation" : "",
+    documentationCollapsed ? "documentation-collapsed" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
 
   // --- SSE streaming for composer messages ---
   useSSE(composerStream?.endpoint ?? null, {
@@ -267,6 +296,66 @@ export function LearningWorkspacePage({
     });
   }
 
+  async function loadDocumentation(signal?: AbortSignal) {
+    if (!session || !user) {
+      setDocumentationState({ status: "idle" });
+      return;
+    }
+    setDocumentationState({ status: "loading" });
+    try {
+      const data = await fetchKnowledgePointDocumentation({
+        userId: user.id,
+        knowledgePointId: session.context_snapshot.KnowledgePoint.id,
+        signal,
+      });
+      if (signal?.aborted) return;
+      setDocumentationState({ status: "ready", data });
+    } catch (error) {
+      if (signal?.aborted) return;
+      setDocumentationState({
+        status: "error",
+        message: error instanceof Error ? error.message : "文档加载失败",
+      });
+    }
+  }
+
+  function handleDocumentReference(text: string) {
+    const trimmed = text.trim().slice(0, 500);
+    if (!trimmed) return;
+    const template = `引用文档：\n> ${trimmed.replace(/\n/g, "\n> ")}\n\n我的问题是：`;
+    setComposerPrefillText(template);
+  }
+
+  async function handleTriggerConceptCheck() {
+    if (!session || !user || conceptTriggerState.status === "loading" || conceptCheckStarted) return;
+    setConceptTriggerState({ status: "loading", message: null });
+    try {
+      const response = await triggerConceptCheck({
+        userId: user.id,
+        sessionId: session.session_id,
+      });
+      const toolCall = response.tool_call;
+      onAddMessage({
+        ...createMessage("agent", response.agent_message, "Agent"),
+        toolCalls: [
+          {
+            id: toolCall.id,
+            name: toolCall.name,
+            args: toolCall.args,
+            argsBuffer: "",
+            status: toolCall.status === "done" ? "done" : "pending",
+          },
+        ],
+      });
+      setConceptTriggerState({ status: "triggered", message: null });
+    } catch (error) {
+      setConceptTriggerState({
+        status: "error",
+        message: error instanceof Error ? error.message : "概念检验生成失败",
+      });
+    }
+  }
+
   function handleToolCallEvent(messageId: string, payload: SSEToolCall) {
     if (payload.phase === "start") {
       onStartToolCall(messageId, payload.tool_call_id, payload.name);
@@ -311,7 +400,23 @@ export function LearningWorkspacePage({
   useEffect(() => {
     composerBusyRef.current = false;
     setComposerStream(null);
+    setConceptTriggerState({ status: "idle", message: null });
+    setComposerPrefillText(null);
   }, [session?.session_id, resetNonce]);
+
+  useEffect(() => {
+    setDocumentationCollapsed(false);
+  }, [session?.session_id, session?.context_snapshot.KnowledgePoint.id]);
+
+  useEffect(() => {
+    if (!session || !user) {
+      setDocumentationState({ status: "idle" });
+      return;
+    }
+    const controller = new AbortController();
+    void loadDocumentation(controller.signal);
+    return () => controller.abort();
+  }, [session?.context_snapshot.KnowledgePoint.id, user?.id]);
 
   useEffect(() => {
     if (session && activeExercise) {
@@ -597,7 +702,7 @@ export function LearningWorkspacePage({
   );
 
   return (
-    <div className="learning-workspace-layout">
+    <div className={layoutClassName}>
       <section className="conversation" aria-label="Agent 代码练习对话" ref={conversationScrollRef}>
         <div className="thread">
           <div className="lesson-title">
@@ -616,6 +721,19 @@ export function LearningWorkspacePage({
               isStreaming={composerStreaming}
               sessionActive={Boolean(session)}
               onSend={handleComposerSubmit}
+              composerPrefillText={composerPrefillText}
+              onComposerPrefillConsumed={() => setComposerPrefillText(null)}
+              beforeComposer={
+                session && !conceptCheckStarted ? (
+                  <ConceptCheckTrigger
+                    disabled={conceptTriggerDisabled}
+                    loading={conceptTriggerState.status === "loading"}
+                    triggered={conceptTriggerState.status === "triggered"}
+                    errorMessage={conceptTriggerState.status === "error" ? conceptTriggerState.message : null}
+                    onTrigger={() => void handleTriggerConceptCheck()}
+                  />
+                ) : undefined
+              }
               emptyState={!session && sessionState.status === "idle" ? emptyState : undefined}
               placeholder={
                 composerStreaming
@@ -663,6 +781,15 @@ export function LearningWorkspacePage({
 
         </div>
       </section>
+      {session && (
+        <DocumentationPanel
+          collapsed={documentationCollapsed}
+          state={documentationState}
+          onCollapsedChange={setDocumentationCollapsed}
+          onRetry={() => void loadDocumentation()}
+          onReference={handleDocumentReference}
+        />
+      )}
     </div>
   );
 }

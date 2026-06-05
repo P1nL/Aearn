@@ -49,7 +49,7 @@
   "session_id": "sess_001",
   "session_type": "learn",
   "entry_point": "start_learning",
-  "learning_stage": "concept_check",
+  "learning_stage": "documentation_reading",
   "learning_stage_state": {
     "covered_subpoint_ids": [],
     "feynman_status": "pending",
@@ -362,7 +362,8 @@ collect_goal
 ```text
 start_learning_session
   -> context_assembler
-  -> concept_intro
+  -> documentation_reading
+  -> concept_qna
   -> concept_check
        -> correct: practice_offer
        -> incorrect: concept_repair
@@ -395,23 +396,31 @@ start_learning_session
 
 写入：
 
-- `LearningSession(session_type=learn, started_at, entry_point, learning_stage=concept_check, learning_stage_state_json)`
-- 首条 `LearningMessage(role=agent)`，内容为知识点概念介绍，`metadata.tool_calls` 持久化 `show_concept_intro`
+- `LearningSession(session_type=learn, started_at, entry_point, learning_stage=documentation_reading, learning_stage_state_json)`
+- 首条 `LearningMessage(role=agent)`，内容为右侧文档阅读引导；不自动持久化 `show_concept_intro`
 
 输出：
 
 - `session_id`
 - `session_state=learning`
 - `exercise=null`
-- `learning_stage=concept_check`
+- `learning_stage=documentation_reading`
 - `lesson_outline`
 - `lesson_sources`
-- `initial_tool_calls`
+- `initial_tool_calls=[]`
 
 失败分支：
 
 - 已有未结束 session -> 返回原 `session_id`，进入 `context_assembler`
-- 概念开场模型生成失败、校验失败或 guardrail 拦截 -> `CONCEPT_INTRO_GENERATION_FAILED`，不写入破损 `LearningMessage`
+- 用户、计划或知识点不存在 -> 返回对应 not-found 错误；不会创建破损 `LearningSession`
+
+### `documentation_reading`
+
+职责：
+
+- 展示右侧知识点文档、目录、章节折叠和引用到对话入口。
+- 用户可围绕文档提问；提问后进入 `concept_qna`。
+- 用户点击「开始概念检验」后才生成并持久化 `show_concept_intro`，进入 `concept_check`。
 
 ### `concept_intro`
 
@@ -1022,7 +1031,7 @@ load_note_sources
 
 | 当前节点 | 条件 | 下一节点 |
 |---|---|---|
-| `context_assembler` | 学习会话处于概念阶段 | `concept_intro` / `concept_check` / `concept_repair` / `practice_offer` |
+| `context_assembler` | 学习会话处于概念阶段 | `documentation_reading` / `concept_qna` / `concept_check` / `concept_repair` / `practice_offer` |
 | `concept_intro` | 已生成并持久化概念卡 | `concept_check` |
 | `concept_check` | 用户判断正确 | `practice_offer` |
 | `concept_check` | 用户判断错误且未达上限 | `concept_repair` |
@@ -1121,7 +1130,7 @@ load_note_sources
 
 | 时机 | 读取 | 写入 |
 |---|---|---|
-| 会话开始 | User、LearningPlan、PlanModule、KnowledgePoint、ReviewState、StageSummary | LearningSession、LearningMessage、show_concept_intro metadata |
+| 会话开始 | User、LearningPlan、PlanModule、KnowledgePoint、ReviewState、StageSummary | LearningSession、文档阅读引导 LearningMessage |
 | 概念判断 / 概念修正 / 练习确认 | LearningSession、KnowledgePoint、LearningMessage | LearningSession.learning_stage_state_json、LearningMessage、show_concept_check_result metadata |
 | 生成历史引用 | LearningSession、LearningMessage | 无 |
 | 展示练习 | Exercise、CodeBlank、TestCase、RuntimeProfile | 无 |
