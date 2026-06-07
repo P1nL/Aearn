@@ -28,7 +28,10 @@ export function DocSection({ section, defaultExpanded, onReference }: DocSection
           {section.code_blocks.map((block, index) => (
             <figure className="doc-code-block" key={`${section.id}-${index}`}>
               <figcaption>
-                <span>{block.caption}</span>
+                <span>
+                  <strong>{codeBlockSourceLabel(block.source_type)}</strong>
+                  {displayCodeBlockCaption(block.caption)}
+                </span>
                 <button
                   className="doc-reference-btn"
                   type="button"
@@ -46,6 +49,17 @@ export function DocSection({ section, defaultExpanded, onReference }: DocSection
       )}
     </section>
   );
+}
+
+function codeBlockSourceLabel(sourceType: string | null | undefined): string {
+  if (sourceType === "official") return "官方示例";
+  if (sourceType === "aearn") return "Aearn 示例";
+  if (sourceType === "trusted") return "可信示例";
+  return "示例";
+}
+
+function displayCodeBlockCaption(caption: string): string {
+  return caption.replace(/^(Aearn 示例|官方示例|可信示例)：/, "").trim();
 }
 
 function MarkdownLikeText({ text }: { text: string }) {

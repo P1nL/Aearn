@@ -446,12 +446,15 @@ start_learning_session
 - 使用模型判断用户对当前 `active_concept_check` 的自然语言回答。
 - 返回并持久化 `show_concept_check_result(result=correct|incorrect|unclear)`。
 - 只使用安全最小上下文：知识点、lesson outline/sources、当前 intro/check、用户回答、attempt count、既有误解和 safe summary。
+- `unclear` 只用于未回答、不确定、无关、无法判断或自相矛盾；部分正确、漏答或方向明确但不完整必须作为 `incorrect` / incomplete feedback。
+- `incorrect`、`unclear` 和 `judgement_ready=false` blocked judgement 共用 `concept_check_attempts` 上限；达到上限后不再继续澄清追问。
 
 条件边：
 
 - `correct` -> `practice_offer`
 - `incorrect` 且未达上限 -> `concept_repair`
-- `unclear` -> `concept_check`
+- `unclear` 且未达上限 -> `concept_check`
+- `incorrect` / `unclear` 达到上限 -> `practice_offer` 或 `select_exercise` 引导练习路径
 - 用户明确要求提前练习 -> `select_exercise`，先写 `show_concept_check_result(result=skipped)`
 
 ### `concept_repair`
@@ -1037,7 +1040,7 @@ load_note_sources
 | `concept_check` | 用户判断错误且未达上限 | `concept_repair` |
 | `concept_check` / `concept_repair` | 用户明确提前练习 | `select_exercise` |
 | `concept_repair` | 达到修正上限并选择引导练习 | `select_exercise` |
-| `practice_offer` | 用户确认开始练习 | `select_exercise` |
+| `practice_offer` | 用户确认开始练习；模型生成包含当前知识点小结的解锁说明 | `select_exercise` |
 | `show_learning_history` | 用户继续复述或追问旧会话内容 | `concept_check` / `concept_repair` |
 | `context_assembler` | 练习已解锁但缺少 exercise | `select_exercise` |
 | `select_exercise` | 无可用 exercise | `generate_exercise_candidate` |
@@ -1194,6 +1197,7 @@ stateDiagram-v2
     ConceptCheck --> PracticeOffer: correct
     ConceptCheck --> ConceptRepair: incorrect
     ConceptCheck --> ConceptCheck: unclear
+    ConceptCheck --> PracticeOffer: unclear or incorrect limit
     ConceptCheck --> SelectExercise: direct practice request
     ConceptRepair --> ConceptCheck: narrower repair check
     ConceptRepair --> PracticeOffer: repair limit

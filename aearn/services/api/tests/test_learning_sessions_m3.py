@@ -58,6 +58,15 @@ def disable_llm_generation(monkeypatch: pytest.MonkeyPatch) -> None:
             del temperature
             prompt_text = json.dumps(messages, ensure_ascii=False)
             normalized_prompt = prompt_text.replace("\\", "")
+            if '"practice_unlock_reason":"concept_check_passed"' in normalized_prompt:
+                assert "不要复述或打印练习题面" in normalized_prompt
+                return ["当前知识点小结：状态变量放在回调外部时会跨多次点击共享；", "下面进入练习，用运行结果验证这个关系。"]
+            if '"practice_unlock_reason":"concept_check_skipped"' in normalized_prompt:
+                assert "不要复述或打印练习题面" in normalized_prompt
+                return ["当前知识点小结：先区分回调内部局部变量和外部共享状态；", "这次先进入引导练习，概念检查仍标记为未完成。"]
+            if '"practice_unlock_reason":"concept_check_repair_limit"' in normalized_prompt:
+                assert "不要复述或打印练习题面" in normalized_prompt
+                return ["当前知识点小结：关键是判断状态是否能跨回调保留；", "我们先通过引导练习定位误解。"]
             if '"concept_check_result":"correct"' in normalized_prompt and '"stage":"practice_offer"' in normalized_prompt:
                 return ["概念判断已通过，", "可以点击“开始练习”。"]
             if '"concept_check_result":"incorrect"' in normalized_prompt and '"stage":"concept_repair"' in normalized_prompt:
@@ -110,6 +119,12 @@ def disable_llm_generation(monkeypatch: pytest.MonkeyPatch) -> None:
                 "confidence": "high",
                 "explanation": "你的判断抓住了回调作用域和跨点击状态共享的关系。",
                 "next_prompt": "如果要继续，可以回复“开始练习”。",
+                "answer_leakage_review": {
+                    "status": "clear",
+                    "revealed_target_answer": False,
+                    "next_prompt_requires_same_answer": False,
+                    "reason": "没有泄露后要求复述。",
+                },
                 "actions": [
                     {"id": "start_practice", "label": "开始练习"},
                     {"id": "show_another_example", "label": "再看一个例子"},
@@ -122,6 +137,12 @@ def disable_llm_generation(monkeypatch: pytest.MonkeyPatch) -> None:
                 "confidence": "medium",
                 "explanation": "这里的误解是把回调里的局部变量当成了跨点击共享状态。",
                 "next_prompt": "再判断一次：如果变量每次回调都会重新创建，它能记住上次点击吗？",
+                "answer_leakage_review": {
+                    "status": "clear",
+                    "revealed_target_answer": False,
+                    "next_prompt_requires_same_answer": False,
+                    "reason": "下一步追问的是原因关系。",
+                },
                 "actions": [],
                 "repair_check": {
                     "type": "single_choice",
@@ -138,6 +159,12 @@ def disable_llm_generation(monkeypatch: pytest.MonkeyPatch) -> None:
             "confidence": "low",
             "explanation": "这次回答还不能判断你选的是哪种作用域关系。",
             "next_prompt": "请直接回复 A/B/C，或说明 count 是否能跨点击共享。",
+            "answer_leakage_review": {
+                "status": "clear",
+                "revealed_target_answer": False,
+                "next_prompt_requires_same_answer": False,
+                "reason": "没有泄露目标答案。",
+            },
             "actions": [],
             "repair_check": None,
         }
@@ -418,6 +445,12 @@ def test_learning_concept_blocked_judgement_does_not_unlock_practice(
             "confidence": "high",
             "explanation": "答案看起来可能正确，但依据还不够明确。",
             "next_prompt": "请补一句为什么 A 能说明状态没有跨点击共享。",
+            "answer_leakage_review": {
+                "status": "clear",
+                "revealed_target_answer": False,
+                "next_prompt_requires_same_answer": False,
+                "reason": "blocked path 只要求补判断依据。",
+            },
             "actions": [{"id": "start_practice", "label": "开始练习"}],
             "repair_check": None,
             "judgements": {
@@ -461,7 +494,100 @@ def test_learning_concept_blocked_judgement_does_not_unlock_practice(
         ).fetchone()
     assert stored is not None
     assert stored["learning_stage"] == "concept_check"
-    assert stored["learning_stage_state_json"]["concept_check_attempts"] == 0
+    assert stored["learning_stage_state_json"]["concept_check_attempts"] == 1
+
+
+def test_learning_concept_answer_leakage_review_is_passed_through(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user, plan = _confirmed_plan(client, language="java")
+    session = _start_session(client, user, plan)
+
+    def revised_concept_check(*args, **kwargs) -> dict[str, object]:  # type: ignore[no-untyped-def]
+        del args, kwargs
+        return {
+            "result": "correct",
+            "confidence": "high",
+            "explanation": "你的回答已经抓住 char 到 double 会使用字符编码数值；以 'A' 为例会得到 65.0。",
+            "next_prompt": "换成 'B' 时，你会怎样解释结果随字符编码变化？",
+            "answer_leakage_review": {
+                "status": "revised",
+                "revealed_target_answer": True,
+                "next_prompt_requires_same_answer": False,
+                "reason": "解释中提到了 65.0，因此下一步改成迁移解释题。",
+            },
+            "actions": [{"id": "start_practice", "label": "开始练习"}],
+            "repair_check": None,
+        }
+
+    monkeypatch.setattr(learning_conversation, "build_sdk_concept_check_result", revised_concept_check)
+
+    response = client.post(
+        f"/api/learning-sessions/{session['session_id']}/messages",
+        json={
+            "role": "user",
+            "content": "是该字符的 Unicode 数值。",
+            "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
+        },
+    )
+
+    assert response.status_code == 200
+    args = response.json()["tool_calls"][0]["args"]
+    assert args["answer_leakage_review"]["status"] == "revised"
+    assert "65.0" in args["explanation"]
+    assert "65" not in args["next_prompt"]
+    assert "B" in args["next_prompt"]
+
+
+def test_learning_concept_partial_answer_can_be_incorrect_not_unclear(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user, plan = _confirmed_plan(client, language="javascript")
+    session = _start_session(client, user, plan)
+
+    def partial_answer_check(*args, **kwargs) -> dict[str, object]:  # type: ignore[no-untyped-def]
+        del args, kwargs
+        return {
+            "result": "incorrect",
+            "confidence": "medium",
+            "explanation": "你答中了 A，但漏掉了另一个会改变结果的条件；这是不完整答案，不是无法判断。",
+            "next_prompt": "再判断一次：除了 A 之外，还需要检查哪一个条件？",
+            "answer_leakage_review": {
+                "status": "clear",
+                "revealed_target_answer": False,
+                "next_prompt_requires_same_answer": False,
+                "reason": "只指出缺失方向，没有给出目标选项。",
+            },
+            "actions": [],
+            "repair_check": {
+                "type": "single_choice",
+                "question": "除了 A 之外，还需要检查哪一个条件？",
+                "options": [
+                    {"id": "A", "text": "只看点击次数。"},
+                    {"id": "B", "text": "还要看状态是否跨回调共享。"},
+                ],
+                "expected_focus": "多条件判断的缺失点",
+            },
+        }
+
+    monkeypatch.setattr(learning_conversation, "build_sdk_concept_check_result", partial_answer_check)
+
+    response = client.post(
+        f"/api/learning-sessions/{session['session_id']}/messages",
+        json={
+            "role": "user",
+            "content": "我觉得 A 对。",
+            "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["tool_calls"][0]["args"]["result"] == "incorrect"
+    assert body["session_state"]["learning_stage_state"]["concept_check_attempts"] == 1
+    assert body["session_state"]["learning_stage"] == "concept_repair"
 
 
 def test_start_learning_session_keeps_distinct_knowledge_points_separate(client: TestClient) -> None:
@@ -555,6 +681,8 @@ def test_learning_concept_stage_unlocks_practice_early_with_incomplete_notice(cl
     )
     assert unlock.status_code == 200
     body = unlock.json()
+    assert body["generation_source"] == "llm"
+    assert "当前知识点小结" in body["agent_message"]["content"]
     assert body["session_state"]["learning_stage"] == "practice_support"
     assert body["session_state"]["learning_stage_state"]["learning_incomplete"] is True
     assert body["session_state"]["learning_stage_state"]["practice_unlock_reason"] == "concept_check_skipped"
@@ -563,7 +691,7 @@ def test_learning_concept_stage_unlocks_practice_early_with_incomplete_notice(cl
     tool_call = body["tool_calls"][1]
     assert tool_call["name"] == "show_code_exercise"
     assert tool_call["args"]["unlock_reason"] == "concept_check_skipped"
-    assert "概念检查会标记为未完成" in tool_call["args"]["notice"]
+    assert tool_call["args"]["notice"] == ""
     assert tool_call["args"]["exercise"]["runtime_profile"]["runtime_tier"] == "browser_preview"
 
     resumed = _resume_session(client, user, plan)
@@ -597,10 +725,13 @@ def test_learning_concept_stage_uses_check_offer_before_normal_unlock(client: Te
     )
     assert unlock.status_code == 200
     result = unlock.json()
+    assert result["generation_source"] == "llm"
+    assert "当前知识点小结" in result["agent_message"]["content"]
     assert result["session_state"]["learning_stage"] == "practice_support"
     assert result["session_state"]["learning_stage_state"]["learning_incomplete"] is False
     assert result["session_state"]["learning_stage_state"]["practice_unlock_reason"] == "concept_check_passed"
     assert result["tool_calls"][0]["name"] == "show_code_exercise"
+    assert result["tool_calls"][0]["args"]["notice"] == ""
 
 
 def test_practice_unlock_returns_model_unavailable_when_adaptive_generation_is_unavailable(
@@ -708,13 +839,10 @@ def test_practice_offer_start_unlocks_when_model_is_disabled(
         },
     )
 
-    assert unlock.status_code == 200
+    assert unlock.status_code == 503
     result = unlock.json()
-    assert result["generation_source"] == "deterministic"
-    assert "直接进入练习" in result["agent_message"]["content"]
-    assert result["session_state"]["learning_stage"] == "practice_support"
-    assert result["session_state"]["learning_stage_state"]["practice_unlock_reason"] == "concept_check_passed"
-    assert result["tool_calls"][0]["name"] == "show_code_exercise"
+    assert result["error"]["code"] == "MODEL_UNAVAILABLE"
+    assert result["error"]["details"] == {"reason": "LLMConfigurationError"}
 
 
 def test_practice_offer_start_sse_unlocks_when_model_is_disabled(
@@ -752,30 +880,9 @@ def test_practice_offer_start_sse_unlocks_when_model_is_disabled(
         events = _parse_sse_events("".join(response.iter_text()))
 
     event_names = [event["event"] for event in events]
-    assert "error" not in event_names
-    assert event_names[0] == "agent_message"
-    assert event_names[-1] == "done"
-    assert events[-1]["data"]["generation_source"] == "deterministic"
-    tool_call_starts = [
-        event
-        for event in events
-        if event["event"] == "tool_call" and event["data"].get("phase") == "start"
-    ]
-    assert any(event["data"].get("name") == "show_code_exercise" for event in tool_call_starts)
-    tool_call_dones = [
-        event
-        for event in events
-        if event["event"] == "tool_call" and event["data"].get("phase") == "done"
-    ]
-    exercise_call = next(
-        (
-            event
-            for event in tool_call_dones
-            if event["data"].get("arguments", {}).get("unlock_reason") == "concept_check_passed"
-        ),
-        None,
-    )
-    assert exercise_call is not None
+    assert event_names == ["error"]
+    assert events[-1]["data"]["error"]["code"] == "MODEL_UNAVAILABLE"
+    assert events[-1]["data"]["error"]["details"] == {"reason": "LLMConfigurationError"}
 
 
 def test_learning_concept_incorrect_unclear_and_repair_limit_paths(client: TestClient) -> None:
@@ -797,7 +904,28 @@ def test_learning_concept_incorrect_unclear_and_repair_limit_paths(client: TestC
     assert unclear_body["tool_calls"][0]["args"]["result"] == "unclear"
     assert "还不够明确" in unclear_body["agent_message"]["content"]
     assert unclear_body["session_state"]["learning_stage_state"]["learning_incomplete"] is True
+    assert unclear_body["session_state"]["learning_stage_state"]["concept_check_attempts"] == 1
     assert unclear_body["tool_calls"][0]["args"]["repair_check"] is None
+
+    second_unclear = client.post(
+        f"/api/learning-sessions/{unclear_session['session_id']}/messages",
+        json={
+            "role": "user",
+            "content": "还是不确定。",
+            "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
+        },
+    )
+    assert second_unclear.status_code == 200
+    second_unclear_body = second_unclear.json()
+    second_unclear_state = second_unclear_body["session_state"]["learning_stage_state"]
+    assert second_unclear_state["concept_check_attempts"] == 2
+    assert second_unclear_state["repair_limit_reached"] is True
+    assert second_unclear_body["tool_calls"][0]["args"]["repair_check"] is None
+    assert any(
+        action["id"] == "guided_practice"
+        for action in second_unclear_body["tool_calls"][0]["args"]["actions"]
+    )
+    assert "停止概念追问" in second_unclear_body["tool_calls"][0]["args"]["next_prompt"]
 
     with connect() as conn:
         conn.execute("UPDATE learning_sessions SET status = 'finished' WHERE id = %s", (unclear_session["session_id"],))
@@ -891,6 +1019,16 @@ def test_learning_history_includes_only_learning_turns_across_sessions(client: T
     serialized = json.dumps(body, ensure_ascii=False)
     assert "第一段学习对话" in serialized
     assert all(message["role"] in {"user", "agent"} for item in body["sessions"] for message in item["messages"])
+    active_messages = body["sessions"][0]["messages"]
+    assert any(message["role"] == "user" and "查看历史对话" in message["content"] for message in active_messages)
+    history_tool_message = next(
+        message
+        for message in active_messages
+        if any(tool_call["name"] == "show_learning_history" for tool_call in message.get("tool_calls", []))
+    )
+    assert history_tool_message["role"] == "agent"
+    assert history_tool_message["tool_calls"][0]["name"] == "show_learning_history"
+    assert history_tool_message["tool_calls"][0]["status"] == "done"
 
 
 def test_learning_message_json_uses_model_and_is_idempotent(client: TestClient) -> None:
@@ -1129,7 +1267,7 @@ def test_deepseek_learning_message_uses_direct_client_without_agents_sdk(
     assert "MODEL_UNAVAILABLE" not in json.dumps(body, ensure_ascii=False)
 
 
-def test_deepseek_learning_message_policy_leak_returns_model_unavailable(
+def test_deepseek_learning_message_internal_policy_leak_returns_model_unavailable(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1161,7 +1299,7 @@ def test_deepseek_learning_message_policy_leak_returns_model_unavailable(
                         ensure_ascii=False,
                     )
                 ]
-            return ['我先判断你的卡点。\nresponse_policy: {"diagnosis_first": true, "forbidden_outputs": []}']
+            return ["_policy说不要连续盘问，但这样回复符合policy要求。"]
 
     def fail_agents_sdk_factory(settings, **kwargs):  # type: ignore[no-untyped-def]
         del settings, kwargs
@@ -1197,8 +1335,8 @@ def test_deepseek_learning_message_policy_leak_returns_model_unavailable(
     body = response.json()
     serialized = json.dumps(body, ensure_ascii=False)
     assert body["error"]["code"] == "MODEL_UNAVAILABLE"
-    assert "response_policy" not in serialized
-    assert "diagnosis_first" not in serialized
+    assert "_policy" not in serialized
+    assert "policy要求" not in serialized
 
     with connect() as conn:
         stored = conn.execute(
@@ -1206,9 +1344,9 @@ def test_deepseek_learning_message_policy_leak_returns_model_unavailable(
             SELECT count(*) AS count
             FROM learning_messages
             WHERE session_id = %s
-              AND content LIKE %s
+              AND POSITION(%s IN content) > 0
             """,
-            (session["session_id"], "%response_policy%"),
+            (session["session_id"], "_policy"),
         ).fetchone()
     assert stored is not None
     assert stored["count"] == 0
@@ -1522,7 +1660,8 @@ def test_learning_message_langgraph_ordered_tool_loop_unlocks_practice(
     assert response.status_code == 200
     body = response.json()
     assert "orchestration" in captured
-    assert body["generation_source"] == "deterministic"
+    assert body["generation_source"] == "llm"
+    assert "当前知识点小结" in body["agent_message"]["content"]
     assert body["session_state"]["learning_stage"] == "practice_support"
     assert body["session_state"]["learning_stage_state"]["practice_unlock_reason"] == "concept_check_skipped"
     assert [tool_call["name"] for tool_call in body["tool_calls"]] == [
@@ -1533,6 +1672,7 @@ def test_learning_message_langgraph_ordered_tool_loop_unlocks_practice(
     exercise_tool_call = body["tool_calls"][1]
     assert exercise_tool_call["args"]["unlock_reason"] == "concept_check_skipped"
     assert exercise_tool_call["args"]["concept_summary"] == "graph-selected early practice"
+    assert exercise_tool_call["args"]["notice"] == ""
     assert exercise_tool_call["args"]["exercise"]["runtime_profile"]["runtime_tier"] == "browser_preview"
 
     resumed = _resume_session(client, user, plan)
@@ -2781,6 +2921,25 @@ def test_javascript_run_and_submit_persist_attempts(client: TestClient) -> None:
     assert run_body["test_pass_rate"] == 1.0
     assert run_body["passed_test_count"] == run_body["total_test_count"] == 3
 
+    restore_after_run_response = client.post(
+        "/api/learning-sessions/start",
+        json={
+            "user_id": user["id"],
+            "plan_id": plan["LearningPlan"]["id"],
+            "knowledge_point_id": knowledge_point_id,
+        },
+    )
+    assert restore_after_run_response.status_code == 200
+    restore_after_run = restore_after_run_response.json()
+    assert restore_after_run["latest_run"]["attempt_id"] == run_body["attempt_id"]
+    assert restore_after_run["latest_run"]["runtime_status"] == "success"
+    assert restore_after_run["latest_submit"] is None
+    assert restore_after_run["latest_workbench_state"]["exercise_id"] == exercise["id"]
+    assert restore_after_run["latest_workbench_state"]["source_attempt_type"] == "run"
+    assert restore_after_run["latest_workbench_state"]["code"].strip() == code.strip()
+    assert restore_after_run["latest_workbench_state"]["filled_blanks"] == filled_blanks
+    assert restore_after_run["latest_workbench_state"]["run_mode"] == "visible_tests"
+
     explanation_response = client.post(
         f"/api/learning-sessions/{session['session_id']}/attempts/{run_body['attempt_id']}/check-explanation",
         json={
@@ -2814,6 +2973,27 @@ def test_javascript_run_and_submit_persist_attempts(client: TestClient) -> None:
     assert result["fsrs_rating"] in {"Good", "Easy"}
     assert submit_body["KnowledgePoint"]["status"] == "reviewing"
     assert submit_body["ReviewState"]["last_attempt_id"] == submit_body["attempt_id"]
+
+    restore_after_submit_response = client.post(
+        "/api/learning-sessions/start",
+        json={
+            "user_id": user["id"],
+            "plan_id": plan["LearningPlan"]["id"],
+            "knowledge_point_id": knowledge_point_id,
+        },
+    )
+    assert restore_after_submit_response.status_code == 200
+    restore_after_submit = restore_after_submit_response.json()
+    assert restore_after_submit["context_snapshot"]["KnowledgePoint"]["status"] == "reviewing"
+    assert restore_after_submit["latest_run"]["attempt_id"] == run_body["attempt_id"]
+    assert restore_after_submit["latest_submit"]["attempt_id"] == submit_body["attempt_id"]
+    assert restore_after_submit["latest_submit"]["code_completion_result"]["result"] == result["result"]
+    assert restore_after_submit["latest_submit"]["ReviewState"]["last_attempt_id"] == submit_body["attempt_id"]
+    assert restore_after_submit["latest_workbench_state"]["exercise_id"] == exercise["id"]
+    assert restore_after_submit["latest_workbench_state"]["source_attempt_type"] == "submit"
+    assert restore_after_submit["latest_workbench_state"]["code"].strip() == code.strip()
+    assert restore_after_submit["latest_workbench_state"]["filled_blanks"] == filled_blanks
+    assert restore_after_submit["latest_workbench_state"]["run_mode"] == "visible_tests"
 
     with connect() as conn:
         attempt_rows = conn.execute(
@@ -4038,14 +4218,14 @@ def test_knowledge_point_documentation_returns_sections_and_enforces_user_bounda
     assert body["knowledge_point_id"] == knowledge_point_id
     assert body["title"] == plan["knowledge_points"][0]["title"]
     assert body["cache_hit"] is False
-    assert [section["id"] for section in body["sections"]] == [
-        "core_concept",
-        "syntax",
-        "examples",
-        "common_mistakes",
-        "best_practices",
-    ]
+    assert [section["id"] for section in body["sections"]] == ["official_documentation", "examples"]
+    assert body["sections"][0]["title"] == "官方文档内容"
+    assert body["sections"][1]["title"] == "实例"
     assert body["sections"][1]["code_blocks"][0]["language"] == "javascript"
+    assert body["sections"][1]["code_blocks"][0]["source_type"] == "aearn"
+    assert body["sections"][1]["code_blocks"][0]["caption"].startswith("Aearn 示例：")
+    assert body["references"]
+    assert {"title", "url", "source_type", "retrieved_at"}.issubset(body["references"][0])
 
     serialized = json.dumps(body, ensure_ascii=False)
     assert "solution_reference" not in serialized

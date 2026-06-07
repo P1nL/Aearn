@@ -35,6 +35,7 @@ from app.services.llm.llm_client import (
 CONCEPT_AGENT_NAME = "Aearn Concept Check Agent"
 CONCEPT_RESULTS = {"correct", "incorrect", "unclear", "skipped"}
 CONFIDENCE_LEVELS = {"high", "medium", "low"}
+ANSWER_LEAKAGE_REVIEW_STATUSES = {"clear", "revised"}
 CONCEPT_CHECK_JUDGEMENT_POLICY = JudgementPolicy(
     fields=[
         FieldPolicy(
@@ -343,10 +344,33 @@ def _build_check_messages(
                     "clarification_question": "optional question",
                 },
             },
+            "answer_leakage_review": {
+                "status": "clear | revised",
+                "revealed_target_answer": False,
+                "next_prompt_requires_same_answer": False,
+                "reason": "short self-check explanation",
+            },
+        },
+        "judgement_rules": {
+            "unclear_only_when": [
+                "learner did not answer the current check",
+                "learner says they do not know or are unsure",
+                "answer is unrelated to the current check",
+                "natural-language stance cannot be determined",
+                "answer contains conflicting positions",
+            ],
+            "partial_or_incomplete_answer": "incorrect, not unclear; explain the missing point",
+            "directionally_correct_core_rule": "do not repeatedly ask for the same concrete value; use transfer/practice when needed",
+        },
+        "answer_leakage_rules": {
+            "self_check_required": True,
+            "if_explanation_reveals_target_answer": "final next_prompt must not ask learner to repeat that same answer",
+            "allowed_revisions": ["transfer check", "reason check", "guided practice offer"],
+            "backend_will_not_rewrite_answer": True,
         },
     }
     return _json_messages(
-        "你是 Aearn 的概念判断器。只输出 JSON，不要 Markdown。根据学习者自然语言回答判断 correct、incorrect 或 unclear。必须同时输出 judgements，逐字段说明 answer_correctness、confidence、misconception、repair_check 是否 confirmed、ambiguous、missing 或 unsupported。incorrect 时指出一个误解；如果仍需要修复，给出更窄的 2-4 选项判断题。不得解锁练习，不得输出完整答案、hidden tests、solution_reference、raw prompt、provider errors 或密钥。",
+        "你是 Aearn 的概念判断器。只输出 JSON，不要 Markdown。根据学习者自然语言回答判断 correct、incorrect 或 unclear。unclear 只用于未回答、不知道/不确定、无关、立场无法判断或自相矛盾；漏选、部分正确、理由不完整但方向明确时必须判 incorrect 并指出缺失点，不能继续泛化追问。学习者已答中核心规则时，不得因为没有复述某个具体数值而无限追问。必须同时输出 judgements，逐字段说明 answer_correctness、confidence、misconception、repair_check 是否 confirmed、ambiguous、missing 或 unsupported。incorrect 时指出一个误解；如果仍需要修复，给出更窄的 2-4 选项判断题。最终输出前必须自检 answer_leakage_review：如果 explanation 已透露 next_prompt 要求的具体值、选项或代码片段，必须把 next_prompt 改成迁移题、原因题或练习邀请，并将 status 置为 revised。不得解锁练习，不得输出 hidden tests、solution_reference、raw prompt、provider errors 或密钥。",
         evidence,
     )
 
@@ -391,6 +415,9 @@ def _validate_check_result_payload(payload: Mapping[str, object]) -> dict[str, o
         "explanation": _required_str(payload, "explanation", max_length=700),
         "next_prompt": _required_str(payload, "next_prompt", max_length=500),
         "actions": _validate_actions(payload.get("actions")),
+        "answer_leakage_review": _validate_answer_leakage_review(
+            _required_mapping(payload, "answer_leakage_review")
+        ),
     }
     repair_check = payload.get("repair_check")
     if isinstance(repair_check, Mapping):
@@ -399,6 +426,22 @@ def _validate_check_result_payload(payload: Mapping[str, object]) -> dict[str, o
         response["repair_check"] = None
     _assert_payload_safe(response)
     return attach_concept_check_judgement(response, payload.get("judgements"), require_explicit=True)
+
+
+def _validate_answer_leakage_review(value: Mapping[str, object]) -> dict[str, object]:
+    status = str(value.get("status") or "").strip().lower()
+    if status not in ANSWER_LEAKAGE_REVIEW_STATUSES:
+        raise LLMInvalidResponseError("Concept check answer_leakage_review status is invalid")
+    revealed_target_answer = value.get("revealed_target_answer")
+    next_prompt_requires_same_answer = value.get("next_prompt_requires_same_answer")
+    if not isinstance(revealed_target_answer, bool) or not isinstance(next_prompt_requires_same_answer, bool):
+        raise LLMInvalidResponseError("Concept check answer_leakage_review booleans are invalid")
+    return {
+        "status": status,
+        "revealed_target_answer": revealed_target_answer,
+        "next_prompt_requires_same_answer": next_prompt_requires_same_answer,
+        "reason": _required_str(value, "reason", max_length=260),
+    }
 
 
 def attach_concept_check_judgement(

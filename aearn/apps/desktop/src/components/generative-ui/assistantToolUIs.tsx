@@ -221,7 +221,7 @@ export const ConceptIntroToolUI = makeAssistantToolUI<ConceptIntroArgs, unknown>
 export const ConceptCheckResultToolUI = makeAssistantToolUI<ConceptCheckResultArgs, unknown>({
   toolName: "show_concept_check_result",
   render: ({ args, status }) => (
-    <ConceptCheckResultCard
+    <ConceptCheckResultFeedback
       args={normalizeConceptCheckResultArgs(args)}
       status={mapStatusToToolStatus(status)}
     />
@@ -361,6 +361,7 @@ function normalizeConceptCheckResultArgs(args: unknown): ConceptCheckResultArgs 
     confidence: isConfidence(args.confidence) ? args.confidence : "low",
     explanation: typeof args.explanation === "string" ? args.explanation : "",
     next_prompt: typeof args.next_prompt === "string" ? args.next_prompt : "",
+    answer_leakage_review: normalizeAnswerLeakageReview(args.answer_leakage_review),
     actions: Array.isArray(args.actions)
       ? args.actions
           .filter((action): action is Record<string, unknown> => isRecord(action))
@@ -403,6 +404,18 @@ const EMPTY_CONCEPT_CHECK_RESULT: ConceptCheckResultArgs = {
   actions: [],
   repair_check: null,
 };
+
+function normalizeAnswerLeakageReview(value: unknown): ConceptCheckResultArgs["answer_leakage_review"] {
+  if (!isRecord(value)) {
+    return null;
+  }
+  return {
+    status: typeof value.status === "string" ? value.status : "clear",
+    revealed_target_answer: Boolean(value.revealed_target_answer),
+    next_prompt_requires_same_answer: Boolean(value.next_prompt_requires_same_answer),
+    reason: typeof value.reason === "string" ? value.reason : "",
+  };
+}
 
 function normalizeConceptExample(value: unknown): ConceptIntroArgs["example"] {
   if (!isRecord(value)) {
@@ -470,21 +483,26 @@ function ConceptIntroCard({
   );
 }
 
-function ConceptCheckResultCard({
+function ConceptCheckResultFeedback({
   args,
   status,
 }: ToolUIProps<ConceptCheckResultArgs>) {
   const resultLabel = conceptResultLabel(args.result);
   return (
-    <article className={`gen-card concept-result-card ${args.result}`} aria-label="概念判断结果">
-      <header className="gen-card-header">
-        <span className="gen-card-kicker">判断结果</span>
-        <span className={status === "running" ? "gen-card-badge streaming" : "gen-card-badge"}>
-          {status === "running" ? "判断中" : `${resultLabel} · ${confidenceLabel(args.confidence)}`}
-        </span>
-      </header>
-      <h3 className="gen-card-title">{resultLabel}</h3>
-      <p>{args.explanation}</p>
+    <section className={`concept-result-feedback ${args.result}`} aria-label="概念判断结果">
+      <div className="concept-feedback-row">
+        <span>判断</span>
+        <p>{status === "running" ? "判断中" : `${resultLabel} · ${confidenceLabel(args.confidence)}`}</p>
+      </div>
+      <div className="concept-feedback-row">
+        <span>原因</span>
+        <p>{args.explanation}</p>
+      </div>
+      {args.answer_leakage_review?.status === "revised" && (
+        <div className="concept-feedback-note">
+          已调整下一步提示，避免要求你复述刚被透露的答案。
+        </div>
+      )}
       {args.repair_check && (
         <section className="concept-check repair" aria-label="修复判断题">
           <p>{args.repair_check.question}</p>
@@ -498,7 +516,12 @@ function ConceptCheckResultCard({
           </div>
         </section>
       )}
-      {args.next_prompt && <p className="concept-next">{args.next_prompt}</p>}
+      {args.next_prompt && (
+        <div className="concept-feedback-row">
+          <span>下一步</span>
+          <p>{args.next_prompt}</p>
+        </div>
+      )}
       {args.actions.length > 0 && (
         <div className="concept-action-hints" aria-label="可回复动作">
           {args.actions.map((action) => (
@@ -506,7 +529,7 @@ function ConceptCheckResultCard({
           ))}
         </div>
       )}
-    </article>
+    </section>
   );
 }
 

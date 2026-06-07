@@ -45,7 +45,7 @@
 | UF-01 | P0 | 首次建档：模糊目标模式 | 无活动计划 | 输入目标 -> 每轮单一澄清 -> 生成路线卡片 -> 可直接输入修订 -> 最新卡片点击 `开始学习` | 普通回复不展开整段路线；创建正式 `plan`，进入工作台，左侧路线面板有模块；旧卡片按钮禁用；`source_attribution` 可区分动态文档参考、用户资料或模板 fallback |
 | UF-02 | P1 | 首次建档：参考资料模式 | 有课程目录或代码片段 | 粘贴资料 -> 生成草稿 -> 标注来源与 Agent 补充 | 用户能区分资料来源和新增内容 |
 | UF-03 | P0 | 日常进入应用 | 已有活动计划 | 打开应用 -> 加载 dashboard | 5 秒内默认进入当前学习，展示当前阶段、今日任务、复习数量和复习提示 |
-| UF-04 | P0 | 学习闭环 | 有 `browser_preview` 或 `python_stdout_test` 练习 | 进入知识点 -> 查看 `show_concept_intro` -> 自然语言判断 -> `show_concept_check_result` -> 对话中生成练习 UI -> 补全 -> 运行/预览/测试 -> 提交 -> 查看反馈 | 前端不暴露 run/submit 内部 Attempt 类型；概念卡和判断结果可刷新重放；后端生成可追溯 `Attempt`、`code_completion_result`，状态写回知识点 |
+| UF-04 | P0 | 学习闭环 | 有 `browser_preview` 或 `python_stdout_test` 练习 | 进入知识点 -> 查看右侧 `官方文档内容` / `实例` -> 触发 `show_concept_intro` -> 自然语言判断 -> `show_concept_check_result` 紧凑反馈 -> 对话中生成练习 UI -> 补全 -> 运行/预览/测试 -> 提交 -> 查看反馈 | 前端不暴露 run/submit 内部 Attempt 类型；官方文档来源、示例来源标签、概念卡和紧凑判断反馈可刷新重放；后端生成可追溯 `Attempt`、`code_completion_result`，状态写回知识点 |
 | UF-05 | P0 | 运行失败后错因解释 | 练习会产生失败测试或 runtime error | run 失败 -> 点击解释错误 -> 修改 -> rerun | 错因来自真实错误，旧结果标记 stale，新 Attempt 可追踪 |
 | UF-06 | P0 | 复习闭环 | `ReviewState.due_at` 到期 | 进入复习 -> 短热身或跳过 -> 完成 seed bank 变体 -> submit | warmup 结果可刷新重放但不更新 FSRS；提交写入 `Attempt(review_submit)` 后更新 `fsrs_rating`、`due_at`、`forget_risk`，列表即时刷新 |
 | UF-07 | P1 | 笔记抽屉 | 学习或复习会话进行中 | 打开笔记抽屉 -> 输入错因和修正方式 -> 自动保存 -> 请求 Agent 辅助补全 | 笔记不打断代码练习，保存状态明确，Agent 不自动生成完整笔记 |
@@ -83,7 +83,7 @@
 | `POST /api/plans` | `plan_draft` 确认、重复提交、草稿无效 |
 | `GET /api/dashboard` | 活动目标、阶段、复习数量、恢复入口 |
 | `POST /api/learning-sessions/start` | 新会话返回并持久化 `show_concept_intro`、已有未结束会话幂等返回、非法概念开场返回 `CONCEPT_INTRO_GENERATION_FAILED` |
-| `POST /api/learning-sessions/{session_id}/messages` | `correct`、`incorrect`、`unclear`、`skipped` 概念判断，`concept_repair` 上限，引导练习和 tool-call 幂等重放 |
+| `POST /api/learning-sessions/{session_id}/messages` | `correct`、`incorrect`、`unclear`、`skipped` 概念判断；`unclear` 仅用于未回答/不确定/无关/冲突/无法判断；部分正确或漏答为 `incorrect`；`incorrect`、`unclear`、`judgement_ready=false` 共用上限；`answer_leakage_review` 自检元数据；引导练习和 tool-call 幂等重放 |
 | `POST /api/learning-sessions/{session_id}/exercises/{exercise_id}/run` | `success`、`runtime_error`、`timeout`、`unsupported` |
 | `POST /api/learning-sessions/{session_id}/exercises/{exercise_id}/submit` | `passed`、`partial`、`failed`、`easy` 和硬门槛 |
 | `POST /api/learning-sessions/{session_id}/exercises/{exercise_id}/hint` | `nudge`、`concept`、`code_shape`、提示次数累加 |
@@ -211,9 +211,15 @@ LLM 输出质量单独用固定样例集评估，至少覆盖 JS/HTML/CSS、Pyth
 
 - [ ] 顶部展示目标、阶段、语言、复习数量、恢复入口。
 - [ ] 左侧路线高亮当前模块和知识点。
+- [ ] 右侧文档面板只展示 `官方文档内容` 和 `实例` 两个主区块；来源展示 title、URL、时间，示例能区分 `官方示例` 与 `Aearn 示例`。
 - [ ] 新会话入口显示 `show_concept_intro` 概念卡，包含总结、例子和 2-4 个文本选项；选项不是强制按钮，composer 保持可用。
-- [ ] `show_concept_check_result` 能展示正确、错误、模糊和跳过四类结果；错误路径展示更窄 `repair_check`，不直接解锁练习。
-- [ ] 概念判断通过后，`开始练习` 生成 `show_code_exercise`，`practice_unlock_reason=concept_check_passed` 且 `learning_incomplete=false`。
+- [ ] `show_concept_check_result` 以内联紧凑反馈展示正确、错误、模糊和跳过四类结果，不再渲染独立大卡；错误路径可展示更窄 `repair_check`，不直接解锁练习。
+- [ ] `unclear` 边界清晰：部分正确、漏答或方向明确但不完整的回答判为 `incorrect`，不是无限澄清。
+- [ ] 模型输出若在解释中泄露了下一步要检查的目标答案，最终 `answer_leakage_review.status="revised"`，且 `next_prompt` 改为迁移题、原因题或练习邀请，不要求复述同一答案。
+- [ ] `incorrect` 和 `unclear` 都计入概念追问上限；达到上限后只提供引导练习或再看一个例子。
+- [ ] 概念判断通过后，`开始练习` 由模型生成包含当前知识点小结的解锁说明，并生成 `show_code_exercise`；`practice_unlock_reason=concept_check_passed` 且 `learning_incomplete=false`。
+- [ ] 练习解锁 Agent 文案不得复述练习题面、starter code 或补全空；`show_code_exercise.notice` 不复制 Agent 正文，不在卡片上方重复输出同一段文字。
+- [ ] 学习页模型未配置、不可连接或输出不可用时，`开始练习` 返回 `MODEL_UNAVAILABLE`；不得展示后端固定练习解锁文案、固定概念小结或 `show_code_exercise`。
 - [ ] 用户直接要求练习或修正上限后进入引导练习时，练习卡明确显示概念未完成状态。
 - [ ] `CONCEPT_INTRO_GENERATION_FAILED` 页面显示重试和返回路线动作，不展示破损概念卡。
 - [ ] 代码编辑器、预览和测试结果出现在对话生成的练习 UI 中，而不是固定三栏页面。

@@ -212,9 +212,15 @@ export function markKnowledgePointLearning(
   return {
     ...plan,
     knowledge_points: plan.knowledge_points.map((knowledgePoint) =>
-      knowledgePoint.id === knowledgePointId ? { ...knowledgePoint, status: "learning" } : knowledgePoint,
+      knowledgePoint.id === knowledgePointId && !isReviewStatus(knowledgePoint.status)
+        ? { ...knowledgePoint, status: "learning" }
+        : knowledgePoint,
     ),
   };
+}
+
+function isReviewStatus(status: CreatedPlanResponse["knowledge_points"][number]["status"]): boolean {
+  return status === "reviewing" || status === "mastered";
 }
 
 export function applyKnowledgePointUpdate(

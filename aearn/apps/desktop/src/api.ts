@@ -30,6 +30,7 @@ import type {
   LearningExercise,
   LearningHistoryResponse,
   LearningMode,
+  LearningSessionInitialToolCall,
   LearningSessionResponse,
   NoteListResponse,
   NoteRecord,
@@ -1040,7 +1041,24 @@ function isLearningSessionResponse(payload: unknown): payload is LearningSession
     isRecord(payload.learning_stage_state) &&
     Array.isArray(payload.lesson_outline) &&
     Array.isArray(payload.lesson_sources) &&
-    typeof payload.initial_agent_message === "string"
+    typeof payload.initial_agent_message === "string" &&
+    (!("latest_run" in payload) || payload.latest_run === null || isRunExerciseResponse(payload.latest_run)) &&
+    (!("latest_submit" in payload) || payload.latest_submit === null || isSubmitExerciseResponse(payload.latest_submit)) &&
+    (!("latest_workbench_state" in payload) ||
+      payload.latest_workbench_state === null ||
+      isLearningWorkbenchState(payload.latest_workbench_state))
+  );
+}
+
+function isLearningWorkbenchState(payload: unknown): payload is LearningSessionResponse["latest_workbench_state"] {
+  return (
+    isRecord(payload) &&
+    typeof payload.exercise_id === "string" &&
+    typeof payload.source_attempt_id === "string" &&
+    (payload.source_attempt_type === "run" || payload.source_attempt_type === "submit") &&
+    typeof payload.code === "string" &&
+    isStringRecord(payload.filled_blanks) &&
+    (payload.run_mode === "preview" || payload.run_mode === "visible_tests" || payload.run_mode === null)
   );
 }
 
@@ -1057,7 +1075,9 @@ function isKnowledgePointDocumentationResponse(payload: unknown): payload is Kno
       (reference) =>
         isRecord(reference) &&
         typeof reference.title === "string" &&
-        typeof reference.url === "string",
+        typeof reference.url === "string" &&
+        (!("source_type" in reference) || reference.source_type === null || typeof reference.source_type === "string") &&
+        (!("retrieved_at" in reference) || reference.retrieved_at === null || typeof reference.retrieved_at === "string"),
     ) &&
     typeof payload.generated_at === "string" &&
     typeof payload.cache_hit === "boolean"
@@ -1077,7 +1097,8 @@ function isDocumentationSection(payload: unknown): payload is KnowledgePointDocu
         isRecord(block) &&
         typeof block.language === "string" &&
         typeof block.code === "string" &&
-        typeof block.caption === "string",
+        typeof block.caption === "string" &&
+        (!("source_type" in block) || block.source_type === null || typeof block.source_type === "string"),
     )
   );
 }
@@ -1114,9 +1135,21 @@ function isLearningHistoryResponse(payload: unknown): payload is LearningHistory
             isRecord(message) &&
             typeof message.id === "string" &&
             (message.role === "user" || message.role === "agent") &&
-            typeof message.content === "string",
+            typeof message.content === "string" &&
+            (!("tool_calls" in message) ||
+              (Array.isArray(message.tool_calls) && message.tool_calls.every(isLearningHistoryToolCall))),
         ),
     )
+  );
+}
+
+function isLearningHistoryToolCall(payload: unknown): payload is LearningSessionInitialToolCall {
+  return (
+    isRecord(payload) &&
+    typeof payload.id === "string" &&
+    typeof payload.name === "string" &&
+    payload.args !== undefined &&
+    (payload.status === "pending" || payload.status === "running" || payload.status === "done" || payload.status === "error")
   );
 }
 
@@ -1403,6 +1436,10 @@ function isForgetRisk(payload: unknown): payload is "low" | "normal" | "high" {
 
 function isRecord(payload: unknown): payload is Record<string, unknown> {
   return typeof payload === "object" && payload !== null;
+}
+
+function isStringRecord(payload: unknown): payload is Record<string, string> {
+  return isRecord(payload) && Object.values(payload).every((value) => typeof value === "string");
 }
 
 // --- SSE helpers ---

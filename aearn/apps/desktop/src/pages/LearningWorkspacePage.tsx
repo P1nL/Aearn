@@ -155,7 +155,7 @@ export function LearningWorkspacePage({
   );
   const practiceUnlocked = session?.learning_stage === "practice_support" || Boolean(activeExercise) || hasExerciseToolMessage;
   const resumeExerciseMessage: ConversationMessage | null =
-    session && session.exercise && !hasExerciseToolMessage && messages.length === 0
+    session && session.exercise && !hasExerciseToolMessage
       ? {
           id: `resume-exercise-${session.session_id}-${session.exercise.id}`,
           speaker: "agent",
@@ -173,9 +173,7 @@ export function LearningWorkspacePage({
                 unlock_reason: session.learning_stage_state.practice_unlock_reason ?? "legacy_session",
                 learning_incomplete: Boolean(session.learning_stage_state.learning_incomplete),
                 concept_summary: session.learning_stage_state.concept_summary ?? "",
-                notice: session.learning_stage_state.learning_incomplete
-                  ? `当前学习进度尚未完成。概念小结：${session.learning_stage_state.concept_summary ?? ""}`
-                  : `概念小结：${session.learning_stage_state.concept_summary ?? ""}`,
+                notice: "",
               },
               argsBuffer: "",
               status: "done",
@@ -185,7 +183,7 @@ export function LearningWorkspacePage({
       : null;
 
   const initialMessage: ConversationMessage | null =
-    session && (initialAgentMessage || initialToolCalls.length > 0)
+    session && messages.length === 0 && (initialAgentMessage || initialToolCalls.length > 0)
       ? {
           id: `initial-${session.session_id}`,
           speaker: "agent" as const,
@@ -374,12 +372,17 @@ export function LearningWorkspacePage({
     }
   }
 
-  function resetWorkbenchState(nextCode = "", nextBlanks: Record<string, string> = {}, nextSelectedBlankId = "") {
+  function resetWorkbenchState(
+    nextCode = "",
+    nextBlanks: Record<string, string> = {},
+    nextSelectedBlankId = "",
+    nextRunMode: ExerciseRunMode | null = null,
+  ) {
     setEditorCode(nextCode);
     setFilledBlanks(nextBlanks);
     setExerciseActionState({ status: "idle" });
     setIsStale(false);
-    setLastRunMode(null);
+    setLastRunMode(nextRunMode);
     setLastExerciseAction(null);
     setHintUsageCount(0);
     setErrorCount(0);
@@ -420,15 +423,19 @@ export function LearningWorkspacePage({
 
   useEffect(() => {
     if (session && activeExercise) {
+      const restoredWorkbenchState = session.latest_workbench_state;
+      const restoredMatchesExercise = restoredWorkbenchState?.exercise_id === activeExercise.id;
+      const baseBlanks = initialBlankState(activeExercise);
       resetWorkbenchState(
-        activeExercise.starter_code,
-        initialBlankState(activeExercise),
+        restoredMatchesExercise ? restoredWorkbenchState.code : activeExercise.starter_code,
+        restoredMatchesExercise ? { ...baseBlanks, ...restoredWorkbenchState.filled_blanks } : baseBlanks,
         activeExercise.code_blanks[0]?.blank_key ?? "",
+        restoredMatchesExercise ? restoredWorkbenchState.run_mode : null,
       );
       return;
     }
     resetWorkbenchState();
-  }, [session?.session_id, activeExercise?.id, resetNonce]);
+  }, [session?.session_id, activeExercise?.id, session?.latest_workbench_state?.source_attempt_id, resetNonce]);
 
   useEffect(() => {
     const scrollContainer = conversationScrollRef.current;

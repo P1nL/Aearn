@@ -115,7 +115,7 @@ LEARNING_TUTOR_SYSTEM_PROMPT = """你是 Aearn 的诊断型编程语言学习导
 
 只使用这些输入里允许的信息。不要补造题面、starter code、答案、测试细节或学习者没有提供的代码。
 不要声称进行了实时网页搜索。官方/可信文档只能来自 official_docs_grounding 中已经提供的本地索引片段和 citation metadata。
-不要复述输入 JSON 字段名或内部策略字段，例如 response_policy、conversation_context、recent_safe_messages、runtime_boundary；只输出给学习者看的自然语言。
+不要复述输入 JSON 字段名或内部策略字段，例如 response_policy、conversation_context、recent_safe_messages、runtime_boundary；也不要提到 policy、_policy、策略要求、符合 policy、根据 policy 这类内部策略表述；只输出给学习者看的自然语言。
 
 ## 工作循环
 
@@ -226,6 +226,7 @@ LEARNING_TUTOR_USER_PROMPT_PREFIX = """请根据下面 JSON 回复学习者。�
 - 如果学习者在要完整答案，转成具体局部提示或检查步骤，不给完整答案。
 - 承接 conversation_context，避免重复上一轮已经讲过的内容。
 - 如果 concept_progress.latest_concept_check_result 存在，它就是本轮概念判断事实；回复必须与其 result、repair_check 和 actions 对齐，不要再提出冲突的新判断题。
+- 如果 response_policy.stage_strategy 要求进入真实练习，回复必须包含当前知识点小结；小结只能依据 concept_progress.concept_summary、lesson_outline 和已给出的概念判断事实生成。
 - 回复要自然，像真人导师，不要像流程提示、测试断言或安全拒绝模板。
 
 """
@@ -428,18 +429,14 @@ def create_learning_message_response(
     )
     prepared = precompute_learning_message_transition(prepared)
     side_effects, tool_context = build_learning_agent_tool_runtime(prepared.context)
-    deterministic = deterministic_learning_message_text(prepared)
-    if deterministic is None:
-        text, generation_source, generation_model = collect_learning_message_text(
-            prepared.context,
-            user_content=content,
-            settings=effective_settings,
-            client=client,
-            side_effects=side_effects,
-            tool_context=tool_context,
-        )
-    else:
-        text, generation_source, generation_model = deterministic
+    text, generation_source, generation_model = collect_learning_message_text(
+        prepared.context,
+        user_content=content,
+        settings=effective_settings,
+        client=client,
+        side_effects=side_effects,
+        tool_context=tool_context,
+    )
     response = build_learning_message_response(
         prepared,
         content=text,
@@ -680,25 +677,10 @@ def _safe_graph_value(value: object) -> Any:
     return _limit_text(str(value), 4000)
 
 
-def deterministic_learning_message_text(prepared: PreparedLearningMessage) -> tuple[str, str, str] | None:
-    if prepared.stored_response is not None:
-        return None
-    if not _transition_has_tool(prepared.transition, "show_code_exercise"):
-        return None
-
-    content = _deterministic_practice_unlock_message(prepared.transition.learning_stage_state)
-    assert_safe_teaching_output(content)
-    return content, "deterministic", ""
-
-
 def _transition_tool_names(transition: LearningConversationTransition) -> tuple[str, ...]:
     if transition.tool_names:
         return transition.tool_names
     return (transition.tool_name,) if transition.tool_name else ()
-
-
-def _transition_has_tool(transition: LearningConversationTransition, tool_name: str) -> bool:
-    return tool_name in _transition_tool_names(transition)
 
 
 def precompute_learning_message_transition(prepared: PreparedLearningMessage) -> PreparedLearningMessage:
@@ -853,7 +835,13 @@ def store_learning_message_response(
     side_effects: AgentSideEffects | None = None,
 ) -> dict[str, object]:
     finalized = dict(response)
-    tool_calls, final_stage, final_state = _apply_or_reuse_transition(conn, prepared)
+    agent_message = finalized.get("agent_message", {})
+    content = str(agent_message.get("content") or "") if isinstance(agent_message, Mapping) else ""
+    tool_calls, final_stage, final_state = _apply_or_reuse_transition(
+        conn,
+        prepared,
+        agent_content=content,
+    )
     if tool_calls:
         finalized["tool_calls"] = tool_calls
     finalized["session_state"] = {
@@ -863,8 +851,6 @@ def store_learning_message_response(
         "learning_stage": final_stage,
         "learning_stage_state": dict(final_state),
     }
-    agent_message = finalized.get("agent_message", {})
-    content = str(agent_message.get("content") or "") if isinstance(agent_message, Mapping) else ""
     metadata: dict[str, object] = {}
     if tool_calls:
         metadata["tool_calls"] = tool_calls
@@ -1050,10 +1036,12 @@ def _run_code_for_learning_tool(exercise: Mapping[str, object], code: str) -> di
 def _apply_or_reuse_transition(
     conn: Connection[dict[str, object]],
     prepared: PreparedLearningMessage,
+    *,
+    agent_content: str = "",
 ) -> tuple[list[dict[str, object]], str, Mapping[str, object]]:
     precomputed = prepared.precomputed_transition
     if precomputed is None:
-        return _apply_transition_and_build_tool_calls(conn, prepared)
+        return _apply_transition_and_build_tool_calls(conn, prepared, agent_content=agent_content)
     if _transition_tool_names(prepared.transition) == ("show_concept_check_result",):
         update_learning_session_stage(
             conn,
@@ -1512,6 +1500,7 @@ def _empty_safe_summary() -> dict[str, object]:
 def _response_policy(context: LearningConversationContext, user_content: str) -> dict[str, object]:
     direct_answer_requested = detect_direct_answer_request(user_content)
     concept_result = str(context.learning_stage_state.get("concept_check_result") or "")
+    practice_unlock_reason = str(context.learning_stage_state.get("practice_unlock_reason") or "")
     stage_strategy = {
         "concept_intro": "建立直觉和概念边界，不展开完整练习。",
         "concept_check": "围绕当前概念判断题判断学习者自然语言回答。",
@@ -1521,6 +1510,15 @@ def _response_policy(context: LearningConversationContext, user_content: str) ->
     }.get(context.learning_stage, "先诊断，再给一个可执行下一步。")
     if context.learning_stage == "practice_offer" and concept_result == "correct":
         stage_strategy = "概念判断已经通过；不要再追问新的概念题或变体，只用 1-3 句承接判断结果，并提示可以开始练习或再看一个例子。"
+    elif context.learning_stage == "practice_support" and practice_unlock_reason:
+        stage_strategy = (
+            "本轮已经确认进入真实练习，必须由模型动态生成 1-3 句练习解锁说明；"
+            "说明里要包含当前知识点小结，依据 concept_progress.concept_summary 与 lesson_outline，"
+            "不要使用固定模板，不要再让学习者点击开始练习，不要继续出新的概念题。"
+            "不要复述或打印练习题面、exercise.prompt、starter_code、code_blanks、代码块或需要补全的空；"
+            "练习卡片会单独展示题目，只需要提示学习者看下方卡片开始做。"
+            "如果 concept_progress.learning_incomplete=true，要说明这是引导练习且概念检查尚未完全完成。"
+        )
     elif context.learning_stage == "concept_repair" and concept_result == "incorrect":
         stage_strategy = "概念判断暂未通过；不要生成额外新题，只引导学习者回答结构化修复题或说明当前误解。"
     elif context.learning_stage in {"concept_check", "concept_repair"} and concept_result == "unclear":
@@ -1826,6 +1824,8 @@ def _context_with_transition(
 def _apply_transition_and_build_tool_calls(
     conn: Connection[dict[str, object]],
     prepared: PreparedLearningMessage,
+    *,
+    agent_content: str = "",
 ) -> tuple[list[dict[str, object]], str, Mapping[str, object]]:
     transition = prepared.transition
     tool_names = _transition_tool_names(transition)
@@ -1835,6 +1835,7 @@ def _apply_transition_and_build_tool_calls(
             prepared,
             tool_names=tool_names,
             explicit_order=bool(transition.tool_names),
+            agent_content=agent_content,
         )
 
     if tool_names == ("show_concept_check_result",):
@@ -1872,6 +1873,7 @@ def _apply_practice_tool_loop(
     *,
     tool_names: tuple[str, ...],
     explicit_order: bool,
+    agent_content: str = "",
 ) -> tuple[list[dict[str, object]], str, Mapping[str, object]]:
     transition = prepared.transition
     transition_state = dict(transition.learning_stage_state)
@@ -1902,7 +1904,7 @@ def _apply_practice_tool_loop(
                 "unlock_reason": transition_state.get("practice_unlock_reason"),
                 "learning_incomplete": transition_state.get("learning_incomplete"),
                 "concept_summary": transition_state.get("concept_summary"),
-                "notice": _practice_notice(transition_state),
+                "notice": _practice_notice(transition_state, agent_content=agent_content),
             }
             tool_calls.append(_tool_call("show_code_exercise", args, prepared.message_id))
             exercise_appended = True
@@ -1943,14 +1945,19 @@ def _build_concept_check_result_tool(
     candidate = attach_concept_check_judgement(candidate)
     if candidate.get("judgement_ready") is False:
         result_args = _blocked_concept_check_result_tool_args(context, candidate)
+        attempts = attempt_count + 1
         final_state = dict(state)
         final_state["concept_check_result"] = "unclear"
+        final_state["concept_check_attempts"] = attempts
         final_state["concept_summary"] = _concept_summary(context)
         final_state["learning_incomplete"] = True
         final_state["blocked_concept_judgement"] = {
             "blocking_fields": _string_list(result_args.get("judgement_blocking_fields")),
             "clarification_question": result_args["next_prompt"],
         }
+        if attempts >= 2:
+            _apply_concept_repair_limit(result_args)
+            final_state["repair_limit_reached"] = True
         return result_args, context.learning_stage, final_state
     result_args = _concept_check_result_tool_args(context, candidate)
     result = str(result_args["result"])
@@ -2003,7 +2010,13 @@ def _build_concept_check_result_tool(
         return result_args, final_stage, final_state
 
     if result == "unclear":
-        result_args["actions"] = _ensure_actions(result_args.get("actions"), [])
+        attempts = attempt_count + 1
+        final_state["concept_check_attempts"] = attempts
+        if attempts >= 2:
+            _apply_concept_repair_limit(result_args)
+            final_state["repair_limit_reached"] = True
+        else:
+            result_args["actions"] = _ensure_actions(result_args.get("actions"), [])
         return result_args, final_stage, final_state
 
     return result_args, final_stage, final_state
@@ -2045,7 +2058,7 @@ def _concept_check_result_tool_args(
 ) -> dict[str, object]:
     actions = candidate.get("actions")
     repair_check = candidate.get("repair_check")
-    return {
+    result: dict[str, object] = {
         "session_id": context.session_id,
         "knowledge_point_id": context.knowledge_point_id,
         "result": str(candidate.get("result") or "unclear"),
@@ -2057,6 +2070,20 @@ def _concept_check_result_tool_args(
         else [],
         "repair_check": dict(repair_check) if isinstance(repair_check, Mapping) else None,
     }
+    _copy_answer_leakage_review(result, candidate)
+    return result
+
+
+def _apply_concept_repair_limit(result_args: dict[str, object]) -> None:
+    result_args["repair_check"] = None
+    result_args["actions"] = _ensure_actions(
+        result_args.get("actions"),
+        [
+            {"id": "guided_practice", "label": "进入引导练习"},
+            {"id": "show_another_example", "label": "再看一个例子"},
+        ],
+    )
+    result_args["next_prompt"] = "这轮先停止概念追问。你可以再看一个例子，或进入引导练习。"
 
 
 def _blocked_concept_check_result_tool_args(
@@ -2079,7 +2106,14 @@ def _blocked_concept_check_result_tool_args(
         "repair_check": None,
     }
     _copy_judgement_metadata(result, candidate)
+    _copy_answer_leakage_review(result, candidate)
     return result
+
+
+def _copy_answer_leakage_review(target: dict[str, object], source: Mapping[str, object]) -> None:
+    value = source.get("answer_leakage_review")
+    if isinstance(value, Mapping):
+        target["answer_leakage_review"] = dict(value)
 
 
 def _copy_judgement_metadata(target: dict[str, object], source: Mapping[str, object]) -> None:
@@ -2101,17 +2135,6 @@ def _practice_unlock_reason_for_stage(stage: str, state: Mapping[str, object]) -
     if stage in {"concept_check", "concept_repair"}:
         return "concept_check_skipped"
     return "early_request"
-
-
-def _deterministic_practice_unlock_message(state: Mapping[str, object]) -> str:
-    reason = str(state.get("practice_unlock_reason") or "early_request")
-    if reason == "concept_check_passed":
-        return "可以，概念判断已经通过。下面直接进入练习；先按练习卡片写代码，运行后把结果发给我。"
-    if reason == "concept_check_skipped":
-        return "可以先进入练习。我会把概念检查标记为未完成；先按练习卡片写代码，运行后把结果发给我。"
-    if reason == "concept_check_repair_limit":
-        return "我们先换到练习里定位问题。下面直接进入练习；运行后把结果发给我。"
-    return "可以先进入练习。下面直接展示练习卡片；运行后把结果发给我。"
 
 
 def _ensure_actions(value: object, defaults: Sequence[Mapping[str, str]]) -> list[dict[str, str]]:
@@ -2171,6 +2194,7 @@ def list_learning_history(
           learning_messages.id AS message_id,
           learning_messages.role,
           learning_messages.content,
+          learning_messages.metadata,
           learning_messages.created_at
         FROM learning_sessions
         JOIN learning_messages ON learning_messages.session_id = learning_sessions.id
@@ -2207,6 +2231,7 @@ def list_learning_history(
                     "id": str(row["message_id"]),
                     "role": str(row["role"]),
                     "content": _limit_text(str(row["content"]), 1200),
+                    "tool_calls": _history_tool_calls(row.get("metadata")),
                     "created_at": _isoformat(row.get("created_at")),
                 }
             )
@@ -2216,6 +2241,32 @@ def list_learning_history(
         "active_session_id": active_session_id,
         "sessions": sessions,
     }
+
+
+def _history_tool_calls(metadata: object) -> list[dict[str, object]]:
+    if not isinstance(metadata, Mapping):
+        return []
+    tool_calls = metadata.get("tool_calls")
+    if not isinstance(tool_calls, Sequence) or isinstance(tool_calls, str | bytes):
+        return []
+    serialized: list[dict[str, object]] = []
+    for item in tool_calls:
+        if not isinstance(item, Mapping):
+            continue
+        tool_call_id = str(item.get("id") or "").strip()
+        name = str(item.get("name") or "").strip()
+        if not tool_call_id or not name:
+            continue
+        status = str(item.get("status") or "done")
+        serialized.append(
+            {
+                "id": tool_call_id,
+                "name": name,
+                "args": item.get("args") if isinstance(item.get("args"), Mapping) else {},
+                "status": status if status in {"pending", "running", "done", "error"} else "done",
+            }
+        )
+    return serialized
 
 
 def _tool_call(name: str, args: Mapping[str, object], message_id: str) -> dict[str, object]:
@@ -2294,18 +2345,9 @@ def _concept_summary(context: LearningConversationContext) -> str:
     return "；".join(items) or str(context.knowledge_point.get("title") or "当前知识点")
 
 
-def _practice_notice(state: Mapping[str, object]) -> str:
-    summary = str(state.get("concept_summary") or "")
-    reason = str(state.get("practice_unlock_reason") or "")
-    if reason == "concept_check_passed":
-        return f"概念判断已通过。概念小结：{summary}"
-    if reason == "concept_check_skipped":
-        return f"你选择先进入练习，概念检查会标记为未完成。概念小结：{summary}"
-    if reason == "concept_check_repair_limit":
-        return f"概念判断暂未完全通过，先进入引导练习。概念小结：{summary}"
-    if state.get("learning_incomplete") is True:
-        return f"当前学习进度尚未完成。概念小结：{summary}"
-    return f"费曼复述已通过。概念小结：{summary}"
+def _practice_notice(state: Mapping[str, object], *, agent_content: str = "") -> str:
+    del state, agent_content
+    return ""
 
 
 def _sanitize_exercise_context(exercise: Mapping[str, object]) -> dict[str, object]:

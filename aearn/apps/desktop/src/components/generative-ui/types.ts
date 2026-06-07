@@ -100,6 +100,12 @@ export type ConceptCheckResultArgs = {
   confidence: "high" | "medium" | "low";
   explanation: string;
   next_prompt: string;
+  answer_leakage_review?: {
+    status: "clear" | "revised" | string;
+    revealed_target_answer: boolean;
+    next_prompt_requires_same_answer: boolean;
+    reason: string;
+  } | null;
   actions: Array<{
     id: string;
     label: string;

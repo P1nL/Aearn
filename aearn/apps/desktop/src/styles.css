@@ -1059,6 +1059,16 @@
       font-size: 12px;
     }
 
+    .doc-code-block figcaption strong {
+      display: inline-flex;
+      margin-right: 6px;
+      padding: 2px 7px;
+      border-radius: 999px;
+      background: rgba(47, 125, 99, .1);
+      color: var(--accent-dark);
+      font-size: 11px;
+    }
+
     .doc-code-block pre {
       max-width: 100%;
       margin: 0;
@@ -1073,7 +1083,7 @@
 
     .doc-references {
       display: grid;
-      gap: 4px;
+      gap: 8px;
       padding-top: 4px;
       border-top: 1px solid var(--line);
       color: var(--muted);
@@ -1081,13 +1091,23 @@
     }
 
     .doc-references h3,
-    .doc-references p {
+    .doc-reference-item p {
       margin: 0;
     }
 
     .doc-references h3 {
       color: var(--ink);
       font-size: 12px;
+    }
+
+    .doc-reference-item {
+      display: grid;
+      gap: 2px;
+    }
+
+    .doc-reference-item span {
+      color: var(--muted);
+      font-size: 11px;
     }
 
     .concept-trigger-card {
@@ -3746,17 +3766,53 @@ img {
   font-size: 12px;
 }
 
-.concept-intro-card,
-.concept-result-card {
+.concept-intro-card {
   display: grid;
   gap: 14px;
 }
 
-.concept-summary,
-.concept-result-card p {
+.concept-summary {
   margin: 0;
   color: var(--ink);
   line-height: 1.7;
+}
+
+.concept-result-feedback {
+  display: grid;
+  gap: 10px;
+  margin: 8px 0;
+  padding: 12px 14px;
+  border-left: 3px solid rgba(84, 94, 112, .28);
+  border-radius: 14px;
+  background: rgba(250, 247, 240, .72);
+}
+
+.concept-feedback-row {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+
+.concept-feedback-row span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.concept-feedback-row p {
+  margin: 0;
+  color: var(--ink);
+  line-height: 1.65;
+}
+
+.concept-feedback-note {
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: rgba(47, 125, 99, .08);
+  color: var(--accent-dark);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .concept-example,
@@ -3820,17 +3876,17 @@ img {
   background: rgba(250, 247, 240, .9);
 }
 
-.concept-result-card.correct {
-  border-color: rgba(79, 130, 93, .35);
+.concept-result-feedback.correct {
+  border-left-color: rgba(79, 130, 93, .58);
 }
 
-.concept-result-card.incorrect {
-  border-color: rgba(184, 132, 70, .4);
+.concept-result-feedback.incorrect {
+  border-left-color: rgba(184, 132, 70, .62);
 }
 
-.concept-result-card.skipped,
-.concept-result-card.unclear {
-  border-color: rgba(84, 94, 112, .25);
+.concept-result-feedback.skipped,
+.concept-result-feedback.unclear {
+  border-left-color: rgba(84, 94, 112, .42);
 }
 
 .concept-next {
