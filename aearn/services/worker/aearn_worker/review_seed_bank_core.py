@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 
-GENERATOR_VERSION = "review_seed_bank_v1"
+GENERATOR_VERSION = "review_seed_bank_model_v2"
 CORE_REVIEW_EXERCISE_TYPES = {
     "code_blank",
     "fix_bug",
@@ -21,40 +21,8 @@ class ReviewSeedBankValidationError(ValueError):
 
 
 def build_review_seed_bank_payload(context: Mapping[str, object]) -> tuple[list[dict[str, object]], dict[str, object]]:
-    knowledge_point_id = str(context["knowledge_point_id"])
-    title = _text(context.get("title"), "当前知识点")
-    description = _text(context.get("description"), f"复习 {title} 的核心行为。")
-    language = _text(context.get("language"), "javascript")
-    runtime_tier = _text(context.get("runtime_tier"), "browser_preview")
-    weak_points = _string_list(context.get("weak_points_json"))
-    seed_count = _target_seed_count(context)
-    supported_types = supported_review_exercise_types(runtime_tier)
-    type_cycle = _type_cycle(supported_types)
-
-    seeds: list[dict[str, object]] = []
-    for index in range(seed_count):
-        exercise_type = type_cycle[index % len(type_cycle)]
-        misconception = _misconception_for(index, weak_points, language)
-        seed = _build_seed(
-            knowledge_point_id=knowledge_point_id,
-            title=title,
-            description=description,
-            language=language,
-            runtime_tier=runtime_tier,
-            exercise_type=exercise_type,
-            misconception=misconception,
-            index=index,
-        )
-        seeds.append(seed)
-
-    quality_report = validate_review_seed_bank(
-        seeds,
-        knowledge_point_id=knowledge_point_id,
-        high_risk=_is_high_risk(context),
-        requires_review_ai_patch="review_ai_patch" in supported_types,
-        supported_exercise_types=supported_types,
-    )
-    return seeds, quality_report
+    del context
+    raise ReviewSeedBankValidationError("review seed bank generation requires a model-generated candidate")
 
 
 def validate_review_seed_bank(
@@ -196,198 +164,6 @@ def persist_failed_seed_bank(
     )
 
 
-def _build_seed(
-    *,
-    knowledge_point_id: str,
-    title: str,
-    description: str,
-    language: str,
-    runtime_tier: str,
-    exercise_type: str,
-    misconception: str,
-    index: int,
-) -> dict[str, object]:
-    suffix = f"{exercise_type}_{index + 1:02d}"
-    if exercise_type == "review_ai_patch":
-        return _review_ai_patch_seed(
-            knowledge_point_id=knowledge_point_id,
-            title=title,
-            description=description,
-            language=language,
-            runtime_tier=runtime_tier,
-            misconception=misconception,
-            suffix=suffix,
-        )
-    return _practice_seed(
-        knowledge_point_id=knowledge_point_id,
-        title=title,
-        description=description,
-        language=language,
-        runtime_tier=runtime_tier,
-        exercise_type=exercise_type,
-        misconception=misconception,
-        suffix=suffix,
-        index=index,
-    )
-
-
-def _review_ai_patch_seed(
-    *,
-    knowledge_point_id: str,
-    title: str,
-    description: str,
-    language: str,
-    runtime_tier: str,
-    misconception: str,
-    suffix: str,
-) -> dict[str, object]:
-    original_code, ai_diff, expected_risk = _patch_material(language, title)
-    return {
-        "id": f"seed_{_slug(title)}_{suffix}",
-        "exercise_type": "review_ai_patch",
-        "difficulty": 3,
-        "target_misconception": misconception,
-        "knowledge_point_id": knowledge_point_id,
-        "runtime_tier": runtime_tier,
-        "prompt_markdown": (
-            f"围绕 **{title}** 审查一段 AI 生成改动。你需要判断它是否满足需求，"
-            f"并给出基于 diff、需求或测试的证据。\n\n复习变体编号：{suffix}。"
-        ),
-        "starter_code": original_code,
-        "solution_reference": "",
-        "visible_tests_summary": ["结论必须引用需求、diff 或可见测试信号，不能只说 tests passed。"],
-        "metadata": {
-            "requirement": f"{description} 请保持 {title} 的关键行为可验证。",
-            "original_code": original_code,
-            "ai_diff": ai_diff,
-            "review_focus": f"{title} 的当前知识点风险与 AI 改动是否一致。",
-            "expected_risk": expected_risk,
-            "expected_verdict": "fail",
-            "expected_next_actions": ["reject", "request_change"],
-        },
-        "rubric": {
-            "verdict_correctness": "0-2",
-            "evidence_grounding": "0-2",
-            "knowledge_point_alignment": "0-2",
-            "actionability": "0-2",
-        },
-    }
-
-
-def _practice_seed(
-    *,
-    knowledge_point_id: str,
-    title: str,
-    description: str,
-    language: str,
-    runtime_tier: str,
-    exercise_type: str,
-    misconception: str,
-    suffix: str,
-    index: int,
-) -> dict[str, object]:
-    starter_code, _solution_reference, blank_value, expected_concept = _practice_material(language, exercise_type, index)
-    return {
-        "id": f"seed_{_slug(title)}_{suffix}",
-        "exercise_type": exercise_type,
-        "difficulty": 2 if exercise_type in {"code_blank", "explain_code"} else 3,
-        "target_misconception": misconception,
-        "knowledge_point_id": knowledge_point_id,
-        "runtime_tier": runtime_tier,
-        "prompt_markdown": (
-            f"围绕 **{title}** 完成一个复习变体。\n\n"
-            f"复习目标：{description}\n\n"
-            f"先独立完成，再用自己的话说明你验证了什么。\n\n复习变体编号：{suffix}。"
-        ),
-        "starter_code": starter_code,
-        "visible_tests_summary": ["可见检查会验证核心补全和最小运行行为。"],
-        "metadata": {
-            "review_focus": f"{title} 的迁移应用",
-            "required_patterns": [blank_value],
-            "target_misconception": misconception,
-        },
-        "rubric": {
-            "completion_correctness": "0-2",
-            "runtime_and_tests": "0-2",
-            "error_diagnosis": "0-2",
-            "explanation_check": "0-2",
-        },
-        "code_blanks": [
-            {
-                "blank_key": "blank_1",
-                "placeholder": blank_value,
-                "expected_concept": expected_concept,
-                "acceptable_patterns_json": [{"type": "literal", "value": blank_value}],
-                "is_core": True,
-                "order_index": 0,
-            }
-        ],
-        "test_cases": [
-            {
-                "case_type": "visible" if runtime_tier != "browser_preview" else "preview_assertion",
-                "input_json": {"review_seed": suffix},
-                "expected_output_json": {"contains": blank_value},
-                "assertion_code": None,
-                "weight": 1,
-                "is_critical": True,
-                "timeout_ms": 5000,
-                "order_index": 0,
-            }
-        ],
-    }
-
-
-def _practice_material(language: str, exercise_type: str, index: int) -> tuple[str, str, str, str]:
-    if language == "python":
-        blank = "total" if index % 2 == 0 else "len(scores)"
-        starter = (
-            "def summarize_scores(scores):\n"
-            "    total = sum(scores)\n"
-            "    print(f\"total={total}\")\n"
-            "    return __BLANK_1__\n"
-        )
-        solution = starter.replace("__BLANK_1__", blank)
-        concept = "区分 stdout 和返回值，返回调用方真正需要继续使用的值。"
-        return starter, solution, blank, concept
-    if language == "html_css":
-        blank = "active"
-        starter = "<button class=\"pill __BLANK_1__\">Review ready</button>\n"
-        return starter, starter.replace("__BLANK_1__", blank), blank, "把交互态类名放在真实 DOM 元素上。"
-    blank = "count"
-    if exercise_type == "fix_bug":
-        blank = "outside_handler"
-    starter = (
-        "let count = 0;\n"
-        "button.addEventListener('click', () => {\n"
-        "  count += 1;\n"
-        "  output.textContent = String(__BLANK_1__);\n"
-        "});\n"
-    )
-    solution = starter.replace("__BLANK_1__", "count")
-    concept = "跨点击共享的状态需要位于回调可访问且不会每次重建的作用域。"
-    return starter, solution, "count" if blank == "outside_handler" else blank, concept
-
-
-def _patch_material(language: str, title: str) -> tuple[str, str, str]:
-    if language == "python":
-        return (
-            "def summarize_scores(scores):\n    total = sum(scores)\n    return total\n",
-            "-    return total\n+    print(total)\n",
-            "调用方拿不到返回值，stdout 不能替代函数返回。",
-        )
-    if language == "html_css":
-        return (
-            "<button class=\"pill active\">Ready</button>\n",
-            "-<button class=\"pill active\">Ready</button>\n+<button class=\"pill\">Ready</button>\n",
-            "AI 改动移除了交互态类名，预览断言会失去目标状态。",
-        )
-    return (
-        "let count = 0;\nbutton.addEventListener('click', () => {\n  count += 1;\n  output.textContent = String(count);\n});\n",
-        "-let count = 0;\n button.addEventListener('click', () => {\n+  let count = 0;\n   count += 1;\n   output.textContent = String(count);\n });\n",
-        f"AI 把 {title} 相关状态放进回调内部，多次点击会重置。",
-    )
-
-
 def _validate_review_ai_patch_seed(seed_id: str, seed: Mapping[str, object]) -> None:
     metadata = seed.get("metadata")
     rubric = seed.get("rubric")
@@ -414,46 +190,6 @@ def _reject_leaks(seed_id: str, *values: str) -> None:
         raise ReviewSeedBankValidationError(f"{seed_id}: unsafe hidden or provider detail")
 
 
-def _target_seed_count(context: Mapping[str, object]) -> int:
-    return 12 if _is_high_risk(context) else 8
-
-
-def _is_high_risk(context: Mapping[str, object]) -> bool:
-    weak_points = _string_list(context.get("weak_points_json"))
-    if len(weak_points) >= 2:
-        return True
-    mastery = context.get("mastery_score")
-    if isinstance(mastery, int | float) and mastery < 0.45:
-        return True
-    if "core" in _text(context.get("title"), "").lower():
-        return True
-    if _text(context.get("last_fsrs_rating"), "") == "Again":
-        return True
-    if _int(context.get("lapses"), 0) > 0:
-        return True
-    if _int(context.get("order_index"), 0) <= 1:
-        return True
-    return False
-
-
-def _type_cycle(supported_types: Sequence[str]) -> list[str]:
-    preferred = ["code_blank", "fix_bug", "review_ai_patch", "explain_code", "implement_function"]
-    ordered = [exercise_type for exercise_type in preferred if exercise_type in supported_types]
-    return ordered or ["explain_code"]
-
-
-def _misconception_for(index: int, weak_points: Sequence[str], language: str) -> str:
-    if weak_points:
-        return weak_points[index % len(weak_points)]
-    if language == "python":
-        defaults = ["return_vs_stdout", "value_flow_error", "test_evidence_gap"]
-    elif language == "html_css":
-        defaults = ["selector_state_gap", "class_application_error", "preview_evidence_gap"]
-    else:
-        defaults = ["state_scope_error", "event_handler_state_reset", "insufficient_test_evidence"]
-    return defaults[index % len(defaults)]
-
-
 def _fingerprint(*values: str) -> str:
     return hashlib.sha256("|".join(values).encode("utf-8")).hexdigest()
 
@@ -463,12 +199,6 @@ def _required_text(mapping: Mapping[str, object], key: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ReviewSeedBankValidationError(f"missing required field {key}")
     return value.strip()
-
-
-def _string_list(value: object) -> list[str]:
-    if not isinstance(value, Sequence) or isinstance(value, str):
-        return []
-    return [str(item) for item in value if str(item).strip()]
 
 
 def _text(value: object, fallback: str) -> str:
@@ -486,9 +216,3 @@ def _int(value: object, fallback: int) -> int:
         return int(str(value))
     except (TypeError, ValueError):
         return fallback
-
-
-def _slug(value: str) -> str:
-    ascii_slug = "".join(ch.lower() if ch.isalnum() else "_" for ch in value)
-    compact = "_".join(part for part in ascii_slug.split("_") if part)
-    return compact[:36] or "knowledge_point"

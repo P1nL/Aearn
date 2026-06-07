@@ -244,6 +244,8 @@ data: {"request_id":"req_001","session_id":"sess_001","content":"先观察这段
 }
 ```
 
+学习页 SSE 只发送结构化输出中解包后的 `public_message`；不得发送完整 envelope、`internal_review`、provider reasoning 或 JSON key token。
+
 #### `tool_status`
 
 用途：LangGraph 节点或工具调用状态。
@@ -1778,7 +1780,7 @@ HTTP 状态码：
 
 错误码：`SESSION_NOT_FOUND`、`VALIDATION_ERROR`、`MODEL_UNAVAILABLE`、`RATE_LIMITED`
 
-模型说明：学习页对话不提供确定性教学文案兜底，包括概念判断通过后用户点击 `开始练习` 的练习解锁说明。模型失败、未配置、输出为空或输出被 guardrail 拦截时，JSON 模式返回 `MODEL_UNAVAILABLE`；SSE 模式发送一个 `error.code=MODEL_UNAVAILABLE` 事件并终止，不写入成功的 assistant 响应、`show_code_exercise` 工具调用或幂等成功记录。guardrail 必须拦截模型把内部策略作为正式输出写给学习者的情况，例如 `response_policy`、`_policy`、`policy要求` 或“根据 policy”式表述。
+模型说明：学习页对话不提供确定性教学文案兜底，包括概念判断通过后用户点击 `开始练习` 的练习解锁说明。后端把阶段动作编译为内部 typed directive 和当轮 instructions，模型输入的学习事实 JSON 不包含 `response_policy`、`stage_strategy`、`forbidden_outputs` 或 `allowed_outputs` 等内部策略对象。模型必须返回版本化结构化 envelope：`schema_version`、`public_message` 和固定布尔 `internal_review`。只有 `public_message` 写入 `agent_message.content`；`internal_review` 不进入 API、SSE、历史或持久化正文。模型失败、未配置、输出为空、schema 非法、任一 self-review 为 `false`，或公开正文被 guardrail 拦截时，JSON 模式返回 `MODEL_UNAVAILABLE`；SSE 模式发送一个 `error.code=MODEL_UNAVAILABLE` 事件并终止，不写入成功的 assistant 响应、`show_code_exercise` 工具调用或幂等成功记录。guardrail 仍必须拦截模型把内部策略作为正式输出写给学习者的情况，例如 `_policy`、`policy要求` 或“根据 policy”式表述。
 
 幂等/重试说明：使用 `client_message_id` 去重；SSE 模式可增量返回多个 `agent_message` 和 `tool_call` 事件。
 

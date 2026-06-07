@@ -260,7 +260,7 @@ Composer state stays controlled by assistant-ui and review navigation follows th
 ### 1. Scope / Trigger
 
 - Trigger: implementing or changing the bottom composer behavior for active learning workspace messages.
-- Scope: `aearn/apps/desktop/src/App.tsx`, `api.ts`, `appTypes.ts`, `components/ThreadMessages.tsx`, `hooks/useSSE.ts`, the app store message mutators, and composer CSS.
+- Scope: `aearn/apps/desktop/src/App.tsx`, `api.ts`, `appTypes.ts`, `components/AssistantUIThread.tsx`, `hooks/useSSE.ts`, the app store message mutators, and composer CSS.
 
 ### 2. Signatures
 
@@ -279,6 +279,8 @@ Composer state stays controlled by assistant-ui and review navigation follows th
 - If no active session exists, show disabled guidance and do not call the backend.
 - A stream that closes without `done` or `error` must become a visible recoverable error state.
 - The frontend must not derive scoring, final exercise result, review scheduling, or hidden-test facts from conversation messages.
+- The frontend must not render "导师判断", chain-of-thought, provider reasoning, or inferred hidden thinking; do not regex-split assistant text or parse prompt-policy markers from normal content.
+- Public frontend types and render paths must ignore/drop `internal_review`; that field is backend-private and must never appear in the UI or app store.
 
 ### 4. Validation & Error Matrix
 
@@ -293,9 +295,9 @@ Composer state stays controlled by assistant-ui and review navigation follows th
 
 ### 5. Good/Base/Bad Cases
 
-- Good: learner asks a follow-up during an active session, sees one assistant bubble fill incrementally, then the streaming cursor disappears on `done`.
+- Good: learner asks a follow-up during an active session, sees one assistant bubble fill incrementally, then the streaming cursor disappears on `done`; no separate diagnostic or thinking panel appears.
 - Base: learner opens home without an active session and sees guidance to start a knowledge point before asking the Agent.
-- Bad: using `EventSource` for this POST body, appending one message per delta, reusing a fixed `X-Request-Id`, or streaming review/global chatbot messages in this task.
+- Bad: using `EventSource` for this POST body, appending one message per delta, reusing a fixed `X-Request-Id`, streaming review/global chatbot messages in this task, displaying backend-private `internal_review`, or trying to detect thoughts by matching `_policy`, JSON keys, or prompt-like text in the assistant content.
 
 ### 6. Tests Required
 
@@ -305,6 +307,7 @@ Composer state stays controlled by assistant-ui and review navigation follows th
 - Verify duplicate send prevention while streaming.
 - Verify `agent_message` deltas update one assistant bubble and `done` clears the streaming state.
 - Verify stream error or incomplete close renders an error bubble and allows retry.
+- Verify no frontend code renders a mentor-judgement/thinking container or attempts to extract one from message text.
 
 ### 7. Wrong vs Correct
 
@@ -325,7 +328,7 @@ updateHomeMessage(assistantMessageId, {
 });
 ```
 
-The stream owns one assistant bubble that changes status as the request moves from connecting to streaming, done, or error.
+The stream owns one assistant bubble that changes status as the request moves from connecting to streaming, done, or error; no separate thinking or diagnostic panel is inferred.
 
 ## Scenario: Desktop App Shell vs Page and Feature Boundaries
 

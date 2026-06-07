@@ -16,6 +16,7 @@ type SidebarNavProps = {
   onToggleGroup: (group: NavGroupKey) => void;
   onRouteChange: (route: AppRoute) => void;
   onSelectKnowledgePoint: (knowledgePointId: string) => void;
+  onSelectReviewKnowledgePoint: (knowledgePointId: string) => void;
 };
 
 export function SidebarNav({
@@ -26,6 +27,7 @@ export function SidebarNav({
   onToggleGroup,
   onRouteChange,
   onSelectKnowledgePoint,
+  onSelectReviewKnowledgePoint,
 }: SidebarNavProps) {
   const [expandedSubmenus, setExpandedSubmenus] = useState<Record<LimitedNavGroupKey, boolean>>({
     learn: false,
@@ -140,7 +142,7 @@ export function SidebarNav({
                   disabled={item.disabled}
                   title={item.label}
                   onClick={() => {
-                    if (!item.disabled) onRouteChange("review");
+                    if (!item.disabled) onSelectReviewKnowledgePoint(item.id);
                   }}
                 >
                   <span className="nav-dot"></span>

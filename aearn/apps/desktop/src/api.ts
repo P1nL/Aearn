@@ -36,8 +36,10 @@ import type {
   NoteRecord,
   PlanDraft,
   ReviewDueItem,
+  ReviewHistoryMessage,
   ReviewAiPatchAnswer,
   ReviewExerciseResultResponse,
+  ReviewMessagesResponse,
   ReviewSessionResponse,
   ReviewWarmupResultResponse,
   ReviewStateSummary,
@@ -517,6 +519,22 @@ export async function startReviewSession(input: {
   });
   if (!isReviewSessionResponse(payload)) {
     throw new Error("Review session start returned an invalid payload");
+  }
+  return payload;
+}
+
+export async function fetchReviewMessages(input: {
+  userId: string;
+  sessionId: string;
+  signal?: AbortSignal;
+}): Promise<ReviewMessagesResponse> {
+  const query = new URLSearchParams({ user_id: input.userId });
+  const payload = await requestJson(
+    `${API_BASE_URL}/api/reviews/${encodeURIComponent(input.sessionId)}/messages?${query.toString()}`,
+    { signal: input.signal },
+  );
+  if (!isReviewMessagesResponse(payload)) {
+    throw new Error("Review messages API returned an invalid payload");
   }
   return payload;
 }
@@ -1276,7 +1294,27 @@ function isReviewWarmupResultResponse(payload: unknown): payload is ReviewWarmup
     typeof payload.review_stage === "string" &&
     isReviewWarmupState(payload.warmup) &&
     isRecord(payload.review_stage_state) &&
-    payload.next_action === "start_variant"
+    (payload.next_action === "start_variant" || payload.next_action === "retry_same")
+  );
+}
+
+function isReviewMessagesResponse(payload: unknown): payload is ReviewMessagesResponse {
+  return (
+    isRecord(payload) &&
+    typeof payload.session_id === "string" &&
+    Array.isArray(payload.messages) &&
+    payload.messages.every(isReviewHistoryMessage)
+  );
+}
+
+function isReviewHistoryMessage(payload: unknown): payload is ReviewHistoryMessage {
+  return (
+    isRecord(payload) &&
+    typeof payload.id === "string" &&
+    (payload.role === "user" || payload.role === "agent") &&
+    typeof payload.content === "string" &&
+    (typeof payload.client_message_id === "string" || payload.client_message_id === null) &&
+    (typeof payload.created_at === "string" || payload.created_at === null)
   );
 }
 

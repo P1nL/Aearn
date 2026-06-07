@@ -43,6 +43,32 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+class _StructuredLearningFakeMixin:
+    def complete_structured_text_stream(self, messages, *, output_type, temperature=None):  # type: ignore[no-untyped-def]
+        del output_type
+        yield '{"schema_version":"1","public_message":"'
+        for delta in self.complete_text_stream(messages, temperature=temperature):
+            yield json.dumps(str(delta), ensure_ascii=False)[1:-1]
+        yield '","internal_review":{"public_message_safe":true,"no_internal_policy_reference":true,"no_answer_leakage":true,"no_forbidden_content":true}}'
+
+
+def _structured_learning_output(public_message: str) -> str:
+    return json.dumps(
+        {
+            "schema_version": "1",
+            "public_message": public_message,
+            "internal_review": {
+                "public_message_safe": True,
+                "no_internal_policy_reference": True,
+                "no_answer_leakage": True,
+                "no_forbidden_content": True,
+            },
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
 @pytest.fixture()
 def client() -> TestClient:
     bootstrap_database()
@@ -51,7 +77,7 @@ def client() -> TestClient:
 
 @pytest.fixture(autouse=True)
 def disable_llm_generation(monkeypatch: pytest.MonkeyPatch) -> None:
-    class FakeLearningConversationClient:
+    class FakeLearningConversationClient(_StructuredLearningFakeMixin):
         model = "fake-teaching-model"
 
         def complete_text_stream(self, messages, *, temperature=None):  # type: ignore[no-untyped-def]
@@ -1117,7 +1143,7 @@ def test_learning_message_routes_and_passes_handoffs_to_sdk_client(
     session = _start_session(client, user, plan)
     captured: dict[str, object] = {}
 
-    class FakeRoutedClient:
+    class FakeRoutedClient(_StructuredLearningFakeMixin):
         model = "fake-routed-model"
 
         def complete_text_stream(self, messages, *, temperature=None):  # type: ignore[no-untyped-def]
@@ -1171,6 +1197,14 @@ def test_learning_message_routes_and_passes_handoffs_to_sdk_client(
     body = response.json()
     assert body["agent_message"]["content"] == "路由接入完成。"
     assert body["generation_model"] == "fake-routed-model"
+    prompt_json = json.dumps(captured["messages"], ensure_ascii=False)
+    assert "response_policy" not in prompt_json
+    assert "stage_strategy" not in prompt_json
+    assert "forbidden_outputs" not in prompt_json
+    assert "allowed_outputs" not in prompt_json
+    assert "public_message" in prompt_json
+    assert "diagnostic_summary" not in prompt_json
+    assert "internal_review" not in json.dumps(body, ensure_ascii=False)
     route_input = captured["route_input"]
     assert route_input["session_stage"] == "concept_check"
     assert route_input["user_message"] == "为什么要用变量保存状态？"
@@ -1189,6 +1223,72 @@ def test_learning_message_routes_and_passes_handoffs_to_sdk_client(
     assert "agent_name" not in json.dumps(body, ensure_ascii=False)
 
 
+def test_learning_message_json_exposes_only_public_message_without_internal_review(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user, plan = _confirmed_plan(client, language="javascript")
+    session = _start_session(client, user, plan)
+    client_message_id = f"desktop_msg_{uuid.uuid4().hex}"
+
+    class StructuredClient:
+        model = "structured-model"
+
+        def complete_text_stream(self, messages, *, temperature=None):  # type: ignore[no-untyped-def]
+            del messages, temperature
+            return ["unused"]
+
+        def complete_structured_text_stream(self, messages, *, output_type, temperature=None):  # type: ignore[no-untyped-def]
+            del messages, output_type, temperature
+            return [_structured_learning_output("先看 count 的作用域，再看点击回调。")]
+
+    monkeypatch.setattr(
+        learning_conversation,
+        "AgentsSDKLearningConversationClient",
+        lambda settings, **kwargs: StructuredClient(),
+    )
+
+    response = client.post(
+        f"/api/learning-sessions/{session['session_id']}/messages",
+        json={
+            "role": "user",
+            "content": "为什么要用变量保存状态？",
+            "client_message_id": client_message_id,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    serialized = json.dumps(body, ensure_ascii=False)
+    assert body["agent_message"]["content"] == "先看 count 的作用域，再看点击回调。"
+    assert set(body["agent_message"]) == {"id", "role", "content"}
+    assert "internal_review" not in serialized
+
+    replay = client.post(
+        f"/api/learning-sessions/{session['session_id']}/messages",
+        json={
+            "role": "user",
+            "content": "为什么要用变量保存状态？",
+            "client_message_id": client_message_id,
+        },
+    )
+    assert replay.status_code == 200
+    assert replay.json()["agent_message"] == body["agent_message"]
+
+    history = client.get(
+        "/api/learning-sessions/history",
+        params={
+            "user_id": user["id"],
+            "knowledge_point_id": plan["knowledge_points"][0]["id"],
+            "active_session_id": session["session_id"],
+        },
+    )
+    assert history.status_code == 200
+    active_messages = history.json()["sessions"][0]["messages"]
+    assert active_messages[-1]["content"] == body["agent_message"]["content"]
+    assert "diagnostic_summary" not in active_messages[-1]
+
+
 def test_deepseek_learning_message_uses_direct_client_without_agents_sdk(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -1197,7 +1297,7 @@ def test_deepseek_learning_message_uses_direct_client_without_agents_sdk(
     session = _start_session(client, user, plan)
     captured: dict[str, object] = {"direct_calls": 0}
 
-    class FakeDirectDeepSeekClient:
+    class FakeDirectDeepSeekClient(_StructuredLearningFakeMixin):
         model = "deepseek-chat"
 
         def complete_text_stream(self, messages, *, temperature=None):  # type: ignore[no-untyped-def]
@@ -1275,7 +1375,7 @@ def test_deepseek_learning_message_internal_policy_leak_returns_model_unavailabl
     session = _start_session(client, user, plan)
     client_message_id = f"desktop_msg_{uuid.uuid4().hex}"
 
-    class LeakingDirectDeepSeekClient:
+    class LeakingDirectDeepSeekClient(_StructuredLearningFakeMixin):
         model = "deepseek-chat"
 
         def complete_text_stream(self, messages, *, temperature=None):  # type: ignore[no-untyped-def]
@@ -1352,6 +1452,50 @@ def test_deepseek_learning_message_internal_policy_leak_returns_model_unavailabl
     assert stored["count"] == 0
 
 
+def test_learning_message_internal_review_failure_returns_model_unavailable(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user, plan = _confirmed_plan(client, language="javascript")
+    session = _start_session(client, user, plan)
+
+    class UnsafeReviewClient:
+        model = "provider-model"
+
+        def complete_text_stream(self, messages, *, temperature=None):  # type: ignore[no-untyped-def]
+            del messages, temperature
+            return ["unused"]
+
+        def complete_structured_text_stream(self, messages, *, output_type, temperature=None):  # type: ignore[no-untyped-def]
+            del messages, output_type, temperature
+            return [
+                _structured_learning_output("看一个局部提示。").replace(
+                    '"no_internal_policy_reference":true',
+                    '"no_internal_policy_reference":false',
+                )
+            ]
+
+    monkeypatch.setattr(
+        learning_conversation,
+        "AgentsSDKLearningConversationClient",
+        lambda settings, **kwargs: UnsafeReviewClient(),
+    )
+
+    response = client.post(
+        f"/api/learning-sessions/{session['session_id']}/messages",
+        json={
+            "role": "user",
+            "content": "为什么要把 count 放在回调外？",
+            "client_message_id": f"desktop_msg_{uuid.uuid4().hex}",
+        },
+    )
+
+    assert response.status_code == 503
+    serialized = json.dumps(response.json(), ensure_ascii=False)
+    assert response.json()["error"]["code"] == "MODEL_UNAVAILABLE"
+    assert "internal_review" not in serialized
+
+
 def test_deepseek_concept_repair_stream_progresses_without_model_unavailable(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -1359,7 +1503,7 @@ def test_deepseek_concept_repair_stream_progresses_without_model_unavailable(
     user, plan = _confirmed_plan(client, language="javascript")
     session = _start_session(client, user, plan)
 
-    class FakeDirectDeepSeekClient:
+    class FakeDirectDeepSeekClient(_StructuredLearningFakeMixin):
         model = "deepseek-chat"
 
         def complete_text_stream(self, messages, *, temperature=None):  # type: ignore[no-untyped-def]
@@ -1959,7 +2103,7 @@ def test_learning_message_routes_wire_agent_side_effects_and_tool_context(
     session = _start_session(client, user, plan)
     captured: list[dict[str, object]] = []
 
-    class FakeToolAwareClient:
+    class FakeToolAwareClient(_StructuredLearningFakeMixin):
         model = "fake-tool-aware-model"
 
         def __init__(
@@ -2099,7 +2243,7 @@ def test_learning_message_injects_profile_summary_and_drains_profile_side_effect
         ensure_learner_profile(conn, str(other_user["id"]))
         conn.commit()
 
-    class FakeProfileAwareClient:
+    class FakeProfileAwareClient(_StructuredLearningFakeMixin):
         model = "fake-profile-aware-model"
 
         def __init__(
@@ -2181,7 +2325,7 @@ def test_learning_message_json_uses_configured_model_stream(
     session = start_response.json()
     captured: dict[str, object] = {}
 
-    class FakeStreamingClient:
+    class FakeStreamingClient(_StructuredLearningFakeMixin):
         model = "fake-teaching-model"
 
         def complete_text_stream(self, messages, *, temperature=None):  # type: ignore[no-untyped-def]
@@ -2257,7 +2401,7 @@ def test_learning_message_builds_llm_safe_summary_and_recent_context(
         )
         conn.commit()
 
-    class FakeSummaryTutorClient:
+    class FakeSummaryTutorClient(_StructuredLearningFakeMixin):
         model = "fake-teaching-model"
 
         def complete_text_stream(self, messages, *, temperature=None):  # type: ignore[no-untyped-def]
@@ -2388,7 +2532,7 @@ def test_learning_message_reuses_persisted_summary_until_refresh_threshold(
         )
         conn.commit()
 
-    class FakeTutorClient:
+    class FakeTutorClient(_StructuredLearningFakeMixin):
         model = "fake-teaching-model"
 
         def complete_text_stream(self, messages, *, temperature=None):  # type: ignore[no-untyped-def]
@@ -2429,7 +2573,7 @@ def test_learning_message_direct_answer_request_redirects_to_partial_guidance(
     session = _start_session(client, user, plan)
     captured: dict[str, object] = {}
 
-    class FakeTutorClient:
+    class FakeTutorClient(_StructuredLearningFakeMixin):
         model = "fake-teaching-model"
 
         def complete_text_stream(self, messages, *, temperature=None):  # type: ignore[no-untyped-def]
@@ -2460,7 +2604,8 @@ def test_learning_message_direct_answer_request_redirects_to_partial_guidance(
     assert "完整代码" not in body["agent_message"]["content"]
     assert "只检查 count" in body["agent_message"]["content"]
     main_prompt = json.dumps(captured["main_messages"], ensure_ascii=False)
-    assert "direct_answer_requested" in main_prompt
+    assert "direct_answer_requested" not in main_prompt
+    assert "学习者在索要完整答案时" in main_prompt
     assert "局部提示" in main_prompt
 
 
@@ -2480,7 +2625,7 @@ def test_learning_message_llm_failure_returns_model_unavailable_without_provider
     )
     session = start_response.json()
 
-    class FailingStreamingClient:
+    class FailingStreamingClient(_StructuredLearningFakeMixin):
         model = "provider-model"
 
         def complete_text_stream(self, messages, *, temperature=None):  # type: ignore[no-untyped-def]
@@ -2539,7 +2684,7 @@ def test_learning_message_json_guardrail_returns_model_unavailable_when_model_ou
     )
     session = start_response.json()
 
-    class LeakingStreamingClient:
+    class LeakingStreamingClient(_StructuredLearningFakeMixin):
         model = "provider-model"
 
         def complete_text_stream(self, messages, *, temperature=None):  # type: ignore[no-untyped-def]
@@ -2629,6 +2774,11 @@ def test_learning_message_sse_streams_agent_message_and_done(client: TestClient)
     assert agent_events[-1]["data"]["content"]
     assert events[-1]["data"]["message_id"] == agent_events[-1]["data"]["message_id"]
     assert events[-1]["data"]["generation_source"] == "llm"
+    serialized_events = json.dumps(events, ensure_ascii=False)
+    assert "schema_version" not in serialized_events
+    assert "internal_review" not in serialized_events
+    assert '"public_message"' not in serialized_events
+    assert "diagnostic_summary" not in serialized_events
 
 
 def test_learning_message_sse_emits_graph_tool_status_before_agent_message(
@@ -2769,7 +2919,7 @@ def test_learning_message_sse_guardrail_error_after_partial_output(
     )
     session = start_response.json()
 
-    class PartiallyLeakingStreamingClient:
+    class PartiallyLeakingStreamingClient(_StructuredLearningFakeMixin):
         model = "provider-model"
 
         def complete_text_stream(self, messages, *, temperature=None):  # type: ignore[no-untyped-def]

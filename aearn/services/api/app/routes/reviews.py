@@ -1,5 +1,6 @@
 import asyncio
-from collections.abc import AsyncGenerator, Iterable
+import hashlib
+from collections.abc import AsyncGenerator, Iterable, Mapping
 from datetime import datetime
 
 from fastapi import APIRouter, Query, Request, status
@@ -21,10 +22,13 @@ from app.models.reviews import ReviewWarmupResultRequest, StartReviewSessionRequ
 from app.services.repositories.plan_repository import IdempotencyConflictError
 from app.services.conversations.review_conversation import (
     ReviewSessionNotFoundError,
+    ensure_review_session_system_messages,
+    list_review_messages,
     prepare_review_message,
     safe_generation_exceptions,
     start_review_generation,
     store_review_agent_message,
+    store_review_user_message,
 )
 from app.services.repositories.review_repository import (
     EntityNotFoundError,
@@ -253,6 +257,16 @@ def create_review_session(
                 knowledge_point_id=payload.knowledge_point_id,
                 request_id=request_id_from(request),
             )
+            ensure_review_session_system_messages(
+                conn,
+                session_id=str(response["session_id"]),
+                initial_agent_message=str(response["initial_agent_message"]),
+                warmup_message=(
+                    _review_warmup_prompt_message(response)
+                    if str(response.get("review_stage")) in {"warmup", "warmup_repair"}
+                    else None
+                ),
+            )
         except EntityNotFoundError as exc:
             conn.rollback()
             return error_response(
@@ -295,6 +309,26 @@ def create_review_session(
     )
 
 
+@router.get("/{session_id}/messages", response_model=None)
+def read_review_messages(
+    session_id: str,
+    request: Request,
+    user_id: str = Query(min_length=1),
+) -> dict[str, object] | JSONResponse:
+    with connect() as conn:
+        try:
+            response = list_review_messages(conn, session_id=session_id, user_id=user_id)
+        except ReviewSessionNotFoundError as exc:
+            return error_response(
+                request,
+                code=exc.code,
+                message=exc.message,
+                status_code=status.HTTP_404_NOT_FOUND,
+                details={"session_id": session_id},
+            )
+    return JSONResponse(status_code=status.HTTP_200_OK, content=jsonable_encoder(response))
+
+
 @router.post("/{session_id}/warmup-result", response_model=None)
 async def submit_review_warmup_result(
     session_id: str,
@@ -329,6 +363,17 @@ async def submit_review_warmup_result(
                 session_id=session_id,
                 action=payload.action,
                 answer=payload.answer,
+            )
+            store_review_user_message(
+                conn,
+                session_id=session_id,
+                content=_review_warmup_user_message(payload.action, payload.answer),
+            )
+            store_review_agent_message(
+                conn,
+                session_id=session_id,
+                content=_review_warmup_result_message(response),
+                client_message_id=_review_warmup_result_message_key(session_id, response),
             )
         except EntityNotFoundError as exc:
             conn.rollback()
@@ -400,6 +445,14 @@ async def submit_review_result(
                 request_id=request_id_from(request),
                 request_body=body,
             )
+            feedback = response.get("feedback")
+            if isinstance(feedback, str) and feedback.strip():
+                store_review_agent_message(
+                    conn,
+                    session_id=session_id,
+                    content=feedback,
+                    client_message_id=_review_exercise_result_message_key(session_id, response),
+                )
         except EntityNotFoundError as exc:
             conn.rollback()
             return error_response(
@@ -649,3 +702,59 @@ def _review_agent_message_event(
         "delta": delta,
         "content": content,
     }
+
+
+def _review_warmup_prompt_message(response: Mapping[str, object]) -> str:
+    warmup = response.get("warmup")
+    question = ""
+    if isinstance(warmup, dict):
+        question = str(warmup.get("question") or "")
+    lead = "先做一次短修正：" if str(response.get("review_stage")) == "warmup_repair" else "先做一个短热身："
+    return f"{lead}\n{question}\n\n直接回答热身问题；如果想跳过，可以输入“跳过”。"
+
+
+def _review_warmup_user_message(action: str, answer: str | None) -> str:
+    if action == "skip":
+        return "跳过热身"
+    return (answer or "").strip() or "提交热身回答"
+
+
+def _review_warmup_result_message(response: Mapping[str, object]) -> str:
+    warmup = response.get("warmup")
+    feedback = ""
+    question = ""
+    if isinstance(warmup, dict):
+        feedback = str(warmup.get("feedback") or "")
+        question = str(warmup.get("question") or "")
+    lines = [feedback or "热身已记录。"]
+    if str(response.get("review_stage")) in {"warmup", "warmup_repair"}:
+        lines.append(f"再修正一下：{question}")
+    else:
+        lines.append("热身完成。下面进入同一个知识点的复习变体练习。")
+    return "\n\n".join(lines)
+
+
+def _review_warmup_result_message_key(session_id: str, response: Mapping[str, object]) -> str:
+    warmup = response.get("warmup")
+    result = ""
+    repair_count = 0
+    last_answer = ""
+    if isinstance(warmup, dict):
+        result = str(warmup.get("result") or "")
+        repair_count = int(warmup.get("repair_count") or 0)
+        last_answer = str(warmup.get("last_answer") or "")
+    digest = _stable_review_message_digest(str(response.get("review_stage") or ""), result, str(repair_count), last_answer)
+    return f"review:{session_id}:warmup-result:{digest}"
+
+
+def _review_exercise_result_message_key(session_id: str, response: Mapping[str, object]) -> str | None:
+    attempt_id = response.get("attempt_id")
+    if isinstance(attempt_id, str) and attempt_id:
+        return f"review:{session_id}:exercise-result:{attempt_id}"
+    next_action = str(response.get("next_action") or "retry_same")
+    digest = _stable_review_message_digest(next_action, str(response.get("feedback") or ""))
+    return f"review:{session_id}:exercise-result:{digest}"
+
+
+def _stable_review_message_digest(*parts: str) -> str:
+    return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()[:24]

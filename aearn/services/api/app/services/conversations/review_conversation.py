@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Protocol
 
 from psycopg import Connection
@@ -127,14 +128,104 @@ def store_review_agent_message(
     *,
     session_id: str,
     content: str,
+    client_message_id: str | None = None,
 ) -> None:
-    conn.execute(
-        """
-        INSERT INTO review_messages (review_session_id, role, content)
-        VALUES (%s, 'agent', %s)
-        """,
-        (session_id, content),
+    _store_review_message(
+        conn,
+        session_id=session_id,
+        role="agent",
+        content=content,
+        client_message_id=client_message_id,
     )
+
+
+def store_review_user_message(
+    conn: Connection[dict[str, object]],
+    *,
+    session_id: str,
+    content: str,
+    client_message_id: str | None = None,
+) -> None:
+    _store_review_message(
+        conn,
+        session_id=session_id,
+        role="user",
+        content=content,
+        client_message_id=client_message_id,
+    )
+
+
+def ensure_review_session_system_messages(
+    conn: Connection[dict[str, object]],
+    *,
+    session_id: str,
+    initial_agent_message: str,
+    warmup_message: str | None,
+) -> None:
+    store_review_agent_message(
+        conn,
+        session_id=session_id,
+        content=initial_agent_message,
+        client_message_id=f"review:{session_id}:system-initial",
+    )
+    if warmup_message:
+        store_review_agent_message(
+            conn,
+            session_id=session_id,
+            content=warmup_message,
+            client_message_id=f"review:{session_id}:system-warmup",
+        )
+
+
+def list_review_messages(
+    conn: Connection[dict[str, object]],
+    *,
+    session_id: str,
+    user_id: str | None = None,
+) -> dict[str, object]:
+    session = conn.execute(
+        """
+        SELECT id::text AS id, user_id::text AS user_id
+        FROM learning_sessions
+        WHERE id = %s AND session_type = 'review'
+        LIMIT 1
+        """,
+        (session_id,),
+    ).fetchone()
+    if session is None:
+        raise ReviewSessionNotFoundError("SESSION_NOT_FOUND", "复习会话不存在")
+    if user_id is not None and str(session["user_id"]) != user_id:
+        raise ReviewSessionNotFoundError("SESSION_NOT_FOUND", "复习会话不存在")
+
+    rows = conn.execute(
+        """
+        SELECT id::text AS id, role, content, client_message_id, created_at
+        FROM review_messages
+        WHERE review_session_id = %s
+        ORDER BY
+          CASE
+            WHEN client_message_id LIKE 'review:%%:system-initial' THEN 0
+            WHEN client_message_id LIKE 'review:%%:system-warmup' THEN 1
+            ELSE 2
+          END,
+          created_at,
+          id
+        """,
+        (session_id,),
+    ).fetchall()
+    return {
+        "session_id": str(session["id"]),
+        "messages": [
+            {
+                "id": str(row["id"]),
+                "role": str(row["role"]),
+                "content": str(row["content"]),
+                "client_message_id": str(row["client_message_id"]) if row.get("client_message_id") else None,
+                "created_at": _iso_or_none(row.get("created_at")),
+            }
+            for row in rows
+        ],
+    }
 
 
 def load_review_context(
@@ -180,7 +271,14 @@ def load_review_context(
         SELECT role, content
         FROM review_messages
         WHERE review_session_id = %s
-        ORDER BY created_at
+        ORDER BY
+          CASE
+            WHEN client_message_id LIKE 'review:%%:system-initial' THEN 0
+            WHEN client_message_id LIKE 'review:%%:system-warmup' THEN 1
+            ELSE 2
+          END,
+          created_at,
+          id
         """,
         (session_id,),
     ).fetchall()
@@ -260,3 +358,40 @@ def _build_messages(
 def _message_id(session_id: str, client_message_id: str) -> str:
     digest = hashlib.sha256(f"review:{session_id}:{client_message_id}".encode("utf-8")).hexdigest()[:24]
     return f"msg_review_{digest}"
+
+
+def _store_review_message(
+    conn: Connection[dict[str, object]],
+    *,
+    session_id: str,
+    role: str,
+    content: str,
+    client_message_id: str | None,
+) -> None:
+    if client_message_id:
+        existing = conn.execute(
+            """
+            SELECT id
+            FROM review_messages
+            WHERE client_message_id = %s
+            LIMIT 1
+            """,
+            (client_message_id,),
+        ).fetchone()
+        if existing is not None:
+            return
+    conn.execute(
+        """
+        INSERT INTO review_messages (review_session_id, role, content, client_message_id)
+        VALUES (%s, %s, %s, %s)
+        """,
+        (session_id, role, content, client_message_id),
+    )
+
+
+def _iso_or_none(value: object) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return str(value)

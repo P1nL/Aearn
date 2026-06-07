@@ -698,8 +698,8 @@ The cache boundary is user-scoped and concept checks are created only after the 
 
 ### 1. Scope / Trigger
 
-- Trigger: implementing or changing model-backed learning conversation messages, practice unlock copy, or generated learning tool calls for the active learning workspace.
-- Scope: `POST /api/learning-sessions/{session_id}/messages`, `LearningMessageRequest`, `app/services/conversations/learning_conversation.py`, `app/agents/learning/learning_conversation_agent.py`, `app/agents/learning/learning_concept_agent.py`, `app/services/llm/llm_client.py`, `idempotency_records`, and API tests for JSON and SSE modes.
+- Trigger: implementing or changing model-backed learning conversation messages, structured public output, practice unlock copy, or generated learning tool calls for the active learning workspace.
+- Scope: `POST /api/learning-sessions/{session_id}/messages`, `LearningMessageRequest`, `app/services/conversations/learning_conversation.py`, `app/agents/learning/learning_public_output.py`, `app/agents/learning/learning_conversation_agent.py`, `app/agents/learning/learning_concept_agent.py`, `app/services/llm/llm_client.py`, `idempotency_records`, and API tests for JSON and SSE modes.
 - SDK-backed Agent modules for this flow belong under `app/agents/`, for example `app/agents/learning_conversation_agent.py` and `app/agents/sdk_runtime.py`.
 
 ### 2. Signatures
@@ -710,9 +710,11 @@ The cache boundary is user-scoped and concept checks are created only after the 
 - Request tracing: optional `X-Request-Id`
 - Idempotency key: `learning-message:{session_id}:{client_message_id}`
 - Practice unlock tool args: `show_code_exercise.args.notice` defaults to an empty string; it must not copy the model-generated agent message.
-- Local protocol boundary: `TextCompletionClient.complete_text_stream(messages, temperature=None)`.
-- Default configured model path: `AgentsSDKLearningConversationClient.complete_text_stream(...)`, backed by `openai-agents`.
-- DeepSeek learning text path: `DirectLearningConversationClient.complete_text_stream(...)`, backed by `OpenAICompatibleClient.complete_text_stream(...)` and Chat Completions `stream=true`.
+- Local protocol boundary: `TextCompletionClient.complete_structured_text_stream(messages, *, output_type=LearningPublicOutput, temperature=None)`.
+- Learning structured output schema: `LearningPublicOutput(schema_version, public_message, internal_review)`.
+- Learning stream decoder: `LearningOutputStreamDecoder.feed(chunk) -> list[str]` and `LearningOutputStreamDecoder.finish() -> LearningPublicOutput`.
+- Default configured model path: `AgentsSDKLearningConversationClient.complete_structured_text_stream(...)`, backed by `openai-agents` with `Agent(output_type=LearningPublicOutput)`.
+- DeepSeek learning text path: `DirectLearningConversationClient.complete_structured_text_stream(...)`, backed by `OpenAICompatibleClient.complete_structured_text_stream(...)`, Chat Completions `stream=true`, and `response_format={"type":"json_object"}`.
 - DeepSeek concept JSON path: `DirectConceptClient.complete_json(...)`, backed by `OpenAICompatibleClient.complete_json(...)` and Chat Completions `response_format={"type":"json_object"}`.
 - Dependency signature: `openai-agents==0.17.3` in `aearn/services/api/pyproject.toml`.
 - SDK tool factory signature: `app/agents/tools.py::build_teaching_tools(messages) -> list[Tool]`.
@@ -720,20 +722,25 @@ The cache boundary is user-scoped and concept checks are created only after the 
 
 ### 3. Contracts
 
-- JSON mode returns `agent_message`, `session_state`, `generation_source`, and optional `generation_model`.
+- JSON mode returns `agent_message`, `session_state`, `generation_source`, and optional `generation_model`; `agent_message.content` is the validated `public_message`.
 - SSE mode emits one or more `agent_message` events and exactly one terminal `done` event on success.
 - `agent_message` data must include `request_id`, `session_id`, `message_id`, `delta`, and accumulated `content`.
+- SSE learning-message `agent_message` deltas must be decoded only from the structured envelope's `public_message`; never stream JSON braces, `schema_version`, `internal_review`, or extra diagnostic text as message content.
 - `done` data must include `request_id`, `session_id`, `message_id`, `generation_source`, `generation_model`, and a `result_ref`.
 - Provider configuration, raw provider errors, API keys, hidden test source, hidden case IDs, and reference answers must never be returned or logged.
 - The prompt context may include current knowledge point, lesson outline, sanitized current-stage state, safe exercise prompt/starter code, visible run summary, learner message, and safe conversation continuity only.
+- The learning prompt user JSON must not contain `response_policy`, `stage_strategy`, `forbidden_outputs`, `allowed_outputs`, or renamed equivalents of those internal policy objects.
 - Safe conversation continuity is `conversation_context.safe_summary` plus the most recent bounded `recent_safe_messages`; it must be generated or reused after sanitizing stored `learning_messages`, not by injecting full raw chat history.
 - `conversation_summary` belongs under `learning_sessions.learning_stage_state_json` as versioned session state. It must include refresh metadata such as message count and stage so the service can avoid every-turn summary refresh.
-- Direct-answer requests from learners are not input-guardrail failures by default. Detect them separately and feed `response_policy.direct_answer_requested=true` so the tutor redirects to local hints or checks without giving a full answer.
+- Direct-answer requests from learners are not input-guardrail failures by default. Detect them separately, compile the decision into `LearningReplyDirective`, and render only concise public-facing reply instructions; do not serialize the directive object or internal field names into user JSON.
 - Aearn-owned SDK modules may use SDK `Agent`, `Runner.run_streamed`, `ModelSettings`, and `OpenAIProvider`, but product API shapes and durable state remain in Aearn services/repositories.
 - Teaching-agent SDK tools may read only the already-sanitized learning evidence prepared by `learning_conversation.py`; they must return bounded summaries and must not read or write repositories directly.
 - Teaching-agent SDK tools must not return hidden case IDs, hidden test source, `solution_reference`, full submitted code, provider payloads, raw prompts, API keys, or full note bodies.
-- Teaching-agent guardrails must exist at the SDK-agent boundary and at the public response boundary so fake clients and SDK clients both pass through the same leak checks before JSON or SSE output reaches the frontend.
-- Teaching-agent output guardrails must block internal policy self-references even when the provider returns them as normal final content, including `response_policy`, `_policy`, `policy要求`, and "according to policy" style wording.
+- Teaching-agent guardrails must exist at the SDK-agent boundary and at the public response boundary so fake clients and SDK clients both pass through the same leak checks before JSON or SSE output reaches the frontend; guardrails are defense-in-depth, not the primary channel separator.
+- Teaching-agent output guardrails must block internal policy self-references when they appear in `public_message`, including `response_policy`, `_policy`, `policy要求`, and "according to policy" style wording, while allowing normal course terminology such as browser same-origin policy.
+- `internal_review` contains only fixed boolean self-review fields. Any false value, missing field, duplicate key, extra free-text reasoning, or non-boolean value invalidates the candidate.
+- `internal_review` must never be returned to JSON clients, emitted over SSE, stored in `learning_messages.content`, stored in normal metadata, or written to ordinary logs.
+- Provider-native reasoning fields such as DeepSeek `reasoning_content` remain ignored by transport parsing and must not be mapped into the structured public envelope.
 - SDK tracing must be disabled by default for this path unless a dedicated tracing configuration is explicitly designed.
 - SDK provider base URL handling must preserve existing `OPENAI_BASE_URL` behavior: both `https://provider.example` and `https://provider.example/v1` must resolve to the OpenAI client base URL ending in `/v1`.
 - `llm_provider_type="deepseek"` must use the direct OpenAI-compatible Chat Completions path for learning text and concept JSON. Do not instantiate OpenAI Agents SDK clients, tools, or handoffs for DeepSeek learning-session generation unless a task explicitly implements the official Chat Completions `tools` / `tool_calls` / `role:"tool"` loop.
@@ -750,40 +757,44 @@ The cache boundary is user-scoped and concept checks are created only after the 
 - Missing or inactive learning session -> `SESSION_NOT_FOUND` with 404 in JSON mode or one SSE `error` event in streaming mode.
 - Same idempotency key with a different request body -> `IDEMPOTENCY_CONFLICT`, `recoverable=false`.
 - Same idempotency key with the same request body -> replay the stored completed assistant message; SSE replay may send it as one `agent_message` plus `done`.
-- Model failure before useful output -> `MODEL_UNAVAILABLE`.
+- Model failure before useful validated public output -> `MODEL_UNAVAILABLE`.
 - Model failure during `practice_offer -> practice_support` unlock -> `MODEL_UNAVAILABLE`; no agent success message, no `show_code_exercise`, no idempotency success record.
-- DeepSeek direct Chat Completions failure, invalid JSON, or empty direct stream before useful output -> `MODEL_UNAVAILABLE`.
-- SDK runner exception, invalid SDK event stream, or empty SDK output before useful output -> `MODEL_UNAVAILABLE`.
-- Guardrail-blocked learner request or model output before useful output -> `MODEL_UNAVAILABLE`.
+- DeepSeek direct Chat Completions failure, invalid structured JSON, missing JSON response-format support, or empty direct stream before useful output -> `MODEL_UNAVAILABLE`.
+- SDK runner exception, invalid SDK event stream, missing final structured output, or empty SDK output before useful output -> `MODEL_UNAVAILABLE`.
+- Structured envelope schema failure, duplicate JSON key, missing or blank `public_message`, false `internal_review`, public guardrail failure, or decoder/final-output mismatch -> `MODEL_UNAVAILABLE`.
+- Guardrail-blocked learner request or model public output before useful output -> `MODEL_UNAVAILABLE`.
 - Model stream interruption after partial output -> SSE `error` event with recoverable retry guidance and no stored successful response.
 - Guardrail-blocked model output after at least one public SSE `agent_message` chunk -> SSE `error` event with recoverable retry guidance and no stored successful idempotency response.
 - Unexpected server failure -> `INTERNAL_ERROR` without raw provider details, prompt text, code submissions, or secrets.
 
 ### 5. Good/Base/Bad Cases
 
-- Good: configured OpenAI-compatible provider streams deltas, the route accumulates safe content, stores the final response once, and replays the same `client_message_id` without calling the model again.
-- Good: learner clicks `开始练习`, the configured model returns a concise current knowledge-point summary, and `show_code_exercise.args.notice` is empty so the card does not repeat the agent message.
-- Good: DeepSeek learning messages and concept checks use direct Chat Completions clients while OpenAI can continue using the Agents SDK path.
+- Good: configured OpenAI-compatible provider streams a structured envelope, the decoder emits only `public_message` deltas, the service stores the final public response once, and replay returns the same `client_message_id` result without calling the model again.
+- Good: learner clicks `开始练习`, the configured model returns a concise current knowledge-point summary in `public_message`, and `show_code_exercise.args.notice` is empty so the card does not repeat the agent message.
+- Good: DeepSeek learning messages use direct Chat Completions structured JSON while concept checks use their own direct JSON path; OpenAI can continue using the Agents SDK path with `output_type=LearningPublicOutput`.
 - Good: SDK tools summarize current stage, knowledge point, exercise metadata, and visible latest-attempt facts without exposing raw code submissions or hidden identifiers.
 - Base: local development has no model key; the endpoint returns `MODEL_UNAVAILABLE` and all tests pass without live provider access via fake clients.
-- Bad: adding a durable chat-history table for this MVP, exposing hidden test data in prompt/response, using WebSocket/global chatbot behavior for active learning composer messages, exposing SDK event names directly through the public API, sending DeepSeek through Agents SDK handoff/tool orchestration, letting an SDK tool mutate `Attempt`, `ReviewState`, `ReviewLog`, `Note`, `LearningSession`, or `idempotency_records`, showing hard-coded practice unlock copy when the model is unavailable, printing the exercise prompt/starter code in the agent message before the card, or copying the full agent message into `show_code_exercise.args.notice`.
+- Bad: adding a durable chat-history table for this MVP, exposing hidden test data in prompt/response, using WebSocket/global chatbot behavior for active learning composer messages, exposing SDK event names directly through the public API, sending DeepSeek through Agents SDK handoff/tool orchestration, letting an SDK tool mutate `Attempt`, `ReviewState`, `ReviewLog`, `Note`, `LearningSession`, or `idempotency_records`, showing hard-coded practice unlock copy when the model is unavailable, streaming raw JSON envelope keys to the frontend, rendering `internal_review` or provider reasoning, printing the exercise prompt/starter code in the agent message before the card, or copying the full agent message into `show_code_exercise.args.notice`.
 
 ### 6. Tests Required
 
 - API-test JSON success and idempotent replay for a real active learning session.
 - API-test SSE success with ordered `agent_message` chunks followed by terminal `done`.
+- Unit-test structured learning output schema, duplicate-key rejection, false `internal_review`, public-message guardrails, and the incremental decoder for chunk splits, escapes, Unicode escapes, field-order changes, truncation, and oversized output.
 - API-test missing session and validation errors in both JSON and SSE modes.
 - API-test LLM-disabled or LLM-failure `MODEL_UNAVAILABLE` and assert provider raw details do not leak.
 - API-test practice unlock in JSON and SSE modes with LLM disabled; assert `MODEL_UNAVAILABLE`, no terminal success, and no `show_code_exercise`.
-- API-test successful practice unlock with fake model output; assert `generation_source="llm"`, the prompt forbids repeating exercise-card details, the model text includes the current knowledge-point summary, and `show_code_exercise.args.notice == ""`.
+- API-test JSON success and replay expose only validated `agent_message.content`, never `internal_review` or diagnostic text.
+- API-test SSE success emits only decoded `public_message` deltas followed by terminal `done`.
+- API-test successful practice unlock with fake structured model output; assert `generation_source="llm"`, the prompt forbids repeating exercise-card details, the model text includes the current knowledge-point summary, and `show_code_exercise.args.notice == ""`.
 - API-test guardrail-blocked JSON model output and assert `MODEL_UNAVAILABLE` without leaked hidden IDs, key-like tokens, or complete-answer wording.
 - API-test internal policy leakage in normal model content, such as `_policy` or `policy要求`, and assert `MODEL_UNAVAILABLE` with no leaked content persisted.
 - API-test guardrail-blocked SSE output after a partial safe chunk and assert a recoverable `error` event with no stored successful idempotency response.
 - API-test safe summary generation, persisted summary reuse below refresh threshold, direct-answer request redirection, and prompt context redaction for hidden IDs, internal reference fields, provider errors, API-key-like tokens, and complete-answer wording.
 - Unit-test OpenAI-compatible streaming payload compatibility so unsupported `temperature` is omitted by default.
-- Unit-test DeepSeek direct learning text streaming and direct concept JSON clients with fake transports; assert they call Chat Completions and do not instantiate Agents SDK clients.
+- Unit-test DeepSeek direct learning structured streaming and direct concept JSON clients with fake transports; assert learning messages request Chat Completions `response_format={"type":"json_object"}` and do not instantiate Agents SDK clients.
 - API-test DeepSeek concept repair and practice-unlock flows with fake direct clients; assert there is no `MODEL_UNAVAILABLE` caused by Agents SDK handoff/tool orchestration.
-- Unit-test the SDK-backed client with a fake SDK runner; tests must assert no live model call is required, tracing is disabled, text deltas are extracted, base URLs are normalized, SDK tools are attached, and guardrails are attached.
+- Unit-test the SDK-backed client with a fake SDK runner; tests must assert no live model call is required, tracing is disabled, structured public output is serialized, `output_type=LearningPublicOutput` is attached, base URLs are normalized, SDK tools are attached, and guardrails are attached.
 - Unit-test SDK tool summary helpers and guardrail helpers directly; assert summaries omit hidden case IDs, `solution_reference`, full starter/submitted code, provider errors, and raw prompt content.
 - Run the full backend pytest suite and `pnpm --dir .\aearn desktop:check` for cross-layer composer changes.
 
@@ -801,13 +812,14 @@ This leaks SDK event shapes through the feature layer and can bypass `MODEL_UNAV
 #### Correct
 
 ```python
-chunks = AgentsSDKLearningConversationClient(settings).complete_text_stream(
+chunks = AgentsSDKLearningConversationClient(settings).complete_structured_text_stream(
     messages,
+    output_type=LearningPublicOutput,
     temperature=None,
 )
 ```
 
-The feature owns safe prompt construction, model-error mapping, idempotency, and SSE framing while the SDK client remains behind the local `TextCompletionClient` boundary.
+The feature owns safe prompt construction, structured-output decoding, model-error mapping, idempotency, and SSE framing while the SDK client remains behind the local structured text boundary.
 
 #### Wrong
 
@@ -1163,7 +1175,7 @@ The graph owns the route decision; the service validates the graph output agains
 - Shared summary refresh decision: `should_refresh_summary(state, message_count, stage, threshold) -> ContextRefreshDecision`.
 - Shared JSON extraction: `extract_json_object(text)` and `parse_fenced_json_object(content, invalid_message, object_message) -> dict[str, object]`.
 - Shared bounded text helpers: `limit_text(value, max_length)`, `sanitize_summary_text(...)`, and `sanitize_summary_list(...)`.
-- Runtime context block builder: `build_runtime_context_block(safe_summary, recent_safe_messages, current_diagnosis, response_policy)`.
+- Runtime context block builder: `build_runtime_context_block(*, safe_summary, recent_messages, current_focus_key, fallback_focus_key=None, strategy_key=None, avoid_key=None)`.
 - Domain runtime context builders: `build_onboarding_plan_runtime_context(...)` and `build_review_runtime_context(...)`.
 
 ### 3. Contracts
@@ -1173,6 +1185,7 @@ The graph owns the route decision; the service validates the graph output agains
 - Domain services remain responsible for loading facts, persisting summaries, mapping model failures to public errors, idempotency replay, and public JSON/SSE framing.
 - Domain adapters must keep domain-specific policy explicit. Learning, onboarding, and review contexts may share sanitization primitives, but must not collapse into one global summary schema.
 - Runtime context must contain bounded and sanitized summaries only: no hidden test ids/source, `solution_reference`, full submitted code, full private notes, raw prompts, provider payloads, SDK event names, or API keys.
+- Shared runtime context blocks must not carry learning-specific internal policy objects such as `response_policy`; learning reply behavior belongs in the owning service as `LearningReplyDirective` plus compiled public-facing instructions.
 - Shared JSON helpers must raise `LLMInvalidResponseError` with domain-provided messages when output is invalid or not a JSON object.
 
 ### 4. Validation & Error Matrix
@@ -1215,9 +1228,11 @@ This injects raw stored messages and state into the prompt, bypassing bounded sa
 safe_messages = safe_messages_from_records(rows)
 runtime_context = build_runtime_context_block(
     safe_summary=safe_summary,
-    recent_safe_messages=[message.as_dict() for message in safe_messages],
-    current_diagnosis=current_diagnosis,
-    response_policy=response_policy,
+    recent_messages=[message.as_dict() for message in safe_messages],
+    current_focus_key="current_stuck_point",
+    fallback_focus_key="last_diagnosis",
+    strategy_key="last_agent_strategy",
+    avoid_key="avoid_repeating",
 )
 ```
 

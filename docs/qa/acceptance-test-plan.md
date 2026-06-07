@@ -219,6 +219,9 @@ LLM 输出质量单独用固定样例集评估，至少覆盖 JS/HTML/CSS、Pyth
 - [ ] `incorrect` 和 `unclear` 都计入概念追问上限；达到上限后只提供引导练习或再看一个例子。
 - [ ] 概念判断通过后，`开始练习` 由模型生成包含当前知识点小结的解锁说明，并生成 `show_code_exercise`；`practice_unlock_reason=concept_check_passed` 且 `learning_incomplete=false`。
 - [ ] 练习解锁 Agent 文案不得复述练习题面、starter code 或补全空；`show_code_exercise.notice` 不复制 Agent 正文，不在卡片上方重复输出同一段文字。
+- [ ] 学习页模型输出必须通过结构化 envelope 校验；API/SSE/历史只暴露 `agent_message.content`，不得暴露 `schema_version`、`public_message` key、`internal_review`、额外诊断摘要或 provider reasoning。
+- [ ] 前端不渲染“导师判断”或思考过程，也不得从正文用正则猜测内部/诊断内容。
+- [ ] 模型返回非法 schema、`internal_review` 任一字段为 `false`、`_policy...符合policy要求` 等内部策略自述，或公开字段 guardrail 失败时，返回 `MODEL_UNAVAILABLE` 且不落库成功 assistant 消息。
 - [ ] 学习页模型未配置、不可连接或输出不可用时，`开始练习` 返回 `MODEL_UNAVAILABLE`；不得展示后端固定练习解锁文案、固定概念小结或 `show_code_exercise`。
 - [ ] 用户直接要求练习或修正上限后进入引导练习时，练习卡明确显示概念未完成状态。
 - [ ] `CONCEPT_INTRO_GENERATION_FAILED` 页面显示重试和返回路线动作，不展示破损概念卡。

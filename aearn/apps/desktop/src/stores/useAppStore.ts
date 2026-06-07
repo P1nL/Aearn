@@ -95,6 +95,8 @@ type AppStore = {
   updateHomeMessage: (id: string, patch: ConversationMessagePatch) => void;
   addReviewMessage: (msg: ConversationMessage) => void;
   updateReviewMessage: (id: string, patch: ConversationMessagePatch) => void;
+  setReviewConversation: (messages: ConversationMessage[]) => void;
+  clearReviewConversation: () => void;
 
   // Onboarding conversation actions
   addOnboardingMessage: (msg: ConversationMessage) => void;
@@ -205,6 +207,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
         };
       }),
     })),
+  setReviewConversation: (messages) => set({ reviewConversation: messages }),
+  clearReviewConversation: () => set({ reviewConversation: [] }),
   addOnboardingMessage: (msg) => set((s) => ({ onboardingMessages: [...s.onboardingMessages, msg] })),
   updateOnboardingMessage: (id, patch) =>
     set((s) => ({

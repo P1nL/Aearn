@@ -1,5 +1,6 @@
 import json
 import uuid
+from collections.abc import Mapping
 
 import psycopg
 import pytest
@@ -7,6 +8,7 @@ from fastapi.testclient import TestClient
 
 import app.routes.plans as plans_route
 import app.routes.reviews as reviews_route
+from app.agents.learning.learning_public_output import learning_public_output_json
 from app.core.config import Settings, get_settings
 from app.db.bootstrap import bootstrap_database
 from app.db.connection import connect
@@ -48,6 +50,11 @@ def disable_review_coach_sdk(monkeypatch: pytest.MonkeyPatch) -> None:
         def complete_text_stream(self, messages, *, temperature=None):  # type: ignore[no-untyped-def]
             del messages, temperature
             return ["我会生成当前练习，并保持讲解聚焦在可见题面。"]
+
+        def complete_structured_text_stream(self, messages, *, output_type, temperature=None):  # type: ignore[no-untyped-def]
+            del output_type
+            public_message = "".join(self.complete_text_stream(messages, temperature=temperature))
+            return [learning_public_output_json(public_message)]
 
     def fake_concept_intro(*args, **kwargs) -> dict[str, object]:  # type: ignore[no-untyped-def]
         del args, kwargs
@@ -118,6 +125,217 @@ def _fake_dynamic_plan_draft(payload, user, course, **kwargs):  # type: ignore[n
         plan_draft=plan_draft,
         agent_notes=[plan_draft.runtime_boundary.notice, "Test fake dynamic plan."],
     )
+
+
+def _fake_model_review_seeds(context: Mapping[str, object]) -> list[dict[str, object]]:
+    runtime_profile = context.get("runtime_profile")
+    runtime_profile = runtime_profile if isinstance(runtime_profile, Mapping) else {}
+    language = str(runtime_profile.get("language") or "javascript")
+    runtime_tier = str(runtime_profile.get("runtime_tier") or "browser_preview")
+    knowledge_point_id = str(context["knowledge_point_id"])
+    title = str(context.get("knowledge_point_title") or "Review concept")
+    supported = context.get("supported_exercise_types")
+    supported_types = [str(item) for item in supported] if isinstance(supported, list) else ["code_blank"]
+    preferred = ["code_blank", "fix_bug", "review_ai_patch", "explain_code", "implement_function"]
+    type_cycle = [exercise_type for exercise_type in preferred if exercise_type in supported_types] or [supported_types[0]]
+    target_seed_count = int(context.get("target_seed_count") or 8)
+
+    seeds: list[dict[str, object]] = []
+    for index in range(target_seed_count):
+        exercise_type = type_cycle[index % len(type_cycle)]
+        if exercise_type == "review_ai_patch":
+            seed = _fake_model_review_patch_seed(
+                knowledge_point_id=knowledge_point_id,
+                title=title,
+                language=language,
+                runtime_tier=runtime_tier,
+                index=index,
+            )
+        else:
+            seed = _fake_model_practice_seed(
+                knowledge_point_id=knowledge_point_id,
+                title=title,
+                language=language,
+                runtime_tier=runtime_tier,
+                exercise_type=exercise_type,
+                index=index,
+            )
+        seeds.append(seed)
+    return seeds
+
+
+def _fake_model_practice_seed(
+    *,
+    knowledge_point_id: str,
+    title: str,
+    language: str,
+    runtime_tier: str,
+    exercise_type: str,
+    index: int,
+) -> dict[str, object]:
+    seed_id = f"fake_model_{exercise_type}_{index + 1:02d}"
+    if language == "python":
+        starter_code = "def summarize_scores(scores):\n    total = sum(scores)\n    return __BLANK_1__\n"
+        required_patterns = ["return total"]
+        code_blanks = [
+            {
+                "blank_key": "blank_1",
+                "placeholder": "total",
+                "expected_concept": "Return the computed total so callers can use it.",
+                "acceptable_patterns_json": [{"type": "literal", "value": "total"}],
+                "is_core": True,
+                "order_index": 0,
+            }
+        ]
+        test_cases = [_fake_visible_case({"scores": [2, 3, 4]}, {"return": 9})]
+    else:
+        starter_code = (
+            "const button = document.querySelector(\"#counter-button\");\n"
+            "const output = document.querySelector(\"#counter-output\");\n"
+            "let count = 0;\n\n"
+            "button.__BLANK_1__(\"click\", () => {\n"
+            "  __BLANK_2__;\n"
+            "  output.textContent = String(count);\n"
+            "});\n"
+        )
+        required_patterns = ["addEventListener", "count += 1", "output.textContent"]
+        code_blanks = [
+            {
+                "blank_key": "blank_1",
+                "placeholder": "addEventListener",
+                "expected_concept": "Bind the click listener to the button.",
+                "acceptable_patterns_json": [{"type": "literal", "value": "addEventListener"}],
+                "is_core": True,
+                "order_index": 0,
+            },
+            {
+                "blank_key": "blank_2",
+                "placeholder": "count += 1",
+                "expected_concept": "Increment the shared counter inside the event callback.",
+                "acceptable_patterns_json": [{"type": "literal", "value": "count += 1"}],
+                "is_core": True,
+                "order_index": 1,
+            },
+        ]
+        test_cases = [
+            _fake_visible_case({"event": "click"}, {"textContent": "1"}),
+            _fake_preview_case({"selector": "#counter-output"}, {"textContent": "1"}, order_index=1),
+        ]
+    return {
+        "id": seed_id,
+        "exercise_type": exercise_type,
+        "difficulty": 2 + (index % 3),
+        "target_misconception": f"model_context_gap_{index}",
+        "knowledge_point_id": knowledge_point_id,
+        "runtime_tier": runtime_tier,
+        "title": f"{title}: model-generated {exercise_type}",
+        "warmup_question": f"Before the model-generated variant {index + 1}, recall what state must stay observable.",
+        "warmup_expected_focus": "State, return value, or evidence must match the visible behavior.",
+        "warmup_keywords": ["state", "return", "evidence"],
+        "review_focus": "Use the latest learner state to target the fragile concept.",
+        "prompt_markdown": f"Model-generated review seed {index + 1}: complete the {exercise_type} task for **{title}**.",
+        "starter_code": starter_code,
+        "visible_test_policy": "visible_only",
+        "requires_explanation": True,
+        "metadata": {
+            "required_patterns": required_patterns,
+            "browser_rule_family": "js_event_flow" if language != "python" else "",
+            "review_focus": "latest learner state",
+        },
+        "code_blanks": code_blanks,
+        "test_cases": test_cases,
+    }
+
+
+def _fake_model_review_patch_seed(
+    *,
+    knowledge_point_id: str,
+    title: str,
+    language: str,
+    runtime_tier: str,
+    index: int,
+) -> dict[str, object]:
+    if language == "python":
+        original_code = "def summarize_scores(scores):\n    total = sum(scores)\n    return total\n"
+        ai_diff = "-    return total\n+    print(total)\n+    return None"
+        expected_risk = "The caller loses the function return value."
+    else:
+        original_code = (
+            "let count = 0;\n"
+            "button.addEventListener(\"click\", () => {\n"
+            "  count += 1;\n"
+            "  output.textContent = String(count);\n"
+            "});\n"
+        )
+        ai_diff = "-let count = 0;\n button.addEventListener(\"click\", () => {\n+  let count = 0;\n   count += 1;"
+        expected_risk = "The counter is recreated on every click, so repeated clicks do not accumulate."
+    rubric = {
+        "verdict_correctness": "0-2",
+        "evidence_grounding": "0-2",
+        "knowledge_point_alignment": "0-2",
+        "actionability": "0-2",
+    }
+    return {
+        "id": f"fake_model_review_ai_patch_{index + 1:02d}",
+        "exercise_type": "review_ai_patch",
+        "difficulty": 4,
+        "target_misconception": "review_patch_evidence",
+        "knowledge_point_id": knowledge_point_id,
+        "runtime_tier": runtime_tier,
+        "title": f"{title}: model-generated AI patch review",
+        "warmup_question": "What evidence should you inspect before accepting an AI patch?",
+        "warmup_expected_focus": "Use the requirement, diff, and visible behavior together.",
+        "warmup_keywords": ["requirement", "diff", "evidence"],
+        "review_focus": "Ground the verdict in the requirement and diff.",
+        "prompt_markdown": f"Model-generated review seed {index + 1}: audit the AI patch for **{title}**.",
+        "starter_code": original_code,
+        "visible_test_policy": "visible_only",
+        "requires_explanation": True,
+        "metadata": {
+            "requirement": "Keep the observable behavior and preserve the concept under review.",
+            "original_code": original_code,
+            "ai_diff": ai_diff,
+            "review_focus": "Ground the verdict in requirement, diff, and behavior.",
+            "expected_risk": expected_risk,
+            "expected_verdict": "fail",
+            "expected_next_action": "request_change",
+            "rubric": rubric,
+        },
+        "rubric": rubric,
+        "code_blanks": [],
+        "test_cases": [],
+    }
+
+
+def _fake_visible_case(input_json: Mapping[str, object], expected_output_json: Mapping[str, object]) -> dict[str, object]:
+    return {
+        "case_type": "visible",
+        "input_json": dict(input_json),
+        "expected_output_json": dict(expected_output_json),
+        "assertion_code": None,
+        "weight": 1,
+        "is_critical": True,
+        "timeout_ms": 5000,
+        "order_index": 0,
+    }
+
+
+def _fake_preview_case(
+    input_json: Mapping[str, object],
+    expected_output_json: Mapping[str, object],
+    *,
+    order_index: int,
+) -> dict[str, object]:
+    return {
+        "case_type": "preview_assertion",
+        "input_json": dict(input_json),
+        "expected_output_json": dict(expected_output_json),
+        "assertion_code": None,
+        "weight": 1,
+        "is_critical": False,
+        "timeout_ms": 5000,
+        "order_index": order_index,
+    }
 
 
 def test_today_reviews_returns_empty_and_sorted_due_items(client: TestClient) -> None:
@@ -196,6 +414,9 @@ def test_review_start_requires_due_state_and_reuses_active_session(client: TestC
     assert created_body["warmup"]["result"] == "pending"
     assert created_body["selected_seed_id"]
     assert created_body["seed_bank"]["status"] == "ready"
+    assert created_body["seed_bank"]["generator_version"] == "review_seed_bank_model_v2"
+    assert "模型生成复习题" in created_body["review_exercise"]["prompt_markdown"]
+    assert created_body["review_exercise"]["metadata_json"]["seed_generator_version"] == "review_seed_bank_model_v2"
     assert created_body["variant_reason"]
     assert created_body["initial_agent_message"].startswith("这次复习围绕 ")
 
@@ -274,11 +495,11 @@ def test_review_start_returns_seed_bank_generation_failed_without_fallback(
     knowledge_point_id = plan["knowledge_points"][0]["id"]
     _mark_due(knowledge_point_id)
 
-    def raise_generation_failure(context: dict[str, object]) -> tuple[list[dict[str, object]], dict[str, object]]:
+    def raise_generation_failure(context: Mapping[str, object]) -> None:
         del context
-        raise review_seed_bank.ReviewSeedBankValidationError("unsafe generated payload")
+        return None
 
-    monkeypatch.setattr(review_seed_bank, "build_review_seed_bank_payload", raise_generation_failure)
+    monkeypatch.setattr(review_seed_bank, "build_model_review_seed_bank", raise_generation_failure)
 
     created = client.post(
         "/api/reviews/start",
@@ -302,6 +523,166 @@ def test_review_start_returns_seed_bank_generation_failed_without_fallback(
     assert bank["status"] == "failed"
     assert bank["seed_count"] == 0
     assert bank["failure_code"] == "REVIEW_SEED_BANK_GENERATION_FAILED"
+
+
+def test_review_seed_bank_model_context_adapts_to_learner_state(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user, plan = _confirmed_plan(client, language="javascript")
+    knowledge_point_id = plan["knowledge_points"][0]["id"]
+    learning = client.post(
+        "/api/learning-sessions/start",
+        json={
+            "user_id": user["id"],
+            "plan_id": plan["LearningPlan"]["id"],
+            "knowledge_point_id": knowledge_point_id,
+        },
+    )
+    assert learning.status_code == 201
+    exercise = _unlock_practice_exercise(client, learning.json())
+    filled_blanks = _filled_blanks_for(exercise)
+    run = client.post(
+        f"/api/learning-sessions/{learning.json()['session_id']}/exercises/{exercise['id']}/run",
+        json={
+            "code": exercise["solution_reference"],
+            "filled_blanks": filled_blanks,
+            "runtime_profile_id": exercise["runtime_profile"]["id"],
+            "run_mode": "visible_tests",
+        },
+    )
+    assert run.status_code == 201
+    submitted = client.post(
+        f"/api/learning-sessions/{learning.json()['session_id']}/exercises/{exercise['id']}/submit",
+        json={
+            "attempt_id": run.json()["attempt_id"],
+            "code": exercise["solution_reference"],
+            "filled_blanks": filled_blanks,
+            "submit_version": 1,
+            "explanation": "状态变量放在回调外层，所以多次点击会共享同一个 count。",
+            "hint_usage_count": 0,
+            "error_count": 0,
+        },
+    )
+    assert submitted.status_code == 200
+    attempt_id = submitted.json()["attempt_id"]
+    _mark_due(knowledge_point_id, reps=4)
+    with connect() as conn:
+        conn.execute(
+            """
+            UPDATE knowledge_points
+            SET weak_points_json = %s::jsonb,
+                mastery_score = 0.31
+            WHERE id = %s
+            """,
+            (json.dumps(["state_scope_error", "test_evidence_gap"]), knowledge_point_id),
+        )
+        conn.execute(
+            """
+            UPDATE review_states
+            SET last_attempt_id = %s,
+                last_fsrs_rating = 'Again',
+                reps = 4,
+                lapses = 2
+            WHERE knowledge_point_id = %s
+            """,
+            (attempt_id, knowledge_point_id),
+        )
+        conn.commit()
+
+    captured: dict[str, object] = {}
+    fake_generator = review_seed_bank.build_model_review_seed_bank
+
+    def capture_generation_context(context: Mapping[str, object]):  # type: ignore[no-untyped-def]
+        captured["context"] = context
+        return fake_generator(context)
+
+    monkeypatch.setattr(review_seed_bank, "build_model_review_seed_bank", capture_generation_context)
+
+    started = client.post(
+        "/api/reviews/start",
+        json={"user_id": user["id"], "knowledge_point_id": knowledge_point_id},
+    )
+    assert started.status_code == 201
+    started_body = started.json()
+    context = captured["context"]
+    assert isinstance(context, dict)
+    learner_state = context["learner_state"]
+    runtime_profile = context["runtime_profile"]
+    assert isinstance(learner_state, dict)
+    assert isinstance(runtime_profile, dict)
+    assert learner_state["weak_points"] == ["state_scope_error", "test_evidence_gap"]
+    assert learner_state["mastery_score"] == 0.31
+    assert learner_state["last_fsrs_rating"] == "Again"
+    assert learner_state["review_count"] == 4
+    assert learner_state["lapse_count"] == 2
+    assert learner_state["latest_attempt"]["attempt_id"] == attempt_id
+    assert runtime_profile["language"] == "javascript"
+    assert runtime_profile["runtime_tier"] == "browser_preview"
+    assert context["target_seed_count"] == 12
+    assert "模型生成" in started_body["review_exercise"]["title"]
+    assert started_body["seed_bank"]["quality_report"]["generation_source"] == "llm"
+    assert started_body["seed_bank"]["quality_report"]["generation_model"] == "fake-review-seed-model"
+
+
+def test_review_messages_replay_start_and_warmup_history(client: TestClient) -> None:
+    user, plan = _confirmed_plan(client, language="javascript")
+    knowledge_point_id = plan["knowledge_points"][0]["id"]
+    _mark_due(knowledge_point_id)
+
+    created = client.post(
+        "/api/reviews/start",
+        json={"user_id": user["id"], "knowledge_point_id": knowledge_point_id},
+    )
+    assert created.status_code == 201
+    review_session = created.json()
+    session_id = review_session["session_id"]
+
+    history = client.get(f"/api/reviews/{session_id}/messages", params={"user_id": user["id"]})
+    assert history.status_code == 200
+    messages = history.json()["messages"]
+    assert [message["role"] for message in messages[:2]] == ["agent", "agent"]
+    assert messages[0]["content"] == review_session["initial_agent_message"]
+    assert review_session["warmup"]["question"] in messages[1]["content"]
+
+    replayed = client.post(
+        "/api/reviews/start",
+        json={"user_id": user["id"], "knowledge_point_id": knowledge_point_id},
+    )
+    assert replayed.status_code == 200
+    replay_history = client.get(f"/api/reviews/{session_id}/messages", params={"user_id": user["id"]})
+    assert replay_history.status_code == 200
+    assert len(replay_history.json()["messages"]) == len(messages)
+
+    warmup = client.post(
+        f"/api/reviews/{session_id}/warmup-result",
+        json={"user_id": user["id"], "action": "answer", "answer": "不太确定"},
+    )
+    assert warmup.status_code == 200
+    after_warmup = client.get(f"/api/reviews/{session_id}/messages", params={"user_id": user["id"]})
+    assert after_warmup.status_code == 200
+    serialized = json.dumps(after_warmup.json(), ensure_ascii=False)
+    assert "不太确定" in serialized
+    assert warmup.json()["warmup"]["feedback"] in serialized
+
+
+def test_review_messages_cross_user_returns_session_not_found(client: TestClient) -> None:
+    owner, plan = _confirmed_plan(client, language="javascript")
+    other = _create_user(client)
+    knowledge_point_id = plan["knowledge_points"][0]["id"]
+    _mark_due(knowledge_point_id)
+    created = client.post(
+        "/api/reviews/start",
+        json={"user_id": owner["id"], "knowledge_point_id": knowledge_point_id},
+    )
+    assert created.status_code == 201
+
+    history = client.get(
+        f"/api/reviews/{created.json()['session_id']}/messages",
+        params={"user_id": other["id"]},
+    )
+    assert history.status_code == 404
+    assert history.json()["error"]["code"] == "SESSION_NOT_FOUND"
 
 
 def test_review_warmup_branches_do_not_create_fsrs_evidence(client: TestClient) -> None:

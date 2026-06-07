@@ -8,10 +8,6 @@ from psycopg.rows import dict_row
 
 from aearn_worker.review_seed_bank_core import (
     GENERATOR_VERSION,
-    ReviewSeedBankValidationError,
-    build_review_seed_bank_payload,
-    persist_failed_seed_bank,
-    persist_ready_seed_bank,
 )
 
 
@@ -74,15 +70,26 @@ def generate_seed_bank(user_id: str, knowledge_point_id: str) -> dict[str, objec
             SELECT
               review_states.user_id::text AS user_id,
               review_states.plan_id::text AS plan_id,
-              review_states.knowledge_point_id::text AS knowledge_point_id,
+              review_states.knowledge_point_id::text AS id,
               review_states.last_fsrs_rating,
+              review_states.reps,
               review_states.lapses,
+              review_states.last_attempt_id::text AS last_attempt_id,
               knowledge_points.title,
               knowledge_points.description,
               knowledge_points.order_index,
+              knowledge_points.skill_tags_json,
+              knowledge_points.lesson_outline_json,
+              knowledge_points.mastery_score,
               knowledge_points.weak_points_json,
+              knowledge_points.last_exercise_result,
+              knowledge_points.last_exercise_score,
+              runtime_profiles.id::text AS runtime_profile_id,
               runtime_profiles.language,
-              runtime_profiles.runtime_tier
+              runtime_profiles.runtime_tier,
+              runtime_profiles.runner,
+              runtime_profiles.supports_tests,
+              runtime_profiles.supports_stdout
             FROM review_states
             JOIN knowledge_points ON knowledge_points.id = review_states.knowledge_point_id
             JOIN language_courses ON language_courses.id = knowledge_points.language_course_id
@@ -96,25 +103,44 @@ def generate_seed_bank(user_id: str, knowledge_point_id: str) -> dict[str, objec
         if context is None:
             return {"status": "failed", "failure_code": "KNOWLEDGE_POINT_NOT_FOUND"}
         try:
-            seeds, quality_report = build_review_seed_bank_payload(context)
-        except (KeyError, ValueError, ReviewSeedBankValidationError) as exc:
-            persist_failed_seed_bank(
+            from app.services.repositories.review_seed_bank import (
+                ReviewSeedBankGenerationError,
+                generate_review_seed_bank_for_knowledge_point,
+            )
+        except ImportError as exc:
+            return {
+                "status": "failed",
+                "failure_code": "API_REPOSITORY_UNAVAILABLE",
+                "failure_message": exc.__class__.__name__,
+                "generator_version": GENERATOR_VERSION,
+            }
+
+        runtime_profile = {
+            "id": str(context["runtime_profile_id"]),
+            "language": context["language"],
+            "runtime_tier": context["runtime_tier"],
+            "runner": context["runner"],
+            "supports_tests": context["supports_tests"],
+            "supports_stdout": context["supports_stdout"],
+        }
+        try:
+            seed_bank = generate_review_seed_bank_for_knowledge_point(
                 conn,
                 user_id=str(context["user_id"]),
                 plan_id=str(context["plan_id"]),
-                knowledge_point_id=str(context["knowledge_point_id"]),
-                failure_code="VALIDATION_FAILED",
-                failure_message=str(exc),
+                knowledge_point=context,
+                runtime_profile=runtime_profile,
             )
+        except ReviewSeedBankGenerationError as exc:
             conn.commit()
-            return {"status": "failed", "failure_code": "VALIDATION_FAILED"}
-        persist_ready_seed_bank(
-            conn,
-            user_id=str(context["user_id"]),
-            plan_id=str(context["plan_id"]),
-            knowledge_point_id=str(context["knowledge_point_id"]),
-            seeds=seeds,
-            quality_report=quality_report,
-        )
+            return {
+                "status": "failed",
+                "failure_code": exc.code,
+                "generator_version": GENERATOR_VERSION,
+            }
         conn.commit()
-    return {"status": "ready", "seed_count": len(seeds), "generator_version": GENERATOR_VERSION}
+    return {
+        "status": "ready",
+        "seed_count": int(seed_bank["seed_count"]),
+        "generator_version": GENERATOR_VERSION,
+    }

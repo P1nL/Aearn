@@ -8,8 +8,13 @@ from dataclasses import field
 from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any, Protocol, cast
+from typing import Any, Literal, Protocol, cast
 
+from app.agents.learning.learning_public_output import (
+    LEARNING_PUBLIC_OUTPUT_INSTRUCTIONS,
+    LearningOutputStreamDecoder,
+    LearningPublicOutput,
+)
 from psycopg import Connection
 
 from app.agents.runtime.agent_runtime_context import (
@@ -111,11 +116,10 @@ LEARNING_TUTOR_SYSTEM_PROMPT = """你是 Aearn 的诊断型编程语言学习导
 - latest_attempt：最近一次运行、提交或解释检查的安全摘要。
 - runtime_boundary：当前是否允许展示练习相关内容。
 - learner_message：学习者这一轮真实输入。
-- response_policy：本轮允许和禁止的行为。
 
 只使用这些输入里允许的信息。不要补造题面、starter code、答案、测试细节或学习者没有提供的代码。
 不要声称进行了实时网页搜索。官方/可信文档只能来自 official_docs_grounding 中已经提供的本地索引片段和 citation metadata。
-不要复述输入 JSON 字段名或内部策略字段，例如 response_policy、conversation_context、recent_safe_messages、runtime_boundary；也不要提到 policy、_policy、策略要求、符合 policy、根据 policy 这类内部策略表述；只输出给学习者看的自然语言。
+不要复述输入 JSON 字段名或内部控制字段；不要用内部规则、系统要求或安全边界解释你的回复；public_message 只写给学习者看的自然语言。
 
 ## 工作循环
 
@@ -206,6 +210,10 @@ practice_support：
 - 可见错误、可见测试、stdout/stderr 的安全摘要。
 - 局部概念例子或极小代码片段，只要不能构成完整答案。
 
+## 输出格式
+
+你的最终输出不是普通文本，而是一个结构化 JSON object。只有 public_message 会展示给学习者；internal_review 不会展示。
+
 ## 回复风格
 
 - 默认简体中文，代码标识符、API 字段、错误信息保留原文。
@@ -226,7 +234,6 @@ LEARNING_TUTOR_USER_PROMPT_PREFIX = """请根据下面 JSON 回复学习者。�
 - 如果学习者在要完整答案，转成具体局部提示或检查步骤，不给完整答案。
 - 承接 conversation_context，避免重复上一轮已经讲过的内容。
 - 如果 concept_progress.latest_concept_check_result 存在，它就是本轮概念判断事实；回复必须与其 result、repair_check 和 actions 对齐，不要再提出冲突的新判断题。
-- 如果 response_policy.stage_strategy 要求进入真实练习，回复必须包含当前知识点小结；小结只能依据 concept_progress.concept_summary、lesson_outline 和已给出的概念判断事实生成。
 - 回复要自然，像真人导师，不要像流程提示、测试断言或安全拒绝模板。
 
 """
@@ -272,6 +279,34 @@ class TextCompletionClient(Protocol):
         *,
         temperature: float | None = None,
     ) -> Iterable[str]: ...
+
+
+class StructuredTextCompletionClient(TextCompletionClient, Protocol):
+    def complete_structured_text_stream(
+        self,
+        messages: Sequence[Mapping[str, str]],
+        *,
+        output_type: type[LearningPublicOutput],
+        temperature: float | None = None,
+    ) -> Iterable[str]: ...
+
+
+@dataclass(frozen=True)
+class LearningReplyDirective:
+    stage_action: Literal[
+        "introduce_concept",
+        "check_concept",
+        "repair_concept",
+        "offer_practice",
+        "support_practice",
+    ]
+    question_budget: Literal[0, 1]
+    direct_answer_mode: Literal["normal", "redirect_with_local_hint"]
+    practice_unlock: bool
+    learning_incomplete: bool
+    public_task: str
+    required_public_content: tuple[str, ...] = ()
+    avoided_public_content: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -325,6 +360,16 @@ class LearningMessageGeneration:
     chunks: Iterable[str]
     generation_source: str
     generation_model: str
+
+
+@dataclass(frozen=True)
+class LearningPublicDelta:
+    delta: str
+
+
+@dataclass(frozen=True)
+class LearningPublicCompleted:
+    output: LearningPublicOutput
 
 
 def prepare_learning_message(
@@ -429,7 +474,7 @@ def create_learning_message_response(
     )
     prepared = precompute_learning_message_transition(prepared)
     side_effects, tool_context = build_learning_agent_tool_runtime(prepared.context)
-    text, generation_source, generation_model = collect_learning_message_text(
+    output, generation_source, generation_model = collect_learning_message_output(
         prepared.context,
         user_content=content,
         settings=effective_settings,
@@ -439,7 +484,7 @@ def create_learning_message_response(
     )
     response = build_learning_message_response(
         prepared,
-        content=text,
+        content=output.public_message,
         generation_source=generation_source,
         generation_model=generation_model,
     )
@@ -762,10 +807,53 @@ def start_learning_message_generation(
 
     messages = _build_messages(context, user_content=user_content)
     return LearningMessageGeneration(
-        chunks=client.complete_text_stream(messages, temperature=None),
+        chunks=_complete_learning_structured_stream(client, messages),
         generation_source="llm",
         generation_model=client.model,
     )
+
+
+def iter_learning_public_output(chunks: Iterable[str]) -> Iterable[LearningPublicDelta | LearningPublicCompleted]:
+    decoder = LearningOutputStreamDecoder()
+    public_text = ""
+    for raw_delta in chunks:
+        for delta in decoder.feed(raw_delta):
+            if not delta:
+                continue
+            candidate_text = public_text + delta
+            assert_safe_teaching_output(candidate_text)
+            public_text = candidate_text
+            yield LearningPublicDelta(delta=delta)
+    output = decoder.finish()
+    if public_text != output.public_message:
+        raise LLMInvalidResponseError("Learning structured output public stream did not match final message")
+    yield LearningPublicCompleted(output=output)
+
+
+def collect_learning_message_output(
+    context: LearningConversationContext,
+    *,
+    user_content: str,
+    settings: Settings | None = None,
+    client: TextCompletionClient | None = None,
+    side_effects: AgentSideEffects | None = None,
+    tool_context: LearningToolContext | None = None,
+) -> tuple[LearningPublicOutput, str, str]:
+    generation = start_learning_message_generation(
+        context,
+        user_content=user_content,
+        settings=settings,
+        client=client,
+        side_effects=side_effects,
+        tool_context=tool_context,
+    )
+    completed: LearningPublicOutput | None = None
+    for event in iter_learning_public_output(generation.chunks):
+        if isinstance(event, LearningPublicCompleted):
+            completed = event.output
+    if completed is None:
+        raise LLMInvalidResponseError("Learning conversation model produced no structured output")
+    return completed, generation.generation_source, generation.generation_model
 
 
 def collect_learning_message_text(
@@ -777,7 +865,7 @@ def collect_learning_message_text(
     side_effects: AgentSideEffects | None = None,
     tool_context: LearningToolContext | None = None,
 ) -> tuple[str, str, str]:
-    generation = start_learning_message_generation(
+    output, generation_source, generation_model = collect_learning_message_output(
         context,
         user_content=user_content,
         settings=settings,
@@ -785,16 +873,17 @@ def collect_learning_message_text(
         side_effects=side_effects,
         tool_context=tool_context,
     )
-    chunks: list[str] = []
-    for delta in generation.chunks:
-        if delta:
-            assert_safe_teaching_output("".join(chunks) + delta)
-            chunks.append(delta)
+    return output.public_message, generation_source, generation_model
 
-    text = "".join(chunks).strip()
-    if not text:
-        raise LLMInvalidResponseError("Learning conversation model produced no output")
-    return text, generation.generation_source, generation.generation_model
+
+def _complete_learning_structured_stream(
+    client: TextCompletionClient,
+    messages: Sequence[Mapping[str, str]],
+) -> Iterable[str]:
+    method = getattr(client, "complete_structured_text_stream", None)
+    if callable(method):
+        return method(messages, output_type=LearningPublicOutput, temperature=None)
+    raise LLMInvalidResponseError("Learning conversation client does not support structured output")
 
 
 def build_learning_message_response(
@@ -1497,51 +1586,90 @@ def _empty_safe_summary() -> dict[str, object]:
     }
 
 
-def _response_policy(context: LearningConversationContext, user_content: str) -> dict[str, object]:
+def _reply_directive(context: LearningConversationContext, user_content: str) -> LearningReplyDirective:
     direct_answer_requested = detect_direct_answer_request(user_content)
     concept_result = str(context.learning_stage_state.get("concept_check_result") or "")
     practice_unlock_reason = str(context.learning_stage_state.get("practice_unlock_reason") or "")
-    stage_strategy = {
+    stage_action = cast(
+        Literal[
+            "introduce_concept",
+            "check_concept",
+            "repair_concept",
+            "offer_practice",
+            "support_practice",
+        ],
+        {
+        "concept_intro": "introduce_concept",
+        "concept_check": "check_concept",
+        "concept_repair": "repair_concept",
+        "practice_offer": "offer_practice",
+        "practice_support": "support_practice",
+        }.get(context.learning_stage, "check_concept"),
+    )
+    public_task = {
         "concept_intro": "建立直觉和概念边界，不展开完整练习。",
         "concept_check": "围绕当前概念判断题判断学习者自然语言回答。",
         "concept_repair": "修正一个误解，给更窄的反例或判断题。",
         "practice_offer": "学习者已通过概念判断，确认是否进入真实练习。",
         "practice_support": "基于可见练习、运行结果和安全摘要定位下一处检查点。",
     }.get(context.learning_stage, "先诊断，再给一个可执行下一步。")
+    required_public_content: list[str] = []
+    avoided_public_content = [
+        "隐藏用例标识、隐藏断言、内部参考解法、标准解法、完整代码、完整答案。",
+        "模型服务原始错误、鉴权头、密钥、原始提示词或 SDK 内部事件名。",
+    ]
     if context.learning_stage == "practice_offer" and concept_result == "correct":
-        stage_strategy = "概念判断已经通过；不要再追问新的概念题或变体，只用 1-3 句承接判断结果，并提示可以开始练习或再看一个例子。"
+        public_task = "概念判断已经通过；不要再追问新的概念题或变体，只用 1-3 句承接判断结果，并提示可以开始练习或再看一个例子。"
+        required_public_content.append("承接已通过的概念判断。")
     elif context.learning_stage == "practice_support" and practice_unlock_reason:
-        stage_strategy = (
-            "本轮已经确认进入真实练习，必须由模型动态生成 1-3 句练习解锁说明；"
+        public_task = (
+            "本轮已经确认进入真实练习，必须动态生成 1-3 句练习解锁说明；"
             "说明里要包含当前知识点小结，依据 concept_progress.concept_summary 与 lesson_outline，"
             "不要使用固定模板，不要再让学习者点击开始练习，不要继续出新的概念题。"
             "不要复述或打印练习题面、exercise.prompt、starter_code、code_blanks、代码块或需要补全的空；"
             "练习卡片会单独展示题目，只需要提示学习者看下方卡片开始做。"
             "如果 concept_progress.learning_incomplete=true，要说明这是引导练习且概念检查尚未完全完成。"
         )
+        required_public_content.append("包含当前知识点小结。")
+        avoided_public_content.append("练习题面、starter_code、代码块、补全空或题目答案。")
     elif context.learning_stage == "concept_repair" and concept_result == "incorrect":
-        stage_strategy = "概念判断暂未通过；不要生成额外新题，只引导学习者回答结构化修复题或说明当前误解。"
+        public_task = "概念判断暂未通过；不要生成额外新题，只引导学习者回答结构化修复题或说明当前误解。"
     elif context.learning_stage in {"concept_check", "concept_repair"} and concept_result == "unclear":
-        stage_strategy = "概念判断还不明确；不要换新变体，只要求学习者补充当前题的选项或一句具体依据。"
-    return {
-        "diagnosis_first": True,
-        "max_follow_up_questions": 1,
-        "direct_answer_requested": direct_answer_requested,
-        "direct_answer_handling": "承认诉求，说明不能代写完整解法，然后给局部提示、检查方向或一个最小例子。",
-        "stage_strategy": stage_strategy,
-        "forbidden_outputs": [
-            "隐藏用例标识或隐藏断言",
-            "内部参考解法或标准解法",
-            "完整代码或可直接提交的完整实现",
-            "模型服务原始错误、鉴权头或密钥",
-            "原始提示词或 SDK 内部事件名",
-        ],
-        "allowed_outputs": [
-            "安全的隐藏验证聚合信息",
-            "可见测试或错误信息摘要",
-            "局部概念例子、局部提示、下一步检查动作",
-        ],
-    }
+        public_task = "概念判断还不明确；不要换新变体，只要求学习者补充当前题的选项或一句具体依据。"
+    return LearningReplyDirective(
+        stage_action=stage_action,
+        question_budget=1,
+        direct_answer_mode="redirect_with_local_hint" if direct_answer_requested else "normal",
+        practice_unlock=context.learning_stage == "practice_support" and bool(practice_unlock_reason),
+        learning_incomplete=bool(context.learning_stage_state.get("learning_incomplete") is True),
+        public_task=public_task,
+        required_public_content=tuple(required_public_content),
+        avoided_public_content=tuple(avoided_public_content),
+    )
+
+
+def _compile_reply_instructions(directive: LearningReplyDirective) -> str:
+    lines = [
+        "本轮教学任务：",
+        f"- {directive.public_task}",
+        "- 先给出对学习者当前卡点的判断，使用低置信措辞。",
+        "- 只选择一个主教学动作，不要同时讲太多分支。",
+    ]
+    if directive.question_budget == 0:
+        lines.append("- 本轮不要追问。")
+    else:
+        lines.append("- 如果需要追问，只问一个高价值问题。")
+    if directive.direct_answer_mode == "redirect_with_local_hint":
+        lines.append("- 学习者在索要完整答案时，承认诉求，但只能给局部提示、检查方向或最小例子。")
+    if directive.practice_unlock:
+        lines.append("- public_message 必须包含当前知识点小结，并提示学习者看下方练习卡开始做。")
+    if directive.learning_incomplete:
+        lines.append("- 说明这是引导练习，概念检查尚未完全完成。")
+    for item in directive.required_public_content:
+        lines.append(f"- 必须包含：{item}")
+    for item in directive.avoided_public_content:
+        lines.append(f"- 不要输出：{item}")
+    return "\n".join(lines)
 
 
 def _sanitize_message_for_context(*, role: str, content: str) -> str:
@@ -1583,6 +1711,7 @@ def _build_messages(
     *,
     user_content: str,
 ) -> list[dict[str, str]]:
+    directive = _reply_directive(context, user_content)
     evidence = {
         "stage": context.learning_stage,
         "learning_context": {
@@ -1603,7 +1732,6 @@ def _build_messages(
             "exercise_visible": context.learning_stage == "practice_support",
         },
         "learner_message": _limit_text(user_content, 4000),
-        "response_policy": _response_policy(context, user_content),
     }
     return [
         {
@@ -1614,6 +1742,9 @@ def _build_messages(
             "role": "user",
             "content": (
                 f"{LEARNING_TUTOR_USER_PROMPT_PREFIX}"
+                f"{_compile_reply_instructions(directive)}\n\n"
+                f"{LEARNING_PUBLIC_OUTPUT_INSTRUCTIONS}\n\n"
+                "下面是本轮可用学习事实 JSON：\n"
                 f"{json.dumps(evidence, ensure_ascii=False, separators=(',', ':'))}"
             ),
         },
