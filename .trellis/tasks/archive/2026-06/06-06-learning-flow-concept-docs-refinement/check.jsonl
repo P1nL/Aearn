@@ -1,0 +1,5 @@
+{"file":"docs/product/frontend-interaction-spec.md","reason":"Verify implemented UI behavior matches product interaction rules."}
+{"file":"docs/architecture/api-contract.md","reason":"Verify response contracts and concept-check semantics match implementation."}
+{"file":"docs/qa/acceptance-test-plan.md","reason":"Verify new acceptance cases are covered by tests or explicit manual checks."}
+{"file":".trellis/spec/frontend/index.md","reason":"Check React/Tauri changes against frontend project guidelines."}
+{"file":".trellis/spec/backend/index.md","reason":"Check API and repository changes against backend project guidelines."}
