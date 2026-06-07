@@ -19,7 +19,11 @@ Completed P4 parent readiness for local-product-completion, documented equivalen
 
 ### Main Changes
 
-(Add details)
+- Added a structured `LearningPublicOutput` boundary for learning messages so only validated `public_message` reaches JSON/SSE clients, persistence, and replay.
+- Removed internal policy objects from the learning prompt payload and compiled stage behavior into backend-owned instructions.
+- Added model-generated review seed bank generation with learner-state context and no fixed fallback bank.
+- Added review message history persistence/replay and desktop restore support for reused review sessions.
+- Updated backend/frontend code-specs plus API, product, and QA docs for the new public-output and review contracts.
 
 ### Git Commits
 
@@ -29,7 +33,12 @@ Completed P4 parent readiness for local-product-completion, documented equivalen
 
 ### Testing
 
-- [OK] (Add test results)
+- [OK] `uv --directory .\aearn\services\api run python -m pytest tests\test_onboarding_m2.py tests\test_learning_public_output.py tests\test_llm_integration.py tests\test_learning_sessions_m3.py tests\test_reviews_m4.py tests\test_notes_m5.py tests\test_dashboard_resume_m6.py tests\test_worker_import.py -q` -> 195 passed, 3 warnings
+- [OK] `uv --directory .\aearn\services\api run ruff check .`
+- [OK] `uv --directory .\aearn\services\api run python -m mypy app`
+- [OK] `pnpm --dir .\aearn desktop:check`
+- [OK] `python .\.trellis\scripts\task.py validate .\.trellis\tasks\06-07-learning-message-output-boundary`
+- [OK] `git diff --check`
 
 ### Status
 
@@ -224,6 +233,39 @@ Refined the learning page flow: official-docs panel now uses two source-attribut
 | Hash | Message |
 |------|---------|
 | `f7dadea` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 67: Learning output and review flow hardening
+
+**Date**: 2026-06-07
+**Task**: Learning output and review flow hardening
+**Branch**: `main`
+
+### Summary
+
+Implemented structured public-message output boundary for learning messages, model-generated review seed banks with learner-state context, and review conversation history replay; validated backend focused and milestone batches plus ruff, mypy, desktop build, task validation, and diff check.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `09d67d6` | (see git log) |
 
 ### Testing
 
