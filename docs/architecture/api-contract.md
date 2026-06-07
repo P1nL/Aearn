@@ -135,7 +135,7 @@ V1 使用本地单用户或轻量用户机制，不强制登录态。所有需�
 
 ### 模型必需契约
 
-下列 AI 驱动接口必须依赖已配置且可用的模型 API：建档对话槽位提取、学习页对话、练习提示/错因解释/解释检查、复习页教练文案和复习对话、笔记辅助补全。模型未配置、不可连接、调用失败、流式输出为空、输出不符合 schema，或 guardrail 判定输出不可安全展示时，接口必须返回 `MODEL_UNAVAILABLE`，不得退回关键词解析或确定性文案。
+下列 AI 驱动接口必须依赖已配置且可用的模型 API：建档对话槽位提取、学习页对话、练习提示/错因解释/解释检查、复习页教练文案和复习对话、笔记辅助补全。可重试的 provider 超时、连接失败、HTTP `408/429/5xx` 先由 transport 做短重试；模型未配置、不可连接、调用重试后仍失败、流式输出为空、输出不符合 schema，或 guardrail 判定输出不可安全展示时，接口必须返回 `MODEL_UNAVAILABLE`，不得退回关键词解析或确定性文案。
 
 动态路线生成是 post-MVP 增强，不改变上面的模型失败总则：槽位提取和普通对话仍不得关键词兜底。公开路线语言的 `plan_draft` modules 必须来自已通过校验的 agent-generated modules；缺少模型配置、`PLAN_GENERATION_ENABLED`、`EXA_API_KEY`、权威文档映射或生成输出未覆盖用户目标/水平/时间/权威来源时，接口必须返回 `PLAN_GENERATION_UNAVAILABLE` 或 `PLAN_DRAFT_INVALID`，不得回退到 `COURSE_TEMPLATES` 或 onboarding plan candidate。已命中幂等记录的历史成功响应可直接回放；服务端 runner/FSRS 等非 AI 判定逻辑仍可保持确定性，因为它们不是模型失败兜底。
 
@@ -261,7 +261,7 @@ data: {"request_id":"req_001","session_id":"sess_001","content":"先观察这段
 
 #### `tool_call`
 
-用途：对话流中的生成式 UI 工具调用。学习页当前使用 `show_concept_intro` 生成概念开场卡，使用 `show_concept_check_result` 展示概念判断结果，使用 `show_code_exercise` 生成练习卡片，使用 `show_learning_history` 引用当前知识点的学习页历史对话。
+用途：对话流中的生成式 UI 工具调用。学习页当前使用 `show_concept_intro` 生成概念开场卡，使用 `show_concept_check_result` 持久化概念判断结果并由前端渲染为紧凑反馈，使用 `show_code_exercise` 生成练习卡片，使用 `show_learning_history` 引用当前知识点的学习页历史对话。
 
 ```json
 {
@@ -1575,6 +1575,9 @@ Response JSON 示例：
   },
   "initial_agent_message": "先阅读右侧「事件监听与状态变量」文档，再决定是否进入概念检验。阅读过程中可以选中文字或代码块并点击「引用到对话」。准备好后，点击「开始概念检验」。",
   "initial_tool_calls": [],
+  "latest_run": null,
+  "latest_submit": null,
+  "latest_workbench_state": null,
   "session_state": "learning"
 }
 ```
@@ -1591,11 +1594,13 @@ HTTP 状态码：
 
 幂等/重试说明：幂等键为 `user_id + plan_id + knowledge_point_id + active_session`。重试不得创建多个活动会话；已触发概念检验的恢复会话必须重放持久化的 `show_concept_intro`，不得重新生成漂移的概念开场。
 
+恢复说明：当会话已进入 `practice_support` 且当前练习存在历史 `Attempt`，响应必须返回最近一次 `latest_run`、最近一次 `latest_submit` 和 `latest_workbench_state`。`latest_run` 复用 `RunExerciseResponse` 形状，`latest_submit` 复用 `SubmitExerciseResponse` 形状；`latest_workbench_state` 至少包含 `exercise_id`、`source_attempt_id`、`source_attempt_type`、`code`、`filled_blanks` 和可为空的 `run_mode`。前端用这些字段恢复练习卡片、输出区和提交摘要，不要求用户重新运行或重新提交。若无法从持久化幂等记录确认最近运行是 `visible_tests`，`run_mode` 必须为 `null`，前端不得据此启用提交按钮。
+
 相关数据表/状态机节点：`LearningSession`、`LearningPlan`、`KnowledgePoint`、`RuntimeProfile`、`LearningMessage`；`start_learning_session`、`context_assembler`、`documentation_reading`。练习只在 `practice_support` 阶段进入 `select_exercise`、`present_exercise`。
 
 #### `GET /api/learning-sessions/knowledge-points/{knowledge_point_id}/documentation`
 
-用途：读取当前知识点的右侧文档面板内容。MVP 从已持久化的 `lesson_outline_json`、`lesson_sources_json` 和 `teaching_chunks` 组装结构化文档，不暴露 hidden tests、solution references、provider payload 或 raw prompts。响应按 `user_id + knowledge_point_id` 写入 Redis 24 小时 best-effort 缓存；缓存不可用时无缓存继续生成，`cache_hit` 标识本次是否命中。
+用途：读取当前知识点的右侧文档面板内容。MVP 从已持久化的官方/可信 grounding、`lesson_sources_json`、`lesson_outline_json` 和 `teaching_chunks` 组装结构化文档，不暴露 hidden tests、solution references、provider payload 或 raw prompts。响应只包含 `官方文档内容` 和 `实例` 两个主区块；官方内容保持来源归因和忠实翻译/格式清理边界，不作为 AI 五段式压缩讲义展示。响应按 `user_id + knowledge_point_id` 写入 Redis 24 小时 best-effort 缓存；缓存不可用时无缓存继续生成，`cache_hit` 标识本次是否命中。
 
 Response JSON 示例：
 
@@ -1606,22 +1611,23 @@ Response JSON 示例：
   "summary": "理解事件监听如何触发回调，以及状态变量为什么需要跨点击保存。",
   "sections": [
     {
-      "id": "core_concept",
-      "type": "core_concept",
-      "title": "核心概念",
-      "content_markdown": "事件监听与状态变量的学习目标是先建立稳定心智模型，再进入代码验证。",
+      "id": "official_documentation",
+      "type": "official_documentation",
+      "title": "官方文档内容",
+      "content_markdown": "以下内容来自已索引的官方/可信来源片段；Aearn 只做界面语言说明、格式清理和来源保留。",
       "code_blocks": []
     },
     {
-      "id": "syntax",
-      "type": "syntax",
-      "title": "语法结构",
-      "content_markdown": "先看最小结构，再看每个组成部分的职责。",
+      "id": "examples",
+      "type": "examples",
+      "title": "实例",
+      "content_markdown": "下面的示例用于把官方片段落到当前练习语境；来源标签会区分官方示例和 Aearn 示例。",
       "code_blocks": [
         {
           "language": "javascript",
           "code": "const input = \"观察输入\";\nconsole.log(input);",
-          "caption": "把知识点绑定到一个可观察输出，方便验证理解。"
+          "caption": "Aearn 示例：把知识点绑定到一个可观察输出，方便验证理解。",
+          "source_type": "aearn"
         }
       ]
     }
@@ -1629,7 +1635,9 @@ Response JSON 示例：
   "references": [
     {
       "title": "MDN Web Docs: EventTarget.addEventListener()",
-      "url": "https://developer.mozilla.org/docs/Web/API/EventTarget/addEventListener"
+      "url": "https://developer.mozilla.org/docs/Web/API/EventTarget/addEventListener",
+      "source_type": "official",
+      "retrieved_at": "2026-06-06T08:00:00Z"
     }
   ],
   "generated_at": "2026-06-04T08:00:00Z",
@@ -1697,8 +1705,9 @@ HTTP 状态码：`200`、`404`、`409`、`503`
 阶段规则：
 
 - `concept_check`：围绕 `show_concept_intro` 的判断题接收自然语言回答，返回持久化 `show_concept_check_result`；不主动展示完整题面或 starter code。
-- `concept_repair`：首次判断错误后只修正一个误解，返回更窄的 `repair_check`；两次失败后停止盘问，提供另一个例子或引导练习。
-- `practice_offer`：概念判断正确后等待用户确认是否开始练习；确认后进入 `practice_support`，`practice_unlock_reason=concept_check_passed`。
+- `concept_check` 的 `unclear` 只用于未回答、不确定、无关、无法判断或自相矛盾；部分正确、漏答或方向明确但不完整必须输出 `incorrect` / incomplete feedback。
+- `concept_repair`：首次判断错误或模糊后只修正一个误解或要求一次更明确回答，返回更窄的 `repair_check`；`incorrect`、`unclear` 和 `judgement_ready=false` blocked path 共用 `concept_check_attempts` 上限，两次仍未通过后停止盘问，提供另一个例子或引导练习。
+- `practice_offer`：概念判断正确后等待用户确认是否开始练习；确认后进入 `practice_support`，`practice_unlock_reason=concept_check_passed`。本轮 Agent 文案必须由模型动态生成，并包含当前知识点小结；后端不得使用固定解锁文案或固定概念小结兜底。`show_code_exercise.notice` 默认空，不能复制 Agent 正文或重复展示题面。
 - `practice_support`：允许围绕真实练习、运行事实、hint 和错因解释继续对话。
 - 用户在 `concept_check` / `concept_repair` 中明确要求提前练习时可进入 `practice_support`，但必须先持久化 `show_concept_check_result(result=skipped)`，且 `show_code_exercise` 参数必须带 `practice_unlock_reason=concept_check_skipped`、`learning_incomplete=true` 和概念小结。
 
@@ -1745,6 +1754,12 @@ Response JSON 示例：
         "confidence": "high",
         "explanation": "放在回调内部会导致每次点击重新初始化，不能跨点击保存状态。",
         "next_prompt": "要开始做一个小练习吗？",
+        "answer_leakage_review": {
+          "status": "clear",
+          "revealed_target_answer": false,
+          "next_prompt_requires_same_answer": false,
+          "reason": "没有先泄露再要求复述同一答案。"
+        },
         "actions": [{"id": "start_practice", "label": "开始练习"}],
         "repair_check": null
       }
@@ -1763,7 +1778,7 @@ HTTP 状态码：
 
 错误码：`SESSION_NOT_FOUND`、`VALIDATION_ERROR`、`MODEL_UNAVAILABLE`、`RATE_LIMITED`
 
-模型说明：学习页对话不提供确定性教学文案兜底。模型失败或输出被 guardrail 拦截时，JSON 模式返回 `MODEL_UNAVAILABLE`；SSE 模式发送一个 `error.code=MODEL_UNAVAILABLE` 事件并终止，不写入成功的 assistant 响应或幂等成功记录。
+模型说明：学习页对话不提供确定性教学文案兜底，包括概念判断通过后用户点击 `开始练习` 的练习解锁说明。模型失败、未配置、输出为空或输出被 guardrail 拦截时，JSON 模式返回 `MODEL_UNAVAILABLE`；SSE 模式发送一个 `error.code=MODEL_UNAVAILABLE` 事件并终止，不写入成功的 assistant 响应、`show_code_exercise` 工具调用或幂等成功记录。guardrail 必须拦截模型把内部策略作为正式输出写给学习者的情况，例如 `response_policy`、`_policy`、`policy要求` 或“根据 policy”式表述。
 
 幂等/重试说明：使用 `client_message_id` 去重；SSE 模式可增量返回多个 `agent_message` 和 `tool_call` 事件。
 
@@ -1803,12 +1818,14 @@ Response JSON 示例：
           "id": "msg_001",
           "role": "agent",
           "content": "今天先理解事件监听与状态变量...",
+          "tool_calls": [],
           "created_at": "2026-05-25T11:20:01Z"
         },
         {
           "id": "msg_002",
           "role": "user",
           "content": "我认为状态需要保存在回调外层。",
+          "tool_calls": [],
           "created_at": "2026-05-25T11:21:02Z"
         }
       ]
@@ -1825,6 +1842,8 @@ HTTP 状态码：
 错误码：`KNOWLEDGE_POINT_NOT_FOUND`
 
 幂等/重试说明：只读接口，可安全重试；默认按当前会话优先，其后按会话开始时间倒序返回。
+
+响应中的 `messages[*].tool_calls` 只来自 `learning_messages.metadata.tool_calls`，用于刷新或重新打开学习页时重放已持久化的生成式 UI 卡片；不得返回 grounding、agent side effects 或 provider payload。
 
 相关数据表/状态机节点：`LearningSession`、`LearningMessage`、`KnowledgePoint`；`show_learning_history`。
 

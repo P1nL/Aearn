@@ -133,7 +133,7 @@ LearningWorkspacePage
     RouteActionMenu
   ConversationTimeline
     GeneratedConceptIntroCard
-    GeneratedConceptCheckResultCard
+    CompactConceptCheckFeedback
     AgentMessage
     GeneratedLearningHistoryCard
     GeneratedCodeExerciseCard
@@ -165,7 +165,7 @@ LearningWorkspacePage
 6. 前端以 `session_id` 加载会话；如果 `learning_stage` 不是 `practice_support`，只展示阅读/概念优先对话，不展示练习卡片。
 7. 新会话入口进入 `documentation_reading`，右侧自动加载知识点文档，`initial_tool_calls=[]`；只有用户点击「开始概念检验」后才调用 `POST /api/learning-sessions/{session_id}/trigger-concept-check` 并渲染 `show_concept_intro`。
 8. 已触发概念检验的恢复会话必须重放持久化的 `show_concept_intro`，不得重新生成不同内容。
-9. Agent 通过 `show_concept_check_result` 展示自然语言判断结果，通过 `show_code_exercise` 工具调用在对话中生成练习 UI；通过 `show_learning_history` 工具调用展示知识点历史对话引用。
+9. Agent 通过 `show_concept_check_result` 持久化自然语言判断结果，但前端只渲染为普通 Agent 回复里的紧凑反馈；通过 `show_code_exercise` 工具调用在对话中生成练习 UI；通过 `show_learning_history` 工具调用展示知识点历史对话引用。
 
 ### `WorkspaceTopStatusBar`
 
@@ -192,7 +192,7 @@ LearningWorkspacePage
 
 ### 左侧复习分组
 
-- 左侧「复习」分组可以展示 `status=reviewing/mastered` 的知识点，但不能只凭 `status` 判断可点击。
+- 左侧「复习」分组可以展示 `status=reviewing/mastered` 的知识点；如果 `review_state.is_due === true`，即使本地 `status` 因恢复学习会话仍显示为 `learning`，也必须展示为待复习项。
 - `GET /api/plans/{plan_id}` 返回的 `knowledge_points[].review_state.is_due === true` 是侧栏项可点击的唯一事实来源。
 - `is_due=false` 或缺少 `review_state` 时，侧栏项必须渲染为禁用预告态，显示 `review_state.label` 或「已安排，等待同步」，不跳转 `ReviewPage`，不触发 `POST /api/reviews/start`，不显示错误 toast。
 - 可点击的到期项必须与 `GET /api/reviews/today` 的到期队列语义一致；进入复习页后不能出现“侧栏可点击但今日队列为空”的不一致状态。
@@ -222,11 +222,14 @@ LearningWorkspacePage
 
 - `LearningWorkspacePage` 必须接受 `exercise=null` 的会话响应，并保持 composer 可用。
 - `documentation_reading` / `concept_qna` 阶段必须显示右侧文档面板和「开始概念检验」按钮；文档未加载完成时按钮禁用。
-- 文档面板支持目录跳转、章节折叠、选中文字引用到对话和代码块引用到对话；引用只填充 composer，不自动发送。
+- 文档面板只展示 `官方文档内容` 和 `实例` 两个主区块：官方内容来自已持久化官方/可信来源或忠实翻译片段，实例必须标明 `官方示例` 或 `Aearn 示例`；不再渲染 `核心概念`、`语法结构`、`实战示例`、`常见错误`、`最佳实践` 五段式讲义。
+- 文档面板支持目录跳转、章节折叠、来源标题/URL/时间展示、选中文字引用到对话和代码块引用到对话；引用只填充 composer，不自动发送。
 - `show_concept_intro` 渲染概念总结、易懂例子和 2-4 个文本选项；选项只是可复制的回答提示，不是强制按钮。
-- `show_concept_check_result` 渲染 `correct` / `incorrect` / `unclear` / `skipped` 结果、解释、下一步提示、可选 `repair_check` 和文本 quick replies。
+- `show_concept_check_result` 不渲染独立大卡；它以内联紧凑反馈展示 `判断`、`原因`、`下一步`，保留可选 `repair_check` 和文本 quick replies。
+- `unclear` 只表示未回答、不确定、无关、无法判断或自相矛盾；部分正确、漏答或方向明确但不完整的回答显示为 `incorrect` / incomplete feedback。
+- `incorrect` 和 `unclear` 共用概念追问上限，达到上限后不再继续“更具体一点”追问，只提供引导练习或再看一个例子。
 - `concept_check`、`concept_repair` 和 `practice_offer` 只展示概念判断与修正，不直接固定展示练习卡片。
-- `practice_support` 才能展示 `GeneratedCodeExerciseCard`；如果是跳过或修正上限后的引导练习，卡片说明内展示“当前学习进度尚未完成”和概念小结。
+- `practice_support` 才能展示 `GeneratedCodeExerciseCard`；练习解锁说明来自本轮模型回复，必须包含当前知识点小结。卡片 `notice` 默认空，不能复制 Agent 正文或重复展示题面。如果模型不可用，前端只展示 `MODEL_UNAVAILABLE` 错误，不展示后端固定练习卡或固定概念小结。
 - `CONCEPT_INTRO_GENERATION_FAILED` 必须显示重试生成和返回路线动作，不展示破损 fallback 卡片。
 - 学习页 composer SSE 错误必须按稳定 `error.code` 解释原因：`MODEL_UNAVAILABLE` 展示模型服务或配置不可用，`STREAM_INCOMPLETE` 展示流没有收到 `done` / `error` 终止事件，`STREAM_ERROR` / `STREAM_UNAVAILABLE` / `STREAM_HTTP_ERROR` 展示连接或 SSE 可用性问题；不能把所有错误都包成同一句泛化“回答没有完成”。
 - 用户主动回看历史时展示 `GeneratedLearningHistoryCard`，只引用学习页 AI/用户对话，不引用建档页或复习页内容。
@@ -524,7 +527,7 @@ SettingsPage
 | `POST /api/onboarding/{session_id}/confirm_plan` | `GeneratedLearningRouteCard` | 仅由最新卡片的 `开始学习` 确认正式计划 |
 | `PATCH /api/plans/{plan_id}/modules/{module_id}` | `RoutePanel` | 跳过、替换、调整模块 |
 | `POST /api/learning-sessions/start` | `LearningWorkspacePage`、`GeneratedConceptIntroCard` | 创建或恢复学习会话；概念阶段允许 `exercise=null`，新会话返回持久化 `initial_tool_calls` |
-| `POST /api/learning-sessions/{session_id}/messages` | `ConversationTimeline`、`GeneratedConceptCheckResultCard`、`GeneratedCodeExerciseCard`、`GeneratedLearningHistoryCard` | 概念判断、修正追问、练习确认和学习页工具卡片 |
+| `POST /api/learning-sessions/{session_id}/messages` | `ConversationTimeline`、`CompactConceptCheckFeedback`、`GeneratedCodeExerciseCard`、`GeneratedLearningHistoryCard` | 概念判断、修正追问、练习确认和学习页工具卡片 |
 | `GET /api/learning-sessions/history` | `GeneratedLearningHistoryCard` | 按知识点读取所有学习页会话历史，不包含建档页或复习页 |
 | `POST /api/learning-sessions/{session_id}/exercises/{exercise_id}/run` | `RunActionBar`、`GeneratedRuntimeFeedback` | 展示运行、预览或测试反馈；前端不暴露内部 Attempt 类型 |
 | `POST /api/learning-sessions/{session_id}/exercises/{exercise_id}/submit` | `RunActionBar`、`ExplanationCheckPanel` | 获取 `code_completion_result`；前端不暴露内部 Attempt 类型 |

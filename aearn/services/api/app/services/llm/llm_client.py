@@ -1,18 +1,33 @@
 from __future__ import annotations
 
+import http.client
 import json
 import logging
 import socket
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from typing import TypeVar
 
 from app.core.config import Settings, get_settings
 from app.services.llm.llm_urls import deepseek_chat_completions_url, responses_url
 
 
 logger = logging.getLogger(__name__)
+
+LLM_PROVIDER_RETRY_ATTEMPTS = 3
+LLM_PROVIDER_RETRY_BASE_DELAY_SECONDS = 0.25
+_RETRYABLE_HTTP_STATUS_CODES = {408, 429, 500, 502, 503, 504}
+_RETRYABLE_TRANSPORT_ERRORS = (
+    urllib.error.URLError,
+    TimeoutError,
+    socket.timeout,
+    ConnectionError,
+    http.client.RemoteDisconnected,
+)
+T = TypeVar("T")
 
 
 class LLMConfigurationError(RuntimeError):
@@ -208,20 +223,12 @@ def _post_json_stream(
     payload: Mapping[str, object],
     timeout: float,
 ) -> Mapping[str, object]:
-    request = urllib.request.Request(
-        url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers=dict(headers),
-        method="POST",
-    )
-    try:
+    def request_once() -> Mapping[str, object]:
+        request = _provider_request(url, headers, payload)
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return _parse_responses_stream(response)
-    except urllib.error.HTTPError as exc:
-        raise LLMCallError(f"LLM provider returned HTTP {exc.code}") from exc
-    except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
-        logger.warning("LLM provider JSON stream request failed: %s", _safe_transport_error(exc))
-        raise LLMCallError("LLM provider request failed") from exc
+
+    return _request_with_retries("JSON stream", request_once)
 
 
 def _post_json(
@@ -230,20 +237,14 @@ def _post_json(
     payload: Mapping[str, object],
     timeout: float,
 ) -> Mapping[str, object]:
-    request = urllib.request.Request(
-        url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers=dict(headers),
-        method="POST",
-    )
-    try:
+    def request_once() -> str:
+        request = _provider_request(url, headers, payload)
         with urllib.request.urlopen(request, timeout=timeout) as response:
             body = response.read().decode("utf-8", "replace").strip()
-    except urllib.error.HTTPError as exc:
-        raise LLMCallError(f"LLM provider returned HTTP {exc.code}") from exc
-    except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
-        logger.warning("LLM provider JSON request failed: %s", _safe_transport_error(exc))
-        raise LLMCallError("LLM provider request failed") from exc
+
+        return body
+
+    body = _request_with_retries("JSON", request_once)
 
     if not body:
         raise LLMInvalidResponseError("LLM provider returned an empty response")
@@ -275,19 +276,73 @@ def _post_text_stream(
     payload: Mapping[str, object],
     timeout: float,
 ) -> Generator[str, None, None]:
-    request = urllib.request.Request(
+    for attempt in range(1, LLM_PROVIDER_RETRY_ATTEMPTS + 1):
+        yielded_any = False
+        try:
+            request = _provider_request(url, headers, payload)
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                for delta in _iter_response_text_deltas(response):
+                    yielded_any = True
+                    yield delta
+            return
+        except urllib.error.HTTPError as exc:
+            if yielded_any or not _should_retry_http_error(exc) or attempt >= LLM_PROVIDER_RETRY_ATTEMPTS:
+                raise LLMCallError(f"LLM provider returned HTTP {exc.code}") from exc
+            _log_retry("text stream", attempt, f"HTTP {exc.code}")
+        except _RETRYABLE_TRANSPORT_ERRORS as exc:
+            if yielded_any or attempt >= LLM_PROVIDER_RETRY_ATTEMPTS:
+                logger.warning("LLM provider text stream request failed: %s", _safe_transport_error(exc))
+                raise LLMCallError("LLM provider request failed") from exc
+            _log_retry("text stream", attempt, _safe_transport_error(exc))
+        _sleep_before_retry(attempt)
+
+
+def _provider_request(
+    url: str,
+    headers: Mapping[str, str],
+    payload: Mapping[str, object],
+) -> urllib.request.Request:
+    return urllib.request.Request(
         url,
         data=json.dumps(payload).encode("utf-8"),
         headers=dict(headers),
         method="POST",
     )
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            yield from _iter_response_text_deltas(response)
-    except urllib.error.HTTPError as exc:
-        raise LLMCallError(f"LLM provider returned HTTP {exc.code}") from exc
-    except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
-        raise LLMCallError("LLM provider request failed") from exc
+
+
+def _request_with_retries(operation_name: str, request_once: Callable[[], T]) -> T:
+    for attempt in range(1, LLM_PROVIDER_RETRY_ATTEMPTS + 1):
+        try:
+            return request_once()
+        except urllib.error.HTTPError as exc:
+            if not _should_retry_http_error(exc) or attempt >= LLM_PROVIDER_RETRY_ATTEMPTS:
+                raise LLMCallError(f"LLM provider returned HTTP {exc.code}") from exc
+            _log_retry(operation_name, attempt, f"HTTP {exc.code}")
+        except _RETRYABLE_TRANSPORT_ERRORS as exc:
+            if attempt >= LLM_PROVIDER_RETRY_ATTEMPTS:
+                logger.warning("LLM provider %s request failed: %s", operation_name, _safe_transport_error(exc))
+                raise LLMCallError("LLM provider request failed") from exc
+            _log_retry(operation_name, attempt, _safe_transport_error(exc))
+        _sleep_before_retry(attempt)
+    raise LLMCallError("LLM provider retry attempts exhausted")
+
+
+def _should_retry_http_error(exc: urllib.error.HTTPError) -> bool:
+    return int(exc.code) in _RETRYABLE_HTTP_STATUS_CODES
+
+
+def _log_retry(operation_name: str, attempt: int, reason: str) -> None:
+    logger.warning(
+        "LLM provider %s request failed; retrying (%s/%s): %s",
+        operation_name,
+        attempt,
+        LLM_PROVIDER_RETRY_ATTEMPTS,
+        reason,
+    )
+
+
+def _sleep_before_retry(attempt: int) -> None:
+    time.sleep(LLM_PROVIDER_RETRY_BASE_DELAY_SECONDS * attempt)
 
 
 def _iter_response_text_deltas(response: Iterable[bytes]) -> Generator[str, None, None]:

@@ -462,6 +462,15 @@ export type LearningSessionInitialToolCall = {
   status: "done" | "running" | "error" | "pending";
 };
 
+export type LearningWorkbenchState = {
+  exercise_id: string;
+  source_attempt_id: string;
+  source_attempt_type: "run" | "submit";
+  code: string;
+  filled_blanks: Record<string, string>;
+  run_mode: "preview" | "visible_tests" | null;
+};
+
 export type LearningSessionResponse = {
   session_id: string;
   session_type: "learn";
@@ -485,6 +494,9 @@ export type LearningSessionResponse = {
   learning_stage_state: LearningStageState;
   initial_agent_message: string;
   initial_tool_calls: LearningSessionInitialToolCall[];
+  latest_run?: RunExerciseResponse | null;
+  latest_submit?: SubmitExerciseResponse | null;
+  latest_workbench_state?: LearningWorkbenchState | null;
   session_state: "learning";
 };
 
@@ -492,10 +504,11 @@ export type DocumentationCodeBlock = {
   language: string;
   code: string;
   caption: string;
+  source_type?: "official" | "trusted" | "aearn" | string | null;
 };
 
 export type DocumentationSection = {
-  id: "core_concept" | "syntax" | "examples" | "common_mistakes" | "best_practices" | string;
+  id: "official_documentation" | "examples" | string;
   type: string;
   title: string;
   content_markdown: string;
@@ -505,6 +518,8 @@ export type DocumentationSection = {
 export type DocumentationReference = {
   title: string;
   url: string;
+  source_type?: "official" | "trusted" | "aearn" | string | null;
+  retrieved_at?: string | null;
 };
 
 export type KnowledgePointDocumentationResponse = {
@@ -538,6 +553,7 @@ export type LearningHistoryResponse = {
       id: string;
       role: "user" | "agent";
       content: string;
+      tool_calls?: LearningSessionInitialToolCall[];
       created_at: string | null;
     }>;
   }>;

@@ -29,13 +29,19 @@ from app.services.repositories.learner_profile import ensure_learner_profile
 from app.services.llm.llm_client import LLMCallError, LLMInvalidResponseError
 from app.services.repositories.learner_profile import merge_stable_profile_signals
 from app.services.repositories.plan_repository import IdempotencyConflictError, request_hash
-from app.services.repositories.review_scheduler import apply_attempt_review_update
+from app.services.repositories.review_scheduler import (
+    apply_attempt_review_update,
+    normalize_review_state_payload,
+    serialize_knowledge_point as serialize_review_knowledge_point,
+    serialize_review_state as serialize_scheduler_review_state,
+)
 from app.services.runners.runtime_runner import RuntimeExecutionResult, run_exercise
 from app.services.curriculum.teaching_chunks import (
     ensure_current_knowledge_point_chunks,
     index_current_knowledge_point_chunks,
     search_chunks,
 )
+from app.services.grounding.grounding_index_repository import build_official_docs_grounding_context
 from app.services.repositories.user_repository import get_user
 
 
@@ -63,7 +69,7 @@ class EvaluationConflictError(ValueError):
 
 
 DOCUMENTATION_CACHE_TTL_SECONDS = 24 * 60 * 60
-DOCUMENTATION_CACHE_VERSION = "v1"
+DOCUMENTATION_CACHE_VERSION = "v2"
 
 
 def get_knowledge_point_documentation(
@@ -84,13 +90,22 @@ def get_knowledge_point_documentation(
         f"{context['title']} {context.get('description') or ''}",
         top_k=3,
     )
-    sections = _documentation_sections(context, chunks)
+    official_grounding = build_official_docs_grounding_context(
+        conn,
+        language_id_or_alias=str(context.get("runtime_language") or ""),
+        query_text=f"{context['title']} {context.get('description') or ''}",
+        topic_tags=_documentation_topic_tags(context),
+        knowledge_point_id=str(context["id"]),
+        knowledge_point_title=str(context["title"]),
+        top_k=3,
+    )
+    sections = _documentation_sections(context, chunks, official_grounding)
     response = {
         "knowledge_point_id": str(context["id"]),
         "title": str(context["title"]),
         "summary": _documentation_summary(context),
         "sections": sections,
-        "references": _documentation_references(context),
+        "references": _documentation_references(context, official_grounding),
         "generated_at": datetime.now(UTC).isoformat(),
         "cache_hit": False,
     }
@@ -215,13 +230,23 @@ def start_learning_session(
         """,
         (context["module_id"], plan_id),
     )
-    conn.execute(
+    updated_knowledge_point = conn.execute(
         """
         UPDATE knowledge_points
-        SET status = 'learning', last_session_id = %s
+        SET status = CASE
+              WHEN status IN ('reviewing', 'mastered') THEN status
+              ELSE 'learning'
+            END,
+            last_session_id = %s
         WHERE id = %s
+        RETURNING status
         """,
         (session["id"], knowledge_point_id),
+    ).fetchone()
+    knowledge_point_status = (
+        str(updated_knowledge_point["status"])
+        if updated_knowledge_point is not None
+        else str(context.get("status") or "learning")
     )
 
     learning_stage = str(session.get("learning_stage") or "practice_support")
@@ -235,6 +260,15 @@ def start_learning_session(
         if learning_stage == "practice_support"
         else None
     )
+    restored_practice_state = (
+        _restore_latest_exercise_state(conn, session_id=str(session["id"]), exercise=exercise)
+        if exercise is not None
+        else {
+            "latest_run": None,
+            "latest_submit": None,
+            "latest_workbench_state": None,
+        }
+    )
     response = {
         "session_id": str(session["id"]),
         "session_type": session["session_type"],
@@ -247,7 +281,7 @@ def start_learning_session(
             "KnowledgePoint": {
                 "id": str(context["id"]),
                 "title": context["title"],
-                "status": "learning",
+                "status": knowledge_point_status,
             },
             "RuntimeProfile": runtime_profile,
         },
@@ -258,6 +292,9 @@ def start_learning_session(
         "learning_stage_state": learning_stage_state,
         "initial_agent_message": initial_message,
         "initial_tool_calls": initial_tool_calls,
+        "latest_run": restored_practice_state["latest_run"],
+        "latest_submit": restored_practice_state["latest_submit"],
+        "latest_workbench_state": restored_practice_state["latest_workbench_state"],
         "session_state": "learning",
     }
     return response, reused
@@ -1144,6 +1181,174 @@ def _load_run_attempt(
     return attempt
 
 
+def _restore_latest_exercise_state(
+    conn: Connection[dict[str, object]],
+    *,
+    session_id: str,
+    exercise: Mapping[str, object],
+) -> dict[str, object | None]:
+    exercise_id = str(exercise["id"])
+    latest_run = _load_latest_exercise_attempt(
+        conn,
+        session_id=session_id,
+        exercise_id=exercise_id,
+        attempt_type="run",
+    )
+    latest_submit = _load_latest_exercise_attempt(
+        conn,
+        session_id=session_id,
+        exercise_id=exercise_id,
+        attempt_type="submit",
+    )
+    workbench_attempt = _latest_workbench_attempt(latest_run, latest_submit)
+    return {
+        "latest_run": (
+            _serialize_run_response(latest_run, _runtime_result_from_attempt(latest_run))
+            if latest_run is not None
+            else None
+        ),
+        "latest_submit": (
+            _serialize_submit_response_from_attempt(conn, submit_attempt=latest_submit, exercise=exercise)
+            if latest_submit is not None
+            else None
+        ),
+        "latest_workbench_state": (
+            _serialize_workbench_state(
+                conn,
+                attempt=workbench_attempt,
+                exercise_id=exercise_id,
+                latest_run=latest_run,
+            )
+            if workbench_attempt is not None
+            else None
+        ),
+    }
+
+
+def _load_latest_exercise_attempt(
+    conn: Connection[dict[str, object]],
+    *,
+    session_id: str,
+    exercise_id: str,
+    attempt_type: str,
+) -> Mapping[str, object] | None:
+    return conn.execute(
+        """
+        SELECT *
+        FROM attempts
+        WHERE session_id = %s
+          AND exercise_id = %s
+          AND attempt_type = %s
+        ORDER BY created_at DESC
+        LIMIT 1
+        """,
+        (session_id, exercise_id, attempt_type),
+    ).fetchone()
+
+
+def _latest_workbench_attempt(
+    latest_run: Mapping[str, object] | None,
+    latest_submit: Mapping[str, object] | None,
+) -> Mapping[str, object] | None:
+    if latest_submit is None:
+        return latest_run
+    if latest_run is None:
+        return latest_submit
+    submit_created_at = latest_submit.get("created_at")
+    run_created_at = latest_run.get("created_at")
+    if isinstance(submit_created_at, datetime) and isinstance(run_created_at, datetime):
+        return latest_submit if submit_created_at >= run_created_at else latest_run
+    return latest_submit
+
+
+def _serialize_workbench_state(
+    conn: Connection[dict[str, object]],
+    *,
+    attempt: Mapping[str, object],
+    exercise_id: str,
+    latest_run: Mapping[str, object] | None,
+) -> dict[str, object]:
+    run_mode = _run_mode_for_attempt(conn, latest_run) if latest_run is not None else None
+    if latest_run is not None and attempt.get("code_hash") != latest_run.get("code_hash"):
+        run_mode = None
+    return {
+        "exercise_id": exercise_id,
+        "source_attempt_id": str(attempt["id"]),
+        "source_attempt_type": str(attempt["attempt_type"]),
+        "code": str(attempt.get("submitted_code") or ""),
+        "filled_blanks": _filled_blanks_from_attempt(attempt),
+        "run_mode": run_mode,
+    }
+
+
+def _serialize_submit_response_from_attempt(
+    conn: Connection[dict[str, object]],
+    *,
+    submit_attempt: Mapping[str, object],
+    exercise: Mapping[str, object],
+) -> dict[str, object] | None:
+    code_completion_result = _mapping_or_empty(submit_attempt.get("code_completion_result"))
+    if not code_completion_result:
+        return None
+    knowledge_point_id = str(exercise["knowledge_point_id"])
+    knowledge_point = conn.execute(
+        """
+        SELECT id, status, mastery_score, last_exercise_result, last_exercise_score
+        FROM knowledge_points
+        WHERE id = %s
+        """,
+        (knowledge_point_id,),
+    ).fetchone()
+    review_state = conn.execute(
+        """
+        SELECT *
+        FROM review_states
+        WHERE knowledge_point_id = %s
+        """,
+        (knowledge_point_id,),
+    ).fetchone()
+    if knowledge_point is None or review_state is None:
+        return None
+    return {
+        "attempt_id": str(submit_attempt["id"]),
+        "code_completion_result": dict(code_completion_result),
+        "KnowledgePoint": serialize_review_knowledge_point(knowledge_point),
+        "ReviewState": normalize_review_state_payload(serialize_scheduler_review_state(review_state)),
+        "next_action": str(code_completion_result.get("next_action") or "schedule_review"),
+    }
+
+
+def _run_mode_for_attempt(
+    conn: Connection[dict[str, object]],
+    attempt: Mapping[str, object] | None,
+) -> str | None:
+    if attempt is None:
+        return None
+    record = conn.execute(
+        """
+        SELECT key
+        FROM idempotency_records
+        WHERE operation = 'run_learning_session_exercise'
+          AND response_json->>'attempt_id' = %s
+          AND invalidated_at IS NULL
+        ORDER BY created_at DESC
+        LIMIT 1
+        """,
+        (str(attempt["id"]),),
+    ).fetchone()
+    if record is None:
+        return None
+    suffix = str(record["key"]).rsplit(":", 1)[-1]
+    return suffix if suffix in {"preview", "visible_tests"} else None
+
+
+def _filled_blanks_from_attempt(attempt: Mapping[str, object]) -> dict[str, str]:
+    value = attempt.get("filled_blanks_json") or {}
+    if not isinstance(value, Mapping):
+        return {}
+    return {str(key): str(item) for key, item in value.items()}
+
+
 def _load_session_attempt(
     conn: Connection[dict[str, object]],
     *,
@@ -1290,89 +1495,150 @@ def _documentation_summary(context: Mapping[str, object]) -> str:
     outline = _lesson_outline(context)
     if outline:
         return "；".join(item["note"] for item in outline[:2] if item["note"])
-    return f"围绕 {context['title']} 的核心概念、语法、示例和常见错误。"
+    return f"围绕 {context['title']} 的官方文档片段和可验证示例。"
 
 
 def _documentation_sections(
     context: Mapping[str, object],
     chunks: Sequence[Mapping[str, object]],
+    official_grounding: Mapping[str, object],
 ) -> list[dict[str, object]]:
     language = str(context.get("runtime_language") or "text")
     title = str(context["title"])
-    outline = _lesson_outline(context)
-    outline_text = _outline_markdown(outline)
-    chunk_text = _chunk_markdown(chunks)
-    syntax_example = _documentation_code_example(language, title)
-    mistake_example = _documentation_mistake_example(language)
+    example = _documentation_code_example(language, title)
     return [
         {
-            "id": "core_concept",
-            "type": "core_concept",
-            "title": "核心概念",
-            "content_markdown": (
-                f"{title} 的学习目标是先建立稳定心智模型，再进入代码验证。"
-                f"{_documentation_summary(context)}\n\n"
-                f"它位于「{context.get('module_title') or '当前模块'}」中，和本模块的其他知识点一起服务于"
-                "可解释、可验证的 AI 编程练习。阅读时先确认它解决什么问题，再观察它会改变程序的哪一段行为。"
-            ),
+            "id": "official_documentation",
+            "type": "official_documentation",
+            "title": "官方文档内容",
+            "content_markdown": _official_documentation_markdown(context, official_grounding, chunks),
             "code_blocks": [],
-        },
-        {
-            "id": "syntax",
-            "type": "syntax",
-            "title": "语法结构",
-            "content_markdown": (
-                "先看最小结构，再看每个组成部分的职责。不要急着记完整代码，先分清输入、状态变化和输出。"
-                f"\n\n{outline_text}"
-            ),
-            "code_blocks": [syntax_example],
         },
         {
             "id": "examples",
             "type": "examples",
-            "title": "实战示例",
-            "content_markdown": (
-                "下面的示例用于把概念落到可观察行为。你可以先读注释，再尝试解释为什么输出会变化。"
-                f"\n\n{chunk_text}"
-            ),
-            "code_blocks": [syntax_example],
-        },
-        {
-            "id": "common_mistakes",
-            "type": "common_mistakes",
-            "title": "常见错误",
-            "content_markdown": (
-                "- 只记住写法，没有说明它控制的行为。\n"
-                "- 把一次性的示例当成通用规则，没有检查边界条件。\n"
-                "- 遇到 AI 生成代码时只看能否运行，没有追踪输入、状态和输出。\n"
-                "- 复述概念时跳过关键术语，导致后续练习无法定位错误。"
-            ),
-            "code_blocks": [mistake_example],
-        },
-        {
-            "id": "best_practices",
-            "type": "best_practices",
-            "title": "最佳实践",
-            "content_markdown": (
-                "- 用一句话说明这个知识点解决的问题。\n"
-                "- 给出一个最小示例，并指出输入、处理和输出。\n"
-                "- 在练习前先预测结果，再运行验证。\n"
-                "- 如果引用 AI 生成代码，必须能指出关键判断依据，而不是只接受最终答案。"
-            ),
-            "code_blocks": [],
+            "title": "实例",
+            "content_markdown": _documentation_examples_markdown(chunks),
+            "code_blocks": [example],
         },
     ]
 
 
-def _documentation_references(context: Mapping[str, object]) -> list[dict[str, str]]:
-    references = [
-        {"title": source["title"] or "课程来源", "url": source["url"]}
-        for source in _lesson_sources(context)
-        if source["title"] or source["url"]
-    ]
+def _documentation_references(
+    context: Mapping[str, object],
+    official_grounding: Mapping[str, object],
+) -> list[dict[str, str | None]]:
+    references: list[dict[str, str | None]] = []
+    citations = official_grounding.get("citations")
+    if isinstance(citations, Sequence) and not isinstance(citations, (str, bytes)):
+        for citation in citations:
+            if not isinstance(citation, Mapping):
+                continue
+            title = str(citation.get("title") or citation.get("source_id") or "官方文档")
+            url = str(citation.get("canonical_url") or "")
+            if not title and not url:
+                continue
+            references.append(
+                {
+                    "title": title,
+                    "url": url,
+                    "source_type": _reference_source_type(citation),
+                    "retrieved_at": str(citation.get("fetched_at") or "") or None,
+                }
+            )
+    for source in _lesson_sources(context):
+        if not source["title"] and not source["url"]:
+            continue
+        entry = {
+            "title": source["title"] or "课程来源",
+            "url": source["url"],
+            "source_type": "trusted",
+            "retrieved_at": None,
+        }
+        if entry not in references:
+            references.append(entry)
     if references:
         return references
-    return [{"title": "当前本地课程提纲", "url": ""}]
+    return [{"title": "当前本地课程提纲", "url": "", "source_type": "aearn", "retrieved_at": None}]
+
+
+def _official_documentation_markdown(
+    context: Mapping[str, object],
+    official_grounding: Mapping[str, object],
+    chunks: Sequence[Mapping[str, object]],
+) -> str:
+    items = _grounding_items(official_grounding)
+    if items:
+        lines = [
+            "以下内容来自已索引的官方/可信来源片段；Aearn 只做界面语言说明、格式清理和来源保留，不改写为五段式讲义。",
+        ]
+        for index, item in enumerate(items, start=1):
+            citation = item.get("citation")
+            citation_title = "官方/可信来源"
+            citation_url = ""
+            if isinstance(citation, Mapping):
+                citation_title = str(citation.get("title") or citation.get("source_id") or citation_title)
+                citation_url = str(citation.get("canonical_url") or "")
+            source_suffix = f"（{citation_url}）" if citation_url else ""
+            content = str(item.get("content") or "").strip()
+            if content:
+                lines.append(f"{index}. {citation_title}{source_suffix}\n{content}")
+        return "\n\n".join(lines)
+
+    sources = _lesson_sources(context)
+    outline = _lesson_outline(context)
+    lines = [
+        "当前知识点还没有命中本地 official_docs_grounding 正文片段；下面只展示已绑定来源和最小目标片段，原文请从来源入口打开。",
+    ]
+    if sources:
+        lines.append("来源入口：")
+        lines.extend(f"- {source['title'] or '课程来源'}：{source['url'] or '无 URL'}" for source in sources)
+    if outline:
+        lines.append("目标片段：")
+        lines.extend(f"- {item['title']}：{item['note']}" for item in outline if item.get("title") or item.get("note"))
+    if not sources and not outline:
+        chunk_text = _chunk_markdown(chunks)
+        lines.append(chunk_text)
+    return "\n".join(lines)
+
+
+def _documentation_examples_markdown(chunks: Sequence[Mapping[str, object]]) -> str:
+    example_lines = []
+    for chunk in chunks:
+        if str(chunk.get("chunk_type") or "") != "example":
+            continue
+        title = str(chunk.get("title") or "Aearn 示例")
+        content = str(chunk.get("content") or "").strip()
+        if content:
+            example_lines.append(f"- Aearn 示例：{title}：{content[:260]}")
+    if example_lines:
+        return "下面的示例用于把官方片段落到当前练习语境；来源标签会区分官方示例和 Aearn 示例。\n" + "\n".join(
+            example_lines
+        )
+    return "下面提供一个 Aearn 示例，用于把当前知识点落到可观察行为；它不是官方文档内容。"
+
+
+def _grounding_items(official_grounding: Mapping[str, object]) -> list[Mapping[str, object]]:
+    items = official_grounding.get("items")
+    if not isinstance(items, Sequence) or isinstance(items, (str, bytes)):
+        return []
+    return [item for item in items if isinstance(item, Mapping)]
+
+
+def _documentation_topic_tags(context: Mapping[str, object]) -> tuple[str, ...]:
+    tags = context.get("skill_tags_json")
+    if not isinstance(tags, Sequence) or isinstance(tags, (str, bytes)):
+        return ()
+    return tuple(str(tag).strip() for tag in tags if str(tag).strip())[:6]
+
+
+def _reference_source_type(citation: Mapping[str, object]) -> str:
+    trust_tier = str(citation.get("source_trust_tier") or "")
+    if trust_tier == "official":
+        return "official"
+    if trust_tier == "trusted_de_facto":
+        return "trusted"
+    return "trusted"
 
 
 def _outline_markdown(outline: Sequence[Mapping[str, str]]) -> str:
@@ -1383,14 +1649,14 @@ def _outline_markdown(outline: Sequence[Mapping[str, str]]) -> str:
 
 def _chunk_markdown(chunks: Sequence[Mapping[str, object]]) -> str:
     if not chunks:
-        return "当前没有更多材料片段。先用上方语法结构完成一次最小解释。"
+        return "当前没有更多材料片段。先结合上方官方来源完成一次最小解释。"
     lines = []
     for chunk in chunks:
         title = str(chunk.get("title") or "材料片段")
         content = str(chunk.get("content") or "").strip()
         if content:
             lines.append(f"- {title}：{content[:260]}")
-    return "\n".join(lines) if lines else "当前没有更多材料片段。先用上方语法结构完成一次最小解释。"
+    return "\n".join(lines) if lines else "当前没有更多材料片段。先结合上方官方来源完成一次最小解释。"
 
 
 def _documentation_code_example(language: str, title: str) -> dict[str, str]:
@@ -1403,30 +1669,35 @@ def _documentation_code_example(language: str, title: str) -> dict[str, str]:
                 f"const concept = \"{title}\";\n"
                 "console.log(`${concept}: ${input}`);"
             ),
-            "caption": "把知识点绑定到一个可观察输出，方便验证理解。",
+            "caption": "Aearn 示例：把知识点绑定到一个可观察输出，方便验证理解。",
+            "source_type": "aearn",
         }
     if normalized == "python":
         return {
             "language": "python",
             "code": f"concept = \"{title}\"\nprint(f\"理解 {{concept}} 的输入、处理和输出\")",
-            "caption": "用最小输出先说明行为，再进入练习。",
+            "caption": "Aearn 示例：用最小输出先说明行为，再进入练习。",
+            "source_type": "aearn",
         }
     if normalized == "sql":
         return {
             "language": "sql",
             "code": "SELECT name\nFROM learning_items\nWHERE status = 'ready'\nORDER BY id;",
-            "caption": "先看 SELECT 如何表达读取目标、过滤条件和排序规则。",
+            "caption": "Aearn 示例：先看 SELECT 如何表达读取目标、过滤条件和排序规则。",
+            "source_type": "aearn",
         }
     if normalized == "html_css":
         return {
             "language": "html",
             "code": "<section class=\"concept-card\">\n  <h2>核心概念</h2>\n  <p>用结构和样式表达含义。</p>\n</section>",
-            "caption": "先区分结构语义和视觉样式，再验证页面行为。",
+            "caption": "Aearn 示例：先区分结构语义和视觉样式，再验证页面行为。",
+            "source_type": "aearn",
         }
     return {
         "language": normalized or "text",
         "code": f"// {title}\n// 先写出输入、处理、输出，再补充具体语法。",
-        "caption": "通用阅读模板：先解释行为，再写具体代码。",
+        "caption": "Aearn 示例：通用阅读模板：先解释行为，再写具体代码。",
+        "source_type": "aearn",
     }
 
 
@@ -1448,7 +1719,7 @@ def _initial_agent_message(context: Mapping[str, object]) -> str:
     sources = _lesson_sources(context)
     lines = [
         f"先阅读右侧「{title}」文档，再决定是否进入概念检验。",
-        "文档里包含核心概念、语法结构、实战示例、常见错误和最佳实践。",
+        "文档里只保留「官方文档内容」和「实例」两个主区块，先看来源，再看示例。",
         "阅读过程中可以选中文字或代码块并点击「引用到对话」，我会围绕引用内容解释。",
         "准备好后，点击下方「开始概念检验」，我会生成几道题检查你的理解。",
         "",

@@ -7,6 +7,7 @@ import {
   fetchApiHealth,
   fetchDashboard,
   fetchLanguageCourses,
+  fetchLearningHistory,
   fetchLocalUsers,
   fetchPlanDetail,
   fetchResumeContext,
@@ -32,6 +33,7 @@ import type {
   LanguageCourse,
   LocalUserExportPayload,
   LocalUserListItem,
+  LearningHistoryResponse,
   RunExerciseResponse,
   SubmitExerciseResponse,
   UserProfile,
@@ -557,9 +559,16 @@ export const useAppStore = create<AppStore>((set, get) => ({
     set({ sessionState: { status: "loading", knowledgePointId }, lastRun: null, lastSubmit: null });
     try {
       const response = await startLearningSession({ userId, planId: planResponse.LearningPlan.id, knowledgePointId });
+      const restoredMessages = await restoreLearningConversationMessages({
+        userId,
+        knowledgePointId,
+        sessionId: response.session_id,
+      });
       set({
         sessionState: { status: "ready", data: response },
-        homeConversation: [],
+        lastRun: response.latest_run ?? null,
+        lastSubmit: response.latest_submit ?? null,
+        homeConversation: restoredMessages,
         createdPlan: markKnowledgePointLearning(get().createdPlan ?? planResponse, knowledgePointId),
         ...(activateHome ? { activeRoute: "home" as const } : {}),
       });
@@ -665,4 +674,48 @@ function downloadJson(filename: string, payload: unknown) {
   anchor.click();
   anchor.remove();
   window.URL.revokeObjectURL(url);
+}
+
+async function restoreLearningConversationMessages(input: {
+  userId: string;
+  knowledgePointId: string;
+  sessionId: string;
+}): Promise<ConversationMessage[]> {
+  try {
+    const history = await fetchLearningHistory({
+      userId: input.userId,
+      knowledgePointId: input.knowledgePointId,
+      activeSessionId: input.sessionId,
+    });
+    return activeLearningHistoryMessages(history, input.sessionId);
+  } catch {
+    return [];
+  }
+}
+
+function activeLearningHistoryMessages(
+  history: LearningHistoryResponse,
+  sessionId: string,
+): ConversationMessage[] {
+  const activeSession = history.sessions.find((session) => session.session_id === sessionId);
+  if (!activeSession) {
+    return [];
+  }
+  return activeSession.messages.map((message) => {
+    const toolCalls = (message.tool_calls ?? []).map((toolCall) => ({
+      id: toolCall.id,
+      name: toolCall.name,
+      args: toolCall.args,
+      argsBuffer: "",
+      status: toolCall.status,
+    }));
+    return {
+      id: `history-${message.id}`,
+      speaker: message.role === "user" ? "user" : "agent",
+      text: message.content,
+      label: message.role === "agent" ? "Agent" : undefined,
+      status: "done",
+      ...(toolCalls.length > 0 ? { toolCalls } : {}),
+    };
+  });
 }

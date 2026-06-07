@@ -29,7 +29,6 @@ from app.services.conversations.learning_conversation import (
     build_learning_agent_tool_runtime,
     build_learning_message_response,
     create_learning_message_response,
-    deterministic_learning_message_text,
     list_learning_history,
     prepare_learning_message,
     prepare_learning_message_for_generation,
@@ -839,22 +838,17 @@ async def _learning_message_stream(
         try:
             prepared = precompute_learning_message_transition(prepared)
             side_effects, tool_context = build_learning_agent_tool_runtime(prepared.context)
-            deterministic = deterministic_learning_message_text(prepared)
-            if deterministic is None:
-                generation = start_learning_message_generation(
-                    prepared.context,
-                    user_content=payload.content,
-                    side_effects=side_effects,
-                    tool_context=tool_context,
-                )
-                generation_source = generation.generation_source
-                generation_model = generation.generation_model
-                chunks = _iter_generation_chunks(request, generation.chunks)
-            else:
-                full_text, generation_source, generation_model = deterministic
-                chunks = _iter_generation_chunks(request, [full_text])
+            generation = start_learning_message_generation(
+                prepared.context,
+                user_content=payload.content,
+                side_effects=side_effects,
+                tool_context=tool_context,
+            )
+            generation_source = generation.generation_source
+            generation_model = generation.generation_model
+            chunks = _iter_generation_chunks(request, generation.chunks)
             async for delta in chunks:
-                candidate_text = full_text + delta if deterministic is None else delta
+                candidate_text = full_text + delta
                 assert_safe_teaching_output(candidate_text)
                 full_text = candidate_text
                 yield writer.event(

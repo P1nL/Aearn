@@ -466,11 +466,16 @@ def test_json_transport_logs_safe_network_reason(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
+    calls = 0
+
     def fail_urlopen(*args: object, **kwargs: object) -> object:
+        nonlocal calls
         del args, kwargs
+        calls += 1
         raise TimeoutError("timed out")
 
     monkeypatch.setattr(llm_client_module.urllib.request, "urlopen", fail_urlopen)
+    monkeypatch.setattr(llm_client_module.time, "sleep", lambda _seconds: None)
     caplog.set_level(logging.WARNING, logger="app.services.llm.llm_client")
 
     with pytest.raises(LLMCallError):
@@ -481,11 +486,132 @@ def test_json_transport_logs_safe_network_reason(
             1,
         )
 
+    assert calls == llm_client_module.LLM_PROVIDER_RETRY_ATTEMPTS
     log_text = caplog.text
     assert "TimeoutError" in log_text
     assert "timed out" in log_text
     assert "secret-key" not in log_text
     assert "private learner goal" not in log_text
+
+
+def test_json_transport_retries_timeout_then_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = 0
+
+    class FakeResponse:
+        def __enter__(self) -> "FakeResponse":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            del args
+
+        def read(self) -> bytes:
+            return b'{"ok":true}'
+
+    def flaky_urlopen(*args: object, **kwargs: object) -> FakeResponse:
+        nonlocal calls
+        del args, kwargs
+        calls += 1
+        if calls < 3:
+            raise TimeoutError("timed out")
+        return FakeResponse()
+
+    monkeypatch.setattr(llm_client_module.urllib.request, "urlopen", flaky_urlopen)
+    monkeypatch.setattr(llm_client_module.time, "sleep", lambda _seconds: None)
+
+    result = llm_client_module._post_json(
+        "https://api.deepseek.com/chat/completions",
+        {"Authorization": "Bearer secret-key", "Content-Type": "application/json"},
+        {"prompt": "private learner goal"},
+        1,
+    )
+
+    assert result == {"ok": True}
+    assert calls == 3
+
+
+def test_json_transport_retries_rate_limit_then_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = 0
+
+    class FakeResponse:
+        def __enter__(self) -> "FakeResponse":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            del args
+
+        def read(self) -> bytes:
+            return b'{"ok":true}'
+
+    def flaky_urlopen(*args: object, **kwargs: object) -> FakeResponse:
+        nonlocal calls
+        del args, kwargs
+        calls += 1
+        if calls < 2:
+            raise llm_client_module.urllib.error.HTTPError(
+                "https://api.deepseek.com/chat/completions",
+                429,
+                "Too Many Requests",
+                None,
+                None,
+            )
+        return FakeResponse()
+
+    monkeypatch.setattr(llm_client_module.urllib.request, "urlopen", flaky_urlopen)
+    monkeypatch.setattr(llm_client_module.time, "sleep", lambda _seconds: None)
+
+    result = llm_client_module._post_json(
+        "https://api.deepseek.com/chat/completions",
+        {"Authorization": "Bearer secret-key", "Content-Type": "application/json"},
+        {"prompt": "private learner goal"},
+        1,
+    )
+
+    assert result == {"ok": True}
+    assert calls == 2
+
+
+def test_text_stream_retries_before_first_delta(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = 0
+
+    class FakeStream:
+        def __enter__(self) -> "FakeStream":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            del args
+
+        def __iter__(self) -> object:
+            return iter(
+                [
+                    b'data: {"choices":[{"delta":{"content":"hello"}}]}\n',
+                    b"\n",
+                    b"data: [DONE]\n",
+                    b"\n",
+                ]
+            )
+
+    def flaky_urlopen(*args: object, **kwargs: object) -> FakeStream:
+        nonlocal calls
+        del args, kwargs
+        calls += 1
+        if calls < 2:
+            raise TimeoutError("timed out")
+        return FakeStream()
+
+    monkeypatch.setattr(llm_client_module.urllib.request, "urlopen", flaky_urlopen)
+    monkeypatch.setattr(llm_client_module.time, "sleep", lambda _seconds: None)
+
+    chunks = list(
+        llm_client_module._post_text_stream(
+            "https://api.deepseek.com/chat/completions",
+            {"Authorization": "Bearer secret-key", "Content-Type": "application/json"},
+            {"prompt": "private learner goal"},
+            1,
+        )
+    )
+
+    assert chunks == ["hello"]
+    assert calls == 2
 
 
 def test_onboarding_slot_extractor_uses_streaming_responses_json_client() -> None:
@@ -820,6 +946,12 @@ def test_deepseek_concept_generation_resolves_direct_json_client(monkeypatch: py
                     "confidence": "high",
                     "explanation": "你的判断抓住了状态变量共享关系。",
                     "next_prompt": "可以回复开始练习。",
+                    "answer_leakage_review": {
+                        "status": "clear",
+                        "revealed_target_answer": False,
+                        "next_prompt_requires_same_answer": False,
+                        "reason": "没有先泄露再要求复述同一答案。",
+                    },
                     "actions": [{"id": "start_practice", "label": "开始练习"}],
                     "repair_check": None,
                     "judgements": {
@@ -864,8 +996,10 @@ def test_deepseek_concept_generation_resolves_direct_json_client(monkeypatch: py
 
     assert result is not None
     assert result["result"] == "correct"
+    assert result["answer_leakage_review"]["status"] == "clear"
     assert captured["provider"] == "deepseek"
     assert captured["temperature"] == 0.1
+    assert "answer_leakage_review" in json.dumps(captured["messages"], ensure_ascii=False)
 
 
 def test_deepseek_stream_parser_handles_choices_delta_and_done() -> None:
@@ -1822,6 +1956,9 @@ def test_teaching_guardrails_block_leaky_or_complete_answer_text() -> None:
         "solution_reference 里已经有参考答案。",
         "provider raw 401 invalid_api_key",
         'response_policy: {"diagnosis_first": true, "forbidden_outputs": []}',
+        "_policy说不要连续盘问，这样符合policy要求。",
+        "根据 policy 要求，我不能继续。",
+        "内部策略要求我现在转入练习。",
         "完整答案如下：button.addEventListener(...)",
         "完整答案如下：\n```js\nbutton.addEventListener('click', () => {})\n```",
     ]:
@@ -1830,6 +1967,7 @@ def test_teaching_guardrails_block_leaky_or_complete_answer_text() -> None:
 
     assert_safe_teaching_output("例如 `:hover` 表示鼠标移上去时的状态。")
     assert_safe_teaching_output("```css\n.button:hover { color: red; }\n```")
+    assert_safe_teaching_output("浏览器的 same-origin policy 会限制跨源读取。")
 
 
 def test_llm_explain_error_uses_model_output_and_server_knowledge_point() -> None:

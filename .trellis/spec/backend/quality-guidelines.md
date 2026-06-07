@@ -698,7 +698,7 @@ The cache boundary is user-scoped and concept checks are created only after the 
 
 ### 1. Scope / Trigger
 
-- Trigger: implementing or changing model-backed learning conversation messages for the active learning workspace.
+- Trigger: implementing or changing model-backed learning conversation messages, practice unlock copy, or generated learning tool calls for the active learning workspace.
 - Scope: `POST /api/learning-sessions/{session_id}/messages`, `LearningMessageRequest`, `app/services/conversations/learning_conversation.py`, `app/agents/learning/learning_conversation_agent.py`, `app/agents/learning/learning_concept_agent.py`, `app/services/llm/llm_client.py`, `idempotency_records`, and API tests for JSON and SSE modes.
 - SDK-backed Agent modules for this flow belong under `app/agents/`, for example `app/agents/learning_conversation_agent.py` and `app/agents/sdk_runtime.py`.
 
@@ -709,6 +709,7 @@ The cache boundary is user-scoped and concept checks are created only after the 
 - Streaming selector: `Accept: text/event-stream`
 - Request tracing: optional `X-Request-Id`
 - Idempotency key: `learning-message:{session_id}:{client_message_id}`
+- Practice unlock tool args: `show_code_exercise.args.notice` defaults to an empty string; it must not copy the model-generated agent message.
 - Local protocol boundary: `TextCompletionClient.complete_text_stream(messages, temperature=None)`.
 - Default configured model path: `AgentsSDKLearningConversationClient.complete_text_stream(...)`, backed by `openai-agents`.
 - DeepSeek learning text path: `DirectLearningConversationClient.complete_text_stream(...)`, backed by `OpenAICompatibleClient.complete_text_stream(...)` and Chat Completions `stream=true`.
@@ -732,10 +733,15 @@ The cache boundary is user-scoped and concept checks are created only after the 
 - Teaching-agent SDK tools may read only the already-sanitized learning evidence prepared by `learning_conversation.py`; they must return bounded summaries and must not read or write repositories directly.
 - Teaching-agent SDK tools must not return hidden case IDs, hidden test source, `solution_reference`, full submitted code, provider payloads, raw prompts, API keys, or full note bodies.
 - Teaching-agent guardrails must exist at the SDK-agent boundary and at the public response boundary so fake clients and SDK clients both pass through the same leak checks before JSON or SSE output reaches the frontend.
+- Teaching-agent output guardrails must block internal policy self-references even when the provider returns them as normal final content, including `response_policy`, `_policy`, `policy要求`, and "according to policy" style wording.
 - SDK tracing must be disabled by default for this path unless a dedicated tracing configuration is explicitly designed.
 - SDK provider base URL handling must preserve existing `OPENAI_BASE_URL` behavior: both `https://provider.example` and `https://provider.example/v1` must resolve to the OpenAI client base URL ending in `/v1`.
 - `llm_provider_type="deepseek"` must use the direct OpenAI-compatible Chat Completions path for learning text and concept JSON. Do not instantiate OpenAI Agents SDK clients, tools, or handoffs for DeepSeek learning-session generation unless a task explicitly implements the official Chat Completions `tools` / `tool_calls` / `role:"tool"` loop.
-- `show_code_exercise` remains a backend deterministic tool event. The model may explain or coach, but it must not be required to generate the practice-card payload.
+- `show_code_exercise` remains a backend-owned tool event: the service/repository owns exercise selection, unlock reason, `learning_incomplete`, and durable stage writes.
+- Practice unlock visible copy is model-backed: when `practice_unlock_reason` is set, the prompt must require a current knowledge-point summary based on `concept_progress.concept_summary` and `lesson_outline`.
+- Practice unlock model copy must not repeat the exercise card payload. The prompt must forbid printing the exercise title, prompt, starter code, code blanks, code blocks, or blank answers; the generated exercise card owns those details.
+- `show_code_exercise.args.notice` must not duplicate `agent_message.content`; use an empty notice unless a future model contract adds a separate, non-duplicative notice field.
+- Do not add deterministic or keyword fallback copy for practice unlock. If the model is disabled, unavailable, returns empty output, or fails guardrails before success, return `MODEL_UNAVAILABLE` and do not emit/store `show_code_exercise`.
 - When model configuration is disabled, incomplete, failing, or produces an invalid/empty stream, return `MODEL_UNAVAILABLE`.
 
 ### 4. Validation & Error Matrix
@@ -745,6 +751,7 @@ The cache boundary is user-scoped and concept checks are created only after the 
 - Same idempotency key with a different request body -> `IDEMPOTENCY_CONFLICT`, `recoverable=false`.
 - Same idempotency key with the same request body -> replay the stored completed assistant message; SSE replay may send it as one `agent_message` plus `done`.
 - Model failure before useful output -> `MODEL_UNAVAILABLE`.
+- Model failure during `practice_offer -> practice_support` unlock -> `MODEL_UNAVAILABLE`; no agent success message, no `show_code_exercise`, no idempotency success record.
 - DeepSeek direct Chat Completions failure, invalid JSON, or empty direct stream before useful output -> `MODEL_UNAVAILABLE`.
 - SDK runner exception, invalid SDK event stream, or empty SDK output before useful output -> `MODEL_UNAVAILABLE`.
 - Guardrail-blocked learner request or model output before useful output -> `MODEL_UNAVAILABLE`.
@@ -755,10 +762,11 @@ The cache boundary is user-scoped and concept checks are created only after the 
 ### 5. Good/Base/Bad Cases
 
 - Good: configured OpenAI-compatible provider streams deltas, the route accumulates safe content, stores the final response once, and replays the same `client_message_id` without calling the model again.
+- Good: learner clicks `开始练习`, the configured model returns a concise current knowledge-point summary, and `show_code_exercise.args.notice` is empty so the card does not repeat the agent message.
 - Good: DeepSeek learning messages and concept checks use direct Chat Completions clients while OpenAI can continue using the Agents SDK path.
 - Good: SDK tools summarize current stage, knowledge point, exercise metadata, and visible latest-attempt facts without exposing raw code submissions or hidden identifiers.
 - Base: local development has no model key; the endpoint returns `MODEL_UNAVAILABLE` and all tests pass without live provider access via fake clients.
-- Bad: adding a durable chat-history table for this MVP, exposing hidden test data in prompt/response, using WebSocket/global chatbot behavior for active learning composer messages, exposing SDK event names directly through the public API, sending DeepSeek through Agents SDK handoff/tool orchestration, or letting an SDK tool mutate `Attempt`, `ReviewState`, `ReviewLog`, `Note`, `LearningSession`, or `idempotency_records`.
+- Bad: adding a durable chat-history table for this MVP, exposing hidden test data in prompt/response, using WebSocket/global chatbot behavior for active learning composer messages, exposing SDK event names directly through the public API, sending DeepSeek through Agents SDK handoff/tool orchestration, letting an SDK tool mutate `Attempt`, `ReviewState`, `ReviewLog`, `Note`, `LearningSession`, or `idempotency_records`, showing hard-coded practice unlock copy when the model is unavailable, printing the exercise prompt/starter code in the agent message before the card, or copying the full agent message into `show_code_exercise.args.notice`.
 
 ### 6. Tests Required
 
@@ -766,7 +774,10 @@ The cache boundary is user-scoped and concept checks are created only after the 
 - API-test SSE success with ordered `agent_message` chunks followed by terminal `done`.
 - API-test missing session and validation errors in both JSON and SSE modes.
 - API-test LLM-disabled or LLM-failure `MODEL_UNAVAILABLE` and assert provider raw details do not leak.
+- API-test practice unlock in JSON and SSE modes with LLM disabled; assert `MODEL_UNAVAILABLE`, no terminal success, and no `show_code_exercise`.
+- API-test successful practice unlock with fake model output; assert `generation_source="llm"`, the prompt forbids repeating exercise-card details, the model text includes the current knowledge-point summary, and `show_code_exercise.args.notice == ""`.
 - API-test guardrail-blocked JSON model output and assert `MODEL_UNAVAILABLE` without leaked hidden IDs, key-like tokens, or complete-answer wording.
+- API-test internal policy leakage in normal model content, such as `_policy` or `policy要求`, and assert `MODEL_UNAVAILABLE` with no leaked content persisted.
 - API-test guardrail-blocked SSE output after a partial safe chunk and assert a recoverable `error` event with no stored successful idempotency response.
 - API-test safe summary generation, persisted summary reuse below refresh threshold, direct-answer request redirection, and prompt context redaction for hidden IDs, internal reference fields, provider errors, API-key-like tokens, and complete-answer wording.
 - Unit-test OpenAI-compatible streaming payload compatibility so unsupported `temperature` is omitted by default.
@@ -815,7 +826,7 @@ else:
     client = AgentsSDKLearningConversationClient(settings, side_effects=side_effects)
 ```
 
-DeepSeek uses the documented Chat Completions surface while the service keeps deterministic stage transitions and `show_code_exercise` tool events under Aearn ownership.
+DeepSeek uses the documented Chat Completions surface while the service keeps stage transitions and `show_code_exercise` tool payloads under Aearn ownership.
 
 #### Wrong
 

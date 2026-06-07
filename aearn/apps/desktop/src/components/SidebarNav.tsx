@@ -35,7 +35,10 @@ export function SidebarNav({
   const learnItems = buildLearnNavItems(createdPlan, activeKnowledgePointId);
   const reviewItems =
     createdPlan?.knowledge_points
-      .filter((knowledgePoint) => knowledgePoint.status === "reviewing" || knowledgePoint.status === "mastered")
+      .filter((knowledgePoint) => {
+        const reviewState = knowledgePoint.review_state;
+        return reviewState?.is_due === true || knowledgePoint.status === "reviewing" || knowledgePoint.status === "mastered";
+      })
       .map((knowledgePoint) => {
         const reviewState = knowledgePoint.review_state;
         const isDue = reviewState?.is_due === true;

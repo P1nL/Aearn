@@ -65,6 +65,12 @@ _PROMPT_LEAK_OUTPUT_TOKENS = (
     "learner_profile",
     "official_docs_grounding",
 )
+_PROMPT_LEAK_OUTPUT_PATTERNS = (
+    re.compile(r"(?<![A-Za-z0-9])_policy\b", re.IGNORECASE),
+    re.compile(r"\bpolicy\s*(?:要求|规则|规定)", re.IGNORECASE),
+    re.compile(r"(?:符合|根据|按照|满足|遵守)\s*policy\s*(?:要求|规则|规定)?", re.IGNORECASE),
+    re.compile(r"(?:内部|系统|安全)\s*策略\s*(?:要求|规则|规定)", re.IGNORECASE),
+)
 _DIRECT_ANSWER_OUTPUT_PATTERNS = (
     re.compile(r"完整答案如下", re.IGNORECASE),
     re.compile(r"完整代码如下", re.IGNORECASE),
@@ -100,6 +106,9 @@ def check_teaching_output(text: str) -> TeachingGuardrailCheck:
     normalized = text.lower()
     for token in _PROMPT_LEAK_OUTPUT_TOKENS:
         if token in normalized:
+            return TeachingGuardrailCheck(True, "prompt_leak", "prompt or internal-context marker appeared in text")
+    for pattern in _PROMPT_LEAK_OUTPUT_PATTERNS:
+        if pattern.search(text):
             return TeachingGuardrailCheck(True, "prompt_leak", "prompt or internal-context marker appeared in text")
     for pattern in _DIRECT_ANSWER_OUTPUT_PATTERNS:
         if pattern.search(text):

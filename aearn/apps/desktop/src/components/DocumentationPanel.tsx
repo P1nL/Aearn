@@ -17,7 +17,7 @@ type DocumentationPanelProps = {
   onReference: (text: string) => void;
 };
 
-const DEFAULT_EXPANDED_SECTIONS = new Set(["core_concept", "syntax", "examples"]);
+const DEFAULT_EXPANDED_SECTIONS = new Set(["official_documentation", "examples"]);
 
 export function DocumentationPanel({
   state,
@@ -126,15 +126,21 @@ export function DocumentationPanel({
             <footer className="doc-references">
               <h3>参考来源</h3>
               {state.data.references.map((reference) => (
-                <p key={`${reference.title}-${reference.url}`}>
-                  {reference.url ? (
-                    <a href={reference.url} target="_blank" rel="noreferrer">
-                      {reference.title}
-                    </a>
-                  ) : (
-                    reference.title
-                  )}
-                </p>
+                <div className="doc-reference-item" key={`${reference.title}-${reference.url}`}>
+                  <p>
+                    {reference.url ? (
+                      <a href={reference.url} target="_blank" rel="noreferrer">
+                        {reference.title}
+                      </a>
+                    ) : (
+                      reference.title
+                    )}
+                  </p>
+                  <span>
+                    {sourceTypeLabel(reference.source_type)}
+                    {reference.retrieved_at ? ` · ${formatReferenceTime(reference.retrieved_at)}` : ""}
+                  </span>
+                </div>
               ))}
             </footer>
           )}
@@ -142,4 +148,17 @@ export function DocumentationPanel({
       )}
     </aside>
   );
+}
+
+function sourceTypeLabel(sourceType: string | null | undefined): string {
+  if (sourceType === "official") return "官方来源";
+  if (sourceType === "aearn") return "Aearn 来源";
+  if (sourceType === "trusted") return "可信来源";
+  return "来源";
+}
+
+function formatReferenceTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString("zh-CN", { dateStyle: "short", timeStyle: "short" });
 }

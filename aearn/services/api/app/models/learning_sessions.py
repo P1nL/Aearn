@@ -30,6 +30,7 @@ class DocumentationCodeBlock(BaseModel):
     language: str = Field(min_length=1)
     code: str = Field(min_length=1)
     caption: str
+    source_type: str | None = None
 
 
 class DocumentationSection(BaseModel):
@@ -43,6 +44,8 @@ class DocumentationSection(BaseModel):
 class DocumentationReference(BaseModel):
     title: str = Field(min_length=1)
     url: str
+    source_type: str | None = None
+    retrieved_at: str | None = None
 
 
 class KnowledgePointDocumentationResponse(BaseModel):
