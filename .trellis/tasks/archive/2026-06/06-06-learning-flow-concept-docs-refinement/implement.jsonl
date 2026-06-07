@@ -1,0 +1,6 @@
+{"file":"docs/product/frontend-interaction-spec.md","reason":"Source of truth for learning-page UI flow, documentation panel behavior, and generated tool rendering."}
+{"file":"docs/architecture/api-contract.md","reason":"Source of truth for documentation endpoint payloads and learning-session concept-check contracts."}
+{"file":"docs/architecture/langgraph-state-machine.md","reason":"Source of truth for learning stages and concept-check transition behavior when follow-up limits change."}
+{"file":"docs/qa/acceptance-test-plan.md","reason":"Acceptance checks for concept judgement behavior, compact feedback UI, and official documentation panel."}
+{"file":".trellis/spec/frontend/index.md","reason":"Frontend guideline index for selecting implementation rules before editing React/Tauri files."}
+{"file":".trellis/spec/backend/index.md","reason":"Backend guideline index for selecting implementation rules before editing API and repository code."}
