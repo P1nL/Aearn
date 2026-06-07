@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 from typing import cast
 
+from app.agents.learning.learning_public_output import LearningPublicOutput
 from app.agents.runtime.guardrails import build_teaching_guardrails
 from app.agents.graphs.router import build_routing_context, get_agent_description
 from app.agents.runtime.sdk_runtime import (
@@ -56,6 +57,24 @@ class AgentsSDKLearningConversationClient:
         *,
         temperature: float | None = None,
     ) -> Iterable[str]:
+        return self._complete_stream(messages, temperature=temperature, output_type=None)
+
+    def complete_structured_text_stream(
+        self,
+        messages: Sequence[Mapping[str, str]],
+        *,
+        output_type: type[LearningPublicOutput],
+        temperature: float | None = None,
+    ) -> Iterable[str]:
+        return self._complete_stream(messages, temperature=temperature, output_type=output_type)
+
+    def _complete_stream(
+        self,
+        messages: Sequence[Mapping[str, str]],
+        *,
+        temperature: float | None,
+        output_type: type[LearningPublicOutput] | None,
+    ) -> Iterable[str]:
         instructions, input_text = split_chat_messages(messages)
         input_guardrails, output_guardrails = build_teaching_guardrails()
         routing_context = build_routing_context(self._agent_name, self._handoff_targets)
@@ -79,11 +98,13 @@ class AgentsSDKLearningConversationClient:
                     temperature=temperature,
                     input_guardrails=input_guardrails,
                     output_guardrails=output_guardrails,
+                    output_type=output_type,
                 )
                 for target in self._handoff_targets
             ],
             input_guardrails=input_guardrails,
             output_guardrails=output_guardrails,
+            output_type=output_type,
         )
         runner = self._runner
         if runner is None:
@@ -99,7 +120,6 @@ class AgentsSDKLearningConversationClient:
                 run_config=self._run_config,
             )
         )
-
 
 class DirectLearningConversationClient:
     def __init__(
@@ -123,6 +143,18 @@ class DirectLearningConversationClient:
     ) -> Iterable[str]:
         return self._text_client.complete_text_stream(messages, temperature=temperature)
 
+    def complete_structured_text_stream(
+        self,
+        messages: Sequence[Mapping[str, str]],
+        *,
+        output_type: type[LearningPublicOutput],
+        temperature: float | None = None,
+    ) -> Iterable[str]:
+        return self._text_client.complete_structured_text_stream(
+            messages,
+            output_type=output_type,
+            temperature=temperature,
+        )
 
 def _safe_handoff_targets(agent_name: str, targets: Sequence[str]) -> tuple[str, ...]:
     safe_targets: list[str] = []

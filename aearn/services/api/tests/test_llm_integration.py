@@ -57,6 +57,7 @@ from app.agents.learning.learning_conversation_agent import (
     DirectLearningConversationClient,
     TEACHING_AGENT_NAME,
 )
+from app.agents.learning.learning_public_output import LearningPublicOutput
 from app.agents.runtime.sdk_runtime import (
     build_run_config,
     extract_text_delta,
@@ -859,6 +860,63 @@ def test_deepseek_learning_conversation_client_uses_direct_streaming_chat_comple
     }
 
 
+def test_deepseek_learning_conversation_structured_stream_requests_json_object() -> None:
+    captured: dict[str, object] = {}
+
+    def stream_transport(
+        url: str,
+        headers: Mapping[str, str],
+        payload: Mapping[str, object],
+        timeout: float,
+    ) -> Sequence[str]:
+        captured["url"] = url
+        captured["headers"] = dict(headers)
+        captured["payload"] = dict(payload)
+        captured["timeout"] = timeout
+        return [
+            '{"schema_version":"1","public_message":"先看状态变量。",'
+            '"internal_review":{"public_message_safe":true,'
+            '"no_internal_policy_reference":true,"no_answer_leakage":true,'
+            '"no_forbidden_content":true}}'
+        ]
+
+    client = DirectLearningConversationClient(
+        Settings(
+            llm_type="deepseek",
+            deepseek_api_key="test-key",
+            deepseek_base_url="https://api.deepseek.com",
+            deepseek_model="deepseek-chat",
+            llm_timeout_seconds=7,
+        ),
+        text_client=OpenAICompatibleClient(
+            Settings(
+                llm_type="deepseek",
+                deepseek_api_key="test-key",
+                deepseek_base_url="https://api.deepseek.com",
+                deepseek_model="deepseek-chat",
+                llm_timeout_seconds=7,
+            ),
+            stream_transport=stream_transport,
+        ),
+    )
+
+    chunks = list(
+        client.complete_structured_text_stream(
+            [
+                {"role": "system", "content": "导师提示词"},
+                {"role": "user", "content": "输出 JSON"},
+            ],
+            output_type=LearningPublicOutput,
+        )
+    )
+
+    assert "".join(chunks).startswith('{"schema_version":"1"')
+    assert captured["url"] == "https://api.deepseek.com/chat/completions"
+    assert captured["payload"]["response_format"] == {"type": "json_object"}
+    assert captured["payload"]["stream"] is True
+    assert "json" in json.dumps(captured["payload"], ensure_ascii=False).lower()
+
+
 def test_deepseek_concept_client_uses_direct_json_chat_completion() -> None:
     captured: dict[str, object] = {}
 
@@ -1089,6 +1147,53 @@ def test_agents_sdk_learning_conversation_client_streams_text_deltas() -> None:
     assert captured["max_turns"] == 4
     assert captured["run_config"].tracing_disabled is True
     assert client.model == "third-party-model"
+
+
+def test_agents_sdk_learning_conversation_client_passes_structured_output_type() -> None:
+    captured: dict[str, object] = {}
+
+    class FakeStreamedRun:
+        final_output = {
+            "schema_version": "1",
+            "public_message": "先看状态变量。",
+            "internal_review": {
+                "public_message_safe": True,
+                "no_internal_policy_reference": True,
+                "no_answer_leakage": True,
+                "no_forbidden_content": True,
+            },
+        }
+
+        async def stream_events(self):  # type: ignore[no-untyped-def]
+            if False:
+                yield None
+
+    class FakeRunner:
+        def run_streamed(self, starting_agent, input, **kwargs):  # type: ignore[no-untyped-def]
+            del input, kwargs
+            captured["output_type"] = getattr(starting_agent, "output_type", None)
+            captured["handoff_output_types"] = [
+                getattr(handoff, "output_type", None)
+                for handoff in getattr(starting_agent, "handoffs", [])
+            ]
+            return FakeStreamedRun()
+
+    client = AgentsSDKLearningConversationClient(
+        Settings(
+            llm_type="openai",
+            openai_api_key="test-key",
+            openai_base_url="https://provider.example/v1",
+            openai_model="third-party-model",
+        ),
+        runner=FakeRunner(),
+        handoff_targets=["diagnosis"],
+    )
+
+    chunks = list(client.complete_structured_text_stream(_teaching_messages(), output_type=LearningPublicOutput))
+
+    assert '"public_message":"先看状态变量。"' in "".join(chunks)
+    assert captured["output_type"] is LearningPublicOutput
+    assert captured["handoff_output_types"] == [LearningPublicOutput]
 
 
 def test_agents_sdk_learning_conversation_client_builds_routed_handoffs() -> None:

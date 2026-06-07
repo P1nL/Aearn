@@ -1,26 +1,31 @@
 import { startTransition, useEffect, useRef, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
 
-import { buildReviewMessageSSEUrl, fetchTodayReviews, startReviewSession, submitReviewExerciseResult, submitReviewWarmupResult } from "../api";
+import { buildReviewMessageSSEUrl, fetchReviewMessages, fetchTodayReviews, startReviewSession, submitReviewExerciseResult, submitReviewWarmupResult } from "../api";
 import type { ConversationMessage, NoteContext } from "../appTypes";
 import { AssistantUIThread } from "../components/AssistantUIThread";
+import { CodeEditor } from "../features/learning/CodeEditor";
 import { useSSE } from "../hooks/useSSE";
-import { runtimeLabel } from "../lib/desktopLabels";
+import { completionResultLabel, fsrsRatingLabel, runtimeLabel } from "../lib/desktopLabels";
 import { formatErrorMessage } from "../lib/errorMessages";
 import { createMessage } from "../lib/learningHelpers";
 import { useAppStore } from "../stores/useAppStore";
 import type {
   ReviewDueItem,
+  ReviewHistoryMessage,
   ReviewAiPatchAnswer,
   ReviewExerciseResultResponse,
   ReviewSessionResponse,
+  ReviewWarmupResultResponse,
   UserProfile,
 } from "../types";
 
 type ReviewPageProps = {
   isActive: boolean;
   user: UserProfile | null;
+  selectedKnowledgePointId: string | null;
   messages: ConversationMessage[];
+  onActiveKnowledgePointChange: (knowledgePointId: string | null) => void;
   onActiveNoteContextChange: (context: NoteContext | null) => void;
 };
 
@@ -38,7 +43,14 @@ type ReviewStreamRequest = {
 
 const REVIEW_QUICK_REPLIES = ["我记得", "不太确定", "完全忘了"];
 
-export function ReviewPage({ isActive, user, messages, onActiveNoteContextChange }: ReviewPageProps) {
+export function ReviewPage({
+  isActive,
+  user,
+  selectedKnowledgePointId,
+  messages,
+  onActiveKnowledgePointChange,
+  onActiveNoteContextChange,
+}: ReviewPageProps) {
   const store = useAppStore();
   const [dueItems, setDueItems] = useState<ReviewDueItem[]>([]);
   const [loadState, setLoadState] = useState<"idle" | "loading" | "ready" | "error">("idle");
@@ -50,6 +62,7 @@ export function ReviewPage({ isActive, user, messages, onActiveNoteContextChange
   const [warmupAnswer, setWarmupAnswer] = useState("");
   const [warmupState, setWarmupState] = useState<"idle" | "submitting" | "error">("idle");
   const [startingKnowledgePointId, setStartingKnowledgePointId] = useState<string | null>(null);
+  const [startRequestedKnowledgePointId, setStartRequestedKnowledgePointId] = useState<string | null>(null);
   const [reviewPatchAnswer, setReviewPatchAnswer] = useState<ReviewAiPatchAnswer>({
     verdict: "fail",
     evidence: "",
@@ -109,7 +122,13 @@ export function ReviewPage({ isActive, user, messages, onActiveNoteContextChange
 
   function handleComposerSubmit(input: string) {
     const content = input.trim();
-    if (content.length === 0 || isStreaming || !activeReview || !user) return;
+    if (content.length === 0 || isStreaming || warmupState === "submitting" || !activeReview || !user) return;
+
+    if (warmupPending) {
+      store.addReviewMessage(createMessage("user", content));
+      void handleWarmupSubmit(isWarmupSkipIntent(content) ? "skip" : "answer", content);
+      return;
+    }
 
     const assistantMessage: ConversationMessage = {
       ...createMessage("agent", "", "Agent"),
@@ -160,6 +179,10 @@ export function ReviewPage({ isActive, user, messages, onActiveNoteContextChange
     if (!user) {
       return;
     }
+    if (activeReview?.knowledge_point.id !== item.KnowledgePoint.id) {
+      setActiveReview(null);
+      store.clearReviewConversation();
+    }
     setStartingKnowledgePointId(item.KnowledgePoint.id);
     setSubmitState("idle");
     setWarmupState("idle");
@@ -170,6 +193,11 @@ export function ReviewPage({ isActive, user, messages, onActiveNoteContextChange
         userId: user.id,
         knowledgePointId: item.KnowledgePoint.id,
       });
+      const restoredMessages = await restoreReviewConversationMessages({
+        userId: user.id,
+        sessionId: response.session_id,
+        fallbackReview: response,
+      });
       startTransition(() => {
         setActiveReview(response);
         setEditorCode(response.review_exercise.starter_code);
@@ -178,10 +206,8 @@ export function ReviewPage({ isActive, user, messages, onActiveNoteContextChange
         setWarmupAnswer(response.warmup.last_answer ?? "");
         setReviewPatchAnswer(defaultReviewPatchAnswer());
       });
-      // Add AI greeting as first message in thread
-      store.addReviewMessage(
-        createMessage("agent", response.initial_agent_message, "Agent"),
-      );
+      onActiveKnowledgePointChange(response.knowledge_point.id);
+      store.setReviewConversation(restoredMessages);
     } catch (error) {
       setErrorMessage(formatErrorMessage(error, "无法开始复习"));
     } finally {
@@ -189,10 +215,11 @@ export function ReviewPage({ isActive, user, messages, onActiveNoteContextChange
     }
   }
 
-  async function handleWarmupSubmit(action: "answer" | "skip") {
+  async function handleWarmupSubmit(action: "answer" | "skip", answerOverride?: string) {
     if (!activeReview || !user || warmupState === "submitting") {
       return;
     }
+    const submittedAnswer = answerOverride ?? warmupAnswer;
     setWarmupState("submitting");
     setErrorMessage(null);
     try {
@@ -200,7 +227,7 @@ export function ReviewPage({ isActive, user, messages, onActiveNoteContextChange
         userId: user.id,
         sessionId: activeReview.session_id,
         action,
-        answer: action === "skip" ? undefined : warmupAnswer,
+        answer: action === "skip" ? undefined : submittedAnswer,
       });
       startTransition(() => {
         setActiveReview((current) =>
@@ -213,9 +240,10 @@ export function ReviewPage({ isActive, user, messages, onActiveNoteContextChange
               }
             : current,
         );
-        setWarmupAnswer(response.warmup.last_answer ?? warmupAnswer);
+        setWarmupAnswer(response.warmup.last_answer ?? submittedAnswer);
         setWarmupState("idle");
       });
+      store.addReviewMessage(createMessage("agent", buildWarmupResultMessage(response), "Agent"));
     } catch (error) {
       setWarmupState("error");
       setErrorMessage(formatErrorMessage(error, "热身提交失败"));
@@ -278,6 +306,50 @@ export function ReviewPage({ isActive, user, messages, onActiveNoteContextChange
   }, [isActive, user?.id]);
 
   useEffect(() => {
+    if (!isActive) {
+      return;
+    }
+    setErrorMessage(null);
+    setReviewResult(null);
+    setStartRequestedKnowledgePointId(null);
+    if (!selectedKnowledgePointId) {
+      setActiveReview(null);
+      store.clearReviewConversation();
+      onActiveNoteContextChange(null);
+    }
+  }, [isActive, selectedKnowledgePointId, user?.id]);
+
+  useEffect(() => {
+    if (!isActive || !user || !selectedKnowledgePointId || loadState !== "ready" || startingKnowledgePointId) {
+      return;
+    }
+    if (activeReview?.knowledge_point.id === selectedKnowledgePointId) {
+      return;
+    }
+    if (startRequestedKnowledgePointId === selectedKnowledgePointId) {
+      return;
+    }
+
+    const targetItem = dueItems.find((item) => item.KnowledgePoint.id === selectedKnowledgePointId);
+    if (!targetItem) {
+      setErrorMessage("这个知识点当前没有到期复习项；请从左侧选择标记为已到期的复习知识点。");
+      return;
+    }
+
+    setStartRequestedKnowledgePointId(selectedKnowledgePointId);
+    void handleStartReview(targetItem);
+  }, [
+    activeReview?.knowledge_point.id,
+    dueItems,
+    isActive,
+    loadState,
+    selectedKnowledgePointId,
+    startRequestedKnowledgePointId,
+    startingKnowledgePointId,
+    user?.id,
+  ]);
+
+  useEffect(() => {
     if (!isActive || !activeReview) {
       onActiveNoteContextChange(null);
       return;
@@ -293,199 +365,110 @@ export function ReviewPage({ isActive, user, messages, onActiveNoteContextChange
 
   const activeExercise = activeReview?.review_exercise ?? null;
   const warmupPending = activeReview?.review_stage === "warmup" || activeReview?.review_stage === "warmup_repair";
-  const warmupAnswerBlank = warmupAnswer.trim().length === 0;
   const patchAnswerComplete =
     activeExercise?.exercise_type !== "review_ai_patch" ||
     (reviewPatchAnswer.evidence.trim().length > 0 && reviewPatchAnswer.knowledge_point_risk.trim().length > 0);
   const submitDisabled = !activeReview || warmupPending || !patchAnswerComplete || submitState === "submitting" || submitState === "done";
   const composerSessionActive = Boolean(activeReview);
+  const composerBusy = isStreaming || warmupState === "submitting";
+  const selectedDueItem = selectedKnowledgePointId ? dueItems.find((item) => item.KnowledgePoint.id === selectedKnowledgePointId) ?? null : null;
+  const reviewThreadMessages = activeReview ? messages : [];
+  const showReviewLoading =
+    !activeReview && !errorMessage && (loadState === "loading" || startingKnowledgePointId !== null || selectedKnowledgePointId !== null);
+  const showReviewStatus =
+    !activeReview &&
+    !showReviewLoading &&
+    (!user || loadState === "error" || (loadState === "ready" && dueItems.length === 0) || Boolean(errorMessage));
+  const reviewExerciseNode = activeReview ? (
+    <>
+      {errorMessage && <div className="tool-card">错误：{errorMessage}</div>}
+
+      {activeExercise && !warmupPending && (
+        <ReviewExerciseWorkbench
+          review={activeReview}
+          result={reviewResult}
+          editorCode={editorCode}
+          filledBlanks={filledBlanks}
+          explanation={explanation}
+          patchAnswer={reviewPatchAnswer}
+          submitDisabled={submitDisabled}
+          submitState={submitState}
+          onCodeChange={setEditorCode}
+          onBlankChange={(blankKey, value) =>
+            setFilledBlanks((current) => ({
+              ...current,
+              [blankKey]: value,
+            }))
+          }
+          onExplanationChange={setExplanation}
+          onPatchAnswerChange={setReviewPatchAnswer}
+          onSubmit={() => void handleSubmitReview()}
+        />
+      )}
+    </>
+  ) : null;
 
   return (
     <div className="review-screen">
       <div className="review-thread-wrap">
         <section className="conversation" aria-label="复习对话" ref={conversationScrollRef}>
           <div className="thread">
-            {!activeReview && (
-              <div className="lesson-title">
-                <p>独立复习会话，针对薄弱知识点进行变体练习。</p>
+            {activeReview && (
+              <>
+                <div className="lesson-title">
+                  <p>{`当前复习知识点：${activeReview.knowledge_point.title}。热身、变体练习和反馈会留在同一个线程里。`}</p>
+                </div>
+
+                <AssistantUIThread
+                  messages={reviewThreadMessages}
+                  isStreaming={composerBusy}
+                  sessionActive={composerSessionActive}
+                  onSend={handleComposerSubmit}
+                  hideNoteButton
+                  quickReplies={composerSessionActive && warmupPending ? REVIEW_QUICK_REPLIES : undefined}
+                  placeholder={
+                    composerBusy
+                      ? warmupState === "submitting" ? "正在记录热身……" : "AI 正在回复……"
+                      : warmupPending
+                        ? "直接回答热身问题，或输入“跳过”。"
+                        : "用自己的话复述，或请求提示……"
+                  }
+                  ariaLabel="复习输入框"
+                  beforeComposer={reviewExerciseNode}
+                />
+              </>
+            )}
+
+            {showReviewLoading && (
+              <div className="review-loading-state" role="status" aria-label="正在加载复习会话">
+                <div className="wb-spinner" aria-hidden="true" />
               </div>
             )}
 
-            <AssistantUIThread
-              messages={messages}
-              isStreaming={isStreaming}
-              sessionActive={composerSessionActive}
-              onSend={handleComposerSubmit}
-              hideNoteButton
-              quickReplies={composerSessionActive && messages.length <= 1 ? REVIEW_QUICK_REPLIES : undefined}
-              placeholder={
-                isStreaming
-                  ? "AI 正在回复……"
-                  : !composerSessionActive
-                    ? "先开始一个复习会话……"
-                    : "用自己的话复述，或请求提示……"
-              }
-              ariaLabel="复习输入框"
-              guidanceText={!composerSessionActive ? "点击上方「开始复习」后，可以在这里和 AI 对话。" : undefined}
-            />
-
-            <section className="exercise-workbench" aria-label="今日复习闭环">
-              <div className="exercise-head">
-                <div>
-                  <span className="eyebrow">Review Queue</span>
-                  <h2>今日待复习</h2>
-                </div>
-                <button className="btn ghost" type="button" disabled={!user || loadState === "loading"} onClick={() => void loadDueReviews()}>
-                  {loadState === "loading" ? "刷新中..." : "刷新"}
-                </button>
-              </div>
-
-              {!user && <div className="tool-card">先完成建档和学习计划后，复习页才会加载待复习内容。</div>}
-              {errorMessage && <div className="tool-card">错误：{errorMessage}</div>}
-              {user && loadState === "ready" && dueItems.length === 0 && <div className="tool-card">当前没有已到期复习项。</div>}
-
-              {dueItems.length > 0 && (
-                <div className="review-recap-grid" aria-label="待复习知识点">
-                  {dueItems.map((item) => (
-                    <article className="review-card active" key={item.KnowledgePoint.id}>
-                      <h3>{item.KnowledgePoint.title}</h3>
-                      <p>
-                        下次复习：{formatDateTime(item.ReviewState.due_at)} · 遗忘风险：{riskLabel(item.forget_risk)}
-                      </p>
-                      <p>
-                        已复习 {item.ReviewState.review_count} 次
-                      </p>
-                      <button
-                        className="btn primary"
-                        type="button"
-                        disabled={startingKnowledgePointId === item.KnowledgePoint.id}
-                        onClick={() => void handleStartReview(item)}
-                      >
-                        {startingKnowledgePointId === item.KnowledgePoint.id ? "生成复习材料..." : "开始复习"}
+            {showReviewStatus && (
+              <article className="system-card" aria-label="复习状态">
+                <h3>复习状态</h3>
+                <p>
+                  {!user
+                    ? "先完成建档和学习计划后，复习页才会加载待复习内容。"
+                    : loadState === "ready" && dueItems.length === 0
+                        ? "当前没有已到期复习项。"
+                        : errorMessage ?? "等待你从左侧选择一个已到期复习知识点。"}
+                </p>
+                {(errorMessage || (user && loadState === "ready" && dueItems.length === 0)) && (
+                  <div className="system-card-actions">
+                    <button className="btn ghost-btn" type="button" disabled={!user || loadState === "loading"} onClick={() => void loadDueReviews()}>
+                      {loadState === "loading" ? "刷新中..." : "重新加载复习状态"}
+                    </button>
+                    {selectedDueItem && (
+                      <button className="btn primary ghost-btn" type="button" disabled={startingKnowledgePointId === selectedDueItem.KnowledgePoint.id} onClick={() => void handleStartReview(selectedDueItem)}>
+                        {startingKnowledgePointId === selectedDueItem.KnowledgePoint.id ? "生成复习材料..." : "重试开始复习"}
                       </button>
-                    </article>
-                  ))}
-                </div>
-              )}
-
-              {activeReview && (
-                <article className="review-card active review-warmup-card" aria-label="复习热身">
-                  <div className="exercise-head">
-                    <div>
-                      <span className="eyebrow">Warmup</span>
-                      <h2>先短回忆，再做变体</h2>
-                    </div>
-                    <span className="runtime-pill">{reviewStageLabel(activeReview.review_stage)}</span>
+                    )}
                   </div>
-                  <p>{activeReview.warmup.question}</p>
-                  {activeReview.warmup.feedback && <div className="tool-card">{activeReview.warmup.feedback}</div>}
-                  {warmupPending ? (
-                    <div className="warmup-actions">
-                      <textarea
-                        value={warmupAnswer}
-                        placeholder="用一句话说出这个知识点最容易出错的地方。"
-                        onChange={(event) => setWarmupAnswer(event.target.value)}
-                      />
-                      <div className="button-row">
-                        <button className="btn primary" type="button" disabled={warmupState === "submitting" || warmupAnswerBlank} onClick={() => void handleWarmupSubmit("answer")}>
-                          {warmupState === "submitting" ? "记录中..." : "提交热身"}
-                        </button>
-                        <button className="btn ghost" type="button" disabled={warmupState === "submitting"} onClick={() => void handleWarmupSubmit("skip")}>
-                          跳过热身
-                        </button>
-                      </div>
-                    </div>
-                  ) : (
-                    <p>热身结果：{warmupResultLabel(activeReview.warmup.result)}。掌握程度和复习安排会在你提交下面的变体练习后更新。</p>
-                  )}
-                </article>
-              )}
-
-              {activeReview && activeExercise && (
-                <article className="review-card active" aria-label="复习变体练习">
-                  <div className="exercise-head">
-                    <div>
-                      <span className="eyebrow">变体练习</span>
-                      <h2>{activeExercise.title}</h2>
-                    </div>
-                    <span className="runtime-pill">{runtimeLabel(activeExercise.runtime_profile.runtime_tier)}</span>
-                  </div>
-                  <p>{activeReview.variant_reason}</p>
-
-                  {activeExercise.exercise_type === "review_ai_patch" ? (
-                    <ReviewAiPatchForm
-                      exercise={activeExercise}
-                      answer={reviewPatchAnswer}
-                      setAnswer={setReviewPatchAnswer}
-                      submitDisabled={submitDisabled}
-                      submitState={submitState}
-                      onSubmit={() => void handleSubmitReview()}
-                    />
-                  ) : (
-                    <div className="exercise-grid">
-                      <div className="exercise-panel">
-                        <p>{activeExercise.prompt_markdown}</p>
-                        <div className="blank-grid">
-                          {activeExercise.code_blanks.map((blank) => (
-                            <label key={blank.id}>
-                              {blank.blank_key}
-                              <input
-                                value={filledBlanks[blank.blank_key] ?? ""}
-                                onChange={(event) =>
-                                  setFilledBlanks((current) => ({
-                                    ...current,
-                                    [blank.blank_key]: event.target.value,
-                                  }))
-                                }
-                              />
-                            </label>
-                          ))}
-                        </div>
-                        <label className="exercise-editor">
-                          解释
-                          <textarea
-                            value={explanation}
-                            placeholder="用自己的话说明为什么这样补全，后端会据此生成评分结果。"
-                            onChange={(event) => setExplanation(event.target.value)}
-                          />
-                        </label>
-                      </div>
-
-                      <div className="exercise-editor">
-                        <label>
-                          代码
-                          <textarea value={editorCode} onChange={(event) => setEditorCode(event.target.value)} />
-                        </label>
-                        <button className="btn primary" type="button" disabled={submitDisabled} onClick={() => void handleSubmitReview()}>
-                          {submitState === "submitting" ? "提交中..." : submitState === "done" ? "已提交" : warmupPending ? "先完成热身" : "提交复习结果"}
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </article>
-              )}
-
-              {reviewResult && (
-                <article className="submit-summary">
-                  <h3>复习结果</h3>
-                  <p>{reviewResult.feedback}</p>
-                  <div className="review-recap-grid">
-                    <div className="review-card">
-                      <h3>{fsrsRatingLabel(reviewResult.fsrs_rating)}</h3>
-                      <p>掌握程度</p>
-                    </div>
-                    <div className="review-card">
-                      <h3>{formatDateTime(reviewResult.due_at)}</h3>
-                      <p>下次复习</p>
-                    </div>
-                    <div className="review-card">
-                      <h3>{riskLabel(reviewResult.forget_risk)}</h3>
-                      <p>遗忘风险</p>
-                    </div>
-                  </div>
-                </article>
-              )}
-            </section>
+                )}
+              </article>
+            )}
 
           </div>
         </section>
@@ -494,21 +477,156 @@ export function ReviewPage({ isActive, user, messages, onActiveNoteContextChange
   );
 }
 
-function ReviewAiPatchForm({
-  exercise,
-  answer,
-  setAnswer,
-  submitDisabled,
-  submitState,
-  onSubmit,
-}: {
-  exercise: ReviewSessionResponse["review_exercise"];
-  answer: ReviewAiPatchAnswer;
-  setAnswer: Dispatch<SetStateAction<ReviewAiPatchAnswer>>;
+type ReviewExerciseWorkbenchProps = {
+  review: ReviewSessionResponse;
+  result: ReviewExerciseResultResponse | null;
+  editorCode: string;
+  filledBlanks: Record<string, string>;
+  explanation: string;
+  patchAnswer: ReviewAiPatchAnswer;
   submitDisabled: boolean;
   submitState: "idle" | "submitting" | "done" | "error";
+  onCodeChange: (value: string) => void;
+  onBlankChange: (blankKey: string, value: string) => void;
+  onExplanationChange: (value: string) => void;
+  onPatchAnswerChange: Dispatch<SetStateAction<ReviewAiPatchAnswer>>;
   onSubmit: () => void;
-}) {
+};
+
+function ReviewExerciseWorkbench({
+  review,
+  result,
+  editorCode,
+  filledBlanks,
+  explanation,
+  patchAnswer,
+  submitDisabled,
+  submitState,
+  onCodeChange,
+  onBlankChange,
+  onExplanationChange,
+  onPatchAnswerChange,
+  onSubmit,
+}: ReviewExerciseWorkbenchProps) {
+  const exercise = review.review_exercise;
+  const isPatchReview = exercise.exercise_type === "review_ai_patch";
+  const stateClassName = reviewWorkbenchStateClassName(submitState);
+
+  return (
+    <section className="exercise-workbench review-exercise-workbench" aria-label="复习变体练习">
+      <div className="wb-header">
+        <div className="wb-header-left">
+          <span className="wb-kicker">复习练习</span>
+          <h2 className="wb-title">{exercise.title}</h2>
+        </div>
+        <div className="wb-header-right">
+          <span className="wb-meta-pill">{exercise.exercise_type}</span>
+          <span className="wb-meta-pill">{runtimeLabel(exercise.runtime_profile.runtime_tier)}</span>
+          <span className={stateClassName}>{reviewSubmitStateLabel(submitState)}</span>
+        </div>
+      </div>
+
+      <div className="wb-context-bar">
+        <span>{review.knowledge_point.title}</span>
+        <span className="wb-context-sep" />
+        <span>{reviewStageLabel(review.review_stage)}</span>
+        <span className="wb-context-sep" />
+        <span>已复习 {review.ReviewState.review_count} 次</span>
+      </div>
+
+      <div className="wb-split">
+        <div className="wb-editor-pane">
+          <div className="wb-prompt">
+            <strong>{review.variant_reason}</strong>
+            <p>{exercise.prompt_markdown}</p>
+          </div>
+
+          {!isPatchReview && exercise.code_blanks.length > 0 && (
+            <div className="wb-blanks">
+              {exercise.code_blanks.map((blank) => (
+                <label className="wb-blank" key={blank.id}>
+                  <span className="wb-blank-key">{blank.blank_key}</span>
+                  <input
+                    className="wb-blank-input"
+                    value={filledBlanks[blank.blank_key] ?? ""}
+                    placeholder={blank.placeholder}
+                    disabled={submitState === "submitting" || submitState === "done"}
+                    onChange={(event) => onBlankChange(blank.blank_key, event.target.value)}
+                  />
+                </label>
+              ))}
+            </div>
+          )}
+
+          {isPatchReview ? (
+            <ReviewAiPatchEvidence exercise={exercise} />
+          ) : (
+            <div className="wb-editor-frame">
+              <div className="wb-editor-toolbar">
+                <div className="wb-editor-toolbar-left">
+                  <span className="wb-editor-lang">{exercise.runtime_profile.language}</span>
+                </div>
+                <div className="wb-editor-toolbar-right">
+                  <button className="wb-toolbar-btn wb-toolbar-btn-primary" type="button" disabled={submitDisabled} onClick={onSubmit}>
+                    {reviewSubmitButtonLabel(submitState)}
+                  </button>
+                </div>
+              </div>
+              {submitDisabled && submitState !== "done" && <div className="wb-notice">{reviewSubmitNotice(exercise, submitState)}</div>}
+              <CodeEditor
+                language={exercise.runtime_profile.language}
+                value={editorCode}
+                onChange={onCodeChange}
+                readOnly={submitState === "submitting" || submitState === "done"}
+                height="360px"
+                dark
+              />
+            </div>
+          )}
+
+          <div className="wb-assist">
+            <div className="wb-assist-tabs">
+              <button className="wb-assist-tab active" type="button">
+                {isPatchReview ? "审查结论" : "解释"}
+              </button>
+            </div>
+            <div className="wb-assist-body">
+              {isPatchReview ? (
+                <ReviewAiPatchFields
+                  answer={patchAnswer}
+                  setAnswer={onPatchAnswerChange}
+                  submitDisabled={submitDisabled}
+                  submitState={submitState}
+                  onSubmit={onSubmit}
+                />
+              ) : (
+                <div className="wb-assist-panel">
+                  <textarea
+                    className="wb-explanation-input"
+                    value={explanation}
+                    placeholder="用自己的话说明为什么这样补全，后端会据此生成评分结果。"
+                    disabled={submitState === "submitting" || submitState === "done"}
+                    onChange={(event) => onExplanationChange(event.target.value)}
+                  />
+                  <div className="wb-assist-controls">
+                    <span className="wb-round-badge">提交后才会更新复习节奏</span>
+                    <button className="wb-toolbar-btn wb-toolbar-btn-primary" type="button" disabled={submitDisabled} onClick={onSubmit}>
+                      {reviewSubmitButtonLabel(submitState)}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <ReviewResultOutput result={result} submitState={submitState} />
+      </div>
+    </section>
+  );
+}
+
+function ReviewAiPatchEvidence({ exercise }: { exercise: ReviewSessionResponse["review_exercise"] }) {
   const metadata = exercise.metadata_json;
   const requirement = stringMeta(metadata, "requirement", exercise.prompt_markdown);
   const originalCode = stringMeta(metadata, "original_code", exercise.starter_code);
@@ -516,57 +634,79 @@ function ReviewAiPatchForm({
   const reviewFocus = stringMeta(metadata, "review_focus", "判断 AI 改动是否满足当前知识点要求。");
 
   return (
-    <div className="review-patch-grid">
-      <div className="exercise-panel">
-        <p>{exercise.prompt_markdown}</p>
-        <div className="patch-evidence">
-          <h3>需求</h3>
-          <p>{requirement}</p>
-          <h3>原始代码</h3>
-          <pre>{originalCode}</pre>
-          <h3>AI 改动</h3>
-          <pre>{aiDiff}</pre>
-          <h3>审查焦点</h3>
-          <p>{reviewFocus}</p>
-        </div>
-      </div>
-      <div className="exercise-panel">
-        <label>
-          结论
+    <div className="patch-evidence review-patch-evidence">
+      <h3>需求</h3>
+      <p>{requirement}</p>
+      <h3>原始代码</h3>
+      <pre>{originalCode}</pre>
+      <h3>AI 改动</h3>
+      <pre>{aiDiff}</pre>
+      <h3>审查焦点</h3>
+      <p>{reviewFocus}</p>
+    </div>
+  );
+}
+
+function ReviewAiPatchFields({
+  answer,
+  setAnswer,
+  submitDisabled,
+  submitState,
+  onSubmit,
+}: {
+  answer: ReviewAiPatchAnswer;
+  setAnswer: Dispatch<SetStateAction<ReviewAiPatchAnswer>>;
+  submitDisabled: boolean;
+  submitState: "idle" | "submitting" | "done" | "error";
+  onSubmit: () => void;
+}) {
+  return (
+    <div className="wb-assist-panel">
+      <label className="review-field">
+        <span>结论</span>
+        <select
+          className="wb-select"
+          value={answer.verdict}
+          disabled={submitState === "submitting" || submitState === "done"}
+          onChange={(event) =>
+            setAnswer((current) => ({
+              ...current,
+              verdict: event.target.value as ReviewAiPatchAnswer["verdict"],
+            }))
+          }
+        >
+          <option value="fail">不通过</option>
+          <option value="pass">通过</option>
+          <option value="uncertain">不确定</option>
+        </select>
+      </label>
+      <label className="review-field">
+        <span>证据</span>
+        <textarea
+          className="wb-explanation-input"
+          value={answer.evidence}
+          placeholder="引用需求、diff 或测试信号。不能只写 tests passed。"
+          disabled={submitState === "submitting" || submitState === "done"}
+          onChange={(event) => setAnswer((current) => ({ ...current, evidence: event.target.value }))}
+        />
+      </label>
+      <label className="review-field">
+        <span>当前知识点风险</span>
+        <textarea
+          className="wb-explanation-input"
+          value={answer.knowledge_point_risk}
+          placeholder="说明这个改动会怎样影响当前知识点。"
+          disabled={submitState === "submitting" || submitState === "done"}
+          onChange={(event) => setAnswer((current) => ({ ...current, knowledge_point_risk: event.target.value }))}
+        />
+      </label>
+      <div className="wb-assist-controls">
+        <label className="review-field compact">
+          <span>下一步</span>
           <select
-            value={answer.verdict}
-            onChange={(event) =>
-              setAnswer((current) => ({
-                ...current,
-                verdict: event.target.value as ReviewAiPatchAnswer["verdict"],
-              }))
-            }
-          >
-            <option value="fail">不通过</option>
-            <option value="pass">通过</option>
-            <option value="uncertain">不确定</option>
-          </select>
-        </label>
-        <label className="exercise-editor">
-          证据
-          <textarea
-            value={answer.evidence}
-            placeholder="引用需求、diff 或测试信号。不能只写 tests passed。"
-            onChange={(event) => setAnswer((current) => ({ ...current, evidence: event.target.value }))}
-          />
-        </label>
-        <label className="exercise-editor">
-          当前知识点风险
-          <textarea
-            value={answer.knowledge_point_risk}
-            placeholder="说明这个改动会怎样影响当前知识点。"
-            onChange={(event) => setAnswer((current) => ({ ...current, knowledge_point_risk: event.target.value }))}
-          />
-        </label>
-        <label>
-          下一步
-          <select
+            className="wb-select"
             value={answer.next_action}
+            disabled={submitState === "submitting" || submitState === "done"}
             onChange={(event) =>
               setAnswer((current) => ({
                 ...current,
@@ -580,9 +720,84 @@ function ReviewAiPatchForm({
             <option value="accept">接受改动</option>
           </select>
         </label>
-        <button className="btn primary" type="button" disabled={submitDisabled} onClick={onSubmit}>
-          {submitState === "submitting" ? "提交中..." : submitState === "done" ? "已提交" : "提交审查结论"}
+        <button className="wb-toolbar-btn wb-toolbar-btn-primary" type="button" disabled={submitDisabled} onClick={onSubmit}>
+          {reviewSubmitButtonLabel(submitState)}
         </button>
+      </div>
+      {submitDisabled && submitState !== "done" && <div className="wb-notice">证据和风险说明都填写后才能提交审查结论。</div>}
+    </div>
+  );
+}
+
+function ReviewResultOutput({
+  result,
+  submitState,
+}: {
+  result: ReviewExerciseResultResponse | null;
+  submitState: "idle" | "submitting" | "done" | "error";
+}) {
+  const statusLabel = result ? completionResultLabel(result.result) : submitState === "error" ? "提交失败" : "待提交";
+  const statusClassName = result ? (result.result !== "failed" ? "success" : "error") : "";
+
+  return (
+    <div className="wb-output-pane">
+      <div className="wb-output-header">
+        <span className="wb-output-title">复习反馈</span>
+        <span className={["wb-output-status", statusClassName].filter(Boolean).join(" ")}>{statusLabel}</span>
+      </div>
+      <div className="wb-output-body">
+        {submitState === "submitting" && (
+          <div className="wb-output-loading">
+            <div className="wb-spinner" />
+            正在提交复习结果……
+          </div>
+        )}
+        {submitState === "error" && (
+          <div className="wb-output-error">
+            <span>提交失败，请检查输入后重试。</span>
+          </div>
+        )}
+        {!result && submitState !== "submitting" && submitState !== "error" && (
+          <div className="wb-output-empty">
+            <div className="wb-output-empty-icon">↵</div>
+            <p>完成左侧练习并提交后，这里会显示后端返回的评分与下次复习安排。</p>
+          </div>
+        )}
+        {result && (
+          <div className="review-result-stack">
+            <p>{result.feedback}</p>
+            <div className="review-result-metrics">
+              <div className="review-result-metric">
+                <span>结果</span>
+                <strong>{completionResultLabel(result.result)}</strong>
+              </div>
+              <div className="review-result-metric">
+                <span>分数</span>
+                <strong>{formatScore(result.score)}</strong>
+              </div>
+              <div className="review-result-metric">
+                <span>掌握程度</span>
+                <strong>{fsrsRatingLabel(result.fsrs_rating)}</strong>
+              </div>
+              <div className="review-result-metric">
+                <span>下次复习</span>
+                <strong>{formatDateTime(result.due_at)}</strong>
+              </div>
+              <div className="review-result-metric">
+                <span>遗忘风险</span>
+                <strong>{riskLabel(result.forget_risk)}</strong>
+              </div>
+            </div>
+            {result.weak_points.length > 0 && (
+              <div className="review-result-weak-points">
+                <span>需要回看</span>
+                {result.weak_points.map((point) => (
+                  <em key={point}>{point}</em>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -601,6 +816,44 @@ function defaultReviewPatchAnswer(): ReviewAiPatchAnswer {
   };
 }
 
+async function restoreReviewConversationMessages(input: {
+  userId: string;
+  sessionId: string;
+  fallbackReview: ReviewSessionResponse;
+}): Promise<ConversationMessage[]> {
+  try {
+    const history = await fetchReviewMessages({
+      userId: input.userId,
+      sessionId: input.sessionId,
+    });
+    const restored = history.messages.map(reviewHistoryMessageToConversationMessage);
+    if (restored.length > 0) {
+      return restored;
+    }
+  } catch {
+    // Fallback keeps the review usable if a legacy backend lacks the history endpoint.
+  }
+  return initialReviewConversationMessages(input.fallbackReview);
+}
+
+function reviewHistoryMessageToConversationMessage(message: ReviewHistoryMessage): ConversationMessage {
+  return {
+    id: `history-${message.id}`,
+    speaker: message.role === "user" ? "user" : "agent",
+    text: message.content,
+    label: message.role === "agent" ? "Agent" : undefined,
+    status: "done",
+  };
+}
+
+function initialReviewConversationMessages(review: ReviewSessionResponse): ConversationMessage[] {
+  const messages = [createMessage("agent", review.initial_agent_message, "Agent")];
+  if (isReviewWarmupPending(review.review_stage)) {
+    messages.push(createMessage("agent", buildWarmupQuestionMessage(review), "Agent"));
+  }
+  return messages;
+}
+
 function patchOriginalCode(metadata: Record<string, unknown>): string {
   return stringMeta(metadata, "original_code", "");
 }
@@ -608,6 +861,29 @@ function patchOriginalCode(metadata: Record<string, unknown>): string {
 function stringMeta(metadata: Record<string, unknown>, key: string, fallback: string): string {
   const value = metadata[key];
   return typeof value === "string" && value.trim() ? value : fallback;
+}
+
+function isReviewWarmupPending(stage: ReviewSessionResponse["review_stage"]): boolean {
+  return stage === "warmup" || stage === "warmup_repair";
+}
+
+function isWarmupSkipIntent(content: string): boolean {
+  return /^(跳过|skip|完全忘了)$/i.test(content.trim());
+}
+
+function buildWarmupQuestionMessage(review: ReviewSessionResponse): string {
+  const lead = review.review_stage === "warmup_repair" ? "先做一次短修正：" : "先做一个短热身：";
+  return `${lead}\n${review.warmup.question}\n\n直接在下面输入框回答；如果想跳过，可以输入“跳过”或点「完全忘了」。`;
+}
+
+function buildWarmupResultMessage(result: ReviewWarmupResultResponse): string {
+  const lines = [result.warmup.feedback ?? `热身结果：${warmupResultLabel(result.warmup.result)}。`];
+  if (isReviewWarmupPending(result.review_stage)) {
+    lines.push(`再修正一下：${result.warmup.question}`);
+  } else {
+    lines.push("热身完成。下面进入同一个知识点的复习变体练习。");
+  }
+  return lines.join("\n\n");
 }
 
 function reviewStageLabel(stage: ReviewSessionResponse["review_stage"]): string {
@@ -668,20 +944,57 @@ function riskLabel(value: ReviewDueItem["forget_risk"]): string {
   return "正常";
 }
 
-function fsrsRatingLabel(rating: string | number): string {
-  if (rating === "again" || rating === "Again" || rating === 1) {
-    return "需要重学";
+function reviewWorkbenchStateClassName(submitState: "idle" | "submitting" | "done" | "error"): string {
+  if (submitState === "submitting") {
+    return "wb-state wb-state-running";
   }
-  if (rating === "hard" || rating === "Hard" || rating === 2) {
-    return "较困难";
+  if (submitState === "done") {
+    return "wb-state wb-state-submitted";
   }
-  if (rating === "good" || rating === "Good" || rating === 3) {
-    return "良好";
+  if (submitState === "error") {
+    return "wb-state wb-state-dirty";
   }
-  if (rating === "easy" || rating === "Easy" || rating === 4) {
-    return "轻松掌握";
+  return "wb-state";
+}
+
+function reviewSubmitStateLabel(submitState: "idle" | "submitting" | "done" | "error"): string {
+  if (submitState === "submitting") {
+    return "提交中";
   }
-  return String(rating);
+  if (submitState === "done") {
+    return "已提交";
+  }
+  if (submitState === "error") {
+    return "提交失败";
+  }
+  return "待提交";
+}
+
+function reviewSubmitButtonLabel(submitState: "idle" | "submitting" | "done" | "error"): string {
+  if (submitState === "submitting") {
+    return "提交中...";
+  }
+  if (submitState === "done") {
+    return "已提交";
+  }
+  return "提交复习结果";
+}
+
+function reviewSubmitNotice(
+  exercise: ReviewSessionResponse["review_exercise"],
+  submitState: "idle" | "submitting" | "done" | "error",
+): string {
+  if (submitState === "submitting") {
+    return "当前提交正在处理中，请等待后端返回结果。";
+  }
+  if (exercise.exercise_type === "review_ai_patch") {
+    return "证据和风险说明都填写后才能提交审查结论。";
+  }
+  return "提交后会由后端更新掌握程度、下次复习和遗忘风险。";
+}
+
+function formatScore(score: number): string {
+  return Number.isInteger(score) ? String(score) : score.toFixed(2);
 }
 
 function createClientId(prefix: string): string {

@@ -562,6 +562,9 @@ def _load_due_review_context(
         SELECT
           review_states.*,
           knowledge_points.*,
+          knowledge_points.mastery_score AS kp_mastery_score,
+          knowledge_points.last_exercise_result AS kp_last_exercise_result,
+          knowledge_points.last_exercise_score AS kp_last_exercise_score,
           learning_plans.status AS plan_status,
           runtime_profiles.id AS runtime_profile_id,
           runtime_profiles.slug AS runtime_profile_slug,

@@ -26,6 +26,7 @@ function App() {
   const notes = useNotesStore();
   const settings = useSettingsStore();
   const [environmentDoctor, setEnvironmentDoctor] = useState<EnvironmentDoctorState>({ status: "idle" });
+  const [selectedReviewKnowledgePointId, setSelectedReviewKnowledgePointId] = useState<string | null>(null);
 
   const dashboard = app.dashboardState.status === "ready" ? app.dashboardState.data : null;
   const session = app.sessionState.status === "ready" ? app.sessionState.data : null;
@@ -41,6 +42,7 @@ function App() {
           : "";
 
   const visibleRoute = app.activeRoute;
+  const sidebarActiveKnowledgePointId = visibleRoute === "review" ? (selectedReviewKnowledgePointId ?? "") : activeKnowledgePointId;
   const sidebarHint = ROUTE_META[visibleRoute].hint;
   const sidebarProgress = app.createdPlan ? computeSidebarProgress(app.createdPlan) : 0;
   const crumb = getCrumbLabel(visibleRoute, settings.settingsTab, session, activeExercise);
@@ -76,6 +78,9 @@ function App() {
   async function goToRoute(route: AppRoute) {
     const closed = await closeDrawers();
     if (!closed) return;
+    if (route === "review") {
+      setSelectedReviewKnowledgePointId(null);
+    }
     app.setActiveRoute(route);
   }
 
@@ -106,6 +111,13 @@ function App() {
     notes.setDrawerOpen(true);
     const note = await notes.ensureForContext(app.user.id, context);
     if (note) notes.setPageSelection(notes.pageSelection ?? note.knowledge_point_id);
+  }
+
+  async function handleSelectReviewKnowledgePoint(knowledgePointId: string) {
+    const closed = await closeDrawers();
+    if (!closed) return;
+    setSelectedReviewKnowledgePointId(knowledgePointId);
+    app.setActiveRoute("review");
   }
 
   function handleResetGoal() {
@@ -164,6 +176,10 @@ function App() {
   useEffect(() => {
     if (app.user) settings.syncFromUser(app.user);
   }, [app.user?.id, app.user?.updated_at]);
+
+  useEffect(() => {
+    setSelectedReviewKnowledgePointId(null);
+  }, [app.user?.id, app.createdPlan?.LearningPlan.id]);
 
   useEffect(() => {
     if (!app.bootstrapHydrated) return;
@@ -251,7 +267,7 @@ function App() {
           <SidebarNav
             activeRoute={visibleRoute}
             createdPlan={app.createdPlan}
-            activeKnowledgePointId={activeKnowledgePointId}
+            activeKnowledgePointId={sidebarActiveKnowledgePointId}
             openGroups={app.openGroups}
             onToggleGroup={app.toggleGroup}
             onRouteChange={goToRoute}
@@ -260,6 +276,7 @@ function App() {
                 void app.openLearningSession(app.createdPlan, id);
               }
             }}
+            onSelectReviewKnowledgePoint={(id) => void handleSelectReviewKnowledgePoint(id)}
           />
           <SideContext
             route={visibleRoute}
@@ -280,7 +297,7 @@ function App() {
           </header>
 
           <div className="workspace-shell">
-            {dashboard && visibleRoute !== "onboarding" && visibleRoute !== "home" && (
+            {dashboard && visibleRoute !== "onboarding" && visibleRoute !== "home" && visibleRoute !== "review" && (
               <section className={dashboard.next_entry_point.type === "review" ? "dashboard-banner warning" : "dashboard-banner"} aria-label="恢复与复习提示">
                 <div className="dashboard-banner-copy">
                   <strong>{dashboard.current_stage ?? "当前学习"}</strong>
@@ -332,7 +349,14 @@ function App() {
             </section>
 
             <section className={screenClassName(visibleRoute === "review")} aria-label="复习页">
-              <ReviewPage isActive={visibleRoute === "review"} user={app.user} messages={reviewMessages} onActiveNoteContextChange={notes.setReviewNoteContext} />
+              <ReviewPage
+                isActive={visibleRoute === "review"}
+                user={app.user}
+                selectedKnowledgePointId={selectedReviewKnowledgePointId}
+                messages={reviewMessages}
+                onActiveKnowledgePointChange={setSelectedReviewKnowledgePointId}
+                onActiveNoteContextChange={notes.setReviewNoteContext}
+              />
             </section>
 
             <section className={screenClassName(visibleRoute === "notes")} aria-label="笔记页">

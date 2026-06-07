@@ -161,6 +161,63 @@ class OpenAICompatibleClient:
         except Exception as exc:
             raise LLMCallError("LLM provider streaming transport failed") from exc
 
+    def complete_structured_text_stream(
+        self,
+        messages: Sequence[Mapping[str, str]],
+        *,
+        output_type: type[object],
+        temperature: float | None = None,
+    ) -> Generator[str, None, str]:
+        del output_type
+        if self._settings.llm_provider_type == "deepseek":
+            payload: dict[str, object] = {
+                "model": self.model,
+                "messages": _messages_to_chat_completions(messages, require_json_hint=True),
+                "stream": True,
+                "response_format": {"type": "json_object"},
+            }
+            if temperature is not None:
+                payload["temperature"] = temperature
+            url = deepseek_chat_completions_url(str(self._settings.llm_base_url))
+        else:
+            instructions, input_text = _messages_to_responses_input(messages)
+            payload = {
+                "model": self.model,
+                "input": _ensure_json_mode_hint(input_text),
+                "stream": True,
+                "text": {"format": {"type": "json_object"}},
+            }
+            if instructions is not None:
+                payload["instructions"] = instructions
+            if temperature is not None:
+                payload["temperature"] = temperature
+            url = responses_url(str(self._settings.llm_base_url))
+        headers = {
+            "Authorization": f"Bearer {self._settings.llm_api_key}",
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+        }
+        timeout = float(self._settings.llm_timeout_seconds)
+        try:
+            chunks = (
+                self._stream_transport(url, headers, payload, timeout)
+                if self._stream_transport is not None
+                else _post_text_stream(url, headers, payload, timeout)
+            )
+            full_text = ""
+            for delta in chunks:
+                if not delta:
+                    continue
+                full_text += delta
+                yield delta
+            if not full_text.strip():
+                raise LLMInvalidResponseError("LLM provider structured streaming response has no content")
+            return full_text
+        except (LLMCallError, LLMInvalidResponseError):
+            raise
+        except Exception as exc:
+            raise LLMCallError("LLM provider structured streaming transport failed") from exc
+
     def _request_provider(
         self,
         payload: Mapping[str, object],

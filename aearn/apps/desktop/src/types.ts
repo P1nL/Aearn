@@ -762,7 +762,7 @@ export type ReviewWarmupResultResponse = {
   review_stage: ReviewSessionResponse["review_stage"];
   warmup: ReviewWarmupState;
   review_stage_state: ReviewStageState;
-  next_action: "start_variant";
+  next_action: "start_variant" | "retry_same";
 };
 
 export type ReviewAiPatchAnswer = {
@@ -787,6 +787,19 @@ export type ReviewExerciseResultResponse = {
   code_completion_result: CodeCompletionResult;
   next_action: NextAction;
   idempotency_replayed?: boolean;
+};
+
+export type ReviewHistoryMessage = {
+  id: string;
+  role: "user" | "agent";
+  content: string;
+  client_message_id: string | null;
+  created_at: string | null;
+};
+
+export type ReviewMessagesResponse = {
+  session_id: string;
+  messages: ReviewHistoryMessage[];
 };
 
 export type UserPreferencesUpdate = {

@@ -13,6 +13,7 @@ from app.core.errors import (
     request_id_from,
 )
 from app.db.connection import connect
+from app.agents.learning.learning_public_output import LearningOutputStreamDecoder
 from app.agents.runtime.guardrails import assert_safe_teaching_output
 from app.models.learning_sessions import (
     CheckExplanationRequest,
@@ -847,20 +848,25 @@ async def _learning_message_stream(
             generation_source = generation.generation_source
             generation_model = generation.generation_model
             chunks = _iter_generation_chunks(request, generation.chunks)
-            async for delta in chunks:
-                candidate_text = full_text + delta
-                assert_safe_teaching_output(candidate_text)
-                full_text = candidate_text
-                yield writer.event(
-                    "agent_message",
-                    _agent_message_event(
-                        request_id=request_id,
-                        session_id=session_id,
-                        message_id=prepared.message_id,
-                        delta=delta,
-                        content=full_text,
-                    ),
-                )
+            decoder = LearningOutputStreamDecoder()
+            async for raw_delta in chunks:
+                for public_delta in decoder.feed(raw_delta):
+                    candidate_text = full_text + public_delta
+                    assert_safe_teaching_output(candidate_text)
+                    full_text = candidate_text
+                    yield writer.event(
+                        "agent_message",
+                        _agent_message_event(
+                            request_id=request_id,
+                            session_id=session_id,
+                            message_id=prepared.message_id,
+                            delta=public_delta,
+                            content=full_text,
+                        ),
+                    )
+            output = decoder.finish()
+            if full_text != output.public_message:
+                raise LLMInvalidResponseError("streamed public_message did not match final structured output")
         except safe_generation_exceptions() as exc:
             yield writer.error(
                 code="MODEL_UNAVAILABLE",

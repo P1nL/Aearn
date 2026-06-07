@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import queue
 import threading
 from collections.abc import AsyncIterator, Callable, Iterable, Mapping, Sequence
@@ -67,7 +68,19 @@ def build_agent(
     handoffs: Sequence[Agent[Any]] | None = None,
     input_guardrails: Sequence[InputGuardrail[object]] | None = None,
     output_guardrails: Sequence[OutputGuardrail[object]] | None = None,
+    output_type: type[Any] | None = None,
 ) -> Agent[object]:
+    if output_type is None:
+        return Agent(
+            name=name,
+            instructions=instructions,
+            tools=list(tools or []),
+            handoffs=list(handoffs or []),
+            model=model,
+            model_settings=ModelSettings(temperature=temperature),
+            input_guardrails=list(input_guardrails or []),
+            output_guardrails=list(output_guardrails or []),
+        )
     return Agent(
         name=name,
         instructions=instructions,
@@ -77,6 +90,7 @@ def build_agent(
         model_settings=ModelSettings(temperature=temperature),
         input_guardrails=list(input_guardrails or []),
         output_guardrails=list(output_guardrails or []),
+        output_type=output_type,
     )
 
 
@@ -162,7 +176,7 @@ async def stream_text_deltas(
     if not emitted:
         final_output = getattr(streamed, "final_output", None)
         if final_output is not None:
-            text = str(final_output).strip()
+            text = _final_output_to_text(final_output)
             if text:
                 yield text
 
@@ -184,3 +198,13 @@ def extract_text_delta(event: object, *, include_done_text: bool = True) -> str:
         text = getattr(data, "text", "")
         return text if isinstance(text, str) else ""
     return ""
+
+
+def _final_output_to_text(final_output: object) -> str:
+    model_dump_json = getattr(final_output, "model_dump_json", None)
+    if callable(model_dump_json):
+        dumped = model_dump_json()
+        return dumped.strip() if isinstance(dumped, str) else ""
+    if isinstance(final_output, Mapping):
+        return json.dumps(final_output, ensure_ascii=False, separators=(",", ":"))
+    return str(final_output).strip()

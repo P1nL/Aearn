@@ -230,6 +230,8 @@ LearningWorkspacePage
 - `incorrect` 和 `unclear` 共用概念追问上限，达到上限后不再继续“更具体一点”追问，只提供引导练习或再看一个例子。
 - `concept_check`、`concept_repair` 和 `practice_offer` 只展示概念判断与修正，不直接固定展示练习卡片。
 - `practice_support` 才能展示 `GeneratedCodeExerciseCard`；练习解锁说明来自本轮模型回复，必须包含当前知识点小结。卡片 `notice` 默认空，不能复制 Agent 正文或重复展示题面。如果模型不可用，前端只展示 `MODEL_UNAVAILABLE` 错误，不展示后端固定练习卡或固定概念小结。
+- 学习页 Agent 只渲染后端 `agent_message.content` 和正式工具卡；不展示“导师判断”、思考过程、chain-of-thought 或 provider reasoning，也不得从正文用正则猜测、抽取或重命名内部内容。
+- 学习页 SSE 只能消费后端解包后的 `public_message` delta/content；不得渲染结构化 envelope、`internal_review`、provider reasoning 或任何 raw prompt 字段。
 - `CONCEPT_INTRO_GENERATION_FAILED` 必须显示重试生成和返回路线动作，不展示破损 fallback 卡片。
 - 学习页 composer SSE 错误必须按稳定 `error.code` 解释原因：`MODEL_UNAVAILABLE` 展示模型服务或配置不可用，`STREAM_INCOMPLETE` 展示流没有收到 `done` / `error` 终止事件，`STREAM_ERROR` / `STREAM_UNAVAILABLE` / `STREAM_HTTP_ERROR` 展示连接或 SSE 可用性问题；不能把所有错误都包成同一句泛化“回答没有完成”。
 - 用户主动回看历史时展示 `GeneratedLearningHistoryCard`，只引用学习页 AI/用户对话，不引用建档页或复习页内容。
