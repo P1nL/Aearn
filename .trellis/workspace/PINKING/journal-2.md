@@ -203,3 +203,36 @@ Implemented the learning documentation reading flow, right-side documentation pa
 ### Next Steps
 
 - None - task complete
+
+
+## Session 66: Refine learning flow concept docs
+
+**Date**: 2026-06-07
+**Task**: Refine learning flow concept docs
+**Branch**: `main`
+
+### Summary
+
+Refined the learning page flow: official-docs panel now uses two source-attributed sections, concept check results render as compact feedback, unclear/incorrect repair attempts share a limit, practice unlock copy is model-backed without deterministic fallback, internal policy leakage is guarded, and docs/spec/tests were aligned.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `f7dadea` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
