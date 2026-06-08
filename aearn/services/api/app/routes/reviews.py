@@ -33,6 +33,7 @@ from app.services.conversations.review_conversation import (
 from app.services.repositories.review_repository import (
     EntityNotFoundError,
     InvalidReviewRequestError,
+    ReviewAdaptiveSupplementRequired,
     ReviewNotDueError,
     ReviewSessionConflictError,
     get_today_reviews,
@@ -48,7 +49,7 @@ from app.services.streaming.sse import SSEWriter, stream_response
 router = APIRouter(prefix="/api/reviews", tags=["reviews"])
 
 REVIEW_GRAPH_ALLOWED_INTENT_TARGETS = {
-    IntentType.PERSISTENCE: ("review_session", "attempt_and_fsrs"),
+    IntentType.PERSISTENCE: ("review_session", "review_batch", "attempt_and_fsrs"),
     IntentType.TOOL_CALL: ("review_coach", "evaluate_warmup"),
 }
 
@@ -491,6 +492,16 @@ async def submit_review_result(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 details={"reason": str(exc)},
             )
+        except ReviewAdaptiveSupplementRequired as exc:
+            conn.commit()
+            return error_response(
+                request,
+                code="REVIEW_ADAPTIVE_SUPPLEMENT_FAILED",
+                message="当前候选池无法覆盖剩余复习弱点，需要生成自适应补充题",
+                status_code=status.HTTP_409_CONFLICT,
+                details={"reason": str(exc), "next_action": "retry_after_supplement"},
+                recoverable=True,
+            )
         conn.commit()
     if replayed:
         response["idempotency_replayed"] = True
@@ -730,7 +741,7 @@ def _review_warmup_result_message(response: Mapping[str, object]) -> str:
     if str(response.get("review_stage")) in {"warmup", "warmup_repair"}:
         lines.append(f"再修正一下：{question}")
     else:
-        lines.append("热身完成。下面进入同一个知识点的复习变体练习。")
+        lines.append("热身完成。下面进入同一个知识点的正式复习题。")
     return "\n\n".join(lines)
 
 

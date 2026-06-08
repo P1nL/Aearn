@@ -1,7 +1,7 @@
 """LangGraph-based review conversation orchestration.
 
 Owns flow decisions for review start, due-state validation routing,
-exercise result handling, FSRS update coordination, and review coach feedback.
+exercise result handling, batch finalization coordination, and review coach feedback.
 
 Services/repositories still own session creation, attempt writes,
 ReviewState updates, ReviewLog writes, idempotency, and public response envelopes.
@@ -87,15 +87,15 @@ def _orch_reuse_session(state: ReviewOrchInput) -> dict[str, Any]:
 
 
 def _orch_submit_result(state: ReviewOrchInput) -> dict[str, Any]:
-    """Process exercise submission and trigger FSRS update."""
+    """Process exercise submission through the backend-owned review batch."""
     rating = state.get("fsrs_rating") or "Good"
     if rating not in _VALID_FSRS_RATINGS:
         rating = "Good"
     return {
-        "next_action": "submit_and_update",
+        "next_action": "submit_review_batch",
         "intent_type": "persistence",
         "intent_payload": {
-            "target": "attempt_and_fsrs",
+            "target": "review_batch",
             "session_id": state.get("session_id", ""),
             "fsrs_rating": rating,
             "attempt_result": state.get("attempt_result", ""),

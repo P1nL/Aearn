@@ -186,6 +186,172 @@ def apply_attempt_review_update(
     }
 
 
+def apply_review_batch_update(
+    conn: Connection[dict[str, object]],
+    *,
+    knowledge_point_id: str,
+    representative_attempt_id: str,
+    final_rating: str,
+    aggregate_result: Mapping[str, object],
+    source: str,
+    request_id: str | None,
+) -> dict[str, object]:
+    attempt = conn.execute(
+        """
+        SELECT attempts.*, exercises.knowledge_point_id AS exercise_knowledge_point_id
+        FROM attempts
+        JOIN exercises ON exercises.id = attempts.exercise_id
+        WHERE attempts.id = %s
+        FOR UPDATE OF attempts
+        """,
+        (representative_attempt_id,),
+    ).fetchone()
+    if attempt is None:
+        raise ReviewSchedulingError("representative attempt not found")
+
+    state = conn.execute(
+        """
+        SELECT *
+        FROM review_states
+        WHERE knowledge_point_id = %s
+        FOR UPDATE
+        """,
+        (knowledge_point_id,),
+    ).fetchone()
+    if state is None:
+        raise ReviewSchedulingError("review state missing for knowledge point")
+
+    rating = str(final_rating or "")
+    normalized_request_id = _request_id_or_none(request_id) or default_review_update_key(
+        knowledge_point_id=knowledge_point_id,
+        attempt_id=representative_attempt_id,
+        rating=rating,
+    )
+    existing_log = conn.execute(
+        """
+        SELECT next_state_json
+        FROM review_logs
+        WHERE request_id = %s
+           OR (attempt_id = %s AND rating = %s AND source = %s)
+        ORDER BY created_at DESC
+        LIMIT 1
+        """,
+        (normalized_request_id, representative_attempt_id, rating, source),
+    ).fetchone()
+    if existing_log is not None:
+        next_state = existing_log["next_state_json"]
+        if not isinstance(next_state, Mapping):
+            raise ReviewSchedulingError("stored review log next_state_json is invalid")
+        knowledge_point = _load_knowledge_point(conn, knowledge_point_id)
+        return {
+            "KnowledgePoint": serialize_knowledge_point(knowledge_point),
+            "ReviewState": normalize_review_state_payload(next_state),
+            "due_at": next_state.get("due_at"),
+            "forget_risk": forget_risk_for(next_state),
+        }
+
+    _validate_attempt_for_review_batch_update(attempt, state, knowledge_point_id, source, rating)
+    previous_state = serialize_review_state(state)
+    reviewed_at = _aware_datetime(attempt.get("created_at")) or datetime.now(UTC)
+    next_state_values = _compute_next_state(state, rating, reviewed_at)
+
+    review_state = conn.execute(
+        """
+        UPDATE review_states
+        SET
+          card_state = %(card_state)s,
+          stability = %(stability)s,
+          difficulty = %(difficulty)s,
+          due_at = %(due_at)s,
+          elapsed_days = %(elapsed_days)s,
+          scheduled_days = %(scheduled_days)s,
+          reps = reps + 1,
+          lapses = lapses + %(lapse_increment)s,
+          last_review_at = %(reviewed_at)s,
+          last_attempt_id = %(attempt_id)s,
+          last_fsrs_rating = %(rating)s,
+          scheduler_version = %(scheduler_version)s,
+          fsrs_parameters = %(fsrs_parameters)s::jsonb,
+          suspended_at = NULL
+        WHERE knowledge_point_id = %(knowledge_point_id)s
+        RETURNING *
+        """,
+        {
+            **next_state_values,
+            "attempt_id": representative_attempt_id,
+            "rating": rating,
+            "reviewed_at": reviewed_at,
+            "scheduler_version": SCHEDULER_VERSION,
+            "fsrs_parameters": json.dumps({"scheduler_fallback": True, "batch_finalization": True}),
+            "knowledge_point_id": knowledge_point_id,
+        },
+    ).fetchone()
+    if review_state is None:
+        raise ReviewSchedulingError("review state update returned no row")
+
+    result = str(aggregate_result.get("result") or "failed")
+    score = _int_or_zero(aggregate_result.get("score"))
+    updated_knowledge_point = conn.execute(
+        """
+        UPDATE knowledge_points
+        SET
+          status = %s,
+          mastery_score = %s,
+          weak_points_json = %s::jsonb,
+          last_exercise_result = %s,
+          last_exercise_score = %s,
+          last_exercise_breakdown_json = %s::jsonb,
+          last_explanation_check_result = %s::jsonb,
+          last_session_id = %s
+        WHERE id = %s
+        RETURNING *
+        """,
+        (
+            knowledge_point_status_for(result),
+            mastery_score_for(result, score),
+            json.dumps(aggregate_result.get("weak_points") or aggregate_result.get("unresolved_focus_tags") or []),
+            result,
+            score,
+            json.dumps(aggregate_result.get("score_breakdown") or aggregate_result),
+            json.dumps(_json_compatible(aggregate_result.get("explanation_check_result") or {})),
+            attempt["session_id"],
+            knowledge_point_id,
+        ),
+    ).fetchone()
+    if updated_knowledge_point is None:
+        raise ReviewSchedulingError("knowledge point update returned no row")
+
+    next_state = serialize_review_state(review_state)
+    conn.execute(
+        """
+        INSERT INTO review_logs (
+          knowledge_point_id, user_id, plan_id, attempt_id, rating,
+          previous_state_json, next_state_json, scheduled_due_at, reviewed_at, source, request_id
+        )
+        VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s)
+        """,
+        (
+            knowledge_point_id,
+            state["user_id"],
+            state["plan_id"],
+            representative_attempt_id,
+            rating,
+            json.dumps(previous_state),
+            json.dumps(next_state),
+            review_state["due_at"],
+            reviewed_at,
+            source,
+            normalized_request_id,
+        ),
+    )
+    return {
+        "KnowledgePoint": serialize_knowledge_point(updated_knowledge_point),
+        "ReviewState": next_state,
+        "due_at": next_state["due_at"],
+        "forget_risk": forget_risk_for(next_state),
+    }
+
+
 def default_review_update_key(*, knowledge_point_id: str, attempt_id: str, rating: str) -> str:
     return f"review:update:{knowledge_point_id}:{attempt_id}:{rating}"
 
@@ -266,6 +432,27 @@ def _validate_attempt_for_review_update(
     code_completion_result = _mapping_or_empty(attempt.get("code_completion_result"))
     if code_completion_result.get("fsrs_rating") != rating:
         raise ReviewSchedulingError("attempt result fsrs rating does not match attempt rating")
+
+
+def _validate_attempt_for_review_batch_update(
+    attempt: Mapping[str, object],
+    state: Mapping[str, object],
+    knowledge_point_id: str,
+    source: str,
+    final_rating: str,
+) -> None:
+    if source != "review_submit":
+        raise ReviewSchedulingError("batch review update source must be review_submit")
+    if str(attempt.get("attempt_type") or "") != "review_submit":
+        raise ReviewSchedulingError("batch review update requires review_submit attempt")
+    if str(attempt.get("exercise_knowledge_point_id")) != knowledge_point_id:
+        raise ReviewSchedulingError("representative attempt exercise does not match knowledge point")
+    if str(attempt.get("user_id")) != str(state.get("user_id")):
+        raise ReviewSchedulingError("representative attempt user does not match review state user")
+    if attempt.get("evaluation_status") != "evaluated":
+        raise ReviewSchedulingError("representative attempt has not been evaluated")
+    if final_rating not in VALID_FSRS_RATINGS:
+        raise ReviewSchedulingError("batch final fsrs rating is invalid")
 
 
 def _compute_next_state(

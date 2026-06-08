@@ -236,6 +236,7 @@ export function ReviewPage({
                 ...current,
                 review_stage: response.review_stage,
                 review_stage_state: response.review_stage_state,
+                current_node: response.current_node,
                 warmup: response.warmup,
               }
             : current,

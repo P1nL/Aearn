@@ -718,8 +718,9 @@ export type ReviewSessionResponse = {
   };
   review_exercise: LearningExercise;
   ReviewState: ReviewStateSummary;
-  review_stage: "warmup" | "warmup_repair" | "variant_practice" | "submitted";
+  review_stage: ReviewStage;
   review_stage_state: ReviewStageState;
+  current_node: ReviewCurrentNode;
   warmup: ReviewWarmupState;
   selected_seed_id: string | null;
   seed_bank?: {
@@ -734,6 +735,36 @@ export type ReviewSessionResponse = {
   initial_agent_message: string;
 };
 
+export type ReviewStage = "warmup" | "warmup_repair" | "variant_practice" | "exercise" | "exercise_feedback" | "final_summary" | "submitted";
+
+export type ReviewCurrentNode =
+  | {
+      type: "warmup" | "warmup_repair";
+      stage: ReviewStage;
+      can_pause: boolean;
+      warmup: ReviewWarmupState;
+      position: number;
+      target_count: number;
+    }
+  | {
+      type: "exercise";
+      stage: "exercise";
+      can_pause: boolean;
+      exercise: LearningExercise;
+      position: number;
+      target_count: number;
+      completed_count: number;
+      candidate_id: string;
+    }
+  | {
+      type: "final_summary";
+      stage: ReviewStage;
+      can_pause: boolean;
+      finalization: Record<string, unknown>;
+      completed_count: number;
+      target_count: number;
+    };
+
 export type ReviewWarmupState = {
   question: string;
   expected_focus: string;
@@ -741,6 +772,8 @@ export type ReviewWarmupState = {
   repair_count: number;
   last_answer: string | null;
   feedback: string | null;
+  recall_level?: "clear" | "fuzzy" | "wrong" | "skipped" | null;
+  diagnosis?: Record<string, unknown>;
 };
 
 export type ReviewStageState = {
@@ -762,7 +795,8 @@ export type ReviewWarmupResultResponse = {
   review_stage: ReviewSessionResponse["review_stage"];
   warmup: ReviewWarmupState;
   review_stage_state: ReviewStageState;
-  next_action: "start_variant" | "retry_same";
+  current_node: ReviewCurrentNode;
+  next_action: "start_variant" | "start_exercise" | "retry_same";
 };
 
 export type ReviewAiPatchAnswer = {

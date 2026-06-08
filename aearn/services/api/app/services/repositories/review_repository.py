@@ -22,8 +22,9 @@ from app.services.exercises.exercise_repository import get_exercise
 from app.services.repositories.learner_profile import merge_stable_profile_signals
 from app.services.repositories.learning_session_repository import build_code_hash
 from app.services.repositories.plan_repository import IdempotencyConflictError, request_hash
-from app.services.repositories.review_scheduler import apply_attempt_review_update, forget_risk_for, serialize_review_state
+from app.services.repositories.review_scheduler import apply_review_batch_update, forget_risk_for, serialize_review_state
 from app.services.repositories.review_seed_bank import (
+    GENERATOR_VERSION as REVIEW_CANDIDATE_POOL_VERSION,
     build_review_warmup,
     ensure_ready_review_seed_bank,
     materialize_review_seed_exercise,
@@ -68,6 +69,9 @@ REVIEW_EXPLANATION_JUDGEMENT_POLICY = JudgementPolicy(
     default_fallback_question="请再补一句这次提交为什么能覆盖当前知识点风险。",
 )
 
+REVIEW_BATCH_SCHEMA_VERSION = "review_batch_v1"
+_REVIEW_BATCH_STAGES = {"warmup", "warmup_repair", "exercise", "exercise_feedback", "final_summary", "submitted"}
+
 
 class EntityNotFoundError(ValueError):
     def __init__(self, code: str, message: str) -> None:
@@ -85,6 +89,10 @@ class ReviewSessionConflictError(ValueError):
 
 
 class InvalidReviewRequestError(ValueError):
+    pass
+
+
+class ReviewAdaptiveSupplementRequired(ValueError):
     pass
 
 
@@ -183,12 +191,19 @@ def start_review_session(
         )
         state = _initial_review_stage_state(
             context=context,
-            seed_bank_id=str(seed_bank["id"]),
+            seed_bank=seed_bank,
             seed=seed,
             exercise=exercise,
         )
         seed_bank_payload = serialize_seed_bank(seed_bank)
         selected_seed_id = str(seed["id"])
+    else:
+        state = _ensure_review_batch_state(
+            state,
+            context=context,
+            exercise=exercise,
+        )
+        selected_seed_id = _state_seed_id(state)
 
     if session is None:
         session = conn.execute(
@@ -205,7 +220,7 @@ def start_review_session(
                 context["plan_id"],
                 knowledge_point_id,
                 knowledge_point_id,
-                "warmup",
+                _stage_from_state(state),
                 json.dumps(state),
                 _request_id_or_none(request_id),
             ),
@@ -240,6 +255,7 @@ def start_review_session(
         "ReviewState": serialize_review_state(context),
         "review_stage": _stage_from_state(state),
         "review_stage_state": state,
+        "current_node": _current_review_node(state, exercise=exercise),
         "warmup": state["warmup"],
         "selected_seed_id": selected_seed_id,
     }
@@ -286,10 +302,24 @@ def submit_review_exercise_result(
         response = stored["response_json"]
         if not isinstance(response, dict):
             raise RuntimeError("stored review result response is invalid")
+        if response.get("error_code") == "REVIEW_ADAPTIVE_SUPPLEMENT_FAILED":
+            raise ReviewAdaptiveSupplementRequired(str(response.get("error_message") or "adaptive supplement is required"))
         return response, True
 
     session = _load_review_session(conn, session_id, user_id=user_id)
     exercise = _load_session_exercise(conn, exercise_id=exercise_id, session=session)
+    state = _review_stage_state_from_session(session)
+    if state is None:
+        raise ReviewSessionConflictError("review session has no batch state")
+    state = _ensure_review_batch_state(state, exercise=exercise)
+    if _stage_from_state(state) != "exercise":
+        raise ReviewSessionConflictError("review session current node is not a formal exercise")
+    batch = _mapping_or_empty(state.get("batch"))
+    if str(batch.get("current_exercise_id") or "") != exercise_id:
+        raise ReviewSessionConflictError("submitted exercise does not match active review exercise")
+    current_entry = _current_plan_entry(state)
+    if str(current_entry.get("status") or "") not in {"active", ""}:
+        raise ReviewSessionConflictError("active review exercise has already been completed")
 
     if exercise["exercise_type"] == "review_ai_patch":
         if answer_payload is None:
@@ -329,6 +359,14 @@ def submit_review_exercise_result(
         explanation_check_payload = explanation_check.model_dump() if explanation_check is not None else None
         blocked_response = _blocked_review_explanation_check_response(explanation_check_payload)
         if blocked_response is not None:
+            blocked_response.update(
+                {
+                    "review_stage": _stage_from_state(state),
+                    "review_stage_state": state,
+                    "current_node": _current_review_node(state, exercise=exercise),
+                    "review_exercise": exercise,
+                }
+            )
             conn.execute(
                 """
                 INSERT INTO idempotency_records (key, operation, request_hash, response_json, user_id)
@@ -397,45 +435,150 @@ def submit_review_exercise_result(
     if submit_attempt is None:
         raise RuntimeError("review submit attempt insert returned no row")
 
-    schedule = apply_attempt_review_update(
-        conn,
-        knowledge_point_id=str(exercise["knowledge_point_id"]),
-        attempt_id=str(submit_attempt["id"]),
-        source="review_submit",
-        request_id=request_id,
-    )
-    merge_stable_profile_signals(
-        conn,
-        str(session["user_id"]),
+    state = _complete_current_review_plan_entry(
+        state,
+        exercise=exercise,
         attempt=submit_attempt,
-        knowledge_point={"id": str(exercise["knowledge_point_id"]), "title": str(exercise.get("knowledge_point_title") or exercise.get("title") or "")},
-        session_id=session_id,
-        source="review_submit",
+        code_completion_result=code_completion_result,
+        service_fields=service_fields,
     )
-    submitted_state = _mark_review_stage_submitted(session)
-    conn.execute(
-        """
-        UPDATE learning_sessions
-        SET status = 'finished',
-            ended_at = now(),
-            next_entry_point = %s,
-            review_stage = 'submitted',
-            review_stage_state_json = %s::jsonb
-        WHERE id = %s
-        """,
-        (str(exercise["knowledge_point_id"]), json.dumps(submitted_state), session_id),
+    state["session_diagnosis"] = _updated_formal_session_diagnosis(
+        state.get("session_diagnosis"),
+        completed_entry=_current_completed_plan_entry(state, str(submit_attempt["id"])),
+        code_completion_result=code_completion_result,
     )
+    state = _refresh_review_batch_progress(state)
 
-    response = {
-        **code_completion_result,
-        "attempt_id": str(submit_attempt["id"]),
-        "due_at": schedule["due_at"],
-        "forget_risk": schedule["forget_risk"],
-        "ReviewState": schedule["ReviewState"],
-        "KnowledgePoint": schedule["KnowledgePoint"],
-        "code_completion_result": code_completion_result,
-        "next_action": code_completion_result["next_action"],
-    }
+    if _should_finalize_review_batch(state):
+        final_rating, aggregate_result = _aggregate_review_batch_rating(state)
+        schedule = apply_review_batch_update(
+            conn,
+            knowledge_point_id=str(exercise["knowledge_point_id"]),
+            representative_attempt_id=str(submit_attempt["id"]),
+            final_rating=final_rating,
+            aggregate_result=aggregate_result,
+            source="review_submit",
+            request_id=_request_id_or_none(request_id) or _batch_finalization_request_id(session_id, str(submit_attempt["id"]), final_rating),
+        )
+        profile_attempt = _representative_profile_attempt(
+            submit_attempt,
+            final_rating=final_rating,
+            aggregate_result=aggregate_result,
+        )
+        merge_stable_profile_signals(
+            conn,
+            str(session["user_id"]),
+            attempt=profile_attempt,
+            knowledge_point={
+                "id": str(exercise["knowledge_point_id"]),
+                "title": str(exercise.get("knowledge_point_title") or exercise.get("title") or ""),
+            },
+            session_id=session_id,
+            source="review_submit",
+        )
+        state = _mark_review_batch_finalized(
+            state,
+            representative_attempt_id=str(submit_attempt["id"]),
+            final_rating=final_rating,
+            aggregate_result=aggregate_result,
+            schedule=schedule,
+        )
+        conn.execute(
+            """
+            UPDATE learning_sessions
+            SET status = 'finished',
+                ended_at = now(),
+                next_entry_point = %s,
+                review_stage = 'final_summary',
+                review_stage_state_json = %s::jsonb
+            WHERE id = %s
+            """,
+            (str(exercise["knowledge_point_id"]), json.dumps(state), session_id),
+        )
+        response = {
+            **code_completion_result,
+            "attempt_id": str(submit_attempt["id"]),
+            "due_at": schedule["due_at"],
+            "forget_risk": schedule["forget_risk"],
+            "ReviewState": schedule["ReviewState"],
+            "KnowledgePoint": schedule["KnowledgePoint"],
+            "code_completion_result": code_completion_result,
+            "review_stage": "final_summary",
+            "review_stage_state": state,
+            "current_node": _current_review_node(state, exercise=None),
+            "final_result": {
+                "final_fsrs_rating": final_rating,
+                "aggregate_result": aggregate_result,
+                "due_at": schedule["due_at"],
+                "forget_risk": schedule["forget_risk"],
+            },
+            "next_action": "schedule_review",
+        }
+    else:
+        context = _load_due_review_context(conn, user_id=str(session["user_id"]), knowledge_point_id=str(exercise["knowledge_point_id"]))
+        runtime_profile = _serialize_runtime_profile(context)
+        try:
+            next_exercise = _advance_to_next_review_exercise(
+                conn,
+                state,
+                context=context,
+                runtime_profile=runtime_profile,
+            )
+        except ReviewAdaptiveSupplementRequired as exc:
+            _mark_adaptive_supplement_needed(state, reason=str(exc))
+            state["review_stage"] = "exercise"
+            conn.execute(
+                """
+                UPDATE learning_sessions
+                SET status = 'active',
+                    next_entry_point = %s,
+                    review_stage = 'exercise',
+                    review_stage_state_json = %s::jsonb
+                WHERE id = %s
+                """,
+                (str(exercise["knowledge_point_id"]), json.dumps(state), session_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO idempotency_records (key, operation, request_hash, response_json, user_id)
+                VALUES (%s, 'submit_review_exercise_result', %s, %s::jsonb, %s)
+                """,
+                (
+                    key,
+                    payload_hash,
+                    json.dumps(
+                        {
+                            "error_code": "REVIEW_ADAPTIVE_SUPPLEMENT_FAILED",
+                            "error_message": str(exc),
+                        }
+                    ),
+                    str(session["user_id"]),
+                ),
+            )
+            raise
+        state["review_stage"] = "exercise"
+        conn.execute(
+            """
+            UPDATE learning_sessions
+            SET status = 'active',
+                next_entry_point = %s,
+                review_stage = 'exercise',
+                review_stage_state_json = %s::jsonb
+            WHERE id = %s
+            """,
+            (str(exercise["knowledge_point_id"]), json.dumps(state), session_id),
+        )
+        response = {
+            **code_completion_result,
+            "attempt_id": str(submit_attempt["id"]),
+            "code_completion_result": code_completion_result,
+            "review_exercise": next_exercise,
+            "review_stage": "exercise",
+            "review_stage_state": state,
+            "current_node": _current_review_node(state, exercise=next_exercise),
+            "next_action": "next_exercise",
+            "final_result": None,
+        }
     conn.execute(
         """
         INSERT INTO idempotency_records (key, operation, request_hash, response_json, user_id)
@@ -458,6 +601,9 @@ def record_review_warmup_result(
     state = _review_stage_state_from_session(session)
     if state is None:
         raise ReviewSessionConflictError("review session has no warmup state")
+    exercise_id = _state_exercise_id(state)
+    exercise = get_exercise(conn, exercise_id) if exercise_id is not None else None
+    state = _ensure_review_batch_state(state, exercise=exercise)
     warmup = _mapping_or_empty(state.get("warmup"))
     if action == "skip":
         result = "skipped"
@@ -491,31 +637,52 @@ def record_review_warmup_result(
             "review_stage": str(session.get("review_stage") or _stage_from_state(state)),
             "warmup": response_warmup,
             "review_stage_state": response_state,
+            "current_node": _current_review_node(response_state, exercise=exercise),
             "next_action": "retry_same",
         }
     repair_count = _int_or_zero(warmup.get("repair_count"))
-    next_stage = "variant_practice"
+    recall_level = _warmup_recall_level(result)
+    next_stage = "exercise"
     feedback = _warmup_feedback(result)
-    if result in {"incorrect", "unclear"} and repair_count < 1:
+    if recall_level in {"fuzzy", "wrong"} and repair_count < 1:
         next_stage = "warmup_repair"
         repair_count += 1
-        feedback = "先做一次短修正：用一句话指出当前知识点里最容易出错的风险，然后进入变体题。"
-    elif result in {"incorrect", "unclear"}:
+        feedback = "先做一次短修正：用一句话指出当前知识点里最容易出错的风险，然后进入正式复习题。"
+    elif recall_level in {"fuzzy", "wrong"}:
         variant = _mapping_or_empty(state.get("variant"))
         variant["guided"] = True
         state["variant"] = variant
+        _mark_current_plan_guided(state)
 
     updated_warmup = dict(warmup)
     updated_warmup.update(
         {
             "result": result,
+            "recall_level": recall_level,
             "last_answer": answer,
             "repair_count": repair_count,
             "feedback": feedback,
+            "judgement_ready": True,
+            "judgement_blocking_fields": [],
+            "clarification_question": None,
+            "diagnosis": _warmup_diagnosis(
+                recall_level=recall_level,
+                answer=answer,
+                warmup=warmup,
+            ),
         }
     )
     state["warmup"] = updated_warmup
     state["review_stage"] = next_stage
+    state["session_diagnosis"] = _updated_session_diagnosis(
+        state.get("session_diagnosis"),
+        recall_level=recall_level,
+        warmup=updated_warmup,
+    )
+    if recall_level == "skipped":
+        batch = _mapping_or_empty(state.get("batch"))
+        batch["difficulty_bias"] = "lower"
+        state["batch"] = batch
     conn.execute(
         """
         UPDATE learning_sessions
@@ -530,7 +697,8 @@ def record_review_warmup_result(
         "review_stage": next_stage,
         "warmup": updated_warmup,
         "review_stage_state": state,
-        "next_action": "start_variant",
+        "current_node": _current_review_node(state, exercise=exercise),
+        "next_action": "retry_same" if next_stage == "warmup_repair" else "start_exercise",
     }
 
 
@@ -883,7 +1051,11 @@ def _review_stage_state_from_session(session: Mapping[str, object] | None) -> di
     state = session.get("review_stage_state_json")
     if not isinstance(state, Mapping):
         return None
-    if not isinstance(state.get("warmup"), Mapping) or not isinstance(state.get("variant"), Mapping):
+    if not isinstance(state.get("warmup"), Mapping):
+        return None
+    if state.get("schema_version") == REVIEW_BATCH_SCHEMA_VERSION and isinstance(state.get("batch"), Mapping):
+        return dict(state)
+    if not isinstance(state.get("variant"), Mapping):
         return None
     return dict(state)
 
@@ -891,14 +1063,14 @@ def _review_stage_state_from_session(session: Mapping[str, object] | None) -> di
 def _initial_review_stage_state(
     *,
     context: Mapping[str, object],
-    seed_bank_id: str,
+    seed_bank: Mapping[str, object],
     seed: Mapping[str, object],
     exercise: Mapping[str, object],
 ) -> dict[str, object]:
-    return {
+    legacy_state = {
         "review_stage": "warmup",
         "knowledge_point_id": str(context["id"]),
-        "seed_bank_id": seed_bank_id,
+        "seed_bank_id": str(seed_bank["id"]),
         "seed_id": str(seed["id"]),
         "warmup": build_review_warmup(seed, context),
         "variant": {
@@ -908,9 +1080,858 @@ def _initial_review_stage_state(
             "selection_reason": _variant_reason(context),
         },
     }
+    return _ensure_review_batch_state(
+        legacy_state,
+        context=context,
+        exercise=exercise,
+        seed_bank=seed_bank,
+        seed=seed,
+    )
+
+
+def _ensure_review_batch_state(
+    state: Mapping[str, object],
+    *,
+    context: Mapping[str, object] | None = None,
+    exercise: Mapping[str, object] | None = None,
+    seed_bank: Mapping[str, object] | None = None,
+    seed: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    """Normalize legacy review state into the resumable batch state contract."""
+    normalized = dict(state)
+    warmup = _normalize_warmup_state(_mapping_or_empty(normalized.get("warmup")))
+    seed_metadata = _review_seed_metadata(seed=seed, exercise=exercise)
+    candidate_id = _candidate_id_for_state(normalized, seed=seed, seed_metadata=seed_metadata)
+    exercise_id = _exercise_id_for_state(normalized, exercise=exercise)
+    batch_counts = _review_batch_counts(context)
+    batch = _mapping_or_empty(normalized.get("batch"))
+    current_stage = _normalize_review_stage(str(normalized.get("review_stage") or "warmup"))
+    batch.update(
+        {
+            "status": str(batch.get("status") or "active"),
+            "min_exercise_count": _int_or_zero(batch.get("min_exercise_count")) or batch_counts["min"],
+            "target_exercise_count": _int_or_zero(batch.get("target_exercise_count")) or batch_counts["target"],
+            "max_exercise_count": _int_or_zero(batch.get("max_exercise_count")) or batch_counts["max"],
+            "completed_count": _int_or_zero(batch.get("completed_count")),
+            "current_exercise_id": exercise_id,
+            "current_candidate_id": candidate_id,
+            "can_finalize": bool(batch.get("can_finalize", False)),
+        }
+    )
+
+    pool = _mapping_or_empty(normalized.get("pool"))
+    seed_bank_id = _seed_bank_id_for_state(normalized, seed_bank=seed_bank, seed_metadata=seed_metadata)
+    pool.update(
+        {
+            "seed_bank_id": seed_bank_id,
+            "generator_version": str(
+                seed_bank.get("generator_version")
+                if seed_bank is not None
+                else pool.get("generator_version") or seed_metadata.get("seed_generator_version") or REVIEW_CANDIDATE_POOL_VERSION
+            ),
+            "candidate_count": _candidate_count_for_pool(pool, seed_bank=seed_bank),
+            "adaptive_supplements": pool.get("adaptive_supplements") if isinstance(pool.get("adaptive_supplements"), list) else [],
+        }
+    )
+
+    exercise_plan = _exercise_plan_for_state(
+        normalized,
+        candidate_id=candidate_id,
+        exercise=exercise,
+        seed=seed,
+        seed_metadata=seed_metadata,
+    )
+    variant = _variant_for_state(
+        normalized,
+        exercise=exercise,
+        context=context,
+        seed_metadata=seed_metadata,
+    )
+    session_diagnosis = _initial_session_diagnosis(
+        normalized.get("session_diagnosis"),
+        context=context,
+    )
+
+    return {
+        **normalized,
+        "schema_version": REVIEW_BATCH_SCHEMA_VERSION,
+        "review_stage": current_stage,
+        "knowledge_point_id": str(
+            normalized.get("knowledge_point_id")
+            or (context.get("id") if context is not None else "")
+            or (exercise.get("knowledge_point_id") if exercise is not None else "")
+        ),
+        "seed_bank_id": seed_bank_id,
+        "seed_id": candidate_id,
+        "batch": batch,
+        "warmup": warmup,
+        "session_diagnosis": session_diagnosis,
+        "pool": pool,
+        "exercise_plan": exercise_plan,
+        "variant": variant,
+        "finalization": _mapping_or_empty(normalized.get("finalization")) or {
+            "status": "pending",
+            "representative_attempt_id": None,
+            "final_fsrs_rating": None,
+            "aggregate_result": None,
+        },
+    }
+
+
+def _normalize_warmup_state(warmup: Mapping[str, object]) -> dict[str, object]:
+    normalized = dict(warmup)
+    result = str(normalized.get("result") or "pending")
+    recall_level = _warmup_recall_level(result) if result != "pending" else None
+    normalized.setdefault("result", "pending")
+    normalized.setdefault("repair_count", 0)
+    normalized.setdefault("last_answer", None)
+    normalized.setdefault("feedback", None)
+    normalized["recall_level"] = normalized.get("recall_level") or recall_level
+    diagnosis = normalized.get("diagnosis")
+    if not isinstance(diagnosis, Mapping):
+        normalized["diagnosis"] = _empty_warmup_diagnosis()
+    return normalized
+
+
+def _empty_warmup_diagnosis() -> dict[str, object]:
+    return {
+        "recall_level": None,
+        "confidence": None,
+        "evidence": [],
+        "missing_points": [],
+        "misconception": "",
+        "suggested_focus": [],
+    }
+
+
+def _review_batch_counts(context: Mapping[str, object] | None) -> dict[str, int]:
+    if context is None:
+        return {"min": 3, "target": 4, "max": 6}
+    weak_points = _string_list(context.get("weak_points_json"))
+    mastery_score = context.get("mastery_score")
+    high_risk = (
+        str(context.get("last_fsrs_rating") or "") == "Again"
+        or _int_or_zero(context.get("lapses")) > 0
+        or (mastery_score is not None and _float_or_zero(mastery_score) < 0.45)
+        or len(weak_points) >= 2
+    )
+    return {"min": 3, "target": 5 if high_risk else 4, "max": 6}
+
+
+def _review_seed_metadata(
+    *,
+    seed: Mapping[str, object] | None,
+    exercise: Mapping[str, object] | None,
+) -> dict[str, object]:
+    if seed is not None:
+        metadata = seed.get("metadata")
+        if isinstance(metadata, Mapping):
+            return dict(metadata)
+        metadata_json = seed.get("metadata_json")
+        if isinstance(metadata_json, Mapping):
+            return dict(metadata_json)
+    if exercise is None:
+        return {}
+    metadata_json = exercise.get("metadata_json")
+    if not isinstance(metadata_json, Mapping):
+        return {}
+    review_seed = metadata_json.get("review_seed")
+    if isinstance(review_seed, Mapping):
+        return {
+            **dict(review_seed),
+            "seed_generator_version": metadata_json.get("seed_generator_version"),
+        }
+    return {}
+
+
+def _candidate_id_for_state(
+    state: Mapping[str, object],
+    *,
+    seed: Mapping[str, object] | None,
+    seed_metadata: Mapping[str, object],
+) -> str:
+    if seed is not None and seed.get("id"):
+        return str(seed["id"])
+    batch = state.get("batch")
+    if isinstance(batch, Mapping) and batch.get("current_candidate_id"):
+        return str(batch["current_candidate_id"])
+    if seed_metadata.get("candidate_id"):
+        return str(seed_metadata["candidate_id"])
+    if seed_metadata.get("seed_id"):
+        return str(seed_metadata["seed_id"])
+    seed_id = state.get("seed_id")
+    return str(seed_id) if seed_id else ""
+
+
+def _seed_bank_id_for_state(
+    state: Mapping[str, object],
+    *,
+    seed_bank: Mapping[str, object] | None,
+    seed_metadata: Mapping[str, object],
+) -> str:
+    if seed_bank is not None and seed_bank.get("id"):
+        return str(seed_bank["id"])
+    if state.get("seed_bank_id"):
+        return str(state["seed_bank_id"])
+    if seed_metadata.get("seed_bank_id"):
+        return str(seed_metadata["seed_bank_id"])
+    pool = state.get("pool")
+    if isinstance(pool, Mapping) and pool.get("seed_bank_id"):
+        return str(pool["seed_bank_id"])
+    return ""
+
+
+def _exercise_id_for_state(
+    state: Mapping[str, object],
+    *,
+    exercise: Mapping[str, object] | None,
+) -> str:
+    if exercise is not None and exercise.get("id"):
+        return str(exercise["id"])
+    batch = state.get("batch")
+    if isinstance(batch, Mapping) and batch.get("current_exercise_id"):
+        return str(batch["current_exercise_id"])
+    variant = state.get("variant")
+    if isinstance(variant, Mapping) and variant.get("exercise_id"):
+        return str(variant["exercise_id"])
+    return ""
+
+
+def _candidate_count_for_pool(
+    pool: Mapping[str, object],
+    *,
+    seed_bank: Mapping[str, object] | None,
+) -> int:
+    if seed_bank is not None:
+        count = _int_or_zero(seed_bank.get("seed_count"))
+        if count:
+            return count
+        seeds = seed_bank.get("seeds_json")
+        if isinstance(seeds, list):
+            return len(seeds)
+    return _int_or_zero(pool.get("candidate_count"))
+
+
+def _exercise_plan_for_state(
+    state: Mapping[str, object],
+    *,
+    candidate_id: str,
+    exercise: Mapping[str, object] | None,
+    seed: Mapping[str, object] | None,
+    seed_metadata: Mapping[str, object],
+) -> list[dict[str, object]]:
+    raw_plan = state.get("exercise_plan")
+    if isinstance(raw_plan, list) and raw_plan:
+        return [dict(item) for item in raw_plan if isinstance(item, Mapping)]
+    if exercise is None:
+        return []
+    capability = seed.get("capability") if seed is not None else seed_metadata.get("capability")
+    focus_tags = _string_list(seed.get("focus_tags")) if seed is not None else _string_list(seed_metadata.get("focus_tags"))
+    return [
+        {
+            "position": 1,
+            "candidate_id": candidate_id,
+            "exercise_id": str(exercise["id"]),
+            "status": "active",
+            "capability": capability,
+            "exercise_type": str(exercise["exercise_type"]),
+            "focus_tags": focus_tags,
+            "is_core": bool(seed_metadata.get("is_core", False)),
+        }
+    ]
+
+
+def _variant_for_state(
+    state: Mapping[str, object],
+    *,
+    exercise: Mapping[str, object] | None,
+    context: Mapping[str, object] | None,
+    seed_metadata: Mapping[str, object],
+) -> dict[str, object]:
+    variant = _mapping_or_empty(state.get("variant"))
+    if exercise is not None:
+        variant.setdefault("exercise_id", str(exercise["id"]))
+        variant.setdefault("exercise_type", str(exercise["exercise_type"]))
+    variant.setdefault("guided", False)
+    variant.setdefault(
+        "selection_reason",
+        str(seed_metadata.get("selection_reason") or (_variant_reason(context) if context is not None else "")),
+    )
+    return variant
+
+
+def _initial_session_diagnosis(
+    value: object,
+    *,
+    context: Mapping[str, object] | None,
+) -> dict[str, object]:
+    if isinstance(value, Mapping):
+        diagnosis = dict(value)
+    else:
+        diagnosis = {}
+    diagnosis.setdefault("recall_level", None)
+    diagnosis.setdefault("weak_points", _string_list(context.get("weak_points_json")) if context is not None else [])
+    diagnosis.setdefault("passed_focus_tags", [])
+    diagnosis.setdefault("failed_focus_tags", [])
+    diagnosis.setdefault("skip_count", 0)
+    diagnosis.setdefault("core_failure_count", 0)
+    diagnosis.setdefault("last_result", None)
+    return diagnosis
+
+
+def _current_review_node(
+    state: Mapping[str, object],
+    *,
+    exercise: Mapping[str, object] | None,
+) -> dict[str, object]:
+    stage = _stage_from_state(state)
+    batch = _mapping_or_empty(state.get("batch"))
+    target_count = _int_or_zero(batch.get("target_exercise_count")) or 4
+    if stage in {"warmup", "warmup_repair"}:
+        return {
+            "type": stage,
+            "stage": stage,
+            "can_pause": True,
+            "warmup": _mapping_or_empty(state.get("warmup")),
+            "position": 0,
+            "target_count": target_count,
+        }
+    if stage in {"submitted", "final_summary"}:
+        finalization = _mapping_or_empty(state.get("finalization"))
+        return {
+            "type": "final_summary",
+            "stage": stage,
+            "can_pause": False,
+            "finalization": finalization,
+            "completed_count": _int_or_zero(batch.get("completed_count")),
+            "target_count": target_count,
+            "final_fsrs_rating": finalization.get("final_fsrs_rating"),
+            "due_at": finalization.get("due_at"),
+            "forget_risk": finalization.get("forget_risk"),
+        }
+    plan_entry = _current_plan_entry(state)
+    return {
+        "type": "exercise",
+        "stage": "exercise",
+        "can_pause": True,
+        "exercise": dict(exercise) if isinstance(exercise, Mapping) else {},
+        "position": _int_or_zero(plan_entry.get("position")) or 1,
+        "target_count": target_count,
+        "completed_count": _int_or_zero(batch.get("completed_count")),
+        "candidate_id": str(plan_entry.get("candidate_id") or batch.get("current_candidate_id") or ""),
+    }
+
+
+def _current_plan_entry(state: Mapping[str, object]) -> dict[str, object]:
+    batch = _mapping_or_empty(state.get("batch"))
+    current_exercise_id = str(batch.get("current_exercise_id") or "")
+    plan = state.get("exercise_plan")
+    if isinstance(plan, list):
+        for item in plan:
+            if not isinstance(item, Mapping):
+                continue
+            if current_exercise_id and str(item.get("exercise_id") or "") == current_exercise_id:
+                return dict(item)
+        for item in plan:
+            if isinstance(item, Mapping) and str(item.get("status") or "") == "active":
+                return dict(item)
+    return {}
+
+
+def _complete_current_review_plan_entry(
+    state: Mapping[str, object],
+    *,
+    exercise: Mapping[str, object],
+    attempt: Mapping[str, object],
+    code_completion_result: Mapping[str, object],
+    service_fields: Mapping[str, object],
+) -> dict[str, object]:
+    updated = dict(state)
+    plan = updated.get("exercise_plan")
+    if not isinstance(plan, list):
+        raise ReviewSessionConflictError("review exercise plan is missing")
+    current_entry = _current_plan_entry(updated)
+    current_exercise_id = str(current_entry.get("exercise_id") or "")
+    if not current_exercise_id:
+        raise ReviewSessionConflictError("active review exercise plan entry is missing")
+    seed_metadata = _review_seed_metadata(seed=None, exercise=exercise)
+    completed = {
+        **current_entry,
+        "status": "completed",
+        "attempt_id": str(attempt["id"]),
+        "exercise_id": str(exercise["id"]),
+        "candidate_id": str(current_entry.get("candidate_id") or seed_metadata.get("candidate_id") or ""),
+        "capability": str(current_entry.get("capability") or seed_metadata.get("capability") or ""),
+        "exercise_type": str(exercise["exercise_type"]),
+        "focus_tags": _unique_strings(_string_list(current_entry.get("focus_tags")) + _string_list(seed_metadata.get("focus_tags"))),
+        "is_core": bool(current_entry.get("is_core") or seed_metadata.get("is_core", False)),
+        "result": str(code_completion_result.get("result") or "failed"),
+        "score": _int_or_zero(code_completion_result.get("score")),
+        "fsrs_rating": str(code_completion_result.get("fsrs_rating") or ""),
+        "score_breakdown": _mapping_or_empty(code_completion_result.get("score_breakdown")),
+        "evidence_quality": _evidence_quality_for_result(code_completion_result, service_fields),
+        "completed_at": _iso_or_none(attempt.get("created_at")),
+    }
+    updated_plan: list[dict[str, object]] = []
+    replaced = False
+    for item in plan:
+        if isinstance(item, Mapping) and str(item.get("exercise_id") or "") == current_exercise_id:
+            updated_plan.append(completed)
+            replaced = True
+        elif isinstance(item, Mapping):
+            updated_plan.append(dict(item))
+    if not replaced:
+        updated_plan.append(completed)
+    updated["exercise_plan"] = updated_plan
+    return updated
+
+
+def _current_completed_plan_entry(state: Mapping[str, object], attempt_id: str) -> dict[str, object]:
+    plan = state.get("exercise_plan")
+    if isinstance(plan, list):
+        for item in plan:
+            if isinstance(item, Mapping) and str(item.get("attempt_id") or "") == attempt_id:
+                return dict(item)
+    return {}
+
+
+def _updated_formal_session_diagnosis(
+    value: object,
+    *,
+    completed_entry: Mapping[str, object],
+    code_completion_result: Mapping[str, object],
+) -> dict[str, object]:
+    diagnosis = _initial_session_diagnosis(value, context=None)
+    focus_tags = _string_list(completed_entry.get("focus_tags"))
+    result = str(completed_entry.get("result") or code_completion_result.get("result") or "failed")
+    rating = str(completed_entry.get("fsrs_rating") or code_completion_result.get("fsrs_rating") or "")
+    passed = result in {"passed", "easy"} and rating in {"Good", "Easy"}
+    diagnosis["last_result"] = result
+    diagnosis["last_fsrs_rating"] = rating
+    if passed:
+        diagnosis["passed_focus_tags"] = _unique_strings(_string_list(diagnosis.get("passed_focus_tags")) + focus_tags)
+    else:
+        diagnosis["failed_focus_tags"] = _unique_strings(_string_list(diagnosis.get("failed_focus_tags")) + focus_tags)
+        diagnosis["weak_points"] = _unique_strings(
+            _string_list(diagnosis.get("weak_points"))
+            + _string_list(code_completion_result.get("weak_points"))
+            + focus_tags[:3]
+        )
+    if bool(completed_entry.get("is_core")) and not passed:
+        diagnosis["core_failure_count"] = _int_or_zero(diagnosis.get("core_failure_count")) + 1
+    if rating == "Again":
+        diagnosis["skip_count"] = _int_or_zero(diagnosis.get("skip_count")) + 1
+    return diagnosis
+
+
+def _refresh_review_batch_progress(state: Mapping[str, object]) -> dict[str, object]:
+    updated = dict(state)
+    batch = _mapping_or_empty(updated.get("batch"))
+    coverage = _review_batch_coverage(updated)
+    completed_count = len(_completed_review_entries(updated))
+    batch["completed_count"] = completed_count
+    batch["coverage"] = coverage
+    batch["can_finalize"] = _can_finalize_review_batch(updated, completed_count=completed_count, coverage=coverage)
+    updated["batch"] = batch
+    return updated
+
+
+def _review_batch_coverage(state: Mapping[str, object]) -> dict[str, object]:
+    completed = _completed_review_entries(state)
+    diagnosis = _mapping_or_empty(state.get("session_diagnosis"))
+    required = _required_review_capabilities(state)
+    covered = _unique_strings([str(entry.get("capability") or "") for entry in completed if entry.get("capability")])
+    failed_core = _unique_strings(
+        [
+            str(entry.get("capability") or "")
+            for entry in completed
+            if bool(entry.get("is_core")) and str(entry.get("result") or "") not in {"passed", "easy"}
+        ]
+    )
+    passed_focus = _string_list(diagnosis.get("passed_focus_tags"))
+    failed_focus = _string_list(diagnosis.get("failed_focus_tags"))
+    weak_points = _string_list(diagnosis.get("weak_points"))
+    unresolved = [tag for tag in _unique_strings(failed_focus + weak_points) if tag not in set(passed_focus)]
+    return {
+        "required_capabilities": required,
+        "covered_capabilities": covered,
+        "failed_core_capabilities": failed_core,
+        "unresolved_focus_tags": unresolved,
+    }
+
+
+def _required_review_capabilities(state: Mapping[str, object]) -> list[str]:
+    batch = _mapping_or_empty(state.get("batch"))
+    coverage = _mapping_or_empty(batch.get("coverage"))
+    existing = _string_list(coverage.get("required_capabilities"))
+    if existing:
+        return existing
+    return ["basic_application", "concept_explanation", "debugging"]
+
+
+def _can_finalize_review_batch(
+    state: Mapping[str, object],
+    *,
+    completed_count: int,
+    coverage: Mapping[str, object],
+) -> bool:
+    batch = _mapping_or_empty(state.get("batch"))
+    min_count = _int_or_zero(batch.get("min_exercise_count")) or 3
+    target_count = _int_or_zero(batch.get("target_exercise_count")) or 4
+    max_count = _int_or_zero(batch.get("max_exercise_count")) or 6
+    if completed_count >= max_count:
+        return True
+    if completed_count < min_count:
+        return False
+    diagnosis = _mapping_or_empty(state.get("session_diagnosis"))
+    core_failures = _int_or_zero(diagnosis.get("core_failure_count"))
+    if core_failures and completed_count < target_count:
+        return False
+    required = set(_string_list(coverage.get("required_capabilities")))
+    covered = set(_string_list(coverage.get("covered_capabilities")))
+    required_coverage_count = min(3, len(required)) if required else 2
+    if len(covered & required) >= required_coverage_count:
+        return True
+    return completed_count >= target_count
+
+
+def _should_finalize_review_batch(state: Mapping[str, object]) -> bool:
+    batch = _mapping_or_empty(state.get("batch"))
+    completed_count = _int_or_zero(batch.get("completed_count"))
+    max_count = _int_or_zero(batch.get("max_exercise_count")) or 6
+    return completed_count >= max_count or bool(batch.get("can_finalize"))
+
+
+def _advance_to_next_review_exercise(
+    conn: Connection[dict[str, object]],
+    state: dict[str, object],
+    *,
+    context: Mapping[str, object],
+    runtime_profile: Mapping[str, object],
+) -> dict[str, object]:
+    pool = _mapping_or_empty(state.get("pool"))
+    seed_bank_id = str(pool.get("seed_bank_id") or state.get("seed_bank_id") or "")
+    seed_bank = _load_ready_review_seed_bank(conn, seed_bank_id)
+    seed = _select_next_review_seed(seed_bank=seed_bank, state=state, runtime_profile=runtime_profile)
+    exercise = materialize_review_seed_exercise(
+        conn,
+        seed_bank=seed_bank,
+        seed=seed,
+        context=context,
+        runtime_profile=runtime_profile,
+    )
+    seed_metadata = _review_seed_metadata(seed=seed, exercise=exercise)
+    plan = state.get("exercise_plan")
+    if not isinstance(plan, list):
+        plan = []
+    next_entry = {
+        "position": len([item for item in plan if isinstance(item, Mapping)]) + 1,
+        "candidate_id": str(seed["id"]),
+        "exercise_id": str(exercise["id"]),
+        "status": "active",
+        "capability": str(seed.get("capability") or seed_metadata.get("capability") or ""),
+        "exercise_type": str(exercise["exercise_type"]),
+        "focus_tags": _string_list(seed.get("focus_tags")) or _string_list(seed_metadata.get("focus_tags")),
+        "is_core": bool(seed_metadata.get("is_core", False)),
+        "selection_reason": str(seed_metadata.get("selection_reason") or seed.get("review_focus") or ""),
+    }
+    plan.append(next_entry)
+    state["exercise_plan"] = plan
+    batch = _mapping_or_empty(state.get("batch"))
+    batch["current_exercise_id"] = str(exercise["id"])
+    batch["current_candidate_id"] = str(seed["id"])
+    state["batch"] = batch
+    state["seed_id"] = str(seed["id"])
+    pool["adaptive_supplement_status"] = "not_needed"
+    state["pool"] = pool
+    state["variant"] = _variant_for_state(state, exercise=exercise, context=context, seed_metadata=seed_metadata)
+    return exercise
+
+
+def _load_ready_review_seed_bank(conn: Connection[dict[str, object]], seed_bank_id: str) -> Mapping[str, object]:
+    if not seed_bank_id:
+        raise ReviewAdaptiveSupplementRequired("review candidate pool is missing")
+    row = conn.execute(
+        """
+        SELECT *
+        FROM review_seed_banks
+        WHERE id = %s
+          AND status = 'ready'
+        LIMIT 1
+        """,
+        (seed_bank_id,),
+    ).fetchone()
+    if row is None:
+        raise ReviewAdaptiveSupplementRequired("ready review candidate pool is missing")
+    return row
+
+
+def _select_next_review_seed(
+    *,
+    seed_bank: Mapping[str, object],
+    state: Mapping[str, object],
+    runtime_profile: Mapping[str, object],
+) -> Mapping[str, object]:
+    seeds = [dict(item) for item in _seed_list(seed_bank.get("seeds_json"))]
+    if not seeds:
+        raise ReviewAdaptiveSupplementRequired("review candidate pool is empty")
+    supported_types = _string_list(runtime_profile.get("supported_exercise_types"))
+    used_candidate_ids = _used_candidate_ids(state)
+    scored: list[tuple[int, int, Mapping[str, object]]] = []
+    for index, seed in enumerate(seeds):
+        candidate_id = str(seed.get("id") or "")
+        if not candidate_id or candidate_id in used_candidate_ids:
+            continue
+        exercise_type = str(seed.get("exercise_type") or "")
+        if supported_types and exercise_type not in supported_types:
+            continue
+        if _seed_avoid_conflicts(seed, state):
+            continue
+        scored.append((_next_seed_score(seed, state), -index, seed))
+    if not scored:
+        raise ReviewAdaptiveSupplementRequired("ready review candidate pool cannot cover the remaining review need")
+    return max(scored, key=lambda item: (item[0], item[1]))[2]
+
+
+def _seed_list(value: object) -> list[Mapping[str, object]]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, Mapping)]
+
+
+def _used_candidate_ids(state: Mapping[str, object]) -> set[str]:
+    plan = state.get("exercise_plan")
+    if not isinstance(plan, list):
+        return set()
+    return {str(item.get("candidate_id") or "") for item in plan if isinstance(item, Mapping) and item.get("candidate_id")}
+
+
+def _seed_avoid_conflicts(seed: Mapping[str, object], state: Mapping[str, object]) -> bool:
+    avoid_if = seed.get("avoid_if")
+    if not isinstance(avoid_if, Mapping):
+        return False
+    current_recent = str(_mapping_or_empty(state.get("batch")).get("current_candidate_id") or "")
+    if current_recent and current_recent in set(_string_list(avoid_if.get("recent_candidate_ids"))):
+        return True
+    diagnosis = _mapping_or_empty(state.get("session_diagnosis"))
+    if _int_or_zero(diagnosis.get("core_failure_count")):
+        return False
+    already_passed = set(_string_list(avoid_if.get("already_passed_focus_tags")))
+    if not already_passed:
+        return False
+    passed_focus = set(_string_list(diagnosis.get("passed_focus_tags")))
+    return already_passed <= passed_focus
+
+
+def _next_seed_score(seed: Mapping[str, object], state: Mapping[str, object]) -> int:
+    diagnosis = _mapping_or_empty(state.get("session_diagnosis"))
+    coverage = _mapping_or_empty(_mapping_or_empty(state.get("batch")).get("coverage"))
+    covered_capabilities = set(_string_list(coverage.get("covered_capabilities")))
+    required_capabilities = set(_string_list(coverage.get("required_capabilities")) or _required_review_capabilities(state))
+    failed_focus = set(_string_list(diagnosis.get("failed_focus_tags")))
+    weak_points = set(_string_list(diagnosis.get("weak_points")))
+    focus_tags = set(_string_list(seed.get("focus_tags")))
+    capability = str(seed.get("capability") or "")
+    score = 0
+    if capability and capability not in covered_capabilities:
+        score += 60 if capability in required_capabilities else 35
+    if focus_tags & failed_focus:
+        score += 40
+    if focus_tags & weak_points:
+        score += 25
+    metadata = seed.get("metadata")
+    is_core = isinstance(metadata, Mapping) and bool(metadata.get("is_core", False))
+    if is_core:
+        score += 8
+    if _int_or_zero(diagnosis.get("core_failure_count")) and is_core:
+        score += 15
+    if _int_or_zero(diagnosis.get("skip_count")):
+        score += max(0, 6 - _int_or_zero(seed.get("difficulty")))
+    previous_type = _last_completed_exercise_type(state)
+    if previous_type and previous_type == str(seed.get("exercise_type") or ""):
+        score -= 20
+    return score
+
+
+def _last_completed_exercise_type(state: Mapping[str, object]) -> str:
+    completed = _completed_review_entries(state)
+    if not completed:
+        return ""
+    return str(completed[-1].get("exercise_type") or "")
+
+
+def _completed_review_entries(state: Mapping[str, object]) -> list[dict[str, object]]:
+    plan = state.get("exercise_plan")
+    if not isinstance(plan, list):
+        return []
+    return [dict(item) for item in plan if isinstance(item, Mapping) and str(item.get("status") or "") == "completed"]
+
+
+def _mark_adaptive_supplement_needed(state: dict[str, object], *, reason: str) -> None:
+    pool = _mapping_or_empty(state.get("pool"))
+    pool["adaptive_supplement_status"] = "needed"
+    pool["adaptive_supplement_failure_code"] = "REVIEW_ADAPTIVE_SUPPLEMENT_FAILED"
+    pool["adaptive_supplement_failure_reason"] = reason
+    state["pool"] = pool
+    batch = _mapping_or_empty(state.get("batch"))
+    batch["can_finalize"] = False
+    state["batch"] = batch
+
+
+def _aggregate_review_batch_rating(state: Mapping[str, object]) -> tuple[str, dict[str, object]]:
+    completed = _completed_review_entries(state)
+    diagnosis = _mapping_or_empty(state.get("session_diagnosis"))
+    coverage = _mapping_or_empty(_mapping_or_empty(state.get("batch")).get("coverage"))
+    pass_count = sum(1 for entry in completed if str(entry.get("result") or "") in {"passed", "easy"})
+    partial_count = sum(1 for entry in completed if str(entry.get("result") or "") == "partial")
+    fail_count = sum(1 for entry in completed if str(entry.get("result") or "") == "failed")
+    core_failure_count = sum(
+        1
+        for entry in completed
+        if bool(entry.get("is_core")) and str(entry.get("result") or "") not in {"passed", "easy"}
+    )
+    skip_count = _int_or_zero(diagnosis.get("skip_count"))
+    scores = [_int_or_zero(entry.get("score")) for entry in completed]
+    score = round(sum(scores) / len(scores)) if scores else 0
+    weak_points = _unique_strings(
+        _string_list(diagnosis.get("weak_points")) + _string_list(coverage.get("unresolved_focus_tags"))
+    )
+    strong_evidence = all(str(entry.get("evidence_quality") or "strong") == "strong" for entry in completed)
+    final_rating = "Good"
+    rating_reason = "Batch performance is stable enough for normal review scheduling."
+    if fail_count >= 2 or skip_count >= 2 or core_failure_count >= 2:
+        final_rating = "Again"
+        rating_reason = "Repeated failures or skips show the knowledge point needs relearning."
+    elif core_failure_count >= 1:
+        final_rating = "Hard"
+        rating_reason = "A core review capability still failed, so the batch cannot receive a high rating."
+    elif fail_count == 1 and pass_count < 2:
+        final_rating = "Hard"
+        rating_reason = "A failure remains without enough stable recovery evidence."
+    elif partial_count >= 2:
+        final_rating = "Hard"
+        rating_reason = "Multiple partial results indicate unresolved weakness."
+    elif fail_count == 0 and partial_count == 0 and skip_count == 0 and strong_evidence and pass_count >= 3:
+        final_rating = "Easy"
+        rating_reason = "All required review checks passed with strong evidence."
+    elif fail_count <= 1 and pass_count >= 2:
+        final_rating = "Good"
+        rating_reason = "One small non-core miss is outweighed by stable performance across the batch."
+    aggregate_result: dict[str, object] = {
+        "result": "passed" if final_rating in {"Good", "Easy"} else "partial" if final_rating == "Hard" else "failed",
+        "final_fsrs_rating": final_rating,
+        "completed_count": len(completed),
+        "pass_count": pass_count,
+        "partial_count": partial_count,
+        "fail_count": fail_count,
+        "core_failure_count": core_failure_count,
+        "skip_count": skip_count,
+        "score": score,
+        "weak_points": weak_points,
+        "unresolved_focus_tags": _string_list(coverage.get("unresolved_focus_tags")),
+        "covered_capabilities": _string_list(coverage.get("covered_capabilities")),
+        "score_breakdown": {
+            "pass_count": pass_count,
+            "partial_count": partial_count,
+            "fail_count": fail_count,
+            "core_failure_count": core_failure_count,
+            "skip_count": skip_count,
+        },
+        "rating_reason": rating_reason,
+    }
+    return final_rating, aggregate_result
+
+
+def _mark_review_batch_finalized(
+    state: Mapping[str, object],
+    *,
+    representative_attempt_id: str,
+    final_rating: str,
+    aggregate_result: Mapping[str, object],
+    schedule: Mapping[str, object],
+) -> dict[str, object]:
+    updated = dict(state)
+    batch = _mapping_or_empty(updated.get("batch"))
+    batch["status"] = "finalized"
+    batch["can_finalize"] = True
+    batch["completed_count"] = len(_completed_review_entries(updated))
+    updated["batch"] = batch
+    finalization = _mapping_or_empty(updated.get("finalization"))
+    finalization.update(
+        {
+            "status": "applied",
+            "representative_attempt_id": representative_attempt_id,
+            "final_fsrs_rating": final_rating,
+            "aggregate_result": dict(aggregate_result),
+            "due_at": schedule.get("due_at"),
+            "forget_risk": schedule.get("forget_risk"),
+            "review_state": schedule.get("ReviewState"),
+        }
+    )
+    updated["finalization"] = finalization
+    updated["review_stage"] = "final_summary"
+    return updated
+
+
+def _representative_profile_attempt(
+    attempt: Mapping[str, object],
+    *,
+    final_rating: str,
+    aggregate_result: Mapping[str, object],
+) -> dict[str, object]:
+    profile_attempt = dict(attempt)
+    profile_attempt["fsrs_rating"] = final_rating
+    profile_attempt["score"] = _int_or_zero(aggregate_result.get("score"))
+    profile_attempt["error_count"] = _int_or_zero(aggregate_result.get("fail_count"))
+    profile_attempt["runtime_status"] = "success" if final_rating in {"Good", "Easy"} else "review_batch_partial"
+    profile_attempt["test_pass_rate"] = 1.0 if final_rating in {"Good", "Easy"} else 0.5
+    profile_attempt["code_completion_result"] = {
+        "result": aggregate_result.get("result"),
+        "score": aggregate_result.get("score"),
+        "score_breakdown": aggregate_result.get("score_breakdown") or {},
+        "weak_points": aggregate_result.get("weak_points") or [],
+        "fsrs_rating": final_rating,
+    }
+    return profile_attempt
+
+
+def _batch_finalization_request_id(session_id: str, attempt_id: str, rating: str) -> str:
+    return f"review-batch-finalization:{session_id}:{attempt_id}:{rating}"
+
+
+def _evidence_quality_for_result(
+    code_completion_result: Mapping[str, object],
+    service_fields: Mapping[str, object],
+) -> str:
+    patch_result = code_completion_result.get("review_ai_patch_result")
+    if isinstance(patch_result, Mapping):
+        return str(patch_result.get("evidence_quality") or "weak")
+    explanation = service_fields.get("explanation_check_result")
+    if isinstance(explanation, Mapping) and _int_or_zero(explanation.get("score")) < 2:
+        return "weak"
+    return "strong" if _int_or_zero(code_completion_result.get("score")) >= 7 else "weak"
+
+
+def _mark_current_plan_guided(state: dict[str, object]) -> None:
+    current_entry = _current_plan_entry(state)
+    if not current_entry:
+        return
+    plan = state.get("exercise_plan")
+    if not isinstance(plan, list):
+        return
+    current_exercise_id = str(current_entry.get("exercise_id") or "")
+    for item in plan:
+        if isinstance(item, dict) and str(item.get("exercise_id") or "") == current_exercise_id:
+            item["guided"] = True
+            return
 
 
 def _state_exercise_id(state: Mapping[str, object]) -> str | None:
+    batch = state.get("batch")
+    if isinstance(batch, Mapping):
+        exercise_id = batch.get("current_exercise_id")
+        if exercise_id:
+            return str(exercise_id)
     variant = state.get("variant")
     if not isinstance(variant, Mapping):
         return None
@@ -919,17 +1940,30 @@ def _state_exercise_id(state: Mapping[str, object]) -> str | None:
 
 
 def _state_seed_id(state: Mapping[str, object]) -> str | None:
+    batch = state.get("batch")
+    if isinstance(batch, Mapping) and batch.get("current_candidate_id"):
+        return str(batch["current_candidate_id"])
     seed_id = state.get("seed_id")
     return str(seed_id) if seed_id else None
 
 
 def _stage_from_state(state: Mapping[str, object]) -> str:
     stage = state.get("review_stage")
-    if stage in {"warmup", "warmup_repair", "variant_practice", "submitted"}:
+    if stage in _REVIEW_BATCH_STAGES:
         return str(stage)
+    if stage == "variant_practice":
+        return "exercise"
     warmup = state.get("warmup")
     if isinstance(warmup, Mapping) and warmup.get("result") in {"correct", "skipped"}:
-        return "variant_practice"
+        return "exercise"
+    return "warmup"
+
+
+def _normalize_review_stage(stage: str) -> str:
+    if stage in _REVIEW_BATCH_STAGES:
+        return stage
+    if stage == "variant_practice":
+        return "exercise"
     return "warmup"
 
 
@@ -939,15 +1973,85 @@ def _mark_review_stage_submitted(session: Mapping[str, object]) -> dict[str, obj
     return state
 
 
+def _warmup_recall_level(result: str) -> str:
+    if result == "correct":
+        return "clear"
+    if result == "unclear":
+        return "fuzzy"
+    if result == "skipped":
+        return "skipped"
+    return "wrong"
+
+
+def _warmup_diagnosis(
+    *,
+    recall_level: str,
+    answer: str | None,
+    warmup: Mapping[str, object],
+) -> dict[str, object]:
+    focus_tags = _warmup_focus_tags(warmup)
+    evidence = [answer.strip()] if isinstance(answer, str) and answer.strip() else []
+    if recall_level == "skipped":
+        evidence = ["skipped_warmup"]
+    confidence = {
+        "clear": 0.9,
+        "fuzzy": 0.45,
+        "wrong": 0.2,
+        "skipped": 0.0,
+    }.get(recall_level, 0.3)
+    return {
+        "recall_level": recall_level,
+        "confidence": confidence,
+        "evidence": evidence[:3],
+        "missing_points": [] if recall_level == "clear" else focus_tags[:3],
+        "misconception": "" if recall_level == "clear" else str(warmup.get("expected_focus") or ""),
+        "suggested_focus": focus_tags[:6],
+    }
+
+
+def _warmup_focus_tags(warmup: Mapping[str, object]) -> list[str]:
+    tags = _string_list(warmup.get("keywords"))
+    expected_focus = str(warmup.get("expected_focus") or "").strip()
+    if expected_focus:
+        tags.append(expected_focus)
+    return _unique_strings(tags)
+
+
+def _updated_session_diagnosis(
+    value: object,
+    *,
+    recall_level: str,
+    warmup: Mapping[str, object],
+) -> dict[str, object]:
+    diagnosis = _initial_session_diagnosis(value, context=None)
+    focus_tags = _warmup_focus_tags(warmup)
+    diagnosis["recall_level"] = recall_level
+    diagnosis["last_result"] = recall_level
+    if recall_level == "clear":
+        diagnosis["passed_focus_tags"] = _unique_strings(_string_list(diagnosis.get("passed_focus_tags")) + focus_tags)
+    else:
+        diagnosis["weak_points"] = _unique_strings(_string_list(diagnosis.get("weak_points")) + focus_tags[:3])
+        diagnosis["failed_focus_tags"] = _unique_strings(_string_list(diagnosis.get("failed_focus_tags")) + focus_tags)
+    if recall_level == "skipped":
+        diagnosis["skip_count"] = _int_or_zero(diagnosis.get("skip_count")) + 1
+    return diagnosis
+
+
+def _unique_strings(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        normalized = value.strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        result.append(normalized)
+    return result
+
+
 def _normalize_review_warmup_judgement(result: str) -> dict[str, object]:
-    if result in {"correct", "incorrect", "skipped"}:
+    if result in {"correct", "incorrect", "unclear", "skipped"}:
         judgement = StructuredJudgement(status="confirmed")
-    elif result == "unclear":
-        judgement = StructuredJudgement(
-            status="ambiguous",
-            ambiguity_type="answer_unclear",
-            clarification_question=REVIEW_WARMUP_JUDGEMENT_POLICY.default_fallback_question,
-        )
     else:
         judgement = StructuredJudgement(
             status="unsupported",
@@ -1049,12 +2153,12 @@ def _evaluate_warmup_answer(*, answer: str, expected_focus: str, question: str) 
 
 def _warmup_feedback(result: str) -> str:
     if result == "correct":
-        return "热身通过，继续完成变体练习。"
+        return "热身通过，进入本轮正式复习题。"
     if result == "skipped":
-        return "已跳过热身，本轮 FSRS 仍只看变体练习提交。"
+        return "已跳过热身，本轮会优先补基础题覆盖。"
     if result == "unclear":
-        return "回答还不够明确，先用一句话补充风险点。"
-    return "回答和当前知识点不匹配，先做一次短修正。"
+        return "回答还不够明确，先做一次短修正再进入正式复习题。"
+    return "回答和当前知识点不匹配，先做一次短修正再进入正式复习题。"
 
 
 def _mapping_or_empty(value: object) -> dict[str, object]:

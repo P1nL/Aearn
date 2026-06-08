@@ -757,20 +757,24 @@ start_learning_session
 
 ### 目标
 
-对到期知识点先做短热身，再从持久化 seed bank 选择变体练习，完成 `Attempt(review_submit)` 后更新 FSRS。复习页不做长教学，warmup 也不进入 FSRS。
+对到期知识点先做短热身，再从持久化 candidate pool 选择一批正式复习题。每题完成后只写 `Attempt(review_submit)` 和 session-local `review_batch_v1` 状态；FSRS、`ReviewState`、`review_logs`、`KnowledgePoint` 和长期 learner profile 只在批次最终结算时更新一次。复习页不做长教学，warmup 和中间正式题都不进入 FSRS。
 
 ```text
 start_review_session
   -> load_due_review
   -> ensure_review_seed_bank
   -> select_review_seed
+  -> initialize_review_batch_state
   -> present_review_warmup
   -> record_review_warmup_result
   -> present_review_exercise
-  -> run_review_exercise
+  -> record_review_exercise_result
   -> check_explanation
   -> evaluate_attempt
-  -> update_review_state
+  -> update_review_batch_state
+  -> select_next_review_exercise
+  -> present_review_exercise
+  -> finalize_review_batch
   -> finish_review_session
 ```
 
@@ -780,7 +784,7 @@ start_review_session
 
 - `LearningSession(session_type=review, started_at, entry_point=review)`
 - `LearningSession.review_stage=warmup`
-- `LearningSession.review_stage_state_json`
+- `LearningSession.review_stage_state_json.schema_version=review_batch_v1`
 
 ### `load_due_review`
 
@@ -812,9 +816,9 @@ start_review_session
 职责：
 
 - 读取当前知识点的 `review_seed_banks`。
-- 如果没有 ready bank 或 bank 已失效，同步 rescue 生成完整 seed bank。
+- 如果没有 ready bank 或 bank 已失效，同步 rescue 生成完整 baseline candidate pool，并持久化到 `review_seed_banks.seeds_json`。
 - 正常异步生成和同步 rescue 复用同一 generator、schema、validation、安全检查和持久化路径。
-- rescue 必须先持久化完整 seed bank，再允许选 seed。
+- rescue 必须先持久化完整 candidate pool，再允许选 seed/candidate。
 
 失败分支：
 
@@ -840,6 +844,7 @@ start_review_session
 - `selected_seed_id`
 - `warmup`
 - `review_stage_state`
+- `current_node`
 - `variant_reason`
 
 ### `present_review_warmup`
@@ -858,28 +863,60 @@ start_review_session
 
 规则：
 
-- `correct` / `skipped` -> `variant_practice`
-- `incorrect` / `unclear` 且 `repair_count=0` -> `warmup_repair`
-- 第二次仍不正确或不明确 -> `variant_practice`，并把变体标记为 guided
+- `correct` -> `clear` -> `exercise`
+- `skipped` -> `skipped` -> 低难度 `exercise`
+- `incorrect` -> `wrong` 且 `repair_count=0` -> `warmup_repair`
+- `unclear` -> `fuzzy` 且 `repair_count=0` -> `warmup_repair`
+- 第二次仍不正确或不明确 -> `exercise`，并把当前题标记为 guided
 - 不创建 `Attempt`，不写 `ReviewLog`，不更新 `ReviewState`
 
-### `run_review_exercise`
+### `record_review_exercise_result`
 
-等价于 `run_exercise`，但写入：
+职责：
+
+- 校验 active review session 的 `current_node.type=exercise`，且提交的 `exercise_id` 必须匹配当前节点。
+- 写入或幂等回放一个 `Attempt.attempt_type=review_submit`。
+- 生成本题 `code_completion_result`、`score_breakdown`、本题 `fsrs_rating` 和弱点信号。
+- 只更新 `LearningSession.review_stage_state_json` 中的 `exercise_plan`、`session_diagnosis`、`batch.completed_count`、coverage 和 `batch.can_finalize`。
+
+写入：
 
 - `Attempt.attempt_type=review_submit`
+- `Attempt.score`
+- `Attempt.score_breakdown_json`
+- `Attempt.code_completion_result`
+- `Attempt.fsrs_rating`
+- `LearningSession.review_stage_state_json`
 
 补充：
 
 - `review_ai_patch` 不运行用户代码，而是把结构化审核答案写入 `submitted_code` / `code_completion_result`。
 - `review_ai_patch` 必须包含 `verdict`、`evidence`、`knowledge_point_risk`、`next_action`。
 - `review_ai_patch` 的评分维度为 `verdict_correctness`、`evidence_grounding`、`knowledge_point_alignment`、`actionability`；弱证据不得映射为 `Easy`。
+- 如果 explanation judgement 不可用，返回 `retry_same`，不写 `Attempt`，不推进批次。
+- 中间题不得写 `ReviewState`、`review_logs`、`KnowledgePoint` 或长期 learner profile。
 
-### `update_review_state`
+### `select_next_review_exercise`
 
 职责：
 
-- 根据 `fsrs_rating` 更新 FSRS 字段
+- 当 `batch.can_finalize=false` 且未到 `max_exercise_count` 时，从 ready `review_seed_banks.seeds_json` 中选择下一个未使用 candidate。
+- 优先覆盖缺失 capability、失败 focus tag、core candidate 和未重复 exercise type。
+- 避免已使用 candidate、明显 `avoid_if` 冲突和过度重复题型。
+- Materialize 下一个 `Exercise`，追加 active `exercise_plan` entry，并返回新的 `current_node.type=exercise`。
+
+失败分支：
+
+- 如果 baseline pool 无法覆盖当前弱点或最低剩余覆盖，保持 session `active`，在 `pool.adaptive_supplement_status=needed` 中记录原因，返回 `REVIEW_ADAPTIVE_SUPPLEMENT_FAILED`，不得展示硬编码 fallback 题。
+
+### `finalize_review_batch`
+
+职责：
+
+- 在达到最少正式题数量且 capability/core 覆盖足够时，或到达 `max_exercise_count` 时，基于整批表现聚合一个后端拥有的 `final_fsrs_rating`。
+- 聚合输入包括 warmup recall、正式题 result、capability coverage、difficulty、core failures、skip count、解释质量、`review_ai_patch` evidence quality 和历史弱点。
+- 使用最终代表 attempt 调用 batch scheduler，写入一次 FSRS 结果和一条 `review_logs`。
+- 生成 `current_node.type=final_summary`。
 
 写入：
 
@@ -892,6 +929,10 @@ start_review_session
 - `ReviewState.lapse_count`
 - `ReviewState.last_attempt_id`
 - `ReviewState.last_fsrs_rating`
+- `ReviewLog`
+- `KnowledgePoint.last_session_id`
+- `LearningSession.review_stage=final_summary`
+- `LearningSession.review_stage_state_json.finalization`
 
 条件：
 
@@ -899,6 +940,9 @@ start_review_session
 - `Hard` -> 小幅拉长或保持短间隔
 - `Good` -> 正常拉长间隔
 - `Easy` -> 明显拉长间隔
+- 核心能力失败不得产生 `Easy`
+- 多次跳过、重复 core failure 或 unresolved high-risk weakness 应压到 `Hard` 或 `Again`
+- 非核心小失误可在其余表现稳定时保持 `Good`
 
 ### `finish_review_session`
 
@@ -1056,7 +1100,10 @@ load_note_sources
 | `route_evaluation_result` | `partial` | `update_learning_memory` 或 `hint_or_explain_error` |
 | `route_evaluation_result` | `failed` | `hint_or_explain_error` 或 `update_learning_memory` |
 | `update_learning_memory` | 写入成功 | `finish_learning_session` |
-| `update_review_state` | 写入成功 | `finish_review_session` |
+| `update_review_batch_state` | 还需继续复习且 baseline pool 可覆盖 | `select_next_review_exercise` |
+| `update_review_batch_state` | 候选池无法覆盖剩余弱点 | `REVIEW_ADAPTIVE_SUPPLEMENT_FAILED` |
+| `update_review_batch_state` | 达到最终结算条件 | `finalize_review_batch` |
+| `finalize_review_batch` | 写入成功 | `finish_review_session` |
 
 ## Prompt 模板引用
 
@@ -1143,7 +1190,8 @@ load_note_sources
 | 检查解释 | Attempt、explanation_text | Attempt.explanation_check_result |
 | 提交评分 | Attempt、Exercise、TestCase | Attempt(attempt_type=submit)、Attempt.score、Attempt.fsrs_rating |
 | 学习完成 | Attempt、code_completion_result | SessionKnowledgePoint、KnowledgePoint、ReviewState |
-| 复习完成 | Attempt、fsrs_rating | ReviewState |
+| 复习中间题完成 | Attempt、code_completion_result、review seed metadata | LearningSession.review_stage_state_json |
+| 复习批次完成 | representative Attempt、final_fsrs_rating、aggregate_result | ReviewState、ReviewLog、KnowledgePoint、LearningSession.review_stage_state_json |
 | 会话结束 | 当前 state | LearningSession.summary_text、next_entry_point、StageSummary |
 | 辅助补全笔记 | Attempt、Note、LearningSession、KnowledgePoint | Note |
 

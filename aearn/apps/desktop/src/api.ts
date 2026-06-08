@@ -1280,6 +1280,7 @@ function isReviewSessionResponse(payload: unknown): payload is ReviewSessionResp
     isLearningExercise(payload.review_exercise) &&
     isReviewStateSummary(payload.ReviewState) &&
     typeof payload.review_stage === "string" &&
+    isRecord(payload.current_node) &&
     isReviewWarmupState(payload.warmup) &&
     isRecord(payload.review_stage_state) &&
     typeof payload.variant_reason === "string" &&
@@ -1294,7 +1295,8 @@ function isReviewWarmupResultResponse(payload: unknown): payload is ReviewWarmup
     typeof payload.review_stage === "string" &&
     isReviewWarmupState(payload.warmup) &&
     isRecord(payload.review_stage_state) &&
-    (payload.next_action === "start_variant" || payload.next_action === "retry_same")
+    isRecord(payload.current_node) &&
+    (payload.next_action === "start_variant" || payload.next_action === "start_exercise" || payload.next_action === "retry_same")
   );
 }
 
