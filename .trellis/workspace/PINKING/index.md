@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-2.md`
-- **Total Sessions**: 68
+- **Total Sessions**: 69
 - **Last Active**: 2026-06-08
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-2.md` | ~313 | Active |
+| `journal-2.md` | ~344 | Active |
 | `journal-1.md` | ~1979 | Archived |
 <!-- @@@/auto:active-documents -->
 
@@ -30,6 +30,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 69 | 2026-06-08 | Review task tree closeout | - | `main` |
 | 68 | 2026-06-08 | Review batch finalization | `70b6bf0` | `main` |
 | 67 | 2026-06-07 | Learning output and review flow hardening | `09d67d6` | `main` |
 | 66 | 2026-06-07 | Refine learning flow concept docs | `f7dadea` | `main` |
