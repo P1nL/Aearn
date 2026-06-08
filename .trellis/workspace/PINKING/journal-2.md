@@ -278,3 +278,36 @@ Implemented structured public-message output boundary for learning messages, mod
 ### Next Steps
 
 - None - task complete
+
+
+## Session 68: Review batch finalization
+
+**Date**: 2026-06-08
+**Task**: Review batch finalization
+**Branch**: `main`
+
+### Summary
+
+Implemented backend-owned review batch flow with candidate-pool selection, session-local intermediate submits, final FSRS aggregation, docs/spec sync, and verification.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `70b6bf0` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
