@@ -2340,6 +2340,16 @@ Response JSON 示例：
       "ai_diff": "-let count = 0;\n button.addEventListener('click', () => {\n+  let count = 0;\n   count += 1;",
       "review_focus": "用需求、diff 与可见行为共同判断状态作用域风险",
       "expected_risk": "count 被移进回调后每次点击都会重新初始化",
+      "seed_generator_version": "review_candidate_pool_v1",
+      "review_seed": {
+        "seed_bank_id": "rsb_001",
+        "seed_id": "candidate_review_ai_patch_01",
+        "candidate_id": "candidate_review_ai_patch_01",
+        "capability": "transfer_or_review",
+        "focus_tags": ["state_scope_error", "ai_patch", "evidence"],
+        "selection_reason": "用 AI patch 审核确认用户能基于需求、diff 与行为证据识别状态作用域风险。",
+        "is_core": true
+      },
       "rubric": {
         "verdict_correctness": "0-2",
         "evidence_grounding": "0-2",
@@ -2358,31 +2368,99 @@ Response JSON 示例：
     "feedback": null
   },
   "review_stage": "warmup",
+  "current_node": {
+    "type": "warmup",
+    "stage": "warmup",
+    "can_pause": true,
+    "position": 0,
+    "target_count": 4,
+    "warmup": {
+      "result": "pending",
+      "repair_count": 0
+    }
+  },
   "review_stage_state": {
+    "schema_version": "review_batch_v1",
     "review_stage": "warmup",
     "knowledge_point_id": "kp_dom_event_state",
     "seed_bank_id": "rsb_001",
     "seed_id": "seed_review_ai_patch_01",
+    "batch": {
+      "status": "active",
+      "min_exercise_count": 3,
+      "target_exercise_count": 4,
+      "max_exercise_count": 6,
+      "completed_count": 0,
+      "current_exercise_id": "ex_dom_toggle_state_variant",
+      "current_candidate_id": "candidate_review_ai_patch_01",
+      "can_finalize": false
+    },
     "warmup": {
       "result": "pending",
-      "repair_count": 0
+      "repair_count": 0,
+      "recall_level": null,
+      "diagnosis": {
+        "recall_level": null,
+        "confidence": null,
+        "evidence": [],
+        "missing_points": [],
+        "misconception": "",
+        "suggested_focus": []
+      }
     },
+    "session_diagnosis": {
+      "recall_level": null,
+      "weak_points": ["state_scope_error"],
+      "passed_focus_tags": [],
+      "failed_focus_tags": [],
+      "skip_count": 0,
+      "core_failure_count": 0,
+      "last_result": null
+    },
+    "pool": {
+      "seed_bank_id": "rsb_001",
+      "generator_version": "review_candidate_pool_v1",
+      "candidate_count": 12,
+      "adaptive_supplements": []
+    },
+    "exercise_plan": [
+      {
+        "position": 1,
+        "candidate_id": "candidate_review_ai_patch_01",
+        "exercise_id": "ex_dom_toggle_state_variant",
+        "status": "active",
+        "capability": "transfer_or_review",
+        "exercise_type": "review_ai_patch",
+        "focus_tags": ["state_scope_error", "ai_patch", "evidence"],
+        "is_core": true
+      }
+    ],
     "variant": {
       "exercise_id": "ex_dom_toggle_state_variant",
       "exercise_type": "review_ai_patch",
       "guided": false
+    },
+    "finalization": {
+      "status": "pending",
+      "representative_attempt_id": null,
+      "final_fsrs_rating": null,
+      "aggregate_result": null
     }
   },
   "selected_seed_id": "seed_review_ai_patch_01",
   "seed_bank": {
     "id": "rsb_001",
     "status": "ready",
-    "generator_version": "review_seed_bank_v1",
+    "generator_version": "review_candidate_pool_v1",
     "seed_count": 12,
     "generated_at": "2026-05-11T09:19:00Z",
     "quality_report": {
-      "required_type_coverage": true,
-      "contains_review_ai_patch": true
+      "candidate_count": 12,
+      "exercise_types": ["code_blank", "fix_bug", "explain_code", "implement_function", "review_ai_patch"],
+      "capabilities": ["basic_application", "concept_explanation", "debugging", "transfer_or_review"],
+      "core_candidate_count": 5,
+      "focus_tag_count": 9,
+      "safety": "validated"
     }
   },
   "variant_reason": "上次错因是 state_scope_error，本次换成同构状态保存场景。",
@@ -2400,9 +2478,9 @@ HTTP 状态码：
 
 错误码：`USER_NOT_FOUND`、`KNOWLEDGE_POINT_NOT_FOUND`、`REVIEW_NOT_DUE`、`SESSION_CONFLICT`、`MODEL_UNAVAILABLE`、`REVIEW_SEED_BANK_GENERATION_FAILED`
 
-Seed bank 说明：正常路径由 worker 在计划或知识点创建后预生成完整 seed bank；如果复习开始时缺失或失效，`POST /api/reviews/start` 可以同步 rescue 生成同一份完整 seed bank，并先持久化再选择 seed。异步生成和同步 rescue 必须共用 generator、schema、校验、安全检查和持久化路径。rescue 失败时返回 `REVIEW_SEED_BANK_GENERATION_FAILED`，不得展示低质量 fallback 问题。
+Seed bank / candidate pool 说明：正常路径由 worker 在计划或知识点创建后预生成完整 candidate pool，并持久化到 `review_seed_banks.seeds_json`；如果复习开始时缺失或失效，`POST /api/reviews/start` 可以同步 rescue 生成同一份完整 candidate pool，并先持久化再选择 seed/candidate。异步生成和同步 rescue 必须共用 generator、schema、校验、安全检查和持久化路径。rescue 失败时返回 `REVIEW_SEED_BANK_GENERATION_FAILED`，不得展示低质量 fallback 问题。
 
-模型说明：复习页的 `variant_reason` 和 `initial_agent_message` 必须来自模型生成并通过安全校验。模型不可用或输出不安全时返回 `MODEL_UNAVAILABLE`，不得退回本地固定复习文案。Seed bank 中不得包含 hidden tests、`solution_reference`、raw prompt、provider 原始错误或 secrets。
+模型说明：复习页的 `variant_reason` 和 `initial_agent_message` 必须来自模型生成并通过安全校验。模型不可用或输出不安全时返回 `MODEL_UNAVAILABLE`，不得退回本地固定复习文案。Candidate pool 中不得包含 hidden tests、`solution_reference`、raw prompt、provider 原始错误或 secrets；候选题必须携带 `capability`、`focus_tags`、`recommended_for`、`avoid_if` 和选择元数据，后续 graph 可据此无模型选题。
 
 幂等/重试说明：幂等键为 `user_id + knowledge_point_id + due_at`。同一到期项重试返回同一 `session_id`。
 
@@ -2436,22 +2514,42 @@ Response JSON 示例：
 ```json
 {
   "session_id": "sess_review_001",
-  "review_stage": "variant_practice",
+  "review_stage": "exercise",
   "warmup": {
     "question": "先用一句话回忆：事件监听与状态变量最容易错在哪里？",
     "expected_focus": "状态应位于能跨事件复用的作用域",
     "result": "correct",
+    "recall_level": "clear",
     "last_answer": "count 要放在能跨多次点击复用的外层作用域。",
     "repair_count": 0,
-    "feedback": "热身通过，继续完成变体练习。"
+    "feedback": "热身通过，进入本轮正式复习题。",
+    "diagnosis": {
+      "recall_level": "clear",
+      "confidence": 0.9,
+      "evidence": ["count 要放在能跨多次点击复用的外层作用域。"],
+      "missing_points": [],
+      "misconception": "",
+      "suggested_focus": ["state", "count", "作用域", "事件"]
+    }
+  },
+  "current_node": {
+    "type": "exercise",
+    "stage": "exercise",
+    "can_pause": true,
+    "exercise": {},
+    "position": 1,
+    "target_count": 4,
+    "completed_count": 0,
+    "candidate_id": "candidate_review_ai_patch_01"
   },
   "review_stage_state": {
-    "review_stage": "variant_practice",
+    "schema_version": "review_batch_v1",
+    "review_stage": "exercise",
     "knowledge_point_id": "kp_dom_event_state",
     "seed_bank_id": "rsb_001",
     "seed_id": "seed_review_ai_patch_01"
   },
-  "next_action": "start_variant"
+  "next_action": "start_exercise"
 }
 ```
 
@@ -2464,13 +2562,13 @@ HTTP 状态码：
 
 错误码：`SESSION_NOT_FOUND`、`SESSION_CONFLICT`、`VALIDATION_ERROR`
 
-阶段规则：`correct`、`skipped` 直接进入 `variant_practice`；`incorrect` 或 `unclear` 最多进入一次 `warmup_repair`，第二次仍不通过时进入带引导的 `variant_practice`。任何 warmup 分支都不得触发 FSRS。
+阶段规则：`correct` 归一为 `clear` 并进入 `exercise`；`skipped` 归一为 `skipped` 并进入低难度 `exercise`；`incorrect` 归一为 `wrong`、`unclear` 归一为 `fuzzy`，最多进入一次 `warmup_repair`，第二次仍不通过时进入带引导的 `exercise`。任何 warmup 分支都不得触发 FSRS。
 
 相关数据表/状态机节点：`LearningSession`；`record_review_warmup_result`、`present_review_exercise`。
 
 #### `POST /api/reviews/{session_id}/exercise-result`
 
-用途：提交复习变体练习结果，写入 `Attempt(attempt_type=review_submit)`，生成 `code_completion_result`，并更新 `ReviewState`。这是复习页唯一可以推进 FSRS 的写入。
+用途：提交当前复习批次中的正式题结果，写入或幂等回放一个 `Attempt(attempt_type=review_submit)`，生成 `code_completion_result`，并更新 `LearningSession.review_stage_state_json` 中的 session-local 批次状态。中间题不会更新 `ReviewState`、`review_logs`、`KnowledgePoint`、FSRS 或长期 learner profile；只有批次满足最终结算条件时，后端才用整批表现聚合一个 `final_fsrs_rating` 并一次性写入调度结果。
 
 Request JSON 示例：
 
@@ -2506,11 +2604,83 @@ Request JSON 示例：
 }
 ```
 
-Response JSON 示例：
+中间题 Response JSON 示例：
 
 ```json
 {
-  "result": "easy",
+  "attempt_id": "att_review_submit_001",
+  "result": "passed",
+  "score": 7,
+  "score_breakdown": {
+    "completion_correctness": 2,
+    "runtime_and_tests": 2,
+    "error_diagnosis": 1,
+    "explanation_check": 2
+  },
+  "fsrs_rating": "Good",
+  "weak_points": ["state_scope_error"],
+  "feedback": "本题通过，但解释还需要更明确地连接事件回调和外层状态。",
+  "code_completion_result": {},
+  "review_stage": "exercise",
+  "review_stage_state": {
+    "schema_version": "review_batch_v1",
+    "batch": {
+      "status": "active",
+      "completed_count": 1,
+      "min_exercise_count": 3,
+      "target_exercise_count": 4,
+      "max_exercise_count": 6,
+      "can_finalize": false,
+      "current_exercise_id": "ex_dom_ai_patch_review_02",
+      "current_candidate_id": "candidate_review_ai_patch_02"
+    },
+    "exercise_plan": [
+      {
+        "position": 1,
+        "candidate_id": "candidate_review_ai_patch_01",
+        "exercise_id": "ex_dom_toggle_state_variant",
+        "status": "completed",
+        "attempt_id": "att_review_submit_001",
+        "result": "passed",
+        "score": 7,
+        "fsrs_rating": "Good",
+        "capability": "transfer_or_review",
+        "focus_tags": ["state_scope_error", "ai_patch", "evidence"],
+        "is_core": true
+      },
+      {
+        "position": 2,
+        "candidate_id": "candidate_review_ai_patch_02",
+        "exercise_id": "ex_dom_ai_patch_review_02",
+        "status": "active",
+        "capability": "debugging",
+        "focus_tags": ["state_scope_error", "regression"],
+        "is_core": true
+      }
+    ]
+  },
+  "current_node": {
+    "type": "exercise",
+    "stage": "exercise",
+    "can_pause": true,
+    "position": 2,
+    "target_count": 4,
+    "completed_count": 1,
+    "candidate_id": "candidate_review_ai_patch_02",
+    "exercise": {}
+  },
+  "review_exercise": {},
+  "next_action": "next_exercise",
+  "final_result": null
+}
+```
+
+最终题 Response JSON 示例：
+
+```json
+{
+  "attempt_id": "att_review_submit_003",
+  "result": "passed",
   "score": 8,
   "score_breakdown": {
     "completion_correctness": 2,
@@ -2520,7 +2690,46 @@ Response JSON 示例：
   },
   "fsrs_rating": "Easy",
   "weak_points": [],
-  "feedback": "复习变体完成稳定，可以延长下次复习间隔。",
+  "feedback": "本题稳定，整批复习已完成并结算。",
+  "code_completion_result": {},
+  "review_stage": "final_summary",
+  "review_stage_state": {
+    "schema_version": "review_batch_v1",
+    "batch": {
+      "status": "finalized",
+      "completed_count": 3,
+      "min_exercise_count": 3,
+      "target_exercise_count": 4,
+      "max_exercise_count": 6,
+      "can_finalize": true
+    },
+    "finalization": {
+      "status": "finalized",
+      "representative_attempt_id": "att_review_submit_003",
+      "final_fsrs_rating": "Good",
+      "aggregate_result": "passed"
+    }
+  },
+  "current_node": {
+    "type": "final_summary",
+    "stage": "final_summary",
+    "can_pause": false,
+    "completed_count": 3,
+    "finalization": {
+      "status": "finalized",
+      "representative_attempt_id": "att_review_submit_003",
+      "final_fsrs_rating": "Good",
+      "aggregate_result": "passed"
+    }
+  },
+  "final_result": {
+    "final_fsrs_rating": "Good",
+    "aggregate_result": "passed",
+    "due_at": "2026-05-16T09:00:00Z",
+    "forget_risk": "low",
+    "completed_count": 3,
+    "weak_points": []
+  },
   "due_at": "2026-05-16T09:00:00Z",
   "forget_risk": "low",
   "ReviewState": {
@@ -2532,28 +2741,37 @@ Response JSON 示例：
     "last_review_at": "2026-05-11T09:20:00Z",
     "review_count": 3,
     "lapse_count": 0,
-    "last_attempt_id": "att_review_submit_001",
-    "last_fsrs_rating": "Easy"
+    "last_attempt_id": "att_review_submit_003",
+    "last_fsrs_rating": "Good"
   },
-  "next_action": "advance_next"
+  "KnowledgePoint": {
+    "id": "kp_dom_event_state",
+    "status": "reviewing",
+    "weak_points": []
+  },
+  "next_action": "schedule_review"
 }
 ```
 
-`review_ai_patch` 的 `score_breakdown` 使用 `verdict_correctness`、`evidence_grounding`、`knowledge_point_alignment`、`actionability` 四项，并在 `code_completion_result.review_ai_patch_result` 中保存 learner verdict、expected verdict、evidence quality、expected risk 和 learner next action。只说 `tests passed` 属于弱证据；即使结论方向正确，也不得映射为 `Easy`。
+响应规则：每次有效正式题提交都会返回 `attempt_id`、本题 `result` / `score` / `score_breakdown` / `fsrs_rating`、`review_stage_state` 和 `current_node`。`ReviewState`、`KnowledgePoint`、顶层 `due_at`、`forget_risk` 和非空 `final_result` 只出现在最终结算响应中；中间响应可以保留 `final_result: null` 作为兼容字段。中途退出时 session 保持 `active`；下一次 `POST /api/reviews/start` 命中同一到期知识点时返回当前 `current_node` 和已完成 plan，不触发 FSRS。
+
+`review_ai_patch` 的 `score_breakdown` 使用 `verdict_correctness`、`evidence_grounding`、`knowledge_point_alignment`、`actionability` 四项，并在 `code_completion_result.review_ai_patch_result` 中保存 learner verdict、expected verdict、evidence quality、expected risk 和 learner next action。只说 `tests passed` 属于弱证据；即使结论方向正确，也不得让本题映射为 `Easy`。最终 FSRS rating 由后端根据整批 warmup、formal results、capability coverage、core failures、skip count、解释质量和历史弱点聚合；模型和前端不得决定最终 rating。
 
 HTTP 状态码：
 
 - `200`：提交成功或幂等返回
 - `400`：字段不合法
 - `404`：复习会话、练习或 Attempt 不存在
-- `409`：复习会话状态冲突
+- `409`：复习会话状态冲突，或 ready candidate pool 无法覆盖当前弱点且需要自适应补充题
 - `422`：评分与 FSRS 映射冲突
 
-错误码：`SESSION_NOT_FOUND`、`EXERCISE_NOT_FOUND`、`ATTEMPT_NOT_FOUND`、`EVALUATION_CONFLICT`、`VALIDATION_ERROR`
+错误码：`SESSION_NOT_FOUND`、`EXERCISE_NOT_FOUND`、`ATTEMPT_NOT_FOUND`、`SESSION_CONFLICT`、`REVIEW_ADAPTIVE_SUPPLEMENT_FAILED`、`EVALUATION_CONFLICT`、`VALIDATION_ERROR`
 
-幂等/重试说明：幂等键为 `knowledge_point_id + attempt_id + fsrs_rating`。重试不得重复增加 `review_count` 或重复推进 `due_at`。
+候选池不足说明：如果批次还不能 finalize，但 ready baseline candidate pool 已没有可覆盖剩余弱点或最低覆盖要求的候选题，后端保持 session `active`，在 `review_stage_state.pool` 中标记 `adaptive_supplement_status=needed`，并返回可恢复错误 `REVIEW_ADAPTIVE_SUPPLEMENT_FAILED`。当前 child 不展示硬编码 fallback 题，也不污染长期候选池。
 
-相关数据表/状态机节点：`Attempt`、`ReviewState`、`KnowledgePoint`、`LearningSession`；`run_review_exercise`、`check_explanation`、`evaluate_attempt`、`update_review_state`、`finish_review_session`。
+幂等/重试说明：幂等键覆盖 `session_id + exercise_id + request body`。重试同一个中间题提交不得重复创建 `Attempt`、不得重复 materialize 下一题、不得写调度；重试最终题提交不得重复增加 `review_count`、重复推进 `due_at` 或重复写 `review_logs`。
+
+相关数据表/状态机节点：`Attempt`、`LearningSession`、最终响应才触达 `ReviewState`、`KnowledgePoint`、`ReviewLog`；`record_review_exercise_result`、`check_explanation`、`evaluate_attempt`、`update_review_batch_state`、`select_next_review_exercise`、`finalize_review_batch`、`finish_review_session`。
 
 ### 6. 笔记
 
@@ -2980,7 +3198,7 @@ HTTP 状态码：
 
 幂等/重试说明：只读接口，可安全重试；完成复习后前端必须重新拉取。
 
-相关数据表/状态机节点：`KnowledgePoint`、`ReviewState`、`Attempt`、`SessionKnowledgePoint`；`update_learning_memory`、`update_review_state` 的结果展示。
+相关数据表/状态机节点：`KnowledgePoint`、`ReviewState`、`Attempt`、`SessionKnowledgePoint`；`update_learning_memory`、`finalize_review_batch` 的结果展示。
 
 ## Mock 数据规则
 

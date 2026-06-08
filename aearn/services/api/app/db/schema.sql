@@ -207,7 +207,7 @@ CREATE TABLE IF NOT EXISTS learning_sessions (
   next_entry_point text,
   learning_stage text CHECK (learning_stage IS NULL OR learning_stage IN ('documentation_reading', 'concept_intro', 'concept_check', 'concept_repair', 'practice_offer', 'concept_qna', 'readiness_check', 'practice_support')),
   learning_stage_state_json jsonb NOT NULL DEFAULT '{}'::jsonb,
-  review_stage text CHECK (review_stage IS NULL OR review_stage IN ('warmup', 'warmup_repair', 'variant_practice', 'submitted')),
+  review_stage text CHECK (review_stage IS NULL OR review_stage IN ('warmup', 'warmup_repair', 'variant_practice', 'exercise', 'exercise_feedback', 'final_summary', 'submitted')),
   review_stage_state_json jsonb NOT NULL DEFAULT '{}'::jsonb,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
@@ -438,7 +438,7 @@ BEGIN
     DROP CONSTRAINT IF EXISTS learning_sessions_review_stage_check;
   ALTER TABLE learning_sessions
     ADD CONSTRAINT learning_sessions_review_stage_check
-    CHECK (review_stage IS NULL OR review_stage IN ('warmup', 'warmup_repair', 'variant_practice', 'submitted'));
+    CHECK (review_stage IS NULL OR review_stage IN ('warmup', 'warmup_repair', 'variant_practice', 'exercise', 'exercise_feedback', 'final_summary', 'submitted'));
 END;
 $$;
 

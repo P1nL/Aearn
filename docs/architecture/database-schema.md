@@ -325,8 +325,8 @@ $$ LANGUAGE plpgsql;
 | `request_id` | `text` | NULL | API 幂等键 |
 | `learning_stage` | `text` | NULL | CHECK in `documentation_reading` / `concept_intro` / `concept_check` / `concept_repair` / `practice_offer` / `concept_qna` / `readiness_check` / `practice_support`；仅 `session_type=learn` 使用，`concept_qna` / `readiness_check` 为旧会话兼容 |
 | `learning_stage_state_json` | `jsonb` | NOT NULL DEFAULT `'{}'::jsonb` | 精简概念判断、修正、练习解锁和旧费曼检查状态 |
-| `review_stage` | `text` | NULL | CHECK in `warmup` / `warmup_repair` / `variant_practice` / `submitted`；仅 `session_type=review` 使用 |
-| `review_stage_state_json` | `jsonb` | NOT NULL DEFAULT `'{}'::jsonb` | 精简复习热身、seed、变体练习和提交阶段状态 |
+| `review_stage` | `text` | NULL | CHECK in `warmup` / `warmup_repair` / `variant_practice` / `exercise` / `exercise_feedback` / `final_summary` / `submitted`；仅 `session_type=review` 使用，`variant_practice` 为旧会话兼容别名 |
+| `review_stage_state_json` | `jsonb` | NOT NULL DEFAULT `'{}'::jsonb` | `review_batch_v1` 复习批次状态、热身诊断、候选池元数据、当前题和最终结算占位 |
 | `created_at` | `timestamptz` | NOT NULL DEFAULT `now()` |  |
 | `updated_at` | `timestamptz` | NOT NULL DEFAULT `now()` |  |
 
@@ -429,7 +429,7 @@ $$ LANGUAGE plpgsql;
 
 ### `review_seed_banks`
 
-每个知识点的复习材料种子库。复习页不主要依赖短学习历史生成题目，而是先从官方 taxonomy、知识点目标、课程提纲、runtime 能力和常见误解生成完整 seed bank，再从中选择本轮变体。
+每个知识点的复习材料候选池。复习页不主要依赖短学习历史生成题目，而是先从官方 taxonomy、知识点目标、课程提纲、runtime 能力和常见误解生成完整 candidate pool，再从中选择本轮变体。当前持久化表名和字段名仍沿用 `review_seed_banks` / `seeds_json`，但 `generator_version=review_candidate_pool_v1` 的行按候选池合同解释。
 
 | 字段 | 类型 | 必填/默认值 | 约束与说明 |
 |---|---|---|---|
@@ -437,11 +437,11 @@ $$ LANGUAGE plpgsql;
 | `user_id` | `uuid` | NOT NULL | FK -> `users.id` |
 | `plan_id` | `uuid` | NOT NULL | FK -> `learning_plans.id` |
 | `knowledge_point_id` | `uuid` | NOT NULL | FK -> `knowledge_points.id` |
-| `generator_version` | `text` | NOT NULL | 生成器版本，例如 `review_seed_bank_v1` |
+| `generator_version` | `text` | NOT NULL | 生成器版本，例如 `review_candidate_pool_v1` |
 | `status` | `text` | NOT NULL DEFAULT `'generating'` | CHECK in `generating` / `ready` / `failed` |
 | `seed_count` | `integer` | NOT NULL DEFAULT `0` | CHECK `seed_count >= 0` |
-| `seeds_json` | `jsonb` | NOT NULL DEFAULT `'[]'::jsonb` | 完整复习 seed 列表，schema 见下文 |
-| `quality_report_json` | `jsonb` | NOT NULL DEFAULT `'{}'::jsonb` | 数量、类型覆盖、去重和安全校验结果 |
+| `seeds_json` | `jsonb` | NOT NULL DEFAULT `'[]'::jsonb` | 完整复习候选题列表，schema 见下文 |
+| `quality_report_json` | `jsonb` | NOT NULL DEFAULT `'{}'::jsonb` | 数量、题型/能力覆盖、core 覆盖、去重和安全校验结果 |
 | `failure_code` | `text` | NULL | 失败时记录稳定错误码 |
 | `failure_message` | `text` | NULL | 失败摘要，不保存 raw provider error 或 secrets |
 | `generated_at` | `timestamptz` | NULL | 成功生成时间 |
@@ -455,10 +455,12 @@ $$ LANGUAGE plpgsql;
 
 生成与安全规则：
 
-- 普通知识点要求 8-12 个 seed；核心或高风险知识点要求 12-16 个 seed。
+- 普通知识点要求 10-12 个候选题；核心或高风险知识点要求 12-16 个候选题；候选池硬上限为 18。
 - 必须覆盖当前 runtime 支持的核心复习题型，并在支持时包含至少一个 `review_ai_patch`。
-- `review_ai_patch` seed 必须包含 requirement、original code、AI diff、review focus、expected risk 和 scoring rubric。
-- seed 不得包含 hidden tests、参考答案泄露、raw prompt、provider 原始错误、API key 或 secrets。
+- 候选题必须携带 `capability`、`focus_tags`、`recommended_for`、`avoid_if`、`metadata.selection_reason` 和 `metadata.is_core`，供后端 graph 后续无模型选题。
+- `capability` 取值为 `basic_application`、`concept_explanation`、`debugging`、`transfer_or_review`。
+- `review_ai_patch` 候选题必须包含 requirement、original code、AI diff、review focus、expected risk、expected verdict、expected next action 和 scoring rubric。
+- 候选题不得包含 hidden tests、参考答案泄露、raw prompt、provider 原始错误、API key 或 secrets。
 - 异步生成和同步 rescue 必须共用同一 generator、schema、validation、安全检查和持久化路径；同步 rescue 失败时标记 `failed` 并返回 `REVIEW_SEED_BANK_GENERATION_FAILED`。
 
 ### `review_states`
@@ -493,7 +495,7 @@ $$ LANGUAGE plpgsql;
 
 ### `review_logs`
 
-FSRS 更新的 append-only 日志。每次学习提交或复习提交只要更新 `ReviewState`，就必须写入一条 `ReviewLog`。
+FSRS 更新的 append-only 日志。每次学习提交或复习批次最终结算只要更新 `ReviewState`，就必须写入一条 `ReviewLog`。复习中间题只写 `Attempt(review_submit)` 和 `learning_sessions.review_stage_state_json`，不写 `review_logs`；由于 `attempt_id` 仍为 `NOT NULL`，批次最终结算使用最后一个已完成正式题 attempt 作为 representative attempt。
 
 | 字段 | 类型 | 必填/默认值 | 约束与说明 |
 |---|---|---|---|
@@ -501,7 +503,7 @@ FSRS 更新的 append-only 日志。每次学习提交或复习提交只要更�
 | `knowledge_point_id` | `uuid` | NOT NULL | FK -> `knowledge_points.id` |
 | `user_id` | `uuid` | NOT NULL | FK -> `users.id` |
 | `plan_id` | `uuid` | NOT NULL | FK -> `learning_plans.id` |
-| `attempt_id` | `uuid` | NOT NULL | FK -> `attempts.id` |
+| `attempt_id` | `uuid` | NOT NULL | FK -> `attempts.id`；复习批次最终结算时保存 representative `review_submit` attempt |
 | `rating` | `text` | NOT NULL | CHECK in `Again` / `Hard` / `Good` / `Easy` |
 | `previous_state_json` | `jsonb` | NOT NULL | 更新前 ReviewState 快照 |
 | `next_state_json` | `jsonb` | NOT NULL | 更新后 ReviewState 快照 |
@@ -717,39 +719,104 @@ FSRS 更新的 append-only 日志。每次学习提交或复习提交只要更�
 
 ```json
 {
+  "schema_version": "review_batch_v1",
   "review_stage": "warmup",
   "knowledge_point_id": "uuid",
   "seed_bank_id": "uuid",
   "seed_id": "seed_review_ai_patch_01",
+  "batch": {
+    "status": "active",
+    "min_exercise_count": 3,
+    "target_exercise_count": 4,
+    "max_exercise_count": 6,
+    "completed_count": 0,
+    "current_exercise_id": "uuid",
+    "current_candidate_id": "seed_review_ai_patch_01",
+    "can_finalize": false
+  },
   "warmup": {
     "question": "先用一句话回忆：事件监听与状态变量最容易错在哪里？",
     "expected_focus": "状态应位于能跨事件复用的作用域",
     "keywords": ["state", "count", "作用域", "事件"],
     "result": "pending",
+    "recall_level": null,
     "last_answer": null,
     "repair_count": 0,
-    "feedback": null
+    "feedback": null,
+    "diagnosis": {
+      "recall_level": null,
+      "confidence": null,
+      "evidence": [],
+      "missing_points": [],
+      "misconception": "",
+      "suggested_focus": []
+    }
   },
+  "session_diagnosis": {
+    "recall_level": null,
+    "weak_points": [],
+    "passed_focus_tags": [],
+    "failed_focus_tags": [],
+    "skip_count": 0,
+    "core_failure_count": 0,
+    "last_result": null
+  },
+  "pool": {
+    "seed_bank_id": "uuid",
+    "generator_version": "review_candidate_pool_v1",
+    "candidate_count": 12,
+    "adaptive_supplements": []
+  },
+  "exercise_plan": [
+    {
+      "position": 1,
+      "candidate_id": "seed_review_ai_patch_01",
+      "exercise_id": "uuid",
+      "status": "active",
+      "capability": "transfer_or_review",
+      "exercise_type": "review_ai_patch",
+      "focus_tags": ["state_scope_error"],
+      "is_core": true
+    }
+  ],
   "variant": {
     "exercise_id": "uuid",
     "exercise_type": "review_ai_patch",
     "guided": false
+  },
+  "finalization": {
+    "status": "pending",
+    "representative_attempt_id": null,
+    "final_fsrs_rating": null,
+    "aggregate_result": null
   }
 }
 ```
 
-`review_stage` 只允许 `warmup`、`warmup_repair`、`variant_practice`、`submitted`。热身的 `correct`、`incorrect`、`unclear`、`skipped` 结果只写入该 JSON，用于刷新重放和诊断，不创建 `Attempt`，不写 `review_logs`，不更新 `ReviewState`。
+`review_stage` 允许 `warmup`、`warmup_repair`、`exercise`、`exercise_feedback`、`final_summary`、`submitted`，并保留 `variant_practice` 读取旧会话。热身的 `correct`、`incorrect`、`unclear`、`skipped` 结果会归一成 `clear`、`wrong`、`fuzzy`、`skipped` 诊断，只写入该 JSON，用于刷新重放和本轮内选题，不创建 `Attempt`，不写 `review_logs`，不更新 `ReviewState`。
 
 ### `review_seed_banks.seeds_json`
 
 ```json
 [
   {
-    "id": "seed_review_ai_patch_01",
+    "id": "candidate_review_ai_patch_01",
     "knowledge_point_id": "uuid",
     "exercise_type": "review_ai_patch",
     "difficulty": 3,
+    "capability": "transfer_or_review",
     "target_misconception": "state_scope_error",
+    "focus_tags": ["state_scope_error", "ai_patch", "evidence"],
+    "recommended_for": {
+      "recall_levels": ["fuzzy", "wrong", "skipped"],
+      "weak_points": ["state_scope_error"],
+      "after_result": ["failed", "partial"]
+    },
+    "avoid_if": {
+      "already_passed_focus_tags": ["state_scope_error"],
+      "recent_candidate_ids": [],
+      "unsupported_runtime_tiers": []
+    },
     "warmup_question": "先回忆：事件状态最容易错在哪里？",
     "warmup_expected_focus": "状态变量作用域与连续事件行为",
     "review_focus": "用需求、diff 与可见行为共同判断状态作用域风险",
@@ -762,6 +829,8 @@ FSRS 更新的 append-only 日志。每次学习提交或复习提交只要更�
       "expected_risk": "每次点击都会重新初始化 count",
       "expected_verdict": "fail",
       "expected_next_action": "request_change",
+      "selection_reason": "用 AI patch 审核确认用户能基于需求、diff 与行为证据识别状态作用域风险。",
+      "is_core": true,
       "rubric": {
         "verdict_correctness": "0-2",
         "evidence_grounding": "0-2",
@@ -773,7 +842,7 @@ FSRS 更新的 append-only 日志。每次学习提交或复习提交只要更�
 ]
 ```
 
-同一 seed bank 内 seed `id` 必须唯一，题面和 starter code 需要做重复检测。`code_blank`、`fix_bug`、`implement_function` 和 `explain_code` seed 可以包含可见测试和 hidden summary，但不得泄露隐藏测试源码或标准答案。
+同一 candidate pool 内候选题 `id` 必须唯一，题面和 starter code 需要做重复检测。`code_blank`、`fix_bug`、`implement_function` 和 `explain_code` 候选题可以包含可见测试和 hidden summary，但不得泄露隐藏测试源码或标准答案。候选池不是最终展示顺序，后端 graph 后续根据当前 session-local 诊断、已完成题和覆盖缺口选择具体题目。
 
 ### `knowledge_points.weak_points_json`
 
@@ -1149,12 +1218,13 @@ FSRS 更新的 append-only 日志。每次学习提交或复习提交只要更�
 | `initialize_review_state` | `review_states` | 为每个 `KnowledgePoint` 创建 `card_state=new`，`due_at=NULL` |
 | `start_learning_session` / `start_review_session` | `learning_sessions` | 使用 `request_id` 幂等；学习页新会话写入 `learning_stage=documentation_reading`，不自动持久化 `show_concept_intro`；复习页新会话写入 `review_stage=warmup` 和完整 `review_stage_state_json` |
 | `concept_check` / `concept_repair` / `practice_offer` | `learning_sessions`、`learning_messages` | 更新精简阶段状态并保存学习页可见对话和 `show_concept_check_result` 工具调用 |
-| `ensure_review_seed_bank` | `review_seed_banks`、可选 `exercises` | 异步或同步 rescue 生成完整 seed bank，校验通过后持久化；rescue 失败记录 failed，不展示 fallback 题 |
+| `ensure_review_seed_bank` | `review_seed_banks`、可选 `exercises` | 异步或同步 rescue 生成完整 candidate pool，校验通过后持久化到 `seeds_json`；rescue 失败记录 failed，不展示 fallback 题 |
 | `record_review_warmup_result` | `learning_sessions` | 只更新 `review_stage` / `review_stage_state_json`，不创建 `Attempt`，不更新 FSRS |
 | `run_exercise` / `run_review_exercise` | `attempts` | 保存运行事实，不更新 `ReviewState` |
-| `evaluate_attempt` | `attempts` | 写 `score`、`score_breakdown_json`、`code_completion_result`、`fsrs_rating` |
+| `evaluate_attempt` | `attempts` | 写 `score`、`score_breakdown_json`、`code_completion_result`、单题 `fsrs_rating` |
 | `update_learning_memory` | `session_knowledge_points`、`knowledge_points`、`review_states`、`review_logs` | 在同一事务内提交 |
-| `update_review_state` | `review_states`、`review_logs` | 每次 FSRS 更新必须有日志 |
+| `update_review_batch_state` | `learning_sessions`、可选 `exercises` | 复习中间题只更新 `review_batch_v1`、选择下一题或标记 `adaptive_supplement_status=needed`，不更新 FSRS |
+| `finalize_review_batch` | `review_states`、`review_logs`、`knowledge_points`、`learning_sessions` | 用整批聚合 `final_fsrs_rating` 一次性更新 FSRS；`review_logs.attempt_id` 使用 representative attempt |
 | `finish_learning_session` / `finish_review_session` | `learning_sessions`、必要时 `stage_summaries` | 生成摘要和恢复入口 |
 | `assist_note_draft` | `notes` | 只回写 `agent_draft_content`，属于 Note 辅助补全，不创建独立复盘草稿流程 |
 

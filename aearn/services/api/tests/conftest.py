@@ -47,13 +47,13 @@ def _fake_review_seed_bank_candidate(model_context: Mapping[str, object]) -> Gen
         supported = ["explain_code"]
     else:
         supported = [str(item) for item in supported_types]
-    target_count = int(model_context.get("target_seed_count") or 8)
+    target_count = int(model_context.get("target_seed_count") or 10)
     seeds = [
         _fake_review_seed(model_context, exercise_type=supported[index % len(supported)], index=index)
         for index in range(target_count)
     ]
     return GeneratedReviewSeedBank(
-        content={"seed_bank": {"seeds": seeds, "quality_notes": ["fake model-generated review seed bank"]}},
+        content={"candidate_pool": {"candidates": seeds, "quality_notes": ["fake model-generated review candidate pool"]}},
         model="fake-review-seed-model",
     )
 
@@ -74,7 +74,19 @@ def _fake_review_seed(
         "id": f"model_seed_{exercise_type}_{index + 1:02d}",
         "exercise_type": exercise_type,
         "difficulty": 2 + (index % 3),
+        "capability": _fake_candidate_capability(exercise_type, index=index),
         "target_misconception": misconception,
+        "focus_tags": [misconception, "state_scope", "evidence"] if language != "python" else [misconception, "return_value", "stdout"],
+        "recommended_for": {
+            "recall_levels": ["fuzzy", "wrong", "skipped"],
+            "weak_points": [misconception],
+            "after_result": ["failed", "partial"],
+        },
+        "avoid_if": {
+            "already_passed_focus_tags": [misconception],
+            "recent_candidate_ids": [],
+            "unsupported_runtime_tiers": [],
+        },
         "knowledge_point_id": knowledge_point_id,
         "runtime_tier": runtime_tier,
         "title": f"{title}：模型生成复习变体 {index + 1}",
@@ -86,10 +98,15 @@ def _fake_review_seed(
     }
     if exercise_type == "review_ai_patch":
         return base | _fake_review_patch_seed(language=language, title=title, index=index)
-    return base | _fake_practice_review_seed(language=language, title=title, index=index)
+    return base | _fake_practice_review_seed(
+        language=language,
+        title=title,
+        exercise_type=exercise_type,
+        index=index,
+    )
 
 
-def _fake_practice_review_seed(*, language: str, title: str, index: int) -> dict[str, object]:
+def _fake_practice_review_seed(*, language: str, title: str, exercise_type: str, index: int) -> dict[str, object]:
     if language == "python":
         starter_code = (
             f"# model generated review variant {index + 1}\n"
@@ -129,7 +146,11 @@ def _fake_practice_review_seed(*, language: str, title: str, index: int) -> dict
         "starter_code": starter_code,
         "visible_test_policy": "visible_and_hidden_summary",
         "requires_explanation": True,
-        "metadata": metadata,
+        "metadata": _candidate_metadata(
+            metadata,
+            selection_reason=f"Use {exercise_type} to check {title} misconception {index + 1}.",
+            is_core=index % 2 == 0,
+        ),
         "code_blanks": [
             {
                 "blank_key": "blank_1",
@@ -173,15 +194,19 @@ def _fake_review_patch_seed(*, language: str, title: str, index: int) -> dict[st
         "starter_code": original_code,
         "visible_test_policy": "visible_only",
         "requires_explanation": True,
-        "metadata": {
-            "requirement": "保留原有可见行为，并确保关键状态或返回值仍能被后续调用验证。",
-            "original_code": original_code,
-            "ai_diff": ai_diff,
-            "review_focus": _fake_review_focus(language),
-            "expected_risk": expected_risk,
-            "expected_verdict": "fail",
-            "expected_next_action": "request_change",
-        },
+        "metadata": _candidate_metadata(
+            {
+                "requirement": "保留原有可见行为，并确保关键状态或返回值仍能被后续调用验证。",
+                "original_code": original_code,
+                "ai_diff": ai_diff,
+                "review_focus": _fake_review_focus(language),
+                "expected_risk": expected_risk,
+                "expected_verdict": "fail",
+                "expected_next_action": "request_change",
+            },
+            selection_reason=f"Review an AI patch to verify evidence quality for {title}.",
+            is_core=True,
+        ),
         "rubric": {
             "verdict_correctness": "0-2",
             "evidence_grounding": "0-2",
@@ -199,6 +224,31 @@ def _fake_review_misconception(model_context: Mapping[str, object], index: int) 
     if isinstance(weak_points, list) and weak_points:
         return str(weak_points[index % len(weak_points)])
     return ("state_scope_error", "return_vs_output", "test_evidence_gap")[index % 3]
+
+
+def _fake_candidate_capability(exercise_type: str, *, index: int) -> str:
+    if exercise_type == "review_ai_patch":
+        return "transfer_or_review"
+    if exercise_type == "fix_bug":
+        return "debugging"
+    if exercise_type == "explain_code":
+        return "concept_explanation"
+    if exercise_type == "implement_function" and index % 2 == 1:
+        return "transfer_or_review"
+    return "basic_application"
+
+
+def _candidate_metadata(
+    metadata: Mapping[str, object],
+    *,
+    selection_reason: str,
+    is_core: bool,
+) -> dict[str, object]:
+    return {
+        **dict(metadata),
+        "selection_reason": selection_reason,
+        "is_core": is_core,
+    }
 
 
 def _fake_review_focus(language: str) -> str:

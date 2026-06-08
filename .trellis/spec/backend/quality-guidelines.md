@@ -40,7 +40,7 @@ The dependency source for the API service is `aearn/services/api/pyproject.toml`
 - For API endpoints, add smoke or contract tests that assert status codes, response envelopes, error codes, and idempotency behavior.
 - For database migrations, verify repeatability and core inserts for the tables touched by the task.
 - For runner/evaluation logic, test `success`, `runtime_error`, `timeout`, and `unsupported` separately.
-- For review scheduling, test that retries do not double-increment review counters.
+- For review scheduling, test that intermediate batch submits do not update FSRS, `ReviewState`, `ReviewLog`, `KnowledgePoint`, or long-term learner profile, and that final submit/retry writes scheduler state exactly once.
 - API test batches that call `bootstrap_database()` share the same local database and must be run sequentially; do not launch M2/M3/M4 pytest commands in parallel.
 
 ---
@@ -428,15 +428,17 @@ Keep retry safety on request identity and `idempotency_records`, while allowing 
 
 - `GET /api/reviews/today?user_id={user_id}&due_before={iso?}&limit={n}` returns due review items sorted by `ReviewState.due_at`.
 - `POST /api/reviews/start` with `{user_id, knowledge_point_id}` starts or reuses an active `LearningSession(session_type='review')`.
-- `POST /api/reviews/{session_id}/exercise-result` with `exercise_id`, optional `attempt_id`, `code`, `filled_blanks`, `submit_version`, optional `explanation_check`, hint/error counts, and optional `code_hash` writes `Attempt(review_submit)`.
-- Shared scheduler signature: `apply_attempt_review_update(conn, knowledge_point_id, attempt_id, source, request_id)` updates `ReviewState` only from persisted `Attempt(submit|review_submit)`.
+- `POST /api/reviews/{session_id}/exercise-result` with `exercise_id`, optional `attempt_id`, `code`, `filled_blanks`, `submit_version`, optional `explanation_check`, hint/error counts, optional `code_hash`, or `review_ai_patch_answer` writes or replays one `Attempt(review_submit)` and returns the next `current_node`.
+- Learning scheduler signature: `apply_attempt_review_update(conn, knowledge_point_id, attempt_id, source, request_id)` updates `ReviewState` from persisted learning `Attempt(submit)`.
+- Review batch scheduler signature: `apply_review_batch_update(conn, knowledge_point_id, representative_attempt_id, final_rating, aggregate_result, source, request_id)` updates `ReviewState` once from the finalized review batch.
 - Worker task signature: `review.refresh_due_counts` reads due `review_states` and returns `{"total_due": int, "counts_by_user": {user_id: count}}`.
 
 ### 3. Contracts
 
 - `Attempt(run)` must never update `ReviewState` or write `ReviewLog`.
-- Learning submit and review submit must both call the shared scheduler instead of duplicating FSRS update logic.
-- Scheduler idempotency key defaults to `review:update:{knowledge_point_id}:{attempt_id}:{rating}`; replay by request id or `(attempt_id, rating, source)` returns the existing next state.
+- Learning submit calls the attempt scheduler; review intermediate submits must not call a scheduler; review finalization calls the batch scheduler.
+- Scheduler idempotency key defaults to `review:update:{knowledge_point_id}:{attempt_id}:{rating}` for attempt scheduling and `review:batch:{session_id}:{representative_attempt_id}:{final_rating}` or caller-provided request id for review batch finalization.
+- Replay by request id or `(attempt_id, rating, source)` returns the existing next state and must not increment counters twice.
 - `review_states` storage still uses legacy `reps` / `lapses`, but API payloads must expose `review_count` / `lapse_count` while preserving `reps` / `lapses` compatibility.
 - `review_logs.request_id` and `(attempt_id, rating, source)` must be unique to prevent double counter increments.
 - Worker due-count queries are read-only; they must not update `ReviewState`, create `ReviewLog`, or prepare variants.
@@ -447,22 +449,24 @@ Keep retry safety on request identity and `idempotency_records`, while allowing 
 - Unknown knowledge point for review start -> `KNOWLEDGE_POINT_NOT_FOUND` with 404.
 - No due state, future `due_at`, suspended state, or inactive plan -> `REVIEW_NOT_DUE` with 409.
 - Review session/exercise mismatch -> `SESSION_CONFLICT` with 409.
+- Baseline candidate pool cannot cover remaining review weakness and batch cannot finalize -> `REVIEW_ADAPTIVE_SUPPLEMENT_FAILED` with recoverable 409.
 - Missing review session, exercise, or run attempt -> documented 404 error code.
 - Same review result idempotency key with different payload -> `IDEMPOTENCY_CONFLICT` with 409.
 - Invalid scheduling attempt type, rating, user mismatch, or unevaluated attempt -> `ReviewSchedulingError` and no `ReviewState` mutation.
 
 ### 5. Good/Base/Bad Cases
 
-- Good: complete a learning submit, force due, start review, submit a review exercise, and see one `Attempt(review_submit)`, one `ReviewLog(source='review_submit')`, incremented `review_count`, backend `due_at`, and `forget_risk`.
+- Good: complete a learning submit, force due, start review, submit intermediate review exercises and see only `Attempt(review_submit)` plus session-local batch state; final submit writes one `ReviewLog(source='review_submit')`, increments `review_count`, and returns backend `due_at` / `forget_risk`.
 - Base: call due-count worker with existing due rows and verify the returned counts while the row snapshot and log count stay unchanged.
-- Bad: computing `due_at` from the request body, updating `review_states` from `Attempt(run)`, or inserting a second `ReviewLog` on retry.
+- Bad: computing `due_at` from the request body, updating `review_states` from `Attempt(run)` or intermediate review submit, or inserting a second `ReviewLog` on final retry.
 
 ### 6. Tests Required
 
 - Assert `GET /api/reviews/today` returns empty state and due items sorted by `due_at`.
 - Assert `POST /api/reviews/start` rejects early items and reuses the active due review session.
-- Assert review exercise result writes `Attempt(review_submit)` and updates `ReviewState` exactly once.
-- Assert replaying the same review result returns `idempotency_replayed=true` without incrementing `reps`.
+- Assert intermediate review exercise results write `Attempt(review_submit)` and do not update `ReviewState`, `ReviewLog`, `KnowledgePoint`, or long-term learner profile.
+- Assert final review exercise result updates `ReviewState` and `ReviewLog` exactly once.
+- Assert replaying the same intermediate or final review result returns `idempotency_replayed=true` without duplicating attempts, exercises, logs, or `reps`.
 - Assert `Attempt(run)` leaves review state unchanged.
 - Assert `review.refresh_due_counts` is registered, uses `Asia/Shanghai`, and is read-only.
 
@@ -471,22 +475,33 @@ Keep retry safety on request identity and `idempotency_records`, while allowing 
 #### Wrong
 
 ```python
-if attempt_type == "run":
+if attempt_type in {"run", "review_submit"}:
     update_review_state(...)
 ```
 
-This makes exploratory runs change the spaced-repetition schedule.
+This makes exploratory runs and intermediate review questions change the spaced-repetition schedule.
 
 #### Correct
 
 ```python
-apply_attempt_review_update(
-    conn,
-    knowledge_point_id=knowledge_point_id,
-    attempt_id=submit_attempt_id,
-    source="learn_submit",
-    request_id=request_id,
-)
+if source == "learn_submit":
+    apply_attempt_review_update(
+        conn,
+        knowledge_point_id=knowledge_point_id,
+        attempt_id=submit_attempt_id,
+        source=source,
+        request_id=request_id,
+    )
+elif source == "review_submit" and batch_can_finalize:
+    apply_review_batch_update(
+        conn,
+        knowledge_point_id=knowledge_point_id,
+        representative_attempt_id=submit_attempt_id,
+        final_rating=final_rating,
+        aggregate_result=aggregate_result,
+        source=source,
+        request_id=request_id,
+    )
 ```
 
 Only persisted submit facts can move `ReviewState`, and retries reuse `ReviewLog` instead of mutating counters twice.

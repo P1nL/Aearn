@@ -29,7 +29,7 @@ from app.services.llm.llm_client import (
 REVIEW_CORE_TYPES = ("code_blank", "fix_bug", "explain_code", "implement_function", "review_ai_patch")
 _REVIEW_SEED_BANK_MAX_TOKENS = 12000
 _REVIEW_SEED_BANK_MIN_TIMEOUT_SECONDS = 75.0
-_REVIEW_SEED_BANK_PROMPT_VERSION = "review_seed_bank_prompt_v2"
+_REVIEW_SEED_BANK_PROMPT_VERSION = "review_candidate_pool_prompt_v1"
 _SAFE_MODEL_EXCEPTIONS = (
     LLMCallError,
     LLMConfigurationError,
@@ -158,6 +158,14 @@ def select_review_seed(
         raise ReviewSeedBankGenerationError("EMPTY_REVIEW_SEED_BANK", "review seed bank has no seeds")
 
     supported = set(_supported_types(runtime_profile))
+    scored_seeds = [
+        (_candidate_selection_score(seed, context=context, supported=supported), index, seed)
+        for index, seed in enumerate(seeds)
+    ]
+    selected = max(scored_seeds, key=lambda item: (item[0], -item[1]))
+    if selected[0] > 0:
+        return selected[2]
+
     weak_points = " ".join(_string_list(context.get("weak_points_json"))).lower()
     if "patch" in weak_points or "ai" in weak_points or "review" in weak_points:
         for seed in seeds:
@@ -211,12 +219,7 @@ def materialize_review_seed_exercise(
 
     metadata = _seed_metadata(seed)
     metadata["seed_generator_version"] = GENERATOR_VERSION
-    metadata["review_seed"] = {
-        "seed_bank_id": str(seed_bank["id"]),
-        "seed_id": seed_id,
-        "target_misconception": seed.get("target_misconception"),
-        "review_focus": seed.get("review_focus"),
-    }
+    metadata["review_seed"] = _review_seed_provenance(seed_bank=seed_bank, seed=seed)
     created = conn.execute(
         """
         INSERT INTO exercises (
@@ -323,12 +326,7 @@ def _ensure_review_seed_metadata(
     metadata = dict(metadata_value) if isinstance(metadata_value, Mapping) else {}
     metadata.update(_seed_metadata(seed))
     metadata["seed_generator_version"] = GENERATOR_VERSION
-    metadata["review_seed"] = {
-        "seed_bank_id": str(seed_bank["id"]),
-        "seed_id": str(seed["id"]),
-        "target_misconception": seed.get("target_misconception"),
-        "review_focus": seed.get("review_focus"),
-    }
+    metadata["review_seed"] = _review_seed_provenance(seed_bank=seed_bank, seed=seed)
     conn.execute(
         "UPDATE exercises SET metadata_json = %s::jsonb WHERE id = %s",
         (json.dumps(metadata), exercise_id),
@@ -502,7 +500,7 @@ def _review_seed_generation_context(
         attempt_id=str(context["last_attempt_id"]) if context.get("last_attempt_id") else None,
     )
     return {
-        "task": "review_seed_bank_candidate",
+        "task": "review_candidate_pool",
         "generator_version": GENERATOR_VERSION,
         "prompt_version": _REVIEW_SEED_BANK_PROMPT_VERSION,
         "knowledge_point_id": str(context["id"]),
@@ -529,14 +527,18 @@ def _review_seed_generation_context(
         },
         "supported_exercise_types": list(supported_types),
         "requires_review_ai_patch": "review_ai_patch" in supported_types,
-        "target_seed_count": 12 if high_risk else 8,
+        "target_seed_count": 12 if high_risk else 10,
         "high_risk": high_risk,
-        "seed_contract": {
+        "candidate_contract": {
             "required_fields": [
                 "id",
                 "exercise_type",
                 "difficulty",
+                "capability",
                 "target_misconception",
+                "focus_tags",
+                "recommended_for",
+                "avoid_if",
                 "knowledge_point_id",
                 "runtime_tier",
                 "title",
@@ -549,6 +551,16 @@ def _review_seed_generation_context(
                 "code_blanks",
                 "test_cases",
                 "metadata",
+            ],
+            "allowed_capabilities": [
+                "basic_application",
+                "concept_explanation",
+                "debugging",
+                "transfer_or_review",
+            ],
+            "metadata_fields": [
+                "selection_reason",
+                "is_core",
             ],
             "review_ai_patch_metadata_fields": [
                 "requirement",
@@ -577,8 +589,10 @@ def _review_seed_model_messages(context: Mapping[str, object]) -> list[dict[str,
         {
             "role": "system",
             "content": (
-                "You generate Aearn review seed banks. The questions must be model-generated, "
-                "adapted to the learner_state, and safe to persist. Return JSON only. "
+                "You generate Aearn review candidate pools. The candidates must be model-generated, "
+                "adapted to the learner_state, safe to persist, and useful for a later backend graph to select from. "
+                "Return JSON only. Generate a candidate pool, not a fixed display order. "
+                "Never decide FSRS rating, due_at, final review count, session completion, or persistence. "
                 "Never include solution_reference, hidden test bodies, hidden expected values, "
                 "raw prompts, provider errors, API keys, or secrets."
             ),
@@ -587,18 +601,21 @@ def _review_seed_model_messages(context: Mapping[str, object]) -> list[dict[str,
             "role": "user",
             "content": json.dumps(
                 {
-                    "task": "generate_review_seed_bank",
+                    "task": "generate_review_candidate_pool",
                     "generation_policy": (
-                        "Generate exactly target_seed_count unique seeds. Cover every supported_exercise_type at least once. "
+                        "Generate exactly target_seed_count unique candidates. Cover every supported_exercise_type at least once. "
+                        "Cover basic_application, concept_explanation, debugging, and transfer_or_review when supported. "
                         "Use learner_state weak_points, mastery_score, last_fsrs_rating, review_count, lapse_count, "
-                        "and latest_attempt to choose misconceptions and difficulty. For review_ai_patch, include requirement, "
+                        "and latest_attempt to choose misconceptions, focus_tags, capability, selection metadata, and difficulty. "
+                        "Each candidate must include recommended_for, avoid_if, metadata.selection_reason, and metadata.is_core. "
+                        "For review_ai_patch, include requirement, "
                         "original_code, ai_diff, expected risk, expected verdict, expected next action, and rubric. "
                         "For practice seeds, include starter_code, code_blanks, and visible or preview test summaries only."
                     ),
                     "bounded_review_context": context,
                     "response_shape": {
-                        "seed_bank": {
-                            "seeds": [],
+                        "candidate_pool": {
+                            "candidates": [],
                             "quality_notes": [],
                         }
                     },
@@ -616,12 +633,16 @@ def _seeds_from_generated(
     payload: object = generated
     if isinstance(generated.get("seed_bank"), Mapping):
         payload = generated["seed_bank"]
+    if isinstance(generated.get("candidate_pool"), Mapping):
+        payload = generated["candidate_pool"]
     if isinstance(payload, Mapping):
-        raw_seeds = payload.get("seeds")
+        raw_seeds = payload.get("candidates")
+        if raw_seeds is None:
+            raw_seeds = payload.get("seeds")
     else:
         raw_seeds = payload
     if not isinstance(raw_seeds, list):
-        raise ReviewSeedBankValidationError("model response must include seeds")
+        raise ReviewSeedBankValidationError("model response must include candidates")
 
     seeds: list[dict[str, object]] = []
     runtime_context = context.get("runtime_profile")
@@ -745,6 +766,63 @@ def _seed_metadata(seed: Mapping[str, object]) -> dict[str, object]:
     return {}
 
 
+def _review_seed_provenance(
+    *,
+    seed_bank: Mapping[str, object],
+    seed: Mapping[str, object],
+) -> dict[str, object]:
+    metadata = _seed_metadata(seed)
+    return {
+        "seed_bank_id": str(seed_bank["id"]),
+        "seed_id": str(seed["id"]),
+        "candidate_id": str(seed["id"]),
+        "target_misconception": seed.get("target_misconception"),
+        "review_focus": seed.get("review_focus"),
+        "capability": seed.get("capability"),
+        "focus_tags": _string_list(seed.get("focus_tags")),
+        "selection_reason": metadata.get("selection_reason"),
+        "is_core": bool(metadata.get("is_core", False)),
+    }
+
+
+def _candidate_selection_score(
+    seed: Mapping[str, object],
+    *,
+    context: Mapping[str, object],
+    supported: set[str],
+) -> int:
+    exercise_type = str(seed.get("exercise_type") or "")
+    if exercise_type not in supported:
+        return -100
+
+    score = 0
+    weak_points = {item.lower() for item in _string_list(context.get("weak_points_json"))}
+    focus_values = {
+        str(seed.get("target_misconception") or "").lower(),
+        *{item.lower() for item in _string_list(seed.get("focus_tags"))},
+    }
+    recommended_for = seed.get("recommended_for")
+    if isinstance(recommended_for, Mapping):
+        focus_values.update(item.lower() for item in _string_list(recommended_for.get("weak_points")))
+    if weak_points and weak_points & focus_values:
+        score += 10
+
+    weak_text = " ".join(sorted(weak_points))
+    if exercise_type == "review_ai_patch" and any(token in weak_text for token in ("patch", "ai", "review")):
+        score += 30
+    if str(context.get("last_fsrs_rating") or "") == "Again":
+        if exercise_type == "fix_bug":
+            score += 20
+        if seed.get("capability") == "debugging":
+            score += 10
+    if seed.get("capability") == "basic_application":
+        score += 2
+    metadata = _seed_metadata(seed)
+    if bool(metadata.get("is_core")):
+        score += 1
+    return score
+
+
 def _seed_solution_reference(seed: Mapping[str, object]) -> str | None:
     if seed.get("exercise_type") == "review_ai_patch":
         return None
@@ -802,7 +880,21 @@ def _safe_seed_id(value: object, *, index: int) -> str:
 
 def _contains_forbidden_material(seed: Mapping[str, object]) -> bool:
     serialized = json.dumps(_string_values(seed), ensure_ascii=False).lower()
-    forbidden = ("hidden test source", "api_key", "sk-", "traceback", "raw prompt", "provider error")
+    forbidden = (
+        "hidden answer",
+        "hidden test source",
+        "hidden_case",
+        "hidden_test",
+        "api_key",
+        "api key",
+        "sk-",
+        "secret",
+        "traceback",
+        "raw prompt",
+        "raw_prompt",
+        "provider error",
+        "provider_error",
+    )
     if any(item in serialized for item in forbidden):
         return True
     solution_reference = seed.get("solution_reference")
