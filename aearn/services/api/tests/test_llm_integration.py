@@ -40,9 +40,12 @@ from app.agents.onboarding.onboarding_plan_agent import (
 )
 from app.agents.review.review_coach_agent import (
     REVIEW_COACH_AGENT_NAME,
+    REVIEW_WARMUP_JUDGE_AGENT_NAME,
     AgentsSDKReviewCoachClient,
+    AgentsSDKReviewWarmupJudgementClient,
     ReviewCoachContext,
     ReviewCoachJsonResponse,
+    ReviewWarmupJudgementContext,
     build_sdk_review_coach_response,
 )
 from app.agents.runtime.guardrails import (
@@ -1652,6 +1655,70 @@ def test_agents_sdk_review_coach_client_streams_text_deltas_and_attaches_guardra
     assert captured["max_turns"] == 2
     assert captured["run_config"].tracing_disabled is True
     assert client.model == "third-party-model"
+
+
+def test_agents_sdk_review_warmup_judge_classifies_free_text_answer() -> None:
+    captured: dict[str, object] = {}
+
+    class FakeDelta:
+        type = "response.output_text.delta"
+
+        def __init__(self, delta: str) -> None:
+            self.delta = delta
+
+    class FakeEvent:
+        type = "raw_response_event"
+
+        def __init__(self, delta: str) -> None:
+            self.data = FakeDelta(delta)
+
+    class FakeStreamedRun:
+        final_output = None
+
+        async def stream_events(self):  # type: ignore[no-untyped-def]
+            yield FakeEvent('{"result":"correct","confidence":"high",')
+            yield FakeEvent('"feedback":"回答覆盖了证据与风险之间的关系。"}')
+
+    class FakeRunner:
+        def run_streamed(self, starting_agent, input, **kwargs):  # type: ignore[no-untyped-def]
+            captured["agent_name"] = starting_agent.name
+            captured["instructions"] = starting_agent.instructions
+            captured["input_guardrail_count"] = len(starting_agent.input_guardrails)
+            captured["output_guardrail_count"] = len(starting_agent.output_guardrails)
+            captured["input"] = input
+            captured["max_turns"] = kwargs["max_turns"]
+            return FakeStreamedRun()
+
+    client = AgentsSDKReviewWarmupJudgementClient(
+        Settings(
+            llm_type="openai",
+            openai_api_key="test-key",
+            openai_base_url="https://provider.example/v1",
+            openai_model="third-party-model",
+        ),
+        runner=FakeRunner(),
+    )
+    context = ReviewWarmupJudgementContext(
+        knowledge_point_title="AI Patch Review Evidence",
+        question="请说明 evidence_gap 会带来什么风险。",
+        expected_focus="不能仅凭补丁文本证明行为正确，需要可执行证据覆盖关键风险。",
+        learner_answer="补丁看起来合理不代表行为正确，还要用测试证据覆盖关键风险。",
+        repair_count=0,
+    )
+
+    response = client.complete_json(context)
+
+    assert response.content == {
+        "result": "correct",
+        "confidence": "high",
+        "feedback": "回答覆盖了证据与风险之间的关系。",
+    }
+    assert captured["agent_name"] == REVIEW_WARMUP_JUDGE_AGENT_NAME
+    assert captured["input_guardrail_count"] == 1
+    assert captured["output_guardrail_count"] == 1
+    assert "learner_answer" in str(captured["input"])
+    assert "不要让学习者自行选择阶段" in str(captured["instructions"])
+    assert captured["max_turns"] == 2
 
 
 def test_review_coach_sdk_response_rejects_output_that_leaks_hidden_identifier() -> None:

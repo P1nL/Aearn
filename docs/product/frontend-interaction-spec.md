@@ -354,8 +354,8 @@ ReviewPage
 
 - empty：今日无待复习项，提示继续学习或查看历史表现。
 - loading：列表加载、seed bank rescue、变体生成、热身提交和复习提交均显示局部 skeleton；首次加载可 skeleton，后台刷新保留旧卡片。
-- warmup：展示短热身问题、跳过按钮和一句话回答输入。
-- warmup_repair：热身错误或不明确后最多展示一次短修正提示，然后进入变体练习。
+- warmup：展示短热身问题、跳过入口和自由文本回答输入；不展示“我记得 / 不太确定 / 完全忘了”等自评选项，阶段由后端根据用户回答判定。
+- warmup_repair：热身错误或不明确后最多展示一次自然追问，不叠加“短修正 / 再修正”这类流程文案，然后进入变体练习。
 - variant_practice：展示 `code_blank`、`fix_bug`、`explain_code`、`implement_function` 或 `review_ai_patch` 变体题。
 - error：队列加载失败不影响工作台；seed bank rescue 失败展示 `REVIEW_SEED_BANK_GENERATION_FAILED` 和重试入口；提交失败不得把复习项标记完成。
 - disabled：未选择复习项时禁用运行/提交。

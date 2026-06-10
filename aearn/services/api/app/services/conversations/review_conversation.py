@@ -159,15 +159,8 @@ def ensure_review_session_system_messages(
     conn: Connection[dict[str, object]],
     *,
     session_id: str,
-    initial_agent_message: str,
     warmup_message: str | None,
 ) -> None:
-    store_review_agent_message(
-        conn,
-        session_id=session_id,
-        content=initial_agent_message,
-        client_message_id=f"review:{session_id}:system-initial",
-    )
     if warmup_message:
         store_review_agent_message(
             conn,
@@ -202,11 +195,17 @@ def list_review_messages(
         SELECT id::text AS id, role, content, client_message_id, created_at
         FROM review_messages
         WHERE review_session_id = %s
+          AND (
+            client_message_id IS NULL
+            OR (
+              client_message_id NOT LIKE 'review:%%:system-initial'
+              AND client_message_id NOT LIKE 'review:%%:exercise-result:%%'
+            )
+          )
         ORDER BY
           CASE
-            WHEN client_message_id LIKE 'review:%%:system-initial' THEN 0
-            WHEN client_message_id LIKE 'review:%%:system-warmup' THEN 1
-            ELSE 2
+            WHEN client_message_id LIKE 'review:%%:system-warmup' THEN 0
+            ELSE 1
           END,
           created_at,
           id
@@ -271,11 +270,17 @@ def load_review_context(
         SELECT role, content
         FROM review_messages
         WHERE review_session_id = %s
+          AND (
+            client_message_id IS NULL
+            OR (
+              client_message_id NOT LIKE 'review:%%:system-initial'
+              AND client_message_id NOT LIKE 'review:%%:exercise-result:%%'
+            )
+          )
         ORDER BY
           CASE
-            WHEN client_message_id LIKE 'review:%%:system-initial' THEN 0
-            WHEN client_message_id LIKE 'review:%%:system-warmup' THEN 1
-            ELSE 2
+            WHEN client_message_id LIKE 'review:%%:system-warmup' THEN 0
+            ELSE 1
           END,
           created_at,
           id

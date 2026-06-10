@@ -33,6 +33,7 @@ type AssistantUIThreadProps = {
   composerPrefillText?: string | null;
   onComposerPrefillConsumed?: () => void;
   quickReplies?: string[];
+  renderMessageAttachment?: (message: ConversationMessage) => ReactNode;
   canOpenNoteDrawer?: boolean;
   noteDrawerOpen?: boolean;
   onToggleNoteDrawer?: () => void;
@@ -60,6 +61,7 @@ export function AssistantUIThread({
   composerPrefillText,
   onComposerPrefillConsumed,
   quickReplies,
+  renderMessageAttachment,
   canOpenNoteDrawer = false,
   noteDrawerOpen = false,
   onToggleNoteDrawer,
@@ -98,7 +100,7 @@ export function AssistantUIThread({
               <>{emptyState}</>
             ) : (
               <ThreadPrimitive.Messages>
-                {() => <ConversationMessageRenderer source={messages} />}
+                {() => <ConversationMessageRenderer source={messages} renderAttachment={renderMessageAttachment} />}
               </ThreadPrimitive.Messages>
             )}
           </ThreadPrimitive.Viewport>
@@ -184,28 +186,33 @@ function ComposerPrefillBridge({
 
 type RendererProps = {
   source: ConversationMessage[];
+  renderAttachment?: (message: ConversationMessage) => ReactNode;
 };
 
-function ConversationMessageRenderer({ source }: RendererProps) {
+function ConversationMessageRenderer({ source, renderAttachment }: RendererProps) {
   const message = useMessage();
   const original = source.find((entry) => entry.id === message.id);
   const speaker: "user" | "agent" = message.role === "user" ? "user" : "agent";
   const status = original?.status;
+  const attachmentOnly = original?.presentation === "attachment" && original.attachment !== undefined;
 
   return (
     <article
-      className={messageClassName(speaker, status)}
+      className={messageClassName(speaker, status, original?.presentation)}
       aria-live={status === "streaming" ? "polite" : undefined}
     >
-      <div className="avatar">{speaker === "agent" ? "A" : "你"}</div>
+      {!attachmentOnly && <div className="avatar">{speaker === "agent" ? "A" : "你"}</div>}
       <div className="bubble">
-        {original?.label && <div className="bubble-label">{original.label}</div>}
-        <MessagePrimitive.Parts
-          components={{
-            Text: TextPart,
-            tools: { Fallback: ToolCallFallback },
-          }}
-        />
+        {!attachmentOnly && original?.label && <div className="bubble-label">{original.label}</div>}
+        {!attachmentOnly && (
+          <MessagePrimitive.Parts
+            components={{
+              Text: TextPart,
+              tools: { Fallback: ToolCallFallback },
+            }}
+          />
+        )}
+        {original ? renderAttachment?.(original) : null}
         {original?.statusText && <div className="bubble-status">{original.statusText}</div>}
       </div>
     </article>
@@ -240,8 +247,12 @@ function ToolCallFallback({ toolName, status }: ToolCallMessagePartProps) {
   );
 }
 
-function messageClassName(speaker: "agent" | "user", status?: ConversationMessage["status"]): string {
-  return ["message", speaker, status].filter(Boolean).join(" ");
+function messageClassName(
+  speaker: "agent" | "user",
+  status?: ConversationMessage["status"],
+  presentation?: ConversationMessage["presentation"],
+): string {
+  return ["message", speaker, status, presentation === "attachment" ? "attachment-message" : null].filter(Boolean).join(" ");
 }
 
 function findLatestRouteToolCallId(messages: ConversationMessage[]): string | null {

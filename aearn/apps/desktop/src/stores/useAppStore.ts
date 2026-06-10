@@ -40,6 +40,7 @@ import type {
 } from "../types";
 import { ApiRequestError } from "../types";
 import { NAV_DEFAULTS } from "../lib/appContent";
+import { readDevBootstrapContext } from "../lib/devBootstrap";
 import { formatErrorMessage } from "../lib/errorMessages";
 import { applyKnowledgePointUpdate, markKnowledgePointLearning } from "../lib/learningHelpers";
 import { clearBootstrapContext, readBootstrapContext, writeBootstrapContext } from "../lib/bootstrapStorage";
@@ -347,7 +348,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
       const [health, catalog] = await Promise.all([fetchApiHealth(signal), fetchLanguageCourses(signal)]);
       set({ apiHealth: { status: "online", data: health }, courses: catalog });
 
-      const stored = readBootstrapContext();
+      const devBootstrap = await readDevBootstrapContext(signal);
+      if (signal?.aborted) return;
+      if (devBootstrap) {
+        writeBootstrapContext(devBootstrap);
+      }
+      const stored = devBootstrap ?? readBootstrapContext();
       if (!stored.userId) {
         set({ dashboardState: { status: "idle" } });
         return;

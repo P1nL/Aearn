@@ -67,14 +67,25 @@ export type ConversationToolCall = {
   status: ToolCallStatus;
 };
 
+export type ConversationAttachment =
+  | {
+      type: "review_exercise";
+      sessionId: string;
+      exerciseId: string;
+      knowledgePointId: string;
+      title: string;
+    };
+
 export type ConversationMessage = {
   id: string;
   speaker: "agent" | "user";
   text: string;
   label?: string;
+  presentation?: "bubble" | "attachment";
   status?: "streaming" | "error" | "done";
   statusText?: string;
   toolCalls?: ConversationToolCall[];
+  attachment?: ConversationAttachment;
 };
 
 export type SettingsPanel = {

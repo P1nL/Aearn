@@ -563,6 +563,7 @@ export async function submitReviewExerciseResult(input: {
   userId: string;
   sessionId: string;
   exerciseId: string;
+  attemptId?: string;
   code: string;
   filledBlanks: Record<string, string>;
   explanation?: string;
@@ -575,6 +576,7 @@ export async function submitReviewExerciseResult(input: {
     body: JSON.stringify({
       user_id: input.userId,
       exercise_id: input.exerciseId,
+      attempt_id: input.attemptId,
       code: input.code,
       filled_blanks: input.filledBlanks,
       explanation: input.explanation,
@@ -1333,23 +1335,69 @@ function isReviewWarmupState(payload: unknown): payload is ReviewWarmupResultRes
 }
 
 function isReviewExerciseResultResponse(payload: unknown): payload is ReviewExerciseResultResponse {
-  return (
-    isRecord(payload) &&
-    typeof payload.attempt_id === "string" &&
-    typeof payload.result === "string" &&
-    typeof payload.score === "number" &&
-    isRecord(payload.score_breakdown) &&
-    typeof payload.fsrs_rating === "string" &&
-    Array.isArray(payload.weak_points) &&
-    typeof payload.feedback === "string" &&
-    (typeof payload.due_at === "string" || payload.due_at === null) &&
-    isForgetRisk(payload.forget_risk) &&
-    isReviewStateSummary(payload.ReviewState) &&
-    isRecord(payload.KnowledgePoint) &&
-    typeof payload.KnowledgePoint.id === "string" &&
-    isCodeCompletionResult(payload.code_completion_result) &&
-    typeof payload.next_action === "string"
-  );
+  if (
+    !isRecord(payload) ||
+    typeof payload.result !== "string" ||
+    typeof payload.score !== "number" ||
+    !isRecord(payload.score_breakdown) ||
+    typeof payload.fsrs_rating !== "string" ||
+    !Array.isArray(payload.weak_points) ||
+    typeof payload.feedback !== "string" ||
+    !isCodeCompletionResult(payload.code_completion_result) ||
+    typeof payload.next_action !== "string"
+  ) {
+    return false;
+  }
+
+  if (payload.next_action === "next_exercise") {
+    return (
+      typeof payload.attempt_id === "string" &&
+      isLearningExercise(payload.review_exercise) &&
+      typeof payload.review_stage === "string" &&
+      isRecord(payload.review_stage_state) &&
+      isRecord(payload.current_node) &&
+      payload.final_result === null &&
+      (payload.due_at === undefined || payload.due_at === null) &&
+      (payload.forget_risk === undefined || isForgetRisk(payload.forget_risk)) &&
+      (payload.ReviewState === undefined || isReviewStateSummary(payload.ReviewState)) &&
+      (payload.KnowledgePoint === undefined ||
+        (isRecord(payload.KnowledgePoint) && typeof payload.KnowledgePoint.id === "string"))
+    );
+  }
+
+  if (payload.next_action === "schedule_review") {
+    return (
+      typeof payload.attempt_id === "string" &&
+      (payload.review_stage === undefined || typeof payload.review_stage === "string") &&
+      (payload.review_stage_state === undefined || isRecord(payload.review_stage_state)) &&
+      (payload.current_node === undefined || isRecord(payload.current_node)) &&
+      (payload.review_exercise === undefined || isLearningExercise(payload.review_exercise)) &&
+      (payload.final_result === undefined ||
+        (isRecord(payload.final_result) &&
+          (typeof payload.final_result.final_fsrs_rating === "string") &&
+          (typeof payload.final_result.due_at === "string" || payload.final_result.due_at === null) &&
+          isForgetRisk(payload.final_result.forget_risk))) &&
+      (typeof payload.due_at === "string" || payload.due_at === null) &&
+      isForgetRisk(payload.forget_risk) &&
+      isReviewStateSummary(payload.ReviewState) &&
+      isRecord(payload.KnowledgePoint) &&
+      typeof payload.KnowledgePoint.id === "string"
+    );
+  }
+
+  if (payload.next_action === "retry_same") {
+    return (
+      typeof payload.review_stage === "string" &&
+      isRecord(payload.review_stage_state) &&
+      isRecord(payload.current_node) &&
+      isLearningExercise(payload.review_exercise) &&
+      typeof payload.judgement_ready === "boolean" &&
+      (payload.judgement_blocking_fields === undefined || Array.isArray(payload.judgement_blocking_fields)) &&
+      (payload.clarification_question === undefined || typeof payload.clarification_question === "string")
+    );
+  }
+
+  return false;
 }
 
 function isNoteListResponse(payload: unknown): payload is NoteListResponse {

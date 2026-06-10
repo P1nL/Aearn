@@ -33,6 +33,7 @@ docs/.obsidian/
 .env.*
 !.env.example
 *.log
+aearn/apps/desktop/public/aearn-dev-bootstrap.json
 
 # OS files.
 Thumbs.db

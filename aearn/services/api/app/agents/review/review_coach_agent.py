@@ -21,6 +21,9 @@ from app.services.llm.llm_client import LLMCallError, LLMConfigurationError, LLM
 
 
 REVIEW_COACH_AGENT_NAME = "Aearn Review Coach"
+REVIEW_WARMUP_JUDGE_AGENT_NAME = "Aearn Review Warmup Judge"
+REVIEW_WARMUP_RESULTS = {"correct", "incorrect", "unclear"}
+REVIEW_WARMUP_CONFIDENCE_LEVELS = {"high", "medium", "low"}
 
 
 @dataclass(frozen=True)
@@ -49,6 +52,21 @@ class ReviewCoachJsonResponse:
     model: str
 
 
+@dataclass(frozen=True)
+class ReviewWarmupJudgementContext:
+    knowledge_point_title: str
+    question: str
+    expected_focus: str
+    learner_answer: str
+    repair_count: int
+
+
+@dataclass(frozen=True)
+class ReviewWarmupJudgementJsonResponse:
+    content: dict[str, object]
+    model: str
+
+
 class ReviewCoachClient(Protocol):
     @property
     def model(self) -> str: ...
@@ -59,6 +77,18 @@ class ReviewCoachClient(Protocol):
         *,
         temperature: float = 0.2,
     ) -> ReviewCoachJsonResponse: ...
+
+
+class ReviewWarmupJudgementClient(Protocol):
+    @property
+    def model(self) -> str: ...
+
+    def complete_json(
+        self,
+        context: ReviewWarmupJudgementContext,
+        *,
+        temperature: float = 0.1,
+    ) -> ReviewWarmupJudgementJsonResponse: ...
 
 
 class AgentsSDKReviewCoachClient:
@@ -113,6 +143,58 @@ class AgentsSDKReviewCoachClient:
         return ReviewCoachJsonResponse(content=_parse_json_object(content), model=self.model)
 
 
+class AgentsSDKReviewWarmupJudgementClient:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        runner: AgentsSDKRunner | None = None,
+    ) -> None:
+        self._settings = settings
+        self._run_config = build_run_config(settings)
+        self._runner = runner
+
+    @property
+    def model(self) -> str:
+        return str(self._settings.llm_model or "")
+
+    def complete_json(
+        self,
+        context: ReviewWarmupJudgementContext,
+        *,
+        temperature: float = 0.1,
+    ) -> ReviewWarmupJudgementJsonResponse:
+        messages = _build_warmup_judgement_messages(context)
+        instructions, input_text = split_chat_messages(messages)
+        input_guardrails, output_guardrails = build_teaching_guardrails()
+        agent = build_agent(
+            name=REVIEW_WARMUP_JUDGE_AGENT_NAME,
+            instructions=instructions,
+            model=self.model,
+            temperature=temperature,
+            tools=[],
+            input_guardrails=input_guardrails,
+            output_guardrails=output_guardrails,
+        )
+        runner = self._runner
+        if runner is None:
+            from agents import Runner
+
+            runner = cast(AgentsSDKRunner, Runner)
+
+        chunks = iter_streamed_text(
+            lambda: stream_text_deltas(
+                runner=runner,
+                agent=agent,
+                input_text=input_text,
+                run_config=self._run_config,
+                max_turns=2,
+            )
+        )
+        content = "".join(chunks).strip()
+        return ReviewWarmupJudgementJsonResponse(content=_parse_json_object(content), model=self.model)
+
+
 def build_review_coach_client(
     settings: Settings | None = None,
     *,
@@ -148,6 +230,27 @@ def build_sdk_review_coach_response(
     return response
 
 
+def build_sdk_review_warmup_judgement_response(
+    context: ReviewWarmupJudgementContext,
+    *,
+    settings: Settings | None = None,
+    client: ReviewWarmupJudgementClient | None = None,
+) -> dict[str, object] | None:
+    resolved_client = _resolve_warmup_judgement_client(settings=settings, client=client)
+    if resolved_client is None:
+        return None
+
+    try:
+        result = resolved_client.complete_json(context, temperature=0.1)
+        response = _validate_review_warmup_judgement_response(result.content)
+    except SAFE_GENERATION_EXCEPTIONS:
+        return None
+
+    response["generation_source"] = "llm"
+    response["generation_model"] = result.model
+    return response
+
+
 SAFE_GENERATION_EXCEPTIONS = (
     LLMCallError,
     LLMConfigurationError,
@@ -169,6 +272,22 @@ def _resolve_client(
         return None
     try:
         return AgentsSDKReviewCoachClient(effective_settings)
+    except LLMConfigurationError:
+        return None
+
+
+def _resolve_warmup_judgement_client(
+    *,
+    settings: Settings | None,
+    client: ReviewWarmupJudgementClient | None,
+) -> ReviewWarmupJudgementClient | None:
+    if client is not None:
+        return client
+    effective_settings = settings or get_settings()
+    if not effective_settings.openai_compatible_configured:
+        return None
+    try:
+        return AgentsSDKReviewWarmupJudgementClient(effective_settings)
     except LLMConfigurationError:
         return None
 
@@ -229,6 +348,42 @@ def _build_messages(context: ReviewCoachContext) -> list[dict[str, str]]:
     ]
 
 
+def _build_warmup_judgement_messages(context: ReviewWarmupJudgementContext) -> list[dict[str, str]]:
+    evidence = {
+        "task": "judge_review_warmup",
+        "knowledge_point_title": _bounded_text(context.knowledge_point_title, 160),
+        "question": _bounded_text(context.question, 500),
+        "expected_focus": _bounded_text(context.expected_focus, 500),
+        "learner_answer": _bounded_text(context.learner_answer, 1200),
+        "repair_count": context.repair_count,
+        "output_schema": {
+            "result": "correct | incorrect | unclear",
+            "confidence": "high | medium | low",
+            "feedback": "one short learner-facing sentence",
+        },
+        "judgement_rules": {
+            "correct": "the answer recalls the core relationship or risk in expected_focus",
+            "incorrect": "the answer is relevant but wrong, incomplete, or misses the core relationship",
+            "unclear": "the learner explicitly does not know, gives no usable answer, is unrelated, or is self-contradictory",
+        },
+    }
+    return [
+        {
+            "role": "system",
+            "content": (
+                "你是 Aearn 的复习热身判断器。只输出 JSON，不要 Markdown。"
+                "根据学习者的自然语言回答判断 correct、incorrect 或 unclear，不要让学习者自行选择阶段。"
+                "部分正确或遗漏关键点应判 incorrect；只有不知道、不确定、无关、冲突或无法判断时才判 unclear。"
+                "feedback 必须简短，不得泄露参考答案、隐藏测试、完整代码、provider 错误、raw prompt 或密钥。"
+            ),
+        },
+        {
+            "role": "user",
+            "content": json.dumps(evidence, ensure_ascii=False, separators=(",", ":")),
+        },
+    ]
+
+
 def _validate_review_coach_response(payload: Mapping[str, object]) -> dict[str, object]:
     initial_agent_message = _required_str(payload, "initial_agent_message", max_length=240)
     variant_reason = _required_str(payload, "variant_reason", max_length=260)
@@ -244,6 +399,22 @@ def _validate_review_coach_response(payload: Mapping[str, object]) -> dict[str, 
     if coaching_text:
         response["coaching_text"] = coaching_text
     return response
+
+
+def _validate_review_warmup_judgement_response(payload: Mapping[str, object]) -> dict[str, object]:
+    result = str(payload.get("result") or "").strip().lower()
+    if result not in REVIEW_WARMUP_RESULTS:
+        raise LLMInvalidResponseError("Review warmup judgement result is invalid")
+    confidence = str(payload.get("confidence") or "").strip().lower()
+    if confidence not in REVIEW_WARMUP_CONFIDENCE_LEVELS:
+        confidence = "low"
+    feedback = _required_str(payload, "feedback", max_length=320)
+    assert_safe_teaching_output(feedback)
+    return {
+        "result": result,
+        "confidence": confidence,
+        "feedback": feedback,
+    }
 
 
 def _latest_attempt_evidence(latest_attempt: Mapping[str, object] | None) -> dict[str, object]:

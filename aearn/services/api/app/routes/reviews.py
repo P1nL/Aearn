@@ -261,7 +261,6 @@ def create_review_session(
             ensure_review_session_system_messages(
                 conn,
                 session_id=str(response["session_id"]),
-                initial_agent_message=str(response["initial_agent_message"]),
                 warmup_message=(
                     _review_warmup_prompt_message(response)
                     if str(response.get("review_stage")) in {"warmup", "warmup_repair"}
@@ -446,14 +445,6 @@ async def submit_review_result(
                 request_id=request_id_from(request),
                 request_body=body,
             )
-            feedback = response.get("feedback")
-            if isinstance(feedback, str) and feedback.strip():
-                store_review_agent_message(
-                    conn,
-                    session_id=session_id,
-                    content=feedback,
-                    client_message_id=_review_exercise_result_message_key(session_id, response),
-                )
         except EntityNotFoundError as exc:
             conn.rollback()
             return error_response(
@@ -720,8 +711,7 @@ def _review_warmup_prompt_message(response: Mapping[str, object]) -> str:
     question = ""
     if isinstance(warmup, dict):
         question = str(warmup.get("question") or "")
-    lead = "先做一次短修正：" if str(response.get("review_stage")) == "warmup_repair" else "先做一个短热身："
-    return f"{lead}\n{question}\n\n直接回答热身问题；如果想跳过，可以输入“跳过”。"
+    return _review_warmup_prompt_text(str(response.get("review_stage")), question)
 
 
 def _review_warmup_user_message(action: str, answer: str | None) -> str:
@@ -737,12 +727,18 @@ def _review_warmup_result_message(response: Mapping[str, object]) -> str:
     if isinstance(warmup, dict):
         feedback = str(warmup.get("feedback") or "")
         question = str(warmup.get("question") or "")
-    lines = [feedback or "热身已记录。"]
     if str(response.get("review_stage")) in {"warmup", "warmup_repair"}:
-        lines.append(f"再修正一下：{question}")
-    else:
-        lines.append("热身完成。下面进入同一个知识点的正式复习题。")
+        return feedback or _review_warmup_prompt_text(str(response.get("review_stage")), question)
+    lines = [feedback or "热身已记录。"]
+    lines.append("下面直接进一道同知识点的题，看看你能不能在代码里认出来。")
     return "\n\n".join(lines)
+
+
+def _review_warmup_prompt_text(stage: str, question: str) -> str:
+    prompt = question.strip() or "这类代码最容易让人误判的地方是什么？"
+    if stage == "warmup_repair":
+        return f"我还没确认这个点已经稳住。换个更具体的说法：\n{prompt}\n\n不用写完整答案，说出你会警惕什么就行；想跳过就输入“跳过”。"
+    return f"先把这个点唤醒一下：\n{prompt}\n\n不用写完整答案，说一句你记得的风险点就行；想跳过就输入“跳过”。"
 
 
 def _review_warmup_result_message_key(session_id: str, response: Mapping[str, object]) -> str:
@@ -756,15 +752,6 @@ def _review_warmup_result_message_key(session_id: str, response: Mapping[str, ob
         last_answer = str(warmup.get("last_answer") or "")
     digest = _stable_review_message_digest(str(response.get("review_stage") or ""), result, str(repair_count), last_answer)
     return f"review:{session_id}:warmup-result:{digest}"
-
-
-def _review_exercise_result_message_key(session_id: str, response: Mapping[str, object]) -> str | None:
-    attempt_id = response.get("attempt_id")
-    if isinstance(attempt_id, str) and attempt_id:
-        return f"review:{session_id}:exercise-result:{attempt_id}"
-    next_action = str(response.get("next_action") or "retry_same")
-    digest = _stable_review_message_digest(next_action, str(response.get("feedback") or ""))
-    return f"review:{session_id}:exercise-result:{digest}"
 
 
 def _stable_review_message_digest(*parts: str) -> str:
