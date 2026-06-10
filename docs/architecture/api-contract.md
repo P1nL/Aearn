@@ -2522,7 +2522,9 @@ Response JSON 示例：
     "recall_level": "clear",
     "last_answer": "count 要放在能跨多次点击复用的外层作用域。",
     "repair_count": 0,
-    "feedback": "热身通过，进入本轮正式复习题。",
+    "feedback": "这个点够用了，下面用一道题确认你能不能在代码里认出来。",
+    "judgement_source": "llm",
+    "judgement_model": "configured-model",
     "diagnosis": {
       "recall_level": "clear",
       "confidence": 0.9,
@@ -2562,7 +2564,7 @@ HTTP 状态码：
 
 错误码：`SESSION_NOT_FOUND`、`SESSION_CONFLICT`、`VALIDATION_ERROR`
 
-阶段规则：`correct` 归一为 `clear` 并进入 `exercise`；`skipped` 归一为 `skipped` 并进入低难度 `exercise`；`incorrect` 归一为 `wrong`、`unclear` 归一为 `fuzzy`，最多进入一次 `warmup_repair`，第二次仍不通过时进入带引导的 `exercise`。任何 warmup 分支都不得触发 FSRS。
+阶段规则：`action=answer` 接收用户自由文本，由 Review Warmup Judge 判断 `correct`、`incorrect` 或 `unclear`，前端不得要求用户自行选择阶段；模型不可用时后端可使用受限启发式兜底并在 `judgement_source` 标记来源。`correct` 归一为 `clear` 并进入 `exercise`；`skipped` 归一为 `skipped` 并进入低难度 `exercise`；`incorrect` 归一为 `wrong`、`unclear` 归一为 `fuzzy`，最多进入一次 `warmup_repair`，第二次仍不通过时进入带引导的 `exercise`。任何 warmup 分支都不得触发 FSRS。
 
 相关数据表/状态机节点：`LearningSession`；`record_review_warmup_result`、`present_review_exercise`。
 

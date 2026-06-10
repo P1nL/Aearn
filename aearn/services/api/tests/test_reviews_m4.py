@@ -82,6 +82,26 @@ def disable_review_coach_sdk(monkeypatch: pytest.MonkeyPatch) -> None:
             },
         }
 
+    def fake_review_warmup_judgement(context) -> dict[str, object]:  # type: ignore[no-untyped-def]
+        normalized = context.learner_answer.strip().lower()
+        if not normalized or normalized in {"不太确定", "完全忘了", "不知道", "unclear", "not sure"}:
+            result = "unclear"
+        elif any(marker in normalized for marker in ("状态", "作用域", "返回", "stdout", "测试", "state", "scope", "return", "test")):
+            result = "correct"
+        else:
+            result = "incorrect"
+        return {
+            "result": result,
+            "confidence": "high",
+            "feedback": {
+                "correct": "回答覆盖了当前知识点的核心关系。",
+                "incorrect": "回答和当前知识点相关，但还缺少关键关系。",
+                "unclear": "回答还不足以判断掌握程度，需要一次更窄的修正。",
+            }[result],
+            "generation_source": "llm",
+            "generation_model": "fake-review-warmup-judge",
+        }
+
     monkeypatch.setattr(learning_session_repository, "build_sdk_concept_intro", fake_concept_intro)
     monkeypatch.setattr(
         review_repository,
@@ -92,6 +112,11 @@ def disable_review_coach_sdk(monkeypatch: pytest.MonkeyPatch) -> None:
             "generation_source": "llm",
             "generation_model": "fake-review-coach",
         },
+    )
+    monkeypatch.setattr(
+        review_repository,
+        "build_sdk_review_warmup_judgement_response",
+        fake_review_warmup_judgement,
     )
     monkeypatch.setattr(plans_route, "build_dynamic_plan_draft", _fake_dynamic_plan_draft)
     monkeypatch.setattr(
@@ -698,6 +723,31 @@ def test_review_candidate_pool_validation_enforces_schema_and_coverage() -> None
         )
 
 
+def test_review_seed_bank_prompt_requires_top_level_selection_metadata() -> None:
+    context = {
+        "knowledge_point_id": "kp_candidate_pool",
+        "knowledge_point_title": "Review concept",
+        "runtime_profile": {"language": "javascript", "runtime_tier": "browser_preview"},
+        "supported_exercise_types": ["code_blank", "fix_bug", "explain_code", "implement_function", "review_ai_patch"],
+        "target_seed_count": 10,
+    }
+    messages = review_seed_bank._review_seed_model_messages(context)  # type: ignore[attr-defined]
+    user_payload = json.loads(messages[1]["content"])
+    policy = user_payload["generation_policy"]
+    candidate_schema = user_payload["response_shape"]["candidate_pool"]["candidates"][0]
+
+    assert "top-level recommended_for" in policy
+    assert "Do not move recommended_for or avoid_if inside metadata" in policy
+    assert set(candidate_schema["recommended_for"]) == {"recall_levels", "weak_points", "after_result"}
+    assert set(candidate_schema["avoid_if"]) == {
+        "already_passed_focus_tags",
+        "recent_candidate_ids",
+        "unsupported_runtime_tiers",
+    }
+    assert "recommended_for" not in candidate_schema["metadata"]
+    assert "avoid_if" not in candidate_schema["metadata"]
+
+
 def test_review_seed_bank_model_context_adapts_to_learner_state(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -822,9 +872,9 @@ def test_review_messages_replay_start_and_warmup_history(client: TestClient) -> 
     history = client.get(f"/api/reviews/{session_id}/messages", params={"user_id": user["id"]})
     assert history.status_code == 200
     messages = history.json()["messages"]
-    assert [message["role"] for message in messages[:2]] == ["agent", "agent"]
-    assert messages[0]["content"] == review_session["initial_agent_message"]
-    assert review_session["warmup"]["question"] in messages[1]["content"]
+    assert [message["role"] for message in messages] == ["agent"]
+    assert review_session["initial_agent_message"] not in messages[0]["content"]
+    assert review_session["warmup"]["question"] in messages[0]["content"]
 
     replayed = client.post(
         "/api/reviews/start",
@@ -845,6 +895,65 @@ def test_review_messages_replay_start_and_warmup_history(client: TestClient) -> 
     serialized = json.dumps(after_warmup.json(), ensure_ascii=False)
     assert "不太确定" in serialized
     assert warmup.json()["warmup"]["feedback"] in serialized
+    assert "先做一次短修正" not in serialized
+    assert "再修正一下" not in serialized
+    assert "正式复习题" not in serialized
+
+    legacy_feedback = "旧版独立复习提交反馈不应恢复成普通 Agent 消息。"
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO review_messages (review_session_id, role, content, client_message_id)
+            VALUES (%s, 'agent', %s, %s)
+            """,
+            (session_id, legacy_feedback, f"review:{session_id}:exercise-result:legacy-attempt"),
+        )
+        conn.commit()
+    filtered_history = client.get(f"/api/reviews/{session_id}/messages", params={"user_id": user["id"]})
+    assert filtered_history.status_code == 200
+    filtered_serialized = json.dumps(filtered_history.json(), ensure_ascii=False)
+    assert legacy_feedback not in filtered_serialized
+
+
+def test_review_warmup_model_judgement_selects_stage_from_free_text(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user, plan = _confirmed_plan(client, language="javascript")
+    knowledge_point_id = plan["knowledge_points"][0]["id"]
+    _mark_due(knowledge_point_id)
+    created = client.post(
+        "/api/reviews/start",
+        json={"user_id": user["id"], "knowledge_point_id": knowledge_point_id},
+    )
+    assert created.status_code == 201
+
+    monkeypatch.setattr(
+        review_repository,
+        "build_sdk_review_warmup_judgement_response",
+        lambda context: {
+            "result": "correct",
+            "confidence": "high",
+            "feedback": "模型判断这段回答已经覆盖核心风险。",
+            "generation_source": "llm",
+            "generation_model": "fake-stage-judge",
+        },
+    )
+    response = client.post(
+        f"/api/reviews/{created.json()['session_id']}/warmup-result",
+        json={
+            "user_id": user["id"],
+            "action": "answer",
+            "answer": "我会先核对补丁证据是否真正覆盖风险，再决定是否接受。",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["review_stage"] == "exercise"
+    assert body["warmup"]["recall_level"] == "clear"
+    assert body["warmup"]["judgement_source"] == "llm"
+    assert body["warmup"]["judgement_model"] == "fake-stage-judge"
 
 
 def test_review_messages_cross_user_returns_session_not_found(client: TestClient) -> None:
@@ -930,6 +1039,11 @@ def test_review_warmup_branches_do_not_create_fsrs_evidence(client: TestClient) 
     assert first_wrong.json()["current_node"]["type"] == "warmup_repair"
     assert first_wrong.json()["warmup"]["repair_count"] == 1
     assert first_wrong.json()["warmup"]["recall_level"] == "wrong"
+    first_wrong_feedback = first_wrong.json()["warmup"]["feedback"]
+    assert "先做一次短修正" not in first_wrong_feedback
+    assert "再修正一下" not in first_wrong_feedback
+    assert "正式复习题" not in first_wrong_feedback
+    assert first_wrong.json()["warmup"]["question"] in first_wrong_feedback
     assert first_wrong.json()["next_action"] == "retry_same"
 
     second_wrong = client.post(
@@ -1101,12 +1215,58 @@ def test_review_run_and_submit_updates_schedule_once(client: TestClient) -> None
     assert first_replay_body["attempt_id"] == first_body["attempt_id"]
     assert first_replay_body["review_exercise"]["id"] == first_next["id"]
 
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT review_stage_state_json FROM learning_sessions WHERE id = %s",
+            (review_session["session_id"],),
+        ).fetchone()
+        assert row is not None
+        legacy_state = dict(row["review_stage_state_json"])
+        legacy_plan = []
+        for entry in legacy_state["exercise_plan"]:
+            legacy_entry = dict(entry)
+            if legacy_entry.get("attempt_id") == first_body["attempt_id"]:
+                legacy_entry.pop("exercise", None)
+                legacy_entry.pop("exercise_title", None)
+                legacy_entry.pop("submitted_code", None)
+                legacy_entry.pop("filled_blanks", None)
+                legacy_entry.pop("explanation", None)
+                legacy_entry.pop("review_ai_patch_answer", None)
+                legacy_entry.pop("feedback", None)
+                legacy_entry.pop("weak_points", None)
+                legacy_entry.pop("code_completion_result", None)
+                legacy_entry.pop("test_pass_rate", None)
+                legacy_entry.pop("hint_usage_count", None)
+                legacy_entry.pop("error_count", None)
+                legacy_entry.pop("error_cause", None)
+            legacy_plan.append(legacy_entry)
+        legacy_state["exercise_plan"] = legacy_plan
+        conn.execute(
+            "UPDATE learning_sessions SET review_stage_state_json = %s::jsonb WHERE id = %s",
+            (json.dumps(legacy_state), review_session["session_id"]),
+        )
+        conn.commit()
+
     resumed = client.post(
         "/api/reviews/start",
         json={"user_id": user["id"], "knowledge_point_id": knowledge_point_id},
     )
     assert resumed.status_code == 200
-    assert resumed.json()["current_node"]["exercise"]["id"] == first_next["id"]
+    resumed_body = resumed.json()
+    assert resumed_body["current_node"]["exercise"]["id"] == first_next["id"]
+    completed_entries = [
+        entry
+        for entry in resumed_body["review_stage_state"]["exercise_plan"]
+        if entry.get("attempt_id") == first_body["attempt_id"]
+    ]
+    assert len(completed_entries) == 1
+    assert completed_entries[0]["exercise_title"] == exercise["title"]
+    assert completed_entries[0]["exercise"]["id"] == exercise["id"]
+    assert completed_entries[0]["submitted_code"].strip() == str(exercise["solution_reference"]).strip()
+    assert completed_entries[0]["filled_blanks"]["blank_1"]
+    assert completed_entries[0]["explanation"] == "状态变量放在回调外层，所以多次点击会共享同一个 count。"
+    assert completed_entries[0]["feedback"] == first_body["feedback"]
+    assert completed_entries[0]["code_completion_result"]["feedback"] == first_body["feedback"]
 
     with connect() as conn:
         intermediate_state = conn.execute(

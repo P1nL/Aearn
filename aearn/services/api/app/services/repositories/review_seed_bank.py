@@ -585,6 +585,9 @@ def _review_seed_generation_context(
 
 
 def _review_seed_model_messages(context: Mapping[str, object]) -> list[dict[str, str]]:
+    runtime_profile = context.get("runtime_profile")
+    runtime_tier = str(runtime_profile.get("runtime_tier") or "") if isinstance(runtime_profile, Mapping) else ""
+    knowledge_point_id = str(context.get("knowledge_point_id") or "")
     return [
         {
             "role": "system",
@@ -607,7 +610,9 @@ def _review_seed_model_messages(context: Mapping[str, object]) -> list[dict[str,
                         "Cover basic_application, concept_explanation, debugging, and transfer_or_review when supported. "
                         "Use learner_state weak_points, mastery_score, last_fsrs_rating, review_count, lapse_count, "
                         "and latest_attempt to choose misconceptions, focus_tags, capability, selection metadata, and difficulty. "
-                        "Each candidate must include recommended_for, avoid_if, metadata.selection_reason, and metadata.is_core. "
+                        "Each candidate must include top-level recommended_for, top-level avoid_if, metadata.selection_reason, and metadata.is_core. "
+                        "Do not move recommended_for or avoid_if inside metadata. recommended_for must include at least one non-empty "
+                        "selection signal among recall_levels, weak_points, and after_result. "
                         "For review_ai_patch, include requirement, "
                         "original_code, ai_diff, expected risk, expected verdict, expected next action, and rubric. "
                         "For practice seeds, include starter_code, code_blanks, and visible or preview test summaries only."
@@ -615,7 +620,41 @@ def _review_seed_model_messages(context: Mapping[str, object]) -> list[dict[str,
                     "bounded_review_context": context,
                     "response_shape": {
                         "candidate_pool": {
-                            "candidates": [],
+                            "candidates": [
+                                {
+                                    "id": "c1",
+                                    "exercise_type": "code_blank",
+                                    "difficulty": 2,
+                                    "capability": "basic_application",
+                                    "target_misconception": "short learner-specific misconception",
+                                    "focus_tags": ["specific_focus_tag"],
+                                    "recommended_for": {
+                                        "recall_levels": ["fuzzy", "wrong", "skipped"],
+                                        "weak_points": ["specific_focus_tag"],
+                                        "after_result": ["failed", "partial"],
+                                    },
+                                    "avoid_if": {
+                                        "already_passed_focus_tags": ["specific_focus_tag"],
+                                        "recent_candidate_ids": [],
+                                        "unsupported_runtime_tiers": [],
+                                    },
+                                    "knowledge_point_id": knowledge_point_id,
+                                    "runtime_tier": runtime_tier,
+                                    "title": "learner-facing title",
+                                    "warmup_question": "short recall question",
+                                    "warmup_expected_focus": "expected recall focus",
+                                    "warmup_keywords": ["keyword"],
+                                    "review_focus": "review focus",
+                                    "prompt_markdown": "learner-facing prompt without solutions or hidden tests",
+                                    "starter_code": "starter code with blanks where applicable",
+                                    "code_blanks": [],
+                                    "test_cases": [],
+                                    "metadata": {
+                                        "selection_reason": "why this candidate fits learner_state",
+                                        "is_core": True,
+                                    },
+                                }
+                            ],
                             "quality_notes": [],
                         }
                     },

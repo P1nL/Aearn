@@ -807,19 +807,37 @@ export type ReviewAiPatchAnswer = {
 };
 
 export type ReviewExerciseResultResponse = {
-  attempt_id: string;
+  attempt_id?: string;
   result: CodeCompletionResult["result"];
   score: number;
   score_breakdown: CodeCompletionResult["score_breakdown"];
+  hard_gates?: CodeCompletionResult["hard_gates"];
+  test_pass_rate?: number;
+  hint_usage_count?: number;
+  error_count?: number;
   fsrs_rating: FsrsRating;
   weak_points: string[];
+  error_cause?: string | null;
   feedback: string;
-  due_at: string | null;
-  forget_risk: ForgetRisk;
-  ReviewState: ReviewStateSummary;
-  KnowledgePoint: SubmitExerciseResponse["KnowledgePoint"];
   code_completion_result: CodeCompletionResult;
-  next_action: NextAction;
+  next_action: NextAction | "next_exercise";
+  review_stage?: ReviewStage;
+  review_stage_state?: ReviewStageState;
+  current_node?: ReviewCurrentNode;
+  review_exercise?: LearningExercise;
+  final_result?: {
+    final_fsrs_rating: FsrsRating;
+    aggregate_result: Record<string, unknown>;
+    due_at: string | null;
+    forget_risk: ForgetRisk;
+  } | null;
+  due_at?: string | null;
+  forget_risk?: ForgetRisk;
+  ReviewState?: ReviewStateSummary;
+  KnowledgePoint?: SubmitExerciseResponse["KnowledgePoint"];
+  judgement_ready?: boolean;
+  judgement_blocking_fields?: string[];
+  clarification_question?: string;
   idempotency_replayed?: boolean;
 };
 

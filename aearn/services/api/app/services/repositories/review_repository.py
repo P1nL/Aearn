@@ -8,7 +8,12 @@ from typing import Any, cast
 from psycopg import Connection
 
 from app.agents.runtime.guardrails import assert_safe_teaching_output
-from app.agents.review.review_coach_agent import ReviewCoachContext, build_sdk_review_coach_response
+from app.agents.review.review_coach_agent import (
+    ReviewCoachContext,
+    ReviewWarmupJudgementContext,
+    build_sdk_review_coach_response,
+    build_sdk_review_warmup_judgement_response,
+)
 from app.agents.runtime.structured_judgement import (
     FieldPolicy,
     JudgementPolicy,
@@ -203,6 +208,7 @@ def start_review_session(
             context=context,
             exercise=exercise,
         )
+        state = _hydrate_completed_review_entries(conn, state)
         selected_seed_id = _state_seed_id(state)
 
     if session is None:
@@ -607,12 +613,37 @@ def record_review_warmup_result(
     warmup = _mapping_or_empty(state.get("warmup"))
     if action == "skip":
         result = "skipped"
+        judgement_source = "explicit_skip"
+        judgement_model = None
+        model_feedback = None
     else:
-        result = _evaluate_warmup_answer(
-            answer=answer or "",
-            expected_focus=str(warmup.get("expected_focus") or ""),
-            question=str(warmup.get("question") or ""),
+        judgement = build_sdk_review_warmup_judgement_response(
+            ReviewWarmupJudgementContext(
+                knowledge_point_title=str(
+                    exercise.get("knowledge_point_title")
+                    or exercise.get("title")
+                    or ""
+                )
+                if exercise is not None
+                else "",
+                question=str(warmup.get("question") or ""),
+                expected_focus=str(warmup.get("expected_focus") or ""),
+                learner_answer=answer or "",
+                repair_count=_int_or_zero(warmup.get("repair_count")),
+            )
         )
+        result = (
+            str(judgement["result"])
+            if judgement is not None
+            else _evaluate_warmup_answer(
+                answer=answer or "",
+                expected_focus=str(warmup.get("expected_focus") or ""),
+                question=str(warmup.get("question") or ""),
+            )
+        )
+        judgement_source = str(judgement.get("generation_source") or "llm") if judgement is not None else "heuristic_fallback"
+        judgement_model = str(judgement.get("generation_model") or "") if judgement is not None else None
+        model_feedback = str(judgement.get("feedback") or "") if judgement is not None else None
     normalized_warmup = _normalize_review_warmup_judgement(result)
     if not normalized_warmup["ready"]:
         response_warmup = dict(warmup)
@@ -643,11 +674,11 @@ def record_review_warmup_result(
     repair_count = _int_or_zero(warmup.get("repair_count"))
     recall_level = _warmup_recall_level(result)
     next_stage = "exercise"
-    feedback = _warmup_feedback(result)
+    feedback = model_feedback or _warmup_feedback(result)
     if recall_level in {"fuzzy", "wrong"} and repair_count < 1:
         next_stage = "warmup_repair"
         repair_count += 1
-        feedback = "先做一次短修正：用一句话指出当前知识点里最容易出错的风险，然后进入正式复习题。"
+        feedback = _warmup_repair_feedback(warmup, result)
     elif recall_level in {"fuzzy", "wrong"}:
         variant = _mapping_or_empty(state.get("variant"))
         variant["guided"] = True
@@ -665,6 +696,8 @@ def record_review_warmup_result(
             "judgement_ready": True,
             "judgement_blocking_fields": [],
             "clarification_question": None,
+            "judgement_source": judgement_source,
+            "judgement_model": judgement_model,
             "diagnosis": _warmup_diagnosis(
                 recall_level=recall_level,
                 answer=answer,
@@ -1460,6 +1493,12 @@ def _complete_current_review_plan_entry(
         "status": "completed",
         "attempt_id": str(attempt["id"]),
         "exercise_id": str(exercise["id"]),
+        "exercise": dict(exercise),
+        "exercise_title": str(exercise.get("title") or current_entry.get("exercise_title") or current_entry.get("title") or ""),
+        "submitted_code": str(attempt.get("submitted_code") or ""),
+        "filled_blanks": _mapping_or_empty(attempt.get("filled_blanks_json")),
+        "explanation": str(attempt.get("explanation_text") or ""),
+        "review_ai_patch_answer": _review_ai_patch_answer_from_attempt(attempt, exercise=exercise),
         "candidate_id": str(current_entry.get("candidate_id") or seed_metadata.get("candidate_id") or ""),
         "capability": str(current_entry.get("capability") or seed_metadata.get("capability") or ""),
         "exercise_type": str(exercise["exercise_type"]),
@@ -1470,6 +1509,9 @@ def _complete_current_review_plan_entry(
         "fsrs_rating": str(code_completion_result.get("fsrs_rating") or ""),
         "score_breakdown": _mapping_or_empty(code_completion_result.get("score_breakdown")),
         "evidence_quality": _evidence_quality_for_result(code_completion_result, service_fields),
+        "feedback": str(code_completion_result.get("feedback") or ""),
+        "weak_points": _string_list(code_completion_result.get("weak_points")),
+        "code_completion_result": dict(code_completion_result),
         "completed_at": _iso_or_none(attempt.get("created_at")),
     }
     updated_plan: list[dict[str, object]] = []
@@ -1484,6 +1526,142 @@ def _complete_current_review_plan_entry(
         updated_plan.append(completed)
     updated["exercise_plan"] = updated_plan
     return updated
+
+
+def _hydrate_completed_review_entries(
+    conn: Connection[dict[str, object]],
+    state: Mapping[str, object],
+) -> dict[str, object]:
+    """Backfill persisted card summaries for sessions created before the card-result contract."""
+    plan = state.get("exercise_plan")
+    if not isinstance(plan, list):
+        return dict(state)
+
+    updated_plan: list[dict[str, object]] = []
+    changed = False
+    for item in plan:
+        if not isinstance(item, Mapping):
+            continue
+        updated_item = dict(item)
+        if str(updated_item.get("status") or "") != "completed":
+            updated_plan.append(updated_item)
+            continue
+        attempt_id = str(updated_item.get("attempt_id") or "")
+        if not attempt_id:
+            updated_plan.append(updated_item)
+            continue
+        row = conn.execute(
+            """
+            SELECT attempts.id::text AS attempt_id,
+                   attempts.exercise_id::text AS exercise_id,
+                   attempts.submitted_code,
+                   attempts.filled_blanks_json,
+                   attempts.explanation_text,
+                   attempts.code_completion_result,
+                   attempts.score,
+                   attempts.test_pass_rate,
+                   attempts.hint_usage_count,
+                   attempts.error_count,
+                   attempts.error_cause,
+                   attempts.score_breakdown_json,
+                   exercises.title AS exercise_title
+            FROM attempts
+            JOIN exercises ON exercises.id = attempts.exercise_id
+            WHERE attempts.id = %s
+            LIMIT 1
+            """,
+            (attempt_id,),
+        ).fetchone()
+        if row is None:
+            updated_plan.append(updated_item)
+            continue
+
+        completion = _mapping_or_empty(row.get("code_completion_result"))
+        exercise = get_exercise(conn, str(row.get("exercise_id") or ""))
+        if not isinstance(updated_item.get("exercise"), Mapping) and exercise is not None:
+            updated_item["exercise"] = dict(exercise)
+            changed = True
+        if not str(updated_item.get("exercise_title") or ""):
+            updated_item["exercise_title"] = str(row.get("exercise_title") or "")
+            changed = True
+        if not str(updated_item.get("submitted_code") or "") and row.get("submitted_code") is not None:
+            updated_item["submitted_code"] = str(row.get("submitted_code") or "")
+            changed = True
+        if not isinstance(updated_item.get("filled_blanks"), Mapping):
+            updated_item["filled_blanks"] = _mapping_or_empty(row.get("filled_blanks_json"))
+            changed = True
+        if not str(updated_item.get("explanation") or "") and row.get("explanation_text") is not None:
+            updated_item["explanation"] = str(row.get("explanation_text") or "")
+            changed = True
+        if not isinstance(updated_item.get("review_ai_patch_answer"), Mapping):
+            patch_answer = _review_ai_patch_answer_from_attempt(row, exercise=exercise)
+            if patch_answer:
+                updated_item["review_ai_patch_answer"] = patch_answer
+                changed = True
+        if not str(updated_item.get("feedback") or "") and completion.get("feedback") is not None:
+            updated_item["feedback"] = str(completion.get("feedback") or "")
+            changed = True
+        if not updated_item.get("weak_points") and completion.get("weak_points") is not None:
+            updated_item["weak_points"] = _string_list(completion.get("weak_points"))
+            changed = True
+        if not isinstance(updated_item.get("code_completion_result"), Mapping) and completion:
+            updated_item["code_completion_result"] = dict(completion)
+            changed = True
+        if _int_or_zero(updated_item.get("score")) == 0 and row.get("score") is not None:
+            updated_item["score"] = _int_or_zero(row.get("score"))
+            changed = True
+        if row.get("test_pass_rate") is not None and "test_pass_rate" not in updated_item:
+            updated_item["test_pass_rate"] = _float_or_zero(row.get("test_pass_rate"))
+            changed = True
+        if row.get("hint_usage_count") is not None and "hint_usage_count" not in updated_item:
+            updated_item["hint_usage_count"] = _int_or_zero(row.get("hint_usage_count"))
+            changed = True
+        if row.get("error_count") is not None and "error_count" not in updated_item:
+            updated_item["error_count"] = _int_or_zero(row.get("error_count"))
+            changed = True
+        if row.get("error_cause") is not None and "error_cause" not in updated_item:
+            updated_item["error_cause"] = str(row.get("error_cause") or "")
+            changed = True
+        if not isinstance(updated_item.get("score_breakdown"), Mapping):
+            score_breakdown = _mapping_or_empty(row.get("score_breakdown_json") or completion.get("score_breakdown"))
+            if score_breakdown:
+                updated_item["score_breakdown"] = score_breakdown
+                changed = True
+        updated_plan.append(updated_item)
+
+    if not changed:
+        return dict(state)
+    updated = dict(state)
+    updated["exercise_plan"] = updated_plan
+    return updated
+
+
+def _review_ai_patch_answer_from_attempt(
+    attempt: Mapping[str, object],
+    *,
+    exercise: Mapping[str, object] | None,
+) -> dict[str, object]:
+    if exercise is None or str(exercise.get("exercise_type") or "") != "review_ai_patch":
+        return {}
+    submitted_code = str(attempt.get("submitted_code") or "").strip()
+    if not submitted_code.startswith("{"):
+        return {}
+    try:
+        parsed = json.loads(submitted_code)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(parsed, Mapping):
+        return {}
+    verdict = str(parsed.get("verdict") or "")
+    next_action = str(parsed.get("next_action") or "")
+    if verdict not in {"pass", "fail", "uncertain"} or next_action not in {"accept", "reject", "request_change", "run_more_tests"}:
+        return {}
+    return {
+        "verdict": verdict,
+        "evidence": str(parsed.get("evidence") or ""),
+        "knowledge_point_risk": str(parsed.get("knowledge_point_risk") or ""),
+        "next_action": next_action,
+    }
 
 
 def _current_completed_plan_entry(state: Mapping[str, object], attempt_id: str) -> dict[str, object]:
@@ -2153,12 +2331,20 @@ def _evaluate_warmup_answer(*, answer: str, expected_focus: str, question: str) 
 
 def _warmup_feedback(result: str) -> str:
     if result == "correct":
-        return "热身通过，进入本轮正式复习题。"
+        return "这个点够用了，下面用一道题确认你能不能在代码里认出来。"
     if result == "skipped":
-        return "已跳过热身，本轮会优先补基础题覆盖。"
+        return "先不硬回忆了，下面从基础题把这个点找回来。"
     if result == "unclear":
-        return "回答还不够明确，先做一次短修正再进入正式复习题。"
-    return "回答和当前知识点不匹配，先做一次短修正再进入正式复习题。"
+        return "这个点还没稳住，下一题我会带着提示走。"
+    return "这句还没碰到当前知识点最容易踩坑的地方，下一题我会带着提示走。"
+
+
+def _warmup_repair_feedback(warmup: Mapping[str, object], result: str) -> str:
+    question = str(warmup.get("question") or "").strip()
+    prompt = question or "这类代码最容易让人误判的地方是什么？"
+    if result == "unclear":
+        return f"我还没法确认你抓住了这个点。换个更具体的说法：{prompt}"
+    return f"这句还没碰到当前知识点最容易踩坑的地方。换个更具体的说法：{prompt}"
 
 
 def _mapping_or_empty(value: object) -> dict[str, object]:
