@@ -342,3 +342,36 @@ Archived the completed review graph adaptive flow parent and remaining completed
 ### Next Steps
 
 - None - task complete
+
+
+## Session 70: Review conversation card persistence
+
+**Date**: 2026-06-10
+**Task**: Review conversation card persistence
+**Branch**: `main`
+
+### Summary
+
+Fixed review warmup judgement and conversation-flow exercise cards: warmup uses model/free-text stage judgement, completed exercise cards persist submitted answers and feedback, next exercises render as new in-flow cards, dev:test-data seeds deterministic review QA data. Verified desktop:check, review pytest, local user boundary pytest, ruff, and git diff --check.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `95d8a3b` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
