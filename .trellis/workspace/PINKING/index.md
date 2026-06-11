@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-2.md`
-- **Total Sessions**: 71
+- **Total Sessions**: 72
 - **Last Active**: 2026-06-11
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-2.md` | ~410 | Active |
+| `journal-2.md` | ~443 | Active |
 | `journal-1.md` | ~1979 | Archived |
 <!-- @@@/auto:active-documents -->
 
@@ -30,6 +30,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 72 | 2026-06-11 | Full product QA | `cc2ef95` | `main` |
 | 71 | 2026-06-11 | Review warmup natural conversation | `a089af8` | `main` |
 | 70 | 2026-06-10 | Review conversation card persistence | `95d8a3b` | `main` |
 | 69 | 2026-06-08 | Review task tree closeout | - | `main` |
