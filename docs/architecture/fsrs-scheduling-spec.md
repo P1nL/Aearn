@@ -20,7 +20,7 @@ Attempt -> code_completion_result -> Attempt.fsrs_rating -> ReviewState -> due_a
 2. `Attempt.fsrs_rating` 是调度输入，取值只能是 `Again` / `Hard` / `Good` / `Easy`。
 3. 只有 `Attempt(attempt_type=submit)` 和 `Attempt(attempt_type=review_submit)` 可以更新 `ReviewState`。
 4. `Attempt(attempt_type=run)` 只保存运行事实，不进入 FSRS。
-5. 复习页 warmup 的 `correct`、`incorrect`、`unclear`、`skipped` 只写入 `learning_sessions.review_stage_state_json`，不创建 `Attempt`，不写 `ReviewLog`，不更新 FSRS。
+5. 复习页 warmup 的 `correct`、`incorrect`、`unclear`、`off_topic` 和隐藏兼容 `skipped` 只写入 `learning_sessions.review_stage_state_json`，不创建 `Attempt`，不写 `ReviewLog`，不更新 FSRS；新桌面端不暴露跳过入口，也不把 `跳过` / `skip` 文本转成跳过动作。
 6. `due_at` 使用 `timestamptz` 存储绝对时间点，数据库比较统一使用 `now()`。
 7. “今日复习”窗口按 `Asia/Shanghai` 计算，但不改变数据库 UTC 存储策略。
 8. 任何失败重试都不得重新运行用户代码，只能基于已保存的 `Attempt` 重放调度更新。

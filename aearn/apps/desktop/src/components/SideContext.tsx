@@ -60,8 +60,8 @@ export function SideContext({
             <p className="mini-body">复习页会从后端读取到期知识点；没有用户或没有到期项时保持空态。</p>
           </article>
           <article className="review-mini">
-            <h3 className="mini-title">先热身</h3>
-            <p className="mini-body">热身只帮助唤醒记忆，不会提前更新掌握程度或复习计划。</p>
+            <h3 className="mini-title">先聊这一点</h3>
+            <p className="mini-body">开场问题只帮你把记忆拉回来，不会提前更新掌握程度或复习计划。</p>
           </article>
           <article className="review-mini">
             <h3 className="mini-title">提交后更新</h3>

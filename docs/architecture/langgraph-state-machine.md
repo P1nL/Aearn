@@ -851,8 +851,8 @@ start_review_session
 
 职责：
 
-- 展示一句话短热身，唤醒当前知识点，不展开长教学。
-- 允许用户跳过；跳过写 `warmup.result=skipped`。
+- 展示一句自然开场问题，唤醒当前知识点，不展开长教学。
+- 新桌面端不展示跳过入口；用户输入 `跳过` / `skip` 仍按普通自由文本提交。`warmup.result=skipped` 只保留为隐藏兼容路径。
 
 ### `record_review_warmup_result`
 
@@ -864,7 +864,9 @@ start_review_session
 规则：
 
 - `correct` -> `clear` -> `exercise`
-- `skipped` -> `skipped` -> 低难度 `exercise`
+- 隐藏兼容 `skipped` -> `skipped` -> 低难度 `exercise`
+- 首次 `off_topic` -> `off_topic` -> 保持当前问题并返回模型生成的拉回提醒
+- 第二次 `off_topic` -> `off_topic` -> `exercise`，并把当前题标记为 guided
 - `incorrect` -> `wrong` 且 `repair_count=0` -> `warmup_repair`
 - `unclear` -> `fuzzy` 且 `repair_count=0` -> `warmup_repair`
 - 第二次仍不正确或不明确 -> `exercise`，并把当前题标记为 guided
