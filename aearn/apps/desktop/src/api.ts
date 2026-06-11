@@ -542,7 +542,7 @@ export async function fetchReviewMessages(input: {
 export async function submitReviewWarmupResult(input: {
   userId: string;
   sessionId: string;
-  action: "answer" | "skip";
+  action: "answer";
   answer?: string;
 }): Promise<ReviewWarmupResultResponse> {
   const payload = await requestJson(`${API_BASE_URL}/api/reviews/${input.sessionId}/warmup-result`, {
@@ -1329,6 +1329,7 @@ function isReviewWarmupState(payload: unknown): payload is ReviewWarmupResultRes
     typeof payload.expected_focus === "string" &&
     typeof payload.result === "string" &&
     typeof payload.repair_count === "number" &&
+    typeof payload.off_topic_count === "number" &&
     (typeof payload.last_answer === "string" || payload.last_answer === null) &&
     (typeof payload.feedback === "string" || payload.feedback === null)
   );

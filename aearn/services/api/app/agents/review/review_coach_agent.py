@@ -22,7 +22,7 @@ from app.services.llm.llm_client import LLMCallError, LLMConfigurationError, LLM
 
 REVIEW_COACH_AGENT_NAME = "Aearn Review Coach"
 REVIEW_WARMUP_JUDGE_AGENT_NAME = "Aearn Review Warmup Judge"
-REVIEW_WARMUP_RESULTS = {"correct", "incorrect", "unclear"}
+REVIEW_WARMUP_RESULTS = {"correct", "incorrect", "unclear", "off_topic"}
 REVIEW_WARMUP_CONFIDENCE_LEVELS = {"high", "medium", "low"}
 
 
@@ -235,20 +235,28 @@ def build_sdk_review_warmup_judgement_response(
     *,
     settings: Settings | None = None,
     client: ReviewWarmupJudgementClient | None = None,
+    max_attempts: int = 2,
 ) -> dict[str, object] | None:
     resolved_client = _resolve_warmup_judgement_client(settings=settings, client=client)
     if resolved_client is None:
         return None
 
-    try:
-        result = resolved_client.complete_json(context, temperature=0.1)
-        response = _validate_review_warmup_judgement_response(result.content)
-    except SAFE_GENERATION_EXCEPTIONS:
-        return None
+    attempts = max(1, max_attempts)
+    last_error: Exception | None = None
+    for _ in range(attempts):
+        try:
+            result = resolved_client.complete_json(context, temperature=0.1)
+            response = _validate_review_warmup_judgement_response(result.content)
+        except SAFE_GENERATION_EXCEPTIONS as exc:
+            last_error = exc
+            continue
+        response["generation_source"] = "llm"
+        response["generation_model"] = result.model
+        return response
 
-    response["generation_source"] = "llm"
-    response["generation_model"] = result.model
-    return response
+    if last_error is not None:
+        raise last_error
+    return None
 
 
 SAFE_GENERATION_EXCEPTIONS = (
@@ -357,14 +365,15 @@ def _build_warmup_judgement_messages(context: ReviewWarmupJudgementContext) -> l
         "learner_answer": _bounded_text(context.learner_answer, 1200),
         "repair_count": context.repair_count,
         "output_schema": {
-            "result": "correct | incorrect | unclear",
+            "result": "correct | incorrect | unclear | off_topic",
             "confidence": "high | medium | low",
             "feedback": "one short learner-facing sentence",
         },
         "judgement_rules": {
             "correct": "the answer recalls the core relationship or risk in expected_focus",
             "incorrect": "the answer is relevant but wrong, incomplete, or misses the core relationship",
-            "unclear": "the learner explicitly does not know, gives no usable answer, is unrelated, or is self-contradictory",
+            "unclear": "the learner explicitly does not know, gives no usable answer, or is self-contradictory",
+            "off_topic": "the answer is clearly unrelated to the current warmup question and expected_focus",
         },
     }
     return [
@@ -372,8 +381,9 @@ def _build_warmup_judgement_messages(context: ReviewWarmupJudgementContext) -> l
             "role": "system",
             "content": (
                 "你是 Aearn 的复习热身判断器。只输出 JSON，不要 Markdown。"
-                "根据学习者的自然语言回答判断 correct、incorrect 或 unclear，不要让学习者自行选择阶段。"
-                "部分正确或遗漏关键点应判 incorrect；只有不知道、不确定、无关、冲突或无法判断时才判 unclear。"
+                "根据学习者的自然语言回答判断 correct、incorrect、unclear 或 off_topic，不要让学习者自行选择阶段。"
+                "部分正确或遗漏关键点应判 incorrect；不知道、不确定、冲突或无法判断时判 unclear。"
+                "如果回答明显偏离当前热身问题，判 off_topic，并在 feedback 中自然说明这和当前热身无关，请专注回答当前热身问题。"
                 "feedback 必须简短，不得泄露参考答案、隐藏测试、完整代码、provider 错误、raw prompt 或密钥。"
             ),
         },

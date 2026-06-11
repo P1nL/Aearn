@@ -37,7 +37,7 @@ from app.services.repositories.review_seed_bank import (
     serialize_seed_bank,
 )
 from app.services.runners.runtime_runner import RuntimeExecutionResult, run_exercise
-from app.services.llm.llm_client import LLMCallError, LLMInvalidResponseError
+from app.services.llm.llm_client import LLMCallError, LLMConfigurationError, LLMInvalidResponseError
 from app.services.repositories.user_repository import get_user
 
 
@@ -46,10 +46,10 @@ REVIEW_WARMUP_JUDGEMENT_POLICY = JudgementPolicy(
         FieldPolicy(
             name="warmup_correctness",
             required=True,
-            fallback_question="请用一句话说明你记得的关键风险；如果不确定也可以跳过热身。",
+            fallback_question="请用一句话说明你记得的关键风险；如果不确定也可以直接说不确定。",
         ),
     ],
-    default_fallback_question="请用一句话说明你记得的关键风险；如果不确定也可以跳过热身。",
+    default_fallback_question="请用一句话说明你记得的关键风险；如果不确定也可以直接说不确定。",
 )
 REVIEW_EXPLANATION_JUDGEMENT_POLICY = JudgementPolicy(
     fields=[
@@ -99,6 +99,19 @@ class InvalidReviewRequestError(ValueError):
 
 class ReviewAdaptiveSupplementRequired(ValueError):
     pass
+
+
+class ReviewWarmupModelUnavailableError(LLMCallError):
+    pass
+
+
+WARMUP_MODEL_UNAVAILABLE_EXCEPTIONS = (
+    LLMCallError,
+    LLMConfigurationError,
+    LLMInvalidResponseError,
+    TypeError,
+    ValueError,
+)
 
 
 def get_today_reviews(
@@ -617,33 +630,32 @@ def record_review_warmup_result(
         judgement_model = None
         model_feedback = None
     else:
-        judgement = build_sdk_review_warmup_judgement_response(
-            ReviewWarmupJudgementContext(
-                knowledge_point_title=str(
-                    exercise.get("knowledge_point_title")
-                    or exercise.get("title")
-                    or ""
+        try:
+            judgement = build_sdk_review_warmup_judgement_response(
+                ReviewWarmupJudgementContext(
+                    knowledge_point_title=str(
+                        exercise.get("knowledge_point_title")
+                        or exercise.get("title")
+                        or ""
+                    )
+                    if exercise is not None
+                    else "",
+                    question=str(warmup.get("question") or ""),
+                    expected_focus=str(warmup.get("expected_focus") or ""),
+                    learner_answer=answer or "",
+                    repair_count=_int_or_zero(warmup.get("repair_count")),
                 )
-                if exercise is not None
-                else "",
-                question=str(warmup.get("question") or ""),
-                expected_focus=str(warmup.get("expected_focus") or ""),
-                learner_answer=answer or "",
-                repair_count=_int_or_zero(warmup.get("repair_count")),
             )
-        )
-        result = (
-            str(judgement["result"])
-            if judgement is not None
-            else _evaluate_warmup_answer(
-                answer=answer or "",
-                expected_focus=str(warmup.get("expected_focus") or ""),
-                question=str(warmup.get("question") or ""),
-            )
-        )
-        judgement_source = str(judgement.get("generation_source") or "llm") if judgement is not None else "heuristic_fallback"
-        judgement_model = str(judgement.get("generation_model") or "") if judgement is not None else None
-        model_feedback = str(judgement.get("feedback") or "") if judgement is not None else None
+        except WARMUP_MODEL_UNAVAILABLE_EXCEPTIONS as exc:
+            raise ReviewWarmupModelUnavailableError("Review warmup judgement requires available model output") from exc
+        if judgement is None:
+            raise ReviewWarmupModelUnavailableError("Review warmup judgement requires configured model API")
+        result = str(judgement["result"])
+        judgement_source = str(judgement.get("generation_source") or "llm")
+        judgement_model = str(judgement.get("generation_model") or "")
+        model_feedback = str(judgement.get("feedback") or "")
+        if result == "off_topic" and not model_feedback.strip():
+            raise ReviewWarmupModelUnavailableError("Review warmup off-topic steering requires model feedback")
     normalized_warmup = _normalize_review_warmup_judgement(result)
     if not normalized_warmup["ready"]:
         response_warmup = dict(warmup)
@@ -672,9 +684,57 @@ def record_review_warmup_result(
             "next_action": "retry_same",
         }
     repair_count = _int_or_zero(warmup.get("repair_count"))
+    off_topic_count = _int_or_zero(warmup.get("off_topic_count"))
     recall_level = _warmup_recall_level(result)
     next_stage = "exercise"
     feedback = model_feedback or _warmup_feedback(result)
+    if result == "off_topic":
+        off_topic_count += 1
+        feedback = model_feedback or ""
+        if off_topic_count <= 1:
+            updated_warmup = dict(warmup)
+            updated_warmup.update(
+                {
+                    "result": result,
+                    "recall_level": recall_level,
+                    "last_answer": answer,
+                    "off_topic_count": off_topic_count,
+                    "feedback": feedback,
+                    "judgement_ready": True,
+                    "judgement_blocking_fields": [],
+                    "clarification_question": None,
+                    "judgement_source": judgement_source,
+                    "judgement_model": judgement_model,
+                    "diagnosis": _warmup_diagnosis(
+                        recall_level=recall_level,
+                        answer=answer,
+                        warmup=warmup,
+                    ),
+                }
+            )
+            state["warmup"] = updated_warmup
+            state["review_stage"] = "warmup"
+            conn.execute(
+                """
+                UPDATE learning_sessions
+                SET review_stage = 'warmup',
+                    review_stage_state_json = %s::jsonb
+                WHERE id = %s
+                """,
+                (json.dumps(state), session_id),
+            )
+            return {
+                "session_id": session_id,
+                "review_stage": "warmup",
+                "warmup": updated_warmup,
+                "review_stage_state": state,
+                "current_node": _current_review_node(state, exercise=exercise),
+                "next_action": "retry_same",
+            }
+        variant = _mapping_or_empty(state.get("variant"))
+        variant["guided"] = True
+        state["variant"] = variant
+        _mark_current_plan_guided(state)
     if recall_level in {"fuzzy", "wrong"} and repair_count < 1:
         next_stage = "warmup_repair"
         repair_count += 1
@@ -692,6 +752,7 @@ def record_review_warmup_result(
             "recall_level": recall_level,
             "last_answer": answer,
             "repair_count": repair_count,
+            "off_topic_count": off_topic_count,
             "feedback": feedback,
             "judgement_ready": True,
             "judgement_blocking_fields": [],
@@ -1217,6 +1278,7 @@ def _normalize_warmup_state(warmup: Mapping[str, object]) -> dict[str, object]:
     recall_level = _warmup_recall_level(result) if result != "pending" else None
     normalized.setdefault("result", "pending")
     normalized.setdefault("repair_count", 0)
+    normalized.setdefault("off_topic_count", 0)
     normalized.setdefault("last_answer", None)
     normalized.setdefault("feedback", None)
     normalized["recall_level"] = normalized.get("recall_level") or recall_level
@@ -2158,6 +2220,8 @@ def _warmup_recall_level(result: str) -> str:
         return "fuzzy"
     if result == "skipped":
         return "skipped"
+    if result == "off_topic":
+        return "off_topic"
     return "wrong"
 
 
@@ -2171,11 +2235,14 @@ def _warmup_diagnosis(
     evidence = [answer.strip()] if isinstance(answer, str) and answer.strip() else []
     if recall_level == "skipped":
         evidence = ["skipped_warmup"]
+    if recall_level == "off_topic":
+        focus_tags = []
     confidence = {
         "clear": 0.9,
         "fuzzy": 0.45,
         "wrong": 0.2,
         "skipped": 0.0,
+        "off_topic": 0.0,
     }.get(recall_level, 0.3)
     return {
         "recall_level": recall_level,
@@ -2205,6 +2272,8 @@ def _updated_session_diagnosis(
     focus_tags = _warmup_focus_tags(warmup)
     diagnosis["recall_level"] = recall_level
     diagnosis["last_result"] = recall_level
+    if recall_level == "off_topic":
+        return diagnosis
     if recall_level == "clear":
         diagnosis["passed_focus_tags"] = _unique_strings(_string_list(diagnosis.get("passed_focus_tags")) + focus_tags)
     else:
@@ -2228,7 +2297,7 @@ def _unique_strings(values: list[str]) -> list[str]:
 
 
 def _normalize_review_warmup_judgement(result: str) -> dict[str, object]:
-    if result in {"correct", "incorrect", "unclear", "skipped"}:
+    if result in {"correct", "incorrect", "unclear", "off_topic", "skipped"}:
         judgement = StructuredJudgement(status="confirmed")
     else:
         judgement = StructuredJudgement(
@@ -2314,26 +2383,13 @@ def _normalize_review_explanation_check_judgement(
     }
 
 
-def _evaluate_warmup_answer(*, answer: str, expected_focus: str, question: str) -> str:
-    normalized = answer.strip().lower()
-    if not normalized or normalized in {"不太确定", "完全忘了", "不知道", "unclear", "not sure"}:
-        return "unclear"
-    focus_tokens = [token.lower() for token in expected_focus.replace("_", " ").split() if len(token) >= 2]
-    if focus_tokens and any(token in normalized for token in focus_tokens[:6]):
-        return "correct"
-    concept_markers = ("状态", "作用域", "返回", "stdout", "测试", "class", "selector", "state", "scope", "return", "test")
-    if any(marker in normalized for marker in concept_markers):
-        return "correct"
-    if len(answer.strip()) >= 20 and any(marker in question for marker in ("出错", "风险", "回忆")):
-        return "correct"
-    return "incorrect"
-
-
 def _warmup_feedback(result: str) -> str:
     if result == "correct":
         return "这个点够用了，下面用一道题确认你能不能在代码里认出来。"
     if result == "skipped":
         return "先不硬回忆了，下面从基础题把这个点找回来。"
+    if result == "off_topic":
+        return ""
     if result == "unclear":
         return "这个点还没稳住，下一题我会带着提示走。"
     return "这句还没碰到当前知识点最容易踩坑的地方，下一题我会带着提示走。"

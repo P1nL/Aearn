@@ -19,6 +19,7 @@ from app.services.curriculum.plan_generator import build_plan_draft
 from app.services.repositories import learning_session_repository, review_repository, review_seed_bank
 from app.services.repositories.learner_profile import get_learner_profile
 from app.services.repositories.review_scheduler import apply_attempt_review_update
+from app.services.llm.llm_client import LLMInvalidResponseError
 from aearn_worker.review_seed_bank_core import (
     GENERATOR_VERSION,
     ReviewSeedBankValidationError,
@@ -86,6 +87,10 @@ def disable_review_coach_sdk(monkeypatch: pytest.MonkeyPatch) -> None:
         normalized = context.learner_answer.strip().lower()
         if not normalized or normalized in {"不太确定", "完全忘了", "不知道", "unclear", "not sure"}:
             result = "unclear"
+        elif normalized in {"跳过", "skip"}:
+            result = "unclear"
+        elif any(marker in normalized for marker in ("天气", "火锅", "电影", "吃饭", "weather", "movie", "lunch")):
+            result = "off_topic"
         elif any(marker in normalized for marker in ("状态", "作用域", "返回", "stdout", "测试", "state", "scope", "return", "test")):
             result = "correct"
         else:
@@ -97,6 +102,7 @@ def disable_review_coach_sdk(monkeypatch: pytest.MonkeyPatch) -> None:
                 "correct": "回答覆盖了当前知识点的核心关系。",
                 "incorrect": "回答和当前知识点相关，但还缺少关键关系。",
                 "unclear": "回答还不足以判断掌握程度，需要一次更窄的修正。",
+                "off_topic": "这和当前热身无关，请先专注回答当前这个问题。",
             }[result],
             "generation_source": "llm",
             "generation_model": "fake-review-warmup-judge",
@@ -954,6 +960,152 @@ def test_review_warmup_model_judgement_selects_stage_from_free_text(
     assert body["warmup"]["recall_level"] == "clear"
     assert body["warmup"]["judgement_source"] == "llm"
     assert body["warmup"]["judgement_model"] == "fake-stage-judge"
+
+
+def test_review_warmup_treats_off_topic_as_retry_same_without_fsrs_evidence(client: TestClient) -> None:
+    user, plan = _confirmed_plan(client, language="javascript")
+    knowledge_point_id = plan["knowledge_points"][0]["id"]
+    _mark_due(knowledge_point_id, reps=5)
+    created = client.post(
+        "/api/reviews/start",
+        json={"user_id": user["id"], "knowledge_point_id": knowledge_point_id},
+    )
+    assert created.status_code == 201
+    session_id = created.json()["session_id"]
+
+    response = client.post(
+        f"/api/reviews/{session_id}/warmup-result",
+        json={"user_id": user["id"], "action": "answer", "answer": "我午饭想吃火锅。"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["review_stage"] == "warmup"
+    assert body["next_action"] == "retry_same"
+    assert body["current_node"]["type"] == "warmup"
+    assert body["warmup"]["result"] == "off_topic"
+    assert body["warmup"]["recall_level"] == "off_topic"
+    assert body["warmup"]["off_topic_count"] == 1
+    assert body["warmup"]["feedback"] == "这和当前热身无关，请先专注回答当前这个问题。"
+    assert body["warmup"]["judgement_source"] == "llm"
+
+    with connect() as conn:
+        stored = conn.execute(
+            """
+            SELECT review_stage, review_stage_state_json
+            FROM learning_sessions
+            WHERE id = %s
+            """,
+            (session_id,),
+        ).fetchone()
+        counts = conn.execute(
+            """
+            SELECT
+              (SELECT count(*) FROM attempts WHERE session_id = %s) AS attempt_count,
+              (SELECT count(*) FROM review_logs WHERE knowledge_point_id = %s) AS review_log_count,
+              (SELECT reps FROM review_states WHERE knowledge_point_id = %s) AS reps
+            """,
+            (session_id, knowledge_point_id, knowledge_point_id),
+        ).fetchone()
+    assert stored is not None
+    assert stored["review_stage"] == "warmup"
+    assert stored["review_stage_state_json"]["warmup"]["off_topic_count"] == 1
+    assert counts is not None
+    assert counts["attempt_count"] == 0
+    assert counts["review_log_count"] == 0
+    assert counts["reps"] == 5
+
+
+def test_review_warmup_second_off_topic_enters_guided_exercise(client: TestClient) -> None:
+    user, plan = _confirmed_plan(client, language="javascript")
+    knowledge_point_id = plan["knowledge_points"][0]["id"]
+    _mark_due(knowledge_point_id, reps=4)
+    created = client.post(
+        "/api/reviews/start",
+        json={"user_id": user["id"], "knowledge_point_id": knowledge_point_id},
+    )
+    assert created.status_code == 201
+    session_id = created.json()["session_id"]
+
+    first = client.post(
+        f"/api/reviews/{session_id}/warmup-result",
+        json={"user_id": user["id"], "action": "answer", "answer": "今天天气不错。"},
+    )
+    assert first.status_code == 200
+    assert first.json()["review_stage"] == "warmup"
+
+    second = client.post(
+        f"/api/reviews/{session_id}/warmup-result",
+        json={"user_id": user["id"], "action": "answer", "answer": "我想看电影。"},
+    )
+
+    assert second.status_code == 200
+    body = second.json()
+    assert body["review_stage"] == "exercise"
+    assert body["next_action"] == "start_exercise"
+    assert body["current_node"]["type"] == "exercise"
+    assert body["warmup"]["result"] == "off_topic"
+    assert body["warmup"]["off_topic_count"] == 2
+    assert body["review_stage_state"]["variant"]["guided"] is True
+    assert body["review_stage_state"]["exercise_plan"][0]["guided"] is True
+    assert body["review_stage_state"]["session_diagnosis"].get("failed_focus_tags", []) == []
+
+    with connect() as conn:
+        counts = conn.execute(
+            """
+            SELECT
+              (SELECT count(*) FROM attempts WHERE session_id = %s) AS attempt_count,
+              (SELECT count(*) FROM review_logs WHERE knowledge_point_id = %s) AS review_log_count,
+              (SELECT reps FROM review_states WHERE knowledge_point_id = %s) AS reps
+            """,
+            (session_id, knowledge_point_id, knowledge_point_id),
+        ).fetchone()
+    assert counts is not None
+    assert counts["attempt_count"] == 0
+    assert counts["review_log_count"] == 0
+    assert counts["reps"] == 4
+
+
+def test_review_warmup_model_unavailable_returns_retry_same_error(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user, plan = _confirmed_plan(client, language="javascript")
+    knowledge_point_id = plan["knowledge_points"][0]["id"]
+    _mark_due(knowledge_point_id, reps=2)
+    created = client.post(
+        "/api/reviews/start",
+        json={"user_id": user["id"], "knowledge_point_id": knowledge_point_id},
+    )
+    assert created.status_code == 201
+    session_id = created.json()["session_id"]
+
+    def blocked_warmup_judge(context) -> dict[str, object]:  # type: ignore[no-untyped-def]
+        del context
+        raise LLMInvalidResponseError("Teaching output guardrail blocked provider_error")
+
+    monkeypatch.setattr(
+        review_repository,
+        "build_sdk_review_warmup_judgement_response",
+        blocked_warmup_judge,
+    )
+
+    response = client.post(
+        f"/api/reviews/{session_id}/warmup-result",
+        json={"user_id": user["id"], "action": "answer", "answer": "今天天气不错。"},
+    )
+
+    assert response.status_code == 503
+    error = response.json()["error"]
+    assert error["code"] == "MODEL_UNAVAILABLE"
+    assert error["recoverable"] is True
+    assert error["next_action"] == "retry_same"
+    assert "provider_error" not in json.dumps(error, ensure_ascii=False)
+
+    history = client.get(f"/api/reviews/{session_id}/messages", params={"user_id": user["id"]})
+    assert history.status_code == 200
+    serialized = json.dumps(history.json(), ensure_ascii=False)
+    assert "今天天气不错" not in serialized
 
 
 def test_review_messages_cross_user_returns_session_not_found(client: TestClient) -> None:

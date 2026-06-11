@@ -2364,6 +2364,7 @@ Response JSON 示例：
     "keywords": ["state", "count", "作用域", "事件"],
     "result": "pending",
     "repair_count": 0,
+    "off_topic_count": 0,
     "last_answer": null,
     "feedback": null
   },
@@ -2376,7 +2377,8 @@ Response JSON 示例：
     "target_count": 4,
     "warmup": {
       "result": "pending",
-      "repair_count": 0
+      "repair_count": 0,
+      "off_topic_count": 0
     }
   },
   "review_stage_state": {
@@ -2398,6 +2400,7 @@ Response JSON 示例：
     "warmup": {
       "result": "pending",
       "repair_count": 0,
+      "off_topic_count": 0,
       "recall_level": null,
       "diagnosis": {
         "recall_level": null,
@@ -2488,7 +2491,7 @@ Seed bank / candidate pool 说明：正常路径由 worker 在计划或知识点
 
 #### `POST /api/reviews/{session_id}/warmup-result`
 
-用途：提交或跳过短热身，只更新复习会话阶段状态，不创建 `Attempt`，不写 `review_logs`，不更新 `ReviewState`。
+用途：提交短热身自由文本答案，只更新复习会话阶段状态，不创建 `Attempt`，不写 `review_logs`，不更新 `ReviewState`。新桌面端不暴露跳过入口，也不得把用户输入的 `跳过` / `skip` 转成跳过动作。
 
 Request JSON 示例：
 
@@ -2500,7 +2503,7 @@ Request JSON 示例：
 }
 ```
 
-跳过热身：
+隐藏兼容请求（仅旧客户端，不由桌面 UI 或产品文案暴露）：
 
 ```json
 {
@@ -2522,6 +2525,7 @@ Response JSON 示例：
     "recall_level": "clear",
     "last_answer": "count 要放在能跨多次点击复用的外层作用域。",
     "repair_count": 0,
+    "off_topic_count": 0,
     "feedback": "这个点够用了，下面用一道题确认你能不能在代码里认出来。",
     "judgement_source": "llm",
     "judgement_model": "configured-model",
@@ -2555,16 +2559,39 @@ Response JSON 示例：
 }
 ```
 
+首次偏航时继续停留在热身，并返回模型生成的拉回提醒：
+
+```json
+{
+  "session_id": "sess_review_001",
+  "review_stage": "warmup",
+  "warmup": {
+    "question": "先用一句话回忆：事件监听与状态变量最容易错在哪里？",
+    "expected_focus": "状态应位于能跨事件复用的作用域",
+    "result": "off_topic",
+    "recall_level": "off_topic",
+    "last_answer": "我今天晚上想吃火锅。",
+    "repair_count": 0,
+    "off_topic_count": 1,
+    "feedback": "这和当前热身无关，先回到这个问题：事件监听里的状态变量最容易在哪里放错？",
+    "judgement_source": "llm",
+    "judgement_model": "configured-model"
+  },
+  "next_action": "retry_same"
+}
+```
+
 HTTP 状态码：
 
 - `200`：热身结果记录成功
 - `400`：字段不合法
 - `404`：复习会话不存在
 - `409`：复习会话状态冲突
+- `503`：模型未配置、不可连接、输出非法、输出为空或被安全规则拦截
 
-错误码：`SESSION_NOT_FOUND`、`SESSION_CONFLICT`、`VALIDATION_ERROR`
+错误码：`SESSION_NOT_FOUND`、`SESSION_CONFLICT`、`VALIDATION_ERROR`、`MODEL_UNAVAILABLE`
 
-阶段规则：`action=answer` 接收用户自由文本，由 Review Warmup Judge 判断 `correct`、`incorrect` 或 `unclear`，前端不得要求用户自行选择阶段；模型不可用时后端可使用受限启发式兜底并在 `judgement_source` 标记来源。`correct` 归一为 `clear` 并进入 `exercise`；`skipped` 归一为 `skipped` 并进入低难度 `exercise`；`incorrect` 归一为 `wrong`、`unclear` 归一为 `fuzzy`，最多进入一次 `warmup_repair`，第二次仍不通过时进入带引导的 `exercise`。任何 warmup 分支都不得触发 FSRS。
+阶段规则：`action=answer` 接收用户自由文本，由 Review Warmup Judge 判断 `correct`、`incorrect`、`unclear` 或 `off_topic`，前端不得要求用户自行选择阶段。新桌面端输入 `跳过` / `skip` 仍走 `action=answer`；后端可保留隐藏 `action=skip` 兼容旧调用方，`skipped` 归一为 `skipped` 并进入低难度 `exercise`。`correct` 归一为 `clear` 并进入 `exercise`；`incorrect` 归一为 `wrong`、`unclear` 归一为 `fuzzy`，最多进入一次 `warmup_repair`，第二次仍不通过时进入带引导的 `exercise`。首次 `off_topic` 不算知识点错误，必须返回模型生成的自然拉回提醒，保持 `review_stage=warmup` 并返回 `next_action=retry_same`；第二次 `off_topic` 进入带引导的 `exercise`。模型不可用、输出非法、输出为空或输出被现有 teaching safety guardrails 拦截时，后端重试一次；第二次仍失败则返回 recoverable `MODEL_UNAVAILABLE` 和 `next_action=retry_same`，不得使用固定模板兜底，也不得自动进入练习。任何 warmup 分支都不得创建 `Attempt`、写 `review_logs`、写 FSRS evidence 或更新长期 `ReviewState`。
 
 相关数据表/状态机节点：`LearningSession`；`record_review_warmup_result`、`present_review_exercise`。
 
