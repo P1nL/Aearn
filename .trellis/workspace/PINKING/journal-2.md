@@ -375,3 +375,36 @@ Fixed review warmup judgement and conversation-flow exercise cards: warmup uses 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 71: Review warmup natural conversation
+
+**Date**: 2026-06-11
+**Task**: Review warmup natural conversation
+**Branch**: `main`
+
+### Summary
+
+Implemented natural review warmup, off-topic steering, model-unavailable handling, desktop skip removal, tests and docs.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `a089af8` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
