@@ -409,8 +409,8 @@
 1. 用户进入复习页。
 2. 用户查看左侧复习概览。
 3. 用户开始当前最高优先级复习项。
-4. 用户先完成一句话短热身，或选择跳过热身。
-5. 如果热身错误或不明确，用户最多经历一次短修正提示。
+4. 用户用一句自由文本回答开场问题；新桌面端不展示跳过入口，输入 `跳过` / `skip` 仍按普通回答处理。
+5. 如果回答错误、不明确或第一次明显偏航，用户最多经历一次自然追问或模型生成的拉回提醒。
 6. 用户完成后端选中的复习变体题；如果是 `review_ai_patch`，需要给出结论、证据、知识点风险和下一步动作。
 7. 用户运行或提交复习练习。
 8. 用户查看反馈。
@@ -418,7 +418,7 @@
 ### Agent 自动动作
 
 - 创建独立复习会话。
-- 给出短热身，只唤醒概念，不展开长教学。
+- 给出一句自然开场问题，只唤醒概念，不展开长教学。
 - 从持久化 seed bank 中选择同构或迁移变体题。
 - 复用学习页的生成式代码编辑器和测试区。
 - 根据变体练习或 `review_ai_patch` 的真实提交结果给出反馈。
@@ -430,7 +430,7 @@
 - 今日未到期但即将到期的内容只在左侧面板展示为预告。
 - 复习开始时确保存在完整 `review_seed_bank`；如果缺失，则同步 rescue 生成并先持久化完整 seed bank，再选择 seed。
 - seed bank 生成或校验失败时返回 `REVIEW_SEED_BANK_GENERATION_FAILED`，不得展示低质量 fallback 题。
-- warmup 的正确、错误、不明确和跳过结果只写入复习会话状态，不更新 FSRS。
+- warmup 的正确、错误、不明确、偏航和隐藏兼容跳过结果只写入复习会话状态，不更新 FSRS。
 - 只有变体练习提交成功后才写入 `Attempt(attempt_type=review_submit)`，并更新 `ReviewState` 和下一次 `due_at`。
 - 提交失败不得标记完成。
 - 复习页 warmup、exercise-result 和 review message 请求都必须携带当前 active `user_id`；跨用户 session mismatch 返回 `SESSION_NOT_FOUND`，不读取或推进其他本地用户的复习状态。
@@ -440,8 +440,8 @@
 | API | 用途 |
 |---|---|
 | `GET /api/reviews/today` | 获取待复习和预告复习项 |
-| `POST /api/reviews/start` | 创建独立复习会话、热身状态和 seed bank 变体题 |
-| `POST /api/reviews/{session_id}/warmup-result` | 记录热身答案或跳过，不更新 FSRS |
+| `POST /api/reviews/start` | 创建独立复习会话、开场问题状态和 seed bank 变体题 |
+| `POST /api/reviews/{session_id}/warmup-result` | 记录自由文本回答；隐藏 `action=skip` 仅兼容旧调用方；不更新 FSRS |
 | `POST /api/reviews/{session_id}/exercise-result` | 提交复习结果并更新 FSRS |
 
 ### 涉及数据对象
@@ -482,7 +482,7 @@
 
 - 复习页是独立会话。
 - 复习排序符合遗忘风险。
-- warmup 可以跳过，且任何 warmup 分支都不会更新 FSRS。
+- 新桌面端不暴露跳过入口，输入 `跳过` / `skip` 仍按普通回答处理；任何 warmup 分支都不会更新 FSRS。
 - `review_ai_patch` 要求用户提交 verdict、evidence、knowledge point risk 和 next action，弱证据不能得到 `Easy`。
 - 完成一条后自动进入下一条。
 - 提交失败不会误写完成状态。

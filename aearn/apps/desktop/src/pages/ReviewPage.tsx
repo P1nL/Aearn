@@ -444,7 +444,7 @@ export function ReviewPage({
       }
     } catch (error) {
       setWarmupState("error");
-      setErrorMessage(formatErrorMessage(error, "热身提交失败"));
+      setErrorMessage(formatErrorMessage(error, "回答提交失败"));
     }
   }
 
@@ -820,7 +820,7 @@ export function ReviewPage({
             {activeReview && (
               <>
                 <div className="lesson-title">
-                  <p>{`当前复习知识点：${activeReview.knowledge_point.title}。热身、变体练习和反馈会留在同一个线程里。`}</p>
+                  <p>{`当前复习知识点：${activeReview.knowledge_point.title}。开场问题、变体练习和反馈会留在同一个线程里。`}</p>
                 </div>
 
                 <AssistantUIThread
@@ -1866,7 +1866,7 @@ function buildWarmupPromptText(stage: ReviewSessionResponse["review_stage"], que
   if (stage === "warmup_repair") {
     return `我还没确认这个点已经稳住。换个更具体的说法：\n${prompt}\n\n不用写完整答案，说出你会警惕什么就行。`;
   }
-  return `先把这个点唤醒一下：\n${prompt}\n\n不用写完整答案，说一句你记得的风险点就行。`;
+  return `先从这个问题开始：\n${prompt}\n\n不用写完整答案，说一句你记得的风险点就行。`;
 }
 
 function reviewStageLabel(stage: ReviewSessionResponse["review_stage"]): string {
@@ -1884,10 +1884,10 @@ function reviewStageLabel(stage: ReviewSessionResponse["review_stage"]): string 
 
 function warmupResultLabel(result: ReviewSessionResponse["warmup"]["result"]): string {
   if (result === "correct") {
-    return "已唤醒";
+    return "已收到";
   }
   if (result === "skipped") {
-    return "已跳过";
+    return "直接开始练习";
   }
   if (result === "unclear") {
     return "不明确";

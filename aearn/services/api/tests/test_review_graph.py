@@ -43,7 +43,7 @@ class TestReviewOrchestration:
         assert result["next_action"] == "reject_not_due"
         assert result["intent_type"] == "none"
 
-    def test_submit_triggers_fsrs_update(self):
+    def test_submit_routes_to_review_batch(self):
         result = invoke_review_orchestration(
             session_id="s1",
             user_id="u1",
@@ -52,8 +52,9 @@ class TestReviewOrchestration:
             attempt_result="passed",
             fsrs_rating="Good",
         )
-        assert result["next_action"] == "submit_and_update"
+        assert result["next_action"] == "submit_review_batch"
         assert result["intent_type"] == "persistence"
+        assert result["intent_payload"]["target"] == "review_batch"
         assert result["intent_payload"]["fsrs_rating"] == "Good"
 
     def test_submit_normalizes_invalid_rating(self):
@@ -113,12 +114,12 @@ class TestReviewOrchestration:
 class TestReviewContractAdapters:
     def test_run_result_from_persistence(self):
         result = {
-            "next_action": "submit_and_update",
+            "next_action": "submit_review_batch",
             "intent_type": "persistence",
-            "intent_payload": {"target": "attempt_and_fsrs", "fsrs_rating": "Good"},
+            "intent_payload": {"target": "review_batch", "fsrs_rating": "Good"},
         }
         run_result = review_result_to_run_result(result)
-        assert run_result.next_stage == "submit_and_update"
+        assert run_result.next_stage == "submit_review_batch"
         assert len(run_result.intents) == 1
         assert run_result.intents[0].intent_type.value == "persistence"
 

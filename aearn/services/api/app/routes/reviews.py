@@ -725,7 +725,7 @@ def _review_warmup_prompt_message(response: Mapping[str, object]) -> str:
 def _review_warmup_user_message(action: str, answer: str | None) -> str:
     if action == "skip":
         return "直接进入练习"
-    return (answer or "").strip() or "提交热身回答"
+    return (answer or "").strip() or "我还没输入具体内容。"
 
 
 def _review_warmup_result_message(response: Mapping[str, object]) -> str:
@@ -737,7 +737,7 @@ def _review_warmup_result_message(response: Mapping[str, object]) -> str:
         question = str(warmup.get("question") or "")
     if str(response.get("review_stage")) in {"warmup", "warmup_repair"}:
         return feedback or _review_warmup_prompt_text(str(response.get("review_stage")), question)
-    lines = [feedback or "热身已记录。"]
+    lines = [feedback or "我已经记下你的回答。"]
     lines.append("下面直接进一道同知识点的题，看看你能不能在代码里认出来。")
     return "\n\n".join(lines)
 
@@ -746,7 +746,7 @@ def _review_warmup_prompt_text(stage: str, question: str) -> str:
     prompt = question.strip() or "这类代码最容易让人误判的地方是什么？"
     if stage == "warmup_repair":
         return f"我还没确认这个点已经稳住。换个更具体的说法：\n{prompt}\n\n不用写完整答案，说出你会警惕什么就行。"
-    return f"先把这个点唤醒一下：\n{prompt}\n\n不用写完整答案，说一句你记得的风险点就行。"
+    return f"先从这个问题开始：\n{prompt}\n\n不用写完整答案，说一句你记得的风险点就行。"
 
 
 def _review_warmup_result_message_key(session_id: str, response: Mapping[str, object]) -> str:

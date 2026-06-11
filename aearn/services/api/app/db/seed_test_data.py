@@ -5,7 +5,7 @@ import json
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from aearn_worker.review_seed_bank_core import persist_ready_seed_bank
 
@@ -57,12 +57,14 @@ def seed_test_data(*, bootstrap_file: Path | None = None) -> dict[str, object]:
             idempotency_key=default_confirm_key(str(user["id"]), draft.draft_id),
             request_hash=request_hash(body),
         )
-        plan_id = str(plan_response["LearningPlan"]["id"])
+        learning_plan = cast(Mapping[str, object], plan_response["LearningPlan"])
+        runtime_profile = cast(Mapping[str, object], course["runtime_profile"])
+        plan_id = str(learning_plan["id"])
         knowledge_points = _load_plan_knowledge_points(conn, plan_id=plan_id)
         _shape_demo_learning_state(conn, user_id=str(user["id"]), plan_id=plan_id, knowledge_points=knowledge_points)
         knowledge_points = _load_plan_knowledge_points(conn, plan_id=plan_id)
         _seed_notes(conn, user_id=str(user["id"]), knowledge_points=knowledge_points)
-        _seed_ready_review_pools(conn, user_id=str(user["id"]), plan_id=plan_id, knowledge_points=knowledge_points, runtime_profile=course["runtime_profile"])
+        _seed_ready_review_pools(conn, user_id=str(user["id"]), plan_id=plan_id, knowledge_points=knowledge_points, runtime_profile=runtime_profile)
 
         plan_detail = get_plan_detail(conn, plan_id, user_id=str(user["id"]))
         conn.commit()
@@ -77,7 +79,7 @@ def seed_test_data(*, bootstrap_file: Path | None = None) -> dict[str, object]:
         "defaultRoute": "review",
         "summary": {
             "displayName": user["display_name"],
-            "planGoal": plan_response["LearningPlan"]["goal_text"],
+            "planGoal": learning_plan["goal_text"],
             "knowledgePointCount": len(knowledge_points),
             "dueReviewCount": 2,
             "notesCount": 2,

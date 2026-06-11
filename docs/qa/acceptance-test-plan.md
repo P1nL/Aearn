@@ -47,7 +47,7 @@
 | UF-03 | P0 | 日常进入应用 | 已有活动计划 | 打开应用 -> 加载 dashboard | 5 秒内默认进入当前学习，展示当前阶段、今日任务、复习数量和复习提示 |
 | UF-04 | P0 | 学习闭环 | 有 `browser_preview` 或 `python_stdout_test` 练习 | 进入知识点 -> 查看右侧 `官方文档内容` / `实例` -> 触发 `show_concept_intro` -> 自然语言判断 -> `show_concept_check_result` 紧凑反馈 -> 对话中生成练习 UI -> 补全 -> 运行/预览/测试 -> 提交 -> 查看反馈 | 前端不暴露 run/submit 内部 Attempt 类型；官方文档来源、示例来源标签、概念卡和紧凑判断反馈可刷新重放；后端生成可追溯 `Attempt`、`code_completion_result`，状态写回知识点 |
 | UF-05 | P0 | 运行失败后错因解释 | 练习会产生失败测试或 runtime error | run 失败 -> 点击解释错误 -> 修改 -> rerun | 错因来自真实错误，旧结果标记 stale，新 Attempt 可追踪 |
-| UF-06 | P0 | 复习闭环 | `ReviewState.due_at` 到期 | 进入复习 -> 短热身或跳过 -> 完成 seed bank 变体 -> submit | warmup 结果可刷新重放但不更新 FSRS；提交写入 `Attempt(review_submit)` 后更新 `fsrs_rating`、`due_at`、`forget_risk`，列表即时刷新 |
+| UF-06 | P0 | 复习闭环 | `ReviewState.due_at` 到期 | 进入复习 -> 用自由文本回答开场问题 -> 完成 seed bank 变体 -> submit | 新桌面端不暴露跳过入口，输入 `跳过` / `skip` 仍按普通回答处理；warmup 结果可刷新重放但不更新 FSRS；提交写入 `Attempt(review_submit)` 后更新 `fsrs_rating`、`due_at`、`forget_risk`，列表即时刷新 |
 | UF-07 | P1 | 笔记抽屉 | 学习或复习会话进行中 | 打开笔记抽屉 -> 输入错因和修正方式 -> 自动保存 -> 请求 Agent 辅助补全 | 笔记不打断代码练习，保存状态明确，Agent 不自动生成完整笔记 |
 | UF-08 | P1 | 笔记页 | 已有学习目标或知识点 | 进入笔记页 -> 按语言/知识点选择笔记 -> 编辑 Markdown -> 保存 | 笔记绑定知识点，复习和学习共用同一份笔记，不存在独立草稿生成流程 |
 | UF-09 | P0 | 恢复中断学习 | 有历史会话摘要 | 打开应用 -> 调用 dashboard/resume -> 展示上次停留点和复习提示 | 普通打开默认当前学习；仅中断多日且复习高风险时优先进入复习 |
@@ -91,7 +91,7 @@
 | `POST /api/learning-sessions/{session_id}/attempts/{attempt_id}/check-explanation` | 最多 2 轮、`follow_up_required` |
 | `GET /api/reviews/today` | 空复习、到期排序、`due_at` |
 | `POST /api/reviews/start` | `warmup`、`review_stage`、`review_stage_state`、`selected_seed_id`、seed bank ready/replay、同步 rescue 成功、`REVIEW_SEED_BANK_GENERATION_FAILED` 不返回 fallback 题、`variant_reason` |
-| `POST /api/reviews/{session_id}/warmup-result` | `correct`、`incorrect`、`unclear`、`skipped` 四类分支，最多一次 `warmup_repair`，不写 `Attempt` / `review_logs` / `ReviewState` |
+| `POST /api/reviews/{session_id}/warmup-result` | `correct`、`incorrect`、`unclear`、`off_topic` 和隐藏兼容 `skipped` 分支；新桌面端 `跳过` / `skip` 仍提交 `action=answer`；最多一次 `warmup_repair`，不写 `Attempt` / `review_logs` / `ReviewState` |
 | `POST /api/reviews/{session_id}/exercise-result` | `code_blank`、`fix_bug`、`explain_code`、`implement_function`、`review_ai_patch`，FSRS Rating、`due_at`、`forget_risk`、幂等不重复增加 `review_count` |
 | `GET /api/learning-sessions/resume` | 最近摘要、`next_entry_point`、当前模块 |
 | `GET /api/notes` | 按语言或知识点读取笔记、空笔记状态 |
@@ -235,8 +235,8 @@ LLM 输出质量单独用固定样例集评估，至少覆盖 JS/HTML/CSS、Pyth
 ### 复习窗口
 
 - [ ] 无待复习项时展示空态和继续学习入口。
-- [ ] 开始复习后展示短热身、`review_stage`、`variant_reason` 和 seed 变体。
-- [ ] 热身正确、错误、不明确和跳过都能切换到正确阶段；热身不会显示 FSRS 变化。
+- [ ] 开始复习后展示自然开场问题、`review_stage`、`variant_reason` 和 seed 变体；不展示跳过入口或“热身阶段”文案。
+- [ ] warmup 正确、错误、不明确、首次偏航、二次偏航和隐藏兼容跳过都能切换到正确阶段；warmup 不会显示 FSRS 变化。
 - [ ] seed bank rescue 失败展示 `REVIEW_SEED_BANK_GENERATION_FAILED` 和重试入口，不展示 fallback 题。
 - [ ] `review_ai_patch` 表单必须填写 verdict、evidence、knowledge point risk 和 next action，提交结果完全使用后端评分。
 - [ ] 提交成功后列表移除或标记完成。
