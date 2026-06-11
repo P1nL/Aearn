@@ -408,3 +408,36 @@ Implemented natural review warmup, off-topic steering, model-unavailable handlin
 ### Next Steps
 
 - None - task complete
+
+
+## Session 72: Full product QA
+
+**Date**: 2026-06-11
+**Task**: Full product QA
+**Branch**: `main`
+
+### Summary
+
+Completed end-to-end Aearn full product QA, including review.zh.md, warmup natural-conversation verification, desktop flow checks, backend guardrails, live-model QA, and PASS report after contained fixes.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `cc2ef95` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
