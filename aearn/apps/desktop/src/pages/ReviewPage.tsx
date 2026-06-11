@@ -210,7 +210,7 @@ export function ReviewPage({
 
     if (warmupPending) {
       store.addReviewMessage(createMessage("user", content));
-      void handleWarmupSubmit(isWarmupSkipIntent(content) ? "skip" : "answer", content);
+      void handleWarmupSubmit("answer", content);
       return;
     }
 
@@ -402,7 +402,7 @@ export function ReviewPage({
     }
   }
 
-  async function handleWarmupSubmit(action: "answer" | "skip", answerOverride?: string) {
+  async function handleWarmupSubmit(action: "answer", answerOverride?: string) {
     if (!activeReview || !user || warmupState === "submitting") {
       return;
     }
@@ -414,7 +414,7 @@ export function ReviewPage({
         userId: user.id,
         sessionId: activeReview.session_id,
         action,
-        answer: action === "skip" ? undefined : submittedAnswer,
+        answer: submittedAnswer,
       });
       const nextReview: ReviewSessionResponse = {
         ...activeReview,
@@ -831,9 +831,9 @@ export function ReviewPage({
                   hideNoteButton
                   placeholder={
                     composerBusy
-                      ? warmupState === "submitting" ? "正在记录热身……" : "AI 正在回复……"
+                      ? warmupState === "submitting" ? "正在记录回答……" : "AI 正在回复……"
                       : warmupPending
-                        ? "说一句你的理解，或输入“跳过”。"
+                        ? "说一句你的理解。"
                         : "用自己的话复述，或请求提示……"
                   }
                   ariaLabel="复习输入框"
@@ -1848,10 +1848,6 @@ function isReviewWarmupPending(stage: ReviewSessionResponse["review_stage"]): bo
   return stage === "warmup" || stage === "warmup_repair";
 }
 
-function isWarmupSkipIntent(content: string): boolean {
-  return /^(跳过|skip)$/i.test(content.trim());
-}
-
 function buildWarmupQuestionMessage(review: ReviewSessionResponse): string {
   return buildWarmupPromptText(review.review_stage, review.warmup.question);
 }
@@ -1860,7 +1856,7 @@ function buildWarmupResultMessage(result: ReviewWarmupResultResponse): string {
   if (isReviewWarmupPending(result.review_stage)) {
     return result.warmup.feedback ?? buildWarmupPromptText(result.review_stage, result.warmup.question);
   }
-  const lines = [result.warmup.feedback ?? `热身结果：${warmupResultLabel(result.warmup.result)}。`];
+  const lines = [result.warmup.feedback ?? `我已经记下你的回答：${warmupResultLabel(result.warmup.result)}。`];
   lines.push("下面直接进一道同知识点的题，看看你能不能在代码里认出来。");
   return lines.join("\n\n");
 }
@@ -1868,14 +1864,14 @@ function buildWarmupResultMessage(result: ReviewWarmupResultResponse): string {
 function buildWarmupPromptText(stage: ReviewSessionResponse["review_stage"], question: string): string {
   const prompt = question.trim() || "这类代码最容易让人误判的地方是什么？";
   if (stage === "warmup_repair") {
-    return `我还没确认这个点已经稳住。换个更具体的说法：\n${prompt}\n\n不用写完整答案，说出你会警惕什么就行；想跳过就输入“跳过”。`;
+    return `我还没确认这个点已经稳住。换个更具体的说法：\n${prompt}\n\n不用写完整答案，说出你会警惕什么就行。`;
   }
-  return `先把这个点唤醒一下：\n${prompt}\n\n不用写完整答案，说一句你记得的风险点就行；想跳过就输入“跳过”。`;
+  return `先把这个点唤醒一下：\n${prompt}\n\n不用写完整答案，说一句你记得的风险点就行。`;
 }
 
 function reviewStageLabel(stage: ReviewSessionResponse["review_stage"]): string {
   if (stage === "warmup") {
-    return "热身";
+    return "先聊一下";
   }
   if (stage === "warmup_repair") {
     return "再想一下";
@@ -1895,6 +1891,9 @@ function warmupResultLabel(result: ReviewSessionResponse["warmup"]["result"]): s
   }
   if (result === "unclear") {
     return "不明确";
+  }
+  if (result === "off_topic") {
+    return "偏离问题";
   }
   if (result === "incorrect") {
     return "需修正";

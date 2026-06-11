@@ -768,11 +768,12 @@ export type ReviewCurrentNode =
 export type ReviewWarmupState = {
   question: string;
   expected_focus: string;
-  result: "pending" | "correct" | "incorrect" | "unclear" | "skipped";
+  result: "pending" | "correct" | "incorrect" | "unclear" | "off_topic" | "skipped";
   repair_count: number;
+  off_topic_count: number;
   last_answer: string | null;
   feedback: string | null;
-  recall_level?: "clear" | "fuzzy" | "wrong" | "skipped" | null;
+  recall_level?: "clear" | "fuzzy" | "wrong" | "off_topic" | "skipped" | null;
   diagnosis?: Record<string, unknown>;
 };
 

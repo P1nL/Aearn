@@ -46,7 +46,9 @@ from app.agents.review.review_coach_agent import (
     ReviewCoachContext,
     ReviewCoachJsonResponse,
     ReviewWarmupJudgementContext,
+    ReviewWarmupJudgementJsonResponse,
     build_sdk_review_coach_response,
+    build_sdk_review_warmup_judgement_response,
 )
 from app.agents.runtime.guardrails import (
     assert_safe_teaching_output,
@@ -1718,7 +1720,99 @@ def test_agents_sdk_review_warmup_judge_classifies_free_text_answer() -> None:
     assert captured["output_guardrail_count"] == 1
     assert "learner_answer" in str(captured["input"])
     assert "不要让学习者自行选择阶段" in str(captured["instructions"])
+    assert "off_topic" in str(captured["instructions"])
     assert captured["max_turns"] == 2
+
+
+def test_build_sdk_review_warmup_judgement_retries_invalid_output_once() -> None:
+    class FlakyWarmupClient:
+        model = "sdk-warmup-model"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def complete_json(
+            self,
+            context: ReviewWarmupJudgementContext,
+            *,
+            temperature: float = 0.1,
+        ) -> ReviewWarmupJudgementJsonResponse:
+            del context, temperature
+            self.calls += 1
+            if self.calls == 1:
+                return ReviewWarmupJudgementJsonResponse(
+                    content={"result": "unrelated", "confidence": "high", "feedback": "invalid"},
+                    model=self.model,
+                )
+            return ReviewWarmupJudgementJsonResponse(
+                content={
+                    "result": "off_topic",
+                    "confidence": "high",
+                    "feedback": "这和当前热身无关，请专注回答当前热身问题。",
+                },
+                model=self.model,
+            )
+
+    client = FlakyWarmupClient()
+    response = build_sdk_review_warmup_judgement_response(
+        ReviewWarmupJudgementContext(
+            knowledge_point_title="事件状态",
+            question="看到这段事件代码时你会先检查什么？",
+            expected_focus="状态变量是否放在回调外层并被连续点击复用。",
+            learner_answer="我想先聊今天午饭。",
+            repair_count=0,
+        ),
+        client=client,
+    )
+
+    assert client.calls == 2
+    assert response == {
+        "result": "off_topic",
+        "confidence": "high",
+        "feedback": "这和当前热身无关，请专注回答当前热身问题。",
+        "generation_source": "llm",
+        "generation_model": "sdk-warmup-model",
+    }
+
+
+def test_build_sdk_review_warmup_judgement_raises_after_two_invalid_outputs() -> None:
+    class InvalidWarmupClient:
+        model = "sdk-warmup-model"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def complete_json(
+            self,
+            context: ReviewWarmupJudgementContext,
+            *,
+            temperature: float = 0.1,
+        ) -> ReviewWarmupJudgementJsonResponse:
+            del context, temperature
+            self.calls += 1
+            return ReviewWarmupJudgementJsonResponse(
+                content={
+                    "result": "off_topic",
+                    "confidence": "high",
+                    "feedback": "完整答案如下：secret solution",
+                },
+                model=self.model,
+            )
+
+    client = InvalidWarmupClient()
+    with pytest.raises(LLMInvalidResponseError):
+        build_sdk_review_warmup_judgement_response(
+            ReviewWarmupJudgementContext(
+                knowledge_point_title="事件状态",
+                question="看到这段事件代码时你会先检查什么？",
+                expected_focus="状态变量是否放在回调外层并被连续点击复用。",
+                learner_answer="我想先聊今天午饭。",
+                repair_count=0,
+            ),
+            client=client,
+        )
+
+    assert client.calls == 2
 
 
 def test_review_coach_sdk_response_rejects_output_that_leaks_hidden_identifier() -> None:

@@ -17,18 +17,20 @@ def error_response(
     status_code: int,
     details: dict[str, object] | None = None,
     recoverable: bool = True,
+    next_action: str | None = None,
 ) -> JSONResponse:
+    error: dict[str, object] = {
+        "code": code,
+        "message": message,
+        "details": details or {},
+        "request_id": request_id_from(request),
+        "recoverable": recoverable,
+    }
+    if next_action is not None:
+        error["next_action"] = next_action
     return JSONResponse(
         status_code=status_code,
-        content={
-            "error": {
-                "code": code,
-                "message": message,
-                "details": details or {},
-                "request_id": request_id_from(request),
-                "recoverable": recoverable,
-            },
-        },
+        content={"error": error},
     )
 
 
@@ -36,6 +38,7 @@ def model_unavailable_response(
     request: Request,
     *,
     details: dict[str, object] | None = None,
+    next_action: str | None = None,
 ) -> JSONResponse:
     return error_response(
         request,
@@ -44,4 +47,5 @@ def model_unavailable_response(
         status_code=503,
         details=details,
         recoverable=True,
+        next_action=next_action,
     )

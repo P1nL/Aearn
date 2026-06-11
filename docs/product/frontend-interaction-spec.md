@@ -340,13 +340,14 @@ ReviewPage
 |---|---|---|
 | 加载今日复习 | `GET /api/reviews/today?user_id={user_id}` | 展示待复习列表 |
 | 开始复习 | `POST /api/reviews/start` | 展示短热身、`review_stage`、`review_exercise`、`selected_seed_id` 和 `variant_reason` |
-| 提交热身答案 | `POST /api/reviews/{session_id}/warmup-result` | 更新 `warmup.result` 和 `review_stage`；不显示 FSRS 变化 |
-| 跳过热身 | `POST /api/reviews/{session_id}/warmup-result`，`action=skip` | 记录 `warmup_result=skipped`，直接进入变体练习 |
+| 提交热身答案 | `POST /api/reviews/{session_id}/warmup-result` | 自由文本提交；可能继续热身、进入一次追问或进入变体练习；不显示 FSRS 变化 |
 | 运行复习练习 | 复用学习会话 `/run` 能力或 review runner | 展示运行结果 |
-| 提交复习结果 | `POST /api/reviews/{session_id}/exercise-result` | 更新 `fsrs_rating`、`due_at`、`forget_risk` |
+| 提交复习结果 | `POST /api/reviews/{session_id}/exercise-result` | 当前卡片内展示即时轻反馈；仅批次完成时展示总结并更新 `fsrs_rating`、`due_at`、`forget_risk` |
 | 下一条 | 刷新列表 | 当前项完成后启用 |
 
 复习页所有 session 写入请求（message、warmup-result、exercise-result）都必须在 JSON body 中携带当前 active `user_id`；跨用户 session mismatch 由后端返回 `SESSION_NOT_FOUND`，不得复用旧用户的 warmup、exercise 或 review conversation 状态。
+
+热身是普通导师对话，不展示“跳过”按钮/入口，也不提示用户输入 `跳过` / `skip`。用户真的输入 `跳过` 或 `skip` 时，桌面端仍按普通自由文本发送 `action=answer`，不转换成后端隐藏兼容的 `action=skip`。后端返回 `off_topic` 时，第一次在同一热身问题上展示模型生成的拉回提醒；第二次偏航或仍无法给出可用回答时进入带引导的变体练习。若拉回提醒两次模型生成都不可用、非法或被安全规则拦截，前端展示 recoverable `MODEL_UNAVAILABLE`，保留当前热身输入，不展示固定模板兜底。
 
 `review_ai_patch` 题型不展示代码编辑提交框，而展示结构化审核表单：`verdict`、`evidence`、`knowledge_point_risk`、`next_action`。提交前必须要求用户填写证据和风险说明；前端只做必填校验，不本地计算 `score_breakdown`、`fsrs_rating`、`due_at` 或 `forget_risk`。
 
@@ -354,9 +355,9 @@ ReviewPage
 
 - empty：今日无待复习项，提示继续学习或查看历史表现。
 - loading：列表加载、seed bank rescue、变体生成、热身提交和复习提交均显示局部 skeleton；首次加载可 skeleton，后台刷新保留旧卡片。
-- warmup：展示短热身问题、跳过入口和自由文本回答输入；不展示“我记得 / 不太确定 / 完全忘了”等自评选项，阶段由后端根据用户回答判定。
-- warmup_repair：热身错误或不明确后最多展示一次自然追问，不叠加“短修正 / 再修正”这类流程文案，然后进入变体练习。
-- variant_practice：展示 `code_blank`、`fix_bug`、`explain_code`、`implement_function` 或 `review_ai_patch` 变体题。
+- warmup：展示短热身问题和自由文本回答输入；不展示“跳过热身”“热身阶段”或“我记得 / 不太确定 / 完全忘了”等机械选项，阶段由后端根据用户回答判定。
+- warmup_repair：热身错误或不明确后最多展示一次自然追问；首次 `off_topic` 展示模型生成的拉回提醒并保持当前热身，不叠加“短修正 / 再修正”这类流程文案。
+- variant_practice：展示 `code_blank`、`fix_bug`、`explain_code`、`implement_function` 或 `review_ai_patch` 变体题；正式练习保持一题一卡，每题提交后在该卡片内显示即时轻反馈，最终批次完成后再展示总结。
 - error：队列加载失败不影响工作台；seed bank rescue 失败展示 `REVIEW_SEED_BANK_GENERATION_FAILED` 和重试入口；提交失败不得把复习项标记完成。
 - disabled：未选择复习项时禁用运行/提交。
 - confirm：退出未提交复习时确认是否保留当前编辑内容。
@@ -538,8 +539,8 @@ SettingsPage
 | `POST /api/learning-sessions/{session_id}/attempts/{attempt_id}/check-explanation` | `ExplanationCheckPanel` | 检查用户解释 |
 | `GET /api/reviews/today` | `ReviewQueuePanel` | 获取待复习列表 |
 | `POST /api/reviews/start` | `ReviewWarmupCard`、`ReviewExercisePanel` | 创建或恢复复习会话；渲染热身、阶段状态、seed 变体和 rescue 错误 |
-| `POST /api/reviews/{session_id}/warmup-result` | `ReviewWarmupCard`、`ReviewExercisePanel` | 记录热身结果并切换到修正或变体练习；不更新 FSRS 展示 |
-| `POST /api/reviews/{session_id}/exercise-result` | `ReviewAIPatchPanel`、`ReviewMetricPanel` | 提交变体练习或 AI 补丁审核，使用后端返回更新 FSRS 展示 |
+| `POST /api/reviews/{session_id}/warmup-result` | `ReviewWarmupCard`、`ReviewExercisePanel` | 提交热身自由文本，展示模型判断、追问或偏航拉回；不更新 FSRS 展示 |
+| `POST /api/reviews/{session_id}/exercise-result` | `ReviewAIPatchPanel`、`ReviewMetricPanel` | 提交变体练习或 AI 补丁审核；中间题只更新当前卡片反馈，最终批次完成后才更新 FSRS 展示 |
 | `GET /api/notes` | `NotesPage`、`NoteDrawer` | 读取知识点 Markdown 笔记 |
 | `POST /api/notes` | `NotesPage`、`NoteDrawer` | 创建知识点笔记 |
 | `PATCH /api/notes/{note_id}` | `NotesPage`、`NoteDrawer` | 保存知识点笔记 |

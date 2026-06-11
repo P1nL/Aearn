@@ -36,6 +36,7 @@ from app.services.repositories.review_repository import (
     ReviewAdaptiveSupplementRequired,
     ReviewNotDueError,
     ReviewSessionConflictError,
+    ReviewWarmupModelUnavailableError,
     get_today_reviews,
     record_review_warmup_result,
     start_review_session,
@@ -394,6 +395,13 @@ async def submit_review_warmup_result(
                 details={"reason": str(exc)},
                 recoverable=False,
             )
+        except ReviewWarmupModelUnavailableError as exc:
+            conn.rollback()
+            return model_unavailable_response(
+                request,
+                details={"reason": exc.__class__.__name__},
+                next_action="retry_same",
+            )
         conn.commit()
     return JSONResponse(status_code=status.HTTP_200_OK, content=jsonable_encoder(response))
 
@@ -716,7 +724,7 @@ def _review_warmup_prompt_message(response: Mapping[str, object]) -> str:
 
 def _review_warmup_user_message(action: str, answer: str | None) -> str:
     if action == "skip":
-        return "跳过热身"
+        return "直接进入练习"
     return (answer or "").strip() or "提交热身回答"
 
 
@@ -737,8 +745,8 @@ def _review_warmup_result_message(response: Mapping[str, object]) -> str:
 def _review_warmup_prompt_text(stage: str, question: str) -> str:
     prompt = question.strip() or "这类代码最容易让人误判的地方是什么？"
     if stage == "warmup_repair":
-        return f"我还没确认这个点已经稳住。换个更具体的说法：\n{prompt}\n\n不用写完整答案，说出你会警惕什么就行；想跳过就输入“跳过”。"
-    return f"先把这个点唤醒一下：\n{prompt}\n\n不用写完整答案，说一句你记得的风险点就行；想跳过就输入“跳过”。"
+        return f"我还没确认这个点已经稳住。换个更具体的说法：\n{prompt}\n\n不用写完整答案，说出你会警惕什么就行。"
+    return f"先把这个点唤醒一下：\n{prompt}\n\n不用写完整答案，说一句你记得的风险点就行。"
 
 
 def _review_warmup_result_message_key(session_id: str, response: Mapping[str, object]) -> str:
