@@ -441,3 +441,36 @@ Completed end-to-end Aearn full product QA, including review.zh.md, warmup natur
 ### Next Steps
 
 - None - task complete
+
+
+## Session 73: Regenerate current project docs
+
+**Date**: 2026-06-18
+**Task**: Regenerate current project docs
+**Branch**: `main`
+
+### Summary
+
+Created docs/current current-state package, classified old-doc archive/writeback decisions, wrote back low-risk stale docs, fixed desktop Vite chunk warning with manual chunks, and verified desktop/backend checks.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `01ba0d8` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
