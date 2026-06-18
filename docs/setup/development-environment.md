@@ -1,7 +1,7 @@
 # Aearn 前置环境配置
 
-日期：2026-05-24
-状态：Active V1.1
+日期：2026-06-18
+状态：Active V1.1（2026-06-18 局部回写：本机连接串统一为 `127.0.0.1`）
 适用范围：当前 Aearn 第一版稳定基线和 post-MVP / v1.1 增强的本机开发环境、服务依赖、版本边界、运行顺序和验收命令
 
 ## 目标
@@ -127,8 +127,8 @@ aearn/infra/docker-compose.yml
 建议本地连接串：
 
 ```text
-postgresql://postgres:postgres@localhost:5432/postgres?sslmode=disable
-redis://localhost:6379/0
+postgresql://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable
+redis://127.0.0.1:6379/0
 ```
 
 启动验证：
@@ -147,8 +147,8 @@ APP_ENV=development
 API_HOST=127.0.0.1
 API_PORT=8001
 
-DATABASE_URL=postgresql://postgres:postgres@localhost:5432/postgres?sslmode=disable
-REDIS_URL=redis://localhost:6379/0
+DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable
+REDIS_URL=redis://127.0.0.1:6379/0
 
 LLM_TYPE=openai
 OPENAI_API_KEY=
@@ -163,8 +163,8 @@ EXA_API_KEY=
 
 TZ=Asia/Shanghai
 FSRS_SCHEDULER_VERSION=fsrs_v1_default
-CELERY_BROKER_URL=redis://localhost:6379/0
-CELERY_RESULT_BACKEND=redis://localhost:6379/1
+CELERY_BROKER_URL=redis://127.0.0.1:6379/0
+CELERY_RESULT_BACKEND=redis://127.0.0.1:6379/1
 
 RUNNER_BROWSER_ENABLED=true
 RUNNER_PYTHON_ENABLED=true

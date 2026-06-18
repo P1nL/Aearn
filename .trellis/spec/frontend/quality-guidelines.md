@@ -41,6 +41,7 @@ Every UI task must be checked against `docs/product/frontend-interaction-spec.md
 
 - Run `pnpm desktop:check` from `aearn/` after desktop code changes.
 - Run `pnpm --dir apps/desktop build` from `aearn/` when only the desktop package is in scope.
+- Treat Vite `chunk size is larger than 500 kB` warnings as build hygiene issues. Prefer targeted Rollup `manualChunks` for stable vendor groups such as React, assistant-ui, Monaco, Tauri, and app utilities before considering `chunkSizeWarningLimit`.
 - For Tauri shell changes, run `cargo check` from `aearn/apps/desktop/src-tauri` when practical.
 - For visible UI changes, open the local Vite or Tauri target and verify loading/error/responsive behavior.
 - For API-connected UI, cover happy path, API error, offline, retry, stale result, and disabled unsupported runtime states.
