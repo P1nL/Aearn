@@ -39,7 +39,9 @@
 
 ## 文档新鲜度
 
-2026-05-24 已完成一轮 `docs/` 新鲜度审计：当前没有需要整篇归档的 active 文档；`setup/development-environment.md` 和 `setup/claude-frontend-handoff.md` 已修正局部过期内容。后续如出现整篇过期文档，应移动到 `docs/archive/<date>/`，并在本索引标注替代入口。
+2026-06-18 已完成一轮当前代码重读与 `docs/current/` 文档包生成：当前没有需要整篇归档的 active 文档；本轮已回写 `setup/development-environment.md` 的本机连接串和 `aearn/services/worker/README.md` 的 worker 任务状态。后续重点是局部刷新 `architecture/api-contract.md` 与 `product/frontend-interaction-spec.md` 中 planned/deferred endpoint 的分组，而不是整篇归档。
+
+如未来出现整篇过期文档，应移动到 `docs/archive/<date>/`，并在本索引标注替代入口。带日期的 demo story 或 release readiness 文档优先作为历史快照保留，除非已经不再被当前索引引用。
 
 ## 已移除的重复文档
 
