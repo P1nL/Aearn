@@ -39,3 +39,20 @@ aearn/apps/desktop/public/aearn-dev-bootstrap.json
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+# Local Trellis planning and tool-synchronization artifacts.
+.trellis/agents/
+.trellis/tasks/[0-9][0-9]-*/
+.agents/skills/trellis-*/
+.claude/agents/trellis-*.md
+.claude/commands/trellis/
+.claude/skills/trellis-*/
+.codex/agents/trellis-*.toml
+.codex/hooks/inject-workflow-state.py
+.codex/skills/
+
+# Local documentation workspace state and temporary material.
+docs/current/.obsidian/
+docs/current/.trash/
+docs/current/semi-overt/
+tmp/
