@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-2.md`
-- **Total Sessions**: 73
-- **Last Active**: 2026-06-18
+- **Total Sessions**: 74
+- **Last Active**: 2026-07-26
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-2.md` | ~476 | Active |
+| `journal-2.md` | ~510 | Active |
 | `journal-1.md` | ~1979 | Archived |
 <!-- @@@/auto:active-documents -->
 
@@ -30,6 +30,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 74 | 2026-07-26 | Complete Tutor Harness runtime seam | `9f65449`, `30772e9` | `main` |
 | 73 | 2026-06-18 | Regenerate current project docs | `01ba0d8` | `main` |
 | 72 | 2026-06-11 | Full product QA | `cc2ef95` | `main` |
 | 71 | 2026-06-11 | Review warmup natural conversation | `a089af8` | `main` |
