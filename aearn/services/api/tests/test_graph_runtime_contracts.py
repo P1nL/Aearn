@@ -1,6 +1,7 @@
 """Tests for shared graph runtime contracts."""
 from __future__ import annotations
 
+from app.agents.runtime.redaction import redact_value as runtime_redact_value
 from app.agents.graphs.graph_runtime_contracts import (
     GraphFallback,
     GraphHumanCheckpoint,
@@ -466,6 +467,9 @@ class TestBuildFallback:
 
 
 class TestRedaction:
+    def test_legacy_graph_reexports_runtime_owned_redaction(self):
+        assert redact_value is runtime_redact_value
+
     def test_redacts_mapping_sensitive_keys(self):
         data = {
             "title": "hello",
