@@ -1594,3 +1594,149 @@ if question and _has_structured_clarification(slots):
 ```
 
 Safety blocking remains strict, while valid conversational answers stay visible.
+
+## Scenario: Feature-Disabled Tutor Harness Runtime Seam
+
+### 1. Scope / Trigger
+
+- Trigger: adding or extending the internal Tutor Harness under
+  `app/agents/harness/` and `app/services/tutor/`, including the finite run
+  loop, context construction, provider gateway, feature flag, typed effects, or
+  compaction requests.
+- Scope: `TUTOR_HARNESS_ENABLED`, `TutorRunLoop`, `TutorHarnessService`,
+  `TutorRunStore`, context/provider/capability/effect/compaction ports, and
+  the focused Harness unit tests.
+- This is a migration seam. It is not permission to add a learner-facing route,
+  SSE frame, Desktop consumer, database migration, repository, worker, or
+  outbox before the owning follow-up task is approved.
+
+### 2. Signatures
+
+- Environment: `TUTOR_HARNESS_ENABLED=false` by default; it is independent of
+  `LANGGRAPH_ENABLED`.
+- Internal entry point:
+  `TutorHarnessService.run(run_id=..., lease_owner_id=...) -> TutorRunResult`.
+- Finite orchestration:
+  `TutorRunLoop.run(run_id=..., lease_owner_id=...) -> TutorRunResult`.
+- Revision authority:
+  `TutorRunStore.current_input_revision(run_id) -> int`.
+- Provider boundary:
+  `TutorProviderGateway.decide(run=..., context=...) -> TutorProviderResult`.
+- Compaction boundary:
+  `TutorCompactionPublisher.publish(TutorCompactionRequest)`; the request must
+  carry a deterministic idempotency key and must not call a Curator directly.
+
+### 3. Contracts
+
+- Keep `TUTOR_HARNESS_ENABLED` feature-off unless an explicit integration task
+  wires it. Legacy routes, Graph routing/checkpoints, SSE producers, learning
+  conversation services, and Desktop source must not read the flag during the
+  isolated runtime-seam phase.
+- Harness modules may use `app.agents.runtime` helpers and the selected
+  `OpenAICompatibleClient`. They must not import legacy Graph/router modules,
+  LangGraph APIs, route handlers, database connections/repositories, or worker
+  implementations.
+- Acquire a valid lease before writing any terminal checkpoint or durable-like
+  result. A lease conflict returns a non-persistent `lease_unavailable` result;
+  it must not allow a competing worker to terminalize the run.
+- Reload the authoritative input revision before a model call, capability
+  dispatch, after a capability result, and immediately before effect commit. An
+  effect whose expected revision is stale becomes `stale_rejected` and its
+  committer is never called.
+- Context construction is deterministic and bounded in this order:
+  system/selected-Skill/policy, active plan, review/FSRS, sanitized recent
+  messages, working summary, learner-visible memory, activity/execution facts,
+  and allowed capability schemas. Checkpoint metadata contains only source
+  identifiers, hashes, counts, and token-budget data; it never stores a raw
+  prompt, full history, provider payload, hidden test, reference answer, or
+  secret.
+- The provider gateway uses only the currently configured primary model/provider
+  and its existing retry behavior. Configuration, transport, strict-envelope,
+  malformed nested payload, or guardrail failures map to the redacted internal
+  terminal code `MODEL_UNAVAILABLE`; do not add cross-provider/model fallback.
+- A compaction request may be published only for terminal, safe-checkpoint, or
+  configured context-high-water conditions. It is not a per-token trigger and
+  does not create a worker, outbox row, or model call in this phase.
+
+### 4. Validation & Error Matrix
+
+- `TUTOR_HARNESS_ENABLED=false` -> internal service returns `blocked_policy`
+  / `feature_disabled` without lease acquisition or provider invocation.
+- Lease unavailable -> `blocked_policy` / `lease_unavailable`, with no
+  checkpoint or result persisted by the losing worker.
+- Deadline, cancellation, or an exhausted fixed budget after a lease -> typed
+  terminal outcome plus a terminal checkpoint/compaction request.
+- Newer input revision before effect commit -> `stale_rejected`; the effect
+  committer receives no call.
+- Primary provider configuration/call/invalid response/strict-envelope or
+  guardrail failure -> `model_unavailable` with safe code `MODEL_UNAVAILABLE`
+  and no raw provider detail.
+- Capability/effect port denies or is unavailable -> `blocked_policy`; no
+  default capability executes and no product-domain mutation occurs.
+- Forbidden import or a legacy product consumer of the Harness flag -> test
+  failure before integration.
+
+### 5. Good/Base/Bad Cases
+
+- Good: a fake primary provider produces a bounded decision, a fake store owns
+  the lease, and the run waits for input or reaches a typed terminal result
+  without changing existing public traffic.
+- Good: a second learner input increments the revision; the old effect is
+  rejected, context is rebuilt from the new revision, and the stale committer
+  is never invoked.
+- Base: a local developer has no model key. The isolated gateway returns
+  `MODEL_UNAVAILABLE` through fakes/tests; no live provider call is required.
+- Bad: a terminal checkpoint is written before acquiring a lease, allowing a
+  losing worker to race the owning worker.
+- Bad: a gateway silently redacts and accepts `reasoning`, provider diagnostics,
+  hidden-test, or raw-history data inside a nested capability/effect payload.
+- Bad: setting the internal flag changes legacy API/SSE/Desktop behavior or
+  introduces a migration/outbox/worker before the designated child owns it.
+
+### 6. Tests Required
+
+- Unit-test default-false feature gating, with no lease or provider call while
+  disabled; statically assert legacy API, Graph, streaming, conversation, and
+  Desktop sources do not consume `TUTOR_HARNESS_ENABLED`.
+- Unit-test zero, one, and multiple bounded iterations; cover lease conflict,
+  cancellation, deadline, iteration/model/capability/effect budgets, and the
+  no-persist behavior for a losing lease contender.
+- Unit-test revision reloads at every unsafe boundary and assert a stale effect
+  is recorded as `stale_rejected` before the committer can run.
+- Unit-test fixed-order context selection, token/item limits, runtime and
+  Harness-specific redaction, metadata-only checkpoints, and deterministic
+  high-water/terminal/safe-checkpoint compaction idempotency keys.
+- Unit-test both DeepSeek Chat Completions and OpenAI-compatible Responses
+  through fake transports; assert no fallback, strict nested envelope rejection,
+  guardrail rejection, and redacted `MODEL_UNAVAILABLE` results.
+- Keep the legacy Graph redaction regression test: legacy import must re-export
+  the runtime-owned helper without changing its bounded redaction behavior.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+# A losing worker persists a terminal result before it owns the run.
+if stop_outcome is not None:
+    return self._terminal(snapshot, outcome=stop_outcome)
+lease = store.acquire_lease(run_id, owner_id=owner_id, now=clock.now(), duration_seconds=30)
+```
+
+This lets cancellation, deadline, or a zero budget terminalize a run even when
+another worker already owns the lease.
+
+#### Correct
+
+```python
+lease = store.acquire_lease(run_id, owner_id=owner_id, now=clock.now(), duration_seconds=30)
+if lease is None:
+    return nonpersistent_lease_unavailable(run_id)
+if stop_outcome is not None:
+    return persist_terminal_after_owned_lease(snapshot, lease, stop_outcome)
+```
+
+Lease ownership precedes terminal persistence. The finite loop then reloads the
+input revision before every unsafe boundary and keeps all resulting state inside
+its typed ports until later persistence and API integration tasks own the
+adapter work.

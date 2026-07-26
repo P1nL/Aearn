@@ -159,6 +159,7 @@ DEEPSEEK_BASE_URL=https://api.deepseek.com
 DEEPSEEK_MODEL=deepseek-v4-flash
 LLM_TIMEOUT_SECONDS=60
 PLAN_GENERATION_ENABLED=true
+TUTOR_HARNESS_ENABLED=false
 EXA_API_KEY=
 
 TZ=Asia/Shanghai
@@ -170,6 +171,11 @@ RUNNER_BROWSER_ENABLED=true
 RUNNER_PYTHON_ENABLED=true
 RUNNER_COMPILED_SANDBOX_ENABLED=false
 ```
+
+`TUTOR_HARNESS_ENABLED` 在 Child 00 默认保持 `false`。它是未来 Tutor
+Harness 接入的独立开关，不替代 `LANGGRAPH_ENABLED`；本 child 不会因为将它
+设为 `true` 而注册用户可见 API、SSE 流或 Desktop/UI 路径。当前模型与 legacy
+Graph 流量仍遵循各自已有的配置和 feature flag。
 
 ### 官方 DeepSeek Chat Completions API
 
