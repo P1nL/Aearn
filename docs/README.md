@@ -13,6 +13,7 @@
 | API 契约 | `architecture/api-contract.md` | 前后端、runner service、LangGraph 和 mock/契约测试对接 |
 | 数据库 | `architecture/database-schema.md` | PostgreSQL 表、约束、索引和 migration 顺序 |
 | Agent 状态机 | `architecture/langgraph-state-machine.md` | LangGraph 图、节点、条件边和写库时机 |
+| Tutor Harness 过渡契约 | `architecture/tutor-harness-transition.md` | Child 00 的 legacy/target/adapter 边界、有限 run loop 与后续接入责任；不替代现有产品契约 |
 | 评分规则 | `architecture/code-completion-evaluation-spec.md` | 代码补全评分、Prompt、Attempt 判定和 FSRS rating 映射 |
 | 复习调度 | `architecture/fsrs-scheduling-spec.md` | FSRS 调度、ReviewState、ReviewLog 和 Celery 任务 |
 | 验收测试 | `qa/acceptance-test-plan.md` | API、Agent 输出、FSRS、前端手工 QA 的完成标准 |
