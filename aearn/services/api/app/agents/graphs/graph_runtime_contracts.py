@@ -11,6 +11,13 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 
+from app.agents.runtime.redaction import (
+    REDACTED_CONTENT_MARKERS as REDACTED_CONTENT_MARKERS,
+    REDACTED_FIELDS as REDACTED_FIELDS,
+    redact_mapping as _redact_mapping,
+    redact_value as redact_value,
+)
+
 
 MAX_USER_TEXT_LENGTH = 4000
 MAX_SUMMARY_LENGTH = 2000
@@ -37,39 +44,6 @@ MAX_HUMAN_CHECKPOINT_REASON_LENGTH = 240
 MAX_HUMAN_CHECKPOINT_PROMPT_LENGTH = 500
 MAX_HUMAN_CHECKPOINT_SCOPE_LENGTH = 80
 MAX_HUMAN_CHECKPOINT_METADATA_KEYS = 10
-
-REDACTED_FIELDS = frozenset({
-    "solution_reference",
-    "hidden_tests",
-    "hidden_test_source",
-    "raw_prompt",
-    "system_prompt",
-    "provider_payload",
-    "api_key",
-    "secret",
-    "auth_token",
-    "stack_trace",
-    "traceback",
-})
-
-REDACTED_CONTENT_MARKERS = (
-    "solution_reference",
-    "solution reference",
-    "hidden_test",
-    "hidden test",
-    "raw_prompt",
-    "raw prompt",
-    "system prompt",
-    "api_key",
-    "api key",
-    "secret_key",
-    "secret key",
-    "auth_token",
-    "auth token",
-    "provider payload",
-    "provider error",
-)
-
 
 class IntentType(str, Enum):
     STAGE_UPDATE = "stage_update"
@@ -641,40 +615,6 @@ def validate_boundary_intents(
 
 
 # --- Redaction and sanitization ---
-
-
-def redact_value(value: object) -> object:
-    if isinstance(value, str):
-        return _redact_string(value)
-    if isinstance(value, Mapping):
-        return _redact_mapping(value)
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
-        return [redact_value(item) for item in value[:20]]
-    return value
-
-
-def _redact_mapping(
-    mapping: Mapping[str, object],
-    *,
-    max_keys: int = 50,
-) -> dict[str, object]:
-    result: dict[str, object] = {}
-    for i, (key, value) in enumerate(mapping.items()):
-        if i >= max_keys:
-            break
-        if key.lower() in REDACTED_FIELDS:
-            result[key] = "[REDACTED]"
-            continue
-        result[key] = redact_value(value)
-    return result
-
-
-def _redact_string(value: str) -> str:
-    lowered = value.lower()
-    for marker in REDACTED_CONTENT_MARKERS:
-        if marker in lowered:
-            return "[REDACTED: contains sensitive content]"
-    return value
 
 
 def _redact_error(error: str) -> str:

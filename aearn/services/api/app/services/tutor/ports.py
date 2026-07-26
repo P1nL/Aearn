@@ -1,0 +1,304 @@
+"""Injected service ports and deterministic fakes for the Tutor Harness."""
+from __future__ import annotations
+
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import replace
+from datetime import datetime, timedelta
+from typing import Protocol
+
+from app.agents.harness.contracts import (
+    TokenEstimator as TokenEstimator,
+    TutorCapabilityRequest,
+    TutorCapabilityResult,
+    TutorCapabilityStatus,
+    TutorCheckpoint,
+    TutorCompactionRequest,
+    TutorContextInput,
+    TutorContextSelection,
+    TutorEffectProposal,
+    TutorEffectResult,
+    TutorEffectStatus,
+    TutorInputEvent,
+    TutorLease,
+    TutorProviderResult,
+    TutorRunResult,
+    TutorRunSnapshot,
+)
+
+
+class TutorRunStore(Protocol):
+    def load_snapshot(self, run_id: str) -> TutorRunSnapshot | None: ...
+
+    def acquire_lease(
+        self,
+        run_id: str,
+        *,
+        owner_id: str,
+        now: datetime,
+        duration_seconds: int,
+    ) -> TutorLease | None: ...
+
+    def heartbeat_lease(
+        self,
+        lease: TutorLease,
+        *,
+        now: datetime,
+        duration_seconds: int,
+    ) -> TutorLease | None: ...
+
+    def current_input_revision(self, run_id: str) -> int: ...
+
+    def is_cancelled(self, run_id: str) -> bool: ...
+
+    def save_checkpoint(self, checkpoint: TutorCheckpoint) -> None: ...
+
+    def record_result(self, result: TutorRunResult) -> None: ...
+
+
+class TutorContextLoader(Protocol):
+    def load_context(self, snapshot: TutorRunSnapshot, *, input_revision: int) -> TutorContextInput: ...
+
+
+class TutorProviderGateway(Protocol):
+    def decide(
+        self,
+        *,
+        run: TutorRunSnapshot,
+        context: TutorContextSelection,
+    ) -> TutorProviderResult: ...
+
+
+class TutorCapabilityGateway(Protocol):
+    def dispatch(
+        self,
+        *,
+        run: TutorRunSnapshot,
+        request: TutorCapabilityRequest,
+    ) -> TutorCapabilityResult: ...
+
+
+class TutorEffectCommitter(Protocol):
+    def commit(
+        self,
+        *,
+        run: TutorRunSnapshot,
+        proposal: TutorEffectProposal,
+    ) -> TutorEffectResult: ...
+
+
+class TutorCompactionPublisher(Protocol):
+    def publish(self, request: TutorCompactionRequest) -> None: ...
+
+
+class Clock(Protocol):
+    def now(self) -> datetime: ...
+
+
+class FixedClock:
+    """Deterministic clock for unit tests and isolated loop simulation."""
+
+    def __init__(self, now: datetime) -> None:
+        self._now = now
+
+    def now(self) -> datetime:
+        return self._now
+
+    def advance(self, *, seconds: int) -> None:
+        self._now += timedelta(seconds=seconds)
+
+
+class InMemoryTutorRunStore:
+    """Non-durable fake that proves lease and monotonic revision behavior."""
+
+    def __init__(self, snapshots: Iterable[TutorRunSnapshot] = ()) -> None:
+        self._snapshots: dict[str, TutorRunSnapshot] = {}
+        self._input_revisions: dict[str, int] = {}
+        self._cancelled: set[str] = set()
+        self._leases: dict[str, TutorLease] = {}
+        self._lease_generations: dict[str, int] = {}
+        self.checkpoints: list[TutorCheckpoint] = []
+        self.results: list[TutorRunResult] = []
+        self.lease_attempts = 0
+        self.deny_leases = False
+        for snapshot in snapshots:
+            self.add_snapshot(snapshot)
+
+    def add_snapshot(self, snapshot: TutorRunSnapshot) -> None:
+        self._snapshots[snapshot.run_id] = snapshot
+        self._input_revisions[snapshot.run_id] = snapshot.input_revision
+
+    def load_snapshot(self, run_id: str) -> TutorRunSnapshot | None:
+        snapshot = self._snapshots.get(run_id)
+        if snapshot is None:
+            return None
+        return replace(
+            snapshot,
+            input_revision=self._input_revisions[run_id],
+            cancelled=run_id in self._cancelled or snapshot.cancelled,
+        )
+
+    def acquire_lease(
+        self,
+        run_id: str,
+        *,
+        owner_id: str,
+        now: datetime,
+        duration_seconds: int,
+    ) -> TutorLease | None:
+        self.lease_attempts += 1
+        if self.deny_leases or run_id not in self._snapshots:
+            return None
+        current = self._leases.get(run_id)
+        if current is not None and current.expires_at > now and current.owner_id != owner_id:
+            return None
+        generation = self._lease_generations.get(run_id, 0) + 1
+        lease = TutorLease(
+            run_id=run_id,
+            owner_id=owner_id,
+            expires_at=now + timedelta(seconds=duration_seconds),
+            generation=generation,
+        )
+        self._leases[run_id] = lease
+        self._lease_generations[run_id] = generation
+        return lease
+
+    def heartbeat_lease(
+        self,
+        lease: TutorLease,
+        *,
+        now: datetime,
+        duration_seconds: int,
+    ) -> TutorLease | None:
+        current = self._leases.get(lease.run_id)
+        if current != lease or current.expires_at <= now:
+            return None
+        renewed = TutorLease(
+            run_id=lease.run_id,
+            owner_id=lease.owner_id,
+            expires_at=now + timedelta(seconds=duration_seconds),
+            generation=lease.generation,
+        )
+        self._leases[lease.run_id] = renewed
+        return renewed
+
+    def current_input_revision(self, run_id: str) -> int:
+        return self._input_revisions[run_id]
+
+    def accept_input(self, event: TutorInputEvent) -> TutorRunSnapshot:
+        if event.run_id not in self._snapshots:
+            raise KeyError(event.run_id)
+        current_revision = self._input_revisions[event.run_id]
+        if event.revision != current_revision + 1:
+            raise ValueError("Tutor input revisions must increment by one")
+        self._input_revisions[event.run_id] = event.revision
+        snapshot = self.load_snapshot(event.run_id)
+        if snapshot is None:
+            raise KeyError(event.run_id)
+        return snapshot
+
+    def cancel(self, run_id: str) -> None:
+        self._cancelled.add(run_id)
+
+    def is_cancelled(self, run_id: str) -> bool:
+        return run_id in self._cancelled or bool(self._snapshots.get(run_id, None) and self._snapshots[run_id].cancelled)
+
+    def save_checkpoint(self, checkpoint: TutorCheckpoint) -> None:
+        self.checkpoints.append(checkpoint)
+
+    def record_result(self, result: TutorRunResult) -> None:
+        self.results.append(result)
+
+
+class InMemoryTutorContextLoader:
+    """Revision-indexed, non-persistent scoped context fake."""
+
+    def __init__(self, contexts: Mapping[tuple[str, int], TutorContextInput]) -> None:
+        self._contexts = dict(contexts)
+        self.loaded_revisions: list[tuple[str, int]] = []
+
+    def load_context(self, snapshot: TutorRunSnapshot, *, input_revision: int) -> TutorContextInput:
+        self.loaded_revisions.append((snapshot.run_id, input_revision))
+        context = self._contexts[(snapshot.run_id, input_revision)]
+        return replace(context, input_revision=input_revision)
+
+
+class SequenceTutorProvider:
+    """Returns injected results in order without any model or network call."""
+
+    def __init__(
+        self,
+        results: Iterable[TutorProviderResult],
+        *,
+        on_decide: Callable[[TutorRunSnapshot, TutorContextSelection], None] | None = None,
+    ) -> None:
+        self._results = list(results)
+        self._on_decide = on_decide
+        self.calls: list[tuple[TutorRunSnapshot, TutorContextSelection]] = []
+
+    def decide(self, *, run: TutorRunSnapshot, context: TutorContextSelection) -> TutorProviderResult:
+        self.calls.append((run, context))
+        if self._on_decide is not None:
+            self._on_decide(run, context)
+        if not self._results:
+            return TutorProviderResult.model_unavailable()
+        return self._results.pop(0)
+
+
+class DefaultDenyCapabilityGateway:
+    def dispatch(self, *, run: TutorRunSnapshot, request: TutorCapabilityRequest) -> TutorCapabilityResult:
+        del run
+        return TutorCapabilityResult(
+            request_id=request.request_id,
+            status=TutorCapabilityStatus.DENIED,
+            continue_run=False,
+        )
+
+
+class SequenceCapabilityGateway:
+    def __init__(self, results: Iterable[TutorCapabilityResult]) -> None:
+        self._results = list(results)
+        self.calls: list[TutorCapabilityRequest] = []
+
+    def dispatch(self, *, run: TutorRunSnapshot, request: TutorCapabilityRequest) -> TutorCapabilityResult:
+        del run
+        self.calls.append(request)
+        if not self._results:
+            return TutorCapabilityResult(request_id=request.request_id, status=TutorCapabilityStatus.UNAVAILABLE)
+        return self._results.pop(0)
+
+
+class DefaultDenyEffectCommitter:
+    def commit(self, *, run: TutorRunSnapshot, proposal: TutorEffectProposal) -> TutorEffectResult:
+        del run
+        return TutorEffectResult(effect_id=proposal.effect_id, status=TutorEffectStatus.DENIED)
+
+
+class RecordingEffectCommitter:
+    def __init__(self, *, status: TutorEffectStatus = TutorEffectStatus.COMMITTED) -> None:
+        self.status = status
+        self.calls: list[TutorEffectProposal] = []
+
+    def commit(self, *, run: TutorRunSnapshot, proposal: TutorEffectProposal) -> TutorEffectResult:
+        del run
+        self.calls.append(proposal)
+        commit_id = f"commit:{proposal.effect_id}" if self.status is TutorEffectStatus.COMMITTED else None
+        return TutorEffectResult(effect_id=proposal.effect_id, status=self.status, commit_id=commit_id)
+
+
+class InMemoryTutorCompactionPublisher:
+    """Idempotent recording publisher; it never calls a worker or Curator."""
+
+    def __init__(self) -> None:
+        self.requests: list[TutorCompactionRequest] = []
+        self._keys: set[str] = set()
+
+    def publish(self, request: TutorCompactionRequest) -> None:
+        if request.idempotency_key in self._keys:
+            return
+        self._keys.add(request.idempotency_key)
+        self.requests.append(request)
+
+
+class NoopTutorCompactionPublisher:
+    def publish(self, request: TutorCompactionRequest) -> None:
+        del request
