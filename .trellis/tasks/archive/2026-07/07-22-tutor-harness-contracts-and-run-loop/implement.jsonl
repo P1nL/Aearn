@@ -1,0 +1,9 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend documentation routing and service-local command rules."}
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "Required `agents/harness`, `agents/runtime`, and `services/tutor` module ownership boundaries."}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Stable error-envelope and `MODEL_UNAVAILABLE` constraints for later route integration."}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Redacted diagnostics and safe structured-log constraints."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Provider, feature-flag, Graph compatibility, fake-client, and backend validation rules."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Contract and data-flow review requirements across runtime, future persistence, API, and desktop layers."}
+{"file": ".trellis/tasks/07-22-tutor-harness-contracts-and-run-loop/research/current-runtime-baseline.md", "reason": "Current-code evidence and Child 00 boundary decisions."}
+{"file": ".trellis/tasks/07-22-agent-harness-rearchitecture/research/documentation-authority-audit.md", "reason": "Approved legacy/current/target documentation precedence."}
+{"file": ".trellis/tasks/07-22-agent-harness-rearchitecture/research/memory-curator-boundary.md", "reason": "Compaction request ownership and no-direct-write boundary."}

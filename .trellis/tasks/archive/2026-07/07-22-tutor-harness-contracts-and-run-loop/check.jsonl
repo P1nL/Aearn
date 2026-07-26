@@ -1,0 +1,7 @@
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Focused quality checks for LLM, Graph, feature-flag, idempotency, redaction, and test isolation."}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Stable error and SSE failure-shape review criteria."}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "No-secret/no-raw-prompt diagnostics review criteria."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Review contracts and future layer handoff boundaries."}
+{"file": ".trellis/tasks/07-22-tutor-harness-contracts-and-run-loop/research/current-runtime-baseline.md", "reason": "Evidence-backed legacy preservation and target module boundaries."}
+{"file": ".trellis/tasks/07-22-agent-harness-rearchitecture/research/documentation-authority-audit.md", "reason": "Review transition-document authority and prevent legacy-doc drift."}
+{"file": ".trellis/tasks/07-22-agent-harness-rearchitecture/research/memory-curator-boundary.md", "reason": "Review compaction trigger, provider, redaction, and proposal-only constraints."}
