@@ -508,3 +508,36 @@ Implemented and verified the feature-disabled Tutor Harness contracts, bounded c
 ### Next Steps
 
 - None - task complete
+
+
+## Session 75: Add Tutor Skill Catalog Capability Gateway
+
+**Date**: 2026-07-27
+**Task**: Add Tutor Skill Catalog Capability Gateway
+**Branch**: `main`
+
+### Summary
+
+Implemented a versioned Tutor Skill catalog, policy-gated decision/capability boundaries, registry-only grounding, focused tests, and the reusable backend code-spec while preserving the feature-disabled Harness boundary.
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `92492c6` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
