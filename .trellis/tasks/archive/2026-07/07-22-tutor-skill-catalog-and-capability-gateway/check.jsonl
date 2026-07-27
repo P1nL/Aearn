@@ -1,0 +1,5 @@
+{"file":".trellis/spec/backend/index.md","reason":"Backend quality and documentation authority for the changed internal runtime."}
+{"file":".trellis/spec/backend/error-handling.md","reason":"Stable typed denial/unavailable behavior and no internal error leakage."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Harness feature-off, redaction, revision, registry-grounding, and focused verification requirements."}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Review catalog, provider, policy, gateway, and grounding boundary consistency."}
+{"file":".trellis/tasks/07-22-tutor-skill-catalog-and-capability-gateway/research/current-skill-capability-baseline.md","reason":"Repository evidence used to verify legacy and database/network exclusion rules."}
