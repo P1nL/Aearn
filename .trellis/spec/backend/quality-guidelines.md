@@ -1740,3 +1740,168 @@ Lease ownership precedes terminal persistence. The finite loop then reloads the
 input revision before every unsafe boundary and keeps all resulting state inside
 its typed ports until later persistence and API integration tasks own the
 adapter work.
+
+
+## Scenario: Tutor Skill Catalog and Registry-Only Capability Gateway
+
+### 1. Scope / Trigger
+
+- Trigger: adding or changing published Tutor Skills, catalog compilation, catalog
+  context decoration, decision gating, capability policy, or registry-only
+  grounding under `app/agents/harness/` and `app/services/tutor/`.
+- Scope: `app/agents/skills/`, `SkillCatalogCompiler`, immutable catalog and
+  descriptor contracts, `CatalogContextLoader`, `TutorDecisionGate`,
+  `CapabilityPolicyResolver`, `CatalogCapabilityGateway`, `GroundingLookup`,
+  and focused catalog/gateway/grounding tests.
+- This is still an internal feature-disabled Harness seam. It is not permission
+  to expose a route, SSE event, Desktop consumer, database repository/migration,
+  worker/outbox, arbitrary fetcher, runner, or legacy Graph/tool adapter.
+
+### 2. Signatures
+
+- Published bundle root:
+  `app/agents/skills/<skill_id>/<semantic_version>/` containing
+  `manifest.json`, a UTF-8 instruction file, and a non-empty JSON evaluation
+  suite.
+- Catalog compile:
+  `SkillCatalogCompiler.compile(source_root: Path) -> SkillCatalogSnapshot`.
+- Context decoration:
+  `CatalogContextLoader.load_context(run, input_revision) -> TutorContextInput`.
+- Decision gate:
+  `TutorDecisionGate.validate(run, decision) -> TutorDecisionGateResult`.
+- Capability dispatch:
+  `CatalogCapabilityGateway.dispatch(run, request) -> TutorCapabilityResult`.
+- Grounding adapter:
+  `GroundingLookup.lookup(query, source_ids) -> tuple[GroundingLookupItem, ...]`.
+- The first and only executable descriptor is
+  `grounding.retrieve@1.0.0`; it accepts `language_id_or_alias`, `query_text`,
+  optional `topic_tags`, and `top_k` in `1..4`.
+
+### 3. Contracts
+
+- A published Skill id and runtime reference must use stable identifiers plus
+  exact SemVer. `current`, empty versions, ranges, wildcards, and unknown
+  id/version pairs are denials, never resolution fallbacks.
+- Catalog compilation is whole-snapshot and fail-closed: reject unsafe/symlinked
+  source roots or resources, traversal, malformed/empty resources, hash
+  mismatches, duplicate id/version pairs, untrusted resource refs, and unknown
+  descriptor/effect declarations. The ordered immutable snapshot has a canonical
+  SHA-256 digest.
+- A policy context binds run/user scope, origin, input revision, catalog digest,
+  consent, runtime availability, budget, eligible exact Skill refs, and allowed
+  source ids. The uncomposed resolver is default-deny and must not infer any of
+  those facts from model output.
+- Before selection, context may expose only policy-eligible Skill summaries and
+  MCP-compatible descriptor schemas. After a validated selection, it may expose
+  only that reviewed instruction with exact id/version/hash facts. The normal
+  bounded `TutorContextBuilder` remains the sole prompt-construction path.
+- Store a new Skill selection only in the injected run-local store keyed by
+  `(run_id, input_revision)`. Return a context-rebuild result and forbid a
+  capability request, effect proposal, or terminal intent in that same
+  selection decision. Durable selection/replay evidence belongs to the owning
+  persistence child.
+- The gate validates catalog membership and policy before every capability or
+  effect boundary. The gateway decodes only descriptor-declared argument keys,
+  validates the typed input/output schemas, and never turns a model value into
+  a function, URL, path, SQL fragment, image, user id, shell command, or DB
+  target.
+- Registry grounding derives source scope from `grounding_sources.py` and uses
+  an injected lookup over pre-indexed facts. Filter lookup output to registered
+  source id/language/trust/allowlisted URL facts, reject credential-bearing
+  citation URLs, bound snippets/citations, and convert malformed lookup output
+  to a typed unavailable result. Harness/catalog/gateway code must not import a
+  DB connection, persisted grounding index, HTTP client/fetcher, crawler,
+  shell, runner, legacy Graph/router, or legacy teaching tools.
+- Effects remain `TutorEffectProposal` values carrying
+  `expected_input_revision`; they are default-denied unless both the selected
+  Skill and catalog/policy explicitly authorize them. The initial published
+  catalog authorizes no effect type.
+
+### 4. Validation & Error Matrix
+
+- Invalid or unpinned Skill ref, policy/catalog mismatch, or an unknown
+  capability/effect -> typed `DENIED`; do not call the gateway or committer.
+- New Skill selection mixed with a capability/effect/terminal action ->
+  `DENIED / mixed_skill_selection_action`; record no partial action.
+- No selected exact Skill before a capability request ->
+  `DENIED / skill_selection_required`; do not call the lookup.
+- Extra/duplicate/non-JSON argument fields or a URL/path/image/SQL/command
+  input -> `DENIED / capability_arguments_invalid` or
+  `DENIED / grounding_input_invalid`; do not call the lookup.
+- Unsupported language -> `UNAVAILABLE / unsupported_grounding_language`.
+  Empty policy/registry-source intersection ->
+  `DENIED / grounding_source_scope_denied`.
+- Lookup failure -> `UNAVAILABLE / grounding_lookup_unavailable`; malformed
+  injected lookup output -> `UNAVAILABLE / grounding_lookup_invalid_result`.
+  Out-of-scope or credential-bearing citation URLs are filtered before output
+  and can produce a completed empty grounding result without leaking a value.
+- Effect proposals not declared by the selected Skill/catalog/policy -> typed
+  denial before `TutorEffectCommitter.commit()`; no product-domain mutation.
+
+### 5. Good/Base/Bad Cases
+
+- Good: policy exposes `tutor.registry-grounding@1.0.0` and
+  `grounding.retrieve`; the first decision selects that exact Skill, the next
+  bounded turn receives its reviewed instruction, and a declared request returns
+  at most four cited registry snippets.
+- Good: a malformed lookup record, invalid SHA-256 content hash, or credentialed
+  canonical URL fails closed without exposing an unsafe citation.
+- Base: default composition has no eligible Skill, capability, effect, source,
+  or runtime permission, so model-shaped actions are denied without a network,
+  DB, or product write.
+- Bad: treating `current` as a latest-version lookup, loading an arbitrary Skill
+  file from a provider field, resolving a URL/source id supplied by the model,
+  or accepting a selected Skill and dispatching a capability in the same turn.
+- Bad: allowing a manifest alone to enable plan/note/review/memory/runner
+  effects before its owning durable transaction, sandbox, or user-control task
+  exists.
+
+### 6. Tests Required
+
+- Assert deterministic snapshot digest and exact id/version resolution; reject
+  invalid SemVer, `current`/wildcards, unsafe paths/symlinks, malformed or
+  missing resources/evaluations, hash mismatch, duplicate bundles, unknown
+  capabilities/effects, and untrusted registry refs.
+- Assert context exposes only policy-eligible summaries/schemas before
+  selection and exact reviewed instruction/hash facts after selection.
+- Assert selection rebuilds context, cannot mix with a capability/effect, and
+  does not persist beyond the injected run-local store contract.
+- Assert unknown/non-policy capability/effect requests and undeclared/unsafe
+  argument fields deny without gateway/lookup/committer calls.
+- Assert `grounding.retrieve` language isolation, registry scope intersection,
+  bounded snippets/citations, URL credential filtering, malformed lookup output
+  failure, unsupported/empty results, and no lookup call for rejected input.
+- Keep Child 00 Harness context/provider/run-loop tests and the static forbidden
+  import/feature-off regression green. Use offline deterministic fakes only;
+  no live model, documentation fetch, or database is required.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+# A provider-selected version and URL become executable targets.
+skill = catalog.resolve_latest(provider_skill_id)
+return fetch(provider_arguments["url"])
+```
+
+This bypasses exact reviewed-version resolution, policy scope, schema
+validation, and registry ownership.
+
+#### Correct
+
+```python
+# Gate first; descriptor and registry scope own all executable facts.
+gate = decision_gate.validate(run=run, decision=decision)
+if gate.status is TutorDecisionGateStatus.REBUILD_CONTEXT:
+    return rebuild_context()
+if gate.status is TutorDecisionGateStatus.DENIED:
+    return typed_denial(gate.diagnostic_code)
+
+request = decode_only_descriptor_fields(decision.capability_requests[0])
+return grounding_gateway.dispatch(run=run, request=request)
+```
+
+The model supplies only bounded intent. Catalog, policy, descriptor schemas,
+and the registry determine whether anything is executable and what source scope
+it can use.
