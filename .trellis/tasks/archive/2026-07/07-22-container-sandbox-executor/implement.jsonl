@@ -1,0 +1,12 @@
+{"file":".trellis/spec/backend/index.md","reason":"Backend placement, source-of-truth routing, and service-local command conventions for API/executor work."}
+{"file":".trellis/spec/backend/directory-structure.md","reason":"Separates API, worker, shared contracts, standalone executor, and infrastructure responsibilities."}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"Additive PostgreSQL schema, UUID/timestamptz, scoped foreign keys, locking, idempotency, and repeatable bootstrap requirements."}
+{"file":".trellis/spec/backend/error-handling.md","reason":"Stable denied/unavailable/timeout outcomes without Docker or database diagnostic leakage."}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"Safe structured executor/job observability without code, hidden tests, secrets, paths, or Docker error bodies."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Feature-off Harness, runner result, serial bootstrap test, and no-legacy-fallback invariants."}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"Reuse existing hashes, safe projection, idempotency, runner-result, and deterministic test patterns instead of parallel implementations."}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Maps proof to effect transaction to durable job to privileged executor to future result adapter boundaries."}
+{"file":"docs/architecture/tutor-harness-transition.md","reason":"Target Harness ownership, Child 02 effect CAS, feature-off posture, and Child 04/06 boundary authority."}
+{"file":"docs/setup/development-environment.md","reason":"Current Docker/local process baseline and the limited explicit executor-development documentation delta."}
+{"file":".trellis/tasks/07-22-container-sandbox-executor/research/current-runner-executor-baseline.md","reason":"Verified legacy runner, config, Docker, worker, and Child 02 transaction evidence."}
+{"file":".trellis/tasks/07-22-container-sandbox-executor/research/all-current-runtime-matrix.md","reason":"User-approved seven-runtime scope, per-runtime protocol restrictions, immutable lock, and no-Rust/C++ evidence."}

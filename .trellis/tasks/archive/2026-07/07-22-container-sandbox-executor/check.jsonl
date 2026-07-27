@@ -1,0 +1,12 @@
+{"file":".trellis/spec/backend/index.md","reason":"Review source-of-truth routing and correct API/executor package ownership."}
+{"file":".trellis/spec/backend/directory-structure.md","reason":"Review that Docker privilege remains isolated in a dedicated executor and shared code stays contract-only."}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"Review additive schema, scoped predicates, SKIP LOCKED lease behavior, idempotency, and rollback safety."}
+{"file":".trellis/spec/backend/error-handling.md","reason":"Review stable safe denial, unavailable, timeout, cancellation, and conflict outcomes."}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"Review that logs, audit, traces, events, and exports never disclose code, hidden tests, secrets, paths, Docker errors, or identifiers."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Review feature-off compatibility, serial database verification, runner outcome coverage, and no host fallback."}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"Review reuse of safe projection, hashes, runner-result conversion, validation, and deterministic fakes rather than duplicated security logic."}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Review complete data flow from trusted intent through transactional job, executor, safe result, and future Child 06 adapter."}
+{"file":"docs/architecture/tutor-harness-transition.md","reason":"Review target Harness/effect ownership and explicit exclusions for public APIs, queue policy, legacy execution, and Desktop."}
+{"file":"docs/setup/development-environment.md","reason":"Review explicit local executor startup/health boundaries without granting Docker access to API or worker startup."}
+{"file":".trellis/tasks/07-22-container-sandbox-executor/research/current-runner-executor-baseline.md","reason":"Validate design against actual legacy subprocess, worker, Compose, Docker, and Child 02 persistence seams."}
+{"file":".trellis/tasks/07-22-container-sandbox-executor/research/all-current-runtime-matrix.md","reason":"Validate all seven current runtime entries, their protocol prohibitions, immutable-lock requirement, and Rust/C++ exclusion."}
