@@ -12,6 +12,7 @@ from app.agents.harness.contracts import (
     TutorCheckpointReason,
     TutorCompactionTrigger,
     TutorDecision,
+    TutorDecisionGateStatus,
     TutorEffectResult,
     TutorEffectStatus,
     TutorLease,
@@ -26,9 +27,11 @@ from app.agents.harness.contracts import (
 from app.core.config import Settings
 from app.services.tutor.ports import (
     Clock,
+    DefaultDenyTutorDecisionGate,
     TutorCapabilityGateway,
     TutorCompactionPublisher,
     TutorContextLoader,
+    TutorDecisionGate,
     TutorEffectCommitter,
     TutorProviderGateway,
     TutorRunStore,
@@ -52,6 +55,7 @@ class TutorRunLoop:
         effect_committer: TutorEffectCommitter,
         clock: Clock,
         compaction_publisher: TutorCompactionPublisher,
+        decision_gate: TutorDecisionGate | None = None,
     ) -> None:
         self._store = store
         self._context_loader = context_loader
@@ -59,6 +63,7 @@ class TutorRunLoop:
         self._provider = provider
         self._capability_gateway = capability_gateway
         self._effect_committer = effect_committer
+        self._decision_gate = decision_gate or DefaultDenyTutorDecisionGate()
         self._clock = clock
         self._compaction_publisher = compaction_publisher
 
@@ -181,6 +186,18 @@ class TutorRunLoop:
                         metadata=metadata,
                         effect_results=effect_results,
                     )
+
+                gate_result = self._decision_gate.validate(run=snapshot, decision=decision)
+                if gate_result.status is TutorDecisionGateStatus.DENIED:
+                    return self._terminal(
+                        snapshot,
+                        outcome=TutorTerminalOutcome.BLOCKED_POLICY,
+                        diagnostic_code=gate_result.diagnostic_code or _POLICY_BLOCKED,
+                        metadata=metadata,
+                        effect_results=effect_results,
+                    )
+                if gate_result.status is TutorDecisionGateStatus.REBUILD_CONTEXT:
+                    continue
 
                 if decision.checkpoint_reason is not None:
                     self._save_safe_checkpoint(

@@ -1,0 +1,10 @@
+{
+  "suite": "tutor.registry-grounding@1.0.0",
+  "cases": [
+    {
+      "id": "python-functions-citation",
+      "input": "Explain when a Python function returns a value.",
+      "expected": "Use only grounding.retrieve and retain a bounded citation."
+    }
+  ]
+}

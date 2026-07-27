@@ -24,6 +24,7 @@ from app.agents.harness.contracts import (
 )
 from app.core.config import Settings
 from app.services.tutor.ports import (
+    AllowTutorDecisionGate,
     DefaultDenyCapabilityGateway,
     FixedClock,
     InMemoryTutorCompactionPublisher,
@@ -109,6 +110,7 @@ def _loop(
         effect_committer=effect_committer or RecordingEffectCommitter(status=TutorEffectStatus.DENIED),
         clock=FixedClock(NOW),
         compaction_publisher=resolved_publisher,
+        decision_gate=AllowTutorDecisionGate(),
     )
     return loop, resolved_publisher
 
@@ -240,6 +242,7 @@ def test_stale_effect_is_rejected_before_committer_and_context_rebuilds() -> Non
         effect_committer=effect_committer,
         clock=FixedClock(NOW),
         compaction_publisher=publisher,
+        decision_gate=AllowTutorDecisionGate(),
     )
 
     result = loop.run(run_id="run-loop", lease_owner_id="worker-1")

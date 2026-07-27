@@ -14,7 +14,7 @@ from app.agents.harness.contracts import (
 )
 from app.core.config import Settings
 from app.services.llm.llm_client import LLMCallError, LLMJsonResponse, OpenAICompatibleClient
-from app.services.tutor.provider_gateway import PrimaryTutorProviderGateway
+from app.services.tutor.provider_gateway import PrimaryTutorProviderGateway, parse_tutor_decision
 
 
 class FakeJsonClient:
@@ -218,3 +218,27 @@ def test_primary_gateway_maps_selected_provider_error_without_cross_provider_fal
     assert result.safe_code == "MODEL_UNAVAILABLE"
     assert "secret-token" not in serialized
     assert "provider raw" not in serialized
+
+
+def test_provider_keeps_bounded_string_list_arguments_for_descriptor_validation() -> None:
+    decision = parse_tutor_decision(
+        {
+            "capability_requests": [
+                {
+                    "request_id": "grounding-1",
+                    "capability_id": "grounding.retrieve",
+                    "arguments": {
+                        "language_id_or_alias": "python",
+                        "query_text": "function return",
+                        "topic_tags": ["functions"],
+                        "top_k": 1,
+                    },
+                }
+            ]
+        }
+    )
+
+    request = decision.capability_requests[0]
+    arguments = {field.key: json.loads(field.value) for field in request.arguments}
+    assert arguments["topic_tags"] == ["functions"]
+    assert arguments["top_k"] == 1

@@ -84,6 +84,12 @@ class TutorCapabilityStatus(str, Enum):
     UNAVAILABLE = "unavailable"
 
 
+class TutorDecisionGateStatus(str, Enum):
+    APPROVED = "approved"
+    REBUILD_CONTEXT = "rebuild_context"
+    DENIED = "denied"
+
+
 class TutorEffectStatus(str, Enum):
     PROPOSED = "proposed"
     COMMITTED = "committed"
@@ -372,10 +378,13 @@ class TutorCapabilityResult:
     status: TutorCapabilityStatus
     safe_result: tuple[TutorPayloadField, ...] = ()
     continue_run: bool = False
+    diagnostic_code: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "request_id", _safe_identifier(self.request_id))
         object.__setattr__(self, "safe_result", _bounded_payload_fields(self.safe_result))
+        if self.diagnostic_code is not None:
+            object.__setattr__(self, "diagnostic_code", _safe_identifier(self.diagnostic_code))
 
 
 @dataclass(frozen=True)
@@ -435,6 +444,16 @@ class TutorDecision:
             )
         ):
             raise ValueError("Tutor decision must contain a bounded action or terminal intent")
+
+
+@dataclass(frozen=True)
+class TutorDecisionGateResult:
+    status: TutorDecisionGateStatus
+    diagnostic_code: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.diagnostic_code is not None:
+            object.__setattr__(self, "diagnostic_code", _safe_identifier(self.diagnostic_code))
 
 
 @dataclass(frozen=True)

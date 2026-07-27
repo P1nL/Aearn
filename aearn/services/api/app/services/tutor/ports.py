@@ -15,6 +15,9 @@ from app.agents.harness.contracts import (
     TutorCompactionRequest,
     TutorContextInput,
     TutorContextSelection,
+    TutorDecision,
+    TutorDecisionGateResult,
+    TutorDecisionGateStatus,
     TutorEffectProposal,
     TutorEffectResult,
     TutorEffectStatus,
@@ -75,6 +78,15 @@ class TutorCapabilityGateway(Protocol):
         run: TutorRunSnapshot,
         request: TutorCapabilityRequest,
     ) -> TutorCapabilityResult: ...
+
+
+class TutorDecisionGate(Protocol):
+    def validate(
+        self,
+        *,
+        run: TutorRunSnapshot,
+        decision: TutorDecision,
+    ) -> TutorDecisionGateResult: ...
 
 
 class TutorEffectCommitter(Protocol):
@@ -265,6 +277,37 @@ class SequenceCapabilityGateway:
         if not self._results:
             return TutorCapabilityResult(request_id=request.request_id, status=TutorCapabilityStatus.UNAVAILABLE)
         return self._results.pop(0)
+
+
+class DefaultDenyTutorDecisionGate:
+    """Deny model-selected Skills, capabilities, and effects until composed explicitly."""
+
+    def validate(
+        self,
+        *,
+        run: TutorRunSnapshot,
+        decision: TutorDecision,
+    ) -> TutorDecisionGateResult:
+        del run
+        if decision.skill_references or decision.capability_requests or decision.effect_proposals:
+            return TutorDecisionGateResult(
+                status=TutorDecisionGateStatus.DENIED,
+                diagnostic_code="catalog_not_configured",
+            )
+        return TutorDecisionGateResult(status=TutorDecisionGateStatus.APPROVED)
+
+
+class AllowTutorDecisionGate:
+    """Explicit deterministic fake for Child 00 loop tests only."""
+
+    def validate(
+        self,
+        *,
+        run: TutorRunSnapshot,
+        decision: TutorDecision,
+    ) -> TutorDecisionGateResult:
+        del run, decision
+        return TutorDecisionGateResult(status=TutorDecisionGateStatus.APPROVED)
 
 
 class DefaultDenyEffectCommitter:

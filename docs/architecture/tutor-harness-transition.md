@@ -89,6 +89,77 @@ Configuration, selected-provider call, response/schema, or guardrail failures
 become redacted `MODEL_UNAVAILABLE`; raw provider errors, prompts, keys, and
 payloads never cross this contract.
 
+## Child 01 Target: Skill Catalog, Policy, and Registry Grounding
+
+Child 01 adds an isolated internal catalog/gateway composition only. It does
+not make the Harness reachable from product traffic or change the default
+`TUTOR_HARNESS_ENABLED=false` posture.
+
+### Published Skill Catalog
+
+- Reviewed bundles live under
+  `aearn/services/api/app/agents/skills/<skill_id>/<semantic_version>/` and
+  contain `manifest.json`, a UTF-8 reviewed instruction, and a non-empty JSON
+  evaluation suite in the same Git-owned tree.
+- The compiler accepts exact SemVer 2 references only, verifies bundle-relative
+  resource names and content hashes, checks reviewed registry references,
+  declared descriptors/effects, and compiles the complete set into an ordered,
+  immutable snapshot with a canonical SHA-256 digest. An invalid bundle rejects
+  the whole snapshot; there is no partial or `current` fallback.
+- `tutor.registry-grounding@1.0.0` is the initial published Skill. It requires
+  only `grounding.retrieve`, declares the reviewed
+  `registry:grounding_sources` resource, and declares no allowed effect type.
+  Skills remain instruction/resource data, not model-authored or executable
+  code.
+
+### Catalog Context and Decision Boundary
+
+- A catalog context loader decorates the existing bounded context input. Before
+  selection it supplies only policy-eligible exact-version Skill summaries and
+  MCP-compatible JSON schemas. After a validated selection it supplies that
+  exact reviewed instruction plus id/version/hash facts. It never exposes a
+  legacy tool registry or arbitrary catalog file body.
+- Selection is stored only in an injected run-local store keyed by run id and
+  input revision. A newly selected Skill causes a context rebuild and cannot
+  dispatch a capability or propose an effect in the same model decision. Child
+  02 owns durable selected-version/hash evidence for replay and restart.
+- The catalog decision gate runs after strict provider-envelope parsing and
+  before checkpoint/capability/effect work. It rejects unversioned, unknown,
+  policy-ineligible, malformed, or mixed selection/action decisions without
+  fallback. The default uncomposed gate denies model-selected Skills,
+  capabilities, and effects.
+
+### Capability Policy and Effect Boundary
+
+- `CapabilityPolicyContext` binds run/user scope, origin, current input
+  revision, catalog digest, consent, runtime availability, remaining budget,
+  policy tags, eligible exact Skill references, and registered source scope.
+  The default resolver publishes no Skill, capability, effect, or source.
+- Only descriptor-declared fields are decoded from the bounded provider
+  envelope. Unknown field names, URLs, paths, images, SQL fragments, shell
+  commands, arbitrary user identifiers, and function-like targets are denied
+  before a lookup is attempted.
+- Effects remain typed `TutorEffectProposal` values carrying
+  `expected_input_revision`. The initial catalog has no effect descriptor or
+  allowed effect type, so effect proposals are denied before the default-deny
+  committer and no domain mutation path is reached.
+
+### Registry-Only Grounding
+
+- The sole executable Child 01 capability is `grounding.retrieve@1.0.0`. It
+  accepts only bounded language/query/topic/count fields, derives eligible
+  source ids from `grounding_sources.py`, and returns capped snippets with
+  citation/source metadata.
+- The gateway receives an injected `GroundingLookup` adapter. Its in-memory
+  implementation reuses pure retrieval over supplied indexed chunks; the
+  catalog, Harness, and gateway do not directly import a database connection,
+  persisted index repository, HTTP fetcher, crawler, shell, runner, or legacy
+  teaching tool.
+- A future persisted lookup adapter and any durable invocation/effect evidence
+  remain outside this child. No route, SSE frame, Desktop component, migration,
+  repository, worker, outbox, provider-routing change, or legacy Graph/tool
+  removal is authorized here.
+
 ## Target Loop and Future Ownership
 
 The finite loop leases, loads, checks fixed budgets/cancellation, builds bounded

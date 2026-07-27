@@ -1,0 +1,26 @@
+{
+  "id": "tutor.registry-grounding",
+  "version": "1.0.0",
+  "owner": "aearn-core",
+  "kind": "tutoring",
+  "summary": "Retrieve bounded cited documentation facts from the approved registry.",
+  "instruction_file": "instructions.md",
+  "evaluation_suite_file": "evals.json",
+  "content_hashes": {
+    "instructions.md": "081388e2c9e5f4c7c11e9ba3a33b66f06f5a1f461fe3fc14acf4513a47c8780d",
+    "evals.json": "c3a9be60f93e7d805c32ebe2139fc6a7d2ac8d50e26d4b07141c59ea19c8d8e8"
+  },
+  "resource_refs": [
+    "registry:grounding_sources"
+  ],
+  "requires_capabilities": [
+    "grounding.retrieve"
+  ],
+  "allowed_effect_types": [],
+  "policy_tags": [
+    "registry-grounding"
+  ],
+  "input_contract": "tutor.skill-input.v1",
+  "output_contract": "tutor.skill-decision.v1",
+  "deprecated": false
+}

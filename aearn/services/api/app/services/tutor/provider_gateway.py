@@ -67,17 +67,22 @@ _FORBIDDEN_NESTED_PAYLOAD_FIELD_NAMES = frozenset(
 )
 
 
+TutorEnvelopeValue = str | int | float | bool | None | list[str]
+
+
 def _validate_nested_payload_fields(
-    value: dict[str, str | int | float | bool | None],
+    value: dict[str, TutorEnvelopeValue],
     *,
     label: str,
-) -> dict[str, str | int | float | bool | None]:
+) -> dict[str, TutorEnvelopeValue]:
     if len(value) > MAX_TUTOR_PAYLOAD_FIELDS:
         raise ValueError(f"{label} exceed the bounded contract")
     for raw_key, raw_value in value.items():
         compact_key = "".join(character for character in raw_key.lower() if character.isalnum())
         if compact_key in _FORBIDDEN_NESTED_PAYLOAD_FIELD_NAMES or compact_key.startswith("hiddentest"):
             raise ValueError(f"{label} contain an internal-only field")
+        if isinstance(raw_value, list) and (len(raw_value) > 4 or any(len(item) > 120 for item in raw_value)):
+            raise ValueError(f"{label} contain an oversized list")
         assert_safe_teaching_output(raw_key)
         assert_safe_teaching_output(json.dumps(raw_value, ensure_ascii=False, sort_keys=True))
     return value
@@ -95,14 +100,14 @@ class _SkillReferencePayload(_StrictEnvelopeModel):
 class _CapabilityRequestPayload(_StrictEnvelopeModel):
     request_id: str = Field(min_length=1, max_length=120)
     capability_id: str = Field(min_length=1, max_length=120)
-    arguments: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
+    arguments: dict[str, TutorEnvelopeValue] = Field(default_factory=dict)
 
     @field_validator("arguments")
     @classmethod
     def _validate_arguments(
         cls,
-        value: dict[str, str | int | float | bool | None],
-    ) -> dict[str, str | int | float | bool | None]:
+        value: dict[str, TutorEnvelopeValue],
+    ) -> dict[str, TutorEnvelopeValue]:
         return _validate_nested_payload_fields(value, label="capability arguments")
 
 
@@ -110,14 +115,14 @@ class _EffectProposalPayload(_StrictEnvelopeModel):
     effect_id: str = Field(min_length=1, max_length=120)
     effect_type: str = Field(min_length=1, max_length=120)
     expected_input_revision: int = Field(ge=0)
-    payload: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
+    payload: dict[str, TutorEnvelopeValue] = Field(default_factory=dict)
 
     @field_validator("payload")
     @classmethod
     def _validate_payload(
         cls,
-        value: dict[str, str | int | float | bool | None],
-    ) -> dict[str, str | int | float | bool | None]:
+        value: dict[str, TutorEnvelopeValue],
+    ) -> dict[str, TutorEnvelopeValue]:
         return _validate_nested_payload_fields(value, label="effect payload")
 
 
