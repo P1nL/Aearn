@@ -1,0 +1,6 @@
+{"file":".trellis/spec/backend/index.md","reason":"Backend task placement and source-of-truth routing for the API service."}
+{"file":".trellis/spec/backend/directory-structure.md","reason":"Required module placement for new agents/harness and services/tutor code."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Feature-disabled Tutor Harness and registry-grounding invariants and required test cases."}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"Catalog/schema work must reuse existing bounded contracts and avoid duplicated validation."}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Maps catalog-to-provider-to-gateway-to-grounding contract boundaries."}
+{"file":".trellis/tasks/07-22-tutor-skill-catalog-and-capability-gateway/research/current-skill-capability-baseline.md","reason":"Verified Child 00 seam, legacy exclusions, and registry-only grounding evidence."}
