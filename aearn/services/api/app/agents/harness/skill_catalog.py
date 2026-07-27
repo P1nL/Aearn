@@ -14,6 +14,7 @@ from app.agents.harness.capabilities import (
     EffectDescriptor,
     contains_forbidden_execution_target,
     default_capability_descriptors,
+    default_effect_descriptors,
     is_catalog_identifier,
     is_exact_semver,
     is_tutor_contract_identifier,
@@ -252,11 +253,11 @@ class SkillCatalogCompiler:
         self,
         *,
         capability_descriptors: tuple[CapabilityDescriptor, ...] | None = None,
-        effect_descriptors: tuple[EffectDescriptor, ...] = (),
+        effect_descriptors: tuple[EffectDescriptor, ...] | None = None,
         allowed_resource_refs: frozenset[str] = _ALLOWED_RESOURCE_REFS,
     ) -> None:
         self._capability_descriptors = tuple(capability_descriptors or default_capability_descriptors())
-        self._effect_descriptors = tuple(effect_descriptors)
+        self._effect_descriptors = tuple(effect_descriptors if effect_descriptors is not None else default_effect_descriptors())
         self._allowed_resource_refs = frozenset(allowed_resource_refs)
         _ensure_unique_descriptors(self._capability_descriptors, attribute="capability_id")
         _ensure_unique_descriptors(self._effect_descriptors, attribute="effect_type")

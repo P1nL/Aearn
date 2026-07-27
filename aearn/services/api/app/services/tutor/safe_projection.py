@@ -45,6 +45,8 @@ _SAFE_KEYS = frozenset(
         "capability_id", "capability_version", "effect_id", "effect_type", "request_id", "request_hash", "result_hash",
         "payload_hash", "safe_hash", "idempotency_key", "event_key", "lease_owner_id", "lease_generation", "trigger", "priority",
         "outbox_id", "proposal_id", "trace_id", "commit_id", "source_id", "source_hash", "source_ids", "source_hashes",
+        "execution_job_id", "execution_intent_id", "lock_fingerprint", "execution_state",
+        "attempt_sequence", "cleanup_state", "availability_code",
         "source_count", "item_count", "count", "selected_count", "skipped_count", "token_budget", "consumed_tokens",
         "duration_ms", "confidence", "section", "sections", "section_counts", "retention_until", "stale_after",
         "created_at", "expires_at", "deadline", "max_iterations", "max_model_calls", "max_capability_calls",
@@ -55,6 +57,7 @@ _SAFE_KEYS = frozenset(
 _INTEGER_KEYS = frozenset(
     {
         "event_sequence", "event_from_sequence", "event_to_sequence", "input_revision", "lease_generation", "priority",
+        "attempt_sequence",
         "source_count", "item_count", "count", "selected_count", "skipped_count", "token_budget", "consumed_tokens",
         "duration_ms", "max_iterations", "max_model_calls", "max_capability_calls", "max_effects",
         "context_token_budget", "lease_duration_seconds",
@@ -63,7 +66,7 @@ _INTEGER_KEYS = frozenset(
 _HASH_KEYS = frozenset(
     {
         "catalog_digest", "policy_fingerprint", "manifest_hash", "instruction_hash", "evaluation_hash", "request_hash",
-        "result_hash", "payload_hash", "safe_hash", "source_hash",
+        "result_hash", "payload_hash", "safe_hash", "source_hash", "lock_fingerprint",
     }
 )
 

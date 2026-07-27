@@ -1,0 +1,68 @@
+{
+  "schema_version": "aearn-executor-runtime-catalog-v1",
+  "runtimes": [
+    {
+      "runtime_id": "python-stdout-v1",
+      "protocol_version": "sandbox-input-v1",
+      "fixed_entrypoint": ["/opt/aearn/entrypoint.py"],
+      "non_root_user": "10001:10001",
+      "limits": {"cpu_millis": 500, "memory_mb": 256, "pids_limit": 64, "nofile_limit": 256, "wall_clock_seconds": 15, "max_output_bytes": 8192, "work_tmpfs_mb": 64, "temp_tmpfs_mb": 32},
+      "harness_path": "runtimes/python-stdout-v1/",
+      "prohibitions": ["no-network", "no-pip", "no-venv", "no-package-install", "no-host-filesystem"]
+    },
+    {
+      "runtime_id": "browser-preview-v1",
+      "protocol_version": "sandbox-input-v1",
+      "fixed_entrypoint": ["/opt/aearn/entrypoint.py"],
+      "non_root_user": "10001:10001",
+      "limits": {"cpu_millis": 500, "memory_mb": 256, "pids_limit": 64, "nofile_limit": 256, "wall_clock_seconds": 15, "max_output_bytes": 8192, "work_tmpfs_mb": 64, "temp_tmpfs_mb": 32},
+      "harness_path": "runtimes/browser-preview-v1/",
+      "prohibitions": ["no-network", "no-navigation", "no-download", "no-extensions", "no-browser-flags"]
+    },
+    {
+      "runtime_id": "node-typescript-v1",
+      "protocol_version": "sandbox-input-v1",
+      "fixed_entrypoint": ["/opt/aearn/entrypoint.py"],
+      "non_root_user": "10001:10001",
+      "limits": {"cpu_millis": 500, "memory_mb": 256, "pids_limit": 64, "nofile_limit": 256, "wall_clock_seconds": 15, "max_output_bytes": 8192, "work_tmpfs_mb": 64, "temp_tmpfs_mb": 32},
+      "harness_path": "runtimes/node-typescript-v1/",
+      "prohibitions": ["no-network", "no-npm", "no-yarn", "no-pnpm", "no-project-workspace"]
+    },
+    {
+      "runtime_id": "sqlite-query-v1",
+      "protocol_version": "sandbox-input-v1",
+      "fixed_entrypoint": ["/opt/aearn/entrypoint.py"],
+      "non_root_user": "10001:10001",
+      "limits": {"cpu_millis": 500, "memory_mb": 256, "pids_limit": 64, "nofile_limit": 256, "wall_clock_seconds": 15, "max_output_bytes": 8192, "work_tmpfs_mb": 64, "temp_tmpfs_mb": 32},
+      "harness_path": "runtimes/sqlite-query-v1/",
+      "prohibitions": ["no-network", "no-postgresql", "no-attach", "no-extensions", "no-ddl-dml"]
+    },
+    {
+      "runtime_id": "java-managed-v1",
+      "protocol_version": "sandbox-input-v1",
+      "fixed_entrypoint": ["/opt/aearn/entrypoint.py"],
+      "non_root_user": "10001:10001",
+      "limits": {"cpu_millis": 500, "memory_mb": 256, "pids_limit": 64, "nofile_limit": 256, "wall_clock_seconds": 15, "max_output_bytes": 8192, "work_tmpfs_mb": 64, "temp_tmpfs_mb": 32},
+      "harness_path": "runtimes/java-managed-v1/",
+      "prohibitions": ["no-network", "no-maven", "no-gradle", "no-dependencies", "no-project-workspace"]
+    },
+    {
+      "runtime_id": "go-managed-v1",
+      "protocol_version": "sandbox-input-v1",
+      "fixed_entrypoint": ["/opt/aearn/entrypoint.py"],
+      "non_root_user": "10001:10001",
+      "limits": {"cpu_millis": 500, "memory_mb": 256, "pids_limit": 64, "nofile_limit": 256, "wall_clock_seconds": 15, "max_output_bytes": 8192, "work_tmpfs_mb": 64, "temp_tmpfs_mb": 32},
+      "harness_path": "runtimes/go-managed-v1/",
+      "prohibitions": ["no-network", "no-go-get", "no-module-download", "no-dependencies", "no-project-workspace"]
+    },
+    {
+      "runtime_id": "dotnet-managed-v1",
+      "protocol_version": "sandbox-input-v1",
+      "fixed_entrypoint": ["/opt/aearn/entrypoint.py"],
+      "non_root_user": "10001:10001",
+      "limits": {"cpu_millis": 500, "memory_mb": 256, "pids_limit": 64, "nofile_limit": 256, "wall_clock_seconds": 15, "max_output_bytes": 8192, "work_tmpfs_mb": 64, "temp_tmpfs_mb": 32},
+      "harness_path": "runtimes/dotnet-managed-v1/",
+      "prohibitions": ["no-network", "no-nuget", "no-restore", "no-workloads", "no-project-workspace"]
+    }
+  ]
+}

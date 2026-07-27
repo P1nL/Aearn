@@ -1,5 +1,6 @@
 import json
 import uuid
+from datetime import timedelta
 
 import psycopg
 import pytest
@@ -7,6 +8,7 @@ import pytest
 from app.core.config import get_settings
 from app.db.bootstrap import bootstrap_database
 from app.db.connection import connect
+from tutor_execution_support import create_pending_execution_job
 
 
 def _database_available() -> bool:
@@ -72,6 +74,25 @@ def test_bootstrap_is_repeatable_and_seeds_catalog() -> None:
     assert active_cpp_course is None
 
 
+EXECUTION_SCOPE_CONSTRAINTS = (
+    "uq_tutor_effects_id_run",
+    "uq_tutor_effects_id_run_effect",
+    "uq_tutor_input_events_run_message_revision",
+    "uq_tutor_execution_intents_id_scope",
+    "fk_tutor_execution_intent_consumed_effect_run",
+    "fk_tutor_execution_intent_accepted_input",
+    "fk_tutor_execution_job_intent_scope",
+    "fk_tutor_execution_job_effect_scope",
+)
+
+EXECUTION_LIFECYCLE_CONSTRAINTS = (
+    "chk_tutor_execution_jobs_terminal_result",
+    "chk_tutor_execution_jobs_claimed_lease",
+    "chk_tutor_execution_jobs_launch_reservation",
+    "chk_tutor_execution_jobs_reserved_running",
+    "chk_tutor_execution_jobs_running_started",
+)
+
 TARGET_TUTOR_TABLES = (
     "tutor_conversations",
     "tutor_messages",
@@ -83,6 +104,10 @@ TARGET_TUTOR_TABLES = (
     "tutor_run_events",
     "tutor_capability_invocations",
     "tutor_effects",
+    "tutor_execution_intents",
+    "tutor_execution_jobs",
+    "tutor_execution_attempts",
+    "tutor_executor_health",
     "tutor_run_traces",
     "tutor_memory_curation_outbox",
     "tutor_curation_proposals",
@@ -111,6 +136,9 @@ def test_tutor_target_schema_is_repeatable_and_enforces_run_event_identity() -> 
                     "trg_tutor_conversations_updated_at",
                     "trg_tutor_runs_updated_at",
                     "trg_tutor_effects_updated_at",
+                    "trg_tutor_execution_jobs_updated_at",
+                    "trg_tutor_execution_jobs_lifecycle_guard",
+                    "trg_tutor_executor_health_updated_at",
                     "trg_tutor_memory_curation_outbox_updated_at",
                     "trg_tutor_curation_proposals_updated_at",
                 ],
@@ -121,9 +149,41 @@ def test_tutor_target_schema_is_repeatable_and_enforces_run_event_identity() -> 
             "trg_tutor_conversations_updated_at",
             "trg_tutor_runs_updated_at",
             "trg_tutor_effects_updated_at",
+            "trg_tutor_execution_jobs_updated_at",
+            "trg_tutor_execution_jobs_lifecycle_guard",
+            "trg_tutor_executor_health_updated_at",
             "trg_tutor_memory_curation_outbox_updated_at",
             "trg_tutor_curation_proposals_updated_at",
         }
+        executor_indexes = conn.execute(
+            """
+            SELECT indexname
+            FROM pg_indexes
+            WHERE schemaname = 'public'
+              AND indexname = ANY(%s)
+            """,
+            (
+                [
+                    "idx_tutor_execution_intents_run_expiry",
+                    "idx_tutor_execution_jobs_claim",
+                    "idx_tutor_execution_attempts_job_created",
+                    "idx_tutor_executor_health_heartbeat",
+                ],
+            ),
+        ).fetchall()
+        assert {str(row["indexname"]) for row in executor_indexes} == {
+            "idx_tutor_execution_intents_run_expiry",
+            "idx_tutor_execution_jobs_claim",
+            "idx_tutor_execution_attempts_job_created",
+            "idx_tutor_executor_health_heartbeat",
+        }
+        execution_constraint_rows = conn.execute(
+            "SELECT conname FROM pg_constraint WHERE conname = ANY(%s)",
+            (list(EXECUTION_SCOPE_CONSTRAINTS + EXECUTION_LIFECYCLE_CONSTRAINTS),),
+        ).fetchall()
+        assert {str(row["conname"]) for row in execution_constraint_rows} == set(
+            EXECUTION_SCOPE_CONSTRAINTS + EXECUTION_LIFECYCLE_CONSTRAINTS
+        )
 
         user = conn.execute(
             "INSERT INTO users (display_name) VALUES (%s) RETURNING id",
@@ -309,3 +369,153 @@ def test_core_learning_relationships_can_be_inserted() -> None:
 
     assert review_state is not None
     assert review_state["card_state"] == "new"
+
+
+def test_tutor_execution_schema_rejects_cross_scope_and_lifecycle_mutations(tutor_persistence) -> None:
+    """The database, not only Python guards, owns the execution job invariants."""
+
+    fixture = tutor_persistence
+    now = fixture.run.policy.deadline - timedelta(days=1)
+    _, job_id = create_pending_execution_job(fixture, now=now)
+    job = fixture.connection.execute(
+        """
+        SELECT id, intent_id, effect_record_id, effect_key
+        FROM tutor_execution_jobs
+        WHERE id = %s
+        """,
+        (job_id,),
+    ).fetchone()
+    assert job is not None
+
+    other_run = fixture.repository.create_run(
+        user_id=fixture.user_id,
+        conversation_id=fixture.conversation_id,
+        catalog_digest=fixture.catalog.digest,
+        policy=fixture.run.policy,
+    )
+    other_effect = fixture.connection.execute(
+        """
+        INSERT INTO tutor_effects (
+          run_id, effect_id, idempotency_key, effect_type, expected_input_revision,
+          payload_hash, lease_owner_id, lease_generation, status, safe_outcome_json, safe_outcome_hash
+        )
+        VALUES (%s, %s, %s, 'runner.execute', 0, %s, 'schema-check', 1, 'denied', '{}'::jsonb, %s)
+        RETURNING id
+        """,
+        (
+            other_run.run_id,
+            str(job["effect_key"]),
+            "schema-cross-scope-effect",
+            "a" * 64,
+            "b" * 64,
+        ),
+    ).fetchone()
+    assert other_effect is not None
+
+    with pytest.raises(psycopg.errors.ForeignKeyViolation):
+        with fixture.connection.transaction():
+            fixture.connection.execute(
+                "UPDATE tutor_execution_intents SET input_revision = input_revision + 1 WHERE id = %s",
+                (job["intent_id"],),
+            )
+
+    with pytest.raises(psycopg.errors.ForeignKeyViolation):
+        with fixture.connection.transaction():
+            fixture.connection.execute(
+                """
+                UPDATE tutor_execution_intents
+                SET consumed_at = now(), consumed_by_effect_id = %s
+                WHERE id = %s
+                """,
+                (other_effect["id"], job["intent_id"]),
+            )
+
+    with pytest.raises(psycopg.errors.ForeignKeyViolation):
+        with fixture.connection.transaction():
+            fixture.connection.execute(
+                "UPDATE tutor_execution_jobs SET effect_record_id = %s WHERE id = %s",
+                (other_effect["id"], job_id),
+            )
+
+    with pytest.raises(psycopg.errors.ForeignKeyViolation):
+        with fixture.connection.transaction():
+            fixture.connection.execute(
+                """
+                UPDATE tutor_execution_jobs
+                SET run_id = %s, effect_record_id = %s
+                WHERE id = %s
+                """,
+                (other_run.run_id, other_effect["id"], job_id),
+            )
+
+    with pytest.raises(psycopg.errors.CheckViolation):
+        with fixture.connection.transaction():
+            fixture.connection.execute(
+                "UPDATE tutor_execution_jobs SET state = 'completed' WHERE id = %s",
+                (job_id,),
+            )
+
+    fixture.connection.execute(
+        """
+        UPDATE tutor_execution_jobs
+        SET state = 'claimed', lease_owner_id = 'schema-executor', lease_generation = 1,
+            lease_expires_at = %s
+        WHERE id = %s
+        """,
+        (now + timedelta(seconds=30), job_id),
+    )
+    fixture.connection.execute(
+        """
+        UPDATE tutor_execution_jobs
+        SET state = 'launch_reserved', launch_token = 'schema-launch-token',
+            launch_generation = 1, launch_reserved_at = %s
+        WHERE id = %s
+        """,
+        (now, job_id),
+    )
+
+    with pytest.raises(psycopg.errors.CheckViolation):
+        with fixture.connection.transaction():
+            fixture.connection.execute(
+                "UPDATE tutor_execution_jobs SET launch_token = 'replacement-token' WHERE id = %s",
+                (job_id,),
+            )
+
+    fixture.connection.execute(
+        """
+        UPDATE tutor_execution_jobs
+        SET state = 'completed', result_json = %s::jsonb, result_hash = %s,
+            terminal_at = %s, cleanup_state = 'completed'
+        WHERE id = %s
+        """,
+        (json.dumps({"status": "success"}), "c" * 64, now, job_id),
+    )
+
+    with pytest.raises(psycopg.errors.CheckViolation):
+        with fixture.connection.transaction():
+            fixture.connection.execute(
+                """
+                UPDATE tutor_execution_jobs
+                SET state = 'pending', result_json = NULL, result_hash = NULL, terminal_at = NULL
+                WHERE id = %s
+                """,
+                (job_id,),
+            )
+
+    fixture.connection.execute(
+        """
+        UPDATE tutor_execution_jobs
+        SET state = 'failed', result_json = %s::jsonb, result_hash = %s, cleanup_state = 'failed'
+        WHERE id = %s
+        """,
+        (json.dumps({"status": "failed"}), "d" * 64, job_id),
+    )
+    terminal = fixture.connection.execute(
+        "SELECT state, launch_token, cleanup_state FROM tutor_execution_jobs WHERE id = %s",
+        (job_id,),
+    ).fetchone()
+    assert terminal == {
+        "state": "failed",
+        "launch_token": "schema-launch-token",
+        "cleanup_state": "failed",
+    }

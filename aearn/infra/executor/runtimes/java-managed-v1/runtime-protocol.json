@@ -1,0 +1,17 @@
+{
+  "schema_version": "aearn-runtime-protocol-v1",
+  "runtime_id": "java-managed-v1",
+  "protocol_version": "sandbox-input-v1",
+  "submission_shape": "single_java_source",
+  "fixed_entrypoint": "/opt/aearn/entrypoint.py",
+  "fixed_adapter": "/opt/aearn/runtime-adapter",
+  "allowed_actions": [
+    "run",
+    "test",
+    "debug",
+    "explain"
+  ],
+  "network": "none",
+  "package_install": "forbidden",
+  "host_mounts": "forbidden"
+}

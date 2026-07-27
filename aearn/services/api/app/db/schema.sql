@@ -844,6 +844,106 @@ CREATE TABLE IF NOT EXISTS tutor_effects (
   UNIQUE (run_id, idempotency_key)
 );
 
+-- Container executor target persistence (Child 03): additive, feature-off, and safe-projection-only.
+CREATE TABLE IF NOT EXISTS tutor_execution_intents (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  conversation_id uuid NOT NULL REFERENCES tutor_conversations(id) ON DELETE RESTRICT,
+  run_id uuid NOT NULL REFERENCES tutor_runs(id) ON DELETE RESTRICT,
+  source_message_id uuid NOT NULL REFERENCES tutor_messages(id) ON DELETE RESTRICT,
+  exercise_id uuid NOT NULL REFERENCES exercises(id) ON DELETE RESTRICT,
+  input_revision integer NOT NULL CHECK (input_revision >= 0),
+  origin text NOT NULL CHECK (origin IN ('interactive', 'proactive')),
+  action text NOT NULL CHECK (action IN ('run', 'test', 'debug', 'explain')),
+  catalog_digest text NOT NULL CHECK (catalog_digest ~ '^[0-9a-f]{64}$'),
+  policy_fingerprint text NOT NULL CHECK (policy_fingerprint ~ '^[0-9a-f]{64}$'),
+  budget_fingerprint text NOT NULL CHECK (budget_fingerprint ~ '^[0-9a-f]{64}$'),
+  budget_execution_count integer NOT NULL CHECK (budget_execution_count = 1),
+  issued_at timestamptz NOT NULL,
+  expires_at timestamptz NOT NULL,
+  consumed_at timestamptz,
+  consumed_by_effect_id uuid REFERENCES tutor_effects(id) ON DELETE RESTRICT,
+  cancelled_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT fk_tutor_execution_intent_run_user
+    FOREIGN KEY (run_id, user_id) REFERENCES tutor_runs(id, user_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_execution_intent_run_conversation
+    FOREIGN KEY (run_id, conversation_id) REFERENCES tutor_runs(id, conversation_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_execution_intent_message_conversation
+    FOREIGN KEY (source_message_id, conversation_id) REFERENCES tutor_messages(id, conversation_id) ON DELETE RESTRICT,
+  CHECK (expires_at > issued_at),
+  CHECK ((consumed_at IS NULL) = (consumed_by_effect_id IS NULL))
+);
+
+CREATE TABLE IF NOT EXISTS tutor_execution_jobs (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  effect_record_id uuid NOT NULL UNIQUE REFERENCES tutor_effects(id) ON DELETE RESTRICT,
+  effect_key text NOT NULL CHECK (char_length(effect_key) <= 160),
+  intent_id uuid NOT NULL UNIQUE REFERENCES tutor_execution_intents(id) ON DELETE RESTRICT,
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  conversation_id uuid NOT NULL REFERENCES tutor_conversations(id) ON DELETE RESTRICT,
+  run_id uuid NOT NULL REFERENCES tutor_runs(id) ON DELETE RESTRICT,
+  runtime_id text NOT NULL CHECK (char_length(runtime_id) <= 120),
+  lock_fingerprint text NOT NULL CHECK (lock_fingerprint ~ '^[0-9a-f]{64}$'),
+  source_reference_hash text NOT NULL CHECK (source_reference_hash ~ '^[0-9a-f]{64}$'),
+  test_reference_hash text NOT NULL CHECK (test_reference_hash ~ '^[0-9a-f]{64}$'),
+  state text NOT NULL CHECK (state IN (
+    'pending', 'claimed', 'launch_reserved', 'running', 'completed', 'timed_out',
+    'cancelled', 'unavailable', 'launch_uncertain', 'failed'
+  )),
+  lease_owner_id text,
+  lease_generation integer NOT NULL DEFAULT 0 CHECK (lease_generation >= 0),
+  lease_expires_at timestamptz,
+  launch_token text UNIQUE CHECK (launch_token IS NULL OR char_length(launch_token) <= 160),
+  launch_generation integer NOT NULL DEFAULT 0 CHECK (launch_generation >= 0),
+  launch_reserved_at timestamptz,
+  started_at timestamptz,
+  cancellation_requested_at timestamptz,
+  cleanup_state text NOT NULL DEFAULT 'pending' CHECK (cleanup_state IN ('pending', 'completed', 'failed', 'not_required')),
+  result_json jsonb,
+  result_hash text CHECK (result_hash IS NULL OR result_hash ~ '^[0-9a-f]{64}$'),
+  safe_diagnostic_code text,
+  terminal_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT fk_tutor_execution_job_run_user
+    FOREIGN KEY (run_id, user_id) REFERENCES tutor_runs(id, user_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_execution_job_run_conversation
+    FOREIGN KEY (run_id, conversation_id) REFERENCES tutor_runs(id, conversation_id) ON DELETE RESTRICT,
+  CHECK ((result_json IS NULL) = (result_hash IS NULL)),
+  CHECK ((launch_token IS NULL) = (launch_reserved_at IS NULL))
+);
+
+CREATE TABLE IF NOT EXISTS tutor_execution_attempts (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  job_id uuid NOT NULL REFERENCES tutor_execution_jobs(id) ON DELETE RESTRICT,
+  attempt_sequence integer NOT NULL CHECK (attempt_sequence >= 1),
+  executor_id text NOT NULL CHECK (char_length(executor_id) <= 160),
+  lease_generation integer NOT NULL CHECK (lease_generation >= 0),
+  launch_generation integer NOT NULL CHECK (launch_generation >= 0),
+  stage text NOT NULL CHECK (stage IN ('claimed', 'preflight', 'launch_reserved', 'running', 'cleanup', 'terminal')),
+  lock_fingerprint text NOT NULL CHECK (lock_fingerprint ~ '^[0-9a-f]{64}$'),
+  safe_diagnostic_code text,
+  duration_ms integer NOT NULL DEFAULT 0 CHECK (duration_ms >= 0),
+  output_bytes integer NOT NULL DEFAULT 0 CHECK (output_bytes >= 0),
+  cleanup_state text NOT NULL DEFAULT 'pending' CHECK (cleanup_state IN ('pending', 'completed', 'failed', 'not_required')),
+  result_hash text CHECK (result_hash IS NULL OR result_hash ~ '^[0-9a-f]{64}$'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (job_id, attempt_sequence)
+);
+
+CREATE TABLE IF NOT EXISTS tutor_executor_health (
+  executor_id text PRIMARY KEY CHECK (char_length(executor_id) <= 160),
+  service_version text NOT NULL CHECK (char_length(service_version) <= 120),
+  registry_fingerprint text NOT NULL CHECK (registry_fingerprint ~ '^[0-9a-f]{64}$'),
+  verified_runtime_ids_json jsonb NOT NULL DEFAULT '[]'::jsonb,
+  status text NOT NULL CHECK (status IN ('available', 'unavailable', 'quarantined')),
+  availability_code text NOT NULL CHECK (char_length(availability_code) <= 120),
+  last_heartbeat_at timestamptz NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS tutor_run_traces (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   run_id uuid NOT NULL REFERENCES tutor_runs(id) ON DELETE RESTRICT,
@@ -974,6 +1074,227 @@ BEGIN
   END IF;
 END $$;
 
+-- Child 03 execution scope and lifecycle guards.  These are additive because
+-- bootstrap_database() is the only schema applier and is intentionally repeatable.
+DO $$
+BEGIN
+  -- Parent keys required by Child 03's cross-table scope foreign keys.
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'tutor_effects'::regclass AND conname = 'uq_tutor_effects_id_run'
+  ) THEN
+    ALTER TABLE tutor_effects
+      ADD CONSTRAINT uq_tutor_effects_id_run UNIQUE (id, run_id);
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'tutor_effects'::regclass AND conname = 'uq_tutor_effects_id_run_effect'
+  ) THEN
+    ALTER TABLE tutor_effects
+      ADD CONSTRAINT uq_tutor_effects_id_run_effect UNIQUE (id, run_id, effect_id);
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'tutor_run_input_events'::regclass
+      AND conname = 'uq_tutor_input_events_run_message_revision'
+  ) THEN
+    ALTER TABLE tutor_run_input_events
+      ADD CONSTRAINT uq_tutor_input_events_run_message_revision
+      UNIQUE (run_id, message_id, input_revision);
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'tutor_execution_intents'::regclass
+      AND conname = 'uq_tutor_execution_intents_id_scope'
+  ) THEN
+    ALTER TABLE tutor_execution_intents
+      ADD CONSTRAINT uq_tutor_execution_intents_id_scope
+      UNIQUE (id, run_id, user_id, conversation_id);
+  END IF;
+
+  -- NOT VALID keeps this additive for an already-bootstrapped local database
+  -- while PostgreSQL still enforces every new write or mutation.
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'tutor_execution_intents'::regclass
+      AND conname = 'fk_tutor_execution_intent_consumed_effect_run'
+  ) THEN
+    ALTER TABLE tutor_execution_intents
+      ADD CONSTRAINT fk_tutor_execution_intent_consumed_effect_run
+      FOREIGN KEY (consumed_by_effect_id, run_id)
+      REFERENCES tutor_effects(id, run_id) ON DELETE RESTRICT NOT VALID;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'tutor_execution_intents'::regclass
+      AND conname = 'fk_tutor_execution_intent_accepted_input'
+  ) THEN
+    ALTER TABLE tutor_execution_intents
+      ADD CONSTRAINT fk_tutor_execution_intent_accepted_input
+      FOREIGN KEY (run_id, source_message_id, input_revision)
+      REFERENCES tutor_run_input_events(run_id, message_id, input_revision)
+      ON DELETE RESTRICT NOT VALID;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'tutor_execution_jobs'::regclass
+      AND conname = 'fk_tutor_execution_job_intent_scope'
+  ) THEN
+    ALTER TABLE tutor_execution_jobs
+      ADD CONSTRAINT fk_tutor_execution_job_intent_scope
+      FOREIGN KEY (intent_id, run_id, user_id, conversation_id)
+      REFERENCES tutor_execution_intents(id, run_id, user_id, conversation_id)
+      ON DELETE RESTRICT NOT VALID;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'tutor_execution_jobs'::regclass
+      AND conname = 'fk_tutor_execution_job_effect_scope'
+  ) THEN
+    ALTER TABLE tutor_execution_jobs
+      ADD CONSTRAINT fk_tutor_execution_job_effect_scope
+      FOREIGN KEY (effect_record_id, run_id, effect_key)
+      REFERENCES tutor_effects(id, run_id, effect_id)
+      ON DELETE RESTRICT NOT VALID;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'tutor_execution_jobs'::regclass
+      AND conname = 'chk_tutor_execution_jobs_terminal_result'
+  ) THEN
+    ALTER TABLE tutor_execution_jobs
+      ADD CONSTRAINT chk_tutor_execution_jobs_terminal_result
+      CHECK (
+        (
+          state IN ('completed', 'timed_out', 'cancelled', 'unavailable', 'launch_uncertain', 'failed')
+          AND terminal_at IS NOT NULL
+          AND result_json IS NOT NULL
+          AND result_hash IS NOT NULL
+        )
+        OR (
+          state NOT IN ('completed', 'timed_out', 'cancelled', 'unavailable', 'launch_uncertain', 'failed')
+          AND terminal_at IS NULL
+          AND result_json IS NULL
+          AND result_hash IS NULL
+        )
+      ) NOT VALID;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'tutor_execution_jobs'::regclass
+      AND conname = 'chk_tutor_execution_jobs_claimed_lease'
+  ) THEN
+    ALTER TABLE tutor_execution_jobs
+      ADD CONSTRAINT chk_tutor_execution_jobs_claimed_lease
+      CHECK (
+        state <> 'claimed'
+        OR (
+          lease_owner_id IS NOT NULL
+          AND lease_generation > 0
+          AND lease_expires_at IS NOT NULL
+          AND launch_token IS NULL
+          AND launch_generation = 0
+          AND launch_reserved_at IS NULL
+        )
+      ) NOT VALID;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'tutor_execution_jobs'::regclass
+      AND conname = 'chk_tutor_execution_jobs_launch_reservation'
+  ) THEN
+    ALTER TABLE tutor_execution_jobs
+      ADD CONSTRAINT chk_tutor_execution_jobs_launch_reservation
+      CHECK (
+        (launch_token IS NULL AND launch_generation = 0 AND launch_reserved_at IS NULL)
+        OR (launch_token IS NOT NULL AND launch_generation > 0 AND launch_reserved_at IS NOT NULL)
+      ) NOT VALID;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'tutor_execution_jobs'::regclass
+      AND conname = 'chk_tutor_execution_jobs_reserved_running'
+  ) THEN
+    ALTER TABLE tutor_execution_jobs
+      ADD CONSTRAINT chk_tutor_execution_jobs_reserved_running
+      CHECK (
+        state NOT IN ('launch_reserved', 'running')
+        OR (
+          launch_token IS NOT NULL
+          AND launch_generation > 0
+          AND launch_reserved_at IS NOT NULL
+          AND lease_owner_id IS NOT NULL
+          AND lease_generation > 0
+          AND lease_expires_at IS NOT NULL
+        )
+      ) NOT VALID;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'tutor_execution_jobs'::regclass
+      AND conname = 'chk_tutor_execution_jobs_running_started'
+  ) THEN
+    ALTER TABLE tutor_execution_jobs
+      ADD CONSTRAINT chk_tutor_execution_jobs_running_started
+      CHECK (state <> 'running' OR started_at IS NOT NULL) NOT VALID;
+  END IF;
+END $$;
+
+CREATE OR REPLACE FUNCTION enforce_tutor_execution_job_lifecycle()
+RETURNS trigger AS $$
+BEGIN
+  IF TG_OP = 'UPDATE' THEN
+    IF OLD.launch_token IS NOT NULL
+       AND (
+         NEW.launch_token IS DISTINCT FROM OLD.launch_token
+         OR NEW.launch_generation IS DISTINCT FROM OLD.launch_generation
+         OR NEW.launch_reserved_at IS DISTINCT FROM OLD.launch_reserved_at
+       )
+    THEN
+      RAISE EXCEPTION USING
+        ERRCODE = '23514',
+        MESSAGE = 'execution launch reservation is immutable';
+    END IF;
+
+    IF OLD.launch_token IS NULL
+       AND NEW.launch_token IS NOT NULL
+       AND NOT (OLD.state = 'claimed' AND NEW.state = 'launch_reserved')
+    THEN
+      RAISE EXCEPTION USING
+        ERRCODE = '23514',
+        MESSAGE = 'execution launch token may only be allocated during reservation';
+    END IF;
+
+    IF OLD.state IN ('completed', 'timed_out', 'cancelled', 'unavailable', 'launch_uncertain', 'failed') THEN
+      IF NEW.state NOT IN ('completed', 'timed_out', 'cancelled', 'unavailable', 'launch_uncertain', 'failed') THEN
+        RAISE EXCEPTION USING
+          ERRCODE = '23514',
+          MESSAGE = 'execution terminal state cannot become non-terminal';
+      END IF;
+
+      IF NEW.state <> OLD.state AND NEW.state <> 'failed' THEN
+        RAISE EXCEPTION USING
+          ERRCODE = '23514',
+          MESSAGE = 'execution terminal state may only converge to failed during cleanup';
+      END IF;
+    END IF;
+  END IF;
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
 CREATE INDEX IF NOT EXISTS idx_tutor_conversations_user ON tutor_conversations(user_id, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tutor_messages_conversation ON tutor_messages(conversation_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_tutor_runs_user_status ON tutor_runs(user_id, status, updated_at DESC);
@@ -983,6 +1304,11 @@ CREATE INDEX IF NOT EXISTS idx_tutor_checkpoints_run_created ON tutor_run_checkp
 CREATE INDEX IF NOT EXISTS idx_tutor_events_run_sequence ON tutor_run_events(run_id, event_sequence);
 CREATE INDEX IF NOT EXISTS idx_tutor_capability_invocations_run_created ON tutor_capability_invocations(run_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tutor_effects_run_created ON tutor_effects(run_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tutor_execution_intents_run_expiry ON tutor_execution_intents(run_id, expires_at);
+CREATE INDEX IF NOT EXISTS idx_tutor_execution_jobs_claim ON tutor_execution_jobs(state, lease_expires_at, created_at);
+CREATE INDEX IF NOT EXISTS idx_tutor_execution_jobs_run_created ON tutor_execution_jobs(run_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tutor_execution_attempts_job_created ON tutor_execution_attempts(job_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_tutor_executor_health_heartbeat ON tutor_executor_health(last_heartbeat_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tutor_traces_run_sequence ON tutor_run_traces(run_id, event_from_sequence);
 CREATE INDEX IF NOT EXISTS idx_tutor_curation_outbox_state_created ON tutor_memory_curation_outbox(state, created_at);
 CREATE INDEX IF NOT EXISTS idx_tutor_curation_proposals_state_created ON tutor_curation_proposals(state, created_at);
@@ -997,6 +1323,19 @@ FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
 DROP TRIGGER IF EXISTS trg_tutor_effects_updated_at ON tutor_effects;
 CREATE TRIGGER trg_tutor_effects_updated_at BEFORE UPDATE ON tutor_effects
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_tutor_execution_jobs_updated_at ON tutor_execution_jobs;
+CREATE TRIGGER trg_tutor_execution_jobs_updated_at BEFORE UPDATE ON tutor_execution_jobs
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_tutor_execution_jobs_lifecycle_guard ON tutor_execution_jobs;
+CREATE TRIGGER trg_tutor_execution_jobs_lifecycle_guard
+BEFORE INSERT OR UPDATE ON tutor_execution_jobs
+FOR EACH ROW EXECUTE FUNCTION enforce_tutor_execution_job_lifecycle();
+
+DROP TRIGGER IF EXISTS trg_tutor_executor_health_updated_at ON tutor_executor_health;
+CREATE TRIGGER trg_tutor_executor_health_updated_at BEFORE UPDATE ON tutor_executor_health
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
 DROP TRIGGER IF EXISTS trg_tutor_memory_curation_outbox_updated_at ON tutor_memory_curation_outbox;

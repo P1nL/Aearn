@@ -592,6 +592,20 @@ def payload_fields_from_mapping(value: Mapping[str, object] | None) -> tuple[Tut
     return tuple(fields)
 
 
+def payload_mapping_from_fields(fields: tuple[TutorPayloadField, ...] | list[TutorPayloadField]) -> dict[str, object] | None:
+    """Decode the canonical JSON field representation used by provider payloads."""
+
+    decoded: dict[str, object] = {}
+    for field in fields:
+        if field.key in decoded:
+            return None
+        try:
+            decoded[field.key] = json.loads(field.value)
+        except json.JSONDecodeError:
+            return None
+    return decoded
+
+
 def _bounded_payload_fields(fields: object) -> tuple[TutorPayloadField, ...]:
     if not isinstance(fields, tuple | list):
         return ()

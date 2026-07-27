@@ -160,6 +160,7 @@ DEEPSEEK_MODEL=deepseek-v4-flash
 LLM_TIMEOUT_SECONDS=60
 PLAN_GENERATION_ENABLED=true
 TUTOR_HARNESS_ENABLED=false
+TUTOR_EXECUTOR_ENABLED=false
 EXA_API_KEY=
 
 TZ=Asia/Shanghai
@@ -308,11 +309,26 @@ pnpm --dir .\aearn dev
 pnpm --dir .\aearn dev:status
 pnpm --dir .\aearn dev:restart
 pnpm --dir .\aearn dev:stop
+
+# Explicit-only, feature-disabled container executor process.
+pnpm --dir .\aearn executor:once
+pnpm --dir .\aearn executor:dev
 ```
 
 脚本会自动启动 Docker 依赖、执行 schema bootstrap、拉起 API、Celery worker 和 Tauri desktop dev server，并把日志写入 `aearn/.logs/`。Windows 下不要直接调用 `uvicorn` / `celery` 可执行脚本；应使用 `python -m uvicorn` / `python -m celery`，避免 `uv trampoline failed to canonicalize script path`。当前 worker 通过 API venv 启动，因为 API venv 包含 `redis` transport 和 editable worker 依赖。
 
 `dev:status` 会显示 Docker 服务、API `/health`、desktop dev server 以及脚本追踪的进程状态。tracked PID 可能显示为 `alive`、`stale` 或 `untrusted`：`stale` 表示旧 PID 已不存在，`untrusted` 表示 PID 存在但命令行与 Aearn 启动命令不匹配。`dev:stop` 和 `dev:restart` 只会停止命令行已验证的 tracked Aearn 进程，遇到 stale/untrusted PID 会跳过并清理状态文件，避免误杀无关进程。
+
+### 隔离 executor（Child 03，显式启动）
+
+`pnpm --dir .\aearn dev`、`start-dev.ps1` 和 general Celery worker **不会**
+启动 executor，也不会向 API/worker 注入 runtime client 或 socket 权限。
+executor 只能由开发者显式运行 `executor:once` 或 `executor:dev`；默认
+`TUTOR_EXECUTOR_ENABLED=false`，且没有 reviewed immutable image lock 时它只写
+safe unavailable heartbeat，不会启动、拉取或回退到本机 legacy runner。
+
+详细的运行时 lock、健康、fail-closed 和排障边界见
+[`container-sandbox-executor.md`](./container-sandbox-executor.md)。
 
 手动等价命令：
 

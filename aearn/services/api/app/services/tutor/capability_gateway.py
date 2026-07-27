@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+
 from urllib.parse import urlparse
 
 from pydantic import ValidationError
@@ -19,6 +20,7 @@ from app.agents.harness.contracts import (
     TutorCapabilityResult,
     TutorCapabilityStatus,
     TutorPayloadField,
+    payload_mapping_from_fields,
     TutorRunSnapshot,
 )
 from app.agents.harness.skill_catalog import SkillCatalogSnapshot
@@ -138,15 +140,9 @@ def _decode_declared_arguments(
     request: TutorCapabilityRequest,
     declared_fields: frozenset[str],
 ) -> dict[str, object] | None:
-    arguments: dict[str, object] = {}
-    for field in request.arguments:
-        if field.key in arguments or field.key not in declared_fields:
-            return None
-        try:
-            arguments[field.key] = json.loads(field.value)
-        except json.JSONDecodeError:
-            return None
-    return arguments
+    if any(field.key not in declared_fields for field in request.arguments):
+        return None
+    return payload_mapping_from_fields(request.arguments)
 
 
 def _matches_registry_scope(
