@@ -9,15 +9,19 @@ from app.agents.harness.contracts import (
     TutorCapabilityRequest,
     TutorCapabilityResult,
     TutorCapabilityStatus,
+    TutorCheckpoint,
     TutorCheckpointReason,
+    TutorCompactionRequest,
     TutorContextInput,
     TutorContextSource,
     TutorDecision,
     TutorEffectProposal,
     TutorEffectStatus,
     TutorInputEvent,
+    TutorLease,
     TutorPolicySnapshot,
     TutorProviderResult,
+    TutorRunResult,
     TutorRunSnapshot,
     TutorRunStatus,
     TutorTerminalOutcome,
@@ -32,6 +36,7 @@ from app.services.tutor.ports import (
     InMemoryTutorRunStore,
     RecordingEffectCommitter,
     SequenceCapabilityGateway,
+    TutorLifecycleConflict,
     SequenceTutorProvider,
 )
 from app.services.tutor.run_loop import TutorHarnessService, TutorRunLoop
@@ -99,6 +104,7 @@ def _loop(
     effect_committer: RecordingEffectCommitter | None = None,
     publisher: InMemoryTutorCompactionPublisher | None = None,
     builder: TutorContextBuilder | None = None,
+    lifecycle: object | None = None,
 ) -> tuple[TutorRunLoop, InMemoryTutorCompactionPublisher]:
     resolved_publisher = publisher or InMemoryTutorCompactionPublisher()
     loop = TutorRunLoop(
@@ -111,6 +117,7 @@ def _loop(
         clock=FixedClock(NOW),
         compaction_publisher=resolved_publisher,
         decision_gate=AllowTutorDecisionGate(),
+        lifecycle=lifecycle,  # type: ignore[arg-type]
     )
     return loop, resolved_publisher
 
@@ -287,6 +294,113 @@ def test_safe_checkpoint_and_high_water_publish_only_typed_idempotent_requests()
         TutorCheckpointReason.SAFE_PROGRESS,
         TutorCheckpointReason.TERMINAL,
     ]
+
+
+class _RecordingLifecycle:
+    def __init__(self) -> None:
+        self.checkpoints: list[TutorCheckpoint] = []
+        self.high_water: list[TutorCompactionRequest] = []
+        self.terminals: list[tuple[TutorLease, TutorCheckpoint, TutorRunResult, TutorCompactionRequest]] = []
+        self.waiting: list[TutorRunResult] = []
+
+    def persist_safe_checkpoint(
+        self,
+        *,
+        snapshot: TutorRunSnapshot,
+        lease: TutorLease,
+        checkpoint: TutorCheckpoint,
+        compaction_request: TutorCompactionRequest,
+    ) -> None:
+        del snapshot, lease, compaction_request
+        self.checkpoints.append(checkpoint)
+
+    def persist_context_high_water(
+        self,
+        *,
+        snapshot: TutorRunSnapshot,
+        lease: TutorLease,
+        request: TutorCompactionRequest,
+        created_at: datetime,
+    ) -> None:
+        del snapshot, lease, created_at
+        self.high_water.append(request)
+
+    def persist_terminal(
+        self,
+        *,
+        snapshot: TutorRunSnapshot,
+        lease: TutorLease,
+        checkpoint: TutorCheckpoint,
+        result: TutorRunResult,
+        compaction_request: TutorCompactionRequest,
+    ) -> TutorRunResult:
+        del snapshot
+        self.terminals.append((lease, checkpoint, result, compaction_request))
+        return result
+
+    def persist_waiting_result(
+        self,
+        *,
+        snapshot: TutorRunSnapshot,
+        lease: TutorLease,
+        result: TutorRunResult,
+        created_at: datetime,
+    ) -> TutorRunResult:
+        del snapshot, lease, created_at
+        self.waiting.append(result)
+        return result
+
+
+def test_lifecycle_adapter_owns_terminal_persistence_when_explicitly_composed() -> None:
+    store = InMemoryTutorRunStore([_snapshot()])
+    provider = SequenceTutorProvider([TutorProviderResult(decision=TutorDecision(terminal_outcome=TutorTerminalOutcome.COMPLETED))])
+    lifecycle = _RecordingLifecycle()
+    loop, publisher = _loop(
+        store=store,
+        contexts={("run-loop", 0): _context(0)},
+        provider=provider,
+        lifecycle=lifecycle,
+    )
+
+    result = loop.run(run_id="run-loop", lease_owner_id="worker-atomic")
+
+    assert result.status is TutorRunStatus.COMPLETED
+    assert len(lifecycle.terminals) == 1
+    assert lifecycle.terminals[0][2] == result
+    assert store.checkpoints == []
+    assert store.results == []
+    assert publisher.requests == []
+
+
+class _ConflictedTerminalLifecycle:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def persist_terminal(self, **kwargs) -> TutorRunResult:
+        del kwargs
+        self.calls += 1
+        raise TutorLifecycleConflict("lease ownership changed")
+
+
+def test_lifecycle_conflict_returns_nonpersistent_lease_unavailable_without_retrying_terminal_write() -> None:
+    store = InMemoryTutorRunStore([_snapshot(policy=_policy(max_iterations=0))])
+    provider = SequenceTutorProvider([])
+    lifecycle = _ConflictedTerminalLifecycle()
+    loop, publisher = _loop(
+        store=store,
+        contexts={},
+        provider=provider,
+        lifecycle=lifecycle,
+    )
+
+    result = loop.run(run_id="run-loop", lease_owner_id="worker-conflicted")
+
+    assert result.status is TutorRunStatus.BLOCKED_POLICY
+    assert result.diagnostic_code == "lease_unavailable"
+    assert lifecycle.calls == 1
+    assert store.checkpoints == []
+    assert store.results == []
+    assert publisher.requests == []
 
 
 def test_feature_disabled_service_uses_default_false_without_leasing_or_model_call(monkeypatch) -> None:

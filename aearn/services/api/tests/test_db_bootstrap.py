@@ -1,3 +1,4 @@
+import json
 import uuid
 
 import psycopg
@@ -69,6 +70,132 @@ def test_bootstrap_is_repeatable_and_seeds_catalog() -> None:
     assert sql_runtime["runner"] == "sql"
     assert sql_runtime["sandbox_policy"]["dialect"] == "sqlite"
     assert active_cpp_course is None
+
+
+TARGET_TUTOR_TABLES = (
+    "tutor_conversations",
+    "tutor_messages",
+    "tutor_catalog_snapshots",
+    "tutor_runs",
+    "tutor_run_skill_selections",
+    "tutor_run_input_events",
+    "tutor_run_checkpoints",
+    "tutor_run_events",
+    "tutor_capability_invocations",
+    "tutor_effects",
+    "tutor_run_traces",
+    "tutor_memory_curation_outbox",
+    "tutor_curation_proposals",
+)
+
+
+def test_tutor_target_schema_is_repeatable_and_enforces_run_event_identity() -> None:
+    bootstrap_database()
+    bootstrap_database()
+    suffix = uuid.uuid4().hex[:8]
+
+    with connect() as conn:
+        table_rows = conn.execute(
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_name = ANY(%s)",
+            (list(TARGET_TUTOR_TABLES),),
+        ).fetchall()
+        trigger_rows = conn.execute(
+            """
+            SELECT tgname
+            FROM pg_trigger
+            WHERE tgname = ANY(%s)
+              AND NOT tgisinternal
+            """,
+            (
+                [
+                    "trg_tutor_conversations_updated_at",
+                    "trg_tutor_runs_updated_at",
+                    "trg_tutor_effects_updated_at",
+                    "trg_tutor_memory_curation_outbox_updated_at",
+                    "trg_tutor_curation_proposals_updated_at",
+                ],
+            ),
+        ).fetchall()
+        assert {str(row["table_name"]) for row in table_rows} == set(TARGET_TUTOR_TABLES)
+        assert {str(row["tgname"]) for row in trigger_rows} == {
+            "trg_tutor_conversations_updated_at",
+            "trg_tutor_runs_updated_at",
+            "trg_tutor_effects_updated_at",
+            "trg_tutor_memory_curation_outbox_updated_at",
+            "trg_tutor_curation_proposals_updated_at",
+        }
+
+        user = conn.execute(
+            "INSERT INTO users (display_name) VALUES (%s) RETURNING id",
+            (f"Tutor Schema Smoke {suffix}",),
+        ).fetchone()
+        assert user is not None
+        digest = "a" * 64
+        catalog = conn.execute(
+            """
+            INSERT INTO tutor_catalog_snapshots (digest, manifest_json, redaction_version)
+            VALUES (%s, %s::jsonb, 'tutor_safe_projection_v1')
+            RETURNING digest
+            """,
+            (digest, json.dumps({"catalog_digest": digest, "skills": []})),
+        ).fetchone()
+        assert catalog is not None
+        conversation = conn.execute(
+            "INSERT INTO tutor_conversations (user_id) VALUES (%s) RETURNING id",
+            (user["id"],),
+        ).fetchone()
+        assert conversation is not None
+        run = conn.execute(
+            """
+            INSERT INTO tutor_runs (
+              user_id, conversation_id, origin, status, policy_json,
+              policy_version, policy_fingerprint, catalog_digest
+            )
+            VALUES (%s, %s, 'interactive', 'queued', %s::jsonb, 'tutor_policy_v1', %s, %s)
+            RETURNING id
+            """,
+            (
+                user["id"],
+                conversation["id"],
+                json.dumps(
+                    {
+                        "deadline": "2030-01-01T00:00:00+00:00",
+                        "max_iterations": 1,
+                        "max_model_calls": 1,
+                        "max_capability_calls": 0,
+                        "max_effects": 0,
+                        "context_token_budget": 8,
+                        "lease_duration_seconds": 30,
+                    }
+                ),
+                "b" * 64,
+                digest,
+            ),
+        ).fetchone()
+        assert run is not None
+        event = conn.execute(
+            """
+            INSERT INTO tutor_run_events (
+              run_id, event_sequence, event_key, kind, input_revision, payload_json, payload_hash
+            )
+            VALUES (%s, 1, 'bootstrap-smoke', 'input_accepted', 0, %s::jsonb, %s)
+            RETURNING id
+            """,
+            (run["id"], json.dumps({"kind": "input_accepted"}), "c" * 64),
+        ).fetchone()
+        assert event is not None
+        with pytest.raises(psycopg.errors.UniqueViolation):
+            with conn.transaction():
+                conn.execute(
+                    """
+                    INSERT INTO tutor_run_events (
+                      run_id, event_sequence, event_key, kind, input_revision, payload_json, payload_hash
+                    )
+                    VALUES (%s, 1, 'bootstrap-smoke-duplicate', 'input_accepted', 0, %s::jsonb, %s)
+                    """,
+                    (run["id"], json.dumps({"kind": "input_accepted"}), "d" * 64),
+                )
+        conn.rollback()
 
 
 def test_core_learning_relationships_can_be_inserted() -> None:

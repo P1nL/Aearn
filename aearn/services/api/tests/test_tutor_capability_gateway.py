@@ -312,4 +312,9 @@ def test_catalog_and_tutor_source_never_import_legacy_or_unbounded_execution_sur
 
     for path in files:
         source = path.read_text(encoding="utf-8")
-        assert not any(marker in source for marker in forbidden), path
+        forbidden_for_path = forbidden
+        if path.name == "persistence.py":
+            # Child 02 owns the only target SQL repository. Keep the storage
+            # exception narrow while retaining every execution/legacy boundary.
+            forbidden_for_path = tuple(marker for marker in forbidden if marker not in {"app.db", "psycopg"})
+        assert not any(marker in source for marker in forbidden_for_path), path
