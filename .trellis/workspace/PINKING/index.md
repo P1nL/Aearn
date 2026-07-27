@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-2.md`
-- **Total Sessions**: 75
-- **Last Active**: 2026-07-27
+- **Total Sessions**: 77
+- **Last Active**: 2026-07-28
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-2.md` | ~543 | Active |
+| `journal-2.md` | ~609 | Active |
 | `journal-1.md` | ~1979 | Archived |
 <!-- @@@/auto:active-documents -->
 
@@ -30,6 +30,8 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 77 | 2026-07-28 | Complete Container Sandbox Executor | `cd7bcce198973988fdd7889075a22a1b22406e6a` | `main` |
+| 76 | 2026-07-27 | Complete Tutor State, Traces, and Evals | `00b57a9f585796e5b7c46c7e8bf91849b765f115` | `main` |
 | 75 | 2026-07-27 | Add Tutor Skill Catalog Capability Gateway | `92492c6` | `main` |
 | 74 | 2026-07-26 | Complete Tutor Harness runtime seam | `9f65449`, `30772e9` | `main` |
 | 73 | 2026-06-18 | Regenerate current project docs | `01ba0d8` | `main` |
