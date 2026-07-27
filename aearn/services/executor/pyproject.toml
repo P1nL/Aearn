@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aearn-executor"
+version = "0.1.0"
+description = "Isolated PostgreSQL-backed container executor for Aearn Tutor."
+requires-python = ">=3.11,<3.13"
+dependencies = [
+  "aearn-shared",
+  "docker==7.1.0",
+  "psycopg[binary]",
+]
+
+[project.scripts]
+aearn-executor = "aearn_executor.main:main"
+
+[dependency-groups]
+dev = [
+  "pytest",
+  "ruff",
+  "mypy",
+]
+
+[tool.uv]
+package = true
+
+[tool.setuptools.packages.find]
+include = ["aearn_executor*"]
+
+[tool.uv.sources]
+aearn-shared = { path = "../../packages/shared", editable = true }
+
+[tool.mypy]
+mypy_path = ["$MYPY_CONFIG_FILE_DIR/../../packages/shared", "$MYPY_CONFIG_FILE_DIR/typings"]

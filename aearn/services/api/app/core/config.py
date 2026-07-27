@@ -64,6 +64,9 @@ class Settings(BaseModel):
     tutor_harness_enabled: bool = Field(
         default_factory=lambda: _env_str("TUTOR_HARNESS_ENABLED", "false").lower() in ("true", "1", "yes")
     )
+    tutor_executor_enabled: bool = Field(
+        default_factory=lambda: _env_str("TUTOR_EXECUTOR_ENABLED", "false").lower() in ("true", "1", "yes")
+    )
 
     @property
     def llm_provider_type(self) -> str:

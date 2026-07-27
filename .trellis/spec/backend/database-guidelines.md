@@ -190,3 +190,81 @@ uv --directory .\aearn\services\api run python -c "import psycopg; psycopg.conne
 ```powershell
 uv --directory .\aearn\services\api run python -c "import psycopg; conn = psycopg.connect('postgresql://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable', connect_timeout=10); print(conn.execute('select 1').fetchone()[0]); conn.close()"
 ```
+
+---
+
+## Scenario: Tutor Container Executor Scope and Lifecycle Integrity
+
+### 1. Scope / Trigger
+
+- Trigger: changing `tutor_execution_*` schema, `ExecutionIntentRepository`, `PostgresExecutionJobStore`, executor health/claim logic, or the in-transaction `runner.execute` submission seam.
+- Scope: feature-disabled Tutor execution only. The API/Harness transaction persists an intent/job; only `aearn/services/executor/` may claim it after commit. No public route, SSE, Desktop, legacy runner, host subprocess fallback, or generic worker queue is authorized by this scenario.
+
+### 2. Signatures
+
+- DB parent evidence: `tutor_run_input_events(run_id, message_id, input_revision)`, `tutor_effects(id, run_id, effect_id)`, and `tutor_execution_intents(id, run_id, user_id, conversation_id)`.
+- Intent contract: `tutor_execution_intents(run_id, source_message_id, input_revision, consumed_by_effect_id)`.
+- Job contract: `tutor_execution_jobs(intent_id, effect_record_id, effect_key, run_id, user_id, conversation_id, state, lease_*, launch_*, result_*, terminal_at)`.
+- Lifecycle: `pending -> claimed -> launch_reserved -> running -> terminal`, where terminal is `completed | timed_out | cancelled | unavailable | launch_uncertain | failed`. The only terminal-to-terminal convergence is `* -> failed` when cleanup fails.
+- Claim command: `PostgresExecutionJobStore.claim_next(executor_id, now, lease_seconds)` uses `FOR UPDATE SKIP LOCKED`; `claim_reserved_for_recovery(...)` may adopt a reserved launch but may never allocate a new launch token.
+
+### 3. Contracts
+
+- Bootstrap remains repeatable and additive. Composite parent keys and child foreign keys must keep an intent, accepted source input, effect, job, run, user, and conversation in the same scope. Add new legacy-safe FK/CHECK constraints with guarded DDL; `NOT VALID` is permitted only to preserve existing rows, never to disable enforcement for new writes.
+- An execution intent's `(run_id, source_message_id, input_revision)` must reference an actually accepted Tutor input. Its consumed effect must belong to the same run.
+- A job's `(intent_id, run_id, user_id, conversation_id)` must match its intent, and `(effect_record_id, run_id, effect_key)` must match its effect. Scalar UUID foreign keys alone are not sufficient scope protection.
+- A terminal job must have `terminal_at`, `result_json`, and `result_hash`; a non-terminal job must have none of them. `claimed` requires a non-empty owner, positive generation, and expiry. `launch_reserved` and `running` require one positive launch generation, token, reservation timestamp, and lease facts.
+- `launch_token`, `launch_generation`, and `launch_reserved_at` become immutable once allocated. A terminal job may never return to a non-terminal state. These cross-row rules belong in a narrow `BEFORE INSERT OR UPDATE` trigger, not only in Python code.
+- Raw source, hidden tests, image references, container identifiers, commands, mounts, paths, and Docker errors never enter these tables' learner-safe result/projection fields. Jobs persist opaque references, hashes, safe codes, counters, and bounded results only.
+
+### 4. Validation & Error Matrix
+
+- An intent whose source revision/message was not accepted for its run -> PostgreSQL foreign-key violation; no job is created.
+- A consumed effect from another run, or a job whose effect/intent scope differs from its run/user/conversation -> PostgreSQL foreign-key violation.
+- Terminal state without result/timestamp, a claimed row without a lease shape, or reserved/running state without launch facts -> PostgreSQL check violation.
+- Replacing/clearing a reserved launch token or changing terminal back to pending/claimed/running -> lifecycle-trigger check violation.
+- Cleanup after a terminal launch result -> may converge to `failed` with a new safe failure result and `cleanup_state=failed`; it must not resurrect work.
+- Missing immutable lock, stale/incompatible health, disabled `TUTOR_EXECUTOR_ENABLED`, cancellation, or expired old lease -> safe unavailable/cancelled/stale behavior; never Docker launch or legacy runner fallback.
+
+### 5. Good/Base/Bad Cases
+
+- Good: one effect transaction commits one scoped `pending` job; two executor connections contend, the second skips the held row, and an expired **unreserved** claim can be reclaimed by the next generation.
+- Good: a recovery executor adopts the same `launch_reserved` token and generation; it searches/adopts the matching container or records `launch_uncertain`, never reserves another token.
+- Base: no reviewed digest lock exists, so the executor writes only unavailable health and no job reaches Docker.
+- Bad: referencing a message from a different input revision, updating only a job UUID while changing its run, storing a terminal result on a non-terminal job, clearing the launch token for retry, or returning a terminal job to `pending`.
+
+### 6. Tests Required
+
+- Run `bootstrap_database()` twice and assert the composite keys, scoped foreign keys, lifecycle checks, and lifecycle trigger exist.
+- Use real PostgreSQL mutation tests to prove cross-run input/effect/job updates are rejected, terminal result shape is enforced, launch token replacement is rejected, terminal-to-non-terminal is rejected, and terminal-to-`failed` cleanup convergence is allowed.
+- Use two independent `psycopg` connections: lock a pending job in connection A, assert connection B's `claim_next()` skips it, then release A and assert B claims exactly once.
+- Cover expired pre-launch lease reclaim, old-lease reserve rejection, reserved-launch recovery with the original token, and cancellation before reservation producing terminal `cancelled` without a token.
+- Keep contract/redaction tests proving that API/Harness/worker/legacy runners have no Docker client or fallback and that safe results omit raw source, hidden tests, image/container/path/command details.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```sql
+-- A scalar UUID link can point at an effect from another Tutor run.
+UPDATE tutor_execution_jobs
+SET effect_record_id = :other_effect_id
+WHERE id = :job_id;
+```
+
+#### Correct
+
+```sql
+-- The composite FK makes the effect record, run, and effect key one scope.
+ALTER TABLE tutor_execution_jobs
+  ADD CONSTRAINT fk_tutor_execution_job_effect_scope
+  FOREIGN KEY (effect_record_id, run_id, effect_key)
+  REFERENCES tutor_effects(id, run_id, effect_id)
+  ON DELETE RESTRICT NOT VALID;
+
+-- A trigger then preserves the one-time external-effect reservation.
+IF OLD.launch_token IS NOT NULL
+   AND NEW.launch_token IS DISTINCT FROM OLD.launch_token THEN
+  RAISE EXCEPTION USING ERRCODE = '23514';
+END IF;
+```

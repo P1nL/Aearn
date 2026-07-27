@@ -10,6 +10,8 @@
     "dev:status": "powershell -ExecutionPolicy Bypass -File ./scripts/start-dev.ps1 -Status",
     "desktop:dev": "pnpm --dir apps/desktop tauri dev",
     "desktop:build": "pnpm --dir apps/desktop tauri build",
-    "desktop:check": "pnpm --dir apps/desktop build"
+    "desktop:check": "pnpm --dir apps/desktop build",
+    "executor:dev": "uv --directory ./services/executor run python -m aearn_executor",
+    "executor:once": "uv --directory ./services/executor run python -m aearn_executor --once"
   }
 }

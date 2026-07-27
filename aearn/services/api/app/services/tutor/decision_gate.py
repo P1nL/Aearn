@@ -1,6 +1,10 @@
 """Catalog-constrained decision validation before Tutor capability or effect boundaries."""
 from __future__ import annotations
 
+from pydantic import ValidationError
+
+from app.agents.harness.contracts import payload_mapping_from_fields
+
 from app.agents.harness.skill_catalog import CatalogSkillReference, PublishedSkill, SkillCatalogSnapshot
 from app.agents.harness.contracts import (
     TutorDecision,
@@ -142,6 +146,13 @@ class CatalogTutorDecisionGate:
                 return _deny("effect_not_allowed_by_skill")
             if not policy.allows_effect(descriptor):
                 return _deny("effect_not_policy_eligible")
+            payload = payload_mapping_from_fields(proposal.payload)
+            if payload is None:
+                return _deny("effect_arguments_invalid")
+            try:
+                descriptor.proposal_model.model_validate(payload)
+            except ValidationError:
+                return _deny("effect_arguments_invalid")
         return None
 
     def _selected_skill(self, *, run: TutorRunSnapshot) -> tuple[TutorSkillSelection, PublishedSkill] | None:

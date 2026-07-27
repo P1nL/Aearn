@@ -233,6 +233,43 @@ identity. They cover policy denial, strict provider-envelope rejection, bounded
 loop exit, stale revision/effect behavior, primary-only `MODEL_UNAVAILABLE`,
 and redaction leakage without a live model, network, worker, or wall clock.
 
+## Child 03 Target: Isolated Container Executor
+
+Child 03 adds a feature-disabled, durable execution foundation. It does not
+make the Harness reachable from product traffic and does not change the legacy
+runner, route, Graph, SSE, Desktop, or general Celery-worker boundary.
+
+- `runner.execute` is an exact catalog effect that accepts only a server-issued
+  opaque `ExecutionIntentProofV1` reference. The proof binds an interactive
+  user/conversation/run/revision/message/exercise scope, explicit action,
+  catalog/policy/budget evidence, and expiry. Proactive origin, stale scope,
+  cancellation, missing evidence, or extra model fields create no job.
+- The Child 02 in-transaction handler only records or replays one
+  `tutor_execution_jobs` row and consumes the proof. It does not contact an
+  image registry, runtime daemon, or legacy runner. The durable PostgreSQL job
+  table is the execution source of truth; later broker delivery can only be a
+  wake-up optimization.
+- Only `aearn/services/executor/` owns the runtime client. It claims jobs after
+  commit, reserves one immutable launch token before an external action, and
+  either adopts a matching labeled runtime or records `launch_uncertain`.
+  Uncertainty is terminal rather than a reason to launch a second runtime.
+- The Git-owned catalog names the seven reviewed protocol entries: Python,
+  browser preview, TypeScript, SQLite, Java, Go, and C#. Rust and C++ remain
+  absent. `image-locks.json` contains only reviewed
+  `repository@sha256:<64-hex>` locks; an omitted lock is unavailable, never a
+  tag, local image, pull, or host-process fallback.
+- `TUTOR_EXECUTOR_ENABLED=false` is independent from both
+  `TUTOR_HARNESS_ENABLED` and `REAL_EXECUTION_ENABLED`. API availability reads
+  only a compatible executor heartbeat and lock fingerprint. It never contacts
+  the runtime daemon.
+- Intent/job/audit/event/export projections retain opaque ids, fingerprints,
+  enums, counters, and capped learner-safe result facts only. They exclude
+  source code, hidden tests, image details, runtime identifiers, commands,
+  mounts, paths, container identifiers, and raw runtime errors.
+
+The standalone process and its operator workflow are documented in
+[`../setup/container-sandbox-executor.md`](../setup/container-sandbox-executor.md).
+
 ## Target Loop and Future Ownership
 
 The finite loop leases, loads, checks fixed budgets/cancellation, builds bounded

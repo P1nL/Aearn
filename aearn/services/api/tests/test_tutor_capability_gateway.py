@@ -317,4 +317,10 @@ def test_catalog_and_tutor_source_never_import_legacy_or_unbounded_execution_sur
             # Child 02 owns the only target SQL repository. Keep the storage
             # exception narrow while retaining every execution/legacy boundary.
             forbidden_for_path = tuple(marker for marker in forbidden if marker not in {"app.db", "psycopg"})
+        if path.name == "execution.py":
+            # Child 03 owns the target SQL intent/job repository and may adapt
+            # the immutable runner result dataclass only. It must not import a
+            # runner implementation or launch a host path.
+            forbidden_for_path = tuple(marker for marker in forbidden if marker not in {"psycopg"})
+            source = source.replace("app.services.runners.runtime_contracts", "")
         assert not any(marker in source for marker in forbidden_for_path), path

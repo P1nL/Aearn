@@ -1,0 +1,16 @@
+{
+  "cases": [
+    {
+      "id": "opaque-proof-only",
+      "proposal": {
+        "intent_proof_id": "server-issued-proof"
+      },
+      "expects": "requires_exact_server_proof"
+    },
+    {
+      "id": "no-target-selection",
+      "proposal": {},
+      "expects": "deny_without_proof"
+    }
+  ]
+}

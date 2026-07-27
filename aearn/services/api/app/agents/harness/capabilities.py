@@ -8,6 +8,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from aearn_shared.execution import ExecutionEffectProposalV1
+
 
 EXACT_SEMVER_PATTERN = re.compile(
     r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
@@ -246,6 +248,17 @@ def _ensure_unique_schema_fields(model: type[BaseModel]) -> None:
         raise ValueError("Pydantic schema fields must not expose duplicate names")
 
 
+RUNNER_EXECUTE_EFFECT_TYPE = "runner.execute"
+RUNNER_EXECUTE_EFFECT_DESCRIPTOR = EffectDescriptor(
+    effect_type=RUNNER_EXECUTE_EFFECT_TYPE,
+    version="1.0.0",
+    description="Record one server-approved interactive execution intent for the isolated executor.",
+    proposal_model=ExecutionEffectProposalV1,
+    policy_tags=("interactive-execution",),
+    implementation_owner="container-executor",
+)
+
+
 GROUNDING_RETRIEVE_CAPABILITY_ID = "grounding.retrieve"
 GROUNDING_RETRIEVE_DESCRIPTOR = CapabilityDescriptor(
     capability_id=GROUNDING_RETRIEVE_CAPABILITY_ID,
@@ -259,6 +272,12 @@ GROUNDING_RETRIEVE_DESCRIPTOR = CapabilityDescriptor(
 
 
 def default_capability_descriptors() -> tuple[CapabilityDescriptor, ...]:
-    """Return the sole executable descriptor for the reviewed first vertical."""
+    """Return the approved bounded capability descriptors."""
 
     return (GROUNDING_RETRIEVE_DESCRIPTOR,)
+
+
+def default_effect_descriptors() -> tuple[EffectDescriptor, ...]:
+    """Return effect metadata only; a handler remains separately feature-gated."""
+
+    return (RUNNER_EXECUTE_EFFECT_DESCRIPTOR,)

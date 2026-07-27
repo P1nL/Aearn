@@ -1,0 +1,51 @@
+"""Versioned, pure contracts for the isolated Tutor execution boundary."""
+
+from aearn_shared.execution.catalog import (
+    RuntimeCatalogRegistryV1,
+    RuntimeCatalogValidationError,
+    load_runtime_catalog_registry,
+    runtime_id_for_profile,
+)
+from aearn_shared.execution.contracts import (
+    ExecutionAction,
+    ExecutionBudgetV1,
+    ExecutionEffectProposalV1,
+    ExecutionHealthV1,
+    ExecutionIntentProofV1,
+    ExecutionJobClaimV1,
+    ExecutionJobState,
+    ExecutionJobV1,
+    RuntimeCatalogEntryV1,
+    RuntimeImageLockV1,
+    RuntimeLimitProfileV1,
+    SafeExecutionResultV1,
+    SafeExecutionStatus,
+    SafeTestFeedbackV1,
+    SandboxInputV1,
+    SandboxResultV1,
+    SandboxTestFeedbackV1,
+)
+
+__all__ = [
+    "ExecutionAction",
+    "ExecutionBudgetV1",
+    "ExecutionEffectProposalV1",
+    "ExecutionHealthV1",
+    "ExecutionIntentProofV1",
+    "ExecutionJobClaimV1",
+    "ExecutionJobState",
+    "ExecutionJobV1",
+    "RuntimeCatalogEntryV1",
+    "RuntimeCatalogRegistryV1",
+    "RuntimeCatalogValidationError",
+    "RuntimeImageLockV1",
+    "RuntimeLimitProfileV1",
+    "SafeExecutionResultV1",
+    "SafeExecutionStatus",
+    "SafeTestFeedbackV1",
+    "SandboxInputV1",
+    "SandboxResultV1",
+    "SandboxTestFeedbackV1",
+    "load_runtime_catalog_registry",
+    "runtime_id_for_profile",
+]
