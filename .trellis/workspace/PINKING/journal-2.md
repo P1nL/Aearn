@@ -541,3 +541,69 @@ Implemented a versioned Tutor Skill catalog, policy-gated decision/capability bo
 ### Next Steps
 
 - None - task complete
+
+
+## Session 76: Complete Tutor State, Traces, and Evals
+
+**Date**: 2026-07-27
+**Task**: Complete Tutor State, Traces, and Evals
+**Branch**: `main`
+
+### Summary
+
+Implemented and independently verified the feature-off Tutor durable persistence, safe trace/export, internal replay, effect CAS, curation envelope, deterministic evals, and target contracts.
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `00b57a9f585796e5b7c46c7e8bf91849b765f115` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 77: Complete Container Sandbox Executor
+
+**Date**: 2026-07-28
+**Task**: Complete Container Sandbox Executor
+**Branch**: `main`
+
+### Summary
+
+Implemented and verified the feature-disabled isolated container executor: shared immutable contracts and catalog, scoped durable intent/job lifecycle, executor-only Docker boundary, seven runtime protocol definitions, redaction, and fail-closed health/lock gates. No public traffic or legacy runner behavior changed.
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `cd7bcce198973988fdd7889075a22a1b22406e6a` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
