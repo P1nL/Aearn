@@ -1,0 +1,10 @@
+{"file":".trellis/spec/backend/index.md","reason":"Review module placement, source-of-truth routing, and API-service validation ownership."}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"Review additive schema safety, scoped transactions, locking, idempotency, and rollback boundaries."}
+{"file":".trellis/spec/backend/error-handling.md","reason":"Review stable conflict/denial/error codes and safe internal diagnostics."}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"Review that traces, exports, and failures never expose prompts, provider data, secrets, code, or paths."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Review feature-off Harness constraints, redaction, revision/effect safety, deterministic tests, and no accidental public wiring."}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"Review that existing redaction, metadata, catalog, and fake patterns are reused rather than forked."}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Review lifecycle-to-storage-to-future SSE/worker/Curator contract consistency."}
+{"file":"docs/architecture/tutor-harness-transition.md","reason":"Review Child 02 target ownership and explicit non-ownership of queue, Curator semantics, API/SSE, and Desktop."}
+{"file":".trellis/tasks/07-22-tutor-state-traces-and-evals/research/persistence-and-schema-baseline.md","reason":"Verify implementation against observed bootstrap/transaction/run-loop/catalog evidence."}
+{"file":".trellis/tasks/07-22-tutor-state-traces-and-evals/research/trace-redaction-replay-eval-baseline.md","reason":"Verify protected-data, replay, outbox/proposal, and eval regression coverage."}
