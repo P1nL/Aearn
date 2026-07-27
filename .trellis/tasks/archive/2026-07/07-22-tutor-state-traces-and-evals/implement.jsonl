@@ -1,0 +1,10 @@
+{"file":".trellis/spec/backend/index.md","reason":"Backend placement, documentation authority, and API-service command routing for the target persistence foundation."}
+{"file":".trellis/spec/backend/directory-structure.md","reason":"Narrow placement rules for new Tutor service and Harness persistence modules."}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"PostgreSQL schema, transaction, UUID/timestamptz, JSONB, and idempotency constraints."}
+{"file":".trellis/spec/backend/error-handling.md","reason":"Stable conflict/denial/failure behavior without raw provider or database leakage."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Feature-disabled Harness, metadata-only checkpoint, redaction, and focused-test invariants."}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"Reuse existing redaction, checkpoint, catalog, idempotency, and fake contracts instead of duplicating them."}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Maps run-loop to repository to future SSE/worker/Curator boundary contracts."}
+{"file":"docs/architecture/tutor-harness-transition.md","reason":"Target ownership boundary for Child 02 durable state, internal replay, and downstream Child 04/05/06 work."}
+{"file":".trellis/tasks/07-22-tutor-state-traces-and-evals/research/persistence-and-schema-baseline.md","reason":"Verified bootstrap, repository, transaction, run-loop, catalog-selection, and migration-gap evidence."}
+{"file":".trellis/tasks/07-22-tutor-state-traces-and-evals/research/trace-redaction-replay-eval-baseline.md","reason":"Verified trace/redaction, replay, outbox/proposal, and deterministic-evaluation evidence."}
