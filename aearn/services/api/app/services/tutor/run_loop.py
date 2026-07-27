@@ -33,6 +33,8 @@ from app.services.tutor.ports import (
     TutorContextLoader,
     TutorDecisionGate,
     TutorEffectCommitter,
+    TutorLifecycleConflict,
+    TutorLifecyclePersistence,
     TutorProviderGateway,
     TutorRunStore,
 )
@@ -56,6 +58,7 @@ class TutorRunLoop:
         clock: Clock,
         compaction_publisher: TutorCompactionPublisher,
         decision_gate: TutorDecisionGate | None = None,
+        lifecycle: TutorLifecyclePersistence | None = None,
     ) -> None:
         self._store = store
         self._context_loader = context_loader
@@ -66,6 +69,7 @@ class TutorRunLoop:
         self._decision_gate = decision_gate or DefaultDenyTutorDecisionGate()
         self._clock = clock
         self._compaction_publisher = compaction_publisher
+        self._lifecycle = lifecycle
 
     def run(self, *, run_id: str, lease_owner_id: str) -> TutorRunResult:
         snapshot = self._store.load_snapshot(run_id)
@@ -79,17 +83,7 @@ class TutorRunLoop:
             duration_seconds=snapshot.policy.lease_duration_seconds,
         )
         if lease is None:
-            return TutorRunResult(
-                run_id=snapshot.run_id,
-                status=TutorRunStatus.BLOCKED_POLICY,
-                input_revision=snapshot.input_revision,
-                iteration_count=snapshot.iteration_count,
-                model_call_count=snapshot.model_call_count,
-                capability_call_count=snapshot.capability_call_count,
-                effect_count=snapshot.effect_count,
-                terminal_outcome=TutorTerminalOutcome.BLOCKED_POLICY,
-                diagnostic_code="lease_unavailable",
-            )
+            return _lease_unavailable_result(snapshot)
 
         snapshot = replace(snapshot, status=TutorRunStatus.LEASED, lease=lease)
         effect_results: list[TutorEffectResult] = []
@@ -154,7 +148,17 @@ class TutorRunLoop:
                 )
                 metadata = context.checkpoint_metadata
                 if context.high_water_compaction_request is not None:
-                    self._compaction_publisher.publish(context.high_water_compaction_request)
+                    if self._lifecycle is None:
+                        self._compaction_publisher.publish(context.high_water_compaction_request)
+                    else:
+                        if snapshot.lease is None:
+                            raise RuntimeError("owned Tutor lifecycle is missing a lease")
+                        self._lifecycle.persist_context_high_water(
+                            snapshot=snapshot,
+                            lease=snapshot.lease,
+                            request=context.high_water_compaction_request,
+                            created_at=self._clock.now(),
+                        )
 
                 # Reload immediately before the model boundary so a newly accepted
                 # learner input cannot be answered with stale composed context.
@@ -202,6 +206,7 @@ class TutorRunLoop:
                 if decision.checkpoint_reason is not None:
                     self._save_safe_checkpoint(
                         snapshot,
+                        lease=lease,
                         reason=decision.checkpoint_reason,
                         metadata=metadata,
                     )
@@ -243,6 +248,8 @@ class TutorRunLoop:
                     )
 
                 return self._waiting_for_input(snapshot, decision=decision, effect_results=effect_results)
+        except TutorLifecycleConflict:
+            return _lease_unavailable_result(snapshot, effect_results=effect_results)
         except Exception:
             return self._terminal(
                 snapshot,
@@ -411,6 +418,7 @@ class TutorRunLoop:
         self,
         snapshot: TutorRunSnapshot,
         *,
+        lease: TutorLease,
         reason: TutorCheckpointReason,
         metadata: TutorCheckpointMetadata,
     ) -> None:
@@ -422,16 +430,23 @@ class TutorRunLoop:
             metadata=metadata,
             created_at=self._clock.now(),
         )
-        self._store.save_checkpoint(checkpoint)
-        self._compaction_publisher.publish(
-            build_compaction_request(
-                run_id=snapshot.run_id,
-                conversation_id=snapshot.conversation_id,
-                input_revision=snapshot.input_revision,
-                trigger=TutorCompactionTrigger.SAFE_CHECKPOINT,
-                metadata=metadata,
-            )
+        request = build_compaction_request(
+            run_id=snapshot.run_id,
+            conversation_id=snapshot.conversation_id,
+            input_revision=snapshot.input_revision,
+            trigger=TutorCompactionTrigger.SAFE_CHECKPOINT,
+            metadata=metadata,
         )
+        if self._lifecycle is not None:
+            self._lifecycle.persist_safe_checkpoint(
+                snapshot=snapshot,
+                lease=lease,
+                checkpoint=checkpoint,
+                compaction_request=request,
+            )
+            return
+        self._store.save_checkpoint(checkpoint)
+        self._compaction_publisher.publish(request)
 
     def _terminal(
         self,
@@ -453,15 +468,12 @@ class TutorRunLoop:
             metadata=checkpoint_metadata,
             created_at=self._clock.now(),
         )
-        self._store.save_checkpoint(checkpoint)
-        self._compaction_publisher.publish(
-            build_compaction_request(
-                run_id=snapshot.run_id,
-                conversation_id=snapshot.conversation_id,
-                input_revision=snapshot.input_revision,
-                trigger=TutorCompactionTrigger.TERMINAL,
-                metadata=checkpoint_metadata,
-            )
+        request = build_compaction_request(
+            run_id=snapshot.run_id,
+            conversation_id=snapshot.conversation_id,
+            input_revision=snapshot.input_revision,
+            trigger=TutorCompactionTrigger.TERMINAL,
+            metadata=checkpoint_metadata,
         )
         result = TutorRunResult(
             run_id=snapshot.run_id,
@@ -476,6 +488,18 @@ class TutorRunLoop:
             diagnostic_code=diagnostic_code,
             effect_results=tuple(effect_results),
         )
+        if self._lifecycle is not None:
+            if snapshot.lease is None:
+                raise RuntimeError("owned Tutor lifecycle is missing a lease")
+            return self._lifecycle.persist_terminal(
+                snapshot=snapshot,
+                lease=snapshot.lease,
+                checkpoint=checkpoint,
+                result=result,
+                compaction_request=request,
+            )
+        self._store.save_checkpoint(checkpoint)
+        self._compaction_publisher.publish(request)
         self._store.record_result(result)
         return result
 
@@ -497,6 +521,15 @@ class TutorRunLoop:
             public_message=decision.public_message,
             effect_results=tuple(effect_results),
         )
+        if self._lifecycle is not None:
+            if snapshot.lease is None:
+                raise RuntimeError("owned Tutor lifecycle is missing a lease")
+            return self._lifecycle.persist_waiting_result(
+                snapshot=snapshot,
+                lease=snapshot.lease,
+                result=result,
+                created_at=self._clock.now(),
+            )
         self._store.record_result(result)
         return result
 
@@ -516,6 +549,25 @@ class TutorHarnessService:
         if not self._enabled:
             return self._loop.feature_disabled_result(run_id=run_id)
         return self._loop.run(run_id=run_id, lease_owner_id=lease_owner_id)
+
+
+def _lease_unavailable_result(
+    snapshot: TutorRunSnapshot,
+    *,
+    effect_results: list[TutorEffectResult] | tuple[TutorEffectResult, ...] = (),
+) -> TutorRunResult:
+    return TutorRunResult(
+        run_id=snapshot.run_id,
+        status=TutorRunStatus.BLOCKED_POLICY,
+        input_revision=snapshot.input_revision,
+        iteration_count=snapshot.iteration_count,
+        model_call_count=snapshot.model_call_count,
+        capability_call_count=snapshot.capability_call_count,
+        effect_count=snapshot.effect_count,
+        terminal_outcome=TutorTerminalOutcome.BLOCKED_POLICY,
+        diagnostic_code="lease_unavailable",
+        effect_results=tuple(effect_results),
+    )
 
 
 def _missing_run_result(run_id: str) -> TutorRunResult:

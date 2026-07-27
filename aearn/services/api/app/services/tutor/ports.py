@@ -102,6 +102,51 @@ class TutorCompactionPublisher(Protocol):
     def publish(self, request: TutorCompactionRequest) -> None: ...
 
 
+class TutorLifecyclePersistence(Protocol):
+    """Atomic persistence seam for the composed target adapter only."""
+
+    def persist_safe_checkpoint(
+        self,
+        *,
+        snapshot: TutorRunSnapshot,
+        lease: TutorLease,
+        checkpoint: TutorCheckpoint,
+        compaction_request: TutorCompactionRequest,
+    ) -> None: ...
+
+    def persist_context_high_water(
+        self,
+        *,
+        snapshot: TutorRunSnapshot,
+        lease: TutorLease,
+        request: TutorCompactionRequest,
+        created_at: datetime,
+    ) -> None: ...
+
+    def persist_terminal(
+        self,
+        *,
+        snapshot: TutorRunSnapshot,
+        lease: TutorLease,
+        checkpoint: TutorCheckpoint,
+        result: TutorRunResult,
+        compaction_request: TutorCompactionRequest,
+    ) -> TutorRunResult: ...
+
+    def persist_waiting_result(
+        self,
+        *,
+        snapshot: TutorRunSnapshot,
+        lease: TutorLease,
+        result: TutorRunResult,
+        created_at: datetime,
+    ) -> TutorRunResult: ...
+
+
+class TutorLifecycleConflict(RuntimeError):
+    """The composed lifecycle lost lease/revision/terminal ownership without committing."""
+
+
 class Clock(Protocol):
     def now(self) -> datetime: ...
 

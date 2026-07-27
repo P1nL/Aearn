@@ -1905,3 +1905,128 @@ return grounding_gateway.dispatch(run=run, request=request)
 The model supplies only bounded intent. Catalog, policy, descriptor schemas,
 and the registry determine whether anything is executable and what source scope
 it can use.
+
+## Scenario: Tutor Durable Persistence, Redacted Replay, and Curation Envelope
+
+### 1. Scope / Trigger
+
+- Trigger: changing Child 02 target-only Tutor SQL, `PostgresTutorRepository`,
+  `PostgresTutorLifecycle`, safe trace/export projection, curation envelope, or
+  deterministic Tutor evaluation fixtures.
+- Scope: `app/db/schema.sql`, `app/services/tutor/{persistence,safe_projection,evals}.py`,
+  the lifecycle adapter, and focused PostgreSQL/fake-only tests.
+- This owner may persist feature-off `tutor_*` state. It does not add a route,
+  SSE/`Last-Event-ID` adapter, Desktop consumer, worker, Curator model call, or
+  plan/memory/review/FSRS/activity mutation.
+
+### 2. Signatures
+
+- Bootstrap: `bootstrap_database()` applies the additive idempotent `tutor_*`
+  SQL delta through the existing schema applier.
+- Input: `PostgresTutorRepository.accept_input(...) -> TutorInputAcceptance`.
+- Replay: `events_after(user_id, run_id, after_sequence, limit) -> tuple[TutorDurableEvent, ...]`.
+- Lifecycle: `PostgresTutorLifecycle.persist_safe_checkpoint(...)`,
+  `persist_context_high_water(...)`, `persist_terminal(...)`, and
+  `persist_waiting_result(...)` are the composed transaction boundary.
+- Effects: `commit_effect_if_current(...) -> TutorEffectCommitReceipt`.
+- Diagnostics: `TutorSafeProjection.project(...)` before persistence and
+  `export(...)` again for every read/export path.
+
+### 3. Contracts
+
+- All new state is additive `tutor_*`, uses UUID/timestamptz/explicit JSONB
+  contracts, and keeps user/run/conversation scope in both repository predicates
+  and composite foreign keys. Bootstrap must be safe to rerun, including when
+  the named scoped constraints already exist.
+- Canonical learner text is written only to `tutor_messages`. Events,
+  checkpoints, capability/effect receipts, traces, outbox rows, proposal rows,
+  and exports contain only allowlisted IDs, hashes, counters, codes, and bounded
+  metadata.
+- Input acceptance locks the scoped run, replays the same key/body hash,
+  rejects a different hash or cancelled/terminal run, increments exactly one
+  revision, and appends one ordered `input_accepted` event in the same
+  transaction.
+- `next_event_sequence` is allocated under the locked run row. Reads return only
+  `event_sequence > after_sequence` in ascending order; request-local SSE IDs
+  are never stored as this cursor.
+- Checkpoint/high-water/terminal writes atomically include their safe event,
+  redacted trace, and idempotent outbox envelope. Retrying the same lifecycle
+  identity reuses the trace/outbox rather than adding a second diagnostic row.
+- Capability receipts require an exact selected Skill/catalog evidence and
+  replay only an identical request/result receipt. Effects remain default-deny:
+  a registered in-transaction handler is insufficient unless the exact selected
+  catalog evidence also declares the effect; stale lease/revision/cancellation
+  records only `stale_rejected` evidence and never invokes a handler.
+- Curation source IDs/hashes and idempotency keys must pass the same safe
+  projection before storage. Proposal creation marks an outbox stale when its
+  input revision, policy/memory version, or retention boundary is stale.
+
+### 4. Validation & Error Matrix
+
+- Missing/wrong-user run or outbox -> `TutorRunNotFound`.
+- Same input/event/capability/effect/outbox/proposal identity with different
+  immutable evidence -> `TutorIdempotencyConflict`.
+- Cancelled or terminal run -> reject new input/non-terminal state with
+  `TutorTerminalStateConflict`.
+- Stale lease, expired lease, or stale revision -> `TutorLeaseConflict` at the
+  repository; the lifecycle adapter maps it to `TutorLifecycleConflict`, and
+  the loop returns non-persistent `blocked_policy / lease_unavailable`.
+- Unpinned/mismatched Skill, undeclared capability, or undeclared effect ->
+  `TutorCatalogEvidenceError` or a durable typed `denied` effect; no callback.
+- Unsafe diagnostic key/value, source evidence, or export header -> omit it;
+  never substitute raw provider, prompt, code, path, command, SQL, or secret.
+
+### 5. Good/Base/Bad Cases
+
+- Good: a retry of the same input, event, safe checkpoint, terminal result,
+  outbox, or proposal returns its original durable identity and preserves one
+  ordered event/trace/outbox/proposal record.
+- Good: a learner cancellation races an old effect; the repository records a
+  safe `stale_rejected` event and does not call the handler.
+- Base: the initial reviewed catalog declares no effect type, so even an
+  explicitly registered future handler remains denied.
+- Bad: writing learner content to `payload_json`, `trace_json`, or an outbox
+  JSON column; exporting an unprojected event/trace `kind`; treating a local
+  `evt_*` writer counter as a durable replay cursor.
+
+### 6. Tests Required
+
+- Run bootstrap twice and assert every `tutor_*` table/trigger/scoped constraint
+  exists; assert a run cannot combine one user's `user_id` with another user's
+  conversation.
+- Assert input replay/hash conflict/cancellation, exact Skill evidence,
+  capability receipt identity, event suffix ordering, terminal uniqueness, and
+  lifecycle rollback/idempotent trace/outbox behavior.
+- Assert stale lease/revision/cancellation effects never invoke the registered
+  handler; initial catalog effects remain denied.
+- Assert nested/key/value-based redaction at write and export time, including a
+  malformed historical event/trace header and unsafe curation source evidence.
+- Keep fake-only eval fixtures pinned to catalog/Skill hashes and cover denial,
+  strict provider rejection, bounded loop, CAS, primary-only model failure,
+  replay/outbox/proposal/terminal identity, and leakage.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+# Each retry creates a fresh trace and trusts raw outbox source metadata.
+append_event(run_id, event_key="checkpoint:1")
+insert_trace(raw_checkpoint)
+insert_outbox(source_ids=request.source_ids)
+```
+
+This duplicates diagnostic state and can turn the outbox into a raw
+conversation/diagnostic store.
+
+#### Correct
+
+```python
+# Under the scoped run lock, reuse the event/trace identity and project twice.
+event = append_safe_event_locked(...)
+trace = insert_or_replay_safe_trace(event, projector.project(metadata))
+upsert_outbox(projector.export(source_ids_and_hashes), trace)
+```
+
+The lifecycle transaction either commits the whole safe receipt once or rolls
+it back without a visible partial event, trace, or outbox row.

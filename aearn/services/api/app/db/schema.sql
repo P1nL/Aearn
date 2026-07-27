@@ -669,3 +669,340 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_learning_messages_client_id ON learning_mes
 DROP TRIGGER IF EXISTS trg_onboarding_conversations_updated_at ON onboarding_conversations;
 CREATE TRIGGER trg_onboarding_conversations_updated_at BEFORE UPDATE ON onboarding_conversations
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- Tutor Harness target persistence (Child 02): additive and feature-off.
+-- These tables are never read by legacy routes, Graphs, SSE, desktop, or workers.
+CREATE TABLE IF NOT EXISTS tutor_conversations (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  status text NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'closed', 'cancelled')),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_tutor_conversations_id_user UNIQUE (id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS tutor_messages (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  conversation_id uuid NOT NULL REFERENCES tutor_conversations(id) ON DELETE RESTRICT,
+  role text NOT NULL CHECK (role IN ('learner', 'tutor')),
+  content text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_tutor_messages_id_conversation UNIQUE (id, conversation_id)
+);
+
+CREATE TABLE IF NOT EXISTS tutor_catalog_snapshots (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  digest text NOT NULL UNIQUE CHECK (digest ~ '^[0-9a-f]{64}$'),
+  manifest_json jsonb NOT NULL,
+  redaction_version text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS tutor_runs (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  conversation_id uuid NOT NULL REFERENCES tutor_conversations(id) ON DELETE RESTRICT,
+  origin text NOT NULL CHECK (origin IN ('interactive', 'proactive')),
+  status text NOT NULL CHECK (status IN (
+    'queued', 'leased', 'running', 'waiting_for_input', 'waiting_for_capability',
+    'awaiting_effect_commit', 'completed', 'model_unavailable', 'blocked_policy',
+    'budget_exhausted', 'cancelled', 'failed'
+  )),
+  policy_json jsonb NOT NULL,
+  policy_version text NOT NULL,
+  policy_fingerprint text NOT NULL CHECK (policy_fingerprint ~ '^[0-9a-f]{64}$'),
+  catalog_digest text NOT NULL REFERENCES tutor_catalog_snapshots(digest) ON DELETE RESTRICT,
+  input_revision integer NOT NULL DEFAULT 0 CHECK (input_revision >= 0),
+  iteration_count integer NOT NULL DEFAULT 0 CHECK (iteration_count >= 0),
+  model_call_count integer NOT NULL DEFAULT 0 CHECK (model_call_count >= 0),
+  capability_call_count integer NOT NULL DEFAULT 0 CHECK (capability_call_count >= 0),
+  effect_count integer NOT NULL DEFAULT 0 CHECK (effect_count >= 0),
+  active_lease_owner_id text,
+  active_lease_generation integer NOT NULL DEFAULT 0 CHECK (active_lease_generation >= 0),
+  active_lease_expires_at timestamptz,
+  cancelled_at timestamptz,
+  terminal_outcome text CHECK (terminal_outcome IS NULL OR terminal_outcome IN (
+    'completed', 'model_unavailable', 'blocked_policy', 'budget_exhausted', 'cancelled', 'failed'
+  )),
+  terminal_diagnostic_code text,
+  terminal_at timestamptz,
+  next_event_sequence integer NOT NULL DEFAULT 1 CHECK (next_event_sequence >= 1),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_tutor_runs_id_user UNIQUE (id, user_id),
+  CONSTRAINT uq_tutor_runs_id_conversation UNIQUE (id, conversation_id),
+  CONSTRAINT fk_tutor_runs_conversation_user
+    FOREIGN KEY (conversation_id, user_id) REFERENCES tutor_conversations(id, user_id) ON DELETE RESTRICT,
+  CHECK ((terminal_outcome IS NULL) = (terminal_at IS NULL))
+);
+
+CREATE TABLE IF NOT EXISTS tutor_run_skill_selections (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  run_id uuid NOT NULL REFERENCES tutor_runs(id) ON DELETE RESTRICT,
+  input_revision integer NOT NULL CHECK (input_revision >= 0),
+  skill_id text NOT NULL,
+  skill_version text NOT NULL,
+  manifest_hash text NOT NULL CHECK (manifest_hash ~ '^[0-9a-f]{64}$'),
+  instruction_hash text NOT NULL CHECK (instruction_hash ~ '^[0-9a-f]{64}$'),
+  evaluation_hash text NOT NULL CHECK (evaluation_hash ~ '^[0-9a-f]{64}$'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (run_id, input_revision),
+  UNIQUE (run_id, input_revision, skill_id, skill_version)
+);
+
+CREATE TABLE IF NOT EXISTS tutor_run_input_events (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  run_id uuid NOT NULL REFERENCES tutor_runs(id) ON DELETE RESTRICT,
+  conversation_id uuid NOT NULL REFERENCES tutor_conversations(id) ON DELETE RESTRICT,
+  message_id uuid NOT NULL REFERENCES tutor_messages(id) ON DELETE RESTRICT,
+  input_revision integer NOT NULL CHECK (input_revision > 0),
+  idempotency_key text NOT NULL CHECK (char_length(idempotency_key) <= 160),
+  body_hash text NOT NULL CHECK (body_hash ~ '^[0-9a-f]{64}$'),
+  source text NOT NULL CHECK (char_length(source) <= 120),
+  accepted_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (run_id, input_revision),
+  UNIQUE (run_id, idempotency_key),
+  UNIQUE (run_id, message_id),
+  CONSTRAINT fk_tutor_input_event_run_conversation
+    FOREIGN KEY (run_id, conversation_id) REFERENCES tutor_runs(id, conversation_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_input_event_message_conversation
+    FOREIGN KEY (message_id, conversation_id) REFERENCES tutor_messages(id, conversation_id) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS tutor_run_checkpoints (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  run_id uuid NOT NULL REFERENCES tutor_runs(id) ON DELETE RESTRICT,
+  input_revision integer NOT NULL CHECK (input_revision >= 0),
+  reason text NOT NULL CHECK (reason IN ('safe_progress', 'capability_result', 'terminal')),
+  status text NOT NULL CHECK (status IN (
+    'queued', 'leased', 'running', 'waiting_for_input', 'waiting_for_capability',
+    'awaiting_effect_commit', 'completed', 'model_unavailable', 'blocked_policy',
+    'budget_exhausted', 'cancelled', 'failed'
+  )),
+  metadata_json jsonb NOT NULL,
+  metadata_hash text NOT NULL CHECK (metadata_hash ~ '^[0-9a-f]{64}$'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (run_id, input_revision, reason, status)
+);
+
+CREATE TABLE IF NOT EXISTS tutor_run_events (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  run_id uuid NOT NULL REFERENCES tutor_runs(id) ON DELETE RESTRICT,
+  event_sequence integer NOT NULL CHECK (event_sequence > 0),
+  event_key text NOT NULL CHECK (char_length(event_key) <= 160),
+  kind text NOT NULL CHECK (char_length(kind) <= 120),
+  input_revision integer NOT NULL CHECK (input_revision >= 0),
+  payload_json jsonb NOT NULL,
+  payload_hash text NOT NULL CHECK (payload_hash ~ '^[0-9a-f]{64}$'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (run_id, event_sequence),
+  UNIQUE (run_id, event_key)
+);
+
+CREATE TABLE IF NOT EXISTS tutor_capability_invocations (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  run_id uuid NOT NULL REFERENCES tutor_runs(id) ON DELETE RESTRICT,
+  event_id uuid NOT NULL REFERENCES tutor_run_events(id) ON DELETE RESTRICT,
+  input_revision integer NOT NULL CHECK (input_revision >= 0),
+  invocation_key text NOT NULL CHECK (char_length(invocation_key) <= 160),
+  capability_id text NOT NULL,
+  capability_version text NOT NULL,
+  catalog_digest text NOT NULL CHECK (catalog_digest ~ '^[0-9a-f]{64}$'),
+  policy_fingerprint text NOT NULL CHECK (policy_fingerprint ~ '^[0-9a-f]{64}$'),
+  skill_id text,
+  skill_version text,
+  manifest_hash text,
+  instruction_hash text,
+  lease_owner_id text NOT NULL,
+  lease_generation integer NOT NULL CHECK (lease_generation > 0),
+  status text NOT NULL CHECK (status IN ('completed', 'denied', 'unavailable')),
+  diagnostic_code text,
+  request_hash text NOT NULL CHECK (request_hash ~ '^[0-9a-f]{64}$'),
+  result_hash text NOT NULL CHECK (result_hash ~ '^[0-9a-f]{64}$'),
+  duration_ms integer NOT NULL DEFAULT 0 CHECK (duration_ms >= 0),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (run_id, invocation_key)
+);
+
+CREATE TABLE IF NOT EXISTS tutor_effects (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  run_id uuid NOT NULL REFERENCES tutor_runs(id) ON DELETE RESTRICT,
+  effect_id text NOT NULL,
+  idempotency_key text NOT NULL CHECK (char_length(idempotency_key) <= 160),
+  effect_type text NOT NULL,
+  expected_input_revision integer NOT NULL CHECK (expected_input_revision >= 0),
+  payload_hash text NOT NULL CHECK (payload_hash ~ '^[0-9a-f]{64}$'),
+  lease_owner_id text NOT NULL,
+  lease_generation integer NOT NULL CHECK (lease_generation > 0),
+  status text NOT NULL CHECK (status IN ('proposed', 'committed', 'denied', 'stale_rejected')),
+  commit_id text,
+  safe_outcome_json jsonb NOT NULL,
+  safe_outcome_hash text NOT NULL CHECK (safe_outcome_hash ~ '^[0-9a-f]{64}$'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (run_id, effect_id),
+  UNIQUE (run_id, idempotency_key)
+);
+
+CREATE TABLE IF NOT EXISTS tutor_run_traces (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  run_id uuid NOT NULL REFERENCES tutor_runs(id) ON DELETE RESTRICT,
+  event_from_sequence integer NOT NULL CHECK (event_from_sequence > 0),
+  event_to_sequence integer NOT NULL CHECK (event_to_sequence >= event_from_sequence),
+  kind text NOT NULL CHECK (char_length(kind) <= 120),
+  trace_json jsonb NOT NULL,
+  trace_hash text NOT NULL CHECK (trace_hash ~ '^[0-9a-f]{64}$'),
+  redaction_version text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS tutor_memory_curation_outbox (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  run_id uuid NOT NULL REFERENCES tutor_runs(id) ON DELETE RESTRICT,
+  conversation_id uuid NOT NULL REFERENCES tutor_conversations(id) ON DELETE RESTRICT,
+  input_revision integer NOT NULL CHECK (input_revision >= 0),
+  trigger text NOT NULL CHECK (trigger IN ('terminal', 'safe_checkpoint', 'context_high_water')),
+  event_from_sequence integer NOT NULL CHECK (event_from_sequence > 0),
+  event_to_sequence integer NOT NULL CHECK (event_to_sequence >= event_from_sequence),
+  trace_id uuid NOT NULL REFERENCES tutor_run_traces(id) ON DELETE RESTRICT,
+  source_ids_json jsonb NOT NULL,
+  source_hashes_json jsonb NOT NULL,
+  policy_version text NOT NULL,
+  memory_setting_version text NOT NULL,
+  priority integer NOT NULL DEFAULT 0 CHECK (priority BETWEEN 0 AND 100),
+  retention_until timestamptz NOT NULL,
+  stale_after timestamptz NOT NULL,
+  state text NOT NULL CHECK (state IN ('pending', 'no_action', 'stale', 'failed')),
+  idempotency_key text NOT NULL UNIQUE CHECK (char_length(idempotency_key) <= 160),
+  envelope_json jsonb NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT fk_tutor_outbox_run_conversation
+    FOREIGN KEY (run_id, conversation_id) REFERENCES tutor_runs(id, conversation_id) ON DELETE RESTRICT,
+  CHECK (stale_after <= retention_until)
+);
+
+CREATE TABLE IF NOT EXISTS tutor_curation_proposals (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  outbox_id uuid NOT NULL UNIQUE REFERENCES tutor_memory_curation_outbox(id) ON DELETE RESTRICT,
+  event_id uuid NOT NULL REFERENCES tutor_run_events(id) ON DELETE RESTRICT,
+  kind text NOT NULL CHECK (kind IN ('context_summary', 'memory_entry')),
+  state text NOT NULL CHECK (state IN ('pending', 'no_action', 'stale', 'failed')),
+  event_from_sequence integer NOT NULL CHECK (event_from_sequence > 0),
+  event_to_sequence integer NOT NULL CHECK (event_to_sequence >= event_from_sequence),
+  provenance_json jsonb NOT NULL,
+  payload_json jsonb NOT NULL,
+  payload_hash text NOT NULL CHECK (payload_hash ~ '^[0-9a-f]{64}$'),
+  confidence text NOT NULL CHECK (confidence IN ('low', 'medium', 'high')),
+  policy_version text NOT NULL,
+  memory_setting_version text NOT NULL,
+  retention_until timestamptz NOT NULL,
+  stale_after timestamptz NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CHECK (stale_after <= retention_until)
+);
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'tutor_conversations'::regclass AND conname = 'uq_tutor_conversations_id_user'
+  ) THEN
+    ALTER TABLE tutor_conversations
+      ADD CONSTRAINT uq_tutor_conversations_id_user UNIQUE (id, user_id);
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'tutor_messages'::regclass AND conname = 'uq_tutor_messages_id_conversation'
+  ) THEN
+    ALTER TABLE tutor_messages
+      ADD CONSTRAINT uq_tutor_messages_id_conversation UNIQUE (id, conversation_id);
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'tutor_runs'::regclass AND conname = 'uq_tutor_runs_id_user'
+  ) THEN
+    ALTER TABLE tutor_runs
+      ADD CONSTRAINT uq_tutor_runs_id_user UNIQUE (id, user_id);
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'tutor_runs'::regclass AND conname = 'uq_tutor_runs_id_conversation'
+  ) THEN
+    ALTER TABLE tutor_runs
+      ADD CONSTRAINT uq_tutor_runs_id_conversation UNIQUE (id, conversation_id);
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'tutor_runs'::regclass AND conname = 'fk_tutor_runs_conversation_user'
+  ) THEN
+    ALTER TABLE tutor_runs
+      ADD CONSTRAINT fk_tutor_runs_conversation_user
+      FOREIGN KEY (conversation_id, user_id) REFERENCES tutor_conversations(id, user_id) ON DELETE RESTRICT;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'tutor_run_input_events'::regclass AND conname = 'fk_tutor_input_event_run_conversation'
+  ) THEN
+    ALTER TABLE tutor_run_input_events
+      ADD CONSTRAINT fk_tutor_input_event_run_conversation
+      FOREIGN KEY (run_id, conversation_id) REFERENCES tutor_runs(id, conversation_id) ON DELETE RESTRICT;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'tutor_run_input_events'::regclass AND conname = 'fk_tutor_input_event_message_conversation'
+  ) THEN
+    ALTER TABLE tutor_run_input_events
+      ADD CONSTRAINT fk_tutor_input_event_message_conversation
+      FOREIGN KEY (message_id, conversation_id) REFERENCES tutor_messages(id, conversation_id) ON DELETE RESTRICT;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'tutor_memory_curation_outbox'::regclass AND conname = 'fk_tutor_outbox_run_conversation'
+  ) THEN
+    ALTER TABLE tutor_memory_curation_outbox
+      ADD CONSTRAINT fk_tutor_outbox_run_conversation
+      FOREIGN KEY (run_id, conversation_id) REFERENCES tutor_runs(id, conversation_id) ON DELETE RESTRICT;
+  END IF;
+END $$;
+
+CREATE INDEX IF NOT EXISTS idx_tutor_conversations_user ON tutor_conversations(user_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tutor_messages_conversation ON tutor_messages(conversation_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_tutor_runs_user_status ON tutor_runs(user_id, status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tutor_runs_conversation ON tutor_runs(conversation_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tutor_input_events_run_revision ON tutor_run_input_events(run_id, input_revision);
+CREATE INDEX IF NOT EXISTS idx_tutor_checkpoints_run_created ON tutor_run_checkpoints(run_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tutor_events_run_sequence ON tutor_run_events(run_id, event_sequence);
+CREATE INDEX IF NOT EXISTS idx_tutor_capability_invocations_run_created ON tutor_capability_invocations(run_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tutor_effects_run_created ON tutor_effects(run_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tutor_traces_run_sequence ON tutor_run_traces(run_id, event_from_sequence);
+CREATE INDEX IF NOT EXISTS idx_tutor_curation_outbox_state_created ON tutor_memory_curation_outbox(state, created_at);
+CREATE INDEX IF NOT EXISTS idx_tutor_curation_proposals_state_created ON tutor_curation_proposals(state, created_at);
+
+DROP TRIGGER IF EXISTS trg_tutor_conversations_updated_at ON tutor_conversations;
+CREATE TRIGGER trg_tutor_conversations_updated_at BEFORE UPDATE ON tutor_conversations
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_tutor_runs_updated_at ON tutor_runs;
+CREATE TRIGGER trg_tutor_runs_updated_at BEFORE UPDATE ON tutor_runs
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_tutor_effects_updated_at ON tutor_effects;
+CREATE TRIGGER trg_tutor_effects_updated_at BEFORE UPDATE ON tutor_effects
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_tutor_memory_curation_outbox_updated_at ON tutor_memory_curation_outbox;
+CREATE TRIGGER trg_tutor_memory_curation_outbox_updated_at BEFORE UPDATE ON tutor_memory_curation_outbox
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_tutor_curation_proposals_updated_at ON tutor_curation_proposals;
+CREATE TRIGGER trg_tutor_curation_proposals_updated_at BEFORE UPDATE ON tutor_curation_proposals
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();

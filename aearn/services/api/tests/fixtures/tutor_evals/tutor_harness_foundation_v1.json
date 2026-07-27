@@ -1,0 +1,146 @@
+{
+  "schema_version": "tutor_eval_v1",
+  "suite_id": "tutor-harness-foundation-v1",
+  "cases": [
+    {
+      "id": "catalog-identity-pinned",
+      "scenario": "catalog_identity",
+      "catalog": {
+        "digest": "3443db89bf2717a09b1c9f9d7511d194d7fdba100f496e027a5daeb51ff2c493",
+        "skill_id": "tutor.registry-grounding",
+        "skill_version": "1.0.0",
+        "manifest_hash": "127ff1e847a4ba51b7804e2f888add13b0c7bbf2500e8bb76f2cc6b088f7b62a",
+        "instruction_hash": "081388e2c9e5f4c7c11e9ba3a33b66f06f5a1f461fe3fc14acf4513a47c8780d",
+        "evaluation_hash": "c3a9be60f93e7d805c32ebe2139fc6a7d2ac8d50e26d4b07141c59ea19c8d8e8"
+      },
+      "expected": {
+        "status": "validated"
+      }
+    },
+    {
+      "id": "policy-denial-no-capability",
+      "scenario": "policy_denial",
+      "catalog": {
+        "digest": "3443db89bf2717a09b1c9f9d7511d194d7fdba100f496e027a5daeb51ff2c493",
+        "skill_id": "tutor.registry-grounding",
+        "skill_version": "1.0.0",
+        "manifest_hash": "127ff1e847a4ba51b7804e2f888add13b0c7bbf2500e8bb76f2cc6b088f7b62a",
+        "instruction_hash": "081388e2c9e5f4c7c11e9ba3a33b66f06f5a1f461fe3fc14acf4513a47c8780d",
+        "evaluation_hash": "c3a9be60f93e7d805c32ebe2139fc6a7d2ac8d50e26d4b07141c59ea19c8d8e8"
+      },
+      "expected": {
+        "status": "blocked_policy",
+        "code": "catalog_not_configured",
+        "provider_calls": 1
+      }
+    },
+    {
+      "id": "strict-provider-envelope-rejected",
+      "scenario": "strict_provider_rejection",
+      "catalog": {
+        "digest": "3443db89bf2717a09b1c9f9d7511d194d7fdba100f496e027a5daeb51ff2c493",
+        "skill_id": "tutor.registry-grounding",
+        "skill_version": "1.0.0",
+        "manifest_hash": "127ff1e847a4ba51b7804e2f888add13b0c7bbf2500e8bb76f2cc6b088f7b62a",
+        "instruction_hash": "081388e2c9e5f4c7c11e9ba3a33b66f06f5a1f461fe3fc14acf4513a47c8780d",
+        "evaluation_hash": "c3a9be60f93e7d805c32ebe2139fc6a7d2ac8d50e26d4b07141c59ea19c8d8e8"
+      },
+      "expected": {
+        "status": "model_unavailable",
+        "code": "MODEL_UNAVAILABLE"
+      }
+    },
+    {
+      "id": "bounded-loop-exits-before-provider",
+      "scenario": "bounded_loop",
+      "catalog": {
+        "digest": "3443db89bf2717a09b1c9f9d7511d194d7fdba100f496e027a5daeb51ff2c493",
+        "skill_id": "tutor.registry-grounding",
+        "skill_version": "1.0.0",
+        "manifest_hash": "127ff1e847a4ba51b7804e2f888add13b0c7bbf2500e8bb76f2cc6b088f7b62a",
+        "instruction_hash": "081388e2c9e5f4c7c11e9ba3a33b66f06f5a1f461fe3fc14acf4513a47c8780d",
+        "evaluation_hash": "c3a9be60f93e7d805c32ebe2139fc6a7d2ac8d50e26d4b07141c59ea19c8d8e8"
+      },
+      "expected": {
+        "status": "budget_exhausted",
+        "provider_calls": 0
+      }
+    },
+    {
+      "id": "revision-race-stale-effect",
+      "scenario": "stale_effect",
+      "catalog": {
+        "digest": "3443db89bf2717a09b1c9f9d7511d194d7fdba100f496e027a5daeb51ff2c493",
+        "skill_id": "tutor.registry-grounding",
+        "skill_version": "1.0.0",
+        "manifest_hash": "127ff1e847a4ba51b7804e2f888add13b0c7bbf2500e8bb76f2cc6b088f7b62a",
+        "instruction_hash": "081388e2c9e5f4c7c11e9ba3a33b66f06f5a1f461fe3fc14acf4513a47c8780d",
+        "evaluation_hash": "c3a9be60f93e7d805c32ebe2139fc6a7d2ac8d50e26d4b07141c59ea19c8d8e8"
+      },
+      "expected": {
+        "status": "completed",
+        "effect_status": "stale_rejected",
+        "committer_calls": 0
+      }
+    },
+    {
+      "id": "primary-only-model-unavailable",
+      "scenario": "primary_model_unavailable",
+      "catalog": {
+        "digest": "3443db89bf2717a09b1c9f9d7511d194d7fdba100f496e027a5daeb51ff2c493",
+        "skill_id": "tutor.registry-grounding",
+        "skill_version": "1.0.0",
+        "manifest_hash": "127ff1e847a4ba51b7804e2f888add13b0c7bbf2500e8bb76f2cc6b088f7b62a",
+        "instruction_hash": "081388e2c9e5f4c7c11e9ba3a33b66f06f5a1f461fe3fc14acf4513a47c8780d",
+        "evaluation_hash": "c3a9be60f93e7d805c32ebe2139fc6a7d2ac8d50e26d4b07141c59ea19c8d8e8"
+      },
+      "expected": {
+        "status": "model_unavailable",
+        "code": "MODEL_UNAVAILABLE",
+        "provider_calls": 1
+      }
+    },
+    {
+      "id": "protected-values-never-exported",
+      "scenario": "redaction_leakage",
+      "catalog": {
+        "digest": "3443db89bf2717a09b1c9f9d7511d194d7fdba100f496e027a5daeb51ff2c493",
+        "skill_id": "tutor.registry-grounding",
+        "skill_version": "1.0.0",
+        "manifest_hash": "127ff1e847a4ba51b7804e2f888add13b0c7bbf2500e8bb76f2cc6b088f7b62a",
+        "instruction_hash": "081388e2c9e5f4c7c11e9ba3a33b66f06f5a1f461fe3fc14acf4513a47c8780d",
+        "evaluation_hash": "c3a9be60f93e7d805c32ebe2139fc6a7d2ac8d50e26d4b07141c59ea19c8d8e8"
+      },
+      "protected_markers": [
+        "secret-token",
+        "hidden test",
+        "Traceback",
+        "C:\\secret",
+        "full_solution"
+      ],
+      "expected": {
+        "status": "redacted",
+        "leak_free": true
+      }
+    },
+    {
+      "id": "replay-outbox-proposal-terminal-unique",
+      "scenario": "replay_outbox_proposal",
+      "catalog": {
+        "digest": "3443db89bf2717a09b1c9f9d7511d194d7fdba100f496e027a5daeb51ff2c493",
+        "skill_id": "tutor.registry-grounding",
+        "skill_version": "1.0.0",
+        "manifest_hash": "127ff1e847a4ba51b7804e2f888add13b0c7bbf2500e8bb76f2cc6b088f7b62a",
+        "instruction_hash": "081388e2c9e5f4c7c11e9ba3a33b66f06f5a1f461fe3fc14acf4513a47c8780d",
+        "evaluation_hash": "c3a9be60f93e7d805c32ebe2139fc6a7d2ac8d50e26d4b07141c59ea19c8d8e8"
+      },
+      "expected": {
+        "input_replayed": true,
+        "event_replayed": true,
+        "outbox_replayed": true,
+        "proposal_replayed": true,
+        "terminal_writers": 1
+      }
+    }
+  ]
+}

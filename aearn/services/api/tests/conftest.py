@@ -1,13 +1,23 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from uuid import uuid4
 
+import psycopg
 import pytest
 
+from app.agents.harness.contracts import TutorPolicySnapshot, TutorRunSnapshot
+from app.agents.harness.skill_catalog import SkillCatalogSnapshot, compile_published_skill_catalog
+from app.core.config import get_settings
+from app.db.bootstrap import bootstrap_database
+from app.db.connection import connect
 from app.services.exercises import adaptive_exercise_service
 from app.services.exercises.adaptive_exercise_service import GeneratedAdaptiveCandidate
 from app.services.repositories import review_seed_bank
 from app.services.repositories.review_seed_bank import GeneratedReviewSeedBank
+from app.services.tutor.persistence import PostgresTutorRepository
 
 
 @pytest.fixture(autouse=True)
@@ -286,3 +296,67 @@ def _fake_preview_case(
         "timeout_ms": 5000,
         "order_index": order_index,
     }
+
+# Child 02 target-only Tutor persistence fixtures. These use real PostgreSQL
+# when available and roll all test-owned rows back at fixture teardown.
+
+@dataclass(frozen=True)
+class TutorPersistenceFixture:
+    connection: psycopg.Connection[dict[str, object]]
+    repository: PostgresTutorRepository
+    user_id: str
+    conversation_id: str
+    run: TutorRunSnapshot
+    catalog: SkillCatalogSnapshot
+
+
+def _tutor_database_available() -> bool:
+    try:
+        with psycopg.connect(get_settings().database_url, connect_timeout=2) as conn:
+            conn.execute("select 1")
+        return True
+    except psycopg.OperationalError:
+        return False
+
+
+@pytest.fixture
+def tutor_persistence() -> TutorPersistenceFixture:
+    if not _tutor_database_available():
+        pytest.skip("PostgreSQL is not available; run aearn infra compose for Tutor persistence tests.")
+    bootstrap_database()
+    with connect() as conn:
+        suffix = uuid4().hex[:12]
+        user = conn.execute(
+            "INSERT INTO users (display_name) VALUES (%s) RETURNING id",
+            (f"Tutor Persistence {suffix}",),
+        ).fetchone()
+        assert user is not None
+        user_id = str(user["id"])
+        catalog = compile_published_skill_catalog()
+        repository = PostgresTutorRepository(conn)
+        repository.record_catalog_snapshot(catalog)
+        conversation_id = repository.create_conversation(user_id=user_id)
+        run = repository.create_run(
+            user_id=user_id,
+            conversation_id=conversation_id,
+            catalog_digest=catalog.digest,
+            policy=TutorPolicySnapshot(
+                deadline=datetime(2030, 1, 1, tzinfo=UTC),
+                max_iterations=3,
+                max_model_calls=3,
+                max_capability_calls=2,
+                max_effects=2,
+                context_token_budget=64,
+            ),
+        )
+        try:
+            yield TutorPersistenceFixture(
+                connection=conn,
+                repository=repository,
+                user_id=user_id,
+                conversation_id=conversation_id,
+                run=run,
+                catalog=catalog,
+            )
+        finally:
+            conn.rollback()
