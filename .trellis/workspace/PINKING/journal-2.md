@@ -607,3 +607,36 @@ Implemented and verified the feature-disabled isolated container executor: share
 ### Next Steps
 
 - None - task complete
+
+
+## Session 78: Complete Tutor Proactive Scheduler foundation
+
+**Date**: 2026-07-28
+**Task**: Complete Tutor Proactive Scheduler foundation
+**Branch**: `main`
+
+### Summary
+
+Implemented and verified the feature-disabled Tutor proactive scheduler: durable signals and candidates, fail-closed origin-aware policy, PostgreSQL leases and curation jobs, separate worker wrappers, tests, and operational documentation. No public routes, chat delivery, desktop behavior, push, or deployment changed.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `9b615cd` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
