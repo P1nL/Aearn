@@ -6,6 +6,7 @@ from typing import Literal
 
 from app.core.config import Settings, get_settings
 from app.db.connection import connect
+from app.services.tutor.curation import build_curation_proposal_processor
 from app.services.tutor.proactive import TutorProactiveScheduler, TutorProactiveSchedulerConfig
 from app.services.tutor.proactive_repository import PostgresTutorProactiveRepository
 
@@ -32,7 +33,11 @@ def run_tutor_scheduler_operation(
         return {"status": "no_action", "code": "no_due_time_signal_source", "processed": 0}
     with connect() as conn:
         repository = PostgresTutorProactiveRepository(conn)
-        scheduler = TutorProactiveScheduler(store=repository, config=config)
+        scheduler = TutorProactiveScheduler(
+            store=repository,
+            config=config,
+            curation_processor=build_curation_proposal_processor(conn=conn, settings=resolved_settings),
+        )
         if operation == "drain_candidates":
             result = scheduler.drain_candidates(worker_id="celery-proactive", now=current_time, limit=limit)
             conn.commit()

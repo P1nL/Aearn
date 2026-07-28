@@ -71,6 +71,10 @@ def _context() -> TutorContextInput:
     )
 
 
+def _registry_skill(catalog):
+    return next(skill for skill in catalog.skills if skill.reference.key == "tutor.registry-grounding@1.0.0")
+
+
 def _policy(catalog, run: TutorRunSnapshot, *, runtime_available: bool = True) -> CapabilityPolicyContext:
     return CapabilityPolicyContext(
         run_id=run.run_id,
@@ -78,7 +82,7 @@ def _policy(catalog, run: TutorRunSnapshot, *, runtime_available: bool = True) -
         origin=run.origin,
         input_revision=run.input_revision,
         catalog_digest=catalog.digest,
-        eligible_skill_references=(catalog.skills[0].reference,),
+        eligible_skill_references=(_registry_skill(catalog).reference,),
         eligible_capability_ids=("grounding.retrieve",),
         granted_policy_tags=("registry-grounding",),
         allowed_origins=("interactive",),
@@ -106,7 +110,7 @@ def _request(*, extra: dict[str, object] | None = None) -> TutorCapabilityReques
 
 
 def _select(store: InMemoryTutorSkillSelectionStore, catalog, run: TutorRunSnapshot) -> None:
-    skill = catalog.skills[0]
+    skill = _registry_skill(catalog)
     store.record(
         run_id=run.run_id,
         input_revision=run.input_revision,
@@ -314,7 +318,7 @@ def test_catalog_and_tutor_source_never_import_legacy_or_unbounded_execution_sur
     for path in files:
         source = path.read_text(encoding="utf-8")
         forbidden_for_path = forbidden
-        if path.name in {"persistence.py", "proactive_repository.py"}:
+        if path.name in {"persistence.py", "proactive_repository.py", "learner_state.py"}:
             # Child 02 owns durable replay and Child 04 owns scheduler queue
             # leases. Keep the SQL exception narrow while retaining every
             # execution, legacy, route, and unbounded-runtime boundary.

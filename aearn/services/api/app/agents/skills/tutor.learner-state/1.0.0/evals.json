@@ -1,0 +1,19 @@
+{
+  "cases": [
+    {
+      "id": "activate-uses-evidence",
+      "proposal": "tutor.plan.activate",
+      "expects": "bounded_outline_diff_and_evidence"
+    },
+    {
+      "id": "memory-is-objective-only",
+      "proposal": "tutor.memory.record",
+      "expects": "reject_inference_and_raw_payloads"
+    },
+    {
+      "id": "rollback-is-predecessor-only",
+      "proposal": "tutor.plan.rollback",
+      "expects": "server_selects_recorded_predecessor"
+    }
+  ]
+}

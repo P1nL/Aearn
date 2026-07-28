@@ -66,10 +66,17 @@ def test_published_catalog_is_exact_versioned_immutable_and_deterministic() -> N
     assert first == second
     assert first.digest == second.digest
     assert tuple(skill.reference.key for skill in first.skills) == (
+        "tutor.learner-state@1.0.0",
         "tutor.registry-grounding@1.0.0",
         "tutor.runner-execution@1.0.0",
     )
-    assert tuple(descriptor.effect_type for descriptor in first.effect_descriptors) == ("runner.execute",)
+    assert tuple(descriptor.effect_type for descriptor in first.effect_descriptors) == (
+        "runner.execute",
+        "tutor.plan.activate",
+        "tutor.plan.rollback",
+        "tutor.memory.record",
+        "tutor.activity.record",
+    )
     assert first.resolve_skill("tutor.registry-grounding", "1.0.0") is not None
     assert first.resolve_skill("tutor.registry-grounding", "current") is None
     assert isinstance(first.skills, tuple)

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from aearn_shared.execution import ExecutionEffectProposalV1
 
@@ -248,6 +248,280 @@ def _ensure_unique_schema_fields(model: type[BaseModel]) -> None:
         raise ValueError("Pydantic schema fields must not expose duplicate names")
 
 
+_SAFE_REFERENCE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@-]{0,119}$")
+_SHA256_HEX_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _bounded_learner_text(value: str, *, label: str, maximum: int) -> str:
+    normalized = " ".join(str(value).split())
+    if not normalized or len(normalized) > maximum:
+        raise ValueError(f"{label} must be bounded learner-safe text")
+    if contains_forbidden_execution_target(normalized):
+        raise ValueError(f"{label} cannot contain an execution target")
+    return normalized
+
+
+def _stable_reference(value: str, *, label: str) -> str:
+    normalized = str(value).strip()
+    if not _SAFE_REFERENCE_PATTERN.fullmatch(normalized):
+        raise ValueError(f"{label} must be a stable bounded reference")
+    return normalized
+
+
+def _sha256_reference(value: str, *, label: str) -> str:
+    normalized = str(value).strip().lower()
+    if not _SHA256_HEX_PATTERN.fullmatch(normalized):
+        raise ValueError(f"{label} must be a SHA-256 hex digest")
+    return normalized
+
+
+class TutorPlanDiffItemV1(_FrozenSchema):
+    """One bounded learner-safe before/after item for an immutable plan revision."""
+
+    field: str = Field(min_length=1, max_length=80)
+    before: str | None = Field(default=None, max_length=120)
+    after: str | None = Field(default=None, max_length=120)
+
+    @field_validator("field")
+    @classmethod
+    def _validate_field(cls, value: str) -> str:
+        return _stable_reference(value, label="plan diff field")
+
+    @field_validator("before", "after")
+    @classmethod
+    def _validate_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return _bounded_learner_text(value, label="plan diff text", maximum=120)
+
+    @model_validator(mode="after")
+    def _require_change(self) -> "TutorPlanDiffItemV1":
+        if self.before is None and self.after is None:
+            raise ValueError("plan diff item must contain a before or after value")
+        return self
+
+
+class TutorPlanActivateProposalV1(_FrozenSchema):
+    """Exact effect payload for a new immutable active Tutor plan revision."""
+
+    title: str = Field(min_length=1, max_length=120)
+    outline: tuple[str, ...] = Field(min_length=1, max_length=4)
+    change_reason: str = Field(min_length=1, max_length=160)
+    diff: tuple[TutorPlanDiffItemV1, ...] = Field(min_length=1, max_length=4)
+    evidence_ids: tuple[str, ...] = Field(min_length=1, max_length=4)
+    evidence_hashes: tuple[str, ...] = Field(min_length=1, max_length=4)
+    policy_version: str = Field(min_length=1, max_length=120)
+
+    @field_validator("title", "change_reason")
+    @classmethod
+    def _validate_text(cls, value: str) -> str:
+        maximum = 120 if len(value) <= 120 else 160
+        return _bounded_learner_text(value, label="plan text", maximum=maximum)
+
+    @field_validator("outline")
+    @classmethod
+    def _validate_outline(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        normalized = tuple(_bounded_learner_text(value, label="plan outline item", maximum=96) for value in values)
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("plan outline items must be unique")
+        return normalized
+
+    @field_validator("evidence_ids")
+    @classmethod
+    def _validate_evidence_ids(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        normalized = tuple(_stable_reference(value, label="plan evidence id") for value in values)
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("plan evidence ids must be unique")
+        return normalized
+
+    @field_validator("evidence_hashes")
+    @classmethod
+    def _validate_evidence_hashes(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        normalized = tuple(_sha256_reference(value, label="plan evidence hash") for value in values)
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("plan evidence hashes must be unique")
+        return normalized
+
+    @field_validator("policy_version")
+    @classmethod
+    def _validate_policy_version(cls, value: str) -> str:
+        return _stable_reference(value, label="plan policy version")
+
+    @model_validator(mode="after")
+    def _validate_evidence_shape(self) -> "TutorPlanActivateProposalV1":
+        if len(self.evidence_ids) != len(self.evidence_hashes):
+            raise ValueError("plan evidence ids and hashes must have equal lengths")
+        return self
+
+
+class TutorPlanRollbackProposalV1(_FrozenSchema):
+    """Exact effect payload for a one-predecessor-only Tutor plan rollback."""
+
+    reason: str = Field(min_length=1, max_length=160)
+    evidence_ids: tuple[str, ...] = Field(min_length=1, max_length=4)
+    evidence_hashes: tuple[str, ...] = Field(min_length=1, max_length=4)
+    policy_version: str = Field(min_length=1, max_length=120)
+
+    @field_validator("reason")
+    @classmethod
+    def _validate_reason(cls, value: str) -> str:
+        return _bounded_learner_text(value, label="plan rollback reason", maximum=160)
+
+    @field_validator("evidence_ids")
+    @classmethod
+    def _validate_ids(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        normalized = tuple(_stable_reference(value, label="plan rollback evidence id") for value in values)
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("plan rollback evidence ids must be unique")
+        return normalized
+
+    @field_validator("evidence_hashes")
+    @classmethod
+    def _validate_hashes(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        normalized = tuple(_sha256_reference(value, label="plan rollback evidence hash") for value in values)
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("plan rollback evidence hashes must be unique")
+        return normalized
+
+    @field_validator("policy_version")
+    @classmethod
+    def _validate_policy_version(cls, value: str) -> str:
+        return _stable_reference(value, label="plan rollback policy version")
+
+    @model_validator(mode="after")
+    def _validate_evidence_shape(self) -> "TutorPlanRollbackProposalV1":
+        if len(self.evidence_ids) != len(self.evidence_hashes):
+            raise ValueError("plan rollback evidence ids and hashes must have equal lengths")
+        return self
+
+
+class TutorObjectiveMemoryRecordProposalV1(_FrozenSchema):
+    """Only objective learner facts may be recorded through a Tutor effect."""
+
+    memory_kind: Literal["objective_fact"]
+    category: str = Field(min_length=1, max_length=80)
+    fact: str = Field(min_length=1, max_length=180)
+    evidence_ids: tuple[str, ...] = Field(min_length=1, max_length=4)
+    evidence_hashes: tuple[str, ...] = Field(min_length=1, max_length=4)
+    policy_version: str = Field(min_length=1, max_length=120)
+
+    @field_validator("category", "policy_version")
+    @classmethod
+    def _validate_identifiers(cls, value: str) -> str:
+        return _stable_reference(value, label="memory identifier")
+
+    @field_validator("fact")
+    @classmethod
+    def _validate_fact(cls, value: str) -> str:
+        return _bounded_learner_text(value, label="memory fact", maximum=180)
+
+    @field_validator("evidence_ids")
+    @classmethod
+    def _validate_ids(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        normalized = tuple(_stable_reference(value, label="memory evidence id") for value in values)
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("memory evidence ids must be unique")
+        return normalized
+
+    @field_validator("evidence_hashes")
+    @classmethod
+    def _validate_hashes(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        normalized = tuple(_sha256_reference(value, label="memory evidence hash") for value in values)
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("memory evidence hashes must be unique")
+        return normalized
+
+    @model_validator(mode="after")
+    def _validate_evidence_shape(self) -> "TutorObjectiveMemoryRecordProposalV1":
+        if len(self.evidence_ids) != len(self.evidence_hashes):
+            raise ValueError("memory evidence ids and hashes must have equal lengths")
+        return self
+
+
+class TutorActivityRecordProposalV1(_FrozenSchema):
+    """Learner-safe activity and optional inbox projection request."""
+
+    category: str = Field(min_length=1, max_length=80)
+    reason: str = Field(min_length=1, max_length=160)
+    evidence_ids: tuple[str, ...] = Field(min_length=1, max_length=4)
+    evidence_hashes: tuple[str, ...] = Field(min_length=1, max_length=4)
+    inbox_message: str | None = Field(default=None, max_length=160)
+    policy_version: str = Field(min_length=1, max_length=120)
+
+    @field_validator("category", "policy_version")
+    @classmethod
+    def _validate_identifiers(cls, value: str) -> str:
+        return _stable_reference(value, label="activity identifier")
+
+    @field_validator("reason", "inbox_message")
+    @classmethod
+    def _validate_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return _bounded_learner_text(value, label="activity text", maximum=160)
+
+    @field_validator("evidence_ids")
+    @classmethod
+    def _validate_ids(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        normalized = tuple(_stable_reference(value, label="activity evidence id") for value in values)
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("activity evidence ids must be unique")
+        return normalized
+
+    @field_validator("evidence_hashes")
+    @classmethod
+    def _validate_hashes(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        normalized = tuple(_sha256_reference(value, label="activity evidence hash") for value in values)
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("activity evidence hashes must be unique")
+        return normalized
+
+    @model_validator(mode="after")
+    def _validate_evidence_shape(self) -> "TutorActivityRecordProposalV1":
+        if len(self.evidence_ids) != len(self.evidence_hashes):
+            raise ValueError("activity evidence ids and hashes must have equal lengths")
+        return self
+
+
+TUTOR_PLAN_ACTIVATE_EFFECT_TYPE = "tutor.plan.activate"
+TUTOR_PLAN_ROLLBACK_EFFECT_TYPE = "tutor.plan.rollback"
+TUTOR_MEMORY_RECORD_EFFECT_TYPE = "tutor.memory.record"
+TUTOR_ACTIVITY_RECORD_EFFECT_TYPE = "tutor.activity.record"
+
+TUTOR_PLAN_ACTIVATE_EFFECT_DESCRIPTOR = EffectDescriptor(
+    effect_type=TUTOR_PLAN_ACTIVATE_EFFECT_TYPE,
+    version="1.0.0",
+    description="Create one immutable learner-safe Tutor plan revision and activate its pointer.",
+    proposal_model=TutorPlanActivateProposalV1,
+    policy_tags=("learner-state",),
+    implementation_owner="tutor-learner-state",
+)
+TUTOR_PLAN_ROLLBACK_EFFECT_DESCRIPTOR = EffectDescriptor(
+    effect_type=TUTOR_PLAN_ROLLBACK_EFFECT_TYPE,
+    version="1.0.0",
+    description="Move the active Tutor plan pointer to its recorded predecessor with evidence.",
+    proposal_model=TutorPlanRollbackProposalV1,
+    policy_tags=("learner-state",),
+    implementation_owner="tutor-learner-state",
+)
+TUTOR_MEMORY_RECORD_EFFECT_DESCRIPTOR = EffectDescriptor(
+    effect_type=TUTOR_MEMORY_RECORD_EFFECT_TYPE,
+    version="1.0.0",
+    description="Record one evidence-backed objective learner memory fact without an inference.",
+    proposal_model=TutorObjectiveMemoryRecordProposalV1,
+    policy_tags=("learner-state",),
+    implementation_owner="tutor-learner-state",
+)
+TUTOR_ACTIVITY_RECORD_EFFECT_DESCRIPTOR = EffectDescriptor(
+    effect_type=TUTOR_ACTIVITY_RECORD_EFFECT_TYPE,
+    version="1.0.0",
+    description="Record one learner-safe activity item with an optional inbox projection.",
+    proposal_model=TutorActivityRecordProposalV1,
+    policy_tags=("learner-state",),
+    implementation_owner="tutor-learner-state",
+)
+
+
 RUNNER_EXECUTE_EFFECT_TYPE = "runner.execute"
 RUNNER_EXECUTE_EFFECT_DESCRIPTOR = EffectDescriptor(
     effect_type=RUNNER_EXECUTE_EFFECT_TYPE,
@@ -280,4 +554,10 @@ def default_capability_descriptors() -> tuple[CapabilityDescriptor, ...]:
 def default_effect_descriptors() -> tuple[EffectDescriptor, ...]:
     """Return effect metadata only; a handler remains separately feature-gated."""
 
-    return (RUNNER_EXECUTE_EFFECT_DESCRIPTOR,)
+    return (
+        RUNNER_EXECUTE_EFFECT_DESCRIPTOR,
+        TUTOR_PLAN_ACTIVATE_EFFECT_DESCRIPTOR,
+        TUTOR_PLAN_ROLLBACK_EFFECT_DESCRIPTOR,
+        TUTOR_MEMORY_RECORD_EFFECT_DESCRIPTOR,
+        TUTOR_ACTIVITY_RECORD_EFFECT_DESCRIPTOR,
+    )

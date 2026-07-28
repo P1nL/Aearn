@@ -85,7 +85,7 @@ def test_default_policy_preserves_persisted_origin_and_mismatched_context_cannot
     assert context.allowed_origins == ()
 
 
-def test_proactive_composition_rejects_runner_execute_and_domain_effect_authority() -> None:
+def test_proactive_composition_rejects_runner_and_memory_but_allows_explicit_plan_activity_effects() -> None:
     catalog = compile_published_skill_catalog()
 
     with pytest.raises(ValueError, match="runner.execute"):
@@ -94,9 +94,27 @@ def test_proactive_composition_rejects_runner_execute_and_domain_effect_authorit
             policy=_policy(),
             allowed_capability_ids=("runner.execute",),
         )
-
+    with pytest.raises(ValueError, match="runner.execute"):
+        ProactiveRunComposition(
+            catalog=catalog,
+            policy=_policy(max_effects=1),
+            allowed_effect_types=("runner.execute",),
+        )
+    with pytest.raises(ValueError, match="learner-memory"):
+        ProactiveRunComposition(
+            catalog=catalog,
+            policy=_policy(max_effects=1),
+            allowed_effect_types=("tutor.memory.record",),
+        )
     with pytest.raises(ValueError, match="effect authority"):
         ProactiveRunComposition(catalog=catalog, policy=_policy(max_effects=1))
+
+    approved = ProactiveRunComposition(
+        catalog=catalog,
+        policy=_policy(max_effects=2),
+        allowed_effect_types=("tutor.plan.activate", "tutor.activity.record"),
+    )
+    assert approved.allowed_effect_types == ("tutor.plan.activate", "tutor.activity.record")
 
 
 class _ReservationStore:
