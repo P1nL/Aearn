@@ -2,6 +2,7 @@ from fastapi import APIRouter, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 
+from app.core.config import get_settings
 from app.core.errors import error_response
 from app.db.connection import connect
 from app.models.onboarding import UserCreateRequest
@@ -14,6 +15,7 @@ from app.services.repositories.local_user_data_repository import (
     reset_user_data,
 )
 from app.services.repositories.user_repository import create_user, get_user, update_preferences
+from app.services.tutor.cutover import CutoverError, runtime_gate_error
 
 
 router = APIRouter(prefix="/api/users", tags=["users"])
@@ -92,6 +94,16 @@ async def reset_user_learning_data(user_id: str, request: Request) -> dict[str, 
             status_code=status.HTTP_400_BAD_REQUEST,
             details={"field": "confirm"},
             recoverable=False,
+        )
+    cutover_error = _legacy_reset_gate_error(user_id)
+    if cutover_error is not None:
+        return error_response(
+            request,
+            code=cutover_error.code,
+            message=cutover_error.message,
+            status_code=cutover_error.status_code,
+            details=cutover_error.details,
+            recoverable=cutover_error.recoverable,
         )
     with connect() as conn:
         try:
@@ -183,3 +195,11 @@ async def _json_body(request: Request) -> dict[str, object]:
     except Exception:
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _legacy_reset_gate_error(user_id: str) -> CutoverError | None:
+    """Keep ordinary reset from becoming an implicit cutover confirmation."""
+
+    if not get_settings().tutor_harness_enabled:
+        return None
+    return runtime_gate_error(user_id=user_id)

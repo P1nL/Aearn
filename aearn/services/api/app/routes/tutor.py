@@ -21,6 +21,7 @@ from app.models.tutor import (
 )
 from app.services.streaming.sse import sse_event, stream_response
 from app.services.tutor.interactive import TutorRunDispatcher, build_tutor_run_dispatcher
+from app.services.tutor.cutover import runtime_gate_error
 from app.services.tutor.public_api import TutorPublicApiError, TutorPublicService, TutorPublicSseEvent
 
 
@@ -34,7 +35,7 @@ def create_or_resume_conversation(
     payload: CreateTutorConversationRequest,
     request: Request,
 ) -> JSONResponse:
-    unavailable = _require_tutor_route(request)
+    unavailable = _require_tutor_route(request, payload.user_id)
     if unavailable is not None:
         return unavailable
     response = _call_service(
@@ -63,7 +64,7 @@ def create_conversation_input(
     request: Request,
     background_tasks: BackgroundTasks,
 ) -> JSONResponse:
-    unavailable = _require_tutor_route(request)
+    unavailable = _require_tutor_route(request, payload.user_id)
     if unavailable is not None:
         return unavailable
     response = _call_service(
@@ -97,7 +98,7 @@ def create_run_input(
     request: Request,
     background_tasks: BackgroundTasks,
 ) -> JSONResponse:
-    unavailable = _require_tutor_route(request)
+    unavailable = _require_tutor_route(request, payload.user_id)
     if unavailable is not None:
         return unavailable
     response = _call_service(
@@ -130,7 +131,7 @@ def read_run(
     request: Request,
     user_id: str = Query(min_length=1),
 ) -> JSONResponse:
-    unavailable = _require_tutor_route(request)
+    unavailable = _require_tutor_route(request, user_id)
     if unavailable is not None:
         return unavailable
     response = _call_service(request, lambda service: service.read_run(user_id=user_id, run_id=run_id))
@@ -143,7 +144,7 @@ async def stream_run_events(
     request: Request,
     user_id: str = Query(min_length=1),
 ) -> JSONResponse | StreamingResponse:
-    unavailable = _require_tutor_route(request)
+    unavailable = _require_tutor_route(request, user_id)
     if unavailable is not None:
         return unavailable
     try:
@@ -170,7 +171,7 @@ def list_activity(
     user_id: str = Query(min_length=1),
     limit: int = Query(default=50, ge=1, le=100),
 ) -> JSONResponse:
-    unavailable = _require_tutor_route(request)
+    unavailable = _require_tutor_route(request, user_id)
     if unavailable is not None:
         return unavailable
     response = _call_service(request, lambda service: service.list_activity(user_id=user_id, limit=limit))
@@ -184,7 +185,7 @@ def list_inbox(
     include_dismissed: bool = Query(default=False),
     limit: int = Query(default=50, ge=1, le=100),
 ) -> JSONResponse:
-    unavailable = _require_tutor_route(request)
+    unavailable = _require_tutor_route(request, user_id)
     if unavailable is not None:
         return unavailable
     response = _call_service(
@@ -204,7 +205,7 @@ def mark_inbox_read(
     payload: TutorMutationRequest,
     request: Request,
 ) -> JSONResponse:
-    unavailable = _require_tutor_route(request)
+    unavailable = _require_tutor_route(request, payload.user_id)
     if unavailable is not None:
         return unavailable
     response = _call_service(
@@ -225,7 +226,7 @@ def dismiss_inbox(
     payload: TutorMutationRequest,
     request: Request,
 ) -> JSONResponse:
-    unavailable = _require_tutor_route(request)
+    unavailable = _require_tutor_route(request, payload.user_id)
     if unavailable is not None:
         return unavailable
     response = _call_service(
@@ -247,7 +248,7 @@ def list_memory(
     include_inactive: bool = Query(default=False),
     limit: int = Query(default=50, ge=1, le=100),
 ) -> JSONResponse:
-    unavailable = _require_tutor_route(request)
+    unavailable = _require_tutor_route(request, user_id)
     if unavailable is not None:
         return unavailable
     response = _call_service(
@@ -267,7 +268,7 @@ def correct_memory(
     payload: CorrectTutorMemoryRequest,
     request: Request,
 ) -> JSONResponse:
-    unavailable = _require_tutor_route(request)
+    unavailable = _require_tutor_route(request, payload.user_id)
     if unavailable is not None:
         return unavailable
     response = _call_service(
@@ -289,7 +290,7 @@ def delete_memory(
     payload: TutorMutationRequest,
     request: Request,
 ) -> JSONResponse:
-    unavailable = _require_tutor_route(request)
+    unavailable = _require_tutor_route(request, payload.user_id)
     if unavailable is not None:
         return unavailable
     response = _call_service(
@@ -310,7 +311,7 @@ def list_plan_revisions(
     user_id: str = Query(min_length=1),
     limit: int = Query(default=50, ge=1, le=100),
 ) -> JSONResponse:
-    unavailable = _require_tutor_route(request)
+    unavailable = _require_tutor_route(request, user_id)
     if unavailable is not None:
         return unavailable
     response = _call_service(request, lambda service: service.list_plan_revisions(user_id=user_id, limit=limit))
@@ -322,7 +323,7 @@ def rollback_plan(
     payload: TutorMutationRequest,
     request: Request,
 ) -> JSONResponse:
-    unavailable = _require_tutor_route(request)
+    unavailable = _require_tutor_route(request, payload.user_id)
     if unavailable is not None:
         return unavailable
     response = _call_service(
@@ -341,7 +342,7 @@ def read_preferences(
     request: Request,
     user_id: str = Query(min_length=1),
 ) -> JSONResponse:
-    unavailable = _require_tutor_route(request)
+    unavailable = _require_tutor_route(request, user_id)
     if unavailable is not None:
         return unavailable
     response = _call_service(request, lambda service: service.read_preferences(user_id=user_id))
@@ -353,7 +354,7 @@ def update_preferences(
     payload: UpdateTutorPreferencesRequest,
     request: Request,
 ) -> JSONResponse:
-    unavailable = _require_tutor_route(request)
+    unavailable = _require_tutor_route(request, payload.user_id)
     if unavailable is not None:
         return unavailable
     response = _call_service(
@@ -447,17 +448,27 @@ def _parse_last_event_id(value: str | None) -> int:
     return int(normalized)
 
 
-def _require_tutor_route(request: Request) -> JSONResponse | None:
-    if get_settings().tutor_harness_enabled:
-        return None
-    return error_response(
-        request,
-        code="CUTOVER_REQUIRED",
-        message="Tutor Harness 尚未完成受控切换，当前学习流程保持不变。",
-        status_code=status.HTTP_409_CONFLICT,
-        details={"feature": "tutor_harness"},
-        recoverable=False,
-    )
+def _require_tutor_route(request: Request, user_id: str) -> JSONResponse | None:
+    if not get_settings().tutor_harness_enabled:
+        return error_response(
+            request,
+            code="CUTOVER_REQUIRED",
+            message="Tutor Harness 尚未完成受控切换，当前学习流程保持不变。",
+            status_code=status.HTTP_409_CONFLICT,
+            details={"feature": "tutor_harness"},
+            recoverable=False,
+        )
+    gate_error = runtime_gate_error(user_id=user_id)
+    if gate_error is not None:
+        return error_response(
+            request,
+            code=gate_error.code,
+            message=gate_error.message,
+            status_code=gate_error.status_code,
+            details=gate_error.details,
+            recoverable=gate_error.recoverable,
+        )
+    return None
 
 
 def _idempotency_key(request: Request, fallback: str) -> str:

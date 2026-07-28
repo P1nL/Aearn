@@ -7,6 +7,7 @@ from app.routes.dashboard import router as dashboard_router
 from app.routes.courses import router as courses_router
 from app.routes.environment import router as environment_router
 from app.routes.health import router as health_router
+from app.routes.harness_cutover import router as harness_cutover_router
 from app.routes.learning_sessions import router as learning_sessions_router
 from app.routes.notes import router as notes_router
 from app.routes.onboarding import router as onboarding_router
@@ -14,6 +15,7 @@ from app.routes.plans import router as plans_router
 from app.routes.reviews import router as reviews_router
 from app.routes.tutor import router as tutor_router
 from app.routes.users import router as users_router
+from app.services.tutor.cutover import CutoverRuntimeBlocked
 
 
 app = FastAPI(title="Aearn API", version="0.1.0")
@@ -37,6 +39,7 @@ app.include_router(learning_sessions_router)
 app.include_router(reviews_router)
 app.include_router(onboarding_router)
 app.include_router(notes_router)
+app.include_router(harness_cutover_router)
 app.include_router(tutor_router)
 
 
@@ -49,4 +52,17 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         status_code=status.HTTP_400_BAD_REQUEST,
         details={"errors": exc.errors()},
         recoverable=True,
+    )
+
+
+@app.exception_handler(CutoverRuntimeBlocked)
+async def cutover_runtime_blocked_handler(request: Request, exc: CutoverRuntimeBlocked):
+    error = exc.error
+    return error_response(
+        request,
+        code=error.code,
+        message=error.message,
+        status_code=error.status_code,
+        details=error.details,
+        recoverable=error.recoverable,
     )

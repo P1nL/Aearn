@@ -19,6 +19,7 @@ import type {
   ExplanationCheckResponse,
   HintLevel,
   HintResponse,
+  HarnessCutoverDecision,
   KnowledgePointDocumentationResponse,
   Language,
   LanguageCourse,
@@ -131,6 +132,44 @@ export async function fetchUserDataSummary(userId: string, signal?: AbortSignal)
     throw new Error("User data summary API returned an invalid payload");
   }
   return payload.summary;
+}
+
+export async function fetchHarnessCutover(userId: string, signal?: AbortSignal): Promise<HarnessCutoverDecision> {
+  const payload = await requestJson(
+    `${API_BASE_URL}/api/harness/cutover?${new URLSearchParams({ user_id: userId }).toString()}`,
+    { signal },
+  );
+  if (!isHarnessCutoverDecision(payload)) {
+    throw new Error("Harness cutover API returned an invalid payload");
+  }
+  return payload;
+}
+
+export async function confirmHarnessCutover(input: {
+  userId: string;
+  cutoverVersion: string;
+  summaryVersion: number;
+  previewNonce: string;
+  summaryHash: string;
+  clientActionId: string;
+}): Promise<HarnessCutoverDecision> {
+  const payload = await requestJson(`${API_BASE_URL}/api/harness/cutover/confirm`, {
+    method: "POST",
+    headers: { "Idempotency-Key": input.clientActionId },
+    body: JSON.stringify({
+      user_id: input.userId,
+      cutover_version: input.cutoverVersion,
+      summary_version: input.summaryVersion,
+      preview_nonce: input.previewNonce,
+      summary_hash: input.summaryHash,
+      client_action_id: input.clientActionId,
+      confirm: true,
+    }),
+  });
+  if (!isHarnessCutoverDecision(payload)) {
+    throw new Error("Harness cutover confirmation returned an invalid payload");
+  }
+  return payload;
 }
 
 export async function exportLocalUserData(userId: string): Promise<LocalUserExportPayload> {
@@ -1087,6 +1126,61 @@ function isLocalUserDataSummary(payload: unknown): payload is LocalUserDataSumma
     typeof payload.counts.notes === "number" &&
     (typeof payload.last_activity_at === "string" || payload.last_activity_at === null)
   );
+}
+
+function isHarnessCutoverDecision(payload: unknown): payload is HarnessCutoverDecision {
+  if (!isRecord(payload) || typeof payload.cutover_version !== "string" || typeof payload.rollout_active !== "boolean") {
+    return false;
+  }
+  if (!isHarnessCutoverState(payload.state) || !isHarnessCutoverNextAction(payload.next_action)) {
+    return false;
+  }
+  if (payload.summary !== undefined && !isHarnessCutoverSummary(payload.summary)) {
+    return false;
+  }
+  if (payload.summary_version !== undefined && typeof payload.summary_version !== "number") {
+    return false;
+  }
+  if (payload.preview_nonce !== undefined && typeof payload.preview_nonce !== "string") {
+    return false;
+  }
+  if (payload.summary_hash !== undefined && typeof payload.summary_hash !== "string") {
+    return false;
+  }
+  if (payload.code !== undefined && typeof payload.code !== "string") {
+    return false;
+  }
+  return true;
+}
+
+function isHarnessCutoverSummary(payload: unknown): boolean {
+  if (!isRecord(payload) || !Array.isArray(payload.legacy_categories) || !Array.isArray(payload.legacy_profile_fields)) {
+    return false;
+  }
+  if (!payload.legacy_categories.every((item) => isRecord(item) && typeof item.id === "string" && typeof item.count === "number")) {
+    return false;
+  }
+  if (!payload.legacy_profile_fields.every((item) => isRecord(item) && typeof item.id === "string" && item.will_clear === true)) {
+    return false;
+  }
+  return (
+    isRecord(payload.checkpoint) &&
+    (payload.checkpoint.state === "not_configured" || payload.checkpoint.state === "scoped" || payload.checkpoint.state === "unresolved") &&
+    typeof payload.checkpoint.record_count === "number" &&
+    Array.isArray(payload.retained_categories) &&
+    payload.retained_categories.every((item) => typeof item === "string") &&
+    typeof payload.target_state_present === "boolean"
+  );
+}
+
+function isHarnessCutoverState(payload: unknown): payload is HarnessCutoverDecision["state"] {
+  return payload === "rollout_inactive" || payload === "summary_ready" || payload === "verified"
+    || payload === "blocked_target_state" || payload === "blocked_checkpoint_scope";
+}
+
+function isHarnessCutoverNextAction(payload: unknown): payload is HarnessCutoverDecision["next_action"] {
+  return payload === "continue_legacy" || payload === "confirm_cutover" || payload === "enter_tutor"
+    || payload === "resolve_cutover_block";
 }
 
 function isLocalUserResetResponse(payload: unknown): payload is LocalUserResetResponse {

@@ -1,7 +1,7 @@
 import asyncio
 from collections.abc import AsyncGenerator
 
-from fastapi import APIRouter, Query, Request, status
+from fastapi import APIRouter, Depends, Query, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, StreamingResponse
 
@@ -20,9 +20,10 @@ from app.services.repositories.note_repository import (
 )
 from app.services.llm.llm_client import LLMCallError, LLMConfigurationError, LLMInvalidResponseError
 from app.services.streaming.sse import SSEWriter, stream_response, wants_stream
+from app.services.tutor.cutover import require_legacy_runtime
 
 
-router = APIRouter(prefix="/api/notes", tags=["notes"])
+router = APIRouter(prefix="/api/notes", tags=["notes"], dependencies=[Depends(require_legacy_runtime)])
 
 
 @router.get("", response_model=None)

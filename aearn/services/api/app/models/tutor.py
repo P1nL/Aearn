@@ -50,3 +50,17 @@ class UpdateTutorPreferencesRequest(TutorMutationRequest):
         if self.inferred_memory_enabled is None and self.proactive_paused is None:
             raise ValueError("at least one Tutor preference is required")
         return self
+
+
+class HarnessCutoverConfirmRequest(BaseModel):
+    user_id: str = Field(min_length=1, max_length=120)
+    cutover_version: str = Field(min_length=1, max_length=120)
+    summary_version: int = Field(ge=1)
+    preview_nonce: str = Field(min_length=1, max_length=160)
+    summary_hash: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
+    client_action_id: str = Field(
+        min_length=1,
+        max_length=160,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:@-]{0,159}$",
+    )
+    confirm: bool

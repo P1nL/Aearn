@@ -2,7 +2,7 @@ import asyncio
 from collections.abc import AsyncGenerator, Iterable, Mapping
 from typing import Any
 
-from fastapi import APIRouter, Query, Request, status
+from fastapi import APIRouter, Depends, Query, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, StreamingResponse
 
@@ -61,9 +61,14 @@ from app.services.repositories.dashboard_repository import (
 )
 from app.services.repositories.plan_repository import IdempotencyConflictError
 from app.services.streaming.sse import SSEWriter, chunk_tool_call_arguments, stream_response, wants_stream
+from app.services.tutor.cutover import require_legacy_runtime
 
 
-router = APIRouter(prefix="/api/learning-sessions", tags=["learning-sessions"])
+router = APIRouter(
+    prefix="/api/learning-sessions",
+    tags=["learning-sessions"],
+    dependencies=[Depends(require_legacy_runtime)],
+)
 
 
 @router.get("/resume", response_model=None)

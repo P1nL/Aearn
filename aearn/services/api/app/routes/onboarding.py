@@ -2,7 +2,7 @@ import asyncio
 import uuid
 from collections.abc import AsyncGenerator, Iterable, Mapping
 
-from fastapi import APIRouter, Header, Request, status
+from fastapi import APIRouter, Depends, Header, Request, status
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.agents.graphs.graph_runtime_contracts import (
@@ -52,9 +52,10 @@ from app.services.repositories.plan_repository import (
     request_hash,
 )
 from app.services.streaming.sse import SSEWriter, chunk_tool_call_arguments, stream_response
+from app.services.tutor.cutover import require_legacy_runtime
 
 
-router = APIRouter(prefix="/api/onboarding", tags=["onboarding"])
+router = APIRouter(prefix="/api/onboarding", tags=["onboarding"], dependencies=[Depends(require_legacy_runtime)])
 
 SUPPORTED_ONBOARDING_LANGUAGES = [
     "python",

@@ -390,6 +390,67 @@ replacement and deletion remains a guarded state transition. Preference routes
 may expose inferred-memory enablement and a user's proactive pause, but never
 enable background work, relax hard pause/budgets, or expose provider settings.
 
+## Child 07 Target: Verified Clean-Slate Cutover Gate
+
+Child 07 owns the one-time transition from the legacy learning runtime to the
+public Tutor surface. It does not migrate legacy learner history and it does
+not physically remove Graph, route, tool, dependency, or documentation code in
+the first cutover change.
+
+- `TUTOR_HARNESS_ENABLED=false` preserves the legacy product path and keeps
+  `/api/tutor/*` feature-off. The flag is only rollout composition; it never
+  proves that a local learner has cut over.
+- With the flag enabled, both user-scoped legacy runtime routes and Tutor
+  routes consult the same `harness_cutovers(user_id, cutover_version)` receipt.
+  Only `verified` permits Tutor traffic. `summary_ready`, `required`,
+  `verification_failed`, `blocked_target_state`, and
+  `blocked_checkpoint_scope` deny both runtime families; the narrow cutover
+  status and confirmation endpoints remain available. A legacy route without a
+  recognizable UUID user scope fails closed rather than falling through to a
+  session/path-only legacy read. A `verified` receipt authorizes only the
+  Tutor family; it never reopens a legacy route.
+- `GET /api/harness/cutover?user_id=...` is server-authoritative. It computes a
+  canonical safe summary/hash and issues a preview nonce only for legacy data
+  that needs destructive confirmation. The Desktop may display that summary but
+  cannot choose table names, counts, checkpoint threads, or deletion scope.
+- `POST /api/harness/cutover/confirm` requires the exact version, summary
+  version, nonce, hash, `confirm=true`, and a stable client idempotency key.
+  A stale summary, cross-user request, changed-body replay, target-state row,
+  or unresolved checkpoint scope deletes nothing.
+- The transaction locks the active user row, derives only
+  `aearn:learning:<learning_session_id>` checkpoint threads before deleting
+  sessions, deletes exact `idempotency_records.user_id` rows rather than JSON
+  or text matches, clears the five legacy learner preference fields, verifies
+  the same scope, and commits `verified` atomically. Identity, display name,
+  time slots, reminder preference, shared `tutor_catalog_snapshots`, and
+  `checkpoint_migrations` stay outside deletion scope.
+- Any pre-cutover user-scoped `tutor_*` row or
+  `tutor_api_idempotency_records` row is target-state contamination. It is
+  blocked, never deleted or migrated. Missing checkpointer tables are safe
+  zero; an unknown schema, namespace, `NULL` thread id, or unprovable thread
+  mapping blocks instead of issuing a broad delete.
+- The ordinary `POST /api/users/{user_id}/reset-data` operation remains a
+  legacy reset while the rollout is disabled. Once rollout is active, it first
+  requires the same verified receipt; a pending summary can never use reset to
+  delete legacy rows and then become an implicit empty-state cutover.
+- If deletion or verification raises an error, the destructive transaction is
+  rolled back and a separate safe `CUTOVER_VERIFICATION_FAILED` receipt keeps
+  both runtime families blocked. Rolling back code after a confirmed cutover is
+  never a claim of learner-data recovery.
+
+Desktop bootstrap reads the local user identity, asks the cutover endpoint
+before restoring `aearn.bootstrap.planId` or issuing dashboard/resume/legacy
+requests, then mounts only the blocking confirmation screen or a fresh
+`TutorWorkspacePage`. Verified success preserves `userId`, writes `planId=null`,
+clears legacy in-memory and settings-form state, and does not clear unrelated
+local UI storage.
+
+Physical legacy retirement is a later proof gate. It requires feature-enabled
+cutover and fresh Tutor-entry coverage, a verified Desktop default route with
+no legacy bootstrap calls, gated legacy worker writes, an empty scoped caller
+search, and Child 08 source-of-truth reconciliation before Graph/runtime code
+or dependencies may be removed.
+
 ## Target Loop and Future Ownership
 
 The finite loop leases, loads, checks fixed budgets/cancellation, builds bounded

@@ -19,6 +19,8 @@ import { NotesPage } from "./pages/NotesPage";
 import { OnboardingPage } from "./pages/OnboardingPage";
 import { ReviewPage } from "./pages/ReviewPage";
 import { SettingsPage } from "./pages/SettingsPage";
+import { HarnessCutoverPage } from "./pages/HarnessCutoverPage";
+import { TutorWorkspacePage } from "./pages/TutorWorkspacePage";
 import type { LearningSessionResponse, LocalUserListItem } from "./types";
 
 function App() {
@@ -42,6 +44,7 @@ function App() {
           : "";
 
   const visibleRoute = app.activeRoute;
+  const isCutoverRoute = visibleRoute === "cutover" || visibleRoute === "tutor";
   const sidebarActiveKnowledgePointId = visibleRoute === "review" ? (selectedReviewKnowledgePointId ?? "") : activeKnowledgePointId;
   const sidebarHint = ROUTE_META[visibleRoute].hint;
   const sidebarProgress = app.createdPlan ? computeSidebarProgress(app.createdPlan) : 0;
@@ -157,6 +160,15 @@ function App() {
     }
   }
 
+  async function handleConfirmHarnessCutover() {
+    const successful = await app.confirmHarnessCutover();
+    if (successful) {
+      notes.reset();
+      settings.reset();
+    }
+    return successful;
+  }
+
   const refreshEnvironmentDoctor = useCallback(async (signal?: AbortSignal) => {
     setEnvironmentDoctor({ status: "loading" });
     try {
@@ -176,6 +188,12 @@ function App() {
   useEffect(() => {
     if (app.user) settings.syncFromUser(app.user);
   }, [app.user?.id, app.user?.updated_at]);
+
+  useEffect(() => {
+    if (!isCutoverRoute) return;
+    notes.reset();
+    settings.reset();
+  }, [isCutoverRoute, app.user?.id]);
 
   useEffect(() => {
     setSelectedReviewKnowledgePointId(null);
@@ -231,6 +249,54 @@ function App() {
   }, [notes.drawerOpen, notes.drawerContext?.knowledgePointId]);
 
   // --- Render ---
+  if (isCutoverRoute) {
+    return (
+      <main className="stage">
+        <section className={app.sidebarOpen ? "desktop" : "desktop sidebar-collapsed"} aria-label="Aearn Tutor 受控切换">
+          <header className="app-menu" aria-label="桌面应用菜单栏">
+            <div className="menu-left">
+              <button className="sidebar-toggle" type="button" aria-label={app.sidebarOpen ? "折叠左侧栏" : "展开左侧栏"} aria-expanded={app.sidebarOpen} onClick={app.toggleSidebar}>
+                <img src="/sidebar.png" alt="" />
+              </button>
+              <div className="app-title">Aearn Tutor</div>
+            </div>
+          </header>
+
+          <aside className="sidebar no-context" aria-label="Tutor 切换状态">
+            <div className="brand">
+              <span className="mark">A</span>
+              <span className="brand-name">Aearn Tutor</span>
+            </div>
+            <section className="harness-shell-nav" aria-label="切换说明">
+              <strong>{visibleRoute === "tutor" ? "新的学习入口" : "受控切换"}</strong>
+              <span>{visibleRoute === "tutor" ? "旧学习路线与会话已不会在此入口恢复。" : "服务器会先核对摘要，再执行任何清理。"}</span>
+            </section>
+          </aside>
+
+          <section className="main" aria-label="Tutor 工作区">
+            <header className="topbar">
+              <div className="crumb">{getCrumbLabel(visibleRoute, settings.settingsTab, null, null)}</div>
+              <ApiHealthChip apiHealth={app.apiHealth} />
+            </header>
+            <div className="workspace-shell harness-workspace-shell">
+              {visibleRoute === "cutover" && (
+                <HarnessCutoverPage
+                  user={app.user}
+                  decision={app.cutoverDecision}
+                  actionState={app.dataActionState}
+                  actionMessage={app.dataActionMessage}
+                  onConfirm={handleConfirmHarnessCutover}
+                  onRefresh={app.refreshHarnessCutover}
+                />
+              )}
+              {visibleRoute === "tutor" && <TutorWorkspacePage user={app.user} enabled isActive initialConversationId={null} />}
+            </div>
+          </section>
+        </section>
+      </main>
+    );
+  }
+
   return (
     <main className="stage">
       <section className={app.sidebarOpen ? "desktop" : "desktop sidebar-collapsed"} aria-label="Aearn 对话学习工作台">

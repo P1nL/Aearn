@@ -2,10 +2,12 @@ import { create } from "zustand";
 
 import {
   API_BASE_URL,
+  confirmHarnessCutover,
   deleteLocalUser,
   exportLocalUserData,
   fetchApiHealth,
   fetchDashboard,
+  fetchHarnessCutover,
   fetchLanguageCourses,
   fetchLearningHistory,
   fetchLocalUsers,
@@ -30,6 +32,7 @@ import { parsePartial } from "../lib/partialJson";
 import type {
   CreatedPlanResponse,
   DashboardResponse,
+  HarnessCutoverDecision,
   LanguageCourse,
   LocalUserExportPayload,
   LocalUserListItem,
@@ -66,6 +69,7 @@ type AppStore = {
   userDataSummaryState: UserDataSummaryState;
   dataActionState: "idle" | "loading" | "success" | "error";
   dataActionMessage: string | null;
+  cutoverDecision: HarnessCutoverDecision | null;
   bootstrapHydrated: boolean;
   lastRun: RunExerciseResponse | null;
   lastSubmit: SubmitExerciseResponse | null;
@@ -121,6 +125,8 @@ type AppStore = {
   exportActiveUserData: () => Promise<LocalUserExportPayload | null>;
   resetActiveUserData: () => Promise<boolean>;
   deleteActiveUser: () => Promise<boolean>;
+  refreshHarnessCutover: () => Promise<void>;
+  confirmHarnessCutover: () => Promise<boolean>;
   openLearningSession: (planResponse: CreatedPlanResponse, knowledgePointId: string, activeUserId?: string, activateHome?: boolean) => Promise<void>;
   handlePlanCreated: (plan: CreatedPlanResponse, activeUser: UserProfile) => Promise<void>;
   handleKnowledgePointUpdate: (patch: SubmitExerciseResponse["KnowledgePoint"]) => void;
@@ -140,6 +146,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   userDataSummaryState: { status: "idle" },
   dataActionState: "idle",
   dataActionMessage: null,
+  cutoverDecision: null,
   bootstrapHydrated: false,
   lastRun: null,
   lastSubmit: null,
@@ -173,6 +180,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       onboardingSessionId: null,
       composerInput: "",
       activeRoute: options?.route ?? "onboarding",
+      cutoverDecision: null,
       resetNonce: get().resetNonce + 1,
     }),
   setComposerInput: (input) => set({ composerInput: input }),
@@ -342,7 +350,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
     })),
 
   bootstrap: async (signal) => {
-    set({ bootstrapHydrated: false, apiHealth: { status: "loading" }, dashboardState: { status: "loading" } });
+    set({
+      bootstrapHydrated: false,
+      apiHealth: { status: "loading" },
+      dashboardState: { status: "loading" },
+      cutoverDecision: null,
+    });
 
     try {
       const [health, catalog] = await Promise.all([fetchApiHealth(signal), fetchLanguageCourses(signal)]);
@@ -362,6 +375,18 @@ export const useAppStore = create<AppStore>((set, get) => ({
       const loadedUser = await fetchUserProfile(stored.userId, signal);
       if (signal?.aborted) return;
       set({ user: loadedUser });
+
+      const cutover = await fetchHarnessCutover(stored.userId, signal);
+      if (signal?.aborted) return;
+      if (cutover.rollout_active) {
+        writeBootstrapContext({ userId: loadedUser.id, planId: null });
+        get().clearUserScopedState({
+          keepUser: loadedUser,
+          route: cutover.state === "verified" ? "tutor" : "cutover",
+        });
+        set({ cutoverDecision: cutover, user: loadedUser });
+        return;
+      }
 
       if (!stored.planId) {
         set({ createdPlan: null, sessionState: { status: "idle" }, dashboardState: { status: "idle" }, activeRoute: "onboarding" });
@@ -470,6 +495,21 @@ export const useAppStore = create<AppStore>((set, get) => ({
       writeBootstrapContext({ userId: loadedUser.id, planId: null });
       get().clearUserScopedState({ keepUser: loadedUser, route: "onboarding" });
       set({ user: loadedUser, dataActionState: "success", dataActionMessage: "已切换本地用户" });
+      const cutover = await fetchHarnessCutover(item.id);
+      if (cutover.rollout_active) {
+        get().clearUserScopedState({
+          keepUser: loadedUser,
+          route: cutover.state === "verified" ? "tutor" : "cutover",
+        });
+        set({
+          user: loadedUser,
+          cutoverDecision: cutover,
+          dataActionState: "success",
+          dataActionMessage: cutover.state === "verified" ? "已进入 Tutor 学习入口" : "需要先完成 Tutor 切换",
+        });
+        void get().loadLocalUsers();
+        return;
+      }
       if (item.active_plan_id) {
         const [plan, dashboardResponse] = await Promise.all([
           fetchPlanDetail(item.active_plan_id, item.id),
@@ -555,6 +595,77 @@ export const useAppStore = create<AppStore>((set, get) => ({
       return true;
     } catch (error) {
       set({ dataActionState: "error", dataActionMessage: formatErrorMessage(error, "删除本地用户失败") });
+      return false;
+    }
+  },
+
+  refreshHarnessCutover: async () => {
+    const user = get().user;
+    if (!user) return;
+    set({ dataActionState: "loading", dataActionMessage: "正在重新检查 Tutor 切换状态..." });
+    try {
+      const decision = await fetchHarnessCutover(user.id);
+      if (!decision.rollout_active) {
+        set({
+          cutoverDecision: null,
+          dataActionState: "success",
+          dataActionMessage: "当前仍保持既有学习流程",
+        });
+        return;
+      }
+      writeBootstrapContext({ userId: user.id, planId: null });
+      get().clearUserScopedState({
+        keepUser: user,
+        route: decision.state === "verified" ? "tutor" : "cutover",
+      });
+      set({
+        user,
+        cutoverDecision: decision,
+        dataActionState: "success",
+        dataActionMessage: decision.state === "verified" ? "切换已验证，可以开始新的 Tutor 对话" : "已刷新服务器摘要",
+      });
+    } catch (error) {
+      set({ dataActionState: "error", dataActionMessage: formatErrorMessage(error, "无法读取 Tutor 切换状态") });
+    }
+  },
+
+  confirmHarnessCutover: async () => {
+    const { user, cutoverDecision } = get();
+    if (!user || !cutoverDecision || cutoverDecision.state !== "summary_ready") return false;
+    if (
+      typeof cutoverDecision.summary_version !== "number"
+      || !cutoverDecision.preview_nonce
+      || !cutoverDecision.summary_hash
+    ) {
+      set({ dataActionState: "error", dataActionMessage: "切换摘要不完整，请先刷新。" });
+      return false;
+    }
+    set({ dataActionState: "loading", dataActionMessage: "正在由服务器核对并清理旧学习记录..." });
+    try {
+      const decision = await confirmHarnessCutover({
+        userId: user.id,
+        cutoverVersion: cutoverDecision.cutover_version,
+        summaryVersion: cutoverDecision.summary_version,
+        previewNonce: cutoverDecision.preview_nonce,
+        summaryHash: cutoverDecision.summary_hash,
+        clientActionId: createCutoverActionId(),
+      });
+      if (decision.state !== "verified") {
+        set({ cutoverDecision: decision, dataActionState: "error", dataActionMessage: "服务器未确认切换，请刷新摘要后重试。" });
+        return false;
+      }
+      const retainedUser = await fetchUserProfile(user.id).catch(() => clearLegacyUserFields(user));
+      writeBootstrapContext({ userId: retainedUser.id, planId: null });
+      get().clearUserScopedState({ keepUser: retainedUser, route: "tutor" });
+      set({
+        user: retainedUser,
+        cutoverDecision: decision,
+        dataActionState: "success",
+        dataActionMessage: "旧学习记录已验证清理完成，已进入新的 Tutor 对话。",
+      });
+      return true;
+    } catch (error) {
+      set({ dataActionState: "error", dataActionMessage: formatErrorMessage(error, "Tutor 切换未完成") });
       return false;
     }
   },
@@ -666,6 +777,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       onboardingSessionId: null,
       composerInput: "",
       activeRoute: "onboarding",
+      cutoverDecision: null,
       resetNonce: get().resetNonce + 1,
     });
   },
@@ -684,6 +796,22 @@ function downloadJson(filename: string, payload: unknown) {
   anchor.click();
   anchor.remove();
   window.URL.revokeObjectURL(url);
+}
+
+function createCutoverActionId(): string {
+  const random = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return `harness-cutover:${random}`;
+}
+
+function clearLegacyUserFields(user: UserProfile): UserProfile {
+  return {
+    ...user,
+    learning_style: null,
+    teaching_preference: null,
+    encouragement_preference: null,
+    profession: null,
+    background_context: null,
+  };
 }
 
 async function restoreLearningConversationMessages(input: {

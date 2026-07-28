@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Header, Query, Request, status
+from fastapi import APIRouter, Depends, Header, Query, Request, status
 from fastapi.responses import JSONResponse
 
 from app.core.errors import error_response
@@ -20,9 +20,10 @@ from app.services.repositories.plan_repository import (
     request_hash,
 )
 from app.services.repositories.user_repository import get_user
+from app.services.tutor.cutover import require_legacy_runtime
 
 
-router = APIRouter(prefix="/api/plans", tags=["plans"])
+router = APIRouter(prefix="/api/plans", tags=["plans"], dependencies=[Depends(require_legacy_runtime)])
 
 
 @router.post("/generate", response_model=None)

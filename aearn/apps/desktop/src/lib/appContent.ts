@@ -26,6 +26,14 @@ export const ROUTE_META: Record<AppRoute, { crumb: string; hint: string }> = {
     crumb: "设置 / 外观",
     hint: "设置影响 Agent 上下文和提醒策略",
   },
+  cutover: {
+    crumb: "Tutor / 受控切换",
+    hint: "完成服务器确认后进入新的 Tutor 学习入口",
+  },
+  tutor: {
+    crumb: "Tutor / 新学习对话",
+    hint: "从一个新的学习目标开始",
+  },
 };
 
 export const SETTING_PANELS: Record<SettingsKey, SettingsPanel> = {

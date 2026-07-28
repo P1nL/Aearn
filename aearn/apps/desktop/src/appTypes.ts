@@ -46,7 +46,7 @@ export type ExerciseActionKind =
 export type ExerciseRunMode = "preview" | "visible_tests";
 export type WorkbenchState = "pristine" | "dirty" | "running" | "submitted" | "unsupported";
 
-export type AppRoute = "onboarding" | "home" | "review" | "notes" | "settings";
+export type AppRoute = "onboarding" | "home" | "review" | "notes" | "settings" | "cutover" | "tutor";
 export type SettingsKey =
   | "appearance"
   | "models"

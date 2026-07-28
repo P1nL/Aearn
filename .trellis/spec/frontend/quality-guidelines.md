@@ -600,3 +600,109 @@ const [plan, dashboardResponse] = await Promise.all([
 ```
 
 Reload decisions come from validated backend state, not from a local optimistic shortcut.
+
+## Scenario: Desktop Server-Authoritative Harness Cutover Bootstrap
+
+### 1. Scope / Trigger
+
+- Trigger: changing desktop bootstrap, `aearn.bootstrap`, Tutor cutover API
+  types/validators, `HarnessCutoverPage`, or the special `cutover`/`tutor`
+  routes.
+- Scope: `src/{App,api,types,appTypes}.ts(x)`, `stores/useAppStore.ts`,
+  `stores/useSettingsStore.ts`, `pages/HarnessCutoverPage.tsx`, and cutover
+  CSS.
+- This replaces neither the normal onboarding flow while rollout is inactive
+  nor the server authority over destructive scope and runtime authorization.
+
+### 2. Signatures
+
+- Read: `fetchHarnessCutover(userId) -> GET /api/harness/cutover?user_id=...`.
+- Confirm: `confirmHarnessCutover({ userId, cutoverVersion, summaryVersion,
+  previewNonce, summaryHash, clientActionId })`.
+- Bootstrap storage remains
+  `localStorage["aearn.bootstrap"] = { userId, planId: string | null }`.
+- App routes include `cutover` for a pending/blocked decision and `tutor` only
+  for a verified decision.
+
+### 3. Contracts
+
+- After a local user identity is loaded, fetch the server cutover decision
+  before reading a stored `planId` or calling plan, dashboard, resume, legacy
+  learning, review, notes, or Tutor-conversation restoration APIs.
+- An active `summary_ready` or blocked decision retains `userId`, writes
+  `planId: null`, clears user-scoped legacy app/settings/notes state, and
+  mounts only `HarnessCutoverPage`. It must not auto-confirm.
+- An active `verified` decision writes `planId: null`, clears legacy state, and
+  mounts a fresh `TutorWorkspacePage` with `initialConversationId=null`.
+- The page displays only server-projected deletion/retention categories and
+  stable errors. Confirmation requires a visible learner checkbox plus an
+  explicit button; the browser never computes or sends deletion scope/counts.
+- Preserve unrelated local UI storage. Clear the legacy bootstrap plan and
+  recognized user-scoped stores only; never blanket-clear browser storage.
+- UI error branches use stable API `error.code`, keep refresh/retry feedback
+  visible, and block duplicate confirmation while a request is pending.
+
+### 4. Validation & Error Matrix
+
+- `rollout_inactive` -> retain the legacy bootstrap path; do not mount cutover
+  or Tutor special routes.
+- `summary_ready` -> show server summary; confirmation button is disabled until
+  the learner checks the irreversible-action acknowledgement.
+- `blocked_target_state` or `blocked_checkpoint_scope` -> show a blocking
+  explanation and refresh affordance; expose no legacy navigation escape hatch.
+- Confirmation stale/failure -> retain the blocking page and show stable error
+  feedback; do not locally claim that data was cleared.
+- Invalid cutover API payload -> visible API error; do not cast it into a route
+  decision or restore a legacy plan.
+
+### 5. Good / Base / Bad Cases
+
+- Good: a returning legacy user calls health/catalog/user/cutover, clears stale
+  `planId`, shows the exact summary, checks the acknowledgement, and only then
+  enables the explicit confirm button.
+- Good: a verified user opens an empty Tutor conversation rather than old
+  dashboard, session, review, note, or plan state.
+- Base: the rollout is inactive, so the existing dashboard/resume bootstrap
+  remains unchanged.
+- Bad: restoring dashboard/resume before cutover, using a client route to enter
+  Tutor without the decision, treating a checkbox/reload as confirmation, or
+  clearing all `localStorage` keys.
+
+### 6. Tests Required
+
+- Run `pnpm --dir .\aearn desktop:check` after any type, store, page, or CSS
+  change.
+- Render the cutover flow against a disposable mock API: verify page identity,
+  nonblank summary, no framework overlay, clean console, preserved `userId` /
+  cleared `planId`, no dashboard/resume request before the decision, and
+  acknowledgement-controlled confirmation enablement.
+- Check a narrow viewport for readable categories, full-width action controls,
+  and no horizontal clipping. Do not use a real user, live provider, worker,
+  executor, or enabled production flag for the smoke.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```ts
+const stored = readBootstrapContext();
+await fetchDashboard(stored.userId);
+setActiveRoute("tutor");
+```
+
+This restores or authorizes a runtime from local state before the server has
+made the one-time cutover decision.
+
+#### Correct
+
+```ts
+const cutover = await fetchHarnessCutover(loadedUser.id, signal);
+if (cutover.rollout_active) {
+  writeBootstrapContext({ userId: loadedUser.id, planId: null });
+  clearUserScopedState({ keepUser: loadedUser, route: cutover.state === "verified" ? "tutor" : "cutover" });
+  return;
+}
+```
+
+The server decision is the first runtime-routing fact; legacy restoration is
+only reachable through the inactive rollout branch.

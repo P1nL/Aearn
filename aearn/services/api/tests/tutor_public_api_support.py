@@ -10,6 +10,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app.routes.tutor as tutor_route
+import app.routes.harness_cutover as harness_cutover_route
+import app.services.tutor.cutover as cutover_service
 from app.agents.harness.contracts import (
     TutorDecision,
     TutorProviderResult,
@@ -45,6 +47,8 @@ def tutor_client() -> Iterator[TestClient]:
 def tutor_api_settings(monkeypatch: pytest.MonkeyPatch) -> Settings:
     settings = Settings(tutor_harness_enabled=True, llm_type="disabled")
     monkeypatch.setattr(tutor_route, "get_settings", lambda: settings)
+    monkeypatch.setattr(harness_cutover_route, "get_settings", lambda: settings)
+    monkeypatch.setattr(cutover_service, "get_settings", lambda: settings)
     return settings
 
 
@@ -53,13 +57,14 @@ def create_tutor_user(client: TestClient) -> dict[str, object]:
         "/api/users",
         json={
             "display_name": f"Tutor API {uuid.uuid4().hex[:10]}",
-            "learning_style": "practice_first",
-            "teaching_preference": "step_by_step",
         },
     )
     assert response.status_code == 201
     user = response.json()["user"]
     assert isinstance(user, dict)
+    decision = client.get(f"/api/harness/cutover?user_id={user['id']}")
+    assert decision.status_code == 200
+    assert decision.json()["state"] == "verified"
     return user
 
 
