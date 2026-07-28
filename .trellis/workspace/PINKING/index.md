@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-2.md`
-- **Total Sessions**: 79
+- **Total Sessions**: 80
 - **Last Active**: 2026-07-28
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-2.md` | ~675 | Active |
+| `journal-2.md` | ~708 | Active |
 | `journal-1.md` | ~1979 | Archived |
 <!-- @@@/auto:active-documents -->
 
@@ -30,6 +30,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 80 | 2026-07-28 | Tutor API SSE and Desktop pre-cutover delivery | `f0ee786` | `main` |
 | 79 | 2026-07-28 | Deliver Tutor learner state projections | `d796435` | `main` |
 | 78 | 2026-07-28 | Complete Tutor Proactive Scheduler foundation | `9b615cd` | `main` |
 | 77 | 2026-07-27 | Complete Container Sandbox Executor | `cd7bcce198973988fdd7889075a22a1b22406e6a` | `main` |
