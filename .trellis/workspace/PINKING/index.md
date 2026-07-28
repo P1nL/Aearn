@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-2.md`
-- **Total Sessions**: 77
-- **Last Active**: 2026-07-27
+- **Total Sessions**: 78
+- **Last Active**: 2026-07-28
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-2.md` | ~609 | Active |
+| `journal-2.md` | ~642 | Active |
 | `journal-1.md` | ~1979 | Archived |
 <!-- @@@/auto:active-documents -->
 
@@ -30,6 +30,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 78 | 2026-07-28 | Complete Tutor Proactive Scheduler foundation | `9b615cd` | `main` |
 | 77 | 2026-07-27 | Complete Container Sandbox Executor | `cd7bcce198973988fdd7889075a22a1b22406e6a` | `main` |
 | 76 | 2026-07-27 | Complete Tutor State, Traces, and Evals | `00b57a9f585796e5b7c46c7e8bf91849b765f115` | `main` |
 | 75 | 2026-07-27 | Add Tutor Skill Catalog Capability Gateway | `92492c6` | `main` |
