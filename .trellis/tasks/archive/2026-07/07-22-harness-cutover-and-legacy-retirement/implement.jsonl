@@ -1,0 +1,6 @@
+{"file":"docs/architecture/tutor-harness-transition.md","reason":"Frozen target ownership, pre-cutover API/desktop boundary, and required Child 07 cutover/retirement contract delta."}
+{"file":"docs/product/user-flows.md","reason":"Current local-user reset, retained identity, Settings, and post-success user-flow baseline that cutover intentionally narrows."}
+{"file":"docs/product/frontend-interaction-spec.md","reason":"Desktop bootstrap, reset, localStorage, data-summary, and user-visible destructive-action constraints."}
+{"file":"docs/architecture/database-schema.md","reason":"Current owned-data deletion order, idempotency, user preference, and foreign-key baseline for the new exact cutover scope."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Backend Tutor, route, persistence, worker, feature-off, and bootstrap-test contracts for implementing the gate."}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Desktop application-state and user-visible cutover gating requirements."}

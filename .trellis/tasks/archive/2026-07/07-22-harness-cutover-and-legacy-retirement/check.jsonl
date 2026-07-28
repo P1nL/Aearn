@@ -1,0 +1,5 @@
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"Repeatable schema, transaction, idempotency, user scope, and sequential bootstrap-test checks for destructive cutover code."}
+{"file":".trellis/spec/backend/error-handling.md","reason":"Stable error-envelope, safe diagnostics, and recoverability rules for cutover status and confirmation failures."}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"Typed server-state discrimination and guarded desktop rendering for cutover/Tutor routing."}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Cross-layer review checklist covering API, transaction, bootstrap state, worker, and Desktop effects."}
+{"file":"docs/architecture/tutor-harness-transition.md","reason":"Verification authority for feature-off public adapter behavior and Child 07's server-authoritative activation boundary."}
