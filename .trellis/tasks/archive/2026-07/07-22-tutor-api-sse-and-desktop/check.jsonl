@@ -1,0 +1,5 @@
+{"file":".trellis/spec/backend/error-handling.md","reason":"Stable JSON/SSE error envelope and recoverability requirements for public Tutor routes."}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"Repeatable target schema, idempotency, user scope, and sequential bootstrap-test rules."}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"Runtime validation and discriminated SSE union requirements for the desktop adapter."}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"API-service-storage-SSE-desktop flow and boundary review checklist."}
+{"file":"docs/architecture/tutor-harness-transition.md","reason":"Verification source for safe target-to-public event adaptation and later cutover ownership."}

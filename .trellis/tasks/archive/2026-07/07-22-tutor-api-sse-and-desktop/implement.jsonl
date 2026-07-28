@@ -1,0 +1,5 @@
+{"file":"docs/architecture/tutor-harness-transition.md","reason":"Frozen target ownership, durable event/replay constraints, and Child 05 learner-state boundary consumed by the public adapter."}
+{"file":"docs/architecture/api-contract.md","reason":"Existing error envelope and SSE vocabulary that the compatibility layer must preserve during the adapter window."}
+{"file":"docs/product/frontend-interaction-spec.md","reason":"Current desktop interaction/state boundary used to keep Tutor controls pre-cutover and user-facing."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Backend route, persistence, bootstrap-test, and Tutor target-layer quality contracts."}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Desktop API/SSE, visible state, protected-internal, and build-check constraints."}
