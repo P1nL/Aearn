@@ -673,3 +673,36 @@ Implemented feature-disabled immutable plan revisions and rollback, governed lea
 ### Next Steps
 
 - None - task complete
+
+
+## Session 80: Tutor API SSE and Desktop pre-cutover delivery
+
+**Date**: 2026-07-28
+**Task**: Tutor API SSE and Desktop pre-cutover delivery
+**Branch**: `main`
+
+### Summary
+
+Delivered and verified Child 06 public Tutor API/SSE adapter, input merge dispatcher, isolated cursor-replay desktop workspace, learner controls, and contract/spec updates; legacy routing remains unchanged.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `f0ee786` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
