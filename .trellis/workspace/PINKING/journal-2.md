@@ -706,3 +706,41 @@ Delivered and verified Child 06 public Tutor API/SSE adapter, input merge dispat
 ### Next Steps
 
 - None - task complete
+
+
+## Session 81: Complete verified Tutor harness cutover
+
+**Date**: 2026-07-28
+**Task**: Complete verified Tutor harness cutover
+**Branch**: `main`
+
+### Summary
+
+Implemented the server-authoritative per-user cutover gate, verified legacy cleanup, runtime denial, Desktop bootstrap flow, and focused API/worker/Desktop verification.
+
+### Main Changes
+
+- Added the server-authoritative `harness_cutovers` receipt, canonical summary/hash/nonce protocol, and idempotent confirmation endpoints.
+- Enforced verified-only Tutor admission plus active-rollout legacy runtime denial; ordinary reset cannot bypass a pending cutover.
+- Implemented exact user-scoped legacy/checkpoint cleanup with target-state and unknown-scope fail-closed branches, atomic verification, and rollback receipts.
+- Added the Desktop cutover page and bootstrap reset path that preserves `userId`, clears only legacy `planId`/user-scoped state, and avoids legacy restoration requests.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `002ba372843caf314c7c04904ce8b20f32a9b524` | (see git log) |
+
+### Testing
+
+- [OK] `ruff check app tests` and `python -m mypy app` (146 source files).
+- [OK] Focused API/worker suite: 20 passed; one third-party LangGraph deprecation warning only.
+- [OK] `pnpm --dir .\aearn desktop:check`, repeatable database bootstrap, Trellis manifest validation, and `git diff --check`.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
