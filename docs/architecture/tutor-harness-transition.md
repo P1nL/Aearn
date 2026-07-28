@@ -344,6 +344,52 @@ or Graph boundaries.
 - Child 05 remains unreachable from product traffic. Child 06 owns public API,
   SSE, and Desktop adaptation; Child 07 owns cutover and legacy retirement.
 
+## Child 06 Target: Public API, Cursor SSE, and Pre-Cutover Desktop
+
+Child 06 may expose a versioned `/api/tutor` adapter over the durable target
+records. It does not make the Harness the normal product path: with
+`TUTOR_HARNESS_ENABLED=false`, every target route returns the stable
+`CUTOVER_REQUIRED` envelope before a target-domain read or write. Setting that
+route-composition flag is not a cutover confirmation, does not delete legacy
+data, and does not authorize Graph retirement; Child 07 owns those gates.
+
+| Surface | Child 06 status | Compatibility rule | Removal gate |
+| --- | --- | --- | --- |
+| Existing learning/onboarding/review/notes routes and Graph SSE streams | legacy | Preserve current request, event, and desktop behavior. No implicit reroute. | Child 07 and Child 08 replacement proof. |
+| `POST /api/tutor/conversations`, input/run/activity/memory/plan/preference routes | new | Use only user-scoped `tutor_*` target records and stable envelopes. | Retained target surface. |
+| `GET /api/tutor/runs/{run_id}/events` | new | Adapt ordered durable events to SSE ids and `Last-Event-ID`; never call a provider while streaming. | Retained target surface. |
+| Legacy endpoint to Tutor translation | adapter | Explicit, versioned, and tested only; Child 06 adds no automatic adapter. | Remove only after replacement consumers pass. |
+| Harness desktop components | new, cutover-gated | Compile typed UI/contracts without changing the default legacy app entry. | Child 07 server cutover state. |
+
+All target mutations require a client idempotency key. The adapter persists only
+the operation/key/body hash and a learner-safe response projection; a replay
+returns the original projection and a different body is
+`IDEMPOTENCY_CONFLICT`. Conversation input creates one interactive run only
+when no non-terminal compatible run exists; otherwise it calls the durable
+input-acceptance transaction and returns its monotonic input revision. It never
+cancels a run or starts a competing legacy stream for a second learner message.
+
+The public SSE cursor is a non-negative decimal `Last-Event-ID` scoped to one
+run. The adapter reads the ordered durable suffix where
+`event_sequence > cursor`, frames each sequence as the public SSE `id`, and
+maps only learner-safe event facts. Existing compatible event names remain
+available where applicable; `input_accepted`, `run_state`, and `activity` are
+new optional event types. A route or replay error raised before it can be tied
+to one durable event is terminal but has no SSE `id`; desktop code must model
+that frame as `id: null`, retain its last numeric cursor, and never use an
+error frame as `Last-Event-ID`. Raw learner messages, traces, Curator
+prompts/source segments/rationale, provider payloads/errors, code, paths,
+hidden tests, Attempt, and FSRS details are never API/SSE/Desktop fields.
+
+Learner controls read immutable plan lineage/diffs, learner-safe memory
+provenance/retention facts, and activity/inbox state. User plan rollback can
+move only to the active revision's recorded predecessor and appends an audited
+user-control action; it cannot choose a target revision or mutate legacy plan,
+review, FSRS, attempt, or profile data. User memory corrections append a linked
+replacement and deletion remains a guarded state transition. Preference routes
+may expose inferred-memory enablement and a user's proactive pause, but never
+enable background work, relax hard pause/budgets, or expose provider settings.
+
 ## Target Loop and Future Ownership
 
 The finite loop leases, loads, checks fixed budgets/cancellation, builds bounded
