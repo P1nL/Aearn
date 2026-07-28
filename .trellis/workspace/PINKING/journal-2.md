@@ -640,3 +640,36 @@ Implemented and verified the feature-disabled Tutor proactive scheduler: durable
 ### Next Steps
 
 - None - task complete
+
+
+## Session 79: Deliver Tutor learner state projections
+
+**Date**: 2026-07-28
+**Task**: Deliver Tutor learner state projections
+**Branch**: `main`
+
+### Summary
+
+Implemented feature-disabled immutable plan revisions and rollback, governed learner memory, primary-only Curator projections, safe activity and inbox state, schema/contracts/tests, and verified the Tutor regression suite.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `d796435` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
