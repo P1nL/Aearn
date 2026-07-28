@@ -116,6 +116,15 @@ TARGET_TUTOR_TABLES = (
     "tutor_proactive_candidates",
     "tutor_curation_jobs",
     "tutor_scheduler_audit",
+    "tutor_plan_revisions",
+    "tutor_active_plans",
+    "tutor_plan_revision_actions",
+    "tutor_memory_preferences",
+    "tutor_memory_entries",
+    "tutor_context_summaries",
+    "tutor_curation_projection_receipts",
+    "tutor_activity_records",
+    "tutor_inbox_items",
 )
 
 
@@ -151,6 +160,15 @@ def test_tutor_target_schema_is_repeatable_and_enforces_run_event_identity() -> 
                     "trg_tutor_proactive_candidates_lifecycle",
                     "trg_tutor_curation_jobs_updated_at",
                     "trg_tutor_curation_jobs_lifecycle",
+                    "trg_tutor_plan_revisions_immutable",
+                    "trg_tutor_plan_actions_immutable",
+                    "trg_tutor_memory_entries_lifecycle",
+                    "trg_tutor_activity_records_immutable",
+                    "trg_tutor_inbox_items_lifecycle",
+                    "trg_tutor_active_plans_updated_at",
+                    "trg_tutor_memory_preferences_updated_at",
+                    "trg_tutor_memory_entries_updated_at",
+                    "trg_tutor_inbox_items_updated_at",
                 ],
             ),
         ).fetchall()
@@ -169,6 +187,15 @@ def test_tutor_target_schema_is_repeatable_and_enforces_run_event_identity() -> 
             "trg_tutor_proactive_candidates_lifecycle",
             "trg_tutor_curation_jobs_updated_at",
             "trg_tutor_curation_jobs_lifecycle",
+            "trg_tutor_plan_revisions_immutable",
+            "trg_tutor_plan_actions_immutable",
+            "trg_tutor_memory_entries_lifecycle",
+            "trg_tutor_activity_records_immutable",
+            "trg_tutor_inbox_items_lifecycle",
+            "trg_tutor_active_plans_updated_at",
+            "trg_tutor_memory_preferences_updated_at",
+            "trg_tutor_memory_entries_updated_at",
+            "trg_tutor_inbox_items_updated_at",
         }
         executor_indexes = conn.execute(
             """
@@ -183,6 +210,11 @@ def test_tutor_target_schema_is_repeatable_and_enforces_run_event_identity() -> 
                     "idx_tutor_execution_jobs_claim",
                     "idx_tutor_execution_attempts_job_created",
                     "idx_tutor_executor_health_heartbeat",
+                    "idx_tutor_plan_revisions_user_created",
+                    "idx_tutor_memory_entries_user_state",
+                    "idx_tutor_curation_projection_receipts_user_created",
+                    "idx_tutor_activity_records_user_created",
+                    "idx_tutor_inbox_items_user_state",
                 ],
             ),
         ).fetchall()
@@ -191,6 +223,11 @@ def test_tutor_target_schema_is_repeatable_and_enforces_run_event_identity() -> 
             "idx_tutor_execution_jobs_claim",
             "idx_tutor_execution_attempts_job_created",
             "idx_tutor_executor_health_heartbeat",
+            "idx_tutor_plan_revisions_user_created",
+            "idx_tutor_memory_entries_user_state",
+            "idx_tutor_curation_projection_receipts_user_created",
+            "idx_tutor_activity_records_user_created",
+            "idx_tutor_inbox_items_user_state",
         }
         execution_constraint_rows = conn.execute(
             "SELECT conname FROM pg_constraint WHERE conname = ANY(%s)",

@@ -1,0 +1,398 @@
+"""Primary-only, redacted-outbox Curator for Child 05 target projections."""
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Literal, Protocol, TypeAlias
+
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+
+from app.agents.harness.capabilities import contains_forbidden_execution_target
+from app.core.config import Settings, get_settings
+from app.services.llm.llm_client import (
+    LLMCallError,
+    LLMConfigurationError,
+    LLMInvalidResponseError,
+    OpenAICompatibleClient,
+)
+from app.services.tutor.learner_state import (
+    TutorCurationSource,
+    TutorLearnerStateConflict,
+    TutorLearnerStateRepository,
+)
+from app.services.tutor.persistence import (
+    PostgresTutorRepository,
+    TutorCurationProposalReceipt,
+    TutorIdempotencyConflict,
+    TutorRunNotFound,
+)
+from app.services.tutor.proactive import CurationProcessOutcome, TutorCurationJob
+
+
+_SAFE_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@-]{0,159}$")
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+
+
+class _FrozenCurationModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
+
+
+class CurationContextSummaryProposalV1(_FrozenCurationModel):
+    kind: Literal["context_summary"]
+    summary: str = Field(min_length=1, max_length=280)
+    confidence: Literal["low", "medium", "high"]
+
+    @field_validator("summary")
+    @classmethod
+    def _validate_summary(cls, value: str) -> str:
+        return _learner_text(value, label="context summary", maximum=280)
+
+
+class CurationMemoryEntryProposalV1(_FrozenCurationModel):
+    kind: Literal["memory_entry"]
+    category: str = Field(min_length=1, max_length=120)
+    statement: str = Field(min_length=1, max_length=180)
+    confidence: Literal["low", "medium", "high"]
+
+    @field_validator("category")
+    @classmethod
+    def _validate_category(cls, value: str) -> str:
+        return _identifier(value, label="memory category")
+
+    @field_validator("statement")
+    @classmethod
+    def _validate_statement(cls, value: str) -> str:
+        return _learner_text(value, label="memory statement", maximum=180)
+
+
+class CurationNoActionProposalV1(_FrozenCurationModel):
+    kind: Literal["no_action"]
+    code: str = Field(min_length=1, max_length=120)
+
+    @field_validator("code")
+    @classmethod
+    def _validate_code(cls, value: str) -> str:
+        return _identifier(value, label="curation no-action code")
+
+
+CurationProjectionProposal: TypeAlias = CurationContextSummaryProposalV1 | CurationMemoryEntryProposalV1
+CurationOutput: TypeAlias = CurationProjectionProposal | CurationNoActionProposalV1
+
+
+@dataclass(frozen=True)
+class CurationGatewayResult:
+    state: Literal["proposal", "no_action", "retryable"]
+    code: str
+    proposal: CurationProjectionProposal | None = None
+
+    def __post_init__(self) -> None:
+        _identifier(self.code, label="curation gateway code")
+        if self.state == "proposal" and self.proposal is None:
+            raise ValueError("a curation proposal result requires a proposal")
+        if self.state != "proposal" and self.proposal is not None:
+            raise ValueError("non-proposal curation result cannot carry a proposal")
+
+
+class CurationJsonClient(Protocol):
+    def complete_json(
+        self,
+        messages: Sequence[Mapping[str, str]],
+        *,
+        temperature: float | None = 0.2,
+        max_tokens: int | None = None,
+        timeout_seconds: float | None = None,
+    ) -> object: ...
+
+
+class CurationGateway(Protocol):
+    def propose(self, *, source: TutorCurationSource) -> CurationGatewayResult: ...
+
+
+class PrimaryCurationGateway:
+    """Call only the configured primary provider/model, with no fallback path."""
+
+    def __init__(
+        self,
+        *,
+        settings: Settings | None = None,
+        client: CurationJsonClient | None = None,
+        max_output_tokens: int | None = None,
+        timeout_seconds: float | None = None,
+    ) -> None:
+        self._settings = settings or get_settings()
+        configured_limit = self._settings.tutor_curation_max_output_tokens
+        self._max_output_tokens = configured_limit if max_output_tokens is None else max_output_tokens
+        if self._max_output_tokens < 0:
+            raise ValueError("curation max output tokens must be non-negative")
+        self._client = client
+        self._timeout_seconds = timeout_seconds
+
+    def propose(self, *, source: TutorCurationSource) -> CurationGatewayResult:
+        if self._max_output_tokens == 0:
+            return CurationGatewayResult(state="no_action", code="curation_output_disabled")
+        try:
+            client = self._client if self._client is not None else OpenAICompatibleClient(self._settings)
+            response = client.complete_json(
+                _build_messages(source=source),
+                temperature=None,
+                max_tokens=self._max_output_tokens,
+                timeout_seconds=self._timeout_seconds,
+            )
+            content = getattr(response, "content", None)
+            if not isinstance(content, Mapping):
+                return CurationGatewayResult(state="retryable", code="curation_model_invalid_response")
+            parsed = parse_curation_output(content)
+        except (LLMCallError, LLMConfigurationError, LLMInvalidResponseError, ValidationError, TypeError, ValueError):
+            return CurationGatewayResult(state="retryable", code="curation_model_unavailable")
+        except Exception:
+            # Never turn an adapter failure into a provider/model fallback.
+            return CurationGatewayResult(state="retryable", code="curation_model_unavailable")
+        if isinstance(parsed, CurationNoActionProposalV1):
+            return CurationGatewayResult(state="no_action", code=parsed.code)
+        return CurationGatewayResult(state="proposal", code="curation_proposal_ready", proposal=parsed)
+
+
+class TutorMemoryCurator:
+    """Validate one redacted outbox source and commit one typed target projection."""
+
+    def __init__(
+        self,
+        *,
+        repository: PostgresTutorRepository,
+        learner_state: TutorLearnerStateRepository,
+        gateway: CurationGateway,
+    ) -> None:
+        self._repository = repository
+        self._learner_state = learner_state
+        self._gateway = gateway
+
+    def process(self, *, job: TutorCurationJob, lease_owner_id: str, now: datetime) -> CurationProcessOutcome:
+        source, code = self._learner_state.curation_source_for_job(
+            job_id=job.job_id,
+            user_id=job.user_id,
+            lease_owner_id=lease_owner_id,
+            lease_generation=job.lease_generation,
+            now=_utc(now),
+        )
+        if source is None:
+            return CurationProcessOutcome(state="no_action", code=code)
+        result = self._gateway.propose(source=source)
+        if result.state == "retryable":
+            return CurationProcessOutcome(state="retryable", code=result.code)
+        try:
+            if result.state == "no_action":
+                self._record_non_projection(
+                    source=source,
+                    kind="context_summary",
+                    state="no_action",
+                    confidence="low",
+                    code=result.code,
+                    payload_hash=_hash({"kind": "no_action", "code": result.code}),
+                    now=_utc(now),
+                )
+                return CurationProcessOutcome(state="no_action", code=result.code)
+            proposal = result.proposal
+            if proposal is None:
+                return CurationProcessOutcome(state="retryable", code="curation_proposal_missing")
+            return self._commit_projection(source=source, proposal=proposal, now=_utc(now))
+        except (TutorIdempotencyConflict, TutorLearnerStateConflict, TutorRunNotFound, ValueError):
+            return CurationProcessOutcome(state="retryable", code="curation_persistence_retryable")
+
+    def _commit_projection(
+        self,
+        *,
+        source: TutorCurationSource,
+        proposal: CurationProjectionProposal,
+        now: datetime,
+    ) -> CurationProcessOutcome:
+        with self._repository._conn.transaction():  # noqa: SLF001 - exact shared transaction is the target boundary.
+            refreshed, code = self._learner_state.curation_source_for_job(
+                job_id=source.job_id,
+                user_id=source.user_id,
+                lease_owner_id=source.lease_owner_id,
+                lease_generation=source.lease_generation,
+                now=now,
+            )
+            if refreshed is None:
+                return CurationProcessOutcome(state="no_action", code=code)
+            proposal_receipt = self._record_generic_proposal(source=refreshed, proposal=proposal, now=now)
+            if proposal_receipt.state != "pending":
+                self._learner_state.record_curation_projection_receipt(
+                    source=refreshed,
+                    proposal_id=proposal_receipt.proposal_id,
+                    state=_receipt_state(proposal_receipt.state),
+                    target_kind="none",
+                    target_id=None,
+                    code="curation_projection_not_pending",
+                    now=now,
+                )
+                return CurationProcessOutcome(state="no_action", code="curation_projection_not_pending")
+            if isinstance(proposal, CurationContextSummaryProposalV1):
+                self._learner_state.commit_context_summary_projection(
+                    source=refreshed,
+                    proposal_id=proposal_receipt.proposal_id,
+                    summary=proposal.summary,
+                    code="curation_context_summary_committed",
+                    now=now,
+                )
+            else:
+                self._learner_state.commit_inference_memory_projection(
+                    source=refreshed,
+                    proposal_id=proposal_receipt.proposal_id,
+                    category=proposal.category,
+                    statement=proposal.statement,
+                    confidence=proposal.confidence,
+                    code="curation_memory_entry_committed",
+                    now=now,
+                )
+        return CurationProcessOutcome(state="completed", code="curation_projection_committed")
+
+    def _record_non_projection(
+        self,
+        *,
+        source: TutorCurationSource,
+        kind: Literal["context_summary", "memory_entry"],
+        state: Literal["no_action", "stale", "failed"],
+        confidence: Literal["low", "medium", "high"],
+        code: str,
+        payload_hash: str,
+        now: datetime,
+    ) -> None:
+        with self._repository._conn.transaction():  # noqa: SLF001 - pair generic evidence and domain receipt atomically.
+            receipt = self._repository.record_curation_proposal(
+                user_id=source.user_id,
+                outbox_id=source.outbox_id,
+                kind=kind,
+                state=state,
+                payload={"safe_hash": payload_hash},
+                confidence=confidence,
+                policy_version=source.policy_version,
+                memory_setting_version=source.memory_setting_version,
+                created_at=now,
+            )
+            self._learner_state.record_curation_projection_receipt(
+                source=source,
+                proposal_id=receipt.proposal_id,
+                state=_receipt_state(receipt.state),
+                target_kind="none",
+                target_id=None,
+                code=code,
+                now=now,
+            )
+
+    def _record_generic_proposal(
+        self,
+        *,
+        source: TutorCurationSource,
+        proposal: CurationProjectionProposal,
+        now: datetime,
+    ) -> TutorCurationProposalReceipt:
+        if isinstance(proposal, CurationContextSummaryProposalV1):
+            kind: Literal["context_summary", "memory_entry"] = "context_summary"
+            confidence = proposal.confidence
+            payload_hash = _hash({"summary": proposal.summary, "kind": kind})
+        else:
+            kind = "memory_entry"
+            confidence = proposal.confidence
+            payload_hash = _hash(
+                {"category": proposal.category, "statement": proposal.statement, "kind": kind}
+            )
+        return self._repository.record_curation_proposal(
+            user_id=source.user_id,
+            outbox_id=source.outbox_id,
+            kind=kind,
+            state="pending",
+            payload={"safe_hash": payload_hash},
+            confidence=confidence,
+            policy_version=source.policy_version,
+            memory_setting_version=source.memory_setting_version,
+            created_at=now,
+        )
+
+
+def build_curation_proposal_processor(
+    *,
+    conn,
+    settings: Settings | None = None,
+) -> TutorMemoryCurator:
+    """Create the feature-gated processor; a zero output budget remains a no-call path."""
+
+    resolved_settings = settings or get_settings()
+    return TutorMemoryCurator(
+        repository=PostgresTutorRepository(conn),
+        learner_state=TutorLearnerStateRepository(conn),
+        gateway=PrimaryCurationGateway(settings=resolved_settings),
+    )
+
+
+def parse_curation_output(payload: Mapping[str, object]) -> CurationOutput:
+    kind = str(payload.get("kind") or "")
+    if kind == "context_summary":
+        return CurationContextSummaryProposalV1.model_validate(payload)
+    if kind == "memory_entry":
+        return CurationMemoryEntryProposalV1.model_validate(payload)
+    if kind == "no_action":
+        return CurationNoActionProposalV1.model_validate(payload)
+    raise LLMInvalidResponseError("Curator output has an unsupported kind")
+
+
+def _build_messages(*, source: TutorCurationSource) -> list[dict[str, str]]:
+    system = (
+        "You are the Aearn Memory Curator. Return one JSON object only. "
+        "Allowed kind values are context_summary, memory_entry, or no_action. "
+        "Use only the supplied redacted evidence. Never include raw conversation, prompt, "
+        "provider reasoning, code, URL, path, command, SQL, secret, chat, activity, plan, "
+        "review, FSRS, attempt, executor, provider choice, or unknown fields."
+    )
+    bounded_source = {
+        "outbox_id": source.outbox_id,
+        "run_id": source.run_id,
+        "policy_version": source.policy_version,
+        "memory_setting_version": source.memory_setting_version,
+        "source_ids": list(source.source_ids[:16]),
+        "source_hashes": list(source.source_hashes[:16]),
+        "retention_until": source.retention_until.astimezone(UTC).isoformat(),
+        "stale_after": source.stale_after.astimezone(UTC).isoformat(),
+        "envelope": source.envelope,
+    }
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": json.dumps(bounded_source, ensure_ascii=False, sort_keys=True)},
+    ]
+
+
+def _receipt_state(value: str) -> Literal["no_action", "stale", "failed"]:
+    if value == "no_action":
+        return "no_action"
+    if value == "stale":
+        return "stale"
+    if value == "failed":
+        return "failed"
+    raise TutorLearnerStateConflict("curation_receipt_state_invalid")
+
+
+def _identifier(value: object, *, label: str) -> str:
+    normalized = str(value or "").strip()
+    if not _SAFE_IDENTIFIER.fullmatch(normalized):
+        raise ValueError(f"{label} must be a stable bounded identifier")
+    return normalized
+
+
+def _learner_text(value: object, *, label: str, maximum: int) -> str:
+    normalized = " ".join(str(value or "").split())
+    if not normalized or len(normalized) > maximum or contains_forbidden_execution_target(normalized):
+        raise ValueError(f"{label} must be bounded learner-safe text")
+    return normalized
+
+
+def _hash(value: object) -> str:
+    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _utc(value: datetime) -> datetime:
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)

@@ -89,6 +89,9 @@ class Settings(BaseModel):
     tutor_curation_daily_budget: int = Field(
         default_factory=lambda: _env_int("TUTOR_CURATION_DAILY_BUDGET", "0")
     )
+    tutor_curation_max_output_tokens: int = Field(
+        default_factory=lambda: _env_int("TUTOR_CURATION_MAX_OUTPUT_TOKENS", "0"), ge=0
+    )
     tutor_proactive_concurrency_limit: int = Field(
         default_factory=lambda: _env_int("TUTOR_PROACTIVE_CONCURRENCY_LIMIT", "0")
     )

@@ -18,6 +18,13 @@ from app.services.tutor.run_loop import TutorRunLoop
 SchedulerQueue = Literal["proactive", "curation"]
 SchedulerState = Literal["pending", "leased", "completed", "no_action", "failed", "stale"]
 ProcessorState = Literal["completed", "no_action", "failed", "retryable"]
+_PROACTIVE_EFFECT_ALLOWLIST = frozenset(
+    {
+        "tutor.plan.activate",
+        "tutor.plan.rollback",
+        "tutor.activity.record",
+    }
+)
 
 _SAFE_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -299,9 +306,15 @@ class ProactiveRunComposition:
 
     def __post_init__(self) -> None:
         _validate_identifier(self.policy_version, label="policy_version")
-        if "runner.execute" in self.allowed_capability_ids:
+        if "runner.execute" in self.allowed_capability_ids or "runner.execute" in self.allowed_effect_types:
             raise ValueError("proactive runs must not receive runner.execute")
-        if self.allowed_effect_types or self.policy.max_effects != 0:
+        if "tutor.memory.record" in self.allowed_effect_types:
+            raise ValueError("proactive runs must not receive learner-memory inference authority")
+        if any(effect_type not in _PROACTIVE_EFFECT_ALLOWLIST for effect_type in self.allowed_effect_types):
+            raise ValueError("proactive effect type is not explicitly approved")
+        if self.allowed_effect_types and self.policy.max_effects <= 0:
+            raise ValueError("proactive effect authority requires a positive effect budget")
+        if not self.allowed_effect_types and self.policy.max_effects != 0:
             raise ValueError("Child 04 proactive runs must not receive domain effect authority")
         for capability_id in self.allowed_capability_ids:
             _validate_identifier(capability_id, label="allowed capability id")
@@ -318,6 +331,7 @@ class ProactiveRunComposition:
             "lease_duration_seconds": self.policy.lease_duration_seconds,
             "policy_version": self.policy_version,
             "allowed_capability_ids": self.allowed_capability_ids,
+            "allowed_effect_types": self.allowed_effect_types,
         }
         encoded = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(encoded.encode("utf-8")).hexdigest()

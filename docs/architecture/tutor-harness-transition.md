@@ -3,9 +3,10 @@
 ## Status and Authority
 
 This transition contract records the feature-disabled, in-process Tutor
-Harness seam from Child 00/01 and the target-only durable foundation delivered
-by Child 02. Child 02 adds no learner-facing API, SSE stream, desktop entry
-point, worker, Curator, feature activation, or legacy-data migration.
+Harness seam from Children 00/01, the target-only durable foundation from Child 02,
+the scheduling/queue seam from Child 04, and the Child 05 learner-state projections.
+None of these target layers adds a learner-facing API, SSE stream, Desktop entry
+point, legacy-data migration, cutover, or product activation.
 
 | Authority | Meaning |
 | --- | --- |
@@ -288,17 +289,60 @@ review-worker behavior, or product-domain projection.
 - A proactive candidate reserves one internal `tutor_conversations` record
   (`visibility=internal`, `kind=proactive`) and one `tutor_runs` record with
   `origin=proactive` before the existing finite `TutorRunLoop` can run. The
-  background composition rejects `runner.execute`, carries typed origin through
-  the policy boundary, and has no normal-success chat/desktop delivery path.
+  background composition permanently rejects `runner.execute` and
+  `tutor.memory.record`. It may receive only explicitly policy-composed
+  `tutor.plan.activate`, `tutor.plan.rollback`, or `tutor.activity.record`
+  authority with a positive effect budget; the default composition remains empty
+  and has no normal-success chat/desktop delivery path.
 - The curation queue seeds exactly one low-priority job per Child 02 pending
-  outbox identity. It preserves the outbox as the redacted semantic envelope,
-  rechecks source revision/policy/memory-setting/retention facts before work,
-  and uses a default-deny injected proposal processor. It cannot directly write
-  memory, plan, activity, inbox, review, FSRS, attempt, filesystem, or chat.
+  outbox identity. It preserves the outbox as the redacted semantic envelope and
+  rechecks source revision/policy/memory-setting/retention facts before work.
+  Child 04's injected default remains no-action; Child 05 may compose a
+  primary-only Curator only when all scheduler gates pass and
+  `TUTOR_CURATION_MAX_OUTPUT_TOKENS > 0`. It cannot directly write chat, plan,
+  review, FSRS, attempt, filesystem, or an arbitrary provider/model target.
 - The worker exposes bounded target task names
   `tutor.proactive.scan_due_signals`, `tutor.proactive.drain_candidates`, and
   `tutor.curation.drain`. They delegate to API-side policy/repository services;
   their default feature-off behavior makes no model, capability, or domain call.
+
+## Child 05 Target: Learner State, Curator Projection, and User Controls
+
+Child 05 adds feature-disabled target-domain state without changing the legacy
+`learning_plans`, learner-profile, review, FSRS, attempt, route, SSE, Desktop,
+or Graph boundaries.
+
+- The reviewed catalog adds exact descriptors for `tutor.plan.activate`,
+  `tutor.plan.rollback`, `tutor.memory.record`, and `tutor.activity.record`.
+  The reviewed `tutor.learner-state@1.0.0` Skill declares only those effects.
+  The default policy still grants none. `PostgresTutorRepository.commit_effect_if_current()`
+  now revalidates the descriptor payload as well as the selected Skill evidence
+  before invoking an in-transaction handler.
+- `tutor_plan_revisions` is immutable, `tutor_active_plans` is the sole mutable
+  pointer, and `tutor_plan_revision_actions` is append-only. An activation adds
+  a revision plus evidence and predecessor; rollback can move only to the active
+  revision's recorded predecessor. Neither path writes legacy plans, review,
+  FSRS, attempts, or learner profiles.
+- `tutor_memory_entries` distinguishes `objective_fact` from `inference`.
+  Objective facts can be evidence-backed effects or trusted/user-control
+  records. Inferences require Curator provenance, confidence, policy and
+  memory-setting versions, retention/staleness, and a redacted outbox/proposal
+  scope. Corrections append a linked replacement; deletion is a guarded state
+  transition, not a raw-data rewrite. `tutor_memory_preferences` versioning
+  invalidates stale queued work.
+- `tutor_activity_records` is append-only learner-safe evidence and
+  `tutor_inbox_items` is its optional, user-scoped read/dismiss projection.
+  Neither table stores prompt, trace, provider reasoning, code, path, command,
+  SQL, hidden-test, or secret data.
+- `PrimaryCurationGateway` sees only the Child 02 redacted envelope and calls
+  the configured primary `OpenAICompatibleClient` once with no provider/model
+  fallback. `TUTOR_CURATION_MAX_OUTPUT_TOKENS=0` is the default no-call mode.
+  A typed result can create exactly one context summary or inference projection;
+  `tutor_curation_projection_receipts` records `committed`, `no_action`,
+  `stale`, or `failed` without turning generic proposal rows into a raw provider
+  payload store.
+- Child 05 remains unreachable from product traffic. Child 06 owns public API,
+  SSE, and Desktop adaptation; Child 07 owns cutover and legacy retirement.
 
 ## Target Loop and Future Ownership
 
@@ -317,7 +361,7 @@ mutation of memory, plans, reviews, FSRS, attempts, messages, or activity.
 | Child 01 | Skill catalog, capability policy, registered capability implementations. |
 | Child 02 | Additive target SQL repositories, exact catalog replay evidence, durable internal events/checkpoints, lifecycle transaction, redacted trace/export, curation envelope, and fake-only evals. |
 | Child 04 | Queue leasing/retry/circuit-breaker ownership for persisted outbox work; Child 02 does not run jobs. |
-| Child 05 | Curator generation, semantic proposal validation, and all plan/memory/activity/domain projections. |
+| Child 05 | Delivered target learner-state effects, immutable plan revisions/rollback, memory/activity/inbox projections, and primary-only Curator validation under feature-off gates. |
 | Child 06 | Tutor API/SSE `Last-Event-ID` adaptation, delivery acknowledgement, feature exposure, and desktop deduplication. |
 | Child 07/08 | Cutover, legacy retirement, and source-of-truth reconciliation. |
 

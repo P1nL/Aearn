@@ -2161,3 +2161,176 @@ else:
 
 The correct path is idempotent, origin-aware, feature-off by default, and has no
 unbounded provider, direct domain-write, chat, or desktop side effect.
+
+## Scenario: Feature-Disabled Tutor Learner State, Curator, and Safe Activity Projections
+
+### 1. Scope / Trigger
+
+- Trigger: changing reviewed Tutor learner-state effects, `tutor.learner-state@1.0.0`,
+  `tutor_*` plan/memory/activity/inbox tables, `TutorLearnerStateRepository`,
+  `PrimaryCurationGateway`, `TutorMemoryCurator`, or the Child 04 curation
+  worker composition.
+- Scope: `app/agents/harness/capabilities.py`, `app/agents/skills/`,
+  `app/services/tutor/{persistence,learner_state,curation,proactive,proactive_worker}.py`,
+  `app/core/config.py`, `app/db/schema.sql`, and focused PostgreSQL/fake-only tests.
+- This is a target-only domain layer. It must not add a public route, SSE frame,
+  Desktop rendering, legacy Graph composition, legacy plan/profile write, review,
+  FSRS, attempt, executor, provider/model fallback, cutover, or legacy retirement.
+
+### 2. Signatures
+
+- Catalog effect types: `tutor.plan.activate`, `tutor.plan.rollback`,
+  `tutor.memory.record`, and `tutor.activity.record`, each at exact version
+  `1.0.0` and declared only by `tutor.learner-state@1.0.0`.
+- Effect boundary:
+  `PostgresTutorRepository.commit_effect_if_current(user_id, run_id, lease, proposal, idempotency_key, now)`
+  validates the descriptor payload, exact selected Skill evidence, current input
+  revision, lease, cancellation, and idempotency before invoking a domain handler.
+- Plan domain: `TutorLearnerStateRepository.activate_plan_from_effect(...)` and
+  `rollback_plan_from_effect(...)`; rollback accepts no caller-selected target.
+- Learner controls: `set_inferred_memory_preference(...)`, `correct_memory_entry(...)`,
+  `delete_memory_entry(...)`, `mark_inbox_read(...)`, and `dismiss_inbox_item(...)`.
+- Curator: `PrimaryCurationGateway.propose(source) -> CurationGatewayResult` and
+  `TutorMemoryCurator.process(job, lease_owner_id, now) -> CurationProcessOutcome`.
+- Environment: `TUTOR_CURATION_MAX_OUTPUT_TOKENS=0` is the default. A positive
+  value is necessary but not sufficient for a provider call; the Child 04
+  scheduler, hard-pause, cutover, preference, source-revision, version,
+  retention, budget, concurrency, cooldown, circuit, and job-lease gates still apply.
+- DB: `tutor_plan_revisions`, `tutor_active_plans`,
+  `tutor_plan_revision_actions`, `tutor_memory_preferences`,
+  `tutor_memory_entries`, `tutor_context_summaries`,
+  `tutor_curation_projection_receipts`, `tutor_activity_records`, and
+  `tutor_inbox_items` are additive target-only tables.
+
+### 3. Contracts
+
+- Plan revisions are immutable and append-only. `tutor_active_plans` is the
+  only mutable pointer. Activation creates an evidence-backed revision/action;
+  rollback moves only to its stored predecessor and never edits revision bodies.
+- Plan effects, actions, or read models never write `learning_plans`,
+  `learner_profiles`, `review_states`, `review_logs`, FSRS state, attempts, or
+  legacy product tables.
+- `tutor.memory.record` accepts only `memory_kind="objective_fact"` with equal
+  bounded `evidence_ids`/SHA-256 `evidence_hashes`. Inference is Curator-only
+  and requires `confidence`, Curator/outbox/proposal provenance, policy and
+  memory-setting versions, plus retention and staleness timestamps.
+- Corrections append a new objective entry linked by `replaced_entry_id`; a
+  delete changes only the guarded target state. No correction or delete rewrites
+  historic evidence fields.
+- A Curator receives only the Child 02 redacted outbox envelope, source ids and
+  hashes, policy/memory versions, and retention facts. It stores neither raw
+  prompt/message/provider payload/reasoning nor an arbitrary model response.
+- A Curator chooses only one typed `context_summary`, `memory_entry`, or
+  `no_action` result. Generic proposal evidence stores only a safe content hash;
+  the target projection and exactly-one receipt carry the final domain result.
+- `PrimaryCurationGateway` calls only the configured `OpenAICompatibleClient`
+  primary provider/model. It must not instantiate or retry against a fallback
+  provider/model. Existing transport retries inside that one configured client
+  do not authorize a provider change.
+- Proactive compositions permanently deny `runner.execute` and
+  `tutor.memory.record`. They may receive only explicitly configured plan or
+  activity effects with a positive effect budget; all default composition lists
+  remain empty.
+- Activity/inbox text is learner-safe and bounded. These tables never retain
+  trace, provider reasoning, prompt, code, URL, path, command, SQL, hidden-test,
+  solution, or secret data.
+
+### 4. Validation & Error Matrix
+
+- Missing descriptor, malformed/extra payload fields, unselected Skill, or
+  effect absent from the selected Skill -> durable `DENIED`; handler not invoked.
+- Stale input revision, cancelled/terminal run, expired/mismatched lease ->
+  durable `STALE_REJECTED`; handler not invoked.
+- No active plan predecessor -> `plan_rollback_unavailable`; no pointer/revision
+  mutation occurs.
+- Invalid learner memory statement/evidence hash/count -> validation failure;
+  no memory entry is inserted.
+- Correcting/deleting a missing or non-active memory entry ->
+  `memory_entry_not_found` or `memory_entry_not_active`.
+- Memory preference/version mismatch, disabled inferred memory, non-pending
+  outbox, stale source revision, expired retention/staleness, or stale job lease
+  -> curation `no_action`/`stale`; no gateway call after the pre-call denial.
+- `TUTOR_CURATION_MAX_OUTPUT_TOKENS=0` -> `curation_output_disabled`; no
+  `OpenAICompatibleClient` construction or provider call.
+- Invalid/unavailable primary model output -> retryable `curation_model_*`; no
+  partial proposal, context summary, memory entry, or receipt is committed.
+- A mismatched replay proposal/receipt/target hash -> idempotency conflict;
+  never silently replace a learner-state projection.
+
+### 5. Good/Base/Bad Cases
+
+- Good: a selected `tutor.learner-state@1.0.0` plan activation writes one
+  immutable revision, one active pointer, and one action; a second activation
+  records the predecessor; rollback returns only to that predecessor.
+- Good: an objective memory effect stores evidence without confidence; a
+  Curator inference stores confidence, outbox/proposal scope, setting/policy
+  versions, and retention facts; correction appends a linked replacement.
+- Good: a queued, current, enabled curation job sends only its redacted envelope
+  to one fake primary gateway, then commits one inference/context target and one
+  `committed` receipt in the same transaction as generic proposal persistence.
+- Base: normal settings keep `TUTOR_CURATION_MAX_OUTPUT_TOKENS=0`, so a worker
+  can reach the composed processor but receives bounded no-action with zero
+  provider calls and no public product behavior change.
+- Bad: putting a plan body, memory statement, raw provider response, prompt, or
+  learner message into `tutor_curation_proposals.payload_json`; directly writing
+  activity/inbox from a Curator; accepting an inference through
+  `tutor.memory.record`; or selecting a provider/model from model output.
+
+### 6. Tests Required
+
+- `tests/test_learning_plan_revisions.py`: activate/replay/second revision/
+  predecessor-only rollback, immutable revision trigger, and proof legacy plan,
+  review, and attempt counts are unchanged.
+- `tests/test_tutor_memory.py`: objective-only effect evidence, setting-version
+  control, correction/delete lineage, unsafe raw payload rejection, and no
+  direct inference row.
+- `tests/test_tutor_memory_curator.py`: redacted source shape, one fake-primary
+  call for an eligible job, one target projection plus receipt, preference-disable
+  no-call, and zero-output-token no-call.
+- `tests/test_tutor_activity.py`: user scope, optional inbox lifecycle,
+  safe activity fields, and descriptor denial before a handler write.
+- `tests/test_tutor_skill_catalog.py`, `tests/test_tutor_capability_gateway.py`,
+  and `tests/fixtures/tutor_evals/tutor_harness_foundation_v1.json`: exact Skill
+  catalog order, effect descriptors, digest/hash identity, and no relaxation of
+  the catalog gate.
+- `tests/test_db_bootstrap.py`: bootstrap twice, all new target tables, indexes,
+  trigger names, scoped foreign keys, and immutable/lifecycle checks.
+- Run PostgreSQL/bootstrap-heavy Tutor tests sequentially, then `ruff check app tests`
+  and `python -m mypy app` from `aearn/services/api` through `uv`.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+# This bypasses the selected-Skill/descriptor/CAS boundary and leaves a raw
+# provider response in a generic curation record.
+outbox = load_outbox(job.outbox_id)
+proposal = fallback_provider.complete_json({"prompt": raw_messages})
+conn.execute("INSERT INTO tutor_memory_entries (...) VALUES (...)")
+```
+
+#### Correct
+
+```python
+source, code = learner_state.curation_source_for_job(...)
+if source is None:
+    return CurationProcessOutcome(state="no_action", code=code)
+
+result = primary_only_gateway.propose(source=source)
+if result.state == "proposal":
+    with conn.transaction():
+        proposal = tutor_repository.record_curation_proposal(
+            payload={"safe_hash": projection_hash},
+            ...,
+        )
+        learner_state.commit_inference_memory_projection(
+            source=source,
+            proposal_id=proposal.proposal_id,
+            ...,
+        )
+```
+
+The correct path validates before the model boundary, preserves one primary-only
+call, stores only safe evidence in the generic proposal, and commits the target
+projection through scoped repository contracts.

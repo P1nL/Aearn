@@ -16,8 +16,9 @@ from typing import Final, cast
 from uuid import uuid4
 
 from psycopg import Connection
+from pydantic import ValidationError
 
-from app.agents.harness.capabilities import is_exact_semver
+from app.agents.harness.capabilities import EffectDescriptor, default_effect_descriptors, is_exact_semver
 from app.agents.harness.contracts import (
     TutorCapabilityRequest,
     TutorCapabilityResult,
@@ -34,6 +35,7 @@ from app.agents.harness.contracts import (
     TutorRunSnapshot,
     TutorRunStatus,
     TutorTerminalOutcome,
+    payload_mapping_from_fields,
 )
 from app.agents.harness.skill_catalog import SkillCatalogSnapshot
 from app.services.tutor.ports import TutorLifecycleConflict, TutorLifecyclePersistence, TutorRunStore
@@ -199,11 +201,16 @@ class PostgresTutorRepository:
         projector: TutorSafeProjection | None = None,
         failpoint: Failpoint | None = None,
         effect_handlers: Mapping[str, EffectHandler] | None = None,
+        effect_descriptors: Sequence[EffectDescriptor] | None = None,
     ) -> None:
         self._conn = conn
         self._projector = projector or TutorSafeProjection()
         self._failpoint = failpoint
         self._effect_handlers = dict(effect_handlers or {})
+        descriptors = tuple(default_effect_descriptors() if effect_descriptors is None else effect_descriptors)
+        self._effect_descriptors = {descriptor.effect_type: descriptor for descriptor in descriptors}
+        if len(self._effect_descriptors) != len(descriptors):
+            raise ValueError("effect descriptors must have unique effect types")
         for effect_type in self._effect_handlers:
             _safe_key(effect_type, label="registered effect type")
 
@@ -878,10 +885,24 @@ class PostgresTutorRepository:
                 return TutorEffectCommitReceipt(result=result, event=event, replayed=False, committer_invoked=False)
 
             handler = self._effect_handlers.get(proposal.effect_type)
-            if handler is None or not self._selected_skill_allows_effect(
-                run=run,
-                input_revision=proposal.expected_input_revision,
-                effect_type=proposal.effect_type,
+            descriptor = self._effect_descriptors.get(proposal.effect_type)
+            payload = payload_mapping_from_fields(proposal.payload)
+            descriptor_valid = False
+            if descriptor is not None and payload is not None:
+                try:
+                    descriptor.proposal_model.model_validate(payload)
+                    descriptor_valid = True
+                except (ValidationError, TypeError, ValueError):
+                    descriptor_valid = False
+            if (
+                handler is None
+                or descriptor is None
+                or not descriptor_valid
+                or not self._selected_skill_allows_effect(
+                    run=run,
+                    input_revision=proposal.expected_input_revision,
+                    effect_type=proposal.effect_type,
+                )
             ):
                 result = TutorEffectResult(effect_id=proposal.effect_id, status=TutorEffectStatus.DENIED)
                 event = self._record_effect_result_locked(

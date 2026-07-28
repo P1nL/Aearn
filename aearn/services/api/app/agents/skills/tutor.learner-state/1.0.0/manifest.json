@@ -1,0 +1,27 @@
+{
+  "id": "tutor.learner-state",
+  "version": "1.0.0",
+  "owner": "aearn-core",
+  "kind": "tutoring",
+  "summary": "Propose bounded learner-state updates with evidence and no raw diagnostic storage.",
+  "instruction_file": "instructions.md",
+  "evaluation_suite_file": "evals.json",
+  "content_hashes": {
+    "instructions.md": "ff4c22a0b19745c4f1dae360368860281c9d333b7c7d321c4cbda5f47e2e86dc",
+    "evals.json": "630c36012c440e292d495edb307c5942dde01137fb6dc168ba0da69f5498774e"
+  },
+  "resource_refs": [],
+  "requires_capabilities": [],
+  "allowed_effect_types": [
+    "tutor.plan.activate",
+    "tutor.plan.rollback",
+    "tutor.memory.record",
+    "tutor.activity.record"
+  ],
+  "policy_tags": [
+    "learner-state"
+  ],
+  "input_contract": "tutor.learner-state.v1",
+  "output_contract": "tutor.effect-decision.v1",
+  "deprecated": false
+}
