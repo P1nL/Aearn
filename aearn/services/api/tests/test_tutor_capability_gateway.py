@@ -48,6 +48,7 @@ def _run(*, max_capability_calls: int = 1) -> TutorRunSnapshot:
         run_id="catalog-run",
         conversation_id="catalog-conversation",
         user_id="catalog-user",
+        origin="interactive",
         input_revision=0,
         policy=TutorPolicySnapshot(
             deadline=datetime(2030, 1, 1, tzinfo=UTC),
@@ -74,7 +75,7 @@ def _policy(catalog, run: TutorRunSnapshot, *, runtime_available: bool = True) -
     return CapabilityPolicyContext(
         run_id=run.run_id,
         user_id=run.user_id,
-        origin="interactive",
+        origin=run.origin,
         input_revision=run.input_revision,
         catalog_digest=catalog.digest,
         eligible_skill_references=(catalog.skills[0].reference,),
@@ -313,9 +314,10 @@ def test_catalog_and_tutor_source_never_import_legacy_or_unbounded_execution_sur
     for path in files:
         source = path.read_text(encoding="utf-8")
         forbidden_for_path = forbidden
-        if path.name == "persistence.py":
-            # Child 02 owns the only target SQL repository. Keep the storage
-            # exception narrow while retaining every execution/legacy boundary.
+        if path.name in {"persistence.py", "proactive_repository.py"}:
+            # Child 02 owns durable replay and Child 04 owns scheduler queue
+            # leases. Keep the SQL exception narrow while retaining every
+            # execution, legacy, route, and unbounded-runtime boundary.
             forbidden_for_path = tuple(marker for marker in forbidden if marker not in {"app.db", "psycopg"})
         if path.name == "execution.py":
             # Child 03 owns the target SQL intent/job repository and may adapt
@@ -323,4 +325,8 @@ def test_catalog_and_tutor_source_never_import_legacy_or_unbounded_execution_sur
             # runner implementation or launch a host path.
             forbidden_for_path = tuple(marker for marker in forbidden if marker not in {"psycopg"})
             source = source.replace("app.services.runners.runtime_contracts", "")
+        if path.name == "proactive_worker.py":
+            # Child 04 uses a bounded API-side worker adapter only; routes and
+            # legacy Graph/runner surfaces remain forbidden.
+            forbidden_for_path = tuple(marker for marker in forbidden_for_path if marker != "app.db")
         assert not any(marker in source for marker in forbidden_for_path), path

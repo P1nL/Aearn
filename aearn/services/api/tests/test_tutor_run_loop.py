@@ -69,6 +69,7 @@ def _snapshot(*, policy: TutorPolicySnapshot | None = None, cancelled: bool = Fa
         run_id="run-loop",
         conversation_id="conversation-loop",
         user_id="user-loop",
+        origin="interactive",
         input_revision=0,
         policy=policy or _policy(),
         cancelled=cancelled,
@@ -438,7 +439,13 @@ def test_harness_and_tutor_modules_do_not_depend_on_legacy_graph_route_or_storag
 
     for path in files:
         source = path.read_text(encoding="utf-8")
-        assert not any(marker in source for marker in forbidden), path
+        forbidden_for_path = forbidden
+        if path.name == "proactive_worker.py":
+            # Child 04 owns the one bounded API-side worker adapter. It may open
+            # the target database connection, but never imports legacy Graph,
+            # route, streaming, or product-conversation boundaries.
+            forbidden_for_path = tuple(marker for marker in forbidden if marker != "app.db")
+        assert not any(marker in source for marker in forbidden_for_path), path
 
 
 def test_tutor_feature_flag_is_not_consumed_by_legacy_route_sse_or_desktop_paths() -> None:

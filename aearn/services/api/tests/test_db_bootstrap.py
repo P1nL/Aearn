@@ -111,6 +111,11 @@ TARGET_TUTOR_TABLES = (
     "tutor_run_traces",
     "tutor_memory_curation_outbox",
     "tutor_curation_proposals",
+    "tutor_proactive_preferences",
+    "tutor_proactive_signals",
+    "tutor_proactive_candidates",
+    "tutor_curation_jobs",
+    "tutor_scheduler_audit",
 )
 
 
@@ -141,6 +146,11 @@ def test_tutor_target_schema_is_repeatable_and_enforces_run_event_identity() -> 
                     "trg_tutor_executor_health_updated_at",
                     "trg_tutor_memory_curation_outbox_updated_at",
                     "trg_tutor_curation_proposals_updated_at",
+                    "trg_tutor_proactive_preferences_updated_at",
+                    "trg_tutor_proactive_candidates_updated_at",
+                    "trg_tutor_proactive_candidates_lifecycle",
+                    "trg_tutor_curation_jobs_updated_at",
+                    "trg_tutor_curation_jobs_lifecycle",
                 ],
             ),
         ).fetchall()
@@ -154,6 +164,11 @@ def test_tutor_target_schema_is_repeatable_and_enforces_run_event_identity() -> 
             "trg_tutor_executor_health_updated_at",
             "trg_tutor_memory_curation_outbox_updated_at",
             "trg_tutor_curation_proposals_updated_at",
+            "trg_tutor_proactive_preferences_updated_at",
+            "trg_tutor_proactive_candidates_updated_at",
+            "trg_tutor_proactive_candidates_lifecycle",
+            "trg_tutor_curation_jobs_updated_at",
+            "trg_tutor_curation_jobs_lifecycle",
         }
         executor_indexes = conn.execute(
             """
@@ -392,6 +407,7 @@ def test_tutor_execution_schema_rejects_cross_scope_and_lifecycle_mutations(tuto
         conversation_id=fixture.conversation_id,
         catalog_digest=fixture.catalog.digest,
         policy=fixture.run.policy,
+        origin="interactive",
     )
     other_effect = fixture.connection.execute(
         """

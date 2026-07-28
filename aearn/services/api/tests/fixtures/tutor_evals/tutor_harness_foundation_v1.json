@@ -6,7 +6,7 @@
       "id": "catalog-identity-pinned",
       "scenario": "catalog_identity",
       "catalog": {
-        "digest": "3443db89bf2717a09b1c9f9d7511d194d7fdba100f496e027a5daeb51ff2c493",
+        "digest": "b28a9387372c371e15bf85aaf8b56a66f2e505896782965a36c619b524bbd940",
         "skill_id": "tutor.registry-grounding",
         "skill_version": "1.0.0",
         "manifest_hash": "127ff1e847a4ba51b7804e2f888add13b0c7bbf2500e8bb76f2cc6b088f7b62a",
@@ -21,7 +21,7 @@
       "id": "policy-denial-no-capability",
       "scenario": "policy_denial",
       "catalog": {
-        "digest": "3443db89bf2717a09b1c9f9d7511d194d7fdba100f496e027a5daeb51ff2c493",
+        "digest": "b28a9387372c371e15bf85aaf8b56a66f2e505896782965a36c619b524bbd940",
         "skill_id": "tutor.registry-grounding",
         "skill_version": "1.0.0",
         "manifest_hash": "127ff1e847a4ba51b7804e2f888add13b0c7bbf2500e8bb76f2cc6b088f7b62a",
@@ -38,7 +38,7 @@
       "id": "strict-provider-envelope-rejected",
       "scenario": "strict_provider_rejection",
       "catalog": {
-        "digest": "3443db89bf2717a09b1c9f9d7511d194d7fdba100f496e027a5daeb51ff2c493",
+        "digest": "b28a9387372c371e15bf85aaf8b56a66f2e505896782965a36c619b524bbd940",
         "skill_id": "tutor.registry-grounding",
         "skill_version": "1.0.0",
         "manifest_hash": "127ff1e847a4ba51b7804e2f888add13b0c7bbf2500e8bb76f2cc6b088f7b62a",
@@ -54,7 +54,7 @@
       "id": "bounded-loop-exits-before-provider",
       "scenario": "bounded_loop",
       "catalog": {
-        "digest": "3443db89bf2717a09b1c9f9d7511d194d7fdba100f496e027a5daeb51ff2c493",
+        "digest": "b28a9387372c371e15bf85aaf8b56a66f2e505896782965a36c619b524bbd940",
         "skill_id": "tutor.registry-grounding",
         "skill_version": "1.0.0",
         "manifest_hash": "127ff1e847a4ba51b7804e2f888add13b0c7bbf2500e8bb76f2cc6b088f7b62a",
@@ -70,7 +70,7 @@
       "id": "revision-race-stale-effect",
       "scenario": "stale_effect",
       "catalog": {
-        "digest": "3443db89bf2717a09b1c9f9d7511d194d7fdba100f496e027a5daeb51ff2c493",
+        "digest": "b28a9387372c371e15bf85aaf8b56a66f2e505896782965a36c619b524bbd940",
         "skill_id": "tutor.registry-grounding",
         "skill_version": "1.0.0",
         "manifest_hash": "127ff1e847a4ba51b7804e2f888add13b0c7bbf2500e8bb76f2cc6b088f7b62a",
@@ -87,7 +87,7 @@
       "id": "primary-only-model-unavailable",
       "scenario": "primary_model_unavailable",
       "catalog": {
-        "digest": "3443db89bf2717a09b1c9f9d7511d194d7fdba100f496e027a5daeb51ff2c493",
+        "digest": "b28a9387372c371e15bf85aaf8b56a66f2e505896782965a36c619b524bbd940",
         "skill_id": "tutor.registry-grounding",
         "skill_version": "1.0.0",
         "manifest_hash": "127ff1e847a4ba51b7804e2f888add13b0c7bbf2500e8bb76f2cc6b088f7b62a",
@@ -104,7 +104,7 @@
       "id": "protected-values-never-exported",
       "scenario": "redaction_leakage",
       "catalog": {
-        "digest": "3443db89bf2717a09b1c9f9d7511d194d7fdba100f496e027a5daeb51ff2c493",
+        "digest": "b28a9387372c371e15bf85aaf8b56a66f2e505896782965a36c619b524bbd940",
         "skill_id": "tutor.registry-grounding",
         "skill_version": "1.0.0",
         "manifest_hash": "127ff1e847a4ba51b7804e2f888add13b0c7bbf2500e8bb76f2cc6b088f7b62a",
@@ -127,7 +127,7 @@
       "id": "replay-outbox-proposal-terminal-unique",
       "scenario": "replay_outbox_proposal",
       "catalog": {
-        "digest": "3443db89bf2717a09b1c9f9d7511d194d7fdba100f496e027a5daeb51ff2c493",
+        "digest": "b28a9387372c371e15bf85aaf8b56a66f2e505896782965a36c619b524bbd940",
         "skill_id": "tutor.registry-grounding",
         "skill_version": "1.0.0",
         "manifest_hash": "127ff1e847a4ba51b7804e2f888add13b0c7bbf2500e8bb76f2cc6b088f7b62a",

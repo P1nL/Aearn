@@ -7,7 +7,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from typing import Protocol
+from typing import Literal, Protocol
 
 from app.agents.runtime.agent_runtime_context import limit_text, sanitize_message_content, sanitize_summary_text
 from app.agents.runtime.redaction import redact_value
@@ -17,6 +17,9 @@ MAX_TUTOR_IDENTIFIER_LENGTH = 120
 MAX_TUTOR_PUBLIC_MESSAGE_LENGTH = 1600
 MAX_TUTOR_PAYLOAD_FIELDS = 12
 MAX_TUTOR_PAYLOAD_VALUE_LENGTH = 360
+
+
+TutorRunOrigin = Literal["interactive", "proactive"]
 
 
 class TutorRunStatus(str, Enum):
@@ -487,6 +490,7 @@ class TutorRunSnapshot:
     user_id: str
     input_revision: int
     policy: TutorPolicySnapshot
+    origin: TutorRunOrigin
     status: TutorRunStatus = TutorRunStatus.QUEUED
     lease: TutorLease | None = None
     iteration_count: int = 0
@@ -501,6 +505,8 @@ class TutorRunSnapshot:
         for name in ("iteration_count", "model_call_count", "capability_call_count", "effect_count"):
             if getattr(self, name) < 0:
                 raise ValueError(f"{name} must be non-negative")
+        if self.origin not in {"interactive", "proactive"}:
+            raise ValueError("Tutor run origin is invalid")
         object.__setattr__(self, "run_id", _safe_identifier(self.run_id))
         object.__setattr__(self, "conversation_id", _safe_identifier(self.conversation_id))
         object.__setattr__(self, "user_id", _safe_identifier(self.user_id))

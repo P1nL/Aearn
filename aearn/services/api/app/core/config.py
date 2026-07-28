@@ -18,6 +18,10 @@ def _env_int(name: str, default: str) -> int:
     return int(_env_str(name, default))
 
 
+def _env_bool(name: str, default: str) -> bool:
+    return _env_str(name, default).lower() in ("true", "1", "yes")
+
+
 def _env_optional(name: str) -> str | None:
     value = os.getenv(name)
     if value is None:
@@ -66,6 +70,57 @@ class Settings(BaseModel):
     )
     tutor_executor_enabled: bool = Field(
         default_factory=lambda: _env_str("TUTOR_EXECUTOR_ENABLED", "false").lower() in ("true", "1", "yes")
+    )
+    tutor_proactive_scheduler_enabled: bool = Field(
+        default_factory=lambda: _env_bool("TUTOR_PROACTIVE_SCHEDULER_ENABLED", "false")
+    )
+    tutor_background_hard_paused: bool = Field(
+        default_factory=lambda: _env_bool("TUTOR_BACKGROUND_HARD_PAUSED", "true")
+    )
+    tutor_proactive_cutover_eligible: bool = Field(
+        default_factory=lambda: _env_bool("TUTOR_PROACTIVE_CUTOVER_ELIGIBLE", "false")
+    )
+    tutor_inferred_memory_enabled: bool = Field(
+        default_factory=lambda: _env_bool("TUTOR_INFERRED_MEMORY_ENABLED", "false")
+    )
+    tutor_proactive_daily_budget: int = Field(
+        default_factory=lambda: _env_int("TUTOR_PROACTIVE_DAILY_BUDGET", "0")
+    )
+    tutor_curation_daily_budget: int = Field(
+        default_factory=lambda: _env_int("TUTOR_CURATION_DAILY_BUDGET", "0")
+    )
+    tutor_proactive_concurrency_limit: int = Field(
+        default_factory=lambda: _env_int("TUTOR_PROACTIVE_CONCURRENCY_LIMIT", "0")
+    )
+    tutor_curation_concurrency_limit: int = Field(
+        default_factory=lambda: _env_int("TUTOR_CURATION_CONCURRENCY_LIMIT", "0")
+    )
+    tutor_proactive_cooldown_seconds: int = Field(
+        default_factory=lambda: _env_int("TUTOR_PROACTIVE_COOLDOWN_SECONDS", "86400")
+    )
+    tutor_curation_cooldown_seconds: int = Field(
+        default_factory=lambda: _env_int("TUTOR_CURATION_COOLDOWN_SECONDS", "3600")
+    )
+    tutor_proactive_circuit_failure_threshold: int = Field(
+        default_factory=lambda: _env_int("TUTOR_PROACTIVE_CIRCUIT_FAILURE_THRESHOLD", "1")
+    )
+    tutor_curation_circuit_failure_threshold: int = Field(
+        default_factory=lambda: _env_int("TUTOR_CURATION_CIRCUIT_FAILURE_THRESHOLD", "1")
+    )
+    tutor_scheduler_circuit_window_seconds: int = Field(
+        default_factory=lambda: _env_int("TUTOR_SCHEDULER_CIRCUIT_WINDOW_SECONDS", "3600")
+    )
+    tutor_proactive_lease_seconds: int = Field(
+        default_factory=lambda: _env_int("TUTOR_PROACTIVE_LEASE_SECONDS", "60")
+    )
+    tutor_curation_lease_seconds: int = Field(
+        default_factory=lambda: _env_int("TUTOR_CURATION_LEASE_SECONDS", "60")
+    )
+    tutor_scheduler_max_retry_attempts: int = Field(
+        default_factory=lambda: _env_int("TUTOR_SCHEDULER_MAX_RETRY_ATTEMPTS", "2")
+    )
+    tutor_scheduler_retry_backoff_seconds: int = Field(
+        default_factory=lambda: _env_int("TUTOR_SCHEDULER_RETRY_BACKOFF_SECONDS", "60")
     )
 
     @property

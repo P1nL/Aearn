@@ -12,7 +12,7 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Final
+from typing import Final, cast
 from uuid import uuid4
 
 from psycopg import Connection
@@ -30,6 +30,7 @@ from app.agents.harness.contracts import (
     TutorLease,
     TutorPolicySnapshot,
     TutorRunResult,
+    TutorRunOrigin,
     TutorRunSnapshot,
     TutorRunStatus,
     TutorTerminalOutcome,
@@ -265,7 +266,7 @@ class PostgresTutorRepository:
         catalog_digest: str,
         policy: TutorPolicySnapshot,
         run_id: str | None = None,
-        origin: str = "interactive",
+        origin: TutorRunOrigin,
         policy_version: str = "tutor_policy_v1",
         policy_fingerprint: str | None = None,
     ) -> TutorRunSnapshot:
@@ -2037,6 +2038,9 @@ def _snapshot_from_row(row: Mapping[str, object]) -> TutorRunSnapshot:
         context_token_budget=_as_int(policy_data.get("context_token_budget"), 1),
         lease_duration_seconds=_as_int(policy_data.get("lease_duration_seconds"), 1),
     )
+    origin = str(row.get("origin") or "")
+    if origin not in {"interactive", "proactive"}:
+        raise TutorPersistenceError("stored Tutor run origin is invalid")
     expires_at = _as_datetime(row.get("active_lease_expires_at"))
     owner_id = row.get("active_lease_owner_id")
     generation = _as_int(row.get("active_lease_generation"), 0)
@@ -2051,6 +2055,7 @@ def _snapshot_from_row(row: Mapping[str, object]) -> TutorRunSnapshot:
         user_id=str(row["user_id"]),
         input_revision=_as_int(row["input_revision"], 0),
         policy=policy,
+        origin=cast(TutorRunOrigin, origin),
         status=TutorRunStatus(str(row["status"])),
         lease=lease,
         iteration_count=_as_int(row.get("iteration_count"), 0),

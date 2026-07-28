@@ -676,9 +676,15 @@ CREATE TABLE IF NOT EXISTS tutor_conversations (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
   status text NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'closed', 'cancelled')),
+  visibility text NOT NULL DEFAULT 'learner',
+  kind text NOT NULL DEFAULT 'interactive',
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
-  CONSTRAINT uq_tutor_conversations_id_user UNIQUE (id, user_id)
+  CONSTRAINT uq_tutor_conversations_id_user UNIQUE (id, user_id),
+  CONSTRAINT chk_tutor_conversations_visibility_kind CHECK (
+    (visibility = 'learner' AND kind = 'interactive')
+    OR (visibility = 'internal' AND kind = 'proactive')
+  )
 );
 
 CREATE TABLE IF NOT EXISTS tutor_messages (
@@ -1002,6 +1008,218 @@ CREATE TABLE IF NOT EXISTS tutor_curation_proposals (
   updated_at timestamptz NOT NULL DEFAULT now(),
   CHECK (stale_after <= retention_until)
 );
+
+
+-- Tutor proactive scheduler (Child 04): additive, feature-disabled, and safe-reference-only.
+ALTER TABLE tutor_conversations
+  ADD COLUMN IF NOT EXISTS visibility text NOT NULL DEFAULT 'learner';
+ALTER TABLE tutor_conversations
+  ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'interactive';
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'tutor_conversations'::regclass
+      AND conname = 'chk_tutor_conversations_visibility_kind'
+  ) THEN
+    ALTER TABLE tutor_conversations
+      ADD CONSTRAINT chk_tutor_conversations_visibility_kind CHECK (
+        (visibility = 'learner' AND kind = 'interactive')
+        OR (visibility = 'internal' AND kind = 'proactive')
+      );
+  END IF;
+END $$;
+
+CREATE TABLE IF NOT EXISTS tutor_proactive_preferences (
+  user_id uuid PRIMARY KEY REFERENCES users(id) ON DELETE RESTRICT,
+  enabled boolean NOT NULL DEFAULT false,
+  hard_paused boolean NOT NULL DEFAULT false,
+  policy_version text NOT NULL CHECK (char_length(policy_version) <= 160),
+  setting_version text NOT NULL CHECK (char_length(setting_version) <= 160),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS tutor_proactive_signals (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  signal_kind text NOT NULL CHECK (char_length(signal_kind) <= 160),
+  source_type text NOT NULL CHECK (char_length(source_type) <= 160),
+  source_id text NOT NULL CHECK (char_length(source_id) <= 160),
+  source_hash text NOT NULL CHECK (source_hash ~ '^[0-9a-f]{64}$'),
+  occurred_at timestamptz NOT NULL,
+  dedupe_key text NOT NULL CHECK (char_length(dedupe_key) <= 160),
+  dedupe_bucket_at timestamptz NOT NULL,
+  dedupe_window_seconds integer NOT NULL CHECK (dedupe_window_seconds > 0),
+  source_reference_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  policy_version text NOT NULL CHECK (char_length(policy_version) <= 160),
+  disposition text NOT NULL CHECK (disposition IN ('received', 'accepted', 'suppressed', 'no_action')),
+  disposition_code text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  last_seen_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_tutor_proactive_signals_id_user UNIQUE (id, user_id),
+  CONSTRAINT uq_tutor_proactive_signal_source UNIQUE (user_id, source_type, source_id, source_hash)
+);
+
+CREATE TABLE IF NOT EXISTS tutor_proactive_candidates (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  signal_id uuid NOT NULL UNIQUE REFERENCES tutor_proactive_signals(id) ON DELETE RESTRICT,
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  candidate_kind text NOT NULL CHECK (char_length(candidate_kind) <= 160),
+  dedupe_key text NOT NULL CHECK (char_length(dedupe_key) <= 160),
+  dedupe_bucket_at timestamptz NOT NULL,
+  policy_version text NOT NULL CHECK (char_length(policy_version) <= 160),
+  policy_fingerprint text NOT NULL CHECK (policy_fingerprint ~ '^[0-9a-f]{64}$'),
+  state text NOT NULL CHECK (state IN ('pending', 'leased', 'completed', 'no_action', 'failed', 'stale')),
+  no_action_code text,
+  last_error_code text,
+  not_before timestamptz NOT NULL,
+  attempt_count integer NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+  lease_owner_id text,
+  lease_generation integer NOT NULL DEFAULT 0 CHECK (lease_generation >= 0),
+  lease_expires_at timestamptz,
+  run_id uuid,
+  run_started_at timestamptz,
+  terminal_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_tutor_proactive_candidates_id_user UNIQUE (id, user_id),
+  CONSTRAINT uq_tutor_proactive_candidate_dedupe UNIQUE (user_id, dedupe_key, dedupe_bucket_at),
+  CONSTRAINT fk_tutor_proactive_candidate_signal_user
+    FOREIGN KEY (signal_id, user_id) REFERENCES tutor_proactive_signals(id, user_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_proactive_candidate_run_user
+    FOREIGN KEY (run_id, user_id) REFERENCES tutor_runs(id, user_id) ON DELETE RESTRICT,
+  CONSTRAINT chk_tutor_proactive_candidate_terminal CHECK (
+    (state IN ('completed', 'no_action', 'failed', 'stale')) = (terminal_at IS NOT NULL)
+  ),
+  CONSTRAINT chk_tutor_proactive_candidate_lease CHECK (
+    (state = 'leased' AND lease_owner_id IS NOT NULL AND lease_generation > 0 AND lease_expires_at IS NOT NULL)
+    OR (state <> 'leased' AND lease_owner_id IS NULL AND lease_expires_at IS NULL)
+  )
+);
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'tutor_memory_curation_outbox'::regclass
+      AND conname = 'uq_tutor_outbox_id_run'
+  ) THEN
+    ALTER TABLE tutor_memory_curation_outbox
+      ADD CONSTRAINT uq_tutor_outbox_id_run UNIQUE (id, run_id);
+  END IF;
+END $$;
+
+CREATE TABLE IF NOT EXISTS tutor_curation_jobs (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  outbox_id uuid NOT NULL UNIQUE REFERENCES tutor_memory_curation_outbox(id) ON DELETE RESTRICT,
+  run_id uuid NOT NULL REFERENCES tutor_runs(id) ON DELETE RESTRICT,
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  policy_version text NOT NULL CHECK (char_length(policy_version) <= 160),
+  memory_setting_version text NOT NULL CHECK (char_length(memory_setting_version) <= 160),
+  state text NOT NULL CHECK (state IN ('pending', 'leased', 'completed', 'no_action', 'failed', 'stale')),
+  no_action_code text,
+  last_error_code text,
+  not_before timestamptz NOT NULL,
+  attempt_count integer NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+  lease_owner_id text,
+  lease_generation integer NOT NULL DEFAULT 0 CHECK (lease_generation >= 0),
+  lease_expires_at timestamptz,
+  processor_started_at timestamptz,
+  terminal_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_tutor_curation_jobs_id_user UNIQUE (id, user_id),
+  CONSTRAINT fk_tutor_curation_job_run_user
+    FOREIGN KEY (run_id, user_id) REFERENCES tutor_runs(id, user_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_curation_job_outbox_run
+    FOREIGN KEY (outbox_id, run_id) REFERENCES tutor_memory_curation_outbox(id, run_id) ON DELETE RESTRICT,
+  CONSTRAINT chk_tutor_curation_job_terminal CHECK (
+    (state IN ('completed', 'no_action', 'failed', 'stale')) = (terminal_at IS NOT NULL)
+  ),
+  CONSTRAINT chk_tutor_curation_job_lease CHECK (
+    (state = 'leased' AND lease_owner_id IS NOT NULL AND lease_generation > 0 AND lease_expires_at IS NOT NULL)
+    OR (state <> 'leased' AND lease_owner_id IS NULL AND lease_expires_at IS NULL)
+  )
+);
+
+CREATE TABLE IF NOT EXISTS tutor_scheduler_audit (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  queue text NOT NULL CHECK (queue IN ('proactive', 'curation')),
+  candidate_id uuid,
+  curation_job_id uuid,
+  decision text NOT NULL CHECK (char_length(decision) <= 160),
+  code text NOT NULL CHECK (char_length(code) <= 160),
+  details_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT fk_tutor_scheduler_audit_candidate_user
+    FOREIGN KEY (candidate_id, user_id) REFERENCES tutor_proactive_candidates(id, user_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_scheduler_audit_curation_user
+    FOREIGN KEY (curation_job_id, user_id) REFERENCES tutor_curation_jobs(id, user_id) ON DELETE RESTRICT,
+  CONSTRAINT chk_tutor_scheduler_audit_target CHECK (
+    (candidate_id IS NULL) <> (curation_job_id IS NULL)
+  )
+);
+
+CREATE INDEX IF NOT EXISTS idx_tutor_proactive_candidates_pending
+  ON tutor_proactive_candidates (not_before, created_at, id)
+  WHERE state = 'pending';
+CREATE INDEX IF NOT EXISTS idx_tutor_proactive_candidates_user_state
+  ON tutor_proactive_candidates (user_id, state, terminal_at);
+CREATE INDEX IF NOT EXISTS idx_tutor_curation_jobs_pending
+  ON tutor_curation_jobs (not_before, created_at, id)
+  WHERE state = 'pending';
+CREATE INDEX IF NOT EXISTS idx_tutor_curation_jobs_user_state
+  ON tutor_curation_jobs (user_id, state, terminal_at);
+CREATE INDEX IF NOT EXISTS idx_tutor_scheduler_audit_user_created
+  ON tutor_scheduler_audit (user_id, created_at DESC);
+
+CREATE OR REPLACE FUNCTION enforce_tutor_scheduler_queue_lifecycle()
+RETURNS trigger AS $$
+BEGIN
+  IF NEW.state = 'leased' THEN
+    IF NEW.lease_owner_id IS NULL OR NEW.lease_generation <= 0 OR NEW.lease_expires_at IS NULL THEN
+      RAISE EXCEPTION USING ERRCODE = '23514', MESSAGE = 'leased scheduler row requires a lease shape';
+    END IF;
+  ELSIF NEW.lease_owner_id IS NOT NULL OR NEW.lease_expires_at IS NOT NULL THEN
+    RAISE EXCEPTION USING ERRCODE = '23514', MESSAGE = 'non-leased scheduler row cannot retain a lease';
+  END IF;
+  IF (NEW.state IN ('completed', 'no_action', 'failed', 'stale')) <> (NEW.terminal_at IS NOT NULL) THEN
+    RAISE EXCEPTION USING ERRCODE = '23514', MESSAGE = 'scheduler terminal state requires terminal_at';
+  END IF;
+  IF TG_OP = 'UPDATE' THEN
+    IF OLD.state IN ('completed', 'no_action', 'failed', 'stale') AND NEW.state <> OLD.state THEN
+      RAISE EXCEPTION USING ERRCODE = '23514', MESSAGE = 'terminal scheduler row cannot return to work';
+    END IF;
+    IF NEW.lease_generation < OLD.lease_generation THEN
+      RAISE EXCEPTION USING ERRCODE = '23514', MESSAGE = 'scheduler lease generation cannot decrease';
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_tutor_proactive_candidates_lifecycle ON tutor_proactive_candidates;
+CREATE TRIGGER trg_tutor_proactive_candidates_lifecycle
+BEFORE INSERT OR UPDATE ON tutor_proactive_candidates
+FOR EACH ROW EXECUTE FUNCTION enforce_tutor_scheduler_queue_lifecycle();
+
+DROP TRIGGER IF EXISTS trg_tutor_curation_jobs_lifecycle ON tutor_curation_jobs;
+CREATE TRIGGER trg_tutor_curation_jobs_lifecycle
+BEFORE INSERT OR UPDATE ON tutor_curation_jobs
+FOR EACH ROW EXECUTE FUNCTION enforce_tutor_scheduler_queue_lifecycle();
+
+DROP TRIGGER IF EXISTS trg_tutor_proactive_preferences_updated_at ON tutor_proactive_preferences;
+CREATE TRIGGER trg_tutor_proactive_preferences_updated_at BEFORE UPDATE ON tutor_proactive_preferences
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+DROP TRIGGER IF EXISTS trg_tutor_proactive_candidates_updated_at ON tutor_proactive_candidates;
+CREATE TRIGGER trg_tutor_proactive_candidates_updated_at BEFORE UPDATE ON tutor_proactive_candidates
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+DROP TRIGGER IF EXISTS trg_tutor_curation_jobs_updated_at ON tutor_curation_jobs;
+CREATE TRIGGER trg_tutor_curation_jobs_updated_at BEFORE UPDATE ON tutor_curation_jobs
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
 DO $$
 BEGIN

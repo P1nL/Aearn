@@ -348,6 +348,7 @@ def tutor_persistence() -> TutorPersistenceFixture:
                 max_effects=2,
                 context_token_budget=64,
             ),
+            origin="interactive",
         )
         try:
             yield TutorPersistenceFixture(
