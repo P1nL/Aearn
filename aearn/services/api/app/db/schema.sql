@@ -1842,6 +1842,43 @@ CREATE TABLE IF NOT EXISTS tutor_api_idempotency_records (
   CONSTRAINT uq_tutor_api_idempotency_user_operation_key UNIQUE (user_id, operation, idempotency_key)
 );
 
+-- Child 07 cutover receipt. This is intentionally separate from ordinary
+-- local-user reset records: it holds only a safe summary fingerprint and the
+-- one-time gate state, never legacy learner content or target Tutor state.
+CREATE TABLE IF NOT EXISTS harness_cutovers (
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  cutover_version text NOT NULL CHECK (char_length(cutover_version) BETWEEN 1 AND 120),
+  state text NOT NULL DEFAULT 'required' CHECK (state IN (
+    'required', 'summary_ready', 'verified', 'verification_failed',
+    'blocked_target_state', 'blocked_checkpoint_scope'
+  )),
+  summary_hash text CHECK (summary_hash IS NULL OR summary_hash ~ '^[0-9a-f]{64}$'),
+  preview_nonce text CHECK (preview_nonce IS NULL OR char_length(preview_nonce) BETWEEN 1 AND 160),
+  summary_version integer NOT NULL DEFAULT 0 CHECK (summary_version >= 0),
+  confirmation_idempotency_key text CHECK (
+    confirmation_idempotency_key IS NULL
+    OR char_length(confirmation_idempotency_key) BETWEEN 1 AND 160
+  ),
+  confirmation_request_hash text CHECK (
+    confirmation_request_hash IS NULL
+    OR confirmation_request_hash ~ '^[0-9a-f]{64}$'
+  ),
+  confirmed_at timestamptz,
+  verified_at timestamptz,
+  failure_code text CHECK (failure_code IS NULL OR char_length(failure_code) BETWEEN 1 AND 160),
+  failure_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, cutover_version)
+);
+
+CREATE INDEX IF NOT EXISTS idx_harness_cutovers_state_updated
+  ON harness_cutovers (state, updated_at DESC);
+
+DROP TRIGGER IF EXISTS trg_harness_cutovers_updated_at ON harness_cutovers;
+CREATE TRIGGER trg_harness_cutovers_updated_at BEFORE UPDATE ON harness_cutovers
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
 CREATE INDEX IF NOT EXISTS idx_tutor_plan_revisions_user_created
   ON tutor_plan_revisions (user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tutor_plan_actions_user_created

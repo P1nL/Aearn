@@ -5368,3 +5368,202 @@ img {
     width: 100%;
   }
 }
+
+/* Child 07 server-authoritative clean-slate transition. */
+.harness-cutover-page {
+  min-height: 100%;
+  display: grid;
+  place-items: center;
+  padding: 28px;
+  background:
+    radial-gradient(circle at top right, rgba(116, 86, 255, 0.12), transparent 34%),
+    linear-gradient(145deg, #111520 0%, #171d2d 100%);
+}
+
+.harness-cutover-card {
+  width: min(760px, 100%);
+  display: grid;
+  gap: 20px;
+  padding: clamp(24px, 4vw, 42px);
+  border: 1px solid rgba(206, 215, 255, 0.18);
+  border-radius: 24px;
+  background: rgba(25, 31, 48, 0.93);
+  box-shadow: 0 28px 80px rgba(2, 5, 14, 0.42);
+}
+
+.harness-cutover-header {
+  display: grid;
+  gap: 10px;
+}
+
+.harness-cutover-eyebrow {
+  margin: 0;
+  color: #a9b2ff;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.harness-cutover-header h1,
+.harness-cutover-summary h2,
+.harness-cutover-retained h2,
+.harness-cutover-blocked h2 {
+  margin: 0;
+  color: #f5f7ff;
+}
+
+.harness-cutover-header h1 {
+  font-size: clamp(1.65rem, 4vw, 2.35rem);
+}
+
+.harness-cutover-header p:not(.harness-cutover-eyebrow),
+.harness-cutover-summary > div > p,
+.harness-cutover-blocked p,
+.harness-cutover-muted {
+  margin: 0;
+  color: #b9c3db;
+  line-height: 1.65;
+}
+
+.harness-cutover-summary,
+.harness-cutover-retained,
+.harness-cutover-confirmation,
+.harness-cutover-blocked {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid rgba(206, 215, 255, 0.13);
+  border-radius: 16px;
+  background: rgba(10, 14, 24, 0.42);
+}
+
+.harness-cutover-counts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.harness-cutover-counts li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 11px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.045);
+  color: #d9e0f0;
+}
+
+.harness-cutover-counts strong {
+  color: #ffb9b2;
+}
+
+.harness-cutover-checkpoint,
+.harness-cutover-feedback {
+  margin: 0;
+  color: #c5cee3;
+  font-size: 0.9rem;
+}
+
+.harness-cutover-retained ul {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding-left: 20px;
+  color: #cfd7ea;
+  line-height: 1.5;
+}
+
+.harness-cutover-confirm-checkbox {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  color: #e4e9f7;
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.harness-cutover-confirm-checkbox input {
+  width: 18px;
+  height: 18px;
+  margin-top: 2px;
+  accent-color: #8f7cff;
+}
+
+.harness-cutover-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.harness-cutover-primary,
+.harness-cutover-secondary {
+  min-height: 40px;
+  padding: 0 15px;
+  border-radius: 10px;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.harness-cutover-primary {
+  border: 1px solid #9a8bff;
+  background: #8877f8;
+  color: #fff;
+}
+
+.harness-cutover-secondary {
+  border: 1px solid rgba(212, 220, 255, 0.32);
+  background: transparent;
+  color: #e6ebfb;
+}
+
+.harness-cutover-primary:disabled,
+.harness-cutover-secondary:disabled,
+.harness-cutover-confirm-checkbox input:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.harness-cutover-blocked {
+  border-color: rgba(255, 177, 107, 0.34);
+  background: rgba(93, 60, 30, 0.2);
+}
+
+.harness-cutover-feedback.error {
+  color: #ffb6ad;
+}
+
+@media (max-width: 640px) {
+  .harness-cutover-page { padding: 14px; }
+  .harness-cutover-card { padding: 22px; border-radius: 18px; }
+  .harness-cutover-actions { justify-content: stretch; }
+  .harness-cutover-actions button { width: 100%; }
+}
+
+.harness-shell-nav {
+  display: grid;
+  gap: 10px;
+  margin: 18px 12px;
+  padding: 14px;
+  border: 1px solid rgba(176, 169, 255, 0.24);
+  border-radius: 12px;
+  background: rgba(123, 104, 238, 0.09);
+  color: #e9e7ff;
+  line-height: 1.5;
+}
+
+.harness-shell-nav span {
+  color: #bfc8db;
+  font-size: 0.86rem;
+}
+
+.harness-workspace-shell {
+  min-height: 0;
+  padding: 0;
+}

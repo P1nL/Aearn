@@ -2334,3 +2334,125 @@ if result.state == "proposal":
 The correct path validates before the model boundary, preserves one primary-only
 call, stores only safe evidence in the generic proposal, and commits the target
 projection through scoped repository contracts.
+
+## Scenario: Verified Tutor Harness Cutover and Legacy Runtime Denial
+
+### 1. Scope / Trigger
+
+- Trigger: adding or changing `harness_cutovers`, `/api/harness/cutover`,
+  destructive legacy cleanup, Tutor/legacy runtime gates, legacy review-worker
+  writes, or an ordinary local-user reset during a Tutor rollout.
+- Scope: `app/db/schema.sql`, `app/services/tutor/cutover.py`,
+  `app/routes/{harness_cutover,tutor,users}.py`, audited legacy routers,
+  `aearn_worker/worker_app.py`, and focused PostgreSQL/API tests.
+- This is a one-way clean-slate transition. It is not history migration,
+  provider/executor activation, Graph deletion, or recovery of confirmed data.
+
+### 2. Signatures
+
+- DB receipt: `harness_cutovers(user_id, cutover_version)` with the durable
+  states `required`, `summary_ready`, `verified`, `verification_failed`,
+  `blocked_target_state`, and `blocked_checkpoint_scope`.
+- Status: `GET /api/harness/cutover?user_id={uuid}`.
+- Confirm: `POST /api/harness/cutover/confirm` with
+  `{ user_id, cutover_version, summary_version, preview_nonce, summary_hash,
+  client_action_id, confirm: true }`.
+- Tutor gate: `HarnessCutoverService.assert_runtime_allowed(user_id=...)`.
+- Legacy gate: `HarnessCutoverService.assert_legacy_runtime_denied(user_id=...)`.
+
+### 3. Contracts
+
+- `TUTOR_HARNESS_ENABLED=false` leaves legacy routes unchanged and keeps Tutor
+  routes feature-off before opening a target connection. The flag alone never
+  authorizes a learner.
+- When the rollout is active, only `verified` authorizes Tutor routes. Every
+  legacy router is denied, including a verified user; a missing or malformed
+  user scope also fails closed instead of allowing a session/path-only read.
+- The server alone derives canonical legacy counts, target-state facts,
+  checkpoint threads, summary hash, and preview nonce. Clients never submit a
+  deletion table, count, target id, or checkpoint scope.
+- Confirmation locks the user, recomputes the exact summary, deletes only
+  proven legacy ownership, verifies the same scope, and commits `verified` in
+  one transaction. A failure rolls back deletion and writes only a safe
+  `CUTOVER_VERIFICATION_FAILED` receipt in a separate transaction.
+- The cutover path deletes exact `idempotency_records.user_id` rows; it must not
+  reuse reset's key/JSON/text `LIKE` ownership heuristic. It clears only the
+  five legacy learner fields and preserves local identity plus notification/UI
+  preferences.
+- `tutor_*` user state is target-state contamination and blocks without any
+  target or legacy deletion. Checkpointer cleanup recognizes only
+  `aearn:learning:<learning_session_id>` in the supported public tables; a
+  missing table is safe zero, while an unknown schema/namespace/`NULL` thread
+  id/unmatched thread blocks.
+- Once rollout is active, ordinary `POST /api/users/{user_id}/reset-data` first
+  requires the Tutor authorization gate. It cannot delete a pending summary and
+  turn that user into an implicit empty-state cutover.
+
+### 4. Validation & Error Matrix
+
+- Missing/false `confirm` -> `CUTOVER_CONFIRMATION_REQUIRED`; no deletion.
+- Changed legacy inventory, stale version/nonce/hash, or cross-user preview ->
+  `CUTOVER_SUMMARY_STALE`; refresh the server summary.
+- Same `client_action_id` with a changed confirmation body ->
+  `CUTOVER_CONFIRMATION_CONFLICT`.
+- Pre-cutover target rows -> `CUTOVER_TARGET_STATE_PRESENT`; delete nothing.
+- Unknown or unprovable checkpointer scope ->
+  `CUTOVER_CHECKPOINT_SCOPE_UNRESOLVED`; delete nothing.
+- Destructive SQL/verification failure -> `CUTOVER_VERIFICATION_FAILED`; both
+  runtime families remain blocked.
+- Active-rollout legacy request, including `verified` user -> `CUTOVER_REQUIRED`
+  unless a more specific blocked/failure code applies.
+
+### 5. Good / Base / Bad Cases
+
+- Good: a legacy user receives a server summary, explicitly confirms its exact
+  nonce/hash, loses all legacy rows and owned checkpoint rows, retains identity
+  preferences, and reaches only Tutor.
+- Good: an already empty user receives a durable verified receipt without a
+  destructive prompt, while a target-contaminated user remains blocked.
+- Base: checkpoint tables are absent; inventory reports safe zero and creates
+  no LangGraph table.
+- Bad: treating `TUTOR_HARNESS_ENABLED` as cutover proof, allowing a verified
+  user into dashboard/resume/onboarding, or using ordinary reset to erase a
+  pending legacy profile before confirmation.
+
+### 6. Tests Required
+
+- `tests/test_harness_cutover.py`: exact confirmation/replay/stale/cross-user
+  behavior, full legacy hierarchy deletion, retained fields, target blocking,
+  injected rollback receipt, malformed/unscoped legacy denial, verified legacy
+  denial, public checkpoint ownership, unrelated checkpoint survival, and
+  unresolved namespace/`NULL` thread denial.
+- `tests/test_local_user_data_boundary.py`: ordinary reset still preserves its
+  legacy preference contract while the rollout-off baseline remains intact.
+- `tests/test_worker_import.py`: every active-rollout receipt state blocks the
+  legacy review worker; a disabled rollout performs no gate query.
+- Run `bootstrap_database()` after schema edits, then focused pytest, `ruff
+  check app tests`, and `python -m mypy app` through `uv`.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+if settings.tutor_harness_enabled:
+    return  # Treats the global rollout flag as user authorization.
+reset_user_data(conn, user_id)  # Can erase a pending summary before confirmation.
+```
+
+This lets a flag or legacy reset bypass a server-authoritative clean-slate
+confirmation and can reopen the wrong runtime.
+
+#### Correct
+
+```python
+if get_settings().tutor_harness_enabled:
+    gate_error = runtime_gate_error(user_id=user_id)
+    if gate_error is not None:
+        return stable_error_response(gate_error)
+
+HarnessCutoverService(conn).assert_legacy_runtime_denied(user_id=user_id)
+```
+
+Tutor authorization and legacy denial are separate decisions. The destructive
+scope remains owned by the confirmation service, never by a generic reset.

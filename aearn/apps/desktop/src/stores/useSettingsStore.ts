@@ -32,6 +32,7 @@ type SettingsStore = {
   setTab: (tab: SettingsKey) => void;
   updateField: (field: keyof SettingsFormState, value: string | boolean) => void;
   syncFromUser: (user: UserProfile) => void;
+  reset: () => void;
   save: (userId: string) => Promise<UserProfile | null>;
   isDirty: (user: UserProfile | null) => boolean;
 };
@@ -137,6 +138,8 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       saveErrorMessage: null,
     });
   },
+
+  reset: () => set({ settingsTab: "learning", form: emptyForm(), saveState: "idle", saveErrorMessage: null }),
 
   save: async (userId) => {
     const { form } = get();

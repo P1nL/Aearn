@@ -1,13 +1,14 @@
-from fastapi import APIRouter, Query, Request, status
+from fastapi import APIRouter, Depends, Query, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 
 from app.core.errors import error_response
 from app.db.connection import connect
 from app.services.repositories.dashboard_repository import EntityNotFoundError, get_dashboard
+from app.services.tutor.cutover import require_legacy_runtime
 
 
-router = APIRouter(prefix="/api", tags=["dashboard"])
+router = APIRouter(prefix="/api", tags=["dashboard"], dependencies=[Depends(require_legacy_runtime)])
 
 
 @router.get("/dashboard", response_model=None)

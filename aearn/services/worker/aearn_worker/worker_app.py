@@ -40,6 +40,37 @@ def _run_tutor_scheduler_task(operation: str, *, limit: int) -> dict[str, object
     return run_tutor_scheduler_operation(operation=operation, limit=limit)  # type: ignore[arg-type]
 
 
+def _tutor_rollout_enabled() -> bool:
+    return os.getenv("TUTOR_HARNESS_ENABLED", "false").strip().lower() in {"true", "1", "yes"}
+
+
+def _legacy_worker_gate_code(conn: psycopg.Connection, user_id: str) -> str | None:
+    """Prevent legacy review writers from recreating data after verified cutover."""
+
+    if not _tutor_rollout_enabled():
+        return None
+    row = conn.execute(
+        """
+        SELECT state, failure_code
+        FROM harness_cutovers
+        WHERE user_id = %s AND cutover_version = 'harness_clean_slate_v1'
+        """,
+        (user_id,),
+    ).fetchone()
+    if row is None:
+        return "CUTOVER_REQUIRED"
+    state = str(row["state"])
+    if state == "blocked_target_state":
+        return "CUTOVER_TARGET_STATE_PRESENT"
+    if state == "blocked_checkpoint_scope":
+        return "CUTOVER_CHECKPOINT_SCOPE_UNRESOLVED"
+    if state == "verification_failed":
+        return "CUTOVER_VERIFICATION_FAILED"
+    if state == "verified":
+        return "CUTOVER_REQUIRED"
+    return "CUTOVER_REQUIRED"
+
+
 @celery_app.task(name="health.ping")
 def ping() -> str:
     return "pong"
@@ -67,8 +98,17 @@ def refresh_due_counts() -> dict[str, object]:
         "postgresql://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable",
     )
     with psycopg.connect(database_url, row_factory=dict_row) as conn:
+        cutover_filter = """
+              AND NOT EXISTS (
+                SELECT 1
+                FROM harness_cutovers
+                WHERE harness_cutovers.user_id = review_states.user_id
+                  AND harness_cutovers.cutover_version = 'harness_clean_slate_v1'
+                  AND harness_cutovers.state = 'verified'
+              )
+        """ if _tutor_rollout_enabled() else ""
         rows = conn.execute(
-            """
+            f"""
             SELECT review_states.user_id::text AS user_id, count(*)::int AS due_count
             FROM review_states
             JOIN learning_plans ON learning_plans.id = review_states.plan_id
@@ -80,6 +120,7 @@ def refresh_due_counts() -> dict[str, object]:
               AND learning_plans.deleted_at IS NULL
               AND knowledge_points.deleted_at IS NULL
               AND knowledge_points.status IN ('reviewing', 'mastered')
+              {cutover_filter}
             GROUP BY review_states.user_id
             ORDER BY review_states.user_id
             """
@@ -98,6 +139,9 @@ def generate_seed_bank(user_id: str, knowledge_point_id: str) -> dict[str, objec
         "postgresql://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable",
     )
     with psycopg.connect(database_url, row_factory=dict_row) as conn:
+        cutover_code = _legacy_worker_gate_code(conn, user_id)
+        if cutover_code is not None:
+            return {"status": "blocked", "failure_code": cutover_code}
         context = conn.execute(
             """
             SELECT

@@ -217,6 +217,35 @@ export type LocalUserExportPayload = {
   redaction: Record<string, string>;
 };
 
+export type HarnessCutoverState =
+  | "rollout_inactive"
+  | "summary_ready"
+  | "verified"
+  | "blocked_target_state"
+  | "blocked_checkpoint_scope";
+
+export type HarnessCutoverSummary = {
+  legacy_categories: Array<{ id: string; count: number }>;
+  legacy_profile_fields: Array<{ id: string; will_clear: true }>;
+  checkpoint: { state: "not_configured" | "scoped" | "unresolved"; record_count: number };
+  retained_categories: string[];
+  target_state_present: boolean;
+};
+
+export type HarnessCutoverDecision = {
+  cutover_version: string;
+  rollout_active: boolean;
+  state: HarnessCutoverState;
+  summary_version?: number;
+  preview_nonce?: string;
+  summary_hash?: string;
+  summary?: HarnessCutoverSummary;
+  code?: string;
+  verified_at?: string | null;
+  idempotent_replayed?: boolean;
+  next_action: "continue_legacy" | "confirm_cutover" | "enter_tutor" | "resolve_cutover_block";
+};
+
 export type DraftKnowledgePoint = {
   temp_id: string;
   title: string;

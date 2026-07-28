@@ -3,7 +3,7 @@ import hashlib
 from collections.abc import AsyncGenerator, Iterable, Mapping
 from datetime import datetime
 
-from fastapi import APIRouter, Query, Request, status
+from fastapi import APIRouter, Depends, Query, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, StreamingResponse
 from psycopg import Connection
@@ -45,9 +45,10 @@ from app.services.repositories.review_repository import (
 from app.services.repositories.review_seed_bank import ReviewSeedBankGenerationError
 from app.services.llm.llm_client import LLMCallError, LLMConfigurationError, LLMInvalidResponseError
 from app.services.streaming.sse import SSEWriter, stream_response
+from app.services.tutor.cutover import require_legacy_runtime
 
 
-router = APIRouter(prefix="/api/reviews", tags=["reviews"])
+router = APIRouter(prefix="/api/reviews", tags=["reviews"], dependencies=[Depends(require_legacy_runtime)])
 
 REVIEW_GRAPH_ALLOWED_INTENT_TARGETS = {
     IntentType.PERSISTENCE: ("review_session", "review_batch", "attempt_and_fsrs"),
