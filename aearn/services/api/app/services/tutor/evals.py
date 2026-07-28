@@ -166,6 +166,7 @@ def _snapshot(*, policy: TutorPolicySnapshot | None = None) -> TutorRunSnapshot:
         run_id="eval-run",
         conversation_id="eval-conversation",
         user_id="eval-user",
+        origin="interactive",
         input_revision=0,
         policy=policy or _policy(),
     )

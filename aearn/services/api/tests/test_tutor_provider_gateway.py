@@ -52,6 +52,7 @@ def _run() -> TutorRunSnapshot:
         run_id="run-provider",
         conversation_id="conversation-provider",
         user_id="user-provider",
+        origin="interactive",
         input_revision=0,
         policy=TutorPolicySnapshot(
             deadline=datetime(2030, 1, 1, tzinfo=timezone.utc),

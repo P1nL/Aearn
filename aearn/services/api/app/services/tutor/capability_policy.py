@@ -3,14 +3,11 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Literal, Protocol
+from typing import Protocol
 
 from app.agents.harness.capabilities import CapabilityDescriptor, EffectDescriptor, is_catalog_identifier
 from app.agents.harness.skill_catalog import CatalogSkillReference, SkillCatalogSnapshot
-from app.agents.harness.contracts import TutorRunSnapshot
-
-
-TutorRunOrigin = Literal["interactive", "proactive"]
+from app.agents.harness.contracts import TutorRunOrigin, TutorRunSnapshot
 
 
 @dataclass(frozen=True)
@@ -67,6 +64,7 @@ class CapabilityPolicyContext:
         return (
             self.run_id == run.run_id
             and self.user_id == run.user_id
+            and self.origin == run.origin
             and self.input_revision == run.input_revision
             and self.catalog_digest == catalog.digest
         )
@@ -115,7 +113,7 @@ class DefaultDenyCapabilityPolicyResolver:
         return CapabilityPolicyContext(
             run_id=run.run_id,
             user_id=run.user_id,
-            origin="interactive",
+            origin=run.origin,
             input_revision=run.input_revision,
             catalog_digest=catalog.digest,
         )

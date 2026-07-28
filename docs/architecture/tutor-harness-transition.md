@@ -270,6 +270,36 @@ runner, route, Graph, SSE, Desktop, or general Celery-worker boundary.
 The standalone process and its operator workflow are documented in
 [`../setup/container-sandbox-executor.md`](../setup/container-sandbox-executor.md).
 
+## Child 04 Target: Proactive Scheduler and Curation Queue
+
+Child 04 adds only feature-disabled durable scheduling mechanics. It does not
+expose a route, SSE frame, desktop state, notification, chat message, legacy
+review-worker behavior, or product-domain projection.
+
+- A committed domain fact or bounded time scan records a typed signal with a
+  stable producer identity, source hash, dedupe key/window, safe reference
+  fields, and an auditable disposition. Candidate creation records every allow,
+  no-action, or duplicate-window decision; PostgreSQL is authoritative for
+  dedupe, leases, retries, and broker redelivery recovery.
+- Scheduler policy is fail-closed: global enable, hard pause, verified cutover,
+  per-user preference/pause, separate daily budget, concurrency, cooldown, and
+  circuit-breaker limits are checked before a run or Curator processor can be
+  invoked. Defaults keep the scheduler disabled and background work hard-paused.
+- A proactive candidate reserves one internal `tutor_conversations` record
+  (`visibility=internal`, `kind=proactive`) and one `tutor_runs` record with
+  `origin=proactive` before the existing finite `TutorRunLoop` can run. The
+  background composition rejects `runner.execute`, carries typed origin through
+  the policy boundary, and has no normal-success chat/desktop delivery path.
+- The curation queue seeds exactly one low-priority job per Child 02 pending
+  outbox identity. It preserves the outbox as the redacted semantic envelope,
+  rechecks source revision/policy/memory-setting/retention facts before work,
+  and uses a default-deny injected proposal processor. It cannot directly write
+  memory, plan, activity, inbox, review, FSRS, attempt, filesystem, or chat.
+- The worker exposes bounded target task names
+  `tutor.proactive.scan_due_signals`, `tutor.proactive.drain_candidates`, and
+  `tutor.curation.drain`. They delegate to API-side policy/repository services;
+  their default feature-off behavior makes no model, capability, or domain call.
+
 ## Target Loop and Future Ownership
 
 The finite loop leases, loads, checks fixed budgets/cancellation, builds bounded

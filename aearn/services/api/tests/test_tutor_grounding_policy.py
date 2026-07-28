@@ -28,6 +28,7 @@ def _run() -> TutorRunSnapshot:
         run_id="grounding-run",
         conversation_id="grounding-conversation",
         user_id="grounding-user",
+        origin="interactive",
         input_revision=0,
         policy=TutorPolicySnapshot(
             deadline=datetime(2030, 1, 1, tzinfo=UTC),
@@ -47,7 +48,7 @@ def _policy(
     return CapabilityPolicyContext(
         run_id=run.run_id,
         user_id=run.user_id,
-        origin="interactive",
+        origin=run.origin,
         input_revision=run.input_revision,
         catalog_digest=catalog.digest,
         eligible_skill_references=(catalog.skills[0].reference,),

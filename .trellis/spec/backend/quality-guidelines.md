@@ -2030,3 +2030,134 @@ upsert_outbox(projector.export(source_ids_and_hashes), trace)
 
 The lifecycle transaction either commits the whole safe receipt once or rolls
 it back without a visible partial event, trace, or outbox row.
+
+## Scenario: Feature-Disabled Tutor Proactive Scheduler and Curation Queue
+
+### 1. Scope / Trigger
+
+- Trigger: adding or changing target-only proactive signals/candidates, scheduler
+  policy, PostgreSQL queue leases, curation-job mechanics, internal proactive
+  conversations, `origin` propagation, or the three Tutor Celery wrappers.
+- Scope: `app/services/tutor/{proactive,proactive_repository,proactive_worker}.py`,
+  `TutorRunSnapshot`, `CapabilityPolicyContext`, `app/db/schema.sql`,
+  `aearn_worker/worker_app.py`, and focused scheduler/database/worker tests.
+- This is a Child 04 background seam. It must not expose an API route, SSE frame,
+  desktop state, normal-success chat message/notification, legacy review-worker
+  behavior, direct memory/plan/activity/inbox/review/FSRS/attempt write, or a
+  live model dependency.
+
+### 2. Signatures
+
+- Signal ingress:
+  `TutorProactiveScheduler.ingest_committed_signal(signal, now) -> TutorProactiveCandidate`.
+- Candidate drain:
+  `TutorProactiveScheduler.drain_candidates(worker_id, now, limit) -> SchedulerDrainResult`.
+- Curation seed/drain:
+  `seed_curation_jobs(now, limit)` and `drain_curation(worker_id, now, limit)`.
+- DB: `tutor_proactive_preferences`, `tutor_proactive_signals`,
+  `tutor_proactive_candidates`, `tutor_curation_jobs`, and
+  `tutor_scheduler_audit`; all must use scoped foreign keys, lease generations,
+  terminal-state checks, and repeatable bootstrap DDL.
+- Background run reservation: one internal `tutor_conversations` row
+  (`visibility=internal`, `kind=proactive`) plus one `tutor_runs` row with
+  `origin=proactive` before a finite `TutorRunLoop` receives the run id.
+- Worker tasks: `tutor.proactive.scan_due_signals`,
+  `tutor.proactive.drain_candidates`, and `tutor.curation.drain`.
+
+### 3. Contracts
+
+- Defaults are fail-closed: `TUTOR_PROACTIVE_SCHEDULER_ENABLED=false`,
+  `TUTOR_BACKGROUND_HARD_PAUSED=true`, no cutover eligibility, zero budgets,
+  and no inferred-memory processing. Settings may enable mechanics only after a
+  later approved cutover owns public activation.
+- A signal carries only stable identifiers, a SHA-256 source hash, bounded
+  dedupe facts, and allowlisted reference fields. Raw learner text, prompts,
+  provider payloads, code, paths, commands, secrets, and reasoning are not
+  scheduler/audit data.
+- Scheduler policy checks global enable/hard pause/cutover, user preference and
+  pause, independent proactive or curation budget/concurrency/cooldown/circuit
+  limits before an executor or Curator processor call. Every denied candidate or
+  leased job records a safe `no_action`/`stale` audit result.
+- `TutorRunSnapshot.origin` is required and validated. Persistence must reject a
+  missing/unknown origin, policy resolution must copy `run.origin`, and policy
+  matching must compare origin so a background run cannot inherit interactive
+  authority.
+- The proactive composition forbids `runner.execute` and domain effects. It
+  reserves the durable run before invoking only the existing finite loop; it
+  never produces direct chat/desktop delivery.
+- Curation jobs may be seeded only from Child 02 `pending` outbox records. They
+  retain that outbox as the semantic redacted envelope, recheck policy/memory
+  versions, source revision, and staleness, then call only an injected proposal
+  processor. Child 04 supplies a default-deny processor, not a Curator model.
+
+### 4. Validation & Error Matrix
+
+- Scheduler disabled, hard paused, cutover-ineligible, preference-disabled,
+  budget/concurrency/cooldown/circuit denial -> durable `no_action`; no provider,
+  capability, or Curator processor call.
+- Duplicate signal in the same user/dedupe bucket -> one existing candidate,
+  signal `suppressed/dedupe_window`, and safe audit evidence.
+- Expired lease below retry cap -> pending with bounded backoff; at/over cap ->
+  terminal `failed`. A terminal row cannot return to a working state.
+- Unknown/missing persisted run origin -> persistence error; never silently
+  default to `interactive`.
+- Non-pending/stale outbox, stale source revision, policy-version mismatch, or
+  memory-setting mismatch -> curation `stale`/`no_action`; no processor call.
+- Missing scheduler composition in the worker -> typed no-action fallback; no
+  implicit provider or legacy review-task fallback.
+
+### 5. Good/Base/Bad Cases
+
+- Good: two committed signals with different producer ids but one dedupe bucket
+  create one candidate, preserve both signal dispositions, and make the duplicate
+  auditable without calling a model.
+- Good: a proactive reservation creates an internal empty conversation and a
+  `proactive` run, then an injected finite-loop factory can run that exact id.
+- Base: scheduler remains disabled in a normal local checkout, so all target
+  worker wrappers return a bounded blocked/no-action result and leave product
+  traffic unchanged.
+- Bad: treating a worker name as proof of origin, reusing a learner-visible
+  conversation for a background run, putting raw outbox/learner content in an
+  audit row, calling a Curator after inferred memory is disabled, or reusing a
+  legacy review task as a hidden Tutor wake-up path.
+
+### 6. Tests Required
+
+- PostgreSQL tests: bootstrap twice; assert all scheduler tables, indexes,
+  triggers, scoped foreign keys, terminal/lease checks, dedupe replay, lease
+  recovery/backoff, and one internal proactive conversation/run reservation.
+- Policy tests: explicit/unknown origin behavior, resolver origin match,
+  proactive `runner.execute`/effect denial, fail-closed settings, and static
+  absence of proactive composition in Graph/route/streaming/Desktop sources.
+- Scheduler tests: hard pause, user pause, budget, concurrency, cooldown,
+  circuit, and duplicate-window paths produce no executor call.
+- Curation tests: outbox job idempotency, hard pause, inferred-memory disable,
+  independent curation budget, stale outbox/revision/version handling, retry,
+  and proof that no processor call happens after denial.
+- Worker import tests: target task names/routes are registered while existing
+  `review.refresh_due_counts` and `review.generate_seed_bank` remain unchanged.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+# A broker retry creates a second learner-visible conversation and immediately calls a model.
+conversation_id = create_existing_chat_conversation(user_id)
+provider.decide(prompt_from_signal(signal))
+```
+
+#### Correct
+
+```python
+# PostgreSQL owns candidate claim and durable run reservation before the finite loop.
+candidate = repository.claim_next_candidate(...)
+if not policy.allows(candidate):
+    repository.mark_candidate_terminal(candidate=candidate, state="no_action", ...)
+else:
+    reservation = repository.reserve_proactive_run(candidate=candidate, ...)
+    result = finite_loop.run(run_id=reservation.run_id, lease_owner_id=worker_id)
+```
+
+The correct path is idempotent, origin-aware, feature-off by default, and has no
+unbounded provider, direct domain-write, chat, or desktop side effect.
