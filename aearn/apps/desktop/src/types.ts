@@ -901,6 +901,191 @@ export type NoteListResponse = {
   };
 };
 
+export type TutorRunStatus =
+  | "queued"
+  | "leased"
+  | "running"
+  | "waiting_for_input"
+  | "waiting_for_capability"
+  | "awaiting_effect_commit"
+  | "completed"
+  | "model_unavailable"
+  | "blocked_policy"
+  | "budget_exhausted"
+  | "cancelled"
+  | "failed";
+
+export type TutorTerminalOutcome = "completed" | "model_unavailable" | "blocked_policy" | "budget_exhausted" | "cancelled" | "failed";
+
+export type TutorRunState = {
+  run_id: string;
+  conversation_id: string;
+  origin: "interactive" | "proactive";
+  status: TutorRunStatus;
+  input_revision: number;
+  cancelled: boolean;
+  iteration_count: number;
+  model_call_count: number;
+  capability_call_count: number;
+  effect_count: number;
+  terminal_outcome: TutorTerminalOutcome | null;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+export type TutorConversationResponse = {
+  conversation_id: string;
+  created: boolean;
+  idempotent_replayed: boolean;
+};
+
+export type TutorInputAcceptedResponse = {
+  conversation_id: string;
+  run_id: string;
+  input_revision: number;
+  message_id: string;
+  event_cursor: number;
+  merged: boolean;
+  input_replayed: boolean;
+  idempotent_replayed: boolean;
+  run: TutorRunState;
+};
+
+export type TutorActivityItem = {
+  activity_id: string;
+  category: string;
+  reason: string;
+  evidence: string[];
+  created_at: string | null;
+};
+
+export type TutorInboxItem = {
+  inbox_id: string;
+  activity_id: string;
+  message: string;
+  state: "unread" | "read" | "dismissed";
+  read_at: string | null;
+  dismissed_at: string | null;
+  created_at: string | null;
+};
+
+export type TutorMemoryItem = {
+  entry_id: string;
+  memory_kind: "objective_fact" | "inference";
+  state: "active" | "replaced" | "deleted";
+  category: string;
+  statement: string;
+  confidence: string | null;
+  provenance: string;
+  replaced_entry_id: string | null;
+  evidence: string[];
+  retention_until: string | null;
+  stale_after: string | null;
+  created_at: string | null;
+};
+
+export type TutorPlanRevision = {
+  revision_id: string;
+  predecessor_revision_id: string | null;
+  title: string;
+  outline: string[];
+  diff: string[];
+  learner_reason: string;
+  evidence: string[];
+  created_at: string | null;
+};
+
+export type TutorPlanRevisionList = {
+  active_revision_id: string | null;
+  items: TutorPlanRevision[];
+};
+
+export type TutorPreferences = {
+  inferred_memory_enabled: boolean;
+  memory_setting_version: string;
+  proactive_paused: boolean;
+  proactive_enabled: boolean;
+};
+
+export type TutorInputAcceptedSseEvent = {
+  id: number;
+  type: "input_accepted";
+  data: {
+    run_id: string;
+    input_revision: number;
+    event_sequence: number;
+    message_id: string | null;
+    status: "accepted";
+  };
+};
+
+export type TutorToolStatusSseEvent = {
+  id: number;
+  type: "tool_status";
+  data: {
+    run_id: string;
+    input_revision: number;
+    event_sequence: number;
+    status: string;
+    tool: string;
+    message: string;
+  };
+};
+
+export type TutorActivitySseEvent = {
+  id: number;
+  type: "activity";
+  data: {
+    run_id: string;
+    input_revision: number;
+    event_sequence: number;
+    category: string;
+    status: string;
+  };
+};
+
+export type TutorRunStateSseEvent = {
+  id: number;
+  type: "run_state";
+  data: {
+    run_id: string;
+    input_revision: number;
+    event_sequence: number;
+    status: TutorRunStatus;
+    terminal_outcome: TutorTerminalOutcome | null;
+  };
+};
+
+export type TutorDoneSseEvent = {
+  id: number;
+  type: "done";
+  data: {
+    run_id: string;
+    input_revision: number;
+    event_sequence: number;
+    result_ref: { type: "TutorRun"; id: string };
+    public_message: string | null;
+  };
+};
+
+export type TutorErrorSseEvent = {
+  /** Route-level validation errors do not have a durable run cursor. */
+  id: number | null;
+  type: "error";
+  data: {
+    error: ApiError;
+    public_message?: string | null;
+  };
+};
+
+export type TutorSseEvent =
+  | TutorInputAcceptedSseEvent
+  | TutorToolStatusSseEvent
+  | TutorActivitySseEvent
+  | TutorRunStateSseEvent
+  | TutorDoneSseEvent
+  | TutorErrorSseEvent;
+
 export class ApiRequestError extends Error {
   readonly apiError: ApiError;
 

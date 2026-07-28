@@ -1829,6 +1829,19 @@ CREATE TABLE IF NOT EXISTS tutor_inbox_items (
   )
 );
 
+-- Child 06 public adapter idempotency.  This table stores only a request hash
+-- and learner-safe response projection; it is never a raw Tutor message store.
+CREATE TABLE IF NOT EXISTS tutor_api_idempotency_records (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  operation text NOT NULL CHECK (char_length(operation) BETWEEN 1 AND 120),
+  idempotency_key text NOT NULL CHECK (char_length(idempotency_key) BETWEEN 1 AND 160),
+  request_hash text NOT NULL CHECK (request_hash ~ '^[0-9a-f]{64}$'),
+  response_json jsonb NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_tutor_api_idempotency_user_operation_key UNIQUE (user_id, operation, idempotency_key)
+);
+
 CREATE INDEX IF NOT EXISTS idx_tutor_plan_revisions_user_created
   ON tutor_plan_revisions (user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tutor_plan_actions_user_created
@@ -1845,6 +1858,8 @@ CREATE INDEX IF NOT EXISTS idx_tutor_activity_records_user_created
   ON tutor_activity_records (user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tutor_inbox_items_user_state
   ON tutor_inbox_items (user_id, state, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tutor_api_idempotency_user_created
+  ON tutor_api_idempotency_records (user_id, created_at DESC);
 
 CREATE OR REPLACE FUNCTION enforce_tutor_plan_revision_immutable()
 RETURNS trigger AS $$

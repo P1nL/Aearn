@@ -53,6 +53,15 @@ import type {
   TriggerConceptCheckResponse,
   UserPreferencesUpdate,
   UserProfile,
+  TutorActivityItem,
+  TutorConversationResponse,
+  TutorInboxItem,
+  TutorInputAcceptedResponse,
+  TutorMemoryItem,
+  TutorPlanRevision,
+  TutorPlanRevisionList,
+  TutorPreferences,
+  TutorRunState,
 } from "./types";
 
 import { ApiRequestError } from "./types";
@@ -694,6 +703,207 @@ export async function requestNoteAgentDraft(input: {
     throw new Error("Note agent-draft API returned an invalid payload");
   }
   return payload.note;
+}
+
+export async function createTutorConversation(input: {
+  userId: string;
+  clientActionId: string;
+  conversationId?: string;
+}): Promise<TutorConversationResponse> {
+  const payload = await requestJson(`${API_BASE_URL}/api/tutor/conversations`, {
+    method: "POST",
+    headers: tutorMutationHeaders(input.clientActionId),
+    body: JSON.stringify({
+      user_id: input.userId,
+      client_action_id: input.clientActionId,
+      ...(input.conversationId ? { conversation_id: input.conversationId } : {}),
+    }),
+  });
+  const response = toTutorConversationResponse(payload);
+  if (!response) throw new Error("Tutor conversation API returned an invalid payload");
+  return response;
+}
+
+export async function acceptTutorConversationInput(input: {
+  userId: string;
+  conversationId: string;
+  content: string;
+  clientActionId: string;
+}): Promise<TutorInputAcceptedResponse> {
+  const payload = await requestJson(
+    `${API_BASE_URL}/api/tutor/conversations/${encodeURIComponent(input.conversationId)}/inputs`,
+    {
+      method: "POST",
+      headers: tutorMutationHeaders(input.clientActionId),
+      body: JSON.stringify({
+        user_id: input.userId,
+        content: input.content,
+        client_action_id: input.clientActionId,
+      }),
+    },
+  );
+  const response = toTutorInputAcceptedResponse(payload);
+  if (!response) throw new Error("Tutor input API returned an invalid payload");
+  return response;
+}
+
+export async function acceptTutorRunInput(input: {
+  userId: string;
+  runId: string;
+  content: string;
+  clientActionId: string;
+}): Promise<TutorInputAcceptedResponse> {
+  const payload = await requestJson(`${API_BASE_URL}/api/tutor/runs/${encodeURIComponent(input.runId)}/inputs`, {
+    method: "POST",
+    headers: tutorMutationHeaders(input.clientActionId),
+    body: JSON.stringify({
+      user_id: input.userId,
+      content: input.content,
+      client_action_id: input.clientActionId,
+    }),
+  });
+  const response = toTutorInputAcceptedResponse(payload);
+  if (!response) throw new Error("Tutor run-input API returned an invalid payload");
+  return response;
+}
+
+export async function fetchTutorRun(userId: string, runId: string, signal?: AbortSignal): Promise<TutorRunState> {
+  const query = new URLSearchParams({ user_id: userId });
+  const payload = await requestJson(`${API_BASE_URL}/api/tutor/runs/${encodeURIComponent(runId)}?${query.toString()}`, { signal });
+  const run = toTutorRunState(payload);
+  if (!run) throw new Error("Tutor run API returned an invalid payload");
+  return run;
+}
+
+export async function fetchTutorActivity(userId: string, signal?: AbortSignal): Promise<TutorActivityItem[]> {
+  const payload = await requestJson(`${API_BASE_URL}/api/tutor/activity?${new URLSearchParams({ user_id: userId }).toString()}`, { signal });
+  if (!isRecord(payload) || !Array.isArray(payload.items)) throw new Error("Tutor activity API returned an invalid payload");
+  const items = payload.items.map(toTutorActivityItem);
+  if (items.some((item) => item === null)) throw new Error("Tutor activity API returned an invalid item");
+  return items.filter((item): item is TutorActivityItem => item !== null);
+}
+
+export async function fetchTutorInbox(userId: string, signal?: AbortSignal): Promise<TutorInboxItem[]> {
+  const payload = await requestJson(`${API_BASE_URL}/api/tutor/inbox?${new URLSearchParams({ user_id: userId }).toString()}`, { signal });
+  if (!isRecord(payload) || !Array.isArray(payload.items)) throw new Error("Tutor inbox API returned an invalid payload");
+  const items = payload.items.map(toTutorInboxItem);
+  if (items.some((item) => item === null)) throw new Error("Tutor inbox API returned an invalid item");
+  return items.filter((item): item is TutorInboxItem => item !== null);
+}
+
+export async function markTutorInboxRead(input: { userId: string; inboxId: string; clientActionId: string }): Promise<TutorInboxItem> {
+  const payload = await requestJson(`${API_BASE_URL}/api/tutor/inbox/${encodeURIComponent(input.inboxId)}/read`, {
+    method: "POST",
+    headers: tutorMutationHeaders(input.clientActionId),
+    body: JSON.stringify({ user_id: input.userId, client_action_id: input.clientActionId }),
+  });
+  const item = isRecord(payload) ? toTutorInboxItem(payload.inbox) : null;
+  if (!item) throw new Error("Tutor inbox-read API returned an invalid payload");
+  return item;
+}
+
+export async function dismissTutorInbox(input: { userId: string; inboxId: string; clientActionId: string }): Promise<TutorInboxItem> {
+  const payload = await requestJson(`${API_BASE_URL}/api/tutor/inbox/${encodeURIComponent(input.inboxId)}/dismiss`, {
+    method: "POST",
+    headers: tutorMutationHeaders(input.clientActionId),
+    body: JSON.stringify({ user_id: input.userId, client_action_id: input.clientActionId }),
+  });
+  const item = isRecord(payload) ? toTutorInboxItem(payload.inbox) : null;
+  if (!item) throw new Error("Tutor inbox-dismiss API returned an invalid payload");
+  return item;
+}
+
+export async function fetchTutorMemory(userId: string, signal?: AbortSignal): Promise<TutorMemoryItem[]> {
+  const payload = await requestJson(`${API_BASE_URL}/api/tutor/memory?${new URLSearchParams({ user_id: userId }).toString()}`, { signal });
+  if (!isRecord(payload) || !Array.isArray(payload.items)) throw new Error("Tutor memory API returned an invalid payload");
+  const items = payload.items.map(toTutorMemoryItem);
+  if (items.some((item) => item === null)) throw new Error("Tutor memory API returned an invalid item");
+  return items.filter((item): item is TutorMemoryItem => item !== null);
+}
+
+export async function correctTutorMemory(input: {
+  userId: string;
+  entryId: string;
+  statement: string;
+  clientActionId: string;
+}): Promise<TutorMemoryItem> {
+  const payload = await requestJson(`${API_BASE_URL}/api/tutor/memory/${encodeURIComponent(input.entryId)}`, {
+    method: "PATCH",
+    headers: tutorMutationHeaders(input.clientActionId),
+    body: JSON.stringify({
+      user_id: input.userId,
+      statement: input.statement,
+      client_action_id: input.clientActionId,
+    }),
+  });
+  const item = isRecord(payload) ? toTutorMemoryItem(payload.memory) : null;
+  if (!item) throw new Error("Tutor memory-correction API returned an invalid payload");
+  return item;
+}
+
+export async function deleteTutorMemory(input: { userId: string; entryId: string; clientActionId: string }): Promise<void> {
+  const payload = await requestJson(`${API_BASE_URL}/api/tutor/memory/${encodeURIComponent(input.entryId)}`, {
+    method: "DELETE",
+    headers: tutorMutationHeaders(input.clientActionId),
+    body: JSON.stringify({ user_id: input.userId, client_action_id: input.clientActionId }),
+  });
+  if (!isRecord(payload) || payload.entry_id !== input.entryId || payload.state !== "deleted") {
+    throw new Error("Tutor memory-delete API returned an invalid payload");
+  }
+}
+
+export async function fetchTutorPlanRevisions(userId: string, signal?: AbortSignal): Promise<TutorPlanRevisionList> {
+  const payload = await requestJson(`${API_BASE_URL}/api/tutor/plans/revisions?${new URLSearchParams({ user_id: userId }).toString()}`, { signal });
+  const response = toTutorPlanRevisionList(payload);
+  if (!response) throw new Error("Tutor plan-revision API returned an invalid payload");
+  return response;
+}
+
+export async function rollbackTutorPlan(input: { userId: string; clientActionId: string }): Promise<TutorPlanRevision | null> {
+  const payload = await requestJson(`${API_BASE_URL}/api/tutor/plans/rollback`, {
+    method: "POST",
+    headers: tutorMutationHeaders(input.clientActionId),
+    body: JSON.stringify({ user_id: input.userId, client_action_id: input.clientActionId }),
+  });
+  if (!isRecord(payload)) throw new Error("Tutor plan-rollback API returned an invalid payload");
+  if (payload.active_plan === null) return null;
+  const plan = toTutorPlanRevision(payload.active_plan);
+  if (!plan) throw new Error("Tutor plan-rollback API returned an invalid plan");
+  return plan;
+}
+
+export async function fetchTutorPreferences(userId: string, signal?: AbortSignal): Promise<TutorPreferences> {
+  const payload = await requestJson(`${API_BASE_URL}/api/tutor/preferences?${new URLSearchParams({ user_id: userId }).toString()}`, { signal });
+  const preferences = toTutorPreferences(payload);
+  if (!preferences) throw new Error("Tutor preferences API returned an invalid payload");
+  return preferences;
+}
+
+export async function updateTutorPreferences(input: {
+  userId: string;
+  clientActionId: string;
+  inferredMemoryEnabled?: boolean;
+  expectedMemorySettingVersion?: string;
+  proactivePaused?: boolean;
+}): Promise<TutorPreferences> {
+  const payload = await requestJson(`${API_BASE_URL}/api/tutor/preferences`, {
+    method: "PATCH",
+    headers: tutorMutationHeaders(input.clientActionId),
+    body: JSON.stringify({
+      user_id: input.userId,
+      client_action_id: input.clientActionId,
+      ...(input.inferredMemoryEnabled === undefined ? {} : { inferred_memory_enabled: input.inferredMemoryEnabled }),
+      ...(input.expectedMemorySettingVersion ? { expected_memory_setting_version: input.expectedMemorySettingVersion } : {}),
+      ...(input.proactivePaused === undefined ? {} : { proactive_paused: input.proactivePaused }),
+    }),
+  });
+  const preferences = toTutorPreferences(payload);
+  if (!preferences) throw new Error("Tutor preferences-update API returned an invalid payload");
+  return preferences;
+}
+
+function tutorMutationHeaders(clientActionId: string): Record<string, string> {
+  return { "Idempotency-Key": clientActionId };
 }
 
 async function requestJson(url: string, init: RequestInit = {}): Promise<unknown> {
@@ -1515,6 +1725,113 @@ function isRuntimeStatus(payload: unknown): payload is RuntimeStatus {
   );
 }
 
+function toTutorConversationResponse(payload: unknown): TutorConversationResponse | null {
+  if (!isRecord(payload) || typeof payload.conversation_id !== "string" || typeof payload.created !== "boolean" || typeof payload.idempotent_replayed !== "boolean") {
+    return null;
+  }
+  return {
+    conversation_id: payload.conversation_id,
+    created: payload.created,
+    idempotent_replayed: payload.idempotent_replayed,
+  };
+}
+
+function toTutorInputAcceptedResponse(payload: unknown): TutorInputAcceptedResponse | null {
+  if (!isRecord(payload) || typeof payload.conversation_id !== "string" || typeof payload.run_id !== "string" || typeof payload.input_revision !== "number" || typeof payload.message_id !== "string" || typeof payload.event_cursor !== "number" || typeof payload.merged !== "boolean" || typeof payload.input_replayed !== "boolean" || typeof payload.idempotent_replayed !== "boolean") {
+    return null;
+  }
+  const run = toTutorRunState(payload.run);
+  if (!run) return null;
+  return {
+    conversation_id: payload.conversation_id,
+    run_id: payload.run_id,
+    input_revision: payload.input_revision,
+    message_id: payload.message_id,
+    event_cursor: payload.event_cursor,
+    merged: payload.merged,
+    input_replayed: payload.input_replayed,
+    idempotent_replayed: payload.idempotent_replayed,
+    run,
+  };
+}
+
+function toTutorRunState(payload: unknown): TutorRunState | null {
+  if (!isRecord(payload) || typeof payload.run_id !== "string" || typeof payload.conversation_id !== "string" || (payload.origin !== "interactive" && payload.origin !== "proactive") || !isTutorRunStatus(payload.status) || typeof payload.input_revision !== "number" || typeof payload.cancelled !== "boolean" || typeof payload.iteration_count !== "number" || typeof payload.model_call_count !== "number" || typeof payload.capability_call_count !== "number" || typeof payload.effect_count !== "number" || !isNullableTutorTerminalOutcome(payload.terminal_outcome) || !isNullableString(payload.created_at) || !isNullableString(payload.updated_at)) {
+    return null;
+  }
+  return {
+    run_id: payload.run_id,
+    conversation_id: payload.conversation_id,
+    origin: payload.origin,
+    status: payload.status,
+    input_revision: payload.input_revision,
+    cancelled: payload.cancelled,
+    iteration_count: payload.iteration_count,
+    model_call_count: payload.model_call_count,
+    capability_call_count: payload.capability_call_count,
+    effect_count: payload.effect_count,
+    terminal_outcome: payload.terminal_outcome,
+    created_at: payload.created_at,
+    updated_at: payload.updated_at,
+  };
+}
+
+function toTutorActivityItem(payload: unknown): TutorActivityItem | null {
+  if (!isRecord(payload) || typeof payload.activity_id !== "string" || typeof payload.category !== "string" || typeof payload.reason !== "string" || !isStringArray(payload.evidence) || !isNullableString(payload.created_at)) return null;
+  return { activity_id: payload.activity_id, category: payload.category, reason: payload.reason, evidence: payload.evidence, created_at: payload.created_at };
+}
+
+function toTutorInboxItem(payload: unknown): TutorInboxItem | null {
+  if (!isRecord(payload) || typeof payload.inbox_id !== "string" || typeof payload.activity_id !== "string" || typeof payload.message !== "string" || !isTutorInboxState(payload.state) || !isNullableString(payload.read_at) || !isNullableString(payload.dismissed_at) || !isNullableString(payload.created_at)) return null;
+  return { inbox_id: payload.inbox_id, activity_id: payload.activity_id, message: payload.message, state: payload.state, read_at: payload.read_at, dismissed_at: payload.dismissed_at, created_at: payload.created_at };
+}
+
+function toTutorMemoryItem(payload: unknown): TutorMemoryItem | null {
+  if (!isRecord(payload) || typeof payload.entry_id !== "string" || (payload.memory_kind !== "objective_fact" && payload.memory_kind !== "inference") || !isTutorMemoryState(payload.state) || typeof payload.category !== "string" || typeof payload.statement !== "string" || !isNullableString(payload.confidence) || typeof payload.provenance !== "string" || !isNullableString(payload.replaced_entry_id) || !isStringArray(payload.evidence) || !isNullableString(payload.retention_until) || !isNullableString(payload.stale_after) || !isNullableString(payload.created_at)) return null;
+  return { entry_id: payload.entry_id, memory_kind: payload.memory_kind, state: payload.state, category: payload.category, statement: payload.statement, confidence: payload.confidence, provenance: payload.provenance, replaced_entry_id: payload.replaced_entry_id, evidence: payload.evidence, retention_until: payload.retention_until, stale_after: payload.stale_after, created_at: payload.created_at };
+}
+
+function toTutorPlanRevision(payload: unknown): TutorPlanRevision | null {
+  if (!isRecord(payload) || typeof payload.revision_id !== "string" || !isNullableString(payload.predecessor_revision_id) || typeof payload.title !== "string" || !isStringArray(payload.outline) || !isStringArray(payload.diff) || typeof payload.learner_reason !== "string" || !isStringArray(payload.evidence) || !isNullableString(payload.created_at)) return null;
+  return { revision_id: payload.revision_id, predecessor_revision_id: payload.predecessor_revision_id, title: payload.title, outline: payload.outline, diff: payload.diff, learner_reason: payload.learner_reason, evidence: payload.evidence, created_at: payload.created_at };
+}
+
+function toTutorPlanRevisionList(payload: unknown): TutorPlanRevisionList | null {
+  if (!isRecord(payload) || !isNullableString(payload.active_revision_id) || !Array.isArray(payload.items)) return null;
+  const items = payload.items.map(toTutorPlanRevision);
+  if (items.some((item) => item === null)) return null;
+  return { active_revision_id: payload.active_revision_id, items: items.filter((item): item is TutorPlanRevision => item !== null) };
+}
+
+function toTutorPreferences(payload: unknown): TutorPreferences | null {
+  if (!isRecord(payload) || typeof payload.inferred_memory_enabled !== "boolean" || typeof payload.memory_setting_version !== "string" || typeof payload.proactive_paused !== "boolean" || typeof payload.proactive_enabled !== "boolean") return null;
+  return { inferred_memory_enabled: payload.inferred_memory_enabled, memory_setting_version: payload.memory_setting_version, proactive_paused: payload.proactive_paused, proactive_enabled: payload.proactive_enabled };
+}
+
+function isTutorRunStatus(payload: unknown): payload is TutorRunState["status"] {
+  return payload === "queued" || payload === "leased" || payload === "running" || payload === "waiting_for_input" || payload === "waiting_for_capability" || payload === "awaiting_effect_commit" || payload === "completed" || payload === "model_unavailable" || payload === "blocked_policy" || payload === "budget_exhausted" || payload === "cancelled" || payload === "failed";
+}
+
+function isNullableTutorTerminalOutcome(payload: unknown): payload is TutorRunState["terminal_outcome"] {
+  return payload === null || payload === "completed" || payload === "model_unavailable" || payload === "blocked_policy" || payload === "budget_exhausted" || payload === "cancelled" || payload === "failed";
+}
+
+function isTutorInboxState(payload: unknown): payload is TutorInboxItem["state"] {
+  return payload === "unread" || payload === "read" || payload === "dismissed";
+}
+
+function isTutorMemoryState(payload: unknown): payload is TutorMemoryItem["state"] {
+  return payload === "active" || payload === "replaced" || payload === "deleted";
+}
+
+function isNullableString(payload: unknown): payload is string | null {
+  return typeof payload === "string" || payload === null;
+}
+
+function isStringArray(payload: unknown): payload is string[] {
+  return Array.isArray(payload) && payload.every((value) => typeof value === "string");
+}
+
 function isApiErrorEnvelope(payload: unknown): payload is { error: ApiError } {
   return isRecord(payload) && isRecord(payload.error) && typeof payload.error.code === "string";
 }
@@ -1541,6 +1858,10 @@ export function buildSSEUrl(path: string, params?: Record<string, string>): stri
     }
   }
   return url.toString();
+}
+
+export function buildTutorRunEventsUrl(runId: string, userId: string): string {
+  return buildSSEUrl(`/api/tutor/runs/${encodeURIComponent(runId)}/events`, { user_id: userId });
 }
 
 export function buildLearningMessageSSEUrl(sessionId: string): string {

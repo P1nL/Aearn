@@ -125,6 +125,7 @@ TARGET_TUTOR_TABLES = (
     "tutor_curation_projection_receipts",
     "tutor_activity_records",
     "tutor_inbox_items",
+    "tutor_api_idempotency_records",
 )
 
 
@@ -215,6 +216,7 @@ def test_tutor_target_schema_is_repeatable_and_enforces_run_event_identity() -> 
                     "idx_tutor_curation_projection_receipts_user_created",
                     "idx_tutor_activity_records_user_created",
                     "idx_tutor_inbox_items_user_state",
+                    "idx_tutor_api_idempotency_user_created",
                 ],
             ),
         ).fetchall()
@@ -228,6 +230,7 @@ def test_tutor_target_schema_is_repeatable_and_enforces_run_event_identity() -> 
             "idx_tutor_curation_projection_receipts_user_created",
             "idx_tutor_activity_records_user_created",
             "idx_tutor_inbox_items_user_state",
+            "idx_tutor_api_idempotency_user_created",
         }
         execution_constraint_rows = conn.execute(
             "SELECT conname FROM pg_constraint WHERE conname = ANY(%s)",

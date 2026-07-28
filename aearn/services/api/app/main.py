@@ -12,6 +12,7 @@ from app.routes.notes import router as notes_router
 from app.routes.onboarding import router as onboarding_router
 from app.routes.plans import router as plans_router
 from app.routes.reviews import router as reviews_router
+from app.routes.tutor import router as tutor_router
 from app.routes.users import router as users_router
 
 
@@ -36,6 +37,7 @@ app.include_router(learning_sessions_router)
 app.include_router(reviews_router)
 app.include_router(onboarding_router)
 app.include_router(notes_router)
+app.include_router(tutor_router)
 
 
 @app.exception_handler(RequestValidationError)

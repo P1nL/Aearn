@@ -38,6 +38,7 @@ from app.agents.harness.contracts import (
     payload_mapping_from_fields,
 )
 from app.agents.harness.skill_catalog import SkillCatalogSnapshot
+from app.agents.runtime.agent_runtime_context import sanitize_summary_text
 from app.services.tutor.ports import TutorLifecycleConflict, TutorLifecyclePersistence, TutorRunStore
 from app.services.tutor.safe_projection import TutorSafeProjection
 from app.services.tutor.skill_selection import TutorSkillSelection
@@ -115,6 +116,17 @@ class TutorInputAcceptance:
     input_revision: int
     event: TutorDurableEvent
     replayed: bool
+
+
+@dataclass(frozen=True)
+class TutorRunReadState:
+    """Learner-safe run lifecycle facts for the Child 06 public adapter."""
+
+    snapshot: TutorRunSnapshot
+    terminal_outcome: TutorTerminalOutcome | None
+    diagnostic_code: str | None
+    created_at: datetime
+    updated_at: datetime
 
 
 @dataclass(frozen=True)
@@ -230,6 +242,33 @@ class PostgresTutorRepository:
             raise TutorRunNotFound("tutor user not found")
         return str(row["id"])
 
+    def resolve_learner_conversation(self, *, user_id: str, conversation_id: str) -> str:
+        row = self._conn.execute(
+            """
+            SELECT id
+            FROM tutor_conversations
+            WHERE id = %s
+              AND user_id = %s
+              AND visibility = 'learner'
+              AND kind = 'interactive'
+              AND status = 'active'
+            """,
+            (conversation_id, user_id),
+        ).fetchone()
+        if row is None:
+            raise TutorRunNotFound("tutor conversation not found")
+        return str(row["id"])
+
+    def create_or_resume_learner_conversation(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str | None = None,
+    ) -> tuple[str, bool]:
+        if conversation_id is not None:
+            return self.resolve_learner_conversation(user_id=user_id, conversation_id=conversation_id), False
+        return self.create_conversation(user_id=user_id), True
+
     def record_catalog_snapshot(self, catalog: SkillCatalogSnapshot) -> str:
         catalog_payload = {
             "catalog_digest": catalog.digest,
@@ -321,12 +360,90 @@ class PostgresTutorRepository:
             raise RuntimeError("tutor run insert failed")
         return _snapshot_from_row(row)
 
+    def find_or_create_interactive_run(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str,
+        catalog_digest: str,
+        policy: TutorPolicySnapshot,
+        policy_version: str = "tutor_interactive_policy_v1",
+    ) -> tuple[TutorRunSnapshot, bool]:
+        """Serialize one learner conversation to at most one reusable run.
+
+        The conversation row lock makes a second input merge into the existing
+        non-terminal interactive run rather than creating a competing stream.
+        """
+
+        with self._conn.transaction():
+            conversation = self._conn.execute(
+                """
+                SELECT id
+                FROM tutor_conversations
+                WHERE id = %s
+                  AND user_id = %s
+                  AND visibility = 'learner'
+                  AND kind = 'interactive'
+                  AND status = 'active'
+                FOR UPDATE
+                """,
+                (conversation_id, user_id),
+            ).fetchone()
+            if conversation is None:
+                raise TutorRunNotFound("tutor conversation not found")
+            existing = self._conn.execute(
+                """
+                SELECT *
+                FROM tutor_runs
+                WHERE user_id = %s
+                  AND conversation_id = %s
+                  AND origin = 'interactive'
+                  AND terminal_outcome IS NULL
+                  AND cancelled_at IS NULL
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                FOR UPDATE
+                """,
+                (user_id, conversation_id),
+            ).fetchone()
+            if existing is not None:
+                return _snapshot_from_row(existing), False
+            return (
+                self.create_run(
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                    catalog_digest=catalog_digest,
+                    policy=policy,
+                    origin="interactive",
+                    policy_version=policy_version,
+                ),
+                True,
+            )
+
     def load_snapshot(self, *, user_id: str, run_id: str) -> TutorRunSnapshot | None:
         row = self._conn.execute(
             "SELECT * FROM tutor_runs WHERE id = %s AND user_id = %s",
             (run_id, user_id),
         ).fetchone()
         return _snapshot_from_row(row) if row is not None else None
+
+    def read_run_state(self, *, user_id: str, run_id: str) -> TutorRunReadState:
+        row = self._conn.execute(
+            "SELECT * FROM tutor_runs WHERE id = %s AND user_id = %s",
+            (run_id, user_id),
+        ).fetchone()
+        if row is None:
+            raise TutorRunNotFound("tutor run not found")
+        terminal_value = row.get("terminal_outcome")
+        terminal_outcome = TutorTerminalOutcome(str(terminal_value)) if terminal_value is not None else None
+        diagnostic = str(row["terminal_diagnostic_code"]) if row.get("terminal_diagnostic_code") is not None else None
+        return TutorRunReadState(
+            snapshot=_snapshot_from_row(row),
+            terminal_outcome=terminal_outcome,
+            diagnostic_code=diagnostic,
+            created_at=_as_datetime(row.get("created_at")) or datetime.now(UTC),
+            updated_at=_as_datetime(row.get("updated_at")) or datetime.now(UTC),
+        )
 
     def acquire_lease(
         self,
@@ -597,6 +714,32 @@ class PostgresTutorRepository:
             (run_id, user_id, after_sequence, limit),
         ).fetchall()
         return tuple(_event_from_row(row, projector=self._projector) for row in rows)
+
+    def public_tutor_message(
+        self,
+        *,
+        user_id: str,
+        run_id: str,
+        message_id: str,
+    ) -> str | None:
+        """Load only a scoped, already-guarded Tutor public message."""
+
+        row = self._conn.execute(
+            """
+            SELECT messages.content
+            FROM tutor_runs AS runs
+            JOIN tutor_messages AS messages
+              ON messages.conversation_id = runs.conversation_id
+            WHERE runs.id = %s
+              AND runs.user_id = %s
+              AND messages.id = %s
+              AND messages.role = 'tutor'
+            """,
+            (run_id, user_id, message_id),
+        ).fetchone()
+        if row is None:
+            return None
+        return sanitize_summary_text(str(row["content"]), max_length=1_200) or None
 
     def record_skill_selection(
         self,
@@ -1041,7 +1184,17 @@ class PostgresTutorRepository:
             _assert_active_lease(run, lease=lease, now=checkpoint.created_at)
             if checkpoint.input_revision != _as_int(run["input_revision"], 0) or result.input_revision != checkpoint.input_revision:
                 raise TutorLeaseConflict("terminal lifecycle revision is stale")
-            trace = self._persist_checkpoint_and_outbox_locked(run=run, checkpoint=checkpoint, envelope=envelope)
+            terminal_message_id = self._record_terminal_public_message_locked(
+                run=run,
+                result=result,
+                created_at=checkpoint.created_at,
+            )
+            trace = self._persist_checkpoint_and_outbox_locked(
+                run=run,
+                checkpoint=checkpoint,
+                envelope=envelope,
+                terminal_message_id=terminal_message_id,
+            )
             self._trip_failpoint("before_terminal_update")
             updated = self._conn.execute(
                 """
@@ -1619,6 +1772,7 @@ class PostgresTutorRepository:
         run: Mapping[str, object],
         checkpoint: TutorCheckpoint,
         envelope: TutorCurationEnvelope,
+        terminal_message_id: str | None = None,
     ) -> TutorTraceRecord:
         metadata = checkpoint.metadata.as_dict()
         safe_checkpoint = self._projector.checkpoint(
@@ -1658,18 +1812,21 @@ class PostgresTutorRepository:
         if checkpoint_row is None:
             raise RuntimeError("checkpoint receipt is missing")
         event_kind = "terminal_result" if checkpoint.reason.value == "terminal" else "checkpoint_saved"
+        event_payload: dict[str, object] = {
+            **safe_checkpoint,
+            "kind": event_kind,
+            "run_id": str(run["id"]),
+            "catalog_digest": str(run["catalog_digest"]),
+            "policy_version": str(run["policy_version"]),
+        }
+        if terminal_message_id is not None:
+            event_payload["message_id"] = terminal_message_id
         event = self._append_event_locked(
             run_id=str(run["id"]),
             event_key=f"checkpoint:{checkpoint.input_revision}:{checkpoint.reason.value}:{checkpoint.status.value}",
             kind=event_kind,
             input_revision=checkpoint.input_revision,
-            payload={
-                **safe_checkpoint,
-                "kind": event_kind,
-                "run_id": str(run["id"]),
-                "catalog_digest": str(run["catalog_digest"]),
-                "policy_version": str(run["policy_version"]),
-            },
+            payload=event_payload,
         )
         self._trip_failpoint("after_event")
         trace = self._insert_trace_locked(
@@ -1689,6 +1846,28 @@ class PostgresTutorRepository:
         )
         self._trip_failpoint("after_outbox")
         return trace
+
+    def _record_terminal_public_message_locked(
+        self,
+        *,
+        run: Mapping[str, object],
+        result: TutorRunResult,
+        created_at: datetime,
+    ) -> str | None:
+        public_message = sanitize_summary_text(result.public_message or "", max_length=1_200)
+        if not public_message:
+            return None
+        row = self._conn.execute(
+            """
+            INSERT INTO tutor_messages (conversation_id, role, content, created_at)
+            VALUES (%s, 'tutor', %s, %s)
+            RETURNING id
+            """,
+            (run["conversation_id"], public_message, created_at),
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("terminal Tutor public message insert failed")
+        return str(row["id"])
 
     def _insert_trace_locked(
         self,

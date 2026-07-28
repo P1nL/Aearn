@@ -8,6 +8,7 @@ from uuid import uuid4
 import psycopg
 import pytest
 
+
 from app.agents.harness.contracts import TutorPolicySnapshot, TutorRunSnapshot
 from app.agents.harness.skill_catalog import SkillCatalogSnapshot, compile_published_skill_catalog
 from app.core.config import get_settings
@@ -18,6 +19,8 @@ from app.services.exercises.adaptive_exercise_service import GeneratedAdaptiveCa
 from app.services.repositories import review_seed_bank
 from app.services.repositories.review_seed_bank import GeneratedReviewSeedBank
 from app.services.tutor.persistence import PostgresTutorRepository
+
+pytest_plugins = ("tutor_public_api_support",)
 
 
 @pytest.fixture(autouse=True)

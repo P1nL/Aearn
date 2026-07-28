@@ -68,6 +68,9 @@ class TutorPlanRevision:
     learner_reason: str
     policy_version: str
     created_at: datetime
+    diff: tuple[dict[str, object], ...] = ()
+    evidence_ids: tuple[str, ...] = ()
+    evidence_hashes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -94,6 +97,8 @@ class TutorMemoryEntry:
     retention_until: datetime | None
     stale_after: datetime | None
     created_at: datetime
+    evidence_ids: tuple[str, ...] = ()
+    evidence_hashes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -103,6 +108,8 @@ class TutorActivityRecord:
     category: str
     learner_reason: str
     created_at: datetime
+    evidence_ids: tuple[str, ...] = ()
+    evidence_hashes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -294,6 +301,71 @@ class TutorLearnerStateRepository:
             ),
         )
         return target_revision_id
+
+    def rollback_plan_from_user_action(
+        self,
+        *,
+        user_id: str,
+        idempotency_key: str,
+        reason: str = "Learner requested a plan rollback.",
+        now: datetime | None = None,
+    ) -> str:
+        """Move only to the active revision's recorded predecessor.
+
+        Public learner controls are not model effects.  They preserve the same
+        immutable plan/action boundary while recording a user-control audit row
+        with no fabricated run/effect linkage.  Route-level idempotency owns
+        replay behavior for this method.
+        """
+
+        changed_at = _utc(now)
+        action_key = _identifier(idempotency_key, label="plan rollback idempotency key")
+        learner_reason = _learner_text(reason, label="plan rollback reason", maximum=160)
+        evidence_hash = _hash({"user_id": user_id, "action": "plan_rollback", "key": action_key})
+        evidence_id = f"user-control:{evidence_hash[:24]}"
+        with self._conn.transaction():
+            self._lock_user(user_id)
+            active = self._conn.execute(
+                """
+                SELECT active.revision_id::text AS current_revision_id,
+                       revisions.predecessor_revision_id::text AS predecessor_revision_id
+                FROM tutor_active_plans AS active
+                JOIN tutor_plan_revisions AS revisions
+                  ON revisions.id = active.revision_id AND revisions.user_id = active.user_id
+                WHERE active.user_id = %s
+                FOR UPDATE OF active, revisions
+                """,
+                (user_id,),
+            ).fetchone()
+            if active is None or active.get("predecessor_revision_id") is None:
+                raise TutorLearnerStateConflict("plan_rollback_unavailable")
+            current_revision_id = str(active["current_revision_id"])
+            target_revision_id = str(active["predecessor_revision_id"])
+            self._conn.execute(
+                "UPDATE tutor_active_plans SET revision_id = %s, updated_at = %s WHERE user_id = %s",
+                (target_revision_id, changed_at, user_id),
+            )
+            self._conn.execute(
+                """
+                INSERT INTO tutor_plan_revision_actions (
+                  user_id, action, current_revision_id, target_revision_id, predecessor_revision_id,
+                  source_run_id, source_effect_record_id, learner_reason, evidence_ids_json,
+                  evidence_hashes_json, policy_version, created_at
+                )
+                VALUES (%s, 'rollback', %s, %s, %s, NULL, NULL, %s, %s::jsonb, %s::jsonb, 'user_control_v1', %s)
+                """,
+                (
+                    user_id,
+                    current_revision_id,
+                    target_revision_id,
+                    target_revision_id,
+                    learner_reason,
+                    _json([evidence_id]),
+                    _json([evidence_hash]),
+                    changed_at,
+                ),
+            )
+            return target_revision_id
 
     def record_objective_memory_from_effect(
         self,
@@ -827,8 +899,9 @@ class TutorLearnerStateRepository:
             """
             SELECT revisions.id::text AS id, revisions.user_id::text AS user_id,
                    revisions.predecessor_revision_id::text AS predecessor_revision_id,
-                   revisions.title, revisions.outline_json, revisions.learner_reason,
-                   revisions.policy_version, revisions.created_at
+                    revisions.title, revisions.outline_json, revisions.diff_json,
+                    revisions.learner_reason, revisions.evidence_ids_json,
+                    revisions.evidence_hashes_json, revisions.policy_version, revisions.created_at
             FROM tutor_active_plans AS active
             JOIN tutor_plan_revisions AS revisions
               ON revisions.id = active.revision_id AND revisions.user_id = active.user_id
@@ -837,6 +910,24 @@ class TutorLearnerStateRepository:
             (user_id,),
         ).fetchone()
         return _plan_revision_from_row(row) if row is not None else None
+
+    def list_plan_revisions(self, *, user_id: str, limit: int = 50) -> tuple[TutorPlanRevision, ...]:
+        if limit < 1 or limit > 100:
+            raise ValueError("plan revision list limit must be within 1..100")
+        rows = self._conn.execute(
+            """
+            SELECT id::text AS id, user_id::text AS user_id,
+                   predecessor_revision_id::text AS predecessor_revision_id,
+                   title, outline_json, diff_json, learner_reason,
+                   evidence_ids_json, evidence_hashes_json, policy_version, created_at
+            FROM tutor_plan_revisions
+            WHERE user_id = %s
+            ORDER BY created_at DESC, id DESC
+            LIMIT %s
+            """,
+            (user_id, limit),
+        ).fetchall()
+        return tuple(_plan_revision_from_row(row) for row in rows)
 
     def list_memory_entries(
         self,
@@ -851,7 +942,8 @@ class TutorLearnerStateRepository:
             """
             SELECT id::text AS id, user_id::text AS user_id, memory_kind, state, category,
                    statement, confidence, provenance_kind, replaced_entry_id::text AS replaced_entry_id,
-                   policy_version, memory_setting_version, retention_until, stale_after, created_at
+                   policy_version, memory_setting_version, evidence_ids_json, evidence_hashes_json,
+                   retention_until, stale_after, created_at
             FROM tutor_memory_entries
             WHERE user_id = %s AND (%s OR state = 'active')
             ORDER BY created_at DESC, id DESC
@@ -861,12 +953,29 @@ class TutorLearnerStateRepository:
         ).fetchall()
         return tuple(_memory_entry_from_row(row) for row in rows)
 
+    def memory_entry_for_user(self, *, user_id: str, entry_id: str) -> TutorMemoryEntry:
+        row = self._conn.execute(
+            """
+            SELECT id::text AS id, user_id::text AS user_id, memory_kind, state, category,
+                   statement, confidence, provenance_kind, replaced_entry_id::text AS replaced_entry_id,
+                   policy_version, memory_setting_version, evidence_ids_json, evidence_hashes_json,
+                   retention_until, stale_after, created_at
+            FROM tutor_memory_entries
+            WHERE user_id = %s AND id = %s
+            """,
+            (user_id, entry_id),
+        ).fetchone()
+        if row is None:
+            raise TutorLearnerStateNotFound("memory_entry_not_found")
+        return _memory_entry_from_row(row)
+
     def list_activity_records(self, *, user_id: str, limit: int = 50) -> tuple[TutorActivityRecord, ...]:
         if limit < 1 or limit > 100:
             raise ValueError("activity list limit must be within 1..100")
         rows = self._conn.execute(
             """
-            SELECT id::text AS id, user_id::text AS user_id, category, learner_reason, created_at
+            SELECT id::text AS id, user_id::text AS user_id, category, learner_reason,
+                   evidence_ids_json, evidence_hashes_json, created_at
             FROM tutor_activity_records
             WHERE user_id = %s
             ORDER BY created_at DESC, id DESC
@@ -1232,6 +1341,17 @@ def _string_tuple(value: object) -> tuple[str, ...]:
     return tuple(str(item) for item in value if isinstance(item, str))
 
 
+def _mapping_tuple(value: object) -> tuple[dict[str, object], ...]:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            value = []
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return ()
+    return tuple(dict(item) for item in value if isinstance(item, Mapping))
+
+
 def _as_datetime(value: object) -> datetime | None:
     if isinstance(value, datetime):
         return _utc(value)
@@ -1277,6 +1397,9 @@ def _plan_revision_from_row(row: Mapping[str, object]) -> TutorPlanRevision:
         learner_reason=str(row["learner_reason"]),
         policy_version=str(row["policy_version"]),
         created_at=_as_datetime(row["created_at"]) or datetime.now(UTC),
+        diff=_mapping_tuple(row.get("diff_json")),
+        evidence_ids=_string_tuple(row.get("evidence_ids_json")),
+        evidence_hashes=_string_tuple(row.get("evidence_hashes_json")),
     )
 
 
@@ -1300,6 +1423,8 @@ def _memory_entry_from_row(row: Mapping[str, object]) -> TutorMemoryEntry:
         retention_until=_as_datetime(row.get("retention_until")),
         stale_after=_as_datetime(row.get("stale_after")),
         created_at=_as_datetime(row["created_at"]) or datetime.now(UTC),
+        evidence_ids=_string_tuple(row.get("evidence_ids_json")),
+        evidence_hashes=_string_tuple(row.get("evidence_hashes_json")),
     )
 
 
@@ -1310,6 +1435,8 @@ def _activity_from_row(row: Mapping[str, object]) -> TutorActivityRecord:
         category=str(row["category"]),
         learner_reason=str(row["learner_reason"]),
         created_at=_as_datetime(row["created_at"]) or datetime.now(UTC),
+        evidence_ids=_string_tuple(row.get("evidence_ids_json")),
+        evidence_hashes=_string_tuple(row.get("evidence_hashes_json")),
     )
 
 
