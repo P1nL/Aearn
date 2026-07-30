@@ -1,0 +1,10 @@
+{"file": ".trellis/tasks/07-22-agent-harness-rearchitecture/prd.md", "reason": "Target requirements, safety boundaries, and planning review state."}
+{"file": ".trellis/tasks/07-22-agent-harness-rearchitecture/design.md", "reason": "Harness target architecture plus documentation authority and migration matrix."}
+{"file": ".trellis/tasks/07-22-agent-harness-rearchitecture/research/memory-curator-boundary.md", "reason": "Approved Context Compactor boundary, ownership split, and safety/test obligations."}
+{"file": ".trellis/tasks/07-22-agent-harness-rearchitecture/implement.md", "reason": "Sequencing, child contracts, validation gates, and rollback plan."}
+{"file": ".trellis/tasks/07-22-agent-harness-rearchitecture/research/documentation-authority-audit.md", "reason": "Evidence-backed legacy/current/target authority audit."}
+{"file": "docs/README.md", "reason": "Current source-of-truth routing and document ownership."}
+{"file": "docs/current/Aearn/current-state-audit.md", "reason": "Verified current-state and API/route freshness risks."}
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend conventions for future Harness child work."}
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend conventions for later desktop work."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Cross-layer migration and contract review guidance."}
