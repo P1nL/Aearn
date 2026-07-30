@@ -1,0 +1,12 @@
+{"file": ".trellis/tasks/07-22-agent-harness-rearchitecture/prd.md", "reason": "Acceptance criteria and safety constraints to check against."}
+{"file": ".trellis/tasks/07-22-agent-harness-rearchitecture/design.md", "reason": "Architecture, authority rules, migration, and rollback design."}
+{"file": ".trellis/tasks/07-22-agent-harness-rearchitecture/research/memory-curator-boundary.md", "reason": "Curator trigger, redaction, proposal-only, provider, and test boundaries to verify."}
+{"file": ".trellis/tasks/07-22-agent-harness-rearchitecture/implement.md", "reason": "Cross-child gates, validation sequence, and documentation delivery plan."}
+{"file": ".trellis/tasks/07-22-agent-harness-rearchitecture/research/documentation-authority-audit.md", "reason": "Evidence for detecting legacy/target documentation drift."}
+{"file": "docs/README.md", "reason": "Source-of-truth index and final documentation routing requirements."}
+{"file": "docs/product/user-flows.md", "reason": "Legacy product/reset baseline to reconcile with target flows."}
+{"file": "docs/architecture/api-contract.md", "reason": "Legacy API and SSE compatibility baseline."}
+{"file": "docs/architecture/database-schema.md", "reason": "Legacy data, deletion, and migration baseline."}
+{"file": "docs/qa/acceptance-test-plan.md", "reason": "Existing acceptance baseline to reconcile before parent archive."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Backend quality review guidance."}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Frontend quality review guidance."}
