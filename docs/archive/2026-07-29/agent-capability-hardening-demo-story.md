@@ -1,3 +1,10 @@
+> **Historical archive — superseded on 2026-07-29.** This is a dated demo
+> narrative for an earlier Graph/SDK capability-hardening slice. It is not the
+> active Tutor Harness contract. Statements below preserve their original
+> historical context. For current behavior, read
+> [Tutor Harness Runtime](../../architecture/tutor-harness-runtime.md) and the
+> [acceptance plan](../../qa/acceptance-test-plan.md).
+
 # Agent Capability Hardening Demo Story
 
 日期：2026-06-01

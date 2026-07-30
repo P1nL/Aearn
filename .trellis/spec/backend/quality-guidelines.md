@@ -6,53 +6,95 @@
 
 ## Overview
 
-Backend work must preserve the narrow Aearn MVP loop defined by `docs/plans/learning-agent-implementation-plan.md`. The formal API service currently pins dependencies only; implementation begins in Milestone 1 and must follow the documented API, database, runtime, FSRS, and LangGraph contracts.
+Backend work targets the active **Tutor Harness** runtime under
+`aearn/services/api/app`. Current behavior is defined by
+`docs/architecture/tutor-harness-runtime.md`, `api-contract.md`,
+`database-schema.md`, `setup/development-environment.md`, and the current
+route/schema/tests—not by the retired Graph/SDK implementation.
 
-The dependency source for the API service is `aearn/services/api/pyproject.toml`, which already includes `pytest`, `pytest-asyncio`, `httpx`, `ruff`, and `mypy` in the dev dependency group.
+> **Historical-scenario note (2026-07-29):** The older Milestone/Graph/SDK
+> scenarios below are retained as implementation history. They may use
+> historical present tense, `LANGGRAPH_ENABLED`, old routes, FSRS/Attempt, or
+> legacy data models. Do not implement or restore those paths unless a future
+> task explicitly reopens them. Active work must preserve the verified-only
+> Tutor entry, current API composition, and dated archive boundary.
+
+The API dependency source is `aearn/services/api/pyproject.toml`; it contains
+FastAPI, psycopg, Redis, Celery, Pydantic, dotenv and local worker/shared
+packages. It intentionally has no LangChain, LangGraph, LangGraph checkpoint,
+or OpenAI Agents SDK direct runtime dependency.
 
 ---
 
 ## Forbidden Patterns
 
-- Do not write formal MVP backend code in historical `01_` through `07_` tutorial directories.
-- Do not upgrade LangChain, LangGraph, FastAPI, Redis, Celery, or Tauri-related versions casually. Version compatibility is part of this repository's contract.
-- Do not expose `Attempt(run)` / `Attempt(submit)` as user-facing UI concepts; those are backend facts.
-- Do not let settings APIs modify scoring rules, required Attempt facts, or FSRS scheduling rules.
-- Do not duplicate `Attempt`, `ReviewState`, or `ReviewLog` writes on retry.
+- Do not write current backend code in historical tutorial directories or
+  reintroduce `app.agents.graphs`, Graph/router/tool/legacy conversation
+  surfaces, `LANGGRAPH_ENABLED`, or Agents SDK imports into active code.
+- Do not use a feature flag, client cache, ordinary reset, or a docs claim as a
+  substitute for the server-authoritative `harness_cutovers` receipt.
+- Do not expose raw learner text outside `tutor_messages`, or provider payloads,
+  prompts/reasoning, hidden tests, reference answers, checkpoint data, paths,
+  commands or secrets through public projections.
+- Do not make proactive work learner-visible chat/desktop notification or allow
+  it to execute learner code, `runner.execute`, subprocesses, or direct memory
+  effects.
+- Do not duplicate/replay Tutor input/effect/plan/memory/activity writes without
+  repository idempotency, current revision and lease/CAS checks.
 - Do not commit real `.env` files or LLM secrets.
 
 ---
 
 ## Required Patterns
 
-- Run backend commands from the owning subproject, typically through `uv --directory .\aearn\services\api ...`.
-- Check API changes against `docs/architecture/api-contract.md` before implementation.
-- Check persistence changes against `docs/architecture/database-schema.md` before implementation.
-- Check runner and scoring changes against `docs/architecture/code-completion-evaluation-spec.md`.
-- Check LangGraph node and write timing changes against `docs/architecture/langgraph-state-machine.md`.
-- Keep local defaults in `.env.example`; never use real external service secrets as examples.
+- Run backend commands from `aearn/services/api` through
+  `uv --directory .\aearn\services\api ...`.
+- Check public changes against `docs/architecture/api-contract.md`, persistence
+  against `docs/architecture/database-schema.md`, and runtime/scheduler/cutover
+  changes against `docs/architecture/tutor-harness-runtime.md`.
+- Require exact reviewed `Skill id@semantic-version` evidence before a
+  capability/effect; default-deny all descriptor fields/targets not explicitly
+  allowed.
+- Keep the production scheduler scan global (`user_id=None`); test/maintenance
+  user scope must be explicit and propagate through every changed queue phase.
+- Treat the initial proactive posture as controlled default delivery:
+  verified receipt + policy/pause/budget/cooldown/concurrency/lease/circuit gates
+  still apply, while curation/inferred memory remain default-off.
+- Preserve clean-slate semantics: target-state contamination and unresolved
+  checkpoint scope block before deletion; code rollback after confirmation never
+  restores deleted history.
 
 ---
 
 ## Testing Requirements
 
-- For Milestone 0 dependency checks, run the service-local `uv` commands and Docker Compose health checks documented in the database guidelines.
-- For API endpoints, add smoke or contract tests that assert status codes, response envelopes, error codes, and idempotency behavior.
-- For database migrations, verify repeatability and core inserts for the tables touched by the task.
-- For runner/evaluation logic, test `success`, `runtime_error`, `timeout`, and `unsupported` separately.
-- For review scheduling, test that intermediate batch submits do not update FSRS, `ReviewState`, `ReviewLog`, `KnowledgePoint`, or long-term learner profile, and that final submit/retry writes scheduler state exactly once.
-- API test batches that call `bootstrap_database()` share the same local database and must be run sequentially; do not launch M2/M3/M4 pytest commands in parallel.
+- Run `ruff check .`, `python -m mypy app`, `lock --check`, and the serial
+  `python -m pytest` suite from the API directory for cross-layer changes.
+- API tests must assert public status/envelope/error/idempotency and absence of
+  protected fields, not just internal helper return values.
+- PostgreSQL/bootstrap-sensitive tests must run sequentially. A fixture that
+  commits for independent-connection coverage must clean exact child rows,
+  verified receipts and test singleton state in foreign-key order.
+- Default proactive coverage must prove verified activity/inbox delivery and
+  unverified no-provider/no-run denial with deterministic seams.
+- After retirement, run the scoped source/dependency audit; historical docs are
+  permitted only when visibly labelled and not indexed as active runtime.
 
 ---
 
 ## Code Review Checklist
 
-- The change runs from the correct subproject directory and does not rely on a repository-root Python environment.
-- API fields, enums, and error shapes match the contract.
-- Database fields, constraints, indexes, and write timing match the schema and state-machine documents.
-- Any write operation with retry risk has an idempotency story.
-- User content, code submissions, notes, and secrets are not logged.
-- P0 acceptance cases from `docs/qa/acceptance-test-plan.md` remain satisfied for the touched flow.
+- The change runs from the correct subproject directory and does not rely on a
+  repository-root Python environment.
+- Routing, worker composition and public projections consult the same current
+  `verified` cutover receipt; no legacy fallback route survives.
+- Durable writes use user/run/conversation scope, idempotency and repository
+  transactions; stale effects cannot invoke handlers.
+- Provider/executor/runtime imports remain at their designated boundaries.
+- Any fixture commit has a tested scoped cleanup path and does not leak rows to
+  the following test.
+
+---
 
 ## Scenario: Local User Data Boundary APIs
 
@@ -2456,3 +2498,230 @@ HarnessCutoverService(conn).assert_legacy_runtime_denied(user_id=user_id)
 
 Tutor authorization and legacy denial are separate decisions. The destructive
 scope remains owned by the confirmation service, never by a generic reset.
+
+## Scenario: Tutor Integration Adapter Boundaries and Scoped Curation Verification
+
+### 1. Scope / Trigger
+
+- Trigger: extending the published Tutor Skill catalog, adding a target
+  integration adapter, or testing curation against the shared PostgreSQL
+  outbox/job queue.
+- Scope: catalog-consuming Tutor tests, target adapters under
+  `app/services/tutor/`, `TutorProactiveScheduler`,
+  `PostgresTutorProactiveRepository`, and their PostgreSQL integration tests.
+- This scenario prevents integration tests from encoding catalog order,
+  misclassifying approved target adapters as core Harness code, or accidentally
+  claiming/recovering another fixture user's curation work.
+
+### 2. Signatures
+
+- Exact Skill identity: `skill.reference.key`, for example
+  `tutor.registry-grounding@1.0.0`; a list position is not an identity.
+- Test/maintenance seed:
+  `TutorProactiveScheduler.seed_curation_jobs(now=..., limit=..., user_id: str | None = None)`.
+- Test/maintenance drain:
+  `TutorProactiveScheduler.drain_curation(worker_id=..., now=..., limit=..., user_id: str | None = None)`.
+- Store methods carry the same optional `user_id` through curation-job seed,
+  pending-job claim, and expired-lease recovery.
+- Approved database-backed target adapters are
+  `interactive.py`, `public_api.py`, and `cutover.py`. Their explicit target
+  database access does not authorize Graph, legacy router/tool/runner, legacy
+  conversation, or subprocess imports.
+
+### 3. Contracts
+
+- Tests that need a particular Skill resolve it by the exact reviewed
+  `reference.key`; they must not use `catalog.skills[0]` or any other positional
+  selection. Adding an unrelated published Skill must not redirect a grounding
+  or learner-state test to another capability policy.
+- Core Harness/catalog code remains storage- and legacy-runtime-independent.
+  The named target adapters may open target persistence only because their
+  owning child integrates the verified Harness boundary; static checks still
+  deny Graph/router/tool/runner dependency paths.
+- `user_id=None` preserves the production worker's global queue behavior. An
+  explicit `user_id` is only for deterministic fixture isolation or controlled
+  maintenance and must scope every state-changing queue phase: seed, claim,
+  and expired-lease recovery.
+- A scoped operation must neither seed, claim, recover, retry, fail, nor append
+  audit effects for another user's curation job. SQL scoping belongs in the
+  repository query/update, not only in a caller-side assertion.
+- Capability/public-selection tests read the current capability registry as the
+  source of truth. Do not preserve an old product matrix merely because a
+  grounding fixture happens to exist for that language.
+
+### 4. Validation & Error Matrix
+
+- Missing or unknown exact Skill key in a test fixture -> fail the fixture
+  setup; do not silently bind the first catalog entry.
+- A core Harness/catalog module imports target DB or a legacy Graph/router/tool/
+  runner surface -> static boundary regression.
+- A named target adapter imports a Graph/router/tool/runner or subprocess
+  surface -> static boundary regression even when its DB import is allowed.
+- Empty/invalid explicit `user_id` -> identifier validation failure before any
+  queue query.
+- Scoped seed/claim/recovery sees only another user's row -> safe no-work; the
+  foreign row's state, lease, retry count, and audit history remain unchanged.
+- Global worker call omits `user_id` -> normal global queue drain remains
+  available; do not accidentally convert production curation into per-test
+  routing.
+
+### 5. Good / Base / Bad Cases
+
+- Good: a grounding test locates
+  `tutor.registry-grounding@1.0.0` by key, an approved public adapter uses its
+  target repository without importing legacy runtime code, and a fixture drain
+  handles only that fixture user's outbox/job rows.
+- Base: the live worker calls the scheduler without `user_id`, so committed
+  curation work from all eligible users remains globally claimable.
+- Bad: using `catalog.skills[0]`, changing a static test to allow DB imports in
+  every Harness module, or calling an unscoped drain in a shared-bootstrap test
+  and asserting the first database row represents the test fixture.
+
+### 6. Tests Required
+
+- Catalog/policy/repository tests: add or reorder a non-target Skill and prove
+  grounding/learner-state fixtures still select their exact `reference.key`.
+- Static boundary tests: separately assert the core Harness deny-list and the
+  explicit target-adapter allow-list; both classes must continue to reject
+  Graph/router/tool/runner/subprocess dependencies.
+- PostgreSQL curation tests: with two users, prove scoped seed does not create
+  a foreign job, scoped drain does not claim a foreign pending job, and scoped
+  expired-lease recovery does not mutate a foreign leased job.
+- Worker test: retain one unscoped composition test so `user_id=None` continues
+  to mean global production processing rather than fixture-only behavior.
+- Run bootstrap-sensitive Tutor tests sequentially, then run `ruff check .`
+  and `python -m mypy app` from `aearn/services/api` through `uv`.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+# Catalog order changes when a new Skill is published; this can bind a
+# grounding policy to an unrelated learner-state Skill.
+skill = catalog.skills[0]
+scheduler.drain_curation(worker_id="test-worker", now=now)
+```
+
+#### Correct
+
+```python
+skill = next(
+    item
+    for item in catalog.skills
+    if item.reference.key == "tutor.registry-grounding@1.0.0"
+)
+
+# Test-only scope traverses seed, claim, and expired-lease recovery. The
+# production worker intentionally omits user_id and remains global.
+scheduler.seed_curation_jobs(now=now, user_id=fixture.user_id)
+scheduler.drain_curation(worker_id="test-worker", now=now, user_id=fixture.user_id)
+```
+
+Exact semantic identity and repository-owned queue scope keep independent
+integration tests from changing one another's behavior while retaining the
+global production worker contract.
+
+---
+
+## Scenario: Committed Verified Tutor Fixture Cleanup
+
+### 1. Scope / Trigger
+
+- Trigger: a PostgreSQL Tutor fixture gains a new user-root receipt or other
+  non-cascading foreign-key row, and a test deliberately commits the fixture so
+  independent connections can observe it.
+- Scope: `tests/conftest.py::tutor_persistence`, cross-connection execution/
+  scheduler tests, test-only cleanup helpers, `harness_cutovers`,
+  `tutor_execution_*`, and singleton test health rows.
+- This scenario prevents a new verified-cutover receipt from turning a normally
+  rollback-scoped test into leaked state after a cross-connection assertion.
+
+### 2. Signatures
+
+- Verified fixture receipt:
+  `harness_cutovers(user_id, cutover_version, state='verified')`.
+- Cross-connection test pattern:
+  `fixture.connection.commit()` followed by independent `connect()` calls.
+- Exact cleanup helper:
+  `_cleanup_committed_fixture(user_id, conversation_id, run_id, exercise_id)`.
+- Root deletion boundary: `DELETE FROM users WHERE id = %s` is valid only after
+  every test-owned child row and the matching `harness_cutovers` receipt are
+  gone.
+
+### 3. Contracts
+
+- `tutor_persistence` models a user that already completed clean-slate cutover
+  before any Tutor row exists. The verified receipt is part of the fixture
+  contract, not optional test decoration.
+- Normal fixture teardown may use rollback. A test that commits for a real
+  `FOR UPDATE SKIP LOCKED` or independent-connection assertion owns exact
+  cleanup in a separate transaction.
+- Cleanup order is child-to-root: execution attempts/jobs/intents/effects,
+  run-scoped Tutor rows, conversation rows, test-only executor health, legacy
+  exercise hierarchy, learner profile/idempotency rows, `harness_cutovers`, then
+  the fixture user. Do not use broad `TRUNCATE`, another user's rows, or a
+  global queue reset.
+- A cleanup helper that removes a user must delete the receipt for that exact
+  `(user_id, CUTOVER_VERSION)` first. The helper must leave the shared
+  `test-executor` health identity absent, otherwise the next fixture can collide
+  on its primary key.
+
+### 4. Validation & Error Matrix
+
+- Deleting the fixture user while its `harness_cutovers` row exists ->
+  PostgreSQL `ForeignKeyViolation`; the cleanup transaction rolls back and all
+  rows remain leaked.
+- A rolled-back cleanup leaves `tutor_executor_health(executor_id='test-executor')`
+  -> the next fixture's health seed fails with `UniqueViolation`; fix cleanup
+  order rather than weakening the health primary key or swallowing the error.
+- A cross-connection test commits but has no exact cleanup helper -> full-suite
+  order dependence; add the helper and rerun the complete serial API suite.
+- Cleanup query missing its fixture user/run/conversation predicate -> test
+  safety failure; it must not delete a foreign fixture's rows.
+
+### 5. Good / Base / Bad Cases
+
+- Good: a `SKIP LOCKED` test commits its verified fixture, contender assertions
+  finish, cleanup deletes its receipt before the user, and the next executor
+  test seeds `test-executor` without a collision.
+- Base: a normal fixture never commits and `finally: conn.rollback()` removes
+  the receipt with the rest of its transaction.
+- Bad: adding a verified receipt in `conftest.py` but leaving a user-delete
+  cleanup unchanged, calling `TRUNCATE tutor_executor_health`, or catching the
+  foreign-key error and continuing to the next test.
+
+### 6. Tests Required
+
+- Run `tests/test_tutor_executor_job_store.py` serially; its independent
+  `FOR UPDATE SKIP LOCKED` test must complete cleanup and the following
+  reserved-launch recovery test must seed health successfully.
+- Run the full API suite serially after fixture schema/root changes. A focused
+  green test alone is insufficient because leaked committed rows appear in the
+  next test, not necessarily the current one.
+- Add/retain a fixture test that inserts the verified receipt before Tutor rows
+  so routes/scheduler tests retain the real admission topology.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+# Fails after tutor_persistence starts inserting harness_cutovers.
+conn.execute("DELETE FROM idempotency_records WHERE user_id = %s", (user_id,))
+conn.execute("DELETE FROM users WHERE id = %s", (user_id,))
+```
+
+#### Correct
+
+```python
+# Child rows are already removed above. Delete the exact verified receipt before
+# removing the root user, then clear only the test-owned singleton health row.
+conn.execute("DELETE FROM tutor_executor_health WHERE executor_id = 'test-executor'")
+conn.execute("DELETE FROM harness_cutovers WHERE user_id = %s", (user_id,))
+conn.execute("DELETE FROM users WHERE id = %s", (user_id,))
+```
+
+A committed fixture must be cleaned in the same foreign-key topology that
+bootstrap created; keeping the receipt is correct for runtime admission and
+incorrect only after the fixture's test-owned user is being destroyed.

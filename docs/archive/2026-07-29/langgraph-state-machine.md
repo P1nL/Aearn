@@ -1,7 +1,14 @@
+> **Historical archive — superseded on 2026-07-29.** This is a dated record of
+> the retired LangGraph orchestration model. It is not an active runtime,
+> package, API, Desktop, or release contract. Statements below preserve their
+> original historical context. For current behavior, read
+> [Tutor Harness Runtime](../../architecture/tutor-harness-runtime.md) and the
+> [documentation index](../../README.md).
+
 # Agent LangGraph 状态机文档
 
-日期：2026-05-11  
-状态：Draft V1.1  
+日期：2026-05-11
+状态：Draft V1.1
 适用范围：Aearn 的建档、学习会话、代码运行、Attempt 评分、复习变体、恢复学习和笔记辅助补全
 
 ## 目标

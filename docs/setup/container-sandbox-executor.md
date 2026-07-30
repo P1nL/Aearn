@@ -1,88 +1,131 @@
 # Container Sandbox Executor Operations Contract
 
-## Status and Scope
+**Status:** Current operational boundary, 2026-07-29.
+**Authority:** `aearn/services/executor/`, `aearn/infra/executor/`,
+`tutor_execution_*` schema, executor tests, and
+[Tutor Harness Runtime](../architecture/tutor-harness-runtime.md).
 
-This is a feature-disabled internal service for the Tutor Harness target. It
-has no HTTP route, public SSE frame, Desktop consumer, or legacy-runner
-fallback. The normal `pnpm --dir .\aearn dev` process set remains PostgreSQL,
-Redis, API, general worker, and Desktop only; it does not start the executor.
+The executor is an explicit, standalone container process. It is not a public
+HTTP API, SSE producer, Desktop dependency, normal Celery runtime client, or
+fallback for the removed legacy runner. The default product posture remains
+safe unavailable until an operator intentionally supplies all reviewed
+preconditions.
 
-The executor is the sole Aearn service package permitted to own a container
-runtime client. API/Harness code only persists a proof/job and reads safe health
-and result facts. The worker remains a general Celery process without runtime
-client dependencies.
+## 1. Process ownership and commands
 
-## Explicit Local Commands
+The normal development process set is PostgreSQL, Redis, API, general Celery
+worker, and Desktop. It does **not** start the executor. Start it separately:
 
 ```powershell
-# One health/queue poll. Default setting records feature-disabled availability.
+# Refresh safe health and process at most one durable job.
 pnpm --dir .\aearn executor:once
 
-# Long-running isolated process, started intentionally in a separate terminal.
+# Long-running isolated process in a dedicated terminal.
 pnpm --dir .\aearn executor:dev
 ```
 
-The process reads environment supplied to that terminal. It does not load or
-modify `aearn/.env`. `TUTOR_EXECUTOR_ENABLED` defaults to `false`; setting it
-true does not authorize execution by itself.
+The executor reads the environment of its own terminal. Its settings module
+does not load or modify `aearn/.env`; pass any required `DATABASE_URL` and
+`TUTOR_EXECUTOR_ENABLED` explicitly to that process. API, Desktop, Harness,
+and the normal worker do not receive a Docker runtime client dependency.
 
-## Enablement Preconditions
+## 2. Default-deny posture
 
-An individual runtime is available only when all of these are true:
+```text
+TUTOR_EXECUTOR_ENABLED=false
+```
 
-1. `TUTOR_EXECUTOR_ENABLED=true` for the explicit executor process and the
-   feature remains independently composed by a later Harness integration task.
-2. The Git-owned catalog contains the approved runtime protocol entry.
-3. `aearn/infra/executor/image-locks.json` contains a reviewed exact
-   `repository@sha256:<64-hex>` lock that matches the catalog protocol,
-   non-root identity, entrypoint, and limits.
-4. The standalone executor has a recent compatible health heartbeat and has
-   verified the pre-existing local image without pulling it.
-5. A server-issued interactive execution proof, exact selected Skill/effect,
-   current revision/lease, uncancelled run, and budget all pass inside the
-   Child 02 effect transaction.
+With the default setting, the service records safe feature-disabled/health
+facts and does not claim jobs, start containers, use a host subprocess, pull
+an image, or open a network path. Setting the flag to `true` alone is still
+insufficient: the reviewed image-lock registry is intentionally empty until
+real immutable locks are approved, so no runtime is available by default.
 
-The checked-in lock registry is intentionally empty until real reviewed images
-are published. This is the expected fail-closed condition: every runtime is
-unavailable, no image tag/local id is substituted, and no host subprocess path
-is used.
+No caller may substitute an image tag, local image ID, arbitrary Docker command,
+host executable, browser runner, or fallback network request for a missing
+reviewed lock.
 
-## Isolation Profile
+## 3. Enablement preconditions
 
-The executor derives every launch from the reviewed lock. The job, proof, API
-request, learner, and model cannot select images, commands, mounts, paths,
-network settings, devices, or runtime flags. The profile requires an exact
-image digest, fixed in-image entrypoint, no network, read-only root, explicit
-`/work` and `/tmp` tmpfs, non-root UID/GID, dropped capabilities,
-`no-new-privileges`, PID/CPU/memory/file/output/wall-clock limits, and cleanup.
+A job may reach a container only when every condition is true:
 
-The seven catalog entries are Python stdout, browser preview, TypeScript,
-SQLite, Java, Go, and C#. Rust and C++ remain unsupported. Runtime Dockerfiles
-are build definitions only and accept an explicit prebuilt toolchain base; they
-are not production locks and do not enable execution.
+1. The standalone executor is explicitly enabled and can reach PostgreSQL.
+2. The Git-owned runtime catalog contains the requested supported runtime.
+3. `aearn/infra/executor/image-locks.json` contains the reviewed exact
+   `repository@sha256:<64-hex>` lock for that runtime.
+4. Catalog protocol, lock fingerprint, fixed non-root identity, image entrypoint
+   and resource limits agree.
+5. A current interactive run has server-issued execution proof, exact selected
+   Skill/effect evidence, current input revision, valid lease, remaining
+   budget, and is not cancelled.
+6. The executor has a compatible safe health heartbeat and can verify the
+   existing local image without implicitly pulling it.
 
-## Lifecycle and Recovery
+Proactive work can never satisfy item 5 for `runner.execute`: background
+composition permanently denies learner-code execution even when the executor
+is otherwise enabled.
 
-`tutor_execution_jobs` is the durable queue. The effect transaction creates one
-job per effect/proof identity, then the executor claims `pending` work (or
-safely reclaims an expired `claimed` lease that has no launch token) using a
-short `FOR UPDATE SKIP LOCKED` transaction. It writes a launch token before the
-external side effect. A replacement executor may adopt only an exact matching
-labeled runtime. If it cannot prove the prior launch state, it records
-`launch_uncertain` and never creates another runtime.
+## 4. Immutable launch profile
 
-Cancellation is idempotent before claim, before launch, while waiting, and
-after terminalization. Cleanup is in a finally path. A cleanup failure becomes
-a safe failed result and quarantines executor health; it is not exposed as raw
-runtime diagnostics.
+`build_launch_spec()` derives every runtime setting from the reviewed lock.
+Neither learner input, model output, API payload nor queue row can choose an
+image, command, mount, network mode, device, privilege flag or resource limit.
 
-## Observability and Safety
+The fixed profile includes:
 
-Internal durable job/audit facts contain only opaque IDs, runtime IDs, hashes,
-state, counters, timestamps, safe codes, and capped learner-safe result text.
-Any future learner/public projection excludes runtime IDs as well as submission
-code, hidden tests, image reference/digest, command, mount, path, container
-identifier, raw runtime error, and credentials.
+- exact digest image and reviewed in-image entrypoint;
+- `network_mode="none"`, no host network escape;
+- read-only root filesystem; tmpfs only for `/work` and `/tmp`;
+- reviewed non-root UID/GID, `cap_drop=("ALL",)`,
+  `no-new-privileges:true`, never privileged;
+- bounded PID, CPU, memory, file descriptor, output and wall-clock limits;
+- bounded daemon-side local log buffer;
+- labels binding job ID, launch token, lock fingerprint and runtime ID.
 
-For the transition boundary, see
-[`../architecture/tutor-harness-transition.md`](../architecture/tutor-harness-transition.md).
+The supported catalog protocol entries are Python stdout, browser preview,
+TypeScript, SQLite, Java, Go and C#. Rust and C++ are absent. Dockerfiles are
+build definitions only; they do not themselves authorize runtime execution.
+
+## 5. Durable lifecycle and recovery
+
+`tutor_execution_jobs` is the source of truth. The normal effect transaction
+creates/replays at most one job for a proof identity; broker delivery is only a
+wake-up mechanism.
+
+1. The executor claims `pending` work using short transactional locking.
+2. It records a launch token before any external side effect.
+3. A replacement executor may adopt only a container with exactly matching
+   labels/token/lock; unknown prior state becomes `launch_uncertain`.
+4. `launch_uncertain` is terminal/safe. It is never a reason to start a second
+   container.
+5. Cancellation is idempotent before claim, before launch, while waiting and
+   after terminalization. Cleanup runs in `finally`; cleanup failure is a safe
+   failure and quarantines health rather than exposing raw engine output.
+
+## 6. Public-data and observability boundary
+
+Durable executor rows and safe health facts may contain opaque IDs, fingerprints,
+states, counters, timestamps, stable codes and capped learner-safe result text.
+They must not expose learner submission code, hidden tests, image digest,
+container ID, command, mount, filesystem path, raw Docker error, provider data
+or credentials through Tutor API/SSE/Desktop.
+
+No HTTP endpoint turns arbitrary caller data into a job. The public current
+runtime only reads safe executor availability/result facts when an approved
+interactive effect is composed; it never imports the Docker client.
+
+## 7. Verification
+
+```powershell
+# API-side execution/effect boundary.
+uv --directory .\aearn\services\api run python -m pytest tests/test_tutor_execution_contracts.py -q
+
+# Standalone executor contract tests.
+uv --directory .\aearn\services\executor run python -m pytest
+```
+
+Real Docker conformance is explicitly opt-in and remains skipped/fail-closed
+until the project carries seven reviewed immutable image locks and matching
+fixtures. A passing unit suite does not justify enabling a production image
+fleet; record the actual result and residual risk in the
+[Release Readiness Ledger](../qa/tutor-harness-release-readiness.md).

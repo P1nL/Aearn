@@ -1,24 +1,35 @@
-# Tutor Harness Transition Contract
+# Tutor Harness Transition Contract — Historical Migration Evidence
 
-## Status and Authority
+> **Historical status (2026-07-29):** This document preserves the migration and
+> clean-slate design evidence from the feature-disabled/additive Children 00--07.
+> It is **not** the current runtime contract and must not be used to decide
+> active routing, default scheduler posture, package dependencies, Desktop
+> behavior, or release readiness. Read
+> [Tutor Harness Runtime](./tutor-harness-runtime.md) and the current source
+> documents indexed by [`docs/README.md`](../README.md) first.
 
-This transition contract records the feature-disabled, in-process Tutor
-Harness seam from Children 00/01, the target-only durable foundation from Child 02,
-the scheduling/queue seam from Child 04, and the Child 05 learner-state projections.
-None of these target layers adds a learner-facing API, SSE stream, Desktop entry
-point, legacy-data migration, cutover, or product activation.
+## Status, authority, and reading rule
 
-| Authority | Meaning |
+The active runtime is the verified-only Tutor Harness: the server-authoritative
+cutover receipt gates the public Tutor API and Desktop, legacy Graph/SDK
+implementation is retired from the active source tree, and verified-only
+proactive delivery has a controlled default. Those present-tense facts are
+specified elsewhere; this record explains how the repository reached that
+boundary.
+
+| Authority | Meaning today |
 | --- | --- |
-| **Legacy baseline** | Current routes, Graph routing, `learning_stage`, Graph checkpoints, SSE vocabulary, persistence, and desktop flows remain the compatibility baseline. |
-| **Target contract** | The immutable Harness contracts, bounded context builder, primary-only provider gateway, finite loop, catalog policy boundary, and Child 02 target-only durable state/replay/redaction contracts. |
-| **Adapter window** | Until Child 06, the Harness is unreachable from product traffic. Existing API/SSE/Desktop flows preserve legacy contracts while future adapters translate at the boundary. |
-| **Retired** | Nothing is retired by Child 00. Later cutover work owns explicit retirement and migration decisions. |
+| [Current runtime contract](./tutor-harness-runtime.md) | Active loop, Skills, provider, persistence, scheduler, executor, cutover and rollback boundary. |
+| Current routes/schema/tests/configuration | Factual source for public behavior and safety gates. |
+| This transition document | Historical migration/cutover evidence and earlier child contracts only. |
+| `docs/archive/2026-07-29/` | Dated Graph/SDK-era evidence, never an active runtime source. |
 
-Current code/tests establish legacy facts. This document only defines the new
-internal target contract.
+**Reading rule:** the historical sections below preserve their original design
+language. References such as “current”, “feature-disabled”, “future child”,
+“legacy baseline”, or “does not expose” describe the state at the time that
+section was written. They do not override the current runtime contract.
 
-## Legacy Baseline: Explicit Non-Changes
+## Historical Legacy Baseline: Explicit Non-Changes
 
 - `LANGGRAPH_ENABLED` remains the legacy Graph flag and is not reused.
 - Legacy `learning_stage` routing, specialist handoffs, Graph checkpoints,
@@ -472,4 +483,6 @@ mutation of memory, plans, reviews, FSRS, attempts, messages, or activity.
 | Child 06 | Tutor API/SSE `Last-Event-ID` adaptation, delivery acknowledgement, feature exposure, and desktop deduplication. |
 | Child 07/08 | Cutover, legacy retirement, and source-of-truth reconciliation. |
 
-This document does not authorize product traffic to enter the Harness.
+This historical document did not authorize product traffic at the time it was
+written. Product traffic now follows the current verified-only runtime contract;
+this sentence is retained only to preserve the earlier migration boundary.

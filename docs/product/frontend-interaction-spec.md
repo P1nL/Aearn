@@ -1,557 +1,174 @@
-# Aearn 前端交互规格
+# Aearn Tutor 桌面端交互规格
 
-日期：2026-05-13  
-状态：Draft V1.1  
-适用范围：React + Tauri 桌面端第一版，承接 `user-flows.md`、`api-contract.md`、`code-completion-evaluation-spec.md` 和 `langgraph-state-machine.md`
+**状态：** 当前 Desktop 交互契约，2026-07-29。
+**适用范围：** `aearn/apps/desktop/src/` 的 React + Tauri UI。
+**权威来源：** `App.tsx`、`stores/useAppStore.ts`、`api.ts`、
+`pages/HarnessCutoverPage.tsx`、`pages/TutorWorkspacePage.tsx` 与类型/测试。
 
-## 目标
+本规格取代旧 Onboarding、LearningWorkspace、Review、Notes 和 Graph/SSE UI
+描述。Desktop 只呈现服务器授予的 Tutor 状态；它不会编排 provider、Graph、
+后台队列、切换删除范围或执行器。
 
-把产品 IA、用户流程、API 契约、评分规则和 LangGraph 状态机落成可实现的前端交互边界。第一版必须优先支撑下面的闭环：
+## 设计目标
 
-```text
-建档生成学习路线 -> 进入当前学习 -> 对话中生成练习 UI -> 编写/运行/预览 -> Agent hint / explain-error -> 记录笔记 -> FSRS 复习
+1. **先准入、后工作区。** 任何本地身份恢复都先读取服务器 cutover decision，
+   再渲染用户可操作的 Tutor UI。
+2. **解释不可逆边界。** 有旧数据时，清理页显示服务器摘要和保留项，明确代码
+   回退不会恢复清理的数据。
+3. **保持对话可继续。** 输入确认、run 状态和 SSE cursor 都可见；运行时允许
+   继续补充输入，而不是创建竞争会话。
+4. **让学习记录受用户控制。** Activity/inbox、记忆、计划版本和偏好在同一
+   工作区中以 learner-safe projection 展示。
+5. **不泄露内部细节。** UI 不显示 provider 原始错误、内部 reason、prompt、
+   checkpoint、capability schema、执行命令、hidden tests 或密钥。
+
+## 顶层状态机
+
+```mermaid
+stateDiagram-v2
+  [*] --> loading
+  loading --> welcome: no stored userId
+  loading --> welcome: stored user cannot be recovered
+  loading --> cutover: decision is summary_ready or blocked
+  loading --> tutor: decision is verified
+  welcome --> cutover: created user needs confirmation
+  welcome --> tutor: created user is verified
+  cutover --> tutor: POST confirm returns verified
+  cutover --> cutover: stale or blocked response
 ```
 
-前端不承担最终评分、FSRS 调度或 LangGraph 编排职责。前端负责把用户操作、代码编辑、运行结果、提示、解释检查和笔记内容清晰展示，并通过 API 与后端状态机对齐。
-
-## 设计原则
-
-1. 代码编辑器、预览和测试结果以对话中的生成式 UI 呈现，不做固定三栏工作台。
-2. 所有能影响 `Attempt`、`code_completion_result`、`ReviewState` 的操作必须走 API，不允许前端本地伪造完成状态。
-3. JS/HTML/CSS、Python、TypeScript、SQL、Java/Go/C# 按公开路线和运行能力分层展示；C++/Rust 明确暂不支持，不把“本机 toolchain 已检测到”误导成“公开课程/完整项目执行可用”。
-4. 前端 UI 不暴露 `Attempt(run)` 和 `Attempt(submit)` 两类内部概念，只展示运行、预览、测试和提交结果；后端仍保留两类事实记录。
-5. 所有长耗时状态都必须有 loading、error、disabled、retry 或 confirm 反馈。
-
-## 第一版明确不做
-
-- 不做复杂拖拽式路线编辑，只允许按钮式 `skip`、`replace`、`adjust`。
-- 不做多窗口自由停靠或复杂 dock layout。
-- 不做外部渠道一键分发、账号登录、社区发布或平台适配改写。
-- 不做完整在线编译沙箱或通用 IDE；Java / Go / C# 仅允许 `managed_compiled_test` 的本机 teaching-grade 单练习执行，Rust / C++ 继续作为暂不支持公开路线处理。
-- 不做项目级多文件调试、任意依赖安装、真实代码仓库深度导入。
-- 不做独立复盘草稿流程、`publishDrawer` 用户路径、`CodeDraftPage` 一级页面或面试讲述草稿。
-
-## 顶层组件树
-
-```text
-AppShell
-  BootstrapBoundary
-    AppTopBar
-    PrimaryRouter
-      OnboardingPage
-      LearningWorkspacePage
-      ReviewPage
-      NotesPage
-      SettingsPage
-    NoteDrawer
-    GlobalToastRegion
-    GlobalConfirmDialog
-    GlobalErrorBoundary
-```
-
-### `AppShell`
-
-职责：
-
-- 初始化 Tauri 壳能力、API base URL、当前用户与窗口状态。
-- 提供全局导航、toast、confirm、error boundary。
-- 不直接持有练习评分逻辑。
-
-核心状态：
-
-| 状态 | 字段 | 展示要求 |
-|---|---|---|
-| 初始化中 | `bootstrap_status=loading` | 全屏骨架屏，禁止用户进入工作台 |
-| 初始化失败 | `bootstrap_status=error` | 显示错误、重试按钮和设置入口 |
-| 无用户 | `user_state=empty` | 跳转 Onboarding |
-| 有活动计划 | `active_plan_id` | 默认进入 LearningWorkspace |
-| API 离线 | `api_status=offline` | 顶部警告，运行/提交/生成禁用 |
-| 切换本地用户 | `active_user_id` 变化 | 先清空 plan/session/review/notes/dashboard 等旧状态，再写入 bootstrap 并重新拉取新用户事实 |
-
-## 页面组件规格
-
-## 页面 0：`OnboardingPage`
-
-### 组件树
-
-```text
-OnboardingPage
-  AssistantUIThread
-    ConversationTimeline
-      GeneratedLearningRouteCard
-    Composer
-```
-
-### 核心数据
-
-- `mode`：`goal_based` / `material_based`
-- `goal_text`
-- `materials`
-- `language`
-- `course_id`
-- `target_level`
-- `clarification_answers`
-- `onboarding_session_id`
-- `tool_calls.show_learning_route`
-- `plan_draft`
-- `modules`
-- `source_attribution`
-- `runtime_tier`：`browser_preview` / `python_stdout_test` / `node_typescript_test` / `sql_query_test` / `managed_compiled_test` / `compiled_sandbox_later`
-
-### 主要按钮行为
-
-| 按钮 | API / 行为 | 启用条件 | 成功后 |
-|---|---|---|---|
-| 发送建档回复 | `POST /api/onboarding/messages` SSE | API 在线且没有正在生成的回复 | 普通气泡继续引导，或以 `show_learning_route` 渲染路线卡片 |
-| 修改路线 | 向 composer 输入自然语言修改要求 | 已有路线卡片 | 生成新路线卡片；时间预算变化会显示新的学习节奏，旧卡片 `开始学习` 禁用 |
-| 开始学习 | `POST /api/onboarding/{session_id}/confirm_plan` | 当前最新路线卡片且草稿校验通过 | 创建 `plan` 并进入工作台 |
-
-### 页面状态
-
-| 状态 | 触发 | UI 反馈 |
-|---|---|---|
-| empty | 首次打开且无输入 | 引导用户输入模糊目标或粘贴资料 |
-| loading | 生成草稿中 | 禁用生成/确认按钮，展示流式 Agent 文案或 skeleton |
-| error | API 返回错误 | 展示 `error.code`、`error.message`、重试按钮 |
-| disabled | 输入不足或 API 离线 | 按钮置灰并给出原因 |
-| stale route | 新卡片已替换旧卡片 | 保留旧卡片内容，只禁用旧卡片的 `开始学习` |
-| confirm | 重新生成、破坏主干调整、确认计划 | 弹出 `GlobalConfirmDialog` |
-| unsupported language | `POST /api/onboarding/messages` 返回 `LANGUAGE_NOT_SUPPORTED` | 展示后端 `error.message` 和支持语言列表，不渲染路线卡片 |
-| unsupported notice | `runtime_tier=compiled_sandbox_later` | 明确 Rust/C++ 或静态 compiled disclosure 不提供 L3 执行 |
-| fallback notice | 动态路线生成失败但模板 fallback 成功 | 保持可确认路线卡片，展示简短来源说明，不暴露 provider 原始错误 |
-
-## 页面 1：`LearningWorkspacePage`
-
-### 组件树
-
-```text
-LearningWorkspacePage
-  WorkspaceTopStatusBar
-  RoutePanel
-    ModuleTree
-    KnowledgePointList
-    RouteActionMenu
-  ConversationTimeline
-    GeneratedConceptIntroCard
-    CompactConceptCheckFeedback
-    AgentMessage
-    GeneratedLearningHistoryCard
-    GeneratedCodeExerciseCard
-      ExercisePrompt
-      CodeEditor
-      BlankNavigator
-      RunActionBar
-      GeneratedRuntimeFeedback
-        PreviewPane
-        StdoutPane
-        TestResultPane
-        ErrorFeedbackPane
-      ExplanationCheckPanel
-      NoteDrawerToggle
-  AssistantSidePanel
-    KeyConceptsCard
-    CommonErrorsCard
-    HintHistoryCard
-    StageBenefitCard
-```
-
-### 初始化流程
-
-1. 页面加载 `GET /api/dashboard?user_id={user_id}`。
-2. 普通打开默认进入当前学习入口；如果有到期复习，只展示应用内提示，不强制跳转。
-3. 仅当后端判断“最近一次学习活动距当前超过 72 小时，且至少存在一条 `forget_risk=high` 的到期复习”时，优先进入 `ReviewPage`。
-4. 如果 `resume_available=true`，展示恢复学习提示和 `next_entry_point`。
-5. 用户点击当前知识点后调用 `POST /api/learning-sessions/start`。
-6. 前端以 `session_id` 加载会话；如果 `learning_stage` 不是 `practice_support`，只展示阅读/概念优先对话，不展示练习卡片。
-7. 新会话入口进入 `documentation_reading`，右侧自动加载知识点文档，`initial_tool_calls=[]`；只有用户点击「开始概念检验」后才调用 `POST /api/learning-sessions/{session_id}/trigger-concept-check` 并渲染 `show_concept_intro`。
-8. 已触发概念检验的恢复会话必须重放持久化的 `show_concept_intro`，不得重新生成不同内容。
-9. Agent 通过 `show_concept_check_result` 持久化自然语言判断结果，但前端只渲染为普通 Agent 回复里的紧凑反馈；通过 `show_code_exercise` 工具调用在对话中生成练习 UI；通过 `show_learning_history` 工具调用展示知识点历史对话引用。
-
-### `WorkspaceTopStatusBar`
-
-展示字段：
-
-- `active_goal`
-- `current_stage`
-- `current_language`
-- `current_course`
-- `today_learning_tasks`
-- `today_review_count`
-- `overall_progress`
-- `resume_available`
-- `next_entry_point`
-
-按钮：
-
-| 按钮 | 行为 | 禁用条件 |
-|---|---|---|
-| 继续学习 | 进入当前 `next_entry_point` | 无活动计划 |
-| 今日复习 | 跳转 `ReviewPage` | `today_review_count=0` 时仍可进入空态 |
-| 设置 | 跳转 `SettingsPage` | 无 |
-| 恢复上次 | `GET /api/learning-sessions/resume` | `resume_available=false` |
-
-### 左侧复习分组
-
-- 左侧「复习」分组可以展示 `status=reviewing/mastered` 的知识点；如果 `review_state.is_due === true`，即使本地 `status` 因恢复学习会话仍显示为 `learning`，也必须展示为待复习项。
-- `GET /api/plans/{plan_id}` 返回的 `knowledge_points[].review_state.is_due === true` 是侧栏项可点击的唯一事实来源。
-- `is_due=false` 或缺少 `review_state` 时，侧栏项必须渲染为禁用预告态，显示 `review_state.label` 或「已安排，等待同步」，不跳转 `ReviewPage`，不触发 `POST /api/reviews/start`，不显示错误 toast。
-- 可点击的到期项必须与 `GET /api/reviews/today` 的到期队列语义一致；进入复习页后不能出现“侧栏可点击但今日队列为空”的不一致状态。
-
-### `RoutePanel`
-
-状态标签：
-
-- 未开始
-- 学习中
-- 已完成
-- 已跳过
-
-按钮行为：
-
-| 操作 | 行为 | 约束 |
-|---|---|---|
-| 点击模块 | 展示模块详情与知识点列表 | 不自动切换学习状态 |
-| 进入知识点 | `POST /api/learning-sessions/start` | 需要活动 `plan_id` |
-| 跳过模块 | `PATCH /api/plans/{plan_id}/modules/{module_id}` | 仅 `is_skippable=true` |
-| 替换模块 | 调用模块调整接口或进入计划草稿调整态 | 第一版只做按钮式替换 |
-| 调整模块 | 弹 confirm 后提交调整 | 风险提示必须说明可能破坏知识主干 |
-
-### 概念优先会话阶段
-
-职责：
-
-- `LearningWorkspacePage` 必须接受 `exercise=null` 的会话响应，并保持 composer 可用。
-- `documentation_reading` / `concept_qna` 阶段必须显示右侧文档面板和「开始概念检验」按钮；文档未加载完成时按钮禁用。
-- 文档面板只展示 `官方文档内容` 和 `实例` 两个主区块：官方内容来自已持久化官方/可信来源或忠实翻译片段，实例必须标明 `官方示例` 或 `Aearn 示例`；不再渲染 `核心概念`、`语法结构`、`实战示例`、`常见错误`、`最佳实践` 五段式讲义。
-- 文档面板支持目录跳转、章节折叠、来源标题/URL/时间展示、选中文字引用到对话和代码块引用到对话；引用只填充 composer，不自动发送。
-- `show_concept_intro` 渲染概念总结、易懂例子和 2-4 个文本选项；选项只是可复制的回答提示，不是强制按钮。
-- `show_concept_check_result` 不渲染独立大卡；它以内联紧凑反馈展示 `判断`、`原因`、`下一步`，保留可选 `repair_check` 和文本 quick replies。
-- `unclear` 只表示未回答、不确定、无关、无法判断或自相矛盾；部分正确、漏答或方向明确但不完整的回答显示为 `incorrect` / incomplete feedback。
-- `incorrect` 和 `unclear` 共用概念追问上限，达到上限后不再继续“更具体一点”追问，只提供引导练习或再看一个例子。
-- `concept_check`、`concept_repair` 和 `practice_offer` 只展示概念判断与修正，不直接固定展示练习卡片。
-- `practice_support` 才能展示 `GeneratedCodeExerciseCard`；练习解锁说明来自本轮模型回复，必须包含当前知识点小结。卡片 `notice` 默认空，不能复制 Agent 正文或重复展示题面。如果模型不可用，前端只展示 `MODEL_UNAVAILABLE` 错误，不展示后端固定练习卡或固定概念小结。
-- 学习页 Agent 只渲染后端 `agent_message.content` 和正式工具卡；不展示“导师判断”、思考过程、chain-of-thought 或 provider reasoning，也不得从正文用正则猜测、抽取或重命名内部内容。
-- 学习页 SSE 只能消费后端解包后的 `public_message` delta/content；不得渲染结构化 envelope、`internal_review`、provider reasoning 或任何 raw prompt 字段。
-- `CONCEPT_INTRO_GENERATION_FAILED` 必须显示重试生成和返回路线动作，不展示破损 fallback 卡片。
-- 学习页 composer SSE 错误必须按稳定 `error.code` 解释原因：`MODEL_UNAVAILABLE` 展示模型服务或配置不可用，`STREAM_INCOMPLETE` 展示流没有收到 `done` / `error` 终止事件，`STREAM_ERROR` / `STREAM_UNAVAILABLE` / `STREAM_HTTP_ERROR` 展示连接或 SSE 可用性问题；不能把所有错误都包成同一句泛化“回答没有完成”。
-- 用户主动回看历史时展示 `GeneratedLearningHistoryCard`，只引用学习页 AI/用户对话，不引用建档页或复习页内容。
-
-状态来源：
-
-| 字段 | 前端用途 |
-|---|---|
-| `learning_stage` | 决定 placeholder、quick replies 和是否可渲染练习卡 |
-| `learning_stage_state.learning_incomplete` | 决定提前练习提示 |
-| `lesson_outline` / `lesson_sources` | 展示概念提纲和来源归因 |
-| `initial_tool_calls[]` | 已触发概念检验的恢复会话重放持久化 `show_concept_intro`；新 `documentation_reading` 会话为空数组 |
-| `tool_calls[].name` | 选择 `show_concept_intro`、`show_concept_check_result`、`show_code_exercise` 或 `show_learning_history` 组件 |
-
-### `GeneratedCodeExerciseCard`
-
-职责：
-
-- 作为对话中的生成式 UI 卡片展示题面、`starter_code`、`CodeBlank`、当前 `filled_blanks`。
-- 只由 `show_code_exercise` 工具调用或已解锁的恢复状态创建，不由 `session.exercise` 在会话入口固定渲染。
-- 管理本地编辑状态：`pristine`、`dirty`、`running`、`submitted`。
-- 不计算最终 `result`、`score` 或 `fsrs_rating`。
-- 不在 UI 上显示 `Attempt(run)` / `Attempt(submit)` 内部类型。
-
-编辑器状态：
-
-| 状态 | 触发 | UI 反馈 |
-|---|---|---|
-| `pristine` | 初次加载 | Run 可用，Submit 需先 run 或解释检查 |
-| `dirty` | 用户修改代码 | 显示未运行变更，旧测试结果标记为 stale |
-| `running` | 调用 `/run` 中 | 编辑器可读，运行按钮 loading |
-| `unsupported` | `runtime_tier=compiled_sandbox_later` 或后端返回 `runtime_status=unsupported` | 运行/提交按钮禁用，展示能力边界 |
-| `submitted` | `/submit` 返回 | 展示提交结果摘要，可继续开新一次练习尝试 |
-
-### `RunActionBar`
-
-按钮：
-
-| 按钮 | API / 行为 | 启用条件 | 结果展示 |
-|---|---|---|---|
-| 运行预览 | `POST /api/learning-sessions/{session_id}/exercises/{exercise_id}/run`，`run_mode=preview` | `runtime_tier=browser_preview` | `PreviewPane`、console、运行结果摘要 |
-| 运行可见测试 | 同上，`run_mode=visible_tests` | `supports_tests=true` | `TestResultPane`、stdout/stderr |
-| 提交答案 | `POST /api/learning-sessions/{session_id}/exercises/{exercise_id}/submit` | 有 `attempt_id`、最近一次 `run_mode=visible_tests`、`runtime_status=success` 且结果未 stale，或后端允许 submit 时自动 run | `code_completion_result` |
-| 获取提示 | `POST /api/learning-sessions/{session_id}/exercises/{exercise_id}/hint` | 有当前代码，未超过提示策略限制 | `HintHistoryCard` |
-| 解释错误 | `POST /api/learning-sessions/{session_id}/attempts/{attempt_id}/explain-error` | 最近 Attempt 有错误或失败测试 | `ErrorFeedbackPane` |
-| 检查解释 | `POST /api/learning-sessions/{session_id}/attempts/{attempt_id}/check-explanation` | 有 `attempt_id` 和用户解释 | `ExplanationCheckPanel` |
-| 打开笔记 | 打开 `NoteDrawer` | 当前会话可追溯到知识点 | 当前知识点 Markdown 笔记 |
-| 结束会话 | `POST /api/learning-sessions/{session_id}/finish` | 有 active session | 返回摘要与 `next_entry_point` |
-
-学习页所有会话写入请求（message、run、submit、hint、explain-error、check-explanation）都必须在 JSON body 中携带当前 active `user_id`；跨用户 session mismatch 由后端返回 `SESSION_NOT_FOUND`，桌面端只展示稳定错误码和消息。
-
-### 生成式运行反馈边界
-
-`GeneratedRuntimeFeedback` 位于对话生成的练习卡片内，必须把不同反馈拆开：
-
-| 区域 | 展示内容 | 不展示内容 |
-|---|---|---|
-| `PreviewPane` | JS/HTML/CSS 实时预览、DOM 断言摘要、console 输出 | Python stdout、隐藏测试细节 |
-| `StdoutPane` | Python stdout、stderr、进程退出状态 | DOM 预览 |
-| `TestResultPane` | 可见测试、隐藏测试数量摘要、通过率、失败用例名称 | 隐藏测试源码或完整答案 |
-| `ErrorFeedbackPane` | `missing_toolchain`、`compile_error`、`runtime_error`、`timeout`、`test_failure`、`unsupported`、`error_cause`、`fix_suggestion` | 最终评分替代品 |
-| `ExplanationCheckPanel` | 用户解释输入、`result`、`follow_up_required`、反馈 | 长篇聊天式追问 |
-
-错误反馈区必须区分三类来源：
-
-- runner 事实：`runtime_status`、`stdout`、`stderr`、`test_results`、`error_message`
-- Agent 解释：`error_cause`、`explanation`、`fix_suggestion`
-- 评分结果：`result`、`score_breakdown`、`weak_points`、`fsrs_rating`
-
-运行或提交接口成功返回后，桌面端必须基于后端返回的 `RunExerciseResponse` / `SubmitExerciseResponse` 追加一条短 Agent 对话反馈，避免练习卡片已更新但对话区停留在上一条提问。该反馈是确定性 UI 文案，不额外调用模型，也不能本地计算评分或调度结论。
-
-### 语言运行能力分层
-
-| `runtime_tier` | 技术范围 | 前端能力 | API 依赖 | 第一版限制 |
-|---|---|---|---|---|
-| `browser_preview` | JS / HTML / CSS | 实时预览、console 捕获、DOM 断言摘要、可见测试反馈 | `/run`、`/submit`、`/hint`、`/explain-error` | 不支持任意 npm 依赖、不支持多文件项目调试 |
-| `python_stdout_test` | Python | 代码编辑、stdout/stderr、函数测试和可见测试结果 | `/run`、`/submit`、`/hint`、`/explain-error` | 不承诺本地 GUI、网络访问或任意第三方包 |
-| `node_typescript_test` | TypeScript | 代码编辑、stdout/stderr、单文件函数测试 | `/run`、`/submit`、`/hint`、`/explain-error` | 公开路线可用，不支持任意 npm 依赖或多文件项目 |
-| `sql_query_test` | SQL | 查询编辑、SQLite 教学方言测试、stdout/stderr 摘要 | `/run`、`/submit`、`/hint`、`/explain-error` | 公开路线可用，不连接 Aearn PostgreSQL app database |
-| `managed_compiled_test` | Java / Go / C# | 本机 toolchain 状态、编译/运行/测试结果、缺 toolchain/编译错误提示 | `/run`、`/submit`、`/hint`、`/explain-error` | 公开路线可用，只支持单文件或服务端 harness 教学练习；不支持 Maven / Gradle / Go modules / NuGet / `.sln` / 任意项目执行 |
-| `compiled_sandbox_later` | Rust / C++ | 静态阅读、补全练习、能力边界提示 | `/run` 返回 `runtime_status=unsupported` 或不展示运行按钮 | 不提供 L3 编译运行或资源隔离沙箱 |
-
-## 页面 2：`ReviewPage`
-
-### 组件树
-
-```text
-ReviewPage
-  ReviewQueuePanel
-  ReviewExercisePanel
-    ReviewPromptCard
-    ReviewWarmupCard
-    GeneratedCodeExerciseCard
-    ReviewAIPatchPanel
-  ReviewMetricPanel
-    ForgetRiskCard
-    LastReviewCard
-    MasteryCard
-    NextDueAtCard
-    WeakPointsCard
-```
-
-### 初始化与按钮
-
-| 操作 | API | 成功后 |
-|---|---|---|
-| 加载今日复习 | `GET /api/reviews/today?user_id={user_id}` | 展示待复习列表 |
-| 开始复习 | `POST /api/reviews/start` | 展示短热身、`review_stage`、`review_exercise`、`selected_seed_id` 和 `variant_reason` |
-| 提交热身答案 | `POST /api/reviews/{session_id}/warmup-result` | 自由文本提交；可能继续热身、进入一次追问或进入变体练习；不显示 FSRS 变化 |
-| 运行复习练习 | 复用学习会话 `/run` 能力或 review runner | 展示运行结果 |
-| 提交复习结果 | `POST /api/reviews/{session_id}/exercise-result` | 当前卡片内展示即时轻反馈；仅批次完成时展示总结并更新 `fsrs_rating`、`due_at`、`forget_risk` |
-| 下一条 | 刷新列表 | 当前项完成后启用 |
-
-复习页所有 session 写入请求（message、warmup-result、exercise-result）都必须在 JSON body 中携带当前 active `user_id`；跨用户 session mismatch 由后端返回 `SESSION_NOT_FOUND`，不得复用旧用户的 warmup、exercise 或 review conversation 状态。
-
-热身是普通导师对话，不展示“跳过”按钮/入口，也不提示用户输入 `跳过` / `skip`。用户真的输入 `跳过` 或 `skip` 时，桌面端仍按普通自由文本发送 `action=answer`，不转换成后端隐藏兼容的 `action=skip`。后端返回 `off_topic` 时，第一次在同一热身问题上展示模型生成的拉回提醒；第二次偏航或仍无法给出可用回答时进入带引导的变体练习。若拉回提醒两次模型生成都不可用、非法或被安全规则拦截，前端展示 recoverable `MODEL_UNAVAILABLE`，保留当前热身输入，不展示固定模板兜底。
-
-`review_ai_patch` 题型不展示代码编辑提交框，而展示结构化审核表单：`verdict`、`evidence`、`knowledge_point_risk`、`next_action`。提交前必须要求用户填写证据和风险说明；前端只做必填校验，不本地计算 `score_breakdown`、`fsrs_rating`、`due_at` 或 `forget_risk`。
-
-### 状态
-
-- empty：今日无待复习项，提示继续学习或查看历史表现。
-- loading：列表加载、seed bank rescue、变体生成、热身提交和复习提交均显示局部 skeleton；首次加载可 skeleton，后台刷新保留旧卡片。
-- warmup：展示短热身问题和自由文本回答输入；不展示“跳过热身”“热身阶段”或“我记得 / 不太确定 / 完全忘了”等机械选项，阶段由后端根据用户回答判定。
-- warmup_repair：热身错误或不明确后最多展示一次自然追问；首次 `off_topic` 展示模型生成的拉回提醒并保持当前热身，不叠加“短修正 / 再修正”这类流程文案。
-- variant_practice：展示 `code_blank`、`fix_bug`、`explain_code`、`implement_function` 或 `review_ai_patch` 变体题；正式练习保持一题一卡，每题提交后在该卡片内显示即时轻反馈，最终批次完成后再展示总结。
-- error：队列加载失败不影响工作台；seed bank rescue 失败展示 `REVIEW_SEED_BANK_GENERATION_FAILED` 和重试入口；提交失败不得把复习项标记完成。
-- disabled：未选择复习项时禁用运行/提交。
-- confirm：退出未提交复习时确认是否保留当前编辑内容。
-
-## 页面 3：`NotesPage`
-
-### 组件树
-
-```text
-NotesPage
-  NotesLanguageTree
-    LanguageGroup
-    KnowledgePointNoteItem
-  MarkdownNoteEditor
-    NoteTitleBar
-    MarkdownTextarea
-    NoteSaveStatus
-  NoteContextPanel
-    KnowledgePointSummaryCard
-    RelatedSessionCard
-    AgentAssistCard
-```
-
-### 核心行为
-
-- 按学习目标语言组织一级标题，按笔记创建时所在学习会话标题组织二级标题。
-- 读取和编辑当前知识点的 Markdown 笔记。
-- 学习会话和复习会话引用同一份知识点笔记。
-- Agent 只能辅助补全笔记，不自动生成完整笔记。
-- 不创建独立复盘草稿、题解草稿或面试讲述草稿流程。
-
-### 按钮行为
-
-| 按钮 | API / 行为 | 约束 |
-|---|---|---|
-| 新建笔记 | `POST /api/notes` | 当前知识点允许创建空笔记 |
-| 保存笔记 | `PATCH /api/notes/{note_id}` | Markdown 内容可为空但必须绑定知识点 |
-| Agent 辅助补全 | 后端笔记辅助能力或会话内 Agent 消息 | 必须基于当前会话、代码、测试结果和用户已有笔记 |
-| 返回学习 | 跳回来源学习或复习会话 | 不丢失未保存内容 |
-
-## 全局组件：`NoteDrawer`
-
-### 组件树
-
-```text
-NoteDrawer
-  NoteDrawerHeader
-  MarkdownNoteEditor
-  AgentAssistNoteAction
-  NoteSaveStatus
-```
-
-### 行为边界
-
-- 学习或复习会话中均可打开，且必须能追溯到当前知识点。
-- 关闭抽屉前自动保存，展示 `未保存`、`保存中`、`已保存` 或 `保存失败`。
-- 保存失败时不静默关闭，必须保留本地编辑内容并提示重试。
-- Agent 可基于当前会话辅助补全笔记，但不得虚构测试结果或替用户生成完整笔记。
-
-## 页面 4：`SettingsPage`
-
-### 组件树
-
-```text
-SettingsPage
-  SettingsCategoryTabs
-  AppearanceSettingsPanel
-  ModelSettingsPanel
-  LearningPreferencePanel
-  ReviewSettingsPanel
-  NotificationSettingsPanel
-  RecordsPrivacyPanel
-  AboutDiagnosticsPanel
-  SettingsActionBar
-```
-
-### 设置分类
-
-| 分类 | 第一版功能 |
-|---|---|
-| 外观 | 主题、视觉密度、侧栏、字号或动效 |
-| 模型设置 | 用户 API 配置、提示模型、错因解释模型、笔记辅助模型 |
-| 学习偏好 | 讲解深度、提示风格、是否鼓励先自己尝试 |
-| 复习 | 高风险阈值、普通打开是否只提示、复习优先策略说明 |
-| 通知设置 | 学习提醒、复习提醒、桌面通知开关 |
-| 记录与隐私 | 展示、导出、清理本地记录；不控制 Attempt 是否写入 |
-| 关于与诊断 | 版本、API base URL、后端状态、runner 状态、诊断日志 |
-
-### API
-
-- 读取：`GET /api/users/{user_id}`
-- 保存：`PATCH /api/users/{user_id}/preferences`
-- 本地用户列表：`GET /api/users`
-- 数据摘要：`GET /api/users/{user_id}/data-summary`
-- 导出：`GET /api/users/{user_id}/export`
-- 重置学习数据：`POST /api/users/{user_id}/reset-data`
-- 删除本地用户：`DELETE /api/users/{user_id}`
-
-### 禁止配置
-
-- 设置页不允许修改后端固定评分规则。
-- 设置页不允许关闭或改变 `Attempt` 必填事实记录。
-- 设置页不允许修改 FSRS 固定规则或直接写入 `due_at`。
-
-### 状态
-
-- dirty：表单修改未保存。
-- saving：保存中禁用重复提交。
-- saved：展示保存成功时间。
-- error：字段级错误优先展示，未知错误进入全局 toast。
-- local_users_loading：加载可切换本地用户列表。
-- data_summary_loading：刷新当前用户本地数据摘要。
-- exporting：导出 learner-safe JSON，导出前后不修改后端数据。
-- resetting：reset 进行中，成功后保留 `userId`、清空 `planId`、清空旧 store 并回到 Onboarding。
-- deleting：delete 进行中，成功后清空当前 bootstrap/store 并回到本地用户选择或 Onboarding。
-
-### `RecordsPrivacyPanel`
-
-- 必须展示当前本地用户、`user_id`、活动计划、最近活动时间和数据摘要计数。
-- 本地用户列表只展示未删除用户；切换用户时先清空当前内存状态，再调用 `GET /api/users/{user_id}`、`GET /api/plans/{plan_id}?user_id={user_id}`、dashboard、resume、notes/review 等事实接口。
-- `export` 通过 `GET /api/users/{user_id}/export` 输出 learner-safe JSON；UI 不显示 hidden tests、solution references、raw prompts 或 provider payloads。
-- `reset` 必须先展示 `data-summary` 预览并二次确认；成功后保留当前用户画像和偏好，清除 `localStorage["aearn.bootstrap"].planId`，回到 onboarding。
-- `delete` 必须先展示 `data-summary` 预览、建议先导出并二次确认；成功后如果删除的是当前用户，清空 `localStorage["aearn.bootstrap"]`。
-- 错误展示必须使用稳定 `error.code` 和 `error.message`，不得以 free-form message 作为业务分支。
-
-## Tauri 与 API 边界
-
-### Tauri 负责
-
-- 窗口创建、窗口尺寸、系统托盘或基础菜单。
-- 本地文件选择、复制到剪贴板、导出用户笔记或诊断日志。
-- 安全存储轻量本地配置，如 API base URL、最近窗口尺寸。
-- 承载 webview/iframe 预览容器和基础 CSP。
-
-### API / 后端负责
-
-- `LearningPlan`、`KnowledgePoint`、`Exercise`、`Attempt`、`ReviewState` 的事实写入。
-- `learning_stage`、`learning_stage_state`、`learning_messages` 和学习历史过滤由后端负责。
-- LangGraph 状态机编排：Onboarding / Learning / Review / Resume / Notes Assist。
-- runner service：运行、测试、stdout/stderr、timeout、unsupported。
-- `code_completion_result` 评分、JSON 校验、FSRS Rating 映射。
-- `due_at`、`forget_risk`、复习队列计算。
+`AppRoute` 只能是 `loading`、`welcome`、`cutover` 或 `tutor`。不存在可由
+客户端直接导航的 legacy route。
+
+## Bootstrap、缓存与服务器权威
+
+### Bootstrap 顺序
+
+1. `useAppStore.bootstrap()` 并行读取 `/health` 和语言课程目录；健康状态只
+   用于显示，不构成服务器准入的替代品。
+2. 读取本地 bootstrap。若没有 `userId`，进入 `welcome`。
+3. 有 `userId` 时，先读取 `GET /api/users/{user_id}`，然后立即写回
+   `{ userId, planId: null }`。
+4. 读取 `GET /api/harness/cutover?user_id=...`，仅由响应 `state` 决定
+   `cutover` 或 `tutor`。
+5. 任何恢复失败都会清除本地 bootstrap，回到 `welcome`。UI 不发送旧
+   dashboard、resume、plan 或 session 恢复请求。
+
+### 本地存储边界
+
+- 可持久化的身份事实只有本地 `userId`；旧 `planId` 一律归一化为 `null`。
+- 切换确认成功后再次写入 `{ userId, planId: null }`，并让工作区重新读取
+  目标状态。
+- local storage 不能证明 cutover，不能保存切换摘要/nonce，不能恢复被删除的
+  legacy 数据，也不能绕过 server gate。
+
+## 页面与组件
+
+| UI 状态 | 主要组件 | 用户可见职责 | 禁止职责 |
+| --- | --- | --- | --- |
+| `loading` | `LoadingScreen` | 显示本地身份/服务器状态读取进度 | 猜测用户是否已切换或恢复旧页面 |
+| `welcome` | `WelcomeScreen` | 收集显示名称并创建本地用户 | 保存模型密钥、provider 或 learning plan |
+| `cutover` | `HarnessCutoverPage` | 显示服务器摘要、阻塞原因、保留项和确认动作 | 选择表、计数、checkpoint 线程或删除范围 |
+| `tutor` | `TutorWorkspacePage` | 对话、状态、SSE、活动/inbox、memory、plan/preference controls | 运行 Graph、执行 learner code、直接写数据库 |
+
+顶层 `App` 只包含应用菜单、API 健康文本、一个不可覆盖的当前入口标签以及
+上述主体。侧栏折叠只能改变布局，不改变 active route 或 server decision。
+
+## 切换页面：`HarnessCutoverPage`
+
+### `summary_ready`
+
+- 显示 `legacy_categories`、`legacy_profile_fields`、可精确归属的 checkpoint
+  数，以及保留的 identity/notification 类别。
+- “刷新摘要”重新请求服务器；确认前摘要变更会返回 stale 错误，用户必须查看
+  新摘要。
+- 确认按钮只在复选框选中且请求未 pending 时可用。
+- `POST /api/harness/cutover/confirm` 必须带服务器已给出的 version、summary
+  version、nonce、hash 和新建的 client action ID。
+
+### blocked / error
+
+- `blocked_target_state` 显示“发现预切换 Tutor 数据”；UI 不提供删除/迁移
+  该数据的快捷入口。
+- `blocked_checkpoint_scope` 显示“无法安全确认历史运行状态归属”；UI 不提供
+  宽泛 checkpoint 清理。
+- 其他错误以公开 `error.code` 和可读 `message` 显示，不渲染后端异常细节。
+
+## Tutor 工作区：`TutorWorkspacePage`
+
+### 主列：对话与 run 状态
+
+- 第一次发送时先创建/恢复 conversation；后续输入根据 active interactive run
+  调用 conversation-input 或 run-input API。
+- Composer 最多 16,000 个字符，可用 Ctrl/⌘+Enter 提交。提交中禁用重复动作，
+  但 active run 下的成功后续输入可被服务端 merge。
+- 时间线只展示 learner input、公开 Tutor message、safe activity/status、确认和
+  public error。最多保留 100 条 UI 条目。
+- 运行摘要显示公开 status、输入 revision 和当前 SSE cursor。它不显示 provider
+  诊断或内部 tool arguments。
+
+### SSE 交互
+
+`useTutorSSE` 是 transport-only hook：它不推断 terminal state，也不请求模型。
+
+- 首次连接不发送 cursor；重连时只发送最后已消费的数字 `Last-Event-ID`。
+- 同一 run 的重复/倒退 ID 被丢弃；保留 512 个已见 ID 防止重复呈现。
+- `done` 和 `error` 是终态；没有 `id` 的 error 不更新 cursor。
+- 自动重连最多两次。`SSE_CURSOR_INVALID`、未知事件或不完整帧显示稳定的
+  `TUTOR_SSE_PROTOCOL_ERROR` / error 入口，而不是把不可信 payload 渲染成 UI。
+
+### 侧列：学习控制
+
+| 面板 | 数据与动作 | UI 边界 |
+| --- | --- | --- |
+| `TutorActivityPanel` | activity、inbox、read、dismiss | 背景建议只以 activity/inbox 呈现，不显示为聊天或系统通知 |
+| `TutorMemoryPanel` | memory、correct、delete | 显示安全 statement/evidence；校正和删除均为有确认的 API 状态变更 |
+| `TutorPlanPreferencesPanel` | plan revision、rollback、memory/proactive preference | 只能回退到直接前驱；只可切换 inferred memory 与暂停主动建议 |
+
+“暂停主动建议”默认显示为可用但未暂停。恢复（`proactive_paused=false`）会恢复该
+用户的 `enabled=true` 偏好；它不会绕过 verified receipt、全局 pause、日预算、
+冷却、并发或熔断器。
+
+## 责任边界
+
+### Desktop 负责
+
+- 本地身份 bootstrap 与失效缓存清理。
+- 请求 JSON/SSE、解析已公开类型、显示 loading/error/retry 状态。
+- 生成客户端 idempotency action ID。
+- 响应式布局、键盘提交、可访问标签和操作反馈。
+
+### API / Harness 负责
+
+- cutover summary、确认、数据删除/验证、runtime gate 和所有持久化事务。
+- 输入 revision、run 预算/lease、Skill/capability/effect validation、provider
+  failure mapping、SSE 顺序和 redaction。
+- activity/inbox/memory/plan/preference 的用户范围和幂等。
+- scheduler、curation、executor 和 provider composition。
 
 ### 前端禁止越界
 
-- 不直接调用 LLM API 生成最终评分。
-- 不本地修改 `fsrs_rating`、`due_at` 或 `ReviewState`。
-- 不根据 warmup 结果、本地测试通过或 `review_ai_patch` 表单内容本地计算 score、FSRS 或复习完成态。
-- 不把本地预览成功当作 `/submit` 通过。
-- 不在 `compiled_sandbox_later`、Rust/C++ 或后端返回 `unsupported` 的练习上展示“可运行/可提交”状态；Java/Go/C# 只有在后端返回 `managed_compiled_test` 且运行状态成功时才可提交。
+- 不根据本地状态把 `cutover` 改成 `tutor`。
+- 不保存、传输或展示 provider key、prompt、reasoning、raw event/trace、
+  hidden tests、reference answers、完整 learner code、shell/SQL/path 或 Docker
+  信息。
+- 不发起 `runner.execute`，不启动 subprocess/worker，不把 proactive activity
+  伪装成聊天消息或桌面通知。
+- 不重新引入旧 Onboarding/Learning/Review/Notes 页、legacy SSE parser 或
+  Graph-specific component。
 
-## 全局状态与错误处理
+## 响应式与可访问性验收
 
-| 状态类型 | 使用位置 | 规范 |
-|---|---|---|
-| loading | 页面初始化、生成计划草稿、运行、提交、笔记辅助补全 | 局部 skeleton 优先，避免整页阻塞 |
-| empty | 无计划、无复习、无笔记 | 给出下一步按钮 |
-| error | API、runner、LLM 输出校验、写库失败 | 显示 `error.code` 和可恢复动作 |
-| disabled | 输入不足、API 离线、runtime unsupported、提交中 | tooltip 或行内说明原因 |
-| confirm | 破坏主干调整、离开未保存笔记、结束未提交会话、清理记录 | 明确后果与取消路径 |
-| stale | 代码修改后旧测试结果仍显示 | 标记“结果来自上一次运行” |
-| autosaving | 知识点 Markdown 笔记 | 展示保存中/已保存/失败重试 |
+- 窄视口下主列与控制列必须可读；Composer 和主要操作不可溢出视口或被侧栏遮挡。
+- 所有可操作控件有可读的 label、disabled/loading 状态和 error/status live
+  region。
+- 键盘可以聚焦并提交 Composer、切换偏好、刷新/确认 cutover、处理 inbox。
+- 服务器离线、cutover blocked、SSE 中断和并发 conflict 均显示公开错误并保留
+  用户仍可安全操作的部分。
 
-## API 到组件映射
+## 相关文档
 
-| API | 主要组件 | 前端使用方式 |
-|---|---|---|
-| `GET /api/dashboard` | `WorkspaceTopStatusBar` | 初始化当前学习、复习提示与恢复入口 |
-| `POST /api/onboarding/messages` | `OnboardingPage`、`GeneratedLearningRouteCard` | 多轮引导；信息足够时流式输出 `show_learning_route` 卡片 |
-| `POST /api/onboarding/{session_id}/confirm_plan` | `GeneratedLearningRouteCard` | 仅由最新卡片的 `开始学习` 确认正式计划 |
-| `PATCH /api/plans/{plan_id}/modules/{module_id}` | `RoutePanel` | 跳过、替换、调整模块 |
-| `POST /api/learning-sessions/start` | `LearningWorkspacePage`、`GeneratedConceptIntroCard` | 创建或恢复学习会话；概念阶段允许 `exercise=null`，新会话返回持久化 `initial_tool_calls` |
-| `POST /api/learning-sessions/{session_id}/messages` | `ConversationTimeline`、`CompactConceptCheckFeedback`、`GeneratedCodeExerciseCard`、`GeneratedLearningHistoryCard` | 概念判断、修正追问、练习确认和学习页工具卡片 |
-| `GET /api/learning-sessions/history` | `GeneratedLearningHistoryCard` | 按知识点读取所有学习页会话历史，不包含建档页或复习页 |
-| `POST /api/learning-sessions/{session_id}/exercises/{exercise_id}/run` | `RunActionBar`、`GeneratedRuntimeFeedback` | 展示运行、预览或测试反馈；前端不暴露内部 Attempt 类型 |
-| `POST /api/learning-sessions/{session_id}/exercises/{exercise_id}/submit` | `RunActionBar`、`ExplanationCheckPanel` | 获取 `code_completion_result`；前端不暴露内部 Attempt 类型 |
-| `POST /api/learning-sessions/{session_id}/exercises/{exercise_id}/hint` | `AssistantSidePanel` | 获取分层提示 |
-| `POST /api/learning-sessions/{session_id}/attempts/{attempt_id}/explain-error` | `ErrorFeedbackPane` | 获取错因解释 |
-| `POST /api/learning-sessions/{session_id}/attempts/{attempt_id}/check-explanation` | `ExplanationCheckPanel` | 检查用户解释 |
-| `GET /api/reviews/today` | `ReviewQueuePanel` | 获取待复习列表 |
-| `POST /api/reviews/start` | `ReviewWarmupCard`、`ReviewExercisePanel` | 创建或恢复复习会话；渲染热身、阶段状态、seed 变体和 rescue 错误 |
-| `POST /api/reviews/{session_id}/warmup-result` | `ReviewWarmupCard`、`ReviewExercisePanel` | 提交热身自由文本，展示模型判断、追问或偏航拉回；不更新 FSRS 展示 |
-| `POST /api/reviews/{session_id}/exercise-result` | `ReviewAIPatchPanel`、`ReviewMetricPanel` | 提交变体练习或 AI 补丁审核；中间题只更新当前卡片反馈，最终批次完成后才更新 FSRS 展示 |
-| `GET /api/notes` | `NotesPage`、`NoteDrawer` | 读取知识点 Markdown 笔记 |
-| `POST /api/notes` | `NotesPage`、`NoteDrawer` | 创建知识点笔记 |
-| `PATCH /api/notes/{note_id}` | `NotesPage`、`NoteDrawer` | 保存知识点笔记 |
-
-除明确只读查询外，所有用户上下文 API helper 必须从当前 app store 读取 active `user.id` 并传入请求；切换本地用户时先清空旧 store，再用新 `user_id` 重新拉取事实，不能只依赖旧 `session_id`、`plan_id` 或 `note_id`。
-
-## 完成标准
-
-- 五个一级页面均有组件树、核心按钮、状态与 API 边界：Onboarding、Learning、Review、Notes、Settings。
-- 工作台明确对话生成式代码编辑器、实时预览、stdout/test、错误反馈区边界。
-- JS/HTML/CSS、Python、TypeScript、SQL、Java/Go/C# 的公开路线和运行能力分层不会误导用户，C++/Rust 会明确显示暂不支持。
-- loading、empty、error、disabled、confirm、stale、autosaving 状态均有统一处理。
-- 前端不会越权承担评分、FSRS 或 LangGraph 状态机职责。
-- 复习页能展示短热身、热身修正、seed rescue 失败、五类核心复习题型和 `review_ai_patch` 结构化提交。
+- [用户流程](./user-flows.md)
+- [Tutor Harness Runtime](../architecture/tutor-harness-runtime.md)
+- [API 与 SSE 契约](../architecture/api-contract.md)
+- [验收计划](../qa/acceptance-test-plan.md)

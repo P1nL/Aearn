@@ -1,3 +1,10 @@
+> **Historical archive — superseded on 2026-07-29.** This is a dated record of
+> the retired OpenAI Agents SDK release gate. It is not current provider,
+> dependency, API, Desktop, or release evidence. Statements below preserve
+> their original historical context. For current behavior, read
+> [Tutor Harness Runtime](../../architecture/tutor-harness-runtime.md) and the
+> [release-readiness ledger](../../qa/tutor-harness-release-readiness.md).
+
 # SDK Agent Release Readiness
 
 日期：2026-05-24
