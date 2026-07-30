@@ -744,3 +744,41 @@ Implemented the server-authoritative per-user cutover gate, verified legacy clea
 ### Next Steps
 
 - None - task complete
+
+
+## Session 82: Complete Tutor Harness integration and legacy retirement
+
+**Date**: 2026-07-30
+**Task**: Complete Tutor Harness integration and legacy retirement
+**Branch**: `main`
+
+### Summary
+
+Completed Child 08: activated verified-only proactive delivery, physically retired legacy Graph and SDK runtime paths, published the current Tutor Harness contract, and passed the final sequential verification matrix.
+
+### Main Changes
+
+- Activated the verified-only proactive default path with per-user cutover admission, bounded daily/concurrent delivery, and learner-safe activity/inbox effects.
+- Retired active Graph/router/SDK runtime, legacy Desktop flows, obsolete worker paths, and direct dependency pins after the caller audit was clean.
+- Published the current Tutor Harness architecture, release-readiness ledger, historical-document archive, and cross-layer Trellis quality guidance.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `469ab8c` | (see git log) |
+| `4d9c90b` | (see git log) |
+
+### Testing
+
+- [OK] API: 275 passed; `ruff check .`; `python -m mypy app` (99 source files); and `uv lock --check`.
+- [OK] Executor: 9 passed; Desktop: `pnpm --dir .\aearn desktop:check`.
+- [OK] Trellis task validation, current-document link audit, scoped legacy/dependency audit, and `git diff --check`.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
