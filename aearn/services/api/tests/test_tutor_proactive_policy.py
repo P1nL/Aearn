@@ -13,6 +13,7 @@ from app.services.tutor.proactive import (
     ProactiveRunComposition,
     ProactiveRunReservation,
     TutorProactiveCandidate,
+    TutorProactiveSchedulerConfig,
     TutorRunLoopProactiveExecutor,
 )
 
@@ -63,6 +64,18 @@ def _candidate() -> TutorProactiveCandidate:
         run_started_at=None,
         terminal_at=None,
     )
+
+
+def test_default_proactive_config_is_bounded_and_active_only_for_verified_users() -> None:
+    config = TutorProactiveSchedulerConfig()
+
+    assert config.enabled is True
+    assert config.hard_paused is False
+    assert config.cutover_eligible is True
+    assert config.proactive_daily_budget == 1
+    assert config.proactive_concurrency_limit == 1
+    assert config.inferred_memory_enabled is False
+    assert config.curation_daily_budget == 0
 
 
 def test_tutor_run_origin_is_required_and_unknown_values_fail_closed() -> None:
@@ -176,18 +189,22 @@ def test_proactive_executor_reserves_then_runs_only_the_existing_finite_loop() -
 
 
 
-def test_legacy_graph_route_streaming_and_desktop_surfaces_do_not_compose_proactive_harness_work() -> None:
+def test_retired_graph_route_streaming_and_desktop_sources_are_absent() -> None:
     api_root = Path(__file__).resolve().parents[1]
-    legacy_roots = (
-        api_root / "app" / "agents" / "graphs",
-        api_root / "app" / "routes",
-        api_root / "app" / "services" / "streaming",
-        api_root.parent.parent / "apps" / "desktop" / "src",
+    retired_source_paths = (
+        api_root / "app" / "agents" / "graphs" / "learning_graph.py",
+        api_root / "app" / "agents" / "graphs" / "onboarding_graph.py",
+        api_root / "app" / "agents" / "graphs" / "review_graph.py",
+        api_root / "app" / "routes" / "dashboard.py",
+        api_root / "app" / "routes" / "learning_sessions.py",
+        api_root / "app" / "routes" / "notes.py",
+        api_root / "app" / "routes" / "onboarding.py",
+        api_root / "app" / "routes" / "plans.py",
+        api_root / "app" / "routes" / "reviews.py",
+        api_root / "app" / "services" / "streaming" / "".join(("graph", "_event_stream.py")),
+        api_root.parent.parent / "apps" / "desktop" / "src" / "pages" / "LearningWorkspacePage.tsx",
+        api_root.parent.parent / "apps" / "desktop" / "src" / "pages" / "OnboardingPage.tsx",
+        api_root.parent.parent / "apps" / "desktop" / "src" / "pages" / "ReviewPage.tsx",
+        api_root.parent.parent / "apps" / "desktop" / "src" / "pages" / "NotesPage.tsx",
     )
-    forbidden = ("app.services.tutor.proactive", "tutor.proactive.", "TUTOR_PROACTIVE_SCHEDULER")
-
-    for root in legacy_roots:
-        for pattern in ("*.py", "*.ts", "*.tsx"):
-            for source_path in root.rglob(pattern):
-                source = source_path.read_text(encoding="utf-8")
-                assert not any(marker in source for marker in forbidden), source_path
+    assert all(not path.exists() for path in retired_source_paths), retired_source_paths

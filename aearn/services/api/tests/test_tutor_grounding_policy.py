@@ -23,6 +23,10 @@ from app.services.tutor.skill_selection import InMemoryTutorSkillSelectionStore,
 NOW = datetime(2026, 7, 27, tzinfo=UTC)
 
 
+def _grounding_skill(catalog):
+    return next(skill for skill in catalog.skills if skill.reference.key == "tutor.registry-grounding@1.0.0")
+
+
 def _run() -> TutorRunSnapshot:
     return TutorRunSnapshot(
         run_id="grounding-run",
@@ -45,13 +49,14 @@ def _policy(
     consent_granted: bool = True,
     runtime_available: bool = True,
 ) -> CapabilityPolicyContext:
+    skill = _grounding_skill(catalog)
     return CapabilityPolicyContext(
         run_id=run.run_id,
         user_id=run.user_id,
         origin=run.origin,
         input_revision=run.input_revision,
         catalog_digest=catalog.digest,
-        eligible_skill_references=(catalog.skills[0].reference,),
+        eligible_skill_references=(skill.reference,),
         eligible_capability_ids=("grounding.retrieve",),
         granted_policy_tags=("registry-grounding",),
         allowed_origins=("interactive",),
@@ -64,7 +69,7 @@ def _policy(
 
 def _store_with_selection(catalog, run: TutorRunSnapshot) -> InMemoryTutorSkillSelectionStore:
     store = InMemoryTutorSkillSelectionStore()
-    skill = catalog.skills[0]
+    skill = _grounding_skill(catalog)
     store.record(
         run_id=run.run_id,
         input_revision=run.input_revision,

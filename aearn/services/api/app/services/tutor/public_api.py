@@ -574,7 +574,7 @@ class TutorPublicService:
             self._proactive.upsert_preference(
                 preference=TutorProactivePreference(
                     user_id=user_id,
-                    enabled=current.enabled,
+                    enabled=True if not proactive_paused else current.enabled,
                     hard_paused=proactive_paused,
                     policy_version=current.policy_version,
                     setting_version=f"tutor_proactive_setting:{version_hash[:20]}",

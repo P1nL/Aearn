@@ -2,7 +2,6 @@ from fastapi import APIRouter, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 
-from app.core.config import get_settings
 from app.core.errors import error_response
 from app.db.connection import connect
 from app.models.onboarding import UserCreateRequest
@@ -200,6 +199,4 @@ async def _json_body(request: Request) -> dict[str, object]:
 def _legacy_reset_gate_error(user_id: str) -> CutoverError | None:
     """Keep ordinary reset from becoming an implicit cutover confirmation."""
 
-    if not get_settings().tutor_harness_enabled:
-        return None
     return runtime_gate_error(user_id=user_id)

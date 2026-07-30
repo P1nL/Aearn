@@ -10,8 +10,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app.routes.tutor as tutor_route
-import app.routes.harness_cutover as harness_cutover_route
-import app.services.tutor.cutover as cutover_service
 from app.agents.harness.contracts import (
     TutorDecision,
     TutorProviderResult,
@@ -45,10 +43,8 @@ def tutor_client() -> Iterator[TestClient]:
 
 @pytest.fixture
 def tutor_api_settings(monkeypatch: pytest.MonkeyPatch) -> Settings:
-    settings = Settings(tutor_harness_enabled=True, llm_type="disabled")
+    settings = Settings(llm_type="disabled")
     monkeypatch.setattr(tutor_route, "get_settings", lambda: settings)
-    monkeypatch.setattr(harness_cutover_route, "get_settings", lambda: settings)
-    monkeypatch.setattr(cutover_service, "get_settings", lambda: settings)
     return settings
 
 

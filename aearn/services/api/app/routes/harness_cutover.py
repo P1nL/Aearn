@@ -2,7 +2,6 @@ from fastapi import APIRouter, Query, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 
-from app.core.config import get_settings
 from app.core.errors import error_response
 from app.db.connection import connect
 from app.models.tutor import HarnessCutoverConfirmRequest
@@ -16,10 +15,7 @@ router = APIRouter(prefix="/api/harness", tags=["harness-cutover"])
 def read_harness_cutover(request: Request, user_id: str = Query(min_length=1)) -> JSONResponse:
     with connect() as conn:
         try:
-            response = HarnessCutoverService(conn).get_decision(
-                user_id=user_id,
-                rollout_enabled=get_settings().tutor_harness_enabled,
-            )
+            response = HarnessCutoverService(conn).get_decision(user_id=user_id)
         except CutoverError as exc:
             conn.rollback()
             return _cutover_error(request, exc)
@@ -39,7 +35,6 @@ def confirm_harness_cutover(payload: HarnessCutoverConfirmRequest, request: Requ
                 summary_hash=payload.summary_hash,
                 client_action_id=payload.client_action_id,
                 confirm=payload.confirm,
-                rollout_enabled=get_settings().tutor_harness_enabled,
             )
         except CutoverError as exc:
             conn.rollback()

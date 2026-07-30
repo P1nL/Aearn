@@ -62,29 +62,23 @@ class Settings(BaseModel):
     real_execution_enabled: bool = Field(
         default_factory=lambda: _env_str("REAL_EXECUTION_ENABLED", "true").lower() in ("true", "1", "yes")
     )
-    langgraph_enabled: bool = Field(
-        default_factory=lambda: _env_str("LANGGRAPH_ENABLED", "false").lower() in ("true", "1", "yes")
-    )
-    tutor_harness_enabled: bool = Field(
-        default_factory=lambda: _env_str("TUTOR_HARNESS_ENABLED", "false").lower() in ("true", "1", "yes")
-    )
     tutor_executor_enabled: bool = Field(
         default_factory=lambda: _env_str("TUTOR_EXECUTOR_ENABLED", "false").lower() in ("true", "1", "yes")
     )
     tutor_proactive_scheduler_enabled: bool = Field(
-        default_factory=lambda: _env_bool("TUTOR_PROACTIVE_SCHEDULER_ENABLED", "false")
+        default_factory=lambda: _env_bool("TUTOR_PROACTIVE_SCHEDULER_ENABLED", "true")
     )
     tutor_background_hard_paused: bool = Field(
-        default_factory=lambda: _env_bool("TUTOR_BACKGROUND_HARD_PAUSED", "true")
+        default_factory=lambda: _env_bool("TUTOR_BACKGROUND_HARD_PAUSED", "false")
     )
     tutor_proactive_cutover_eligible: bool = Field(
-        default_factory=lambda: _env_bool("TUTOR_PROACTIVE_CUTOVER_ELIGIBLE", "false")
+        default_factory=lambda: _env_bool("TUTOR_PROACTIVE_CUTOVER_ELIGIBLE", "true")
     )
     tutor_inferred_memory_enabled: bool = Field(
         default_factory=lambda: _env_bool("TUTOR_INFERRED_MEMORY_ENABLED", "false")
     )
     tutor_proactive_daily_budget: int = Field(
-        default_factory=lambda: _env_int("TUTOR_PROACTIVE_DAILY_BUDGET", "0")
+        default_factory=lambda: _env_int("TUTOR_PROACTIVE_DAILY_BUDGET", "1")
     )
     tutor_curation_daily_budget: int = Field(
         default_factory=lambda: _env_int("TUTOR_CURATION_DAILY_BUDGET", "0")
@@ -93,10 +87,10 @@ class Settings(BaseModel):
         default_factory=lambda: _env_int("TUTOR_CURATION_MAX_OUTPUT_TOKENS", "0"), ge=0
     )
     tutor_proactive_concurrency_limit: int = Field(
-        default_factory=lambda: _env_int("TUTOR_PROACTIVE_CONCURRENCY_LIMIT", "0")
+        default_factory=lambda: _env_int("TUTOR_PROACTIVE_CONCURRENCY_LIMIT", "1")
     )
     tutor_curation_concurrency_limit: int = Field(
-        default_factory=lambda: _env_int("TUTOR_CURATION_CONCURRENCY_LIMIT", "0")
+        default_factory=lambda: _env_int("TUTOR_CURATION_CONCURRENCY_LIMIT", "1")
     )
     tutor_proactive_cooldown_seconds: int = Field(
         default_factory=lambda: _env_int("TUTOR_PROACTIVE_COOLDOWN_SECONDS", "86400")

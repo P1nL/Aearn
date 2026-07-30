@@ -139,7 +139,7 @@ export function TutorPlanPreferencesPanel({
               />
               <span>
                 <strong>暂停主动建议</strong>
-                <small>{preferences.proactive_enabled ? "暂停后，系统不会主动生成新的学习建议。" : "主动建议尚未对当前学习流程开放。"}</small>
+                <small>{preferences.proactive_enabled ? (preferences.proactive_paused ? "主动建议默认开启；当前已暂停，恢复后会以收件箱方式提供下一步建议。" : "主动建议默认开启；你可以随时暂停，建议只会出现在活动记录和收件箱中。") : "主动建议当前被服务端安全策略关闭。"}</small>
               </span>
             </label>
           </div>

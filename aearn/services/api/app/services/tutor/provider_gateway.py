@@ -21,8 +21,8 @@ from app.agents.harness.contracts import (
     TutorTerminalOutcome,
     payload_fields_from_mapping,
 )
-from app.agents.runtime.guardrails import assert_safe_teaching_output
 from app.core.config import Settings, get_settings
+from app.core.teaching_safety import check_teaching_output
 from app.services.llm.llm_client import (
     LLMCallError,
     LLMConfigurationError,
@@ -44,6 +44,12 @@ class TutorJsonClient(Protocol):
         max_tokens: int | None = None,
         timeout_seconds: float | None = None,
     ) -> LLMJsonResponse: ...
+
+
+def _assert_safe_tutor_output(text: str) -> None:
+    check = check_teaching_output(text)
+    if check.blocked:
+        raise LLMInvalidResponseError(f"Teaching output guardrail blocked {check.category}")
 
 
 _FORBIDDEN_NESTED_PAYLOAD_FIELD_NAMES = frozenset(
@@ -83,8 +89,8 @@ def _validate_nested_payload_fields(
             raise ValueError(f"{label} contain an internal-only field")
         if isinstance(raw_value, list) and (len(raw_value) > 4 or any(len(item) > 120 for item in raw_value)):
             raise ValueError(f"{label} contain an oversized list")
-        assert_safe_teaching_output(raw_key)
-        assert_safe_teaching_output(json.dumps(raw_value, ensure_ascii=False, sort_keys=True))
+        _assert_safe_tutor_output(raw_key)
+        _assert_safe_tutor_output(json.dumps(raw_value, ensure_ascii=False, sort_keys=True))
     return value
 
 
@@ -200,7 +206,7 @@ def parse_tutor_decision(payload: Mapping[str, object]) -> TutorDecision:
     if envelope.checkpoint_reason is TutorCheckpointReason.TERMINAL:
         raise LLMInvalidResponseError("Tutor decision cannot request a terminal checkpoint reason")
     if envelope.public_message is not None:
-        assert_safe_teaching_output(envelope.public_message)
+        _assert_safe_tutor_output(envelope.public_message)
 
     skill_references = tuple(
         TutorSkillReference(skill_id=item.skill_id, version=item.version)
@@ -258,14 +264,14 @@ def _assert_payload_text_safe(
     effect_proposals: tuple[TutorEffectProposal, ...],
 ) -> None:
     for request in capability_requests:
-        assert_safe_teaching_output(request.request_id)
-        assert_safe_teaching_output(request.capability_id)
+        _assert_safe_tutor_output(request.request_id)
+        _assert_safe_tutor_output(request.capability_id)
         for field in request.arguments:
-            assert_safe_teaching_output(field.key)
-            assert_safe_teaching_output(field.value)
+            _assert_safe_tutor_output(field.key)
+            _assert_safe_tutor_output(field.value)
     for proposal in effect_proposals:
-        assert_safe_teaching_output(proposal.effect_id)
-        assert_safe_teaching_output(proposal.effect_type)
+        _assert_safe_tutor_output(proposal.effect_id)
+        _assert_safe_tutor_output(proposal.effect_type)
         for field in proposal.payload:
-            assert_safe_teaching_output(field.key)
-            assert_safe_teaching_output(field.value)
+            _assert_safe_tutor_output(field.key)
+            _assert_safe_tutor_output(field.value)

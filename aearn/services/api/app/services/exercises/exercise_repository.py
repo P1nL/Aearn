@@ -7,10 +7,11 @@ from typing import Any, cast
 
 from psycopg import Connection
 
-from aearn_worker.review_seed_bank_core import GENERATOR_VERSION
-
 from app.services.exercises import adaptive_exercise_service
 from app.services.curriculum.teaching_chunks import index_current_knowledge_point_chunks
+
+
+REVIEW_SEED_GENERATOR_VERSION = "review_candidate_pool_v1"
 
 
 def get_or_create_exercise_for_knowledge_point(
@@ -1054,7 +1055,7 @@ def _exercise_template_from_review_seed(
         **dict(seed_metadata),
         "review_seed_id": seed_id,
         "target_misconception": seed.get("target_misconception"),
-        "seed_generator_version": GENERATOR_VERSION,
+        "seed_generator_version": REVIEW_SEED_GENERATOR_VERSION,
     }
     starter_code = str(seed.get("starter_code") or "")
     code_blanks = _review_seed_code_blanks(seed)

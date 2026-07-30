@@ -10,17 +10,15 @@ import hashlib
 import json
 import re
 import secrets
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Literal
 from uuid import UUID
 
-from fastapi import Request
 from psycopg import Connection
 
-from app.core.config import get_settings
 from app.db.connection import connect
 
 
@@ -146,17 +144,10 @@ class HarnessCutoverService:
         self._conn = conn
         self._failure_injector = failure_injector
 
-    def get_decision(self, *, user_id: str, rollout_enabled: bool) -> dict[str, object]:
+    def get_decision(self, *, user_id: str) -> dict[str, object]:
         normalized_user_id = _uuid_identifier(user_id)
         with self._conn.transaction():
-            self._lock_active_user(normalized_user_id, for_update=rollout_enabled)
-            if not rollout_enabled:
-                return {
-                    "cutover_version": CUTOVER_VERSION,
-                    "rollout_active": False,
-                    "state": "rollout_inactive",
-                    "next_action": "continue_legacy",
-                }
+            self._lock_active_user(normalized_user_id, for_update=True)
             record = self._ensure_record_locked(normalized_user_id)
             if str(record["state"]) == "verified":
                 return self._verified_response(record, idempotent_replayed=False)
@@ -201,7 +192,6 @@ class HarnessCutoverService:
         summary_hash: str,
         client_action_id: str,
         confirm: bool,
-        rollout_enabled: bool,
     ) -> dict[str, object]:
         normalized_user_id = _uuid_identifier(user_id)
         normalized_key = _idempotency_key(client_action_id)
@@ -219,14 +209,6 @@ class HarnessCutoverService:
                 status_code=400,
                 recoverable=False,
                 details={"field": "confirm"},
-            )
-        if not rollout_enabled:
-            raise CutoverError(
-                "CUTOVER_REQUIRED",
-                "Tutor Harness 尚未进入受控切换阶段。",
-                status_code=409,
-                recoverable=False,
-                details={"feature": "tutor_harness"},
             )
         request_hash = _summary_hash(
             {
@@ -277,21 +259,6 @@ class HarnessCutoverService:
             record = self._runtime_record_locked(normalized_user_id)
             if record is not None and str(record["state"]) == "verified":
                 return
-            if record is None:
-                inventory = self._inventory(normalized_user_id)
-                if inventory.has_target_state:
-                    raise self._gate_error("CUTOVER_TARGET_STATE_PRESENT")
-                if inventory.checkpoints.state == "unresolved":
-                    raise self._gate_error("CUTOVER_CHECKPOINT_SCOPE_UNRESOLVED")
-                raise self._gate_error("CUTOVER_REQUIRED")
-            self._raise_state_gate_error(str(record["state"]))
-
-    def assert_legacy_runtime_denied(self, *, user_id: str) -> None:
-        """Deny every legacy runtime path after rollout, including verified users."""
-
-        normalized_user_id = _uuid_identifier(user_id)
-        with self._conn.transaction():
-            record = self._runtime_record_locked(normalized_user_id)
             if record is None:
                 inventory = self._inventory(normalized_user_id)
                 if inventory.has_target_state:
@@ -839,48 +806,6 @@ def runtime_gate_error(*, user_id: str) -> CutoverError | None:
     return None
 
 
-async def require_legacy_runtime(request: Request) -> AsyncIterator[None]:
-    """Preserve legacy behavior while off; deny every legacy path after rollout."""
-
-    if not get_settings().tutor_harness_enabled:
-        yield
-        return
-    user_id = await _request_user_id(request)
-    if user_id is None or not _is_uuid(user_id):
-        raise CutoverRuntimeBlocked(
-            CutoverError(
-                "CUTOVER_REQUIRED",
-                "需要先完成受控切换，当前学习入口暂不可用。",
-                status_code=409,
-                recoverable=False,
-                details={"cutover_version": CUTOVER_VERSION},
-            )
-        )
-    with connect() as conn:
-        try:
-            HarnessCutoverService(conn).assert_legacy_runtime_denied(user_id=user_id)
-        except CutoverError as exc:
-            conn.rollback()
-            raise CutoverRuntimeBlocked(exc) from exc
-    raise RuntimeError("legacy cutover gate unexpectedly allowed a request")
-
-
-async def _request_user_id(request: Request) -> str | None:
-    query_value = request.query_params.get("user_id")
-    if query_value:
-        return query_value
-    if request.method.upper() in {"GET", "HEAD", "OPTIONS"}:
-        return None
-    try:
-        payload = await request.json()
-    except Exception:
-        return None
-    if not isinstance(payload, Mapping):
-        return None
-    value = payload.get("user_id")
-    return value if isinstance(value, str) and value else None
-
-
 def _uuid_identifier(value: str) -> str:
     try:
         return str(UUID(str(value)))
@@ -891,14 +816,6 @@ def _uuid_identifier(value: str) -> str:
             status_code=400,
             details={"field": "user_id"},
         ) from exc
-
-
-def _is_uuid(value: str) -> bool:
-    try:
-        UUID(value)
-    except (TypeError, ValueError):
-        return False
-    return True
 
 
 def _idempotency_key(value: str) -> str:

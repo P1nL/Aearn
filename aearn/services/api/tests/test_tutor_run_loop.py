@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 from app.agents.harness.context_builder import TutorContextBuilder, TutorContextBuilderConfig
 from app.agents.harness.contracts import (
     CONTEXT_SECTION_PRIORITY,
@@ -26,7 +28,6 @@ from app.agents.harness.contracts import (
     TutorRunStatus,
     TutorTerminalOutcome,
 )
-from app.core.config import Settings
 from app.services.tutor.ports import (
     AllowTutorDecisionGate,
     DefaultDenyCapabilityGateway,
@@ -404,32 +405,62 @@ def test_lifecycle_conflict_returns_nonpersistent_lease_unavailable_without_retr
     assert publisher.requests == []
 
 
-def test_feature_disabled_service_uses_default_false_without_leasing_or_model_call(monkeypatch) -> None:
-    monkeypatch.delenv("TUTOR_HARNESS_ENABLED", raising=False)
-    settings = Settings()
+def test_harness_service_runs_without_a_feature_flag(monkeypatch: pytest.MonkeyPatch) -> None:
     store = InMemoryTutorRunStore([_snapshot()])
     provider = SequenceTutorProvider([])
     loop, _ = _loop(store=store, contexts={}, provider=provider)
-    service = TutorHarnessService.from_settings(loop=loop, settings=settings)
+    expected = TutorRunResult(
+        run_id="run-loop",
+        status=TutorRunStatus.COMPLETED,
+        input_revision=0,
+        iteration_count=0,
+        model_call_count=0,
+        capability_call_count=0,
+        effect_count=0,
+    )
+    calls: list[tuple[str, str]] = []
+
+    def delegated_run(*, run_id: str, lease_owner_id: str) -> TutorRunResult:
+        calls.append((run_id, lease_owner_id))
+        return expected
+
+    monkeypatch.setattr(loop, "run", delegated_run)
+    service = TutorHarnessService.enabled(loop=loop)
 
     result = service.run(run_id="run-loop", lease_owner_id="worker-1")
 
-    assert settings.tutor_harness_enabled is False
-    assert result.status is TutorRunStatus.BLOCKED_POLICY
-    assert result.diagnostic_code == "feature_disabled"
-    assert store.lease_attempts == 0
-    assert provider.calls == []
+    assert result is expected
+    assert calls == [("run-loop", "worker-1")]
 
 
-def test_harness_and_tutor_modules_do_not_depend_on_legacy_graph_route_or_storage_boundaries() -> None:
+def test_harness_and_tutor_modules_do_not_depend_on_retired_runtime_or_storage_boundaries() -> None:
     api_root = Path(__file__).resolve().parents[1]
     files = [
         *sorted((api_root / "app" / "agents" / "harness").glob("*.py")),
         *sorted((api_root / "app" / "services" / "tutor").glob("*.py")),
     ]
+    retired_agent_packages = (
+        "graphs",
+        "learning",
+        "notes",
+        "onboarding",
+        "review",
+        "runtime",
+        "tooling",
+    )
+    retired_source_paths = tuple(
+        api_root / "app" / "agents" / package_name / "__init__.py"
+        for package_name in retired_agent_packages
+    ) + (
+        api_root / "app" / "services" / "streaming" / "".join(("graph", "_event_stream.py")),
+    )
+    assert all(not path.exists() for path in retired_source_paths), retired_source_paths
+
+    retired_module_prefixes = tuple(
+        ".".join(("app", "agents", package_name)) for package_name in retired_agent_packages
+    )
     forbidden = (
-        "app.agents.graphs",
-        "langgraph",
+        "".join(("lang", "graph")),
         "app.routes",
         "app.db",
         "app.services.worker",
@@ -445,23 +476,54 @@ def test_harness_and_tutor_modules_do_not_depend_on_legacy_graph_route_or_storag
             # the target database connection, but never imports legacy Graph,
             # route, streaming, or product-conversation boundaries.
             forbidden_for_path = tuple(marker for marker in forbidden if marker != "app.db")
+        if path.name in {"cutover.py", "interactive.py"}:
+            # Children 06/07 own these target database-backed adapters. Their
+            # explicit database access is allowed; Graph, route, and legacy
+            # conversation dependencies remain forbidden.
+            forbidden_for_path = tuple(marker for marker in forbidden if marker != "app.db")
+        assert not any(marker in source for marker in retired_module_prefixes), path
         assert not any(marker in source for marker in forbidden_for_path), path
 
 
-def test_tutor_feature_flag_is_not_consumed_by_legacy_route_sse_or_desktop_paths() -> None:
+def test_retired_runtime_paths_and_rollout_flags_are_absent() -> None:
     api_root = Path(__file__).resolve().parents[1]
-    legacy_roots = (
-        api_root / "app" / "routes",
-        api_root / "app" / "agents" / "graphs",
-        api_root / "app" / "services" / "streaming",
-        api_root / "app" / "services" / "conversations",
-        api_root.parents[1] / "apps" / "desktop" / "src",
+    retired_source_paths = (
+        *(
+            api_root / "app" / "routes" / filename
+            for filename in (
+                "dashboard.py",
+                "learning_sessions.py",
+                "notes.py",
+                "onboarding.py",
+                "plans.py",
+                "reviews.py",
+            )
+        ),
+        *(
+            api_root / "app" / "services" / "conversations" / filename
+            for filename in (
+                "learning_conversation.py",
+                "onboarding_conversation.py",
+                "review_conversation.py",
+            )
+        ),
+        api_root / "app" / "services" / "streaming" / "".join(("graph", "_event_stream.py")),
+        *(
+            api_root.parents[1] / "apps" / "desktop" / "src" / "pages" / filename
+            for filename in (
+                "LearningWorkspacePage.tsx",
+                "NotesPage.tsx",
+                "OnboardingPage.tsx",
+                "ReviewPage.tsx",
+                "SettingsPage.tsx",
+            )
+        ),
     )
+    assert all(not path.exists() for path in retired_source_paths), retired_source_paths
 
-    for root in legacy_roots:
-        for path in root.rglob("*"):
-            if not path.is_file() or path.suffix not in {".py", ".ts", ".tsx"}:
-                continue
-            source = path.read_text(encoding="utf-8")
-            assert "tutor_harness_enabled" not in source, path
-            assert "TUTOR_HARNESS_ENABLED" not in source, path
+    settings_source = (api_root / "app" / "core" / "config.py").read_text(encoding="utf-8")
+    retired_setting_names = (
+        "_".join(("".join(("lang", "graph")), "enabled")),
+        "_".join(("tutor", "harness", "enabled")),
+    )
+    assert not any(setting_name in settings_source for setting_name in retired_setting_names)

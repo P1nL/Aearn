@@ -37,8 +37,8 @@ from app.agents.harness.contracts import (
     TutorTerminalOutcome,
     payload_mapping_from_fields,
 )
-from app.agents.harness.skill_catalog import SkillCatalogSnapshot
-from app.agents.runtime.agent_runtime_context import sanitize_summary_text
+from app.agents.harness.skill_catalog import CatalogSkillReference, SkillCatalogSnapshot
+from app.core.teaching_safety import sanitize_summary_text
 from app.services.tutor.ports import TutorLifecycleConflict, TutorLifecyclePersistence, TutorRunStore
 from app.services.tutor.safe_projection import TutorSafeProjection
 from app.services.tutor.skill_selection import TutorSkillSelection
@@ -833,6 +833,41 @@ class PostgresTutorRepository:
                 event=event,
                 replayed=False,
             )
+
+    def load_skill_selection(
+        self,
+        *,
+        user_id: str,
+        run_id: str,
+        input_revision: int,
+    ) -> TutorSkillSelection | None:
+        if input_revision < 0:
+            raise ValueError("Skill selection revision must be non-negative")
+        row = self._conn.execute(
+            """
+            SELECT selections.skill_id, selections.skill_version,
+                   selections.manifest_hash, selections.instruction_hash
+            FROM tutor_run_skill_selections AS selections
+            JOIN tutor_runs AS runs ON runs.id = selections.run_id
+            WHERE selections.run_id = %s
+              AND selections.input_revision = %s
+              AND runs.user_id = %s
+            """,
+            (run_id, input_revision, user_id),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            return TutorSkillSelection(
+                reference=CatalogSkillReference(
+                    skill_id=str(row["skill_id"]),
+                    version=str(row["skill_version"]),
+                ),
+                manifest_hash=str(row["manifest_hash"]),
+                instruction_hash=str(row["instruction_hash"]),
+            )
+        except ValueError as exc:
+            raise TutorCatalogEvidenceError("stored Skill selection is invalid") from exc
 
     def record_capability_invocation(
         self,
@@ -2024,6 +2059,35 @@ class PostgresTutorRepository:
     def _trip_failpoint(self, stage: str) -> None:
         if self._failpoint is not None:
             self._failpoint(stage)
+
+
+class PostgresTutorSkillSelectionStore:
+    """Durable exact-Skill evidence adapter shared by catalog gates and effects."""
+
+    def __init__(self, *, repository: PostgresTutorRepository, user_id: str) -> None:
+        self._repository = repository
+        self._user_id = user_id
+
+    def get(self, *, run_id: str, input_revision: int) -> TutorSkillSelection | None:
+        return self._repository.load_skill_selection(
+            user_id=self._user_id,
+            run_id=run_id,
+            input_revision=input_revision,
+        )
+
+    def record(
+        self,
+        *,
+        run_id: str,
+        input_revision: int,
+        selection: TutorSkillSelection,
+    ) -> None:
+        self._repository.record_skill_selection(
+            user_id=self._user_id,
+            run_id=run_id,
+            input_revision=input_revision,
+            selection=selection,
+        )
 
 
 class PostgresTutorLifecycle(TutorLifecyclePersistence):

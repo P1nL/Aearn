@@ -57,18 +57,18 @@ def test_cpp_uses_trusted_de_facto_source_with_disclosure() -> None:
     assert "no single official" in cppreference.notes
 
 
-def test_non_public_languages_gain_docs_without_public_selection_side_effects() -> None:
-    expected_execution_support = {
-        "typescript": True,
-        "go": True,
-        "csharp": True,
-        "rust": False,
-        "sql": True,
+def test_grounding_sources_preserve_current_public_language_capabilities() -> None:
+    expected_capabilities = {
+        "typescript": (True, True),
+        "go": (True, True),
+        "csharp": (True, True),
+        "rust": (False, False),
+        "sql": (True, True),
     }
 
-    for language_id, supports_execution in expected_execution_support.items():
+    for language_id, (enabled_for_public_selection, supports_execution) in expected_capabilities.items():
         capability = require_language_capability(language_id)
 
         assert sources_for_language(language_id)
-        assert capability.enabled_for_public_selection is False
+        assert capability.enabled_for_public_selection is enabled_for_public_selection
         assert capability.supports_execution is supports_execution

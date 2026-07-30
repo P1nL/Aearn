@@ -1,7 +1,6 @@
 # pnpm --dir .\aearn dev：启动 Docker 依赖、bootstrap DB、API、Celery worker、Tauri desktop
 # pnpm --dir .\aearn dev:status：查看状态
 # pnpm --dir .\aearn dev:restart：重启本脚本拉起的进程
-# pnpm --dir .\aearn dev:test-data：重置固定测试用户数据、写入测试数据并启动桌面端
 # pnpm --dir .\aearn dev:stop：停止本脚本拉起的 API/worker/desktop
 param(
   [switch]$Restart,
@@ -9,7 +8,6 @@ param(
   [switch]$Status,
   [switch]$SkipDocker,
   [switch]$SkipBootstrap,
-  [switch]$TestData,
   [switch]$NoWorker,
   [switch]$NoDesktop
 )
@@ -20,7 +18,6 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $AearnDir = Split-Path -Parent $ScriptDir
 $RepoRoot = Split-Path -Parent $AearnDir
 $ApiDir = Join-Path $AearnDir "services\api"
-$DevBootstrapFile = Join-Path $AearnDir "apps\desktop\public\aearn-dev-bootstrap.json"
 $LogDir = Join-Path $AearnDir ".logs"
 $StateFile = Join-Path $LogDir "dev-processes.json"
 $ApiPort = 8001
@@ -287,16 +284,6 @@ if (-not $SkipBootstrap) {
     -FilePath "uv" `
     -ArgumentList @("--directory", $ApiDir, "run", "python", "-m", "app.db.bootstrap") `
     -FailureMessage "database bootstrap failed"
-}
-
-if ($TestData) {
-  Write-Step "resetting and seeding deterministic local test data"
-  Invoke-Checked `
-    -FilePath "uv" `
-    -ArgumentList @("--directory", $ApiDir, "run", "python", "-m", "app.db.seed_test_data", "--bootstrap-file", $DevBootstrapFile) `
-    -FailureMessage "test data seed failed"
-} else {
-  Remove-Item -LiteralPath $DevBootstrapFile -ErrorAction SilentlyContinue
 }
 
 $apiHealthUrl = "http://127.0.0.1:$ApiPort/health"

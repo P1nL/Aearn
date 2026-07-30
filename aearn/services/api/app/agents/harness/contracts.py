@@ -9,8 +9,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Literal, Protocol
 
-from app.agents.runtime.agent_runtime_context import limit_text, sanitize_message_content, sanitize_summary_text
-from app.agents.runtime.redaction import redact_value
+from app.core.teaching_safety import limit_text, redact_value, sanitize_message_content, sanitize_summary_text
 
 
 MAX_TUTOR_IDENTIFIER_LENGTH = 120
