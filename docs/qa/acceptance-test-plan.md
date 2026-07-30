@@ -1,317 +1,167 @@
-# Aearn 测试与验收计划
+# Aearn Tutor Harness 验收计划
 
-日期：2026-05-13  
-状态：Draft V1.1  
-适用范围：Aearn 第一版稳定基线、post-MVP / v1.1 增强、API 契约、Agent 输出质量、FSRS 调度、代码补全验证和前端手工 QA
+**状态：** 当前 integration/QA 契约，2026-07-29。
+**范围：** `07-22-tutor-integration-qa-and-docs` 的 Tutor runtime、cutover、
+Desktop、background scheduler、executor boundary、legacy retirement 与文档一致性。
+**权威来源：** 当前代码/测试/schema；实测命令结果进入
+[Release Readiness Ledger](./tutor-harness-release-readiness.md)。本计划不是
+release approval，任何未通过或未执行 gate 都必须在 ledger 中保留。
 
-## 目标
+## 1. 验收原则
 
-本计划定义产品达到可实施验收的测试口径。验收必须覆盖确定性行为和 LLM 输出质量，但二者分开评估：确定性测试检查 API、状态、评分规则、FSRS、运行反馈是否稳定；LLM 输出质量测试检查 Agent 是否按证据生成结构化、具体、可执行的解释和反馈。
+1. **使用 fixture，不使用真实学习者。** 测试使用 disposable PostgreSQL user、
+   fake provider、fake clock、fake executor/worker seam；不得调用真实模型、
+   执行 learner code 或记录真实 learner content。
+2. **共享 bootstrap 必须串行。** 同时运行调用 `bootstrap_database()` 的 pytest
+   可能造成 database deadlock/tuple conflict。测试命令必须按本计划给出的顺序
+   执行，失败不能用“并发问题”掩盖。
+3. **每个坏路径要被拒绝。** 除了成功路径，必须证明切换绕过、跨用户读写、
+   stale effect、无 Skill evidence、provider fallback、未注册 grounding、
+   proactive code execution、raw diagnostics leak 和旧 runtime 再进入都失败。
+4. **静态搜索不是唯一证据。** legacy source/dependency/doc audit、测试、Desktop
+   build 和 fixture smoke 要同时通过，才可称实现退休完成。
+5. **不写敏感证据。** 测试报告和 ledger 只能记录命令、计数、stable error、
+   revision、fixture posture 和 residual risk；不记录 raw message/code/prompt、
+   provider payload、hidden tests、checkpoint 或 secret。
 
-不允许把“模型看起来回答不错”作为唯一通过标准。所有 LLM 相关验收至少要同时满足结构校验、证据一致性校验和人工或半自动 rubric 评分。
+## 2. 优先级与通过规则
 
-## 优先级定义
+| 级别 | 定义 | 未通过后果 |
+| --- | --- | --- |
+| P0 | 破坏 server-authoritative gate、用户范围、持久化、安全执行或公开 API/SSE 的缺陷 | 阻止 release/任务归档 |
+| P1 | 明显的 Desktop、重试、可访问性、队列恢复或文档矛盾 | 必须修复或在 ledger 明确残余风险；本 child 默认不以“已批准发布”关闭 |
+| P2 | 文案、视觉、非安全边缘可用性 | 记录并设定后续 owner，不掩盖 P0/P1 |
 
-| 优先级 | 含义 | 失败影响 |
-|---|---|---|
-| P0 | 第一版基线和当前发布必须通过，失败会破坏主闭环或写错学习状态 | 阻塞发布 |
-| P1 | 重要体验或稳定性，失败会造成明显误导或重复操作 | 发布前必须修复或明确降级 |
-| P2 | 优化项、边缘路径、文案和体验一致性 | 可带已知问题发布 |
+通过判定：P0 全部通过；P1 不得有未记录的回归；所有 final commands 成功或有精确
+阻塞说明。`task.py validate`、green build 或 docs 更新单独不能代替任何 P0。
 
-## 总体通过标准
+## 3. 自动化验证矩阵
 
-- P0 用例 100% 通过。
-- P1 用例通过率不低于 95%，且不能存在会误写 `Attempt`、`ReviewState`、`due_at` 的缺陷。
-- P2 用例完成评估并记录结论。
-- API 契约测试必须覆盖成功、失败、缺字段、枚举非法和 `unsupported`。
-- Agent 评分 JSON 必须通过 schema、枚举、分数合计、硬门槛和 FSRS 映射校验。
-- LLM 输出质量测试不得出现虚构运行结果、泄露隐藏测试、跳过硬门槛判定或直接给完整答案冒充轻提示。
+| ID | 优先级 | Gate | 必须证明 | 主要证据 |
+| --- | --- | --- | --- | --- |
+| RT-01 | P0 | Provider boundary | 只调用配置的 primary provider；配置/响应/guardrail 失败映射 `MODEL_UNAVAILABLE`，无 cross-provider/model fallback | `test_tutor_provider_gateway.py`、`test_tutor_run_loop.py` |
+| RT-02 | P0 | Bounded run loop | iteration/model/capability/effect/context/lease budget 有界；取消与 lost lease 安全结束 | `test_tutor_run_loop.py`、`test_tutor_execution_contracts.py` |
+| RT-03 | P0 | Skill/capability/grounding | exact `id@version` evidence、descriptor default-deny、registry-only grounding；不能传 URL/path/shell/SQL/任意 user target | `test_tutor_skill_catalog.py`、`test_tutor_capability_gateway.py`、`test_tutor_grounding_policy.py` |
+| RT-04 | P0 | Durable input/effect/replay | input revision merge、idempotency、ordered events、stale effect rejection、trace redaction 和 current lease CAS | `test_tutor_run_repository.py`、`test_tutor_input_merge.py`、`test_tutor_trace_redaction.py` |
+| RT-05 | P0 | Learner-state | immutable plan、direct-predecessor rollback、memory correction/delete、activity/inbox scope | `test_tutor_memory.py`、`test_tutor_activity.py`、Tutor route tests |
+| RT-06 | P0 | API/SSE | verified gate、stable error envelope、cursor suffix、terminal ordering、stream never calls provider | `test_tutor_routes.py`、`test_tutor_sse.py` |
+| RT-07 | P0 | Cutover | exact server summary/nonce/hash, atomic deletion verification, retained identity/preferences, target contamination/checkpoint fail-closed, legacy denial | `test_harness_cutover.py`、`test_db_bootstrap.py` |
+| RT-08 | P0 | Default proactive delivery | verified fixture terminal signal → candidate → exact Skill selection → `tutor.activity.record` → activity/inbox；unverified candidate has `cutover_unverified` and no provider/run | `test_tutor_proactive_default_delivery.py`、`test_tutor_proactive_policy.py` |
+| RT-09 | P0 | Scheduler/curation | dedupe、pause、budget、cooldown、concurrency、lease/retry/circuit、global vs scoped semantics；curation default no-call | `test_tutor_proactive_candidates.py`、`test_tutor_memory_curation_scheduler.py`、`test_tutor_memory_curator.py` |
+| RT-10 | P0 | Executor boundary | default disabled/unavailable、immutable lock/profile、network none、no host fallback、cleanup/uncertain launch | API execution tests + `aearn/services/executor/tests/` |
+| RT-11 | P0 | Worker import/composition | worker has only target task wrappers; no executor runtime client import; scheduler production scan remains global | `test_worker_import.py` |
+| UX-01 | P1 | Desktop bootstrap | local identity → server cutover → `welcome/cutover/tutor`; stale `planId` cleared and no legacy request emitted | `pnpm --dir .\aearn desktop:check` + fixture browser/Desktop smoke |
+| UX-02 | P1 | Responsive/error UX | narrow viewport no horizontal overflow; Composer/primary actions visible; stable public error/retry states | fixture browser/Desktop smoke |
+| DOC-01 | P0 | Current documentation | README/source-of-truth docs name Tutor as active runtime; transition/archive docs are visibly historical; no current Graph/SDK claim | link audit + `rg` audit + doc review |
+| RET-01 | P0 | Legacy retirement | no production/test Graph/router/tool/SDK caller or direct dependency pin remains; historical evidence is archived/labelled | scoped source/dependency audit + full build/test |
 
-## 测试分层
+## 4. Required fixture flows
 
-| 层级 | 类型 | 目标 | 示例 |
-|---|---|---|---|
-| L0 | 单元 / 规则测试 | 校验纯规则和数据转换 | `result` 到 `fsrs_rating` 映射 |
-| L1 | API 契约测试 | 校验请求响应、错误码、枚举与幂等 | `/run`、`/submit`、`/reviews/{session_id}/exercise-result` |
-| L2 | 集成测试 | 校验 runner、Agent 状态机、写库时机 | `run_exercise -> evaluate_attempt -> update_review_state` |
-| L3 | E2E 流程测试 | 校验用户能完成闭环 | Onboarding、学习、复习、恢复学习 |
-| L4 | 前端手工 QA | 校验加载、空态、错误、禁用、确认、视觉边界 | 工作台、复习页、笔记抽屉、笔记页、设置页 |
-| L5 | LLM 质量评测 | 校验 Agent 输出是否结构化、证据一致、可执行 | 错因解释、提示、代码解释检查 |
+### FI-01：verified cutover 与 Tutor-only entry
 
-## 核心用户流程验收
+1. Create one disposable local user with legacy rows or use an isolated fixture.
+2. Read `/api/harness/cutover`; assert server summary only names safe categories.
+3. Submit the exact confirmation. Assert receipt is `verified`, legacy scope is
+   empty, required identity/preferences are preserved, and pre-cutover
+   `tutor_*` rows would have blocked rather than been deleted.
+4. Assert `/api/tutor/*` works only after the receipt; direct legacy endpoint
+   remains `409 CUTOVER_REQUIRED` for the verified fixture.
+5. Delete the disposable user/fixture afterward. Do not place fixture content in
+   docs or logs.
 
-| ID | 优先级 | 流程 | 前置条件 | 步骤 | 通过标准 |
-|---|---|---|---|---|---|
-| UF-01 | P0 | 首次建档：模糊目标模式 | 无活动计划 | 输入目标 -> 每轮单一澄清 -> 生成路线卡片 -> 可直接输入修订 -> 最新卡片点击 `开始学习` | 普通回复不展开整段路线；创建正式 `plan`，进入工作台，左侧路线面板有模块；旧卡片按钮禁用；`source_attribution` 可区分动态文档参考、用户资料或模板 fallback |
-| UF-02 | P1 | 首次建档：参考资料模式 | 有课程目录或代码片段 | 粘贴资料 -> 生成草稿 -> 标注来源与 Agent 补充 | 用户能区分资料来源和新增内容 |
-| UF-03 | P0 | 日常进入应用 | 已有活动计划 | 打开应用 -> 加载 dashboard | 5 秒内默认进入当前学习，展示当前阶段、今日任务、复习数量和复习提示 |
-| UF-04 | P0 | 学习闭环 | 有 `browser_preview` 或 `python_stdout_test` 练习 | 进入知识点 -> 查看右侧 `官方文档内容` / `实例` -> 触发 `show_concept_intro` -> 自然语言判断 -> `show_concept_check_result` 紧凑反馈 -> 对话中生成练习 UI -> 补全 -> 运行/预览/测试 -> 提交 -> 查看反馈 | 前端不暴露 run/submit 内部 Attempt 类型；官方文档来源、示例来源标签、概念卡和紧凑判断反馈可刷新重放；后端生成可追溯 `Attempt`、`code_completion_result`，状态写回知识点 |
-| UF-05 | P0 | 运行失败后错因解释 | 练习会产生失败测试或 runtime error | run 失败 -> 点击解释错误 -> 修改 -> rerun | 错因来自真实错误，旧结果标记 stale，新 Attempt 可追踪 |
-| UF-06 | P0 | 复习闭环 | `ReviewState.due_at` 到期 | 进入复习 -> 用自由文本回答开场问题 -> 完成 seed bank 变体 -> submit | 新桌面端不暴露跳过入口，输入 `跳过` / `skip` 仍按普通回答处理；warmup 结果可刷新重放但不更新 FSRS；提交写入 `Attempt(review_submit)` 后更新 `fsrs_rating`、`due_at`、`forget_risk`，列表即时刷新 |
-| UF-07 | P1 | 笔记抽屉 | 学习或复习会话进行中 | 打开笔记抽屉 -> 输入错因和修正方式 -> 自动保存 -> 请求 Agent 辅助补全 | 笔记不打断代码练习，保存状态明确，Agent 不自动生成完整笔记 |
-| UF-08 | P1 | 笔记页 | 已有学习目标或知识点 | 进入笔记页 -> 按语言/知识点选择笔记 -> 编辑 Markdown -> 保存 | 笔记绑定知识点，复习和学习共用同一份笔记，不存在独立草稿生成流程 |
-| UF-09 | P0 | 恢复中断学习 | 有历史会话摘要 | 打开应用 -> 调用 dashboard/resume -> 展示上次停留点和复习提示 | 普通打开默认当前学习；仅中断多日且复习高风险时优先进入复习 |
-| UF-10 | P1 | Compiled language 能力边界 | 选择 Java / Go / C# 课程或尝试 C++ / Rust | 进入练习页或 Onboarding 错误 | Java / Go / C# 只展示 `managed_compiled_test` teaching-grade 单练习能力；C++ / Rust 返回 unsupported，不承诺完整项目/在线编译沙箱 |
-| UF-11 | P1 | 设置页分类与边界 | 应用已完成初始化 | 进入设置 -> 切换外观、模型设置、学习偏好、复习、通知设置、记录与隐私、关于与诊断 | 分类完整；不能修改后端评分、Attempt 必填事实记录或 FSRS 固定规则 |
+### FI-02：interactive run、SSE 与 safe projection
 
-## API 契约测试
+1. Use a deterministic provider/dispatcher seam and a verified fixture user.
+2. Create a Tutor conversation, submit input, then submit a follow-up while the
+   first interactive run is non-terminal.
+3. Verify monotonic `input_revision`, idempotent replay, run-local cursor,
+   `input_accepted` before terminal frame, and a read-only SSE replay.
+4. Inject provider/config/policy failure and assert stable public code without
+   provider body or internal trace.
 
-### 通用规则
+### FI-03：verified-only proactive default path
 
-- 所有响应失败时使用统一结构：
+1. Seed a terminal interactive run for a verified fixture user only.
+2. Execute `scan_due_signals` and `drain_candidates` through the API-side test
+   seam with fake provider/clock.
+3. Assert source hash contains only durable run ID/outcome/timestamp facts;
+   persisted exact selection is `tutor.learner-state@1.0.0` and only
+   `tutor.activity.record` commits.
+4. Assert activity/inbox rows exist, no learner-visible background chat exists,
+   and no runner/subprocess/memory effect is requested.
+5. Repeat for an unverified user. Assert `cutover_unverified`, no provider
+   call and no proactive run.
 
-```json
-{
-  "error": {
-    "code": "PLAN_NOT_FOUND",
-    "message": "学习计划不存在"
-  }
-}
+### FI-04：Desktop normal/narrow path
+
+1. Bootstrap Desktop with a disposable verified user and deliberately stale
+   `planId`.
+2. Assert network begins with profile/cutover, no dashboard/resume/legacy route
+   request occurs, and bootstrap persistence has `planId=null`.
+3. At normal and narrow viewport, assert Tutor Composer and primary action are
+   reachable and document width does not overflow.
+4. Do not submit a live provider request or enable executor merely to make this
+   smoke look more realistic.
+
+## 5. Final command matrix
+
+Run in this order after all code/docs edits. Do **not** run bootstrap-heavy
+pytest commands in parallel.
+
+```powershell
+# API suite: serial execution only.
+uv --directory .\aearn\services\api run python -m pytest
+uv --directory .\aearn\services\api run ruff check .
+uv --directory .\aearn\services\api run python -m mypy app
+uv --directory .\aearn\services\api lock --check
+
+# Standalone executor contract checks. Docker conformance remains opt-in and
+# fails closed when reviewed immutable locks are absent.
+uv --directory .\aearn\services\executor run python -m pytest
+
+# Desktop and local managed process status.
+pnpm --dir .\aearn desktop:check
+pnpm --dir .\aearn dev:status
+
+# Trellis/doc hygiene.
+python .\.trellis\scripts\task.py validate .\.trellis\tasks\07-22-tutor-integration-qa-and-docs
+git diff --check
 ```
 
-- 枚举字段必须拒绝非法值。
-- 必填字段缺失必须返回明确 `error.code`。
-- 幂等接口重复请求不得重复写入完成状态。
-- 写库失败时不得向前端返回已完成学习或已完成复习。
-- 前端验收不暴露 `Attempt(run)` / `Attempt(submit)`，但 API 和数据库验收必须能区分运行事实与提交事实。
+The API full suite itself includes the final fake-provider proactive smoke.
+When it fails, run the affected test module serially for diagnosis, repair the
+owning boundary, then rerun the full matrix; do not edit ledger wording to
+mask it.
 
-### P0 API 清单
+## 6. Legacy retirement / documentation audit
 
-| API | 必测内容 |
-|---|---|
-| `POST /api/plans/generate` | `goal_based`、`material_based`、缺少目标、runtime 能力提示、动态路线生成成功、动态失败 fallback、`source_attribution` |
-| `POST /api/plans` | `plan_draft` 确认、重复提交、草稿无效 |
-| `GET /api/dashboard` | 活动目标、阶段、复习数量、恢复入口 |
-| `POST /api/learning-sessions/start` | 新会话返回并持久化 `show_concept_intro`、已有未结束会话幂等返回、非法概念开场返回 `CONCEPT_INTRO_GENERATION_FAILED` |
-| `POST /api/learning-sessions/{session_id}/messages` | `correct`、`incorrect`、`unclear`、`skipped` 概念判断；`unclear` 仅用于未回答/不确定/无关/冲突/无法判断；部分正确或漏答为 `incorrect`；`incorrect`、`unclear`、`judgement_ready=false` 共用上限；`answer_leakage_review` 自检元数据；引导练习和 tool-call 幂等重放 |
-| `POST /api/learning-sessions/{session_id}/exercises/{exercise_id}/run` | `success`、`runtime_error`、`timeout`、`unsupported` |
-| `POST /api/learning-sessions/{session_id}/exercises/{exercise_id}/submit` | `passed`、`partial`、`failed`、`easy` 和硬门槛 |
-| `POST /api/learning-sessions/{session_id}/exercises/{exercise_id}/hint` | `nudge`、`concept`、`code_shape`、提示次数累加 |
-| `POST /api/learning-sessions/{session_id}/attempts/{attempt_id}/explain-error` | 错因分类、修复建议、关联知识点 |
-| `POST /api/learning-sessions/{session_id}/attempts/{attempt_id}/check-explanation` | 最多 2 轮、`follow_up_required` |
-| `GET /api/reviews/today` | 空复习、到期排序、`due_at` |
-| `POST /api/reviews/start` | `warmup`、`review_stage`、`review_stage_state`、`selected_seed_id`、seed bank ready/replay、同步 rescue 成功、`REVIEW_SEED_BANK_GENERATION_FAILED` 不返回 fallback 题、`variant_reason` |
-| `POST /api/reviews/{session_id}/warmup-result` | `correct`、`incorrect`、`unclear`、`off_topic` 和隐藏兼容 `skipped` 分支；新桌面端 `跳过` / `skip` 仍提交 `action=answer`；最多一次 `warmup_repair`，不写 `Attempt` / `review_logs` / `ReviewState` |
-| `POST /api/reviews/{session_id}/exercise-result` | `code_blank`、`fix_bug`、`explain_code`、`implement_function`、`review_ai_patch`，FSRS Rating、`due_at`、`forget_risk`、幂等不重复增加 `review_count` |
-| `GET /api/learning-sessions/resume` | 最近摘要、`next_entry_point`、当前模块 |
-| `GET /api/notes` | 按语言或知识点读取笔记、空笔记状态 |
-| `POST /api/notes` | 创建知识点笔记、重复创建幂等或明确冲突 |
-| `PATCH /api/notes/{note_id}` | Markdown 保存、保存失败不丢内容 |
-| `GET /api/users/{user_id}` | 用户偏好、设置分类、诊断状态 |
-| `PATCH /api/users/{user_id}/preferences` | 保存允许项，拒绝评分、Attempt、FSRS 固定规则修改 |
+The expected active source audit after retirement is empty for production and
+current tests:
 
-### 契约通过标准
+```powershell
+rg -n --glob '*.py' 'app\.agents\.graphs|from langgraph|langgraph-checkpoint|graph_event_stream|from agents|import agents|LANGGRAPH_ENABLED' aearn\services\api\app aearn\services\api\tests
+rg -n 'LANGGRAPH_ENABLED|langchain|langgraph|openai-agents' aearn\services\api\pyproject.toml aearn\services\api\uv.lock
+```
 
-- 每个 P0 API 至少有一个成功样例和一个失败样例。
-- 动态路线生成不得改变 `PlanDraft` 公共结构；fallback 成功时仍返回 2xx 和可确认草稿，fallback 失败时返回稳定错误码，不暴露 provider 原始错误。
-- 学习页概念开场和判断结果必须作为 `metadata.tool_calls` 持久化；刷新、恢复或 `client_message_id` 重放不得生成漂移内容。
-- `CONCEPT_INTRO_GENERATION_FAILED` 不得落库破损 `show_concept_intro`，也不得暴露 raw provider error、raw prompt、SDK internals 或 secrets。
-- `runtime_status` 只能是 `success` / `runtime_error` / `timeout` / `unsupported`。
-- `result` 只能是 `failed` / `partial` / `passed` / `easy`。
-- `fsrs_rating` 只能是 `Again` / `Hard` / `Good` / `Easy`。
-- `score_breakdown` 四项分数均在 0-2，且 `score` 等于总和。
-- `test_pass_rate < 0.8` 或关键测试失败时，不得返回 `passed` / `easy`。
+Historical documents under `docs/archive/2026-07-29/` and the transition record
+may intentionally mention those terms; every such file must have a visible
+historical label. The docs index and all current source-of-truth files must not
+route a reader to the historical runtime as active.
 
-## 代码补全验证与运行反馈验收
+## 7. Release evidence and non-claims
 
-| ID | 优先级 | 场景 | 输入 | 通过标准 |
-|---|---|---|---|---|
-| CE-01 | P0 | JS/HTML/CSS 预览成功 | DOM 点击计数题，补全正确 | `runtime_status=success`，预览更新，测试通过 |
-| CE-02 | P0 | JS 隐藏测试失败 | 只通过可见测试 | `test_pass_rate < 1`，不泄露隐藏测试源码，最高 `partial` |
-| CE-03 | P0 | Python stdout 成功 | 函数返回或 print 正确 | stdout/test 展示正确，生成 Attempt |
-| CE-04 | P0 | Python 运行错误 | 语法或类型错误 | 展示 stderr，`explain-error` 能定位错误类别 |
-| CE-05 | P0 | 核心空缺错误 | `CodeBlank` 核心项错误 | `core_blank_gate=false`，结果为 `failed` |
-| CE-06 | P0 | 测试全过但解释失败 | `test_pass_rate=1.0`，解释矛盾 | 最高 `partial`，触发追问或重点复习 |
-| CE-07 | P1 | 使用多次提示后通过 | `hint_usage_count > 2` | `fsrs_rating` 降级为 `Hard` 或不高于 `Good` |
-| CE-08 | P0 | C++/Rust unsupported / compiled managed languages | C++ / Rust 不出现在公开课程；Java / Go / C# 为 `managed_compiled_test` | C++ / Rust 选择返回不支持；Java / Go / C# 覆盖 `missing_toolchain`、`compile_error`、`runtime_error`、`timeout`、`test_failure`、`success`，不把缺 toolchain 写成完成态 |
-| CE-09 | P1 | 运行结果 stale | run 后修改代码 | 旧测试结果标记 stale，提交前提示重新运行 |
-| CE-10 | P0 | runner 写库失败 | Attempt 写入后 ReviewState 写入失败 | 前端不显示复习完成，可重试且不重复运行 |
-| CE-11 | P0 | AI 补丁审核弱证据 | `review_ai_patch` verdict 正确但 evidence 只写 `tests passed` | `score_breakdown.evidence_grounding < 2`，结果不高于 `partial`，`fsrs_rating=Hard`，不得返回 `Easy` |
+The final ledger records for every gate: command/procedure, working revision,
+fixture posture, result, warnings, residual risk, and follow-up owner. It must
+state explicitly that:
 
-## FSRS 调度测试
+- deterministic/fake-provider checks do not prove real model quality, latency,
+  quota or teaching usefulness;
+- container contract checks do not prove a production image fleet when no
+  reviewed image locks are present;
+- post-cutover code rollback never restores intentionally deleted legacy data;
+- a passing Trellis manifest/documentation audit is not a deployment or release
+  approval.
 
-| ID | 优先级 | 场景 | 通过标准 |
-|---|---|---|---|
-| FSRS-01 | P0 | `failed` 映射 | `fsrs_rating=Again`，`lapse_count` 增加或保持正确 |
-| FSRS-02 | P0 | `partial` 映射 | `fsrs_rating=Hard`，`due_at` 保持短间隔 |
-| FSRS-03 | P0 | `passed` 且低提示低错误 | `fsrs_rating=Good`，正常拉长间隔 |
-| FSRS-04 | P0 | `easy` 且无提示无错误 | `fsrs_rating=Easy`，明显拉长间隔 |
-| FSRS-05 | P0 | 仅 run 未 submit | 不更新 `ReviewState` |
-| FSRS-06 | P0 | 复习 warmup 正确、错误、不明确或跳过 | 只更新 `learning_sessions.review_stage_state_json`，不创建 `Attempt`，不写 `review_logs`，不更新 `ReviewState` |
-| FSRS-07 | P0 | 复习提交成功 | 写入 `last_review_at`、`review_count`、`last_attempt_id`、`last_fsrs_rating` |
-| FSRS-08 | P1 | 时区边界 | `due_at` 在用户本地日期展示正确 |
-| FSRS-09 | P1 | 恢复学习入口 | 普通打开只提示复习；仅中断多日且复习高风险时优先进入复习 |
-
-## Agent 输出质量测试
-
-### 确定性校验
-
-这些测试必须自动化，失败即不通过：
-
-- LLM 输出必须是可解析 JSON。
-- 枚举值必须合法。
-- `score` 必须等于 `completion_correctness + runtime_and_tests + error_diagnosis + explanation_check`。
-- 四个分项分数必须在 0-2。
-- 硬门槛失败时，`result` 不得为 `passed` 或 `easy`。
-- `result` 与 `fsrs_rating` 映射不得冲突。
-- `feedback` 不得虚构不存在的测试、stdout、stderr 或代码行为。
-- `review_ai_patch` 输出必须包含 `verdict_correctness`、`evidence_grounding`、`knowledge_point_alignment`、`actionability` 四项，且弱证据不得映射为 `Easy`。
-
-### 质量 rubric
-
-LLM 输出质量单独用固定样例集评估，至少覆盖 JS/HTML/CSS、Python、运行错误、测试失败、解释失败、提示过多、复习变体。
-
-| 维度 | 分值 | 通过要求 |
-|---|---:|---|
-| 证据一致性 | 0-2 | 必须引用真实运行/测试/错误事实，不虚构 |
-| 反馈可执行性 | 0-2 | 指出具体代码位置、概念或下一步动作 |
-| 提示边界 | 0-2 | `nudge` 不给答案，`code_shape` 不直接替用户完成全题 |
-| 错因分类准确性 | 0-2 | 错因标签与失败原因一致 |
-| 语言简洁度 | 0-2 | 不输出冗长泛化教程 |
-
-通过标准：
-
-- 每条样例总分不低于 7/10。
-- `证据一致性` 不得为 0。
-- P0 样例集中不得出现泄露隐藏测试、忽略硬门槛或虚构运行结果。
-- 对同一固定输入重复 3 次，结构校验通过率必须为 100%，质量 rubric 平均分不低于 8/10。
-
-### `explain-error` 模型接入验收
-
-- [ ] 使用第三方 OpenAI-compatible `.env` 配置后，`explain-error` 响应包含 `generation_source=llm`。
-- [ ] 中转站类 provider 先通过 `GET /v1/models` 确认当前 key 实际可请求的模型名，再把其中一个模型名写入本机 `aearn/.env`。
-- [ ] 对要求 Responses API streaming 的 provider，后端请求必须使用 `POST /v1/responses`、`stream=true` 和 JSON 输出约束；不得依赖旧的非流式 `/chat/completions`。
-- [ ] 未配置、key 无效、provider 超时或模型返回非法 JSON 时，`explain-error` 返回 503，错误码为 `MODEL_UNAVAILABLE`，且不暴露 provider 原始错误。
-- [ ] 同一 `attempt_id` 和同一错误上下文重复请求命中幂等记录，不再次调用模型。
-- [ ] 模型输出不得泄露隐藏测试 case id、隐藏测试源码、参考答案、真实 API key 或 provider 原始错误。
-- [ ] 本地默认测试不需要真实第三方 API key，模型成功/失败路径用 mock 覆盖。
-
-## 前端手工 QA 清单
-
-### 全局
-
-- [ ] API 离线时顶部有明确提示，运行、提交、生成计划草稿和笔记辅助补全禁用。
-- [ ] 所有 loading 状态不导致重复提交。
-- [ ] 所有 error 状态显示 `error.code` 或可读错误。
-- [ ] 离开未保存笔记、跳过模块、调整主干、清理记录时有 confirm。
-- [ ] 代码修改后旧运行结果显示 stale。
-
-### Onboarding
-
-- [ ] 空输入不能生成计划。
-- [ ] 生成 `plan_draft` 时按钮进入 loading。
-- [ ] 已生成路线后补充时间预算会生成新版路线卡片并展示新的学习节奏。
-- [ ] 动态路线生成开启时，路线来源展示或诊断信息可区分 `agent_generated`、用户资料和模板 fallback。
-- [ ] 动态路线生成失败时可回退到已审核课程模板；没有已登记课程或安全 fallback 时展示可恢复错误，不承诺任意语言可运行。
-- [ ] `compiled_sandbox_later` 课程展示能力边界。
-- [ ] `is_skippable=false` 的模块不能跳过。
-- [ ] 确认计划后进入工作台。
-
-### 学习工作台
-
-- [ ] 顶部展示目标、阶段、语言、复习数量、恢复入口。
-- [ ] 左侧路线高亮当前模块和知识点。
-- [ ] 右侧文档面板只展示 `官方文档内容` 和 `实例` 两个主区块；来源展示 title、URL、时间，示例能区分 `官方示例` 与 `Aearn 示例`。
-- [ ] 新会话入口显示 `show_concept_intro` 概念卡，包含总结、例子和 2-4 个文本选项；选项不是强制按钮，composer 保持可用。
-- [ ] `show_concept_check_result` 以内联紧凑反馈展示正确、错误、模糊和跳过四类结果，不再渲染独立大卡；错误路径可展示更窄 `repair_check`，不直接解锁练习。
-- [ ] `unclear` 边界清晰：部分正确、漏答或方向明确但不完整的回答判为 `incorrect`，不是无限澄清。
-- [ ] 模型输出若在解释中泄露了下一步要检查的目标答案，最终 `answer_leakage_review.status="revised"`，且 `next_prompt` 改为迁移题、原因题或练习邀请，不要求复述同一答案。
-- [ ] `incorrect` 和 `unclear` 都计入概念追问上限；达到上限后只提供引导练习或再看一个例子。
-- [ ] 概念判断通过后，`开始练习` 由模型生成包含当前知识点小结的解锁说明，并生成 `show_code_exercise`；`practice_unlock_reason=concept_check_passed` 且 `learning_incomplete=false`。
-- [ ] 练习解锁 Agent 文案不得复述练习题面、starter code 或补全空；`show_code_exercise.notice` 不复制 Agent 正文，不在卡片上方重复输出同一段文字。
-- [ ] 学习页模型输出必须通过结构化 envelope 校验；API/SSE/历史只暴露 `agent_message.content`，不得暴露 `schema_version`、`public_message` key、`internal_review`、额外诊断摘要或 provider reasoning。
-- [ ] 前端不渲染“导师判断”或思考过程，也不得从正文用正则猜测内部/诊断内容。
-- [ ] 模型返回非法 schema、`internal_review` 任一字段为 `false`、`_policy...符合policy要求` 等内部策略自述，或公开字段 guardrail 失败时，返回 `MODEL_UNAVAILABLE` 且不落库成功 assistant 消息。
-- [ ] 学习页模型未配置、不可连接或输出不可用时，`开始练习` 返回 `MODEL_UNAVAILABLE`；不得展示后端固定练习解锁文案、固定概念小结或 `show_code_exercise`。
-- [ ] 用户直接要求练习或修正上限后进入引导练习时，练习卡明确显示概念未完成状态。
-- [ ] `CONCEPT_INTRO_GENERATION_FAILED` 页面显示重试和返回路线动作，不展示破损概念卡。
-- [ ] 代码编辑器、预览和测试结果出现在对话生成的练习 UI 中，而不是固定三栏页面。
-- [ ] 前端按钮和文案只展示运行、预览、测试、提交结果，不暴露 `Attempt(run)` / `Attempt(submit)` 内部类型。
-- [ ] JS/HTML/CSS 展示 `PreviewPane`，Python 展示 `StdoutPane`。
-- [ ] C++ / Rust 返回 unsupported；Java / Go / C# managed compiled 状态按后端 `runtime_status` 展示。
-- [ ] `run`、`submit`、`hint`、`explain-error`、`check-explanation` 的 loading 与错误互不覆盖。
-- [ ] `score_breakdown`、`weak_points`、`next_action` 清晰展示。
-
-### 复习窗口
-
-- [ ] 无待复习项时展示空态和继续学习入口。
-- [ ] 开始复习后展示自然开场问题、`review_stage`、`variant_reason` 和 seed 变体；不展示跳过入口或“热身阶段”文案。
-- [ ] warmup 正确、错误、不明确、首次偏航、二次偏航和隐藏兼容跳过都能切换到正确阶段；warmup 不会显示 FSRS 变化。
-- [ ] seed bank rescue 失败展示 `REVIEW_SEED_BANK_GENERATION_FAILED` 和重试入口，不展示 fallback 题。
-- [ ] `review_ai_patch` 表单必须填写 verdict、evidence、knowledge point risk 和 next action，提交结果完全使用后端评分。
-- [ ] 提交成功后列表移除或标记完成。
-- [ ] 提交失败不得标记完成。
-- [ ] 右侧指标展示 `due_at`、`forget_risk`、上次复习时间和掌握度。
-- [ ] 复习练习复用对话生成式代码练习 UI。
-
-### 笔记抽屉
-
-- [ ] 学习和复习会话中都能打开当前知识点笔记抽屉。
-- [ ] `未保存`、`保存中`、`已保存`、`保存失败` 状态可见。
-- [ ] 保存失败时保留本地内容，不静默关闭抽屉。
-- [ ] Agent 辅助补全只基于当前会话、代码、测试结果和用户已有笔记，不自动生成完整笔记。
-
-### 笔记页
-
-- [ ] 笔记按学习目标语言和知识点组织。
-- [ ] Markdown 编辑器支持创建空笔记、编辑和保存。
-- [ ] 学习会话和复习会话引用同一份知识点笔记。
-- [ ] 页面不存在 `CodeDraftPage`、`publishDrawer`、面试讲述草稿或独立复盘草稿入口。
-
-### 设置页面
-
-- [ ] 保存时禁用重复提交。
-- [ ] 字段级错误能定位到具体表单项。
-- [ ] 外观、模型设置、学习偏好、复习、通知设置、记录与隐私、关于与诊断七类可切换。
-- [ ] 模型设置页只说明后端 `.env` 模型配置和当前诊断状态，不保存真实 API key；学习偏好、讲解风格、提示风格、通知偏好等可编辑偏好能保存并重新读取。
-- [ ] 设置页不出现修改后端评分、Attempt 必填事实记录或 FSRS 固定规则的开关。
-
-## 发布验收门禁
-
-### P0 门禁
-
-- Onboarding、学习闭环、复习闭环、恢复学习全部通过。
-- `/run`、`/submit`、`/exercise-result` 契约测试全部通过。
-- `code_completion_result` 自动校验全部通过。
-- FSRS 映射和 `ReviewState` 写入时机全部通过。
-- TypeScript/SQL/Java/Go/C# 公开路线的 teaching-grade runner 边界清晰，C++/Rust 暂不支持公开路线且没有误导性入口。
-
-### P1 门禁
-
-- 笔记抽屉、笔记页、错误重试、stale 状态、confirm 状态通过。
-- 前端手工 QA 的 P1 问题已修复或写入已知问题清单。
-- LLM 质量 rubric 达到通过标准。
-
-### P2 门禁
-
-- 文案一致性、视觉 polish、边缘错误提示完成评估。
-
-## Post-MVP / v1.1 增强验收
-
-### 动态学习路线生成
-
-- [ ] `PLAN_GENERATION_ENABLED=false` 时，`POST /api/plans/generate` 走第一版模板路径，响应结构不变。
-- [ ] 模型配置完整且 fake plan generation client 返回合法 modules 时，响应中 modules 使用动态结果，`source_attribution` 标记动态生成来源。
-- [ ] 动态输出缺少 modules、数量越界、非中文标题、非法 `temp_id`、guardrail 命中或工具超时时，服务回退到模板或已校验 candidate，不暴露 raw provider error。
-- [ ] 未同步扩展 `Language`、数据库约束、课程 catalog 和 runtime boundary 的语言不能作为公开可确认计划。
-- [ ] 新增语言正式上线前必须补 API 示例、数据库约束、catalog seed、runtime boundary、前端展示、P0/P1 验收和回滚策略。
-- [ ] 未完成项不影响主闭环、不误写状态、不误导运行能力。
-
-## 需要持续同步的字段与术语
-
-以下字段变化会影响测试和前端验收，必须同步更新本计划：
-
-- `plan_draft`
-- `runtime_tier`
-- `runtime_status`
-- `run_mode`
-- `Attempt`
-- `code_completion_result`
-- `score_breakdown`
-- `hard_gates`
-- `explanation_check`
-- `hint_usage_count`
-- `error_count`
-- `fsrs_rating`
-- `due_at`
-- `next_entry_point`
+Only after the entire matrix, retirement audit, fixture smoke, source-of-truth
+review and intentional human release decision can a separate release process
+be considered. This child must otherwise remain `in_progress`.

@@ -1,7 +1,14 @@
+> **Historical archive — superseded on 2026-07-29.** This is a dated demo
+> narrative for the retired learning-page Graph runtime. It does not describe
+> the active Tutor product flow. Statements below preserve their original
+> historical context. For current behavior, read
+> [Tutor Harness Runtime](../../architecture/tutor-harness-runtime.md) and
+> [current user flows](../../product/user-flows.md).
+
 # Learning Graph Runtime Demo Story
 
-日期：2026-06-01  
-状态：Post-MVP graph hardening demo evidence  
+日期：2026-06-01
+状态：Post-MVP graph hardening demo evidence
 范围：`02-learning-graph-runtime-hardening` 的学习页 LangGraph runtime vertical slice，以及 onboarding / review 为什么保持 graph-assisted service flow。
 
 ## 结论

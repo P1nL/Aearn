@@ -6,60 +6,87 @@
 
 ## Overview
 
-Frontend work targets the Tauri desktop app under `aearn/apps/desktop/`. The current quality gate is the package build command, which runs `tsc && vite build`; the root workspace exposes it as `pnpm desktop:check` from `aearn/`.
+Frontend work targets the current Tutor-only Tauri desktop app under
+`aearn/apps/desktop/`. The build gate is `pnpm --dir .\aearn desktop:check`,
+which runs `tsc && vite build`. Current UI behavior is defined by
+`docs/product/frontend-interaction-spec.md`, `docs/product/user-flows.md`, the
+current API contract, and `aearn/apps/desktop/src/`.
 
-Every UI task must be checked against `docs/product/frontend-interaction-spec.md` and the acceptance plan.
+> **Historical-scenario note (2026-07-29):** The older M2--M6, onboarding,
+> learning-workbench, review, notes and Graph/SSE scenarios below are retained
+> as historical implementation evidence. They do not authorize restoring old
+> routes, bootstrap calls, state stores, components, or API types. The current
+> top-level route set is `loading | welcome | cutover | tutor`.
 
 ---
 
 ## Forbidden Patterns
 
-- Do not implement product UI in `docs/design/`; that directory is reference/prototype material.
-- Do not expose `Attempt(run)`, `Attempt(submit)`, `review_submit`, or FSRS internals as ordinary user labels.
-- Do not paste spec/runbook wording into the UI. Settings and diagnostics copy must use product-facing language such as "当前状态" and "复习节奏", not implementation terms like `Source of truth`, `MVP`, `ReviewState`, `due_at`, or "fixed backend rules".
-- Do not calculate final score, result, `fsrs_rating`, `due_at`, or review scheduling in the frontend.
-- Do not reuse learning-page `lastRun` / `lastSubmit` as review-page recap data. Review UI should render review queue/session/result state from the review endpoints only.
-- Do not show unsupported compiled-language capabilities as runnable. Java/Go/C# are only `managed_compiled_test` teaching-grade single-exercise execution; C++ / Rust public routes stay disabled/unsupported.
-- Do not add new UI libraries, routers, or state managers without task scope and verification.
-- Do not rely on console output as the only user feedback.
+- Do not implement active product UI in `docs/design/` or reintroduce old
+  Onboarding/Learning/Review/Notes pages, Graph-specific SSE parsers, dashboard
+  or resume bootstrap calls.
+- Do not let local storage, a stale `planId`, a client route or a checkbox turn
+  `cutover` into `tutor`; only the server `verified` decision authorizes the
+  workspace.
+- Do not show provider keys/errors/reasoning, prompt/trace/checkpoint data,
+  hidden tests, reference answers, complete learner code, container details,
+  commands or paths.
+- Do not calculate run terminal state, Skill/effect permission, plan rollback,
+  memory mutation, scheduler policy or cutover deletion scope in the frontend.
+- Do not turn background activity/inbox into a chat message or desktop
+  notification, or expose a runner/subprocess action.
+- Do not add UI libraries, routers, or state managers without task scope and
+  verification.
 
 ---
 
 ## Required Patterns
 
-- Run desktop commands from `aearn/` or `aearn/apps/desktop/`, not from the repository root.
-- Keep loading, error, disabled, retry, and stale states visible for long operations.
-- Keep generated exercise cards in the conversation flow, not as a separate fixed workbench unless the product spec changes.
-- Use backend responses as source of truth for run/submit results.
-- Preserve responsive behavior for narrow windows.
-- Keep `src-tauri/icons/icon.ico` present for Windows Tauri checks.
-- Runtime sidebar, conversation, and draft panels must render real user/plan/session data or explicit empty states. Do not use prototype fallback lesson titles, canned chat messages, or fake draft modules in `aearn/apps/desktop/src/`.
+- Run desktop commands from `aearn/` or `aearn/apps/desktop/`, not the repo
+  root; run `pnpm --dir .\aearn desktop:check` after source/type changes.
+- Bootstrap local `userId`, normalize `planId=null`, fetch user then server
+  cutover decision, and route only to welcome/cutover/tutor from that decision.
+- Keep loading, API error, disabled, retry and SSE terminal/incomplete states
+  visible using stable public error codes.
+- Parse Tutor SSE as unknown at the boundary; only a validated non-negative
+  durable event ID advances `Last-Event-ID`. An id-less error remains terminal
+  feedback and never changes the cursor.
+- Render real Tutor conversation/activity/inbox/memory/plan/preference data or
+  explicit empty states; keep narrow-window primary actions and Composer
+  reachable.
+- Treat the backend as authority for run status, terminal result, user scope,
+  preference state and all mutations; generate only bounded client action IDs.
 
 ---
 
 ## Testing Requirements
 
-- Run `pnpm desktop:check` from `aearn/` after desktop code changes.
-- Run `pnpm --dir apps/desktop build` from `aearn/` when only the desktop package is in scope.
-- Treat Vite `chunk size is larger than 500 kB` warnings as build hygiene issues. Prefer targeted Rollup `manualChunks` for stable vendor groups such as React, assistant-ui, Monaco, Tauri, and app utilities before considering `chunkSizeWarningLimit`.
-- For Tauri shell changes, run `cargo check` from `aearn/apps/desktop/src-tauri` when practical.
-- For visible UI changes, open the local Vite or Tauri target and verify loading/error/responsive behavior.
-- For API-connected UI, cover happy path, API error, offline, retry, stale result, and disabled unsupported runtime states.
+- Run `pnpm --dir .\aearn desktop:check` after frontend changes.
+- For visible behavior, smoke `welcome -> cutover/tutor`, a verified fresh Tutor
+  entry, a blocked cutover, public API error, SSE reconnect/terminal behavior,
+  and narrow viewport overflow/primary action accessibility when a local target
+  is serving this checkout.
+- Verify a stale bootstrap never produces legacy dashboard/resume/plan/session
+  requests, and verified flow clears `planId` before mounting Tutor.
+- Do not substitute a build for cutover/API/SSE/backend validation; record the
+  fixture smoke and any unavailable local process explicitly.
 
 ---
 
 ## Code Review Checklist
 
-- The component names and page flow match `frontend-interaction-spec.md`.
-- The initial runtime conversation is empty until real user/session events exist; no demo `ConversationMessage` arrays or placeholder Agent bubbles are injected.
-- Sidebar learning and note entries come from `CreatedPlanResponse.knowledge_points` or a visible empty state, not fixed DOM/Python example titles.
-- UI labels avoid backend-internal Attempt and FSRS implementation terms.
-- Result, rating, next-action, and hard-gate enums use shared user-facing label helpers instead of local one-off switch statements.
-- Settings page copy preserves the documented category boundary while staying user-facing rather than spec-facing.
-- Async operations have user-visible state and do not allow duplicate writes while pending.
-- Old run output cannot masquerade as current output after code changes.
-- API errors branch on stable `error.code`, not free-form messages.
-- Build/type-check commands were run from the correct workspace.
+- `App.tsx`, `useAppStore`, API validators/types, pages and hooks agree on the
+  four current routes and server-authoritative cutover state.
+- Tutor workspace sees only safe public projections; no internal fields are
+  passed through `unknown` parsing or rendered as fallback text.
+- Stream retry preserves the last valid numeric cursor and does not invent run
+  completion locally.
+- Activity/inbox, memory and plan controls use public IDs and idempotency action
+  IDs without crossing user scope.
+- The changed layout remains usable at narrow widths and does not rely on
+  removed legacy components/state stores.
+
+---
 
 ## Scenario: M2 Desktop Onboarding Flow
 

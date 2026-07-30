@@ -160,3 +160,25 @@ Create detailed flow docs when:
 - Multiple teams are involved
 - Data format is complex
 - Feature has caused bugs before
+
+## Integration Catalog and Shared Queue Checklist
+
+When a cross-layer change extends a catalog, adds a target adapter, or reuses a
+shared database queue:
+
+- [ ] Resolve a semantic catalog entry by exact stable key/version, never by
+  list position or a display label.
+- [ ] Classify each module as core Harness or an approved target adapter before
+  changing static boundary tests; a narrow data-access allow-list must not
+  permit Graph, router, tool, runner, subprocess, or legacy-conversation paths.
+- [ ] For shared queue fixture tests, make isolation explicit and trace it
+  through seed, claim, and expired-lease recovery; assert another user's rows
+  remain untouched.
+- [ ] Keep the production worker's global queue semantics explicit. A scoped
+  test/maintenance operation must not silently change normal worker behavior.
+- [ ] When a shared fixture gains a new non-cascading root receipt or foreign
+  key, audit every test that commits fixture rows: cleanup must follow
+  child-to-root order and remove only its exact rows, or the next test can
+  inherit leaked singleton/queue state.
+- [ ] Read language/capability state from the current registry/source of truth,
+  not from an older fixture expectation.
