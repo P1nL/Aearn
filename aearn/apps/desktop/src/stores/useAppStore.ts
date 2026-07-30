@@ -1,600 +1,121 @@
 import { create } from "zustand";
 
 import {
-  API_BASE_URL,
   confirmHarnessCutover,
-  deleteLocalUser,
-  exportLocalUserData,
+  createUser,
   fetchApiHealth,
-  fetchDashboard,
   fetchHarnessCutover,
   fetchLanguageCourses,
-  fetchLearningHistory,
-  fetchLocalUsers,
-  fetchPlanDetail,
-  fetchResumeContext,
-  fetchUserDataSummary,
   fetchUserProfile,
-  resetLocalUserData,
-  startLearningSession,
 } from "../api";
-import type {
-  ApiHealthState,
-  AppRoute,
-  ConversationMessage,
-  ConversationToolCall,
-  LocalUsersState,
-  NavGroupKey,
-  SessionState,
-  UserDataSummaryState,
-} from "../appTypes";
-import { parsePartial } from "../lib/partialJson";
-import type {
-  CreatedPlanResponse,
-  DashboardResponse,
-  HarnessCutoverDecision,
-  LanguageCourse,
-  LocalUserExportPayload,
-  LocalUserListItem,
-  LearningHistoryResponse,
-  RunExerciseResponse,
-  SubmitExerciseResponse,
-  UserProfile,
-} from "../types";
-import { ApiRequestError } from "../types";
-import { NAV_DEFAULTS } from "../lib/appContent";
-import { readDevBootstrapContext } from "../lib/devBootstrap";
-import { formatErrorMessage } from "../lib/errorMessages";
-import { applyKnowledgePointUpdate, markKnowledgePointLearning } from "../lib/learningHelpers";
 import { clearBootstrapContext, readBootstrapContext, writeBootstrapContext } from "../lib/bootstrapStorage";
+import { getErrorInfo } from "../lib/errorMessages";
+import type { HarnessCutoverDecision, UserProfile } from "../types";
 
-export type DashboardState =
-  | { status: "idle" }
-  | { status: "loading" }
-  | { status: "ready"; data: DashboardResponse }
-  | { status: "error"; message: string };
+export type AppRoute = "loading" | "welcome" | "cutover" | "tutor";
+export type ApiHealthState =
+  | { status: "checking" }
+  | { status: "online" }
+  | { status: "offline"; message: string };
+export type DataActionState = "idle" | "loading" | "success" | "error";
 
-type ConversationMessagePatch = Partial<ConversationMessage> & {
-  appendText?: string;
-};
-
-type AppStore = {
-  apiHealth: ApiHealthState;
-  dashboardState: DashboardState;
-  courses: LanguageCourse[];
-  user: UserProfile | null;
-  createdPlan: CreatedPlanResponse | null;
-  sessionState: SessionState;
-  localUsersState: LocalUsersState;
-  userDataSummaryState: UserDataSummaryState;
-  dataActionState: "idle" | "loading" | "success" | "error";
-  dataActionMessage: string | null;
-  cutoverDecision: HarnessCutoverDecision | null;
-  bootstrapHydrated: boolean;
-  lastRun: RunExerciseResponse | null;
-  lastSubmit: SubmitExerciseResponse | null;
+type AppState = {
   activeRoute: AppRoute;
+  apiHealth: ApiHealthState;
+  bootstrapHydrated: boolean;
   sidebarOpen: boolean;
-  openGroups: Record<NavGroupKey, boolean>;
-  composerInput: string;
-  homeConversation: ConversationMessage[];
-  reviewConversation: ConversationMessage[];
-  resetNonce: number;
-
-  // Onboarding conversation state
-  onboardingMessages: ConversationMessage[];
-  onboardingSessionId: string | null;
-
-  // Simple setters
-  setUser: (user: UserProfile | null) => void;
-  setCreatedPlan: (plan: CreatedPlanResponse | null) => void;
-  setActiveRoute: (route: AppRoute) => void;
-  setLastRun: (run: RunExerciseResponse | null) => void;
-  setLastSubmit: (submit: SubmitExerciseResponse | null) => void;
-  clearLearningSession: () => void;
-  clearUserScopedState: (options?: { keepUser?: UserProfile | null; route?: AppRoute }) => void;
-  setComposerInput: (input: string) => void;
-  toggleSidebar: () => void;
-  toggleGroup: (group: NavGroupKey) => void;
-  addHomeMessage: (msg: ConversationMessage) => void;
-  updateHomeMessage: (id: string, patch: ConversationMessagePatch) => void;
-  addReviewMessage: (msg: ConversationMessage) => void;
-  updateReviewMessage: (id: string, patch: ConversationMessagePatch) => void;
-  setReviewConversation: (messages: ConversationMessage[]) => void;
-  clearReviewConversation: () => void;
-
-  // Onboarding conversation actions
-  addOnboardingMessage: (msg: ConversationMessage) => void;
-  updateOnboardingMessage: (id: string, patch: ConversationMessagePatch) => void;
-  setOnboardingSessionId: (id: string | null) => void;
-
-  // Tool call state machine (currently scoped to onboarding messages)
-  startOnboardingToolCall: (messageId: string, toolCallId: string, name: string) => void;
-  appendOnboardingToolCallDelta: (messageId: string, toolCallId: string, delta: string) => void;
-  finalizeOnboardingToolCall: (messageId: string, toolCallId: string, args: unknown) => void;
-  startHomeToolCall: (messageId: string, toolCallId: string, name: string) => void;
-  appendHomeToolCallDelta: (messageId: string, toolCallId: string, delta: string) => void;
-  finalizeHomeToolCall: (messageId: string, toolCallId: string, args: unknown) => void;
-
-  // Complex actions
+  user: UserProfile | null;
+  cutoverDecision: HarnessCutoverDecision | null;
+  dataActionState: DataActionState;
+  dataActionMessage: string | null;
   bootstrap: (signal?: AbortSignal) => Promise<void>;
-  refreshDashboard: (activeUserId?: string, signal?: AbortSignal) => Promise<void>;
-  loadLocalUsers: (signal?: AbortSignal) => Promise<void>;
-  loadUserDataSummary: (activeUserId?: string, signal?: AbortSignal) => Promise<void>;
-  switchLocalUser: (item: LocalUserListItem) => Promise<void>;
-  exportActiveUserData: () => Promise<LocalUserExportPayload | null>;
-  resetActiveUserData: () => Promise<boolean>;
-  deleteActiveUser: () => Promise<boolean>;
+  createLocalUser: (displayName: string) => Promise<boolean>;
   refreshHarnessCutover: () => Promise<void>;
   confirmHarnessCutover: () => Promise<boolean>;
-  openLearningSession: (planResponse: CreatedPlanResponse, knowledgePointId: string, activeUserId?: string, activateHome?: boolean) => Promise<void>;
-  handlePlanCreated: (plan: CreatedPlanResponse, activeUser: UserProfile) => Promise<void>;
-  handleKnowledgePointUpdate: (patch: SubmitExerciseResponse["KnowledgePoint"]) => void;
-  handleResumeShortcut: () => Promise<void>;
-  handleStartCurrentLearning: () => Promise<void>;
-  resetGoal: () => void;
+  toggleSidebar: () => void;
 };
 
-export const useAppStore = create<AppStore>((set, get) => ({
-  apiHealth: { status: "loading" },
-  dashboardState: { status: "idle" },
-  courses: [],
+export const useAppStore = create<AppState>((set, get) => ({
+  activeRoute: "loading",
+  apiHealth: { status: "checking" },
+  bootstrapHydrated: false,
+  sidebarOpen: true,
   user: null,
-  createdPlan: null,
-  sessionState: { status: "idle" },
-  localUsersState: { status: "idle" },
-  userDataSummaryState: { status: "idle" },
+  cutoverDecision: null,
   dataActionState: "idle",
   dataActionMessage: null,
-  cutoverDecision: null,
-  bootstrapHydrated: false,
-  lastRun: null,
-  lastSubmit: null,
-  activeRoute: "onboarding",
-  sidebarOpen: true,
-  openGroups: NAV_DEFAULTS,
-  composerInput: "",
-  homeConversation: [],
-  reviewConversation: [],
-  resetNonce: 0,
-  onboardingMessages: [],
-  onboardingSessionId: null,
-
-  setUser: (user) => set({ user }),
-  setCreatedPlan: (plan) => set({ createdPlan: plan }),
-  setActiveRoute: (route) => set({ activeRoute: route }),
-  setLastRun: (run) => set({ lastRun: run }),
-  setLastSubmit: (submit) => set({ lastSubmit: submit }),
-  clearLearningSession: () => set({ sessionState: { status: "idle" }, lastRun: null, lastSubmit: null, homeConversation: [] }),
-  clearUserScopedState: (options) =>
-    set({
-      user: options?.keepUser ?? null,
-      createdPlan: null,
-      sessionState: { status: "idle" },
-      dashboardState: { status: "idle" },
-      lastRun: null,
-      lastSubmit: null,
-      homeConversation: [],
-      reviewConversation: [],
-      onboardingMessages: [],
-      onboardingSessionId: null,
-      composerInput: "",
-      activeRoute: options?.route ?? "onboarding",
-      cutoverDecision: null,
-      resetNonce: get().resetNonce + 1,
-    }),
-  setComposerInput: (input) => set({ composerInput: input }),
-  toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
-  toggleGroup: (group) => set((s) => ({ openGroups: { ...s.openGroups, [group]: !s.openGroups[group] } })),
-  addHomeMessage: (msg) => set((s) => ({ homeConversation: [...s.homeConversation, msg] })),
-  updateHomeMessage: (id, patch) =>
-    set((s) => ({
-      homeConversation: s.homeConversation.map((message) => {
-        if (message.id !== id) {
-          return message;
-        }
-        const { appendText, ...messagePatch } = patch;
-        return {
-          ...message,
-          ...messagePatch,
-          text: appendText ? `${message.text}${appendText}` : (messagePatch.text ?? message.text),
-        };
-      }),
-    })),
-  addReviewMessage: (msg) => set((s) => ({ reviewConversation: [...s.reviewConversation, msg] })),
-  updateReviewMessage: (id, patch) =>
-    set((s) => ({
-      reviewConversation: s.reviewConversation.map((message) => {
-        if (message.id !== id) {
-          return message;
-        }
-        const { appendText, ...messagePatch } = patch;
-        return {
-          ...message,
-          ...messagePatch,
-          text: appendText ? `${message.text}${appendText}` : (messagePatch.text ?? message.text),
-        };
-      }),
-    })),
-  setReviewConversation: (messages) => set({ reviewConversation: messages }),
-  clearReviewConversation: () => set({ reviewConversation: [] }),
-  addOnboardingMessage: (msg) => set((s) => ({ onboardingMessages: [...s.onboardingMessages, msg] })),
-  updateOnboardingMessage: (id, patch) =>
-    set((s) => ({
-      onboardingMessages: s.onboardingMessages.map((message) => {
-        if (message.id !== id) {
-          return message;
-        }
-        const { appendText, ...messagePatch } = patch;
-        return {
-          ...message,
-          ...messagePatch,
-          text: appendText ? `${message.text}${appendText}` : (messagePatch.text ?? message.text),
-        };
-      }),
-    })),
-  setOnboardingSessionId: (id) => set({ onboardingSessionId: id }),
-
-  startOnboardingToolCall: (messageId, toolCallId, name) =>
-    set((s) => ({
-      onboardingMessages: s.onboardingMessages.map((message) => {
-        if (message.id !== messageId) return message;
-        const existing = message.toolCalls ?? [];
-        if (existing.some((entry) => entry.id === toolCallId)) {
-          return message;
-        }
-        const toolCall: ConversationToolCall = {
-          id: toolCallId,
-          name,
-          args: null,
-          argsBuffer: "",
-          status: "pending",
-        };
-        return { ...message, toolCalls: [...existing, toolCall] };
-      }),
-    })),
-  appendOnboardingToolCallDelta: (messageId, toolCallId, delta) =>
-    set((s) => ({
-      onboardingMessages: s.onboardingMessages.map((message) => {
-        if (message.id !== messageId) return message;
-        const existing = message.toolCalls ?? [];
-        if (existing.length === 0) return message;
-        return {
-          ...message,
-          toolCalls: existing.map((entry) => {
-            if (entry.id !== toolCallId) return entry;
-            const nextBuffer = `${entry.argsBuffer}${delta}`;
-            const parsed = parsePartial(nextBuffer);
-            return {
-              ...entry,
-              argsBuffer: nextBuffer,
-              args: parsed ?? entry.args,
-              status: "running" as const,
-            };
-          }),
-        };
-      }),
-    })),
-  finalizeOnboardingToolCall: (messageId, toolCallId, args) =>
-    set((s) => ({
-      onboardingMessages: s.onboardingMessages.map((message) => {
-        if (message.id !== messageId) return message;
-        const existing = message.toolCalls ?? [];
-        if (existing.length === 0) return message;
-        return {
-          ...message,
-          toolCalls: existing.map((entry) =>
-            entry.id === toolCallId
-              ? { ...entry, args, status: "done" as const }
-              : entry,
-          ),
-        };
-      }),
-    })),
-
-  startHomeToolCall: (messageId, toolCallId, name) =>
-    set((s) => ({
-      homeConversation: s.homeConversation.map((message) => {
-        if (message.id !== messageId) return message;
-        const existing = message.toolCalls ?? [];
-        if (existing.some((entry) => entry.id === toolCallId)) {
-          return message;
-        }
-        const toolCall: ConversationToolCall = {
-          id: toolCallId,
-          name,
-          args: null,
-          argsBuffer: "",
-          status: "pending",
-        };
-        return { ...message, toolCalls: [...existing, toolCall] };
-      }),
-    })),
-  appendHomeToolCallDelta: (messageId, toolCallId, delta) =>
-    set((s) => ({
-      homeConversation: s.homeConversation.map((message) => {
-        if (message.id !== messageId) return message;
-        const existing = message.toolCalls ?? [];
-        if (existing.length === 0) return message;
-        return {
-          ...message,
-          toolCalls: existing.map((entry) => {
-            if (entry.id !== toolCallId) return entry;
-            const nextBuffer = `${entry.argsBuffer}${delta}`;
-            const parsed = parsePartial(nextBuffer);
-            return {
-              ...entry,
-              argsBuffer: nextBuffer,
-              args: parsed ?? entry.args,
-              status: "running" as const,
-            };
-          }),
-        };
-      }),
-    })),
-  finalizeHomeToolCall: (messageId, toolCallId, args) =>
-    set((s) => ({
-      homeConversation: s.homeConversation.map((message) => {
-        if (message.id !== messageId) return message;
-        const existing = message.toolCalls ?? [];
-        if (existing.length === 0) return message;
-        return {
-          ...message,
-          toolCalls: existing.map((entry) =>
-            entry.id === toolCallId
-              ? { ...entry, args, status: "done" as const }
-              : entry,
-          ),
-        };
-      }),
-    })),
 
   bootstrap: async (signal) => {
-    set({
-      bootstrapHydrated: false,
-      apiHealth: { status: "loading" },
-      dashboardState: { status: "loading" },
-      cutoverDecision: null,
-    });
-
-    try {
-      const [health, catalog] = await Promise.all([fetchApiHealth(signal), fetchLanguageCourses(signal)]);
-      set({ apiHealth: { status: "online", data: health }, courses: catalog });
-
-      const devBootstrap = await readDevBootstrapContext(signal);
-      if (signal?.aborted) return;
-      if (devBootstrap) {
-        writeBootstrapContext(devBootstrap);
-      }
-      const stored = devBootstrap ?? readBootstrapContext();
-      if (!stored.userId) {
-        set({ dashboardState: { status: "idle" } });
-        return;
-      }
-
-      const loadedUser = await fetchUserProfile(stored.userId, signal);
-      if (signal?.aborted) return;
-      set({ user: loadedUser });
-
-      const cutover = await fetchHarnessCutover(stored.userId, signal);
-      if (signal?.aborted) return;
-      if (cutover.rollout_active) {
-        writeBootstrapContext({ userId: loadedUser.id, planId: null });
-        get().clearUserScopedState({
-          keepUser: loadedUser,
-          route: cutover.state === "verified" ? "tutor" : "cutover",
-        });
-        set({ cutoverDecision: cutover, user: loadedUser });
-        return;
-      }
-
-      if (!stored.planId) {
-        set({ createdPlan: null, sessionState: { status: "idle" }, dashboardState: { status: "idle" }, activeRoute: "onboarding" });
-        return;
-      }
-
-      const [plan, dashboardResponse] = await Promise.all([
-        fetchPlanDetail(stored.planId, stored.userId, signal),
-        fetchDashboard(stored.userId, signal),
-      ]);
-      if (signal?.aborted) return;
-
-      set({ createdPlan: plan, dashboardState: { status: "ready", data: dashboardResponse } });
-
-      if (dashboardResponse.next_entry_point.type === "review") {
-        set({ activeRoute: "review", sessionState: { status: "idle" } });
-        return;
-      }
-
-      if (dashboardResponse.next_entry_point.type === "resume") {
-        const resume = await fetchResumeContext(stored.userId, plan.LearningPlan.id, signal);
-        if (signal?.aborted) return;
-        if (resume.resume_available && resume.next_entry_point.knowledge_point_id) {
-          await get().openLearningSession(plan, resume.next_entry_point.knowledge_point_id, stored.userId);
-          return;
-        }
-        if (resume.next_entry_point.knowledge_point_id) {
-          await get().openLearningSession(plan, resume.next_entry_point.knowledge_point_id, stored.userId);
-          return;
-        }
-      }
-
-      if (dashboardResponse.next_entry_point.type === "learning_session" && dashboardResponse.next_entry_point.knowledge_point_id) {
-        await get().openLearningSession(plan, dashboardResponse.next_entry_point.knowledge_point_id, stored.userId);
-        return;
-      }
-
-      set({ activeRoute: "home" });
-    } catch (error) {
-      if (signal?.aborted) return;
-      if (error instanceof ApiRequestError && (error.apiError.code === "USER_NOT_FOUND" || error.apiError.code === "PLAN_NOT_FOUND")) {
-        clearBootstrapContext();
-        set({ user: null, createdPlan: null, sessionState: { status: "idle" }, activeRoute: "onboarding", dashboardState: { status: "idle" } });
-        return;
-      }
-      set({
-        apiHealth: { status: "offline", message: error instanceof Error ? error.message : "Unable to reach API service" },
-        dashboardState: { status: "error", message: formatErrorMessage(error, "无法恢复 dashboard") },
-      });
-    } finally {
-      if (!signal?.aborted) {
-        set({ bootstrapHydrated: true });
-      }
+    set({ activeRoute: "loading", bootstrapHydrated: false, dataActionMessage: null });
+    const [healthResult, catalogResult] = await Promise.allSettled([
+      fetchApiHealth(signal),
+      fetchLanguageCourses(signal),
+    ]);
+    if (signal?.aborted) return;
+    if (healthResult.status === "fulfilled") {
+      set({ apiHealth: { status: "online" } });
+    } else {
+      set({ apiHealth: { status: "offline", message: getErrorInfo(healthResult.reason).message } });
     }
-  },
+    if (catalogResult.status === "rejected" && healthResult.status === "fulfilled") {
+      set({ dataActionMessage: `课程目录暂不可用：${getErrorInfo(catalogResult.reason).message}` });
+    }
 
-  refreshDashboard: async (activeUserId, signal) => {
-    const userId = activeUserId ?? get().user?.id;
-    if (!userId) {
-      set({ dashboardState: { status: "idle" } });
+    const stored = readBootstrapContext();
+    if (!stored.userId) {
+      set({ activeRoute: "welcome", bootstrapHydrated: true });
       return;
     }
-    try {
-      const response = await fetchDashboard(userId, signal);
-      if (signal?.aborted) return;
-      set({ dashboardState: { status: "ready", data: response } });
-    } catch (error) {
-      if (signal?.aborted) return;
-      set({ dashboardState: { status: "error", message: formatErrorMessage(error, "无法刷新 dashboard") } });
-    }
-  },
 
-  loadLocalUsers: async (signal) => {
-    set({ localUsersState: { status: "loading" } });
     try {
-      const response = await fetchLocalUsers(signal);
+      const user = await fetchUserProfile(stored.userId, signal);
       if (signal?.aborted) return;
-      set({ localUsersState: { status: "ready", items: response.items } });
-    } catch (error) {
+      writeBootstrapContext({ userId: user.id, planId: null });
+      const decision = await fetchHarnessCutover(user.id, signal);
       if (signal?.aborted) return;
-      set({ localUsersState: { status: "error", message: formatErrorMessage(error, "无法读取本地用户") } });
-    }
-  },
-
-  loadUserDataSummary: async (activeUserId, signal) => {
-    const userId = activeUserId ?? get().user?.id;
-    if (!userId) {
-      set({ userDataSummaryState: { status: "idle" } });
-      return;
-    }
-    set({ userDataSummaryState: { status: "loading" } });
-    try {
-      const summary = await fetchUserDataSummary(userId, signal);
-      if (signal?.aborted) return;
-      set({ userDataSummaryState: { status: "ready", data: summary } });
-    } catch (error) {
-      if (signal?.aborted) return;
-      set({ userDataSummaryState: { status: "error", message: formatErrorMessage(error, "无法读取本地记录摘要") } });
-    }
-  },
-
-  switchLocalUser: async (item) => {
-    set({ dataActionState: "loading", dataActionMessage: "正在切换本地用户..." });
-    try {
-      const loadedUser = await fetchUserProfile(item.id);
-      writeBootstrapContext({ userId: loadedUser.id, planId: null });
-      get().clearUserScopedState({ keepUser: loadedUser, route: "onboarding" });
-      set({ user: loadedUser, dataActionState: "success", dataActionMessage: "已切换本地用户" });
-      const cutover = await fetchHarnessCutover(item.id);
-      if (cutover.rollout_active) {
-        get().clearUserScopedState({
-          keepUser: loadedUser,
-          route: cutover.state === "verified" ? "tutor" : "cutover",
-        });
-        set({
-          user: loadedUser,
-          cutoverDecision: cutover,
-          dataActionState: "success",
-          dataActionMessage: cutover.state === "verified" ? "已进入 Tutor 学习入口" : "需要先完成 Tutor 切换",
-        });
-        void get().loadLocalUsers();
-        return;
-      }
-      if (item.active_plan_id) {
-        const [plan, dashboardResponse] = await Promise.all([
-          fetchPlanDetail(item.active_plan_id, item.id),
-          fetchDashboard(item.id),
-        ]);
-        writeBootstrapContext({ userId: item.id, planId: plan.LearningPlan.id });
-        set({ createdPlan: plan, dashboardState: { status: "ready", data: dashboardResponse } });
-        const next = dashboardResponse.next_entry_point;
-        if (next.type === "review") {
-          set({ activeRoute: "review" });
-        } else if (next.type === "resume") {
-          const resume = await fetchResumeContext(item.id, plan.LearningPlan.id);
-          if (resume.next_entry_point.knowledge_point_id) {
-            await get().openLearningSession(plan, resume.next_entry_point.knowledge_point_id, item.id);
-          } else {
-            set({ activeRoute: "home" });
-          }
-        } else if (next.knowledge_point_id) {
-          await get().openLearningSession(plan, next.knowledge_point_id, item.id);
-        } else {
-          set({ activeRoute: "home" });
-        }
-      }
-      void get().loadLocalUsers();
-      void get().loadUserDataSummary(item.id);
-    } catch (error) {
-      set({ dataActionState: "error", dataActionMessage: formatErrorMessage(error, "切换本地用户失败") });
-    }
-  },
-
-  exportActiveUserData: async () => {
-    const user = get().user;
-    if (!user) return null;
-    set({ dataActionState: "loading", dataActionMessage: "正在生成导出文件..." });
-    try {
-      const payload = await exportLocalUserData(user.id);
-      const filename = `aearn-export-${user.display_name || "user"}-${new Date().toISOString().slice(0, 10)}.json`;
-      downloadJson(filename, payload);
-      set({ dataActionState: "success", dataActionMessage: "导出文件已生成" });
-      return payload;
-    } catch (error) {
-      set({ dataActionState: "error", dataActionMessage: formatErrorMessage(error, "导出本地记录失败") });
-      return null;
-    }
-  },
-
-  resetActiveUserData: async () => {
-    const user = get().user;
-    if (!user) return false;
-    set({ dataActionState: "loading", dataActionMessage: "正在重置学习数据..." });
-    try {
-      const response = await resetLocalUserData(user.id);
-      writeBootstrapContext({ userId: response.user.id, planId: null });
-      get().clearUserScopedState({ keepUser: response.user, route: "onboarding" });
       set({
-        user: response.user,
-        userDataSummaryState: { status: "ready", data: response.summary },
-        dataActionState: "success",
-        dataActionMessage: "学习数据已重置，用户资料和偏好已保留",
+        user,
+        cutoverDecision: decision,
+        activeRoute: routeForDecision(decision),
+        bootstrapHydrated: true,
+        dataActionState: "idle",
       });
-      void get().loadLocalUsers();
-      return true;
     } catch (error) {
-      set({ dataActionState: "error", dataActionMessage: formatErrorMessage(error, "重置学习数据失败") });
+      if (signal?.aborted) return;
+      clearBootstrapContext();
+      set({
+        user: null,
+        cutoverDecision: null,
+        activeRoute: "welcome",
+        bootstrapHydrated: true,
+        dataActionState: "error",
+        dataActionMessage: `无法恢复本地身份：${getErrorInfo(error).message}`,
+      });
+    }
+  },
+
+  createLocalUser: async (displayName) => {
+    const normalized = displayName.trim();
+    if (!normalized) {
+      set({ dataActionState: "error", dataActionMessage: "请先填写一个显示名称。" });
       return false;
     }
-  },
-
-  deleteActiveUser: async () => {
-    const user = get().user;
-    if (!user) return false;
-    set({ dataActionState: "loading", dataActionMessage: "正在删除本地用户..." });
+    set({ dataActionState: "loading", dataActionMessage: null });
     try {
-      await deleteLocalUser(user.id);
-      clearBootstrapContext();
-      get().clearUserScopedState({ keepUser: null, route: "onboarding" });
+      const user = await createUser(normalized);
+      writeBootstrapContext({ userId: user.id, planId: null });
+      const decision = await fetchHarnessCutover(user.id);
       set({
-        userDataSummaryState: { status: "idle" },
+        user,
+        cutoverDecision: decision,
+        activeRoute: routeForDecision(decision),
+        bootstrapHydrated: true,
         dataActionState: "success",
-        dataActionMessage: "本地用户已删除",
+        dataActionMessage: decision.state === "verified" ? "已创建本地身份，欢迎开始你的学习目标。" : null,
       });
-      void get().loadLocalUsers();
       return true;
     } catch (error) {
-      set({ dataActionState: "error", dataActionMessage: formatErrorMessage(error, "删除本地用户失败") });
+      set({ dataActionState: "error", dataActionMessage: getErrorInfo(error).message });
       return false;
     }
   },
@@ -602,258 +123,59 @@ export const useAppStore = create<AppStore>((set, get) => ({
   refreshHarnessCutover: async () => {
     const user = get().user;
     if (!user) return;
-    set({ dataActionState: "loading", dataActionMessage: "正在重新检查 Tutor 切换状态..." });
+    set({ dataActionState: "loading", dataActionMessage: null });
     try {
       const decision = await fetchHarnessCutover(user.id);
-      if (!decision.rollout_active) {
-        set({
-          cutoverDecision: null,
-          dataActionState: "success",
-          dataActionMessage: "当前仍保持既有学习流程",
-        });
-        return;
-      }
-      writeBootstrapContext({ userId: user.id, planId: null });
-      get().clearUserScopedState({
-        keepUser: user,
-        route: decision.state === "verified" ? "tutor" : "cutover",
-      });
       set({
-        user,
         cutoverDecision: decision,
-        dataActionState: "success",
-        dataActionMessage: decision.state === "verified" ? "切换已验证，可以开始新的 Tutor 对话" : "已刷新服务器摘要",
+        activeRoute: routeForDecision(decision),
+        dataActionState: "idle",
+        dataActionMessage: null,
       });
     } catch (error) {
-      set({ dataActionState: "error", dataActionMessage: formatErrorMessage(error, "无法读取 Tutor 切换状态") });
+      set({ dataActionState: "error", dataActionMessage: getErrorInfo(error).message });
     }
   },
 
   confirmHarnessCutover: async () => {
     const { user, cutoverDecision } = get();
-    if (!user || !cutoverDecision || cutoverDecision.state !== "summary_ready") return false;
-    if (
-      typeof cutoverDecision.summary_version !== "number"
-      || !cutoverDecision.preview_nonce
-      || !cutoverDecision.summary_hash
-    ) {
-      set({ dataActionState: "error", dataActionMessage: "切换摘要不完整，请先刷新。" });
+    if (!user || !cutoverDecision || cutoverDecision.state !== "summary_ready") {
+      set({ dataActionState: "error", dataActionMessage: "当前没有可确认的服务器清理摘要。" });
       return false;
     }
-    set({ dataActionState: "loading", dataActionMessage: "正在由服务器核对并清理旧学习记录..." });
+    const { cutover_version, summary_version, preview_nonce, summary_hash } = cutoverDecision;
+    if (summary_version === undefined || !preview_nonce || !summary_hash) {
+      set({ dataActionState: "error", dataActionMessage: "服务器摘要不完整，请先刷新。" });
+      return false;
+    }
+    set({ dataActionState: "loading", dataActionMessage: null });
     try {
       const decision = await confirmHarnessCutover({
         userId: user.id,
-        cutoverVersion: cutoverDecision.cutover_version,
-        summaryVersion: cutoverDecision.summary_version,
-        previewNonce: cutoverDecision.preview_nonce,
-        summaryHash: cutoverDecision.summary_hash,
-        clientActionId: createCutoverActionId(),
+        cutoverVersion: cutover_version,
+        summaryVersion: summary_version,
+        previewNonce: preview_nonce,
+        summaryHash: summary_hash,
+        clientActionId: `cutover:${user.id}:${Date.now()}:${Math.random().toString(16).slice(2)}`,
       });
-      if (decision.state !== "verified") {
-        set({ cutoverDecision: decision, dataActionState: "error", dataActionMessage: "服务器未确认切换，请刷新摘要后重试。" });
-        return false;
-      }
-      const retainedUser = await fetchUserProfile(user.id).catch(() => clearLegacyUserFields(user));
-      writeBootstrapContext({ userId: retainedUser.id, planId: null });
-      get().clearUserScopedState({ keepUser: retainedUser, route: "tutor" });
+      writeBootstrapContext({ userId: user.id, planId: null });
+      const enteredTutor = decision.state === "verified";
       set({
-        user: retainedUser,
         cutoverDecision: decision,
-        dataActionState: "success",
-        dataActionMessage: "旧学习记录已验证清理完成，已进入新的 Tutor 对话。",
+        activeRoute: routeForDecision(decision),
+        dataActionState: enteredTutor ? "success" : "error",
+        dataActionMessage: enteredTutor ? "旧学习记录已按服务器摘要清理，已进入新的 Tutor 工作区。" : "服务器未允许进入 Tutor，请查看当前状态。",
       });
-      return true;
+      return enteredTutor;
     } catch (error) {
-      set({ dataActionState: "error", dataActionMessage: formatErrorMessage(error, "Tutor 切换未完成") });
+      set({ dataActionState: "error", dataActionMessage: getErrorInfo(error).message });
       return false;
     }
   },
 
-  openLearningSession: async (planResponse, knowledgePointId, activeUserId, activateHome = true) => {
-    const userId = activeUserId ?? get().user?.id;
-    if (!userId) {
-      set({ sessionState: { status: "error", knowledgePointId, message: "请先完成用户建档" } });
-      return;
-    }
-
-    set({ sessionState: { status: "loading", knowledgePointId }, lastRun: null, lastSubmit: null });
-    try {
-      const response = await startLearningSession({ userId, planId: planResponse.LearningPlan.id, knowledgePointId });
-      const restoredMessages = await restoreLearningConversationMessages({
-        userId,
-        knowledgePointId,
-        sessionId: response.session_id,
-      });
-      set({
-        sessionState: { status: "ready", data: response },
-        lastRun: response.latest_run ?? null,
-        lastSubmit: response.latest_submit ?? null,
-        homeConversation: restoredMessages,
-        createdPlan: markKnowledgePointLearning(get().createdPlan ?? planResponse, knowledgePointId),
-        ...(activateHome ? { activeRoute: "home" as const } : {}),
-      });
-      void get().refreshDashboard(userId);
-    } catch (error) {
-      set({
-        sessionState: { status: "error", knowledgePointId, message: formatErrorMessage(error, "无法启动学习会话") },
-        ...(activateHome ? { activeRoute: "home" as const } : {}),
-      });
-    }
-  },
-
-  handlePlanCreated: async (plan, activeUser) => {
-    writeBootstrapContext({ userId: activeUser.id, planId: plan.LearningPlan.id });
-    set({ user: activeUser, createdPlan: plan, sessionState: { status: "idle" }, lastRun: null, lastSubmit: null, dashboardState: { status: "idle" } });
-    const nextKnowledgePointId = plan.next_entry_point.knowledge_point_id;
-    if (nextKnowledgePointId) {
-      await get().openLearningSession(plan, nextKnowledgePointId, activeUser.id);
-      return;
-    }
-    set({ activeRoute: "home" });
-  },
-
-  handleKnowledgePointUpdate: (patch) => {
-    const { createdPlan, sessionState } = get();
-    set({
-      createdPlan: createdPlan ? applyKnowledgePointUpdate(createdPlan, patch) : createdPlan,
-      sessionState:
-        sessionState.status === "ready"
-          ? {
-              status: "ready",
-              data: {
-                ...sessionState.data,
-                context_snapshot: {
-                  ...sessionState.data.context_snapshot,
-                  KnowledgePoint: { ...sessionState.data.context_snapshot.KnowledgePoint, status: patch.status },
-                },
-              },
-            }
-          : sessionState,
-    });
-    void get().refreshDashboard();
-  },
-
-  handleResumeShortcut: async () => {
-    const { user, createdPlan } = get();
-    if (!user || !createdPlan) return;
-    try {
-      const resume = await fetchResumeContext(user.id, createdPlan.LearningPlan.id);
-      if (resume.next_entry_point.knowledge_point_id) {
-        await get().openLearningSession(createdPlan, resume.next_entry_point.knowledge_point_id, user.id);
-        return;
-      }
-      set({ activeRoute: "home" });
-    } catch (error) {
-      set({ dashboardState: { status: "error", message: formatErrorMessage(error, "无法恢复上次学习") } });
-    }
-  },
-
-  handleStartCurrentLearning: async () => {
-    const { createdPlan, dashboardState } = get();
-    const dashboard = dashboardState.status === "ready" ? dashboardState.data : null;
-    if (!createdPlan || !dashboard) return;
-    const knowledgePointId =
-      dashboard.next_entry_point.type === "learning_session"
-        ? dashboard.next_entry_point.knowledge_point_id
-        : dashboard.today_learning_tasks[0]?.knowledge_point_id ?? createdPlan.next_entry_point.knowledge_point_id;
-    if (!knowledgePointId) {
-      set({ activeRoute: "home" });
-      return;
-    }
-    await get().openLearningSession(createdPlan, knowledgePointId);
-  },
-
-  resetGoal: () => {
-    set({
-      createdPlan: null,
-      sessionState: { status: "idle" },
-      dashboardState: { status: "idle" },
-      lastRun: null,
-      lastSubmit: null,
-      homeConversation: [],
-      reviewConversation: [],
-      onboardingMessages: [],
-      onboardingSessionId: null,
-      composerInput: "",
-      activeRoute: "onboarding",
-      cutoverDecision: null,
-      resetNonce: get().resetNonce + 1,
-    });
-  },
+  toggleSidebar: () => set((state) => ({ sidebarOpen: !state.sidebarOpen })),
 }));
 
-function downloadJson(filename: string, payload: unknown) {
-  if (typeof window === "undefined") {
-    return;
-  }
-  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
-  const url = window.URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = filename.replace(/[\\/:*?"<>|]/g, "_");
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  window.URL.revokeObjectURL(url);
-}
-
-function createCutoverActionId(): string {
-  const random = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  return `harness-cutover:${random}`;
-}
-
-function clearLegacyUserFields(user: UserProfile): UserProfile {
-  return {
-    ...user,
-    learning_style: null,
-    teaching_preference: null,
-    encouragement_preference: null,
-    profession: null,
-    background_context: null,
-  };
-}
-
-async function restoreLearningConversationMessages(input: {
-  userId: string;
-  knowledgePointId: string;
-  sessionId: string;
-}): Promise<ConversationMessage[]> {
-  try {
-    const history = await fetchLearningHistory({
-      userId: input.userId,
-      knowledgePointId: input.knowledgePointId,
-      activeSessionId: input.sessionId,
-    });
-    return activeLearningHistoryMessages(history, input.sessionId);
-  } catch {
-    return [];
-  }
-}
-
-function activeLearningHistoryMessages(
-  history: LearningHistoryResponse,
-  sessionId: string,
-): ConversationMessage[] {
-  const activeSession = history.sessions.find((session) => session.session_id === sessionId);
-  if (!activeSession) {
-    return [];
-  }
-  return activeSession.messages.map((message) => {
-    const toolCalls = (message.tool_calls ?? []).map((toolCall) => ({
-      id: toolCall.id,
-      name: toolCall.name,
-      args: toolCall.args,
-      argsBuffer: "",
-      status: toolCall.status,
-    }));
-    return {
-      id: `history-${message.id}`,
-      speaker: message.role === "user" ? "user" : "agent",
-      text: message.content,
-      label: message.role === "agent" ? "Agent" : undefined,
-      status: "done",
-      ...(toolCalls.length > 0 ? { toolCalls } : {}),
-    };
-  });
+function routeForDecision(decision: HarnessCutoverDecision): AppRoute {
+  return decision.state === "verified" ? "tutor" : "cutover";
 }

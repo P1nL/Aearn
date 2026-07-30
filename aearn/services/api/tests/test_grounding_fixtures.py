@@ -44,18 +44,18 @@ def test_fixture_documents_for_language_supports_aliases_and_unknowns() -> None:
     assert fixture_documents_for_language("unknown") == ()
 
 
-def test_non_public_language_fixtures_do_not_change_runtime_capabilities() -> None:
-    expected_execution_support = {
-        "typescript": True,
-        "go": True,
-        "csharp": True,
-        "rust": False,
-        "sql": True,
+def test_fixture_documents_preserve_current_public_language_capabilities() -> None:
+    expected_capabilities = {
+        "typescript": (True, True),
+        "go": (True, True),
+        "csharp": (True, True),
+        "rust": (False, False),
+        "sql": (True, True),
     }
 
-    for language_id, supports_execution in expected_execution_support.items():
+    for language_id, (enabled_for_public_selection, supports_execution) in expected_capabilities.items():
         capability = require_language_capability(language_id)
 
         assert fixture_documents_for_language(language_id)
-        assert capability.enabled_for_public_selection is False
+        assert capability.enabled_for_public_selection is enabled_for_public_selection
         assert capability.supports_execution is supports_execution

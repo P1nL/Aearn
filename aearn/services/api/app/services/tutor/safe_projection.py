@@ -16,7 +16,7 @@ from datetime import date, datetime
 from typing import Final
 from urllib.parse import urlparse
 
-from app.agents.runtime.redaction import redact_value
+from app.core.teaching_safety import redact_value
 
 
 SAFE_PROJECTION_VERSION: Final[str] = "tutor_safe_projection_v1"

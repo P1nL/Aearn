@@ -24,7 +24,6 @@ from app.agents.harness.contracts import (
     empty_checkpoint_metadata,
     terminal_status,
 )
-from app.core.config import Settings
 from app.services.tutor.ports import (
     Clock,
     DefaultDenyTutorDecisionGate,
@@ -535,15 +534,15 @@ class TutorRunLoop:
 
 
 class TutorHarnessService:
-    """An internal feature gate; no route, stream, or UI instantiates it in Child 00."""
+    """Tutor runtime execution boundary."""
 
     def __init__(self, *, loop: TutorRunLoop, enabled: bool) -> None:
         self._loop = loop
         self._enabled = enabled
 
     @classmethod
-    def from_settings(cls, *, loop: TutorRunLoop, settings: Settings) -> "TutorHarnessService":
-        return cls(loop=loop, enabled=settings.tutor_harness_enabled)
+    def enabled(cls, *, loop: TutorRunLoop) -> "TutorHarnessService":
+        return cls(loop=loop, enabled=True)
 
     def run(self, *, run_id: str, lease_owner_id: str) -> TutorRunResult:
         if not self._enabled:

@@ -1033,13 +1033,24 @@ END $$;
 
 CREATE TABLE IF NOT EXISTS tutor_proactive_preferences (
   user_id uuid PRIMARY KEY REFERENCES users(id) ON DELETE RESTRICT,
-  enabled boolean NOT NULL DEFAULT false,
+  enabled boolean NOT NULL DEFAULT true,
   hard_paused boolean NOT NULL DEFAULT false,
   policy_version text NOT NULL CHECK (char_length(policy_version) <= 160),
   setting_version text NOT NULL CHECK (char_length(setting_version) <= 160),
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- Earlier scheduler slices created unpaused preferences with enabled=false.
+-- The public control is pause/resume, so preserve explicit pauses but migrate
+-- the former default into the verified-only, controlled-delivery default.
+ALTER TABLE tutor_proactive_preferences
+  ALTER COLUMN enabled SET DEFAULT true;
+UPDATE tutor_proactive_preferences
+SET enabled = true,
+    updated_at = now()
+WHERE enabled = false
+  AND hard_paused = false;
 
 CREATE TABLE IF NOT EXISTS tutor_proactive_signals (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

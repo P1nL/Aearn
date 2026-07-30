@@ -7,11 +7,7 @@ import psycopg
 import pytest
 from fastapi.testclient import TestClient
 
-import app.routes.harness_cutover as harness_cutover_route
-import app.routes.tutor as tutor_route
-import app.routes.users as users_route
-import app.services.tutor.cutover as cutover_module
-from app.core.config import Settings, get_settings
+from app.core.config import get_settings
 from app.db.bootstrap import bootstrap_database
 from app.db.connection import connect
 from app.main import app
@@ -40,13 +36,8 @@ def client() -> TestClient:
 
 
 @pytest.fixture()
-def rollout_enabled(monkeypatch: pytest.MonkeyPatch) -> Settings:
-    settings = Settings(tutor_harness_enabled=True, llm_type="disabled")
-    monkeypatch.setattr(harness_cutover_route, "get_settings", lambda: settings)
-    monkeypatch.setattr(tutor_route, "get_settings", lambda: settings)
-    monkeypatch.setattr(users_route, "get_settings", lambda: settings)
-    monkeypatch.setattr(cutover_module, "get_settings", lambda: settings)
-    return settings
+def rollout_enabled() -> None:
+    """The Tutor cutover is the always-on product entry boundary."""
 
 
 @pytest.fixture()
@@ -324,7 +315,7 @@ def _seed_full_legacy_hierarchy(user_id: str) -> dict[str, object]:
 
 def test_confirm_is_explicit_exact_and_preserves_retained_settings(
     client: TestClient,
-    rollout_enabled: Settings,
+    rollout_enabled: None,
 ) -> None:
     del rollout_enabled
     owner = _create_user(client, legacy=True)
@@ -385,7 +376,7 @@ def test_confirm_is_explicit_exact_and_preserves_retained_settings(
         assert conn.execute("SELECT count(*)::int AS count FROM idempotency_records WHERE user_id = %s", (other["id"],)).fetchone()["count"] == 1
 
 
-def test_stale_and_cross_user_confirmation_do_not_delete(client: TestClient, rollout_enabled: Settings) -> None:
+def test_stale_and_cross_user_confirmation_do_not_delete(client: TestClient, rollout_enabled: None) -> None:
     del rollout_enabled
     owner = _create_user(client, legacy=True)
     other = _create_user(client, legacy=True)
@@ -413,7 +404,7 @@ def test_stale_and_cross_user_confirmation_do_not_delete(client: TestClient, rol
 
 def test_target_state_and_runtime_paths_fail_closed_without_deletion(
     client: TestClient,
-    rollout_enabled: Settings,
+    rollout_enabled: None,
 ) -> None:
     del rollout_enabled
     user = _create_user(client, legacy=True)
@@ -434,8 +425,7 @@ def test_target_state_and_runtime_paths_fail_closed_without_deletion(
     assert tutor_response.json()["error"]["code"] == "CUTOVER_TARGET_STATE_PRESENT"
 
     dashboard_response = client.get(f"/api/dashboard?user_id={user['id']}")
-    assert dashboard_response.status_code == 409
-    assert dashboard_response.json()["error"]["code"] == "CUTOVER_TARGET_STATE_PRESENT"
+    assert dashboard_response.status_code == 404
 
     with connect() as conn:
         assert conn.execute("SELECT learning_style FROM users WHERE id = %s", (user["id"],)).fetchone()["learning_style"] == "practice_first"
@@ -444,7 +434,7 @@ def test_target_state_and_runtime_paths_fail_closed_without_deletion(
 
 def test_cutover_deletes_full_legacy_hierarchy_and_only_owned_checkpoints(
     client: TestClient,
-    rollout_enabled: Settings,
+    rollout_enabled: None,
     public_checkpoint_tables: None,
 ) -> None:
     del rollout_enabled, public_checkpoint_tables
@@ -517,7 +507,7 @@ def test_cutover_deletes_full_legacy_hierarchy_and_only_owned_checkpoints(
 @pytest.mark.parametrize("unresolved_thread_id", ["aearn:learning:00000000-0000-0000-0000-000000000000", None])
 def test_cutover_blocks_unresolved_checkpoint_scope_without_deletion(
     client: TestClient,
-    rollout_enabled: Settings,
+    rollout_enabled: None,
     public_checkpoint_tables: None,
     unresolved_thread_id: str | None,
 ) -> None:
@@ -541,9 +531,9 @@ def test_cutover_blocks_unresolved_checkpoint_scope_without_deletion(
         assert user_row is not None and user_row["learning_style"] == "practice_first"
 
 
-def test_rollout_blocks_ordinary_reset_and_unscoped_legacy_requests(
+def test_cutover_blocks_ordinary_reset_and_legacy_routes_are_absent(
     client: TestClient,
-    rollout_enabled: Settings,
+    rollout_enabled: None,
 ) -> None:
     del rollout_enabled
     user = _create_user(client, legacy=True)
@@ -553,12 +543,10 @@ def test_rollout_blocks_ordinary_reset_and_unscoped_legacy_requests(
     assert reset.json()["error"]["code"] == "CUTOVER_REQUIRED"
 
     malformed_dashboard = client.get("/api/dashboard?user_id=not-a-uuid")
-    assert malformed_dashboard.status_code == 409
-    assert malformed_dashboard.json()["error"]["code"] == "CUTOVER_REQUIRED"
+    assert malformed_dashboard.status_code == 404
 
     unscoped_onboarding = client.get("/api/onboarding/sessions/not-a-session/messages")
-    assert unscoped_onboarding.status_code == 409
-    assert unscoped_onboarding.json()["error"]["code"] == "CUTOVER_REQUIRED"
+    assert unscoped_onboarding.status_code == 404
 
     with connect() as conn:
         row = conn.execute(
@@ -571,7 +559,7 @@ def test_rollout_blocks_ordinary_reset_and_unscoped_legacy_requests(
 
 def test_verified_user_can_only_enter_tutor_not_legacy_runtime(
     client: TestClient,
-    rollout_enabled: Settings,
+    rollout_enabled: None,
 ) -> None:
     del rollout_enabled
     user = _create_user(client, legacy=False)
@@ -581,15 +569,14 @@ def test_verified_user_can_only_enter_tutor_not_legacy_runtime(
     assert decision.json()["state"] == "verified"
 
     legacy_dashboard = client.get(f"/api/dashboard?user_id={user['id']}")
-    assert legacy_dashboard.status_code == 409
-    assert legacy_dashboard.json()["error"]["code"] == "CUTOVER_REQUIRED"
+    assert legacy_dashboard.status_code == 404
 
 
 def test_verification_failure_rolls_back_and_persists_safe_receipt(client: TestClient) -> None:
     user = _create_user(client, legacy=True)
     with connect() as conn:
         service = HarnessCutoverService(conn)
-        preview = service.get_decision(user_id=str(user["id"]), rollout_enabled=True)
+        preview = service.get_decision(user_id=str(user["id"]))
 
         def fail_before_verification(stage: str) -> None:
             if stage == "before_verification":
@@ -599,7 +586,6 @@ def test_verification_failure_rolls_back_and_persists_safe_receipt(client: TestC
         with pytest.raises(CutoverError) as raised:
             failing.confirm(
                 **_confirmation_body(str(user["id"]), preview),
-                rollout_enabled=True,
             )
         assert raised.value.code == "CUTOVER_VERIFICATION_FAILED"
         row = conn.execute("SELECT learning_style FROM users WHERE id = %s", (user["id"],)).fetchone()

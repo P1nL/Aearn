@@ -1,4 +1,4 @@
-"""Deterministic, feature-disabled proactive Tutor scheduling contracts and service."""
+"""Bounded, verified-only proactive Tutor scheduling contracts and service."""
 from __future__ import annotations
 
 import hashlib
@@ -32,16 +32,16 @@ _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 @dataclass(frozen=True)
 class TutorProactiveSchedulerConfig:
-    """Fail-closed policy facts for target-only background work."""
+    """Controlled default policy facts for verified-only background work."""
 
-    enabled: bool = False
-    hard_paused: bool = True
-    cutover_eligible: bool = False
+    enabled: bool = True
+    hard_paused: bool = False
+    cutover_eligible: bool = True
     inferred_memory_enabled: bool = False
-    proactive_daily_budget: int = 0
+    proactive_daily_budget: int = 1
     curation_daily_budget: int = 0
-    proactive_concurrency_limit: int = 0
-    curation_concurrency_limit: int = 0
+    proactive_concurrency_limit: int = 1
+    curation_concurrency_limit: int = 1
     proactive_cooldown_seconds: int = 86_400
     curation_cooldown_seconds: int = 3_600
     proactive_circuit_failure_threshold: int = 1
@@ -182,7 +182,7 @@ class PersistedProactiveSignal:
 @dataclass(frozen=True)
 class TutorProactivePreference:
     user_id: str
-    enabled: bool = False
+    enabled: bool = True
     hard_paused: bool = False
     policy_version: str = "tutor_proactive_policy_v1"
     setting_version: str = "tutor_proactive_setting_v1"
@@ -340,6 +340,8 @@ class ProactiveRunComposition:
 class TutorProactiveSchedulerStore(Protocol):
     def preference_for_user(self, *, user_id: str) -> TutorProactivePreference: ...
 
+    def verified_cutover_for_user(self, *, user_id: str) -> bool: ...
+
     def proactive_usage(
         self, *, user_id: str, now: datetime, circuit_window_seconds: int
     ) -> SchedulerUsage: ...
@@ -347,6 +349,10 @@ class TutorProactiveSchedulerStore(Protocol):
     def curation_usage(self, *, user_id: str, now: datetime, circuit_window_seconds: int) -> SchedulerUsage: ...
 
     def record_signal(self, *, signal: TutorProactiveSignal, now: datetime) -> PersistedProactiveSignal: ...
+
+    def scan_due_signals(
+        self, *, now: datetime, limit: int, user_id: str | None = None
+    ) -> tuple[TutorProactiveSignal, ...]: ...
 
     def create_or_replay_candidate(
         self,
@@ -398,7 +404,9 @@ class TutorProactiveSchedulerStore(Protocol):
         now: datetime,
     ) -> ProactiveRunReservation: ...
 
-    def seed_curation_jobs(self, *, now: datetime, limit: int) -> tuple[TutorCurationJob, ...]: ...
+    def seed_curation_jobs(
+        self, *, now: datetime, limit: int, user_id: str | None = None
+    ) -> tuple[TutorCurationJob, ...]: ...
 
     def claim_next_curation_job(
         self,
@@ -408,6 +416,7 @@ class TutorProactiveSchedulerStore(Protocol):
         lease_seconds: int,
         max_retry_attempts: int,
         retry_backoff_seconds: int,
+        user_id: str | None = None,
     ) -> TutorCurationJob | None: ...
 
     def curation_job_current(self, *, job: TutorCurationJob, now: datetime) -> SchedulerDecision: ...
@@ -438,7 +447,9 @@ class ProactiveLoopFactory(Protocol):
     def build(
         self,
         *,
+        run_id: str,
         user_id: str,
+        candidate_kind: str,
         allowed_capability_ids: tuple[str, ...],
         allowed_effect_types: tuple[str, ...],
     ) -> TutorRunLoop: ...
@@ -498,7 +509,9 @@ class TutorRunLoopProactiveExecutor:
             now=now,
         )
         loop = self._loop_factory.build(
+            run_id=reservation.run_id,
             user_id=candidate.user_id,
+            candidate_kind=candidate.candidate_kind,
             allowed_capability_ids=self._composition.allowed_capability_ids,
             allowed_effect_types=self._composition.allowed_effect_types,
         )
@@ -532,6 +545,24 @@ class TutorProactiveScheduler:
             now=now,
         )
 
+    def scan_due_signals(
+        self,
+        *,
+        now: datetime,
+        limit: int = 20,
+        user_id: str | None = None,
+    ) -> tuple[TutorProactiveCandidate, ...]:
+        """Convert only repository-selected safe facts into durable candidates."""
+
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        if user_id is not None:
+            _validate_identifier(user_id, label="user_id")
+        return tuple(
+            self.ingest_committed_signal(signal=signal, now=now)
+            for signal in self._store.scan_due_signals(now=now, limit=limit, user_id=user_id)
+        )
+
     def drain_candidates(self, *, worker_id: str, now: datetime, limit: int = 10) -> SchedulerDrainResult:
         _validate_identifier(worker_id, label="worker_id")
         if limit <= 0:
@@ -563,15 +594,23 @@ class TutorProactiveScheduler:
             result = result.add(state=outcome.state)
         return result
 
-    def seed_curation_jobs(self, *, now: datetime, limit: int = 20) -> tuple[TutorCurationJob, ...]:
+    def seed_curation_jobs(
+        self, *, now: datetime, limit: int = 20, user_id: str | None = None
+    ) -> tuple[TutorCurationJob, ...]:
         if limit <= 0:
             raise ValueError("limit must be positive")
-        return self._store.seed_curation_jobs(now=now, limit=limit)
+        if user_id is not None:
+            _validate_identifier(user_id, label="user_id")
+        return self._store.seed_curation_jobs(now=now, limit=limit, user_id=user_id)
 
-    def drain_curation(self, *, worker_id: str, now: datetime, limit: int = 10) -> SchedulerDrainResult:
+    def drain_curation(
+        self, *, worker_id: str, now: datetime, limit: int = 10, user_id: str | None = None
+    ) -> SchedulerDrainResult:
         _validate_identifier(worker_id, label="worker_id")
         if limit <= 0:
             raise ValueError("limit must be positive")
+        if user_id is not None:
+            _validate_identifier(user_id, label="user_id")
         result = SchedulerDrainResult()
         for _ in range(limit):
             job = self._store.claim_next_curation_job(
@@ -580,6 +619,7 @@ class TutorProactiveScheduler:
                 lease_seconds=self._config.curation_lease_seconds,
                 max_retry_attempts=self._config.max_retry_attempts,
                 retry_backoff_seconds=self._config.retry_backoff_seconds,
+                user_id=user_id,
             )
             if job is None:
                 break
@@ -646,6 +686,8 @@ class TutorProactiveScheduler:
             return SchedulerDecision(False, "background_hard_paused", "proactive")
         if not self._config.cutover_eligible:
             return SchedulerDecision(False, "cutover_ineligible", "proactive")
+        if not self._store.verified_cutover_for_user(user_id=user_id):
+            return SchedulerDecision(False, "cutover_unverified", "proactive")
         preference = self._store.preference_for_user(user_id=user_id)
         if preference.hard_paused:
             return SchedulerDecision(False, "user_hard_paused", "proactive")
@@ -674,6 +716,8 @@ class TutorProactiveScheduler:
             return SchedulerDecision(False, "background_hard_paused", "curation")
         if not self._config.cutover_eligible:
             return SchedulerDecision(False, "cutover_ineligible", "curation")
+        if not self._store.verified_cutover_for_user(user_id=user_id):
+            return SchedulerDecision(False, "cutover_unverified", "curation")
         if not self._config.inferred_memory_enabled:
             return SchedulerDecision(False, "inferred_memory_disabled", "curation")
         preference = self._store.preference_for_user(user_id=user_id)

@@ -449,15 +449,6 @@ def _parse_last_event_id(value: str | None) -> int:
 
 
 def _require_tutor_route(request: Request, user_id: str) -> JSONResponse | None:
-    if not get_settings().tutor_harness_enabled:
-        return error_response(
-            request,
-            code="CUTOVER_REQUIRED",
-            message="Tutor Harness 尚未完成受控切换，当前学习流程保持不变。",
-            status_code=status.HTTP_409_CONFLICT,
-            details={"feature": "tutor_harness"},
-            recoverable=False,
-        )
     gate_error = runtime_gate_error(user_id=user_id)
     if gate_error is not None:
         return error_response(

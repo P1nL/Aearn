@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 import app.routes.tutor as tutor_route
 from app.core.config import Settings
+from app.services.tutor.cutover import CutoverError
 from app.main import app
 from tutor_public_api_support import (
     RecordingTutorDispatcher,
@@ -23,7 +24,16 @@ def test_tutor_routes_fail_closed_before_any_target_connection(monkeypatch: pyte
         calls.append("connect")
         raise AssertionError("disabled Tutor route must not open a target connection")
 
-    monkeypatch.setattr(tutor_route, "get_settings", lambda: Settings(tutor_harness_enabled=False))
+    monkeypatch.setattr(
+        tutor_route,
+        "runtime_gate_error",
+        lambda **_kwargs: CutoverError(
+            "CUTOVER_REQUIRED",
+            "需要先完成受控切换，当前学习入口暂不可用。",
+            status_code=409,
+            recoverable=False,
+        ),
+    )
     monkeypatch.setattr(tutor_route, "connect", unexpected_connect)
     client = TestClient(app)
 
@@ -99,6 +109,7 @@ def test_tutor_conversation_and_safe_read_models(
     current = preferences.json()
     assert current["inferred_memory_enabled"] is False
     assert current["proactive_paused"] is False
+    assert current["proactive_enabled"] is True
 
     updated = tutor_client.patch(
         "/api/tutor/preferences",
@@ -113,6 +124,14 @@ def test_tutor_conversation_and_safe_read_models(
     assert updated.status_code == 200
     assert updated.json()["inferred_memory_enabled"] is False
     assert updated.json()["proactive_paused"] is True
+
+    resumed = tutor_client.patch(
+        "/api/tutor/preferences",
+        json=action_payload(user_id, "resume-proactive", proactive_paused=False),
+    )
+    assert resumed.status_code == 200
+    assert resumed.json()["proactive_paused"] is False
+    assert resumed.json()["proactive_enabled"] is True
 
     missing_memory = tutor_client.patch(
         f"/api/tutor/memory/{uuid4()}",

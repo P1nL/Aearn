@@ -20,8 +20,7 @@ from app.agents.harness.contracts import (
     TutorContextSource,
     build_compaction_request,
 )
-from app.agents.runtime.agent_runtime_context import limit_text, sanitize_message_content, sanitize_summary_text
-from app.agents.runtime.redaction import redact_value
+from app.core.teaching_safety import limit_text, redact_value, sanitize_message_content, sanitize_summary_text
 
 
 DEFAULT_SECTION_ITEM_LIMITS: tuple[tuple[TutorContextSection, int], ...] = (

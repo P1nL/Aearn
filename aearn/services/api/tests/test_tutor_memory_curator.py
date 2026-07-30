@@ -112,8 +112,8 @@ def test_curator_projects_one_inference_from_redacted_outbox_with_one_receipt(tu
         curation_processor=curator,
     )
 
-    seeded = scheduler.seed_curation_jobs(now=_NOW)
-    result = scheduler.drain_curation(worker_id="curator-worker", now=_NOW)
+    seeded = scheduler.seed_curation_jobs(now=_NOW, user_id=fixture.user_id)
+    result = scheduler.drain_curation(worker_id="curator-worker", now=_NOW, user_id=fixture.user_id)
     projection = fixture.connection.execute(
         """
         SELECT memory_kind, state, confidence, provenance_kind, policy_version,
@@ -182,7 +182,7 @@ def test_curator_preference_disable_and_zero_output_budget_never_call_provider(t
         config=_config(),
         curation_processor=curator,
     )
-    scheduler.seed_curation_jobs(now=_NOW)
+    scheduler.seed_curation_jobs(now=_NOW, user_id=fixture.user_id)
     learner_state.set_inferred_memory_preference(
         user_id=fixture.user_id,
         enabled=False,
@@ -190,7 +190,9 @@ def test_curator_preference_disable_and_zero_output_budget_never_call_provider(t
         now=_NOW,
     )
 
-    result = scheduler.drain_curation(worker_id="preference-disabled-worker", now=_NOW)
+    result = scheduler.drain_curation(
+        worker_id="preference-disabled-worker", now=_NOW, user_id=fixture.user_id
+    )
 
     assert result.claimed == 1
     assert result.no_action == 1

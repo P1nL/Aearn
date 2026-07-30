@@ -1,6 +1,7 @@
 """PostgreSQL source of truth for target-only proactive scheduling and curation leases."""
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections.abc import Mapping
@@ -10,6 +11,7 @@ from typing import Literal
 from psycopg import Connection
 
 from app.agents.harness.contracts import TutorPolicySnapshot
+from app.services.tutor.cutover import CUTOVER_VERSION
 from app.services.tutor.persistence import TutorCatalogEvidenceError, TutorLeaseConflict, TutorRunNotFound
 from app.services.tutor.proactive import (
     PersistedProactiveSignal,
@@ -77,6 +79,19 @@ class PostgresTutorProactiveRepository:
             (user_id,),
         ).fetchone()
         return _preference_from_row(row) if row is not None else TutorProactivePreference(user_id=user_id)
+
+    def verified_cutover_for_user(self, *, user_id: str) -> bool:
+        row = self._conn.execute(
+            """
+            SELECT 1
+            FROM harness_cutovers
+            WHERE user_id = %s
+              AND cutover_version = %s
+              AND state = 'verified'
+            """,
+            (user_id, CUTOVER_VERSION),
+        ).fetchone()
+        return row is not None
 
     def record_signal(self, *, signal: TutorProactiveSignal, now: datetime) -> PersistedProactiveSignal:
         safe_reference = self._projector.project(dict(signal.source_reference))
@@ -146,6 +161,78 @@ class PostgresTutorProactiveRepository:
             disposition_code=None,
             replayed=False,
         )
+
+    def scan_due_signals(
+        self,
+        *,
+        now: datetime,
+        limit: int,
+        user_id: str | None = None,
+    ) -> tuple[TutorProactiveSignal, ...]:
+        """Return the latest safe interactive-terminal fact for each verified user.
+
+        The query deliberately carries no tutor message, prompt, code, trace, or
+        provider field. Durable run identity, terminal outcome, and timestamp are
+        sufficient to create a deduplicated background wake-up.
+        """
+
+        if limit <= 0:
+            raise ValueError("signal scan limit must be positive")
+        user_scope = "AND runs.user_id = %s" if user_id is not None else ""
+        query_params: tuple[object, ...] = (
+            (CUTOVER_VERSION, now, user_id, limit)
+            if user_id is not None
+            else (CUTOVER_VERSION, now, limit)
+        )
+        rows = self._conn.execute(
+            f"""
+            SELECT DISTINCT ON (runs.user_id)
+                   runs.id::text AS run_id,
+                   runs.user_id::text AS user_id,
+                   runs.terminal_outcome,
+                   runs.terminal_at
+            FROM tutor_runs AS runs
+            JOIN harness_cutovers AS cutovers
+              ON cutovers.user_id = runs.user_id
+             AND cutovers.cutover_version = %s
+             AND cutovers.state = 'verified'
+            WHERE runs.origin = 'interactive'
+              AND runs.terminal_outcome IS NOT NULL
+              AND runs.terminal_at IS NOT NULL
+              AND runs.terminal_at <= %s
+              {user_scope}
+            ORDER BY runs.user_id, runs.terminal_at DESC, runs.id DESC
+            LIMIT %s
+            """,
+            query_params,
+        ).fetchall()
+        signals: list[TutorProactiveSignal] = []
+        for row in rows:
+            terminal_at = _as_datetime(row.get("terminal_at"))
+            if terminal_at is None:
+                continue
+            run_id = str(row["run_id"])
+            terminal_outcome = str(row["terminal_outcome"])
+            source_hash = hashlib.sha256(
+                f"{run_id}|{terminal_outcome}|{terminal_at.astimezone(UTC).isoformat()}".encode("utf-8")
+            ).hexdigest()
+            signals.append(
+                TutorProactiveSignal(
+                    user_id=str(row["user_id"]),
+                    signal_kind="interactive_terminal",
+                    source_type="tutor_run",
+                    source_id=run_id,
+                    source_hash=source_hash,
+                    occurred_at=terminal_at,
+                    dedupe_key="interactive_terminal",
+                    dedupe_window_seconds=86_400,
+                    source_reference={
+                        "source_event_id": run_id,
+                        "policy_tag": "interactive_terminal",
+                    },
+                )
+            )
+        return tuple(signals)
 
     def create_or_replay_candidate(
         self,
@@ -575,21 +662,26 @@ class PostgresTutorProactiveRepository:
             )
 
 
-    def seed_curation_jobs(self, *, now: datetime, limit: int) -> tuple[TutorCurationJob, ...]:
+    def seed_curation_jobs(
+        self, *, now: datetime, limit: int, user_id: str | None = None
+    ) -> tuple[TutorCurationJob, ...]:
+        user_scope = "AND runs.user_id = %s" if user_id is not None else ""
+        query_params: tuple[object, ...] = (user_id, limit) if user_id is not None else (limit,)
         with self._conn.transaction():
             rows = self._conn.execute(
-                """
+                f"""
                 SELECT outbox.*, runs.user_id::text AS user_id
                 FROM tutor_memory_curation_outbox AS outbox
                 JOIN tutor_runs AS runs ON runs.id = outbox.run_id
                 LEFT JOIN tutor_curation_jobs AS jobs ON jobs.outbox_id = outbox.id
                 WHERE jobs.id IS NULL
                   AND outbox.state = 'pending'
+                  {user_scope}
                 ORDER BY outbox.priority DESC, outbox.created_at ASC, outbox.id ASC
                 FOR UPDATE OF outbox SKIP LOCKED
                 LIMIT %s
                 """,
-                (limit,),
+                query_params,
             ).fetchall()
             jobs: list[TutorCurationJob] = []
             for outbox in rows:
@@ -650,23 +742,28 @@ class PostgresTutorProactiveRepository:
         lease_seconds: int,
         max_retry_attempts: int,
         retry_backoff_seconds: int,
+        user_id: str | None = None,
     ) -> TutorCurationJob | None:
         with self._conn.transaction():
             self._recover_expired_curation_jobs(
                 now=now,
                 max_retry_attempts=max_retry_attempts,
                 retry_backoff_seconds=retry_backoff_seconds,
+                user_id=user_id,
             )
+            user_scope = "AND user_id = %s" if user_id is not None else ""
+            query_params: tuple[object, ...] = (now, user_id) if user_id is not None else (now,)
             row = self._conn.execute(
-                """
+                f"""
                 SELECT *
                 FROM tutor_curation_jobs
                 WHERE state = 'pending' AND not_before <= %s
+                  {user_scope}
                 ORDER BY not_before ASC, created_at ASC, id ASC
                 FOR UPDATE SKIP LOCKED
                 LIMIT 1
                 """,
-                (now,),
+                query_params,
             ).fetchone()
             if row is None:
                 return None
@@ -861,10 +958,38 @@ class PostgresTutorProactiveRepository:
             )
 
     def _recover_expired_curation_jobs(
-        self, *, now: datetime, max_retry_attempts: int, retry_backoff_seconds: int
+        self,
+        *,
+        now: datetime,
+        max_retry_attempts: int,
+        retry_backoff_seconds: int,
+        user_id: str | None = None,
     ) -> None:
+        user_scope = "AND user_id = %s" if user_id is not None else ""
+        query_params: tuple[object, ...] = (
+            (
+                max_retry_attempts,
+                max_retry_attempts,
+                now + timedelta(seconds=retry_backoff_seconds),
+                max_retry_attempts,
+                now,
+                now,
+                now,
+                user_id,
+            )
+            if user_id is not None
+            else (
+                max_retry_attempts,
+                max_retry_attempts,
+                now + timedelta(seconds=retry_backoff_seconds),
+                max_retry_attempts,
+                now,
+                now,
+                now,
+            )
+        )
         rows = self._conn.execute(
-            """
+            f"""
             UPDATE tutor_curation_jobs
             SET state = CASE WHEN attempt_count >= %s THEN 'failed' ELSE 'pending' END,
                 last_error_code = 'lease_expired',
@@ -874,17 +999,10 @@ class PostgresTutorProactiveRepository:
                 terminal_at = CASE WHEN attempt_count >= %s THEN %s ELSE NULL END,
                 updated_at = %s
             WHERE state = 'leased' AND lease_expires_at <= %s
+              {user_scope}
             RETURNING id::text AS id, user_id::text AS user_id, state, attempt_count
             """,
-            (
-                max_retry_attempts,
-                max_retry_attempts,
-                now + timedelta(seconds=retry_backoff_seconds),
-                max_retry_attempts,
-                now,
-                now,
-                now,
-            ),
+            query_params,
         ).fetchall()
         for row in rows:
             self._append_audit(

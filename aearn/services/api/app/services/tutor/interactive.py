@@ -57,31 +57,35 @@ class PostgresTutorContextLoader:
         *,
         conn: Connection[dict[str, object]],
         learner_state: TutorLearnerStateRepository,
+        proactive_candidate_kind: str | None = None,
     ) -> None:
         self._conn = conn
         self._learner_state = learner_state
+        self._proactive_candidate_kind = proactive_candidate_kind
 
     def load_context(self, snapshot: TutorRunSnapshot, *, input_revision: int) -> TutorContextInput:
-        rows = self._conn.execute(
-            """
-            SELECT id::text AS id, role, content
-            FROM tutor_messages
-            WHERE conversation_id = %s
-            ORDER BY created_at DESC, id DESC
-            LIMIT 8
-            """,
-            (snapshot.conversation_id,),
-        ).fetchall()
-        recent_messages = tuple(
-            TutorContextSource(
-                source_id=f"message:{row['id']}",
-                content={
-                    "role": "assistant" if str(row.get("role")) == "tutor" else "user",
-                    "content": str(row.get("content") or ""),
-                },
+        recent_messages: tuple[TutorContextSource, ...] = ()
+        if self._proactive_candidate_kind is None:
+            rows = self._conn.execute(
+                """
+                SELECT id::text AS id, role, content
+                FROM tutor_messages
+                WHERE conversation_id = %s
+                ORDER BY created_at DESC, id DESC
+                LIMIT 8
+                """,
+                (snapshot.conversation_id,),
+            ).fetchall()
+            recent_messages = tuple(
+                TutorContextSource(
+                    source_id=f"message:{row['id']}",
+                    content={
+                        "role": "assistant" if str(row.get("role")) == "tutor" else "user",
+                        "content": str(row.get("content") or ""),
+                    },
+                )
+                for row in reversed(rows)
             )
-            for row in reversed(rows)
-        )
 
         active_plan = self._learner_state.active_plan_for_user(user_id=snapshot.user_id)
         active_plan_sources = (
@@ -135,12 +139,27 @@ class PostgresTutorContextLoader:
             input_revision=input_revision,
             system_descriptors=(
                 TutorContextSource(
-                    source_id="tutor:interactive:policy",
-                    content={
-                        "surface": "interactive_tutor",
-                        "action_policy": "default_deny",
-                        "input_revision": input_revision,
-                    },
+                    source_id=(
+                        "tutor:interactive:policy"
+                        if self._proactive_candidate_kind is None
+                        else "tutor:proactive:policy"
+                    ),
+                    content=(
+                        {
+                            "surface": "interactive_tutor",
+                            "action_policy": "default_deny",
+                            "input_revision": input_revision,
+                        }
+                        if self._proactive_candidate_kind is None
+                        else {
+                            "surface": "proactive_tutor",
+                            "candidate_kind": self._proactive_candidate_kind,
+                            "delivery_scope": "activity_inbox_only",
+                            "learner_chat": "forbidden",
+                            "runner_execution": "forbidden",
+                            "input_revision": input_revision,
+                        }
+                    ),
                 ),
             ),
             active_plan=active_plan_sources,
@@ -202,7 +221,7 @@ class TutorInteractiveRunDispatcher:
                 ),
                 lifecycle=PostgresTutorLifecycle(repository=repository),
             )
-            result = TutorHarnessService.from_settings(loop=loop, settings=self._settings).run(
+            result = TutorHarnessService.enabled(loop=loop).run(
                 run_id=run_id,
                 lease_owner_id=f"tutor-api:{uuid4().hex}",
             )

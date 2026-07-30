@@ -89,7 +89,11 @@ def test_input_acceptance_checks_user_scope_and_persists_exact_catalog_selection
             content="I should not be able to write another user's run.",
         )
 
-    skill = fixture.catalog.skills[0]
+    skill = next(
+        skill
+        for skill in fixture.catalog.skills
+        if skill.reference.key == "tutor.registry-grounding@1.0.0"
+    )
     selection = TutorSkillSelection(
         reference=CatalogSkillReference(skill.manifest.id, skill.manifest.version),
         manifest_hash=skill.manifest_hash,
@@ -191,7 +195,7 @@ def test_capability_receipt_requires_exact_selection_and_replays_only_identical_
             policy_fingerprint=str(run_evidence["policy_fingerprint"]),
         )
 
-    skill = fixture.catalog.skills[0]
+    skill = next(skill for skill in fixture.catalog.skills if skill.reference.key == "tutor.registry-grounding@1.0.0")
     fixture.repository.record_skill_selection(
         user_id=fixture.user_id,
         run_id=fixture.run.run_id,

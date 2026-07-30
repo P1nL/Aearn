@@ -298,16 +298,31 @@ def test_selection_rebuilds_context_before_grounding_dispatch_and_effect_never_c
     assert committer.calls == []
 
 
-def test_catalog_and_tutor_source_never_import_legacy_or_unbounded_execution_surfaces() -> None:
+def test_catalog_and_tutor_source_never_import_retired_or_unbounded_execution_surfaces() -> None:
     api_root = Path(__file__).resolve().parents[1]
     files = [
         *sorted((api_root / "app" / "agents" / "harness").glob("*.py")),
         *sorted((api_root / "app" / "services" / "tutor").glob("*.py")),
     ]
+    retired_agent_packages = (
+        "graphs",
+        "learning",
+        "notes",
+        "onboarding",
+        "review",
+        "runtime",
+        "tooling",
+    )
+    retired_source_paths = tuple(
+        api_root / "app" / "agents" / package_name / "__init__.py"
+        for package_name in retired_agent_packages
+    )
+    assert all(not path.exists() for path in retired_source_paths), retired_source_paths
+
+    retired_module_prefixes = tuple(
+        ".".join(("app", "agents", package_name)) for package_name in retired_agent_packages
+    )
     forbidden = (
-        "app.agents.graphs.router",
-        "app.agents.tooling.tools",
-        "app.agents.tooling.tools_web",
         "app.db",
         "psycopg",
         "grounding_index_repository",
@@ -333,4 +348,10 @@ def test_catalog_and_tutor_source_never_import_legacy_or_unbounded_execution_sur
             # Child 04 uses a bounded API-side worker adapter only; routes and
             # legacy Graph/runner surfaces remain forbidden.
             forbidden_for_path = tuple(marker for marker in forbidden_for_path if marker != "app.db")
+        if path.name in {"cutover.py", "interactive.py", "public_api.py"}:
+            # Children 06/07 own these database-backed target adapters. They may
+            # open target connections, but they must remain independent from
+            # Graph/router/tool/runner implementation paths.
+            forbidden_for_path = tuple(marker for marker in forbidden if marker not in {"app.db", "psycopg"})
+        assert not any(marker in source for marker in retired_module_prefixes), path
         assert not any(marker in source for marker in forbidden_for_path), path

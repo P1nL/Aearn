@@ -73,6 +73,10 @@ def _cleanup_committed_fixture(
                 conn.execute("DELETE FROM learning_plans WHERE id = %s", (relation["plan_id"],))
             conn.execute("DELETE FROM learner_profiles WHERE user_id = %s", (user_id,))
             conn.execute("DELETE FROM idempotency_records WHERE user_id = %s", (user_id,))
+            # tutor_persistence models a verified post-cutover user. Cross-
+            # connection tests commit that fixture deliberately, so the durable
+            # receipt must be removed before the fixture user can be deleted.
+            conn.execute("DELETE FROM harness_cutovers WHERE user_id = %s", (user_id,))
             conn.execute("DELETE FROM users WHERE id = %s", (user_id,))
 
 
