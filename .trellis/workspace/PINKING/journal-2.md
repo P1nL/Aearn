@@ -829,3 +829,56 @@ Closed the planning-only Tutor Harness rearchitecture parent after all nine inde
 ### Next Steps
 
 - None - task complete
+
+
+## Session 84: 稳定 Tutor TurnRun 与 DeepSeek 决策契约
+
+**Date**: 2026-08-03
+**Task**: 稳定 Tutor TurnRun 与 DeepSeek 决策契约
+**Branch**: `main`
+
+### Summary
+
+完成 Tutor 每普通消息独立 TurnRun、DeepSeek Responses 严格决策、公开历史与 Desktop 导航，并通过完整本地质量门。
+
+### Main Changes
+
+## Completed
+
+- Implemented strict DeepSeek primary JSON decision handling: exact `deepseek-v4-flash` Responses routing, bounded same-primary repair, strict typed title/continuation contract, and redacted provider failures.
+- Changed ordinary Tutor chat to durable conversation history plus a fresh finite TurnRun per normal learner message; first turn is atomic/idempotent and latest input supersedes the older foreground run.
+- Added server-owned conversation list/history cursors and allowlisted public-process projections; Desktop now supports local drafts, recent/all conversation navigation, hydration, compact disclosure cards, and selected-run-only SSE.
+- Closed the post-provider race with an autocommit dispatcher, run-loop rechecks before every unsafe boundary, and locked terminal persistence guards.
+- Fixed proactive effect CAS to pass the injected Clock into repository time checks, preventing deterministic scheduler/test leases from being evaluated against wall-clock time.
+
+## Verification
+
+- `uv --directory .\aearn\services\api lock --check && uv --directory .\aearn\services\api run python -m pytest -q` -> 321 passed.
+- `uv --directory .\aearn\services\api run ruff check app tests` -> passed.
+- `uv --directory .\aearn\services\api run python -m mypy app` -> 99 source files, no issues.
+- `pnpm --dir .\aearn desktop:check` -> `tsc && vite build` passed.
+- Trellis task validation and `git diff --check` passed; the in-app browser smoke remained blocked by the local browser kernel asset error.
+
+## Closeout
+
+- Archived `08-02-deepseek-responses-decision-contract`, `08-02-tutor-conversation-turnrun-history`, and parent `08-02-tutor-run-lifecycle-deepseek-responses`.
+- No push or deployment was performed.
+
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `ffaa073` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
