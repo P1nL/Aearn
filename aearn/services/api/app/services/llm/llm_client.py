@@ -9,10 +9,11 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from enum import Enum
 from typing import TypeVar
 
 from app.core.config import Settings, get_settings
-from app.services.llm.llm_urls import deepseek_chat_completions_url, responses_url
+from app.services.llm.llm_urls import deepseek_chat_completions_url, deepseek_responses_url, responses_url
 
 
 logger = logging.getLogger(__name__)
@@ -38,14 +39,66 @@ class LLMCallError(RuntimeError):
     pass
 
 
+class LLMInvalidResponseKind(str, Enum):
+    """Bounded structural categories for a provider response rejected by the adapter."""
+
+    UNKNOWN = "unknown"
+    ENVELOPE_INVALID = "envelope_invalid"
+    CONTENT_MISSING = "content_missing"
+    CONTENT_NOT_JSON_OBJECT = "content_not_json_object"
+    RESPONSE_INCOMPLETE = "response_incomplete"
+    RESPONSE_FAILED = "response_failed"
+
+
+class LLMProtocol(str, Enum):
+    """One selected provider protocol per request; callers never fall through."""
+
+    RESPONSES = "responses"
+    DEEPSEEK_CHAT_COMPLETIONS = "deepseek_chat_completions"
+    DEEPSEEK_RESPONSES = "deepseek_responses"
+
+
+DEEPSEEK_V4_FLASH_MODEL = "deepseek-v4-flash"
+
+
+def select_llm_protocol(settings: Settings) -> LLMProtocol:
+    """Select a protocol from exact provider/model configuration only.
+
+    DeepSeek documents Responses compatibility only for the exact V4 Flash model.
+    All other configured DeepSeek models retain the Chat Completions contract.
+    """
+
+    if settings.llm_provider_type != "deepseek":
+        return LLMProtocol.RESPONSES
+    if str(settings.llm_model or "").strip() == DEEPSEEK_V4_FLASH_MODEL:
+        return LLMProtocol.DEEPSEEK_RESPONSES
+    return LLMProtocol.DEEPSEEK_CHAT_COMPLETIONS
+
+
 class LLMInvalidResponseError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        kind: LLMInvalidResponseKind = LLMInvalidResponseKind.UNKNOWN,
+    ) -> None:
+        super().__init__(message)
+        self.kind = kind
 
 
 @dataclass(frozen=True)
 class LLMJsonResponse:
     content: dict[str, object]
     model: str
+
+
+def _require_provider_response_object(value: object) -> Mapping[str, object]:
+    if not isinstance(value, Mapping):
+        raise LLMInvalidResponseError(
+            "LLM provider response must be a JSON object",
+            kind=LLMInvalidResponseKind.ENVELOPE_INVALID,
+        )
+    return value
 
 
 JsonTransport = Callable[[str, Mapping[str, str], Mapping[str, object], float], Mapping[str, object]]
@@ -78,35 +131,29 @@ class OpenAICompatibleClient:
         max_tokens: int | None = None,
         timeout_seconds: float | None = None,
     ) -> LLMJsonResponse:
-        if self._settings.llm_provider_type == "deepseek":
-            return self._complete_deepseek_json(
+        """Return one strict JSON object through the exact selected provider protocol."""
+
+        protocol = select_llm_protocol(self._settings)
+        if protocol is LLMProtocol.DEEPSEEK_CHAT_COMPLETIONS:
+            return self._complete_deepseek_chat_json(
                 messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
                 timeout_seconds=timeout_seconds,
             )
 
-        instructions, input_text = _messages_to_responses_input(messages)
-        input_text = _ensure_json_mode_hint(input_text)
-        payload: dict[str, object] = {
-            "model": self.model,
-            "input": input_text,
-            "stream": True,
-            "text": {"format": {"type": "json_object"}},
-        }
-        if instructions is not None:
-            payload["instructions"] = instructions
-        if max_tokens is not None:
-            payload["max_output_tokens"] = max_tokens
-        headers = {
-            "Authorization": f"Bearer {self._settings.llm_api_key}",
-            "Content-Type": "application/json",
-            "Accept": "text/event-stream",
-        }
-        provider_response = self._request_provider(payload, headers, timeout_seconds=timeout_seconds)
-        content = _extract_message_content(provider_response)
-        model = _response_model(provider_response) or self.model
-        return LLMJsonResponse(content=_parse_json_object(content), model=model)
+        url = (
+            deepseek_responses_url(str(self._settings.llm_base_url))
+            if protocol is LLMProtocol.DEEPSEEK_RESPONSES
+            else responses_url(str(self._settings.llm_base_url))
+        )
+        return self._complete_responses_json(
+            messages,
+            url=url,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout_seconds=timeout_seconds,
+        )
 
     def complete_text_stream(
         self,
@@ -218,25 +265,63 @@ class OpenAICompatibleClient:
         except Exception as exc:
             raise LLMCallError("LLM provider structured streaming transport failed") from exc
 
-    def _request_provider(
+    def _complete_responses_json(
         self,
+        messages: Sequence[Mapping[str, str]],
+        *,
+        url: str,
+        temperature: float | None,
+        max_tokens: int | None,
+        timeout_seconds: float | None,
+    ) -> LLMJsonResponse:
+        instructions, input_text = _messages_to_responses_input(messages)
+        payload: dict[str, object] = {
+            "model": self.model,
+            "input": _ensure_json_mode_hint(input_text),
+            "stream": True,
+            "text": {"format": {"type": "json_object"}},
+        }
+        if instructions is not None:
+            payload["instructions"] = instructions
+        if temperature is not None:
+            payload["temperature"] = temperature
+        if max_tokens is not None:
+            payload["max_output_tokens"] = max_tokens
+        headers = {
+            "Authorization": f"Bearer {self._settings.llm_api_key}",
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+        }
+        provider_response = self._request_responses_provider(
+            url=url,
+            payload=payload,
+            headers=headers,
+            timeout_seconds=timeout_seconds,
+        )
+        _ensure_responses_completed(provider_response)
+        content = _extract_message_content(provider_response)
+        model = _response_model(provider_response) or self.model
+        return LLMJsonResponse(content=_parse_json_object(content), model=model)
+
+    def _request_responses_provider(
+        self,
+        *,
+        url: str,
         payload: Mapping[str, object],
         headers: Mapping[str, str],
-        *,
         timeout_seconds: float | None = None,
     ) -> Mapping[str, object]:
-        url = responses_url(str(self._settings.llm_base_url))
         timeout = _resolve_timeout_seconds(self._settings.llm_timeout_seconds, timeout_seconds)
         if self._transport is not None:
             try:
-                return self._transport(url, headers, payload, timeout)
+                return _require_provider_response_object(self._transport(url, headers, payload, timeout))
             except (LLMCallError, LLMInvalidResponseError):
                 raise
             except Exception as exc:
                 raise LLMCallError("LLM provider transport failed") from exc
         return _post_json_stream(url, headers, payload, timeout)
 
-    def _complete_deepseek_json(
+    def _complete_deepseek_chat_json(
         self,
         messages: Sequence[Mapping[str, str]],
         *,
@@ -262,7 +347,7 @@ class OpenAICompatibleClient:
         timeout = _resolve_timeout_seconds(self._settings.llm_timeout_seconds, timeout_seconds)
         if self._transport is not None:
             try:
-                provider_response = self._transport(url, headers, payload, timeout)
+                provider_response = _require_provider_response_object(self._transport(url, headers, payload, timeout))
             except (LLMCallError, LLMInvalidResponseError):
                 raise
             except Exception as exc:
@@ -304,21 +389,26 @@ def _post_json(
     body = _request_with_retries("JSON", request_once)
 
     if not body:
-        raise LLMInvalidResponseError("LLM provider returned an empty response")
+        raise LLMInvalidResponseError(
+            "LLM provider returned an empty response",
+            kind=LLMInvalidResponseKind.ENVELOPE_INVALID,
+        )
     try:
         parsed = json.loads(body)
     except json.JSONDecodeError as exc:
-        raise LLMInvalidResponseError("LLM provider returned invalid JSON") from exc
-    if not isinstance(parsed, Mapping):
-        raise LLMInvalidResponseError("LLM provider response must be a JSON object")
-    return parsed
+        raise LLMInvalidResponseError(
+            "LLM provider returned invalid JSON",
+            kind=LLMInvalidResponseKind.ENVELOPE_INVALID,
+        ) from exc
+    return _require_provider_response_object(parsed)
 
 
 def _safe_transport_error(exc: BaseException) -> str:
+    """Return a log-safe transport category without preserving provider detail."""
+
     if isinstance(exc, urllib.error.URLError):
-        reason = exc.reason
-        return f"{type(reason).__name__}: {reason}"
-    return f"{type(exc).__name__}: {exc}"
+        return "URLError"
+    return type(exc).__name__
 
 
 def _resolve_timeout_seconds(configured_timeout: float, timeout_seconds: float | None) -> float:
@@ -419,9 +509,11 @@ def _iter_response_text_deltas(response: Iterable[bytes]) -> Generator[str, None
         try:
             parsed = json.loads(payload_text)
         except json.JSONDecodeError as exc:
-            raise LLMInvalidResponseError("LLM provider stream returned invalid JSON") from exc
-        if not isinstance(parsed, Mapping):
-            raise LLMInvalidResponseError("LLM provider stream event must be a JSON object")
+            raise LLMInvalidResponseError(
+                "LLM provider stream returned invalid JSON",
+                kind=LLMInvalidResponseKind.ENVELOPE_INVALID,
+            ) from exc
+        _require_provider_response_object(parsed)
 
         event_type = str(parsed.get("type", ""))
         if event_type == "response.output_text.delta":
@@ -493,13 +585,15 @@ def _parse_responses_stream(response: Iterable[bytes]) -> Mapping[str, object]:
         try:
             parsed = json.loads(payload_text)
         except json.JSONDecodeError as exc:
-            raise LLMInvalidResponseError("LLM provider stream returned invalid JSON") from exc
-        if not isinstance(parsed, Mapping):
-            raise LLMInvalidResponseError("LLM provider stream event must be a JSON object")
+            raise LLMInvalidResponseError(
+                "LLM provider stream returned invalid JSON",
+                kind=LLMInvalidResponseKind.ENVELOPE_INVALID,
+            ) from exc
+        _require_provider_response_object(parsed)
 
         event_type = str(parsed.get("type", ""))
         maybe_response = parsed.get("response")
-        if isinstance(maybe_response, Mapping):
+        if isinstance(maybe_response, Mapping) and event_type in {"response.completed", "response.incomplete", "response.failed"}:
             latest_response = dict(maybe_response)
 
         if event_type == "response.output_text.delta":
@@ -510,6 +604,16 @@ def _parse_responses_stream(response: Iterable[bytes]) -> Mapping[str, object]:
             text = parsed.get("text")
             if isinstance(text, str) and text.strip():
                 latest_text = text.strip()
+        elif event_type == "response.incomplete":
+            raise LLMInvalidResponseError(
+                "LLM provider response was incomplete",
+                kind=LLMInvalidResponseKind.RESPONSE_INCOMPLETE,
+            )
+        elif event_type == "response.failed":
+            raise LLMInvalidResponseError(
+                "LLM provider response failed",
+                kind=LLMInvalidResponseKind.RESPONSE_FAILED,
+            )
         elif event_type == "response.completed" and isinstance(maybe_response, Mapping):
             latest_response = dict(maybe_response)
 
@@ -528,7 +632,10 @@ def _parse_responses_stream(response: Iterable[bytes]) -> Mapping[str, object]:
     if latest_response is None:
         if latest_text is not None:
             return _response_from_text(latest_text, model="")
-        raise LLMInvalidResponseError("LLM provider stream ended without a response")
+        raise LLMInvalidResponseError(
+            "LLM provider stream ended without a response",
+            kind=LLMInvalidResponseKind.ENVELOPE_INVALID,
+        )
     if latest_text is not None and not _has_message_content(latest_response):
         latest_response = dict(latest_response)
         latest_response["output"] = [
@@ -547,6 +654,29 @@ def _parse_responses_stream(response: Iterable[bytes]) -> Mapping[str, object]:
     return latest_response
 
 
+def _ensure_responses_completed(provider_response: Mapping[str, object]) -> None:
+    """Reject nonterminal/failed Responses envelopes before reading visible output."""
+
+    response = _normalize_response_payload(provider_response)
+    response_type = str(provider_response.get("type", ""))
+    status = str(response.get("status", "")).strip().lower()
+    if response_type == "response.incomplete" or status == "incomplete":
+        raise LLMInvalidResponseError(
+            "LLM provider response was incomplete",
+            kind=LLMInvalidResponseKind.RESPONSE_INCOMPLETE,
+        )
+    if response_type == "response.failed" or status == "failed":
+        raise LLMInvalidResponseError(
+            "LLM provider response failed",
+            kind=LLMInvalidResponseKind.RESPONSE_FAILED,
+        )
+    if response_type and response_type != "response.completed":
+        raise LLMInvalidResponseError(
+            "LLM provider response did not complete",
+            kind=LLMInvalidResponseKind.ENVELOPE_INVALID,
+        )
+
+
 def _has_message_content(provider_response: Mapping[str, object]) -> bool:
     try:
         _extract_message_content(provider_response)
@@ -558,7 +688,10 @@ def _has_message_content(provider_response: Mapping[str, object]) -> bool:
 def _response_from_text(text: str, *, model: str) -> dict[str, object]:
     stripped = text.strip()
     if not stripped:
-        raise LLMInvalidResponseError("LLM provider response has no message content")
+        raise LLMInvalidResponseError(
+            "LLM provider response has no message content",
+            kind=LLMInvalidResponseKind.CONTENT_MISSING,
+        )
     return {
         "model": model,
         "output": [
@@ -636,45 +769,64 @@ def _ensure_json_mode_hint(input_text: str) -> str:
 
 def _extract_message_content(provider_response: Mapping[str, object]) -> str:
     response = _normalize_response_payload(provider_response)
-    output = response.get("output")
-    if isinstance(output, Sequence) and not isinstance(output, (str, bytes)):
-        for item in output:
-            if not isinstance(item, Mapping):
-                continue
-            content = item.get("content")
-            if not isinstance(content, Sequence) or isinstance(content, (str, bytes)):
-                continue
-            for part in content:
-                if not isinstance(part, Mapping):
-                    continue
-                if str(part.get("type", "")) != "output_text":
-                    continue
-                text = part.get("text")
-                if isinstance(text, str) and text.strip():
-                    return text.strip()
+    has_output = "output" in response
+    has_choices = "choices" in response
+    invalid_envelope = False
 
-    choices = response.get("choices")
-    if isinstance(choices, Sequence) and not isinstance(choices, (str, bytes)) and choices:
-        first_choice = choices[0]
-        if isinstance(first_choice, Mapping):
-            message = first_choice.get("message")
-            if isinstance(message, Mapping):
-                choice_content: object = message.get("content")
-            else:
-                choice_content = first_choice.get("text")
-            if isinstance(choice_content, str) and choice_content.strip():
-                return choice_content.strip()
-            if isinstance(choice_content, Sequence) and not isinstance(choice_content, (str, bytes)):
-                text_parts = [
-                    str(part.get("text", "")).strip()
-                    for part in choice_content
-                    if isinstance(part, Mapping) and str(part.get("type", "")) == "text"
-                ]
-                combined = "\n".join(part for part in text_parts if part)
-                if combined:
-                    return combined
+    if has_output:
+        output = response.get("output")
+        if not isinstance(output, Sequence) or isinstance(output, (str, bytes)):
+            invalid_envelope = True
+        else:
+            for item in output:
+                if not isinstance(item, Mapping):
+                    continue
+                content = item.get("content")
+                if not isinstance(content, Sequence) or isinstance(content, (str, bytes)):
+                    continue
+                for part in content:
+                    if not isinstance(part, Mapping):
+                        continue
+                    if str(part.get("type", "")) != "output_text":
+                        continue
+                    text = part.get("text")
+                    if isinstance(text, str) and text.strip():
+                        return text.strip()
 
-    raise LLMInvalidResponseError("LLM provider response has no message content")
+    if has_choices:
+        choices = response.get("choices")
+        if not isinstance(choices, Sequence) or isinstance(choices, (str, bytes)):
+            invalid_envelope = True
+        else:
+            for choice in choices:
+                if not isinstance(choice, Mapping):
+                    continue
+                message = choice.get("message")
+                if isinstance(message, Mapping):
+                    choice_content: object = message.get("content")
+                else:
+                    choice_content = choice.get("text")
+                if isinstance(choice_content, str) and choice_content.strip():
+                    return choice_content.strip()
+                if isinstance(choice_content, Sequence) and not isinstance(choice_content, (str, bytes)):
+                    text_parts = [
+                        str(part.get("text", "")).strip()
+                        for part in choice_content
+                        if isinstance(part, Mapping) and str(part.get("type", "")) == "text"
+                    ]
+                    combined = "\n".join(part for part in text_parts if part)
+                    if combined:
+                        return combined
+
+    if invalid_envelope or (not has_output and not has_choices):
+        raise LLMInvalidResponseError(
+            "LLM provider response does not use a supported output envelope",
+            kind=LLMInvalidResponseKind.ENVELOPE_INVALID,
+        )
+    raise LLMInvalidResponseError(
+        "LLM provider response has no message content",
+        kind=LLMInvalidResponseKind.CONTENT_MISSING,
+    )
 
 
 def _response_model(provider_response: Mapping[str, object]) -> str:
@@ -702,9 +854,15 @@ def _parse_json_object(content: str) -> dict[str, object]:
     try:
         parsed = json.loads(_strip_json_fence(content))
     except json.JSONDecodeError as exc:
-        raise LLMInvalidResponseError("LLM message content is not valid JSON") from exc
+        raise LLMInvalidResponseError(
+            "LLM message content is not valid JSON",
+            kind=LLMInvalidResponseKind.CONTENT_NOT_JSON_OBJECT,
+        ) from exc
     if not isinstance(parsed, dict):
-        raise LLMInvalidResponseError("LLM message content must be a JSON object")
+        raise LLMInvalidResponseError(
+            "LLM message content must be a JSON object",
+            kind=LLMInvalidResponseKind.CONTENT_NOT_JSON_OBJECT,
+        )
     return parsed
 
 

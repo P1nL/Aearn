@@ -11,9 +11,9 @@ from app.agents.harness.contracts import (
     TutorCapabilityStatus,
     TutorPayloadField,
 )
-
 from app.agents.harness.skill_catalog import CatalogSkillReference
 from app.services.tutor.persistence import (
+    PostgresTutorRepository,
     TutorCatalogEvidenceError,
     TutorIdempotencyConflict,
     TutorRunNotFound,
@@ -151,6 +151,53 @@ def test_accept_input_rejects_a_cancelled_run_before_writing_raw_content(tutor_p
         (fixture.conversation_id,),
     ).fetchone()
     assert row == {"count": 0}
+
+
+def test_first_turn_rolls_back_every_created_row_after_an_intermediate_failure(tutor_persistence) -> None:
+    fixture = tutor_persistence
+
+    def counts() -> dict[str, int]:
+        row = fixture.connection.execute(
+            """
+            SELECT
+              (SELECT count(*) FROM tutor_conversations WHERE user_id = %s) AS conversations,
+              (SELECT count(*) FROM tutor_runs WHERE user_id = %s) AS runs,
+              (
+                SELECT count(*)
+                FROM tutor_messages AS messages
+                JOIN tutor_conversations AS conversations ON conversations.id = messages.conversation_id
+                WHERE conversations.user_id = %s
+              ) AS messages,
+              (
+                SELECT count(*)
+                FROM tutor_run_public_processes AS processes
+                JOIN tutor_runs AS runs ON runs.id = processes.run_id
+                WHERE runs.user_id = %s
+              ) AS processes
+            """,
+            (fixture.user_id, fixture.user_id, fixture.user_id, fixture.user_id),
+        ).fetchone()
+        assert row is not None
+        return {key: int(value) for key, value in row.items()}
+
+    before = counts()
+
+    def fail_after_first_input(stage: str) -> None:
+        if stage == "after_fresh_turn_input":
+            raise RuntimeError("forced first-turn rollback")
+
+    failing_repository = PostgresTutorRepository(fixture.connection, failpoint=fail_after_first_input)
+    with pytest.raises(RuntimeError, match="forced first-turn rollback"):
+        failing_repository.create_first_interactive_turn(
+            user_id=fixture.user_id,
+            catalog_digest=fixture.catalog.digest,
+            policy=fixture.run.policy,
+            idempotency_key="first-turn-forced-rollback",
+            content="这条首发消息不能在失败后留下空会话。",
+            received_at=datetime.now(UTC),
+        )
+
+    assert counts() == before
 
 
 def test_capability_receipt_requires_exact_selection_and_replays_only_identical_evidence(tutor_persistence) -> None:

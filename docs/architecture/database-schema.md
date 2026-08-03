@@ -1,6 +1,6 @@
 # Aearn 数据库 Schema 与持久化契约
 
-**状态：** 当前 schema 说明，2026-07-29。
+**状态：** 当前 schema 说明，2026-08-03。
 **权威来源：** `aearn/services/api/app/db/schema.sql`、PostgreSQL bootstrap、
 Tutor repositories 与 schema/cutover tests。
 **范围：** PostgreSQL 是 Tutor run、cutover receipt、背景队列和 learner-safe
@@ -53,25 +53,36 @@ projection 的唯一 durable authority；Desktop、Celery 和 provider 不拥有
 `checkpoints`、`checkpoint_blobs`、`checkpoint_writes`。未知表/namespace、
 `NULL` thread ID、未知 learning thread 或无法证明映射的记录都 fail closed。
 
-## 4. Tutor 对话、run 与可重放事件
+## 4. Tutor 对话、TurnRun、公开过程与可重放事件
 
 | 表 | 责任 | 关键不变量 |
 | --- | --- | --- |
-| `tutor_conversations` | user-scoped learner-visible/internal conversation 根 | `visibility` 与 `kind` 区分公开交互和内部 proactive conversation |
-| `tutor_messages` | canonical learner/Tutor public message body | 唯一允许存放原始 learner 文本的 Tutor 表；不可作为 trace/export dump |
+| `tutor_conversations` | user-scoped learner-visible/internal conversation 根 | `visibility` 与 `kind` 区分公开交互和内部 proactive conversation；learner conversation 的 `title` 只能保存安全模型简述，`NULL` 对外投影为“新对话”；`last_public_activity_at` 是列表排序的唯一 authority |
+| `tutor_messages` | canonical learner/Tutor public message body | 唯一允许存放原始 learner 文本的 Tutor 表；不可作为 trace/export dump；旧 message-only conversation 继续可读 |
 | `tutor_catalog_snapshots` | reviewed Skill catalog digest snapshot | run 只能引用已持久化的 digest |
-| `tutor_runs` | 有限 loop 的 durable snapshot | `origin` 为 `interactive/proactive`；lease、budget counter、`input_revision`、terminal outcome 和 `next_event_sequence` 都由 DB 保护 |
+| `tutor_runs` | 有限 loop 的 durable snapshot | `origin` 为 `interactive/proactive`；lease、budget counter、`input_revision`、terminal outcome 和 `next_event_sequence` 都由 DB 保护；`superseded_by_run_id` 是内部 audit link；`continuation_kind` 只允许 explicit continuation enum |
+| `tutor_run_public_processes` | 一条新 interactive run 对应一条 server-safe public-process projection | 只允许 `thinking/completed/superseded/unavailable`，只保留 timestamps、关联 public Tutor message 和固定 step key；不存 reasoning、provider payload、prompt、trace 或工具参数 |
+| `tutor_run_public_process_steps` | append-only public-process step order | `(run_id, ordinal)` 唯一；step key/state 均有 DB + repository allowlist；公开 label 在 read projection 映射而非存自由文本 |
 | `tutor_run_skill_selections` | exact Skill evidence | `(run_id, input_revision)` 唯一；保存 id/version 与 manifest/instruction/evaluation hash |
-| `tutor_run_input_events` | 已接受输入的 revision/event receipt | revision 单调；用于 merge/replay 与 stale-effect gate |
+| `tutor_run_input_events` | 已接受输入的 revision/event receipt | revision 在同一 run 内单调；普通消息一条一个 fresh run，只有 explicit continuation 才在同 run 增加 revision；用于 replay 与 stale-effect gate |
 | `tutor_run_checkpoints` | metadata-only checkpoint | 不保存 assembled prompt、raw history 或 provider payload |
 | `tutor_run_events` | run-local ordered event log | `event_sequence` 在 locked run row 上分配；SSE 只读取其安全后缀 |
-| `tutor_capability_invocations`、`tutor_effects` | capability/effect receipt | 当前 revision、lease、Skill evidence 与 policy 必须同时通过；stale effect 不调用 handler |
+| `tutor_capability_invocations`、`tutor_effects` | capability/effect receipt | 当前 revision、lease、Skill evidence 与 policy 必须同时通过；stale/superseded effect 不调用 handler |
 | `tutor_run_traces` | redacted diagnostic trace | trace 写入和导出都再次走 allowlist projection |
-| `tutor_api_idempotency_records` | public Tutor mutation replay | `(user_id, operation, idempotency_key)` 唯一；只存 request hash 与安全 response JSON |
+| `tutor_api_idempotency_records` | public Tutor mutation replay | `(user_id, operation, idempotency_key)` 唯一；首发、普通 turn 和 continuation 都绑定 request hash 与安全 response JSON |
+
+`POST /conversations/first-turn` 的 repository mutation 在一个 transaction 内创建 learner
+conversation、fresh run、首条 learner message/input event 和 `input_received` process；任何
+中间失败都会回滚，不留下空 conversation。普通 conversation-input 在 conversation lock
+下先结束旧 foreground run、冻结其 process，再创建新 run。partial unique index
+`uq_tutor_runs_interactive_foreground` 只允许同一 conversation 存在一条尚未 terminal、
+cancelled 或 superseded 的 interactive foreground run。
 
 终态约束：`tutor_runs.terminal_outcome` 与 `terminal_at` 必须同时为 `NULL` 或同时
 存在。terminal transition、safe event、trace 与 curation outbox 由同一事务维护，
-避免暴露半完成状态。
+避免暴露半完成状态。provider 返回后的 lifecycle write 再次检查 cancellation/supersede；
+stale run 只能收敛到安全 cancelled/superseded projection，不能写 Tutor message、title、
+capability receipt 或 effect commit。
 
 ## 5. Skills、capability、effects 与执行器
 

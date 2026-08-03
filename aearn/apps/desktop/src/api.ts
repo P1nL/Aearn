@@ -5,13 +5,20 @@ import {
   type HarnessCutoverDecision,
   type LanguageCourse,
   type TutorActivityItem,
-  type TutorConversationResponse,
+  type TutorContinuationKind,
+  type TutorConversationHistoryResponse,
+  type TutorConversationListResponse,
+  type TutorConversationSummary,
+  type TutorForegroundRun,
+  type TutorHistoryItem,
   type TutorInboxItem,
   type TutorInputAcceptedResponse,
   type TutorMemoryItem,
   type TutorPlanRevision,
   type TutorPlanRevisionList,
   type TutorPreferences,
+  type TutorPublicProcess,
+  type TutorPublicProcessStep,
   type TutorRunState,
   type UserProfile,
 } from "./types";
@@ -80,22 +87,50 @@ export async function confirmHarnessCutover(input: {
   return payload;
 }
 
-export async function createTutorConversation(input: {
+export async function acceptTutorFirstTurn(input: {
   userId: string;
+  content: string;
   clientActionId: string;
-  conversationId?: string;
-}): Promise<TutorConversationResponse> {
-  const payload = await requestJson(`${API_BASE_URL}/api/tutor/conversations`, {
+}): Promise<TutorInputAcceptedResponse> {
+  const payload = await requestJson(`${API_BASE_URL}/api/tutor/conversations/first-turn`, {
     method: "POST",
     headers: tutorMutationHeaders(input.clientActionId),
-    body: JSON.stringify({
-      user_id: input.userId,
-      client_action_id: input.clientActionId,
-      ...(input.conversationId ? { conversation_id: input.conversationId } : {}),
-    }),
+    body: JSON.stringify({ user_id: input.userId, content: input.content, client_action_id: input.clientActionId }),
   });
-  const response = toTutorConversationResponse(payload);
-  if (!response) throw new Error("Tutor conversation API returned an invalid payload");
+  const response = toTutorInputAcceptedResponse(payload);
+  if (!response) throw new Error("Tutor first-turn API returned an invalid payload");
+  return response;
+}
+
+export async function fetchTutorConversations(input: {
+  userId: string;
+  limit?: number;
+  cursor?: string | null;
+  signal?: AbortSignal;
+}): Promise<TutorConversationListResponse> {
+  const query = new URLSearchParams({ user_id: input.userId, limit: String(input.limit ?? 8) });
+  if (input.cursor) query.set("cursor", input.cursor);
+  const payload = await requestJson(`${API_BASE_URL}/api/tutor/conversations?${query.toString()}`, { signal: input.signal });
+  const response = toTutorConversationListResponse(payload);
+  if (!response) throw new Error("Tutor conversation-list API returned an invalid payload");
+  return response;
+}
+
+export async function fetchTutorConversationHistory(input: {
+  userId: string;
+  conversationId: string;
+  limit?: number;
+  cursor?: string | null;
+  signal?: AbortSignal;
+}): Promise<TutorConversationHistoryResponse> {
+  const query = new URLSearchParams({ user_id: input.userId, limit: String(input.limit ?? 40) });
+  if (input.cursor) query.set("cursor", input.cursor);
+  const payload = await requestJson(
+    `${API_BASE_URL}/api/tutor/conversations/${encodeURIComponent(input.conversationId)}/history?${query.toString()}`,
+    { signal: input.signal },
+  );
+  const response = toTutorConversationHistoryResponse(payload);
+  if (!response) throw new Error("Tutor history API returned an invalid payload");
   return response;
 }
 
@@ -367,15 +402,92 @@ function isHarnessCutoverSummary(payload: unknown): boolean {
   );
 }
 
-function toTutorConversationResponse(payload: unknown): TutorConversationResponse | null {
-  if (!isRecord(payload) || !isString(payload.conversation_id) || typeof payload.created !== "boolean" || typeof payload.idempotent_replayed !== "boolean") return null;
-  return { conversation_id: payload.conversation_id, created: payload.created, idempotent_replayed: payload.idempotent_replayed };
+function toTutorConversationListResponse(payload: unknown): TutorConversationListResponse | null {
+  if (!isRecord(payload) || !Array.isArray(payload.items) || !isNullableString(payload.next_cursor) || typeof payload.has_more !== "boolean") return null;
+  const items: TutorConversationSummary[] = [];
+  for (const item of payload.items) {
+    const parsed = toTutorConversationSummary(item);
+    if (!parsed) return null;
+    items.push(parsed);
+  }
+  return { items, next_cursor: payload.next_cursor, has_more: payload.has_more };
+}
+
+function toTutorConversationHistoryResponse(payload: unknown): TutorConversationHistoryResponse | null {
+  if (!isRecord(payload) || !Array.isArray(payload.items) || !isNullableString(payload.next_cursor) || typeof payload.has_more !== "boolean") return null;
+  if (!("active_run" in payload)) return null;
+  const activeRun = payload.active_run === null ? null : toTutorForegroundRun(payload.active_run);
+  if (activeRun === null && payload.active_run !== null) return null;
+  const items: TutorHistoryItem[] = [];
+  for (const item of payload.items) {
+    const parsed = toTutorHistoryItem(item);
+    if (!parsed) return null;
+    items.push(parsed);
+  }
+  return { items, next_cursor: payload.next_cursor, has_more: payload.has_more, active_run: activeRun };
+}
+
+function toTutorConversationSummary(payload: unknown): TutorConversationSummary | null {
+  if (!isRecord(payload) || !isString(payload.conversation_id) || !isString(payload.title) || !isNullableString(payload.last_public_activity_at)) return null;
+  if (!("active_run" in payload)) return null;
+  const activeRun = payload.active_run === null ? null : toTutorForegroundRun(payload.active_run);
+  if (activeRun === null && payload.active_run !== null) return null;
+  return {
+    conversation_id: payload.conversation_id,
+    title: payload.title,
+    last_public_activity_at: payload.last_public_activity_at,
+    active_run: activeRun,
+  };
+}
+
+function toTutorForegroundRun(payload: unknown): TutorForegroundRun | null {
+  if (!isRecord(payload) || !isString(payload.run_id) || !isTutorRunStatus(payload.status) || !isNullableTutorContinuationKind(payload.continuation_kind)) return null;
+  return { run_id: payload.run_id, status: payload.status, continuation_kind: payload.continuation_kind };
+}
+
+function toTutorHistoryItem(payload: unknown): TutorHistoryItem | null {
+  if (!isRecord(payload) || !isString(payload.kind) || !isString(payload.id) || !isNullableString(payload.created_at)) return null;
+  if (payload.kind === "message") {
+    if ((payload.role !== "learner" && payload.role !== "tutor") || !isString(payload.content)) return null;
+    return { kind: "message", id: payload.id, role: payload.role, content: payload.content, created_at: payload.created_at };
+  }
+  if (payload.kind === "process") {
+    return toTutorPublicProcess(payload);
+  }
+  return null;
+}
+
+function toTutorPublicProcess(payload: unknown): TutorPublicProcess | null {
+  if (!isRecord(payload) || payload.kind !== "process" || !isString(payload.id) || !isString(payload.run_id) || !isTutorProcessDisplayState(payload.display_state) || !Array.isArray(payload.steps) || !isNonNegativeSafeInteger(payload.elapsed_seconds) || !isNullableString(payload.created_at) || !isNullableString(payload.finished_at)) return null;
+  const steps: TutorPublicProcessStep[] = [];
+  for (const step of payload.steps) {
+    const parsed = toTutorPublicProcessStep(step);
+    if (!parsed) return null;
+    steps.push(parsed);
+  }
+  return {
+    kind: "process",
+    id: payload.id,
+    run_id: payload.run_id,
+    display_state: payload.display_state,
+    steps,
+    elapsed_seconds: payload.elapsed_seconds,
+    created_at: payload.created_at,
+    finished_at: payload.finished_at,
+  };
+}
+
+function toTutorPublicProcessStep(payload: unknown): TutorPublicProcessStep | null {
+  if (!isRecord(payload) || !isTutorProcessStepKey(payload.key) || !isTutorProcessStepState(payload.state) || !isString(payload.label)) return null;
+  return { key: payload.key, state: payload.state, label: payload.label };
 }
 
 function toTutorInputAcceptedResponse(payload: unknown): TutorInputAcceptedResponse | null {
-  if (!isRecord(payload) || !isString(payload.conversation_id) || !isString(payload.run_id) || !isNonNegativeSafeInteger(payload.input_revision) || !isString(payload.message_id) || !isNonNegativeSafeInteger(payload.event_cursor) || typeof payload.merged !== "boolean" || typeof payload.input_replayed !== "boolean" || typeof payload.idempotent_replayed !== "boolean") return null;
+  if (!isRecord(payload) || !isString(payload.conversation_id) || !isString(payload.run_id) || !isNonNegativeSafeInteger(payload.input_revision) || !isString(payload.message_id) || !isNonNegativeSafeInteger(payload.event_cursor) || typeof payload.merged !== "boolean" || typeof payload.input_replayed !== "boolean" || typeof payload.idempotent_replayed !== "boolean" || !("process" in payload) || !("replaced_run_id" in payload) || !("replaced_process" in payload)) return null;
   const run = toTutorRunState(payload.run);
-  if (!run) return null;
+  const process = payload.process === null ? null : toTutorPublicProcess(payload.process);
+  const replacedProcess = payload.replaced_process === null ? null : toTutorPublicProcess(payload.replaced_process);
+  if (!run || (process === null && payload.process !== null) || (replacedProcess === null && payload.replaced_process !== null) || !isNullableString(payload.replaced_run_id)) return null;
   return {
     conversation_id: payload.conversation_id,
     run_id: payload.run_id,
@@ -386,11 +498,14 @@ function toTutorInputAcceptedResponse(payload: unknown): TutorInputAcceptedRespo
     input_replayed: payload.input_replayed,
     idempotent_replayed: payload.idempotent_replayed,
     run,
+    process,
+    replaced_run_id: payload.replaced_run_id,
+    replaced_process: replacedProcess,
   };
 }
 
 function toTutorRunState(payload: unknown): TutorRunState | null {
-  if (!isRecord(payload) || !isString(payload.run_id) || !isString(payload.conversation_id) || (payload.origin !== "interactive" && payload.origin !== "proactive") || !isTutorRunStatus(payload.status) || !isNonNegativeSafeInteger(payload.input_revision) || typeof payload.cancelled !== "boolean" || !isNonNegativeSafeInteger(payload.iteration_count) || !isNonNegativeSafeInteger(payload.model_call_count) || !isNonNegativeSafeInteger(payload.capability_call_count) || !isNonNegativeSafeInteger(payload.effect_count) || !isNullableTutorTerminalOutcome(payload.terminal_outcome) || !isNullableString(payload.created_at) || !isNullableString(payload.updated_at)) return null;
+  if (!isRecord(payload) || !isString(payload.run_id) || !isString(payload.conversation_id) || (payload.origin !== "interactive" && payload.origin !== "proactive") || !isTutorRunStatus(payload.status) || !isNonNegativeSafeInteger(payload.input_revision) || typeof payload.cancelled !== "boolean" || !isNonNegativeSafeInteger(payload.iteration_count) || !isNonNegativeSafeInteger(payload.model_call_count) || !isNonNegativeSafeInteger(payload.capability_call_count) || !isNonNegativeSafeInteger(payload.effect_count) || !isNullableTutorTerminalOutcome(payload.terminal_outcome) || !isNullableTutorContinuationKind(payload.continuation_kind) || !isNullableString(payload.created_at) || !isNullableString(payload.updated_at)) return null;
   return {
     run_id: payload.run_id,
     conversation_id: payload.conversation_id,
@@ -403,6 +518,7 @@ function toTutorRunState(payload: unknown): TutorRunState | null {
     capability_call_count: payload.capability_call_count,
     effect_count: payload.effect_count,
     terminal_outcome: payload.terminal_outcome,
+    continuation_kind: payload.continuation_kind,
     created_at: payload.created_at,
     updated_at: payload.updated_at,
   };
@@ -473,6 +589,22 @@ function isTutorRunStatus(value: unknown): value is TutorRunState["status"] {
 
 function isNullableTutorTerminalOutcome(value: unknown): value is TutorRunState["terminal_outcome"] {
   return value === null || value === "completed" || value === "model_unavailable" || value === "blocked_policy" || value === "budget_exhausted" || value === "cancelled" || value === "failed";
+}
+
+function isNullableTutorContinuationKind(value: unknown): value is TutorContinuationKind | null {
+  return value === null || value === "approval" || value === "capability_result" || value === "external_result";
+}
+
+function isTutorProcessDisplayState(value: unknown): value is TutorPublicProcess["display_state"] {
+  return value === "thinking" || value === "completed" || value === "superseded" || value === "unavailable";
+}
+
+function isTutorProcessStepKey(value: unknown): value is TutorPublicProcessStep["key"] {
+  return value === "input_received" || value === "context_prepared" || value === "authorized_resource_checked" || value === "learning_reply_generated" || value === "replaced_by_newer_input";
+}
+
+function isTutorProcessStepState(value: unknown): value is TutorPublicProcessStep["state"] {
+  return value === "completed" || value === "current";
 }
 
 function isTutorInboxState(value: unknown): value is TutorInboxItem["state"] {

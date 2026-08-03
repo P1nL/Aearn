@@ -1,6 +1,6 @@
 # Aearn Tutor 桌面端交互规格
 
-**状态：** 当前 Desktop 交互契约，2026-07-29。
+**状态：** 当前 Desktop 交互契约，2026-08-03。
 **适用范围：** `aearn/apps/desktop/src/` 的 React + Tauri UI。
 **权威来源：** `App.tsx`、`stores/useAppStore.ts`、`api.ts`、
 `pages/HarnessCutoverPage.tsx`、`pages/TutorWorkspacePage.tsx` 与类型/测试。
@@ -15,8 +15,9 @@
    再渲染用户可操作的 Tutor UI。
 2. **解释不可逆边界。** 有旧数据时，清理页显示服务器摘要和保留项，明确代码
    回退不会恢复清理的数据。
-3. **保持对话可继续。** 输入确认、run 状态和 SSE cursor 都可见；运行时允许
-   继续补充输入，而不是创建竞争会话。
+3. **保持历史连续、普通输入独立。** conversation history、公开 process 和
+   run 状态可恢复；每条普通消息创建新的有限 TurnRun，只有服务器明确授权的
+   continuation 才能复用等待中的 run。
 4. **让学习记录受用户控制。** Activity/inbox、记忆、计划版本和偏好在同一
    工作区中以 learner-safe projection 展示。
 5. **不泄露内部细节。** UI 不显示 provider 原始错误、内部 reason、prompt、
@@ -96,24 +97,50 @@ stateDiagram-v2
 
 ## Tutor 工作区：`TutorWorkspacePage`
 
-### 主列：对话与 run 状态
+### 会话导航、主列与 run 状态
 
-- 第一次发送时先创建/恢复 conversation；后续输入根据 active interactive run
-  调用 conversation-input 或 run-input API。
-- Composer 最多 16,000 个字符，可用 Ctrl/⌘+Enter 提交。提交中禁用重复动作，
-  但 active run 下的成功后续输入可被服务端 merge。
-- 时间线只展示 learner input、公开 Tutor message、safe activity/status、确认和
-  public error。最多保留 100 条 UI 条目。
-- 运行摘要显示公开 status、输入 revision 和当前 SSE cursor。它不显示 provider
-  诊断或内部 tool arguments。
+- `App.tsx` 保存当前选择的 conversation ID。左侧显示“新对话”和最多 8 条由
+  `last_public_activity_at` 倒序的 recent conversation；仅当服务器声明仍有更多时显示
+  “查看全部对话”。完整列表是可键盘操作的轻量面板，采用 cursor 分页，不把所有
+  history 塞进侧栏。
+- 选择“新对话”只清空本地 timeline/run/composer context 并将 selection 设为 draft；
+  **不得**创建 conversation、run、message 或 sidebar item。首个非空提交调用
+  `POST /conversations/first-turn`，成功后才选中新 conversation 并刷新 recent list。
+- 选择已有 conversation 时，页面取消旧 history request/stream、清空旧本地 timeline，
+  从 `GET /conversations/{id}/history` hydrate 最新 40 条倒序 public timeline 后按正序
+  渲染；“加载更早记录”使用 server cursor prepend，并保持滚动锚点。仅当 history
+  response 声明 active foreground run 时订阅该 run 的 SSE。
+- 普通 composer submit 始终调用 selected conversation 的 conversation-input endpoint，
+  并创建 fresh finite TurnRun；它不会因为本地存在 run 而调用 run-input。只有 run 是
+  `waiting_for_input` 且带 server-provided `continuation_kind` 时才显示 continuation
+  affordance，此时才能调用 `/runs/{run_id}/inputs`。
+- Composer 最多 16,000 个字符，可用 Ctrl/⌘+Enter 提交；pending 时禁用重复动作。
+  timeline 是独立纵向滚动区，Composer 在 desktop view 保持可见，新的 history 条目
+  不得把它持续挤出主要可视区。
+- timeline 只渲染 server public `message.content` 和 server public process fields。
+  新版 process 是紧凑的行内 disclosure：默认折叠，整行/箭头可键盘操作，含可读
+  label 与 `aria-expanded`。它只显示 `display_state`、server-calculated duration 和
+  allowlisted `steps[].label`；标题为“公开处理过程”。完成后显示“已处理 …”，被替代
+  时显示“已根据你的新消息更新本轮处理”。不得使用旧的绿色三栏 dashboard、渐变思考
+  面板或从 SSE/raw trace 推断模型思考。
+- 旧版 message-only history 正常显示，但不得合成 process 卡片、步骤或 duration。
+  run summary 仅显示公开 status 和 stream cursor，绝不显示 provider 诊断或内部 tool
+  arguments。
 
 ### SSE 交互
 
-`useTutorSSE` 是 transport-only hook：它不推断 terminal state，也不请求模型。
+`useTutorSSE` 是 transport-only hook：它不重建 conversation history、不推断 terminal
+state，也不请求模型。SSE event 只触发当前 selected conversation 的节流 history/control
+refresh；history endpoint 是 timeline 的唯一 source of truth。
 
+- endpoint 变更、选择其他 conversation 或组件卸载时必须清理旧 stream；新的 history
+  hydrate 不得被旧 stream callback 关闭。
 - 首次连接不发送 cursor；重连时只发送最后已消费的数字 `Last-Event-ID`。
 - 同一 run 的重复/倒退 ID 被丢弃；保留 512 个已见 ID 防止重复呈现。
-- `done` 和 `error` 是终态；没有 `id` 的 error 不更新 cursor。
+- `done` 和 `error` 是 transport 终态；没有 `id` 的 error 不更新 cursor。
+- 非终态的 `waiting_for_input` `run_state` 可携带 learner-safe `public_message`；
+  Desktop 以服务端 history 刷新后的消息为准，并只在 explicit continuation 可用时
+  展示继续确认控制。
 - 自动重连最多两次。`SSE_CURSOR_INVALID`、未知事件或不完整帧显示稳定的
   `TUTOR_SSE_PROTOCOL_ERROR` / error 入口，而不是把不可信 payload 渲染成 UI。
 

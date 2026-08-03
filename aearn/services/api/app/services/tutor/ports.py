@@ -53,6 +53,8 @@ class TutorRunStore(Protocol):
 
     def is_cancelled(self, run_id: str) -> bool: ...
 
+    def is_superseded(self, run_id: str) -> bool: ...
+
     def save_checkpoint(self, checkpoint: TutorCheckpoint) -> None: ...
 
     def record_result(self, result: TutorRunResult) -> None: ...
@@ -171,6 +173,7 @@ class InMemoryTutorRunStore:
         self._snapshots: dict[str, TutorRunSnapshot] = {}
         self._input_revisions: dict[str, int] = {}
         self._cancelled: set[str] = set()
+        self._superseded: set[str] = set()
         self._leases: dict[str, TutorLease] = {}
         self._lease_generations: dict[str, int] = {}
         self.checkpoints: list[TutorCheckpoint] = []
@@ -256,8 +259,14 @@ class InMemoryTutorRunStore:
     def cancel(self, run_id: str) -> None:
         self._cancelled.add(run_id)
 
+    def supersede(self, run_id: str) -> None:
+        self._superseded.add(run_id)
+
     def is_cancelled(self, run_id: str) -> bool:
         return run_id in self._cancelled or bool(self._snapshots.get(run_id, None) and self._snapshots[run_id].cancelled)
+
+    def is_superseded(self, run_id: str) -> bool:
+        return run_id in self._superseded
 
     def save_checkpoint(self, checkpoint: TutorCheckpoint) -> None:
         self.checkpoints.append(checkpoint)

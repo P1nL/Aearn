@@ -11,6 +11,8 @@ from fastapi.testclient import TestClient
 
 import app.routes.tutor as tutor_route
 from app.agents.harness.contracts import (
+    TutorCheckpointReason,
+    TutorContinuationKind,
     TutorDecision,
     TutorProviderResult,
     TutorRunResult,
@@ -96,19 +98,54 @@ class RecordingTutorDispatcher:
 class TerminalTutorProvider:
     message: str
     outcome: TutorTerminalOutcome = TutorTerminalOutcome.COMPLETED
+    conversation_title: str | None = None
     calls: list[tuple[str, int]] = field(default_factory=list)
 
     def decide(self, *, run, context) -> TutorProviderResult:  # type: ignore[no-untyped-def]
         self.calls.append((run.run_id, run.input_revision))
         if self.outcome is TutorTerminalOutcome.COMPLETED:
             return TutorProviderResult(
-                decision=TutorDecision(public_message=self.message, terminal_outcome=TutorTerminalOutcome.COMPLETED)
+                decision=TutorDecision(
+                    public_message=self.message,
+                    conversation_title=self.conversation_title,
+                    terminal_outcome=TutorTerminalOutcome.COMPLETED,
+                )
             )
         return TutorProviderResult(decision=None, terminal_outcome=self.outcome, safe_code="fixture_terminal")
 
 
-def terminal_dispatcher(*, settings: Settings, message: str = "请先比较变量声明的位置与可见范围。") -> tuple[TutorInteractiveRunDispatcher, TerminalTutorProvider]:
-    provider = TerminalTutorProvider(message=message)
+def terminal_dispatcher(
+    *,
+    settings: Settings,
+    message: str = "请先比较变量声明的位置与可见范围。",
+    conversation_title: str | None = None,
+) -> tuple[TutorInteractiveRunDispatcher, TerminalTutorProvider]:
+    provider = TerminalTutorProvider(message=message, conversation_title=conversation_title)
+    return (
+        TutorInteractiveRunDispatcher(settings=settings, provider_factory=lambda _settings: provider),
+        provider,
+    )
+
+
+@dataclass
+class WaitingTutorProvider:
+    message: str
+    calls: list[tuple[str, int]] = field(default_factory=list)
+
+    def decide(self, *, run, context) -> TutorProviderResult:  # type: ignore[no-untyped-def]
+        del context
+        self.calls.append((run.run_id, run.input_revision))
+        return TutorProviderResult(
+            decision=TutorDecision(
+                public_message=self.message,
+                checkpoint_reason=TutorCheckpointReason.CAPABILITY_RESULT,
+                continuation_kind=TutorContinuationKind.APPROVAL,
+            )
+        )
+
+
+def waiting_dispatcher(*, settings: Settings, message: str) -> tuple[TutorInteractiveRunDispatcher, WaitingTutorProvider]:
+    provider = WaitingTutorProvider(message=message)
     return (
         TutorInteractiveRunDispatcher(settings=settings, provider_factory=lambda _settings: provider),
         provider,

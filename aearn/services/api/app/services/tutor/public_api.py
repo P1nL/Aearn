@@ -31,7 +31,13 @@ from app.services.tutor.learner_state import (
 )
 from app.services.tutor.persistence import (
     PostgresTutorRepository,
+    TutorConversationSummary,
+    TutorConversationTimelineRecord,
+    TutorCursorInvalid,
+    TutorPublicForegroundRun,
     TutorDurableEvent,
+    TutorInteractiveTurnAcceptance,
+    TutorPublicProcessState,
     TutorIdempotencyConflict,
     TutorRunNotFound,
     TutorRunReadState,
@@ -103,6 +109,26 @@ class TutorPublicService:
             ),
         )
 
+    def accept_first_turn(
+        self,
+        *,
+        user_id: str,
+        content: str,
+        idempotency_key: str,
+    ) -> dict[str, object]:
+        normalized_user_id = _uuid_identifier(user_id, label="user_id")
+        return self._mutate(
+            user_id=normalized_user_id,
+            operation="tutor.conversation.first_turn",
+            idempotency_key=idempotency_key,
+            request_body={"content": content},
+            action=lambda: self._accept_first_turn(
+                user_id=normalized_user_id,
+                content=content,
+                idempotency_key=idempotency_key,
+            ),
+        )
+
     def accept_conversation_input(
         self,
         *,
@@ -157,6 +183,68 @@ class TutorPublicService:
             return _run_payload(self._repository.read_run_state(user_id=normalized_user_id, run_id=normalized_run_id))
         except TutorRunNotFound as exc:
             raise _run_not_found(normalized_run_id) from exc
+
+    def list_conversations(
+        self,
+        *,
+        user_id: str,
+        limit: int,
+        cursor: str | None,
+    ) -> dict[str, object]:
+        normalized_user_id = _uuid_identifier(user_id, label="user_id")
+        self._assert_user_exists(normalized_user_id)
+        try:
+            items, next_cursor, has_more = self._repository.list_public_conversations(
+                user_id=normalized_user_id,
+                limit=limit,
+                cursor=cursor,
+            )
+        except TutorCursorInvalid as exc:
+            raise _cursor_invalid() from exc
+        return {
+            "items": [_conversation_summary_payload(item) for item in items],
+            "next_cursor": next_cursor,
+            "has_more": has_more,
+        }
+
+    def read_conversation_history(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str,
+        limit: int,
+        cursor: str | None,
+    ) -> dict[str, object]:
+        normalized_user_id = _uuid_identifier(user_id, label="user_id")
+        normalized_conversation_id = _uuid_identifier(conversation_id, label="conversation_id")
+        self._assert_user_exists(normalized_user_id)
+        try:
+            items, next_cursor, has_more = self._repository.read_public_history(
+                user_id=normalized_user_id,
+                conversation_id=normalized_conversation_id,
+                limit=limit,
+                cursor=cursor,
+                now=datetime.now(UTC),
+            )
+            active_run = self._repository.read_public_foreground_run(
+                user_id=normalized_user_id,
+                conversation_id=normalized_conversation_id,
+            )
+        except TutorCursorInvalid as exc:
+            raise _cursor_invalid() from exc
+        except TutorRunNotFound as exc:
+            raise TutorPublicApiError(
+                "TUTOR_CONVERSATION_NOT_FOUND",
+                "Tutor conversation was not found for the current learner.",
+                status_code=404,
+                details={"conversation_id": normalized_conversation_id},
+            ) from exc
+        return {
+            "items": [_timeline_payload(item) for item in items],
+            "next_cursor": next_cursor,
+            "has_more": has_more,
+            "active_run": _foreground_run_payload(active_run),
+        }
 
     def replay_events(
         self,
@@ -363,6 +451,33 @@ class TutorPublicService:
             ) from exc
         return {"conversation_id": resolved, "created": created}
 
+    def _accept_first_turn(
+        self,
+        *,
+        user_id: str,
+        content: str,
+        idempotency_key: str,
+    ) -> dict[str, object]:
+        self._assert_user_exists(user_id)
+        now = datetime.now(UTC)
+        try:
+            catalog = compile_published_skill_catalog()
+            self._repository.record_catalog_snapshot(catalog)
+            accepted = self._repository.create_first_interactive_turn(
+                user_id=user_id,
+                catalog_digest=catalog.digest,
+                policy=_interactive_policy(now),
+                idempotency_key=idempotency_key,
+                content=content,
+                received_at=now,
+            )
+            state = self._repository.read_run_state(user_id=user_id, run_id=accepted.run.run_id)
+        except TutorIdempotencyConflict as exc:
+            raise _idempotency_conflict() from exc
+        except TutorTerminalStateConflict as exc:
+            raise _run_not_active() from exc
+        return _turn_acceptance_payload(accepted, state=state, first_turn=True)
+
     def _accept_conversation_input(
         self,
         *,
@@ -376,20 +491,16 @@ class TutorPublicService:
         try:
             catalog = compile_published_skill_catalog()
             self._repository.record_catalog_snapshot(catalog)
-            run, created = self._repository.find_or_create_interactive_run(
+            accepted = self._repository.create_interactive_turn(
                 user_id=user_id,
                 conversation_id=conversation_id,
                 catalog_digest=catalog.digest,
                 policy=_interactive_policy(now),
-            )
-            acceptance = self._repository.accept_input(
-                user_id=user_id,
-                run_id=run.run_id,
                 idempotency_key=idempotency_key,
                 content=content,
                 received_at=now,
             )
-            state = self._repository.read_run_state(user_id=user_id, run_id=run.run_id)
+            state = self._repository.read_run_state(user_id=user_id, run_id=accepted.run.run_id)
         except TutorRunNotFound as exc:
             raise TutorPublicApiError(
                 "TUTOR_CONVERSATION_NOT_FOUND",
@@ -401,16 +512,7 @@ class TutorPublicService:
             raise _idempotency_conflict() from exc
         except TutorTerminalStateConflict as exc:
             raise _run_not_active(conversation_id=conversation_id) from exc
-        return {
-            "conversation_id": conversation_id,
-            "run_id": run.run_id,
-            "input_revision": acceptance.input_revision,
-            "message_id": acceptance.message_id,
-            "event_cursor": acceptance.event.event_sequence,
-            "merged": not created,
-            "input_replayed": acceptance.replayed,
-            "run": _run_payload(state),
-        }
+        return _turn_acceptance_payload(accepted, state=state, first_turn=False)
 
     def _accept_existing_run_input(
         self,
@@ -423,7 +525,13 @@ class TutorPublicService:
         self._assert_user_exists(user_id)
         try:
             state = self._repository.read_run_state(user_id=user_id, run_id=run_id)
-            if state.snapshot.origin != "interactive" or state.snapshot.cancelled or state.terminal_outcome is not None:
+            if (
+                state.snapshot.origin != "interactive"
+                or state.snapshot.cancelled
+                or state.terminal_outcome is not None
+                or state.snapshot.status.value != "waiting_for_input"
+                or state.snapshot.continuation_kind is None
+            ):
                 raise _run_not_active(run_id=run_id)
             acceptance = self._repository.accept_input(
                 user_id=user_id,
@@ -439,6 +547,7 @@ class TutorPublicService:
             raise _idempotency_conflict() from exc
         except TutorTerminalStateConflict as exc:
             raise _run_not_active(run_id=run_id) from exc
+        process = self._repository.read_public_process(user_id=user_id, run_id=run_id)
         return {
             "conversation_id": updated.snapshot.conversation_id,
             "run_id": run_id,
@@ -448,6 +557,9 @@ class TutorPublicService:
             "merged": True,
             "input_replayed": acceptance.replayed,
             "run": _run_payload(updated),
+            "process": _public_process_payload(process) if process is not None else None,
+            "replaced_run_id": None,
+            "replaced_process": None,
         }
 
     def _mark_inbox_read(self, user_id: str, inbox_id: str) -> TutorInboxItem:
@@ -606,15 +718,28 @@ class TutorPublicService:
                     "status": "accepted",
                 },
             )
-        if event.kind in {"skill_selected", "capability_invoked"}:
+        if event.kind == "skill_selected":
             return TutorPublicSseEvent(
                 sequence=event.event_sequence,
                 event_type="tool_status",
                 data={
                     **base,
-                    "status": _safe_text(payload.get("status")) or "completed",
-                    "tool": _safe_text(payload.get("capability_id")) or _safe_text(payload.get("skill_id")) or "tutor",
-                    "message": "Tutor updated its learner-safe working state.",
+                    "status": "completed",
+                    "tool": "public_process",
+                    "label": "已整理最近的对话与学习目标",
+                    "message": "已整理最近的对话与学习目标",
+                },
+            )
+        if event.kind == "capability_invoked":
+            return TutorPublicSseEvent(
+                sequence=event.event_sequence,
+                event_type="tool_status",
+                data={
+                    **base,
+                    "status": "completed",
+                    "tool": "public_process",
+                    "label": "已查阅已授权的学习资料",
+                    "message": "已查阅已授权的学习资料",
                 },
             )
         if event.kind == "effect_result":
@@ -623,9 +748,33 @@ class TutorPublicService:
                 event_type="activity",
                 data={
                     **base,
-                    "category": _safe_text(payload.get("effect_type")) or "tutor_action",
+                    "category": "public_process",
                     "status": _safe_text(payload.get("status")) or "completed",
+                    "label": "已完成一次受控学习建议生成",
                 },
+            )
+        if event.kind == "waiting_for_input":
+            message_id = _safe_text(payload.get("message_id"))
+            public_message = (
+                self._repository.public_tutor_message(
+                    user_id=user_id,
+                    run_id=event.run_id,
+                    message_id=message_id,
+                )
+                if message_id
+                else None
+            )
+            data: dict[str, object] = {
+                **base,
+                "status": "waiting_for_input",
+                "terminal_outcome": None,
+            }
+            if public_message is not None:
+                data["public_message"] = public_message
+            return TutorPublicSseEvent(
+                sequence=event.event_sequence,
+                event_type="run_state",
+                data=data,
             )
         if event.kind == "terminal_result":
             terminal = state.terminal_outcome
@@ -742,6 +891,11 @@ def _interactive_policy(now: datetime) -> TutorPolicySnapshot:
 
 def _run_payload(state: TutorRunReadState) -> dict[str, object]:
     snapshot = state.snapshot
+    continuation_kind = (
+        snapshot.continuation_kind.value
+        if snapshot.status.value == "waiting_for_input" and state.terminal_outcome is None and snapshot.continuation_kind is not None
+        else None
+    )
     return {
         "run_id": snapshot.run_id,
         "conversation_id": snapshot.conversation_id,
@@ -754,9 +908,84 @@ def _run_payload(state: TutorRunReadState) -> dict[str, object]:
         "capability_call_count": snapshot.capability_call_count,
         "effect_count": snapshot.effect_count,
         "terminal_outcome": state.terminal_outcome.value if state.terminal_outcome is not None else None,
-        "diagnostic_code": state.diagnostic_code,
+        "continuation_kind": continuation_kind,
         "created_at": _iso(state.created_at),
         "updated_at": _iso(state.updated_at),
+    }
+
+
+def _turn_acceptance_payload(
+    accepted: TutorInteractiveTurnAcceptance,
+    *,
+    state: TutorRunReadState,
+    first_turn: bool,
+) -> dict[str, object]:
+    del first_turn
+    return {
+        "conversation_id": accepted.run.conversation_id,
+        "run_id": accepted.run.run_id,
+        "input_revision": accepted.acceptance.input_revision,
+        "message_id": accepted.acceptance.message_id,
+        "event_cursor": accepted.acceptance.event.event_sequence,
+        "merged": False,
+        "input_replayed": accepted.acceptance.replayed,
+        "run": _run_payload(state),
+        "process": _public_process_payload(accepted.process) if accepted.process is not None else None,
+        "replaced_run_id": accepted.replaced_run_id,
+        "replaced_process": _public_process_payload(accepted.replaced_process)
+        if accepted.replaced_process is not None
+        else None,
+    }
+
+
+def _foreground_run_payload(item: TutorPublicForegroundRun | None) -> dict[str, object] | None:
+    if item is None:
+        return None
+    return {
+        "run_id": item.run_id,
+        "status": item.status,
+        "continuation_kind": item.continuation_kind.value if item.continuation_kind is not None else None,
+    }
+
+
+def _conversation_summary_payload(item: TutorConversationSummary) -> dict[str, object]:
+    active_run: dict[str, object] | None = None
+    if item.active_run_id is not None and item.active_run_status is not None:
+        active_run = {
+            "run_id": item.active_run_id,
+            "status": item.active_run_status,
+            "continuation_kind": item.active_run_continuation_kind.value if item.active_run_continuation_kind is not None else None,
+        }
+    return {
+        "conversation_id": item.conversation_id,
+        "title": item.title or "新对话",
+        "last_public_activity_at": _iso(item.last_public_activity_at),
+        "active_run": active_run,
+    }
+
+
+def _public_process_payload(item: TutorPublicProcessState) -> dict[str, object]:
+    return {
+        "kind": "process",
+        "id": item.run_id,
+        "run_id": item.run_id,
+        "display_state": item.display_state,
+        "steps": [dict(step) for step in item.steps],
+        "elapsed_seconds": item.elapsed_seconds,
+        "created_at": _iso(item.created_at),
+        "finished_at": _iso(item.finished_at),
+    }
+
+
+def _timeline_payload(item: TutorConversationTimelineRecord) -> dict[str, object]:
+    if item.kind == "process" and item.process is not None:
+        return _public_process_payload(item.process)
+    return {
+        "kind": "message",
+        "id": item.item_id,
+        "role": item.role,
+        "content": item.content or "",
+        "created_at": _iso(item.created_at),
     }
 
 
@@ -853,6 +1082,15 @@ def _idempotency_conflict() -> TutorPublicApiError:
     )
 
 
+def _cursor_invalid() -> TutorPublicApiError:
+    return TutorPublicApiError(
+        "CURSOR_INVALID",
+        "The requested Tutor history cursor is invalid or no longer available.",
+        status_code=400,
+        recoverable=True,
+    )
+
+
 def _run_not_found(run_id: str) -> TutorPublicApiError:
     return TutorPublicApiError(
         "TUTOR_RUN_NOT_FOUND",
@@ -870,7 +1108,7 @@ def _run_not_active(*, run_id: str | None = None, conversation_id: str | None = 
         details["conversation_id"] = conversation_id
     return TutorPublicApiError(
         "RUN_NOT_ACTIVE",
-        "Tutor run is not active for input merge.",
+        "Tutor run is not active for this input.",
         status_code=409,
         details=details,
     )

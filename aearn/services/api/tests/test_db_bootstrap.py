@@ -93,6 +93,12 @@ EXECUTION_LIFECYCLE_CONSTRAINTS = (
     "chk_tutor_execution_jobs_running_started",
 )
 
+CONVERSATION_TURNRUN_CONSTRAINTS = (
+    "fk_tutor_runs_superseded_by_run",
+    "chk_tutor_conversations_title",
+    "chk_tutor_runs_continuation_kind",
+)
+
 TARGET_TUTOR_TABLES = (
     "tutor_conversations",
     "tutor_messages",
@@ -126,6 +132,8 @@ TARGET_TUTOR_TABLES = (
     "tutor_activity_records",
     "tutor_inbox_items",
     "tutor_api_idempotency_records",
+    "tutor_run_public_processes",
+    "tutor_run_public_process_steps",
 )
 
 
@@ -170,6 +178,7 @@ def test_tutor_target_schema_is_repeatable_and_enforces_run_event_identity() -> 
                     "trg_tutor_memory_preferences_updated_at",
                     "trg_tutor_memory_entries_updated_at",
                     "trg_tutor_inbox_items_updated_at",
+                    "trg_tutor_public_processes_updated_at",
                 ],
             ),
         ).fetchall()
@@ -197,6 +206,7 @@ def test_tutor_target_schema_is_repeatable_and_enforces_run_event_identity() -> 
             "trg_tutor_memory_preferences_updated_at",
             "trg_tutor_memory_entries_updated_at",
             "trg_tutor_inbox_items_updated_at",
+            "trg_tutor_public_processes_updated_at",
         }
         executor_indexes = conn.execute(
             """
@@ -217,6 +227,10 @@ def test_tutor_target_schema_is_repeatable_and_enforces_run_event_identity() -> 
                     "idx_tutor_activity_records_user_created",
                     "idx_tutor_inbox_items_user_state",
                     "idx_tutor_api_idempotency_user_created",
+                    "uq_tutor_runs_interactive_foreground",
+                    "idx_tutor_conversations_public_activity",
+                    "idx_tutor_public_processes_conversation_activity",
+                    "idx_tutor_public_process_steps_run_ordinal",
                 ],
             ),
         ).fetchall()
@@ -231,13 +245,17 @@ def test_tutor_target_schema_is_repeatable_and_enforces_run_event_identity() -> 
             "idx_tutor_activity_records_user_created",
             "idx_tutor_inbox_items_user_state",
             "idx_tutor_api_idempotency_user_created",
+            "uq_tutor_runs_interactive_foreground",
+            "idx_tutor_conversations_public_activity",
+            "idx_tutor_public_processes_conversation_activity",
+            "idx_tutor_public_process_steps_run_ordinal",
         }
         execution_constraint_rows = conn.execute(
             "SELECT conname FROM pg_constraint WHERE conname = ANY(%s)",
-            (list(EXECUTION_SCOPE_CONSTRAINTS + EXECUTION_LIFECYCLE_CONSTRAINTS),),
+            (list(EXECUTION_SCOPE_CONSTRAINTS + EXECUTION_LIFECYCLE_CONSTRAINTS + CONVERSATION_TURNRUN_CONSTRAINTS),),
         ).fetchall()
         assert {str(row["conname"]) for row in execution_constraint_rows} == set(
-            EXECUTION_SCOPE_CONSTRAINTS + EXECUTION_LIFECYCLE_CONSTRAINTS
+            EXECUTION_SCOPE_CONSTRAINTS + EXECUTION_LIFECYCLE_CONSTRAINTS + CONVERSATION_TURNRUN_CONSTRAINTS
         )
 
         user = conn.execute(
@@ -442,9 +460,10 @@ def test_tutor_execution_schema_rejects_cross_scope_and_lifecycle_mutations(tuto
     ).fetchone()
     assert job is not None
 
+    other_conversation_id = fixture.repository.create_conversation(user_id=fixture.user_id)
     other_run = fixture.repository.create_run(
         user_id=fixture.user_id,
-        conversation_id=fixture.conversation_id,
+        conversation_id=other_conversation_id,
         catalog_digest=fixture.catalog.digest,
         policy=fixture.run.policy,
         origin="interactive",

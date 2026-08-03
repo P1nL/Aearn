@@ -1,24 +1,47 @@
 from __future__ import annotations
 
 import json
+import urllib.error
 from datetime import datetime, timezone
 from typing import Mapping, Sequence
 
 import pytest
 
 from app.agents.harness.contracts import (
+    TutorCheckpointReason,
+    TutorContinuationKind,
     TutorContextSelection,
     TutorPolicySnapshot,
     TutorRunSnapshot,
     empty_checkpoint_metadata,
 )
 from app.core.config import Settings
-from app.services.llm.llm_client import LLMCallError, LLMJsonResponse, OpenAICompatibleClient
-from app.services.tutor.provider_gateway import PrimaryTutorProviderGateway, parse_tutor_decision
+from app.services.llm.llm_client import (
+    LLMCallError,
+    LLMInvalidResponseError,
+    LLMInvalidResponseKind,
+    LLMJsonResponse,
+    OpenAICompatibleClient,
+    _extract_message_content,
+    _parse_responses_stream,
+    _safe_transport_error,
+)
+from app.services.llm.llm_urls import deepseek_responses_url
+from app.services.tutor.provider_gateway import (
+    PrimaryTutorProviderGateway,
+    _TUTOR_DECISION_REPAIR_MESSAGE,
+    _build_messages,
+    parse_tutor_decision,
+)
 
 
 class FakeJsonClient:
-    def __init__(self, *, content: dict[str, object] | None = None, error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        content: dict[str, object] | None = None,
+        error: Exception | None = None,
+    ) -> None:
         self._content = content or {}
         self._error = error
         self.calls = 0
@@ -40,6 +63,26 @@ class FakeJsonClient:
         if self._error is not None:
             raise self._error
         return LLMJsonResponse(content=self._content, model=self.model)
+
+
+class SequencedJsonClient(FakeJsonClient):
+    def __init__(self, contents: list[dict[str, object]]) -> None:
+        super().__init__()
+        self._contents = list(contents)
+        self.messages: list[tuple[dict[str, str], ...]] = []
+
+    def complete_json(
+        self,
+        messages: Sequence[Mapping[str, str]],
+        *,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        timeout_seconds: float | None = None,
+    ) -> LLMJsonResponse:
+        del temperature, max_tokens, timeout_seconds
+        self.calls += 1
+        self.messages.append(tuple(dict(message) for message in messages))
+        return LLMJsonResponse(content=self._contents.pop(0), model=self.model)
 
 
 class FalseyJsonClient(FakeJsonClient):
@@ -77,7 +120,9 @@ def _valid_payload() -> dict[str, object]:
     }
 
 
-def test_primary_gateway_uses_configured_deepseek_client_without_fallback() -> None:
+def test_primary_gateway_uses_exact_deepseek_v4_flash_responses_contract_without_fallback() -> (
+    None
+):
     captured: dict[str, object] = {}
 
     def transport(
@@ -86,10 +131,27 @@ def test_primary_gateway_uses_configured_deepseek_client_without_fallback() -> N
         payload: Mapping[str, object],
         timeout: float,
     ) -> Mapping[str, object]:
-        captured.update(url=url, headers=dict(headers), payload=dict(payload), timeout=timeout)
+        captured.update(
+            url=url, headers=dict(headers), payload=dict(payload), timeout=timeout
+        )
         return {
-            "model": "deepseek-v4-flash",
-            "choices": [{"message": {"content": json.dumps(_valid_payload(), ensure_ascii=False)}}],
+            "type": "response.completed",
+            "response": {
+                "model": "deepseek-v4-flash",
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": json.dumps(
+                                    _valid_payload(), ensure_ascii=False
+                                ),
+                            }
+                        ],
+                    }
+                ],
+            },
         }
 
     settings = Settings(
@@ -108,12 +170,56 @@ def test_primary_gateway_uses_configured_deepseek_client_without_fallback() -> N
     assert result.terminal_outcome is None
     assert result.decision is not None
     assert result.decision.terminal_outcome is not None
-    assert captured["url"] == "https://api.deepseek.com/chat/completions"
-    assert captured["payload"]["model"] == "deepseek-v4-flash"
+    assert captured["url"] == "https://api.deepseek.com/responses"
+    payload = captured["payload"]
+    assert isinstance(payload, Mapping)
+    assert payload["model"] == "deepseek-v4-flash"
+    assert payload["stream"] is True
+    assert payload["text"] == {"format": {"type": "json_object"}}
+    assert payload["max_output_tokens"] == 1200
+    assert isinstance(payload["input"], str)
+    assert isinstance(payload["instructions"], str)
+    assert captured["headers"] == {
+        "Authorization": "Bearer test-key",
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream",
+    }
     assert settings.llm_provider_type == "deepseek"
 
 
-def test_primary_gateway_uses_configured_openai_compatible_client_without_fallback() -> None:
+@pytest.mark.parametrize(
+    ("base_url", "expected_url"),
+    [
+        ("https://api.deepseek.com", "https://api.deepseek.com/responses"),
+        ("https://api.deepseek.com/v1", "https://api.deepseek.com/responses"),
+        ("https://api.deepseek.com/responses", "https://api.deepseek.com/responses"),
+        (
+            "https://api.deepseek.com/v1/chat/completions",
+            "https://api.deepseek.com/responses",
+        ),
+    ],
+)
+def test_deepseek_responses_url_normalizes_known_configured_endpoints(
+    base_url: str,
+    expected_url: str,
+) -> None:
+    assert deepseek_responses_url(base_url) == expected_url
+
+
+def test_primary_gateway_uses_exact_model_match_for_deepseek_responses() -> None:
+    settings = Settings(
+        llm_type="deepseek",
+        deepseek_api_key="test-key",
+        deepseek_base_url="https://api.deepseek.com",
+        deepseek_model="DeepSeek-V4-Flash",
+    )
+
+    from app.services.llm.llm_client import LLMProtocol, select_llm_protocol
+
+    assert select_llm_protocol(settings) is LLMProtocol.DEEPSEEK_CHAT_COMPLETIONS
+
+
+def test_primary_gateway_keeps_other_deepseek_models_on_chat_completions() -> None:
     captured: dict[str, object] = {}
 
     def transport(
@@ -122,10 +228,326 @@ def test_primary_gateway_uses_configured_openai_compatible_client_without_fallba
         payload: Mapping[str, object],
         timeout: float,
     ) -> Mapping[str, object]:
-        captured.update(url=url, headers=dict(headers), payload=dict(payload), timeout=timeout)
+        captured.update(
+            url=url, headers=dict(headers), payload=dict(payload), timeout=timeout
+        )
+        return {
+            "model": "deepseek-v4-pro",
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(_valid_payload(), ensure_ascii=False)
+                    }
+                }
+            ],
+        }
+
+    settings = Settings(
+        llm_type="deepseek",
+        deepseek_api_key="test-key",
+        deepseek_base_url="https://api.deepseek.com/v1",
+        deepseek_model="deepseek-v4-pro",
+    )
+    result = PrimaryTutorProviderGateway(
+        settings=settings,
+        client=OpenAICompatibleClient(settings, transport=transport),
+    ).decide(run=_run(), context=_context())
+
+    assert result.decision is not None
+    assert captured["url"] == "https://api.deepseek.com/chat/completions"
+    assert captured["payload"]["model"] == "deepseek-v4-pro"
+    assert captured["payload"]["response_format"] == {"type": "json_object"}
+
+
+@pytest.mark.parametrize(
+    ("provider_response", "expected_code"),
+    [
+        (
+            {
+                "type": "response.completed",
+                "response": {
+                    "output": [
+                        {
+                            "type": "reasoning",
+                            "summary": [{"type": "summary_text", "text": "private"}],
+                        }
+                    ]
+                },
+            },
+            "TUTOR_PROVIDER_RESPONSE_CONTENT_MISSING",
+        ),
+        (
+            {
+                "type": "response.incomplete",
+                "response": {"status": "incomplete", "output": []},
+            },
+            "TUTOR_PROVIDER_RESPONSE_INCOMPLETE",
+        ),
+        (
+            {
+                "type": "response.failed",
+                "response": {"status": "failed", "error": {"message": "private"}},
+            },
+            "TUTOR_PROVIDER_RESPONSE_FAILED",
+        ),
+    ],
+)
+def test_primary_gateway_classifies_deepseek_responses_terminal_shapes_without_retaining_bodies(
+    provider_response: Mapping[str, object],
+    expected_code: str,
+) -> None:
+    calls: list[None] = []
+
+    def transport(
+        url: str,
+        headers: Mapping[str, str],
+        payload: Mapping[str, object],
+        timeout: float,
+    ) -> Mapping[str, object]:
+        del url, headers, payload, timeout
+        calls.append(None)
+        return provider_response
+
+    settings = Settings(
+        llm_type="deepseek",
+        deepseek_api_key="test-key",
+        deepseek_base_url="https://provider.example",
+        deepseek_model="deepseek-v4-flash",
+    )
+    gateway = PrimaryTutorProviderGateway(
+        settings=settings,
+        client=OpenAICompatibleClient(settings, transport=transport),
+    )
+
+    result = gateway.decide(run=_run(), context=_context())
+
+    assert result.terminal_outcome is not None
+    assert result.safe_code == expected_code
+    expected_calls = (
+        2 if expected_code == "TUTOR_PROVIDER_RESPONSE_CONTENT_MISSING" else 1
+    )
+    assert len(calls) == expected_calls
+    assert "private" not in repr(result)
+
+
+@pytest.mark.parametrize(
+    ("provider_response", "expected_code"),
+    [
+        (
+            {"error": {"type": "unexpected_shape"}},
+            "TUTOR_PROVIDER_RESPONSE_ENVELOPE_INVALID",
+        ),
+        (
+            {"choices": [{"message": {"content": ""}}]},
+            "TUTOR_PROVIDER_RESPONSE_CONTENT_MISSING",
+        ),
+        (
+            {"choices": [{"message": {"content": "not a JSON object"}}]},
+            "TUTOR_PROVIDER_RESPONSE_CONTENT_NOT_JSON",
+        ),
+    ],
+)
+def test_primary_gateway_classifies_deepseek_invalid_response_shapes_without_retaining_bodies(
+    provider_response: Mapping[str, object],
+    expected_code: str,
+) -> None:
+    calls: list[None] = []
+
+    def transport(
+        url: str,
+        headers: Mapping[str, str],
+        payload: Mapping[str, object],
+        timeout: float,
+    ) -> Mapping[str, object]:
+        del url, headers, payload, timeout
+        calls.append(None)
+        return provider_response
+
+    settings = Settings(
+        llm_type="deepseek",
+        deepseek_api_key="test-key",
+        deepseek_base_url="https://provider.example",
+        deepseek_model="model",
+    )
+    gateway = PrimaryTutorProviderGateway(
+        settings=settings,
+        client=OpenAICompatibleClient(settings, transport=transport),
+    )
+
+    result = gateway.decide(run=_run(), context=_context())
+
+    assert result.terminal_outcome is not None
+    assert result.safe_code == expected_code
+    expected_calls = (
+        1 if expected_code == "TUTOR_PROVIDER_RESPONSE_ENVELOPE_INVALID" else 2
+    )
+    assert len(calls) == expected_calls
+    assert "unexpected_shape" not in repr(result)
+    assert "private" not in repr(result)
+
+
+def _sse_frame(payload: Mapping[str, object]) -> tuple[bytes, bytes]:
+    return (
+        ("data: " + json.dumps(payload, ensure_ascii=False) + chr(10)).encode("utf-8"),
+        b"\n",
+    )
+
+
+def _sse_lines(*frames: tuple[bytes, bytes]) -> tuple[bytes, ...]:
+    return tuple(line for frame in frames for line in frame)
+
+
+def test_deepseek_responses_sse_visible_text_delta_finishes_as_completed_output() -> (
+    None
+):
+    visible_json = json.dumps(_valid_payload(), ensure_ascii=False)
+    response = _parse_responses_stream(
+        _sse_lines(
+            _sse_frame(
+                {"type": "response.output_text.delta", "delta": visible_json[:12]}
+            ),
+            _sse_frame(
+                {"type": "response.output_text.delta", "delta": visible_json[12:]}
+            ),
+            _sse_frame(
+                {
+                    "type": "response.completed",
+                    "response": {
+                        "id": "resp-safe",
+                        "model": "deepseek-v4-flash",
+                        "status": "completed",
+                        "output": [
+                            {
+                                "type": "reasoning",
+                                "summary": [
+                                    {"type": "summary_text", "text": "private"}
+                                ],
+                            }
+                        ],
+                    },
+                }
+            ),
+        )
+    )
+
+    content = response["output"]
+    assert isinstance(content, list)
+    assert content[0]["content"][0]["text"] == visible_json
+    assert "private" not in repr(response)
+
+
+def test_deepseek_responses_completed_reasoning_only_envelope_has_no_visible_text() -> (
+    None
+):
+    with pytest.raises(LLMInvalidResponseError) as exc_info:
+        _extract_message_content(
+            {
+                "type": "response.completed",
+                "response": {
+                    "output": [
+                        {
+                            "type": "reasoning",
+                            "summary": [{"type": "summary_text", "text": "private"}],
+                        }
+                    ]
+                },
+            }
+        )
+
+    assert exc_info.value.kind is LLMInvalidResponseKind.CONTENT_MISSING
+    assert "private" not in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    ("event_type", "expected_kind"),
+    [
+        ("response.incomplete", LLMInvalidResponseKind.RESPONSE_INCOMPLETE),
+        ("response.failed", LLMInvalidResponseKind.RESPONSE_FAILED),
+    ],
+)
+def test_deepseek_responses_sse_terminal_failure_events_are_safe(
+    event_type: str,
+    expected_kind: LLMInvalidResponseKind,
+) -> None:
+    with pytest.raises(LLMInvalidResponseError) as exc_info:
+        _parse_responses_stream(
+            _sse_lines(
+                _sse_frame(
+                    {
+                        "type": event_type,
+                        "response": {
+                            "status": event_type.rsplit(".", 1)[-1],
+                            "error": {"message": "private provider body"},
+                        },
+                    }
+                )
+            )
+        )
+
+    assert exc_info.value.kind is expected_kind
+    assert "private provider body" not in str(exc_info.value)
+
+
+def test_primary_gateway_does_not_retry_or_fallback_after_selected_provider_request_rejection() -> (
+    None
+):
+    urls: list[str] = []
+
+    def transport(
+        url: str,
+        headers: Mapping[str, str],
+        payload: Mapping[str, object],
+        timeout: float,
+    ) -> Mapping[str, object]:
+        del headers, payload, timeout
+        urls.append(url)
+        raise urllib.error.HTTPError(url, 400, "request rejected", hdrs=None, fp=None)
+
+    settings = Settings(
+        llm_type="deepseek",
+        deepseek_api_key="test-key",
+        deepseek_base_url="https://api.deepseek.com/v1",
+        deepseek_model="deepseek-v4-flash",
+    )
+    gateway = PrimaryTutorProviderGateway(
+        settings=settings,
+        client=OpenAICompatibleClient(settings, transport=transport),
+    )
+
+    result = gateway.decide(run=_run(), context=_context())
+
+    assert urls == ["https://api.deepseek.com/responses"]
+    assert result.terminal_outcome is not None
+    assert result.safe_code == "TUTOR_PROVIDER_REQUEST_REJECTED"
+    assert "request rejected" not in repr(result)
+
+
+def test_primary_gateway_uses_configured_openai_compatible_client_without_fallback() -> (
+    None
+):
+    captured: dict[str, object] = {}
+
+    def transport(
+        url: str,
+        headers: Mapping[str, str],
+        payload: Mapping[str, object],
+        timeout: float,
+    ) -> Mapping[str, object]:
+        captured.update(
+            url=url, headers=dict(headers), payload=dict(payload), timeout=timeout
+        )
         return {
             "model": "provider-model",
-            "output": [{"content": [{"type": "output_text", "text": json.dumps(_valid_payload(), ensure_ascii=False)}]}],
+            "output": [
+                {
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": json.dumps(_valid_payload(), ensure_ascii=False),
+                        }
+                    ]
+                }
+            ],
         }
 
     settings = Settings(
@@ -149,7 +571,9 @@ def test_primary_gateway_uses_configured_openai_compatible_client_without_fallba
 
 def test_primary_gateway_uses_the_injected_client_even_when_it_is_falsey() -> None:
     client = FalseyJsonClient(content=_valid_payload())
-    gateway = PrimaryTutorProviderGateway(settings=Settings(llm_type="disabled"), client=client)
+    gateway = PrimaryTutorProviderGateway(
+        settings=Settings(llm_type="disabled"), client=client
+    )
 
     result = gateway.decide(run=_run(), context=_context())
 
@@ -157,14 +581,138 @@ def test_primary_gateway_uses_the_injected_client_even_when_it_is_falsey() -> No
     assert client.calls == 1
 
 
-def test_primary_gateway_rejects_unknown_or_guardrail_blocked_envelopes_as_model_unavailable() -> None:
+def test_parse_tutor_decision_accepts_safe_title_and_explicit_continuation() -> None:
+    decision = parse_tutor_decision(
+        {
+            "public_message": "请确认是否要继续执行下一步。",
+            "conversation_title": "  函数基础练习  ",
+            "skill_references": [],
+            "capability_requests": [],
+            "effect_proposals": [],
+            "checkpoint_reason": "capability_result",
+            "continuation_kind": "approval",
+            "terminal_intent": None,
+        }
+    )
+
+    assert decision.conversation_title == "函数基础练习"
+    assert decision.checkpoint_reason is TutorCheckpointReason.CAPABILITY_RESULT
+    assert decision.continuation_kind is TutorContinuationKind.APPROVAL
+    assert decision.terminal_outcome is None
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "public_message": "继续。",
+            "conversation_title": "x" * 49,
+            "terminal_intent": "completed",
+        },
+        {
+            "public_message": "继续。",
+            "conversation_title": "private\nname",
+            "terminal_intent": "completed",
+        },
+        {
+            "public_message": "继续。",
+            "conversation_title": "raw prompt summary",
+            "terminal_intent": "completed",
+        },
+        {
+            "public_message": "继续。",
+            "continuation_kind": "approval",
+            "terminal_intent": "completed",
+        },
+        {
+            "public_message": "继续。",
+            "continuation_kind": "approval",
+            "checkpoint_reason": "safe_progress",
+        },
+        {"public_message": "继续。", "terminal_intent": None},
+    ],
+)
+def test_parse_tutor_decision_rejects_invalid_title_or_ambiguous_continuation(
+    payload: Mapping[str, object],
+) -> None:
+    with pytest.raises(LLMInvalidResponseError):
+        parse_tutor_decision(payload)
+
+
+def test_tutor_decision_prompts_share_the_canonical_shape_without_internal_term_lists() -> (
+    None
+):
+    initial_messages = _build_messages(run=_run(), context=_context())
+    initial_system = initial_messages[0]["content"]
+
+    assert '"conversation_title"' in initial_system
+    assert '"continuation_kind"' in initial_system
+    assert '"terminal_intent":"completed"' in initial_system
+    assert "reasoning, diagnostics" not in initial_system
+    assert "provider data" not in initial_system
+    assert "prompts, secrets" not in initial_system
+    assert "reasoning, diagnostics" not in _TUTOR_DECISION_REPAIR_MESSAGE
+    assert "provider data" not in _TUTOR_DECISION_REPAIR_MESSAGE
+    assert "prompts, secrets" not in _TUTOR_DECISION_REPAIR_MESSAGE
+
+
+def test_primary_gateway_retries_one_invalid_envelope_on_the_same_primary_model() -> (
+    None
+):
+    client = SequencedJsonClient(
+        [
+            {
+                "public_message": "先看一个小例子。",
+                "checkpoint_reason": "initialization",
+            },
+            _valid_payload(),
+        ]
+    )
+    gateway = PrimaryTutorProviderGateway(
+        settings=Settings(llm_type="disabled"), client=client
+    )
+
+    result = gateway.decide(run=_run(), context=_context())
+
+    assert result.decision is not None
+    assert result.terminal_outcome is None
+    assert client.calls == 2
+    assert len(client.messages[0]) == 2
+    assert len(client.messages[1]) == 3
+    repair_message = client.messages[1][-1]
+    assert repair_message["role"] == "user"
+    assert "replacement" in repair_message["content"]
+    assert "initialization" not in repair_message["content"]
+    assert "先看一个小例子" not in repair_message["content"]
+
+
+def test_primary_gateway_rejects_unknown_or_guardrail_blocked_envelopes_as_model_unavailable() -> (
+    None
+):
     unknown = PrimaryTutorProviderGateway(
-        settings=Settings(llm_type="openai", openai_api_key="k", openai_base_url="https://provider.example", openai_model="m"),
-        client=FakeJsonClient(content={"public_message": "继续看变量。", "reasoning": "private chain"}),
+        settings=Settings(
+            llm_type="openai",
+            openai_api_key="k",
+            openai_base_url="https://provider.example",
+            openai_model="m",
+        ),
+        client=FakeJsonClient(
+            content={"public_message": "继续看变量。", "reasoning": "private chain"}
+        ),
     )
     blocked = PrimaryTutorProviderGateway(
-        settings=Settings(llm_type="openai", openai_api_key="k", openai_base_url="https://provider.example", openai_model="m"),
-        client=FakeJsonClient(content={"public_message": "完整答案如下：...", "terminal_intent": "completed"}),
+        settings=Settings(
+            llm_type="openai",
+            openai_api_key="k",
+            openai_base_url="https://provider.example",
+            openai_model="m",
+        ),
+        client=FakeJsonClient(
+            content={
+                "public_message": "完整答案如下：...",
+                "terminal_intent": "completed",
+            }
+        ),
     )
 
     unknown_result = unknown.decide(run=_run(), context=_context())
@@ -172,14 +720,23 @@ def test_primary_gateway_rejects_unknown_or_guardrail_blocked_envelopes_as_model
 
     assert unknown_result.terminal_outcome is not None
     assert blocked_result.terminal_outcome is not None
-    assert unknown_result.safe_code == "MODEL_UNAVAILABLE"
-    assert blocked_result.safe_code == "MODEL_UNAVAILABLE"
+    assert unknown_result.safe_code == "TUTOR_PROVIDER_DECISION_INVALID"
+    assert blocked_result.safe_code == "TUTOR_PROVIDER_OUTPUT_SAFETY_REJECTED"
 
 
-@pytest.mark.parametrize("field_name", ["reasoning", "diagnostic", "provider_payload", "hidden_test_body"])
-def test_primary_gateway_rejects_internal_nested_payload_fields_as_model_unavailable(field_name: str) -> None:
+@pytest.mark.parametrize(
+    "field_name", ["reasoning", "diagnostic", "provider_payload", "hidden_test_body"]
+)
+def test_primary_gateway_rejects_internal_nested_payload_fields_as_model_unavailable(
+    field_name: str,
+) -> None:
     gateway = PrimaryTutorProviderGateway(
-        settings=Settings(llm_type="openai", openai_api_key="k", openai_base_url="https://provider.example", openai_model="m"),
+        settings=Settings(
+            llm_type="openai",
+            openai_api_key="k",
+            openai_base_url="https://provider.example",
+            openai_model="m",
+        ),
         client=FakeJsonClient(
             content={
                 "effect_proposals": [
@@ -197,11 +754,15 @@ def test_primary_gateway_rejects_internal_nested_payload_fields_as_model_unavail
     result = gateway.decide(run=_run(), context=_context())
 
     assert result.terminal_outcome is not None
-    assert result.safe_code == "MODEL_UNAVAILABLE"
+    assert result.safe_code == "TUTOR_PROVIDER_DECISION_INVALID"
 
 
-def test_primary_gateway_maps_selected_provider_error_without_cross_provider_fallback_or_raw_detail() -> None:
-    fake = FakeJsonClient(error=LLMCallError("provider raw Authorization: Bearer secret-token"))
+def test_primary_gateway_maps_selected_provider_error_without_cross_provider_fallback_or_raw_detail() -> (
+    None
+):
+    fake = FakeJsonClient(
+        error=LLMCallError("provider raw Authorization: Bearer secret-token")
+    )
     settings = Settings(
         llm_type="deepseek",
         deepseek_api_key="test-key",
@@ -216,12 +777,14 @@ def test_primary_gateway_maps_selected_provider_error_without_cross_provider_fal
     assert fake.calls == 1
     assert settings.llm_provider_type == "deepseek"
     assert result.terminal_outcome is not None
-    assert result.safe_code == "MODEL_UNAVAILABLE"
+    assert result.safe_code == "TUTOR_PROVIDER_REQUEST_FAILED"
     assert "secret-token" not in serialized
     assert "provider raw" not in serialized
 
 
-def test_provider_keeps_bounded_string_list_arguments_for_descriptor_validation() -> None:
+def test_provider_keeps_bounded_string_list_arguments_for_descriptor_validation() -> (
+    None
+):
     decision = parse_tutor_decision(
         {
             "capability_requests": [
@@ -243,3 +806,107 @@ def test_provider_keeps_bounded_string_list_arguments_for_descriptor_validation(
     arguments = {field.key: json.loads(field.value) for field in request.arguments}
     assert arguments["topic_tags"] == ["functions"]
     assert arguments["top_k"] == 1
+
+
+def test_llm_transport_log_category_omits_provider_detail() -> None:
+    assert (
+        _safe_transport_error(
+            urllib.error.URLError("https://token@example.invalid/private")
+        )
+        == "URLError"
+    )
+    assert (
+        _safe_transport_error(RuntimeError("Authorization: Bearer secret-token"))
+        == "RuntimeError"
+    )
+
+
+def _llm_call_error_with_cause(cause: BaseException) -> LLMCallError:
+    try:
+        raise LLMCallError("selected provider failed") from cause
+    except LLMCallError as error:
+        return error
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_code"),
+    [
+        (
+            LLMInvalidResponseError(
+                "provider response envelope is invalid",
+                kind=LLMInvalidResponseKind.ENVELOPE_INVALID,
+            ),
+            "TUTOR_PROVIDER_RESPONSE_ENVELOPE_INVALID",
+        ),
+        (
+            LLMInvalidResponseError(
+                "provider response has no message content",
+                kind=LLMInvalidResponseKind.CONTENT_MISSING,
+            ),
+            "TUTOR_PROVIDER_RESPONSE_CONTENT_MISSING",
+        ),
+        (
+            LLMInvalidResponseError(
+                "provider message content is not a JSON object",
+                kind=LLMInvalidResponseKind.CONTENT_NOT_JSON_OBJECT,
+            ),
+            "TUTOR_PROVIDER_RESPONSE_CONTENT_NOT_JSON",
+        ),
+        (
+            LLMInvalidResponseError("legacy unclassified invalid response"),
+            "TUTOR_PROVIDER_RESPONSE_INVALID",
+        ),
+        (
+            _llm_call_error_with_cause(TimeoutError("provider request timed out")),
+            "TUTOR_PROVIDER_TIMEOUT",
+        ),
+        (
+            _llm_call_error_with_cause(
+                urllib.error.HTTPError(
+                    "https://provider.example",
+                    400,
+                    "request rejected",
+                    hdrs=None,
+                    fp=None,
+                )
+            ),
+            "TUTOR_PROVIDER_REQUEST_REJECTED",
+        ),
+        (
+            _llm_call_error_with_cause(
+                urllib.error.HTTPError(
+                    "https://provider.example", 429, "rate limited", hdrs=None, fp=None
+                )
+            ),
+            "TUTOR_PROVIDER_RATE_LIMITED",
+        ),
+        (RuntimeError("adapter seam failed"), "TUTOR_PROVIDER_ADAPTER_FAILED"),
+    ],
+)
+def test_primary_gateway_records_safe_configuration_and_failure_categories(
+    error: Exception,
+    expected_code: str,
+) -> None:
+    gateway = PrimaryTutorProviderGateway(
+        settings=Settings(
+            llm_type="deepseek",
+            deepseek_api_key="test-key",
+            deepseek_base_url="https://provider.example",
+            deepseek_model="model",
+        ),
+        client=FakeJsonClient(error=error),
+    )
+
+    result = gateway.decide(run=_run(), context=_context())
+
+    assert result.terminal_outcome is not None
+    assert result.safe_code == expected_code
+
+
+def test_primary_gateway_records_safe_configuration_failure_without_a_client() -> None:
+    gateway = PrimaryTutorProviderGateway(settings=Settings(llm_type="disabled"))
+
+    result = gateway.decide(run=_run(), context=_context())
+
+    assert result.terminal_outcome is not None
+    assert result.safe_code == "TUTOR_PROVIDER_CONFIGURATION_UNAVAILABLE"

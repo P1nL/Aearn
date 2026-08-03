@@ -139,15 +139,15 @@ def test_zero_iteration_budget_terminates_without_provider_call() -> None:
     assert {request.trigger.value for request in publisher.requests} == {"terminal"}
 
 
-def test_one_iteration_waits_for_input_without_graph_semantics() -> None:
+def test_one_iteration_completes_an_ordinary_turn_without_graph_semantics() -> None:
     store = InMemoryTutorRunStore([_snapshot()])
     provider = SequenceTutorProvider([TutorProviderResult(decision=TutorDecision(public_message="先确认变量在哪个作用域。"))])
     loop, _ = _loop(store=store, contexts={("run-loop", 0): _context(0)}, provider=provider)
 
     result = loop.run(run_id="run-loop", lease_owner_id="worker-1")
 
-    assert result.status is TutorRunStatus.WAITING_FOR_INPUT
-    assert result.terminal_outcome is None
+    assert result.status is TutorRunStatus.COMPLETED
+    assert result.terminal_outcome is TutorTerminalOutcome.COMPLETED
     assert result.iteration_count == 1
     assert result.model_call_count == 1
     assert len(provider.calls) == 1
@@ -257,9 +257,80 @@ def test_stale_effect_is_rejected_before_committer_and_context_rebuilds() -> Non
     result = loop.run(run_id="run-loop", lease_owner_id="worker-1")
 
     assert result.status is TutorRunStatus.COMPLETED
-    assert [item.status for item in result.effect_results] == [TutorEffectStatus.STALE_REJECTED]
+    # Input revision refresh happens immediately after the provider boundary, before
+    # effect dispatch. No stale effect receipt or handler invocation is permitted.
+    assert result.effect_results == ()
     assert effect_committer.calls == []
     assert context_loader.loaded_revisions == [("run-loop", 0), ("run-loop", 1)]
+
+
+def test_post_provider_terminal_outcome_is_rechecked_for_supersede() -> None:
+    store = InMemoryTutorRunStore([_snapshot()])
+
+    def supersede_after_provider(run: TutorRunSnapshot, context: object) -> None:
+        del run, context
+        store.supersede("run-loop")
+
+    provider = SequenceTutorProvider(
+        [
+            TutorProviderResult(
+                decision=None,
+                terminal_outcome=TutorTerminalOutcome.MODEL_UNAVAILABLE,
+                safe_code="provider_terminal_should_not_win",
+            )
+        ],
+        on_decide=supersede_after_provider,
+    )
+    loop, _ = _loop(store=store, contexts={("run-loop", 0): _context(0)}, provider=provider)
+
+    result = loop.run(run_id="run-loop", lease_owner_id="worker-1")
+
+    assert result.status is TutorRunStatus.CANCELLED
+    assert result.terminal_outcome is TutorTerminalOutcome.CANCELLED
+    assert result.diagnostic_code == "superseded"
+
+
+def test_post_provider_supersede_stops_before_decision_capability_effect_or_terminal_write() -> None:
+    store = InMemoryTutorRunStore([_snapshot()])
+    effect_committer = RecordingEffectCommitter()
+    capability_gateway = SequenceCapabilityGateway(
+        [TutorCapabilityResult("capability-after-provider", TutorCapabilityStatus.COMPLETED)]
+    )
+
+    def supersede_after_provider(run: TutorRunSnapshot, context: object) -> None:
+        del run, context
+        store.supersede("run-loop")
+
+    provider = SequenceTutorProvider(
+        [
+            TutorProviderResult(
+                decision=TutorDecision(
+                    public_message="这条旧结果绝不能发布给学习者。",
+                    capability_requests=(TutorCapabilityRequest("capability-after-provider", "safe-capability"),),
+                    effect_proposals=(TutorEffectProposal("effect-after-provider", "save_note", expected_input_revision=0),),
+                    terminal_outcome=TutorTerminalOutcome.COMPLETED,
+                )
+            )
+        ],
+        on_decide=supersede_after_provider,
+    )
+    loop, _ = _loop(
+        store=store,
+        contexts={("run-loop", 0): _context(0)},
+        provider=provider,
+        capability_gateway=capability_gateway,
+        effect_committer=effect_committer,
+    )
+
+    result = loop.run(run_id="run-loop", lease_owner_id="worker-1")
+
+    assert result.status is TutorRunStatus.CANCELLED
+    assert result.terminal_outcome is TutorTerminalOutcome.CANCELLED
+    assert result.diagnostic_code == "superseded"
+    assert result.effect_results == ()
+    assert capability_gateway.calls == []
+    assert effect_committer.calls == []
+    assert len(provider.calls) == 1
 
 
 def test_safe_checkpoint_and_high_water_publish_only_typed_idempotent_requests() -> None:

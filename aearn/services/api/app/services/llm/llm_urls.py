@@ -21,14 +21,18 @@ def normalize_openai_base_url(base_url: str) -> str:
 def normalize_deepseek_base_url(base_url: str) -> str:
     normalized = base_url.rstrip("/")
     lowered = normalized.lower()
-    if lowered.endswith("/v1/chat/completions"):
-        normalized = normalized[: -len("/v1/chat/completions")]
-    elif lowered.endswith("/chat/completions"):
-        normalized = normalized[: -len("/chat/completions")]
-    elif lowered.endswith("/v1"):
-        normalized = normalized[: -len("/v1")]
+    for suffix in ("/v1/chat/completions", "/chat/completions", "/v1/responses", "/responses", "/v1"):
+        if lowered.endswith(suffix):
+            normalized = normalized[: -len(suffix)]
+            break
     return normalized.rstrip("/")
 
 
 def deepseek_chat_completions_url(base_url: str) -> str:
     return f"{normalize_deepseek_base_url(base_url)}/chat/completions"
+
+
+def deepseek_responses_url(base_url: str) -> str:
+    """Return the documented DeepSeek Responses endpoint without an OpenAI `/v1` suffix."""
+
+    return f"{normalize_deepseek_base_url(base_url)}/responses"

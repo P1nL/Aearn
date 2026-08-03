@@ -378,6 +378,7 @@ function toTutorSseEvent(type: TutorSseEvent["type"], id: number | null, payload
   }
   if (type === "run_state") {
     if (id === null || !isEventBase(payload) || !isTutorRunStatus(payload.status) || !isNullableTerminalOutcome(payload.terminal_outcome)) return null;
+    if ("public_message" in payload && !isNullableString(payload.public_message)) return null;
     return {
       id,
       type,
@@ -387,6 +388,9 @@ function toTutorSseEvent(type: TutorSseEvent["type"], id: number | null, payload
         event_sequence: payload.event_sequence,
         status: payload.status,
         terminal_outcome: payload.terminal_outcome,
+        ...(typeof payload.public_message === "string" || payload.public_message === null
+          ? { public_message: payload.public_message }
+          : {}),
       },
     };
   }
