@@ -1,0 +1,29 @@
+{
+  "id": "tutor-run-lifecycle-deepseek-responses",
+  "name": "tutor-run-lifecycle-deepseek-responses",
+  "title": "稳定 Tutor 多轮运行生命周期与 DeepSeek Responses 适配",
+  "description": "修复 interactive conversation 复用有界 run 导致多轮输入预算/超时耗尽的问题；为 DeepSeek V4 Flash 按官方 Codex/Responses 协议补充受控适配、严格 JSON 决策与无敏感诊断。拆分为可独立验收的生命周期与协议适配子项。",
+  "status": "completed",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P1",
+  "creator": "PINKING",
+  "assignee": "PINKING",
+  "createdAt": "2026-08-02",
+  "completedAt": "2026-08-03",
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [
+    "08-02-deepseek-responses-decision-contract",
+    "08-02-tutor-conversation-turnrun-history"
+  ],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {}
+}
