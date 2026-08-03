@@ -3,17 +3,25 @@ from __future__ import annotations
 
 import hashlib
 import json
+import unicodedata
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from typing import Literal, Protocol
 
-from app.core.teaching_safety import limit_text, redact_value, sanitize_message_content, sanitize_summary_text
+from app.core.teaching_safety import (
+    check_teaching_output,
+    limit_text,
+    redact_value,
+    sanitize_message_content,
+    sanitize_summary_text,
+)
 
 
 MAX_TUTOR_IDENTIFIER_LENGTH = 120
 MAX_TUTOR_PUBLIC_MESSAGE_LENGTH = 1600
+MAX_TUTOR_CONVERSATION_TITLE_LENGTH = 48
 MAX_TUTOR_PAYLOAD_FIELDS = 12
 MAX_TUTOR_PAYLOAD_VALUE_LENGTH = 360
 
@@ -72,6 +80,14 @@ class TutorCheckpointReason(str, Enum):
     SAFE_PROGRESS = "safe_progress"
     CAPABILITY_RESULT = "capability_result"
     TERMINAL = "terminal"
+
+
+class TutorContinuationKind(str, Enum):
+    """Server-authorized ways to continue one existing bounded Tutor run."""
+
+    APPROVAL = "approval"
+    CAPABILITY_RESULT = "capability_result"
+    EXTERNAL_RESULT = "external_result"
 
 
 class TutorCompactionTrigger(str, Enum):
@@ -419,22 +435,33 @@ class TutorEffectResult:
 @dataclass(frozen=True)
 class TutorDecision:
     public_message: str | None = None
+    conversation_title: str | None = None
     skill_references: tuple[TutorSkillReference, ...] = ()
     capability_requests: tuple[TutorCapabilityRequest, ...] = ()
     effect_proposals: tuple[TutorEffectProposal, ...] = ()
     checkpoint_reason: TutorCheckpointReason | None = None
+    continuation_kind: TutorContinuationKind | None = None
     terminal_outcome: TutorTerminalOutcome | None = None
 
     def __post_init__(self) -> None:
         if self.public_message is not None:
             public_message = sanitize_summary_text(self.public_message, max_length=MAX_TUTOR_PUBLIC_MESSAGE_LENGTH)
             object.__setattr__(self, "public_message", public_message or None)
+        if self.conversation_title is not None:
+            object.__setattr__(self, "conversation_title", normalize_tutor_conversation_title(self.conversation_title))
         object.__setattr__(self, "skill_references", tuple(self.skill_references[:4]))
         object.__setattr__(self, "capability_requests", tuple(self.capability_requests[:4]))
         object.__setattr__(self, "effect_proposals", tuple(self.effect_proposals[:4]))
         _ensure_unique((item.skill_id for item in self.skill_references), "skill references")
         _ensure_unique((item.request_id for item in self.capability_requests), "capability request ids")
         _ensure_unique((item.effect_id for item in self.effect_proposals), "effect proposal ids")
+        if self.continuation_kind is not None:
+            if self.checkpoint_reason is not TutorCheckpointReason.CAPABILITY_RESULT:
+                raise ValueError("Tutor continuation requires a capability-result checkpoint")
+            if self.terminal_outcome is not None:
+                raise ValueError("Tutor continuation cannot also be terminal")
+        if self.terminal_outcome is not None and self.continuation_kind is not None:
+            raise ValueError("Tutor decision cannot combine terminal and continuation intent")
         if not any(
             (
                 self.public_message,
@@ -442,6 +469,7 @@ class TutorDecision:
                 self.capability_requests,
                 self.effect_proposals,
                 self.checkpoint_reason,
+                self.continuation_kind,
                 self.terminal_outcome,
             )
         ):
@@ -474,11 +502,11 @@ class TutorProviderResult:
             object.__setattr__(self, "safe_code", _safe_identifier(self.safe_code))
 
     @classmethod
-    def model_unavailable(cls) -> "TutorProviderResult":
+    def model_unavailable(cls, *, safe_code: str = "MODEL_UNAVAILABLE") -> "TutorProviderResult":
         return cls(
             decision=None,
             terminal_outcome=TutorTerminalOutcome.MODEL_UNAVAILABLE,
-            safe_code="MODEL_UNAVAILABLE",
+            safe_code=safe_code,
         )
 
 
@@ -497,6 +525,8 @@ class TutorRunSnapshot:
     capability_call_count: int = 0
     effect_count: int = 0
     cancelled: bool = False
+    # Only a persisted server-authorized checkpoint may expose this on a live run.
+    continuation_kind: TutorContinuationKind | None = None
 
     def __post_init__(self) -> None:
         if self.input_revision < 0:
@@ -522,6 +552,10 @@ class TutorRunResult:
     effect_count: int
     terminal_outcome: TutorTerminalOutcome | None = None
     public_message: str | None = None
+    # The decision candidate is persisted only with the same successful public reply.
+    conversation_title: str | None = None
+    # A normal completed TurnRun has no continuation.
+    continuation_kind: TutorContinuationKind | None = None
     diagnostic_code: str | None = None
     effect_results: tuple[TutorEffectResult, ...] = ()
 
@@ -538,6 +572,11 @@ class TutorRunResult:
                 "public_message",
                 sanitize_summary_text(self.public_message, max_length=MAX_TUTOR_PUBLIC_MESSAGE_LENGTH) or None,
             )
+        if self.conversation_title is not None:
+            object.__setattr__(self, "conversation_title", normalize_tutor_conversation_title(self.conversation_title))
+        if self.continuation_kind is not None:
+            if self.status is not TutorRunStatus.WAITING_FOR_INPUT or self.terminal_outcome is not None:
+                raise ValueError("Tutor continuation result must be a non-terminal waiting state")
         if self.diagnostic_code is not None:
             object.__setattr__(self, "diagnostic_code", _safe_identifier(self.diagnostic_code))
         object.__setattr__(self, "effect_results", tuple(self.effect_results))
@@ -581,6 +620,22 @@ def build_compaction_request(
 
 def terminal_status(outcome: TutorTerminalOutcome) -> TutorRunStatus:
     return TutorRunStatus(outcome.value)
+
+
+def normalize_tutor_conversation_title(value: object) -> str:
+    """Normalize one learner-safe model title candidate for later guarded persistence."""
+
+    normalized = unicodedata.normalize("NFKC", str(value or "")).strip()
+    if not normalized:
+        raise ValueError("conversation_title must not be blank")
+    if any(character in normalized for character in "\r\n\t"):
+        raise ValueError("conversation_title must be a single line")
+    if len(normalized) > MAX_TUTOR_CONVERSATION_TITLE_LENGTH:
+        raise ValueError("conversation_title exceeds the visible character limit")
+    check = check_teaching_output(normalized)
+    if check.blocked:
+        raise ValueError("conversation_title failed the teaching safety policy")
+    return normalized
 
 
 def payload_fields_from_mapping(value: Mapping[str, object] | None) -> tuple[TutorPayloadField, ...]:

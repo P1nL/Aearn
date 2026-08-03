@@ -2,18 +2,18 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   acceptTutorConversationInput,
+  acceptTutorFirstTurn,
   acceptTutorRunInput,
   buildTutorRunEventsUrl,
-  createTutorConversation,
   correctTutorMemory,
   deleteTutorMemory,
   dismissTutorInbox,
   fetchTutorActivity,
+  fetchTutorConversationHistory,
   fetchTutorInbox,
   fetchTutorMemory,
   fetchTutorPlanRevisions,
   fetchTutorPreferences,
-  fetchTutorRun,
   markTutorInboxRead,
   rollbackTutorPlan,
   updateTutorPreferences,
@@ -26,58 +26,62 @@ import { getErrorInfo } from "../lib/errorMessages";
 import type {
   ApiError,
   TutorActivityItem,
+  TutorConversationHistoryResponse,
+  TutorForegroundRun,
+  TutorHistoryItem,
   TutorInboxItem,
-  TutorInputAcceptedResponse,
   TutorMemoryItem,
   TutorPlanRevisionList,
   TutorPreferences,
-  TutorRunState,
+  TutorPublicProcess,
+  TutorRunStatus,
   TutorSseEvent,
   UserProfile,
 } from "../types";
 
 type TutorWorkspacePageProps = {
   user: UserProfile | null;
-  /** Child 07 must supply a server-authoritative cutover decision before enabling this surface. */
   enabled?: boolean;
   isActive?: boolean;
-  initialConversationId?: string | null;
+  selectedConversationId: string | null;
+  onSelectConversation: (conversationId: string | null) => void;
+  onConversationsChanged?: () => void;
 };
-
-type TutorTimelineEntry = {
-  id: string;
-  kind: "learner" | "tutor" | "activity" | "notice" | "error";
-  text: string;
-  detail?: string;
-};
-
-type TutorInputAcknowledgement = Pick<
-  TutorInputAcceptedResponse,
-  "input_revision" | "merged" | "input_replayed" | "idempotent_replayed"
->;
 
 type ControlsStatus = "idle" | "loading" | "ready" | "error";
-
+type HistoryStatus = "idle" | "loading" | "ready" | "error";
+type ComposerMode = "ordinary" | "continuation";
 type PreferenceUpdate = {
   inferredMemoryEnabled?: boolean;
   expectedMemorySettingVersion?: string;
   proactivePaused?: boolean;
 };
+type ScrollAnchor = { top: number; height: number };
+
+const HISTORY_PAGE_SIZE = 40;
 
 export function TutorWorkspacePage({
   user,
   enabled = false,
   isActive = true,
-  initialConversationId = null,
+  selectedConversationId,
+  onSelectConversation,
+  onConversationsChanged,
 }: TutorWorkspacePageProps) {
-  const [conversationId, setConversationId] = useState<string | null>(initialConversationId);
-  const [run, setRun] = useState<TutorRunState | null>(null);
-  const [timeline, setTimeline] = useState<TutorTimelineEntry[]>([]);
+  const [timeline, setTimeline] = useState<TutorHistoryItem[]>([]);
+  const [historyStatus, setHistoryStatus] = useState<HistoryStatus>("idle");
+  const [historyError, setHistoryError] = useState<{ code: string; message: string } | null>(null);
+  const [historyCursor, setHistoryCursor] = useState<string | null>(null);
+  const [historyHasMore, setHistoryHasMore] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [activeRun, setActiveRun] = useState<TutorForegroundRun | null>(null);
+  const [activeRunConversationId, setActiveRunConversationId] = useState<string | null>(null);
   const [composerText, setComposerText] = useState("");
+  const [composerMode, setComposerMode] = useState<ComposerMode>("ordinary");
   const [composerStatus, setComposerStatus] = useState<"idle" | "submitting">("idle");
   const [composerError, setComposerError] = useState<{ code: string; message: string } | null>(null);
   const [streamError, setStreamError] = useState<ApiError | null>(null);
-  const [latestAcknowledgement, setLatestAcknowledgement] = useState<TutorInputAcknowledgement | null>(null);
+  const [openProcessRuns, setOpenProcessRuns] = useState<Record<string, boolean>>({});
   const [controlsStatus, setControlsStatus] = useState<ControlsStatus>("idle");
   const [controlsError, setControlsError] = useState<string | null>(null);
   const [activity, setActivity] = useState<TutorActivityItem[]>([]);
@@ -88,39 +92,101 @@ export function TutorWorkspacePage({
   const [busyInboxId, setBusyInboxId] = useState<string | null>(null);
   const [busyMemoryId, setBusyMemoryId] = useState<string | null>(null);
   const [pendingPlanOrPreferenceAction, setPendingPlanOrPreferenceAction] = useState<"rollback" | "memory" | "proactive" | null>(null);
-  const activeRunIdRef = useRef<string | null>(null);
 
   const userId = user?.id ?? null;
   const mayUseTutor = enabled && isActive && userId !== null;
-  const isActiveInteractiveRun = Boolean(run && run.origin === "interactive" && run.terminal_outcome === null && !run.cancelled);
-  const activeRunId = isActiveInteractiveRun ? run?.run_id ?? null : null;
-  activeRunIdRef.current = activeRunId;
+  const selectedConversationIdRef = useRef<string | null>(selectedConversationId);
+  const timelineRef = useRef<HTMLElement | null>(null);
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  const historyRequestRef = useRef<AbortController | null>(null);
+  const refreshTimerRef = useRef<number | null>(null);
+  const prependAnchorRef = useRef<ScrollAnchor | null>(null);
+  const scrollToLatestRef = useRef(false);
+  selectedConversationIdRef.current = selectedConversationId;
 
-  const appendTimeline = useCallback((entry: TutorTimelineEntry) => {
+  const continuationAvailable = activeRun?.status === "waiting_for_input" && activeRun.continuation_kind !== null;
+  const streamUrl = mayUseTutor && userId && selectedConversationId && activeRun && activeRunConversationId === selectedConversationId
+    ? buildTutorRunEventsUrl(activeRun.run_id, userId)
+    : null;
+
+  const mergeChronologicalTimeline = useCallback((items: TutorHistoryItem[], placement: "replace" | "prepend") => {
+    const chronological = [...items].reverse();
     setTimeline((current) => {
-      if (current.some((item) => item.id === entry.id)) {
-        return current;
-      }
-      return [...current, entry].slice(-100);
+      const combined = placement === "prepend" ? [...chronological, ...current] : chronological;
+      const seen = new Set<string>();
+      return combined.filter((item) => {
+        const key = `${item.kind}:${item.id}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
     });
   }, []);
 
-  const refreshRun = useCallback(async (runId: string) => {
-    if (!userId) return;
-    try {
-      const nextRun = await fetchTutorRun(userId, runId);
-      setRun(nextRun);
-    } catch (error) {
-      const info = getErrorInfo(error);
-      setStreamError({
-        code: info.code,
-        message: info.message,
-        details: {},
-        request_id: "tutor-workspace",
-        recoverable: info.recoverable,
-      });
+  const loadHistory = useCallback(async (
+    conversationId: string,
+    options: { cursor?: string | null; placement?: "replace" | "prepend"; showLoading?: boolean } = {},
+  ): Promise<TutorConversationHistoryResponse | null> => {
+    if (!mayUseTutor || !userId || selectedConversationIdRef.current !== conversationId) return null;
+    historyRequestRef.current?.abort();
+    const controller = new AbortController();
+    historyRequestRef.current = controller;
+    const placement = options.placement ?? "replace";
+    if (options.showLoading) {
+      setHistoryStatus("loading");
+      setHistoryError(null);
+      if (placement === "replace") {
+        setTimeline([]);
+        setHistoryCursor(null);
+        setHistoryHasMore(false);
+        setActiveRun(null);
+        setActiveRunConversationId(null);
+        setOpenProcessRuns({});
+      }
     }
-  }, [userId]);
+    try {
+      const response = await fetchTutorConversationHistory({
+        userId,
+        conversationId,
+        limit: HISTORY_PAGE_SIZE,
+        cursor: options.cursor,
+        signal: controller.signal,
+      });
+      if (controller.signal.aborted || selectedConversationIdRef.current !== conversationId) return null;
+      mergeChronologicalTimeline(response.items, placement);
+      if (placement === "replace") {
+        setHistoryCursor(response.next_cursor);
+        setHistoryHasMore(response.has_more);
+        setActiveRun(response.active_run);
+        setActiveRunConversationId(response.active_run ? conversationId : null);
+        setHistoryStatus("ready");
+        scrollToLatestRef.current = true;
+      }
+      return response;
+    } catch (error) {
+      if (controller.signal.aborted) return null;
+      const info = getErrorInfo(error);
+      setHistoryError({ code: info.code, message: info.message });
+      setHistoryStatus("error");
+      return null;
+    } finally {
+      if (historyRequestRef.current === controller) historyRequestRef.current = null;
+    }
+  }, [mayUseTutor, mergeChronologicalTimeline, userId]);
+
+  const refreshCurrentHistory = useCallback(() => {
+    const conversationId = selectedConversationIdRef.current;
+    if (!conversationId) return;
+    void loadHistory(conversationId, { placement: "replace" });
+  }, [loadHistory]);
+
+  const scheduleHistoryRefresh = useCallback(() => {
+    if (refreshTimerRef.current !== null) return;
+    refreshTimerRef.current = window.setTimeout(() => {
+      refreshTimerRef.current = null;
+      refreshCurrentHistory();
+    }, 80);
+  }, [refreshCurrentHistory]);
 
   const loadControls = useCallback(async (signal?: AbortSignal) => {
     if (!userId || !mayUseTutor) {
@@ -153,78 +219,13 @@ export function TutorWorkspacePage({
   }, [mayUseTutor, userId]);
 
   const handleTutorEvent = useCallback((event: TutorSseEvent) => {
-    if (event.type === "input_accepted") {
-      setLatestAcknowledgement({
-        input_revision: event.data.input_revision,
-        merged: true,
-        input_replayed: false,
-        idempotent_replayed: false,
-      });
-      appendTimeline({
-        id: `tutor-input-${event.id}`,
-        kind: "notice",
-        text: `已接收第 ${event.data.input_revision} 条输入。`,
-        detail: "Tutor 会在下一个安全检查点重新评估学习方向。",
-      });
-      return;
-    }
-    if (event.type === "tool_status") {
-      appendTimeline({
-        id: `tutor-status-${event.id}`,
-        kind: "activity",
-        text: event.data.message,
-        detail: `当前进度：${displayEventStatus(event.data.status)}`,
-      });
-      return;
-    }
-    if (event.type === "activity") {
-      appendTimeline({
-        id: `tutor-activity-${event.id}`,
-        kind: "activity",
-        text: displayActivityEvent(event.data.category),
-        detail: `状态：${displayEventStatus(event.data.status)}`,
-      });
+    scheduleHistoryRefresh();
+    if (event.type === "done" || event.type === "error" || event.type === "activity") {
       void loadControls();
-      return;
+      onConversationsChanged?.();
     }
-    if (event.type === "run_state") {
-      void refreshRun(event.data.run_id);
-      return;
-    }
-    if (event.type === "done") {
-      appendTimeline({
-        id: `tutor-done-${event.id}`,
-        kind: "tutor",
-        text: event.data.public_message ?? "本次 Tutor 响应已完成。",
-      });
-      setStreamError(null);
-      void refreshRun(event.data.run_id);
-      void loadControls();
-      return;
-    }
+  }, [loadControls, onConversationsChanged, scheduleHistoryRefresh]);
 
-    if (event.data.public_message) {
-      appendTimeline({
-        id: `tutor-error-message-${event.id ?? event.data.error.request_id}`,
-        kind: "tutor",
-        text: event.data.public_message,
-      });
-    }
-    appendTimeline({
-      id: `tutor-error-${event.id ?? event.data.error.request_id}`,
-      kind: "error",
-      text: event.data.error.message,
-      detail: event.data.error.code,
-    });
-    setStreamError(event.data.error);
-    const currentRunId = activeRunIdRef.current;
-    if (currentRunId) {
-      void refreshRun(currentRunId);
-    }
-    void loadControls();
-  }, [appendTimeline, loadControls, refreshRun]);
-
-  const streamUrl = mayUseTutor && userId && activeRunId ? buildTutorRunEventsUrl(activeRunId, userId) : null;
   const stream = useTutorSSE(streamUrl, {
     enabled: Boolean(streamUrl),
     maxReconnectAttempts: 2,
@@ -233,22 +234,31 @@ export function TutorWorkspacePage({
   });
 
   useEffect(() => {
-    setConversationId(initialConversationId);
-    setRun(null);
-    setTimeline([]);
+    // The transport hook cleans the previous endpoint when the selected conversation changes.
+    historyRequestRef.current?.abort();
+    if (refreshTimerRef.current !== null) {
+      window.clearTimeout(refreshTimerRef.current);
+      refreshTimerRef.current = null;
+    }
     setComposerText("");
+    setComposerMode("ordinary");
     setComposerStatus("idle");
     setComposerError(null);
     setStreamError(null);
-    setLatestAcknowledgement(null);
-    setActivity([]);
-    setInbox([]);
-    setMemory([]);
-    setPlans(null);
-    setPreferences(null);
-    setControlsError(null);
-    setControlsStatus("idle");
-  }, [initialConversationId, mayUseTutor, userId]);
+    setOpenProcessRuns({});
+
+    if (!mayUseTutor || !userId || !selectedConversationId) {
+      setTimeline([]);
+      setHistoryStatus("idle");
+      setHistoryError(null);
+      setHistoryCursor(null);
+      setHistoryHasMore(false);
+      setActiveRun(null);
+      setActiveRunConversationId(null);
+      return;
+    }
+    void loadHistory(selectedConversationId, { placement: "replace", showLoading: true });
+  }, [loadHistory, mayUseTutor, selectedConversationId, userId]);
 
   useEffect(() => {
     if (!mayUseTutor || !userId) return;
@@ -257,6 +267,42 @@ export function TutorWorkspacePage({
     return () => controller.abort();
   }, [loadControls, mayUseTutor, userId]);
 
+  useEffect(() => () => {
+    historyRequestRef.current?.abort();
+    if (refreshTimerRef.current !== null) window.clearTimeout(refreshTimerRef.current);
+  }, []);
+
+  useEffect(() => {
+    const element = timelineRef.current;
+    if (!element) return;
+    if (prependAnchorRef.current) {
+      const anchor = prependAnchorRef.current;
+      element.scrollTop = anchor.top + (element.scrollHeight - anchor.height);
+      prependAnchorRef.current = null;
+      return;
+    }
+    if (scrollToLatestRef.current) {
+      element.scrollTop = element.scrollHeight;
+      scrollToLatestRef.current = false;
+    }
+  }, [timeline]);
+
+  async function loadOlderHistory() {
+    if (!selectedConversationId || !historyCursor || loadingOlder) return;
+    const element = timelineRef.current;
+    if (element) prependAnchorRef.current = { top: element.scrollTop, height: element.scrollHeight };
+    setLoadingOlder(true);
+    try {
+      const response = await loadHistory(selectedConversationId, { cursor: historyCursor, placement: "prepend" });
+      if (response) {
+        setHistoryCursor(response.next_cursor);
+        setHistoryHasMore(response.has_more);
+      }
+    } finally {
+      setLoadingOlder(false);
+    }
+  }
+
   async function submitComposer() {
     const content = composerText.trim();
     if (!content || !mayUseTutor || !userId || composerStatus === "submitting") return;
@@ -264,47 +310,45 @@ export function TutorWorkspacePage({
     setComposerStatus("submitting");
     setComposerError(null);
     try {
-      let resolvedConversationId = conversationId ?? run?.conversation_id ?? null;
-      if (!resolvedConversationId) {
-        const conversation = await createTutorConversation({
-          userId,
-          clientActionId: createTutorActionId("tutor-conversation"),
-        });
-        resolvedConversationId = conversation.conversation_id;
-        setConversationId(resolvedConversationId);
-      }
+      const accepted = composerMode === "continuation" && continuationAvailable && activeRun
+        ? await acceptTutorRunInput({
+            userId,
+            runId: activeRun.run_id,
+            content,
+            clientActionId: createTutorActionId("tutor-continuation-input"),
+          })
+        : selectedConversationId
+          ? await acceptTutorConversationInput({
+              userId,
+              conversationId: selectedConversationId,
+              content,
+              clientActionId: createTutorActionId("tutor-conversation-input"),
+            })
+          : await acceptTutorFirstTurn({
+              userId,
+              content,
+              clientActionId: createTutorActionId("tutor-first-turn"),
+            });
 
-      const clientActionId = createTutorActionId("tutor-input");
-      const accepted = isActiveInteractiveRun && run
-        ? await acceptTutorRunInput({ userId, runId: run.run_id, content, clientActionId })
-        : await acceptTutorConversationInput({ userId, conversationId: resolvedConversationId, content, clientActionId });
-
-      setConversationId(accepted.conversation_id);
-      setRun(accepted.run);
-      setLatestAcknowledgement({
-        input_revision: accepted.input_revision,
-        merged: accepted.merged,
-        input_replayed: accepted.input_replayed,
-        idempotent_replayed: accepted.idempotent_replayed,
-      });
-      appendTimeline({
-        id: `learner-input-${accepted.message_id}`,
-        kind: "learner",
-        text: content,
-      });
-      appendTimeline({
-        id: `acknowledgement-${accepted.message_id}`,
-        kind: "notice",
-        text: accepted.merged ? "这条跟进已合并到当前 Tutor 运行。" : "已开始新的 Tutor 学习对话。",
-        detail: `输入修订：${accepted.input_revision}`,
-      });
       setComposerText("");
+      setComposerMode("ordinary");
+      setActiveRun({
+        run_id: accepted.run.run_id,
+        status: accepted.run.status,
+        continuation_kind: accepted.run.continuation_kind,
+      });
+      setActiveRunConversationId(accepted.conversation_id);
+      onConversationsChanged?.();
+      if (selectedConversationId !== accepted.conversation_id) {
+        onSelectConversation(accepted.conversation_id);
+      } else {
+        scrollToLatestRef.current = true;
+        refreshCurrentHistory();
+      }
     } catch (error) {
       const info = getErrorInfo(error);
       setComposerError({ code: info.code, message: info.message });
-      if (info.code === "RUN_NOT_ACTIVE" && run) {
-        void refreshRun(run.run_id);
-      }
+      refreshCurrentHistory();
     } finally {
       setComposerStatus("idle");
     }
@@ -406,20 +450,30 @@ export function TutorWorkspacePage({
     );
   }
 
+  const title = selectedConversationId ? "当前学习对话" : "新对话";
+  const composerLabel = composerMode === "continuation"
+    ? "继续完成这项确认"
+    : selectedConversationId
+      ? "继续当前对话"
+      : "从你的学习目标开始";
+  const composerHint = composerMode === "continuation"
+    ? "此输入仅用于服务器明确要求的继续确认。"
+    : "普通消息会创建新的有限 TurnRun；当前会话历史会被安全保留。";
+
   return (
     <main className="tutor-workspace" aria-labelledby="tutor-workspace-title">
       <section className="tutor-main-column">
         <header className="tutor-hero">
           <div>
             <p className="tutor-panel-eyebrow">Tutor 学习对话</p>
-            <h1 id="tutor-workspace-title">从你的目标开始</h1>
-            <p>用自然语言描述想学什么。Tutor 会根据已确认的学习事实给出下一步；运行中也可以继续补充或改变方向。</p>
+            <h1 id="tutor-workspace-title">{title}</h1>
+            <p>服务端保存可见对话与公开处理过程。普通消息始终从新的、有限的处理单元开始。</p>
           </div>
           <div className="tutor-run-summary" aria-live="polite">
             <span>当前状态</span>
-            <strong>{run ? displayRunStatus(run.status, run.terminal_outcome) : "等待你的第一条目标"}</strong>
-            {run && <small>已接收 {run.input_revision} 条输入</small>}
-            {activeRunId && <small>流游标：{stream.cursor}</small>}
+            <strong>{activeRun ? displayRunStatus(activeRun.status) : selectedConversationId ? "没有进行中的处理" : "等待你的第一条目标"}</strong>
+            {activeRun && <small>{activeRun.continuation_kind ? "等待明确的继续确认" : "正在使用当前公开状态"}</small>}
+            {streamUrl && <small>流游标：{stream.cursor}</small>}
           </div>
         </header>
 
@@ -429,7 +483,9 @@ export function TutorWorkspacePage({
               <strong>{streamError.code}</strong>
               <span>{streamError.message}</span>
             </div>
-            {streamError.recoverable && activeRunId && <button className="tutor-text-button" type="button" onClick={stream.retry}>重新连接</button>}
+            {streamError.recoverable && streamUrl && (
+              <button className="tutor-text-button" type="button" onClick={stream.retry}>重新连接</button>
+            )}
           </div>
         )}
         {composerError && (
@@ -438,42 +494,73 @@ export function TutorWorkspacePage({
             <span>{composerError.message}</span>
           </div>
         )}
-        {latestAcknowledgement && (
-          <div className="tutor-acknowledgement" aria-live="polite">
-            <strong>{latestAcknowledgement.merged ? "跟进已合并" : "输入已接收"}</strong>
-            <span>第 {latestAcknowledgement.input_revision} 条输入已持久化。</span>
-            {latestAcknowledgement.input_replayed && <span>这是一次安全重放的确认。</span>}
-          </div>
-        )}
 
-        <section className="tutor-timeline" aria-label="Tutor 对话时间线">
-          {timeline.length === 0 ? (
-            <div className="tutor-empty-timeline">
-              <strong>可以从一个模糊目标开始</strong>
-              <p>例如：理解闭包、准备 JavaScript DOM 项目，或针对某个报错调整学习方向。</p>
-            </div>
-          ) : (
-            timeline.map((item) => (
-              <article className={`tutor-timeline-entry ${item.kind}`} key={item.id}>
-                <span className="tutor-timeline-label">{timelineLabel(item.kind)}</span>
-                <div>
-                  <p>{item.text}</p>
-                  {item.detail && <small>{item.detail}</small>}
-                </div>
-              </article>
-            ))
+        <section className="tutor-timeline" ref={timelineRef} aria-label="Tutor 对话时间线" aria-busy={historyStatus === "loading"}>
+          {historyHasMore && (
+            <button className="tutor-load-earlier" type="button" onClick={() => void loadOlderHistory()} disabled={loadingOlder}>
+              {loadingOlder ? "正在加载更早记录……" : "加载更早记录"}
+            </button>
           )}
+          {historyStatus === "loading" && timeline.length === 0 && (
+            <div className="tutor-empty-timeline"><strong>正在恢复对话记录……</strong></div>
+          )}
+          {historyStatus === "error" && historyError && (
+            <div className="tutor-inline-error" role="alert">
+              <div><strong>{historyError.code}</strong><span>{historyError.message}</span></div>
+              {selectedConversationId && <button className="tutor-text-button" type="button" onClick={refreshCurrentHistory}>重试</button>}
+            </div>
+          )}
+          {historyStatus !== "loading" && timeline.length === 0 && !historyError && (
+            <div className="tutor-empty-timeline">
+              <strong>{selectedConversationId ? "这里还没有可见记录" : "可以从一个模糊目标开始"}</strong>
+              <p>{selectedConversationId ? "服务器会在有可见输入或回复后保留时间线。" : "例如：理解闭包、准备 JavaScript DOM 项目，或针对某个报错调整学习方向。"}</p>
+            </div>
+          )}
+          {timeline.map((item) => item.kind === "process"
+            ? (
+              <PublicProcessDisclosure
+                key={`process:${item.id}`}
+                process={item}
+                open={Boolean(openProcessRuns[item.run_id])}
+                onToggle={() => setOpenProcessRuns((current) => ({ ...current, [item.run_id]: !current[item.run_id] }))}
+              />
+            )
+            : (
+              <article className={`tutor-timeline-entry ${item.role === "learner" ? "learner" : "tutor"}`} key={`message:${item.id}`}>
+                <span className="tutor-timeline-label">{item.role === "learner" ? "你" : "Tutor"}</span>
+                <div><p>{item.content}</p></div>
+              </article>
+            ))}
         </section>
 
+        {continuationAvailable && (
+          <section className="tutor-continuation-card" aria-label="继续当前确认">
+            <div>
+              <strong>需要你的确认后才能继续</strong>
+              <span>只有这一类服务器明确授权的等待状态会复用当前 run。</span>
+            </div>
+            <button className="tutor-compact-button" type="button" onClick={() => { setComposerMode("continuation"); composerRef.current?.focus(); }}>
+              继续确认
+            </button>
+          </section>
+        )}
+
         <form className="tutor-composer" onSubmit={(event) => { event.preventDefault(); void submitComposer(); }}>
-          <label htmlFor="tutor-composer-input">告诉 Tutor 你想达成什么，或继续补充当前问题</label>
+          <label htmlFor="tutor-composer-input">{composerLabel}</label>
+          {composerMode === "continuation" && (
+            <div className="tutor-composer-mode" role="status">
+              <span>正在使用已授权的继续确认输入。</span>
+              <button className="tutor-text-button" type="button" onClick={() => setComposerMode("ordinary")}>改为普通消息</button>
+            </div>
+          )}
           <textarea
+            ref={composerRef}
             id="tutor-composer-input"
             value={composerText}
             rows={4}
             maxLength={16_000}
-            placeholder="例如：我会写基础 JavaScript，但总弄不清闭包里的变量什么时候会保留。"
-            disabled={composerStatus === "submitting"}
+            placeholder={composerMode === "continuation" ? "输入服务器请求的确认或结果。" : "例如：我会写基础 JavaScript，但总弄不清闭包里的变量什么时候会保留。"}
+            disabled={!mayUseTutor || composerStatus === "submitting"}
             onChange={(event) => setComposerText(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
@@ -484,19 +571,15 @@ export function TutorWorkspacePage({
           />
           <div className="tutor-composer-footer">
             <div className="tutor-goal-examples" aria-label="目标示例">
-              {[
-                "帮我理清闭包和作用域",
-                "我想系统复习 DOM 事件",
-                "这个报错我不知道从哪里开始看",
-              ].map((example) => (
+              {["帮我理清闭包和作用域", "我想系统复习 DOM 事件", "这个报错我不知道从哪里开始看"].map((example) => (
                 <button key={example} type="button" onClick={() => setComposerText(example)} disabled={composerStatus === "submitting"}>{example}</button>
               ))}
             </div>
             <button className="tutor-primary-button" type="submit" disabled={composerStatus === "submitting" || composerText.trim().length === 0}>
-              {composerStatus === "submitting" ? "正在确认输入……" : activeRunId ? "发送跟进" : "开始对话"}
+              {composerStatus === "submitting" ? "正在确认输入……" : composerMode === "continuation" ? "提交确认" : selectedConversationId ? "发送消息" : "开始对话"}
             </button>
           </div>
-          <p className="tutor-composer-hint">按 Ctrl / ⌘ + Enter 可发送。即使 Tutor 正在处理，也可以继续发送跟进。</p>
+          <p className="tutor-composer-hint">{composerHint} 按 Ctrl / ⌘ + Enter 可发送。</p>
         </form>
       </section>
 
@@ -535,55 +618,86 @@ export function TutorWorkspacePage({
   );
 }
 
-function createTutorActionId(prefix: string): string {
-  const random = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  return `${prefix}:${random}`;
+type PublicProcessDisclosureProps = {
+  process: TutorPublicProcess;
+  open: boolean;
+  onToggle: () => void;
+};
+
+function PublicProcessDisclosure({ process, open, onToggle }: PublicProcessDisclosureProps) {
+  const detailId = `tutor-public-process-${process.run_id}`;
+  const status = displayPublicProcessStatus(process);
+  const duration = formatPublicDuration(process.elapsed_seconds);
+
+  return (
+    <section className={`tutor-public-process ${process.display_state}`} aria-label={status}>
+      <button
+        className="tutor-public-process-toggle"
+        type="button"
+        aria-expanded={open}
+        aria-controls={detailId}
+        aria-label={`公开处理过程：${status}。${open ? "收起详情" : "展开详情"}`}
+        onClick={onToggle}
+      >
+        <span className="tutor-public-process-indicator" aria-hidden="true" />
+        <span className="tutor-public-process-summary">
+          <strong>{status}</strong>
+          <small>{process.display_state === "thinking" ? "公开处理过程可展开查看已完成步骤" : `已处理 ${duration}`}</small>
+        </span>
+        <span className="tutor-public-process-chevron" aria-hidden="true">⌄</span>
+      </button>
+      <div id={detailId} className="tutor-public-process-details" hidden={!open}>
+        <strong>公开处理过程</strong>
+        {process.steps.length > 0 ? (
+          <ol className="tutor-public-process-steps">
+            {process.steps.map((step) => (
+              <li className={`tutor-public-process-step ${step.state}`} key={`${process.run_id}:${step.key}`}>
+                <span aria-hidden="true" />
+                <span>{step.label}</span>
+              </li>
+            ))}
+          </ol>
+        ) : (
+          <p>暂时没有可展示的公开步骤。</p>
+        )}
+      </div>
+    </section>
+  );
 }
 
-function displayRunStatus(status: TutorRunState["status"], terminalOutcome: TutorRunState["terminal_outcome"]): string {
-  if (terminalOutcome === "completed") return "已完成";
-  if (terminalOutcome === "model_unavailable") return "模型暂不可用";
-  if (terminalOutcome === "blocked_policy") return "当前操作未获允许";
-  if (terminalOutcome === "budget_exhausted") return "本次运行已达到安全限制";
-  if (terminalOutcome === "cancelled") return "已停止";
-  if (terminalOutcome === "failed") return "未能安全完成";
+function displayRunStatus(status: TutorRunStatus): string {
   return {
     queued: "正在排队",
     leased: "正在准备",
-    running: "正在处理",
-    waiting_for_input: "等待你的补充",
-    waiting_for_capability: "正在等待已允许的能力",
+    running: "正在思考",
+    waiting_for_input: "等待你的确认",
+    waiting_for_capability: "正在等待已授权的能力",
     awaiting_effect_commit: "正在确认学习更新",
     completed: "已完成",
     model_unavailable: "模型暂不可用",
     blocked_policy: "当前操作未获允许",
-    budget_exhausted: "本次运行已达到安全限制",
-    cancelled: "已停止",
+    budget_exhausted: "本次处理已达到安全限制",
+    cancelled: "已根据新消息更新",
     failed: "未能安全完成",
   }[status];
 }
 
-function displayEventStatus(status: string): string {
-  if (status === "completed") return "已完成";
-  if (status === "running") return "进行中";
-  if (status === "accepted") return "已接收";
-  if (status === "denied") return "未执行";
-  return "已更新";
+function displayPublicProcessStatus(process: TutorPublicProcess): string {
+  if (process.display_state === "thinking") return "正在思考";
+  if (process.display_state === "completed") return `已处理 ${formatPublicDuration(process.elapsed_seconds)}`;
+  if (process.display_state === "superseded") return "已根据你的新消息更新本轮处理";
+  return "本轮处理暂不可用";
 }
 
-function displayActivityEvent(category: string): string {
-  if (category.includes("plan")) return "Tutor 更新了学习计划记录。";
-  if (category.includes("memory")) return "Tutor 更新了可检查的学习记录。";
-  if (category.includes("runner")) return "Tutor 记录了练习反馈。";
-  return "Tutor 记录了一项学习活动。";
+function formatPublicDuration(elapsedSeconds: number): string {
+  const seconds = Math.max(0, Math.min(3_600, elapsedSeconds));
+  if (seconds < 60) return `${seconds} 秒`;
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  return remainder > 0 ? `${minutes} 分 ${remainder} 秒` : `${minutes} 分`;
 }
 
-function timelineLabel(kind: TutorTimelineEntry["kind"]): string {
-  return {
-    learner: "你",
-    tutor: "Tutor",
-    activity: "学习动态",
-    notice: "已确认",
-    error: "需要注意",
-  }[kind];
+function createTutorActionId(prefix: string): string {
+  const random = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return `${prefix}:${random}`;
 }

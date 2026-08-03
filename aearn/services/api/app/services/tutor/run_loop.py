@@ -172,6 +172,20 @@ class TutorRunLoop:
                     iteration_count=snapshot.iteration_count + 1,
                     model_call_count=snapshot.model_call_count + 1,
                 )
+                refreshed, terminal = self._refresh_before_unsafe_boundary(
+                    snapshot,
+                    lease=lease,
+                    metadata=metadata,
+                    effect_results=effect_results,
+                )
+                if terminal is not None:
+                    return terminal
+                if refreshed.input_revision != snapshot.input_revision:
+                    snapshot = refreshed
+                    continue
+                snapshot = refreshed
+                lease = snapshot.lease or lease
+
                 if provider_result.terminal_outcome is not None:
                     return self._terminal(
                         snapshot,
@@ -180,6 +194,7 @@ class TutorRunLoop:
                         metadata=metadata,
                         effect_results=effect_results,
                     )
+
                 decision = provider_result.decision
                 if decision is None:
                     return self._terminal(
@@ -201,6 +216,20 @@ class TutorRunLoop:
                     )
                 if gate_result.status is TutorDecisionGateStatus.REBUILD_CONTEXT:
                     continue
+
+                refreshed, terminal = self._refresh_before_unsafe_boundary(
+                    snapshot,
+                    lease=lease,
+                    metadata=metadata,
+                    effect_results=effect_results,
+                )
+                if terminal is not None:
+                    return terminal
+                if refreshed.input_revision != snapshot.input_revision:
+                    snapshot = refreshed
+                    continue
+                snapshot = refreshed
+                lease = snapshot.lease or lease
 
                 if decision.checkpoint_reason is not None:
                     self._save_safe_checkpoint(
@@ -244,9 +273,21 @@ class TutorRunLoop:
                         metadata=metadata,
                         effect_results=effect_results,
                         public_message=decision.public_message,
+                        conversation_title=decision.conversation_title,
                     )
 
-                return self._waiting_for_input(snapshot, decision=decision, effect_results=effect_results)
+                if decision.continuation_kind is not None:
+                    return self._waiting_for_input(snapshot, decision=decision, effect_results=effect_results)
+
+                return self._terminal(
+                    snapshot,
+                    outcome=TutorTerminalOutcome.COMPLETED,
+                    diagnostic_code=None,
+                    metadata=metadata,
+                    effect_results=effect_results,
+                    public_message=decision.public_message,
+                    conversation_title=decision.conversation_title,
+                )
         except TutorLifecycleConflict:
             return _lease_unavailable_result(snapshot, effect_results=effect_results)
         except Exception:
@@ -407,6 +448,8 @@ class TutorRunLoop:
         )
 
     def _stop_outcome(self, snapshot: TutorRunSnapshot) -> tuple[TutorTerminalOutcome, str] | None:
+        if self._store.is_superseded(snapshot.run_id):
+            return TutorTerminalOutcome.CANCELLED, "superseded"
         if self._store.is_cancelled(snapshot.run_id) or snapshot.cancelled:
             return TutorTerminalOutcome.CANCELLED, "cancelled"
         if self._clock.now() >= snapshot.policy.deadline:
@@ -456,6 +499,7 @@ class TutorRunLoop:
         metadata: TutorCheckpointMetadata | None = None,
         effect_results: list[TutorEffectResult] | tuple[TutorEffectResult, ...] = (),
         public_message: str | None = None,
+        conversation_title: str | None = None,
     ) -> TutorRunResult:
         checkpoint_metadata = metadata or empty_checkpoint_metadata(token_budget=snapshot.policy.context_token_budget)
         status = terminal_status(outcome)
@@ -484,6 +528,7 @@ class TutorRunLoop:
             effect_count=snapshot.effect_count,
             terminal_outcome=outcome,
             public_message=public_message,
+            conversation_title=conversation_title,
             diagnostic_code=diagnostic_code,
             effect_results=tuple(effect_results),
         )
@@ -518,6 +563,7 @@ class TutorRunLoop:
             capability_call_count=snapshot.capability_call_count,
             effect_count=snapshot.effect_count,
             public_message=decision.public_message,
+            continuation_kind=decision.continuation_kind,
             effect_results=tuple(effect_results),
         )
         if self._lifecycle is not None:

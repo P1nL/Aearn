@@ -86,6 +86,11 @@ class Settings(BaseModel):
     tutor_curation_max_output_tokens: int = Field(
         default_factory=lambda: _env_int("TUTOR_CURATION_MAX_OUTPUT_TOKENS", "0"), ge=0
     )
+    # Server-only HMAC material for opaque learner-history pagination cursors.
+    # Local development has a bounded fallback; shared deployments must set the env value.
+    tutor_cursor_signing_key: str = Field(
+        default_factory=lambda: _env_str("TUTOR_CURSOR_SIGNING_KEY", "aearn-local-history-cursor-v1")
+    )
     tutor_proactive_concurrency_limit: int = Field(
         default_factory=lambda: _env_int("TUTOR_PROACTIVE_CONCURRENCY_LIMIT", "1")
     )

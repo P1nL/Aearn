@@ -1784,6 +1784,230 @@ its typed ports until later persistence and API integration tasks own the
 adapter work.
 
 
+## Scenario: Tutor Primary JSON Decision Provider Boundary
+
+### 1. Scope / Trigger
+
+- Trigger: changing `OpenAICompatibleClient.complete_json()`, DeepSeek model
+  routing, Responses SSE decoding, `PrimaryTutorProviderGateway`, strict
+  `TutorDecision` parsing, or provider diagnostic logging.
+- Scope: `app/services/llm/{llm_client,llm_urls}.py`,
+  `app/services/tutor/provider_gateway.py`,
+  `app/agents/harness/contracts.py`, and focused fake-transport tests.
+- This scope owns a primary-provider JSON decision boundary only. It does not
+  authorize a provider/model fallback, public diagnostics, conversation-title
+  persistence, history APIs, or Desktop behavior.
+
+### 2. Signatures
+
+- `select_llm_protocol(settings) -> LLMProtocol`.
+- `deepseek_responses_url(base_url) -> str`.
+- `OpenAICompatibleClient.complete_json(messages, *, temperature, max_tokens,
+  timeout_seconds) -> LLMJsonResponse`.
+- `PrimaryTutorProviderGateway.decide(run, context) -> TutorProviderResult`.
+- `parse_tutor_decision(payload) -> TutorDecision`.
+- Strict decision fields: `public_message`, `conversation_title`,
+  `skill_references`, `capability_requests`, `effect_proposals`,
+  `checkpoint_reason`, `continuation_kind`, and `terminal_intent`.
+
+### 3. Contracts
+
+- Select exactly one protocol before the request: non-DeepSeek uses Responses;
+  DeepSeek uses `/responses` only for the exact case-sensitive model
+  `deepseek-v4-flash`; every other DeepSeek model uses
+  `/chat/completions`. Never use a prefix, alias, casing normalization, failed
+  request, or retry to infer a different protocol.
+- The DeepSeek Responses request uses `input`, optional `instructions`,
+  `stream=true`, `text.format=json_object`, and bounded
+  `max_output_tokens`. Its final learner-visible content may come only from
+  `output_text`; reasoning, analysis, provider error bodies, and arbitrary output
+  items are never a fallback source.
+- Use one canonical complete JSON example in both the initial prompt and the
+  one permitted same-primary repair. The decision envelope is `extra=forbid`.
+  `conversation_title` is NFKC-normalized, single-line, learner-safe, and at
+  most 48 characters. `continuation_kind` is closed and is valid only with
+  `checkpoint_reason=capability_result` and no terminal intent.
+- A repair is allowed at most once and only for a repairable visible-content,
+  JSON, Tutor-decision, or output-safety rejection. `response.incomplete`,
+  `response.failed`, malformed envelopes, HTTP/transport failures, and selected
+  provider request rejection terminate without repair.
+- HTTP 400 maps to the bounded internal category
+  `TUTOR_PROVIDER_REQUEST_REJECTED`; public run reads/SSE remain
+  `MODEL_UNAVAILABLE`. Provider bodies, prompts, reasoning, headers,
+  credentials, URL details, and exception messages must not enter public
+  projections, durable safe diagnostics, or normal logs. Transport logs may use
+  only a stable exception category.
+
+### 4. Validation & Error Matrix
+
+- Exact `deepseek-v4-flash` -> one `/responses` request; no Chat Completions
+  fallback.
+- Other DeepSeek model or different casing -> one `/chat/completions` request.
+- Completed response with only reasoning/no `output_text` ->
+  `TUTOR_PROVIDER_RESPONSE_CONTENT_MISSING`; one same-primary repair may be
+  attempted.
+- `response.incomplete` -> `TUTOR_PROVIDER_RESPONSE_INCOMPLETE`; one request,
+  no repair.
+- `response.failed` -> `TUTOR_PROVIDER_RESPONSE_FAILED`; one request, no repair.
+- Unsupported/malformed Responses envelope ->
+  `TUTOR_PROVIDER_RESPONSE_ENVELOPE_INVALID`; one request, no repair.
+- Visible non-object JSON -> `TUTOR_PROVIDER_RESPONSE_CONTENT_NOT_JSON`; at most
+  one same-primary repair.
+- HTTP 400 -> `TUTOR_PROVIDER_REQUEST_REJECTED`; one request, no repair/fallback.
+- Unknown decision key, unsafe title, invalid continuation, or internal nested
+  field -> `TUTOR_PROVIDER_DECISION_INVALID`; at most one same-primary repair.
+
+### 5. Good / Base / Bad Cases
+
+- Good: fake `deepseek-v4-flash` Responses SSE emits deltas and a completed
+  response; only the assembled `output_text` becomes the strict decision.
+- Good: an upstream request rejection returns a bounded internal category while
+  public API/SSE reveal only `MODEL_UNAVAILABLE` and the provider response is not
+  retained.
+- Base: a non-V4-Flash DeepSeek model remains on the existing Chat Completions
+  JSON contract.
+- Bad: falling through from `/responses` to `/chat/completions`, treating a
+  reasoning item as answer content, retrying `response.failed`, or logging an
+  exception string that contains provider URL, headers, or credentials.
+
+### 6. Tests Required
+
+- Fake-transport tests assert exact-model protocol selection, URL normalization,
+  request shape, selected-protocol failure call count, and no fallback.
+- Test raw SSE lines for `response.output_text.delta`, completed,
+  incomplete, failed, malformed, reasoning-only, and non-JSON visible content.
+- Test canonical prompt/repair shape, title/continuation validation, at-most-once
+  repair, and that rejected JSON/provider body is absent from repair text and
+  results.
+- Test HTTP 400, authentication/quota/rate/timeout/transport categories and
+  assert no provider detail appears in `repr`, public SSE, or log-safe transport
+  categories.
+- Run `tests/test_tutor_provider_gateway.py`, `tests/test_tutor_run_loop.py`,
+  `tests/test_tutor_sse.py`, `ruff check`, `python -m mypy app`, and
+  `git diff --check` through `uv` from `aearn/services/api`.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+if responses_request_failed:
+    return call_chat_completions(messages)
+```
+
+A cross-protocol fallback duplicates a primary decision attempt and hides a
+provider-contract failure. It can also turn a rejected prompt into a second
+unreviewed request.
+
+#### Correct
+
+```python
+protocol = select_llm_protocol(settings)
+response = complete_with_selected_protocol(protocol, messages)
+if response_error_is_repairable(response):
+    return repair_once_with_same_primary(messages)
+return safe_selected_protocol_failure(response)
+```
+
+The configured model determines the one protocol before the call. Only bounded,
+repairable candidate errors receive one same-primary repair; all other failures
+remain safe terminal outcomes without provider detail.
+
+
+## Scenario: Tutor Interactive TurnRun, Post-Provider Supersede, and Clock-Consistent CAS
+
+### 1. Scope / Trigger
+
+- Trigger: changing ordinary Tutor conversation input, first-turn creation, interactive dispatch, terminal persistence, public-process history, run-loop cancellation/supersede guards, or a proactive effect path that accepts an injected `Clock`.
+- Scope: `app/routes/tutor.py`, `app/services/tutor/{public_api,interactive,run_loop,persistence,proactive_worker}.py`, additive `tutor_*` schema, and focused PostgreSQL/fake-provider/Desktop contract tests.
+- This scenario owns the durable interactive TurnRun boundary. It does not authorize manual title rename, raw reasoning/provider projection, provider/model/protocol fallback, or a background run inheriting interactive authority.
+
+### 2. Signatures
+
+- First turn: `POST /api/tutor/conversations/first-turn` -> `PostgresTutorRepository.create_first_interactive_turn(...)`.
+- Ordinary turn: `POST /api/tutor/conversations/{conversation_id}/inputs` -> `PostgresTutorRepository.create_interactive_turn(...)`.
+- Explicit continuation only: `POST /api/tutor/runs/{run_id}/inputs`.
+- Interactive dispatcher: `TutorInteractiveRunDispatcher.dispatch(user_id, run_id) -> TutorRunResult`.
+- Unsafe-boundary guard: `TutorRunLoop._refresh_before_unsafe_boundary(snapshot, lease, metadata, effect_results)`.
+- Terminal persistence: `PostgresTutorLifecycle.persist_terminal(...)` / repository terminal write under the scoped run/conversation lock.
+- Clock-bound effect adapter: `PostgresProactiveEffectCommitter(repository, clock).commit(run, proposal)` -> `repository.commit_effect_if_current(..., now=clock.now())`.
+
+### 3. Contracts
+
+- A learner-visible `TutorConversation` is long-lived context/history scope. Every ordinary message creates a fresh finite interactive `TurnRun` with fresh policy deadline, counters, lease, and SSE lifecycle. Only a persisted explicit continuation can reuse its waiting run.
+- First nonblank draft submit is one idempotent atomic mutation: conversation, run, learner message, input event, and initial allowlisted public-process projection either all commit or all roll back. Selecting a draft alone never persists a conversation.
+- Under the conversation lock, a normal turn supersedes/cancels the current foreground run before inserting the replacement. The partial unique foreground predicate is the database authority; application-level selection alone is insufficient.
+- Interactive provider calls must not inherit an implicit PostgreSQL transaction or hold a foreground/conversation lock. `TutorInteractiveRunDispatcher` uses an autocommit connection; repository lifecycle methods own short atomic transactions at durable boundaries.
+- Immediately after every provider return, and again before decision gate, capability dispatch, effect commit, and terminal public persistence, the loop refreshes cancellation/supersede, lease, and input revision. If the run was superseded, it converges to a safe cancelled/superseded process result and must not invoke the decision gate, capability gateway, effect committer, or stale learner-visible terminal write.
+- Terminal persistence repeats the foreground/cancel/supersede check while locked. A stale run may finalize only its safe cancellation/process projection; it cannot insert a Tutor message, write a conversation title, append a capability receipt, commit an effect, or advance public activity as a successful response.
+- Any composition that accepts an injected `Clock` must propagate `clock.now()` into every repository mutation whose lease/CAS eligibility compares time. Do not mix a test/scheduler `FixedClock` with `datetime.now()` or an omitted repository `now` default, because an otherwise valid lease can be incorrectly rejected as expired.
+- Conversation list/history/cursors and public-process labels are server projections. They remain user/conversation scoped and never reconstruct reasoning, traces, prompts, provider payloads, capability arguments, diagnostics, or secrets.
+
+### 4. Validation & Error Matrix
+
+- New ordinary input while an old provider call is pending -> old run is safely superseded after provider return; no Tutor message/title/capability/effect success from the old run.
+- Terminal persistence observes cancellation/supersede/foreground loss under lock -> safe superseded/cancelled result only; no learner-visible success write.
+- Normal completed/cancelled/superseded run passed to `POST /runs/{run_id}/inputs` -> `RUN_NOT_ACTIVE`; only a persisted authorized continuation is accepted.
+- Same first-turn or ordinary-turn idempotency key/body -> replay the original safe IDs/result; same key with a different body -> `IDEMPOTENCY_CONFLICT`.
+- Invalid, malformed, cross-user, or cross-conversation history/list cursor -> stable `CURSOR_INVALID`; no SQL/provider detail.
+- A lease/CAS mutation evaluated with the composition clock before expiry -> normal current/committed path when other predicates pass; stale revision, cancelled/superseded state, or an actually expired lease -> safe stale/no-action path without a domain handler.
+
+### 5. Good / Base / Bad Cases
+
+- Good: ten ordinary messages retain one conversation id but create ten distinct run ids; each later run starts with fresh counters/deadline and the old foreground process becomes a safe superseded record.
+- Good: a fake provider supersedes its run during `decide`; the post-provider guard returns cancellation before decision/capability/effect/public-terminal work, and the replacement run remains the only foreground run.
+- Good: a proactive test injects `FixedClock`; the committer passes that same clock value into the repository CAS so the claimed lease is judged against the test timeline.
+- Base: legacy message-only history remains readable without a fabricated process card or duration; title absence projects as `新对话`.
+- Bad: calling a provider inside an open transaction, treating a revision check before the provider call as sufficient, writing a Tutor reply before the locked foreground recheck, or letting one repository call fall back to wall-clock time in a deterministic scheduler/test composition.
+
+### 6. Tests Required
+
+- `tests/test_tutor_input_merge.py`: first-turn atomic rollback/replay, distinct normal turns, foreground uniqueness, normal run-input denial, and provider-return supersede suppression.
+- `tests/test_tutor_run_loop.py`: post-provider terminal/supersede refresh before decision, capability, effect, and terminal persistence.
+- `tests/test_tutor_conversation_history.py`, `tests/test_tutor_sse.py`, and route/public API tests: user/conversation cursor scope, legacy history, allowlisted process projection, and selected-run-only transport behavior.
+- `tests/test_tutor_proactive_default_delivery.py`, `tests/test_tutor_evals.py`, and provider/persistence tests: injected-clock effect/CAS behavior, stable safe diagnostics, and no live provider call.
+- Run `uv --directory .\aearn\services\api lock --check && uv --directory .\aearn\services\api run python -m pytest -q`, then `ruff check app tests`, `python -m mypy app`, `pnpm --dir .\aearn desktop:check`, and `git diff --check`.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+with connect() as conn:
+    repository = PostgresTutorRepository(conn)
+    provider_result = provider.decide(run=snapshot, context=context)
+    repository.persist_terminal(...)
+```
+
+The provider call can inherit an implicit transaction and keep the foreground/conversation lock while a newer ordinary message needs to replace the run. A later terminal write can then publish stale work.
+
+```python
+receipt = repository.commit_effect_if_current(..., now=datetime.now(UTC))
+```
+
+This evaluates a deterministic scheduler/test lease against wall-clock time instead of the injected timeline.
+
+#### Correct
+
+```python
+with connect() as conn:
+    conn.autocommit = True
+    result = loop.run(run_id=run_id, lease_owner_id=owner_id)
+
+# `run_loop` refreshes supersede/cancellation after `provider.decide()`;
+# lifecycle persistence opens the short locked transaction for the final write.
+```
+
+```python
+receipt = repository.commit_effect_if_current(
+    ...,
+    now=self._clock.now(),
+)
+```
+
+The external provider call no longer blocks replacement, the stale run fails closed at both loop and persistence boundaries, and all time-sensitive CAS predicates use the same composed clock.
+
+
 ## Scenario: Tutor Skill Catalog and Registry-Only Capability Gateway
 
 ### 1. Scope / Trigger

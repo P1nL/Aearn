@@ -1,6 +1,6 @@
 # Tutor Harness Runtime Architecture
 
-**Status:** Current runtime contract as of 2026-07-29.
+**Status:** Current runtime contract as of 2026-08-03.
 **Authority:** Current route registration, `aearn/services/api/app`,
 `aearn/apps/desktop`, `aearn/services/worker`, `schema.sql`, and their tests.
 The transition document is historical migration evidence; it is not the normal
@@ -35,26 +35,119 @@ legacy learner history.
 | Worker | `services/worker/aearn_worker/worker_app.py` | Thin Celery wrappers for `health.ping`, `tutor.proactive.scan_due_signals`, `tutor.proactive.drain_candidates`, and `tutor.curation.drain`. |
 | Desktop | `apps/desktop/src/` | Bootstraps `loading -> welcome -> cutover -> tutor`; it presents server decisions and cannot override them. |
 
-## 3. Interactive Tutor run
+## 3. Interactive Tutor conversation and finite TurnRun
 
-1. `POST /api/tutor/conversations` creates or resumes one learner-visible
-   conversation.
-2. `POST /api/tutor/conversations/{conversation_id}/inputs` creates an
-   interactive run or merges an input into a compatible non-terminal run.
-   `POST /api/tutor/runs/{run_id}/inputs` is the explicit follow-up form.
-3. The input transaction stores raw learner text only in `tutor_messages`,
-   increments the run-local input revision, and appends an ordered safe event.
-4. A post-commit dispatcher obtains a lease and runs the finite Harness loop.
-   The loop reloads the authoritative input revision before every unsafe
-   boundary. Stale effects are recorded as `stale_rejected`; their handlers are
-   not called.
-5. `GET /api/tutor/runs/{run_id}/events` replays only the ordered safe suffix
+A learner-visible `TutorConversation` is long-lived history/context scope; an
+ordinary learner message is a **fresh, finite** interactive `TurnRun`:
+
+```text
+local draft
+  -> POST /conversations/first-turn
+  -> conversation + first TurnRun + learner input + public process (one transaction)
+
+existing conversation + ordinary learner message
+  -> POST /conversations/{conversation_id}/inputs
+  -> supersede old foreground run + fresh TurnRun
+
+explicit server-authorized continuation only
+  -> POST /runs/{run_id}/inputs
+  -> same waiting run receives the next revision
+```
+
+1. Selecting “新对话” creates only local Desktop draft state. The first nonblank
+   submission calls `POST /api/tutor/conversations/first-turn`; it atomically
+   creates the learner-visible conversation, fresh run, learner message/input
+   event, and `input_received` public-process projection. API idempotency owns
+   replay; a rollback cannot leave an empty conversation or duplicate dispatch.
+2. `POST /api/tutor/conversations/{conversation_id}/inputs` never merges normal
+   chat into a live run. Under the conversation lock, it terminalizes the prior
+   foreground interactive run as cancelled/superseded, freezes its process card,
+   creates a fresh run with new policy deadline/counters/lease, accepts the new
+   learner message, and dispatches only that new run. The partial unique
+   foreground index is the durable one-run invariant.
+3. `POST /api/tutor/runs/{run_id}/inputs` is not an ordinary follow-up route. It
+   is allowed only for a current interactive `waiting_for_input` run whose
+   persisted `continuation_kind` explicitly authorizes it. The accepted
+   continuation clears the consumed kind, advances the same run revision, and
+   may acquire a fresh lease.
+4. Raw learner text is stored only in `tutor_messages`; normal input acceptance
+   appends an ordered safe event and updates `last_public_activity_at`. The
+   conversation list/history reads never reconstruct raw content from events,
+   trace, provider output, or diagnostics.
+5. A post-commit dispatcher obtains a lease and runs the finite Harness loop.
+   Its provider call is outside an implicit PostgreSQL transaction: lifecycle
+   methods own short atomic transactions, so a new ordinary turn can acquire the
+   conversation lock while a provider response is pending. The loop refreshes
+   cancellation/supersede and revision state immediately after every provider
+   return, before decision gating, capability dispatch, effect commit and
+   terminal persistence. A stale run converges to a safe cancelled/superseded
+   projection and cannot write a Tutor message, conversation title, capability
+   receipt or effect.
+6. `GET /api/tutor/runs/{run_id}/events` remains incremental run-local transport
    using a non-negative `Last-Event-ID` cursor. It never calls a provider while
-   streaming.
+   streaming; Desktop history remains the server-authoritative conversation read.
+
+### Public conversation history and process projection
+
+`GET /api/tutor/conversations` returns only learner-visible conversation
+summaries in public-activity order. `GET /api/tutor/conversations/{id}/history`
+returns reverse chronological public message/process items with a server-signed,
+user- and conversation-scoped opaque cursor. A process item is a durable,
+server-owned projection with one of `thinking`, `completed`, `superseded`, or
+`unavailable`, fixed allowlisted symbolic steps, and server-calculated bounded
+elapsed seconds. Legacy message-only rows remain visible without invented cards
+or durations.
+
+The only title source is the same successful `TutorDecision.conversation_title`
+that writes a learner-visible Tutor reply. It is normalized/validated and stored
+once only while `tutor_conversations.title IS NULL`; absence projects as
+“新对话”. There is no learner-text fallback, title-only provider call, or rename
+surface.
 
 The provider boundary uses only the configured primary compatible provider. A
 missing, malformed, unsafe, or failed provider response maps to a stable
 learner-safe `MODEL_UNAVAILABLE` outcome. There is no provider/model fallback.
+At most one same-provider repair retry may follow a repairable visible-content,
+JSON, or Tutor-decision rejection; incomplete, failed, malformed-envelope, and
+transport responses terminate without repair. The reminder never echoes the
+rejected response, validation detail, prompt, or credentials.
+The durable run may retain a bounded internal diagnostic code for configuration,
+timeout, authentication/quota/rate-limit, HTTP/transport, invalid provider
+response envelope, missing response content, non-JSON response content, invalid
+Tutor decision, output-safety rejection, or adapter failure. Public run reads and
+API/SSE still expose only `MODEL_UNAVAILABLE` and never return the internal code,
+raw provider bodies, prompts, reasoning, transport details, or credentials.
+
+### Primary JSON decision protocol
+
+Before a JSON Tutor decision, `OpenAICompatibleClient.complete_json()` selects one
+protocol from the configured provider and model, and never changes that selection
+for a retry or failure:
+
+- non-DeepSeek configurations retain the existing Responses path;
+- DeepSeek uses the Responses path only when the configured model is the exact,
+  case-sensitive value `deepseek-v4-flash`; its normalized endpoint is
+  `/responses`, with `input`, optional `instructions`, `stream=true`,
+  `text.format=json_object`, and bounded `max_output_tokens`;
+- every other DeepSeek model retains the Chat Completions path at
+  `/chat/completions` with `response_format=json_object`.
+
+The Responses adapter accepts final learner-visible content only from
+`output_text`. It rejects reasoning-only output, missing visible text, malformed
+SSE/envelopes, non-object JSON text, `response.incomplete`, and `response.failed`
+with bounded internal categories. A selected-provider HTTP `400` is likewise a
+safe internal request-rejected category; it never triggers a protocol, model, or
+provider fallback and its response body is not retained.
+
+Tutor decision JSON is a frozen, `extra=forbid` envelope with one canonical
+example shared by the initial prompt and the at-most-once same-model repair. A
+normal direct reply explicitly sets `terminal_intent="completed"`. A
+`continuation_kind` is an enum and is valid only with
+`checkpoint_reason="capability_result"` and no terminal intent. The optional
+`conversation_title` is an NFKC-normalized, single-line, learner-safe candidate
+of at most 48 characters. This adapter validates and types the candidate only;
+conversation-title persistence and public history behavior remain owned by the
+separate lifecycle boundary.
 
 ## 4. Skills, capabilities, effects, and grounding
 
@@ -156,16 +249,33 @@ or messages.
 
 ## 9. Verification and release non-claim
 
-The final local verification matrix was run serially on 2026-07-29: the API
-suite passed **275 tests**, API Ruff and Mypy passed (Mypy: **99 source
+### Current local change verification (2026-08-03)
+
+The TurnRun/history and strict provider-decision changes were verified locally,
+not released:
+
+- `uv --directory .\aearn\services\api lock --check && uv --directory .\aearn\services\api run python -m pytest -q` -> **321 passed**;
+- `uv --directory .\aearn\services\api run ruff check app tests` -> passed;
+- `uv --directory .\aearn\services\api run python -m mypy app` -> **99 source files** with no issues;
+- `pnpm --dir .\aearn desktop:check` -> `tsc && vite build` passed;
+- `git diff --check` -> passed (line-ending warnings only).
+
+Focused coverage includes fresh ordinary TurnRuns, first-turn idempotency,
+post-provider supersede suppression, title/process/history projection, cursor
+scope, strict DeepSeek decision handling, and injected-clock proactive
+lease/CAS behavior. These checks confirm the local contract only; they do not
+prove live-provider teaching quality, latency, quota, browser interaction flow,
+or production image-fleet behavior.
+
+### Historical release-readiness matrix (2026-07-29)
+
+The earlier final local verification matrix was run serially on 2026-07-29: the
+API suite passed **275 tests**, API Ruff and Mypy passed (Mypy: **99 source
 files**), API lock check passed, standalone executor tests passed **9 tests**,
 Desktop `tsc && vite build` passed, current source/dependency audit returned no
 legacy matches, task validation passed, and `git diff --check` passed. The
 full command/output record, fixture posture and resolved test regression are in
 [`../qa/tutor-harness-release-readiness.md`](../qa/tutor-harness-release-readiness.md).
 
-Those checks do not prove a live provider's teaching quality, latency, quota,
-or production image fleet behavior. PostgreSQL/Redis were healthy during
-verification; API/Desktop processes were intentionally not left running and
-the local dev-state file still reports stale historical PIDs. No deployment,
-release approval, commit, push, or task archive follows from this documentation.
+Neither the current local checks nor the historical matrix is deployment,
+release approval, commit, push, or task-archive authorization.

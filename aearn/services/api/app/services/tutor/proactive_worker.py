@@ -72,8 +72,9 @@ class ProactiveDeliveryProviderGateway:
 class PostgresProactiveEffectCommitter:
     """Use the normal durable CAS effect boundary with a run-scoped idempotency key."""
 
-    def __init__(self, *, repository: PostgresTutorRepository) -> None:
+    def __init__(self, *, repository: PostgresTutorRepository, clock: Clock) -> None:
         self._repository = repository
+        self._clock = clock
 
     def commit(self, *, run: TutorRunSnapshot, proposal: TutorEffectProposal) -> TutorEffectResult:
         if run.lease is None:
@@ -85,6 +86,7 @@ class PostgresProactiveEffectCommitter:
             lease=run.lease,
             proposal=proposal,
             idempotency_key=hashlib.sha256(identity.encode("utf-8")).hexdigest(),
+            now=self._clock.now(),
         )
         return receipt.result
 
@@ -159,7 +161,7 @@ class PostgresProactiveLoopFactory:
             context_builder=TutorContextBuilder(),
             provider=ProactiveDeliveryProviderGateway(self._provider_factory(self._settings)),
             capability_gateway=DefaultDenyCapabilityGateway(),
-            effect_committer=PostgresProactiveEffectCommitter(repository=repository),
+            effect_committer=PostgresProactiveEffectCommitter(repository=repository, clock=self._clock),
             clock=self._clock,
             compaction_publisher=NoopTutorCompactionPublisher(),
             decision_gate=CatalogTutorDecisionGate(

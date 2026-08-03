@@ -47,7 +47,7 @@
       },
       "expected": {
         "status": "model_unavailable",
-        "code": "MODEL_UNAVAILABLE"
+        "code": "TUTOR_PROVIDER_DECISION_INVALID"
       }
     },
     {
@@ -79,7 +79,7 @@
       },
       "expected": {
         "status": "completed",
-        "effect_status": "stale_rejected",
+        "effect_status": "none",
         "committer_calls": 0
       }
     },
@@ -96,7 +96,7 @@
       },
       "expected": {
         "status": "model_unavailable",
-        "code": "MODEL_UNAVAILABLE",
+        "code": "TUTOR_PROVIDER_REQUEST_FAILED",
         "provider_calls": 1
       }
     },

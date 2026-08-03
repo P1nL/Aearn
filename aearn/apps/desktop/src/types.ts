@@ -81,6 +81,8 @@ export type TutorTerminalOutcome =
   | "cancelled"
   | "failed";
 
+export type TutorContinuationKind = "approval" | "capability_result" | "external_result";
+
 export type TutorRunState = {
   run_id: string;
   conversation_id: string;
@@ -93,8 +95,62 @@ export type TutorRunState = {
   capability_call_count: number;
   effect_count: number;
   terminal_outcome: TutorTerminalOutcome | null;
+  continuation_kind: TutorContinuationKind | null;
   created_at: string | null;
   updated_at: string | null;
+};
+
+export type TutorConversationSummary = {
+  conversation_id: string;
+  title: string;
+  last_public_activity_at: string | null;
+  active_run: TutorForegroundRun | null;
+};
+
+export type TutorForegroundRun = {
+  run_id: string;
+  status: TutorRunStatus;
+  continuation_kind: TutorContinuationKind | null;
+};
+
+export type TutorConversationListResponse = {
+  items: TutorConversationSummary[];
+  next_cursor: string | null;
+  has_more: boolean;
+};
+
+export type TutorPublicProcessStep = {
+  key: "input_received" | "context_prepared" | "authorized_resource_checked" | "learning_reply_generated" | "replaced_by_newer_input";
+  state: "completed" | "current";
+  label: string;
+};
+
+export type TutorPublicProcess = {
+  kind: "process";
+  id: string;
+  run_id: string;
+  display_state: "thinking" | "completed" | "superseded" | "unavailable";
+  steps: TutorPublicProcessStep[];
+  elapsed_seconds: number;
+  created_at: string | null;
+  finished_at: string | null;
+};
+
+export type TutorHistoryMessage = {
+  kind: "message";
+  id: string;
+  role: "learner" | "tutor";
+  content: string;
+  created_at: string | null;
+};
+
+export type TutorHistoryItem = TutorHistoryMessage | TutorPublicProcess;
+
+export type TutorConversationHistoryResponse = {
+  items: TutorHistoryItem[];
+  next_cursor: string | null;
+  has_more: boolean;
+  active_run: TutorForegroundRun | null;
 };
 
 export type TutorConversationResponse = {
@@ -113,6 +169,9 @@ export type TutorInputAcceptedResponse = {
   input_replayed: boolean;
   idempotent_replayed: boolean;
   run: TutorRunState;
+  process: TutorPublicProcess | null;
+  replaced_run_id: string | null;
+  replaced_process: TutorPublicProcess | null;
 };
 
 export type TutorActivityItem = {
@@ -217,6 +276,7 @@ export type TutorRunStateSseEvent = {
     event_sequence: number;
     status: TutorRunStatus;
     terminal_outcome: TutorTerminalOutcome | null;
+    public_message?: string | null;
   };
 };
 

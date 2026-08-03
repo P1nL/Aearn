@@ -23,7 +23,11 @@ from app.db.connection import connect
 from app.services.tutor.capability_policy import DefaultDenyCapabilityPolicyResolver
 from app.services.tutor.decision_gate import CatalogTutorDecisionGate
 from app.services.tutor.learner_state import TutorLearnerStateRepository
-from app.services.tutor.persistence import PostgresTutorLifecycle, PostgresTutorRepository
+from app.services.tutor.persistence import (
+    PostgresTutorLifecycle,
+    PostgresTutorRepository,
+    PostgresTutorSkillSelectionStore,
+)
 from app.services.tutor.ports import (
     Clock,
     DefaultDenyCapabilityGateway,
@@ -33,7 +37,6 @@ from app.services.tutor.ports import (
 )
 from app.services.tutor.provider_gateway import PrimaryTutorProviderGateway
 from app.services.tutor.run_loop import TutorHarnessService, TutorRunLoop
-from app.services.tutor.skill_selection import InMemoryTutorSkillSelectionStore
 
 
 class TutorRunDispatcher(Protocol):
@@ -194,11 +197,15 @@ class TutorInteractiveRunDispatcher:
 
     def dispatch(self, *, user_id: str, run_id: str) -> TutorRunResult:
         with connect() as conn:
+            # The provider call must never inherit an implicit PostgreSQL transaction
+            # or hold a foreground-run lock. Repository lifecycle methods open their
+            # own short atomic transactions around each durable boundary.
+            conn.autocommit = True
             repository = PostgresTutorRepository(conn)
             learner_state = TutorLearnerStateRepository(conn)
             catalog = compile_published_skill_catalog()
             policy_resolver = DefaultDenyCapabilityPolicyResolver()
-            selection_store = InMemoryTutorSkillSelectionStore()
+            selection_store = PostgresTutorSkillSelectionStore(repository=repository, user_id=user_id)
             base_loader = PostgresTutorContextLoader(conn=conn, learner_state=learner_state)
             loop = TutorRunLoop(
                 store=repository.as_run_store(user_id=user_id),

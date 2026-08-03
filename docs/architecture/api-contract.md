@@ -1,6 +1,6 @@
 # Aearn Tutor HTTP 与 SSE API 契约
 
-**状态：** 当前公共 API 契约，2026-07-29。
+**状态：** 当前公共 API 契约，2026-08-03。
 **权威来源：** `aearn/services/api/app/main.py` 中注册的路由、Pydantic model、
 `services/tutor/public_api.py`、`services/tutor/cutover.py` 与 API 测试。
 **不适用：** 已移除的 Graph、Dashboard、Onboarding、Learning Session、Review、
@@ -127,57 +127,97 @@ cutover decision。
 checkpoint scope 或验证失败都不产生半完成删除。代码回滚之后也不会恢复已经
 确认删除的历史。
 
-## 5. Tutor 会话与 run 接口
+## 5. Tutor 会话、TurnRun 与历史接口
 
-所有本节接口均要求 verified user。
+所有本节接口均要求 verified user；所有 UUID、idempotency replay、cursor 和读取范围都
+同时受当前 `user_id` 约束。
 
-### Conversation 与输入
+### 首发、普通输入与显式 continuation
 
-| Method | Path | 请求 body | 成功响应 |
+| Method | Path | 请求/查询 | 成功响应 |
 | --- | --- | --- | --- |
-| `POST` | `/api/tutor/conversations` | `user_id`、`client_action_id`、可选 `conversation_id` | `conversation_id`、`created`、`idempotent_replayed` |
-| `POST` | `/api/tutor/conversations/{conversation_id}/inputs` | `user_id`、`client_action_id`、`content` | 202（新接受）或 200（重放）；见下方 input response |
-| `POST` | `/api/tutor/runs/{run_id}/inputs` | 同上 | 202（新接受）或 200（重放/merge） |
+| `POST` | `/api/tutor/conversations/first-turn` | `user_id`、`client_action_id`、`content` | 202（新首发）或 200（同 key 重放）；原子返回新 `conversation_id`、新 `run_id` 与初始公开 process |
+| `POST` | `/api/tutor/conversations/{conversation_id}/inputs` | `user_id`、`client_action_id`、`content` | 202（新普通 TurnRun）或 200（同 key 重放）；见下方 turn response |
+| `POST` | `/api/tutor/runs/{run_id}/inputs` | 同上 | 只接受服务端持久化授权的 explicit continuation；202（新接受）或 200（重放） |
+| `POST` | `/api/tutor/conversations` | `user_id`、`client_action_id`、可选 `conversation_id` | 兼容 create/resume 入口；Desktop draft 不调用它创建空 conversation |
 | `GET` | `/api/tutor/runs/{run_id}?user_id={uuid}` | — | 当前 `TutorRun` 安全状态 |
 
-`content` 必须是 trim 后非空且最多 16,000 字符。Conversation input 会创建新的
-interactive run，或将输入合并进同 conversation 的兼容非终态 run；明确 run
-input 只接受未取消且尚未 terminal 的 interactive run。终态/不兼容 run 返回
+`content` 必须是 trim 后非空且最多 16,000 字符。点击 Desktop “新对话”只建立本地
+ draft；首个非空输入调用 `first-turn`，在同一 idempotent transaction 中创建
+conversation、fresh interactive `TurnRun`、learner message/input event 和
+`input_received` public-process。中间失败会整体回滚，不能留下空 conversation；同
+idempotency key/body 重放返回相同 conversation/run ID，且不重复 dispatch；同 key
+不同 body 返回 `409 IDEMPOTENCY_CONFLICT`。
+
+每条普通 learner 消息都调用 conversation-input 并创建独立、有限的 `TurnRun`，不会
+复用旧 run 的 deadline、budget、lease 或 counter。事务在 conversation lock 下将旧的
+foreground interactive run 标记为 `cancelled` + `superseded_by_run_id`，冻结旧公开
+process 为 `superseded`，再创建并只 dispatch 新 run。因此每个 conversation 同时至多
+一条 foreground run；旧 run 的公开卡片只显示“已根据你的新消息更新本轮处理”。
+
+`/runs/{run_id}/inputs` 不是普通聊天快捷方式：仅当 run 仍属于当前用户、尚未
+terminal/cancelled/superseded、状态为 `waiting_for_input`，且已持久化
+`continuation_kind` 时允许继续。普通 completed、normal-chat 或被替代 run 一律返回
 `409 RUN_NOT_ACTIVE`。
 
-输入响应示例：
+安全 title 只能在同次成功 Tutor decision 写入 learner-visible reply 时尝试写入，使用
+NFKC 单行且最多 48 字符的 `conversation_title`，并以 `WHERE title IS NULL` 固定一次。
+无 title 时对外显示“新对话”；不得从 learner 原文回退命名，也没有 rename API。
+
+普通 turn response 示例：
 
 ```json
 {
   "conversation_id": "uuid",
   "run_id": "uuid",
-  "input_revision": 2,
+  "input_revision": 1,
   "message_id": "uuid",
-  "event_cursor": 8,
-  "merged": true,
+  "event_cursor": 1,
+  "merged": false,
   "input_replayed": false,
   "idempotent_replayed": false,
+  "replaced_run_id": "uuid-or-null",
+  "process": {
+    "kind": "process",
+    "run_id": "uuid",
+    "display_state": "thinking",
+    "steps": [{"key": "input_received", "state": "completed", "label": "已接收你的问题"}],
+    "elapsed_seconds": 0
+  },
+  "replaced_process": {"kind": "process", "display_state": "superseded"},
   "run": {
     "run_id": "uuid",
     "conversation_id": "uuid",
     "origin": "interactive",
     "status": "queued",
-    "input_revision": 2,
-    "cancelled": false,
-    "iteration_count": 0,
-    "model_call_count": 0,
-    "capability_call_count": 0,
-    "effect_count": 0,
+    "input_revision": 1,
     "terminal_outcome": null,
-    "diagnostic_code": null,
-    "created_at": "...",
-    "updated_at": "..."
+    "continuation_kind": null
   }
 }
 ```
 
-接受输入的事务完成后，路由安排 post-commit interactive dispatch。接受响应本身
-不泄露 dispatcher/provider 异常，SSE/run read 才反映公开的 terminal outcome。
+接受输入的事务完成后，路由才安排 post-commit interactive dispatch。接受响应不泄露
+dispatcher/provider 异常；run read、SSE 和 history 只反映服务端安全投影。
+
+### Conversation list、history 与 public process
+
+| Method | Path | 查询 | 响应 |
+| --- | --- | --- | --- |
+| `GET` | `/api/tutor/conversations` | `user_id`、`limit=1..40`、可选 opaque `cursor` | learner-visible conversation summaries，按 `(last_public_activity_at DESC, id DESC)` 排序 |
+| `GET` | `/api/tutor/conversations/{conversation_id}/history` | `user_id`、`limit=1..40`、可选 opaque `cursor` | 服务端权威的倒序 public timeline、`next_cursor`、`has_more`、可选 active foreground run |
+
+list item 只含 `conversation_id`、服务端投影 title、`last_public_activity_at` 与可选
+`active_run={run_id,status,continuation_kind}`；不返回 learner 原文 preview、provider/model
+信息、trace 或诊断。history item 是 `message`（只含 public learner/Tutor content）或
+`process`（只含 `display_state`、固定 allowlisted `steps[].label`、server-calculated
+`elapsed_seconds` 与时间字段）。旧 `tutor_messages` 没有 process row 时仍以
+message-only history 返回，服务器不会伪造步骤、duration 或 title。
+
+cursor 由服务端签名并绑定 cursor kind、user 和（history 时）conversation scope。篡改、
+跨用户、跨 conversation、错误版本或不合法 token 一律返回 `400 CURSOR_INVALID`，不返回
+SQL/签名细节。公开 process 的状态仅可为 `thinking`、`completed`、`superseded` 或
+`unavailable`；步骤文本来自服务端固定 allowlist，时长为非负且 bounded 的服务器计算值。
 
 ### Run 状态
 
@@ -189,7 +229,9 @@ input 只接受未取消且尚未 terminal 的 interactive run。终态/不兼�
 `failed`。
 
 `MODEL_UNAVAILABLE` 表示主 provider 没有产生可安全使用的结果；Aearn 不尝试
-跨 provider/model fallback。
+跨 provider/model fallback。run read 和 SSE 都不会返回内部 provider diagnostics；
+数据库中的受控诊断仅用于本地运维排查，且不会包含 provider response body、prompt、
+reasoning、transport detail 或 credential。
 
 ## 6. Tutor SSE cursor 契约
 
@@ -209,7 +251,7 @@ input 只接受未取消且尚未 terminal 的 interactive run。终态/不兼�
 | `input_accepted` | `message_id`、`status="accepted"` | 否 |
 | `tool_status` | 安全 `status`、`tool`、固定 learner-safe message | 否 |
 | `activity` | effect `category`、安全 `status` | 否 |
-| `run_state` | `status`、`terminal_outcome` | 可能 |
+| `run_state` | `status`、`terminal_outcome`、可选 learner-safe `public_message` | 可能 |
 | `done` | `result_ref={type:"TutorRun",id}`、可选 `public_message` | 是 |
 | `error` | 统一公开 error、可选 `public_message` | 是 |
 

@@ -6,7 +6,9 @@ transaction/savepoint only for operations that must be atomic.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
+import hmac
 import json
 import re
 from collections.abc import Callable, Mapping, Sequence
@@ -22,9 +24,11 @@ from app.agents.harness.capabilities import EffectDescriptor, default_effect_des
 from app.agents.harness.contracts import (
     TutorCapabilityRequest,
     TutorCapabilityResult,
+    TutorCapabilityStatus,
     TutorCheckpoint,
     TutorCompactionRequest,
     TutorCompactionTrigger,
+    TutorContinuationKind,
     TutorEffectProposal,
     TutorEffectResult,
     TutorEffectStatus,
@@ -35,9 +39,11 @@ from app.agents.harness.contracts import (
     TutorRunSnapshot,
     TutorRunStatus,
     TutorTerminalOutcome,
+    normalize_tutor_conversation_title,
     payload_mapping_from_fields,
 )
 from app.agents.harness.skill_catalog import CatalogSkillReference, SkillCatalogSnapshot
+from app.core.config import get_settings
 from app.core.teaching_safety import sanitize_summary_text
 from app.services.tutor.ports import TutorLifecycleConflict, TutorLifecyclePersistence, TutorRunStore
 from app.services.tutor.safe_projection import TutorSafeProjection
@@ -71,6 +77,27 @@ _DURABLE_EVENT_KINDS: Final[frozenset[str]] = frozenset(
 _TRACE_KINDS: Final[frozenset[str]] = frozenset(
     {"checkpoint", "terminal_checkpoint", "compaction_request", "waiting_result"}
 )
+_PUBLIC_PROCESS_VERSION: Final[str] = "tutor_public_process_v1"
+_PUBLIC_PROCESS_STATES: Final[frozenset[str]] = frozenset({"thinking", "completed", "superseded", "unavailable"})
+_PUBLIC_PROCESS_STEP_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "input_received",
+        "context_prepared",
+        "authorized_resource_checked",
+        "learning_reply_generated",
+        "replaced_by_newer_input",
+    }
+)
+_PUBLIC_PROCESS_STEP_STATES: Final[frozenset[str]] = frozenset({"completed", "current"})
+_PUBLIC_PROCESS_STEP_LABELS: Final[dict[str, str]] = {
+    "input_received": "已接收你的问题",
+    "context_prepared": "已整理最近的对话与学习目标",
+    "authorized_resource_checked": "已查阅已授权的学习资料",
+    "learning_reply_generated": "已完成一次受控学习建议生成",
+    "replaced_by_newer_input": "已根据你的新消息更新本轮处理",
+}
+_MAX_PUBLIC_PROCESS_ELAPSED_SECONDS: Final[int] = 3_600
+_CURSOR_VERSION: Final[int] = 1
 
 
 class TutorPersistenceError(ValueError):
@@ -94,6 +121,10 @@ class TutorLeaseConflict(TutorPersistenceError):
 
 
 class TutorCatalogEvidenceError(TutorPersistenceError):
+    pass
+
+
+class TutorCursorInvalid(TutorPersistenceError):
     pass
 
 
@@ -127,6 +158,62 @@ class TutorRunReadState:
     diagnostic_code: str | None
     created_at: datetime
     updated_at: datetime
+
+
+@dataclass(frozen=True)
+class TutorPublicProcessState:
+    """Server-owned public process projection; never contains trace/provider data."""
+
+    run_id: str
+    conversation_id: str
+    display_state: str
+    steps: tuple[dict[str, object], ...]
+    elapsed_seconds: int
+    created_at: datetime
+    finished_at: datetime | None
+
+
+@dataclass(frozen=True)
+class TutorConversationSummary:
+    conversation_id: str
+    title: str | None
+    last_public_activity_at: datetime
+    active_run_id: str | None
+    active_run_status: str | None
+    active_run_continuation_kind: TutorContinuationKind | None
+
+
+@dataclass(frozen=True)
+class TutorInteractiveTurnAcceptance:
+    """Atomic fresh-run acceptance for a normal learner turn."""
+
+    run: TutorRunSnapshot
+    acceptance: TutorInputAcceptance
+    replaced_run_id: str | None
+    process: TutorPublicProcessState | None
+    replaced_process: TutorPublicProcessState | None
+
+
+@dataclass(frozen=True)
+class TutorPublicForegroundRun:
+    """Minimal server-authoritative foreground run projection for one conversation."""
+
+    run_id: str
+    status: str
+    continuation_kind: TutorContinuationKind | None
+
+
+@dataclass(frozen=True)
+class TutorConversationTimelineRecord:
+    """One server-authoritative public timeline row before route serialization."""
+
+    kind: str
+    item_id: str
+    created_at: datetime
+    sort_rank: int
+    role: str | None = None
+    content: str | None = None
+    process: TutorPublicProcessState | None = None
 
 
 @dataclass(frozen=True)
@@ -219,6 +306,10 @@ class PostgresTutorRepository:
         self._projector = projector or TutorSafeProjection()
         self._failpoint = failpoint
         self._effect_handlers = dict(effect_handlers or {})
+        # This value is server configuration, never exposed in API payloads or logs.
+        self._cursor_signing_key = hashlib.sha256(
+            get_settings().tutor_cursor_signing_key.encode("utf-8")
+        ).digest()
         descriptors = tuple(default_effect_descriptors() if effect_descriptors is None else effect_descriptors)
         self._effect_descriptors = {descriptor.effect_type: descriptor for descriptor in descriptors}
         if len(self._effect_descriptors) != len(descriptors):
@@ -315,6 +406,7 @@ class PostgresTutorRepository:
         origin: TutorRunOrigin,
         policy_version: str = "tutor_policy_v1",
         policy_fingerprint: str | None = None,
+        continuation_kind: TutorContinuationKind | None = None,
     ) -> TutorRunSnapshot:
         if origin not in {"interactive", "proactive"}:
             raise ValueError("Tutor run origin is invalid")
@@ -340,9 +432,9 @@ class PostgresTutorRepository:
             """
             INSERT INTO tutor_runs (
               id, user_id, conversation_id, origin, status, policy_json,
-              policy_version, policy_fingerprint, catalog_digest
+              policy_version, policy_fingerprint, catalog_digest, continuation_kind
             )
-            VALUES (%s, %s, %s, %s, 'queued', %s::jsonb, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, 'queued', %s::jsonb, %s, %s, %s, %s)
             RETURNING *
             """,
             (
@@ -354,6 +446,7 @@ class PostgresTutorRepository:
                 policy_version,
                 fingerprint,
                 catalog_digest,
+                continuation_kind.value if continuation_kind is not None else None,
             ),
         ).fetchone()
         if row is None:
@@ -420,6 +513,838 @@ class PostgresTutorRepository:
                 True,
             )
 
+    def create_first_interactive_turn(
+        self,
+        *,
+        user_id: str,
+        catalog_digest: str,
+        policy: TutorPolicySnapshot,
+        idempotency_key: str,
+        content: str,
+        received_at: datetime,
+        conversation_id: str | None = None,
+        policy_version: str = "tutor_interactive_policy_v1",
+    ) -> TutorInteractiveTurnAcceptance:
+        """Create a learner-visible conversation only together with its first turn.
+
+        The caller's enclosing idempotency transaction owns replay.  This method
+        still keeps the conversation, fresh run, learner message/input receipt,
+        and initial public process in one database transaction so a failed first
+        send cannot leave an empty conversation behind.
+        """
+
+        with self._conn.transaction():
+            resolved_conversation_id = self.create_conversation(
+                user_id=user_id,
+                conversation_id=conversation_id,
+            )
+            self._trip_failpoint("after_first_turn_conversation")
+            conversation = self._lock_learner_conversation(
+                user_id=user_id,
+                conversation_id=resolved_conversation_id,
+            )
+            return self._create_interactive_turn_locked(
+                conversation=conversation,
+                user_id=user_id,
+                catalog_digest=catalog_digest,
+                policy=policy,
+                idempotency_key=idempotency_key,
+                content=content,
+                received_at=received_at,
+                policy_version=policy_version,
+            )
+
+    def create_interactive_turn(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str,
+        catalog_digest: str,
+        policy: TutorPolicySnapshot,
+        idempotency_key: str,
+        content: str,
+        received_at: datetime,
+        policy_version: str = "tutor_interactive_policy_v1",
+    ) -> TutorInteractiveTurnAcceptance:
+        """Accept one normal message as a fresh finite TurnRun.
+
+        A conversation row lock serializes replacement, and the old foreground
+        run is made terminal before the new run is inserted.  The replacement
+        audit link is attached after insertion because it is an immediate FK.
+        """
+
+        with self._conn.transaction():
+            conversation = self._lock_learner_conversation(
+                user_id=user_id,
+                conversation_id=conversation_id,
+            )
+            return self._create_interactive_turn_locked(
+                conversation=conversation,
+                user_id=user_id,
+                catalog_digest=catalog_digest,
+                policy=policy,
+                idempotency_key=idempotency_key,
+                content=content,
+                received_at=received_at,
+                policy_version=policy_version,
+            )
+
+    def _create_interactive_turn_locked(
+        self,
+        *,
+        conversation: Mapping[str, object],
+        user_id: str,
+        catalog_digest: str,
+        policy: TutorPolicySnapshot,
+        idempotency_key: str,
+        content: str,
+        received_at: datetime,
+        policy_version: str,
+    ) -> TutorInteractiveTurnAcceptance:
+        conversation_id = str(conversation["id"])
+        foreground = self._conn.execute(
+            """
+            SELECT *
+            FROM tutor_runs
+            WHERE user_id = %s
+              AND conversation_id = %s
+              AND origin = 'interactive'
+              AND terminal_outcome IS NULL
+              AND cancelled_at IS NULL
+              AND superseded_by_run_id IS NULL
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            FOR UPDATE
+            """,
+            (user_id, conversation_id),
+        ).fetchone()
+        next_run_id = str(uuid4())
+        replaced_run_id: str | None = None
+        replaced_process: TutorPublicProcessState | None = None
+        if foreground is not None:
+            replaced_run_id = str(foreground["id"])
+            replaced = self._conn.execute(
+                """
+                UPDATE tutor_runs
+                SET status = 'cancelled',
+                    cancelled_at = COALESCE(cancelled_at, %s),
+                    terminal_outcome = COALESCE(terminal_outcome, 'cancelled'),
+                    terminal_diagnostic_code = COALESCE(terminal_diagnostic_code, 'superseded'),
+                    terminal_at = COALESCE(terminal_at, %s),
+                    active_lease_owner_id = NULL,
+                    active_lease_expires_at = NULL
+                WHERE id = %s
+                  AND user_id = %s
+                  AND terminal_outcome IS NULL
+                  AND cancelled_at IS NULL
+                  AND superseded_by_run_id IS NULL
+                RETURNING *
+                """,
+                (received_at, received_at, replaced_run_id, user_id),
+            ).fetchone()
+            if replaced is None:
+                raise TutorTerminalStateConflict("foreground Tutor run changed before replacement")
+            self._freeze_public_process_locked(
+                run=replaced,
+                display_state="superseded",
+                step_key="replaced_by_newer_input",
+                occurred_at=received_at,
+            )
+            self._append_event_locked(
+                run_id=replaced_run_id,
+                event_key=f"terminal:superseded:{_as_int(replaced['input_revision'], 0)}",
+                kind="terminal_result",
+                input_revision=_as_int(replaced["input_revision"], 0),
+                payload={
+                    "kind": "terminal_result",
+                    "status": "cancelled",
+                    "run_id": replaced_run_id,
+                    "input_revision": _as_int(replaced["input_revision"], 0),
+                },
+            )
+            replaced_process = self.read_public_process(user_id=user_id, run_id=replaced_run_id)
+
+        run = self.create_run(
+            user_id=user_id,
+            conversation_id=conversation_id,
+            catalog_digest=catalog_digest,
+            policy=policy,
+            run_id=next_run_id,
+            origin="interactive",
+            policy_version=policy_version,
+        )
+        self._trip_failpoint("after_fresh_turn_run")
+        if replaced_run_id is not None:
+            linked = self._conn.execute(
+                """
+                UPDATE tutor_runs
+                SET superseded_by_run_id = %s
+                WHERE id = %s AND user_id = %s
+                RETURNING id
+                """,
+                (run.run_id, replaced_run_id, user_id),
+            ).fetchone()
+            if linked is None:
+                raise TutorRunNotFound("superseded Tutor run disappeared")
+        acceptance = self.accept_input(
+            user_id=user_id,
+            run_id=run.run_id,
+            idempotency_key=idempotency_key,
+            content=content,
+            received_at=received_at,
+        )
+        fresh_run = self._lock_run(user_id=user_id, run_id=run.run_id)
+        self._ensure_public_process_locked(run=fresh_run, occurred_at=received_at)
+        self._trip_failpoint("after_fresh_turn_input")
+        process = self.read_public_process(user_id=user_id, run_id=run.run_id)
+        return TutorInteractiveTurnAcceptance(
+            run=self.load_snapshot(user_id=user_id, run_id=run.run_id) or run,
+            acceptance=acceptance,
+            replaced_run_id=replaced_run_id,
+            process=process,
+            replaced_process=replaced_process,
+        )
+
+    def _lock_conversation(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str,
+        learner_only: bool = False,
+    ) -> Mapping[str, object]:
+        clauses = ["id = %s", "user_id = %s", "status = 'active'"]
+        if learner_only:
+            clauses.extend(("visibility = 'learner'", "kind = 'interactive'"))
+        row = self._conn.execute(
+            f"SELECT * FROM tutor_conversations WHERE {' AND '.join(clauses)} FOR UPDATE",
+            (conversation_id, user_id),
+        ).fetchone()
+        if row is None:
+            raise TutorRunNotFound("tutor conversation not found")
+        return row
+
+    def _lock_learner_conversation(self, *, user_id: str, conversation_id: str) -> Mapping[str, object]:
+        return self._lock_conversation(user_id=user_id, conversation_id=conversation_id, learner_only=True)
+
+    def _lock_run_with_conversation(
+        self,
+        *,
+        user_id: str,
+        run_id: str,
+        learner_only: bool = False,
+    ) -> tuple[Mapping[str, object], Mapping[str, object]]:
+        """Lock a run's conversation before its run row to serialize latest-input-wins.
+
+        Normal turns lock the conversation then the foreground run. Every later
+        unsafe write follows the same ordering, so a newly accepted turn either
+        replaces the old run first or waits behind a write that is already
+        authoritative; it cannot race a stale post-provider write around it.
+        """
+
+        reference = self._conn.execute(
+            "SELECT conversation_id FROM tutor_runs WHERE id = %s AND user_id = %s",
+            (run_id, user_id),
+        ).fetchone()
+        if reference is None:
+            raise TutorRunNotFound("tutor run not found")
+        conversation = self._lock_conversation(
+            user_id=user_id,
+            conversation_id=str(reference["conversation_id"]),
+            learner_only=learner_only,
+        )
+        run = self._lock_run(user_id=user_id, run_id=run_id)
+        if str(run["conversation_id"]) != str(conversation["id"]):
+            raise TutorPersistenceError("Tutor run conversation scope is inconsistent")
+        return conversation, run
+
+    def _touch_conversation_public_activity_locked(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str,
+        occurred_at: datetime,
+    ) -> None:
+        updated = self._conn.execute(
+            """
+            UPDATE tutor_conversations
+            SET last_public_activity_at = GREATEST(last_public_activity_at, %s)
+            WHERE id = %s AND user_id = %s
+            RETURNING id
+            """,
+            (occurred_at, conversation_id, user_id),
+        ).fetchone()
+        if updated is None:
+            raise TutorRunNotFound("tutor conversation not found")
+
+    def _ensure_public_process_locked(
+        self,
+        *,
+        run: Mapping[str, object],
+        occurred_at: datetime,
+    ) -> None:
+        if str(run.get("origin")) != "interactive":
+            return
+        inserted = self._conn.execute(
+            """
+            INSERT INTO tutor_run_public_processes (
+              run_id, user_id, conversation_id, projection_version,
+              display_state, current_step_key, started_at, last_public_activity_at
+            )
+            VALUES (%s, %s, %s, %s, 'thinking', 'input_received', %s, %s)
+            ON CONFLICT (run_id) DO NOTHING
+            RETURNING run_id
+            """,
+            (
+                run["id"],
+                run["user_id"],
+                run["conversation_id"],
+                _PUBLIC_PROCESS_VERSION,
+                occurred_at,
+                occurred_at,
+            ),
+        ).fetchone()
+        if inserted is None:
+            return
+        self._conn.execute(
+            """
+            INSERT INTO tutor_run_public_process_steps (run_id, ordinal, step_key, state, occurred_at)
+            VALUES (%s, 1, 'input_received', 'completed', %s)
+            ON CONFLICT (run_id, ordinal) DO NOTHING
+            """,
+            (run["id"], occurred_at),
+        )
+        self._touch_conversation_public_activity_locked(
+            user_id=str(run["user_id"]),
+            conversation_id=str(run["conversation_id"]),
+            occurred_at=occurred_at,
+        )
+
+    def _append_public_process_step_locked(
+        self,
+        *,
+        run_id: str,
+        step_key: str,
+        state: str,
+        occurred_at: datetime,
+    ) -> bool:
+        if step_key not in _PUBLIC_PROCESS_STEP_KEYS or state not in _PUBLIC_PROCESS_STEP_STATES:
+            raise ValueError("public process step is not allowlisted")
+        existing = self._conn.execute(
+            """
+            SELECT id
+            FROM tutor_run_public_process_steps
+            WHERE run_id = %s AND step_key = %s
+            ORDER BY ordinal DESC
+            LIMIT 1
+            """,
+            (run_id, step_key),
+        ).fetchone()
+        if existing is not None:
+            return False
+        ordinal_row = self._conn.execute(
+            "SELECT COALESCE(MAX(ordinal), 0) + 1 AS ordinal FROM tutor_run_public_process_steps WHERE run_id = %s",
+            (run_id,),
+        ).fetchone()
+        ordinal = _as_int(ordinal_row["ordinal"] if ordinal_row is not None else 1, 1)
+        self._conn.execute(
+            """
+            INSERT INTO tutor_run_public_process_steps (run_id, ordinal, step_key, state, occurred_at)
+            VALUES (%s, %s, %s, %s, %s)
+            """,
+            (run_id, ordinal, step_key, state, occurred_at),
+        )
+        return True
+
+    def _advance_public_process_locked(
+        self,
+        *,
+        run: Mapping[str, object],
+        step_key: str,
+        occurred_at: datetime,
+    ) -> None:
+        if step_key not in _PUBLIC_PROCESS_STEP_KEYS:
+            raise ValueError("public process step is not allowlisted")
+        process = self._conn.execute(
+            "SELECT * FROM tutor_run_public_processes WHERE run_id = %s FOR UPDATE",
+            (run["id"],),
+        ).fetchone()
+        if process is None or str(process["display_state"]) != "thinking":
+            return
+        self._append_public_process_step_locked(
+            run_id=str(run["id"]),
+            step_key=step_key,
+            state="completed",
+            occurred_at=occurred_at,
+        )
+        self._conn.execute(
+            """
+            UPDATE tutor_run_public_processes
+            SET current_step_key = %s,
+                last_public_activity_at = GREATEST(last_public_activity_at, %s)
+            WHERE run_id = %s
+            """,
+            (step_key, occurred_at, run["id"]),
+        )
+        self._touch_conversation_public_activity_locked(
+            user_id=str(run["user_id"]),
+            conversation_id=str(run["conversation_id"]),
+            occurred_at=occurred_at,
+        )
+
+    def _freeze_public_process_locked(
+        self,
+        *,
+        run: Mapping[str, object],
+        display_state: str,
+        step_key: str | None,
+        occurred_at: datetime,
+        tutor_message_id: str | None = None,
+    ) -> None:
+        if display_state not in _PUBLIC_PROCESS_STATES or display_state == "thinking":
+            raise ValueError("public process terminal state is invalid")
+        if step_key is not None and step_key not in _PUBLIC_PROCESS_STEP_KEYS:
+            raise ValueError("public process step is not allowlisted")
+        process = self._conn.execute(
+            "SELECT * FROM tutor_run_public_processes WHERE run_id = %s FOR UPDATE",
+            (run["id"],),
+        ).fetchone()
+        # Older records must remain message-only history; do not manufacture a card.
+        if process is None:
+            return
+        if str(process["display_state"]) == "thinking":
+            if step_key is not None:
+                self._append_public_process_step_locked(
+                    run_id=str(run["id"]),
+                    step_key=step_key,
+                    state="completed",
+                    occurred_at=occurred_at,
+                )
+            self._conn.execute(
+                """
+                UPDATE tutor_run_public_processes
+                SET display_state = %s,
+                    current_step_key = COALESCE(%s, current_step_key),
+                    tutor_message_id = COALESCE(%s, tutor_message_id),
+                    last_public_activity_at = GREATEST(last_public_activity_at, %s),
+                    finished_at = %s
+                WHERE run_id = %s
+                """,
+                (display_state, step_key, tutor_message_id, occurred_at, occurred_at, run["id"]),
+            )
+        elif tutor_message_id is not None:
+            self._conn.execute(
+                """
+                UPDATE tutor_run_public_processes
+                SET tutor_message_id = COALESCE(tutor_message_id, %s)
+                WHERE run_id = %s
+                """,
+                (tutor_message_id, run["id"]),
+            )
+        self._touch_conversation_public_activity_locked(
+            user_id=str(run["user_id"]),
+            conversation_id=str(run["conversation_id"]),
+            occurred_at=occurred_at,
+        )
+
+    def _write_conversation_title_once_locked(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str,
+        candidate: str | None,
+    ) -> None:
+        if candidate is None:
+            return
+        try:
+            title = normalize_tutor_conversation_title(candidate)
+        except ValueError:
+            return
+        self._conn.execute(
+            """
+            UPDATE tutor_conversations
+            SET title = %s
+            WHERE id = %s AND user_id = %s AND title IS NULL
+            """,
+            (title, conversation_id, user_id),
+        )
+
+    def read_public_process(self, *, user_id: str, run_id: str, now: datetime | None = None) -> TutorPublicProcessState | None:
+        row = self._conn.execute(
+            """
+            SELECT processes.*
+            FROM tutor_run_public_processes AS processes
+            JOIN tutor_runs AS runs ON runs.id = processes.run_id
+            WHERE processes.run_id = %s AND runs.user_id = %s
+            """,
+            (run_id, user_id),
+        ).fetchone()
+        return self._public_process_state_from_row(row, now=now) if row is not None else None
+
+    def _public_process_state_from_row(
+        self,
+        row: Mapping[str, object],
+        *,
+        now: datetime | None = None,
+    ) -> TutorPublicProcessState:
+        run_id = str(row["run_id"])
+        started_at = _as_datetime(row.get("started_at")) or datetime.now(UTC)
+        finished_at = _as_datetime(row.get("finished_at"))
+        effective_end = finished_at or now or datetime.now(UTC)
+        elapsed_seconds = max(0, min(_MAX_PUBLIC_PROCESS_ELAPSED_SECONDS, int((effective_end - started_at).total_seconds())))
+        steps = self._conn.execute(
+            """
+            SELECT step_key, state, occurred_at
+            FROM tutor_run_public_process_steps
+            WHERE run_id = %s
+            ORDER BY ordinal ASC
+            """,
+            (run_id,),
+        ).fetchall()
+        public_steps: list[dict[str, object]] = []
+        for step in steps:
+            key = str(step.get("step_key") or "")
+            if key not in _PUBLIC_PROCESS_STEP_KEYS:
+                continue
+            state = str(step.get("state") or "completed")
+            public_steps.append(
+                {
+                    "key": key,
+                    "state": state if state in _PUBLIC_PROCESS_STEP_STATES else "completed",
+                    "label": _PUBLIC_PROCESS_STEP_LABELS[key],
+                }
+            )
+        display_state = str(row.get("display_state") or "unavailable")
+        return TutorPublicProcessState(
+            run_id=run_id,
+            conversation_id=str(row["conversation_id"]),
+            display_state=display_state if display_state in _PUBLIC_PROCESS_STATES else "unavailable",
+            steps=tuple(public_steps),
+            elapsed_seconds=elapsed_seconds,
+            created_at=started_at,
+            finished_at=finished_at,
+        )
+
+    def list_public_conversations(
+        self,
+        *,
+        user_id: str,
+        limit: int,
+        cursor: str | None = None,
+    ) -> tuple[tuple[TutorConversationSummary, ...], str | None, bool]:
+        if limit < 1 or limit > 40:
+            raise ValueError("conversation page limit is invalid")
+        after = self._decode_public_cursor(
+            cursor=cursor,
+            kind="conversation-list",
+            user_id=user_id,
+            conversation_id=None,
+        ) if cursor else None
+        query = """
+            SELECT conversations.id AS conversation_id,
+                   conversations.title,
+                   conversations.last_public_activity_at,
+                   foreground.id AS active_run_id,
+                   foreground.status AS active_run_status,
+                   foreground.continuation_kind AS active_run_continuation_kind
+            FROM tutor_conversations AS conversations
+            LEFT JOIN LATERAL (
+              SELECT runs.id, runs.status, runs.continuation_kind
+              FROM tutor_runs AS runs
+              WHERE runs.user_id = conversations.user_id
+                AND runs.conversation_id = conversations.id
+                AND runs.origin = 'interactive'
+                AND runs.terminal_outcome IS NULL
+                AND runs.cancelled_at IS NULL
+                AND runs.superseded_by_run_id IS NULL
+              ORDER BY runs.created_at DESC, runs.id DESC
+              LIMIT 1
+            ) AS foreground ON TRUE
+            WHERE conversations.user_id = %s
+              AND conversations.visibility = 'learner'
+              AND conversations.kind = 'interactive'
+              AND conversations.status = 'active'
+              AND (
+                EXISTS (SELECT 1 FROM tutor_messages AS messages WHERE messages.conversation_id = conversations.id)
+                OR EXISTS (SELECT 1 FROM tutor_run_public_processes AS processes WHERE processes.conversation_id = conversations.id)
+              )
+        """
+        params: list[object] = [user_id]
+        if after is not None:
+            query += """
+              AND (
+                conversations.last_public_activity_at < %s
+                OR (
+                  conversations.last_public_activity_at = %s
+                  AND conversations.id < %s::uuid
+                )
+              )
+            """
+            params.extend((after["created_at"], after["created_at"], after["item_id"]))
+        query += """
+            ORDER BY conversations.last_public_activity_at DESC, conversations.id DESC
+            LIMIT %s
+        """
+        params.append(limit + 1)
+        rows = self._conn.execute(query, tuple(params)).fetchall()
+        page_rows = rows[:limit]
+        items: list[TutorConversationSummary] = []
+        for row in page_rows:
+            continuation_value = row.get("active_run_continuation_kind")
+            try:
+                continuation_kind = TutorContinuationKind(str(continuation_value)) if continuation_value is not None else None
+            except ValueError:
+                continuation_kind = None
+            items.append(
+                TutorConversationSummary(
+                    conversation_id=str(row["conversation_id"]),
+                    title=str(row["title"]) if row.get("title") is not None else None,
+                    last_public_activity_at=_as_datetime(row.get("last_public_activity_at")) or datetime.now(UTC),
+                    active_run_id=str(row["active_run_id"]) if row.get("active_run_id") is not None else None,
+                    active_run_status=str(row["active_run_status"]) if row.get("active_run_status") is not None else None,
+                    active_run_continuation_kind=continuation_kind,
+                )
+            )
+        has_more = len(rows) > limit
+        next_cursor = (
+            self._encode_public_cursor(
+                kind="conversation-list",
+                user_id=user_id,
+                conversation_id=None,
+                created_at=items[-1].last_public_activity_at,
+                sort_rank=0,
+                item_id=items[-1].conversation_id,
+            )
+            if has_more and items
+            else None
+        )
+        return tuple(items), next_cursor, has_more
+
+    def read_public_foreground_run(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str,
+    ) -> TutorPublicForegroundRun | None:
+        self.resolve_learner_conversation(user_id=user_id, conversation_id=conversation_id)
+        row = self._conn.execute(
+            """
+            SELECT id, status, continuation_kind
+            FROM tutor_runs
+            WHERE user_id = %s
+              AND conversation_id = %s
+              AND origin = 'interactive'
+              AND terminal_outcome IS NULL
+              AND cancelled_at IS NULL
+              AND superseded_by_run_id IS NULL
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            """,
+            (user_id, conversation_id),
+        ).fetchone()
+        if row is None:
+            return None
+        raw_kind = row.get("continuation_kind")
+        try:
+            continuation_kind = TutorContinuationKind(str(raw_kind)) if raw_kind is not None else None
+        except ValueError:
+            continuation_kind = None
+        return TutorPublicForegroundRun(
+            run_id=str(row["id"]),
+            status=str(row["status"]),
+            continuation_kind=continuation_kind,
+        )
+
+    def read_public_history(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str,
+        limit: int,
+        cursor: str | None = None,
+        now: datetime | None = None,
+    ) -> tuple[tuple[TutorConversationTimelineRecord, ...], str | None, bool]:
+        if limit < 1 or limit > 40:
+            raise ValueError("history page limit is invalid")
+        self.resolve_learner_conversation(user_id=user_id, conversation_id=conversation_id)
+        after = self._decode_public_cursor(
+            cursor=cursor,
+            kind="conversation-history",
+            user_id=user_id,
+            conversation_id=conversation_id,
+        ) if cursor else None
+        timeline = """
+            WITH timeline AS (
+              SELECT
+                'message'::text AS kind,
+                messages.id AS item_id,
+                messages.created_at AS created_at,
+                CASE WHEN messages.role = 'learner' THEN 10 ELSE 30 END AS sort_rank,
+                messages.role AS role,
+                messages.content AS content,
+                NULL::uuid AS process_run_id
+              FROM tutor_messages AS messages
+              JOIN tutor_conversations AS conversations ON conversations.id = messages.conversation_id
+              WHERE conversations.id = %s
+                AND conversations.user_id = %s
+                AND conversations.visibility = 'learner'
+                AND conversations.kind = 'interactive'
+                AND conversations.status = 'active'
+              UNION ALL
+              SELECT
+                'process'::text AS kind,
+                processes.run_id AS item_id,
+                processes.started_at AS created_at,
+                20 AS sort_rank,
+                NULL::text AS role,
+                NULL::text AS content,
+                processes.run_id AS process_run_id
+              FROM tutor_run_public_processes AS processes
+              JOIN tutor_conversations AS conversations ON conversations.id = processes.conversation_id
+              WHERE processes.conversation_id = %s
+                AND processes.user_id = %s
+                AND conversations.visibility = 'learner'
+                AND conversations.kind = 'interactive'
+                AND conversations.status = 'active'
+            )
+            SELECT * FROM timeline
+        """
+        params: list[object] = [conversation_id, user_id, conversation_id, user_id]
+        if after is not None:
+            timeline += """
+            WHERE (
+              created_at < %s
+              OR (
+                created_at = %s
+                AND (
+                  sort_rank < %s
+                  OR (sort_rank = %s AND item_id < %s::uuid)
+                )
+              )
+            )
+            """
+            params.extend(
+                (
+                    after["created_at"],
+                    after["created_at"],
+                    after["sort_rank"],
+                    after["sort_rank"],
+                    after["item_id"],
+                )
+            )
+        timeline += " ORDER BY created_at DESC, sort_rank DESC, item_id DESC LIMIT %s"
+        params.append(limit + 1)
+        rows = self._conn.execute(timeline, tuple(params)).fetchall()
+        page_rows = rows[:limit]
+        records: list[TutorConversationTimelineRecord] = []
+        for row in page_rows:
+            kind = str(row["kind"])
+            created_at = _as_datetime(row.get("created_at")) or datetime.now(UTC)
+            if kind == "message":
+                role = str(row.get("role") or "")
+                if role not in {"learner", "tutor"}:
+                    continue
+                records.append(
+                    TutorConversationTimelineRecord(
+                        kind="message",
+                        item_id=str(row["item_id"]),
+                        created_at=created_at,
+                        sort_rank=_as_int(row.get("sort_rank"), 0),
+                        role=role,
+                        content=str(row.get("content") or ""),
+                    )
+                )
+                continue
+            if kind == "process":
+                process_run_id = str(row.get("process_run_id") or "")
+                process = self.read_public_process(user_id=user_id, run_id=process_run_id, now=now)
+                if process is not None:
+                    records.append(
+                        TutorConversationTimelineRecord(
+                            kind="process",
+                            item_id=process.run_id,
+                            created_at=created_at,
+                            sort_rank=_as_int(row.get("sort_rank"), 0),
+                            process=process,
+                        )
+                    )
+        has_more = len(rows) > limit
+        next_cursor = (
+            self._encode_public_cursor(
+                kind="conversation-history",
+                user_id=user_id,
+                conversation_id=conversation_id,
+                created_at=records[-1].created_at,
+                sort_rank=records[-1].sort_rank,
+                item_id=records[-1].item_id,
+            )
+            if has_more and records
+            else None
+        )
+        return tuple(records), next_cursor, has_more
+
+    def _encode_public_cursor(
+        self,
+        *,
+        kind: str,
+        user_id: str,
+        conversation_id: str | None,
+        created_at: datetime,
+        sort_rank: int,
+        item_id: str,
+    ) -> str:
+        payload = {
+            "v": _CURSOR_VERSION,
+            "k": kind,
+            "u": user_id,
+            "c": conversation_id,
+            "t": created_at.astimezone(UTC).isoformat(),
+            "r": sort_rank,
+            "i": item_id,
+        }
+        encoded = _base64url_encode(_json(payload).encode("utf-8"))
+        signature = hmac.new(self._cursor_signing_key, encoded.encode("ascii"), hashlib.sha256).digest()
+        return f"{encoded}.{_base64url_encode(signature)}"
+
+    def _decode_public_cursor(
+        self,
+        *,
+        cursor: str,
+        kind: str,
+        user_id: str,
+        conversation_id: str | None,
+    ) -> dict[str, object]:
+        parts = cursor.split(".")
+        if len(parts) != 2 or not all(parts):
+            raise TutorCursorInvalid("cursor is invalid")
+        encoded, supplied_signature = parts
+        expected_signature = _base64url_encode(
+            hmac.new(self._cursor_signing_key, encoded.encode("ascii"), hashlib.sha256).digest()
+        )
+        if not hmac.compare_digest(supplied_signature, expected_signature):
+            raise TutorCursorInvalid("cursor is invalid")
+        try:
+            payload = _as_mapping(json.loads(_base64url_decode(encoded).decode("utf-8")))
+            parsed_created_at = _as_datetime(payload.get("t"))
+            parsed_rank = _as_int(payload.get("r"), -1)
+            item_id = str(payload.get("i") or "")
+            valid = (
+                _as_int(payload.get("v"), -1) == _CURSOR_VERSION
+                and str(payload.get("k") or "") == kind
+                and str(payload.get("u") or "") == user_id
+                and payload.get("c") == conversation_id
+                and parsed_created_at is not None
+                and parsed_rank >= 0
+                and bool(item_id)
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+            valid = False
+            parsed_created_at = None
+            parsed_rank = -1
+            item_id = ""
+        if not valid or parsed_created_at is None:
+            raise TutorCursorInvalid("cursor is invalid")
+        return {"created_at": parsed_created_at, "sort_rank": parsed_rank, "item_id": item_id}
+
     def load_snapshot(self, *, user_id: str, run_id: str) -> TutorRunSnapshot | None:
         row = self._conn.execute(
             "SELECT * FROM tutor_runs WHERE id = %s AND user_id = %s",
@@ -459,7 +1384,7 @@ class PostgresTutorRepository:
             raise ValueError("lease duration must be positive")
         with self._conn.transaction():
             run = self._lock_run(user_id=user_id, run_id=run_id)
-            if _is_terminal(run):
+            if _is_terminal(run) or run.get("cancelled_at") is not None or run.get("superseded_by_run_id") is not None:
                 return None
             expires_at = _as_datetime(run.get("active_lease_expires_at"))
             current_owner = str(run.get("active_lease_owner_id") or "")
@@ -508,6 +1433,8 @@ class PostgresTutorRepository:
                   AND active_lease_generation = %s
                   AND active_lease_expires_at > %s
                   AND terminal_outcome IS NULL
+                  AND cancelled_at IS NULL
+                  AND superseded_by_run_id IS NULL
                 RETURNING id, active_lease_owner_id, active_lease_generation, active_lease_expires_at
                 """,
                 (new_expiry, lease.run_id, user_id, lease.owner_id, lease.generation, now),
@@ -539,18 +1466,67 @@ class PostgresTutorRepository:
             raise TutorRunNotFound("tutor run not found")
         return row.get("cancelled_at") is not None
 
-    def request_cancellation(self, *, user_id: str, run_id: str, now: datetime) -> None:
+    def is_superseded(self, *, user_id: str, run_id: str) -> bool:
         row = self._conn.execute(
-            """
-            UPDATE tutor_runs
-            SET cancelled_at = COALESCE(cancelled_at, %s)
-            WHERE id = %s AND user_id = %s AND terminal_outcome IS NULL
-            RETURNING id
-            """,
-            (now, run_id, user_id),
+            "SELECT superseded_by_run_id FROM tutor_runs WHERE id = %s AND user_id = %s",
+            (run_id, user_id),
         ).fetchone()
-        if row is None and self.load_snapshot(user_id=user_id, run_id=run_id) is None:
+        if row is None:
             raise TutorRunNotFound("tutor run not found")
+        return row.get("superseded_by_run_id") is not None
+
+    def request_cancellation(self, *, user_id: str, run_id: str, now: datetime) -> None:
+        """Terminally cancel one run without allowing a post-provider public write.
+
+        This uses the same conversation-then-run lock order as normal replacement
+        and terminal persistence.  A cancellation therefore cannot slip between
+        the stale check and the Tutor-message write of an in-flight run.
+        """
+
+        with self._conn.transaction():
+            conversation, run = self._lock_run_with_conversation(
+                user_id=user_id,
+                run_id=run_id,
+                learner_only=False,
+            )
+            if _is_terminal(run):
+                return
+            updated = self._conn.execute(
+                """
+                UPDATE tutor_runs
+                SET status = 'cancelled',
+                    cancelled_at = COALESCE(cancelled_at, %s),
+                    terminal_outcome = 'cancelled',
+                    terminal_diagnostic_code = COALESCE(terminal_diagnostic_code, 'cancelled'),
+                    terminal_at = COALESCE(terminal_at, %s),
+                    active_lease_owner_id = NULL,
+                    active_lease_expires_at = NULL
+                WHERE id = %s AND user_id = %s AND terminal_outcome IS NULL
+                RETURNING *
+                """,
+                (now, now, run_id, user_id),
+            ).fetchone()
+            if updated is None:
+                return
+            if str(updated.get("origin")) == "interactive" and str(conversation.get("visibility")) == "learner":
+                self._freeze_public_process_locked(
+                    run=updated,
+                    display_state="unavailable",
+                    step_key=None,
+                    occurred_at=now,
+                )
+            self._append_event_locked(
+                run_id=run_id,
+                event_key=f"terminal:cancelled:{_as_int(updated['input_revision'], 0)}",
+                kind="terminal_result",
+                input_revision=_as_int(updated["input_revision"], 0),
+                payload={
+                    "kind": "terminal_result",
+                    "status": "cancelled",
+                    "run_id": run_id,
+                    "input_revision": _as_int(updated["input_revision"], 0),
+                },
+            )
 
     def accept_input(
         self,
@@ -596,8 +1572,9 @@ class PostgresTutorRepository:
                     event=event,
                     replayed=True,
                 )
-            _assert_not_terminal(run)
             _assert_not_cancelled(run)
+            _assert_not_superseded(run)
+            _assert_not_terminal(run)
             message = self._conn.execute(
                 """
                 INSERT INTO tutor_messages (conversation_id, role, content, created_at)
@@ -611,7 +1588,15 @@ class PostgresTutorRepository:
             updated = self._conn.execute(
                 """
                 UPDATE tutor_runs
-                SET input_revision = input_revision + 1
+                SET input_revision = input_revision + 1,
+                    status = CASE
+                      WHEN status = 'waiting_for_input' AND continuation_kind IS NOT NULL THEN 'queued'
+                      ELSE status
+                    END,
+                    continuation_kind = CASE
+                      WHEN status = 'waiting_for_input' AND continuation_kind IS NOT NULL THEN NULL
+                      ELSE continuation_kind
+                    END
                 WHERE id = %s AND user_id = %s AND input_revision = %s
                 RETURNING input_revision
                 """,
@@ -654,6 +1639,11 @@ class PostgresTutorRepository:
                     "request_hash": actual_hash,
                 },
             )
+            self._touch_conversation_public_activity_locked(
+                user_id=user_id,
+                conversation_id=str(run["conversation_id"]),
+                occurred_at=accepted_at,
+            )
             return TutorInputAcceptance(
                 run_id=run_id,
                 message_id=str(message["id"]),
@@ -680,8 +1670,12 @@ class PostgresTutorRepository:
             raise ValueError("event input revision must be non-negative")
         with self._conn.transaction():
             run = self._lock_run(user_id=user_id, run_id=run_id)
-            if (_is_terminal(run) or run.get("cancelled_at") is not None) and kind != "terminal_result":
-                raise TutorTerminalStateConflict("terminal or cancelled Tutor run cannot append a non-terminal event")
+            if (
+                _is_terminal(run)
+                or run.get("cancelled_at") is not None
+                or run.get("superseded_by_run_id") is not None
+            ) and kind != "terminal_result":
+                raise TutorTerminalStateConflict("terminal, cancelled, or superseded Tutor run cannot append a non-terminal event")
             return self._append_event_locked(
                 run_id=run_id,
                 event_key=event_key,
@@ -753,9 +1747,14 @@ class PostgresTutorRepository:
             raise TutorCatalogEvidenceError("Skill selection must use exact reviewed SemVer")
         event_key = f"skill-selection:{input_revision}"
         with self._conn.transaction():
-            run = self._lock_run(user_id=user_id, run_id=run_id)
+            _conversation, run = self._lock_run_with_conversation(
+                user_id=user_id,
+                run_id=run_id,
+                learner_only=False,
+            )
             _assert_not_terminal(run)
             _assert_not_cancelled(run)
+            _assert_not_superseded(run)
             if input_revision != _as_int(run["input_revision"], 0):
                 raise TutorIdempotencyConflict("Skill selection revision is no longer current")
             evaluation_hash = self._catalog_evaluation_hash(
@@ -821,6 +1820,11 @@ class PostgresTutorRepository:
                     "instruction_hash": selection.instruction_hash,
                     "evaluation_hash": evaluation_hash,
                 },
+            )
+            self._advance_public_process_locked(
+                run=run,
+                step_key="context_prepared",
+                occurred_at=event.created_at,
             )
             return TutorSkillSelectionEvidence(
                 run_id=run_id,
@@ -893,10 +1897,15 @@ class PostgresTutorRepository:
         request_hash = _payload_fields_hash(request.arguments)
         result_hash = _payload_fields_hash(result.safe_result)
         with self._conn.transaction():
-            run = self._lock_run(user_id=user_id, run_id=run_id)
+            _conversation, run = self._lock_run_with_conversation(
+                user_id=user_id,
+                run_id=run_id,
+                learner_only=False,
+            )
             _assert_active_lease(run, lease=lease, now=datetime.now(UTC))
             _assert_not_terminal(run)
             _assert_not_cancelled(run)
+            _assert_not_superseded(run)
             if input_revision != _as_int(run["input_revision"], 0):
                 raise TutorLeaseConflict("capability receipt revision is stale")
             if catalog_digest != str(run["catalog_digest"]) or policy_fingerprint != str(run["policy_fingerprint"]):
@@ -998,6 +2007,12 @@ class PostgresTutorRepository:
             ).fetchone()
             if row is None:
                 raise RuntimeError("capability receipt insert failed")
+            if result.status is TutorCapabilityStatus.COMPLETED:
+                self._advance_public_process_locked(
+                    run=run,
+                    step_key="authorized_resource_checked",
+                    occurred_at=event.created_at,
+                )
             return TutorCapabilityInvocationReceipt(str(row["id"]), event, False)
 
     def commit_effect_if_current(
@@ -1015,7 +2030,11 @@ class PostgresTutorRepository:
         payload_hash = _payload_fields_hash(proposal.payload)
         event_key = f"effect:{proposal.effect_id}"
         with self._conn.transaction():
-            run = self._lock_run(user_id=user_id, run_id=run_id)
+            _conversation, run = self._lock_run_with_conversation(
+                user_id=user_id,
+                run_id=run_id,
+                learner_only=False,
+            )
             existing = self._conn.execute(
                 "SELECT * FROM tutor_effects WHERE run_id = %s AND effect_id = %s",
                 (run_id, proposal.effect_id),
@@ -1042,6 +2061,8 @@ class PostgresTutorRepository:
                     committer_invoked=False,
                 )
 
+            if run.get("superseded_by_run_id") is not None:
+                raise TutorTerminalStateConflict("superseded Tutor run cannot record an effect")
             is_current = (
                 not _is_terminal(run)
                 and run.get("cancelled_at") is None
@@ -1149,10 +2170,15 @@ class PostgresTutorRepository:
         if envelope.request.trigger is not TutorCompactionTrigger.SAFE_CHECKPOINT:
             raise ValueError("safe checkpoint requires a safe-checkpoint curation trigger")
         with self._conn.transaction():
-            run = self._lock_run(user_id=user_id, run_id=checkpoint.run_id)
+            _conversation, run = self._lock_run_with_conversation(
+                user_id=user_id,
+                run_id=checkpoint.run_id,
+                learner_only=False,
+            )
             _assert_active_lease(run, lease=lease, now=checkpoint.created_at)
             _assert_not_terminal(run)
             _assert_not_cancelled(run)
+            _assert_not_superseded(run)
             if checkpoint.input_revision != _as_int(run["input_revision"], 0):
                 raise TutorLeaseConflict("checkpoint revision is stale")
             return self._persist_checkpoint_and_outbox_locked(run=run, checkpoint=checkpoint, envelope=envelope)
@@ -1171,10 +2197,15 @@ class PostgresTutorRepository:
         if request.trigger is not TutorCompactionTrigger.CONTEXT_HIGH_WATER:
             raise ValueError("context high-water lifecycle requires its matching trigger")
         with self._conn.transaction():
-            run = self._lock_run(user_id=user_id, run_id=request.run_id)
+            _conversation, run = self._lock_run_with_conversation(
+                user_id=user_id,
+                run_id=request.run_id,
+                learner_only=False,
+            )
             _assert_active_lease(run, lease=lease, now=created_at)
             _assert_not_terminal(run)
             _assert_not_cancelled(run)
+            _assert_not_superseded(run)
             if request.input_revision != _as_int(run["input_revision"], 0):
                 raise TutorLeaseConflict("compaction revision is stale")
             event = self._append_event_locked(
@@ -1212,14 +2243,67 @@ class PostgresTutorRepository:
             raise ValueError("terminal lifecycle requires a terminal curation trigger")
         if result.terminal_outcome is None:
             raise ValueError("terminal lifecycle requires a terminal result")
+        conversation_ref = self._conn.execute(
+            "SELECT conversation_id FROM tutor_runs WHERE id = %s AND user_id = %s",
+            (result.run_id, user_id),
+        ).fetchone()
+        if conversation_ref is None:
+            raise TutorRunNotFound("tutor run not found")
         with self._conn.transaction():
+            conversation = self._lock_conversation(
+                user_id=user_id,
+                conversation_id=str(conversation_ref["conversation_id"]),
+                learner_only=False,
+            )
             run = self._lock_run(user_id=user_id, run_id=result.run_id)
             if _is_terminal(run):
                 return _result_from_row(run)
+            if run.get("cancelled_at") is not None or run.get("superseded_by_run_id") is not None:
+                display_state = "superseded" if run.get("superseded_by_run_id") is not None else "unavailable"
+                step_key = "replaced_by_newer_input" if display_state == "superseded" else None
+                self._freeze_public_process_locked(
+                    run=run,
+                    display_state=display_state,
+                    step_key=step_key,
+                    occurred_at=checkpoint.created_at,
+                )
+                updated = self._conn.execute(
+                    """
+                    UPDATE tutor_runs
+                    SET status = 'cancelled',
+                        terminal_outcome = 'cancelled',
+                        terminal_diagnostic_code = CASE
+                          WHEN superseded_by_run_id IS NULL THEN COALESCE(terminal_diagnostic_code, 'cancelled')
+                          ELSE COALESCE(terminal_diagnostic_code, 'superseded')
+                        END,
+                        terminal_at = COALESCE(terminal_at, %s),
+                        active_lease_owner_id = NULL,
+                        active_lease_expires_at = NULL
+                    WHERE id = %s AND user_id = %s AND terminal_outcome IS NULL
+                    RETURNING *
+                    """,
+                    (checkpoint.created_at, result.run_id, user_id),
+                ).fetchone()
+                if updated is None:
+                    latest = self._lock_run(user_id=user_id, run_id=result.run_id)
+                    return _result_from_row(latest)
+                self._append_event_locked(
+                    run_id=result.run_id,
+                    event_key=f"terminal:cancelled:{_as_int(updated['input_revision'], 0)}",
+                    kind="terminal_result",
+                    input_revision=_as_int(updated["input_revision"], 0),
+                    payload={
+                        "kind": "terminal_result",
+                        "status": "cancelled",
+                        "run_id": result.run_id,
+                        "input_revision": _as_int(updated["input_revision"], 0),
+                    },
+                )
+                return _result_from_row(updated)
             _assert_active_lease(run, lease=lease, now=checkpoint.created_at)
             if checkpoint.input_revision != _as_int(run["input_revision"], 0) or result.input_revision != checkpoint.input_revision:
                 raise TutorLeaseConflict("terminal lifecycle revision is stale")
-            terminal_message_id = self._record_terminal_public_message_locked(
+            terminal_message_id = self._record_public_message_locked(
                 run=run,
                 result=result,
                 created_at=checkpoint.created_at,
@@ -1241,8 +2325,14 @@ class PostgresTutorRepository:
                     effect_count = %s,
                     terminal_outcome = %s,
                     terminal_diagnostic_code = %s,
-                    terminal_at = %s
-                WHERE id = %s AND user_id = %s AND terminal_outcome IS NULL
+                    terminal_at = %s,
+                    active_lease_owner_id = NULL,
+                    active_lease_expires_at = NULL
+                WHERE id = %s
+                  AND user_id = %s
+                  AND terminal_outcome IS NULL
+                  AND cancelled_at IS NULL
+                  AND superseded_by_run_id IS NULL
                 RETURNING *
                 """,
                 (
@@ -1261,6 +2351,28 @@ class PostgresTutorRepository:
             if updated is None:
                 latest = self._lock_run(user_id=user_id, run_id=result.run_id)
                 return _result_from_row(latest)
+            if str(run.get("origin")) == "interactive" and str(conversation.get("visibility")) == "learner":
+                if result.terminal_outcome is TutorTerminalOutcome.COMPLETED:
+                    if terminal_message_id is not None:
+                        self._write_conversation_title_once_locked(
+                            user_id=user_id,
+                            conversation_id=str(run["conversation_id"]),
+                            candidate=result.conversation_title,
+                        )
+                    self._freeze_public_process_locked(
+                        run=run,
+                        display_state="completed",
+                        step_key="learning_reply_generated",
+                        occurred_at=checkpoint.created_at,
+                        tutor_message_id=terminal_message_id,
+                    )
+                else:
+                    self._freeze_public_process_locked(
+                        run=run,
+                        display_state="unavailable",
+                        step_key=None,
+                        occurred_at=checkpoint.created_at,
+                    )
             del trace
             return result
 
@@ -1275,24 +2387,42 @@ class PostgresTutorRepository:
         if result.status is not TutorRunStatus.WAITING_FOR_INPUT:
             raise ValueError("only waiting-for-input result may use this lifecycle operation")
         with self._conn.transaction():
-            run = self._lock_run(user_id=user_id, run_id=result.run_id)
+            _conversation, run = self._lock_run_with_conversation(
+                user_id=user_id,
+                run_id=result.run_id,
+                learner_only=False,
+            )
             _assert_active_lease(run, lease=lease, now=created_at)
             _assert_not_terminal(run)
             _assert_not_cancelled(run)
+            _assert_not_superseded(run)
+            if result.continuation_kind is None:
+                raise TutorTerminalStateConflict("waiting input requires a persisted continuation kind")
+            persisted_kind = run.get("continuation_kind")
+            if persisted_kind is not None and str(persisted_kind) != result.continuation_kind.value:
+                raise TutorTerminalStateConflict("waiting continuation kind conflicts with persisted run state")
             if result.input_revision != _as_int(run["input_revision"], 0):
                 raise TutorLeaseConflict("waiting result revision is stale")
+            public_message_id = self._record_public_message_locked(
+                run=run,
+                result=result,
+                created_at=created_at,
+            )
+            event_payload: dict[str, object] = {
+                "kind": "waiting_for_input",
+                "status": result.status.value,
+                "run_id": result.run_id,
+                "input_revision": result.input_revision,
+                "count": result.iteration_count,
+            }
+            if public_message_id is not None:
+                event_payload["message_id"] = public_message_id
             event = self._append_event_locked(
                 run_id=result.run_id,
                 event_key=f"waiting:{result.input_revision}:{result.iteration_count}:{result.model_call_count}",
                 kind="waiting_for_input",
                 input_revision=result.input_revision,
-                payload={
-                    "kind": "waiting_for_input",
-                    "status": result.status.value,
-                    "run_id": result.run_id,
-                    "input_revision": result.input_revision,
-                    "count": result.iteration_count,
-                },
+                payload=event_payload,
             )
             self._insert_trace_locked(
                 run_id=result.run_id,
@@ -1305,12 +2435,21 @@ class PostgresTutorRepository:
                 },
                 created_at=created_at,
             )
-            self._conn.execute(
+            updated = self._conn.execute(
                 """
                 UPDATE tutor_runs
                 SET status = %s, iteration_count = %s, model_call_count = %s,
-                    capability_call_count = %s, effect_count = %s
-                WHERE id = %s AND user_id = %s
+                    capability_call_count = %s, effect_count = %s,
+                    continuation_kind = COALESCE(continuation_kind, %s),
+                    active_lease_owner_id = NULL, active_lease_expires_at = NULL
+                WHERE id = %s
+                  AND user_id = %s
+                  AND active_lease_owner_id = %s
+                  AND active_lease_generation = %s
+                  AND terminal_outcome IS NULL
+                  AND cancelled_at IS NULL
+                  AND superseded_by_run_id IS NULL
+                RETURNING id
                 """,
                 (
                     result.status.value,
@@ -1318,10 +2457,15 @@ class PostgresTutorRepository:
                     result.model_call_count,
                     result.capability_call_count,
                     result.effect_count,
+                    result.continuation_kind.value,
                     result.run_id,
                     user_id,
+                    lease.owner_id,
+                    lease.generation,
                 ),
-            )
+            ).fetchone()
+            if updated is None:
+                raise TutorLeaseConflict("waiting result lease was lost")
             return result
 
     def record_curation_proposal(
@@ -1882,7 +3026,7 @@ class PostgresTutorRepository:
         self._trip_failpoint("after_outbox")
         return trace
 
-    def _record_terminal_public_message_locked(
+    def _record_public_message_locked(
         self,
         *,
         run: Mapping[str, object],
@@ -1901,7 +3045,7 @@ class PostgresTutorRepository:
             (run["conversation_id"], public_message, created_at),
         ).fetchone()
         if row is None:
-            raise RuntimeError("terminal Tutor public message insert failed")
+            raise RuntimeError("Tutor public message insert failed")
         return str(row["id"])
 
     def _insert_trace_locked(
@@ -2222,6 +3366,9 @@ class PostgresTutorRunStore(TutorRunStore):
     def is_cancelled(self, run_id: str) -> bool:
         return self._repository.is_cancelled(user_id=self._user_id, run_id=run_id)
 
+    def is_superseded(self, run_id: str) -> bool:
+        return self._repository.is_superseded(user_id=self._user_id, run_id=run_id)
+
     def save_checkpoint(self, checkpoint: TutorCheckpoint) -> None:
         raise RuntimeError("PostgresTutorRunStore requires PostgresTutorLifecycle for checkpoint persistence")
 
@@ -2327,6 +3474,11 @@ def _snapshot_from_row(row: Mapping[str, object]) -> TutorRunSnapshot:
         capability_call_count=_as_int(row.get("capability_call_count"), 0),
         effect_count=_as_int(row.get("effect_count"), 0),
         cancelled=row.get("cancelled_at") is not None,
+        continuation_kind=(
+            TutorContinuationKind(str(row["continuation_kind"]))
+            if row.get("continuation_kind") is not None
+            else None
+        ),
     )
 
 
@@ -2384,6 +3536,11 @@ def _assert_not_cancelled(run: Mapping[str, object]) -> None:
         raise TutorTerminalStateConflict("Tutor run is cancelled")
 
 
+def _assert_not_superseded(run: Mapping[str, object]) -> None:
+    if run.get("superseded_by_run_id") is not None:
+        raise TutorTerminalStateConflict("Tutor run is superseded")
+
+
 def _is_terminal(run: Mapping[str, object]) -> bool:
     return str(run.get("status") or "") in _TERMINAL_STATUSES or run.get("terminal_outcome") is not None
 
@@ -2427,6 +3584,15 @@ def _sha256_json(value: object) -> str:
 
 def _json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _base64url_encode(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
+
+
+def _base64url_decode(value: str) -> bytes:
+    padding = "=" * (-len(value) % 4)
+    return base64.urlsafe_b64decode(f"{value}{padding}".encode("ascii"))
 
 
 def _as_mapping(value: object) -> dict[str, object]:

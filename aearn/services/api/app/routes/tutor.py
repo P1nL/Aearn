@@ -30,6 +30,80 @@ T = TypeVar("T")
 logger = logging.getLogger(__name__)
 
 
+@router.post("/conversations/first-turn", response_model=None)
+def create_first_conversation_turn(
+    payload: TutorInputRequest,
+    request: Request,
+    background_tasks: BackgroundTasks,
+) -> JSONResponse:
+    """Atomically create a draft conversation and its first finite TurnRun."""
+
+    unavailable = _require_tutor_route(request, payload.user_id)
+    if unavailable is not None:
+        return unavailable
+    response = _call_service(
+        request,
+        lambda service: service.accept_first_turn(
+            user_id=payload.user_id,
+            content=payload.content,
+            idempotency_key=_idempotency_key(request, payload.client_action_id),
+        ),
+        commit=True,
+    )
+    if isinstance(response, JSONResponse):
+        return response
+    _schedule_interactive_dispatch(
+        background_tasks=background_tasks,
+        dispatcher=build_tutor_run_dispatcher(get_settings()),
+        user_id=payload.user_id,
+        response=response,
+    )
+    return JSONResponse(
+        status_code=status.HTTP_200_OK if bool(response.get("idempotent_replayed")) else status.HTTP_202_ACCEPTED,
+        content=jsonable_encoder(response),
+    )
+
+
+@router.get("/conversations", response_model=None)
+def list_conversations(
+    request: Request,
+    user_id: str = Query(min_length=1),
+    limit: int = Query(default=8, ge=1, le=40),
+    cursor: str | None = Query(default=None, min_length=1, max_length=2048),
+) -> JSONResponse:
+    unavailable = _require_tutor_route(request, user_id)
+    if unavailable is not None:
+        return unavailable
+    response = _call_service(
+        request,
+        lambda service: service.list_conversations(user_id=user_id, limit=limit, cursor=cursor),
+    )
+    return response if isinstance(response, JSONResponse) else JSONResponse(status_code=status.HTTP_200_OK, content=jsonable_encoder(response))
+
+
+@router.get("/conversations/{conversation_id}/history", response_model=None)
+def read_conversation_history(
+    conversation_id: str,
+    request: Request,
+    user_id: str = Query(min_length=1),
+    limit: int = Query(default=40, ge=1, le=40),
+    cursor: str | None = Query(default=None, min_length=1, max_length=2048),
+) -> JSONResponse:
+    unavailable = _require_tutor_route(request, user_id)
+    if unavailable is not None:
+        return unavailable
+    response = _call_service(
+        request,
+        lambda service: service.read_conversation_history(
+            user_id=user_id,
+            conversation_id=conversation_id,
+            limit=limit,
+            cursor=cursor,
+        ),
+    )
+    return response if isinstance(response, JSONResponse) else JSONResponse(status_code=status.HTTP_200_OK, content=jsonable_encoder(response))
+
+
 @router.post("/conversations", response_model=None)
 def create_or_resume_conversation(
     payload: CreateTutorConversationRequest,
