@@ -128,7 +128,11 @@ for a retry or failure:
 - DeepSeek uses the Responses path only when the configured model is the exact,
   case-sensitive value `deepseek-v4-flash`; its normalized endpoint is
   `/responses`, with `input`, optional `instructions`, `stream=true`,
-  `text.format=json_object`, and bounded `max_output_tokens`;
+  `text.format=json_object`, and bounded `max_output_tokens`. The configured
+  DeepSeek V4 Flash window is `1_000_000` tokens and its generated-output cap is
+  `384_000`; the interactive ContextBuilder receives the remaining `616_000`
+  token selection budget, without broadening the fixed, learner-safe context
+  source allowlist;
 - every other DeepSeek model retains the Chat Completions path at
   `/chat/completions` with `response_format=json_object`.
 

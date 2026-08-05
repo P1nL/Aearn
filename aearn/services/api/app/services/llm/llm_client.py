@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import TypeVar
 
-from app.core.config import Settings, get_settings
+from app.core.config import DEEPSEEK_V4_FLASH_MODEL, Settings, get_settings
 from app.services.llm.llm_urls import deepseek_chat_completions_url, deepseek_responses_url, responses_url
 
 
@@ -56,9 +56,6 @@ class LLMProtocol(str, Enum):
     RESPONSES = "responses"
     DEEPSEEK_CHAT_COMPLETIONS = "deepseek_chat_completions"
     DEEPSEEK_RESPONSES = "deepseek_responses"
-
-
-DEEPSEEK_V4_FLASH_MODEL = "deepseek-v4-flash"
 
 
 def select_llm_protocol(settings: Settings) -> LLMProtocol:

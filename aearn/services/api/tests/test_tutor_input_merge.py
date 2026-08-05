@@ -156,6 +156,36 @@ def test_ordinary_turns_create_fresh_runs_and_supersede_the_prior_foreground_run
     assert_error(cross_user, "TUTOR_RUN_NOT_FOUND", 404)
 
 
+def test_interactive_turn_uses_deepseek_v4_flash_context_window_after_output_reservation(
+    monkeypatch: pytest.MonkeyPatch,
+    tutor_client: TestClient,
+    tutor_api_settings: Settings,
+) -> None:
+    del tutor_api_settings
+    settings = Settings(llm_type="deepseek", deepseek_model="deepseek-v4-flash")
+    dispatcher = RecordingTutorDispatcher()
+    monkeypatch.setattr(tutor_route, "get_settings", lambda: settings)
+    monkeypatch.setattr(tutor_route, "build_tutor_run_dispatcher", lambda _settings: dispatcher)
+    user = create_tutor_user(tutor_client)
+    user_id = str(user["id"])
+
+    accepted = tutor_client.post(
+        "/api/tutor/conversations/first-turn",
+        json=action_payload(user_id, "deepseek-token-window", content="请解释变量作用域。"),
+    )
+
+    assert accepted.status_code == 202
+    run_id = str(accepted.json()["run_id"])
+    assert dispatcher.calls == [(user_id, run_id)]
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT policy_json FROM tutor_runs WHERE id = %s AND user_id = %s",
+            (run_id, user_id),
+        ).fetchone()
+    assert row is not None
+    assert row["policy_json"]["context_token_budget"] == 616_000
+
+
 def test_first_turn_is_idempotent_and_dispatches_only_the_new_run(
     monkeypatch: pytest.MonkeyPatch,
     tutor_client: TestClient,

@@ -457,7 +457,7 @@ async def _event_stream(
     while True:
         try:
             with connect() as conn:
-                service = TutorPublicService(conn)
+                service = TutorPublicService(conn, settings=get_settings())
                 events = service.replay_events(
                     user_id=user_id,
                     run_id=run_id,
@@ -573,7 +573,7 @@ def _call_service(
     commit: bool = False,
 ) -> dict[str, object] | JSONResponse:
     with connect() as conn:
-        service = TutorPublicService(conn)
+        service = TutorPublicService(conn, settings=get_settings())
         try:
             response = action(service)
         except TutorPublicApiError as exc:

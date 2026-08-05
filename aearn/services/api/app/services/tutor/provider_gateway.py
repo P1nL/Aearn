@@ -243,14 +243,21 @@ class PrimaryTutorProviderGateway:
         *,
         settings: Settings | None = None,
         client: TutorJsonClient | None = None,
-        max_output_tokens: int = 1200,
+        max_output_tokens: int | None = None,
         timeout_seconds: float | None = None,
     ) -> None:
-        if max_output_tokens <= 0:
-            raise ValueError("max_output_tokens must be positive")
         self._settings = settings or get_settings()
+        resolved_max_output_tokens = self._settings.tutor_max_output_tokens
+        if max_output_tokens is not None:
+            resolved_max_output_tokens = max_output_tokens
+        if resolved_max_output_tokens <= 0:
+            raise ValueError("max_output_tokens must be positive")
+        if self._settings.uses_deepseek_v4_flash_responses and (
+            resolved_max_output_tokens > self._settings.tutor_deepseek_v4_flash_max_output_tokens
+        ):
+            raise ValueError("max_output_tokens exceeds the configured DeepSeek V4 Flash maximum")
         self._client = client
-        self._max_output_tokens = max_output_tokens
+        self._max_output_tokens = resolved_max_output_tokens
         self._timeout_seconds = timeout_seconds
 
     def decide(

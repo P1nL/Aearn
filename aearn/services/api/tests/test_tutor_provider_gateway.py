@@ -176,7 +176,9 @@ def test_primary_gateway_uses_exact_deepseek_v4_flash_responses_contract_without
     assert payload["model"] == "deepseek-v4-flash"
     assert payload["stream"] is True
     assert payload["text"] == {"format": {"type": "json_object"}}
-    assert payload["max_output_tokens"] == 1200
+    assert payload["max_output_tokens"] == 384_000
+    assert settings.tutor_deepseek_v4_flash_context_window_tokens == 1_000_000
+    assert settings.tutor_context_token_budget == 616_000
     assert isinstance(payload["input"], str)
     assert isinstance(payload["instructions"], str)
     assert captured["headers"] == {
@@ -185,6 +187,31 @@ def test_primary_gateway_uses_exact_deepseek_v4_flash_responses_contract_without
         "Accept": "text/event-stream",
     }
     assert settings.llm_provider_type == "deepseek"
+
+
+def test_deepseek_v4_flash_token_limits_reserve_output_capacity_within_the_context_window() -> None:
+    settings = Settings(
+        llm_type="deepseek",
+        deepseek_model="deepseek-v4-flash",
+        tutor_deepseek_v4_flash_context_window_tokens=1_000_000,
+        tutor_deepseek_v4_flash_max_output_tokens=384_000,
+    )
+
+    assert settings.uses_deepseek_v4_flash_responses is True
+    assert settings.tutor_deepseek_v4_flash_context_window_tokens == 1_000_000
+    assert settings.tutor_max_output_tokens == 384_000
+    assert settings.tutor_context_token_budget == 616_000
+
+    with pytest.raises(ValueError, match="must leave room within the context window"):
+        Settings(
+            llm_type="deepseek",
+            deepseek_model="deepseek-v4-flash",
+            tutor_deepseek_v4_flash_context_window_tokens=384_000,
+            tutor_deepseek_v4_flash_max_output_tokens=384_000,
+        )
+
+    with pytest.raises(ValueError, match="configured DeepSeek V4 Flash maximum"):
+        PrimaryTutorProviderGateway(settings=settings, max_output_tokens=384_001)
 
 
 @pytest.mark.parametrize(

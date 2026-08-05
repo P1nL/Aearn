@@ -79,6 +79,18 @@ TUTOR_EXECUTOR_ENABLED=false
 provider/model fallback。真实 key 只存在本机 `.env`，不要把它放进文档、测试
 fixture、日志或 Git。
 
+对于精确的 `DEEPSEEK_MODEL=deepseek-v4-flash`，Tutor 默认使用官方上限：
+
+```env
+TUTOR_DEEPSEEK_V4_FLASH_CONTEXT_WINDOW_TOKENS=1000000
+TUTOR_DEEPSEEK_V4_FLASH_MAX_OUTPUT_TOKENS=384000
+```
+
+前者是模型的**总 context window**，后者是 Responses 请求的
+`max_output_tokens`。Tutor 预留 384K 生成空间，并把其余 616K 用作受控的
+ContextBuilder 选择预算；它不会因此读取完整数据库历史、raw prompt、provider
+payload 或 reasoning。将输出上限设为不小于 context window 会在启动时被拒绝。
+
 ### 默认 proactive / curation posture
 
 ```env
