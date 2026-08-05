@@ -8,6 +8,7 @@ from uuid import UUID
 from psycopg import Connection
 
 from app.services.repositories.user_repository import get_user, serialize_user
+from app.services.tutor.persistence import PostgresTutorRepository
 
 
 class EntityNotFoundError(ValueError):
@@ -122,6 +123,9 @@ def export_user_data(conn: Connection[dict[str, object]], user_id: str) -> dict[
         "adaptive_variant_summaries": _export_adaptive_variant_summaries(conn, user_id),
         "notes": _export_notes(conn, user_id),
         "conversation_summaries": _export_conversation_summaries(conn, user_id),
+        "learning_tracks": _export_learning_tracks(conn, user_id),
+        "learning_track_plan_revisions": _export_learning_track_plan_revisions(conn, user_id),
+        "learning_track_nodes": _export_learning_track_nodes(conn, user_id),
         "redaction": {
             "hidden_tests": "omitted",
             "solution_references": "omitted",
@@ -225,6 +229,12 @@ def _summary_counts(conn: Connection[dict[str, object]], user_id: str) -> dict[s
             """,
             user_id,
         ),
+        "learning_tracks": _count(conn, "SELECT count(*) AS count FROM tutor_learning_tracks WHERE user_id = %s", user_id),
+        "learning_track_plan_revisions": _count(conn, "SELECT count(*) AS count FROM tutor_track_plan_revisions WHERE user_id = %s", user_id),
+        "learning_track_nodes": _count(conn, "SELECT count(*) AS count FROM tutor_track_plan_nodes WHERE user_id = %s", user_id),
+        "learning_track_progress": _count(conn, "SELECT count(*) AS count FROM tutor_track_node_progress WHERE user_id = %s", user_id),
+        "mastery_evidence": _count(conn, "SELECT count(*) AS count FROM tutor_mastery_evidence WHERE user_id = %s", user_id),
+        "mastery_states": _count(conn, "SELECT count(*) AS count FROM tutor_mastery_states WHERE user_id = %s", user_id),
     }
 
 
@@ -493,7 +503,132 @@ def _export_conversation_summaries(conn: Connection[dict[str, object]], user_id:
     }
 
 
+def _export_learning_tracks(conn: Connection[dict[str, object]], user_id: str) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """
+        SELECT id, language_id, goal_text, target_level, status, current_knowledge_key,
+               version, last_learned_at, created_at, updated_at, archived_at
+        FROM tutor_learning_tracks
+        WHERE user_id = %s
+        ORDER BY created_at, id
+        """,
+        (user_id,),
+    ).fetchall()
+    return [_safe_row(row, exclude=()) for row in rows]
+
+
+def _export_learning_track_plan_revisions(
+    conn: Connection[dict[str, object]],
+    user_id: str,
+) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """
+        SELECT id, track_id, predecessor_revision_id, status, title, target_level,
+               generator_version, policy_version, change_reason, content_hash,
+               created_at, activated_at
+        FROM tutor_track_plan_revisions
+        WHERE user_id = %s
+        ORDER BY created_at, id
+        """,
+        (user_id,),
+    ).fetchall()
+    return [_safe_row(row, exclude=()) for row in rows]
+
+
+def _export_learning_track_nodes(
+    conn: Connection[dict[str, object]],
+    user_id: str,
+) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """
+        SELECT nodes.id, nodes.track_id, nodes.revision_id, nodes.module_id,
+               nodes.knowledge_key, nodes.title, nodes.description, nodes.order_index,
+               nodes.is_core, nodes.prerequisite_keys_json, nodes.required_capabilities_json,
+               progress.status AS progress_status, progress.version AS progress_version,
+               mastery.confidence AS mastery_confidence,
+               mastery.mastery_level, mastery.strengths_json, mastery.weaknesses_json,
+               mastery.evidence_count, mastery.projector_version
+        FROM tutor_track_plan_nodes AS nodes
+        LEFT JOIN tutor_track_node_progress AS progress
+          ON (progress.track_id, progress.user_id, progress.knowledge_key) =
+             (nodes.track_id, nodes.user_id, nodes.knowledge_key)
+        LEFT JOIN tutor_mastery_states AS mastery
+          ON (mastery.track_id, mastery.user_id, mastery.knowledge_key) =
+             (nodes.track_id, nodes.user_id, nodes.knowledge_key)
+        WHERE nodes.user_id = %s
+        ORDER BY nodes.track_id, nodes.revision_id, nodes.module_id, nodes.order_index, nodes.id
+        """,
+        (user_id,),
+    ).fetchall()
+    return [_safe_row(row, exclude=()) for row in rows]
+
+
+def _delete_learning_track_data(conn: Connection[dict[str, object]], user_id: str) -> None:
+    # Scope snapshots are children of durable Tutor runs/conversations. Cancel
+    # active runs first so an old continuation cannot resume after its authority
+    # rows are removed, while preserving existing conversation/history rows.
+    now = datetime.now(UTC)
+    tutor_repository = PostgresTutorRepository(conn)
+    active_runs = conn.execute(
+        """
+        SELECT id
+        FROM tutor_runs
+        WHERE user_id = %s
+          AND origin = 'interactive'
+          AND terminal_outcome IS NULL
+          AND cancelled_at IS NULL
+          AND superseded_by_run_id IS NULL
+        ORDER BY created_at, id
+        """,
+        (user_id,),
+    ).fetchall()
+    for run in active_runs:
+        tutor_repository.request_cancellation(
+            user_id=user_id,
+            run_id=str(run["id"]),
+            now=now,
+        )
+    conn.execute("SELECT set_config('aearn.learning_track_purge_user_id', %s, true)", (user_id,))
+    conn.execute("DELETE FROM tutor_run_learning_scopes WHERE user_id = %s", (user_id,))
+    conn.execute("DELETE FROM tutor_conversation_learning_scopes WHERE user_id = %s", (user_id,))
+    conn.execute("DELETE FROM tutor_mastery_states WHERE user_id = %s", (user_id,))
+    conn.execute("DELETE FROM tutor_mastery_evidence WHERE user_id = %s", (user_id,))
+    conn.execute("UPDATE tutor_learning_tracks SET current_knowledge_key = NULL WHERE user_id = %s", (user_id,))
+    conn.execute("DELETE FROM tutor_track_node_progress WHERE user_id = %s", (user_id,))
+    conn.execute("DELETE FROM tutor_track_plan_migrations WHERE user_id = %s", (user_id,))
+    conn.execute("DELETE FROM tutor_track_plan_nodes WHERE user_id = %s", (user_id,))
+    conn.execute("DELETE FROM tutor_track_plan_modules WHERE user_id = %s", (user_id,))
+    conn.execute("DELETE FROM tutor_track_active_plans WHERE user_id = %s", (user_id,))
+
+    revision_rows = conn.execute(
+        """
+        WITH RECURSIVE revision_depth AS (
+          SELECT id, predecessor_revision_id, 0 AS depth
+          FROM tutor_track_plan_revisions
+          WHERE user_id = %s AND predecessor_revision_id IS NULL
+          UNION ALL
+          SELECT child.id, child.predecessor_revision_id, parent.depth + 1
+          FROM tutor_track_plan_revisions AS child
+          JOIN revision_depth AS parent ON parent.id = child.predecessor_revision_id
+          WHERE child.user_id = %s
+        )
+        SELECT id
+        FROM revision_depth
+        ORDER BY depth DESC, id
+        """,
+        (user_id, user_id),
+    ).fetchall()
+    for row in revision_rows:
+        conn.execute(
+            "DELETE FROM tutor_track_plan_revisions WHERE id = %s AND user_id = %s",
+            (row["id"], user_id),
+        )
+    conn.execute("DELETE FROM tutor_learning_tracks WHERE user_id = %s", (user_id,))
+    conn.execute("DELETE FROM tutor_api_idempotency_records WHERE user_id = %s", (user_id,))
+
+
 def _delete_user_owned_learning_data(conn: Connection[dict[str, object]], user_id: str) -> None:
+    _delete_learning_track_data(conn, user_id)
     conn.execute("DELETE FROM idempotency_records WHERE user_id = %s OR key LIKE %s OR response_json::text LIKE %s", (user_id, f"%{user_id}%", f"%{user_id}%"))
     conn.execute(
         """

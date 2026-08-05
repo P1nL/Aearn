@@ -1,8 +1,8 @@
 # Aearn 数据库 Schema 与持久化契约
 
-**状态：** 当前 schema 说明，2026-08-03。
+**状态：** 当前 schema 说明，2026-08-05。
 **权威来源：** `aearn/services/api/app/db/schema.sql`、PostgreSQL bootstrap、
-Tutor repositories 与 schema/cutover tests。
+Tutor/LearningTrack repositories 与 schema/cutover tests。
 **范围：** PostgreSQL 是 Tutor run、cutover receipt、背景队列和 learner-safe
 projection 的唯一 durable authority；Desktop、Celery 和 provider 不拥有并行
 状态机或迁移账本。
@@ -69,7 +69,7 @@ projection 的唯一 durable authority；Desktop、Celery 和 provider 不拥有
 | `tutor_run_events` | run-local ordered event log | `event_sequence` 在 locked run row 上分配；SSE 只读取其安全后缀 |
 | `tutor_capability_invocations`、`tutor_effects` | capability/effect receipt | 当前 revision、lease、Skill evidence 与 policy 必须同时通过；stale/superseded effect 不调用 handler |
 | `tutor_run_traces` | redacted diagnostic trace | trace 写入和导出都再次走 allowlist projection |
-| `tutor_api_idempotency_records` | public Tutor mutation replay | `(user_id, operation, idempotency_key)` 唯一；首发、普通 turn 和 continuation 都绑定 request hash 与安全 response JSON |
+| `tutor_api_idempotency_records` | public Tutor / LearningTrack mutation replay | `(user_id, operation, idempotency_key)` 唯一；Tutor 输入与 `learning_track.*` mutation 都绑定 request hash 与安全 response JSON |
 
 `POST /conversations/first-turn` 的 repository mutation 在一个 transaction 内创建 learner
 conversation、fresh run、首条 learner message/input event 和 `input_received` process；任何
@@ -84,7 +84,42 @@ cancelled 或 superseded 的 interactive foreground run。
 stale run 只能收敛到安全 cancelled/superseded projection，不能写 Tutor message、title、
 capability receipt 或 effect commit。
 
-## 5. Skills、capability、effects 与执行器
+## 5. LearningTrack、计划路线、掌握度与教学 scope
+
+LearningTrack 是新增的 track-scoped 教学权威状态，与旧 `learning_*` 表以及
+user-level `tutor_plan_revisions` 明确隔离：
+
+| 表 | 责任 | 关键不变量 |
+| --- | --- | --- |
+| `tutor_learning_tracks` | user + language + goal 的长期主线根 | `(id,user_id)` 复合 scope；`version` 用于 CAS；当前节点 FK 只能指向同 track progress |
+| `tutor_track_plan_revisions` | predecessor-linked 完整计划版本 | predecessor 不得自指；canonical `plan_json` / SHA-256 不可普通 UPDATE/DELETE；状态 transition 与 activation timestamp 由 trigger 收口；每 track partial unique active revision，deferred constraint 保证 pointer/revision 一致 |
+| `tutor_track_active_plans` | track 唯一 active pointer | revision、track、user 必须为同一复合作用域 |
+| `tutor_track_plan_modules`、`tutor_track_plan_nodes` | revision 内不可变路线结构 | stable key/order 唯一；module/node 普通 UPDATE/DELETE 被 trigger 拒绝；prerequisite DAG 在应用 contract 验证 |
+| `tutor_track_node_progress` | `(track_id,knowledge_key)` 长期进度 | stable key 跨 revision 保留；source revision 必须在同 track/user scope 内真实包含该 knowledge key；status 与 started/completed timestamps 双向一致 |
+| `tutor_track_plan_migrations` | proposal/activation 影响与 CAS receipt | from/to revision 同 track/user；impact、expected version、idempotency/request hash 不可原地改写；lifecycle trigger 约束 proposed/confirmed/rejected/applied 与 timestamps |
+| `tutor_mastery_evidence` | append-only trusted evidence | receipt 在 track + kind 内唯一；普通 UPDATE/DELETE 均被 trigger 拒绝；不能由模型正文直接生成 |
+| `tutor_mastery_states` | projector 可重算的 bounded 状态 | 只引用同 progress/evidence scope；零 evidence 与 `last_evidence_id=NULL` 一致 |
+| `tutor_conversation_learning_scopes` | conversation 的 general/planning/track binding | learning-track scope 必须引用同 user track；无 row 的旧 conversation 投影为 general |
+| `tutor_run_learning_scopes` | fresh TurnRun 创建时的 immutable task/scope snapshot | run/user/conversation/track/progress 复合 FK；continuation 不得 UPDATE snapshot |
+
+计划激活先锁 track 并校验 `expected_track_version`、direct predecessor 与 migration
+状态，再切换 revision/pointer。相同 `knowledge_key` 的 progress/mastery 保留；新 key
+依据其 prerequisite 的已完成状态初始化为 available 或 locked。移出 active plan 的旧
+progress/evidence 不在 activation 时删除，roadmap/progress 汇总只读取 active revision
+节点。
+
+`MasteryProjector` 只消费 persisted trusted evidence summary，按 independence 权重产生
+`confidence`、`mastery_level`、strength/weakness 与 projector version。它不依赖 provider，
+同一有序 evidence 集可确定性重算。
+
+本地 data summary/export 包含 LearningTrack、revision、node/progress 与 bounded mastery
+state，但不导出 raw `plan_json` 或 evidence body/hash。confirmed reset/delete 先将该
+用户仍 active 的 interactive runs 安全 terminalize，再在 transaction-local purge capability
+下按 run/conversation scope -> mastery -> progress/migration -> node/module -> active pointer ->
+child-first revision -> track 的外键顺序清理，并删除该用户 API idempotency；cutover
+inventory 将任一新 track/scope/evidence 行视为 target contamination，绝不在切换中删除。
+
+## 6. Skills、capability、effects 与执行器
 
 - Skills 以 Git-owned catalog 的 exact `id@semantic-version` 选择，永久保存
   evidence hash。别名、范围、`current` 与未知 Skill 不能成为 durable proof。
@@ -96,7 +131,7 @@ capability receipt 或 effect commit。
   Desktop 不导入 runtime client，也没有 host subprocess fallback。
 - Proactive origin 永远不允许 `runner.execute` 或 learner-code execution。
 
-## 6. Proactive scheduler 与 curation 队列
+## 7. Proactive scheduler 与 curation 队列
 
 | 表 | 责任 | 默认/安全边界 |
 | --- | --- | --- |
@@ -112,7 +147,7 @@ capability receipt 或 effect commit。
 显式 user scope 仅供 fixture/maintenance isolation；它不能改变正常 worker 的
 全局行为。
 
-## 7. Learner-state projections
+## 8. Learner-state projections
 
 | 表 | 当前业务事实 | 不变量 |
 | --- | --- | --- |
@@ -125,7 +160,7 @@ capability receipt 或 effect commit。
 | `tutor_activity_records` | append-only learner-safe activity | 可从 effect/run 追溯，但不含 internal payload |
 | `tutor_inbox_items` | 一条 activity 对应的可读/dismiss 投影 | `unread/read/dismissed` 生命周期与时间戳约束 |
 
-## 8. 公开投影与删除规则
+## 9. 公开投影与删除规则
 
 - repository 是唯一可将表行转成 API/SSE payload 的层；SQL/JSONB 不得被 route
   直接串行化为用户输出。
@@ -136,7 +171,7 @@ capability receipt 或 effect commit。
 - 删除本地用户是显式 confirmed 用户数据操作。cutover 不是“reset”捷径，且
   pre-cutover target state 不能用普通 reset 清空。
 
-## 9. 历史表与当前读取规则
+## 10. 历史表与当前读取规则
 
 旧表仍可能包含 `learning_plans`、`plan_modules`、`knowledge_points`、
 `exercises`、`attempts`、`review_states`、`review_logs`、`notes`、
@@ -148,13 +183,13 @@ capability receipt 或 effect commit。
 - 历史概念如 Attempt、FSRS、hidden tests 与 source attribution 不会被 Tutor
   API 重建、展示或静默写入；历史归档不会被当作 current runtime source。
 
-## 10. Schema 验证
+## 11. Schema 验证
 
 执行顺序必须串行，避免共享 PostgreSQL bootstrap fixture 并发导致 deadlock 或
 `tuple concurrently updated`：
 
 ```powershell
-uv --directory .\aearn\services\api run python -m pytest tests/test_db_bootstrap.py tests/test_harness_cutover.py
+uv --directory .\aearn\services\api run python -m pytest tests/test_db_bootstrap.py tests/test_learning_track_repository.py tests/test_harness_cutover.py
 uv --directory .\aearn\services\api run python -m pytest tests/test_tutor_run_repository.py tests/test_tutor_proactive_default_delivery.py
 ```
 

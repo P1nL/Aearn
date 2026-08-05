@@ -20,6 +20,13 @@ from psycopg import Connection
 from app.agents.harness.contracts import TutorPolicySnapshot, TutorTerminalOutcome
 from app.core.config import Settings, get_settings
 from app.agents.harness.skill_catalog import compile_published_skill_catalog
+from app.services.learning.contracts import LearningScope, LearningScopeKind, LearningTaskKind
+from app.services.learning.track_repository import (
+    LearningScopeConflict,
+    LearningTrackNotFound,
+    PostgresLearningTrackRepository,
+    ScopeSnapshot,
+)
 from app.services.tutor.learner_state import (
     TutorActivityRecord,
     TutorInboxItem,
@@ -86,6 +93,7 @@ class TutorPublicService:
         self._conn = conn
         self._settings = settings or get_settings()
         self._repository = PostgresTutorRepository(conn)
+        self._learning_tracks = PostgresLearningTrackRepository(conn)
         self._learner_state = TutorLearnerStateRepository(conn)
         self._proactive = PostgresTutorProactiveRepository(conn)
 
@@ -95,6 +103,7 @@ class TutorPublicService:
         user_id: str,
         conversation_id: str | None,
         idempotency_key: str,
+        learning_scope: LearningScope | None = None,
     ) -> dict[str, object]:
         normalized_user_id = _uuid_identifier(user_id, label="user_id")
         normalized_conversation_id = (
@@ -104,10 +113,14 @@ class TutorPublicService:
             user_id=normalized_user_id,
             operation="tutor.conversation.create_or_resume",
             idempotency_key=idempotency_key,
-            request_body={"conversation_id": normalized_conversation_id},
+            request_body={
+                "conversation_id": normalized_conversation_id,
+                "learning_scope": _learning_scope_payload(learning_scope),
+            },
             action=lambda: self._create_or_resume_conversation(
                 user_id=normalized_user_id,
                 conversation_id=normalized_conversation_id,
+                learning_scope=learning_scope,
             ),
         )
 
@@ -117,16 +130,18 @@ class TutorPublicService:
         user_id: str,
         content: str,
         idempotency_key: str,
+        learning_scope: LearningScope | None = None,
     ) -> dict[str, object]:
         normalized_user_id = _uuid_identifier(user_id, label="user_id")
         return self._mutate(
             user_id=normalized_user_id,
             operation="tutor.conversation.first_turn",
             idempotency_key=idempotency_key,
-            request_body={"content": content},
+            request_body={"content": content, "learning_scope": _learning_scope_payload(learning_scope)},
             action=lambda: self._accept_first_turn(
                 user_id=normalized_user_id,
                 content=content,
+                learning_scope=learning_scope,
                 idempotency_key=idempotency_key,
             ),
         )
@@ -138,6 +153,7 @@ class TutorPublicService:
         conversation_id: str,
         content: str,
         idempotency_key: str,
+        learning_scope: LearningScope | None = None,
     ) -> dict[str, object]:
         normalized_user_id = _uuid_identifier(user_id, label="user_id")
         normalized_conversation_id = _uuid_identifier(conversation_id, label="conversation_id")
@@ -145,11 +161,16 @@ class TutorPublicService:
             user_id=normalized_user_id,
             operation="tutor.conversation.input",
             idempotency_key=idempotency_key,
-            request_body={"conversation_id": normalized_conversation_id, "content": content},
+            request_body={
+                "conversation_id": normalized_conversation_id,
+                "content": content,
+                "learning_scope": _learning_scope_payload(learning_scope),
+            },
             action=lambda: self._accept_conversation_input(
                 user_id=normalized_user_id,
                 conversation_id=normalized_conversation_id,
                 content=content,
+                learning_scope=learning_scope,
                 idempotency_key=idempotency_key,
             ),
         )
@@ -161,6 +182,7 @@ class TutorPublicService:
         run_id: str,
         content: str,
         idempotency_key: str,
+        learning_scope: LearningScope | None = None,
     ) -> dict[str, object]:
         normalized_user_id = _uuid_identifier(user_id, label="user_id")
         normalized_run_id = _uuid_identifier(run_id, label="run_id")
@@ -168,11 +190,16 @@ class TutorPublicService:
             user_id=normalized_user_id,
             operation="tutor.run.input",
             idempotency_key=idempotency_key,
-            request_body={"run_id": normalized_run_id, "content": content},
+            request_body={
+                "run_id": normalized_run_id,
+                "content": content,
+                "learning_scope": _learning_scope_payload(learning_scope),
+            },
             action=lambda: self._accept_existing_run_input(
                 user_id=normalized_user_id,
                 run_id=normalized_run_id,
                 content=content,
+                learning_scope=learning_scope,
                 idempotency_key=idempotency_key,
             ),
         )
@@ -437,8 +464,27 @@ class TutorPublicService:
             ),
         )
 
-    def _create_or_resume_conversation(self, *, user_id: str, conversation_id: str | None) -> dict[str, object]:
+    def _create_or_resume_conversation(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str | None,
+        learning_scope: LearningScope | None,
+    ) -> dict[str, object]:
         self._assert_user_exists(user_id)
+        if (
+            learning_scope is not None
+            and learning_scope.scope_kind is LearningScopeKind.LEARNING_TRACK
+            and (
+                learning_scope.knowledge_key is not None
+                or learning_scope.task_kind is not LearningTaskKind.LESSON_TEACHING
+            )
+        ):
+            raise TutorPublicApiError(
+                "LEARNING_SCOPE_CONFLICT",
+                "Conversation binding accepts only track scope; task_kind and knowledge_key belong to a fresh TurnRun.",
+                status_code=409,
+            )
         try:
             resolved, created = self._repository.create_or_resume_learner_conversation(
                 user_id=user_id,
@@ -451,6 +497,25 @@ class TutorPublicService:
                 status_code=404,
                 details={"conversation_id": conversation_id},
             ) from exc
+        if learning_scope is not None:
+            try:
+                self._learning_tracks.bind_conversation_scope(
+                    user_id=user_id,
+                    conversation_id=resolved,
+                    scope=learning_scope,
+                )
+            except LearningTrackNotFound as exc:
+                raise TutorPublicApiError(
+                    "LEARNING_TRACK_NOT_FOUND",
+                    "LearningTrack was not found for the current learner.",
+                    status_code=404,
+                ) from exc
+            except LearningScopeConflict as exc:
+                raise TutorPublicApiError(
+                    "LEARNING_SCOPE_CONFLICT",
+                    "Tutor conversation learning scope cannot change while a foreground run is active.",
+                    status_code=409,
+                ) from exc
         return {"conversation_id": resolved, "created": created}
 
     def _accept_first_turn(
@@ -458,6 +523,7 @@ class TutorPublicService:
         *,
         user_id: str,
         content: str,
+        learning_scope: LearningScope | None,
         idempotency_key: str,
     ) -> dict[str, object]:
         self._assert_user_exists(user_id)
@@ -473,6 +539,11 @@ class TutorPublicService:
                 content=content,
                 received_at=now,
             )
+            self._snapshot_learning_scope(
+                user_id=user_id,
+                run_id=accepted.run.run_id,
+                learning_scope=learning_scope,
+            )
             state = self._repository.read_run_state(user_id=user_id, run_id=accepted.run.run_id)
         except TutorIdempotencyConflict as exc:
             raise _idempotency_conflict() from exc
@@ -486,6 +557,7 @@ class TutorPublicService:
         user_id: str,
         conversation_id: str,
         content: str,
+        learning_scope: LearningScope | None,
         idempotency_key: str,
     ) -> dict[str, object]:
         self._assert_user_exists(user_id)
@@ -501,6 +573,11 @@ class TutorPublicService:
                 idempotency_key=idempotency_key,
                 content=content,
                 received_at=now,
+            )
+            self._snapshot_learning_scope(
+                user_id=user_id,
+                run_id=accepted.run.run_id,
+                learning_scope=learning_scope,
             )
             state = self._repository.read_run_state(user_id=user_id, run_id=accepted.run.run_id)
         except TutorRunNotFound as exc:
@@ -522,9 +599,16 @@ class TutorPublicService:
         user_id: str,
         run_id: str,
         content: str,
+        learning_scope: LearningScope | None,
         idempotency_key: str,
     ) -> dict[str, object]:
         self._assert_user_exists(user_id)
+        if learning_scope is not None:
+            raise TutorPublicApiError(
+                "LEARNING_SCOPE_CONFLICT",
+                "Explicit continuation cannot change an immutable run learning scope.",
+                status_code=409,
+            )
         try:
             state = self._repository.read_run_state(user_id=user_id, run_id=run_id)
             if (
@@ -563,6 +647,32 @@ class TutorPublicService:
             "replaced_run_id": None,
             "replaced_process": None,
         }
+
+    def _snapshot_learning_scope(
+        self,
+        *,
+        user_id: str,
+        run_id: str,
+        learning_scope: LearningScope | None,
+    ) -> ScopeSnapshot:
+        try:
+            return self._learning_tracks.snapshot_run_scope(
+                user_id=user_id,
+                run_id=run_id,
+                explicit_scope=learning_scope,
+            )
+        except LearningTrackNotFound as exc:
+            raise TutorPublicApiError(
+                "LEARNING_TRACK_NOT_FOUND",
+                "LearningTrack was not found for the current learner.",
+                status_code=404,
+            ) from exc
+        except LearningScopeConflict as exc:
+            raise TutorPublicApiError(
+                "LEARNING_SCOPE_CONFLICT",
+                "Tutor run learning scope could not be snapshotted safely.",
+                status_code=409,
+            ) from exc
 
     def _mark_inbox_read(self, user_id: str, inbox_id: str) -> TutorInboxItem:
         try:
@@ -840,6 +950,10 @@ class TutorPublicService:
         request_hash = _request_hash(request_body)
         with self._conn.transaction():
             self._assert_user_exists(user_id)
+            self._conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtext(%s), hashtext(%s))",
+                (user_id, f"{operation}:{key}"),
+            )
             existing = self._conn.execute(
                 """
                 SELECT request_hash, response_json
@@ -889,6 +1003,17 @@ def _interactive_policy(now: datetime, *, settings: Settings) -> TutorPolicySnap
         context_token_budget=settings.tutor_context_token_budget,
         lease_duration_seconds=30,
     )
+
+
+def _learning_scope_payload(scope: LearningScope | None) -> dict[str, object] | None:
+    if scope is None:
+        return None
+    return {
+        "scope_kind": scope.scope_kind.value,
+        "learning_track_id": scope.learning_track_id,
+        "task_kind": (scope.task_kind or LearningTaskKind.GENERAL_TUTOR).value,
+        "knowledge_key": scope.knowledge_key,
+    }
 
 
 def _run_payload(state: TutorRunReadState) -> dict[str, object]:

@@ -129,6 +129,17 @@ _TARGET_COUNT_SQL: tuple[tuple[str, str], ...] = (
     ("tutor_activity_records", "SELECT count(*)::int AS count FROM tutor_activity_records WHERE user_id = %s"),
     ("tutor_inbox_items", "SELECT count(*)::int AS count FROM tutor_inbox_items WHERE user_id = %s"),
     ("tutor_api_idempotency_records", "SELECT count(*)::int AS count FROM tutor_api_idempotency_records WHERE user_id = %s"),
+    ("tutor_learning_tracks", "SELECT count(*)::int AS count FROM tutor_learning_tracks WHERE user_id = %s"),
+    ("tutor_track_plan_revisions", "SELECT count(*)::int AS count FROM tutor_track_plan_revisions WHERE user_id = %s"),
+    ("tutor_track_active_plans", "SELECT count(*)::int AS count FROM tutor_track_active_plans WHERE user_id = %s"),
+    ("tutor_track_plan_modules", "SELECT count(*)::int AS count FROM tutor_track_plan_modules WHERE user_id = %s"),
+    ("tutor_track_plan_nodes", "SELECT count(*)::int AS count FROM tutor_track_plan_nodes WHERE user_id = %s"),
+    ("tutor_track_node_progress", "SELECT count(*)::int AS count FROM tutor_track_node_progress WHERE user_id = %s"),
+    ("tutor_track_plan_migrations", "SELECT count(*)::int AS count FROM tutor_track_plan_migrations WHERE user_id = %s"),
+    ("tutor_mastery_evidence", "SELECT count(*)::int AS count FROM tutor_mastery_evidence WHERE user_id = %s"),
+    ("tutor_mastery_states", "SELECT count(*)::int AS count FROM tutor_mastery_states WHERE user_id = %s"),
+    ("tutor_conversation_learning_scopes", "SELECT count(*)::int AS count FROM tutor_conversation_learning_scopes WHERE user_id = %s"),
+    ("tutor_run_learning_scopes", "SELECT count(*)::int AS count FROM tutor_run_learning_scopes WHERE user_id = %s"),
 )
 
 
