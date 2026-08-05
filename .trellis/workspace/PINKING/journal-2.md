@@ -882,3 +882,37 @@ Closed the planning-only Tutor Harness rearchitecture parent after all nine inde
 ### Next Steps
 
 - None - task complete
+
+
+## Session 85: 完成 LearningTrack 领域基础并清理工作树
+
+**Date**: 2026-08-05
+**Task**: 完成 LearningTrack 领域基础并清理工作树
+**Branch**: `main`
+
+### Summary
+
+提交此前已验证的 DeepSeek V4 Flash token budget 修复；完成 LearningTrack、版本化计划、掌握度证据、Tutor scope 与 execution tier 领域基础；通过 PostgreSQL、Pytest、Ruff、Mypy、lock、Trellis validate 和 diff 检查；隔离无关 Trellis/agent 工具链修改并归档首个产品 child。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `36905cb` | (see git log) |
+| `82c3edf` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
