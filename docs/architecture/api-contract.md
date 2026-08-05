@@ -1,8 +1,8 @@
 # Aearn Tutor HTTP 与 SSE API 契约
 
-**状态：** 当前公共 API 契约，2026-08-03。
+**状态：** 当前公共 API 契约，2026-08-05。
 **权威来源：** `aearn/services/api/app/main.py` 中注册的路由、Pydantic model、
-`services/tutor/public_api.py`、`services/tutor/cutover.py` 与 API 测试。
+`services/tutor/public_api.py`、`services/learning/`、`services/tutor/cutover.py` 与 API 测试。
 **不适用：** 已移除的 Graph、Dashboard、Onboarding、Learning Session、Review、
 Notes 和旧 streaming endpoint。历史文档不构成当前可调用 API。
 
@@ -45,8 +45,12 @@ learner code、checkpoint、path、command 或 secret。
 ```
 
 服务端按 `(user_id, operation, idempotency_key, request_body_hash)` 存储安全响应
-投影：同 body 重放返回原响应并标记 `idempotent_replayed=true`；相同 key 配不同
-不可变 body 返回 `409 IDEMPOTENCY_CONFLICT`，绝不重复写入或重新调用 provider。
+投影；mutation 在 lookup/write 前按 `(user_id, operation, idempotency_key)` 获取 transaction
+advisory lock，因此 concurrent first write 也只执行一次。同 body 重放返回原响应并标记
+`idempotent_replayed=true`；相同 key 配不同不可变 body 返回 `409 IDEMPOTENCY_CONFLICT`，
+绝不重复写入或重新调用 provider。
+`/api/learning-tracks` mutation 复用同一存储与 key 格式，但使用独立
+`learning_track.*` operation namespace。
 
 ## 2. Runtime gate
 
@@ -136,10 +140,10 @@ checkpoint scope 或验证失败都不产生半完成删除。代码回滚之后
 
 | Method | Path | 请求/查询 | 成功响应 |
 | --- | --- | --- | --- |
-| `POST` | `/api/tutor/conversations/first-turn` | `user_id`、`client_action_id`、`content` | 202（新首发）或 200（同 key 重放）；原子返回新 `conversation_id`、新 `run_id` 与初始公开 process |
-| `POST` | `/api/tutor/conversations/{conversation_id}/inputs` | `user_id`、`client_action_id`、`content` | 202（新普通 TurnRun）或 200（同 key 重放）；见下方 turn response |
+| `POST` | `/api/tutor/conversations/first-turn` | `user_id`、`client_action_id`、`content`、可选 `learning_scope` | 202（新首发）或 200（同 key 重放）；原子返回新 `conversation_id`、新 `run_id` 与初始公开 process |
+| `POST` | `/api/tutor/conversations/{conversation_id}/inputs` | `user_id`、`client_action_id`、`content`、可选 `learning_scope` | 202（新普通 TurnRun）或 200（同 key 重放）；见下方 turn response |
 | `POST` | `/api/tutor/runs/{run_id}/inputs` | 同上 | 只接受服务端持久化授权的 explicit continuation；202（新接受）或 200（重放） |
-| `POST` | `/api/tutor/conversations` | `user_id`、`client_action_id`、可选 `conversation_id` | 兼容 create/resume 入口；Desktop draft 不调用它创建空 conversation |
+| `POST` | `/api/tutor/conversations` | `user_id`、`client_action_id`、可选 `conversation_id` / `learning_scope` | 兼容 create/resume 入口；Desktop draft 不调用它创建空 conversation |
 | `GET` | `/api/tutor/runs/{run_id}?user_id={uuid}` | — | 当前 `TutorRun` 安全状态 |
 
 `content` 必须是 trim 后非空且最多 16,000 字符。点击 Desktop “新对话”只建立本地
@@ -155,10 +159,19 @@ foreground interactive run 标记为 `cancelled` + `superseded_by_run_id`，冻�
 process 为 `superseded`，再创建并只 dispatch 新 run。因此每个 conversation 同时至多
 一条 foreground run；旧 run 的公开卡片只显示“已根据你的新消息更新本轮处理”。
 
+`learning_scope` 是 additive 结构化输入：`scope_kind` 为 `general | plan_drafting |
+learning_track`；first-turn/ordinary-turn 的 track scope 还可固定 run-only
+`task_kind` 与 `knowledge_key`。单独 `/conversations` binding 只持久化 broad
+scope/track，若携带 run-only 字段则返回 `409 LEARNING_SCOPE_CONFLICT`，不会静默丢弃。
+未提供时新 run 快照为 `general/general_tutor`。旧 conversation 没有
+scope row 时也只投影为 general，不从聊天正文推断归属。
+
 `/runs/{run_id}/inputs` 不是普通聊天快捷方式：仅当 run 仍属于当前用户、尚未
 terminal/cancelled/superseded、状态为 `waiting_for_input`，且已持久化
-`continuation_kind` 时允许继续。普通 completed、normal-chat 或被替代 run 一律返回
-`409 RUN_NOT_ACTIVE`。
+`continuation_kind` 时允许继续。ordinary input 创建 fresh run 并重新快照 conversation
+scope；explicit continuation 复用同一 immutable run scope，若请求携带新的
+`learning_scope` 则返回 `409 LEARNING_SCOPE_CONFLICT`。普通 completed、normal-chat 或
+被替代 run 一律返回 `409 RUN_NOT_ACTIVE`。
 
 安全 title 只能在同次成功 Tutor decision 写入 learner-visible reply 时尝试写入，使用
 NFKC 单行且最多 48 字符的 `conversation_title`，并以 `WHERE title IS NULL` 固定一次。
@@ -259,7 +272,35 @@ SSE 不提供 raw learner messages、traces、selected Skill instructions、capa
 arguments、effect payload、curation envelope、provider diagnostics 或 checkpoint
 payload。
 
-## 7. 学习控制接口
+## 7. LearningTrack 路线与计划接口
+
+所有 `/api/learning-tracks*` 路由都要求 verified user，并以 `user_id + track_id`
+校验对象范围。一个用户可以创建多条 LearningTrack，同一语言的不同目标不会互相
+覆盖；跨用户对象与不存在对象都返回 `404 LEARNING_TRACK_NOT_FOUND`。
+
+| Method | Path | 请求/查询 | 响应与限制 |
+| --- | --- | --- | --- |
+| `GET` | `/api/learning-tracks` | `user_id` | track 列表、进度摘要、active revision、当前节点、`execution_tier` |
+| `POST` | `/api/learning-tracks` | `user_id`、`client_action_id`、language/goal/target、完整 `plan`、可选 `conversation_id` | 原子创建 track、active revision、modules/nodes、初始 progress/mastery；201 或幂等重放 200 |
+| `GET` | `/api/learning-tracks/{track_id}` | `user_id` | track detail 安全投影 |
+| `GET` | `/api/learning-tracks/{track_id}/roadmap` | `user_id` | active revision 的 module/node、progress 与 bounded mastery state |
+| `GET` | `/api/learning-tracks/{track_id}/plan-revisions` | `user_id` | predecessor-linked revision 摘要与 impact |
+| `POST` | `/api/learning-tracks/{track_id}/plan-revisions` | `user_id`、`client_action_id`、`expected_track_version`、完整候选 `plan` | 创建 proposed revision，不改变 active pointer；201 或幂等重放 200 |
+| `POST` | `/api/learning-tracks/{track_id}/plan-revisions/{revision_id}/activate` | `user_id`、`client_action_id`、`expected_track_version` | 只激活当前 active revision 的 proposed 直接后继；200 |
+
+计划必须有 canonical SHA-256、稳定 lowercase `module_key` / `knowledge_key`、唯一
+order 和无环 prerequisite DAG。proposal/activation 使用 track row lock + expected
+version；冲突返回 `409 LEARNING_PLAN_VERSION_CONFLICT` 或
+`LEARNING_PLAN_ACTIVATION_INVALID`。计划结构的输入错误返回统一 validation envelope；
+track root 的 language/goal/target 不一致返回 `LEARNING_PLAN_INVALID`。
+
+Track public projection 不返回 `plan_json`、mastery evidence body、source receipt hash、
+provider、image lock fingerprint 或 executor health detail。`execution_tier` 只能是
+`teaching_local | container_verified | static_only | unavailable`：development 可声明
+teaching-local；public 必须同时拥有 reviewed immutable image lock 和 compatible health
+才可声明 container-verified，否则 fail closed。
+
+## 8. 学习控制接口
 
 | Method | Path | 请求/查询 | 响应与限制 |
 | --- | --- | --- | --- |
@@ -281,7 +322,7 @@ payload。
 `enabled=true`，但不放宽服务器 verified、global pause、budget、cooldown、
 concurrency 或 circuit gate。
 
-## 8. Background / executor 非 API 边界
+## 9. Background / executor 非 API 边界
 
 - Celery 中只有 `tutor.proactive.scan_due_signals`、
   `tutor.proactive.drain_candidates` 和 `tutor.curation.drain` target task；它们
@@ -293,17 +334,18 @@ concurrency 或 circuit gate。
   reviewed immutable image lock 缺失时保持 safe unavailable；见
   [Executor Operations](../setup/container-sandbox-executor.md)。
 
-## 9. 已移除的接口
+## 10. 已移除的接口
 
 当前 `main.py` 不注册旧 `/api/dashboard`、`/api/plans`、
 `/api/learning-sessions`、`/api/reviews`、`/api/notes`、Graph event stream 或
 SDK specialist route。调用方必须迁移到本文件中的 cutover/Tutor 接口；不得
 通过兼容 adapter 重建旧业务状态。
 
-## 10. 契约验证
+## 11. 契约验证
 
-最小自动验证覆盖：cutover gate/confirmation、Tutor public routes、SSE cursor
-与 terminal ordering、run loop/persistence、activity/inbox/memory/plan、默认
+最小自动验证覆盖：cutover gate/confirmation、LearningTrack contract/repository/API、
+PostgreSQL scoped constraints、Tutor scope snapshot、Tutor public routes、SSE cursor 与
+terminal ordering、run loop/persistence、activity/inbox/memory/plan、默认
 proactive delivery、worker import、schema bootstrap 和 Desktop typed build。完整
 可复现命令与结果记录在
 [Release Readiness Ledger](../qa/tutor-harness-release-readiness.md)。

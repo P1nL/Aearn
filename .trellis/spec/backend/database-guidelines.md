@@ -41,6 +41,8 @@ The formal MVP runtime lives under `aearn/`, not under the historical `01_` thro
 - Index names should be descriptive and stable: `idx_<table>_<columns>`.
 - Unique constraints for active records should include `WHERE deleted_at IS NULL` or `WHERE archived_at IS NULL` when the schema requires soft-delete or archive semantics.
 - Idempotency storage must preserve both `Idempotency-Key` and request body identity when implemented.
+- For a new user-scoped mutation whose idempotency row may not exist yet, a prior `SELECT ... FOR UPDATE` does not serialize concurrent first writes. Acquire a transaction-scoped advisory lock (or an equivalent database-owned reservation) from the full `(user_id, operation, idempotency_key)` identity before the replay lookup and business write.
+- Immutable LearningTrack revisions, route structure, mastery evidence, migration receipts, and run scope snapshots reject ordinary physical deletes as well as updates. Confirmed local reset/delete may use a transaction-local purge capability only after active runs are safely terminalized and only for the exact user-owned child-to-root deletion path.
 
 ---
 

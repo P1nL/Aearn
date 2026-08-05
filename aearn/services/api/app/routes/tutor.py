@@ -46,6 +46,7 @@ def create_first_conversation_turn(
         lambda service: service.accept_first_turn(
             user_id=payload.user_id,
             content=payload.content,
+            learning_scope=payload.learning_scope.to_domain() if payload.learning_scope is not None else None,
             idempotency_key=_idempotency_key(request, payload.client_action_id),
         ),
         commit=True,
@@ -117,6 +118,7 @@ def create_or_resume_conversation(
         lambda service: service.create_or_resume_conversation(
             user_id=payload.user_id,
             conversation_id=payload.conversation_id,
+            learning_scope=payload.learning_scope.to_domain() if payload.learning_scope is not None else None,
             idempotency_key=_idempotency_key(request, payload.client_action_id),
         ),
         commit=True,
@@ -147,6 +149,7 @@ def create_conversation_input(
             user_id=payload.user_id,
             conversation_id=conversation_id,
             content=payload.content,
+            learning_scope=payload.learning_scope.to_domain() if payload.learning_scope is not None else None,
             idempotency_key=_idempotency_key(request, payload.client_action_id),
         ),
         commit=True,
@@ -181,6 +184,7 @@ def create_run_input(
             user_id=payload.user_id,
             run_id=run_id,
             content=payload.content,
+            learning_scope=payload.learning_scope.to_domain() if payload.learning_scope is not None else None,
             idempotency_key=_idempotency_key(request, payload.client_action_id),
         ),
         commit=True,

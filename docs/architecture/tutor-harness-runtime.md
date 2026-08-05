@@ -1,8 +1,9 @@
 # Tutor Harness Runtime Architecture
 
-**Status:** Current runtime contract as of 2026-08-03.
+**Status:** Current runtime contract as of 2026-08-04.
 **Authority:** Current route registration, `aearn/services/api/app`,
-`aearn/apps/desktop`, `aearn/services/worker`, `schema.sql`, and their tests.
+`aearn/apps/desktop`, `aearn/services/worker`, `services/learning/`,
+`schema.sql`, and their tests.
 The transition document is historical migration evidence; it is not the normal
 runtime specification.
 
@@ -16,7 +17,7 @@ a compatibility bridge to the former product.
 local identity
   -> GET /api/harness/cutover
   -> verified receipt
-  -> Tutor conversation, activity, inbox, memory, plan revisions, preferences
+  -> LearningTrack routes and Tutor conversation/activity/inbox/memory/preferences
 ```
 
 A missing, pending, blocked, failed, or malformed cutover state denies both the
@@ -29,6 +30,7 @@ legacy learner history.
 | Layer | Owner | Contract |
 | --- | --- | --- |
 | Public adapter | `routes/tutor.py`, `services/tutor/public_api.py` | Validates user scope and idempotency, exposes learner-safe projections, and never performs Graph/router compatibility work. |
+| Learning domain | `routes/learning_tracks.py`, `services/learning/` | Owns track-scoped plans, progress/mastery, execution-tier projection, immutable scope snapshots, and a read-only Tutor context adapter; it does not implement Lesson/Gate/Review or execute code. |
 | Interactive dispatch | `services/tutor/interactive.py` | Starts an already accepted input only after its transaction commits, composes a bounded loop, and keeps provider failures out of the accepted-input response. |
 | Harness | `agents/harness/`, `services/tutor/run_loop.py` | Bounded run loop, lease ownership, input-revision reload, exact Skill selection, capability/effect gate, checkpoint lifecycle, and typed terminal outcome. |
 | Durable state | `services/tutor/persistence.py`, `learner_state.py`, `proactive_repository.py` | PostgreSQL owns user/run/conversation scope, ordered events, idempotency, CAS effects, redacted projections, plan/memory/activity state, and queue leases. |
@@ -86,6 +88,23 @@ explicit server-authorized continuation only
 6. `GET /api/tutor/runs/{run_id}/events` remains incremental run-local transport
    using a non-negative `Last-Event-ID` cursor. It never calls a provider while
    streaming; Desktop history remains the server-authoritative conversation read.
+7. Conversation creation, first-turn, and ordinary-turn requests may carry an
+   additive structured `learning_scope`. Each fresh run writes one immutable
+   `tutor_run_learning_scopes` snapshot containing `scope_kind`, `task_kind`,
+   optional track, and optional knowledge key. Missing scope remains
+   `general/general_tutor`; old conversations are never classified from natural
+   language. Explicit continuation reuses the persisted snapshot and rejects a
+   supplied replacement scope.
+
+### LearningTrack context seam
+
+The LearningTrack package provides `TutorLearningContextAdapter`, a read-only
+adapter that converts a run snapshot into bounded sources for scope/task kind,
+track language/goal/active plan, and the current node's progress/mastery summary.
+This child freezes that adapter contract only. The existing provider context
+priority and item limits are unchanged; a later integration task may compose the
+adapter after defining how track sources coexist with the current user-level Tutor
+plan. Raw plan JSON and mastery evidence bodies never enter this adapter.
 
 ### Public conversation history and process projection
 
@@ -183,7 +202,27 @@ store. API idempotency records bind an operation, user scope, request body hash,
 and safe response. A reused idempotency key with different immutable input is a
 conflict, never a second write.
 
-## 6. Learner controls
+## 6. LearningTrack authority and learner controls
+
+`/api/learning-tracks` is the verified-only HTTP boundary for multiple independent
+language/goal tracks. PostgreSQL owns immutable predecessor-linked plan revisions,
+one active pointer per track, stable-key progress, append-only mastery evidence,
+and a deterministic mastery projection. Activation uses expected track version
+and direct-predecessor checks; it preserves progress/mastery for retained
+`knowledge_key` values and initializes new nodes from satisfied prerequisites.
+
+`ExecutionTierResolver` is the sole LearningTrack capability projection. Local
+development may expose `teaching_local`; public composition requires both a
+reviewed immutable image lock and compatible executor health for
+`container_verified`. Static teaching/review capability falls back to
+`static_only`; all other cases are `unavailable`. Resolution never launches a
+runner or executor.
+
+This foundation intentionally does not implement a LearningTrack UI,
+LessonDocument, exercise Gate, module diagnostic, spaced review, model code-review
+exercise, or actual code execution. Those remain separate product children.
+
+Existing user-level Tutor controls remain unchanged:
 
 - Plan revisions are immutable. `tutor_active_plans` is the only active pointer;
   rollback can move only to the stored predecessor and writes an action record.
@@ -253,7 +292,25 @@ or messages.
 
 ## 9. Verification and release non-claim
 
-### Current local change verification (2026-08-03)
+### LearningTrack foundation verification (2026-08-05)
+
+The additive LearningTrack foundation was verified locally against real
+PostgreSQL and the complete API suite, not released:
+
+- `uv --directory .\aearn\services\api run python -m app.db.bootstrap` twice -> passed;
+- LearningTrack/schema/Tutor/cutover focused batch -> **95 passed**;
+- complete `python -m pytest -q` -> **345 passed**;
+- `ruff check app tests` and `python -m mypy app --no-incremental` -> passed
+  (**108 source files**);
+- `uv --directory .\aearn\services\api lock --check`, Trellis task validation,
+  and `git diff --check` -> passed (line-ending warnings only).
+
+This verifies contracts, scoped PostgreSQL constraints, progress merge, mastery
+replay, local-data inventory, and Tutor scope compatibility. It does not enable
+Lesson/Gate/Review/UI/code execution, prove a public container fleet, or authorize
+commit, release, push, or deployment.
+
+### Prior current local change verification (2026-08-03)
 
 The TurnRun/history and strict provider-decision changes were verified locally,
 not released:

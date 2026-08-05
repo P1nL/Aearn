@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from app.models.learning_tracks import LearningScopeInput
 
 class TutorMutationRequest(BaseModel):
     user_id: str = Field(min_length=1, max_length=120)
@@ -14,10 +15,12 @@ class TutorMutationRequest(BaseModel):
 
 class CreateTutorConversationRequest(TutorMutationRequest):
     conversation_id: str | None = Field(default=None, min_length=1, max_length=120)
+    learning_scope: LearningScopeInput | None = None
 
 
 class TutorInputRequest(TutorMutationRequest):
     content: str = Field(min_length=1, max_length=16_000)
+    learning_scope: LearningScopeInput | None = None
 
     @field_validator("content")
     @classmethod
