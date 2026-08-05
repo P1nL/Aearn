@@ -1,0 +1,4 @@
+{"file":".trellis/tasks/08-04-learning-track-plan-mastery-domain/prd.md","reason":"检查多个 track、版本化计划、掌握度证据、scope 和兼容验收。"}
+{"file":".trellis/tasks/08-04-learning-track-plan-mastery-domain/design.md","reason":"检查数据模型、并发、idempotency、错误、安全、迁移和回滚。"}
+{"file":".trellis/tasks/08-04-learning-track-plan-mastery-domain/research/baseline.md","reason":"检查实现没有恢复旧领域、夸大 execution tier 或破坏 finite TurnRun。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"检查跨层 round-trip、scope 和 public projection 一致性。"}
