@@ -3,7 +3,14 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+
+DEEPSEEK_V4_FLASH_MODEL = "deepseek-v4-flash"
+DEEPSEEK_V4_FLASH_CONTEXT_WINDOW_TOKENS = 1_000_000
+DEEPSEEK_V4_FLASH_MAX_OUTPUT_TOKENS = 384_000
+DEFAULT_TUTOR_CONTEXT_TOKEN_BUDGET = 512
+DEFAULT_TUTOR_MAX_OUTPUT_TOKENS = 1_200
 
 
 ROOT_DIR = Path(__file__).resolve().parents[4]
@@ -55,6 +62,22 @@ class Settings(BaseModel):
     deepseek_base_url: str | None = Field(default_factory=lambda: _env_optional("DEEPSEEK_BASE_URL"))
     deepseek_model: str | None = Field(default_factory=lambda: _env_optional("DEEPSEEK_MODEL"))
     llm_timeout_seconds: float = Field(default_factory=lambda: float(_env_str("LLM_TIMEOUT_SECONDS", "20")))
+    tutor_deepseek_v4_flash_context_window_tokens: int = Field(
+        default_factory=lambda: _env_int(
+            "TUTOR_DEEPSEEK_V4_FLASH_CONTEXT_WINDOW_TOKENS",
+            str(DEEPSEEK_V4_FLASH_CONTEXT_WINDOW_TOKENS),
+        ),
+        ge=1,
+        le=DEEPSEEK_V4_FLASH_CONTEXT_WINDOW_TOKENS,
+    )
+    tutor_deepseek_v4_flash_max_output_tokens: int = Field(
+        default_factory=lambda: _env_int(
+            "TUTOR_DEEPSEEK_V4_FLASH_MAX_OUTPUT_TOKENS",
+            str(DEEPSEEK_V4_FLASH_MAX_OUTPUT_TOKENS),
+        ),
+        ge=1,
+        le=DEEPSEEK_V4_FLASH_MAX_OUTPUT_TOKENS,
+    )
     exa_api_key: str | None = Field(default_factory=lambda: _env_optional("EXA_API_KEY"))
     plan_generation_enabled: bool = Field(
         default_factory=lambda: _env_str("PLAN_GENERATION_ENABLED", "true").lower() in ("true", "1", "yes")
@@ -125,9 +148,40 @@ class Settings(BaseModel):
         default_factory=lambda: _env_int("TUTOR_SCHEDULER_RETRY_BACKOFF_SECONDS", "60")
     )
 
+    @model_validator(mode="after")
+    def _validate_deepseek_v4_flash_token_limits(self) -> "Settings":
+        if self.uses_deepseek_v4_flash_responses and (
+            self.tutor_deepseek_v4_flash_max_output_tokens
+            >= self.tutor_deepseek_v4_flash_context_window_tokens
+        ):
+            raise ValueError("DeepSeek V4 Flash max output tokens must leave room within the context window")
+        return self
+
     @property
     def llm_provider_type(self) -> str:
         return self.llm_type.strip().lower()
+
+    @property
+    def uses_deepseek_v4_flash_responses(self) -> bool:
+        return (
+            self.llm_provider_type == "deepseek"
+            and str(self.llm_model or "").strip() == DEEPSEEK_V4_FLASH_MODEL
+        )
+
+    @property
+    def tutor_context_token_budget(self) -> int:
+        if self.uses_deepseek_v4_flash_responses:
+            return (
+                self.tutor_deepseek_v4_flash_context_window_tokens
+                - self.tutor_deepseek_v4_flash_max_output_tokens
+            )
+        return DEFAULT_TUTOR_CONTEXT_TOKEN_BUDGET
+
+    @property
+    def tutor_max_output_tokens(self) -> int:
+        if self.uses_deepseek_v4_flash_responses:
+            return self.tutor_deepseek_v4_flash_max_output_tokens
+        return DEFAULT_TUTOR_MAX_OUTPUT_TOKENS
 
     @property
     def openai_configured(self) -> bool:

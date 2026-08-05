@@ -18,6 +18,7 @@ from uuid import UUID
 from psycopg import Connection
 
 from app.agents.harness.contracts import TutorPolicySnapshot, TutorTerminalOutcome
+from app.core.config import Settings, get_settings
 from app.agents.harness.skill_catalog import compile_published_skill_catalog
 from app.services.tutor.learner_state import (
     TutorActivityRecord,
@@ -81,8 +82,9 @@ class TutorPublicSseEvent:
 class TutorPublicService:
     """Route-facing target API service with no provider or worker dependency."""
 
-    def __init__(self, conn: Connection[dict[str, object]]) -> None:
+    def __init__(self, conn: Connection[dict[str, object]], *, settings: Settings | None = None) -> None:
         self._conn = conn
+        self._settings = settings or get_settings()
         self._repository = PostgresTutorRepository(conn)
         self._learner_state = TutorLearnerStateRepository(conn)
         self._proactive = PostgresTutorProactiveRepository(conn)
@@ -466,7 +468,7 @@ class TutorPublicService:
             accepted = self._repository.create_first_interactive_turn(
                 user_id=user_id,
                 catalog_digest=catalog.digest,
-                policy=_interactive_policy(now),
+                policy=_interactive_policy(now, settings=self._settings),
                 idempotency_key=idempotency_key,
                 content=content,
                 received_at=now,
@@ -495,7 +497,7 @@ class TutorPublicService:
                 user_id=user_id,
                 conversation_id=conversation_id,
                 catalog_digest=catalog.digest,
-                policy=_interactive_policy(now),
+                policy=_interactive_policy(now, settings=self._settings),
                 idempotency_key=idempotency_key,
                 content=content,
                 received_at=now,
@@ -877,14 +879,14 @@ class TutorPublicService:
             )
 
 
-def _interactive_policy(now: datetime) -> TutorPolicySnapshot:
+def _interactive_policy(now: datetime, *, settings: Settings) -> TutorPolicySnapshot:
     return TutorPolicySnapshot(
         deadline=now + timedelta(minutes=5),
         max_iterations=4,
         max_model_calls=3,
         max_capability_calls=2,
         max_effects=2,
-        context_token_budget=512,
+        context_token_budget=settings.tutor_context_token_budget,
         lease_duration_seconds=30,
     )
 
