@@ -1,0 +1,4 @@
+{"file":".trellis/tasks/08-04-learning-track-plan-mastery-domain/design.md","reason":"加载 LearningTrack 表、计划版本、掌握度、scope、execution tier 和 API 设计。"}
+{"file":".trellis/tasks/08-04-learning-track-plan-mastery-domain/research/baseline.md","reason":"加载当前 user-level plan、旧领域隔离、TurnRun 与 executor lock 基线。"}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"遵循 PostgreSQL、append-only evidence、复合作用域和 executor 生命周期约束。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"追踪 schema、repository、API、Tutor scope adapter 和 public projection。"}
