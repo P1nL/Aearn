@@ -1,0 +1,3 @@
+{"file":".trellis/tasks/08-04-tutor-context-summary-retrieval-compaction/prd.md","reason":"检查增量覆盖、跨作用域隔离、最新纠正优先、降级和原始消息保留验收。"}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"检查 summary scope、coverage、迁移、幂等和跨用户隔离。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"检查 current、recent、summary、memory 和 activity 的固定优先级。"}

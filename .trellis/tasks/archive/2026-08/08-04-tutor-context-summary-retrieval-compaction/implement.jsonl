@@ -1,0 +1,3 @@
+{"file":".trellis/tasks/08-04-tutor-context-summary-retrieval-compaction/design.md","reason":"加载 conversation 游标、结构化摘要、退休消息、worker evidence 和冲突优先级设计。"}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"设计 conversation 作用域、coverage 游标、source hash 和 additive migration。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"连接消息退休、增量摘要、检索注入、worker lease 与上下文预算。"}
