@@ -742,6 +742,76 @@ CREATE TABLE IF NOT EXISTS tutor_runs (
   CHECK ((terminal_outcome IS NULL) = (terminal_at IS NULL))
 );
 
+CREATE TABLE IF NOT EXISTS tutor_provider_attempt_receipts (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  run_id uuid NOT NULL REFERENCES tutor_runs(id) ON DELETE RESTRICT,
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  conversation_id uuid NOT NULL REFERENCES tutor_conversations(id) ON DELETE RESTRICT,
+  input_revision integer NOT NULL CHECK (input_revision >= 0),
+  decision_iteration integer NOT NULL CHECK (decision_iteration >= 1),
+  attempt_index integer NOT NULL CHECK (attempt_index >= 1),
+  provider_type text NOT NULL CHECK (char_length(provider_type) BETWEEN 1 AND 160),
+  model text CHECK (model IS NULL OR char_length(model) BETWEEN 1 AND 160),
+  protocol text NOT NULL CHECK (protocol IN ('responses', 'deepseek_responses', 'deepseek_chat_completions')),
+  outcome text NOT NULL CHECK (outcome IN (
+    'accepted', 'repairable_rejected', 'terminal_rejected', 'transport_failed'
+  )),
+  diagnostic_code text CHECK (diagnostic_code IS NULL OR char_length(diagnostic_code) BETWEEN 1 AND 120),
+  input_tokens bigint CHECK (input_tokens IS NULL OR input_tokens >= 0),
+  cached_input_tokens bigint CHECK (cached_input_tokens IS NULL OR cached_input_tokens >= 0),
+  uncached_input_tokens bigint CHECK (uncached_input_tokens IS NULL OR uncached_input_tokens >= 0),
+  output_tokens bigint CHECK (output_tokens IS NULL OR output_tokens >= 0),
+  reported_total_tokens bigint CHECK (reported_total_tokens IS NULL OR reported_total_tokens >= 0),
+  calculated_total_tokens bigint CHECK (calculated_total_tokens IS NULL OR calculated_total_tokens >= 0),
+  reasoning_tokens bigint CHECK (reasoning_tokens IS NULL OR reasoning_tokens >= 0),
+  usage_available boolean NOT NULL DEFAULT false,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_tutor_provider_attempt_receipts_identity
+    UNIQUE (run_id, input_revision, decision_iteration, attempt_index),
+  CONSTRAINT fk_tutor_provider_attempt_receipt_run_user
+    FOREIGN KEY (run_id, user_id) REFERENCES tutor_runs(id, user_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_provider_attempt_receipt_run_conversation
+    FOREIGN KEY (run_id, conversation_id) REFERENCES tutor_runs(id, conversation_id) ON DELETE RESTRICT,
+  CONSTRAINT chk_tutor_provider_attempt_receipt_cached_input CHECK (
+    (input_tokens IS NULL AND cached_input_tokens IS NULL AND uncached_input_tokens IS NULL)
+    OR (
+      input_tokens IS NOT NULL
+      AND cached_input_tokens IS NOT NULL
+      AND cached_input_tokens <= input_tokens
+      AND uncached_input_tokens = input_tokens - cached_input_tokens
+    )
+    OR (
+      input_tokens IS NOT NULL
+      AND cached_input_tokens IS NULL
+      AND uncached_input_tokens = input_tokens
+    )
+  ),
+  CONSTRAINT chk_tutor_provider_attempt_receipt_calculated_total CHECK (
+    (calculated_total_tokens IS NULL AND (input_tokens IS NULL OR output_tokens IS NULL))
+    OR (
+      input_tokens IS NOT NULL
+      AND output_tokens IS NOT NULL
+      AND calculated_total_tokens = input_tokens + output_tokens
+    )
+  ),
+  CONSTRAINT chk_tutor_provider_attempt_receipt_usage_availability CHECK (
+    usage_available = (
+      input_tokens IS NOT NULL
+      OR cached_input_tokens IS NOT NULL
+      OR output_tokens IS NOT NULL
+      OR reported_total_tokens IS NOT NULL
+      OR reasoning_tokens IS NOT NULL
+    )
+  ),
+  CONSTRAINT chk_tutor_provider_attempt_receipt_outcome_diagnostic CHECK (
+    (outcome = 'accepted' AND diagnostic_code IS NULL)
+    OR (outcome <> 'accepted' AND diagnostic_code IS NOT NULL)
+  ),
+  CONSTRAINT chk_tutor_provider_attempt_receipt_transport_usage CHECK (
+    outcome <> 'transport_failed' OR usage_available = false
+  )
+);
+
 CREATE TABLE IF NOT EXISTS tutor_run_skill_selections (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   run_id uuid NOT NULL REFERENCES tutor_runs(id) ON DELETE RESTRICT,
@@ -1524,11 +1594,20 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+CREATE OR REPLACE FUNCTION enforce_tutor_provider_attempt_receipt_immutable()
+RETURNS trigger AS $$
+BEGIN
+  RAISE EXCEPTION 'Tutor provider attempt receipts are append-only' USING ERRCODE = '23514';
+END;
+$$ LANGUAGE plpgsql;
+
 CREATE INDEX IF NOT EXISTS idx_tutor_conversations_user ON tutor_conversations(user_id, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tutor_messages_conversation ON tutor_messages(conversation_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_tutor_runs_user_status ON tutor_runs(user_id, status, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tutor_runs_conversation ON tutor_runs(conversation_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tutor_input_events_run_revision ON tutor_run_input_events(run_id, input_revision);
+CREATE INDEX IF NOT EXISTS idx_tutor_provider_attempt_receipts_run_created
+  ON tutor_provider_attempt_receipts(run_id, created_at, decision_iteration, attempt_index);
 CREATE INDEX IF NOT EXISTS idx_tutor_checkpoints_run_created ON tutor_run_checkpoints(run_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tutor_events_run_sequence ON tutor_run_events(run_id, event_sequence);
 CREATE INDEX IF NOT EXISTS idx_tutor_capability_invocations_run_created ON tutor_capability_invocations(run_id, created_at DESC);
@@ -1541,6 +1620,11 @@ CREATE INDEX IF NOT EXISTS idx_tutor_executor_health_heartbeat ON tutor_executor
 CREATE INDEX IF NOT EXISTS idx_tutor_traces_run_sequence ON tutor_run_traces(run_id, event_from_sequence);
 CREATE INDEX IF NOT EXISTS idx_tutor_curation_outbox_state_created ON tutor_memory_curation_outbox(state, created_at);
 CREATE INDEX IF NOT EXISTS idx_tutor_curation_proposals_state_created ON tutor_curation_proposals(state, created_at);
+
+DROP TRIGGER IF EXISTS trg_tutor_provider_attempt_receipts_immutable ON tutor_provider_attempt_receipts;
+CREATE TRIGGER trg_tutor_provider_attempt_receipts_immutable
+BEFORE UPDATE OR DELETE ON tutor_provider_attempt_receipts
+FOR EACH ROW EXECUTE FUNCTION enforce_tutor_provider_attempt_receipt_immutable();
 
 DROP TRIGGER IF EXISTS trg_tutor_conversations_updated_at ON tutor_conversations;
 CREATE TRIGGER trg_tutor_conversations_updated_at BEFORE UPDATE ON tutor_conversations

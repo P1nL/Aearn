@@ -3090,3 +3090,108 @@ conn.execute("DELETE FROM users WHERE id = %s", (user_id,))
 A committed fixture must be cleaned in the same foreign-key topology that
 bootstrap created; keeping the receipt is correct for runtime admission and
 incorrect only after the fixture's test-owned user is being destroyed.
+
+---
+
+## Scenario: Tutor Provider Attempt Usage 与缓存计量
+
+### 1. Scope / Trigger
+
+- Trigger：修改 `OpenAICompatibleClient` usage 解析、Tutor primary provider retry、
+  `TutorProviderResult`、run-loop provider lifecycle 或 provider attempt 数据库表。
+- Scope：`services/llm/contracts.py`、`llm_client.py`、
+  `services/tutor/{provider_gateway,run_loop,persistence,ports}.py`、Harness contracts、
+  `tutor_provider_attempt_receipts` 以及 focused provider/PostgreSQL tests。
+- 该 contract 只记录安全计量事实；不选择预算、价格、provider、model 或 protocol，
+  也不增加 learner-visible API/SSE 字段。
+
+### 2. Signatures
+
+- LLM contract：`LLMUsage(input_tokens, cached_input_tokens, output_tokens, total_tokens, reasoning_tokens)`。
+- LLM response：`LLMJsonResponse(content, model, usage: LLMUsage | None = None)`。
+- Gateway receipt：`TutorProviderAttemptReceipt(attempt_index, outcome, provider_type, protocol, usage, model, diagnostic_code)`。
+- Run result：`TutorProviderResult(..., attempts: tuple[TutorProviderAttemptReceipt, ...])`。
+- Lifecycle write：`persist_provider_attempts(snapshot, decision_iteration, attempts, created_at)`。
+- DB identity：`UNIQUE (run_id, input_revision, decision_iteration, attempt_index)`。
+
+### 3. Contracts
+
+- Responses 使用 `input_tokens/output_tokens/total_tokens` 与 details 中的 cached/reasoning；
+  Chat Completions 使用 `prompt_tokens/completion_tokens/total_tokens` 与 prompt/completion details。
+- 所有 provider reported 数值可缺失但不得为负；`cached_input_tokens` 存在时必须有
+  `input_tokens` 且不大于它。
+- `input_tokens` 已包含缓存读取，规范化值固定为
+  `uncached_input_tokens = input_tokens - cached_input_tokens`；不得再把 cached 加回 input。
+- provider reported total 和 calculated `input_tokens + output_tokens` 是两个独立事实，
+  不因不一致而改写 provider 数字。
+- 一个 run-loop decision 可能产生首次请求和一次 same-provider repair 两条 receipt；
+  `model_call_count` 仍只增加一次 decision boundary。
+- envelope 已返回但 visible content/JSON/decision/safety 校验失败时保留 usage；
+  transport 在 envelope 前失败时只记录安全 outcome/diagnostic，不伪造 token。
+- receipt 在 provider 返回后、cancellation/supersede 的业务写门禁前持久化；stale run
+  可保留已发生的 usage，但不能写 message、title、capability 或 effect。
+- receipt 只含 scope、受限标识、outcome/diagnostic、token 和 timestamp；不含 prompt、
+  history、raw response、reasoning 文本、URL/header/body 或 credential，也不进入 public history/SSE/export。
+
+### 4. Validation & Error Matrix
+
+- token 为负、布尔值，或 cached 大于 input -> `LLMUsage` 拒绝；provider envelope
+  解析器将 malformed usage 降级为 unavailable，不使 Tutor 主流程失败。
+- usage 字段缺失 -> `usage=None` / SQL `NULL` + `usage_available=false`，不是零值。
+- accepted attempt 带 diagnostic，或 rejected/transport attempt 缺 diagnostic -> contract 拒绝。
+- transport attempt 带 usage -> contract/DB CHECK 拒绝。
+- exact identity + 完全相同安全事实 -> 幂等重放；exact identity + 不同事实 ->
+  `TutorIdempotencyConflict`，lifecycle 映射为内部 `TutorLifecycleConflict`。
+- user/run/conversation 不一致 -> repository not-found/conflict 或 PostgreSQL composite FK violation。
+- receipt UPDATE/DELETE -> PostgreSQL `23514` append-only violation。
+- persistence 冲突 -> 不公开半完成 token 计量，不绕过既有 terminal/safety gate。
+
+### 5. Good/Base/Bad Cases
+
+- Good：`175420 input / 170368 cached / 2223 output` 得到 `5052 uncached`，
+  calculated total 为 `177643`，且 repair 的两次实际请求分别可审计。
+- Good：首次响应有 usage 但 JSON 无效，receipt 记为 `repairable_rejected`；第二次
+  accepted receipt 独立保存，run `model_call_count` 仍只增加一次。
+- Base：compatible provider 不返回 usage；Tutor decision 正常继续，receipt 明确 unavailable。
+- Bad：计算 `input + cached` 得到 `345788`，把缺失字段写成 0，只保留 repair 的最终
+  success，或把 raw provider body/validation detail 塞进 receipt/trace。
+
+### 6. Tests Required
+
+- `tests/test_tutor_provider_gateway.py`：Responses stream、Chat Completions、cached/no-cache、
+  reasoning、partial/malformed/missing usage、invalid JSON repair、transport 与 primary-only 回归。
+- `tests/test_tutor_run_loop.py`：attempt receipts 在 stale-result 抑制前持久化，同时
+  public message/title/capability/effect 仍被 cancellation/supersede gate 阻止。
+- `tests/test_tutor_run_repository.py`：两个 attempt、missing usage、exact replay、冲突重放、
+  跨 user/conversation、derived token CHECK、transport CHECK 和 UPDATE/DELETE trigger。
+- `tests/test_db_bootstrap.py`：bootstrap 两次并断言表、索引、约束与 immutable trigger。
+- 最终串行运行 focused pytest、完整 pytest、`ruff check app tests`、
+  `python -m mypy app --no-incremental`、`uv lock --check`、Trellis validate 和 `git diff --check`。
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+# input_tokens 已含 cached；这里会重复计算物理输入。
+physical_input = usage.input_tokens + usage.cached_input_tokens
+persist(input_tokens=usage.input_tokens or 0, cached_input_tokens=usage.cached_input_tokens or 0)
+```
+
+#### Correct
+
+```python
+uncached_input = (
+    usage.input_tokens - (usage.cached_input_tokens or 0)
+    if usage.input_tokens is not None
+    else None
+)
+persist(
+    input_tokens=usage.input_tokens,
+    cached_input_tokens=usage.cached_input_tokens,
+    uncached_input_tokens=uncached_input,
+    usage_available=usage.usage_available,
+)
+```
+
+正确实现保留 missing 与 zero 的区别，并让数据库约束重新验证所有派生计量事实。

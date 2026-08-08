@@ -13,6 +13,7 @@ from enum import Enum
 from typing import TypeVar
 
 from app.core.config import DEEPSEEK_V4_FLASH_MODEL, Settings, get_settings
+from app.services.llm.contracts import LLMUsage
 from app.services.llm.llm_urls import deepseek_chat_completions_url, deepseek_responses_url, responses_url
 
 
@@ -78,15 +79,26 @@ class LLMInvalidResponseError(RuntimeError):
         message: str,
         *,
         kind: LLMInvalidResponseKind = LLMInvalidResponseKind.UNKNOWN,
+        usage: LLMUsage | None = None,
+        model: str | None = None,
     ) -> None:
         super().__init__(message)
         self.kind = kind
+        self.usage = usage
+        self.model = model
+
+    def attach_response_metadata(self, *, usage: LLMUsage | None, model: str | None) -> None:
+        if self.usage is None:
+            self.usage = usage
+        if self.model is None:
+            self.model = model
 
 
 @dataclass(frozen=True)
 class LLMJsonResponse:
     content: dict[str, object]
     model: str
+    usage: LLMUsage | None = None
 
 
 def _require_provider_response_object(value: object) -> Mapping[str, object]:
@@ -295,10 +307,16 @@ class OpenAICompatibleClient:
             headers=headers,
             timeout_seconds=timeout_seconds,
         )
-        _ensure_responses_completed(provider_response)
-        content = _extract_message_content(provider_response)
+        usage = _extract_llm_usage(provider_response, protocol=LLMProtocol.RESPONSES)
         model = _response_model(provider_response) or self.model
-        return LLMJsonResponse(content=_parse_json_object(content), model=model)
+        try:
+            _ensure_responses_completed(provider_response)
+            content = _extract_message_content(provider_response)
+            parsed_content = _parse_json_object(content)
+        except LLMInvalidResponseError as exc:
+            exc.attach_response_metadata(usage=usage, model=model)
+            raise
+        return LLMJsonResponse(content=parsed_content, model=model, usage=usage)
 
     def _request_responses_provider(
         self,
@@ -351,9 +369,15 @@ class OpenAICompatibleClient:
                 raise LLMCallError("LLM provider transport failed") from exc
         else:
             provider_response = _post_json(url, headers, payload, timeout)
-        content = _extract_message_content(provider_response)
+        usage = _extract_llm_usage(provider_response, protocol=LLMProtocol.DEEPSEEK_CHAT_COMPLETIONS)
         model = _response_model(provider_response) or self.model
-        return LLMJsonResponse(content=_parse_json_object(content), model=model)
+        try:
+            content = _extract_message_content(provider_response)
+            parsed_content = _parse_json_object(content)
+        except LLMInvalidResponseError as exc:
+            exc.attach_response_metadata(usage=usage, model=model)
+            raise
+        return LLMJsonResponse(content=parsed_content, model=model, usage=usage)
 
 
 def _post_json_stream(
@@ -602,14 +626,20 @@ def _parse_responses_stream(response: Iterable[bytes]) -> Mapping[str, object]:
             if isinstance(text, str) and text.strip():
                 latest_text = text.strip()
         elif event_type == "response.incomplete":
+            response_metadata = maybe_response if isinstance(maybe_response, Mapping) else {}
             raise LLMInvalidResponseError(
                 "LLM provider response was incomplete",
                 kind=LLMInvalidResponseKind.RESPONSE_INCOMPLETE,
+                usage=_extract_llm_usage(response_metadata, protocol=LLMProtocol.RESPONSES),
+                model=_response_model(response_metadata) or None,
             )
         elif event_type == "response.failed":
+            response_metadata = maybe_response if isinstance(maybe_response, Mapping) else {}
             raise LLMInvalidResponseError(
                 "LLM provider response failed",
                 kind=LLMInvalidResponseKind.RESPONSE_FAILED,
+                usage=_extract_llm_usage(response_metadata, protocol=LLMProtocol.RESPONSES),
+                model=_response_model(response_metadata) or None,
             )
         elif event_type == "response.completed" and isinstance(maybe_response, Mapping):
             latest_response = dict(maybe_response)
@@ -824,6 +854,79 @@ def _extract_message_content(provider_response: Mapping[str, object]) -> str:
         "LLM provider response has no message content",
         kind=LLMInvalidResponseKind.CONTENT_MISSING,
     )
+
+
+def _extract_llm_usage(
+    provider_response: Mapping[str, object],
+    *,
+    protocol: LLMProtocol,
+) -> LLMUsage | None:
+    response = _normalize_response_payload(provider_response)
+    raw_usage = response.get("usage")
+    if not isinstance(raw_usage, Mapping):
+        return None
+
+    if protocol is LLMProtocol.DEEPSEEK_CHAT_COMPLETIONS:
+        paths = {
+            "input_tokens": ("prompt_tokens",),
+            "cached_input_tokens": ("prompt_tokens_details", "cached_tokens"),
+            "output_tokens": ("completion_tokens",),
+            "total_tokens": ("total_tokens",),
+        }
+        reasoning_paths = (
+            ("completion_tokens_details", "reasoning_tokens"),
+            ("output_tokens_details", "reasoning_tokens"),
+        )
+    else:
+        paths = {
+            "input_tokens": ("input_tokens",),
+            "cached_input_tokens": ("input_tokens_details", "cached_tokens"),
+            "output_tokens": ("output_tokens",),
+            "total_tokens": ("total_tokens",),
+        }
+        reasoning_paths = (
+            ("output_tokens_details", "reasoning_tokens"),
+            ("completion_tokens_details", "reasoning_tokens"),
+        )
+
+    values: dict[str, int | None] = {}
+    for field_name, field_path in paths.items():
+        valid, value = _optional_usage_int(raw_usage, field_path)
+        if not valid:
+            return None
+        values[field_name] = value
+
+    reasoning_tokens: int | None = None
+    for field_path in reasoning_paths:
+        valid, value = _optional_usage_int(raw_usage, field_path)
+        if not valid:
+            return None
+        if value is not None:
+            reasoning_tokens = value
+            break
+    values["reasoning_tokens"] = reasoning_tokens
+
+    try:
+        usage = LLMUsage(**values)
+    except ValueError:
+        return None
+    return usage if usage.usage_available else None
+
+
+def _optional_usage_int(
+    value: Mapping[str, object],
+    path: tuple[str, ...],
+) -> tuple[bool, int | None]:
+    current: object = value
+    for key in path:
+        if not isinstance(current, Mapping) or key not in current:
+            return True, None
+        current = current[key]
+    if current is None:
+        return True, None
+    if isinstance(current, bool) or not isinstance(current, int) or current < 0:
+        return False, None
+    return True, current
 
 
 def _response_model(provider_response: Mapping[str, object]) -> str:

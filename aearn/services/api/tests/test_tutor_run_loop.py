@@ -22,12 +22,15 @@ from app.agents.harness.contracts import (
     TutorInputEvent,
     TutorLease,
     TutorPolicySnapshot,
+    TutorProviderAttemptOutcome,
+    TutorProviderAttemptReceipt,
     TutorProviderResult,
     TutorRunResult,
     TutorRunSnapshot,
     TutorRunStatus,
     TutorTerminalOutcome,
 )
+from app.services.llm.contracts import LLMUsage
 from app.services.tutor.ports import (
     AllowTutorDecisionGate,
     DefaultDenyCapabilityGateway,
@@ -406,10 +409,24 @@ def test_safe_checkpoint_and_high_water_publish_only_typed_idempotent_requests()
 
 class _RecordingLifecycle:
     def __init__(self) -> None:
+        self.provider_attempts: list[
+            tuple[TutorRunSnapshot, int, tuple[TutorProviderAttemptReceipt, ...]]
+        ] = []
         self.checkpoints: list[TutorCheckpoint] = []
         self.high_water: list[TutorCompactionRequest] = []
         self.terminals: list[tuple[TutorLease, TutorCheckpoint, TutorRunResult, TutorCompactionRequest]] = []
         self.waiting: list[TutorRunResult] = []
+
+    def persist_provider_attempts(
+        self,
+        *,
+        snapshot: TutorRunSnapshot,
+        decision_iteration: int,
+        attempts: tuple[TutorProviderAttemptReceipt, ...],
+        created_at: datetime,
+    ) -> None:
+        del created_at
+        self.provider_attempts.append((snapshot, decision_iteration, attempts))
 
     def persist_safe_checkpoint(
         self,
@@ -478,6 +495,61 @@ def test_lifecycle_adapter_owns_terminal_persistence_when_explicitly_composed() 
     assert store.checkpoints == []
     assert store.results == []
     assert publisher.requests == []
+
+
+def test_provider_attempt_receipts_persist_before_superseded_result_is_suppressed() -> None:
+    store = InMemoryTutorRunStore([_snapshot()])
+
+    def supersede_after_provider(run: TutorRunSnapshot, context: object) -> None:
+        del run, context
+        store.supersede("run-loop")
+
+    provider = SequenceTutorProvider(
+        [
+            TutorProviderResult(
+                decision=TutorDecision(
+                    public_message="这条旧结果绝不能发布给学习者。",
+                    terminal_outcome=TutorTerminalOutcome.COMPLETED,
+                ),
+                attempts=(
+                    TutorProviderAttemptReceipt(
+                        attempt_index=1,
+                        outcome=TutorProviderAttemptOutcome.ACCEPTED,
+                        provider_type="deepseek",
+                        protocol="deepseek_responses",
+                        model="deepseek-v4-flash",
+                        usage=LLMUsage(
+                            input_tokens=175_420,
+                            cached_input_tokens=170_368,
+                            output_tokens=2_223,
+                            total_tokens=177_643,
+                        ),
+                    ),
+                ),
+            )
+        ],
+        on_decide=supersede_after_provider,
+    )
+    lifecycle = _RecordingLifecycle()
+    loop, _ = _loop(
+        store=store,
+        contexts={("run-loop", 0): _context(0)},
+        provider=provider,
+        lifecycle=lifecycle,
+    )
+
+    result = loop.run(run_id="run-loop", lease_owner_id="worker-usage")
+
+    assert result.status is TutorRunStatus.CANCELLED
+    assert result.public_message is None
+    assert len(lifecycle.provider_attempts) == 1
+    snapshot, decision_iteration, attempts = lifecycle.provider_attempts[0]
+    assert snapshot.input_revision == 0
+    assert decision_iteration == 1
+    assert attempts[0].usage is not None
+    assert attempts[0].usage.uncached_input_tokens == 5_052
+    assert len(lifecycle.terminals) == 1
+    assert lifecycle.terminals[0][2].terminal_outcome is TutorTerminalOutcome.CANCELLED
 
 
 class _ConflictedTerminalLifecycle:

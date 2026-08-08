@@ -1,6 +1,6 @@
 # Tutor Harness Runtime Architecture
 
-**Status:** Current runtime contract as of 2026-08-04.
+**Status:** Current runtime contract as of 2026-08-08.
 **Authority:** Current route registration, `aearn/services/api/app`,
 `aearn/apps/desktop`, `aearn/services/worker`, `services/learning/`,
 `schema.sql`, and their tests.
@@ -147,6 +147,23 @@ At most one same-provider repair retry may follow a repairable visible-content,
 JSON, or Tutor-decision rejection; incomplete, failed, malformed-envelope, and
 transport responses terminate without repair. The reminder never echoes the
 rejected response, validation detail, prompt, or credentials.
+
+Each actual provider attempt returns a safe `TutorProviderAttemptReceipt`. The first
+request and the optional same-provider repair have separate `attempt_index` values,
+while `tutor_runs.model_call_count` continues to count one run-loop decision boundary,
+not raw HTTP requests. The lifecycle persists attempt receipts immediately after the
+provider returns and before the refreshed cancellation/supersede gate; this preserves
+already-incurred usage for a stale run without authorizing its public message, title,
+capability, or effect.
+
+`LLMUsage` normalizes Responses and Chat Completions fields without changing provider
+routing. Provider `input_tokens`/`prompt_tokens` already include cached input, so
+`uncached_input_tokens = input_tokens - cached_input_tokens`; cached tokens are never
+added to input again. Provider-reported total and calculated input-plus-output remain
+separate facts. Missing or malformed usage is unavailable (`None`/SQL `NULL`), not a
+zero-valued success and not a Tutor failure. A completed envelope may retain numeric
+usage even when visible content, JSON, decision, or safety validation rejects it;
+transport failure before an envelope never fabricates usage.
 The durable run may retain a bounded internal diagnostic code for configuration,
 timeout, authentication/quota/rate-limit, HTTP/transport, invalid provider
 response envelope, missing response content, non-JSON response content, invalid
@@ -208,8 +225,8 @@ separate lifecycle boundary.
 ## 5. Privacy, diagnostics, and persistence
 
 The canonical learner message body is limited to `tutor_messages`. Events,
-traces, checkpoints, capability/effect receipts, exports, outbox rows, and
-public SSE are projected twice through learner-safe allowlists. They omit raw
+traces, checkpoints, capability/effect/provider-attempt receipts, exports, outbox rows,
+and public SSE are projected twice through learner-safe allowlists. They omit raw
 prompts/history, provider payloads/errors/reasoning, hidden tests, reference
 answers, submitted code, filesystem/container paths, shell/SQL targets,
 credentials, and checkpoint payloads.

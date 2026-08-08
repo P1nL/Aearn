@@ -19,6 +19,8 @@ from app.agents.harness.contracts import (
     TutorContextSelection,
     TutorDecision,
     TutorEffectProposal,
+    TutorProviderAttemptOutcome,
+    TutorProviderAttemptReceipt,
     TutorProviderResult,
     TutorRunSnapshot,
     TutorSkillReference,
@@ -34,6 +36,7 @@ from app.services.llm.llm_client import (
     LLMInvalidResponseKind,
     LLMJsonResponse,
     OpenAICompatibleClient,
+    select_llm_protocol,
 )
 
 
@@ -277,60 +280,175 @@ class PrimaryTutorProviderGateway:
         run: TutorRunSnapshot,
         context: TutorContextSelection,
     ) -> TutorProviderResult:
+        attempts: list[TutorProviderAttemptReceipt] = []
         try:
-            client = self._client if self._client is not None else OpenAICompatibleClient(self._settings)
+            client = (
+                self._client
+                if self._client is not None
+                else OpenAICompatibleClient(self._settings)
+            )
             messages = _build_messages(run=run, context=context)
-            for attempt in range(PRIMARY_PROVIDER_DECISION_ATTEMPTS):
-                try:
-                    response = client.complete_json(
-                        messages,
-                        temperature=None,
-                        max_tokens=self._max_output_tokens,
-                        timeout_seconds=self._timeout_seconds,
-                    )
-                    decision = parse_tutor_decision(response.content)
-                    return TutorProviderResult(decision=decision, model=response.model or client.model)
-                except TutorOutputSafetyError as exc:
-                    diagnostic_code = _PROVIDER_OUTPUT_SAFETY_REJECTED
-                    exception_type = type(exc).__name__
-                    repairable = True
-                except TutorDecisionValidationError as exc:
-                    diagnostic_code = _PROVIDER_DECISION_INVALID
-                    exception_type = type(exc).__name__
-                    repairable = True
-                except LLMInvalidResponseError as exc:
-                    diagnostic_code = _provider_invalid_response_diagnostic_code(exc)
-                    exception_type = type(exc).__name__
-                    repairable = exc.kind in _REPAIRABLE_INVALID_RESPONSE_KINDS
-                except (ValidationError, TypeError, ValueError) as exc:
-                    diagnostic_code = _PROVIDER_DECISION_INVALID
-                    exception_type = type(exc).__name__
-                    repairable = True
-                else:
-                    continue
-
-                logger.warning(
-                    "Tutor primary model response was rejected (%s/%s): %s [%s]",
-                    attempt + 1,
-                    PRIMARY_PROVIDER_DECISION_ATTEMPTS,
-                    exception_type,
-                    diagnostic_code,
-                )
-                if not repairable or attempt + 1 == PRIMARY_PROVIDER_DECISION_ATTEMPTS:
-                    return TutorProviderResult.model_unavailable(safe_code=diagnostic_code)
-                messages.append({"role": "user", "content": _TUTOR_DECISION_REPAIR_MESSAGE})
-            return TutorProviderResult.model_unavailable(safe_code=_PROVIDER_RESPONSE_INVALID)
+            protocol = select_llm_protocol(self._settings).value
+            provider_type = self._settings.llm_provider_type
         except LLMConfigurationError as exc:
-            logger.warning("Tutor primary model configuration was unavailable: %s", type(exc).__name__)
-            return TutorProviderResult.model_unavailable(safe_code=_PROVIDER_CONFIGURATION_UNAVAILABLE)
-        except LLMCallError as exc:
-            diagnostic_code = _provider_call_diagnostic_code(exc)
-            logger.warning("Tutor primary model request was unavailable: %s", diagnostic_code)
-            return TutorProviderResult.model_unavailable(safe_code=diagnostic_code)
+            logger.warning(
+                "Tutor primary model configuration was unavailable: %s",
+                type(exc).__name__,
+            )
+            return TutorProviderResult.model_unavailable(
+                safe_code=_PROVIDER_CONFIGURATION_UNAVAILABLE
+            )
         except Exception as exc:
-            # A selected-provider adapter failure is never a reason to route to another provider.
-            logger.warning("Tutor primary model adapter failed: %s", type(exc).__name__)
-            return TutorProviderResult.model_unavailable(safe_code=_PROVIDER_ADAPTER_FAILED)
+            logger.warning(
+                "Tutor primary model adapter failed before invocation: %s",
+                type(exc).__name__,
+            )
+            return TutorProviderResult.model_unavailable(
+                safe_code=_PROVIDER_ADAPTER_FAILED
+            )
+
+        for attempt_index in range(1, PRIMARY_PROVIDER_DECISION_ATTEMPTS + 1):
+            response: LLMJsonResponse | None = None
+            try:
+                response = client.complete_json(
+                    messages,
+                    temperature=None,
+                    max_tokens=self._max_output_tokens,
+                    timeout_seconds=self._timeout_seconds,
+                )
+                decision = parse_tutor_decision(response.content)
+            except LLMConfigurationError as exc:
+                logger.warning(
+                    "Tutor primary model configuration was unavailable: %s",
+                    type(exc).__name__,
+                )
+                return TutorProviderResult.model_unavailable(
+                    safe_code=_PROVIDER_CONFIGURATION_UNAVAILABLE,
+                    attempts=tuple(attempts),
+                )
+            except LLMCallError as exc:
+                diagnostic_code = _provider_call_diagnostic_code(exc)
+                attempts.append(
+                    TutorProviderAttemptReceipt(
+                        attempt_index=attempt_index,
+                        outcome=TutorProviderAttemptOutcome.TRANSPORT_FAILED,
+                        provider_type=provider_type,
+                        protocol=protocol,
+                        model=client.model,
+                        diagnostic_code=diagnostic_code,
+                    )
+                )
+                logger.warning(
+                    "Tutor primary model request was unavailable: %s", diagnostic_code
+                )
+                return TutorProviderResult.model_unavailable(
+                    safe_code=diagnostic_code,
+                    attempts=tuple(attempts),
+                )
+            except TutorOutputSafetyError as exc:
+                diagnostic_code = _PROVIDER_OUTPUT_SAFETY_REJECTED
+                exception_type = type(exc).__name__
+                repairable = True
+                usage = response.usage if response is not None else exc.usage
+                model = (
+                    response.model if response is not None else exc.model
+                ) or client.model
+            except TutorDecisionValidationError as exc:
+                diagnostic_code = _PROVIDER_DECISION_INVALID
+                exception_type = type(exc).__name__
+                repairable = True
+                usage = response.usage if response is not None else exc.usage
+                model = (
+                    response.model if response is not None else exc.model
+                ) or client.model
+            except LLMInvalidResponseError as exc:
+                diagnostic_code = _provider_invalid_response_diagnostic_code(exc)
+                exception_type = type(exc).__name__
+                repairable = exc.kind in _REPAIRABLE_INVALID_RESPONSE_KINDS
+                usage = response.usage if response is not None else exc.usage
+                model = (
+                    response.model if response is not None else exc.model
+                ) or client.model
+            except (ValidationError, TypeError, ValueError) as exc:
+                diagnostic_code = _PROVIDER_DECISION_INVALID
+                exception_type = type(exc).__name__
+                repairable = True
+                usage = response.usage if response is not None else None
+                model = (
+                    response.model if response is not None else None
+                ) or client.model
+            except Exception as exc:
+                diagnostic_code = _PROVIDER_ADAPTER_FAILED
+                if response is not None:
+                    attempts.append(
+                        TutorProviderAttemptReceipt(
+                            attempt_index=attempt_index,
+                            outcome=TutorProviderAttemptOutcome.TERMINAL_REJECTED,
+                            provider_type=provider_type,
+                            protocol=protocol,
+                            model=response.model or client.model,
+                            usage=response.usage,
+                            diagnostic_code=diagnostic_code,
+                        )
+                    )
+                logger.warning(
+                    "Tutor primary model adapter failed: %s", type(exc).__name__
+                )
+                return TutorProviderResult.model_unavailable(
+                    safe_code=diagnostic_code,
+                    attempts=tuple(attempts),
+                )
+            else:
+                model = response.model or client.model
+                attempts.append(
+                    TutorProviderAttemptReceipt(
+                        attempt_index=attempt_index,
+                        outcome=TutorProviderAttemptOutcome.ACCEPTED,
+                        provider_type=provider_type,
+                        protocol=protocol,
+                        model=model,
+                        usage=response.usage,
+                    )
+                )
+                return TutorProviderResult(
+                    decision=decision,
+                    model=model,
+                    attempts=tuple(attempts),
+                )
+
+            attempts.append(
+                TutorProviderAttemptReceipt(
+                    attempt_index=attempt_index,
+                    outcome=(
+                        TutorProviderAttemptOutcome.REPAIRABLE_REJECTED
+                        if repairable
+                        else TutorProviderAttemptOutcome.TERMINAL_REJECTED
+                    ),
+                    provider_type=provider_type,
+                    protocol=protocol,
+                    model=model,
+                    usage=usage,
+                    diagnostic_code=diagnostic_code,
+                )
+            )
+            logger.warning(
+                "Tutor primary model response was rejected (%s/%s): %s [%s]",
+                attempt_index,
+                PRIMARY_PROVIDER_DECISION_ATTEMPTS,
+                exception_type,
+                diagnostic_code,
+            )
+            if not repairable or attempt_index == PRIMARY_PROVIDER_DECISION_ATTEMPTS:
+                return TutorProviderResult.model_unavailable(
+                    safe_code=diagnostic_code,
+                    attempts=tuple(attempts),
+                )
+            messages.append({"role": "user", "content": _TUTOR_DECISION_REPAIR_MESSAGE})
+
+        return TutorProviderResult.model_unavailable(
+            safe_code=_PROVIDER_RESPONSE_INVALID,
+            attempts=tuple(attempts),
+        )
 
 
 def _provider_invalid_response_diagnostic_code(exc: LLMInvalidResponseError) -> str:
