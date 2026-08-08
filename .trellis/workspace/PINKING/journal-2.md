@@ -976,3 +976,42 @@ Closed the planning-only Tutor Harness rearchitecture parent after all nine inde
 ### Next Steps
 
 - None - task complete
+
+
+## Session 87: 完成 Tutor Provider Usage 与缓存计量
+
+**Date**: 2026-08-08
+**Task**: 完成 Tutor Provider Usage 与缓存计量
+**Branch**: `main`
+
+### Summary
+
+实现 provider-neutral LLMUsage、Responses/Chat usage 解析、每个实际 attempt 的安全 receipt、PostgreSQL append-only 持久化与作用域约束；补齐 focused/完整 Pytest、Ruff、Mypy、lock、Trellis validate 和文档规格验证。
+
+### Main Changes
+
+- 新增 provider-neutral `LLMUsage`，归一化 Responses 与 Chat Completions 的 input、cached、output、reported total 和 reasoning token。
+- 为首次请求与 same-provider repair 分别生成 `TutorProviderAttemptReceipt`，并保持 run-level `model_call_count` 的 decision-boundary 语义。
+- 新增 scoped append-only `tutor_provider_attempt_receipts`、幂等重放、复合外键、derived token CHECK 和 immutable trigger。
+- 更新 Tutor runtime、数据库、QA 文档与 Trellis 后端可执行规格。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `43d954f9a3a1061d2a1efe3a16e9b808257eb3fa` | (see git log) |
+
+### Testing
+
+- [OK] focused Pytest：81 passed。
+- [OK] 完整 API Pytest：374 passed。
+- [OK] PostgreSQL scope、幂等、CHECK、FK 与 append-only trigger 覆盖通过。
+- [OK] Ruff、Mypy（110 source files）、`uv lock --check`、Trellis validate 与 `git diff --check` 通过。
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 当前 child 已归档；下一条 dependency-satisfied child 是 `08-04-tutor-adaptive-context-budget-planner`，待单独启动。
