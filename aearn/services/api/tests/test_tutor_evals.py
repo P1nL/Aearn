@@ -30,6 +30,10 @@ def test_fake_only_tutor_eval_fixture_covers_pinned_catalog_and_required_scenari
         "primary-only-model-unavailable",
         "protected-values-never-exported",
         "replay-outbox-proposal-terminal-unique",
+        "current-input-pinned",
+        "newest-history-selected",
+        "teaching-correction-policy-present",
+        "current-input-unrepresentable-provider-not-called",
     }
 
 

@@ -1685,6 +1685,12 @@ Safety blocking remains strict, while valid conversational answers stay visible.
   dispatch, after a capability result, and immediately before effect commit. An
   effect whose expected revision is stale becomes `stale_rejected` and its
   committer is never called.
+- Every interactive TurnRun context must resolve one authoritative learner input
+  from exact run/revision evidence and carry it separately from optional history.
+  Reserve its bounded token cost before optional sections; optional context may be
+  evicted, but must never evict the current input. If no safe non-empty
+  representation fits, fail with a typed safe code before provider invocation.
+  Proactive contexts must explicitly declare that current input is not required.
 - Context construction is deterministic and bounded in this order:
   system/selected-Skill/policy, active plan, review/FSRS, sanitized recent
   messages, working summary, learner-visible memory, activity/execution facts,
@@ -1782,6 +1788,141 @@ Lease ownership precedes terminal persistence. The finite loop then reloads the
 input revision before every unsafe boundary and keeps all resulting state inside
 its typed ports until later persistence and API integration tasks own the
 adapter work.
+
+
+## Scenario: Authoritative Tutor Current Input and Newest History
+
+### 1. Scope / Trigger
+
+- Trigger: changing interactive Tutor input evidence, `TutorContextInput`,
+  `TutorContextBuilder`, PostgreSQL context loading, provider prompt assembly,
+  context-failure mapping, or latest-input regression evaluation.
+- Scope: `tutor_run_input_events`, `tutor_messages`,
+  `app/agents/harness/{contracts,context_builder}.py`,
+  `app/services/tutor/{interactive,provider_gateway,run_loop,evals}.py`, and
+  their focused unit/PostgreSQL tests.
+- This contract does not authorize schema changes, keyword-based production
+  routing, provider fallback, live-provider CI, or proactive learner chat.
+
+### 2. Signatures
+
+- Evidence: `tutor_run_input_events(run_id, input_revision, message_id)` joins
+  the canonical `tutor_messages(id, conversation_id, role, content)` row.
+- Loader: `PostgresTutorContextLoader.load_context(snapshot, *, input_revision)
+  -> TutorContextInput`.
+- Input contract: `TutorContextInput.current_input_required: bool` plus
+  `current_input: TutorContextSource | None`.
+- Builder: `TutorContextBuilder.build(context_input, *, token_budget)
+  -> TutorContextSelection`.
+- Provider payload: `{input_revision, current_input, context,
+  context_metadata}`, where `current_input` is separate from optional context.
+- Optional smoke: set `AEARN_RUN_TUTOR_LATEST_INPUT_SMOKE=1`, then run
+  `python -m app.services.tutor.latest_input_smoke` through the API `uv`
+  environment.
+
+### 3. Contracts
+
+- Interactive runs explicitly set `current_input_required=true` and resolve
+  exactly one nonblank learner message from the active run, exact revision, user,
+  and conversation. Never infer current input from timestamp, role alone, or the
+  last conversation row.
+- Proactive runs explicitly set `current_input_required=false`, carry no
+  `current_input`, and expose no recent learner chat. Origin and loader mode
+  must agree; a caller cannot use proactive composition to bypass an interactive
+  input requirement.
+- The builder sanitizes and bounds current input first, reserves its token estimate
+  before every optional section, and stores only source id/hash, token estimate,
+  and truncation state in checkpoint metadata. Selection content and metadata must
+  agree exactly.
+- Optional recent history excludes the exact current message. Apply the item cap
+  to the newest suffix, attempt token-budget selection newest-first, skip an
+  oversized optional item without blocking smaller next-newest items, then present
+  selected messages in chronological order.
+- If a safe nonempty current-input representation cannot fit, terminate before
+  the provider with a typed safe diagnostic. Never call the provider with missing
+  learner intent.
+- Initial and repair requests share the same teaching policy: acknowledge/answer
+  the authoritative input first, treat corrections/refusals/completion as stale
+  path overrides, do not repeat rejected steps, answer advice/comparison questions
+  directly, and ask at most one necessary follow-up.
+
+### 4. Validation & Error Matrix
+
+- Required input missing -> `TUTOR_CURRENT_INPUT_MISSING`; no provider call.
+- Input supplied when not required -> `TUTOR_CURRENT_INPUT_UNEXPECTED`.
+- Loader origin/composition mismatch -> `TUTOR_CONTEXT_ORIGIN_INVALID`.
+- Requested revision differs from the snapshot or is below one ->
+  `TUTOR_CURRENT_INPUT_REVISION_INVALID`.
+- Exact scoped event/message evidence is missing or ambiguous ->
+  `TUTOR_CURRENT_INPUT_EVIDENCE_INVALID`.
+- Evidence points to a non-learner role -> `TUTOR_CURRENT_INPUT_ROLE_INVALID`.
+- Canonical or sanitized input is blank -> `TUTOR_CURRENT_INPUT_EMPTY`.
+- Minimum safe representation exceeds the token budget ->
+  `TUTOR_CURRENT_INPUT_UNREPRESENTABLE`; run terminalizes as `failed` with
+  zero model calls and public projection remains the generic safe failure family.
+
+### 5. Good / Base / Bad Cases
+
+- Good: a long conversation resolves `我应该学哪些语言` from exact run/revision
+  evidence, excludes it from history, keeps the newest prior messages, and sends it
+  as the provider payload's separate `current_input`.
+- Good: an explicit continuation advances the same run revision; the new event is
+  current input and the prior revision becomes optional history. Equal timestamps
+  and later unrelated rows do not change current-input identity.
+- Base: a proactive candidate carries learner-state/activity context with
+  `current_input_required=false` and no learner chat.
+- Bad: read eight newest rows, reverse them, then take the first four; this selects
+  an older prefix and can discard the learner's latest correction.
+- Bad: silently omit an oversized required input, route on Chinese keywords, or let
+  a schema-repair reminder replace the teaching policy.
+
+### 6. Tests Required
+
+- Unit-test required-input reservation, sanitization, deterministic truncation,
+  unrepresentable failure, selection/metadata consistency, and proactive invented
+  input rejection.
+- Unit-test latest-history item cap and tight-budget behavior: select newest-first,
+  skip oversized optional items, and emit the selected subset chronologically.
+- PostgreSQL-test exact event/message resolution, long history, equal timestamp,
+  later interfering rows, explicit continuation revision, role/missing evidence,
+  scope mismatch, and interactive/proactive origin agreement.
+- Provider-test separate payload shape, current-input content, teaching-policy
+  markers, and repair inheritance without echoing rejected output.
+- Run-loop/eval tests assert typed failure and zero provider calls. Default tests
+  must not read live settings or construct a live provider; the smoke command is
+  explicit opt-in only.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+rows = load_latest_messages(limit=8)
+context = TutorContextInput(
+    current_input_required=True,
+    current_input=None,
+    recent_messages=tuple(reversed(rows)),
+)
+```
+
+This guesses that history contains the current request and lets item/token limits
+discard it.
+
+#### Correct
+
+```python
+current = load_exact_input_event(run_id=run.run_id, input_revision=run.input_revision)
+history = load_bounded_history_excluding(current.message_id)
+context = TutorContextInput(
+    current_input_required=True,
+    current_input=TutorContextSource(f"message:{current.message_id}", current.content),
+    recent_messages=history,
+)
+selection = builder.build(context, token_budget=run.policy.context_token_budget)
+```
+
+The exact event owns identity, required input consumes budget first, and optional
+history can be reduced without erasing the learner's current intent.
 
 
 ## Scenario: Tutor Primary JSON Decision Provider Boundary

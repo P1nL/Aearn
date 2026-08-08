@@ -42,6 +42,16 @@ logger = logging.getLogger(__name__)
 
 PRIMARY_PROVIDER_DECISION_ATTEMPTS = 2
 
+_TUTOR_TEACHING_POLICY = (
+    "When current_input is present, treat it as the authoritative request for this TurnRun and answer or acknowledge it "
+    "before advancing any earlier lesson, exercise, setup, or plan. Prior context is supporting evidence only. "
+    "A learner correction, interruption, refusal, goal change, or statement that a step is already complete overrides stale "
+    "assumptions: briefly acknowledge the change, stop the stale path, and do not repeat completed or rejected steps unless "
+    "the learner explicitly asks. For advice, comparison, capability, or what-to-learn questions, answer directly first and "
+    "ask at most one necessary follow-up question. Do not force an earlier website, image, or HTML path merely because it "
+    "appears in context. Be concise and learner-facing, and state uncertainty instead of inventing facts."
+)
+
 _PROVIDER_CONFIGURATION_UNAVAILABLE = "TUTOR_PROVIDER_CONFIGURATION_UNAVAILABLE"
 _PROVIDER_TIMEOUT = "TUTOR_PROVIDER_TIMEOUT"
 _PROVIDER_AUTH_FAILED = "TUTOR_PROVIDER_AUTH_FAILED"
@@ -98,7 +108,8 @@ _TUTOR_DECISION_REPAIR_MESSAGE = (
     "Use null when there is no optional value and empty arrays when there are no requests. "
     "A normal direct reply must use terminal_intent=completed and continuation_kind=null. "
     "A continuation_kind is allowed only with checkpoint_reason=capability_result and terminal_intent=null. "
-    "Include only the listed keys and values needed for this decision."
+    "Include only the listed keys and values needed for this decision. "
+    f"Keep following this teaching policy: {_TUTOR_TEACHING_POLICY}"
 )
 
 
@@ -432,10 +443,12 @@ def _build_messages(*, run: TutorRunSnapshot, context: TutorContextSelection) ->
         "checkpoint_reason=capability_result and terminal_intent=null. Use null, not false, for absent optional values. "
         "Follow this exact complete shape (values may differ): "
         f"{_canonical_tutor_decision_example()} "
-        "Include only the listed keys and values needed for this decision."
+        "Include only the listed keys and values needed for this decision. "
+        f"Teaching policy: {_TUTOR_TEACHING_POLICY}"
     )
     payload = {
         "input_revision": run.input_revision,
+        "current_input": context.current_input.as_prompt_value() if context.current_input is not None else None,
         "context": context.as_prompt_context(),
         "context_metadata": context.checkpoint_metadata.as_dict(),
     }

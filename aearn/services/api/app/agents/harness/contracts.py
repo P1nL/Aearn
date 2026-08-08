@@ -44,6 +44,14 @@ class TutorRunStatus(str, Enum):
     FAILED = "failed"
 
 
+class TutorContextError(RuntimeError):
+    """A bounded context invariant failed before the provider boundary."""
+
+    def __init__(self, safe_code: str) -> None:
+        self.safe_code = _safe_identifier(safe_code)
+        super().__init__(self.safe_code)
+
+
 class TutorTerminalOutcome(str, Enum):
     COMPLETED = "completed"
     MODEL_UNAVAILABLE = "model_unavailable"
@@ -192,6 +200,8 @@ class TutorContextInput:
     run_id: str
     conversation_id: str
     input_revision: int
+    current_input_required: bool
+    current_input: TutorContextSource | None = None
     system_descriptors: tuple[TutorContextSource, ...] = ()
     active_plan: tuple[TutorContextSource, ...] = ()
     review_snapshot: tuple[TutorContextSource, ...] = ()
@@ -204,6 +214,10 @@ class TutorContextInput:
     def __post_init__(self) -> None:
         if self.input_revision < 0:
             raise ValueError("input_revision must be non-negative")
+        if self.current_input_required and self.current_input is None:
+            raise TutorContextError("TUTOR_CURRENT_INPUT_MISSING")
+        if not self.current_input_required and self.current_input is not None:
+            raise TutorContextError("TUTOR_CURRENT_INPUT_UNEXPECTED")
         object.__setattr__(self, "run_id", _safe_identifier(self.run_id))
         object.__setattr__(self, "conversation_id", _safe_identifier(self.conversation_id))
         for name in (
@@ -254,6 +268,41 @@ class TutorContextItem:
 
 
 @dataclass(frozen=True)
+class TutorCurrentInput:
+    source_id: str
+    content: str
+    source_hash: str
+    token_estimate: int
+    truncated: bool = False
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "source_id", _safe_identifier(self.source_id))
+        object.__setattr__(self, "content", limit_text(self.content, MAX_TUTOR_PUBLIC_MESSAGE_LENGTH))
+        object.__setattr__(self, "source_hash", limit_text(self.source_hash, 64))
+        if not self.content:
+            raise ValueError("current input content must not be blank")
+        if self.token_estimate < 1:
+            raise ValueError("current input token_estimate must be positive")
+
+    def as_prompt_value(self) -> dict[str, str]:
+        return {"role": "user", "content": self.content}
+
+
+@dataclass(frozen=True)
+class TutorCurrentInputMetadata:
+    source_id: str
+    source_hash: str
+    token_estimate: int
+    truncated: bool = False
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "source_id", _safe_identifier(self.source_id))
+        object.__setattr__(self, "source_hash", limit_text(self.source_hash, 64))
+        if self.token_estimate < 1:
+            raise ValueError("current input token_estimate must be positive")
+
+
+@dataclass(frozen=True)
 class TutorContextSectionMetadata:
     section: TutorContextSection
     selected_count: int
@@ -272,6 +321,7 @@ class TutorContextSectionMetadata:
 class TutorCheckpointMetadata:
     token_budget: int
     consumed_tokens: int
+    current_input: TutorCurrentInputMetadata | None = None
     sections: tuple[TutorContextSectionMetadata, ...] = ()
 
     def __post_init__(self) -> None:
@@ -283,16 +333,28 @@ class TutorCheckpointMetadata:
 
     @property
     def source_ids(self) -> tuple[str, ...]:
-        return tuple(source_id for section in self.sections for source_id in section.source_ids)
+        current = (self.current_input.source_id,) if self.current_input is not None else ()
+        return current + tuple(source_id for section in self.sections for source_id in section.source_ids)
 
     @property
     def source_hashes(self) -> tuple[str, ...]:
-        return tuple(source_hash for section in self.sections for source_hash in section.source_hashes)
+        current = (self.current_input.source_hash,) if self.current_input is not None else ()
+        return current + tuple(source_hash for section in self.sections for source_hash in section.source_hashes)
 
     def as_dict(self) -> dict[str, object]:
         return {
             "token_budget": self.token_budget,
             "consumed_tokens": self.consumed_tokens,
+            "current_input": (
+                {
+                    "source_id": self.current_input.source_id,
+                    "source_hash": self.current_input.source_hash,
+                    "token_estimate": self.current_input.token_estimate,
+                    "truncated": self.current_input.truncated,
+                }
+                if self.current_input is not None
+                else None
+            ),
             "sections": [
                 {
                     "section": section.section.value,
@@ -334,10 +396,22 @@ class TutorCompactionRequest:
 class TutorContextSelection:
     items: tuple[TutorContextItem, ...]
     checkpoint_metadata: TutorCheckpointMetadata
+    current_input: TutorCurrentInput | None = None
     high_water_compaction_request: TutorCompactionRequest | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "items", tuple(self.items))
+        metadata = self.checkpoint_metadata.current_input
+        if (self.current_input is None) != (metadata is None):
+            raise ValueError("current input and checkpoint metadata must agree")
+        if self.current_input is not None and metadata is not None:
+            if (
+                self.current_input.source_id != metadata.source_id
+                or self.current_input.source_hash != metadata.source_hash
+                or self.current_input.token_estimate != metadata.token_estimate
+                or self.current_input.truncated != metadata.truncated
+            ):
+                raise ValueError("current input metadata does not match selection")
 
     def as_prompt_context(self) -> list[dict[str, str]]:
         return [item.as_prompt_value() for item in self.items]

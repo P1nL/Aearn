@@ -11,6 +11,7 @@ from app.agents.harness.contracts import (
     TutorCheckpointMetadata,
     TutorCheckpointReason,
     TutorCompactionTrigger,
+    TutorContextError,
     TutorDecision,
     TutorDecisionGateStatus,
     TutorEffectResult,
@@ -290,6 +291,14 @@ class TutorRunLoop:
                 )
         except TutorLifecycleConflict:
             return _lease_unavailable_result(snapshot, effect_results=effect_results)
+        except TutorContextError as exc:
+            return self._terminal(
+                snapshot,
+                outcome=TutorTerminalOutcome.FAILED,
+                diagnostic_code=exc.safe_code,
+                metadata=metadata,
+                effect_results=effect_results,
+            )
         except Exception:
             return self._terminal(
                 snapshot,

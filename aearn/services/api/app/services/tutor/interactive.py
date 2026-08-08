@@ -16,7 +16,7 @@ from psycopg import Connection
 
 from app.agents.harness.catalog_context import CatalogContextLoader
 from app.agents.harness.context_builder import TutorContextBuilder
-from app.agents.harness.contracts import TutorContextInput, TutorContextSource, TutorRunResult, TutorRunSnapshot
+from app.agents.harness.contracts import TutorContextError, TutorContextInput, TutorContextSource, TutorRunResult, TutorRunSnapshot
 from app.agents.harness.skill_catalog import compile_published_skill_catalog
 from app.core.config import Settings
 from app.db.connection import connect
@@ -67,17 +67,25 @@ class PostgresTutorContextLoader:
         self._proactive_candidate_kind = proactive_candidate_kind
 
     def load_context(self, snapshot: TutorRunSnapshot, *, input_revision: int) -> TutorContextInput:
+        current_input: TutorContextSource | None = None
+        current_input_required = self._current_input_required(snapshot)
         recent_messages: tuple[TutorContextSource, ...] = ()
-        if self._proactive_candidate_kind is None:
+        if current_input_required:
+            current_row = self._load_current_input_row(snapshot, input_revision=input_revision)
+            current_message_id = str(current_row["message_id"])
+            current_input = TutorContextSource(
+                source_id=f"message:{current_message_id}",
+                content=str(current_row.get("content") or ""),
+            )
             rows = self._conn.execute(
                 """
-                SELECT id::text AS id, role, content
+                SELECT id::text AS id, role, content, created_at
                 FROM tutor_messages
-                WHERE conversation_id = %s
+                WHERE conversation_id = %s AND id <> %s
                 ORDER BY created_at DESC, id DESC
                 LIMIT 8
                 """,
-                (snapshot.conversation_id,),
+                (snapshot.conversation_id, current_message_id),
             ).fetchall()
             recent_messages = tuple(
                 TutorContextSource(
@@ -140,6 +148,8 @@ class PostgresTutorContextLoader:
             run_id=snapshot.run_id,
             conversation_id=snapshot.conversation_id,
             input_revision=input_revision,
+            current_input=current_input,
+            current_input_required=current_input_required,
             system_descriptors=(
                 TutorContextSource(
                     source_id=(
@@ -170,6 +180,54 @@ class PostgresTutorContextLoader:
             learner_memory=memory_sources,
             activity_facts=activity_sources,
         )
+
+
+    def _current_input_required(self, snapshot: TutorRunSnapshot) -> bool:
+        proactive = self._proactive_candidate_kind is not None
+        if proactive != (snapshot.origin == "proactive"):
+            raise TutorContextError("TUTOR_CONTEXT_ORIGIN_INVALID")
+        return not proactive
+
+    def _load_current_input_row(
+        self,
+        snapshot: TutorRunSnapshot,
+        *,
+        input_revision: int,
+    ) -> dict[str, object]:
+        if input_revision != snapshot.input_revision or input_revision < 1:
+            raise TutorContextError("TUTOR_CURRENT_INPUT_REVISION_INVALID")
+        rows = self._conn.execute(
+            """
+            SELECT inputs.message_id::text AS message_id, messages.role, messages.content
+            FROM tutor_runs AS runs
+            JOIN tutor_run_input_events AS inputs
+              ON inputs.run_id = runs.id
+             AND inputs.input_revision = %s
+            JOIN tutor_messages AS messages
+              ON messages.id = inputs.message_id
+            WHERE runs.id = %s
+              AND runs.user_id = %s
+              AND runs.conversation_id = %s
+              AND runs.input_revision = %s
+              AND inputs.conversation_id = runs.conversation_id
+              AND messages.conversation_id = runs.conversation_id
+            """,
+            (
+                input_revision,
+                snapshot.run_id,
+                snapshot.user_id,
+                snapshot.conversation_id,
+                input_revision,
+            ),
+        ).fetchall()
+        if len(rows) != 1:
+            raise TutorContextError("TUTOR_CURRENT_INPUT_EVIDENCE_INVALID")
+        row = rows[0]
+        if str(row.get("role")) != "learner":
+            raise TutorContextError("TUTOR_CURRENT_INPUT_ROLE_INVALID")
+        if not str(row.get("content") or "").strip():
+            raise TutorContextError("TUTOR_CURRENT_INPUT_EMPTY")
+        return row
 
 
 ProviderFactory = Callable[[Settings], TutorProviderGateway]
