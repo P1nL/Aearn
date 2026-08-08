@@ -1015,3 +1015,36 @@ Closed the planning-only Tutor Harness rearchitecture parent after all nine inde
 ### Next Steps
 
 - 当前 child 已归档；下一条 dependency-satisfied child 是 `08-04-tutor-adaptive-context-budget-planner`，待单独启动。
+
+
+## Session 88: Tutor 自适应上下文预算规划器
+
+**Date**: 2026-08-08
+**Task**: Tutor 自适应上下文预算规划器
+**Branch**: `main`
+
+### Summary
+
+实现 provider-bounded 全请求上下文规划、确定性序列化、自适应预算模式、受限重建、安全策略持久化与 cache-aware 校准，并通过聚焦测试、PostgreSQL 约束测试、全量 Pytest、Ruff、Mypy、uv lock 和 diff 检查。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `d681f1a` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
