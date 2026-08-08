@@ -916,3 +916,63 @@ Closed the planning-only Tutor Harness rearchitecture parent after all nine inde
 ### Next Steps
 
 - None - task complete
+
+
+## Session 86: 完成 Tutor 最新输入与教学相关性 child
+
+**Date**: 2026-08-08
+**Task**: 完成 Tutor 最新输入与教学相关性 child
+**Branch**: `main`
+
+### Summary
+
+实现并验证 Tutor 权威当前输入、最新历史选择和教学策略，归档当前 child。
+
+### Main Changes
+
+## 完成内容
+
+- 归档 child `08-04-tutor-latest-input-teaching-relevance`，父任务保持 planning，未启动其他 child。
+- 通过精确 `tutor_run_input_events(run_id, input_revision)` 证据加载权威当前输入，并与可裁剪历史分离。
+- ContextBuilder 优先保留当前输入、选择最新历史后按时间顺序呈现；无法安全表示时在 provider 前类型化失败。
+- 初始与 repair provider 提示共享最新意图教学策略，补充确定性 eval 与显式 opt-in live smoke。
+- 更新后端质量规范与 Tutor Harness 架构文档。
+
+## 验证
+
+- focused Pytest: 71 passed
+- input merge/run loop/SSE: 23 passed
+- PostgreSQL bootstrap/repository/context loader: 15 passed
+- full Pytest: 365 passed
+- Ruff: passed
+- Mypy: 109 source files, passed
+- uv lock --check: passed
+- task.py validate: passed
+- git diff --check: passed（仅 Windows LF/CRLF 提示）
+
+## 提交
+
+- `784239e feat(tutor): preserve authoritative latest input context`
+- `81faa49 chore(task): archive 08-04-tutor-latest-input-teaching-relevance`
+
+未执行 live-provider smoke、push、deploy 或生产数据修改。
+
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `784239e` | (see git log) |
+| `81faa49` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
