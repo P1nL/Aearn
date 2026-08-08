@@ -17,6 +17,7 @@ from app.core.teaching_safety import (
     sanitize_message_content,
     sanitize_summary_text,
 )
+from app.services.llm.contracts import LLMUsage
 
 
 MAX_TUTOR_IDENTIFIER_LENGTH = 120
@@ -121,6 +122,13 @@ class TutorEffectStatus(str, Enum):
     COMMITTED = "committed"
     DENIED = "denied"
     STALE_REJECTED = "stale_rejected"
+
+
+class TutorProviderAttemptOutcome(str, Enum):
+    ACCEPTED = "accepted"
+    REPAIRABLE_REJECTED = "repairable_rejected"
+    TERMINAL_REJECTED = "terminal_rejected"
+    TRANSPORT_FAILED = "transport_failed"
 
 
 class TokenEstimator(Protocol):
@@ -561,26 +569,78 @@ class TutorDecisionGateResult:
 
 
 @dataclass(frozen=True)
+class TutorProviderAttemptReceipt:
+    attempt_index: int
+    outcome: TutorProviderAttemptOutcome
+    provider_type: str
+    protocol: str
+    usage: LLMUsage | None = None
+    model: str | None = None
+    diagnostic_code: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.attempt_index < 1:
+            raise ValueError("provider attempt_index must be positive")
+        object.__setattr__(self, "provider_type", _safe_identifier(self.provider_type))
+        object.__setattr__(self, "protocol", _safe_identifier(self.protocol))
+        if self.model is not None:
+            object.__setattr__(self, "model", _safe_identifier(self.model))
+        if self.diagnostic_code is not None:
+            object.__setattr__(
+                self, "diagnostic_code", _safe_identifier(self.diagnostic_code)
+            )
+        if (
+            self.outcome is TutorProviderAttemptOutcome.ACCEPTED
+            and self.diagnostic_code is not None
+        ):
+            raise ValueError("accepted provider attempt cannot have a diagnostic code")
+        if (
+            self.outcome is not TutorProviderAttemptOutcome.ACCEPTED
+            and self.diagnostic_code is None
+        ):
+            raise ValueError("rejected provider attempt requires a diagnostic code")
+        if (
+            self.outcome is TutorProviderAttemptOutcome.TRANSPORT_FAILED
+            and self.usage is not None
+        ):
+            raise ValueError("transport failure cannot report provider envelope usage")
+
+
+@dataclass(frozen=True)
 class TutorProviderResult:
     decision: TutorDecision | None
     model: str | None = None
     terminal_outcome: TutorTerminalOutcome | None = None
     safe_code: str | None = None
+    attempts: tuple[TutorProviderAttemptReceipt, ...] = ()
 
     def __post_init__(self) -> None:
         if (self.decision is None) == (self.terminal_outcome is None):
-            raise ValueError("provider result must contain either a decision or terminal outcome")
+            raise ValueError(
+                "provider result must contain either a decision or terminal outcome"
+            )
         if self.model is not None:
             object.__setattr__(self, "model", _safe_identifier(self.model))
         if self.safe_code is not None:
             object.__setattr__(self, "safe_code", _safe_identifier(self.safe_code))
+        object.__setattr__(self, "attempts", tuple(self.attempts))
+        _ensure_unique(
+            (str(item.attempt_index) for item in self.attempts),
+            "provider attempt indexes",
+        )
 
     @classmethod
-    def model_unavailable(cls, *, safe_code: str = "MODEL_UNAVAILABLE") -> "TutorProviderResult":
+    def model_unavailable(
+        cls,
+        *,
+        safe_code: str = "MODEL_UNAVAILABLE",
+        attempts: tuple[TutorProviderAttemptReceipt, ...] = (),
+    ) -> "TutorProviderResult":
         return cls(
             decision=None,
             terminal_outcome=TutorTerminalOutcome.MODEL_UNAVAILABLE,
             safe_code=safe_code,
+            attempts=attempts,
         )
 
 

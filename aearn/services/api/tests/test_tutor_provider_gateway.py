@@ -15,6 +15,7 @@ from app.agents.harness.contracts import (
     TutorContextSelection,
     TutorContextSource,
     TutorPolicySnapshot,
+    TutorProviderAttemptOutcome,
     TutorRunSnapshot,
 )
 from app.core.config import Settings
@@ -23,7 +24,10 @@ from app.services.llm.llm_client import (
     LLMInvalidResponseError,
     LLMInvalidResponseKind,
     LLMJsonResponse,
+    LLMProtocol,
+    LLMUsage,
     OpenAICompatibleClient,
+    _extract_llm_usage,
     _extract_message_content,
     _parse_responses_stream,
     _safe_transport_error,
@@ -1000,3 +1004,208 @@ def test_primary_gateway_records_safe_configuration_failure_without_a_client() -
 
     assert result.terminal_outcome is not None
     assert result.safe_code == "TUTOR_PROVIDER_CONFIGURATION_UNAVAILABLE"
+
+
+
+def test_llm_usage_derives_uncached_input_without_double_counting_cached_tokens() -> None:
+    usage = LLMUsage(
+        input_tokens=175_420,
+        cached_input_tokens=170_368,
+        output_tokens=2_223,
+        total_tokens=177_643,
+        reasoning_tokens=321,
+    )
+
+    assert usage.usage_available is True
+    assert usage.uncached_input_tokens == 5_052
+    assert usage.calculated_total_tokens == 177_643
+    assert usage.input_tokens + usage.cached_input_tokens != usage.total_tokens
+
+    with pytest.raises(ValueError, match="must not exceed"):
+        LLMUsage(input_tokens=10, cached_input_tokens=11)
+    with pytest.raises(ValueError, match="non-negative"):
+        LLMUsage(output_tokens=-1)
+
+
+def test_responses_usage_parser_keeps_cached_and_reasoning_details() -> None:
+    usage = _extract_llm_usage(
+        {
+            "type": "response.completed",
+            "response": {
+                "usage": {
+                    "input_tokens": 175_420,
+                    "input_tokens_details": {"cached_tokens": 170_368},
+                    "output_tokens": 2_223,
+                    "output_tokens_details": {"reasoning_tokens": 321},
+                    "total_tokens": 177_643,
+                }
+            },
+        },
+        protocol=LLMProtocol.RESPONSES,
+    )
+
+    assert usage == LLMUsage(
+        input_tokens=175_420,
+        cached_input_tokens=170_368,
+        output_tokens=2_223,
+        total_tokens=177_643,
+        reasoning_tokens=321,
+    )
+    assert usage is not None and usage.uncached_input_tokens == 5_052
+
+
+def test_chat_completions_usage_parser_normalizes_prompt_fields() -> None:
+    usage = _extract_llm_usage(
+        {
+            "usage": {
+                "prompt_tokens": 120,
+                "prompt_tokens_details": {"cached_tokens": 100},
+                "completion_tokens": 30,
+                "completion_tokens_details": {"reasoning_tokens": 7},
+                "total_tokens": 150,
+            }
+        },
+        protocol=LLMProtocol.DEEPSEEK_CHAT_COMPLETIONS,
+    )
+
+    assert usage == LLMUsage(
+        input_tokens=120,
+        cached_input_tokens=100,
+        output_tokens=30,
+        total_tokens=150,
+        reasoning_tokens=7,
+    )
+    assert usage is not None and usage.uncached_input_tokens == 20
+
+
+def test_malformed_or_missing_provider_usage_is_unavailable_without_blocking_content() -> None:
+    malformed = _extract_llm_usage(
+        {
+            "usage": {
+                "prompt_tokens": 10,
+                "prompt_tokens_details": {"cached_tokens": 11},
+                "completion_tokens": 2,
+            }
+        },
+        protocol=LLMProtocol.DEEPSEEK_CHAT_COMPLETIONS,
+    )
+    missing = _extract_llm_usage(
+        {"choices": [{"message": {"content": "{}"}}]},
+        protocol=LLMProtocol.DEEPSEEK_CHAT_COMPLETIONS,
+    )
+
+    assert malformed is None
+    assert missing is None
+
+
+def test_gateway_records_usage_for_each_repair_attempt_and_preserves_model_call_semantics() -> None:
+    provider_responses: list[Mapping[str, object]] = [
+        {
+            "model": "deepseek-v4-pro",
+            "usage": {
+                "prompt_tokens": 175_420,
+                "prompt_tokens_details": {"cached_tokens": 170_368},
+                "completion_tokens": 20,
+                "total_tokens": 175_440,
+            },
+            "choices": [{"message": {"content": "not json"}}],
+        },
+        {
+            "model": "deepseek-v4-pro",
+            "usage": {
+                "prompt_tokens": 180,
+                "completion_tokens": 40,
+                "total_tokens": 220,
+            },
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(_valid_payload(), ensure_ascii=False)
+                    }
+                }
+            ],
+        },
+    ]
+
+    def transport(
+        url: str,
+        headers: Mapping[str, str],
+        payload: Mapping[str, object],
+        timeout: float,
+    ) -> Mapping[str, object]:
+        del url, headers, payload, timeout
+        return provider_responses.pop(0)
+
+    settings = Settings(
+        llm_type="deepseek",
+        deepseek_api_key="test-key",
+        deepseek_base_url="https://provider.example",
+        deepseek_model="deepseek-v4-pro",
+    )
+    gateway = PrimaryTutorProviderGateway(
+        settings=settings,
+        client=OpenAICompatibleClient(settings, transport=transport),
+    )
+
+    result = gateway.decide(run=_run(), context=_context())
+
+    assert result.decision is not None
+    assert [attempt.outcome for attempt in result.attempts] == [
+        TutorProviderAttemptOutcome.REPAIRABLE_REJECTED,
+        TutorProviderAttemptOutcome.ACCEPTED,
+    ]
+    assert result.attempts[0].usage is not None
+    assert result.attempts[0].usage.uncached_input_tokens == 5_052
+    assert result.attempts[1].usage == LLMUsage(
+        input_tokens=180,
+        output_tokens=40,
+        total_tokens=220,
+    )
+
+
+def test_gateway_preserves_completed_envelope_usage_when_visible_content_is_rejected() -> None:
+    def transport(
+        url: str,
+        headers: Mapping[str, str],
+        payload: Mapping[str, object],
+        timeout: float,
+    ) -> Mapping[str, object]:
+        del url, headers, payload, timeout
+        return {
+            "type": "response.failed",
+            "response": {
+                "status": "failed",
+                "model": "deepseek-v4-flash",
+                "usage": {
+                    "input_tokens": 60,
+                    "input_tokens_details": {"cached_tokens": 50},
+                    "output_tokens": 3,
+                    "total_tokens": 63,
+                },
+                "error": {"message": "private provider body"},
+            },
+        }
+
+    settings = Settings(
+        llm_type="deepseek",
+        deepseek_api_key="test-key",
+        deepseek_base_url="https://provider.example",
+        deepseek_model="deepseek-v4-flash",
+    )
+    result = PrimaryTutorProviderGateway(
+        settings=settings,
+        client=OpenAICompatibleClient(settings, transport=transport),
+    ).decide(run=_run(), context=_context())
+
+    assert result.terminal_outcome is not None
+    assert len(result.attempts) == 1
+    attempt = result.attempts[0]
+    assert attempt.outcome is TutorProviderAttemptOutcome.TERMINAL_REJECTED
+    assert attempt.diagnostic_code == "TUTOR_PROVIDER_RESPONSE_FAILED"
+    assert attempt.usage == LLMUsage(
+        input_tokens=60,
+        cached_input_tokens=50,
+        output_tokens=3,
+        total_tokens=63,
+    )
+    assert "private provider body" not in repr(result)

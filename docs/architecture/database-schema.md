@@ -1,6 +1,6 @@
 # Aearn 数据库 Schema 与持久化契约
 
-**状态：** 当前 schema 说明，2026-08-05。
+**状态：** 当前 schema 说明，2026-08-08。
 **权威来源：** `aearn/services/api/app/db/schema.sql`、PostgreSQL bootstrap、
 Tutor/LearningTrack repositories 与 schema/cutover tests。
 **范围：** PostgreSQL 是 Tutor run、cutover receipt、背景队列和 learner-safe
@@ -61,6 +61,7 @@ projection 的唯一 durable authority；Desktop、Celery 和 provider 不拥有
 | `tutor_messages` | canonical learner/Tutor public message body | 唯一允许存放原始 learner 文本的 Tutor 表；不可作为 trace/export dump；旧 message-only conversation 继续可读 |
 | `tutor_catalog_snapshots` | reviewed Skill catalog digest snapshot | run 只能引用已持久化的 digest |
 | `tutor_runs` | 有限 loop 的 durable snapshot | `origin` 为 `interactive/proactive`；lease、budget counter、`input_revision`、terminal outcome 和 `next_event_sequence` 都由 DB 保护；`superseded_by_run_id` 是内部 audit link；`continuation_kind` 只允许 explicit continuation enum |
+| `tutor_provider_attempt_receipts` | 每个实际 provider HTTP attempt 的 append-only usage 事实 | identity 为 `(run_id,input_revision,decision_iteration,attempt_index)`；复合 FK 固定 user/run/conversation scope；只保存受限 provider/model/protocol、outcome/diagnostic 和非负 token 数，不保存 prompt、response body、reasoning 文本、URL/header 或 credential |
 | `tutor_run_public_processes` | 一条新 interactive run 对应一条 server-safe public-process projection | 只允许 `thinking/completed/superseded/unavailable`，只保留 timestamps、关联 public Tutor message 和固定 step key；不存 reasoning、provider payload、prompt、trace 或工具参数 |
 | `tutor_run_public_process_steps` | append-only public-process step order | `(run_id, ordinal)` 唯一；step key/state 均有 DB + repository allowlist；公开 label 在 read projection 映射而非存自由文本 |
 | `tutor_run_skill_selections` | exact Skill evidence | `(run_id, input_revision)` 唯一；保存 id/version 与 manifest/instruction/evaluation hash |
@@ -83,6 +84,7 @@ cancelled 或 superseded 的 interactive foreground run。
 避免暴露半完成状态。provider 返回后的 lifecycle write 再次检查 cancellation/supersede；
 stale run 只能收敛到安全 cancelled/superseded projection，不能写 Tutor message、title、
 capability receipt 或 effect commit。
+已经真实发生的 provider attempt 是独立执行/成本事实：run loop 在 provider 返回后、业务结果门禁前持久化其安全 receipt，因此 superseded/cancelled run 可以保留 usage，但仍不能获得 message、title、capability 或 effect 写权限。`input_tokens` 已包含缓存读取；`uncached_input_tokens = input_tokens - cached_input_tokens`，不得把 cached 再加回总输入。provider reported `total_tokens` 与 calculated `input_tokens + output_tokens` 分列保存；usage 缺失用 `usage_available=false` 与 `NULL` 表示，不能伪装成零。
 
 ## 5. LearningTrack、计划路线、掌握度与教学 scope
 
@@ -165,7 +167,7 @@ inventory 将任一新 track/scope/evidence 行视为 target contamination，绝
 - repository 是唯一可将表行转成 API/SSE payload 的层；SQL/JSONB 不得被 route
   直接串行化为用户输出。
 - `tutor_messages` 的 raw learner content 不复制到 event、trace、outbox、
-  inbox、activity、capability/effect receipt 或 idempotency response。
+  inbox、activity、capability/effect/provider-attempt receipt 或 idempotency response。
 - 所有 user-scoped query/mutation 都显式带 user ID；复合外键、unique constraint、
   lease generation、CAS 和 `FOR UPDATE SKIP LOCKED` 防止跨用户和重复 worker 写入。
 - 删除本地用户是显式 confirmed 用户数据操作。cutover 不是“reset”捷径，且

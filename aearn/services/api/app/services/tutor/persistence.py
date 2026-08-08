@@ -34,6 +34,8 @@ from app.agents.harness.contracts import (
     TutorEffectStatus,
     TutorLease,
     TutorPolicySnapshot,
+    TutorProviderAttemptOutcome,
+    TutorProviderAttemptReceipt,
     TutorRunResult,
     TutorRunOrigin,
     TutorRunSnapshot,
@@ -45,6 +47,7 @@ from app.agents.harness.contracts import (
 from app.agents.harness.skill_catalog import CatalogSkillReference, SkillCatalogSnapshot
 from app.core.config import get_settings
 from app.core.teaching_safety import sanitize_summary_text
+from app.services.llm.contracts import LLMUsage
 from app.services.tutor.ports import TutorLifecycleConflict, TutorLifecyclePersistence, TutorRunStore
 from app.services.tutor.safe_projection import TutorSafeProjection
 from app.services.tutor.skill_selection import TutorSkillSelection
@@ -242,6 +245,16 @@ class TutorEffectCommitReceipt:
     event: TutorDurableEvent
     replayed: bool
     committer_invoked: bool
+
+
+@dataclass(frozen=True)
+class TutorProviderAttemptRecord:
+    receipt_id: str
+    run_id: str
+    input_revision: int
+    decision_iteration: int
+    attempt: TutorProviderAttemptReceipt
+    created_at: datetime
 
 
 @dataclass(frozen=True)
@@ -2228,6 +2241,134 @@ class PostgresTutorRepository:
             self._trip_failpoint("after_outbox")
             return trace
 
+    def record_provider_attempts(
+        self,
+        *,
+        snapshot: TutorRunSnapshot,
+        decision_iteration: int,
+        attempts: tuple[TutorProviderAttemptReceipt, ...],
+        created_at: datetime,
+    ) -> None:
+        if decision_iteration < 1:
+            raise ValueError("provider decision_iteration must be positive")
+        if not attempts:
+            return
+        if len({attempt.attempt_index for attempt in attempts}) != len(attempts):
+            raise ValueError("provider attempt indexes must be unique")
+
+        with self._conn.transaction():
+            run = self._conn.execute(
+                """
+                SELECT id, user_id, conversation_id, input_revision
+                FROM tutor_runs
+                WHERE id = %s AND user_id = %s
+                """,
+                (snapshot.run_id, snapshot.user_id),
+            ).fetchone()
+            if run is None:
+                raise TutorRunNotFound("tutor run not found")
+            if str(run["conversation_id"]) != snapshot.conversation_id:
+                raise TutorIdempotencyConflict("provider attempt run scope conflicts with persisted conversation")
+            if snapshot.input_revision > _as_int(run["input_revision"], -1):
+                raise TutorIdempotencyConflict("provider attempt input revision exceeds persisted run revision")
+
+            for attempt in attempts:
+                usage = attempt.usage
+                values = (
+                    snapshot.run_id,
+                    snapshot.user_id,
+                    snapshot.conversation_id,
+                    snapshot.input_revision,
+                    decision_iteration,
+                    attempt.attempt_index,
+                    attempt.provider_type,
+                    attempt.model,
+                    attempt.protocol,
+                    attempt.outcome.value,
+                    attempt.diagnostic_code,
+                    usage.input_tokens if usage is not None else None,
+                    usage.cached_input_tokens if usage is not None else None,
+                    usage.uncached_input_tokens if usage is not None else None,
+                    usage.output_tokens if usage is not None else None,
+                    usage.total_tokens if usage is not None else None,
+                    usage.calculated_total_tokens if usage is not None else None,
+                    usage.reasoning_tokens if usage is not None else None,
+                    usage is not None and usage.usage_available,
+                )
+                inserted = self._conn.execute(
+                    """
+                    INSERT INTO tutor_provider_attempt_receipts (
+                      run_id, user_id, conversation_id, input_revision,
+                      decision_iteration, attempt_index, provider_type, model, protocol,
+                      outcome, diagnostic_code, input_tokens, cached_input_tokens,
+                      uncached_input_tokens, output_tokens, reported_total_tokens,
+                      calculated_total_tokens, reasoning_tokens, usage_available, created_at
+                    )
+                    VALUES (
+                      %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                      %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    )
+                    ON CONFLICT (run_id, input_revision, decision_iteration, attempt_index) DO NOTHING
+                    RETURNING id
+                    """,
+                    (*values, created_at),
+                ).fetchone()
+                if inserted is not None:
+                    continue
+                replay = self._conn.execute(
+                    """
+                    SELECT id
+                    FROM tutor_provider_attempt_receipts
+                    WHERE run_id = %s
+                      AND user_id = %s
+                      AND conversation_id = %s
+                      AND input_revision = %s
+                      AND decision_iteration = %s
+                      AND attempt_index = %s
+                      AND provider_type IS NOT DISTINCT FROM %s
+                      AND model IS NOT DISTINCT FROM %s
+                      AND protocol IS NOT DISTINCT FROM %s
+                      AND outcome IS NOT DISTINCT FROM %s
+                      AND diagnostic_code IS NOT DISTINCT FROM %s
+                      AND input_tokens IS NOT DISTINCT FROM %s
+                      AND cached_input_tokens IS NOT DISTINCT FROM %s
+                      AND uncached_input_tokens IS NOT DISTINCT FROM %s
+                      AND output_tokens IS NOT DISTINCT FROM %s
+                      AND reported_total_tokens IS NOT DISTINCT FROM %s
+                      AND calculated_total_tokens IS NOT DISTINCT FROM %s
+                      AND reasoning_tokens IS NOT DISTINCT FROM %s
+                      AND usage_available IS NOT DISTINCT FROM %s
+                    """,
+                    values,
+                ).fetchone()
+                if replay is None:
+                    raise TutorIdempotencyConflict(
+                        "provider attempt receipt identity conflicts with different safe facts"
+                    )
+
+    def list_provider_attempt_receipts(
+        self,
+        *,
+        user_id: str,
+        run_id: str,
+    ) -> tuple[TutorProviderAttemptRecord, ...]:
+        run = self._conn.execute(
+            "SELECT id FROM tutor_runs WHERE id = %s AND user_id = %s",
+            (run_id, user_id),
+        ).fetchone()
+        if run is None:
+            raise TutorRunNotFound("tutor run not found")
+        rows = self._conn.execute(
+            """
+            SELECT *
+            FROM tutor_provider_attempt_receipts
+            WHERE run_id = %s AND user_id = %s
+            ORDER BY decision_iteration, attempt_index, created_at, id
+            """,
+            (run_id, user_id),
+        ).fetchall()
+        return tuple(_provider_attempt_record_from_row(row) for row in rows)
+
     def complete_run(
         self,
         *,
@@ -3248,6 +3389,24 @@ class PostgresTutorLifecycle(TutorLifecyclePersistence):
         self._memory_setting_version = memory_setting_version
         self._priority = priority
 
+    def persist_provider_attempts(
+        self,
+        *,
+        snapshot: TutorRunSnapshot,
+        decision_iteration: int,
+        attempts: tuple[TutorProviderAttemptReceipt, ...],
+        created_at: datetime,
+    ) -> None:
+        try:
+            self._repository.record_provider_attempts(
+                snapshot=snapshot,
+                decision_iteration=decision_iteration,
+                attempts=attempts,
+                created_at=created_at,
+            )
+        except TutorPersistenceError as exc:
+            raise TutorLifecycleConflict("Tutor provider attempt persistence conflicted") from exc
+
     def persist_safe_checkpoint(
         self,
         *,
@@ -3422,6 +3581,38 @@ def _event_from_row(row: Mapping[str, object], *, projector: TutorSafeProjection
         payload=projector.export(row.get("payload_json")),
         created_at=created_at,
     )
+
+def _provider_attempt_record_from_row(row: Mapping[str, object]) -> TutorProviderAttemptRecord:
+    usage = None
+    if bool(row.get("usage_available")):
+        usage = LLMUsage(
+            input_tokens=_as_optional_int(row.get("input_tokens")),
+            cached_input_tokens=_as_optional_int(row.get("cached_input_tokens")),
+            output_tokens=_as_optional_int(row.get("output_tokens")),
+            total_tokens=_as_optional_int(row.get("reported_total_tokens")),
+            reasoning_tokens=_as_optional_int(row.get("reasoning_tokens")),
+        )
+    return TutorProviderAttemptRecord(
+        receipt_id=str(row["id"]),
+        run_id=str(row["run_id"]),
+        input_revision=_as_int(row.get("input_revision"), 0),
+        decision_iteration=_as_int(row.get("decision_iteration"), 0),
+        attempt=TutorProviderAttemptReceipt(
+            attempt_index=_as_int(row.get("attempt_index"), 0),
+            outcome=TutorProviderAttemptOutcome(str(row["outcome"])),
+            provider_type=str(row["provider_type"]),
+            protocol=str(row["protocol"]),
+            model=str(row["model"]) if row.get("model") is not None else None,
+            usage=usage,
+            diagnostic_code=(
+                str(row["diagnostic_code"])
+                if row.get("diagnostic_code") is not None
+                else None
+            ),
+        ),
+        created_at=_as_datetime(row.get("created_at")) or datetime.now(UTC),
+    )
+
 
 def _selection_from_row(row: Mapping[str, object]) -> tuple[str, int, str, str, str, str, str]:
     return (
@@ -3630,6 +3821,17 @@ def _as_int(value: object, default: int) -> int:
         return int(str(value))
     except (TypeError, ValueError):
         return default
+
+
+def _as_optional_int(value: object) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        return None
 
 
 def _as_datetime(value: object) -> datetime | None:

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
 from datetime import UTC, datetime
 
+import psycopg
 import pytest
 
 from app.agents.harness.contracts import (
@@ -10,8 +12,11 @@ from app.agents.harness.contracts import (
     TutorCapabilityResult,
     TutorCapabilityStatus,
     TutorPayloadField,
+    TutorProviderAttemptOutcome,
+    TutorProviderAttemptReceipt,
 )
 from app.agents.harness.skill_catalog import CatalogSkillReference
+from app.services.llm.contracts import LLMUsage
 from app.services.tutor.persistence import (
     PostgresTutorRepository,
     TutorCatalogEvidenceError,
@@ -296,3 +301,237 @@ def test_capability_receipt_requires_exact_selection_and_replays_only_identical_
             catalog_digest=str(run_evidence["catalog_digest"]),
             policy_fingerprint=str(run_evidence["policy_fingerprint"]),
         )
+
+def test_provider_attempt_receipts_replay_identically_and_reject_conflicting_facts(
+    tutor_persistence,
+) -> None:
+    fixture = tutor_persistence
+    created_at = datetime.now(UTC)
+    attempts = (
+        TutorProviderAttemptReceipt(
+            attempt_index=1,
+            outcome=TutorProviderAttemptOutcome.REPAIRABLE_REJECTED,
+            provider_type="deepseek",
+            protocol="deepseek_responses",
+            model="deepseek-v4-flash",
+            usage=LLMUsage(
+                input_tokens=175_420,
+                cached_input_tokens=170_368,
+                output_tokens=20,
+                total_tokens=175_440,
+                reasoning_tokens=7,
+            ),
+            diagnostic_code="content_not_json",
+        ),
+        TutorProviderAttemptReceipt(
+            attempt_index=2,
+            outcome=TutorProviderAttemptOutcome.ACCEPTED,
+            provider_type="deepseek",
+            protocol="deepseek_responses",
+            model="deepseek-v4-flash",
+            usage=LLMUsage(input_tokens=180, output_tokens=40, total_tokens=220),
+        ),
+    )
+
+    fixture.repository.record_provider_attempts(
+        snapshot=fixture.run,
+        decision_iteration=1,
+        attempts=attempts,
+        created_at=created_at,
+    )
+    fixture.repository.record_provider_attempts(
+        snapshot=fixture.run,
+        decision_iteration=1,
+        attempts=attempts,
+        created_at=created_at,
+    )
+    fixture.repository.record_provider_attempts(
+        snapshot=fixture.run,
+        decision_iteration=2,
+        attempts=(
+            TutorProviderAttemptReceipt(
+                attempt_index=1,
+                outcome=TutorProviderAttemptOutcome.ACCEPTED,
+                provider_type="deepseek",
+                protocol="deepseek_responses",
+                model="deepseek-v4-flash",
+            ),
+        ),
+        created_at=created_at,
+    )
+
+    receipts = fixture.repository.list_provider_attempt_receipts(
+        user_id=fixture.user_id,
+        run_id=fixture.run.run_id,
+    )
+    assert len(receipts) == 3
+    first_usage = receipts[0].attempt.usage
+    assert first_usage is not None
+    assert first_usage.input_tokens == 175_420
+    assert first_usage.cached_input_tokens == 170_368
+    assert first_usage.uncached_input_tokens == 5_052
+    assert first_usage.calculated_total_tokens == 175_440
+    assert receipts[0].decision_iteration == 1
+    assert (
+        receipts[0].attempt.outcome is TutorProviderAttemptOutcome.REPAIRABLE_REJECTED
+    )
+    assert receipts[1].attempt.outcome is TutorProviderAttemptOutcome.ACCEPTED
+    assert receipts[2].decision_iteration == 2
+    assert receipts[2].attempt.usage is None
+    unavailable_usage = fixture.connection.execute(
+        """
+        SELECT input_tokens, cached_input_tokens, uncached_input_tokens,
+               output_tokens, reported_total_tokens, reasoning_tokens, usage_available
+        FROM tutor_provider_attempt_receipts
+        WHERE run_id = %s AND decision_iteration = 2 AND attempt_index = 1
+        """,
+        (fixture.run.run_id,),
+    ).fetchone()
+    assert unavailable_usage == {
+        "input_tokens": None,
+        "cached_input_tokens": None,
+        "uncached_input_tokens": None,
+        "output_tokens": None,
+        "reported_total_tokens": None,
+        "reasoning_tokens": None,
+        "usage_available": False,
+    }
+
+    conflicting_attempt = TutorProviderAttemptReceipt(
+        attempt_index=1,
+        outcome=TutorProviderAttemptOutcome.REPAIRABLE_REJECTED,
+        provider_type="deepseek",
+        protocol="deepseek_responses",
+        model="deepseek-v4-flash",
+        usage=LLMUsage(
+            input_tokens=175_421, cached_input_tokens=170_368, output_tokens=20
+        ),
+        diagnostic_code="content_not_json",
+    )
+    with pytest.raises(
+        TutorIdempotencyConflict, match="provider attempt receipt identity"
+    ):
+        fixture.repository.record_provider_attempts(
+            snapshot=fixture.run,
+            decision_iteration=1,
+            attempts=(conflicting_attempt,),
+            created_at=created_at,
+        )
+
+    other_user = fixture.connection.execute(
+        "INSERT INTO users (display_name) VALUES ('Provider Attempt Other User') RETURNING id"
+    ).fetchone()
+    assert other_user is not None
+    other_user_id = str(other_user["id"])
+    with pytest.raises(TutorRunNotFound):
+        fixture.repository.list_provider_attempt_receipts(
+            user_id=other_user_id,
+            run_id=fixture.run.run_id,
+        )
+    with pytest.raises(TutorRunNotFound):
+        fixture.repository.record_provider_attempts(
+            snapshot=replace(fixture.run, user_id=other_user_id),
+            decision_iteration=1,
+            attempts=attempts,
+            created_at=created_at,
+        )
+
+
+def test_provider_attempt_receipt_constraints_enforce_scope_derived_usage_and_append_only(
+    tutor_persistence,
+) -> None:
+    fixture = tutor_persistence
+    receipt = TutorProviderAttemptReceipt(
+        attempt_index=1,
+        outcome=TutorProviderAttemptOutcome.ACCEPTED,
+        provider_type="openai",
+        protocol="responses",
+        model="gpt-test",
+        usage=LLMUsage(
+            input_tokens=10, cached_input_tokens=4, output_tokens=3, total_tokens=13
+        ),
+    )
+    fixture.repository.record_provider_attempts(
+        snapshot=fixture.run,
+        decision_iteration=1,
+        attempts=(receipt,),
+        created_at=datetime.now(UTC),
+    )
+
+    with pytest.raises(psycopg.errors.CheckViolation, match="append-only"):
+        with fixture.connection.transaction():
+            fixture.connection.execute(
+                "UPDATE tutor_provider_attempt_receipts SET output_tokens = 4 WHERE run_id = %s",
+                (fixture.run.run_id,),
+            )
+    with pytest.raises(psycopg.errors.CheckViolation, match="append-only"):
+        with fixture.connection.transaction():
+            fixture.connection.execute(
+                "DELETE FROM tutor_provider_attempt_receipts WHERE run_id = %s",
+                (fixture.run.run_id,),
+            )
+
+    with pytest.raises(psycopg.errors.CheckViolation):
+        with fixture.connection.transaction():
+            fixture.connection.execute(
+                """
+                INSERT INTO tutor_provider_attempt_receipts (
+                  run_id, user_id, conversation_id, input_revision,
+                  decision_iteration, attempt_index, provider_type, protocol,
+                  outcome, input_tokens, cached_input_tokens, uncached_input_tokens,
+                  usage_available
+                )
+                VALUES (%s, %s, %s, 0, 1, 2, 'openai', 'responses',
+                        'accepted', 10, 11, 0, true)
+                """,
+                (fixture.run.run_id, fixture.user_id, fixture.conversation_id),
+            )
+
+    with pytest.raises(psycopg.errors.CheckViolation):
+        with fixture.connection.transaction():
+            fixture.connection.execute(
+                """
+                INSERT INTO tutor_provider_attempt_receipts (
+                  run_id, user_id, conversation_id, input_revision,
+                  decision_iteration, attempt_index, provider_type, protocol,
+                  outcome, diagnostic_code, input_tokens, uncached_input_tokens,
+                  usage_available
+                )
+                VALUES (%s, %s, %s, 0, 1, 3, 'openai', 'responses',
+                        'transport_failed', 'provider_transport_failed', 1, 1, true)
+                """,
+                (fixture.run.run_id, fixture.user_id, fixture.conversation_id),
+            )
+
+    other_user = fixture.connection.execute(
+        "INSERT INTO users (display_name) VALUES ('Provider Scope User') RETURNING id"
+    ).fetchone()
+    assert other_user is not None
+    with pytest.raises(psycopg.errors.ForeignKeyViolation):
+        with fixture.connection.transaction():
+            fixture.connection.execute(
+                """
+                INSERT INTO tutor_provider_attempt_receipts (
+                  run_id, user_id, conversation_id, input_revision,
+                  decision_iteration, attempt_index, provider_type, protocol,
+                  outcome, usage_available
+                )
+                VALUES (%s, %s, %s, 0, 1, 5, 'openai', 'responses', 'accepted', false)
+                """,
+                (fixture.run.run_id, str(other_user["id"]), fixture.conversation_id),
+            )
+
+    other_conversation = fixture.repository.create_conversation(user_id=fixture.user_id)
+    with pytest.raises(psycopg.errors.ForeignKeyViolation):
+        with fixture.connection.transaction():
+            fixture.connection.execute(
+                """
+                INSERT INTO tutor_provider_attempt_receipts (
+                  run_id, user_id, conversation_id, input_revision,
+                  decision_iteration, attempt_index, provider_type, protocol,
+                  outcome, usage_available
+                )
+                VALUES (%s, %s, %s, 0, 1, 4, 'openai', 'responses', 'accepted', false)
+                """,
+                (fixture.run.run_id, fixture.user_id, other_conversation),
+            )

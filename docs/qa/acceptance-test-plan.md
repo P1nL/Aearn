@@ -1,7 +1,7 @@
 # Aearn Tutor Harness 验收计划
 
-**状态：** 当前 integration/QA 契约，2026-07-29。
-**范围：** `07-22-tutor-integration-qa-and-docs` 的 Tutor runtime、cutover、
+**状态：** 当前 integration/QA 契约，2026-08-08。
+**范围：** 当前 Tutor runtime、cutover、provider attempt 计量、LearningTrack、
 Desktop、background scheduler、executor boundary、legacy retirement 与文档一致性。
 **权威来源：** 当前代码/测试/schema；实测命令结果进入
 [Release Readiness Ledger](./tutor-harness-release-readiness.md)。本计划不是
@@ -50,6 +50,7 @@ release approval，任何未通过或未执行 gate 都必须在 ledger 中保�
 | RT-09 | P0 | Scheduler/curation | dedupe、pause、budget、cooldown、concurrency、lease/retry/circuit、global vs scoped semantics；curation default no-call | `test_tutor_proactive_candidates.py`、`test_tutor_memory_curation_scheduler.py`、`test_tutor_memory_curator.py` |
 | RT-10 | P0 | Executor boundary | default disabled/unavailable、immutable lock/profile、network none、no host fallback、cleanup/uncertain launch | API execution tests + `aearn/services/executor/tests/` |
 | RT-11 | P0 | Worker import/composition | worker has only target task wrappers; no executor runtime client import; scheduler production scan remains global | `test_worker_import.py` |
+| RT-12 | P0 | Provider usage/cache accounting | Responses/Chat usage 归一化；cached 不重复计数；repair attempt 分列；缺失 usage 不伪造；跨用户、冲突重放和 UPDATE/DELETE 被拒绝；receipt 不进入公开投影 | `test_tutor_provider_gateway.py`、`test_tutor_run_loop.py`、`test_tutor_run_repository.py`、`test_db_bootstrap.py` |
 | UX-01 | P1 | Desktop bootstrap | local identity → server cutover → `welcome/cutover/tutor`; stale `planId` cleared and no legacy request emitted | `pnpm --dir .\aearn desktop:check` + fixture browser/Desktop smoke |
 | UX-02 | P1 | Responsive/error UX | narrow viewport no horizontal overflow; Composer/primary actions visible; stable public error/retry states | fixture browser/Desktop smoke |
 | DOC-01 | P0 | Current documentation | README/source-of-truth docs name Tutor as active runtime; transition/archive docs are visibly historical; no current Graph/SDK claim | link audit + `rg` audit + doc review |
@@ -92,7 +93,21 @@ release approval，任何未通过或未执行 gate 都必须在 ledger 中保�
 5. Repeat for an unverified user. Assert `cutover_unverified`, no provider
    call and no proactive run.
 
-### FI-04：Desktop normal/narrow path
+### FI-04：provider usage/cache receipt
+
+1. 使用 fixed Responses 与 Chat Completions envelope，不调用真实 provider。
+2. 断言 `input_tokens=175420`、`cached_input_tokens=170368` 派生
+   `uncached_input_tokens=5052`，reported total 与 calculated total 分列，cached 不再加回 input。
+3. 让首次响应因 JSON/decision 校验失败并执行一次 repair；断言两个实际 attempt
+   分别持久化，而 run-level `model_call_count` 仍只增加一次 decision boundary。
+4. 断言 usage 缺失保存为 `NULL`/unavailable；transport 无 envelope 不产生 token；
+   superseded run 只保留安全 receipt，不写 public message/title/capability/effect。
+5. 使用真实 PostgreSQL 断言 exact replay 幂等、不同事实冲突、跨 user/conversation
+   FK 拒绝、derived token CHECK 生效且 receipt UPDATE/DELETE 被 append-only trigger 拒绝。
+6. 检查日志、trace、history、SSE 与 learner export 不含 prompt、provider body、
+   reasoning 文本、URL/header 或 credential。
+
+### FI-05：Desktop normal/narrow path
 
 1. Bootstrap Desktop with a disposable verified user and deliberately stale
    `planId`.

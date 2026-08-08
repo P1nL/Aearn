@@ -23,6 +23,7 @@ from app.agents.harness.contracts import (
     TutorEffectStatus,
     TutorInputEvent,
     TutorLease,
+    TutorProviderAttemptReceipt,
     TutorProviderResult,
     TutorRunResult,
     TutorRunSnapshot,
@@ -106,6 +107,15 @@ class TutorCompactionPublisher(Protocol):
 
 class TutorLifecyclePersistence(Protocol):
     """Atomic persistence seam for the composed target adapter only."""
+
+    def persist_provider_attempts(
+        self,
+        *,
+        snapshot: TutorRunSnapshot,
+        decision_iteration: int,
+        attempts: tuple[TutorProviderAttemptReceipt, ...],
+        created_at: datetime,
+    ) -> None: ...
 
     def persist_safe_checkpoint(
         self,

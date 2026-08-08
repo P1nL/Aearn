@@ -93,10 +93,28 @@ EXECUTION_LIFECYCLE_CONSTRAINTS = (
     "chk_tutor_execution_jobs_running_started",
 )
 
+PROVIDER_ATTEMPT_RECEIPT_CONSTRAINTS = (
+    "uq_tutor_provider_attempt_receipts_identity",
+    "fk_tutor_provider_attempt_receipt_run_user",
+    "fk_tutor_provider_attempt_receipt_run_conversation",
+    "chk_tutor_provider_attempt_receipt_cached_input",
+    "chk_tutor_provider_attempt_receipt_calculated_total",
+    "chk_tutor_provider_attempt_receipt_usage_availability",
+    "chk_tutor_provider_attempt_receipt_outcome_diagnostic",
+    "chk_tutor_provider_attempt_receipt_transport_usage",
+)
+
 CONVERSATION_TURNRUN_CONSTRAINTS = (
     "fk_tutor_runs_superseded_by_run",
     "chk_tutor_conversations_title",
     "chk_tutor_runs_continuation_kind",
+)
+
+TUTOR_SCHEMA_CONSTRAINTS = (
+    EXECUTION_SCOPE_CONSTRAINTS
+    + EXECUTION_LIFECYCLE_CONSTRAINTS
+    + PROVIDER_ATTEMPT_RECEIPT_CONSTRAINTS
+    + CONVERSATION_TURNRUN_CONSTRAINTS
 )
 
 TARGET_TUTOR_TABLES = (
@@ -104,6 +122,7 @@ TARGET_TUTOR_TABLES = (
     "tutor_messages",
     "tutor_catalog_snapshots",
     "tutor_runs",
+    "tutor_provider_attempt_receipts",
     "tutor_run_skill_selections",
     "tutor_run_input_events",
     "tutor_run_checkpoints",
@@ -156,6 +175,7 @@ def test_tutor_target_schema_is_repeatable_and_enforces_run_event_identity() -> 
             """,
             (
                 [
+                    "trg_tutor_provider_attempt_receipts_immutable",
                     "trg_tutor_conversations_updated_at",
                     "trg_tutor_runs_updated_at",
                     "trg_tutor_effects_updated_at",
@@ -184,6 +204,7 @@ def test_tutor_target_schema_is_repeatable_and_enforces_run_event_identity() -> 
         ).fetchall()
         assert {str(row["table_name"]) for row in table_rows} == set(TARGET_TUTOR_TABLES)
         assert {str(row["tgname"]) for row in trigger_rows} == {
+            "trg_tutor_provider_attempt_receipts_immutable",
             "trg_tutor_conversations_updated_at",
             "trg_tutor_runs_updated_at",
             "trg_tutor_effects_updated_at",
@@ -217,6 +238,7 @@ def test_tutor_target_schema_is_repeatable_and_enforces_run_event_identity() -> 
             """,
             (
                 [
+                    "idx_tutor_provider_attempt_receipts_run_created",
                     "idx_tutor_execution_intents_run_expiry",
                     "idx_tutor_execution_jobs_claim",
                     "idx_tutor_execution_attempts_job_created",
@@ -235,6 +257,7 @@ def test_tutor_target_schema_is_repeatable_and_enforces_run_event_identity() -> 
             ),
         ).fetchall()
         assert {str(row["indexname"]) for row in executor_indexes} == {
+            "idx_tutor_provider_attempt_receipts_run_created",
             "idx_tutor_execution_intents_run_expiry",
             "idx_tutor_execution_jobs_claim",
             "idx_tutor_execution_attempts_job_created",
@@ -252,10 +275,10 @@ def test_tutor_target_schema_is_repeatable_and_enforces_run_event_identity() -> 
         }
         execution_constraint_rows = conn.execute(
             "SELECT conname FROM pg_constraint WHERE conname = ANY(%s)",
-            (list(EXECUTION_SCOPE_CONSTRAINTS + EXECUTION_LIFECYCLE_CONSTRAINTS + CONVERSATION_TURNRUN_CONSTRAINTS),),
+            (list(TUTOR_SCHEMA_CONSTRAINTS),),
         ).fetchall()
         assert {str(row["conname"]) for row in execution_constraint_rows} == set(
-            EXECUTION_SCOPE_CONSTRAINTS + EXECUTION_LIFECYCLE_CONSTRAINTS + CONVERSATION_TURNRUN_CONSTRAINTS
+            TUTOR_SCHEMA_CONSTRAINTS
         )
 
         user = conn.execute(

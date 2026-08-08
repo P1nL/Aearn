@@ -30,6 +30,8 @@ The formal MVP runtime lives under `aearn/`, not under the historical `01_` thro
 - Add `set_updated_at()` triggers for mutable business tables.
 - Do not create PostgreSQL enum types for MVP enums. The schema currently specifies `text CHECK (...)` to keep enum changes migration-friendly.
 - Append-only tables such as `attempts` and `review_logs` should be corrected by new records or explicit status fields, not by soft deletion.
+- `tutor_provider_attempt_receipts` 是每个实际 provider attempt 的 append-only 事实表；使用 `(run_id,input_revision,decision_iteration,attempt_index)` 幂等 identity、run/user/conversation 复合外键和 UPDATE/DELETE 拒绝触发器。相同 identity 只允许完全相同的安全事实重放。
+- provider `input_tokens` 已包含 `cached_input_tokens`；数据库持久化 `uncached_input_tokens = input_tokens - cached_input_tokens`，并把 provider reported total 与 calculated input-plus-output 分列。usage 缺失必须使用 `NULL` + `usage_available=false`，不得写零值占位。
 
 ---
 

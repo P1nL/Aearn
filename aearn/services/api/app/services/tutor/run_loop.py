@@ -167,11 +167,19 @@ class TutorRunLoop:
                     snapshot = replace(snapshot, input_revision=before_model_revision)
                     continue
 
+                decision_iteration = snapshot.model_call_count + 1
                 provider_result = self._provider.decide(run=snapshot, context=context)
+                if self._lifecycle is not None and provider_result.attempts:
+                    self._lifecycle.persist_provider_attempts(
+                        snapshot=snapshot,
+                        decision_iteration=decision_iteration,
+                        attempts=provider_result.attempts,
+                        created_at=self._clock.now(),
+                    )
                 snapshot = replace(
                     snapshot,
                     iteration_count=snapshot.iteration_count + 1,
-                    model_call_count=snapshot.model_call_count + 1,
+                    model_call_count=decision_iteration,
                 )
                 refreshed, terminal = self._refresh_before_unsafe_boundary(
                     snapshot,
