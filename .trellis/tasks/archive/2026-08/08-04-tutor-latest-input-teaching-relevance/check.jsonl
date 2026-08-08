@@ -1,0 +1,2 @@
+{"file":".trellis/tasks/08-04-tutor-latest-input-teaching-relevance/prd.md","reason":"检查最新输入、纠正处理、历史选择、安全边界和确定性回归验收。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"检查当前输入从 API 到 provider 决策的完整链路和回归覆盖。"}
