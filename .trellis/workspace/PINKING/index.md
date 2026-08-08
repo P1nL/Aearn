@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-2.md`
-- **Total Sessions**: 85
-- **Last Active**: 2026-08-05
+- **Total Sessions**: 86
+- **Last Active**: 2026-08-08
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-2.md` | ~918 | Active |
+| `journal-2.md` | ~978 | Active |
 | `journal-1.md` | ~1979 | Archived |
 <!-- @@@/auto:active-documents -->
 
@@ -30,6 +30,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 86 | 2026-08-08 | 完成 Tutor 最新输入与教学相关性 child | `784239e`, `81faa49` | `main` |
 | 85 | 2026-08-05 | 完成 LearningTrack 领域基础并清理工作树 | `36905cb`, `82c3edf` | `main` |
 | 84 | 2026-08-03 | 稳定 Tutor TurnRun 与 DeepSeek 决策契约 | `ffaa073` | `main` |
 | 83 | 2026-07-30 | Close Tutor Harness rearchitecture parent | `9f65449`, `30772e9`, `92492c6`, `00b57a9`, `cd7bcce`, `9b615cd`, `d796435`, `f0ee786`, `002ba37`, `469ab8c`, `4d9c90b` | `main` |
