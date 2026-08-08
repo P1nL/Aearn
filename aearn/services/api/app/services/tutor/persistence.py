@@ -28,6 +28,8 @@ from app.agents.harness.contracts import (
     TutorCheckpoint,
     TutorCompactionRequest,
     TutorCompactionTrigger,
+    TutorContextBudgetMode,
+    TutorContextBudgetPolicy,
     TutorContinuationKind,
     TutorEffectProposal,
     TutorEffectResult,
@@ -36,6 +38,7 @@ from app.agents.harness.contracts import (
     TutorPolicySnapshot,
     TutorProviderAttemptOutcome,
     TutorProviderAttemptReceipt,
+    TutorProviderContextCapability,
     TutorRunResult,
     TutorRunOrigin,
     TutorRunSnapshot,
@@ -3639,6 +3642,7 @@ def _snapshot_from_row(row: Mapping[str, object]) -> TutorRunSnapshot:
         max_effects=_as_int(policy_data.get("max_effects"), 0),
         context_token_budget=_as_int(policy_data.get("context_token_budget"), 1),
         lease_duration_seconds=_as_int(policy_data.get("lease_duration_seconds"), 1),
+        context_budget_policy=_context_budget_policy_from_payload(policy_data.get("context_budget_policy")),
     )
     origin = str(row.get("origin") or "")
     if origin not in {"interactive", "proactive"}:
@@ -3698,7 +3702,75 @@ def _policy_payload(policy: TutorPolicySnapshot) -> dict[str, object]:
         "max_effects": policy.max_effects,
         "context_token_budget": policy.context_token_budget,
         "lease_duration_seconds": policy.lease_duration_seconds,
+        "context_budget_policy": (
+            _context_budget_policy_payload(policy.context_budget_policy)
+            if policy.context_budget_policy is not None
+            else None
+        ),
     }
+
+
+def _context_budget_policy_payload(policy: TutorContextBudgetPolicy) -> dict[str, object]:
+    capability = policy.capability
+    return {
+        "capability": {
+            "context_window_tokens": capability.context_window_tokens,
+            "max_output_reserve_tokens": capability.max_output_reserve_tokens,
+            "protocol_reserve_tokens": capability.protocol_reserve_tokens,
+            "safety_margin_tokens": capability.safety_margin_tokens,
+            "maximum_dynamic_target_tokens": capability.maximum_dynamic_target_tokens,
+            "capability_version": capability.capability_version,
+        },
+        "mode_targets": {
+            mode.value: target for mode, target in policy.mode_targets
+        },
+        "warning_ratio": policy.warning_ratio,
+        "critical_ratio": policy.critical_ratio,
+        "max_expansions": policy.max_expansions,
+        "estimator_version": policy.estimator_version,
+        "policy_version": policy.policy_version,
+        "fixed_mode": policy.fixed_mode.value if policy.fixed_mode is not None else None,
+    }
+
+
+def _context_budget_policy_from_payload(value: object) -> TutorContextBudgetPolicy | None:
+    payload = _as_mapping(value)
+    if not payload:
+        return None
+    capability_data = _as_mapping(payload.get("capability"))
+    mode_target_data = _as_mapping(payload.get("mode_targets"))
+    try:
+        capability = TutorProviderContextCapability(
+            context_window_tokens=_as_int(capability_data.get("context_window_tokens"), 0),
+            max_output_reserve_tokens=_as_int(capability_data.get("max_output_reserve_tokens"), 0),
+            protocol_reserve_tokens=_as_int(capability_data.get("protocol_reserve_tokens"), 0),
+            safety_margin_tokens=_as_int(capability_data.get("safety_margin_tokens"), 0),
+            maximum_dynamic_target_tokens=_as_int(capability_data.get("maximum_dynamic_target_tokens"), 0),
+            capability_version=str(capability_data.get("capability_version") or ""),
+        )
+        fixed_mode_value = payload.get("fixed_mode")
+        return TutorContextBudgetPolicy(
+            capability=capability,
+            mode_targets=tuple(
+                (
+                    mode,
+                    _as_int(mode_target_data.get(mode.value), 0),
+                )
+                for mode in TutorContextBudgetMode
+            ),
+            warning_ratio=_as_float(payload.get("warning_ratio"), 0.0),
+            critical_ratio=_as_float(payload.get("critical_ratio"), 0.0),
+            max_expansions=_as_int(payload.get("max_expansions"), 0),
+            estimator_version=str(payload.get("estimator_version") or ""),
+            policy_version=str(payload.get("policy_version") or ""),
+            fixed_mode=(
+                TutorContextBudgetMode(str(fixed_mode_value))
+                if fixed_mode_value is not None
+                else None
+            ),
+        )
+    except (TypeError, ValueError) as exc:
+        raise TutorPersistenceError("stored Tutor context budget policy is invalid") from exc
 
 
 def _compaction_payload(request: TutorCompactionRequest, *, status: str) -> dict[str, object]:
@@ -3821,6 +3893,16 @@ def _as_int(value: object, default: int) -> int:
         return int(str(value))
     except (TypeError, ValueError):
         return default
+
+def _as_float(value: object, default: float) -> float:
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, int | float | str):
+        try:
+            return float(value)
+        except ValueError:
+            return default
+    return default
 
 
 def _as_optional_int(value: object) -> int | None:

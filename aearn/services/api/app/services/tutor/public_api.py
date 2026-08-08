@@ -17,6 +17,7 @@ from uuid import UUID
 
 from psycopg import Connection
 
+from app.agents.harness.context_budget import build_tutor_context_budget_policy
 from app.agents.harness.contracts import TutorPolicySnapshot, TutorTerminalOutcome
 from app.core.config import Settings, get_settings
 from app.agents.harness.skill_catalog import compile_published_skill_catalog
@@ -1002,6 +1003,7 @@ def _interactive_policy(now: datetime, *, settings: Settings) -> TutorPolicySnap
         max_effects=2,
         context_token_budget=settings.tutor_context_token_budget,
         lease_duration_seconds=30,
+        context_budget_policy=build_tutor_context_budget_policy(settings),
     )
 
 

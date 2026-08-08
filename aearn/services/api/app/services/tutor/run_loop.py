@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Final
 
+from app.agents.harness.context_budget import TutorContextBudgetPlanner
 from app.agents.harness.context_builder import TutorContextBuilder
 from app.agents.harness.contracts import (
     TutorCapabilityStatus,
@@ -53,6 +54,7 @@ class TutorRunLoop:
         context_loader: TutorContextLoader,
         context_builder: TutorContextBuilder,
         provider: TutorProviderGateway,
+        context_budget_planner: TutorContextBudgetPlanner | None = None,
         capability_gateway: TutorCapabilityGateway,
         effect_committer: TutorEffectCommitter,
         clock: Clock,
@@ -63,6 +65,7 @@ class TutorRunLoop:
         self._store = store
         self._context_loader = context_loader
         self._context_builder = context_builder
+        self._context_budget_planner = context_budget_planner or TutorContextBudgetPlanner()
         self._provider = provider
         self._capability_gateway = capability_gateway
         self._effect_committer = effect_committer
@@ -87,6 +90,7 @@ class TutorRunLoop:
 
         snapshot = replace(snapshot, status=TutorRunStatus.LEASED, lease=lease)
         effect_results: list[TutorEffectResult] = []
+        context_expansion_count = 0
         metadata = empty_checkpoint_metadata(token_budget=snapshot.policy.context_token_budget)
 
         try:
@@ -135,6 +139,8 @@ class TutorRunLoop:
                     )
 
                 current_revision = self._store.current_input_revision(snapshot.run_id)
+                if current_revision != snapshot.input_revision:
+                    context_expansion_count = 0
                 snapshot = replace(
                     snapshot,
                     status=TutorRunStatus.RUNNING,
@@ -142,9 +148,11 @@ class TutorRunLoop:
                     input_revision=current_revision,
                 )
                 context_input = self._context_loader.load_context(snapshot, input_revision=current_revision)
-                context = self._context_builder.build(
-                    context_input,
-                    token_budget=snapshot.policy.context_token_budget,
+                context = self._context_budget_planner.build_context(
+                    run=snapshot,
+                    context_input=context_input,
+                    builder=self._context_builder,
+                    expansion_count=context_expansion_count,
                 )
                 metadata = context.checkpoint_metadata
                 if context.high_water_compaction_request is not None:
@@ -164,6 +172,7 @@ class TutorRunLoop:
                 # learner input cannot be answered with stale composed context.
                 before_model_revision = self._store.current_input_revision(snapshot.run_id)
                 if before_model_revision != snapshot.input_revision:
+                    context_expansion_count = 0
                     snapshot = replace(snapshot, input_revision=before_model_revision)
                     continue
 
@@ -190,6 +199,7 @@ class TutorRunLoop:
                 if terminal is not None:
                     return terminal
                 if refreshed.input_revision != snapshot.input_revision:
+                    context_expansion_count = 0
                     snapshot = refreshed
                     continue
                 snapshot = refreshed
@@ -224,6 +234,13 @@ class TutorRunLoop:
                         effect_results=effect_results,
                     )
                 if gate_result.status is TutorDecisionGateStatus.REBUILD_CONTEXT:
+                    max_expansions = (
+                        snapshot.policy.context_budget_policy.max_expansions
+                        if snapshot.policy.context_budget_policy is not None
+                        else 0
+                    )
+                    if context_expansion_count < max_expansions:
+                        context_expansion_count += 1
                     continue
 
                 refreshed, terminal = self._refresh_before_unsafe_boundary(

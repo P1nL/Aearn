@@ -14,9 +14,13 @@ from app.agents.harness.contracts import (
     TutorCheckpoint,
     TutorCheckpointReason,
     TutorCompactionRequest,
+    TutorContextBudgetMode,
+    TutorContextBudgetPolicy,
     TutorContextInput,
     TutorContextSource,
     TutorDecision,
+    TutorDecisionGateResult,
+    TutorDecisionGateStatus,
     TutorEffectProposal,
     TutorEffectStatus,
     TutorInputEvent,
@@ -24,6 +28,7 @@ from app.agents.harness.contracts import (
     TutorPolicySnapshot,
     TutorProviderAttemptOutcome,
     TutorProviderAttemptReceipt,
+    TutorProviderContextCapability,
     TutorProviderResult,
     TutorRunResult,
     TutorRunSnapshot,
@@ -112,6 +117,7 @@ def _loop(
     publisher: InMemoryTutorCompactionPublisher | None = None,
     builder: TutorContextBuilder | None = None,
     lifecycle: object | None = None,
+    decision_gate: object | None = None,
 ) -> tuple[TutorRunLoop, InMemoryTutorCompactionPublisher]:
     resolved_publisher = publisher or InMemoryTutorCompactionPublisher()
     loop = TutorRunLoop(
@@ -123,7 +129,7 @@ def _loop(
         effect_committer=effect_committer or RecordingEffectCommitter(status=TutorEffectStatus.DENIED),
         clock=FixedClock(NOW),
         compaction_publisher=resolved_publisher,
-        decision_gate=AllowTutorDecisionGate(),
+        decision_gate=decision_gate or AllowTutorDecisionGate(),  # type: ignore[arg-type]
         lifecycle=lifecycle,  # type: ignore[arg-type]
     )
     return loop, resolved_publisher
@@ -705,3 +711,120 @@ def test_retired_runtime_paths_and_rollout_flags_are_absent() -> None:
         "_".join(("tutor", "harness", "enabled")),
     )
     assert not any(setting_name in settings_source for setting_name in retired_setting_names)
+
+
+class _InsufficientContextOnceGate:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def validate(self, *, run: TutorRunSnapshot, decision: TutorDecision) -> TutorDecisionGateResult:
+        del run, decision
+        self.calls += 1
+        if self.calls == 1:
+            return TutorDecisionGateResult(
+                status=TutorDecisionGateStatus.REBUILD_CONTEXT,
+                diagnostic_code="insufficient_context",
+            )
+        return TutorDecisionGateResult(status=TutorDecisionGateStatus.APPROVED)
+
+
+def test_controlled_insufficient_context_rebuild_upgrades_exactly_one_mode() -> None:
+    capability = TutorProviderContextCapability(
+        context_window_tokens=10_000,
+        max_output_reserve_tokens=1_000,
+        protocol_reserve_tokens=32,
+        safety_margin_tokens=64,
+        maximum_dynamic_target_tokens=4_000,
+        capability_version="run-loop-capability-v1",
+    )
+    budget_policy = TutorContextBudgetPolicy(
+        capability=capability,
+        mode_targets=(
+            (TutorContextBudgetMode.COMPACT, 500),
+            (TutorContextBudgetMode.NORMAL, 1_000),
+            (TutorContextBudgetMode.COMPLEX, 2_000),
+            (TutorContextBudgetMode.EXTENDED, 4_000),
+        ),
+        max_expansions=1,
+    )
+    store = InMemoryTutorRunStore(
+        [
+            _snapshot(
+                policy=_policy(
+                    max_iterations=3,
+                    max_model_calls=3,
+                    context_token_budget=4_000,
+                    context_budget_policy=budget_policy,
+                )
+            )
+        ]
+    )
+    provider = SequenceTutorProvider(
+        [
+            TutorProviderResult(decision=TutorDecision(public_message="Need more context.")),
+            TutorProviderResult(decision=TutorDecision(public_message="Use the narrower scope.")),
+        ]
+    )
+    gate = _InsufficientContextOnceGate()
+    loop, _ = _loop(
+        store=store,
+        contexts={("run-loop", 0): _context(0)},
+        provider=provider,
+        decision_gate=gate,
+    )
+
+    result = loop.run(run_id="run-loop", lease_owner_id="worker-1")
+
+    assert result.status is TutorRunStatus.COMPLETED
+    assert result.model_call_count == 2
+    assert len(provider.calls) == 2
+    first_metadata = provider.calls[0][1].checkpoint_metadata
+    second_metadata = provider.calls[1][1].checkpoint_metadata
+    assert first_metadata.budget_mode is TutorContextBudgetMode.COMPACT
+    assert first_metadata.expansion_count == 0
+    assert second_metadata.budget_mode is TutorContextBudgetMode.NORMAL
+    assert second_metadata.expansion_count == 1
+
+
+def test_full_serialized_required_overflow_stops_before_provider_call() -> None:
+    capability = TutorProviderContextCapability(
+        context_window_tokens=500,
+        max_output_reserve_tokens=200,
+        protocol_reserve_tokens=10,
+        safety_margin_tokens=10,
+        maximum_dynamic_target_tokens=100,
+        capability_version="tiny-capability-v1",
+    )
+    budget_policy = TutorContextBudgetPolicy(
+        capability=capability,
+        mode_targets=(
+            (TutorContextBudgetMode.COMPACT, 25),
+            (TutorContextBudgetMode.NORMAL, 50),
+            (TutorContextBudgetMode.COMPLEX, 75),
+            (TutorContextBudgetMode.EXTENDED, 100),
+        ),
+        max_expansions=1,
+    )
+    store = InMemoryTutorRunStore(
+        [
+            _snapshot(
+                policy=_policy(
+                    context_token_budget=100,
+                    context_budget_policy=budget_policy,
+                )
+            )
+        ]
+    )
+    provider = SequenceTutorProvider([])
+    loop, _ = _loop(
+        store=store,
+        contexts={("run-loop", 0): _context(0)},
+        provider=provider,
+    )
+
+    result = loop.run(run_id="run-loop", lease_owner_id="worker-1")
+
+    assert result.status is TutorRunStatus.FAILED
+    assert result.diagnostic_code == "TUTOR_CONTEXT_REQUIRED_OVERFLOW"
+    assert result.model_call_count == 0
+    assert provider.calls == []

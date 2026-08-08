@@ -15,6 +15,7 @@ from uuid import uuid4
 from psycopg import Connection
 
 from app.agents.harness.catalog_context import CatalogContextLoader
+from app.agents.harness.context_budget import TutorContextBudgetPlanner
 from app.agents.harness.context_builder import TutorContextBuilder
 from app.agents.harness.contracts import TutorContextError, TutorContextInput, TutorContextSource, TutorRunResult, TutorRunSnapshot
 from app.agents.harness.skill_catalog import compile_published_skill_catalog
@@ -274,6 +275,7 @@ class TutorInteractiveRunDispatcher:
                     selection_store=selection_store,
                 ),
                 context_builder=TutorContextBuilder(),
+                context_budget_planner=TutorContextBudgetPlanner(),
                 provider=self._provider_factory(self._settings),
                 capability_gateway=DefaultDenyCapabilityGateway(),
                 effect_committer=DefaultDenyEffectCommitter(),

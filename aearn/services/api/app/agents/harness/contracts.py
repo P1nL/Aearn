@@ -75,9 +75,9 @@ class TutorContextSection(str, Enum):
 
 CONTEXT_SECTION_PRIORITY: tuple[TutorContextSection, ...] = (
     TutorContextSection.SYSTEM,
+    TutorContextSection.RECENT_MESSAGES,
     TutorContextSection.ACTIVE_PLAN,
     TutorContextSection.REVIEW,
-    TutorContextSection.RECENT_MESSAGES,
     TutorContextSection.WORKING_SUMMARY,
     TutorContextSection.LEARNER_MEMORY,
     TutorContextSection.ACTIVITY,
@@ -137,6 +137,136 @@ class TokenEstimator(Protocol):
     def estimate_tokens(self, value: object) -> int: ...
 
 
+class TutorContextBudgetMode(str, Enum):
+    COMPACT = "compact"
+    NORMAL = "normal"
+    COMPLEX = "complex"
+    EXTENDED = "extended"
+
+
+@dataclass(frozen=True)
+class TutorProviderContextCapability:
+    context_window_tokens: int
+    max_output_reserve_tokens: int
+    protocol_reserve_tokens: int
+    safety_margin_tokens: int
+    maximum_dynamic_target_tokens: int
+    capability_version: str
+
+    def __post_init__(self) -> None:
+        for name in (
+            "context_window_tokens",
+            "max_output_reserve_tokens",
+            "protocol_reserve_tokens",
+            "safety_margin_tokens",
+            "maximum_dynamic_target_tokens",
+        ):
+            if getattr(self, name) <= 0:
+                raise ValueError(f"{name} must be positive")
+        if self.input_hard_limit <= self.protocol_reserve_tokens + self.safety_margin_tokens:
+            raise ValueError("provider capability must leave positive required input capacity")
+        if self.maximum_dynamic_target_tokens > self.dynamic_hard_limit:
+            raise ValueError("maximum_dynamic_target_tokens exceeds provider input capacity")
+        object.__setattr__(self, "capability_version", _safe_identifier(self.capability_version))
+
+    @property
+    def input_hard_limit(self) -> int:
+        return self.context_window_tokens - self.max_output_reserve_tokens
+
+    @property
+    def dynamic_hard_limit(self) -> int:
+        return self.input_hard_limit - self.protocol_reserve_tokens - self.safety_margin_tokens
+
+
+@dataclass(frozen=True)
+class TutorContextBudgetPolicy:
+    capability: TutorProviderContextCapability
+    mode_targets: tuple[tuple[TutorContextBudgetMode, int], ...]
+    warning_ratio: float = 0.8
+    critical_ratio: float = 0.95
+    max_expansions: int = 1
+    estimator_version: str = "utf8_bytes_v1"
+    policy_version: str = "tutor_context_budget_v1"
+    fixed_mode: TutorContextBudgetMode | None = None
+
+    def __post_init__(self) -> None:
+        if not 0 < self.warning_ratio < self.critical_ratio <= 1:
+            raise ValueError("context warning/critical ratios are invalid")
+        if self.max_expansions < 0:
+            raise ValueError("max_expansions must be non-negative")
+        targets: dict[TutorContextBudgetMode, int] = {}
+        for mode, target in self.mode_targets:
+            if mode in targets or target <= 0:
+                raise ValueError("context mode targets must be unique and positive")
+            targets[mode] = target
+        if set(targets) != set(TutorContextBudgetMode):
+            raise ValueError("context mode targets must cover every budget mode")
+        normalized_targets = tuple((mode, targets[mode]) for mode in TutorContextBudgetMode)
+        if any(
+            normalized_targets[index][1] >= normalized_targets[index + 1][1]
+            for index in range(len(normalized_targets) - 1)
+        ):
+            raise ValueError("context mode targets must increase by mode")
+        object.__setattr__(self, "mode_targets", normalized_targets)
+        object.__setattr__(self, "estimator_version", _safe_identifier(self.estimator_version))
+        object.__setattr__(self, "policy_version", _safe_identifier(self.policy_version))
+
+    def target_for(self, mode: TutorContextBudgetMode) -> int:
+        for candidate, target in self.mode_targets:
+            if candidate is mode:
+                return target
+        raise ValueError("context budget mode target is unavailable")
+
+
+@dataclass(frozen=True)
+class TutorContextBudgetPlan:
+    mode: TutorContextBudgetMode
+    physical_input_limit: int
+    required_token_estimate: int
+    optional_token_budget: int
+    total_input_warning_tokens: int
+    total_input_critical_tokens: int
+    expansion_count: int
+    estimator_version: str
+    capability_version: str
+    policy_version: str
+    estimated_total_input_tokens: int
+
+    def __post_init__(self) -> None:
+        for name in (
+            "physical_input_limit",
+            "required_token_estimate",
+            "total_input_warning_tokens",
+            "total_input_critical_tokens",
+            "estimated_total_input_tokens",
+        ):
+            if getattr(self, name) <= 0:
+                raise ValueError(f"{name} must be positive")
+        if self.optional_token_budget < 0 or self.expansion_count < 0:
+            raise ValueError("context optional budget and expansion count must be non-negative")
+        if not (
+            self.total_input_warning_tokens
+            < self.total_input_critical_tokens
+            <= self.physical_input_limit
+        ):
+            raise ValueError("context warning/critical token limits are invalid")
+        if self.required_token_estimate > self.estimated_total_input_tokens:
+            raise ValueError("estimated total input cannot be below the required estimate")
+        if self.estimated_total_input_tokens > self.physical_input_limit:
+            raise ValueError("estimated total input exceeds the provider hard limit")
+        object.__setattr__(self, "estimator_version", _safe_identifier(self.estimator_version))
+        object.__setattr__(self, "capability_version", _safe_identifier(self.capability_version))
+        object.__setattr__(self, "policy_version", _safe_identifier(self.policy_version))
+
+    @property
+    def warning_reached(self) -> bool:
+        return self.estimated_total_input_tokens >= self.total_input_warning_tokens
+
+    @property
+    def critical_reached(self) -> bool:
+        return self.estimated_total_input_tokens >= self.total_input_critical_tokens
+
+
 @dataclass(frozen=True)
 class TutorPolicySnapshot:
     deadline: datetime
@@ -146,6 +276,7 @@ class TutorPolicySnapshot:
     max_effects: int = 0
     context_token_budget: int = 1200
     lease_duration_seconds: int = 30
+    context_budget_policy: TutorContextBudgetPolicy | None = None
 
     def __post_init__(self) -> None:
         for name in ("max_iterations", "max_model_calls", "max_capability_calls", "max_effects"):
@@ -331,12 +462,34 @@ class TutorCheckpointMetadata:
     consumed_tokens: int
     current_input: TutorCurrentInputMetadata | None = None
     sections: tuple[TutorContextSectionMetadata, ...] = ()
+    budget_mode: TutorContextBudgetMode | None = None
+    estimated_total_input_tokens: int | None = None
+    optional_token_budget: int | None = None
+    warning_reached: bool = False
+    critical_reached: bool = False
+    expansion_count: int = 0
+    estimator_version: str | None = None
+    capability_version: str | None = None
+    budget_policy_version: str | None = None
+    truncated_count: int = 0
 
     def __post_init__(self) -> None:
         if self.token_budget <= 0:
             raise ValueError("token_budget must be positive")
         if self.consumed_tokens < 0 or self.consumed_tokens > self.token_budget:
             raise ValueError("consumed_tokens must be within token_budget")
+        if self.estimated_total_input_tokens is not None and self.estimated_total_input_tokens <= 0:
+            raise ValueError("estimated_total_input_tokens must be positive")
+        if self.optional_token_budget is not None and self.optional_token_budget < 0:
+            raise ValueError("optional_token_budget must be non-negative")
+        if self.expansion_count < 0 or self.truncated_count < 0:
+            raise ValueError("expansion_count and truncated_count must be non-negative")
+        if self.critical_reached and not self.warning_reached:
+            raise ValueError("critical context state must also reach warning")
+        for name in ("estimator_version", "capability_version", "budget_policy_version"):
+            value = getattr(self, name)
+            if value is not None:
+                object.__setattr__(self, name, _safe_identifier(value))
         object.__setattr__(self, "sections", tuple(self.sections))
 
     @property
@@ -373,6 +526,16 @@ class TutorCheckpointMetadata:
                 }
                 for section in self.sections
             ],
+            "budget_mode": self.budget_mode.value if self.budget_mode is not None else None,
+            "estimated_total_input_tokens": self.estimated_total_input_tokens,
+            "optional_token_budget": self.optional_token_budget,
+            "warning_reached": self.warning_reached,
+            "critical_reached": self.critical_reached,
+            "expansion_count": self.expansion_count,
+            "estimator_version": self.estimator_version,
+            "capability_version": self.capability_version,
+            "budget_policy_version": self.budget_policy_version,
+            "truncated_count": self.truncated_count,
         }
 
 

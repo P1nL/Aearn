@@ -1692,9 +1692,9 @@ Safety blocking remains strict, while valid conversational answers stay visible.
   representation fits, fail with a typed safe code before provider invocation.
   Proactive contexts must explicitly declare that current input is not required.
 - Context construction is deterministic and bounded in this order:
-  system/selected-Skill/policy, active plan, review/FSRS, sanitized recent
-  messages, working summary, learner-visible memory, activity/execution facts,
-  and allowed capability schemas. Checkpoint metadata contains only source
+  system/selected-Skill/policy, sanitized newest recent messages, directly
+  related active plan and review/FSRS, working summary, learner-visible memory,
+  activity/execution facts, and allowed capability schemas. Checkpoint metadata contains only source
   identifiers, hashes, counts, and token-budget data; it never stores a raw
   prompt, full history, provider payload, hidden test, reference answer, or
   secret.
@@ -3195,3 +3195,134 @@ persist(
 ```
 
 正确实现保留 missing 与 zero 的区别，并让数据库约束重新验证所有派生计量事实。
+
+
+---
+
+## Scenario: Tutor 自适应完整请求上下文预算
+
+### 1. Scope / Trigger
+
+- Trigger：修改 Tutor provider context window/output reserve、完整请求 serializer、
+  `TutorContextBuilder` optional budget、run policy fingerprint、受控 context rebuild，
+  或 provider usage estimator calibration。
+- Scope：`app/agents/harness/{contracts,context_builder,context_budget,provider_request}.py`、
+  `app/services/tutor/{provider_gateway,run_loop,public_api,interactive,persistence,safe_projection}.py`、
+  `app/core/config.py` 及 focused unit/PostgreSQL tests。
+- 该 contract 不授权 provider/model/protocol fallback、按价格路由、预测 cache hit、
+  公开 token telemetry、实时自动改配置或扩展历史数据 source allowlist。
+
+### 2. Signatures
+
+- Capability：`TutorProviderContextCapability(context_window_tokens, max_output_reserve_tokens, protocol_reserve_tokens, safety_margin_tokens, maximum_dynamic_target_tokens, capability_version)`；
+  `input_hard_limit = context_window_tokens - max_output_reserve_tokens`。
+- Policy：`TutorContextBudgetPolicy(capability, mode_targets, warning_ratio, critical_ratio, max_expansions, estimator_version, policy_version, fixed_mode)`。
+- Modes：`compact | normal | complex | extended`；targets 必须逐档严格递增，初始默认
+  为 `16000/64000/192000/384000`，但始终被 capability 裁剪。
+- Planner：`TutorContextBudgetPlanner.build_context(run, context_input, builder, expansion_count=0) -> TutorContextSelection`。
+- Serializer：`TutorProviderRequestSerializer.build_messages(run, context) -> list[dict[str, str]]`，gateway 与 dry-run planner 必须共享同一实现。
+- Env：`TUTOR_CONTEXT_WINDOW_TOKENS`、`TUTOR_CONTEXT_OUTPUT_RESERVE_TOKENS`、
+  `TUTOR_CONTEXT_PROTOCOL_RESERVE_TOKENS`、`TUTOR_CONTEXT_SAFETY_MARGIN_TOKENS`、
+  `TUTOR_CONTEXT_MAX_DYNAMIC_TARGET_TOKENS`、
+  `TUTOR_DEEPSEEK_V4_FLASH_MAX_DYNAMIC_TARGET_TOKENS`、四档 target、warning/critical ratio、
+  `TUTOR_CONTEXT_MAX_EXPANSIONS` 与可选 `TUTOR_CONTEXT_FIXED_MODE`。
+- Exact registry：仅精确 `LLM_TYPE=deepseek` + `DEEPSEEK_MODEL=deepseek-v4-flash`
+  使用 `1_000_000` window / `384_000` output reserve；相似名字走显式保守默认。
+
+### 3. Contracts
+
+- 新 interactive run 在 `policy_json` 冻结 capability、mode targets、ratios、
+  expansion limit、estimator/policy version，并参与 `policy_fingerprint`；旧 run 缺少
+  `context_budget_policy` 时继续使用 persisted `context_token_budget`，不得追溯改写。
+- Planner 先使用 required-only selection dry-build 最终 provider message，再估算
+  system teaching policy、canonical strict decision shape、current input、context、metadata、
+  JSON envelope，并额外加入 protocol reserve 与 safety margin。只把剩余 optional
+  budget 交给 builder；`616_000` 是 DeepSeek V4 Flash input hard limit，不是填满目标。
+- current input 永远 required 且先保留。optional priority 固定为：system/selected Skill
+  policy、最新既往消息、直接相关 active plan/review、working summary、memory、activity、
+  非必要 capability schema。达到预算时跳过 optional item，不能删除 current input。
+- classifier 只读取安全结构化事实：current input 字符/行数、code fence 数、候选/长
+  source 数、recent history 数与 summary availability；不得把模型自由文本自报复杂度
+  或中文/英文业务关键词作为唯一升级依据。
+- `REBUILD_CONTEXT` 是受控 gate；在 frozen `max_expansions` 内最多逐次上升一个 mode，
+  仍受 `max_iterations`/`max_model_calls` 限制。input revision 改变时 expansion count
+  重置；达到 expansion 上限后可重建相同 mode，但不能继续增加 optional target。
+- warning/critical high-water 以 `required estimate + 当前 mode optional target 的比例`
+  计算，不再使用 provider 物理大窗口的固定 80%；否则普通 allowlisted source 永远
+  无法触发 compaction signal。
+- checkpoint/trace 仅可保存 mode、完整估算、optional budget、warning/critical 状态、
+  expansion/selected/skipped/truncated counts、source IDs/hashes 和版本；禁止 raw prompt、
+  provider payload、历史正文、reasoning、hidden tests、path/command 或 credential。
+- 请求前 cache hit 未知，cached tokens 仍占物理输入。请求后 `LLMUsage.input_tokens`
+  已含 cached；calibration 比较该 actual physical total 与 estimate，不再添加 cached。
+- 纯 deterministic serializer 属于 `agents/harness/provider_request.py`，不得放进会通过
+  eager `services.tutor.__init__` 回引 `run_loop` 的依赖路径，避免 planner/gateway 循环导入。
+
+### 4. Validation & Error Matrix
+
+- window/output/protocol/safety reserve 后没有正 required capacity -> Settings/capability
+  构造失败，启动配置不生效。
+- mode targets 缺档、重复、非正数或不严格递增 -> `TutorContextBudgetPolicy` 拒绝。
+- required-only 完整序列化估算超过 input hard limit ->
+  `TUTOR_CONTEXT_REQUIRED_OVERFLOW`，run `failed`，provider call 为零。
+- optional selection 后完整请求仍超过 hard limit -> planner 确定性收缩 optional budget；
+  无法在有界 rebalance 内收敛 -> `TUTOR_CONTEXT_REQUEST_OVERFLOW`，不调用 provider。
+- 非精确 model 名（例如 `deepseek-v4-flash-preview`）-> 保守显式 capability，不能继承
+  1M registry entry。
+- 旧 persisted policy 无 `context_budget_policy` -> legacy builder path；不是损坏数据。
+- calibration 缺 estimated/actual input -> `ValueError`；missing usage 仍是 unavailable，
+  不能伪造为零。
+
+### 5. Good / Base / Bad Cases
+
+- Good：简单短问题选择 compact；长代码/多 source 问题选择 complex/extended；两者
+  用同一 serializer 得到稳定 estimate，且均不越 provider hard limit。
+- Good：tight budget 保留 authoritative current input，选择最新 prior message，跳过
+  activity/无关 schema；受控 rebuild 最多从 compact 升到 normal 一次。
+- Base：未知 provider/model 通过显式 5296/1200 conservative window/output 配置，仅给
+  512 optional dynamic target；旧 run 继续原来的 512 budget。
+- Bad：因模型宣称支持 1M 就把 616K 全交给 builder；从模型名前缀猜窗口；在 preflight
+  扣掉预计 cached tokens；planner 与 gateway 分别复制 request JSON；扩容后不重检 revision。
+
+### 6. Tests Required
+
+- `test_tutor_context_budget.py`：exact/unknown registry、reserve cross-validation、四档
+  deterministic classifier、shared serialized estimate、hard-limit clipping、低优先级驱逐、
+  required overflow、cached calibration。
+- `test_tutor_context_builder.py`：current input reservation、newest-first recent selection、
+  optional budget、metadata/selection 一致和 high-water 行为。
+- `test_tutor_provider_gateway.py`：shared initial/repair serializer、primary-only protocol、
+  exact DeepSeek limits 和 usage regression。
+- `test_tutor_run_loop.py`：required overflow 零 provider call、受控单次 mode upgrade、
+  revision/supersede/cancellation/model budget gate。
+- `test_tutor_input_merge.py` / `test_tutor_run_repository.py`：新 run policy JSON 完整、
+  PostgreSQL round-trip、estimator version 改变 fingerprint、public projection 无 token 明细。
+- 串行运行 PostgreSQL/bootstrap tests，再运行完整 pytest、Ruff、Mypy、`uv lock --check`、
+  Trellis validate 和 `git diff --check`。
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+# cached 不能从物理输入中扣除；616K 也不是每轮 selection target。
+optional_budget = 616_000 - expected_cached_tokens
+messages = build_gateway_messages(run, context)
+estimate = estimate_context_items_only(context)
+```
+
+#### Correct
+
+```python
+messages = shared_serializer.build_messages(run=run, context=required_selection)
+required = estimator.estimate_tokens(messages) + protocol_reserve + safety_margin
+optional_budget = min(mode_target, maximum_dynamic_target, input_hard_limit - required)
+selection = builder.build(
+    context_input,
+    token_budget=current_input_tokens + optional_budget,
+    optional_token_budget=optional_budget,
+)
+```
+
+共享最终 serializer、显式 capability 和 required-first 选择，才能同时保证物理 hard
+limit、current-input 权威性、确定性重放和 cache 计量语义。

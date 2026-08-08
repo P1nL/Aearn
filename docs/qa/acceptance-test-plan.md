@@ -51,6 +51,7 @@ release approval，任何未通过或未执行 gate 都必须在 ledger 中保�
 | RT-10 | P0 | Executor boundary | default disabled/unavailable、immutable lock/profile、network none、no host fallback、cleanup/uncertain launch | API execution tests + `aearn/services/executor/tests/` |
 | RT-11 | P0 | Worker import/composition | worker has only target task wrappers; no executor runtime client import; scheduler production scan remains global | `test_worker_import.py` |
 | RT-12 | P0 | Provider usage/cache accounting | Responses/Chat usage 归一化；cached 不重复计数；repair attempt 分列；缺失 usage 不伪造；跨用户、冲突重放和 UPDATE/DELETE 被拒绝；receipt 不进入公开投影 | `test_tutor_provider_gateway.py`、`test_tutor_run_loop.py`、`test_tutor_run_repository.py`、`test_db_bootstrap.py` |
+| RT-13 | P0 | Adaptive context budget | capability 显式冻结；完整 serializer + reserve 预估不越 hard limit；四档可裁剪；current input 不驱逐；`insufficient_context` 最多有界升级；cache 不放宽物理预算；policy/metadata 不进入公开 API/SSE | `test_tutor_context_budget.py`、`test_tutor_context_builder.py`、`test_tutor_provider_gateway.py`、`test_tutor_run_loop.py`、`test_tutor_input_merge.py`、`test_tutor_run_repository.py` |
 | UX-01 | P1 | Desktop bootstrap | local identity → server cutover → `welcome/cutover/tutor`; stale `planId` cleared and no legacy request emitted | `pnpm --dir .\aearn desktop:check` + fixture browser/Desktop smoke |
 | UX-02 | P1 | Responsive/error UX | narrow viewport no horizontal overflow; Composer/primary actions visible; stable public error/retry states | fixture browser/Desktop smoke |
 | DOC-01 | P0 | Current documentation | README/source-of-truth docs name Tutor as active runtime; transition/archive docs are visibly historical; no current Graph/SDK claim | link audit + `rg` audit + doc review |
@@ -107,7 +108,16 @@ release approval，任何未通过或未执行 gate 都必须在 ledger 中保�
 6. 检查日志、trace、history、SSE 与 learner export 不含 prompt、provider body、
    reasoning 文本、URL/header 或 credential。
 
-### FI-05：Desktop normal/narrow path
+### FI-05：adaptive context budget
+
+1. 使用 synthetic capability 分别构造 compact/normal/complex/extended 输入，断言相同输入与 policy 得到相同 mode、optional budget、selected/skipped/truncated metadata。
+2. 用共享 serializer 重新序列化 planner 结果，断言 system、strict decision contract、current input、context、metadata、JSON envelope、protocol reserve 与 safety margin 的总估算等于 checkpoint 记录，且不超过 input hard limit。
+3. 构造 tight budget，断言低优先级 activity/非必要 capability schema 先被跳过，authoritative current input 保留；构造 required serialized overflow，断言 provider call 为零并返回 `TUTOR_CONTEXT_REQUIRED_OVERFLOW`。
+4. 让 decision gate 首次返回受控 `REBUILD_CONTEXT / insufficient_context`，断言最多升级一个 mode，并继续受 `max_iterations`、`max_model_calls` 与 frozen `max_expansions` 限制。
+5. 使用 fixed provider usage receipt 比较 estimate/actual；`input_tokens` 已含 cached，校准不得将 `cached_input_tokens` 再加回，也不得在请求前假设 cache hit。
+6. 使用真实 PostgreSQL 断言 capability/mode target/ratio/expansion/estimator version 在 `policy_json` round-trip，且改变 estimator version 会改变 `policy_fingerprint`；公开 history/SSE 不出现内部 token 明细。
+
+### FI-06：Desktop normal/narrow path
 
 1. Bootstrap Desktop with a disposable verified user and deliberately stale
    `planId`.
