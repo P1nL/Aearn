@@ -13,6 +13,7 @@ from app.agents.harness.contracts import (
     TokenEstimator,
     TutorCheckpointMetadata,
     TutorCompactionTrigger,
+    TutorContextBudgetPlan,
     TutorContextError,
     TutorContextInput,
     TutorContextItem,
@@ -120,12 +121,23 @@ class TutorContextBuilder:
         self._estimator = estimator or Utf8ByteTokenEstimator()
         self._config = config or TutorContextBuilderConfig()
 
-    def build(self, context_input: TutorContextInput, *, token_budget: int) -> TutorContextSelection:
+    def build(
+        self,
+        context_input: TutorContextInput,
+        *,
+        token_budget: int,
+        optional_token_budget: int | None = None,
+        budget_plan: TutorContextBudgetPlan | None = None,
+    ) -> TutorContextSelection:
         if token_budget <= 0:
             raise ValueError("token_budget must be positive")
+        if optional_token_budget is not None and optional_token_budget < 0:
+            raise ValueError("optional_token_budget must be non-negative")
 
         current_input = self._select_current_input(context_input, token_budget=token_budget)
         consumed_tokens = current_input.token_estimate if current_input is not None else 0
+        optional_consumed_tokens = 0
+        truncated_count = int(current_input.truncated) if current_input is not None else 0
         by_section = dict(context_input.section_sources())
         selected_items: list[TutorContextItem] = []
         section_metadata: list[TutorContextSectionMetadata] = []
@@ -141,35 +153,52 @@ class TutorContextBuilder:
             if section is TutorContextSection.RECENT_MESSAGES:
                 bounded_sources = sources[-item_limit:] if item_limit else ()
                 skipped_count += len(sources) - len(bounded_sources)
-                recent_items: list[TutorContextItem] = []
+                recent_items: list[tuple[TutorContextItem, bool]] = []
                 for source in reversed(bounded_sources):
-                    content = self._serialize_source(section, source)
+                    content, truncated = self._serialize_source(section, source)
                     estimate = max(1, self._estimator.estimate_tokens(content))
-                    if consumed_tokens + estimate > token_budget:
+                    if not self._optional_item_fits(
+                        consumed_tokens=consumed_tokens,
+                        optional_consumed_tokens=optional_consumed_tokens,
+                        estimate=estimate,
+                        token_budget=token_budget,
+                        optional_token_budget=optional_token_budget,
+                    ):
                         skipped_count += 1
                         continue
                     recent_items.append(
-                        TutorContextItem(
-                            section=section,
-                            source_id=source.source_id,
-                            content=content,
-                            source_hash=_source_hash(content),
-                            token_estimate=estimate,
+                        (
+                            TutorContextItem(
+                                section=section,
+                                source_id=source.source_id,
+                                content=content,
+                                source_hash=_source_hash(content),
+                                token_estimate=estimate,
+                            ),
+                            truncated,
                         )
                     )
                     consumed_tokens += estimate
-                for item in reversed(recent_items):
+                    optional_consumed_tokens += estimate
+                for item, truncated in reversed(recent_items):
                     selected_items.append(item)
                     selected_ids.append(item.source_id)
                     selected_hashes.append(item.source_hash)
+                    truncated_count += int(truncated)
                 selected_count = len(recent_items)
             else:
                 bounded_sources = sources[:item_limit]
                 skipped_count += len(sources) - len(bounded_sources)
                 for source in bounded_sources:
-                    content = self._serialize_source(section, source)
+                    content, truncated = self._serialize_source(section, source)
                     estimate = max(1, self._estimator.estimate_tokens(content))
-                    if consumed_tokens + estimate > token_budget:
+                    if not self._optional_item_fits(
+                        consumed_tokens=consumed_tokens,
+                        optional_consumed_tokens=optional_consumed_tokens,
+                        estimate=estimate,
+                        token_budget=token_budget,
+                        optional_token_budget=optional_token_budget,
+                    ):
                         skipped_count += 1
                         continue
                     source_hash = _source_hash(content)
@@ -186,6 +215,8 @@ class TutorContextBuilder:
                     selected_hashes.append(source_hash)
                     selected_count += 1
                     consumed_tokens += estimate
+                    optional_consumed_tokens += estimate
+                    truncated_count += int(truncated)
 
             section_metadata.append(
                 TutorContextSectionMetadata(
@@ -197,6 +228,11 @@ class TutorContextBuilder:
                 )
             )
 
+        estimated_total_input_tokens = (
+            budget_plan.required_token_estimate + optional_consumed_tokens
+            if budget_plan is not None
+            else None
+        )
         metadata = TutorCheckpointMetadata(
             token_budget=token_budget,
             consumed_tokens=consumed_tokens,
@@ -211,10 +247,34 @@ class TutorContextBuilder:
                 else None
             ),
             sections=tuple(section_metadata),
+            budget_mode=budget_plan.mode if budget_plan is not None else None,
+            estimated_total_input_tokens=estimated_total_input_tokens,
+            optional_token_budget=(
+                budget_plan.optional_token_budget if budget_plan is not None else optional_token_budget
+            ),
+            warning_reached=(
+                estimated_total_input_tokens >= budget_plan.total_input_warning_tokens
+                if budget_plan is not None and estimated_total_input_tokens is not None
+                else False
+            ),
+            critical_reached=(
+                estimated_total_input_tokens >= budget_plan.total_input_critical_tokens
+                if budget_plan is not None and estimated_total_input_tokens is not None
+                else False
+            ),
+            expansion_count=budget_plan.expansion_count if budget_plan is not None else 0,
+            estimator_version=budget_plan.estimator_version if budget_plan is not None else None,
+            capability_version=budget_plan.capability_version if budget_plan is not None else None,
+            budget_policy_version=budget_plan.policy_version if budget_plan is not None else None,
+            truncated_count=truncated_count,
         )
         high_water_request = None
-        high_water_threshold = ceil(token_budget * self._config.high_water_ratio)
-        if (current_input is not None or selected_items) and consumed_tokens >= high_water_threshold:
+        high_water_reached = (
+            metadata.warning_reached
+            if budget_plan is not None
+            else consumed_tokens >= ceil(token_budget * self._config.high_water_ratio)
+        )
+        if (current_input is not None or selected_items) and high_water_reached:
             high_water_request = build_compaction_request(
                 run_id=context_input.run_id,
                 conversation_id=context_input.conversation_id,
@@ -229,6 +289,19 @@ class TutorContextBuilder:
             current_input=current_input,
             high_water_compaction_request=high_water_request,
         )
+
+    @staticmethod
+    def _optional_item_fits(
+        *,
+        consumed_tokens: int,
+        optional_consumed_tokens: int,
+        estimate: int,
+        token_budget: int,
+        optional_token_budget: int | None,
+    ) -> bool:
+        if consumed_tokens + estimate > token_budget:
+            return False
+        return optional_token_budget is None or optional_consumed_tokens + estimate <= optional_token_budget
 
     def _select_current_input(
         self,
@@ -283,17 +356,36 @@ class TutorContextBuilder:
             return first_character
         raise TutorContextError("TUTOR_CURRENT_INPUT_UNREPRESENTABLE")
 
-    def _serialize_source(self, section: TutorContextSection, source: TutorContextSource) -> str:
+    def _serialize_source(
+        self,
+        section: TutorContextSection,
+        source: TutorContextSource,
+    ) -> tuple[str, bool]:
         safe_value = _sanitize_source_value(
             section=section,
             value=source.content,
             max_characters=self._config.max_source_characters,
         )
         if isinstance(safe_value, str):
-            return safe_value
-        return limit_text(
-            json.dumps(safe_value, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
-            self._config.max_source_characters,
+            return safe_value, _source_value_exceeds_limit(
+                section=section,
+                value=source.content,
+                max_characters=self._config.max_source_characters,
+            )
+        serialized = json.dumps(
+            safe_value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return (
+            limit_text(serialized, self._config.max_source_characters),
+            len(serialized) > self._config.max_source_characters
+            or _source_value_exceeds_limit(
+                section=section,
+                value=source.content,
+                max_characters=self._config.max_source_characters,
+            ),
         )
 
 
@@ -311,6 +403,38 @@ def _sanitize_source_value(*, section: TutorContextSection, value: object, max_c
             ),
         }
     return _sanitize_value(redacted, max_characters=max_characters)
+
+
+def _source_value_exceeds_limit(
+    *,
+    section: TutorContextSection,
+    value: object,
+    max_characters: int,
+) -> bool:
+    redacted = _redact_harness_sensitive_fields(redact_value(value))
+    if section is TutorContextSection.RECENT_MESSAGES and isinstance(redacted, Mapping):
+        return len(str(redacted.get("content") or "")) > max_characters
+    if isinstance(redacted, str):
+        return len(redacted) > max_characters
+    if isinstance(redacted, Mapping):
+        return any(
+            _source_value_exceeds_limit(
+                section=section,
+                value=item,
+                max_characters=max_characters,
+            )
+            for item in redacted.values()
+        )
+    if isinstance(redacted, Sequence) and not isinstance(redacted, (str, bytes)):
+        return any(
+            _source_value_exceeds_limit(
+                section=section,
+                value=item,
+                max_characters=max_characters,
+            )
+            for item in redacted
+        )
+    return False
 
 
 def _redact_harness_sensitive_fields(value: object) -> object:

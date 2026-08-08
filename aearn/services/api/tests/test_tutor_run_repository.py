@@ -7,15 +7,18 @@ from datetime import UTC, datetime
 import psycopg
 import pytest
 
+from app.agents.harness.context_budget import build_tutor_context_budget_policy
 from app.agents.harness.contracts import (
     TutorCapabilityRequest,
     TutorCapabilityResult,
     TutorCapabilityStatus,
     TutorPayloadField,
+    TutorPolicySnapshot,
     TutorProviderAttemptOutcome,
     TutorProviderAttemptReceipt,
 )
 from app.agents.harness.skill_catalog import CatalogSkillReference
+from app.core.config import Settings
 from app.services.llm.contracts import LLMUsage
 from app.services.tutor.persistence import (
     PostgresTutorRepository,
@@ -535,3 +538,61 @@ def test_provider_attempt_receipt_constraints_enforce_scope_derived_usage_and_ap
                 """,
                 (fixture.run.run_id, fixture.user_id, other_conversation),
             )
+
+
+def test_context_budget_policy_round_trips_and_participates_in_the_policy_fingerprint(
+    tutor_persistence,
+) -> None:
+    fixture = tutor_persistence
+    budget_policy = build_tutor_context_budget_policy(
+        Settings(llm_type="deepseek", deepseek_model="deepseek-v4-flash")
+    )
+    conversation_id = fixture.repository.create_conversation(user_id=fixture.user_id)
+    run = fixture.repository.create_run(
+        user_id=fixture.user_id,
+        conversation_id=conversation_id,
+        catalog_digest=fixture.catalog.digest,
+        policy=TutorPolicySnapshot(
+            deadline=datetime(2030, 1, 1, tzinfo=UTC),
+            max_iterations=4,
+            max_model_calls=3,
+            max_capability_calls=2,
+            max_effects=2,
+            context_token_budget=616_000,
+            context_budget_policy=budget_policy,
+        ),
+        origin="interactive",
+        policy_version="tutor_interactive_policy_v2",
+    )
+    row = fixture.connection.execute(
+        "SELECT policy_json, policy_fingerprint FROM tutor_runs WHERE id = %s",
+        (run.run_id,),
+    ).fetchone()
+    loaded = fixture.repository.load_snapshot(user_id=fixture.user_id, run_id=run.run_id)
+
+    assert row is not None
+    assert loaded is not None
+    assert loaded.policy.context_budget_policy == budget_policy
+    policy_json = row["policy_json"]
+    assert isinstance(policy_json, dict)
+    stored_budget = policy_json["context_budget_policy"]
+    assert isinstance(stored_budget, dict)
+    assert stored_budget["estimator_version"] == "utf8_bytes_v1"
+    assert stored_budget["policy_version"] == "tutor_context_budget_v1"
+    assert stored_budget["capability"]["capability_version"] == "deepseek-v4-flash-responses-v1"
+    changed_policy = replace(budget_policy, estimator_version="utf8_bytes_v2")
+    changed_conversation_id = fixture.repository.create_conversation(user_id=fixture.user_id)
+    changed_run = fixture.repository.create_run(
+        user_id=fixture.user_id,
+        conversation_id=changed_conversation_id,
+        catalog_digest=fixture.catalog.digest,
+        policy=replace(run.policy, context_budget_policy=changed_policy),
+        origin="interactive",
+        policy_version="tutor_interactive_policy_v2",
+    )
+    changed_row = fixture.connection.execute(
+        "SELECT policy_fingerprint FROM tutor_runs WHERE id = %s",
+        (changed_run.run_id,),
+    ).fetchone()
+    assert changed_row is not None
+    assert row["policy_fingerprint"] != changed_row["policy_fingerprint"]

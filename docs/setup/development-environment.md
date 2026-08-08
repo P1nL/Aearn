@@ -79,17 +79,44 @@ TUTOR_EXECUTOR_ENABLED=false
 provider/model fallback。真实 key 只存在本机 `.env`，不要把它放进文档、测试
 fixture、日志或 Git。
 
-对于精确的 `DEEPSEEK_MODEL=deepseek-v4-flash`，Tutor 默认使用官方上限：
+对于精确的 `DEEPSEEK_MODEL=deepseek-v4-flash`，Tutor 默认使用官方上限；
+其他模型只使用显式保守配置，不根据相似模型名推断大窗口：
 
 ```env
 TUTOR_DEEPSEEK_V4_FLASH_CONTEXT_WINDOW_TOKENS=1000000
 TUTOR_DEEPSEEK_V4_FLASH_MAX_OUTPUT_TOKENS=384000
+TUTOR_DEEPSEEK_V4_FLASH_MAX_DYNAMIC_TARGET_TOKENS=384000
+TUTOR_CONTEXT_WINDOW_TOKENS=5296
+TUTOR_CONTEXT_OUTPUT_RESERVE_TOKENS=1200
+TUTOR_CONTEXT_PROTOCOL_RESERVE_TOKENS=128
+TUTOR_CONTEXT_SAFETY_MARGIN_TOKENS=256
+TUTOR_CONTEXT_MAX_DYNAMIC_TARGET_TOKENS=512
+TUTOR_CONTEXT_COMPACT_TARGET_TOKENS=16000
+TUTOR_CONTEXT_NORMAL_TARGET_TOKENS=64000
+TUTOR_CONTEXT_COMPLEX_TARGET_TOKENS=192000
+TUTOR_CONTEXT_EXTENDED_TARGET_TOKENS=384000
+TUTOR_CONTEXT_WARNING_RATIO=0.8
+TUTOR_CONTEXT_CRITICAL_RATIO=0.95
+TUTOR_CONTEXT_MAX_EXPANSIONS=1
+TUTOR_CONTEXT_FIXED_MODE=
 ```
 
-前者是模型的**总 context window**，后者是 Responses 请求的
-`max_output_tokens`。Tutor 预留 384K 生成空间，并把其余 616K 用作受控的
-ContextBuilder 选择预算；它不会因此读取完整数据库历史、raw prompt、provider
-payload 或 reasoning。将输出上限设为不小于 context window 会在启动时被拒绝。
+DeepSeek V4 Flash 的总窗口为 1M，输出 reserve 为 384K，物理输入 hard limit
+因此是 616K；616K 是能力上限，不是每轮填满目标。planner 以共享的确定性
+serializer dry-build 完整请求，覆盖 system/teaching policy、严格 JSON contract、
+current input、context、metadata、JSON envelope、protocol reserve 与 safety margin，
+然后只把剩余 optional budget 交给 ContextBuilder。16K/64K/192K/384K 是可配置
+档位目标，仍会被 provider hard limit 和 dynamic cap 裁剪。精确
+`deepseek-v4-flash` 使用 `TUTOR_DEEPSEEK_V4_FLASH_MAX_DYNAMIC_TARGET_TOKENS`；
+其他模型默认使用保守的 `TUTOR_CONTEXT_MAX_DYNAMIC_TARGET_TOKENS=512`，但可以在
+同时显式扩大 generic window/output/reserve 后提高该值。将输出或其他 reserve
+配置到不再留下正的必需输入空间会在启动时被拒绝。
+
+`TUTOR_CONTEXT_FIXED_MODE` 留空时按安全结构化事实自适应；可设为 `compact`、
+`normal`、`complex` 或 `extended` 作为保守回滚控制。只有受控内部
+`insufficient_context` 结果可在同一 TurnRun 中升级一个档位，并继续受
+iteration/model-call budget 限制。provider cache 不改变物理输入：预估时不扣除
+预期命中，actual `input_tokens` 也不再把 `cached_input_tokens` 加回第二次。
 
 ### 默认 proactive / curation posture
 

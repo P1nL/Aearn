@@ -22,7 +22,7 @@ from app.core.teaching_safety import redact_value
 SAFE_PROJECTION_VERSION: Final[str] = "tutor_safe_projection_v1"
 _OMIT: Final[object] = object()
 _MAX_DEPTH: Final[int] = 5
-_MAX_ITEMS: Final[int] = 16
+_MAX_ITEMS: Final[int] = 24
 _MAX_SAFE_TEXT_LENGTH: Final[int] = 160
 _SAFE_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@-]{0,159}$")
 _SHA256 = re.compile(r"^[0-9a-f]{24,64}$")
@@ -51,7 +51,9 @@ _SAFE_KEYS = frozenset(
         "duration_ms", "confidence", "section", "sections", "section_counts", "retention_until", "stale_after",
         "created_at", "expires_at", "deadline", "max_iterations", "max_model_calls", "max_capability_calls",
         "max_effects", "context_token_budget", "lease_duration_seconds", "skills", "required_capability_ids",
-        "allowed_effect_types", "policy_tags",
+        "allowed_effect_types", "policy_tags", "context_budget_policy", "budget_mode", "estimated_total_input_tokens", "optional_token_budget",
+        "warning_reached", "critical_reached", "expansion_count", "estimator_version", "capability_version",
+        "budget_policy_version", "truncated_count",
     }
 )
 _INTEGER_KEYS = frozenset(
@@ -60,7 +62,9 @@ _INTEGER_KEYS = frozenset(
         "attempt_sequence",
         "source_count", "item_count", "count", "selected_count", "skipped_count", "token_budget", "consumed_tokens",
         "duration_ms", "max_iterations", "max_model_calls", "max_capability_calls", "max_effects",
-        "context_token_budget", "lease_duration_seconds",
+        "context_token_budget", "lease_duration_seconds", "estimated_total_input_tokens", "optional_token_budget",
+        "expansion_count", "truncated_count", "context_window_tokens", "max_output_reserve_tokens",
+        "protocol_reserve_tokens", "safety_margin_tokens", "maximum_dynamic_target_tokens",
     }
 )
 _HASH_KEYS = frozenset(
@@ -147,10 +151,63 @@ class TutorSafeProjection:
             return self._project_skills(value, depth=depth)
         if key in {"retention_until", "stale_after", "created_at", "expires_at", "deadline"}:
             return _safe_timestamp(value)
+        if key == "context_budget_policy":
+            return self._project_context_budget_policy(value, depth=depth)
         if key == "confidence":
             normalized = str(value or "").lower()
             return normalized if normalized in {"low", "medium", "high"} else _OMIT
+        if key in {"warning_reached", "critical_reached"}:
+            return value if isinstance(value, bool) else _OMIT
+        if key == "budget_mode":
+            normalized = str(value or "").lower()
+            return normalized if normalized in {"compact", "normal", "complex", "extended"} else _OMIT
         return _safe_identifier(value)
+
+    def _project_context_budget_policy(self, value: object, *, depth: int) -> dict[str, object] | object:
+        if not isinstance(value, Mapping) or depth > _MAX_DEPTH:
+            return _OMIT
+        capability = value.get("capability")
+        capability_result: dict[str, object] = {}
+        if isinstance(capability, Mapping):
+            for key in (
+                "context_window_tokens",
+                "max_output_reserve_tokens",
+                "protocol_reserve_tokens",
+                "safety_margin_tokens",
+                "maximum_dynamic_target_tokens",
+            ):
+                projected = self._project_value(key, capability.get(key), depth=depth + 1)
+                if projected is not _OMIT:
+                    capability_result[key] = projected
+            version = _safe_identifier(capability.get("capability_version"))
+            if isinstance(version, str):
+                capability_result["capability_version"] = version
+        mode_targets_value = value.get("mode_targets")
+        mode_targets: dict[str, int] = {}
+        if isinstance(mode_targets_value, Mapping):
+            for mode in ("compact", "normal", "complex", "extended"):
+                projected = self._project_value("optional_token_budget", mode_targets_value.get(mode), depth=depth + 1)
+                if isinstance(projected, int):
+                    mode_targets[mode] = projected
+        result: dict[str, object] = {
+            "capability": capability_result,
+            "mode_targets": mode_targets,
+        }
+        for key in ("warning_ratio", "critical_ratio"):
+            raw = value.get(key)
+            if isinstance(raw, int | float) and not isinstance(raw, bool) and 0 < raw <= 1:
+                result[key] = float(raw)
+        max_expansions = self._project_value("expansion_count", value.get("max_expansions"), depth=depth + 1)
+        if isinstance(max_expansions, int):
+            result["max_expansions"] = max_expansions
+        for key in ("estimator_version", "policy_version"):
+            normalized = _safe_identifier(value.get(key))
+            if isinstance(normalized, str):
+                result[key] = normalized
+        fixed_mode = str(value.get("fixed_mode") or "")
+        if fixed_mode in {"compact", "normal", "complex", "extended"}:
+            result["fixed_mode"] = fixed_mode
+        return result
 
     def _project_identifiers(self, value: object) -> list[str]:
         if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):

@@ -183,11 +183,45 @@ for a retry or failure:
   `/responses`, with `input`, optional `instructions`, `stream=true`,
   `text.format=json_object`, and bounded `max_output_tokens`. The configured
   DeepSeek V4 Flash window is `1_000_000` tokens and its generated-output cap is
-  `384_000`; the interactive ContextBuilder receives the remaining `616_000`
-  token selection budget, without broadening the fixed, learner-safe context
-  source allowlist;
+  `384_000`, leaving a physical input hard limit of `616_000`. That hard limit is
+  a capability boundary, not a per-turn fill target: the adaptive planner first
+  estimates the exact serialized system/user messages plus protocol reserve and
+  safety margin, then gives ContextBuilder only the remaining optional budget;
 - every other DeepSeek model retains the Chat Completions path at
   `/chat/completions` with `response_format=json_object`.
+
+### Adaptive context budget planning
+
+Every new interactive TurnRun freezes a `TutorContextBudgetPolicy` in
+`policy_json` and its policy fingerprint. The policy contains explicit provider
+capability evidence, configurable `compact`/`normal`/`complex`/`extended`
+targets, warning/critical ratios, one bounded expansion count, and estimator and
+policy versions. The exact `deepseek-v4-flash` registry entry uses the verified
+1M/384K limits; every other model uses explicit conservative Settings and never
+gains a large window from a fuzzy model-name match. Older runs without the new
+policy continue to replay their persisted `context_token_budget`.
+
+The planner and provider gateway share one deterministic serializer, so dry-run
+estimation covers the real system teaching policy, canonical strict decision
+shape, current input, selected context, metadata, JSON envelope, protocol
+reserve, and safety margin. Required current input is selected first and can
+never be evicted. Optional sources remain bounded and deterministic; activity
+and unrelated capability schemas are skipped before a request can cross the
+hard limit. A required serialized request that cannot fit returns
+`TUTOR_CONTEXT_REQUIRED_OVERFLOW` before any provider call.
+
+Initial mode selection uses only safe structural facts such as current-input
+length/line structure, fenced-code volume, candidate-source counts, long-source
+counts, recent-history volume, and summary availability. Only the controlled
+internal `REBUILD_CONTEXT / insufficient_context` gate can advance one mode,
+subject to both the frozen expansion count and existing iteration/model-call
+budgets. Context high-water is computed from `required estimate + the selected
+mode's optional target ratio`, not from a fixed percentage of a 616K physical
+window that normal bounded sources could never reach. Checkpoint metadata stores
+only mode, estimates, budgets, counts, source IDs/hashes, thresholds, and
+versions; public API/SSE remains unchanged.
+Provider `input_tokens` already includes cached input, so cache is never deducted
+from preflight physical usage and is never added to actual input a second time.
 
 The Responses adapter accepts final learner-visible content only from
 `output_text`. It rejects reasoning-only output, missing visible text, malformed
@@ -410,3 +444,21 @@ full command/output record, fixture posture and resolved test regression are in
 
 Neither the current local checks nor the historical matrix is deployment,
 release approval, commit, push, or task-archive authorization.
+
+
+### Adaptive context budget verification (2026-08-08)
+
+The adaptive planner change was verified locally without a live provider, release,
+or production-data mutation:
+
+- focused context/builder/provider/run-loop/input-merge batch -> **101 passed**;
+- PostgreSQL bootstrap/constraint and run-policy round-trip batch -> **12 passed**;
+- complete serial `python -m pytest -q` -> **390 passed**;
+- `ruff check app tests`, `python -m mypy app --no-incremental`
+  (**112 source files**), and `uv lock --check` -> passed;
+- Trellis task validation and `git diff --check` -> passed.
+
+These checks prove deterministic local contracts, policy persistence, hard-limit
+preflight, bounded rebuild, safe metadata, and cache accounting semantics. They do
+not claim live-model tokenization parity or authorize commit, push, deployment, or
+production-data changes.

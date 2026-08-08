@@ -51,6 +51,13 @@ def _config(*, recent_limit: int = 1, high_water_ratio: float = 0.8) -> TutorCon
     )
 
 
+
+
+def _section_metadata(selection: object, section: TutorContextSection):
+    metadata = getattr(selection, "checkpoint_metadata")
+    return next(item for item in metadata.sections if item.section is section)
+
+
 def test_context_selection_is_fixed_order_deterministic_and_budgeted() -> None:
     builder = TutorContextBuilder(estimator=OneTokenEstimator(), config=_config())
     context_input = _context_input()
@@ -68,9 +75,9 @@ def test_context_selection_is_fixed_order_deterministic_and_budgeted() -> None:
     assert first.checkpoint_metadata.token_budget == 3
     assert first == second
     assert first.checkpoint_metadata.current_input is not None
-    assert first.checkpoint_metadata.sections[2].selected_count == 0
-    assert first.checkpoint_metadata.sections[3].selected_count == 0
-    assert first.checkpoint_metadata.sections[3].skipped_count == 0
+    assert _section_metadata(first, TutorContextSection.REVIEW).selected_count == 0
+    assert _section_metadata(first, TutorContextSection.RECENT_MESSAGES).selected_count == 0
+    assert _section_metadata(first, TutorContextSection.RECENT_MESSAGES).skipped_count == 0
 
 
 def test_context_redacts_messages_and_evidence_and_checkpoint_stores_metadata_only() -> None:
@@ -220,7 +227,7 @@ def test_recent_message_limit_keeps_the_newest_bounded_suffix_in_chronological_o
     )
 
     assert [item.source_id for item in selection.items] == ["message-3", "message-4", "message-5", "message-6"]
-    assert selection.checkpoint_metadata.sections[3].skipped_count == 2
+    assert _section_metadata(selection, TutorContextSection.RECENT_MESSAGES).skipped_count == 2
 
 
 def test_tight_history_budget_keeps_newest_messages_then_restores_chronological_order() -> None:
@@ -243,7 +250,7 @@ def test_tight_history_budget_keeps_newest_messages_then_restores_chronological_
     )
 
     assert [item.source_id for item in selection.items] == ["message-5", "message-6"]
-    assert selection.checkpoint_metadata.sections[3].skipped_count == 4
+    assert _section_metadata(selection, TutorContextSection.RECENT_MESSAGES).skipped_count == 4
 
 
 def test_history_selection_skips_one_oversized_newest_item_and_keeps_the_next_newest() -> None:
@@ -265,7 +272,7 @@ def test_history_selection_skips_one_oversized_newest_item_and_keeps_the_next_ne
     )
 
     assert [item.source_id for item in selection.items] == ["message-5"]
-    assert selection.checkpoint_metadata.sections[3].skipped_count == 3
+    assert _section_metadata(selection, TutorContextSection.RECENT_MESSAGES).skipped_count == 3
 
 
 def test_oversized_current_input_is_deterministically_truncated_before_optional_context() -> None:
@@ -289,6 +296,29 @@ def test_oversized_current_input_is_deterministically_truncated_before_optional_
     assert selection.items == ()
     assert selection.checkpoint_metadata.current_input is not None
     assert selection.checkpoint_metadata.current_input.truncated is True
+    assert selection.checkpoint_metadata.truncated_count == 1
+
+
+def test_selected_optional_source_truncation_is_counted_without_storing_raw_content() -> None:
+    selection = TutorContextBuilder(
+        estimator=OneTokenEstimator(),
+        config=TutorContextBuilderConfig(max_source_characters=20),
+    ).build(
+        TutorContextInput(
+            run_id="tutor-run-optional-truncate",
+            conversation_id="conversation-optional-truncate",
+            input_revision=1,
+            current_input_required=True,
+            current_input=TutorContextSource("message-1", "current"),
+            activity_facts=(TutorContextSource("activity-1", "x" * 200),),
+        ),
+        token_budget=2,
+    )
+
+    assert selection.current_input is not None
+    assert [item.source_id for item in selection.items] == ["activity-1"]
+    assert selection.checkpoint_metadata.truncated_count == 1
+    assert "x" * 200 not in json.dumps(selection.checkpoint_metadata.as_dict())
 
 
 def test_current_input_hash_and_token_metadata_match_the_bounded_prompt_content() -> None:

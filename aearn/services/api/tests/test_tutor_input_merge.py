@@ -184,6 +184,18 @@ def test_interactive_turn_uses_deepseek_v4_flash_context_window_after_output_res
         ).fetchone()
     assert row is not None
     assert row["policy_json"]["context_token_budget"] == 616_000
+    budget_policy = row["policy_json"]["context_budget_policy"]
+    assert budget_policy["capability"]["context_window_tokens"] == 1_000_000
+    assert budget_policy["capability"]["max_output_reserve_tokens"] == 384_000
+    assert budget_policy["capability"]["capability_version"] == "deepseek-v4-flash-responses-v1"
+    assert budget_policy["mode_targets"] == {
+        "compact": 16_000,
+        "normal": 64_000,
+        "complex": 192_000,
+        "extended": 384_000,
+    }
+    assert budget_policy["max_expansions"] == 1
+    assert budget_policy["estimator_version"] == "utf8_bytes_v1"
 
 
 def test_first_turn_is_idempotent_and_dispatches_only_the_new_run(

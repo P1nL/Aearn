@@ -11,6 +11,9 @@ DEEPSEEK_V4_FLASH_CONTEXT_WINDOW_TOKENS = 1_000_000
 DEEPSEEK_V4_FLASH_MAX_OUTPUT_TOKENS = 384_000
 DEFAULT_TUTOR_CONTEXT_TOKEN_BUDGET = 512
 DEFAULT_TUTOR_MAX_OUTPUT_TOKENS = 1_200
+DEFAULT_TUTOR_CONTEXT_WINDOW_TOKENS = 5_296
+DEFAULT_TUTOR_CONTEXT_PROTOCOL_RESERVE_TOKENS = 128
+DEFAULT_TUTOR_CONTEXT_SAFETY_MARGIN_TOKENS = 256
 
 
 ROOT_DIR = Path(__file__).resolve().parents[4]
@@ -27,6 +30,10 @@ def _env_int(name: str, default: str) -> int:
 
 def _env_bool(name: str, default: str) -> bool:
     return _env_str(name, default).lower() in ("true", "1", "yes")
+
+
+def _env_float(name: str, default: str) -> float:
+    return float(_env_str(name, default))
 
 
 def _env_optional(name: str) -> str | None:
@@ -78,6 +85,78 @@ class Settings(BaseModel):
         ge=1,
         le=DEEPSEEK_V4_FLASH_MAX_OUTPUT_TOKENS,
     )
+    tutor_default_context_window_tokens: int = Field(
+        default_factory=lambda: _env_int(
+            "TUTOR_CONTEXT_WINDOW_TOKENS",
+            str(DEFAULT_TUTOR_CONTEXT_WINDOW_TOKENS),
+        ),
+        ge=1,
+    )
+    tutor_default_output_reserve_tokens: int = Field(
+        default_factory=lambda: _env_int(
+            "TUTOR_CONTEXT_OUTPUT_RESERVE_TOKENS",
+            str(DEFAULT_TUTOR_MAX_OUTPUT_TOKENS),
+        ),
+        ge=1,
+    )
+    tutor_context_protocol_reserve_tokens: int = Field(
+        default_factory=lambda: _env_int(
+            "TUTOR_CONTEXT_PROTOCOL_RESERVE_TOKENS",
+            str(DEFAULT_TUTOR_CONTEXT_PROTOCOL_RESERVE_TOKENS),
+        ),
+        ge=1,
+    )
+    tutor_context_safety_margin_tokens: int = Field(
+        default_factory=lambda: _env_int(
+            "TUTOR_CONTEXT_SAFETY_MARGIN_TOKENS",
+            str(DEFAULT_TUTOR_CONTEXT_SAFETY_MARGIN_TOKENS),
+        ),
+        ge=1,
+    )
+    tutor_deepseek_v4_flash_max_dynamic_target_tokens: int = Field(
+        default_factory=lambda: _env_int(
+            "TUTOR_DEEPSEEK_V4_FLASH_MAX_DYNAMIC_TARGET_TOKENS",
+            "384000",
+        ),
+        ge=1,
+        le=384_000,
+    )
+    tutor_context_max_dynamic_target_tokens: int = Field(
+        default_factory=lambda: _env_int("TUTOR_CONTEXT_MAX_DYNAMIC_TARGET_TOKENS", "512"),
+        ge=1,
+    )
+    tutor_context_compact_target_tokens: int = Field(
+        default_factory=lambda: _env_int("TUTOR_CONTEXT_COMPACT_TARGET_TOKENS", "16000"),
+        ge=1,
+    )
+    tutor_context_normal_target_tokens: int = Field(
+        default_factory=lambda: _env_int("TUTOR_CONTEXT_NORMAL_TARGET_TOKENS", "64000"),
+        ge=1,
+    )
+    tutor_context_complex_target_tokens: int = Field(
+        default_factory=lambda: _env_int("TUTOR_CONTEXT_COMPLEX_TARGET_TOKENS", "192000"),
+        ge=1,
+    )
+    tutor_context_extended_target_tokens: int = Field(
+        default_factory=lambda: _env_int("TUTOR_CONTEXT_EXTENDED_TARGET_TOKENS", "384000"),
+        ge=1,
+    )
+    tutor_context_warning_ratio: float = Field(
+        default_factory=lambda: _env_float("TUTOR_CONTEXT_WARNING_RATIO", "0.8"),
+        gt=0,
+        le=1,
+    )
+    tutor_context_critical_ratio: float = Field(
+        default_factory=lambda: _env_float("TUTOR_CONTEXT_CRITICAL_RATIO", "0.95"),
+        gt=0,
+        le=1,
+    )
+    tutor_context_max_expansions: int = Field(
+        default_factory=lambda: _env_int("TUTOR_CONTEXT_MAX_EXPANSIONS", "1"),
+        ge=0,
+        le=3,
+    )
+    tutor_context_fixed_mode: str | None = Field(default_factory=lambda: _env_optional("TUTOR_CONTEXT_FIXED_MODE"))
     exa_api_key: str | None = Field(default_factory=lambda: _env_optional("EXA_API_KEY"))
     plan_generation_enabled: bool = Field(
         default_factory=lambda: _env_str("PLAN_GENERATION_ENABLED", "true").lower() in ("true", "1", "yes")
@@ -149,12 +228,26 @@ class Settings(BaseModel):
     )
 
     @model_validator(mode="after")
-    def _validate_deepseek_v4_flash_token_limits(self) -> "Settings":
+    def _validate_tutor_context_limits(self) -> "Settings":
         if self.uses_deepseek_v4_flash_responses and (
             self.tutor_deepseek_v4_flash_max_output_tokens
             >= self.tutor_deepseek_v4_flash_context_window_tokens
         ):
             raise ValueError("DeepSeek V4 Flash max output tokens must leave room within the context window")
+        input_hard_limit = self.tutor_context_window_capacity_tokens - self.tutor_context_output_reserve_tokens
+        if input_hard_limit <= self.tutor_context_protocol_reserve_tokens + self.tutor_context_safety_margin_tokens:
+            raise ValueError("Tutor context reserves must leave positive required input capacity")
+        maximum_dynamic_target = self.tutor_context_max_dynamic_target_capacity_tokens
+        if maximum_dynamic_target > (
+            input_hard_limit
+            - self.tutor_context_protocol_reserve_tokens
+            - self.tutor_context_safety_margin_tokens
+        ):
+            raise ValueError("Tutor maximum dynamic target exceeds the configured input capacity")
+        if not self.tutor_context_warning_ratio < self.tutor_context_critical_ratio:
+            raise ValueError("Tutor context warning ratio must be below the critical ratio")
+        if self.tutor_context_fixed_mode not in {None, "compact", "normal", "complex", "extended"}:
+            raise ValueError("TUTOR_CONTEXT_FIXED_MODE is invalid")
         return self
 
     @property
@@ -169,13 +262,34 @@ class Settings(BaseModel):
         )
 
     @property
+    def tutor_context_window_capacity_tokens(self) -> int:
+        if self.uses_deepseek_v4_flash_responses:
+            return self.tutor_deepseek_v4_flash_context_window_tokens
+        return self.tutor_default_context_window_tokens
+
+    @property
+    def tutor_context_output_reserve_tokens(self) -> int:
+        if self.uses_deepseek_v4_flash_responses:
+            return self.tutor_deepseek_v4_flash_max_output_tokens
+        return self.tutor_default_output_reserve_tokens
+
+    @property
+    def tutor_context_max_dynamic_target_capacity_tokens(self) -> int:
+        if self.uses_deepseek_v4_flash_responses:
+            return self.tutor_deepseek_v4_flash_max_dynamic_target_tokens
+        return self.tutor_context_max_dynamic_target_tokens
+
+    @property
     def tutor_context_token_budget(self) -> int:
         if self.uses_deepseek_v4_flash_responses:
             return (
                 self.tutor_deepseek_v4_flash_context_window_tokens
                 - self.tutor_deepseek_v4_flash_max_output_tokens
             )
-        return DEFAULT_TUTOR_CONTEXT_TOKEN_BUDGET
+        return min(
+            DEFAULT_TUTOR_CONTEXT_TOKEN_BUDGET,
+            self.tutor_context_max_dynamic_target_tokens,
+        )
 
     @property
     def tutor_max_output_tokens(self) -> int:
