@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-2.md`
-- **Total Sessions**: 87
+- **Total Sessions**: 88
 - **Last Active**: 2026-08-08
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-2.md` | ~1011 | Active |
+| `journal-2.md` | ~1050 | Active |
 | `journal-1.md` | ~1979 | Archived |
 <!-- @@@/auto:active-documents -->
 
@@ -30,6 +30,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 88 | 2026-08-08 | Tutor 自适应上下文预算规划器 | `d681f1a` | `main` |
 | 87 | 2026-08-08 | 完成 Tutor Provider Usage 与缓存计量 | `43d954f9a3a1061d2a1efe3a16e9b808257eb3fa` | `main` |
 | 86 | 2026-08-08 | 完成 Tutor 最新输入与教学相关性 child | `784239e`, `81faa49` | `main` |
 | 85 | 2026-08-05 | 完成 LearningTrack 领域基础并清理工作树 | `36905cb`, `82c3edf` | `main` |
