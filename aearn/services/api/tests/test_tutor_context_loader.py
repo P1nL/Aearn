@@ -108,8 +108,8 @@ def test_postgres_context_loader_uses_input_event_when_timestamps_tie_or_a_later
     assert interference is not None
     tied = fixture.connection.execute(
         """
-        INSERT INTO tutor_messages (conversation_id, role, content, created_at)
-        VALUES (%s, 'tutor', '同时间戳干扰行', %s)
+        INSERT INTO tutor_messages (id, conversation_id, role, content, created_at)
+        VALUES ('00000000-0000-0000-0000-000000000001', %s, 'tutor', '同时间戳但游标更早', %s)
         RETURNING id::text AS id
         """,
         (fixture.conversation_id, accepted_at),
@@ -125,8 +125,8 @@ def test_postgres_context_loader_uses_input_event_when_timestamps_tie_or_a_later
     assert context_input.current_input.content == "权威当前输入"
     assert [source.source_id for source in context_input.recent_messages] == [
         f"message:{tied['id']}",
-        f"message:{interference['id']}",
     ]
+    assert all(source.source_id != f"message:{interference['id']}" for source in context_input.recent_messages)
 
 
 def test_postgres_context_loader_rejects_missing_or_wrong_role_current_input_evidence(

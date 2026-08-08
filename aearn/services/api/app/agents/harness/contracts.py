@@ -6,7 +6,7 @@ import json
 import unicodedata
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Literal, Protocol
 
@@ -25,6 +25,10 @@ MAX_TUTOR_PUBLIC_MESSAGE_LENGTH = 1600
 MAX_TUTOR_CONVERSATION_TITLE_LENGTH = 48
 MAX_TUTOR_PAYLOAD_FIELDS = 12
 MAX_TUTOR_PAYLOAD_VALUE_LENGTH = 360
+TUTOR_CONTEXT_SUMMARY_SCHEMA_VERSION = "tutor_context_summary_v2"
+TUTOR_CONTEXT_SUMMARY_POLICY_VERSION = "tutor_context_summary_policy_v2"
+MAX_TUTOR_CONTEXT_COMPACTION_MESSAGES = 24
+MAX_TUTOR_CONTEXT_COMPACTION_CANDIDATES = 32
 
 
 TutorRunOrigin = Literal["interactive", "proactive"]
@@ -335,6 +339,104 @@ class TutorContextSource:
 
 
 @dataclass(frozen=True)
+class TutorContextCompactionCandidate:
+    message_id: str
+    content_hash: str
+    created_at: datetime
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "message_id", _safe_identifier(self.message_id))
+        content_hash = str(self.content_hash or "").lower()
+        if not _is_sha256(content_hash):
+            raise ValueError("compaction candidate content_hash must be SHA-256")
+        object.__setattr__(self, "content_hash", content_hash)
+        if self.created_at.tzinfo is None:
+            raise ValueError("compaction candidate timestamp must be timezone-aware")
+        object.__setattr__(self, "created_at", self.created_at.astimezone(UTC))
+
+
+@dataclass(frozen=True)
+class TutorContextCompactionPlan:
+    summary_schema_version: str
+    summary_policy_version: str
+    candidates: tuple[TutorContextCompactionCandidate, ...]
+    prior_summary_id: str | None = None
+    prior_summary_hash: str | None = None
+
+    def __post_init__(self) -> None:
+        if (
+            self.summary_schema_version != TUTOR_CONTEXT_SUMMARY_SCHEMA_VERSION
+            or self.summary_policy_version != TUTOR_CONTEXT_SUMMARY_POLICY_VERSION
+        ):
+            raise ValueError("structured compaction schema or policy version is unsupported")
+        candidates = tuple(self.candidates)
+        if not candidates or len(candidates) > MAX_TUTOR_CONTEXT_COMPACTION_CANDIDATES:
+            raise ValueError("compaction candidates must be non-empty and bounded")
+        identities = tuple(candidate.message_id for candidate in candidates)
+        if len(identities) != len(set(identities)):
+            raise ValueError("compaction candidate identities must be unique")
+        if tuple(sorted(candidates, key=lambda item: (item.created_at, item.message_id))) != candidates:
+            raise ValueError("compaction candidates must follow conversation timeline order")
+        object.__setattr__(self, "candidates", candidates)
+        if (self.prior_summary_id is None) != (self.prior_summary_hash is None):
+            raise ValueError("prior summary identity and hash must be paired")
+        if self.prior_summary_id is not None:
+            object.__setattr__(self, "prior_summary_id", _safe_identifier(self.prior_summary_id))
+            prior_hash = str(self.prior_summary_hash or "").lower()
+            if not _is_sha256(prior_hash):
+                raise ValueError("prior summary hash must be SHA-256")
+            object.__setattr__(self, "prior_summary_hash", prior_hash)
+
+
+@dataclass(frozen=True)
+class TutorContextCompactionInput:
+    summary_schema_version: str
+    summary_policy_version: str
+    source_hash: str
+    retired_message_ids: tuple[str, ...]
+    retired_message_hashes: tuple[str, ...]
+    covered_through_created_at: datetime
+    covered_through_message_id: str
+    prior_summary_id: str | None = None
+    prior_summary_hash: str | None = None
+
+    def __post_init__(self) -> None:
+        if (
+            self.summary_schema_version != TUTOR_CONTEXT_SUMMARY_SCHEMA_VERSION
+            or self.summary_policy_version != TUTOR_CONTEXT_SUMMARY_POLICY_VERSION
+        ):
+            raise ValueError("structured compaction schema or policy version is unsupported")
+        object.__setattr__(self, "summary_schema_version", _safe_identifier(self.summary_schema_version))
+        object.__setattr__(self, "summary_policy_version", _safe_identifier(self.summary_policy_version))
+        source_hash = str(self.source_hash or "").lower()
+        if not _is_sha256(source_hash):
+            raise ValueError("context summary source_hash must be SHA-256")
+        object.__setattr__(self, "source_hash", source_hash)
+        message_ids = tuple(_safe_identifier(value) for value in self.retired_message_ids)
+        message_hashes = tuple(str(value or "").lower() for value in self.retired_message_hashes)
+        if not message_ids or len(message_ids) != len(message_hashes):
+            raise ValueError("retired message evidence must be non-empty and paired")
+        if len(message_ids) != len(set(message_ids)) or any(not _is_sha256(value) for value in message_hashes):
+            raise ValueError("retired message evidence is malformed")
+        object.__setattr__(self, "retired_message_ids", message_ids)
+        object.__setattr__(self, "retired_message_hashes", message_hashes)
+        covered_message_id = _safe_identifier(self.covered_through_message_id)
+        if message_ids[-1] != covered_message_id:
+            raise ValueError("coverage cursor must end at the final retired message")
+        object.__setattr__(self, "covered_through_message_id", covered_message_id)
+        if self.covered_through_created_at.tzinfo is None:
+            raise ValueError("coverage timestamp must be timezone-aware")
+        if (self.prior_summary_id is None) != (self.prior_summary_hash is None):
+            raise ValueError("prior summary identity and hash must be paired")
+        if self.prior_summary_id is not None:
+            object.__setattr__(self, "prior_summary_id", _safe_identifier(self.prior_summary_id))
+            prior_hash = str(self.prior_summary_hash or "").lower()
+            if not _is_sha256(prior_hash):
+                raise ValueError("prior summary hash must be SHA-256")
+            object.__setattr__(self, "prior_summary_hash", prior_hash)
+
+
+@dataclass(frozen=True)
 class TutorContextInput:
     run_id: str
     conversation_id: str
@@ -349,6 +451,7 @@ class TutorContextInput:
     learner_memory: tuple[TutorContextSource, ...] = ()
     activity_facts: tuple[TutorContextSource, ...] = ()
     capability_schemas: tuple[TutorContextSource, ...] = ()
+    compaction_plan: TutorContextCompactionPlan | None = None
 
     def __post_init__(self) -> None:
         if self.input_revision < 0:
@@ -472,6 +575,7 @@ class TutorCheckpointMetadata:
     capability_version: str | None = None
     budget_policy_version: str | None = None
     truncated_count: int = 0
+    compaction_input: TutorContextCompactionInput | None = None
 
     def __post_init__(self) -> None:
         if self.token_budget <= 0:
@@ -536,20 +640,58 @@ class TutorCheckpointMetadata:
             "capability_version": self.capability_version,
             "budget_policy_version": self.budget_policy_version,
             "truncated_count": self.truncated_count,
+            "summary_schema_version": (
+                self.compaction_input.summary_schema_version if self.compaction_input is not None else None
+            ),
+            "summary_policy_version": (
+                self.compaction_input.summary_policy_version if self.compaction_input is not None else None
+            ),
+            "summary_source_hash": (
+                self.compaction_input.source_hash if self.compaction_input is not None else None
+            ),
+            "prior_summary_id": (
+                self.compaction_input.prior_summary_id if self.compaction_input is not None else None
+            ),
+            "prior_summary_hash": (
+                self.compaction_input.prior_summary_hash if self.compaction_input is not None else None
+            ),
+            "retired_message_ids": (
+                list(self.compaction_input.retired_message_ids) if self.compaction_input is not None else []
+            ),
+            "retired_message_hashes": (
+                list(self.compaction_input.retired_message_hashes) if self.compaction_input is not None else []
+            ),
+            "covered_through_created_at": (
+                self.compaction_input.covered_through_created_at.isoformat()
+                if self.compaction_input is not None
+                else None
+            ),
+            "covered_through_message_id": (
+                self.compaction_input.covered_through_message_id if self.compaction_input is not None else None
+            ),
         }
 
 
 @dataclass(frozen=True)
 class TutorCompactionRequest:
     idempotency_key: str
+    curation_idempotency_key: str
     run_id: str
     conversation_id: str
     input_revision: int
     trigger: TutorCompactionTrigger
+    projection_kind: Literal["memory_or_summary", "context_summary"]
     source_ids: tuple[str, ...]
     source_hashes: tuple[str, ...]
     token_budget: int
     consumed_tokens: int
+    summary_schema_version: str | None = None
+    summary_policy_version: str | None = None
+    summary_source_hash: str | None = None
+    prior_summary_id: str | None = None
+    prior_summary_hash: str | None = None
+    covered_through_created_at: datetime | None = None
+    covered_through_message_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.input_revision < 0:
@@ -557,10 +699,62 @@ class TutorCompactionRequest:
         if self.token_budget <= 0 or self.consumed_tokens < 0 or self.consumed_tokens > self.token_budget:
             raise ValueError("compaction request budget is invalid")
         object.__setattr__(self, "idempotency_key", limit_text(self.idempotency_key, 160))
+        object.__setattr__(self, "curation_idempotency_key", limit_text(self.curation_idempotency_key, 160))
         object.__setattr__(self, "run_id", _safe_identifier(self.run_id))
         object.__setattr__(self, "conversation_id", _safe_identifier(self.conversation_id))
-        object.__setattr__(self, "source_ids", tuple(_safe_identifier(value) for value in self.source_ids))
-        object.__setattr__(self, "source_hashes", tuple(limit_text(value, 64) for value in self.source_hashes))
+        source_ids = tuple(_safe_identifier(value) for value in self.source_ids)
+        source_hashes = tuple(str(value or "").lower() for value in self.source_hashes)
+        if len(source_ids) != len(source_hashes):
+            raise ValueError("compaction source evidence is malformed")
+        object.__setattr__(self, "source_ids", source_ids)
+        object.__setattr__(self, "source_hashes", source_hashes)
+        if self.projection_kind == "context_summary":
+            if any(not _is_sha256(value) for value in source_hashes):
+                raise ValueError("structured compaction source hashes must be SHA-256")
+            if (
+                not source_ids
+                or self.summary_schema_version is None
+                or self.summary_policy_version is None
+                or self.summary_source_hash is None
+                or self.covered_through_created_at is None
+                or self.covered_through_message_id is None
+            ):
+                raise ValueError("structured context summary request is incomplete")
+            object.__setattr__(self, "summary_schema_version", _safe_identifier(self.summary_schema_version))
+            object.__setattr__(self, "summary_policy_version", _safe_identifier(self.summary_policy_version))
+            summary_source_hash = str(self.summary_source_hash or "").lower()
+            if not _is_sha256(summary_source_hash):
+                raise ValueError("summary source hash must be SHA-256")
+            object.__setattr__(self, "summary_source_hash", summary_source_hash)
+            if self.covered_through_created_at.tzinfo is None:
+                raise ValueError("summary coverage timestamp must be timezone-aware")
+            covered_message_id = _safe_identifier(self.covered_through_message_id)
+            if source_ids[-1] != covered_message_id:
+                raise ValueError("summary coverage must end at the final source message")
+            object.__setattr__(self, "covered_through_message_id", covered_message_id)
+            if (self.prior_summary_id is None) != (self.prior_summary_hash is None):
+                raise ValueError("prior summary evidence must be paired")
+            if self.prior_summary_id is not None:
+                object.__setattr__(self, "prior_summary_id", _safe_identifier(self.prior_summary_id))
+                prior_hash = str(self.prior_summary_hash or "").lower()
+                if not _is_sha256(prior_hash):
+                    raise ValueError("prior summary hash must be SHA-256")
+                object.__setattr__(self, "prior_summary_hash", prior_hash)
+        elif any(not _is_safe_hash(value) for value in source_hashes):
+            raise ValueError("legacy compaction source hashes are malformed")
+        elif any(
+            value is not None
+            for value in (
+                self.summary_schema_version,
+                self.summary_policy_version,
+                self.summary_source_hash,
+                self.prior_summary_id,
+                self.prior_summary_hash,
+                self.covered_through_created_at,
+                self.covered_through_message_id,
+            )
+        ):
+            raise ValueError("legacy curation request cannot carry structured summary evidence")
 
 
 @dataclass(frozen=True)
@@ -891,28 +1085,136 @@ def build_compaction_request(
     trigger: TutorCompactionTrigger,
     metadata: TutorCheckpointMetadata,
 ) -> TutorCompactionRequest:
+    compaction = metadata.compaction_input
+    source_ids = compaction.retired_message_ids if compaction is not None else metadata.source_ids
+    source_hashes = compaction.retired_message_hashes if compaction is not None else metadata.source_hashes
+    projection_kind: Literal["memory_or_summary", "context_summary"] = (
+        "context_summary" if compaction is not None else "memory_or_summary"
+    )
     payload = {
         "run_id": _safe_identifier(run_id),
         "conversation_id": _safe_identifier(conversation_id),
         "input_revision": input_revision,
         "trigger": trigger.value,
-        "source_ids": list(metadata.source_ids),
-        "source_hashes": list(metadata.source_hashes),
+        "projection_kind": projection_kind,
+        "source_ids": list(source_ids),
+        "source_hashes": list(source_hashes),
         "token_budget": metadata.token_budget,
         "consumed_tokens": metadata.consumed_tokens,
+        "summary_source_hash": compaction.source_hash if compaction is not None else None,
     }
     digest = hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:24]
+    if compaction is None:
+        curation_idempotency_key = f"tutor-compaction:{digest}"
+    else:
+        curation_payload = {
+            "conversation_id": _safe_identifier(conversation_id),
+            "summary_schema_version": compaction.summary_schema_version,
+            "summary_policy_version": compaction.summary_policy_version,
+            "prior_summary_id": compaction.prior_summary_id,
+            "prior_summary_hash": compaction.prior_summary_hash,
+            "source_ids": list(compaction.retired_message_ids),
+            "source_hashes": list(compaction.retired_message_hashes),
+            "covered_through_created_at": compaction.covered_through_created_at.astimezone(UTC).isoformat(),
+            "covered_through_message_id": compaction.covered_through_message_id,
+            "summary_source_hash": compaction.source_hash,
+        }
+        curation_digest = hashlib.sha256(
+            json.dumps(curation_payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        ).hexdigest()[:24]
+        curation_idempotency_key = f"tutor-summary:{curation_digest}"
     return TutorCompactionRequest(
         idempotency_key=f"tutor-compaction:{digest}",
+        curation_idempotency_key=curation_idempotency_key,
         run_id=run_id,
         conversation_id=conversation_id,
         input_revision=input_revision,
         trigger=trigger,
-        source_ids=metadata.source_ids,
-        source_hashes=metadata.source_hashes,
+        projection_kind=projection_kind,
+        source_ids=source_ids,
+        source_hashes=source_hashes,
         token_budget=metadata.token_budget,
         consumed_tokens=metadata.consumed_tokens,
+        summary_schema_version=(compaction.summary_schema_version if compaction is not None else None),
+        summary_policy_version=(compaction.summary_policy_version if compaction is not None else None),
+        summary_source_hash=(compaction.source_hash if compaction is not None else None),
+        prior_summary_id=(compaction.prior_summary_id if compaction is not None else None),
+        prior_summary_hash=(compaction.prior_summary_hash if compaction is not None else None),
+        covered_through_created_at=(compaction.covered_through_created_at if compaction is not None else None),
+        covered_through_message_id=(compaction.covered_through_message_id if compaction is not None else None),
     )
+
+
+def build_tutor_message_evidence_hash(
+    *,
+    message_id: str,
+    role: str,
+    content: str,
+    created_at: datetime,
+) -> str:
+    if role not in {"learner", "tutor"}:
+        raise ValueError("Tutor message evidence role is invalid")
+    if created_at.tzinfo is None:
+        raise ValueError("Tutor message evidence timestamp must be timezone-aware")
+    payload = {
+        "message_id": _safe_identifier(message_id),
+        "role": role,
+        "content": str(content),
+        "created_at": created_at.astimezone(UTC).isoformat(),
+    }
+    return hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def build_tutor_context_summary_source_hash(
+    *,
+    summary_schema_version: str,
+    summary_policy_version: str,
+    prior_summary_id: str | None,
+    prior_summary_hash: str | None,
+    retired_message_ids: tuple[str, ...],
+    retired_message_hashes: tuple[str, ...],
+    covered_through_created_at: datetime,
+    covered_through_message_id: str,
+) -> str:
+    if covered_through_created_at.tzinfo is None:
+        raise ValueError("summary coverage timestamp must be timezone-aware")
+    normalized_prior_summary_id = _safe_identifier(prior_summary_id) if prior_summary_id is not None else None
+    normalized_prior_summary_hash = str(prior_summary_hash or "").lower() or None
+    normalized_message_ids = [_safe_identifier(value) for value in retired_message_ids]
+    normalized_message_hashes = [str(value or "").lower() for value in retired_message_hashes]
+    if (normalized_prior_summary_id is None) != (normalized_prior_summary_hash is None):
+        raise ValueError("prior summary evidence must be paired")
+    if not normalized_message_ids or len(normalized_message_ids) != len(normalized_message_hashes):
+        raise ValueError("retired message evidence must be non-empty and paired")
+    if any(not _is_sha256(value) for value in normalized_message_hashes):
+        raise ValueError("retired message hashes must be SHA-256")
+    if normalized_prior_summary_hash is not None and not _is_sha256(normalized_prior_summary_hash):
+        raise ValueError("prior summary hash must be SHA-256")
+    payload: dict[str, object] = {
+        "summary_schema_version": _safe_identifier(summary_schema_version),
+        "summary_policy_version": _safe_identifier(summary_policy_version),
+        "prior_summary_id": normalized_prior_summary_id,
+        "prior_summary_hash": normalized_prior_summary_hash,
+        "retired_message_ids": normalized_message_ids,
+        "retired_message_hashes": normalized_message_hashes,
+        "covered_through_created_at": covered_through_created_at.astimezone(UTC).isoformat(),
+        "covered_through_message_id": _safe_identifier(covered_through_message_id),
+    }
+    return hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _is_sha256(value: object) -> bool:
+    normalized = str(value or "").lower()
+    return len(normalized) == 64 and all(character in "0123456789abcdef" for character in normalized)
+
+
+def _is_safe_hash(value: object) -> bool:
+    normalized = str(value or "").lower()
+    return 24 <= len(normalized) <= 64 and all(character in "0123456789abcdef" for character in normalized)
 
 
 def terminal_status(outcome: TutorTerminalOutcome) -> TutorRunStatus:

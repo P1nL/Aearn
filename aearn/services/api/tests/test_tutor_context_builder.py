@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from app.agents.harness.context_builder import TutorContextBuilder, TutorContextBuilderConfig
 from app.agents.harness.contracts import (
     CONTEXT_SECTION_PRIORITY,
+    TUTOR_CONTEXT_SUMMARY_POLICY_VERSION,
+    TUTOR_CONTEXT_SUMMARY_SCHEMA_VERSION,
+    TutorContextCompactionCandidate,
+    TutorContextCompactionPlan,
     TutorContextError,
     TutorContextInput,
     TutorContextSection,
@@ -251,6 +256,47 @@ def test_tight_history_budget_keeps_newest_messages_then_restores_chronological_
 
     assert [item.source_id for item in selection.items] == ["message-5", "message-6"]
     assert _section_metadata(selection, TutorContextSection.RECENT_MESSAGES).skipped_count == 4
+
+
+def test_compaction_retirement_follows_budget_selected_recent_window() -> None:
+    base_time = datetime(2026, 8, 8, 9, 0, tzinfo=UTC)
+    candidates = tuple(
+        TutorContextCompactionCandidate(
+            message_id=f"id-{index}",
+            content_hash=f"{index:x}" * 64,
+            created_at=base_time + timedelta(minutes=index),
+        )
+        for index in range(1, 7)
+    )
+    context_input = TutorContextInput(
+        run_id="tutor-run-compaction-window",
+        conversation_id="conversation-compaction-window",
+        input_revision=7,
+        current_input_required=True,
+        current_input=TutorContextSource("message:current", "latest-turn"),
+        recent_messages=tuple(
+            TutorContextSource(
+                f"message:id-{index}",
+                {"role": "user", "content": f"turn-{index}"},
+            )
+            for index in range(1, 7)
+        ),
+        compaction_plan=TutorContextCompactionPlan(
+            summary_schema_version=TUTOR_CONTEXT_SUMMARY_SCHEMA_VERSION,
+            summary_policy_version=TUTOR_CONTEXT_SUMMARY_POLICY_VERSION,
+            candidates=candidates,
+        ),
+    )
+
+    selection = TutorContextBuilder(
+        estimator=OneTokenEstimator(), config=_config(recent_limit=4)
+    ).build(context_input, token_budget=3)
+
+    assert [item.source_id for item in selection.items] == ["message:id-5", "message:id-6"]
+    compaction = selection.checkpoint_metadata.compaction_input
+    assert compaction is not None
+    assert compaction.retired_message_ids == ("id-1", "id-2", "id-3", "id-4")
+    assert compaction.covered_through_message_id == "id-4"
 
 
 def test_history_selection_skips_one_oversized_newest_item_and_keeps_the_next_newest() -> None:

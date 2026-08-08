@@ -17,13 +17,25 @@ from psycopg import Connection
 from app.agents.harness.catalog_context import CatalogContextLoader
 from app.agents.harness.context_budget import TutorContextBudgetPlanner
 from app.agents.harness.context_builder import TutorContextBuilder
-from app.agents.harness.contracts import TutorContextError, TutorContextInput, TutorContextSource, TutorRunResult, TutorRunSnapshot
+from app.agents.harness.contracts import (
+    MAX_TUTOR_CONTEXT_COMPACTION_CANDIDATES,
+    TUTOR_CONTEXT_SUMMARY_POLICY_VERSION,
+    TUTOR_CONTEXT_SUMMARY_SCHEMA_VERSION,
+    TutorContextCompactionCandidate,
+    TutorContextCompactionPlan,
+    TutorContextError,
+    TutorContextInput,
+    TutorContextSource,
+    TutorRunResult,
+    TutorRunSnapshot,
+    build_tutor_message_evidence_hash,
+)
 from app.agents.harness.skill_catalog import compile_published_skill_catalog
 from app.core.config import Settings
 from app.db.connection import connect
 from app.services.tutor.capability_policy import DefaultDenyCapabilityPolicyResolver
 from app.services.tutor.decision_gate import CatalogTutorDecisionGate
-from app.services.tutor.learner_state import TutorLearnerStateRepository
+from app.services.tutor.learner_state import TutorContextSummaryProjection, TutorLearnerStateRepository
 from app.services.tutor.persistence import (
     PostgresTutorLifecycle,
     PostgresTutorRepository,
@@ -62,31 +74,58 @@ class PostgresTutorContextLoader:
         conn: Connection[dict[str, object]],
         learner_state: TutorLearnerStateRepository,
         proactive_candidate_kind: str | None = None,
+        now_provider: Callable[[], datetime] | None = None,
     ) -> None:
         self._conn = conn
         self._learner_state = learner_state
         self._proactive_candidate_kind = proactive_candidate_kind
+        self._now_provider = now_provider or (lambda: datetime.now(UTC))
 
     def load_context(self, snapshot: TutorRunSnapshot, *, input_revision: int) -> TutorContextInput:
         current_input: TutorContextSource | None = None
         current_input_required = self._current_input_required(snapshot)
         recent_messages: tuple[TutorContextSource, ...] = ()
+        working_summary: tuple[TutorContextSource, ...] = ()
+        compaction_plan: TutorContextCompactionPlan | None = None
         if current_input_required:
             current_row = self._load_current_input_row(snapshot, input_revision=input_revision)
             current_message_id = str(current_row["message_id"])
+            current_created_at = current_row.get("created_at")
+            if not isinstance(current_created_at, datetime):
+                raise TutorContextError("TUTOR_CURRENT_INPUT_EVIDENCE_INVALID")
             current_input = TutorContextSource(
                 source_id=f"message:{current_message_id}",
                 content=str(current_row.get("content") or ""),
             )
+            summary = self._learner_state.latest_context_summary_for_conversation(
+                user_id=snapshot.user_id,
+                conversation_id=snapshot.conversation_id,
+                current_message_created_at=current_created_at,
+                current_message_id=current_message_id,
+                now=self._now_provider(),
+            )
+            if summary is not None:
+                working_summary = (
+                    TutorContextSource(
+                        source_id=f"summary:{summary.summary_id}",
+                        content=summary.summary_json,
+                    ),
+                )
             rows = self._conn.execute(
                 """
                 SELECT id::text AS id, role, content, created_at
                 FROM tutor_messages
-                WHERE conversation_id = %s AND id <> %s
+                WHERE conversation_id = %s
+                  AND (created_at, id) < (%s, %s::uuid)
                 ORDER BY created_at DESC, id DESC
-                LIMIT 8
+                LIMIT %s
                 """,
-                (snapshot.conversation_id, current_message_id),
+                (
+                    snapshot.conversation_id,
+                    current_created_at,
+                    current_message_id,
+                    MAX_TUTOR_CONTEXT_COMPACTION_CANDIDATES,
+                ),
             ).fetchall()
             recent_messages = tuple(
                 TutorContextSource(
@@ -97,6 +136,12 @@ class PostgresTutorContextLoader:
                     },
                 )
                 for row in reversed(rows)
+            )
+            compaction_plan = self._load_compaction_plan(
+                conversation_id=snapshot.conversation_id,
+                current_created_at=current_created_at,
+                current_message_id=current_message_id,
+                prior_summary=summary,
             )
 
         active_plan = self._learner_state.active_plan_for_user(user_id=snapshot.user_id)
@@ -178,8 +223,78 @@ class PostgresTutorContextLoader:
             ),
             active_plan=active_plan_sources,
             recent_messages=recent_messages,
+            working_summary=working_summary,
             learner_memory=memory_sources,
             activity_facts=activity_sources,
+            compaction_plan=compaction_plan,
+        )
+
+    def _load_compaction_plan(
+        self,
+        *,
+        conversation_id: str,
+        current_created_at: datetime,
+        current_message_id: str,
+        prior_summary: TutorContextSummaryProjection | None,
+    ) -> TutorContextCompactionPlan | None:
+        if prior_summary is None:
+            rows = self._conn.execute(
+                """
+                SELECT id::text AS id, role, content, created_at
+                FROM tutor_messages
+                WHERE conversation_id = %s
+                  AND (created_at, id) < (%s, %s::uuid)
+                ORDER BY created_at ASC, id ASC
+                LIMIT %s
+                """,
+                (
+                    conversation_id,
+                    current_created_at,
+                    current_message_id,
+                    MAX_TUTOR_CONTEXT_COMPACTION_CANDIDATES,
+                ),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                """
+                SELECT id::text AS id, role, content, created_at
+                FROM tutor_messages
+                WHERE conversation_id = %s
+                  AND (created_at, id) > (%s, %s::uuid)
+                  AND (created_at, id) < (%s, %s::uuid)
+                ORDER BY created_at ASC, id ASC
+                LIMIT %s
+                """,
+                (
+                    conversation_id,
+                    prior_summary.covered_through_created_at,
+                    prior_summary.covered_through_message_id,
+                    current_created_at,
+                    current_message_id,
+                    MAX_TUTOR_CONTEXT_COMPACTION_CANDIDATES,
+                ),
+            ).fetchall()
+        if not rows:
+            return None
+        candidates = tuple(
+            TutorContextCompactionCandidate(
+                message_id=str(row["id"]),
+                content_hash=build_tutor_message_evidence_hash(
+                    message_id=str(row["id"]),
+                    role=str(row["role"]),
+                    content=str(row.get("content") or ""),
+                    created_at=_required_datetime(row.get("created_at")),
+                ),
+                created_at=_required_datetime(row.get("created_at")),
+            )
+            for row in rows
+        )
+        return TutorContextCompactionPlan(
+            summary_schema_version=TUTOR_CONTEXT_SUMMARY_SCHEMA_VERSION,
+            summary_policy_version=TUTOR_CONTEXT_SUMMARY_POLICY_VERSION,
+            candidates=candidates,
+            prior_summary_id=(prior_summary.summary_id if prior_summary is not None else None),
+            prior_summary_hash=(prior_summary.content_hash if prior_summary is not None else None),
         )
 
 
@@ -199,7 +314,7 @@ class PostgresTutorContextLoader:
             raise TutorContextError("TUTOR_CURRENT_INPUT_REVISION_INVALID")
         rows = self._conn.execute(
             """
-            SELECT inputs.message_id::text AS message_id, messages.role, messages.content
+            SELECT inputs.message_id::text AS message_id, messages.role, messages.content, messages.created_at
             FROM tutor_runs AS runs
             JOIN tutor_run_input_events AS inputs
               ON inputs.run_id = runs.id
@@ -229,6 +344,12 @@ class PostgresTutorContextLoader:
         if not str(row.get("content") or "").strip():
             raise TutorContextError("TUTOR_CURRENT_INPUT_EMPTY")
         return row
+
+
+def _required_datetime(value: object) -> datetime:
+    if not isinstance(value, datetime):
+        raise TutorContextError("TUTOR_CONTEXT_TIMELINE_INVALID")
+    return value
 
 
 ProviderFactory = Callable[[Settings], TutorProviderGateway]

@@ -3254,7 +3254,7 @@ class PostgresTutorRepository:
         request = envelope.request
         if request.run_id != str(run["id"]) or request.conversation_id != str(run["conversation_id"]):
             raise TutorPersistenceError("curation request does not match target run scope")
-        _safe_key(request.idempotency_key, label="curation idempotency key")
+        _safe_key(request.curation_idempotency_key, label="curation idempotency key")
         raw_source_ids = list(request.source_ids)
         expected_source_hashes = [str(value).lower() for value in request.source_hashes]
         safe_sources = self._projector.export(
@@ -3289,9 +3289,14 @@ class PostgresTutorRepository:
               run_id, conversation_id, input_revision, trigger,
               event_from_sequence, event_to_sequence, trace_id,
               source_ids_json, source_hashes_json, policy_version, memory_setting_version,
+              projection_kind, summary_schema_version, summary_policy_version,
+              summary_source_hash, prior_summary_id, prior_summary_hash,
+              covered_through_created_at, covered_through_message_id,
               priority, retention_until, stale_after, state, idempotency_key, envelope_json, created_at
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s, 'pending', %s, %s::jsonb, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s,
+                    %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, 'pending', %s, %s::jsonb, %s)
             ON CONFLICT (idempotency_key) DO NOTHING
             RETURNING id, idempotency_key, state
             """,
@@ -3307,10 +3312,18 @@ class PostgresTutorRepository:
                 _json(safe_source_hashes),
                 run["policy_version"],
                 envelope.memory_setting_version,
+                request.projection_kind,
+                request.summary_schema_version,
+                request.summary_policy_version,
+                request.summary_source_hash,
+                request.prior_summary_id,
+                request.prior_summary_hash,
+                request.covered_through_created_at,
+                request.covered_through_message_id,
                 envelope.priority,
                 retention_until,
                 stale_after,
-                request.idempotency_key,
+                request.curation_idempotency_key,
                 _json(payload),
                 created_at,
             ),
@@ -3318,24 +3331,37 @@ class PostgresTutorRepository:
         if row is None:
             row = self._conn.execute(
                 "SELECT * FROM tutor_memory_curation_outbox WHERE idempotency_key = %s FOR UPDATE",
-                (request.idempotency_key,),
+                (request.curation_idempotency_key,),
             ).fetchone()
             if row is None:
                 raise RuntimeError("curation outbox replay row is missing")
-            if (
+            common_conflict = (
                 str(row["run_id"]) != str(run["id"])
                 or str(row["conversation_id"]) != str(run["conversation_id"])
                 or _as_int(row["input_revision"], -1) != request.input_revision
-                or str(row["trigger"]) != request.trigger.value
-                or _as_int(row["event_from_sequence"], -1) != event_sequence
-                or _as_int(row["event_to_sequence"], -1) != event_sequence
-                or str(row["trace_id"]) != trace_id
                 or _as_list(row.get("source_ids_json")) != safe_source_ids
                 or _as_list(row.get("source_hashes_json")) != safe_source_hashes
                 or str(row["policy_version"]) != str(run["policy_version"])
                 or str(row["memory_setting_version"]) != envelope.memory_setting_version
+                or str(row.get("projection_kind") or "memory_or_summary") != request.projection_kind
                 or _as_int(row["priority"], -1) != envelope.priority
-            ):
+            )
+            structured_conflict = request.projection_kind == "context_summary" and (
+                _optional_text(row, "summary_schema_version") != request.summary_schema_version
+                or _optional_text(row, "summary_policy_version") != request.summary_policy_version
+                or _optional_text(row, "summary_source_hash") != request.summary_source_hash
+                or _optional_text(row, "prior_summary_id") != request.prior_summary_id
+                or _optional_text(row, "prior_summary_hash") != request.prior_summary_hash
+                or _as_datetime(row.get("covered_through_created_at")) != request.covered_through_created_at
+                or _optional_text(row, "covered_through_message_id") != request.covered_through_message_id
+            )
+            legacy_conflict = request.projection_kind == "memory_or_summary" and (
+                str(row["trigger"]) != request.trigger.value
+                or _as_int(row["event_from_sequence"], -1) != event_sequence
+                or _as_int(row["event_to_sequence"], -1) != event_sequence
+                or str(row["trace_id"]) != trace_id
+            )
+            if common_conflict or structured_conflict or legacy_conflict:
                 raise TutorIdempotencyConflict("curation idempotency key conflicts with durable evidence")
             return TutorCurationOutboxReceipt(
                 outbox_id=str(row["id"]), idempotency_key=str(row["idempotency_key"]), state=str(row["state"]), replayed=True
@@ -3778,14 +3804,23 @@ def _compaction_payload(request: TutorCompactionRequest, *, status: str) -> dict
         "kind": "compaction_request",
         "status": status,
         "idempotency_key": request.idempotency_key,
+        "curation_idempotency_key": request.curation_idempotency_key,
         "run_id": request.run_id,
         "conversation_id": request.conversation_id,
         "input_revision": request.input_revision,
         "trigger": request.trigger.value,
+        "projection_kind": request.projection_kind,
         "source_ids": list(request.source_ids),
         "source_hashes": list(request.source_hashes),
         "token_budget": request.token_budget,
         "consumed_tokens": request.consumed_tokens,
+        "summary_schema_version": request.summary_schema_version,
+        "summary_policy_version": request.summary_policy_version,
+        "summary_source_hash": request.summary_source_hash,
+        "prior_summary_id": request.prior_summary_id,
+        "prior_summary_hash": request.prior_summary_hash,
+        "covered_through_created_at": request.covered_through_created_at,
+        "covered_through_message_id": request.covered_through_message_id,
     }
 
 
@@ -3903,6 +3938,11 @@ def _as_float(value: object, default: float) -> float:
         except ValueError:
             return default
     return default
+
+
+def _optional_text(row: Mapping[str, object], key: str) -> str | None:
+    value = row.get(key)
+    return str(value) if value is not None else None
 
 
 def _as_optional_int(value: object) -> int | None:

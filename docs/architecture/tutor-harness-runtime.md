@@ -223,6 +223,42 @@ versions; public API/SSE remains unchanged.
 Provider `input_tokens` already includes cached input, so cache is never deducted
 from preflight physical usage and is never added to actual input a second time.
 
+### Long-conversation summary retrieval and compaction
+
+Interactive context preserves three ordered fidelity tiers: authoritative
+`current_input`, the newest prior raw-message suffix, and at most one structured
+`working_summary` for older retired messages. The loader resolves all three from
+the conversation timeline `(created_at, message_id)`. The current input never
+enters the retirement set; equal timestamps use the UUID key to avoid gaps,
+duplicates, or later-row interference.
+
+A non-empty continuous retirement prefix produces `tutor_context_summary_v2`
+evidence containing the prior summary identity/hash, retired message IDs and
+SHA-256 content hashes, and the coverage cursor. Checkpoints, traces, and
+`tutor_memory_curation_outbox` persist only this bounded evidence. A leased
+`context_summary` curation job re-reads the exact `tutor_messages` rows under the
+same user/conversation scope, revalidates ordering, coverage continuity, and
+hashes, and sends the bounded raw text only to the configured primary Curator
+request. Raw retired content is never copied into a trace, outbox, proposal,
+receipt, or summary metadata envelope.
+
+The committed projection is an append-only `tutor_context_summaries` row with a
+bounded learner-safe overview plus versioned JSON fields for current goal,
+confirmed facts, completed steps, rejected paths, open questions, and learner
+preferences. Retrieval accepts only a committed, unexpired, non-stale row with
+exact schema/policy versions and coverage earlier than the current input. Legacy
+280-character rows remain compatible storage but are never presented as v2.
+Malformed or unavailable summaries fail closed to `current_input +
+recent_messages`; original messages are not deleted.
+
+Provider conflict priority is fixed as `current_input > recent_messages >
+working_summary > learner_memory/activity`. A newer correction or completion
+therefore overrides stale summary content, and the next incremental summary can
+record the corrected fact. Conversation continuity is independent of the
+inferred-memory opt-in, while the existing scheduler pause, lease, retry,
+budget, circuit, finite TurnRun, adaptive request budget, and provider hard limit
+remain authoritative.
+
 The Responses adapter accepts final learner-visible content only from
 `output_text`. It rejects reasoning-only output, missing visible text, malformed
 SSE/envelopes, non-object JSON text, `response.incomplete`, and `response.failed`

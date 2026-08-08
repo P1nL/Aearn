@@ -9,10 +9,12 @@ from collections.abc import Mapping, Sequence
 
 from app.agents.harness.contracts import (
     CONTEXT_SECTION_PRIORITY,
+    MAX_TUTOR_CONTEXT_COMPACTION_MESSAGES,
     MAX_TUTOR_PUBLIC_MESSAGE_LENGTH,
     TokenEstimator,
     TutorCheckpointMetadata,
     TutorCompactionTrigger,
+    TutorContextCompactionInput,
     TutorContextBudgetPlan,
     TutorContextError,
     TutorContextInput,
@@ -24,6 +26,7 @@ from app.agents.harness.contracts import (
     TutorContextSelection,
     TutorContextSource,
     build_compaction_request,
+    build_tutor_context_summary_source_hash,
 )
 from app.core.teaching_safety import limit_text, redact_value, sanitize_message_content, sanitize_summary_text
 
@@ -233,6 +236,10 @@ class TutorContextBuilder:
             if budget_plan is not None
             else None
         )
+        compaction_input = self._build_compaction_input(
+            context_input=context_input,
+            selected_items=tuple(selected_items),
+        )
         metadata = TutorCheckpointMetadata(
             token_budget=token_budget,
             consumed_tokens=consumed_tokens,
@@ -267,6 +274,7 @@ class TutorContextBuilder:
             capability_version=budget_plan.capability_version if budget_plan is not None else None,
             budget_policy_version=budget_plan.policy_version if budget_plan is not None else None,
             truncated_count=truncated_count,
+            compaction_input=compaction_input,
         )
         high_water_request = None
         high_water_reached = (
@@ -288,6 +296,53 @@ class TutorContextBuilder:
             checkpoint_metadata=metadata,
             current_input=current_input,
             high_water_compaction_request=high_water_request,
+        )
+
+    @staticmethod
+    def _build_compaction_input(
+        *,
+        context_input: TutorContextInput,
+        selected_items: tuple[TutorContextItem, ...],
+    ) -> TutorContextCompactionInput | None:
+        plan = context_input.compaction_plan
+        if plan is None:
+            return None
+        candidate_indexes = {
+            candidate.message_id: index for index, candidate in enumerate(plan.candidates)
+        }
+        selected_indexes = [
+            candidate_indexes[message_id]
+            for item in selected_items
+            if item.section is TutorContextSection.RECENT_MESSAGES
+            and (message_id := item.source_id.removeprefix("message:")) in candidate_indexes
+        ]
+        retirement_end = min(selected_indexes) if selected_indexes else len(plan.candidates)
+        retired = plan.candidates[:retirement_end][:MAX_TUTOR_CONTEXT_COMPACTION_MESSAGES]
+        if not retired:
+            return None
+        retired_message_ids = tuple(candidate.message_id for candidate in retired)
+        retired_message_hashes = tuple(candidate.content_hash for candidate in retired)
+        covered = retired[-1]
+        source_hash = build_tutor_context_summary_source_hash(
+            summary_schema_version=plan.summary_schema_version,
+            summary_policy_version=plan.summary_policy_version,
+            prior_summary_id=plan.prior_summary_id,
+            prior_summary_hash=plan.prior_summary_hash,
+            retired_message_ids=retired_message_ids,
+            retired_message_hashes=retired_message_hashes,
+            covered_through_created_at=covered.created_at,
+            covered_through_message_id=covered.message_id,
+        )
+        return TutorContextCompactionInput(
+            summary_schema_version=plan.summary_schema_version,
+            summary_policy_version=plan.summary_policy_version,
+            source_hash=source_hash,
+            retired_message_ids=retired_message_ids,
+            retired_message_hashes=retired_message_hashes,
+            covered_through_created_at=covered.created_at,
+            covered_through_message_id=covered.message_id,
+            prior_summary_id=plan.prior_summary_id,
+            prior_summary_hash=plan.prior_summary_hash,
         )
 
     @staticmethod

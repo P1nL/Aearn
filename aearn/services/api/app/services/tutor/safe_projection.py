@@ -22,7 +22,8 @@ from app.core.teaching_safety import redact_value
 SAFE_PROJECTION_VERSION: Final[str] = "tutor_safe_projection_v1"
 _OMIT: Final[object] = object()
 _MAX_DEPTH: Final[int] = 5
-_MAX_ITEMS: Final[int] = 24
+_MAX_MAPPING_ITEMS: Final[int] = 32
+_MAX_SEQUENCE_ITEMS: Final[int] = 24
 _MAX_SAFE_TEXT_LENGTH: Final[int] = 160
 _SAFE_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@-]{0,159}$")
 _SHA256 = re.compile(r"^[0-9a-f]{24,64}$")
@@ -43,8 +44,11 @@ _SAFE_KEYS = frozenset(
         "event_to_sequence", "input_revision", "catalog_digest", "policy_version", "policy_fingerprint",
         "memory_setting_version", "skill_id", "skill_version", "manifest_hash", "instruction_hash", "evaluation_hash",
         "capability_id", "capability_version", "effect_id", "effect_type", "request_id", "request_hash", "result_hash",
-        "payload_hash", "safe_hash", "idempotency_key", "event_key", "lease_owner_id", "lease_generation", "trigger", "priority",
+        "payload_hash", "safe_hash", "idempotency_key", "curation_idempotency_key", "event_key", "lease_owner_id", "lease_generation", "trigger", "priority",
         "outbox_id", "proposal_id", "trace_id", "commit_id", "source_id", "source_hash", "source_ids", "source_hashes",
+        "projection_kind", "summary_schema_version", "summary_policy_version", "summary_source_hash",
+        "prior_summary_id", "prior_summary_hash", "retired_message_ids", "retired_message_hashes",
+        "covered_through_created_at", "covered_through_message_id",
         "execution_job_id", "execution_intent_id", "lock_fingerprint", "execution_state",
         "attempt_sequence", "cleanup_state", "availability_code",
         "source_count", "item_count", "count", "selected_count", "skipped_count", "token_budget", "consumed_tokens",
@@ -70,7 +74,7 @@ _INTEGER_KEYS = frozenset(
 _HASH_KEYS = frozenset(
     {
         "catalog_digest", "policy_fingerprint", "manifest_hash", "instruction_hash", "evaluation_hash", "request_hash",
-        "result_hash", "payload_hash", "safe_hash", "source_hash", "lock_fingerprint",
+        "result_hash", "payload_hash", "safe_hash", "source_hash", "summary_source_hash", "prior_summary_hash", "lock_fingerprint",
     }
 )
 
@@ -121,7 +125,7 @@ class TutorSafeProjection:
             return {}
         result: dict[str, object] = {}
         for index, raw_key in enumerate(sorted(value, key=lambda item: str(item))):
-            if index >= _MAX_ITEMS:
+            if index >= _MAX_MAPPING_ITEMS:
                 break
             key = str(raw_key)
             if key not in _SAFE_KEYS:
@@ -139,9 +143,9 @@ class TutorSafeProjection:
         if key in _HASH_KEYS:
             normalized = str(value or "").lower()
             return normalized if _SHA256.fullmatch(normalized) else _OMIT
-        if key == "source_hashes":
+        if key in {"source_hashes", "retired_message_hashes"}:
             return self._project_hashes(value)
-        if key in {"source_ids", "required_capability_ids", "allowed_effect_types", "policy_tags"}:
+        if key in {"source_ids", "retired_message_ids", "required_capability_ids", "allowed_effect_types", "policy_tags"}:
             return self._project_identifiers(value)
         if key == "sections":
             return self._project_sections(value, depth=depth)
@@ -149,10 +153,13 @@ class TutorSafeProjection:
             return self._project_section_counts(value)
         if key == "skills":
             return self._project_skills(value, depth=depth)
-        if key in {"retention_until", "stale_after", "created_at", "expires_at", "deadline"}:
+        if key in {"retention_until", "stale_after", "created_at", "expires_at", "deadline", "covered_through_created_at"}:
             return _safe_timestamp(value)
         if key == "context_budget_policy":
             return self._project_context_budget_policy(value, depth=depth)
+        if key == "projection_kind":
+            normalized = str(value or "").lower()
+            return normalized if normalized in {"memory_or_summary", "context_summary"} else _OMIT
         if key == "confidence":
             normalized = str(value or "").lower()
             return normalized if normalized in {"low", "medium", "high"} else _OMIT
@@ -213,7 +220,7 @@ class TutorSafeProjection:
         if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
             return []
         result: list[str] = []
-        for item in value[:_MAX_ITEMS]:
+        for item in value[:_MAX_SEQUENCE_ITEMS]:
             normalized = _safe_identifier(item)
             if isinstance(normalized, str):
                 result.append(normalized)
@@ -224,7 +231,7 @@ class TutorSafeProjection:
             return []
         return [
             normalized
-            for item in value[:_MAX_ITEMS]
+            for item in value[:_MAX_SEQUENCE_ITEMS]
             if _SHA256.fullmatch(normalized := str(item or "").lower())
         ]
 
@@ -233,7 +240,7 @@ class TutorSafeProjection:
             return []
         return [
             self._project_mapping(item, depth=depth + 1)
-            for item in value[:_MAX_ITEMS]
+            for item in value[:_MAX_SEQUENCE_ITEMS]
             if isinstance(item, Mapping)
         ]
 
@@ -242,7 +249,7 @@ class TutorSafeProjection:
             return {}
         result: dict[str, int] = {}
         for index, raw_key in enumerate(sorted(value, key=lambda item: str(item))):
-            if index >= _MAX_ITEMS:
+            if index >= _MAX_MAPPING_ITEMS:
                 break
             identifier = _safe_identifier(raw_key)
             count = value[raw_key]
@@ -255,7 +262,7 @@ class TutorSafeProjection:
         if not isinstance(value, Sequence) or isinstance(value, (str, bytes)) or depth > _MAX_DEPTH:
             return []
         result: list[dict[str, object]] = []
-        for item in value[:_MAX_ITEMS]:
+        for item in value[:_MAX_SEQUENCE_ITEMS]:
             if not isinstance(item, Mapping):
                 continue
             projected = self._project_mapping(item, depth=depth + 1)
