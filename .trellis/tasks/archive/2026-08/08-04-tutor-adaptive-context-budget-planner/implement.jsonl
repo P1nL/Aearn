@@ -1,0 +1,3 @@
+{"file":".trellis/tasks/08-04-tutor-adaptive-context-budget-planner/design.md","reason":"加载 provider capability、完整请求估算、预算档位、驱逐和有界升级设计。"}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"复用统一 capability、token estimator、上下文选择和配置契约，避免平行实现。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"协调配置、输入装配、预算档位、provider 调用、扩容与观测数据流。"}
