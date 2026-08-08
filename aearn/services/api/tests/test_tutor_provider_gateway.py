@@ -7,13 +7,15 @@ from typing import Mapping, Sequence
 
 import pytest
 
+from app.agents.harness.context_builder import TutorContextBuilder, TutorContextBuilderConfig
 from app.agents.harness.contracts import (
     TutorCheckpointReason,
     TutorContinuationKind,
+    TutorContextInput,
     TutorContextSelection,
+    TutorContextSource,
     TutorPolicySnapshot,
     TutorRunSnapshot,
-    empty_checkpoint_metadata,
 )
 from app.core.config import Settings
 from app.services.llm.llm_client import (
@@ -106,9 +108,31 @@ def _run() -> TutorRunSnapshot:
 
 
 def _context() -> TutorContextSelection:
-    return TutorContextSelection(
-        items=(),
-        checkpoint_metadata=empty_checkpoint_metadata(token_budget=1200),
+    return TutorContextBuilder(config=TutorContextBuilderConfig(section_item_limits=())).build(
+        TutorContextInput(
+            run_id="run-provider",
+            conversation_id="conversation-provider",
+            input_revision=0,
+            current_input_required=True,
+            current_input=TutorContextSource("message-current", "请解释变量作用域。"),
+        ),
+        token_budget=1200,
+    )
+
+
+def _interactive_context() -> TutorContextSelection:
+    return TutorContextBuilder().build(
+        TutorContextInput(
+            run_id="run-provider",
+            conversation_id="conversation-provider",
+            input_revision=0,
+            current_input=TutorContextSource("message-current", "我应该学哪些语言"),
+            current_input_required=True,
+            recent_messages=(
+                TutorContextSource("message-old", {"role": "user", "content": "我想做个网站"}),
+            ),
+        ),
+        token_budget=1200,
     )
 
 
@@ -118,6 +142,45 @@ def _valid_payload() -> dict[str, object]:
         "skill_references": [{"skill_id": "scope-basics", "version": "v1"}],
         "terminal_intent": "completed",
     }
+
+
+def test_provider_payload_separates_authoritative_current_input_from_optional_history() -> None:
+    messages = _build_messages(run=_run(), context=_interactive_context())
+    system = messages[0]["content"]
+    payload = json.loads(messages[1]["content"])
+
+    assert payload["current_input"] == {"role": "user", "content": "我应该学哪些语言"}
+    assert [item["source_id"] for item in payload["context"]] == ["message-old"]
+    assert payload["context_metadata"]["current_input"]["source_id"] == "message-current"
+    assert "authoritative request" in system
+    assert "correction" in system
+    assert "already complete" in system
+    assert "answer directly first" in system
+    assert "at most one necessary follow-up question" in system
+    assert "website, image, or HTML" in system
+
+
+def test_repair_retry_preserves_current_input_and_latest_intent_teaching_policy() -> None:
+    client = SequencedJsonClient(
+        [
+            {"public_message": "旧路径。", "checkpoint_reason": "invalid"},
+            _valid_payload(),
+        ]
+    )
+    gateway = PrimaryTutorProviderGateway(settings=Settings(llm_type="disabled"), client=client)
+
+    result = gateway.decide(run=_run(), context=_interactive_context())
+
+    assert result.decision is not None
+    assert client.calls == 2
+    first_payload = json.loads(client.messages[0][1]["content"])
+    retry_payload = json.loads(client.messages[1][1]["content"])
+    assert first_payload["current_input"] == retry_payload["current_input"]
+    assert retry_payload["current_input"]["content"] == "我应该学哪些语言"
+    repair_message = client.messages[1][-1]["content"]
+    assert "authoritative request" in repair_message
+    assert "stop the stale path" in repair_message
+    assert "answer directly first" in repair_message
 
 
 def test_primary_gateway_uses_exact_deepseek_v4_flash_responses_contract_without_fallback() -> (

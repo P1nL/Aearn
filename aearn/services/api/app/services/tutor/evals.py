@@ -13,6 +13,7 @@ from app.agents.harness.contracts import (
     CONTEXT_SECTION_PRIORITY,
     TutorCapabilityRequest,
     TutorContextInput,
+    TutorContextSection,
     TutorContextSource,
     TutorDecision,
     TutorEffectProposal,
@@ -37,7 +38,7 @@ from app.services.tutor.ports import (
     RecordingEffectCommitter,
     SequenceTutorProvider,
 )
-from app.services.tutor.provider_gateway import PrimaryTutorProviderGateway
+from app.services.tutor.provider_gateway import PrimaryTutorProviderGateway, _build_messages
 from app.services.tutor.run_loop import TutorRunLoop
 from app.services.tutor.safe_projection import TutorSafeProjection
 
@@ -123,6 +124,14 @@ def run_tutor_eval_case(case: TutorEvalCase, *, catalog: SkillCatalogSnapshot | 
         observed = _redaction_observed(case.protected_markers)
     elif case.scenario == "replay_outbox_proposal":
         observed = _replay_outbox_proposal_observed()
+    elif case.scenario == "current_input_pinned":
+        observed = _current_input_pinned_observed()
+    elif case.scenario == "newest_history_selected":
+        observed = _newest_history_selected_observed()
+    elif case.scenario == "teaching_correction_policy_present":
+        observed = _teaching_correction_policy_observed()
+    elif case.scenario == "current_input_unrepresentable_provider_not_called":
+        observed = _current_input_unrepresentable_observed()
     else:
         raise TutorEvalFixtureError("Tutor eval scenario is not supported")
     for key, expected_value in case.expected.items():
@@ -177,6 +186,8 @@ def _context(revision: int) -> TutorContextInput:
         run_id="eval-run",
         conversation_id="eval-conversation",
         input_revision=revision,
+        current_input_required=True,
+        current_input=TutorContextSource(f"eval-message-{revision}", "current learner request"),
         system_descriptors=(TutorContextSource("eval-system", {"status": "bounded"}),),
     )
 
@@ -330,6 +341,121 @@ def _replay_outbox_proposal_observed() -> dict[str, object]:
     }
 
 
+def _current_input_pinned_observed() -> dict[str, object]:
+    selection = TutorContextBuilder(estimator=_OneTokenEstimator()).build(
+        TutorContextInput(
+            run_id="eval-run",
+            conversation_id="eval-conversation",
+            input_revision=1,
+            current_input=TutorContextSource("message-current", "我应该学哪些语言"),
+            current_input_required=True,
+            system_descriptors=(TutorContextSource("system", {"path": "old-html"}),),
+            recent_messages=(
+                TutorContextSource("message-old", {"role": "user", "content": "我想做个网站"}),
+            ),
+        ),
+        token_budget=2,
+    )
+    return {
+        "current_input": selection.current_input.content if selection.current_input is not None else None,
+        "current_source": selection.current_input.source_id if selection.current_input is not None else None,
+        "context_sources": [item.source_id for item in selection.items],
+    }
+
+
+def _newest_history_selected_observed() -> dict[str, object]:
+    limits = tuple(
+        (section, 4 if section is TutorContextSection.RECENT_MESSAGES else 0)
+        for section in CONTEXT_SECTION_PRIORITY
+    )
+    selection = TutorContextBuilder(
+        estimator=_OneTokenEstimator(),
+        config=TutorContextBuilderConfig(section_item_limits=limits),
+    ).build(
+        TutorContextInput(
+            run_id="eval-run",
+            conversation_id="eval-conversation",
+            input_revision=7,
+            current_input=TutorContextSource("message-7", "latest"),
+            current_input_required=True,
+            recent_messages=tuple(
+                TutorContextSource(f"message-{index}", {"role": "user", "content": f"turn-{index}"})
+                for index in range(1, 7)
+            ),
+        ),
+        token_budget=8,
+    )
+    return {"history_sources": [item.source_id for item in selection.items]}
+
+
+def _teaching_correction_policy_observed() -> dict[str, object]:
+    selection = TutorContextBuilder(estimator=_OneTokenEstimator()).build(
+        TutorContextInput(
+            run_id="eval-run",
+            conversation_id="eval-conversation",
+            input_revision=1,
+            current_input=TutorContextSource("message-current", "你不是应该教我编程语言吗"),
+            current_input_required=True,
+        ),
+        token_budget=4,
+    )
+    system = _build_messages(run=_snapshot(), context=selection)[0]["content"]
+    required = (
+        "authoritative request",
+        "correction",
+        "stop the stale path",
+        "answer directly first",
+        "at most one necessary follow-up question",
+    )
+    return {"policy_present": all(marker in system for marker in required)}
+
+
+def _current_input_unrepresentable_observed() -> dict[str, object]:
+    class _TwoTokenEstimator:
+        def estimate_tokens(self, value: object) -> int:
+            del value
+            return 2
+
+    policy = _policy()
+    policy = TutorPolicySnapshot(
+        deadline=policy.deadline,
+        max_iterations=policy.max_iterations,
+        max_model_calls=policy.max_model_calls,
+        max_capability_calls=policy.max_capability_calls,
+        max_effects=policy.max_effects,
+        context_token_budget=1,
+    )
+    store = InMemoryTutorRunStore([_snapshot(policy=policy)])
+    provider = SequenceTutorProvider([])
+    loop = TutorRunLoop(
+        store=store,
+        context_loader=InMemoryTutorContextLoader(
+            {
+                ("eval-run", 0): TutorContextInput(
+                    run_id="eval-run",
+                    conversation_id="eval-conversation",
+                    input_revision=0,
+                    current_input=TutorContextSource("message-current", "x"),
+                    current_input_required=True,
+                )
+            }
+        ),
+        context_builder=TutorContextBuilder(estimator=_TwoTokenEstimator()),
+        provider=provider,
+        capability_gateway=DefaultDenyCapabilityGateway(),
+        effect_committer=RecordingEffectCommitter(status=TutorEffectStatus.DENIED),
+        clock=FixedClock(_NOW),
+        compaction_publisher=InMemoryTutorCompactionPublisher(),
+        decision_gate=AllowTutorDecisionGate(),
+    )
+    result = loop.run(run_id="eval-run", lease_owner_id="eval-worker")
+    return {
+        "status": result.status.value,
+        "code": result.diagnostic_code,
+        "provider_calls": len(provider.calls),
+    }
+
+
 def _redaction_observed(markers: Sequence[str]) -> dict[str, object]:
     projector = TutorSafeProjection()
     raw = {
@@ -348,9 +474,19 @@ def _redaction_observed(markers: Sequence[str]) -> dict[str, object]:
 
 
 def _empty_context():
-    from app.agents.harness.contracts import TutorContextSelection, empty_checkpoint_metadata
-
-    return TutorContextSelection(items=(), checkpoint_metadata=empty_checkpoint_metadata(token_budget=8))
+    return TutorContextBuilder(
+        estimator=_OneTokenEstimator(),
+        config=TutorContextBuilderConfig(section_item_limits=()),
+    ).build(
+        TutorContextInput(
+            run_id="eval-run",
+            conversation_id="eval-conversation",
+            input_revision=0,
+            current_input_required=True,
+            current_input=TutorContextSource("eval-current-input", "current learner request"),
+        ),
+        token_budget=8,
+    )
 
 
 class _OneTokenEstimator:

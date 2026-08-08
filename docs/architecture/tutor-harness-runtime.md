@@ -85,10 +85,19 @@ explicit server-authorized continuation only
    terminal persistence. A stale run converges to a safe cancelled/superseded
    projection and cannot write a Tutor message, conversation title, capability
    receipt or effect.
-6. `GET /api/tutor/runs/{run_id}/events` remains incremental run-local transport
+6. Each interactive context load resolves the authoritative learner input from the exact
+   `tutor_run_input_events(run_id, input_revision).message_id` evidence within the
+   snapshot's user/run/conversation scope. The Harness carries that input separately
+   from optional history, reserves its bounded token cost before every optional
+   section, and never calls the provider if even a minimum safe representation cannot
+   fit. The optional history excludes that exact message, keeps the newest bounded
+   suffix using stable `created_at, id` ordering, and presents the selected suffix in
+   chronological order. Proactive runs explicitly declare that no learner input is
+   required; they never invent chat text.
+7. `GET /api/tutor/runs/{run_id}/events` remains incremental run-local transport
    using a non-negative `Last-Event-ID` cursor. It never calls a provider while
    streaming; Desktop history remains the server-authoritative conversation read.
-7. Conversation creation, first-turn, and ordinary-turn requests may carry an
+8. Conversation creation, first-turn, and ordinary-turn requests may carry an
    additive structured `learning_scope`. Each fresh run writes one immutable
    `tutor_run_learning_scopes` snapshot containing `scope_kind`, `task_kind`,
    optional track, and optional knowledge key. Missing scope remains
@@ -122,6 +131,14 @@ that writes a learner-visible Tutor reply. It is normalized/validated and stored
 once only while `tutor_conversations.title IS NULL`; absence projects as
 “新对话”. There is no learner-text fallback, title-only provider call, or rename
 surface.
+
+For interactive runs, the provider payload exposes `current_input` separately from
+optional `context`. The shared initial/repair teaching policy treats it as the
+authoritative request, answers or acknowledges it before any older path, treats
+corrections/refusals/completion statements as overrides, avoids repeating rejected
+steps, answers advice/comparison questions first, and asks at most one necessary
+follow-up. This is an instruction contract backed by deterministic fixtures, not a
+keyword router or a claim that fake-model tests prove teaching quality.
 
 The provider boundary uses only the configured primary compatible provider. A
 missing, malformed, unsafe, or failed provider response maps to a stable
@@ -290,7 +307,43 @@ while legacy rows remain. After confirmed deletion, rollback does not recreate,
 migrate, or infer deleted learner plans, sessions, attempts, FSRS state, notes,
 or messages.
 
-## 9. Verification and release non-claim
+## 9. Optional live-provider latest-input smoke
+
+The default suite remains offline and fake-only. A developer may intentionally run the
+controlled latest-input scenario against the already configured local provider with:
+
+```powershell
+$env:AEARN_RUN_TUTOR_LATEST_INPUT_SMOKE = "1"
+uv --directory .\aearn\services\api run python -m app.services.tutor.latest_input_smoke
+```
+
+The command uses normal settings/environment credential handling and does not print
+credentials, provider payloads, prompts, reasoning, or transport diagnostics. It emits
+only bounded learner-visible messages plus boolean rubric fields for latest-turn
+relevance, correction acknowledgement, rejected-step repetition, answer-first
+behavior, and stale-path abandonment. This smoke is optional model-behavior evidence;
+it is not CI, release approval, or a substitute for deterministic contract tests.
+
+## 10. Verification and release non-claim
+
+### Latest-input teaching relevance verification (2026-08-05)
+
+The authoritative-current-input change was verified locally against real PostgreSQL
+and the complete API suite, not released:
+
+- focused context/provider/eval/smoke batch -> **71 passed**;
+- input-merge/run-loop/SSE regression batch -> **23 passed**;
+- PostgreSQL bootstrap/run-repository/context-loader batch -> **15 passed**;
+- complete `python -m pytest -q` -> **365 passed**;
+- `ruff check app tests`, `python -m mypy app --no-incremental`
+  (**109 source files**), and `uv lock --check` -> passed;
+- Trellis task validation and `git diff --check` -> passed (line-ending
+  warnings only).
+
+The optional live-provider smoke was added but not executed, because no separate
+approval to use a real provider was given. These checks verify the local contract;
+they do not prove live-model teaching quality or authorize commit, push, deployment,
+or production-data changes.
 
 ### LearningTrack foundation verification (2026-08-05)
 

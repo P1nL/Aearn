@@ -82,6 +82,8 @@ def _context(revision: int) -> TutorContextInput:
         run_id="run-loop",
         conversation_id="conversation-loop",
         input_revision=revision,
+        current_input_required=True,
+        current_input=TutorContextSource(f"message-current-{revision}", "I need help with scope."),
         system_descriptors=(TutorContextSource("system", {"rule": "bounded"}),),
         recent_messages=(TutorContextSource(f"message-{revision}", {"role": "user", "content": "I need help with scope."}),),
     )
@@ -122,6 +124,39 @@ def _loop(
         lifecycle=lifecycle,  # type: ignore[arg-type]
     )
     return loop, resolved_publisher
+
+
+
+def test_required_current_input_failure_is_typed_and_stops_before_provider_call() -> None:
+    store = InMemoryTutorRunStore([_snapshot(policy=_policy(context_token_budget=1))])
+    provider = SequenceTutorProvider([])
+    invalid_context = TutorContextInput(
+        run_id="run-loop",
+        conversation_id="conversation-loop",
+        input_revision=0,
+        current_input=TutorContextSource("message-current", "x"),
+        current_input_required=True,
+    )
+
+    class UnrepresentableEstimator:
+        def estimate_tokens(self, value: object) -> int:
+            del value
+            return 2
+
+    loop, _ = _loop(
+        store=store,
+        contexts={("run-loop", 0): invalid_context},
+        provider=provider,
+        builder=TutorContextBuilder(estimator=UnrepresentableEstimator()),
+    )
+
+    result = loop.run(run_id="run-loop", lease_owner_id="worker-1")
+
+    assert result.status is TutorRunStatus.FAILED
+    assert result.terminal_outcome is TutorTerminalOutcome.FAILED
+    assert result.diagnostic_code == "TUTOR_CURRENT_INPUT_UNREPRESENTABLE"
+    assert result.model_call_count == 0
+    assert provider.calls == []
 
 
 def test_zero_iteration_budget_terminates_without_provider_call() -> None:

@@ -141,6 +141,77 @@
         "proposal_replayed": true,
         "terminal_writers": 1
       }
+    },
+    {
+      "id": "current-input-pinned",
+      "scenario": "current_input_pinned",
+      "catalog": {
+        "digest": "152c6cd8400fed1c8429e2f04b2855fd1767466720feb0963fc1bd0aa2976c4f",
+        "skill_id": "tutor.registry-grounding",
+        "skill_version": "1.0.0",
+        "manifest_hash": "127ff1e847a4ba51b7804e2f888add13b0c7bbf2500e8bb76f2cc6b088f7b62a",
+        "instruction_hash": "081388e2c9e5f4c7c11e9ba3a33b66f06f5a1f461fe3fc14acf4513a47c8780d",
+        "evaluation_hash": "c3a9be60f93e7d805c32ebe2139fc6a7d2ac8d50e26d4b07141c59ea19c8d8e8"
+      },
+      "expected": {
+        "current_input": "我应该学哪些语言",
+        "current_source": "message-current",
+        "context_sources": [
+          "system"
+        ]
+      }
+    },
+    {
+      "id": "newest-history-selected",
+      "scenario": "newest_history_selected",
+      "catalog": {
+        "digest": "152c6cd8400fed1c8429e2f04b2855fd1767466720feb0963fc1bd0aa2976c4f",
+        "skill_id": "tutor.registry-grounding",
+        "skill_version": "1.0.0",
+        "manifest_hash": "127ff1e847a4ba51b7804e2f888add13b0c7bbf2500e8bb76f2cc6b088f7b62a",
+        "instruction_hash": "081388e2c9e5f4c7c11e9ba3a33b66f06f5a1f461fe3fc14acf4513a47c8780d",
+        "evaluation_hash": "c3a9be60f93e7d805c32ebe2139fc6a7d2ac8d50e26d4b07141c59ea19c8d8e8"
+      },
+      "expected": {
+        "history_sources": [
+          "message-3",
+          "message-4",
+          "message-5",
+          "message-6"
+        ]
+      }
+    },
+    {
+      "id": "teaching-correction-policy-present",
+      "scenario": "teaching_correction_policy_present",
+      "catalog": {
+        "digest": "152c6cd8400fed1c8429e2f04b2855fd1767466720feb0963fc1bd0aa2976c4f",
+        "skill_id": "tutor.registry-grounding",
+        "skill_version": "1.0.0",
+        "manifest_hash": "127ff1e847a4ba51b7804e2f888add13b0c7bbf2500e8bb76f2cc6b088f7b62a",
+        "instruction_hash": "081388e2c9e5f4c7c11e9ba3a33b66f06f5a1f461fe3fc14acf4513a47c8780d",
+        "evaluation_hash": "c3a9be60f93e7d805c32ebe2139fc6a7d2ac8d50e26d4b07141c59ea19c8d8e8"
+      },
+      "expected": {
+        "policy_present": true
+      }
+    },
+    {
+      "id": "current-input-unrepresentable-provider-not-called",
+      "scenario": "current_input_unrepresentable_provider_not_called",
+      "catalog": {
+        "digest": "152c6cd8400fed1c8429e2f04b2855fd1767466720feb0963fc1bd0aa2976c4f",
+        "skill_id": "tutor.registry-grounding",
+        "skill_version": "1.0.0",
+        "manifest_hash": "127ff1e847a4ba51b7804e2f888add13b0c7bbf2500e8bb76f2cc6b088f7b62a",
+        "instruction_hash": "081388e2c9e5f4c7c11e9ba3a33b66f06f5a1f461fe3fc14acf4513a47c8780d",
+        "evaluation_hash": "c3a9be60f93e7d805c32ebe2139fc6a7d2ac8d50e26d4b07141c59ea19c8d8e8"
+      },
+      "expected": {
+        "status": "failed",
+        "code": "TUTOR_CURRENT_INPUT_UNREPRESENTABLE",
+        "provider_calls": 0
+      }
     }
   ]
 }

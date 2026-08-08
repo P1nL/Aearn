@@ -66,6 +66,8 @@ def _context() -> TutorContextInput:
         run_id="catalog-run",
         conversation_id="catalog-conversation",
         input_revision=0,
+        current_input_required=True,
+        current_input=TutorContextSource("message-current", "Please explain this capability."),
         system_descriptors=(TutorContextSource("base-system", {"policy": "bounded"}),),
         capability_schemas=(TutorContextSource("legacy-capability", {"name": "never-expose"}),),
     )
