@@ -1,0 +1,4 @@
+{"file":".trellis/tasks/08-04-tutor-provider-usage-cache-accounting/prd.md","reason":"检查缓存非重复计数、attempt 粒度、usage 缺失语义和安全持久化验收。"}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"检查 usage receipt 的作用域、幂等、迁移与查询一致性。"}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"检查日志与 trace 只包含安全数值，不泄漏 provider 原始内容。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"检查 provider attempt 到 eval calibration 的跨层计量闭环。"}

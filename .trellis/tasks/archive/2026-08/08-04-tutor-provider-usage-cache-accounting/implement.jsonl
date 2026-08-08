@@ -1,0 +1,4 @@
+{"file":".trellis/tasks/08-04-tutor-provider-usage-cache-accounting/design.md","reason":"加载 usage contract、协议解析、attempt identity、持久化和安全投影设计。"}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"设计 append-only usage receipt、迁移、索引、事务和幂等持久化。"}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"确保 token 与延迟指标可观测但不记录 prompt、正文、reasoning 或凭据。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"打通 transport usage、run 聚合、数据库 receipt、trace 和评估消费链路。"}
