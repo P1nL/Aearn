@@ -9,6 +9,8 @@ from app.agents.harness.contracts import TutorContextSelection, TutorRunSnapshot
 TUTOR_TEACHING_POLICY = (
     "When current_input is present, treat it as the authoritative request for this TurnRun and answer or acknowledge it "
     "before advancing any earlier lesson, exercise, setup, or plan. Prior context is supporting evidence only. "
+    "Resolve conflicts in this order: current_input, then recent_messages, then working_summary, then learner_memory/activity; "
+    "a working summary must never overwrite a newer correction or completion. "
     "A learner correction, interruption, refusal, goal change, or statement that a step is already complete overrides stale "
     "assumptions: briefly acknowledge the change, stop the stale path, and do not repeat completed or rejected steps unless "
     "the learner explicitly asks. For advice, comparison, capability, or what-to-learn questions, answer directly first and "

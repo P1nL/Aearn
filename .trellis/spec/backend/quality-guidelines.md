@@ -3326,3 +3326,115 @@ selection = builder.build(
 
 共享最终 serializer、显式 capability 和 required-first 选择，才能同时保证物理 hard
 limit、current-input 权威性、确定性重放和 cache 计量语义。
+
+---
+
+## Scenario: Tutor 长对话结构化摘要检索与压缩
+
+### 1. Scope / Trigger
+
+- Trigger：修改 interactive context loader、recent window/retirement set、compaction
+  request、curation outbox/job、Curator strict JSON、`tutor_context_summaries`、summary
+  retrieval 或 provider context conflict policy。
+- Scope：`app/agents/harness/{contracts,context_builder,provider_request}.py`、
+  `app/services/tutor/{interactive,persistence,learner_state,curation,proactive,proactive_repository,safe_projection}.py`、
+  `app/db/schema.sql`、focused unit/PostgreSQL tests 和 Tutor source-of-truth docs。
+- 不授权删除/改写 `tutor_messages`、回退旧 Graph/router/SDK、引入向量数据库、把
+  summary 暴露成公开聊天消息，或把 context summary 合并到 inferred-memory 设置。
+
+### 2. Signatures
+
+- Timeline key：conversation 级 `(created_at, message_id)`；查询 newest-first，provider
+  呈现 oldest-first，相同时间戳由 UUID 稳定排序。
+- Schema：`tutor_context_summary_v2` + `tutor_context_summary_policy_v2`；字段为
+  `current_goal`、`confirmed_facts`、`completed_steps`、`rejected_paths`、
+  `open_questions`、`learner_preferences` 和 server-owned coverage/source metadata。
+- Compaction evidence：prior summary identity/hash、连续 retired message IDs/SHA-256
+  hashes、coverage cursor、schema/policy version 和 semantic idempotency key。
+- Projection kind：`memory_or_summary | context_summary`；job 与 outbox 必须一致。
+
+### 3. Contracts
+
+- `current_input` 由 exact `tutor_run_input_events.message_id` 证明，永不进入 recent
+  history 或 retirement set。current 之后的干扰行也不得进入本 TurnRun。
+- recent window 保留 current 之前的最新有界原文；retirement set 只取 prior summary
+  coverage 之后、recent boundary 之前的连续前缀，单批最多 24 条。下一批从已提交
+  coverage 后继续，不能遗漏、重复或跨 conversation/user。
+- checkpoint/trace/outbox 只保存 ID/hash/version/cursor 等安全 metadata。worker 必须先
+  验证 current lease、job/outbox/run scope、timeline continuity 和每条 content hash，才
+  能临时读取 raw message 并调用 primary Curator；raw input 不写 durable envelope。
+- Curator initial/repair 使用同一 strict v2 contract、primary-only、无 fallback。输出
+  数组和文本有界，未知字段拒绝；completed/rejected/open-question 语义分离。
+- proposal、structured summary 和 projection receipt 在一个事务内提交。summary row
+  的 user/run/conversation/outbox/covered-message/prior-summary 由 composite FK 约束；
+  UPDATE 被 append-only trigger 拒绝，纠正追加新 row。用户 reset/delete 仍可按既有
+  数据生命周期物理清理 projection，但不得改写 raw history。
+- loader 只接受同 user/conversation、committed、未 stale/expired、exact schema/policy、
+  coverage 早于 current input 且结构化 payload 可重新校验的最新单一 summary。
+  malformed/incompatible row、curator unavailable 或 job stale 时回退 current + recent。
+- Provider 语义优先级固定为 `current_input > recent_messages > working_summary >
+  learner_memory/activity`，initial 与 repair instruction 必须一致。context summary 不受
+  inferred-memory opt-out 自动禁用，但 scheduler pause/budget/cooldown/lease/retry/circuit
+  和 finite TurnRun/adaptive hard limit 继续生效。
+
+### 4. Validation & Error Matrix
+
+- source IDs 缺失/重复、hash 非 SHA-256、final source 不等于 coverage cursor -> contract
+  或数据库拒绝，不创建 v2 outbox。
+- job/outbox projection kind、policy、revision、lease 或 prior summary 不一致 -> stale/
+  no_action；不得调用 Curator。
+- message 缺失、跨 scope、顺序不连续、content/source hash mismatch -> no_action；不得写
+  summary/receipt，不删除原始消息。
+- Curator unavailable/invalid/legacy v1 response -> bounded retry/failure；不得 fallback。
+- stale/expired/incompatible/malformed summary -> loader 跳过；不得覆盖 current input。
+- 相同 prior + retirement evidence 经 high-water/terminal 重试 -> 同一 semantic outbox；
+  evidence 改变 -> 新 fingerprint。
+
+### 5. Good / Base / Bad Cases
+
+- Good：6 条 prior + 1 条 current，最新 4 条作为 recent，最早 2 条只压缩一次；下一
+  TurnRun 同时获得 authoritative current、recent suffix 和一份 v2 working summary。
+- Good：旧 summary 记为“尚未准备”，current 说“我已经有了”；provider 以 current
+  为准，新 summary 把事实移入 completed/confirmed 并记录 rejected path。
+- Base：无 valid summary 或 curation disabled/unavailable 时继续 current + recent，原始
+  history 完整保留，普通新消息仍创建 fresh TurnRun。
+- Bad：按 run-local input revision 当 conversation cursor；把 raw message 放入 trace/
+  outbox；加载多份重叠 summary；memory opt-out 直接关闭 continuity；summary 原地 UPDATE。
+
+### 6. Tests Required
+
+- `test_tutor_context_summary.py`：recent + summary round-trip、semantic trigger dedupe、raw
+  evidence 非持久化、strict primary gateway、source mismatch、stale、scope FK、append-only。
+- `test_tutor_context_loader.py` / `test_tutor_context_builder.py`：same-timestamp order、current
+  exclusion、later interference exclusion、single-summary priority、checkpoint metadata。
+- `test_tutor_memory_curator.py` / outbox/scheduler tests：legacy v1 compatibility、invalid/
+  unavailable retry、projection-kind/memory-setting boundary、lease/retry/recovery。
+- `test_tutor_provider_gateway.py`：initial/repair 同时声明 current > recent > summary。
+- `test_db_bootstrap.py`：repeatable additive columns/indexes/composite constraints/immutable trigger。
+- 串行运行 focused PostgreSQL tests、完整 pytest、Ruff、Mypy、`uv lock --check`、Trellis
+  validate 和 `git diff --check`。
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+# 固定“取八条、前四条退休”，没有使用实际 budget-selected recent window。
+recent = load_messages(limit=8)
+retired = load_messages(before=recent[3].created_at)
+trace_json["raw_messages"] = retired
+```
+
+#### Correct
+
+```python
+# loader 只提供 bounded compaction candidates；Builder 根据实际 token/item
+# selection 找到 earliest selected recent，再生成连续 retirement evidence。
+plan = load_compaction_plan(after=prior_coverage, before=current_input, limit=32)
+selection = context_builder.build(context_input, token_budget=budget)
+compaction = build_compaction_input_from_selected_recent(plan, selection)
+# durable checkpoint/outbox 仅保存 message IDs、SHA-256、coverage 和版本。
+```
+
+这样可以避免 token budget 变化时遗漏或重复摘要，也避免 diagnostic persistence
+重新成为第二份 conversation history。

@@ -110,11 +110,25 @@ CONVERSATION_TURNRUN_CONSTRAINTS = (
     "chk_tutor_runs_continuation_kind",
 )
 
+CONTEXT_SUMMARY_CONSTRAINTS = (
+    "chk_tutor_outbox_summary_evidence",
+    "chk_tutor_curation_jobs_projection_kind",
+    "uq_tutor_outbox_id_conversation",
+    "fk_tutor_outbox_covered_message",
+    "uq_tutor_context_summary_id_scope",
+    "fk_tutor_context_summary_conversation_user",
+    "fk_tutor_context_summary_outbox_conversation",
+    "fk_tutor_context_summary_covered_message",
+    "fk_tutor_context_summary_prior_scope",
+    "chk_tutor_context_summary_v2_shape",
+)
+
 TUTOR_SCHEMA_CONSTRAINTS = (
     EXECUTION_SCOPE_CONSTRAINTS
     + EXECUTION_LIFECYCLE_CONSTRAINTS
     + PROVIDER_ATTEMPT_RECEIPT_CONSTRAINTS
     + CONVERSATION_TURNRUN_CONSTRAINTS
+    + CONTEXT_SUMMARY_CONSTRAINTS
 )
 
 TARGET_TUTOR_TABLES = (
@@ -192,6 +206,7 @@ def test_tutor_target_schema_is_repeatable_and_enforces_run_event_identity() -> 
                     "trg_tutor_plan_revisions_immutable",
                     "trg_tutor_plan_actions_immutable",
                     "trg_tutor_memory_entries_lifecycle",
+                    "trg_tutor_context_summaries_immutable",
                     "trg_tutor_activity_records_immutable",
                     "trg_tutor_inbox_items_lifecycle",
                     "trg_tutor_active_plans_updated_at",
@@ -203,6 +218,52 @@ def test_tutor_target_schema_is_repeatable_and_enforces_run_event_identity() -> 
             ),
         ).fetchall()
         assert {str(row["table_name"]) for row in table_rows} == set(TARGET_TUTOR_TABLES)
+        summary_column_rows = conn.execute(
+            """
+            SELECT table_name, column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = ANY(%s)
+              AND column_name = ANY(%s)
+            """,
+            (
+                ["tutor_memory_curation_outbox", "tutor_curation_jobs", "tutor_context_summaries"],
+                [
+                    "projection_kind",
+                    "conversation_id",
+                    "summary_schema_version",
+                    "summary_policy_version",
+                    "summary_json",
+                    "summary_source_hash",
+                    "source_hash",
+                    "prior_summary_id",
+                    "prior_summary_hash",
+                    "covered_through_created_at",
+                    "covered_through_message_id",
+                ],
+            ),
+        ).fetchall()
+        summary_columns = {(str(row["table_name"]), str(row["column_name"])) for row in summary_column_rows}
+        assert {
+            ("tutor_memory_curation_outbox", "projection_kind"),
+            ("tutor_memory_curation_outbox", "summary_schema_version"),
+            ("tutor_memory_curation_outbox", "summary_policy_version"),
+            ("tutor_memory_curation_outbox", "summary_source_hash"),
+            ("tutor_memory_curation_outbox", "prior_summary_id"),
+            ("tutor_memory_curation_outbox", "prior_summary_hash"),
+            ("tutor_memory_curation_outbox", "covered_through_created_at"),
+            ("tutor_memory_curation_outbox", "covered_through_message_id"),
+            ("tutor_curation_jobs", "projection_kind"),
+            ("tutor_context_summaries", "conversation_id"),
+            ("tutor_context_summaries", "summary_schema_version"),
+            ("tutor_context_summaries", "summary_policy_version"),
+            ("tutor_context_summaries", "summary_json"),
+            ("tutor_context_summaries", "source_hash"),
+            ("tutor_context_summaries", "prior_summary_id"),
+            ("tutor_context_summaries", "prior_summary_hash"),
+            ("tutor_context_summaries", "covered_through_created_at"),
+            ("tutor_context_summaries", "covered_through_message_id"),
+        }.issubset(summary_columns)
         assert {str(row["tgname"]) for row in trigger_rows} == {
             "trg_tutor_provider_attempt_receipts_immutable",
             "trg_tutor_conversations_updated_at",
@@ -221,6 +282,7 @@ def test_tutor_target_schema_is_repeatable_and_enforces_run_event_identity() -> 
             "trg_tutor_plan_revisions_immutable",
             "trg_tutor_plan_actions_immutable",
             "trg_tutor_memory_entries_lifecycle",
+            "trg_tutor_context_summaries_immutable",
             "trg_tutor_activity_records_immutable",
             "trg_tutor_inbox_items_lifecycle",
             "trg_tutor_active_plans_updated_at",
@@ -246,6 +308,7 @@ def test_tutor_target_schema_is_repeatable_and_enforces_run_event_identity() -> 
                     "idx_tutor_plan_revisions_user_created",
                     "idx_tutor_memory_entries_user_state",
                     "idx_tutor_curation_projection_receipts_user_created",
+                    "idx_tutor_context_summaries_conversation_coverage",
                     "idx_tutor_activity_records_user_created",
                     "idx_tutor_inbox_items_user_state",
                     "idx_tutor_api_idempotency_user_created",
@@ -265,6 +328,7 @@ def test_tutor_target_schema_is_repeatable_and_enforces_run_event_identity() -> 
             "idx_tutor_plan_revisions_user_created",
             "idx_tutor_memory_entries_user_state",
             "idx_tutor_curation_projection_receipts_user_created",
+            "idx_tutor_context_summaries_conversation_coverage",
             "idx_tutor_activity_records_user_created",
             "idx_tutor_inbox_items_user_state",
             "idx_tutor_api_idempotency_user_created",

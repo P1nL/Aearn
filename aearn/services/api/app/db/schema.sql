@@ -1045,6 +1045,15 @@ CREATE TABLE IF NOT EXISTS tutor_memory_curation_outbox (
   source_hashes_json jsonb NOT NULL,
   policy_version text NOT NULL,
   memory_setting_version text NOT NULL,
+  projection_kind text NOT NULL DEFAULT 'memory_or_summary'
+    CHECK (projection_kind IN ('memory_or_summary', 'context_summary')),
+  summary_schema_version text,
+  summary_policy_version text,
+  summary_source_hash text,
+  prior_summary_id uuid,
+  prior_summary_hash text,
+  covered_through_created_at timestamptz,
+  covered_through_message_id uuid,
   priority integer NOT NULL DEFAULT 0 CHECK (priority BETWEEN 0 AND 100),
   retention_until timestamptz NOT NULL,
   stale_after timestamptz NOT NULL,
@@ -1053,10 +1062,50 @@ CREATE TABLE IF NOT EXISTS tutor_memory_curation_outbox (
   envelope_json jsonb NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_tutor_outbox_id_conversation UNIQUE (id, conversation_id),
   CONSTRAINT fk_tutor_outbox_run_conversation
     FOREIGN KEY (run_id, conversation_id) REFERENCES tutor_runs(id, conversation_id) ON DELETE RESTRICT,
+  CONSTRAINT chk_tutor_outbox_summary_evidence CHECK (
+    (projection_kind = 'memory_or_summary'
+      AND summary_schema_version IS NULL
+      AND summary_policy_version IS NULL
+      AND summary_source_hash IS NULL
+      AND prior_summary_id IS NULL
+      AND prior_summary_hash IS NULL
+      AND covered_through_created_at IS NULL
+      AND covered_through_message_id IS NULL)
+    OR (projection_kind = 'context_summary'
+      AND summary_schema_version = 'tutor_context_summary_v2'
+      AND summary_policy_version = 'tutor_context_summary_policy_v2'
+      AND summary_source_hash ~ '^[0-9a-f]{64}$'
+      AND (prior_summary_hash IS NULL OR prior_summary_hash ~ '^[0-9a-f]{64}$')
+      AND jsonb_typeof(source_ids_json) = 'array'
+      AND jsonb_array_length(source_ids_json) > 0
+      AND jsonb_typeof(source_hashes_json) = 'array'
+      AND jsonb_array_length(source_hashes_json) = jsonb_array_length(source_ids_json)
+      AND covered_through_created_at IS NOT NULL
+      AND covered_through_message_id IS NOT NULL
+      AND ((prior_summary_id IS NULL) = (prior_summary_hash IS NULL)))
+  ),
   CHECK (stale_after <= retention_until)
 );
+
+ALTER TABLE tutor_memory_curation_outbox
+  ADD COLUMN IF NOT EXISTS projection_kind text NOT NULL DEFAULT 'memory_or_summary';
+ALTER TABLE tutor_memory_curation_outbox
+  ADD COLUMN IF NOT EXISTS summary_schema_version text;
+ALTER TABLE tutor_memory_curation_outbox
+  ADD COLUMN IF NOT EXISTS summary_policy_version text;
+ALTER TABLE tutor_memory_curation_outbox
+  ADD COLUMN IF NOT EXISTS summary_source_hash text;
+ALTER TABLE tutor_memory_curation_outbox
+  ADD COLUMN IF NOT EXISTS prior_summary_id uuid;
+ALTER TABLE tutor_memory_curation_outbox
+  ADD COLUMN IF NOT EXISTS prior_summary_hash text;
+ALTER TABLE tutor_memory_curation_outbox
+  ADD COLUMN IF NOT EXISTS covered_through_created_at timestamptz;
+ALTER TABLE tutor_memory_curation_outbox
+  ADD COLUMN IF NOT EXISTS covered_through_message_id uuid;
 
 CREATE TABLE IF NOT EXISTS tutor_curation_proposals (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -1199,6 +1248,8 @@ CREATE TABLE IF NOT EXISTS tutor_curation_jobs (
   user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
   policy_version text NOT NULL CHECK (char_length(policy_version) <= 160),
   memory_setting_version text NOT NULL CHECK (char_length(memory_setting_version) <= 160),
+  projection_kind text NOT NULL DEFAULT 'memory_or_summary'
+    CHECK (projection_kind IN ('memory_or_summary', 'context_summary')),
   state text NOT NULL CHECK (state IN ('pending', 'leased', 'completed', 'no_action', 'failed', 'stale')),
   no_action_code text,
   last_error_code text,
@@ -1224,6 +1275,21 @@ CREATE TABLE IF NOT EXISTS tutor_curation_jobs (
     OR (state <> 'leased' AND lease_owner_id IS NULL AND lease_expires_at IS NULL)
   )
 );
+
+ALTER TABLE tutor_curation_jobs
+  ADD COLUMN IF NOT EXISTS projection_kind text NOT NULL DEFAULT 'memory_or_summary';
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'tutor_curation_jobs'::regclass
+      AND conname = 'chk_tutor_curation_jobs_projection_kind'
+  ) THEN
+    ALTER TABLE tutor_curation_jobs
+      ADD CONSTRAINT chk_tutor_curation_jobs_projection_kind
+      CHECK (projection_kind IN ('memory_or_summary', 'context_summary'));
+  END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS tutor_scheduler_audit (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -1829,9 +1895,18 @@ CREATE TABLE IF NOT EXISTS tutor_context_summaries (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
   run_id uuid NOT NULL,
+  conversation_id uuid,
   outbox_id uuid NOT NULL,
   proposal_id uuid NOT NULL,
   summary text NOT NULL CHECK (char_length(summary) BETWEEN 1 AND 280),
+  summary_schema_version text,
+  summary_policy_version text,
+  summary_json jsonb,
+  covered_through_created_at timestamptz,
+  covered_through_message_id uuid,
+  source_hash text,
+  prior_summary_id uuid,
+  prior_summary_hash text,
   policy_version text NOT NULL CHECK (char_length(policy_version) <= 160),
   memory_setting_version text NOT NULL CHECK (char_length(memory_setting_version) <= 160),
   retention_until timestamptz NOT NULL,
@@ -1840,17 +1915,151 @@ CREATE TABLE IF NOT EXISTS tutor_context_summaries (
   created_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT uq_tutor_context_summary_outbox UNIQUE (outbox_id),
   CONSTRAINT uq_tutor_context_summary_proposal UNIQUE (proposal_id),
+  CONSTRAINT uq_tutor_context_summary_id_scope UNIQUE (id, user_id, conversation_id),
   CONSTRAINT fk_tutor_context_summary_run_user
     FOREIGN KEY (run_id, user_id)
     REFERENCES tutor_runs(id, user_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_context_summary_conversation_user
+    FOREIGN KEY (conversation_id, user_id)
+    REFERENCES tutor_conversations(id, user_id) ON DELETE RESTRICT,
   CONSTRAINT fk_tutor_context_summary_outbox_run
     FOREIGN KEY (outbox_id, run_id)
     REFERENCES tutor_memory_curation_outbox(id, run_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_context_summary_outbox_conversation
+    FOREIGN KEY (outbox_id, conversation_id)
+    REFERENCES tutor_memory_curation_outbox(id, conversation_id) ON DELETE RESTRICT,
   CONSTRAINT fk_tutor_context_summary_proposal_outbox
     FOREIGN KEY (proposal_id, outbox_id)
     REFERENCES tutor_curation_proposals(id, outbox_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_context_summary_covered_message
+    FOREIGN KEY (covered_through_message_id, conversation_id)
+    REFERENCES tutor_messages(id, conversation_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_context_summary_prior_scope
+    FOREIGN KEY (prior_summary_id, user_id, conversation_id)
+    REFERENCES tutor_context_summaries(id, user_id, conversation_id) ON DELETE RESTRICT,
+  CONSTRAINT chk_tutor_context_summary_v2_shape CHECK (
+    (summary_schema_version IS NULL
+      AND summary_policy_version IS NULL
+      AND summary_json IS NULL
+      AND covered_through_created_at IS NULL
+      AND covered_through_message_id IS NULL
+      AND source_hash IS NULL
+      AND prior_summary_id IS NULL
+      AND prior_summary_hash IS NULL
+      AND conversation_id IS NULL)
+    OR (summary_schema_version = 'tutor_context_summary_v2'
+      AND summary_policy_version = 'tutor_context_summary_policy_v2'
+      AND summary_json IS NOT NULL
+      AND jsonb_typeof(summary_json) = 'object'
+      AND conversation_id IS NOT NULL
+      AND covered_through_created_at IS NOT NULL
+      AND covered_through_message_id IS NOT NULL
+      AND source_hash ~ '^[0-9a-f]{64}$'
+      AND (prior_summary_hash IS NULL OR prior_summary_hash ~ '^[0-9a-f]{64}$')
+      AND ((prior_summary_id IS NULL) = (prior_summary_hash IS NULL)))
+  ),
   CONSTRAINT chk_tutor_context_summary_retention CHECK (stale_after <= retention_until)
 );
+
+ALTER TABLE tutor_context_summaries
+  ADD COLUMN IF NOT EXISTS conversation_id uuid;
+ALTER TABLE tutor_context_summaries
+  ADD COLUMN IF NOT EXISTS summary_schema_version text;
+ALTER TABLE tutor_context_summaries
+  ADD COLUMN IF NOT EXISTS summary_policy_version text;
+ALTER TABLE tutor_context_summaries
+  ADD COLUMN IF NOT EXISTS summary_json jsonb;
+ALTER TABLE tutor_context_summaries
+  ADD COLUMN IF NOT EXISTS covered_through_created_at timestamptz;
+ALTER TABLE tutor_context_summaries
+  ADD COLUMN IF NOT EXISTS covered_through_message_id uuid;
+ALTER TABLE tutor_context_summaries
+  ADD COLUMN IF NOT EXISTS source_hash text;
+ALTER TABLE tutor_context_summaries
+  ADD COLUMN IF NOT EXISTS prior_summary_id uuid;
+ALTER TABLE tutor_context_summaries
+  ADD COLUMN IF NOT EXISTS prior_summary_hash text;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'tutor_memory_curation_outbox'::regclass
+      AND conname = 'chk_tutor_outbox_summary_evidence'
+  ) THEN
+    ALTER TABLE tutor_memory_curation_outbox
+      ADD CONSTRAINT chk_tutor_outbox_summary_evidence CHECK (
+        (projection_kind = 'memory_or_summary'
+          AND summary_schema_version IS NULL
+          AND summary_policy_version IS NULL
+          AND summary_source_hash IS NULL
+          AND prior_summary_id IS NULL
+          AND prior_summary_hash IS NULL
+          AND covered_through_created_at IS NULL
+          AND covered_through_message_id IS NULL)
+        OR (projection_kind = 'context_summary'
+          AND summary_schema_version = 'tutor_context_summary_v2'
+          AND summary_policy_version = 'tutor_context_summary_policy_v2'
+          AND summary_source_hash ~ '^[0-9a-f]{64}$'
+          AND (prior_summary_hash IS NULL OR prior_summary_hash ~ '^[0-9a-f]{64}$')
+          AND jsonb_typeof(source_ids_json) = 'array'
+          AND jsonb_array_length(source_ids_json) > 0
+          AND jsonb_typeof(source_hashes_json) = 'array'
+          AND jsonb_array_length(source_hashes_json) = jsonb_array_length(source_ids_json)
+          AND covered_through_created_at IS NOT NULL
+          AND covered_through_message_id IS NOT NULL
+          AND ((prior_summary_id IS NULL) = (prior_summary_hash IS NULL)))
+      );
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'tutor_context_summaries'::regclass
+      AND conname = 'chk_tutor_context_summary_v2_shape'
+  ) THEN
+    ALTER TABLE tutor_context_summaries
+      ADD CONSTRAINT chk_tutor_context_summary_v2_shape CHECK (
+        (summary_schema_version IS NULL
+          AND summary_policy_version IS NULL
+          AND summary_json IS NULL
+          AND covered_through_created_at IS NULL
+          AND covered_through_message_id IS NULL
+          AND source_hash IS NULL
+          AND prior_summary_id IS NULL
+          AND prior_summary_hash IS NULL
+          AND conversation_id IS NULL)
+        OR (summary_schema_version = 'tutor_context_summary_v2'
+          AND summary_policy_version = 'tutor_context_summary_policy_v2'
+          AND summary_json IS NOT NULL
+          AND jsonb_typeof(summary_json) = 'object'
+          AND conversation_id IS NOT NULL
+          AND covered_through_created_at IS NOT NULL
+          AND covered_through_message_id IS NOT NULL
+          AND source_hash ~ '^[0-9a-f]{64}$'
+          AND (prior_summary_hash IS NULL OR prior_summary_hash ~ '^[0-9a-f]{64}$')
+          AND ((prior_summary_id IS NULL) = (prior_summary_hash IS NULL)))
+      );
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'tutor_memory_curation_outbox'::regclass
+      AND conname = 'uq_tutor_outbox_id_conversation'
+  ) THEN
+    ALTER TABLE tutor_memory_curation_outbox
+      ADD CONSTRAINT uq_tutor_outbox_id_conversation UNIQUE (id, conversation_id);
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'tutor_context_summaries'::regclass
+      AND conname = 'uq_tutor_context_summary_id_scope'
+  ) THEN
+    ALTER TABLE tutor_context_summaries
+      ADD CONSTRAINT uq_tutor_context_summary_id_scope UNIQUE (id, user_id, conversation_id);
+  END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS tutor_curation_projection_receipts (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -1984,6 +2193,65 @@ CREATE INDEX IF NOT EXISTS idx_tutor_memory_entries_inference_stale
   ON tutor_memory_entries (user_id, stale_after) WHERE memory_kind = 'inference' AND state = 'active';
 CREATE INDEX IF NOT EXISTS idx_tutor_context_summaries_user_created
   ON tutor_context_summaries (user_id, created_at DESC);
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'tutor_memory_curation_outbox'::regclass
+      AND conname = 'fk_tutor_outbox_covered_message'
+  ) THEN
+    ALTER TABLE tutor_memory_curation_outbox
+      ADD CONSTRAINT fk_tutor_outbox_covered_message
+      FOREIGN KEY (covered_through_message_id, conversation_id)
+      REFERENCES tutor_messages(id, conversation_id) ON DELETE RESTRICT;
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'tutor_context_summaries'::regclass
+      AND conname = 'fk_tutor_context_summary_conversation_user'
+  ) THEN
+    ALTER TABLE tutor_context_summaries
+      ADD CONSTRAINT fk_tutor_context_summary_conversation_user
+      FOREIGN KEY (conversation_id, user_id)
+      REFERENCES tutor_conversations(id, user_id) ON DELETE RESTRICT;
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'tutor_context_summaries'::regclass
+      AND conname = 'fk_tutor_context_summary_outbox_conversation'
+  ) THEN
+    ALTER TABLE tutor_context_summaries
+      ADD CONSTRAINT fk_tutor_context_summary_outbox_conversation
+      FOREIGN KEY (outbox_id, conversation_id)
+      REFERENCES tutor_memory_curation_outbox(id, conversation_id) ON DELETE RESTRICT;
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'tutor_context_summaries'::regclass
+      AND conname = 'fk_tutor_context_summary_covered_message'
+  ) THEN
+    ALTER TABLE tutor_context_summaries
+      ADD CONSTRAINT fk_tutor_context_summary_covered_message
+      FOREIGN KEY (covered_through_message_id, conversation_id)
+      REFERENCES tutor_messages(id, conversation_id) ON DELETE RESTRICT;
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'tutor_context_summaries'::regclass
+      AND conname = 'fk_tutor_context_summary_prior_scope'
+  ) THEN
+    ALTER TABLE tutor_context_summaries
+      ADD CONSTRAINT fk_tutor_context_summary_prior_scope
+      FOREIGN KEY (prior_summary_id, user_id, conversation_id)
+      REFERENCES tutor_context_summaries(id, user_id, conversation_id) ON DELETE RESTRICT;
+  END IF;
+END $$;
+
+CREATE INDEX IF NOT EXISTS idx_tutor_context_summaries_conversation_coverage
+  ON tutor_context_summaries (
+    user_id, conversation_id, covered_through_created_at DESC, covered_through_message_id DESC
+  );
 CREATE INDEX IF NOT EXISTS idx_tutor_curation_projection_receipts_user_created
   ON tutor_curation_projection_receipts (user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tutor_activity_records_user_created
@@ -2040,6 +2308,12 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+CREATE OR REPLACE FUNCTION enforce_tutor_context_summary_immutable()
+RETURNS trigger AS $$
+BEGIN
+  RAISE EXCEPTION USING ERRCODE = '23514', MESSAGE = 'Tutor context summaries are append-only';
+END;
+$$ LANGUAGE plpgsql;
 CREATE OR REPLACE FUNCTION enforce_tutor_activity_immutable()
 RETURNS trigger AS $$
 BEGIN
@@ -2082,6 +2356,10 @@ CREATE TRIGGER trg_tutor_memory_entries_lifecycle
 BEFORE UPDATE OR DELETE ON tutor_memory_entries
 FOR EACH ROW EXECUTE FUNCTION enforce_tutor_memory_entry_lifecycle();
 
+DROP TRIGGER IF EXISTS trg_tutor_context_summaries_immutable ON tutor_context_summaries;
+CREATE TRIGGER trg_tutor_context_summaries_immutable
+BEFORE UPDATE ON tutor_context_summaries
+FOR EACH ROW EXECUTE FUNCTION enforce_tutor_context_summary_immutable();
 DROP TRIGGER IF EXISTS trg_tutor_activity_records_immutable ON tutor_activity_records;
 CREATE TRIGGER trg_tutor_activity_records_immutable
 BEFORE UPDATE OR DELETE ON tutor_activity_records

@@ -691,10 +691,10 @@ class PostgresTutorProactiveRepository:
                 inserted = self._conn.execute(
                     """
                     INSERT INTO tutor_curation_jobs (
-                      outbox_id, run_id, user_id, policy_version, memory_setting_version, state,
-                      no_action_code, not_before, created_at, updated_at, terminal_at
+                      outbox_id, run_id, user_id, policy_version, memory_setting_version,
+                      projection_kind, state, no_action_code, not_before, created_at, updated_at, terminal_at
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                             CASE WHEN %s = 'stale' THEN %s ELSE NULL END)
                     ON CONFLICT (outbox_id) DO NOTHING
                     RETURNING *
@@ -705,6 +705,7 @@ class PostgresTutorProactiveRepository:
                         outbox["user_id"],
                         outbox["policy_version"],
                         outbox["memory_setting_version"],
+                        outbox.get("projection_kind") or "memory_or_summary",
                         state,
                         code,
                         now,
@@ -802,6 +803,7 @@ class PostgresTutorProactiveRepository:
               outbox.state AS outbox_state,
               outbox.policy_version AS outbox_policy_version,
               outbox.memory_setting_version AS outbox_memory_setting_version,
+              outbox.projection_kind AS outbox_projection_kind,
               outbox.stale_after,
               outbox.input_revision,
               runs.input_revision AS run_input_revision
@@ -823,6 +825,8 @@ class PostgresTutorProactiveRepository:
             return SchedulerDecision(False, "outbox_policy_version_stale", "curation")
         if str(row["outbox_memory_setting_version"]) != job.memory_setting_version:
             return SchedulerDecision(False, "outbox_memory_setting_stale", "curation")
+        if str(row.get("outbox_projection_kind") or "memory_or_summary") != job.projection_kind:
+            return SchedulerDecision(False, "outbox_projection_kind_stale", "curation")
         if _as_int(row.get("input_revision"), -1) != _as_int(row.get("run_input_revision"), -1):
             return SchedulerDecision(False, "outbox_source_revision_stale", "curation")
         return SchedulerDecision(True, "eligible", "curation")
@@ -1115,12 +1119,19 @@ def _candidate_from_row(row: Mapping[str, object]) -> TutorProactiveCandidate:
 
 
 def _curation_job_from_row(row: Mapping[str, object]) -> TutorCurationJob:
+    raw_projection_kind = str(row.get("projection_kind") or "memory_or_summary")
+    if raw_projection_kind not in {"memory_or_summary", "context_summary"}:
+        raise ValueError("curation projection kind is invalid")
+    projection_kind: Literal["memory_or_summary", "context_summary"] = (
+        "context_summary" if raw_projection_kind == "context_summary" else "memory_or_summary"
+    )
     return TutorCurationJob(
         job_id=str(row["id"]),
         outbox_id=str(row["outbox_id"]),
         user_id=str(row["user_id"]),
         policy_version=str(row["policy_version"]),
         memory_setting_version=str(row["memory_setting_version"]),
+        projection_kind=projection_kind,
         state=str(row["state"]),  # type: ignore[arg-type]
         no_action_code=_optional_str(row.get("no_action_code")),
         not_before=_as_datetime(row.get("not_before")) or datetime.now(UTC),

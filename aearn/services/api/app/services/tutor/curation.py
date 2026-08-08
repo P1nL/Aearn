@@ -7,11 +7,13 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Literal, Protocol, TypeAlias
+from typing import Literal, Protocol, Self, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from app.agents.harness.capabilities import contains_forbidden_execution_target
+from app.agents.harness.contracts import TUTOR_CONTEXT_SUMMARY_SCHEMA_VERSION
+from app.core.teaching_safety import sanitize_message_content
 from app.core.config import Settings, get_settings
 from app.services.llm.llm_client import (
     LLMCallError,
@@ -52,6 +54,48 @@ class CurationContextSummaryProposalV1(_FrozenCurationModel):
         return _learner_text(value, label="context summary", maximum=280)
 
 
+class CurationContextSummaryProposalV2(_FrozenCurationModel):
+    kind: Literal["context_summary"]
+    schema_version: Literal["tutor_context_summary_v2"]
+    current_goal: str | None = Field(default=None, max_length=240)
+    confirmed_facts: tuple[str, ...] = Field(default_factory=tuple, max_length=8)
+    completed_steps: tuple[str, ...] = Field(default_factory=tuple, max_length=8)
+    rejected_paths: tuple[str, ...] = Field(default_factory=tuple, max_length=8)
+    open_questions: tuple[str, ...] = Field(default_factory=tuple, max_length=8)
+    learner_preferences: tuple[str, ...] = Field(default_factory=tuple, max_length=6)
+    confidence: Literal["low", "medium", "high"]
+
+    @field_validator("current_goal")
+    @classmethod
+    def _validate_goal(cls, value: str | None) -> str | None:
+        return _learner_text(value, label="context summary current goal", maximum=240) if value is not None else None
+
+    @field_validator(
+        "confirmed_facts",
+        "completed_steps",
+        "rejected_paths",
+        "open_questions",
+        "learner_preferences",
+    )
+    @classmethod
+    def _validate_items(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple(_learner_text(item, label="context summary item", maximum=240) for item in value)
+
+    @model_validator(mode="after")
+    def _require_semantic_content(self) -> Self:
+        if self.current_goal is None and not any(
+            (
+                self.confirmed_facts,
+                self.completed_steps,
+                self.rejected_paths,
+                self.open_questions,
+                self.learner_preferences,
+            )
+        ):
+            raise ValueError("structured context summary cannot be empty")
+        return self
+
+
 class CurationMemoryEntryProposalV1(_FrozenCurationModel):
     kind: Literal["memory_entry"]
     category: str = Field(min_length=1, max_length=120)
@@ -79,7 +123,9 @@ class CurationNoActionProposalV1(_FrozenCurationModel):
         return _identifier(value, label="curation no-action code")
 
 
-CurationProjectionProposal: TypeAlias = CurationContextSummaryProposalV1 | CurationMemoryEntryProposalV1
+CurationProjectionProposal: TypeAlias = (
+    CurationContextSummaryProposalV1 | CurationContextSummaryProposalV2 | CurationMemoryEntryProposalV1
+)
 CurationOutput: TypeAlias = CurationProjectionProposal | CurationNoActionProposalV1
 
 
@@ -146,6 +192,14 @@ class PrimaryCurationGateway:
             if not isinstance(content, Mapping):
                 return CurationGatewayResult(state="retryable", code="curation_model_invalid_response")
             parsed = parse_curation_output(content)
+            if source.projection_kind == "context_summary" and not isinstance(
+                parsed, (CurationContextSummaryProposalV2, CurationNoActionProposalV1)
+            ):
+                return CurationGatewayResult(state="retryable", code="curation_model_invalid_response")
+            if source.projection_kind == "memory_or_summary" and isinstance(
+                parsed, CurationContextSummaryProposalV2
+            ):
+                return CurationGatewayResult(state="retryable", code="curation_model_invalid_response")
         except (LLMCallError, LLMConfigurationError, LLMInvalidResponseError, ValidationError, TypeError, ValueError):
             return CurationGatewayResult(state="retryable", code="curation_model_unavailable")
         except Exception:
@@ -209,6 +263,14 @@ class TutorMemoryCurator:
         proposal: CurationProjectionProposal,
         now: datetime,
     ) -> CurationProcessOutcome:
+        if source.projection_kind == "context_summary" and not isinstance(
+            proposal, CurationContextSummaryProposalV2
+        ):
+            return CurationProcessOutcome(state="retryable", code="curation_summary_schema_invalid")
+        if source.projection_kind == "memory_or_summary" and isinstance(
+            proposal, CurationContextSummaryProposalV2
+        ):
+            return CurationProcessOutcome(state="retryable", code="curation_projection_kind_invalid")
         with self._repository._conn.transaction():  # noqa: SLF001 - exact shared transaction is the target boundary.
             refreshed, code = self._learner_state.curation_source_for_job(
                 job_id=source.job_id,
@@ -231,7 +293,24 @@ class TutorMemoryCurator:
                     now=now,
                 )
                 return CurationProcessOutcome(state="no_action", code="curation_projection_not_pending")
-            if isinstance(proposal, CurationContextSummaryProposalV1):
+            if isinstance(proposal, CurationContextSummaryProposalV2):
+                self._learner_state.commit_structured_context_summary_projection(
+                    source=refreshed,
+                    proposal_id=proposal_receipt.proposal_id,
+                    summary=_summary_overview(proposal),
+                    summary_json={
+                        "schema_version": proposal.schema_version,
+                        "current_goal": proposal.current_goal,
+                        "confirmed_facts": list(proposal.confirmed_facts),
+                        "completed_steps": list(proposal.completed_steps),
+                        "rejected_paths": list(proposal.rejected_paths),
+                        "open_questions": list(proposal.open_questions),
+                        "learner_preferences": list(proposal.learner_preferences),
+                    },
+                    code="curation_context_summary_committed",
+                    now=now,
+                )
+            elif isinstance(proposal, CurationContextSummaryProposalV1):
                 self._learner_state.commit_context_summary_projection(
                     source=refreshed,
                     proposal_id=proposal_receipt.proposal_id,
@@ -291,8 +370,12 @@ class TutorMemoryCurator:
         proposal: CurationProjectionProposal,
         now: datetime,
     ) -> TutorCurationProposalReceipt:
-        if isinstance(proposal, CurationContextSummaryProposalV1):
+        if isinstance(proposal, CurationContextSummaryProposalV2):
             kind: Literal["context_summary", "memory_entry"] = "context_summary"
+            confidence = proposal.confidence
+            payload_hash = _hash({"summary": proposal.model_dump(mode="json"), "kind": kind})
+        elif isinstance(proposal, CurationContextSummaryProposalV1):
+            kind = "context_summary"
             confidence = proposal.confidence
             payload_hash = _hash({"summary": proposal.summary, "kind": kind})
         else:
@@ -331,6 +414,8 @@ def build_curation_proposal_processor(
 
 def parse_curation_output(payload: Mapping[str, object]) -> CurationOutput:
     kind = str(payload.get("kind") or "")
+    if kind == "context_summary" and str(payload.get("schema_version") or "") == TUTOR_CONTEXT_SUMMARY_SCHEMA_VERSION:
+        return CurationContextSummaryProposalV2.model_validate(payload)
     if kind == "context_summary":
         return CurationContextSummaryProposalV1.model_validate(payload)
     if kind == "memory_entry":
@@ -341,28 +426,85 @@ def parse_curation_output(payload: Mapping[str, object]) -> CurationOutput:
 
 
 def _build_messages(*, source: TutorCurationSource) -> list[dict[str, str]]:
-    system = (
-        "You are the Aearn Memory Curator. Return one JSON object only. "
-        "Allowed kind values are context_summary, memory_entry, or no_action. "
-        "Use only the supplied redacted evidence. Never include raw conversation, prompt, "
-        "provider reasoning, code, URL, path, command, SQL, secret, chat, activity, plan, "
-        "review, FSRS, attempt, executor, provider choice, or unknown fields."
-    )
-    bounded_source = {
-        "outbox_id": source.outbox_id,
-        "run_id": source.run_id,
-        "policy_version": source.policy_version,
-        "memory_setting_version": source.memory_setting_version,
-        "source_ids": list(source.source_ids[:16]),
-        "source_hashes": list(source.source_hashes[:16]),
-        "retention_until": source.retention_until.astimezone(UTC).isoformat(),
-        "stale_after": source.stale_after.astimezone(UTC).isoformat(),
-        "envelope": source.envelope,
-    }
+    bounded_source: dict[str, object]
+    if source.projection_kind == "context_summary":
+        system = (
+            "You are the Aearn Tutor Context Summary Curator. Return one JSON object only. "
+            "Use exactly these keys: kind, schema_version, current_goal, confirmed_facts, completed_steps, "
+            "rejected_paths, open_questions, learner_preferences, confidence. "
+            "kind must be context_summary and schema_version must be tutor_context_summary_v2. "
+            "Merge only the supplied prior summary and retired messages. Newer learner corrections override older "
+            "facts; completed work and rejected paths must remain separate; open questions are not confirmed facts. "
+            "Do not quote messages or include code, URL, path, command, SQL, provider detail, credential, reasoning, "
+            "or unknown fields. Use bounded arrays and return no_action only when no continuity fact is safe to retain."
+        )
+        bounded_source = {
+            "summary_schema_version": source.summary_schema_version,
+            "summary_policy_version": source.summary_policy_version,
+            "prior_summary_id": source.prior_summary_id,
+            "prior_summary_hash": source.prior_summary_hash,
+            "prior_summary": source.prior_summary_json,
+            "retired_messages": [
+                {
+                    "message_id": item.message_id,
+                    "role": item.role,
+                    "created_at": item.created_at.astimezone(UTC).isoformat(),
+                    "content": sanitize_message_content(
+                        role="assistant" if item.role == "tutor" else "user",
+                        content=item.content,
+                        max_length=1200,
+                    ),
+                }
+                for item in source.retired_messages[:24]
+            ],
+            "covered_through_created_at": (
+                source.covered_through_created_at.astimezone(UTC).isoformat()
+                if source.covered_through_created_at is not None
+                else None
+            ),
+            "covered_through_message_id": source.covered_through_message_id,
+            "source_hash": source.summary_source_hash,
+        }
+    else:
+        system = (
+            "You are the Aearn Memory Curator. Return one JSON object only. "
+            "Allowed kind values are context_summary, memory_entry, or no_action. "
+            "Use only the supplied redacted evidence. Never include raw conversation, prompt, "
+            "provider reasoning, code, URL, path, command, SQL, secret, chat, activity, plan, "
+            "review, FSRS, attempt, executor, provider choice, or unknown fields."
+        )
+        bounded_source = {
+            "outbox_id": source.outbox_id,
+            "run_id": source.run_id,
+            "policy_version": source.policy_version,
+            "memory_setting_version": source.memory_setting_version,
+            "source_ids": list(source.source_ids[:16]),
+            "source_hashes": list(source.source_hashes[:16]),
+            "retention_until": source.retention_until.astimezone(UTC).isoformat(),
+            "stale_after": source.stale_after.astimezone(UTC).isoformat(),
+            "envelope": source.envelope,
+        }
     return [
         {"role": "system", "content": system},
         {"role": "user", "content": json.dumps(bounded_source, ensure_ascii=False, sort_keys=True)},
     ]
+
+
+def _summary_overview(proposal: CurationContextSummaryProposalV2) -> str:
+    parts: list[str] = []
+    if proposal.current_goal is not None:
+        parts.append(f"目标：{proposal.current_goal}")
+    if proposal.confirmed_facts:
+        parts.append(f"事实：{proposal.confirmed_facts[0]}")
+    if proposal.completed_steps:
+        parts.append(f"完成：{proposal.completed_steps[0]}")
+    if proposal.rejected_paths:
+        parts.append(f"拒绝路径：{proposal.rejected_paths[0]}")
+    if proposal.open_questions:
+        parts.append(f"待解决：{proposal.open_questions[0]}")
+    if proposal.learner_preferences:
+        parts.append(f"偏好：{proposal.learner_preferences[0]}")
+    return _learner_text("；".join(parts)[:280], label="context summary", maximum=280)
 
 
 def _receipt_state(value: str) -> Literal["no_action", "stale", "failed"]:

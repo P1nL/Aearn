@@ -157,6 +157,8 @@ def test_provider_payload_separates_authoritative_current_input_from_optional_hi
     assert [item["source_id"] for item in payload["context"]] == ["message-old"]
     assert payload["context_metadata"]["current_input"]["source_id"] == "message-current"
     assert "authoritative request" in system
+    assert "current_input, then recent_messages, then working_summary" in system
+    assert "a working summary must never overwrite a newer correction or completion" in system
     assert "correction" in system
     assert "already complete" in system
     assert "answer directly first" in system
@@ -183,6 +185,8 @@ def test_repair_retry_preserves_current_input_and_latest_intent_teaching_policy(
     assert retry_payload["current_input"]["content"] == "我应该学哪些语言"
     repair_message = client.messages[1][-1]["content"]
     assert "authoritative request" in repair_message
+    assert "current_input, then recent_messages, then working_summary" in repair_message
+    assert "a working summary must never overwrite a newer correction or completion" in repair_message
     assert "stop the stale path" in repair_message
     assert "answer directly first" in repair_message
 

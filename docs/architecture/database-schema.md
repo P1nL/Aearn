@@ -158,9 +158,26 @@ inventory 将任一新 track/scope/evidence 行视为 target contamination，绝
 | `tutor_plan_revision_actions` | append-only activation/rollback action | 用户 rollback 只可回到直接 predecessor |
 | `tutor_memory_preferences` | inferred-memory setting/version | setting version 使 stale queued work 失效 |
 | `tutor_memory_entries` | objective fact 或 inference | correction 追加 replacement；delete 是受控 state transition |
-| `tutor_context_summaries` | safe compacted context projection | bounded source/evidence，非 prompt/history dump |
+| `tutor_context_summaries` | safe compacted context projection | v2 绑定 conversation、schema/policy、结构化 JSON、coverage、source hash 与 prior lineage；UPDATE 被 append-only trigger 拒绝，legacy 短摘要可保留但不进入 v2 loader |
 | `tutor_activity_records` | append-only learner-safe activity | 可从 effect/run 追溯，但不含 internal payload |
 | `tutor_inbox_items` | 一条 activity 对应的可读/dismiss 投影 | `unread/read/dismissed` 生命周期与时间戳约束 |
+
+### 8.1 长对话结构化摘要
+
+`tutor_memory_curation_outbox.projection_kind` 区分旧的 `memory_or_summary` 与
+`context_summary`。v2 outbox 必须同时具备 exact schema/policy version、连续退休消息
+ID/hash、conversation coverage cursor、source hash，以及成对的 prior summary
+identity/hash；相同语义 evidence 在 high-water 与 terminal lifecycle 之间共用一个
+curation idempotency key。`tutor_curation_jobs.projection_kind` 必须与 outbox 一致。
+
+`tutor_context_summaries` 的 v2 row 通过 composite FK 证明 user/run/conversation、
+outbox、covered message 与 prior summary 均在同一 scope。结构化列必须整组存在，
+`source_hash`/`prior_summary_hash` 为 SHA-256，并使用
+`(user_id, conversation_id, covered_through_created_at DESC,
+covered_through_message_id DESC)` 检索最新 coverage。summary 内容不可原地 UPDATE；
+纠正通过追加新 row。用户级 reset/delete 可按既有依赖顺序物理删除 summary
+projection，但不能因此删除或改写 `tutor_messages`。公开 export 默认不暴露内部
+`summary_json`。
 
 ## 9. 公开投影与删除规则
 

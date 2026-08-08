@@ -52,6 +52,7 @@ release approval，任何未通过或未执行 gate 都必须在 ledger 中保�
 | RT-11 | P0 | Worker import/composition | worker has only target task wrappers; no executor runtime client import; scheduler production scan remains global | `test_worker_import.py` |
 | RT-12 | P0 | Provider usage/cache accounting | Responses/Chat usage 归一化；cached 不重复计数；repair attempt 分列；缺失 usage 不伪造；跨用户、冲突重放和 UPDATE/DELETE 被拒绝；receipt 不进入公开投影 | `test_tutor_provider_gateway.py`、`test_tutor_run_loop.py`、`test_tutor_run_repository.py`、`test_db_bootstrap.py` |
 | RT-13 | P0 | Adaptive context budget | capability 显式冻结；完整 serializer + reserve 预估不越 hard limit；四档可裁剪；current input 不驱逐；`insufficient_context` 最多有界升级；cache 不放宽物理预算；policy/metadata 不进入公开 API/SSE | `test_tutor_context_budget.py`、`test_tutor_context_builder.py`、`test_tutor_provider_gateway.py`、`test_tutor_run_loop.py`、`test_tutor_input_merge.py`、`test_tutor_run_repository.py` |
+| RT-14 | P0 | Long-context summary | stable timeline retirement、v2 strict JSON、semantic dedupe、leased transient evidence load、committed latest-summary retrieval、current/recent 优先级、stale/invalid fail-closed、append-only/scope FK；不删除 raw history，不受 inferred-memory opt-out 误伤 | `test_tutor_context_summary.py`、`test_tutor_context_loader.py`、`test_tutor_context_builder.py`、`test_tutor_memory_curator.py`、`test_tutor_memory_curation_outbox.py`、`test_tutor_memory_curation_scheduler.py`、`test_tutor_provider_gateway.py`、`test_db_bootstrap.py` |
 | UX-01 | P1 | Desktop bootstrap | local identity → server cutover → `welcome/cutover/tutor`; stale `planId` cleared and no legacy request emitted | `pnpm --dir .\aearn desktop:check` + fixture browser/Desktop smoke |
 | UX-02 | P1 | Responsive/error UX | narrow viewport no horizontal overflow; Composer/primary actions visible; stable public error/retry states | fixture browser/Desktop smoke |
 | DOC-01 | P0 | Current documentation | README/source-of-truth docs name Tutor as active runtime; transition/archive docs are visibly historical; no current Graph/SDK claim | link audit + `rg` audit + doc review |
@@ -117,7 +118,26 @@ release approval，任何未通过或未执行 gate 都必须在 ledger 中保�
 5. 使用 fixed provider usage receipt 比较 estimate/actual；`input_tokens` 已含 cached，校准不得将 `cached_input_tokens` 再加回，也不得在请求前假设 cache hit。
 6. 使用真实 PostgreSQL 断言 capability/mode target/ratio/expansion/estimator version 在 `policy_json` round-trip，且改变 estimator version 会改变 `policy_fingerprint`；公开 history/SSE 不出现内部 token 明细。
 
-### FI-06：Desktop normal/narrow path
+### FI-06：长对话摘要检索与压缩
+
+1. 在同一 conversation 写入超过 recent window 的 prior messages，再接受 fresh
+   TurnRun current input；断言 current input 独立，recent suffix 按
+   `(created_at,id)` 稳定排序，retirement set 是未覆盖的连续前缀。
+2. 用 high-water 与 terminal 触发同一 evidence；断言只产生一个
+   `context_summary` outbox/job，trace/outbox/proposal/receipt 不含 raw marker。
+3. 在合法 lease 下让 primary Curator 返回 strict `tutor_context_summary_v2`；断言
+   proposal、structured summary、coverage 和 committed receipt 原子 round-trip，下一
+   TurnRun 只加载一份最新 valid summary。
+4. 构造“旧摘要认为未完成、current input 声明已完成”的冲突；断言 provider initial
+   与 repair policy 都遵守 `current > recent > summary > memory/activity`。
+5. 破坏 source hash、跨 conversation covered message、schema/retention/stale 状态；
+   断言 provider 不被调用或 loader 回退 recent-only，summary UPDATE 被 append-only
+   trigger 拒绝，legacy v1 row 不冒充 v2。
+6. 关闭 inferred memory，保留正常 curation scheduler/用户 background gate；断言
+   context summary 仍可生成，provider hard limit、adaptive budget、finite TurnRun 与
+   PostgreSQL persistence contract 不变。
+
+### FI-07：Desktop normal/narrow path
 
 1. Bootstrap Desktop with a disposable verified user and deliberately stale
    `planId`.

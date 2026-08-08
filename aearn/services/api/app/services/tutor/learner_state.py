@@ -30,10 +30,14 @@ from app.agents.harness.capabilities import (
     contains_forbidden_execution_target,
 )
 from app.agents.harness.contracts import (
+    TUTOR_CONTEXT_SUMMARY_POLICY_VERSION,
+    TUTOR_CONTEXT_SUMMARY_SCHEMA_VERSION,
     TutorEffectProposal,
     TutorEffectResult,
     TutorEffectStatus,
     TutorRunSnapshot,
+    build_tutor_context_summary_source_hash,
+    build_tutor_message_evidence_hash,
     payload_mapping_from_fields,
 )
 
@@ -125,6 +129,35 @@ class TutorInboxItem:
 
 
 @dataclass(frozen=True)
+class TutorContextSummaryProjection:
+    summary_id: str
+    user_id: str
+    conversation_id: str
+    summary: str
+    summary_json: dict[str, object]
+    summary_schema_version: str
+    summary_policy_version: str
+    content_hash: str
+    source_hash: str
+    prior_summary_id: str | None
+    prior_summary_hash: str | None
+    covered_through_created_at: datetime
+    covered_through_message_id: str
+    retention_until: datetime
+    stale_after: datetime
+    created_at: datetime
+
+
+@dataclass(frozen=True)
+class TutorCurationMessageEvidence:
+    message_id: str
+    role: Literal["learner", "tutor"]
+    content: str
+    content_hash: str
+    created_at: datetime
+
+
+@dataclass(frozen=True)
 class TutorCurationSource:
     job_id: str
     outbox_id: str
@@ -139,6 +172,17 @@ class TutorCurationSource:
     source_hashes: tuple[str, ...]
     retention_until: datetime
     stale_after: datetime
+    conversation_id: str | None = None
+    projection_kind: Literal["memory_or_summary", "context_summary"] = "memory_or_summary"
+    summary_schema_version: str | None = None
+    summary_policy_version: str | None = None
+    summary_source_hash: str | None = None
+    prior_summary_id: str | None = None
+    prior_summary_hash: str | None = None
+    covered_through_created_at: datetime | None = None
+    covered_through_message_id: str | None = None
+    prior_summary_json: dict[str, object] | None = None
+    retired_messages: tuple[TutorCurationMessageEvidence, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -608,6 +652,54 @@ class TutorLearnerStateRepository:
                     raise TutorLearnerStateNotFound("memory_entry_not_found")
                 raise TutorLearnerStateConflict("memory_entry_not_active")
 
+    def latest_context_summary_for_conversation(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str,
+        current_message_created_at: datetime,
+        current_message_id: str,
+        now: datetime,
+    ) -> TutorContextSummaryProjection | None:
+        rows = self._conn.execute(
+            """
+            SELECT summaries.*
+            FROM tutor_context_summaries AS summaries
+            JOIN tutor_curation_projection_receipts AS receipts
+              ON receipts.target_kind = 'context_summary'
+             AND receipts.target_id = summaries.id
+             AND receipts.state = 'committed'
+            WHERE summaries.user_id = %s
+              AND summaries.conversation_id = %s
+              AND summaries.summary_schema_version = %s
+              AND summaries.summary_policy_version = %s
+              AND summaries.stale_after > %s
+              AND summaries.retention_until > %s
+              AND (summaries.covered_through_created_at, summaries.covered_through_message_id)
+                  < (%s, %s::uuid)
+            ORDER BY summaries.covered_through_created_at DESC,
+                     summaries.covered_through_message_id DESC,
+                     summaries.id DESC
+            LIMIT 16
+            """,
+            (
+                user_id,
+                conversation_id,
+                TUTOR_CONTEXT_SUMMARY_SCHEMA_VERSION,
+                TUTOR_CONTEXT_SUMMARY_POLICY_VERSION,
+                now,
+                now,
+                current_message_created_at,
+                current_message_id,
+            ),
+        ).fetchall()
+        for row in rows:
+            try:
+                return _context_summary_from_row(row)
+            except TutorLearnerStateConflict:
+                continue
+        return None
+
     def curation_source_for_job(
         self,
         *,
@@ -625,20 +717,30 @@ class TutorLearnerStateRepository:
               jobs.user_id::text AS user_id,
               jobs.policy_version AS job_policy_version,
               jobs.memory_setting_version AS job_memory_setting_version,
+              jobs.projection_kind AS job_projection_kind,
               jobs.state AS job_state,
               jobs.lease_owner_id,
               jobs.lease_generation,
               jobs.lease_expires_at,
               outbox.run_id::text AS run_id,
+              outbox.conversation_id::text AS conversation_id,
               outbox.state AS outbox_state,
               outbox.policy_version AS outbox_policy_version,
               outbox.memory_setting_version AS outbox_memory_setting_version,
+              outbox.projection_kind AS outbox_projection_kind,
               outbox.input_revision AS outbox_input_revision,
               outbox.retention_until,
               outbox.stale_after,
               outbox.envelope_json,
               outbox.source_ids_json,
               outbox.source_hashes_json,
+              outbox.summary_schema_version,
+              outbox.summary_policy_version,
+              outbox.summary_source_hash,
+              outbox.prior_summary_id::text AS prior_summary_id,
+              outbox.prior_summary_hash,
+              outbox.covered_through_created_at,
+              outbox.covered_through_message_id::text AS covered_through_message_id,
               runs.input_revision AS run_input_revision,
               preferences.inferred_memory_enabled,
               preferences.setting_version AS preference_setting_version
@@ -665,33 +767,227 @@ class TutorLearnerStateRepository:
             return None, "outbox_not_pending"
         stale_after = _as_datetime(row.get("stale_after"))
         retention_until = _as_datetime(row.get("retention_until"))
-        if stale_after is None or retention_until is None or stale_after <= now:
+        if stale_after is None or retention_until is None or stale_after <= now or retention_until <= now:
             return None, "outbox_stale"
         if str(row["job_policy_version"]) != str(row["outbox_policy_version"]):
             return None, "outbox_policy_version_stale"
         if str(row["job_memory_setting_version"]) != str(row["outbox_memory_setting_version"]):
             return None, "outbox_memory_setting_stale"
+        projection_kind = str(row.get("outbox_projection_kind") or "memory_or_summary")
+        if projection_kind not in {"memory_or_summary", "context_summary"}:
+            return None, "curation_projection_kind_invalid"
+        if str(row.get("job_projection_kind") or "") != projection_kind:
+            return None, "curation_projection_kind_stale"
         if _as_int(row.get("outbox_input_revision"), -1) != _as_int(row.get("run_input_revision"), -1):
             return None, "outbox_source_revision_stale"
-        if not bool(row.get("inferred_memory_enabled")):
-            return None, "memory_preference_disabled"
-        if str(row.get("preference_setting_version") or "") != str(row["outbox_memory_setting_version"]):
-            return None, "memory_setting_version_stale"
+        if projection_kind == "memory_or_summary":
+            if not bool(row.get("inferred_memory_enabled")):
+                return None, "memory_preference_disabled"
+            if str(row.get("preference_setting_version") or "") != str(row["outbox_memory_setting_version"]):
+                return None, "memory_setting_version_stale"
+            return (
+                TutorCurationSource(
+                    job_id=str(row["job_id"]),
+                    outbox_id=str(row["outbox_id"]),
+                    run_id=str(row["run_id"]),
+                    user_id=str(row["user_id"]),
+                    lease_owner_id=str(row["lease_owner_id"]),
+                    lease_generation=_as_int(row["lease_generation"], 0),
+                    policy_version=str(row["outbox_policy_version"]),
+                    memory_setting_version=str(row["outbox_memory_setting_version"]),
+                    envelope=_mapping(row.get("envelope_json")),
+                    source_ids=_string_tuple(row.get("source_ids_json")),
+                    source_hashes=_string_tuple(row.get("source_hashes_json")),
+                    retention_until=retention_until,
+                    stale_after=stale_after,
+                    conversation_id=str(row["conversation_id"]),
+                    projection_kind="memory_or_summary",
+                ),
+                "eligible",
+            )
+        structured, code = self._structured_curation_source(
+            row=row,
+            lease_owner_id=lease_owner_id,
+            lease_generation=lease_generation,
+            retention_until=retention_until,
+            stale_after=stale_after,
+        )
+        return structured, code
+
+    def _structured_curation_source(
+        self,
+        *,
+        row: Mapping[str, object],
+        lease_owner_id: str,
+        lease_generation: int,
+        retention_until: datetime,
+        stale_after: datetime,
+    ) -> tuple[TutorCurationSource | None, str]:
+        schema_version = str(row.get("summary_schema_version") or "")
+        policy_version = str(row.get("summary_policy_version") or "")
+        summary_source_hash = str(row.get("summary_source_hash") or "").lower()
+        conversation_id = str(row.get("conversation_id") or "")
+        source_ids = _string_tuple(row.get("source_ids_json"))
+        source_hashes = tuple(value.lower() for value in _string_tuple(row.get("source_hashes_json")))
+        covered_at = _as_datetime(row.get("covered_through_created_at"))
+        covered_message_id = _optional_text(row, "covered_through_message_id")
+        prior_summary_id = _optional_text(row, "prior_summary_id")
+        prior_summary_hash = _optional_text(row, "prior_summary_hash")
+        if (
+            schema_version != TUTOR_CONTEXT_SUMMARY_SCHEMA_VERSION
+            or policy_version != TUTOR_CONTEXT_SUMMARY_POLICY_VERSION
+            or not _is_sha256(summary_source_hash)
+            or not source_ids
+            or len(source_ids) != len(source_hashes)
+            or len(source_ids) > 24
+            or any(not _is_sha256(value) for value in source_hashes)
+            or covered_at is None
+            or covered_message_id is None
+            or source_ids[-1] != covered_message_id
+            or (prior_summary_id is None) != (prior_summary_hash is None)
+        ):
+            return None, "context_summary_evidence_invalid"
+        prior_summary: TutorContextSummaryProjection | None = None
+        if prior_summary_id is not None:
+            prior_row = self._conn.execute(
+                """
+                SELECT summaries.*
+                FROM tutor_context_summaries AS summaries
+                JOIN tutor_curation_projection_receipts AS receipts
+                  ON receipts.target_kind = 'context_summary'
+                 AND receipts.target_id = summaries.id
+                 AND receipts.state = 'committed'
+                WHERE summaries.id = %s
+                  AND summaries.user_id = %s
+                  AND summaries.conversation_id = %s
+                """,
+                (prior_summary_id, row["user_id"], conversation_id),
+            ).fetchone()
+            if prior_row is None:
+                return None, "prior_context_summary_not_found"
+            try:
+                prior_summary = _context_summary_from_row(prior_row)
+            except TutorLearnerStateConflict:
+                return None, "prior_context_summary_invalid"
+            if (
+                prior_summary.content_hash != str(prior_summary_hash).lower()
+                or prior_summary.summary_schema_version != schema_version
+                or prior_summary.summary_policy_version != policy_version
+            ):
+                return None, "prior_context_summary_stale"
+        message_rows = self._conn.execute(
+            """
+            SELECT messages.id::text AS id, messages.role, messages.content, messages.created_at
+            FROM tutor_messages AS messages
+            JOIN tutor_conversations AS conversations ON conversations.id = messages.conversation_id
+            WHERE messages.conversation_id = %s
+              AND conversations.user_id = %s
+              AND messages.id = ANY(%s::uuid[])
+            """,
+            (conversation_id, row["user_id"], list(source_ids)),
+        ).fetchall()
+        by_id = {str(item["id"]): item for item in message_rows}
+        if set(by_id) != set(source_ids):
+            return None, "context_summary_message_missing"
+        evidence: list[TutorCurationMessageEvidence] = []
+        for message_id, expected_hash in zip(source_ids, source_hashes, strict=True):
+            item = by_id[message_id]
+            role = str(item.get("role") or "")
+            created_at = _as_datetime(item.get("created_at"))
+            if role not in {"learner", "tutor"} or created_at is None:
+                return None, "context_summary_message_invalid"
+            content = str(item.get("content") or "")
+            actual_hash = build_tutor_message_evidence_hash(
+                message_id=message_id,
+                role=role,
+                content=content,
+                created_at=created_at,
+            )
+            if actual_hash != expected_hash:
+                return None, "context_summary_message_hash_mismatch"
+            evidence.append(
+                TutorCurationMessageEvidence(
+                    message_id=message_id,
+                    role="learner" if role == "learner" else "tutor",
+                    content=content,
+                    content_hash=actual_hash,
+                    created_at=created_at,
+                )
+            )
+        ordered = tuple(sorted(evidence, key=lambda item: (item.created_at, item.message_id)))
+        if tuple(item.message_id for item in ordered) != source_ids:
+            return None, "context_summary_message_order_invalid"
+        if ordered[-1].created_at != covered_at or ordered[-1].message_id != covered_message_id:
+            return None, "context_summary_coverage_invalid"
+        if prior_summary is None:
+            continuity_rows = self._conn.execute(
+                """
+                SELECT id::text AS id
+                FROM tutor_messages
+                WHERE conversation_id = %s
+                  AND (created_at, id) <= (%s, %s::uuid)
+                ORDER BY created_at ASC, id ASC
+                """,
+                (conversation_id, covered_at, covered_message_id),
+            ).fetchall()
+        else:
+            continuity_rows = self._conn.execute(
+                """
+                SELECT id::text AS id
+                FROM tutor_messages
+                WHERE conversation_id = %s
+                  AND (created_at, id) > (%s, %s::uuid)
+                  AND (created_at, id) <= (%s, %s::uuid)
+                ORDER BY created_at ASC, id ASC
+                """,
+                (
+                    conversation_id,
+                    prior_summary.covered_through_created_at,
+                    prior_summary.covered_through_message_id,
+                    covered_at,
+                    covered_message_id,
+                ),
+            ).fetchall()
+        if tuple(str(item["id"]) for item in continuity_rows) != source_ids:
+            return None, "context_summary_coverage_gap"
+        recomputed_source_hash = build_tutor_context_summary_source_hash(
+            summary_schema_version=schema_version,
+            summary_policy_version=policy_version,
+            prior_summary_id=prior_summary_id,
+            prior_summary_hash=prior_summary_hash,
+            retired_message_ids=source_ids,
+            retired_message_hashes=source_hashes,
+            covered_through_created_at=covered_at,
+            covered_through_message_id=covered_message_id,
+        )
+        if recomputed_source_hash != summary_source_hash:
+            return None, "context_summary_source_hash_mismatch"
         return (
             TutorCurationSource(
                 job_id=str(row["job_id"]),
                 outbox_id=str(row["outbox_id"]),
                 run_id=str(row["run_id"]),
                 user_id=str(row["user_id"]),
-                lease_owner_id=str(row["lease_owner_id"]),
-                lease_generation=_as_int(row["lease_generation"], 0),
+                lease_owner_id=lease_owner_id,
+                lease_generation=lease_generation,
                 policy_version=str(row["outbox_policy_version"]),
                 memory_setting_version=str(row["outbox_memory_setting_version"]),
                 envelope=_mapping(row.get("envelope_json")),
-                source_ids=_string_tuple(row.get("source_ids_json")),
-                source_hashes=_string_tuple(row.get("source_hashes_json")),
+                source_ids=source_ids,
+                source_hashes=source_hashes,
                 retention_until=retention_until,
                 stale_after=stale_after,
+                conversation_id=conversation_id,
+                projection_kind="context_summary",
+                summary_schema_version=schema_version,
+                summary_policy_version=policy_version,
+                summary_source_hash=summary_source_hash,
+                prior_summary_id=prior_summary_id,
+                prior_summary_hash=prior_summary_hash,
+                covered_through_created_at=covered_at,
+                covered_through_message_id=covered_message_id,
+                prior_summary_json=(prior_summary.summary_json if prior_summary is not None else None),
+                retired_messages=ordered,
             ),
             "eligible",
         )
@@ -739,6 +1035,104 @@ class TutorLearnerStateRepository:
             ).fetchone()
             if row is None:
                 raise RuntimeError("context summary insert failed")
+            target_id = str(row["id"])
+        else:
+            if str(existing["content_hash"]) != content_hash:
+                raise TutorLearnerStateConflict("context_summary_identity_conflict")
+            target_id = str(existing["id"])
+        return self.record_curation_projection_receipt(
+            source=source,
+            proposal_id=proposal_id,
+            state="committed",
+            target_kind="context_summary",
+            target_id=target_id,
+            code=code,
+            now=created_at,
+        )
+
+    def commit_structured_context_summary_projection(
+        self,
+        *,
+        source: TutorCurationSource,
+        proposal_id: str,
+        summary: str,
+        summary_json: Mapping[str, object],
+        code: str,
+        now: datetime | None = None,
+    ) -> TutorCurationProjectionReceipt:
+        created_at = _utc(now)
+        if (
+            source.projection_kind != "context_summary"
+            or source.conversation_id is None
+            or source.summary_schema_version != TUTOR_CONTEXT_SUMMARY_SCHEMA_VERSION
+            or source.summary_policy_version != TUTOR_CONTEXT_SUMMARY_POLICY_VERSION
+            or source.summary_source_hash is None
+            or source.covered_through_created_at is None
+            or source.covered_through_message_id is None
+        ):
+            raise TutorLearnerStateConflict("structured_context_summary_source_invalid")
+        safe_summary = _learner_text(summary, label="context summary", maximum=280)
+        semantic = _structured_summary_semantics(summary_json)
+        persisted_summary = {
+            "schema_version": TUTOR_CONTEXT_SUMMARY_SCHEMA_VERSION,
+            **semantic,
+            "covered_through_created_at": source.covered_through_created_at.isoformat(),
+            "covered_through_message_id": source.covered_through_message_id,
+            "source_hash": source.summary_source_hash,
+        }
+        self._assert_curation_proposal_scope(source=source, proposal_id=proposal_id, now=created_at)
+        content_hash = _hash(
+            {
+                "summary": safe_summary,
+                "summary_json": persisted_summary,
+                "prior_summary_id": source.prior_summary_id,
+                "prior_summary_hash": source.prior_summary_hash,
+            }
+        )
+        existing = self._conn.execute(
+            "SELECT id::text AS id, content_hash FROM tutor_context_summaries WHERE proposal_id = %s",
+            (proposal_id,),
+        ).fetchone()
+        if existing is None:
+            row = self._conn.execute(
+                """
+                INSERT INTO tutor_context_summaries (
+                  user_id, run_id, conversation_id, outbox_id, proposal_id, summary,
+                  summary_schema_version, summary_policy_version, summary_json,
+                  covered_through_created_at, covered_through_message_id,
+                  source_hash, prior_summary_id, prior_summary_hash,
+                  policy_version, memory_setting_version, retention_until, stale_after,
+                  content_hash, created_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s, %s)
+                RETURNING id::text AS id
+                """,
+                (
+                    source.user_id,
+                    source.run_id,
+                    source.conversation_id,
+                    source.outbox_id,
+                    proposal_id,
+                    safe_summary,
+                    source.summary_schema_version,
+                    source.summary_policy_version,
+                    _json(persisted_summary),
+                    source.covered_through_created_at,
+                    source.covered_through_message_id,
+                    source.summary_source_hash,
+                    source.prior_summary_id,
+                    source.prior_summary_hash,
+                    source.policy_version,
+                    source.memory_setting_version,
+                    source.retention_until,
+                    source.stale_after,
+                    content_hash,
+                    created_at,
+                ),
+            ).fetchone()
+            if row is None:
+                raise RuntimeError("structured context summary insert failed")
             target_id = str(row["id"])
         else:
             if str(existing["content_hash"]) != content_hash:
@@ -1153,6 +1547,10 @@ class TutorLearnerStateRepository:
               outbox.state AS outbox_state,
               outbox.input_revision AS outbox_input_revision,
               outbox.stale_after,
+              outbox.projection_kind,
+              outbox.summary_schema_version,
+              outbox.summary_policy_version,
+              outbox.summary_source_hash,
               runs.input_revision AS run_input_revision,
               preferences.inferred_memory_enabled,
               preferences.setting_version AS preference_setting_version,
@@ -1190,12 +1588,24 @@ class TutorLearnerStateRepository:
         ):
             raise TutorLearnerStateConflict("curation_job_lease_stale")
         stale_after = _as_datetime(row.get("stale_after"))
-        if (
+        common_stale = (
             str(row["proposal_policy_version"]) != source.policy_version
             or str(row["proposal_memory_setting_version"]) != source.memory_setting_version
             or _as_int(row.get("outbox_input_revision"), -1) != _as_int(row.get("run_input_revision"), -1)
             or stale_after is None
             or stale_after <= now
+            or str(row.get("projection_kind") or "memory_or_summary") != source.projection_kind
+        )
+        if source.projection_kind == "context_summary":
+            structured_stale = (
+                str(row.get("summary_schema_version") or "") != source.summary_schema_version
+                or str(row.get("summary_policy_version") or "") != source.summary_policy_version
+                or str(row.get("summary_source_hash") or "").lower() != source.summary_source_hash
+            )
+            if common_stale or structured_stale:
+                raise TutorLearnerStateConflict("curation_source_stale")
+        elif (
+            common_stale
             or not bool(row.get("inferred_memory_enabled"))
             or str(row.get("preference_setting_version") or "") != source.memory_setting_version
         ):
@@ -1401,6 +1811,118 @@ def _plan_revision_from_row(row: Mapping[str, object]) -> TutorPlanRevision:
         evidence_ids=_string_tuple(row.get("evidence_ids_json")),
         evidence_hashes=_string_tuple(row.get("evidence_hashes_json")),
     )
+
+
+def _context_summary_from_row(row: Mapping[str, object]) -> TutorContextSummaryProjection:
+    raw_summary_json = _mapping(row.get("summary_json"))
+    semantic_keys = {
+        "schema_version",
+        "current_goal",
+        "confirmed_facts",
+        "completed_steps",
+        "rejected_paths",
+        "open_questions",
+        "learner_preferences",
+    }
+    metadata_keys = {
+        "covered_through_created_at",
+        "covered_through_message_id",
+        "source_hash",
+    }
+    if set(raw_summary_json) != semantic_keys | metadata_keys:
+        raise TutorLearnerStateConflict("stored_context_summary_invalid")
+    semantic = _structured_summary_semantics(
+        {key: raw_summary_json[key] for key in semantic_keys}
+    )
+    schema_version = str(row.get("summary_schema_version") or "")
+    policy_version = str(row.get("summary_policy_version") or "")
+    covered_at = _as_datetime(row.get("covered_through_created_at"))
+    covered_message_id = _optional_text(row, "covered_through_message_id")
+    conversation_id = _optional_text(row, "conversation_id")
+    source_hash = str(row.get("source_hash") or "").lower()
+    content_hash = str(row.get("content_hash") or "").lower()
+    if (
+        schema_version != TUTOR_CONTEXT_SUMMARY_SCHEMA_VERSION
+        or policy_version != TUTOR_CONTEXT_SUMMARY_POLICY_VERSION
+        or covered_at is None
+        or covered_message_id is None
+        or conversation_id is None
+        or not _is_sha256(source_hash)
+        or not _is_sha256(content_hash)
+        or _as_datetime(raw_summary_json.get("covered_through_created_at")) != covered_at
+        or str(raw_summary_json.get("covered_through_message_id") or "") != covered_message_id
+        or str(raw_summary_json.get("source_hash") or "").lower() != source_hash
+    ):
+        raise TutorLearnerStateConflict("stored_context_summary_invalid")
+    summary_json = {
+        "schema_version": TUTOR_CONTEXT_SUMMARY_SCHEMA_VERSION,
+        **semantic,
+        "covered_through_created_at": covered_at.isoformat(),
+        "covered_through_message_id": covered_message_id,
+        "source_hash": source_hash,
+    }
+    return TutorContextSummaryProjection(
+        summary_id=str(row["id"]),
+        user_id=str(row["user_id"]),
+        conversation_id=conversation_id,
+        summary=str(row["summary"]),
+        summary_json=summary_json,
+        summary_schema_version=schema_version,
+        summary_policy_version=policy_version,
+        content_hash=content_hash,
+        source_hash=source_hash,
+        prior_summary_id=_optional_text(row, "prior_summary_id"),
+        prior_summary_hash=_optional_text(row, "prior_summary_hash"),
+        covered_through_created_at=covered_at,
+        covered_through_message_id=covered_message_id,
+        retention_until=_as_datetime(row["retention_until"]) or datetime.now(UTC),
+        stale_after=_as_datetime(row["stale_after"]) or datetime.now(UTC),
+        created_at=_as_datetime(row["created_at"]) or datetime.now(UTC),
+    )
+
+
+def _structured_summary_semantics(value: Mapping[str, object]) -> dict[str, object]:
+    expected = {
+        "schema_version",
+        "current_goal",
+        "confirmed_facts",
+        "completed_steps",
+        "rejected_paths",
+        "open_questions",
+        "learner_preferences",
+    }
+    if set(value) != expected or str(value.get("schema_version") or "") != TUTOR_CONTEXT_SUMMARY_SCHEMA_VERSION:
+        raise TutorLearnerStateConflict("structured_context_summary_payload_invalid")
+    current_goal_raw = value.get("current_goal")
+    current_goal = (
+        _learner_text(current_goal_raw, label="context summary current goal", maximum=240)
+        if current_goal_raw is not None
+        else None
+    )
+    result: dict[str, object] = {
+        "current_goal": current_goal,
+    }
+    for key, maximum_items in (
+        ("confirmed_facts", 8),
+        ("completed_steps", 8),
+        ("rejected_paths", 8),
+        ("open_questions", 8),
+        ("learner_preferences", 6),
+    ):
+        raw_items = value.get(key)
+        if not isinstance(raw_items, Sequence) or isinstance(raw_items, (str, bytes)) or len(raw_items) > maximum_items:
+            raise TutorLearnerStateConflict("structured_context_summary_payload_invalid")
+        result[key] = [
+            _learner_text(item, label=f"context summary {key}", maximum=240)
+            for item in raw_items
+        ]
+    if current_goal is None and not any(result[key] for key in result if key != "current_goal"):
+        raise TutorLearnerStateConflict("structured_context_summary_payload_empty")
+    return result
+
+
+def _is_sha256(value: object) -> bool:
+    return bool(_SHA256.fullmatch(str(value or "").lower()))
 
 
 def _memory_entry_from_row(row: Mapping[str, object]) -> TutorMemoryEntry:

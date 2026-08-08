@@ -239,6 +239,7 @@ class TutorCurationJob:
     user_id: str
     policy_version: str
     memory_setting_version: str
+    projection_kind: Literal["memory_or_summary", "context_summary"]
     state: SchedulerState
     no_action_code: str | None
     not_before: datetime
@@ -626,7 +627,7 @@ class TutorProactiveScheduler:
             result = result.add(claimed=True)
             source_decision = self._store.curation_job_current(job=job, now=now)
             decision = source_decision if not source_decision.allowed else self._curation_decision(
-                user_id=job.user_id,
+                job=job,
                 now=now,
                 claimed=True,
             )
@@ -709,7 +710,8 @@ class TutorProactiveScheduler:
             circuit_threshold=self._config.proactive_circuit_failure_threshold,
         )
 
-    def _curation_decision(self, *, user_id: str, now: datetime, claimed: bool) -> SchedulerDecision:
+    def _curation_decision(self, *, job: TutorCurationJob, now: datetime, claimed: bool) -> SchedulerDecision:
+        user_id = job.user_id
         if not self._config.enabled:
             return SchedulerDecision(False, "scheduler_disabled", "curation")
         if self._config.hard_paused:
@@ -718,7 +720,7 @@ class TutorProactiveScheduler:
             return SchedulerDecision(False, "cutover_ineligible", "curation")
         if not self._store.verified_cutover_for_user(user_id=user_id):
             return SchedulerDecision(False, "cutover_unverified", "curation")
-        if not self._config.inferred_memory_enabled:
+        if job.projection_kind == "memory_or_summary" and not self._config.inferred_memory_enabled:
             return SchedulerDecision(False, "inferred_memory_disabled", "curation")
         preference = self._store.preference_for_user(user_id=user_id)
         if preference.hard_paused:
