@@ -46,7 +46,7 @@ Completed P4 parent readiness for local-product-completion, documented equivalen
 
 ### Next Steps
 
-- None - task complete
+- 当前 child 已完成并归档；不在本次 session 启动父任务。
 
 
 ## Session 61: Chat-first conversation experience
@@ -61,7 +61,10 @@ Completed chat-first onboarding normalization, expanded public route language bo
 
 ### Main Changes
 
-(Add details)
+- 将 recent retirement 从固定窗口改为由实际 ContextBuilder item/token selection 决定，current input 保持独立且不可被摘要驱逐。
+- 实现 `tutor_context_summary_v2`、prior lineage、coverage/source hash、leased transient evidence retrieval、strict primary Curator 和 semantic curation dedupe。
+- 增加 PostgreSQL additive 字段、scope composite FK、append-only summary trigger、bootstrap assertions，以及 loader/builder/curation/run-loop 回归测试。
+- 同步 Tutor runtime、database schema、acceptance plan 和 backend quality spec。
 
 ### Git Commits
 
@@ -71,7 +74,9 @@ Completed chat-first onboarding normalization, expanded public route language bo
 
 ### Testing
 
-- [OK] (Add test results)
+- [OK] 聚焦 context/curation/run-loop/bootstrap Pytest：59 passed。
+- [OK] 最终完整串行 API Pytest：397 passed。
+- [OK] Ruff、Mypy（112 source files）、`uv lock --check`、Trellis validate、`git diff --check`。
 
 ### Status
 
@@ -1036,6 +1041,39 @@ Closed the planning-only Tutor Harness rearchitecture parent after all nine inde
 | Hash | Message |
 |------|---------|
 | `d681f1a` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 89: 完成 Tutor 长对话摘要检索与压缩闭环
+
+**Date**: 2026-08-08
+**Task**: 完成 Tutor 长对话摘要检索与压缩闭环
+**Branch**: `main`
+
+### Summary
+
+完成 budget-selected recent window、结构化 summary v2、leased transient evidence retrieval、幂等 curation persistence、latest valid summary recovery、PostgreSQL scope/append-only constraints、聚焦与全量验证，并同步 backend spec 与 source-of-truth 文档。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `ddc6233` | (see git log) |
 
 ### Testing
 
