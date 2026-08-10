@@ -1,0 +1,8 @@
+{"file":".trellis/tasks/08-04-learning-home-plan-builder/prd.md","reason":"检查首页、planning、草案版本、确认、语言、恢复、隐私与验收边界。"}
+{"file":".trellis/tasks/08-04-learning-home-plan-builder/design.md","reason":"检查 task-aware default-deny、通用 payload 上限、原子确认、Desktop 导航和回滚设计。"}
+{"file":".trellis/tasks/08-04-learning-home-plan-builder/research/baseline.md","reason":"检查实现复用当前 LearningTrack/Harness，且不恢复旧 Graph/onboarding/learning 表。"}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"检查 user/session/draft/track 复合范围、append-only、幂等、CAS 和 bootstrap。"}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"检查响应式、可访问性、loading/error/retry 和 Desktop build/smoke。"}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"检查 API projection、learning scope 和 planning draft 的严格前端类型边界。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"检查草案生成到确认创建 track 的跨层数据流和失败回滚。"}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"检查没有复制 Tutor run/history/SSE 或重建 LearningTrack authority。"}
