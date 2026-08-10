@@ -18,8 +18,7 @@ release approval，任何未通过或未执行 gate 都必须在 ledger 中保�
 3. **每个坏路径要被拒绝。** 除了成功路径，必须证明切换绕过、跨用户读写、
    stale effect、无 Skill evidence、provider fallback、未注册 grounding、
    proactive code execution、raw diagnostics leak 和旧 runtime 再进入都失败。
-4. **静态搜索不是唯一证据。** legacy source/dependency/doc audit、测试、Desktop
-   build 和 fixture smoke 要同时通过，才可称实现退休完成。
+4. **静态搜索或 build 不是前端证据。** legacy source/dependency/doc audit、后端测试与网页端 fixture/browser smoke 必须按各自边界完成；前端默认不运行 Desktop build/typecheck。
 5. **不写敏感证据。** 测试报告和 ledger 只能记录命令、计数、stable error、
    revision、fixture posture 和 residual risk；不记录 raw message/code/prompt、
    provider payload、hidden tests、checkpoint 或 secret。
@@ -54,8 +53,8 @@ release approval，任何未通过或未执行 gate 都必须在 ledger 中保�
 | RT-13 | P0 | Adaptive context budget | capability 显式冻结；完整 serializer + reserve 预估不越 hard limit；四档可裁剪；current input 不驱逐；`insufficient_context` 最多有界升级；cache 不放宽物理预算；policy/metadata 不进入公开 API/SSE | `test_tutor_context_budget.py`、`test_tutor_context_builder.py`、`test_tutor_provider_gateway.py`、`test_tutor_run_loop.py`、`test_tutor_input_merge.py`、`test_tutor_run_repository.py` |
 | RT-14 | P0 | Long-context summary | stable timeline retirement、v2 strict JSON、semantic dedupe、leased transient evidence load、committed latest-summary retrieval、current/recent 优先级、stale/invalid fail-closed、append-only/scope FK；不删除 raw history，不受 inferred-memory opt-out 误伤 | `test_tutor_context_summary.py`、`test_tutor_context_loader.py`、`test_tutor_context_builder.py`、`test_tutor_memory_curator.py`、`test_tutor_memory_curation_outbox.py`、`test_tutor_memory_curation_scheduler.py`、`test_tutor_provider_gateway.py`、`test_db_bootstrap.py` |
 | RT-15 | P0 | Context governance eval / observability | versioned v2 fixture、safe receipt、current/history/usage/budget/summary cross-contract cases、attempt-level usage、calibration grouping、real-provider smoke default skip；receipt 不含 raw prompt/history/provider body/reasoning/credential | `test_tutor_evals.py`、`test_tutor_context_eval_smoke.py`、`test_tutor_real_provider_smoke.py` 与 RT-12/13/14 owning tests |
-| UX-01 | P1 | Desktop bootstrap | local identity → server cutover → `welcome/cutover/tutor`; stale `planId` cleared and no legacy request emitted | `pnpm --dir .\aearn desktop:check` + fixture browser/Desktop smoke |
-| UX-02 | P1 | Responsive/error UX | narrow viewport no horizontal overflow; Composer/primary actions visible; stable public error/retry states | fixture browser/Desktop smoke |
+| UX-01 | P1 | Frontend bootstrap | local identity → server cutover → `welcome/cutover/tutor`; stale `planId` cleared and no legacy request emitted | fixture web browser smoke |
+| UX-02 | P1 | Responsive/error UX | narrow viewport no horizontal overflow; Composer/primary actions visible; stable public error/retry states | fixture web browser smoke |
 | DOC-01 | P0 | Current documentation | README/source-of-truth docs name Tutor as active runtime; transition/archive docs are visibly historical; no current Graph/SDK claim | link audit + `rg` audit + doc review |
 | RET-01 | P0 | Legacy retirement | no production/test Graph/router/tool/SDK caller or direct dependency pin remains; historical evidence is archived/labelled | scoped source/dependency audit + full build/test |
 
@@ -187,8 +186,7 @@ uv --directory .\aearn\services\api lock --check
 # fails closed when reviewed immutable locks are absent.
 uv --directory .\aearn\services\executor run python -m pytest
 
-# Desktop and local managed process status.
-pnpm --dir .\aearn desktop:check
+# Local managed process status. Frontend validation is performed in the web browser.
 pnpm --dir .\aearn dev:status
 
 # Trellis/doc hygiene.
@@ -244,3 +242,11 @@ state explicitly that:
 Only after the entire matrix, retirement audit, fixture smoke, source-of-truth
 review and intentional human release decision can a separate release process
 be considered. This child must otherwise remain `in_progress`.
+
+## 2026-08-10：Learning Home / plan builder 验收增量
+
+| ID | 优先级 | 区域 | 验收 | 证据 |
+|---|---|---|---|---|
+| RT-16 | P0 | Planning persistence | session create/resume/cancel、append-only draft、source run replay、stale confirm、原子 track 创建、跨用户 404 | `test_learning_plan_sessions.py`、`test_learning_plan_draft_capability.py`、LearningTrack/DB tests |
+| RT-17 | P0 | Plan capability | exact Skill、active plan scope only、compact payload 仍受 12×360 限制、registry source、safe receipt、其他 scope default-deny | capability/catalog/policy/run-loop focused regression |
+| UX-02 | P1 | Learning Home / Planner | 三/二/一列、添加卡末尾并直接进入 planner、无语言选择器；首页与 planner 无左侧栏，planner 无 hero/外层对话卡片；未激活状态只有中央 Composer，首条消息/run 后才出现 GPT 式消息流与底部 Composer；进入 planner 即出现右缘按钮与四角圆角浮动窗口，`current_draft` 为空时只有 emoji 且 Composer 聚焦前后外壳视觉稳定，草案到达后同一窗口原位展示路线；窗口可收起/重开、与视口右缘保留明显留白且不挤压对话列；恢复/确认与 downstream 真实未就绪 | local web browser smoke |

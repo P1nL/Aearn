@@ -199,3 +199,7 @@ refresh；history endpoint 是 timeline 的唯一 source of truth。
 - [Tutor Harness Runtime](../architecture/tutor-harness-runtime.md)
 - [API 与 SSE 契约](../architecture/api-contract.md)
 - [验收计划](../qa/acceptance-test-plan.md)
+
+## 2026-08-10：verified shell 内部学习视图
+
+`AppRoute` 仍只有 `loading | welcome | cutover | tutor`。`tutor` 内部只包含 `learning_home`、`track_planner` 和 downstream not-ready intent，不提供 general conversation / 对话历史页面或导航入口。既有服务端 conversation 数据与 API 保持兼容；`features/tutor/TutorConversationSurface.tsx` 仅作为 planner 的 history/SSE/composer/continuation 内核，并始终发送 `plan_drafting/plan_drafting` scope。首页不渲染左侧栏，也不显示对话历史或手动刷新按钮；添加卡直接创建/恢复 planning session，不显示语言选择器，语言及其他计划信息全部在对话中询问。planning 页面同样不渲染应用左侧栏、Tutor hero 或外层对话卡片。历史加载完成且没有消息或 active run 时，未激活状态只在可用区域中央显示一个圆角 Composer，不显示空状态说明、建议按钮或底部提示；首条消息被接受后才切换为 Tutor 左侧正文、学习者右侧气泡的 GPT 式消息流，并把 Composer 移到底部。收集阶段保持居中单列，Composer 获得文本输入焦点时也不改变外壳边框、阴影或位置。进入 planning 页面时，页面右缘立即出现展开/收起按钮并默认弹出四角圆角的紧凑独立浮动窗口；服务端尚未返回 `current_draft` 时窗口只显示一个 emoji 和隐藏的可访问状态，不显示伪造计划字段，草案到达后在同一窗口原位替换为计划路线。窗口不参与主布局，与视口右缘保留明显留白，不表现为贴边侧栏，不挤压对话列且不占满整个右侧；用户可收起并重开，同一 draft 的普通刷新不强制重开，新 draft 版本则自动展示。窄屏使用限制最大高度的底部浮动检查器；卡片不重算进度、复习或 execution tier。宽屏三列、中屏两列、窄屏单列，添加卡 DOM 顺序固定最后。当前前端完成门仅为 `http://127.0.0.1:1420` 网页端浏览器验证；除非用户明确要求，不运行 Desktop build/typecheck。

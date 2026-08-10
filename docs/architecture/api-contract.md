@@ -349,3 +349,13 @@ terminal ordering、run loop/persistence、activity/inbox/memory/plan、默认
 proactive delivery、worker import、schema bootstrap 和 Desktop typed build。完整
 可复现命令与结果记录在
 [Release Readiness Ledger](../qa/tutor-harness-release-readiness.md)。
+
+## 2026-08-10：Learning Home 与 planning session API
+
+- `GET /api/learning-tracks/catalog?user_id={uuid}`：返回语言 `selection_tier`、`selectable`、lesson generation、server-resolved `execution_tier`/disclosure 与 source trust policy。
+- `POST /api/learning-plan-sessions`：创建或恢复同一用户唯一未完成 session，并创建专用 Tutor conversation、绑定 `plan_drafting` scope。
+- `GET /api/learning-plan-sessions/current` 与 `GET /api/learning-plan-sessions/{id}`：返回 user-scoped session 和当前 typed draft 安全投影。
+- `POST /api/learning-plan-sessions/{id}/cancel`：按 expected session version 取消。
+- `POST /api/learning-plan-sessions/{id}/confirm`：校验 session version、current draft id/version/hash 后，在同一事务创建 track/revision/route/progress 并改绑 conversation。
+
+稳定错误包括 `LEARNING_PLAN_SESSION_NOT_FOUND`、`LEARNING_PLAN_SESSION_CONFLICT`、`LEARNING_PLAN_SESSION_ALREADY_CONFIRMED`、`LEARNING_PLAN_DRAFT_NOT_READY`、`LEARNING_PLAN_DRAFT_INVALID`、`LEARNING_PLAN_DRAFT_QUALITY_BLOCKED`、`LEARNING_PLAN_DRAFT_STALE` 和 `LEARNING_LANGUAGE_NOT_SELECTABLE`。

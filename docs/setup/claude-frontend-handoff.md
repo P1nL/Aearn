@@ -84,7 +84,7 @@ docs/design/learning-agent-claude-desktop-framework.html
 4. .trellis/spec/frontend/quality-guidelines.md 是前端实现规则。
 5. 不要暴露 Attempt(run)、Attempt(submit)、review_submit、FSRS 内部规则、score 规则编辑或 raw due_at 控件。
 6. 不要修改 docs/design/learning-agent-claude-desktop-framework.html，除非用户明确要求。
-7. 修改后必须运行 pnpm --dir .\aearn desktop:check。
+7. 修改后只使用 `http://127.0.0.1:1420` 做网页端浏览器验证；除非用户明确要求，不运行 Desktop build/typecheck。
 8. 如果涉及学习闭环，必须浏览器验证 onboarding -> learning -> run visible tests -> explain-error -> stale -> rerun -> check explanation -> submit。
 
 输出要求：
@@ -93,15 +93,9 @@ docs/design/learning-agent-claude-desktop-framework.html
 - 给出实际运行过的验证命令和结果。
 ```
 
-## 最小验收命令
+## 最小验收方式
 
-前端代码改动后至少运行：
-
-```powershell
-pnpm --dir .\aearn desktop:check
-```
-
-如果涉及 API-connected UI 或学习闭环，还要启动真实本地服务：
+前端代码改动后直接使用网页端浏览器验证。若本地服务尚未启动，启动真实本地服务：
 
 ```powershell
 docker compose -f .\aearn\infra\docker-compose.yml up -d
@@ -139,7 +133,7 @@ clear bootstrap / cold start
 - 代码修改后旧运行结果没有 stale 提示，或者 submit 仍然可点。
 - 设置页新增了看似方便但越界的评分、FSRS 或 Attempt 控件。
 - reload 只信任 localStorage，没有触发 user / plan / dashboard / resume 请求链。
-- 只跑 `desktop:check`，但没有验证真实浏览器 UI。
+- 只做 build、typecheck 或静态搜索，但没有验证真实浏览器 UI。
 
 ## 交付清单
 

@@ -2,7 +2,7 @@
 
 ## Current runtime status
 
-**Updated: 2026-07-29.** Aearn's active product runtime is the **Tutor Harness**.
+**Updated: 2026-08-10.** Aearn's active product runtime is the **Tutor Harness**.
 The desktop starts from a local learner identity, asks the server for a
 cutover decision, and admits a learner to the Tutor workspace only after a
 server-authoritative `verified` receipt. The former graph/router/SDK product
@@ -11,7 +11,7 @@ runtime-specific documents are preserved under
 [`archive/2026-07-29/`](./archive/2026-07-29/).
 
 This is not a release approval. The verified code, dependency, database, and
-Desktop checks are recorded in
+web-browser checks are recorded in
 [`qa/tutor-harness-release-readiness.md`](./qa/tutor-harness-release-readiness.md).
 That ledger records the controlled verified-only proactive-delivery proof and its residual risk; it is not a release approval.
 
@@ -20,7 +20,7 @@ That ledger records the controlled verified-only proactive-delivery proof and it
 | Surface | Current document | Authority |
 | --- | --- | --- |
 | Runtime architecture and security boundary | [`architecture/tutor-harness-runtime.md`](./architecture/tutor-harness-runtime.md) | Tutor loop, Skills, safe persistence, provider, executor, scheduler, cutover, and rollback rules. |
-| Learner flow | [`product/user-flows.md`](./product/user-flows.md) | Local identity, controlled cutover, Tutor conversation, activity/inbox, memory, plan revision, and user controls. |
+| Learner flow | [`product/user-flows.md`](./product/user-flows.md) | Local identity, controlled cutover, LearningTrack home, conversational plan drafting, and downstream learning intents. |
 | Desktop interaction | [`product/frontend-interaction-spec.md`](./product/frontend-interaction-spec.md) | Bootstrap state machine, server authority, responsive Tutor UI, SSE handling, and local storage boundary. |
 | HTTP and SSE API | [`architecture/api-contract.md`](./architecture/api-contract.md) | Current public routes, idempotency, cursor replay, errors, and privacy rules. |
 | Database | [`architecture/database-schema.md`](./architecture/database-schema.md) | `tutor_*`, `harness_cutovers`, scoped persistence, deletion/preservation, and historical legacy tables. |

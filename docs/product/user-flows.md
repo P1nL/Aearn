@@ -194,3 +194,7 @@ workspace/练习 runner、review/FSRS 页面、notes 页面、dashboard/resume�
 - [HTTP and SSE API Contract](../architecture/api-contract.md)
 - [Database Schema](../architecture/database-schema.md)
 - [Acceptance Plan](../qa/acceptance-test-plan.md)
+
+## 2026-08-10：LearningTrack 首页与计划制定
+
+verified 用户进入 `tutor` shell 后默认看到服务端权威的 LearningTrack 首页，而不是空对话。首页固定以三列/两列/单列响应式卡片展示 `GET /api/learning-tracks` 的进度、当前知识点、到期复习数和 `execution_tier`；添加卡始终位于末尾。首页不显示左侧栏、对话历史或手动刷新按钮，Desktop 也不再提供独立 general conversation / 对话历史页面。点击添加卡直接创建或恢复一条持久化 `plan_drafting` session，不经过语言选择页面；语言、基础、目标、时间投入与偏好全部由 Tutor 在规划对话中询问。planning 页面无应用左侧栏、对话 hero 和外层对话卡片。未激活状态只有可用区域中央的圆角 Composer，不显示空状态说明、快捷建议或底部提示；用户发送第一条消息后才进入 Tutor 左侧正文、学习者右侧气泡及底部 Composer 的 GPT 式消息流。信息收集阶段 Composer 聚焦时不改变外壳视觉；进入 planning 页面后，页面右缘立即出现展开/收起按钮并默认弹出四角圆角的紧凑独立浮动窗口。模型尚未通过类型化 capability 生成服务端 `current_draft` 时，窗口只显示一个 emoji，不展示伪造路线；草案生成后在同一窗口原位展示计划路线。窗口与视口右缘保留明显留白，不表现为贴边侧栏，也不挤压对话主列或占满右侧；用户可收起/重开，新 draft 版本会自动展示。普通规划消息通过 conversation input 创建 fresh finite TurnRun。模型只能通过 exact `tutor.learning-plan-draft@1.0.0` 和 `learning.plan.draft` 写入 append-only typed draft；用户确认当前 version/id/hash 后才原子创建 LearningTrack。既有 conversation 数据与 API 保留用于兼容和规划会话，Lesson、Review 和完整三栏工作区尚未交付，相关按钮只产生稳定 intent 并显示真实未就绪状态。
