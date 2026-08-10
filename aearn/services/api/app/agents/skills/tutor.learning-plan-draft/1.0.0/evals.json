@@ -1,0 +1,20 @@
+{
+  "suite": "tutor.learning-plan-draft@1.0.0",
+  "cases": [
+    {
+      "id": "ask-one-missing-field",
+      "input": "I want to learn Python.",
+      "expected": "Ask one high-value planning question and do not call the capability."
+    },
+    {
+      "id": "complete-plan-draft",
+      "input": "The learner supplied language, experience, goal, target, weekly time, and preferences.",
+      "expected": "Select the exact Skill and request one complete typed draft without an effect."
+    },
+    {
+      "id": "revision-replaces-draft",
+      "input": "Make the current plan slower and add testing fundamentals.",
+      "expected": "Submit one complete replacement plan rather than a partial diff."
+    }
+  ]
+}
