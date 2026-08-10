@@ -1086,3 +1086,41 @@ Closed the planning-only Tutor Harness rearchitecture parent after all nine inde
 ### Next Steps
 
 - None - task complete
+
+
+## Session 90: 完成 Tutor 上下文治理评估与可观测性
+
+**Date**: 2026-08-10
+**Task**: 完成 Tutor 上下文治理评估与可观测性
+**Branch**: `main`
+
+### Summary
+
+完成 versioned v2 eval fixture、安全 receipt、usage/cache/repair attempt 计量、四档预算与 summary 综合回归、calibration 报告和默认禁用的五轮真实 provider smoke；完整 API 404 passed、1 skipped，Ruff、Mypy、lock、Desktop、Trellis 与 diff hygiene 通过。
+
+### Main Changes
+
+- 新增 `tutor_context_eval_v2` fixture、`tutor_context_eval_receipt_v1` 安全证据与 `tutor_context_calibration_v1` 分组报告。
+- 组合 current input、history、usage/cache、四档预算、repair attempt、summary retirement/correction/stale contract，并增加 PostgreSQL 集成 fixture。
+- 增加默认禁用的 `TUTOR_REAL_PROVIDER_SMOKE` 固定五轮边界，区分 fake contract、real behavior sample 与 release approval。
+- 同步 Tutor runtime、QA acceptance、release-readiness 与 backend executable quality spec。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `f0f8eb8` | feat(tutor): add context governance evals |
+
+### Testing
+
+- [OK] Complete serial API suite: `404 passed, 1 skipped in 33.41s`；skip 为未启用的 real-provider smoke。
+- [OK] Ruff、Mypy（114 source files）、`uv lock --check`、Desktop `tsc && vite build`。
+- [OK] Trellis validate、fixture JSON validation 与 `git diff --check`。
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
