@@ -1,6 +1,6 @@
 # Aearn Tutor Harness 验收计划
 
-**状态：** 当前 integration/QA 契约，2026-08-08。
+**状态：** 当前 integration/QA 契约，2026-08-10。
 **范围：** 当前 Tutor runtime、cutover、provider attempt 计量、LearningTrack、
 Desktop、background scheduler、executor boundary、legacy retirement 与文档一致性。
 **权威来源：** 当前代码/测试/schema；实测命令结果进入
@@ -53,6 +53,7 @@ release approval，任何未通过或未执行 gate 都必须在 ledger 中保�
 | RT-12 | P0 | Provider usage/cache accounting | Responses/Chat usage 归一化；cached 不重复计数；repair attempt 分列；缺失 usage 不伪造；跨用户、冲突重放和 UPDATE/DELETE 被拒绝；receipt 不进入公开投影 | `test_tutor_provider_gateway.py`、`test_tutor_run_loop.py`、`test_tutor_run_repository.py`、`test_db_bootstrap.py` |
 | RT-13 | P0 | Adaptive context budget | capability 显式冻结；完整 serializer + reserve 预估不越 hard limit；四档可裁剪；current input 不驱逐；`insufficient_context` 最多有界升级；cache 不放宽物理预算；policy/metadata 不进入公开 API/SSE | `test_tutor_context_budget.py`、`test_tutor_context_builder.py`、`test_tutor_provider_gateway.py`、`test_tutor_run_loop.py`、`test_tutor_input_merge.py`、`test_tutor_run_repository.py` |
 | RT-14 | P0 | Long-context summary | stable timeline retirement、v2 strict JSON、semantic dedupe、leased transient evidence load、committed latest-summary retrieval、current/recent 优先级、stale/invalid fail-closed、append-only/scope FK；不删除 raw history，不受 inferred-memory opt-out 误伤 | `test_tutor_context_summary.py`、`test_tutor_context_loader.py`、`test_tutor_context_builder.py`、`test_tutor_memory_curator.py`、`test_tutor_memory_curation_outbox.py`、`test_tutor_memory_curation_scheduler.py`、`test_tutor_provider_gateway.py`、`test_db_bootstrap.py` |
+| RT-15 | P0 | Context governance eval / observability | versioned v2 fixture、safe receipt、current/history/usage/budget/summary cross-contract cases、attempt-level usage、calibration grouping、real-provider smoke default skip；receipt 不含 raw prompt/history/provider body/reasoning/credential | `test_tutor_evals.py`、`test_tutor_context_eval_smoke.py`、`test_tutor_real_provider_smoke.py` 与 RT-12/13/14 owning tests |
 | UX-01 | P1 | Desktop bootstrap | local identity → server cutover → `welcome/cutover/tutor`; stale `planId` cleared and no legacy request emitted | `pnpm --dir .\aearn desktop:check` + fixture browser/Desktop smoke |
 | UX-02 | P1 | Responsive/error UX | narrow viewport no horizontal overflow; Composer/primary actions visible; stable public error/retry states | fixture browser/Desktop smoke |
 | DOC-01 | P0 | Current documentation | README/source-of-truth docs name Tutor as active runtime; transition/archive docs are visibly historical; no current Graph/SDK claim | link audit + `rg` audit + doc review |
@@ -137,7 +138,26 @@ release approval，任何未通过或未执行 gate 都必须在 ledger 中保�
    context summary 仍可生成，provider hard limit、adaptive budget、finite TurnRun 与
    PostgreSQL persistence contract 不变。
 
-### FI-07：Desktop normal/narrow path
+### FI-07：Tutor context governance eval 与 calibration
+
+1. 加载 `tutor_context_governance_v2.json`，使用固定 capability、budget policy、
+   clock/latency 数值、deterministic estimator 和 fake provider；旧
+   `tutor_harness_foundation_v1.json` 必须继续兼容。
+2. 断言 current input pinned 且只出现一次、equal timestamp history 按
+   `(created_at,message_id)` 排序、optional context 先驱逐、required input
+   无法表示时 provider call 为零。
+3. 断言 cached 是 actual input 子集、uncached 正确派生、repair 两次 attempt
+   分列而 decision count 仍为一、reported/calculated total 不互相覆盖。
+4. 断言 compact 与有界 expansion mode、physical hard limit、summary retirement
+   coverage、correction override、stale summary exclusion 和 deterministic replay。
+5. Eval receipt 只输出数字、布尔、枚举、版本和不透明 source ID；calibration
+   按 provider/protocol/capability/mode/estimator/config 分组，样本不足时不输出
+   P50/P95，也不自动修改生产配置。
+6. `TUTOR_REAL_PROVIDER_SMOKE` 默认未设置；普通 CI 必须 skip。只有单独批准且
+   provider 配置完整时，才运行固定五轮 smoke，并明确它只是 real behavior sample，
+   不是 fake contract 或 release approval。
+
+### FI-08：Desktop normal/narrow path
 
 1. Bootstrap Desktop with a disposable verified user and deliberately stale
    `planId`.
@@ -154,6 +174,9 @@ Run in this order after all code/docs edits. Do **not** run bootstrap-heavy
 pytest commands in parallel.
 
 ```powershell
+# Context governance focused gate; real-provider case is collected as skip by default.
+uv --directory .\aearn\services\api run python -m pytest tests/test_tutor_evals.py tests/test_tutor_context_eval_smoke.py tests/test_tutor_real_provider_smoke.py tests/test_tutor_context_builder.py tests/test_tutor_context_budget.py tests/test_tutor_provider_gateway.py tests/test_tutor_run_loop.py tests/test_tutor_context_loader.py tests/test_tutor_context_summary.py tests/test_tutor_run_repository.py tests/test_db_bootstrap.py -q
+
 # API suite: serial execution only.
 uv --directory .\aearn\services\api run python -m pytest
 uv --directory .\aearn\services\api run ruff check .
@@ -169,9 +192,20 @@ pnpm --dir .\aearn desktop:check
 pnpm --dir .\aearn dev:status
 
 # Trellis/doc hygiene.
-python .\.trellis\scripts\task.py validate .\.trellis\tasks\07-22-tutor-integration-qa-and-docs
+python .\.trellis\scripts\task.py validate .\.trellis\tasks\08-04-tutor-context-budget-evals-observability
 git diff --check
 ```
+
+
+Optional real-provider behavior sample; do not run without separate approval:
+
+```powershell
+$env:TUTOR_REAL_PROVIDER_SMOKE = "1"
+uv --directory .\aearn\services\api run python -m pytest tests/test_tutor_real_provider_smoke.py -q -m real_provider
+```
+
+The command must never be part of the default matrix and must not print provider
+request/response bodies, prompt/history, reasoning, credentials, paths, or commands.
 
 The API full suite itself includes the final fake-provider proactive smoke.
 When it fails, run the affected test module serially for diagnosis, repair the

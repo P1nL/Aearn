@@ -127,3 +127,44 @@ cutover tests pass; it is not a signed Tauri package test.
 - This ledger is not a release approval, deployment authorization or task
   archive instruction. Any failed/pending final gate keeps the child
   `in_progress`.
+
+
+## Tutor context governance eval evidence (2026-08-10)
+
+**任务：** `08-04-tutor-context-budget-evals-observability`
+**基线：** `f4cc3bb chore: record tutor context summary session`
+**状态：** **In progress — not a release approval**
+
+本轮在当前 `main` working tree 上增加 versioned `tutor_context_eval_v2` fixture、
+`tutor_context_eval_receipt_v1` 安全结果、`tutor_context_calibration_v1` 分组报告、
+PostgreSQL current/history 集成证据，以及默认禁用的固定五轮 real-provider smoke。
+没有调用真实 provider，没有提交、push、部署或修改生产数据。
+
+### 当前 focused evidence
+
+| Gate | 命令/证据 | 结果 | 边界 |
+| --- | --- | --- | --- |
+| Eval schema / safe receipt | `tests/test_tutor_evals.py` | **7 passed** | v1 兼容；v2 receipt 不含 raw prompt/history/provider body/reasoning/credential |
+| Smoke default boundary | `tests/test_tutor_context_eval_smoke.py tests/test_tutor_real_provider_smoke.py` | **2 passed, 1 skipped** | `TUTOR_REAL_PROVIDER_SMOKE` 未启用；未构造真实 provider |
+| Cross-contract focused batch | eval/smoke + context builder/budget/provider/run-loop/loader/summary/repository/bootstrap | **130 passed, 1 skipped in 4.11s** | PostgreSQL/bootstrap 串行；skip 是显式 real-provider case |
+| Calibration | versioned provider/protocol/capability/mode/estimator/config grouping | **Pass** | 样本不足不输出 P50/P95；报告只建议 review，不自动改生产配置 |
+| Complete API suite | `uv --directory .\aearn\services\api run python -m pytest -q` | **404 passed, 1 skipped in 33.41s** | 唯一 skip 为未启用的 `real_provider` smoke |
+| Ruff | `uv --directory .\aearn\services\api run ruff check app tests` | **Pass** | All checks passed |
+| Mypy | `uv --directory .\aearn\services\api run python -m mypy app --no-incremental` | **Pass — 114 source files** | 无类型抑制 |
+| Lock | `uv --directory .\aearn\services\api lock --check` | **Pass** | Resolved 51 packages；无 lock drift |
+| Desktop | `pnpm --dir .\aearn desktop:check` | **Pass** | `tsc && vite build`；46 modules transformed |
+| Trellis / diff hygiene | child validate + `git diff --check` | **Pass** | spec 更新后最终复验 |
+
+### Evidence classification
+
+- **Fake contract verified：** v2 deterministic cases 与前四个 owning contract 的 focused tests。
+- **Real provider behavior sampled：** 否；真实 smoke 未获单独批准并稳定 skip。
+- **Release approved：** 否；仍需完整串行 suite、Ruff、Mypy、lock、Desktop、Trellis、
+  diff hygiene 和人工 release decision。
+
+### 当前非声明和剩余风险
+
+- Fake provider 不能证明真实模型教学质量、缓存命中、延迟、quota 或可用性。
+- 固定 numeric latency 只验证 receipt/report contract，不是假装的真实首 token 测量。
+- 单次 real-provider smoke 即使未来通过，也只是 bounded behavior sample，不是发布批准。
+- 完整本地质量矩阵已经通过，但本任务仍停在 commit 审批门；没有 commit、push、deploy 或 task archive。

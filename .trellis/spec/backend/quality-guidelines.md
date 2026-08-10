@@ -3438,3 +3438,97 @@ compaction = build_compaction_input_from_selected_recent(plan, selection)
 
 这样可以避免 token budget 变化时遗漏或重复摘要，也避免 diagnostic persistence
 重新成为第二份 conversation history。
+
+
+---
+
+## Scenario: Tutor 上下文治理 Eval、Calibration 与真实 Provider Smoke 边界
+
+### 1. Scope / Trigger
+
+- Trigger：修改 Tutor context eval fixture/schema、safe eval receipt、跨 current-input/usage/budget/summary 聚合、calibration 报告或真实 provider smoke。
+- Scope：`app/services/tutor/{evals,context_evals,context_eval_smoke}.py`、`tests/fixtures/tutor_evals/`、相关 focused/PostgreSQL tests、QA/runtime/release-readiness 文档。
+- 该 contract 只组合前置 child 已冻结的语义；不授权第二套 context selection、usage 派生、summary eligibility、provider routing、生产阈值自动修改或默认 live-provider CI。
+
+### 2. Signatures
+
+- Legacy fixture：`load_tutor_eval_cases(path) -> tuple[TutorEvalCase, ...]`，继续读取 `tutor_eval_v1`。
+- Context fixture：`load_tutor_context_eval_cases(path) -> tuple[TutorContextEvalCase, ...]`，只读取 `tutor_context_eval_v2`。
+- Execution：`run_tutor_context_eval_case(case) -> TutorContextEvalResult`；`run_tutor_context_eval_fixture(path) -> tuple[TutorContextEvalResult, ...]`。
+- Safe result：`TutorContextEvalReceipt.as_dict() -> dict[str, object]`，schema 为 `tutor_context_eval_receipt_v1`。
+- Calibration：`build_tutor_context_calibration_report(receipts, percentile_min_samples=5) -> TutorCalibrationReport`，schema 为 `tutor_context_calibration_v1`。
+- Optional smoke：`TUTOR_REAL_PROVIDER_SMOKE=1` + `pytest -m real_provider tests/test_tutor_real_provider_smoke.py`。
+
+### 3. Contracts
+
+- v2 fixture 使用 synthetic learner-safe content、固定 capability/policy、deterministic estimator、fake provider 和固定 numeric latency；普通 suite 不访问网络。
+- Eval 必须调用现有 `TutorContextBuilder`、`TutorContextBudgetPlanner`、`PrimaryTutorProviderGateway`、`LLMUsage` 与 compaction contract；不得复制或弱化 owning child 的生产语义。PostgreSQL loader/persistence/bootstrap tests 仍是 timeline、scope、append-only 和 durable round-trip 的权威证据。
+- Receipt 只允许数字、布尔、枚举、版本、安全 diagnostic 和不透明 source ID。禁止 prompt、message content、history、provider request/response body、reasoning 文本、credential、URL/header、path、command 或可还原 learner 文本的 summary。
+- `cached_input_tokens` 始终是 `actual_input_tokens` 子集；`uncached = actual - cached`。repair 每个实际 attempt 单独保留，decision count 不因 repair 增加；reported total 与 calculated input-plus-output 分列。missing usage 为 `None`，不是 0。
+- 任意 budget receipt 的 `estimated_total_input_tokens <= physical_input_limit`；current input 只出现一次且不能被 optional context 驱逐。required input 无法表示或完整请求越界时 provider call 为 0。
+- Summary eval 只报告 retirement coverage 数量、trigger、safe IDs 和 replay stability；raw retired messages 只允许在既有 leased Curator transient boundary 内出现，不进入 eval receipt。
+- Calibration 至少按 provider/protocol/capability/mode/estimator/config version 分组。样本数低于阈值时 P50/P95 为 `None`；误差过大只返回 review 建议，不能自动修改 Settings、policy 或 routing。
+- 真实 smoke 默认在读取 Settings、构造 provider 或发送请求之前 disabled/skip。只有单独批准、`TUTOR_REAL_PROVIDER_SMOKE=1` 和完整 provider 配置同时存在时，才运行固定五轮；输出仅含 learner-safe reply、安全 usage/cache/mode/latency/attempt/rubric。fake contract、real behavior sample 与 release approval 必须分别标记。
+
+### 4. Validation & Error Matrix
+
+- 未知 fixture schema、空 cases、重复 `case_id`、非法 capability/mode target/ratio/origin/timestamp -> `TutorContextEvalFixtureError`，不运行 provider。
+- token 为负/布尔、cached 大于 input -> `LLMUsage`/fixture validation 拒绝。
+- expected subset 不匹配 -> `TutorContextEvalResult.passed=false`，不得改 production code 或吞掉观测值。
+- protected marker 出现在 receipt -> `TutorContextEvalFixtureError`；禁止通过删测试 marker 掩盖泄漏。
+- current input 不可表示或 request hard-limit overflow -> safe diagnostic + `provider_call_count=0`。
+- usage 缺失 -> attempt 保留、usage 字段 `None`；主 decision 可继续。
+- `TUTOR_REAL_PROVIDER_SMOKE` 未设置 -> smoke 在 `get_settings()` 前返回 disabled，pytest `real_provider` case 稳定 skip。
+- 开关已设置但 provider 配置 incomplete/unsupported -> safe unavailable，不打印 credential 或配置正文。
+
+### 5. Good/Base/Bad Cases
+
+- Good：v1 fixture 继续通过；v2 同时证明 current pinned/newest history/no duplicate、cached 非重复、repair attempt 分列、compact/complex bounded expansion、hard limit、summary retirement/correction/stale exclusion，receipt 不含 protected marker。
+- Good：五个同组 calibration 样本达到阈值后生成 P50/P95；误差低时建议保留 versioned config 并等待真实证据。
+- Base：provider 不返回 usage；receipt 的 token 字段保持 unknown，deterministic contract 仍可通过。真实 smoke 未批准时 `2 passed, 1 skipped` 是正常边界，不是缺失测试。
+- Bad：在 eval 中重写 production selector；把 cached 加回 input；把两个 repair attempt 合并；把 fake reply 宣称为真实教学质量；默认加载 `.env`/provider；把 raw prompt/history/body/reasoning 写入 report 或 ledger。
+
+### 6. Tests Required
+
+- `tests/test_tutor_evals.py`：v1 compatibility、v2 required case set、safe receipt、attempt indexes/usage、physical limit、calibration grouping/threshold、invalid schema/usage，以及真实 PostgreSQL current/equal-timestamp history。
+- `tests/test_tutor_context_eval_smoke.py`：环境开关在 Settings/provider 构造前 fail-closed，rubric 对 correction/advice 保持有界。
+- `tests/test_tutor_real_provider_smoke.py`：`real_provider` marker + env skip；默认完整 suite 不访问网络。
+- Owning regression：`test_tutor_context_builder.py`、`test_tutor_context_budget.py`、`test_tutor_provider_gateway.py`、`test_tutor_run_loop.py`、`test_tutor_context_loader.py`、`test_tutor_context_summary.py`、`test_tutor_run_repository.py`、`test_db_bootstrap.py`。
+- 最终串行运行完整 pytest，再运行 `ruff check app tests`、`python -m mypy app --no-incremental`、`uv lock --check`、Desktop check、Trellis validate 和 `git diff --check`；真实 smoke 只在另行批准后单独运行。
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+# 把 raw evidence 与 aggregate 混在一起，还把 cached 重复加回 physical input。
+receipt = {
+    "prompt": provider_request,
+    "history": messages,
+    "actual_input_tokens": usage.input_tokens + usage.cached_input_tokens,
+    "attempt": provider_result.attempts[-1],
+}
+if os.getenv("CI"):
+    run_live_provider_smoke()
+```
+
+#### Correct
+
+```python
+# 组合现有 contract，只投影安全数值/枚举/版本，并保留 attempt 粒度。
+attempts = tuple(TutorEvalAttemptMetrics.from_receipt(item) for item in result.attempts)
+receipt = TutorContextEvalReceipt(
+    case_id=case.case_id,
+    actual_input_tokens=usage.input_tokens,
+    cached_input_tokens=usage.cached_input_tokens,
+    uncached_input_tokens=usage.uncached_input_tokens,
+    attempts=attempts,
+    provider_called=provider_calls > 0,
+    rubric=fixed_boolean_rubric,
+    # identity/version/count fields omitted here for brevity
+)
+if os.getenv("TUTOR_REAL_PROVIDER_SMOKE") == "1" and settings.llm_configuration_status == "configured":
+    run_bounded_five_turn_smoke()
+```
+
+正确实现让 fake contract、PostgreSQL durable evidence、真实模型抽样和人工 release decision 保持可审计且互不冒充。
