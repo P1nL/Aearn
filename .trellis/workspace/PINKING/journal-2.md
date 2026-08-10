@@ -1124,3 +1124,38 @@ Closed the planning-only Tutor Harness rearchitecture parent after all nine inde
 ### Next Steps
 
 - None - task complete
+
+
+## Session 91: 完成学习首页与对话式计划制定
+
+**Date**: 2026-08-10
+**Task**: 完成学习首页与对话式计划制定
+**Branch**: `main`
+
+### Summary
+
+实现服务端权威的 LearningTrack 首页、对话式计划草案能力、可确认计划会话与独立浮动计划窗口；完成后端测试、网页端交互验证、规范同步和任务归档。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `802693a` | (see git log) |
+| `3ebc420` | (see git log) |
+| `bf0a414` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
