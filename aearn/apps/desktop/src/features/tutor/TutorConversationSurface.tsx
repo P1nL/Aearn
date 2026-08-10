@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
 
 import {
   acceptTutorConversationInput,
@@ -17,12 +17,12 @@ import {
   markTutorInboxRead,
   rollbackTutorPlan,
   updateTutorPreferences,
-} from "../api";
-import { TutorActivityPanel } from "../features/tutor/TutorActivityPanel";
-import { TutorMemoryPanel } from "../features/tutor/TutorMemoryPanel";
-import { TutorPlanPreferencesPanel } from "../features/tutor/TutorPlanPreferencesPanel";
-import { useTutorSSE } from "../hooks/useTutorSSE";
-import { getErrorInfo } from "../lib/errorMessages";
+} from "../../api";
+import { TutorActivityPanel } from "./TutorActivityPanel";
+import { TutorMemoryPanel } from "./TutorMemoryPanel";
+import { TutorPlanPreferencesPanel } from "./TutorPlanPreferencesPanel";
+import { useTutorSSE } from "../../hooks/useTutorSSE";
+import { getErrorInfo } from "../../lib/errorMessages";
 import type {
   ApiError,
   TutorActivityItem,
@@ -37,15 +37,17 @@ import type {
   TutorRunStatus,
   TutorSseEvent,
   UserProfile,
-} from "../types";
+} from "../../types";
 
-type TutorWorkspacePageProps = {
+export type TutorConversationSurfaceProps = {
   user: UserProfile | null;
   enabled?: boolean;
   isActive?: boolean;
   selectedConversationId: string | null;
   onSelectConversation: (conversationId: string | null) => void;
   onConversationsChanged?: () => void;
+  mode?: "general" | "plan_drafting";
+  showControls?: boolean;
 };
 
 type ControlsStatus = "idle" | "loading" | "ready" | "error";
@@ -59,15 +61,18 @@ type PreferenceUpdate = {
 type ScrollAnchor = { top: number; height: number };
 
 const HISTORY_PAGE_SIZE = 40;
+const GENERAL_EXAMPLES = ["帮我理清闭包和作用域", "我想系统复习 DOM 事件", "这个报错我不知道从哪里开始看"] as const;
 
-export function TutorWorkspacePage({
+export function TutorConversationSurface({
   user,
   enabled = false,
   isActive = true,
   selectedConversationId,
   onSelectConversation,
   onConversationsChanged,
-}: TutorWorkspacePageProps) {
+  mode = "general",
+  showControls = true,
+}: TutorConversationSurfaceProps) {
   const [timeline, setTimeline] = useState<TutorHistoryItem[]>([]);
   const [historyStatus, setHistoryStatus] = useState<HistoryStatus>("idle");
   const [historyError, setHistoryError] = useState<{ code: string; message: string } | null>(null);
@@ -189,7 +194,7 @@ export function TutorWorkspacePage({
   }, [refreshCurrentHistory]);
 
   const loadControls = useCallback(async (signal?: AbortSignal) => {
-    if (!userId || !mayUseTutor) {
+    if (!userId || !mayUseTutor || !showControls) {
       setControlsStatus("idle");
       return;
     }
@@ -323,6 +328,9 @@ export function TutorWorkspacePage({
               conversationId: selectedConversationId,
               content,
               clientActionId: createTutorActionId("tutor-conversation-input"),
+              ...(mode === "plan_drafting"
+                ? { learningScope: { scope_kind: "plan_drafting" as const, task_kind: "plan_drafting" as const } }
+                : {}),
             })
           : await acceptTutorFirstTurn({
               userId,
@@ -450,32 +458,64 @@ export function TutorWorkspacePage({
     );
   }
 
+  const planning = mode === "plan_drafting";
+  const planningIdle = planning
+    && historyStatus === "ready"
+    && timeline.length === 0
+    && activeRun === null
+    && historyError === null;
+  const workspaceClassName = showControls
+    ? "tutor-workspace"
+    : `tutor-workspace tutor-conversation-only${planningIdle ? " tutor-conversation-idle" : ""}`;
   const title = selectedConversationId ? "当前学习对话" : "新对话";
   const composerLabel = composerMode === "continuation"
     ? "继续完成这项确认"
-    : selectedConversationId
-      ? "继续当前对话"
-      : "从你的学习目标开始";
+    : planning
+      ? "告诉 Tutor 你的目标或调整意见"
+      : selectedConversationId
+        ? "继续当前对话"
+        : "从你的学习目标开始";
   const composerHint = composerMode === "continuation"
     ? "此输入仅用于服务器明确要求的继续确认。"
-    : "普通消息会创建新的有限 TurnRun；当前会话历史会被安全保留。";
+    : planning
+      ? "普通消息会创建新的有限 plan_drafting TurnRun；正式计划只来自已验证的类型化草案。"
+      : "普通消息会创建新的有限 TurnRun；当前会话历史会被安全保留。";
+  const composerSubmitLabel = composerStatus === "submitting"
+    ? "正在确认输入……"
+    : composerMode === "continuation"
+      ? "提交确认"
+      : selectedConversationId
+        ? "发送消息"
+        : "开始对话";
+  function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+      event.preventDefault();
+      void submitComposer();
+    }
+  }
 
   return (
-    <main className="tutor-workspace" aria-labelledby="tutor-workspace-title">
+    <main
+      className={workspaceClassName}
+      aria-label={planning ? "学习计划对话" : undefined}
+      aria-labelledby={planning ? undefined : "tutor-workspace-title"}
+    >
       <section className="tutor-main-column">
-        <header className="tutor-hero">
-          <div>
-            <p className="tutor-panel-eyebrow">Tutor 学习对话</p>
-            <h1 id="tutor-workspace-title">{title}</h1>
-            <p>服务端保存可见对话与公开处理过程。普通消息始终从新的、有限的处理单元开始。</p>
-          </div>
-          <div className="tutor-run-summary" aria-live="polite">
-            <span>当前状态</span>
-            <strong>{activeRun ? displayRunStatus(activeRun.status) : selectedConversationId ? "没有进行中的处理" : "等待你的第一条目标"}</strong>
-            {activeRun && <small>{activeRun.continuation_kind ? "等待明确的继续确认" : "正在使用当前公开状态"}</small>}
-            {streamUrl && <small>流游标：{stream.cursor}</small>}
-          </div>
-        </header>
+        {!planning && (
+          <header className="tutor-hero">
+            <div>
+              <p className="tutor-panel-eyebrow">Tutor 学习对话</p>
+              <h1 id="tutor-workspace-title">{title}</h1>
+              <p>服务端保存可见对话与公开处理过程。普通消息始终从新的、有限的处理单元开始。</p>
+            </div>
+            <div className="tutor-run-summary" aria-live="polite">
+              <span>当前状态</span>
+              <strong>{activeRun ? displayRunStatus(activeRun.status) : selectedConversationId ? "没有进行中的处理" : "等待你的第一条目标"}</strong>
+              {activeRun && <small>{activeRun.continuation_kind ? "等待明确的继续确认" : "正在使用当前公开状态"}</small>}
+              {streamUrl && <small>流游标：{stream.cursor}</small>}
+            </div>
+          </header>
+        )}
 
         {streamError && (
           <div className="tutor-inline-error tutor-stream-error" role="alert">
@@ -495,7 +535,7 @@ export function TutorWorkspacePage({
           </div>
         )}
 
-        <section className="tutor-timeline" ref={timelineRef} aria-label="Tutor 对话时间线" aria-busy={historyStatus === "loading"}>
+        <section className={`tutor-timeline${planning ? " tutor-chatgpt-timeline" : ""}`} ref={timelineRef} aria-label="Tutor 对话时间线" aria-busy={historyStatus === "loading"}>
           {historyHasMore && (
             <button className="tutor-load-earlier" type="button" onClick={() => void loadOlderHistory()} disabled={loadingOlder}>
               {loadingOlder ? "正在加载更早记录……" : "加载更早记录"}
@@ -510,7 +550,7 @@ export function TutorWorkspacePage({
               {selectedConversationId && <button className="tutor-text-button" type="button" onClick={refreshCurrentHistory}>重试</button>}
             </div>
           )}
-          {historyStatus !== "loading" && timeline.length === 0 && !historyError && (
+          {historyStatus !== "loading" && timeline.length === 0 && !historyError && !planning && (
             <div className="tutor-empty-timeline">
               <strong>{selectedConversationId ? "这里还没有可见记录" : "可以从一个模糊目标开始"}</strong>
               <p>{selectedConversationId ? "服务器会在有可见输入或回复后保留时间线。" : "例如：理解闭包、准备 JavaScript DOM 项目，或针对某个报错调整学习方向。"}</p>
@@ -545,45 +585,77 @@ export function TutorWorkspacePage({
           </section>
         )}
 
-        <form className="tutor-composer" onSubmit={(event) => { event.preventDefault(); void submitComposer(); }}>
-          <label htmlFor="tutor-composer-input">{composerLabel}</label>
-          {composerMode === "continuation" && (
-            <div className="tutor-composer-mode" role="status">
-              <span>正在使用已授权的继续确认输入。</span>
-              <button className="tutor-text-button" type="button" onClick={() => setComposerMode("ordinary")}>改为普通消息</button>
-            </div>
-          )}
-          <textarea
-            ref={composerRef}
-            id="tutor-composer-input"
-            value={composerText}
-            rows={4}
-            maxLength={16_000}
-            placeholder={composerMode === "continuation" ? "输入服务器请求的确认或结果。" : "例如：我会写基础 JavaScript，但总弄不清闭包里的变量什么时候会保留。"}
-            disabled={!mayUseTutor || composerStatus === "submitting"}
-            onChange={(event) => setComposerText(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
-                event.preventDefault();
-                void submitComposer();
-              }
-            }}
-          />
-          <div className="tutor-composer-footer">
-            <div className="tutor-goal-examples" aria-label="目标示例">
-              {["帮我理清闭包和作用域", "我想系统复习 DOM 事件", "这个报错我不知道从哪里开始看"].map((example) => (
-                <button key={example} type="button" onClick={() => setComposerText(example)} disabled={composerStatus === "submitting"}>{example}</button>
-              ))}
-            </div>
-            <button className="tutor-primary-button" type="submit" disabled={composerStatus === "submitting" || composerText.trim().length === 0}>
-              {composerStatus === "submitting" ? "正在确认输入……" : composerMode === "continuation" ? "提交确认" : selectedConversationId ? "发送消息" : "开始对话"}
-            </button>
+        {planning ? (
+          <div className={`tutor-chatgpt-composer-area${planningIdle ? " idle" : ""}`}>
+            <form className="tutor-composer tutor-composer-chatgpt" onSubmit={(event) => { event.preventDefault(); void submitComposer(); }}>
+              <label className="visually-hidden" htmlFor="tutor-composer-input">{composerLabel}</label>
+              {composerMode === "continuation" && (
+                <div className="tutor-composer-mode" role="status">
+                  <span>正在使用已授权的继续确认输入。</span>
+                  <button className="tutor-text-button" type="button" onClick={() => setComposerMode("ordinary")}>改为普通消息</button>
+                </div>
+              )}
+              <div className="tutor-composer-chatgpt-shell">
+                <textarea
+                  ref={composerRef}
+                  id="tutor-composer-input"
+                  value={composerText}
+                  rows={2}
+                  maxLength={16_000}
+                  placeholder={composerMode === "continuation" ? "输入服务器请求的确认或结果。" : "描述你想学习什么，或回答 Tutor 的问题"}
+                  disabled={!mayUseTutor || composerStatus === "submitting"}
+                  onChange={(event) => setComposerText(event.target.value)}
+                  onKeyDown={handleComposerKeyDown}
+                />
+                <button
+                  className="tutor-composer-send"
+                  type="submit"
+                  aria-label={composerSubmitLabel}
+                  title={composerSubmitLabel}
+                  disabled={composerStatus === "submitting" || composerText.trim().length === 0}
+                >
+                  <span aria-hidden="true">↑</span>
+                </button>
+              </div>
+              {!planningIdle ? <p className="tutor-composer-hint">Aearn Tutor 可能会犯错，请核对生成的计划路线。按 Ctrl / ⌘ + Enter 可发送。</p> : null}
+            </form>
           </div>
-          <p className="tutor-composer-hint">{composerHint} 按 Ctrl / ⌘ + Enter 可发送。</p>
-        </form>
+        ) : (
+          <form className="tutor-composer" onSubmit={(event) => { event.preventDefault(); void submitComposer(); }}>
+            <label htmlFor="tutor-composer-input">{composerLabel}</label>
+            {composerMode === "continuation" && (
+              <div className="tutor-composer-mode" role="status">
+                <span>正在使用已授权的继续确认输入。</span>
+                <button className="tutor-text-button" type="button" onClick={() => setComposerMode("ordinary")}>改为普通消息</button>
+              </div>
+            )}
+            <textarea
+              ref={composerRef}
+              id="tutor-composer-input"
+              value={composerText}
+              rows={4}
+              maxLength={16_000}
+              placeholder="例如：我会写基础 JavaScript，但总弄不清闭包里的变量什么时候会保留。"
+              disabled={!mayUseTutor || composerStatus === "submitting"}
+              onChange={(event) => setComposerText(event.target.value)}
+              onKeyDown={handleComposerKeyDown}
+            />
+            <div className="tutor-composer-footer">
+              <div className="tutor-goal-examples" aria-label="目标示例">
+                {GENERAL_EXAMPLES.map((example) => (
+                  <button key={example} type="button" onClick={() => setComposerText(example)} disabled={composerStatus === "submitting"}>{example}</button>
+                ))}
+              </div>
+              <button className="tutor-primary-button" type="submit" disabled={composerStatus === "submitting" || composerText.trim().length === 0}>
+                {composerSubmitLabel}
+              </button>
+            </div>
+            <p className="tutor-composer-hint">{composerHint} 按 Ctrl / ⌘ + Enter 可发送。</p>
+          </form>
+        )}
       </section>
 
-      <aside className="tutor-side-column" aria-label="Tutor 学习控制">
+      {showControls && <aside className="tutor-side-column" aria-label="Tutor 学习控制">
         <TutorActivityPanel
           activity={activity}
           inbox={inbox}
@@ -613,7 +685,7 @@ export function TutorWorkspacePage({
           onRollback={handleRollbackPlan}
           onUpdatePreferences={handleUpdatePreferences}
         />
-      </aside>
+      </aside>}
     </main>
   );
 }

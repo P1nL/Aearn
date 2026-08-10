@@ -4,6 +4,14 @@ import {
   type ApiHealth,
   type HarnessCutoverDecision,
   type LanguageCourse,
+  type LearningLanguageCatalogItem,
+  type LearningPlanDraft,
+  type LearningPlanModule,
+  type LearningPlanNode,
+  type LearningPlanProfile,
+  type LearningPlanSession,
+  type LearningScopeInput,
+  type LearningTrackSummary,
   type TutorActivityItem,
   type TutorContinuationKind,
   type TutorConversationHistoryResponse,
@@ -91,11 +99,17 @@ export async function acceptTutorFirstTurn(input: {
   userId: string;
   content: string;
   clientActionId: string;
+  learningScope?: LearningScopeInput;
 }): Promise<TutorInputAcceptedResponse> {
   const payload = await requestJson(`${API_BASE_URL}/api/tutor/conversations/first-turn`, {
     method: "POST",
     headers: tutorMutationHeaders(input.clientActionId),
-    body: JSON.stringify({ user_id: input.userId, content: input.content, client_action_id: input.clientActionId }),
+    body: JSON.stringify({
+      user_id: input.userId,
+      content: input.content,
+      client_action_id: input.clientActionId,
+      ...(input.learningScope ? { learning_scope: input.learningScope } : {}),
+    }),
   });
   const response = toTutorInputAcceptedResponse(payload);
   if (!response) throw new Error("Tutor first-turn API returned an invalid payload");
@@ -139,13 +153,19 @@ export async function acceptTutorConversationInput(input: {
   conversationId: string;
   content: string;
   clientActionId: string;
+  learningScope?: LearningScopeInput;
 }): Promise<TutorInputAcceptedResponse> {
   const payload = await requestJson(
     `${API_BASE_URL}/api/tutor/conversations/${encodeURIComponent(input.conversationId)}/inputs`,
     {
       method: "POST",
       headers: tutorMutationHeaders(input.clientActionId),
-      body: JSON.stringify({ user_id: input.userId, content: input.content, client_action_id: input.clientActionId }),
+      body: JSON.stringify({
+        user_id: input.userId,
+        content: input.content,
+        client_action_id: input.clientActionId,
+        ...(input.learningScope ? { learning_scope: input.learningScope } : {}),
+      }),
     },
   );
   const response = toTutorInputAcceptedResponse(payload);
@@ -304,6 +324,125 @@ export async function updateTutorPreferences(input: {
   return preferences;
 }
 
+export async function fetchLearningTracks(userId: string, signal?: AbortSignal): Promise<LearningTrackSummary[]> {
+  const query = new URLSearchParams({ user_id: userId });
+  const payload = await requestJson(`${API_BASE_URL}/api/learning-tracks?${query.toString()}`, { signal });
+  if (!isRecord(payload) || !Array.isArray(payload.items)) throw new Error("LearningTrack API returned an invalid payload");
+  const items = payload.items.map(toLearningTrackSummary);
+  if (items.some((item) => item === null)) throw new Error("LearningTrack API returned an invalid item");
+  return items.filter((item): item is LearningTrackSummary => item !== null);
+}
+
+export async function fetchLearningLanguageCatalog(
+  userId: string,
+  signal?: AbortSignal,
+): Promise<LearningLanguageCatalogItem[]> {
+  const query = new URLSearchParams({ user_id: userId });
+  const payload = await requestJson(`${API_BASE_URL}/api/learning-tracks/catalog?${query.toString()}`, { signal });
+  if (!isRecord(payload) || !Array.isArray(payload.items)) throw new Error("Learning language catalog returned an invalid payload");
+  const items = payload.items.map(toLearningLanguageCatalogItem);
+  if (items.some((item) => item === null)) throw new Error("Learning language catalog returned an invalid item");
+  return items.filter((item): item is LearningLanguageCatalogItem => item !== null);
+}
+
+export async function fetchCurrentLearningPlanSession(
+  userId: string,
+  signal?: AbortSignal,
+): Promise<LearningPlanSession | null> {
+  const query = new URLSearchParams({ user_id: userId });
+  const payload = await requestJson(`${API_BASE_URL}/api/learning-plan-sessions/current?${query.toString()}`, { signal });
+  if (!isRecord(payload) || !("session" in payload)) throw new Error("Learning plan session API returned an invalid payload");
+  if (payload.session === null) return null;
+  const session = toLearningPlanSession(payload.session);
+  if (!session) throw new Error("Learning plan session API returned an invalid session");
+  return session;
+}
+
+export async function fetchLearningPlanSession(
+  userId: string,
+  sessionId: string,
+  signal?: AbortSignal,
+): Promise<LearningPlanSession> {
+  const query = new URLSearchParams({ user_id: userId });
+  const payload = await requestJson(
+    `${API_BASE_URL}/api/learning-plan-sessions/${encodeURIComponent(sessionId)}?${query.toString()}`,
+    { signal },
+  );
+  const session = isRecord(payload) ? toLearningPlanSession(payload.session) : null;
+  if (!session) throw new Error("Learning plan session API returned an invalid session");
+  return session;
+}
+
+export async function createLearningPlanSession(input: {
+  userId: string;
+  clientActionId: string;
+  preferredLanguageId?: string;
+}): Promise<LearningPlanSession> {
+  const payload = await requestJson(`${API_BASE_URL}/api/learning-plan-sessions`, {
+    method: "POST",
+    headers: tutorMutationHeaders(input.clientActionId),
+    body: JSON.stringify({
+      user_id: input.userId,
+      client_action_id: input.clientActionId,
+      ...(input.preferredLanguageId ? { preferred_language_id: input.preferredLanguageId } : {}),
+    }),
+  });
+  const session = isRecord(payload) ? toLearningPlanSession(payload.session) : null;
+  if (!session) throw new Error("Learning plan session creation returned an invalid payload");
+  return session;
+}
+
+export async function cancelLearningPlanSession(input: {
+  userId: string;
+  sessionId: string;
+  expectedSessionVersion: number;
+  clientActionId: string;
+}): Promise<LearningPlanSession> {
+  const payload = await requestJson(
+    `${API_BASE_URL}/api/learning-plan-sessions/${encodeURIComponent(input.sessionId)}/cancel`,
+    {
+      method: "POST",
+      headers: tutorMutationHeaders(input.clientActionId),
+      body: JSON.stringify({
+        user_id: input.userId,
+        client_action_id: input.clientActionId,
+        expected_session_version: input.expectedSessionVersion,
+      }),
+    },
+  );
+  const session = isRecord(payload) ? toLearningPlanSession(payload.session) : null;
+  if (!session) throw new Error("Learning plan session cancellation returned an invalid payload");
+  return session;
+}
+
+export async function confirmLearningPlanSession(input: {
+  userId: string;
+  session: LearningPlanSession;
+  clientActionId: string;
+}): Promise<{ session: LearningPlanSession; track: LearningTrackSummary }> {
+  const draft = input.session.current_draft;
+  if (!draft) throw new Error("Learning plan draft is not ready");
+  const payload = await requestJson(
+    `${API_BASE_URL}/api/learning-plan-sessions/${encodeURIComponent(input.session.session_id)}/confirm`,
+    {
+      method: "POST",
+      headers: tutorMutationHeaders(input.clientActionId),
+      body: JSON.stringify({
+        user_id: input.userId,
+        client_action_id: input.clientActionId,
+        expected_session_version: input.session.version,
+        draft_id: draft.draft_id,
+        draft_version: draft.draft_version,
+        content_hash: draft.content_hash,
+      }),
+    },
+  );
+  const session = isRecord(payload) ? toLearningPlanSession(payload.session) : null;
+  const track = isRecord(payload) ? toLearningTrackSummary(payload.track) : null;
+  if (!session || !track) throw new Error("Learning plan confirmation returned an invalid payload");
+  return { session, track };
+}
+
 export function buildTutorRunEventsUrl(runId: string, userId: string): string {
   const url = new URL(`/api/tutor/runs/${encodeURIComponent(runId)}/events`, API_BASE_URL);
   url.searchParams.set("user_id", userId);
@@ -400,6 +539,206 @@ function isHarnessCutoverSummary(payload: unknown): boolean {
     payload.retained_categories.every(isString) &&
     typeof payload.target_state_present === "boolean"
   );
+}
+
+function toLearningTrackSummary(payload: unknown): LearningTrackSummary | null {
+  if (
+    !isRecord(payload) ||
+    !isString(payload.track_id) ||
+    !isString(payload.language_id) ||
+    !isString(payload.language_display_name) ||
+    !isString(payload.goal_text) ||
+    !isString(payload.target_level) ||
+    !isLearningTrackStatus(payload.status) ||
+    !isNonNegativeSafeInteger(payload.version) ||
+    !isString(payload.active_revision_id) ||
+    !isString(payload.active_plan_title) ||
+    !isNullableString(payload.current_knowledge_key) ||
+    !isNullableString(payload.current_knowledge_title) ||
+    !isRecord(payload.progress) ||
+    !isNonNegativeSafeInteger(payload.progress.total) ||
+    !isNonNegativeSafeInteger(payload.progress.completed) ||
+    !isNonNegativeSafeInteger(payload.progress.in_progress) ||
+    !isNonNegativeSafeInteger(payload.progress.review_due) ||
+    typeof payload.progress.percent !== "number" ||
+    !isNonNegativeSafeInteger(payload.review_due_count) ||
+    !isExecutionTier(payload.execution_tier) ||
+    !isString(payload.execution_disclosure) ||
+    !isNullableString(payload.last_learned_at) ||
+    !isNullableString(payload.updated_at)
+  ) return null;
+  return payload as LearningTrackSummary;
+}
+
+function toLearningLanguageCatalogItem(payload: unknown): LearningLanguageCatalogItem | null {
+  if (
+    !isRecord(payload) ||
+    !isString(payload.language_id) ||
+    !isString(payload.display_name) ||
+    !isSelectionTier(payload.selection_tier) ||
+    typeof payload.selectable !== "boolean" ||
+    !isCapabilityState(payload.lesson_generation_state) ||
+    !isExecutionTier(payload.execution_tier) ||
+    !isString(payload.execution_disclosure) ||
+    !isSourceTrustPolicy(payload.source_trust_policy)
+  ) return null;
+  return payload as LearningLanguageCatalogItem;
+}
+
+function toLearningPlanSession(payload: unknown): LearningPlanSession | null {
+  if (
+    !isRecord(payload) ||
+    !isString(payload.session_id) ||
+    !isString(payload.conversation_id) ||
+    !isLearningPlanSessionStatus(payload.status) ||
+    !isNullableString(payload.preferred_language_id) ||
+    !isNonNegativeSafeInteger(payload.version) ||
+    !isNullableString(payload.confirmed_track_id) ||
+    !isNullableString(payload.created_at) ||
+    !isNullableString(payload.updated_at) ||
+    !isNullableString(payload.confirmed_at) ||
+    !isNullableString(payload.cancelled_at)
+  ) return null;
+  const draft = payload.current_draft === null ? null : toLearningPlanDraft(payload.current_draft);
+  if (draft === null && payload.current_draft !== null) return null;
+  const lastError = payload.last_error;
+  let parsedLastError: LearningPlanSession["last_error"] = null;
+  if (lastError !== null) {
+    if (!isRecord(lastError) || !isString(lastError.code) || !isNullableString(lastError.at)) return null;
+    parsedLastError = { code: lastError.code, at: lastError.at };
+  }
+  return {
+    session_id: payload.session_id,
+    conversation_id: payload.conversation_id,
+    status: payload.status,
+    preferred_language_id: payload.preferred_language_id,
+    version: payload.version,
+    current_draft: draft,
+    confirmed_track_id: payload.confirmed_track_id,
+    last_error: parsedLastError,
+    created_at: payload.created_at,
+    updated_at: payload.updated_at,
+    confirmed_at: payload.confirmed_at,
+    cancelled_at: payload.cancelled_at,
+  };
+}
+
+function toLearningPlanDraft(payload: unknown): LearningPlanDraft | null {
+  if (
+    !isRecord(payload) ||
+    !isString(payload.draft_id) ||
+    !isNonNegativeSafeInteger(payload.draft_version) ||
+    !isString(payload.content_hash) ||
+    !isString(payload.generator_version) ||
+    !isString(payload.policy_version) ||
+    !isNullableString(payload.created_at) ||
+    !Array.isArray(payload.sources)
+  ) return null;
+  const profile = toLearningPlanProfile(payload.profile);
+  if (!profile || !isRecord(payload.plan) || !isString(payload.plan.title) || !isString(payload.plan.target_level) || !Array.isArray(payload.plan.modules)) return null;
+  const modules = payload.plan.modules.map(toLearningPlanModule);
+  if (modules.some((module) => module === null)) return null;
+  const sources: LearningPlanDraft["sources"] = [];
+  for (const source of payload.sources) {
+    if (!isRecord(source) || !isString(source.source_id) || !isString(source.display_name) || !isString(source.trust_tier)) return null;
+    sources.push({ source_id: source.source_id, display_name: source.display_name, trust_tier: source.trust_tier });
+  }
+  return {
+    draft_id: payload.draft_id,
+    draft_version: payload.draft_version,
+    content_hash: payload.content_hash,
+    profile,
+    plan: {
+      title: payload.plan.title,
+      target_level: payload.plan.target_level,
+      modules: modules.filter((module): module is LearningPlanModule => module !== null),
+    },
+    sources,
+    generator_version: payload.generator_version,
+    policy_version: payload.policy_version,
+    created_at: payload.created_at,
+  };
+}
+
+function toLearningPlanProfile(payload: unknown): LearningPlanProfile | null {
+  if (
+    !isRecord(payload) ||
+    !isString(payload.language_id) ||
+    !isString(payload.goal_text) ||
+    !isString(payload.target_level) ||
+    !isNonNegativeSafeInteger(payload.weekly_minutes) ||
+    !isExperienceLevel(payload.experience_level) ||
+    !isStringArray(payload.teaching_preferences) ||
+    !isString(payload.pace_summary) ||
+    !isString(payload.title)
+  ) return null;
+  return payload as LearningPlanProfile;
+}
+
+function toLearningPlanModule(payload: unknown): LearningPlanModule | null {
+  if (
+    !isRecord(payload) ||
+    !isString(payload.module_key) ||
+    !isString(payload.title) ||
+    !isString(payload.description) ||
+    !isNonNegativeSafeInteger(payload.order_index) ||
+    typeof payload.is_core !== "boolean" ||
+    typeof payload.is_skippable !== "boolean" ||
+    !Array.isArray(payload.nodes)
+  ) return null;
+  const nodes = payload.nodes.map(toLearningPlanNode);
+  if (nodes.some((node) => node === null)) return null;
+  return {
+    module_key: payload.module_key,
+    title: payload.title,
+    description: payload.description,
+    order_index: payload.order_index,
+    is_core: payload.is_core,
+    is_skippable: payload.is_skippable,
+    nodes: nodes.filter((node): node is LearningPlanNode => node !== null),
+  };
+}
+
+function toLearningPlanNode(payload: unknown): LearningPlanNode | null {
+  if (
+    !isRecord(payload) ||
+    !isString(payload.knowledge_key) ||
+    !isString(payload.title) ||
+    !isString(payload.description) ||
+    !isNonNegativeSafeInteger(payload.order_index) ||
+    typeof payload.is_core !== "boolean" ||
+    !isStringArray(payload.prerequisite_keys) ||
+    !isStringArray(payload.required_capabilities)
+  ) return null;
+  return payload as LearningPlanNode;
+}
+
+function isLearningTrackStatus(value: unknown): value is LearningTrackSummary["status"] {
+  return value === "active" || value === "paused" || value === "completed" || value === "archived";
+}
+
+function isExecutionTier(value: unknown): value is LearningTrackSummary["execution_tier"] {
+  return value === "teaching_local" || value === "container_verified" || value === "static_only" || value === "unavailable";
+}
+
+function isSelectionTier(value: unknown): value is LearningLanguageCatalogItem["selection_tier"] {
+  return value === "core" || value === "extended" || value === "degraded" || value === "unavailable";
+}
+
+function isCapabilityState(value: unknown): value is LearningLanguageCatalogItem["lesson_generation_state"] {
+  return value === "full" || value === "partial" || value === "planned" || value === "unsupported";
+}
+
+function isSourceTrustPolicy(value: unknown): value is LearningLanguageCatalogItem["source_trust_policy"] {
+  return value === "official" || value === "trusted_de_facto" || value === "internal";
+}
+
+function isLearningPlanSessionStatus(value: unknown): value is LearningPlanSession["status"] {
+  return value === "collecting" || value === "draft_ready" || value === "confirmed" || value === "cancelled";
+}
+
+function isExperienceLevel(value: unknown): value is LearningPlanProfile["experience_level"] {
+  return value === "new" || value === "beginner" || value === "intermediate" || value === "advanced";
 }
 
 function toTutorConversationListResponse(payload: unknown): TutorConversationListResponse | null {
