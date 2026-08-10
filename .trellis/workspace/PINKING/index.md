@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-2.md`
-- **Total Sessions**: 90
+- **Total Sessions**: 91
 - **Last Active**: 2026-08-10
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-2.md` | ~1121 | Active |
+| `journal-2.md` | ~1161 | Active |
 | `journal-1.md` | ~1979 | Archived |
 <!-- @@@/auto:active-documents -->
 
@@ -30,6 +30,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 91 | 2026-08-10 | 完成学习首页与对话式计划制定 | `802693a`, `3ebc420`, `bf0a414` | `main` |
 | 90 | 2026-08-10 | 完成 Tutor 上下文治理评估与可观测性 | `f0f8eb8` | `main` |
 | 89 | 2026-08-08 | 完成 Tutor 长对话摘要检索与压缩闭环 | `ddc6233` | `main` |
 | 88 | 2026-08-08 | Tutor 自适应上下文预算规划器 | `d681f1a` | `main` |
