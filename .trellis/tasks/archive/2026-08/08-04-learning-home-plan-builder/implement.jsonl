@@ -1,0 +1,9 @@
+{"file":".trellis/tasks/08-04-learning-home-plan-builder/design.md","reason":"加载 verified shell、planning session、类型化草案 capability、确认事务与 Desktop 设计。"}
+{"file":".trellis/tasks/08-04-learning-home-plan-builder/research/baseline.md","reason":"加载 LearningTrack、Tutor Harness、语言 registry、Desktop 与文档差异基线。"}
+{"file":".trellis/spec/backend/directory-structure.md","reason":"遵循 route、service、repository 与领域包职责边界。"}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"遵循 PostgreSQL 事务、复合作用域、append-only、幂等和 additive schema 规则。"}
+{"file":".trellis/spec/backend/error-handling.md","reason":"实现稳定 learner-safe error envelope 和跨用户不泄露规则。"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"覆盖后端类型、测试、lint、mypy 和回归质量门。"}
+{"file":".trellis/spec/frontend/index.md","reason":"加载 Desktop 组件、状态、hook、类型安全和质量规范索引。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"追踪 schema、repository、capability、API、Desktop 与文档的完整 round-trip。"}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"复用 Tutor conversation/SSE/composer 与 LearningTrack contract，避免第二套生命周期。"}
