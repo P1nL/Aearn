@@ -50,6 +50,69 @@ Future components must follow `docs/product/frontend-interaction-spec.md`, espec
 
 ---
 
+## Server-Authoritative Generated Side Panels
+
+A conversational planning inspector may be present before the validated backend
+artifact exists, but generated plan content must remain server-authoritative.
+Render the toggle and a visually minimal shell immediately; while the artifact
+pointer is null, the open shell may show only a neutral emoji plus hidden
+accessible status text. It must not synthesize titles, modules, progress,
+sources, readiness, or any other plan fact.
+
+```tsx
+const draft = session.current_draft;
+const draftId = draft?.draft_id ?? null;
+const [draftOpen, setDraftOpen] = useState(true);
+
+useEffect(() => {
+  if (draftId) setDraftOpen(true);
+}, [draftId]);
+
+return (
+  <DraftDock open={draftOpen} onOpenChange={setDraftOpen}>
+    {draftOpen
+      ? draft
+        ? <PlanRouteInspector draft={draft} />
+        : <DraftPendingEmoji aria-label="计划尚未生成" />
+      : null}
+  </DraftDock>
+);
+```
+
+The backend artifact pointer is still the generated-content reveal contract.
+A newly generated draft may open the inspector automatically, while collapsing
+the same draft must survive ordinary session refreshes; key the auto-open effect
+to the primitive draft ID, not the whole session object. Keep the desktop
+inspector compact with a bounded width and height, inset it visibly from the
+viewport edge, and preserve visible rounding on all four corners so it reads as
+an independent floating window instead of an attached sidebar. On narrow
+screens, use a bounded floating sheet rather than inserting the draft below the
+conversation. Respect `prefers-reduced-motion`, expose `aria-expanded` and
+`aria-controls`, and keep the conversation/composer usable before and after the
+inspector appears.
+
+## Conversation Activation Layout
+
+Planning conversations distinguish an unactivated shell from an active thread.
+The idle layout is derived from loaded server history, not from whether the
+composer currently contains text:
+
+```tsx
+const planningIdle = mode === "plan_drafting"
+  && historyStatus === "ready"
+  && timeline.length === 0
+  && activeRun === null
+  && historyError === null;
+```
+
+When `planningIdle` is true, hide the empty timeline, suggestion controls, and
+secondary composer hints; center the single composer in the available workspace.
+As soon as the first input is accepted and an active run or durable timeline
+item exists, switch to the normal message stream with the composer at the
+bottom. Loading and error states are not idle states and must remain visible.
+This prevents an empty conversation from looking like an already-active thread
+while preserving immediate transition from accepted input to run feedback.
+
 ## Common Mistakes
 
 - Showing backend fact enums such as `Attempt(run)` or `Attempt(submit)` directly to users.

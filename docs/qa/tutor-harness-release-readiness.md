@@ -168,3 +168,14 @@ PostgreSQL current/history 集成证据，以及默认禁用的固定五轮 real
 - 固定 numeric latency 只验证 receipt/report contract，不是假装的真实首 token 测量。
 - 单次 real-provider smoke 即使未来通过，也只是 bounded behavior sample，不是发布批准。
 - 完整本地质量矩阵已经通过，但本任务仍停在 commit 审批门；没有 commit、push、deploy 或 task archive。
+
+## Learning Home / plan builder evidence (2026-08-10)
+
+**任务：** `08-04-learning-home-plan-builder`
+**状态：** **In progress — not a release approval**
+
+- 本地 fake/offline 与 PostgreSQL focused matrix 覆盖 planning session、typed draft、stale/idempotent confirm、LearningTrack 创建、capability/run loop/context/usage/cache/summary/SSE 回归。
+- `pnpm --dir .\aearn desktop:check` 已验证 TypeScript/Vite production build。
+- 真实 provider smoke 默认未执行；本证据不证明真实模型教学质量，也不是 deploy 或 release approval。
+- LessonDocument、ReviewSession、练习 Gate 和完整三栏学习工作区仍由后续 child 交付；当前 CTA 明确显示未就绪。
+- receipt、SSE 与文档证据不保存 raw prompt/history、provider body、reasoning、credential 或 transport body。

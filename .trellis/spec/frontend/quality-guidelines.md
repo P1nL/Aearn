@@ -6,9 +6,11 @@
 
 ## Overview
 
-Frontend work targets the current Tutor-only Tauri desktop app under
-`aearn/apps/desktop/`. The build gate is `pnpm --dir .\aearn desktop:check`,
-which runs `tsc && vite build`. Current UI behavior is defined by
+Frontend work targets the current Tutor UI under `aearn/apps/desktop/`. The
+current frontend completion gate is browser validation against the local web
+target at `http://127.0.0.1:1420`; `pnpm --dir .\aearn desktop:check` is not a
+default frontend validation step and must not be run unless the user explicitly
+requests a Desktop build/typecheck. Current UI behavior is defined by
 `docs/product/frontend-interaction-spec.md`, `docs/product/user-flows.md`, the
 current API contract, and `aearn/apps/desktop/src/`.
 
@@ -42,8 +44,9 @@ current API contract, and `aearn/apps/desktop/src/`.
 
 ## Required Patterns
 
-- Run desktop commands from `aearn/` or `aearn/apps/desktop/`, not the repo
-  root; run `pnpm --dir .\aearn desktop:check` after source/type changes.
+- Serve the current checkout at `http://127.0.0.1:1420` and validate the
+  changed flow in a real browser. Do not run `desktop:check` as a routine
+  frontend gate unless the user explicitly asks for it.
 - Bootstrap local `userId`, normalize `planId=null`, fetch user then server
   cutover decision, and route only to welcome/cutover/tutor from that decision.
 - Keep loading, API error, disabled, retry and SSE terminal/incomplete states
@@ -61,15 +64,16 @@ current API contract, and `aearn/apps/desktop/src/`.
 
 ## Testing Requirements
 
-- Run `pnpm --dir .\aearn desktop:check` after frontend changes.
-- For visible behavior, smoke `welcome -> cutover/tutor`, a verified fresh Tutor
-  entry, a blocked cutover, public API error, SSE reconnect/terminal behavior,
-  and narrow viewport overflow/primary action accessibility when a local target
-  is serving this checkout.
+- Validate frontend changes only through the local browser target unless the
+  user explicitly requests an additional Desktop build/typecheck.
+- For visible behavior, smoke the changed route and interaction at
+  `http://127.0.0.1:1420`, including page identity, meaningful DOM, no framework
+  overlay, console health, screenshot evidence, one real interaction, and a
+  narrow viewport when the layout is responsive.
 - Verify a stale bootstrap never produces legacy dashboard/resume/plan/session
   requests, and verified flow clears `planId` before mounting Tutor.
-- Do not substitute a build for cutover/API/SSE/backend validation; record the
-  fixture smoke and any unavailable local process explicitly.
+- Do not substitute a build or static search for rendered browser evidence;
+  record any unavailable local process or untestable state explicitly.
 
 ---
 
@@ -87,6 +91,82 @@ current API contract, and `aearn/apps/desktop/src/`.
   removed legacy components/state stores.
 
 ---
+
+## Scenario: Current Frontend Browser-Only Validation
+
+### 1. Scope / Trigger
+
+- Trigger: any user-visible React/CSS/frontend flow change in the current checkout.
+- Scope: `aearn/apps/desktop/src/**` and the local web target served on port `1420`.
+
+### 2. Signatures
+
+- Target URL: `http://127.0.0.1:1420`.
+- Required evidence: page URL/title, meaningful DOM, no framework overlay,
+  browser console errors/warnings, screenshot, one changed-flow interaction,
+  and responsive overflow checks when applicable.
+- `pnpm --dir .\aearn desktop:check` is not part of the default frontend gate.
+
+### 3. Contracts
+
+- A frontend change is complete only after the changed behavior is rendered and
+  observed in the browser against the current local API/fixture state.
+- Use the Browser plugin first when available; keep validation read-only except
+  for the exact local interaction needed to prove the flow.
+- Do not create test users, planning sessions, tracks, or other persisted data
+  merely to obtain a screenshot unless the task explicitly authorizes it.
+- Run a Desktop build/typecheck only when the user explicitly requests it.
+
+### 4. Validation & Error Matrix
+
+- Page is blank or shows a framework overlay -> frontend validation fails.
+- Relevant console error/warning -> explain and fix it before claiming success.
+- Changed control cannot be exercised -> validation remains incomplete.
+- Horizontal overflow at a required responsive viewport -> validation fails.
+- Browser target or required fixture unavailable -> report the exact blocker; do
+  not replace the missing browser evidence with `desktop:check`.
+
+### 5. Good/Base/Bad Cases
+
+- Good: load the changed page, verify the removed/added controls in the DOM,
+  exercise one safe interaction, capture desktop and narrow screenshots, and
+  confirm no relevant console errors.
+- Base: a non-responsive copy change uses one normal viewport plus DOM/console
+  checks and one relevant interaction when available.
+- Bad: run only `tsc && vite build` or inspect source strings and claim the UI
+  works without opening the page.
+
+### 6. Tests Required
+
+- Open `http://127.0.0.1:1420` in the Browser plugin.
+- Assert the intended page identity and changed visible state.
+- Exercise at least one safe target-flow interaction and observe the next state.
+- Check console health and horizontal overflow; add a narrow viewport for
+  responsive work.
+- Capture screenshot evidence outside the repository.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```powershell
+pnpm --dir .\aearn desktop:check
+# No browser verification.
+```
+
+A successful build does not prove the rendered behavior or responsive layout.
+
+#### Correct
+
+```text
+open http://127.0.0.1:1420
+-> verify page identity and changed DOM
+-> exercise the target interaction
+-> check console and overflow
+-> capture desktop and narrow screenshots
+```
+
+The current frontend gate is rendered web behavior, not a Desktop build.
 
 ## Scenario: M2 Desktop Onboarding Flow
 
@@ -126,7 +206,7 @@ current API contract, and `aearn/apps/desktop/src/`.
 
 ### 6. Tests Required
 
-- Run `pnpm --dir .\aearn desktop:check`.
+- Validate the changed rendered flow at `http://127.0.0.1:1420` in a real browser.
 - Browser smoke: open `http://127.0.0.1:1420`, verify API online, generate a JS draft, confirm it, and see workspace summary.
 - Browser smoke onboarding route revisions: generate one route card, send a time-budget-only revision, verify the old `开始学习` is disabled and the latest card remains startable.
 - Browser console should have no current errors after the latest reload and flow.
@@ -190,7 +270,7 @@ M2 keeps course visibility separate from real runtime availability.
 
 ### 6. Tests Required
 
-- Run `pnpm --dir .\aearn desktop:check`.
+- Validate the changed rendered flow at `http://127.0.0.1:1420` in a real browser.
 - Browser smoke: open `http://127.0.0.1:1420`, create a JS plan, enter the workbench, run visible tests, check explanation, and submit once.
 - Verify hint/explain/check buttons enable only after a run Attempt exists and that stale UI appears after editing code post-run.
 
@@ -259,7 +339,7 @@ Submit follows the actual M3 contract instead of a single optimistic condition.
 
 ### 6. Tests Required
 
-- Run `pnpm --dir .\aearn desktop:check`.
+- Validate the changed rendered flow at `http://127.0.0.1:1420` in a real browser.
 - Browser smoke the learning page at the current local target when practical: document panel visible, disabled future review item, reference prefill, trigger concept check, collapse/reopen.
 - Backend M3 tests must pass for `LearningStage` and trigger payload shape; M2/M4 tests must pass for plan-detail review state and review not-due behavior.
 
@@ -329,7 +409,7 @@ Composer state stays controlled by assistant-ui and review navigation follows th
 
 ### 6. Tests Required
 
-- Run `pnpm --dir .\aearn desktop:check` after frontend changes.
+- Validate the changed rendered flow at `http://127.0.0.1:1420` in a real browser.
 - Browser smoke the active learning path only when current backend and Vite/Tauri processes are serving this checkout.
 - Verify home composer sends `role=user`, `content`, and a fresh `client_message_id` only when an active session exists.
 - Verify duplicate send prevention while streaming.
@@ -396,7 +476,7 @@ The stream owns one assistant bubble that changes status as the request moves fr
 
 ### 6. Tests Required
 
-- Run `pnpm --dir .\aearn desktop:check`.
+- Validate the changed rendered flow at `http://127.0.0.1:1420` in a real browser.
 - For changes touching the M3 workbench wiring, browser smoke the onboarding -> learning session -> run visible tests -> check explanation -> submit path.
 - Confirm `App.tsx` no longer defines page-level or workbench result-panel functions by direct file inspection.
 
@@ -471,7 +551,7 @@ Keep the shell responsible for orchestration and let the page own the workbench 
 
 ### 6. Tests Required
 
-- Run `pnpm --dir .\aearn desktop:check` after changing ReviewPage or review API types.
+- Validate the changed rendered flow at `http://127.0.0.1:1420` in a real browser.
 - Backend M4 tests must pass because the ReviewPage depends on `/api/reviews/*` response shapes.
 - For browser smoke, create or reuse a user with due review state, open review route, start review, submit once, and verify visible `due_at` / `forget_risk`.
 
@@ -532,7 +612,7 @@ Render `reviewResult.due_at`, `reviewResult.forget_risk`, and `reviewResult.Revi
 
 ### 6. Tests Required
 
-- Run `pnpm --dir .\aearn desktop:check`.
+- Validate the changed rendered flow at `http://127.0.0.1:1420` in a real browser.
 - Browser smoke cold start with `localStorage["aearn.bootstrap"]` cleared: assert `.conversation` has `overflow-y: auto`, no `.message` article, and sidebar empty-state copy.
 - Browser smoke returning-user or generated-plan state: assert sidebar entries match backend knowledge point titles.
 
@@ -598,7 +678,7 @@ Only user actions and backend/session events create runtime conversation message
 
 ### 6. Tests Required
 
-- Run `pnpm --dir .\aearn desktop:check`.
+- Validate the changed rendered flow at `http://127.0.0.1:1420` in a real browser.
 - Browser smoke cold start with `localStorage["aearn.bootstrap"]` cleared.
 - Browser smoke onboarding confirm -> bootstrap write -> reload -> request-chain verification.
 - Browser smoke SettingsPage category visibility and forbidden-rule-boundary check.
@@ -697,8 +777,8 @@ Reload decisions come from validated backend state, not from a local optimistic 
 
 ### 6. Tests Required
 
-- Run `pnpm --dir .\aearn desktop:check` after any type, store, page, or CSS
-  change.
+- Validate any type, store, page, or CSS change through the local web browser
+  target; do not use a Desktop build as the default frontend gate.
 - Render the cutover flow against a disposable mock API: verify page identity,
   nonblank summary, no framework overlay, clean console, preserved `userId` /
   cleared `planId`, no dashboard/resume request before the decision, and

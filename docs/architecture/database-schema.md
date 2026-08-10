@@ -214,3 +214,7 @@ uv --directory .\aearn\services\api run python -m pytest tests/test_tutor_run_re
 
 完整命令、结果和 residual risk 以
 [Release Readiness Ledger](../qa/tutor-harness-release-readiness.md) 为准。
+
+## 2026-08-10：计划制定持久化
+
+`tutor_learning_plan_sessions` 是 user/conversation-scoped planning root，同一用户最多一条 `collecting | draft_ready` session；它保存 current draft pointer、确认 track、版本与 allowlisted safe error，不保存 raw prompt/history/provider body/reasoning。`tutor_learning_plan_drafts` 保存确认所需的 profile、canonical plan、registry-owned source summary、content hash 和 source run/revision；草案 append-only，`(session_id,draft_version)` 与 `(source_run_id,source_input_revision)` 唯一。current pointer 使用 deferrable composite FK 保证 draft 属于同一 user/session。local export/reset 与 cutover target inventory 已纳入两张表。

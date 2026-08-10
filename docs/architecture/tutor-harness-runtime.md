@@ -552,3 +552,7 @@ passing, Mypy passing on **114 source files**, `uv lock --check` passing, Deskto
 `tsc && vite build` passing with **46 modules transformed**, and Trellis/diff hygiene
 passing. These results still do not authorize a real-provider call, commit, push,
 deployment, task archive, or release approval.
+
+## 2026-08-10 Learning-plan drafting composition
+
+The interactive dispatcher remains deny-by-default. A PostgreSQL-backed policy resolver grants only `tutor.learning-plan-draft@1.0.0` and `learning.plan.draft@1.0.0` for a current, non-terminal, non-superseded interactive `plan_drafting` run whose conversation owns an active planning session. The capability validates compact nested JSON, server-owned language/source/runtime facts and the frozen LearningPlan DAG, then appends one typed draft. Generic capability receipts contain only draft id/version/hash/status. Effects remain denied and HTTP confirmation is the only track-creation action. The learning context decorator appends bounded scope/session/current-draft descriptors without changing current-input pinning, adaptive budget order, usage/cache accounting or summary compaction.
