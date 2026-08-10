@@ -1,0 +1,2 @@
+{"file":".trellis/tasks/08-04-tutor-context-governance-adaptive-budget/design.md","reason":"加载父任务总体 contract、子任务边界、数据流、兼容性和分阶段回滚策略。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"规划当前输入、provider、预算、摘要、持久化和评估之间的端到端数据流。"}
