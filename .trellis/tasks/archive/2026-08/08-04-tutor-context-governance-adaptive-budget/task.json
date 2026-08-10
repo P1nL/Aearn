@@ -1,0 +1,32 @@
+{
+  "id": "tutor-context-governance-adaptive-budget",
+  "name": "tutor-context-governance-adaptive-budget",
+  "title": "Tutor 上下文治理与自适应预算",
+  "description": "建立权威当前输入、自适应上下文预算、缓存与 usage 计量、长期摘要压缩及综合评估闭环。",
+  "status": "completed",
+  "dev_type": null,
+  "scope": "backend",
+  "package": null,
+  "priority": "P1",
+  "creator": "PINKING",
+  "assignee": "PINKING",
+  "createdAt": "2026-08-04",
+  "completedAt": "2026-08-10",
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [
+    "08-04-tutor-latest-input-teaching-relevance",
+    "08-04-tutor-provider-usage-cache-accounting",
+    "08-04-tutor-adaptive-context-budget-planner",
+    "08-04-tutor-context-summary-retrieval-compaction",
+    "08-04-tutor-context-budget-evals-observability"
+  ],
+  "parent": "08-04-programming-language-learning-agent-product",
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {}
+}
