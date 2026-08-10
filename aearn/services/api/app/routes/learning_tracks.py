@@ -30,6 +30,15 @@ def list_learning_tracks(request: Request, user_id: str = Query(min_length=1)) -
     return response if isinstance(response, JSONResponse) else JSONResponse(status_code=200, content=jsonable_encoder(response))
 
 
+@router.get("/catalog", response_model=None)
+def list_learning_track_catalog(request: Request, user_id: str = Query(min_length=1)) -> JSONResponse:
+    unavailable = _require_verified(request, user_id)
+    if unavailable is not None:
+        return unavailable
+    response = _call(request, lambda service: service.list_language_catalog(user_id=user_id))
+    return response if isinstance(response, JSONResponse) else JSONResponse(status_code=200, content=jsonable_encoder(response))
+
+
 @router.post("", response_model=None)
 def create_learning_track(payload: CreateLearningTrackRequest, request: Request) -> JSONResponse:
     unavailable = _require_verified(request, payload.user_id)

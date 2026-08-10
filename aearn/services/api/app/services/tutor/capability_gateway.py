@@ -1,4 +1,4 @@
-"""Catalog-aware, default-deny dispatch for the sole registry-only Tutor capability."""
+"""Catalog-aware, default-deny dispatch for explicitly registered Tutor capabilities."""
 from __future__ import annotations
 
 import json
@@ -9,10 +9,13 @@ from pydantic import ValidationError
 
 from app.agents.harness.capabilities import (
     GROUNDING_RETRIEVE_CAPABILITY_ID,
+    LEARNING_PLAN_DRAFT_CAPABILITY_ID,
     CapabilityMode,
     GroundingCitationOutput,
     GroundingRetrieveInput,
     GroundingRetrieveOutput,
+    LearningPlanDraftCapabilityInput,
+    LearningPlanDraftCapabilityOutput,
 )
 from app.agents.harness.contracts import (
     MAX_TUTOR_PAYLOAD_VALUE_LENGTH,
@@ -25,13 +28,17 @@ from app.agents.harness.contracts import (
 )
 from app.agents.harness.skill_catalog import SkillCatalogSnapshot
 from app.services.grounding.grounding_sources import GroundingSource, get_grounding_source, sources_for_language
+from app.services.learning.plan_capability import (
+    LearningPlanDraftCapabilityError,
+    LearningPlanDraftCapabilityHandler,
+)
 from app.services.tutor.capability_policy import CapabilityPolicyResolver
 from app.services.tutor.grounding_lookup import GroundingLookup, GroundingLookupItem, GroundingLookupQuery
 from app.services.tutor.skill_selection import TutorSkillSelectionStore
 
 
 class CatalogCapabilityGateway:
-    """Dispatch descriptor-first only; no model field can select an external target."""
+    """Dispatch descriptor-first only; every handler is explicitly registered."""
 
     def __init__(
         self,
@@ -39,12 +46,14 @@ class CatalogCapabilityGateway:
         catalog: SkillCatalogSnapshot,
         policy_resolver: CapabilityPolicyResolver,
         selection_store: TutorSkillSelectionStore,
-        grounding_lookup: GroundingLookup,
+        grounding_lookup: GroundingLookup | None = None,
+        learning_plan_handler: LearningPlanDraftCapabilityHandler | None = None,
     ) -> None:
         self._catalog = catalog
         self._policy_resolver = policy_resolver
         self._selection_store = selection_store
         self._grounding_lookup = grounding_lookup
+        self._learning_plan_handler = learning_plan_handler
 
     def dispatch(
         self,
@@ -56,7 +65,7 @@ class CatalogCapabilityGateway:
         if not policy.matches(run=run, catalog=self._catalog):
             return _denied(request, "policy_context_stale")
         descriptor = self._catalog.capability(request.capability_id)
-        if descriptor is None or descriptor.capability_id != GROUNDING_RETRIEVE_CAPABILITY_ID:
+        if descriptor is None:
             return _denied(request, "unknown_capability")
         if descriptor.mode is not CapabilityMode.READ:
             return _denied(request, "capability_mode_not_allowed")
@@ -81,6 +90,25 @@ class CatalogCapabilityGateway:
         arguments = _decode_declared_arguments(request=request, declared_fields=descriptor.input_field_names)
         if arguments is None:
             return _denied(request, "capability_arguments_invalid")
+        if descriptor.capability_id == GROUNDING_RETRIEVE_CAPABILITY_ID:
+            return self._dispatch_grounding(
+                request=request,
+                arguments=arguments,
+                allowed_source_ids=policy.allowed_source_ids,
+            )
+        if descriptor.capability_id == LEARNING_PLAN_DRAFT_CAPABILITY_ID:
+            return self._dispatch_learning_plan(request=request, run=run, arguments=arguments)
+        return _denied(request, "unknown_capability")
+
+    def _dispatch_grounding(
+        self,
+        *,
+        request: TutorCapabilityRequest,
+        arguments: dict[str, object],
+        allowed_source_ids: tuple[str, ...],
+    ) -> TutorCapabilityResult:
+        if self._grounding_lookup is None:
+            return _unavailable(request, "grounding_lookup_unavailable")
         try:
             grounding_input = GroundingRetrieveInput.model_validate(arguments)
         except ValidationError:
@@ -90,7 +118,7 @@ class CatalogCapabilityGateway:
         if not registry_sources:
             return _unavailable(request, "unsupported_grounding_language")
         registry_source_ids = {source.source_id for source in registry_sources}
-        source_ids = tuple(sorted(registry_source_ids & set(policy.allowed_source_ids)))
+        source_ids = tuple(sorted(registry_source_ids & set(allowed_source_ids)))
         if not source_ids:
             return _denied(request, "grounding_source_scope_denied")
 
@@ -134,6 +162,34 @@ class CatalogCapabilityGateway:
             diagnostic_code="grounding_completed",
         )
 
+    def _dispatch_learning_plan(
+        self,
+        *,
+        request: TutorCapabilityRequest,
+        run: TutorRunSnapshot,
+        arguments: dict[str, object],
+    ) -> TutorCapabilityResult:
+        if self._learning_plan_handler is None:
+            return _unavailable(request, "learning_plan_handler_unavailable")
+        try:
+            capability_input = LearningPlanDraftCapabilityInput.model_validate(arguments)
+        except ValidationError:
+            return _denied(request, "learning_plan_input_invalid")
+        try:
+            output = self._learning_plan_handler.generate(run=run, capability_input=capability_input)
+        except LearningPlanDraftCapabilityError as exc:
+            return TutorCapabilityResult(
+                request_id=request.request_id,
+                status=exc.status,
+                safe_result=(TutorPayloadField(key="code", value=exc.code),),
+                diagnostic_code=exc.diagnostic_code,
+            )
+        return TutorCapabilityResult(
+            request_id=request.request_id,
+            status=TutorCapabilityStatus.COMPLETED,
+            safe_result=_safe_learning_plan_fields(output),
+            diagnostic_code="learning_plan_draft_completed",
+        )
 
 def _decode_declared_arguments(
     *,
@@ -196,6 +252,16 @@ def _validated_grounding_output(items: tuple[GroundingLookupItem, ...]) -> Groun
                 for item in items
             ],
         }
+    )
+
+
+
+def _safe_learning_plan_fields(output: LearningPlanDraftCapabilityOutput) -> tuple[TutorPayloadField, ...]:
+    return (
+        TutorPayloadField(key="draft_id", value=output.draft_id),
+        TutorPayloadField(key="draft_version", value=str(output.draft_version)),
+        TutorPayloadField(key="content_hash", value=output.content_hash),
+        TutorPayloadField(key="quality_status", value=output.quality_status),
     )
 
 

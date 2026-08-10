@@ -2843,6 +2843,122 @@ CREATE TABLE IF NOT EXISTS tutor_run_learning_scopes (
   )
 );
 
+CREATE TABLE IF NOT EXISTS tutor_learning_plan_sessions (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  conversation_id uuid NOT NULL,
+  status text NOT NULL DEFAULT 'collecting' CHECK (status IN ('collecting', 'draft_ready', 'confirmed', 'cancelled')),
+  preferred_language_id text CHECK (
+    preferred_language_id IS NULL OR char_length(preferred_language_id) BETWEEN 1 AND 80
+  ),
+  current_draft_id uuid,
+  confirmed_track_id uuid,
+  version integer NOT NULL DEFAULT 1 CHECK (version >= 1),
+  last_error_code text CHECK (
+    last_error_code IS NULL OR last_error_code ~ '^[A-Z][A-Z0-9_]{2,79}$'
+  ),
+  last_error_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  confirmed_at timestamptz,
+  cancelled_at timestamptz,
+  CONSTRAINT uq_tutor_learning_plan_sessions_id_user UNIQUE (id, user_id),
+  CONSTRAINT uq_tutor_learning_plan_sessions_conversation_user UNIQUE (conversation_id, user_id),
+  CONSTRAINT fk_tutor_learning_plan_session_conversation_user
+    FOREIGN KEY (conversation_id, user_id)
+    REFERENCES tutor_conversations(id, user_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_learning_plan_session_confirmed_track_user
+    FOREIGN KEY (confirmed_track_id, user_id)
+    REFERENCES tutor_learning_tracks(id, user_id) ON DELETE RESTRICT,
+  CONSTRAINT chk_tutor_learning_plan_session_error_shape CHECK (
+    (last_error_code IS NULL) = (last_error_at IS NULL)
+  ),
+  CONSTRAINT chk_tutor_learning_plan_session_status_shape CHECK (
+    (status = 'collecting' AND current_draft_id IS NULL AND confirmed_track_id IS NULL
+      AND confirmed_at IS NULL AND cancelled_at IS NULL)
+    OR (status = 'draft_ready' AND current_draft_id IS NOT NULL AND confirmed_track_id IS NULL
+      AND confirmed_at IS NULL AND cancelled_at IS NULL)
+    OR (status = 'confirmed' AND current_draft_id IS NOT NULL AND confirmed_track_id IS NOT NULL
+      AND confirmed_at IS NOT NULL AND cancelled_at IS NULL)
+    OR (status = 'cancelled' AND confirmed_track_id IS NULL AND confirmed_at IS NULL
+      AND cancelled_at IS NOT NULL)
+  )
+);
+
+CREATE TABLE IF NOT EXISTS tutor_learning_plan_drafts (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  session_id uuid NOT NULL,
+  user_id uuid NOT NULL,
+  draft_version integer NOT NULL CHECK (draft_version >= 1),
+  predecessor_draft_id uuid,
+  language_id text NOT NULL CHECK (char_length(language_id) BETWEEN 1 AND 80),
+  goal_text text NOT NULL CHECK (char_length(goal_text) BETWEEN 1 AND 2000),
+  target_level text NOT NULL CHECK (char_length(target_level) BETWEEN 1 AND 120),
+  weekly_minutes integer NOT NULL CHECK (weekly_minutes BETWEEN 15 AND 10080),
+  experience_level text NOT NULL CHECK (experience_level IN ('new', 'beginner', 'intermediate', 'advanced')),
+  teaching_preferences_json jsonb NOT NULL DEFAULT '[]'::jsonb CHECK (
+    jsonb_typeof(teaching_preferences_json) = 'array'
+    AND jsonb_array_length(teaching_preferences_json) <= 4
+  ),
+  pace_summary text NOT NULL CHECK (char_length(pace_summary) BETWEEN 1 AND 240),
+  profile_json jsonb NOT NULL CHECK (jsonb_typeof(profile_json) = 'object'),
+  plan_json jsonb NOT NULL CHECK (jsonb_typeof(plan_json) = 'object'),
+  source_summary_json jsonb NOT NULL CHECK (
+    jsonb_typeof(source_summary_json) = 'array'
+    AND jsonb_array_length(source_summary_json) BETWEEN 1 AND 8
+  ),
+  content_hash text NOT NULL CHECK (content_hash ~ '^[0-9a-f]{64}$'),
+  generator_version text NOT NULL CHECK (char_length(generator_version) BETWEEN 1 AND 160),
+  policy_version text NOT NULL CHECK (char_length(policy_version) BETWEEN 1 AND 160),
+  change_reason text NOT NULL CHECK (char_length(change_reason) BETWEEN 1 AND 600),
+  source_run_id uuid NOT NULL,
+  source_input_revision integer NOT NULL CHECK (source_input_revision >= 1),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_tutor_learning_plan_drafts_id_scope UNIQUE (id, session_id, user_id),
+  CONSTRAINT uq_tutor_learning_plan_drafts_session_version UNIQUE (session_id, draft_version),
+  CONSTRAINT uq_tutor_learning_plan_drafts_source_revision UNIQUE (source_run_id, source_input_revision),
+  CONSTRAINT fk_tutor_learning_plan_draft_session_user
+    FOREIGN KEY (session_id, user_id)
+    REFERENCES tutor_learning_plan_sessions(id, user_id) ON DELETE RESTRICT
+    DEFERRABLE INITIALLY DEFERRED,
+  CONSTRAINT fk_tutor_learning_plan_draft_predecessor_scope
+    FOREIGN KEY (predecessor_draft_id, session_id, user_id)
+    REFERENCES tutor_learning_plan_drafts(id, session_id, user_id) ON DELETE RESTRICT
+    DEFERRABLE INITIALLY DEFERRED,
+  CONSTRAINT fk_tutor_learning_plan_draft_run_user
+    FOREIGN KEY (source_run_id, user_id)
+    REFERENCES tutor_runs(id, user_id) ON DELETE RESTRICT,
+  CONSTRAINT chk_tutor_learning_plan_draft_predecessor_distinct CHECK (
+    predecessor_draft_id IS NULL OR predecessor_draft_id <> id
+  ),
+  CONSTRAINT chk_tutor_learning_plan_draft_version_shape CHECK (
+    (draft_version = 1 AND predecessor_draft_id IS NULL)
+    OR (draft_version > 1 AND predecessor_draft_id IS NOT NULL)
+  )
+);
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'fk_tutor_learning_plan_session_current_draft_scope'
+  ) THEN
+    ALTER TABLE tutor_learning_plan_sessions
+      ADD CONSTRAINT fk_tutor_learning_plan_session_current_draft_scope
+      FOREIGN KEY (current_draft_id, id, user_id)
+      REFERENCES tutor_learning_plan_drafts(id, session_id, user_id) ON DELETE RESTRICT
+      DEFERRABLE INITIALLY DEFERRED;
+  END IF;
+END;
+$$;
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_tutor_learning_plan_sessions_one_active
+  ON tutor_learning_plan_sessions(user_id)
+  WHERE status IN ('collecting', 'draft_ready');
+CREATE INDEX IF NOT EXISTS idx_tutor_learning_plan_sessions_user_updated
+  ON tutor_learning_plan_sessions(user_id, updated_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_tutor_learning_plan_drafts_session_version
+  ON tutor_learning_plan_drafts(session_id, draft_version DESC);
+
 CREATE UNIQUE INDEX IF NOT EXISTS uq_tutor_track_plan_revisions_one_active
   ON tutor_track_plan_revisions(track_id) WHERE status = 'active';
 CREATE INDEX IF NOT EXISTS idx_tutor_learning_tracks_user_updated
@@ -2868,6 +2984,26 @@ BEGIN
   RETURN current_setting('aearn.learning_track_purge_user_id', true) = target_user_id::text;
 END;
 $$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION enforce_tutor_learning_plan_draft_immutable()
+RETURNS trigger AS $$
+BEGIN
+  IF TG_OP = 'DELETE' AND tutor_learning_track_purge_allowed(OLD.user_id) THEN
+    RETURN OLD;
+  END IF;
+  RAISE EXCEPTION 'Tutor learning plan drafts are append-only' USING ERRCODE = '23514';
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_tutor_learning_plan_sessions_updated_at ON tutor_learning_plan_sessions;
+CREATE TRIGGER trg_tutor_learning_plan_sessions_updated_at
+BEFORE UPDATE ON tutor_learning_plan_sessions
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_tutor_learning_plan_drafts_immutable ON tutor_learning_plan_drafts;
+CREATE TRIGGER trg_tutor_learning_plan_drafts_immutable
+BEFORE UPDATE OR DELETE ON tutor_learning_plan_drafts
+FOR EACH ROW EXECUTE FUNCTION enforce_tutor_learning_plan_draft_immutable();
 
 CREATE OR REPLACE FUNCTION enforce_tutor_track_plan_revision_immutable()
 RETURNS trigger AS $$

@@ -113,6 +113,79 @@ class GroundingRetrieveOutput(_FrozenSchema):
     snippets: tuple[GroundingSnippetOutput, ...] = Field(default=(), max_length=4)
 
 
+class LearningPlanDraftCapabilityInput(_FrozenSchema):
+    """Compact strings keep the generic Tutor envelope bounded at 12 fields."""
+
+    profile_json: str = Field(min_length=2, max_length=360)
+    module_1: str = Field(min_length=2, max_length=360)
+    module_2: str = Field(min_length=2, max_length=360)
+    module_3: str | None = Field(default=None, min_length=2, max_length=360)
+    module_4: str | None = Field(default=None, min_length=2, max_length=360)
+    module_5: str | None = Field(default=None, min_length=2, max_length=360)
+    module_6: str | None = Field(default=None, min_length=2, max_length=360)
+    module_7: str | None = Field(default=None, min_length=2, max_length=360)
+    module_8: str | None = Field(default=None, min_length=2, max_length=360)
+
+    @field_validator("profile_json", "module_1", "module_2", "module_3", "module_4", "module_5", "module_6", "module_7", "module_8")
+    @classmethod
+    def _validate_compact_json(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if contains_forbidden_execution_target(normalized):
+            raise ValueError("learning plan draft input cannot contain an execution target")
+        return normalized
+
+    @model_validator(mode="after")
+    def _validate_contiguous_modules(self) -> "LearningPlanDraftCapabilityInput":
+        values = (
+            self.module_1,
+            self.module_2,
+            self.module_3,
+            self.module_4,
+            self.module_5,
+            self.module_6,
+            self.module_7,
+            self.module_8,
+        )
+        seen_empty = False
+        for value in values:
+            if value is None:
+                seen_empty = True
+            elif seen_empty:
+                raise ValueError("learning plan draft modules must be contiguous")
+        return self
+
+    def module_values(self) -> tuple[str, ...]:
+        return tuple(
+            value
+            for value in (
+                self.module_1,
+                self.module_2,
+                self.module_3,
+                self.module_4,
+                self.module_5,
+                self.module_6,
+                self.module_7,
+                self.module_8,
+            )
+            if value is not None
+        )
+
+
+class LearningPlanDraftCapabilityOutput(_FrozenSchema):
+    status: Literal["completed"]
+    draft_id: str = Field(min_length=1, max_length=120)
+    draft_version: int = Field(ge=1)
+    content_hash: str = Field(min_length=64, max_length=64)
+    quality_status: Literal["passed"]
+
+    @field_validator("content_hash")
+    @classmethod
+    def _validate_content_hash(cls, value: str) -> str:
+        return _sha256_reference(value, label="learning plan draft content hash")
+
+
 @dataclass(frozen=True)
 class CapabilityDescriptor:
     """A developer-owned in-process capability definition."""
@@ -533,6 +606,18 @@ RUNNER_EXECUTE_EFFECT_DESCRIPTOR = EffectDescriptor(
 )
 
 
+LEARNING_PLAN_DRAFT_CAPABILITY_ID = "learning.plan.draft"
+LEARNING_PLAN_DRAFT_DESCRIPTOR = CapabilityDescriptor(
+    capability_id=LEARNING_PLAN_DRAFT_CAPABILITY_ID,
+    version="1.0.0",
+    mode=CapabilityMode.READ,
+    description="Validate and persist one bounded learning plan draft for the active planning session.",
+    input_model=LearningPlanDraftCapabilityInput,
+    result_model=LearningPlanDraftCapabilityOutput,
+    policy_tags=("plan-drafting",),
+)
+
+
 GROUNDING_RETRIEVE_CAPABILITY_ID = "grounding.retrieve"
 GROUNDING_RETRIEVE_DESCRIPTOR = CapabilityDescriptor(
     capability_id=GROUNDING_RETRIEVE_CAPABILITY_ID,
@@ -548,7 +633,7 @@ GROUNDING_RETRIEVE_DESCRIPTOR = CapabilityDescriptor(
 def default_capability_descriptors() -> tuple[CapabilityDescriptor, ...]:
     """Return the approved bounded capability descriptors."""
 
-    return (GROUNDING_RETRIEVE_DESCRIPTOR,)
+    return (GROUNDING_RETRIEVE_DESCRIPTOR, LEARNING_PLAN_DRAFT_DESCRIPTOR)
 
 
 def default_effect_descriptors() -> tuple[EffectDescriptor, ...]:

@@ -67,6 +67,7 @@ def test_published_catalog_is_exact_versioned_immutable_and_deterministic() -> N
     assert first.digest == second.digest
     assert tuple(skill.reference.key for skill in first.skills) == (
         "tutor.learner-state@1.0.0",
+        "tutor.learning-plan-draft@1.0.0",
         "tutor.registry-grounding@1.0.0",
         "tutor.runner-execution@1.0.0",
     )

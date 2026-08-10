@@ -39,6 +39,18 @@ from app.services.tutor.execution import ExecutionIntentRepository, default_runt
 
 
 _IDEMPOTENCY_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@-]{0,159}$")
+_LANGUAGE_CATALOG: tuple[tuple[str, str], ...] = (
+    ("python", "core"),
+    ("javascript", "core"),
+    ("typescript", "core"),
+    ("sql", "core"),
+    ("java", "extended"),
+    ("html_css", "extended"),
+    ("go", "degraded"),
+    ("csharp", "degraded"),
+    ("rust", "degraded"),
+    ("cpp", "degraded"),
+)
 T = TypeVar("T")
 
 
@@ -135,6 +147,16 @@ class LearningTrackService:
         normalized_user_id = _uuid(user_id, label="user_id")
         self._assert_user(normalized_user_id)
         return {"items": [self._project_track(row) for row in self._repository.list_tracks(user_id=normalized_user_id)]}
+
+    def list_language_catalog(self, *, user_id: str) -> dict[str, object]:
+        normalized_user_id = _uuid(user_id, label="user_id")
+        self._assert_user(normalized_user_id)
+        return {
+            "items": [
+                self._project_language_catalog(language_id=language_id, selection_tier=selection_tier)
+                for language_id, selection_tier in _LANGUAGE_CATALOG
+            ]
+        }
 
     def read_track(self, *, user_id: str, track_id: str) -> dict[str, object]:
         normalized_user_id = _uuid(user_id, label="user_id")
@@ -332,23 +354,7 @@ class LearningTrackService:
     def _project_track(self, row: Mapping[str, object], *, detail: bool = False) -> dict[str, object]:
         language_id = str(row["language_id"])
         _canonical, capability = _language(language_id)
-        composition = ExecutionComposition.DEVELOPMENT if self._settings.app_env.strip().lower() == "development" else ExecutionComposition.PUBLIC
-        availability = _ExecutorAvailabilityAdapter(
-            ExecutionIntentRepository(
-                self._conn,
-                registry=default_runtime_registry(),
-                executor_enabled=lambda: self._settings.tutor_executor_enabled,
-            )
-        )
-        tier = self._tier_resolver.resolve(
-            language=capability,
-            inputs=ExecutionTierInputs(
-                composition=composition,
-                local_runner_available=self._local_runner_available(capability),
-                runtime_registry=default_runtime_registry(),
-                executor_availability=availability,
-            ),
-        )
+        tier = self._execution_tier(capability)
         total = _int(row.get("progress_total"))
         completed = _int(row.get("progress_completed"))
         result: dict[str, object] = {
@@ -380,6 +386,45 @@ class LearningTrackService:
             result["created_at"] = _iso(row.get("created_at"))
             result["archived_at"] = _iso(row.get("archived_at"))
         return result
+
+    def _project_language_catalog(self, *, language_id: str, selection_tier: str) -> dict[str, object]:
+        canonical, capability = _language(language_id)
+        grouped = capabilities_for_public_course_language(canonical)
+        capabilities = grouped or (capability,)
+        tier = self._execution_tier(capability)
+        return {
+            "language_id": canonical,
+            "display_name": "HTML/CSS" if canonical == "html_css" else capability.display_name,
+            "selection_tier": selection_tier,
+            "selectable": all(item.enabled_for_public_selection for item in capabilities),
+            "lesson_generation_state": capability.lesson_generation,
+            "execution_tier": tier.tier.value,
+            "execution_disclosure": tier.disclosure,
+            "source_trust_policy": capability.source_trust_policy,
+        }
+
+    def _execution_tier(self, capability: LanguageCapability):
+        composition = (
+            ExecutionComposition.DEVELOPMENT
+            if self._settings.app_env.strip().lower() == "development"
+            else ExecutionComposition.PUBLIC
+        )
+        availability = _ExecutorAvailabilityAdapter(
+            ExecutionIntentRepository(
+                self._conn,
+                registry=default_runtime_registry(),
+                executor_enabled=lambda: self._settings.tutor_executor_enabled,
+            )
+        )
+        return self._tier_resolver.resolve(
+            language=capability,
+            inputs=ExecutionTierInputs(
+                composition=composition,
+                local_runner_available=self._local_runner_available(capability),
+                runtime_registry=default_runtime_registry(),
+                executor_availability=availability,
+            ),
+        )
 
     def _mutate(
         self,

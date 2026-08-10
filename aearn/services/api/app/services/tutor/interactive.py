@@ -7,7 +7,8 @@ Only a configured primary provider can produce a bounded public response.
 """
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Protocol
 from uuid import uuid4
@@ -33,7 +34,14 @@ from app.agents.harness.contracts import (
 from app.agents.harness.skill_catalog import compile_published_skill_catalog
 from app.core.config import Settings
 from app.db.connection import connect
-from app.services.tutor.capability_policy import DefaultDenyCapabilityPolicyResolver
+from app.services.learning.context_adapter import TutorLearningContextAdapter
+from app.services.learning.plan_capability import LearningPlanDraftCapabilityHandler
+from app.services.learning.plan_repository import (
+    LearningPlanSessionNotFound,
+    PostgresLearningPlanSessionRepository,
+)
+from app.services.tutor.capability_gateway import CatalogCapabilityGateway
+from app.services.learning.plan_policy import InteractiveLearningCapabilityPolicyResolver
 from app.services.tutor.decision_gate import CatalogTutorDecisionGate
 from app.services.tutor.learner_state import TutorContextSummaryProjection, TutorLearnerStateRepository
 from app.services.tutor.persistence import (
@@ -43,11 +51,11 @@ from app.services.tutor.persistence import (
 )
 from app.services.tutor.ports import (
     Clock,
-    DefaultDenyCapabilityGateway,
     DefaultDenyEffectCommitter,
     NoopTutorCompactionPublisher,
     TutorProviderGateway,
 )
+from app.services.tutor.grounding_lookup import InMemoryGroundingLookup
 from app.services.tutor.provider_gateway import PrimaryTutorProviderGateway
 from app.services.tutor.run_loop import TutorHarnessService, TutorRunLoop
 
@@ -346,6 +354,118 @@ class PostgresTutorContextLoader:
         return row
 
 
+class PostgresTutorLearningContextLoader:
+    """Append bounded learning authority without changing current-input priority."""
+
+    def __init__(
+        self,
+        *,
+        conn: Connection[dict[str, object]],
+        base_loader: PostgresTutorContextLoader,
+    ) -> None:
+        self._learning = TutorLearningContextAdapter(conn)
+        self._plans = PostgresLearningPlanSessionRepository(conn)
+        self._base_loader = base_loader
+
+    def load_context(self, snapshot: TutorRunSnapshot, *, input_revision: int) -> TutorContextInput:
+        base = self._base_loader.load_context(snapshot, input_revision=input_revision)
+        learning = self._learning.load(user_id=snapshot.user_id, run_id=snapshot.run_id)
+        descriptors = list(base.system_descriptors)
+        descriptors.extend(learning.sources)
+        if learning.scope.scope_kind.value == "plan_drafting":
+            try:
+                session = self._plans.active_session_for_run(
+                    user_id=snapshot.user_id,
+                    run_id=snapshot.run_id,
+                    input_revision=input_revision,
+                )
+            except LearningPlanSessionNotFound:
+                session = None
+            if session is not None:
+                descriptors.append(
+                    TutorContextSource(
+                        source_id=f"learning-plan-session:{session['id']}",
+                        content={
+                            "status": str(session["status"]),
+                            "preferred_language_id": session.get("preferred_language_id"),
+                            "session_version": _context_int(session.get("version")),
+                            "current_draft_version": _context_int(session.get("draft_version")),
+                            "current_draft_hash": session.get("content_hash"),
+                        },
+                    )
+                )
+                draft = _bounded_current_draft(session)
+                if draft is not None:
+                    descriptors.append(
+                        TutorContextSource(
+                            source_id=f"learning-plan-current-draft:{session['current_draft_id']}",
+                            content=draft,
+                        )
+                    )
+        return replace(base, system_descriptors=tuple(descriptors))
+
+
+def _bounded_current_draft(session: Mapping[str, object]) -> dict[str, object] | None:
+    plan = session.get("plan_json")
+    profile = session.get("profile_json")
+    sources = session.get("source_summary_json")
+    if not isinstance(plan, Mapping) or not isinstance(profile, Mapping):
+        return None
+    modules_raw = plan.get("modules")
+    modules: list[dict[str, object]] = []
+    if isinstance(modules_raw, list):
+        for module in modules_raw[:8]:
+            if not isinstance(module, Mapping):
+                continue
+            nodes_raw = module.get("nodes")
+            nodes = []
+            if isinstance(nodes_raw, list):
+                nodes = [
+                    {
+                        "knowledge_key": node.get("knowledge_key"),
+                        "title": node.get("title"),
+                    }
+                    for node in nodes_raw[:8]
+                    if isinstance(node, Mapping)
+                ]
+            modules.append(
+                {
+                    "module_key": module.get("module_key"),
+                    "title": module.get("title"),
+                    "nodes": nodes,
+                }
+            )
+    source_ids = [
+        str(item["source_id"])
+        for item in sources[:8]
+        if isinstance(item, Mapping) and item.get("source_id") is not None
+    ] if isinstance(sources, list) else []
+    return {
+        "profile": {
+            "language_id": profile.get("language_id"),
+            "goal_text": profile.get("goal_text"),
+            "target_level": profile.get("target_level"),
+            "weekly_minutes": profile.get("weekly_minutes"),
+            "experience_level": profile.get("experience_level"),
+            "teaching_preferences": profile.get("teaching_preferences"),
+            "pace_summary": profile.get("pace_summary"),
+        },
+        "modules": modules,
+        "source_ids": source_ids,
+    }
+
+
+def _context_int(value: object) -> int:
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return value
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _required_datetime(value: object) -> datetime:
     if not isinstance(value, datetime):
         raise TutorContextError("TUTOR_CONTEXT_TIMELINE_INVALID")
@@ -359,9 +479,9 @@ class TutorInteractiveRunDispatcher:
     """Execute one persisted interactive run through the finite Harness loop.
 
     The dispatcher is used only after the public input route's database
-    transaction commits. Its production composition is policy-default-deny:
-    provider output may produce a public response, while all Skills,
-    capabilities, and effects remain behind the existing catalog/policy gates.
+    transaction commits. Its production composition remains default-deny except
+    for the exact plan-drafting Skill/capability on an active planning session.
+    Effects remain behind the existing deny-by-default gate.
     """
 
     def __init__(
@@ -384,13 +504,14 @@ class TutorInteractiveRunDispatcher:
             repository = PostgresTutorRepository(conn)
             learner_state = TutorLearnerStateRepository(conn)
             catalog = compile_published_skill_catalog()
-            policy_resolver = DefaultDenyCapabilityPolicyResolver()
+            policy_resolver = InteractiveLearningCapabilityPolicyResolver(conn)
             selection_store = PostgresTutorSkillSelectionStore(repository=repository, user_id=user_id)
             base_loader = PostgresTutorContextLoader(conn=conn, learner_state=learner_state)
+            learning_loader = PostgresTutorLearningContextLoader(conn=conn, base_loader=base_loader)
             loop = TutorRunLoop(
                 store=repository.as_run_store(user_id=user_id),
                 context_loader=CatalogContextLoader(
-                    base_loader=base_loader,
+                    base_loader=learning_loader,
                     catalog=catalog,
                     policy_resolver=policy_resolver,
                     selection_store=selection_store,
@@ -398,7 +519,13 @@ class TutorInteractiveRunDispatcher:
                 context_builder=TutorContextBuilder(),
                 context_budget_planner=TutorContextBudgetPlanner(),
                 provider=self._provider_factory(self._settings),
-                capability_gateway=DefaultDenyCapabilityGateway(),
+                capability_gateway=CatalogCapabilityGateway(
+                    catalog=catalog,
+                    policy_resolver=policy_resolver,
+                    selection_store=selection_store,
+                    grounding_lookup=InMemoryGroundingLookup(),
+                    learning_plan_handler=LearningPlanDraftCapabilityHandler(conn),
+                ),
                 effect_committer=DefaultDenyEffectCommitter(),
                 clock=self._clock,
                 compaction_publisher=NoopTutorCompactionPublisher(),

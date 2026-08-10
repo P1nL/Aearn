@@ -123,6 +123,8 @@ def export_user_data(conn: Connection[dict[str, object]], user_id: str) -> dict[
         "adaptive_variant_summaries": _export_adaptive_variant_summaries(conn, user_id),
         "notes": _export_notes(conn, user_id),
         "conversation_summaries": _export_conversation_summaries(conn, user_id),
+        "learning_plan_sessions": _export_learning_plan_sessions(conn, user_id),
+        "learning_plan_drafts": _export_learning_plan_drafts(conn, user_id),
         "learning_tracks": _export_learning_tracks(conn, user_id),
         "learning_track_plan_revisions": _export_learning_track_plan_revisions(conn, user_id),
         "learning_track_nodes": _export_learning_track_nodes(conn, user_id),
@@ -229,6 +231,8 @@ def _summary_counts(conn: Connection[dict[str, object]], user_id: str) -> dict[s
             """,
             user_id,
         ),
+        "learning_plan_sessions": _count(conn, "SELECT count(*) AS count FROM tutor_learning_plan_sessions WHERE user_id = %s", user_id),
+        "learning_plan_drafts": _count(conn, "SELECT count(*) AS count FROM tutor_learning_plan_drafts WHERE user_id = %s", user_id),
         "learning_tracks": _count(conn, "SELECT count(*) AS count FROM tutor_learning_tracks WHERE user_id = %s", user_id),
         "learning_track_plan_revisions": _count(conn, "SELECT count(*) AS count FROM tutor_track_plan_revisions WHERE user_id = %s", user_id),
         "learning_track_nodes": _count(conn, "SELECT count(*) AS count FROM tutor_track_plan_nodes WHERE user_id = %s", user_id),
@@ -503,6 +507,44 @@ def _export_conversation_summaries(conn: Connection[dict[str, object]], user_id:
     }
 
 
+def _export_learning_plan_sessions(
+    conn: Connection[dict[str, object]],
+    user_id: str,
+) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """
+        SELECT id, conversation_id, status, preferred_language_id, current_draft_id,
+               confirmed_track_id, version, last_error_code, last_error_at,
+               created_at, updated_at, confirmed_at, cancelled_at
+        FROM tutor_learning_plan_sessions
+        WHERE user_id = %s
+        ORDER BY created_at, id
+        """,
+        (user_id,),
+    ).fetchall()
+    return [_safe_row(row, exclude=()) for row in rows]
+
+
+def _export_learning_plan_drafts(
+    conn: Connection[dict[str, object]],
+    user_id: str,
+) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """
+        SELECT id, session_id, draft_version, predecessor_draft_id, language_id,
+               goal_text, target_level, weekly_minutes, experience_level,
+               teaching_preferences_json, pace_summary, profile_json, plan_json,
+               source_summary_json, content_hash, generator_version, policy_version,
+               change_reason, source_run_id, source_input_revision, created_at
+        FROM tutor_learning_plan_drafts
+        WHERE user_id = %s
+        ORDER BY session_id, draft_version
+        """,
+        (user_id,),
+    ).fetchall()
+    return [_safe_row(row, exclude=()) for row in rows]
+
+
 def _export_learning_tracks(conn: Connection[dict[str, object]], user_id: str) -> list[dict[str, object]]:
     rows = conn.execute(
         """
@@ -589,6 +631,9 @@ def _delete_learning_track_data(conn: Connection[dict[str, object]], user_id: st
             now=now,
         )
     conn.execute("SELECT set_config('aearn.learning_track_purge_user_id', %s, true)", (user_id,))
+    conn.execute("SET CONSTRAINTS ALL DEFERRED")
+    conn.execute("DELETE FROM tutor_learning_plan_drafts WHERE user_id = %s", (user_id,))
+    conn.execute("DELETE FROM tutor_learning_plan_sessions WHERE user_id = %s", (user_id,))
     conn.execute("DELETE FROM tutor_run_learning_scopes WHERE user_id = %s", (user_id,))
     conn.execute("DELETE FROM tutor_conversation_learning_scopes WHERE user_id = %s", (user_id,))
     conn.execute("DELETE FROM tutor_mastery_states WHERE user_id = %s", (user_id,))
