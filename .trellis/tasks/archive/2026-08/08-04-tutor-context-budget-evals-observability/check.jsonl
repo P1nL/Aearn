@@ -1,0 +1,3 @@
+{"file":".trellis/tasks/08-04-tutor-context-budget-evals-observability/prd.md","reason":"检查确定性场景、数值指标、教学 rubric、真实 smoke 和发布证据验收。"}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"检查测试输出、trace 和报告不含 prompt、history、reasoning 或 credential。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"检查五个子任务 contract 在集成评估中保持同一数据流和语义。"}
