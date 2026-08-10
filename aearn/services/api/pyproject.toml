@@ -33,3 +33,8 @@ aearn-shared = { path = "../../packages/shared", editable = true }
 
 [tool.mypy]
 mypy_path = ["../worker", "../../packages/shared"]
+
+[tool.pytest.ini_options]
+markers = [
+  "real_provider: explicit opt-in tests that call the configured real LLM provider",
+]

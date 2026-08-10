@@ -276,6 +276,31 @@ of at most 48 characters. This adapter validates and types the candidate only;
 conversation-title persistence and public history behavior remain owned by the
 separate lifecycle boundary.
 
+### Context governance eval and calibration
+
+The context-governance evidence layer is offline and additive. The versioned
+`tutor_context_eval_v2` fixture composes the already-owned current-input, provider
+attempt usage, adaptive budget, and structured-summary contracts; it does not
+introduce a second selection algorithm or change online defaults. Each case uses a
+fixed capability/policy, deterministic estimator, fake provider, fixed numeric
+latency, and synthetic learner-safe content. PostgreSQL-backed owning tests remain
+the authority for timeline ordering, scope, append-only receipts, bootstrap, and
+summary persistence.
+
+Each case emits `tutor_context_eval_receipt_v1`, whose fields are limited to safe
+numbers, booleans, enums, versions, diagnostic codes, and opaque source IDs. Cached
+input remains a subset of actual input, repair attempts remain separate, provider
+reported total remains distinct from calculated input-plus-output, and unavailable
+usage stays `null`. Raw prompt/history, provider body, reasoning, credentials, paths,
+commands, and reconstructable summary text are not receipt fields.
+
+`tutor_context_calibration_v1` groups estimate/actual evidence by
+provider/protocol/capability/budget mode/estimator/config version. P50/P95 appear only
+after the configured sample threshold; excessive estimation error recommends review
+of the estimator or safety margin but never changes production settings
+automatically. Fake contract evidence, optional real-provider behavior sampling, and
+human release approval are three separate states.
+
 ## 4. Skills, capabilities, effects, and grounding
 
 - Published Skills are exact `id@semantic-version` bundles with reviewed
@@ -394,7 +419,7 @@ while legacy rows remain. After confirmed deletion, rollback does not recreate,
 migrate, or infer deleted learner plans, sessions, attempts, FSRS state, notes,
 or messages.
 
-## 9. Optional live-provider latest-input smoke
+## 9. Optional live-provider smokes
 
 The default suite remains offline and fake-only. A developer may intentionally run the
 controlled latest-input scenario against the already configured local provider with:
@@ -410,6 +435,21 @@ only bounded learner-visible messages plus boolean rubric fields for latest-turn
 relevance, correction acknowledgement, rejected-step repetition, answer-first
 behavior, and stale-path abandonment. This smoke is optional model-behavior evidence;
 it is not CI, release approval, or a substitute for deterministic contract tests.
+
+The integrated context-governance smoke is a separate five-turn boundary and remains
+disabled unless explicitly approved and enabled:
+
+```powershell
+$env:TUTOR_REAL_PROVIDER_SMOKE = "1"
+uv --directory .\aearn\services\api run python -m pytest tests/test_tutor_real_provider_smoke.py -q -m real_provider
+```
+
+It uses the fixed five learner turns from the acceptance plan, the production planner
+and primary gateway, and bounded synthetic user/conversation/run IDs. Output is limited
+to learner-safe replies, usage numbers, cache ratio, selected budget mode, safe latency,
+attempt count, and boolean rubric. It never prints or persists provider request/response
+bodies, prompt/history, reasoning, credentials, paths, or commands. The smoke is not
+run by default and does not authorize release.
 
 ## 10. Verification and release non-claim
 
@@ -498,3 +538,17 @@ These checks prove deterministic local contracts, policy persistence, hard-limit
 preflight, bounded rebuild, safe metadata, and cache accounting semantics. They do
 not claim live-model tokenization parity or authorize commit, push, deployment, or
 production-data changes.
+
+### Context governance eval verification (2026-08-10)
+
+The versioned eval/observability patch was exercised locally without a real provider,
+commit, push, deployment, or production-data mutation. The first cross-contract batch
+completed with **130 passed, 1 skipped**; the skipped case is the explicitly gated
+`real_provider` smoke. It covered v1 compatibility, v2 fixture validation, safe receipts,
+current/history ordering through PostgreSQL, usage/cache/repair attempts, all budget
+modes and hard limits, summary retirement/correction/stale behavior, run-loop regression,
+provider gateway regression, run persistence, and repeatable bootstrap. The final matrix then completed with **404 passed, 1 skipped in 33.41s**, Ruff
+passing, Mypy passing on **114 source files**, `uv lock --check` passing, Desktop
+`tsc && vite build` passing with **46 modules transformed**, and Trellis/diff hygiene
+passing. These results still do not authorize a real-provider call, commit, push,
+deployment, task archive, or release approval.
