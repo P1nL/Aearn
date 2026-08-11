@@ -1159,3 +1159,45 @@ Closed the planning-only Tutor Harness rearchitecture parent after all nine inde
 ### Next Steps
 
 - None - task complete
+
+
+## Session 92: 完成 LessonDocument 与权威来源课程能力
+
+**Date**: 2026-08-11
+**Task**: 完成 LessonDocument 与权威来源课程能力
+**Branch**: `main`
+
+### Summary
+
+完成不可变标准与个性化 LessonDocument、权威来源快照、受控 authoring、assignment 冻结与显式迁移、verified-only API 和网页端阅读器；完整 API suite 425 passed、1 skipped，Ruff、Mypy、lock、Trellis validate、git diff 与多视口浏览器验收通过。
+
+### Main Changes
+
+- 新增严格注册的十类 Lesson block、canonical hash、来源引用与个性化继承质量门。
+- 新增不可变标准/个性化文档、来源快照、assignment 冻结/提案/显式迁移和 durable authoring lifecycle。
+- 扩展 Grounding source version 与原始文档 hash，完成 verified-only Lesson API、用户数据治理和 cutover inventory。
+- 新增网页端 Lesson 阅读器、严格 unknown parser、引用证据面板和失败重试/版本迁移状态。
+- 同步 product、architecture、QA source-of-truth 与 backend/frontend Trellis code-spec。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `b73dfa0` | (see git log) |
+| `b4a56e8` | (see git log) |
+| `a1e335e` | (see git log) |
+
+### Testing
+
+- [OK] 聚焦后端矩阵 122 passed。
+- [OK] 完整 API suite 425 passed、1 skipped；唯一 skip 为默认禁用的真实 provider smoke。
+- [OK] Ruff、Mypy（128 source files）、lock check、Trellis validate 与 `git diff --check` 通过。
+- [OK] 网页端 1440px、900px、390px 浏览器状态流、引用、冻结、proposal、迁移和无溢出验证通过；按任务边界未运行 Desktop build/typecheck。
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 父任务继续保持 `planning`；下一候选子任务为 `08-04-exercise-gates-execution-unlock`。

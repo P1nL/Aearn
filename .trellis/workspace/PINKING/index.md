@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-2.md`
-- **Total Sessions**: 91
-- **Last Active**: 2026-08-10
+- **Total Sessions**: 92
+- **Last Active**: 2026-08-11
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-2.md` | ~1161 | Active |
+| `journal-2.md` | ~1196 | Active |
 | `journal-1.md` | ~1979 | Archived |
 <!-- @@@/auto:active-documents -->
 
@@ -30,6 +30,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 92 | 2026-08-11 | 完成 LessonDocument 与权威来源课程能力 | `b73dfa0`, `b4a56e8`, `a1e335e` | `main` |
 | 91 | 2026-08-10 | 完成学习首页与对话式计划制定 | `802693a`, `3ebc420`, `bf0a414` | `main` |
 | 90 | 2026-08-10 | 完成 Tutor 上下文治理评估与可观测性 | `f0f8eb8` | `main` |
 | 89 | 2026-08-08 | 完成 Tutor 长对话摘要检索与压缩闭环 | `ddc6233` | `main` |
