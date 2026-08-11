@@ -1,5 +1,5 @@
-{"file":".trellis/tasks/08-04-exercise-gates-execution-unlock/design.md","reason":"加载 Gate、Attempt、execution queue additive owner、模块诊断、路线解锁、前端与安全技术设计。"}
-{"file":".trellis/tasks/08-04-exercise-gates-execution-unlock/research/repository-baseline.md","reason":"加载现有 LearningTrack、Lesson slot、Tutor executor、legacy exercise 与前端接缝证据。"}
+{"file":".trellis/tasks/archive/2026-08/08-04-exercise-gates-execution-unlock/design.md","reason":"加载 Gate、Attempt、execution queue additive owner、模块诊断、路线解锁、前端与安全技术设计。"}
+{"file":".trellis/tasks/archive/2026-08/08-04-exercise-gates-execution-unlock/research/repository-baseline.md","reason":"加载现有 LearningTrack、Lesson slot、Tutor executor、legacy exercise 与前端接缝证据。"}
 {"file":".trellis/tasks/08-04-programming-language-learning-agent-product/design.md","reason":"遵守父任务对练习版本、模块跳过计划版本、execution tier 与单一执行队列的跨任务设计。"}
 {"file":".trellis/tasks/archive/2026-08/08-04-lesson-document-authority-grounding/design.md","reason":"保持已发布 Lesson gate slot、assignment freeze、迁移和 registered renderer authority。"}
 {"file":".trellis/spec/backend/database-guidelines.md","reason":"遵循 PostgreSQL 复合 scope、append-only、幂等 advisory reservation、execution lifecycle 与用户清理规则。"}

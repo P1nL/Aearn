@@ -1201,3 +1201,42 @@ Closed the planning-only Tutor Harness rearchitecture parent after all nine inde
 ### Next Steps
 
 - 父任务继续保持 `planning`；下一候选子任务为 `08-04-exercise-gates-execution-unlock`。
+
+
+## Session 93: 完成练习 Gate、模块诊断与受控执行
+
+**Date**: 2026-08-11
+**Task**: 完成练习 Gate、模块诊断与受控执行
+**Branch**: `main`
+
+### Summary
+
+完成服务端权威练习 Gate、append-only Attempt、模块诊断显式确认、现有 execution queue 复用、网页端 Gate/诊断交互、source-of-truth 与可执行规范同步；完整 API/executor/TypeScript/浏览器/Trellis 验证通过，未运行真实 provider、reviewed image fleet、Desktop build 或部署。
+
+### Main Changes
+
+- 新增不可变 exercise/private rubric/Gate binding authority、append-only Attempt/result/hint、模块诊断与显式 skip 确认。
+- 以 owner/source one-of 复用现有 execution intent/job 队列，并扩展 executor trusted-input scope，不创建第二队列或虚假 Tutor effect。
+- 完成 Lesson Gate 面板、same-Attempt 轮询、stale result、四 execution tier 披露和模块诊断 modal。
+- 同步 product、API、数据库、Harness runtime、QA source-of-truth 与 backend/frontend Trellis 可执行规范。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `9904619` | (see git log) |
+
+### Testing
+
+- [OK] API lock/Ruff/Mypy 通过；完整 suite 为 442 passed、1 skipped。
+- [OK] Executor lock/Ruff/Mypy 通过；完整 suite 为 11 passed。
+- [OK] 前端 `tsc --noEmit` 通过；1440px、900px、390px 真实网页端 Gate/诊断流程通过。
+- [OK] Trellis validate 为 implement 37 条、check 27 条；归档自引用路径已重写并复验通过；`git diff --check` 通过。
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 当前子任务已归档；父任务继续保持 `planning`，不在本次收尾中启动后续子任务。

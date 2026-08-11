@@ -1,6 +1,6 @@
-{"file":".trellis/tasks/08-04-exercise-gates-execution-unlock/prd.md","reason":"检查 Gate、Attempt、模块诊断、execution tier、路线解锁、隐私和网页端验收范围。"}
-{"file":".trellis/tasks/08-04-exercise-gates-execution-unlock/design.md","reason":"检查 gate_kind 与 requirement_kind、数据模型、队列复用、finalization、诊断计划版本和前端设计一致性。"}
-{"file":".trellis/tasks/08-04-exercise-gates-execution-unlock/research/repository-baseline.md","reason":"检查实现基于当前 active runtime，不恢复 legacy exercise authority 或创建第二套执行队列。"}
+{"file":".trellis/tasks/archive/2026-08/08-04-exercise-gates-execution-unlock/prd.md","reason":"检查 Gate、Attempt、模块诊断、execution tier、路线解锁、隐私和网页端验收范围。"}
+{"file":".trellis/tasks/archive/2026-08/08-04-exercise-gates-execution-unlock/design.md","reason":"检查 gate_kind 与 requirement_kind、数据模型、队列复用、finalization、诊断计划版本和前端设计一致性。"}
+{"file":".trellis/tasks/archive/2026-08/08-04-exercise-gates-execution-unlock/research/repository-baseline.md","reason":"检查实现基于当前 active runtime，不恢复 legacy exercise authority 或创建第二套执行队列。"}
 {"file":".trellis/tasks/08-04-programming-language-learning-agent-product/prd.md","reason":"检查单知识点不可跳过、模块全部核心能力通过、用户确认和公开执行边界。"}
 {"file":".trellis/spec/backend/database-guidelines.md","reason":"检查 bootstrap twice、复合外键、append-only、幂等并发、execution lifecycle 与 purge。"}
 {"file":".trellis/spec/backend/error-handling.md","reason":"检查 404/409/422/503 映射、跨 scope 不泄漏和 unexpected exception 脱敏。"}
