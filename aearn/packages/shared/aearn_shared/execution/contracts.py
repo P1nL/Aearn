@@ -422,17 +422,19 @@ class SafeExecutionResultV1(_FrozenModel):
 
 
 class ExecutionJobV1(_FrozenModel):
-    """Safe durable queue fact. Image, command, code, and paths are absent."""
+    """Safe durable queue fact for either a Tutor effect or exercise Attempt."""
 
     job_id: str = Field(min_length=1, max_length=160)
-    effect_id: str = Field(min_length=1, max_length=160)
     intent_proof_id: str = Field(min_length=1, max_length=160)
     user_id: str = Field(min_length=1, max_length=160)
-    conversation_id: str = Field(min_length=1, max_length=160)
-    run_id: str = Field(min_length=1, max_length=160)
     runtime_id: str = Field(min_length=1, max_length=120)
     lock_fingerprint: str = Field(min_length=64, max_length=64)
     state: ExecutionJobState
+    owner_kind: Literal["tutor_effect", "exercise_attempt"] = "tutor_effect"
+    effect_id: str | None = Field(default=None, max_length=160)
+    conversation_id: str | None = Field(default=None, max_length=160)
+    run_id: str | None = Field(default=None, max_length=160)
+    exercise_attempt_id: str | None = Field(default=None, max_length=160)
     lease_owner_id: str | None = Field(default=None, max_length=160)
     lease_generation: int = Field(default=0, ge=0)
     lease_expires_at: datetime | None = None
@@ -442,10 +444,23 @@ class ExecutionJobV1(_FrozenModel):
     result: SafeExecutionResultV1 | None = None
     safe_diagnostic_code: str | None = Field(default=None, max_length=120)
 
-    @field_validator("job_id", "effect_id", "intent_proof_id", "user_id", "conversation_id", "run_id")
+    @field_validator("job_id", "intent_proof_id", "user_id")
     @classmethod
     def validate_identifiers(cls, value: str) -> str:
         return _identifier(value, label="execution job field")
+
+    @field_validator(
+        "effect_id",
+        "conversation_id",
+        "run_id",
+        "exercise_attempt_id",
+        "lease_owner_id",
+        "launch_token",
+        "safe_diagnostic_code",
+    )
+    @classmethod
+    def validate_optional_identifiers(cls, value: str | None) -> str | None:
+        return None if value is None else _identifier(value, label="execution job identifier")
 
     @field_validator("runtime_id")
     @classmethod
@@ -457,10 +472,15 @@ class ExecutionJobV1(_FrozenModel):
     def validate_lock_fingerprint(cls, value: str) -> str:
         return _sha256(value, label="lock fingerprint")
 
-    @field_validator("lease_owner_id", "launch_token", "safe_diagnostic_code")
-    @classmethod
-    def validate_optional_identifiers(cls, value: str | None) -> str | None:
-        return None if value is None else _identifier(value, label="execution job identifier")
+    @model_validator(mode="after")
+    def validate_owner(self) -> "ExecutionJobV1":
+        tutor_shape = self.effect_id is not None and self.conversation_id is not None and self.run_id is not None
+        gate_shape = self.exercise_attempt_id is not None
+        if self.owner_kind == "tutor_effect" and (not tutor_shape or gate_shape):
+            raise ValueError("Tutor execution job owner shape is invalid")
+        if self.owner_kind == "exercise_attempt" and (tutor_shape or not gate_shape):
+            raise ValueError("exercise Attempt job owner shape is invalid")
+        return self
 
 
 class ExecutionJobClaimV1(_FrozenModel):

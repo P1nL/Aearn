@@ -145,6 +145,15 @@ _TARGET_COUNT_SQL: tuple[tuple[str, str], ...] = (
     ("tutor_lesson_documents", "SELECT count(*)::int AS count FROM tutor_lesson_documents WHERE user_id = %s AND document_kind = 'personalized'"),
     ("tutor_lesson_assignments", "SELECT count(*)::int AS count FROM tutor_lesson_assignments WHERE user_id = %s"),
     ("tutor_lesson_authoring_runs", "SELECT count(*)::int AS count FROM tutor_lesson_authoring_runs WHERE user_id = %s"),
+    ("tutor_lesson_gate_bindings", "SELECT count(*)::int AS count FROM tutor_lesson_gate_bindings WHERE user_id = %s"),
+    ("tutor_lesson_gate_states", "SELECT count(*)::int AS count FROM tutor_lesson_gate_states WHERE user_id = %s"),
+    ("tutor_module_diagnostic_sessions", "SELECT count(*)::int AS count FROM tutor_module_diagnostic_sessions WHERE user_id = %s"),
+    ("tutor_module_diagnostic_items", "SELECT count(*)::int AS count FROM tutor_module_diagnostic_items WHERE user_id = %s"),
+    ("tutor_exercise_attempts", "SELECT count(*)::int AS count FROM tutor_exercise_attempts WHERE user_id = %s"),
+    ("tutor_exercise_attempt_submissions", "SELECT count(*)::int AS count FROM tutor_exercise_attempt_submissions WHERE user_id = %s"),
+    ("tutor_exercise_attempt_results", "SELECT count(*)::int AS count FROM tutor_exercise_attempt_results WHERE user_id = %s"),
+    ("tutor_exercise_hint_receipts", "SELECT count(*)::int AS count FROM tutor_exercise_hint_receipts WHERE user_id = %s"),
+    ("tutor_exercise_execution_links", "SELECT count(*)::int AS count FROM tutor_exercise_execution_links WHERE user_id = %s"),
 )
 
 

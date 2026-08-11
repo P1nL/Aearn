@@ -18,6 +18,7 @@ from app.services.learning.contracts import (
     LearningScopeKind,
     LearningTaskKind,
     MasteryEvidence,
+    MasteryEvidenceEffect,
     MasteryEvidenceKind,
     MasteryIndependence,
     NodeProgressStatus,
@@ -212,6 +213,10 @@ class PostgresLearningTrackRepository:
             "modules": modules,
         }
 
+    def read_active_plan(self, *, user_id: str, track_id: str) -> tuple[str, LearningPlan]:
+        active = self._active_revision(user_id=user_id, track_id=track_id)
+        return str(active["id"]), _plan_from_row(active)
+
     def list_revisions(self, *, user_id: str, track_id: str) -> tuple[dict[str, object], ...]:
         self._assert_track(user_id=user_id, track_id=track_id)
         rows = self._conn.execute(
@@ -391,7 +396,7 @@ class PostgresLearningTrackRepository:
                   track_id, user_id, knowledge_key, confidence, mastery_level,
                   strengths_json, weaknesses_json, evidence_count, last_evidence_id,
                   projector_version, version
-                ) VALUES (%s, %s, %s, 0, 'unseen', '[]'::jsonb, '[]'::jsonb, 0, NULL, 'learning_mastery_v1', 1)
+                ) VALUES (%s, %s, %s, 0, 'unseen', '[]'::jsonb, '[]'::jsonb, 0, NULL, 'learning_mastery_v2', 1)
                 ON CONFLICT (track_id, knowledge_key) DO NOTHING
                 """,
                 (track_id, user_id, node.knowledge_key),
@@ -592,6 +597,7 @@ class PostgresLearningTrackRepository:
                 str(existing["user_id"]) != user_id
                 or str(existing["knowledge_key"]) != evidence.knowledge_key
                 or str(existing["source_receipt_hash"]) != evidence.source_receipt_hash
+                or str(existing.get("evidence_effect") or "reinforcing") != evidence.evidence_effect.value
                 or str(existing["independence"]) != evidence.independence.value
                 or _float(existing["score"]) != evidence.score
                 or _int(existing["hint_count"]) != evidence.hint_count
@@ -614,14 +620,15 @@ class PostgresLearningTrackRepository:
             self._conn.execute(
                 """
                 INSERT INTO tutor_mastery_evidence (
-                  id, track_id, user_id, knowledge_key, evidence_kind,
+                  id, track_id, user_id, knowledge_key, evidence_kind, evidence_effect,
                   source_receipt_id, source_receipt_hash, independence, score,
                   hint_count, attempt_count, evidence_summary_json, created_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
                 """,
                 (
                     evidence_id, track_id, user_id, evidence.knowledge_key, evidence.evidence_kind.value,
-                    evidence.source_receipt_id, evidence.source_receipt_hash, evidence.independence.value,
+                    evidence.evidence_effect.value, evidence.source_receipt_id, evidence.source_receipt_hash,
+                    evidence.independence.value,
                     evidence.score, evidence.hint_count, evidence.attempt_count,
                     _json(dict(evidence.summary)), evidence.created_at,
                 ),
@@ -720,7 +727,7 @@ class PostgresLearningTrackRepository:
                   track_id, user_id, knowledge_key, confidence, mastery_level,
                   strengths_json, weaknesses_json, evidence_count, last_evidence_id,
                   projector_version, version
-                ) VALUES (%s, %s, %s, 0, 'unseen', '[]'::jsonb, '[]'::jsonb, 0, NULL, 'learning_mastery_v1', 1)
+                ) VALUES (%s, %s, %s, 0, 'unseen', '[]'::jsonb, '[]'::jsonb, 0, NULL, 'learning_mastery_v2', 1)
                 """,
                 (track_id, user_id, node.knowledge_key),
             )
@@ -815,6 +822,7 @@ class PostgresLearningTrackRepository:
                 source_receipt_id=str(row["source_receipt_id"]),
                 source_receipt_hash=str(row["source_receipt_hash"]),
                 independence=MasteryIndependence(str(row["independence"])),
+                evidence_effect=MasteryEvidenceEffect(str(row.get("evidence_effect") or "reinforcing")),
                 score=_float(row["score"]),
                 hint_count=_int(row["hint_count"]),
                 attempt_count=_int(row["attempt_count"]),
@@ -836,8 +844,8 @@ class PostgresLearningTrackRepository:
             INSERT INTO tutor_mastery_states (
               track_id, user_id, knowledge_key, confidence, mastery_level,
               strengths_json, weaknesses_json, evidence_count, last_evidence_id,
-              projector_version, version
-            ) VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, 1)
+              observation_count, last_observation_id, projector_version, version
+            ) VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s, 1)
             ON CONFLICT (track_id, knowledge_key) DO UPDATE SET
               user_id = EXCLUDED.user_id,
               confidence = EXCLUDED.confidence,
@@ -846,6 +854,8 @@ class PostgresLearningTrackRepository:
               weaknesses_json = EXCLUDED.weaknesses_json,
               evidence_count = EXCLUDED.evidence_count,
               last_evidence_id = EXCLUDED.last_evidence_id,
+              observation_count = EXCLUDED.observation_count,
+              last_observation_id = EXCLUDED.last_observation_id,
               projector_version = EXCLUDED.projector_version,
               version = tutor_mastery_states.version + 1
             """,
@@ -853,7 +863,8 @@ class PostgresLearningTrackRepository:
                 track_id, user_id, projection.knowledge_key, projection.confidence,
                 projection.mastery_level.value, _json(list(projection.strengths)),
                 _json(list(projection.weaknesses)), projection.evidence_count,
-                projection.last_evidence_id, projection.projector_version,
+                projection.last_evidence_id, projection.observation_count,
+                projection.last_observation_id, projection.projector_version,
             ),
         )
 

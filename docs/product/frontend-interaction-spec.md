@@ -211,4 +211,14 @@ refresh；history endpoint 是 timeline 的唯一 source of truth。
 状态机为 `loading -> missing -> preparing -> ready`，失败进入可恢复 `failed`。`api.ts` 从 `unknown` 严格构造 `LessonDocumentState`、十类 block union、citation、assignment 和 update proposal；未知字段、未知 block、非法 URL、重复/不连续 block 或悬空 citation 都显示 contract error，不做 HTML/Markdown fallback。
 
 ready 页面复用 `LessonDocumentView`、`LessonBlockRenderer` 和
-`LessonSourcesPanel`。事实段落展示 inline citation；证据面板可键盘展开并展示受限摘录。start、refresh 和 migration 都使用 server version/CAS 与新的 client action ID。Gate slot 必须显示“练习能力将在后续任务开放”，不得出现 run/submit/score/unlock 控件。网页端完成门为 `http://127.0.0.1:1420` 的 normal、900px 与 390px 浏览器验证；默认不运行 Desktop build/typecheck。
+`LessonSourcesPanel`。事实段落展示 inline citation；证据面板可键盘展开并展示受限摘录。start、refresh 和 migration 都使用 server version/CAS 与新的 client action ID。Gate slot 通过 typed render seam 接收服务端 Gate projection；页面只按 `allowed_actions` 显示 prepare、hint、run 或 submit，不在本地计算 score、pass、mastery 或 unlock。网页端完成门为 `http://127.0.0.1:1420` 的 normal、900px 与 390px 浏览器验证；默认不运行 Desktop build。
+
+## 2026-08-11：Lesson Gate 与模块诊断交互
+
+`LessonDocumentPage` 拥有 Gate map、editor、hint、Attempt、poll/replay、stale、error 和 diagnostic modal 状态；`LessonDocumentView` 与 `LessonBlockRenderer` 继续保持纯展示，只通过 typed `renderExerciseGate` seam 渲染 `LessonGatePanel`。`api.ts` 从 `unknown` 严格构造 Gate、exercise、Attempt/result、hint、diagnostic 和 impact union，未知字段、状态、tier、exercise type 或 action 必须成为可见 contract error。
+
+`LessonGatePanel` 只消费服务器 `allowed_actions`。未绑定 Gate 显示 prepare；pending Attempt 轮询同一个 `attempt_id`；终态结果显示服务端 score 和 safe feedback。学习者修改 editor 后，旧结果必须显示 stale，不得继续作为当前提交证据。`static_only` 隐藏 Run 并显示 `execution_claim=not_run` 语义，`unavailable` 隐藏 Run/Submit，`teaching_local` 显示 development-only 披露，`container_verified` 只展示服务器已经授权的动作。
+
+`ModuleDiagnosticModal` 是独立对话框，不复用知识点 Gate。打开入口只由 Lesson state 的 `module_diagnostic_allowed=true` 决定；创建后逐项显示冻结的核心 capability，失败/部分通过必须显示“未跳过任何知识点”和冷却/薄弱项。通过状态只显示 proposed impact，必须有显式确认按钮；确认成功后重新读取 Lesson/路线并隐藏已失效入口。
+
+网页验收必须覆盖 1440px、精确 900px 和 390px，无水平溢出、无 framework overlay、相关 console error/warning 为零、键盘焦点可见、对话框适配窄屏。可以使用 disposable stateful fake API 验证状态机；不能用静态搜索或 Desktop build 代替真实网页交互，也不能调用真实 provider、真实 executor 或生产数据。

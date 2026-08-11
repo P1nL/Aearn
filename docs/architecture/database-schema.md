@@ -229,3 +229,17 @@ personalized document。standard 行没有 user/track owner；personalized 行�
 `tutor_lesson_assignments` 保证每个 `track_id + knowledge_key` 最多一个 active assignment。开始后 `started_at`、document identity 与 activation lineage 不可改写；更新先创建 direct proposed successor。`tutor_lesson_authoring_runs` 保存 pending/claimed/running/terminal、lease、expected versions、source set、safe failure 和结果 identity；`tutor_lesson_authoring_attempt_receipts` 只保存 append-only provider/model/protocol/outcome/usage/hash metadata。
 
 local export 包含 personalized blocks、assignment 与 citation metadata，但省略 evidence excerpt 全文、prompt/body/reasoning 和内部 quality details。reset/delete 在 transaction-local purge capability 下 child-to-root 删除 user-owned Lesson rows；共享 standard documents 与其 source snapshots 保留。cutover target inventory 只统计 personalized document、assignment 和 authoring run，不把共享 standard 内容归给某个用户。
+
+## 2026-08-11：练习 Gate、Attempt 与模块诊断 authority
+
+新练习 authority 由十二张 additive 表组成：`tutor_exercise_versions`、`tutor_exercise_private_rubrics`、`tutor_lesson_gate_bindings`、`tutor_lesson_gate_states`、`tutor_module_diagnostic_versions`、`tutor_module_diagnostic_sessions`、`tutor_module_diagnostic_items`、`tutor_exercise_attempts`、`tutor_exercise_attempt_submissions`、`tutor_exercise_attempt_results`、`tutor_exercise_hint_receipts` 和 `tutor_exercise_execution_links`。共享 exercise/diagnostic version 与 private rubric 不属于单个用户；binding/state、Attempt、submission/result/hint、diagnostic session/item 和 execution link 通过复合 FK 固定 exact user/track/plan/Lesson/diagnostic scope。
+
+`gate_kind=knowledge_check | guided_practice | independent_practice` 继续描述 Lesson 教学形态；`requirement_kind=required | recommended | diagnostic` 单独控制路线阻塞。binding 和 exercise/rubric 由 canonical hash/version 冻结。Gate state 只允许 `available | in_progress | passed | remediation_required` 的受控生命周期；Attempt、submission、result、hint 与 execution link 为 append-only/immutable，普通 UPDATE/DELETE 被 trigger 拒绝。
+
+`tutor_exercise_attempts` 使用 owner shape CHECK 分离 Lesson `run | submit` 与模块 `diagnostic_submit`。完整提交只保存在 `tutor_exercise_attempt_submissions.content_text`，公共读取和 export 只投影 hash/摘要。terminal `tutor_exercise_attempt_results` 每个 Attempt 最多一条；required submit 的 result、mastery evidence、Gate CAS、progress completion 和 unlock 在同一数据库事务内 exactly-once 投影。`run` 结果不进入 Gate/mastery/progress。
+
+现有 `tutor_execution_intents` 通过 `source_kind=tutor_message | exercise_submission` 扩展，`tutor_execution_jobs` 通过 `owner_kind=tutor_effect | exercise_attempt` 扩展；两者使用 exact one-of CHECK 和复合 FK 保留旧 Tutor scope，同时允许 Gate 复用同一 claim/lease/launch-token/terminal 队列。Gate 路径不创建 Tutor conversation/message/effect。`tutor_exercise_execution_links` 固定 Attempt 到 existing intent/job 的一对一关系。
+
+`tutor_mastery_evidence.evidence_effect` 区分 `reinforcing` 与 `observational_non_degrading`。失败或部分通过的模块诊断只追加 observation/weakness，不降低既有 confidence；全部核心能力独立达到版本化阈值后，session 才可引用 predecessor-linked proposed plan revision。只有 confirm transaction 可把 session 置为 `confirmed`、激活 successor、写 `diagnostic_skipped` 并重算下游 availability。
+
+local export 省略完整 submission、hidden/private rubric/reference answer 和内部 execution 信息；reset/delete/cutover 在 transaction-local purge capability 下按 execution link/result/hint/submission/Attempt/Gate/diagnostic child-to-root 清理 user-owned rows。共享 curated exercise/diagnostic versions 与 private rubric 保留。Bootstrap twice 必须重复成功，并断言 owner/source one-of、scope FK、唯一性、immutability/lifecycle trigger 和索引存在。

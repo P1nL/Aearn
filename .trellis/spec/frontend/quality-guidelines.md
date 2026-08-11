@@ -834,7 +834,7 @@ Required viewports: normal desktop, 900px, 390px
 - Learning Home continue enters the server-owned current knowledge key.
 - Required state flow is `missing -> prepare -> preparing -> ready` plus `failed -> retry -> ready`.
 - All ten registered block types, inline citations, source trust/version/section/time/URL/excerpt, start freeze, update proposal, and explicit migration must be observable.
-- Gate must contain no run, submit, score, pass, or unlock controls.
+- Gate controls must exactly match server `allowed_actions`; score/pass/unlock remain server projections, and static/unavailable tiers must hide disallowed execution actions.
 - Use fixture/fake infrastructure only; do not call a real provider or mutate real learner data.
 
 ### 4. Validation & Error Matrix
@@ -846,20 +846,20 @@ Required viewports: normal desktop, 900px, 390px
 | Horizontal overflow at required viewport | fail |
 | Unknown payload renders partial content | fail |
 | Refresh silently replaces a started document | fail |
-| Gate exposes unimplemented capability | fail |
+| Gate action exceeds server `allowed_actions`, static shows Run, or unavailable shows Run/Submit | fail |
 | In-app browser screenshot capture alone times out | interactions/DOM/console remain valid; use standalone Playwright only for screenshot fallback and record the boundary |
 
 ### 5. Good / Base / Bad Cases
 
 - Good: start freezes the current assignment; refresh displays impact while the old title remains; explicit activation switches versions.
-- Base: source panel remains readable in one column at 390px and Gate has zero buttons.
+- Base: source panel remains readable in one column at 390px and Gate shows only the actions returned by the fixture.
 - Bad: claim frontend completion from `tsc`, source inspection, or a mocked component snapshot without a browser flow.
 - Bad: use a real provider or production user to make the smoke look realistic.
 
 ### 6. Tests Required
 
 - Page identity, meaningful content, no overlay, and clean console.
-- Ten `.lesson-block` nodes, expected source count, and zero Gate capability buttons.
+- Ten `.lesson-block` nodes, expected source count, and Gate controls matching `allowed_actions` for all four execution tiers.
 - Failed/retry and missing/preparing/ready state transitions.
 - Start freeze, refresh proposal without replacement, and explicit migration.
 - Normal, 900px, and 390px DOM overflow checks, keyboard source access, visible focus, and reduced-motion compatibility.
@@ -878,3 +878,11 @@ pnpm desktop:check passed, therefore the Lesson reader is accepted.
 ```text
 Open http://127.0.0.1:1420 with a disposable stateful API fixture, exercise the full state machine, inspect DOM and console at all required viewports, then record exact evidence and non-claims.
 ```
+
+## Gate 与模块诊断网页完成门（2026-08-11）
+
+- 必走流程：unprepared→prepare、hint、container pending→same Attempt poll、editor stale、submit terminal、teaching-local disclosure、static no-Run、unavailable no Run/Submit。
+- 诊断必须分别验证 fail/partial 不跳过与 pass→impact→explicit confirm→route refresh。
+- 检查 protected markers 不出现在 DOM/network public payload：private test、reference answer、rubric hash、container/image、Docker socket、command/path。
+- 1440px、精确 900px、390px 均检查 `scrollWidth <= clientWidth`、modal viewport fit、键盘 focus、console 0 error/warning、无 framework overlay。
+- Desktop/Tauri build 不是此完成门；独立 `tsc --noEmit` 可作为类型补充，但不能代替真实浏览器交互。

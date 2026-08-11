@@ -258,6 +258,19 @@ be considered. This child must otherwise remain `in_progress`.
 | RT-18 | P0 | Lesson contract | 十类注册 block、canonical hash、未知字段/HTML/script/hidden-answer 拒绝、事实 citation coverage、personalized 保留标准 coverage/Gate | `test_lesson_document_contracts.py`、`test_lesson_document_quality.py` |
 | RT-19 | P0 | Lesson persistence | shared standard、track-scoped personalized、source snapshot reindex 后可读、assignment start/freeze/proposal/migration、append-only schema | `test_lesson_document_repository.py`、bootstrap/LearningTrack/cutover regression |
 | RT-20 | P0 | Lesson authoring/API | durable lease、primary-only strict port、safe attempts、no evidence/provider/invalid/quality/stale fail closed、verified/cross-user/locked/version/idempotency | `test_lesson_document_authoring.py`、`test_lesson_documents.py` |
-| UX-03 | P1 | Lesson reader | Home continue -> Lesson；missing/preparing/ready；十类 block；inline citation/source panel；start freeze；proposal/migrate；Gate 无伪能力；1280/900/390 无溢出/overlay/console error | local web browser smoke at `http://127.0.0.1:1420` |
+| UX-03 | P1 | Lesson reader | Home continue -> Lesson；missing/preparing/ready；十类 block；inline citation/source panel；start freeze；proposal/migrate；Gate 由 typed seam 接入服务端 authority；1440/900/390 无溢出/overlay/console error | local web browser smoke at `http://127.0.0.1:1420` |
 
 真实 provider smoke 默认不执行；fake author contract、PostgreSQL durable evidence、网页端 fixture 与 release approval 必须分别标记。前端默认不运行 Desktop build/typecheck。
+
+## 2026-08-11：练习 Gate 与模块诊断验收矩阵
+
+| ID | 优先级 | 区域 | 验收 | 证据 |
+| --- | --- | --- | --- | --- |
+| RT-21 | P0 | Exercise/Gate contract | 四类 curated fixture、public/private quality boundary、`gate_kind`/`requirement_kind` 分离、canonical hash、static 不声明执行、observational evidence 不降级 | `test_exercise_gate_contracts.py`、`test_exercise_gate_quality.py` |
+| RT-22 | P0 | PostgreSQL authority | 12 张 Practice 表、bootstrap twice、scope/one-of/immutability、Attempt idempotency、required submit 原子 Gate/mastery/progress/unlock、run 不推进、export/reset/cutover redaction | `test_exercise_gate_repository.py`、`test_db_bootstrap.py`、LearningTrack/Lesson/cutover regressions |
+| RT-23 | P0 | Existing execution queue | Gate Attempt 复用 existing intent/job、无假 Tutor conversation/message/effect、old Tutor claim/lease/launch token 回归、executor trusted input exact private scope | `test_exercise_gate_repository.py`、Tutor execution regression、`test_exercise_trusted_input.py`、executor suite |
+| RT-24 | P0 | Gate/API privacy | verified-only、locked/cross-scope 404、version/idempotency conflict、pending same-Attempt poll、stable 422/503、public projection 不含 submission/rubric/reference/container/path | `test_exercise_gates.py`、protected-marker audit |
+| RT-25 | P0 | Module diagnostic | 只允许模块边界、direct API bypass 被拒绝、fail/partial 不创建 revision/不跳过/不降 mastery、pass 必须 confirm 后才激活 `diagnostic_skipped` | `test_module_diagnostics.py` |
+| UX-04 | P1 | Gate/diagnostic web | prepare/hint/run/submit/poll/stale；四 tier 诚实 UI；失败诊断“未跳过任何知识点”；pass impact + explicit confirm；1440/900/390 无溢出、focus 可见、console/overlay clean | real browser at `http://127.0.0.1:1420` with disposable stateful fake API |
+
+默认质量门为 API/executor lock、Ruff、Mypy、完整串行 pytest、前端 `tsc --noEmit`、真实网页端 smoke、Trellis validate 与 `git diff --check`。本任务不运行 Desktop/Tauri build。真实 provider、reviewed image fleet、Docker conformance 和生产 executor smoke 未获批准，不能从 fake/curated 证据推断 release readiness。

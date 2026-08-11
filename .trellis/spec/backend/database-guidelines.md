@@ -374,3 +374,86 @@ VALUES (
 ```
 
 The active assignment remains stable until an explicit version-checked activation supersedes it.
+
+## 场景：练习 Gate、Attempt 与 execution owner（2026-08-11）
+
+### 1. 适用范围与触发条件
+
+- 触发条件：新增或修改 exercise version、Gate binding/state、Attempt、模块诊断、执行队列 owner，或这些事实的 export/reset/cutover。
+- 目标：让 PostgreSQL 固定 exact user/track/plan/Lesson/diagnostic scope，并在复用现有执行队列时不弱化旧 Tutor 路径。
+
+### 2. 接口与数据库签名
+
+```text
+tutor_exercise_attempts.attempt_type = run | submit | diagnostic_submit
+tutor_execution_intents.source_kind = tutor_message | exercise_submission
+tutor_execution_jobs.owner_kind = tutor_effect | exercise_attempt
+tutor_mastery_evidence.evidence_effect = reinforcing | observational_non_degrading
+```
+
+```sql
+CHECK (
+  (source_kind = 'tutor_message' AND conversation_id IS NOT NULL AND exercise_attempt_id IS NULL)
+  OR
+  (source_kind = 'exercise_submission' AND conversation_id IS NULL AND exercise_attempt_id IS NOT NULL)
+)
+```
+
+### 3. 契约
+
+- 共享 exercise/diagnostic version 与 user-owned Gate/Attempt/session 必须分表；私有 rubric/reference/test 不进入公共表、export 或普通模型上下文。
+- Lesson `run | submit` 与模块 `diagnostic_submit` 使用 owner-shape CHECK 和复合 FK 固定 exact scope。
+- `gate_kind` 是教学形态，`requirement_kind` 是路线阻塞语义，不得复用同一字段。
+- Attempt、submission、result、hint、execution link 为 append-only/immutable；Gate/session 只允许受控生命周期更新。
+- Gate intent/job 不得填 Tutor conversation/run/message/effect 字段；Tutor intent/job 不得填 exercise owner 字段。
+- user purge 按 link/result/hint/submission/Attempt/Gate/diagnostic child-to-root 清理，保留共享 version/rubric。
+
+### 4. 验证与错误矩阵
+
+| 条件 | 必须结果 |
+| --- | --- |
+| Tutor 与 exercise owner 字段同时存在 | owner/source one-of CHECK 拒绝 |
+| Attempt 引用其他用户、track、assignment、binding、session 或 item | 复合 FK 拒绝；公共服务映射为不泄漏 scope 的 404 |
+| 同一 Attempt 写第二条 terminal result 或 execution link | 唯一约束拒绝，读取 winner 并重放 |
+| 普通 UPDATE/DELETE 修改 append-only Practice 事实 | immutable trigger 拒绝 |
+| 未授权 purge 删除 user-owned Practice 行 | purge capability trigger 拒绝 |
+| failed/partial diagnostic 尝试写降低掌握度的 evidence | projector 只消费 reinforcing evidence，观察事实不降低 confidence |
+
+### 5. 正常、基础与错误案例
+
+- 正常：`submit` terminal result、mastery evidence、Gate CAS、progress completion 和下游 unlock 在一个事务中 exactly-once 提交。
+- 基础：`run` 保存结果但不更新 Gate、mastery、progress 或路线。
+- 错误：为 Gate 创建虚假 Tutor conversation/message/effect，或仅把旧 owner 字段改 nullable 而没有 one-of CHECK。
+
+### 6. 必须测试
+
+- bootstrap twice，断言十二张 Practice 表、owner/source CHECK、复合 FK、唯一约束、trigger 和索引存在。
+- bad owner shape、跨 scope reference、重复 terminal result、普通 UPDATE/DELETE 与非授权 purge 均由真实 PostgreSQL 拒绝。
+- 同一 Attempt 的 queue link、poll/recovery、result/evidence/unlock winner-replay。
+- export 不含完整 submission/private rubric/reference answer；reset/cutover child-to-root 且共享版本保留。
+- 旧 Tutor claim/lease/launch token/terminal/recovery 测试必须继续通过。
+
+### 7. 错误与正确写法
+
+#### 错误
+
+```sql
+ALTER TABLE tutor_execution_jobs ALTER COLUMN conversation_id DROP NOT NULL;
+-- 没有 owner discriminator、CHECK 或复合 FK。
+```
+
+这会让半 Tutor、半 exercise 的 job 进入队列，应用层检查无法替代数据库 authority。
+
+#### 正确
+
+```sql
+ALTER TABLE tutor_execution_jobs ADD COLUMN owner_kind text NOT NULL DEFAULT 'tutor_effect';
+ALTER TABLE tutor_execution_jobs ADD COLUMN exercise_attempt_id uuid;
+ALTER TABLE tutor_execution_jobs ADD CONSTRAINT chk_owner_shape CHECK (
+  (owner_kind = 'tutor_effect' AND conversation_id IS NOT NULL AND exercise_attempt_id IS NULL)
+  OR
+  (owner_kind = 'exercise_attempt' AND conversation_id IS NULL AND exercise_attempt_id IS NOT NULL)
+);
+```
+
+discriminator、one-of CHECK、owning复合 FK 和旧路径回归共同建立可执行边界。

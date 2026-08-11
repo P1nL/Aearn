@@ -52,6 +52,11 @@ class MasteryEvidenceKind(StrEnum):
     TRUSTED_IMPORT = "trusted_import"
 
 
+class MasteryEvidenceEffect(StrEnum):
+    REINFORCING = "reinforcing"
+    OBSERVATIONAL_NON_DEGRADING = "observational_non_degrading"
+
+
 class MasteryIndependence(StrEnum):
     INDEPENDENT = "independent"
     HINTED = "hinted"
@@ -253,6 +258,7 @@ class MasteryEvidence:
     attempt_count: int
     summary: Mapping[str, object]
     created_at: datetime
+    evidence_effect: MasteryEvidenceEffect = MasteryEvidenceEffect.REINFORCING
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "knowledge_key", stable_key(self.knowledge_key, label="knowledge_key"))

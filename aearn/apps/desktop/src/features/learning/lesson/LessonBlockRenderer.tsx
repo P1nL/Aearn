@@ -1,11 +1,14 @@
-import type { LessonBlock } from "../../../types";
+import type { ReactNode } from "react";
+
+import type { LessonBlock, LessonExerciseGateBlock } from "../../../types";
 
 type LessonBlockRendererProps = {
   block: LessonBlock;
   onCitation: (citationId: string) => void;
+  renderExerciseGate?: (block: LessonExerciseGateBlock) => ReactNode;
 };
 
-export function LessonBlockRenderer({ block, onCitation }: LessonBlockRendererProps) {
+export function LessonBlockRenderer({ block, onCitation, renderExerciseGate }: LessonBlockRendererProps) {
   const citations = <CitationMarkers citationIds={block.citation_ids} onCitation={onCitation} />;
   switch (block.type) {
     case "heading":
@@ -23,7 +26,7 @@ export function LessonBlockRenderer({ block, onCitation }: LessonBlockRendererPr
     case "hint":
       return <aside className="lesson-block lesson-hint"><BlockTitle title={block.title} /><ol>{block.steps.map((step) => <li key={step}>{step}</li>)}</ol>{citations}</aside>;
     case "exercise_gate":
-      return <section className="lesson-block lesson-gate"><div><p className="tutor-panel-eyebrow">练习 Gate slot</p><BlockTitle title="理解检查已冻结" /><p>{block.learner_prompt}</p></div><dl><div><dt>类型</dt><dd>{gateKindLabel(block.gate_kind)}</dd></div><div><dt>Contract</dt><dd>{block.assessment_contract_version}</dd></div><div><dt>能力</dt><dd>{block.required_capabilities.join("、")}</dd></div></dl><p className="lesson-gate-boundary">练习能力将在后续任务开放；当前没有运行、提交、评分或解锁操作。</p>{citations}</section>;
+      return renderExerciseGate ? renderExerciseGate(block) : <section className="lesson-block lesson-gate"><div><p className="tutor-panel-eyebrow">练习 Gate slot</p><BlockTitle title="理解检查已冻结" /><p>{block.learner_prompt}</p></div><dl><div><dt>类型</dt><dd>{gateKindLabel(block.gate_kind)}</dd></div><div><dt>Contract</dt><dd>{block.assessment_contract_version}</dd></div><div><dt>能力</dt><dd>{block.required_capabilities.join("、")}</dd></div></dl><p className="lesson-gate-boundary">当前页面尚未连接 Gate capability seam。</p>{citations}</section>;
     case "summary":
       return <section className="lesson-block lesson-summary"><BlockTitle title="本课小结" /><ul>{block.points.map((point) => <li key={point}>{point}</li>)}</ul>{citations}</section>;
     case "next_steps":

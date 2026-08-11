@@ -141,7 +141,7 @@ Apply this contract when rendering Lesson documents, composing the later learnin
 - `LessonBlockRenderer` exhaustively renders only the registered discriminated union. A new block type requires backend contract, frontend type/parser, renderer, tests, and browser fixture updates together.
 - Facts expose inline citation buttons that target `LessonSourcesPanel`; the source panel renders only validated frozen snapshot metadata.
 - No component renders arbitrary HTML or Markdown.
-- `exercise_gate` displays its frozen public contract and explicit later-task boundary, with no run, submit, score, pass, or unlock controls.
+- `exercise_gate` preserves its frozen public contract and receives capability UI only through a typed render seam. `LessonGatePanel` consumes server `allowed_actions`; no component computes score, pass, mastery, diagnostic outcome, or unlock.
 
 ### 4. Validation & Error Matrix
 
@@ -159,7 +159,7 @@ Apply this contract when rendering Lesson documents, composing the later learnin
 ### 5. Good / Base / Bad Cases
 
 - Good: Learning Home passes the server-owned `current_knowledge_key`; all ten blocks and one frozen source set render.
-- Base: Gate is visible as a contract-only block and contains zero capability buttons.
+- Base: an unprepared Gate shows only the server-authorized prepare action; static/unavailable tiers hide actions that the server did not authorize.
 - Bad: use index position to infer the current node or source.
 - Bad: use `dangerouslySetInnerHTML`, a Markdown fallback, or an `unknown as LessonDocument` cast.
 
@@ -168,7 +168,7 @@ Apply this contract when rendering Lesson documents, composing the later learnin
 - Browser flow from Learning Home through missing/preparing/ready and failed/retry.
 - Render every registered block and assert inline citations map to returned sources.
 - Start freeze, refresh proposal, and explicit migration behavior.
-- Gate contains no fake capability controls.
+- Gate controls match `allowed_actions`; editor changes stale prior results; diagnostic pass still requires explicit confirm.
 - Normal, 900px, and 390px checks for no overlay, clean console, no horizontal overflow, visible focus, keyboard source interaction, and reduced-motion compatibility.
 
 ### 7. Wrong vs Correct
@@ -186,7 +186,15 @@ switch (block.type) {
   case "concept":
     return <ConceptBlockView block={block} onCitation={onCitation} />;
   case "exercise_gate":
-    return <ExerciseGateContract block={block} />;
+    return renderExerciseGate(block);
   // every registered type is explicit; no default content fallback
 }
 ```
+
+## Lesson Gate 与模块诊断组件接缝（2026-08-11）
+
+- `LessonDocumentPage` 拥有 Gate/editor/hint/Attempt/poll/stale/error/modal 状态；renderer 和 document view 只接 typed props/callback。
+- `LessonGatePanel` 必须逐项检查 server `allowed_actions`，不能从 tier、score 或本地状态自行扩权。
+- pending 必须轮询原 `attempt_id`；editor 修改后旧结果显示 stale 或清除，不能继续作为当前提交结果。
+- `ModuleDiagnosticModal` 独立于知识点 Gate；失败明确不跳过，pass 只展示 impact，confirm 后才刷新 Lesson/路线。
+- textarea、modal、关闭/确认按钮必须有 label、visible focus、busy/disabled 和 live status；390px 不得横向溢出。

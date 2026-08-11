@@ -131,8 +131,13 @@ def export_user_data(conn: Connection[dict[str, object]], user_id: str) -> dict[
         "lesson_documents": _export_lesson_documents(conn, user_id),
         "lesson_assignments": _export_lesson_assignments(conn, user_id),
         "lesson_citations": _export_lesson_citations(conn, user_id),
+        "lesson_gates": _export_lesson_gates(conn, user_id),
+        "exercise_attempt_summaries": _export_exercise_attempt_summaries(conn, user_id),
+        "module_diagnostic_summaries": _export_module_diagnostic_summaries(conn, user_id),
         "redaction": {
             "hidden_tests": "omitted",
+            "private_rubrics": "omitted",
+            "exercise_submission_content": "omitted",
             "solution_references": "omitted",
             "raw_prompts": "omitted",
             "provider_payloads": "omitted",
@@ -245,6 +250,9 @@ def _summary_counts(conn: Connection[dict[str, object]], user_id: str) -> dict[s
         "lesson_documents": _count(conn, "SELECT count(*) AS count FROM tutor_lesson_documents WHERE user_id = %s AND document_kind = 'personalized'", user_id),
         "lesson_assignments": _count(conn, "SELECT count(*) AS count FROM tutor_lesson_assignments WHERE user_id = %s", user_id),
         "lesson_authoring_runs": _count(conn, "SELECT count(*) AS count FROM tutor_lesson_authoring_runs WHERE user_id = %s", user_id),
+        "lesson_gates": _count(conn, "SELECT count(*) AS count FROM tutor_lesson_gate_states WHERE user_id = %s", user_id),
+        "exercise_attempts": _count(conn, "SELECT count(*) AS count FROM tutor_exercise_attempts WHERE user_id = %s", user_id),
+        "module_diagnostics": _count(conn, "SELECT count(*) AS count FROM tutor_module_diagnostic_sessions WHERE user_id = %s", user_id),
     }
 
 
@@ -660,6 +668,82 @@ def _export_lesson_citations(conn: Connection[dict[str, object]], user_id: str) 
     return [_safe_row(row, exclude=()) for row in rows]
 
 
+def _export_lesson_gates(
+    conn: Connection[dict[str, object]],
+    user_id: str,
+) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """
+        SELECT bindings.id AS binding_id, bindings.track_id, bindings.knowledge_key,
+               bindings.gate_key, slots.gate_kind, bindings.requirement_kind,
+               bindings.pass_policy_version, bindings.pass_threshold,
+               bindings.execution_requirement, bindings.binding_contract_hash,
+               versions.exercise_key, versions.exercise_type, versions.version AS exercise_version,
+               versions.title AS exercise_title, versions.learner_prompt_json,
+               states.state, states.attempt_count, states.best_score, states.version AS gate_version,
+               states.passed_at, states.created_at, states.updated_at
+        FROM tutor_lesson_gate_bindings AS bindings
+        JOIN tutor_lesson_gate_slots AS slots ON slots.id = bindings.slot_id
+        JOIN tutor_exercise_versions AS versions ON versions.id = bindings.exercise_version_id
+        LEFT JOIN tutor_lesson_gate_states AS states
+          ON states.gate_binding_id = bindings.id AND states.user_id = bindings.user_id
+        WHERE bindings.user_id = %s
+        ORDER BY bindings.track_id, bindings.knowledge_key, bindings.gate_key
+        """,
+        (user_id,),
+    ).fetchall()
+    return [_safe_row(row, exclude=()) for row in rows]
+
+
+def _export_exercise_attempt_summaries(
+    conn: Connection[dict[str, object]],
+    user_id: str,
+) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """
+        SELECT attempts.id, attempts.attempt_type, attempts.track_id, attempts.plan_revision_id,
+               attempts.knowledge_key, attempts.lesson_assignment_id, attempts.gate_binding_id,
+               attempts.diagnostic_session_id, attempts.diagnostic_item_id,
+               attempts.exercise_version_id, attempts.submission_hash, attempts.hint_state_hash,
+               attempts.independence, attempts.accepted_at,
+               results.outcome, results.score, results.safe_feedback_json,
+               results.capability_scores_json, results.policy_version, results.terminal_at
+        FROM tutor_exercise_attempts AS attempts
+        LEFT JOIN tutor_exercise_attempt_results AS results ON results.attempt_id = attempts.id
+        WHERE attempts.user_id = %s
+        ORDER BY attempts.accepted_at, attempts.id
+        """,
+        (user_id,),
+    ).fetchall()
+    return [_safe_row(row, exclude=()) for row in rows]
+
+
+def _export_module_diagnostic_summaries(
+    conn: Connection[dict[str, object]],
+    user_id: str,
+) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """
+        SELECT sessions.id, sessions.track_id, sessions.module_key,
+               versions.version AS diagnostic_version, versions.policy_version,
+               versions.core_capabilities_json, versions.pass_threshold,
+               sessions.source_plan_revision_id, sessions.proposed_plan_revision_id,
+               sessions.state, sessions.impact_json, sessions.weak_capabilities_json,
+               sessions.version, sessions.started_at, sessions.terminal_at,
+               sessions.cooldown_until, sessions.confirmed_at,
+               count(items.id)::int AS item_count
+        FROM tutor_module_diagnostic_sessions AS sessions
+        JOIN tutor_module_diagnostic_versions AS versions ON versions.id = sessions.diagnostic_version_id
+        LEFT JOIN tutor_module_diagnostic_items AS items ON items.session_id = sessions.id
+        WHERE sessions.user_id = %s
+        GROUP BY sessions.id, versions.id
+        ORDER BY sessions.started_at, sessions.id
+        """,
+        (user_id,),
+    ).fetchall()
+    return [_safe_row(row, exclude=()) for row in rows]
+
+
 def _delete_learning_track_data(conn: Connection[dict[str, object]], user_id: str) -> None:
     # Scope snapshots are children of durable Tutor runs/conversations. Cancel
     # active runs first so an old continuation cannot resume after its authority
@@ -687,6 +771,36 @@ def _delete_learning_track_data(conn: Connection[dict[str, object]], user_id: st
         )
     conn.execute("SELECT set_config('aearn.learning_track_purge_user_id', %s, true)", (user_id,))
     conn.execute("SET CONSTRAINTS ALL DEFERRED")
+    conn.execute(
+        """
+        UPDATE tutor_execution_jobs
+        SET cancellation_requested_at = COALESCE(cancellation_requested_at, %s)
+        WHERE user_id = %s AND owner_kind = 'exercise_attempt'
+          AND state NOT IN ('completed', 'timed_out', 'cancelled', 'unavailable', 'launch_uncertain', 'failed')
+        """,
+        (now, user_id),
+    )
+    conn.execute(
+        """
+        DELETE FROM tutor_execution_attempts
+        WHERE job_id IN (
+          SELECT id FROM tutor_execution_jobs
+          WHERE user_id = %s AND owner_kind = 'exercise_attempt'
+        )
+        """,
+        (user_id,),
+    )
+    conn.execute("DELETE FROM tutor_exercise_execution_links WHERE user_id = %s", (user_id,))
+    conn.execute("DELETE FROM tutor_execution_jobs WHERE user_id = %s AND owner_kind = 'exercise_attempt'", (user_id,))
+    conn.execute("DELETE FROM tutor_execution_intents WHERE user_id = %s AND source_kind = 'exercise_submission'", (user_id,))
+    conn.execute("DELETE FROM tutor_exercise_attempt_results WHERE user_id = %s", (user_id,))
+    conn.execute("DELETE FROM tutor_exercise_attempt_submissions WHERE user_id = %s", (user_id,))
+    conn.execute("DELETE FROM tutor_exercise_attempts WHERE user_id = %s", (user_id,))
+    conn.execute("DELETE FROM tutor_exercise_hint_receipts WHERE user_id = %s", (user_id,))
+    conn.execute("DELETE FROM tutor_lesson_gate_states WHERE user_id = %s", (user_id,))
+    conn.execute("DELETE FROM tutor_module_diagnostic_items WHERE user_id = %s", (user_id,))
+    conn.execute("DELETE FROM tutor_module_diagnostic_sessions WHERE user_id = %s", (user_id,))
+    conn.execute("DELETE FROM tutor_lesson_gate_bindings WHERE user_id = %s", (user_id,))
     conn.execute("DELETE FROM tutor_lesson_authoring_attempt_receipts WHERE user_id = %s", (user_id,))
     conn.execute("DELETE FROM tutor_lesson_authoring_runs WHERE user_id = %s", (user_id,))
     conn.execute("DELETE FROM tutor_lesson_assignments WHERE user_id = %s", (user_id,))

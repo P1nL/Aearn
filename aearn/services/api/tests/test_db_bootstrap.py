@@ -155,6 +155,33 @@ LESSON_SCHEMA_CONSTRAINTS = (
     "chk_tutor_lesson_authoring_attempt_usage",
 )
 
+PRACTICE_SCHEMA_CONSTRAINTS = (
+    "uq_tutor_exercise_versions_key_version",
+    "chk_tutor_exercise_versions_execution_shape",
+    "uq_tutor_lesson_gate_bindings_document_key",
+    "fk_tutor_lesson_gate_binding_slot",
+    "uq_tutor_lesson_gate_states_assignment_binding",
+    "fk_tutor_lesson_gate_state_assignment_scope",
+    "fk_tutor_lesson_gate_state_binding_scope",
+    "chk_tutor_lesson_gate_states_passed",
+    "uq_tutor_module_diagnostic_sessions_idempotency",
+    "fk_tutor_module_diagnostic_session_revision_scope",
+    "chk_tutor_module_diagnostic_sessions_terminal",
+    "chk_tutor_module_diagnostic_sessions_confirmation",
+    "fk_tutor_module_diagnostic_item_session_scope",
+    "fk_tutor_module_diagnostic_item_node_scope",
+    "uq_tutor_exercise_attempts_idempotency",
+    "chk_tutor_exercise_attempts_owner_shape",
+    "fk_tutor_exercise_attempt_submission_scope",
+    "fk_tutor_exercise_attempt_result_scope",
+    "fk_tutor_exercise_hint_assignment_scope",
+    "chk_tutor_execution_intents_source_shape",
+    "fk_tutor_execution_intent_gate_submission",
+    "chk_tutor_execution_jobs_owner_shape",
+    "fk_tutor_execution_job_gate_intent_scope",
+    "fk_tutor_exercise_execution_link_job_scope",
+)
+
 TUTOR_SCHEMA_CONSTRAINTS = (
     EXECUTION_SCOPE_CONSTRAINTS
     + EXECUTION_LIFECYCLE_CONSTRAINTS
@@ -162,6 +189,7 @@ TUTOR_SCHEMA_CONSTRAINTS = (
     + CONVERSATION_TURNRUN_CONSTRAINTS
     + CONTEXT_SUMMARY_CONSTRAINTS
     + LESSON_SCHEMA_CONSTRAINTS
+    + PRACTICE_SCHEMA_CONSTRAINTS
 )
 
 TARGET_TUTOR_TABLES = (
@@ -207,6 +235,18 @@ TARGET_TUTOR_TABLES = (
     "tutor_lesson_assignments",
     "tutor_lesson_authoring_runs",
     "tutor_lesson_authoring_attempt_receipts",
+    "tutor_exercise_versions",
+    "tutor_exercise_private_rubrics",
+    "tutor_lesson_gate_bindings",
+    "tutor_lesson_gate_states",
+    "tutor_module_diagnostic_versions",
+    "tutor_module_diagnostic_sessions",
+    "tutor_module_diagnostic_items",
+    "tutor_exercise_attempts",
+    "tutor_exercise_attempt_submissions",
+    "tutor_exercise_attempt_results",
+    "tutor_exercise_hint_receipts",
+    "tutor_exercise_execution_links",
 )
 
 
@@ -264,6 +304,20 @@ def test_tutor_target_schema_is_repeatable_and_enforces_run_event_identity() -> 
                     "trg_tutor_lesson_authoring_runs_updated_at",
                     "trg_tutor_lesson_authoring_runs_lifecycle",
                     "trg_tutor_lesson_authoring_attempt_receipts_immutable",
+                    "trg_tutor_exercise_versions_immutable",
+                    "trg_tutor_exercise_private_rubrics_immutable",
+                    "trg_tutor_lesson_gate_bindings_immutable",
+                    "trg_tutor_lesson_gate_states_updated_at",
+                    "trg_tutor_lesson_gate_states_lifecycle",
+                    "trg_tutor_module_diagnostic_versions_immutable",
+                    "trg_tutor_module_diagnostic_sessions_updated_at",
+                    "trg_tutor_module_diagnostic_sessions_lifecycle",
+                    "trg_tutor_module_diagnostic_items_immutable",
+                    "trg_tutor_exercise_attempts_immutable",
+                    "trg_tutor_exercise_attempt_submissions_immutable",
+                    "trg_tutor_exercise_attempt_results_immutable",
+                    "trg_tutor_exercise_hint_receipts_immutable",
+                    "trg_tutor_exercise_execution_links_immutable",
                 ],
             ),
         ).fetchall()
@@ -350,6 +404,20 @@ def test_tutor_target_schema_is_repeatable_and_enforces_run_event_identity() -> 
             "trg_tutor_lesson_authoring_runs_updated_at",
             "trg_tutor_lesson_authoring_runs_lifecycle",
             "trg_tutor_lesson_authoring_attempt_receipts_immutable",
+            "trg_tutor_exercise_versions_immutable",
+            "trg_tutor_exercise_private_rubrics_immutable",
+            "trg_tutor_lesson_gate_bindings_immutable",
+            "trg_tutor_lesson_gate_states_updated_at",
+            "trg_tutor_lesson_gate_states_lifecycle",
+            "trg_tutor_module_diagnostic_versions_immutable",
+            "trg_tutor_module_diagnostic_sessions_updated_at",
+            "trg_tutor_module_diagnostic_sessions_lifecycle",
+            "trg_tutor_module_diagnostic_items_immutable",
+            "trg_tutor_exercise_attempts_immutable",
+            "trg_tutor_exercise_attempt_submissions_immutable",
+            "trg_tutor_exercise_attempt_results_immutable",
+            "trg_tutor_exercise_hint_receipts_immutable",
+            "trg_tutor_exercise_execution_links_immutable",
         }
         executor_indexes = conn.execute(
             """
@@ -384,6 +452,11 @@ def test_tutor_target_schema_is_repeatable_and_enforces_run_event_identity() -> 
                     "idx_tutor_lesson_assignments_track_key_created",
                     "idx_tutor_lesson_authoring_runs_claim",
                     "idx_tutor_lesson_authoring_runs_track_key",
+                    "uq_tutor_module_diagnostic_sessions_active",
+                    "idx_tutor_lesson_gate_states_assignment",
+                    "idx_tutor_exercise_attempts_gate",
+                    "idx_tutor_exercise_attempts_diagnostic",
+                    "idx_tutor_module_diagnostic_sessions_track",
                 ],
             ),
         ).fetchall()
@@ -412,6 +485,11 @@ def test_tutor_target_schema_is_repeatable_and_enforces_run_event_identity() -> 
             "idx_tutor_lesson_assignments_track_key_created",
             "idx_tutor_lesson_authoring_runs_claim",
             "idx_tutor_lesson_authoring_runs_track_key",
+            "uq_tutor_module_diagnostic_sessions_active",
+            "idx_tutor_lesson_gate_states_assignment",
+            "idx_tutor_exercise_attempts_gate",
+            "idx_tutor_exercise_attempts_diagnostic",
+            "idx_tutor_module_diagnostic_sessions_track",
         }
         execution_constraint_rows = conn.execute(
             "SELECT conname FROM pg_constraint WHERE conname = ANY(%s)",

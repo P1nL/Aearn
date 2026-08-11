@@ -6,12 +6,13 @@ from typing import Mapping, Sequence
 
 from app.services.learning.contracts import (
     MasteryEvidence,
+    MasteryEvidenceEffect,
     MasteryIndependence,
     MasteryLevel,
 )
 
 
-PROJECTOR_VERSION = "learning_mastery_v1"
+PROJECTOR_VERSION = "learning_mastery_v2"
 _MAX_SUMMARY_ITEMS = 8
 
 
@@ -24,6 +25,8 @@ class MasteryProjection:
     weaknesses: tuple[str, ...]
     evidence_count: int
     last_evidence_id: str | None
+    observation_count: int = 0
+    last_observation_id: str | None = None
     projector_version: str = PROJECTOR_VERSION
 
 
@@ -43,31 +46,47 @@ class MasteryProjector:
                 last_evidence_id=None,
             )
 
+        reinforcing = tuple(
+            item for item in scoped
+            if item.evidence_effect is MasteryEvidenceEffect.REINFORCING
+        )
+        observations = tuple(
+            item for item in scoped
+            if item.evidence_effect is MasteryEvidenceEffect.OBSERVATIONAL_NON_DEGRADING
+        )
         weighted_total = 0.0
         weight_total = 0.0
         independent_count = 0
         strength_counts: dict[str, int] = {}
         weakness_counts: dict[str, int] = {}
-        for item in scoped:
+        for item in reinforcing:
             weight = _independence_weight(item.independence)
             weighted_total += item.score * weight
             weight_total += weight
             independent_count += int(item.independence is MasteryIndependence.INDEPENDENT)
             _merge_summary_terms(strength_counts, item.summary, key="strengths")
             _merge_summary_terms(weakness_counts, item.summary, key="weaknesses")
+        for item in observations:
+            _merge_summary_terms(weakness_counts, item.summary, key="weaknesses")
 
         score = weighted_total / weight_total if weight_total else 0.0
-        evidence_factor = min(1.0, len(scoped) / 4)
-        independence_factor = 0.75 + 0.25 * (independent_count / len(scoped))
+        evidence_factor = min(1.0, len(reinforcing) / 4)
+        independence_factor = 0.75 + 0.25 * (independent_count / len(reinforcing)) if reinforcing else 1.0
         confidence = round(max(0.0, min(1.0, score * evidence_factor * independence_factor)), 4)
         return MasteryProjection(
             knowledge_key=knowledge_key,
             confidence=confidence,
-            mastery_level=_mastery_level(confidence=confidence, evidence_count=len(scoped), independent_count=independent_count),
+            mastery_level=_mastery_level(
+                confidence=confidence,
+                evidence_count=len(reinforcing),
+                independent_count=independent_count,
+            ),
             strengths=_rank_terms(strength_counts),
             weaknesses=_rank_terms(weakness_counts),
-            evidence_count=len(scoped),
-            last_evidence_id=scoped[-1].evidence_id,
+            evidence_count=len(reinforcing),
+            last_evidence_id=reinforcing[-1].evidence_id if reinforcing else None,
+            observation_count=len(observations),
+            last_observation_id=observations[-1].evidence_id if observations else None,
         )
 
 

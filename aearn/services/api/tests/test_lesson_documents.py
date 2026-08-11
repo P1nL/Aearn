@@ -81,6 +81,8 @@ def test_missing_prepare_ready_start_refresh_and_explicit_migration(lesson_clien
     missing = lesson_client.get(f"{path}?user_id={user_id}")
     assert missing.status_code == 200
     assert missing.json()["status"] == "missing"
+    assert missing.json()["module_key"] == "foundations"
+    assert missing.json()["module_diagnostic_allowed"] is False
 
     prepare_payload = {
         "user_id": user_id,
@@ -96,6 +98,8 @@ def test_missing_prepare_ready_start_refresh_and_explicit_migration(lesson_clien
     assert ready.status_code == 200
     body = ready.json()
     assert body["status"] == "ready"
+    assert body["module_key"] == "foundations"
+    assert body["module_diagnostic_allowed"] is False
     assert len(body["document"]["blocks"]) == 10
     assert body["sources"][0]["source_version_label"]
     assert body["sources"][0]["evidence_excerpt"]

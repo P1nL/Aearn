@@ -217,3 +217,76 @@ return parseLessonState(payload);
 ```
 
 The parser, not a cast, establishes the application type.
+
+## 场景：Gate、Attempt 与诊断运行时解析（2026-08-11）
+
+### 1. 适用范围与触发条件
+
+- 触发条件：修改 Gate/Attempt/diagnostic API、execution tier、`allowed_actions`、Lesson Gate 页面或模块诊断弹窗。
+- 目标：前端只渲染经过 exact runtime validation 的 learner-safe projection，不从本地状态扩权。
+
+### 2. 接口签名
+
+```ts
+fetchLessonGates(...): Promise<LessonGateCollection>
+prepareLessonGate(...): Promise<LessonGateMutationResponse>
+requestLessonGateHint(...): Promise<LessonGateHint>
+createLessonGateAttempt(...): Promise<ExerciseAttempt>
+fetchExerciseAttempt(...): Promise<ExerciseAttempt>
+createModuleDiagnostic(...): Promise<ModuleDiagnostic>
+createModuleDiagnosticAttempt(...): Promise<ModuleDiagnostic>
+confirmModuleDiagnosticSkip(...): Promise<ModuleDiagnostic>
+```
+
+### 3. 契约
+
+- 从 `unknown` 精确验证 execution tier、exercise type、Gate status/action/requirement、Attempt type/status/result、diagnostic state/item/impact 和 nullable 时间。
+- `allowed_actions` 是服务端授权 literal union；未知 action/tier/status/extra key 必须拒绝整个 projection。
+- public Attempt 只接受 `submission_hash` 和 learner-safe result；完整 submission、private rubric/test/reference、container/image/command/path 字段均为 contract violation。
+- editor/hint/poll/modal/stale 是页面临时状态；score/pass/mastery/route change/diagnostic impact 只来自 API。
+- API wrapper 不使用 `any`、response cast、宽泛 index signature 或前端推导 score/pass/unlock。
+
+### 4. 验证与错误矩阵
+
+| Payload 或状态缺陷 | 前端结果 |
+| --- | --- |
+| 未知 `execution_tier`、Gate status、exercise type 或 diagnostic state | 显示 contract error，不局部渲染 |
+| `allowed_actions` 含未知动作 | 拒绝整个 Gate projection |
+| public result 含 submission/private/container 字段 | 拒绝 payload，不写入页面状态 |
+| pending poll 返回另一个 `attempt_id` | 视为 contract/scope error，不覆盖当前 Attempt |
+| editor 在 terminal result 后变化 | 旧结果标记 stale 或清除 |
+| diagnostic pass 未确认 | 只展示 proposed impact，不本地更新路线 |
+
+### 5. 正常、基础与错误案例
+
+- 正常：`container_verified` 返回 `allowed_actions=[hint,run,submit]`，页面轮询同一 Attempt 并显示服务端终态。
+- 基础：`static_only` 只返回 hint/submit，页面无 Run 并显示 `not_run` 语义。
+- 错误：根据 tier 自行补出 Run，或用 `response.json() as LessonGate` 绕过 parser。
+
+### 6. 必须测试
+
+- exact parser 接受所有合法 Gate/Attempt/diagnostic 状态，并拒绝 extra key、未知 enum/action 和 protected field。
+- 真实浏览器覆盖 prepare/hint/run/submit/poll/stale、四 tier、diagnostic fail/pass/confirm。
+- 1440px、精确 900px、390px 检查无水平溢出、modal fit、visible focus、console clean 和无 overlay。
+- DOM/network public projection 不得出现 private test、reference answer、rubric、container/image、Docker socket、command/path。
+
+### 7. 错误与正确写法
+
+#### 错误
+
+```ts
+const gate = (await response.json()) as LessonGate;
+if (gate.execution_tier === "container_verified") actions.push("run");
+```
+
+这会绕过服务端 `allowed_actions`，并允许未知或敏感字段进入应用状态。
+
+#### 正确
+
+```ts
+const payload: unknown = await response.json();
+const gate = parseLessonGate(payload);
+const canRun = gate.allowed_actions.includes("run");
+```
+
+parser 建立类型边界，`allowed_actions` 建立能力边界，两者缺一不可。
