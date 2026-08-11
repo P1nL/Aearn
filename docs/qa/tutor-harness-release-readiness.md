@@ -209,3 +209,33 @@ PostgreSQL current/history 集成证据，以及默认禁用的固定五轮 real
 - 按任务明确边界，没有运行 `pnpm --dir .\aearn desktop:check`、Tauri build 或 Desktop typecheck；网页端 Vite 编译与真实浏览器渲染是本 child 的前端完成门。
 - `exercise_gate` 仅展示冻结的公开 contract 和“练习能力将在后续任务开放”，没有 Attempt、运行、提交、评分、通过或路线解锁能力。
 - fake author、fixture grounding 与 mock API 只证明 contract、状态机和安全边界，不证明真实模型教学质量、延迟、quota、可用性或发布可靠性；本记录不是 release approval。
+
+## 练习 Gate、模块诊断与受控执行证据（2026-08-11）
+
+**任务：** `08-04-exercise-gates-execution-unlock`
+**状态：** **Completed locally — not a release approval**
+
+本轮在当前 `main` 工作树中新增不可变 exercise/private-rubric/Gate binding authority、assignment-scoped Gate state、append-only Attempt/submission/result/hint、模块诊断与显式 skip 确认、existing execution intent/job owner seam、executor trusted input，以及 Lesson 内网页 Gate/diagnostic UI。所有练习使用 curated fixture 或 disposable fake API；未调用真实 provider、真实生产 executor，未构建/签名/发布 reviewed image fleet，也未提交、push、部署或修改生产数据。
+
+### 当前验证证据
+
+| Gate | 命令或证据 | 结果 | 边界 |
+| --- | --- | --- | --- |
+| API dependency lock | `uv --directory .\aearn\services\api lock --check` | **Pass** | 无 lock drift |
+| API Ruff | `uv --directory .\aearn\services\api run ruff check app tests` | **Pass** | `All checks passed` |
+| API Mypy | `uv --directory .\aearn\services\api run python -m mypy app --no-incremental` | **Pass — 138 source files** | 无类型抑制 |
+| Complete API suite | `uv --directory .\aearn\services\api run python -m pytest -q` | **442 passed, 1 skipped in 71.60s** | 唯一 skip 为默认禁用的真实 provider smoke；PostgreSQL/bootstrap 串行 |
+| Executor dependency lock / Ruff / Mypy | executor `lock --check`、`ruff check aearn_executor tests`、`mypy aearn_executor --no-incremental` | **Pass — 9 source files** | 仅本地 contract；无 Docker/生产 runtime claim |
+| Complete executor suite | `uv --directory .\aearn\services\executor run python -m pytest -q` | **11 passed** | 覆盖 Gate private trusted-input scope；未启动 reviewed container fleet |
+| Frontend type contract | `pnpm --dir .\aearn\apps\desktop exec tsc --noEmit` | **Pass** | 只做 TypeScript contract 检查；未运行 Desktop/Tauri build |
+| 网页 Gate/diagnostic | `http://127.0.0.1:1420` + disposable stateful fake API | **Pass** | prepare/hint；container pending→same Attempt poll；stale；submit；teaching/static/unavailable；diagnostic fail/pass/confirm；1440/900/390 无水平溢出，console 0 error/0 warning，focus 可见 |
+| Privacy / DOM | 浏览器 DOM marker audit + API/repository tests | **Pass** | 未出现 `private_test`、`reference_answer`、`rubric_hash`、`container_name`、`docker.sock`、`image_reference`；export 省略完整 submission |
+| Trellis / diff hygiene | child validate + `git diff --check` | **Pass — implement 37 / check 27** | Archive this child only; parent remains planning and is not started |
+
+### 网页端证据边界
+
+- in-app Browser 完成导航、状态机、DOM、响应式、console 与 focus 验证；in-app screenshot capture 超时，因此只对截图采集使用 standalone Playwright fallback。
+- 截图保存在本机临时目录：`C:\Users\PINKING\AppData\Local\Temp\aearn-gate-desktop-1440.png`、`C:\Users\PINKING\AppData\Local\Temp\aearn-gate-panel-desktop.png`、`C:\Users\PINKING\AppData\Local\Temp\aearn-diagnostic-mobile-390.png`，未写入工作树。
+- fake API、curated fixture 和 static evaluator 证明 contract、状态机、隐私与 fail-closed 边界，不证明真实容器隔离、镜像供应链、性能、可靠性或生产 readiness。
+- 公开 `container_verified` 仍要求 reviewed immutable image lock 与兼容 executor health；本轮没有这些发布前置条件。`teaching_local` 仍仅 development-only，`static_only` 明确 `not_run`，`unavailable` 不产生 host fallback。
+- Local work commit, child archive, and session journal are development closeout only; they do not authorize push, deploy, release, or production-data changes.

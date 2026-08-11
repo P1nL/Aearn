@@ -2766,6 +2766,9 @@ CREATE TABLE IF NOT EXISTS tutor_mastery_evidence (
   evidence_kind text NOT NULL CHECK (evidence_kind IN (
     'gate', 'module_diagnostic', 'review', 'model_code_review', 'trusted_import'
   )),
+  evidence_effect text NOT NULL DEFAULT 'reinforcing' CHECK (evidence_effect IN (
+    'reinforcing', 'observational_non_degrading'
+  )),
   source_receipt_id text NOT NULL CHECK (char_length(source_receipt_id) BETWEEN 1 AND 160),
   source_receipt_hash text NOT NULL CHECK (source_receipt_hash ~ '^[0-9a-f]{64}$'),
   independence text NOT NULL CHECK (independence IN ('independent', 'hinted', 'remediated')),
@@ -2793,6 +2796,8 @@ CREATE TABLE IF NOT EXISTS tutor_mastery_states (
   weaknesses_json jsonb NOT NULL DEFAULT '[]'::jsonb CHECK (jsonb_typeof(weaknesses_json) = 'array'),
   evidence_count integer NOT NULL DEFAULT 0 CHECK (evidence_count >= 0),
   last_evidence_id uuid,
+  observation_count integer NOT NULL DEFAULT 0 CHECK (observation_count >= 0),
+  last_observation_id uuid,
   projector_version text NOT NULL CHECK (char_length(projector_version) BETWEEN 1 AND 160),
   version integer NOT NULL DEFAULT 1 CHECK (version >= 1),
   created_at timestamptz NOT NULL DEFAULT now(),
@@ -3709,3 +3714,598 @@ DROP TRIGGER IF EXISTS trg_tutor_lesson_authoring_attempt_receipts_immutable ON 
 CREATE TRIGGER trg_tutor_lesson_authoring_attempt_receipts_immutable
 BEFORE UPDATE OR DELETE ON tutor_lesson_authoring_attempt_receipts
 FOR EACH ROW EXECUTE FUNCTION enforce_tutor_lesson_immutable();
+
+-- Lesson exercise Gate, append-only attempt, and module diagnostic authority.
+ALTER TABLE tutor_mastery_evidence
+  ADD COLUMN IF NOT EXISTS evidence_effect text NOT NULL DEFAULT 'reinforcing';
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'tutor_mastery_evidence'::regclass
+      AND conname = 'chk_tutor_mastery_evidence_effect'
+  ) THEN
+    ALTER TABLE tutor_mastery_evidence
+      ADD CONSTRAINT chk_tutor_mastery_evidence_effect
+      CHECK (evidence_effect IN ('reinforcing', 'observational_non_degrading'));
+  END IF;
+END $$;
+
+ALTER TABLE tutor_mastery_states
+  ADD COLUMN IF NOT EXISTS observation_count integer NOT NULL DEFAULT 0;
+ALTER TABLE tutor_mastery_states
+  ADD COLUMN IF NOT EXISTS last_observation_id uuid;
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'tutor_mastery_states'::regclass
+      AND conname = 'chk_tutor_mastery_states_observation_count'
+  ) THEN
+    ALTER TABLE tutor_mastery_states
+      ADD CONSTRAINT chk_tutor_mastery_states_observation_count CHECK (observation_count >= 0);
+  END IF;
+END $$;
+
+CREATE TABLE IF NOT EXISTS tutor_exercise_versions (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  language_id text NOT NULL CHECK (language_id ~ '^[a-z0-9][a-z0-9._:-]{0,159}$'),
+  exercise_key text NOT NULL CHECK (exercise_key ~ '^[a-z0-9][a-z0-9._:-]{0,159}$'),
+  exercise_type text NOT NULL CHECK (exercise_type IN (
+    'code_completion', 'sql_query', 'browser_preview', 'static_code_reasoning'
+  )),
+  version text NOT NULL CHECK (version ~ '^[a-z0-9][a-z0-9._:-]{0,159}$'),
+  source_kind text NOT NULL CHECK (source_kind IN ('curated_fixture', 'registered_author')),
+  title text NOT NULL CHECK (char_length(title) BETWEEN 1 AND 240),
+  learner_prompt_json jsonb NOT NULL CHECK (jsonb_typeof(learner_prompt_json) = 'object'),
+  starter_artifact_json jsonb NOT NULL CHECK (jsonb_typeof(starter_artifact_json) = 'object'),
+  required_capabilities_json jsonb NOT NULL CHECK (jsonb_typeof(required_capabilities_json) = 'array'),
+  runtime_profile_key text CHECK (
+    runtime_profile_key IS NULL OR runtime_profile_key ~ '^[a-z0-9][a-z0-9._:-]{0,159}$'
+  ),
+  execution_required boolean NOT NULL,
+  public_feedback_policy_version text NOT NULL CHECK (
+    public_feedback_policy_version ~ '^[a-z0-9][a-z0-9._:-]{0,159}$'
+  ),
+  validation_status text NOT NULL CHECK (validation_status IN ('ready', 'rejected')),
+  content_hash text NOT NULL CHECK (content_hash ~ '^[0-9a-f]{64}$'),
+  published_at timestamptz NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_tutor_exercise_versions_key_version UNIQUE (exercise_key, version),
+  CONSTRAINT uq_tutor_exercise_versions_id_identity UNIQUE (id, language_id, exercise_key, version),
+  CONSTRAINT chk_tutor_exercise_versions_execution_shape CHECK (
+    execution_required = (runtime_profile_key IS NOT NULL)
+  )
+);
+
+CREATE TABLE IF NOT EXISTS tutor_exercise_private_rubrics (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  exercise_version_id uuid NOT NULL UNIQUE REFERENCES tutor_exercise_versions(id) ON DELETE RESTRICT,
+  rubric_version text NOT NULL CHECK (rubric_version ~ '^[a-z0-9][a-z0-9._:-]{0,159}$'),
+  private_test_bundle_json jsonb NOT NULL CHECK (jsonb_typeof(private_test_bundle_json) = 'array'),
+  reference_answer_json jsonb NOT NULL CHECK (jsonb_typeof(reference_answer_json) = 'object'),
+  score_policy_json jsonb NOT NULL CHECK (jsonb_typeof(score_policy_json) = 'object'),
+  rubric_hash text NOT NULL CHECK (rubric_hash ~ '^[0-9a-f]{64}$'),
+  published_at timestamptz NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_tutor_exercise_private_rubrics_id_exercise UNIQUE (id, exercise_version_id)
+);
+
+CREATE TABLE IF NOT EXISTS tutor_lesson_gate_bindings (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  slot_id uuid NOT NULL REFERENCES tutor_lesson_gate_slots(id) ON DELETE RESTRICT,
+  document_id uuid NOT NULL REFERENCES tutor_lesson_documents(id) ON DELETE RESTRICT,
+  user_id uuid NOT NULL,
+  track_id uuid NOT NULL,
+  knowledge_key text NOT NULL CHECK (knowledge_key ~ '^[a-z0-9][a-z0-9._:-]{0,159}$'),
+  gate_key text NOT NULL CHECK (gate_key ~ '^[a-z0-9][a-z0-9._:-]{0,159}$'),
+  exercise_version_id uuid NOT NULL REFERENCES tutor_exercise_versions(id) ON DELETE RESTRICT,
+  requirement_kind text NOT NULL CHECK (requirement_kind IN ('required', 'recommended', 'diagnostic')),
+  pass_policy_version text NOT NULL CHECK (pass_policy_version ~ '^[a-z0-9][a-z0-9._:-]{0,159}$'),
+  pass_threshold double precision NOT NULL CHECK (pass_threshold > 0 AND pass_threshold <= 1),
+  execution_requirement text NOT NULL CHECK (execution_requirement IN ('required', 'optional', 'forbidden')),
+  remediation_exercise_version_id uuid REFERENCES tutor_exercise_versions(id) ON DELETE RESTRICT,
+  slot_contract_hash text NOT NULL CHECK (slot_contract_hash ~ '^[0-9a-f]{64}$'),
+  binding_contract_hash text NOT NULL CHECK (binding_contract_hash ~ '^[0-9a-f]{64}$'),
+  published_at timestamptz NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_tutor_lesson_gate_bindings_document_key UNIQUE (document_id, gate_key),
+  CONSTRAINT uq_tutor_lesson_gate_bindings_id_scope UNIQUE (id, document_id, user_id, track_id, knowledge_key),
+  CONSTRAINT fk_tutor_lesson_gate_binding_slot
+    FOREIGN KEY (document_id, gate_key)
+    REFERENCES tutor_lesson_gate_slots(document_id, gate_key) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_lesson_gate_binding_track_user
+    FOREIGN KEY (track_id, user_id) REFERENCES tutor_learning_tracks(id, user_id) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS tutor_lesson_gate_states (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL,
+  track_id uuid NOT NULL,
+  knowledge_key text NOT NULL CHECK (knowledge_key ~ '^[a-z0-9][a-z0-9._:-]{0,159}$'),
+  lesson_assignment_id uuid NOT NULL,
+  document_id uuid NOT NULL,
+  gate_binding_id uuid NOT NULL,
+  state text NOT NULL CHECK (state IN ('available', 'in_progress', 'passed', 'remediation_required')),
+  attempt_count integer NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+  best_score double precision NOT NULL DEFAULT 0 CHECK (best_score >= 0 AND best_score <= 1),
+  latest_attempt_id uuid,
+  passing_attempt_id uuid,
+  version integer NOT NULL DEFAULT 1 CHECK (version >= 1),
+  passed_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_tutor_lesson_gate_states_assignment_binding UNIQUE (lesson_assignment_id, gate_binding_id),
+  CONSTRAINT uq_tutor_lesson_gate_states_id_scope UNIQUE (id, user_id, track_id, knowledge_key),
+  CONSTRAINT fk_tutor_lesson_gate_state_assignment_scope
+    FOREIGN KEY (lesson_assignment_id, user_id, track_id, knowledge_key)
+    REFERENCES tutor_lesson_assignments(id, user_id, track_id, knowledge_key) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_lesson_gate_state_binding_scope
+    FOREIGN KEY (gate_binding_id, document_id, user_id, track_id, knowledge_key)
+    REFERENCES tutor_lesson_gate_bindings(id, document_id, user_id, track_id, knowledge_key) ON DELETE RESTRICT,
+  CONSTRAINT chk_tutor_lesson_gate_states_passed CHECK (
+    (state = 'passed') = (passed_at IS NOT NULL AND passing_attempt_id IS NOT NULL)
+  )
+);
+
+CREATE TABLE IF NOT EXISTS tutor_module_diagnostic_versions (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  language_id text NOT NULL CHECK (language_id ~ '^[a-z0-9][a-z0-9._:-]{0,159}$'),
+  module_key text NOT NULL CHECK (module_key ~ '^[a-z0-9][a-z0-9._:-]{0,159}$'),
+  version text NOT NULL CHECK (version ~ '^[a-z0-9][a-z0-9._:-]{0,159}$'),
+  policy_version text NOT NULL CHECK (policy_version ~ '^[a-z0-9][a-z0-9._:-]{0,159}$'),
+  core_capabilities_json jsonb NOT NULL CHECK (jsonb_typeof(core_capabilities_json) = 'array'),
+  pass_threshold double precision NOT NULL CHECK (pass_threshold > 0 AND pass_threshold <= 1),
+  require_all_core boolean NOT NULL DEFAULT true,
+  independent_only boolean NOT NULL DEFAULT true,
+  cooldown_seconds integer NOT NULL CHECK (cooldown_seconds >= 0 AND cooldown_seconds <= 2678400),
+  content_hash text NOT NULL CHECK (content_hash ~ '^[0-9a-f]{64}$'),
+  published_at timestamptz NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_tutor_module_diagnostic_versions_identity UNIQUE (language_id, module_key, version),
+  CONSTRAINT uq_tutor_module_diagnostic_versions_id_identity UNIQUE (id, language_id, module_key, version)
+);
+
+CREATE TABLE IF NOT EXISTS tutor_module_diagnostic_sessions (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL,
+  track_id uuid NOT NULL,
+  module_key text NOT NULL CHECK (module_key ~ '^[a-z0-9][a-z0-9._:-]{0,159}$'),
+  diagnostic_version_id uuid NOT NULL REFERENCES tutor_module_diagnostic_versions(id) ON DELETE RESTRICT,
+  source_plan_revision_id uuid NOT NULL,
+  expected_track_version integer NOT NULL CHECK (expected_track_version >= 1),
+  state text NOT NULL CHECK (state IN ('active', 'failed', 'passed_pending_confirmation', 'confirmed', 'expired')),
+  idempotency_key text NOT NULL CHECK (char_length(idempotency_key) BETWEEN 1 AND 160),
+  request_hash text NOT NULL CHECK (request_hash ~ '^[0-9a-f]{64}$'),
+  proposed_plan_revision_id uuid,
+  impact_json jsonb NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(impact_json) = 'object'),
+  weak_capabilities_json jsonb NOT NULL DEFAULT '[]'::jsonb CHECK (jsonb_typeof(weak_capabilities_json) = 'array'),
+  version integer NOT NULL DEFAULT 1 CHECK (version >= 1),
+  started_at timestamptz NOT NULL,
+  terminal_at timestamptz,
+  cooldown_until timestamptz,
+  confirmed_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_tutor_module_diagnostic_sessions_id_scope UNIQUE (id, user_id, track_id),
+  CONSTRAINT uq_tutor_module_diagnostic_sessions_idempotency UNIQUE (user_id, track_id, module_key, idempotency_key),
+  CONSTRAINT fk_tutor_module_diagnostic_session_track_user
+    FOREIGN KEY (track_id, user_id) REFERENCES tutor_learning_tracks(id, user_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_module_diagnostic_session_revision_scope
+    FOREIGN KEY (source_plan_revision_id, track_id, user_id)
+    REFERENCES tutor_track_plan_revisions(id, track_id, user_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_module_diagnostic_session_proposed_scope
+    FOREIGN KEY (proposed_plan_revision_id, track_id, user_id)
+    REFERENCES tutor_track_plan_revisions(id, track_id, user_id) ON DELETE RESTRICT,
+  CONSTRAINT chk_tutor_module_diagnostic_sessions_terminal CHECK (
+    (state = 'active') = (terminal_at IS NULL)
+  ),
+  CONSTRAINT chk_tutor_module_diagnostic_sessions_confirmation CHECK (
+    (state = 'confirmed') = (confirmed_at IS NOT NULL)
+  )
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_tutor_module_diagnostic_sessions_active
+  ON tutor_module_diagnostic_sessions(user_id, track_id, module_key)
+  WHERE state IN ('active', 'passed_pending_confirmation');
+
+CREATE TABLE IF NOT EXISTS tutor_module_diagnostic_items (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  session_id uuid NOT NULL,
+  user_id uuid NOT NULL,
+  track_id uuid NOT NULL,
+  source_plan_revision_id uuid NOT NULL,
+  item_key text NOT NULL CHECK (item_key ~ '^[a-z0-9][a-z0-9._:-]{0,159}$'),
+  order_index integer NOT NULL CHECK (order_index >= 0),
+  capability_key text NOT NULL CHECK (capability_key ~ '^[a-z0-9][a-z0-9._:-]{0,159}$'),
+  knowledge_key text NOT NULL CHECK (knowledge_key ~ '^[a-z0-9][a-z0-9._:-]{0,159}$'),
+  exercise_version_id uuid NOT NULL REFERENCES tutor_exercise_versions(id) ON DELETE RESTRICT,
+  threshold double precision NOT NULL CHECK (threshold > 0 AND threshold <= 1),
+  item_hash text NOT NULL CHECK (item_hash ~ '^[0-9a-f]{64}$'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_tutor_module_diagnostic_items_session_key UNIQUE (session_id, item_key),
+  CONSTRAINT uq_tutor_module_diagnostic_items_session_order UNIQUE (session_id, order_index),
+  CONSTRAINT uq_tutor_module_diagnostic_items_id_scope UNIQUE (id, session_id, user_id, track_id),
+  CONSTRAINT fk_tutor_module_diagnostic_item_session_scope
+    FOREIGN KEY (session_id, user_id, track_id)
+    REFERENCES tutor_module_diagnostic_sessions(id, user_id, track_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_module_diagnostic_item_node_scope
+    FOREIGN KEY (source_plan_revision_id, track_id, user_id, knowledge_key)
+    REFERENCES tutor_track_plan_nodes(revision_id, track_id, user_id, knowledge_key) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS tutor_exercise_attempts (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  attempt_type text NOT NULL CHECK (attempt_type IN ('run', 'submit', 'diagnostic_submit')),
+  user_id uuid NOT NULL,
+  track_id uuid NOT NULL,
+  plan_revision_id uuid NOT NULL,
+  expected_track_version integer NOT NULL CHECK (expected_track_version >= 1),
+  expected_progress_version integer CHECK (expected_progress_version IS NULL OR expected_progress_version >= 1),
+  knowledge_key text NOT NULL CHECK (knowledge_key ~ '^[a-z0-9][a-z0-9._:-]{0,159}$'),
+  lesson_assignment_id uuid,
+  document_id uuid,
+  gate_binding_id uuid,
+  diagnostic_session_id uuid,
+  diagnostic_item_id uuid,
+  exercise_version_id uuid NOT NULL REFERENCES tutor_exercise_versions(id) ON DELETE RESTRICT,
+  submission_hash text NOT NULL CHECK (submission_hash ~ '^[0-9a-f]{64}$'),
+  hint_state_hash text NOT NULL CHECK (hint_state_hash ~ '^[0-9a-f]{64}$'),
+  independence text NOT NULL CHECK (independence IN ('independent', 'hinted', 'remediated')),
+  idempotency_key text NOT NULL CHECK (char_length(idempotency_key) BETWEEN 1 AND 160),
+  request_hash text NOT NULL CHECK (request_hash ~ '^[0-9a-f]{64}$'),
+  accepted_at timestamptz NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_tutor_exercise_attempts_id_user UNIQUE (id, user_id),
+  CONSTRAINT uq_tutor_exercise_attempts_id_exercise UNIQUE (id, user_id, exercise_version_id),
+  CONSTRAINT uq_tutor_exercise_attempts_id_scope UNIQUE (id, user_id, track_id, exercise_version_id),
+  CONSTRAINT uq_tutor_exercise_attempts_idempotency UNIQUE (user_id, attempt_type, idempotency_key),
+  CONSTRAINT fk_tutor_exercise_attempt_track_user
+    FOREIGN KEY (track_id, user_id) REFERENCES tutor_learning_tracks(id, user_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_exercise_attempt_revision_scope
+    FOREIGN KEY (plan_revision_id, track_id, user_id)
+    REFERENCES tutor_track_plan_revisions(id, track_id, user_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_exercise_attempt_assignment_scope
+    FOREIGN KEY (lesson_assignment_id, user_id, track_id, knowledge_key)
+    REFERENCES tutor_lesson_assignments(id, user_id, track_id, knowledge_key) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_exercise_attempt_binding_scope
+    FOREIGN KEY (gate_binding_id, document_id, user_id, track_id, knowledge_key)
+    REFERENCES tutor_lesson_gate_bindings(id, document_id, user_id, track_id, knowledge_key) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_exercise_attempt_diagnostic_item_scope
+    FOREIGN KEY (diagnostic_item_id, diagnostic_session_id, user_id, track_id)
+    REFERENCES tutor_module_diagnostic_items(id, session_id, user_id, track_id) ON DELETE RESTRICT,
+  CONSTRAINT chk_tutor_exercise_attempts_owner_shape CHECK (
+    (
+      attempt_type IN ('run', 'submit')
+      AND lesson_assignment_id IS NOT NULL AND document_id IS NOT NULL AND gate_binding_id IS NOT NULL
+      AND diagnostic_session_id IS NULL AND diagnostic_item_id IS NULL
+      AND expected_progress_version IS NOT NULL
+    )
+    OR (
+      attempt_type = 'diagnostic_submit'
+      AND lesson_assignment_id IS NULL AND document_id IS NULL AND gate_binding_id IS NULL
+      AND diagnostic_session_id IS NOT NULL AND diagnostic_item_id IS NOT NULL
+      AND expected_progress_version IS NULL
+    )
+  )
+);
+
+CREATE TABLE IF NOT EXISTS tutor_exercise_attempt_submissions (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  attempt_id uuid NOT NULL UNIQUE,
+  user_id uuid NOT NULL,
+  exercise_version_id uuid NOT NULL,
+  submission_kind text NOT NULL CHECK (submission_kind IN ('code', 'sql', 'structured_answer')),
+  content_text text NOT NULL CHECK (char_length(content_text) BETWEEN 1 AND 48000),
+  content_hash text NOT NULL CHECK (content_hash ~ '^[0-9a-f]{64}$'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_tutor_exercise_attempt_submissions_id_scope UNIQUE (id, attempt_id, user_id, exercise_version_id),
+  CONSTRAINT fk_tutor_exercise_attempt_submission_scope
+    FOREIGN KEY (attempt_id, user_id, exercise_version_id)
+    REFERENCES tutor_exercise_attempts(id, user_id, exercise_version_id) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS tutor_exercise_attempt_results (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  attempt_id uuid NOT NULL UNIQUE,
+  user_id uuid NOT NULL,
+  outcome text NOT NULL CHECK (outcome IN ('passed', 'failed', 'timed_out', 'cancelled', 'unavailable', 'invalid')),
+  score double precision NOT NULL CHECK (score >= 0 AND score <= 1),
+  safe_feedback_json jsonb NOT NULL CHECK (jsonb_typeof(safe_feedback_json) = 'object'),
+  capability_scores_json jsonb NOT NULL CHECK (jsonb_typeof(capability_scores_json) = 'object'),
+  execution_receipt_hash text CHECK (execution_receipt_hash IS NULL OR execution_receipt_hash ~ '^[0-9a-f]{64}$'),
+  policy_version text NOT NULL CHECK (policy_version ~ '^[a-z0-9][a-z0-9._:-]{0,159}$'),
+  result_hash text NOT NULL CHECK (result_hash ~ '^[0-9a-f]{64}$'),
+  terminal_at timestamptz NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_tutor_exercise_attempt_results_id_scope UNIQUE (id, attempt_id, user_id),
+  CONSTRAINT fk_tutor_exercise_attempt_result_scope
+    FOREIGN KEY (attempt_id, user_id) REFERENCES tutor_exercise_attempts(id, user_id) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS tutor_exercise_hint_receipts (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL,
+  track_id uuid NOT NULL,
+  knowledge_key text NOT NULL CHECK (knowledge_key ~ '^[a-z0-9][a-z0-9._:-]{0,159}$'),
+  lesson_assignment_id uuid NOT NULL,
+  gate_binding_id uuid NOT NULL,
+  hint_level integer NOT NULL CHECK (hint_level BETWEEN 1 AND 3),
+  hint_policy_version text NOT NULL CHECK (hint_policy_version ~ '^[a-z0-9][a-z0-9._:-]{0,159}$'),
+  safe_hint_json jsonb NOT NULL CHECK (jsonb_typeof(safe_hint_json) = 'object'),
+  idempotency_key text NOT NULL CHECK (char_length(idempotency_key) BETWEEN 1 AND 160),
+  request_hash text NOT NULL CHECK (request_hash ~ '^[0-9a-f]{64}$'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_tutor_exercise_hint_receipts_idempotency UNIQUE (user_id, lesson_assignment_id, gate_binding_id, idempotency_key),
+  CONSTRAINT fk_tutor_exercise_hint_assignment_scope
+    FOREIGN KEY (lesson_assignment_id, user_id, track_id, knowledge_key)
+    REFERENCES tutor_lesson_assignments(id, user_id, track_id, knowledge_key) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_exercise_hint_binding
+    FOREIGN KEY (gate_binding_id) REFERENCES tutor_lesson_gate_bindings(id) ON DELETE RESTRICT
+);
+
+-- Add the Gate source/owner to the existing executor queue without weakening the legacy path.
+ALTER TABLE tutor_execution_intents ADD COLUMN IF NOT EXISTS source_kind text NOT NULL DEFAULT 'tutor_message';
+ALTER TABLE tutor_execution_intents ADD COLUMN IF NOT EXISTS exercise_attempt_id uuid;
+ALTER TABLE tutor_execution_intents ADD COLUMN IF NOT EXISTS exercise_submission_id uuid;
+ALTER TABLE tutor_execution_intents ADD COLUMN IF NOT EXISTS exercise_version_id uuid;
+ALTER TABLE tutor_execution_intents ALTER COLUMN conversation_id DROP NOT NULL;
+ALTER TABLE tutor_execution_intents ALTER COLUMN run_id DROP NOT NULL;
+ALTER TABLE tutor_execution_intents ALTER COLUMN source_message_id DROP NOT NULL;
+ALTER TABLE tutor_execution_intents ALTER COLUMN exercise_id DROP NOT NULL;
+ALTER TABLE tutor_execution_intents ALTER COLUMN input_revision DROP NOT NULL;
+ALTER TABLE tutor_execution_intents DROP CONSTRAINT IF EXISTS tutor_execution_intents_origin_check;
+ALTER TABLE tutor_execution_intents
+  ADD CONSTRAINT tutor_execution_intents_origin_check CHECK (origin IN ('interactive', 'proactive', 'exercise_gate'));
+
+DO $$
+DECLARE item record;
+BEGIN
+  FOR item IN
+    SELECT conname FROM pg_constraint
+    WHERE conrelid = 'tutor_execution_intents'::regclass AND contype = 'c'
+      AND pg_get_constraintdef(oid) LIKE '%consumed_at IS NULL%consumed_by_effect_id IS NULL%'
+  LOOP
+    EXECUTE format('ALTER TABLE tutor_execution_intents DROP CONSTRAINT %I', item.conname);
+  END LOOP;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conrelid = 'tutor_execution_intents'::regclass
+      AND conname = 'chk_tutor_execution_intents_source_shape'
+  ) THEN
+    ALTER TABLE tutor_execution_intents ADD CONSTRAINT chk_tutor_execution_intents_source_shape CHECK (
+      (
+        source_kind = 'tutor_message'
+        AND conversation_id IS NOT NULL AND run_id IS NOT NULL AND source_message_id IS NOT NULL
+        AND exercise_id IS NOT NULL AND input_revision IS NOT NULL
+        AND exercise_attempt_id IS NULL AND exercise_submission_id IS NULL AND exercise_version_id IS NULL
+        AND origin IN ('interactive', 'proactive')
+        AND ((consumed_at IS NULL) = (consumed_by_effect_id IS NULL))
+      )
+      OR (
+        source_kind = 'exercise_submission'
+        AND conversation_id IS NULL AND run_id IS NULL AND source_message_id IS NULL AND exercise_id IS NULL
+        AND input_revision IS NULL AND origin = 'exercise_gate'
+        AND exercise_attempt_id IS NOT NULL AND exercise_submission_id IS NOT NULL AND exercise_version_id IS NOT NULL
+        AND consumed_by_effect_id IS NULL
+      )
+    ) NOT VALID;
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conrelid = 'tutor_execution_intents'::regclass
+      AND conname = 'uq_tutor_execution_intents_gate_scope'
+  ) THEN
+    ALTER TABLE tutor_execution_intents
+      ADD CONSTRAINT uq_tutor_execution_intents_gate_scope UNIQUE (id, exercise_attempt_id, user_id);
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conrelid = 'tutor_execution_intents'::regclass
+      AND conname = 'fk_tutor_execution_intent_gate_attempt'
+  ) THEN
+    ALTER TABLE tutor_execution_intents ADD CONSTRAINT fk_tutor_execution_intent_gate_attempt
+      FOREIGN KEY (exercise_attempt_id, user_id)
+      REFERENCES tutor_exercise_attempts(id, user_id) ON DELETE RESTRICT NOT VALID;
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conrelid = 'tutor_execution_intents'::regclass
+      AND conname = 'fk_tutor_execution_intent_gate_submission'
+  ) THEN
+    ALTER TABLE tutor_execution_intents ADD CONSTRAINT fk_tutor_execution_intent_gate_submission
+      FOREIGN KEY (exercise_submission_id, exercise_attempt_id, user_id, exercise_version_id)
+      REFERENCES tutor_exercise_attempt_submissions(id, attempt_id, user_id, exercise_version_id)
+      ON DELETE RESTRICT NOT VALID;
+  END IF;
+END $$;
+
+ALTER TABLE tutor_execution_jobs ADD COLUMN IF NOT EXISTS owner_kind text NOT NULL DEFAULT 'tutor_effect';
+ALTER TABLE tutor_execution_jobs ADD COLUMN IF NOT EXISTS exercise_attempt_id uuid;
+ALTER TABLE tutor_execution_jobs ALTER COLUMN effect_record_id DROP NOT NULL;
+ALTER TABLE tutor_execution_jobs ALTER COLUMN effect_key DROP NOT NULL;
+ALTER TABLE tutor_execution_jobs ALTER COLUMN conversation_id DROP NOT NULL;
+ALTER TABLE tutor_execution_jobs ALTER COLUMN run_id DROP NOT NULL;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conrelid = 'tutor_execution_jobs'::regclass
+      AND conname = 'chk_tutor_execution_jobs_owner_shape'
+  ) THEN
+    ALTER TABLE tutor_execution_jobs ADD CONSTRAINT chk_tutor_execution_jobs_owner_shape CHECK (
+      (
+        owner_kind = 'tutor_effect'
+        AND effect_record_id IS NOT NULL AND effect_key IS NOT NULL
+        AND conversation_id IS NOT NULL AND run_id IS NOT NULL AND exercise_attempt_id IS NULL
+      )
+      OR (
+        owner_kind = 'exercise_attempt'
+        AND effect_record_id IS NULL AND effect_key IS NULL
+        AND conversation_id IS NULL AND run_id IS NULL AND exercise_attempt_id IS NOT NULL
+      )
+    ) NOT VALID;
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conrelid = 'tutor_execution_jobs'::regclass
+      AND conname = 'uq_tutor_execution_jobs_gate_scope'
+  ) THEN
+    ALTER TABLE tutor_execution_jobs
+      ADD CONSTRAINT uq_tutor_execution_jobs_gate_scope UNIQUE (id, exercise_attempt_id, user_id);
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conrelid = 'tutor_execution_jobs'::regclass
+      AND conname = 'fk_tutor_execution_job_gate_intent_scope'
+  ) THEN
+    ALTER TABLE tutor_execution_jobs ADD CONSTRAINT fk_tutor_execution_job_gate_intent_scope
+      FOREIGN KEY (intent_id, exercise_attempt_id, user_id)
+      REFERENCES tutor_execution_intents(id, exercise_attempt_id, user_id)
+      ON DELETE RESTRICT NOT VALID;
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conrelid = 'tutor_execution_jobs'::regclass
+      AND conname = 'fk_tutor_execution_job_gate_attempt'
+  ) THEN
+    ALTER TABLE tutor_execution_jobs ADD CONSTRAINT fk_tutor_execution_job_gate_attempt
+      FOREIGN KEY (exercise_attempt_id, user_id)
+      REFERENCES tutor_exercise_attempts(id, user_id) ON DELETE RESTRICT NOT VALID;
+  END IF;
+END $$;
+
+CREATE TABLE IF NOT EXISTS tutor_exercise_execution_links (
+  attempt_id uuid PRIMARY KEY,
+  user_id uuid NOT NULL,
+  execution_intent_id uuid NOT NULL UNIQUE REFERENCES tutor_execution_intents(id) ON DELETE RESTRICT,
+  execution_job_id uuid NOT NULL UNIQUE REFERENCES tutor_execution_jobs(id) ON DELETE RESTRICT,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT fk_tutor_exercise_execution_link_attempt
+    FOREIGN KEY (attempt_id, user_id) REFERENCES tutor_exercise_attempts(id, user_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_exercise_execution_link_intent_scope
+    FOREIGN KEY (execution_intent_id, attempt_id, user_id)
+    REFERENCES tutor_execution_intents(id, exercise_attempt_id, user_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_exercise_execution_link_job_scope
+    FOREIGN KEY (execution_job_id, attempt_id, user_id)
+    REFERENCES tutor_execution_jobs(id, exercise_attempt_id, user_id) ON DELETE RESTRICT
+);
+
+CREATE OR REPLACE FUNCTION enforce_tutor_practice_shared_immutable()
+RETURNS trigger AS $$
+BEGIN
+  RAISE EXCEPTION 'Practice shared authority rows are immutable' USING ERRCODE = '23514';
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION enforce_tutor_practice_user_append_only()
+RETURNS trigger AS $$
+BEGIN
+  IF TG_OP = 'DELETE' AND tutor_learning_track_purge_allowed(OLD.user_id) THEN RETURN OLD; END IF;
+  RAISE EXCEPTION 'Practice user facts are append-only' USING ERRCODE = '23514';
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION enforce_tutor_lesson_gate_state_lifecycle()
+RETURNS trigger AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    IF tutor_learning_track_purge_allowed(OLD.user_id) THEN RETURN OLD; END IF;
+    RAISE EXCEPTION 'Lesson Gate state cannot be deleted' USING ERRCODE = '23514';
+  END IF;
+  IF NEW.id IS DISTINCT FROM OLD.id OR NEW.user_id IS DISTINCT FROM OLD.user_id
+     OR NEW.track_id IS DISTINCT FROM OLD.track_id OR NEW.knowledge_key IS DISTINCT FROM OLD.knowledge_key
+     OR NEW.lesson_assignment_id IS DISTINCT FROM OLD.lesson_assignment_id
+     OR NEW.document_id IS DISTINCT FROM OLD.document_id OR NEW.gate_binding_id IS DISTINCT FROM OLD.gate_binding_id
+     OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+    RAISE EXCEPTION 'Lesson Gate state identity is immutable' USING ERRCODE = '23514';
+  END IF;
+  IF OLD.state = 'passed' AND NEW IS DISTINCT FROM OLD THEN
+    RAISE EXCEPTION 'Passed Lesson Gate state is immutable' USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION enforce_tutor_module_diagnostic_session_lifecycle()
+RETURNS trigger AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    IF tutor_learning_track_purge_allowed(OLD.user_id) THEN RETURN OLD; END IF;
+    RAISE EXCEPTION 'Module diagnostic session cannot be deleted' USING ERRCODE = '23514';
+  END IF;
+  IF NEW.id IS DISTINCT FROM OLD.id OR NEW.user_id IS DISTINCT FROM OLD.user_id
+     OR NEW.track_id IS DISTINCT FROM OLD.track_id OR NEW.module_key IS DISTINCT FROM OLD.module_key
+     OR NEW.diagnostic_version_id IS DISTINCT FROM OLD.diagnostic_version_id
+     OR NEW.source_plan_revision_id IS DISTINCT FROM OLD.source_plan_revision_id
+     OR NEW.expected_track_version IS DISTINCT FROM OLD.expected_track_version
+     OR NEW.idempotency_key IS DISTINCT FROM OLD.idempotency_key OR NEW.request_hash IS DISTINCT FROM OLD.request_hash
+     OR NEW.started_at IS DISTINCT FROM OLD.started_at OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+    RAISE EXCEPTION 'Module diagnostic session identity is immutable' USING ERRCODE = '23514';
+  END IF;
+  IF OLD.state IN ('failed', 'confirmed', 'expired') AND NEW IS DISTINCT FROM OLD THEN
+    RAISE EXCEPTION 'Terminal module diagnostic session is immutable' USING ERRCODE = '23514';
+  END IF;
+  IF OLD.state = 'active' AND NEW.state IN ('active', 'failed', 'passed_pending_confirmation', 'expired') THEN RETURN NEW; END IF;
+  IF OLD.state = 'passed_pending_confirmation' AND NEW.state IN ('passed_pending_confirmation', 'confirmed', 'expired') THEN RETURN NEW; END IF;
+  RAISE EXCEPTION 'Module diagnostic session transition is invalid' USING ERRCODE = '23514';
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_tutor_exercise_versions_immutable ON tutor_exercise_versions;
+CREATE TRIGGER trg_tutor_exercise_versions_immutable
+BEFORE UPDATE OR DELETE ON tutor_exercise_versions
+FOR EACH ROW EXECUTE FUNCTION enforce_tutor_practice_shared_immutable();
+DROP TRIGGER IF EXISTS trg_tutor_exercise_private_rubrics_immutable ON tutor_exercise_private_rubrics;
+CREATE TRIGGER trg_tutor_exercise_private_rubrics_immutable
+BEFORE UPDATE OR DELETE ON tutor_exercise_private_rubrics
+FOR EACH ROW EXECUTE FUNCTION enforce_tutor_practice_shared_immutable();
+DROP TRIGGER IF EXISTS trg_tutor_lesson_gate_bindings_immutable ON tutor_lesson_gate_bindings;
+CREATE TRIGGER trg_tutor_lesson_gate_bindings_immutable
+BEFORE UPDATE OR DELETE ON tutor_lesson_gate_bindings
+FOR EACH ROW EXECUTE FUNCTION enforce_tutor_practice_user_append_only();
+DROP TRIGGER IF EXISTS trg_tutor_module_diagnostic_versions_immutable ON tutor_module_diagnostic_versions;
+CREATE TRIGGER trg_tutor_module_diagnostic_versions_immutable
+BEFORE UPDATE OR DELETE ON tutor_module_diagnostic_versions
+FOR EACH ROW EXECUTE FUNCTION enforce_tutor_practice_shared_immutable();
+DROP TRIGGER IF EXISTS trg_tutor_module_diagnostic_items_immutable ON tutor_module_diagnostic_items;
+CREATE TRIGGER trg_tutor_module_diagnostic_items_immutable
+BEFORE UPDATE OR DELETE ON tutor_module_diagnostic_items
+FOR EACH ROW EXECUTE FUNCTION enforce_tutor_practice_user_append_only();
+DROP TRIGGER IF EXISTS trg_tutor_exercise_attempts_immutable ON tutor_exercise_attempts;
+CREATE TRIGGER trg_tutor_exercise_attempts_immutable
+BEFORE UPDATE OR DELETE ON tutor_exercise_attempts
+FOR EACH ROW EXECUTE FUNCTION enforce_tutor_practice_user_append_only();
+DROP TRIGGER IF EXISTS trg_tutor_exercise_attempt_submissions_immutable ON tutor_exercise_attempt_submissions;
+CREATE TRIGGER trg_tutor_exercise_attempt_submissions_immutable
+BEFORE UPDATE OR DELETE ON tutor_exercise_attempt_submissions
+FOR EACH ROW EXECUTE FUNCTION enforce_tutor_practice_user_append_only();
+DROP TRIGGER IF EXISTS trg_tutor_exercise_attempt_results_immutable ON tutor_exercise_attempt_results;
+CREATE TRIGGER trg_tutor_exercise_attempt_results_immutable
+BEFORE UPDATE OR DELETE ON tutor_exercise_attempt_results
+FOR EACH ROW EXECUTE FUNCTION enforce_tutor_practice_user_append_only();
+DROP TRIGGER IF EXISTS trg_tutor_exercise_hint_receipts_immutable ON tutor_exercise_hint_receipts;
+CREATE TRIGGER trg_tutor_exercise_hint_receipts_immutable
+BEFORE UPDATE OR DELETE ON tutor_exercise_hint_receipts
+FOR EACH ROW EXECUTE FUNCTION enforce_tutor_practice_user_append_only();
+DROP TRIGGER IF EXISTS trg_tutor_exercise_execution_links_immutable ON tutor_exercise_execution_links;
+CREATE TRIGGER trg_tutor_exercise_execution_links_immutable
+BEFORE UPDATE OR DELETE ON tutor_exercise_execution_links
+FOR EACH ROW EXECUTE FUNCTION enforce_tutor_practice_user_append_only();
+DROP TRIGGER IF EXISTS trg_tutor_lesson_gate_states_updated_at ON tutor_lesson_gate_states;
+CREATE TRIGGER trg_tutor_lesson_gate_states_updated_at BEFORE UPDATE ON tutor_lesson_gate_states
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+DROP TRIGGER IF EXISTS trg_tutor_lesson_gate_states_lifecycle ON tutor_lesson_gate_states;
+CREATE TRIGGER trg_tutor_lesson_gate_states_lifecycle BEFORE UPDATE OR DELETE ON tutor_lesson_gate_states
+FOR EACH ROW EXECUTE FUNCTION enforce_tutor_lesson_gate_state_lifecycle();
+DROP TRIGGER IF EXISTS trg_tutor_module_diagnostic_sessions_updated_at ON tutor_module_diagnostic_sessions;
+CREATE TRIGGER trg_tutor_module_diagnostic_sessions_updated_at BEFORE UPDATE ON tutor_module_diagnostic_sessions
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+DROP TRIGGER IF EXISTS trg_tutor_module_diagnostic_sessions_lifecycle ON tutor_module_diagnostic_sessions;
+CREATE TRIGGER trg_tutor_module_diagnostic_sessions_lifecycle BEFORE UPDATE OR DELETE ON tutor_module_diagnostic_sessions
+FOR EACH ROW EXECUTE FUNCTION enforce_tutor_module_diagnostic_session_lifecycle();
+
+CREATE INDEX IF NOT EXISTS idx_tutor_lesson_gate_states_assignment
+  ON tutor_lesson_gate_states(lesson_assignment_id, state, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tutor_exercise_attempts_gate
+  ON tutor_exercise_attempts(lesson_assignment_id, gate_binding_id, accepted_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tutor_exercise_attempts_diagnostic
+  ON tutor_exercise_attempts(diagnostic_session_id, diagnostic_item_id, accepted_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tutor_module_diagnostic_sessions_track
+  ON tutor_module_diagnostic_sessions(track_id, module_key, created_at DESC);

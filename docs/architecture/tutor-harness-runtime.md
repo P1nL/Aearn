@@ -30,7 +30,7 @@ legacy learner history.
 | Layer | Owner | Contract |
 | --- | --- | --- |
 | Public adapter | `routes/tutor.py`, `services/tutor/public_api.py` | Validates user scope and idempotency, exposes learner-safe projections, and never performs Graph/router compatibility work. |
-| Learning domain | `routes/learning_tracks.py`, `services/learning/` | Owns track-scoped plans, progress/mastery, immutable LessonDocument/source snapshots/assignments, execution-tier projection, immutable scope snapshots, and a read-only Tutor context adapter; it does not implement exercise execution, Gate scoring, Review, or code execution. |
+| Learning domain | `routes/learning_tracks.py`, `routes/exercise_gates.py`, `services/learning/` | Owns track-scoped plans, progress/mastery, immutable LessonDocument/source snapshots/assignments, exercise Gate/Attempt/module-diagnostic authority, execution-tier projection, immutable scope snapshots, and a read-only Tutor context adapter; Review remains separate. |
 | Interactive dispatch | `services/tutor/interactive.py` | Starts an already accepted input only after its transaction commits, composes a bounded loop, and keeps provider failures out of the accepted-input response. |
 | Harness | `agents/harness/`, `services/tutor/run_loop.py` | Bounded run loop, lease ownership, input-revision reload, exact Skill selection, capability/effect gate, checkpoint lifecycle, and typed terminal outcome. |
 | Durable state | `services/tutor/persistence.py`, `learner_state.py`, `proactive_repository.py` | PostgreSQL owns user/run/conversation scope, ordered events, idempotency, CAS effects, redacted projections, plan/memory/activity state, and queue leases. |
@@ -347,7 +347,7 @@ reviewed immutable image lock and compatible executor health for
 `static_only`; all other cases are `unavailable`. Resolution never launches a
 runner or executor.
 
-LearningTrack Home and the single-page immutable LessonDocument reader are now implemented. Exercise Gate binding/scoring, module diagnostic, spaced review, model code-review exercise, the full three-column workspace, and actual code execution remain separate product children.
+LearningTrack Home, the single-page immutable LessonDocument reader, server-authoritative exercise Gate binding/scoring, append-only Attempt flow, module diagnostic confirmation, and existing-queue execution handoff are now implemented. Spaced review, model code-review exercise, the full three-column workspace, and a reviewed production container image fleet remain separate product work.
 
 Existing user-level Tutor controls remain unchanged:
 
@@ -560,3 +560,11 @@ The interactive dispatcher remains deny-by-default. A PostgreSQL-backed policy r
 Lesson authoring is a separate server-owned artifact workflow, not an expansion of the generic Tutor capability payload. A durable run is created and committed before dispatch. The dispatcher claims a lease, reads only persisted registry-owned grounding, assigns short evidence handles, calls the configured primary provider through a strict JSON port, applies deterministic schema/citation/coverage/Gate quality gates, rechecks track/progress/source versions, and publishes standard + personalized documents, snapshots, assignment, and terminal run state in one final transaction.
 
 There is no provider/model fallback and no static lesson template fallback. Provider calls happen outside long PostgreSQL transactions. Attempt receipts contain only safe provider/model/protocol/outcome/usage/hash metadata. The interactive Tutor context limit and `12 × 360` generic capability envelope are unchanged; ordinary Tutor context does not receive full Lesson blocks or source excerpts.
+
+### Exercise Gate execution reuse boundary (2026-08-11)
+
+Exercise Gate is a separate learning artifact workflow, not a generic Tutor capability/effect call. The API accepts a scoped Attempt and private submission, then maps execution-required work into the existing `tutor_execution_intents` / `tutor_execution_jobs` lifecycle with `source_kind=exercise_submission` and `owner_kind=exercise_attempt`. It does not create a Tutor conversation, message, run, or effect. Existing Tutor execution remains on `tutor_message` / `tutor_effect`; database one-of checks prevent a row from mixing the two ownership models.
+
+The executor claims the same lease/launch-token job, but its trusted-input loader resolves Gate input only after matching user, Attempt, submission, exercise version, private rubric and runtime profile references. The public API never receives the trusted input or private artifacts. Terminal execution output is reduced to an immutable learner-safe Attempt result before the learning service can project Gate/mastery/progress; the executor itself never writes pass, mastery or unlock authority.
+
+`container_verified` remains fail-closed and is not granted solely because a route exists. Public execution requires a reviewed immutable image lock and compatible health/profile evidence. `teaching_local` is development-only; `static_only` uses deterministic server evaluation with `execution_claim=not_run`; `unavailable` creates no execution job and never falls back to host subprocess, legacy runner or a second queue. This child did not build, sign, publish or approve a reviewed image fleet and did not call a real provider.

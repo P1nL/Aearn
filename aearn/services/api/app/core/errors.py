@@ -19,11 +19,12 @@ def error_response(
     recoverable: bool = True,
     next_action: str | None = None,
 ) -> JSONResponse:
+    request_id = request_id_from(request)
     error: dict[str, object] = {
         "code": code,
         "message": message,
         "details": details or {},
-        "request_id": request_id_from(request),
+        "request_id": request_id,
         "recoverable": recoverable,
     }
     if next_action is not None:
@@ -31,6 +32,7 @@ def error_response(
     return JSONResponse(
         status_code=status_code,
         content={"error": error},
+        headers={"X-Request-Id": request_id},
     )
 
 

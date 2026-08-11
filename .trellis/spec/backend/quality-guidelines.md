@@ -3617,3 +3617,11 @@ repository.publish_authoring_result(document=document, snapshots=snapshots, qual
 ```
 
 The strict candidate, evidence set, quality report, and final persisted authority remain separate and auditable.
+
+## 练习 Gate 与模块诊断质量门（2026-08-11）
+
+- Public exercise 与 private rubric 必须通过同一 version/hash quality boundary；public prompt/starter 禁止 hidden test、reference answer、rubric、credential、container/image、command/path marker。
+- `run` 只能产生执行反馈；`submit` 才能在 terminal finalization 中投影 Gate/mastery/progress/unlock。重复 poll/recovery 必须 exactly-once。
+- `container_verified` 缺少 reviewed lock、兼容 health/profile 或 executor enablement 时返回 `EXECUTION_UNAVAILABLE`，不得回退 host/legacy runner。`teaching_local` 仅 development injection；`static_only` 必须确定性且声明 `not_run`。
+- 模块诊断必须冻结全部 core capability；fail/partial 仅产生 `observational_non_degrading` evidence，不创建 plan revision、不跳过节点。pass 也必须在 explicit confirm 后才激活 predecessor-linked successor。
+- 默认 suite 不访问真实 provider、不启动 Docker fleet、不修改生产数据；真实 provider/container smoke 必须单独批准，且不是 release approval。

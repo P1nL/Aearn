@@ -51,6 +51,8 @@ class LessonScopeRecord:
     target_level: str
     track_version: int
     active_plan_revision_id: str
+    module_key: str
+    module_diagnostic_allowed: bool
     knowledge_key: str
     node_title: str
     node_description: str
@@ -109,6 +111,24 @@ class PostgresLessonDocumentRepository:
             SELECT tracks.user_id, tracks.id AS track_id, tracks.language_id,
                    tracks.goal_text, tracks.target_level, tracks.version AS track_version,
                    active.revision_id AS active_plan_revision_id,
+                   modules.module_key,
+                   (
+                     modules.is_skippable
+                     AND nodes.order_index = 0
+                     AND tracks.current_knowledge_key = nodes.knowledge_key
+                     AND NOT EXISTS (
+                       SELECT 1
+                       FROM tutor_track_plan_nodes AS module_nodes
+                       JOIN tutor_track_node_progress AS module_progress
+                         ON (module_progress.track_id, module_progress.user_id, module_progress.knowledge_key) =
+                            (module_nodes.track_id, module_nodes.user_id, module_nodes.knowledge_key)
+                       WHERE module_nodes.module_id = modules.id
+                         AND module_nodes.revision_id = modules.revision_id
+                         AND module_nodes.track_id = modules.track_id
+                         AND module_nodes.user_id = modules.user_id
+                         AND module_progress.status IN ('completed', 'review_due', 'diagnostic_skipped')
+                     )
+                   ) AS module_diagnostic_allowed,
                    nodes.knowledge_key, nodes.title AS node_title, nodes.description AS node_description,
                    nodes.required_capabilities_json, progress.status AS progress_status,
                    progress.version AS progress_version, mastery.mastery_level,
@@ -119,6 +139,9 @@ class PostgresLessonDocumentRepository:
             JOIN tutor_track_plan_nodes AS nodes
               ON (nodes.revision_id, nodes.track_id, nodes.user_id) =
                  (active.revision_id, active.track_id, active.user_id)
+            JOIN tutor_track_plan_modules AS modules
+              ON (modules.id, modules.revision_id, modules.track_id, modules.user_id) =
+                 (nodes.module_id, nodes.revision_id, nodes.track_id, nodes.user_id)
             JOIN tutor_track_node_progress AS progress
               ON (progress.track_id, progress.user_id, progress.knowledge_key) =
                  (nodes.track_id, nodes.user_id, nodes.knowledge_key)
@@ -134,7 +157,8 @@ class PostgresLessonDocumentRepository:
         return LessonScopeRecord(
             user_id=str(row["user_id"]), track_id=str(row["track_id"]), language_id=str(row["language_id"]),
             goal_text=str(row["goal_text"]), target_level=str(row["target_level"]), track_version=_int(row["track_version"]),
-            active_plan_revision_id=str(row["active_plan_revision_id"]), knowledge_key=str(row["knowledge_key"]),
+            active_plan_revision_id=str(row["active_plan_revision_id"]), module_key=str(row["module_key"]),
+            module_diagnostic_allowed=bool(row["module_diagnostic_allowed"]), knowledge_key=str(row["knowledge_key"]),
             node_title=str(row["node_title"]), node_description=str(row["node_description"]),
             required_capabilities=_string_tuple(row.get("required_capabilities_json")),
             progress_status=str(row["progress_status"]), progress_version=_int(row["progress_version"]),

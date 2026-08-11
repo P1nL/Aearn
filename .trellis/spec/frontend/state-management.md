@@ -134,3 +134,10 @@ writeBootstrapContext({ userId: loadedUser.id, planId: plan.LearningPlan.id });
 ```
 
 Persist the user boundary before rendering new facts, then persist the plan only after backend validation succeeds.
+
+## Lesson Gate 临时状态与服务端权威（2026-08-11）
+
+- editor 文本、当前 hint 展示、poll timer、modal open 和 stale 标记属于页面临时状态。
+- Gate status/version、`allowed_actions`、Attempt/result、score/pass、mastery、route change、diagnostic state/impact/cooldown 全部来自 API。
+- 提交后只能合并服务器返回 projection；不得先乐观写 passed/unlock。发生 conflict、路由变化或 confirm 后重新读取 Lesson/Gate authority。
+- 页面卸载、track/key 改变或新 Attempt 替换旧 Attempt 时清理 poll timer，旧 callback 不得覆盖新 scope。

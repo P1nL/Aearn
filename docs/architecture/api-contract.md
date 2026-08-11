@@ -377,3 +377,21 @@ proactive delivery、worker import、schema bootstrap 和 Desktop typed build。
 `LESSON_DOCUMENT_VERSION_CONFLICT`、`LESSON_ASSIGNMENT_CONFLICT`、
 `LESSON_SOURCE_EVIDENCE_INSUFFICIENT`、`LESSON_DOCUMENT_GENERATION_UNAVAILABLE`、
 `LESSON_DOCUMENT_INVALID` 和 `LESSON_DOCUMENT_QUALITY_BLOCKED`。公共投影不包含 prompt、provider body、reasoning、内部 quality report、完整抓取原文、hidden test、reference answer、命令、路径或 credential。
+
+## 2026-08-11：练习 Gate 与模块诊断 API
+
+所有 Gate 和模块诊断路由都位于 `/api/learning-tracks`、要求 verified user，并按 exact `user_id + track_id + active plan revision + knowledge/module scope` 校验。跨用户、跨 track、locked Lesson、失效 assignment/binding 和不存在对象不泄漏存在性。mutation 使用 `client_action_id`/`Idempotency-Key`、request hash 与 expected version；同 key 同请求重放原响应，同 key 不同请求返回冲突。
+
+| Method | Path | Contract |
+| --- | --- | --- |
+| `GET` | `/api/learning-tracks/{track_id}/lessons/{knowledge_key}/gates?user_id=...` | 返回 active/frozen assignment 的 learner-safe Gate、exercise、tier、`allowed_actions` 与最新安全结果 |
+| `POST` | `/api/learning-tracks/{track_id}/lessons/{knowledge_key}/gates/{gate_key}/prepare` | 使用 expected track/progress version 创建或重放 exact immutable binding/state |
+| `POST` | `/api/learning-tracks/{track_id}/lessons/{knowledge_key}/gates/{gate_key}/hints` | 使用 expected Gate version 追加有界 safe hint receipt；不返回 private rubric/reference answer |
+| `POST` | `/api/learning-tracks/{track_id}/lessons/{knowledge_key}/gates/{gate_key}/attempts` | `attempt_type=run | submit`；保存私有 submission，pending execution 返回 `202`，同步 static/local 结果可直接终态 |
+| `GET` | `/api/learning-tracks/{track_id}/lessons/{knowledge_key}/attempts/{attempt_id}?user_id=...` | 读取同一 Attempt 的 pending/terminal learner-safe projection，并可幂等触发 terminal projection |
+| `POST` | `/api/learning-tracks/{track_id}/modules/{module_key}/diagnostics` | 只在服务端模块入口规则允许时冻结诊断版本/items；direct API 绕过同样被拒绝 |
+| `GET` | `/api/learning-tracks/{track_id}/modules/{module_key}/diagnostics/{session_id}?user_id=...` | 返回 session、冻结能力/items、safe results、薄弱项、cooldown 和 proposed impact |
+| `POST` | `/api/learning-tracks/{track_id}/modules/{module_key}/diagnostics/{session_id}/items/{item_id}/attempts` | 创建 `diagnostic_submit` Attempt；要求 independent-only，不提供提示/补救 |
+| `POST` | `/api/learning-tracks/{track_id}/modules/{module_key}/diagnostics/{session_id}/confirm-skip` | 只确认当前 active predecessor 的 `passed_pending_confirmation` session，并原子激活 proposed revision |
+
+公共 Gate/Attempt/diagnostic 投影不包含完整 submission、private tests、reference answer、private rubric、container/image、command/path、raw executor/provider response 或内部异常。稳定错误包括 `LESSON_GATE_NOT_FOUND`、`LESSON_GATE_NOT_READY`、`LESSON_GATE_VERSION_CONFLICT`、`EXERCISE_ATTEMPT_CONFLICT`、`EXECUTION_UNAVAILABLE`、`MODULE_DIAGNOSTIC_NOT_ALLOWED`、`MODULE_DIAGNOSTIC_COOLDOWN` 和 `MODULE_DIAGNOSTIC_VERSION_CONFLICT`；validation error 使用 learner-safe `422`。

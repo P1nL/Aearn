@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 from uuid import uuid4
 
 from psycopg import Connection
@@ -210,6 +211,149 @@ class ExecutionIntentRepository:
                 ),
             )
         return proof
+
+    def create_or_replay_exercise_job(
+        self,
+        *,
+        user_id: str,
+        attempt_id: str,
+        submission_id: str,
+        exercise_version_id: str,
+        action: ExecutionAction,
+        now: datetime | None = None,
+    ) -> ExecutionJobV1:
+        """Attach an exercise Attempt to the existing durable executor queue."""
+
+        current = _utc(now or self._clock())
+        existing = self._conn.execute(
+            """
+            SELECT jobs.*
+            FROM tutor_exercise_execution_links AS links
+            JOIN tutor_execution_jobs AS jobs ON jobs.id = links.execution_job_id
+            WHERE links.attempt_id = %s AND links.user_id = %s
+            """,
+            (attempt_id, user_id),
+        ).fetchone()
+        if existing is not None:
+            return _job_from_row(existing)
+        source = self._conn.execute(
+            """
+            SELECT attempts.id, attempts.user_id, attempts.exercise_version_id,
+                   submissions.id AS submission_id, submissions.content_hash,
+                   versions.language_id, versions.runtime_profile_key, versions.content_hash,
+                   rubrics.rubric_hash
+            FROM tutor_exercise_attempts AS attempts
+            JOIN tutor_exercise_attempt_submissions AS submissions
+              ON (submissions.attempt_id, submissions.user_id, submissions.exercise_version_id) =
+                 (attempts.id, attempts.user_id, attempts.exercise_version_id)
+            JOIN tutor_exercise_versions AS versions ON versions.id = attempts.exercise_version_id
+            JOIN tutor_exercise_private_rubrics AS rubrics ON rubrics.exercise_version_id = versions.id
+            WHERE attempts.id = %s AND attempts.user_id = %s
+              AND submissions.id = %s AND versions.id = %s
+            FOR UPDATE OF attempts
+            """,
+            (attempt_id, user_id, submission_id, exercise_version_id),
+        ).fetchone()
+        if source is None:
+            raise ExecutionSubmissionError("exercise_attempt_scope_denied")
+        runtime_id = runtime_id_for_profile(
+            runtime_tier=str(source["runtime_profile_key"]),
+            language=str(source["language_id"]),
+        )
+        if runtime_id is None:
+            raise ExecutionSubmissionError("trusted_runtime_unsupported")
+        availability = self.availability_for_runtime(runtime_id, now=current)
+        if not availability.available:
+            raise ExecutionSubmissionError(availability.code)
+        lock = self._registry.lock_for(runtime_id)
+        if lock is None:
+            raise ExecutionSubmissionError("runtime_lock_unavailable")
+        intent_id = str(uuid4())
+        job_id = str(uuid4())
+        self._conn.execute(
+            """
+            INSERT INTO tutor_execution_intents (
+              id, user_id, conversation_id, run_id, source_message_id, exercise_id,
+              input_revision, origin, action, catalog_digest, policy_fingerprint,
+              budget_fingerprint, budget_execution_count, issued_at, expires_at,
+              consumed_at, consumed_by_effect_id, source_kind, exercise_attempt_id,
+              exercise_submission_id, exercise_version_id
+            ) VALUES (
+              %s, %s, NULL, NULL, NULL, NULL, NULL, 'exercise_gate', %s, %s, %s,
+              %s, 1, %s, %s, %s, NULL, 'exercise_submission', %s, %s, %s
+            )
+            """,
+            (
+                intent_id,
+                user_id,
+                action.value,
+                self._registry.catalog_fingerprint,
+                str(source["content_hash"]),
+                _reference_hash("exercise-gate-budget-v1"),
+                current,
+                current + timedelta(seconds=120),
+                current,
+                attempt_id,
+                submission_id,
+                exercise_version_id,
+            ),
+        )
+        row = self._conn.execute(
+            """
+            INSERT INTO tutor_execution_jobs (
+              id, effect_record_id, effect_key, intent_id, user_id, conversation_id,
+              run_id, runtime_id, lock_fingerprint, source_reference_hash,
+              test_reference_hash, state, owner_kind, exercise_attempt_id
+            ) VALUES (
+              %s, NULL, NULL, %s, %s, NULL, NULL, %s, %s, %s, %s,
+              'pending', 'exercise_attempt', %s
+            ) RETURNING *
+            """,
+            (
+                job_id,
+                intent_id,
+                user_id,
+                runtime_id,
+                lock.fingerprint,
+                _reference_hash(submission_id),
+                _reference_hash(str(source["rubric_hash"])),
+                attempt_id,
+            ),
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("exercise execution job insert failed")
+        self._conn.execute(
+            """
+            INSERT INTO tutor_exercise_execution_links (
+              attempt_id, user_id, execution_intent_id, execution_job_id
+            ) VALUES (%s, %s, %s, %s)
+            """,
+            (attempt_id, user_id, intent_id, job_id),
+        )
+        return _job_from_row(row)
+
+    def read_exercise_safe_result(self, *, user_id: str, attempt_id: str) -> SafeExecutionResultV1 | None:
+        row = self._conn.execute(
+            """
+            SELECT jobs.result_json
+            FROM tutor_exercise_execution_links AS links
+            JOIN tutor_execution_jobs AS jobs ON jobs.id = links.execution_job_id
+            WHERE links.attempt_id = %s AND links.user_id = %s
+            """,
+            (attempt_id, user_id),
+        ).fetchone()
+        if row is None:
+            raise ExecutionSubmissionError("execution_job_not_found")
+        result = row.get("result_json")
+        if not isinstance(result, Mapping):
+            return None
+        try:
+            return SafeExecutionResultV1.model_validate(result)
+        except ValueError:
+            return SafeExecutionResultV1(
+                status=SafeExecutionStatus.FAILED,
+                diagnostic_code="stored_result_invalid",
+            )
 
     def availability_for_runtime(self, runtime_id: str, *, now: datetime | None = None) -> ExecutionAvailability:
         """Read cached executor health only; this path never contacts the runtime engine."""
@@ -561,14 +705,19 @@ def _job_from_row(row: Mapping[str, object]) -> ExecutionJobV1:
     result = SafeExecutionResultV1.model_validate(result_json) if isinstance(result_json, Mapping) else None
     lease_expires_at = _datetime_or_none(row.get("lease_expires_at"))
     cancellation_requested_at = _datetime_or_none(row.get("cancellation_requested_at"))
+    owner_kind: Literal["tutor_effect", "exercise_attempt"] = (
+        "exercise_attempt" if row.get("owner_kind") == "exercise_attempt" else "tutor_effect"
+    )
     return ExecutionJobV1(
         job_id=str(row["id"]),
-        effect_id=str(row["effect_key"]),
         intent_proof_id=str(row["intent_id"]),
         user_id=str(row["user_id"]),
-        conversation_id=str(row["conversation_id"]),
-        run_id=str(row["run_id"]),
         runtime_id=str(row["runtime_id"]),
+        owner_kind=owner_kind,
+        effect_id=str(row["effect_key"]) if row.get("effect_key") else None,
+        conversation_id=str(row["conversation_id"]) if row.get("conversation_id") else None,
+        run_id=str(row["run_id"]) if row.get("run_id") else None,
+        exercise_attempt_id=str(row["exercise_attempt_id"]) if row.get("exercise_attempt_id") else None,
         lock_fingerprint=str(row["lock_fingerprint"]),
         state=ExecutionJobState(str(row["state"])),
         lease_owner_id=str(row["lease_owner_id"]) if row.get("lease_owner_id") else None,

@@ -455,6 +455,8 @@ export type LessonUpdateProposal = {
 export type LessonDocumentState = {
   status: "missing" | "preparing" | "ready" | "failed";
   track_id: string;
+  module_key: string;
+  module_diagnostic_allowed: boolean;
   knowledge_key: string;
   track_version: number;
   progress_version: number;
@@ -471,6 +473,177 @@ export type LessonPrepareResponse = {
   track_id: string;
   knowledge_key: string;
   authoring_run: LessonAuthoringRun | null;
+  idempotent_replayed: boolean;
+};
+
+export type ExecutionTier = "teaching_local" | "container_verified" | "static_only" | "unavailable";
+export type ExerciseType = "code_completion" | "sql_query" | "browser_preview" | "static_code_reasoning";
+export type GateRequirementKind = "required" | "recommended" | "diagnostic";
+export type LessonGateState = "available" | "in_progress" | "passed" | "remediation_required";
+export type LessonGateAction = "prepare" | "hint" | "run" | "submit";
+export type ExerciseAttemptType = "run" | "submit" | "diagnostic_submit";
+export type ExerciseAttemptOutcome = "passed" | "failed" | "timed_out" | "cancelled" | "unavailable" | "invalid";
+export type ExerciseIndependence = "independent" | "hinted" | "remediated";
+
+export type LessonGateExercise = {
+  exercise_version_id: string;
+  exercise_key: string;
+  exercise_type: ExerciseType;
+  version: string;
+  title: string;
+  learner_prompt: Record<string, unknown>;
+  starter_artifact: Record<string, unknown>;
+  required_capabilities?: string[];
+  content_hash?: string;
+};
+
+export type LessonGateResult = {
+  outcome: ExerciseAttemptOutcome;
+  score: number;
+  safe_feedback: Record<string, unknown>;
+  capability_scores?: Record<string, number>;
+  terminal_at: string | null;
+};
+
+export type LessonGateUnboundItem = {
+  gate_key: string;
+  gate_kind: LessonExerciseGateBlock["gate_kind"];
+  assessment_contract_version: string;
+  required_capabilities: string[];
+  learner_prompt: string;
+  status: "unbound";
+  allowed_actions: LessonGateAction[];
+  exercise: null;
+};
+
+export type LessonGateBoundItem = {
+  gate_key: string;
+  gate_kind: LessonExerciseGateBlock["gate_kind"];
+  assessment_contract_version: string;
+  required_capabilities: string[];
+  learner_prompt: string;
+  binding_id: string;
+  binding_contract_hash: string;
+  requirement_kind: GateRequirementKind;
+  pass_policy_version: string;
+  pass_threshold: number;
+  execution_requirement: "required" | "optional" | "forbidden";
+  status: LessonGateState;
+  gate_version: number;
+  attempt_count: number;
+  best_score: number;
+  latest_attempt_id: string | null;
+  passed_at: string | null;
+  execution_tier: ExecutionTier;
+  execution_disclosure: string;
+  allowed_actions: LessonGateAction[];
+  exercise: LessonGateExercise;
+  latest_result: LessonGateResult | null;
+};
+
+export type LessonGateItem = LessonGateUnboundItem | LessonGateBoundItem;
+
+export type LessonGateList = {
+  track_id: string;
+  knowledge_key: string;
+  track_version: number;
+  progress_version: number;
+  assignment_id: string;
+  assignment_version: number;
+  items: LessonGateItem[];
+};
+
+export type LessonGatePrepareResponse = {
+  status: "ready";
+  gate: LessonGateItem;
+  idempotent_replayed: boolean;
+};
+
+export type LessonGateHint = {
+  hint_id: string;
+  hint_level: number;
+  hint_policy_version: string;
+  safe_hint: Record<string, unknown>;
+  gate_version: number;
+  created_at: string | null;
+  idempotent_replayed: boolean;
+};
+
+export type ExerciseAttemptState = {
+  attempt_id: string;
+  attempt_type: ExerciseAttemptType;
+  track_id: string;
+  knowledge_key: string;
+  exercise_version_id: string;
+  submission_hash: string;
+  independence: ExerciseIndependence;
+  accepted_at: string | null;
+  status: "pending" | "terminal";
+  execution_job_id: string | null;
+  execution_job_state: string | null;
+  result: LessonGateResult | null;
+  projected: boolean | null;
+  route_changed: boolean;
+  mastery: {
+    confidence: number;
+    mastery_level: string;
+    evidence_count: number;
+    observation_count: number;
+  } | null;
+  idempotent_replayed: boolean;
+  execution_tier?: ExecutionTier;
+  execution_disclosure?: string;
+};
+
+export type ModuleDiagnosticStateValue = "active" | "failed" | "passed_pending_confirmation" | "confirmed" | "expired";
+
+export type ModuleDiagnosticImpact = {
+  kind: "diagnostic_skipped_module";
+  module_key: string;
+  diagnostic_session_id: string;
+  policy_version: string;
+  affected_knowledge_keys: string[];
+  capability_scores: Record<string, number>;
+  source_plan_revision_id: string;
+  proposed_plan_revision_id: string;
+  expected_track_version: number;
+};
+
+export type ModuleDiagnosticItem = {
+  item_id: string;
+  item_key: string;
+  order_index: number;
+  capability_key: string;
+  knowledge_key: string;
+  threshold: number;
+  exercise: LessonGateExercise;
+  attempt_id: string | null;
+  execution_job_state: string | null;
+  result: LessonGateResult | null;
+};
+
+export type ModuleDiagnosticState = {
+  session_id: string;
+  track_id: string;
+  module_key: string;
+  diagnostic_version: string;
+  policy_version: string;
+  core_capabilities: string[];
+  pass_threshold: number;
+  require_all_core: boolean;
+  independent_only: boolean;
+  cooldown_seconds: number;
+  state: ModuleDiagnosticStateValue;
+  version: number;
+  source_plan_revision_id: string;
+  proposed_plan_revision_id: string | null;
+  impact: ModuleDiagnosticImpact | null;
+  weak_capabilities: string[];
+  started_at: string | null;
+  terminal_at: string | null;
+  cooldown_until: string | null;
+  confirmed_at: string | null;
+  items: ModuleDiagnosticItem[];
   idempotent_replayed: boolean;
 };
 

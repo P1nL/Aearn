@@ -102,6 +102,8 @@ def lesson_repo():
 
 def _publish(conn, repo, user_id, track_id, snapshot, *, action: str, personalized_title: str = "Python 变量"):
     scope = repo.read_scope(user_id=user_id, track_id=track_id, knowledge_key="python.variables")
+    assert scope.module_key == "foundations"
+    assert scope.module_diagnostic_allowed is False
     run, replayed = repo.create_or_replay_authoring_run(
         scope=scope,
         run_kind="prepare" if action == "initial" else "refresh",

@@ -19,9 +19,9 @@ That ledger records the controlled verified-only proactive-delivery proof and it
 
 | Surface | Current document | Authority |
 | --- | --- | --- |
-| Runtime architecture and security boundary | [`architecture/tutor-harness-runtime.md`](./architecture/tutor-harness-runtime.md) | Tutor loop, Skills, safe persistence, provider, executor, scheduler, cutover, and rollback rules. |
-| Learner flow | [`product/user-flows.md`](./product/user-flows.md) | Local identity, controlled cutover, LearningTrack home, conversational plan drafting, and immutable LessonDocument reading with frozen source evidence. |
-| Desktop interaction | [`product/frontend-interaction-spec.md`](./product/frontend-interaction-spec.md) | Bootstrap state machine, server authority, responsive Tutor UI, SSE handling, and local storage boundary. |
+| Runtime architecture and security boundary | [`architecture/tutor-harness-runtime.md`](./architecture/tutor-harness-runtime.md) | Tutor loop, Skills, safe persistence, exercise execution reuse, provider, executor, scheduler, cutover, and rollback rules. |
+| Learner flow | [`product/user-flows.md`](./product/user-flows.md) | Local identity, controlled cutover, LearningTrack home, immutable LessonDocument reading, server-authoritative exercise Gate, and explicit module-diagnostic skip confirmation. |
+| Desktop interaction | [`product/frontend-interaction-spec.md`](./product/frontend-interaction-spec.md) | Bootstrap state machine, server authority, responsive Tutor UI, Lesson Gate/diagnostic interaction, SSE handling, and local storage boundary. |
 | HTTP and SSE API | [`architecture/api-contract.md`](./architecture/api-contract.md) | Current public routes, idempotency, cursor replay, errors, and privacy rules. |
 | Database | [`architecture/database-schema.md`](./architecture/database-schema.md) | `tutor_*`, `harness_cutovers`, scoped persistence, deletion/preservation, and historical legacy tables. |
 | Local development | [`setup/development-environment.md`](./setup/development-environment.md) | Required tooling, local services, dependency commands, worker/executor posture, and safe verification commands. |

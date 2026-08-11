@@ -226,9 +226,10 @@ class LessonDocumentService:
         document = state.get("document")
         latest_run = state.get("latest_run")
         base: dict[str, object] = {
-            "track_id": scope.track_id, "knowledge_key": scope.knowledge_key,
-            "track_version": scope.track_version, "progress_version": scope.progress_version,
-            "progress_status": scope.progress_status,
+            "track_id": scope.track_id, "module_key": scope.module_key,
+            "module_diagnostic_allowed": scope.module_diagnostic_allowed,
+            "knowledge_key": scope.knowledge_key, "track_version": scope.track_version,
+            "progress_version": scope.progress_version, "progress_status": scope.progress_status,
         }
         if isinstance(assignment, Mapping) and isinstance(document, LessonDocumentDraft):
             sources = state.get("sources")

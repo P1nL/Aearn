@@ -4,6 +4,27 @@ import {
   type ApiHealth,
   type HarnessCutoverDecision,
   type LanguageCourse,
+  type LessonAssignment,
+  type LessonAuthoringRun,
+  type LessonBlock,
+  type LessonCitation,
+  type LessonDocument,
+  type LessonDocumentState,
+  type LessonGateAction,
+  type LessonGateExercise,
+  type LessonGateHint,
+  type LessonGateItem,
+  type LessonGateList,
+  type LessonGatePrepareResponse,
+  type LessonGateResult,
+  type LessonPrepareResponse,
+  type LessonUpdateProposal,
+  type ExerciseAttemptState,
+  type ExerciseAttemptOutcome,
+  type ExecutionTier,
+  type ModuleDiagnosticImpact,
+  type ModuleDiagnosticItem,
+  type ModuleDiagnosticState,
   type LearningLanguageCatalogItem,
   type LearningPlanDraft,
   type LearningPlanModule,
@@ -437,6 +458,208 @@ export async function activateLessonMigration(input: {
   return assignment;
 }
 
+export async function fetchLessonGates(
+  userId: string,
+  trackId: string,
+  knowledgeKey: string,
+  signal?: AbortSignal,
+): Promise<LessonGateList> {
+  const query = new URLSearchParams({ user_id: userId });
+  const url = `${API_BASE_URL}/api/learning-tracks/${encodeURIComponent(trackId)}/lessons/${encodeURIComponent(knowledgeKey)}/gates?${query.toString()}`;
+  const payload = await requestJson(url, { signal });
+  const gates = toLessonGateList(payload);
+  if (!gates) throw new Error("Lesson Gate API returned an invalid payload");
+  return gates;
+}
+
+export async function prepareLessonGate(input: {
+  userId: string;
+  trackId: string;
+  knowledgeKey: string;
+  gateKey: string;
+  expectedTrackVersion: number;
+  expectedProgressVersion: number;
+  clientActionId: string;
+}): Promise<LessonGatePrepareResponse> {
+  const url = `${API_BASE_URL}/api/learning-tracks/${encodeURIComponent(input.trackId)}/lessons/${encodeURIComponent(input.knowledgeKey)}/gates/${encodeURIComponent(input.gateKey)}/prepare`;
+  const payload = await requestJson(url, {
+    method: "POST",
+    headers: tutorMutationHeaders(input.clientActionId),
+    body: JSON.stringify({
+      user_id: input.userId,
+      client_action_id: input.clientActionId,
+      expected_track_version: input.expectedTrackVersion,
+      expected_progress_version: input.expectedProgressVersion,
+    }),
+  });
+  const response = toLessonGatePrepareResponse(payload);
+  if (!response) throw new Error("Lesson Gate prepare API returned an invalid payload");
+  return response;
+}
+
+export async function requestLessonGateHint(input: {
+  userId: string;
+  trackId: string;
+  knowledgeKey: string;
+  gateKey: string;
+  expectedGateVersion: number;
+  clientActionId: string;
+}): Promise<LessonGateHint> {
+  const url = `${API_BASE_URL}/api/learning-tracks/${encodeURIComponent(input.trackId)}/lessons/${encodeURIComponent(input.knowledgeKey)}/gates/${encodeURIComponent(input.gateKey)}/hints`;
+  const payload = await requestJson(url, {
+    method: "POST",
+    headers: tutorMutationHeaders(input.clientActionId),
+    body: JSON.stringify({
+      user_id: input.userId,
+      client_action_id: input.clientActionId,
+      expected_gate_version: input.expectedGateVersion,
+    }),
+  });
+  const hint = toLessonGateHint(payload);
+  if (!hint) throw new Error("Lesson Gate hint API returned an invalid payload");
+  return hint;
+}
+
+export async function createLessonGateAttempt(input: {
+  userId: string;
+  trackId: string;
+  knowledgeKey: string;
+  gateKey: string;
+  attemptType: "run" | "submit";
+  submission: string;
+  expectedTrackVersion: number;
+  expectedProgressVersion: number;
+  expectedAssignmentVersion: number;
+  expectedGateVersion: number;
+  clientActionId: string;
+}): Promise<ExerciseAttemptState> {
+  const url = `${API_BASE_URL}/api/learning-tracks/${encodeURIComponent(input.trackId)}/lessons/${encodeURIComponent(input.knowledgeKey)}/gates/${encodeURIComponent(input.gateKey)}/attempts`;
+  const payload = await requestJson(url, {
+    method: "POST",
+    headers: tutorMutationHeaders(input.clientActionId),
+    body: JSON.stringify({
+      user_id: input.userId,
+      client_action_id: input.clientActionId,
+      attempt_type: input.attemptType,
+      submission: input.submission,
+      expected_track_version: input.expectedTrackVersion,
+      expected_progress_version: input.expectedProgressVersion,
+      expected_assignment_version: input.expectedAssignmentVersion,
+      expected_gate_version: input.expectedGateVersion,
+    }),
+  });
+  const attempt = toExerciseAttemptState(payload);
+  if (!attempt) throw new Error("Lesson Gate attempt API returned an invalid payload");
+  return attempt;
+}
+
+export async function fetchExerciseAttempt(
+  userId: string,
+  trackId: string,
+  knowledgeKey: string,
+  attemptId: string,
+  signal?: AbortSignal,
+): Promise<ExerciseAttemptState> {
+  const query = new URLSearchParams({ user_id: userId });
+  const url = `${API_BASE_URL}/api/learning-tracks/${encodeURIComponent(trackId)}/lessons/${encodeURIComponent(knowledgeKey)}/attempts/${encodeURIComponent(attemptId)}?${query.toString()}`;
+  const payload = await requestJson(url, { signal });
+  const attempt = toExerciseAttemptState(payload);
+  if (!attempt) throw new Error("Exercise Attempt API returned an invalid payload");
+  return attempt;
+}
+
+export async function createModuleDiagnostic(input: {
+  userId: string;
+  trackId: string;
+  moduleKey: string;
+  expectedTrackVersion: number;
+  clientActionId: string;
+}): Promise<ModuleDiagnosticState> {
+  const url = `${API_BASE_URL}/api/learning-tracks/${encodeURIComponent(input.trackId)}/modules/${encodeURIComponent(input.moduleKey)}/diagnostics`;
+  const payload = await requestJson(url, {
+    method: "POST",
+    headers: tutorMutationHeaders(input.clientActionId),
+    body: JSON.stringify({
+      user_id: input.userId,
+      client_action_id: input.clientActionId,
+      expected_track_version: input.expectedTrackVersion,
+    }),
+  });
+  const diagnostic = toModuleDiagnosticState(payload);
+  if (!diagnostic) throw new Error("Module diagnostic API returned an invalid payload");
+  return diagnostic;
+}
+
+export async function fetchModuleDiagnostic(
+  userId: string,
+  trackId: string,
+  moduleKey: string,
+  sessionId: string,
+  signal?: AbortSignal,
+): Promise<ModuleDiagnosticState> {
+  const query = new URLSearchParams({ user_id: userId });
+  const url = `${API_BASE_URL}/api/learning-tracks/${encodeURIComponent(trackId)}/modules/${encodeURIComponent(moduleKey)}/diagnostics/${encodeURIComponent(sessionId)}?${query.toString()}`;
+  const payload = await requestJson(url, { signal });
+  const diagnostic = toModuleDiagnosticState(payload);
+  if (!diagnostic) throw new Error("Module diagnostic read API returned an invalid payload");
+  return diagnostic;
+}
+
+export async function createModuleDiagnosticAttempt(input: {
+  userId: string;
+  trackId: string;
+  moduleKey: string;
+  sessionId: string;
+  itemId: string;
+  submission: string;
+  expectedTrackVersion: number;
+  expectedSessionVersion: number;
+  clientActionId: string;
+}): Promise<ExerciseAttemptState | ModuleDiagnosticState> {
+  const url = `${API_BASE_URL}/api/learning-tracks/${encodeURIComponent(input.trackId)}/modules/${encodeURIComponent(input.moduleKey)}/diagnostics/${encodeURIComponent(input.sessionId)}/items/${encodeURIComponent(input.itemId)}/attempts`;
+  const payload = await requestJson(url, {
+    method: "POST",
+    headers: tutorMutationHeaders(input.clientActionId),
+    body: JSON.stringify({
+      user_id: input.userId,
+      client_action_id: input.clientActionId,
+      submission: input.submission,
+      expected_track_version: input.expectedTrackVersion,
+      expected_session_version: input.expectedSessionVersion,
+    }),
+  });
+  const diagnostic = toModuleDiagnosticState(payload);
+  if (diagnostic) return diagnostic;
+  const attempt = toExerciseAttemptState(payload);
+  if (attempt) return attempt;
+  throw new Error("Module diagnostic attempt API returned an invalid payload");
+}
+
+export async function confirmModuleDiagnosticSkip(input: {
+  userId: string;
+  trackId: string;
+  moduleKey: string;
+  sessionId: string;
+  expectedTrackVersion: number;
+  expectedSessionVersion: number;
+  clientActionId: string;
+}): Promise<ModuleDiagnosticState> {
+  const url = `${API_BASE_URL}/api/learning-tracks/${encodeURIComponent(input.trackId)}/modules/${encodeURIComponent(input.moduleKey)}/diagnostics/${encodeURIComponent(input.sessionId)}/confirm-skip`;
+  const payload = await requestJson(url, {
+    method: "POST",
+    headers: tutorMutationHeaders(input.clientActionId),
+    body: JSON.stringify({
+      user_id: input.userId,
+      client_action_id: input.clientActionId,
+      expected_track_version: input.expectedTrackVersion,
+      expected_session_version: input.expectedSessionVersion,
+    }),
+  });
+  const diagnostic = toModuleDiagnosticState(payload);
+  if (!diagnostic) throw new Error("Module diagnostic confirmation returned an invalid payload");
+  return diagnostic;
+}
+
 export async function fetchCurrentLearningPlanSession(
   userId: string,
   signal?: AbortSignal,
@@ -666,20 +889,23 @@ function toLearningTrackSummary(payload: unknown): LearningTrackSummary | null {
 function toLessonDocumentState(payload: unknown): LessonDocumentState | null {
   if (
     !isRecord(payload) || !isLessonPublicStatus(payload.status) ||
-    !isString(payload.track_id) || !isString(payload.knowledge_key) ||
+    !isString(payload.track_id) || !isString(payload.module_key) ||
+    typeof payload.module_diagnostic_allowed !== "boolean" || !isString(payload.knowledge_key) ||
     !isNonNegativeSafeInteger(payload.track_version) ||
     !isNonNegativeSafeInteger(payload.progress_version) || !isString(payload.progress_status)
   ) return null;
   const common = {
     status: payload.status,
     track_id: payload.track_id,
+    module_key: payload.module_key,
+    module_diagnostic_allowed: payload.module_diagnostic_allowed,
     knowledge_key: payload.knowledge_key,
     track_version: payload.track_version,
     progress_version: payload.progress_version,
     progress_status: payload.progress_status,
   };
   if (payload.status === "ready") {
-    if (!hasExactKeys(payload, ["status", "track_id", "knowledge_key", "track_version", "progress_version", "progress_status", "assignment", "document", "sources", "update"])) return null;
+    if (!hasExactKeys(payload, ["status", "track_id", "module_key", "module_diagnostic_allowed", "knowledge_key", "track_version", "progress_version", "progress_status", "assignment", "document", "sources", "update"])) return null;
     const assignment = toLessonAssignment(payload.assignment);
     const document = toLessonDocument(payload.document);
     if (!assignment || !document || !Array.isArray(payload.sources)) return null;
@@ -699,10 +925,10 @@ function toLessonDocumentState(payload: unknown): LessonDocumentState | null {
     };
   }
   if (payload.status === "missing") {
-    if (!hasExactKeys(payload, ["status", "track_id", "knowledge_key", "track_version", "progress_version", "progress_status"])) return null;
+    if (!hasExactKeys(payload, ["status", "track_id", "module_key", "module_diagnostic_allowed", "knowledge_key", "track_version", "progress_version", "progress_status"])) return null;
     return { ...common, assignment: null, document: null, sources: [], update: null, authoring_run: null };
   }
-  if (!hasExactKeys(payload, ["status", "track_id", "knowledge_key", "track_version", "progress_version", "progress_status", "authoring_run"])) return null;
+  if (!hasExactKeys(payload, ["status", "track_id", "module_key", "module_diagnostic_allowed", "knowledge_key", "track_version", "progress_version", "progress_status", "authoring_run"])) return null;
   const run = toLessonAuthoringRun(payload.authoring_run);
   if (!run) return null;
   return { ...common, assignment: null, document: null, sources: [], update: null, authoring_run: run };
@@ -723,6 +949,327 @@ function toLessonPrepareResponse(payload: unknown): LessonPrepareResponse | null
     knowledge_key: payload.knowledge_key,
     authoring_run: run,
     idempotent_replayed: payload.idempotent_replayed,
+  };
+}
+
+function toLessonGateList(payload: unknown): LessonGateList | null {
+  if (
+    !isRecord(payload) ||
+    !hasExactKeys(payload, ["track_id", "knowledge_key", "track_version", "progress_version", "assignment_id", "assignment_version", "items"]) ||
+    !isString(payload.track_id) || !isString(payload.knowledge_key) ||
+    !isNonNegativeSafeInteger(payload.track_version) || !isNonNegativeSafeInteger(payload.progress_version) ||
+    !isString(payload.assignment_id) || !isNonNegativeSafeInteger(payload.assignment_version) ||
+    !Array.isArray(payload.items)
+  ) return null;
+  const items = payload.items.map(toLessonGateItem);
+  if (items.some((item) => item === null)) return null;
+  return {
+    track_id: payload.track_id,
+    knowledge_key: payload.knowledge_key,
+    track_version: payload.track_version,
+    progress_version: payload.progress_version,
+    assignment_id: payload.assignment_id,
+    assignment_version: payload.assignment_version,
+    items: items.filter((item): item is LessonGateItem => item !== null),
+  };
+}
+
+function toLessonGatePrepareResponse(payload: unknown): LessonGatePrepareResponse | null {
+  if (
+    !isRecord(payload) ||
+    !hasExactKeys(payload, ["status", "gate", "idempotent_replayed"]) ||
+    payload.status !== "ready" || typeof payload.idempotent_replayed !== "boolean"
+  ) return null;
+  const gate = toLessonGateItem(payload.gate);
+  return gate ? { status: "ready", gate, idempotent_replayed: payload.idempotent_replayed } : null;
+}
+
+function toLessonGateHint(payload: unknown): LessonGateHint | null {
+  if (
+    !isRecord(payload) ||
+    !hasExactKeys(payload, ["hint_id", "hint_level", "hint_policy_version", "safe_hint", "gate_version", "created_at", "idempotent_replayed"]) ||
+    !isString(payload.hint_id) || !isNonNegativeSafeInteger(payload.hint_level) ||
+    !isString(payload.hint_policy_version) || !isRecord(payload.safe_hint) ||
+    !isNonNegativeSafeInteger(payload.gate_version) || !isNullableString(payload.created_at) ||
+    typeof payload.idempotent_replayed !== "boolean"
+  ) return null;
+  return {
+    hint_id: payload.hint_id,
+    hint_level: payload.hint_level,
+    hint_policy_version: payload.hint_policy_version,
+    safe_hint: payload.safe_hint,
+    gate_version: payload.gate_version,
+    created_at: payload.created_at,
+    idempotent_replayed: payload.idempotent_replayed,
+  };
+}
+
+function toLessonGateItem(payload: unknown): LessonGateItem | null {
+  if (
+    !isRecord(payload) || !isString(payload.gate_key) || !isLessonGateKind(payload.gate_kind) ||
+    !isString(payload.assessment_contract_version) || !isStringArray(payload.required_capabilities) ||
+    !isString(payload.learner_prompt) || !Array.isArray(payload.allowed_actions) ||
+    !payload.allowed_actions.every(isLessonGateAction)
+  ) return null;
+  const common = {
+    gate_key: payload.gate_key,
+    gate_kind: payload.gate_kind,
+    assessment_contract_version: payload.assessment_contract_version,
+    required_capabilities: payload.required_capabilities,
+    learner_prompt: payload.learner_prompt,
+    allowed_actions: payload.allowed_actions,
+  };
+  if (payload.status === "unbound") {
+    if (!hasExactKeys(payload, ["gate_key", "gate_kind", "assessment_contract_version", "required_capabilities", "learner_prompt", "status", "allowed_actions", "exercise"]) || payload.exercise !== null) return null;
+    return { ...common, status: "unbound", exercise: null };
+  }
+  if (
+    !hasExactKeys(payload, [
+      "gate_key", "gate_kind", "assessment_contract_version", "required_capabilities", "learner_prompt",
+      "binding_id", "binding_contract_hash", "requirement_kind", "pass_policy_version", "pass_threshold",
+      "execution_requirement", "status", "gate_version", "attempt_count", "best_score", "latest_attempt_id",
+      "passed_at", "execution_tier", "execution_disclosure", "allowed_actions", "exercise", "latest_result",
+    ]) ||
+    !isString(payload.binding_id) || !isString(payload.binding_contract_hash) ||
+    !isGateRequirementKind(payload.requirement_kind) || !isString(payload.pass_policy_version) ||
+    !isScore(payload.pass_threshold) || !isExecutionRequirement(payload.execution_requirement) ||
+    !isLessonGateState(payload.status) || !isNonNegativeSafeInteger(payload.gate_version) ||
+    !isNonNegativeSafeInteger(payload.attempt_count) || !isScore(payload.best_score) ||
+    !isNullableString(payload.latest_attempt_id) || !isNullableString(payload.passed_at) ||
+    !isExecutionTier(payload.execution_tier) || !isString(payload.execution_disclosure)
+  ) return null;
+  const exercise = toLessonGateExercise(payload.exercise, true);
+  const latestResult = payload.latest_result === null ? null : toLessonGateResult(payload.latest_result);
+  if (!exercise || (payload.latest_result !== null && !latestResult)) return null;
+  return {
+    ...common,
+    binding_id: payload.binding_id,
+    binding_contract_hash: payload.binding_contract_hash,
+    requirement_kind: payload.requirement_kind,
+    pass_policy_version: payload.pass_policy_version,
+    pass_threshold: payload.pass_threshold,
+    execution_requirement: payload.execution_requirement,
+    status: payload.status,
+    gate_version: payload.gate_version,
+    attempt_count: payload.attempt_count,
+    best_score: payload.best_score,
+    latest_attempt_id: payload.latest_attempt_id,
+    passed_at: payload.passed_at,
+    execution_tier: payload.execution_tier,
+    execution_disclosure: payload.execution_disclosure,
+    exercise,
+    latest_result: latestResult,
+  };
+}
+
+function toLessonGateExercise(payload: unknown, requireGateFields: boolean): LessonGateExercise | null {
+  if (
+    !isRecord(payload) || !isString(payload.exercise_version_id) || !isString(payload.exercise_key) ||
+    !isExerciseType(payload.exercise_type) || !isString(payload.version) || !isString(payload.title) ||
+    !isRecord(payload.learner_prompt) || !isRecord(payload.starter_artifact)
+  ) return null;
+  if (requireGateFields) {
+    if (!hasExactKeys(payload, ["exercise_version_id", "exercise_key", "exercise_type", "version", "title", "learner_prompt", "starter_artifact", "required_capabilities", "content_hash"]) || !isStringArray(payload.required_capabilities) || !isString(payload.content_hash)) return null;
+    return {
+      exercise_version_id: payload.exercise_version_id,
+      exercise_key: payload.exercise_key,
+      exercise_type: payload.exercise_type,
+      version: payload.version,
+      title: payload.title,
+      learner_prompt: payload.learner_prompt,
+      starter_artifact: payload.starter_artifact,
+      required_capabilities: payload.required_capabilities,
+      content_hash: payload.content_hash,
+    };
+  }
+  if (!hasExactKeys(payload, ["exercise_version_id", "exercise_key", "exercise_type", "version", "title", "learner_prompt", "starter_artifact"])) return null;
+  return {
+    exercise_version_id: payload.exercise_version_id,
+    exercise_key: payload.exercise_key,
+    exercise_type: payload.exercise_type,
+    version: payload.version,
+    title: payload.title,
+    learner_prompt: payload.learner_prompt,
+    starter_artifact: payload.starter_artifact,
+  };
+}
+
+function toLessonGateResult(payload: unknown): LessonGateResult | null {
+  if (!isRecord(payload) || !isExerciseAttemptOutcome(payload.outcome) || !isScore(payload.score) || !isRecord(payload.safe_feedback) || !isNullableString(payload.terminal_at)) return null;
+  const baseKeys = ["outcome", "score", "safe_feedback", "terminal_at"];
+  const fullKeys = [...baseKeys, "capability_scores"];
+  if (!hasExactKeys(payload, baseKeys) && !hasExactKeys(payload, fullKeys)) return null;
+  const capabilityScores = payload.capability_scores === undefined ? undefined : toScoreRecord(payload.capability_scores);
+  if (payload.capability_scores !== undefined && !capabilityScores) return null;
+  return {
+    outcome: payload.outcome,
+    score: payload.score,
+    safe_feedback: payload.safe_feedback,
+    ...(capabilityScores ? { capability_scores: capabilityScores } : {}),
+    terminal_at: payload.terminal_at,
+  };
+}
+
+function toExerciseAttemptState(payload: unknown): ExerciseAttemptState | null {
+  if (!isRecord(payload)) return null;
+  const baseKeys = [
+    "attempt_id", "attempt_type", "track_id", "knowledge_key", "exercise_version_id", "submission_hash",
+    "independence", "accepted_at", "status", "execution_job_id", "execution_job_state", "result", "projected",
+    "route_changed", "mastery", "idempotent_replayed",
+  ];
+  const withTierKeys = [...baseKeys, "execution_tier", "execution_disclosure"];
+  if (!hasExactKeys(payload, baseKeys) && !hasExactKeys(payload, withTierKeys)) return null;
+  if (
+    !isString(payload.attempt_id) || !isExerciseAttemptType(payload.attempt_type) ||
+    !isString(payload.track_id) || !isString(payload.knowledge_key) || !isString(payload.exercise_version_id) ||
+    !isString(payload.submission_hash) || !isExerciseIndependence(payload.independence) ||
+    !isNullableString(payload.accepted_at) || (payload.status !== "pending" && payload.status !== "terminal") ||
+    !isNullableString(payload.execution_job_id) || !isNullableString(payload.execution_job_state) ||
+    !(payload.projected === null || typeof payload.projected === "boolean") ||
+    typeof payload.route_changed !== "boolean" || typeof payload.idempotent_replayed !== "boolean"
+  ) return null;
+  const result = payload.result === null ? null : toLessonGateResult(payload.result);
+  if ((payload.result !== null && !result) || (payload.status === "terminal") !== (result !== null)) return null;
+  const mastery = toExerciseMastery(payload.mastery);
+  if (payload.mastery !== null && !mastery) return null;
+  if (payload.execution_tier !== undefined && (!isExecutionTier(payload.execution_tier) || !isString(payload.execution_disclosure))) return null;
+  return {
+    attempt_id: payload.attempt_id,
+    attempt_type: payload.attempt_type,
+    track_id: payload.track_id,
+    knowledge_key: payload.knowledge_key,
+    exercise_version_id: payload.exercise_version_id,
+    submission_hash: payload.submission_hash,
+    independence: payload.independence,
+    accepted_at: payload.accepted_at,
+    status: payload.status,
+    execution_job_id: payload.execution_job_id,
+    execution_job_state: payload.execution_job_state,
+    result,
+    projected: payload.projected,
+    route_changed: payload.route_changed,
+    mastery,
+    idempotent_replayed: payload.idempotent_replayed,
+    ...(payload.execution_tier !== undefined ? {
+      execution_tier: payload.execution_tier,
+      execution_disclosure: payload.execution_disclosure as string,
+    } : {}),
+  };
+}
+
+function toExerciseMastery(payload: unknown): ExerciseAttemptState["mastery"] | null {
+  if (payload === null) return null;
+  if (
+    !isRecord(payload) ||
+    !hasExactKeys(payload, ["confidence", "mastery_level", "evidence_count", "observation_count"]) ||
+    !isScore(payload.confidence) || !isString(payload.mastery_level) ||
+    !isNonNegativeSafeInteger(payload.evidence_count) || !isNonNegativeSafeInteger(payload.observation_count)
+  ) return null;
+  return {
+    confidence: payload.confidence,
+    mastery_level: payload.mastery_level,
+    evidence_count: payload.evidence_count,
+    observation_count: payload.observation_count,
+  };
+}
+
+function toModuleDiagnosticState(payload: unknown): ModuleDiagnosticState | null {
+  if (
+    !isRecord(payload) ||
+    !hasExactKeys(payload, [
+      "session_id", "track_id", "module_key", "diagnostic_version", "policy_version", "core_capabilities",
+      "pass_threshold", "require_all_core", "independent_only", "cooldown_seconds", "state", "version",
+      "source_plan_revision_id", "proposed_plan_revision_id", "impact", "weak_capabilities", "started_at",
+      "terminal_at", "cooldown_until", "confirmed_at", "items", "idempotent_replayed",
+    ]) ||
+    !isString(payload.session_id) || !isString(payload.track_id) || !isString(payload.module_key) ||
+    !isString(payload.diagnostic_version) || !isString(payload.policy_version) || !isStringArray(payload.core_capabilities) ||
+    !isScore(payload.pass_threshold) || typeof payload.require_all_core !== "boolean" ||
+    typeof payload.independent_only !== "boolean" || !isNonNegativeSafeInteger(payload.cooldown_seconds) ||
+    !isModuleDiagnosticState(payload.state) || !isNonNegativeSafeInteger(payload.version) ||
+    !isString(payload.source_plan_revision_id) || !isNullableString(payload.proposed_plan_revision_id) ||
+    !isStringArray(payload.weak_capabilities) || !isNullableString(payload.started_at) ||
+    !isNullableString(payload.terminal_at) || !isNullableString(payload.cooldown_until) ||
+    !isNullableString(payload.confirmed_at) || !Array.isArray(payload.items) ||
+    typeof payload.idempotent_replayed !== "boolean"
+  ) return null;
+  const impact = toModuleDiagnosticImpact(payload.impact);
+  if (impact === undefined) return null;
+  const items = payload.items.map(toModuleDiagnosticItem);
+  if (items.some((item) => item === null)) return null;
+  return {
+    session_id: payload.session_id,
+    track_id: payload.track_id,
+    module_key: payload.module_key,
+    diagnostic_version: payload.diagnostic_version,
+    policy_version: payload.policy_version,
+    core_capabilities: payload.core_capabilities,
+    pass_threshold: payload.pass_threshold,
+    require_all_core: payload.require_all_core,
+    independent_only: payload.independent_only,
+    cooldown_seconds: payload.cooldown_seconds,
+    state: payload.state,
+    version: payload.version,
+    source_plan_revision_id: payload.source_plan_revision_id,
+    proposed_plan_revision_id: payload.proposed_plan_revision_id,
+    impact,
+    weak_capabilities: payload.weak_capabilities,
+    started_at: payload.started_at,
+    terminal_at: payload.terminal_at,
+    cooldown_until: payload.cooldown_until,
+    confirmed_at: payload.confirmed_at,
+    items: items.filter((item): item is ModuleDiagnosticItem => item !== null),
+    idempotent_replayed: payload.idempotent_replayed,
+  };
+}
+
+function toModuleDiagnosticItem(payload: unknown): ModuleDiagnosticItem | null {
+  if (
+    !isRecord(payload) ||
+    !hasExactKeys(payload, ["item_id", "item_key", "order_index", "capability_key", "knowledge_key", "threshold", "exercise", "attempt_id", "execution_job_state", "result"]) ||
+    !isString(payload.item_id) || !isString(payload.item_key) || !isNonNegativeSafeInteger(payload.order_index) ||
+    !isString(payload.capability_key) || !isString(payload.knowledge_key) || !isScore(payload.threshold) ||
+    !isNullableString(payload.attempt_id) || !isNullableString(payload.execution_job_state)
+  ) return null;
+  const exercise = toLessonGateExercise(payload.exercise, false);
+  const result = payload.result === null ? null : toLessonGateResult(payload.result);
+  if (!exercise || (payload.result !== null && !result)) return null;
+  return {
+    item_id: payload.item_id,
+    item_key: payload.item_key,
+    order_index: payload.order_index,
+    capability_key: payload.capability_key,
+    knowledge_key: payload.knowledge_key,
+    threshold: payload.threshold,
+    exercise,
+    attempt_id: payload.attempt_id,
+    execution_job_state: payload.execution_job_state,
+    result,
+  };
+}
+
+function toModuleDiagnosticImpact(payload: unknown): ModuleDiagnosticImpact | null | undefined {
+  if (!isRecord(payload)) return undefined;
+  if (Object.keys(payload).length === 0) return null;
+  if (
+    !hasExactKeys(payload, ["kind", "module_key", "diagnostic_session_id", "policy_version", "affected_knowledge_keys", "capability_scores", "source_plan_revision_id", "proposed_plan_revision_id", "expected_track_version"]) ||
+    payload.kind !== "diagnostic_skipped_module" || !isString(payload.module_key) ||
+    !isString(payload.diagnostic_session_id) || !isString(payload.policy_version) ||
+    !isStringArray(payload.affected_knowledge_keys) || !isString(payload.source_plan_revision_id) ||
+    !isString(payload.proposed_plan_revision_id) || !isNonNegativeSafeInteger(payload.expected_track_version)
+  ) return undefined;
+  const scores = toScoreRecord(payload.capability_scores);
+  if (!scores) return undefined;
+  return {
+    kind: "diagnostic_skipped_module",
+    module_key: payload.module_key,
+    diagnostic_session_id: payload.diagnostic_session_id,
+    policy_version: payload.policy_version,
+    affected_knowledge_keys: payload.affected_knowledge_keys,
+    capability_scores: scores,
+    source_plan_revision_id: payload.source_plan_revision_id,
+    proposed_plan_revision_id: payload.proposed_plan_revision_id,
+    expected_track_version: payload.expected_track_version,
   };
 }
 
@@ -1067,8 +1614,55 @@ function isLearningTrackStatus(value: unknown): value is LearningTrackSummary["s
   return value === "active" || value === "paused" || value === "completed" || value === "archived";
 }
 
-function isExecutionTier(value: unknown): value is LearningTrackSummary["execution_tier"] {
+function isExecutionTier(value: unknown): value is ExecutionTier {
   return value === "teaching_local" || value === "container_verified" || value === "static_only" || value === "unavailable";
+}
+
+function isExerciseType(value: unknown): value is LessonGateExercise["exercise_type"] {
+  return value === "code_completion" || value === "sql_query" || value === "browser_preview" || value === "static_code_reasoning";
+}
+
+function isGateRequirementKind(value: unknown): value is "required" | "recommended" | "diagnostic" {
+  return value === "required" || value === "recommended" || value === "diagnostic";
+}
+
+function isExecutionRequirement(value: unknown): value is "required" | "optional" | "forbidden" {
+  return value === "required" || value === "optional" || value === "forbidden";
+}
+
+function isLessonGateState(value: unknown): value is "available" | "in_progress" | "passed" | "remediation_required" {
+  return value === "available" || value === "in_progress" || value === "passed" || value === "remediation_required";
+}
+
+function isLessonGateAction(value: unknown): value is LessonGateAction {
+  return value === "prepare" || value === "hint" || value === "run" || value === "submit";
+}
+
+function isExerciseAttemptType(value: unknown): value is ExerciseAttemptState["attempt_type"] {
+  return value === "run" || value === "submit" || value === "diagnostic_submit";
+}
+
+function isExerciseAttemptOutcome(value: unknown): value is ExerciseAttemptOutcome {
+  return value === "passed" || value === "failed" || value === "timed_out" || value === "cancelled" || value === "unavailable" || value === "invalid";
+}
+
+function isExerciseIndependence(value: unknown): value is ExerciseAttemptState["independence"] {
+  return value === "independent" || value === "hinted" || value === "remediated";
+}
+
+function isModuleDiagnosticState(value: unknown): value is ModuleDiagnosticState["state"] {
+  return value === "active" || value === "failed" || value === "passed_pending_confirmation" || value === "confirmed" || value === "expired";
+}
+
+function isScore(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1;
+}
+
+function toScoreRecord(value: unknown): Record<string, number> | null {
+  if (!isRecord(value)) return null;
+  const entries = Object.entries(value);
+  if (entries.some(([key, score]) => key.length === 0 || !isScore(score))) return null;
+  return Object.fromEntries(entries) as Record<string, number>;
 }
 
 function isSelectionTier(value: unknown): value is LearningLanguageCatalogItem["selection_tier"] {

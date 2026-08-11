@@ -208,4 +208,14 @@ ready 状态读取一个 track-scoped active assignment、immutable personalized
 `LessonDocument` 和自包含 source snapshots。用户点击“开始本课”只把 `available`
 安全推进到 `in_progress` 并冻结正文顺序、引用、content hash 与公开 Gate slot；不会写完成、掌握度、解锁或运行事实。来源或生成策略更新只产生 proposed assignment 和 learner-safe impact，用户显式迁移前旧 assignment 继续 active。
 
-课程正文通过注册 block union 渲染，事实块的 inline citation 可定位到来源面板。来源面板展示 provider、trust、版本、章节、抓取/冻结时间、canonical URL 和 bounded excerpt。`exercise_gate` 只显示后续练习 contract，不提供运行、提交、评分或解锁按钮。Review、完整三栏工作区和 Lesson 文本选区进入 Tutor 仍属于后续任务。
+课程正文通过注册 block union 渲染，事实块的 inline citation 可定位到来源面板。来源面板展示 provider、trust、版本、章节、抓取/冻结时间、canonical URL 和 bounded excerpt。`exercise_gate` 保留已冻结公开 contract，并由 active assignment 对应的服务端 Gate binding 决定当前状态与可用动作；客户端不按最新文档或本地状态猜测绑定。Review、完整三栏工作区和 Lesson 文本选区进入 Tutor 仍属于后续任务。
+
+## 2026-08-11：练习 Gate、受控执行与模块诊断
+
+ready Lesson 中的 `exercise_gate` 现在读取 active/frozen assignment 下的不可变 binding 和 assignment-scoped Gate state。学习者可按服务端 `allowed_actions` 准备 Gate、请求有界提示、运行或提交；滚动位置、URL、前端缓存和客户端传入的 execution tier 都不能解锁 locked 知识点。`run` 只返回当前 Attempt 的 learner-safe 执行反馈，不写 Gate、掌握度或路线；`submit` 的 terminal result 才能由服务端在受控事务中更新 Gate、掌握度、当前进度与下游可用性。
+
+练习执行明确区分四个层级：`container_verified` 只有在 reviewed immutable image lock 和兼容 executor health 同时满足时才可公开排队；`teaching_local` 只用于 development fixture；`static_only` 不显示 Run，也始终声明未编译、未运行、未测试；`unavailable` 不显示执行依赖动作。执行依赖失败不会回退到 host runner、legacy runner、另一套队列或伪造的成功结果。
+
+每次 `run`、`submit` 或 `diagnostic_submit` 都创建 append-only Attempt。完整提交只进入私有 submission artifact；学习者可见结果只包含 hash、状态、分数、能力分数和安全反馈。请求提示后完成会由服务端记录不同 independence，前端不能自行生成 score、pass、mastery evidence 或 unlock。
+
+“申请跳过”只出现在可跳过模块的入口边界，并打开独立模块诊断。诊断冻结全部核心 capability、题目版本、阈值、cooldown 和 policy；部分通过或失败明确不跳过任何知识点，也不降低既有 proven mastery。全部核心 capability 独立通过后只产生 predecessor-linked proposed plan revision 和影响摘要，仍需学习者显式确认，服务端才激活 successor revision、写入 `diagnostic_skipped` 并重算路线。
