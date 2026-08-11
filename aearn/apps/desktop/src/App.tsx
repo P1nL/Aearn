@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 
 import { LearningHomePage } from "./features/learning/LearningHomePage";
+import { LessonDocumentPage } from "./features/learning/LessonDocumentPage";
 import { LearningPlanBuilderPage } from "./features/learning/LearningPlanBuilderPage";
 import { HarnessCutoverPage } from "./pages/HarnessCutoverPage";
 import { useAppStore } from "./stores/useAppStore";
@@ -9,7 +10,8 @@ import type { LearningPlanSession } from "./types";
 type TutorSurface =
   | { kind: "learning_home"; highlightedTrackId?: string }
   | { kind: "track_planner"; session: LearningPlanSession }
-  | { kind: "downstream_not_ready"; intent: "continue_learning" | "start_review"; trackId: string };
+  | { kind: "lesson_document"; trackId: string; knowledgeKey: string }
+  | { kind: "downstream_not_ready"; intent: "start_review"; trackId: string };
 
 function App() {
   const app = useAppStore();
@@ -39,7 +41,9 @@ function App() {
       ? "学习主线"
       : tutorSurface.kind === "track_planner"
         ? "制定学习计划"
-        : "学习入口"
+        : tutorSurface.kind === "lesson_document"
+          ? "课程阅读"
+          : "学习入口"
     : "受控切换";
   const statusLabel =
     app.apiHealth.status === "online"
@@ -48,7 +52,7 @@ function App() {
         ? `API 离线：${app.apiHealth.message}`
         : "正在检查 API";
   const isSidebarlessTutorSurface = app.activeRoute === "tutor"
-    && (tutorSurface.kind === "learning_home" || tutorSurface.kind === "track_planner");
+    && (tutorSurface.kind === "learning_home" || tutorSurface.kind === "track_planner" || tutorSurface.kind === "lesson_document");
   const desktopClassName = isSidebarlessTutorSurface
     ? "desktop learning-focus-shell"
     : app.sidebarOpen
@@ -114,6 +118,7 @@ function App() {
                 refreshKey={learningRefreshKey}
                 highlightedTrackId={tutorSurface.highlightedTrackId}
                 onOpenPlanner={(session) => setTutorSurface({ kind: "track_planner", session })}
+                onOpenLesson={(trackId, knowledgeKey) => setTutorSurface({ kind: "lesson_document", trackId, knowledgeKey })}
                 onDownstreamIntent={(intent, trackId) => setTutorSurface({ kind: "downstream_not_ready", intent, trackId })}
               />
             ) : app.user && tutorSurface.kind === "track_planner" ? (
@@ -122,6 +127,13 @@ function App() {
                 initialSession={tutorSurface.session}
                 onBack={() => { setLearningRefreshKey((value) => value + 1); setTutorSurface({ kind: "learning_home" }); }}
                 onConfirmed={(trackId) => { setLearningRefreshKey((value) => value + 1); setTutorSurface({ kind: "learning_home", highlightedTrackId: trackId }); }}
+              />
+            ) : app.user && tutorSurface.kind === "lesson_document" ? (
+              <LessonDocumentPage
+                userId={app.user.id}
+                trackId={tutorSurface.trackId}
+                knowledgeKey={tutorSurface.knowledgeKey}
+                onBack={() => { setLearningRefreshKey((value) => value + 1); setTutorSurface({ kind: "learning_home", highlightedTrackId: tutorSurface.trackId }); }}
               />
             ) : tutorSurface.kind === "downstream_not_ready" ? (
               <DownstreamNotReady
@@ -207,18 +219,17 @@ function LearningPrimarySidebar({ onHome }: { onHome: () => void }) {
   return (
     <nav className="learning-primary-nav" aria-label="学习导航">
       <button type="button" onClick={onHome}><span>学习主线</span><small>首页与真实进度</small></button>
-      <div><strong>当前边界</strong><p>Lesson、Review 和完整三栏工作区将在后续任务交付。</p></div>
+      <div><strong>当前边界</strong><p>Lesson 阅读与来源证据已交付；Review、练习执行和完整三栏工作区仍由后续任务实现。</p></div>
     </nav>
   );
 }
 
-function DownstreamNotReady({ intent, onBack }: { intent: "continue_learning" | "start_review"; onBack: () => void }) {
-  const review = intent === "start_review";
+function DownstreamNotReady({ onBack }: { intent: "start_review"; onBack: () => void }) {
   return (
     <section className="downstream-not-ready" aria-labelledby="downstream-not-ready-title">
       <p className="tutor-panel-eyebrow">稳定导航意图已记录</p>
-      <h1 id="downstream-not-ready-title">{review ? "复习工作区尚未交付" : "课程工作区尚未交付"}</h1>
-      <p>{review ? "到期数量来自服务端，但 ReviewSession 将由后续任务实现。" : "LearningTrack 已可作为权威主线，但 LessonDocument 与三栏工作区将由后续任务实现。"}</p>
+      <h1 id="downstream-not-ready-title">复习工作区尚未交付</h1>
+      <p>到期数量来自服务端，但 ReviewSession 将由后续任务实现。</p>
       <button className="tutor-primary-button" type="button" onClick={onBack}>返回学习主线</button>
     </section>
   );

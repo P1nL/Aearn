@@ -349,6 +349,131 @@ export type LearningTrackSummary = {
   updated_at: string | null;
 };
 
+export type LessonCitation = {
+  citation_id: string;
+  source_id: string;
+  display_name: string;
+  provider: string;
+  trust_tier: "official" | "trusted_de_facto" | "internal";
+  source_type: "tutorial" | "reference" | "spec" | "platform_docs" | "vendor_docs";
+  source_version_label: string;
+  source_version_kind: "fixed" | "rolling";
+  canonical_url: string;
+  section_path: string[];
+  fetched_at: string;
+  snapshotted_at: string;
+  evidence_excerpt: string;
+};
+
+type LessonBlockBase = {
+  block_id: string;
+  order_index: number;
+  citation_ids: string[];
+};
+
+export type LessonHeadingBlock = LessonBlockBase & { type: "heading"; title: string; subtitle: string };
+export type LessonObjectivesBlock = LessonBlockBase & { type: "learning_objectives"; items: string[]; coverage_keys: string[] };
+export type LessonConceptBlock = LessonBlockBase & { type: "concept"; title: string; paragraphs: string[]; coverage_keys: string[] };
+export type LessonAuthorityNoteBlock = LessonBlockBase & { type: "authority_note"; title: string; statement: string };
+export type LessonCodeExampleBlock = LessonBlockBase & { type: "code_example"; title: string; language_id: string; code: string; explanation: string[]; execution_claim: "not_run" };
+export type LessonComparisonBlock = LessonBlockBase & { type: "comparison"; title: string; columns: string[]; rows: string[][]; conclusion: string };
+export type LessonHintBlock = LessonBlockBase & { type: "hint"; title: string; steps: string[] };
+export type LessonExerciseGateBlock = LessonBlockBase & {
+  type: "exercise_gate";
+  gate_key: string;
+  gate_kind: "knowledge_check" | "guided_practice" | "independent_practice";
+  assessment_contract_version: string;
+  required_capabilities: string[];
+  learner_prompt: string;
+};
+export type LessonSummaryBlock = LessonBlockBase & { type: "summary"; points: string[]; coverage_keys: string[] };
+export type LessonNextStepsBlock = LessonBlockBase & { type: "next_steps"; items: string[] };
+
+export type LessonBlock =
+  | LessonHeadingBlock
+  | LessonObjectivesBlock
+  | LessonConceptBlock
+  | LessonAuthorityNoteBlock
+  | LessonCodeExampleBlock
+  | LessonComparisonBlock
+  | LessonHintBlock
+  | LessonExerciseGateBlock
+  | LessonSummaryBlock
+  | LessonNextStepsBlock;
+
+export type LessonDocument = {
+  schema_version: "lesson_document_v1";
+  title: string;
+  language_id: string;
+  knowledge_key: string;
+  content_standard_version: string;
+  coverage_keys: string[];
+  blocks: LessonBlock[];
+  content_hash: string;
+};
+
+export type LessonAssignment = {
+  assignment_id: string;
+  document_id: string;
+  assignment_version: number;
+  status: "active" | "proposed" | "superseded";
+  content_hash: string;
+  started_at: string | null;
+  activated_at: string | null;
+  progress_status: string | null;
+  progress_version: number | null;
+};
+
+export type LessonAuthoringRun = {
+  run_id: string;
+  state: "pending" | "claimed" | "running" | "completed" | "failed" | "cancelled";
+  run_kind: "prepare" | "refresh";
+  attempt_count: number;
+  failure_code: string | null;
+  failure_message: string | null;
+  created_at: string;
+  updated_at: string;
+  terminal_at: string | null;
+};
+
+export type LessonUpdateProposal = {
+  assignment_id: string;
+  assignment_version: number;
+  document_id: string;
+  status: "proposed";
+  impact: {
+    source_changes: string[];
+    blocks_added: string[];
+    blocks_removed: string[];
+    blocks_reordered: string[];
+    examples_changed: string[];
+    gates_changed: string[];
+    retained_blocks: string[];
+  };
+};
+
+export type LessonDocumentState = {
+  status: "missing" | "preparing" | "ready" | "failed";
+  track_id: string;
+  knowledge_key: string;
+  track_version: number;
+  progress_version: number;
+  progress_status: string;
+  assignment: LessonAssignment | null;
+  document: LessonDocument | null;
+  sources: LessonCitation[];
+  update: LessonUpdateProposal | null;
+  authoring_run: LessonAuthoringRun | null;
+};
+
+export type LessonPrepareResponse = {
+  status: "missing" | "preparing" | "ready" | "failed";
+  track_id: string;
+  knowledge_key: string;
+  authoring_run: LessonAuthoringRun | null;
+  idempotent_replayed: boolean;
+};
+
 export type LearningLanguageCatalogItem = {
   language_id: string;
   display_name: string;

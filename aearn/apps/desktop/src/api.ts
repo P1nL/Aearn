@@ -345,6 +345,98 @@ export async function fetchLearningLanguageCatalog(
   return items.filter((item): item is LearningLanguageCatalogItem => item !== null);
 }
 
+
+export async function fetchLessonDocument(
+  userId: string,
+  trackId: string,
+  knowledgeKey: string,
+  signal?: AbortSignal,
+): Promise<LessonDocumentState> {
+  const query = new URLSearchParams({ user_id: userId });
+  const url = API_BASE_URL + "/api/learning-tracks/" + encodeURIComponent(trackId) + "/lessons/" + encodeURIComponent(knowledgeKey) + "?" + query.toString();
+  const payload = await requestJson(url, { signal });
+  const state = toLessonDocumentState(payload);
+  if (!state) throw new Error("LessonDocument API returned an invalid payload");
+  return state;
+}
+
+export async function prepareLessonDocument(input: {
+  userId: string;
+  trackId: string;
+  knowledgeKey: string;
+  expectedTrackVersion: number;
+  expectedProgressVersion: number;
+  clientActionId: string;
+  refresh?: boolean;
+}): Promise<LessonPrepareResponse> {
+  const operation = input.refresh ? "refresh" : "prepare";
+  const url = API_BASE_URL + "/api/learning-tracks/" + encodeURIComponent(input.trackId) + "/lessons/" + encodeURIComponent(input.knowledgeKey) + "/" + operation;
+  const payload = await requestJson(url, {
+    method: "POST",
+    headers: tutorMutationHeaders(input.clientActionId),
+    body: JSON.stringify({
+      user_id: input.userId,
+      client_action_id: input.clientActionId,
+      expected_track_version: input.expectedTrackVersion,
+      expected_progress_version: input.expectedProgressVersion,
+    }),
+  });
+  const response = toLessonPrepareResponse(payload);
+  if (!response) throw new Error("Lesson prepare API returned an invalid payload");
+  return response;
+}
+
+export async function startLessonDocument(input: {
+  userId: string;
+  trackId: string;
+  knowledgeKey: string;
+  assignmentId: string;
+  expectedAssignmentVersion: number;
+  expectedProgressVersion: number;
+  clientActionId: string;
+}): Promise<LessonAssignment> {
+  const url = API_BASE_URL + "/api/learning-tracks/" + encodeURIComponent(input.trackId) + "/lessons/" + encodeURIComponent(input.knowledgeKey) + "/start";
+  const payload = await requestJson(url, {
+    method: "POST",
+    headers: tutorMutationHeaders(input.clientActionId),
+    body: JSON.stringify({
+      user_id: input.userId,
+      client_action_id: input.clientActionId,
+      assignment_id: input.assignmentId,
+      expected_assignment_version: input.expectedAssignmentVersion,
+      expected_progress_version: input.expectedProgressVersion,
+    }),
+  });
+  if (!isRecord(payload)) throw new Error("Lesson start API returned an invalid payload");
+  const assignment = toLessonAssignment(payload.assignment);
+  if (!assignment) throw new Error("Lesson start API returned an invalid assignment");
+  return assignment;
+}
+
+export async function activateLessonMigration(input: {
+  userId: string;
+  trackId: string;
+  knowledgeKey: string;
+  assignmentId: string;
+  expectedAssignmentVersion: number;
+  clientActionId: string;
+}): Promise<LessonAssignment> {
+  const url = API_BASE_URL + "/api/learning-tracks/" + encodeURIComponent(input.trackId) + "/lessons/" + encodeURIComponent(input.knowledgeKey) + "/migrations/" + encodeURIComponent(input.assignmentId) + "/activate";
+  const payload = await requestJson(url, {
+    method: "POST",
+    headers: tutorMutationHeaders(input.clientActionId),
+    body: JSON.stringify({
+      user_id: input.userId,
+      client_action_id: input.clientActionId,
+      expected_assignment_version: input.expectedAssignmentVersion,
+    }),
+  });
+  if (!isRecord(payload)) throw new Error("Lesson migration API returned an invalid payload");
+  const assignment = toLessonAssignment(payload.assignment);
+  if (!assignment) throw new Error("Lesson migration API returned an invalid assignment");
+  return assignment;
+}
+
 export async function fetchCurrentLearningPlanSession(
   userId: string,
   signal?: AbortSignal,
@@ -568,6 +660,264 @@ function toLearningTrackSummary(payload: unknown): LearningTrackSummary | null {
     !isNullableString(payload.updated_at)
   ) return null;
   return payload as LearningTrackSummary;
+}
+
+
+function toLessonDocumentState(payload: unknown): LessonDocumentState | null {
+  if (
+    !isRecord(payload) || !isLessonPublicStatus(payload.status) ||
+    !isString(payload.track_id) || !isString(payload.knowledge_key) ||
+    !isNonNegativeSafeInteger(payload.track_version) ||
+    !isNonNegativeSafeInteger(payload.progress_version) || !isString(payload.progress_status)
+  ) return null;
+  const common = {
+    status: payload.status,
+    track_id: payload.track_id,
+    knowledge_key: payload.knowledge_key,
+    track_version: payload.track_version,
+    progress_version: payload.progress_version,
+    progress_status: payload.progress_status,
+  };
+  if (payload.status === "ready") {
+    if (!hasExactKeys(payload, ["status", "track_id", "knowledge_key", "track_version", "progress_version", "progress_status", "assignment", "document", "sources", "update"])) return null;
+    const assignment = toLessonAssignment(payload.assignment);
+    const document = toLessonDocument(payload.document);
+    if (!assignment || !document || !Array.isArray(payload.sources)) return null;
+    const sources = payload.sources.map(toLessonCitation);
+    if (sources.some((item) => item === null)) return null;
+    const update = payload.update === null ? null : toLessonUpdateProposal(payload.update);
+    if (payload.update !== null && !update) return null;
+    const citationIds = new Set(sources.flatMap((source) => source ? [source.citation_id] : []));
+    if (document.blocks.some((block) => block.citation_ids.some((id) => !citationIds.has(id)))) return null;
+    return {
+      ...common,
+      assignment,
+      document,
+      sources: sources.filter((item): item is LessonCitation => item !== null),
+      update,
+      authoring_run: null,
+    };
+  }
+  if (payload.status === "missing") {
+    if (!hasExactKeys(payload, ["status", "track_id", "knowledge_key", "track_version", "progress_version", "progress_status"])) return null;
+    return { ...common, assignment: null, document: null, sources: [], update: null, authoring_run: null };
+  }
+  if (!hasExactKeys(payload, ["status", "track_id", "knowledge_key", "track_version", "progress_version", "progress_status", "authoring_run"])) return null;
+  const run = toLessonAuthoringRun(payload.authoring_run);
+  if (!run) return null;
+  return { ...common, assignment: null, document: null, sources: [], update: null, authoring_run: run };
+}
+
+function toLessonPrepareResponse(payload: unknown): LessonPrepareResponse | null {
+  if (
+    !isRecord(payload) ||
+    !hasExactKeys(payload, ["status", "track_id", "knowledge_key", "authoring_run", "idempotent_replayed"]) ||
+    !isLessonPublicStatus(payload.status) || !isString(payload.track_id) ||
+    !isString(payload.knowledge_key) || typeof payload.idempotent_replayed !== "boolean"
+  ) return null;
+  const run = payload.authoring_run === null ? null : toLessonAuthoringRun(payload.authoring_run);
+  if (payload.authoring_run !== null && !run) return null;
+  return {
+    status: payload.status,
+    track_id: payload.track_id,
+    knowledge_key: payload.knowledge_key,
+    authoring_run: run,
+    idempotent_replayed: payload.idempotent_replayed,
+  };
+}
+
+function toLessonDocument(payload: unknown): LessonDocument | null {
+  if (
+    !isRecord(payload) ||
+    !hasExactKeys(payload, ["schema_version", "title", "language_id", "knowledge_key", "content_standard_version", "coverage_keys", "blocks", "content_hash"]) ||
+    payload.schema_version !== "lesson_document_v1" || !isString(payload.title) ||
+    !isString(payload.language_id) || !isString(payload.knowledge_key) ||
+    !isString(payload.content_standard_version) || !isStringArray(payload.coverage_keys) ||
+    !Array.isArray(payload.blocks) || !isString(payload.content_hash)
+  ) return null;
+  const blocks = payload.blocks.map(toLessonBlock);
+  if (blocks.some((block) => block === null)) return null;
+  const parsed = blocks.filter((block): block is LessonBlock => block !== null);
+  if (
+    new Set(parsed.map((block) => block.block_id)).size !== parsed.length ||
+    parsed.some((block, index) => block.order_index !== index)
+  ) return null;
+  return {
+    schema_version: "lesson_document_v1",
+    title: payload.title,
+    language_id: payload.language_id,
+    knowledge_key: payload.knowledge_key,
+    content_standard_version: payload.content_standard_version,
+    coverage_keys: payload.coverage_keys,
+    blocks: parsed,
+    content_hash: payload.content_hash,
+  };
+}
+
+function toLessonBlock(payload: unknown): LessonBlock | null {
+  if (
+    !isRecord(payload) || !isString(payload.block_id) ||
+    !isNonNegativeSafeInteger(payload.order_index) || !isStringArray(payload.citation_ids) ||
+    !isString(payload.type)
+  ) return null;
+  const base = { block_id: payload.block_id, order_index: payload.order_index, citation_ids: payload.citation_ids };
+  switch (payload.type) {
+    case "heading":
+      if (!hasExactKeys(payload, ["block_id", "type", "order_index", "citation_ids", "title", "subtitle"]) || !isString(payload.title) || !isString(payload.subtitle)) return null;
+      return { ...base, type: "heading", title: payload.title, subtitle: payload.subtitle };
+    case "learning_objectives":
+      if (!hasExactKeys(payload, ["block_id", "type", "order_index", "citation_ids", "items", "coverage_keys"]) || !isStringArray(payload.items) || !isStringArray(payload.coverage_keys)) return null;
+      return { ...base, type: "learning_objectives", items: payload.items, coverage_keys: payload.coverage_keys };
+    case "concept":
+      if (!hasExactKeys(payload, ["block_id", "type", "order_index", "citation_ids", "title", "paragraphs", "coverage_keys"]) || !isString(payload.title) || !isStringArray(payload.paragraphs) || !isStringArray(payload.coverage_keys)) return null;
+      return { ...base, type: "concept", title: payload.title, paragraphs: payload.paragraphs, coverage_keys: payload.coverage_keys };
+    case "authority_note":
+      if (!hasExactKeys(payload, ["block_id", "type", "order_index", "citation_ids", "title", "statement"]) || !isString(payload.title) || !isString(payload.statement)) return null;
+      return { ...base, type: "authority_note", title: payload.title, statement: payload.statement };
+    case "code_example":
+      if (!hasExactKeys(payload, ["block_id", "type", "order_index", "citation_ids", "title", "language_id", "code", "explanation", "execution_claim"]) || !isString(payload.title) || !isString(payload.language_id) || !isString(payload.code) || !isStringArray(payload.explanation) || payload.execution_claim !== "not_run") return null;
+      return { ...base, type: "code_example", title: payload.title, language_id: payload.language_id, code: payload.code, explanation: payload.explanation, execution_claim: "not_run" };
+    case "comparison":
+      if (!hasExactKeys(payload, ["block_id", "type", "order_index", "citation_ids", "title", "columns", "rows", "conclusion"]) || !isString(payload.title) || !isStringArray(payload.columns) || !Array.isArray(payload.rows) || !payload.rows.every(isStringArray) || !isString(payload.conclusion)) return null;
+      return { ...base, type: "comparison", title: payload.title, columns: payload.columns, rows: payload.rows, conclusion: payload.conclusion };
+    case "hint":
+      if (!hasExactKeys(payload, ["block_id", "type", "order_index", "citation_ids", "title", "steps"]) || !isString(payload.title) || !isStringArray(payload.steps)) return null;
+      return { ...base, type: "hint", title: payload.title, steps: payload.steps };
+    case "exercise_gate":
+      if (!hasExactKeys(payload, ["block_id", "type", "order_index", "citation_ids", "gate_key", "gate_kind", "assessment_contract_version", "required_capabilities", "learner_prompt"]) || !isString(payload.gate_key) || !isLessonGateKind(payload.gate_kind) || !isString(payload.assessment_contract_version) || !isStringArray(payload.required_capabilities) || !isString(payload.learner_prompt)) return null;
+      return { ...base, type: "exercise_gate", gate_key: payload.gate_key, gate_kind: payload.gate_kind, assessment_contract_version: payload.assessment_contract_version, required_capabilities: payload.required_capabilities, learner_prompt: payload.learner_prompt };
+    case "summary":
+      if (!hasExactKeys(payload, ["block_id", "type", "order_index", "citation_ids", "points", "coverage_keys"]) || !isStringArray(payload.points) || !isStringArray(payload.coverage_keys)) return null;
+      return { ...base, type: "summary", points: payload.points, coverage_keys: payload.coverage_keys };
+    case "next_steps":
+      if (!hasExactKeys(payload, ["block_id", "type", "order_index", "citation_ids", "items"]) || !isStringArray(payload.items)) return null;
+      return { ...base, type: "next_steps", items: payload.items };
+    default:
+      return null;
+  }
+}
+
+function toLessonCitation(payload: unknown): LessonCitation | null {
+  if (
+    !isRecord(payload) ||
+    !hasExactKeys(payload, ["citation_id", "source_id", "display_name", "provider", "trust_tier", "source_type", "source_version_label", "source_version_kind", "canonical_url", "section_path", "fetched_at", "snapshotted_at", "evidence_excerpt"]) ||
+    !isString(payload.citation_id) || !isString(payload.source_id) || !isString(payload.display_name) ||
+    !isString(payload.provider) || !isLessonTrustTier(payload.trust_tier) ||
+    !isLessonSourceType(payload.source_type) || !isString(payload.source_version_label) ||
+    !isLessonSourceVersionKind(payload.source_version_kind) || !isSafeHttpUrl(payload.canonical_url) ||
+    !isStringArray(payload.section_path) || !isString(payload.fetched_at) ||
+    !isString(payload.snapshotted_at) || !isString(payload.evidence_excerpt)
+  ) return null;
+  return {
+    citation_id: payload.citation_id, source_id: payload.source_id,
+    display_name: payload.display_name, provider: payload.provider,
+    trust_tier: payload.trust_tier, source_type: payload.source_type,
+    source_version_label: payload.source_version_label,
+    source_version_kind: payload.source_version_kind, canonical_url: payload.canonical_url,
+    section_path: payload.section_path, fetched_at: payload.fetched_at,
+    snapshotted_at: payload.snapshotted_at, evidence_excerpt: payload.evidence_excerpt,
+  };
+}
+
+function toLessonAssignment(payload: unknown): LessonAssignment | null {
+  if (
+    !isRecord(payload) || !isString(payload.assignment_id) || !isString(payload.document_id) ||
+    !isNonNegativeSafeInteger(payload.assignment_version) || !isLessonAssignmentStatus(payload.status) ||
+    !isString(payload.content_hash) || !isNullableString(payload.started_at) ||
+    !isNullableString(payload.activated_at) ||
+    !(payload.progress_status === undefined || isNullableString(payload.progress_status)) ||
+    !(payload.progress_version === undefined || payload.progress_version === null || isNonNegativeSafeInteger(payload.progress_version))
+  ) return null;
+  const allowed = ["assignment_id", "document_id", "assignment_version", "status", "content_hash", "started_at", "activated_at", "progress_status", "progress_version"];
+  if (!Object.keys(payload).every((key) => allowed.includes(key))) return null;
+  return {
+    assignment_id: payload.assignment_id, document_id: payload.document_id,
+    assignment_version: payload.assignment_version, status: payload.status,
+    content_hash: payload.content_hash, started_at: payload.started_at,
+    activated_at: payload.activated_at, progress_status: payload.progress_status ?? null,
+    progress_version: payload.progress_version ?? null,
+  };
+}
+
+function toLessonAuthoringRun(payload: unknown): LessonAuthoringRun | null {
+  if (
+    !isRecord(payload) ||
+    !hasExactKeys(payload, ["run_id", "state", "run_kind", "attempt_count", "failure_code", "failure_message", "created_at", "updated_at", "terminal_at"]) ||
+    !isString(payload.run_id) || !isLessonAuthoringState(payload.state) ||
+    (payload.run_kind !== "prepare" && payload.run_kind !== "refresh") ||
+    !isNonNegativeSafeInteger(payload.attempt_count) || !isNullableString(payload.failure_code) ||
+    !isNullableString(payload.failure_message) || !isString(payload.created_at) ||
+    !isString(payload.updated_at) || !isNullableString(payload.terminal_at)
+  ) return null;
+  return {
+    run_id: payload.run_id, state: payload.state, run_kind: payload.run_kind,
+    attempt_count: payload.attempt_count, failure_code: payload.failure_code,
+    failure_message: payload.failure_message, created_at: payload.created_at,
+    updated_at: payload.updated_at, terminal_at: payload.terminal_at,
+  };
+}
+
+function toLessonUpdateProposal(payload: unknown): LessonUpdateProposal | null {
+  if (
+    !isRecord(payload) ||
+    !hasExactKeys(payload, ["assignment_id", "assignment_version", "document_id", "status", "impact"]) ||
+    !isString(payload.assignment_id) || !isNonNegativeSafeInteger(payload.assignment_version) ||
+    !isString(payload.document_id) || payload.status !== "proposed" || !isRecord(payload.impact)
+  ) return null;
+  const impact = payload.impact;
+  const keys = ["source_changes", "blocks_added", "blocks_removed", "blocks_reordered", "examples_changed", "gates_changed", "retained_blocks"];
+  if (
+    !hasExactKeys(impact, keys) ||
+    !isStringArray(impact.source_changes) || !isStringArray(impact.blocks_added) ||
+    !isStringArray(impact.blocks_removed) || !isStringArray(impact.blocks_reordered) ||
+    !isStringArray(impact.examples_changed) || !isStringArray(impact.gates_changed) ||
+    !isStringArray(impact.retained_blocks)
+  ) return null;
+  return {
+    assignment_id: payload.assignment_id, assignment_version: payload.assignment_version,
+    document_id: payload.document_id, status: "proposed",
+    impact: {
+      source_changes: impact.source_changes, blocks_added: impact.blocks_added,
+      blocks_removed: impact.blocks_removed, blocks_reordered: impact.blocks_reordered,
+      examples_changed: impact.examples_changed, gates_changed: impact.gates_changed,
+      retained_blocks: impact.retained_blocks,
+    },
+  };
+}
+
+function isLessonPublicStatus(value: unknown): value is LessonDocumentState["status"] {
+  return value === "missing" || value === "preparing" || value === "ready" || value === "failed";
+}
+function isLessonAssignmentStatus(value: unknown): value is LessonAssignment["status"] {
+  return value === "active" || value === "proposed" || value === "superseded";
+}
+function isLessonAuthoringState(value: unknown): value is LessonAuthoringRun["state"] {
+  return value === "pending" || value === "claimed" || value === "running" || value === "completed" || value === "failed" || value === "cancelled";
+}
+function isLessonGateKind(value: unknown): value is "knowledge_check" | "guided_practice" | "independent_practice" {
+  return value === "knowledge_check" || value === "guided_practice" || value === "independent_practice";
+}
+function isLessonTrustTier(value: unknown): value is LessonCitation["trust_tier"] {
+  return value === "official" || value === "trusted_de_facto" || value === "internal";
+}
+function isLessonSourceType(value: unknown): value is LessonCitation["source_type"] {
+  return value === "tutorial" || value === "reference" || value === "spec" || value === "platform_docs" || value === "vendor_docs";
+}
+function isLessonSourceVersionKind(value: unknown): value is LessonCitation["source_version_kind"] {
+  return value === "fixed" || value === "rolling";
+}
+function isSafeHttpUrl(value: unknown): value is string {
+  if (!isString(value)) return false;
+  try {
+    const parsed = new URL(value);
+    return (parsed.protocol === "http:" || parsed.protocol === "https:") && !parsed.username && !parsed.password;
+  } catch {
+    return false;
+  }
+}
+function hasExactKeys(value: Record<string, unknown>, expected: string[]): boolean {
+  const keys = Object.keys(value).sort();
+  return keys.length === expected.length && keys.every((key, index) => key === [...expected].sort()[index]);
 }
 
 function toLearningLanguageCatalogItem(payload: unknown): LearningLanguageCatalogItem | null {
