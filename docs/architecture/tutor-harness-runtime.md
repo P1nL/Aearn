@@ -1,6 +1,6 @@
 # Tutor Harness Runtime Architecture
 
-**Status:** Current runtime contract as of 2026-08-08.
+**Status:** Current runtime contract as of 2026-08-11.
 **Authority:** Current route registration, `aearn/services/api/app`,
 `aearn/apps/desktop`, `aearn/services/worker`, `services/learning/`,
 `schema.sql`, and their tests.
@@ -30,7 +30,7 @@ legacy learner history.
 | Layer | Owner | Contract |
 | --- | --- | --- |
 | Public adapter | `routes/tutor.py`, `services/tutor/public_api.py` | Validates user scope and idempotency, exposes learner-safe projections, and never performs Graph/router compatibility work. |
-| Learning domain | `routes/learning_tracks.py`, `services/learning/` | Owns track-scoped plans, progress/mastery, execution-tier projection, immutable scope snapshots, and a read-only Tutor context adapter; it does not implement Lesson/Gate/Review or execute code. |
+| Learning domain | `routes/learning_tracks.py`, `services/learning/` | Owns track-scoped plans, progress/mastery, immutable LessonDocument/source snapshots/assignments, execution-tier projection, immutable scope snapshots, and a read-only Tutor context adapter; it does not implement exercise execution, Gate scoring, Review, or code execution. |
 | Interactive dispatch | `services/tutor/interactive.py` | Starts an already accepted input only after its transaction commits, composes a bounded loop, and keeps provider failures out of the accepted-input response. |
 | Harness | `agents/harness/`, `services/tutor/run_loop.py` | Bounded run loop, lease ownership, input-revision reload, exact Skill selection, capability/effect gate, checkpoint lifecycle, and typed terminal outcome. |
 | Durable state | `services/tutor/persistence.py`, `learner_state.py`, `proactive_repository.py` | PostgreSQL owns user/run/conversation scope, ordered events, idempotency, CAS effects, redacted projections, plan/memory/activity state, and queue leases. |
@@ -347,9 +347,7 @@ reviewed immutable image lock and compatible executor health for
 `static_only`; all other cases are `unavailable`. Resolution never launches a
 runner or executor.
 
-This foundation intentionally does not implement a LearningTrack UI,
-LessonDocument, exercise Gate, module diagnostic, spaced review, model code-review
-exercise, or actual code execution. Those remain separate product children.
+LearningTrack Home and the single-page immutable LessonDocument reader are now implemented. Exercise Gate binding/scoring, module diagnostic, spaced review, model code-review exercise, the full three-column workspace, and actual code execution remain separate product children.
 
 Existing user-level Tutor controls remain unchanged:
 
@@ -487,7 +485,7 @@ PostgreSQL and the complete API suite, not released:
 
 This verifies contracts, scoped PostgreSQL constraints, progress merge, mastery
 replay, local-data inventory, and Tutor scope compatibility. It does not enable
-Lesson/Gate/Review/UI/code execution, prove a public container fleet, or authorize
+Gate/Review/full-workspace/code execution, prove a public container fleet, or authorize
 commit, release, push, or deployment.
 
 ### Prior current local change verification (2026-08-03)
@@ -556,3 +554,9 @@ deployment, task archive, or release approval.
 ## 2026-08-10 Learning-plan drafting composition
 
 The interactive dispatcher remains deny-by-default. A PostgreSQL-backed policy resolver grants only `tutor.learning-plan-draft@1.0.0` and `learning.plan.draft@1.0.0` for a current, non-terminal, non-superseded interactive `plan_drafting` run whose conversation owns an active planning session. The capability validates compact nested JSON, server-owned language/source/runtime facts and the frozen LearningPlan DAG, then appends one typed draft. Generic capability receipts contain only draft id/version/hash/status. Effects remain denied and HTTP confirmation is the only track-creation action. The learning context decorator appends bounded scope/session/current-draft descriptors without changing current-input pinning, adaptive budget order, usage/cache accounting or summary compaction.
+
+### LessonDocument authoring boundary (2026-08-11)
+
+Lesson authoring is a separate server-owned artifact workflow, not an expansion of the generic Tutor capability payload. A durable run is created and committed before dispatch. The dispatcher claims a lease, reads only persisted registry-owned grounding, assigns short evidence handles, calls the configured primary provider through a strict JSON port, applies deterministic schema/citation/coverage/Gate quality gates, rechecks track/progress/source versions, and publishes standard + personalized documents, snapshots, assignment, and terminal run state in one final transaction.
+
+There is no provider/model fallback and no static lesson template fallback. Provider calls happen outside long PostgreSQL transactions. Attempt receipts contain only safe provider/model/protocol/outcome/usage/hash metadata. The interactive Tutor context limit and `12 × 360` generic capability envelope are unchanged; ordinary Tutor context does not receive full Lesson blocks or source excerpts.

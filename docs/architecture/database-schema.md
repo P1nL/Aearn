@@ -218,3 +218,14 @@ uv --directory .\aearn\services\api run python -m pytest tests/test_tutor_run_re
 ## 2026-08-10：计划制定持久化
 
 `tutor_learning_plan_sessions` 是 user/conversation-scoped planning root，同一用户最多一条 `collecting | draft_ready` session；它保存 current draft pointer、确认 track、版本与 allowlisted safe error，不保存 raw prompt/history/provider body/reasoning。`tutor_learning_plan_drafts` 保存确认所需的 profile、canonical plan、registry-owned source summary、content hash 和 source run/revision；草案 append-only，`(session_id,draft_version)` 与 `(source_run_id,source_input_revision)` 唯一。current pointer 使用 deferrable composite FK 保证 draft 属于同一 user/session。local export/reset 与 cutover target inventory 已纳入两张表。
+
+## 2026-08-11：LessonDocument authority
+
+`tutor_lesson_documents` 保存共享 immutable standard document 与 user/track-scoped
+personalized document。standard 行没有 user/track owner；personalized 行必须引用匹配语言和 `knowledge_key` 的 standard document、active plan revision、profile hash 和可选 predecessor。canonical blocks、coverage、Gate slot 和引用集合进入 content hash。
+
+`tutor_lesson_source_snapshots` 在发布事务中复制 registry/version/URL/section、grounding chunk ID、raw document hash、chunk hash、抓取/冻结时间和 bounded excerpt；它不对可替换的 `grounding_chunks` 建立删除阻塞 FK。`tutor_lesson_block_citations` 和 `tutor_lesson_gate_slots` 冻结 block-to-source 与公开 Gate contract。
+
+`tutor_lesson_assignments` 保证每个 `track_id + knowledge_key` 最多一个 active assignment。开始后 `started_at`、document identity 与 activation lineage 不可改写；更新先创建 direct proposed successor。`tutor_lesson_authoring_runs` 保存 pending/claimed/running/terminal、lease、expected versions、source set、safe failure 和结果 identity；`tutor_lesson_authoring_attempt_receipts` 只保存 append-only provider/model/protocol/outcome/usage/hash metadata。
+
+local export 包含 personalized blocks、assignment 与 citation metadata，但省略 evidence excerpt 全文、prompt/body/reasoning 和内部 quality details。reset/delete 在 transaction-local purge capability 下 child-to-root 删除 user-owned Lesson rows；共享 standard documents 与其 source snapshots 保留。cutover target inventory 只统计 personalized document、assignment 和 authoring run，不把共享 standard 内容归给某个用户。

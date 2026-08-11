@@ -250,3 +250,14 @@ be considered. This child must otherwise remain `in_progress`.
 | RT-16 | P0 | Planning persistence | session create/resume/cancel、append-only draft、source run replay、stale confirm、原子 track 创建、跨用户 404 | `test_learning_plan_sessions.py`、`test_learning_plan_draft_capability.py`、LearningTrack/DB tests |
 | RT-17 | P0 | Plan capability | exact Skill、active plan scope only、compact payload 仍受 12×360 限制、registry source、safe receipt、其他 scope default-deny | capability/catalog/policy/run-loop focused regression |
 | UX-02 | P1 | Learning Home / Planner | 三/二/一列、添加卡末尾并直接进入 planner、无语言选择器；首页与 planner 无左侧栏，planner 无 hero/外层对话卡片；未激活状态只有中央 Composer，首条消息/run 后才出现 GPT 式消息流与底部 Composer；进入 planner 即出现右缘按钮与四角圆角浮动窗口，`current_draft` 为空时只有 emoji 且 Composer 聚焦前后外壳视觉稳定，草案到达后同一窗口原位展示路线；窗口可收起/重开、与视口右缘保留明显留白且不挤压对话列；恢复/确认与 downstream 真实未就绪 | local web browser smoke |
+
+## 2026-08-11：LessonDocument 验收矩阵
+
+| ID | 优先级 | 区域 | 验收 | 证据 |
+| --- | --- | --- | --- | --- |
+| RT-18 | P0 | Lesson contract | 十类注册 block、canonical hash、未知字段/HTML/script/hidden-answer 拒绝、事实 citation coverage、personalized 保留标准 coverage/Gate | `test_lesson_document_contracts.py`、`test_lesson_document_quality.py` |
+| RT-19 | P0 | Lesson persistence | shared standard、track-scoped personalized、source snapshot reindex 后可读、assignment start/freeze/proposal/migration、append-only schema | `test_lesson_document_repository.py`、bootstrap/LearningTrack/cutover regression |
+| RT-20 | P0 | Lesson authoring/API | durable lease、primary-only strict port、safe attempts、no evidence/provider/invalid/quality/stale fail closed、verified/cross-user/locked/version/idempotency | `test_lesson_document_authoring.py`、`test_lesson_documents.py` |
+| UX-03 | P1 | Lesson reader | Home continue -> Lesson；missing/preparing/ready；十类 block；inline citation/source panel；start freeze；proposal/migrate；Gate 无伪能力；1280/900/390 无溢出/overlay/console error | local web browser smoke at `http://127.0.0.1:1420` |
+
+真实 provider smoke 默认不执行；fake author contract、PostgreSQL durable evidence、网页端 fixture 与 release approval 必须分别标记。前端默认不运行 Desktop build/typecheck。

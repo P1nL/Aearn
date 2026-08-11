@@ -272,3 +272,105 @@ IF OLD.launch_token IS NOT NULL
   RAISE EXCEPTION USING ERRCODE = '23514';
 END IF;
 ```
+
+## Scenario: Immutable LessonDocument Authority
+
+### 1. Scope / Trigger
+
+Apply this contract whenever a change touches `tutor_lesson_*`, grounding source version/hash fields, Lesson assignment migration, authoring lifecycle persistence, local export/reset/delete, or cutover inventory.
+
+### 2. Signatures
+
+The authority consists of these additive PostgreSQL roots and children:
+
+```text
+tutor_lesson_documents
+  -> tutor_lesson_source_snapshots
+  -> tutor_lesson_block_citations
+  -> tutor_lesson_gate_slots
+
+tutor_lesson_assignments -> tutor_lesson_documents
+tutor_lesson_authoring_runs -> tutor_lesson_authoring_attempt_receipts
+```
+
+Repository mutations use exact scope and expected versions:
+
+```python
+start_assignment(
+    *, user_id: str, track_id: str, knowledge_key: str,
+    assignment_id: str, expected_assignment_version: int,
+    expected_progress_version: int, now: datetime,
+) -> Mapping[str, object]
+
+activate_proposed_assignment(
+    *, user_id: str, track_id: str, knowledge_key: str,
+    assignment_id: str, expected_assignment_version: int,
+    now: datetime,
+) -> Mapping[str, object]
+```
+
+### 3. Contracts
+
+- A standard document is shared and must have `user_id`, `track_id`, `active_plan_revision_id`, and `standard_document_id` all null.
+- A personalized document is scoped to exact `user_id + track_id + knowledge_key`, references a standard document, and records active plan revision, profile hash, source-set hash, predecessor lineage, and immutable content hash.
+- Publication copies source version, raw document hash, chunk hash, canonical URL, section path, timestamps, and bounded excerpt into immutable snapshots. `grounding_chunks` remains a replaceable search index and is not a replay dependency.
+- One active assignment exists per track/key. Start may set `started_at` once and move only `available -> in_progress`. A started assignment is never silently replaced.
+- Refresh creates a direct proposed successor with an impact payload. Only explicit activation may supersede the active assignment.
+- Provider calls happen outside long transactions. A durable authoring run owns lease generation, expected track/progress/source versions, terminal safe failure, and append-only attempt usage facts.
+- Confirmed local purge deletes user-owned Lesson children before personalized documents and LearningTrack roots. Shared standard documents and their snapshots remain.
+
+### 4. Validation & Error Matrix
+
+| Condition | Database/application result |
+| --- | --- |
+| Standard row contains user/track ownership | `chk_tutor_lesson_document_scope_shape` rejects the row |
+| Personalized row omits standard/revision ownership | `chk_tutor_lesson_document_scope_shape` rejects the row |
+| Assignment document belongs to another user/track/key | composite FK rejects the row; public service maps scope misses to 404 |
+| Two active assignments exist for one track/key | `uq_tutor_lesson_assignments_one_active` rejects the loser |
+| Started assignment is silently replaced or rewound | assignment lifecycle trigger rejects the update |
+| Published document/snapshot/citation/Gate row is updated or deleted | immutable trigger rejects the mutation outside confirmed purge |
+| Authoring lease or terminal fields contradict state | authoring run CHECK/lifecycle trigger rejects the mutation |
+| Attempt usage is partially fabricated | `chk_tutor_lesson_authoring_attempt_usage` rejects the receipt |
+| Expected track/progress/assignment version is stale | repository returns `LESSON_DOCUMENT_VERSION_CONFLICT` or `LESSON_ASSIGNMENT_CONFLICT` |
+
+### 5. Good / Base / Bad Cases
+
+- Good: publish a shared standard document and a track-scoped personalized successor in one final transaction, then create the active assignment.
+- Base: reindex deletes the original grounding chunk; the already-published Lesson still renders from immutable snapshots.
+- Bad: update a started assignment to a new document without a proposed successor and explicit activation.
+- Bad: user purge deletes a shared standard document or another user's personalized document.
+
+### 6. Tests Required
+
+- Bootstrap twice and assert all seven Lesson tables, owning constraints, indexes, and triggers exist.
+- Round-trip standard and personalized documents, snapshots, citations, and Gate slots through PostgreSQL.
+- Assert standard/personalized shape checks and composite scope FKs reject bad inserts.
+- Assert reindex independence, authoring lease reclaim/stale finalization, idempotent publication, start CAS, proposal creation, explicit migration, cross-user rejection, export/reset/delete, and cutover target counts.
+- Run PostgreSQL/bootstrap-heavy tests serially because they share the bootstrap schema.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```sql
+UPDATE tutor_lesson_assignments
+SET document_id = :new_document_id
+WHERE id = :started_assignment_id;
+```
+
+This silently rewrites the authority referenced by future attempts and mastery evidence.
+
+#### Correct
+
+```sql
+INSERT INTO tutor_lesson_assignments (
+  user_id, track_id, knowledge_key, document_id,
+  assignment_version, status, predecessor_assignment_id, impact_json
+)
+VALUES (
+  :user_id, :track_id, :knowledge_key, :new_document_id,
+  :next_version, 'proposed', :active_assignment_id, :impact_json
+);
+```
+
+The active assignment remains stable until an explicit version-checked activation supersedes it.

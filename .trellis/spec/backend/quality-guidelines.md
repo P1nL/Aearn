@@ -3532,3 +3532,88 @@ if os.getenv("TUTOR_REAL_PROVIDER_SMOKE") == "1" and settings.llm_configuration_
 ```
 
 正确实现让 fake contract、PostgreSQL durable evidence、真实模型抽样和人工 release decision 保持可审计且互不冒充。
+
+## Scenario: Lesson Authoring Quality Gate
+
+### 1. Scope / Trigger
+
+Apply this contract when adding or changing Lesson block schemas, authoring prompts/adapters, grounding evidence selection, publication quality rules, public failure mapping, or personalized derivation behavior.
+
+### 2. Signatures
+
+```python
+parse_lesson_document_candidate(
+    payload: Mapping[str, object],
+) -> LessonDocumentDraft
+
+require_lesson_quality(
+    document: LessonDocumentDraft,
+    snapshots: Sequence[LessonSourceSnapshot],
+    *,
+    standard_document: LessonDocumentDraft | None = None,
+) -> LessonQualityReport
+
+class LessonDocumentAuthorPort(Protocol):
+    def author(self, request: LessonAuthoringRequest) -> LessonAuthoringResponse: ...
+```
+
+### 3. Contracts
+
+- Authoring consumes only persisted, registry-owned, allowlisted grounding. The provider receives short server-created evidence handles, never a selectable URL, source ID, path, command, user ID, or database target.
+- The provider returns a strict candidate only. The server owns evidence-handle rewriting, source snapshots, canonical hashes, quality decisions, publication, and assignment lifecycle.
+- Initial and personalized documents use the same registered ten-block union and exact-key parser. There is no arbitrary HTML/Markdown/React fallback.
+- Factual blocks require citations from the supplied source set; `authority_note` requires an official source; code examples keep `execution_claim="not_run"`.
+- Personalized output must preserve the standard document's core coverage, citation coverage, and Gate contract.
+- There is no static-template or cross-provider fallback. Failure remains durable and learner-safe.
+- Attempt receipts contain only safe provider/model/protocol/outcome/usage and request/response hashes. They never contain prompts, provider bodies, reasoning, raw documents, paths, commands, or credentials.
+
+### 4. Validation & Error Matrix
+
+| Condition | Stable result |
+| --- | --- |
+| No eligible persisted source evidence | `LESSON_SOURCE_EVIDENCE_INSUFFICIENT` |
+| Primary provider unavailable | `LESSON_DOCUMENT_GENERATION_UNAVAILABLE` |
+| Unknown block/type/field, malformed IDs/order, or invalid schema version | `LESSON_DOCUMENT_INVALID` |
+| Missing citations, non-allowlisted source, hash/version mismatch, reduced coverage, changed Gate, HTML/script/style, hidden tests/rubrics/answers | `LESSON_DOCUMENT_QUALITY_BLOCKED` |
+| Track/progress/source set changed during provider call | stale/version failure; no document or assignment is published |
+| Duplicate dispatcher owns stale lease generation | claim/finalization loses CAS and cannot commit a second winner |
+| Unexpected exception | safe generation-unavailable failure without raw exception projection |
+
+### 5. Good / Base / Bad Cases
+
+- Good: the provider cites `S1`; the server rewrites it to an immutable citation ID and publishes only after deterministic quality checks pass.
+- Base: the provider is disabled; the authoring run becomes failed and the UI can retry later.
+- Bad: the provider invents an official URL or source ID not present in the evidence request.
+- Bad: personalized content removes a required capability or changes the frozen `exercise_gate` assessment contract.
+
+### 6. Tests Required
+
+- Positive and negative tests for every registered block, exact fields, stable IDs/order, canonical hashing, size limits, and sensitive marker rejection.
+- Source trust/language/version/hash/allowlist tests and citation membership/coverage assertions.
+- Standard-versus-personalized preservation tests for core coverage and Gate contract.
+- Fake author tests for success, provider failure, invalid candidate, quality block, stale source/track state, lease recovery, replay, and safe attempt receipts.
+- Default suites must not access the network; real-provider smoke remains separately gated and is never release approval.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+candidate = provider.generate(prompt)
+if not candidate:
+    candidate = static_lesson_template(language_id, knowledge_key)
+publish(candidate)
+```
+
+This converts provider or evidence failure into an ungrounded artifact that looks authoritative.
+
+#### Correct
+
+```python
+response = author_port.author(request_with_server_evidence_handles)
+document = parse_lesson_document_candidate(response.candidate)
+report = require_lesson_quality(document, snapshots, standard_document=standard)
+repository.publish_authoring_result(document=document, snapshots=snapshots, quality=report)
+```
+
+The strict candidate, evidence set, quality report, and final persisted authority remain separate and auditable.
