@@ -1,0 +1,27 @@
+{"file":".trellis/tasks/08-04-exercise-gates-execution-unlock/prd.md","reason":"检查 Gate、Attempt、模块诊断、execution tier、路线解锁、隐私和网页端验收范围。"}
+{"file":".trellis/tasks/08-04-exercise-gates-execution-unlock/design.md","reason":"检查 gate_kind 与 requirement_kind、数据模型、队列复用、finalization、诊断计划版本和前端设计一致性。"}
+{"file":".trellis/tasks/08-04-exercise-gates-execution-unlock/research/repository-baseline.md","reason":"检查实现基于当前 active runtime，不恢复 legacy exercise authority 或创建第二套执行队列。"}
+{"file":".trellis/tasks/08-04-programming-language-learning-agent-product/prd.md","reason":"检查单知识点不可跳过、模块全部核心能力通过、用户确认和公开执行边界。"}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"检查 bootstrap twice、复合外键、append-only、幂等并发、execution lifecycle 与 purge。"}
+{"file":".trellis/spec/backend/error-handling.md","reason":"检查 404/409/422/503 映射、跨 scope 不泄漏和 unexpected exception 脱敏。"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"检查 strict contract、fail-closed、真实 PostgreSQL 与 execution 回归质量门。"}
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"检查 Lesson renderer、Gate panel、modal、服务端权威和可访问性边界。"}
+{"file":".trellis/spec/frontend/state-management.md","reason":"检查前端不计算 score、pass、mastery、diagnostic 或 unlock，并正确处理 stale result。"}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"检查 API unknown parsing、union exhaustiveness、tier/status枚举和无不安全断言。"}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"检查只以 http://127.0.0.1:1420 的真实网页端交互作为前端验收，不运行 Desktop build。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"检查 slot/binding/attempt/job/result/evidence/progress/API/UI 的完整round-trip与失败恢复。"}
+{"file":"docs/architecture/api-contract.md","reason":"检查公开路由、错误 envelope、幂等、版本和learner-safe projection已同步。"}
+{"file":"docs/architecture/database-schema.md","reason":"检查 exercise/Gate/Attempt/diagnostic/execution additive schema与数据生命周期已同步。"}
+{"file":"docs/architecture/tutor-harness-runtime.md","reason":"检查 Gate 执行未绕过 Harness/runtime边界、未创建第二队列或host fallback。"}
+{"file":"aearn/services/api/tests/test_tutor_execution_repository.py","reason":"检查旧 Tutor execution scope、claim、lease、launch token与恢复回归未被破坏。"}
+{"file":"aearn/services/api/tests/test_lesson_document_repository.py","reason":"检查 frozen Lesson assignment、gate slot和migration authority未被破坏。"}
+{"file":"aearn/services/api/tests/test_learning_track_repository.py","reason":"检查 progress、diagnostic_skipped、prerequisite与unlock事务保持服务端权威。"}
+{"file":"aearn/services/api/tests/test_exercise_gate_contracts.py","reason":"检查四语言 fixture、Gate 语义分离、static not_run 与 observational mastery 不降级。"}
+{"file":"aearn/services/api/tests/test_exercise_gate_quality.py","reason":"检查 public/private quality boundary、敏感标记和版本不匹配拒绝。"}
+{"file":"aearn/services/api/tests/test_exercise_gate_repository.py","reason":"检查 required Gate 原子投影、existing queue复用、static路径和export/reset/cutover。"}
+{"file":"aearn/services/api/tests/test_exercise_gates.py","reason":"检查 verified-only API、execution unavailable、跨scope隐藏和learner-safe projection。"}
+{"file":"aearn/services/api/tests/test_module_diagnostics.py","reason":"检查fail/partial不跳过、pass需确认和direct API模块边界绕过拒绝。"}
+{"file":"aearn/services/api/tests/test_db_bootstrap.py","reason":"检查Practice表、约束、owner/source one-of、trigger、index与bootstrap twice。"}
+{"file":"aearn/services/executor/tests/test_exercise_trusted_input.py","reason":"检查executor仅在exact claimed Gate scope加载私有submission/rubric并拒绝引用不匹配。"}
+{"file":"docs/qa/acceptance-test-plan.md","reason":"检查RT-21至RT-25与UX-04覆盖自动测试、隐私、队列复用、诊断和网页端完成门。"}
+{"file":"docs/qa/tutor-harness-release-readiness.md","reason":"检查最终命令结果、网页证据、截图fallback、非声明与未批准发布边界。"}
