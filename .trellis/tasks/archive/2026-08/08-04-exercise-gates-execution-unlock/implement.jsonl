@@ -1,0 +1,37 @@
+{"file":".trellis/tasks/08-04-exercise-gates-execution-unlock/design.md","reason":"加载 Gate、Attempt、execution queue additive owner、模块诊断、路线解锁、前端与安全技术设计。"}
+{"file":".trellis/tasks/08-04-exercise-gates-execution-unlock/research/repository-baseline.md","reason":"加载现有 LearningTrack、Lesson slot、Tutor executor、legacy exercise 与前端接缝证据。"}
+{"file":".trellis/tasks/08-04-programming-language-learning-agent-product/design.md","reason":"遵守父任务对练习版本、模块跳过计划版本、execution tier 与单一执行队列的跨任务设计。"}
+{"file":".trellis/tasks/archive/2026-08/08-04-lesson-document-authority-grounding/design.md","reason":"保持已发布 Lesson gate slot、assignment freeze、迁移和 registered renderer authority。"}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"遵循 PostgreSQL 复合 scope、append-only、幂等 advisory reservation、execution lifecycle 与用户清理规则。"}
+{"file":".trellis/spec/backend/error-handling.md","reason":"实现稳定 learner-safe error envelope、跨 scope 404、冲突恢复与内部信息脱敏。"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"遵循 execution queue、strict contract、测试与 fail-closed 质量门。"}
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"保持 Lesson registered renderer、server-authoritative Gate 状态和可访问组件边界。"}
+{"file":".trellis/spec/frontend/state-management.md","reason":"确保 editor 属于本地交互状态，Attempt、score、Gate、mastery 与 unlock 属于服务端状态。"}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"实现 API unknown validation、literal union、stale result 与无 any/直接断言边界。"}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"执行本地网页端真实浏览器 Gate，不用 Desktop build 替代交互证据。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"追踪 Lesson slot 到 binding、Attempt、execution job、result、mastery、progress、API 与 UI 的完整 round-trip。"}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"复用现有 LearningTrack、Lesson、execution tier、Tutor queue、semantic validator 与前端 renderer。"}
+{"file":"docs/README.md","reason":"从索引定位产品、API、数据库、Harness runtime 与 QA source-of-truth，避免重复规格。"}
+{"file":"aearn/services/api/app/services/tutor/execution.py","reason":"保留现有 intent/job/effect scope、lease、claim、launch token、terminal 与恢复语义。"}
+{"file":"aearn/services/api/app/services/learning/lesson_contracts.py","reason":"保留 gate_kind 教学语义和已发布 exercise_gate slot contract。"}
+{"file":"aearn/services/api/app/services/learning/lesson_repository.py","reason":"接入 frozen assignment、gate slot、Lesson migration 与复合 scope authority。"}
+{"file":"aearn/services/api/app/services/learning/mastery.py","reason":"实现 diagnostic observational evidence 不降低既有掌握度的确定性投影。"}
+{"file":"aearn/services/api/app/services/learning/execution_tiers.py","reason":"复用 teaching_local、container_verified、static_only、unavailable 的服务端解析。"}
+{"file":"aearn/packages/shared/aearn_shared/execution/contracts.py","reason":"扩展单一 execution job contract 的 old Tutor/new Gate owner one-of。"}
+{"file":"aearn/services/executor/aearn_executor/trusted_input.py","reason":"扩展 executor 从私有 Gate submission/exercise/rubric读取受信输入且不泄漏。"}
+{"file":"aearn/apps/desktop/src/features/learning/LessonDocumentPage.tsx","reason":"在现有 Lesson 页面所有权内接入 Gate 和模块诊断 server state。"}
+{"file":"aearn/apps/desktop/src/features/learning/lesson/LessonBlockRenderer.tsx","reason":"通过 typed render seam 扩展 exercise_gate，保持 renderer 纯展示。"}
+{"file":"aearn/services/api/app/db/schema.sql","reason":"实现 exercise、Gate、Attempt、diagnostic authority、execution owner one-of、append-only trigger 与数据生命周期约束。"}
+{"file":"aearn/services/api/app/models/exercise_gates.py","reason":"实现 verified-only Gate 与模块诊断 strict mutation request contract。"}
+{"file":"aearn/services/api/app/routes/exercise_gates.py","reason":"实现 Gate read/prepare/hint/Attempt/poll 与模块诊断 create/read/attempt/confirm 路由。"}
+{"file":"aearn/services/api/app/services/learning/practice/contracts.py","reason":"实现 exercise、binding、result、diagnostic 的版本化 typed contract 与 canonical hash。"}
+{"file":"aearn/services/api/app/services/learning/practice/quality.py","reason":"实现 public/private fixture 与 Gate binding 的确定性质量门和敏感标记拒绝。"}
+{"file":"aearn/services/api/app/services/learning/practice/repository.py","reason":"实现 scope-safe Gate/Attempt/hint/result persistence、幂等和 required Gate 原子投影。"}
+{"file":"aearn/services/api/app/services/learning/practice/service.py","reason":"编排四 execution tier、safe projection、static evaluator、poll/finalization 和稳定错误。"}
+{"file":"aearn/services/api/app/services/learning/practice/diagnostics.py","reason":"实现模块边界校验、诊断冻结/聚合、proposed revision 与显式确认激活。"}
+{"file":"aearn/services/api/app/services/learning/practice/fixtures.py","reason":"提供 Python、JavaScript、TypeScript、SQL 与 static 的版本化 curated fixture。"}
+{"file":"aearn/services/api/app/services/repositories/local_user_data_repository.py","reason":"扩展 Gate/Attempt/diagnostic 的安全 export、reset 和 delete child-to-root 生命周期。"}
+{"file":"aearn/apps/desktop/src/api.ts","reason":"实现 Gate/Attempt/diagnostic API wrapper 与 exact unknown runtime validation。"}
+{"file":"aearn/apps/desktop/src/types.ts","reason":"增加 Gate、exercise、Attempt、result、hint、diagnostic 与 impact literal union。"}
+{"file":"aearn/apps/desktop/src/features/learning/lesson/LessonGatePanel.tsx","reason":"实现只消费 server allowed_actions 的可访问 Gate 面板与 stale/pending/result 展示。"}
+{"file":"aearn/apps/desktop/src/features/learning/lesson/ModuleDiagnosticModal.tsx","reason":"实现独立模块诊断 modal、失败非跳过、impact 与显式确认交互。"}
