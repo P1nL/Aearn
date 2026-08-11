@@ -813,3 +813,68 @@ if (cutover.rollout_active) {
 
 The server decision is the first runtime-routing fact; legacy restoration is
 only reachable through the inactive rollout branch.
+
+## Scenario: Lesson Reader Web Validation
+
+### 1. Scope / Trigger
+
+Run this gate after any Lesson page, renderer, API parser, navigation, citation interaction, assignment state, or Lesson CSS change.
+
+### 2. Signatures
+
+```text
+Frontend target: http://127.0.0.1:1420
+API fixture: disposable verified user + stateful mock/fake author
+Required viewports: normal desktop, 900px, 390px
+```
+
+### 3. Contracts
+
+- Validate the rendered application in a real browser; static search or a Desktop build is not a substitute for this child.
+- Learning Home continue enters the server-owned current knowledge key.
+- Required state flow is `missing -> prepare -> preparing -> ready` plus `failed -> retry -> ready`.
+- All ten registered block types, inline citations, source trust/version/section/time/URL/excerpt, start freeze, update proposal, and explicit migration must be observable.
+- Gate must contain no run, submit, score, pass, or unlock controls.
+- Use fixture/fake infrastructure only; do not call a real provider or mutate real learner data.
+
+### 4. Validation & Error Matrix
+
+| Observation | Gate result |
+| --- | --- |
+| Vite/framework overlay | fail |
+| Related console error or warning | fail |
+| Horizontal overflow at required viewport | fail |
+| Unknown payload renders partial content | fail |
+| Refresh silently replaces a started document | fail |
+| Gate exposes unimplemented capability | fail |
+| In-app browser screenshot capture alone times out | interactions/DOM/console remain valid; use standalone Playwright only for screenshot fallback and record the boundary |
+
+### 5. Good / Base / Bad Cases
+
+- Good: start freezes the current assignment; refresh displays impact while the old title remains; explicit activation switches versions.
+- Base: source panel remains readable in one column at 390px and Gate has zero buttons.
+- Bad: claim frontend completion from `tsc`, source inspection, or a mocked component snapshot without a browser flow.
+- Bad: use a real provider or production user to make the smoke look realistic.
+
+### 6. Tests Required
+
+- Page identity, meaningful content, no overlay, and clean console.
+- Ten `.lesson-block` nodes, expected source count, and zero Gate capability buttons.
+- Failed/retry and missing/preparing/ready state transitions.
+- Start freeze, refresh proposal without replacement, and explicit migration.
+- Normal, 900px, and 390px DOM overflow checks, keyboard source access, visible focus, and reduced-motion compatibility.
+- Preserve screenshots outside the repository and stop temporary validation services after the run.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```text
+pnpm desktop:check passed, therefore the Lesson reader is accepted.
+```
+
+#### Correct
+
+```text
+Open http://127.0.0.1:1420 with a disposable stateful API fixture, exercise the full state machine, inspect DOM and console at all required viewports, then record exact evidence and non-claims.
+```

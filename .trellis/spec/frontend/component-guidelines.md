@@ -118,3 +118,75 @@ while preserving immediate transition from accepted input to run feedback.
 - Showing backend fact enums such as `Attempt(run)` or `Attempt(submit)` directly to users.
 - Letting the frontend calculate final `result`, `score`, or `fsrs_rating`; these must come from backend APIs.
 - Treating compiled-language course or runner availability as full sandbox availability. Java/Go/C# are only `managed_compiled_test` teaching-grade single-exercise execution; C++ and Rust remain unsupported for public routes.
+
+## Scenario: LessonDocument Registered Renderer
+
+### 1. Scope / Trigger
+
+Apply this contract when rendering Lesson documents, composing the later learning workspace, changing citation interaction, or adding a new registered Lesson block type.
+
+### 2. Signatures
+
+```tsx
+<LessonDocumentPage userId={userId} trackId={trackId} knowledgeKey={knowledgeKey} onBack={onBack} />
+<LessonDocumentView document={document} assignment={assignment} sources={sources} />
+<LessonBlockRenderer block={block} onCitation={selectCitation} />
+<LessonSourcesPanel sources={sources} selectedCitationId={selectedCitationId} onSelect={selectCitation} />
+```
+
+### 3. Contracts
+
+- `LessonDocumentPage` owns loading, prepare/retry polling, start, refresh proposal, explicit migration, and learner-safe errors.
+- `LessonDocumentView` is the reusable document boundary for both the single-page reader and the later three-column workspace.
+- `LessonBlockRenderer` exhaustively renders only the registered discriminated union. A new block type requires backend contract, frontend type/parser, renderer, tests, and browser fixture updates together.
+- Facts expose inline citation buttons that target `LessonSourcesPanel`; the source panel renders only validated frozen snapshot metadata.
+- No component renders arbitrary HTML or Markdown.
+- `exercise_gate` displays its frozen public contract and explicit later-task boundary, with no run, submit, score, pass, or unlock controls.
+
+### 4. Validation & Error Matrix
+
+| UI condition | Required behavior |
+| --- | --- |
+| API returns unknown block or extra field | show visible contract error; do not partially render |
+| Lesson is missing | show explicit prepare action |
+| Authoring is pending/running | show preparing state and bounded polling |
+| Authoring failed | show safe failure code/message and retry action |
+| Assignment is started | show frozen-version disclosure |
+| Proposed successor exists | show impact without replacing current document |
+| Citation is selected | focus/highlight the matching source snapshot |
+| Current knowledge key is absent | show route/not-ready error; never guess the first node |
+
+### 5. Good / Base / Bad Cases
+
+- Good: Learning Home passes the server-owned `current_knowledge_key`; all ten blocks and one frozen source set render.
+- Base: Gate is visible as a contract-only block and contains zero capability buttons.
+- Bad: use index position to infer the current node or source.
+- Bad: use `dangerouslySetInnerHTML`, a Markdown fallback, or an `unknown as LessonDocument` cast.
+
+### 6. Tests Required
+
+- Browser flow from Learning Home through missing/preparing/ready and failed/retry.
+- Render every registered block and assert inline citations map to returned sources.
+- Start freeze, refresh proposal, and explicit migration behavior.
+- Gate contains no fake capability controls.
+- Normal, 900px, and 390px checks for no overlay, clean console, no horizontal overflow, visible focus, keyboard source interaction, and reduced-motion compatibility.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```tsx
+<div dangerouslySetInnerHTML={{ __html: lesson.body }} />
+```
+
+#### Correct
+
+```tsx
+switch (block.type) {
+  case "concept":
+    return <ConceptBlockView block={block} onCitation={onCitation} />;
+  case "exercise_gate":
+    return <ExerciseGateContract block={block} />;
+  // every registered type is explicit; no default content fallback
+}
+```

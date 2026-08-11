@@ -359,3 +359,21 @@ proactive delivery、worker import、schema bootstrap 和 Desktop typed build。
 - `POST /api/learning-plan-sessions/{id}/confirm`：校验 session version、current draft id/version/hash 后，在同一事务创建 track/revision/route/progress 并改绑 conversation。
 
 稳定错误包括 `LEARNING_PLAN_SESSION_NOT_FOUND`、`LEARNING_PLAN_SESSION_CONFLICT`、`LEARNING_PLAN_SESSION_ALREADY_CONFIRMED`、`LEARNING_PLAN_DRAFT_NOT_READY`、`LEARNING_PLAN_DRAFT_INVALID`、`LEARNING_PLAN_DRAFT_QUALITY_BLOCKED`、`LEARNING_PLAN_DRAFT_STALE` 和 `LEARNING_LANGUAGE_NOT_SELECTABLE`。
+
+## 2026-08-11：LessonDocument API
+
+所有 Lesson 路由都要求 verified user，并按 `user_id + track_id + knowledge_key`
+校验 active plan node；跨用户对象与不存在对象统一返回 `404 LESSON_DOCUMENT_NOT_FOUND`。
+
+| Method | Path | Contract |
+| --- | --- | --- |
+| `GET` | `/api/learning-tracks/{track_id}/lessons/{knowledge_key}?user_id=...` | 返回 `missing / preparing / ready / failed`；ready 仅包含 learner-safe document、active assignment、source snapshots 和可选 update proposal |
+| `POST` | `/api/learning-tracks/{track_id}/lessons/{knowledge_key}/prepare` | 使用 expected track/progress version 和幂等键创建/replay durable authoring run；新 run 返回 `202`，post-commit dispatch 不持有长事务 |
+| `POST` | `/api/learning-tracks/{track_id}/lessons/{knowledge_key}/refresh` | 生成候选新版本；started assignment 只得到 proposal，不静默替换 |
+| `POST` | `/api/learning-tracks/{track_id}/lessons/{knowledge_key}/start` | CAS 冻结 assignment，并只推进 `available -> in_progress` |
+| `POST` | `/api/learning-tracks/{track_id}/lessons/{knowledge_key}/migrations/{assignment_id}/activate` | 只激活 active assignment 的 direct proposed successor |
+
+稳定错误包括 `LESSON_DOCUMENT_NOT_FOUND`、`LESSON_DOCUMENT_NOT_READY`、
+`LESSON_DOCUMENT_VERSION_CONFLICT`、`LESSON_ASSIGNMENT_CONFLICT`、
+`LESSON_SOURCE_EVIDENCE_INSUFFICIENT`、`LESSON_DOCUMENT_GENERATION_UNAVAILABLE`、
+`LESSON_DOCUMENT_INVALID` 和 `LESSON_DOCUMENT_QUALITY_BLOCKED`。公共投影不包含 prompt、provider body、reasoning、内部 quality report、完整抓取原文、hidden test、reference answer、命令、路径或 credential。

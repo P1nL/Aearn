@@ -150,3 +150,70 @@ if (event.type === "error") {
 
 Only a validated numeric durable id advances the replay cursor; an id-less
 public error remains terminal feedback rather than persisted ordering state.
+
+## Scenario: LessonDocument Unknown Boundary
+
+### 1. Scope / Trigger
+
+Apply this contract to Lesson read, prepare, refresh, start, and migration API responses, plus every new Lesson block/source/assignment field.
+
+### 2. Signatures
+
+```ts
+parseLessonState(payload: unknown): LessonState
+fetchLessonDocument(...): Promise<LessonState>
+prepareLessonDocument(...): Promise<LessonPreparingState | LessonReadyState>
+startLessonAssignment(...): Promise<LessonMutationResponse>
+activateLessonMigration(...): Promise<LessonMutationResponse>
+```
+
+### 3. Contracts
+
+- Parse from `unknown`; construct the public TypeScript union only after exact validation.
+- Validate exact top-level keys by state, exact fields for every registered block, unique continuous block order, unique citation IDs, and citation membership in the returned source set.
+- URLs must be absolute credential-free HTTP(S). Validate trust tier, source type, source version kind, assignment status, authoring state, impact arrays, and nullable timestamps explicitly.
+- Reject unknown fields/types rather than dropping them.
+- Do not add `any`, direct response casts, `@ts-ignore`, HTML/Markdown fallback, or a permissive index signature.
+
+### 4. Validation & Error Matrix
+
+| Payload defect | Frontend result |
+| --- | --- |
+| Unknown top-level status | visible Lesson contract error |
+| Unknown block type or extra block field | visible Lesson contract error |
+| Duplicate/non-continuous `order_index` | visible Lesson contract error |
+| Block citation absent from `sources` | visible Lesson contract error |
+| Credentialed/non-HTTP source URL | visible Lesson contract error |
+| Invalid assignment/authoring enum | visible Lesson contract error |
+| Network/server learner-safe error | preserve safe code/message and recoverability; do not expose raw body |
+
+### 5. Good / Base / Bad Cases
+
+- Good: a `ready` payload with ten exact blocks and citations contained in one validated source set.
+- Base: a `failed` payload with a safe authoring run and retryable learner message.
+- Bad: `const lesson = await response.json() as LessonReadyState`.
+- Bad: accept an unknown block and render its arbitrary `content` field.
+
+### 6. Tests Required
+
+- Runtime parser fixtures for every Lesson state and registered block.
+- Rejection fixtures for extra keys, unknown type/status, bad order, duplicate IDs, invalid URL, bad citation membership, invalid enums, and unsafe error bodies.
+- Real browser fixture must exercise both success and failed/retry states because no standalone frontend unit runner currently owns this parser.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```ts
+const payload = (await response.json()) as LessonState;
+return payload;
+```
+
+#### Correct
+
+```ts
+const payload: unknown = await response.json();
+return parseLessonState(payload);
+```
+
+The parser, not a cast, establishes the application type.

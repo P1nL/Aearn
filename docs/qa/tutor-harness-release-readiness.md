@@ -179,3 +179,33 @@ PostgreSQL current/history 集成证据，以及默认禁用的固定五轮 real
 - 真实 provider smoke 默认未执行；本证据不证明真实模型教学质量，也不是 deploy 或 release approval。
 - LessonDocument、ReviewSession、练习 Gate 和完整三栏学习工作区仍由后续 child 交付；当前 CTA 明确显示未就绪。
 - receipt、SSE 与文档证据不保存 raw prompt/history、provider body、reasoning、credential 或 transport body。
+
+## LessonDocument 与权威来源证据（2026-08-11）
+
+**任务：** `08-04-lesson-document-authority-grounding`
+**状态：** **In progress — not a release approval**
+
+本轮在当前 `main` 工作树中新增不可变标准/个性化 `LessonDocument`、来源快照、引用与 Gate slot、assignment 冻结/提案/显式迁移、可恢复 authoring run、verified-only API 和单页网页阅读器。所有 provider 行为使用 fake author/offline fixture；未调用真实 provider，未提交、push、部署或修改生产数据。
+
+### 当前验证证据
+
+| Gate | 命令或证据 | 结果 | 边界 |
+| --- | --- | --- | --- |
+| Lesson contract / quality / authoring | `tests/test_lesson_document_contracts.py tests/test_lesson_document_quality.py tests/test_lesson_document_authoring.py` | **9 passed** | 严格注册 block union、canonical hash、来源/引用/覆盖质量门和 fake author failure-closed |
+| Repository / API / bootstrap / cutover | Lesson repository、Lesson routes、`test_db_bootstrap.py`、LearningTrack repository、cutover | **26 passed** | PostgreSQL 串行；覆盖 7 张 Lesson 表、约束、索引、触发器、reindex 后快照、start freeze、proposal/migration、export/reset |
+| Grounding 回归 | source/fetch/processing/retrieval/citation/reindex/index/policy | **47 passed** | `source_version_label`、`source_version_kind` 与原始文档 hash/chunk hash 分离并 round-trip |
+| LearningTrack / Tutor 回归 | track routes、plan sessions、context builder、run loop | **40 passed** | Lesson authority 未扩大通用 Tutor capability payload，也未注入完整课程正文 |
+| Complete API suite | `uv --directory .\aearn\services\api run python -m pytest -q` | **425 passed, 1 skipped in 60.31s** | 唯一 skip 为默认禁用的真实 provider smoke；没有网络调用 |
+| Ruff | `uv --directory .\aearn\services\api run ruff check app tests` | **Pass** | `All checks passed!` |
+| Mypy | `uv --directory .\aearn\services\api run python -m mypy app --no-incremental` | **Pass — 128 source files** | 新增生产代码无 `type: ignore` 绕过 |
+| Lock | `uv --directory .\aearn\services\api lock --check` | **Pass** | Resolved 51 packages；无 lock drift |
+| 网页端阅读器 | `http://127.0.0.1:1420` + disposable stateful mock API | **Pass** | Learning Home → Lesson；missing/preparing/ready、failed→retry、start freeze、refresh proposal、显式迁移；10 种 block、1 条来源、Gate 内 0 个能力按钮；1440px/900px/390px 无水平溢出，控制台 0 error/0 warning |
+| Trellis / diff hygiene | child validate + `git diff --check` | **最终复验见本任务汇报** | `implement.jsonl` / `check.jsonl` 均为 7 条；不启动父任务 |
+
+### 网页端证据边界
+
+- 浏览器交互、DOM、响应式和控制台验证优先使用 Codex in-app Browser；in-app screenshot 命令持续超时，因此只对截图采集使用 standalone Playwright fallback。
+- 截图证据保存在本机临时目录：`C:\Users\PINKING\AppData\Local\Temp\aearn-lesson-desktop.png` 与 `C:\Users\PINKING\AppData\Local\Temp\aearn-lesson-mobile.png`，未写入工作树。
+- 按任务明确边界，没有运行 `pnpm --dir .\aearn desktop:check`、Tauri build 或 Desktop typecheck；网页端 Vite 编译与真实浏览器渲染是本 child 的前端完成门。
+- `exercise_gate` 仅展示冻结的公开 contract 和“练习能力将在后续任务开放”，没有 Attempt、运行、提交、评分、通过或路线解锁能力。
+- fake author、fixture grounding 与 mock API 只证明 contract、状态机和安全边界，不证明真实模型教学质量、延迟、quota、可用性或发布可靠性；本记录不是 release approval。
