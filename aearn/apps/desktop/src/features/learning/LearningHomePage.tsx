@@ -17,7 +17,8 @@ type LearningHomePageProps = {
   refreshKey: number;
   highlightedTrackId?: string;
   onOpenPlanner: (session: LearningPlanSession) => void;
-  onDownstreamIntent: (intent: "continue_learning" | "start_review", trackId: string) => void;
+  onOpenLesson: (trackId: string, knowledgeKey: string) => void;
+  onDownstreamIntent: (intent: "start_review", trackId: string) => void;
 };
 
 export function LearningHomePage({
@@ -25,6 +26,7 @@ export function LearningHomePage({
   refreshKey,
   highlightedTrackId,
   onOpenPlanner,
+  onOpenLesson,
   onDownstreamIntent,
 }: LearningHomePageProps) {
   const [tracks, setTracks] = useState<LearningTrackSummary[]>([]);
@@ -104,7 +106,7 @@ export function LearningHomePage({
             key={track.track_id}
             track={track}
             highlighted={track.track_id === highlightedTrackId}
-            onContinue={() => onDownstreamIntent("continue_learning", track.track_id)}
+            onContinue={continueHandler(track, onOpenLesson)}
             onReview={() => onDownstreamIntent("start_review", track.track_id)}
           />
         ))}
@@ -118,7 +120,7 @@ export function LearningHomePage({
   );
 }
 
-function LearningTrackCard({ track, highlighted, onContinue, onReview }: { track: LearningTrackSummary; highlighted: boolean; onContinue: () => void; onReview: () => void }) {
+function LearningTrackCard({ track, highlighted, onContinue, onReview }: { track: LearningTrackSummary; highlighted: boolean; onContinue?: () => void; onReview: () => void }) {
   return (
     <article className={highlighted ? "learning-track-card highlighted" : "learning-track-card"}>
       <header><span className="learning-track-language">{track.language_display_name}</span><span className={`learning-tier ${track.execution_tier}`}>{executionTierLabel(track.execution_tier)}</span></header>
@@ -130,9 +132,14 @@ function LearningTrackCard({ track, highlighted, onContinue, onReview }: { track
       </dl>
       <div className="learning-track-progress"><span><strong>{track.progress.percent}%</strong><small>{track.progress.completed} / {track.progress.total} 个知识点</small></span><progress max={100} value={track.progress.percent} aria-label={`${track.language_display_name} 路线进度`} /></div>
       <p className="learning-track-disclosure">{track.execution_disclosure}</p>
-      <footer><button className="tutor-primary-button" type="button" onClick={onContinue}>继续学习</button>{track.review_due_count > 0 && <button className="tutor-compact-button quiet" type="button" onClick={onReview}>开始复习 · {track.review_due_count}</button>}</footer>
+      <footer><button className="tutor-primary-button" type="button" disabled={!onContinue} onClick={onContinue}>{onContinue ? "继续学习" : "等待当前知识点"}</button>{track.review_due_count > 0 && <button className="tutor-compact-button quiet" type="button" onClick={onReview}>开始复习 · {track.review_due_count}</button>}</footer>
     </article>
   );
+}
+
+function continueHandler(track: LearningTrackSummary, onOpenLesson: (trackId: string, knowledgeKey: string) => void): (() => void) | undefined {
+  const knowledgeKey = track.current_knowledge_key;
+  return knowledgeKey ? () => onOpenLesson(track.track_id, knowledgeKey) : undefined;
 }
 
 function executionTierLabel(value: LearningTrackSummary["execution_tier"]): string {
