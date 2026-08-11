@@ -10,6 +10,7 @@ from app.services.runners.language_capabilities import all_language_capabilities
 SourceTrustTier = Literal["official", "trusted_de_facto", "internal"]
 SourceSeedPolicy = Literal["seed_urls_only"]
 SourceContentType = Literal["tutorial", "reference", "spec", "platform_docs", "vendor_docs"]
+SourceVersionKind = Literal["fixed", "rolling"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,6 +25,8 @@ class GroundingSource:
     allowlisted_domains: tuple[str, ...]
     seed_urls: tuple[str, ...]
     topic_tags: tuple[str, ...]
+    source_version_label: str
+    source_version_kind: SourceVersionKind
     notes: str = ""
 
 
@@ -39,6 +42,8 @@ GROUNDING_SOURCES: tuple[GroundingSource, ...] = (
         allowlisted_domains=("docs.python.org",),
         seed_urls=("https://docs.python.org/3/tutorial/index.html",),
         topic_tags=("basics", "control-flow", "functions", "modules", "io", "errors", "classes"),
+        source_version_label="python-3",
+        source_version_kind="rolling",
     ),
     GroundingSource(
         source_id="python-library-reference",
@@ -51,6 +56,8 @@ GROUNDING_SOURCES: tuple[GroundingSource, ...] = (
         allowlisted_domains=("docs.python.org",),
         seed_urls=("https://docs.python.org/3/library/index.html",),
         topic_tags=("stdlib", "data-types", "exceptions", "text", "collections"),
+        source_version_label="python-3",
+        source_version_kind="rolling",
     ),
     GroundingSource(
         source_id="mdn-javascript-guide",
@@ -63,6 +70,8 @@ GROUNDING_SOURCES: tuple[GroundingSource, ...] = (
         allowlisted_domains=("developer.mozilla.org",),
         seed_urls=("https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide",),
         topic_tags=("basics", "control-flow", "functions", "objects", "async", "modules"),
+        source_version_label="mdn-current",
+        source_version_kind="rolling",
     ),
     GroundingSource(
         source_id="mdn-javascript-reference",
@@ -75,6 +84,8 @@ GROUNDING_SOURCES: tuple[GroundingSource, ...] = (
         allowlisted_domains=("developer.mozilla.org",),
         seed_urls=("https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference",),
         topic_tags=("syntax", "standard-objects", "operators", "statements"),
+        source_version_label="mdn-current",
+        source_version_kind="rolling",
     ),
     GroundingSource(
         source_id="typescript-handbook",
@@ -87,6 +98,8 @@ GROUNDING_SOURCES: tuple[GroundingSource, ...] = (
         allowlisted_domains=("www.typescriptlang.org",),
         seed_urls=("https://www.typescriptlang.org/docs/handbook/intro.html",),
         topic_tags=("types", "functions", "objects", "classes", "modules", "narrowing"),
+        source_version_label="typescript-current",
+        source_version_kind="rolling",
     ),
     GroundingSource(
         source_id="dev-java-learn",
@@ -99,6 +112,8 @@ GROUNDING_SOURCES: tuple[GroundingSource, ...] = (
         allowlisted_domains=("dev.java",),
         seed_urls=("https://dev.java/learn/",),
         topic_tags=("basics", "classes", "collections", "concurrency", "tools"),
+        source_version_label="java-current",
+        source_version_kind="rolling",
     ),
     GroundingSource(
         source_id="oracle-java-api",
@@ -111,6 +126,8 @@ GROUNDING_SOURCES: tuple[GroundingSource, ...] = (
         allowlisted_domains=("docs.oracle.com",),
         seed_urls=("https://docs.oracle.com/en/java/javase/21/docs/api/index.html",),
         topic_tags=("api", "stdlib", "collections", "io", "exceptions"),
+        source_version_label="java-se-21",
+        source_version_kind="fixed",
     ),
     GroundingSource(
         source_id="go-docs",
@@ -123,6 +140,8 @@ GROUNDING_SOURCES: tuple[GroundingSource, ...] = (
         allowlisted_domains=("go.dev",),
         seed_urls=("https://go.dev/doc/",),
         topic_tags=("basics", "modules", "effective-go", "testing", "tools"),
+        source_version_label="go-current",
+        source_version_kind="rolling",
     ),
     GroundingSource(
         source_id="go-tour",
@@ -135,6 +154,8 @@ GROUNDING_SOURCES: tuple[GroundingSource, ...] = (
         allowlisted_domains=("go.dev",),
         seed_urls=("https://go.dev/tour/list",),
         topic_tags=("basics", "methods", "interfaces", "concurrency"),
+        source_version_label="go-current",
+        source_version_kind="rolling",
     ),
     GroundingSource(
         source_id="microsoft-csharp-guide",
@@ -150,6 +171,8 @@ GROUNDING_SOURCES: tuple[GroundingSource, ...] = (
             "https://learn.microsoft.com/en-us/dotnet/csharp/tour-of-csharp/",
         ),
         topic_tags=("basics", "types", "classes", "linq", "async", "dotnet"),
+        source_version_label="dotnet-current",
+        source_version_kind="rolling",
     ),
     GroundingSource(
         source_id="rust-book",
@@ -162,6 +185,8 @@ GROUNDING_SOURCES: tuple[GroundingSource, ...] = (
         allowlisted_domains=("doc.rust-lang.org",),
         seed_urls=("https://doc.rust-lang.org/book/",),
         topic_tags=("ownership", "borrowing", "lifetimes", "structs", "enums", "error-handling"),
+        source_version_label="rust-current",
+        source_version_kind="rolling",
     ),
     GroundingSource(
         source_id="rust-std",
@@ -174,6 +199,8 @@ GROUNDING_SOURCES: tuple[GroundingSource, ...] = (
         allowlisted_domains=("doc.rust-lang.org",),
         seed_urls=("https://doc.rust-lang.org/std/",),
         topic_tags=("stdlib", "collections", "result", "option", "iterators"),
+        source_version_label="rust-current",
+        source_version_kind="rolling",
     ),
     GroundingSource(
         source_id="cppreference-cpp",
@@ -187,6 +214,8 @@ GROUNDING_SOURCES: tuple[GroundingSource, ...] = (
         seed_urls=("https://en.cppreference.com/w/cpp",),
         topic_tags=("language", "stdlib", "containers", "algorithms", "templates", "memory"),
         notes="C++ has no single official beginner documentation source; cppreference is the trusted de facto reference.",
+        source_version_label="cppreference-current",
+        source_version_kind="rolling",
     ),
     GroundingSource(
         source_id="postgresql-sql-docs",
@@ -200,6 +229,8 @@ GROUNDING_SOURCES: tuple[GroundingSource, ...] = (
         seed_urls=("https://www.postgresql.org/docs/current/tutorial.html", "https://www.postgresql.org/docs/current/sql.html"),
         topic_tags=("queries", "joins", "aggregation", "ddl", "transactions", "postgresql"),
         notes="SQL grounding uses trusted vendor documentation because SQL has dialect-specific behavior.",
+        source_version_label="postgresql-current",
+        source_version_kind="rolling",
     ),
     GroundingSource(
         source_id="mdn-html",
@@ -212,6 +243,8 @@ GROUNDING_SOURCES: tuple[GroundingSource, ...] = (
         allowlisted_domains=("developer.mozilla.org",),
         seed_urls=("https://developer.mozilla.org/en-US/docs/Web/HTML",),
         topic_tags=("semantics", "forms", "accessibility", "document-structure"),
+        source_version_label="mdn-current",
+        source_version_kind="rolling",
     ),
     GroundingSource(
         source_id="whatwg-html-spec",
@@ -224,6 +257,8 @@ GROUNDING_SOURCES: tuple[GroundingSource, ...] = (
         allowlisted_domains=("html.spec.whatwg.org",),
         seed_urls=("https://html.spec.whatwg.org/multipage/",),
         topic_tags=("spec", "elements", "forms", "dom", "semantics"),
+        source_version_label="living-standard",
+        source_version_kind="rolling",
     ),
     GroundingSource(
         source_id="mdn-css",
@@ -236,6 +271,8 @@ GROUNDING_SOURCES: tuple[GroundingSource, ...] = (
         allowlisted_domains=("developer.mozilla.org",),
         seed_urls=("https://developer.mozilla.org/en-US/docs/Web/CSS",),
         topic_tags=("selectors", "cascade", "box-model", "layout", "responsive", "animations"),
+        source_version_label="mdn-current",
+        source_version_kind="rolling",
     ),
 )
 
@@ -291,6 +328,10 @@ def validate_grounding_source_registry() -> tuple[str, ...]:
             errors.append(f"Grounding source {source.source_id} has no allowlisted domains")
         if not source.seed_urls:
             errors.append(f"Grounding source {source.source_id} has no seed URLs")
+        if not source.source_version_label.strip():
+            errors.append(f"Grounding source {source.source_id} has no source version label")
+        if source.source_version_kind not in {"fixed", "rolling"}:
+            errors.append(f"Grounding source {source.source_id} has an invalid source version kind")
         for seed_url in source.seed_urls:
             if not _seed_url_is_allowlisted(seed_url, source.allowlisted_domains):
                 errors.append(f"Grounding source {source.source_id} seed URL is not allowlisted: {seed_url}")

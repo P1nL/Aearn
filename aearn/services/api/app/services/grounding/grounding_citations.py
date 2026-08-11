@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from app.services.grounding.grounding_retrieval import GroundingRetrievalResult
-from app.services.grounding.grounding_sources import SourceContentType, SourceTrustTier
+from app.services.grounding.grounding_sources import SourceContentType, SourceTrustTier, SourceVersionKind
 
 
 @dataclass(frozen=True, slots=True)
@@ -17,6 +17,9 @@ class GroundingCitation:
     canonical_url: str
     source_type: SourceContentType
     source_trust_tier: SourceTrustTier
+    source_version_label: str
+    source_version_kind: SourceVersionKind
+    document_content_hash: str
     content_hash: str
     fetched_at: datetime
 
@@ -49,6 +52,9 @@ def grounding_results_for_agent(
             canonical_url=chunk.canonical_url,
             source_type=chunk.source_type,
             source_trust_tier=chunk.source_trust_tier,
+            source_version_label=chunk.source_version_label,
+            source_version_kind=chunk.source_version_kind,
+            document_content_hash=chunk.document_content_hash,
             content_hash=chunk.content_hash,
             fetched_at=chunk.fetched_at,
         )

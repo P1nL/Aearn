@@ -28,6 +28,9 @@ def _chunk(
         content_hash=f"hash-{chunk_id}",
         text=text,
         topic_tags=topic_tags,
+        source_version_label="python-3",
+        source_version_kind="rolling",
+        document_content_hash="d" * 64,
     )
 
 

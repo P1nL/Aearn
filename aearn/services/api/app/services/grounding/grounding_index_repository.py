@@ -12,7 +12,7 @@ from app.services.grounding.grounding_citations import AgentGroundingItem, groun
 from app.services.grounding.grounding_processing import GroundingChunk
 from app.services.grounding.grounding_reindex import GroundingReindexReport, run_fixture_grounding_reindex
 from app.services.grounding.grounding_retrieval import GroundingRetrievalQuery, GroundingRetrievalResult, retrieve_grounding_chunks
-from app.services.grounding.grounding_sources import SourceContentType, SourceTrustTier
+from app.services.grounding.grounding_sources import SourceContentType, SourceTrustTier, SourceVersionKind
 from app.services.runners.language_capabilities import capabilities_for_public_course_language, get_language_capability
 
 
@@ -84,9 +84,10 @@ def replace_grounding_chunks(
             INSERT INTO grounding_chunks (
               chunk_id, source_id, language_id, title, section_path_json,
               canonical_url, source_type, source_trust_tier, fetched_at,
+              source_version_label, source_version_kind, document_content_hash,
               content_hash, content, topic_tags_json, metadata_json
             )
-            VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb)
+            VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb)
             ON CONFLICT (chunk_id) DO UPDATE SET
               source_id = EXCLUDED.source_id,
               language_id = EXCLUDED.language_id,
@@ -96,6 +97,9 @@ def replace_grounding_chunks(
               source_type = EXCLUDED.source_type,
               source_trust_tier = EXCLUDED.source_trust_tier,
               fetched_at = EXCLUDED.fetched_at,
+              source_version_label = EXCLUDED.source_version_label,
+              source_version_kind = EXCLUDED.source_version_kind,
+              document_content_hash = EXCLUDED.document_content_hash,
               content_hash = EXCLUDED.content_hash,
               content = EXCLUDED.content,
               topic_tags_json = EXCLUDED.topic_tags_json,
@@ -111,6 +115,9 @@ def replace_grounding_chunks(
                 chunk.source_type,
                 chunk.source_trust_tier,
                 chunk.fetched_at,
+                chunk.source_version_label,
+                chunk.source_version_kind,
+                chunk.document_content_hash,
                 chunk.content_hash,
                 chunk.text[:4000],
                 json.dumps(list(chunk.topic_tags), ensure_ascii=False),
@@ -269,6 +276,9 @@ def _chunk_from_row(row: Mapping[str, object]) -> GroundingChunk:
         content_hash=str(row["content_hash"]),
         text=str(row["content"]),
         topic_tags=tuple(str(item) for item in topic_tags) if isinstance(topic_tags, list | tuple) else (),
+        source_version_label=str(row.get("source_version_label") or "unversioned"),
+        source_version_kind=cast(SourceVersionKind, str(row.get("source_version_kind") or "rolling")),
+        document_content_hash=str(row.get("document_content_hash") or "0" * 64),
     )
 
 
@@ -291,6 +301,9 @@ def _serialize_citation_metadata(item: AgentGroundingItem) -> dict[str, object]:
         "canonical_url": citation.canonical_url,
         "source_type": citation.source_type,
         "source_trust_tier": citation.source_trust_tier,
+        "source_version_label": citation.source_version_label,
+        "source_version_kind": citation.source_version_kind,
+        "document_content_hash": citation.document_content_hash,
         "content_hash": citation.content_hash,
         "fetched_at": citation.fetched_at.isoformat(),
         "relevance_score": item.relevance_score,

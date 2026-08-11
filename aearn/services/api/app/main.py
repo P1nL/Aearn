@@ -11,6 +11,7 @@ from app.routes.environment import router as environment_router
 from app.routes.health import router as health_router
 from app.routes.harness_cutover import router as harness_cutover_router
 from app.routes.learning_plan_sessions import router as learning_plan_sessions_router
+from app.routes.lesson_documents import router as lesson_documents_router
 from app.routes.learning_tracks import router as learning_tracks_router
 from app.routes.tutor import router as tutor_router
 from app.routes.users import router as users_router
@@ -36,6 +37,7 @@ app.include_router(courses_router)
 app.include_router(environment_router)
 app.include_router(harness_cutover_router)
 app.include_router(learning_tracks_router)
+app.include_router(lesson_documents_router)
 app.include_router(learning_plan_sessions_router)
 app.include_router(tutor_router)
 

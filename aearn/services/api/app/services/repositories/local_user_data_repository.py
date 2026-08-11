@@ -128,6 +128,9 @@ def export_user_data(conn: Connection[dict[str, object]], user_id: str) -> dict[
         "learning_tracks": _export_learning_tracks(conn, user_id),
         "learning_track_plan_revisions": _export_learning_track_plan_revisions(conn, user_id),
         "learning_track_nodes": _export_learning_track_nodes(conn, user_id),
+        "lesson_documents": _export_lesson_documents(conn, user_id),
+        "lesson_assignments": _export_lesson_assignments(conn, user_id),
+        "lesson_citations": _export_lesson_citations(conn, user_id),
         "redaction": {
             "hidden_tests": "omitted",
             "solution_references": "omitted",
@@ -239,6 +242,9 @@ def _summary_counts(conn: Connection[dict[str, object]], user_id: str) -> dict[s
         "learning_track_progress": _count(conn, "SELECT count(*) AS count FROM tutor_track_node_progress WHERE user_id = %s", user_id),
         "mastery_evidence": _count(conn, "SELECT count(*) AS count FROM tutor_mastery_evidence WHERE user_id = %s", user_id),
         "mastery_states": _count(conn, "SELECT count(*) AS count FROM tutor_mastery_states WHERE user_id = %s", user_id),
+        "lesson_documents": _count(conn, "SELECT count(*) AS count FROM tutor_lesson_documents WHERE user_id = %s AND document_kind = 'personalized'", user_id),
+        "lesson_assignments": _count(conn, "SELECT count(*) AS count FROM tutor_lesson_assignments WHERE user_id = %s", user_id),
+        "lesson_authoring_runs": _count(conn, "SELECT count(*) AS count FROM tutor_lesson_authoring_runs WHERE user_id = %s", user_id),
     }
 
 
@@ -605,6 +611,55 @@ def _export_learning_track_nodes(
     return [_safe_row(row, exclude=()) for row in rows]
 
 
+def _export_lesson_documents(conn: Connection[dict[str, object]], user_id: str) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """
+        SELECT id, track_id, knowledge_key, language_id, active_plan_revision_id,
+               standard_document_id, predecessor_document_id, schema_version,
+               content_standard_version, generator_version, policy_version,
+               source_set_hash, profile_hash, title, coverage_keys_json, blocks_json,
+               content_hash, change_summary_json, created_at
+        FROM tutor_lesson_documents
+        WHERE user_id = %s AND document_kind = 'personalized'
+        ORDER BY created_at, id
+        """,
+        (user_id,),
+    ).fetchall()
+    return [_safe_row(row, exclude=()) for row in rows]
+
+
+def _export_lesson_assignments(conn: Connection[dict[str, object]], user_id: str) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """
+        SELECT id, track_id, knowledge_key, document_id, source_plan_revision_id,
+               predecessor_assignment_id, assignment_version, status, impact_json,
+               content_hash, started_at, activated_at, created_at, updated_at
+        FROM tutor_lesson_assignments
+        WHERE user_id = %s
+        ORDER BY track_id, knowledge_key, assignment_version
+        """,
+        (user_id,),
+    ).fetchall()
+    return [_safe_row(row, exclude=()) for row in rows]
+
+
+def _export_lesson_citations(conn: Connection[dict[str, object]], user_id: str) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """
+        SELECT document_id, knowledge_key, citation_id, source_id, display_name,
+               provider, trust_tier, source_type, source_version_label,
+               source_version_kind, canonical_url, section_path_json,
+               grounding_chunk_id, document_content_hash, chunk_content_hash,
+               fetched_at, snapshotted_at
+        FROM tutor_lesson_source_snapshots
+        WHERE user_id = %s
+        ORDER BY document_id, citation_id
+        """,
+        (user_id,),
+    ).fetchall()
+    return [_safe_row(row, exclude=()) for row in rows]
+
+
 def _delete_learning_track_data(conn: Connection[dict[str, object]], user_id: str) -> None:
     # Scope snapshots are children of durable Tutor runs/conversations. Cancel
     # active runs first so an old continuation cannot resume after its authority
@@ -632,6 +687,13 @@ def _delete_learning_track_data(conn: Connection[dict[str, object]], user_id: st
         )
     conn.execute("SELECT set_config('aearn.learning_track_purge_user_id', %s, true)", (user_id,))
     conn.execute("SET CONSTRAINTS ALL DEFERRED")
+    conn.execute("DELETE FROM tutor_lesson_authoring_attempt_receipts WHERE user_id = %s", (user_id,))
+    conn.execute("DELETE FROM tutor_lesson_authoring_runs WHERE user_id = %s", (user_id,))
+    conn.execute("DELETE FROM tutor_lesson_assignments WHERE user_id = %s", (user_id,))
+    conn.execute("DELETE FROM tutor_lesson_block_citations WHERE user_id = %s", (user_id,))
+    conn.execute("DELETE FROM tutor_lesson_gate_slots WHERE user_id = %s", (user_id,))
+    conn.execute("DELETE FROM tutor_lesson_source_snapshots WHERE user_id = %s", (user_id,))
+    conn.execute("DELETE FROM tutor_lesson_documents WHERE user_id = %s AND document_kind = 'personalized'", (user_id,))
     conn.execute("DELETE FROM tutor_learning_plan_drafts WHERE user_id = %s", (user_id,))
     conn.execute("DELETE FROM tutor_learning_plan_sessions WHERE user_id = %s", (user_id,))
     conn.execute("DELETE FROM tutor_run_learning_scopes WHERE user_id = %s", (user_id,))

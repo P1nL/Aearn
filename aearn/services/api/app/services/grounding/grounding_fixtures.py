@@ -46,6 +46,8 @@ def fixture_documents_for_language(
             fetched_at=fetched_at or DEFAULT_FIXTURE_FETCHED_AT,
             raw_content=raw_content,
             content_hash=_sha256(raw_content),
+            source_version_label=source.source_version_label,
+            source_version_kind=source.source_version_kind,
         ),
     )
 

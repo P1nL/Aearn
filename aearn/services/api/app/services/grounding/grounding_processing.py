@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from app.services.grounding.grounding_fetcher import GroundingFetchDocument
-from app.services.grounding.grounding_sources import SourceContentType, SourceTrustTier, get_grounding_source
+from app.services.grounding.grounding_sources import SourceContentType, SourceTrustTier, SourceVersionKind, get_grounding_source
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +30,9 @@ class GroundingChunk:
     content_hash: str
     text: str
     topic_tags: tuple[str, ...]
+    source_version_label: str = "unversioned"
+    source_version_kind: SourceVersionKind = "rolling"
+    document_content_hash: str = ""
 
 
 @dataclass(slots=True)
@@ -158,6 +161,9 @@ def clean_and_chunk_document(document: GroundingFetchDocument, *, max_chars: int
                     content_hash=content_hash,
                     text=text,
                     topic_tags=source.topic_tags,
+                    source_version_label=document.source_version_label,
+                    source_version_kind=document.source_version_kind,
+                    document_content_hash=document.content_hash,
                 ),
             )
     return tuple(chunks)

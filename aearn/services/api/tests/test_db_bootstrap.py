@@ -123,12 +123,45 @@ CONTEXT_SUMMARY_CONSTRAINTS = (
     "chk_tutor_context_summary_v2_shape",
 )
 
+LESSON_SCHEMA_CONSTRAINTS = (
+    "uq_tutor_lesson_documents_id_scope",
+    "fk_tutor_lesson_document_user",
+    "fk_tutor_lesson_document_track_user",
+    "fk_tutor_lesson_document_revision_scope",
+    "fk_tutor_lesson_document_standard",
+    "fk_tutor_lesson_document_predecessor",
+    "chk_tutor_lesson_document_scope_shape",
+    "chk_tutor_lesson_document_predecessor_distinct",
+    "uq_tutor_lesson_source_snapshots_document_citation",
+    "uq_tutor_lesson_source_snapshots_id_scope",
+    "fk_tutor_lesson_block_citation_snapshot",
+    "uq_tutor_lesson_gate_slots_document_key",
+    "uq_tutor_lesson_gate_slots_document_block",
+    "uq_tutor_lesson_assignments_id_scope",
+    "fk_tutor_lesson_assignment_track_user",
+    "fk_tutor_lesson_assignment_document_scope",
+    "fk_tutor_lesson_assignment_revision_scope",
+    "fk_tutor_lesson_assignment_predecessor",
+    "chk_tutor_lesson_assignment_predecessor_distinct",
+    "chk_tutor_lesson_assignment_activation",
+    "uq_tutor_lesson_authoring_runs_id_user",
+    "uq_tutor_lesson_authoring_runs_idempotency",
+    "fk_tutor_lesson_authoring_run_track_user",
+    "fk_tutor_lesson_authoring_run_revision_scope",
+    "chk_tutor_lesson_authoring_run_lease",
+    "chk_tutor_lesson_authoring_run_terminal",
+    "uq_tutor_lesson_authoring_attempt_identity",
+    "fk_tutor_lesson_authoring_attempt_run_user",
+    "chk_tutor_lesson_authoring_attempt_usage",
+)
+
 TUTOR_SCHEMA_CONSTRAINTS = (
     EXECUTION_SCOPE_CONSTRAINTS
     + EXECUTION_LIFECYCLE_CONSTRAINTS
     + PROVIDER_ATTEMPT_RECEIPT_CONSTRAINTS
     + CONVERSATION_TURNRUN_CONSTRAINTS
     + CONTEXT_SUMMARY_CONSTRAINTS
+    + LESSON_SCHEMA_CONSTRAINTS
 )
 
 TARGET_TUTOR_TABLES = (
@@ -167,6 +200,13 @@ TARGET_TUTOR_TABLES = (
     "tutor_api_idempotency_records",
     "tutor_run_public_processes",
     "tutor_run_public_process_steps",
+    "tutor_lesson_documents",
+    "tutor_lesson_source_snapshots",
+    "tutor_lesson_block_citations",
+    "tutor_lesson_gate_slots",
+    "tutor_lesson_assignments",
+    "tutor_lesson_authoring_runs",
+    "tutor_lesson_authoring_attempt_receipts",
 )
 
 
@@ -214,6 +254,16 @@ def test_tutor_target_schema_is_repeatable_and_enforces_run_event_identity() -> 
                     "trg_tutor_memory_entries_updated_at",
                     "trg_tutor_inbox_items_updated_at",
                     "trg_tutor_public_processes_updated_at",
+                    "trg_tutor_lesson_documents_lineage",
+                    "trg_tutor_lesson_documents_immutable",
+                    "trg_tutor_lesson_source_snapshots_immutable",
+                    "trg_tutor_lesson_block_citations_immutable",
+                    "trg_tutor_lesson_gate_slots_immutable",
+                    "trg_tutor_lesson_assignments_updated_at",
+                    "trg_tutor_lesson_assignments_lifecycle",
+                    "trg_tutor_lesson_authoring_runs_updated_at",
+                    "trg_tutor_lesson_authoring_runs_lifecycle",
+                    "trg_tutor_lesson_authoring_attempt_receipts_immutable",
                 ],
             ),
         ).fetchall()
@@ -290,6 +340,16 @@ def test_tutor_target_schema_is_repeatable_and_enforces_run_event_identity() -> 
             "trg_tutor_memory_entries_updated_at",
             "trg_tutor_inbox_items_updated_at",
             "trg_tutor_public_processes_updated_at",
+            "trg_tutor_lesson_documents_lineage",
+            "trg_tutor_lesson_documents_immutable",
+            "trg_tutor_lesson_source_snapshots_immutable",
+            "trg_tutor_lesson_block_citations_immutable",
+            "trg_tutor_lesson_gate_slots_immutable",
+            "trg_tutor_lesson_assignments_updated_at",
+            "trg_tutor_lesson_assignments_lifecycle",
+            "trg_tutor_lesson_authoring_runs_updated_at",
+            "trg_tutor_lesson_authoring_runs_lifecycle",
+            "trg_tutor_lesson_authoring_attempt_receipts_immutable",
         }
         executor_indexes = conn.execute(
             """
@@ -316,6 +376,14 @@ def test_tutor_target_schema_is_repeatable_and_enforces_run_event_identity() -> 
                     "idx_tutor_conversations_public_activity",
                     "idx_tutor_public_processes_conversation_activity",
                     "idx_tutor_public_process_steps_run_ordinal",
+                    "uq_tutor_lesson_documents_standard_identity",
+                    "uq_tutor_lesson_documents_personalized_identity",
+                    "idx_tutor_lesson_documents_track_key_created",
+                    "idx_tutor_lesson_source_snapshots_document",
+                    "uq_tutor_lesson_assignments_one_active",
+                    "idx_tutor_lesson_assignments_track_key_created",
+                    "idx_tutor_lesson_authoring_runs_claim",
+                    "idx_tutor_lesson_authoring_runs_track_key",
                 ],
             ),
         ).fetchall()
@@ -336,6 +404,14 @@ def test_tutor_target_schema_is_repeatable_and_enforces_run_event_identity() -> 
             "idx_tutor_conversations_public_activity",
             "idx_tutor_public_processes_conversation_activity",
             "idx_tutor_public_process_steps_run_ordinal",
+            "uq_tutor_lesson_documents_standard_identity",
+            "uq_tutor_lesson_documents_personalized_identity",
+            "idx_tutor_lesson_documents_track_key_created",
+            "idx_tutor_lesson_source_snapshots_document",
+            "uq_tutor_lesson_assignments_one_active",
+            "idx_tutor_lesson_assignments_track_key_created",
+            "idx_tutor_lesson_authoring_runs_claim",
+            "idx_tutor_lesson_authoring_runs_track_key",
         }
         execution_constraint_rows = conn.execute(
             "SELECT conname FROM pg_constraint WHERE conname = ANY(%s)",

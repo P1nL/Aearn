@@ -111,6 +111,9 @@ def _chunk(*, source_id: str = "python-tutorial") -> GroundingChunk:
         content_hash="a" * 64,
         text="A function can return a value to its caller with the return statement.",
         topic_tags=("functions",),
+        source_version_label="python-3",
+        source_version_kind="rolling",
+        document_content_hash="d" * 64,
     )
 
 

@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from app.services.grounding.grounding_sources import GroundingSource, get_grounding_source, sources_for_language
+from app.services.grounding.grounding_sources import GroundingSource, SourceVersionKind, get_grounding_source, sources_for_language
 
 
 GroundingFetchStatus = Literal["ok", "blocked", "failed"]
@@ -38,6 +38,8 @@ class GroundingFetchDocument:
     fetched_at: datetime
     raw_content: str
     content_hash: str
+    source_version_label: str = "unversioned"
+    source_version_kind: SourceVersionKind = "rolling"
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,6 +142,8 @@ class GroundingDocsFetcher:
             fetched_at=self._now(),
             raw_content=raw_content,
             content_hash=hashlib.sha256(raw_content.encode("utf-8")).hexdigest(),
+            source_version_label=source.source_version_label,
+            source_version_kind=source.source_version_kind,
         )
         result = GroundingFetchResult(source_id=source.source_id, url=canonical_url, status="ok", document=document)
         self._cache[cache_key] = result

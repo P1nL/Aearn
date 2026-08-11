@@ -62,6 +62,9 @@ def test_chunks_include_source_metadata_and_stable_hashes() -> None:
     assert chunk.source_type == "tutorial"
     assert chunk.source_trust_tier == "official"
     assert chunk.fetched_at == document.fetched_at
+    assert chunk.source_version_label == "unversioned"
+    assert chunk.source_version_kind == "rolling"
+    assert chunk.document_content_hash == document.content_hash
     assert len(chunk.chunk_id) == 24
     assert len(chunk.content_hash) == 64
     assert "functions" in chunk.topic_tags

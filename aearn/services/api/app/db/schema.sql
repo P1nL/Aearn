@@ -529,6 +529,9 @@ CREATE TABLE IF NOT EXISTS grounding_chunks (
   source_type text NOT NULL CHECK (source_type IN ('tutorial', 'reference', 'spec', 'platform_docs', 'vendor_docs')),
   source_trust_tier text NOT NULL CHECK (source_trust_tier IN ('official', 'trusted_de_facto', 'internal')),
   fetched_at timestamptz NOT NULL,
+  source_version_label text NOT NULL DEFAULT 'unversioned' CHECK (char_length(source_version_label) BETWEEN 1 AND 160),
+  source_version_kind text NOT NULL DEFAULT 'rolling' CHECK (source_version_kind IN ('fixed', 'rolling')),
+  document_content_hash text NOT NULL DEFAULT '0000000000000000000000000000000000000000000000000000000000000000' CHECK (document_content_hash ~ '^[0-9a-f]{64}$'),
   content_hash text NOT NULL,
   content text NOT NULL,
   topic_tags_json jsonb NOT NULL DEFAULT '[]'::jsonb,
@@ -540,6 +543,25 @@ CREATE TABLE IF NOT EXISTS grounding_chunks (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
+
+
+ALTER TABLE grounding_chunks
+  ADD COLUMN IF NOT EXISTS source_version_label text NOT NULL DEFAULT 'unversioned',
+  ADD COLUMN IF NOT EXISTS source_version_kind text NOT NULL DEFAULT 'rolling',
+  ADD COLUMN IF NOT EXISTS document_content_hash text NOT NULL DEFAULT '0000000000000000000000000000000000000000000000000000000000000000';
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_grounding_chunks_source_version_kind') THEN
+    ALTER TABLE grounding_chunks ADD CONSTRAINT chk_grounding_chunks_source_version_kind
+      CHECK (source_version_kind IN ('fixed', 'rolling'));
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_grounding_chunks_document_content_hash') THEN
+    ALTER TABLE grounding_chunks ADD CONSTRAINT chk_grounding_chunks_document_content_hash
+      CHECK (document_content_hash ~ '^[0-9a-f]{64}$');
+  END IF;
+END;
+$$;
 
 CREATE TABLE IF NOT EXISTS grounding_reindex_runs (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -3311,3 +3333,379 @@ DROP TRIGGER IF EXISTS trg_tutor_run_learning_scopes_immutable ON tutor_run_lear
 CREATE TRIGGER trg_tutor_run_learning_scopes_immutable
 BEFORE UPDATE OR DELETE ON tutor_run_learning_scopes
 FOR EACH ROW EXECUTE FUNCTION enforce_tutor_run_learning_scope_immutable();
+
+
+-- Child 08-04 LessonDocument authority: immutable documents, evidence snapshots,
+-- user-scoped assignments, and recoverable server-owned authoring lifecycle.
+CREATE TABLE IF NOT EXISTS tutor_lesson_documents (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  document_kind text NOT NULL CHECK (document_kind IN ('standard', 'personalized')),
+  user_id uuid,
+  track_id uuid,
+  knowledge_key text NOT NULL CHECK (knowledge_key ~ '^[a-z0-9][a-z0-9._:-]{0,159}$'),
+  language_id text NOT NULL CHECK (char_length(language_id) BETWEEN 1 AND 80),
+  active_plan_revision_id uuid,
+  standard_document_id uuid,
+  predecessor_document_id uuid,
+  schema_version text NOT NULL CHECK (schema_version = 'lesson_document_v1'),
+  content_standard_version text NOT NULL CHECK (content_standard_version ~ '^[a-z0-9][a-z0-9._:-]{0,159}$'),
+  generator_version text NOT NULL CHECK (char_length(generator_version) BETWEEN 1 AND 160),
+  policy_version text NOT NULL CHECK (char_length(policy_version) BETWEEN 1 AND 160),
+  source_set_hash text NOT NULL CHECK (source_set_hash ~ '^[0-9a-f]{64}$'),
+  profile_hash text CHECK (profile_hash IS NULL OR profile_hash ~ '^[0-9a-f]{64}$'),
+  title text NOT NULL CHECK (char_length(title) BETWEEN 1 AND 240),
+  coverage_keys_json jsonb NOT NULL CHECK (jsonb_typeof(coverage_keys_json) = 'array'),
+  blocks_json jsonb NOT NULL CHECK (jsonb_typeof(blocks_json) = 'array'),
+  content_hash text NOT NULL CHECK (content_hash ~ '^[0-9a-f]{64}$'),
+  change_summary_json jsonb NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(change_summary_json) = 'object'),
+  quality_summary_json jsonb NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(quality_summary_json) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_tutor_lesson_documents_id_scope UNIQUE (id, user_id, track_id, knowledge_key),
+  CONSTRAINT fk_tutor_lesson_document_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_lesson_document_track_user
+    FOREIGN KEY (track_id, user_id) REFERENCES tutor_learning_tracks(id, user_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_lesson_document_revision_scope
+    FOREIGN KEY (active_plan_revision_id, track_id, user_id)
+    REFERENCES tutor_track_plan_revisions(id, track_id, user_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_lesson_document_standard FOREIGN KEY (standard_document_id) REFERENCES tutor_lesson_documents(id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_lesson_document_predecessor FOREIGN KEY (predecessor_document_id) REFERENCES tutor_lesson_documents(id) ON DELETE RESTRICT,
+  CONSTRAINT chk_tutor_lesson_document_scope_shape CHECK (
+    (document_kind = 'standard' AND user_id IS NULL AND track_id IS NULL
+      AND active_plan_revision_id IS NULL AND standard_document_id IS NULL AND profile_hash IS NULL)
+    OR
+    (document_kind = 'personalized' AND user_id IS NOT NULL AND track_id IS NOT NULL
+      AND active_plan_revision_id IS NOT NULL AND standard_document_id IS NOT NULL AND profile_hash IS NOT NULL)
+  ),
+  CONSTRAINT chk_tutor_lesson_document_predecessor_distinct CHECK (
+    predecessor_document_id IS NULL OR predecessor_document_id <> id
+  )
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_tutor_lesson_documents_standard_identity
+  ON tutor_lesson_documents(
+    language_id, knowledge_key, content_standard_version,
+    generator_version, policy_version, source_set_hash, content_hash
+  ) WHERE document_kind = 'standard';
+CREATE UNIQUE INDEX IF NOT EXISTS uq_tutor_lesson_documents_personalized_identity
+  ON tutor_lesson_documents(
+    user_id, track_id, knowledge_key, standard_document_id,
+    profile_hash, generator_version, policy_version, source_set_hash, content_hash
+  ) WHERE document_kind = 'personalized';
+CREATE INDEX IF NOT EXISTS idx_tutor_lesson_documents_track_key_created
+  ON tutor_lesson_documents(track_id, knowledge_key, created_at DESC)
+  WHERE document_kind = 'personalized';
+
+CREATE TABLE IF NOT EXISTS tutor_lesson_source_snapshots (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  document_id uuid NOT NULL REFERENCES tutor_lesson_documents(id) ON DELETE RESTRICT,
+  user_id uuid,
+  track_id uuid,
+  knowledge_key text NOT NULL CHECK (knowledge_key ~ '^[a-z0-9][a-z0-9._:-]{0,159}$'),
+  citation_id text NOT NULL CHECK (citation_id ~ '^cite_[0-9a-f]{16}$'),
+  source_id text NOT NULL CHECK (char_length(source_id) BETWEEN 1 AND 160),
+  display_name text NOT NULL CHECK (char_length(display_name) BETWEEN 1 AND 240),
+  provider text NOT NULL CHECK (char_length(provider) BETWEEN 1 AND 240),
+  trust_tier text NOT NULL CHECK (trust_tier IN ('official', 'trusted_de_facto', 'internal')),
+  source_type text NOT NULL CHECK (source_type IN ('tutorial', 'reference', 'spec', 'platform_docs', 'vendor_docs')),
+  source_version_label text NOT NULL CHECK (char_length(source_version_label) BETWEEN 1 AND 160),
+  source_version_kind text NOT NULL CHECK (source_version_kind IN ('fixed', 'rolling')),
+  canonical_url text NOT NULL CHECK (canonical_url ~ '^https?://'),
+  section_path_json jsonb NOT NULL DEFAULT '[]'::jsonb CHECK (jsonb_typeof(section_path_json) = 'array'),
+  grounding_chunk_id text NOT NULL CHECK (char_length(grounding_chunk_id) BETWEEN 1 AND 160),
+  document_content_hash text NOT NULL CHECK (document_content_hash ~ '^[0-9a-f]{64}$'),
+  chunk_content_hash text NOT NULL CHECK (chunk_content_hash ~ '^[0-9a-f]{64}$'),
+  fetched_at timestamptz NOT NULL,
+  snapshotted_at timestamptz NOT NULL,
+  evidence_excerpt text NOT NULL CHECK (char_length(evidence_excerpt) BETWEEN 1 AND 1200),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_tutor_lesson_source_snapshots_document_citation UNIQUE (document_id, citation_id),
+  CONSTRAINT uq_tutor_lesson_source_snapshots_id_scope UNIQUE (id, document_id, user_id, track_id, knowledge_key)
+);
+CREATE INDEX IF NOT EXISTS idx_tutor_lesson_source_snapshots_document
+  ON tutor_lesson_source_snapshots(document_id, citation_id);
+
+CREATE TABLE IF NOT EXISTS tutor_lesson_block_citations (
+  document_id uuid NOT NULL REFERENCES tutor_lesson_documents(id) ON DELETE RESTRICT,
+  user_id uuid,
+  track_id uuid,
+  knowledge_key text NOT NULL CHECK (knowledge_key ~ '^[a-z0-9][a-z0-9._:-]{0,159}$'),
+  block_id text NOT NULL CHECK (block_id ~ '^[a-z0-9][a-z0-9._:-]{0,159}$'),
+  citation_id text NOT NULL CHECK (citation_id ~ '^cite_[0-9a-f]{16}$'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (document_id, block_id, citation_id),
+  CONSTRAINT fk_tutor_lesson_block_citation_snapshot
+    FOREIGN KEY (document_id, citation_id)
+    REFERENCES tutor_lesson_source_snapshots(document_id, citation_id) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS tutor_lesson_gate_slots (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  document_id uuid NOT NULL REFERENCES tutor_lesson_documents(id) ON DELETE RESTRICT,
+  user_id uuid,
+  track_id uuid,
+  knowledge_key text NOT NULL CHECK (knowledge_key ~ '^[a-z0-9][a-z0-9._:-]{0,159}$'),
+  block_id text NOT NULL CHECK (block_id ~ '^[a-z0-9][a-z0-9._:-]{0,159}$'),
+  gate_key text NOT NULL CHECK (gate_key ~ '^[a-z0-9][a-z0-9._:-]{0,159}$'),
+  gate_kind text NOT NULL CHECK (gate_kind IN ('knowledge_check', 'guided_practice', 'independent_practice')),
+  assessment_contract_version text NOT NULL CHECK (assessment_contract_version ~ '^[a-z0-9][a-z0-9._:-]{0,159}$'),
+  required_capabilities_json jsonb NOT NULL CHECK (jsonb_typeof(required_capabilities_json) = 'array'),
+  learner_prompt_hash text NOT NULL CHECK (learner_prompt_hash ~ '^[0-9a-f]{64}$'),
+  learner_prompt text NOT NULL CHECK (char_length(learner_prompt) BETWEEN 1 AND 1200),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_tutor_lesson_gate_slots_document_key UNIQUE (document_id, gate_key),
+  CONSTRAINT uq_tutor_lesson_gate_slots_document_block UNIQUE (document_id, block_id)
+);
+
+CREATE TABLE IF NOT EXISTS tutor_lesson_assignments (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL,
+  track_id uuid NOT NULL,
+  knowledge_key text NOT NULL CHECK (knowledge_key ~ '^[a-z0-9][a-z0-9._:-]{0,159}$'),
+  document_id uuid NOT NULL,
+  source_plan_revision_id uuid NOT NULL,
+  predecessor_assignment_id uuid,
+  assignment_version integer NOT NULL CHECK (assignment_version >= 1),
+  status text NOT NULL CHECK (status IN ('active', 'proposed', 'superseded')),
+  impact_json jsonb NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(impact_json) = 'object'),
+  expected_progress_version integer NOT NULL CHECK (expected_progress_version >= 1),
+  content_hash text NOT NULL CHECK (content_hash ~ '^[0-9a-f]{64}$'),
+  started_at timestamptz,
+  activated_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_tutor_lesson_assignments_id_scope UNIQUE (id, user_id, track_id, knowledge_key),
+  CONSTRAINT fk_tutor_lesson_assignment_track_user
+    FOREIGN KEY (track_id, user_id) REFERENCES tutor_learning_tracks(id, user_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_lesson_assignment_document_scope
+    FOREIGN KEY (document_id, user_id, track_id, knowledge_key)
+    REFERENCES tutor_lesson_documents(id, user_id, track_id, knowledge_key) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_lesson_assignment_revision_scope
+    FOREIGN KEY (source_plan_revision_id, track_id, user_id)
+    REFERENCES tutor_track_plan_revisions(id, track_id, user_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_lesson_assignment_predecessor FOREIGN KEY (predecessor_assignment_id) REFERENCES tutor_lesson_assignments(id) ON DELETE RESTRICT,
+  CONSTRAINT chk_tutor_lesson_assignment_predecessor_distinct CHECK (
+    predecessor_assignment_id IS NULL OR predecessor_assignment_id <> id
+  ),
+  CONSTRAINT chk_tutor_lesson_assignment_activation CHECK (
+    (status = 'proposed' AND activated_at IS NULL)
+    OR (status IN ('active', 'superseded') AND activated_at IS NOT NULL)
+  )
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_tutor_lesson_assignments_one_active
+  ON tutor_lesson_assignments(track_id, knowledge_key) WHERE status = 'active';
+CREATE INDEX IF NOT EXISTS idx_tutor_lesson_assignments_track_key_created
+  ON tutor_lesson_assignments(track_id, knowledge_key, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS tutor_lesson_authoring_runs (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL,
+  track_id uuid NOT NULL,
+  knowledge_key text NOT NULL CHECK (knowledge_key ~ '^[a-z0-9][a-z0-9._:-]{0,159}$'),
+  run_kind text NOT NULL CHECK (run_kind IN ('prepare', 'refresh')),
+  state text NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'claimed', 'running', 'completed', 'failed', 'cancelled')),
+  idempotency_key text NOT NULL CHECK (char_length(idempotency_key) BETWEEN 1 AND 160),
+  request_hash text NOT NULL CHECK (request_hash ~ '^[0-9a-f]{64}$'),
+  expected_track_version integer NOT NULL CHECK (expected_track_version >= 1),
+  expected_progress_version integer NOT NULL CHECK (expected_progress_version >= 1),
+  active_plan_revision_id uuid NOT NULL,
+  source_set_hash text CHECK (source_set_hash IS NULL OR source_set_hash ~ '^[0-9a-f]{64}$'),
+  profile_hash text NOT NULL CHECK (profile_hash ~ '^[0-9a-f]{64}$'),
+  attempt_count integer NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+  lease_generation integer NOT NULL DEFAULT 0 CHECK (lease_generation >= 0),
+  lease_owner text,
+  lease_expires_at timestamptz,
+  failure_code text,
+  failure_message text,
+  standard_document_id uuid REFERENCES tutor_lesson_documents(id) ON DELETE RESTRICT,
+  personalized_document_id uuid REFERENCES tutor_lesson_documents(id) ON DELETE RESTRICT,
+  assignment_id uuid REFERENCES tutor_lesson_assignments(id) ON DELETE RESTRICT,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  terminal_at timestamptz,
+  CONSTRAINT uq_tutor_lesson_authoring_runs_id_user UNIQUE (id, user_id),
+  CONSTRAINT uq_tutor_lesson_authoring_runs_idempotency UNIQUE (user_id, run_kind, idempotency_key),
+  CONSTRAINT fk_tutor_lesson_authoring_run_track_user
+    FOREIGN KEY (track_id, user_id) REFERENCES tutor_learning_tracks(id, user_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_lesson_authoring_run_revision_scope
+    FOREIGN KEY (active_plan_revision_id, track_id, user_id)
+    REFERENCES tutor_track_plan_revisions(id, track_id, user_id) ON DELETE RESTRICT,
+  CONSTRAINT chk_tutor_lesson_authoring_run_lease CHECK (
+    (state IN ('claimed', 'running')) = (lease_owner IS NOT NULL AND lease_expires_at IS NOT NULL)
+  ),
+  CONSTRAINT chk_tutor_lesson_authoring_run_terminal CHECK (
+    (state IN ('completed', 'failed', 'cancelled')) = (terminal_at IS NOT NULL)
+  )
+);
+CREATE INDEX IF NOT EXISTS idx_tutor_lesson_authoring_runs_claim
+  ON tutor_lesson_authoring_runs(state, lease_expires_at, created_at)
+  WHERE state IN ('pending', 'claimed', 'running');
+CREATE INDEX IF NOT EXISTS idx_tutor_lesson_authoring_runs_track_key
+  ON tutor_lesson_authoring_runs(track_id, knowledge_key, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS tutor_lesson_authoring_attempt_receipts (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  run_id uuid NOT NULL,
+  user_id uuid NOT NULL,
+  attempt_index integer NOT NULL CHECK (attempt_index >= 1),
+  provider text NOT NULL CHECK (char_length(provider) BETWEEN 1 AND 120),
+  model text NOT NULL CHECK (char_length(model) BETWEEN 1 AND 160),
+  protocol text NOT NULL CHECK (char_length(protocol) BETWEEN 1 AND 80),
+  outcome text NOT NULL CHECK (outcome IN ('success', 'unavailable', 'invalid', 'failed')),
+  diagnostic_code text,
+  usage_available boolean NOT NULL DEFAULT false,
+  input_tokens integer CHECK (input_tokens IS NULL OR input_tokens >= 0),
+  output_tokens integer CHECK (output_tokens IS NULL OR output_tokens >= 0),
+  total_tokens integer CHECK (total_tokens IS NULL OR total_tokens >= 0),
+  request_hash text NOT NULL CHECK (request_hash ~ '^[0-9a-f]{64}$'),
+  response_hash text CHECK (response_hash IS NULL OR response_hash ~ '^[0-9a-f]{64}$'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_tutor_lesson_authoring_attempt_identity UNIQUE (run_id, attempt_index),
+  CONSTRAINT fk_tutor_lesson_authoring_attempt_run_user
+    FOREIGN KEY (run_id, user_id) REFERENCES tutor_lesson_authoring_runs(id, user_id) ON DELETE RESTRICT,
+  CONSTRAINT chk_tutor_lesson_authoring_attempt_usage CHECK (
+    (usage_available AND input_tokens IS NOT NULL AND output_tokens IS NOT NULL)
+    OR (NOT usage_available AND input_tokens IS NULL AND output_tokens IS NULL AND total_tokens IS NULL)
+  )
+);
+
+CREATE OR REPLACE FUNCTION enforce_tutor_lesson_document_lineage()
+RETURNS trigger AS $$
+DECLARE
+  standard_row tutor_lesson_documents%ROWTYPE;
+  predecessor_row tutor_lesson_documents%ROWTYPE;
+BEGIN
+  IF NEW.document_kind = 'personalized' THEN
+    SELECT * INTO standard_row FROM tutor_lesson_documents WHERE id = NEW.standard_document_id;
+    IF standard_row.id IS NULL OR standard_row.document_kind <> 'standard'
+       OR standard_row.language_id <> NEW.language_id
+       OR standard_row.knowledge_key <> NEW.knowledge_key THEN
+      RAISE EXCEPTION 'Personalized LessonDocument must reference a matching standard document' USING ERRCODE = '23514';
+    END IF;
+  END IF;
+  IF NEW.predecessor_document_id IS NOT NULL THEN
+    SELECT * INTO predecessor_row FROM tutor_lesson_documents WHERE id = NEW.predecessor_document_id;
+    IF predecessor_row.id IS NULL OR predecessor_row.document_kind <> NEW.document_kind
+       OR predecessor_row.language_id <> NEW.language_id
+       OR predecessor_row.knowledge_key <> NEW.knowledge_key
+       OR predecessor_row.user_id IS DISTINCT FROM NEW.user_id
+       OR predecessor_row.track_id IS DISTINCT FROM NEW.track_id THEN
+      RAISE EXCEPTION 'LessonDocument predecessor scope is invalid' USING ERRCODE = '23514';
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION enforce_tutor_lesson_immutable()
+RETURNS trigger AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    IF OLD.user_id IS NOT NULL AND tutor_learning_track_purge_allowed(OLD.user_id) THEN
+      RETURN OLD;
+    END IF;
+    RAISE EXCEPTION 'Lesson authority rows are append-only' USING ERRCODE = '23514';
+  END IF;
+  RAISE EXCEPTION 'Lesson authority rows are immutable' USING ERRCODE = '23514';
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION enforce_tutor_lesson_assignment_lifecycle()
+RETURNS trigger AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    IF tutor_learning_track_purge_allowed(OLD.user_id) THEN RETURN OLD; END IF;
+    RAISE EXCEPTION 'Lesson assignments cannot be deleted' USING ERRCODE = '23514';
+  END IF;
+  IF NEW.id IS DISTINCT FROM OLD.id OR NEW.user_id IS DISTINCT FROM OLD.user_id
+     OR NEW.track_id IS DISTINCT FROM OLD.track_id OR NEW.knowledge_key IS DISTINCT FROM OLD.knowledge_key
+     OR NEW.document_id IS DISTINCT FROM OLD.document_id OR NEW.source_plan_revision_id IS DISTINCT FROM OLD.source_plan_revision_id
+     OR NEW.predecessor_assignment_id IS DISTINCT FROM OLD.predecessor_assignment_id
+     OR NEW.assignment_version IS DISTINCT FROM OLD.assignment_version
+     OR NEW.impact_json IS DISTINCT FROM OLD.impact_json OR NEW.content_hash IS DISTINCT FROM OLD.content_hash
+     OR NEW.expected_progress_version IS DISTINCT FROM OLD.expected_progress_version
+     OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+    RAISE EXCEPTION 'Lesson assignment identity is immutable' USING ERRCODE = '23514';
+  END IF;
+  IF OLD.started_at IS NOT NULL AND NEW.started_at IS DISTINCT FROM OLD.started_at THEN
+    RAISE EXCEPTION 'Started Lesson assignment is frozen' USING ERRCODE = '23514';
+  END IF;
+  IF OLD.status = 'proposed' AND NEW.status = 'active'
+     AND (OLD.activated_at IS NOT NULL OR NEW.activated_at IS NULL) THEN
+    RAISE EXCEPTION 'Activated Lesson assignment requires a new activation timestamp' USING ERRCODE = '23514';
+  END IF;
+  IF OLD.status <> 'proposed' AND NEW.activated_at IS DISTINCT FROM OLD.activated_at THEN
+    RAISE EXCEPTION 'Lesson assignment activation timestamp is immutable' USING ERRCODE = '23514';
+  END IF;
+  IF OLD.status = 'active' AND NEW.status IN ('active', 'superseded') THEN RETURN NEW; END IF;
+  IF OLD.status = 'proposed' AND NEW.status IN ('proposed', 'active', 'superseded') THEN RETURN NEW; END IF;
+  IF OLD.status = NEW.status AND OLD.status = 'superseded' THEN RETURN NEW; END IF;
+  RAISE EXCEPTION 'Lesson assignment lifecycle transition is invalid' USING ERRCODE = '23514';
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION enforce_tutor_lesson_authoring_run_lifecycle()
+RETURNS trigger AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    IF tutor_learning_track_purge_allowed(OLD.user_id) THEN RETURN OLD; END IF;
+    RAISE EXCEPTION 'Lesson authoring runs cannot be deleted' USING ERRCODE = '23514';
+  END IF;
+  IF OLD.state IN ('completed', 'failed', 'cancelled') AND NEW IS DISTINCT FROM OLD THEN
+    RAISE EXCEPTION 'Terminal Lesson authoring run is immutable' USING ERRCODE = '23514';
+  END IF;
+  IF OLD.state = 'pending' AND NEW.state IN ('pending', 'claimed', 'cancelled') THEN RETURN NEW; END IF;
+  IF OLD.state = 'claimed' AND NEW.state IN ('claimed', 'running', 'pending', 'failed', 'cancelled') THEN RETURN NEW; END IF;
+  IF OLD.state = 'running' AND NEW.state IN ('running', 'completed', 'failed', 'cancelled') THEN RETURN NEW; END IF;
+  RAISE EXCEPTION 'Lesson authoring run lifecycle transition is invalid' USING ERRCODE = '23514';
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_tutor_lesson_documents_lineage ON tutor_lesson_documents;
+CREATE TRIGGER trg_tutor_lesson_documents_lineage
+BEFORE INSERT ON tutor_lesson_documents
+FOR EACH ROW EXECUTE FUNCTION enforce_tutor_lesson_document_lineage();
+
+DROP TRIGGER IF EXISTS trg_tutor_lesson_documents_immutable ON tutor_lesson_documents;
+CREATE TRIGGER trg_tutor_lesson_documents_immutable
+BEFORE UPDATE OR DELETE ON tutor_lesson_documents
+FOR EACH ROW EXECUTE FUNCTION enforce_tutor_lesson_immutable();
+
+DROP TRIGGER IF EXISTS trg_tutor_lesson_source_snapshots_immutable ON tutor_lesson_source_snapshots;
+CREATE TRIGGER trg_tutor_lesson_source_snapshots_immutable
+BEFORE UPDATE OR DELETE ON tutor_lesson_source_snapshots
+FOR EACH ROW EXECUTE FUNCTION enforce_tutor_lesson_immutable();
+
+DROP TRIGGER IF EXISTS trg_tutor_lesson_block_citations_immutable ON tutor_lesson_block_citations;
+CREATE TRIGGER trg_tutor_lesson_block_citations_immutable
+BEFORE UPDATE OR DELETE ON tutor_lesson_block_citations
+FOR EACH ROW EXECUTE FUNCTION enforce_tutor_lesson_immutable();
+
+DROP TRIGGER IF EXISTS trg_tutor_lesson_gate_slots_immutable ON tutor_lesson_gate_slots;
+CREATE TRIGGER trg_tutor_lesson_gate_slots_immutable
+BEFORE UPDATE OR DELETE ON tutor_lesson_gate_slots
+FOR EACH ROW EXECUTE FUNCTION enforce_tutor_lesson_immutable();
+
+DROP TRIGGER IF EXISTS trg_tutor_lesson_assignments_updated_at ON tutor_lesson_assignments;
+CREATE TRIGGER trg_tutor_lesson_assignments_updated_at
+BEFORE UPDATE ON tutor_lesson_assignments
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_tutor_lesson_assignments_lifecycle ON tutor_lesson_assignments;
+CREATE TRIGGER trg_tutor_lesson_assignments_lifecycle
+BEFORE UPDATE OR DELETE ON tutor_lesson_assignments
+FOR EACH ROW EXECUTE FUNCTION enforce_tutor_lesson_assignment_lifecycle();
+
+DROP TRIGGER IF EXISTS trg_tutor_lesson_authoring_runs_updated_at ON tutor_lesson_authoring_runs;
+CREATE TRIGGER trg_tutor_lesson_authoring_runs_updated_at
+BEFORE UPDATE ON tutor_lesson_authoring_runs
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_tutor_lesson_authoring_runs_lifecycle ON tutor_lesson_authoring_runs;
+CREATE TRIGGER trg_tutor_lesson_authoring_runs_lifecycle
+BEFORE UPDATE OR DELETE ON tutor_lesson_authoring_runs
+FOR EACH ROW EXECUTE FUNCTION enforce_tutor_lesson_authoring_run_lifecycle();
+
+DROP TRIGGER IF EXISTS trg_tutor_lesson_authoring_attempt_receipts_immutable ON tutor_lesson_authoring_attempt_receipts;
+CREATE TRIGGER trg_tutor_lesson_authoring_attempt_receipts_immutable
+BEFORE UPDATE OR DELETE ON tutor_lesson_authoring_attempt_receipts
+FOR EACH ROW EXECUTE FUNCTION enforce_tutor_lesson_immutable();

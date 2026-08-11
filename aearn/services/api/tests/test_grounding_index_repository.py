@@ -73,6 +73,8 @@ def test_search_persisted_grounding_chunks_returns_citation_ready_results(conn) 
     assert results
     assert all(result.chunk.language_id == "python" for result in results)
     assert results[0].chunk.canonical_url.startswith("https://docs.python.org/")
+    assert results[0].chunk.source_version_label == "python-3"
+    assert len(results[0].chunk.document_content_hash) == 64
 
 
 def test_build_official_docs_grounding_context_is_safe_and_bounded(conn) -> None:
@@ -96,6 +98,8 @@ def test_build_official_docs_grounding_context_is_safe_and_bounded(conn) -> None
     citation = context["citations"][0]
     assert citation["canonical_url"].startswith("https://docs.python.org/")
     assert citation["source_trust_tier"] == "official"
+    assert citation["source_version_label"] == "python-3"
+    assert len(citation["document_content_hash"]) == 64
     assert "content" not in citation
 
 
@@ -161,4 +165,7 @@ def _chunk(chunk_id: str, title: str, text: str) -> GroundingChunk:
         content_hash=f"hash-{chunk_id}",
         text=text,
         topic_tags=("functions",),
+        source_version_label="python-3",
+        source_version_kind="rolling",
+        document_content_hash="d" * 64,
     )
