@@ -1,0 +1,7 @@
+{"file":".trellis/tasks/08-04-lesson-document-authority-grounding/prd.md","reason":"检查标准/个性化/frozen Lesson、来源、API、前端、生命周期与范围验收。"}
+{"file":".trellis/tasks/08-04-lesson-document-authority-grounding/design.md","reason":"检查数据模型、authoring 并发、质量门、assignment 迁移、安全、回滚和跨层一致性。"}
+{"file":".trellis/tasks/08-04-lesson-document-authority-grounding/research/repository-baseline.md","reason":"检查实现复用当前 active runtime，不恢复旧 learning documentation 或开放网络能力。"}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"检查 shared standard 与 user-scoped personalized、append-only、CAS、purge 和 bootstrap。"}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"检查只通过本地网页端真实渲染验证，不用 Desktop build 替代交互证据。"}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"检查 block union、API unknown parsing、citation 与 authoring state 的严格类型边界。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"检查 source snapshot 到 block citation、assignment、API 与 UI 的完整 round-trip。"}

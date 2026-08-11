@@ -1,0 +1,7 @@
+{"file":".trellis/tasks/08-04-lesson-document-authority-grounding/design.md","reason":"加载 LessonDocument block、来源快照、authoring lifecycle、assignment、API 与前端设计。"}
+{"file":".trellis/tasks/08-04-lesson-document-authority-grounding/research/repository-baseline.md","reason":"加载当前 LearningTrack、grounding、Harness、Desktop 与数据生命周期证据。"}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"遵循 PostgreSQL 复合作用域、append-only、幂等、additive schema 与用户清理规则。"}
+{"file":".trellis/spec/backend/error-handling.md","reason":"实现稳定 learner-safe error envelope、跨用户不泄露与失败恢复。"}
+{"file":".trellis/spec/frontend/index.md","reason":"加载组件、state、hook、type safety 与网页端验证规范索引。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"追踪 grounding、authoring、schema、API、renderer、citation 与 assignment round-trip。"}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"复用现有 LearningTrack、grounding、provider 配置、幂等、Desktop API validator 与浏览器验证模式。"}
