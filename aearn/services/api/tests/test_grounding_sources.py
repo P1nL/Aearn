@@ -24,6 +24,8 @@ def test_source_ids_are_unique_and_registry_validates_cleanly() -> None:
 
     assert len(source_ids) == len(set(source_ids))
     assert validate_grounding_source_registry() == ()
+    assert all(source.source_version_label for source in sources)
+    assert {source.source_version_kind for source in sources} <= {"fixed", "rolling"}
 
 
 def test_helpers_return_tuple_contracts_and_support_alias_lookup() -> None:

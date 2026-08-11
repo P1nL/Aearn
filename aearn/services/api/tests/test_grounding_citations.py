@@ -21,6 +21,9 @@ def _result(text: str = "Functions group reusable behavior for clear programs.")
         content_hash="abc123",
         text=text,
         topic_tags=("functions",),
+        source_version_label="python-3",
+        source_version_kind="rolling",
+        document_content_hash="d" * 64,
     )
     return GroundingRetrievalResult(chunk=chunk, relevance_score=7.5, match_reasons=("query_terms", "topic_tags"))
 
@@ -37,6 +40,9 @@ def test_grounding_results_for_agent_exposes_citation_metadata() -> None:
     assert item.citation.canonical_url == "https://docs.python.org/3/tutorial/controlflow.html#functions"
     assert item.citation.source_type == "tutorial"
     assert item.citation.source_trust_tier == "official"
+    assert item.citation.source_version_label == "python-3"
+    assert item.citation.source_version_kind == "rolling"
+    assert item.citation.document_content_hash == "d" * 64
     assert item.citation.content_hash == "abc123"
     assert item.citation.fetched_at == datetime(2026, 1, 1, tzinfo=UTC)
 
