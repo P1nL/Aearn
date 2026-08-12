@@ -737,6 +737,15 @@ class PostgresModuleDiagnosticRepository:
             """,
             (now, now, track_id, user_id, keys),
         )
+        from app.services.learning.reviews.schedule_repository import PostgresReviewScheduleRepository
+
+        PostgresReviewScheduleRepository(self._conn).seed_diagnostic_skip(
+            user_id=user_id,
+            track_id=track_id,
+            knowledge_keys=keys,
+            source_receipt_id=session_id,
+            now=now,
+        )
         self._practice._unlock_available_nodes(
             user_id=user_id,
             track_id=track_id,

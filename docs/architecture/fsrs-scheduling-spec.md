@@ -1,5 +1,13 @@
 # FSRS 调度实现规格
 
+> **历史规格，非当前运行时 authority。** 本文件描述 2026-05-11 的旧
+> `review_states` / `review_logs` / top-level `/api/reviews` 设计，仅保留为迁移证据。
+> 2026-08-12 起，正式实现以
+> [`tutor-harness-runtime.md`](./tutor-harness-runtime.md)、
+> [`api-contract.md`](./api-contract.md) 和
+> [`database-schema.md`](./database-schema.md) 中的 track-scoped `tutor_review_*`
+> / `ReviewSession` contract 为准；不得按本文恢复旧 API、表或 Celery authority。
+
 日期：2026-05-11  
 状态：Draft V1  
 适用范围：Aearn 的 `KnowledgePoint` 复习调度、`ReviewState` 更新、`ReviewLog` 追溯、Celery 定时任务与 `fsrs-optimizer` 启用策略

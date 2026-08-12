@@ -611,6 +611,8 @@ def test_concurrent_learning_track_create_replays_one_result() -> None:
         ).fetchone()
         conn.execute("SELECT set_config('aearn.learning_track_purge_user_id', %s, true)", (user_id,))
         conn.execute("DELETE FROM tutor_mastery_states WHERE user_id = %s", (user_id,))
+        conn.execute("DELETE FROM tutor_review_schedule_events WHERE user_id = %s", (user_id,))
+        conn.execute("DELETE FROM tutor_review_schedule_states WHERE user_id = %s", (user_id,))
         conn.execute("UPDATE tutor_learning_tracks SET current_knowledge_key = NULL WHERE user_id = %s", (user_id,))
         conn.execute("DELETE FROM tutor_track_node_progress WHERE user_id = %s", (user_id,))
         conn.execute("DELETE FROM tutor_track_plan_nodes WHERE user_id = %s", (user_id,))

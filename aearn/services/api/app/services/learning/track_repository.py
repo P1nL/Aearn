@@ -244,7 +244,17 @@ class PostgresLearningTrackRepository:
                count(progress.knowledge_key)::int AS progress_total,
                count(*) FILTER (WHERE progress.status IN ('completed', 'diagnostic_skipped'))::int AS progress_completed,
                count(*) FILTER (WHERE progress.status = 'in_progress')::int AS progress_in_progress,
-               count(*) FILTER (WHERE progress.status = 'review_due')::int AS progress_review_due
+               count(*) FILTER (WHERE progress.status = 'review_due')::int AS progress_review_due,
+               (
+                 SELECT count(*)::int FROM tutor_review_schedule_states AS review_schedules
+                 WHERE review_schedules.user_id = tracks.user_id
+                   AND review_schedules.track_id = tracks.id
+                   AND review_schedules.status = 'active'
+                   AND (
+                     review_schedules.due_at <= now()
+                     OR review_schedules.risk_level = 'critical'
+                   )
+               ) AS review_due_count
         FROM tutor_learning_tracks AS tracks
         JOIN tutor_track_active_plans AS active
           ON (active.track_id, active.user_id) = (tracks.id, tracks.user_id)
@@ -402,6 +412,19 @@ class PostgresLearningTrackRepository:
                 (track_id, user_id, node.knowledge_key),
             )
         candidate_keys = {node.knowledge_key for node in candidate_plan.nodes}
+        raw_impact = migration.get("impact_json")
+        impact = dict(raw_impact) if isinstance(raw_impact, Mapping) else {}
+        from app.services.learning.reviews.schedule_repository import PostgresReviewScheduleRepository
+
+        PostgresReviewScheduleRepository(self._conn).migrate_plan(
+            user_id=user_id,
+            track_id=track_id,
+            to_revision_id=revision_id,
+            retained_keys=_string_list(impact.get("retained_progress")),
+            removed_keys=_string_list(impact.get("removed")),
+            migration_id=str(migration["id"]),
+            now=now,
+        )
         current_key = str(track.get("current_knowledge_key") or "")
         if current_key not in candidate_keys:
             current_key = next((node.knowledge_key for node in candidate_plan.nodes if not node.prerequisite_keys), candidate_plan.nodes[0].knowledge_key)
@@ -615,6 +638,14 @@ class PostgresLearningTrackRepository:
                 knowledge_key=evidence.knowledge_key,
                 evidence=stored,
             )
+            if evidence.evidence_kind is not MasteryEvidenceKind.REVIEW:
+                from app.services.learning.reviews.schedule_repository import PostgresReviewScheduleRepository
+
+                PostgresReviewScheduleRepository(self._conn).seed_from_evidence(
+                    user_id=user_id,
+                    track_id=track_id,
+                    evidence=evidence,
+                )
             return evidence_id, projection, True
         else:
             self._conn.execute(
@@ -636,6 +667,14 @@ class PostgresLearningTrackRepository:
         stored = self._load_mastery_evidence(user_id=user_id, track_id=track_id, knowledge_key=evidence.knowledge_key)
         projection = (projector or MasteryProjector()).project(knowledge_key=evidence.knowledge_key, evidence=stored)
         self._upsert_mastery_projection(user_id=user_id, track_id=track_id, projection=projection)
+        if evidence.evidence_kind is not MasteryEvidenceKind.REVIEW:
+            from app.services.learning.reviews.schedule_repository import PostgresReviewScheduleRepository
+
+            PostgresReviewScheduleRepository(self._conn).seed_from_evidence(
+                user_id=user_id,
+                track_id=track_id,
+                evidence=evidence,
+            )
         return evidence_id, projection, replayed
 
     def _insert_revision(

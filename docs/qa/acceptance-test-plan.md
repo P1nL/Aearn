@@ -289,3 +289,18 @@ be considered. This child must otherwise remain `in_progress`.
 默认 suite 使用 deterministic fixture/fake executor，不访问真实 provider，不启动生产容器 fleet。
 完整发布验证仍需单独批准的 reviewed executor image 与真实 provider smoke；它们不由本矩阵自动
 宣称通过。
+
+## 2026-08-12：间隔复习与 ReviewSession 验收矩阵
+
+| ID | 优先级 | 区域 | 验收 | 证据 |
+| --- | --- | --- | --- | --- |
+| RT-30 | P0 | 调度纯函数 | Again/Hard/Good/Easy 单调、independent 优于 hinted、critical failure、overdue escalation、3650 天上界、diagnostic skip 低频 seed | `test_review_scheduler.py` |
+| RT-31 | P0 | Queue/Gate | user/track scoped actionable count；普通 due 不阻断；未来 due 的 critical prerequisite 立即进入 queue/Gate；track card count 一致 | `test_review_sessions.py`、`test_reviews.py`、LearningTrack regression |
+| RT-32 | P0 | ReviewSession lifecycle | create/retry/resume、冻结 context/item、warmup 无长期写、hint independence、batch 未完成禁止 finalize、全部 terminal 后 exactly-once | `test_review_sessions.py`、`test_reviews.py` |
+| RT-33 | P0 | Evidence/migration | finalization 原子写 Attempt aggregate/mastery/schedule event/state；stable key retained、removed suspended；confirmed diagnostic skip seed | review repository、module diagnostic、LearningTrack tests |
+| RT-34 | P0 | Scope/privacy/local data | cross-user 404、version/idempotency、候选不足无 fallback、public/export 不含 submission/private rubric/context hash、reset/cutover child-to-root | `test_review_sessions.py`、`test_reviews.py`、`test_db_bootstrap.py` |
+| RT-35 | P0 | Regression gate | API lock、Ruff、Mypy、完整串行 pytest、executor regression、Desktop typed build、Trellis validate、`git diff --check` | release-readiness ledger |
+
+默认 suite 使用 PostgreSQL、curated immutable exercises、deterministic scorer 和 fake/local execution
+contract，不访问真实 provider、不启动或批准生产 container fleet。ReviewSession 后端/API 通过不等于
+三栏工作区 UI、真实模型题目质量、生产 executor 安全或 release approval。

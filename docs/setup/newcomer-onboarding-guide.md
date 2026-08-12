@@ -1,10 +1,17 @@
 # Aearn 新人接手与学习指南
 
-状态：Living Guide
+状态：Historical pre-cutover onboarding guide
 
 适用对象：第一次接手本仓库的开发者、代码审查者、学习者或 AI coding agent
 
 定位：本文件是仓库导读和上手路径，不替代 `docs/README.md` 中列出的 source of truth 文档
+
+
+> **历史导读，非当前运行时 contract。** 本文主体和路由附录记录 2026-07-29
+> clean-slate cutover 前的 onboarding、learning-session、review 和 notes 产品。
+> 当前开发请从 [`../README.md`](../README.md) 进入 Tutor Harness、LearningTrack、
+> Lesson/Gate/ReviewSession source of truth；不得按本文恢复 `/api/reviews`、
+> `review_states`、旧 Graph 或旧 Desktop 页面。
 
 ## 1. 先建立正确心智模型
 

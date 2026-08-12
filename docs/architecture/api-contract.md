@@ -447,3 +447,30 @@ verdict/finding shape、行范围和重复 ID。
 `MODEL_REVIEW_VALIDATION_UNAVAILABLE`、`MODEL_REVIEW_VALIDATION_FAILED`、
 `MODEL_REVIEW_VALIDATION_STALE`、`MODEL_REVIEW_PUBLICATION_CONFLICT`、
 `MODEL_REVIEW_SUBMISSION_INVALID` 与 `MODEL_REVIEW_EVIDENCE_UNAVAILABLE`。
+
+## 2026-08-12：Track-scoped ReviewSession API
+
+旧 top-level `/api/reviews` 仍属于已移除接口；正式复习只通过 verified-only 的
+`/api/learning-tracks/{track_id}/reviews...` 路由访问，并按 exact
+`user_id + track_id + active plan revision + knowledge_key` 校验。所有 mutation 使用
+`client_action_id` 或 `Idempotency-Key`、request hash 与 expected version；同 key 同请求重放，
+同 key 不同请求返回 `409 IDEMPOTENCY_CONFLICT`。
+
+| Method | Path | Contract |
+| --- | --- | --- |
+| `GET` | `/api/learning-tracks/{track_id}/reviews?user_id=...` | 返回 actionable `due_count`、today queue、risk 与可选 `critical_prerequisite_gate`；普通 due 不构成课程 Gate，关键前置 `critical` 项立即投影 |
+| `POST` | `/api/learning-tracks/{track_id}/reviews/sessions` | 输入 `knowledge_key`、expected track/schedule version 与 `max_items=1..3`；冻结 plan/schedule/context/candidates；候选不足返回可恢复 `blocked` session |
+| `GET` | `/api/learning-tracks/{track_id}/reviews/sessions/{session_id}?user_id=...` | 恢复同一有限 session、冻结 item、Attempt 与 finalization 的 learner-safe 投影 |
+| `POST` | `/api/learning-tracks/{track_id}/reviews/sessions/{session_id}/warmup` | `answered + confidence` 或 `skipped`；只写 warmup receipt 和 session stage，不写长期状态 |
+| `POST` | `/api/learning-tracks/{track_id}/reviews/sessions/{session_id}/items/{item_id}/hints` | 追加有界 safe hint receipt，并把后续 Attempt 标为 hinted；不返回答案/private rubric |
+| `POST` | `/api/learning-tracks/{track_id}/reviews/sessions/{session_id}/items/{item_id}/attempts` | 普通题发送 `submission`，模型审核题发送 `review_submission`，二者严格 one-of；静态结果同步 `200`，existing executor pending 为 `202` |
+| `GET` | `/api/learning-tracks/{track_id}/reviews/sessions/{session_id}/attempts/{attempt_id}?user_id=...` | 读取 exact pending/terminal `review_submit` Attempt |
+| `POST` | `/api/learning-tracks/{track_id}/reviews/sessions/{session_id}/finalize` | 仅在全部 item terminal 后执行唯一聚合；原子写 mastery evidence、schedule event/projection 和 finalization |
+
+稳定错误包括 `REVIEW_NOT_FOUND`、`REVIEW_NOT_READY`、
+`REVIEW_VERSION_CONFLICT`、`REVIEW_CANDIDATE_UNAVAILABLE`、
+`REVIEW_CANDIDATE_INVALID`、`MODEL_REVIEW_SUBMISSION_INVALID`、
+`EXECUTION_UNAVAILABLE` 和 `IDEMPOTENCY_CONFLICT`。候选不足是 session 内的
+`failure_code=REVIEW_CANDIDATE_UNAVAILABLE`、`recoverable=true`，客户端可使用原幂等请求重试。
+公共投影不包含完整 submission、private rubric/tests/reference answer、raw provider/executor
+response、command/path/image/credential、内部 context hash 或 schedule event payload。
