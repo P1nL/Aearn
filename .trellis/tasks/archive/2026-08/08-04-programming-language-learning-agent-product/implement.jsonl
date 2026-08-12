@@ -1,0 +1,3 @@
+{"file":".trellis/tasks/08-04-programming-language-learning-agent-product/design.md","reason":"加载 LearningTrack 总体架构、领域边界、依赖顺序、迁移与验证设计。"}
+{"file":".trellis/tasks/08-04-programming-language-learning-agent-product/research/repository-baseline.md","reason":"加载当前 Tutor Harness、旧领域隔离、grounding、runner/executor 与 Desktop 仓库证据。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"追踪数据库、服务、Harness、API、Desktop 与 executor 的完整数据流和权威边界。"}
