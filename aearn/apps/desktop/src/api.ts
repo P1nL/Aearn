@@ -1731,8 +1731,16 @@ function toTutorForegroundRun(payload: unknown): TutorForegroundRun | null {
 function toTutorHistoryItem(payload: unknown): TutorHistoryItem | null {
   if (!isRecord(payload) || !isString(payload.kind) || !isString(payload.id) || !isNullableString(payload.created_at)) return null;
   if (payload.kind === "message") {
-    if ((payload.role !== "learner" && payload.role !== "tutor") || !isString(payload.content)) return null;
-    return { kind: "message", id: payload.id, role: payload.role, content: payload.content, created_at: payload.created_at };
+    if ((payload.role !== "learner" && payload.role !== "tutor") || !isString(payload.content) || !isStringArray(payload.public_thinking_steps)) return null;
+    if (payload.public_thinking_steps.length > 4 || payload.public_thinking_steps.some((step) => step.length === 0 || step.length > 320)) return null;
+    return {
+      kind: "message",
+      id: payload.id,
+      role: payload.role,
+      content: payload.content,
+      public_thinking_steps: payload.role === "tutor" ? payload.public_thinking_steps : [],
+      created_at: payload.created_at,
+    };
   }
   if (payload.kind === "process") {
     return toTutorPublicProcess(payload);

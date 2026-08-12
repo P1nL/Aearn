@@ -568,7 +568,12 @@ export function TutorConversationSurface({
             : (
               <article className={`tutor-timeline-entry ${item.role === "learner" ? "learner" : "tutor"}`} key={`message:${item.id}`}>
                 <span className="tutor-timeline-label">{item.role === "learner" ? "你" : "Tutor"}</span>
-                <div><p>{item.content}</p></div>
+                <div className="tutor-message-content">
+                  {item.role === "tutor" && item.public_thinking_steps.length > 0 && (
+                    <TutorPublicThinkingDisclosure messageId={item.id} steps={item.public_thinking_steps} />
+                  )}
+                  <p>{item.content}</p>
+                </div>
               </article>
             ))}
         </section>
@@ -687,6 +692,46 @@ export function TutorConversationSurface({
         />
       </aside>}
     </main>
+  );
+}
+
+type TutorPublicThinkingDisclosureProps = {
+  messageId: string;
+  steps: string[];
+};
+
+function TutorPublicThinkingDisclosure({ messageId, steps }: TutorPublicThinkingDisclosureProps) {
+  const [open, setOpen] = useState(true);
+  const detailId = `tutor-public-thinking-${messageId}`;
+
+  return (
+    <section className="tutor-public-thinking" aria-label="思路说明">
+      <button
+        className="tutor-public-thinking-toggle"
+        type="button"
+        aria-expanded={open}
+        aria-controls={detailId}
+        onClick={() => setOpen((current) => !current)}
+      >
+        <span className="tutor-public-thinking-mark" aria-hidden="true" />
+        <span className="tutor-public-thinking-heading">
+          <strong>思路说明</strong>
+          <small>面向你的公开说明</small>
+        </span>
+        <span className="tutor-public-thinking-chevron" aria-hidden="true">⌄</span>
+      </button>
+      <div id={detailId} className="tutor-public-thinking-details" hidden={!open}>
+        <ol>
+          {steps.map((step, index) => (
+            <li key={`${messageId}:thinking:${index}`}>
+              <span aria-hidden="true">{index + 1}</span>
+              <p>{step}</p>
+            </li>
+          ))}
+        </ol>
+        <small>这是专门生成给你阅读的公开思路说明，不包含模型内部隐藏推理。</small>
+      </div>
+    </section>
   );
 }
 

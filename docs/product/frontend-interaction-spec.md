@@ -117,13 +117,18 @@ stateDiagram-v2
 - Composer 最多 16,000 个字符，可用 Ctrl/⌘+Enter 提交；pending 时禁用重复动作。
   timeline 是独立纵向滚动区，Composer 在 desktop view 保持可见，新的 history 条目
   不得把它持续挤出主要可视区。
-- timeline 只渲染 server public `message.content` 和 server public process fields。
+- timeline 只渲染 server public `message.content`、Tutor message 的 bounded
+  `public_thinking_steps[]` 和 server public process fields。`public_thinking_steps` 是 provider
+  专门为学习者编写并经安全校验的公开思路说明，不是 provider-native reasoning；措辞、
+  语气、顺序和粒度由模型根据当前请求自然组织，不要求固定句式或过渡词，
+  默认展开显示在同一 Tutor 回复正文之前，可由整行按钮收起/展开。
   新版 process 是紧凑的行内 disclosure：默认折叠，整行/箭头可键盘操作，含可读
   label 与 `aria-expanded`。它只显示 `display_state`、server-calculated duration 和
   allowlisted `steps[].label`；标题为“公开处理过程”。完成后显示“已处理 …”，被替代
   时显示“已根据你的新消息更新本轮处理”。不得使用旧的绿色三栏 dashboard、渐变思考
   面板或从 SSE/raw trace 推断模型思考。
-- 旧版 message-only history 正常显示，但不得合成 process 卡片、步骤或 duration。
+- 旧版 message-only history 正常显示，缺失 `public_thinking_steps` 时投影为空数组；不得
+  合成公开思路、process 卡片、步骤或 duration。
   run summary 仅显示公开 status 和 stream cursor，绝不显示 provider 诊断或内部 tool
   arguments。
 
@@ -176,7 +181,7 @@ refresh；history endpoint 是 timeline 的唯一 source of truth。
 ### 前端禁止越界
 
 - 不根据本地状态把 `cutover` 改成 `tutor`。
-- 不保存、传输或展示 provider key、prompt、reasoning、raw event/trace、
+- 不保存、传输或展示 provider key、prompt、provider-native reasoning、raw event/trace、
   hidden tests、reference answers、完整 learner code、shell/SQL/path 或 Docker
   信息。
 - 不发起 `runner.execute`，不启动 subprocess/worker，不把 proactive activity
