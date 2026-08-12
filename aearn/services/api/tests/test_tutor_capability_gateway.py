@@ -381,7 +381,7 @@ def test_catalog_and_tutor_source_never_import_retired_or_unbounded_execution_su
     for path in files:
         source = path.read_text(encoding="utf-8")
         forbidden_for_path = forbidden
-        if path.name in {"persistence.py", "proactive_repository.py", "learner_state.py"}:
+        if path.name in {"persistence.py", "proactive_repository.py", "learner_state.py", "action_adapters.py", "action_persistence.py"}:
             # Child 02 owns durable replay and Child 04 owns scheduler queue
             # leases. Keep the SQL exception narrow while retaining every
             # execution, legacy, route, and unbounded-runtime boundary.

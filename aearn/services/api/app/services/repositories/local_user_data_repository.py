@@ -136,6 +136,7 @@ def export_user_data(conn: Connection[dict[str, object]], user_id: str) -> dict[
         "lesson_gates": _export_lesson_gates(conn, user_id),
         "exercise_attempt_summaries": _export_exercise_attempt_summaries(conn, user_id),
         "module_diagnostic_summaries": _export_module_diagnostic_summaries(conn, user_id),
+        "action_receipt_summaries": _export_action_receipt_summaries(conn, user_id),
         "redaction": {
             "hidden_tests": "omitted",
             "private_rubrics": "omitted",
@@ -143,6 +144,9 @@ def export_user_data(conn: Connection[dict[str, object]], user_id: str) -> dict[
             "solution_references": "omitted",
             "raw_prompts": "omitted",
             "provider_payloads": "omitted",
+            "action_arguments": "omitted",
+            "action_raw_results": "omitted",
+            "action_private_verification": "omitted",
             "planning_fact_hashes": "omitted",
             "planning_question_gate_reasons": "omitted",
             "secrets": "omitted",
@@ -259,6 +263,7 @@ def _summary_counts(conn: Connection[dict[str, object]], user_id: str) -> dict[s
         "lesson_gates": _count(conn, "SELECT count(*) AS count FROM tutor_lesson_gate_states WHERE user_id = %s", user_id),
         "exercise_attempts": _count(conn, "SELECT count(*) AS count FROM tutor_exercise_attempts WHERE user_id = %s", user_id),
         "module_diagnostics": _count(conn, "SELECT count(*) AS count FROM tutor_module_diagnostic_sessions WHERE user_id = %s", user_id),
+        "action_receipts": _count(conn, "SELECT count(*) AS count FROM tutor_action_receipts WHERE user_id = %s", user_id),
     }
 
 
@@ -786,6 +791,25 @@ def _export_module_diagnostic_summaries(
     return [_safe_row(row, exclude=()) for row in rows]
 
 
+def _export_action_receipt_summaries(
+    conn: Connection[dict[str, object]],
+    user_id: str,
+) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """
+        SELECT invocation_id, run_id, conversation_id, input_revision, action_id,
+               action_version, status, authority_kind, authority_id, safe_summary,
+               verification_status, diagnostic_code, recovery_kind, recovery_code,
+               retry_after_seconds, terminal_at
+        FROM tutor_action_receipts
+        WHERE user_id = %s
+        ORDER BY terminal_at, invocation_id
+        """,
+        (user_id,),
+    ).fetchall()
+    return [_safe_row(row, exclude=()) for row in rows]
+
+
 def _delete_learning_track_data(conn: Connection[dict[str, object]], user_id: str) -> None:
     # Scope snapshots are children of durable Tutor runs/conversations. Cancel
     # active runs first so an old continuation cannot resume after its authority
@@ -813,6 +837,47 @@ def _delete_learning_track_data(conn: Connection[dict[str, object]], user_id: st
         )
     conn.execute("SELECT set_config('aearn.learning_track_purge_user_id', %s, true)", (user_id,))
     conn.execute("SET CONSTRAINTS ALL DEFERRED")
+    conn.execute(
+        """
+        DELETE FROM tutor_action_receipts WHERE user_id = %s
+        """,
+        (user_id,),
+    )
+    conn.execute(
+        """
+        DELETE FROM tutor_action_verifications
+        WHERE invocation_id IN (SELECT id FROM tutor_action_invocations WHERE user_id = %s)
+        """,
+        (user_id,),
+    )
+    conn.execute(
+        """
+        DELETE FROM tutor_action_attempts
+        WHERE invocation_id IN (SELECT id FROM tutor_action_invocations WHERE user_id = %s)
+        """,
+        (user_id,),
+    )
+    action_rows = conn.execute(
+        """
+        WITH RECURSIVE action_depth AS (
+          SELECT id, parent_invocation_id, 0 AS depth
+          FROM tutor_action_invocations
+          WHERE user_id = %s AND parent_invocation_id IS NULL
+          UNION ALL
+          SELECT child.id, child.parent_invocation_id, parent.depth + 1
+          FROM tutor_action_invocations AS child
+          JOIN action_depth AS parent ON parent.id = child.parent_invocation_id
+          WHERE child.user_id = %s
+        )
+        SELECT id FROM action_depth ORDER BY depth DESC, id
+        """,
+        (user_id, user_id),
+    ).fetchall()
+    for row in action_rows:
+        conn.execute(
+            "DELETE FROM tutor_action_invocations WHERE id = %s AND user_id = %s",
+            (row["id"], user_id),
+        )
     conn.execute(
         """
         UPDATE tutor_execution_jobs

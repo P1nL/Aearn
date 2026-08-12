@@ -71,6 +71,7 @@ class TutorTerminalOutcome(str, Enum):
 class TutorContextSection(str, Enum):
     SYSTEM = "system"
     REQUIRED_FACTS = "required_facts"
+    ACTION_RECEIPTS = "action_receipts"
     ACTIVE_PLAN = "active_plan"
     REVIEW = "review"
     RECENT_MESSAGES = "recent_messages"
@@ -83,6 +84,7 @@ class TutorContextSection(str, Enum):
 CONTEXT_SECTION_PRIORITY: tuple[TutorContextSection, ...] = (
     TutorContextSection.SYSTEM,
     TutorContextSection.REQUIRED_FACTS,
+    TutorContextSection.ACTION_RECEIPTS,
     TutorContextSection.RECENT_MESSAGES,
     TutorContextSection.ACTIVE_PLAN,
     TutorContextSection.REVIEW,
@@ -461,6 +463,7 @@ class TutorContextInput:
     current_input: TutorContextSource | None = None
     system_descriptors: tuple[TutorContextSource, ...] = ()
     required_facts: tuple[TutorContextSource, ...] = ()
+    action_receipts: tuple[TutorContextSource, ...] = ()
     active_plan: tuple[TutorContextSource, ...] = ()
     review_snapshot: tuple[TutorContextSource, ...] = ()
     recent_messages: tuple[TutorContextSource, ...] = ()
@@ -487,6 +490,7 @@ class TutorContextInput:
         for name in (
             "system_descriptors",
             "required_facts",
+            "action_receipts",
             "active_plan",
             "review_snapshot",
             "recent_messages",
@@ -507,6 +511,7 @@ class TutorContextInput:
         return (
             (TutorContextSection.SYSTEM, self.system_descriptors),
             (TutorContextSection.REQUIRED_FACTS, self.required_facts),
+            (TutorContextSection.ACTION_RECEIPTS, self.action_receipts),
             (TutorContextSection.ACTIVE_PLAN, self.active_plan),
             (TutorContextSection.REVIEW, self.review_snapshot),
             (TutorContextSection.RECENT_MESSAGES, self.recent_messages),

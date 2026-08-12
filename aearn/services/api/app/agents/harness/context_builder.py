@@ -34,6 +34,7 @@ from app.core.teaching_safety import limit_text, redact_value, sanitize_message_
 DEFAULT_SECTION_ITEM_LIMITS: tuple[tuple[TutorContextSection, int], ...] = (
     (TutorContextSection.SYSTEM, 3),
     (TutorContextSection.REQUIRED_FACTS, 8),
+    (TutorContextSection.ACTION_RECEIPTS, 4),
     (TutorContextSection.ACTIVE_PLAN, 1),
     (TutorContextSection.REVIEW, 1),
     (TutorContextSection.RECENT_MESSAGES, 4),

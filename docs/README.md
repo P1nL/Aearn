@@ -2,7 +2,7 @@
 
 ## Current runtime status
 
-**Updated: 2026-08-11.** Aearn's active product runtime is the **Tutor Harness**.
+**Updated: 2026-08-12.** Aearn's active product runtime is the **Tutor Harness**.
 The desktop starts from a local learner identity, asks the server for a
 cutover decision, and admits a learner to the Tutor workspace only after a
 server-authoritative `verified` receipt. The former graph/router/SDK product
@@ -19,7 +19,7 @@ That ledger records the controlled verified-only proactive-delivery proof and it
 
 | Surface | Current document | Authority |
 | --- | --- | --- |
-| Runtime architecture and security boundary | [`architecture/tutor-harness-runtime.md`](./architecture/tutor-harness-runtime.md) | Tutor loop, Skills, safe persistence, exercise execution reuse, provider, executor, scheduler, cutover, and rollback rules. |
+| Runtime architecture and security boundary | [`architecture/tutor-harness-runtime.md`](./architecture/tutor-harness-runtime.md) | Tutor loop, Skills, controlled Action Runtime, safe persistence, exercise execution reuse, provider, executor, scheduler, cutover, and rollback rules. |
 | Learner flow | [`product/user-flows.md`](./product/user-flows.md) | Local identity, controlled cutover, LearningTrack home, immutable LessonDocument reading, server-authoritative exercise Gate, and explicit module-diagnostic skip confirmation. |
 | Desktop interaction | [`product/frontend-interaction-spec.md`](./product/frontend-interaction-spec.md) | Bootstrap state machine, server authority, responsive Tutor UI, Lesson Gate/diagnostic interaction, SSE handling, and local storage boundary. |
 | HTTP and SSE API | [`architecture/api-contract.md`](./architecture/api-contract.md) | Current public routes, idempotency, cursor replay, errors, and privacy rules. |

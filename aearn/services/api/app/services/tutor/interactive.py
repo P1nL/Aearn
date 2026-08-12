@@ -44,6 +44,14 @@ from app.services.learning.plan_repository import (
     LearningPlanSessionNotFound,
     PostgresLearningPlanSessionRepository,
 )
+from app.services.tutor.action_adapters import (
+    ControlledCapabilityGateway,
+    PostgresCapabilityAuthorityVerifier,
+    PostgresGroundingActionVerifier,
+    PostgresLearningPlanActionVerifier,
+)
+from app.services.tutor.action_persistence import PostgresActionFence, PostgresActionReceiptStore
+from app.services.tutor.action_runtime import ActionVerifier
 from app.services.tutor.capability_gateway import CatalogCapabilityGateway
 from app.services.learning.plan_policy import InteractiveLearningCapabilityPolicyResolver
 from app.services.tutor.decision_gate import CatalogTutorDecisionGate
@@ -370,6 +378,7 @@ class PostgresTutorLearningContextLoader:
         self._learning = TutorLearningContextAdapter(conn)
         self._plans = PostgresLearningPlanSessionRepository(conn)
         self._facts = PostgresPlanningFactRepository(conn)
+        self._actions = PostgresActionReceiptStore(conn)
         self._base_loader = base_loader
 
     def load_context(self, snapshot: TutorRunSnapshot, *, input_revision: int) -> TutorContextInput:
@@ -377,7 +386,19 @@ class PostgresTutorLearningContextLoader:
         learning = self._learning.load(user_id=snapshot.user_id, run_id=snapshot.run_id)
         descriptors = list(base.system_descriptors)
         descriptors.extend(learning.sources)
-        authoritative = self._facts.project_snapshot(run=snapshot, input_revision=input_revision)
+        action_receipts = tuple(
+            receipt.as_context_source()
+            for receipt in self._actions.list_context_receipts(
+                user_id=snapshot.user_id,
+                run_id=snapshot.run_id,
+                input_revision=input_revision,
+            )
+        )
+        authoritative = self._facts.project_snapshot(
+            run=snapshot,
+            input_revision=input_revision,
+            action_receipts=action_receipts,
+        )
         required_facts = authoritative.required_facts
         recent_messages = base.recent_messages
         compaction_plan = base.compaction_plan
@@ -449,6 +470,7 @@ class PostgresTutorLearningContextLoader:
             base,
             system_descriptors=tuple(descriptors),
             required_facts=required_facts,
+            action_receipts=authoritative.action_receipts,
             recent_messages=recent_messages,
             compaction_plan=compaction_plan,
             authoritative_snapshot_schema_version=authoritative.schema_version,
@@ -526,6 +548,30 @@ def _required_datetime(value: object) -> datetime:
     return value
 
 
+def _action_policy_fingerprint(
+    conn: Connection[dict[str, object]],
+    run: TutorRunSnapshot,
+) -> str:
+    row = conn.execute(
+        "SELECT policy_fingerprint FROM tutor_runs WHERE id = %s AND user_id = %s",
+        (run.run_id, run.user_id),
+    ).fetchone()
+    if row is None:
+        raise TutorContextError("TUTOR_ACTION_POLICY_EVIDENCE_MISSING")
+    return str(row["policy_fingerprint"])
+
+
+def _action_verifier(
+    conn: Connection[dict[str, object]],
+    action_id: str,
+) -> ActionVerifier:
+    if action_id == "learning.plan.draft":
+        return PostgresLearningPlanActionVerifier(conn)
+    if action_id == "grounding.retrieve":
+        return PostgresGroundingActionVerifier(conn)
+    return PostgresCapabilityAuthorityVerifier(conn)
+
+
 ProviderFactory = Callable[[Settings], TutorProviderGateway]
 
 
@@ -574,12 +620,23 @@ class TutorInteractiveRunDispatcher:
                 context_builder=TutorContextBuilder(),
                 context_budget_planner=TutorContextBudgetPlanner(),
                 provider=self._provider_factory(self._settings),
-                capability_gateway=CatalogCapabilityGateway(
+                capability_gateway=ControlledCapabilityGateway(
                     catalog=catalog,
                     policy_resolver=policy_resolver,
                     selection_store=selection_store,
-                    grounding_lookup=InMemoryGroundingLookup(),
-                    learning_plan_handler=LearningPlanDraftCapabilityHandler(conn),
+                    authority_gateway=CatalogCapabilityGateway(
+                        catalog=catalog,
+                        policy_resolver=policy_resolver,
+                        selection_store=selection_store,
+                        grounding_lookup=InMemoryGroundingLookup(),
+                        learning_plan_handler=LearningPlanDraftCapabilityHandler(conn),
+                    ),
+                    authority_recorder=repository,
+                    receipt_store=PostgresActionReceiptStore(conn),
+                    fence=PostgresActionFence(conn),
+                    clock=self._clock,
+                    policy_fingerprint_loader=lambda run: _action_policy_fingerprint(conn, run),
+                    verifier_factory=lambda descriptor: _action_verifier(conn, descriptor.action_id),
                 ),
                 effect_committer=DefaultDenyEffectCommitter(),
                 clock=self._clock,

@@ -4498,3 +4498,271 @@ CREATE INDEX IF NOT EXISTS idx_tutor_exercise_attempts_diagnostic
   ON tutor_exercise_attempts(diagnostic_session_id, diagnostic_item_id, accepted_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tutor_module_diagnostic_sessions_track
   ON tutor_module_diagnostic_sessions(track_id, module_key, created_at DESC);
+
+
+-- Unified controlled Action Runtime: orchestration metadata only. Domain truth remains in capability,
+-- plan, effect, and execution owner tables referenced by authority_kind/authority_id.
+CREATE TABLE IF NOT EXISTS tutor_action_invocations (
+  id text PRIMARY KEY CHECK (char_length(id) BETWEEN 1 AND 160),
+  run_id uuid NOT NULL REFERENCES tutor_runs(id) ON DELETE RESTRICT,
+  conversation_id uuid NOT NULL REFERENCES tutor_conversations(id) ON DELETE RESTRICT,
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  input_revision integer NOT NULL CHECK (input_revision >= 0),
+  lease_owner_id text NOT NULL,
+  lease_generation integer NOT NULL CHECK (lease_generation > 0),
+  action_generation integer NOT NULL CHECK (action_generation > 0),
+  idempotency_key text NOT NULL CHECK (char_length(idempotency_key) BETWEEN 1 AND 160),
+  stable_action_key text NOT NULL CHECK (char_length(stable_action_key) BETWEEN 1 AND 160),
+  action_id text NOT NULL CHECK (char_length(action_id) BETWEEN 1 AND 120),
+  action_version text NOT NULL CHECK (char_length(action_version) BETWEEN 1 AND 80),
+  descriptor_hash text NOT NULL CHECK (descriptor_hash ~ '^[0-9a-f]{64}$'),
+  owner_adapter_id text NOT NULL CHECK (char_length(owner_adapter_id) BETWEEN 1 AND 120),
+  task_kind text NOT NULL CHECK (char_length(task_kind) BETWEEN 1 AND 120),
+  origin text NOT NULL CHECK (origin IN ('interactive', 'proactive', 'exercise_gate')),
+  catalog_digest text NOT NULL CHECK (catalog_digest ~ '^[0-9a-f]{64}$'),
+  policy_fingerprint text NOT NULL CHECK (policy_fingerprint ~ '^[0-9a-f]{64}$'),
+  selected_skill_reference text CHECK (selected_skill_reference IS NULL OR char_length(selected_skill_reference) BETWEEN 1 AND 160),
+  request_hash text NOT NULL CHECK (request_hash ~ '^[0-9a-f]{64}$'),
+  resource_profile_hash text NOT NULL CHECK (resource_profile_hash ~ '^[0-9a-f]{64}$'),
+  resource_request_hash text NOT NULL CHECK (resource_request_hash ~ '^[0-9a-f]{64}$'),
+  parent_invocation_id text,
+  retry_index integer NOT NULL DEFAULT 0 CHECK (retry_index >= 0),
+  status text NOT NULL CHECK (status IN (
+    'requested', 'admitted', 'running', 'succeeded_unverified', 'verified',
+    'retryable_failed', 'permanent_failed', 'denied', 'cancel_requested',
+    'cancelled', 'timed_out', 'superseded'
+  )),
+  requested_at timestamptz NOT NULL,
+  admitted_at timestamptz,
+  started_at timestamptz,
+  terminal_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_tutor_action_invocations_run_key UNIQUE (run_id, idempotency_key),
+  CONSTRAINT uq_tutor_action_invocations_id_run UNIQUE (id, run_id),
+  CONSTRAINT fk_tutor_action_invocation_parent_run
+    FOREIGN KEY (parent_invocation_id, run_id) REFERENCES tutor_action_invocations(id, run_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_action_invocation_run_user
+    FOREIGN KEY (run_id, user_id) REFERENCES tutor_runs(id, user_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_action_invocation_run_conversation
+    FOREIGN KEY (run_id, conversation_id) REFERENCES tutor_runs(id, conversation_id) ON DELETE RESTRICT,
+  CONSTRAINT chk_tutor_action_invocations_parent_distinct CHECK (parent_invocation_id IS NULL OR parent_invocation_id <> id),
+  CONSTRAINT chk_tutor_action_invocations_terminal CHECK (
+    (status IN ('verified', 'retryable_failed', 'permanent_failed', 'denied', 'cancelled', 'timed_out', 'superseded'))
+      = (terminal_at IS NOT NULL)
+  )
+);
+
+ALTER TABLE tutor_action_invocations
+  ADD COLUMN IF NOT EXISTS lease_owner_id text;
+UPDATE tutor_action_invocations AS invocations
+SET lease_owner_id = COALESCE(runs.active_lease_owner_id, 'legacy-action-owner')
+FROM tutor_runs AS runs
+WHERE invocations.run_id = runs.id AND invocations.lease_owner_id IS NULL;
+ALTER TABLE tutor_action_invocations
+  ALTER COLUMN lease_owner_id SET NOT NULL;
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'chk_tutor_action_invocations_lease_owner'
+  ) THEN
+    ALTER TABLE tutor_action_invocations
+      ADD CONSTRAINT chk_tutor_action_invocations_lease_owner
+      CHECK (char_length(lease_owner_id) BETWEEN 1 AND 160);
+  END IF;
+END;
+$$;
+
+CREATE TABLE IF NOT EXISTS tutor_action_attempts (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  invocation_id text NOT NULL REFERENCES tutor_action_invocations(id) ON DELETE RESTRICT,
+  run_id uuid NOT NULL REFERENCES tutor_runs(id) ON DELETE RESTRICT,
+  attempt_index integer NOT NULL CHECK (attempt_index >= 1),
+  status text NOT NULL CHECK (status IN (
+    'succeeded', 'retryable_failed', 'permanent_failed', 'denied',
+    'cancelled', 'timed_out', 'superseded'
+  )),
+  authority_kind text CHECK (authority_kind IS NULL OR authority_kind IN (
+    'capability_invocation', 'plan_draft', 'execution_job', 'effect_receipt', 'grounding_result'
+  )),
+  authority_id text CHECK (authority_id IS NULL OR char_length(authority_id) BETWEEN 1 AND 160),
+  authority_hash text CHECK (authority_hash IS NULL OR authority_hash ~ '^[0-9a-f]{64}$'),
+  result_hash text NOT NULL CHECK (result_hash ~ '^[0-9a-f]{64}$'),
+  safe_result_json jsonb NOT NULL,
+  diagnostic_code text CHECK (diagnostic_code IS NULL OR char_length(diagnostic_code) BETWEEN 1 AND 160),
+  duration_ms integer NOT NULL DEFAULT 0 CHECK (duration_ms >= 0),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_tutor_action_attempts_identity UNIQUE (invocation_id, attempt_index),
+  CONSTRAINT fk_tutor_action_attempt_invocation_run
+    FOREIGN KEY (invocation_id, run_id) REFERENCES tutor_action_invocations(id, run_id) ON DELETE RESTRICT,
+  CONSTRAINT chk_tutor_action_attempt_authority CHECK ((authority_kind IS NULL) = (authority_id IS NULL))
+);
+
+CREATE TABLE IF NOT EXISTS tutor_action_verifications (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  invocation_id text NOT NULL UNIQUE REFERENCES tutor_action_invocations(id) ON DELETE RESTRICT,
+  run_id uuid NOT NULL REFERENCES tutor_runs(id) ON DELETE RESTRICT,
+  status text NOT NULL CHECK (status IN ('pending', 'verified', 'failed', 'not_required')),
+  verifier_id text NOT NULL CHECK (char_length(verifier_id) BETWEEN 1 AND 120),
+  verifier_version text NOT NULL CHECK (char_length(verifier_version) BETWEEN 1 AND 80),
+  authority_kind text CHECK (authority_kind IS NULL OR authority_kind IN (
+    'capability_invocation', 'plan_draft', 'execution_job', 'effect_receipt', 'grounding_result'
+  )),
+  authority_id text CHECK (authority_id IS NULL OR char_length(authority_id) BETWEEN 1 AND 160),
+  authority_hash text CHECK (authority_hash IS NULL OR authority_hash ~ '^[0-9a-f]{64}$'),
+  verification_hash text NOT NULL CHECK (verification_hash ~ '^[0-9a-f]{64}$'),
+  safe_verification_json jsonb NOT NULL,
+  diagnostic_code text CHECK (diagnostic_code IS NULL OR char_length(diagnostic_code) BETWEEN 1 AND 160),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT fk_tutor_action_verification_invocation_run
+    FOREIGN KEY (invocation_id, run_id) REFERENCES tutor_action_invocations(id, run_id) ON DELETE RESTRICT,
+  CONSTRAINT chk_tutor_action_verification_authority CHECK ((authority_kind IS NULL) = (authority_id IS NULL))
+);
+
+CREATE TABLE IF NOT EXISTS tutor_action_receipts (
+  invocation_id text PRIMARY KEY REFERENCES tutor_action_invocations(id) ON DELETE RESTRICT,
+  run_id uuid NOT NULL REFERENCES tutor_runs(id) ON DELETE RESTRICT,
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  conversation_id uuid NOT NULL REFERENCES tutor_conversations(id) ON DELETE RESTRICT,
+  input_revision integer NOT NULL CHECK (input_revision >= 0),
+  stable_action_key text NOT NULL CHECK (char_length(stable_action_key) BETWEEN 1 AND 160),
+  action_id text NOT NULL CHECK (char_length(action_id) BETWEEN 1 AND 120),
+  action_version text NOT NULL CHECK (char_length(action_version) BETWEEN 1 AND 80),
+  status text NOT NULL CHECK (status IN (
+    'verified', 'retryable_failed', 'permanent_failed', 'denied',
+    'cancelled', 'timed_out', 'superseded'
+  )),
+  authority_kind text CHECK (authority_kind IS NULL OR authority_kind IN (
+    'capability_invocation', 'plan_draft', 'execution_job', 'effect_receipt', 'grounding_result'
+  )),
+  authority_id text CHECK (authority_id IS NULL OR char_length(authority_id) BETWEEN 1 AND 160),
+  authority_hash text CHECK (authority_hash IS NULL OR authority_hash ~ '^[0-9a-f]{64}$'),
+  safe_summary text NOT NULL CHECK (char_length(safe_summary) <= 160),
+  result_hash text CHECK (result_hash IS NULL OR result_hash ~ '^[0-9a-f]{64}$'),
+  verification_status text NOT NULL CHECK (verification_status IN ('pending', 'verified', 'failed', 'not_required')),
+  verification_hash text CHECK (verification_hash IS NULL OR verification_hash ~ '^[0-9a-f]{64}$'),
+  diagnostic_code text CHECK (diagnostic_code IS NULL OR char_length(diagnostic_code) BETWEEN 1 AND 160),
+  recovery_kind text NOT NULL CHECK (recovery_kind IN ('none', 'retry', 'rebuild_context', 'request_clarification', 'safe_stop')),
+  recovery_code text NOT NULL CHECK (char_length(recovery_code) BETWEEN 1 AND 160),
+  retry_after_seconds integer NOT NULL DEFAULT 0 CHECK (retry_after_seconds BETWEEN 0 AND 300),
+  receipt_json jsonb NOT NULL,
+  receipt_hash text NOT NULL CHECK (receipt_hash ~ '^[0-9a-f]{64}$'),
+  terminal_at timestamptz NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT fk_tutor_action_receipt_invocation_run
+    FOREIGN KEY (invocation_id, run_id) REFERENCES tutor_action_invocations(id, run_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_action_receipt_run_user
+    FOREIGN KEY (run_id, user_id) REFERENCES tutor_runs(id, user_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_action_receipt_run_conversation
+    FOREIGN KEY (run_id, conversation_id) REFERENCES tutor_runs(id, conversation_id) ON DELETE RESTRICT,
+  CONSTRAINT chk_tutor_action_receipt_authority CHECK ((authority_kind IS NULL) = (authority_id IS NULL)),
+  CONSTRAINT chk_tutor_action_receipt_retry CHECK (
+    (recovery_kind = 'retry' AND retry_after_seconds >= 0)
+    OR (recovery_kind <> 'retry' AND retry_after_seconds = 0)
+  )
+);
+
+CREATE INDEX IF NOT EXISTS idx_tutor_action_invocations_run_created
+  ON tutor_action_invocations(run_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tutor_action_invocations_state_created
+  ON tutor_action_invocations(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_tutor_action_receipts_run_terminal
+  ON tutor_action_receipts(run_id, terminal_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_tutor_action_receipts_current_verified
+  ON tutor_action_receipts(run_id, input_revision, stable_action_key)
+  WHERE status = 'verified';
+
+CREATE OR REPLACE FUNCTION tutor_action_purge_allowed(target_invocation_id text)
+RETURNS boolean AS $$
+DECLARE
+  target_user_id uuid;
+BEGIN
+  SELECT user_id INTO target_user_id
+  FROM tutor_action_invocations
+  WHERE id = target_invocation_id;
+  RETURN target_user_id IS NOT NULL AND tutor_learning_track_purge_allowed(target_user_id);
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION enforce_tutor_action_append_only()
+RETURNS trigger AS $$
+BEGIN
+  IF TG_OP = 'DELETE' AND tutor_action_purge_allowed(OLD.invocation_id) THEN
+    RETURN OLD;
+  END IF;
+  RAISE EXCEPTION 'Tutor action attempt, verification, and receipt rows are append-only' USING ERRCODE = '23514';
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION enforce_tutor_action_invocation_lifecycle()
+RETURNS trigger AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    IF tutor_action_purge_allowed(OLD.id) THEN RETURN OLD; END IF;
+    RAISE EXCEPTION 'Tutor action invocations cannot be deleted' USING ERRCODE = '23514';
+  END IF;
+  IF OLD.id IS DISTINCT FROM NEW.id
+     OR OLD.run_id IS DISTINCT FROM NEW.run_id
+     OR OLD.conversation_id IS DISTINCT FROM NEW.conversation_id
+     OR OLD.user_id IS DISTINCT FROM NEW.user_id
+     OR OLD.input_revision IS DISTINCT FROM NEW.input_revision
+     OR OLD.lease_owner_id IS DISTINCT FROM NEW.lease_owner_id
+     OR OLD.lease_generation IS DISTINCT FROM NEW.lease_generation
+     OR OLD.action_generation IS DISTINCT FROM NEW.action_generation
+     OR OLD.idempotency_key IS DISTINCT FROM NEW.idempotency_key
+     OR OLD.stable_action_key IS DISTINCT FROM NEW.stable_action_key
+     OR OLD.action_id IS DISTINCT FROM NEW.action_id
+     OR OLD.action_version IS DISTINCT FROM NEW.action_version
+     OR OLD.descriptor_hash IS DISTINCT FROM NEW.descriptor_hash
+     OR OLD.owner_adapter_id IS DISTINCT FROM NEW.owner_adapter_id
+     OR OLD.task_kind IS DISTINCT FROM NEW.task_kind
+     OR OLD.origin IS DISTINCT FROM NEW.origin
+     OR OLD.catalog_digest IS DISTINCT FROM NEW.catalog_digest
+     OR OLD.policy_fingerprint IS DISTINCT FROM NEW.policy_fingerprint
+     OR OLD.selected_skill_reference IS DISTINCT FROM NEW.selected_skill_reference
+     OR OLD.request_hash IS DISTINCT FROM NEW.request_hash
+     OR OLD.resource_profile_hash IS DISTINCT FROM NEW.resource_profile_hash
+     OR OLD.resource_request_hash IS DISTINCT FROM NEW.resource_request_hash
+     OR OLD.parent_invocation_id IS DISTINCT FROM NEW.parent_invocation_id
+     OR OLD.retry_index IS DISTINCT FROM NEW.retry_index
+     OR OLD.requested_at IS DISTINCT FROM NEW.requested_at
+     OR OLD.created_at IS DISTINCT FROM NEW.created_at THEN
+    RAISE EXCEPTION 'Tutor action invocation identity is immutable' USING ERRCODE = '23514';
+  END IF;
+  IF OLD.status IN ('verified', 'retryable_failed', 'permanent_failed', 'denied', 'cancelled', 'timed_out', 'superseded') THEN
+    RAISE EXCEPTION 'Terminal Tutor action invocation is immutable' USING ERRCODE = '23514';
+  END IF;
+  IF OLD.status = 'requested' AND NEW.status IN ('admitted', 'denied') THEN RETURN NEW; END IF;
+  IF OLD.status = 'admitted' AND NEW.status IN ('running', 'cancel_requested', 'superseded') THEN RETURN NEW; END IF;
+  IF OLD.status = 'running' AND NEW.status IN (
+    'succeeded_unverified', 'retryable_failed', 'permanent_failed', 'denied',
+    'timed_out', 'cancel_requested', 'superseded'
+  ) THEN RETURN NEW; END IF;
+  IF OLD.status = 'cancel_requested' AND NEW.status IN ('cancelled', 'succeeded_unverified') THEN RETURN NEW; END IF;
+  IF OLD.status = 'succeeded_unverified' AND NEW.status IN (
+    'verified', 'retryable_failed', 'permanent_failed', 'cancel_requested', 'superseded'
+  ) THEN RETURN NEW; END IF;
+  RAISE EXCEPTION 'Tutor action invocation lifecycle transition is invalid' USING ERRCODE = '23514';
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_tutor_action_attempts_immutable ON tutor_action_attempts;
+CREATE TRIGGER trg_tutor_action_attempts_immutable
+BEFORE UPDATE OR DELETE ON tutor_action_attempts
+FOR EACH ROW EXECUTE FUNCTION enforce_tutor_action_append_only();
+DROP TRIGGER IF EXISTS trg_tutor_action_verifications_immutable ON tutor_action_verifications;
+CREATE TRIGGER trg_tutor_action_verifications_immutable
+BEFORE UPDATE OR DELETE ON tutor_action_verifications
+FOR EACH ROW EXECUTE FUNCTION enforce_tutor_action_append_only();
+DROP TRIGGER IF EXISTS trg_tutor_action_receipts_immutable ON tutor_action_receipts;
+CREATE TRIGGER trg_tutor_action_receipts_immutable
+BEFORE UPDATE OR DELETE ON tutor_action_receipts
+FOR EACH ROW EXECUTE FUNCTION enforce_tutor_action_append_only();
+DROP TRIGGER IF EXISTS trg_tutor_action_invocations_lifecycle ON tutor_action_invocations;
+CREATE TRIGGER trg_tutor_action_invocations_lifecycle
+BEFORE UPDATE OR DELETE ON tutor_action_invocations
+FOR EACH ROW EXECUTE FUNCTION enforce_tutor_action_invocation_lifecycle();
+DROP TRIGGER IF EXISTS trg_tutor_action_invocations_updated_at ON tutor_action_invocations;
+CREATE TRIGGER trg_tutor_action_invocations_updated_at
+BEFORE UPDATE ON tutor_action_invocations
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();

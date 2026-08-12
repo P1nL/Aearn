@@ -1,6 +1,6 @@
 # Aearn 数据库 Schema 与持久化契约
 
-**状态：** 当前 schema 说明，2026-08-08。
+**状态：** 当前 schema 说明，2026-08-12。
 **权威来源：** `aearn/services/api/app/db/schema.sql`、PostgreSQL bootstrap、
 Tutor/LearningTrack repositories 与 schema/cutover tests。
 **范围：** PostgreSQL 是 Tutor run、cutover receipt、背景队列和 learner-safe
@@ -259,3 +259,26 @@ local export 包含 personalized blocks、assignment 与 citation metadata，但
 `tutor_mastery_evidence.evidence_effect` 区分 `reinforcing` 与 `observational_non_degrading`。失败或部分通过的模块诊断只追加 observation/weakness，不降低既有 confidence；全部核心能力独立达到版本化阈值后，session 才可引用 predecessor-linked proposed plan revision。只有 confirm transaction 可把 session 置为 `confirmed`、激活 successor、写 `diagnostic_skipped` 并重算下游 availability。
 
 local export 省略完整 submission、hidden/private rubric/reference answer 和内部 execution 信息；reset/delete/cutover 在 transaction-local purge capability 下按 execution link/result/hint/submission/Attempt/Gate/diagnostic child-to-root 清理 user-owned rows。共享 curated exercise/diagnostic versions 与 private rubric 保留。Bootstrap twice 必须重复成功，并断言 owner/source one-of、scope FK、唯一性、immutability/lifecycle trigger 和索引存在。
+
+
+## 2026-08-12：受控 Action Runtime 持久化
+
+`tutor_action_invocations` 保存统一 action orchestration identity、exact descriptor/adapter、
+run/input revision、lease owner/generation、action generation、idempotency/stable key、catalog/policy
+证据与 resource fingerprint；不保存 raw arguments。其生命周期由数据库 trigger 与应用同一
+迁移表约束，终态不可更新或普通删除。`tutor_action_attempts`、
+`tutor_action_verifications`、`tutor_action_receipts` 都是 append-only evidence；只保存安全状态、
+authority reference/hash、结果/验证 hash、稳定 diagnostic/recovery code 与有界 safe JSON。
+
+Action 表不复制领域事实：`capability_invocation` 指向现有 capability receipt，`plan_draft`
+指向 immutable plan draft，`execution_job` 指向现有 execution job/result，未来 effect 仍指向
+原 effect receipt。`(run_id,idempotency_key)` 防止同 key 重复执行；current verified partial
+unique index `(run_id,input_revision,stable_action_key)` 防止同 revision 的语义重复 action。
+复合外键固定 invocation/receipt 的 run、user、conversation scope，parent/retry lineage 只能
+留在同一 run。
+
+Action reserve 必须匹配当前 `tutor_runs` 的 input revision、exact active lease owner/generation、
+未过期 lease、catalog digest、policy fingerprint 与非 terminal/cancelled/superseded 状态。
+本地 export 只返回 bounded action summary，不返回 raw result/hash；confirmed reset 使用既有
+transaction-local purge capability 按 receipt -> verification -> attempt -> invocation 顺序删除。
+cutover inventory 将四张 action 表视为 target state，不会在切换中静默清除。

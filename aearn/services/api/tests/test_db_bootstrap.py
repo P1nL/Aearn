@@ -179,6 +179,27 @@ PLANNING_FACT_SCHEMA_CONSTRAINTS = (
     "chk_tutor_planning_question_events_status",
 )
 
+ACTION_SCHEMA_CONSTRAINTS = (
+    "uq_tutor_action_invocations_run_key",
+    "uq_tutor_action_invocations_id_run",
+    "fk_tutor_action_invocation_parent_run",
+    "fk_tutor_action_invocation_run_user",
+    "fk_tutor_action_invocation_run_conversation",
+    "chk_tutor_action_invocations_parent_distinct",
+    "chk_tutor_action_invocations_terminal",
+    "chk_tutor_action_invocations_lease_owner",
+    "uq_tutor_action_attempts_identity",
+    "fk_tutor_action_attempt_invocation_run",
+    "chk_tutor_action_attempt_authority",
+    "fk_tutor_action_verification_invocation_run",
+    "chk_tutor_action_verification_authority",
+    "fk_tutor_action_receipt_invocation_run",
+    "fk_tutor_action_receipt_run_user",
+    "fk_tutor_action_receipt_run_conversation",
+    "chk_tutor_action_receipt_authority",
+    "chk_tutor_action_receipt_retry",
+)
+
 PRACTICE_SCHEMA_CONSTRAINTS = (
     "uq_tutor_exercise_versions_key_version",
     "chk_tutor_exercise_versions_execution_shape",
@@ -213,6 +234,7 @@ TUTOR_SCHEMA_CONSTRAINTS = (
     + CONVERSATION_TURNRUN_CONSTRAINTS
     + CONTEXT_SUMMARY_CONSTRAINTS
     + PLANNING_FACT_SCHEMA_CONSTRAINTS
+    + ACTION_SCHEMA_CONSTRAINTS
     + LESSON_SCHEMA_CONSTRAINTS
     + PRACTICE_SCHEMA_CONSTRAINTS
 )
@@ -228,6 +250,10 @@ TARGET_TUTOR_TABLES = (
     "tutor_run_checkpoints",
     "tutor_run_events",
     "tutor_capability_invocations",
+    "tutor_action_invocations",
+    "tutor_action_attempts",
+    "tutor_action_verifications",
+    "tutor_action_receipts",
     "tutor_effects",
     "tutor_execution_intents",
     "tutor_execution_jobs",
@@ -299,6 +325,11 @@ def test_tutor_target_schema_is_repeatable_and_enforces_run_event_identity() -> 
                     "trg_tutor_provider_attempt_receipts_immutable",
                     "trg_tutor_planning_intake_facts_immutable",
                     "trg_tutor_planning_question_events_immutable",
+                    "trg_tutor_action_attempts_immutable",
+                    "trg_tutor_action_verifications_immutable",
+                    "trg_tutor_action_receipts_immutable",
+                    "trg_tutor_action_invocations_lifecycle",
+                    "trg_tutor_action_invocations_updated_at",
                     "trg_tutor_conversations_updated_at",
                     "trg_tutor_runs_updated_at",
                     "trg_tutor_effects_updated_at",
@@ -401,6 +432,11 @@ def test_tutor_target_schema_is_repeatable_and_enforces_run_event_identity() -> 
             "trg_tutor_provider_attempt_receipts_immutable",
             "trg_tutor_planning_intake_facts_immutable",
             "trg_tutor_planning_question_events_immutable",
+            "trg_tutor_action_attempts_immutable",
+            "trg_tutor_action_verifications_immutable",
+            "trg_tutor_action_receipts_immutable",
+            "trg_tutor_action_invocations_lifecycle",
+            "trg_tutor_action_invocations_updated_at",
             "trg_tutor_conversations_updated_at",
             "trg_tutor_runs_updated_at",
             "trg_tutor_effects_updated_at",
@@ -475,6 +511,10 @@ def test_tutor_target_schema_is_repeatable_and_enforces_run_event_identity() -> 
                     "idx_tutor_planning_intake_facts_message",
                     "idx_tutor_planning_question_events_session_field",
                     "uq_tutor_planning_question_events_previous",
+                    "idx_tutor_action_invocations_run_created",
+                    "idx_tutor_action_invocations_state_created",
+                    "idx_tutor_action_receipts_run_terminal",
+                    "uq_tutor_action_receipts_current_verified",
                     "uq_tutor_runs_interactive_foreground",
                     "idx_tutor_conversations_public_activity",
                     "idx_tutor_public_processes_conversation_activity",
@@ -512,6 +552,10 @@ def test_tutor_target_schema_is_repeatable_and_enforces_run_event_identity() -> 
             "idx_tutor_planning_intake_facts_message",
             "idx_tutor_planning_question_events_session_field",
             "uq_tutor_planning_question_events_previous",
+            "idx_tutor_action_invocations_run_created",
+            "idx_tutor_action_invocations_state_created",
+            "idx_tutor_action_receipts_run_terminal",
+            "uq_tutor_action_receipts_current_verified",
             "uq_tutor_runs_interactive_foreground",
             "idx_tutor_conversations_public_activity",
             "idx_tutor_public_processes_conversation_activity",

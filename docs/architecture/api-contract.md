@@ -1,6 +1,6 @@
 # Aearn Tutor HTTP 与 SSE API 契约
 
-**状态：** 当前公共 API 契约，2026-08-05。
+**状态：** 当前公共 API 契约，2026-08-12。
 **权威来源：** `aearn/services/api/app/main.py` 中注册的路由、Pydantic model、
 `services/tutor/public_api.py`、`services/learning/`、`services/tutor/cutover.py` 与 API 测试。
 **不适用：** 已移除的 Graph、Dashboard、Onboarding、Learning Session、Review、
@@ -334,6 +334,17 @@ teaching-local；public 必须同时拥有 reviewed immutable image lock 和 com
 `409 MEMORY_SETTING_VERSION_CONFLICT`。`proactive_paused=false` 会恢复用户
 `enabled=true`，但不放宽服务器 verified、global pause、budget、cooldown、
 concurrency 或 circuit gate。
+
+### 受控 Action Runtime 的公开边界（2026-08-12）
+
+Action Runtime 是 Harness 内部 orchestration/receipt 层，不新增 learner-facing 任意工具
+endpoint。客户端不能提交 URL、路径、命令、镜像、环境变量、动态 MCP server、retry 次数或
+resource escalation。公开 conversation/history/SSE 仍只消费既有 learner-safe message/process
+投影；action receipt 仅通过服务端构建的 authoritative context 元数据影响后续 provider turn。
+
+公开或本地导出最多包含 action id/version、terminal status、safe summary、authority kind/handle、
+verification status 与 bounded recovery hint。raw arguments/result、provider body、private test/rubric、
+learner code、command/path、内部异常和 secret 不属于 HTTP/SSE/export contract。
 
 ## 9. Background / executor 非 API 边界
 

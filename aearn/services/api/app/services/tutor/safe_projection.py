@@ -16,7 +16,7 @@ from datetime import date, datetime
 from typing import Final
 from urllib.parse import urlparse
 
-from app.core.teaching_safety import redact_value
+from app.core.teaching_safety import redact_value, sanitize_summary_text
 
 
 SAFE_PROJECTION_VERSION: Final[str] = "tutor_safe_projection_v1"
@@ -61,6 +61,11 @@ _SAFE_KEYS = frozenset(
         "authoritative_snapshot_hash", "fact_revision", "required_fact_count",
         "required_fact_selected_count", "required_fact_missing_count",
         "confirmed_question_reasked_count", "summary_blocked_by_unprojected_fact",
+        "invocation_id", "action_id", "action_version", "stable_action_key",
+        "action_generation", "retry_index", "authority_kind", "authority_id", "authority_hash",
+        "safe_summary", "verification_status", "verification_hash", "verifier_id", "verifier_version",
+        "recovery_kind", "recovery_code", "retry_after_seconds", "descriptor_hash", "owner_adapter_id",
+        "task_kind", "resource_profile_hash", "resource_request_hash", "parent_invocation_id", "terminal_at",
     }
 )
 _INTEGER_KEYS = frozenset(
@@ -74,14 +79,15 @@ _INTEGER_KEYS = frozenset(
         "protocol_reserve_tokens", "safety_margin_tokens", "maximum_dynamic_target_tokens",
         "fact_revision", "required_fact_count", "required_fact_selected_count",
         "required_fact_missing_count", "confirmed_question_reasked_count",
-        "summary_blocked_by_unprojected_fact",
+        "summary_blocked_by_unprojected_fact", "action_generation", "retry_index", "retry_after_seconds",
     }
 )
 _HASH_KEYS = frozenset(
     {
         "catalog_digest", "policy_fingerprint", "manifest_hash", "instruction_hash", "evaluation_hash", "request_hash",
         "result_hash", "payload_hash", "safe_hash", "source_hash", "summary_source_hash", "prior_summary_hash", "lock_fingerprint",
-        "authoritative_snapshot_hash",
+        "authoritative_snapshot_hash", "authority_hash", "verification_hash", "descriptor_hash",
+        "resource_profile_hash", "resource_request_hash",
     }
 )
 
@@ -160,8 +166,10 @@ class TutorSafeProjection:
             return self._project_section_counts(value)
         if key == "skills":
             return self._project_skills(value, depth=depth)
-        if key in {"retention_until", "stale_after", "created_at", "expires_at", "deadline", "covered_through_created_at"}:
+        if key in {"retention_until", "stale_after", "created_at", "expires_at", "deadline", "covered_through_created_at", "terminal_at"}:
             return _safe_timestamp(value)
+        if key == "safe_summary":
+            return _safe_summary_value(value)
         if key == "context_budget_policy":
             return self._project_context_budget_policy(value, depth=depth)
         if key == "projection_kind":
@@ -287,6 +295,13 @@ def _safe_identifier(value: object) -> str | object:
     if _contains_protected_value(text):
         return _OMIT
     if not _SAFE_IDENTIFIER.fullmatch(text):
+        return _OMIT
+    return text
+
+
+def _safe_summary_value(value: object) -> str | object:
+    text = sanitize_summary_text(value, max_length=_MAX_SAFE_TEXT_LENGTH)
+    if not text or _contains_protected_value(text):
         return _OMIT
     return text
 

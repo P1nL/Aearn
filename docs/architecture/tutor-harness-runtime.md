@@ -1,6 +1,6 @@
 # Tutor Harness Runtime Architecture
 
-**Status:** Current runtime contract as of 2026-08-11.
+**Status:** Current runtime contract as of 2026-08-12.
 **Authority:** Current route registration, `aearn/services/api/app`,
 `aearn/apps/desktop`, `aearn/services/worker`, `services/learning/`,
 `schema.sql`, and their tests.
@@ -394,6 +394,39 @@ human release approval are three separate states.
 - Effects require selected-Skill evidence, policy permission, current input
   revision, a valid lease, and a repository transaction. The initial default
   policy denies undeclared actions.
+
+### Controlled Action Runtime (2026-08-12)
+
+The Harness now wraps approved `grounding.retrieve`, `learning.plan.draft`, and
+`runner.execute` work in one versioned Action Runtime lifecycle. An exact
+`ActionDescriptor` declares input/output schema, owner adapter, allowed origin/task
+kind, resource profile, timeout, retry policy, verifier, recovery policy, and safe
+projection. The runtime persists `requested -> admitted -> running ->
+succeeded_unverified -> verified` separately from denied, retryable/permanent failure,
+cancel, timeout, and supersede outcomes.
+
+Action orchestration does not replace domain authority. Grounding and plan capabilities
+continue to write their existing capability/draft receipts; runner actions only read an
+already-created durable execution job and never launch a process in the API transaction.
+Each action receipt stores one authority kind/id/hash reference instead of copying raw
+results. Current input revision, exact lease owner/generation, action generation,
+idempotency key, catalog digest, policy fingerprint, and resource fingerprints fence
+every durable transition.
+
+Resource admission is deny-by-default: provider arguments cannot grant a URL, path,
+command, image, environment variable, dynamic MCP server, network class, source, or
+artifact outside the descriptor and server allowlist. Per-run action, retry,
+verification, and actionable-recovery budgets are server-owned. A handler success is
+only `succeeded_unverified`; a separate verifier must prove current capability, planning
+facts/DAG, grounding citation scope, or terminal execution-job evidence before the
+result becomes `verified`.
+
+Recent terminal action receipts enter `AuthoritativeContextSnapshot` as bounded metadata:
+action id/version, input/action/retry generation, lifecycle status, safe summary,
+authority handle, verification status, and recovery hint. Raw arguments, command/path,
+provider body, private tests/rubric, learner submission, internal exception, and secret
+never enter provider context, public SSE, local export, or trace projection. A current
+verified stable action key is replayed/deduplicated instead of invoking the owner again.
 
 ## 5. Privacy, diagnostics, and persistence
 
