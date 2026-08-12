@@ -18,6 +18,15 @@ import {
   type LessonGatePrepareResponse,
   type LessonGateResult,
   type LessonPrepareResponse,
+  type ModelCodeReviewSubmission,
+  type ModelReviewArtifact,
+  type ModelReviewAuthoringRun,
+  type ModelReviewEvidenceResponse,
+  type ModelReviewFindingFeedback,
+  type ModelReviewPrompt,
+  type ModelReviewSafeFeedback,
+  type ModelReviewScoreBreakdown,
+  type ModelReviewVisibleEvidence,
   type LessonUpdateProposal,
   type ExerciseAttemptState,
   type ExerciseAttemptOutcome,
@@ -520,19 +529,46 @@ export async function requestLessonGateHint(input: {
   return hint;
 }
 
-export async function createLessonGateAttempt(input: {
+type LessonGateAttemptInput = {
   userId: string;
   trackId: string;
   knowledgeKey: string;
   gateKey: string;
   attemptType: "run" | "submit";
-  submission: string;
   expectedTrackVersion: number;
   expectedProgressVersion: number;
   expectedAssignmentVersion: number;
   expectedGateVersion: number;
   clientActionId: string;
-}): Promise<ExerciseAttemptState> {
+} & (
+  | { submission: string; reviewSubmission?: never }
+  | { submission?: never; reviewSubmission: ModelCodeReviewSubmission }
+);
+
+export async function requestModelReviewEvidence(input: {
+  userId: string;
+  trackId: string;
+  knowledgeKey: string;
+  gateKey: string;
+  expectedGateVersion: number;
+  clientActionId: string;
+}): Promise<ModelReviewEvidenceResponse> {
+  const url = `${API_BASE_URL}/api/learning-tracks/${encodeURIComponent(input.trackId)}/lessons/${encodeURIComponent(input.knowledgeKey)}/gates/${encodeURIComponent(input.gateKey)}/evidence`;
+  const payload = await requestJson(url, {
+    method: "POST",
+    headers: tutorMutationHeaders(input.clientActionId),
+    body: JSON.stringify({
+      user_id: input.userId,
+      client_action_id: input.clientActionId,
+      expected_gate_version: input.expectedGateVersion,
+    }),
+  });
+  const evidence = toModelReviewEvidenceResponse(payload);
+  if (!evidence) throw new Error("Model review evidence API returned an invalid payload");
+  return evidence;
+}
+
+export async function createLessonGateAttempt(input: LessonGateAttemptInput): Promise<ExerciseAttemptState> {
   const url = `${API_BASE_URL}/api/learning-tracks/${encodeURIComponent(input.trackId)}/lessons/${encodeURIComponent(input.knowledgeKey)}/gates/${encodeURIComponent(input.gateKey)}/attempts`;
   const payload = await requestJson(url, {
     method: "POST",
@@ -541,7 +577,7 @@ export async function createLessonGateAttempt(input: {
       user_id: input.userId,
       client_action_id: input.clientActionId,
       attempt_type: input.attemptType,
-      submission: input.submission,
+      ...(input.reviewSubmission ? { review_submission: input.reviewSubmission } : { submission: input.submission }),
       expected_track_version: input.expectedTrackVersion,
       expected_progress_version: input.expectedProgressVersion,
       expected_assignment_version: input.expectedAssignmentVersion,
@@ -975,13 +1011,72 @@ function toLessonGateList(payload: unknown): LessonGateList | null {
 }
 
 function toLessonGatePrepareResponse(payload: unknown): LessonGatePrepareResponse | null {
+  if (!isRecord(payload) || typeof payload.idempotent_replayed !== "boolean") return null;
+  if (payload.status === "ready") {
+    if (!hasExactKeys(payload, ["status", "gate", "idempotent_replayed"])) return null;
+    const gate = toLessonGateItem(payload.gate);
+    return gate ? { status: "ready", gate, idempotent_replayed: payload.idempotent_replayed } : null;
+  }
+  if (payload.status !== "preparing" && payload.status !== "failed") return null;
+  if (!hasExactKeys(payload, ["status", "gate", "review_authoring_run", "idempotent_replayed"])) return null;
+  const gate = payload.gate === null ? null : toLessonGateItem(payload.gate);
+  const run = toModelReviewAuthoringRun(payload.review_authoring_run);
+  if ((payload.gate !== null && !gate) || !run) return null;
+  return { status: payload.status, gate, review_authoring_run: run, idempotent_replayed: payload.idempotent_replayed };
+}
+
+function toModelReviewAuthoringRun(payload: unknown): ModelReviewAuthoringRun | null {
   if (
     !isRecord(payload) ||
-    !hasExactKeys(payload, ["status", "gate", "idempotent_replayed"]) ||
-    payload.status !== "ready" || typeof payload.idempotent_replayed !== "boolean"
+    !hasExactKeys(payload, ["run_id", "state", "attempt_count", "failure_code", "failure_message"]) ||
+    !isString(payload.run_id) || !isModelReviewAuthoringState(payload.state) ||
+    !isNonNegativeSafeInteger(payload.attempt_count) || !isNullableString(payload.failure_code) ||
+    !isNullableString(payload.failure_message)
   ) return null;
-  const gate = toLessonGateItem(payload.gate);
-  return gate ? { status: "ready", gate, idempotent_replayed: payload.idempotent_replayed } : null;
+  return {
+    run_id: payload.run_id,
+    state: payload.state,
+    attempt_count: payload.attempt_count,
+    failure_code: payload.failure_code,
+    failure_message: payload.failure_message,
+  };
+}
+
+function toModelReviewEvidenceResponse(payload: unknown): ModelReviewEvidenceResponse | null {
+  if (
+    !isRecord(payload) ||
+    !hasExactKeys(payload, ["evidence_id", "evidence", "assistance_kind", "gate_version", "created_at", "idempotent_replayed"]) ||
+    !isString(payload.evidence_id) || payload.assistance_kind !== "validation_evidence_viewed" ||
+    !isNonNegativeSafeInteger(payload.gate_version) || !isNullableString(payload.created_at) ||
+    typeof payload.idempotent_replayed !== "boolean"
+  ) return null;
+  const evidence = toModelReviewVisibleEvidence(payload.evidence);
+  return evidence ? {
+    evidence_id: payload.evidence_id, evidence, assistance_kind: "validation_evidence_viewed",
+    gate_version: payload.gate_version, created_at: payload.created_at,
+    idempotent_replayed: payload.idempotent_replayed,
+  } : null;
+}
+
+function toModelReviewVisibleEvidence(payload: unknown): ModelReviewVisibleEvidence | null {
+  if (
+    !isRecord(payload) ||
+    !hasExactKeys(payload, ["schema_version", "execution_claim", "checks"]) ||
+    payload.schema_version !== "model_code_review_visible_evidence_v1" ||
+    payload.execution_claim !== "prepublication_only" || !Array.isArray(payload.checks)
+  ) return null;
+  const checks = payload.checks.map((item) => {
+    if (
+      !isRecord(item) || !hasExactKeys(item, ["check_type", "status", "safe_code"]) ||
+      !isVisibleEvidenceCheckType(item.check_type) ||
+      (item.status !== "passed" && item.status !== "not_applicable") || !isString(item.safe_code)
+    ) return null;
+    return { check_type: item.check_type, status: item.status, safe_code: item.safe_code };
+  });
+  if (checks.some((item) => item === null)) return null;
+  const parsed = checks.filter((item): item is ModelReviewVisibleEvidence["checks"][number] => item !== null);
+  if (new Set(parsed.map((item) => item.check_type)).size !== parsed.length) return null;
+  return { schema_version: "model_code_review_visible_evidence_v1", execution_claim: "prepublication_only", checks: parsed };
 }
 
 function toLessonGateHint(payload: unknown): LessonGateHint | null {
@@ -1019,9 +1114,18 @@ function toLessonGateItem(payload: unknown): LessonGateItem | null {
     learner_prompt: payload.learner_prompt,
     allowed_actions: payload.allowed_actions,
   };
-  if (payload.status === "unbound") {
-    if (!hasExactKeys(payload, ["gate_key", "gate_kind", "assessment_contract_version", "required_capabilities", "learner_prompt", "status", "allowed_actions", "exercise"]) || payload.exercise !== null) return null;
-    return { ...common, status: "unbound", exercise: null };
+  if (payload.status === "unbound" || payload.status === "preparing" || payload.status === "failed") {
+    if (
+      !hasExactKeys(payload, [
+        "gate_key", "gate_kind", "assessment_contract_version", "required_capabilities", "learner_prompt",
+        "status", "allowed_actions", "exercise", "review_authoring_run",
+      ]) ||
+      payload.exercise !== null
+    ) return null;
+    const run = payload.review_authoring_run === null ? null : toModelReviewAuthoringRun(payload.review_authoring_run);
+    if (payload.review_authoring_run !== null && !run) return null;
+    if (payload.status !== "unbound" && !run) return null;
+    return { ...common, status: payload.status, exercise: null, review_authoring_run: run };
   }
   if (
     !hasExactKeys(payload, [
@@ -1065,33 +1169,29 @@ function toLessonGateItem(payload: unknown): LessonGateItem | null {
 function toLessonGateExercise(payload: unknown, requireGateFields: boolean): LessonGateExercise | null {
   if (
     !isRecord(payload) || !isString(payload.exercise_version_id) || !isString(payload.exercise_key) ||
-    !isExerciseType(payload.exercise_type) || !isString(payload.version) || !isString(payload.title) ||
-    !isRecord(payload.learner_prompt) || !isRecord(payload.starter_artifact)
+    !isExerciseType(payload.exercise_type) || !isString(payload.version) || !isString(payload.title)
   ) return null;
-  if (requireGateFields) {
-    if (!hasExactKeys(payload, ["exercise_version_id", "exercise_key", "exercise_type", "version", "title", "learner_prompt", "starter_artifact", "required_capabilities", "content_hash"]) || !isStringArray(payload.required_capabilities) || !isString(payload.content_hash)) return null;
-    return {
-      exercise_version_id: payload.exercise_version_id,
-      exercise_key: payload.exercise_key,
-      exercise_type: payload.exercise_type,
-      version: payload.version,
-      title: payload.title,
-      learner_prompt: payload.learner_prompt,
-      starter_artifact: payload.starter_artifact,
-      required_capabilities: payload.required_capabilities,
-      content_hash: payload.content_hash,
-    };
-  }
-  if (!hasExactKeys(payload, ["exercise_version_id", "exercise_key", "exercise_type", "version", "title", "learner_prompt", "starter_artifact"])) return null;
-  return {
+  const expectedKeys = requireGateFields
+    ? ["exercise_version_id", "exercise_key", "exercise_type", "version", "title", "learner_prompt", "starter_artifact", "required_capabilities", "content_hash"]
+    : ["exercise_version_id", "exercise_key", "exercise_type", "version", "title", "learner_prompt", "starter_artifact"];
+  if (!hasExactKeys(payload, expectedKeys)) return null;
+  if (requireGateFields && (!isStringArray(payload.required_capabilities) || !isString(payload.content_hash))) return null;
+  const shared = {
     exercise_version_id: payload.exercise_version_id,
     exercise_key: payload.exercise_key,
-    exercise_type: payload.exercise_type,
     version: payload.version,
     title: payload.title,
-    learner_prompt: payload.learner_prompt,
-    starter_artifact: payload.starter_artifact,
   };
+  const gateFields = requireGateFields
+    ? { required_capabilities: isStringArray(payload.required_capabilities) ? payload.required_capabilities : [], content_hash: typeof payload.content_hash === "string" ? payload.content_hash : "" }
+    : {};
+  if (payload.exercise_type === "model_code_review") {
+    const prompt = toModelReviewPrompt(payload.learner_prompt);
+    const artifact = toModelReviewArtifact(payload.starter_artifact);
+    return prompt && artifact ? { ...shared, ...gateFields, exercise_type: "model_code_review", learner_prompt: prompt, starter_artifact: artifact } : null;
+  }
+  if (!isRecord(payload.learner_prompt) || !isRecord(payload.starter_artifact)) return null;
+  return { ...shared, ...gateFields, exercise_type: payload.exercise_type, learner_prompt: payload.learner_prompt, starter_artifact: payload.starter_artifact };
 }
 
 function toLessonGateResult(payload: unknown): LessonGateResult | null {
@@ -1101,20 +1201,98 @@ function toLessonGateResult(payload: unknown): LessonGateResult | null {
   if (!hasExactKeys(payload, baseKeys) && !hasExactKeys(payload, fullKeys)) return null;
   const capabilityScores = payload.capability_scores === undefined ? undefined : toScoreRecord(payload.capability_scores);
   if (payload.capability_scores !== undefined && !capabilityScores) return null;
+  const safeFeedback = payload.safe_feedback.status === "model_code_review_evaluated"
+    ? toModelReviewSafeFeedback(payload.safe_feedback)
+    : payload.safe_feedback;
+  if (!safeFeedback) return null;
   return {
     outcome: payload.outcome,
     score: payload.score,
-    safe_feedback: payload.safe_feedback,
+    safe_feedback: safeFeedback,
     ...(capabilityScores ? { capability_scores: capabilityScores } : {}),
     terminal_at: payload.terminal_at,
   };
+}
+
+function toModelReviewPrompt(payload: unknown): ModelReviewPrompt | null {
+  if (
+    !isRecord(payload) ||
+    !hasExactKeys(payload, ["schema_version", "requirements", "review_scope", "evidence_boundary", "learner_instruction"]) ||
+    payload.schema_version !== "model_code_review_prompt_v1" || !isStringArray(payload.requirements) ||
+    !isStringArray(payload.review_scope) || payload.evidence_boundary !== "prepublication_verified" ||
+    !isString(payload.learner_instruction) || payload.requirements.length === 0 || payload.review_scope.length === 0
+  ) return null;
+  return {
+    schema_version: "model_code_review_prompt_v1", requirements: payload.requirements,
+    review_scope: payload.review_scope, evidence_boundary: "prepublication_verified",
+    learner_instruction: payload.learner_instruction,
+  };
+}
+
+function toModelReviewArtifact(payload: unknown): ModelReviewArtifact | null {
+  if (
+    !isRecord(payload) ||
+    !hasExactKeys(payload, ["schema_version", "language_id", "runtime_label", "model_code", "code_hash", "line_count"]) ||
+    payload.schema_version !== "model_code_review_artifact_v1" || !isString(payload.language_id) ||
+    !isString(payload.runtime_label) || !isString(payload.model_code) ||
+    !isSha256(payload.code_hash) || !isPositiveSafeInteger(payload.line_count) ||
+    normalizedLineCount(payload.model_code) !== payload.line_count
+  ) return null;
+  return {
+    schema_version: "model_code_review_artifact_v1", language_id: payload.language_id,
+    runtime_label: payload.runtime_label, model_code: payload.model_code, code_hash: payload.code_hash,
+    line_count: payload.line_count,
+  };
+}
+
+function toModelReviewSafeFeedback(payload: unknown): ModelReviewSafeFeedback | null {
+  if (
+    !isRecord(payload) ||
+    !hasExactKeys(payload, ["status", "message", "execution_claim", "assistance_kind", "score_breakdown", "finding_feedback", "omission_band", "next_action"]) ||
+    payload.status !== "model_code_review_evaluated" || !isString(payload.message) ||
+    payload.execution_claim !== "not_run" || !isModelReviewAssistanceKind(payload.assistance_kind) ||
+    !Array.isArray(payload.finding_feedback) ||
+    (payload.omission_band !== "none" && payload.omission_band !== "limited" && payload.omission_band !== "major") ||
+    (payload.next_action !== "advance_next" && payload.next_action !== "review_variant" && payload.next_action !== "show_hint")
+  ) return null;
+  const scoreBreakdown = toModelReviewScoreBreakdown(payload.score_breakdown);
+  const findingFeedback = payload.finding_feedback.map(toModelReviewFindingFeedback);
+  if (!scoreBreakdown || findingFeedback.some((item) => item === null)) return null;
+  const parsed = findingFeedback.filter((item): item is ModelReviewFindingFeedback => item !== null);
+  if (new Set(parsed.map((item) => item.client_finding_id)).size !== parsed.length) return null;
+  return {
+    status: "model_code_review_evaluated", message: payload.message, execution_claim: "not_run",
+    assistance_kind: payload.assistance_kind, score_breakdown: scoreBreakdown, finding_feedback: parsed,
+    omission_band: payload.omission_band, next_action: payload.next_action,
+  };
+}
+
+function toModelReviewScoreBreakdown(payload: unknown): ModelReviewScoreBreakdown | null {
+  const keys = ["policy_version", "verdict", "discovery", "omission", "severity", "evidence", "validation_method", "suggested_fix", "false_positive", "duplicate"];
+  if (!isRecord(payload) || !hasExactKeys(payload, keys) || payload.policy_version !== "model_code_review_score_v1") return null;
+  if (!keys.slice(1).every((key) => isScore(payload[key]))) return null;
+  return {
+    policy_version: "model_code_review_score_v1",
+    verdict: Number(payload.verdict), discovery: Number(payload.discovery), omission: Number(payload.omission),
+    severity: Number(payload.severity), evidence: Number(payload.evidence),
+    validation_method: Number(payload.validation_method), suggested_fix: Number(payload.suggested_fix),
+    false_positive: Number(payload.false_positive), duplicate: Number(payload.duplicate),
+  };
+}
+
+function toModelReviewFindingFeedback(payload: unknown): ModelReviewFindingFeedback | null {
+  if (
+    !isRecord(payload) || !hasExactKeys(payload, ["client_finding_id", "status", "safe_reason_code"]) ||
+    !isString(payload.client_finding_id) || !isModelReviewFindingStatus(payload.status) || !isString(payload.safe_reason_code)
+  ) return null;
+  return { client_finding_id: payload.client_finding_id, status: payload.status, safe_reason_code: payload.safe_reason_code };
 }
 
 function toExerciseAttemptState(payload: unknown): ExerciseAttemptState | null {
   if (!isRecord(payload)) return null;
   const baseKeys = [
     "attempt_id", "attempt_type", "track_id", "knowledge_key", "exercise_version_id", "submission_hash",
-    "independence", "accepted_at", "status", "execution_job_id", "execution_job_state", "result", "projected",
+    "independence", "assistance_kind", "accepted_at", "status", "execution_job_id", "execution_job_state", "result", "projected",
     "route_changed", "mastery", "idempotent_replayed",
   ];
   const withTierKeys = [...baseKeys, "execution_tier", "execution_disclosure"];
@@ -1123,7 +1301,7 @@ function toExerciseAttemptState(payload: unknown): ExerciseAttemptState | null {
     !isString(payload.attempt_id) || !isExerciseAttemptType(payload.attempt_type) ||
     !isString(payload.track_id) || !isString(payload.knowledge_key) || !isString(payload.exercise_version_id) ||
     !isString(payload.submission_hash) || !isExerciseIndependence(payload.independence) ||
-    !isNullableString(payload.accepted_at) || (payload.status !== "pending" && payload.status !== "terminal") ||
+    !isModelReviewAssistanceKind(payload.assistance_kind) || !isNullableString(payload.accepted_at) || (payload.status !== "pending" && payload.status !== "terminal") ||
     !isNullableString(payload.execution_job_id) || !isNullableString(payload.execution_job_state) ||
     !(payload.projected === null || typeof payload.projected === "boolean") ||
     typeof payload.route_changed !== "boolean" || typeof payload.idempotent_replayed !== "boolean"
@@ -1141,6 +1319,7 @@ function toExerciseAttemptState(payload: unknown): ExerciseAttemptState | null {
     exercise_version_id: payload.exercise_version_id,
     submission_hash: payload.submission_hash,
     independence: payload.independence,
+    assistance_kind: payload.assistance_kind,
     accepted_at: payload.accepted_at,
     status: payload.status,
     execution_job_id: payload.execution_job_id,
@@ -1618,8 +1797,34 @@ function isExecutionTier(value: unknown): value is ExecutionTier {
   return value === "teaching_local" || value === "container_verified" || value === "static_only" || value === "unavailable";
 }
 
+function isModelReviewAuthoringState(value: unknown): value is ModelReviewAuthoringRun["state"] {
+  return value === "pending" || value === "claimed" || value === "running" || value === "validating" || value === "completed" || value === "failed" || value === "cancelled";
+}
+
+function isVisibleEvidenceCheckType(value: unknown): value is ModelReviewVisibleEvidence["checks"][number]["check_type"] {
+  return value === "parser" || value === "compile_or_typecheck" || value === "visible_tests" || value === "hidden_tests" || value === "coverage";
+}
+
+function isModelReviewFindingStatus(value: unknown): value is ModelReviewFindingFeedback["status"] {
+  return value === "supported" || value === "partial" || value === "unsupported" || value === "duplicate";
+}
+
+function normalizedLineCount(value: string): number {
+  const normalized = value.replace(/\r\n?/g, "\n");
+  const lines = normalized.split("\n");
+  return normalized.endsWith("\n") ? lines.length - 1 : lines.length;
+}
+
+function isSha256(value: unknown): value is string {
+  return typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
+}
+
+function isPositiveSafeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) > 0;
+}
+
 function isExerciseType(value: unknown): value is LessonGateExercise["exercise_type"] {
-  return value === "code_completion" || value === "sql_query" || value === "browser_preview" || value === "static_code_reasoning";
+  return value === "code_completion" || value === "sql_query" || value === "browser_preview" || value === "static_code_reasoning" || value === "model_code_review";
 }
 
 function isGateRequirementKind(value: unknown): value is "required" | "recommended" | "diagnostic" {
@@ -1648,6 +1853,10 @@ function isExerciseAttemptOutcome(value: unknown): value is ExerciseAttemptOutco
 
 function isExerciseIndependence(value: unknown): value is ExerciseAttemptState["independence"] {
   return value === "independent" || value === "hinted" || value === "remediated";
+}
+
+function isModelReviewAssistanceKind(value: unknown): value is ExerciseAttemptState["assistance_kind"] {
+  return isExerciseIndependence(value) || value === "validation_evidence_viewed";
 }
 
 function isModuleDiagnosticState(value: unknown): value is ModuleDiagnosticState["state"] {

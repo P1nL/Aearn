@@ -9,6 +9,7 @@ import {
   prepareLessonDocument,
   prepareLessonGate,
   requestLessonGateHint,
+  requestModelReviewEvidence,
   startLessonDocument,
 } from "../../api";
 import { getErrorInfo } from "../../lib/errorMessages";
@@ -16,9 +17,12 @@ import type {
   ExerciseAttemptState,
   LessonDocumentState,
   LessonExerciseGateBlock,
+  LessonGateBoundItem,
   LessonGateHint,
   LessonGateItem,
   LessonGateList,
+  ModelCodeReviewSubmission,
+  ModelReviewEvidenceResponse,
   ModuleDiagnosticState,
 } from "../../types";
 import { LessonDocumentView } from "./lesson/LessonDocumentView";
@@ -33,7 +37,7 @@ type LessonDocumentPageProps = {
 };
 
 type LessonAction = "idle" | "preparing" | "starting" | "refreshing" | "migrating";
-type GateAction = "prepare" | "hint" | "run" | "submit" | "poll";
+type GateAction = "prepare" | "hint" | "run" | "submit" | "evidence" | "poll";
 
 type BusyGate = {
   gateKey: string;
@@ -49,6 +53,8 @@ export function LessonDocumentPage({ userId, trackId, knowledgeKey, onBack }: Le
   const [gateLoading, setGateLoading] = useState(false);
   const [gateLoadError, setGateLoadError] = useState<string | null>(null);
   const [gateEditors, setGateEditors] = useState<Record<string, string>>({});
+  const [gateReviewDrafts, setGateReviewDrafts] = useState<Record<string, ModelCodeReviewSubmission>>({});
+  const [gateReviewEvidence, setGateReviewEvidence] = useState<Record<string, ModelReviewEvidenceResponse | null>>({});
   const [gateHints, setGateHints] = useState<Record<string, LessonGateHint | null>>({});
   const [gateAttempts, setGateAttempts] = useState<Record<string, ExerciseAttemptState | null>>({});
   const [gateStale, setGateStale] = useState<Record<string, boolean>>({});
@@ -76,6 +82,7 @@ export function LessonDocumentPage({ userId, trackId, knowledgeKey, onBack }: Le
       if (signal?.aborted) return;
       setGates(next);
       setGateEditors((current) => initializeGateEditors(current, next.items));
+      setGateReviewDrafts((current) => initializeReviewDrafts(current, next.items));
     } catch (error) {
       if (!signal?.aborted) setGateLoadError(getErrorInfo(error).message);
     } finally {
@@ -105,6 +112,12 @@ export function LessonDocumentPage({ userId, trackId, knowledgeKey, onBack }: Le
     void loadGates(controller.signal);
     return () => controller.abort();
   }, [loadGates, state?.assignment, state?.status]);
+
+  useEffect(() => {
+    if (!gates?.items.some((item) => item.status === "preparing")) return undefined;
+    const timer = globalThis.setInterval(() => void loadGates(), 1400);
+    return () => globalThis.clearInterval(timer);
+  }, [gates?.items, loadGates]);
 
   async function prepare(refresh: boolean) {
     if (!state || action !== "idle") return;
@@ -219,25 +232,19 @@ export function LessonDocumentPage({ userId, trackId, knowledgeKey, onBack }: Le
   async function attemptGateAction(block: LessonExerciseGateBlock, attemptType: "run" | "submit") {
     const gate = boundGate(block.gate_key);
     if (!gate || !gates || busyGate) return;
+    const isModelReview = gate.exercise.exercise_type === "model_code_review";
     const submission = gateEditors[block.gate_key] ?? "";
-    if (!submission.trim()) return;
+    const reviewSubmission = gateReviewDrafts[block.gate_key];
+    if (isModelReview && (!reviewSubmission || attemptType !== "submit")) return;
+    if (!isModelReview && !submission.trim()) return;
     setBusyGate({ gateKey: block.gate_key, action: attemptType });
     setGateError(block.gate_key, null);
     setGateStale((current) => ({ ...current, [block.gate_key]: false }));
     try {
-      let attempt = await createLessonGateAttempt({
-        userId,
-        trackId,
-        knowledgeKey,
-        gateKey: block.gate_key,
-        attemptType,
-        submission,
-        expectedTrackVersion: gates.track_version,
-        expectedProgressVersion: gates.progress_version,
-        expectedAssignmentVersion: gates.assignment_version,
-        expectedGateVersion: gate.gate_version,
-        clientActionId: createLessonActionId(`gate-${attemptType}-${block.gate_key}`),
-      });
+      const shared = { userId, trackId, knowledgeKey, gateKey: block.gate_key, attemptType, expectedTrackVersion: gates.track_version, expectedProgressVersion: gates.progress_version, expectedAssignmentVersion: gates.assignment_version, expectedGateVersion: gate.gate_version, clientActionId: createLessonActionId(`gate-${attemptType}-${block.gate_key}`) };
+      let attempt = isModelReview
+        ? await createLessonGateAttempt({ ...shared, attemptType: "submit", reviewSubmission })
+        : await createLessonGateAttempt({ ...shared, submission });
       setGateAttempts((current) => ({ ...current, [block.gate_key]: attempt }));
       if (attempt.status === "pending") {
         attempt = await pollExerciseAttempt({ userId, trackId, knowledgeKey, attemptId: attempt.attempt_id });
@@ -245,6 +252,22 @@ export function LessonDocumentPage({ userId, trackId, knowledgeKey, onBack }: Le
         if (attempt.status === "pending") setGateError(block.gate_key, "受控执行仍在队列中，可以稍后刷新同一 Attempt 的结果。");
       }
       await Promise.all([load(), loadGates()]);
+    } catch (error) {
+      setGateError(block.gate_key, getErrorInfo(error).message);
+    } finally {
+      setBusyGate(null);
+    }
+  }
+
+  async function readReviewEvidence(block: LessonExerciseGateBlock) {
+    const gate = boundGate(block.gate_key);
+    if (!gate || gate.exercise.exercise_type !== "model_code_review" || busyGate) return;
+    setBusyGate({ gateKey: block.gate_key, action: "evidence" });
+    setGateError(block.gate_key, null);
+    try {
+      const evidence = await requestModelReviewEvidence({ userId, trackId, knowledgeKey, gateKey: block.gate_key, expectedGateVersion: gate.gate_version, clientActionId: createLessonActionId(`gate-evidence-${block.gate_key}`) });
+      setGateReviewEvidence((current) => ({ ...current, [block.gate_key]: evidence }));
+      await loadGates();
     } catch (error) {
       setGateError(block.gate_key, getErrorInfo(error).message);
     } finally {
@@ -274,9 +297,9 @@ export function LessonDocumentPage({ userId, trackId, knowledgeKey, onBack }: Le
     }
   }
 
-  function boundGate(gateKey: string) {
+  function boundGate(gateKey: string): LessonGateBoundItem | null {
     const gate = gates?.items.find((item) => item.gate_key === gateKey);
-    return gate && gate.status !== "unbound" ? gate : null;
+    return gate && isBoundGate(gate) ? gate : null;
   }
 
   function setGateError(gateKey: string, message: string | null) {
@@ -285,6 +308,11 @@ export function LessonDocumentPage({ userId, trackId, knowledgeKey, onBack }: Le
 
   function updateGateEditor(gateKey: string, value: string) {
     setGateEditors((current) => ({ ...current, [gateKey]: value }));
+    if (gateAttempts[gateKey]?.result) setGateStale((current) => ({ ...current, [gateKey]: true }));
+  }
+
+  function updateReviewDraft(gateKey: string, draft: ModelCodeReviewSubmission) {
+    setGateReviewDrafts((current) => ({ ...current, [gateKey]: draft }));
     if (gateAttempts[gateKey]?.result) setGateStale((current) => ({ ...current, [gateKey]: true }));
   }
 
@@ -297,16 +325,20 @@ export function LessonDocumentPage({ userId, trackId, knowledgeKey, onBack }: Le
         block={block}
         gate={gate}
         editorValue={gateEditors[block.gate_key] ?? ""}
+        reviewDraft={gateReviewDrafts[block.gate_key] ?? null}
+        reviewEvidence={gateReviewEvidence[block.gate_key] ?? null}
         hint={gateHints[block.gate_key] ?? null}
         attempt={gateAttempts[block.gate_key] ?? null}
         resultStale={gateStale[block.gate_key] ?? false}
         busyAction={currentBusy}
         errorMessage={gateErrors[block.gate_key] ?? null}
         onEditorChange={(value) => updateGateEditor(block.gate_key, value)}
+        onReviewDraftChange={(draft) => updateReviewDraft(block.gate_key, draft)}
         onPrepare={() => void prepareGateAction(block)}
         onHint={() => void hintGateAction(block)}
         onRun={() => void attemptGateAction(block, "run")}
         onSubmit={() => void attemptGateAction(block, "submit")}
+        onEvidence={() => void readReviewEvidence(block)}
         onPoll={() => void pollGateAttempt(block)}
       />
     );
@@ -370,10 +402,23 @@ function LessonUpdateNotice({ state, busy, onMigrate }: { state: LessonDocumentS
   return <section className="lesson-update-notice"><div><p className="tutor-panel-eyebrow">有新课程版本</p><h2>更新不会自动替换已开始课程</h2><p>{changed > 0 ? `检测到 ${changed} 组来源或内容影响。` : "新版本保留当前结构，但生成 lineage 已更新。"} 当前文档会一直保持 active，直到你明确迁移。</p></div><button className="tutor-primary-button" type="button" disabled={busy} onClick={onMigrate}>{busy ? "正在迁移……" : "查看影响后迁移"}</button></section>;
 }
 
+function isBoundGate(item: LessonGateItem): item is LessonGateBoundItem {
+  return item.status !== "unbound" && item.status !== "preparing" && item.status !== "failed";
+}
+
+function initializeReviewDrafts(current: Record<string, ModelCodeReviewSubmission>, items: LessonGateItem[]): Record<string, ModelCodeReviewSubmission> {
+  const next = { ...current };
+  for (const item of items) {
+    if (!isBoundGate(item) || item.exercise.exercise_type !== "model_code_review" || next[item.gate_key]) continue;
+    next[item.gate_key] = { schema_version: "model_code_review_submission_v1", verdict: "uncertain", findings: [], supplemental_note: null };
+  }
+  return next;
+}
+
 function initializeGateEditors(current: Record<string, string>, items: LessonGateItem[]): Record<string, string> {
   const next = { ...current };
   for (const item of items) {
-    if (item.status === "unbound" || next[item.gate_key] !== undefined) continue;
+    if (!isBoundGate(item) || item.exercise.exercise_type === "model_code_review" || next[item.gate_key] !== undefined) continue;
     const starter = item.exercise.starter_artifact.content;
     next[item.gate_key] = typeof starter === "string" ? starter : "";
   }
