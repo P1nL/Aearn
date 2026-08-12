@@ -1,0 +1,18 @@
+{"file": ".trellis/tasks/08-04-model-code-review-exercises/prd.md", "reason": "逐项核对结构化 finding、确定性评分、六场景四语言、预发布验证、隐私、幂等、Gate/诊断与 Desktop 验收。"}
+{"file": ".trellis/tasks/08-04-model-code-review-exercises/design.md", "reason": "检查 authoring、candidate、validation、publication、Action/executor 和 learner Attempt 权威边界一致。"}
+{"file": ".trellis/tasks/08-04-model-code-review-exercises/research/current-system.md", "reason": "检查实现只接入当前正式 runtime，没有恢复旧 review authority 或第二套执行队列。"}
+{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "检查复合外键、append-only、环形删除、export/reset/cutover 与 bootstrap 回归。"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "检查 exact parser、结构化提交、assisted evidence 与服务端结果映射。"}
+{"file": "docs/architecture/api-contract.md", "reason": "检查 Gate authoring、evidence、structured Attempt、错误码与 learner-safe projection。"}
+{"file": "docs/architecture/database-schema.md", "reason": "检查七张 model-review 表、共享 execution owner/source 与数据生命周期。"}
+{"file": "docs/architecture/tutor-harness-runtime.md", "reason": "检查 exact Action descriptor、受控 validation 与单一 executor queue。"}
+{"file": "docs/product/frontend-interaction-spec.md", "reason": "检查结构化审核编辑器、preparing/failed、结果、响应式与可访问性。"}
+{"file": "docs/qa/acceptance-test-plan.md", "reason": "检查 RT-25 至 RT-29 自动化、隐私、队列复用和浏览器完成门。"}
+{"file": "docs/qa/tutor-harness-release-readiness.md", "reason": "记录完整自动化与真实浏览器证据，并保留 provider/image/production 非声明。"}
+{"file": "aearn/services/api/tests/test_model_code_review_contracts.py", "reason": "检查 public/private contract、verdict/finding shape 与四语言 fixture。"}
+{"file": "aearn/services/api/tests/test_model_code_review_scoring.py", "reason": "检查 discovery、omission、severity、duplicate 与 false-positive 确定性评分。"}
+{"file": "aearn/services/api/tests/test_model_code_review_repository.py", "reason": "检查 PostgreSQL authoring 到 publication、export、reset 与 cutover 完整生命周期。"}
+{"file": "aearn/services/api/tests/test_tutor_action_runtime.py", "reason": "检查 exact descriptor、Action receipt、stale fence、cancel/recovery 与单一状态机。"}
+{"file": "aearn/services/api/tests/test_db_bootstrap.py", "reason": "检查七张表、复合约束、append-only trigger 与 NO ACTION DEFERRABLE 环形外键。"}
+{"file": "aearn/services/executor/tests/test_exercise_trusted_input.py", "reason": "检查 executor 通过受信 scope 加载 model-review private input 并拒绝不匹配引用。"}
+{"file": "aearn/apps/desktop/src/features/learning/lesson/ModelCodeReviewPanel.tsx", "reason": "检查结构化编辑、assisted evidence、result mapping、响应式与可访问交互。"}
