@@ -549,3 +549,78 @@ ALTER TABLE tutor_execution_jobs ADD CONSTRAINT chk_owner_shape CHECK (
 ```
 
 discriminator、one-of CHECK、owning复合 FK 和旧路径回归共同建立可执行边界。
+
+
+## Scenario: Controlled Tutor Action Runtime
+
+### 1. Scope / Trigger
+
+- Trigger: add or change an `ActionDescriptor`, lifecycle transition, resource policy, action adapter/verifier, context receipt projection, or any `tutor_action_*` table.
+- Scope: Harness contracts, Tutor services, PostgreSQL, authoritative context, local export/reset, cutover inventory, and tests.
+
+### 2. Signatures
+
+```python
+ControlledActionRuntime.execute(invocation: ActionInvocation) -> ActionRuntimeOutcome
+ActionReceiptStore.usage(*, run_id: str) -> ActionRuntimeUsage
+ActionAdapter.execute(invocation: ActionInvocation) -> ActionExecutionResult
+ActionVerifier.verify(*, descriptor, invocation, execution) -> ActionVerificationResult
+```
+
+DB identities are `tutor_action_invocations(run_id,idempotency_key)` and the current verified
+projection `(run_id,input_revision,stable_action_key) WHERE status='verified'`.
+
+### 3. Contracts
+
+- An action descriptor owns schema, adapter, origin/task scope, resource profile, timeout, retry, verifier, recovery, and public projection policy.
+- The Action Runtime owns orchestration only. Capability, plan draft, effect, and execution tables remain the sole domain authorities; an action receipt stores exactly one authority reference.
+- Reserve and every terminal decision are fenced by exact run/input revision, lease owner/generation, action generation, catalog digest, and policy fingerprint.
+- Success is `succeeded_unverified` until an independent verifier checks the referenced authority.
+- Provider arguments cannot grant URL/path/command/image/environment/network/source/artifact/MCP access. Server-owned per-run action, retry, verification, and recovery budgets are mandatory.
+- Context/API/SSE/export projections contain only bounded action metadata; raw arguments/results, private tests/rubrics, learner code, provider bodies, paths, commands, exceptions, and secrets are forbidden.
+
+### 4. Validation & Error Matrix
+
+| Condition | Stable result |
+| --- | --- |
+| Unknown descriptor/adapter/verifier or scope mismatch | `denied` with a stable action code |
+| Resource request exceeds descriptor/server allowlist | `denied/action_admission_denied` before adapter execution |
+| Stale revision, lease, cancellation, or supersede before/after execution/verification | `cancelled` or `superseded`; never current evidence |
+| Adapter retryable failure within policy/budget | `retryable_failed` plus bounded `retry` directive |
+| Retry/recovery/verification budget exhausted | `permanent_failed` or `denied` plus `safe_stop` |
+| Handler output invalid or authority mismatch | verification failure; never `verified` |
+| Same idempotency key with different request hash | conflict; no second owner call |
+
+### 5. Good/Base/Bad Cases
+
+- Good: grounding writes one existing capability receipt, the action verifier proves allowlisted citations, and one verified action receipt references that capability invocation.
+- Base: a terminal execution job is read and verified by `runner.execute`; the API adapter never launches a process.
+- Bad: storing raw action arguments/results in `tutor_action_receipts`, allowing a model-selected URL/path/command, or treating adapter success as verified.
+
+### 6. Tests Required
+
+- Descriptor/hash serialization and extension registration without changing the core state machine.
+- Timeout, cancellation request/terminal separation, retry classification, budget exhaustion, stale fence before/after adapter and verification, idempotent replay, and current verified dedupe.
+- PostgreSQL bootstrap twice; assert action tables, composite constraints, lifecycle/append-only triggers, indexes, replay, cross-user isolation, export redaction, and child-first reset.
+- Integration tests for `grounding.retrieve`, `learning.plan.draft`, and `runner.execute` authority references; assert no duplicate domain owner and no process launch from the API adapter.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+result = handler(arguments)
+return {"status": "verified", "raw_result": result}
+```
+
+#### Correct
+
+```python
+execution = adapter.execute(invocation)
+store.record_attempt(invocation, execution, attempt_index=1, created_at=now)
+verification = verifier.verify(descriptor=descriptor, invocation=invocation, execution=execution)
+receipt = runtime.finish_only_if_current(execution=execution, verification=verification)
+```
+
+The correct flow separates execution from verification, retains one domain authority, applies
+stale/budget/resource gates, and publishes only the bounded receipt projection.

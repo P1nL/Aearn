@@ -116,6 +116,7 @@ class AuthoritativeContextSnapshot:
     required_facts: tuple[TutorContextSource, ...]
     question_states: tuple[tuple[str, str], ...]
     snapshot_hash: str
+    action_receipts: tuple[TutorContextSource, ...] = ()
     confirmed_question_reasked_count: int = 0
 
 
@@ -433,6 +434,7 @@ class PostgresPlanningFactRepository:
         *,
         run: TutorRunSnapshot,
         input_revision: int,
+        action_receipts: Sequence[TutorContextSource] = (),
     ) -> AuthoritativeContextSnapshot:
         session = self._active_session_for_run(user_id=run.user_id, run_id=run.run_id)
         if session is None:
@@ -442,6 +444,7 @@ class PostgresPlanningFactRepository:
                 planning_session_id=None,
                 facts=(),
                 question_states={},
+                action_receipts=action_receipts,
             )
         session_id = str(session["id"])
         facts = self.current_facts(user_id=run.user_id, session_id=session_id)
@@ -455,6 +458,7 @@ class PostgresPlanningFactRepository:
             planning_session_id=session_id,
             facts=facts,
             question_states=question_states,
+            action_receipts=action_receipts,
             confirmed_question_reasked_count=self._confirmed_question_reasked_count(
                 user_id=run.user_id,
                 session_id=session_id,
@@ -815,6 +819,7 @@ def build_authoritative_context_snapshot(
     planning_session_id: str | None,
     facts: Sequence[PlanningFact],
     question_states: Mapping[PlanningFactField, PlanningQuestionState],
+    action_receipts: Sequence[TutorContextSource] = (),
     confirmed_question_reasked_count: int = 0,
 ) -> AuthoritativeContextSnapshot:
     ordered_facts = tuple(sorted(facts, key=lambda item: item.field_key.value))
@@ -822,6 +827,7 @@ def build_authoritative_context_snapshot(
     questions = tuple(
         sorted((field.value, state.value) for field, state in question_states.items())
     )
+    bounded_action_receipts = tuple(action_receipts[:8])
     return AuthoritativeContextSnapshot(
         schema_version=PLANNING_SNAPSHOT_SCHEMA_VERSION,
         run_id=run.run_id,
@@ -832,7 +838,10 @@ def build_authoritative_context_snapshot(
         facts_fingerprint=fingerprint,
         required_facts=tuple(fact.as_context_source() for fact in ordered_facts),
         question_states=questions,
-        snapshot_hash=_snapshot_hash(run.run_id, input_revision, fingerprint, questions),
+        snapshot_hash=_snapshot_hash(
+            run.run_id, input_revision, fingerprint, questions, bounded_action_receipts
+        ),
+        action_receipts=bounded_action_receipts,
         confirmed_question_reasked_count=confirmed_question_reasked_count,
     )
 
@@ -928,6 +937,7 @@ def _snapshot_hash(
     input_revision: int,
     facts_fingerprint: str,
     question_states: Sequence[tuple[str, str]],
+    action_receipts: Sequence[TutorContextSource],
 ) -> str:
     return hashlib.sha256(
         _json(
@@ -937,6 +947,13 @@ def _snapshot_hash(
                 "input_revision": input_revision,
                 "facts_fingerprint": facts_fingerprint,
                 "question_states": list(question_states),
+                "action_receipts": [
+                    {
+                        "source_id": source.source_id,
+                        "content_hash": hashlib.sha256(_json(source.content).encode("utf-8")).hexdigest(),
+                    }
+                    for source in action_receipts
+                ],
             }
         ).encode("utf-8")
     ).hexdigest()
