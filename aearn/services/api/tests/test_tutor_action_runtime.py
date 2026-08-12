@@ -153,10 +153,13 @@ def test_action_descriptors_are_stable_and_cover_first_migration_set() -> None:
         "grounding.retrieve",
         "learning.plan.draft",
         "runner.execute",
+        "model-code-review.validate",
     ]
     assert all(len(item.contract_hash) == 64 for item in descriptors)
     assert descriptors[0].contract_hash == default_action_descriptors()[0].contract_hash
     assert descriptors[2].side_effect_class is ActionSideEffectClass.EXTERNAL_EXECUTION
+    assert descriptors[3].allowed_origins == ("proactive",)
+    assert descriptors[3].allowed_task_kinds == ("model_code_review",)
 
 
 def test_controlled_runtime_verifies_and_deduplicates_current_action() -> None:

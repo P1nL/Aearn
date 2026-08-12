@@ -110,6 +110,7 @@ class ActionAuthorityKind(StrEnum):
     EXECUTION_JOB = "execution_job"
     EFFECT_RECEIPT = "effect_receipt"
     GROUNDING_RESULT = "grounding_result"
+    MODEL_REVIEW_VALIDATION = "model_review_validation"
 
 
 class _FrozenActionModel(BaseModel):
@@ -166,6 +167,39 @@ class RunnerExecuteActionOutput(_FrozenActionModel):
     @classmethod
     def _validate_state(cls, value: str) -> str:
         return _safe_id(value, label="runner execution state")
+
+
+class ModelCodeReviewValidateActionInput(_FrozenActionModel):
+    candidate_id: str = Field(min_length=1, max_length=160)
+    candidate_hash: str = Field(min_length=64, max_length=64)
+    validation_profile_version: str = Field(min_length=1, max_length=160)
+
+    @field_validator("candidate_id", "validation_profile_version")
+    @classmethod
+    def _validate_ids(cls, value: str) -> str:
+        return _safe_id(value, label="model review validation input")
+
+    @field_validator("candidate_hash")
+    @classmethod
+    def _validate_candidate_hash(cls, value: str) -> str:
+        return _sha256(value, label="model review candidate hash")
+
+
+class ModelCodeReviewValidateActionOutput(_FrozenActionModel):
+    status: Literal["completed"] = "completed"
+    validation_id: str = Field(min_length=1, max_length=160)
+    check_summary_code: str = Field(min_length=1, max_length=160)
+    authority_hash: str = Field(min_length=64, max_length=64)
+
+    @field_validator("validation_id", "check_summary_code")
+    @classmethod
+    def _validate_ids(cls, value: str) -> str:
+        return _safe_id(value, label="model review validation output")
+
+    @field_validator("authority_hash")
+    @classmethod
+    def _validate_authority_hash(cls, value: str) -> str:
+        return _sha256(value, label="model review validation authority hash")
 
 
 @dataclass(frozen=True, slots=True)
@@ -789,7 +823,46 @@ def default_action_descriptors() -> tuple[ActionDescriptor, ...]:
         verifier_version="1.0.0",
         recovery_kinds=(ActionRecoveryKind.RETRY, ActionRecoveryKind.SAFE_STOP),
     )
-    return (grounding, plan, runner)
+    review = ActionDescriptor(
+        action_id="model-code-review.validate",
+        version="1.0.0",
+        input_model=ModelCodeReviewValidateActionInput,
+        output_model=ModelCodeReviewValidateActionOutput,
+        owner_adapter_id="model-review-validation-authority",
+        owner_adapter_version="1.0.0",
+        allowed_origins=("proactive",),
+        allowed_task_kinds=("model_code_review",),
+        resource_profile=ActionResourceProfile(
+            profile_id="model-review-validation-v1",
+            network_class=ActionNetworkClass.EXECUTOR_MANAGED,
+            allowed_artifact_kinds=(
+                "model_review_candidate",
+                "model_review_private_rubric",
+                "model_review_validation",
+            ),
+            execution_profile_ids=(
+                "python-stdout-v1",
+                "node-typescript-v1",
+                "sqlite-query-v1",
+            ),
+            temporary_workspace=True,
+            max_input_bytes=4_096,
+            max_output_bytes=4_096,
+            max_cost_units=1,
+        ),
+        timeout_seconds=120,
+        side_effect_class=ActionSideEffectClass.EXTERNAL_EXECUTION,
+        retry_policy=ActionRetryPolicy(
+            retry_class=ActionRetryClass.IDEMPOTENT,
+            max_attempts=2,
+            backoff_seconds=(1,),
+            retryable_codes=("model_review_validation_pending", "model_review_executor_unavailable"),
+        ),
+        verifier_id="model-review-publication-verifier",
+        verifier_version="1.0.0",
+        recovery_kinds=(ActionRecoveryKind.RETRY, ActionRecoveryKind.SAFE_STOP),
+    )
+    return (grounding, plan, runner, review)
 
 
 def validate_action_resources(

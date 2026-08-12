@@ -430,11 +430,12 @@ class ExecutionJobV1(_FrozenModel):
     runtime_id: str = Field(min_length=1, max_length=120)
     lock_fingerprint: str = Field(min_length=64, max_length=64)
     state: ExecutionJobState
-    owner_kind: Literal["tutor_effect", "exercise_attempt"] = "tutor_effect"
+    owner_kind: Literal["tutor_effect", "exercise_attempt", "model_review_validation"] = "tutor_effect"
     effect_id: str | None = Field(default=None, max_length=160)
     conversation_id: str | None = Field(default=None, max_length=160)
     run_id: str | None = Field(default=None, max_length=160)
     exercise_attempt_id: str | None = Field(default=None, max_length=160)
+    model_review_validation_id: str | None = Field(default=None, max_length=160)
     lease_owner_id: str | None = Field(default=None, max_length=160)
     lease_generation: int = Field(default=0, ge=0)
     lease_expires_at: datetime | None = None
@@ -454,6 +455,7 @@ class ExecutionJobV1(_FrozenModel):
         "conversation_id",
         "run_id",
         "exercise_attempt_id",
+        "model_review_validation_id",
         "lease_owner_id",
         "launch_token",
         "safe_diagnostic_code",
@@ -476,10 +478,15 @@ class ExecutionJobV1(_FrozenModel):
     def validate_owner(self) -> "ExecutionJobV1":
         tutor_shape = self.effect_id is not None and self.conversation_id is not None and self.run_id is not None
         gate_shape = self.exercise_attempt_id is not None
-        if self.owner_kind == "tutor_effect" and (not tutor_shape or gate_shape):
+        review_shape = self.model_review_validation_id is not None and self.conversation_id is not None and self.run_id is not None
+        if self.owner_kind == "tutor_effect" and (not tutor_shape or gate_shape or self.model_review_validation_id is not None):
             raise ValueError("Tutor execution job owner shape is invalid")
-        if self.owner_kind == "exercise_attempt" and (tutor_shape or not gate_shape):
+        if self.owner_kind == "exercise_attempt" and (tutor_shape or not gate_shape or self.model_review_validation_id is not None):
             raise ValueError("exercise Attempt job owner shape is invalid")
+        if self.owner_kind == "model_review_validation" and (
+            self.effect_id is not None or gate_shape or not review_shape
+        ):
+            raise ValueError("model review validation job owner shape is invalid")
         return self
 
 

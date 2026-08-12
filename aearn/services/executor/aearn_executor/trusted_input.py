@@ -20,6 +20,8 @@ class PostgresTrustedInputResolver:
     def load(self, *, job: ExecutionJobV1) -> SandboxInputV1:
         if job.owner_kind == "exercise_attempt":
             return self._load_exercise_attempt(job)
+        if job.owner_kind == "model_review_validation":
+            return self._load_model_review_validation(job)
         return self._load_tutor_effect(job)
 
     def _load_tutor_effect(self, job: ExecutionJobV1) -> SandboxInputV1:
@@ -55,6 +57,46 @@ class PostgresTrustedInputResolver:
             """,
             (job.intent_proof_id,),
         ).fetchall()
+        return _sandbox_input(job=job, row=row, tests=tests)
+
+
+    def _load_model_review_validation(self, job: ExecutionJobV1) -> SandboxInputV1:
+        if job.model_review_validation_id is None:
+            raise TrustedInputResolutionError("trusted_input_scope_missing")
+        row = self._conn.execute(
+            """
+            SELECT intents.action,
+                   candidates.public_payload_json #>> '{starter_artifact,model_code}' AS submission,
+                   candidates.candidate_hash, candidates.private_hash,
+                   candidates.private_payload_json -> 'private_test_bundle' AS private_test_bundle_json,
+                   jobs.source_reference_hash, jobs.test_reference_hash
+            FROM tutor_execution_jobs AS jobs
+            JOIN tutor_execution_intents AS intents ON intents.id = jobs.intent_id
+            JOIN tutor_model_review_validation_runs AS validations
+              ON validations.id = jobs.model_review_validation_id
+             AND validations.id = intents.model_review_validation_id
+             AND validations.user_id = jobs.user_id
+            JOIN tutor_model_review_candidates AS candidates
+              ON candidates.id = validations.candidate_id
+             AND candidates.id = intents.model_review_candidate_id
+             AND candidates.user_id = validations.user_id
+            WHERE jobs.id = %s
+              AND jobs.intent_id = %s
+              AND jobs.model_review_validation_id = %s
+              AND jobs.owner_kind = 'model_review_validation'
+              AND intents.source_kind = 'model_review_candidate'
+            """,
+            (job.job_id, job.intent_proof_id, job.model_review_validation_id),
+        ).fetchone()
+        if row is None or not str(row.get("submission") or "").strip():
+            raise TrustedInputResolutionError("trusted_input_scope_missing")
+        if (
+            str(row["source_reference_hash"]) != _reference_hash(str(row["candidate_hash"]))
+            or str(row["test_reference_hash"]) != _reference_hash(str(row["private_hash"]))
+        ):
+            raise TrustedInputResolutionError("trusted_input_reference_mismatch")
+        raw_tests = row.get("private_test_bundle_json")
+        tests = tuple(raw_tests) if isinstance(raw_tests, list | tuple) else ()
         return _sandbox_input(job=job, row=row, tests=tests)
 
     def _load_exercise_attempt(self, job: ExecutionJobV1) -> SandboxInputV1:

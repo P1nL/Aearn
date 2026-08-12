@@ -5,6 +5,7 @@ import hashlib
 import json
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
+from typing import Literal
 from uuid import uuid4
 
 from aearn_shared.execution import (
@@ -58,7 +59,7 @@ class PostgresExecutionJobStore:
                        runs.cancelled_at AS run_cancelled_at
                 FROM tutor_execution_jobs AS jobs
                 JOIN tutor_execution_intents AS intents ON intents.id = jobs.intent_id
-                JOIN tutor_runs AS runs ON runs.id = jobs.run_id
+                LEFT JOIN tutor_runs AS runs ON runs.id = jobs.run_id
                 WHERE (
                   (jobs.state = 'pending'
                    AND (jobs.lease_expires_at IS NULL OR jobs.lease_expires_at <= %s))
@@ -518,13 +519,26 @@ def _job_from_row(row: Mapping[str, object]) -> ExecutionJobV1:
     result = SafeExecutionResultV1.model_validate(result_value) if isinstance(result_value, Mapping) else None
     lease_expires_at = _datetime_or_none(row.get("lease_expires_at"))
     cancellation_requested_at = _datetime_or_none(row.get("cancellation_requested_at"))
+    raw_owner = str(row.get("owner_kind") or "tutor_effect")
+    owner_kind: Literal["tutor_effect", "exercise_attempt", "model_review_validation"] = (
+        "exercise_attempt"
+        if raw_owner == "exercise_attempt"
+        else "model_review_validation"
+        if raw_owner == "model_review_validation"
+        else "tutor_effect"
+    )
     return ExecutionJobV1(
         job_id=str(row["id"]),
-        effect_id=str(row["effect_key"]),
+        effect_id=str(row["effect_key"]) if row.get("effect_key") else None,
         intent_proof_id=str(row["intent_id"]),
         user_id=str(row["user_id"]),
-        conversation_id=str(row["conversation_id"]),
-        run_id=str(row["run_id"]),
+        owner_kind=owner_kind,
+        conversation_id=str(row["conversation_id"]) if row.get("conversation_id") else None,
+        run_id=str(row["run_id"]) if row.get("run_id") else None,
+        exercise_attempt_id=str(row["exercise_attempt_id"]) if row.get("exercise_attempt_id") else None,
+        model_review_validation_id=str(row["model_review_validation_id"])
+        if row.get("model_review_validation_id")
+        else None,
         runtime_id=str(row["runtime_id"]),
         lock_fingerprint=str(row["lock_fingerprint"]),
         state=ExecutionJobState(str(row["state"])),

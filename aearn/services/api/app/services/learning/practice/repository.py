@@ -288,7 +288,8 @@ class PostgresExerciseGateRepository:
         scope = self.read_scope(user_id=user_id, track_id=track_id, knowledge_key=knowledge_key)
         rows = self._conn.execute(
             """
-            SELECT slots.gate_key, slots.gate_kind, slots.assessment_contract_version,
+            SELECT assignments.id AS assignment_id, assignments.user_id,
+                   slots.gate_key, slots.gate_kind, slots.assessment_contract_version,
                    slots.required_capabilities_json AS slot_capabilities_json,
                    slots.learner_prompt,
                    bindings.id AS binding_id, bindings.requirement_kind,
@@ -522,8 +523,26 @@ class PostgresExerciseGateRepository:
             (user_id, gate["assignment_id"], gate["binding_id"]),
         ).fetchone()
         hint_count = _int(hint_row["count"] if hint_row else 0)
-        independence = "hinted" if hint_count else "independent"
-        hint_state_hash = canonical_hash({"hint_count": hint_count, "policy_version": HINT_POLICY_VERSION})
+        evidence_row = self._conn.execute(
+            """
+            SELECT count(*)::int AS count FROM tutor_model_review_evidence_receipts
+            WHERE user_id = %s AND lesson_assignment_id = %s AND gate_binding_id = %s
+            """,
+            (user_id, gate["assignment_id"], gate["binding_id"]),
+        ).fetchone()
+        evidence_count = _int(evidence_row["count"] if evidence_row else 0)
+        assistance_kind = (
+            "hinted" if hint_count else "validation_evidence_viewed" if evidence_count else "independent"
+        )
+        independence = "hinted" if assistance_kind != "independent" else "independent"
+        hint_state_hash = canonical_hash(
+            {
+                "hint_count": hint_count,
+                "evidence_count": evidence_count,
+                "assistance_kind": assistance_kind,
+                "policy_version": HINT_POLICY_VERSION,
+            }
+        )
         attempt_id = str(uuid4())
         submission_id = str(uuid4())
         submission_hash = canonical_submission_hash(normalized)
@@ -534,8 +553,8 @@ class PostgresExerciseGateRepository:
               expected_track_version, expected_progress_version, knowledge_key,
               lesson_assignment_id, document_id, gate_binding_id,
               exercise_version_id, submission_hash, hint_state_hash, independence,
-              idempotency_key, request_hash, accepted_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+              assistance_kind, idempotency_key, request_hash, accepted_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 attempt_id,
@@ -553,6 +572,7 @@ class PostgresExerciseGateRepository:
                 submission_hash,
                 hint_state_hash,
                 independence,
+                assistance_kind,
                 idempotency_key,
                 request_hash,
                 now,
@@ -596,11 +616,13 @@ class PostgresExerciseGateRepository:
             "submission_id": submission_id,
             "submission_hash": submission_hash,
             "independence": independence,
+            "assistance_kind": assistance_kind,
             "accepted_at": now,
             "gate_version": _int(updated["version"]),
             "runtime_profile_key": gate.get("runtime_profile_key"),
             "required_capabilities_json": gate.get("required_capabilities_json"),
             "pass_threshold": _float(gate["pass_threshold"]),
+            "exercise_type": str(gate["exercise_type"]),
             "idempotent_replayed": False,
         }
 
@@ -874,7 +896,7 @@ def _requirement_kind(gate_kind: str) -> GateRequirementKind:
 def _submission_kind(exercise_type: str) -> str:
     if exercise_type == ExerciseType.SQL_QUERY.value:
         return "sql"
-    if exercise_type == ExerciseType.STATIC_CODE_REASONING.value:
+    if exercise_type in {ExerciseType.STATIC_CODE_REASONING.value, ExerciseType.MODEL_CODE_REVIEW.value}:
         return "structured_answer"
     return "code"
 

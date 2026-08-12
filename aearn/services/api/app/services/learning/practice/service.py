@@ -12,8 +12,16 @@ from psycopg import Connection
 from aearn_shared.execution import ExecutionAction, SafeExecutionResultV1
 from app.services.learning.contracts import ExecutionComposition, ExecutionTier
 from app.services.learning.execution_tiers import ExecutionTierInputs, ExecutionTierResolver
-from app.services.learning.practice.contracts import ExerciseAttemptType
+from app.services.learning.practice.contracts import ExerciseAttemptType, ExerciseType
 from app.services.learning.practice.diagnostics import PostgresModuleDiagnosticRepository
+from app.services.learning.practice.model_review_repository import PostgresModelReviewRepository
+from app.services.learning.practice.model_review_contracts import (
+    ModelReviewArtifactV1,
+    ModelReviewAssistanceKind,
+    ModelReviewRubricV1,
+    parse_model_review_submission,
+)
+from app.services.learning.practice.model_review_scoring import evaluate_model_code_review
 from app.services.learning.practice.policies import evaluate_static_reasoning, score_execution_result
 from app.services.learning.practice.repository import (
     PostgresExerciseGateRepository,
@@ -76,6 +84,7 @@ class ExerciseGateService:
     ) -> None:
         self._conn = conn
         self._repository = PostgresExerciseGateRepository(conn)
+        self._model_reviews = PostgresModelReviewRepository(conn)
         self._diagnostics = PostgresModuleDiagnosticRepository(conn)
         self._execution = execution_repository or ExecutionIntentRepository(conn)
         self._composition = composition
@@ -168,6 +177,47 @@ class ExerciseGateService:
         except PracticeRepositoryError as exc:
             raise _map_repository_error(exc) from exc
 
+    def model_review_evidence(
+        self,
+        *,
+        user_id: str,
+        track_id: str,
+        knowledge_key: str,
+        gate_key: str,
+        expected_gate_version: int,
+        idempotency_key: str,
+    ) -> dict[str, object]:
+        user, track, key = _scope_ids(user_id, track_id, knowledge_key)
+        gate = _stable_key(gate_key, "gate_key")
+        body = {
+            "track_id": track,
+            "knowledge_key": key,
+            "gate_key": gate,
+            "expected_gate_version": expected_gate_version,
+        }
+        try:
+            with self._conn.transaction():
+                row = self._model_reviews.append_learner_evidence(
+                    user_id=user,
+                    track_id=track,
+                    knowledge_key=key,
+                    gate_key=gate,
+                    expected_gate_version=expected_gate_version,
+                    idempotency_key=_idempotency_key(idempotency_key),
+                    request_hash=request_hash(body),
+                    now=datetime.now(UTC),
+                )
+        except PracticeRepositoryError as exc:
+            raise _map_repository_error(exc) from exc
+        return {
+            "evidence_id": str(row["id"]),
+            "evidence": _mapping_dict(row.get("evidence_json")),
+            "assistance_kind": "validation_evidence_viewed",
+            "gate_version": _int(row["gate_version"]),
+            "created_at": _iso(row.get("created_at")),
+            "idempotent_replayed": bool(row.get("idempotent_replayed", False)),
+        }
+
     def attempt_gate(
         self,
         *,
@@ -176,7 +226,8 @@ class ExerciseGateService:
         knowledge_key: str,
         gate_key: str,
         attempt_type: str,
-        submission: str,
+        submission: str | None,
+        review_submission: Mapping[str, object] | None = None,
         expected_track_version: int,
         expected_progress_version: int,
         expected_assignment_version: int,
@@ -205,6 +256,36 @@ class ExerciseGateService:
             )
         except PracticeRepositoryError as exc:
             raise _map_repository_error(exc) from exc
+        exercise_type = str(gate_row.get("exercise_type") or "")
+        if exercise_type == ExerciseType.MODEL_CODE_REVIEW.value:
+            if kind is not ExerciseAttemptType.SUBMIT or submission is not None or review_submission is None:
+                raise ExerciseGateServiceError(
+                    "MODEL_REVIEW_SUBMISSION_INVALID",
+                    "模型代码审核必须提交结构化 review_submission，且不接受 Run 或普通 submission。",
+                    status_code=422,
+                    recoverable=False,
+                )
+            try:
+                artifact = ModelReviewArtifactV1.model_validate(_mapping_dict(gate_row.get("starter_artifact_json")))
+                parsed_review = parse_model_review_submission(review_submission)
+                parsed_review.validate_line_count(artifact.line_count)
+            except (TypeError, ValueError) as exc:
+                raise ExerciseGateServiceError(
+                    "MODEL_REVIEW_SUBMISSION_INVALID",
+                    "结构化代码审核不符合当前题目 contract。",
+                    status_code=422,
+                    recoverable=False,
+                ) from exc
+            normalized_submission = parsed_review.canonical_json()
+        else:
+            if submission is None or review_submission is not None:
+                raise ExerciseGateServiceError(
+                    "VALIDATION_ERROR",
+                    "普通练习必须且只能提交 submission。",
+                    status_code=422,
+                    recoverable=False,
+                )
+            normalized_submission = submission
         tier = self._execution_tier(gate_row)
         if tier["execution_tier"] == ExecutionTier.STATIC_ONLY.value:
             if kind is ExerciseAttemptType.RUN or bool(gate_row.get("execution_required")):
@@ -227,7 +308,7 @@ class ExerciseGateService:
             "knowledge_key": key,
             "gate_key": gate,
             "attempt_type": kind.value,
-            "submission_hash": hashlib.sha256(submission.encode("utf-8")).hexdigest(),
+            "submission_hash": hashlib.sha256(normalized_submission.encode("utf-8")).hexdigest(),
             "expected_track_version": expected_track_version,
             "expected_progress_version": expected_progress_version,
             "expected_assignment_version": expected_assignment_version,
@@ -241,7 +322,7 @@ class ExerciseGateService:
                     knowledge_key=key,
                     gate_key=gate,
                     attempt_type=kind,
-                    submission=submission,
+                    submission=normalized_submission,
                     expected_track_version=expected_track_version,
                     expected_progress_version=expected_progress_version,
                     expected_assignment_version=expected_assignment_version,
@@ -250,7 +331,7 @@ class ExerciseGateService:
                     request_hash=request_hash(body),
                     now=datetime.now(UTC),
                 )
-                response = self._dispatch_attempt(attempt=attempt, submission=submission, tier=tier)
+                response = self._dispatch_attempt(attempt=attempt, submission=normalized_submission, tier=tier)
                 response["execution_tier"] = tier["execution_tier"]
                 response["execution_disclosure"] = tier["execution_disclosure"]
                 return response
@@ -468,6 +549,39 @@ class ExerciseGateService:
         expected_progress_version: int,
     ) -> dict[str, object]:
         try:
+            scope = self._repository.read_scope(
+                user_id=user_id,
+                track_id=track_id,
+                knowledge_key=knowledge_key,
+                for_update=True,
+            )
+            slot = self._model_reviews.read_slot(scope=scope, gate_key=gate_key, for_update=True)
+            if self._model_reviews.is_model_review_slot(slot):
+                run, created = self._model_reviews.create_or_replay_authoring_run(
+                    scope=scope,
+                    slot=slot,
+                    expected_track_version=expected_track_version,
+                    expected_progress_version=expected_progress_version,
+                )
+                rows = self._repository.read_gates(
+                    user_id=user_id, track_id=track_id, knowledge_key=knowledge_key
+                )
+                selected = next((row for row in rows if str(row["gate_key"]) == gate_key), None)
+                if run.state == "completed" and selected is not None and selected.get("binding_id") is not None:
+                    return {"gate": self._project_gate(selected), "status": "ready", "should_dispatch": False}
+                if run.state == "failed":
+                    return {
+                        "gate": self._project_gate(selected) if selected is not None else None,
+                        "status": "failed",
+                        "review_authoring_run": _project_model_review_authoring(run),
+                        "should_dispatch": False,
+                    }
+                return {
+                    "gate": self._project_gate(selected) if selected is not None else None,
+                    "status": "preparing",
+                    "review_authoring_run": _project_model_review_authoring(run),
+                    "should_dispatch": created or run.state in {"pending", "claimed", "running", "validating"},
+                }
             rows = self._repository.prepare_gates(
                 user_id=user_id,
                 track_id=track_id,
@@ -485,7 +599,7 @@ class ExerciseGateService:
                 "当前课程 Gate 尚未绑定可用练习。",
                 status_code=409,
             )
-        return {"gate": self._project_gate(selected), "status": "ready"}
+        return {"gate": self._project_gate(selected), "status": "ready", "should_dispatch": False}
 
     def _dispatch_attempt(
         self,
@@ -508,14 +622,66 @@ class ExerciseGateService:
                     "静态练习不提供 Run，未运行任何代码。",
                     status_code=503,
                 )
-            rubric = self._conn.execute(
+            if str(attempt.get("exercise_type") or "") == ExerciseType.MODEL_CODE_REVIEW.value:
+                row = self._conn.execute(
+                    """
+                    SELECT versions.starter_artifact_json, rubrics.reference_answer_json,
+                           rubrics.score_policy_json
+                    FROM tutor_exercise_versions AS versions
+                    JOIN tutor_exercise_private_rubrics AS rubrics
+                      ON rubrics.exercise_version_id = versions.id
+                    WHERE versions.id = %s AND versions.exercise_type = 'model_code_review'
+                      AND versions.validation_status = 'ready'
+                    """,
+                    (attempt["exercise_version_id"],),
+                ).fetchone()
+                if row is None:
+                    raise ExerciseGateServiceError(
+                        "LESSON_GATE_NOT_READY",
+                        "模型代码审核缺少可验证的评分 contract。",
+                        status_code=409,
+                    )
+                try:
+                    artifact = ModelReviewArtifactV1.model_validate(_mapping_dict(row.get("starter_artifact_json")))
+                    rubric = ModelReviewRubricV1.model_validate(_mapping_dict(row.get("reference_answer_json")))
+                    parsed = parse_model_review_submission(submission)
+                    score_policy = _mapping_dict(row.get("score_policy_json"))
+                    threshold = _float(score_policy.get("threshold") or attempt.get("pass_threshold"))
+                    assistance = (
+                        ModelReviewAssistanceKind(str(attempt.get("assistance_kind") or "independent"))
+                    )
+                    result = evaluate_model_code_review(
+                        submission=parsed,
+                        rubric=rubric,
+                        line_count=artifact.line_count,
+                        required_capabilities=tuple(_string_list(attempt.get("required_capabilities_json"))),
+                        assistance_kind=assistance,
+                        threshold=threshold,
+                        now=datetime.now(UTC),
+                    )
+                except (TypeError, ValueError) as exc:
+                    raise ExerciseGateServiceError(
+                        "MODEL_REVIEW_SUBMISSION_INVALID",
+                        "结构化代码审核不符合当前题目 contract。",
+                        status_code=422,
+                        recoverable=False,
+                    ) from exc
+                return self._project_attempt(
+                    self._repository.finalize_gate_attempt(
+                        user_id=str(attempt["user_id"]),
+                        attempt_id=str(attempt["id"]),
+                        result=result,
+                        now=datetime.now(UTC),
+                    )
+                )
+            rubric_row = self._conn.execute(
                 """
                 SELECT reference_answer_json FROM tutor_exercise_private_rubrics
                 WHERE exercise_version_id = %s
                 """,
                 (attempt["exercise_version_id"],),
             ).fetchone()
-            reference = _mapping_dict(rubric.get("reference_answer_json")) if rubric is not None else {}
+            reference = _mapping_dict(rubric_row.get("reference_answer_json")) if rubric_row is not None else {}
             raw_answers = reference.get("accepted_answers")
             accepted_answers = (
                 tuple(str(item) for item in raw_answers if isinstance(item, str) and item.strip())
@@ -633,15 +799,29 @@ class ExerciseGateService:
 
     def _project_gate(self, row: Mapping[str, object]) -> dict[str, object]:
         if row.get("binding_id") is None or row.get("exercise_version_id") is None:
+            status = "unbound"
+            authoring = None
+            if str(row.get("assessment_contract_version") or "") == "model_code_review_v1":
+                assignment_id = str(row.get("assignment_id") or "")
+                if assignment_id:
+                    run = self._model_reviews.read_authoring_for_slot(
+                        user_id=str(row.get("user_id") or ""),
+                        assignment_id=assignment_id,
+                        gate_key=str(row["gate_key"]),
+                    )
+                    if run is not None:
+                        status = "failed" if run.state == "failed" else "preparing"
+                        authoring = _project_model_review_authoring(run)
             return {
                 "gate_key": str(row["gate_key"]),
                 "gate_kind": str(row["gate_kind"]),
                 "assessment_contract_version": str(row["assessment_contract_version"]),
                 "required_capabilities": _string_list(row.get("slot_capabilities_json")),
                 "learner_prompt": str(row["learner_prompt"]),
-                "status": "unbound",
+                "status": status,
                 "allowed_actions": ["prepare"],
                 "exercise": None,
+                "review_authoring_run": authoring,
             }
         tier = self._execution_tier(row)
         allowed: list[str] = []
@@ -726,6 +906,7 @@ class ExerciseGateService:
             "exercise_version_id": str(row["exercise_version_id"]),
             "submission_hash": str(row["submission_hash"]),
             "independence": str(row["independence"]),
+            "assistance_kind": str(row.get("assistance_kind") or row["independence"]),
             "accepted_at": _iso(row.get("accepted_at")),
             "status": "terminal" if result else "pending",
             "execution_job_id": str(row["execution_job_id"]) if row.get("execution_job_id") else None,
@@ -854,6 +1035,16 @@ class ExerciseGateService:
             raise
         except PracticeRepositoryError as exc:
             raise _map_repository_error(exc) from exc
+
+
+def _project_model_review_authoring(run) -> dict[str, object]:
+    return {
+        "run_id": run.run_id,
+        "state": run.state,
+        "attempt_count": run.attempt_count,
+        "failure_code": run.failure_code,
+        "failure_message": run.failure_message,
+    }
 
 
 def _mapping_dict(value: object) -> dict[str, object]:
