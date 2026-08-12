@@ -1,0 +1,4 @@
+{"path": ".trellis/spec/backend/database-guidelines.md", "reason": "新增 append-only 引用快照表、外键、触发器与本地数据清理。"}
+{"path": ".trellis/spec/frontend/type-safety.md", "reason": "新增 Desktop exact-key API parser 与 strict union。"}
+{"path": "docs/product/frontend-interaction-spec.md", "reason": "工作区、响应式与恢复行为的产品 source of truth。"}
+{"path": ".trellis/tasks/08-04-learning-workspace-context-references/research/current-system.md", "reason": "记录当前 Tutor、Lesson、Review 边界和实现结论。"}
