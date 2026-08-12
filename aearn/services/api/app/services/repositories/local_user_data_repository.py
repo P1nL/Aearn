@@ -140,6 +140,7 @@ def export_user_data(conn: Connection[dict[str, object]], user_id: str) -> dict[
         "review_schedule_summaries": _export_review_schedule_summaries(conn, user_id),
         "review_session_summaries": _export_review_session_summaries(conn, user_id),
         "review_finalization_summaries": _export_review_finalization_summaries(conn, user_id),
+        "tutor_context_reference_summaries": _export_tutor_context_references(conn, user_id),
         "action_receipt_summaries": _export_action_receipt_summaries(conn, user_id),
         "model_review_authoring_summaries": _export_model_review_authoring_summaries(conn, user_id),
         "model_review_candidate_summaries": _export_model_review_candidate_summaries(conn, user_id),
@@ -279,6 +280,7 @@ def _summary_counts(conn: Connection[dict[str, object]], user_id: str) -> dict[s
         "review_schedules": _count(conn, "SELECT count(*) AS count FROM tutor_review_schedule_states WHERE user_id = %s", user_id),
         "review_sessions": _count(conn, "SELECT count(*) AS count FROM tutor_review_sessions WHERE user_id = %s", user_id),
         "review_finalizations": _count(conn, "SELECT count(*) AS count FROM tutor_review_finalizations WHERE user_id = %s", user_id),
+        "tutor_context_references": _count(conn, "SELECT count(*) AS count FROM tutor_message_context_references WHERE user_id = %s", user_id),
         "action_receipts": _count(conn, "SELECT count(*) AS count FROM tutor_action_receipts WHERE user_id = %s", user_id),
         "model_review_authoring_runs": _count(conn, "SELECT count(*) AS count FROM tutor_model_review_authoring_runs WHERE user_id = %s", user_id),
         "model_review_candidates": _count(conn, "SELECT count(*) AS count FROM tutor_model_review_candidates WHERE user_id = %s", user_id),
@@ -904,6 +906,25 @@ def _export_action_receipt_summaries(
     return [_safe_row(row, exclude=()) for row in rows]
 
 
+
+def _export_tutor_context_references(
+    conn: Connection[dict[str, object]],
+    user_id: str,
+) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """
+        SELECT id, conversation_id, run_id, message_id, input_revision,
+               reference_index, reference_kind, track_id, knowledge_key,
+               document_id, attempt_id, review_session_id, exercise_version_id,
+               source_version, source_hash, safe_payload_json, safe_payload_hash, created_at
+        FROM tutor_message_context_references
+        WHERE user_id = %s
+        ORDER BY created_at, id
+        """,
+        (user_id,),
+    ).fetchall()
+    return [_safe_row(row, exclude=()) for row in rows]
+
 def _export_model_review_authoring_summaries(
     conn: Connection[dict[str, object]],
     user_id: str,
@@ -1073,6 +1094,7 @@ def _delete_learning_track_data(conn: Connection[dict[str, object]], user_id: st
         )
     conn.execute("SELECT set_config('aearn.learning_track_purge_user_id', %s, true)", (user_id,))
     conn.execute("SET CONSTRAINTS ALL DEFERRED")
+    conn.execute("DELETE FROM tutor_message_context_references WHERE user_id = %s", (user_id,))
     conn.execute(
         """
         DELETE FROM tutor_action_receipts WHERE user_id = %s
@@ -1287,6 +1309,7 @@ def _delete_model_review_internal_runs(
         "tutor_run_traces",
         "tutor_run_checkpoints",
         "tutor_run_skill_selections",
+        "tutor_message_context_references",
         "tutor_run_input_events",
         "tutor_run_events",
         "tutor_effects",

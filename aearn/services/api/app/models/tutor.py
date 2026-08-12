@@ -1,8 +1,65 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from typing import Annotated, Literal
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.models.learning_tracks import LearningScopeInput
+
+class _StrictReferenceModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class LessonSelectionReferenceInput(_StrictReferenceModel):
+    kind: Literal["lesson_selection"]
+    learning_track_id: UUID
+    knowledge_key: str = Field(min_length=1, max_length=160)
+    document_id: UUID
+    document_content_hash: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
+    block_id: str = Field(min_length=1, max_length=160)
+    start_offset: int = Field(ge=0, le=48_000)
+    end_offset: int = Field(ge=1, le=48_000)
+    excerpt: str = Field(min_length=1, max_length=800)
+
+    @model_validator(mode="after")
+    def validate_range(self) -> "LessonSelectionReferenceInput":
+        normalized = " ".join(self.excerpt.split())
+        if self.end_offset <= self.start_offset or self.end_offset - self.start_offset != len(normalized):
+            raise ValueError("lesson selection offsets must match the normalized excerpt")
+        return self
+
+
+class ExerciseFeedbackReferenceInput(_StrictReferenceModel):
+    kind: Literal["exercise_feedback"]
+    learning_track_id: UUID
+    knowledge_key: str = Field(min_length=1, max_length=160)
+    attempt_id: UUID
+
+
+class ExecutionResultReferenceInput(_StrictReferenceModel):
+    kind: Literal["execution_result"]
+    learning_track_id: UUID
+    knowledge_key: str = Field(min_length=1, max_length=160)
+    attempt_id: UUID
+
+
+class ReviewFeedbackReferenceInput(_StrictReferenceModel):
+    kind: Literal["review_feedback"]
+    learning_track_id: UUID
+    knowledge_key: str = Field(min_length=1, max_length=160)
+    review_session_id: UUID
+    attempt_id: UUID
+
+
+TutorContextReferenceInput = Annotated[
+    LessonSelectionReferenceInput
+    | ExerciseFeedbackReferenceInput
+    | ExecutionResultReferenceInput
+    | ReviewFeedbackReferenceInput,
+    Field(discriminator="kind"),
+]
+
 
 class TutorMutationRequest(BaseModel):
     user_id: str = Field(min_length=1, max_length=120)
@@ -23,6 +80,7 @@ class TutorInputRequest(TutorMutationRequest):
     learning_scope: LearningScopeInput | None = None
     planning_facts: dict[str, object] | None = None
     reopen_fact_fields: list[str] = Field(default_factory=list, max_length=7)
+    context_references: list[TutorContextReferenceInput] = Field(default_factory=list, max_length=6)
 
     @field_validator("content")
     @classmethod

@@ -35,6 +35,7 @@ from app.agents.harness.skill_catalog import compile_published_skill_catalog
 from app.core.config import Settings
 from app.db.connection import connect
 from app.services.learning.context_adapter import TutorLearningContextAdapter
+from app.services.learning.context_references import PostgresTutorContextReferenceRepository
 from app.services.learning.plan_capability import LearningPlanDraftCapabilityHandler
 from app.services.learning.planning_facts import (
     PlanningQuestionDecisionGate,
@@ -376,6 +377,7 @@ class PostgresTutorLearningContextLoader:
         base_loader: PostgresTutorContextLoader,
     ) -> None:
         self._learning = TutorLearningContextAdapter(conn)
+        self._context_references = PostgresTutorContextReferenceRepository(conn)
         self._plans = PostgresLearningPlanSessionRepository(conn)
         self._facts = PostgresPlanningFactRepository(conn)
         self._actions = PostgresActionReceiptStore(conn)
@@ -399,7 +401,24 @@ class PostgresTutorLearningContextLoader:
             input_revision=input_revision,
             action_receipts=action_receipts,
         )
-        required_facts = authoritative.required_facts
+        reference_items = self._context_references.read_for_input(
+            user_id=snapshot.user_id,
+            run_id=snapshot.run_id,
+            input_revision=input_revision,
+        )
+        reference_sources = tuple(
+            TutorContextSource(
+                source_id=f"context-reference:{reference['reference_id']}",
+                content={
+                    key: value
+                    for key, value in reference.items()
+                    if key not in {"reference_id", "safe_payload_hash", "created_at"}
+                },
+                semantic_class="confirmed_fact_source",
+            )
+            for reference in reference_items
+        )
+        required_facts = (*authoritative.required_facts, *reference_sources)
         recent_messages = base.recent_messages
         compaction_plan = base.compaction_plan
         summary_blocked = 0
