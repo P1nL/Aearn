@@ -1,0 +1,4 @@
+{"phase": "planning", "status": "completed", "reason": "已基于正式 LearningTrack、Attempt、Executor、AuthoritativeContextSnapshot 与历史 Review 边界冻结实施设计。"}
+{"phase": "implementation", "status": "completed", "reason": "已实现 track-scoped schedule/event、有限 ReviewSession、warmup/hint/review_submit Attempt、exactly-once finalization、关键前置 Gate、计划迁移、诊断 skip 低频调度与 verified-only API。"}
+{"phase": "integration", "status": "completed", "reason": "已接入 LearningTrack 到期数量、现有静态/模型审核评分与 executor queue，并补齐 local export/reset/cutover；旧 review_states、review_logs、review_seed_banks 与 top-level /api/reviews 未恢复。"}
+{"phase": "documentation", "status": "completed", "reason": "已同步 runtime、API、数据库、用户流、验收、release ledger 和后端 code-spec，并将旧 FSRS/current/newcomer 文档明确标记为历史材料。"}
