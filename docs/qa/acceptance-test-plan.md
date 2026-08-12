@@ -18,7 +18,7 @@ release approval，任何未通过或未执行 gate 都必须在 ledger 中保�
 3. **每个坏路径要被拒绝。** 除了成功路径，必须证明切换绕过、跨用户读写、
    stale effect、无 Skill evidence、provider fallback、未注册 grounding、
    proactive code execution、raw diagnostics leak 和旧 runtime 再进入都失败。
-4. **静态搜索或 build 不是前端证据。** legacy source/dependency/doc audit、后端测试与网页端 fixture/browser smoke 必须按各自边界完成；前端默认不运行 Desktop build/typecheck。
+4. **静态搜索或 build 不是前端交互证据。** legacy source/dependency/doc audit、后端测试、Desktop typed build 与网页端 fixture/browser smoke 必须按各自边界完成；最终集成必须运行 `desktop:check`，涉及交互变化时仍需真实浏览器验证。
 5. **不写敏感证据。** 测试报告和 ledger 只能记录命令、计数、stable error、
    revision、fixture posture 和 residual risk；不记录 raw message/code/prompt、
    provider payload、hidden tests、checkpoint 或 secret。
@@ -304,3 +304,16 @@ be considered. This child must otherwise remain `in_progress`.
 默认 suite 使用 PostgreSQL、curated immutable exercises、deterministic scorer 和 fake/local execution
 contract，不访问真实 provider、不启动或批准生产 container fleet。ReviewSession 后端/API 通过不等于
 三栏工作区 UI、真实模型题目质量、生产 executor 安全或 release approval。
+
+## 2026-08-12：最终学习 Agent 集成验收矩阵
+
+| ID | 优先级 | 区域 | 验收 | 证据 |
+| --- | --- | --- | --- | --- |
+| RT-36 | P0 | 核心语言闭环 | Python、JavaScript、TypeScript、SQL 各完成 plan -> source-backed Lesson -> start -> Gate -> terminal safe feedback -> private persistence -> mastery/progress -> due ReviewSession -> review evidence/schedule event | `test_learning_agent_integration_matrix.py` |
+| RT-37 | P0 | 扩展与降级真实性 | Java、HTML/CSS 只记录扩展 runner/contract；Go/C# 保持 partial；Rust public unavailable；C++ public static-only；无 `container_verified` 夸大 | integration matrix + language/runner tests |
+| RT-38 | P0 | Container fail-closed | `image-locks.json` 为空时，即使 catalog 与 executor health 可见，public execution-required Gate 仍 unavailable；local fixture 只为 `teaching_local` | integration matrix + execution-tier/executor tests |
+| RT-39 | P0 | Cutover/schema inventory | 所有 `tutor_*` 表必须在 user-owned target inventory 或 shared allowlist 中；任一 target state 阻断 cutover；旧数据不静默转换 | `test_harness_cutover.py::test_cutover_inventory_explicitly_classifies_every_tutor_table` + cutover suite |
+| RT-40 | P0 | Authority/privacy | confirmed facts、AuthoritativeContextSnapshot、Action receipt/verification、stale/superseded fencing、safe projection/export redaction 无回归 | context eval/action runtime/context reference/public API suites |
+| RT-41 | P0 | 最终质量门 | API/executor lock、Ruff、Mypy、完整 pytest、Desktop build、DB smoke、Trellis validate、diff hygiene 全部通过 | release-readiness ledger |
+
+真实 provider 与 Docker/container smoke 仍为可选、独立、需批准证据；它们不能替代上述确定性 contract 测试，也不能由上述测试自动推断为发布批准。

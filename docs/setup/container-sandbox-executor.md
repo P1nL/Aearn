@@ -1,6 +1,6 @@
 # Container Sandbox Executor Operations Contract
 
-**Status:** Current operational boundary, 2026-07-29.
+**Status:** Current operational boundary, 2026-08-12.
 **Authority:** `aearn/services/executor/`, `aearn/infra/executor/`,
 `tutor_execution_*` schema, executor tests, and
 [Tutor Harness Runtime](../architecture/tutor-harness-runtime.md).
@@ -129,3 +129,9 @@ until the project carries seven reviewed immutable image locks and matching
 fixtures. A passing unit suite does not justify enabling a production image
 fleet; record the actual result and residual risk in the
 [Release Readiness Ledger](../qa/tutor-harness-release-readiness.md).
+
+## 8. Current reviewed-lock status
+
+As of 2026-08-12, `aearn/infra/executor/image-locks.json` contains zero locks. The runtime catalog lists Python, browser preview, TypeScript, SQLite, Java, Go, and C# build/runtime contracts, but catalog presence and Dockerfiles are not execution approval. Public composition therefore cannot produce `container_verified` for any language.
+
+Local Python/browser/TypeScript/SQL/Java/Go/C# runner tests are development evidence only and must be labeled `teaching_local`. Java and HTML/CSS are extension validation; Go and C# remain partial and toolchain-dependent; Rust and C++ do not have current executable container runtimes. No command may convert a successful local runner result into public executor health or a reviewed image lock.

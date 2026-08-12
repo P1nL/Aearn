@@ -1,7 +1,8 @@
 # Aearn 实施计划与 Post-MVP 路线
 
 日期：2026-05-29
-状态：First-version baseline + Post-MVP Draft
+状态：历史实施计划快照（2026-05-29）；不再是当前 runtime source of truth
+当前规范入口：`docs/README.md`；以下里程碑、页面名和 release 结论仅保留历史上下文，不得用于恢复旧 runtime。
 关联产品流程：`docs/product/user-flows.md`  
 前置配置：`docs/setup/development-environment.md`  
 验收依据：`docs/qa/acceptance-test-plan.md`

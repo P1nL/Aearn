@@ -506,3 +506,11 @@ private rubric/reference answer、raw stdout/stderr、command、container、path
 Attempt 不存在为 `404 CONTEXT_REFERENCE_NOT_FOUND`；缺少真实 execution result 为
 `409 CONTEXT_REFERENCE_NOT_READY`。同一个 Tutor idempotency key 的 request hash 包含引用数组；相同 key 不同引用不能
 被误判为同请求重放。
+
+## 2026-08-12：最终集成审计
+
+最终集成没有新增第二套学习 API。LearningTrack、Lesson、Gate、ReviewSession 与 Tutor 输入继续使用本文件已列出的 verified-only 路由；旧 `/api/dashboard`、`/api/plans`、`/api/learning-sessions`、top-level `/api/reviews`、Graph/SDK specialist 路由仍未注册。
+
+`tests/test_learning_agent_integration_matrix.py` 对 Python、JavaScript、TypeScript、SQL 逐一验证 track/plan、source-backed Lesson、active assignment、Gate、terminal feedback、private submission persistence、mastery/progress、due review、ReviewSession finalization 与 learner-safe projection。相同 fixture 同时断言：空 `image-locks.json` 下 public execution-required Gate 没有 `allowed_actions`，development fixture 只能返回 `teaching_local`。
+
+公开响应的敏感字段审计按字段名递归执行，覆盖 Gate/Attempt/Review projections；既有专项测试继续覆盖 SSE/history/public process/trace/checkpoint/activity/inbox/export。任何完整 submission、private test/rubric/reference answer、raw provider/executor body、command/path/container/secret 都只能留在私有存储或被完全省略。

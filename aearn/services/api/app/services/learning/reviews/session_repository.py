@@ -59,6 +59,17 @@ class PostgresReviewSessionRepository:
             FROM tutor_exercise_versions AS versions
             WHERE versions.language_id = %s AND versions.validation_status = 'ready'
               AND versions.required_capabilities_json ?| %s
+              AND (
+                versions.source_kind <> 'registered_author'
+                OR EXISTS (
+                  SELECT 1
+                  FROM tutor_model_review_publications AS publications
+                  WHERE publications.user_id = %s
+                    AND publications.track_id = %s
+                    AND publications.knowledge_key = %s
+                    AND publications.exercise_version_id = versions.id
+                )
+              )
             ORDER BY
               CASE versions.exercise_type
                 WHEN 'model_code_review' THEN 0
@@ -68,7 +79,14 @@ class PostgresReviewSessionRepository:
               versions.published_at DESC, versions.id DESC
             LIMIT %s
             """,
-            (scope["language_id"], capabilities, limit),
+            (
+                scope["language_id"],
+                capabilities,
+                user_id,
+                track_id,
+                knowledge_key,
+                limit,
+            ),
         ).fetchall()
         return tuple(dict(row) for row in rows)
 

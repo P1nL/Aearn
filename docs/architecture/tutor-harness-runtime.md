@@ -470,7 +470,7 @@ reviewed immutable image lock and compatible executor health for
 `static_only`; all other cases are `unavailable`. Resolution never launches a
 runner or executor.
 
-LearningTrack Home, the single-page immutable LessonDocument reader, server-authoritative exercise Gate binding/scoring, append-only Attempt flow, module diagnostic confirmation, model code-review exercises, track-scoped spaced review, and existing-queue execution handoff are now implemented. The full three-column workspace, structured context references, final integration migration, and a reviewed production container image fleet remain separate product work.
+LearningTrack Home, the responsive three-column learning workspace, immutable LessonDocument reader, server-authoritative exercise Gate binding/scoring, append-only Attempt flow, module diagnostic confirmation, model code-review exercises, track-scoped spaced review, structured Tutor context references, and existing-queue execution handoff are now implemented. The reviewed production container image fleet and real-provider release smoke remain unavailable and require separate operator approval.
 
 Existing user-level Tutor controls remain unchanged:
 
@@ -743,3 +743,16 @@ Public projections omit full submissions, private rubrics/tests, provider bodies
 execution internals, and context hashes. Local export includes bounded review
 summaries only, while reset/delete and cutover inventory include all user-owned
 review rows in child-to-root order.
+
+### Final learning-agent integration audit (2026-08-12)
+
+The final integration boundary is deterministic and repository-grounded:
+
+- Python, JavaScript, TypeScript, and SQL each have a real-PostgreSQL fixture that creates a track, publishes a source-backed immutable LessonDocument, starts the assignment, binds a Gate, records a terminal learner-safe result, projects mastery/progress, creates a due ReviewSession, and finalizes one review evidence/schedule event.
+- The same fixture proves public composition remains `unavailable` for execution-required Gates while `image-locks.json` is empty. Development-only execution is explicitly `teaching_local`; it is never promoted to `container_verified`.
+- Java and HTML/CSS remain extension capabilities with runner-level tests but no claim of the four-language core end-to-end course matrix. Go and C# remain partial local managed-compiled capabilities; Rust is public `unavailable`; C++ is public `static_only`. None has a reviewed public container lock.
+- Cutover now classifies every `tutor_*` table as either user-owned target state or an explicitly shared catalog/health/private-exercise table. A schema reconciliation test fails whenever a future Tutor table is not classified.
+- Legacy `learning_*`, user-level Tutor plan, review, note, and Graph/runtime data are never silently converted into LearningTrack evidence. Clean-slate cutover deletes only the exact confirmed legacy scope; ordinary reset/delete clears current user-owned learning state, while feature rollback preserves stored evidence and cannot bypass the verified cutover gate.
+- Planning, Review, code-review validation, and the right-side Tutor consume persisted authoritative snapshots or verified Action receipts. Execution completion and verification success remain distinct, and stale/superseded authority cannot publish an effect, mastery fact, unlock, or message.
+
+This is local integration evidence, not a release approval, provider-quality claim, image-supply-chain approval, push, deployment, or production-data migration.

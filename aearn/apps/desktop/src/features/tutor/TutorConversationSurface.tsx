@@ -484,7 +484,7 @@ export function TutorConversationSurface({
       <section className="tutor-workspace tutor-workspace-boundary" aria-labelledby="tutor-workspace-title">
         <p className="tutor-panel-eyebrow">预切换工作台</p>
         <h1 id="tutor-workspace-title">Tutor 工作台已经就绪</h1>
-        <p>它仍在等待服务器权威切换。当前学习页和既有 Graph 流程保持不变，不会因打开此组件自动切换。</p>
+        <p>它仍在等待服务器权威切换。当前学习入口不会因打开此组件绕过 cutover 或恢复已退休流程。</p>
       </section>
     );
   }
