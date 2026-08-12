@@ -1240,3 +1240,41 @@ Closed the planning-only Tutor Harness rearchitecture parent after all nine inde
 ### Next Steps
 
 - 当前子任务已归档；父任务继续保持 `planning`，不在本次收尾中启动后续子任务。
+
+
+## Session 94: Tutor 权威上下文事实与运行时收口
+
+**Date**: 2026-08-12
+**Task**: Tutor 权威上下文事实与运行时收口
+**Branch**: `main`
+
+### Summary
+
+完成 Tutor 权威规划事实重建、Provider/决策协议强化、桌面端交互改进及 Trellis 工具链更新；验证通过后归档当前任务，并准备转入统一受控 Action Runtime。
+
+### Main Changes
+
+- 提交 Trellis 工作流与本地 Agent 工具链更新
+- 实现权威 planning facts、typed provider runtime 与诊断能力
+- 改进 Tutor 桌面会话体验与交互规格
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `4d1531d` | (see git log) |
+| `69d0a64` | (see git log) |
+| `33df9f9` | (see git log) |
+
+### Testing
+
+- [OK] 后端上下文矩阵 60 passed、运行时矩阵 97 passed
+- [OK] Ruff、mypy、Trellis validate、desktop:check 均通过
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 启动 08-12-tutor-controlled-action-runtime 并复核已有决策协议实现与剩余缺口
