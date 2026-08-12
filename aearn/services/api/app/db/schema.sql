@@ -5749,3 +5749,85 @@ CREATE INDEX IF NOT EXISTS idx_tutor_review_items_session
   ON tutor_review_items(session_id, order_index);
 CREATE INDEX IF NOT EXISTS idx_tutor_review_hints_item
   ON tutor_review_hint_receipts(item_id, created_at, id);
+
+-- Child 08-04 workspace context references: immutable learner-safe snapshots
+-- bound to one accepted learner message and exact TurnRun input revision.
+CREATE TABLE IF NOT EXISTS tutor_message_context_references (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL,
+  conversation_id uuid NOT NULL,
+  run_id uuid NOT NULL,
+  message_id uuid NOT NULL,
+  input_revision integer NOT NULL CHECK (input_revision > 0),
+  reference_index integer NOT NULL CHECK (reference_index BETWEEN 0 AND 5),
+  reference_kind text NOT NULL CHECK (reference_kind IN (
+    'lesson_selection', 'exercise_feedback', 'execution_result', 'review_feedback'
+  )),
+  track_id uuid NOT NULL,
+  knowledge_key text NOT NULL CHECK (knowledge_key ~ '^[a-z0-9][a-z0-9._:-]{0,159}$'),
+  document_id uuid,
+  attempt_id uuid,
+  review_session_id uuid,
+  exercise_version_id uuid,
+  source_version text NOT NULL CHECK (char_length(source_version) BETWEEN 1 AND 160),
+  source_hash text NOT NULL CHECK (source_hash ~ '^[0-9a-f]{64}$'),
+  safe_payload_json jsonb NOT NULL CHECK (jsonb_typeof(safe_payload_json) = 'object'),
+  safe_payload_hash text NOT NULL CHECK (safe_payload_hash ~ '^[0-9a-f]{64}$'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_tutor_message_context_references_input_index
+    UNIQUE (run_id, input_revision, reference_index),
+  CONSTRAINT uq_tutor_message_context_references_message_index
+    UNIQUE (message_id, reference_index),
+  CONSTRAINT uq_tutor_message_context_references_id_user UNIQUE (id, user_id),
+  CONSTRAINT fk_tutor_context_reference_run_user
+    FOREIGN KEY (run_id, user_id) REFERENCES tutor_runs(id, user_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_context_reference_run_conversation
+    FOREIGN KEY (run_id, conversation_id) REFERENCES tutor_runs(id, conversation_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_context_reference_message_conversation
+    FOREIGN KEY (message_id, conversation_id) REFERENCES tutor_messages(id, conversation_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_context_reference_input_revision
+    FOREIGN KEY (run_id, input_revision) REFERENCES tutor_run_input_events(run_id, input_revision) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_context_reference_track_user
+    FOREIGN KEY (track_id, user_id) REFERENCES tutor_learning_tracks(id, user_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_context_reference_document_scope
+    FOREIGN KEY (document_id, user_id, track_id, knowledge_key)
+    REFERENCES tutor_lesson_documents(id, user_id, track_id, knowledge_key) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_context_reference_attempt_scope
+    FOREIGN KEY (attempt_id, user_id, track_id, exercise_version_id)
+    REFERENCES tutor_exercise_attempts(id, user_id, track_id, exercise_version_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_context_reference_review_scope
+    FOREIGN KEY (review_session_id, user_id, track_id)
+    REFERENCES tutor_review_sessions(id, user_id, track_id) ON DELETE RESTRICT,
+  CONSTRAINT chk_tutor_message_context_reference_shape CHECK (
+    (reference_kind = 'lesson_selection'
+      AND document_id IS NOT NULL AND attempt_id IS NULL
+      AND review_session_id IS NULL AND exercise_version_id IS NULL)
+    OR
+    (reference_kind IN ('exercise_feedback', 'execution_result')
+      AND document_id IS NULL AND attempt_id IS NOT NULL
+      AND review_session_id IS NULL AND exercise_version_id IS NOT NULL)
+    OR
+    (reference_kind = 'review_feedback'
+      AND document_id IS NULL AND attempt_id IS NOT NULL
+      AND review_session_id IS NOT NULL AND exercise_version_id IS NOT NULL)
+  )
+);
+
+CREATE OR REPLACE FUNCTION enforce_tutor_message_context_reference_immutable()
+RETURNS trigger AS $$
+BEGIN
+  IF TG_OP = 'DELETE' AND tutor_learning_track_purge_allowed(OLD.user_id) THEN RETURN OLD; END IF;
+  RAISE EXCEPTION 'Tutor message context references are append-only' USING ERRCODE = '23514';
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_tutor_message_context_references_immutable
+  ON tutor_message_context_references;
+CREATE TRIGGER trg_tutor_message_context_references_immutable
+BEFORE UPDATE OR DELETE ON tutor_message_context_references
+FOR EACH ROW EXECUTE FUNCTION enforce_tutor_message_context_reference_immutable();
+
+CREATE INDEX IF NOT EXISTS idx_tutor_message_context_references_message
+  ON tutor_message_context_references(user_id, conversation_id, message_id, reference_index);
+CREATE INDEX IF NOT EXISTS idx_tutor_message_context_references_input
+  ON tutor_message_context_references(user_id, run_id, input_revision, reference_index);

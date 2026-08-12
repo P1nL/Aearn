@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
@@ -21,6 +21,10 @@ from app.agents.harness.context_budget import build_tutor_context_budget_policy
 from app.agents.harness.contracts import TutorPolicySnapshot, TutorTerminalOutcome
 from app.core.config import Settings, get_settings
 from app.agents.harness.skill_catalog import compile_published_skill_catalog
+from app.services.learning.context_references import (
+    ContextReferenceError,
+    PostgresTutorContextReferenceRepository,
+)
 from app.services.learning.contracts import LearningScope, LearningScopeKind, LearningTaskKind
 from app.services.learning.planning_facts import PlanningFactError, PostgresPlanningFactRepository
 from app.services.learning.track_repository import (
@@ -97,6 +101,7 @@ class TutorPublicService:
         self._repository = PostgresTutorRepository(conn)
         self._learning_tracks = PostgresLearningTrackRepository(conn)
         self._planning_facts = PostgresPlanningFactRepository(conn)
+        self._context_references = PostgresTutorContextReferenceRepository(conn)
         self._learner_state = TutorLearnerStateRepository(conn)
         self._proactive = PostgresTutorProactiveRepository(conn)
 
@@ -136,6 +141,7 @@ class TutorPublicService:
         learning_scope: LearningScope | None = None,
         planning_facts: Mapping[str, object] | None = None,
         reopen_fact_fields: tuple[str, ...] = (),
+        context_references: Sequence[Mapping[str, object]] = (),
     ) -> dict[str, object]:
         normalized_user_id = _uuid_identifier(user_id, label="user_id")
         return self._mutate(
@@ -147,6 +153,7 @@ class TutorPublicService:
                 "learning_scope": _learning_scope_payload(learning_scope),
                 "planning_facts": dict(planning_facts or {}),
                 "reopen_fact_fields": list(reopen_fact_fields),
+                "context_references": [dict(item) for item in context_references],
             },
             action=lambda: self._accept_first_turn(
                 user_id=normalized_user_id,
@@ -154,6 +161,7 @@ class TutorPublicService:
                 learning_scope=learning_scope,
                 planning_facts=planning_facts,
                 reopen_fact_fields=reopen_fact_fields,
+                context_references=context_references,
                 idempotency_key=idempotency_key,
             ),
         )
@@ -168,6 +176,7 @@ class TutorPublicService:
         learning_scope: LearningScope | None = None,
         planning_facts: Mapping[str, object] | None = None,
         reopen_fact_fields: tuple[str, ...] = (),
+        context_references: Sequence[Mapping[str, object]] = (),
     ) -> dict[str, object]:
         normalized_user_id = _uuid_identifier(user_id, label="user_id")
         normalized_conversation_id = _uuid_identifier(conversation_id, label="conversation_id")
@@ -181,6 +190,7 @@ class TutorPublicService:
                 "learning_scope": _learning_scope_payload(learning_scope),
                 "planning_facts": dict(planning_facts or {}),
                 "reopen_fact_fields": list(reopen_fact_fields),
+                "context_references": [dict(item) for item in context_references],
             },
             action=lambda: self._accept_conversation_input(
                 user_id=normalized_user_id,
@@ -189,6 +199,7 @@ class TutorPublicService:
                 learning_scope=learning_scope,
                 planning_facts=planning_facts,
                 reopen_fact_fields=reopen_fact_fields,
+                context_references=context_references,
                 idempotency_key=idempotency_key,
             ),
         )
@@ -203,6 +214,7 @@ class TutorPublicService:
         learning_scope: LearningScope | None = None,
         planning_facts: Mapping[str, object] | None = None,
         reopen_fact_fields: tuple[str, ...] = (),
+        context_references: Sequence[Mapping[str, object]] = (),
     ) -> dict[str, object]:
         normalized_user_id = _uuid_identifier(user_id, label="user_id")
         normalized_run_id = _uuid_identifier(run_id, label="run_id")
@@ -216,6 +228,7 @@ class TutorPublicService:
                 "learning_scope": _learning_scope_payload(learning_scope),
                 "planning_facts": dict(planning_facts or {}),
                 "reopen_fact_fields": list(reopen_fact_fields),
+                "context_references": [dict(item) for item in context_references],
             },
             action=lambda: self._accept_existing_run_input(
                 user_id=normalized_user_id,
@@ -224,6 +237,7 @@ class TutorPublicService:
                 learning_scope=learning_scope,
                 planning_facts=planning_facts,
                 reopen_fact_fields=reopen_fact_fields,
+                context_references=context_references,
                 idempotency_key=idempotency_key,
             ),
         )
@@ -550,6 +564,7 @@ class TutorPublicService:
         learning_scope: LearningScope | None,
         planning_facts: Mapping[str, object] | None,
         reopen_fact_fields: tuple[str, ...],
+        context_references: Sequence[Mapping[str, object]],
         idempotency_key: str,
     ) -> dict[str, object]:
         self._assert_user_exists(user_id)
@@ -570,6 +585,13 @@ class TutorPublicService:
                 run_id=accepted.run.run_id,
                 learning_scope=learning_scope,
             )
+            references = self._context_references.record_for_input(
+                user_id=user_id,
+                scope=scope,
+                message_id=accepted.acceptance.message_id,
+                input_revision=accepted.acceptance.input_revision,
+                references=context_references,
+            )
             if scope.scope_kind is LearningScopeKind.PLAN_DRAFTING:
                 self._planning_facts.record_input(
                     user_id=user_id,
@@ -582,6 +604,13 @@ class TutorPublicService:
                     reopen_fields=reopen_fact_fields,
                 )
             state = self._repository.read_run_state(user_id=user_id, run_id=accepted.run.run_id)
+        except ContextReferenceError as exc:
+            raise TutorPublicApiError(
+                exc.code,
+                exc.message,
+                status_code=exc.status_code,
+                recoverable=exc.recoverable,
+            ) from exc
         except PlanningFactError as exc:
             raise TutorPublicApiError(
                 "VALIDATION_ERROR",
@@ -593,7 +622,7 @@ class TutorPublicService:
             raise _idempotency_conflict() from exc
         except TutorTerminalStateConflict as exc:
             raise _run_not_active() from exc
-        return _turn_acceptance_payload(accepted, state=state, first_turn=True)
+        return _turn_acceptance_payload(accepted, state=state, references=references, first_turn=True)
 
     def _accept_conversation_input(
         self,
@@ -604,6 +633,7 @@ class TutorPublicService:
         learning_scope: LearningScope | None,
         planning_facts: Mapping[str, object] | None,
         reopen_fact_fields: tuple[str, ...],
+        context_references: Sequence[Mapping[str, object]],
         idempotency_key: str,
     ) -> dict[str, object]:
         self._assert_user_exists(user_id)
@@ -625,6 +655,13 @@ class TutorPublicService:
                 run_id=accepted.run.run_id,
                 learning_scope=learning_scope,
             )
+            references = self._context_references.record_for_input(
+                user_id=user_id,
+                scope=scope,
+                message_id=accepted.acceptance.message_id,
+                input_revision=accepted.acceptance.input_revision,
+                references=context_references,
+            )
             if scope.scope_kind is LearningScopeKind.PLAN_DRAFTING:
                 self._planning_facts.record_input(
                     user_id=user_id,
@@ -644,6 +681,13 @@ class TutorPublicService:
                 status_code=404,
                 details={"conversation_id": conversation_id},
             ) from exc
+        except ContextReferenceError as exc:
+            raise TutorPublicApiError(
+                exc.code,
+                exc.message,
+                status_code=exc.status_code,
+                recoverable=exc.recoverable,
+            ) from exc
         except PlanningFactError as exc:
             raise TutorPublicApiError(
                 "VALIDATION_ERROR",
@@ -655,7 +699,7 @@ class TutorPublicService:
             raise _idempotency_conflict() from exc
         except TutorTerminalStateConflict as exc:
             raise _run_not_active(conversation_id=conversation_id) from exc
-        return _turn_acceptance_payload(accepted, state=state, first_turn=False)
+        return _turn_acceptance_payload(accepted, state=state, references=references, first_turn=False)
 
     def _accept_existing_run_input(
         self,
@@ -666,6 +710,7 @@ class TutorPublicService:
         learning_scope: LearningScope | None,
         planning_facts: Mapping[str, object] | None,
         reopen_fact_fields: tuple[str, ...],
+        context_references: Sequence[Mapping[str, object]],
         idempotency_key: str,
     ) -> dict[str, object]:
         self._assert_user_exists(user_id)
@@ -693,6 +738,13 @@ class TutorPublicService:
                 received_at=datetime.now(UTC),
             )
             scope = self._learning_tracks.read_run_scope(user_id=user_id, run_id=run_id)
+            references = self._context_references.record_for_input(
+                user_id=user_id,
+                scope=scope,
+                message_id=acceptance.message_id,
+                input_revision=acceptance.input_revision,
+                references=context_references,
+            )
             if scope.scope_kind is LearningScopeKind.PLAN_DRAFTING:
                 self._planning_facts.record_input(
                     user_id=user_id,
@@ -707,6 +759,13 @@ class TutorPublicService:
             updated = self._repository.read_run_state(user_id=user_id, run_id=run_id)
         except TutorRunNotFound as exc:
             raise _run_not_found(run_id) from exc
+        except ContextReferenceError as exc:
+            raise TutorPublicApiError(
+                exc.code,
+                exc.message,
+                status_code=exc.status_code,
+                recoverable=exc.recoverable,
+            ) from exc
         except PlanningFactError as exc:
             raise TutorPublicApiError(
                 "VALIDATION_ERROR",
@@ -731,6 +790,7 @@ class TutorPublicService:
             "process": _public_process_payload(process) if process is not None else None,
             "replaced_run_id": None,
             "replaced_process": None,
+            "context_references": list(references),
         }
 
     def _snapshot_learning_scope(
@@ -1131,6 +1191,7 @@ def _turn_acceptance_payload(
     accepted: TutorInteractiveTurnAcceptance,
     *,
     state: TutorRunReadState,
+    references: Sequence[Mapping[str, object]],
     first_turn: bool,
 ) -> dict[str, object]:
     del first_turn
@@ -1148,6 +1209,7 @@ def _turn_acceptance_payload(
         "replaced_process": _public_process_payload(accepted.replaced_process)
         if accepted.replaced_process is not None
         else None,
+        "context_references": [dict(item) for item in references],
     }
 
 
@@ -1199,6 +1261,7 @@ def _timeline_payload(item: TutorConversationTimelineRecord) -> dict[str, object
         "role": item.role,
         "content": item.content or "",
         "public_thinking_steps": list(item.public_thinking_steps),
+        "context_references": [dict(reference) for reference in item.context_references],
         "created_at": _iso(item.created_at),
     }
 

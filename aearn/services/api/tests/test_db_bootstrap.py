@@ -244,6 +244,22 @@ REVIEW_SCHEMA_CONSTRAINTS = (
 )
 
 
+CONTEXT_REFERENCE_SCHEMA_CONSTRAINTS = (
+    "uq_tutor_message_context_references_input_index",
+    "uq_tutor_message_context_references_message_index",
+    "uq_tutor_message_context_references_id_user",
+    "fk_tutor_context_reference_run_user",
+    "fk_tutor_context_reference_run_conversation",
+    "fk_tutor_context_reference_message_conversation",
+    "fk_tutor_context_reference_input_revision",
+    "fk_tutor_context_reference_track_user",
+    "fk_tutor_context_reference_document_scope",
+    "fk_tutor_context_reference_attempt_scope",
+    "fk_tutor_context_reference_review_scope",
+    "chk_tutor_message_context_reference_shape",
+)
+
+
 PRACTICE_SCHEMA_CONSTRAINTS = (
     "uq_tutor_exercise_versions_key_version",
     "chk_tutor_exercise_versions_execution_shape",
@@ -282,12 +298,14 @@ TUTOR_SCHEMA_CONSTRAINTS = (
     + LESSON_SCHEMA_CONSTRAINTS
     + PRACTICE_SCHEMA_CONSTRAINTS
     + REVIEW_SCHEMA_CONSTRAINTS
+    + CONTEXT_REFERENCE_SCHEMA_CONSTRAINTS
     + MODEL_REVIEW_SCHEMA_CONSTRAINTS
 )
 
 TARGET_TUTOR_TABLES = (
     "tutor_conversations",
     "tutor_messages",
+    "tutor_message_context_references",
     "tutor_catalog_snapshots",
     "tutor_runs",
     "tutor_provider_attempt_receipts",
@@ -447,6 +465,7 @@ def test_tutor_target_schema_is_repeatable_and_enforces_run_event_identity() -> 
                     "trg_tutor_review_items_immutable",
                     "trg_tutor_review_hints_immutable",
                     "trg_tutor_review_finalizations_immutable",
+                    "trg_tutor_message_context_references_immutable",
                 ],
             ),
         ).fetchall()
@@ -563,6 +582,7 @@ def test_tutor_target_schema_is_repeatable_and_enforces_run_event_identity() -> 
             "trg_tutor_review_items_immutable",
             "trg_tutor_review_hints_immutable",
             "trg_tutor_review_finalizations_immutable",
+            "trg_tutor_message_context_references_immutable",
         }
         executor_indexes = conn.execute(
             """
@@ -618,6 +638,8 @@ def test_tutor_target_schema_is_repeatable_and_enforces_run_event_identity() -> 
                     "idx_tutor_review_hints_item",
                     "idx_tutor_exercise_attempts_review",
                     "uq_tutor_exercise_attempts_review_item",
+                    "idx_tutor_message_context_references_message",
+                    "idx_tutor_message_context_references_input",
                 ],
             ),
         ).fetchall()
@@ -667,6 +689,8 @@ def test_tutor_target_schema_is_repeatable_and_enforces_run_event_identity() -> 
             "idx_tutor_review_hints_item",
             "idx_tutor_exercise_attempts_review",
             "uq_tutor_exercise_attempts_review_item",
+            "idx_tutor_message_context_references_message",
+            "idx_tutor_message_context_references_input",
         }
         execution_constraint_rows = conn.execute(
             "SELECT conname FROM pg_constraint WHERE conname = ANY(%s)",

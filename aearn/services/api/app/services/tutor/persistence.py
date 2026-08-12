@@ -222,6 +222,7 @@ class TutorConversationTimelineRecord:
     role: str | None = None
     content: str | None = None
     public_thinking_steps: tuple[str, ...] = ()
+    context_references: tuple[dict[str, object], ...] = ()
     process: TutorPublicProcessState | None = None
 
 
@@ -1256,6 +1257,18 @@ class PostgresTutorRepository:
         params.append(limit + 1)
         rows = self._conn.execute(timeline, tuple(params)).fetchall()
         page_rows = rows[:limit]
+        from app.services.learning.context_references import PostgresTutorContextReferenceRepository
+
+        learner_message_ids = [
+            str(row["item_id"])
+            for row in page_rows
+            if str(row.get("kind") or "") == "message" and str(row.get("role") or "") == "learner"
+        ]
+        references_by_message = PostgresTutorContextReferenceRepository(self._conn).read_for_messages(
+            user_id=user_id,
+            conversation_id=conversation_id,
+            message_ids=learner_message_ids,
+        )
         records: list[TutorConversationTimelineRecord] = []
         for row in page_rows:
             kind = str(row["kind"])
@@ -1279,6 +1292,7 @@ class PostgresTutorRepository:
                             if role == "tutor"
                             else ()
                         ),
+                        context_references=references_by_message.get(str(row["item_id"]), ()),
                     )
                 )
                 continue
