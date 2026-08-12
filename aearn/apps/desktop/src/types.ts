@@ -141,6 +141,7 @@ export type TutorHistoryMessage = {
   id: string;
   role: "learner" | "tutor";
   content: string;
+  public_thinking_steps: string[];
   created_at: string | null;
 };
 
