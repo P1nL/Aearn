@@ -1,0 +1,32 @@
+{
+  "id": "learning-agent-integration-migration-qa-docs",
+  "name": "learning-agent-integration-migration-qa-docs",
+  "title": "教学 Agent 集成迁移、QA 与文档",
+  "description": "完成新教学领域与 Tutor Harness 的集成、旧导航收敛、端到端语言矩阵、迁移审计、QA 和 source-of-truth 文档。",
+  "status": "completed",
+  "dev_type": "integration",
+  "scope": "fullstack",
+  "package": null,
+  "priority": "P1",
+  "creator": "PINKING",
+  "assignee": "PINKING",
+  "createdAt": "2026-08-04",
+  "completedAt": "2026-08-13",
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "08-04-programming-language-learning-agent-product",
+  "relatedFiles": [
+    "aearn/services/api/tests/test_learning_agent_integration_matrix.py",
+    "aearn/services/api/app/services/learning/reviews/session_repository.py",
+    "aearn/services/api/app/services/tutor/cutover.py",
+    "docs/qa/tutor-harness-release-readiness.md",
+    ".trellis/spec/backend/learning-agent-integration-qa.md"
+  ],
+  "notes": "最终串行质量门通过：API 515 passed/1 skipped，聚焦权威与隐私 84 passed，executor 11 passed，Desktop build、DB smoke、Trellis validate 与 diff hygiene 通过；真实 provider 与 reviewed container fleet 未执行且不构成发布批准。",
+  "meta": {}
+}
