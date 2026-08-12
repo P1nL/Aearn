@@ -1278,3 +1278,24 @@ Closed the planning-only Tutor Harness rearchitecture parent after all nine inde
 ### Next Steps
 
 - 启动 08-12-tutor-controlled-action-runtime 并复核已有决策协议实现与剩余缺口
+
+
+## Session 95: 完成 Tutor 统一受控 Action Runtime
+
+**Date**: 2026-08-12
+**Task**: 完成 Tutor 统一受控 Action Runtime
+**Branch**: `main`
+
+### Summary
+
+实现统一 Action descriptor/invocation/receipt 生命周期、PostgreSQL 持久化、资源与预算门禁、取消/重试/验证/恢复、权威 context 回灌，并迁移 grounding、plan drafting 与 runner authority adapter；完整 API 482 passed、executor 11 passed，Ruff/Mypy/Trellis validation 全绿。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `74555e4` | (see git log) |
+
+### Status
+
+[OK] **Completed**

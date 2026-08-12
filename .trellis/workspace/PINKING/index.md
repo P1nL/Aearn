@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-2.md`
-- **Total Sessions**: 94
+- **Total Sessions**: 95
 - **Last Active**: 2026-08-12
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-2.md` | ~1280 | Active |
+| `journal-2.md` | ~1301 | Active |
 | `journal-1.md` | ~1979 | Archived |
 <!-- @@@/auto:active-documents -->
 
@@ -30,6 +30,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 95 | 2026-08-12 | 完成 Tutor 统一受控 Action Runtime | `74555e4` | `main` |
 | 94 | 2026-08-12 | Tutor 权威上下文事实与运行时收口 | `4d1531d`, `69d0a64`, `33df9f9` | `main` |
 | 93 | 2026-08-11 | 完成练习 Gate、模块诊断与受控执行 | `9904619` | `main` |
 | 92 | 2026-08-11 | 完成 LessonDocument 与权威来源课程能力 | `b73dfa0`, `b4a56e8`, `a1e335e` | `main` |
