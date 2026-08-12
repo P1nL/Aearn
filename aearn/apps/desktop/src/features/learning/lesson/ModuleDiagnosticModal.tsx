@@ -302,11 +302,13 @@ function isDiagnosticState(value: ExerciseAttemptState | ModuleDiagnosticState):
 }
 
 function starterText(item: ModuleDiagnosticItem): string {
+  if (item.exercise.exercise_type === "model_code_review") return "";
   const value = item.exercise.starter_artifact.content;
   return typeof value === "string" ? value : "";
 }
 
 function promptText(item: ModuleDiagnosticItem): string {
+  if (item.exercise.exercise_type === "model_code_review") return item.exercise.learner_prompt.learner_instruction;
   const value = item.exercise.learner_prompt.text;
   return typeof value === "string" ? value : `请完成 ${item.capability_key} 的独立能力检查。`;
 }

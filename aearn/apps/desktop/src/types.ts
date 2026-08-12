@@ -478,30 +478,142 @@ export type LessonPrepareResponse = {
 };
 
 export type ExecutionTier = "teaching_local" | "container_verified" | "static_only" | "unavailable";
-export type ExerciseType = "code_completion" | "sql_query" | "browser_preview" | "static_code_reasoning";
+export type ExerciseType = "code_completion" | "sql_query" | "browser_preview" | "static_code_reasoning" | "model_code_review";
 export type GateRequirementKind = "required" | "recommended" | "diagnostic";
 export type LessonGateState = "available" | "in_progress" | "passed" | "remediation_required";
 export type LessonGateAction = "prepare" | "hint" | "run" | "submit";
 export type ExerciseAttemptType = "run" | "submit" | "diagnostic_submit";
 export type ExerciseAttemptOutcome = "passed" | "failed" | "timed_out" | "cancelled" | "unavailable" | "invalid";
 export type ExerciseIndependence = "independent" | "hinted" | "remediated";
+export type ModelReviewAssistanceKind = ExerciseIndependence | "validation_evidence_viewed";
+export type ModelReviewVerdict = "correctness_issue" | "no_correctness_issue" | "improvement_only" | "uncertain";
+export type ModelReviewFindingKind = "correctness" | "improvement";
+export type ModelReviewSeverity = "info" | "low" | "medium" | "high" | "critical";
+export type ModelReviewFindingStatus = "supported" | "partial" | "unsupported" | "duplicate";
 
-export type LessonGateExercise = {
+export type ModelReviewPrompt = {
+  schema_version: "model_code_review_prompt_v1";
+  requirements: string[];
+  review_scope: string[];
+  evidence_boundary: "prepublication_verified";
+  learner_instruction: string;
+};
+
+export type ModelReviewArtifact = {
+  schema_version: "model_code_review_artifact_v1";
+  language_id: string;
+  runtime_label: string;
+  model_code: string;
+  code_hash: string;
+  line_count: number;
+};
+
+export type ModelReviewFinding = {
+  client_finding_id: string;
+  finding_kind: ModelReviewFindingKind;
+  start_line: number;
+  end_line: number;
+  category: string;
+  severity: ModelReviewSeverity;
+  trigger_condition: string;
+  principle: string;
+  impact: string;
+  validation_method: string;
+  suggested_fix: string;
+  supplemental_note: string | null;
+};
+
+export type ModelCodeReviewSubmission = {
+  schema_version: "model_code_review_submission_v1";
+  verdict: ModelReviewVerdict;
+  findings: ModelReviewFinding[];
+  supplemental_note: string | null;
+};
+
+export type ModelReviewFindingFeedback = {
+  client_finding_id: string;
+  status: ModelReviewFindingStatus;
+  safe_reason_code: string;
+};
+
+export type ModelReviewScoreBreakdown = {
+  policy_version: "model_code_review_score_v1";
+  verdict: number;
+  discovery: number;
+  omission: number;
+  severity: number;
+  evidence: number;
+  validation_method: number;
+  suggested_fix: number;
+  false_positive: number;
+  duplicate: number;
+};
+
+export type ModelReviewSafeFeedback = {
+  status: "model_code_review_evaluated";
+  message: string;
+  execution_claim: "not_run";
+  assistance_kind: ModelReviewAssistanceKind;
+  score_breakdown: ModelReviewScoreBreakdown;
+  finding_feedback: ModelReviewFindingFeedback[];
+  omission_band: "none" | "limited" | "major";
+  next_action: "advance_next" | "review_variant" | "show_hint";
+};
+
+export type ModelReviewVisibleEvidence = {
+  schema_version: "model_code_review_visible_evidence_v1";
+  execution_claim: "prepublication_only";
+  checks: Array<{
+    check_type: "parser" | "compile_or_typecheck" | "visible_tests" | "hidden_tests" | "coverage";
+    status: "passed" | "not_applicable";
+    safe_code: string;
+  }>;
+};
+
+export type ModelReviewEvidenceResponse = {
+  evidence_id: string;
+  evidence: ModelReviewVisibleEvidence;
+  assistance_kind: "validation_evidence_viewed";
+  gate_version: number;
+  created_at: string | null;
+  idempotent_replayed: boolean;
+};
+
+export type ModelReviewAuthoringRun = {
+  run_id: string;
+  state: "pending" | "claimed" | "running" | "validating" | "completed" | "failed" | "cancelled";
+  attempt_count: number;
+  failure_code: string | null;
+  failure_message: string | null;
+};
+
+type LessonGateExerciseBase = {
   exercise_version_id: string;
   exercise_key: string;
-  exercise_type: ExerciseType;
   version: string;
   title: string;
-  learner_prompt: Record<string, unknown>;
-  starter_artifact: Record<string, unknown>;
   required_capabilities?: string[];
   content_hash?: string;
 };
 
+export type ModelCodeReviewExercise = LessonGateExerciseBase & {
+  exercise_type: "model_code_review";
+  learner_prompt: ModelReviewPrompt;
+  starter_artifact: ModelReviewArtifact;
+};
+
+export type LessonGateExercise =
+  | ModelCodeReviewExercise
+  | (LessonGateExerciseBase & {
+      exercise_type: Exclude<ExerciseType, "model_code_review">;
+      learner_prompt: Record<string, unknown>;
+      starter_artifact: Record<string, unknown>;
+    });
+
 export type LessonGateResult = {
   outcome: ExerciseAttemptOutcome;
   score: number;
-  safe_feedback: Record<string, unknown>;
+  safe_feedback: Record<string, unknown> | ModelReviewSafeFeedback;
   capability_scores?: Record<string, number>;
   terminal_at: string | null;
 };
@@ -512,9 +624,10 @@ export type LessonGateUnboundItem = {
   assessment_contract_version: string;
   required_capabilities: string[];
   learner_prompt: string;
-  status: "unbound";
+  status: "unbound" | "preparing" | "failed";
   allowed_actions: LessonGateAction[];
   exercise: null;
+  review_authoring_run: ModelReviewAuthoringRun | null;
 };
 
 export type LessonGateBoundItem = {
@@ -554,11 +667,14 @@ export type LessonGateList = {
   items: LessonGateItem[];
 };
 
-export type LessonGatePrepareResponse = {
-  status: "ready";
-  gate: LessonGateItem;
-  idempotent_replayed: boolean;
-};
+export type LessonGatePrepareResponse =
+  | { status: "ready"; gate: LessonGateItem; idempotent_replayed: boolean }
+  | {
+      status: "preparing" | "failed";
+      gate: LessonGateItem | null;
+      review_authoring_run: ModelReviewAuthoringRun;
+      idempotent_replayed: boolean;
+    };
 
 export type LessonGateHint = {
   hint_id: string;
@@ -578,6 +694,7 @@ export type ExerciseAttemptState = {
   exercise_version_id: string;
   submission_hash: string;
   independence: ExerciseIndependence;
+  assistance_kind: ModelReviewAssistanceKind;
   accepted_at: string | null;
   status: "pending" | "terminal";
   execution_job_id: string | null;
