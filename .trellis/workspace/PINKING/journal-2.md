@@ -1299,3 +1299,43 @@ Closed the planning-only Tutor Harness rearchitecture parent after all nine inde
 ### Status
 
 [OK] **Completed**
+
+
+## Session 96: 完成模型代码审核练习
+
+**Date**: 2026-08-12
+**Task**: 完成模型代码审核练习
+**Branch**: `main`
+
+### Summary
+
+完成 model_code_review 后端、Desktop、PostgreSQL 生命周期、export/reset/cutover、文档与真实浏览器验收；完整 API/Executor/Desktop/Trellis 质量门通过并归档子任务。
+
+### Main Changes
+
+- 实现模型代码审核 contract、确定性评分、authoring/validation/publication 与统一 Action/executor 接入
+- 实现 Desktop 结构化 finding、证据与结果交互
+- 补齐安全 export/reset/cutover、NO ACTION DEFERRABLE 数据库约束与 source-of-truth
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `cb2d15a` | (see git log) |
+| `9747472` | (see git log) |
+| `18e2aed` | (see git log) |
+| `982bb8e` | (see git log) |
+
+### Testing
+
+- [OK] API 491 passed, 1 skipped；Ruff/Mypy/lock 通过
+- [OK] Executor 11 passed；Ruff/Mypy/lock 通过
+- [OK] Desktop build、Trellis validate、git diff check 与 390/900/1440 浏览器验收通过
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 启动并执行 08-04-spaced-review-sessions
