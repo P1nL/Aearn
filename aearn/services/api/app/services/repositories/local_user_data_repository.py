@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -137,6 +138,11 @@ def export_user_data(conn: Connection[dict[str, object]], user_id: str) -> dict[
         "exercise_attempt_summaries": _export_exercise_attempt_summaries(conn, user_id),
         "module_diagnostic_summaries": _export_module_diagnostic_summaries(conn, user_id),
         "action_receipt_summaries": _export_action_receipt_summaries(conn, user_id),
+        "model_review_authoring_summaries": _export_model_review_authoring_summaries(conn, user_id),
+        "model_review_candidate_summaries": _export_model_review_candidate_summaries(conn, user_id),
+        "model_review_validation_summaries": _export_model_review_validation_summaries(conn, user_id),
+        "model_review_publication_summaries": _export_model_review_publication_summaries(conn, user_id),
+        "model_review_evidence_summaries": _export_model_review_evidence_summaries(conn, user_id),
         "redaction": {
             "hidden_tests": "omitted",
             "private_rubrics": "omitted",
@@ -147,6 +153,8 @@ def export_user_data(conn: Connection[dict[str, object]], user_id: str) -> dict[
             "action_arguments": "omitted",
             "action_raw_results": "omitted",
             "action_private_verification": "omitted",
+            "model_review_private_candidates": "omitted",
+            "model_review_private_validation_proofs": "omitted",
             "planning_fact_hashes": "omitted",
             "planning_question_gate_reasons": "omitted",
             "secrets": "omitted",
@@ -264,6 +272,12 @@ def _summary_counts(conn: Connection[dict[str, object]], user_id: str) -> dict[s
         "exercise_attempts": _count(conn, "SELECT count(*) AS count FROM tutor_exercise_attempts WHERE user_id = %s", user_id),
         "module_diagnostics": _count(conn, "SELECT count(*) AS count FROM tutor_module_diagnostic_sessions WHERE user_id = %s", user_id),
         "action_receipts": _count(conn, "SELECT count(*) AS count FROM tutor_action_receipts WHERE user_id = %s", user_id),
+        "model_review_authoring_runs": _count(conn, "SELECT count(*) AS count FROM tutor_model_review_authoring_runs WHERE user_id = %s", user_id),
+        "model_review_candidates": _count(conn, "SELECT count(*) AS count FROM tutor_model_review_candidates WHERE user_id = %s", user_id),
+        "model_review_validation_runs": _count(conn, "SELECT count(*) AS count FROM tutor_model_review_validation_runs WHERE user_id = %s", user_id),
+        "model_review_validation_checks": _count(conn, "SELECT count(*) AS count FROM tutor_model_review_validation_checks WHERE user_id = %s", user_id),
+        "model_review_publications": _count(conn, "SELECT count(*) AS count FROM tutor_model_review_publications WHERE user_id = %s", user_id),
+        "model_review_evidence_receipts": _count(conn, "SELECT count(*) AS count FROM tutor_model_review_evidence_receipts WHERE user_id = %s", user_id),
     }
 
 
@@ -752,17 +766,27 @@ def _export_exercise_attempt_summaries(
                attempts.knowledge_key, attempts.lesson_assignment_id, attempts.gate_binding_id,
                attempts.diagnostic_session_id, attempts.diagnostic_item_id,
                attempts.exercise_version_id, attempts.submission_hash, attempts.hint_state_hash,
-               attempts.independence, attempts.accepted_at,
+               attempts.independence, attempts.assistance_kind, attempts.accepted_at,
+               submissions.submission_kind, submissions.content_text,
                results.outcome, results.score, results.safe_feedback_json,
                results.capability_scores_json, results.policy_version, results.terminal_at
         FROM tutor_exercise_attempts AS attempts
+        JOIN tutor_exercise_attempt_submissions AS submissions ON submissions.attempt_id = attempts.id
         LEFT JOIN tutor_exercise_attempt_results AS results ON results.attempt_id = attempts.id
         WHERE attempts.user_id = %s
         ORDER BY attempts.accepted_at, attempts.id
         """,
         (user_id,),
     ).fetchall()
-    return [_safe_row(row, exclude=()) for row in rows]
+    exported: list[dict[str, object]] = []
+    for row in rows:
+        item = _safe_row(row, exclude=("content_text",))
+        if str(row.get("submission_kind") or "") == "structured_answer":
+            summary = _model_review_submission_summary(row.get("content_text"))
+            if summary is not None:
+                item["review_submission_summary"] = summary
+        exported.append(item)
+    return exported
 
 
 def _export_module_diagnostic_summaries(
@@ -810,6 +834,141 @@ def _export_action_receipt_summaries(
     return [_safe_row(row, exclude=()) for row in rows]
 
 
+def _export_model_review_authoring_summaries(
+    conn: Connection[dict[str, object]],
+    user_id: str,
+) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """
+        SELECT id, track_id, knowledge_key, plan_revision_id, lesson_assignment_id,
+               gate_key, validation_profile_version, request_hash, profile_hash,
+               state, attempt_count, candidate_id, validation_run_id, publication_id,
+               failure_code, terminal_at, created_at, updated_at
+        FROM tutor_model_review_authoring_runs
+        WHERE user_id = %s
+        ORDER BY created_at, id
+        """,
+        (user_id,),
+    ).fetchall()
+    return [_safe_row(row, exclude=()) for row in rows]
+
+
+def _export_model_review_candidate_summaries(
+    conn: Connection[dict[str, object]],
+    user_id: str,
+) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """
+        SELECT id, authoring_run_id, track_id, knowledge_key, public_hash,
+               candidate_hash, generator_version, prompt_schema_version,
+               validation_profile_version, state, created_at, updated_at
+        FROM tutor_model_review_candidates
+        WHERE user_id = %s
+        ORDER BY created_at, id
+        """,
+        (user_id,),
+    ).fetchall()
+    return [_safe_row(row, exclude=()) for row in rows]
+
+
+def _export_model_review_validation_summaries(
+    conn: Connection[dict[str, object]],
+    user_id: str,
+) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """
+        SELECT validations.id, validations.authoring_run_id, validations.candidate_id,
+               validations.track_id, validations.validation_profile_version,
+               validations.candidate_hash, validations.state,
+               validations.action_receipt_hash, validations.authority_hash,
+               validations.check_summary_code, validations.failure_code,
+               validations.safe_summary, validations.terminal_at,
+               validations.created_at, validations.updated_at,
+               count(checks.id)::int AS check_count,
+               count(checks.id) FILTER (WHERE checks.status = 'passed')::int AS passed_check_count,
+               count(checks.id) FILTER (WHERE checks.status = 'failed')::int AS failed_check_count,
+               count(checks.id) FILTER (WHERE checks.status = 'not_applicable')::int AS not_applicable_check_count
+        FROM tutor_model_review_validation_runs AS validations
+        LEFT JOIN tutor_model_review_validation_checks AS checks
+          ON checks.validation_run_id = validations.id AND checks.user_id = validations.user_id
+        WHERE validations.user_id = %s
+        GROUP BY validations.id
+        ORDER BY validations.created_at, validations.id
+        """,
+        (user_id,),
+    ).fetchall()
+    return [_safe_row(row, exclude=()) for row in rows]
+
+
+def _export_model_review_publication_summaries(
+    conn: Connection[dict[str, object]],
+    user_id: str,
+) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """
+        SELECT id, authoring_run_id, candidate_id, validation_run_id,
+               track_id, knowledge_key, lesson_assignment_id, gate_binding_id,
+               exercise_version_id, validation_authority_hash, published_at, created_at
+        FROM tutor_model_review_publications
+        WHERE user_id = %s
+        ORDER BY published_at, id
+        """,
+        (user_id,),
+    ).fetchall()
+    return [_safe_row(row, exclude=()) for row in rows]
+
+
+def _export_model_review_evidence_summaries(
+    conn: Connection[dict[str, object]],
+    user_id: str,
+) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """
+        SELECT id, publication_id, lesson_assignment_id, gate_binding_id,
+               evidence_hash, created_at
+        FROM tutor_model_review_evidence_receipts
+        WHERE user_id = %s
+        ORDER BY created_at, id
+        """,
+        (user_id,),
+    ).fetchall()
+    return [_safe_row(row, exclude=()) for row in rows]
+
+
+def _model_review_submission_summary(content: object) -> dict[str, object] | None:
+    if not isinstance(content, str):
+        return None
+    try:
+        payload = json.loads(content)
+    except json.JSONDecodeError:
+        return None
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema_version") != "model_code_review_submission_v1"
+        or not isinstance(payload.get("findings"), list)
+    ):
+        return None
+    findings: list[dict[str, object]] = []
+    for value in payload["findings"]:
+        if not isinstance(value, dict):
+            return None
+        findings.append(
+            {
+                key: value[key]
+                for key in (
+                    "client_finding_id", "finding_kind", "start_line", "end_line",
+                    "category", "severity",
+                )
+                if key in value
+            }
+        )
+    return {
+        "schema_version": "model_code_review_export_summary_v1",
+        "verdict": payload.get("verdict"),
+        "findings": findings,
+    }
+
+
 def _delete_learning_track_data(conn: Connection[dict[str, object]], user_id: str) -> None:
     # Scope snapshots are children of durable Tutor runs/conversations. Cancel
     # active runs first so an old continuation cannot resume after its authority
@@ -821,13 +980,20 @@ def _delete_learning_track_data(conn: Connection[dict[str, object]], user_id: st
         SELECT id
         FROM tutor_runs
         WHERE user_id = %s
-          AND origin = 'interactive'
+          AND (
+            origin = 'interactive'
+            OR id IN (
+              SELECT internal_run_id
+              FROM tutor_model_review_authoring_runs
+              WHERE user_id = %s AND internal_run_id IS NOT NULL
+            )
+          )
           AND terminal_outcome IS NULL
           AND cancelled_at IS NULL
           AND superseded_by_run_id IS NULL
         ORDER BY created_at, id
         """,
-        (user_id,),
+        (user_id, user_id),
     ).fetchall()
     for run in active_runs:
         tutor_repository.request_cancellation(
@@ -882,7 +1048,7 @@ def _delete_learning_track_data(conn: Connection[dict[str, object]], user_id: st
         """
         UPDATE tutor_execution_jobs
         SET cancellation_requested_at = COALESCE(cancellation_requested_at, %s)
-        WHERE user_id = %s AND owner_kind = 'exercise_attempt'
+        WHERE user_id = %s AND owner_kind IN ('exercise_attempt', 'model_review_validation')
           AND state NOT IN ('completed', 'timed_out', 'cancelled', 'unavailable', 'launch_uncertain', 'failed')
         """,
         (now, user_id),
@@ -900,6 +1066,43 @@ def _delete_learning_track_data(conn: Connection[dict[str, object]], user_id: st
     conn.execute("DELETE FROM tutor_exercise_execution_links WHERE user_id = %s", (user_id,))
     conn.execute("DELETE FROM tutor_execution_jobs WHERE user_id = %s AND owner_kind = 'exercise_attempt'", (user_id,))
     conn.execute("DELETE FROM tutor_execution_intents WHERE user_id = %s AND source_kind = 'exercise_submission'", (user_id,))
+    model_review_internal_rows = conn.execute(
+        """
+        SELECT internal_run_id, internal_conversation_id
+        FROM tutor_model_review_authoring_runs
+        WHERE user_id = %s
+          AND internal_run_id IS NOT NULL
+          AND internal_conversation_id IS NOT NULL
+        """,
+        (user_id,),
+    ).fetchall()
+    model_review_run_ids = tuple(row["internal_run_id"] for row in model_review_internal_rows)
+    model_review_conversation_ids = tuple(row["internal_conversation_id"] for row in model_review_internal_rows)
+    conn.execute("DELETE FROM tutor_model_review_evidence_receipts WHERE user_id = %s", (user_id,))
+    conn.execute("DELETE FROM tutor_model_review_validation_checks WHERE user_id = %s", (user_id,))
+    conn.execute(
+        """
+        DELETE FROM tutor_execution_attempts
+        WHERE job_id IN (
+          SELECT id FROM tutor_execution_jobs
+          WHERE user_id = %s AND owner_kind = 'model_review_validation'
+        )
+        """,
+        (user_id,),
+    )
+    conn.execute("DELETE FROM tutor_execution_jobs WHERE user_id = %s AND owner_kind = 'model_review_validation'", (user_id,))
+    conn.execute("DELETE FROM tutor_execution_intents WHERE user_id = %s AND source_kind = 'model_review_candidate'", (user_id,))
+    conn.execute("DELETE FROM tutor_model_review_publications WHERE user_id = %s", (user_id,))
+    conn.execute("DELETE FROM tutor_model_review_validation_runs WHERE user_id = %s", (user_id,))
+    conn.execute("DELETE FROM tutor_model_review_candidates WHERE user_id = %s", (user_id,))
+    conn.execute("DELETE FROM tutor_model_review_authoring_attempt_receipts WHERE user_id = %s", (user_id,))
+    conn.execute("DELETE FROM tutor_model_review_authoring_runs WHERE user_id = %s", (user_id,))
+    _delete_model_review_internal_runs(
+        conn,
+        user_id=user_id,
+        run_ids=model_review_run_ids,
+        conversation_ids=model_review_conversation_ids,
+    )
     conn.execute("DELETE FROM tutor_exercise_attempt_results WHERE user_id = %s", (user_id,))
     conn.execute("DELETE FROM tutor_exercise_attempt_submissions WHERE user_id = %s", (user_id,))
     conn.execute("DELETE FROM tutor_exercise_attempts WHERE user_id = %s", (user_id,))
@@ -988,6 +1191,63 @@ def _delete_learning_track_data(conn: Connection[dict[str, object]], user_id: st
         )
     conn.execute("DELETE FROM tutor_learning_tracks WHERE user_id = %s", (user_id,))
     conn.execute("DELETE FROM tutor_api_idempotency_records WHERE user_id = %s", (user_id,))
+
+
+def _delete_model_review_internal_runs(
+    conn: Connection[dict[str, object]],
+    *,
+    user_id: str,
+    run_ids: Sequence[object],
+    conversation_ids: Sequence[object],
+) -> None:
+    if not run_ids:
+        return
+    run_id_values = list(run_ids)
+    conversation_id_values = list(conversation_ids)
+    for table_name in (
+        "tutor_capability_invocations",
+        "tutor_run_public_process_steps",
+        "tutor_run_traces",
+        "tutor_run_checkpoints",
+        "tutor_run_skill_selections",
+        "tutor_run_input_events",
+        "tutor_run_events",
+        "tutor_effects",
+        "tutor_run_public_processes",
+        "tutor_run_learning_scopes",
+    ):
+        conn.execute(
+            f"DELETE FROM {table_name} WHERE run_id = ANY(%s::uuid[])",
+            (run_id_values,),
+        )
+    conn.execute(
+        """
+        DELETE FROM tutor_runs
+        WHERE user_id = %s AND id = ANY(%s::uuid[])
+          AND origin = 'proactive'
+          AND conversation_id = ANY(%s::uuid[])
+        """,
+        (user_id, run_id_values, conversation_id_values),
+    )
+    conn.execute(
+        """
+        DELETE FROM tutor_conversation_learning_scopes
+        WHERE user_id = %s AND conversation_id = ANY(%s::uuid[])
+        """,
+        (user_id, conversation_id_values),
+    )
+    conn.execute(
+        "DELETE FROM tutor_messages WHERE conversation_id = ANY(%s::uuid[])",
+        (conversation_id_values,),
+    )
+    conn.execute(
+        """
+        DELETE FROM tutor_conversations
+        WHERE user_id = %s AND id = ANY(%s::uuid[])
+          AND visibility = 'internal' AND kind = 'proactive'
+        """,
+        (user_id, conversation_id_values),
+    )
 
 
 def _delete_user_owned_learning_data(conn: Connection[dict[str, object]], user_id: str) -> None:

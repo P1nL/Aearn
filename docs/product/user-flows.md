@@ -219,3 +219,16 @@ ready Lesson 中的 `exercise_gate` 现在读取 active/frozen assignment 下的
 每次 `run`、`submit` 或 `diagnostic_submit` 都创建 append-only Attempt。完整提交只进入私有 submission artifact；学习者可见结果只包含 hash、状态、分数、能力分数和安全反馈。请求提示后完成会由服务端记录不同 independence，前端不能自行生成 score、pass、mastery evidence 或 unlock。
 
 “申请跳过”只出现在可跳过模块的入口边界，并打开独立模块诊断。诊断冻结全部核心 capability、题目版本、阈值、cooldown 和 policy；部分通过或失败明确不跳过任何知识点，也不降低既有 proven mastery。全部核心 capability 独立通过后只产生 predecessor-linked proposed plan revision 和影响摘要，仍需学习者显式确认，服务端才激活 successor revision、写入 `diagnostic_skipped` 并重算路线。
+
+
+## 2026-08-12：模型代码审核学习流程
+
+当 Lesson Gate 需要动态审核题时，学习者先看到 `preparing`，直到服务端发布 verified
+candidate；失败时只能重试服务端 authoring，不出现本地 fallback。ready 后，学习者阅读需求
+与模型代码，选择“存在 correctness issue / 未发现 correctness issue / 只有改进项 / 不确定”，
+并提交零个或多个结构化 finding。学习者可在服务端允许时查看预发布验证摘要；该动作会降低
+独立性权重，但不会运行本次提交。
+
+服务端以版本化 rubric 一对一确定性匹配 finding，区分发现、遗漏、严重性、证据、验证方法、
+修复建议、重复与误报，再复用现有 Gate/mastery/progress exactly-once 事务。正确代码与“表面
+可疑但正确”场景会显著惩罚误报；模型解释只能补充教学反馈，不能修改结果。
