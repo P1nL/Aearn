@@ -1,0 +1,3 @@
+{"path": ".trellis/spec/backend/quality-guidelines.md", "reason": "核对 API、事务、类型与测试质量。"}
+{"path": ".trellis/spec/frontend/quality-guidelines.md", "reason": "核对响应式、可访问性、清理和 build。"}
+{"path": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "核对 UI 到 API、服务、存储和模型上下文的完整数据流。"}
