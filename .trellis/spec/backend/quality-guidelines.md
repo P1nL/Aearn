@@ -1925,134 +1925,90 @@ The exact event owns identity, required input consumes budget first, and optiona
 history can be reduced without erasing the learner's current intent.
 
 
-## Scenario: Tutor Primary JSON Decision Provider Boundary
+## Scenario: Typed Tutor Provider Items and Encrypted Rejected-Body Diagnostics
 
 ### 1. Scope / Trigger
 
-- Trigger: changing `OpenAICompatibleClient.complete_json()`, DeepSeek model
-  routing, Responses SSE decoding, `PrimaryTutorProviderGateway`, strict
-  `TutorDecision` parsing, or provider diagnostic logging.
-- Scope: `app/services/llm/{llm_client,llm_urls}.py`,
-  `app/services/tutor/provider_gateway.py`,
-  `app/agents/harness/contracts.py`, and focused fake-transport tests.
-- This scope owns a primary-provider JSON decision boundary only. It does not
-  authorize a provider/model fallback, public diagnostics, conversation-title
-  persistence, history APIs, or Desktop behavior.
+- Trigger: changing Tutor provider prompts, JSON parsing, DeepSeek/OpenAI-compatible protocol payloads, replacement retries, provider diagnostic codes, or raw provider-response diagnostics.
+- Scope: `app/agents/harness/provider_request.py`, `app/services/tutor/{decision_protocol,provider_gateway}.py`, `app/services/llm/{llm_client,provider_diagnostics}.py`, `app/core/config.py`, and focused fake-provider/eval tests.
+- This scenario owns the provider-to-domain boundary only. It does not authorize provider-selected IDs/revisions/checkpoints, public raw-body projection, cross-provider fallback, or a diagnostic read API.
 
 ### 2. Signatures
 
-- `select_llm_protocol(settings) -> LLMProtocol`.
-- `deepseek_responses_url(base_url) -> str`.
-- `OpenAICompatibleClient.complete_json(messages, *, temperature, max_tokens,
-  timeout_seconds) -> LLMJsonResponse`.
-- `PrimaryTutorProviderGateway.decide(run, context) -> TutorProviderResult`.
-- `parse_tutor_decision(payload) -> TutorDecision`.
-- Strict decision fields: `public_message`, `conversation_title`,
-  `skill_references`, `capability_requests`, `effect_proposals`,
-  `checkpoint_reason`, `continuation_kind`, and `terminal_intent`.
+- Protocol routing: `select_llm_protocol(settings) -> LLMProtocol`; `deepseek_responses_url(base_url) -> str`.
+- Provider schema: `TutorProviderItemsEnvelope(schema_version, message, action)` from `tutor_provider_output_schema()`.
+- Domain assembly: `parse_tutor_provider_items(payload, run=TutorRunSnapshot) -> TutorDecision`.
+- LLM call: `complete_json(..., output_schema: Mapping | None, schema_name: str | None, capture_provider_body: bool = False) -> LLMJsonResponse`.
+- Diagnostic store: `ProviderDiagnosticStore.begin_capture() -> ProviderBodyCapture`; `capture.commit(ProviderDiagnosticMetadata) -> ProviderDiagnosticArtifact | None`; accepted attempts call `capture.discard()`.
+- Environment: `TUTOR_DECISION_MAX_OUTPUT_TOKENS`, `TUTOR_DEEPSEEK_V4_FLASH_DECISION_MAX_OUTPUT_TOKENS`, `TUTOR_DEEPSEEK_RESPONSES_JSON_SCHEMA_ENABLED`, `TUTOR_DEEPSEEK_REPAIR_THINKING_DISABLED`, and `TUTOR_PROVIDER_DEBUG_CAPTURE_{MODE,KEY_BASE64,DIRECTORY,MAX_BYTES,RETENTION_HOURS}`.
 
 ### 3. Contracts
 
-- Select exactly one protocol before the request: non-DeepSeek uses Responses;
-  DeepSeek uses `/responses` only for the exact case-sensitive model
-  `deepseek-v4-flash`; every other DeepSeek model uses
-  `/chat/completions`. Never use a prefix, alias, casing normalization, failed
-  request, or retry to infer a different protocol.
-- The DeepSeek Responses request uses `input`, optional `instructions`,
-  `stream=true`, `text.format=json_object`, and bounded
-  `max_output_tokens`. Its final learner-visible content may come only from
-  `output_text`; reasoning, analysis, provider error bodies, and arbitrary output
-  items are never a fallback source.
-- Use one canonical complete JSON example in both the initial prompt and the
-  one permitted same-primary repair. The decision envelope is `extra=forbid`.
-  `conversation_title` is NFKC-normalized, single-line, learner-safe, and at
-  most 48 characters. `continuation_kind` is closed and is valid only with
-  `checkpoint_reason=capability_result` and no terminal intent.
-- A repair is allowed at most once and only for a repairable visible-content,
-  JSON, Tutor-decision, or output-safety rejection. `response.incomplete`,
-  `response.failed`, malformed envelopes, HTTP/transport failures, and selected
-  provider request rejection terminate without repair.
-- HTTP 400 maps to the bounded internal category
-  `TUTOR_PROVIDER_REQUEST_REJECTED`; public run reads/SSE remain
-  `MODEL_UNAVAILABLE`. Provider bodies, prompts, reasoning, headers,
-  credentials, URL details, and exception messages must not enter public
-  projections, durable safe diagnostics, or normal logs. Transport logs may use
-  only a stable exception category.
+- `tutor_provider_items_v2` contains one required `agent_message` and one required discriminated action: `turn_completed`, `select_skill`, `request_capability`, `propose_effect`, or `wait_for_input`. `agent_message.public_thinking_steps` is required, bounded to 1..4 learner-visible summaries of at most 320 characters each, and is explicitly public teaching output rather than provider-native reasoning. The model chooses wording, tone, ordering, and granularity for the current request; prompts must not impose a fixed sentence pattern or transition sequence. Models are frozen and `extra=forbid`.
+- Capability/effect values use bounded `{key,value}` arrays. Internal-only keys, duplicate keys, oversized lists, unsafe learner text, unknown action tags, and additional fields are rejected.
+- The provider never emits `request_id`, `effect_id`, `expected_input_revision`, checkpoint reason, input revision, or terminal outcome. The server deterministically derives action IDs from run/revision/model-call scope, copies the current revision into effects, and maps action type into the domain decision.
+- Skill-managed actions use a two-phase boundary: before selection, the prompt requests `select_skill`; after the server records exact reviewed evidence and returns `REBUILD_CONTEXT`, the provider may request the capability/effect with the selected instruction present. If the provider skips selection, the gate may recover only when descriptor/value validation passes and exactly one policy-eligible Skill manifest covers every action. Recovery records only selection and never dispatches the original action. Zero candidates remain `skill_selection_required`; multiple candidates are denied as `action_skill_ambiguous`.
+- Select exactly one protocol before the request: non-DeepSeek uses Responses; exact case-sensitive `deepseek-v4-flash` uses `/responses`; every other DeepSeek model uses `/chat/completions`. A request/retry failure never changes protocol/model/provider.
+- Responses accepts learner-visible content only from `output_text`; provider-native reasoning items, provider error objects, and arbitrary output items are never answer fallbacks. `public_thinking_steps` is parsed only from the validated final visible JSON object.
+- Non-DeepSeek Responses requests use the generated strict JSON Schema. DeepSeek remains JSON-object-compatible by default; JSON Schema for DeepSeek Responses is explicit opt-in for a verified gateway. The narrow decision output budget does not inherit the physical model output maximum.
+- A repairable rejection gets at most one fresh same-provider replacement request. It contains only safe field paths and bounded validation categories, never the rejected value/body or Pydantic/provider validation text.
+- The first DeepSeek attempt keeps normal thinking behavior for teaching quality. By default only the replacement sends `thinking.type=disabled`, making repair a narrow serializer; the setting can explicitly omit that override for an incompatible gateway.
+- Raw body capture defaults to `off` and `OpenAICompatibleClient.complete_json()` requires explicit `capture_provider_body=True`; the Tutor gateway is the owner that constructs/injects the diagnostic store. `rejected` mode requires a base64-encoded 32-byte key, buffers a bounded body in memory, discards accepted bodies, encrypts rejected bodies with AES-GCM and a fresh 12-byte nonce, authenticates safe metadata as AAD, and prunes only fixed-suffix artifacts inside the configured local directory. Artifact IDs/paths never enter receipts, DB rows, API/SSE, exports, or learner-visible logs.
 
 ### 4. Validation & Error Matrix
 
-- Exact `deepseek-v4-flash` -> one `/responses` request; no Chat Completions
-  fallback.
-- Other DeepSeek model or different casing -> one `/chat/completions` request.
-- Completed response with only reasoning/no `output_text` ->
-  `TUTOR_PROVIDER_RESPONSE_CONTENT_MISSING`; one same-primary repair may be
-  attempted.
-- `response.incomplete` -> `TUTOR_PROVIDER_RESPONSE_INCOMPLETE`; one request,
-  no repair.
-- `response.failed` -> `TUTOR_PROVIDER_RESPONSE_FAILED`; one request, no repair.
-- Unsupported/malformed Responses envelope ->
-  `TUTOR_PROVIDER_RESPONSE_ENVELOPE_INVALID`; one request, no repair.
-- Visible non-object JSON -> `TUTOR_PROVIDER_RESPONSE_CONTENT_NOT_JSON`; at most
-  one same-primary repair.
-- HTTP 400 -> `TUTOR_PROVIDER_REQUEST_REJECTED`; one request, no repair/fallback.
-- Unknown decision key, unsafe title, invalid continuation, or internal nested
-  field -> `TUTOR_PROVIDER_DECISION_INVALID`; at most one same-primary repair.
+- Exact `deepseek-v4-flash` -> `/responses`; other DeepSeek model/casing -> `/chat/completions`; no fallback.
+- `response.incomplete`, `response.failed`, malformed envelope, HTTP 400, timeout, or transport failure -> bounded safe diagnostic, no repair/fallback. Missing visible content or non-object JSON -> at most one same-provider replacement.
+- Missing/extra/invalid-literal/type/value/action -> safe `TUTOR_PROVIDER_DECISION_*` diagnostic; one same-provider replacement; final public result remains `MODEL_UNAVAILABLE`.
+- Unsafe raw message/title/public-thinking/payload value -> `TUTOR_PROVIDER_OUTPUT_SAFETY_REJECTED`; raw text is not normalized into an accepted domain value first.
+- DeepSeek JSON Schema flag disabled -> `text.format=json_object`; enabled only by explicit configuration -> generated `json_schema`.
+- First DeepSeek attempt -> no forced `thinking`; repair with the default setting -> `thinking.type=disabled`; setting disabled -> field omitted.
+- Capture mode other than `off|rejected`, or `rejected` without a key -> configuration failure before provider use; no plaintext fallback.
+- Invalid base64/wrong key length, write/encryption/prune failure -> safe internal capture failure; Tutor result and receipt never include the body, key, path, or raw exception.
+- Accepted provider attempt -> capture buffer is zeroed/discarded and no artifact is written.
 
 ### 5. Good / Base / Bad Cases
 
-- Good: fake `deepseek-v4-flash` Responses SSE emits deltas and a completed
-  response; only the assembled `output_text` becomes the strict decision.
-- Good: an upstream request rejection returns a bounded internal category while
-  public API/SSE reveal only `MODEL_UNAVAILABLE` and the provider response is not
-  retained.
-- Base: a non-V4-Flash DeepSeek model remains on the existing Chat Completions
-  JSON contract.
-- Bad: falling through from `/responses` to `/chat/completions`, treating a
-  reasoning item as answer content, retrying `response.failed`, or logging an
-  exception string that contains provider URL, headers, or credentials.
+- Good: provider returns `request_capability`; the server creates a deterministic `capability-*` ID, descriptor/policy gates the request, and no provider-generated authority field exists.
+- Good: first candidate has an extra `reasoning` field; the repair receives `reasoning:extra` (path/category only), and optional rejected-body capture writes encrypted bytes outside public persistence.
+- Base: official-compatible DeepSeek returns JSON object without strict schema support; the generated contract remains in the prompt and the same Pydantic parser/replacement loop applies.
+- Bad: asking the model for the full domain `TutorDecision`, accepting its revision/effect ID, echoing the rejected candidate into repair, using the physical 384K cap for a narrow decision, or writing plaintext provider bodies into receipts/logs.
 
 ### 6. Tests Required
 
-- Fake-transport tests assert exact-model protocol selection, URL normalization,
-  request shape, selected-protocol failure call count, and no fallback.
-- Test raw SSE lines for `response.output_text.delta`, completed,
-  incomplete, failed, malformed, reasoning-only, and non-JSON visible content.
-- Test canonical prompt/repair shape, title/continuation validation, at-most-once
-  repair, and that rejected JSON/provider body is absent from repair text and
-  results.
-- Test HTTP 400, authentication/quota/rate/timeout/transport categories and
-  assert no provider detail appears in `repr`, public SSE, or log-safe transport
-  categories.
-- Run `tests/test_tutor_provider_gateway.py`, `tests/test_tutor_run_loop.py`,
-  `tests/test_tutor_sse.py`, `ruff check`, `python -m mypy app`, and
-  `git diff --check` through `uv` from `aearn/services/api`.
+- `tests/test_tutor_provider_gateway.py`: exact-model protocol/URL/request selection, raw Responses SSE delta/completed/incomplete/failed/reasoning-only handling, generated schema, typed actions, server-owned deterministic IDs/revision, DeepSeek JSON-object default and opt-in schema, repair-only thinking disablement, bounded output budgets, safe field-path replacement, safety-before-normalization, HTTP/transport categories, and no fallback.
+- `tests/test_tutor_capability_gateway.py`: explicit Skill selection, unique-action Skill recovery plus context rebuild before dispatch, ambiguous-action default denial, selected-Skill descriptor validation, and no unauthorized effect commit.
+- `tests/test_provider_diagnostics.py`: AES-GCM round-trip, plaintext/key absence in artifact, fail-closed settings, rejected-only commits, accepted discard, bounded capture, and no raw value in result/receipt repr.
+- `tests/test_tutor_evals.py` and context eval smoke: typed fixture compatibility, safe specific diagnostics, attempt-level usage, and no network by default.
+- Run focused pytest, then full pytest, `ruff check app tests`, `python -m mypy app --no-incremental`, `uv lock --check`, `pnpm --dir .\aearn desktop:check`, and `git diff --check`.
 
 ### 7. Wrong vs Correct
 
 #### Wrong
 
 ```python
-if responses_request_failed:
-    return call_chat_completions(messages)
+candidate = client.complete_json(messages, max_tokens=settings.tutor_max_output_tokens)
+decision = TutorDecision(**candidate.content)  # provider owns IDs/revision/terminal state
+logger.error("invalid provider body: %r", candidate.content)
 ```
 
-A cross-protocol fallback duplicates a primary decision attempt and hides a
-provider-contract failure. It can also turn a rejected prompt into a second
-unreviewed request.
+This couples a large, unstable model envelope directly to runtime authority and leaks sensitive provider content into ordinary logs.
 
 #### Correct
 
 ```python
-protocol = select_llm_protocol(settings)
-response = complete_with_selected_protocol(protocol, messages)
-if response_error_is_repairable(response):
-    return repair_once_with_same_primary(messages)
-return safe_selected_protocol_failure(response)
+response = client.complete_json(
+    messages,
+    max_tokens=settings.tutor_decision_max_output_tokens,
+    output_schema=tutor_provider_output_schema(),
+    schema_name=TUTOR_PROVIDER_ITEMS_SCHEMA_NAME,
+)
+_assert_raw_provider_text_safe(response.content)
+decision = parse_tutor_provider_items(response.content, run=run)
+# accepted -> discard capture; rejected -> encrypted local commit only
 ```
 
-The configured model determines the one protocol before the call. Only bounded,
-repairable candidate errors receive one same-primary repair; all other failures
-remain safe terminal outcomes without provider detail.
+The provider supplies one typed intent; the server assembles authority, the repair receives only safe issue metadata, and raw diagnostics remain encrypted and non-public.
 
 
 ## Scenario: Tutor Interactive TurnRun, Post-Provider Supersede, and Clock-Consistent CAS
@@ -2080,6 +2036,7 @@ remain safe terminal outcomes without provider detail.
 - Under the conversation lock, a normal turn supersedes/cancels the current foreground run before inserting the replacement. The partial unique foreground predicate is the database authority; application-level selection alone is insufficient.
 - Interactive provider calls must not inherit an implicit PostgreSQL transaction or hold a foreground/conversation lock. `TutorInteractiveRunDispatcher` uses an autocommit connection; repository lifecycle methods own short atomic transactions at durable boundaries.
 - Immediately after every provider return, and again before decision gate, capability dispatch, effect commit, and terminal public persistence, the loop refreshes cancellation/supersede, lease, and input revision. If the run was superseded, it converges to a safe cancelled/superseded process result and must not invoke the decision gate, capability gateway, effect committer, or stale learner-visible terminal write.
+- A provider boundary may outlast the nominal lease duration. `heartbeat_lease(...)` may renew after `active_lease_expires_at` only while the exact `owner_id + lease_generation` CAS still matches and the run remains active. Any replacement claim increments the generation first and permanently fences the stale worker. Nominal expiry alone must not strand an otherwise completed provider result in a nonterminal run.
 - Terminal persistence repeats the foreground/cancel/supersede check while locked. A stale run may finalize only its safe cancellation/process projection; it cannot insert a Tutor message, write a conversation title, append a capability receipt, commit an effect, or advance public activity as a successful response.
 - Any composition that accepts an injected `Clock` must propagate `clock.now()` into every repository mutation whose lease/CAS eligibility compares time. Do not mix a test/scheduler `FixedClock` with `datetime.now()` or an omitted repository `now` default, because an otherwise valid lease can be incorrectly rejected as expired.
 - Conversation list/history/cursors and public-process labels are server projections. They remain user/conversation scoped and never reconstruct reasoning, traces, prompts, provider payloads, capability arguments, diagnostics, or secrets.
@@ -2091,22 +2048,23 @@ remain safe terminal outcomes without provider detail.
 - Normal completed/cancelled/superseded run passed to `POST /runs/{run_id}/inputs` -> `RUN_NOT_ACTIVE`; only a persisted authorized continuation is accepted.
 - Same first-turn or ordinary-turn idempotency key/body -> replay the original safe IDs/result; same key with a different body -> `IDEMPOTENCY_CONFLICT`.
 - Invalid, malformed, cross-user, or cross-conversation history/list cursor -> stable `CURSOR_INVALID`; no SQL/provider detail.
-- A lease/CAS mutation evaluated with the composition clock before expiry -> normal current/committed path when other predicates pass; stale revision, cancelled/superseded state, or an actually expired lease -> safe stale/no-action path without a domain handler.
+- Lease heartbeat after nominal expiry with unchanged owner/generation and an active run -> renew the same generation; replacement claim, stale generation, cancelled/superseded state, or terminal run -> no renewal and no stale public write.
 
 ### 5. Good / Base / Bad Cases
 
 - Good: ten ordinary messages retain one conversation id but create ten distinct run ids; each later run starts with fresh counters/deadline and the old foreground process becomes a safe superseded record.
 - Good: a fake provider supersedes its run during `decide`; the post-provider guard returns cancellation before decision/capability/effect/public-terminal work, and the replacement run remains the only foreground run.
 - Good: a proactive test injects `FixedClock`; the committer passes that same clock value into the repository CAS so the claimed lease is judged against the test timeline.
+- Good: a provider returns after the original lease timestamp but before another worker claims the run; the same owner/generation renews, refreshes stale state, and persists the terminal result. If a replacement owner already incremented the generation, the old heartbeat fails.
 - Base: legacy message-only history remains readable without a fabricated process card or duration; title absence projects as `新对话`.
-- Bad: calling a provider inside an open transaction, treating a revision check before the provider call as sufficient, writing a Tutor reply before the locked foreground recheck, or letting one repository call fall back to wall-clock time in a deterministic scheduler/test composition.
+- Bad: calling a provider inside an open transaction, treating a revision check before the provider call as sufficient, writing a Tutor reply before the locked foreground recheck, rejecting a heartbeat only because `expires_at <= now` even though owner/generation still match, or letting one repository call fall back to wall-clock time in a deterministic scheduler/test composition.
 
 ### 6. Tests Required
 
 - `tests/test_tutor_input_merge.py`: first-turn atomic rollback/replay, distinct normal turns, foreground uniqueness, normal run-input denial, and provider-return supersede suppression.
-- `tests/test_tutor_run_loop.py`: post-provider terminal/supersede refresh before decision, capability, effect, and terminal persistence.
+- `tests/test_tutor_run_loop.py`: post-provider terminal/supersede refresh before decision, capability, effect, and terminal persistence; a provider result arriving after nominal lease expiry still completes when no replacement claim exists.
 - `tests/test_tutor_conversation_history.py`, `tests/test_tutor_sse.py`, and route/public API tests: user/conversation cursor scope, legacy history, allowlisted process projection, and selected-run-only transport behavior.
-- `tests/test_tutor_proactive_default_delivery.py`, `tests/test_tutor_evals.py`, and provider/persistence tests: injected-clock effect/CAS behavior, stable safe diagnostics, and no live provider call.
+- `tests/test_tutor_proactive_default_delivery.py`, `tests/test_tutor_evals.py`, and provider/persistence tests: injected-clock effect/CAS behavior, late same-generation renewal, stale post-replacement denial, stable safe diagnostics, and no live provider call.
 - Run `uv --directory .\aearn\services\api lock --check && uv --directory .\aearn\services\api run python -m pytest -q`, then `ruff check app tests`, `python -m mypy app`, `pnpm --dir .\aearn desktop:check`, and `git diff --check`.
 
 ### 7. Wrong vs Correct
@@ -3236,8 +3194,10 @@ persist(
   `context_budget_policy` 时继续使用 persisted `context_token_budget`，不得追溯改写。
 - Planner 先使用 required-only selection dry-build 最终 provider message，再估算
   system teaching policy、canonical strict decision shape、current input、context、metadata、
-  JSON envelope，并额外加入 protocol reserve 与 safety margin。只把剩余 optional
-  budget 交给 builder；`616_000` 是 DeepSeek V4 Flash input hard limit，不是填满目标。
+  JSON envelope，并额外加入 protocol reserve 与 safety margin。固定点 metadata 稳定过程
+  必须把 required-only estimate 作为保守下界，不能因 prompt/metadata 长度变化让最终
+  `estimated_total_input_tokens` 低于 required floor。只把剩余 optional budget 交给
+  builder；`616_000` 是 DeepSeek V4 Flash input hard limit，不是填满目标。
 - current input 永远 required 且先保留。optional priority 固定为：system/selected Skill
   policy、最新既往消息、直接相关 active plan/review、working summary、memory、activity、
   非必要 capability schema。达到预算时跳过 optional item，不能删除 current input。
