@@ -6,10 +6,15 @@
 The desktop starts from a local learner identity, asks the server for a
 cutover decision, and admits a learner to the Tutor workspace only after a
 server-authoritative `verified` receipt. The current learning runtime also includes
-server-authored, prepublication-validated `model_code_review` Lesson Gates and a
+server-authored, prepublication-validated `model_code_review` Lesson Gates, a
 track-scoped spaced-review authority with finite `ReviewSession` batches,
-server-projected critical-prerequisite Gates, and exactly-once mastery/schedule
-finalization. The former graph/router/SDK product
+server-projected critical-prerequisite Gates, exactly-once mastery/schedule
+finalization, and a responsive track learning workspace that combines the
+server roadmap, Lesson/Practice, Review, and a scoped Tutor conversation.
+Learner messages may carry validated append-only `lesson_selection`,
+`exercise_feedback`, `execution_result`, and `review_feedback` references;
+these are injected as separate learner-safe structured context rather than
+being concatenated into learner text. The former graph/router/SDK product
 runtime has been physically removed from the active source tree and its
 runtime-specific documents are preserved under
 [`archive/2026-07-29/`](./archive/2026-07-29/).

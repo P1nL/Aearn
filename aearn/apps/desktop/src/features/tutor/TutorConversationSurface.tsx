@@ -37,7 +37,17 @@ import type {
   TutorRunStatus,
   TutorSseEvent,
   UserProfile,
+  ExerciseAttemptOutcome,
+  LearningScopeInput,
+  TutorContextReference,
+  TutorContextReferenceDraft,
 } from "../../types";
+
+export type TutorComposerReference = {
+  id: string;
+  draft: TutorContextReferenceDraft;
+  label: string;
+};
 
 export type TutorConversationSurfaceProps = {
   user: UserProfile | null;
@@ -48,6 +58,11 @@ export type TutorConversationSurfaceProps = {
   onConversationsChanged?: () => void;
   mode?: "general" | "plan_drafting";
   showControls?: boolean;
+  learningScope?: LearningScopeInput;
+  scopeLabel?: string;
+  contextReferences?: TutorComposerReference[];
+  onRemoveContextReference?: (referenceId: string) => void;
+  onReferencesAccepted?: (references: TutorContextReference[]) => void;
 };
 
 type ControlsStatus = "idle" | "loading" | "ready" | "error";
@@ -72,6 +87,11 @@ export function TutorConversationSurface({
   onConversationsChanged,
   mode = "general",
   showControls = true,
+  learningScope,
+  scopeLabel,
+  contextReferences = [],
+  onRemoveContextReference,
+  onReferencesAccepted,
 }: TutorConversationSurfaceProps) {
   const [timeline, setTimeline] = useState<TutorHistoryItem[]>([]);
   const [historyStatus, setHistoryStatus] = useState<HistoryStatus>("idle");
@@ -100,6 +120,9 @@ export function TutorConversationSurface({
 
   const userId = user?.id ?? null;
   const mayUseTutor = enabled && isActive && userId !== null;
+  const learningScopeKey = learningScope
+    ? `${learningScope.scope_kind}:${learningScope.learning_track_id ?? ""}:${learningScope.task_kind ?? ""}:${learningScope.knowledge_key ?? ""}`
+    : "general";
   const selectedConversationIdRef = useRef<string | null>(selectedConversationId);
   const timelineRef = useRef<HTMLElement | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
@@ -263,7 +286,7 @@ export function TutorConversationSurface({
       return;
     }
     void loadHistory(selectedConversationId, { placement: "replace", showLoading: true });
-  }, [loadHistory, mayUseTutor, selectedConversationId, userId]);
+  }, [learningScopeKey, loadHistory, mayUseTutor, selectedConversationId, userId]);
 
   useEffect(() => {
     if (!mayUseTutor || !userId) return;
@@ -321,6 +344,8 @@ export function TutorConversationSurface({
             runId: activeRun.run_id,
             content,
             clientActionId: createTutorActionId("tutor-continuation-input"),
+            ...(learningScope ? { learningScope } : {}),
+            ...(contextReferences.length > 0 ? { contextReferences: contextReferences.map((item) => item.draft) } : {}),
           })
         : selectedConversationId
           ? await acceptTutorConversationInput({
@@ -328,18 +353,24 @@ export function TutorConversationSurface({
               conversationId: selectedConversationId,
               content,
               clientActionId: createTutorActionId("tutor-conversation-input"),
-              ...(mode === "plan_drafting"
-                ? { learningScope: { scope_kind: "plan_drafting" as const, task_kind: "plan_drafting" as const } }
-                : {}),
+              ...(learningScope
+                ? { learningScope }
+                : mode === "plan_drafting"
+                  ? { learningScope: { scope_kind: "plan_drafting" as const, task_kind: "plan_drafting" as const } }
+                  : {}),
+              ...(contextReferences.length > 0 ? { contextReferences: contextReferences.map((item) => item.draft) } : {}),
             })
           : await acceptTutorFirstTurn({
               userId,
               content,
               clientActionId: createTutorActionId("tutor-first-turn"),
+              ...(learningScope ? { learningScope } : {}),
+              ...(contextReferences.length > 0 ? { contextReferences: contextReferences.map((item) => item.draft) } : {}),
             });
 
       setComposerText("");
       setComposerMode("ordinary");
+      if (contextReferences.length === accepted.context_references.length) onReferencesAccepted?.(accepted.context_references);
       setActiveRun({
         run_id: accepted.run.run_id,
         status: accepted.run.status,
@@ -516,6 +547,7 @@ export function TutorConversationSurface({
             </div>
           </header>
         )}
+        {scopeLabel ? <div className="tutor-learning-scope" role="status"><span>当前学习范围</span><strong>{scopeLabel}</strong></div> : null}
 
         {streamError && (
           <div className="tutor-inline-error tutor-stream-error" role="alert">
@@ -573,6 +605,7 @@ export function TutorConversationSurface({
                     <TutorPublicThinkingDisclosure messageId={item.id} steps={item.public_thinking_steps} />
                   )}
                   <p>{item.content}</p>
+                  {item.context_references.length > 0 ? <TutorReferenceCards references={item.context_references} /> : null}
                 </div>
               </article>
             ))}
@@ -600,6 +633,7 @@ export function TutorConversationSurface({
                   <button className="tutor-text-button" type="button" onClick={() => setComposerMode("ordinary")}>改为普通消息</button>
                 </div>
               )}
+              {contextReferences.length > 0 ? <TutorReferenceDraftChips references={contextReferences} disabled={composerStatus === "submitting"} onRemove={onRemoveContextReference} /> : null}
               <div className="tutor-composer-chatgpt-shell">
                 <textarea
                   ref={composerRef}
@@ -634,6 +668,7 @@ export function TutorConversationSurface({
                 <button className="tutor-text-button" type="button" onClick={() => setComposerMode("ordinary")}>改为普通消息</button>
               </div>
             )}
+            {contextReferences.length > 0 ? <TutorReferenceDraftChips references={contextReferences} disabled={composerStatus === "submitting"} onRemove={onRemoveContextReference} /> : null}
             <textarea
               ref={composerRef}
               id="tutor-composer-input"
@@ -693,6 +728,29 @@ export function TutorConversationSurface({
       </aside>}
     </main>
   );
+}
+
+function TutorReferenceDraftChips({ references, disabled, onRemove }: { references: TutorComposerReference[]; disabled: boolean; onRemove?: (referenceId: string) => void }) {
+  return <div className="tutor-reference-drafts" aria-label="待发送结构化引用">{references.map((reference) => <span key={reference.id} data-kind={reference.draft.kind}><span aria-hidden="true">{referenceIcon(reference.draft.kind)}</span><strong>{reference.label}</strong>{onRemove ? <button type="button" disabled={disabled} aria-label={`移除引用：${reference.label}`} onClick={() => onRemove(reference.id)}>×</button> : null}</span>)}</div>;
+}
+
+function TutorReferenceCards({ references }: { references: TutorContextReference[] }) {
+  return <div className="tutor-reference-cards" aria-label="本条消息的结构化引用">{references.map((reference) => <article key={reference.reference_id} data-kind={reference.kind}><span aria-hidden="true">{referenceIcon(reference.kind)}</span><div><strong>{referenceTitle(reference)}</strong><small>{referenceSummary(reference)}</small></div></article>)}</div>;
+}
+
+function referenceIcon(kind: TutorContextReference["kind"] | TutorContextReferenceDraft["kind"]): string {
+  return { lesson_selection: "§", exercise_feedback: "✓", execution_result: "⌘", review_feedback: "↺" }[kind];
+}
+function referenceTitle(reference: TutorContextReference): string {
+  return { lesson_selection: "课程选段", exercise_feedback: "练习反馈", execution_result: "执行结果", review_feedback: "复习反馈" }[reference.kind];
+}
+function referenceSummary(reference: TutorContextReference): string {
+  if (reference.kind === "lesson_selection") return reference.safe_excerpt;
+  const summary = `${outcomeReferenceLabel(reference.outcome)} · ${Math.round(reference.score * 100)}% · ${reference.feedback_summary}`;
+  return reference.kind === "execution_result" ? `${summary} · ${reference.execution_job_state}` : summary;
+}
+function outcomeReferenceLabel(outcome: ExerciseAttemptOutcome): string {
+  return { passed: "通过", failed: "未通过", timed_out: "超时", cancelled: "已取消", unavailable: "不可用", invalid: "无效" }[outcome];
 }
 
 type TutorPublicThinkingDisclosureProps = {
