@@ -238,7 +238,19 @@ def _policy_denial_observed() -> dict[str, object]:
 def _strict_provider_rejection_observed() -> dict[str, object]:
     gateway = PrimaryTutorProviderGateway(
         settings=Settings(llm_type="openai", openai_api_key="fixture-key", openai_base_url="https://provider.example", openai_model="fixture"),
-        client=_FakeJsonClient({"public_message": "safe", "reasoning": "private diagnostic"}),
+        client=_FakeJsonClient(
+            {
+                "schema_version": "tutor_provider_items_v2",
+                "message": {
+                    "type": "agent_message",
+                    "text": "safe",
+                    "public_thinking_steps": ["当前目标可以收敛为一个可验证的小步骤。"],
+                    "conversation_title": None,
+                },
+                "action": {"type": "turn_completed"},
+                "reasoning": "private diagnostic",
+            }
+        ),
     )
     result = gateway.decide(run=_snapshot(), context=_empty_context())
     return {"status": result.terminal_outcome.value if result.terminal_outcome else "none", "code": result.safe_code}
@@ -512,8 +524,12 @@ class _FakeJsonClient:
         temperature: float | None = None,
         max_tokens: int | None = None,
         timeout_seconds: float | None = None,
+        output_schema: Mapping[str, object] | None = None,
+        schema_name: str | None = None,
+        thinking_mode: str | None = None,
+        capture_provider_body: bool = False,
     ) -> LLMJsonResponse:
-        del messages, temperature, max_tokens, timeout_seconds
+        del messages, temperature, max_tokens, timeout_seconds, output_schema, schema_name, thinking_mode, capture_provider_body
         self.calls += 1
         if self._error is not None:
             raise self._error

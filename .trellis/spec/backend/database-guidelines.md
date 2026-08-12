@@ -35,6 +35,98 @@ The formal MVP runtime lives under `aearn/`, not under the historical `01_` thro
 
 ---
 
+## Scenario: Tutor 权威规划事实与 question lineage
+
+### 1. Scope / Trigger
+
+- Trigger: 修改 planning session 输入、`tutor_planning_intake_facts`、`tutor_planning_question_events`、计划草案 facts fingerprint、Tutor required-facts context、planning decision gate、local export/reset 或 cutover inventory。
+- 该场景是 API、PostgreSQL、Harness、eval 和治理投影的跨层契约；实现时以 `docs/architecture/api-contract.md`、`docs/architecture/database-schema.md` 与 `docs/architecture/tutor-harness-runtime.md` 为 source of truth。
+
+### 2. Signatures
+
+- Tutor input additive fields: `planning_facts: dict[str, object] | None`、`reopen_fact_fields: list[str]`。
+- Stable fields: `language_id | goal_text | target_level | weekly_minutes | experience_level | teaching_preferences | pace_constraints`。
+- Fact identity: `(session_id, field_key, revision)`；source evidence: `(source_run_id, source_message_id, source_input_revision)`。
+- Question lineage: `question_key=field_key`、`previous_event_id -> tutor_planning_question_events.id`。
+- Projector: `build_authoritative_context_snapshot(run, input_revision, planning_session_id, facts, question_states, confirmed_question_reasked_count)`。
+
+### 3. Contracts
+
+- 只有服务端 deterministic normalization 或显式 typed input/confirmation 能写 planning fact；模型推断不能直接成为 confirmed authority。
+- correction 追加一条带 `supersedes_fact_id` 的 successor。current confirmed fact 是没有 successor 的 confirmed leaf；不得 UPDATE 旧事实。
+- question transition 追加 event。current question state 从没有 successor 的 leaf 沿 `previous_event_id` lineage 解析；`reasked_blocked` 只保留审计，公开 current state 回退到其 predecessor。
+- PostgreSQL `now()` 在一个事务内稳定，不能用 `created_at`、UUID 大小或二者组合作为同事务事件先后 authority。`previous_event_id` 必须有唯一 successor 约束，防止 lineage 分叉。
+- confirmed facts 进入 `required_facts`，在 optional history/summary/memory 前完整选中；无法完整表示时 fail closed。
+- unresolved/reopened answer 的 source message 在没有 replacement fact/summary 时必须进入 compaction protection；export 省略 value/event hash 和 gate reason。
+- plan draft 保存生成时 facts fingerprint/revision；confirm 必须与 current facts 相同。
+
+### 4. Validation & Error Matrix
+
+| 条件 | 结果 |
+| --- | --- |
+| `planning_facts` 含未知 field、重复/未知 reopen field 或 request shape 非法 | FastAPI/Pydantic `422` |
+| field value 不能 normalize 或超出范围 | `400 VALIDATION_ERROR`，事务不留下半完成 fact |
+| planning `wait_for_input` 缺少/使用未知 `question_key` | decision gate deny：`planning_question_key_required` / `planning_question_key_invalid` |
+| provider 再问已 confirmed 且未 reopen 的 field | decision gate deny：`confirmed_question_reasked`，追加 `reasked_blocked` event |
+| draft facts fingerprint/revision 与 current projection 不同 | `409 LEARNING_PLAN_DRAFT_STALE` |
+| cross-user/session/conversation/run/message/input evidence 不匹配 | PostgreSQL composite FK violation |
+| UPDATE/普通 DELETE planning fact 或 question event | PostgreSQL append-only trigger 拒绝 |
+| required facts 超 item/token 表示边界 | `TUTOR_REQUIRED_FACTS_UNREPRESENTABLE`，provider 不得被调用 |
+
+### 5. Good/Base/Bad Cases
+
+- Good: learner 提交“每周 30 小时”并附 typed profile；系统保存 `weekly_minutes=1800`，超过四条后续消息后仍从 facts projector 注入 provider context。
+- Base: 旧 collecting session 没有 facts 时返回空 required section；从后续有证据的新输入开始懒建立，不扫描历史自动回填。
+- Good correction: learner 显式 reopen 并提交 `weekly_minutes=600`；新 row 指向 1800 row，question current state 回到 confirmed，旧 draft 变 stale。
+- Bad: `ORDER BY created_at DESC, id DESC LIMIT 1` 猜 question current state；同一事务中的 reopen/supersede/confirmed 时间相同，会产生非确定结果。
+- Bad: 仅扩大 recent-message limit，或让 summary/模型正文覆盖 typed fact。
+
+### 6. Tests Required
+
+- PostgreSQL bootstrap twice，并断言两张表、复合 FK、status CHECK、append-only trigger 与 `uq_tutor_planning_question_events_previous` 存在。
+- fact idempotent replay、correction lineage、same-transaction question state、cross-user evidence、UPDATE rejection、child-first reset/delete。
+- 超过四条后续消息的 `weekly_minutes=1800` fixture：required facts 完整、source semantic pinning、snapshot hash replay 稳定。
+- unresolved answer fixture：source message 位于 `protected_message_ids`，`summary_blocked_by_unprojected_fact=1`。
+- confirmed reask fixture：run 终止为 safe policy denial，checkpoint 保存 reask counter，公共投影不含 diagnostic/hash。
+- draft correction fixture：即使 expected session version 最新，旧 facts fingerprint 仍返回 `LEARNING_PLAN_DRAFT_STALE`。
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```sql
+SELECT field_key, status
+FROM tutor_planning_question_events
+WHERE session_id = $1
+ORDER BY created_at DESC, id DESC
+LIMIT 1;
+```
+
+#### Correct
+
+```sql
+WITH RECURSIVE question_chain AS (
+  SELECT events.id, events.field_key, events.status, events.previous_event_id, 0 AS ancestor_depth
+  FROM tutor_planning_question_events AS events
+  WHERE events.session_id = $1
+    AND NOT EXISTS (
+      SELECT 1 FROM tutor_planning_question_events AS successor
+      WHERE successor.previous_event_id = events.id
+    )
+  UNION ALL
+  SELECT predecessor.id, predecessor.field_key, predecessor.status,
+         predecessor.previous_event_id, chain.ancestor_depth + 1
+  FROM tutor_planning_question_events AS predecessor
+  JOIN question_chain AS chain ON chain.previous_event_id = predecessor.id
+)
+SELECT DISTINCT ON (field_key) field_key, status
+FROM question_chain
+WHERE status <> 'reasked_blocked'
+ORDER BY field_key, ancestor_depth;
+```
+
+---
+
 ## Naming Conventions
 
 - Table names are plural `snake_case`: `learning_plans`, `knowledge_points`, `review_states`.

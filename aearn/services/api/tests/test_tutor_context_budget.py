@@ -224,6 +224,40 @@ def test_planner_estimates_the_exact_serialized_request_and_keeps_cache_out_of_p
     assert selection.current_input is not None
 
 
+class _MetadataShrinkingSerializer(TutorProviderRequestSerializer):
+    def build_messages(self, *, run, context):
+        del run
+        estimate = context.checkpoint_metadata.estimated_total_input_tokens
+        content = "x" * 400 if estimate is None else "x"
+        return [{"role": "system", "content": content}]
+
+
+def test_fixed_point_estimate_never_drops_below_the_required_request_floor() -> None:
+    policy = _policy()
+    run = _run(policy)
+    planner = TutorContextBudgetPlanner(serializer=_MetadataShrinkingSerializer())
+
+    selection = planner.build_context(
+        run=run,
+        context_input=_context(source_count=1),
+        builder=TutorContextBuilder(),
+    )
+
+    estimate = selection.checkpoint_metadata.estimated_total_input_tokens
+    assert estimate is not None
+    serialized = json.dumps(
+        _MetadataShrinkingSerializer().build_messages(run=run, context=selection),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    exact_estimate = (
+        Utf8ByteTokenEstimator().estimate_tokens(serialized)
+        + policy.capability.protocol_reserve_tokens
+        + policy.capability.safety_margin_tokens
+    )
+    assert estimate > exact_estimate
+
+
 def test_tight_dynamic_budget_evicts_low_priority_optional_context_before_current_input() -> None:
     capability = _capability(input_hard_limit=2_500, maximum_dynamic_target=120)
     policy = _policy(capability=capability)

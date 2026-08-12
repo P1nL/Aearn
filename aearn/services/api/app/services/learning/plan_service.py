@@ -12,6 +12,7 @@ from psycopg import Connection
 
 from app.services.learning.contracts import LearningScope, LearningScopeKind
 from app.services.learning.plan_drafting import draft_artifact_from_row
+from app.services.learning.planning_facts import PostgresPlanningFactRepository
 from app.services.learning.plan_repository import (
     LearningPlanSessionConflict,
     LearningPlanSessionNotFound,
@@ -55,6 +56,7 @@ class LearningPlanSessionService:
     def __init__(self, conn: Connection[dict[str, object]]) -> None:
         self._conn = conn
         self._repository = PostgresLearningPlanSessionRepository(conn)
+        self._facts = PostgresPlanningFactRepository(conn)
         self._track_repository = PostgresLearningTrackRepository(conn)
         self._tutor_repository = PostgresTutorRepository(conn)
         self._track_service = LearningTrackService(conn)
@@ -260,6 +262,22 @@ class LearningPlanSessionService:
                     "current_draft_version": _int(session.get("draft_version")),
                 },
             )
+        stored_facts_fingerprint = session.get("facts_fingerprint")
+        if stored_facts_fingerprint is not None:
+            _values, current_fingerprint, current_revision, _missing = self._facts.profile_fact_state(
+                user_id=user_id,
+                session_id=session_id,
+            )
+            if (
+                str(stored_facts_fingerprint) != current_fingerprint
+                or _int(session.get("facts_revision")) != current_revision
+            ):
+                raise LearningPlanSessionServiceError(
+                    "LEARNING_PLAN_DRAFT_STALE",
+                    "学习事实已经更新，请重新生成并确认最新计划。",
+                    status_code=409,
+                    details={"session_id": session_id},
+                )
         try:
             artifact = draft_artifact_from_row(session)
         except ValueError as exc:
@@ -361,8 +379,7 @@ class LearningPlanSessionService:
         if row is None:
             raise LearningPlanSessionServiceError("USER_NOT_FOUND", "用户不存在。", status_code=404)
 
-    @staticmethod
-    def _project_session(row: Mapping[str, object]) -> dict[str, object]:
+    def _project_session(self, row: Mapping[str, object]) -> dict[str, object]:
         draft: dict[str, object] | None = None
         if row.get("current_draft_id") is not None:
             profile_raw = row.get("profile_json")
@@ -381,8 +398,13 @@ class LearningPlanSessionService:
                 else [],
                 "generator_version": str(row.get("generator_version") or ""),
                 "policy_version": str(row.get("policy_version") or ""),
+                "facts_revision": _int(row.get("facts_revision")),
                 "created_at": _iso(row.get("draft_created_at")),
             }
+        planning_context = self._facts.public_projection(
+            user_id=str(row["user_id"]),
+            session_id=str(row["id"]),
+        )
         return {
             "session_id": str(row["id"]),
             "conversation_id": str(row["conversation_id"]),
@@ -390,6 +412,7 @@ class LearningPlanSessionService:
             "preferred_language_id": _optional_str(row.get("preferred_language_id")),
             "version": _int(row.get("version")),
             "current_draft": draft,
+            "planning_context": planning_context,
             "confirmed_track_id": _optional_str(row.get("confirmed_track_id")),
             "last_error": (
                 {

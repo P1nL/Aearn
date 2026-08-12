@@ -97,6 +97,10 @@ class RecordingTutorDispatcher:
 @dataclass
 class TerminalTutorProvider:
     message: str
+    public_thinking_steps: tuple[str, ...] = (
+        "我先定位学习者当前最需要澄清的概念。",
+        "接着选择一个能够马上验证理解的小例子。",
+    )
     outcome: TutorTerminalOutcome = TutorTerminalOutcome.COMPLETED
     conversation_title: str | None = None
     calls: list[tuple[str, int]] = field(default_factory=list)
@@ -107,6 +111,7 @@ class TerminalTutorProvider:
             return TutorProviderResult(
                 decision=TutorDecision(
                     public_message=self.message,
+                    public_thinking_steps=self.public_thinking_steps,
                     conversation_title=self.conversation_title,
                     terminal_outcome=TutorTerminalOutcome.COMPLETED,
                 )
@@ -119,8 +124,16 @@ def terminal_dispatcher(
     settings: Settings,
     message: str = "请先比较变量声明的位置与可见范围。",
     conversation_title: str | None = None,
+    public_thinking_steps: tuple[str, ...] = (
+        "我先定位学习者当前最需要澄清的概念。",
+        "接着选择一个能够马上验证理解的小例子。",
+    ),
 ) -> tuple[TutorInteractiveRunDispatcher, TerminalTutorProvider]:
-    provider = TerminalTutorProvider(message=message, conversation_title=conversation_title)
+    provider = TerminalTutorProvider(
+        message=message,
+        public_thinking_steps=public_thinking_steps,
+        conversation_title=conversation_title,
+    )
     return (
         TutorInteractiveRunDispatcher(settings=settings, provider_factory=lambda _settings: provider),
         provider,
@@ -130,6 +143,9 @@ def terminal_dispatcher(
 @dataclass
 class WaitingTutorProvider:
     message: str
+    public_thinking_steps: tuple[str, ...] = (
+        "我先确认当前信息还不足以安全给出下一步。",
+    )
     calls: list[tuple[str, int]] = field(default_factory=list)
 
     def decide(self, *, run, context) -> TutorProviderResult:  # type: ignore[no-untyped-def]
@@ -138,6 +154,8 @@ class WaitingTutorProvider:
         return TutorProviderResult(
             decision=TutorDecision(
                 public_message=self.message,
+                public_thinking_steps=self.public_thinking_steps,
+                question_key="goal_text",
                 checkpoint_reason=TutorCheckpointReason.CAPABILITY_RESULT,
                 continuation_kind=TutorContinuationKind.APPROVAL,
             )

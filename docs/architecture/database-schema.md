@@ -58,7 +58,7 @@ projection 的唯一 durable authority；Desktop、Celery 和 provider 不拥有
 | 表 | 责任 | 关键不变量 |
 | --- | --- | --- |
 | `tutor_conversations` | user-scoped learner-visible/internal conversation 根 | `visibility` 与 `kind` 区分公开交互和内部 proactive conversation；learner conversation 的 `title` 只能保存安全模型简述，`NULL` 对外投影为“新对话”；`last_public_activity_at` 是列表排序的唯一 authority |
-| `tutor_messages` | canonical learner/Tutor public message body | 唯一允许存放原始 learner 文本的 Tutor 表；不可作为 trace/export dump；旧 message-only conversation 继续可读 |
+| `tutor_messages` | canonical learner/Tutor public message body + bounded public thinking narration | 唯一允许存放原始 learner 文本的 Tutor 表；Tutor 回复可保存最多 4 条 learner-visible `public_thinking_steps_json`，它不是 provider-native reasoning；不可作为 trace/export dump；旧 message-only conversation 继续可读并投影空数组 |
 | `tutor_catalog_snapshots` | reviewed Skill catalog digest snapshot | run 只能引用已持久化的 digest |
 | `tutor_runs` | 有限 loop 的 durable snapshot | `origin` 为 `interactive/proactive`；lease、budget counter、`input_revision`、terminal outcome 和 `next_event_sequence` 都由 DB 保护；`superseded_by_run_id` 是内部 audit link；`continuation_kind` 只允许 explicit continuation enum |
 | `tutor_provider_attempt_receipts` | 每个实际 provider HTTP attempt 的 append-only usage 事实 | identity 为 `(run_id,input_revision,decision_iteration,attempt_index)`；复合 FK 固定 user/run/conversation scope；只保存受限 provider/model/protocol、outcome/diagnostic 和非负 token 数，不保存 prompt、response body、reasoning 文本、URL/header 或 credential |
@@ -103,6 +103,15 @@ user-level `tutor_plan_revisions` 明确隔离：
 | `tutor_mastery_states` | projector 可重算的 bounded 状态 | 只引用同 progress/evidence scope；零 evidence 与 `last_evidence_id=NULL` 一致 |
 | `tutor_conversation_learning_scopes` | conversation 的 general/planning/track binding | learning-track scope 必须引用同 user track；无 row 的旧 conversation 投影为 general |
 | `tutor_run_learning_scopes` | fresh TurnRun 创建时的 immutable task/scope snapshot | run/user/conversation/track/progress 复合 FK；continuation 不得 UPDATE snapshot |
+| `tutor_learning_plan_sessions`、`tutor_learning_plan_drafts` | planning lifecycle 与 immutable typed draft | session 保存 facts policy version；draft 保存生成时的 facts fingerprint/revision，确认时必须仍匹配 current projection |
+| `tutor_planning_intake_facts` | append-only typed intake fact authority | field/value/revision/source evidence 都受 user/session/conversation/run/input 复合 scope；correction 追加 successor，current fact 是没有 `supersedes_fact_id` successor 的 confirmed leaf |
+| `tutor_planning_question_events` | append-only stable question-state lineage | `question_key=field_key`；`previous_event_id` 每个 predecessor 最多一个 successor；current state 从 leaf 沿 predecessor 链解析，不能使用 `created_at` 或 UUID 猜测事务内顺序 |
+
+PostgreSQL `now()` 在同一事务内稳定，因此同次 input 写入的 reopen、supersede 和
+confirmed event 可以拥有相同 `created_at`。planning question current projection 必须先找
+`previous_event_id` 没有 successor 的真实 leaf，再沿显式 lineage 回溯；
+`uq_tutor_planning_question_events_previous` 阻止链分叉。`reasked_blocked` 是审计事件，
+读取对外 question state 时跳过该节点并继续使用其 predecessor 状态。
 
 计划激活先锁 track 并校验 `expected_track_version`、direct predecessor 与 migration
 状态，再切换 revision/pointer。相同 `knowledge_key` 的 progress/mastery 保留；新 key
@@ -217,7 +226,14 @@ uv --directory .\aearn\services\api run python -m pytest tests/test_tutor_run_re
 
 ## 2026-08-10：计划制定持久化
 
-`tutor_learning_plan_sessions` 是 user/conversation-scoped planning root，同一用户最多一条 `collecting | draft_ready` session；它保存 current draft pointer、确认 track、版本与 allowlisted safe error，不保存 raw prompt/history/provider body/reasoning。`tutor_learning_plan_drafts` 保存确认所需的 profile、canonical plan、registry-owned source summary、content hash 和 source run/revision；草案 append-only，`(session_id,draft_version)` 与 `(source_run_id,source_input_revision)` 唯一。current pointer 使用 deferrable composite FK 保证 draft 属于同一 user/session。local export/reset 与 cutover target inventory 已纳入两张表。
+`tutor_learning_plan_sessions` 是 user/conversation-scoped planning root，同一用户最多一条 `collecting | draft_ready` session；它保存 current draft pointer、确认 track、版本、facts policy version 与 allowlisted safe error，不保存 raw prompt/history/provider body/reasoning。`tutor_learning_plan_drafts` 保存确认所需的 profile、canonical plan、registry-owned source summary、content hash、source run/revision，以及生成时的 facts fingerprint/revision；草案 append-only，`(session_id,draft_version)` 与 `(source_run_id,source_input_revision)` 唯一。current pointer 使用 deferrable composite FK 保证 draft 属于同一 user/session。
+
+`tutor_planning_intake_facts` 与 `tutor_planning_question_events` additive 地补足 draft 前的
+规划 authority。事实 correction 和 question transition 都追加 row，不原地改写；复合 FK
+把 source message/run/input revision 锁定到同一 user/session/conversation。local export 仅
+输出 normalized value、lineage/source identity 与安全状态，显式省略 value/event hash 和
+gate reason；reset/delete 按 question leaf-to-root、fact high-revision-to-low-revision、draft、
+session 的顺序清理。cutover target inventory 已将四张 planning 表全部视为 target state。
 
 ## 2026-08-11：LessonDocument authority
 

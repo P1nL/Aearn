@@ -135,6 +135,8 @@ class PostgresLearningPlanSessionRepository:
         run_id: str,
         input_revision: int,
         artifact: LearningPlanDraftArtifact,
+        facts_fingerprint: str,
+        facts_revision: int,
     ) -> tuple[dict[str, object], bool]:
         replay = self._conn.execute(
             self._DRAFT_READ_SQL
@@ -142,7 +144,12 @@ class PostgresLearningPlanSessionRepository:
             (run_id, input_revision),
         ).fetchone()
         if replay is not None:
-            if str(replay["user_id"]) != user_id or str(replay["content_hash"]) != artifact.content_hash:
+            if (
+                str(replay["user_id"]) != user_id
+                or str(replay["content_hash"]) != artifact.content_hash
+                or str(replay.get("facts_fingerprint") or "") != facts_fingerprint
+                or _int(replay.get("facts_revision")) != facts_revision
+            ):
                 raise LearningPlanDraftConflict("draft replay conflicts with stored artifact")
             return dict(replay), True
 
@@ -166,13 +173,14 @@ class PostgresLearningPlanSessionRepository:
               language_id, goal_text, target_level, weekly_minutes, experience_level,
               teaching_preferences_json, pace_summary, profile_json, plan_json,
               source_summary_json, content_hash, generator_version, policy_version,
-              change_reason, source_run_id, source_input_revision
+              change_reason, source_run_id, source_input_revision,
+              facts_fingerprint, facts_revision
             ) VALUES (
               %s, %s, %s, %s, %s,
               %s, %s, %s, %s, %s,
               %s::jsonb, %s, %s::jsonb, %s::jsonb,
               %s::jsonb, %s, %s, %s,
-              %s, %s, %s
+              %s, %s, %s, %s, %s
             )
             RETURNING *
             """,
@@ -198,6 +206,8 @@ class PostgresLearningPlanSessionRepository:
                 artifact.plan.change_reason,
                 run_id,
                 input_revision,
+                facts_fingerprint,
+                facts_revision,
             ),
         ).fetchone()
         if row is None:
@@ -292,7 +302,8 @@ class PostgresLearningPlanSessionRepository:
                drafts.weekly_minutes, drafts.experience_level, drafts.teaching_preferences_json,
                drafts.pace_summary, drafts.profile_json, drafts.plan_json, drafts.source_summary_json,
                drafts.generator_version, drafts.policy_version, drafts.change_reason,
-               drafts.source_run_id, drafts.source_input_revision, drafts.created_at AS draft_created_at
+               drafts.source_run_id, drafts.source_input_revision, drafts.facts_fingerprint,
+               drafts.facts_revision, drafts.created_at AS draft_created_at
         FROM tutor_learning_plan_sessions AS sessions
         LEFT JOIN tutor_learning_plan_drafts AS drafts
           ON drafts.id = sessions.current_draft_id

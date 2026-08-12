@@ -8,14 +8,8 @@ import urllib.error
 from collections.abc import Mapping, Sequence
 from typing import Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
-
 from app.agents.harness.contracts import (
-    MAX_TUTOR_PAYLOAD_FIELDS,
-    MAX_TUTOR_PUBLIC_MESSAGE_LENGTH,
     TutorCapabilityRequest,
-    TutorCheckpointReason,
-    TutorContinuationKind,
     TutorContextSelection,
     TutorDecision,
     TutorEffectProposal,
@@ -23,9 +17,10 @@ from app.agents.harness.contracts import (
     TutorProviderAttemptReceipt,
     TutorProviderResult,
     TutorRunSnapshot,
-    TutorSkillReference,
-    TutorTerminalOutcome,
-    payload_fields_from_mapping,
+)
+from app.agents.harness.provider_request import (
+    TUTOR_TEACHING_POLICY,
+    build_tutor_provider_messages,
 )
 from app.core.config import Settings, get_settings
 from app.core.teaching_safety import check_teaching_output
@@ -38,11 +33,20 @@ from app.services.llm.llm_client import (
     OpenAICompatibleClient,
     select_llm_protocol,
 )
-from app.agents.harness.provider_request import (
-    TUTOR_DECISION_REPAIR_MESSAGE,
-    TUTOR_TEACHING_POLICY,
-    build_tutor_provider_messages,
-    canonical_tutor_decision_example,
+from app.services.llm.provider_diagnostics import (
+    ProviderBodyCapture,
+    ProviderDiagnosticMetadata,
+    ProviderDiagnosticStore,
+)
+from app.services.tutor.decision_protocol import (
+    TUTOR_PROVIDER_ITEMS_SCHEMA_NAME,
+    TutorDecisionValidationError,
+    TutorDecisionValidationIssue,
+    build_tutor_replacement_message,
+    parse_tutor_provider_items,
+    tutor_provider_output_schema,
+    tutor_provider_output_schema_hash,
+    validation_diagnostic_code,
 )
 
 
@@ -50,15 +54,6 @@ logger = logging.getLogger(__name__)
 
 
 PRIMARY_PROVIDER_DECISION_ATTEMPTS = 2
-
-_TUTOR_TEACHING_POLICY = TUTOR_TEACHING_POLICY
-
-
-def _canonical_tutor_decision_example() -> str:
-    return canonical_tutor_decision_example()
-
-
-_TUTOR_DECISION_REPAIR_MESSAGE = TUTOR_DECISION_REPAIR_MESSAGE
 
 _PROVIDER_CONFIGURATION_UNAVAILABLE = "TUTOR_PROVIDER_CONFIGURATION_UNAVAILABLE"
 _PROVIDER_TIMEOUT = "TUTOR_PROVIDER_TIMEOUT"
@@ -86,10 +81,6 @@ _REPAIRABLE_INVALID_RESPONSE_KINDS = frozenset(
 )
 
 
-class TutorDecisionValidationError(LLMInvalidResponseError):
-    """The provider response is JSON-like but does not meet the Tutor decision contract."""
-
-
 class TutorOutputSafetyError(LLMInvalidResponseError):
     """A learner-visible Tutor output failed the shared teaching safety policy."""
 
@@ -105,6 +96,10 @@ class TutorJsonClient(Protocol):
         temperature: float | None = None,
         max_tokens: int | None = None,
         timeout_seconds: float | None = None,
+        output_schema: Mapping[str, object] | None = None,
+        schema_name: str | None = None,
+        thinking_mode: Literal["enabled", "disabled"] | None = None,
+        capture_provider_body: bool = False,
     ) -> LLMJsonResponse: ...
 
 
@@ -114,113 +109,8 @@ def _assert_safe_tutor_output(text: str) -> None:
         raise TutorOutputSafetyError("Tutor output failed the teaching safety policy")
 
 
-_FORBIDDEN_NESTED_PAYLOAD_FIELD_NAMES = frozenset(
-    {
-        "reasoning",
-        "diagnostic",
-        "diagnostics",
-        "solutionreference",
-        "referenceanswer",
-        "rawprompt",
-        "systemprompt",
-        "providerpayload",
-        "providererror",
-        "apikey",
-        "secret",
-        "secretkey",
-        "authtoken",
-        "stacktrace",
-        "traceback",
-    }
-)
-
-
-TutorEnvelopeValue = str | int | float | bool | None | list[str]
-
-
-def _validate_nested_payload_fields(
-    value: dict[str, TutorEnvelopeValue],
-    *,
-    label: str,
-) -> dict[str, TutorEnvelopeValue]:
-    if len(value) > MAX_TUTOR_PAYLOAD_FIELDS:
-        raise ValueError(f"{label} exceed the bounded contract")
-    for raw_key, raw_value in value.items():
-        compact_key = "".join(character for character in raw_key.lower() if character.isalnum())
-        if compact_key in _FORBIDDEN_NESTED_PAYLOAD_FIELD_NAMES or compact_key.startswith("hiddentest"):
-            raise ValueError(f"{label} contain an internal-only field")
-        if isinstance(raw_value, list) and (len(raw_value) > 4 or any(len(item) > 120 for item in raw_value)):
-            raise ValueError(f"{label} contain an oversized list")
-        _assert_safe_tutor_output(raw_key)
-        _assert_safe_tutor_output(json.dumps(raw_value, ensure_ascii=False, sort_keys=True))
-    return value
-
-
-class _StrictEnvelopeModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
-
-
-class _SkillReferencePayload(_StrictEnvelopeModel):
-    skill_id: str = Field(min_length=1, max_length=120)
-    version: str = Field(default="current", min_length=1, max_length=120)
-
-
-class _CapabilityRequestPayload(_StrictEnvelopeModel):
-    request_id: str = Field(min_length=1, max_length=120)
-    capability_id: str = Field(min_length=1, max_length=120)
-    arguments: dict[str, TutorEnvelopeValue] = Field(default_factory=dict)
-
-    @field_validator("arguments")
-    @classmethod
-    def _validate_arguments(
-        cls,
-        value: dict[str, TutorEnvelopeValue],
-    ) -> dict[str, TutorEnvelopeValue]:
-        return _validate_nested_payload_fields(value, label="capability arguments")
-
-
-class _EffectProposalPayload(_StrictEnvelopeModel):
-    effect_id: str = Field(min_length=1, max_length=120)
-    effect_type: str = Field(min_length=1, max_length=120)
-    expected_input_revision: int = Field(ge=0)
-    payload: dict[str, TutorEnvelopeValue] = Field(default_factory=dict)
-
-    @field_validator("payload")
-    @classmethod
-    def _validate_payload(
-        cls,
-        value: dict[str, TutorEnvelopeValue],
-    ) -> dict[str, TutorEnvelopeValue]:
-        return _validate_nested_payload_fields(value, label="effect payload")
-
-
-class _TutorDecisionEnvelope(_StrictEnvelopeModel):
-    public_message: str | None = Field(default=None, max_length=MAX_TUTOR_PUBLIC_MESSAGE_LENGTH)
-    conversation_title: str | None = Field(default=None, max_length=48)
-    skill_references: list[_SkillReferencePayload] = Field(default_factory=list, max_length=4)
-    capability_requests: list[_CapabilityRequestPayload] = Field(default_factory=list, max_length=4)
-    effect_proposals: list[_EffectProposalPayload] = Field(default_factory=list, max_length=4)
-    checkpoint_reason: TutorCheckpointReason | None = None
-    continuation_kind: TutorContinuationKind | None = None
-    terminal_intent: Literal["completed"] | None = None
-
-    @field_validator("public_message")
-    @classmethod
-    def _validate_public_message(cls, value: str | None) -> str | None:
-        if value is not None and not value.strip():
-            raise ValueError("public_message must not be blank")
-        return value
-
-    @field_validator("conversation_title")
-    @classmethod
-    def _validate_conversation_title(cls, value: str | None) -> str | None:
-        if value is not None:
-            _assert_safe_tutor_output(value)
-        return value
-
-
 class PrimaryTutorProviderGateway:
-    """Use exactly the configured `OpenAICompatibleClient` provider and model."""
+    """Use exactly the configured provider and assemble control fields server-side."""
 
     def __init__(
         self,
@@ -231,18 +121,21 @@ class PrimaryTutorProviderGateway:
         timeout_seconds: float | None = None,
     ) -> None:
         self._settings = settings or get_settings()
-        resolved_max_output_tokens = self._settings.tutor_max_output_tokens
+        resolved_max_output_tokens = self._settings.tutor_decision_max_output_tokens
         if max_output_tokens is not None:
             resolved_max_output_tokens = max_output_tokens
         if resolved_max_output_tokens <= 0:
             raise ValueError("max_output_tokens must be positive")
         if self._settings.uses_deepseek_v4_flash_responses and (
-            resolved_max_output_tokens > self._settings.tutor_deepseek_v4_flash_max_output_tokens
+            resolved_max_output_tokens
+            > self._settings.tutor_deepseek_v4_flash_max_output_tokens
         ):
             raise ValueError("max_output_tokens exceeds the configured DeepSeek V4 Flash maximum")
         self._client = client
         self._max_output_tokens = resolved_max_output_tokens
         self._timeout_seconds = timeout_seconds
+        self._output_schema = tutor_provider_output_schema()
+        self._output_schema_hash = tutor_provider_output_schema_hash()
 
     def decide(
         self,
@@ -255,7 +148,7 @@ class PrimaryTutorProviderGateway:
             client = (
                 self._client
                 if self._client is not None
-                else OpenAICompatibleClient(self._settings)
+                else _build_default_client(self._settings)
             )
             messages = _build_messages(run=run, context=context)
             protocol = select_llm_protocol(self._settings).value
@@ -277,16 +170,43 @@ class PrimaryTutorProviderGateway:
                 safe_code=_PROVIDER_ADAPTER_FAILED
             )
 
+        replacement_issues: tuple[TutorDecisionValidationIssue, ...] = ()
         for attempt_index in range(1, PRIMARY_PROVIDER_DECISION_ATTEMPTS + 1):
             response: LLMJsonResponse | None = None
+            rejected_capture: ProviderBodyCapture | None = None
+            if attempt_index > 1:
+                messages = _build_messages(run=run, context=context)
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": build_tutor_replacement_message(
+                            replacement_issues,
+                            teaching_policy=TUTOR_TEACHING_POLICY,
+                        ),
+                    }
+                )
             try:
                 response = client.complete_json(
                     messages,
                     temperature=None,
                     max_tokens=self._max_output_tokens,
                     timeout_seconds=self._timeout_seconds,
+                    output_schema=self._output_schema,
+                    schema_name=TUTOR_PROVIDER_ITEMS_SCHEMA_NAME,
+                    thinking_mode=(
+                        "disabled"
+                        if (
+                            attempt_index > 1
+                            and provider_type == "deepseek"
+                            and self._settings.tutor_deepseek_repair_thinking_disabled
+                        )
+                        else None
+                    ),
+                    capture_provider_body=True,
                 )
-                decision = parse_tutor_decision(response.content)
+                _assert_raw_provider_text_safe(response.content)
+                decision = parse_tutor_provider_items(response.content, run=run)
+                _assert_decision_text_safe(decision)
             except LLMConfigurationError as exc:
                 logger.warning(
                     "Tutor primary model configuration was unavailable: %s",
@@ -298,6 +218,16 @@ class PrimaryTutorProviderGateway:
                 )
             except LLMCallError as exc:
                 diagnostic_code = _provider_call_diagnostic_code(exc)
+                _commit_provider_diagnostic(
+                    exc.diagnostic_capture,
+                    run=run,
+                    attempt_index=attempt_index,
+                    provider_type=provider_type,
+                    protocol=protocol,
+                    model=client.model,
+                    diagnostic_code=diagnostic_code,
+                    contract_hash=self._output_schema_hash,
+                )
                 attempts.append(
                     TutorProviderAttemptReceipt(
                         attempt_index=attempt_index,
@@ -319,37 +249,76 @@ class PrimaryTutorProviderGateway:
                 diagnostic_code = _PROVIDER_OUTPUT_SAFETY_REJECTED
                 exception_type = type(exc).__name__
                 repairable = True
+                replacement_issues = (
+                    TutorDecisionValidationIssue(
+                        path="message",
+                        category="unsafe_output",
+                    ),
+                )
+                rejected_capture = (
+                    response.diagnostic_capture
+                    if response is not None
+                    else exc.diagnostic_capture
+                )
                 usage = response.usage if response is not None else exc.usage
-                model = (
-                    response.model if response is not None else exc.model
-                ) or client.model
+                model = (response.model if response is not None else exc.model) or client.model
             except TutorDecisionValidationError as exc:
-                diagnostic_code = _PROVIDER_DECISION_INVALID
+                diagnostic_code = validation_diagnostic_code(exc.issues)
                 exception_type = type(exc).__name__
                 repairable = True
+                replacement_issues = exc.issues
+                rejected_capture = (
+                    response.diagnostic_capture
+                    if response is not None
+                    else exc.diagnostic_capture
+                )
                 usage = response.usage if response is not None else exc.usage
-                model = (
-                    response.model if response is not None else exc.model
-                ) or client.model
+                model = (response.model if response is not None else exc.model) or client.model
             except LLMInvalidResponseError as exc:
                 diagnostic_code = _provider_invalid_response_diagnostic_code(exc)
                 exception_type = type(exc).__name__
                 repairable = exc.kind in _REPAIRABLE_INVALID_RESPONSE_KINDS
+                replacement_issues = (
+                    TutorDecisionValidationIssue(
+                        path="root",
+                        category=exc.kind.value,
+                    ),
+                )
+                rejected_capture = (
+                    response.diagnostic_capture
+                    if response is not None
+                    else exc.diagnostic_capture
+                )
                 usage = response.usage if response is not None else exc.usage
-                model = (
-                    response.model if response is not None else exc.model
-                ) or client.model
-            except (ValidationError, TypeError, ValueError) as exc:
+                model = (response.model if response is not None else exc.model) or client.model
+            except (TypeError, ValueError) as exc:
                 diagnostic_code = _PROVIDER_DECISION_INVALID
                 exception_type = type(exc).__name__
                 repairable = True
+                replacement_issues = (
+                    TutorDecisionValidationIssue(
+                        path="root",
+                        category="invalid_contract",
+                    ),
+                )
+                rejected_capture = (
+                    response.diagnostic_capture if response is not None else None
+                )
                 usage = response.usage if response is not None else None
-                model = (
-                    response.model if response is not None else None
-                ) or client.model
+                model = (response.model if response is not None else None) or client.model
             except Exception as exc:
                 diagnostic_code = _PROVIDER_ADAPTER_FAILED
                 if response is not None:
+                    _commit_provider_diagnostic(
+                        response.diagnostic_capture,
+                        run=run,
+                        attempt_index=attempt_index,
+                        provider_type=provider_type,
+                        protocol=protocol,
+                        model=response.model or client.model,
+                        diagnostic_code=diagnostic_code,
+                        contract_hash=self._output_schema_hash,
+                    )
                     attempts.append(
                         TutorProviderAttemptReceipt(
                             attempt_index=attempt_index,
@@ -370,6 +339,8 @@ class PrimaryTutorProviderGateway:
                 )
             else:
                 model = response.model or client.model
+                if response.diagnostic_capture is not None:
+                    response.diagnostic_capture.discard()
                 attempts.append(
                     TutorProviderAttemptReceipt(
                         attempt_index=attempt_index,
@@ -386,6 +357,16 @@ class PrimaryTutorProviderGateway:
                     attempts=tuple(attempts),
                 )
 
+            _commit_provider_diagnostic(
+                rejected_capture,
+                run=run,
+                attempt_index=attempt_index,
+                provider_type=provider_type,
+                protocol=protocol,
+                model=model,
+                diagnostic_code=diagnostic_code,
+                contract_hash=self._output_schema_hash,
+            )
             attempts.append(
                 TutorProviderAttemptReceipt(
                     attempt_index=attempt_index,
@@ -402,22 +383,68 @@ class PrimaryTutorProviderGateway:
                 )
             )
             logger.warning(
-                "Tutor primary model response was rejected (%s/%s): %s [%s]",
+                "Tutor primary model response was rejected (%s/%s): %s [%s] "
+                "contract=%s",
                 attempt_index,
                 PRIMARY_PROVIDER_DECISION_ATTEMPTS,
                 exception_type,
                 diagnostic_code,
+                self._output_schema_hash[:12],
             )
             if not repairable or attempt_index == PRIMARY_PROVIDER_DECISION_ATTEMPTS:
                 return TutorProviderResult.model_unavailable(
                     safe_code=diagnostic_code,
                     attempts=tuple(attempts),
                 )
-            messages.append({"role": "user", "content": _TUTOR_DECISION_REPAIR_MESSAGE})
 
         return TutorProviderResult.model_unavailable(
             safe_code=_PROVIDER_RESPONSE_INVALID,
             attempts=tuple(attempts),
+        )
+
+
+def _build_default_client(settings: Settings) -> OpenAICompatibleClient:
+    try:
+        diagnostic_store = ProviderDiagnosticStore.from_settings(settings)
+    except ValueError as exc:
+        raise LLMConfigurationError(
+            "Tutor provider diagnostic configuration is invalid"
+        ) from exc
+    return OpenAICompatibleClient(
+        settings,
+        diagnostic_store=diagnostic_store,
+    )
+
+
+def _commit_provider_diagnostic(
+    capture: ProviderBodyCapture | None,
+    *,
+    run: TutorRunSnapshot,
+    attempt_index: int,
+    provider_type: str,
+    protocol: str,
+    model: str,
+    diagnostic_code: str,
+    contract_hash: str,
+) -> None:
+    if capture is None:
+        return
+    try:
+        capture.commit(
+            ProviderDiagnosticMetadata(
+                run_id=run.run_id,
+                attempt_index=attempt_index,
+                provider_type=provider_type,
+                protocol=protocol,
+                model=model,
+                diagnostic_code=diagnostic_code,
+                contract_hash=contract_hash,
+            )
+        )
+    except Exception as exc:
+        logger.warning(
+            "Tutor provider diagnostic capture failed: %s",
+            type(exc).__name__,
         )
 
 
@@ -457,71 +484,68 @@ def _is_timeout_error(exc: object | None) -> bool:
     return False
 
 
-def parse_tutor_decision(payload: Mapping[str, object]) -> TutorDecision:
-    """Validate one strict decision envelope and apply shared output guardrails."""
-    try:
-        envelope = _TutorDecisionEnvelope.model_validate(payload)
-    except ValidationError as exc:
-        raise TutorDecisionValidationError("Tutor decision failed strict schema validation") from exc
+def parse_tutor_decision(
+    payload: Mapping[str, object],
+    *,
+    run: TutorRunSnapshot,
+) -> TutorDecision:
+    """Compatibility name for the typed provider protocol parser."""
 
-    if envelope.checkpoint_reason is TutorCheckpointReason.TERMINAL:
-        raise TutorDecisionValidationError("Tutor decision cannot request a terminal checkpoint reason")
-    if envelope.public_message is not None:
-        _assert_safe_tutor_output(envelope.public_message)
-    if envelope.conversation_title is not None:
-        _assert_safe_tutor_output(envelope.conversation_title)
-    if envelope.continuation_kind is not None:
-        if envelope.checkpoint_reason is not TutorCheckpointReason.CAPABILITY_RESULT:
-            raise TutorDecisionValidationError("Tutor continuation requires a capability-result checkpoint")
-        if envelope.terminal_intent is not None:
-            raise TutorDecisionValidationError("Tutor continuation cannot also be terminal")
-    elif envelope.terminal_intent is None and not (
-        envelope.skill_references or envelope.capability_requests or envelope.effect_proposals
-    ):
-        raise TutorDecisionValidationError("Tutor decision must be terminal or explicitly continued")
-
-    skill_references = tuple(
-        TutorSkillReference(skill_id=item.skill_id, version=item.version)
-        for item in envelope.skill_references
-    )
-    capability_requests = tuple(
-        TutorCapabilityRequest(
-            request_id=item.request_id,
-            capability_id=item.capability_id,
-            arguments=payload_fields_from_mapping(item.arguments),
-        )
-        for item in envelope.capability_requests
-    )
-    effect_proposals = tuple(
-        TutorEffectProposal(
-            effect_id=item.effect_id,
-            effect_type=item.effect_type,
-            expected_input_revision=item.expected_input_revision,
-            payload=payload_fields_from_mapping(item.payload),
-        )
-        for item in envelope.effect_proposals
-    )
-    _assert_payload_text_safe(capability_requests, effect_proposals)
-
-    try:
-        return TutorDecision(
-            public_message=envelope.public_message,
-            conversation_title=envelope.conversation_title,
-            skill_references=skill_references,
-            capability_requests=capability_requests,
-            effect_proposals=effect_proposals,
-            checkpoint_reason=envelope.checkpoint_reason,
-            continuation_kind=envelope.continuation_kind,
-            terminal_outcome=(TutorTerminalOutcome.COMPLETED if envelope.terminal_intent == "completed" else None),
-        )
-    except ValueError as exc:
-        raise TutorDecisionValidationError("Tutor decision failed contract validation") from exc
+    _assert_raw_provider_text_safe(payload)
+    decision = parse_tutor_provider_items(payload, run=run)
+    _assert_decision_text_safe(decision)
+    return decision
 
 
 def _build_messages(*, run: TutorRunSnapshot, context: TutorContextSelection) -> list[dict[str, str]]:
     """Compatibility alias for tests and evals using the shared serializer."""
 
     return build_tutor_provider_messages(run=run, context=context)
+
+
+def _assert_raw_provider_text_safe(payload: Mapping[str, object]) -> None:
+    message = payload.get("message")
+    if isinstance(message, Mapping):
+        for key in ("text", "conversation_title"):
+            value = message.get(key)
+            if isinstance(value, str):
+                _assert_safe_tutor_output(value)
+        public_thinking_steps = message.get("public_thinking_steps")
+        if isinstance(public_thinking_steps, Sequence) and not isinstance(
+            public_thinking_steps, (str, bytes)
+        ):
+            for step in public_thinking_steps:
+                if isinstance(step, str):
+                    _assert_safe_tutor_output(step)
+    action = payload.get("action")
+    if not isinstance(action, Mapping):
+        return
+    for key in ("skill_id", "version", "capability_id", "effect_type"):
+        value = action.get(key)
+        if isinstance(value, str):
+            _assert_safe_tutor_output(value)
+    for key in ("arguments", "payload"):
+        fields = action.get(key)
+        if not isinstance(fields, Sequence) or isinstance(fields, (str, bytes)):
+            continue
+        for field in fields:
+            if not isinstance(field, Mapping):
+                continue
+            if "value" in field:
+                _assert_safe_tutor_output(
+                    json.dumps(field["value"], ensure_ascii=False, sort_keys=True)
+                )
+
+
+def _assert_decision_text_safe(decision: TutorDecision) -> None:
+    if decision.public_message is not None:
+        _assert_safe_tutor_output(decision.public_message)
+    for step in decision.public_thinking_steps:
+        _assert_safe_tutor_output(step)
+    if decision.conversation_title is not None:
+        _assert_safe_tutor_output(decision.conversation_title)
+    _assert_payload_text_safe(decision.capability_requests, decision.effect_proposals)
+
 
 def _assert_payload_text_safe(
     capability_requests: tuple[TutorCapabilityRequest, ...],

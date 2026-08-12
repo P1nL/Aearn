@@ -118,6 +118,7 @@ def _loop(
     builder: TutorContextBuilder | None = None,
     lifecycle: object | None = None,
     decision_gate: object | None = None,
+    clock: FixedClock | None = None,
 ) -> tuple[TutorRunLoop, InMemoryTutorCompactionPublisher]:
     resolved_publisher = publisher or InMemoryTutorCompactionPublisher()
     loop = TutorRunLoop(
@@ -127,7 +128,7 @@ def _loop(
         provider=provider,
         capability_gateway=capability_gateway or DefaultDenyCapabilityGateway(),  # type: ignore[arg-type]
         effect_committer=effect_committer or RecordingEffectCommitter(status=TutorEffectStatus.DENIED),
-        clock=FixedClock(NOW),
+        clock=clock or FixedClock(NOW),
         compaction_publisher=resolved_publisher,
         decision_gate=decision_gate or AllowTutorDecisionGate(),  # type: ignore[arg-type]
         lifecycle=lifecycle,  # type: ignore[arg-type]
@@ -185,7 +186,17 @@ def test_zero_iteration_budget_terminates_without_provider_call() -> None:
 
 def test_one_iteration_completes_an_ordinary_turn_without_graph_semantics() -> None:
     store = InMemoryTutorRunStore([_snapshot()])
-    provider = SequenceTutorProvider([TutorProviderResult(decision=TutorDecision(public_message="先确认变量在哪个作用域。"))])
+    provider = SequenceTutorProvider([
+        TutorProviderResult(
+            decision=TutorDecision(
+                public_message="先确认变量在哪个作用域。",
+                public_thinking_steps=(
+                    "我先区分变量声明位置与实际读取位置。",
+                    "接着用一次回调执行验证闭包是否保留外层绑定。",
+                ),
+            )
+        )
+    ])
     loop, _ = _loop(store=store, contexts={("run-loop", 0): _context(0)}, provider=provider)
 
     result = loop.run(run_id="run-loop", lease_owner_id="worker-1")
@@ -194,6 +205,10 @@ def test_one_iteration_completes_an_ordinary_turn_without_graph_semantics() -> N
     assert result.terminal_outcome is TutorTerminalOutcome.COMPLETED
     assert result.iteration_count == 1
     assert result.model_call_count == 1
+    assert result.public_thinking_steps == (
+        "我先区分变量声明位置与实际读取位置。",
+        "接着用一次回调执行验证闭包是否保留外层绑定。",
+    )
     assert len(provider.calls) == 1
 
 
@@ -226,6 +241,40 @@ def test_multiple_bounded_iterations_continue_only_through_injected_capability_r
     assert result.model_call_count == 2
     assert result.capability_call_count == 1
     assert len(capabilities.calls) == 1
+
+
+def test_late_provider_result_renews_unclaimed_expired_lease_and_persists_terminal() -> None:
+    clock = FixedClock(NOW)
+    store = InMemoryTutorRunStore([_snapshot(policy=_policy(lease_duration_seconds=30))])
+
+    def finish_after_lease_expiry(run: TutorRunSnapshot, context: object) -> None:
+        del run, context
+        clock.advance(seconds=45)
+
+    provider = SequenceTutorProvider(
+        [
+            TutorProviderResult(
+                decision=TutorDecision(
+                    public_message="租约过期后仍应安全完成。",
+                    terminal_outcome=TutorTerminalOutcome.COMPLETED,
+                )
+            )
+        ],
+        on_decide=finish_after_lease_expiry,
+    )
+    loop, _publisher = _loop(
+        store=store,
+        contexts={("run-loop", 0): _context(0)},
+        provider=provider,
+        clock=clock,
+    )
+
+    result = loop.run(run_id="run-loop", lease_owner_id="worker-slow-provider")
+
+    assert result.status is TutorRunStatus.COMPLETED
+    assert result.public_message == "租约过期后仍应安全完成。"
+    assert result.diagnostic_code is None
+    assert store.results == [result]
 
 
 def test_lease_and_cancellation_are_terminal_before_model_call() -> None:

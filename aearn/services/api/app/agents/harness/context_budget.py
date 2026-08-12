@@ -201,8 +201,7 @@ class TutorContextBudgetPlanner:
         for _ in range(32):
             selection_budget = max(
                 1,
-                (required_selection.current_input.token_estimate if required_selection.current_input else 0)
-                + optional_budget,
+                required_selection.checkpoint_metadata.consumed_tokens + optional_budget,
             )
             candidate = builder.build(
                 context_input,
@@ -381,10 +380,13 @@ class TutorContextBudgetPlanner:
                 checkpoint_metadata=metadata,
                 high_water_compaction_request=request,
             )
-            updated = self._estimate_complete_request(
-                run=run,
-                context=current,
-                capability=capability,
+            updated = max(
+                plan.required_token_estimate,
+                self._estimate_complete_request(
+                    run=run,
+                    context=current,
+                    capability=capability,
+                ),
             )
             if updated == estimate or updated > plan.physical_input_limit:
                 return current, updated

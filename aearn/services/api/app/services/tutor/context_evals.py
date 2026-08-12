@@ -29,6 +29,16 @@ from app.agents.harness.contracts import (
     TutorRunSnapshot,
 )
 from app.core.config import Settings
+from app.services.learning.planning_facts import (
+    AuthoritativeContextSnapshot,
+    PlanningFact,
+    PlanningFactField,
+    PlanningFactState,
+    PlanningQuestionState,
+    build_authoritative_context_snapshot,
+    normalize_planning_fact,
+    planning_fact_value_hash,
+)
 from app.services.llm.contracts import LLMUsage
 from app.services.llm.llm_client import LLMCallError, LLMJsonResponse
 from app.services.tutor.provider_gateway import PrimaryTutorProviderGateway, _build_messages
@@ -124,6 +134,14 @@ class TutorContextEvalReceipt:
     budget_expansion_count: int = 0
     compaction_trigger: str | None = None
     summary_coverage_count: int = 0
+    authoritative_snapshot_schema_version: str | None = None
+    authoritative_snapshot_hash: str | None = None
+    fact_revision: int = 0
+    required_fact_count: int = 0
+    required_fact_selected_count: int = 0
+    required_fact_missing_count: int = 0
+    confirmed_question_reasked_count: int = 0
+    summary_blocked_by_unprojected_fact: int = 0
     provider_called: bool = False
     provider_call_count: int = 0
     provider_attempt_count: int = 0
@@ -145,6 +163,12 @@ class TutorContextEvalReceipt:
             "truncated_count",
             "budget_expansion_count",
             "summary_coverage_count",
+            "fact_revision",
+            "required_fact_count",
+            "required_fact_selected_count",
+            "required_fact_missing_count",
+            "confirmed_question_reasked_count",
+            "summary_blocked_by_unprojected_fact",
             "provider_call_count",
             "provider_attempt_count",
             "decision_count",
@@ -194,6 +218,14 @@ class TutorContextEvalReceipt:
             "budget_expansion_count": self.budget_expansion_count,
             "compaction_trigger": self.compaction_trigger,
             "summary_coverage_count": self.summary_coverage_count,
+            "authoritative_snapshot_schema_version": self.authoritative_snapshot_schema_version,
+            "authoritative_snapshot_hash": self.authoritative_snapshot_hash,
+            "fact_revision": self.fact_revision,
+            "required_fact_count": self.required_fact_count,
+            "required_fact_selected_count": self.required_fact_selected_count,
+            "required_fact_missing_count": self.required_fact_missing_count,
+            "confirmed_question_reasked_count": self.confirmed_question_reasked_count,
+            "summary_blocked_by_unprojected_fact": self.summary_blocked_by_unprojected_fact,
             "provider_called": self.provider_called,
             "provider_call_count": self.provider_call_count,
             "provider_attempt_count": self.provider_attempt_count,
@@ -401,7 +433,7 @@ def _selection_receipt(case: TutorContextEvalCase) -> TutorContextEvalReceipt:
     capability = _capability(case.provider_capability)
     policy = _policy(case.budget_policy, case.provider_capability)
     run = _run(case, policy)
-    context_input = _context_input(case)
+    context_input = _context_input(case, run=run)
     planner = TutorContextBudgetPlanner(estimator=Utf8ByteTokenEstimator())
     builder = TutorContextBuilder(estimator=Utf8ByteTokenEstimator())
     expansion_count = _required_int(case.budget_policy.get("expansion_count"), default=0)
@@ -485,6 +517,14 @@ def _selection_receipt(case: TutorContextEvalCase) -> TutorContextEvalReceipt:
         budget_expansion_count=metadata.expansion_count,
         compaction_trigger=trigger.trigger.value if trigger is not None else None,
         summary_coverage_count=len(compaction.retired_message_ids) if compaction is not None else 0,
+        authoritative_snapshot_schema_version=metadata.authoritative_snapshot_schema_version,
+        authoritative_snapshot_hash=metadata.authoritative_snapshot_hash,
+        fact_revision=metadata.fact_revision,
+        required_fact_count=metadata.required_fact_count,
+        required_fact_selected_count=metadata.required_fact_selected_count,
+        required_fact_missing_count=metadata.required_fact_missing_count,
+        confirmed_question_reasked_count=metadata.confirmed_question_reasked_count,
+        summary_blocked_by_unprojected_fact=metadata.summary_blocked_by_unprojected_fact,
         current_input_present=selection.current_input is not None,
         current_input_occurrences=serialized_messages.count(current_content) if current_content else 0,
         first_token_latency_ms=_optional_int(case.observability.get("first_token_latency_ms")),
@@ -506,7 +546,7 @@ def _usage_receipt(case: TutorContextEvalCase) -> TutorContextEvalReceipt:
     run = _run(case, policy)
     selection = TutorContextBudgetPlanner(estimator=Utf8ByteTokenEstimator()).build_context(
         run=run,
-        context_input=_context_input(case),
+        context_input=_context_input(case, run=run),
         builder=TutorContextBuilder(estimator=Utf8ByteTokenEstimator()),
     )
     client = _FixtureJsonClient(_fixture_responses(case.provider_attempts))
@@ -543,6 +583,14 @@ def _usage_receipt(case: TutorContextEvalCase) -> TutorContextEvalReceipt:
         skipped_count=sum(section.skipped_count for section in metadata.sections),
         truncated_count=metadata.truncated_count,
         budget_expansion_count=metadata.expansion_count,
+        authoritative_snapshot_schema_version=metadata.authoritative_snapshot_schema_version,
+        authoritative_snapshot_hash=metadata.authoritative_snapshot_hash,
+        fact_revision=metadata.fact_revision,
+        required_fact_count=metadata.required_fact_count,
+        required_fact_selected_count=metadata.required_fact_selected_count,
+        required_fact_missing_count=metadata.required_fact_missing_count,
+        confirmed_question_reasked_count=metadata.confirmed_question_reasked_count,
+        summary_blocked_by_unprojected_fact=metadata.summary_blocked_by_unprojected_fact,
         current_input_present=selection.current_input is not None,
         current_input_occurrences=1 if selection.current_input is not None else 0,
         first_token_latency_ms=_optional_int(case.observability.get("first_token_latency_ms")),
@@ -689,7 +737,11 @@ def _run(case: TutorContextEvalCase, policy: TutorContextBudgetPolicy) -> TutorR
     )
 
 
-def _context_input(case: TutorContextEvalCase) -> TutorContextInput:
+def _context_input(
+    case: TutorContextEvalCase,
+    *,
+    run: TutorRunSnapshot,
+) -> TutorContextInput:
     current_raw = case.conversation.get("current_input")
     current = _source(current_raw) if isinstance(current_raw, Mapping) else None
     origin = _origin(case.conversation.get("origin"))
@@ -712,20 +764,30 @@ def _context_input(case: TutorContextEvalCase) -> TutorContextInput:
                     created_at=_timestamp(raw["created_at"]),
                 )
             )
+        protected_raw = case.conversation.get("protected_message_ids", [])
+        if not isinstance(protected_raw, list) or any(
+            not isinstance(value, str) for value in protected_raw
+        ):
+            raise TutorContextEvalFixtureError(
+                "Tutor context eval protected message identities are invalid"
+            )
         compaction_plan = TutorContextCompactionPlan(
             summary_schema_version=TUTOR_CONTEXT_SUMMARY_SCHEMA_VERSION,
             summary_policy_version=TUTOR_CONTEXT_SUMMARY_POLICY_VERSION,
             candidates=tuple(candidates),
             prior_summary_id=str(case.conversation["prior_summary_id"]) if case.conversation.get("prior_summary_id") is not None else None,
             prior_summary_hash=str(case.conversation["prior_summary_hash"]) if case.conversation.get("prior_summary_hash") is not None else None,
+            protected_message_ids=tuple(protected_raw),
         )
+    authoritative = _eval_authoritative_snapshot(case, run=run)
     return TutorContextInput(
-        run_id=f"eval:{case.case_id}",
-        conversation_id=f"eval-conversation:{case.case_id}",
+        run_id=run.run_id,
+        conversation_id=run.conversation_id,
         input_revision=1,
         current_input_required=origin == "interactive",
         current_input=current,
         system_descriptors=_sources(case.conversation.get("system_descriptors")),
+        required_facts=authoritative.required_facts,
         active_plan=_sources(case.conversation.get("active_plan")),
         review_snapshot=_sources(case.conversation.get("review_snapshot")),
         recent_messages=recent,
@@ -734,6 +796,74 @@ def _context_input(case: TutorContextEvalCase) -> TutorContextInput:
         activity_facts=_sources(case.conversation.get("activity")),
         capability_schemas=_sources(case.conversation.get("capability_schemas")),
         compaction_plan=compaction_plan,
+        authoritative_snapshot_schema_version=authoritative.schema_version,
+        authoritative_snapshot_hash=authoritative.snapshot_hash,
+        fact_revision=authoritative.fact_revision,
+        confirmed_question_reasked_count=authoritative.confirmed_question_reasked_count,
+        summary_blocked_by_unprojected_fact=_required_int(
+            case.conversation.get("summary_blocked_by_unprojected_fact"), default=0
+        ),
+    )
+
+
+def _eval_authoritative_snapshot(
+    case: TutorContextEvalCase,
+    *,
+    run: TutorRunSnapshot,
+) -> AuthoritativeContextSnapshot:
+    raw_facts = case.conversation.get("planning_facts")
+    if raw_facts is None:
+        facts: tuple[PlanningFact, ...] = ()
+    else:
+        if not isinstance(raw_facts, list) or any(not isinstance(item, Mapping) for item in raw_facts):
+            raise TutorContextEvalFixtureError("Tutor context eval planning facts are invalid")
+        normalized_facts: list[PlanningFact] = []
+        for index, raw in enumerate(raw_facts, start=1):
+            field = PlanningFactField(str(raw.get("field_key") or ""))
+            value = normalize_planning_fact(field, raw.get("value"))
+            revision = _required_int(raw.get("revision"), default=1)
+            normalized_facts.append(
+                PlanningFact(
+                    fact_id=str(raw.get("fact_id") or f"eval-fact-{index}"),
+                    session_id=f"eval-planning:{case.case_id}",
+                    field_key=field,
+                    value=value,
+                    value_hash=planning_fact_value_hash(field, value),
+                    revision=revision,
+                    state=PlanningFactState.CONFIRMED,
+                    source_message_id=str(raw.get("source_message_id") or f"eval-message-{index}"),
+                    source_run_id=run.run_id,
+                    source_input_revision=_required_int(raw.get("source_input_revision"), default=1),
+                    supersedes_fact_id=(
+                        str(raw["supersedes_fact_id"])
+                        if raw.get("supersedes_fact_id") is not None
+                        else None
+                    ),
+                )
+            )
+        facts = tuple(normalized_facts)
+    raw_questions = case.conversation.get("planning_question_states")
+    if raw_questions is None:
+        question_states = {
+            fact.field_key: PlanningQuestionState.CONFIRMED for fact in facts
+        }
+    elif isinstance(raw_questions, Mapping):
+        question_states = {
+            PlanningFactField(str(field)): PlanningQuestionState(str(state))
+            for field, state in raw_questions.items()
+        }
+    else:
+        raise TutorContextEvalFixtureError("Tutor context eval planning question states are invalid")
+    return build_authoritative_context_snapshot(
+        run=run,
+        input_revision=1,
+        planning_session_id=f"eval-planning:{case.case_id}" if facts else None,
+        facts=facts,
+        question_states=question_states,
+        confirmed_question_reasked_count=_required_int(
+            case.conversation.get("confirmed_question_reasked_count"),
+            default=0,
+        ),
     )
 
 
@@ -757,7 +887,26 @@ def _source(raw: Mapping[str, object]) -> TutorContextSource:
     source_id = raw.get("source_id") or raw.get("message_id")
     if source_id is None or "content" not in raw:
         raise TutorContextEvalFixtureError("Tutor context eval source is incomplete")
-    return TutorContextSource(str(source_id), raw["content"])
+    return TutorContextSource(
+        str(source_id),
+        raw["content"],
+        semantic_class=_semantic_class(raw.get("semantic_class")),
+    )
+
+
+def _semantic_class(
+    value: object,
+) -> Literal["ordinary", "confirmed_fact_source", "correction", "unresolved_question"]:
+    normalized = str(value or "ordinary")
+    if normalized == "ordinary":
+        return "ordinary"
+    if normalized == "confirmed_fact_source":
+        return "confirmed_fact_source"
+    if normalized == "correction":
+        return "correction"
+    if normalized == "unresolved_question":
+        return "unresolved_question"
+    raise TutorContextEvalFixtureError("Tutor context eval semantic class is invalid")
 
 
 def _timestamp(raw: object) -> datetime:
@@ -788,14 +937,14 @@ def _fixture_responses(raw_attempts: Sequence[Mapping[str, object]]) -> tuple[LL
             {"public_message": "fixture", "checkpoint_reason": "invalid"}
             if outcome == TutorProviderAttemptOutcome.REPAIRABLE_REJECTED.value
             else {
-                "public_message": "fixture learner-safe reply",
-                "conversation_title": None,
-                "skill_references": [],
-                "capability_requests": [],
-                "effect_proposals": [],
-                "checkpoint_reason": None,
-                "continuation_kind": None,
-                "terminal_intent": "completed",
+                "schema_version": "tutor_provider_items_v2",
+                "message": {
+                    "type": "agent_message",
+                    "text": "fixture learner-safe reply",
+                    "public_thinking_steps": ["当前目标可以收敛为一个可验证的小步骤。"],
+                    "conversation_title": None,
+                },
+                "action": {"type": "turn_completed"},
             }
         )
         responses.append(LLMJsonResponse(content=content, model="fixture-model", usage=usage))
@@ -818,8 +967,12 @@ class _FixtureJsonClient:
         temperature: float | None = None,
         max_tokens: int | None = None,
         timeout_seconds: float | None = None,
+        output_schema: Mapping[str, object] | None = None,
+        schema_name: str | None = None,
+        thinking_mode: str | None = None,
+        capture_provider_body: bool = False,
     ) -> LLMJsonResponse:
-        del messages, temperature, max_tokens, timeout_seconds
+        del messages, temperature, max_tokens, timeout_seconds, output_schema, schema_name, thinking_mode, capture_provider_body
         self.calls += 1
         if not self._responses:
             raise LLMCallError("fixture response sequence exhausted")
@@ -843,6 +996,13 @@ def _sum_known(values: Iterable[int | None]) -> int | None:
         return None
     return sum(value for value in normalized if value is not None)
 
+
+
+def _optional_text(value: object) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None
 
 
 def _required_int(value: object, *, default: int | None = None) -> int:

@@ -124,6 +124,8 @@ def export_user_data(conn: Connection[dict[str, object]], user_id: str) -> dict[
         "notes": _export_notes(conn, user_id),
         "conversation_summaries": _export_conversation_summaries(conn, user_id),
         "learning_plan_sessions": _export_learning_plan_sessions(conn, user_id),
+        "planning_intake_facts": _export_planning_intake_facts(conn, user_id),
+        "planning_question_events": _export_planning_question_events(conn, user_id),
         "learning_plan_drafts": _export_learning_plan_drafts(conn, user_id),
         "learning_tracks": _export_learning_tracks(conn, user_id),
         "learning_track_plan_revisions": _export_learning_track_plan_revisions(conn, user_id),
@@ -141,6 +143,8 @@ def export_user_data(conn: Connection[dict[str, object]], user_id: str) -> dict[
             "solution_references": "omitted",
             "raw_prompts": "omitted",
             "provider_payloads": "omitted",
+            "planning_fact_hashes": "omitted",
+            "planning_question_gate_reasons": "omitted",
             "secrets": "omitted",
         },
     }
@@ -240,6 +244,8 @@ def _summary_counts(conn: Connection[dict[str, object]], user_id: str) -> dict[s
             user_id,
         ),
         "learning_plan_sessions": _count(conn, "SELECT count(*) AS count FROM tutor_learning_plan_sessions WHERE user_id = %s", user_id),
+        "planning_intake_facts": _count(conn, "SELECT count(*) AS count FROM tutor_planning_intake_facts WHERE user_id = %s", user_id),
+        "planning_question_events": _count(conn, "SELECT count(*) AS count FROM tutor_planning_question_events WHERE user_id = %s", user_id),
         "learning_plan_drafts": _count(conn, "SELECT count(*) AS count FROM tutor_learning_plan_drafts WHERE user_id = %s", user_id),
         "learning_tracks": _count(conn, "SELECT count(*) AS count FROM tutor_learning_tracks WHERE user_id = %s", user_id),
         "learning_track_plan_revisions": _count(conn, "SELECT count(*) AS count FROM tutor_track_plan_revisions WHERE user_id = %s", user_id),
@@ -559,6 +565,42 @@ def _export_learning_plan_drafts(
     return [_safe_row(row, exclude=()) for row in rows]
 
 
+def _export_planning_intake_facts(
+    conn: Connection[dict[str, object]],
+    user_id: str,
+) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """
+        SELECT id, session_id, conversation_id, field_key, value_json,
+               revision, state, source_kind, source_message_id, source_run_id,
+               source_input_revision, supersedes_fact_id, policy_version, created_at
+        FROM tutor_planning_intake_facts
+        WHERE user_id = %s
+        ORDER BY session_id, field_key, revision
+        """,
+        (user_id,),
+    ).fetchall()
+    return [_safe_row(row, exclude=()) for row in rows]
+
+
+def _export_planning_question_events(
+    conn: Connection[dict[str, object]],
+    user_id: str,
+) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """
+        SELECT id, session_id, conversation_id, field_key, question_key, status,
+               source_run_id, source_message_id, source_input_revision, fact_id,
+               previous_event_id, created_at
+        FROM tutor_planning_question_events
+        WHERE user_id = %s
+        ORDER BY session_id, field_key, created_at, id
+        """,
+        (user_id,),
+    ).fetchall()
+    return [_safe_row(row, exclude=()) for row in rows]
+
+
 def _export_learning_tracks(conn: Connection[dict[str, object]], user_id: str) -> list[dict[str, object]]:
     rows = conn.execute(
         """
@@ -808,6 +850,41 @@ def _delete_learning_track_data(conn: Connection[dict[str, object]], user_id: st
     conn.execute("DELETE FROM tutor_lesson_gate_slots WHERE user_id = %s", (user_id,))
     conn.execute("DELETE FROM tutor_lesson_source_snapshots WHERE user_id = %s", (user_id,))
     conn.execute("DELETE FROM tutor_lesson_documents WHERE user_id = %s AND document_kind = 'personalized'", (user_id,))
+    question_event_rows = conn.execute(
+        """
+        WITH RECURSIVE event_depth AS (
+          SELECT id, previous_event_id, 0 AS depth
+          FROM tutor_planning_question_events
+          WHERE user_id = %s AND previous_event_id IS NULL
+          UNION ALL
+          SELECT child.id, child.previous_event_id, parent.depth + 1
+          FROM tutor_planning_question_events AS child
+          JOIN event_depth AS parent ON parent.id = child.previous_event_id
+          WHERE child.user_id = %s
+        )
+        SELECT id FROM event_depth ORDER BY depth DESC, id
+        """,
+        (user_id, user_id),
+    ).fetchall()
+    for row in question_event_rows:
+        conn.execute(
+            "DELETE FROM tutor_planning_question_events WHERE id = %s AND user_id = %s",
+            (row["id"], user_id),
+        )
+    fact_rows = conn.execute(
+        """
+        SELECT id
+        FROM tutor_planning_intake_facts
+        WHERE user_id = %s
+        ORDER BY session_id, field_key, revision DESC, id
+        """,
+        (user_id,),
+    ).fetchall()
+    for row in fact_rows:
+        conn.execute(
+            "DELETE FROM tutor_planning_intake_facts WHERE id = %s AND user_id = %s",
+            (row["id"], user_id),
+        )
     conn.execute("DELETE FROM tutor_learning_plan_drafts WHERE user_id = %s", (user_id,))
     conn.execute("DELETE FROM tutor_learning_plan_sessions WHERE user_id = %s", (user_id,))
     conn.execute("DELETE FROM tutor_run_learning_scopes WHERE user_id = %s", (user_id,))

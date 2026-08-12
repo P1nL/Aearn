@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, SecretStr, model_validator
 
 
 DEEPSEEK_V4_FLASH_MODEL = "deepseek-v4-flash"
@@ -11,6 +11,8 @@ DEEPSEEK_V4_FLASH_CONTEXT_WINDOW_TOKENS = 1_000_000
 DEEPSEEK_V4_FLASH_MAX_OUTPUT_TOKENS = 384_000
 DEFAULT_TUTOR_CONTEXT_TOKEN_BUDGET = 512
 DEFAULT_TUTOR_MAX_OUTPUT_TOKENS = 1_200
+DEFAULT_TUTOR_DECISION_MAX_OUTPUT_TOKENS = 1_200
+DEEPSEEK_V4_FLASH_TUTOR_DECISION_MAX_OUTPUT_TOKENS = 16_384
 DEFAULT_TUTOR_CONTEXT_WINDOW_TOKENS = 5_296
 DEFAULT_TUTOR_CONTEXT_PROTOCOL_RESERVE_TOKENS = 128
 DEFAULT_TUTOR_CONTEXT_SAFETY_MARGIN_TOKENS = 256
@@ -69,6 +71,39 @@ class Settings(BaseModel):
     deepseek_base_url: str | None = Field(default_factory=lambda: _env_optional("DEEPSEEK_BASE_URL"))
     deepseek_model: str | None = Field(default_factory=lambda: _env_optional("DEEPSEEK_MODEL"))
     llm_timeout_seconds: float = Field(default_factory=lambda: float(_env_str("LLM_TIMEOUT_SECONDS", "20")))
+    tutor_provider_debug_capture_mode: str = Field(
+        default_factory=lambda: _env_str(
+            "TUTOR_PROVIDER_DEBUG_CAPTURE_MODE",
+            "off",
+        ).lower()
+    )
+    tutor_provider_debug_capture_key: SecretStr | None = Field(
+        default_factory=lambda: (
+            SecretStr(value)
+            if (value := _env_optional("TUTOR_PROVIDER_DEBUG_CAPTURE_KEY_BASE64"))
+            else None
+        ),
+        repr=False,
+    )
+    tutor_provider_debug_capture_directory: str | None = Field(
+        default_factory=lambda: _env_optional("TUTOR_PROVIDER_DEBUG_CAPTURE_DIRECTORY")
+    )
+    tutor_provider_debug_capture_max_bytes: int = Field(
+        default_factory=lambda: _env_int(
+            "TUTOR_PROVIDER_DEBUG_CAPTURE_MAX_BYTES",
+            "1048576",
+        ),
+        ge=4096,
+        le=16_777_216,
+    )
+    tutor_provider_debug_capture_retention_hours: int = Field(
+        default_factory=lambda: _env_int(
+            "TUTOR_PROVIDER_DEBUG_CAPTURE_RETENTION_HOURS",
+            "24",
+        ),
+        ge=1,
+        le=168,
+    )
     tutor_deepseek_v4_flash_context_window_tokens: int = Field(
         default_factory=lambda: _env_int(
             "TUTOR_DEEPSEEK_V4_FLASH_CONTEXT_WINDOW_TOKENS",
@@ -98,6 +133,33 @@ class Settings(BaseModel):
             str(DEFAULT_TUTOR_MAX_OUTPUT_TOKENS),
         ),
         ge=1,
+    )
+    tutor_default_decision_max_output_tokens: int = Field(
+        default_factory=lambda: _env_int(
+            "TUTOR_DECISION_MAX_OUTPUT_TOKENS",
+            str(DEFAULT_TUTOR_DECISION_MAX_OUTPUT_TOKENS),
+        ),
+        ge=1,
+    )
+    tutor_deepseek_v4_flash_decision_max_output_tokens: int = Field(
+        default_factory=lambda: _env_int(
+            "TUTOR_DEEPSEEK_V4_FLASH_DECISION_MAX_OUTPUT_TOKENS",
+            str(DEEPSEEK_V4_FLASH_TUTOR_DECISION_MAX_OUTPUT_TOKENS),
+        ),
+        ge=1,
+        le=DEEPSEEK_V4_FLASH_MAX_OUTPUT_TOKENS,
+    )
+    tutor_deepseek_responses_json_schema_enabled: bool = Field(
+        default_factory=lambda: _env_bool(
+            "TUTOR_DEEPSEEK_RESPONSES_JSON_SCHEMA_ENABLED",
+            "false",
+        )
+    )
+    tutor_deepseek_repair_thinking_disabled: bool = Field(
+        default_factory=lambda: _env_bool(
+            "TUTOR_DEEPSEEK_REPAIR_THINKING_DISABLED",
+            "true",
+        )
     )
     tutor_context_protocol_reserve_tokens: int = Field(
         default_factory=lambda: _env_int(
@@ -229,11 +291,25 @@ class Settings(BaseModel):
 
     @model_validator(mode="after")
     def _validate_tutor_context_limits(self) -> "Settings":
+        if self.tutor_provider_debug_capture_mode not in {"off", "rejected"}:
+            raise ValueError("TUTOR_PROVIDER_DEBUG_CAPTURE_MODE must be off or rejected")
+        if (
+            self.tutor_provider_debug_capture_mode == "rejected"
+            and self.tutor_provider_debug_capture_key is None
+        ):
+            raise ValueError("Rejected provider capture requires an encryption key")
         if self.uses_deepseek_v4_flash_responses and (
             self.tutor_deepseek_v4_flash_max_output_tokens
             >= self.tutor_deepseek_v4_flash_context_window_tokens
         ):
             raise ValueError("DeepSeek V4 Flash max output tokens must leave room within the context window")
+        if (
+            self.tutor_deepseek_v4_flash_decision_max_output_tokens
+            > self.tutor_deepseek_v4_flash_max_output_tokens
+        ):
+            raise ValueError("DeepSeek V4 Flash Tutor decision output exceeds the provider maximum")
+        if self.tutor_default_decision_max_output_tokens > self.tutor_default_output_reserve_tokens:
+            raise ValueError("Tutor decision output exceeds the default output reserve")
         input_hard_limit = self.tutor_context_window_capacity_tokens - self.tutor_context_output_reserve_tokens
         if input_hard_limit <= self.tutor_context_protocol_reserve_tokens + self.tutor_context_safety_margin_tokens:
             raise ValueError("Tutor context reserves must leave positive required input capacity")
@@ -249,6 +325,18 @@ class Settings(BaseModel):
         if self.tutor_context_fixed_mode not in {None, "compact", "normal", "complex", "extended"}:
             raise ValueError("TUTOR_CONTEXT_FIXED_MODE is invalid")
         return self
+
+    @property
+    def tutor_provider_debug_capture_path(self) -> Path:
+        if self.tutor_provider_debug_capture_directory is not None:
+            return Path(self.tutor_provider_debug_capture_directory)
+        local_app_data = os.getenv("LOCALAPPDATA")
+        if local_app_data:
+            return Path(local_app_data) / "Aearn" / "provider-debug"
+        state_home = os.getenv("XDG_STATE_HOME")
+        if state_home:
+            return Path(state_home) / "aearn" / "provider-debug"
+        return Path.home() / ".local" / "state" / "aearn" / "provider-debug"
 
     @property
     def llm_provider_type(self) -> str:
@@ -296,6 +384,12 @@ class Settings(BaseModel):
         if self.uses_deepseek_v4_flash_responses:
             return self.tutor_deepseek_v4_flash_max_output_tokens
         return DEFAULT_TUTOR_MAX_OUTPUT_TOKENS
+
+    @property
+    def tutor_decision_max_output_tokens(self) -> int:
+        if self.uses_deepseek_v4_flash_responses:
+            return self.tutor_deepseek_v4_flash_decision_max_output_tokens
+        return self.tutor_default_decision_max_output_tokens
 
     @property
     def openai_configured(self) -> bool:

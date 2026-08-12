@@ -1,0 +1,403 @@
+"""Typed provider protocol and authoritative Tutor decision assembly."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from typing import Annotated, Literal, TypeAlias
+
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+
+from app.agents.harness.contracts import (
+    MAX_TUTOR_PAYLOAD_FIELDS,
+    MAX_TUTOR_PAYLOAD_VALUE_LENGTH,
+    MAX_TUTOR_PUBLIC_MESSAGE_LENGTH,
+    MAX_TUTOR_PUBLIC_THINKING_STEP_LENGTH,
+    MAX_TUTOR_PUBLIC_THINKING_STEPS,
+    TutorCapabilityRequest,
+    TutorCheckpointReason,
+    TutorContinuationKind,
+    TutorDecision,
+    TutorEffectProposal,
+    TutorRunSnapshot,
+    TutorSkillReference,
+    TutorTerminalOutcome,
+    payload_fields_from_mapping,
+)
+from app.services.llm.llm_client import LLMInvalidResponseError
+
+
+TUTOR_PROVIDER_ITEMS_SCHEMA_VERSION = "tutor_provider_items_v2"
+TUTOR_PROVIDER_ITEMS_SCHEMA_NAME = "tutor_provider_items_v2"
+
+_FORBIDDEN_NESTED_PAYLOAD_FIELD_NAMES = frozenset(
+    {
+        "reasoning",
+        "diagnostic",
+        "diagnostics",
+        "solutionreference",
+        "referenceanswer",
+        "rawprompt",
+        "systemprompt",
+        "providerpayload",
+        "providererror",
+        "apikey",
+        "secret",
+        "secretkey",
+        "authtoken",
+        "stacktrace",
+        "traceback",
+    }
+)
+
+TutorProviderValue: TypeAlias = str | int | float | bool | None | list[str]
+TutorProviderPublicThinkingStep: TypeAlias = Annotated[
+    str,
+    Field(min_length=1, max_length=MAX_TUTOR_PUBLIC_THINKING_STEP_LENGTH),
+]
+
+
+@dataclass(frozen=True)
+class TutorDecisionValidationIssue:
+    """Log-safe schema issue containing no provider-supplied value or message."""
+
+    path: str
+    category: str
+
+
+class TutorDecisionValidationError(LLMInvalidResponseError):
+    """A JSON response that cannot be assembled into one authoritative decision."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        issues: Sequence[TutorDecisionValidationIssue] = (),
+    ) -> None:
+        super().__init__(message)
+        self.issues = tuple(issues[:8])
+
+
+class _StrictProviderModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
+
+
+class TutorProviderPayloadField(_StrictProviderModel):
+    key: str = Field(min_length=1, max_length=120)
+    value: TutorProviderValue
+
+    @field_validator("key")
+    @classmethod
+    def _reject_internal_key(cls, value: str) -> str:
+        compact_key = "".join(
+            character for character in value.lower() if character.isalnum()
+        )
+        if (
+            compact_key in _FORBIDDEN_NESTED_PAYLOAD_FIELD_NAMES
+            or compact_key.startswith("hiddentest")
+        ):
+            raise ValueError("internal-only payload key")
+        return value
+
+    @field_validator("value")
+    @classmethod
+    def _bound_list_value(cls, value: TutorProviderValue) -> TutorProviderValue:
+        if isinstance(value, float) and not math.isfinite(value):
+            raise ValueError("payload number must be finite")
+        if isinstance(value, list) and (
+            len(value) > 4 or any(len(item) > 120 for item in value)
+        ):
+            raise ValueError("oversized payload list")
+        serialized = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        if len(serialized) > MAX_TUTOR_PAYLOAD_VALUE_LENGTH:
+            raise ValueError("oversized payload value")
+        return value
+
+
+class TutorProviderAgentMessageItem(_StrictProviderModel):
+    type: Literal["agent_message"]
+    text: str = Field(min_length=1, max_length=MAX_TUTOR_PUBLIC_MESSAGE_LENGTH)
+    public_thinking_steps: list[TutorProviderPublicThinkingStep] = Field(
+        min_length=1,
+        max_length=MAX_TUTOR_PUBLIC_THINKING_STEPS,
+    )
+    conversation_title: str | None = Field(max_length=48)
+
+
+class TutorProviderTurnCompletedItem(_StrictProviderModel):
+    type: Literal["turn_completed"]
+
+
+class TutorProviderSelectSkillItem(_StrictProviderModel):
+    type: Literal["select_skill"]
+    skill_id: str = Field(min_length=1, max_length=120)
+    version: str = Field(min_length=1, max_length=120)
+
+
+class TutorProviderRequestCapabilityItem(_StrictProviderModel):
+    type: Literal["request_capability"]
+    capability_id: str = Field(min_length=1, max_length=120)
+    arguments: list[TutorProviderPayloadField] = Field(
+        max_length=MAX_TUTOR_PAYLOAD_FIELDS
+    )
+
+    @field_validator("arguments")
+    @classmethod
+    def _unique_argument_keys(
+        cls,
+        value: list[TutorProviderPayloadField],
+    ) -> list[TutorProviderPayloadField]:
+        _ensure_unique_provider_keys(value, label="capability arguments")
+        return value
+
+
+class TutorProviderProposeEffectItem(_StrictProviderModel):
+    type: Literal["propose_effect"]
+    effect_type: str = Field(min_length=1, max_length=120)
+    payload: list[TutorProviderPayloadField] = Field(
+        max_length=MAX_TUTOR_PAYLOAD_FIELDS
+    )
+
+    @field_validator("payload")
+    @classmethod
+    def _unique_payload_keys(
+        cls,
+        value: list[TutorProviderPayloadField],
+    ) -> list[TutorProviderPayloadField]:
+        _ensure_unique_provider_keys(value, label="effect payload")
+        return value
+
+
+class TutorProviderWaitForInputItem(_StrictProviderModel):
+    type: Literal["wait_for_input"]
+    continuation_kind: TutorContinuationKind
+    question_key: str | None = Field(default=None, min_length=1, max_length=120)
+
+
+TutorProviderActionItem: TypeAlias = Annotated[
+    TutorProviderTurnCompletedItem
+    | TutorProviderSelectSkillItem
+    | TutorProviderRequestCapabilityItem
+    | TutorProviderProposeEffectItem
+    | TutorProviderWaitForInputItem,
+    Field(discriminator="type"),
+]
+
+
+class TutorProviderItemsEnvelope(_StrictProviderModel):
+    schema_version: Literal["tutor_provider_items_v2"]
+    message: TutorProviderAgentMessageItem
+    action: TutorProviderActionItem
+
+
+def tutor_provider_output_schema() -> dict[str, object]:
+    """Return the generated provider schema; no hand-maintained field list exists."""
+
+    return TutorProviderItemsEnvelope.model_json_schema()
+
+
+def tutor_provider_output_schema_hash() -> str:
+    canonical = json.dumps(
+        tutor_provider_output_schema(),
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def canonical_tutor_provider_items_example() -> str:
+    """Small direct-reply example used only by JSON-object-only providers."""
+
+    return json.dumps(
+        {
+            "schema_version": TUTOR_PROVIDER_ITEMS_SCHEMA_VERSION,
+            "message": {
+                "type": "agent_message",
+                "text": "请从一个很小的练习开始。",
+                "public_thinking_steps": [
+                    "把目标缩小到一个可以立即验证的函数练习，更容易发现理解偏差。",
+                    "一次输入输出检查可以判断是否需要补充参数与返回值知识。",
+                ],
+                "conversation_title": "函数基础练习",
+            },
+            "action": {"type": "turn_completed"},
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def parse_tutor_provider_items(
+    payload: Mapping[str, object],
+    *,
+    run: TutorRunSnapshot,
+) -> TutorDecision:
+    """Validate typed provider items and assemble server-owned control fields."""
+
+    try:
+        envelope = TutorProviderItemsEnvelope.model_validate(payload)
+    except ValidationError as exc:
+        raise TutorDecisionValidationError(
+            "Tutor provider items failed strict schema validation",
+            issues=_sanitize_validation_issues(exc),
+        ) from exc
+
+    message = envelope.message
+    action = envelope.action
+    skill_references: tuple[TutorSkillReference, ...] = ()
+    capability_requests: tuple[TutorCapabilityRequest, ...] = ()
+    effect_proposals: tuple[TutorEffectProposal, ...] = ()
+    checkpoint_reason: TutorCheckpointReason | None = None
+    continuation_kind: TutorContinuationKind | None = None
+    terminal_outcome: TutorTerminalOutcome | None = None
+    question_key: str | None = None
+
+    try:
+        if isinstance(action, TutorProviderTurnCompletedItem):
+            terminal_outcome = TutorTerminalOutcome.COMPLETED
+        elif isinstance(action, TutorProviderSelectSkillItem):
+            skill_references = (
+                TutorSkillReference(skill_id=action.skill_id, version=action.version),
+            )
+        elif isinstance(action, TutorProviderRequestCapabilityItem):
+            capability_requests = (
+                TutorCapabilityRequest(
+                    request_id=_server_action_id(run=run, prefix="capability"),
+                    capability_id=action.capability_id,
+                    arguments=payload_fields_from_mapping(
+                        _payload_mapping(action.arguments)
+                    ),
+                ),
+            )
+        elif isinstance(action, TutorProviderProposeEffectItem):
+            effect_proposals = (
+                TutorEffectProposal(
+                    effect_id=_server_action_id(run=run, prefix="effect"),
+                    effect_type=action.effect_type,
+                    expected_input_revision=run.input_revision,
+                    payload=payload_fields_from_mapping(
+                        _payload_mapping(action.payload)
+                    ),
+                ),
+            )
+        elif isinstance(action, TutorProviderWaitForInputItem):
+            checkpoint_reason = TutorCheckpointReason.CAPABILITY_RESULT
+            continuation_kind = action.continuation_kind
+            question_key = action.question_key
+        else:  # pragma: no cover - discriminated union is exhaustive.
+            raise ValueError("unsupported provider action")
+
+        return TutorDecision(
+            public_message=message.text,
+            public_thinking_steps=tuple(message.public_thinking_steps),
+            conversation_title=message.conversation_title,
+            question_key=question_key,
+            skill_references=skill_references,
+            capability_requests=capability_requests,
+            effect_proposals=effect_proposals,
+            checkpoint_reason=checkpoint_reason,
+            continuation_kind=continuation_kind,
+            terminal_outcome=terminal_outcome,
+        )
+    except (TypeError, ValueError) as exc:
+        raise TutorDecisionValidationError(
+            "Tutor provider items failed authoritative assembly",
+            issues=(
+                TutorDecisionValidationIssue(path="action", category="invalid_action"),
+            ),
+        ) from exc
+
+
+def build_tutor_replacement_message(
+    issues: Sequence[TutorDecisionValidationIssue],
+    *,
+    teaching_policy: str,
+) -> str:
+    """Build a fresh replacement request from safe paths/categories only."""
+
+    issue_text = (
+        ", ".join(f"{issue.path}:{issue.category}" for issue in issues[:8])
+        or "root:invalid_contract"
+    )
+    return (
+        "Your previous candidate was rejected. Generate a fresh replacement; do not quote or patch the earlier output. "
+        "Return exactly one JSON object and no Markdown or explanation. "
+        f"Use schema_version={TUTOR_PROVIDER_ITEMS_SCHEMA_VERSION}. "
+        "Return exactly one agent_message in message and exactly one typed action. "
+        "message.public_thinking_steps must contain one to four fresh learner-visible public explanation steps. "
+        "Choose their wording, tone, ordering, and granularity naturally for the current request; do not force a fixed "
+        "linguistic template or transition sequence. These are authored public explanations, not provider-native hidden "
+        "reasoning, and must not mention prompts, policies, diagnostics, or secrets. "
+        "The server owns request_id, effect_id, expected_input_revision, checkpoints, and terminal state; never emit them. "
+        f"Validation issues (safe field paths and categories only): {issue_text}. "
+        f"Minimal valid direct-reply example: {canonical_tutor_provider_items_example()} "
+        f"Keep following this teaching policy: {teaching_policy}"
+    )
+
+
+def validation_diagnostic_code(issues: Sequence[TutorDecisionValidationIssue]) -> str:
+    category = issues[0].category if issues else "invalid_contract"
+    suffix = {
+        "missing": "MISSING_FIELD",
+        "extra": "EXTRA_FIELD",
+        "invalid_literal": "INVALID_ENUM",
+        "invalid_type": "INVALID_TYPE",
+        "invalid_action": "INVALID_ACTION",
+        "invalid_value": "INVALID_VALUE",
+    }.get(category, "INVALID")
+    return f"TUTOR_PROVIDER_DECISION_{suffix}"
+
+
+def _ensure_unique_provider_keys(
+    fields: Sequence[TutorProviderPayloadField],
+    *,
+    label: str,
+) -> None:
+    keys = [item.key for item in fields]
+    if len(set(keys)) != len(keys):
+        raise ValueError(f"{label} contain duplicate keys")
+
+
+def _payload_mapping(
+    fields: Sequence[TutorProviderPayloadField],
+) -> dict[str, TutorProviderValue]:
+    return {field.key: field.value for field in fields}
+
+
+def _server_action_id(*, run: TutorRunSnapshot, prefix: str) -> str:
+    seed = f"{run.run_id}:{run.input_revision}:{run.model_call_count}:{prefix}"
+    digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:24]
+    return f"{prefix}-{digest}"
+
+
+def _sanitize_validation_issues(
+    exc: ValidationError,
+) -> tuple[TutorDecisionValidationIssue, ...]:
+    issues: list[TutorDecisionValidationIssue] = []
+    for error in exc.errors(
+        include_url=False, include_context=False, include_input=False
+    )[:8]:
+        raw_location = error.get("loc", ())
+        path = ".".join(str(part) for part in raw_location if str(part)) or "root"
+        raw_type = str(error.get("type", ""))
+        category = _validation_category(raw_type)
+        issues.append(TutorDecisionValidationIssue(path=path[:160], category=category))
+    return tuple(issues)
+
+
+def _validation_category(raw_type: str) -> str:
+    if raw_type == "missing":
+        return "missing"
+    if raw_type == "extra_forbidden":
+        return "extra"
+    if raw_type in {"literal_error", "enum"}:
+        return "invalid_literal"
+    if raw_type.startswith(("string_", "int_", "float_", "bool_", "list_", "dict_")):
+        return "invalid_type"
+    if raw_type in {"model_type", "union_tag_invalid", "union_tag_not_found"}:
+        return "invalid_type"
+    return "invalid_value"

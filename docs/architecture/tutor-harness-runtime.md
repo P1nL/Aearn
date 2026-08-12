@@ -82,7 +82,10 @@ explicit server-authorized continuation only
    conversation lock while a provider response is pending. The loop refreshes
    cancellation/supersede and revision state immediately after every provider
    return, before decision gating, capability dispatch, effect commit and
-   terminal persistence. A stale run converges to a safe cancelled/superseded
+   terminal persistence. A heartbeat that arrives after nominal expiry may renew
+   only while the exact owner and lease generation still match; a replacement
+   claim increments the generation and permanently fences the stale worker. A
+   stale run converges to a safe cancelled/superseded
    projection and cannot write a Tutor message, conversation title, capability
    receipt or effect.
 6. Each interactive context load resolves the authoritative learner input from the exact
@@ -110,10 +113,48 @@ explicit server-authorized continuation only
 The LearningTrack package provides `TutorLearningContextAdapter`, a read-only
 adapter that converts a run snapshot into bounded sources for scope/task kind,
 track language/goal/active plan, and the current node's progress/mastery summary.
-This child freezes that adapter contract only. The existing provider context
-priority and item limits are unchanged; a later integration task may compose the
-adapter after defining how track sources coexist with the current user-level Tutor
-plan. Raw plan JSON and mastery evidence bodies never enter this adapter.
+`PostgresTutorLearningContextLoader` composes that adapter with the planning fact
+projector before context selection; raw plan JSON and mastery evidence bodies never
+enter this adapter.
+
+### Authoritative planning facts and snapshot reconstruction
+
+A `plan_drafting` learner input may contribute server-normalized typed facts for
+`language_id`, `goal_text`, `target_level`, `weekly_minutes`, `experience_level`,
+`teaching_preferences`, and `pace_constraints`. Each confirmed fact is append-only
+and retains exact learner-message/run/input-revision evidence. A correction appends
+a successor and never rewrites the previous value. Question lifecycle is also an
+append-only predecessor chain using the stable field key; the current state follows
+the actual leaf rather than timestamp or UUID ordering because PostgreSQL `now()` is
+transaction-stable.
+
+Before each provider request, the production loader and context eval both call
+`build_authoritative_context_snapshot()`. The result binds the run/input revision,
+planning session, current fact revision/fingerprint, required fact sources, question
+states, a deterministic snapshot hash, and the confirmed-question reask count.
+Resume and replay rebuild the same snapshot from persisted authority instead of
+recovering facts from free-form history or an asynchronous summary.
+
+`required_facts` is a non-evictable context section immediately after system/policy
+and the separately pinned `current_input`. It is reserved before optional history,
+active plan, summary, memory, activity, or capability schemas. If all confirmed facts
+cannot fit without truncation, context construction fails closed with
+`TUTOR_REQUIRED_FACTS_UNREPRESENTABLE`; it does not silently drop one field.
+
+Recent-history selection pins sources marked `confirmed_fact_source`, `correction`,
+or `unresolved_question` before filling the remaining hard item limit by recency. A
+confirmed fact is already a structured replacement for its source. An unresolved or
+reopened answer without a replacement fact is added to
+`compaction_plan.protected_message_ids`, which blocks retirement and increments
+`summary_blocked_by_unprojected_fact`. Structured summary remains continuity-only
+and cannot override the typed fact authority.
+
+A planning `wait_for_input` action must include a valid stable `question_key`. The
+planning decision gate records `asked`, rejects a question whose field is already
+confirmed with internal diagnostic `confirmed_question_reasked`, and records a safe
+reask counter. Explicit learner correction/reopen creates new lineage before the
+field may be asked again. Public API/SSE never exposes gate reasons, fact/event hashes,
+prompt text, or provider payloads.
 
 ### Public conversation history and process projection
 
@@ -143,10 +184,12 @@ keyword router or a claim that fake-model tests prove teaching quality.
 The provider boundary uses only the configured primary compatible provider. A
 missing, malformed, unsafe, or failed provider response maps to a stable
 learner-safe `MODEL_UNAVAILABLE` outcome. There is no provider/model fallback.
-At most one same-provider repair retry may follow a repairable visible-content,
-JSON, or Tutor-decision rejection; incomplete, failed, malformed-envelope, and
-transport responses terminate without repair. The reminder never echoes the
-rejected response, validation detail, prompt, or credentials.
+At most one same-provider replacement retry may follow a repairable
+visible-content, JSON, or typed-item rejection; incomplete, failed,
+malformed-envelope, and transport responses terminate without repair. The
+replacement request is rebuilt from the authoritative input/context and contains
+only bounded field paths plus validation categories. It never echoes the rejected
+candidate, provider validation message, prompt, or credentials.
 
 Each actual provider attempt returns a safe `TutorProviderAttemptReceipt`. The first
 request and the optional same-provider repair have separate `attempt_index` values,
@@ -166,29 +209,40 @@ usage even when visible content, JSON, decision, or safety validation rejects it
 transport failure before an envelope never fabricates usage.
 The durable run may retain a bounded internal diagnostic code for configuration,
 timeout, authentication/quota/rate-limit, HTTP/transport, invalid provider
-response envelope, missing response content, non-JSON response content, invalid
-Tutor decision, output-safety rejection, or adapter failure. Public run reads and
-API/SSE still expose only `MODEL_UNAVAILABLE` and never return the internal code,
-raw provider bodies, prompts, reasoning, transport details, or credentials.
+response envelope, missing response content, non-JSON response content, typed
+contract categories such as missing/extra/invalid action fields, output-safety
+rejection, or adapter failure. Public run reads and API/SSE still expose only
+`MODEL_UNAVAILABLE` and never return the internal code, raw provider bodies,
+prompts, reasoning, transport details, diagnostic artifact identifiers, or
+credentials.
 
-### Primary JSON decision protocol
+### Primary typed-item decision protocol
 
 Before a JSON Tutor decision, `OpenAICompatibleClient.complete_json()` selects one
 protocol from the configured provider and model, and never changes that selection
 for a retry or failure:
 
-- non-DeepSeek configurations retain the existing Responses path;
+- non-DeepSeek configurations retain the Responses path and receive the generated
+  `TutorProviderItemsEnvelope` through strict `text.format=json_schema`;
 - DeepSeek uses the Responses path only when the configured model is the exact,
   case-sensitive value `deepseek-v4-flash`; its normalized endpoint is
-  `/responses`, with `input`, optional `instructions`, `stream=true`,
-  `text.format=json_object`, and bounded `max_output_tokens`. The configured
-  DeepSeek V4 Flash window is `1_000_000` tokens and its generated-output cap is
-  `384_000`, leaving a physical input hard limit of `616_000`. That hard limit is
-  a capability boundary, not a per-turn fill target: the adaptive planner first
-  estimates the exact serialized system/user messages plus protocol reserve and
-  safety margin, then gives ContextBuilder only the remaining optional budget;
+  `/responses`, with `input`, optional `instructions`, `stream=true`, and a
+  bounded Tutor-decision output budget. Official-compatible operation remains
+  `text.format=json_object`; `TUTOR_DEEPSEEK_RESPONSES_JSON_SCHEMA_ENABLED=true`
+  is an explicit opt-in only for a verified compatible gateway. The physical
+  DeepSeek V4 Flash window/output capability remains `1_000_000`/`384_000`,
+  leaving a physical input hard limit of `616_000`, but the narrow decision task
+  defaults to `16_384` output tokens and does not inherit the physical 384K cap.
+  The first attempt keeps the provider's configured/default thinking behavior; a
+  repair attempt sends `thinking.type=disabled` by default so replacement behaves
+  as a narrow serializer (`TUTOR_DEEPSEEK_REPAIR_THINKING_DISABLED=false` opts
+  out). The physical hard limit is a capability boundary, not a per-turn fill target:
+  the adaptive planner first estimates the exact serialized system/user messages
+  plus protocol reserve and safety margin, then gives ContextBuilder only the
+  remaining optional budget;
 - every other DeepSeek model retains the Chat Completions path at
-  `/chat/completions` with `response_format=json_object`.
+  `/chat/completions` with `response_format=json_object` and the conservative
+  `TUTOR_DECISION_MAX_OUTPUT_TOKENS` budget.
 
 ### Adaptive context budget planning
 
@@ -204,8 +258,12 @@ policy continue to replay their persisted `context_token_budget`.
 The planner and provider gateway share one deterministic serializer, so dry-run
 estimation covers the real system teaching policy, canonical strict decision
 shape, current input, selected context, metadata, JSON envelope, protocol
-reserve, and safety margin. Required current input is selected first and can
-never be evicted. Optional sources remain bounded and deterministic; activity
+reserve, and safety margin. Fixed-point metadata stabilization treats the
+required-only estimate as a conservative lower bound, so prompt or metadata
+length changes cannot make a later total estimate violate the required-request
+floor. Required current input is selected first and can never be evicted. Confirmed
+planning facts are then reserved as the required-facts section before optional
+sources. Optional sources remain bounded and deterministic; activity
 and unrelated capability schemas are skipped before a request can cross the
 hard limit. A required serialized request that cannot fit returns
 `TUTOR_CONTEXT_REQUIRED_OVERFLOW` before any provider call.
@@ -251,10 +309,11 @@ exact schema/policy versions and coverage earlier than the current input. Legacy
 Malformed or unavailable summaries fail closed to `current_input +
 recent_messages`; original messages are not deleted.
 
-Provider conflict priority is fixed as `current_input > recent_messages >
-working_summary > learner_memory/activity`. A newer correction or completion
-therefore overrides stale summary content, and the next incremental summary can
-record the corrected fact. Conversation continuity is independent of the
+Provider conflict priority is fixed as `current_input > required_facts >
+semantically pinned recent_messages > ordinary recent_messages > working_summary >
+learner_memory/activity`. A newer correction or completion therefore overrides stale
+summary content, and the next incremental summary can record the corrected fact.
+Conversation continuity is independent of the
 inferred-memory opt-in, while the existing scheduler pause, lease, retry,
 budget, circuit, finite TurnRun, adaptive request budget, and provider hard limit
 remain authoritative.
@@ -264,17 +323,28 @@ The Responses adapter accepts final learner-visible content only from
 SSE/envelopes, non-object JSON text, `response.incomplete`, and `response.failed`
 with bounded internal categories. A selected-provider HTTP `400` is likewise a
 safe internal request-rejected category; it never triggers a protocol, model, or
-provider fallback and its response body is not retained.
+provider fallback.
 
-Tutor decision JSON is a frozen, `extra=forbid` envelope with one canonical
-example shared by the initial prompt and the at-most-once same-model repair. A
-normal direct reply explicitly sets `terminal_intent="completed"`. A
-`continuation_kind` is an enum and is valid only with
-`checkpoint_reason="capability_result"` and no terminal intent. The optional
-`conversation_title` is an NFKC-normalized, single-line, learner-safe candidate
-of at most 48 characters. This adapter validates and types the candidate only;
-conversation-title persistence and public history behavior remain owned by the
-separate lifecycle boundary.
+The provider contract is the generated, frozen, `extra=forbid`
+`tutor_provider_items_v2` envelope: one `agent_message` plus exactly one typed
+action (`turn_completed`, `select_skill`, `request_capability`,
+`propose_effect`, or `wait_for_input`). The message also carries one to four bounded
+`public_thinking_steps`: learner-visible explanations authored specifically for display.
+Their wording, tone, ordering, and granularity are model-selected for the current request;
+no fixed sentence pattern or transition sequence is required. They are validated as public
+teaching output and remain separate from
+provider-native hidden reasoning, which the Responses adapter still never reads.
+Capability arguments and effect payloads
+are bounded `{key,value}` arrays rather than open JSON objects. The provider never
+chooses `request_id`, `effect_id`, `expected_input_revision`, checkpoints, input
+revision, or terminal state. The server derives deterministic action IDs from the
+run/revision/model-call boundary, copies the current revision into effects, maps
+the typed action into the domain `TutorDecision`, and then applies the existing
+decision gate. The optional `conversation_title` remains an NFKC-normalized,
+single-line, learner-safe candidate of at most 48 characters; persistence and
+public history remain owned by the lifecycle boundary. A successful public Tutor message
+atomically persists its `public_thinking_steps`; failed, denied, stale, superseded, or
+message-less results never publish them. Legacy rows project an empty list.
 
 ### Context governance eval and calibration
 
@@ -306,6 +376,14 @@ human release approval are three separate states.
 - Published Skills are exact `id@semantic-version` bundles with reviewed
   manifest, instruction, and evaluation hashes. Aliases, ranges, `current`, and
   unknown references are denied.
+- Skill-managed actions are two-phase. The provider is instructed to select an exact
+  eligible Skill first, then request the capability/effect only after the server rebuilds
+  context with the reviewed instruction. If a provider skips that step, the decision gate
+  may recover only when descriptor/payload validation passes and exactly one
+  policy-eligible reviewed Skill covers every requested action: it records only the Skill
+  selection and returns `REBUILD_CONTEXT`; it never executes the action from that same
+  decision. Zero matches remain `skill_selection_required`, and multiple matches fail
+  closed as `action_skill_ambiguous`.
 - A decision may select a Skill or request an action, but it cannot mix initial
   selection with a capability/effect in one turn.
 - Capability schemas are descriptor-owned and default-deny. Model data never
@@ -320,11 +398,23 @@ human release approval are three separate states.
 ## 5. Privacy, diagnostics, and persistence
 
 The canonical learner message body is limited to `tutor_messages`. Events,
-traces, checkpoints, capability/effect/provider-attempt receipts, exports, outbox rows,
-and public SSE are projected twice through learner-safe allowlists. They omit raw
-prompts/history, provider payloads/errors/reasoning, hidden tests, reference
-answers, submitted code, filesystem/container paths, shell/SQL targets,
-credentials, and checkpoint payloads.
+traces, checkpoints, capability/effect/provider-attempt receipts, exports, outbox
+rows, and public SSE are projected twice through learner-safe allowlists. They
+omit raw prompts/history, provider payloads/errors/reasoning, hidden tests,
+reference answers, submitted code, filesystem/container paths, shell/SQL targets,
+credentials, diagnostic artifact identifiers, and checkpoint payloads.
+
+Raw provider response capture is a separate local operator boundary and defaults
+to `off`. The generic LLM client captures nothing unless the Tutor gateway
+explicitly calls it with `capture_provider_body=true` and injects the diagnostic
+store. When `TUTOR_PROVIDER_DEBUG_CAPTURE_MODE=rejected`, a valid random
+32-byte base64 key is mandatory. Each attempt buffers at most
+`TUTOR_PROVIDER_DEBUG_CAPTURE_MAX_BYTES`, accepted attempts zero/discard the
+buffer, and rejected attempts write an AES-GCM artifact under the configured
+local directory with a random 96-bit nonce and authenticated safe metadata.
+Artifacts are never database rows or API fields, use a 24-hour default retention,
+and are pruned only inside the configured directory. A capture/configuration
+failure never exposes the body or changes the learner-safe terminal projection.
 
 `event_sequence` is a run-local durable ordering key, not an acknowledgement
 store. API idempotency records bind an operation, user scope, request body hash,

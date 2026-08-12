@@ -47,7 +47,7 @@
       },
       "expected": {
         "status": "model_unavailable",
-        "code": "TUTOR_PROVIDER_DECISION_INVALID"
+        "code": "TUTOR_PROVIDER_DECISION_EXTRA_FIELD"
       }
     },
     {

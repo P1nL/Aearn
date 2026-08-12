@@ -240,7 +240,9 @@ class InMemoryTutorRunStore:
         duration_seconds: int,
     ) -> TutorLease | None:
         current = self._leases.get(lease.run_id)
-        if current != lease or current.expires_at <= now:
+        # A late heartbeat may renew only while the exact owner/generation CAS
+        # still matches. Any replacement claim changes the generation first.
+        if current != lease:
             return None
         renewed = TutorLease(
             run_id=lease.run_id,

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import psycopg
 import pytest
@@ -206,6 +206,47 @@ def test_first_turn_rolls_back_every_created_row_after_an_intermediate_failure(t
         )
 
     assert counts() == before
+
+
+def test_expired_lease_owner_can_renew_only_before_replacement_claim(tutor_persistence) -> None:
+    fixture = tutor_persistence
+    acquired_at = datetime.now(UTC)
+    first = fixture.repository.acquire_lease(
+        user_id=fixture.user_id,
+        run_id=fixture.run.run_id,
+        owner_id="slow-provider-worker",
+        now=acquired_at,
+        duration_seconds=30,
+    )
+    assert first is not None
+
+    renewed = fixture.repository.heartbeat_lease(
+        user_id=fixture.user_id,
+        lease=first,
+        now=acquired_at + timedelta(seconds=45),
+        duration_seconds=30,
+    )
+    assert renewed is not None
+    assert renewed.owner_id == first.owner_id
+    assert renewed.generation == first.generation
+
+    replacement = fixture.repository.acquire_lease(
+        user_id=fixture.user_id,
+        run_id=fixture.run.run_id,
+        owner_id="replacement-worker",
+        now=renewed.expires_at + timedelta(seconds=1),
+        duration_seconds=30,
+    )
+    assert replacement is not None
+    assert replacement.generation == renewed.generation + 1
+
+    stale_renewal = fixture.repository.heartbeat_lease(
+        user_id=fixture.user_id,
+        lease=renewed,
+        now=renewed.expires_at + timedelta(seconds=2),
+        duration_seconds=30,
+    )
+    assert stale_renewal is None
 
 
 def test_capability_receipt_requires_exact_selection_and_replays_only_identical_evidence(tutor_persistence) -> None:

@@ -36,6 +36,10 @@ from app.core.config import Settings
 from app.db.connection import connect
 from app.services.learning.context_adapter import TutorLearningContextAdapter
 from app.services.learning.plan_capability import LearningPlanDraftCapabilityHandler
+from app.services.learning.planning_facts import (
+    PlanningQuestionDecisionGate,
+    PostgresPlanningFactRepository,
+)
 from app.services.learning.plan_repository import (
     LearningPlanSessionNotFound,
     PostgresLearningPlanSessionRepository,
@@ -365,6 +369,7 @@ class PostgresTutorLearningContextLoader:
     ) -> None:
         self._learning = TutorLearningContextAdapter(conn)
         self._plans = PostgresLearningPlanSessionRepository(conn)
+        self._facts = PostgresPlanningFactRepository(conn)
         self._base_loader = base_loader
 
     def load_context(self, snapshot: TutorRunSnapshot, *, input_revision: int) -> TutorContextInput:
@@ -372,6 +377,11 @@ class PostgresTutorLearningContextLoader:
         learning = self._learning.load(user_id=snapshot.user_id, run_id=snapshot.run_id)
         descriptors = list(base.system_descriptors)
         descriptors.extend(learning.sources)
+        authoritative = self._facts.project_snapshot(run=snapshot, input_revision=input_revision)
+        required_facts = authoritative.required_facts
+        recent_messages = base.recent_messages
+        compaction_plan = base.compaction_plan
+        summary_blocked = 0
         if learning.scope.scope_kind.value == "plan_drafting":
             try:
                 session = self._plans.active_session_for_run(
@@ -391,9 +401,42 @@ class PostgresTutorLearningContextLoader:
                             "session_version": _context_int(session.get("version")),
                             "current_draft_version": _context_int(session.get("draft_version")),
                             "current_draft_hash": session.get("content_hash"),
+                            "facts_fingerprint": authoritative.facts_fingerprint,
+                            "fact_revision": authoritative.fact_revision,
+                            "question_states": dict(authoritative.question_states),
                         },
                     )
                 )
+                covered_message_ids, protected_message_ids = self._facts.message_semantics_for_session(
+                    user_id=snapshot.user_id,
+                    session_id=str(session["id"]),
+                )
+                recent_messages = tuple(
+                    replace(
+                        source,
+                        semantic_class=(
+                            "confirmed_fact_source"
+                            if source.source_id.removeprefix("message:") in covered_message_ids
+                            else (
+                                "unresolved_question"
+                                if source.source_id.removeprefix("message:") in protected_message_ids
+                                else source.semantic_class
+                            )
+                        ),
+                    )
+                    for source in base.recent_messages
+                )
+                if compaction_plan is not None:
+                    protected_in_plan = tuple(
+                        candidate.message_id
+                        for candidate in compaction_plan.candidates
+                        if candidate.message_id in protected_message_ids
+                    )
+                    summary_blocked = int(bool(protected_in_plan))
+                    compaction_plan = replace(
+                        compaction_plan,
+                        protected_message_ids=protected_in_plan,
+                    )
                 draft = _bounded_current_draft(session)
                 if draft is not None:
                     descriptors.append(
@@ -402,7 +445,18 @@ class PostgresTutorLearningContextLoader:
                             content=draft,
                         )
                     )
-        return replace(base, system_descriptors=tuple(descriptors))
+        return replace(
+            base,
+            system_descriptors=tuple(descriptors),
+            required_facts=required_facts,
+            recent_messages=recent_messages,
+            compaction_plan=compaction_plan,
+            authoritative_snapshot_schema_version=authoritative.schema_version,
+            authoritative_snapshot_hash=authoritative.snapshot_hash,
+            fact_revision=authoritative.fact_revision,
+            confirmed_question_reasked_count=authoritative.confirmed_question_reasked_count,
+            summary_blocked_by_unprojected_fact=summary_blocked,
+        )
 
 
 def _bounded_current_draft(session: Mapping[str, object]) -> dict[str, object] | None:
@@ -506,6 +560,7 @@ class TutorInteractiveRunDispatcher:
             catalog = compile_published_skill_catalog()
             policy_resolver = InteractiveLearningCapabilityPolicyResolver(conn)
             selection_store = PostgresTutorSkillSelectionStore(repository=repository, user_id=user_id)
+            planning_facts = PostgresPlanningFactRepository(conn)
             base_loader = PostgresTutorContextLoader(conn=conn, learner_state=learner_state)
             learning_loader = PostgresTutorLearningContextLoader(conn=conn, base_loader=base_loader)
             loop = TutorRunLoop(
@@ -529,10 +584,13 @@ class TutorInteractiveRunDispatcher:
                 effect_committer=DefaultDenyEffectCommitter(),
                 clock=self._clock,
                 compaction_publisher=NoopTutorCompactionPublisher(),
-                decision_gate=CatalogTutorDecisionGate(
-                    catalog=catalog,
-                    policy_resolver=policy_resolver,
-                    selection_store=selection_store,
+                decision_gate=PlanningQuestionDecisionGate(
+                    base=CatalogTutorDecisionGate(
+                        catalog=catalog,
+                        policy_resolver=policy_resolver,
+                        selection_store=selection_store,
+                    ),
+                    facts=planning_facts,
                 ),
                 lifecycle=PostgresTutorLifecycle(repository=repository),
             )
