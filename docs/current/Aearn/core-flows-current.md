@@ -1,4 +1,13 @@
-# 当前核心流程
+# 当前核心流程（历史快照）
+
+> **历史快照，非当前 source of truth。** 本文件生成于 2026-06-18，记录已移除的
+> onboarding / learning-session / top-level review / notes runtime；目录名中的 `current` 不代表
+> 2026-08-12 的 active runtime。当前事实请读取
+> [`../../README.md`](../../README.md)、
+> [`../../architecture/tutor-harness-runtime.md`](../../architecture/tutor-harness-runtime.md)、
+> [`../../architecture/api-contract.md`](../../architecture/api-contract.md) 和
+> [`../../architecture/database-schema.md`](../../architecture/database-schema.md)。不得据此恢复
+> `/api/reviews`、`review_states` 或旧 Desktop 页面。
 
 生成日期：2026-06-18
 

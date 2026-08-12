@@ -55,6 +55,7 @@ class ExerciseAttemptType(StrEnum):
     RUN = "run"
     SUBMIT = "submit"
     DIAGNOSTIC_SUBMIT = "diagnostic_submit"
+    REVIEW_SUBMIT = "review_submit"
 
 
 class ExerciseAttemptOutcome(StrEnum):

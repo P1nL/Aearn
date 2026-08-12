@@ -197,7 +197,7 @@ workspace/练习 runner、review/FSRS 页面、notes 页面、dashboard/resume�
 
 ## 2026-08-10：LearningTrack 首页与计划制定
 
-verified 用户进入 `tutor` shell 后默认看到服务端权威的 LearningTrack 首页，而不是空对话。首页固定以三列/两列/单列响应式卡片展示 `GET /api/learning-tracks` 的进度、当前知识点、到期复习数和 `execution_tier`；添加卡始终位于末尾。首页不显示左侧栏、对话历史或手动刷新按钮，Desktop 也不再提供独立 general conversation / 对话历史页面。点击添加卡直接创建或恢复一条持久化 `plan_drafting` session，不经过语言选择页面；语言、基础、目标、时间投入与偏好全部由 Tutor 在规划对话中询问。planning 页面无应用左侧栏、对话 hero 和外层对话卡片。未激活状态只有可用区域中央的圆角 Composer，不显示空状态说明、快捷建议或底部提示；用户发送第一条消息后才进入 Tutor 左侧正文、学习者右侧气泡及底部 Composer 的 GPT 式消息流。信息收集阶段 Composer 聚焦时不改变外壳视觉；进入 planning 页面后，页面右缘立即出现展开/收起按钮并默认弹出四角圆角的紧凑独立浮动窗口。模型尚未通过类型化 capability 生成服务端 `current_draft` 时，窗口只显示一个 emoji，不展示伪造路线；草案生成后在同一窗口原位展示计划路线。窗口与视口右缘保留明显留白，不表现为贴边侧栏，也不挤压对话主列或占满右侧；用户可收起/重开，新 draft 版本会自动展示。普通规划消息通过 conversation input 创建 fresh finite TurnRun。模型只能通过 exact `tutor.learning-plan-draft@1.0.0` 和 `learning.plan.draft` 写入 append-only typed draft；用户确认当前 version/id/hash 后才原子创建 LearningTrack。既有 conversation 数据与 API 保留用于兼容和规划会话，Lesson、Review 和完整三栏工作区尚未交付，相关按钮只产生稳定 intent 并显示真实未就绪状态。
+verified 用户进入 `tutor` shell 后默认看到服务端权威的 LearningTrack 首页，而不是空对话。首页固定以三列/两列/单列响应式卡片展示 `GET /api/learning-tracks` 的进度、当前知识点、到期复习数和 `execution_tier`；添加卡始终位于末尾。首页不显示左侧栏、对话历史或手动刷新按钮，Desktop 也不再提供独立 general conversation / 对话历史页面。点击添加卡直接创建或恢复一条持久化 `plan_drafting` session，不经过语言选择页面；语言、基础、目标、时间投入与偏好全部由 Tutor 在规划对话中询问。planning 页面无应用左侧栏、对话 hero 和外层对话卡片。未激活状态只有可用区域中央的圆角 Composer，不显示空状态说明、快捷建议或底部提示；用户发送第一条消息后才进入 Tutor 左侧正文、学习者右侧气泡及底部 Composer 的 GPT 式消息流。信息收集阶段 Composer 聚焦时不改变外壳视觉；进入 planning 页面后，页面右缘立即出现展开/收起按钮并默认弹出四角圆角的紧凑独立浮动窗口。模型尚未通过类型化 capability 生成服务端 `current_draft` 时，窗口只显示一个 emoji，不展示伪造路线；草案生成后在同一窗口原位展示计划路线。窗口与视口右缘保留明显留白，不表现为贴边侧栏，也不挤压对话主列或占满右侧；用户可收起/重开，新 draft 版本会自动展示。普通规划消息通过 conversation input 创建 fresh finite TurnRun。模型只能通过 exact `tutor.learning-plan-draft@1.0.0` 和 `learning.plan.draft` 写入 append-only typed draft；用户确认当前 version/id/hash 后才原子创建 LearningTrack。既有 conversation 数据与 API 保留用于兼容和规划会话。Lesson、练习 Gate、模型代码审核和 track-scoped ReviewSession 后端 authority 已交付；完整三栏工作区与其中的 Review 中间区域仍由后续工作区 child 交付，尚未接入的按钮必须显示真实未就绪状态。
 
 ## 2026-08-11：LessonDocument 与权威来源阅读
 
@@ -208,7 +208,7 @@ ready 状态读取一个 track-scoped active assignment、immutable personalized
 `LessonDocument` 和自包含 source snapshots。用户点击“开始本课”只把 `available`
 安全推进到 `in_progress` 并冻结正文顺序、引用、content hash 与公开 Gate slot；不会写完成、掌握度、解锁或运行事实。来源或生成策略更新只产生 proposed assignment 和 learner-safe impact，用户显式迁移前旧 assignment 继续 active。
 
-课程正文通过注册 block union 渲染，事实块的 inline citation 可定位到来源面板。来源面板展示 provider、trust、版本、章节、抓取/冻结时间、canonical URL 和 bounded excerpt。`exercise_gate` 保留已冻结公开 contract，并由 active assignment 对应的服务端 Gate binding 决定当前状态与可用动作；客户端不按最新文档或本地状态猜测绑定。Review、完整三栏工作区和 Lesson 文本选区进入 Tutor 仍属于后续任务。
+课程正文通过注册 block union 渲染，事实块的 inline citation 可定位到来源面板。来源面板展示 provider、trust、版本、章节、抓取/冻结时间、canonical URL 和 bounded excerpt。`exercise_gate` 保留已冻结公开 contract，并由 active assignment 对应的服务端 Gate binding 决定当前状态与可用动作；客户端不按最新文档或本地状态猜测绑定。ReviewSession 后端 authority 已可读取和恢复；完整三栏工作区、Review 中间区域和 Lesson 文本选区进入 Tutor 仍属于后续任务。
 
 ## 2026-08-11：练习 Gate、受控执行与模块诊断
 
@@ -232,3 +232,22 @@ candidate；失败时只能重试服务端 authoring，不出现本地 fallback�
 服务端以版本化 rubric 一对一确定性匹配 finding，区分发现、遗漏、严重性、证据、验证方法、
 修复建议、重复与误报，再复用现有 Gate/mastery/progress exactly-once 事务。正确代码与“表面
 可疑但正确”场景会显著惩罚误报；模型解释只能补充教学反馈，不能修改结果。
+
+## 2026-08-12：间隔复习与 ReviewSession
+
+LearningTrack 首页读取同一服务端 `review_due_count`，其含义是当前 actionable review：普通已到期
+schedule，加上需要立即补救的 `critical` schedule。后续工作区左栏只能读取该值和
+`GET /api/learning-tracks/{track_id}/reviews`，不能在浏览器比较日期、推断风险或自行阻断路线。
+普通到期项不影响继续课程；只有当前节点直接或传递前置知识的 `critical` 项才显示短
+Review Gate 和明确补救入口。
+
+学习者开始复习时，服务端冻结最多三道已通过质量门的 immutable ExerciseVersion、active plan
+revision、schedule version 与 `AuthoritativeContextSnapshot`。候选池不足时显示可恢复状态并允许
+原请求重试，不出现本地题面或低质量 fallback。warmup 可以回答或跳过，但只改变当前 session；
+提示会记录 assistance，之后相同正确答案与独立完成获得不同调度结果。
+
+每道正式练习创建一个 append-only `review_submit` Attempt。静态题和模型代码审核可同步评分；
+需要执行的题目只按服务端 `execution_tier` 进入现有 executor queue。全部 item terminal 前不能完成
+session，也不能改 mastery 或下一次复习时间。finalization 成功后才原子写聚合 rating、掌握度证据、
+schedule event 和下一次 `due_at`；重放返回同一结果。resume、历史截断或 summary 暂不可用时继续
+读取创建时冻结的权威 context，不从聊天正文重新猜目标、时间或偏好。

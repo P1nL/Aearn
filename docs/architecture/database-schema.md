@@ -306,3 +306,34 @@ transaction-local child-to-root purge。confirmed reset 先 terminalize 内部 p
 删除 evidence/action/execution/check/publication/validation/candidate/author receipt/authoring，
 再删除该 authoring 独占的 internal run/conversation；去个性化的 immutable published
 exercise/rubric 保留。cutover inventory 将上述七张 user-owned 表显式计为 target state。
+
+## 2026-08-12：Track-scoped ReviewSession 与调度 authority
+
+正式复习由七张 additive user-owned 表组成：`tutor_review_schedule_states`、
+`tutor_review_schedule_events`、`tutor_review_sessions`、
+`tutor_review_warmup_receipts`、`tutor_review_items`、
+`tutor_review_hint_receipts` 和 `tutor_review_finalizations`。schedule state 对
+`track_id + knowledge_key` 唯一，并用复合 FK 固定 user/track/plan revision；event、warmup、
+hint 和 finalization 是 append-only receipt。session 生命周期为
+`blocked | active | ready_to_finalize | finalized | cancelled`，blocked 保持可恢复且不会占用
+第二个 active session identity。
+
+`tutor_exercise_attempts` 的 owner shape 增加 `review_submit`：必须同时绑定 exact
+`review_session_id + review_item_id + track_id + plan_revision_id + knowledge_key`，并保存 expected
+review session/item version。每个 review item 最多一个 Attempt；submission/result 继续使用既有
+private artifact 和 immutable terminal result。执行依赖题复用 `tutor_execution_intents`、
+`tutor_execution_jobs` 与 `tutor_exercise_execution_links`，不新增 queue 或 Tutor conversation。
+
+warmup/hint/中间 Attempt 不更新长期 mastery/schedule。唯一 finalization 在一个事务中锁定
+session、track、schedule 和 terminal Attempts，写一条 `tutor_review_finalizations`、一条
+`tutor_review_schedule_events`、一条 `tutor_mastery_evidence(evidence_kind='review')` 并 CAS 更新
+`tutor_review_schedule_states`。计划 revision 激活按稳定 `knowledge_key` 写 retained/suspended
+migration event；确认的模块诊断 skip 建立低频 schedule。actionable due count 查询包括普通
+`due_at <= now()` 和 `risk_level='critical'`，后者仅在其为当前节点前置知识时投影短 Gate。
+
+local export 只包含 schedule/session/finalization 的有界摘要和 Attempt owner ID，不导出
+context snapshot/hash、selection reason、完整 submission、private rubric/test 或 event state JSON。
+reset/delete 使用既有 transaction-local purge capability，按 finalization/event/hint/result/
+submission/Attempt/item/warmup/session/schedule 的 FK 逆序清理。cutover inventory 显式统计七张
+review 表；bootstrap twice 必须断言 owner CHECK、复合 FK、唯一索引、lifecycle/immutable trigger
+和 repeatable additive migration。

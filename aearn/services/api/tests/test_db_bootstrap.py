@@ -216,6 +216,34 @@ MODEL_REVIEW_SCHEMA_CONSTRAINTS = (
 )
 
 
+REVIEW_SCHEMA_CONSTRAINTS = (
+    "uq_tutor_review_schedule_track_key",
+    "fk_tutor_review_schedule_progress",
+    "fk_tutor_review_schedule_revision",
+    "uq_tutor_review_schedule_event_source",
+    "uq_tutor_review_schedule_event_scope",
+    "fk_tutor_review_schedule_event_scope",
+    "uq_tutor_review_sessions_idempotency",
+    "fk_tutor_review_session_revision",
+    "fk_tutor_review_session_progress",
+    "chk_tutor_review_session_terminal",
+    "chk_tutor_review_session_failure",
+    "chk_tutor_review_session_stage",
+    "uq_tutor_review_warmup_session",
+    "fk_tutor_review_warmup_session",
+    "uq_tutor_review_items_session_order",
+    "fk_tutor_review_item_session",
+    "fk_tutor_review_item_node",
+    "fk_tutor_review_hint_item",
+    "chk_tutor_exercise_attempts_type",
+    "fk_tutor_exercise_attempt_review_item_scope",
+    "uq_tutor_review_finalization_session",
+    "fk_tutor_review_finalization_session",
+    "fk_tutor_review_finalization_mastery",
+    "fk_tutor_review_finalization_schedule_event",
+)
+
+
 PRACTICE_SCHEMA_CONSTRAINTS = (
     "uq_tutor_exercise_versions_key_version",
     "chk_tutor_exercise_versions_execution_shape",
@@ -253,6 +281,7 @@ TUTOR_SCHEMA_CONSTRAINTS = (
     + ACTION_SCHEMA_CONSTRAINTS
     + LESSON_SCHEMA_CONSTRAINTS
     + PRACTICE_SCHEMA_CONSTRAINTS
+    + REVIEW_SCHEMA_CONSTRAINTS
     + MODEL_REVIEW_SCHEMA_CONSTRAINTS
 )
 
@@ -317,6 +346,13 @@ TARGET_TUTOR_TABLES = (
     "tutor_exercise_attempt_results",
     "tutor_exercise_hint_receipts",
     "tutor_exercise_execution_links",
+    "tutor_review_schedule_states",
+    "tutor_review_schedule_events",
+    "tutor_review_sessions",
+    "tutor_review_warmup_receipts",
+    "tutor_review_items",
+    "tutor_review_hint_receipts",
+    "tutor_review_finalizations",
     "tutor_model_review_authoring_runs",
     "tutor_model_review_authoring_attempt_receipts",
     "tutor_model_review_candidates",
@@ -402,6 +438,15 @@ def test_tutor_target_schema_is_repeatable_and_enforces_run_event_identity() -> 
                     "trg_tutor_exercise_attempt_results_immutable",
                     "trg_tutor_exercise_hint_receipts_immutable",
                     "trg_tutor_exercise_execution_links_immutable",
+                    "trg_tutor_review_schedule_states_updated_at",
+                    "trg_tutor_review_schedule_states_lifecycle",
+                    "trg_tutor_review_sessions_updated_at",
+                    "trg_tutor_review_sessions_lifecycle",
+                    "trg_tutor_review_schedule_events_immutable",
+                    "trg_tutor_review_warmups_immutable",
+                    "trg_tutor_review_items_immutable",
+                    "trg_tutor_review_hints_immutable",
+                    "trg_tutor_review_finalizations_immutable",
                 ],
             ),
         ).fetchall()
@@ -509,6 +554,15 @@ def test_tutor_target_schema_is_repeatable_and_enforces_run_event_identity() -> 
             "trg_tutor_exercise_attempt_results_immutable",
             "trg_tutor_exercise_hint_receipts_immutable",
             "trg_tutor_exercise_execution_links_immutable",
+            "trg_tutor_review_schedule_states_updated_at",
+            "trg_tutor_review_schedule_states_lifecycle",
+            "trg_tutor_review_sessions_updated_at",
+            "trg_tutor_review_sessions_lifecycle",
+            "trg_tutor_review_schedule_events_immutable",
+            "trg_tutor_review_warmups_immutable",
+            "trg_tutor_review_items_immutable",
+            "trg_tutor_review_hints_immutable",
+            "trg_tutor_review_finalizations_immutable",
         }
         executor_indexes = conn.execute(
             """
@@ -556,6 +610,14 @@ def test_tutor_target_schema_is_repeatable_and_enforces_run_event_identity() -> 
                     "idx_tutor_exercise_attempts_gate",
                     "idx_tutor_exercise_attempts_diagnostic",
                     "idx_tutor_module_diagnostic_sessions_track",
+                    "uq_tutor_review_sessions_one_active",
+                    "idx_tutor_review_schedule_due",
+                    "idx_tutor_review_schedule_events_created",
+                    "idx_tutor_review_sessions_scope",
+                    "idx_tutor_review_items_session",
+                    "idx_tutor_review_hints_item",
+                    "idx_tutor_exercise_attempts_review",
+                    "uq_tutor_exercise_attempts_review_item",
                 ],
             ),
         ).fetchall()
@@ -597,6 +659,14 @@ def test_tutor_target_schema_is_repeatable_and_enforces_run_event_identity() -> 
             "idx_tutor_exercise_attempts_gate",
             "idx_tutor_exercise_attempts_diagnostic",
             "idx_tutor_module_diagnostic_sessions_track",
+            "uq_tutor_review_sessions_one_active",
+            "idx_tutor_review_schedule_due",
+            "idx_tutor_review_schedule_events_created",
+            "idx_tutor_review_sessions_scope",
+            "idx_tutor_review_items_session",
+            "idx_tutor_review_hints_item",
+            "idx_tutor_exercise_attempts_review",
+            "uq_tutor_exercise_attempts_review_item",
         }
         execution_constraint_rows = conn.execute(
             "SELECT conname FROM pg_constraint WHERE conname = ANY(%s)",

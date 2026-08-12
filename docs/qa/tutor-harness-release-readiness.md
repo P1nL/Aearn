@@ -177,7 +177,7 @@ PostgreSQL current/history 集成证据，以及默认禁用的固定五轮 real
 - 本地 fake/offline 与 PostgreSQL focused matrix 覆盖 planning session、typed draft、stale/idempotent confirm、LearningTrack 创建、capability/run loop/context/usage/cache/summary/SSE 回归。
 - `pnpm --dir .\aearn desktop:check` 已验证 TypeScript/Vite production build。
 - 真实 provider smoke 默认未执行；本证据不证明真实模型教学质量，也不是 deploy 或 release approval。
-- LessonDocument、ReviewSession、练习 Gate 和完整三栏学习工作区仍由后续 child 交付；当前 CTA 明确显示未就绪。
+- 该 2026-08-10 截面尚未交付 LessonDocument、ReviewSession、练习 Gate 和完整三栏学习工作区；后续 dated sections 记录各 child 的实际完成证据。
 - receipt、SSE 与文档证据不保存 raw prompt/history、provider body、reasoning、credential 或 transport body。
 
 ## LessonDocument 与权威来源证据（2026-08-11）
@@ -263,3 +263,27 @@ PostgreSQL current/history 集成证据，以及默认禁用的固定五轮 real
 
 上述结果不证明真实 provider 的生成质量，也不批准生产 executor image。浏览器证据只使用
 临时本地前端 harness 与本地 Vite 服务；不得被解释为生产数据、真实模型或生产容器验证。
+
+## 间隔复习与 ReviewSession 证据（2026-08-12）
+
+**任务：** `08-04-spaced-review-sessions`。本轮实现 track-scoped schedule/event、有限
+ReviewSession、warmup/hint/item/finalization、`review_submit` Attempt owner、existing executor
+reuse、`AuthoritativeContextSnapshot`、计划迁移、诊断 skip 低频 seed、首页 actionable count、
+local export/reset/cutover，以及 verified-only API。旧 `review_states`、`review_logs`、
+`review_seed_banks` 和 top-level `/api/reviews` 未恢复。
+
+### 当前自动化证据
+
+- Review focused：**15 passed**，覆盖纯调度、critical prerequisite 即时 Gate、两题 batch、
+  exactly-once finalization、候选不足恢复、cross-user、revision migration、API 与 local data。
+- Focused Ruff 与 `git diff --check`：**Pass**。
+- API dependency lock、Ruff、Mypy（162 source files）：**Pass**。
+- 完整 API 串行 suite：**506 passed, 1 skipped in 97.85s**；唯一 skip 为默认禁用的 real-provider smoke。
+- Executor lock/Ruff/Mypy 与完整 suite：**Pass，11 passed**。
+- Desktop `tsc && vite build`：**Pass**。
+- Trellis child validate 与最终 `git diff --check`：**Pass**；任务归档在 product commit 后执行。未获得 push/deploy 授权。
+
+### 非声明
+
+上述证据不证明真实 provider 生成质量、生产 container image 隔离或完整三栏 Review UI；本轮未
+调用真实 provider、未启动生产容器 fleet、未 push、未 deploy，也不是 release approval。

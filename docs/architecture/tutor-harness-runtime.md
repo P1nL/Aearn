@@ -17,7 +17,7 @@ a compatibility bridge to the former product.
 local identity
   -> GET /api/harness/cutover
   -> verified receipt
-  -> LearningTrack routes and Tutor conversation/activity/inbox/memory/preferences
+  -> LearningTrack, Lesson/Gate/Review routes and Tutor conversation/activity/inbox/memory/preferences
 ```
 
 A missing, pending, blocked, failed, or malformed cutover state denies both the
@@ -30,7 +30,7 @@ legacy learner history.
 | Layer | Owner | Contract |
 | --- | --- | --- |
 | Public adapter | `routes/tutor.py`, `services/tutor/public_api.py` | Validates user scope and idempotency, exposes learner-safe projections, and never performs Graph/router compatibility work. |
-| Learning domain | `routes/learning_tracks.py`, `routes/exercise_gates.py`, `services/learning/` | Owns track-scoped plans, progress/mastery, immutable LessonDocument/source snapshots/assignments, exercise Gate/Attempt/module-diagnostic authority, execution-tier projection, immutable scope snapshots, and a read-only Tutor context adapter; Review remains separate. |
+| Learning domain | `routes/learning_tracks.py`, `routes/exercise_gates.py`, `routes/learning_track_reviews.py`, `services/learning/` | Owns track-scoped plans, progress/mastery, immutable LessonDocument/source snapshots/assignments, exercise Gate/Attempt/module-diagnostic authority, spaced-review schedule/session authority, execution-tier projection, immutable scope snapshots, and a read-only Tutor context adapter. |
 | Interactive dispatch | `services/tutor/interactive.py` | Starts an already accepted input only after its transaction commits, composes a bounded loop, and keeps provider failures out of the accepted-input response. |
 | Harness | `agents/harness/`, `services/tutor/run_loop.py` | Bounded run loop, lease ownership, input-revision reload, exact Skill selection, capability/effect gate, checkpoint lifecycle, and typed terminal outcome. |
 | Durable state | `services/tutor/persistence.py`, `learner_state.py`, `proactive_repository.py` | PostgreSQL owns user/run/conversation scope, ordered events, idempotency, CAS effects, redacted projections, plan/memory/activity state, and queue leases. |
@@ -470,7 +470,7 @@ reviewed immutable image lock and compatible executor health for
 `static_only`; all other cases are `unavailable`. Resolution never launches a
 runner or executor.
 
-LearningTrack Home, the single-page immutable LessonDocument reader, server-authoritative exercise Gate binding/scoring, append-only Attempt flow, module diagnostic confirmation, and existing-queue execution handoff are now implemented. Spaced review, model code-review exercise, the full three-column workspace, and a reviewed production container image fleet remain separate product work.
+LearningTrack Home, the single-page immutable LessonDocument reader, server-authoritative exercise Gate binding/scoring, append-only Attempt flow, module diagnostic confirmation, model code-review exercises, track-scoped spaced review, and existing-queue execution handoff are now implemented. The full three-column workspace, structured context references, final integration migration, and a reviewed production container image fleet remain separate product work.
 
 Existing user-level Tutor controls remain unchanged:
 
@@ -707,3 +707,39 @@ Parser, compile/typecheck, visible/hidden tests, finding reachability, rubric co
 and redaction are versioned checks; any missing/failed/stale evidence prevents publication. Learner
 submission remains static-only and deterministic: model-authored teaching feedback may consume only
 learner-safe score evidence and cannot change score, mastery evidence or unlock.
+
+### Track-scoped spaced review and finite ReviewSession (2026-08-12)
+
+The active review authority is owned by `services/learning/reviews/` and
+`routes/learning_track_reviews.py`; it does not reopen the removed top-level `/api/reviews`
+runtime. A schedule is uniquely scoped by `user_id + track_id + knowledge_key`,
+uses stable knowledge keys across plan revisions, and is seeded only from trusted
+mastery evidence. Confirmed module-diagnostic skips receive a low-frequency seed.
+Plan activation retains matching keys and writes explicit suspension events for
+removed keys.
+
+`GET /api/learning-tracks/{track_id}/reviews` returns the server-owned actionable
+queue. Ordinary due items do not block course progress. A persisted
+`critical` risk item that is a direct or transitive prerequisite of the current
+node is included immediately even before its next ordinary `due_at`, and is the
+only item projected as `critical_prerequisite_gate`. `review_due_count` follows
+the same actionable definition: ordinary due schedules plus immediate critical
+recovery Gates.
+
+A finite `ReviewSession` freezes the active plan revision, expected track and
+schedule versions, immutable exercise versions, and a bounded
+`AuthoritativeContextSnapshot`. Warmup and hint receipts are append-only session
+facts and never update mastery or the schedule. Each formal item creates exactly
+one `Attempt(review_submit)` and may reuse static/model-review scoring or the
+existing executor queue according to the server-resolved execution tier. Only
+when every item has a terminal result can one finalization transaction append a
+review mastery evidence row, append a schedule event, update the schedule
+projection, and terminalize the session. Replays return the stored result; a
+conflicting request hash or stale version fails closed.
+
+Candidate shortage leaves the same session in recoverable `blocked` state with
+`REVIEW_CANDIDATE_UNAVAILABLE`; no unvalidated fallback exercise is synthesized.
+Public projections omit full submissions, private rubrics/tests, provider bodies,
+execution internals, and context hashes. Local export includes bounded review
+summaries only, while reset/delete and cutover inventory include all user-owned
+review rows in child-to-root order.

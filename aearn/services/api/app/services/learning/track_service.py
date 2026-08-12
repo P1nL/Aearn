@@ -376,7 +376,7 @@ class LearningTrackService:
                 "review_due": _int(row.get("progress_review_due")),
                 "percent": round(0.0 if total == 0 else completed * 100 / total, 2),
             },
-            "review_due_count": 0,
+            "review_due_count": _int(row.get("review_due_count")),
             "execution_tier": tier.tier.value,
             "execution_disclosure": tier.disclosure,
             "last_learned_at": _iso(row.get("last_learned_at")),

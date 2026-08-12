@@ -6,8 +6,10 @@
 The desktop starts from a local learner identity, asks the server for a
 cutover decision, and admits a learner to the Tutor workspace only after a
 server-authoritative `verified` receipt. The current learning runtime also includes
-server-authored, prepublication-validated `model_code_review` Lesson Gates with
-deterministic structured-finding scoring. The former graph/router/SDK product
+server-authored, prepublication-validated `model_code_review` Lesson Gates and a
+track-scoped spaced-review authority with finite `ReviewSession` batches,
+server-projected critical-prerequisite Gates, and exactly-once mastery/schedule
+finalization. The former graph/router/SDK product
 runtime has been physically removed from the active source tree and its
 runtime-specific documents are preserved under
 [`archive/2026-07-29/`](./archive/2026-07-29/).
@@ -22,7 +24,7 @@ That ledger records the controlled verified-only proactive-delivery proof and it
 | Surface | Current document | Authority |
 | --- | --- | --- |
 | Runtime architecture and security boundary | [`architecture/tutor-harness-runtime.md`](./architecture/tutor-harness-runtime.md) | Tutor loop, Skills, controlled Action Runtime, safe persistence, exercise execution reuse, provider, executor, scheduler, cutover, and rollback rules. |
-| Learner flow | [`product/user-flows.md`](./product/user-flows.md) | Local identity, controlled cutover, LearningTrack home, immutable LessonDocument reading, server-authoritative exercise Gate, and explicit module-diagnostic skip confirmation. |
+| Learner flow | [`product/user-flows.md`](./product/user-flows.md) | Local identity, controlled cutover, LearningTrack home, immutable LessonDocument reading, exercise Gate, module diagnostics, and track-scoped ReviewSession behavior. |
 | Desktop interaction | [`product/frontend-interaction-spec.md`](./product/frontend-interaction-spec.md) | Bootstrap state machine, server authority, responsive Tutor UI, Lesson Gate/diagnostic interaction, SSE handling, and local storage boundary. |
 | HTTP and SSE API | [`architecture/api-contract.md`](./architecture/api-contract.md) | Current public routes, idempotency, cursor replay, errors, and privacy rules. |
 | Database | [`architecture/database-schema.md`](./architecture/database-schema.md) | `tutor_*`, `harness_cutovers`, scoped persistence, deletion/preservation, and historical legacy tables. |
@@ -40,12 +42,17 @@ The following files are dated evidence, not an active runtime contract:
 - [`archive/2026-07-29/learning-graph-runtime-demo-story.md`](./archive/2026-07-29/learning-graph-runtime-demo-story.md)
 - [`archive/2026-07-29/agent-capability-hardening-demo-story.md`](./archive/2026-07-29/agent-capability-hardening-demo-story.md)
 - [`architecture/tutor-harness-transition.md`](./architecture/tutor-harness-transition.md), which remains migration evidence only.
+- [`architecture/fsrs-scheduling-spec.md`](./architecture/fsrs-scheduling-spec.md), the pre-cutover `review_states` / `/api/reviews` design.
+- [`current/Aearn/core-flows-current.md`](./current/Aearn/core-flows-current.md), a 2026-06-18 legacy runtime snapshot despite its historical filename.
 
 Pre-cutover `Attempt`, FSRS, hidden-test, legacy plan, review, and note material
-may appear in historical records and in the server's clean-slate inventory. It
-is not reconstructed, served, or mutated by the active Tutor API. The target
-runtime continues to protect hidden tests, source attribution, provider failure
-mapping, and learner content redaction.
+may appear in historical records and in the server's clean-slate inventory. Old
+`review_states`, `review_logs`, `review_seed_banks`, and top-level `/api/reviews`
+are not reconstructed, served, or mutated by the active Tutor API. The active
+review authority instead uses `tutor_review_*` tables and track-scoped
+`/api/learning-tracks/{track_id}/reviews...` routes. The target runtime continues
+to protect hidden tests, source attribution, provider failure mapping, and
+learner content redaction.
 
 ## Documentation maintenance rules
 

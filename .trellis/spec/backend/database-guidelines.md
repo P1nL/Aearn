@@ -676,3 +676,85 @@ REFERENCES tutor_model_review_publications(id, user_id)
 ON DELETE NO ACTION DEFERRABLE INITIALLY IMMEDIATE;
 ```
 Only `NO ACTION` permits the transaction to delete both sides before the deferred check.
+
+## Scenario: Track-Scoped Review Schedule and Finite ReviewSession (2026-08-12)
+
+### 1. Scope / Trigger
+
+- Trigger: changes to `services/learning/reviews/`, track review counts, module-diagnostic skip scheduling, plan activation, `review_submit` Attempt ownership, review API routes, export/reset, or cutover inventory.
+- The pre-cutover `ReviewState`/`ReviewLog` scenario above is historical compatibility evidence only. New work must not register top-level `/api/reviews` or use `review_states`, `review_logs`, or `review_seed_banks` as active authority.
+
+### 2. Signatures
+
+- Queue: `PostgresReviewScheduleRepository.read_queue(user_id, track_id, now) -> {due_count, items, critical_prerequisite_gate}`.
+- Session: `ReviewService.create_session(..., expected_track_version, expected_schedule_version, max_items, idempotency_key)` where `1 <= max_items <= 3`.
+- Mutations: `warmup`, `hint`, `attempt_item`, and `finalize_session` always carry exact user/track/session scope and expected versions.
+- Route module: `app/routes/learning_track_reviews.py`; API root: `/api/learning-tracks/{track_id}/reviews...` only. The retired basename `app/routes/reviews.py` must remain absent.
+- DB authority: `tutor_review_schedule_states`, `tutor_review_schedule_events`, `tutor_review_sessions`, `tutor_review_warmup_receipts`, `tutor_review_items`, `tutor_review_hint_receipts`, and `tutor_review_finalizations`; `tutor_exercise_attempts.attempt_type='review_submit'` owns exact review session/item IDs.
+
+### 3. Contracts
+
+- A schedule is unique by `track_id + knowledge_key` and must carry the matching user and source plan revision. Stable knowledge keys survive plan revision changes; removed keys are explicitly suspended with a migration event.
+- The actionable queue contains active schedules with `due_at <= now` plus persisted `risk_level='critical'` schedules. Only an actionable critical item that is a direct or transitive prerequisite of the current node projects `critical_prerequisite_gate=true`. Track `review_due_count` uses the same actionable definition.
+- A critical recovery Gate may start before its ordinary future `due_at`; ordinary future schedules may not. Candidate shortage leaves a recoverable blocked session and never synthesizes a fallback.
+- Session creation freezes plan/schedule versions, immutable exercise versions, and `review_authoritative_context_v1`. Resume reads the frozen snapshot; it does not infer goal, time, preferences, or correction lineage from conversation history or summary.
+- Warmup and hint receipts are append-only and do not update mastery or schedule. Each item has at most one append-only `review_submit` Attempt. Only one finalization after every item is terminal may append review mastery evidence and a schedule event and CAS-update the schedule in the same transaction.
+- Static/model-review scoring and execution-required work reuse existing exercise contracts and the existing execution queue. Public projections and export omit full submissions, private rubrics/tests, context hashes, event state payloads, provider bodies, commands, paths, images, and credentials.
+
+### 4. Validation & Error Matrix
+
+| Condition | Stable result |
+| --- | --- |
+| Retired basename `app/routes/reviews.py` exists | Cutover regression; rename the track-scoped module instead of weakening the retirement guard |
+| Cross-user/track/session/item/attempt scope | `404 REVIEW_NOT_FOUND` without existence leakage |
+| Stale track, schedule, session, or item version | `409 REVIEW_VERSION_CONFLICT` |
+| Same idempotency identity with different request hash | `409 IDEMPOTENCY_CONFLICT` |
+| Ordinary schedule is not due | `409 REVIEW_NOT_READY`; no session row or Attempt |
+| Critical schedule is a current prerequisite but `due_at` is future | Queue immediately includes it and session creation is allowed |
+| No quality-approved compatible candidate | blocked session with `REVIEW_CANDIDATE_UNAVAILABLE`, `recoverable=true`, no fallback |
+| Warmup writes long-term state or finalization is attempted before all items terminal | reject/rollback; no mastery or schedule mutation |
+| Execution tier is unavailable or reviewed public lock is absent | `503 EXECUTION_UNAVAILABLE`; no host/legacy fallback |
+| Plan revision removes a scheduled knowledge key | preserve audit history and mark schedule `suspended` via explicit migration event |
+
+### 5. Good/Base/Bad Cases
+
+- Good: a due two-item batch freezes both versions, warmup writes no long-term state, the first terminal Attempt leaves the session active, the second makes it ready, and one finalization writes one mastery evidence and one schedule event.
+- Good: a critical forgotten prerequisite with a ten-minute future due date appears immediately as the sole short Gate and can start a recovery session.
+- Base: no eligible candidate exists; the blocked session is returned and the same idempotency request recovers after a verified candidate is published.
+- Bad: count only `due_at <= now`, hiding a persisted critical prerequisite for ten minutes; or include every future critical item as a course Gate without checking current-plan prerequisites.
+- Bad: name the new track-scoped router `app/routes/reviews.py`; static cutover guards intentionally reserve that path for the removed runtime.
+- Bad: update schedule/mastery after each item, regenerate context from recent chat on resume, or create a low-quality local fallback exercise.
+
+### 6. Tests Required
+
+- Pure scheduler tests across supported stability/difficulty ranges: rating/due monotonicity, finite 3650-day bounds, independence/hint difference, critical failure, overdue escalation, and diagnostic-skip seed.
+- PostgreSQL tests for critical future Gate/actionable count, multi-item batch, warmup no-op, exactly-once finalization, cross-user scope, candidate recovery, retained/suspended plan migration, export/reset/cutover, and repeatable bootstrap constraints/triggers.
+- API tests for verified-only lifecycle, idempotent replay, safe pending/terminal Attempt projection, cross-user 404, and track-card count consistency.
+- Full API lock/Ruff/Mypy/pytest, including retired-path guards, executor regression, Desktop typed build, Trellis validation, and `git diff --check` before commit.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```sql
+SELECT count(*)
+FROM tutor_review_schedule_states
+WHERE track_id = $1
+  AND status = 'active'
+  AND due_at <= now();
+```
+
+This hides a persisted critical prerequisite until its ordinary relearning interval expires and lets the UI become a second Gate authority.
+
+#### Correct
+
+```sql
+SELECT schedules.*
+FROM tutor_review_schedule_states AS schedules
+WHERE schedules.user_id = $1
+  AND schedules.track_id = $2
+  AND schedules.status = 'active'
+  AND (schedules.due_at <= $3 OR schedules.risk_level = 'critical');
+```
+
+Then compute `critical_prerequisite_gate` only from the active plan's direct/transitive prerequisite graph. The repository and track-card projection must share this actionable rule, while session creation separately allows only due or critical schedules.

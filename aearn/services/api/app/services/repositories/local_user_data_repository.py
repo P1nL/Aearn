@@ -137,6 +137,9 @@ def export_user_data(conn: Connection[dict[str, object]], user_id: str) -> dict[
         "lesson_gates": _export_lesson_gates(conn, user_id),
         "exercise_attempt_summaries": _export_exercise_attempt_summaries(conn, user_id),
         "module_diagnostic_summaries": _export_module_diagnostic_summaries(conn, user_id),
+        "review_schedule_summaries": _export_review_schedule_summaries(conn, user_id),
+        "review_session_summaries": _export_review_session_summaries(conn, user_id),
+        "review_finalization_summaries": _export_review_finalization_summaries(conn, user_id),
         "action_receipt_summaries": _export_action_receipt_summaries(conn, user_id),
         "model_review_authoring_summaries": _export_model_review_authoring_summaries(conn, user_id),
         "model_review_candidate_summaries": _export_model_review_candidate_summaries(conn, user_id),
@@ -157,6 +160,8 @@ def export_user_data(conn: Connection[dict[str, object]], user_id: str) -> dict[
             "model_review_private_validation_proofs": "omitted",
             "planning_fact_hashes": "omitted",
             "planning_question_gate_reasons": "omitted",
+            "review_context_snapshot_hashes": "omitted",
+            "review_item_selection_hashes": "omitted",
             "secrets": "omitted",
         },
     }
@@ -271,6 +276,9 @@ def _summary_counts(conn: Connection[dict[str, object]], user_id: str) -> dict[s
         "lesson_gates": _count(conn, "SELECT count(*) AS count FROM tutor_lesson_gate_states WHERE user_id = %s", user_id),
         "exercise_attempts": _count(conn, "SELECT count(*) AS count FROM tutor_exercise_attempts WHERE user_id = %s", user_id),
         "module_diagnostics": _count(conn, "SELECT count(*) AS count FROM tutor_module_diagnostic_sessions WHERE user_id = %s", user_id),
+        "review_schedules": _count(conn, "SELECT count(*) AS count FROM tutor_review_schedule_states WHERE user_id = %s", user_id),
+        "review_sessions": _count(conn, "SELECT count(*) AS count FROM tutor_review_sessions WHERE user_id = %s", user_id),
+        "review_finalizations": _count(conn, "SELECT count(*) AS count FROM tutor_review_finalizations WHERE user_id = %s", user_id),
         "action_receipts": _count(conn, "SELECT count(*) AS count FROM tutor_action_receipts WHERE user_id = %s", user_id),
         "model_review_authoring_runs": _count(conn, "SELECT count(*) AS count FROM tutor_model_review_authoring_runs WHERE user_id = %s", user_id),
         "model_review_candidates": _count(conn, "SELECT count(*) AS count FROM tutor_model_review_candidates WHERE user_id = %s", user_id),
@@ -765,6 +773,7 @@ def _export_exercise_attempt_summaries(
         SELECT attempts.id, attempts.attempt_type, attempts.track_id, attempts.plan_revision_id,
                attempts.knowledge_key, attempts.lesson_assignment_id, attempts.gate_binding_id,
                attempts.diagnostic_session_id, attempts.diagnostic_item_id,
+               attempts.review_session_id, attempts.review_item_id,
                attempts.exercise_version_id, attempts.submission_hash, attempts.hint_state_hash,
                attempts.independence, attempts.assistance_kind, attempts.accepted_at,
                submissions.submission_kind, submissions.content_text,
@@ -809,6 +818,67 @@ def _export_module_diagnostic_summaries(
         WHERE sessions.user_id = %s
         GROUP BY sessions.id, versions.id
         ORDER BY sessions.started_at, sessions.id
+        """,
+        (user_id,),
+    ).fetchall()
+    return [_safe_row(row, exclude=()) for row in rows]
+
+
+def _export_review_schedule_summaries(
+    conn: Connection[dict[str, object]],
+    user_id: str,
+) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """
+        SELECT id, track_id, knowledge_key, source_plan_revision_id, status,
+               card_state, stability, difficulty, due_at, last_review_at,
+               review_count, lapse_count, last_rating, risk_level,
+               scheduler_version, version, created_at, updated_at
+        FROM tutor_review_schedule_states
+        WHERE user_id = %s
+        ORDER BY track_id, knowledge_key
+        """,
+        (user_id,),
+    ).fetchall()
+    return [_safe_row(row, exclude=()) for row in rows]
+
+
+def _export_review_session_summaries(
+    conn: Connection[dict[str, object]],
+    user_id: str,
+) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """
+        SELECT sessions.id, sessions.track_id, sessions.plan_revision_id,
+               sessions.knowledge_key, sessions.state, sessions.stage,
+               sessions.failure_code, sessions.version, sessions.started_at,
+               sessions.terminal_at, sessions.created_at, sessions.updated_at,
+               count(items.id)::int AS item_count,
+               count(attempts.id)::int AS attempt_count
+        FROM tutor_review_sessions AS sessions
+        LEFT JOIN tutor_review_items AS items ON items.session_id = sessions.id
+        LEFT JOIN tutor_exercise_attempts AS attempts
+          ON attempts.review_item_id = items.id AND attempts.attempt_type = 'review_submit'
+        WHERE sessions.user_id = %s
+        GROUP BY sessions.id
+        ORDER BY sessions.started_at, sessions.id
+        """,
+        (user_id,),
+    ).fetchall()
+    return [_safe_row(row, exclude=()) for row in rows]
+
+
+def _export_review_finalization_summaries(
+    conn: Connection[dict[str, object]],
+    user_id: str,
+) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """
+        SELECT id, session_id, track_id, knowledge_key, rating,
+               aggregate_json, created_at
+        FROM tutor_review_finalizations
+        WHERE user_id = %s
+        ORDER BY created_at, id
         """,
         (user_id,),
     ).fetchall()
@@ -1078,6 +1148,9 @@ def _delete_learning_track_data(conn: Connection[dict[str, object]], user_id: st
     ).fetchall()
     model_review_run_ids = tuple(row["internal_run_id"] for row in model_review_internal_rows)
     model_review_conversation_ids = tuple(row["internal_conversation_id"] for row in model_review_internal_rows)
+    conn.execute("DELETE FROM tutor_review_finalizations WHERE user_id = %s", (user_id,))
+    conn.execute("DELETE FROM tutor_review_hint_receipts WHERE user_id = %s", (user_id,))
+    conn.execute("DELETE FROM tutor_review_warmup_receipts WHERE user_id = %s", (user_id,))
     conn.execute("DELETE FROM tutor_model_review_evidence_receipts WHERE user_id = %s", (user_id,))
     conn.execute("DELETE FROM tutor_model_review_validation_checks WHERE user_id = %s", (user_id,))
     conn.execute(
@@ -1106,6 +1179,10 @@ def _delete_learning_track_data(conn: Connection[dict[str, object]], user_id: st
     conn.execute("DELETE FROM tutor_exercise_attempt_results WHERE user_id = %s", (user_id,))
     conn.execute("DELETE FROM tutor_exercise_attempt_submissions WHERE user_id = %s", (user_id,))
     conn.execute("DELETE FROM tutor_exercise_attempts WHERE user_id = %s", (user_id,))
+    conn.execute("DELETE FROM tutor_review_items WHERE user_id = %s", (user_id,))
+    conn.execute("DELETE FROM tutor_review_sessions WHERE user_id = %s", (user_id,))
+    conn.execute("DELETE FROM tutor_review_schedule_events WHERE user_id = %s", (user_id,))
+    conn.execute("DELETE FROM tutor_review_schedule_states WHERE user_id = %s", (user_id,))
     conn.execute("DELETE FROM tutor_exercise_hint_receipts WHERE user_id = %s", (user_id,))
     conn.execute("DELETE FROM tutor_lesson_gate_states WHERE user_id = %s", (user_id,))
     conn.execute("DELETE FROM tutor_module_diagnostic_items WHERE user_id = %s", (user_id,))
