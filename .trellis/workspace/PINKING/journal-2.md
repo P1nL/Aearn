@@ -1339,3 +1339,40 @@ Closed the planning-only Tutor Harness rearchitecture parent after all nine inde
 ### Next Steps
 
 - 启动并执行 08-04-spaced-review-sessions
+
+
+## Session 97: 完成间隔复习与 ReviewSession
+
+**Date**: 2026-08-12
+**Task**: 完成间隔复习与 ReviewSession
+**Branch**: `main`
+
+### Summary
+
+完成 track-scoped 间隔复习队列、有限 ReviewSession、关键前置短 Gate、复习 Attempt/finalization、计划迁移、诊断 skip 调度以及 API/数据库/导出/文档集成。
+
+### Main Changes
+
+- 新增 tutor_review_* authority、纯调度策略与 verified-only LearningTrack review API。
+- 复用现有 ExerciseVersion、模型代码审核评分和 executor queue，保持旧 /api/reviews 与 review_states 退役。
+- 同步 source-of-truth 与后端 code-spec，并记录退役路径文件名不可复用的 cutover 守卫。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `0e3ea7f` | (see git log) |
+
+### Testing
+
+- [OK] Review focused 15 passed；完整 API 506 passed、1 skipped。
+- [OK] API lock/Ruff/Mypy 通过；Executor 11 passed；Desktop production build 通过。
+- [OK] Trellis validate 与 git diff --check 通过。
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 启动 08-04-learning-workspace-context-references，实现三栏工作区与结构化上下文引用。
