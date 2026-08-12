@@ -1,0 +1,32 @@
+{
+  "id": "codex-aearn-agent-architecture-comparison",
+  "name": "codex-aearn-agent-architecture-comparison",
+  "title": "Codex 与 Aearn Agent 架构严格对比评估",
+  "description": "基于 openai/codex 最新源码、官方手册和 Aearn 当前工作树，对上下文、工具、记忆、工作区、执行循环、安全、恢复、可观测性与评测体系进行严格证据化对比。",
+  "status": "completed",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P1",
+  "creator": "PINKING",
+  "assignee": "PINKING",
+  "createdAt": "2026-08-11",
+  "completedAt": "2026-08-11",
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    "research/baseline.md",
+    "research/codex-baseline.md",
+    "research/aearn-baseline.md",
+    "research/comparison-matrix.md",
+    "research/final-assessment.md"
+  ],
+  "notes": "严格对比评估已完成；Aearn 聚焦测试 87 passed；未修改产品代码，未提交、push 或部署。",
+  "meta": {}
+}

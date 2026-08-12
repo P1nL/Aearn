@@ -4,21 +4,21 @@
     "type": "split",
     "children": [
       {
-        "id": "ec88afe94eaa8e7d",
+        "id": "9c59dfc9894a6fff",
         "type": "tabs",
         "children": [
           {
-            "id": "795ab725a9f9407c",
+            "id": "ac485de2bd016bfc",
             "type": "leaf",
             "state": {
               "type": "markdown",
               "state": {
-                "file": "06-02-local-product-completion/implement.md",
+                "file": "archive/2026-08/08-11-codex-aearn-agent-architecture-comparison/research/final-assessment.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "implement"
+              "title": "final-assessment"
             }
           }
         ]
@@ -181,43 +181,43 @@
       "translate:Open translation view": false
     }
   },
-  "active": "795ab725a9f9407c",
+  "active": "ac485de2bd016bfc",
   "lastOpenFiles": [
-    "06-02-managed-compiled-runners-java-go-csharp/review.zh.md",
-    "archive/2026-06/06-02-managed-compiled-runners-java-go-csharp/review.zh.md",
-    "archive/2026-06/06-02-managed-compiled-runners-java-go-csharp/task.json",
-    "archive/2026-06/06-02-managed-compiled-runners-java-go-csharp/prd.md",
-    "archive/2026-06/06-02-managed-compiled-runners-java-go-csharp/implement.jsonl",
-    "archive/2026-06/06-02-managed-compiled-runners-java-go-csharp/implement.md",
-    "archive/2026-06/06-02-managed-compiled-runners-java-go-csharp/design.md",
-    "archive/2026-06/06-02-managed-compiled-runners-java-go-csharp/check.jsonl",
-    "archive/2026-06/06-02-managed-compiled-runners-java-go-csharp",
-    "06-02-managed-compiled-runners-java-go-csharp/implement.md",
-    "06-02-managed-compiled-runners-java-go-csharp/design.md",
-    "06-02-managed-compiled-runners-java-go-csharp/check.jsonl",
-    "06-02-managed-compiled-runners-java-go-csharp/implement.jsonl",
-    "06-02-managed-compiled-runners-java-go-csharp/prd.md",
-    "06-02-managed-compiled-runners-java-go-csharp/task.json",
-    "06-02-managed-compiled-runners-java-go-csharp",
-    "archive/2026-06/06-02-06-language-l3-runner-contracts/task.json",
-    "archive/2026-06/06-02-06-language-l3-runner-contracts/prd.md",
-    "archive/2026-06/06-02-06-language-l3-runner-contracts/implement.jsonl",
-    "06-02-adaptive-exercise-template-system/review.zh.md",
-    "archive/2026-06/06-02-adaptive-exercise-template-system/prd.md",
-    "archive/2026-06/06-02-adaptive-exercise-template-system/review.zh.md",
-    "archive/2026-06/06-02-adaptive-exercise-template-system/design.md",
-    "archive/2026-06/06-02-adaptive-exercise-template-system/implement.md",
-    "archive/2026-06/06-02-sql-query-runner/prd.md",
-    "archive/2026-06/06-02-sql-query-runner/review.zh.md",
-    "archive/2026-06/06-02-sql-query-runner/implement.md",
-    "archive/2026-06/06-02-sql-query-runner/design.md",
-    "06-02-adaptive-exercise-template-system/prd.md",
-    "06-02-sql-query-runner/review.zh.md",
-    "06-02-local-product-completion/implement.md",
-    "06-02-02-local-user-data-boundary/review.zh.md",
-    "06-02-adaptive-exercise-template-system/implement.md",
-    "06-02-adaptive-exercise-template-system/design.md",
-    "06-02-sql-query-runner/implement.md",
-    "06-02-sql-query-runner/design.md"
+    "08-11-codex-aearn-agent-architecture-comparison/design.md",
+    "08-04-lesson-document-authority-grounding/implement.md",
+    "08-04-lesson-document-authority-grounding/prd.md",
+    "08-04-lesson-document-authority-grounding/design.md",
+    "08-04-learning-home-plan-builder/implement.md",
+    "08-04-learning-home-plan-builder/design.md",
+    "archive/2026-08/08-04-tutor-provider-usage-cache-accounting/implement.md",
+    "archive/2026-08/08-04-tutor-context-summary-retrieval-compaction/task.json",
+    "archive/2026-08/08-04-tutor-context-summary-retrieval-compaction/prd.md",
+    "archive/2026-08/08-04-tutor-context-summary-retrieval-compaction/implement.md",
+    "archive/2026-08/08-04-tutor-context-summary-retrieval-compaction/implement.jsonl",
+    "archive/2026-08/08-04-tutor-context-summary-retrieval-compaction/design.md",
+    "archive/2026-08/08-04-tutor-context-summary-retrieval-compaction/check.jsonl",
+    "archive/2026-08/08-04-tutor-context-summary-retrieval-compaction",
+    "08-04-tutor-adaptive-context-budget-planner/prd.md",
+    "archive/2026-08/08-04-tutor-adaptive-context-budget-planner/prd.md",
+    "archive/2026-08/08-04-tutor-adaptive-context-budget-planner/task.json",
+    "archive/2026-08/08-04-tutor-adaptive-context-budget-planner/implement.md",
+    "archive/2026-08/08-04-tutor-adaptive-context-budget-planner/implement.jsonl",
+    "archive/2026-08/08-04-tutor-adaptive-context-budget-planner/design.md",
+    "archive/2026-08/08-04-tutor-adaptive-context-budget-planner/check.jsonl",
+    "archive/2026-08/08-04-tutor-adaptive-context-budget-planner",
+    "archive/2026-08/08-04-tutor-provider-usage-cache-accounting/prd.md",
+    "archive/2026-08/08-04-tutor-latest-input-teaching-relevance/prd.md",
+    "archive/2026-08/08-04-learning-track-plan-mastery-domain/prd.md",
+    "08-04-tutor-adaptive-context-budget-planner/implement.md",
+    "08-04-tutor-adaptive-context-budget-planner/design.md",
+    "08-04-learning-track-plan-mastery-domain/design.md",
+    "08-04-programming-language-learning-agent-product/research/repository-baseline.md",
+    "08-04-learning-track-plan-mastery-domain/research/baseline.md",
+    "08-04-exercise-gates-execution-unlock/prd.md",
+    "08-04-programming-language-learning-agent-product/design.md",
+    "08-04-tutor-provider-usage-cache-accounting/design.md",
+    "08-04-tutor-latest-input-teaching-relevance/implement.md",
+    "08-04-learning-track-plan-mastery-domain/research",
+    "08-04-programming-language-learning-agent-product/research"
   ]
 }

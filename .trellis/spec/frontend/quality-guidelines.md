@@ -30,7 +30,7 @@ current API contract, and `aearn/apps/desktop/src/`.
 - Do not let local storage, a stale `planId`, a client route or a checkbox turn
   `cutover` into `tutor`; only the server `verified` decision authorizes the
   workspace.
-- Do not show provider keys/errors/reasoning, prompt/trace/checkpoint data,
+- Do not show provider keys/errors, provider-native reasoning, prompt/trace/checkpoint data,
   hidden tests, reference answers, complete learner code, container details,
   commands or paths.
 - Do not calculate run terminal state, Skill/effect permission, plan rollback,
@@ -387,7 +387,7 @@ Composer state stays controlled by assistant-ui and review navigation follows th
 - If no active session exists, show disabled guidance and do not call the backend.
 - A stream that closes without `done` or `error` must become a visible recoverable error state.
 - The frontend must not derive scoring, final exercise result, review scheduling, or hidden-test facts from conversation messages.
-- The frontend must not render "导师判断", chain-of-thought, provider reasoning, or inferred hidden thinking; do not regex-split assistant text or parse prompt-policy markers from normal content.
+- The frontend must not render "导师判断", provider-native chain-of-thought/reasoning, or inferred hidden thinking; do not regex-split assistant text or parse prompt-policy markers from normal content. A separately typed, server-persisted `public_thinking_steps[]` field is allowed only as an explicitly learner-visible public explanation and must never be relabeled as hidden/internal reasoning.
 - Public frontend types and render paths must ignore/drop `internal_review`; that field is backend-private and must never appear in the UI or app store.
 
 ### 4. Validation & Error Matrix
