@@ -1398,3 +1398,41 @@ Closed the planning-only Tutor Harness rearchitecture parent after all nine inde
 ### Status
 
 [OK] **Completed**
+
+
+## Session 99: 完成编程语言教学 Agent 任务树
+
+**Date**: 2026-08-13
+**Task**: 完成编程语言教学 Agent 任务树
+**Branch**: `main`
+
+### Summary
+
+完成最终集成修复、四语言端到端矩阵、cutover schema 清单、source-of-truth 收敛，并归档最后子任务与父任务。
+
+### Main Changes
+
+- 修复 Review 候选在 LIMIT 前未按用户/主线发布范围过滤的问题。
+- 显式分类全部 tutor_* cutover target/shared 表并新增 schema reconciliation 回归。
+- 完成 Python、JavaScript、TypeScript、SQL 计划到复习证据矩阵和语言 tier 真实性审计。
+- 更新当前架构、产品、API、数据库、开发、executor、验收与 readiness 文档。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `1b081f5` | (see git log) |
+
+### Testing
+
+- [OK] API lock/Ruff/Mypy 通过；全量 515 passed, 1 skipped。
+- [OK] 权威事实、Action、cutover、安全投影与集成串行批次 84 passed。
+- [OK] Executor lock/Ruff/Mypy 通过，11 passed；Desktop check、DB smoke、Trellis validate、diff hygiene 与响应式浏览器检查通过。
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 真实 provider smoke、reviewed container image fleet、push、deploy 与生产迁移仍需单独批准。
