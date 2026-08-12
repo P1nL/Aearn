@@ -22,6 +22,8 @@ from app.services.llm.contracts import LLMUsage
 
 MAX_TUTOR_IDENTIFIER_LENGTH = 120
 MAX_TUTOR_PUBLIC_MESSAGE_LENGTH = 1600
+MAX_TUTOR_PUBLIC_THINKING_STEPS = 4
+MAX_TUTOR_PUBLIC_THINKING_STEP_LENGTH = 320
 MAX_TUTOR_CONVERSATION_TITLE_LENGTH = 48
 MAX_TUTOR_PAYLOAD_FIELDS = 12
 MAX_TUTOR_PAYLOAD_VALUE_LENGTH = 360
@@ -68,6 +70,7 @@ class TutorTerminalOutcome(str, Enum):
 
 class TutorContextSection(str, Enum):
     SYSTEM = "system"
+    REQUIRED_FACTS = "required_facts"
     ACTIVE_PLAN = "active_plan"
     REVIEW = "review"
     RECENT_MESSAGES = "recent_messages"
@@ -79,6 +82,7 @@ class TutorContextSection(str, Enum):
 
 CONTEXT_SECTION_PRIORITY: tuple[TutorContextSection, ...] = (
     TutorContextSection.SYSTEM,
+    TutorContextSection.REQUIRED_FACTS,
     TutorContextSection.RECENT_MESSAGES,
     TutorContextSection.ACTIVE_PLAN,
     TutorContextSection.REVIEW,
@@ -333,6 +337,12 @@ class TutorInputEvent:
 class TutorContextSource:
     source_id: str
     content: object
+    semantic_class: Literal[
+        "ordinary",
+        "confirmed_fact_source",
+        "correction",
+        "unresolved_question",
+    ] = "ordinary"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "source_id", _safe_identifier(self.source_id))
@@ -362,6 +372,7 @@ class TutorContextCompactionPlan:
     candidates: tuple[TutorContextCompactionCandidate, ...]
     prior_summary_id: str | None = None
     prior_summary_hash: str | None = None
+    protected_message_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if (
@@ -378,6 +389,11 @@ class TutorContextCompactionPlan:
         if tuple(sorted(candidates, key=lambda item: (item.created_at, item.message_id))) != candidates:
             raise ValueError("compaction candidates must follow conversation timeline order")
         object.__setattr__(self, "candidates", candidates)
+        candidate_ids = frozenset(candidate.message_id for candidate in candidates)
+        protected = tuple(_safe_identifier(value) for value in self.protected_message_ids)
+        if len(protected) != len(set(protected)) or not set(protected).issubset(candidate_ids):
+            raise ValueError("protected compaction message identities are invalid")
+        object.__setattr__(self, "protected_message_ids", protected)
         if (self.prior_summary_id is None) != (self.prior_summary_hash is None):
             raise ValueError("prior summary identity and hash must be paired")
         if self.prior_summary_id is not None:
@@ -444,6 +460,7 @@ class TutorContextInput:
     current_input_required: bool
     current_input: TutorContextSource | None = None
     system_descriptors: tuple[TutorContextSource, ...] = ()
+    required_facts: tuple[TutorContextSource, ...] = ()
     active_plan: tuple[TutorContextSource, ...] = ()
     review_snapshot: tuple[TutorContextSource, ...] = ()
     recent_messages: tuple[TutorContextSource, ...] = ()
@@ -452,6 +469,11 @@ class TutorContextInput:
     activity_facts: tuple[TutorContextSource, ...] = ()
     capability_schemas: tuple[TutorContextSource, ...] = ()
     compaction_plan: TutorContextCompactionPlan | None = None
+    authoritative_snapshot_schema_version: str | None = None
+    authoritative_snapshot_hash: str | None = None
+    fact_revision: int = 0
+    confirmed_question_reasked_count: int = 0
+    summary_blocked_by_unprojected_fact: int = 0
 
     def __post_init__(self) -> None:
         if self.input_revision < 0:
@@ -464,6 +486,7 @@ class TutorContextInput:
         object.__setattr__(self, "conversation_id", _safe_identifier(self.conversation_id))
         for name in (
             "system_descriptors",
+            "required_facts",
             "active_plan",
             "review_snapshot",
             "recent_messages",
@@ -473,10 +496,17 @@ class TutorContextInput:
             "capability_schemas",
         ):
             object.__setattr__(self, name, tuple(getattr(self, name)))
+        if self.fact_revision < 0 or self.confirmed_question_reasked_count < 0 or self.summary_blocked_by_unprojected_fact < 0:
+            raise ValueError("authoritative context counters must be non-negative")
+        for name in ("authoritative_snapshot_schema_version", "authoritative_snapshot_hash"):
+            value = getattr(self, name)
+            if value is not None:
+                object.__setattr__(self, name, limit_text(str(value), 160))
 
     def section_sources(self) -> tuple[tuple[TutorContextSection, tuple[TutorContextSource, ...]], ...]:
         return (
             (TutorContextSection.SYSTEM, self.system_descriptors),
+            (TutorContextSection.REQUIRED_FACTS, self.required_facts),
             (TutorContextSection.ACTIVE_PLAN, self.active_plan),
             (TutorContextSection.REVIEW, self.review_snapshot),
             (TutorContextSection.RECENT_MESSAGES, self.recent_messages),
@@ -576,6 +606,14 @@ class TutorCheckpointMetadata:
     budget_policy_version: str | None = None
     truncated_count: int = 0
     compaction_input: TutorContextCompactionInput | None = None
+    authoritative_snapshot_schema_version: str | None = None
+    authoritative_snapshot_hash: str | None = None
+    fact_revision: int = 0
+    required_fact_count: int = 0
+    required_fact_selected_count: int = 0
+    required_fact_missing_count: int = 0
+    confirmed_question_reasked_count: int = 0
+    summary_blocked_by_unprojected_fact: int = 0
 
     def __post_init__(self) -> None:
         if self.token_budget <= 0:
@@ -588,6 +626,15 @@ class TutorCheckpointMetadata:
             raise ValueError("optional_token_budget must be non-negative")
         if self.expansion_count < 0 or self.truncated_count < 0:
             raise ValueError("expansion_count and truncated_count must be non-negative")
+        for name in (
+            "fact_revision", "required_fact_count", "required_fact_selected_count",
+            "required_fact_missing_count", "confirmed_question_reasked_count",
+            "summary_blocked_by_unprojected_fact",
+        ):
+            if getattr(self, name) < 0:
+                raise ValueError(f"{name} must be non-negative")
+        if self.required_fact_selected_count + self.required_fact_missing_count != self.required_fact_count:
+            raise ValueError("required fact selection counts are inconsistent")
         if self.critical_reached and not self.warning_reached:
             raise ValueError("critical context state must also reach warning")
         for name in ("estimator_version", "capability_version", "budget_policy_version"):
@@ -640,6 +687,14 @@ class TutorCheckpointMetadata:
             "capability_version": self.capability_version,
             "budget_policy_version": self.budget_policy_version,
             "truncated_count": self.truncated_count,
+            "authoritative_snapshot_schema_version": self.authoritative_snapshot_schema_version,
+            "authoritative_snapshot_hash": self.authoritative_snapshot_hash,
+            "fact_revision": self.fact_revision,
+            "required_fact_count": self.required_fact_count,
+            "required_fact_selected_count": self.required_fact_selected_count,
+            "required_fact_missing_count": self.required_fact_missing_count,
+            "confirmed_question_reasked_count": self.confirmed_question_reasked_count,
+            "summary_blocked_by_unprojected_fact": self.summary_blocked_by_unprojected_fact,
             "summary_schema_version": (
                 self.compaction_input.summary_schema_version if self.compaction_input is not None else None
             ),
@@ -874,7 +929,9 @@ class TutorEffectResult:
 @dataclass(frozen=True)
 class TutorDecision:
     public_message: str | None = None
+    public_thinking_steps: tuple[str, ...] = ()
     conversation_title: str | None = None
+    question_key: str | None = None
     skill_references: tuple[TutorSkillReference, ...] = ()
     capability_requests: tuple[TutorCapabilityRequest, ...] = ()
     effect_proposals: tuple[TutorEffectProposal, ...] = ()
@@ -886,8 +943,17 @@ class TutorDecision:
         if self.public_message is not None:
             public_message = sanitize_summary_text(self.public_message, max_length=MAX_TUTOR_PUBLIC_MESSAGE_LENGTH)
             object.__setattr__(self, "public_message", public_message or None)
+        object.__setattr__(
+            self,
+            "public_thinking_steps",
+            _bounded_public_thinking_steps(self.public_thinking_steps),
+        )
         if self.conversation_title is not None:
             object.__setattr__(self, "conversation_title", normalize_tutor_conversation_title(self.conversation_title))
+        if self.question_key is not None:
+            object.__setattr__(self, "question_key", _safe_identifier(self.question_key))
+            if self.continuation_kind is None:
+                raise ValueError("question_key requires a continuation")
         object.__setattr__(self, "skill_references", tuple(self.skill_references[:4]))
         object.__setattr__(self, "capability_requests", tuple(self.capability_requests[:4]))
         object.__setattr__(self, "effect_proposals", tuple(self.effect_proposals[:4]))
@@ -1043,6 +1109,7 @@ class TutorRunResult:
     effect_count: int
     terminal_outcome: TutorTerminalOutcome | None = None
     public_message: str | None = None
+    public_thinking_steps: tuple[str, ...] = ()
     # The decision candidate is persisted only with the same successful public reply.
     conversation_title: str | None = None
     # A normal completed TurnRun has no continuation.
@@ -1063,6 +1130,11 @@ class TutorRunResult:
                 "public_message",
                 sanitize_summary_text(self.public_message, max_length=MAX_TUTOR_PUBLIC_MESSAGE_LENGTH) or None,
             )
+        object.__setattr__(
+            self,
+            "public_thinking_steps",
+            _bounded_public_thinking_steps(self.public_thinking_steps),
+        )
         if self.conversation_title is not None:
             object.__setattr__(self, "conversation_title", normalize_tutor_conversation_title(self.conversation_title))
         if self.continuation_kind is not None:
@@ -1269,6 +1341,22 @@ def _bounded_payload_fields(fields: object) -> tuple[TutorPayloadField, ...]:
     if not isinstance(fields, tuple | list):
         return ()
     return tuple(item for item in fields if isinstance(item, TutorPayloadField))[:MAX_TUTOR_PAYLOAD_FIELDS]
+
+
+def _bounded_public_thinking_steps(steps: object) -> tuple[str, ...]:
+    if not isinstance(steps, tuple | list):
+        return ()
+    normalized: list[str] = []
+    for raw_step in steps[:MAX_TUTOR_PUBLIC_THINKING_STEPS]:
+        if not isinstance(raw_step, str):
+            continue
+        step = sanitize_summary_text(
+            raw_step,
+            max_length=MAX_TUTOR_PUBLIC_THINKING_STEP_LENGTH,
+        )
+        if step:
+            normalized.append(step)
+    return tuple(normalized)
 
 
 def _safe_identifier(value: object) -> str:

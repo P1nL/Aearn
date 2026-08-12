@@ -33,9 +33,14 @@ from app.services.llm.llm_client import (
     _safe_transport_error,
 )
 from app.services.llm.llm_urls import deepseek_responses_url
+from app.services.tutor.decision_protocol import (
+    TUTOR_PROVIDER_ITEMS_SCHEMA_VERSION,
+    TutorDecisionValidationIssue,
+    build_tutor_replacement_message,
+    tutor_provider_output_schema,
+)
 from app.services.tutor.provider_gateway import (
     PrimaryTutorProviderGateway,
-    _TUTOR_DECISION_REPAIR_MESSAGE,
     _build_messages,
     parse_tutor_decision,
 )
@@ -63,8 +68,12 @@ class FakeJsonClient:
         temperature: float | None = None,
         max_tokens: int | None = None,
         timeout_seconds: float | None = None,
+        output_schema: Mapping[str, object] | None = None,
+        schema_name: str | None = None,
+        thinking_mode: str | None = None,
+        capture_provider_body: bool = False,
     ) -> LLMJsonResponse:
-        del messages, temperature, max_tokens, timeout_seconds
+        del messages, temperature, max_tokens, timeout_seconds, output_schema, schema_name, thinking_mode, capture_provider_body
         self.calls += 1
         if self._error is not None:
             raise self._error
@@ -84,8 +93,12 @@ class SequencedJsonClient(FakeJsonClient):
         temperature: float | None = None,
         max_tokens: int | None = None,
         timeout_seconds: float | None = None,
+        output_schema: Mapping[str, object] | None = None,
+        schema_name: str | None = None,
+        thinking_mode: str | None = None,
+        capture_provider_body: bool = False,
     ) -> LLMJsonResponse:
-        del temperature, max_tokens, timeout_seconds
+        del temperature, max_tokens, timeout_seconds, output_schema, schema_name, thinking_mode, capture_provider_body
         self.calls += 1
         self.messages.append(tuple(dict(message) for message in messages))
         return LLMJsonResponse(content=self._contents.pop(0), model=self.model)
@@ -142,9 +155,14 @@ def _interactive_context() -> TutorContextSelection:
 
 def _valid_payload() -> dict[str, object]:
     return {
-        "public_message": "先检查变量是在回调外定义，还是只在回调内部可见。",
-        "skill_references": [{"skill_id": "scope-basics", "version": "v1"}],
-        "terminal_intent": "completed",
+        "schema_version": TUTOR_PROVIDER_ITEMS_SCHEMA_VERSION,
+        "message": {
+            "type": "agent_message",
+            "text": "先检查变量是在回调外定义，还是只在回调内部可见。",
+            "public_thinking_steps": ["当前目标可以收敛为一个可验证的小步骤。"],
+            "conversation_title": None,
+        },
+        "action": {"type": "turn_completed"},
     }
 
 
@@ -247,7 +265,7 @@ def test_primary_gateway_uses_exact_deepseek_v4_flash_responses_contract_without
     assert payload["model"] == "deepseek-v4-flash"
     assert payload["stream"] is True
     assert payload["text"] == {"format": {"type": "json_object"}}
-    assert payload["max_output_tokens"] == 384_000
+    assert payload["max_output_tokens"] == 16_384
     assert settings.tutor_deepseek_v4_flash_context_window_tokens == 1_000_000
     assert settings.tutor_context_token_budget == 616_000
     assert isinstance(payload["input"], str)
@@ -258,6 +276,116 @@ def test_primary_gateway_uses_exact_deepseek_v4_flash_responses_contract_without
         "Accept": "text/event-stream",
     }
     assert settings.llm_provider_type == "deepseek"
+
+
+def test_deepseek_repair_disables_thinking_only_for_the_replacement_attempt() -> None:
+    payloads: list[Mapping[str, object]] = []
+    provider_contents = [
+        {
+            "schema_version": TUTOR_PROVIDER_ITEMS_SCHEMA_VERSION,
+            "message": {
+                "type": "agent_message",
+                "text": "继续。",
+                "public_thinking_steps": ["当前目标可以收敛为一个可验证的小步骤。"],
+                "conversation_title": None,
+            },
+            "action": {"type": "unknown_action"},
+        },
+        _valid_payload(),
+    ]
+
+    def transport(
+        url: str,
+        headers: Mapping[str, str],
+        payload: Mapping[str, object],
+        timeout: float,
+    ) -> Mapping[str, object]:
+        del url, headers, timeout
+        payloads.append(dict(payload))
+        content = provider_contents.pop(0)
+        return {
+            "type": "response.completed",
+            "response": {
+                "model": "deepseek-v4-flash",
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": json.dumps(content, ensure_ascii=False),
+                            }
+                        ],
+                    }
+                ],
+            },
+        }
+
+    settings = Settings(
+        llm_type="deepseek",
+        deepseek_api_key="test-key",
+        deepseek_base_url="https://api.deepseek.com/v1",
+        deepseek_model="deepseek-v4-flash",
+    )
+    result = PrimaryTutorProviderGateway(
+        settings=settings,
+        client=OpenAICompatibleClient(settings, transport=transport),
+    ).decide(run=_run(), context=_context())
+
+    assert result.decision is not None
+    assert len(payloads) == 2
+    assert "thinking" not in payloads[0]
+    assert payloads[1]["thinking"] == {"type": "disabled"}
+
+
+def test_deepseek_responses_json_schema_requires_explicit_verified_gateway_opt_in() -> None:
+    captured: dict[str, object] = {}
+
+    def transport(
+        url: str,
+        headers: Mapping[str, str],
+        payload: Mapping[str, object],
+        timeout: float,
+    ) -> Mapping[str, object]:
+        del url, headers, timeout
+        captured["payload"] = dict(payload)
+        return {
+            "type": "response.completed",
+            "response": {
+                "model": "deepseek-v4-flash",
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": json.dumps(_valid_payload(), ensure_ascii=False),
+                            }
+                        ],
+                    }
+                ],
+            },
+        }
+
+    settings = Settings(
+        llm_type="deepseek",
+        deepseek_api_key="test-key",
+        deepseek_base_url="https://verified-gateway.example/v1",
+        deepseek_model="deepseek-v4-flash",
+        tutor_deepseek_responses_json_schema_enabled=True,
+    )
+    result = PrimaryTutorProviderGateway(
+        settings=settings,
+        client=OpenAICompatibleClient(settings, transport=transport),
+    ).decide(run=_run(), context=_context())
+
+    assert result.decision is not None
+    payload = captured["payload"]
+    assert isinstance(payload, Mapping)
+    text_format = payload["text"]["format"]
+    assert text_format["type"] == "json_schema"
+    assert text_format["strict"] is True
+    assert text_format["schema"] == tutor_provider_output_schema()
 
 
 def test_deepseek_v4_flash_token_limits_reserve_output_capacity_within_the_context_window() -> None:
@@ -271,6 +399,7 @@ def test_deepseek_v4_flash_token_limits_reserve_output_capacity_within_the_conte
     assert settings.uses_deepseek_v4_flash_responses is True
     assert settings.tutor_deepseek_v4_flash_context_window_tokens == 1_000_000
     assert settings.tutor_max_output_tokens == 384_000
+    assert settings.tutor_decision_max_output_tokens == 16_384
     assert settings.tutor_context_token_budget == 616_000
 
     with pytest.raises(ValueError, match="must leave room within the context window"):
@@ -664,6 +793,13 @@ def test_primary_gateway_uses_configured_openai_compatible_client_without_fallba
     assert result.decision is not None
     assert result.model == "provider-model"
     assert captured["url"] == "https://provider.example/v1/responses"
+    payload = captured["payload"]
+    assert isinstance(payload, Mapping)
+    text_format = payload["text"]["format"]
+    assert text_format["type"] == "json_schema"
+    assert text_format["name"] == TUTOR_PROVIDER_ITEMS_SCHEMA_VERSION
+    assert text_format["strict"] is True
+    assert text_format["schema"] == tutor_provider_output_schema()
     assert settings.llm_provider_type == "openai"
 
 
@@ -682,15 +818,19 @@ def test_primary_gateway_uses_the_injected_client_even_when_it_is_falsey() -> No
 def test_parse_tutor_decision_accepts_safe_title_and_explicit_continuation() -> None:
     decision = parse_tutor_decision(
         {
-            "public_message": "请确认是否要继续执行下一步。",
-            "conversation_title": "  函数基础练习  ",
-            "skill_references": [],
-            "capability_requests": [],
-            "effect_proposals": [],
-            "checkpoint_reason": "capability_result",
-            "continuation_kind": "approval",
-            "terminal_intent": None,
-        }
+            "schema_version": TUTOR_PROVIDER_ITEMS_SCHEMA_VERSION,
+            "message": {
+                "type": "agent_message",
+                "text": "请确认是否要继续执行下一步。",
+                "public_thinking_steps": ["当前目标可以收敛为一个可验证的小步骤。"],
+                "conversation_title": "  函数基础练习  ",
+            },
+            "action": {
+                "type": "wait_for_input",
+                "continuation_kind": "approval",
+            },
+        },
+        run=_run(),
     )
 
     assert decision.conversation_title == "函数基础练习"
@@ -703,65 +843,156 @@ def test_parse_tutor_decision_accepts_safe_title_and_explicit_continuation() -> 
     "payload",
     [
         {
-            "public_message": "继续。",
-            "conversation_title": "x" * 49,
-            "terminal_intent": "completed",
+            "schema_version": TUTOR_PROVIDER_ITEMS_SCHEMA_VERSION,
+            "message": {
+                "type": "agent_message",
+                "text": "继续。",
+                "public_thinking_steps": ["当前目标可以收敛为一个可验证的小步骤。"],
+                "conversation_title": "x" * 49,
+            },
+            "action": {"type": "turn_completed"},
         },
         {
-            "public_message": "继续。",
-            "conversation_title": "private\nname",
-            "terminal_intent": "completed",
+            "schema_version": TUTOR_PROVIDER_ITEMS_SCHEMA_VERSION,
+            "message": {
+                "type": "agent_message",
+                "text": "继续。",
+                "public_thinking_steps": ["当前目标可以收敛为一个可验证的小步骤。"],
+                "conversation_title": "private\nname",
+            },
+            "action": {"type": "turn_completed"},
         },
         {
-            "public_message": "继续。",
-            "conversation_title": "raw prompt summary",
-            "terminal_intent": "completed",
+            "schema_version": TUTOR_PROVIDER_ITEMS_SCHEMA_VERSION,
+            "message": {
+                "type": "agent_message",
+                "text": "继续。",
+                "public_thinking_steps": ["当前目标可以收敛为一个可验证的小步骤。"],
+                "conversation_title": "raw prompt summary",
+            },
+            "action": {"type": "turn_completed"},
         },
         {
-            "public_message": "继续。",
-            "continuation_kind": "approval",
-            "terminal_intent": "completed",
+            "schema_version": TUTOR_PROVIDER_ITEMS_SCHEMA_VERSION,
+            "message": {
+                "type": "agent_message",
+                "text": "继续。",
+                "public_thinking_steps": ["当前目标可以收敛为一个可验证的小步骤。"],
+                "conversation_title": None,
+            },
+            "action": {
+                "type": "wait_for_input",
+                "continuation_kind": "unknown",
+            },
         },
         {
-            "public_message": "继续。",
-            "continuation_kind": "approval",
-            "checkpoint_reason": "safe_progress",
+            "schema_version": TUTOR_PROVIDER_ITEMS_SCHEMA_VERSION,
+            "message": {
+                "type": "agent_message",
+                "text": "继续。",
+                "public_thinking_steps": ["当前目标可以收敛为一个可验证的小步骤。"],
+                "conversation_title": None,
+            },
+            "action": {"type": "turn_completed", "terminal_intent": "completed"},
         },
-        {"public_message": "继续。", "terminal_intent": None},
+        {
+            "schema_version": TUTOR_PROVIDER_ITEMS_SCHEMA_VERSION,
+            "message": {
+                "type": "agent_message",
+                "text": "继续。",
+                "public_thinking_steps": ["当前目标可以收敛为一个可验证的小步骤。"],
+                "conversation_title": None,
+            },
+        },
     ],
 )
 def test_parse_tutor_decision_rejects_invalid_title_or_ambiguous_continuation(
     payload: Mapping[str, object],
 ) -> None:
     with pytest.raises(LLMInvalidResponseError):
-        parse_tutor_decision(payload)
+        parse_tutor_decision(payload, run=_run())
 
 
-def test_tutor_decision_prompts_share_the_canonical_shape_without_internal_term_lists() -> (
-    None
-):
+def test_tutor_decision_prompt_and_generated_schema_share_one_typed_protocol() -> None:
     initial_messages = _build_messages(run=_run(), context=_context())
     initial_system = initial_messages[0]["content"]
+    schema = tutor_provider_output_schema()
+    replacement_message = build_tutor_replacement_message(
+        (TutorDecisionValidationIssue(path="action.type", category="invalid_literal"),),
+        teaching_policy="current_input is authoritative",
+    )
 
-    assert '"conversation_title"' in initial_system
-    assert '"continuation_kind"' in initial_system
-    assert '"terminal_intent":"completed"' in initial_system
-    assert "reasoning, diagnostics" not in initial_system
-    assert "provider data" not in initial_system
-    assert "prompts, secrets" not in initial_system
-    assert "reasoning, diagnostics" not in _TUTOR_DECISION_REPAIR_MESSAGE
-    assert "provider data" not in _TUTOR_DECISION_REPAIR_MESSAGE
-    assert "prompts, secrets" not in _TUTOR_DECISION_REPAIR_MESSAGE
+    assert TUTOR_PROVIDER_ITEMS_SCHEMA_VERSION in initial_system
+    assert '"type":"agent_message"' in initial_system
+    assert '"type":"turn_completed"' in initial_system
+    assert "request_id, effect_id, expected_input_revision" in initial_system
+    assert "Managed actions are two-phase" in initial_system
+    assert "only then request a capability or propose an effect" in initial_system
+    assert "Choose their wording, tone, ordering, and granularity naturally" in initial_system
+    assert "fixed linguistic template or transition sequence" in initial_system
+    assert "我先判断" not in initial_system
+    assert "接着比较" not in initial_system
+    assert "最后决定" not in initial_system
+    assert schema["additionalProperties"] is False
+    assert schema["required"] == ["schema_version", "message", "action"]
+    message_schema = schema["$defs"]["TutorProviderAgentMessageItem"]
+    assert message_schema["required"] == [
+        "type",
+        "text",
+        "public_thinking_steps",
+        "conversation_title",
+    ]
+    assert message_schema["properties"]["public_thinking_steps"]["minItems"] == 1
+    assert message_schema["properties"]["public_thinking_steps"]["maxItems"] == 4
+    assert "action.type:invalid_literal" in replacement_message
+    assert "never emit them" in replacement_message
+    assert "Choose their wording, tone, ordering, and granularity naturally" in replacement_message
+    assert "fixed linguistic template or transition sequence" in replacement_message
+    assert "private chain" not in replacement_message
 
 
-def test_primary_gateway_retries_one_invalid_envelope_on_the_same_primary_model() -> (
-    None
-):
+def test_parse_tutor_decision_requires_bounded_public_thinking_steps() -> None:
+    missing = _valid_payload()
+    assert isinstance(missing["message"], dict)
+    missing["message"].pop("public_thinking_steps")
+    with pytest.raises(LLMInvalidResponseError):
+        parse_tutor_decision(missing, run=_run())
+
+    oversized = _valid_payload()
+    assert isinstance(oversized["message"], dict)
+    oversized["message"]["public_thinking_steps"] = [
+        "我先检查一个公开步骤。",
+    ] * 5
+    with pytest.raises(LLMInvalidResponseError):
+        parse_tutor_decision(oversized, run=_run())
+
+
+def test_primary_gateway_rejects_unsafe_public_thinking_before_domain_assembly() -> None:
+    payload = _valid_payload()
+    assert isinstance(payload["message"], dict)
+    payload["message"]["public_thinking_steps"] = ["raw prompt summary"]
+    result = PrimaryTutorProviderGateway(
+        settings=Settings(llm_type="disabled"),
+        client=FakeJsonClient(content=payload),
+    ).decide(run=_run(), context=_context())
+
+    assert result.terminal_outcome is not None
+    assert result.safe_code == "TUTOR_PROVIDER_OUTPUT_SAFETY_REJECTED"
+    assert "raw prompt summary" not in repr(result)
+
+
+def test_primary_gateway_retries_one_invalid_envelope_on_the_same_primary_model() -> None:
     client = SequencedJsonClient(
         [
             {
-                "public_message": "先看一个小例子。",
-                "checkpoint_reason": "initialization",
+                "schema_version": TUTOR_PROVIDER_ITEMS_SCHEMA_VERSION,
+                "message": {
+                    "type": "agent_message",
+                    "text": "先看一个小例子。",
+                    "public_thinking_steps": ["当前目标可以收敛为一个可验证的小步骤。"],
+                    "conversation_title": None,
+                },
+                "action": {"type": "initialization"},
             },
             _valid_payload(),
         ]
@@ -779,14 +1010,22 @@ def test_primary_gateway_retries_one_invalid_envelope_on_the_same_primary_model(
     assert len(client.messages[1]) == 3
     repair_message = client.messages[1][-1]
     assert repair_message["role"] == "user"
-    assert "replacement" in repair_message["content"]
+    assert "fresh replacement" in repair_message["content"]
+    assert "action:invalid_type" in repair_message["content"]
     assert "initialization" not in repair_message["content"]
     assert "先看一个小例子" not in repair_message["content"]
 
 
-def test_primary_gateway_rejects_unknown_or_guardrail_blocked_envelopes_as_model_unavailable() -> (
-    None
-):
+def test_primary_gateway_rejects_unknown_or_guardrail_blocked_envelopes_as_model_unavailable() -> None:
+    unknown_payload = _valid_payload()
+    unknown_payload["reasoning"] = "private chain"
+    blocked_payload = _valid_payload()
+    blocked_payload["message"] = {
+        "type": "agent_message",
+        "text": "完整答案如下：...",
+        "public_thinking_steps": ["当前目标可以收敛为一个可验证的小步骤。"],
+        "conversation_title": None,
+    }
     unknown = PrimaryTutorProviderGateway(
         settings=Settings(
             llm_type="openai",
@@ -794,9 +1033,7 @@ def test_primary_gateway_rejects_unknown_or_guardrail_blocked_envelopes_as_model
             openai_base_url="https://provider.example",
             openai_model="m",
         ),
-        client=FakeJsonClient(
-            content={"public_message": "继续看变量。", "reasoning": "private chain"}
-        ),
+        client=FakeJsonClient(content=unknown_payload),
     )
     blocked = PrimaryTutorProviderGateway(
         settings=Settings(
@@ -805,12 +1042,7 @@ def test_primary_gateway_rejects_unknown_or_guardrail_blocked_envelopes_as_model
             openai_base_url="https://provider.example",
             openai_model="m",
         ),
-        client=FakeJsonClient(
-            content={
-                "public_message": "完整答案如下：...",
-                "terminal_intent": "completed",
-            }
-        ),
+        client=FakeJsonClient(content=blocked_payload),
     )
 
     unknown_result = unknown.decide(run=_run(), context=_context())
@@ -818,8 +1050,9 @@ def test_primary_gateway_rejects_unknown_or_guardrail_blocked_envelopes_as_model
 
     assert unknown_result.terminal_outcome is not None
     assert blocked_result.terminal_outcome is not None
-    assert unknown_result.safe_code == "TUTOR_PROVIDER_DECISION_INVALID"
+    assert unknown_result.safe_code == "TUTOR_PROVIDER_DECISION_EXTRA_FIELD"
     assert blocked_result.safe_code == "TUTOR_PROVIDER_OUTPUT_SAFETY_REJECTED"
+    assert "private chain" not in repr(unknown_result)
 
 
 @pytest.mark.parametrize(
@@ -837,14 +1070,20 @@ def test_primary_gateway_rejects_internal_nested_payload_fields_as_model_unavail
         ),
         client=FakeJsonClient(
             content={
-                "effect_proposals": [
-                    {
-                        "effect_id": "effect-1",
-                        "effect_type": "save_note",
-                        "expected_input_revision": 0,
-                        "payload": {field_name: "private internal detail"},
-                    }
-                ]
+                "schema_version": TUTOR_PROVIDER_ITEMS_SCHEMA_VERSION,
+                "message": {
+                    "type": "agent_message",
+                    "text": "准备保存学习笔记。",
+                    "public_thinking_steps": ["当前目标可以收敛为一个可验证的小步骤。"],
+                    "conversation_title": None,
+                },
+                "action": {
+                    "type": "propose_effect",
+                    "effect_type": "save_note",
+                    "payload": [
+                        {"key": field_name, "value": "private internal detail"}
+                    ],
+                },
             }
         ),
     )
@@ -852,12 +1091,11 @@ def test_primary_gateway_rejects_internal_nested_payload_fields_as_model_unavail
     result = gateway.decide(run=_run(), context=_context())
 
     assert result.terminal_outcome is not None
-    assert result.safe_code == "TUTOR_PROVIDER_DECISION_INVALID"
+    assert result.safe_code == "TUTOR_PROVIDER_DECISION_INVALID_VALUE"
+    assert "private internal detail" not in repr(result)
 
 
-def test_primary_gateway_maps_selected_provider_error_without_cross_provider_fallback_or_raw_detail() -> (
-    None
-):
+def test_primary_gateway_maps_selected_provider_error_without_cross_provider_fallback_or_raw_detail() -> None:
     fake = FakeJsonClient(
         error=LLMCallError("provider raw Authorization: Bearer secret-token")
     )
@@ -880,30 +1118,85 @@ def test_primary_gateway_maps_selected_provider_error_without_cross_provider_fal
     assert "provider raw" not in serialized
 
 
-def test_provider_keeps_bounded_string_list_arguments_for_descriptor_validation() -> (
-    None
-):
+def test_provider_keeps_bounded_string_list_arguments_and_server_owns_action_ids() -> None:
     decision = parse_tutor_decision(
         {
-            "capability_requests": [
-                {
-                    "request_id": "grounding-1",
-                    "capability_id": "grounding.retrieve",
-                    "arguments": {
-                        "language_id_or_alias": "python",
-                        "query_text": "function return",
-                        "topic_tags": ["functions"],
-                        "top_k": 1,
-                    },
-                }
-            ]
-        }
+            "schema_version": TUTOR_PROVIDER_ITEMS_SCHEMA_VERSION,
+            "message": {
+                "type": "agent_message",
+                "text": "先检索一个函数返回值示例。",
+                "public_thinking_steps": ["当前目标可以收敛为一个可验证的小步骤。"],
+                "conversation_title": None,
+            },
+            "action": {
+                "type": "request_capability",
+                "capability_id": "grounding.retrieve",
+                "arguments": [
+                    {"key": "language_id_or_alias", "value": "python"},
+                    {"key": "query_text", "value": "function return"},
+                    {"key": "topic_tags", "value": ["functions"]},
+                    {"key": "top_k", "value": 1},
+                ],
+            },
+        },
+        run=_run(),
     )
 
     request = decision.capability_requests[0]
     arguments = {field.key: json.loads(field.value) for field in request.arguments}
+    assert request.request_id.startswith("capability-")
     assert arguments["topic_tags"] == ["functions"]
     assert arguments["top_k"] == 1
+
+
+@pytest.mark.parametrize(
+    "value",
+    [float("nan"), "x" * 361, ["x" * 100] * 4],
+)
+def test_provider_payload_values_must_be_finite_and_round_trip_within_domain_bound(
+    value: object,
+) -> None:
+    payload = {
+        "schema_version": TUTOR_PROVIDER_ITEMS_SCHEMA_VERSION,
+        "message": {
+            "type": "agent_message",
+            "text": "准备调用能力。",
+            "public_thinking_steps": ["当前目标可以收敛为一个可验证的小步骤。"],
+            "conversation_title": None,
+        },
+        "action": {
+            "type": "request_capability",
+            "capability_id": "grounding.retrieve",
+            "arguments": [{"key": "query", "value": value}],
+        },
+    }
+
+    with pytest.raises(LLMInvalidResponseError):
+        parse_tutor_decision(payload, run=_run())
+
+
+def test_server_owned_effect_id_and_revision_are_deterministic() -> None:
+    payload = {
+        "schema_version": TUTOR_PROVIDER_ITEMS_SCHEMA_VERSION,
+        "message": {
+            "type": "agent_message",
+            "text": "准备保存学习笔记。",
+            "public_thinking_steps": ["当前目标可以收敛为一个可验证的小步骤。"],
+            "conversation_title": None,
+        },
+        "action": {
+            "type": "propose_effect",
+            "effect_type": "save_note",
+            "payload": [{"key": "topic", "value": "scope"}],
+        },
+    }
+
+    first = parse_tutor_decision(payload, run=_run()).effect_proposals[0]
+    second = parse_tutor_decision(payload, run=_run()).effect_proposals[0]
+
+    assert first.effect_id == second.effect_id
+    assert first.effect_id.startswith("effect-")
+    assert first.expected_input_revision == _run().input_revision
 
 
 def test_llm_transport_log_category_omits_provider_detail() -> None:

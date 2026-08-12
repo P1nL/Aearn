@@ -8,13 +8,17 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
-from typing import TypeVar
+from typing import Literal, TypeVar
 
 from app.core.config import DEEPSEEK_V4_FLASH_MODEL, Settings, get_settings
 from app.services.llm.contracts import LLMUsage
 from app.services.llm.llm_urls import deepseek_chat_completions_url, deepseek_responses_url, responses_url
+from app.services.llm.provider_diagnostics import (
+    ProviderBodyCapture,
+    ProviderDiagnosticStore,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -37,7 +41,13 @@ class LLMConfigurationError(RuntimeError):
 
 
 class LLMCallError(RuntimeError):
-    pass
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.diagnostic_capture: ProviderBodyCapture | None = None
+
+    def attach_diagnostic_capture(self, capture: ProviderBodyCapture | None) -> None:
+        if self.diagnostic_capture is None:
+            self.diagnostic_capture = capture
 
 
 class LLMInvalidResponseKind(str, Enum):
@@ -86,6 +96,7 @@ class LLMInvalidResponseError(RuntimeError):
         self.kind = kind
         self.usage = usage
         self.model = model
+        self.diagnostic_capture: ProviderBodyCapture | None = None
 
     def attach_response_metadata(self, *, usage: LLMUsage | None, model: str | None) -> None:
         if self.usage is None:
@@ -93,12 +104,21 @@ class LLMInvalidResponseError(RuntimeError):
         if self.model is None:
             self.model = model
 
+    def attach_diagnostic_capture(self, capture: ProviderBodyCapture | None) -> None:
+        if self.diagnostic_capture is None:
+            self.diagnostic_capture = capture
+
 
 @dataclass(frozen=True)
 class LLMJsonResponse:
     content: dict[str, object]
     model: str
     usage: LLMUsage | None = None
+    diagnostic_capture: ProviderBodyCapture | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
 
 def _require_provider_response_object(value: object) -> Mapping[str, object]:
@@ -121,12 +141,14 @@ class OpenAICompatibleClient:
         *,
         transport: JsonTransport | None = None,
         stream_transport: TextStreamTransport | None = None,
+        diagnostic_store: ProviderDiagnosticStore | None = None,
     ) -> None:
         self._settings = settings or get_settings()
         if not self._settings.openai_compatible_configured:
             raise LLMConfigurationError("OpenAI-compatible LLM settings are incomplete")
         self._transport = transport
         self._stream_transport = stream_transport
+        self._diagnostic_store = diagnostic_store
 
     @property
     def model(self) -> str:
@@ -139,30 +161,53 @@ class OpenAICompatibleClient:
         temperature: float | None = 0.2,
         max_tokens: int | None = None,
         timeout_seconds: float | None = None,
+        output_schema: Mapping[str, object] | None = None,
+        schema_name: str | None = None,
+        thinking_mode: Literal["enabled", "disabled"] | None = None,
+        capture_provider_body: bool = False,
     ) -> LLMJsonResponse:
         """Return one strict JSON object through the exact selected provider protocol."""
 
         protocol = select_llm_protocol(self._settings)
-        if protocol is LLMProtocol.DEEPSEEK_CHAT_COMPLETIONS:
-            return self._complete_deepseek_chat_json(
+        diagnostic_capture = (
+            self._diagnostic_store.begin_capture()
+            if capture_provider_body and self._diagnostic_store is not None
+            else None
+        )
+        try:
+            if protocol is LLMProtocol.DEEPSEEK_CHAT_COMPLETIONS:
+                return self._complete_deepseek_chat_json(
+                    messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    timeout_seconds=timeout_seconds,
+                    diagnostic_capture=diagnostic_capture,
+                    thinking_mode=thinking_mode,
+                )
+
+            url = (
+                deepseek_responses_url(str(self._settings.llm_base_url))
+                if protocol is LLMProtocol.DEEPSEEK_RESPONSES
+                else responses_url(str(self._settings.llm_base_url))
+            )
+            return self._complete_responses_json(
                 messages,
+                url=url,
                 temperature=temperature,
                 max_tokens=max_tokens,
                 timeout_seconds=timeout_seconds,
+                output_schema=output_schema,
+                schema_name=schema_name,
+                use_json_schema=(
+                    protocol is not LLMProtocol.DEEPSEEK_RESPONSES
+                    or self._settings.tutor_deepseek_responses_json_schema_enabled
+                ),
+                diagnostic_capture=diagnostic_capture,
+                thinking_mode=thinking_mode,
             )
-
-        url = (
-            deepseek_responses_url(str(self._settings.llm_base_url))
-            if protocol is LLMProtocol.DEEPSEEK_RESPONSES
-            else responses_url(str(self._settings.llm_base_url))
-        )
-        return self._complete_responses_json(
-            messages,
-            url=url,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            timeout_seconds=timeout_seconds,
-        )
+        except (LLMCallError, LLMInvalidResponseError) as exc:
+            exc.attach_diagnostic_capture(diagnostic_capture)
+            raise
 
     def complete_text_stream(
         self,
@@ -282,16 +327,31 @@ class OpenAICompatibleClient:
         temperature: float | None,
         max_tokens: int | None,
         timeout_seconds: float | None,
+        output_schema: Mapping[str, object] | None,
+        schema_name: str | None,
+        use_json_schema: bool,
+        diagnostic_capture: ProviderBodyCapture | None,
+        thinking_mode: Literal["enabled", "disabled"] | None,
     ) -> LLMJsonResponse:
         instructions, input_text = _messages_to_responses_input(messages)
+        text_format: dict[str, object] = {"type": "json_object"}
+        if output_schema is not None and use_json_schema:
+            text_format = {
+                "type": "json_schema",
+                "name": schema_name or "structured_output",
+                "schema": dict(output_schema),
+                "strict": True,
+            }
         payload: dict[str, object] = {
             "model": self.model,
             "input": _ensure_json_mode_hint(input_text),
             "stream": True,
-            "text": {"format": {"type": "json_object"}},
+            "text": {"format": text_format},
         }
         if instructions is not None:
             payload["instructions"] = instructions
+        if thinking_mode is not None and self._settings.llm_provider_type == "deepseek":
+            payload["thinking"] = {"type": thinking_mode}
         if temperature is not None:
             payload["temperature"] = temperature
         if max_tokens is not None:
@@ -306,6 +366,7 @@ class OpenAICompatibleClient:
             payload=payload,
             headers=headers,
             timeout_seconds=timeout_seconds,
+            diagnostic_capture=diagnostic_capture,
         )
         usage = _extract_llm_usage(provider_response, protocol=LLMProtocol.RESPONSES)
         model = _response_model(provider_response) or self.model
@@ -316,7 +377,12 @@ class OpenAICompatibleClient:
         except LLMInvalidResponseError as exc:
             exc.attach_response_metadata(usage=usage, model=model)
             raise
-        return LLMJsonResponse(content=parsed_content, model=model, usage=usage)
+        return LLMJsonResponse(
+            content=parsed_content,
+            model=model,
+            usage=usage,
+            diagnostic_capture=diagnostic_capture,
+        )
 
     def _request_responses_provider(
         self,
@@ -325,16 +391,31 @@ class OpenAICompatibleClient:
         payload: Mapping[str, object],
         headers: Mapping[str, str],
         timeout_seconds: float | None = None,
+        diagnostic_capture: ProviderBodyCapture | None = None,
     ) -> Mapping[str, object]:
         timeout = _resolve_timeout_seconds(self._settings.llm_timeout_seconds, timeout_seconds)
         if self._transport is not None:
             try:
-                return _require_provider_response_object(self._transport(url, headers, payload, timeout))
+                response = _require_provider_response_object(
+                    self._transport(url, headers, payload, timeout)
+                )
+                if diagnostic_capture is not None:
+                    diagnostic_capture.append_mapping(response)
+                return response
             except (LLMCallError, LLMInvalidResponseError):
                 raise
+            except urllib.error.HTTPError as exc:
+                _capture_http_error_body(exc, diagnostic_capture)
+                raise LLMCallError(f"LLM provider returned HTTP {exc.code}") from exc
             except Exception as exc:
                 raise LLMCallError("LLM provider transport failed") from exc
-        return _post_json_stream(url, headers, payload, timeout)
+        return _post_json_stream(
+            url,
+            headers,
+            payload,
+            timeout,
+            diagnostic_capture=diagnostic_capture,
+        )
 
     def _complete_deepseek_chat_json(
         self,
@@ -343,6 +424,8 @@ class OpenAICompatibleClient:
         temperature: float | None,
         max_tokens: int | None,
         timeout_seconds: float | None,
+        diagnostic_capture: ProviderBodyCapture | None,
+        thinking_mode: Literal["enabled", "disabled"] | None,
     ) -> LLMJsonResponse:
         payload: dict[str, object] = {
             "model": self.model,
@@ -351,6 +434,8 @@ class OpenAICompatibleClient:
         }
         if temperature is not None:
             payload["temperature"] = temperature
+        if thinking_mode is not None:
+            payload["thinking"] = {"type": thinking_mode}
         if max_tokens is not None:
             payload["max_tokens"] = max_tokens
         headers = {
@@ -362,13 +447,26 @@ class OpenAICompatibleClient:
         timeout = _resolve_timeout_seconds(self._settings.llm_timeout_seconds, timeout_seconds)
         if self._transport is not None:
             try:
-                provider_response = _require_provider_response_object(self._transport(url, headers, payload, timeout))
+                provider_response = _require_provider_response_object(
+                    self._transport(url, headers, payload, timeout)
+                )
+                if diagnostic_capture is not None:
+                    diagnostic_capture.append_mapping(provider_response)
             except (LLMCallError, LLMInvalidResponseError):
                 raise
+            except urllib.error.HTTPError as exc:
+                _capture_http_error_body(exc, diagnostic_capture)
+                raise LLMCallError(f"LLM provider returned HTTP {exc.code}") from exc
             except Exception as exc:
                 raise LLMCallError("LLM provider transport failed") from exc
         else:
-            provider_response = _post_json(url, headers, payload, timeout)
+            provider_response = _post_json(
+                url,
+                headers,
+                payload,
+                timeout,
+                diagnostic_capture=diagnostic_capture,
+            )
         usage = _extract_llm_usage(provider_response, protocol=LLMProtocol.DEEPSEEK_CHAT_COMPLETIONS)
         model = _response_model(provider_response) or self.model
         try:
@@ -377,7 +475,12 @@ class OpenAICompatibleClient:
         except LLMInvalidResponseError as exc:
             exc.attach_response_metadata(usage=usage, model=model)
             raise
-        return LLMJsonResponse(content=parsed_content, model=model, usage=usage)
+        return LLMJsonResponse(
+            content=parsed_content,
+            model=model,
+            usage=usage,
+            diagnostic_capture=diagnostic_capture,
+        )
 
 
 def _post_json_stream(
@@ -385,13 +488,19 @@ def _post_json_stream(
     headers: Mapping[str, str],
     payload: Mapping[str, object],
     timeout: float,
+    *,
+    diagnostic_capture: ProviderBodyCapture | None = None,
 ) -> Mapping[str, object]:
     def request_once() -> Mapping[str, object]:
         request = _provider_request(url, headers, payload)
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            return _parse_responses_stream(response)
+            return _parse_responses_stream(response, diagnostic_capture=diagnostic_capture)
 
-    return _request_with_retries("JSON stream", request_once)
+    return _request_with_retries(
+        "JSON stream",
+        request_once,
+        diagnostic_capture=diagnostic_capture,
+    )
 
 
 def _post_json(
@@ -399,15 +508,24 @@ def _post_json(
     headers: Mapping[str, str],
     payload: Mapping[str, object],
     timeout: float,
+    *,
+    diagnostic_capture: ProviderBodyCapture | None = None,
 ) -> Mapping[str, object]:
     def request_once() -> str:
         request = _provider_request(url, headers, payload)
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            body = response.read().decode("utf-8", "replace").strip()
+            raw_body = response.read()
+            if diagnostic_capture is not None:
+                diagnostic_capture.append(raw_body)
+            body = raw_body.decode("utf-8", "replace").strip()
 
         return body
 
-    body = _request_with_retries("JSON", request_once)
+    body = _request_with_retries(
+        "JSON",
+        request_once,
+        diagnostic_capture=diagnostic_capture,
+    )
 
     if not body:
         raise LLMInvalidResponseError(
@@ -478,11 +596,17 @@ def _provider_request(
     )
 
 
-def _request_with_retries(operation_name: str, request_once: Callable[[], T]) -> T:
+def _request_with_retries(
+    operation_name: str,
+    request_once: Callable[[], T],
+    *,
+    diagnostic_capture: ProviderBodyCapture | None = None,
+) -> T:
     for attempt in range(1, LLM_PROVIDER_RETRY_ATTEMPTS + 1):
         try:
             return request_once()
         except urllib.error.HTTPError as exc:
+            _capture_http_error_body(exc, diagnostic_capture)
             if not _should_retry_http_error(exc) or attempt >= LLM_PROVIDER_RETRY_ATTEMPTS:
                 raise LLMCallError(f"LLM provider returned HTTP {exc.code}") from exc
             _log_retry(operation_name, attempt, f"HTTP {exc.code}")
@@ -493,6 +617,20 @@ def _request_with_retries(operation_name: str, request_once: Callable[[], T]) ->
             _log_retry(operation_name, attempt, _safe_transport_error(exc))
         _sleep_before_retry(attempt)
     raise LLMCallError("LLM provider retry attempts exhausted")
+
+
+def _capture_http_error_body(
+    exc: urllib.error.HTTPError,
+    capture: ProviderBodyCapture | None,
+) -> None:
+    if capture is None or capture.remaining_capacity <= 0:
+        return
+    try:
+        body = exc.read(capture.remaining_capacity + 1)
+    except Exception:
+        return
+    if isinstance(body, bytes):
+        capture.append(body)
 
 
 def _should_retry_http_error(exc: urllib.error.HTTPError) -> bool:
@@ -588,7 +726,11 @@ def _iter_response_text_deltas(response: Iterable[bytes]) -> Generator[str, None
         yield delta
 
 
-def _parse_responses_stream(response: Iterable[bytes]) -> Mapping[str, object]:
+def _parse_responses_stream(
+    response: Iterable[bytes],
+    *,
+    diagnostic_capture: ProviderBodyCapture | None = None,
+) -> Mapping[str, object]:
     latest_response: dict[str, object] | None = None
     latest_text: str | None = None
     pending_data: list[str] = []
@@ -645,6 +787,8 @@ def _parse_responses_stream(response: Iterable[bytes]) -> Mapping[str, object]:
             latest_response = dict(maybe_response)
 
     for raw_line in response:
+        if diagnostic_capture is not None:
+            diagnostic_capture.append(raw_line)
         line = raw_line.decode("utf-8", "replace").rstrip("\r\n")
         if not line:
             flush_frame()

@@ -18,6 +18,7 @@ from app.services.learning.plan_drafting import (
     decode_compact_profile,
     decode_plan_draft,
 )
+from app.services.learning.planning_facts import PlanningFactError, PostgresPlanningFactRepository
 from app.services.learning.plan_repository import (
     LearningPlanDraftConflict,
     LearningPlanSessionConflict,
@@ -47,6 +48,7 @@ class LearningPlanDraftCapabilityHandler:
     def __init__(self, conn: Connection[dict[str, object]]) -> None:
         self._conn = conn
         self._repository = PostgresLearningPlanSessionRepository(conn)
+        self._facts = PostgresPlanningFactRepository(conn)
 
     def generate(
         self,
@@ -64,12 +66,27 @@ class LearningPlanDraftCapabilityHandler:
                 )
                 try:
                     artifact = self._artifact(session=session, capability_input=capability_input)
+                    facts_fingerprint, facts_revision = self._facts.validate_profile(
+                        user_id=run.user_id,
+                        session_id=str(session["id"]),
+                        profile=artifact.profile.model_dump(mode="json"),
+                        require_complete=False,
+                    )
                     row, _replayed = self._repository.append_draft(
                         user_id=run.user_id,
                         run_id=run.run_id,
                         input_revision=run.input_revision,
                         artifact=artifact,
+                        facts_fingerprint=facts_fingerprint,
+                        facts_revision=facts_revision,
                     )
+                except PlanningFactError as exc:
+                    self._repository.record_safe_error(
+                        user_id=run.user_id,
+                        session_id=str(session["id"]),
+                        code="LEARNING_PLAN_DRAFT_INVALID",
+                    )
+                    raise _invalid() from exc
                 except LearningPlanDraftCapabilityError as exc:
                     self._repository.record_safe_error(
                         user_id=run.user_id,

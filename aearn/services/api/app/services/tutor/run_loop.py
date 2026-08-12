@@ -226,6 +226,13 @@ class TutorRunLoop:
 
                 gate_result = self._decision_gate.validate(run=snapshot, decision=decision)
                 if gate_result.status is TutorDecisionGateStatus.DENIED:
+                    if gate_result.diagnostic_code == "confirmed_question_reasked":
+                        metadata = replace(
+                            metadata,
+                            confirmed_question_reasked_count=(
+                                metadata.confirmed_question_reasked_count + 1
+                            ),
+                        )
                     return self._terminal(
                         snapshot,
                         outcome=TutorTerminalOutcome.BLOCKED_POLICY,
@@ -299,6 +306,7 @@ class TutorRunLoop:
                         metadata=metadata,
                         effect_results=effect_results,
                         public_message=decision.public_message,
+                        public_thinking_steps=decision.public_thinking_steps,
                         conversation_title=decision.conversation_title,
                     )
 
@@ -312,6 +320,7 @@ class TutorRunLoop:
                     metadata=metadata,
                     effect_results=effect_results,
                     public_message=decision.public_message,
+                    public_thinking_steps=decision.public_thinking_steps,
                     conversation_title=decision.conversation_title,
                 )
         except TutorLifecycleConflict:
@@ -533,6 +542,7 @@ class TutorRunLoop:
         metadata: TutorCheckpointMetadata | None = None,
         effect_results: list[TutorEffectResult] | tuple[TutorEffectResult, ...] = (),
         public_message: str | None = None,
+        public_thinking_steps: tuple[str, ...] = (),
         conversation_title: str | None = None,
     ) -> TutorRunResult:
         checkpoint_metadata = metadata or empty_checkpoint_metadata(token_budget=snapshot.policy.context_token_budget)
@@ -562,6 +572,7 @@ class TutorRunLoop:
             effect_count=snapshot.effect_count,
             terminal_outcome=outcome,
             public_message=public_message,
+            public_thinking_steps=public_thinking_steps,
             conversation_title=conversation_title,
             diagnostic_code=diagnostic_code,
             effect_results=tuple(effect_results),
@@ -597,6 +608,7 @@ class TutorRunLoop:
             capability_call_count=snapshot.capability_call_count,
             effect_count=snapshot.effect_count,
             public_message=decision.public_message,
+            public_thinking_steps=decision.public_thinking_steps,
             continuation_kind=decision.continuation_kind,
             effect_results=tuple(effect_results),
         )

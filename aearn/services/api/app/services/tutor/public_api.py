@@ -22,6 +22,7 @@ from app.agents.harness.contracts import TutorPolicySnapshot, TutorTerminalOutco
 from app.core.config import Settings, get_settings
 from app.agents.harness.skill_catalog import compile_published_skill_catalog
 from app.services.learning.contracts import LearningScope, LearningScopeKind, LearningTaskKind
+from app.services.learning.planning_facts import PlanningFactError, PostgresPlanningFactRepository
 from app.services.learning.track_repository import (
     LearningScopeConflict,
     LearningTrackNotFound,
@@ -95,6 +96,7 @@ class TutorPublicService:
         self._settings = settings or get_settings()
         self._repository = PostgresTutorRepository(conn)
         self._learning_tracks = PostgresLearningTrackRepository(conn)
+        self._planning_facts = PostgresPlanningFactRepository(conn)
         self._learner_state = TutorLearnerStateRepository(conn)
         self._proactive = PostgresTutorProactiveRepository(conn)
 
@@ -132,17 +134,26 @@ class TutorPublicService:
         content: str,
         idempotency_key: str,
         learning_scope: LearningScope | None = None,
+        planning_facts: Mapping[str, object] | None = None,
+        reopen_fact_fields: tuple[str, ...] = (),
     ) -> dict[str, object]:
         normalized_user_id = _uuid_identifier(user_id, label="user_id")
         return self._mutate(
             user_id=normalized_user_id,
             operation="tutor.conversation.first_turn",
             idempotency_key=idempotency_key,
-            request_body={"content": content, "learning_scope": _learning_scope_payload(learning_scope)},
+            request_body={
+                "content": content,
+                "learning_scope": _learning_scope_payload(learning_scope),
+                "planning_facts": dict(planning_facts or {}),
+                "reopen_fact_fields": list(reopen_fact_fields),
+            },
             action=lambda: self._accept_first_turn(
                 user_id=normalized_user_id,
                 content=content,
                 learning_scope=learning_scope,
+                planning_facts=planning_facts,
+                reopen_fact_fields=reopen_fact_fields,
                 idempotency_key=idempotency_key,
             ),
         )
@@ -155,6 +166,8 @@ class TutorPublicService:
         content: str,
         idempotency_key: str,
         learning_scope: LearningScope | None = None,
+        planning_facts: Mapping[str, object] | None = None,
+        reopen_fact_fields: tuple[str, ...] = (),
     ) -> dict[str, object]:
         normalized_user_id = _uuid_identifier(user_id, label="user_id")
         normalized_conversation_id = _uuid_identifier(conversation_id, label="conversation_id")
@@ -166,12 +179,16 @@ class TutorPublicService:
                 "conversation_id": normalized_conversation_id,
                 "content": content,
                 "learning_scope": _learning_scope_payload(learning_scope),
+                "planning_facts": dict(planning_facts or {}),
+                "reopen_fact_fields": list(reopen_fact_fields),
             },
             action=lambda: self._accept_conversation_input(
                 user_id=normalized_user_id,
                 conversation_id=normalized_conversation_id,
                 content=content,
                 learning_scope=learning_scope,
+                planning_facts=planning_facts,
+                reopen_fact_fields=reopen_fact_fields,
                 idempotency_key=idempotency_key,
             ),
         )
@@ -184,6 +201,8 @@ class TutorPublicService:
         content: str,
         idempotency_key: str,
         learning_scope: LearningScope | None = None,
+        planning_facts: Mapping[str, object] | None = None,
+        reopen_fact_fields: tuple[str, ...] = (),
     ) -> dict[str, object]:
         normalized_user_id = _uuid_identifier(user_id, label="user_id")
         normalized_run_id = _uuid_identifier(run_id, label="run_id")
@@ -195,12 +214,16 @@ class TutorPublicService:
                 "run_id": normalized_run_id,
                 "content": content,
                 "learning_scope": _learning_scope_payload(learning_scope),
+                "planning_facts": dict(planning_facts or {}),
+                "reopen_fact_fields": list(reopen_fact_fields),
             },
             action=lambda: self._accept_existing_run_input(
                 user_id=normalized_user_id,
                 run_id=normalized_run_id,
                 content=content,
                 learning_scope=learning_scope,
+                planning_facts=planning_facts,
+                reopen_fact_fields=reopen_fact_fields,
                 idempotency_key=idempotency_key,
             ),
         )
@@ -525,6 +548,8 @@ class TutorPublicService:
         user_id: str,
         content: str,
         learning_scope: LearningScope | None,
+        planning_facts: Mapping[str, object] | None,
+        reopen_fact_fields: tuple[str, ...],
         idempotency_key: str,
     ) -> dict[str, object]:
         self._assert_user_exists(user_id)
@@ -540,12 +565,30 @@ class TutorPublicService:
                 content=content,
                 received_at=now,
             )
-            self._snapshot_learning_scope(
+            scope = self._snapshot_learning_scope(
                 user_id=user_id,
                 run_id=accepted.run.run_id,
                 learning_scope=learning_scope,
             )
+            if scope.scope_kind is LearningScopeKind.PLAN_DRAFTING:
+                self._planning_facts.record_input(
+                    user_id=user_id,
+                    run_id=accepted.run.run_id,
+                    conversation_id=accepted.run.conversation_id,
+                    message_id=accepted.acceptance.message_id,
+                    input_revision=accepted.acceptance.input_revision,
+                    content=content,
+                    explicit_facts=planning_facts,
+                    reopen_fields=reopen_fact_fields,
+                )
             state = self._repository.read_run_state(user_id=user_id, run_id=accepted.run.run_id)
+        except PlanningFactError as exc:
+            raise TutorPublicApiError(
+                "VALIDATION_ERROR",
+                "计划事实未通过服务器校验。",
+                status_code=400,
+                details={"field": "planning_facts"},
+            ) from exc
         except TutorIdempotencyConflict as exc:
             raise _idempotency_conflict() from exc
         except TutorTerminalStateConflict as exc:
@@ -559,6 +602,8 @@ class TutorPublicService:
         conversation_id: str,
         content: str,
         learning_scope: LearningScope | None,
+        planning_facts: Mapping[str, object] | None,
+        reopen_fact_fields: tuple[str, ...],
         idempotency_key: str,
     ) -> dict[str, object]:
         self._assert_user_exists(user_id)
@@ -575,11 +620,22 @@ class TutorPublicService:
                 content=content,
                 received_at=now,
             )
-            self._snapshot_learning_scope(
+            scope = self._snapshot_learning_scope(
                 user_id=user_id,
                 run_id=accepted.run.run_id,
                 learning_scope=learning_scope,
             )
+            if scope.scope_kind is LearningScopeKind.PLAN_DRAFTING:
+                self._planning_facts.record_input(
+                    user_id=user_id,
+                    run_id=accepted.run.run_id,
+                    conversation_id=accepted.run.conversation_id,
+                    message_id=accepted.acceptance.message_id,
+                    input_revision=accepted.acceptance.input_revision,
+                    content=content,
+                    explicit_facts=planning_facts,
+                    reopen_fields=reopen_fact_fields,
+                )
             state = self._repository.read_run_state(user_id=user_id, run_id=accepted.run.run_id)
         except TutorRunNotFound as exc:
             raise TutorPublicApiError(
@@ -587,6 +643,13 @@ class TutorPublicService:
                 "Tutor conversation was not found for the current learner.",
                 status_code=404,
                 details={"conversation_id": conversation_id},
+            ) from exc
+        except PlanningFactError as exc:
+            raise TutorPublicApiError(
+                "VALIDATION_ERROR",
+                "计划事实未通过服务器校验。",
+                status_code=400,
+                details={"field": "planning_facts"},
             ) from exc
         except TutorIdempotencyConflict as exc:
             raise _idempotency_conflict() from exc
@@ -601,6 +664,8 @@ class TutorPublicService:
         run_id: str,
         content: str,
         learning_scope: LearningScope | None,
+        planning_facts: Mapping[str, object] | None,
+        reopen_fact_fields: tuple[str, ...],
         idempotency_key: str,
     ) -> dict[str, object]:
         self._assert_user_exists(user_id)
@@ -627,9 +692,28 @@ class TutorPublicService:
                 content=content,
                 received_at=datetime.now(UTC),
             )
+            scope = self._learning_tracks.read_run_scope(user_id=user_id, run_id=run_id)
+            if scope.scope_kind is LearningScopeKind.PLAN_DRAFTING:
+                self._planning_facts.record_input(
+                    user_id=user_id,
+                    run_id=run_id,
+                    conversation_id=state.snapshot.conversation_id,
+                    message_id=acceptance.message_id,
+                    input_revision=acceptance.input_revision,
+                    content=content,
+                    explicit_facts=planning_facts,
+                    reopen_fields=reopen_fact_fields,
+                )
             updated = self._repository.read_run_state(user_id=user_id, run_id=run_id)
         except TutorRunNotFound as exc:
             raise _run_not_found(run_id) from exc
+        except PlanningFactError as exc:
+            raise TutorPublicApiError(
+                "VALIDATION_ERROR",
+                "计划事实未通过服务器校验。",
+                status_code=400,
+                details={"field": "planning_facts"},
+            ) from exc
         except TutorIdempotencyConflict as exc:
             raise _idempotency_conflict() from exc
         except TutorTerminalStateConflict as exc:
@@ -1114,6 +1198,7 @@ def _timeline_payload(item: TutorConversationTimelineRecord) -> dict[str, object
         "id": item.item_id,
         "role": item.role,
         "content": item.content or "",
+        "public_thinking_steps": list(item.public_thinking_steps),
         "created_at": _iso(item.created_at),
     }
 

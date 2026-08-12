@@ -85,6 +85,7 @@ def test_context_governance_v2_fixture_covers_required_cross_contract_cases() ->
         "summary_covers_retired_messages_once",
         "summary_does_not_override_correction",
         "stale_summary_excluded",
+        "confirmed_planning_fact_survives_long_history",
     }
     assert {
         result.receipt.budget_mode

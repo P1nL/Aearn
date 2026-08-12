@@ -714,9 +714,16 @@ CREATE TABLE IF NOT EXISTS tutor_messages (
   conversation_id uuid NOT NULL REFERENCES tutor_conversations(id) ON DELETE RESTRICT,
   role text NOT NULL CHECK (role IN ('learner', 'tutor')),
   content text NOT NULL,
+  public_thinking_steps_json jsonb NOT NULL DEFAULT '[]'::jsonb
+    CONSTRAINT chk_tutor_messages_public_thinking_steps
+    CHECK (jsonb_typeof(public_thinking_steps_json) = 'array'
+      AND jsonb_array_length(public_thinking_steps_json) <= 4),
   created_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT uq_tutor_messages_id_conversation UNIQUE (id, conversation_id)
 );
+
+ALTER TABLE tutor_messages
+  ADD COLUMN IF NOT EXISTS public_thinking_steps_json jsonb NOT NULL DEFAULT '[]'::jsonb;
 
 CREATE TABLE IF NOT EXISTS tutor_catalog_snapshots (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -1406,6 +1413,17 @@ BEGIN
   ) THEN
     ALTER TABLE tutor_messages
       ADD CONSTRAINT uq_tutor_messages_id_conversation UNIQUE (id, conversation_id);
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'tutor_messages'::regclass AND conname = 'chk_tutor_messages_public_thinking_steps'
+  ) THEN
+    ALTER TABLE tutor_messages
+      ADD CONSTRAINT chk_tutor_messages_public_thinking_steps CHECK (
+        jsonb_typeof(public_thinking_steps_json) = 'array'
+        AND jsonb_array_length(public_thinking_steps_json) <= 4
+      );
   END IF;
 
   IF NOT EXISTS (
@@ -2912,6 +2930,170 @@ CREATE TABLE IF NOT EXISTS tutor_learning_plan_sessions (
   )
 );
 
+ALTER TABLE tutor_learning_plan_sessions
+  ADD COLUMN IF NOT EXISTS facts_policy_version text CHECK (
+    facts_policy_version IS NULL OR char_length(facts_policy_version) BETWEEN 1 AND 160
+  );
+
+CREATE TABLE IF NOT EXISTS tutor_planning_intake_facts (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  session_id uuid NOT NULL,
+  user_id uuid NOT NULL,
+  conversation_id uuid NOT NULL,
+  field_key text NOT NULL CHECK (field_key IN (
+    'language_id', 'goal_text', 'target_level', 'weekly_minutes',
+    'experience_level', 'teaching_preferences', 'pace_constraints'
+  )),
+  value_json jsonb NOT NULL,
+  value_hash text NOT NULL CHECK (value_hash ~ '^[0-9a-f]{64}$'),
+  revision integer NOT NULL CHECK (revision >= 1),
+  state text NOT NULL CHECK (state IN ('answered_unconfirmed', 'confirmed', 'withdrawn')),
+  source_kind text NOT NULL CHECK (source_kind IN ('deterministic_input', 'explicit_input', 'explicit_confirmation')),
+  source_message_id uuid NOT NULL,
+  source_run_id uuid NOT NULL,
+  source_input_revision integer NOT NULL CHECK (source_input_revision >= 1),
+  supersedes_fact_id uuid,
+  policy_version text NOT NULL CHECK (char_length(policy_version) BETWEEN 1 AND 160),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_tutor_planning_intake_facts_id_scope UNIQUE (id, session_id, user_id),
+  CONSTRAINT uq_tutor_planning_intake_facts_session_field_revision UNIQUE (session_id, field_key, revision),
+  CONSTRAINT uq_tutor_planning_intake_facts_source_value
+    UNIQUE (session_id, field_key, source_run_id, source_input_revision, value_hash),
+  CONSTRAINT fk_tutor_planning_intake_fact_session_user
+    FOREIGN KEY (session_id, user_id)
+    REFERENCES tutor_learning_plan_sessions(id, user_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_planning_intake_fact_conversation_user
+    FOREIGN KEY (conversation_id, user_id)
+    REFERENCES tutor_conversations(id, user_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_planning_intake_fact_run_user
+    FOREIGN KEY (source_run_id, user_id)
+    REFERENCES tutor_runs(id, user_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_planning_intake_fact_message_conversation
+    FOREIGN KEY (source_message_id, conversation_id)
+    REFERENCES tutor_messages(id, conversation_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_planning_intake_fact_input_evidence
+    FOREIGN KEY (source_run_id, source_message_id, source_input_revision)
+    REFERENCES tutor_run_input_events(run_id, message_id, input_revision) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_planning_intake_fact_predecessor_scope
+    FOREIGN KEY (supersedes_fact_id, session_id, user_id)
+    REFERENCES tutor_planning_intake_facts(id, session_id, user_id) ON DELETE RESTRICT,
+  CONSTRAINT chk_tutor_planning_intake_fact_predecessor_distinct CHECK (
+    supersedes_fact_id IS NULL OR supersedes_fact_id <> id
+  ),
+  CONSTRAINT chk_tutor_planning_intake_fact_revision_shape CHECK (
+    (revision = 1 AND supersedes_fact_id IS NULL)
+    OR (revision > 1 AND supersedes_fact_id IS NOT NULL)
+  )
+);
+
+CREATE INDEX IF NOT EXISTS idx_tutor_planning_intake_facts_user_session
+  ON tutor_planning_intake_facts(user_id, session_id, field_key, revision DESC);
+CREATE INDEX IF NOT EXISTS idx_tutor_planning_intake_facts_message
+  ON tutor_planning_intake_facts(source_message_id);
+
+CREATE TABLE IF NOT EXISTS tutor_planning_question_events (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  session_id uuid NOT NULL,
+  user_id uuid NOT NULL,
+  conversation_id uuid NOT NULL,
+  field_key text NOT NULL CHECK (field_key IN (
+    'language_id', 'goal_text', 'target_level', 'weekly_minutes',
+    'experience_level', 'teaching_preferences', 'pace_constraints'
+  )),
+  question_key text NOT NULL CHECK (question_key = field_key),
+  status text NOT NULL CHECK (status IN (
+    'unasked', 'asked', 'answered_unconfirmed', 'confirmed',
+    'superseded', 'reopened', 'withdrawn', 'reasked_blocked'
+  )),
+  source_run_id uuid,
+  source_message_id uuid,
+  source_input_revision integer CHECK (source_input_revision IS NULL OR source_input_revision >= 1),
+  fact_id uuid,
+  previous_event_id uuid,
+  reason_code text NOT NULL CHECK (char_length(reason_code) BETWEEN 1 AND 120),
+  event_hash text NOT NULL CHECK (event_hash ~ '^[0-9a-f]{64}$'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_tutor_planning_question_events_session_hash UNIQUE (session_id, event_hash),
+  CONSTRAINT uq_tutor_planning_question_events_id_scope UNIQUE (id, session_id, user_id),
+  CONSTRAINT fk_tutor_planning_question_event_session_user
+    FOREIGN KEY (session_id, user_id)
+    REFERENCES tutor_learning_plan_sessions(id, user_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_planning_question_event_conversation_user
+    FOREIGN KEY (conversation_id, user_id)
+    REFERENCES tutor_conversations(id, user_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_planning_question_event_run_user
+    FOREIGN KEY (source_run_id, user_id)
+    REFERENCES tutor_runs(id, user_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_planning_question_event_message_conversation
+    FOREIGN KEY (source_message_id, conversation_id)
+    REFERENCES tutor_messages(id, conversation_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_planning_question_event_fact_scope
+    FOREIGN KEY (fact_id, session_id, user_id)
+    REFERENCES tutor_planning_intake_facts(id, session_id, user_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_planning_question_event_previous_scope
+    FOREIGN KEY (previous_event_id, session_id, user_id)
+    REFERENCES tutor_planning_question_events(id, session_id, user_id) ON DELETE RESTRICT,
+  CONSTRAINT chk_tutor_planning_question_event_source_shape CHECK (
+    (source_run_id IS NULL AND source_message_id IS NULL AND source_input_revision IS NULL)
+    OR (source_run_id IS NOT NULL AND source_input_revision IS NOT NULL)
+  )
+);
+
+CREATE INDEX IF NOT EXISTS idx_tutor_planning_question_events_session_field
+  ON tutor_planning_question_events(session_id, field_key, created_at DESC, id DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_tutor_planning_question_events_previous
+  ON tutor_planning_question_events(previous_event_id)
+  WHERE previous_event_id IS NOT NULL;
+
+ALTER TABLE tutor_planning_question_events
+  DROP CONSTRAINT IF EXISTS tutor_planning_question_events_status_check;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'tutor_planning_question_events'::regclass
+      AND conname = 'chk_tutor_planning_question_events_status'
+  ) THEN
+    ALTER TABLE tutor_planning_question_events
+      ADD CONSTRAINT chk_tutor_planning_question_events_status CHECK (status IN (
+        'unasked', 'asked', 'answered_unconfirmed', 'confirmed',
+        'superseded', 'reopened', 'withdrawn', 'reasked_blocked'
+      ));
+  END IF;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION enforce_tutor_planning_fact_append_only()
+RETURNS trigger AS $$
+BEGIN
+  IF TG_OP = 'DELETE' AND current_setting('aearn.learning_track_purge_user_id', true) = OLD.user_id::text THEN
+    RETURN OLD;
+  END IF;
+  RAISE EXCEPTION 'Tutor planning intake facts are append-only' USING ERRCODE = '23514';
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION enforce_tutor_planning_question_event_append_only()
+RETURNS trigger AS $$
+BEGIN
+  IF TG_OP = 'DELETE' AND current_setting('aearn.learning_track_purge_user_id', true) = OLD.user_id::text THEN
+    RETURN OLD;
+  END IF;
+  RAISE EXCEPTION 'Tutor planning question events are append-only' USING ERRCODE = '23514';
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_tutor_planning_intake_facts_immutable ON tutor_planning_intake_facts;
+CREATE TRIGGER trg_tutor_planning_intake_facts_immutable
+BEFORE UPDATE OR DELETE ON tutor_planning_intake_facts
+FOR EACH ROW EXECUTE FUNCTION enforce_tutor_planning_fact_append_only();
+
+DROP TRIGGER IF EXISTS trg_tutor_planning_question_events_immutable ON tutor_planning_question_events;
+CREATE TRIGGER trg_tutor_planning_question_events_immutable
+BEFORE UPDATE OR DELETE ON tutor_planning_question_events
+FOR EACH ROW EXECUTE FUNCTION enforce_tutor_planning_question_event_append_only();
+
 CREATE TABLE IF NOT EXISTS tutor_learning_plan_drafts (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   session_id uuid NOT NULL,
@@ -2985,6 +3167,13 @@ CREATE INDEX IF NOT EXISTS idx_tutor_learning_plan_sessions_user_updated
   ON tutor_learning_plan_sessions(user_id, updated_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_tutor_learning_plan_drafts_session_version
   ON tutor_learning_plan_drafts(session_id, draft_version DESC);
+ALTER TABLE tutor_learning_plan_drafts
+  ADD COLUMN IF NOT EXISTS facts_fingerprint text CHECK (
+    facts_fingerprint IS NULL OR facts_fingerprint ~ '^[0-9a-f]{64}$'
+  );
+ALTER TABLE tutor_learning_plan_drafts
+  ADD COLUMN IF NOT EXISTS facts_revision integer NOT NULL DEFAULT 0 CHECK (facts_revision >= 0);
+
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_tutor_track_plan_revisions_one_active
   ON tutor_track_plan_revisions(track_id) WHERE status = 'active';

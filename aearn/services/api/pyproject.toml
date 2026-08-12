@@ -13,6 +13,7 @@ dependencies = [
   "celery==5.5.3",
   "pydantic",
   "python-dotenv",
+  "cryptography>=50.0.0",
 ]
 
 [dependency-groups]

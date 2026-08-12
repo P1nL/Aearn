@@ -54,7 +54,11 @@ class CatalogTutorDecisionGate:
 
         if decision.capability_requests or decision.effect_proposals:
             if selected is None:
-                return _deny("skill_selection_required")
+                return self._select_unique_action_skill(
+                    run=run,
+                    decision=decision,
+                    policy=policy,
+                )
             selection, skill = selected
             if not policy.allows_skill(selection.reference):
                 return _deny("skill_not_policy_eligible")
@@ -99,17 +103,83 @@ class CatalogTutorDecisionGate:
         if selected is None or selected[0].reference != reference:
             if decision.capability_requests or decision.effect_proposals or decision.terminal_outcome is not None:
                 return _deny("mixed_skill_selection_action")
-            self._selection_store.record(
-                run_id=run.run_id,
-                input_revision=run.input_revision,
-                selection=TutorSkillSelection(
-                    reference=reference,
-                    manifest_hash=skill.manifest_hash,
-                    instruction_hash=skill.instruction_hash,
-                ),
-            )
+            self._record_selection(run=run, skill=skill)
             return TutorDecisionGateResult(status=TutorDecisionGateStatus.REBUILD_CONTEXT)
         return None
+
+    def _select_unique_action_skill(
+        self,
+        *,
+        run: TutorRunSnapshot,
+        decision: TutorDecision,
+        policy: CapabilityPolicyContext,
+    ) -> TutorDecisionGateResult:
+        action_result = self._validate_unbound_actions(decision=decision, policy=policy)
+        if action_result is not None:
+            return action_result
+
+        required_capability_ids = frozenset(
+            request.capability_id for request in decision.capability_requests
+        )
+        required_effect_types = frozenset(
+            proposal.effect_type for proposal in decision.effect_proposals
+        )
+        candidates = tuple(
+            skill
+            for skill in self._catalog.skills
+            if policy.allows_skill(skill.reference)
+            and required_capability_ids.issubset(skill.manifest.requires_capabilities)
+            and required_effect_types.issubset(skill.manifest.allowed_effect_types)
+        )
+        if not candidates:
+            return _deny("skill_selection_required")
+        if len(candidates) != 1:
+            return _deny("action_skill_ambiguous")
+
+        self._record_selection(run=run, skill=candidates[0])
+        return TutorDecisionGateResult(status=TutorDecisionGateStatus.REBUILD_CONTEXT)
+
+    def _validate_unbound_actions(
+        self,
+        *,
+        decision: TutorDecision,
+        policy: CapabilityPolicyContext,
+    ) -> TutorDecisionGateResult | None:
+        for request in decision.capability_requests:
+            descriptor = self._catalog.capability(request.capability_id)
+            if descriptor is None:
+                return _deny("unknown_capability")
+            if not policy.allows_descriptor(descriptor):
+                return _deny("capability_not_policy_eligible")
+            keys = tuple(field.key for field in request.arguments)
+            if len(keys) != len(set(keys)) or not set(keys).issubset(descriptor.input_field_names):
+                return _deny("capability_arguments_invalid")
+
+        for proposal in decision.effect_proposals:
+            effect_descriptor = self._catalog.effect(proposal.effect_type)
+            if effect_descriptor is None:
+                return _deny("unknown_effect_type")
+            if not policy.allows_effect(effect_descriptor):
+                return _deny("effect_not_policy_eligible")
+            payload = payload_mapping_from_fields(proposal.payload)
+            if payload is None:
+                return _deny("effect_arguments_invalid")
+            try:
+                effect_descriptor.proposal_model.model_validate(payload)
+            except ValidationError:
+                return _deny("effect_arguments_invalid")
+        return None
+
+    def _record_selection(self, *, run: TutorRunSnapshot, skill: PublishedSkill) -> None:
+        self._selection_store.record(
+            run_id=run.run_id,
+            input_revision=run.input_revision,
+            selection=TutorSkillSelection(
+                reference=skill.reference,
+                manifest_hash=skill.manifest_hash,
+                instruction_hash=skill.instruction_hash,
+            ),
+        )
 
     def _validate_capability_requests(
         self,

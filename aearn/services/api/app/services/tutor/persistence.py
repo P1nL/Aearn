@@ -22,6 +22,8 @@ from pydantic import ValidationError
 
 from app.agents.harness.capabilities import EffectDescriptor, default_effect_descriptors, is_exact_semver
 from app.agents.harness.contracts import (
+    MAX_TUTOR_PUBLIC_THINKING_STEP_LENGTH,
+    MAX_TUTOR_PUBLIC_THINKING_STEPS,
     TutorCapabilityRequest,
     TutorCapabilityResult,
     TutorCapabilityStatus,
@@ -219,6 +221,7 @@ class TutorConversationTimelineRecord:
     sort_rank: int
     role: str | None = None
     content: str | None = None
+    public_thinking_steps: tuple[str, ...] = ()
     process: TutorPublicProcessState | None = None
 
 
@@ -1197,6 +1200,7 @@ class PostgresTutorRepository:
                 CASE WHEN messages.role = 'learner' THEN 10 ELSE 30 END AS sort_rank,
                 messages.role AS role,
                 messages.content AS content,
+                messages.public_thinking_steps_json AS public_thinking_steps_json,
                 NULL::uuid AS process_run_id
               FROM tutor_messages AS messages
               JOIN tutor_conversations AS conversations ON conversations.id = messages.conversation_id
@@ -1213,6 +1217,7 @@ class PostgresTutorRepository:
                 20 AS sort_rank,
                 NULL::text AS role,
                 NULL::text AS content,
+                '[]'::jsonb AS public_thinking_steps_json,
                 processes.run_id AS process_run_id
               FROM tutor_run_public_processes AS processes
               JOIN tutor_conversations AS conversations ON conversations.id = processes.conversation_id
@@ -1267,6 +1272,13 @@ class PostgresTutorRepository:
                         sort_rank=_as_int(row.get("sort_rank"), 0),
                         role=role,
                         content=str(row.get("content") or ""),
+                        public_thinking_steps=(
+                            _public_thinking_steps_from_value(
+                                row.get("public_thinking_steps_json")
+                            )
+                            if role == "tutor"
+                            else ()
+                        ),
                     )
                 )
                 continue
@@ -1439,6 +1451,9 @@ class PostgresTutorRepository:
             raise ValueError("lease duration must be positive")
         new_expiry = now + timedelta(seconds=duration_seconds)
         with self._conn.transaction():
+            # Permit a late heartbeat only while the exact owner/generation CAS
+            # still matches. A replacement claim increments the generation, so
+            # an obsolete worker can never renew after another owner takes over.
             row = self._conn.execute(
                 """
                 UPDATE tutor_runs
@@ -1447,13 +1462,12 @@ class PostgresTutorRepository:
                   AND user_id = %s
                   AND active_lease_owner_id = %s
                   AND active_lease_generation = %s
-                  AND active_lease_expires_at > %s
                   AND terminal_outcome IS NULL
                   AND cancelled_at IS NULL
                   AND superseded_by_run_id IS NULL
                 RETURNING id, active_lease_owner_id, active_lease_generation, active_lease_expires_at
                 """,
-                (new_expiry, lease.run_id, user_id, lease.owner_id, lease.generation, now),
+                (new_expiry, lease.run_id, user_id, lease.owner_id, lease.generation),
             ).fetchone()
             if row is None:
                 return None
@@ -3182,11 +3196,18 @@ class PostgresTutorRepository:
             return None
         row = self._conn.execute(
             """
-            INSERT INTO tutor_messages (conversation_id, role, content, created_at)
-            VALUES (%s, 'tutor', %s, %s)
+            INSERT INTO tutor_messages (
+              conversation_id, role, content, public_thinking_steps_json, created_at
+            )
+            VALUES (%s, 'tutor', %s, %s::jsonb, %s)
             RETURNING id
             """,
-            (run["conversation_id"], public_message, created_at),
+            (
+                run["conversation_id"],
+                public_message,
+                _json(list(result.public_thinking_steps)),
+                created_at,
+            ),
         ).fetchone()
         if row is None:
             raise RuntimeError("Tutor public message insert failed")
@@ -3891,6 +3912,22 @@ def _base64url_encode(value: bytes) -> str:
 def _base64url_decode(value: str) -> bytes:
     padding = "=" * (-len(value) % 4)
     return base64.urlsafe_b64decode(f"{value}{padding}".encode("ascii"))
+
+
+def _public_thinking_steps_from_value(value: object) -> tuple[str, ...]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return ()
+    steps: list[str] = []
+    for raw_step in value[:MAX_TUTOR_PUBLIC_THINKING_STEPS]:
+        if not isinstance(raw_step, str):
+            continue
+        step = sanitize_summary_text(
+            raw_step,
+            max_length=MAX_TUTOR_PUBLIC_THINKING_STEP_LENGTH,
+        )
+        if step:
+            steps.append(step)
+    return tuple(steps)
 
 
 def _as_mapping(value: object) -> dict[str, object]:

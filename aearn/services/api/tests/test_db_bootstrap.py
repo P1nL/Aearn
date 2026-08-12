@@ -155,6 +155,30 @@ LESSON_SCHEMA_CONSTRAINTS = (
     "chk_tutor_lesson_authoring_attempt_usage",
 )
 
+PLANNING_FACT_SCHEMA_CONSTRAINTS = (
+    "uq_tutor_planning_intake_facts_id_scope",
+    "uq_tutor_planning_intake_facts_session_field_revision",
+    "uq_tutor_planning_intake_facts_source_value",
+    "fk_tutor_planning_intake_fact_session_user",
+    "fk_tutor_planning_intake_fact_conversation_user",
+    "fk_tutor_planning_intake_fact_run_user",
+    "fk_tutor_planning_intake_fact_message_conversation",
+    "fk_tutor_planning_intake_fact_input_evidence",
+    "fk_tutor_planning_intake_fact_predecessor_scope",
+    "chk_tutor_planning_intake_fact_predecessor_distinct",
+    "chk_tutor_planning_intake_fact_revision_shape",
+    "uq_tutor_planning_question_events_session_hash",
+    "uq_tutor_planning_question_events_id_scope",
+    "fk_tutor_planning_question_event_session_user",
+    "fk_tutor_planning_question_event_conversation_user",
+    "fk_tutor_planning_question_event_run_user",
+    "fk_tutor_planning_question_event_message_conversation",
+    "fk_tutor_planning_question_event_fact_scope",
+    "fk_tutor_planning_question_event_previous_scope",
+    "chk_tutor_planning_question_event_source_shape",
+    "chk_tutor_planning_question_events_status",
+)
+
 PRACTICE_SCHEMA_CONSTRAINTS = (
     "uq_tutor_exercise_versions_key_version",
     "chk_tutor_exercise_versions_execution_shape",
@@ -188,6 +212,7 @@ TUTOR_SCHEMA_CONSTRAINTS = (
     + PROVIDER_ATTEMPT_RECEIPT_CONSTRAINTS
     + CONVERSATION_TURNRUN_CONSTRAINTS
     + CONTEXT_SUMMARY_CONSTRAINTS
+    + PLANNING_FACT_SCHEMA_CONSTRAINTS
     + LESSON_SCHEMA_CONSTRAINTS
     + PRACTICE_SCHEMA_CONSTRAINTS
 )
@@ -226,6 +251,8 @@ TARGET_TUTOR_TABLES = (
     "tutor_activity_records",
     "tutor_inbox_items",
     "tutor_api_idempotency_records",
+    "tutor_planning_intake_facts",
+    "tutor_planning_question_events",
     "tutor_run_public_processes",
     "tutor_run_public_process_steps",
     "tutor_lesson_documents",
@@ -270,6 +297,8 @@ def test_tutor_target_schema_is_repeatable_and_enforces_run_event_identity() -> 
             (
                 [
                     "trg_tutor_provider_attempt_receipts_immutable",
+                    "trg_tutor_planning_intake_facts_immutable",
+                    "trg_tutor_planning_question_events_immutable",
                     "trg_tutor_conversations_updated_at",
                     "trg_tutor_runs_updated_at",
                     "trg_tutor_effects_updated_at",
@@ -370,6 +399,8 @@ def test_tutor_target_schema_is_repeatable_and_enforces_run_event_identity() -> 
         }.issubset(summary_columns)
         assert {str(row["tgname"]) for row in trigger_rows} == {
             "trg_tutor_provider_attempt_receipts_immutable",
+            "trg_tutor_planning_intake_facts_immutable",
+            "trg_tutor_planning_question_events_immutable",
             "trg_tutor_conversations_updated_at",
             "trg_tutor_runs_updated_at",
             "trg_tutor_effects_updated_at",
@@ -440,6 +471,10 @@ def test_tutor_target_schema_is_repeatable_and_enforces_run_event_identity() -> 
                     "idx_tutor_activity_records_user_created",
                     "idx_tutor_inbox_items_user_state",
                     "idx_tutor_api_idempotency_user_created",
+                    "idx_tutor_planning_intake_facts_user_session",
+                    "idx_tutor_planning_intake_facts_message",
+                    "idx_tutor_planning_question_events_session_field",
+                    "uq_tutor_planning_question_events_previous",
                     "uq_tutor_runs_interactive_foreground",
                     "idx_tutor_conversations_public_activity",
                     "idx_tutor_public_processes_conversation_activity",
@@ -473,6 +508,10 @@ def test_tutor_target_schema_is_repeatable_and_enforces_run_event_identity() -> 
             "idx_tutor_activity_records_user_created",
             "idx_tutor_inbox_items_user_state",
             "idx_tutor_api_idempotency_user_created",
+            "idx_tutor_planning_intake_facts_user_session",
+            "idx_tutor_planning_intake_facts_message",
+            "idx_tutor_planning_question_events_session_field",
+            "uq_tutor_planning_question_events_previous",
             "uq_tutor_runs_interactive_foreground",
             "idx_tutor_conversations_public_activity",
             "idx_tutor_public_processes_conversation_activity",

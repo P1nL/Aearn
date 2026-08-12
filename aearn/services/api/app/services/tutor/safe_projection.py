@@ -57,7 +57,10 @@ _SAFE_KEYS = frozenset(
         "max_effects", "context_token_budget", "lease_duration_seconds", "skills", "required_capability_ids",
         "allowed_effect_types", "policy_tags", "context_budget_policy", "budget_mode", "estimated_total_input_tokens", "optional_token_budget",
         "warning_reached", "critical_reached", "expansion_count", "estimator_version", "capability_version",
-        "budget_policy_version", "truncated_count",
+        "budget_policy_version", "truncated_count", "authoritative_snapshot_schema_version",
+        "authoritative_snapshot_hash", "fact_revision", "required_fact_count",
+        "required_fact_selected_count", "required_fact_missing_count",
+        "confirmed_question_reasked_count", "summary_blocked_by_unprojected_fact",
     }
 )
 _INTEGER_KEYS = frozenset(
@@ -69,12 +72,16 @@ _INTEGER_KEYS = frozenset(
         "context_token_budget", "lease_duration_seconds", "estimated_total_input_tokens", "optional_token_budget",
         "expansion_count", "truncated_count", "context_window_tokens", "max_output_reserve_tokens",
         "protocol_reserve_tokens", "safety_margin_tokens", "maximum_dynamic_target_tokens",
+        "fact_revision", "required_fact_count", "required_fact_selected_count",
+        "required_fact_missing_count", "confirmed_question_reasked_count",
+        "summary_blocked_by_unprojected_fact",
     }
 )
 _HASH_KEYS = frozenset(
     {
         "catalog_digest", "policy_fingerprint", "manifest_hash", "instruction_hash", "evaluation_hash", "request_hash",
         "result_hash", "payload_hash", "safe_hash", "source_hash", "summary_source_hash", "prior_summary_hash", "lock_fingerprint",
+        "authoritative_snapshot_hash",
     }
 )
 

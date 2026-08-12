@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -22,7 +23,11 @@ from app.agents.harness.contracts import (
     TutorTerminalOutcome,
     payload_fields_from_mapping,
 )
-from app.agents.harness.skill_catalog import compile_published_skill_catalog
+from app.agents.harness.skill_catalog import (
+    PublishedSkill,
+    SkillCatalogSnapshot,
+    compile_published_skill_catalog,
+)
 from app.services.tutor.capability_gateway import CatalogCapabilityGateway
 from app.services.tutor.capability_policy import CapabilityPolicyContext, InMemoryCapabilityPolicyResolver
 from app.services.tutor.decision_gate import CatalogTutorDecisionGate
@@ -202,7 +207,47 @@ def test_catalog_gate_denies_unversioned_unknown_mixed_and_effect_decisions() ->
     assert effect.diagnostic_code == "unknown_effect_type"
 
 
-def test_selection_rebuilds_context_before_grounding_dispatch_and_effect_never_commits() -> None:
+def test_catalog_gate_denies_ambiguous_action_skill_inference() -> None:
+    catalog = compile_published_skill_catalog()
+    run = _run()
+    registry_skill = _registry_skill(catalog)
+    alternate_skill = PublishedSkill(
+        manifest=registry_skill.manifest.model_copy(
+            update={"id": "tutor.registry-grounding-alternate"}
+        ),
+        instruction=registry_skill.instruction,
+        instruction_hash=registry_skill.instruction_hash,
+        evaluation_hash=registry_skill.evaluation_hash,
+        manifest_hash="a" * 64,
+    )
+    ambiguous_catalog = SkillCatalogSnapshot(
+        skills=(*catalog.skills, alternate_skill),
+        capability_descriptors=catalog.capability_descriptors,
+        effect_descriptors=catalog.effect_descriptors,
+        digest="b" * 64,
+    )
+    policy = replace(
+        _policy(ambiguous_catalog, run),
+        eligible_skill_references=(registry_skill.reference, alternate_skill.reference),
+    )
+    store = InMemoryTutorSkillSelectionStore()
+    gate = CatalogTutorDecisionGate(
+        catalog=ambiguous_catalog,
+        policy_resolver=InMemoryCapabilityPolicyResolver([policy]),
+        selection_store=store,
+    )
+
+    result = gate.validate(
+        run=run,
+        decision=TutorDecision(capability_requests=(_request(),)),
+    )
+
+    assert result.status is TutorDecisionGateStatus.DENIED
+    assert result.diagnostic_code == "action_skill_ambiguous"
+    assert store.records == []
+
+
+def test_unique_action_skill_rebuilds_context_before_grounding_dispatch_and_effect_never_commits() -> None:
     catalog = compile_published_skill_catalog()
     run = _run()
     store = InMemoryTutorRunStore([run])
@@ -212,7 +257,7 @@ def test_selection_rebuilds_context_before_grounding_dispatch_and_effect_never_c
         [
             TutorProviderResult(
                 decision=TutorDecision(
-                    skill_references=(TutorSkillReference("tutor.registry-grounding", "1.0.0"),),
+                    capability_requests=(_request(),),
                 )
             ),
             TutorProviderResult(
@@ -256,6 +301,8 @@ def test_selection_rebuilds_context_before_grounding_dispatch_and_effect_never_c
 
     assert result.status is TutorRunStatus.COMPLETED
     assert result.model_call_count == 2
+    assert len(selection_store.records) == 1
+    assert selection_store.records[0][2].reference == _registry_skill(catalog).reference
     assert len(lookup.calls) == 1
     first_context = json.dumps(provider.calls[0][1].as_prompt_context())
     second_context = json.dumps(provider.calls[1][1].as_prompt_context())
@@ -263,7 +310,6 @@ def test_selection_rebuilds_context_before_grounding_dispatch_and_effect_never_c
     assert "Registry grounding" in second_context
 
     selected_store = InMemoryTutorRunStore([run])
-    _select(selection_store, catalog, run)
     committer = RecordingEffectCommitter(status=TutorEffectStatus.COMMITTED)
     effect_loop = TutorRunLoop(
         store=selected_store,

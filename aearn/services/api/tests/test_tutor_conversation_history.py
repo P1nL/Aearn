@@ -92,6 +92,10 @@ def test_public_conversation_list_and_history_cursors_are_ordered_and_scoped(
     assert history_page_body["has_more"] is True
     assert [item["kind"] for item in history_page_body["items"]] == ["message", "process"]
     assert history_page_body["items"][0]["role"] == "tutor"
+    assert history_page_body["items"][0]["public_thinking_steps"] == [
+        "我先定位学习者当前最需要澄清的概念。",
+        "接着选择一个能够马上验证理解的小例子。",
+    ]
     history_cursor = history_page_body["next_cursor"]
     assert isinstance(history_cursor, str) and history_cursor
 
@@ -102,6 +106,7 @@ def test_public_conversation_list_and_history_cursors_are_ordered_and_scoped(
     assert older_history.json()["has_more"] is False
     assert [item["kind"] for item in older_history.json()["items"]] == ["message"]
     assert older_history.json()["items"][0]["role"] == "learner"
+    assert older_history.json()["items"][0]["public_thinking_steps"] == []
 
     cross_conversation_history = tutor_client.get(
         f"/api/tutor/conversations/{second_conversation_id}/history?user_id={user_id}&limit=2&cursor={history_cursor}"
@@ -206,4 +211,5 @@ def test_history_keeps_legacy_messages_and_exposes_only_bounded_public_process_f
     legacy_items = legacy_history.json()["items"]
     assert [item["kind"] for item in legacy_items] == ["message", "message"]
     assert [item["role"] for item in legacy_items] == ["tutor", "learner"]
+    assert all(item["public_thinking_steps"] == [] for item in legacy_items)
     assert all("elapsed_seconds" not in item and "steps" not in item for item in legacy_items)

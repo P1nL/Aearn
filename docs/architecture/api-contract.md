@@ -166,6 +166,16 @@ scope/track，若携带 run-only 字段则返回 `409 LEARNING_SCOPE_CONFLICT`�
 未提供时新 run 快照为 `general/general_tutor`。旧 conversation 没有
 scope row 时也只投影为 general，不从聊天正文推断归属。
 
+当 `learning_scope.scope_kind=plan_drafting` 时，三个 Tutor 输入入口还可携带可选
+`planning_facts` 与 `reopen_fact_fields`。`planning_facts` 只接受
+`language_id`、`goal_text`、`target_level`、`weekly_minutes`、
+`experience_level`、`teaching_preferences`、`pace_constraints`；值由服务端
+normalize/validate，并绑定已接受的 learner message、run 和 input revision。
+`reopen_fact_fields` 使用同一稳定 field key，表示 learner 主动重新开启收集；普通
+conversation 不会因为请求里出现这些字段而获得 planning authority。同一个
+idempotency key 的 request hash 包含这两个字段，因此变更事实或 reopen 集合不会被
+误判为同请求重放。
+
 `/runs/{run_id}/inputs` 不是普通聊天快捷方式：仅当 run 仍属于当前用户、尚未
 terminal/cancelled/superseded、状态为 `waiting_for_input`，且已持久化
 `continuation_kind` 时允许继续。ordinary input 创建 fresh run 并重新快照 conversation
@@ -222,10 +232,13 @@ dispatcher/provider 异常；run read、SSE 和 history 只反映服务端安全
 
 list item 只含 `conversation_id`、服务端投影 title、`last_public_activity_at` 与可选
 `active_run={run_id,status,continuation_kind}`；不返回 learner 原文 preview、provider/model
-信息、trace 或诊断。history item 是 `message`（只含 public learner/Tutor content）或
-`process`（只含 `display_state`、固定 allowlisted `steps[].label`、server-calculated
-`elapsed_seconds` 与时间字段）。旧 `tutor_messages` 没有 process row 时仍以
-message-only history 返回，服务器不会伪造步骤、duration 或 title。
+信息、trace 或诊断。history item 是 `message`（含 public learner/Tutor `content`，
+并为 Tutor message 返回 bounded `public_thinking_steps[]`；learner/legacy message 返回空数组）
+或 `process`（只含 `display_state`、固定 allowlisted `steps[].label`、server-calculated
+`elapsed_seconds` 与时间字段）。`public_thinking_steps` 是 provider 明确写入最终可见
+JSON 契约、经 safety validation 后与成功 Tutor message 原子持久化的公开说明；它不是
+Responses/DeepSeek 的原生 reasoning item。旧 `tutor_messages` 没有 process row 或公开思路
+字段时仍以 message-only history 返回，服务器不会伪造思路、步骤、duration 或 title。
 
 cursor 由服务端签名并绑定 cursor kind、user 和（history 时）conversation scope。篡改、
 跨用户、跨 conversation、错误版本或不合法 token 一律返回 `400 CURSOR_INVALID`，不返回
@@ -357,6 +370,13 @@ proactive delivery、worker import、schema bootstrap 和 Desktop typed build。
 - `GET /api/learning-plan-sessions/current` 与 `GET /api/learning-plan-sessions/{id}`：返回 user-scoped session 和当前 typed draft 安全投影。
 - `POST /api/learning-plan-sessions/{id}/cancel`：按 expected session version 取消。
 - `POST /api/learning-plan-sessions/{id}/confirm`：校验 session version、current draft id/version/hash 后，在同一事务创建 track/revision/route/progress 并改绑 conversation。
+
+session 公开投影包含 learner-safe `planning_context={schema_version,facts[],questions[],fact_revision}`。
+`facts[]` 只暴露稳定 field、normalized value、状态、revision、source kind 与 source
+message/run/revision identity；`questions[]` 只暴露 `question_key`、`field_key` 和状态。
+内部 value/event hash、question gate reason、prompt 与 provider body 不进入该投影。
+草案保存其生成时的 facts fingerprint/revision；确认时如果 current facts 已变化，即使
+调用方使用最新 session version，也返回 `409 LEARNING_PLAN_DRAFT_STALE`。
 
 稳定错误包括 `LEARNING_PLAN_SESSION_NOT_FOUND`、`LEARNING_PLAN_SESSION_CONFLICT`、`LEARNING_PLAN_SESSION_ALREADY_CONFIRMED`、`LEARNING_PLAN_DRAFT_NOT_READY`、`LEARNING_PLAN_DRAFT_INVALID`、`LEARNING_PLAN_DRAFT_QUALITY_BLOCKED`、`LEARNING_PLAN_DRAFT_STALE` 和 `LEARNING_LANGUAGE_NOT_SELECTABLE`。
 

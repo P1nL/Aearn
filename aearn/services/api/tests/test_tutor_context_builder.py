@@ -414,3 +414,117 @@ def test_unrepresentable_required_current_input_raises_typed_context_error() -> 
         TutorContextBuilder(estimator=AlwaysTooLargeEstimator()).build(context_input, token_budget=1)
 
     assert exc_info.value.safe_code == "TUTOR_CURRENT_INPUT_UNREPRESENTABLE"
+
+def test_required_facts_are_reserved_outside_optional_budget() -> None:
+    context_input = TutorContextInput(
+        run_id="tutor-run-required-facts",
+        conversation_id="conversation-required-facts",
+        input_revision=9,
+        current_input_required=True,
+        current_input=TutorContextSource("message-current", "继续制定计划"),
+        required_facts=(
+            TutorContextSource(
+                "planning-fact:weekly_minutes:1",
+                {"kind": "confirmed_planning_fact", "field_key": "weekly_minutes", "value": 1800},
+            ),
+        ),
+        activity_facts=(TutorContextSource("activity-optional", {"kind": "optional"}),),
+        authoritative_snapshot_schema_version="authoritative-context-snapshot-v1",
+        authoritative_snapshot_hash="1" * 64,
+        fact_revision=1,
+    )
+
+    selection = TutorContextBuilder(estimator=OneTokenEstimator()).build(
+        context_input,
+        token_budget=2,
+        optional_token_budget=0,
+    )
+
+    assert [item.source_id for item in selection.items] == ["planning-fact:weekly_minutes:1"]
+    metadata = selection.checkpoint_metadata
+    assert metadata.required_fact_count == 1
+    assert metadata.required_fact_selected_count == 1
+    assert metadata.required_fact_missing_count == 0
+    assert metadata.authoritative_snapshot_hash == "1" * 64
+    assert metadata.fact_revision == 1
+
+
+def test_semantic_recent_selection_pins_old_confirmed_fact_source() -> None:
+    messages = (
+        TutorContextSource(
+            "message-1",
+            {"role": "user", "content": "我每周有 30 小时"},
+            semantic_class="confirmed_fact_source",
+        ),
+        *(
+            TutorContextSource(
+                f"message-{index}",
+                {"role": "user", "content": f"turn-{index}"},
+            )
+            for index in range(2, 7)
+        ),
+    )
+    context_input = TutorContextInput(
+        run_id="tutor-run-semantic-history",
+        conversation_id="conversation-semantic-history",
+        input_revision=7,
+        current_input_required=True,
+        current_input=TutorContextSource("message-7", "latest-turn"),
+        recent_messages=messages,
+    )
+
+    selection = TutorContextBuilder(
+        estimator=OneTokenEstimator(),
+        config=_config(recent_limit=4),
+    ).build(context_input, token_budget=8)
+
+    assert [item.source_id for item in selection.items] == [
+        "message-1",
+        "message-4",
+        "message-5",
+        "message-6",
+    ]
+
+
+def test_compaction_stops_before_unprojected_fact_barrier() -> None:
+    base_time = datetime(2026, 8, 12, 9, 0, tzinfo=UTC)
+    candidates = tuple(
+        TutorContextCompactionCandidate(
+            message_id=f"id-{index}",
+            content_hash=f"{index:x}" * 64,
+            created_at=base_time + timedelta(minutes=index),
+        )
+        for index in range(1, 7)
+    )
+    context_input = TutorContextInput(
+        run_id="tutor-run-compaction-barrier",
+        conversation_id="conversation-compaction-barrier",
+        input_revision=7,
+        current_input_required=True,
+        current_input=TutorContextSource("message:current", "latest-turn"),
+        recent_messages=tuple(
+            TutorContextSource(
+                f"message:id-{index}",
+                {"role": "user", "content": f"turn-{index}"},
+                semantic_class="unresolved_question" if index == 3 else "ordinary",
+            )
+            for index in range(1, 7)
+        ),
+        compaction_plan=TutorContextCompactionPlan(
+            summary_schema_version=TUTOR_CONTEXT_SUMMARY_SCHEMA_VERSION,
+            summary_policy_version=TUTOR_CONTEXT_SUMMARY_POLICY_VERSION,
+            candidates=candidates,
+            protected_message_ids=("id-3",),
+        ),
+        summary_blocked_by_unprojected_fact=1,
+    )
+
+    selection = TutorContextBuilder(
+        estimator=OneTokenEstimator(),
+        config=_config(recent_limit=2),
+    ).build(context_input, token_budget=4)
+
+    compaction = selection.checkpoint_metadata.compaction_input
+    assert compaction is not None
+    assert compaction.retired_message_ids == ("id-1", "id-2")
+    assert selection.checkpoint_metadata.summary_blocked_by_unprojected_fact == 1

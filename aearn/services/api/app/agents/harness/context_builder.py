@@ -33,6 +33,7 @@ from app.core.teaching_safety import limit_text, redact_value, sanitize_message_
 
 DEFAULT_SECTION_ITEM_LIMITS: tuple[tuple[TutorContextSection, int], ...] = (
     (TutorContextSection.SYSTEM, 3),
+    (TutorContextSection.REQUIRED_FACTS, 8),
     (TutorContextSection.ACTIVE_PLAN, 1),
     (TutorContextSection.REVIEW, 1),
     (TutorContextSection.RECENT_MESSAGES, 4),
@@ -153,8 +154,30 @@ class TutorContextBuilder:
             skipped_count = 0
             item_limit = self._config.item_limit_for(section)
 
-            if section is TutorContextSection.RECENT_MESSAGES:
-                bounded_sources = sources[-item_limit:] if item_limit else ()
+            if section is TutorContextSection.REQUIRED_FACTS:
+                if len(sources) > item_limit:
+                    raise TutorContextError("TUTOR_REQUIRED_FACTS_UNREPRESENTABLE")
+                for source in sources:
+                    content, truncated = self._serialize_source(section, source)
+                    estimate = max(1, self._estimator.estimate_tokens(content))
+                    if truncated or consumed_tokens + estimate > token_budget:
+                        raise TutorContextError("TUTOR_REQUIRED_FACTS_UNREPRESENTABLE")
+                    source_hash = _source_hash(content)
+                    selected_items.append(
+                        TutorContextItem(
+                            section=section,
+                            source_id=source.source_id,
+                            content=content,
+                            source_hash=source_hash,
+                            token_estimate=estimate,
+                        )
+                    )
+                    selected_ids.append(source.source_id)
+                    selected_hashes.append(source_hash)
+                    selected_count += 1
+                    consumed_tokens += estimate
+            elif section is TutorContextSection.RECENT_MESSAGES:
+                bounded_sources = _semantic_recent_sources(sources, item_limit=item_limit)
                 skipped_count += len(sources) - len(bounded_sources)
                 recent_items: list[tuple[TutorContextItem, bool]] = []
                 for source in reversed(bounded_sources):
@@ -275,6 +298,14 @@ class TutorContextBuilder:
             budget_policy_version=budget_plan.policy_version if budget_plan is not None else None,
             truncated_count=truncated_count,
             compaction_input=compaction_input,
+            authoritative_snapshot_schema_version=context_input.authoritative_snapshot_schema_version,
+            authoritative_snapshot_hash=context_input.authoritative_snapshot_hash,
+            fact_revision=context_input.fact_revision,
+            required_fact_count=len(context_input.required_facts),
+            required_fact_selected_count=len(context_input.required_facts),
+            required_fact_missing_count=0,
+            confirmed_question_reasked_count=context_input.confirmed_question_reasked_count,
+            summary_blocked_by_unprojected_fact=context_input.summary_blocked_by_unprojected_fact,
         )
         high_water_request = None
         high_water_reached = (
@@ -317,6 +348,13 @@ class TutorContextBuilder:
             and (message_id := item.source_id.removeprefix("message:")) in candidate_indexes
         ]
         retirement_end = min(selected_indexes) if selected_indexes else len(plan.candidates)
+        protected_indexes = [
+            candidate_indexes[message_id]
+            for message_id in plan.protected_message_ids
+            if message_id in candidate_indexes
+        ]
+        if protected_indexes:
+            retirement_end = min(retirement_end, min(protected_indexes))
         retired = plan.candidates[:retirement_end][:MAX_TUTOR_CONTEXT_COMPACTION_MESSAGES]
         if not retired:
             return None
@@ -443,6 +481,33 @@ class TutorContextBuilder:
             ),
         )
 
+
+
+def _semantic_recent_sources(
+    sources: tuple[TutorContextSource, ...],
+    *,
+    item_limit: int,
+) -> tuple[TutorContextSource, ...]:
+    if item_limit <= 0 or not sources:
+        return ()
+    pinned = [
+        source
+        for source in sources
+        if source.semantic_class in {"confirmed_fact_source", "correction", "unresolved_question"}
+    ]
+    selected: list[TutorContextSource] = []
+    for source in reversed(pinned):
+        if source not in selected:
+            selected.append(source)
+        if len(selected) >= item_limit:
+            break
+    for source in reversed(sources):
+        if source not in selected:
+            selected.append(source)
+        if len(selected) >= item_limit:
+            break
+    selected_ids = {source.source_id for source in selected}
+    return tuple(source for source in sources if source.source_id in selected_ids)
 
 def _sanitize_source_value(*, section: TutorContextSection, value: object, max_characters: int) -> object:
     redacted = _redact_harness_sensitive_fields(redact_value(value))
