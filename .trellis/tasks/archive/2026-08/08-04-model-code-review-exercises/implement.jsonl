@@ -1,0 +1,12 @@
+{"file": ".trellis/tasks/08-04-model-code-review-exercises/design.md", "reason": "加载完整模型审核架构、权威边界、Action/executor 复用与发布事务设计。"}
+{"file": ".trellis/tasks/08-04-model-code-review-exercises/research/current-system.md", "reason": "核对当前 LearningTrack、Lesson Gate、统一 Action Runtime、共享 executor 与旧 review 边界。"}
+{"file": ".trellis/tasks/08-04-programming-language-learning-agent-product/design.md", "reason": "遵守父任务的 ExerciseVersion、单一执行队列、mastery 与隐私跨任务约束。"}
+{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "遵循复合 scope、append-only、NO ACTION DEFERRABLE 环形外键、export/reset 与 cutover 规则。"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "保持稳定 learner-safe 错误、跨 scope 隐藏与内部信息脱敏。"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "执行严格 contract、真实 PostgreSQL、fail-closed 与完整自动化质量门。"}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "保持 Lesson Gate typed 分发、可访问结构化表单与服务端权威。"}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "确保草稿属于本地状态，评分、通过、mastery 与 unlock 属于服务端状态。"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "实现 unknown exact parser、literal union、protected marker 拒绝与结果映射。"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "执行真实浏览器响应式、键盘焦点、console 与交互验收。"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "追踪 authoring、Action、executor、publication、Attempt、mastery、API 与 UI 完整数据流。"}
+{"file": "docs/README.md", "reason": "从 source-of-truth 索引同步 API、数据库、Harness、产品交互与 QA 文档。"}
