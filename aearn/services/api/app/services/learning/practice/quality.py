@@ -4,6 +4,9 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
+from app.services.learning.practice.model_review_contracts import ModelReviewValidationReceiptV1
+from app.services.learning.practice.model_review_quality import require_model_review_quality
+
 from app.services.learning.practice.contracts import (
     ExecutionRequirement,
     ExercisePrivateRubric,
@@ -46,16 +49,21 @@ def require_exercise_quality(
     rubric: ExercisePrivateRubric,
     *,
     binding: LessonGateBinding | None = None,
+    model_review_validation: ModelReviewValidationReceiptV1 | None = None,
 ) -> ExerciseQualityReport:
     public_text = json.dumps(exercise.public_payload(), ensure_ascii=False, sort_keys=True).casefold()
     if any(marker in public_text for marker in _PROTECTED_MARKERS):
         raise ValueError("public exercise contains a protected marker")
+    if exercise.exercise_type is ExerciseType.MODEL_CODE_REVIEW:
+        if model_review_validation is None:
+            raise ValueError("model review exercise requires verified validation receipt")
+        require_model_review_quality(exercise, rubric, model_review_validation)
     if exercise.execution_required:
         if exercise.runtime_profile_id not in _APPROVED_RUNTIME_PROFILES:
             raise ValueError("execution exercise runtime profile is not approved")
         if exercise.exercise_type is ExerciseType.STATIC_CODE_REASONING:
             raise ValueError("static reasoning exercise cannot require execution")
-    elif exercise.exercise_type is not ExerciseType.STATIC_CODE_REASONING:
+    elif exercise.exercise_type not in {ExerciseType.STATIC_CODE_REASONING, ExerciseType.MODEL_CODE_REVIEW}:
         raise ValueError("non-static exercise must require an approved runtime")
     if binding is not None:
         if binding.exercise_key != exercise.exercise_key or binding.exercise_version != exercise.version:

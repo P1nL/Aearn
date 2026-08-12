@@ -356,7 +356,7 @@ class ControlledCapabilityGateway:
         request: TutorCapabilityRequest,
     ) -> TutorCapabilityResult:
         descriptor = self._descriptors.get(request.capability_id)
-        if descriptor is None or request.capability_id == "runner.execute":
+        if descriptor is None or request.capability_id in {"runner.execute", "model-code-review.validate"}:
             return TutorCapabilityResult(
                 request_id=request.request_id,
                 status=TutorCapabilityStatus.DENIED,

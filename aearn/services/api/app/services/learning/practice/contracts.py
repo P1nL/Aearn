@@ -19,6 +19,7 @@ class ExerciseType(StrEnum):
     SQL_QUERY = "sql_query"
     BROWSER_PREVIEW = "browser_preview"
     STATIC_CODE_REASONING = "static_code_reasoning"
+    MODEL_CODE_REVIEW = "model_code_review"
 
 
 class ExerciseSourceKind(StrEnum):

@@ -705,8 +705,13 @@ def _job_from_row(row: Mapping[str, object]) -> ExecutionJobV1:
     result = SafeExecutionResultV1.model_validate(result_json) if isinstance(result_json, Mapping) else None
     lease_expires_at = _datetime_or_none(row.get("lease_expires_at"))
     cancellation_requested_at = _datetime_or_none(row.get("cancellation_requested_at"))
-    owner_kind: Literal["tutor_effect", "exercise_attempt"] = (
-        "exercise_attempt" if row.get("owner_kind") == "exercise_attempt" else "tutor_effect"
+    raw_owner = str(row.get("owner_kind") or "tutor_effect")
+    owner_kind: Literal["tutor_effect", "exercise_attempt", "model_review_validation"] = (
+        "exercise_attempt"
+        if raw_owner == "exercise_attempt"
+        else "model_review_validation"
+        if raw_owner == "model_review_validation"
+        else "tutor_effect"
     )
     return ExecutionJobV1(
         job_id=str(row["id"]),
@@ -718,6 +723,9 @@ def _job_from_row(row: Mapping[str, object]) -> ExecutionJobV1:
         conversation_id=str(row["conversation_id"]) if row.get("conversation_id") else None,
         run_id=str(row["run_id"]) if row.get("run_id") else None,
         exercise_attempt_id=str(row["exercise_attempt_id"]) if row.get("exercise_attempt_id") else None,
+        model_review_validation_id=str(row["model_review_validation_id"])
+        if row.get("model_review_validation_id")
+        else None,
         lock_fingerprint=str(row["lock_fingerprint"]),
         state=ExecutionJobState(str(row["state"])),
         lease_owner_id=str(row["lease_owner_id"]) if row.get("lease_owner_id") else None,
