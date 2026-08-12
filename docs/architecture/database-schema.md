@@ -59,6 +59,7 @@ projection 的唯一 durable authority；Desktop、Celery 和 provider 不拥有
 | --- | --- | --- |
 | `tutor_conversations` | user-scoped learner-visible/internal conversation 根 | `visibility` 与 `kind` 区分公开交互和内部 proactive conversation；learner conversation 的 `title` 只能保存安全模型简述，`NULL` 对外投影为“新对话”；`last_public_activity_at` 是列表排序的唯一 authority |
 | `tutor_messages` | canonical learner/Tutor public message body + bounded public thinking narration | 唯一允许存放原始 learner 文本的 Tutor 表；Tutor 回复可保存最多 4 条 learner-visible `public_thinking_steps_json`，它不是 provider-native reasoning；不可作为 trace/export dump；旧 message-only conversation 继续可读并投影空数组 |
+| `tutor_message_context_references` | learner message/run revision 的 append-only learner-safe artifact snapshot | 复合 FK 固定 user/conversation/run/message/input revision；只保存 bounded safe projection/hash，不复制 learner content、submission、hidden/private artifact 或 raw execution/provider 数据 |
 | `tutor_catalog_snapshots` | reviewed Skill catalog digest snapshot | run 只能引用已持久化的 digest |
 | `tutor_runs` | 有限 loop 的 durable snapshot | `origin` 为 `interactive/proactive`；lease、budget counter、`input_revision`、terminal outcome 和 `next_event_sequence` 都由 DB 保护；`superseded_by_run_id` 是内部 audit link；`continuation_kind` 只允许 explicit continuation enum |
 | `tutor_provider_attempt_receipts` | 每个实际 provider HTTP attempt 的 append-only usage 事实 | identity 为 `(run_id,input_revision,decision_iteration,attempt_index)`；复合 FK 固定 user/run/conversation scope；只保存受限 provider/model/protocol、outcome/diagnostic 和非负 token 数，不保存 prompt、response body、reasoning 文本、URL/header 或 credential |
@@ -337,3 +338,29 @@ reset/delete 使用既有 transaction-local purge capability，按 finalization/
 submission/Attempt/item/warmup/session/schedule 的 FK 逆序清理。cutover inventory 显式统计七张
 review 表；bootstrap twice 必须断言 owner CHECK、复合 FK、唯一索引、lifecycle/immutable trigger
 和 repeatable additive migration。
+
+
+## 2026-08-12：Tutor message context reference authority
+
+`tutor_message_context_references` 是 user-owned append-only 表。每行保存 exact
+`user_id + conversation_id + run_id + message_id + input_revision + reference_index`，并用复合 FK 确保 learner
+message、run 和 input event 属于同一作用域。`(run_id,input_revision,reference_index)` 与
+`(message_id,reference_index)` 唯一；`reference_kind` 只允许 `lesson_selection | exercise_feedback |
+execution_result | review_feedback`。普通 UPDATE/DELETE 由 immutable trigger 拒绝，用户级 confirmed purge 才能按
+child-to-root 路径删除。
+
+表中的 `safe_payload_json` 必须符合 `tutor_context_reference_v1`，`safe_payload_hash` 是 canonical JSON SHA-256。
+artifact identity 列只保存必要的 track/knowledge/document/attempt/review session/exercise version/source version/hash；
+公开读取会重新校验 safe payload hash。Lesson safe snapshot 保存服务端重建的 bounded excerpt；Attempt/Review snapshot
+只保存 terminal outcome、score、assistance、safe feedback、capability scores 和公开时间；execution snapshot 只增加安全
+job identity/state。不得存 learner message 的副本、完整 submission、private rubric/test/reference answer、raw stdout/stderr、
+command/path/container、provider body、reasoning、credential 或 secret。
+
+Tutor input 在外层事务中先创建/锁定 message、run input event 与 immutable run scope，再验证 source artifact 并插入全部
+reference rows；任何 source/scope/version/hash/terminal 校验失败都回滚整条 input。History 按 message + reference index
+重放，context loader 按 run + input revision 读取，因此后续 Lesson migration、Review schedule 更新或 artifact pointer 变化
+不会改写既有快照语义。
+
+local export 仅输出 safe reference projection 与 hash；reset/delete 在删除 Tutor message/run 前先删除引用。cutover target
+inventory 把该表视为 pre-verification target state。bootstrap twice 必须断言复合 FK、唯一索引、kind CHECK、immutable trigger
+和 repeatable additive schema 均存在。

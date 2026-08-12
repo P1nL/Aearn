@@ -140,8 +140,8 @@ checkpoint scope 或验证失败都不产生半完成删除。代码回滚之后
 
 | Method | Path | 请求/查询 | 成功响应 |
 | --- | --- | --- | --- |
-| `POST` | `/api/tutor/conversations/first-turn` | `user_id`、`client_action_id`、`content`、可选 `learning_scope` | 202（新首发）或 200（同 key 重放）；原子返回新 `conversation_id`、新 `run_id` 与初始公开 process |
-| `POST` | `/api/tutor/conversations/{conversation_id}/inputs` | `user_id`、`client_action_id`、`content`、可选 `learning_scope` | 202（新普通 TurnRun）或 200（同 key 重放）；见下方 turn response |
+| `POST` | `/api/tutor/conversations/first-turn` | `user_id`、`client_action_id`、`content`、可选 `learning_scope` / `context_references` | 202（新首发）或 200（同 key 重放）；原子返回新 `conversation_id`、新 `run_id` 与初始公开 process |
+| `POST` | `/api/tutor/conversations/{conversation_id}/inputs` | `user_id`、`client_action_id`、`content`、可选 `learning_scope` / `context_references` | 202（新普通 TurnRun）或 200（同 key 重放）；见下方 turn response |
 | `POST` | `/api/tutor/runs/{run_id}/inputs` | 同上 | 只接受服务端持久化授权的 explicit continuation；202（新接受）或 200（重放） |
 | `POST` | `/api/tutor/conversations` | `user_id`、`client_action_id`、可选 `conversation_id` / `learning_scope` | 兼容 create/resume 入口；Desktop draft 不调用它创建空 conversation |
 | `GET` | `/api/tutor/runs/{run_id}?user_id={uuid}` | — | 当前 `TutorRun` 安全状态 |
@@ -208,6 +208,7 @@ NFKC 单行且最多 48 字符的 `conversation_title`，并以 `WHERE title IS 
     "elapsed_seconds": 0
   },
   "replaced_process": {"kind": "process", "display_state": "superseded"},
+  "context_references": [],
   "run": {
     "run_id": "uuid",
     "conversation_id": "uuid",
@@ -232,9 +233,10 @@ dispatcher/provider 异常；run read、SSE 和 history 只反映服务端安全
 
 list item 只含 `conversation_id`、服务端投影 title、`last_public_activity_at` 与可选
 `active_run={run_id,status,continuation_kind}`；不返回 learner 原文 preview、provider/model
-信息、trace 或诊断。history item 是 `message`（含 public learner/Tutor `content`，
-并为 Tutor message 返回 bounded `public_thinking_steps[]`；learner/legacy message 返回空数组）
-或 `process`（只含 `display_state`、固定 allowlisted `steps[].label`、server-calculated
+信息、trace 或诊断。history item 是 `message`（含 public learner/Tutor `content`、必需的
+`context_references[]`，并为 Tutor message 返回 bounded `public_thinking_steps[]`；Tutor message
+和无引用 learner/legacy message 的引用数组为空）或 `process`（只含 `display_state`、固定
+allowlisted `steps[].label`、server-calculated
 `elapsed_seconds` 与时间字段）。`public_thinking_steps` 是 provider 明确写入最终可见
 JSON 契约、经 safety validation 后与成功 Tutor message 原子持久化的公开说明；它不是
 Responses/DeepSeek 的原生 reasoning item。旧 `tutor_messages` 没有 process row 或公开思路
@@ -474,3 +476,33 @@ verdict/finding shape、行范围和重复 ID。
 `failure_code=REVIEW_CANDIDATE_UNAVAILABLE`、`recoverable=true`，客户端可使用原幂等请求重试。
 公共投影不包含完整 submission、private rubric/tests/reference answer、raw provider/executor
 response、command/path/image/credential、内部 context hash 或 schedule event payload。
+
+
+## 2026-08-12：Tutor 结构化上下文引用
+
+三个 Tutor 输入入口支持可选 `context_references`，最多 6 项，且仅允许
+`learning_scope.scope_kind=learning_track`。引用是严格 discriminated union：
+
+- `lesson_selection`：`learning_track_id`、`knowledge_key`、`document_id`、
+  `document_content_hash`、`block_id`、`start_offset`、`end_offset`、`excerpt`；excerpt 最多 800 字符。
+- `exercise_feedback`：`learning_track_id`、`knowledge_key`、terminal Lesson `attempt_id`。
+- `execution_result`：同上，但 Attempt 必须存在真实 `execution_job_id`。
+- `review_feedback`：`learning_track_id`、`knowledge_key`、`review_session_id`、terminal Review `attempt_id`。
+
+服务端先固定 conversation/run 的 immutable LearningTrack task scope，再逐项读取 source of truth 并构造
+`tutor_context_reference_v1` safe snapshot。Lesson 必须匹配同用户同 track/knowledge 的 active frozen
+assignment、document/hash/block/range；Exercise/Execution/Review 必须匹配同 scope 的真实 terminal Attempt。
+客户端提交的 excerpt、feedback 或 result 不直接进入快照。引用类型必须与 `lesson_teaching | exercise_feedback |
+model_code_review | review_coaching | remediation` task scope 一致；引用不能用于 general/plan-drafting 输入。
+
+输入接受事务把 learner message、run/input revision、run scope 与全部引用原子绑定；任一引用失败都会回滚整条输入。
+acceptance response 与 learner history message 返回有序 safe references，模型 context loader 通过独立 required source
+`tutor-context-references:{message_id}` 注入，不修改 learner `content`。快照只含 bounded safe excerpt、outcome、score、
+safe feedback、capability scores、assistance、公开时间和必要 artifact identity；不得返回完整 submission、hidden test、
+private rubric/reference answer、raw stdout/stderr、command、container、path、provider body 或 secret。
+
+稳定错误包括：非法 union/数量/重复为 `422 CONTEXT_REFERENCE_INVALID`；scope/task/track/knowledge 冲突为
+`409 CONTEXT_REFERENCE_SCOPE_CONFLICT`；active document/hash/range 变化为 `409 CONTEXT_REFERENCE_STALE`；terminal
+Attempt 不存在为 `404 CONTEXT_REFERENCE_NOT_FOUND`；缺少真实 execution result 为
+`409 CONTEXT_REFERENCE_NOT_READY`。同一个 Tutor idempotency key 的 request hash 包含引用数组；相同 key 不同引用不能
+被误判为同请求重放。

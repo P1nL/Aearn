@@ -42,9 +42,16 @@ import {
   type LearningPlanSession,
   type LearningScopeInput,
   type LearningTrackSummary,
+  type LearningTrackDetail,
+  type LearningRoadmap,
+  type LearningRoadmapModule,
+  type LearningRoadmapNode,
   type TutorActivityItem,
   type TutorContinuationKind,
   type TutorConversationHistoryResponse,
+  type TutorConversationResponse,
+  type TutorContextReference,
+  type TutorContextReferenceDraft,
   type TutorConversationListResponse,
   type TutorConversationSummary,
   type TutorForegroundRun,
@@ -58,6 +65,13 @@ import {
   type TutorPublicProcess,
   type TutorPublicProcessStep,
   type TutorRunState,
+  type ReviewAttempt,
+  type ReviewHint,
+  type ReviewQueue,
+  type ReviewQueueItem,
+  type ReviewSession,
+  type ReviewSessionAttemptSummary,
+  type ReviewSessionItem,
   type UserProfile,
 } from "./types";
 
@@ -130,6 +144,7 @@ export async function acceptTutorFirstTurn(input: {
   content: string;
   clientActionId: string;
   learningScope?: LearningScopeInput;
+  contextReferences?: TutorContextReferenceDraft[];
 }): Promise<TutorInputAcceptedResponse> {
   const payload = await requestJson(`${API_BASE_URL}/api/tutor/conversations/first-turn`, {
     method: "POST",
@@ -139,10 +154,32 @@ export async function acceptTutorFirstTurn(input: {
       content: input.content,
       client_action_id: input.clientActionId,
       ...(input.learningScope ? { learning_scope: input.learningScope } : {}),
+      ...(input.contextReferences ? { context_references: input.contextReferences } : {}),
     }),
   });
   const response = toTutorInputAcceptedResponse(payload);
   if (!response) throw new Error("Tutor first-turn API returned an invalid payload");
+  return response;
+}
+
+export async function createOrResumeTutorConversation(input: {
+  userId: string;
+  clientActionId: string;
+  conversationId?: string | null;
+  learningScope?: LearningScopeInput;
+}): Promise<TutorConversationResponse> {
+  const payload = await requestJson(`${API_BASE_URL}/api/tutor/conversations`, {
+    method: "POST",
+    headers: tutorMutationHeaders(input.clientActionId),
+    body: JSON.stringify({
+      user_id: input.userId,
+      client_action_id: input.clientActionId,
+      ...(input.conversationId ? { conversation_id: input.conversationId } : {}),
+      ...(input.learningScope ? { learning_scope: input.learningScope } : {}),
+    }),
+  });
+  const response = toTutorConversationResponse(payload);
+  if (!response) throw new Error("Tutor conversation API returned an invalid payload");
   return response;
 }
 
@@ -184,6 +221,7 @@ export async function acceptTutorConversationInput(input: {
   content: string;
   clientActionId: string;
   learningScope?: LearningScopeInput;
+  contextReferences?: TutorContextReferenceDraft[];
 }): Promise<TutorInputAcceptedResponse> {
   const payload = await requestJson(
     `${API_BASE_URL}/api/tutor/conversations/${encodeURIComponent(input.conversationId)}/inputs`,
@@ -195,6 +233,7 @@ export async function acceptTutorConversationInput(input: {
         content: input.content,
         client_action_id: input.clientActionId,
         ...(input.learningScope ? { learning_scope: input.learningScope } : {}),
+        ...(input.contextReferences ? { context_references: input.contextReferences } : {}),
       }),
     },
   );
@@ -208,11 +247,19 @@ export async function acceptTutorRunInput(input: {
   runId: string;
   content: string;
   clientActionId: string;
+  learningScope?: LearningScopeInput;
+  contextReferences?: TutorContextReferenceDraft[];
 }): Promise<TutorInputAcceptedResponse> {
   const payload = await requestJson(`${API_BASE_URL}/api/tutor/runs/${encodeURIComponent(input.runId)}/inputs`, {
     method: "POST",
     headers: tutorMutationHeaders(input.clientActionId),
-    body: JSON.stringify({ user_id: input.userId, content: input.content, client_action_id: input.clientActionId }),
+    body: JSON.stringify({
+      user_id: input.userId,
+      content: input.content,
+      client_action_id: input.clientActionId,
+      ...(input.learningScope ? { learning_scope: input.learningScope } : {}),
+      ...(input.contextReferences ? { context_references: input.contextReferences } : {}),
+    }),
   });
   const response = toTutorInputAcceptedResponse(payload);
   if (!response) throw new Error("Tutor run-input API returned an invalid payload");
@@ -361,6 +408,142 @@ export async function fetchLearningTracks(userId: string, signal?: AbortSignal):
   const items = payload.items.map(toLearningTrackSummary);
   if (items.some((item) => item === null)) throw new Error("LearningTrack API returned an invalid item");
   return items.filter((item): item is LearningTrackSummary => item !== null);
+}
+
+export async function fetchLearningTrackDetail(
+  userId: string,
+  trackId: string,
+  signal?: AbortSignal,
+): Promise<LearningTrackDetail> {
+  const query = new URLSearchParams({ user_id: userId });
+  const payload = await requestJson(`${API_BASE_URL}/api/learning-tracks/${encodeURIComponent(trackId)}?${query.toString()}`, { signal });
+  const track = isRecord(payload) && hasExactKeys(payload, ["track"]) ? toLearningTrackDetail(payload.track) : null;
+  if (!track) throw new Error("LearningTrack detail API returned an invalid payload");
+  return track;
+}
+
+export async function fetchLearningRoadmap(
+  userId: string,
+  trackId: string,
+  signal?: AbortSignal,
+): Promise<LearningRoadmap> {
+  const query = new URLSearchParams({ user_id: userId });
+  const payload = await requestJson(`${API_BASE_URL}/api/learning-tracks/${encodeURIComponent(trackId)}/roadmap?${query.toString()}`, { signal });
+  const roadmap = isRecord(payload) && hasExactKeys(payload, ["roadmap"]) ? toLearningRoadmap(payload.roadmap) : null;
+  if (!roadmap) throw new Error("Learning roadmap API returned an invalid payload");
+  return roadmap;
+}
+
+export async function fetchReviewQueue(
+  userId: string,
+  trackId: string,
+  signal?: AbortSignal,
+): Promise<ReviewQueue> {
+  const query = new URLSearchParams({ user_id: userId });
+  const payload = await requestJson(`${API_BASE_URL}/api/learning-tracks/${encodeURIComponent(trackId)}/reviews?${query.toString()}`, { signal });
+  const queue = toReviewQueue(payload);
+  if (!queue) throw new Error("Review queue API returned an invalid payload");
+  return queue;
+}
+
+export async function createReviewSession(input: {
+  userId: string;
+  trackId: string;
+  knowledgeKey: string;
+  expectedTrackVersion: number;
+  expectedScheduleVersion: number;
+  maxItems?: number;
+  clientActionId: string;
+}): Promise<ReviewSession> {
+  const payload = await requestJson(`${API_BASE_URL}/api/learning-tracks/${encodeURIComponent(input.trackId)}/reviews/sessions`, {
+    method: "POST",
+    headers: tutorMutationHeaders(input.clientActionId),
+    body: JSON.stringify({
+      user_id: input.userId, client_action_id: input.clientActionId, knowledge_key: input.knowledgeKey,
+      expected_track_version: input.expectedTrackVersion, expected_schedule_version: input.expectedScheduleVersion,
+      max_items: input.maxItems ?? 1,
+    }),
+  });
+  const session = toReviewSession(payload);
+  if (!session) throw new Error("Review session API returned an invalid payload");
+  return session;
+}
+
+export async function fetchReviewSession(
+  userId: string, trackId: string, sessionId: string, signal?: AbortSignal,
+): Promise<ReviewSession> {
+  const query = new URLSearchParams({ user_id: userId });
+  const payload = await requestJson(`${API_BASE_URL}/api/learning-tracks/${encodeURIComponent(trackId)}/reviews/sessions/${encodeURIComponent(sessionId)}?${query.toString()}`, { signal });
+  const session = toReviewSession(payload);
+  if (!session) throw new Error("Review session API returned an invalid payload");
+  return session;
+}
+
+export async function recordReviewWarmup(input: {
+  userId: string; trackId: string; sessionId: string; responseKind: "answered" | "skipped";
+  confidence?: "low" | "medium" | "high"; expectedSessionVersion: number; clientActionId: string;
+}): Promise<ReviewSession> {
+  const payload = await requestJson(`${API_BASE_URL}/api/learning-tracks/${encodeURIComponent(input.trackId)}/reviews/sessions/${encodeURIComponent(input.sessionId)}/warmup`, {
+    method: "POST", headers: tutorMutationHeaders(input.clientActionId),
+    body: JSON.stringify({ user_id: input.userId, client_action_id: input.clientActionId, response_kind: input.responseKind,
+      ...(input.confidence ? { confidence: input.confidence } : {}), expected_session_version: input.expectedSessionVersion }),
+  });
+  const session = toReviewSession(payload);
+  if (!session) throw new Error("Review warmup API returned an invalid payload");
+  return session;
+}
+
+export async function requestReviewHint(input: {
+  userId: string; trackId: string; sessionId: string; itemId: string; hintLevel: number;
+  expectedSessionVersion: number; expectedItemVersion: number; clientActionId: string;
+}): Promise<ReviewHint> {
+  const payload = await requestJson(`${API_BASE_URL}/api/learning-tracks/${encodeURIComponent(input.trackId)}/reviews/sessions/${encodeURIComponent(input.sessionId)}/items/${encodeURIComponent(input.itemId)}/hints`, {
+    method: "POST", headers: tutorMutationHeaders(input.clientActionId),
+    body: JSON.stringify({ user_id: input.userId, client_action_id: input.clientActionId, hint_level: input.hintLevel,
+      expected_session_version: input.expectedSessionVersion, expected_item_version: input.expectedItemVersion }),
+  });
+  const hint = toReviewHint(payload);
+  if (!hint) throw new Error("Review hint API returned an invalid payload");
+  return hint;
+}
+
+type ReviewAttemptInput = {
+  userId: string; trackId: string; sessionId: string; itemId: string; expectedSessionVersion: number;
+  expectedItemVersion: number; clientActionId: string;
+} & ({ submission: string; reviewSubmission?: never } | { submission?: never; reviewSubmission: ModelCodeReviewSubmission });
+
+export async function createReviewAttempt(input: ReviewAttemptInput): Promise<ReviewAttempt> {
+  const payload = await requestJson(`${API_BASE_URL}/api/learning-tracks/${encodeURIComponent(input.trackId)}/reviews/sessions/${encodeURIComponent(input.sessionId)}/items/${encodeURIComponent(input.itemId)}/attempts`, {
+    method: "POST", headers: tutorMutationHeaders(input.clientActionId),
+    body: JSON.stringify({ user_id: input.userId, client_action_id: input.clientActionId,
+      ...(input.reviewSubmission ? { review_submission: input.reviewSubmission } : { submission: input.submission }),
+      expected_session_version: input.expectedSessionVersion, expected_item_version: input.expectedItemVersion }),
+  });
+  const attempt = toReviewAttempt(payload);
+  if (!attempt) throw new Error("Review attempt API returned an invalid payload");
+  return attempt;
+}
+
+export async function fetchReviewAttempt(
+  userId: string, trackId: string, sessionId: string, attemptId: string, signal?: AbortSignal,
+): Promise<ReviewAttempt> {
+  const query = new URLSearchParams({ user_id: userId });
+  const payload = await requestJson(`${API_BASE_URL}/api/learning-tracks/${encodeURIComponent(trackId)}/reviews/sessions/${encodeURIComponent(sessionId)}/attempts/${encodeURIComponent(attemptId)}?${query.toString()}`, { signal });
+  const attempt = toReviewAttempt(payload);
+  if (!attempt) throw new Error("Review attempt API returned an invalid payload");
+  return attempt;
+}
+
+export async function finalizeReviewSession(input: {
+  userId: string; trackId: string; sessionId: string; expectedSessionVersion: number; clientActionId: string;
+}): Promise<ReviewSession> {
+  const payload = await requestJson(`${API_BASE_URL}/api/learning-tracks/${encodeURIComponent(input.trackId)}/reviews/sessions/${encodeURIComponent(input.sessionId)}/finalize`, {
+    method: "POST", headers: tutorMutationHeaders(input.clientActionId),
+    body: JSON.stringify({ user_id: input.userId, client_action_id: input.clientActionId, expected_session_version: input.expectedSessionVersion }),
+  });
+  const session = toReviewSession(payload);
+  if (!session) throw new Error("Review finalization API returned an invalid payload");
+  return session;
 }
 
 export async function fetchLearningLanguageCatalog(
@@ -892,35 +1075,287 @@ function isHarnessCutoverSummary(payload: unknown): boolean {
   );
 }
 
-function toLearningTrackSummary(payload: unknown): LearningTrackSummary | null {
-  if (
-    !isRecord(payload) ||
-    !isString(payload.track_id) ||
-    !isString(payload.language_id) ||
-    !isString(payload.language_display_name) ||
-    !isString(payload.goal_text) ||
-    !isString(payload.target_level) ||
-    !isLearningTrackStatus(payload.status) ||
-    !isNonNegativeSafeInteger(payload.version) ||
-    !isString(payload.active_revision_id) ||
-    !isString(payload.active_plan_title) ||
-    !isNullableString(payload.current_knowledge_key) ||
-    !isNullableString(payload.current_knowledge_title) ||
-    !isRecord(payload.progress) ||
-    !isNonNegativeSafeInteger(payload.progress.total) ||
-    !isNonNegativeSafeInteger(payload.progress.completed) ||
-    !isNonNegativeSafeInteger(payload.progress.in_progress) ||
-    !isNonNegativeSafeInteger(payload.progress.review_due) ||
-    typeof payload.progress.percent !== "number" ||
-    !isNonNegativeSafeInteger(payload.review_due_count) ||
-    !isExecutionTier(payload.execution_tier) ||
-    !isString(payload.execution_disclosure) ||
-    !isNullableString(payload.last_learned_at) ||
-    !isNullableString(payload.updated_at)
-  ) return null;
-  return payload as LearningTrackSummary;
+const LEARNING_TRACK_SUMMARY_KEYS = [
+  "track_id", "language_id", "language_display_name", "goal_text", "target_level", "status", "version",
+  "active_revision_id", "active_plan_title", "current_knowledge_key", "current_knowledge_title", "progress",
+  "review_due_count", "execution_tier", "execution_disclosure", "last_learned_at", "updated_at",
+] as const;
+
+function toLearningTrackDetail(payload: unknown): LearningTrackDetail | null {
+  if (!isRecord(payload) || !hasExactKeys(payload, [...LEARNING_TRACK_SUMMARY_KEYS, "created_at", "archived_at"])) return null;
+  const summary = toLearningTrackSummaryRecord(payload, false);
+  if (!summary || !isNullableString(payload.created_at) || !isNullableString(payload.archived_at)) return null;
+  return { ...summary, created_at: payload.created_at, archived_at: payload.archived_at };
 }
 
+function toLearningRoadmap(payload: unknown): LearningRoadmap | null {
+  if (
+    !isRecord(payload) || !hasExactKeys(payload, ["track_id", "active_revision_id", "title", "target_level", "modules"]) ||
+    !isString(payload.track_id) || !isString(payload.active_revision_id) || !isString(payload.title) ||
+    !isString(payload.target_level) || !Array.isArray(payload.modules)
+  ) return null;
+  const modules = payload.modules.map(toLearningRoadmapModule);
+  if (modules.some((item) => item === null)) return null;
+  return {
+    track_id: payload.track_id,
+    active_revision_id: payload.active_revision_id,
+    title: payload.title,
+    target_level: payload.target_level,
+    modules: modules.filter((item): item is LearningRoadmapModule => item !== null),
+  };
+}
+
+function toLearningRoadmapModule(payload: unknown): LearningRoadmapModule | null {
+  if (
+    !isRecord(payload) ||
+    !hasExactKeys(payload, ["module_id", "module_key", "title", "description", "order_index", "is_core", "is_skippable", "nodes"]) ||
+    !isString(payload.module_id) || !isString(payload.module_key) || !isString(payload.title) ||
+    !isString(payload.description) || !isNonNegativeSafeInteger(payload.order_index) ||
+    typeof payload.is_core !== "boolean" || typeof payload.is_skippable !== "boolean" || !Array.isArray(payload.nodes)
+  ) return null;
+  const nodes = payload.nodes.map(toLearningRoadmapNode);
+  if (nodes.some((item) => item === null)) return null;
+  return {
+    module_id: payload.module_id, module_key: payload.module_key, title: payload.title,
+    description: payload.description, order_index: payload.order_index, is_core: payload.is_core,
+    is_skippable: payload.is_skippable,
+    nodes: nodes.filter((item): item is LearningRoadmapNode => item !== null),
+  };
+}
+
+function toLearningRoadmapNode(payload: unknown): LearningRoadmapNode | null {
+  if (
+    !isRecord(payload) ||
+    !hasExactKeys(payload, [
+      "node_id", "knowledge_key", "title", "description", "order_index", "is_core", "prerequisite_keys",
+      "required_capabilities", "progress_status", "progress_version", "mastery_level", "mastery_confidence",
+    ]) ||
+    !isString(payload.node_id) || !isString(payload.knowledge_key) || !isString(payload.title) ||
+    !isString(payload.description) || !isNonNegativeSafeInteger(payload.order_index) || typeof payload.is_core !== "boolean" ||
+    !isStringArray(payload.prerequisite_keys) || !isStringArray(payload.required_capabilities) ||
+    !isLearningProgressStatus(payload.progress_status) || !isNonNegativeSafeInteger(payload.progress_version) ||
+    !isString(payload.mastery_level) || !isScore(payload.mastery_confidence)
+  ) return null;
+  return {
+    node_id: payload.node_id, knowledge_key: payload.knowledge_key, title: payload.title,
+    description: payload.description, order_index: payload.order_index, is_core: payload.is_core,
+    prerequisite_keys: payload.prerequisite_keys, required_capabilities: payload.required_capabilities,
+    progress_status: payload.progress_status, progress_version: payload.progress_version,
+    mastery_level: payload.mastery_level, mastery_confidence: payload.mastery_confidence,
+  };
+}
+
+function toReviewQueue(payload: unknown): ReviewQueue | null {
+  if (
+    !isRecord(payload) || !hasExactKeys(payload, ["track_id", "as_of", "due_count", "items", "critical_prerequisite_gate"]) ||
+    !isString(payload.track_id) || !isNullableString(payload.as_of) || !isNonNegativeSafeInteger(payload.due_count) ||
+    !Array.isArray(payload.items)
+  ) return null;
+  const items = payload.items.map(toReviewQueueItem);
+  if (items.some((item) => item === null)) return null;
+  const critical = payload.critical_prerequisite_gate === null ? null : toReviewQueueItem(payload.critical_prerequisite_gate);
+  if (payload.critical_prerequisite_gate !== null && !critical) return null;
+  return {
+    track_id: payload.track_id, as_of: payload.as_of, due_count: payload.due_count,
+    items: items.filter((item): item is ReviewQueueItem => item !== null),
+    critical_prerequisite_gate: critical,
+  };
+}
+
+function toReviewQueueItem(payload: unknown): ReviewQueueItem | null {
+  if (
+    !isRecord(payload) ||
+    !hasExactKeys(payload, ["schedule_id", "knowledge_key", "title", "due_at", "risk_level", "critical_prerequisite_gate", "mastery", "required_capabilities", "schedule_version"]) ||
+    !isString(payload.schedule_id) || !isString(payload.knowledge_key) || !isString(payload.title) ||
+    !isNullableString(payload.due_at) || !isReviewRiskLevel(payload.risk_level) ||
+    typeof payload.critical_prerequisite_gate !== "boolean" || !isRecord(payload.mastery) ||
+    !isStringArray(payload.required_capabilities) || !isPositiveSafeInteger(payload.schedule_version)
+  ) return null;
+  return {
+    schedule_id: payload.schedule_id, knowledge_key: payload.knowledge_key, title: payload.title,
+    due_at: payload.due_at, risk_level: payload.risk_level,
+    critical_prerequisite_gate: payload.critical_prerequisite_gate, mastery: payload.mastery,
+    required_capabilities: payload.required_capabilities, schedule_version: payload.schedule_version,
+  };
+}
+
+function toReviewSession(payload: unknown): ReviewSession | null {
+  if (
+    !isRecord(payload) ||
+    !hasExactKeys(payload, [
+      "session_id", "track_id", "knowledge_key", "plan_revision_id", "state", "stage", "failure_code",
+      "recoverable", "version", "context_snapshot", "context_snapshot_hash", "items", "finalization",
+      "started_at", "terminal_at", "idempotent_replayed",
+    ]) ||
+    !isString(payload.session_id) || !isString(payload.track_id) || !isString(payload.knowledge_key) ||
+    !isString(payload.plan_revision_id) || !isReviewSessionState(payload.state) || !isReviewSessionStage(payload.stage) ||
+    !isNullableString(payload.failure_code) || typeof payload.recoverable !== "boolean" ||
+    !isPositiveSafeInteger(payload.version) || !isRecord(payload.context_snapshot) ||
+    !isSha256(payload.context_snapshot_hash) || !Array.isArray(payload.items) ||
+    !isNullableString(payload.started_at) || !isNullableString(payload.terminal_at) ||
+    typeof payload.idempotent_replayed !== "boolean"
+  ) return null;
+  const items = payload.items.map(toReviewSessionItem);
+  if (items.some((item) => item === null)) return null;
+  const finalization = payload.finalization === null ? null : toReviewFinalization(payload.finalization);
+  if (payload.finalization !== null && !finalization) return null;
+  return {
+    session_id: payload.session_id, track_id: payload.track_id, knowledge_key: payload.knowledge_key,
+    plan_revision_id: payload.plan_revision_id, state: payload.state, stage: payload.stage,
+    failure_code: payload.failure_code, recoverable: payload.recoverable, version: payload.version,
+    context_snapshot: payload.context_snapshot, context_snapshot_hash: payload.context_snapshot_hash,
+    items: items.filter((item): item is ReviewSessionItem => item !== null), finalization,
+    started_at: payload.started_at, terminal_at: payload.terminal_at,
+    idempotent_replayed: payload.idempotent_replayed,
+  };
+}
+
+function toReviewSessionItem(payload: unknown): ReviewSessionItem | null {
+  if (
+    !isRecord(payload) || !hasExactKeys(payload, ["item_id", "order_index", "version", "exercise", "attempt"]) ||
+    !isString(payload.item_id) || !isNonNegativeSafeInteger(payload.order_index) || !isPositiveSafeInteger(payload.version)
+  ) return null;
+  const exercise = toReviewExercise(payload.exercise);
+  const attempt = payload.attempt === null ? null : toReviewSessionAttemptSummary(payload.attempt);
+  if (!exercise || (payload.attempt !== null && !attempt)) return null;
+  return { item_id: payload.item_id, order_index: payload.order_index, version: payload.version, exercise, attempt };
+}
+
+function toReviewExercise(payload: unknown): ReviewSessionItem["exercise"] | null {
+  if (
+    !isRecord(payload) || !hasExactKeys(payload, [
+      "exercise_version_id", "exercise_type", "title", "learner_prompt", "starter_artifact",
+      "required_capabilities", "content_hash", "execution_tier", "execution_disclosure",
+    ]) ||
+    !isString(payload.exercise_version_id) || !isExerciseType(payload.exercise_type) || !isString(payload.title) ||
+    !isStringArray(payload.required_capabilities) || !isSha256(payload.content_hash) ||
+    !isExecutionTier(payload.execution_tier) || !isString(payload.execution_disclosure)
+  ) return null;
+  if (payload.exercise_type === "model_code_review") {
+    const prompt = toModelReviewPrompt(payload.learner_prompt);
+    const artifact = toModelReviewArtifact(payload.starter_artifact);
+    if (!prompt || !artifact) return null;
+    return {
+      exercise_version_id: payload.exercise_version_id, exercise_type: payload.exercise_type, title: payload.title,
+      learner_prompt: prompt, starter_artifact: artifact, required_capabilities: payload.required_capabilities,
+      content_hash: payload.content_hash, execution_tier: payload.execution_tier,
+      execution_disclosure: payload.execution_disclosure,
+    };
+  }
+  if (!isRecord(payload.learner_prompt) || !isRecord(payload.starter_artifact)) return null;
+  return {
+    exercise_version_id: payload.exercise_version_id, exercise_type: payload.exercise_type, title: payload.title,
+    learner_prompt: payload.learner_prompt, starter_artifact: payload.starter_artifact,
+    required_capabilities: payload.required_capabilities, content_hash: payload.content_hash,
+    execution_tier: payload.execution_tier, execution_disclosure: payload.execution_disclosure,
+  };
+}
+
+function toReviewSessionAttemptSummary(payload: unknown): ReviewSessionAttemptSummary | null {
+  if (
+    !isRecord(payload) || !hasExactKeys(payload, [
+      "attempt_id", "status", "independence", "assistance_kind", "execution_job_id", "execution_job_state", "result",
+    ]) || !isString(payload.attempt_id) || (payload.status !== "pending" && payload.status !== "terminal") ||
+    !isExerciseIndependence(payload.independence) || !isModelReviewAssistanceKind(payload.assistance_kind) ||
+    !isNullableString(payload.execution_job_id) || !isNullableString(payload.execution_job_state)
+  ) return null;
+  const result = payload.result === null ? null : toLessonGateResult(payload.result);
+  if ((payload.result !== null && !result) || (payload.status === "terminal") !== (result !== null)) return null;
+  return {
+    attempt_id: payload.attempt_id, status: payload.status, independence: payload.independence,
+    assistance_kind: payload.assistance_kind, execution_job_id: payload.execution_job_id,
+    execution_job_state: payload.execution_job_state, result,
+  };
+}
+
+function toReviewFinalization(payload: unknown): ReviewSession["finalization"] | null {
+  if (
+    !isRecord(payload) || !hasExactKeys(payload, ["rating", "aggregate", "result_hash"]) ||
+    !isReviewRating(payload.rating) || !isRecord(payload.aggregate) || !isSha256(payload.result_hash)
+  ) return null;
+  return { rating: payload.rating, aggregate: payload.aggregate, result_hash: payload.result_hash };
+}
+
+function toReviewHint(payload: unknown): ReviewHint | null {
+  if (
+    !isRecord(payload) || !hasExactKeys(payload, ["hint_id", "hint_level", "safe_hint", "created_at"]) ||
+    !isString(payload.hint_id) || !isPositiveSafeInteger(payload.hint_level) || payload.hint_level > 3 ||
+    !isRecord(payload.safe_hint) || !isNullableString(payload.created_at)
+  ) return null;
+  return { hint_id: payload.hint_id, hint_level: payload.hint_level, safe_hint: payload.safe_hint, created_at: payload.created_at };
+}
+
+function toReviewAttempt(payload: unknown): ReviewAttempt | null {
+  if (!isRecord(payload)) return null;
+  const baseKeys = [
+    "attempt_id", "attempt_type", "track_id", "session_id", "item_id", "knowledge_key", "session_version",
+    "exercise_version_id", "submission_hash", "independence", "assistance_kind", "accepted_at", "status",
+    "execution_job_id", "execution_job_state", "result", "idempotent_replayed",
+  ];
+  const withTierKeys = [...baseKeys, "execution_tier", "execution_disclosure"];
+  if (!hasExactKeys(payload, baseKeys) && !hasExactKeys(payload, withTierKeys)) return null;
+  if (
+    !isString(payload.attempt_id) || payload.attempt_type !== "review_submit" || !isString(payload.track_id) ||
+    !isString(payload.session_id) || !isString(payload.item_id) || !isString(payload.knowledge_key) ||
+    !isPositiveSafeInteger(payload.session_version) || !isString(payload.exercise_version_id) ||
+    !isSha256(payload.submission_hash) || !isExerciseIndependence(payload.independence) ||
+    !isModelReviewAssistanceKind(payload.assistance_kind) || !isNullableString(payload.accepted_at) ||
+    (payload.status !== "pending" && payload.status !== "terminal") || !isNullableString(payload.execution_job_id) ||
+    !isNullableString(payload.execution_job_state) || typeof payload.idempotent_replayed !== "boolean"
+  ) return null;
+  const result = payload.result === null ? null : toLessonGateResult(payload.result);
+  if ((payload.result !== null && !result) || (payload.status === "terminal") !== (result !== null)) return null;
+  if (payload.execution_tier !== undefined && (!isExecutionTier(payload.execution_tier) || !isString(payload.execution_disclosure))) return null;
+  return {
+    attempt_id: payload.attempt_id, attempt_type: "review_submit", track_id: payload.track_id,
+    session_id: payload.session_id, item_id: payload.item_id, knowledge_key: payload.knowledge_key,
+    session_version: payload.session_version, exercise_version_id: payload.exercise_version_id,
+    submission_hash: payload.submission_hash, independence: payload.independence,
+    assistance_kind: payload.assistance_kind, accepted_at: payload.accepted_at, status: payload.status,
+    execution_job_id: payload.execution_job_id, execution_job_state: payload.execution_job_state, result,
+    idempotent_replayed: payload.idempotent_replayed,
+    ...(payload.execution_tier !== undefined ? {
+      execution_tier: payload.execution_tier,
+      execution_disclosure: payload.execution_disclosure as string,
+    } : {}),
+  };
+}
+
+function toLearningTrackSummary(payload: unknown): LearningTrackSummary | null {
+  return toLearningTrackSummaryRecord(payload, true);
+}
+
+function toLearningTrackSummaryRecord(payload: unknown, requireExact: boolean): LearningTrackSummary | null {
+  if (
+    !isRecord(payload) || (requireExact && !hasExactKeys(payload, [...LEARNING_TRACK_SUMMARY_KEYS])) ||
+    !isString(payload.track_id) || !isString(payload.language_id) || !isString(payload.language_display_name) ||
+    !isString(payload.goal_text) || !isString(payload.target_level) || !isLearningTrackStatus(payload.status) ||
+    !isPositiveSafeInteger(payload.version) || !isString(payload.active_revision_id) ||
+    !isString(payload.active_plan_title) || !isNullableString(payload.current_knowledge_key) ||
+    !isNullableString(payload.current_knowledge_title) || !isRecord(payload.progress) ||
+    !hasExactKeys(payload.progress, ["total", "completed", "in_progress", "review_due", "percent"]) ||
+    !isNonNegativeSafeInteger(payload.progress.total) || !isNonNegativeSafeInteger(payload.progress.completed) ||
+    !isNonNegativeSafeInteger(payload.progress.in_progress) || !isNonNegativeSafeInteger(payload.progress.review_due) ||
+    typeof payload.progress.percent !== "number" || !Number.isFinite(payload.progress.percent) ||
+    payload.progress.percent < 0 || payload.progress.percent > 100 || !isNonNegativeSafeInteger(payload.review_due_count) ||
+    !isExecutionTier(payload.execution_tier) || !isString(payload.execution_disclosure) ||
+    !isNullableString(payload.last_learned_at) || !isNullableString(payload.updated_at)
+  ) return null;
+  return {
+    track_id: payload.track_id, language_id: payload.language_id, language_display_name: payload.language_display_name,
+    goal_text: payload.goal_text, target_level: payload.target_level, status: payload.status, version: payload.version,
+    active_revision_id: payload.active_revision_id, active_plan_title: payload.active_plan_title,
+    current_knowledge_key: payload.current_knowledge_key, current_knowledge_title: payload.current_knowledge_title,
+    progress: {
+      total: payload.progress.total, completed: payload.progress.completed,
+      in_progress: payload.progress.in_progress, review_due: payload.progress.review_due,
+      percent: payload.progress.percent,
+    },
+    review_due_count: payload.review_due_count, execution_tier: payload.execution_tier,
+    execution_disclosure: payload.execution_disclosure, last_learned_at: payload.last_learned_at,
+    updated_at: payload.updated_at,
+  };
+}
 
 function toLessonDocumentState(payload: unknown): LessonDocumentState | null {
   if (
@@ -1874,6 +2309,28 @@ function toScoreRecord(value: unknown): Record<string, number> | null {
   return Object.fromEntries(entries) as Record<string, number>;
 }
 
+function isLearningProgressStatus(value: unknown): value is LearningRoadmapNode["progress_status"] {
+  return value === "locked" || value === "available" || value === "in_progress" || value === "completed" ||
+    value === "review_due" || value === "diagnostic_skipped";
+}
+
+function isReviewRiskLevel(value: unknown): value is ReviewQueueItem["risk_level"] {
+  return value === "low" || value === "normal" || value === "high" || value === "critical";
+}
+
+function isReviewSessionState(value: unknown): value is ReviewSession["state"] {
+  return value === "blocked" || value === "active" || value === "ready_to_finalize" ||
+    value === "finalized" || value === "cancelled";
+}
+
+function isReviewSessionStage(value: unknown): value is ReviewSession["stage"] {
+  return value === "warmup" || value === "practice" || value === "final_summary";
+}
+
+function isReviewRating(value: unknown): value is NonNullable<ReviewSession["finalization"]>["rating"] {
+  return value === "again" || value === "hard" || value === "good" || value === "easy";
+}
+
 function isSelectionTier(value: unknown): value is LearningLanguageCatalogItem["selection_tier"] {
   return value === "core" || value === "extended" || value === "degraded" || value === "unavailable";
 }
@@ -1892,6 +2349,97 @@ function isLearningPlanSessionStatus(value: unknown): value is LearningPlanSessi
 
 function isExperienceLevel(value: unknown): value is LearningPlanProfile["experience_level"] {
   return value === "new" || value === "beginner" || value === "intermediate" || value === "advanced";
+}
+
+function toTutorConversationResponse(payload: unknown): TutorConversationResponse | null {
+  if (
+    !isRecord(payload) || !hasExactKeys(payload, ["conversation_id", "created", "idempotent_replayed"]) ||
+    !isString(payload.conversation_id) || typeof payload.created !== "boolean" ||
+    typeof payload.idempotent_replayed !== "boolean"
+  ) return null;
+  return { conversation_id: payload.conversation_id, created: payload.created, idempotent_replayed: payload.idempotent_replayed };
+}
+
+function toTutorContextReferences(payload: unknown): TutorContextReference[] | null {
+  if (!Array.isArray(payload) || payload.length > 6) return null;
+  const parsed = payload.map(toTutorContextReference);
+  if (parsed.some((item) => item === null)) return null;
+  return parsed.filter((item): item is TutorContextReference => item !== null);
+}
+
+function toTutorContextReference(payload: unknown): TutorContextReference | null {
+  if (!isRecord(payload) || payload.schema_version !== "tutor_context_reference_v1" || !isString(payload.kind)) return null;
+  const baseKeys = [
+    "reference_id", "schema_version", "kind", "learning_track_id", "knowledge_key", "source_version",
+    "source_hash", "safe_payload_hash", "created_at",
+  ];
+  if (
+    !isString(payload.reference_id) || !isString(payload.learning_track_id) || !isString(payload.knowledge_key) ||
+    !isString(payload.source_version) || !isSha256(payload.source_hash) || !isSha256(payload.safe_payload_hash) ||
+    !isNullableString(payload.created_at)
+  ) return null;
+  const base = {
+    reference_id: payload.reference_id, schema_version: "tutor_context_reference_v1" as const,
+    learning_track_id: payload.learning_track_id, knowledge_key: payload.knowledge_key,
+    source_version: payload.source_version, source_hash: payload.source_hash,
+    safe_payload_hash: payload.safe_payload_hash, created_at: payload.created_at,
+  };
+  if (payload.kind === "lesson_selection") {
+    if (
+      !hasExactKeys(payload, [...baseKeys, "document_id", "document_content_hash", "content_standard_version", "assignment_version", "block_id", "start_offset", "end_offset", "safe_excerpt"]) ||
+      !isString(payload.document_id) || !isSha256(payload.document_content_hash) || !isString(payload.content_standard_version) ||
+      !isPositiveSafeInteger(payload.assignment_version) || !isString(payload.block_id) ||
+      !isNonNegativeSafeInteger(payload.start_offset) || !isPositiveSafeInteger(payload.end_offset) ||
+      payload.end_offset <= payload.start_offset || !isString(payload.safe_excerpt)
+    ) return null;
+    return { ...base, kind: "lesson_selection", document_id: payload.document_id,
+      document_content_hash: payload.document_content_hash, content_standard_version: payload.content_standard_version,
+      assignment_version: payload.assignment_version, block_id: payload.block_id, start_offset: payload.start_offset,
+      end_offset: payload.end_offset, safe_excerpt: payload.safe_excerpt };
+  }
+  const feedbackKeys = [
+    ...baseKeys, "attempt_id", "exercise_version_id", "outcome", "score", "assistance_kind",
+    "feedback_summary", "capability_scores", "terminal_at",
+  ];
+  if (payload.kind === "exercise_feedback" || payload.kind === "execution_result") {
+    const expected = payload.kind === "exercise_feedback"
+      ? [...feedbackKeys, "attempt_type"]
+      : [...feedbackKeys, "attempt_type", "execution_job_id", "execution_job_state"];
+    const scores = toScoreRecord(payload.capability_scores);
+    if (
+      !hasExactKeys(payload, expected) || !isString(payload.attempt_id) ||
+      (payload.attempt_type !== "run" && payload.attempt_type !== "submit") ||
+      !isString(payload.exercise_version_id) || !isExerciseAttemptOutcome(payload.outcome) || !isScore(payload.score) ||
+      !isModelReviewAssistanceKind(payload.assistance_kind) || !isString(payload.feedback_summary) || !scores ||
+      !isNullableString(payload.terminal_at)
+    ) return null;
+    const attemptType: "run" | "submit" = payload.attempt_type;
+    const feedback = { ...base, attempt_id: payload.attempt_id, attempt_type: attemptType,
+      exercise_version_id: payload.exercise_version_id, outcome: payload.outcome, score: payload.score,
+      assistance_kind: payload.assistance_kind, feedback_summary: payload.feedback_summary,
+      capability_scores: scores, terminal_at: payload.terminal_at };
+    if (payload.kind === "exercise_feedback") return { ...feedback, kind: "exercise_feedback" };
+    if (!isString(payload.execution_job_id) || !isString(payload.execution_job_state)) return null;
+    return { ...feedback, kind: "execution_result", execution_job_id: payload.execution_job_id,
+      execution_job_state: payload.execution_job_state };
+  }
+  if (payload.kind === "review_feedback") {
+    const scores = toScoreRecord(payload.capability_scores);
+    if (
+      !hasExactKeys(payload, [...feedbackKeys, "review_session_id", "review_item_id", "session_version"]) ||
+      !isString(payload.review_session_id) || !isString(payload.review_item_id) || !isString(payload.attempt_id) ||
+      !isString(payload.exercise_version_id) || !isPositiveSafeInteger(payload.session_version) ||
+      !isExerciseAttemptOutcome(payload.outcome) || !isScore(payload.score) ||
+      !isModelReviewAssistanceKind(payload.assistance_kind) || !isString(payload.feedback_summary) || !scores ||
+      !isNullableString(payload.terminal_at)
+    ) return null;
+    return { ...base, kind: "review_feedback", review_session_id: payload.review_session_id,
+      review_item_id: payload.review_item_id, attempt_id: payload.attempt_id,
+      exercise_version_id: payload.exercise_version_id, session_version: payload.session_version,
+      outcome: payload.outcome, score: payload.score, assistance_kind: payload.assistance_kind,
+      feedback_summary: payload.feedback_summary, capability_scores: scores, terminal_at: payload.terminal_at };
+  }
+  return null;
 }
 
 function toTutorConversationListResponse(payload: unknown): TutorConversationListResponse | null {
@@ -1940,14 +2488,18 @@ function toTutorForegroundRun(payload: unknown): TutorForegroundRun | null {
 function toTutorHistoryItem(payload: unknown): TutorHistoryItem | null {
   if (!isRecord(payload) || !isString(payload.kind) || !isString(payload.id) || !isNullableString(payload.created_at)) return null;
   if (payload.kind === "message") {
+    if (!hasExactKeys(payload, ["kind", "id", "role", "content", "public_thinking_steps", "context_references", "created_at"])) return null;
     if ((payload.role !== "learner" && payload.role !== "tutor") || !isString(payload.content) || !isStringArray(payload.public_thinking_steps)) return null;
     if (payload.public_thinking_steps.length > 4 || payload.public_thinking_steps.some((step) => step.length === 0 || step.length > 320)) return null;
+    const contextReferences = toTutorContextReferences(payload.context_references);
+    if (!contextReferences || (payload.role === "tutor" && contextReferences.length > 0)) return null;
     return {
       kind: "message",
       id: payload.id,
       role: payload.role,
       content: payload.content,
       public_thinking_steps: payload.role === "tutor" ? payload.public_thinking_steps : [],
+      context_references: contextReferences,
       created_at: payload.created_at,
     };
   }
@@ -1983,24 +2535,27 @@ function toTutorPublicProcessStep(payload: unknown): TutorPublicProcessStep | nu
 }
 
 function toTutorInputAcceptedResponse(payload: unknown): TutorInputAcceptedResponse | null {
-  if (!isRecord(payload) || !isString(payload.conversation_id) || !isString(payload.run_id) || !isNonNegativeSafeInteger(payload.input_revision) || !isString(payload.message_id) || !isNonNegativeSafeInteger(payload.event_cursor) || typeof payload.merged !== "boolean" || typeof payload.input_replayed !== "boolean" || typeof payload.idempotent_replayed !== "boolean" || !("process" in payload) || !("replaced_run_id" in payload) || !("replaced_process" in payload)) return null;
+  if (
+    !isRecord(payload) || !hasExactKeys(payload, [
+      "conversation_id", "run_id", "input_revision", "message_id", "event_cursor", "merged", "input_replayed",
+      "idempotent_replayed", "run", "process", "replaced_run_id", "replaced_process", "context_references",
+    ]) || !isString(payload.conversation_id) || !isString(payload.run_id) ||
+    !isPositiveSafeInteger(payload.input_revision) || !isString(payload.message_id) ||
+    !isNonNegativeSafeInteger(payload.event_cursor) || typeof payload.merged !== "boolean" ||
+    typeof payload.input_replayed !== "boolean" || typeof payload.idempotent_replayed !== "boolean"
+  ) return null;
   const run = toTutorRunState(payload.run);
   const process = payload.process === null ? null : toTutorPublicProcess(payload.process);
   const replacedProcess = payload.replaced_process === null ? null : toTutorPublicProcess(payload.replaced_process);
-  if (!run || (process === null && payload.process !== null) || (replacedProcess === null && payload.replaced_process !== null) || !isNullableString(payload.replaced_run_id)) return null;
+  const contextReferences = toTutorContextReferences(payload.context_references);
+  if (!run || !contextReferences || (process === null && payload.process !== null) ||
+      (replacedProcess === null && payload.replaced_process !== null) || !isNullableString(payload.replaced_run_id)) return null;
   return {
-    conversation_id: payload.conversation_id,
-    run_id: payload.run_id,
-    input_revision: payload.input_revision,
-    message_id: payload.message_id,
-    event_cursor: payload.event_cursor,
-    merged: payload.merged,
-    input_replayed: payload.input_replayed,
-    idempotent_replayed: payload.idempotent_replayed,
-    run,
-    process,
-    replaced_run_id: payload.replaced_run_id,
-    replaced_process: replacedProcess,
+    conversation_id: payload.conversation_id, run_id: payload.run_id, input_revision: payload.input_revision,
+    message_id: payload.message_id, event_cursor: payload.event_cursor, merged: payload.merged,
+    input_replayed: payload.input_replayed, idempotent_replayed: payload.idempotent_replayed, run, process,
+    replaced_run_id: payload.replaced_run_id, replaced_process: replacedProcess,
+    context_references: contextReferences,
   };
 }
 

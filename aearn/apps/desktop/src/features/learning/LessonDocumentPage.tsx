@@ -24,6 +24,8 @@ import type {
   ModelCodeReviewSubmission,
   ModelReviewEvidenceResponse,
   ModuleDiagnosticState,
+  TutorContextReferenceDraft,
+  LearningScopeInput,
 } from "../../types";
 import { LessonDocumentView } from "./lesson/LessonDocumentView";
 import { LessonGatePanel } from "./lesson/LessonGatePanel";
@@ -33,7 +35,9 @@ type LessonDocumentPageProps = {
   userId: string;
   trackId: string;
   knowledgeKey: string;
-  onBack: () => void;
+  onBack?: () => void;
+  embedded?: boolean;
+  onContextReference?: (draft: TutorContextReferenceDraft, label: string, taskKind: NonNullable<LearningScopeInput["task_kind"]>) => void;
 };
 
 type LessonAction = "idle" | "preparing" | "starting" | "refreshing" | "migrating";
@@ -44,7 +48,7 @@ type BusyGate = {
   action: GateAction;
 };
 
-export function LessonDocumentPage({ userId, trackId, knowledgeKey, onBack }: LessonDocumentPageProps) {
+export function LessonDocumentPage({ userId, trackId, knowledgeKey, onBack, embedded = false, onContextReference }: LessonDocumentPageProps) {
   const [state, setState] = useState<LessonDocumentState | null>(null);
   const [loading, setLoading] = useState(true);
   const [action, setAction] = useState<LessonAction>("idle");
@@ -319,9 +323,11 @@ export function LessonDocumentPage({ userId, trackId, knowledgeKey, onBack }: Le
   function renderExerciseGate(block: LessonExerciseGateBlock) {
     const gate = gates?.items.find((item) => item.gate_key === block.gate_key) ?? null;
     const currentBusy = busyGate?.gateKey === block.gate_key ? busyGate.action : null;
+    const terminalAttempt = gateAttempts[block.gate_key]?.status === "terminal" ? gateAttempts[block.gate_key] : null;
+    const taskKind: NonNullable<LearningScopeInput["task_kind"]> = gate && isBoundGate(gate) && gate.exercise.exercise_type === "model_code_review" ? "model_code_review" : "exercise_feedback";
     return (
+      <div className="lesson-gate-reference-wrap" key={block.block_id}>
       <LessonGatePanel
-        key={block.block_id}
         block={block}
         gate={gate}
         editorValue={gateEditors[block.gate_key] ?? ""}
@@ -341,6 +347,14 @@ export function LessonDocumentPage({ userId, trackId, knowledgeKey, onBack }: Le
         onEvidence={() => void readReviewEvidence(block)}
         onPoll={() => void pollGateAttempt(block)}
       />
+      {terminalAttempt && onContextReference ? (
+        <div className="lesson-gate-reference-actions" aria-label="将练习结果引用给 Tutor">
+          <span><strong>把本次 learner-safe 结果带给 Tutor</strong><small>引用绑定真实 terminal Attempt，不会复制隐藏测试或原始运行细节。</small></span>
+          <button className="tutor-compact-button quiet" type="button" onClick={() => onContextReference({ kind: "exercise_feedback", learning_track_id: trackId, knowledge_key: knowledgeKey, attempt_id: terminalAttempt.attempt_id }, `练习反馈 · ${terminalAttempt.result ? Math.round(terminalAttempt.result.score * 100) : 0}%`, taskKind)}>引用反馈</button>
+          {terminalAttempt.execution_job_id ? <button className="tutor-compact-button quiet" type="button" onClick={() => onContextReference({ kind: "execution_result", learning_track_id: trackId, knowledge_key: knowledgeKey, attempt_id: terminalAttempt.attempt_id }, `执行结果 · ${terminalAttempt.execution_job_state ?? "已完成"}`, taskKind)}>引用执行结果</button> : null}
+        </div>
+      ) : null}
+      </div>
     );
   }
 
@@ -349,9 +363,9 @@ export function LessonDocumentPage({ userId, trackId, knowledgeKey, onBack }: Le
   }
 
   return (
-    <main className="lesson-page" aria-labelledby="lesson-page-title">
+    <main className={`lesson-page${embedded ? " lesson-page-embedded" : ""}`} aria-labelledby="lesson-page-title">
       <header className="lesson-page-toolbar">
-        <button className="tutor-text-button" type="button" onClick={onBack}>← 返回学习主线</button>
+        {onBack ? <button className="tutor-text-button" type="button" onClick={onBack}>← 返回学习主线</button> : <span aria-hidden="true" />}
         <div><span>{knowledgeKey}</span><strong id="lesson-page-title">课程阅读</strong></div>
         {state?.status === "ready" && <button className="tutor-compact-button quiet" type="button" disabled={action !== "idle"} onClick={() => void prepare(true)}>{action === "refreshing" ? "正在检查更新……" : "检查课程更新"}</button>}
       </header>
@@ -375,7 +389,14 @@ export function LessonDocumentPage({ userId, trackId, knowledgeKey, onBack }: Le
           ) : null}
           {state.update && <LessonUpdateNotice state={state} busy={action === "migrating"} onMigrate={() => void migrate()} />}
           {gateLoadError ? <div className="tutor-inline-error lesson-page-error" role="alert"><span>{gateLoadError}</span><button className="tutor-text-button" type="button" disabled={gateLoading} onClick={() => void loadGates()}>{gateLoading ? "正在读取……" : "重新读取练习"}</button></div> : null}
-          <LessonDocumentView document={state.document} assignment={state.assignment} sources={state.sources} renderExerciseGate={renderExerciseGate} />
+          <LessonDocumentView
+            document={state.document}
+            assignment={state.assignment}
+            sources={state.sources}
+            renderExerciseGate={renderExerciseGate}
+            learningTrackId={trackId}
+            onSelectionReference={onContextReference ? (draft, label) => onContextReference(draft, label, "lesson_teaching") : undefined}
+          />
           <ModuleDiagnosticModal
             open={diagnosticOpen}
             userId={userId}

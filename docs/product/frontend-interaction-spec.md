@@ -1,9 +1,9 @@
 # Aearn Tutor 桌面端交互规格
 
-**状态：** 当前 Desktop 交互契约，2026-08-03。
+**状态：** 当前 Desktop 交互契约，2026-08-12。
 **适用范围：** `aearn/apps/desktop/src/` 的 React + Tauri UI。
 **权威来源：** `App.tsx`、`stores/useAppStore.ts`、`api.ts`、
-`pages/HarnessCutoverPage.tsx`、`pages/TutorWorkspacePage.tsx` 与类型/测试。
+`pages/HarnessCutoverPage.tsx`、`features/learning/TrackLearningWorkspace.tsx`、`features/learning/ReviewSessionPanel.tsx`、`features/tutor/TutorConversationSurface.tsx` 与类型/测试。
 
 本规格取代旧 Onboarding、LearningWorkspace、Review、Notes 和 Graph/SSE UI
 描述。Desktop 只呈现服务器授予的 Tutor 状态；它不会编排 provider、Graph、
@@ -62,6 +62,9 @@ stateDiagram-v2
   目标状态。
 - local storage 不能证明 cutover，不能保存切换摘要/nonce，不能恢复被删除的
   legacy 数据，也不能绕过 server gate。
+- 学习工作区只额外保存版本化导航指针
+  `aearn.learning-workspace.v1:{userId}`：`{version,trackId,mode,knowledgeKey,reviewSessionId}`。
+  它不是 server state；刷新后必须重新读取并校验 track、roadmap、Lesson/Review 与 conversation。
 
 ## 页面与组件
 
@@ -70,7 +73,7 @@ stateDiagram-v2
 | `loading` | `LoadingScreen` | 显示本地身份/服务器状态读取进度 | 猜测用户是否已切换或恢复旧页面 |
 | `welcome` | `WelcomeScreen` | 收集显示名称并创建本地用户 | 保存模型密钥、provider 或 learning plan |
 | `cutover` | `HarnessCutoverPage` | 显示服务器摘要、阻塞原因、保留项和确认动作 | 选择表、计数、checkpoint 线程或删除范围 |
-| `tutor` | `TutorWorkspacePage` | 对话、状态、SSE、活动/inbox、memory、plan/preference controls | 运行 Graph、执行 learner code、直接写数据库 |
+| `tutor` | `LearningHomePage` / `LearningPlanBuilderPage` / `TrackLearningWorkspace` | 学习主线、计划制定、路线、Lesson/Practice、Review 与 scoped Tutor | 前端计算进度/评分/到期/解锁，运行 Graph 或直接写数据库 |
 
 顶层 `App` 只包含应用菜单、API 健康文本、一个不可覆盖的当前入口标签以及
 上述主体。侧栏折叠只能改变布局，不改变 active route 或 server decision。
@@ -242,3 +245,36 @@ textarea。`preparing` 只展示服务端状态与重试，不生成本地题目
 运行代码”。unknown type/status/field、extra key 或 protected marker 使整个 payload fail
 closed。390px、900px、1440px 下页面不得水平溢出；代码区可以独立横向滚动，radio、按钮和
 fieldset 可键盘操作且 focus 可见，并尊重 reduced motion。
+
+
+## 2026-08-12：三栏学习工作区与结构化上下文引用
+
+`TutorSurface` 的正式学习入口为
+`learning_workspace { trackId, mode, knowledgeKey, reviewSessionId }`。Learning Home 的
+“继续学习”和“开始复习”都进入同一 `TrackLearningWorkspace`；挂载时并行读取 track detail、
+roadmap、Review queue，并通过稳定的 user + track 幂等键创建或恢复 track-scoped Tutor
+conversation。导航指针只负责定位，服务端返回的 locked/available/progress/mastery/due/version
+仍是唯一权威；无效指针会被清除。
+
+宽屏（`>=1180px`）使用 `260px / minmax(0,1fr) / 360px` 三栏并分别滚动；
+`768..1179px` 隐藏固定路线栏，使用带 `aria-modal`、初始焦点、焦点循环、Escape 关闭和焦点归还的
+路线 drawer；`<768px` 使用路线/课程或复习/Tutor tabs，一次只显示一个 panel。三个验证视口均不得
+产生页面级水平溢出，主要动作与 Composer 必须保持可达，并尊重 `prefers-reduced-motion`。
+
+中栏 Lesson 只渲染服务端 blocks、assignment、Gate projection 与 `allowed_actions`。同一个
+`data-lesson-block-id` 内的文本或代码选择可创建 `lesson_selection` 草稿；客户端只计算用于定位的
+NFKC/空白归一化 range 与 candidate excerpt，服务端重新验证 active frozen document/hash/block/range
+并派生 safe excerpt。terminal Lesson Attempt 可产生 `exercise_feedback`，存在真实 execution job 时可额外
+产生 `execution_result`；terminal Review Attempt 可产生 `review_feedback`。引用 chips 可预览、去重、移除，
+不得拼入 learner `content`；发送成功后只有 acceptance 返回相同数量的已保存 safe references 才清空草稿。
+历史 learner message 显示服务端 safe reference cards，Tutor message 的引用数组必须为空。
+
+`ReviewSessionPanel` 严格使用 queue/track/schedule/session/item version 与新的 client action ID 执行
+create、warmup、hint、attempt、同一 Attempt poll 和 finalize。warmup/hint/terminal Attempt 都不会在前端改写
+长期掌握度或到期时间；finalize 后重新读取服务端 queue/roadmap。切换 user、track、mode、knowledge key 或
+review session 时中止旧请求/SSE 并清空旧 reference、editor、result 与 composer scope。
+
+本轮浏览器验收使用可删除的本地 verified fixture，未调用真实 provider 或 executor：`1280x720` 三栏、
+`1024x768` drawer、`390x844` tabs 均无水平溢出；Review queue → warmup → terminal Attempt → finalize、
+Review feedback 引用、Lesson selection 引用和 console/exception smoke 均通过。正式静态门为
+`pnpm --dir .\aearn desktop:check`。

@@ -142,6 +142,7 @@ export type TutorHistoryMessage = {
   role: "learner" | "tutor";
   content: string;
   public_thinking_steps: string[];
+  context_references: TutorContextReference[];
   created_at: string | null;
 };
 
@@ -173,6 +174,7 @@ export type TutorInputAcceptedResponse = {
   process: TutorPublicProcess | null;
   replaced_run_id: string | null;
   replaced_process: TutorPublicProcess | null;
+  context_references: TutorContextReference[];
 };
 
 export type TutorActivityItem = {
@@ -324,6 +326,109 @@ export type LearningScopeInput = {
   knowledge_key?: string | null;
 };
 
+export type LessonSelectionReferenceDraft = {
+  kind: "lesson_selection";
+  learning_track_id: string;
+  knowledge_key: string;
+  document_id: string;
+  document_content_hash: string;
+  block_id: string;
+  start_offset: number;
+  end_offset: number;
+  excerpt: string;
+};
+
+export type ExerciseFeedbackReferenceDraft = {
+  kind: "exercise_feedback";
+  learning_track_id: string;
+  knowledge_key: string;
+  attempt_id: string;
+};
+
+export type ExecutionResultReferenceDraft = {
+  kind: "execution_result";
+  learning_track_id: string;
+  knowledge_key: string;
+  attempt_id: string;
+};
+
+export type ReviewFeedbackReferenceDraft = {
+  kind: "review_feedback";
+  learning_track_id: string;
+  knowledge_key: string;
+  review_session_id: string;
+  attempt_id: string;
+};
+
+export type TutorContextReferenceDraft =
+  | LessonSelectionReferenceDraft
+  | ExerciseFeedbackReferenceDraft
+  | ExecutionResultReferenceDraft
+  | ReviewFeedbackReferenceDraft;
+
+type TutorContextReferenceBase = {
+  reference_id: string;
+  schema_version: "tutor_context_reference_v1";
+  learning_track_id: string;
+  knowledge_key: string;
+  source_version: string;
+  source_hash: string;
+  safe_payload_hash: string;
+  created_at: string | null;
+};
+
+export type LessonSelectionContextReference = TutorContextReferenceBase & {
+  kind: "lesson_selection";
+  document_id: string;
+  document_content_hash: string;
+  content_standard_version: string;
+  assignment_version: number;
+  block_id: string;
+  start_offset: number;
+  end_offset: number;
+  safe_excerpt: string;
+};
+
+export type ExerciseFeedbackContextReference = TutorContextReferenceBase & {
+  kind: "exercise_feedback";
+  attempt_id: string;
+  attempt_type: "run" | "submit";
+  exercise_version_id: string;
+  outcome: ExerciseAttemptOutcome;
+  score: number;
+  assistance_kind: ModelReviewAssistanceKind;
+  feedback_summary: string;
+  capability_scores: Record<string, number>;
+  terminal_at: string | null;
+};
+
+export type ExecutionResultContextReference = Omit<ExerciseFeedbackContextReference, "kind"> & {
+  kind: "execution_result";
+  execution_job_id: string;
+  execution_job_state: string;
+};
+
+export type ReviewFeedbackContextReference = TutorContextReferenceBase & {
+  kind: "review_feedback";
+  review_session_id: string;
+  review_item_id: string;
+  attempt_id: string;
+  exercise_version_id: string;
+  session_version: number;
+  outcome: ExerciseAttemptOutcome;
+  score: number;
+  assistance_kind: ModelReviewAssistanceKind;
+  feedback_summary: string;
+  capability_scores: Record<string, number>;
+  terminal_at: string | null;
+};
+
+export type TutorContextReference =
+  | LessonSelectionContextReference
+  | ExerciseFeedbackContextReference
+  | ExecutionResultContextReference
+  | ReviewFeedbackContextReference;
+
 export type LearningTrackSummary = {
   track_id: string;
   language_id: string;
@@ -348,6 +453,152 @@ export type LearningTrackSummary = {
   execution_disclosure: string;
   last_learned_at: string | null;
   updated_at: string | null;
+};
+
+export type LearningTrackDetail = LearningTrackSummary & {
+  created_at: string | null;
+  archived_at: string | null;
+};
+
+export type LearningRoadmapNode = {
+  node_id: string;
+  knowledge_key: string;
+  title: string;
+  description: string;
+  order_index: number;
+  is_core: boolean;
+  prerequisite_keys: string[];
+  required_capabilities: string[];
+  progress_status: "locked" | "available" | "in_progress" | "completed" | "review_due" | "diagnostic_skipped";
+  progress_version: number;
+  mastery_level: string;
+  mastery_confidence: number;
+};
+
+export type LearningRoadmapModule = {
+  module_id: string;
+  module_key: string;
+  title: string;
+  description: string;
+  order_index: number;
+  is_core: boolean;
+  is_skippable: boolean;
+  nodes: LearningRoadmapNode[];
+};
+
+export type LearningRoadmap = {
+  track_id: string;
+  active_revision_id: string;
+  title: string;
+  target_level: string;
+  modules: LearningRoadmapModule[];
+};
+
+export type ReviewQueueItem = {
+  schedule_id: string;
+  knowledge_key: string;
+  title: string;
+  due_at: string | null;
+  risk_level: "low" | "normal" | "high" | "critical";
+  critical_prerequisite_gate: boolean;
+  mastery: Record<string, unknown>;
+  required_capabilities: string[];
+  schedule_version: number;
+};
+
+export type ReviewQueue = {
+  track_id: string;
+  as_of: string | null;
+  due_count: number;
+  items: ReviewQueueItem[];
+  critical_prerequisite_gate: ReviewQueueItem | null;
+};
+
+type ReviewExerciseBase = {
+  exercise_version_id: string;
+  title: string;
+  required_capabilities: string[];
+  content_hash: string;
+  execution_tier: ExecutionTier;
+  execution_disclosure: string;
+};
+
+export type ReviewExercise =
+  | (ReviewExerciseBase & {
+      exercise_type: "model_code_review";
+      learner_prompt: ModelReviewPrompt;
+      starter_artifact: ModelReviewArtifact;
+    })
+  | (ReviewExerciseBase & {
+      exercise_type: Exclude<ExerciseType, "model_code_review">;
+      learner_prompt: Record<string, unknown>;
+      starter_artifact: Record<string, unknown>;
+    });
+
+export type ReviewSessionAttemptSummary = {
+  attempt_id: string;
+  status: "pending" | "terminal";
+  independence: ExerciseIndependence;
+  assistance_kind: ModelReviewAssistanceKind;
+  execution_job_id: string | null;
+  execution_job_state: string | null;
+  result: LessonGateResult | null;
+};
+
+export type ReviewSessionItem = {
+  item_id: string;
+  order_index: number;
+  version: number;
+  exercise: ReviewExercise;
+  attempt: ReviewSessionAttemptSummary | null;
+};
+
+export type ReviewSession = {
+  session_id: string;
+  track_id: string;
+  knowledge_key: string;
+  plan_revision_id: string;
+  state: "blocked" | "active" | "ready_to_finalize" | "finalized" | "cancelled";
+  stage: "warmup" | "practice" | "final_summary";
+  failure_code: string | null;
+  recoverable: boolean;
+  version: number;
+  context_snapshot: Record<string, unknown>;
+  context_snapshot_hash: string;
+  items: ReviewSessionItem[];
+  finalization: { rating: "again" | "hard" | "good" | "easy"; aggregate: Record<string, unknown>; result_hash: string } | null;
+  started_at: string | null;
+  terminal_at: string | null;
+  idempotent_replayed: boolean;
+};
+
+export type ReviewHint = {
+  hint_id: string;
+  hint_level: number;
+  safe_hint: Record<string, unknown>;
+  created_at: string | null;
+};
+
+export type ReviewAttempt = {
+  attempt_id: string;
+  attempt_type: "review_submit";
+  track_id: string;
+  session_id: string;
+  item_id: string;
+  knowledge_key: string;
+  session_version: number;
+  exercise_version_id: string;
+  submission_hash: string;
+  independence: ExerciseIndependence;
+  assistance_kind: ModelReviewAssistanceKind;
+  accepted_at: string | null;
+  status: "pending" | "terminal";
+  execution_job_id: string | null;
+  execution_job_state: string | null;
+  result: LessonGateResult | null;
+  idempotent_replayed: boolean;
+  execution_tier?: ExecutionTier;
+  execution_disclosure?: string;
 };
 
 export type LessonCitation = {
