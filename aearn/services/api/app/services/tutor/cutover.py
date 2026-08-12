@@ -107,13 +107,37 @@ _LEGACY_COUNT_SQL: tuple[tuple[str, str], ...] = (
     ("idempotency_records", "SELECT count(*)::int AS count FROM idempotency_records WHERE user_id = %s"),
 )
 
-# The other Tutor rows are descendants of these user-scoped roots. Shared
-# tutor_catalog_snapshots and tutor_executor_health intentionally stay out.
+# Every user-owned Tutor table is listed explicitly so schema additions cannot
+# silently escape the cutover target-state inventory. Shared catalogs and
+# executor health have no learner ownership and are intentionally excluded.
+CUTOVER_SHARED_TUTOR_TABLES = frozenset(
+    {
+        "tutor_catalog_snapshots",
+        "tutor_executor_health",
+        "tutor_exercise_versions",
+        "tutor_exercise_private_rubrics",
+        "tutor_module_diagnostic_versions",
+    }
+)
 _TARGET_COUNT_SQL: tuple[tuple[str, str], ...] = (
     ("tutor_conversations", "SELECT count(*)::int AS count FROM tutor_conversations WHERE user_id = %s"),
     ("tutor_runs", "SELECT count(*)::int AS count FROM tutor_runs WHERE user_id = %s"),
+    ("tutor_messages", "SELECT count(*)::int AS count FROM tutor_messages AS messages JOIN tutor_conversations AS conversations ON conversations.id = messages.conversation_id WHERE conversations.user_id = %s"),
+    ("tutor_run_input_events", "SELECT count(*)::int AS count FROM tutor_run_input_events AS input_events JOIN tutor_runs AS runs ON runs.id = input_events.run_id WHERE runs.user_id = %s"),
+    ("tutor_run_events", "SELECT count(*)::int AS count FROM tutor_run_events AS events JOIN tutor_runs AS runs ON runs.id = events.run_id WHERE runs.user_id = %s"),
+    ("tutor_run_checkpoints", "SELECT count(*)::int AS count FROM tutor_run_checkpoints AS checkpoints JOIN tutor_runs AS runs ON runs.id = checkpoints.run_id WHERE runs.user_id = %s"),
+    ("tutor_run_traces", "SELECT count(*)::int AS count FROM tutor_run_traces AS traces JOIN tutor_runs AS runs ON runs.id = traces.run_id WHERE runs.user_id = %s"),
+    ("tutor_run_skill_selections", "SELECT count(*)::int AS count FROM tutor_run_skill_selections AS selections JOIN tutor_runs AS runs ON runs.id = selections.run_id WHERE runs.user_id = %s"),
+    ("tutor_capability_invocations", "SELECT count(*)::int AS count FROM tutor_capability_invocations AS invocations JOIN tutor_runs AS runs ON runs.id = invocations.run_id WHERE runs.user_id = %s"),
+    ("tutor_effects", "SELECT count(*)::int AS count FROM tutor_effects AS effects JOIN tutor_runs AS runs ON runs.id = effects.run_id WHERE runs.user_id = %s"),
+    ("tutor_provider_attempt_receipts", "SELECT count(*)::int AS count FROM tutor_provider_attempt_receipts WHERE user_id = %s"),
+    ("tutor_run_public_processes", "SELECT count(*)::int AS count FROM tutor_run_public_processes WHERE user_id = %s"),
+    ("tutor_run_public_process_steps", "SELECT count(*)::int AS count FROM tutor_run_public_process_steps AS steps JOIN tutor_runs AS runs ON runs.id = steps.run_id WHERE runs.user_id = %s"),
+    ("tutor_memory_curation_outbox", "SELECT count(*)::int AS count FROM tutor_memory_curation_outbox AS outbox JOIN tutor_runs AS runs ON runs.id = outbox.run_id WHERE runs.user_id = %s"),
+    ("tutor_curation_proposals", "SELECT count(*)::int AS count FROM tutor_curation_proposals AS proposals JOIN tutor_memory_curation_outbox AS outbox ON outbox.id = proposals.outbox_id JOIN tutor_runs AS runs ON runs.id = outbox.run_id WHERE runs.user_id = %s"),
     ("tutor_execution_intents", "SELECT count(*)::int AS count FROM tutor_execution_intents WHERE user_id = %s"),
     ("tutor_execution_jobs", "SELECT count(*)::int AS count FROM tutor_execution_jobs WHERE user_id = %s"),
+    ("tutor_execution_attempts", "SELECT count(*)::int AS count FROM tutor_execution_attempts AS attempts JOIN tutor_execution_jobs AS jobs ON jobs.id = attempts.job_id WHERE jobs.user_id = %s"),
     ("tutor_proactive_preferences", "SELECT count(*)::int AS count FROM tutor_proactive_preferences WHERE user_id = %s"),
     ("tutor_proactive_signals", "SELECT count(*)::int AS count FROM tutor_proactive_signals WHERE user_id = %s"),
     ("tutor_proactive_candidates", "SELECT count(*)::int AS count FROM tutor_proactive_candidates WHERE user_id = %s"),
@@ -157,8 +181,12 @@ _TARGET_COUNT_SQL: tuple[tuple[str, str], ...] = (
     ("tutor_run_learning_scopes", "SELECT count(*)::int AS count FROM tutor_run_learning_scopes WHERE user_id = %s"),
     ("tutor_message_context_references", "SELECT count(*)::int AS count FROM tutor_message_context_references WHERE user_id = %s"),
     ("tutor_lesson_documents", "SELECT count(*)::int AS count FROM tutor_lesson_documents WHERE user_id = %s AND document_kind = 'personalized'"),
+    ("tutor_lesson_source_snapshots", "SELECT count(*)::int AS count FROM tutor_lesson_source_snapshots WHERE user_id = %s"),
+    ("tutor_lesson_block_citations", "SELECT count(*)::int AS count FROM tutor_lesson_block_citations WHERE user_id = %s"),
+    ("tutor_lesson_gate_slots", "SELECT count(*)::int AS count FROM tutor_lesson_gate_slots WHERE user_id = %s"),
     ("tutor_lesson_assignments", "SELECT count(*)::int AS count FROM tutor_lesson_assignments WHERE user_id = %s"),
     ("tutor_lesson_authoring_runs", "SELECT count(*)::int AS count FROM tutor_lesson_authoring_runs WHERE user_id = %s"),
+    ("tutor_lesson_authoring_attempt_receipts", "SELECT count(*)::int AS count FROM tutor_lesson_authoring_attempt_receipts WHERE user_id = %s"),
     ("tutor_lesson_gate_bindings", "SELECT count(*)::int AS count FROM tutor_lesson_gate_bindings WHERE user_id = %s"),
     ("tutor_lesson_gate_states", "SELECT count(*)::int AS count FROM tutor_lesson_gate_states WHERE user_id = %s"),
     ("tutor_module_diagnostic_sessions", "SELECT count(*)::int AS count FROM tutor_module_diagnostic_sessions WHERE user_id = %s"),
@@ -176,6 +204,7 @@ _TARGET_COUNT_SQL: tuple[tuple[str, str], ...] = (
     ("tutor_review_hint_receipts", "SELECT count(*)::int AS count FROM tutor_review_hint_receipts WHERE user_id = %s"),
     ("tutor_review_finalizations", "SELECT count(*)::int AS count FROM tutor_review_finalizations WHERE user_id = %s"),
 )
+CUTOVER_TARGET_TUTOR_TABLES = frozenset(name for name, _query in _TARGET_COUNT_SQL)
 
 
 class HarnessCutoverService:

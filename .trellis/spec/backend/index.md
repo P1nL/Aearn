@@ -20,6 +20,7 @@ This directory contains guidelines for backend development. Fill in each file wi
 | [Quality Guidelines](./quality-guidelines.md) | Code standards, forbidden patterns | Filled |
 | [Logging Guidelines](./logging-guidelines.md) | Structured logging, log levels | Filled |
 | [Tutor Context References](./tutor-context-references.md) | Cross-layer typed reference, safe snapshot, history, and context-injection contract | Filled |
+| [Learning Agent Integration and QA](./learning-agent-integration-qa.md) | Final language matrix, execution-tier truthfulness, cutover schema inventory, and readiness contract | Filled |
 
 ---
 

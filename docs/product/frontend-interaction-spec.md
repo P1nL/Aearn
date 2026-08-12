@@ -210,9 +210,13 @@ refresh；history endpoint 是 timeline 的唯一 source of truth。
 
 ## 2026-08-10：verified shell 内部学习视图
 
+> 历史截面：本节只描述 2026-08-10 的中间状态；`downstream not-ready` 已由后文正式 `learning_workspace` 状态取代。
+
 `AppRoute` 仍只有 `loading | welcome | cutover | tutor`。`tutor` 内部只包含 `learning_home`、`track_planner` 和 downstream not-ready intent，不提供 general conversation / 对话历史页面或导航入口。既有服务端 conversation 数据与 API 保持兼容；`features/tutor/TutorConversationSurface.tsx` 仅作为 planner 的 history/SSE/composer/continuation 内核，并始终发送 `plan_drafting/plan_drafting` scope。首页不渲染左侧栏，也不显示对话历史或手动刷新按钮；添加卡直接创建/恢复 planning session，不显示语言选择器，语言及其他计划信息全部在对话中询问。planning 页面同样不渲染应用左侧栏、Tutor hero 或外层对话卡片。历史加载完成且没有消息或 active run 时，未激活状态只在可用区域中央显示一个圆角 Composer，不显示空状态说明、建议按钮或底部提示；首条消息被接受后才切换为 Tutor 左侧正文、学习者右侧气泡的 GPT 式消息流，并把 Composer 移到底部。收集阶段保持居中单列，Composer 获得文本输入焦点时也不改变外壳边框、阴影或位置。进入 planning 页面时，页面右缘立即出现展开/收起按钮并默认弹出四角圆角的紧凑独立浮动窗口；服务端尚未返回 `current_draft` 时窗口只显示一个 emoji 和隐藏的可访问状态，不显示伪造计划字段，草案到达后在同一窗口原位替换为计划路线。窗口不参与主布局，与视口右缘保留明显留白，不表现为贴边侧栏，不挤压对话列且不占满整个右侧；用户可收起并重开，同一 draft 的普通刷新不强制重开，新 draft 版本则自动展示。窄屏使用限制最大高度的底部浮动检查器；卡片不重算进度、复习或 execution tier。宽屏三列、中屏两列、窄屏单列，添加卡 DOM 顺序固定最后。当前前端完成门仅为 `http://127.0.0.1:1420` 网页端浏览器验证；除非用户明确要求，不运行 Desktop build/typecheck。
 
 ## 2026-08-11：LessonDocument 单页阅读状态机
+
+> 历史截面：本节记录独立 Lesson 页面交付时的边界；当前入口已统一进入 `TrackLearningWorkspace`。
 
 `TutorSurface` 现在包含 `lesson_document { trackId, knowledgeKey }`。Learning Home 的“继续学习”只使用服务端 `current_knowledge_key`；为空时按钮保持禁用，不在 Desktop 猜测路线节点。Lesson 页面保持 sidebarless focus shell，提供返回首页的稳定路径，但不提前实现完整三栏或右侧 Tutor。
 
@@ -278,3 +282,9 @@ review session 时中止旧请求/SSE 并清空旧 reference、editor、result �
 `1024x768` drawer、`390x844` tabs 均无水平溢出；Review queue → warmup → terminal Attempt → finalize、
 Review feedback 引用、Lesson selection 引用和 console/exception smoke 均通过。正式静态门为
 `pnpm --dir .\aearn desktop:check`。
+
+### 最终导航与页面归属
+
+当前 `aearn/apps/desktop/src/pages/` 只保留 `HarnessCutoverPage.tsx`。学习产品页面全部位于 `src/features/learning/`：`LearningHomePage`、`LearningPlanBuilderPage` 与正式 `TrackLearningWorkspace`。不存在当前 `OnboardingPage`、`LearningWorkspacePage`、`ReviewPage`、`NotesPage` 或 `SettingsPage` 路由；不得从历史指南恢复这些入口。
+
+`App.tsx` 只在 verified 后装配 Learning Home、planning 与 `learning_workspace`。旧 general conversation 不出现在主导航；右侧 Tutor 是 track-scoped conversation surface，引用、task kind 和 knowledge scope 必须随 workspace pointer 一起切换。Desktop 不自行推导 execution tier、Gate pass、mastery、review due 或 Action verification 状态。

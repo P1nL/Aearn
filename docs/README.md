@@ -49,6 +49,7 @@ The following files are dated evidence, not an active runtime contract:
 - [`architecture/tutor-harness-transition.md`](./architecture/tutor-harness-transition.md), which remains migration evidence only.
 - [`architecture/fsrs-scheduling-spec.md`](./architecture/fsrs-scheduling-spec.md), the pre-cutover `review_states` / `/api/reviews` design.
 - [`current/Aearn/core-flows-current.md`](./current/Aearn/core-flows-current.md), a 2026-06-18 legacy runtime snapshot despite its historical filename.
+- [`setup/newcomer-onboarding-guide.md`](./setup/newcomer-onboarding-guide.md), a pre-cutover implementation guide retained as historical onboarding evidence.
 
 Pre-cutover `Attempt`, FSRS, hidden-test, legacy plan, review, and note material
 may appear in historical records and in the server's clean-slate inventory. Old
@@ -73,3 +74,9 @@ learner content redaction.
    never restores intentionally deleted learner history.
 5. Move a whole obsolete runtime document to a dated archive and add a visible
    redirect instead of silently deleting the evidence.
+
+## 2026-08-12 final integration status
+
+The programming-language learning-agent task tree is integrated locally. A deterministic PostgreSQL matrix covers the complete plan-to-review evidence path for Python, JavaScript, TypeScript, and SQL. Java and HTML/CSS are extension validation only; Go and C# remain partial local managed-compiled capabilities; Rust is unavailable and C++ is static-only. The reviewed image-lock registry is empty, so no public language is `container_verified`.
+
+Cutover inventory is schema-reconciled: every `tutor_*` table is explicitly classified as user-owned target state or shared immutable/catalog infrastructure. Legacy learning state is not silently converted. The final command results and remaining non-claims are recorded in the release-readiness ledger; local completion still does not authorize provider rollout, image approval, push, deployment, or production migration.

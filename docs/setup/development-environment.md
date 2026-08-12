@@ -1,6 +1,6 @@
 # Aearn 本地开发环境
 
-**状态：** 当前 Tutor Harness 开发/验证环境，2026-07-29。
+**状态：** 当前 Tutor Harness 开发/验证环境，2026-08-12。
 **权威来源：** `aearn/package.json`、`aearn/services/api/pyproject.toml`、
 `aearn/infra/docker-compose.yml`、`aearn/scripts/start-dev.ps1` 与
 `.env.example`。
@@ -237,3 +237,32 @@ uv --directory .\aearn\services\api run python -m pytest tests/test_tutor_proact
   使用显式 user scope 的 service seam，不要改生产 task 名或队列行为。
 - 需要重启或变更 skills、MCP、model catalog 时，按本机工具要求新开会话/重启；
   该操作不属于 Aearn API/worker 的正常开发启动流程。
+
+## 8. 最终学习 Agent 集成验证
+
+核心语言闭环和 cutover/schema 对账必须使用真实本地 PostgreSQL，并保持串行：
+
+```powershell
+uv --directory .\aearn\services\api run python -m pytest -q tests/test_learning_agent_integration_matrix.py tests/test_harness_cutover.py
+```
+
+最终质量门：
+
+```powershell
+uv --directory .\aearn\services\api lock --check
+uv --directory .\aearn\services\api run ruff check app tests
+uv --directory .\aearn\services\api run python -m mypy app --no-incremental
+uv --directory .\aearn\services\api run python -m pytest -q
+
+uv --directory .\aearn\services\executor lock --check
+uv --directory .\aearn\services\executor run ruff check aearn_executor tests
+uv --directory .\aearn\services\executor run mypy aearn_executor --no-incremental
+uv --directory .\aearn\services\executor run python -m pytest -q
+
+pnpm --dir .\aearn desktop:check
+python .\.trellis\scripts\task.py validate
+
+git diff --check
+```
+
+真实 provider smoke、Docker conformance、reviewed image build/sign/publish 与生产 executor smoke 都是独立、显式批准的发布前步骤；不运行它们时应记录为未执行，而不是由 fixture 结果推断通过。

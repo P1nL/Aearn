@@ -364,3 +364,11 @@ reference rows；任何 source/scope/version/hash/terminal 校验失败都回滚
 local export 仅输出 safe reference projection 与 hash；reset/delete 在删除 Tutor message/run 前先删除引用。cutover target
 inventory 把该表视为 pre-verification target state。bootstrap twice 必须断言复合 FK、唯一索引、kind CHECK、immutable trigger
 和 repeatable additive schema 均存在。
+
+## 2026-08-12：最终 schema 与迁移清单审计
+
+`HarnessCutoverService` 的 target inventory 现在逐表列出每个 user-owned `tutor_*` 表，包括 run/message/event/trace/checkpoint、Action、execution attempt、Lesson source/citation/Gate slot/authoring receipt、Review 与 context reference descendants。只有无 learner ownership 的 `tutor_catalog_snapshots`、`tutor_executor_health`、去个性化 `tutor_exercise_versions` / `tutor_exercise_private_rubrics` 与 `tutor_module_diagnostic_versions` 被显式归类为 shared。
+
+`test_cutover_inventory_explicitly_classifies_every_tutor_table` 读取真实 PostgreSQL `information_schema.tables`，要求 schema 中所有 `tutor_*` 表恰好等于 target inventory 与 shared allowlist 的并集；新增表若未分类会直接失败。target 任一行存在都会阻断 clean-slate cutover，防止把当前 Tutor/LearningTrack 状态与旧数据混合删除。
+
+迁移策略保持非转换：旧 `learning_*`、user-level Tutor plan、旧 review/notes、旧 checkpoint 只参与 exact inventory/deletion，不会生成 LearningTrack、Lesson、Attempt、mastery 或 ReviewSession。普通 reset/delete 清理当前用户拥有的学习状态和私有提交，但保留共享 immutable exercise/catalog；feature rollback 不执行数据删除，也不把 verified receipt 回退为旧 runtime 入口。

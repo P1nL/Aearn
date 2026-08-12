@@ -11,7 +11,13 @@ from app.core.config import get_settings
 from app.db.bootstrap import bootstrap_database
 from app.db.connection import connect
 from app.main import app
-from app.services.tutor.cutover import CUTOVER_VERSION, CutoverError, HarnessCutoverService
+from app.services.tutor.cutover import (
+    CUTOVER_SHARED_TUTOR_TABLES,
+    CUTOVER_TARGET_TUTOR_TABLES,
+    CUTOVER_VERSION,
+    CutoverError,
+    HarnessCutoverService,
+)
 
 
 def _database_available() -> bool:
@@ -400,6 +406,23 @@ def test_stale_and_cross_user_confirmation_do_not_delete(client: TestClient, rol
         assert owner_row is not None and owner_row["learning_style"] == "practice_first"
         assert other_row is not None and other_row["learning_style"] == "practice_first"
         assert conn.execute("SELECT count(*)::int AS count FROM idempotency_records WHERE user_id = %s", (owner["id"],)).fetchone()["count"] == 1
+
+
+def test_cutover_inventory_explicitly_classifies_every_tutor_table() -> None:
+    bootstrap_database()
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema = 'public' AND left(table_name, 6) = 'tutor_'
+            ORDER BY table_name
+            """
+        ).fetchall()
+    schema_tables = {str(row["table_name"]) for row in rows}
+
+    assert CUTOVER_TARGET_TUTOR_TABLES.isdisjoint(CUTOVER_SHARED_TUTOR_TABLES)
+    assert schema_tables == CUTOVER_TARGET_TUTOR_TABLES | CUTOVER_SHARED_TUTOR_TABLES
 
 
 def test_target_state_and_runtime_paths_fail_closed_without_deletion(

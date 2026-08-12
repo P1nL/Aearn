@@ -287,3 +287,50 @@ local export/reset/cutover，以及 verified-only API。旧 `review_states`、`r
 
 上述证据不证明真实 provider 生成质量、生产 container image 隔离或完整三栏 Review UI；本轮未
 调用真实 provider、未启动生产容器 fleet、未 push、未 deploy，也不是 release approval。
+
+## 最终教学 Agent 集成证据（2026-08-12）
+
+**任务：** `08-04-learning-agent-integration-migration-qa-docs`。本轮完成四种核心语言闭环、Review 候选 scope 修复、cutover 全表分类、旧导航/文档收敛与最终 source-of-truth 审计。所有业务 fixture 使用本地 PostgreSQL、确定性 scorer/fake local runner；未调用真实 provider、未启动 Docker conformance 或生产 container fleet。
+
+### 实现与缺陷修复证据
+
+- `test_learning_agent_integration_matrix.py` 对 Python、JavaScript、TypeScript、SQL 分别创建 LearningTrack/plan、可信来源快照、immutable Lesson、active assignment、Gate、terminal safe result、private submission、mastery/progress、due ReviewSession 与 exactly-once review evidence/schedule event。
+- 同一矩阵断言空 `image-locks.json` 下 public execution-required Gate 为 `unavailable` 且 `allowed_actions=[]`；注入的本地执行只为 `teaching_local`。Java/HTML/CSS 是扩展验证，Go/C# 为 partial local，Rust 为 public unavailable，C++ 为 public static-only。
+- 集成矩阵构造 12 个当前 user/track 不可访问的 `registered_author` 候选，发现 Review SQL 原来会先全局 `LIMIT 12`、再由 service 丢弃跨作用域 publication，合法 curated candidate 可能被饿死。修复后 publication scope 在 SQL 的 `ORDER BY/LIMIT` 前应用，service 端仍保留防御复核。
+- cutover target inventory 显式覆盖全部 user-owned `tutor_*` 表；shared allowlist 仅含 catalog、executor health、共享 immutable exercise/rubric 和 diagnostic version。真实 PostgreSQL schema reconciliation test 要求两组恰好覆盖全部 `tutor_*` 表且不重叠。
+- Desktop 移除“既有 Graph 流程保持不变”的残留文案；当前源代码只装配 verified Learning Home、planning、LearningTrack workspace、Lesson/Gate、Review 与 track-scoped Tutor。
+
+### 最终自动化证据
+
+| Gate | 命令或证据 | 结果 | 边界 |
+| --- | --- | --- | --- |
+| 核心语言 / tier matrix | `uv --directory .\aearn\services\api run python -m pytest -q tests/test_learning_agent_integration_matrix.py` | **5 passed** | 四种核心语言 + 扩展/降级/空 lock 真实性 |
+| 串行权威与隐私聚焦批次 | planning facts/context eval/references + Action/execution/redaction + cutover/bootstrap/Gate/Review/model-review/integration files | **84 passed in 29.72s** | PostgreSQL bootstrap-heavy tests 单进程串行 |
+| API dependency lock | `uv --directory .\aearn\services\api lock --check` | **Pass — Resolved 54 packages** | 无 lock drift |
+| API Ruff | `uv --directory .\aearn\services\api run ruff check app tests` | **Pass** | `All checks passed!` |
+| API Mypy | `uv --directory .\aearn\services\api run python -m mypy app --no-incremental` | **Pass — 163 source files** | 无新增类型抑制 |
+| Complete API suite | `uv --directory .\aearn\services\api run python -m pytest -q -rs` | **515 passed, 1 skipped in 99.04s** | 唯一 skip：显式未启用的 real-provider smoke |
+| Executor lock / Ruff / Mypy | executor `lock --check`、`ruff check aearn_executor tests`、`mypy aearn_executor --no-incremental` | **Pass — Resolved 29 packages / 9 source files** | 本地 contract，不是生产容器批准 |
+| Complete executor suite | `uv --directory .\aearn\services\executor run python -m pytest -q` | **11 passed in 0.57s** | 未运行 Docker conformance；reviewed lock 数为 0 |
+| Desktop typed build | `pnpm --dir .\aearn desktop:check` | **Pass — 60 modules transformed** | `tsc && vite build`；不是 Tauri installer/release build |
+| PostgreSQL smoke | `psycopg ... select 1` | **Pass — 1** | 本地数据库可连接 |
+| Route retirement audit | 当前 FastAPI route inventory | **Pass — 60 `/api/*` routes；retired routes 0；LearningTrack routes 29** | `/api/dashboard`、`/api/plans`、`/api/learning-sessions`、top-level `/api/reviews` 均未注册 |
+| 浏览器轻量复核 | `http://127.0.0.1:1420/` | **Pass** | verified Learning Home；1008px 无水平溢出；console 0 error/0 warning；Graph 残留文案不存在 |
+| Trellis / diff hygiene | child validate + `git diff --check` | **Pass** | active task artifacts 与文档无控制字符或 whitespace error |
+
+一次探索性操作曾把三个会调用 `bootstrap_database()` 的聚焦 pytest 进程并行启动，PostgreSQL 按预期出现 `deadlock detected` / `tuple concurrently updated`。这些并行结果不计入证据；随后按开发文档要求在一个 pytest 进程中串行重跑同一权威/隐私范围，结果为 **84 passed**。完整 API suite 也以单进程串行方式通过。
+
+### 权威事实、Action 与隐私结论
+
+- confirmed `weekly_minutes=1800`（30 小时）在超过 recent-history 上限、summary 阻塞/暂不可用和相同 input revision replay 后仍来自 persisted authoritative facts，`confirmed_question_reasked_count` 保持 0；纠正会追加 revision，不原地改写。
+- planning、Review、模型代码审核与右侧 Tutor 使用 persisted `AuthoritativeContextSnapshot` 或结构化 safe references；不从聊天正文重新猜 confirmed facts。
+- grounding、plan drafting、runner execution 与 model-review validation 通过统一 Action/receipt/verification authority；stale/superseded 或 verification budget failure 不发布第二个 terminal authority。
+- execution completion 与 verification success 分列。未 verified/current 的结果不能成为 Tutor fact、Gate/mastery/unlock 或 effect。
+- public API、SSE/history/process、trace/checkpoint safe projection、activity/inbox、export 与本 ledger 均不包含完整 submission、hidden tests、expected findings、reference answer/private rubric、raw provider body/reasoning、命令、路径、容器或 secret。
+
+### 非声明与剩余风险
+
+- `aearn/infra/executor/image-locks.json` 仍为空；当前没有任何语言获得 public `container_verified`。
+- real-provider smoke 是唯一自动化 skip，原因是未设置 `TUTOR_REAL_PROVIDER_SMOKE=1` 和显式 provider 配置；没有从 fake/offline 结果推断真实模型质量。
+- 未运行 Docker conformance、reviewed image build/sign/publish、生产 executor smoke、Tauri installer、push、deploy 或生产数据迁移。
+- 本地代码、测试、文档、Trellis child/parent closeout 只证明 repository readiness，不是发布批准。
