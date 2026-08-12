@@ -227,3 +227,18 @@ ready 页面复用 `LessonDocumentView`、`LessonBlockRenderer` 和
 `ModuleDiagnosticModal` 是独立对话框，不复用知识点 Gate。打开入口只由 Lesson state 的 `module_diagnostic_allowed=true` 决定；创建后逐项显示冻结的核心 capability，失败/部分通过必须显示“未跳过任何知识点”和冷却/薄弱项。通过状态只显示 proposed impact，必须有显式确认按钮；确认成功后重新读取 Lesson/路线并隐藏已失效入口。
 
 网页验收必须覆盖 1440px、精确 900px 和 390px，无水平溢出、无 framework overlay、相关 console error/warning 为零、键盘焦点可见、对话框适配窄屏。可以使用 disposable stateful fake API 验证状态机；不能用静态搜索或 Desktop build 代替真实网页交互，也不能调用真实 provider、真实 executor 或生产数据。
+
+
+## 2026-08-12：结构化模型代码审核 Gate
+
+`LessonDocumentPage` 保存每个 Gate 的 review draft、authoring poll 与 evidence state；
+`LessonGatePanel` 只按服务端 `exercise_type` 分发。`ModelCodeReviewPanel` 显示需求、只读带
+行号代码、verdict radio、可增删 finding fieldset 和字段级错误；普通 exercise 继续使用原
+textarea。`preparing` 只展示服务端状态与重试，不生成本地题目或答案。
+
+提交必须发送 exact `review_submission`，结果按 `client_finding_id` 显示
+`supported | partial | unsupported | duplicate`、分数维度、omission band 与 next action。
+查看 validation evidence 后显示 assisted 状态，并明确“发布前由服务端验证；本次提交没有
+运行代码”。unknown type/status/field、extra key 或 protected marker 使整个 payload fail
+closed。390px、900px、1440px 下页面不得水平溢出；代码区可以独立横向滚动，radio、按钮和
+fieldset 可键盘操作且 focus 可见，并尊重 reduced motion。

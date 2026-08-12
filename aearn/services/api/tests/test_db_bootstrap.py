@@ -200,6 +200,22 @@ ACTION_SCHEMA_CONSTRAINTS = (
     "chk_tutor_action_receipt_retry",
 )
 
+MODEL_REVIEW_SCHEMA_CONSTRAINTS = (
+    "uq_tutor_model_review_authoring_scope",
+    "fk_tutor_model_review_authoring_candidate",
+    "fk_tutor_model_review_authoring_validation",
+    "fk_tutor_model_review_authoring_publication",
+    "uq_tutor_model_review_candidates_scope",
+    "fk_tutor_model_review_candidate_run",
+    "uq_tutor_model_review_validation_candidate",
+    "fk_tutor_model_review_validation_candidate",
+    "uq_tutor_model_review_validation_check",
+    "uq_tutor_model_review_publication_candidate",
+    "uq_tutor_model_review_publication_gate",
+    "fk_tutor_model_review_evidence_publication_scope",
+)
+
+
 PRACTICE_SCHEMA_CONSTRAINTS = (
     "uq_tutor_exercise_versions_key_version",
     "chk_tutor_exercise_versions_execution_shape",
@@ -237,6 +253,7 @@ TUTOR_SCHEMA_CONSTRAINTS = (
     + ACTION_SCHEMA_CONSTRAINTS
     + LESSON_SCHEMA_CONSTRAINTS
     + PRACTICE_SCHEMA_CONSTRAINTS
+    + MODEL_REVIEW_SCHEMA_CONSTRAINTS
 )
 
 TARGET_TUTOR_TABLES = (
@@ -300,6 +317,13 @@ TARGET_TUTOR_TABLES = (
     "tutor_exercise_attempt_results",
     "tutor_exercise_hint_receipts",
     "tutor_exercise_execution_links",
+    "tutor_model_review_authoring_runs",
+    "tutor_model_review_authoring_attempt_receipts",
+    "tutor_model_review_candidates",
+    "tutor_model_review_validation_runs",
+    "tutor_model_review_validation_checks",
+    "tutor_model_review_publications",
+    "tutor_model_review_evidence_receipts",
 )
 
 
@@ -581,6 +605,28 @@ def test_tutor_target_schema_is_repeatable_and_enforces_run_event_identity() -> 
         assert {str(row["conname"]) for row in execution_constraint_rows} == set(
             TUTOR_SCHEMA_CONSTRAINTS
         )
+        model_review_cycle_rows = conn.execute(
+            """
+            SELECT conname, condeferrable, condeferred, confdeltype
+            FROM pg_constraint
+            WHERE conname = ANY(%s)
+            """,
+            (
+                [
+                    "fk_tutor_model_review_authoring_candidate",
+                    "fk_tutor_model_review_authoring_validation",
+                    "fk_tutor_model_review_authoring_publication",
+                ],
+            ),
+        ).fetchall()
+        assert {str(row["conname"]) for row in model_review_cycle_rows} == {
+            "fk_tutor_model_review_authoring_candidate",
+            "fk_tutor_model_review_authoring_validation",
+            "fk_tutor_model_review_authoring_publication",
+        }
+        assert all(bool(row["condeferrable"]) for row in model_review_cycle_rows)
+        assert all(not bool(row["condeferred"]) for row in model_review_cycle_rows)
+        assert all(str(row["confdeltype"]) == "a" for row in model_review_cycle_rows)
 
         user = conn.execute(
             "INSERT INTO users (display_name) VALUES (%s) RETURNING id",

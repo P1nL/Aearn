@@ -290,3 +290,54 @@ const canRun = gate.allowed_actions.includes("run");
 ```
 
 parser 建立类型边界，`allowed_actions` 建立能力边界，两者缺一不可。
+
+
+## 场景：模型代码审核 exact contract 与结构化编辑器
+
+### 1. 适用范围与触发条件
+- 触发条件：修改 `model_code_review` Gate、authoring 状态、finding editor、evidence 或 result parser/UI。
+
+### 2. 接口签名
+```ts
+prepareLessonGate(...): Promise<LessonGateMutationResponse>
+createLessonGateAttempt({ reviewSubmission, submission: null, ... }): Promise<ExerciseAttempt>
+requestModelReviewEvidence(...): Promise<ModelReviewEvidenceResponse>
+```
+
+### 3. 契约
+- API 从 `unknown` exact-validate prompt/artifact/submission/result/evidence；未知字段、enum、score key 或 protected marker 整体拒绝。
+- `model_code_review` 只能 submit `review_submission`，不能发送普通 `submission` 或 Run。
+- 页面可保存草稿、字段错误和 pending 状态；score/pass/mastery/unlock、finding classification 与 assistance 只来自服务端。
+- result 只按 `client_finding_id` 映射用户卡片，不显示 expected finding、隐藏位置/测试、matcher、rubric 或 provider payload。
+
+### 4. 验证与错误矩阵
+| 条件 | 前端结果 |
+| --- | --- |
+| `preparing` | 显示服务端状态/重试，不生成 fallback |
+| verdict/finding shape 或行范围非法 | 字段级错误，阻止提交 |
+| evidence 成功 | 显示 `validation_evidence_viewed` assisted badge |
+| unknown/extra/protected field | contract error，拒绝局部渲染 |
+| terminal result 后编辑 | 清除或标记旧结果 stale |
+
+### 5. 正常、基础与错误案例
+- 正常：增加两个 finding、删除一个、提交后按保留的 client id 显示 classification。
+- 基础：`no_correctness_issue` 允许零 finding；代码区只读且可横向滚动。
+- 错误：`response.json() as ModelReviewResult`，或前端根据 finding 数量计算 pass。
+
+### 6. 必须测试
+- `pnpm --dir .\\aearn desktop:check`。
+- 真实浏览器覆盖 preparing/retry、结构化编辑、evidence、result、390/900/1440、键盘/focus、console 与 protected marker。
+- 后端 contract/scorer/API 测试必须同行通过。
+
+### 7. 错误与正确写法
+#### 错误
+```ts
+const result = await response.json() as ModelReviewResult;
+const passed = findings.length > 0;
+```
+#### 正确
+```ts
+const payload: unknown = await response.json();
+const result = parseModelReviewResult(payload);
+```
+只有 exact parser 与服务端结果建立类型和评分权威。

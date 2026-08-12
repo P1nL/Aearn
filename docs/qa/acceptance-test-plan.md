@@ -274,3 +274,18 @@ be considered. This child must otherwise remain `in_progress`.
 | UX-04 | P1 | Gate/diagnostic web | prepare/hint/run/submit/poll/stale；四 tier 诚实 UI；失败诊断“未跳过任何知识点”；pass impact + explicit confirm；1440/900/390 无溢出、focus 可见、console/overlay clean | real browser at `http://127.0.0.1:1420` with disposable stateful fake API |
 
 默认质量门为 API/executor lock、Ruff、Mypy、完整串行 pytest、前端 `tsc --noEmit`、真实网页端 smoke、Trellis validate 与 `git diff --check`。本任务不运行 Desktop/Tauri build。真实 provider、reviewed image fleet、Docker conformance 和生产 executor smoke 未获批准，不能从 fake/curated 证据推断 release readiness。
+
+
+## 2026-08-12：模型代码审核验收矩阵
+
+| ID | Priority | Surface | Required proof |
+| --- | --- | --- | --- |
+| RT-25 | P0 | Contract/scorer | 六种场景、四种语言、verdict/finding shape、duplicate/omission/severity/false-positive 确定性 |
+| RT-26 | P0 | Authoring/Action/executor | exact descriptor、internal proactive run、existing queue、九项 validation check、stale/failed fail-closed |
+| RT-27 | P0 | PostgreSQL lifecycle | bootstrap twice、scope/one-of/append-only、`NO ACTION DEFERRABLE` 环形 FK、publication replay、export/reset/cutover |
+| RT-28 | P0 | Gate/API privacy | preparing/ready/failed、structured submit/evidence、exactly-once result/mastery/unlock、protected marker 不外泄 |
+| RT-29 | P1 | Desktop | finding 增删/校验/result mapping、assisted badge、390/900/1440、键盘/focus、console clean |
+
+默认 suite 使用 deterministic fixture/fake executor，不访问真实 provider，不启动生产容器 fleet。
+完整发布验证仍需单独批准的 reviewed executor image 与真实 provider smoke；它们不由本矩阵自动
+宣称通过。

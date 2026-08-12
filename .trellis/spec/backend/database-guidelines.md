@@ -624,3 +624,55 @@ receipt = runtime.finish_only_if_current(execution=execution, verification=verif
 
 The correct flow separates execution from verification, retains one domain authority, applies
 stale/budget/resource gates, and publishes only the bounded receipt projection.
+
+
+## Scenario: Model Code-Review Authoring, Export, and Purge
+
+### 1. Scope / Trigger
+- Trigger: changing `model_code_review` authoring/candidate/validation/publication tables, shared execution owner/source, local export/reset, or cutover inventory.
+
+### 2. Signatures
+- DB roots: `tutor_model_review_authoring_runs`, `tutor_model_review_candidates`, `tutor_model_review_validation_runs`, `tutor_model_review_publications`.
+- Action authority: `model_review_validation`; execution source/owner: `model_review_candidate` / `model_review_validation`.
+- Export keys: `model_review_*_summaries`; private payload/proof keys are omitted.
+
+### 3. Contracts
+- Candidate public/private JSON and hashes are immutable; publication requires exact verified validation authority and scope.
+- Action/execution rows contain opaque IDs and safe hashes, never candidate code, tests, matcher tokens, provider bodies, commands, paths, images, or secrets.
+- The authoring-to-candidate/validation/publication cycle uses `ON DELETE NO ACTION DEFERRABLE INITIALLY IMMEDIATE`. PostgreSQL `RESTRICT` is immediate even when declared deferrable.
+- Confirmed reset terminalizes owned internal proactive runs, deletes user-owned child facts in dependency order, then deletes only those internal runs/conversations. Published immutable exercise/rubric rows remain.
+
+### 4. Validation & Error Matrix
+| Condition | Required result |
+| --- | --- |
+| Missing/failed/stale validation check or Action receipt | candidate remains unpublished |
+| Cross-user candidate/validation/publication reference | composite FK or repository scope rejection |
+| Ordinary UPDATE/DELETE of append-only evidence | `23514` trigger rejection |
+| `RESTRICT` used on an intended deferred cycle | bootstrap/reset regression failure |
+| Export contains private payload, proof, test, matcher, or finding prose | privacy test failure |
+
+### 5. Good/Base/Bad Cases
+- Good: verified nine-check validation publishes once, export returns IDs/status/hash/counts, reset removes user-owned chain and internal run.
+- Base: failed authoring remains safely retryable and export contains only safe failure code/summary.
+- Bad: clearing terminal pointers with a broad purge UPDATE, deleting shared exercise versions, or relying on `SET CONSTRAINTS` with `RESTRICT`.
+
+### 6. Tests Required
+- Bootstrap twice; assert all three circular FKs are deferrable, initially immediate, and `confdeltype='a'` (`NO ACTION`).
+- Full PostgreSQL authoring→publication→evidence→Attempt→export→reset test.
+- Assert private payload, tests, matcher/proof and learner finding prose are absent from export.
+- Cutover inventory must count all seven model-review user-owned tables.
+
+### 7. Wrong vs Correct
+#### Wrong
+```sql
+FOREIGN KEY (publication_id, user_id)
+REFERENCES tutor_model_review_publications(id, user_id)
+ON DELETE RESTRICT DEFERRABLE;
+```
+#### Correct
+```sql
+FOREIGN KEY (publication_id, user_id)
+REFERENCES tutor_model_review_publications(id, user_id)
+ON DELETE NO ACTION DEFERRABLE INITIALLY IMMEDIATE;
+```
+Only `NO ACTION` permits the transaction to delete both sides before the deferred check.

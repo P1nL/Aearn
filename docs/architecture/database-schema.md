@@ -282,3 +282,27 @@ Action reserve 必须匹配当前 `tutor_runs` 的 input revision、exact active
 本地 export 只返回 bounded action summary，不返回 raw result/hash；confirmed reset 使用既有
 transaction-local purge capability 按 receipt -> verification -> attempt -> invocation 顺序删除。
 cutover inventory 将四张 action 表视为 target state，不会在切换中静默清除。
+
+
+## 2026-08-12：模型代码审核 authoring 与发布 authority
+
+`tutor_model_review_authoring_runs`、`tutor_model_review_authoring_attempt_receipts`、
+`tutor_model_review_candidates`、`tutor_model_review_validation_runs`、
+`tutor_model_review_validation_checks`、`tutor_model_review_publications` 与
+`tutor_model_review_evidence_receipts` 保存 user/track/Gate scoped 的生成、受控验证、发布和
+learner assistance 事实。candidate 公共题面与 private rubric/test payload 分列并各自 hash；
+只有 `model-code-review.validate@1.0.0` 的 verified authority 才能原子发布
+`tutor_exercise_versions` / `tutor_exercise_private_rubrics` 与 exact Gate binding。
+
+共享执行队列新增 `source_kind=model_review_candidate` 与
+`owner_kind=model_review_validation`，仍复用既有 intent/job/attempt、reviewed runtime lock、
+lease、retry、cancel 与 terminal contract。学习者 submit 为 `structured_answer`，完整 JSON 只
+保存在 private submission 表；export 只投影 verdict 与用户 finding 的 id/kind/line/category/
+severity 摘要。private candidate、rubric、test、matcher、proof 与 submission 自由文本均省略。
+
+Authoring 对 candidate/validation/publication 的环形引用使用 `ON DELETE NO ACTION
+DEFERRABLE INITIALLY IMMEDIATE`。`RESTRICT` 即使标记 `DEFERRABLE` 仍会立即检查，不能用于
+transaction-local child-to-root purge。confirmed reset 先 terminalize 内部 proactive run，
+删除 evidence/action/execution/check/publication/validation/candidate/author receipt/authoring，
+再删除该 authoring 独占的 internal run/conversation；去个性化的 immutable published
+exercise/rubric 保留。cutover inventory 将上述七张 user-owned 表显式计为 target state。

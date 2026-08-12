@@ -288,3 +288,11 @@ Select-String -Path docs\**\*.md,docs\*.md -Pattern 'Attempt\(run\)|Attempt\(sub
 - 设置页没有破坏后端评分、Attempt、FSRS 固定规则的入口。
 - 文档中旧草稿流程只允许出现在“非第一版基线 / 后置 / 已移除”语境。
 - post-MVP 增强有明确 fallback、回滚、source attribution 和未实现能力边界。
+
+
+## 2026-08-12：模型代码审核练习已落地
+
+`08-04-model-code-review-exercises` 已把 `model_code_review` 接入正式 Exercise/Gate/Attempt、
+Action Runtime 与共享 executor。后续 `08-04-spaced-review-sessions` 可消费稳定的 exercise/result/
+assistance contract，但不得读取 private candidate/rubric/test；`08-04-learning-workspace-context-references`
+只复用 learner-safe Gate projection；最终 integration child 负责跨任务迁移、QA 与文档审计。

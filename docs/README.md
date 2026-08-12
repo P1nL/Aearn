@@ -5,7 +5,9 @@
 **Updated: 2026-08-12.** Aearn's active product runtime is the **Tutor Harness**.
 The desktop starts from a local learner identity, asks the server for a
 cutover decision, and admits a learner to the Tutor workspace only after a
-server-authoritative `verified` receipt. The former graph/router/SDK product
+server-authoritative `verified` receipt. The current learning runtime also includes
+server-authored, prepublication-validated `model_code_review` Lesson Gates with
+deterministic structured-finding scoring. The former graph/router/SDK product
 runtime has been physically removed from the active source tree and its
 runtime-specific documents are preserved under
 [`archive/2026-07-29/`](./archive/2026-07-29/).

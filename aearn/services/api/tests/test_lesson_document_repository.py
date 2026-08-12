@@ -100,7 +100,18 @@ def lesson_repo():
                 conn.execute("DELETE FROM users WHERE id = %s", (user_id,))
 
 
-def _publish(conn, repo, user_id, track_id, snapshot, *, action: str, personalized_title: str = "Python 变量"):
+def _publish(
+    conn,
+    repo,
+    user_id,
+    track_id,
+    snapshot,
+    *,
+    action: str,
+    personalized_title: str = "Python 变量",
+    standard_document=None,
+    personalized_document=None,
+):
     scope = repo.read_scope(user_id=user_id, track_id=track_id, knowledge_key="python.variables")
     assert scope.module_key == "foundations"
     assert scope.module_diagnostic_allowed is False
@@ -119,8 +130,11 @@ def _publish(conn, repo, user_id, track_id, snapshot, *, action: str, personaliz
         running = repo.mark_authoring_running(run_id=claimed.run_id, lease_generation=claimed.lease_generation)
         source_hash = canonical_source_set_hash((snapshot,))
         repo.set_authoring_source_set(run_id=running.run_id, lease_generation=running.lease_generation, source_set_hash=source_hash)
-    standard = sample_lesson_document()
-    personalized = sample_lesson_document(title=personalized_title, personalized=True)
+    standard = standard_document or sample_lesson_document()
+    personalized = personalized_document or sample_lesson_document(
+        title=personalized_title,
+        personalized=True,
+    )
     with conn.transaction():
         published = repo.publish_authoring_result(
             run=running,

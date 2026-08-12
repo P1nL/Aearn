@@ -4994,16 +4994,25 @@ DO $$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_tutor_model_review_authoring_candidate') THEN
     ALTER TABLE tutor_model_review_authoring_runs ADD CONSTRAINT fk_tutor_model_review_authoring_candidate
-      FOREIGN KEY (candidate_id, user_id) REFERENCES tutor_model_review_candidates(id, user_id) ON DELETE RESTRICT;
+      FOREIGN KEY (candidate_id, user_id) REFERENCES tutor_model_review_candidates(id, user_id) ON DELETE NO ACTION
+      DEFERRABLE INITIALLY IMMEDIATE;
   END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_tutor_model_review_authoring_validation') THEN
     ALTER TABLE tutor_model_review_authoring_runs ADD CONSTRAINT fk_tutor_model_review_authoring_validation
-      FOREIGN KEY (validation_run_id, user_id) REFERENCES tutor_model_review_validation_runs(id, user_id) ON DELETE RESTRICT;
+      FOREIGN KEY (validation_run_id, user_id) REFERENCES tutor_model_review_validation_runs(id, user_id) ON DELETE NO ACTION
+      DEFERRABLE INITIALLY IMMEDIATE;
   END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_tutor_model_review_authoring_publication') THEN
     ALTER TABLE tutor_model_review_authoring_runs ADD CONSTRAINT fk_tutor_model_review_authoring_publication
-      FOREIGN KEY (publication_id) REFERENCES tutor_model_review_publications(id) ON DELETE RESTRICT;
+      FOREIGN KEY (publication_id) REFERENCES tutor_model_review_publications(id) ON DELETE NO ACTION
+      DEFERRABLE INITIALLY IMMEDIATE;
   END IF;
+  ALTER TABLE tutor_model_review_authoring_runs
+    ALTER CONSTRAINT fk_tutor_model_review_authoring_candidate DEFERRABLE INITIALLY IMMEDIATE;
+  ALTER TABLE tutor_model_review_authoring_runs
+    ALTER CONSTRAINT fk_tutor_model_review_authoring_validation DEFERRABLE INITIALLY IMMEDIATE;
+  ALTER TABLE tutor_model_review_authoring_runs
+    ALTER CONSTRAINT fk_tutor_model_review_authoring_publication DEFERRABLE INITIALLY IMMEDIATE;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_tutor_model_review_authoring_internal_conversation') THEN
     ALTER TABLE tutor_model_review_authoring_runs ADD CONSTRAINT fk_tutor_model_review_authoring_internal_conversation
       FOREIGN KEY (internal_conversation_id, user_id) REFERENCES tutor_conversations(id, user_id) ON DELETE RESTRICT;
@@ -5333,8 +5342,23 @@ BEGIN
   END IF;
 END $$;
 ALTER TABLE tutor_model_review_authoring_runs
+  DROP CONSTRAINT IF EXISTS fk_tutor_model_review_authoring_candidate;
+ALTER TABLE tutor_model_review_authoring_runs
+  ADD CONSTRAINT fk_tutor_model_review_authoring_candidate
+  FOREIGN KEY (candidate_id, user_id)
+  REFERENCES tutor_model_review_candidates(id, user_id) ON DELETE NO ACTION
+  DEFERRABLE INITIALLY IMMEDIATE;
+ALTER TABLE tutor_model_review_authoring_runs
+  DROP CONSTRAINT IF EXISTS fk_tutor_model_review_authoring_validation;
+ALTER TABLE tutor_model_review_authoring_runs
+  ADD CONSTRAINT fk_tutor_model_review_authoring_validation
+  FOREIGN KEY (validation_run_id, user_id)
+  REFERENCES tutor_model_review_validation_runs(id, user_id) ON DELETE NO ACTION
+  DEFERRABLE INITIALLY IMMEDIATE;
+ALTER TABLE tutor_model_review_authoring_runs
   DROP CONSTRAINT IF EXISTS fk_tutor_model_review_authoring_publication;
 ALTER TABLE tutor_model_review_authoring_runs
   ADD CONSTRAINT fk_tutor_model_review_authoring_publication
   FOREIGN KEY (publication_id, user_id)
-  REFERENCES tutor_model_review_publications(id, user_id) ON DELETE RESTRICT;
+  REFERENCES tutor_model_review_publications(id, user_id) ON DELETE NO ACTION
+  DEFERRABLE INITIALLY IMMEDIATE;

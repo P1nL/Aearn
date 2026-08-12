@@ -426,3 +426,24 @@ message/run/revision identity；`questions[]` 只暴露 `question_key`、`field_
 | `POST` | `/api/learning-tracks/{track_id}/modules/{module_key}/diagnostics/{session_id}/confirm-skip` | 只确认当前 active predecessor 的 `passed_pending_confirmation` session，并原子激活 proposed revision |
 
 公共 Gate/Attempt/diagnostic 投影不包含完整 submission、private tests、reference answer、private rubric、container/image、command/path、raw executor/provider response 或内部异常。稳定错误包括 `LESSON_GATE_NOT_FOUND`、`LESSON_GATE_NOT_READY`、`LESSON_GATE_VERSION_CONFLICT`、`EXERCISE_ATTEMPT_CONFLICT`、`EXECUTION_UNAVAILABLE`、`MODULE_DIAGNOSTIC_NOT_ALLOWED`、`MODULE_DIAGNOSTIC_COOLDOWN` 和 `MODULE_DIAGNOSTIC_VERSION_CONFLICT`；validation error 使用 learner-safe `422`。
+
+
+## 2026-08-12：模型代码审核练习 API
+
+`model_code_review` 是现有 Lesson Gate/Attempt contract 的正式 exercise type，不是旧
+`review_ai_patch` 的别名。Gate prepare/read 可投影 `preparing | ready | failed` 的
+`review_authoring_run`；客户端不得生成 fallback 题。模型审核 submit 必须且只能发送
+`review_submission={schema_version,verdict,findings[],supplemental_note?}`，不能同时发送普通
+`submission`，也不提供 learner Run。finding 包含稳定 client id、行范围、kind/category、
+severity、trigger、principle、impact、validation method 与 suggested fix；服务端再次校验
+verdict/finding shape、行范围和重复 ID。
+
+`POST /api/learning-tracks/{track_id}/lessons/{knowledge_key}/gates/{gate_key}/evidence`
+只返回 verified prepublication checks 的 learner-safe projection，并写入 assistance receipt；
+它不执行代码。Attempt/result 只返回 `submission_hash`、`assistance_kind`、确定性分数维度、
+按 client finding id 的 `supported | partial | unsupported | duplicate`、omission band 与 next
+ action，不返回 expected finding、隐藏测试、matcher token、private rubric 或 candidate body。
+稳定错误包括 `MODEL_REVIEW_GENERATION_UNAVAILABLE`、`MODEL_REVIEW_CANDIDATE_INVALID`、
+`MODEL_REVIEW_VALIDATION_UNAVAILABLE`、`MODEL_REVIEW_VALIDATION_FAILED`、
+`MODEL_REVIEW_VALIDATION_STALE`、`MODEL_REVIEW_PUBLICATION_CONFLICT`、
+`MODEL_REVIEW_SUBMISSION_INVALID` 与 `MODEL_REVIEW_EVIDENCE_UNAVAILABLE`。

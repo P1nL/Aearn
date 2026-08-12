@@ -239,3 +239,27 @@ PostgreSQL current/history 集成证据，以及默认禁用的固定五轮 real
 - fake API、curated fixture 和 static evaluator 证明 contract、状态机、隐私与 fail-closed 边界，不证明真实容器隔离、镜像供应链、性能、可靠性或生产 readiness。
 - 公开 `container_verified` 仍要求 reviewed immutable image lock 与兼容 executor health；本轮没有这些发布前置条件。`teaching_local` 仍仅 development-only，`static_only` 明确 `not_run`，`unavailable` 不产生 host fallback。
 - Local work commit, child archive, and session journal are development closeout only; they do not authorize push, deploy, release, or production-data changes.
+
+
+## 模型代码审核练习证据（2026-08-12）
+
+**任务：** `08-04-model-code-review-exercises`。本轮实现 `model_code_review` 公私 contract、
+六场景/四语言 fixture、确定性 finding scorer、user-scoped authoring、
+`model-code-review.validate@1.0.0`、共享 executor trusted-input、Lesson Gate/API 与 Desktop
+结构化审核界面，并补齐 local export/reset/cutover。
+
+### 当前自动化证据
+
+- API focused：63 passed。
+- API complete：491 passed，1 skipped。
+- Executor complete：11 passed；Executor Ruff/Mypy 通过。
+- API lock、Ruff（152 source files）与 Mypy 通过。
+- Desktop `tsc && vite build` 通过。
+- 真实浏览器临时 harness：结构化 finding 增加/字段阻断、evidence assisted 状态与结果映射通过；390/900/1440 均无页面水平溢出，键盘焦点可见，console warning/error 为零。
+- PostgreSQL bootstrap 与完整 authoring→publication→evidence→structured Attempt→export→reset
+  回归通过；private candidate/rubric/test/matcher 与 finding 自由文本不进入 export。
+
+### 非声明
+
+上述结果不证明真实 provider 的生成质量，也不批准生产 executor image。浏览器证据只使用
+临时本地前端 harness 与本地 Vite 服务；不得被解释为生产数据、真实模型或生产容器验证。

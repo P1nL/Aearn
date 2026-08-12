@@ -691,3 +691,19 @@ Exercise Gate is a separate learning artifact workflow, not a generic Tutor capa
 The executor claims the same lease/launch-token job, but its trusted-input loader resolves Gate input only after matching user, Attempt, submission, exercise version, private rubric and runtime profile references. The public API never receives the trusted input or private artifacts. Terminal execution output is reduced to an immutable learner-safe Attempt result before the learning service can project Gate/mastery/progress; the executor itself never writes pass, mastery or unlock authority.
 
 `container_verified` remains fail-closed and is not granted solely because a route exists. Public execution requires a reviewed immutable image lock and compatible health/profile evidence. `teaching_local` is development-only; `static_only` uses deterministic server evaluation with `execution_claim=not_run`; `unavailable` creates no execution job and never falls back to host subprocess, legacy runner or a second queue. This child did not build, sign, publish or approve a reviewed image fleet and did not call a real provider.
+
+
+### Model code-review authoring and controlled validation (2026-08-12)
+
+A `model_code_review` Gate may create a user/track/knowledge-scoped draft candidate from bounded
+learning facts. The provider is only an author: deterministic parsers and quality policy split the
+public prompt/code from the private rubric, expected findings, tests, reachability and coverage.
+The candidate is not selectable until an internal proactive Tutor run invokes exact descriptor
+`model-code-review.validate@1.0.0` and receives a verified `model_review_validation` authority.
+
+The adapter stores only opaque candidate/validation IDs in Action Runtime and reuses the existing
+execution intent/job queue. API and authoring workers never launch a host process or a second queue.
+Parser, compile/typecheck, visible/hidden tests, finding reachability, rubric consistency, coverage
+and redaction are versioned checks; any missing/failed/stale evidence prevents publication. Learner
+submission remains static-only and deterministic: model-authored teaching feedback may consume only
+learner-safe score evidence and cannot change score, mastery evidence or unlock.
