@@ -2,11 +2,13 @@
 
 ## Current runtime status
 
-**Updated: 2026-08-12.** Aearn's active product runtime is the **Tutor Harness**.
+**Updated: 2026-08-13.** Aearn's active product runtime is the **Tutor Harness**.
 The desktop starts from a local learner identity, asks the server for a
 cutover decision, and admits a learner to the Tutor workspace only after a
 server-authoritative `verified` receipt. The current learning runtime also includes
-server-authored, prepublication-validated `model_code_review` Lesson Gates, a
+server-authored, prepublication-validated `model_code_review` Lesson Gates whose
+provider authors only learner-facing scenario copy and candidate code while
+server-owned templates construct tests/rubrics, a
 track-scoped spaced-review authority with finite `ReviewSession` batches,
 server-projected critical-prerequisite Gates, exactly-once mastery/schedule
 finalization, and a responsive track learning workspace that combines the

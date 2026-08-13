@@ -149,12 +149,14 @@ reopened answer without a replacement fact is added to
 `summary_blocked_by_unprojected_fact`. Structured summary remains continuity-only
 and cannot override the typed fact authority.
 
-A planning `wait_for_input` action must include a valid stable `question_key`. The
-planning decision gate records `asked`, rejects a question whose field is already
-confirmed with internal diagnostic `confirmed_question_reasked`, and records a safe
-reask counter. Explicit learner correction/reopen creates new lineage before the
-field may be asked again. Public API/SSE never exposes gate reasons, fact/event hashes,
-prompt text, or provider payloads.
+`wait_for_input.continuation_kind` 是精确五分支枚举：`clarification` 只处理一处普通歧义；
+`planning_input` 只补齐一项计划事实；`approval` 只请求明确授权；`capability_result` 与
+`external_result` 只等待当前 run 已声明的依赖结果。只有 `planning_input` 必须携带
+`question_key`，且该键只能来自七项 planning fact allowlist；其他四类必须省略
+`question_key`。planning decision gate 只处理 `planning_input`：没有 active planning session
+时拒绝，记录 `asked`，阻止已确认字段被重复询问并写入 safe reask counter。显式 correction/reopen
+创建新 lineage 后才允许再次提问。Public API/SSE 不暴露 gate reason、fact/event hash、prompt
+或 provider payload。
 
 ### Public conversation history and process projection
 
@@ -326,9 +328,11 @@ safe internal request-rejected category; it never triggers a protocol, model, or
 provider fallback.
 
 The provider contract is the generated, frozen, `extra=forbid`
-`tutor_provider_items_v2` envelope: one `agent_message` plus exactly one typed
+`tutor_provider_items_v3` envelope: one `agent_message` plus exactly one typed
 action (`turn_completed`, `select_skill`, `request_capability`,
-`propose_effect`, or `wait_for_input`). The message also carries one to four bounded
+`propose_effect`, or `wait_for_input`). `wait_for_input` 使用上述五类精确
+`continuation_kind`，并由 generated schema、canonical branch examples 与 server-side pairing
+validator 同时约束。The message carries one to four bounded
 `public_thinking_steps`: learner-visible explanations authored specifically for display.
 Their wording, tone, ordering, and granularity are model-selected for the current request;
 no fixed sentence pattern or transition sequence is required. They are validated as public
@@ -696,15 +700,22 @@ The executor claims the same lease/launch-token job, but its trusted-input loade
 ### Model code-review authoring and controlled validation (2026-08-12)
 
 A `model_code_review` Gate may create a user/track/knowledge-scoped draft candidate from bounded
-learning facts. The provider is only an author: deterministic parsers and quality policy split the
-public prompt/code from the private rubric, expected findings, tests, reachability and coverage.
+learning facts. 服务端先选择 versioned controlled template；provider 只能返回 strict
+`model_review_author_candidate_v2={schema_version,title,learner_instruction,candidate_code}`，即教学
+场景文案与候选代码，不能选择 `template_id`，也不能生成 requirements、tests、hidden tests、
+expected outcomes、rubric、finding、matcher/proof 或 score policy。服务端随后从受控 template 与
+private test DSL 构造 public requirements、private tests、expected outcomes、finding rubric、
+reachability/coverage proof 和评分策略，并把完整 template identity/hash 写入 private rubric。
 The candidate is not selectable until an internal proactive Tutor run invokes exact descriptor
 `model-code-review.validate@1.0.0` and receives a verified `model_review_validation` authority.
 
 The adapter stores only opaque candidate/validation IDs in Action Runtime and reuses the existing
 execution intent/job queue. API and authoring workers never launch a host process or a second queue.
 Parser, compile/typecheck, visible/hidden tests, finding reachability, rubric consistency, coverage
-and redaction are versioned checks; any missing/failed/stale evidence prevents publication. Learner
+and redaction are versioned checks; validation 还要求 exact runtime id、test count、visible/hidden
+顺序和 server-authored expected pass/fail outcome 全部匹配。executor 只在 claim 后读取 private DSL，
+传入 sandbox 前会剥离 template test id、`candidate_expected_pass` 与 `proof_ids`。Any
+missing, failed, or stale evidence prevents publication. Learner
 submission remains static-only and deterministic: model-authored teaching feedback may consume only
 learner-safe score evidence and cannot change score, mastery evidence or unlock.
 

@@ -1944,7 +1944,7 @@ history can be reduced without erasing the learner's current intent.
 
 ### 3. Contracts
 
-- `tutor_provider_items_v2` contains one required `agent_message` and one required discriminated action: `turn_completed`, `select_skill`, `request_capability`, `propose_effect`, or `wait_for_input`. `agent_message.public_thinking_steps` is required, bounded to 1..4 learner-visible summaries of at most 320 characters each, and is explicitly public teaching output rather than provider-native reasoning. The model chooses wording, tone, ordering, and granularity for the current request; prompts must not impose a fixed sentence pattern or transition sequence. Models are frozen and `extra=forbid`.
+- `tutor_provider_items_v3` contains one required `agent_message` and one required discriminated action: `turn_completed`, `select_skill`, `request_capability`, `propose_effect`, or `wait_for_input`. `agent_message.public_thinking_steps` is required, bounded to 1..4 learner-visible summaries of at most 320 characters each, and is explicitly public teaching output rather than provider-native reasoning. The model chooses wording, tone, ordering, and granularity for the current request; prompts must not impose a fixed sentence pattern or transition sequence. Models are frozen and `extra=forbid`.
 - Capability/effect values use bounded `{key,value}` arrays. Internal-only keys, duplicate keys, oversized lists, unsafe learner text, unknown action tags, and additional fields are rejected.
 - The provider never emits `request_id`, `effect_id`, `expected_input_revision`, checkpoint reason, input revision, or terminal outcome. The server deterministically derives action IDs from run/revision/model-call scope, copies the current revision into effects, and maps action type into the domain decision.
 - Skill-managed actions use a two-phase boundary: before selection, the prompt requests `select_skill`; after the server records exact reviewed evidence and returns `REBUILD_CONTEXT`, the provider may request the capability/effect with the selected instruction present. If the provider skips selection, the gate may recover only when descriptor/value validation passes and exactly one policy-eligible Skill manifest covers every action. Recovery records only selection and never dispatches the original action. Zero candidates remain `skill_selection_required`; multiple candidates are denied as `action_skill_ambiguous`.
@@ -3585,3 +3585,20 @@ The strict candidate, evidence set, quality report, and final persisted authorit
 - `container_verified` 缺少 reviewed lock、兼容 health/profile 或 executor enablement 时返回 `EXECUTION_UNAVAILABLE`，不得回退 host/legacy runner。`teaching_local` 仅 development injection；`static_only` 必须确定性且声明 `not_run`。
 - 模块诊断必须冻结全部 core capability；fail/partial 仅产生 `observational_non_degrading` evidence，不创建 plan revision、不跳过节点。pass 也必须在 explicit confirm 后才激活 predecessor-linked successor。
 - 默认 suite 不访问真实 provider、不启动 Docker fleet、不修改生产数据；真实 provider/container smoke 必须单独批准，且不是 release approval。
+
+## Prompt 合同与受控 Model Review 模板（2026-08-13）
+
+- 每个生产 `complete_json` 边界必须同时提供 machine-readable `output_schema`、稳定
+  `schema_name` 和至少一个完整合法示例；复杂 union 必须覆盖每个 branch/block 的字段示例。
+- Tutor `wait_for_input` 仅允许 `clarification | planning_input | approval | capability_result |
+  external_result`。只有 `planning_input` 必须携带七项 planning fact allowlist 中的
+  `question_key`，其他 continuation 必须省略。domain、provider schema、DB CHECK 与 Desktop union
+  必须同步。
+- Model Review provider 只能生成教学标题、学习者说明与候选代码。template identity、requirements、
+  tests、expected outcomes、private rubric、finding/proof、coverage 与 score policy 全由服务端版本化
+  template/DSL 构造；任何 model-authored authority 字段都必须 fail closed。
+- controlled template registry 必须在 import/test 时验证六类 scenario、visible/hidden test、连续
+  order、proof coverage、candidate intent、private hash 与 public redaction。
+- validation completion 必须匹配 exact runtime、test count/order/visibility 和服务端 expected outcome。
+  executor 可读取 private DSL，但传给 sandbox 前必须剥离 template test id、expected-pass 与 proof metadata。
+- 默认测试使用 fake provider 与 deterministic template，不把真实 provider 或生产 image fleet 视为已验证。
