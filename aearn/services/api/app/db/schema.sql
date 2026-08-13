@@ -2459,15 +2459,15 @@ BEGIN
       CHECK (title IS NULL OR (char_length(title) BETWEEN 1 AND 48 AND title !~ '[\r\n\t]'));
   END IF;
 
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-    WHERE conrelid = 'tutor_runs'::regclass
-      AND conname = 'chk_tutor_runs_continuation_kind'
-  ) THEN
-    ALTER TABLE tutor_runs
-      ADD CONSTRAINT chk_tutor_runs_continuation_kind
-      CHECK (continuation_kind IS NULL OR continuation_kind IN ('approval', 'capability_result', 'external_result'));
-  END IF;
+  ALTER TABLE tutor_runs
+    DROP CONSTRAINT IF EXISTS chk_tutor_runs_continuation_kind;
+  ALTER TABLE tutor_runs
+    ADD CONSTRAINT chk_tutor_runs_continuation_kind
+    CHECK (
+      continuation_kind IS NULL OR continuation_kind IN (
+        'clarification', 'planning_input', 'approval', 'capability_result', 'external_result'
+      )
+    );
 END $$;
 
 CREATE TABLE IF NOT EXISTS tutor_run_public_processes (

@@ -13,7 +13,9 @@ from uuid import uuid4
 from psycopg import Connection
 
 from app.agents.harness.contracts import (
+    TUTOR_PLANNING_QUESTION_KEYS,
     TutorContextSource,
+    TutorContinuationKind,
     TutorDecision,
     TutorDecisionGateResult,
     TutorDecisionGateStatus,
@@ -33,6 +35,10 @@ class PlanningFactField(StrEnum):
     EXPERIENCE_LEVEL = "experience_level"
     TEACHING_PREFERENCES = "teaching_preferences"
     PACE_CONSTRAINTS = "pace_constraints"
+
+
+if frozenset(item.value for item in PlanningFactField) != TUTOR_PLANNING_QUESTION_KEYS:
+    raise RuntimeError("planning fact fields must match Tutor planning question keys")
 
 
 class PlanningFactState(StrEnum):
@@ -732,11 +738,14 @@ class PlanningQuestionDecisionGate:
         result = self._base.validate(run=run, decision=decision)
         if result.status is not TutorDecisionGateStatus.APPROVED:
             return result
-        if decision.continuation_kind is None:
+        if decision.continuation_kind is not TutorContinuationKind.PLANNING_INPUT:
             return result
         session = self._facts._active_session_for_run(user_id=run.user_id, run_id=run.run_id)
         if session is None:
-            return result
+            return TutorDecisionGateResult(
+                status=TutorDecisionGateStatus.DENIED,
+                diagnostic_code="planning_session_required",
+            )
         if decision.question_key is None:
             return TutorDecisionGateResult(
                 status=TutorDecisionGateStatus.DENIED,

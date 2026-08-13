@@ -2647,7 +2647,7 @@ function isNullableTutorTerminalOutcome(value: unknown): value is TutorRunState[
 }
 
 function isNullableTutorContinuationKind(value: unknown): value is TutorContinuationKind | null {
-  return value === null || value === "approval" || value === "capability_result" || value === "external_result";
+  return value === null || value === "clarification" || value === "planning_input" || value === "approval" || value === "capability_result" || value === "external_result";
 }
 
 function isTutorProcessDisplayState(value: unknown): value is TutorPublicProcess["display_state"] {

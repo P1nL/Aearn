@@ -699,6 +699,25 @@ def test_tutor_target_schema_is_repeatable_and_enforces_run_event_identity() -> 
         assert {str(row["conname"]) for row in execution_constraint_rows} == set(
             TUTOR_SCHEMA_CONSTRAINTS
         )
+        continuation_constraint = conn.execute(
+            """
+            SELECT pg_get_constraintdef(oid) AS definition
+            FROM pg_constraint
+            WHERE conname = 'chk_tutor_runs_continuation_kind'
+            """
+        ).fetchone()
+        assert continuation_constraint is not None
+        continuation_definition = str(continuation_constraint["definition"])
+        for continuation_kind in (
+            "clarification",
+            "planning_input",
+            "approval",
+            "capability_result",
+            "external_result",
+        ):
+            assert continuation_kind in continuation_definition
+        assert "plan_drafting" not in continuation_definition
+
         model_review_cycle_rows = conn.execute(
             """
             SELECT conname, condeferrable, condeferred, confdeltype

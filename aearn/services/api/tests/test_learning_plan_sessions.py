@@ -143,7 +143,12 @@ def test_capability_appends_typed_draft_and_confirm_creates_one_track(
     tutor_client: TestClient,
     tutor_api_settings: Settings,
 ) -> None:
-    dispatcher, _provider = waiting_dispatcher(settings=tutor_api_settings, message="计划信息已足够。")
+    dispatcher, _provider = waiting_dispatcher(
+        settings=tutor_api_settings,
+        message="计划信息已足够。",
+        continuation_kind=TutorContinuationKind.PLANNING_INPUT,
+        question_key="goal_text",
+    )
     monkeypatch.setattr(tutor_route, "build_tutor_run_dispatcher", lambda _settings: dispatcher)
     user_id = str(create_tutor_user(tutor_client)["id"])
     session = _create_session(tutor_client, user_id, "plan-confirm-session")
@@ -238,7 +243,12 @@ def test_confirm_rejects_stale_draft_metadata(
     tutor_client: TestClient,
     tutor_api_settings: Settings,
 ) -> None:
-    dispatcher, _provider = waiting_dispatcher(settings=tutor_api_settings, message="计划已准备。")
+    dispatcher, _provider = waiting_dispatcher(
+        settings=tutor_api_settings,
+        message="计划已准备。",
+        continuation_kind=TutorContinuationKind.PLANNING_INPUT,
+        question_key="goal_text",
+    )
     monkeypatch.setattr(tutor_route, "build_tutor_run_dispatcher", lambda _settings: dispatcher)
     user_id = str(create_tutor_user(tutor_client)["id"])
     session = _create_session(tutor_client, user_id, "plan-stale-session")
@@ -500,7 +510,7 @@ def test_confirmed_planning_fact_survives_long_history_correction_and_reset(
                 public_message="你每周能投入多少时间？",
                 question_key="weekly_minutes",
                 checkpoint_reason=TutorCheckpointReason.CAPABILITY_RESULT,
-                continuation_kind=TutorContinuationKind.APPROVAL,
+                continuation_kind=TutorContinuationKind.PLANNING_INPUT,
             ),
         )
         assert gate_result.status is TutorDecisionGateStatus.DENIED
@@ -630,6 +640,8 @@ def test_confirmed_question_reask_is_blocked_and_checkpoint_metric_is_persisted(
     dispatcher, _provider = waiting_dispatcher(
         settings=tutor_api_settings,
         message="请再告诉我你的学习目标。",
+        continuation_kind=TutorContinuationKind.PLANNING_INPUT,
+        question_key="goal_text",
     )
     monkeypatch.setattr(tutor_route, "build_tutor_run_dispatcher", lambda _settings: dispatcher)
     user_id = str(create_tutor_user(tutor_client)["id"])

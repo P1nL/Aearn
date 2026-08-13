@@ -81,7 +81,7 @@ export type TutorTerminalOutcome =
   | "cancelled"
   | "failed";
 
-export type TutorContinuationKind = "approval" | "capability_result" | "external_result";
+export type TutorContinuationKind = "clarification" | "planning_input" | "approval" | "capability_result" | "external_result";
 
 export type TutorRunState = {
   run_id: string;

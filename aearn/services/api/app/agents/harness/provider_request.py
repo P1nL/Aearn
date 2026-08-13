@@ -3,11 +3,15 @@ from __future__ import annotations
 
 import json
 
-from app.agents.harness.contracts import TutorContextSelection, TutorRunSnapshot
+from app.agents.harness.contracts import TUTOR_PLANNING_QUESTION_KEYS, TutorContextSelection, TutorRunSnapshot
 from app.services.tutor.decision_protocol import (
     TUTOR_PROVIDER_ITEMS_SCHEMA_VERSION,
     canonical_tutor_provider_items_example,
+    canonical_tutor_wait_for_input_examples,
 )
+
+
+_PLANNING_QUESTION_KEY_LIST = ", ".join(sorted(TUTOR_PLANNING_QUESTION_KEYS))
 
 
 TUTOR_TEACHING_POLICY = (
@@ -46,9 +50,13 @@ class TutorProviderRequestSerializer:
             "request_capability, propose_effect, or wait_for_input. "
             "select_skill supplies skill_id and version. request_capability supplies capability_id and a bounded "
             "arguments array of {key,value} fields. propose_effect supplies effect_type and a bounded payload array "
-            "of {key,value} fields. wait_for_input supplies continuation_kind and, for plan-drafting questions, "
-            "a stable question_key from language_id, goal_text, target_level, weekly_minutes, experience_level, "
-            "teaching_preferences, or pace_constraints. "
+            "of {key,value} fields. wait_for_input.continuation_kind must be exactly one of clarification, "
+            "planning_input, approval, capability_result, or external_result. Use clarification only for one general "
+            "ambiguity that the learner must resolve. Use planning_input only for one missing planning fact and include "
+            f"exactly one stable question_key from {_PLANNING_QUESTION_KEY_LIST}. "
+            "Use approval only for an explicit yes/no authorization before a "
+            "gated step. Use capability_result or external_result only when this same run truly depends on that result. "
+            "Every continuation other than planning_input must omit question_key. Never invent another continuation value. "
             "The server exclusively creates request_id, effect_id, expected_input_revision, checkpoints, revisions, "
             "and terminal state; never emit those fields. Outside public_thinking_steps, do not emit reasoning, "
             "diagnostics, hidden tests, prompts, "
@@ -59,6 +67,8 @@ class TutorProviderRequestSerializer:
             "For a normal direct reply, use action.type=turn_completed. "
             "Minimal valid direct-reply example: "
             f"{canonical_tutor_provider_items_example()} "
+            "Valid wait_for_input examples for every continuation branch: "
+            f"{canonical_tutor_wait_for_input_examples()} "
             f"Teaching policy: {TUTOR_TEACHING_POLICY}"
         )
         payload = {

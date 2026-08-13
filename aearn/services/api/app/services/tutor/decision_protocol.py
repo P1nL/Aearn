@@ -9,7 +9,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Annotated, Literal, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from app.agents.harness.contracts import (
     MAX_TUTOR_PAYLOAD_FIELDS,
@@ -17,11 +17,13 @@ from app.agents.harness.contracts import (
     MAX_TUTOR_PUBLIC_MESSAGE_LENGTH,
     MAX_TUTOR_PUBLIC_THINKING_STEP_LENGTH,
     MAX_TUTOR_PUBLIC_THINKING_STEPS,
+    TUTOR_PLANNING_QUESTION_KEYS,
     TutorCapabilityRequest,
     TutorCheckpointReason,
     TutorContinuationKind,
     TutorDecision,
     TutorEffectProposal,
+    TutorPlanningQuestionKey,
     TutorRunSnapshot,
     TutorSkillReference,
     TutorTerminalOutcome,
@@ -30,8 +32,8 @@ from app.agents.harness.contracts import (
 from app.services.llm.llm_client import LLMInvalidResponseError
 
 
-TUTOR_PROVIDER_ITEMS_SCHEMA_VERSION = "tutor_provider_items_v2"
-TUTOR_PROVIDER_ITEMS_SCHEMA_NAME = "tutor_provider_items_v2"
+TUTOR_PROVIDER_ITEMS_SCHEMA_VERSION = "tutor_provider_items_v3"
+TUTOR_PROVIDER_ITEMS_SCHEMA_NAME = "tutor_provider_items_v3"
 
 _FORBIDDEN_NESTED_PAYLOAD_FIELD_NAMES = frozenset(
     {
@@ -174,7 +176,16 @@ class TutorProviderProposeEffectItem(_StrictProviderModel):
 class TutorProviderWaitForInputItem(_StrictProviderModel):
     type: Literal["wait_for_input"]
     continuation_kind: TutorContinuationKind
-    question_key: str | None = Field(default=None, min_length=1, max_length=120)
+    question_key: TutorPlanningQuestionKey | None = None
+
+    @model_validator(mode="after")
+    def _validate_question_key_contract(self) -> "TutorProviderWaitForInputItem":
+        if self.continuation_kind is TutorContinuationKind.PLANNING_INPUT:
+            if self.question_key is None:
+                raise ValueError("planning_input requires question_key")
+        elif self.question_key is not None:
+            raise ValueError("question_key is only valid for planning_input")
+        return self
 
 
 TutorProviderActionItem: TypeAlias = Annotated[
@@ -188,15 +199,64 @@ TutorProviderActionItem: TypeAlias = Annotated[
 
 
 class TutorProviderItemsEnvelope(_StrictProviderModel):
-    schema_version: Literal["tutor_provider_items_v2"]
+    schema_version: Literal["tutor_provider_items_v3"]
     message: TutorProviderAgentMessageItem
     action: TutorProviderActionItem
 
 
 def tutor_provider_output_schema() -> dict[str, object]:
-    """Return the generated provider schema; no hand-maintained field list exists."""
+    """Return the generated schema with exact continuation/question-key branches."""
 
-    return TutorProviderItemsEnvelope.model_json_schema()
+    schema = TutorProviderItemsEnvelope.model_json_schema()
+    definitions = schema.get("$defs")
+    if not isinstance(definitions, dict):  # pragma: no cover - Pydantic schema invariant.
+        raise RuntimeError("Tutor provider schema definitions are missing")
+    definitions["TutorProviderWaitForInputItem"] = _wait_for_input_output_schema()
+    return schema
+
+
+def _wait_for_input_output_schema() -> dict[str, object]:
+    branches: list[dict[str, object]] = []
+    for continuation_kind in (
+        TutorContinuationKind.CLARIFICATION,
+        TutorContinuationKind.APPROVAL,
+        TutorContinuationKind.CAPABILITY_RESULT,
+        TutorContinuationKind.EXTERNAL_RESULT,
+    ):
+        branches.append(
+            {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "type": {"const": "wait_for_input", "type": "string"},
+                    "continuation_kind": {
+                        "const": continuation_kind.value,
+                        "type": "string",
+                    },
+                },
+                "required": ["type", "continuation_kind"],
+            }
+        )
+    branches.insert(
+        1,
+        {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "type": {"const": "wait_for_input", "type": "string"},
+                "continuation_kind": {
+                    "const": TutorContinuationKind.PLANNING_INPUT.value,
+                    "type": "string",
+                },
+                "question_key": {
+                    "enum": sorted(TUTOR_PLANNING_QUESTION_KEYS),
+                    "type": "string",
+                },
+            },
+            "required": ["type", "continuation_kind", "question_key"],
+        },
+    )
+    return {"title": "TutorProviderWaitForInputItem", "anyOf": branches}
 
 
 def tutor_provider_output_schema_hash() -> str:
@@ -210,21 +270,78 @@ def tutor_provider_output_schema_hash() -> str:
 
 
 def canonical_tutor_provider_items_example() -> str:
-    """Small direct-reply example used only by JSON-object-only providers."""
+    """Small direct-reply example used by JSON-object-only providers."""
 
+    return _canonical_provider_example(
+        text="请从一个很小的练习开始。",
+        thinking_steps=(
+            "把目标缩小到一个可以立即验证的函数练习，更容易发现理解偏差。",
+            "一次输入输出检查可以判断是否需要补充参数与返回值知识。",
+        ),
+        title="函数基础练习",
+        action={"type": "turn_completed"},
+    )
+
+
+def canonical_tutor_wait_for_input_examples() -> str:
+    """Canonical examples for every same-run continuation reason."""
+
+    examples = {
+        "clarification": _canonical_provider_example(
+            text="你说的“基础”是指语法基础，还是已经会写简单函数？",
+            thinking_steps=("这个词有两种常见含义，先澄清可以避免给出不匹配的内容。",),
+            title="澄清学习起点",
+            action={"type": "wait_for_input", "continuation_kind": "clarification"},
+        ),
+        "planning_input": _canonical_provider_example(
+            text="你每周大约能安排多少分钟学习？",
+            thinking_steps=("学习时长会直接影响计划节奏，因此需要先补齐这一项计划事实。",),
+            title="制定学习计划",
+            action={
+                "type": "wait_for_input",
+                "continuation_kind": "planning_input",
+                "question_key": "weekly_minutes",
+            },
+        ),
+        "approval": _canonical_provider_example(
+            text="是否确认采用这份学习计划并进入下一步？",
+            thinking_steps=("计划内容已经完整，下一步会执行需要你明确授权的变更。",),
+            title="确认学习计划",
+            action={"type": "wait_for_input", "continuation_kind": "approval"},
+        ),
+        "capability_result": _canonical_provider_example(
+            text="请在已授权的能力检查完成后继续本轮。",
+            thinking_steps=("后续判断依赖能力检查结果，现在不应猜测结果。",),
+            title="等待能力检查",
+            action={"type": "wait_for_input", "continuation_kind": "capability_result"},
+        ),
+        "external_result": _canonical_provider_example(
+            text="请在外部步骤完成并返回结果后继续本轮。",
+            thinking_steps=("外部结果尚未到达，继续推断会产生不可靠结论。",),
+            title="等待外部结果",
+            action={"type": "wait_for_input", "continuation_kind": "external_result"},
+        ),
+    }
+    return " ".join(f"{name}={payload}" for name, payload in examples.items())
+
+
+def _canonical_provider_example(
+    *,
+    text: str,
+    thinking_steps: tuple[str, ...],
+    title: str,
+    action: Mapping[str, object],
+) -> str:
     return json.dumps(
         {
             "schema_version": TUTOR_PROVIDER_ITEMS_SCHEMA_VERSION,
             "message": {
                 "type": "agent_message",
-                "text": "请从一个很小的练习开始。",
-                "public_thinking_steps": [
-                    "把目标缩小到一个可以立即验证的函数练习，更容易发现理解偏差。",
-                    "一次输入输出检查可以判断是否需要补充参数与返回值知识。",
-                ],
-                "conversation_title": "函数基础练习",
+                "text": text,
+                "public_thinking_steps": list(thinking_steps),
+                "conversation_title": title,
             },
-            "action": {"type": "turn_completed"},
+            "action": dict(action),
         },
         ensure_ascii=False,
         separators=(",", ":"),
@@ -254,7 +371,7 @@ def parse_tutor_provider_items(
     checkpoint_reason: TutorCheckpointReason | None = None
     continuation_kind: TutorContinuationKind | None = None
     terminal_outcome: TutorTerminalOutcome | None = None
-    question_key: str | None = None
+    question_key: TutorPlanningQuestionKey | None = None
 
     try:
         if isinstance(action, TutorProviderTurnCompletedItem):
@@ -332,9 +449,12 @@ def build_tutor_replacement_message(
         "Choose their wording, tone, ordering, and granularity naturally for the current request; do not force a fixed "
         "linguistic template or transition sequence. These are authored public explanations, not provider-native hidden "
         "reasoning, and must not mention prompts, policies, diagnostics, or secrets. "
+        "wait_for_input.continuation_kind must be clarification, planning_input, approval, capability_result, or "
+        "external_result. planning_input requires exactly one allowlisted question_key; every other continuation must omit it. "
         "The server owns request_id, effect_id, expected_input_revision, checkpoints, and terminal state; never emit them. "
         f"Validation issues (safe field paths and categories only): {issue_text}. "
         f"Minimal valid direct-reply example: {canonical_tutor_provider_items_example()} "
+        f"Valid continuation branch examples: {canonical_tutor_wait_for_input_examples()} "
         f"Keep following this teaching policy: {teaching_policy}"
     )
 

@@ -41,6 +41,7 @@ import type {
   LearningScopeInput,
   TutorContextReference,
   TutorContextReferenceDraft,
+  TutorContinuationKind,
 } from "../../types";
 
 export type TutorComposerReference = {
@@ -132,7 +133,8 @@ export function TutorConversationSurface({
   const scrollToLatestRef = useRef(false);
   selectedConversationIdRef.current = selectedConversationId;
 
-  const continuationAvailable = activeRun?.status === "waiting_for_input" && activeRun.continuation_kind !== null;
+  const continuationKind = activeRun?.status === "waiting_for_input" ? activeRun.continuation_kind : null;
+  const continuationAvailable = continuationKind !== null;
   const streamUrl = mayUseTutor && userId && selectedConversationId && activeRun && activeRunConversationId === selectedConversationId
     ? buildTutorRunEventsUrl(activeRun.run_id, userId)
     : null;
@@ -500,21 +502,21 @@ export function TutorConversationSurface({
     : `tutor-workspace tutor-conversation-only${planningIdle ? " tutor-conversation-idle" : ""}`;
   const title = selectedConversationId ? "当前学习对话" : "新对话";
   const composerLabel = composerMode === "continuation"
-    ? "继续完成这项确认"
+    ? continuationKind ? displayContinuationComposerLabel(continuationKind) : "继续当前输入"
     : planning
       ? "告诉 Tutor 你的目标或调整意见"
       : selectedConversationId
         ? "继续当前对话"
         : "从你的学习目标开始";
   const composerHint = composerMode === "continuation"
-    ? "此输入仅用于服务器明确要求的继续确认。"
+    ? continuationKind ? displayContinuationHint(continuationKind) : "此输入仅用于服务器明确授权的继续步骤。"
     : planning
       ? "普通消息会创建新的有限 plan_drafting TurnRun；正式计划只来自已验证的类型化草案。"
       : "普通消息会创建新的有限 TurnRun；当前会话历史会被安全保留。";
   const composerSubmitLabel = composerStatus === "submitting"
     ? "正在确认输入……"
     : composerMode === "continuation"
-      ? "提交确认"
+      ? continuationKind ? displayContinuationSubmitLabel(continuationKind) : "提交继续输入"
       : selectedConversationId
         ? "发送消息"
         : "开始对话";
@@ -542,7 +544,7 @@ export function TutorConversationSurface({
             <div className="tutor-run-summary" aria-live="polite">
               <span>当前状态</span>
               <strong>{activeRun ? displayRunStatus(activeRun.status) : selectedConversationId ? "没有进行中的处理" : "等待你的第一条目标"}</strong>
-              {activeRun && <small>{activeRun.continuation_kind ? "等待明确的继续确认" : "正在使用当前公开状态"}</small>}
+              {activeRun && <small>{activeRun.continuation_kind ? displayContinuationStatus(activeRun.continuation_kind) : "正在使用当前公开状态"}</small>}
               {streamUrl && <small>流游标：{stream.cursor}</small>}
             </div>
           </header>
@@ -611,14 +613,14 @@ export function TutorConversationSurface({
             ))}
         </section>
 
-        {continuationAvailable && (
-          <section className="tutor-continuation-card" aria-label="继续当前确认">
+        {continuationKind && (
+          <section className="tutor-continuation-card" aria-label={displayContinuationStatus(continuationKind)}>
             <div>
-              <strong>需要你的确认后才能继续</strong>
-              <span>只有这一类服务器明确授权的等待状态会复用当前 run。</span>
+              <strong>{displayContinuationCardTitle(continuationKind)}</strong>
+              <span>{displayContinuationHint(continuationKind)}</span>
             </div>
             <button className="tutor-compact-button" type="button" onClick={() => { setComposerMode("continuation"); composerRef.current?.focus(); }}>
-              继续确认
+              {displayContinuationSubmitLabel(continuationKind)}
             </button>
           </section>
         )}
@@ -629,7 +631,7 @@ export function TutorConversationSurface({
               <label className="visually-hidden" htmlFor="tutor-composer-input">{composerLabel}</label>
               {composerMode === "continuation" && (
                 <div className="tutor-composer-mode" role="status">
-                  <span>正在使用已授权的继续确认输入。</span>
+                  <span>{continuationKind ? displayContinuationHint(continuationKind) : "正在使用服务器已授权的继续输入。"}</span>
                   <button className="tutor-text-button" type="button" onClick={() => setComposerMode("ordinary")}>改为普通消息</button>
                 </div>
               )}
@@ -641,7 +643,7 @@ export function TutorConversationSurface({
                   value={composerText}
                   rows={2}
                   maxLength={16_000}
-                  placeholder={composerMode === "continuation" ? "输入服务器请求的确认或结果。" : "描述你想学习什么，或回答 Tutor 的问题"}
+                  placeholder={composerMode === "continuation" && continuationKind ? displayContinuationPlaceholder(continuationKind) : "描述你想学习什么，或回答 Tutor 的问题"}
                   disabled={!mayUseTutor || composerStatus === "submitting"}
                   onChange={(event) => setComposerText(event.target.value)}
                   onKeyDown={handleComposerKeyDown}
@@ -664,7 +666,7 @@ export function TutorConversationSurface({
             <label htmlFor="tutor-composer-input">{composerLabel}</label>
             {composerMode === "continuation" && (
               <div className="tutor-composer-mode" role="status">
-                <span>正在使用已授权的继续确认输入。</span>
+                <span>{continuationKind ? displayContinuationHint(continuationKind) : "正在使用服务器已授权的继续输入。"}</span>
                 <button className="tutor-text-button" type="button" onClick={() => setComposerMode("ordinary")}>改为普通消息</button>
               </div>
             )}
@@ -675,7 +677,9 @@ export function TutorConversationSurface({
               value={composerText}
               rows={4}
               maxLength={16_000}
-              placeholder="例如：我会写基础 JavaScript，但总弄不清闭包里的变量什么时候会保留。"
+              placeholder={composerMode === "continuation" && continuationKind
+                ? displayContinuationPlaceholder(continuationKind)
+                : "例如：我会写基础 JavaScript，但总弄不清闭包里的变量什么时候会保留。"}
               disabled={!mayUseTutor || composerStatus === "submitting"}
               onChange={(event) => setComposerText(event.target.value)}
               onKeyDown={handleComposerKeyDown}
@@ -845,7 +849,7 @@ function displayRunStatus(status: TutorRunStatus): string {
     queued: "正在排队",
     leased: "正在准备",
     running: "正在思考",
-    waiting_for_input: "等待你的确认",
+    waiting_for_input: "等待你的回复",
     waiting_for_capability: "正在等待已授权的能力",
     awaiting_effect_commit: "正在确认学习更新",
     completed: "已完成",
@@ -855,6 +859,66 @@ function displayRunStatus(status: TutorRunStatus): string {
     cancelled: "已根据新消息更新",
     failed: "未能安全完成",
   }[status];
+}
+
+function displayContinuationStatus(kind: TutorContinuationKind): string {
+  return {
+    clarification: "等待你补充说明",
+    planning_input: "等待你补充计划信息",
+    approval: "等待你明确确认",
+    capability_result: "等待已授权的能力结果",
+    external_result: "等待外部步骤结果",
+  }[kind];
+}
+
+function displayContinuationCardTitle(kind: TutorContinuationKind): string {
+  return {
+    clarification: "需要你补充说明后才能继续",
+    planning_input: "需要你补充一项计划信息",
+    approval: "需要你明确确认后才能继续",
+    capability_result: "需要已授权的能力结果",
+    external_result: "需要外部步骤结果",
+  }[kind];
+}
+
+function displayContinuationComposerLabel(kind: TutorContinuationKind): string {
+  return {
+    clarification: "补充 Tutor 请求的说明",
+    planning_input: "补充 Tutor 请求的计划信息",
+    approval: "确认是否继续当前步骤",
+    capability_result: "提交已授权的能力结果",
+    external_result: "提交外部步骤结果",
+  }[kind];
+}
+
+function displayContinuationSubmitLabel(kind: TutorContinuationKind): string {
+  return {
+    clarification: "补充说明",
+    planning_input: "提交计划信息",
+    approval: "提交确认",
+    capability_result: "提交能力结果",
+    external_result: "提交外部结果",
+  }[kind];
+}
+
+function displayContinuationHint(kind: TutorContinuationKind): string {
+  return {
+    clarification: "此输入只用于消除当前问题中的一处必要歧义。",
+    planning_input: "此输入只用于补齐当前学习计划缺少的一项事实。",
+    approval: "此输入只用于对当前受控步骤给出明确授权或拒绝。",
+    capability_result: "此输入只用于返回当前 run 已授权能力的结果。",
+    external_result: "此输入只用于返回当前 run 所依赖的外部步骤结果。",
+  }[kind];
+}
+
+function displayContinuationPlaceholder(kind: TutorContinuationKind): string {
+  return {
+    clarification: "补充 Tutor 请求澄清的信息。",
+    planning_input: "填写 Tutor 当前询问的计划信息。",
+    approval: "明确回复确认、拒绝或需要调整的内容。",
+    capability_result: "粘贴或描述已授权能力返回的结果。",
+    external_result: "粘贴或描述外部步骤返回的结果。",
+  }[kind];
 }
 
 function displayPublicProcessStatus(process: TutorPublicProcess): string {
