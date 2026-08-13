@@ -18,20 +18,18 @@ from app.agents.harness.actions import (
 )
 from app.core.config import Settings, get_settings
 from app.db.connection import connect
-from app.services.learning.practice.contracts import (
-    ExercisePrivateRubric,
-    ExerciseSourceKind,
-    ExerciseType,
-    ExerciseVersion,
-)
+from app.services.learning.practice.contracts import ExercisePrivateRubric, ExerciseVersion
 from app.services.learning.practice.model_review_actions import (
     ModelReviewPublicationVerifier,
     ModelReviewValidationActionAdapter,
 )
-from app.services.learning.practice.model_review_contracts import (
-    ModelReviewArtifactV1,
-    ModelReviewPromptV1,
-    ModelReviewRubricV1,
+from app.services.learning.practice.model_review_templates import (
+    MODEL_REVIEW_AUTHOR_CANDIDATE_SCHEMA_NAME,
+    ModelReviewAuthorCandidateV2,
+    author_prompt_contract,
+    model_review_author_output_schema,
+    model_review_template,
+    select_model_review_template,
 )
 from app.services.learning.practice.model_review_repository import (
     MODEL_REVIEW_GENERATOR_VERSION,
@@ -59,6 +57,7 @@ class ModelReviewAuthoringRequest:
     mastery_level: str
     mastery_confidence: float
     validation_profile_version: str
+    template_id: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,7 +92,12 @@ class PrimaryModelCodeReviewAuthor:
         try:
             client = self._client or OpenAICompatibleClient(self._settings)
             response = client.complete_json(
-                _author_messages(request), temperature=0.1, max_tokens=10_000, timeout_seconds=90
+                _author_messages(request),
+                temperature=0.1,
+                max_tokens=6_000,
+                timeout_seconds=90,
+                output_schema=model_review_author_output_schema(),
+                schema_name=MODEL_REVIEW_AUTHOR_CANDIDATE_SCHEMA_NAME,
             )
         except LLMConfigurationError as exc:
             raise ModelReviewAuthoringFailure(
@@ -153,6 +157,12 @@ def dispatch_model_review_authoring_run(
                 mastery_level=running.mastery_level,
                 mastery_confidence=running.mastery_confidence,
                 validation_profile_version=running.validation_profile_version,
+                template_id=select_model_review_template(
+                    language_id=running.language_id,
+                    knowledge_key=running.knowledge_key,
+                    required_capabilities=running.required_capabilities,
+                    mastery_level=running.mastery_level,
+                ).template_id,
             )
             port = author or MODEL_REVIEW_AUTHOR_FACTORY()
             response = _call_author_and_record(port=port, request=request, run=running)
@@ -281,37 +291,21 @@ def _call_author_and_record(
 def _parse_candidate(
     payload: Mapping[str, object], request: ModelReviewAuthoringRequest
 ) -> tuple[ExerciseVersion, ExercisePrivateRubric]:
-    if set(payload) != {"title", "learner_prompt", "starter_artifact", "private_rubric", "private_test_bundle", "score_policy"}:
-        raise ModelReviewAuthoringFailure("MODEL_REVIEW_CANDIDATE_INVALID", "代码审核题候选字段不完整。")
-    prompt = ModelReviewPromptV1.model_validate(_mapping(payload.get("learner_prompt")))
-    artifact = ModelReviewArtifactV1.model_validate(_mapping(payload.get("starter_artifact")))
-    rubric = ModelReviewRubricV1.model_validate(_mapping(payload.get("private_rubric")))
-    if artifact.language_id != request.language_id:
-        raise ModelReviewAuthoringFailure("MODEL_REVIEW_CANDIDATE_INVALID", "代码审核题候选语言不匹配。")
-    seed = _hash_json(payload)
-    exercise = ExerciseVersion(
-        language_id=request.language_id,
-        exercise_key=f"{request.language_id}.review.{request.knowledge_key}.{seed[:12]}",
-        exercise_type=ExerciseType.MODEL_CODE_REVIEW,
-        version=f"v1-{seed[:12]}",
-        source_kind=ExerciseSourceKind.REGISTERED_AUTHOR,
-        title=str(payload["title"]),
-        learner_prompt=prompt.model_dump(mode="json"),
-        starter_artifact=artifact.model_dump(mode="json"),
-        required_capabilities=request.required_capabilities,
-        runtime_profile_id=None,
-        execution_required=False,
-        public_feedback_policy_version="model_code_review_feedback_v1",
-    )
-    private = ExercisePrivateRubric(
-        rubric_version="v1",
-        private_test_bundle=tuple(_mapping(item) for item in _sequence(payload.get("private_test_bundle"))),
-        reference_answer=rubric.model_dump(mode="json"),
-        score_policy=_mapping(payload.get("score_policy")),
-    )
-    if str(private.score_policy.get("kind")) != "model_code_review":
-        raise ModelReviewAuthoringFailure("MODEL_REVIEW_CANDIDATE_INVALID", "代码审核题评分策略无效。")
-    return exercise, private
+    try:
+        authored = ModelReviewAuthorCandidateV2.model_validate(dict(payload))
+        template = model_review_template(request.template_id)
+        if template.language_id != request.language_id:
+            raise ValueError("model review template language does not match request")
+        return template.build_exercise(
+            author=authored,
+            knowledge_key=request.knowledge_key,
+            required_capabilities=request.required_capabilities,
+        )
+    except (TypeError, ValueError) as exc:
+        raise ModelReviewAuthoringFailure(
+            "MODEL_REVIEW_CANDIDATE_INVALID",
+            "代码审核题候选未通过受控模板校验。",
+        ) from exc
 
 
 def _descriptor() -> ActionDescriptor:
@@ -332,14 +326,15 @@ def _execution_profile(public_payload: Mapping[str, object]) -> str:
 
 
 def _author_messages(request: ModelReviewAuthoringRequest) -> tuple[dict[str, str], ...]:
+    template = model_review_template(request.template_id)
     instruction = (
-        "Author one strict model code review exercise JSON object. The learner reviews only generated code, never a user repository. "
-        "Return exact keys: title, learner_prompt, starter_artifact, private_rubric, private_test_bundle, score_policy. "
-        "Use learner_prompt schema model_code_review_prompt_v1 and starter_artifact schema model_code_review_artifact_v1. "
-        "Use private_rubric schema model_code_review_rubric_v1. Include deterministic visible and hidden tests. "
-        "Do not include user identity, conversation history, secrets, paths, commands, images, containers, or provider metadata. "
-        "The public prompt must not reveal scenario_kind, expected findings, matcher tokens, reachability proofs, or hidden tests. "
-        "score_policy is exactly {kind:model_code_review, policy_version:model_code_review_score_v1, threshold:0.8}. Return JSON only."
+        "Author the learner-facing scenario copy and candidate code for one generated-code review exercise. "
+        "The learner reviews only this generated snippet, never a user repository. "
+        + author_prompt_contract(template)
+        + " The server owns all requirements, tests, hidden tests, expected outcomes, validation rubric, findings, "
+        "coverage proofs, and score policy. Follow candidate_intent and the controlled code fragments exactly. "
+        "Do not repair an intentionally defective template or introduce an unrequested defect into a correct template. "
+        "Return JSON only."
     )
     return (
         {"role": "system", "content": instruction},
@@ -348,6 +343,7 @@ def _author_messages(request: ModelReviewAuthoringRequest) -> tuple[dict[str, st
 
 
 def _request_payload(request: ModelReviewAuthoringRequest) -> dict[str, object]:
+    template = model_review_template(request.template_id)
     return {
         "language_id": request.language_id,
         "knowledge_key": request.knowledge_key,
@@ -356,6 +352,7 @@ def _request_payload(request: ModelReviewAuthoringRequest) -> dict[str, object]:
         "mastery_confidence_band": round(request.mastery_confidence, 2),
         "validation_profile_version": request.validation_profile_version,
         "generator_version": MODEL_REVIEW_GENERATOR_VERSION,
+        "selected_template": template.public_authoring_spec(),
     }
 
 
@@ -380,9 +377,3 @@ def _hash_json(value: Mapping[str, object]) -> str:
 
 def _mapping(value: object) -> dict[str, object]:
     return {str(key): item for key, item in value.items()} if isinstance(value, Mapping) else {}
-
-
-def _sequence(value: object) -> tuple[object, ...]:
-    if not isinstance(value, list | tuple):
-        return ()
-    return tuple(value)

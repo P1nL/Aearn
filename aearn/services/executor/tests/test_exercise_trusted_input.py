@@ -93,6 +93,91 @@ def test_exercise_attempt_trusted_input_loads_private_artifacts_only_after_claim
     assert all("tutor_messages" not in query for query in connection.queries)
 
 
+def _model_review_job() -> ExecutionJobV1:
+    return ExecutionJobV1(
+        job_id="00000000-0000-0000-0000-000000000011",
+        intent_proof_id="00000000-0000-0000-0000-000000000012",
+        user_id="00000000-0000-0000-0000-000000000013",
+        runtime_id="python-stdout-v1",
+        owner_kind="model_review_validation",
+        conversation_id="00000000-0000-0000-0000-000000000014",
+        run_id="00000000-0000-0000-0000-000000000015",
+        model_review_validation_id="00000000-0000-0000-0000-000000000016",
+        lock_fingerprint="e" * 64,
+        state=ExecutionJobState.PENDING,
+    )
+
+
+def test_model_review_trusted_input_strips_template_metadata_before_sandbox() -> None:
+    candidate_hash = "a" * 64
+    private_hash = "b" * 64
+    connection = _Connection(
+        {
+            "action": "test",
+            "submission": "def average(total, count):\n    return total / count",
+            "candidate_hash": candidate_hash,
+            "private_hash": private_hash,
+            "source_reference_hash": _reference_hash(candidate_hash),
+            "test_reference_hash": _reference_hash(private_hash),
+            "private_test_bundle_json": [
+                {
+                    "id": "average-normal",
+                    "case_type": "visible",
+                    "input": {"total": 6, "count": 2},
+                    "expected": {"value": 3},
+                    "assertion": "",
+                    "timeout_ms": 2000,
+                    "order_index": 0,
+                    "candidate_expected_pass": True,
+                    "proof_ids": [],
+                },
+                {
+                    "id": "average-zero",
+                    "case_type": "hidden",
+                    "input": {"total": 0, "count": 0},
+                    "expected": {"value": 0},
+                    "assertion": "",
+                    "timeout_ms": 2000,
+                    "order_index": 1,
+                    "candidate_expected_pass": False,
+                    "proof_ids": ["proof-zero-division"],
+                },
+            ],
+        }
+    )
+    resolver = PostgresTrustedInputResolver(cast(Connection[dict[str, object]], connection))
+
+    resolved = resolver.load(job=_model_review_job())
+    visible = json.loads(resolved.visible_test_bundle_json)
+    hidden = json.loads(resolved.hidden_test_bundle_json)
+
+    assert visible == [
+        {
+            "case_type": "visible",
+            "input": {"total": 6, "count": 2},
+            "expected": {"value": 3},
+            "assertion": "",
+            "timeout_ms": 2000,
+            "order_index": 0,
+        }
+    ]
+    assert hidden == [
+        {
+            "case_type": "hidden",
+            "input": {"total": 0, "count": 0},
+            "expected": {"value": 0},
+            "assertion": "",
+            "timeout_ms": 2000,
+            "order_index": 1,
+        }
+    ]
+    serialized = resolved.visible_test_bundle_json + resolved.hidden_test_bundle_json
+    assert "candidate_expected_pass" not in serialized
+    assert "proof-zero-division" not in serialized
+    assert "average-zero" not in serialized
+    assert any("tutor_model_review_candidates" in query for query in connection.queries)
+
+
 def test_exercise_attempt_trusted_input_rejects_reference_mismatch() -> None:
     connection = _Connection(
         {

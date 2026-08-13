@@ -23,8 +23,21 @@ from app.services.learning.practice.contracts import (
     LessonGateBinding,
     canonical_hash,
 )
-from app.services.learning.practice.model_review_contracts import ModelReviewValidationReceiptV1
-from app.services.learning.practice.model_review_quality import candidate_hash as publication_candidate_hash
+from app.services.learning.practice.model_review_contracts import (
+    ModelReviewArtifactV1,
+    ModelReviewPromptV1,
+    ModelReviewRubricV1,
+    ModelReviewValidationReceiptV1,
+)
+from app.services.learning.practice.model_review_templates import (
+    expected_model_review_test_outcomes,
+    model_review_template_coverage_proof,
+    validate_controlled_model_review_candidate,
+)
+from app.services.learning.practice.model_review_quality import (
+    candidate_hash as publication_candidate_hash,
+    model_review_public_redaction_proof,
+)
 from app.services.learning.practice.quality import require_exercise_quality
 from app.services.learning.practice.repository import (
     GateScope,
@@ -41,8 +54,8 @@ from app.services.tutor.execution import ExecutionIntentRepository, ExecutionSub
 from app.services.tutor.persistence import PostgresTutorRepository
 
 
-MODEL_REVIEW_GENERATOR_VERSION = "model_review_author_v1"
-MODEL_REVIEW_PROMPT_SCHEMA_VERSION = "model_review_author_prompt_v1"
+MODEL_REVIEW_GENERATOR_VERSION = "model_review_author_v2"
+MODEL_REVIEW_PROMPT_SCHEMA_VERSION = "model_review_author_prompt_v2"
 MODEL_REVIEW_VALIDATION_PROFILE_VERSION = "model_review_validation_v1"
 MODEL_REVIEW_PASS_POLICY_VERSION = "model_review_pass_v1"
 
@@ -589,28 +602,98 @@ class PostgresModelReviewRepository:
             raise PracticeVersionConflict("model review validation candidate is stale")
         if job.state is not ExecutionJobState.COMPLETED or job.result is None or job.result.status.value != "success":
             raise ModelReviewRepositoryError("MODEL_REVIEW_VALIDATION_FAILED")
-        check_types = (
-            "schema", "parser", "compile_or_typecheck", "visible_tests", "hidden_tests",
-            "finding_reachability", "rubric_consistency", "coverage", "redaction",
-        )
+        exercise, rubric = _candidate_material(candidate)
+        if job.runtime_id != _runtime_id(candidate.public_payload):
+            raise ModelReviewRepositoryError("MODEL_REVIEW_VALIDATION_FAILED")
+        template = validate_controlled_model_review_candidate(exercise=exercise, rubric=rubric)
+        prompt = ModelReviewPromptV1.model_validate(dict(exercise.learner_prompt))
+        artifact = ModelReviewArtifactV1.model_validate(dict(exercise.starter_artifact))
+        private = ModelReviewRubricV1.model_validate(dict(rubric.reference_answer))
+        coverage = model_review_template_coverage_proof(template=template, rubric=rubric)
+        expected_outcomes = expected_model_review_test_outcomes(rubric)
+        feedback = tuple(job.result.test_feedback)
+        expected_passed_count = sum(expected_pass for _, expected_pass in expected_outcomes)
+        if (
+            len(feedback) != len(expected_outcomes)
+            or job.result.total_test_count != len(expected_outcomes)
+            or job.result.passed_test_count != expected_passed_count
+        ):
+            raise ModelReviewRepositoryError("MODEL_REVIEW_VALIDATION_FAILED")
+        observed_outcomes = tuple((item.visible, item.passed) for item in feedback)
+        if observed_outcomes != expected_outcomes:
+            raise ModelReviewRepositoryError("MODEL_REVIEW_VALIDATION_FAILED")
+        visible_feedback = tuple(item for item in feedback if item.visible)
+        hidden_feedback = tuple(item for item in feedback if not item.visible)
+        if not visible_feedback or not hidden_feedback:
+            raise ModelReviewRepositoryError("MODEL_REVIEW_VALIDATION_FAILED")
+        redaction = model_review_public_redaction_proof(exercise)
+        checks: dict[str, object] = {
+            "schema": {
+                "prompt_schema": prompt.schema_version,
+                "artifact_schema": artifact.schema_version,
+                "rubric_schema": private.schema_version,
+                "candidate_hash": candidate.candidate_hash,
+            },
+            "parser": {
+                "template_id": template.template_id,
+                "template_contract_hash": template.contract_hash,
+                "code_hash": artifact.code_hash,
+                "line_count": artifact.line_count,
+            },
+            "compile_or_typecheck": {
+                "job_id": job.job_id,
+                "runtime_id": job.runtime_id,
+                "status": job.result.status.value,
+                "diagnostic_code": job.result.diagnostic_code,
+            },
+            "visible_tests": {
+                "expected": tuple(item[1] for item in expected_outcomes if item[0]),
+                "observed": tuple(item.passed for item in visible_feedback),
+                "count": len(visible_feedback),
+            },
+            "hidden_tests": {
+                "expected": tuple(item[1] for item in expected_outcomes if not item[0]),
+                "observed": tuple(item.passed for item in hidden_feedback),
+                "count": len(hidden_feedback),
+            },
+            "finding_reachability": {
+                "finding_ranges": tuple(
+                    tuple((line.start_line, line.end_line) for line in item.accepted_line_ranges)
+                    for item in private.expected_findings
+                ),
+                "proof_ids": tuple(
+                    proof_id
+                    for item in private.expected_findings
+                    for proof_id in item.reachability_proof_ids
+                ),
+                "line_count": artifact.line_count,
+            },
+            "rubric_consistency": {
+                "template_id": private.template_id,
+                "template_version": private.template_version,
+                "template_contract_hash": private.template_contract_hash,
+                "rubric_hash": rubric.rubric_hash,
+            },
+            "coverage": coverage,
+            "redaction": redaction,
+        }
         receipt = ModelReviewValidationReceiptV1.model_validate(
             {
                 "candidate_hash": candidate.candidate_hash,
                 "validation_profile_version": candidate.validation_profile_version,
                 "checks": [
                     {
-                        "check_type": check,
+                        "check_type": check_type,
                         "status": "passed",
                         "proof_hash": canonical_hash(
                             {
-                                "candidate_hash": candidate.candidate_hash,
                                 "validation_id": validation.validation_id,
-                                "job_result": job.result.model_dump(mode="json"),
-                                "check": check,
+                                "check_type": check_type,
+                                "evidence": evidence,
                             }
                         ),
                     }
-                    for check in check_types
+                    for check_type, evidence in checks.items()
                 ],
             }
         )
@@ -625,7 +708,7 @@ class PostgresModelReviewRepository:
                 """,
                 (
                     validation.validation_id, validation.user_id, item.check_type, item.status,
-                    job.job_id if item.check_type in {"parser", "compile_or_typecheck", "visible_tests", "hidden_tests"} else None,
+                    job.job_id if item.check_type in {"compile_or_typecheck", "visible_tests", "hidden_tests"} else None,
                     item.proof_hash,
                 ),
             )
@@ -636,6 +719,7 @@ class PostgresModelReviewRepository:
                 "receipt_hash": receipt.receipt_hash,
                 "job_id": job.job_id,
                 "job_result_hash": canonical_hash(job.result.model_dump(mode="json")),
+                "template_contract_hash": template.contract_hash,
             }
         )
         updated = self._conn.execute(
@@ -737,6 +821,7 @@ class PostgresModelReviewRepository:
             or rubric.rubric_hash != str(private.get("rubric_hash") or "")
         ):
             raise PracticeVersionConflict("model review publication candidate identity is stale")
+        validate_controlled_model_review_candidate(exercise=exercise, rubric=rubric)
         checks = self._conn.execute(
             """
             SELECT check_type, status, proof_hash
@@ -1134,6 +1219,40 @@ def _job(row: Mapping[str, object]) -> ExecutionJobV1:
         result=SafeExecutionResultV1.model_validate(raw_result) if isinstance(raw_result, Mapping) else None,
         safe_diagnostic_code=str(row["safe_diagnostic_code"]) if row.get("safe_diagnostic_code") else None,
     )
+
+
+def _candidate_material(
+    candidate: ModelReviewCandidateRecord,
+) -> tuple[ExerciseVersion, ExercisePrivateRubric]:
+    public = dict(candidate.public_payload)
+    private = dict(candidate.private_payload)
+    exercise = ExerciseVersion(
+        language_id=str(public["language_id"]),
+        exercise_key=str(public["exercise_key"]),
+        exercise_type=ExerciseType(str(public["exercise_type"])),
+        version=str(public["version"]),
+        source_kind=ExerciseSourceKind(str(public["source_kind"])),
+        title=str(public["title"]),
+        learner_prompt=_mapping(public.get("learner_prompt")),
+        starter_artifact=_mapping(public.get("starter_artifact")),
+        required_capabilities=tuple(str(item) for item in _sequence(public.get("required_capabilities"))),
+        runtime_profile_id=str(public["runtime_profile_id"]) if public.get("runtime_profile_id") else None,
+        execution_required=bool(public["execution_required"]),
+        public_feedback_policy_version=str(public["public_feedback_policy_version"]),
+    )
+    rubric = ExercisePrivateRubric(
+        rubric_version=str(private["rubric_version"]),
+        private_test_bundle=tuple(_mapping(item) for item in _sequence(private.get("private_test_bundle"))),
+        reference_answer=_mapping(private.get("reference_answer")),
+        score_policy=_mapping(private.get("score_policy")),
+    )
+    if (
+        exercise.content_hash != str(public.get("content_hash") or exercise.content_hash)
+        or rubric.rubric_hash != str(private.get("rubric_hash") or "")
+        or publication_candidate_hash(exercise, rubric) != candidate.candidate_hash
+    ):
+        raise PracticeVersionConflict("model review candidate material is stale")
+    return exercise, rubric
 
 
 def _runtime_id(public_payload: Mapping[str, object]) -> str:

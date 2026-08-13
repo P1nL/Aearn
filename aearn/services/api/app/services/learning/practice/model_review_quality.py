@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
-from app.services.learning.practice.contracts import ExercisePrivateRubric, ExerciseType, ExerciseVersion
+from app.services.learning.practice.contracts import ExercisePrivateRubric, ExerciseType, ExerciseVersion, canonical_hash
 from app.services.learning.practice.model_review_contracts import (
     ModelReviewArtifactV1,
     ModelReviewPromptV1,
@@ -75,13 +75,7 @@ def require_model_review_quality(
         raise ValueError("learner model review must be static-only")
     if artifact.language_id != exercise.language_id:
         raise ValueError("model review artifact language does not match exercise")
-    public_text = json.dumps(
-        {"prompt": prompt.model_dump(mode="json"), "artifact": artifact.model_dump(mode="json")},
-        ensure_ascii=False,
-        sort_keys=True,
-    ).casefold()
-    if any(marker in public_text for marker in _PROTECTED):
-        raise ValueError("public model review contains a protected marker")
+    model_review_public_redaction_proof(exercise)
     if validation.candidate_hash != _candidate_hash(exercise, rubric):
         raise ValueError("model review validation does not reference exact candidate")
     statuses = {item.check_type: item.status for item in validation.checks}
@@ -103,6 +97,25 @@ def require_model_review_quality(
         validation_hash=validation.receipt_hash,
         checks=tuple(sorted(statuses)),
     )
+
+
+def model_review_public_redaction_proof(exercise: ExerciseVersion) -> dict[str, object]:
+    prompt, artifact = parse_public_model_review(exercise)
+    public_payload = {
+        "title": exercise.title,
+        "prompt": prompt.model_dump(mode="json"),
+        "artifact": artifact.model_dump(mode="json"),
+    }
+    public_text = json.dumps(public_payload, ensure_ascii=False, sort_keys=True).casefold()
+    if any(marker in public_text for marker in _PROTECTED):
+        raise ValueError("public model review contains a protected marker")
+    return {
+        "exercise_hash": exercise.content_hash,
+        "prompt_schema": prompt.schema_version,
+        "artifact_schema": artifact.schema_version,
+        "public_payload_hash": canonical_hash(public_payload),
+        "protected_marker_count": 0,
+    }
 
 
 def _candidate_hash(exercise: ExerciseVersion, rubric: ExercisePrivateRubric) -> str:
