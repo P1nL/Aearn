@@ -240,7 +240,7 @@ def _strict_provider_rejection_observed() -> dict[str, object]:
         settings=Settings(llm_type="openai", openai_api_key="fixture-key", openai_base_url="https://provider.example", openai_model="fixture"),
         client=_FakeJsonClient(
             {
-                "schema_version": "tutor_provider_items_v2",
+                "schema_version": "tutor_provider_items_v3",
                 "message": {
                     "type": "agent_message",
                     "text": "safe",

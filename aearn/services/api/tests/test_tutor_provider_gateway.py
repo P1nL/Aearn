@@ -815,6 +815,82 @@ def test_primary_gateway_uses_the_injected_client_even_when_it_is_falsey() -> No
     assert client.calls == 1
 
 
+@pytest.mark.parametrize(
+    ("continuation_kind", "question_key"),
+    [
+        ("clarification", None),
+        ("planning_input", "weekly_minutes"),
+        ("approval", None),
+        ("capability_result", None),
+        ("external_result", None),
+    ],
+)
+def test_parse_tutor_decision_accepts_each_exact_continuation_contract(
+    continuation_kind: str,
+    question_key: str | None,
+) -> None:
+    action: dict[str, object] = {
+        "type": "wait_for_input",
+        "continuation_kind": continuation_kind,
+    }
+    if question_key is not None:
+        action["question_key"] = question_key
+    decision = parse_tutor_decision(
+        {
+            "schema_version": TUTOR_PROVIDER_ITEMS_SCHEMA_VERSION,
+            "message": {
+                "type": "agent_message",
+                "text": "请补充这一项信息。",
+                "public_thinking_steps": ["这一项输入是继续当前有限步骤所必需的。"],
+                "conversation_title": None,
+            },
+            "action": action,
+        },
+        run=_run(),
+    )
+
+    assert decision.continuation_kind is TutorContinuationKind(continuation_kind)
+    assert decision.question_key == question_key
+
+
+@pytest.mark.parametrize(
+    ("continuation_kind", "question_key"),
+    [
+        ("planning_input", None),
+        ("planning_input", "unknown_fact"),
+        ("clarification", "weekly_minutes"),
+        ("approval", "goal_text"),
+        ("capability_result", "language_id"),
+        ("external_result", "pace_constraints"),
+    ],
+)
+def test_parse_tutor_decision_rejects_continuation_question_key_mismatch(
+    continuation_kind: str,
+    question_key: str | None,
+) -> None:
+    action: dict[str, object] = {
+        "type": "wait_for_input",
+        "continuation_kind": continuation_kind,
+    }
+    if question_key is not None:
+        action["question_key"] = question_key
+
+    with pytest.raises(LLMInvalidResponseError):
+        parse_tutor_decision(
+            {
+                "schema_version": TUTOR_PROVIDER_ITEMS_SCHEMA_VERSION,
+                "message": {
+                    "type": "agent_message",
+                    "text": "继续。",
+                    "public_thinking_steps": ["当前需要一项明确输入。"],
+                    "conversation_title": None,
+                },
+                "action": action,
+            },
+            run=_run(),
+        )
+
+
 def test_parse_tutor_decision_accepts_safe_title_and_explicit_continuation() -> None:
     decision = parse_tutor_decision(
         {
@@ -944,6 +1020,46 @@ def test_tutor_decision_prompt_and_generated_schema_share_one_typed_protocol() -
     ]
     assert message_schema["properties"]["public_thinking_steps"]["minItems"] == 1
     assert message_schema["properties"]["public_thinking_steps"]["maxItems"] == 4
+    wait_schema = schema["$defs"]["TutorProviderWaitForInputItem"]
+    wait_branches = wait_schema["anyOf"]
+    assert {branch["properties"]["continuation_kind"]["const"] for branch in wait_branches} == {
+        "clarification",
+        "planning_input",
+        "approval",
+        "capability_result",
+        "external_result",
+    }
+    planning_branch = next(
+        branch
+        for branch in wait_branches
+        if branch["properties"]["continuation_kind"]["const"] == "planning_input"
+    )
+    assert planning_branch["required"] == ["type", "continuation_kind", "question_key"]
+    assert set(planning_branch["properties"]["question_key"]["enum"]) == {
+        "language_id",
+        "goal_text",
+        "target_level",
+        "weekly_minutes",
+        "experience_level",
+        "teaching_preferences",
+        "pace_constraints",
+    }
+    for branch in wait_branches:
+        if branch is planning_branch:
+            continue
+        assert branch["required"] == ["type", "continuation_kind"]
+        assert "question_key" not in branch["properties"]
+    for continuation_kind in (
+        "clarification",
+        "planning_input",
+        "approval",
+        "capability_result",
+        "external_result",
+    ):
+        assert continuation_kind in initial_system
+        assert continuation_kind in replacement_message
+    assert '"question_key":"weekly_minutes"' in initial_system
+    assert '"question_key":"weekly_minutes"' in replacement_message
     assert "action.type:invalid_literal" in replacement_message
     assert "never emit them" in replacement_message
     assert "Choose their wording, tone, ordering, and granularity naturally" in replacement_message

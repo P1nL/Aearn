@@ -8,7 +8,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
-from typing import Literal, Protocol
+from typing import Literal, Protocol, get_args
 
 from app.core.teaching_safety import (
     check_teaching_output,
@@ -34,6 +34,18 @@ MAX_TUTOR_CONTEXT_COMPACTION_CANDIDATES = 32
 
 
 TutorRunOrigin = Literal["interactive", "proactive"]
+TutorPlanningQuestionKey = Literal[
+    "language_id",
+    "goal_text",
+    "target_level",
+    "weekly_minutes",
+    "experience_level",
+    "teaching_preferences",
+    "pace_constraints",
+]
+TUTOR_PLANNING_QUESTION_KEYS: frozenset[str] = frozenset(
+    get_args(TutorPlanningQuestionKey)
+)
 
 
 class TutorRunStatus(str, Enum):
@@ -102,8 +114,10 @@ class TutorCheckpointReason(str, Enum):
 
 
 class TutorContinuationKind(str, Enum):
-    """Server-authorized ways to continue one existing bounded Tutor run."""
+    """Server-authorized reasons for accepting one more input on the same run."""
 
+    CLARIFICATION = "clarification"
+    PLANNING_INPUT = "planning_input"
     APPROVAL = "approval"
     CAPABILITY_RESULT = "capability_result"
     EXTERNAL_RESULT = "external_result"
@@ -936,7 +950,7 @@ class TutorDecision:
     public_message: str | None = None
     public_thinking_steps: tuple[str, ...] = ()
     conversation_title: str | None = None
-    question_key: str | None = None
+    question_key: TutorPlanningQuestionKey | None = None
     skill_references: tuple[TutorSkillReference, ...] = ()
     capability_requests: tuple[TutorCapabilityRequest, ...] = ()
     effect_proposals: tuple[TutorEffectProposal, ...] = ()
@@ -957,8 +971,13 @@ class TutorDecision:
             object.__setattr__(self, "conversation_title", normalize_tutor_conversation_title(self.conversation_title))
         if self.question_key is not None:
             object.__setattr__(self, "question_key", _safe_identifier(self.question_key))
-            if self.continuation_kind is None:
-                raise ValueError("question_key requires a continuation")
+        if self.continuation_kind is TutorContinuationKind.PLANNING_INPUT:
+            if self.question_key is None:
+                raise ValueError("planning_input continuation requires question_key")
+            if self.question_key not in TUTOR_PLANNING_QUESTION_KEYS:
+                raise ValueError("planning_input continuation question_key is not allowlisted")
+        elif self.question_key is not None:
+            raise ValueError("question_key is reserved for planning_input continuation")
         object.__setattr__(self, "skill_references", tuple(self.skill_references[:4]))
         object.__setattr__(self, "capability_requests", tuple(self.capability_requests[:4]))
         object.__setattr__(self, "effect_proposals", tuple(self.effect_proposals[:4]))

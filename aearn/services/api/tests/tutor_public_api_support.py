@@ -143,6 +143,8 @@ def terminal_dispatcher(
 @dataclass
 class WaitingTutorProvider:
     message: str
+    continuation_kind: TutorContinuationKind = TutorContinuationKind.CLARIFICATION
+    question_key: str | None = None
     public_thinking_steps: tuple[str, ...] = (
         "我先确认当前信息还不足以安全给出下一步。",
     )
@@ -155,15 +157,25 @@ class WaitingTutorProvider:
             decision=TutorDecision(
                 public_message=self.message,
                 public_thinking_steps=self.public_thinking_steps,
-                question_key="goal_text",
+                question_key=self.question_key,
                 checkpoint_reason=TutorCheckpointReason.CAPABILITY_RESULT,
-                continuation_kind=TutorContinuationKind.APPROVAL,
+                continuation_kind=self.continuation_kind,
             )
         )
 
 
-def waiting_dispatcher(*, settings: Settings, message: str) -> tuple[TutorInteractiveRunDispatcher, WaitingTutorProvider]:
-    provider = WaitingTutorProvider(message=message)
+def waiting_dispatcher(
+    *,
+    settings: Settings,
+    message: str,
+    continuation_kind: TutorContinuationKind = TutorContinuationKind.CLARIFICATION,
+    question_key: str | None = None,
+) -> tuple[TutorInteractiveRunDispatcher, WaitingTutorProvider]:
+    provider = WaitingTutorProvider(
+        message=message,
+        continuation_kind=continuation_kind,
+        question_key=question_key,
+    )
     return (
         TutorInteractiveRunDispatcher(settings=settings, provider_factory=lambda _settings: provider),
         provider,

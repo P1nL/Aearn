@@ -937,7 +937,7 @@ def _fixture_responses(raw_attempts: Sequence[Mapping[str, object]]) -> tuple[LL
             {"public_message": "fixture", "checkpoint_reason": "invalid"}
             if outcome == TutorProviderAttemptOutcome.REPAIRABLE_REJECTED.value
             else {
-                "schema_version": "tutor_provider_items_v2",
+                "schema_version": "tutor_provider_items_v3",
                 "message": {
                     "type": "agent_message",
                     "text": "fixture learner-safe reply",

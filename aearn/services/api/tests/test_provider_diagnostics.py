@@ -161,7 +161,7 @@ def test_gateway_commits_rejected_provider_bodies_but_discards_accepted_body(
     _, key_base64 = _capture_key()
     settings = _settings(tmp_path, key_base64=key_base64)
     rejected_body = {
-        "schema_version": "tutor_provider_items_v2",
+        "schema_version": "tutor_provider_items_v3",
         "message": {
             "type": "agent_message",
             "text": "继续。",
@@ -194,7 +194,7 @@ def test_gateway_commits_rejected_provider_bodies_but_discards_accepted_body(
     )
 
     accepted_body = {
-        "schema_version": "tutor_provider_items_v2",
+        "schema_version": "tutor_provider_items_v3",
         "message": {
             "type": "agent_message",
             "text": "先看一个小例子。",
