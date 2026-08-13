@@ -21,9 +21,12 @@ from app.services.learning.lesson_contracts import (
     LessonDocumentDraft,
     LessonSourceSnapshot,
     calculate_lesson_impact,
+    canonical_lesson_author_example,
     canonical_lesson_document_payload,
     canonical_source_set_hash,
     citation_id_for_chunk,
+    lesson_author_block_examples,
+    lesson_author_output_schema,
     parse_lesson_document_candidate,
 )
 from app.services.learning.lesson_quality import LessonQualityError, require_lesson_quality
@@ -111,7 +114,13 @@ class PrimaryLessonDocumentAuthor:
             ) from exc
         messages = _author_messages(request)
         try:
-            response = client.complete_json(messages, temperature=0.1, max_tokens=12_000)
+            response = client.complete_json(
+                messages,
+                temperature=0.1,
+                max_tokens=12_000,
+                output_schema=lesson_author_output_schema(),
+                schema_name="lesson_document_v1",
+            )
         except LLMConfigurationError as exc:
             raise LessonAuthoringFailure("LESSON_DOCUMENT_GENERATION_UNAVAILABLE", "课程生成服务当前不可用。", outcome="unavailable") from exc
         except LLMInvalidResponseError as exc:
@@ -386,6 +395,7 @@ def _safe_fail(
 
 
 def _author_messages(request: LessonAuthoringRequest) -> tuple[dict[str, str], ...]:
+    citation_handle = request.evidence[0].handle
     instruction = (
         "You author one strict LessonDocument JSON object. Use only the supplied evidence handles in citation_ids. "
         "Do not output URLs, HTML, Markdown, scripts, styles, commands, paths, hidden tests, answers, rubrics, or execution claims. "
@@ -394,7 +404,28 @@ def _author_messages(request: LessonAuthoringRequest) -> tuple[dict[str, str], .
         "exercise_gate, summary, next_steps. block_id values are stable lowercase keys; order_index starts at zero and is continuous. "
         "Every factual block uses at least one supplied evidence handle. code_example.execution_claim is exactly not_run. "
         "exercise_gate only contains gate_key, gate_kind, assessment_contract_version, required_capabilities, learner_prompt. "
-        "Return JSON only with exact document and block fields."
+        "Return JSON only with exact document and block fields. Exact compact document example: "
+        + json.dumps(
+            canonical_lesson_author_example(
+                language_id=request.language_id,
+                knowledge_key=request.knowledge_key,
+                title=request.title,
+                citation_handle=citation_handle,
+            ),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + ". Exact field examples for every registered block type: "
+        + json.dumps(
+            lesson_author_block_examples(
+                language_id=request.language_id,
+                citation_handle=citation_handle,
+            ),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
     )
     payload: dict[str, object] = _safe_request_payload(request)
     if request.standard_document is not None:

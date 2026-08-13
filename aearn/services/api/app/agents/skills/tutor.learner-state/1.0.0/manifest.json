@@ -7,7 +7,7 @@
   "instruction_file": "instructions.md",
   "evaluation_suite_file": "evals.json",
   "content_hashes": {
-    "instructions.md": "ff4c22a0b19745c4f1dae360368860281c9d333b7c7d321c4cbda5f47e2e86dc",
+    "instructions.md": "8b5704261788d00ba384ef833ff825d36af6115562ab407c1d7732d8da5f0b20",
     "evals.json": "630c36012c440e292d495edb307c5942dde01137fb6dc168ba0da69f5498774e"
   },
   "resource_refs": [],
