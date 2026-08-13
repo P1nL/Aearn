@@ -253,11 +253,24 @@ class ModelReviewRubricV1(_FrozenModel):
     expected_findings: tuple[ModelReviewExpectedFindingV1, ...] = Field(default=(), max_length=16)
     visible_evidence_ids: tuple[str, ...] = Field(default=(), max_length=12)
     coverage_policy: str = Field(min_length=1, max_length=160)
+    template_id: str | None = Field(default=None, min_length=1, max_length=160)
+    template_version: str | None = Field(default=None, min_length=1, max_length=160)
+    template_contract_hash: str | None = Field(default=None, min_length=64, max_length=64)
     score_policy_version: Literal["model_code_review_score_v1"] = "model_code_review_score_v1"
     feedback_policy_version: Literal["model_code_review_feedback_v1"] = "model_code_review_feedback_v1"
 
+    @field_validator("template_contract_hash")
+    @classmethod
+    def validate_template_hash(cls, value: str | None) -> str | None:
+        if value is not None and not _SHA256.fullmatch(value):
+            raise ValueError("model review template contract hash must be SHA-256")
+        return value
+
     @model_validator(mode="after")
     def validate_scenario(self) -> "ModelReviewRubricV1":
+        template_identity = (self.template_id, self.template_version, self.template_contract_hash)
+        if any(item is not None for item in template_identity) and not all(item is not None for item in template_identity):
+            raise ValueError("model review template identity must be complete")
         keys = tuple(item.finding_key for item in self.expected_findings)
         if len(keys) != len(set(keys)):
             raise ValueError("expected finding keys must be unique")

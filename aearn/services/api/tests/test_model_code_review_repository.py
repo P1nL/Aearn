@@ -6,9 +6,11 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 from app.services.learning.lesson_contracts import ExerciseGateBlock
-from app.services.learning.practice.contracts import ExerciseSourceKind
-from app.services.learning.practice.model_review_fixtures import MODEL_REVIEW_FIXTURES
 from app.services.learning.practice.model_review_repository import PostgresModelReviewRepository
+from app.services.learning.practice.model_review_templates import (
+    ModelReviewAuthorCandidateV2,
+    select_model_review_template,
+)
 from app.services.learning.practice.repository import PostgresExerciseGateRepository
 from app.services.learning.practice.service import ExerciseGateService
 from app.services.repositories.local_user_data_repository import export_user_data, reset_user_data
@@ -100,17 +102,21 @@ def test_model_review_export_reset_and_cutover_inventory(lesson_repo) -> None:
         now=datetime(2026, 8, 12, 2, 1, tzinfo=UTC),
     )
     running = model_reviews.read_authoring_run(run_id=running.run_id, user_id=user_id)
-    source = MODEL_REVIEW_FIXTURES[0]
-    exercise = replace(
-        source.exercise,
-        exercise_key=f"python.variables.review.export.{uuid4().hex[:12]}",
-        source_kind=ExerciseSourceKind.REGISTERED_AUTHOR,
+    template = select_model_review_template(
+        language_id=running.language_id,
+        knowledge_key=running.knowledge_key,
+        required_capabilities=running.required_capabilities,
+        mastery_level=running.mastery_level,
+    )
+    exercise, rubric = template.build_exercise(
+        author=ModelReviewAuthorCandidateV2.model_validate(template.canonical_author_example()),
+        knowledge_key=running.knowledge_key,
         required_capabilities=running.required_capabilities,
     )
     candidate = model_reviews.create_candidate(
         run=running,
         exercise=exercise,
-        rubric=source.rubric,
+        rubric=rubric,
     )
     validation = model_reviews.create_or_replay_validation(
         run=running,
