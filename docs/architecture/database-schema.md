@@ -61,7 +61,7 @@ projection 的唯一 durable authority；Desktop、Celery 和 provider 不拥有
 | `tutor_messages` | canonical learner/Tutor public message body + bounded public thinking narration | 唯一允许存放原始 learner 文本的 Tutor 表；Tutor 回复可保存最多 4 条 learner-visible `public_thinking_steps_json`，它不是 provider-native reasoning；不可作为 trace/export dump；旧 message-only conversation 继续可读并投影空数组 |
 | `tutor_message_context_references` | learner message/run revision 的 append-only learner-safe artifact snapshot | 复合 FK 固定 user/conversation/run/message/input revision；只保存 bounded safe projection/hash，不复制 learner content、submission、hidden/private artifact 或 raw execution/provider 数据 |
 | `tutor_catalog_snapshots` | reviewed Skill catalog digest snapshot | run 只能引用已持久化的 digest |
-| `tutor_runs` | 有限 loop 的 durable snapshot | `origin` 为 `interactive/proactive`；lease、budget counter、`input_revision`、terminal outcome 和 `next_event_sequence` 都由 DB 保护；`superseded_by_run_id` 是内部 audit link；`continuation_kind` 只允许 explicit continuation enum |
+| `tutor_runs` | 有限 loop 的 durable snapshot | `origin` 为 `interactive/proactive`；lease、budget counter、`input_revision`、terminal outcome 和 `next_event_sequence` 都由 DB 保护；`superseded_by_run_id` 是内部 audit link；`continuation_kind` 只允许 `clarification/planning_input/approval/capability_result/external_result` |
 | `tutor_provider_attempt_receipts` | 每个实际 provider HTTP attempt 的 append-only usage 事实 | identity 为 `(run_id,input_revision,decision_iteration,attempt_index)`；复合 FK 固定 user/run/conversation scope；只保存受限 provider/model/protocol、outcome/diagnostic 和非负 token 数，不保存 prompt、response body、reasoning 文本、URL/header 或 credential |
 | `tutor_run_public_processes` | 一条新 interactive run 对应一条 server-safe public-process projection | 只允许 `thinking/completed/superseded/unavailable`，只保留 timestamps、关联 public Tutor message 和固定 step key；不存 reasoning、provider payload、prompt、trace 或工具参数 |
 | `tutor_run_public_process_steps` | append-only public-process step order | `(run_id, ordinal)` 唯一；step key/state 均有 DB + repository allowlist；公开 label 在 read projection 映射而非存自由文本 |
@@ -292,12 +292,18 @@ cutover inventory 将四张 action 表视为 target state，不会在切换中�
 `tutor_model_review_validation_checks`、`tutor_model_review_publications` 与
 `tutor_model_review_evidence_receipts` 保存 user/track/Gate scoped 的生成、受控验证、发布和
 learner assistance 事实。candidate 公共题面与 private rubric/test payload 分列并各自 hash；
-只有 `model-code-review.validate@1.0.0` 的 verified authority 才能原子发布
+provider candidate 只保存教学标题、学习者说明和候选代码，server-owned private payload 保存
+受控 test DSL、expected outcome、finding/rubric/proof、score policy 以及完整
+`template_id + template_version + template_contract_hash`。只有
+`model-code-review.validate@1.0.0` 的 verified authority 才能原子发布
 `tutor_exercise_versions` / `tutor_exercise_private_rubrics` 与 exact Gate binding。
 
 共享执行队列新增 `source_kind=model_review_candidate` 与
 `owner_kind=model_review_validation`，仍复用既有 intent/job/attempt、reviewed runtime lock、
-lease、retry、cancel 与 terminal contract。学习者 submit 为 `structured_answer`，完整 JSON 只
+lease、retry、cancel 与 terminal contract。trusted-input resolver 只在 exact claimed scope 读取
+private DSL，并在 sandbox wire payload 中剥离 template test id、`candidate_expected_pass` 和
+`proof_ids`；这些 metadata 只用于 API 侧验证结果与服务端模板预期是否一致。学习者 submit 为
+`structured_answer`，完整 JSON 只
 保存在 private submission 表；export 只投影 verdict 与用户 finding 的 id/kind/line/category/
 severity 摘要。private candidate、rubric、test、matcher、proof 与 submission 自由文本均省略。
 

@@ -317,3 +317,15 @@ contract，不访问真实 provider、不启动或批准生产 container fleet�
 | RT-41 | P0 | 最终质量门 | API/executor lock、Ruff、Mypy、完整 pytest、Desktop build、DB smoke、Trellis validate、diff hygiene 全部通过 | release-readiness ledger |
 
 真实 provider 与 Docker/container smoke 仍为可选、独立、需批准证据；它们不能替代上述确定性 contract 测试，也不能由上述测试自动推断为发布批准。
+
+## 2026-08-13：Prompt 合同与受控 Model Review authoring 增量
+
+| ID | 优先级 | 区域 | 验收 | 证据 |
+| --- | --- | --- | --- | --- |
+| RT-42 | P0 | Tutor continuation | 五类 exact enum、`planning_input/question_key` pairing、未知值/错配拒绝、DB/API/Desktop 同步 | `test_tutor_provider_gateway.py`、`test_db_bootstrap.py`、Desktop `tsc --noEmit` |
+| RT-43 | P0 | Model Review author boundary | model schema 仅含教学场景与 candidate code；template identity/tests/rubric/proof/score server-owned；六场景 registry 全覆盖 | `test_model_review_authoring_contract.py` |
+| RT-44 | P0 | Controlled validation DSL | visible/hidden、连续 order、proof coverage、exact runtime/count/outcome；sandbox wire 剥离 expected/proof/id metadata | Model Review repository tests、executor `test_exercise_trusted_input.py` |
+| RT-45 | P0 | 全量 prompt audit | Tutor/Lesson/Adaptive/Curator/Error Explanation 均有严格 schema、稳定 schema name 与合法示例；union/block 示例足够覆盖分支 | `test_prompt_contracts.py`、curation/adaptive/provider focused tests |
+
+本增量不调用真实 provider，也不批准生产 executor image。受控 template 和 fake result 只证明合同、
+隔离和 fail-closed 行为；真实生成质量与 runtime/container conformance 仍需独立批准。

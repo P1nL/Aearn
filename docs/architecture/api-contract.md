@@ -177,11 +177,14 @@ idempotency key 的 request hash 包含这两个字段，因此变更事实或 r
 误判为同请求重放。
 
 `/runs/{run_id}/inputs` 不是普通聊天快捷方式：仅当 run 仍属于当前用户、尚未
-terminal/cancelled/superseded、状态为 `waiting_for_input`，且已持久化
-`continuation_kind` 时允许继续。ordinary input 创建 fresh run 并重新快照 conversation
-scope；explicit continuation 复用同一 immutable run scope，若请求携带新的
-`learning_scope` 则返回 `409 LEARNING_SCOPE_CONFLICT`。普通 completed、normal-chat 或
-被替代 run 一律返回 `409 RUN_NOT_ACTIVE`。
+terminal/cancelled/superseded、状态为 `waiting_for_input`，且已持久化精确
+`continuation_kind` 时允许继续。枚举固定为 `clarification | planning_input | approval |
+capability_result | external_result`：普通歧义、单项计划事实、明确授权、已授权能力结果、
+外部步骤结果分别使用对应值。只有 `planning_input` 携带 allowlisted `question_key`；其他类型
+不得携带。ordinary input 创建 fresh run 并重新快照 conversation scope；explicit continuation
+复用同一 immutable run scope，若请求携带新的 `learning_scope` 则返回
+`409 LEARNING_SCOPE_CONFLICT`。普通 completed、normal-chat 或被替代 run 一律返回
+`409 RUN_NOT_ACTIVE`。
 
 安全 title 只能在同次成功 Tutor decision 写入 learner-visible reply 时尝试写入，使用
 NFKC 单行且最多 48 字符的 `conversation_title`，并以 `WHERE title IS NULL` 固定一次。
@@ -433,7 +436,11 @@ message/run/revision identity；`questions[]` 只暴露 `question_key`、`field_
 ## 2026-08-12：模型代码审核练习 API
 
 `model_code_review` 是现有 Lesson Gate/Attempt contract 的正式 exercise type，不是旧
-`review_ai_patch` 的别名。Gate prepare/read 可投影 `preparing | ready | failed` 的
+`review_ai_patch` 的别名。authoring provider 只返回
+`model_review_author_candidate_v2={schema_version,title,learner_instruction,candidate_code}`；
+`template_id`、requirements、visible/hidden tests、expected outcomes、private rubric、findings、
+coverage proof 与 score policy 全由服务端受控 template/DSL 构造，provider 多出的任何字段都使
+candidate fail closed。Gate prepare/read 可投影 `preparing | ready | failed` 的
 `review_authoring_run`；客户端不得生成 fallback 题。模型审核 submit 必须且只能发送
 `review_submission={schema_version,verdict,findings[],supplemental_note?}`，不能同时发送普通
 `submission`，也不提供 learner Run。finding 包含稳定 client id、行范围、kind/category、
@@ -445,7 +452,9 @@ verdict/finding shape、行范围和重复 ID。
 它不执行代码。Attempt/result 只返回 `submission_hash`、`assistance_kind`、确定性分数维度、
 按 client finding id 的 `supported | partial | unsupported | duplicate`、omission band 与 next
  action，不返回 expected finding、隐藏测试、matcher token、private rubric 或 candidate body。
-稳定错误包括 `MODEL_REVIEW_GENERATION_UNAVAILABLE`、`MODEL_REVIEW_CANDIDATE_INVALID`、
+prepublication validation 必须匹配服务端 template identity/hash、exact runtime、test order/count、
+visible/hidden visibility 与 expected pass/fail outcome；executor 不把 private template id、proof id
+或 expected-pass metadata 传给 sandbox。稳定错误包括 `MODEL_REVIEW_GENERATION_UNAVAILABLE`、`MODEL_REVIEW_CANDIDATE_INVALID`、
 `MODEL_REVIEW_VALIDATION_UNAVAILABLE`、`MODEL_REVIEW_VALIDATION_FAILED`、
 `MODEL_REVIEW_VALIDATION_STALE`、`MODEL_REVIEW_PUBLICATION_CONFLICT`、
 `MODEL_REVIEW_SUBMISSION_INVALID` 与 `MODEL_REVIEW_EVIDENCE_UNAVAILABLE`。
