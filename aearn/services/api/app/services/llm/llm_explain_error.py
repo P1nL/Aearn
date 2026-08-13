@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 import json
-from typing import Protocol
+from typing import Literal, Protocol
 
 from app.core.config import Settings, get_settings
+from pydantic import BaseModel, ConfigDict, Field
+
 from app.services.llm.llm_client import (
     LLMCallError,
     LLMConfigurationError,
@@ -43,7 +45,63 @@ class JsonCompletionClient(Protocol):
         messages: Sequence[Mapping[str, str]],
         *,
         temperature: float = 0.2,
+        output_schema: Mapping[str, object] | None = None,
+        schema_name: str | None = None,
     ) -> LLMJsonResponse: ...
+
+
+class _StrictErrorExplanationModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
+
+
+class LLMErrorExplanationKnowledgePoint(_StrictErrorExplanationModel):
+    id: str = Field(min_length=1, max_length=160)
+    title: str = Field(min_length=1, max_length=240)
+
+
+class LLMErrorExplanationOutput(_StrictErrorExplanationModel):
+    error_cause: Literal[
+        "python_syntax_error",
+        "syntax_error",
+        "selector_error",
+        "event_binding_error",
+        "state_scope_error",
+        "return_value_error",
+        "edge_case_error",
+        "boundary_condition_error",
+        "type_error",
+        "async_order_error",
+        "test_misread",
+        "ai_over_trust",
+        "undefined_reference",
+        "timeout_loop",
+        "runtime_error",
+    ]
+    explanation: str = Field(min_length=1, max_length=900)
+    fix_suggestion: str = Field(min_length=1, max_length=700)
+    related_knowledge_points: tuple[LLMErrorExplanationKnowledgePoint, ...] = Field(max_length=16)
+    next_action: Literal[
+        "retry_same",
+        "show_hint",
+        "explain_error",
+        "review_variant",
+        "schedule_review",
+        "advance_next",
+    ]
+
+
+def llm_error_explanation_output_schema() -> dict[str, object]:
+    return LLMErrorExplanationOutput.model_json_schema()
+
+
+def canonical_llm_error_explanation_example() -> dict[str, object]:
+    return {
+        "error_cause": "boundary_condition_error",
+        "explanation": "当前判断把一个合法边界值也归入了越界分支，因此该输入没有返回预期结果。",
+        "fix_suggestion": "只调整边界比较条件，然后重新运行同一组可见测试；不要一次重写整个函数。",
+        "related_knowledge_points": [],
+        "next_action": "retry_same",
+    }
 
 
 def build_llm_error_explanation(
@@ -75,7 +133,12 @@ def build_llm_error_explanation(
         related_knowledge_points=related_knowledge_points,
     )
     try:
-        result = client.complete_json(messages, temperature=0.2)
+        result = client.complete_json(
+            messages,
+            temperature=0.2,
+            output_schema=llm_error_explanation_output_schema(),
+            schema_name="llm_error_explanation_v1",
+        )
         response = _validate_response(
             result.content,
             related_knowledge_points=related_knowledge_points,
@@ -114,6 +177,7 @@ def _build_messages(
             "content": (
                 "你是 Aearn 的编程学习错因解释器。只根据给定 evidence 解释错误；不要推测不存在的运行结果；"
                 "不要输出隐藏测试源码、参考答案或完整修复代码。只输出 JSON，不要 Markdown。"
+                f"合法输出示例：{json.dumps(canonical_llm_error_explanation_example(), ensure_ascii=False, separators=(',', ':'))}"
             ),
         },
         {
@@ -184,15 +248,33 @@ def _validate_response(
     related_knowledge_points: Sequence[Mapping[str, object]],
     forbidden_tokens: Sequence[str],
 ) -> dict[str, object]:
-    error_cause = _required_str(payload, "error_cause", max_length=80)
-    if error_cause not in ALLOWED_ERROR_CAUSES:
-        raise LLMInvalidResponseError("LLM returned unsupported error_cause")
-    explanation = _required_str(payload, "explanation", max_length=900)
-    fix_suggestion = _required_str(payload, "fix_suggestion", max_length=700)
-    next_action = _required_str(payload, "next_action", max_length=40)
-    if next_action not in ALLOWED_NEXT_ACTIONS:
-        raise LLMInvalidResponseError("LLM returned unsupported next_action")
-    _reject_forbidden_output([error_cause, explanation, fix_suggestion, next_action], forbidden_tokens)
+    try:
+        parsed = LLMErrorExplanationOutput.model_validate(dict(payload))
+    except ValueError as exc:
+        raise LLMInvalidResponseError("LLM returned invalid error explanation contract") from exc
+    error_cause = parsed.error_cause
+    explanation = parsed.explanation
+    fix_suggestion = parsed.fix_suggestion
+    next_action = parsed.next_action
+    allowed_knowledge_points = {
+        (item["id"], item["title"])
+        for item in _knowledge_points_evidence(related_knowledge_points)
+    }
+    authored_knowledge_points = tuple(
+        (item.id, item.title) for item in parsed.related_knowledge_points
+    )
+    if any(item not in allowed_knowledge_points for item in authored_knowledge_points):
+        raise LLMInvalidResponseError("LLM returned an ungrounded knowledge point")
+    _reject_forbidden_output(
+        [
+            error_cause,
+            explanation,
+            fix_suggestion,
+            next_action,
+            *(value for item in authored_knowledge_points for value in item),
+        ],
+        forbidden_tokens,
+    )
     if "```" in explanation or "```" in fix_suggestion:
         raise LLMInvalidResponseError("LLM returned code fence content")
 
@@ -203,16 +285,6 @@ def _validate_response(
         "related_knowledge_points": _knowledge_points_evidence(related_knowledge_points),
         "next_action": next_action,
     }
-
-
-def _required_str(payload: Mapping[str, object], key: str, *, max_length: int) -> str:
-    value = payload.get(key)
-    if not isinstance(value, str):
-        raise LLMInvalidResponseError(f"LLM response field {key} must be a string")
-    stripped = value.strip()
-    if not stripped:
-        raise LLMInvalidResponseError(f"LLM response field {key} must not be blank")
-    return _limit_text(stripped, max_length)
 
 
 def _hidden_case_ids(failed_tests: Sequence[Mapping[str, object]]) -> list[str]:

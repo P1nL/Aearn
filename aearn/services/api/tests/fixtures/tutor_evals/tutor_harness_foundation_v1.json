@@ -6,11 +6,11 @@
       "id": "catalog-identity-pinned",
       "scenario": "catalog_identity",
       "catalog": {
-        "digest": "85b0b39f17f59f2a541666b6595babbf0fe23e713fbc2a5ea7dc60ed7cd1b2a6",
+        "digest": "4b3279381bb7df6b160218cd98d8460da3ea1dca2ed60aca2f1be47fec657ab2",
         "skill_id": "tutor.registry-grounding",
         "skill_version": "1.0.0",
-        "manifest_hash": "127ff1e847a4ba51b7804e2f888add13b0c7bbf2500e8bb76f2cc6b088f7b62a",
-        "instruction_hash": "081388e2c9e5f4c7c11e9ba3a33b66f06f5a1f461fe3fc14acf4513a47c8780d",
+        "manifest_hash": "96e4e36e4487f46616b1cd38746a543cf9eb79484ec6a02f11df8bd2915dbfe3",
+        "instruction_hash": "b636948c9aa1ae26d402f7bbe8a794c1cf54fd605401aa4be01d3a6fe8e22565",
         "evaluation_hash": "c3a9be60f93e7d805c32ebe2139fc6a7d2ac8d50e26d4b07141c59ea19c8d8e8"
       },
       "expected": {
@@ -21,11 +21,11 @@
       "id": "policy-denial-no-capability",
       "scenario": "policy_denial",
       "catalog": {
-        "digest": "85b0b39f17f59f2a541666b6595babbf0fe23e713fbc2a5ea7dc60ed7cd1b2a6",
+        "digest": "4b3279381bb7df6b160218cd98d8460da3ea1dca2ed60aca2f1be47fec657ab2",
         "skill_id": "tutor.registry-grounding",
         "skill_version": "1.0.0",
-        "manifest_hash": "127ff1e847a4ba51b7804e2f888add13b0c7bbf2500e8bb76f2cc6b088f7b62a",
-        "instruction_hash": "081388e2c9e5f4c7c11e9ba3a33b66f06f5a1f461fe3fc14acf4513a47c8780d",
+        "manifest_hash": "96e4e36e4487f46616b1cd38746a543cf9eb79484ec6a02f11df8bd2915dbfe3",
+        "instruction_hash": "b636948c9aa1ae26d402f7bbe8a794c1cf54fd605401aa4be01d3a6fe8e22565",
         "evaluation_hash": "c3a9be60f93e7d805c32ebe2139fc6a7d2ac8d50e26d4b07141c59ea19c8d8e8"
       },
       "expected": {
@@ -38,11 +38,11 @@
       "id": "strict-provider-envelope-rejected",
       "scenario": "strict_provider_rejection",
       "catalog": {
-        "digest": "85b0b39f17f59f2a541666b6595babbf0fe23e713fbc2a5ea7dc60ed7cd1b2a6",
+        "digest": "4b3279381bb7df6b160218cd98d8460da3ea1dca2ed60aca2f1be47fec657ab2",
         "skill_id": "tutor.registry-grounding",
         "skill_version": "1.0.0",
-        "manifest_hash": "127ff1e847a4ba51b7804e2f888add13b0c7bbf2500e8bb76f2cc6b088f7b62a",
-        "instruction_hash": "081388e2c9e5f4c7c11e9ba3a33b66f06f5a1f461fe3fc14acf4513a47c8780d",
+        "manifest_hash": "96e4e36e4487f46616b1cd38746a543cf9eb79484ec6a02f11df8bd2915dbfe3",
+        "instruction_hash": "b636948c9aa1ae26d402f7bbe8a794c1cf54fd605401aa4be01d3a6fe8e22565",
         "evaluation_hash": "c3a9be60f93e7d805c32ebe2139fc6a7d2ac8d50e26d4b07141c59ea19c8d8e8"
       },
       "expected": {
@@ -54,11 +54,11 @@
       "id": "bounded-loop-exits-before-provider",
       "scenario": "bounded_loop",
       "catalog": {
-        "digest": "85b0b39f17f59f2a541666b6595babbf0fe23e713fbc2a5ea7dc60ed7cd1b2a6",
+        "digest": "4b3279381bb7df6b160218cd98d8460da3ea1dca2ed60aca2f1be47fec657ab2",
         "skill_id": "tutor.registry-grounding",
         "skill_version": "1.0.0",
-        "manifest_hash": "127ff1e847a4ba51b7804e2f888add13b0c7bbf2500e8bb76f2cc6b088f7b62a",
-        "instruction_hash": "081388e2c9e5f4c7c11e9ba3a33b66f06f5a1f461fe3fc14acf4513a47c8780d",
+        "manifest_hash": "96e4e36e4487f46616b1cd38746a543cf9eb79484ec6a02f11df8bd2915dbfe3",
+        "instruction_hash": "b636948c9aa1ae26d402f7bbe8a794c1cf54fd605401aa4be01d3a6fe8e22565",
         "evaluation_hash": "c3a9be60f93e7d805c32ebe2139fc6a7d2ac8d50e26d4b07141c59ea19c8d8e8"
       },
       "expected": {
@@ -70,11 +70,11 @@
       "id": "revision-race-stale-effect",
       "scenario": "stale_effect",
       "catalog": {
-        "digest": "85b0b39f17f59f2a541666b6595babbf0fe23e713fbc2a5ea7dc60ed7cd1b2a6",
+        "digest": "4b3279381bb7df6b160218cd98d8460da3ea1dca2ed60aca2f1be47fec657ab2",
         "skill_id": "tutor.registry-grounding",
         "skill_version": "1.0.0",
-        "manifest_hash": "127ff1e847a4ba51b7804e2f888add13b0c7bbf2500e8bb76f2cc6b088f7b62a",
-        "instruction_hash": "081388e2c9e5f4c7c11e9ba3a33b66f06f5a1f461fe3fc14acf4513a47c8780d",
+        "manifest_hash": "96e4e36e4487f46616b1cd38746a543cf9eb79484ec6a02f11df8bd2915dbfe3",
+        "instruction_hash": "b636948c9aa1ae26d402f7bbe8a794c1cf54fd605401aa4be01d3a6fe8e22565",
         "evaluation_hash": "c3a9be60f93e7d805c32ebe2139fc6a7d2ac8d50e26d4b07141c59ea19c8d8e8"
       },
       "expected": {
@@ -87,11 +87,11 @@
       "id": "primary-only-model-unavailable",
       "scenario": "primary_model_unavailable",
       "catalog": {
-        "digest": "85b0b39f17f59f2a541666b6595babbf0fe23e713fbc2a5ea7dc60ed7cd1b2a6",
+        "digest": "4b3279381bb7df6b160218cd98d8460da3ea1dca2ed60aca2f1be47fec657ab2",
         "skill_id": "tutor.registry-grounding",
         "skill_version": "1.0.0",
-        "manifest_hash": "127ff1e847a4ba51b7804e2f888add13b0c7bbf2500e8bb76f2cc6b088f7b62a",
-        "instruction_hash": "081388e2c9e5f4c7c11e9ba3a33b66f06f5a1f461fe3fc14acf4513a47c8780d",
+        "manifest_hash": "96e4e36e4487f46616b1cd38746a543cf9eb79484ec6a02f11df8bd2915dbfe3",
+        "instruction_hash": "b636948c9aa1ae26d402f7bbe8a794c1cf54fd605401aa4be01d3a6fe8e22565",
         "evaluation_hash": "c3a9be60f93e7d805c32ebe2139fc6a7d2ac8d50e26d4b07141c59ea19c8d8e8"
       },
       "expected": {
@@ -104,11 +104,11 @@
       "id": "protected-values-never-exported",
       "scenario": "redaction_leakage",
       "catalog": {
-        "digest": "85b0b39f17f59f2a541666b6595babbf0fe23e713fbc2a5ea7dc60ed7cd1b2a6",
+        "digest": "4b3279381bb7df6b160218cd98d8460da3ea1dca2ed60aca2f1be47fec657ab2",
         "skill_id": "tutor.registry-grounding",
         "skill_version": "1.0.0",
-        "manifest_hash": "127ff1e847a4ba51b7804e2f888add13b0c7bbf2500e8bb76f2cc6b088f7b62a",
-        "instruction_hash": "081388e2c9e5f4c7c11e9ba3a33b66f06f5a1f461fe3fc14acf4513a47c8780d",
+        "manifest_hash": "96e4e36e4487f46616b1cd38746a543cf9eb79484ec6a02f11df8bd2915dbfe3",
+        "instruction_hash": "b636948c9aa1ae26d402f7bbe8a794c1cf54fd605401aa4be01d3a6fe8e22565",
         "evaluation_hash": "c3a9be60f93e7d805c32ebe2139fc6a7d2ac8d50e26d4b07141c59ea19c8d8e8"
       },
       "protected_markers": [
@@ -127,11 +127,11 @@
       "id": "replay-outbox-proposal-terminal-unique",
       "scenario": "replay_outbox_proposal",
       "catalog": {
-        "digest": "85b0b39f17f59f2a541666b6595babbf0fe23e713fbc2a5ea7dc60ed7cd1b2a6",
+        "digest": "4b3279381bb7df6b160218cd98d8460da3ea1dca2ed60aca2f1be47fec657ab2",
         "skill_id": "tutor.registry-grounding",
         "skill_version": "1.0.0",
-        "manifest_hash": "127ff1e847a4ba51b7804e2f888add13b0c7bbf2500e8bb76f2cc6b088f7b62a",
-        "instruction_hash": "081388e2c9e5f4c7c11e9ba3a33b66f06f5a1f461fe3fc14acf4513a47c8780d",
+        "manifest_hash": "96e4e36e4487f46616b1cd38746a543cf9eb79484ec6a02f11df8bd2915dbfe3",
+        "instruction_hash": "b636948c9aa1ae26d402f7bbe8a794c1cf54fd605401aa4be01d3a6fe8e22565",
         "evaluation_hash": "c3a9be60f93e7d805c32ebe2139fc6a7d2ac8d50e26d4b07141c59ea19c8d8e8"
       },
       "expected": {
@@ -146,11 +146,11 @@
       "id": "current-input-pinned",
       "scenario": "current_input_pinned",
       "catalog": {
-        "digest": "85b0b39f17f59f2a541666b6595babbf0fe23e713fbc2a5ea7dc60ed7cd1b2a6",
+        "digest": "4b3279381bb7df6b160218cd98d8460da3ea1dca2ed60aca2f1be47fec657ab2",
         "skill_id": "tutor.registry-grounding",
         "skill_version": "1.0.0",
-        "manifest_hash": "127ff1e847a4ba51b7804e2f888add13b0c7bbf2500e8bb76f2cc6b088f7b62a",
-        "instruction_hash": "081388e2c9e5f4c7c11e9ba3a33b66f06f5a1f461fe3fc14acf4513a47c8780d",
+        "manifest_hash": "96e4e36e4487f46616b1cd38746a543cf9eb79484ec6a02f11df8bd2915dbfe3",
+        "instruction_hash": "b636948c9aa1ae26d402f7bbe8a794c1cf54fd605401aa4be01d3a6fe8e22565",
         "evaluation_hash": "c3a9be60f93e7d805c32ebe2139fc6a7d2ac8d50e26d4b07141c59ea19c8d8e8"
       },
       "expected": {
@@ -165,11 +165,11 @@
       "id": "newest-history-selected",
       "scenario": "newest_history_selected",
       "catalog": {
-        "digest": "85b0b39f17f59f2a541666b6595babbf0fe23e713fbc2a5ea7dc60ed7cd1b2a6",
+        "digest": "4b3279381bb7df6b160218cd98d8460da3ea1dca2ed60aca2f1be47fec657ab2",
         "skill_id": "tutor.registry-grounding",
         "skill_version": "1.0.0",
-        "manifest_hash": "127ff1e847a4ba51b7804e2f888add13b0c7bbf2500e8bb76f2cc6b088f7b62a",
-        "instruction_hash": "081388e2c9e5f4c7c11e9ba3a33b66f06f5a1f461fe3fc14acf4513a47c8780d",
+        "manifest_hash": "96e4e36e4487f46616b1cd38746a543cf9eb79484ec6a02f11df8bd2915dbfe3",
+        "instruction_hash": "b636948c9aa1ae26d402f7bbe8a794c1cf54fd605401aa4be01d3a6fe8e22565",
         "evaluation_hash": "c3a9be60f93e7d805c32ebe2139fc6a7d2ac8d50e26d4b07141c59ea19c8d8e8"
       },
       "expected": {
@@ -185,11 +185,11 @@
       "id": "teaching-correction-policy-present",
       "scenario": "teaching_correction_policy_present",
       "catalog": {
-        "digest": "85b0b39f17f59f2a541666b6595babbf0fe23e713fbc2a5ea7dc60ed7cd1b2a6",
+        "digest": "4b3279381bb7df6b160218cd98d8460da3ea1dca2ed60aca2f1be47fec657ab2",
         "skill_id": "tutor.registry-grounding",
         "skill_version": "1.0.0",
-        "manifest_hash": "127ff1e847a4ba51b7804e2f888add13b0c7bbf2500e8bb76f2cc6b088f7b62a",
-        "instruction_hash": "081388e2c9e5f4c7c11e9ba3a33b66f06f5a1f461fe3fc14acf4513a47c8780d",
+        "manifest_hash": "96e4e36e4487f46616b1cd38746a543cf9eb79484ec6a02f11df8bd2915dbfe3",
+        "instruction_hash": "b636948c9aa1ae26d402f7bbe8a794c1cf54fd605401aa4be01d3a6fe8e22565",
         "evaluation_hash": "c3a9be60f93e7d805c32ebe2139fc6a7d2ac8d50e26d4b07141c59ea19c8d8e8"
       },
       "expected": {
@@ -200,11 +200,11 @@
       "id": "current-input-unrepresentable-provider-not-called",
       "scenario": "current_input_unrepresentable_provider_not_called",
       "catalog": {
-        "digest": "85b0b39f17f59f2a541666b6595babbf0fe23e713fbc2a5ea7dc60ed7cd1b2a6",
+        "digest": "4b3279381bb7df6b160218cd98d8460da3ea1dca2ed60aca2f1be47fec657ab2",
         "skill_id": "tutor.registry-grounding",
         "skill_version": "1.0.0",
-        "manifest_hash": "127ff1e847a4ba51b7804e2f888add13b0c7bbf2500e8bb76f2cc6b088f7b62a",
-        "instruction_hash": "081388e2c9e5f4c7c11e9ba3a33b66f06f5a1f461fe3fc14acf4513a47c8780d",
+        "manifest_hash": "96e4e36e4487f46616b1cd38746a543cf9eb79484ec6a02f11df8bd2915dbfe3",
+        "instruction_hash": "b636948c9aa1ae26d402f7bbe8a794c1cf54fd605401aa4be01d3a6fe8e22565",
         "evaluation_hash": "c3a9be60f93e7d805c32ebe2139fc6a7d2ac8d50e26d4b07141c59ea19c8d8e8"
       },
       "expected": {

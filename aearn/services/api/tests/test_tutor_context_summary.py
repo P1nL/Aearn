@@ -76,9 +76,18 @@ class _PrimaryClient:
         self.content = content
         self.calls: list[object] = []
 
-    def complete_json(self, messages, *, temperature=None, max_tokens=None, timeout_seconds=None):
+    def complete_json(
+        self,
+        messages,
+        *,
+        temperature=None,
+        max_tokens=None,
+        timeout_seconds=None,
+        output_schema=None,
+        schema_name=None,
+    ):
         del temperature, max_tokens, timeout_seconds
-        self.calls.append(messages)
+        self.calls.append((messages, output_schema, schema_name))
         return SimpleNamespace(content=self.content)
 
 
@@ -601,6 +610,8 @@ def test_primary_context_summary_gateway_requires_v2_and_sends_only_transient_bo
     assert result.state == "proposal"
     assert isinstance(result.proposal, CurationContextSummaryProposalV2)
     assert len(client.calls) == 1
+    assert client.calls[0][2] == "tutor_context_summary_v2"
+    assert isinstance(client.calls[0][1], dict)
     serialized = json.dumps(client.calls[0], ensure_ascii=False)
     assert "TRANSIENT_ONLY_MARKER" in serialized
     assert "tutor_context_summary_v2" in serialized

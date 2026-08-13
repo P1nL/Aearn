@@ -58,6 +58,80 @@ FORBIDDEN_LEARNER_TEXT_MARKERS = (
 )
 
 
+def adaptive_exercise_author_output_schema() -> dict[str, object]:
+    """Exact outer authoring contract; tests and runtime authority are absent."""
+
+    text = {"type": "string", "minLength": 1, "maxLength": 48_000}
+    candidate_properties: dict[str, object] = {
+        "title": {"type": "string", "minLength": 1, "maxLength": 240},
+        "prompt_markdown": {"type": "string", "minLength": 1, "maxLength": 12_000},
+        "starter_code": text,
+        "solution_reference": text,
+        "metadata_json": {"type": "object"},
+        "code_blanks": {
+            "type": "array",
+            "maxItems": 16,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "blank_key": {"type": "string", "minLength": 1, "maxLength": 120},
+                    "placeholder": {"type": "string", "minLength": 1, "maxLength": 1_200},
+                    "expected_concept": {"type": "string", "minLength": 1, "maxLength": 1_200},
+                    "acceptable_patterns_json": {"type": "array", "maxItems": 12, "items": {"type": "object"}},
+                    "is_core": {"type": "boolean"},
+                    "order_index": {"type": "integer", "minimum": 0},
+                },
+                "required": [
+                    "blank_key",
+                    "placeholder",
+                    "expected_concept",
+                    "acceptable_patterns_json",
+                    "is_core",
+                    "order_index",
+                ],
+            },
+        },
+        "difficulty": {"type": "integer", "minimum": 1, "maximum": 5},
+        "estimated_minutes": {"type": "integer", "minimum": 1, "maximum": 180},
+        "requires_explanation": {"type": "boolean"},
+        "exercise_intent": {"type": "string", "minLength": 1, "maxLength": 500},
+        "target_skill_tags": {"type": "array", "maxItems": 12, "items": {"type": "string", "minLength": 1, "maxLength": 120}},
+        "alignment_claims": {"type": "array", "maxItems": 8, "items": {"type": "string", "minLength": 1, "maxLength": 500}},
+        "visible_examples": {"type": "array", "maxItems": 4, "items": {"type": "string", "minLength": 1, "maxLength": 500}},
+        "requested_exercise_type": {"type": "string", "minLength": 1, "maxLength": 80},
+    }
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "candidate": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": candidate_properties,
+                "required": ["title", "prompt_markdown", "starter_code", "solution_reference"],
+            }
+        },
+        "required": ["candidate"],
+    }
+
+
+def canonical_adaptive_exercise_author_example(template: CanonicalExerciseTemplate) -> dict[str, object]:
+    fallback = template.fallback_payload
+    candidate: dict[str, object] = {
+        "title": str(fallback.get("title") or "受控编程练习"),
+        "prompt_markdown": str(fallback.get("prompt_markdown") or "完成代码并验证可见行为。"),
+        "starter_code": str(fallback.get("starter_code") or ""),
+        "solution_reference": str(fallback.get("solution_reference") or ""),
+        "exercise_intent": "直接练习当前 required_skill_tags，并保持服务端 runner contract。",
+        "target_skill_tags": [template.language_id],
+        "alignment_claims": ["题目和候选代码直接对应当前知识点。"],
+    }
+    if isinstance(fallback.get("code_blanks"), list):
+        candidate["code_blanks"] = fallback["code_blanks"]
+    return {"candidate": candidate}
+
+
 @dataclass(frozen=True, slots=True)
 class GeneratedAdaptiveCandidate:
     content: Mapping[str, object]
@@ -286,6 +360,8 @@ def build_model_candidate(
         _model_messages(context, template),
         max_tokens=_ADAPTIVE_EXERCISE_MAX_TOKENS,
         timeout_seconds=_ADAPTIVE_EXERCISE_MIN_TIMEOUT_SECONDS,
+        output_schema=adaptive_exercise_author_output_schema(),
+        schema_name="adaptive_exercise_candidate_v1",
     )
     return GeneratedAdaptiveCandidate(content=result.content, model=result.model)
 
@@ -335,19 +411,25 @@ def _model_messages(
                     ),
                     "bounded_learner_context": context,
                     "canonical_template_envelope": safe_envelope,
-                    "response_shape": {
-                        "candidate": {
-                            "title": "string",
-                            "prompt_markdown": "string",
-                            "starter_code": "string",
-                            "solution_reference": "string",
-                            "metadata_json": {},
-                            "code_blanks": [],
-                            "exercise_intent": "string",
-                            "target_skill_tags": [],
-                            "alignment_claims": [],
-                        }
+                    "response_contract": {
+                        "allowed_candidate_fields": sorted(MODEL_CANDIDATE_ALLOWED_KEYS),
+                        "required_candidate_fields": [
+                            "title",
+                            "prompt_markdown",
+                            "starter_code",
+                            "solution_reference",
+                        ],
+                        "server_owned_forbidden_fields": [
+                            "test_cases",
+                            "hidden_tests",
+                            "expected_outputs",
+                            "grading_authority",
+                            "runtime_tier",
+                            "runner_key",
+                            "runner_contract",
+                        ],
                     },
+                    "valid_example": canonical_adaptive_exercise_author_example(template),
                 },
                 ensure_ascii=False,
             ),

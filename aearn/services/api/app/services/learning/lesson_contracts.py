@@ -520,6 +520,121 @@ def _parse_block(value: object) -> LessonBlock:
         return NextStepsBlock(block_id, order_index, citation_ids, _string_sequence(value.get("items"), "items"))
     raise ValueError(f"unregistered LessonDocument block type: {block_type}")
 
+def lesson_author_output_schema() -> dict[str, object]:
+    """Machine-readable schema for the exact Lesson authoring payload."""
+
+    common = {
+        "block_id": {"type": "string", "minLength": 1, "maxLength": 160},
+        "type": {"type": "string"},
+        "order_index": {"type": "integer", "minimum": 0},
+        "citation_ids": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1, "maxLength": 160},
+            "maxItems": 16,
+            "uniqueItems": True,
+        },
+    }
+    block_specs: tuple[tuple[str, dict[str, object]], ...] = (
+        ("heading", {"title": _text_schema(240), "subtitle": _text_schema(500, minimum=0)}),
+        ("learning_objectives", {"items": _text_array_schema(16, 500), "coverage_keys": _text_array_schema(32, 160)}),
+        ("concept", {"title": _text_schema(240), "paragraphs": _text_array_schema(12, 2400), "coverage_keys": _text_array_schema(32, 160)}),
+        ("authority_note", {"title": _text_schema(240), "statement": _text_schema(2400)}),
+        ("code_example", {"title": _text_schema(240), "language_id": _text_schema(80), "code": _text_schema(12000), "explanation": _text_array_schema(12, 1200), "execution_claim": {"const": "not_run"}}),
+        ("comparison", {"title": _text_schema(240), "columns": _text_array_schema(6, 160), "rows": {"type": "array", "minItems": 1, "maxItems": 16, "items": _text_array_schema(6, 800)}, "conclusion": _text_schema(1600)}),
+        ("hint", {"title": _text_schema(240), "steps": _text_array_schema(12, 1000)}),
+        ("exercise_gate", {"gate_key": _text_schema(160), "gate_kind": {"enum": ["knowledge_check", "guided_practice", "independent_practice"]}, "assessment_contract_version": _text_schema(160), "required_capabilities": _text_array_schema(16, 160), "learner_prompt": _text_schema(1200)}),
+        ("summary", {"points": _text_array_schema(16, 800), "coverage_keys": _text_array_schema(32, 160)}),
+        ("next_steps", {"items": _text_array_schema(12, 800)}),
+    )
+    one_of: list[dict[str, object]] = []
+    for block_type, extra in block_specs:
+        properties = {**common, "type": {"const": block_type}, **extra}
+        one_of.append(
+            {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": properties,
+                "required": list(properties),
+            }
+        )
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "schema_version": {"const": LESSON_DOCUMENT_SCHEMA_VERSION},
+            "title": _text_schema(240),
+            "language_id": _text_schema(80),
+            "knowledge_key": _text_schema(160),
+            "content_standard_version": {"const": LESSON_CONTENT_STANDARD_VERSION},
+            "coverage_keys": _text_array_schema(64, 160),
+            "blocks": {"type": "array", "minItems": 1, "maxItems": MAX_LESSON_BLOCKS, "items": {"oneOf": one_of}},
+        },
+        "required": ["schema_version", "title", "language_id", "knowledge_key", "content_standard_version", "coverage_keys", "blocks"],
+    }
+
+
+def canonical_lesson_author_example(*, language_id: str, knowledge_key: str, title: str, citation_handle: str) -> dict[str, object]:
+    """Compact valid example showing exact top-level and block fields."""
+
+    return {
+        "schema_version": LESSON_DOCUMENT_SCHEMA_VERSION,
+        "title": title,
+        "language_id": language_id,
+        "knowledge_key": knowledge_key,
+        "content_standard_version": LESSON_CONTENT_STANDARD_VERSION,
+        "coverage_keys": [f"{knowledge_key}.core"],
+        "blocks": [
+            {
+                "block_id": "lesson-heading",
+                "type": "heading",
+                "order_index": 0,
+                "citation_ids": [citation_handle],
+                "title": title,
+                "subtitle": "先理解核心概念，再完成一个受控练习。",
+            },
+            {
+                "block_id": "lesson-summary",
+                "type": "summary",
+                "order_index": 1,
+                "citation_ids": [citation_handle],
+                "points": ["用一个可验证的例子总结核心行为。"],
+                "coverage_keys": [f"{knowledge_key}.core"],
+            },
+        ],
+    }
+
+
+def lesson_author_block_examples(*, language_id: str, citation_handle: str) -> dict[str, object]:
+    """One exact field example for every registered Lesson block type."""
+
+    common = {"order_index": 0, "citation_ids": [citation_handle]}
+    return {
+        "heading": {"block_id": "heading-1", "type": "heading", **common, "title": "标题", "subtitle": "副标题"},
+        "learning_objectives": {"block_id": "objectives-1", "type": "learning_objectives", **common, "items": ["理解核心行为"], "coverage_keys": ["core.behavior"]},
+        "concept": {"block_id": "concept-1", "type": "concept", **common, "title": "概念", "paragraphs": ["只陈述证据支持的事实。"], "coverage_keys": ["core.behavior"]},
+        "authority_note": {"block_id": "authority-1", "type": "authority_note", **common, "title": "规范提示", "statement": "说明版本或平台边界。"},
+        "code_example": {"block_id": "code-1", "type": "code_example", **common, "title": "代码示例", "language_id": language_id, "code": "value = 1", "explanation": ["解释这一行的可见行为。"], "execution_claim": "not_run"},
+        "comparison": {"block_id": "comparison-1", "type": "comparison", **common, "title": "对比", "columns": ["写法", "行为"], "rows": [["A", "行为 A"]], "conclusion": "指出适用边界。"},
+        "hint": {"block_id": "hint-1", "type": "hint", **common, "title": "提示", "steps": ["先检查输入和输出。"]},
+        "exercise_gate": {"block_id": "gate-1", "type": "exercise_gate", **common, "gate_key": "core.check", "gate_kind": "knowledge_check", "assessment_contract_version": "knowledge_check_v1", "required_capabilities": [f"{language_id}.core"], "learner_prompt": "用自己的话解释核心行为。"},
+        "summary": {"block_id": "summary-1", "type": "summary", **common, "points": ["总结核心行为。"], "coverage_keys": ["core.behavior"]},
+        "next_steps": {"block_id": "next-1", "type": "next_steps", **common, "items": ["完成受控练习。"]},
+    }
+
+
+def _text_schema(maximum: int, *, minimum: int = 1) -> dict[str, object]:
+    return {"type": "string", "minLength": minimum, "maxLength": maximum}
+
+
+def _text_array_schema(maximum_items: int, item_maximum: int) -> dict[str, object]:
+    return {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": maximum_items,
+        "items": _text_schema(item_maximum),
+    }
+
+
 def citation_id_for_chunk(chunk_id: str, chunk_hash: str) -> str:
     digest = hashlib.sha256(f"{chunk_id}:{chunk_hash}".encode("utf-8")).hexdigest()
     return f"cite_{digest[:16]}"

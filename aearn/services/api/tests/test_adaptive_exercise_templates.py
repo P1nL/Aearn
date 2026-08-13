@@ -49,10 +49,14 @@ def test_model_candidate_uses_bounded_tokens_and_long_timeout(monkeypatch: pytes
             temperature: float | None = None,
             max_tokens: int | None = None,
             timeout_seconds: float | None = None,
+            output_schema: Mapping[str, object] | None = None,
+            schema_name: str | None = None,
         ) -> LLMJsonResponse:
             del messages, temperature
             captured["max_tokens"] = max_tokens
             captured["timeout_seconds"] = timeout_seconds
+            captured["output_schema"] = output_schema
+            captured["schema_name"] = schema_name
             return LLMJsonResponse(content={"candidate": {"title": "Practice"}}, model="fake-model")
 
     monkeypatch.setattr(adaptive_exercise_service, "OpenAICompatibleClient", lambda: FakeJsonClient())
@@ -73,6 +77,8 @@ def test_model_candidate_uses_bounded_tokens_and_long_timeout(monkeypatch: pytes
     assert candidate is not None
     assert captured["max_tokens"] == 5000
     assert captured["timeout_seconds"] == 60.0
+    assert captured["schema_name"] == "adaptive_exercise_candidate_v1"
+    assert isinstance(captured["output_schema"], dict)
 
 
 @pytest.mark.parametrize("language", ["python", "javascript"])

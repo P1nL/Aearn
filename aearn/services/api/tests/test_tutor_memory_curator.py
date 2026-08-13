@@ -65,9 +65,28 @@ class _PrimaryClient:
         self.content = content
         self.calls: list[tuple[object, object]] = []
 
-    def complete_json(self, messages, *, temperature=None, max_tokens=None, timeout_seconds=None):
+    def complete_json(
+        self,
+        messages,
+        *,
+        temperature=None,
+        max_tokens=None,
+        timeout_seconds=None,
+        output_schema=None,
+        schema_name=None,
+    ):
         del timeout_seconds
-        self.calls.append((messages, {"temperature": temperature, "max_tokens": max_tokens}))
+        self.calls.append(
+            (
+                messages,
+                {
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                    "output_schema": output_schema,
+                    "schema_name": schema_name,
+                },
+            )
+        )
         return SimpleNamespace(content=self.content)
 
 class _NeverClient:
@@ -252,7 +271,10 @@ def test_primary_curation_gateway_uses_one_injected_primary_and_never_falls_back
     assert result.proposal is not None
     assert result.proposal.kind == "context_summary"
     assert len(client.calls) == 1
-    assert client.calls[0][1] == {"temperature": None, "max_tokens": 17}
+    assert client.calls[0][1]["temperature"] is None
+    assert client.calls[0][1]["max_tokens"] == 17
+    assert client.calls[0][1]["schema_name"] == "tutor_curation_output_v1"
+    assert isinstance(client.calls[0][1]["output_schema"], dict)
     serialized_messages = str(client.calls[0][0])
     assert "evt-1" in serialized_messages
     assert "provider_reasoning" not in serialized_messages

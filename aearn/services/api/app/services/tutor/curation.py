@@ -151,6 +151,8 @@ class CurationJsonClient(Protocol):
         temperature: float | None = 0.2,
         max_tokens: int | None = None,
         timeout_seconds: float | None = None,
+        output_schema: Mapping[str, object] | None = None,
+        schema_name: str | None = None,
     ) -> object: ...
 
 
@@ -187,6 +189,8 @@ class PrimaryCurationGateway:
                 temperature=None,
                 max_tokens=self._max_output_tokens,
                 timeout_seconds=self._timeout_seconds,
+                output_schema=curation_output_schema(source.projection_kind),
+                schema_name=curation_output_schema_name(source.projection_kind),
             )
             content = getattr(response, "content", None)
             if not isinstance(content, Mapping):
@@ -412,6 +416,58 @@ def build_curation_proposal_processor(
     )
 
 
+def curation_output_schema(projection_kind: str) -> dict[str, object]:
+    if projection_kind == "context_summary":
+        return {
+            "oneOf": [
+                CurationContextSummaryProposalV2.model_json_schema(),
+                CurationNoActionProposalV1.model_json_schema(),
+            ]
+        }
+    return {
+        "oneOf": [
+            CurationContextSummaryProposalV1.model_json_schema(),
+            CurationMemoryEntryProposalV1.model_json_schema(),
+            CurationNoActionProposalV1.model_json_schema(),
+        ]
+    }
+
+
+def curation_output_schema_name(projection_kind: str) -> str:
+    return "tutor_context_summary_v2" if projection_kind == "context_summary" else "tutor_curation_output_v1"
+
+
+def canonical_curation_examples(projection_kind: str) -> str:
+    examples: tuple[Mapping[str, object], ...]
+    if projection_kind == "context_summary":
+        examples = (
+            {
+                "kind": "context_summary",
+                "schema_version": TUTOR_CONTEXT_SUMMARY_SCHEMA_VERSION,
+                "current_goal": "继续学习函数参数",
+                "confirmed_facts": ["学习者已经准备好练习环境"],
+                "completed_steps": ["已完成变量基础"],
+                "rejected_paths": ["不再重复旧的网站搭建路径"],
+                "open_questions": ["下一步先练默认参数还是返回值"],
+                "learner_preferences": ["偏好短小且可验证的示例"],
+                "confidence": "high",
+            },
+            {"kind": "no_action", "code": "no_safe_continuity_fact"},
+        )
+    else:
+        examples = (
+            {"kind": "context_summary", "summary": "学习者正在练习函数边界。", "confidence": "medium"},
+            {
+                "kind": "memory_entry",
+                "category": "learning_preference",
+                "statement": "学习者偏好短小且可验证的示例。",
+                "confidence": "high",
+            },
+            {"kind": "no_action", "code": "no_safe_projection"},
+        )
+    return " ".join(json.dumps(item, ensure_ascii=False, separators=(",", ":")) for item in examples)
+
+
 def parse_curation_output(payload: Mapping[str, object]) -> CurationOutput:
     kind = str(payload.get("kind") or "")
     if kind == "context_summary" and str(payload.get("schema_version") or "") == TUTOR_CONTEXT_SUMMARY_SCHEMA_VERSION:
@@ -436,7 +492,8 @@ def _build_messages(*, source: TutorCurationSource) -> list[dict[str, str]]:
             "Merge only the supplied prior summary and retired messages. Newer learner corrections override older "
             "facts; completed work and rejected paths must remain separate; open questions are not confirmed facts. "
             "Do not quote messages or include code, URL, path, command, SQL, provider detail, credential, reasoning, "
-            "or unknown fields. Use bounded arrays and return no_action only when no continuity fact is safe to retain."
+            "or unknown fields. Use bounded arrays and return no_action only when no continuity fact is safe to retain. "
+            f"Valid output examples: {canonical_curation_examples(source.projection_kind)}"
         )
         bounded_source = {
             "summary_schema_version": source.summary_schema_version,
@@ -471,7 +528,8 @@ def _build_messages(*, source: TutorCurationSource) -> list[dict[str, str]]:
             "Allowed kind values are context_summary, memory_entry, or no_action. "
             "Use only the supplied redacted evidence. Never include raw conversation, prompt, "
             "provider reasoning, code, URL, path, command, SQL, secret, chat, activity, plan, "
-            "review, FSRS, attempt, executor, provider choice, or unknown fields."
+            "review, FSRS, attempt, executor, provider choice, or unknown fields. "
+            f"Valid output examples: {canonical_curation_examples(source.projection_kind)}"
         )
         bounded_source = {
             "outbox_id": source.outbox_id,
