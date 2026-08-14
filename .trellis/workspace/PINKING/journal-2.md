@@ -1498,3 +1498,41 @@ Closed the planning-only Tutor Harness rearchitecture parent after all nine inde
 ### Next Steps
 
 - 启动 08-14-tutor-typed-request-authority-turns，先核对 Child 1 已归档并读取后端 specs/source-of-truth。
+
+
+## Session 102: 完成 Tutor 类型化请求与权威续轮
+
+**Date**: 2026-08-15
+**Task**: 完成 Tutor 类型化请求与权威续轮
+**Branch**: `codex/codex-like-tutor-conversation`
+
+### Summary
+
+完成五类 typed request、来源 turn 终结、fresh response/authority turn、planning catalog、approval/receipt CAS、public snapshot/event 与 Desktop type/API seam，并归档 Child 3。
+
+### Main Changes
+
+- 新增 tutor_interaction_requests、response_to_request_id、completion_reason 与复合 scope/CAS 约束。
+- v2 continuation 改为 typed request；learner response 与 verified authority receipt 创建 fresh TurnRun 和独立 dispatch job。
+- 同步 API/runtime/database/acceptance source-of-truth 与 backend/frontend code-spec。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `a1523e5f` | (see git log) |
+| `90ad4a57` | (see git log) |
+
+### Testing
+
+- [OK] API 全量 pytest：560 passed, 1 skipped。
+- [OK] Ruff、Mypy、uv lock --check、compileall、DB bootstrap twice、Trellis validate、git diff --check 通过。
+- [OK] Desktop Vitest：14 passed；desktop:check 的 tsc + Vite build 通过。
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 启动 08-13-tutor-queue-steer-interrupt-control，消费 pending request authority，不重定义 request contract。
