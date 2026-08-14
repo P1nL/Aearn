@@ -2837,6 +2837,7 @@ class PostgresTutorRepository:
                 cancelled=row.get("cancelled_at") is not None,
                 superseded=row.get("superseded_by_run_id") is not None,
             ),
+            input_revision=_as_int(row.get("input_revision"), 0),
             retry_of_turn_id=_optional_string(row.get("retry_of_turn_id")),
             retry_root_turn_id=_optional_string(row.get("retry_root_turn_id")),
             completion_reason=cast(

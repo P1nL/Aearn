@@ -218,7 +218,16 @@ export type TutorApprovalItem = {
 };
 
 export type TutorInteractionRequestItem = TutorElicitationItem | TutorApprovalItem;
-export type TutorHistoryItem = TutorHistoryMessage | TutorPublicProcess | TutorInteractionRequestItem;
+export type TutorHistoryError = {
+  kind: "error";
+  id: string;
+  turn_id: string | null;
+  code: string;
+  message: string;
+  recoverable: boolean;
+  created_at: string | null;
+};
+export type TutorHistoryItem = TutorHistoryMessage | TutorPublicProcess | TutorInteractionRequestItem | TutorHistoryError;
 
 export type TutorConversationHistoryResponse = {
   items: TutorHistoryItem[];
@@ -307,6 +316,7 @@ export type TutorPublicTurn = {
   conversation_id: string;
   interaction_protocol_version: TutorInteractionProtocolVersion;
   status: "in_progress" | "completed" | "interrupted" | "failed";
+  input_revision: number;
   retry_of_turn_id: string | null;
   retry_root_turn_id: string | null;
   completion_reason: TutorTurnCompletionReason | null;

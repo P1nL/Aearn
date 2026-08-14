@@ -109,37 +109,32 @@ stateDiagram-v2
 - 选择“新对话”只清空本地 timeline/run/composer context 并将 selection 设为 draft；
   **不得**创建 conversation、run、message 或 sidebar item。首个非空提交调用
   `POST /conversations/first-turn`，成功后才选中新 conversation 并刷新 recent list。
-- 选择已有 conversation 时，页面取消旧 history request/stream、清空旧本地 timeline，
-  从 `GET /conversations/{id}/history` hydrate 最新 40 条倒序 public timeline 后按正序
-  渲染；“加载更早记录”使用 server cursor prepend，并保持滚动锚点。仅当 history
-  response 声明 active foreground run 时订阅该 run 的 SSE。
-- 普通 composer submit 始终调用 selected conversation 的 conversation-input endpoint，
-  并创建 fresh finite TurnRun；它不会因为本地存在 run 而调用 run-input。只有 run 是
-  `waiting_for_input` 且带 server-provided `continuation_kind` 时才显示 continuation
-  affordance，此时才能调用 `/runs/{run_id}/inputs`。
+- 选择已有 conversation 时，页面取消旧 snapshot request/stream、清空旧本地 timeline，
+  从 `GET /conversations/{id}/snapshot` hydrate 最新 40 条倒序 public timeline、active turn、
+  pending typed request、Queue、control version/state 与 opaque `stream_cursor`。更早记录继续
+  使用 snapshot 的 history cursor prepend，并保持滚动锚点。
+- 普通 composer 只调用 conversation-input/first-turn。运行中 Send 显示“加入 Queue”；
+  Stop、Steer、Queue edit/delete/reorder/execute/resume、Retry 与 typed request response 都携带
+  snapshot 返回的 expected identity/version。Desktop 没有 `/runs/{run_id}/inputs` caller，
+  也不会因 legacy waiting 状态恢复旧 continuation。
+- pending typed request 完全占用 composer 席位。clarification、planning input 与 approval
+  使用服务端 presentation/allowed action；authority request 只显示等待状态。此时普通 composer、
+  Queue tray 与 conversation control mutation 不可触达。
 - Composer 最多 16,000 个字符，可用 Ctrl/⌘+Enter 提交；pending 时禁用重复动作。
-  timeline 是独立纵向滚动区，Composer 在 desktop view 保持可见，新的 history 条目
+  timeline 是独立纵向滚动区，Composer 在 desktop view 保持可见，新的 snapshot 条目
   不得把它持续挤出主要可视区。
-- timeline 只渲染 server public `message.content`、Tutor message 的 bounded
-  `public_thinking_steps[]` 和 server public process fields。`public_thinking_steps` 是 provider
-  专门为学习者编写并经安全校验的公开思路说明，不是 provider-native reasoning；措辞、
-  语气、顺序和粒度由模型根据当前请求自然组织，不要求固定句式或过渡词，
-  默认展开显示在同一 Tutor 回复正文之前，可由整行按钮收起/展开。
-  新版 process 是紧凑的行内 disclosure：默认折叠，整行/箭头可键盘操作，含可读
-  label 与 `aria-expanded`。它只显示 `display_state`、server-calculated duration 和
-  allowlisted `steps[].label`；标题为“公开处理过程”。完成后显示“已处理 …”，被替代
-  时显示“已根据你的新消息更新本轮处理”。不得使用旧的绿色三栏 dashboard、渐变思考
-  面板或从 SSE/raw trace 推断模型思考。
-- 旧版 message-only history 正常显示，缺失 `public_thinking_steps` 时投影为空数组；不得
-  合成公开思路、process 卡片、步骤或 duration。
-  run summary 仅显示公开 status 和 stream cursor，绝不显示 provider 诊断或内部 tool
-  arguments。
+- timeline 只渲染 server public `message`、typed request 与 learner-safe `error`。
+  独立 `process` item 仅为兼容解析和 cursor 顺序存在，不进入主 renderer。Tutor message 的
+  bounded `public_thinking_steps[]` 通过 DSH-derived `Think` disclosure 默认展开；不得从 process、
+  SSE/raw trace、tool/category 或 provider reasoning 合成公开思路。
+- legacy waiting 的 `TUTOR_LEGACY_CONTINUATION_REQUIRES_NEW_TURN` 显示 fresh-turn 迁移卡；
+  ordinary cutover cancellation 使用普通 interrupted 视觉，不显示系统故障或自动动作。
 
 ### SSE 交互
 
-`useTutorSSE` 是 transport-only hook：它不重建 conversation history、不推断 terminal
-state，也不请求模型。SSE event 只触发当前 selected conversation 的节流 history/control
-refresh；history endpoint 是 timeline 的唯一 source of truth。
+`useTutorConversationStream` 是 conversation-global transport hook。snapshot 是 timeline、Queue、
+request 与 control state 的唯一 authority；event 只触发节流 snapshot refresh。hook 保存 opaque
+signed cursor，忽略重复/旧 sequence，发现 gap、cursor invalid 或协议错误时关闭旧流并重新 snapshot。
 
 - endpoint 变更、选择其他 conversation 或组件卸载时必须清理旧 stream；新的 history
   hydrate 不得被旧 stream callback 关闭。
@@ -292,4 +287,4 @@ Review feedback 引用、Lesson selection 引用和 console/exception smoke 均�
 
 ## 2026-08-14：thread/turn v2 capability 与 migration state
 
-Desktop 通过 `GET /api/tutor/capabilities/thread-turn-v2` 读取 exact server capability。`effective_enabled=false` 时保留历史读取并显示只读 unavailable/migration 状态，不发送 Tutor mutation、不恢复旧 continuation。`blocked` 显示安全 block code；legacy waiting 失败可引导 fresh turn；普通 cutover cancellation 继续使用 interrupted 视觉。最终 migration card、Queue/QuestionComposer 视觉与响应式验收由 Desktop integration child 完成。
+Desktop 通过 `GET /api/tutor/capabilities/thread-turn-v2` 读取 exact server capability。`effective_enabled=false` 时保留 snapshot/history 读取并显示只读 unavailable 状态，不发送 Tutor mutation、不恢复旧 continuation。`blocked` 只显示安全 block code；legacy waiting 失败显示 fresh-turn 迁移卡，普通 cutover cancellation 继续使用 interrupted 视觉。v2 页面以 snapshot-first + conversation SSE 工作，Queue tray、typed request composer、Stop/Steer/Retry、键盘、窄屏与 reduced-motion 均由 `TutorConversationSurface` 统一实现。
