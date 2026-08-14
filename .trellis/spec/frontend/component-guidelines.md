@@ -198,3 +198,92 @@ switch (block.type) {
 - pending 必须轮询原 `attempt_id`；editor 修改后旧结果显示 stale 或清除，不能继续作为当前提交结果。
 - `ModuleDiagnosticModal` 独立于知识点 Gate；失败明确不跳过，pass 只展示 impact，confirm 后才刷新 Lesson/路线。
 - textarea、modal、关闭/确认按钮必须有 label、visible focus、busy/disabled 和 live status；390px 不得横向溢出。
+
+## Scenario: Aearn-Owned DSH-Derived UI Foundation
+
+### 1. Scope / Trigger
+
+Apply this contract when adding or consuming reusable controls under
+`aearn/apps/desktop/src/ui/dsh-derived/`, updating the pinned upstream-derived
+source, or styling Tutor Composer, Queue, typed questions, `Think`, or plan
+surfaces with this foundation.
+
+### 2. Signatures
+
+```tsx
+<DshDerivedRoot>
+  <Button variant="primary" busy={saving}>Save</Button>
+  <Input ref={inputRef} aria-label="Name" invalid={hasError} />
+  <DisclosureRow
+    title="Think"
+    expanded={expanded}
+    onExpandedChange={setExpanded}
+  >
+    {publicSteps}
+  </DisclosureRow>
+</DshDerivedRoot>
+```
+
+Public entrypoint: `aearn/apps/desktop/src/ui/dsh-derived/index.ts`.
+Public tokens: `--aearn-*`. The class `.aearn-dsh-derived` is the only scope in
+which internal `--dsw-*` compatibility aliases may exist.
+
+### 3. Contracts
+
+- Components are controlled, presentational React 19 components. They accept typed props/callbacks and never read Tutor APIs, Zustand stores, session state, or upstream runtime context.
+- `DshDerivedRoot` establishes the compatibility scope. Product code consumes public exports and `--aearn-*` tokens rather than importing implementation CSS directly.
+- `Button`, `Input`, `DisclosureRow`, and `Tooltip` preserve native keyboard semantics, visible focus, disabled/busy behavior, and refs where the native element has one.
+- `MessageText` renders literal text only. It does not parse Markdown or HTML.
+- `AearnToast` and `showAearnToast` adapt the existing `sonner` runtime; do not add another toast store or provider implementation.
+- Derived source remains pinned to `deepseek-ai/deepseek-harness@47f943859bef60e4160492346772ded9b24f765a`. Update `THIRD_PARTY_NOTICES.md`, `UPSTREAM.md`, and substantial-file revision comments together.
+- Brand assets, product names, Cordis, plugin/session/runtime packages, and upstream state contracts are forbidden production dependencies.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+| --- | --- |
+| Component needs Tutor/server state | create an Aearn feature adapter outside `ui/dsh-derived`; pass typed props/callbacks down |
+| Upstream CSS references `--dsw-*` | map only the required aliases inside `.aearn-dsh-derived`; do not expose them as public tokens |
+| Target control is disabled but still needs a tooltip | use `disabledTarget` so the wrapper provides focus/title fallback |
+| Motion is decorative | disable or reduce it under `prefers-reduced-motion: reduce` |
+| New copied/adapted source is substantial | record repository path, revision, reuse type, and differences in `UPSTREAM.md` |
+| A candidate dependency imports Cordis or upstream runtime | reject the dependency and adapt the React/CSS source locally |
+
+### 5. Good / Base / Bad Cases
+
+- Good: a Tutor feature owns Queue state and passes item text plus callbacks into foundation controls inside `DshDerivedRoot`.
+- Base: a static `Pill` renders as text; an interactive `Pill` renders as a native button.
+- Bad: import a Tutor store or `api.ts` from `ui/dsh-derived`.
+- Bad: use `--dsw-*` in product CSS, copy brand icons, or install an upstream UI/runtime package.
+
+### 6. Tests Required
+
+- `pnpm --dir .\aearn\apps\desktop test` covers keyboard focus, busy/disabled, refs, controlled disclosure, tooltip association/fallback, literal text, semantic tokens, reduced motion, narrow-container CSS, import boundaries, and brand/runtime exclusion.
+- `pnpm --dir .\aearn desktop:check` proves strict TypeScript and Vite production build compatibility.
+- When the foundation is integrated into a visible product surface, add real browser checks at the required wide, medium, and narrow viewports; this foundation task alone does not authorize Tutor behavior changes.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```tsx
+import { useAppStore } from "../../../stores/useAppStore";
+
+export function QueueButton() {
+  const queue = useAppStore((state) => state.queue);
+  return <button style={{ color: "var(--dsw-alias-brand-primary)" }}>{queue.length}</button>;
+}
+```
+
+#### Correct
+
+```tsx
+export interface QueueButtonProps {
+  count: number;
+  onOpen: () => void;
+}
+
+export function QueueButton({ count, onOpen }: QueueButtonProps) {
+  return <Button variant="ghost" onClick={onOpen}>Queue {count}</Button>;
+}
+```

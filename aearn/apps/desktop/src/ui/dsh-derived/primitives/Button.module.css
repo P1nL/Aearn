@@ -1,0 +1,112 @@
+/* Geometry adapted from upstream UI Button.module.css at revision
+ * 47f943859bef60e4160492346772ded9b24f765a (MIT). */
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 0;
+  border-radius: var(--aearn-radius-capsule);
+  padding: 0 14px;
+  color: var(--aearn-label-primary);
+  background: transparent;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background-color var(--aearn-motion-fast) var(--aearn-ease-standard),
+    color var(--aearn-motion-fast) var(--aearn-ease-standard),
+    box-shadow var(--aearn-motion-fast) var(--aearn-ease-standard),
+    transform var(--aearn-motion-fast) var(--aearn-ease-standard);
+}
+
+.button:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--aearn-focus) 34%, transparent);
+  outline-offset: 2px;
+}
+
+.button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.button:disabled {
+  cursor: not-allowed;
+  opacity: 0.46;
+}
+
+.md { min-height: 36px; }
+.sm {
+  min-height: 28px;
+  padding-inline: 10px;
+  font-size: 12px;
+}
+
+.primary {
+  color: var(--aearn-label-on-brand);
+  background: var(--aearn-brand);
+  box-shadow: var(--aearn-shadow-sm);
+}
+.primary:hover:not(:disabled) { background: var(--aearn-brand-hover); }
+
+.outline {
+  border: 1px solid var(--aearn-border);
+  background: var(--aearn-surface);
+}
+
+.outline:hover:not(:disabled),
+.ghost:hover:not(:disabled),
+.icon:hover:not(:disabled) {
+  background: var(--aearn-interactive-hover);
+}
+
+.ghost:active:not(:disabled),
+.icon:active:not(:disabled) {
+  background: var(--aearn-interactive-active);
+}
+
+.icon {
+  width: 36px;
+  padding: 0;
+}
+.icon.sm { width: 28px; }
+
+.iconSlot,
+.spinner {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+}
+
+.iconSlot {
+  width: 16px;
+  height: 16px;
+}
+
+.button.icon > .iconSlot {
+  width: 18px;
+  height: 18px;
+}
+
+.label { min-width: 0; }
+
+.spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: aearn-button-spin 700ms linear infinite;
+}
+
+@keyframes aearn-button-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .button { transition: none; }
+  .button:active:not(:disabled) { transform: none; }
+  .spinner { animation-duration: 1400ms; }
+}

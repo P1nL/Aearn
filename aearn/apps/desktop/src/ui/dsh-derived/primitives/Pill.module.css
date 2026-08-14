@@ -1,0 +1,38 @@
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 24px;
+  padding: 2px 9px;
+  border: 0;
+  border-radius: var(--aearn-radius-capsule);
+  color: var(--aearn-label-secondary);
+  background: var(--aearn-surface-muted);
+  font: inherit;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.interactive {
+  cursor: pointer;
+}
+
+.interactive:hover:not(:disabled) {
+  background: var(--aearn-interactive-hover);
+}
+
+.interactive:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--aearn-focus) 34%, transparent);
+  outline-offset: 2px;
+}
+
+.interactive:disabled {
+  cursor: not-allowed;
+  opacity: 0.46;
+}
+
+.active {
+  color: var(--aearn-brand-active);
+  background: var(--aearn-brand-soft);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--aearn-brand) 32%, transparent);
+}

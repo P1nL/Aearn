@@ -1,0 +1,33 @@
+/* Scoped compatibility aliases for CSS adapted from upstream UI.
+ * These names are implementation details and must never be consumed outside
+ * an .aearn-dsh-derived subtree. */
+.aearn-dsh-derived {
+  --dsw-alias-bg-base: var(--aearn-canvas);
+  --dsw-alias-bg-layer-1: var(--aearn-surface);
+  --dsw-alias-bg-layer-2: var(--aearn-surface-subtle);
+  --dsw-alias-bg-layer-3: var(--aearn-surface-elevated);
+  --dsw-alias-border-l1: var(--aearn-border-subtle);
+  --dsw-alias-border-l2: var(--aearn-border);
+  --dsw-alias-border-l3: var(--aearn-border-strong);
+  --dsw-alias-brand-primary: var(--aearn-brand);
+  --dsw-alias-button-primary-fill: var(--aearn-brand);
+  --dsw-alias-button-primary-hover: var(--aearn-brand-hover);
+  --dsw-alias-button-ghost-active-fill: var(--aearn-selection);
+  --dsw-alias-button-ghost-active-border: var(--aearn-brand);
+  --dsw-alias-button-tool-bar-fill: var(--aearn-label-secondary);
+  --dsw-alias-button-tool-bar-hover: var(--aearn-label-primary);
+  --dsw-alias-interactive-bg-hover: var(--aearn-interactive-hover);
+  --dsw-alias-interactive-bg-active: var(--aearn-interactive-active);
+  --dsw-alias-label-primary: var(--aearn-label-primary);
+  --dsw-alias-label-primary-foreground: var(--aearn-label-on-brand);
+  --dsw-alias-label-secondary: var(--aearn-label-secondary);
+  --dsw-alias-label-tertiary: var(--aearn-label-tertiary);
+  --dsw-alias-label-dimmed: var(--aearn-label-dimmed);
+  --dsw-alias-state-success-primary: var(--aearn-positive);
+  --dsw-alias-state-warn-primary: var(--aearn-warning);
+  --dsw-alias-state-error-primary: var(--aearn-danger);
+  --dsw-alias-tooltip-bg: var(--aearn-tooltip);
+  --dsw-alias-toast-bg: var(--aearn-toast);
+  --dsw-static-neutral-bluish-00: var(--aearn-label-on-brand);
+  --ds-ease-in-out: var(--aearn-ease-standard);
+}
