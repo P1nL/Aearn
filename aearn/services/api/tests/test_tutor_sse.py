@@ -163,9 +163,12 @@ def test_tutor_waiting_result_releases_lease_for_immediate_follow_up(
     with connect() as conn:
         row = conn.execute(
             """
-            SELECT active_lease_owner_id, active_lease_expires_at, active_lease_generation
-            FROM tutor_runs
-            WHERE id = %s AND user_id = %s
+            SELECT runs.active_lease_owner_id, runs.active_lease_expires_at,
+                   runs.active_lease_generation, jobs.state AS dispatch_state,
+                   jobs.attempt_count AS dispatch_attempt_count
+            FROM tutor_runs AS runs
+            JOIN tutor_interactive_dispatch_jobs AS jobs ON jobs.run_id = runs.id
+            WHERE runs.id = %s AND runs.user_id = %s
             """,
             (run_id, user_id),
         ).fetchone()
@@ -174,6 +177,8 @@ def test_tutor_waiting_result_releases_lease_for_immediate_follow_up(
     assert row["active_lease_owner_id"] is None
     assert row["active_lease_expires_at"] is None
     assert row["active_lease_generation"] == 2
+    assert row["dispatch_state"] == "completed"
+    assert row["dispatch_attempt_count"] == 1
 
 
 def test_tutor_event_replay_projects_nonterminal_public_message(

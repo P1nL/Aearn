@@ -5831,3 +5831,199 @@ CREATE INDEX IF NOT EXISTS idx_tutor_message_context_references_message
   ON tutor_message_context_references(user_id, conversation_id, message_id, reference_index);
 CREATE INDEX IF NOT EXISTS idx_tutor_message_context_references_input
   ON tutor_message_context_references(user_id, run_id, input_revision, reference_index);
+
+-- Child 08-13 Tutor Thread/Turn v2 foundation: versioned public event and durable dispatch authority.
+ALTER TABLE tutor_conversations
+  ADD COLUMN IF NOT EXISTS next_public_event_sequence bigint NOT NULL DEFAULT 1;
+ALTER TABLE tutor_conversations
+  ADD COLUMN IF NOT EXISTS control_version bigint NOT NULL DEFAULT 1;
+ALTER TABLE tutor_conversations
+  DROP CONSTRAINT IF EXISTS chk_tutor_conversations_next_public_event_sequence;
+ALTER TABLE tutor_conversations
+  ADD CONSTRAINT chk_tutor_conversations_next_public_event_sequence
+  CHECK (next_public_event_sequence >= 1);
+ALTER TABLE tutor_conversations
+  DROP CONSTRAINT IF EXISTS chk_tutor_conversations_control_version;
+ALTER TABLE tutor_conversations
+  ADD CONSTRAINT chk_tutor_conversations_control_version
+  CHECK (control_version >= 1);
+
+ALTER TABLE tutor_runs
+  ADD COLUMN IF NOT EXISTS interaction_protocol_version text;
+UPDATE tutor_runs
+SET interaction_protocol_version = 'legacy_v1'
+WHERE interaction_protocol_version IS NULL;
+ALTER TABLE tutor_runs
+  ALTER COLUMN interaction_protocol_version SET NOT NULL;
+ALTER TABLE tutor_runs
+  ALTER COLUMN interaction_protocol_version SET DEFAULT 'thread_turn_v2';
+ALTER TABLE tutor_runs
+  ADD COLUMN IF NOT EXISTS retry_of_turn_id uuid;
+ALTER TABLE tutor_runs
+  ADD COLUMN IF NOT EXISTS retry_root_turn_id uuid;
+ALTER TABLE tutor_runs
+  DROP CONSTRAINT IF EXISTS chk_tutor_runs_interaction_protocol_version;
+ALTER TABLE tutor_runs
+  ADD CONSTRAINT chk_tutor_runs_interaction_protocol_version
+  CHECK (interaction_protocol_version IN ('legacy_v1', 'thread_turn_v2'));
+ALTER TABLE tutor_runs
+  DROP CONSTRAINT IF EXISTS chk_tutor_runs_retry_lineage_distinct;
+ALTER TABLE tutor_runs
+  ADD CONSTRAINT chk_tutor_runs_retry_lineage_distinct
+  CHECK (
+    (retry_of_turn_id IS NULL OR retry_of_turn_id <> id)
+    AND (retry_root_turn_id IS NULL OR retry_root_turn_id <> id)
+  );
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'tutor_runs'::regclass
+      AND conname = 'uq_tutor_runs_id_user_conversation'
+  ) THEN
+    ALTER TABLE tutor_runs
+      ADD CONSTRAINT uq_tutor_runs_id_user_conversation UNIQUE (id, user_id, conversation_id);
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'tutor_runs'::regclass
+      AND conname = 'fk_tutor_runs_retry_of_turn_scope'
+  ) THEN
+    ALTER TABLE tutor_runs
+      ADD CONSTRAINT fk_tutor_runs_retry_of_turn_scope
+      FOREIGN KEY (retry_of_turn_id, user_id, conversation_id)
+      REFERENCES tutor_runs(id, user_id, conversation_id) ON DELETE RESTRICT;
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'tutor_runs'::regclass
+      AND conname = 'fk_tutor_runs_retry_root_turn_scope'
+  ) THEN
+    ALTER TABLE tutor_runs
+      ADD CONSTRAINT fk_tutor_runs_retry_root_turn_scope
+      FOREIGN KEY (retry_root_turn_id, user_id, conversation_id)
+      REFERENCES tutor_runs(id, user_id, conversation_id) ON DELETE RESTRICT;
+  END IF;
+END $$;
+
+ALTER TABLE tutor_run_public_processes
+  DROP CONSTRAINT IF EXISTS tutor_run_public_processes_display_state_check;
+ALTER TABLE tutor_run_public_processes
+  DROP CONSTRAINT IF EXISTS chk_tutor_public_process_display_state;
+ALTER TABLE tutor_run_public_processes
+  ADD CONSTRAINT chk_tutor_public_process_display_state
+  CHECK (display_state IN (
+    'thinking', 'waiting_input', 'waiting_approval', 'waiting_authority',
+    'completed', 'interrupted', 'superseded', 'unavailable', 'failed'
+  ));
+ALTER TABLE tutor_run_public_processes
+  DROP CONSTRAINT IF EXISTS chk_tutor_public_process_finished_state;
+ALTER TABLE tutor_run_public_processes
+  ADD CONSTRAINT chk_tutor_public_process_finished_state CHECK (
+    (display_state IN ('thinking', 'waiting_input', 'waiting_approval', 'waiting_authority') AND finished_at IS NULL)
+    OR
+    (display_state IN ('completed', 'interrupted', 'superseded', 'unavailable', 'failed') AND finished_at IS NOT NULL)
+  );
+
+CREATE TABLE IF NOT EXISTS tutor_conversation_events (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  conversation_id uuid NOT NULL REFERENCES tutor_conversations(id) ON DELETE RESTRICT,
+  event_sequence bigint NOT NULL CHECK (event_sequence > 0),
+  event_key text NOT NULL CHECK (char_length(event_key) BETWEEN 1 AND 160),
+  kind text NOT NULL CHECK (kind IN (
+    'turn_created', 'turn_updated', 'item_added', 'item_updated',
+    'control_updated', 'dispatch_delayed', 'dispatch_dead'
+  )),
+  turn_id uuid,
+  item_id uuid,
+  item_kind text CHECK (item_kind IS NULL OR item_kind IN (
+    'message', 'process', 'elicitation', 'approval', 'error'
+  )),
+  projection_version text NOT NULL DEFAULT 'tutor_conversation_event_v1'
+    CHECK (projection_version = 'tutor_conversation_event_v1'),
+  payload_json jsonb NOT NULL CHECK (jsonb_typeof(payload_json) = 'object'),
+  payload_hash text NOT NULL CHECK (payload_hash ~ '^[0-9a-f]{64}$'),
+  occurred_at timestamptz NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_tutor_conversation_events_sequence UNIQUE (conversation_id, event_sequence),
+  CONSTRAINT uq_tutor_conversation_events_key UNIQUE (conversation_id, event_key),
+  CONSTRAINT uq_tutor_conversation_events_id_scope UNIQUE (id, user_id, conversation_id),
+  CONSTRAINT fk_tutor_conversation_event_conversation_user
+    FOREIGN KEY (conversation_id, user_id)
+    REFERENCES tutor_conversations(id, user_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_conversation_event_turn_scope
+    FOREIGN KEY (turn_id, user_id, conversation_id)
+    REFERENCES tutor_runs(id, user_id, conversation_id) ON DELETE RESTRICT,
+  CONSTRAINT chk_tutor_conversation_event_item_shape CHECK (
+    (item_id IS NULL AND item_kind IS NULL)
+    OR (item_id IS NOT NULL AND item_kind IS NOT NULL)
+  )
+);
+
+CREATE TABLE IF NOT EXISTS tutor_interactive_dispatch_jobs (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  run_id uuid NOT NULL UNIQUE REFERENCES tutor_runs(id) ON DELETE RESTRICT,
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  conversation_id uuid NOT NULL REFERENCES tutor_conversations(id) ON DELETE RESTRICT,
+  state text NOT NULL DEFAULT 'pending' CHECK (state IN (
+    'pending', 'leased', 'retry_wait', 'completed', 'dead'
+  )),
+  attempt_count integer NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+  max_attempts integer NOT NULL DEFAULT 5 CHECK (max_attempts BETWEEN 1 AND 20),
+  available_at timestamptz NOT NULL DEFAULT now(),
+  lease_owner_id text,
+  lease_generation integer NOT NULL DEFAULT 0 CHECK (lease_generation >= 0),
+  lease_expires_at timestamptz,
+  last_error_code text CHECK (
+    last_error_code IS NULL OR char_length(last_error_code) BETWEEN 1 AND 120
+  ),
+  completed_at timestamptz,
+  dead_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_tutor_interactive_dispatch_jobs_id_scope UNIQUE (id, user_id, conversation_id),
+  CONSTRAINT fk_tutor_interactive_dispatch_job_run_scope
+    FOREIGN KEY (run_id, user_id, conversation_id)
+    REFERENCES tutor_runs(id, user_id, conversation_id) ON DELETE RESTRICT,
+  CONSTRAINT chk_tutor_interactive_dispatch_job_lease CHECK (
+    (state = 'leased' AND lease_owner_id IS NOT NULL AND lease_expires_at IS NOT NULL)
+    OR (state <> 'leased' AND lease_owner_id IS NULL AND lease_expires_at IS NULL)
+  ),
+  CONSTRAINT chk_tutor_interactive_dispatch_job_terminal CHECK (
+    (state = 'completed' AND completed_at IS NOT NULL AND dead_at IS NULL)
+    OR (state = 'dead' AND dead_at IS NOT NULL AND completed_at IS NULL)
+    OR (state NOT IN ('completed', 'dead') AND completed_at IS NULL AND dead_at IS NULL)
+  )
+);
+
+CREATE INDEX IF NOT EXISTS idx_tutor_conversation_events_replay
+  ON tutor_conversation_events(conversation_id, event_sequence);
+CREATE INDEX IF NOT EXISTS idx_tutor_conversation_events_turn
+  ON tutor_conversation_events(turn_id, event_sequence) WHERE turn_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_tutor_interactive_dispatch_jobs_claim
+  ON tutor_interactive_dispatch_jobs(available_at, created_at, id)
+  WHERE state IN ('pending', 'retry_wait', 'leased');
+CREATE INDEX IF NOT EXISTS idx_tutor_interactive_dispatch_jobs_user_state
+  ON tutor_interactive_dispatch_jobs(user_id, state, updated_at);
+
+CREATE OR REPLACE FUNCTION enforce_tutor_conversation_event_append_only()
+RETURNS trigger AS $$
+BEGIN
+  IF TG_OP = 'DELETE' AND current_setting('aearn.learning_track_purge_user_id', true) = OLD.user_id::text THEN
+    RETURN OLD;
+  END IF;
+  RAISE EXCEPTION 'Tutor conversation events are append-only' USING ERRCODE = '23514';
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_tutor_conversation_events_immutable ON tutor_conversation_events;
+CREATE TRIGGER trg_tutor_conversation_events_immutable
+BEFORE UPDATE OR DELETE ON tutor_conversation_events
+FOR EACH ROW EXECUTE FUNCTION enforce_tutor_conversation_event_append_only();
+
+DROP TRIGGER IF EXISTS trg_tutor_interactive_dispatch_jobs_updated_at ON tutor_interactive_dispatch_jobs;
+CREATE TRIGGER trg_tutor_interactive_dispatch_jobs_updated_at
+BEFORE UPDATE ON tutor_interactive_dispatch_jobs
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();

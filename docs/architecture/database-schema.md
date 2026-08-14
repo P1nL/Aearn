@@ -1,6 +1,6 @@
 # Aearn 数据库 Schema 与持久化契约
 
-**状态：** 当前 schema 说明，2026-08-12。
+**状态：** 当前 schema 说明，2026-08-14。
 **权威来源：** `aearn/services/api/app/db/schema.sql`、PostgreSQL bootstrap、
 Tutor/LearningTrack repositories 与 schema/cutover tests。
 **范围：** PostgreSQL 是 Tutor run、cutover receipt、背景队列和 learner-safe
@@ -57,18 +57,20 @@ projection 的唯一 durable authority；Desktop、Celery 和 provider 不拥有
 
 | 表 | 责任 | 关键不变量 |
 | --- | --- | --- |
-| `tutor_conversations` | user-scoped learner-visible/internal conversation 根 | `visibility` 与 `kind` 区分公开交互和内部 proactive conversation；learner conversation 的 `title` 只能保存安全模型简述，`NULL` 对外投影为“新对话”；`last_public_activity_at` 是列表排序的唯一 authority |
+| `tutor_conversations` | user-scoped learner-visible/internal conversation 根 | `visibility` 与 `kind` 区分公开交互和内部 proactive conversation；learner conversation 的 `title` 只能保存安全模型简述，`NULL` 对外投影为“新对话”；`last_public_activity_at` 是列表排序 authority；`next_public_event_sequence` 与 `control_version` 均从 1 开始 |
 | `tutor_messages` | canonical learner/Tutor public message body + bounded public thinking narration | 唯一允许存放原始 learner 文本的 Tutor 表；Tutor 回复可保存最多 4 条 learner-visible `public_thinking_steps_json`，它不是 provider-native reasoning；不可作为 trace/export dump；旧 message-only conversation 继续可读并投影空数组 |
 | `tutor_message_context_references` | learner message/run revision 的 append-only learner-safe artifact snapshot | 复合 FK 固定 user/conversation/run/message/input revision；只保存 bounded safe projection/hash，不复制 learner content、submission、hidden/private artifact 或 raw execution/provider 数据 |
 | `tutor_catalog_snapshots` | reviewed Skill catalog digest snapshot | run 只能引用已持久化的 digest |
-| `tutor_runs` | 有限 loop 的 durable snapshot | `origin` 为 `interactive/proactive`；lease、budget counter、`input_revision`、terminal outcome 和 `next_event_sequence` 都由 DB 保护；`superseded_by_run_id` 是内部 audit link；`continuation_kind` 只允许 `clarification/planning_input/approval/capability_result/external_result` |
+| `tutor_runs` | 有限 loop / public turn 的 durable snapshot | `origin` 为 `interactive/proactive`；`interaction_protocol_version` 区分 `legacy_v1/thread_turn_v2`；retry predecessor/root 通过 user+conversation scoped FK；lease、budget counter、`input_revision`、terminal outcome 和 `next_event_sequence` 都由 DB 保护；`continuation_kind` 只允许 `clarification/planning_input/approval/capability_result/external_result` |
 | `tutor_provider_attempt_receipts` | 每个实际 provider HTTP attempt 的 append-only usage 事实 | identity 为 `(run_id,input_revision,decision_iteration,attempt_index)`；复合 FK 固定 user/run/conversation scope；只保存受限 provider/model/protocol、outcome/diagnostic 和非负 token 数，不保存 prompt、response body、reasoning 文本、URL/header 或 credential |
-| `tutor_run_public_processes` | 一条新 interactive run 对应一条 server-safe public-process projection | 只允许 `thinking/completed/superseded/unavailable`，只保留 timestamps、关联 public Tutor message 和固定 step key；不存 reasoning、provider payload、prompt、trace 或工具参数 |
+| `tutor_run_public_processes` | 一条新 interactive run 对应一条 server-safe public-process projection | 只允许 `thinking/waiting_input/waiting_approval/waiting_authority/completed/interrupted/superseded/unavailable/failed`，只保留 timestamps、关联 public Tutor message 和固定 step key；不存 reasoning、provider payload、prompt、trace 或工具参数 |
 | `tutor_run_public_process_steps` | append-only public-process step order | `(run_id, ordinal)` 唯一；step key/state 均有 DB + repository allowlist；公开 label 在 read projection 映射而非存自由文本 |
 | `tutor_run_skill_selections` | exact Skill evidence | `(run_id, input_revision)` 唯一；保存 id/version 与 manifest/instruction/evaluation hash |
 | `tutor_run_input_events` | 已接受输入的 revision/event receipt | revision 在同一 run 内单调；普通消息一条一个 fresh run，只有 explicit continuation 才在同 run 增加 revision；用于 replay 与 stale-effect gate |
 | `tutor_run_checkpoints` | metadata-only checkpoint | 不保存 assembled prompt、raw history 或 provider payload |
 | `tutor_run_events` | run-local ordered event log | `event_sequence` 在 locked run row 上分配；SSE 只读取其安全后缀 |
+| `tutor_conversation_events` | learner-safe conversation-global append-only event log | conversation row lock 分配严格递增 sequence；`event_key` 幂等；kind/payload version 闭合；turn/item reference 与 payload identity 必须一致；普通 UPDATE/DELETE 被 trigger 拒绝 |
+| `tutor_interactive_dispatch_jobs` | one-row-per-run durable interactive dispatch authority | PostgreSQL state 为 `pending/leased/retry_wait/completed/dead`；claim 使用 `FOR UPDATE SKIP LOCKED`、owner/generation/expiry CAS、bounded retry/backoff；Celery 仅是 wakeup |
 | `tutor_capability_invocations`、`tutor_effects` | capability/effect receipt | 当前 revision、lease、Skill evidence 与 policy 必须同时通过；stale/superseded effect 不调用 handler |
 | `tutor_run_traces` | redacted diagnostic trace | trace 写入和导出都再次走 allowlist projection |
 | `tutor_api_idempotency_records` | public Tutor / LearningTrack mutation replay | `(user_id, operation, idempotency_key)` 唯一；Tutor 输入与 `learning_track.*` mutation 都绑定 request hash 与安全 response JSON |
@@ -79,6 +81,19 @@ conversation、fresh run、首条 learner message/input event 和 `input_receive
 下先结束旧 foreground run、冻结其 process，再创建新 run。partial unique index
 `uq_tutor_runs_interactive_foreground` 只允许同一 conversation 存在一条尚未 terminal、
 cancelled 或 superseded 的 interactive foreground run。
+
+历史与内部 run 明确保持 `legacy_v1`；新 learner-visible fresh turn 显式写
+`thread_turn_v2`。同一输入事务还会插入/重新武装 dispatch job，并按 turn-created、message-added、
+process-added 等 owning mutation 追加 conversation event；任何一步失败都会连同 message/run/job/event
+整体回滚。continuation 重用同一 job row，但重置本次 dispatch 的 attempt budget，并递增 lease
+generation 以 fence 仍在完成旧 revision 的 worker。
+
+conversation event payload 只保存 turn 或 item reference、control version、safe dispatch code 和
+attempt，不复制 learner content、Tutor message、prompt、reasoning、trace、provider body 或 capability
+args。snapshot 在 learner conversation 上持有 share lock，再读取 active turn、typed timeline 与
+当前 sequence；历史 conversation 无 event backfill 时仍从 message/process 表投影，stream cursor
+指向 sequence 0。dispatch job 最终 `dead` 时同事务终结 run、冻结 failed process、追加 safe error
+item projection 与 `dispatch_dead` event。
 
 终态约束：`tutor_runs.terminal_outcome` 与 `terminal_at` 必须同时为 `NULL` 或同时
 存在。terminal transition、safe event、trace 与 curation outbox 由同一事务维护，
@@ -373,7 +388,7 @@ inventory 把该表视为 pre-verification target state。bootstrap twice 必须
 
 ## 2026-08-12：最终 schema 与迁移清单审计
 
-`HarnessCutoverService` 的 target inventory 现在逐表列出每个 user-owned `tutor_*` 表，包括 run/message/event/trace/checkpoint、Action、execution attempt、Lesson source/citation/Gate slot/authoring receipt、Review 与 context reference descendants。只有无 learner ownership 的 `tutor_catalog_snapshots`、`tutor_executor_health`、去个性化 `tutor_exercise_versions` / `tutor_exercise_private_rubrics` 与 `tutor_module_diagnostic_versions` 被显式归类为 shared。
+`HarnessCutoverService` 的 target inventory 现在逐表列出每个 user-owned `tutor_*` 表，包括 run/message/run-event/conversation-event/interactive-dispatch job/trace/checkpoint、Action、execution attempt、Lesson source/citation/Gate slot/authoring receipt、Review 与 context reference descendants。只有无 learner ownership 的 `tutor_catalog_snapshots`、`tutor_executor_health`、去个性化 `tutor_exercise_versions` / `tutor_exercise_private_rubrics` 与 `tutor_module_diagnostic_versions` 被显式归类为 shared。
 
 `test_cutover_inventory_explicitly_classifies_every_tutor_table` 读取真实 PostgreSQL `information_schema.tables`，要求 schema 中所有 `tutor_*` 表恰好等于 target inventory 与 shared allowlist 的并集；新增表若未分类会直接失败。target 任一行存在都会阻断 clean-slate cutover，防止把当前 Tutor/LearningTrack 状态与旧数据混合删除。
 

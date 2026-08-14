@@ -392,7 +392,7 @@ def test_catalog_and_tutor_source_never_import_retired_or_unbounded_execution_su
             # runner implementation or launch a host path.
             forbidden_for_path = tuple(marker for marker in forbidden if marker not in {"psycopg"})
             source = source.replace("app.services.runners.runtime_contracts", "")
-        if path.name == "proactive_worker.py":
+        if path.name in {"proactive_worker.py", "interactive_worker.py"}:
             # Child 04 uses a bounded API-side worker adapter only; routes and
             # legacy Graph/runner surfaces remain forbidden.
             forbidden_for_path = tuple(marker for marker in forbidden_for_path if marker != "app.db")

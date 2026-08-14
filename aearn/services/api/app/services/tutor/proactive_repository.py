@@ -570,9 +570,10 @@ class PostgresTutorProactiveRepository:
                 """
                 INSERT INTO tutor_runs (
                   user_id, conversation_id, origin, status, policy_json,
-                  policy_version, policy_fingerprint, catalog_digest, created_at, updated_at
+                  policy_version, policy_fingerprint, catalog_digest,
+                  interaction_protocol_version, created_at, updated_at
                 )
-                VALUES (%s, %s, 'proactive', 'queued', %s::jsonb, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, 'proactive', 'queued', %s::jsonb, %s, %s, %s, 'legacy_v1', %s, %s)
                 RETURNING id::text AS id
                 """,
                 (

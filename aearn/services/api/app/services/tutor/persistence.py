@@ -53,6 +53,17 @@ from app.agents.harness.skill_catalog import CatalogSkillReference, SkillCatalog
 from app.core.config import get_settings
 from app.core.teaching_safety import sanitize_summary_text
 from app.services.llm.contracts import LLMUsage
+from app.services.tutor.conversation_contracts import (
+    TUTOR_CONVERSATION_EVENT_PROJECTION_VERSION,
+    TUTOR_CONVERSATION_SNAPSHOT_VERSION,
+    TUTOR_CONVERSATION_STREAM_CURSOR_VERSION,
+    TutorConversationEventKind,
+    TutorDispatchJobState,
+    TutorInteractionProtocolVersion,
+    TutorPublicTurn,
+    public_turn_status,
+    validate_conversation_event_payload,
+)
 from app.services.tutor.ports import TutorLifecycleConflict, TutorLifecyclePersistence, TutorRunStore
 from app.services.tutor.safe_projection import TutorSafeProjection
 from app.services.tutor.skill_selection import TutorSkillSelection
@@ -86,7 +97,19 @@ _TRACE_KINDS: Final[frozenset[str]] = frozenset(
     {"checkpoint", "terminal_checkpoint", "compaction_request", "waiting_result"}
 )
 _PUBLIC_PROCESS_VERSION: Final[str] = "tutor_public_process_v1"
-_PUBLIC_PROCESS_STATES: Final[frozenset[str]] = frozenset({"thinking", "completed", "superseded", "unavailable"})
+_PUBLIC_PROCESS_STATES: Final[frozenset[str]] = frozenset(
+    {
+        "thinking",
+        "waiting_input",
+        "waiting_approval",
+        "waiting_authority",
+        "completed",
+        "interrupted",
+        "superseded",
+        "unavailable",
+        "failed",
+    }
+)
 _PUBLIC_PROCESS_STEP_KEYS: Final[frozenset[str]] = frozenset(
     {
         "input_received",
@@ -106,6 +129,9 @@ _PUBLIC_PROCESS_STEP_LABELS: Final[dict[str, str]] = {
 }
 _MAX_PUBLIC_PROCESS_ELAPSED_SECONDS: Final[int] = 3_600
 _CURSOR_VERSION: Final[int] = 1
+_CONVERSATION_EVENT_CURSOR_KIND: Final[str] = "conversation-events"
+_DISPATCH_JOB_LEASE_SECONDS: Final[int] = 420
+_DISPATCH_JOB_MAX_ATTEMPTS: Final[int] = 5
 
 
 class TutorPersistenceError(ValueError):
@@ -155,6 +181,7 @@ class TutorInputAcceptance:
     input_revision: int
     event: TutorDurableEvent
     replayed: bool
+    dispatch_job_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -166,6 +193,9 @@ class TutorRunReadState:
     diagnostic_code: str | None
     created_at: datetime
     updated_at: datetime
+    interaction_protocol_version: TutorInteractionProtocolVersion = TutorInteractionProtocolVersion.LEGACY_V1
+    retry_of_turn_id: str | None = None
+    retry_root_turn_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -224,6 +254,57 @@ class TutorConversationTimelineRecord:
     public_thinking_steps: tuple[str, ...] = ()
     context_references: tuple[dict[str, object], ...] = ()
     process: TutorPublicProcessState | None = None
+    turn_id: str | None = None
+    error_code: str | None = None
+    error_recoverable: bool = False
+
+
+@dataclass(frozen=True)
+class TutorConversationEvent:
+    event_id: str
+    conversation_id: str
+    sequence: int
+    event_key: str
+    kind: TutorConversationEventKind
+    turn_id: str | None
+    item_id: str | None
+    item_kind: str | None
+    payload: dict[str, object]
+    occurred_at: datetime
+    cursor: str
+
+
+@dataclass(frozen=True)
+class TutorInteractiveDispatchJob:
+    job_id: str
+    run_id: str
+    user_id: str
+    conversation_id: str
+    state: TutorDispatchJobState
+    attempt_count: int
+    max_attempts: int
+    available_at: datetime
+    lease_owner_id: str | None
+    lease_generation: int
+    lease_expires_at: datetime | None
+    last_error_code: str | None
+    completed_at: datetime | None
+    dead_at: datetime | None
+
+
+@dataclass(frozen=True)
+class TutorConversationSnapshot:
+    conversation_id: str
+    title: str | None
+    control_version: int
+    active_turn: dict[str, object] | None
+    pending_requests: tuple[dict[str, object], ...]
+    queue: tuple[dict[str, object], ...]
+    timeline: tuple[TutorConversationTimelineRecord, ...]
+    next_cursor: str | None
+    has_more: bool
+    stream_cursor: str
+    snapshot_version: str = TUTOR_CONVERSATION_SNAPSHOT_VERSION
 
 
 @dataclass(frozen=True)
@@ -427,9 +508,15 @@ class PostgresTutorRepository:
         policy_version: str = "tutor_policy_v1",
         policy_fingerprint: str | None = None,
         continuation_kind: TutorContinuationKind | None = None,
+        interaction_protocol_version: TutorInteractionProtocolVersion = TutorInteractionProtocolVersion.LEGACY_V1,
+        retry_of_turn_id: str | None = None,
+        retry_root_turn_id: str | None = None,
     ) -> TutorRunSnapshot:
         if origin not in {"interactive", "proactive"}:
             raise ValueError("Tutor run origin is invalid")
+        protocol_version = TutorInteractionProtocolVersion(str(interaction_protocol_version))
+        if retry_of_turn_id is None and retry_root_turn_id is not None:
+            raise ValueError("retry root requires retry predecessor")
         _safe_key(policy_version, label="policy version")
         run_id = run_id or str(uuid4())
         policy_payload = _policy_payload(policy)
@@ -452,9 +539,10 @@ class PostgresTutorRepository:
             """
             INSERT INTO tutor_runs (
               id, user_id, conversation_id, origin, status, policy_json,
-              policy_version, policy_fingerprint, catalog_digest, continuation_kind
+              policy_version, policy_fingerprint, catalog_digest, continuation_kind,
+              interaction_protocol_version, retry_of_turn_id, retry_root_turn_id
             )
-            VALUES (%s, %s, %s, %s, 'queued', %s::jsonb, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, 'queued', %s::jsonb, %s, %s, %s, %s, %s, %s, %s)
             RETURNING *
             """,
             (
@@ -467,6 +555,9 @@ class PostgresTutorRepository:
                 fingerprint,
                 catalog_digest,
                 continuation_kind.value if continuation_kind is not None else None,
+                protocol_version.value,
+                retry_of_turn_id,
+                retry_root_turn_id,
             ),
         ).fetchone()
         if row is None:
@@ -692,6 +783,7 @@ class PostgresTutorRepository:
             run_id=next_run_id,
             origin="interactive",
             policy_version=policy_version,
+            interaction_protocol_version=TutorInteractionProtocolVersion.THREAD_TURN_V2,
         )
         self._trip_failpoint("after_fresh_turn_run")
         if replaced_run_id is not None:
@@ -838,6 +930,14 @@ class PostgresTutorRepository:
             conversation_id=str(run["conversation_id"]),
             occurred_at=occurred_at,
         )
+        self._append_item_reference_event_locked(
+            run=run,
+            event_key=f"item:process:{run['id']}:added",
+            kind=TutorConversationEventKind.ITEM_ADDED,
+            item_id=str(run["id"]),
+            item_kind="process",
+            occurred_at=occurred_at,
+        )
 
     def _append_public_process_step_locked(
         self,
@@ -910,6 +1010,14 @@ class PostgresTutorRepository:
             conversation_id=str(run["conversation_id"]),
             occurred_at=occurred_at,
         )
+        self._append_item_reference_event_locked(
+            run=run,
+            event_key=f"item:process:{run['id']}:step:{step_key}",
+            kind=TutorConversationEventKind.ITEM_UPDATED,
+            item_id=str(run["id"]),
+            item_kind="process",
+            occurred_at=occurred_at,
+        )
 
     def _freeze_public_process_locked(
         self,
@@ -963,6 +1071,14 @@ class PostgresTutorRepository:
         self._touch_conversation_public_activity_locked(
             user_id=str(run["user_id"]),
             conversation_id=str(run["conversation_id"]),
+            occurred_at=occurred_at,
+        )
+        self._append_item_reference_event_locked(
+            run=run,
+            event_key=f"item:process:{run['id']}:state:{display_state}",
+            kind=TutorConversationEventKind.ITEM_UPDATED,
+            item_id=str(run["id"]),
+            item_kind="process",
             occurred_at=occurred_at,
         )
 
@@ -1182,6 +1298,7 @@ class PostgresTutorRepository:
         limit: int,
         cursor: str | None = None,
         now: datetime | None = None,
+        include_errors: bool = False,
     ) -> tuple[tuple[TutorConversationTimelineRecord, ...], str | None, bool]:
         if limit < 1 or limit > 40:
             raise ValueError("history page limit is invalid")
@@ -1202,9 +1319,14 @@ class PostgresTutorRepository:
                 messages.role AS role,
                 messages.content AS content,
                 messages.public_thinking_steps_json AS public_thinking_steps_json,
-                NULL::uuid AS process_run_id
+                NULL::uuid AS process_run_id,
+                COALESCE(input_events.run_id, tutor_process.run_id) AS turn_id,
+                NULL::text AS error_code,
+                NULL::boolean AS error_recoverable
               FROM tutor_messages AS messages
               JOIN tutor_conversations AS conversations ON conversations.id = messages.conversation_id
+              LEFT JOIN tutor_run_input_events AS input_events ON input_events.message_id = messages.id
+              LEFT JOIN tutor_run_public_processes AS tutor_process ON tutor_process.tutor_message_id = messages.id
               WHERE conversations.id = %s
                 AND conversations.user_id = %s
                 AND conversations.visibility = 'learner'
@@ -1219,7 +1341,10 @@ class PostgresTutorRepository:
                 NULL::text AS role,
                 NULL::text AS content,
                 '[]'::jsonb AS public_thinking_steps_json,
-                processes.run_id AS process_run_id
+                processes.run_id AS process_run_id,
+                processes.run_id AS turn_id,
+                NULL::text AS error_code,
+                NULL::boolean AS error_recoverable
               FROM tutor_run_public_processes AS processes
               JOIN tutor_conversations AS conversations ON conversations.id = processes.conversation_id
               WHERE processes.conversation_id = %s
@@ -1227,10 +1352,37 @@ class PostgresTutorRepository:
                 AND conversations.visibility = 'learner'
                 AND conversations.kind = 'interactive'
                 AND conversations.status = 'active'
+        """
+        params: list[object] = [conversation_id, user_id, conversation_id, user_id]
+        if include_errors:
+            timeline += """
+              UNION ALL
+              SELECT
+                'error'::text AS kind,
+                jobs.id AS item_id,
+                jobs.dead_at AS created_at,
+                40 AS sort_rank,
+                NULL::text AS role,
+                NULL::text AS content,
+                '[]'::jsonb AS public_thinking_steps_json,
+                NULL::uuid AS process_run_id,
+                jobs.run_id AS turn_id,
+                'TUTOR_DISPATCH_FAILED'::text AS error_code,
+                true AS error_recoverable
+              FROM tutor_interactive_dispatch_jobs AS jobs
+              JOIN tutor_conversations AS conversations ON conversations.id = jobs.conversation_id
+              WHERE jobs.conversation_id = %s
+                AND jobs.user_id = %s
+                AND jobs.state = 'dead'
+                AND conversations.visibility = 'learner'
+                AND conversations.kind = 'interactive'
+                AND conversations.status = 'active'
+            """
+            params.extend((conversation_id, user_id))
+        timeline += """
             )
             SELECT * FROM timeline
         """
-        params: list[object] = [conversation_id, user_id, conversation_id, user_id]
         if after is not None:
             timeline += """
             WHERE (
@@ -1293,6 +1445,20 @@ class PostgresTutorRepository:
                             else ()
                         ),
                         context_references=references_by_message.get(str(row["item_id"]), ()),
+                        turn_id=str(row["turn_id"]) if row.get("turn_id") is not None else None,
+                    )
+                )
+                continue
+            if kind == "error":
+                records.append(
+                    TutorConversationTimelineRecord(
+                        kind="error",
+                        item_id=str(row["item_id"]),
+                        created_at=created_at,
+                        sort_rank=_as_int(row.get("sort_rank"), 0),
+                        turn_id=_optional_string(row.get("turn_id")),
+                        error_code=str(row.get("error_code") or "TUTOR_DISPATCH_FAILED"),
+                        error_recoverable=row.get("error_recoverable") is True,
                     )
                 )
                 continue
@@ -1307,6 +1473,7 @@ class PostgresTutorRepository:
                             created_at=created_at,
                             sort_rank=_as_int(row.get("sort_rank"), 0),
                             process=process,
+                            turn_id=process.run_id,
                         )
                     )
         has_more = len(rows) > limit
@@ -1387,6 +1554,664 @@ class PostgresTutorRepository:
             raise TutorCursorInvalid("cursor is invalid")
         return {"created_at": parsed_created_at, "sort_rank": parsed_rank, "item_id": item_id}
 
+    def read_conversation_snapshot(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str,
+        limit: int = 40,
+        cursor: str | None = None,
+        now: datetime | None = None,
+    ) -> TutorConversationSnapshot:
+        conversation = self._conn.execute(
+            """
+            SELECT *
+            FROM tutor_conversations
+            WHERE id = %s AND user_id = %s
+              AND visibility = 'learner' AND kind = 'interactive' AND status = 'active'
+            FOR SHARE
+            """,
+            (conversation_id, user_id),
+        ).fetchone()
+        if conversation is None:
+            raise TutorRunNotFound("tutor conversation not found")
+        timeline, next_cursor, has_more = self.read_public_history(
+            user_id=user_id,
+            conversation_id=conversation_id,
+            limit=limit,
+            cursor=cursor,
+            now=now,
+            include_errors=True,
+        )
+        active = self._conn.execute(
+            """
+            SELECT *
+            FROM tutor_runs
+            WHERE user_id = %s AND conversation_id = %s AND origin = 'interactive'
+              AND terminal_outcome IS NULL AND cancelled_at IS NULL AND superseded_by_run_id IS NULL
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            """,
+            (user_id, conversation_id),
+        ).fetchone()
+        current_sequence = max(0, _as_int(conversation.get("next_public_event_sequence"), 1) - 1)
+        return TutorConversationSnapshot(
+            conversation_id=conversation_id,
+            title=str(conversation["title"]) if conversation.get("title") is not None else None,
+            control_version=max(1, _as_int(conversation.get("control_version"), 1)),
+            active_turn=self._public_turn_from_row(active) if active is not None else None,
+            pending_requests=(),
+            queue=(),
+            timeline=timeline,
+            next_cursor=next_cursor,
+            has_more=has_more,
+            stream_cursor=self._encode_conversation_event_cursor(
+                user_id=user_id,
+                conversation_id=conversation_id,
+                sequence=current_sequence,
+            ),
+        )
+
+    def append_conversation_event(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str,
+        event_key: str,
+        kind: TutorConversationEventKind | str,
+        payload: Mapping[str, object],
+        occurred_at: datetime,
+        turn_id: str | None = None,
+        item_id: str | None = None,
+        item_kind: str | None = None,
+    ) -> TutorConversationEvent:
+        with self._conn.transaction():
+            return self._append_conversation_event_locked(
+                user_id=user_id,
+                conversation_id=conversation_id,
+                event_key=event_key,
+                kind=kind,
+                payload=payload,
+                occurred_at=occurred_at,
+                turn_id=turn_id,
+                item_id=item_id,
+                item_kind=item_kind,
+            )
+
+    def conversation_events_after(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str,
+        cursor: str | None,
+        limit: int = 100,
+    ) -> tuple[TutorConversationEvent, ...]:
+        if limit < 1 or limit > 200:
+            raise ValueError("conversation event replay limit is invalid")
+        conversation = self._conn.execute(
+            """
+            SELECT next_public_event_sequence
+            FROM tutor_conversations
+            WHERE id = %s AND user_id = %s
+              AND visibility = 'learner' AND kind = 'interactive' AND status = 'active'
+            """,
+            (conversation_id, user_id),
+        ).fetchone()
+        if conversation is None:
+            raise TutorRunNotFound("tutor conversation not found")
+        after_sequence = (
+            self._decode_conversation_event_cursor(
+                cursor=cursor,
+                user_id=user_id,
+                conversation_id=conversation_id,
+            )
+            if cursor
+            else 0
+        )
+        current_sequence = max(0, _as_int(conversation.get("next_public_event_sequence"), 1) - 1)
+        if after_sequence > current_sequence:
+            raise TutorCursorInvalid("conversation event cursor is ahead of the authoritative sequence")
+        minimum = self._conn.execute(
+            "SELECT MIN(event_sequence) AS minimum FROM tutor_conversation_events WHERE conversation_id = %s",
+            (conversation_id,),
+        ).fetchone()
+        minimum_sequence = _as_int(minimum.get("minimum") if minimum is not None else None, 0)
+        if minimum_sequence > 0 and after_sequence < minimum_sequence - 1:
+            raise TutorCursorInvalid("conversation event cursor is older than the retained event window")
+        rows = self._conn.execute(
+            """
+            SELECT *
+            FROM tutor_conversation_events
+            WHERE user_id = %s AND conversation_id = %s AND event_sequence > %s
+            ORDER BY event_sequence ASC
+            LIMIT %s
+            """,
+            (user_id, conversation_id, after_sequence, limit),
+        ).fetchall()
+        return tuple(
+            _conversation_event_from_row(
+                row,
+                cursor=self._encode_conversation_event_cursor(
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                    sequence=_as_int(row.get("event_sequence"), 0),
+                ),
+            )
+            for row in rows
+        )
+
+    def read_interactive_dispatch_job(self, *, user_id: str, job_id: str) -> TutorInteractiveDispatchJob:
+        row = self._conn.execute(
+            "SELECT * FROM tutor_interactive_dispatch_jobs WHERE id = %s AND user_id = %s",
+            (job_id, user_id),
+        ).fetchone()
+        if row is None:
+            raise TutorRunNotFound("interactive dispatch job not found")
+        return _interactive_dispatch_job_from_row(row)
+
+    def claim_interactive_dispatch_jobs(
+        self,
+        *,
+        owner_id: str,
+        now: datetime,
+        limit: int = 1,
+        job_id: str | None = None,
+        lease_seconds: int = _DISPATCH_JOB_LEASE_SECONDS,
+    ) -> tuple[TutorInteractiveDispatchJob, ...]:
+        _safe_key(owner_id, label="dispatch owner")
+        if limit < 1 or limit > 50 or lease_seconds < 1:
+            raise ValueError("interactive dispatch claim bounds are invalid")
+        with self._conn.transaction():
+            self._conn.execute(
+                """
+                UPDATE tutor_interactive_dispatch_jobs AS jobs
+                SET state = 'completed', completed_at = %s,
+                    lease_owner_id = NULL, lease_expires_at = NULL,
+                    last_error_code = COALESCE(last_error_code, 'run_not_active')
+                FROM tutor_runs AS runs
+                WHERE jobs.run_id = runs.id
+                  AND jobs.state IN ('pending', 'retry_wait', 'leased')
+                  AND (
+                    runs.terminal_outcome IS NOT NULL
+                    OR runs.cancelled_at IS NOT NULL
+                    OR runs.superseded_by_run_id IS NOT NULL
+                  )
+                """,
+                (now,),
+            )
+            query = """
+                WITH candidates AS (
+                  SELECT jobs.id
+                  FROM tutor_interactive_dispatch_jobs AS jobs
+                  JOIN tutor_runs AS runs ON runs.id = jobs.run_id
+                  WHERE (
+                    (jobs.state IN ('pending', 'retry_wait') AND jobs.available_at <= %s)
+                    OR (jobs.state = 'leased' AND jobs.lease_expires_at <= %s)
+                  )
+                    AND runs.terminal_outcome IS NULL
+                    AND runs.cancelled_at IS NULL
+                    AND runs.superseded_by_run_id IS NULL
+            """
+            params: list[object] = [now, now]
+            if job_id is not None:
+                query += " AND jobs.id = %s::uuid"
+                params.append(job_id)
+            query += """
+                  ORDER BY jobs.available_at, jobs.created_at, jobs.id
+                  LIMIT %s
+                  FOR UPDATE OF jobs SKIP LOCKED
+                )
+                UPDATE tutor_interactive_dispatch_jobs AS jobs
+                SET state = 'leased', lease_owner_id = %s,
+                    lease_generation = jobs.lease_generation + 1,
+                    lease_expires_at = %s,
+                    attempt_count = jobs.attempt_count + 1,
+                    completed_at = NULL, dead_at = NULL
+                FROM candidates
+                WHERE jobs.id = candidates.id
+                RETURNING jobs.*
+            """
+            params.extend((limit, owner_id, now + timedelta(seconds=lease_seconds)))
+            rows = self._conn.execute(query, tuple(params)).fetchall()
+        return tuple(_interactive_dispatch_job_from_row(row) for row in rows)
+
+    def complete_interactive_dispatch_job(
+        self,
+        *,
+        job_id: str,
+        owner_id: str,
+        lease_generation: int,
+        completed_at: datetime,
+    ) -> bool:
+        with self._conn.transaction():
+            row = self._conn.execute(
+                """
+                UPDATE tutor_interactive_dispatch_jobs
+                SET state = 'completed', completed_at = %s,
+                    lease_owner_id = NULL, lease_expires_at = NULL,
+                    last_error_code = NULL
+                WHERE id = %s AND state = 'leased'
+                  AND lease_owner_id = %s AND lease_generation = %s
+                RETURNING id
+                """,
+                (completed_at, job_id, owner_id, lease_generation),
+            ).fetchone()
+        return row is not None
+
+    def retry_interactive_dispatch_job(
+        self,
+        *,
+        job_id: str,
+        owner_id: str,
+        lease_generation: int,
+        error_code: str,
+        failed_at: datetime,
+    ) -> TutorInteractiveDispatchJob | None:
+        _safe_key(error_code, label="dispatch error code")
+        with self._conn.transaction():
+            reference = self._conn.execute(
+                """
+                SELECT user_id, conversation_id, run_id
+                FROM tutor_interactive_dispatch_jobs
+                WHERE id = %s AND state = 'leased'
+                  AND lease_owner_id = %s AND lease_generation = %s
+                """,
+                (job_id, owner_id, lease_generation),
+            ).fetchone()
+            if reference is None:
+                return None
+            self._lock_conversation(
+                user_id=str(reference["user_id"]),
+                conversation_id=str(reference["conversation_id"]),
+                learner_only=False,
+            )
+            run = self._lock_run(user_id=str(reference["user_id"]), run_id=str(reference["run_id"]))
+            job = self._conn.execute(
+                """
+                SELECT * FROM tutor_interactive_dispatch_jobs
+                WHERE id = %s AND state = 'leased'
+                  AND lease_owner_id = %s AND lease_generation = %s
+                FOR UPDATE
+                """,
+                (job_id, owner_id, lease_generation),
+            ).fetchone()
+            if job is None:
+                return None
+            attempt = _as_int(job.get("attempt_count"), 0)
+            maximum = _as_int(job.get("max_attempts"), _DISPATCH_JOB_MAX_ATTEMPTS)
+            if attempt >= maximum:
+                updated_job = self._conn.execute(
+                    """
+                    UPDATE tutor_interactive_dispatch_jobs
+                    SET state = 'dead', dead_at = %s, last_error_code = %s,
+                        lease_owner_id = NULL, lease_expires_at = NULL
+                    WHERE id = %s AND state = 'leased'
+                      AND lease_owner_id = %s AND lease_generation = %s
+                    RETURNING *
+                    """,
+                    (failed_at, error_code, job_id, owner_id, lease_generation),
+                ).fetchone()
+                if updated_job is None:
+                    return None
+                terminal_run = run
+                if (
+                    run.get("terminal_outcome") is None
+                    and run.get("cancelled_at") is None
+                    and run.get("superseded_by_run_id") is None
+                ):
+                    terminal_run = self._conn.execute(
+                        """
+                        UPDATE tutor_runs
+                        SET status = 'failed', terminal_outcome = 'failed',
+                            terminal_diagnostic_code = 'dispatch_retry_exhausted', terminal_at = %s,
+                            active_lease_owner_id = NULL, active_lease_expires_at = NULL
+                        WHERE id = %s AND user_id = %s
+                          AND terminal_outcome IS NULL AND cancelled_at IS NULL
+                          AND superseded_by_run_id IS NULL
+                        RETURNING *
+                        """,
+                        (failed_at, run["id"], run["user_id"]),
+                    ).fetchone() or run
+                    self._append_event_locked(
+                        run_id=str(run["id"]),
+                        event_key=f"terminal:dispatch-dead:{_as_int(terminal_run.get('input_revision'), 0)}",
+                        kind="terminal_result",
+                        input_revision=_as_int(terminal_run.get("input_revision"), 0),
+                        payload={
+                            "kind": "terminal_result",
+                            "status": "failed",
+                            "run_id": str(run["id"]),
+                            "input_revision": _as_int(terminal_run.get("input_revision"), 0),
+                        },
+                    )
+                    self._freeze_public_process_locked(
+                        run=terminal_run,
+                        display_state="failed",
+                        step_key=None,
+                        occurred_at=failed_at,
+                    )
+                    self._append_turn_event_locked(
+                        run=terminal_run,
+                        kind=TutorConversationEventKind.TURN_UPDATED,
+                        event_key=f"turn:{run['id']}:dispatch-dead",
+                        occurred_at=failed_at,
+                    )
+                self._append_conversation_event_locked(
+                    user_id=str(reference["user_id"]),
+                    conversation_id=str(reference["conversation_id"]),
+                    event_key=f"dispatch:{job_id}:dead:{lease_generation}",
+                    kind=TutorConversationEventKind.DISPATCH_DEAD,
+                    turn_id=str(reference["run_id"]),
+                    item_id=job_id,
+                    item_kind="error",
+                    payload={
+                        "code": "TUTOR_DISPATCH_FAILED",
+                        "recoverable": True,
+                        "attempt": max(1, attempt),
+                    },
+                    occurred_at=failed_at,
+                )
+                return _interactive_dispatch_job_from_row(updated_job)
+            backoff_seconds = min(300, 2 ** min(max(1, attempt), 8))
+            updated_job = self._conn.execute(
+                """
+                UPDATE tutor_interactive_dispatch_jobs
+                SET state = 'retry_wait', available_at = %s, last_error_code = %s,
+                    lease_owner_id = NULL, lease_expires_at = NULL
+                WHERE id = %s AND state = 'leased'
+                  AND lease_owner_id = %s AND lease_generation = %s
+                RETURNING *
+                """,
+                (
+                    failed_at + timedelta(seconds=backoff_seconds),
+                    error_code,
+                    job_id,
+                    owner_id,
+                    lease_generation,
+                ),
+            ).fetchone()
+            if updated_job is None:
+                return None
+            if _protocol_version_from_row(run) is TutorInteractionProtocolVersion.THREAD_TURN_V2:
+                self._append_conversation_event_locked(
+                    user_id=str(reference["user_id"]),
+                    conversation_id=str(reference["conversation_id"]),
+                    event_key=f"dispatch:{job_id}:delayed:{lease_generation}",
+                    kind=TutorConversationEventKind.DISPATCH_DELAYED,
+                    turn_id=str(reference["run_id"]),
+                    payload={
+                        "code": "TUTOR_DISPATCH_DELAYED",
+                        "recoverable": True,
+                        "attempt": max(1, attempt),
+                    },
+                    occurred_at=failed_at,
+                )
+            return _interactive_dispatch_job_from_row(updated_job)
+
+    def _ensure_interactive_dispatch_job_locked(
+        self,
+        *,
+        run: Mapping[str, object],
+        available_at: datetime,
+    ) -> TutorInteractiveDispatchJob | None:
+        if (
+            str(run.get("origin") or "") != "interactive"
+            or _protocol_version_from_row(run) is not TutorInteractionProtocolVersion.THREAD_TURN_V2
+        ):
+            return None
+        row = self._conn.execute(
+            """
+            INSERT INTO tutor_interactive_dispatch_jobs (
+              run_id, user_id, conversation_id, state, max_attempts, available_at
+            )
+            VALUES (%s, %s, %s, 'pending', %s, %s)
+            ON CONFLICT (run_id) DO UPDATE
+            SET state = 'pending', available_at = EXCLUDED.available_at,
+                attempt_count = 0,
+                lease_owner_id = NULL, lease_expires_at = NULL,
+                lease_generation = tutor_interactive_dispatch_jobs.lease_generation + 1,
+                last_error_code = NULL, completed_at = NULL, dead_at = NULL
+            RETURNING *
+            """,
+            (
+                run["id"],
+                run["user_id"],
+                run["conversation_id"],
+                _DISPATCH_JOB_MAX_ATTEMPTS,
+                available_at,
+            ),
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("interactive dispatch job insert failed")
+        return _interactive_dispatch_job_from_row(row)
+
+    def _append_turn_event_locked(
+        self,
+        *,
+        run: Mapping[str, object],
+        kind: TutorConversationEventKind,
+        event_key: str,
+        occurred_at: datetime,
+    ) -> TutorConversationEvent | None:
+        if (
+            str(run.get("origin") or "") != "interactive"
+            or _protocol_version_from_row(run) is not TutorInteractionProtocolVersion.THREAD_TURN_V2
+        ):
+            return None
+        return self._append_conversation_event_locked(
+            user_id=str(run["user_id"]),
+            conversation_id=str(run["conversation_id"]),
+            event_key=event_key,
+            kind=kind,
+            turn_id=str(run["id"]),
+            payload={"turn": self._public_turn_from_row(run)},
+            occurred_at=occurred_at,
+        )
+
+    def _append_item_reference_event_locked(
+        self,
+        *,
+        run: Mapping[str, object],
+        event_key: str,
+        kind: TutorConversationEventKind,
+        item_id: str,
+        item_kind: str,
+        occurred_at: datetime,
+    ) -> TutorConversationEvent | None:
+        if (
+            str(run.get("origin") or "") != "interactive"
+            or _protocol_version_from_row(run) is not TutorInteractionProtocolVersion.THREAD_TURN_V2
+        ):
+            return None
+        return self._append_conversation_event_locked(
+            user_id=str(run["user_id"]),
+            conversation_id=str(run["conversation_id"]),
+            event_key=event_key,
+            kind=kind,
+            turn_id=str(run["id"]),
+            item_id=item_id,
+            item_kind=item_kind,
+            payload={
+                "item": {
+                    "item_id": item_id,
+                    "item_kind": item_kind,
+                    "turn_id": str(run["id"]),
+                }
+            },
+            occurred_at=occurred_at,
+        )
+
+    def _append_conversation_event_locked(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str,
+        event_key: str,
+        kind: TutorConversationEventKind | str,
+        payload: Mapping[str, object],
+        occurred_at: datetime,
+        turn_id: str | None = None,
+        item_id: str | None = None,
+        item_kind: str | None = None,
+    ) -> TutorConversationEvent:
+        _safe_key(event_key, label="conversation event key")
+        normalized_kind = TutorConversationEventKind(str(kind))
+        safe_payload = validate_conversation_event_payload(normalized_kind, payload)
+        _validate_conversation_event_identity(
+            kind=normalized_kind,
+            payload=safe_payload,
+            turn_id=turn_id,
+            item_id=item_id,
+            item_kind=item_kind,
+        )
+        payload_hash = _sha256_json(safe_payload)
+        conversation = self._lock_conversation(
+            user_id=user_id,
+            conversation_id=conversation_id,
+            learner_only=False,
+        )
+        existing = self._conn.execute(
+            """
+            SELECT * FROM tutor_conversation_events
+            WHERE conversation_id = %s AND event_key = %s
+            """,
+            (conversation_id, event_key),
+        ).fetchone()
+        if existing is not None:
+            if (
+                str(existing.get("payload_hash") or "") != payload_hash
+                or str(existing.get("kind") or "") != normalized_kind.value
+                or _optional_string(existing.get("turn_id")) != turn_id
+                or _optional_string(existing.get("item_id")) != item_id
+                or _optional_string(existing.get("item_kind")) != item_kind
+            ):
+                raise TutorIdempotencyConflict("conversation event key conflicts with different public facts")
+            return _conversation_event_from_row(
+                existing,
+                cursor=self._encode_conversation_event_cursor(
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                    sequence=_as_int(existing.get("event_sequence"), 0),
+                ),
+            )
+        sequence = max(1, _as_int(conversation.get("next_public_event_sequence"), 1))
+        advanced = self._conn.execute(
+            """
+            UPDATE tutor_conversations
+            SET next_public_event_sequence = next_public_event_sequence + 1
+            WHERE id = %s AND user_id = %s AND next_public_event_sequence = %s
+            RETURNING id
+            """,
+            (conversation_id, user_id, sequence),
+        ).fetchone()
+        if advanced is None:
+            raise TutorIdempotencyConflict("conversation public event sequence changed before append")
+        row = self._conn.execute(
+            """
+            INSERT INTO tutor_conversation_events (
+              user_id, conversation_id, event_sequence, event_key, kind,
+              turn_id, item_id, item_kind, projection_version,
+              payload_json, payload_hash, occurred_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s)
+            RETURNING *
+            """,
+            (
+                user_id,
+                conversation_id,
+                sequence,
+                event_key,
+                normalized_kind.value,
+                turn_id,
+                item_id,
+                item_kind,
+                TUTOR_CONVERSATION_EVENT_PROJECTION_VERSION,
+                _json(safe_payload),
+                payload_hash,
+                occurred_at,
+            ),
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("conversation event insert failed")
+        return _conversation_event_from_row(
+            row,
+            cursor=self._encode_conversation_event_cursor(
+                user_id=user_id,
+                conversation_id=conversation_id,
+                sequence=sequence,
+            ),
+        )
+
+    def _public_turn_from_row(self, row: Mapping[str, object]) -> dict[str, object]:
+        turn = TutorPublicTurn(
+            turn_id=str(row["id"]),
+            conversation_id=str(row["conversation_id"]),
+            interaction_protocol_version=_protocol_version_from_row(row),
+            status=public_turn_status(
+                terminal_outcome=_optional_string(row.get("terminal_outcome")),
+                cancelled=row.get("cancelled_at") is not None,
+                superseded=row.get("superseded_by_run_id") is not None,
+            ),
+            retry_of_turn_id=_optional_string(row.get("retry_of_turn_id")),
+            retry_root_turn_id=_optional_string(row.get("retry_root_turn_id")),
+            created_at=(_as_datetime(row.get("created_at")) or datetime.now(UTC)).astimezone(UTC).isoformat(),
+            updated_at=(_as_datetime(row.get("updated_at")) or datetime.now(UTC)).astimezone(UTC).isoformat(),
+        )
+        return dict(turn.model_dump(mode="json", exclude_none=True))
+
+    def _encode_conversation_event_cursor(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str,
+        sequence: int,
+    ) -> str:
+        if sequence < 0:
+            raise ValueError("conversation event cursor sequence must be non-negative")
+        payload = {
+            "v": TUTOR_CONVERSATION_STREAM_CURSOR_VERSION,
+            "k": _CONVERSATION_EVENT_CURSOR_KIND,
+            "u": user_id,
+            "c": conversation_id,
+            "s": sequence,
+        }
+        encoded = _base64url_encode(_json(payload).encode("utf-8"))
+        signature = hmac.new(self._cursor_signing_key, encoded.encode("ascii"), hashlib.sha256).digest()
+        return f"{encoded}.{_base64url_encode(signature)}"
+
+    def _decode_conversation_event_cursor(
+        self,
+        *,
+        cursor: str,
+        user_id: str,
+        conversation_id: str,
+    ) -> int:
+        parts = cursor.split(".")
+        if len(parts) != 2 or not all(parts):
+            raise TutorCursorInvalid("conversation event cursor is invalid")
+        encoded, supplied_signature = parts
+        expected_signature = _base64url_encode(
+            hmac.new(self._cursor_signing_key, encoded.encode("ascii"), hashlib.sha256).digest()
+        )
+        if not hmac.compare_digest(supplied_signature, expected_signature):
+            raise TutorCursorInvalid("conversation event cursor is invalid")
+        try:
+            payload = _as_mapping(json.loads(_base64url_decode(encoded).decode("utf-8")))
+            sequence = _as_int(payload.get("s"), -1)
+            valid = (
+                _as_int(payload.get("v"), -1) == TUTOR_CONVERSATION_STREAM_CURSOR_VERSION
+                and str(payload.get("k") or "") == _CONVERSATION_EVENT_CURSOR_KIND
+                and str(payload.get("u") or "") == user_id
+                and str(payload.get("c") or "") == conversation_id
+                and sequence >= 0
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+            valid = False
+            sequence = -1
+        if not valid:
+            raise TutorCursorInvalid("conversation event cursor is invalid")
+        return sequence
+
     def load_snapshot(self, *, user_id: str, run_id: str) -> TutorRunSnapshot | None:
         row = self._conn.execute(
             "SELECT * FROM tutor_runs WHERE id = %s AND user_id = %s",
@@ -1410,6 +2235,9 @@ class PostgresTutorRepository:
             diagnostic_code=diagnostic,
             created_at=_as_datetime(row.get("created_at")) or datetime.now(UTC),
             updated_at=_as_datetime(row.get("updated_at")) or datetime.now(UTC),
+            interaction_protocol_version=_protocol_version_from_row(row),
+            retry_of_turn_id=str(row["retry_of_turn_id"]) if row.get("retry_of_turn_id") is not None else None,
+            retry_root_turn_id=str(row["retry_root_turn_id"]) if row.get("retry_root_turn_id") is not None else None,
         )
 
     def acquire_lease(
@@ -1571,6 +2399,12 @@ class PostgresTutorRepository:
                     "input_revision": _as_int(updated["input_revision"], 0),
                 },
             )
+            self._append_turn_event_locked(
+                run=updated,
+                kind=TutorConversationEventKind.TURN_UPDATED,
+                event_key=f"turn:{run_id}:cancelled",
+                occurred_at=now,
+            )
 
     def accept_input(
         self,
@@ -1594,7 +2428,11 @@ class PostgresTutorRepository:
         accepted_at = received_at or datetime.now(UTC)
         event_key = f"input:{idempotency_key}"
         with self._conn.transaction():
-            run = self._lock_run(user_id=user_id, run_id=run_id)
+            _conversation, run = self._lock_run_with_conversation(
+                user_id=user_id,
+                run_id=run_id,
+                learner_only=False,
+            )
             existing = self._conn.execute(
                 """
                 SELECT input_revision, message_id, body_hash
@@ -1609,12 +2447,17 @@ class PostgresTutorRepository:
                 event = self._event_by_key_locked(run_id=run_id, event_key=event_key)
                 if event is None:
                     raise RuntimeError("input replay event is missing")
+                dispatch = self._conn.execute(
+                    "SELECT id FROM tutor_interactive_dispatch_jobs WHERE run_id = %s",
+                    (run_id,),
+                ).fetchone()
                 return TutorInputAcceptance(
                     run_id=run_id,
                     message_id=str(existing["message_id"]),
                     input_revision=_as_int(existing["input_revision"], 0),
                     event=event,
                     replayed=True,
+                    dispatch_job_id=str(dispatch["id"]) if dispatch is not None else None,
                 )
             _assert_not_cancelled(run)
             _assert_not_superseded(run)
@@ -1642,7 +2485,7 @@ class PostgresTutorRepository:
                       ELSE continuation_kind
                     END
                 WHERE id = %s AND user_id = %s AND input_revision = %s
-                RETURNING input_revision
+                RETURNING *
                 """,
                 (run_id, user_id, _as_int(run["input_revision"], 0)),
             ).fetchone()
@@ -1688,12 +2531,41 @@ class PostgresTutorRepository:
                 conversation_id=str(run["conversation_id"]),
                 occurred_at=accepted_at,
             )
+            dispatch_job = self._ensure_interactive_dispatch_job_locked(
+                run=updated,
+                available_at=accepted_at,
+            )
+            self._trip_failpoint("after_interactive_dispatch_job")
+            if _protocol_version_from_row(updated) is TutorInteractionProtocolVersion.THREAD_TURN_V2:
+                self._append_turn_event_locked(
+                    run=updated,
+                    kind=(
+                        TutorConversationEventKind.TURN_CREATED
+                        if revision == 1
+                        else TutorConversationEventKind.TURN_UPDATED
+                    ),
+                    event_key=(
+                        f"turn:{run_id}:created"
+                        if revision == 1
+                        else f"turn:{run_id}:input:{revision}"
+                    ),
+                    occurred_at=accepted_at,
+                )
+                self._append_item_reference_event_locked(
+                    run=updated,
+                    event_key=f"item:message:{message['id']}:added",
+                    kind=TutorConversationEventKind.ITEM_ADDED,
+                    item_id=str(message["id"]),
+                    item_kind="message",
+                    occurred_at=accepted_at,
+                )
             return TutorInputAcceptance(
                 run_id=run_id,
                 message_id=str(message["id"]),
                 input_revision=revision,
                 event=event,
                 replayed=False,
+                dispatch_job_id=dispatch_job.job_id if dispatch_job is not None else None,
             )
 
     def append_safe_event(
@@ -2471,6 +3343,12 @@ class PostgresTutorRepository:
                         "input_revision": _as_int(updated["input_revision"], 0),
                     },
                 )
+                self._append_turn_event_locked(
+                    run=updated,
+                    kind=TutorConversationEventKind.TURN_UPDATED,
+                    event_key=f"turn:{result.run_id}:cancelled",
+                    occurred_at=checkpoint.created_at,
+                )
                 return _result_from_row(updated)
             _assert_active_lease(run, lease=lease, now=checkpoint.created_at)
             if checkpoint.input_revision != _as_int(run["input_revision"], 0) or result.input_revision != checkpoint.input_revision:
@@ -2545,6 +3423,12 @@ class PostgresTutorRepository:
                         step_key=None,
                         occurred_at=checkpoint.created_at,
                     )
+            self._append_turn_event_locked(
+                run=updated,
+                kind=TutorConversationEventKind.TURN_UPDATED,
+                event_key=f"turn:{result.run_id}:terminal:{result.terminal_outcome.value}",
+                occurred_at=checkpoint.created_at,
+            )
             del trace
             return result
 
@@ -2621,7 +3505,7 @@ class PostgresTutorRepository:
                   AND terminal_outcome IS NULL
                   AND cancelled_at IS NULL
                   AND superseded_by_run_id IS NULL
-                RETURNING id
+                RETURNING *
                 """,
                 (
                     result.status.value,
@@ -2638,6 +3522,31 @@ class PostgresTutorRepository:
             ).fetchone()
             if updated is None:
                 raise TutorLeaseConflict("waiting result lease was lost")
+            self._conn.execute(
+                """
+                UPDATE tutor_run_public_processes
+                SET display_state = 'waiting_input',
+                    last_public_activity_at = GREATEST(last_public_activity_at, %s)
+                WHERE run_id = %s AND display_state IN (
+                  'thinking', 'waiting_input', 'waiting_approval', 'waiting_authority'
+                )
+                """,
+                (created_at, result.run_id),
+            )
+            self._append_item_reference_event_locked(
+                run=updated,
+                event_key=f"item:process:{result.run_id}:waiting:{result.input_revision}",
+                kind=TutorConversationEventKind.ITEM_UPDATED,
+                item_id=result.run_id,
+                item_kind="process",
+                occurred_at=created_at,
+            )
+            self._append_turn_event_locked(
+                run=updated,
+                kind=TutorConversationEventKind.TURN_UPDATED,
+                event_key=f"turn:{result.run_id}:waiting:{result.input_revision}",
+                occurred_at=created_at,
+            )
             return result
 
     def record_curation_proposal(
@@ -3225,7 +4134,16 @@ class PostgresTutorRepository:
         ).fetchone()
         if row is None:
             raise RuntimeError("Tutor public message insert failed")
-        return str(row["id"])
+        message_id = str(row["id"])
+        self._append_item_reference_event_locked(
+            run=run,
+            event_key=f"item:message:{message_id}:added",
+            kind=TutorConversationEventKind.ITEM_ADDED,
+            item_id=message_id,
+            item_kind="message",
+            occurred_at=created_at,
+        )
+        return message_id
 
     def _insert_trace_locked(
         self,
@@ -3597,6 +4515,91 @@ class PostgresTutorRunStore(TutorRunStore):
 
     def record_result(self, result: TutorRunResult) -> None:
         raise RuntimeError("PostgresTutorRunStore requires PostgresTutorLifecycle for result persistence")
+
+
+def _protocol_version_from_row(row: Mapping[str, object]) -> TutorInteractionProtocolVersion:
+    raw = str(row.get("interaction_protocol_version") or TutorInteractionProtocolVersion.LEGACY_V1.value)
+    try:
+        return TutorInteractionProtocolVersion(raw)
+    except ValueError:
+        return TutorInteractionProtocolVersion.LEGACY_V1
+
+
+def _validate_conversation_event_identity(
+    *,
+    kind: TutorConversationEventKind,
+    payload: Mapping[str, object],
+    turn_id: str | None,
+    item_id: str | None,
+    item_kind: str | None,
+) -> None:
+    if (item_id is None) != (item_kind is None):
+        raise ValueError("conversation event item identity is incomplete")
+    if kind in {TutorConversationEventKind.TURN_CREATED, TutorConversationEventKind.TURN_UPDATED}:
+        turn = _as_mapping(payload.get("turn"))
+        if _optional_string(turn.get("turn_id")) != turn_id or item_id is not None:
+            raise ValueError("conversation turn event identity does not match its payload")
+        return
+    if kind in {TutorConversationEventKind.ITEM_ADDED, TutorConversationEventKind.ITEM_UPDATED}:
+        item = _as_mapping(payload.get("item"))
+        if (
+            _optional_string(item.get("turn_id")) != turn_id
+            or _optional_string(item.get("item_id")) != item_id
+            or _optional_string(item.get("item_kind")) != item_kind
+        ):
+            raise ValueError("conversation item event identity does not match its payload")
+        return
+    if kind is TutorConversationEventKind.CONTROL_UPDATED:
+        if turn_id is not None or item_id is not None:
+            raise ValueError("conversation control event cannot reference a turn or item")
+        return
+    if turn_id is None:
+        raise ValueError("conversation dispatch event requires a turn")
+    if kind is TutorConversationEventKind.DISPATCH_DELAYED and item_id is not None:
+        raise ValueError("delayed dispatch event cannot reference an item")
+    if kind is TutorConversationEventKind.DISPATCH_DEAD and (item_id is None or item_kind != "error"):
+        raise ValueError("dead dispatch event requires its public error item identity")
+
+
+def _conversation_event_from_row(
+    row: Mapping[str, object],
+    *,
+    cursor: str,
+) -> TutorConversationEvent:
+    kind = TutorConversationEventKind(str(row["kind"]))
+    payload = validate_conversation_event_payload(kind, _as_mapping(row.get("payload_json")))
+    return TutorConversationEvent(
+        event_id=str(row["id"]),
+        conversation_id=str(row["conversation_id"]),
+        sequence=_as_int(row.get("event_sequence"), 0),
+        event_key=str(row["event_key"]),
+        kind=kind,
+        turn_id=_optional_string(row.get("turn_id")),
+        item_id=_optional_string(row.get("item_id")),
+        item_kind=_optional_string(row.get("item_kind")),
+        payload=payload,
+        occurred_at=_as_datetime(row.get("occurred_at")) or datetime.now(UTC),
+        cursor=cursor,
+    )
+
+
+def _interactive_dispatch_job_from_row(row: Mapping[str, object]) -> TutorInteractiveDispatchJob:
+    return TutorInteractiveDispatchJob(
+        job_id=str(row["id"]),
+        run_id=str(row["run_id"]),
+        user_id=str(row["user_id"]),
+        conversation_id=str(row["conversation_id"]),
+        state=TutorDispatchJobState(str(row["state"])),
+        attempt_count=_as_int(row.get("attempt_count"), 0),
+        max_attempts=_as_int(row.get("max_attempts"), _DISPATCH_JOB_MAX_ATTEMPTS),
+        available_at=_as_datetime(row.get("available_at")) or datetime.now(UTC),
+        lease_owner_id=_optional_string(row.get("lease_owner_id")),
+        lease_generation=_as_int(row.get("lease_generation"), 0),
+        lease_expires_at=_as_datetime(row.get("lease_expires_at")),
+        last_error_code=_optional_string(row.get("last_error_code")),
+        completed_at=_as_datetime(row.get("completed_at")),
+        dead_at=_as_datetime(row.get("dead_at")),
+    )
 
 
 def _trace_from_row(row: Mapping[str, object], *, projector: TutorSafeProjection) -> TutorTraceRecord:
@@ -3991,9 +4994,12 @@ def _as_float(value: object, default: float) -> float:
     return default
 
 
-def _optional_text(row: Mapping[str, object], key: str) -> str | None:
-    value = row.get(key)
+def _optional_string(value: object) -> str | None:
     return str(value) if value is not None else None
+
+
+def _optional_text(row: Mapping[str, object], key: str) -> str | None:
+    return _optional_string(row.get(key))
 
 
 def _as_optional_int(value: object) -> int | None:

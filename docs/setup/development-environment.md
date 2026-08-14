@@ -1,6 +1,6 @@
 # Aearn 本地开发环境
 
-**状态：** 当前 Tutor Harness 开发/验证环境，2026-08-12。
+**状态：** 当前 Tutor Harness 开发/验证环境，2026-08-14。
 **权威来源：** `aearn/package.json`、`aearn/services/api/pyproject.toml`、
 `aearn/infra/docker-compose.yml`、`aearn/scripts/start-dev.ps1` 与
 `.env.example`。
@@ -151,8 +151,10 @@ pnpm --dir .\aearn dev:restart
 pnpm --dir .\aearn dev:stop
 ```
 
-`dev` 的顺序是：Docker PostgreSQL/Redis → `app.db.bootstrap` → API → 一般
-Celery worker → Tauri Desktop dev server。它的受管日志在 `aearn/.logs/`。
+`dev` 的顺序是：Docker PostgreSQL/Redis → `app.db.bootstrap` → API → Celery
+worker → Celery beat → Tauri Desktop dev server。worker 消费 interactive/proactive/curation
+队列；beat 每 5 秒触发 `tutor.interactive.reconcile`，用于恢复丢失 wakeup 或过期 lease。
+它们的受管 PID 与日志都在 `aearn/.dev-state.json`、`aearn/.logs/`。
 
 `dev:status` 会报告 Docker、`/health`、Desktop dev server 和受管 PID。状态可能
 是：
@@ -171,6 +173,7 @@ docker compose -f .\aearn\infra\docker-compose.yml up -d
 uv --directory .\aearn\services\api run python -m app.db.bootstrap
 uv --directory .\aearn\services\api run python -m uvicorn app.main:app --host 127.0.0.1 --port 8001 --reload
 uv --directory .\aearn\services\api run python -m celery -A aearn_worker.worker_app:celery_app worker --loglevel=info --pool=solo
+uv --directory .\aearn\services\api run python -m celery -A aearn_worker.worker_app:celery_app beat --loglevel=info --pidfile=
 pnpm --dir .\aearn desktop:dev
 ```
 
@@ -233,6 +236,9 @@ uv --directory .\aearn\services\api run python -m pytest tests/test_tutor_proact
   issue/commit 中。
 - `GET /api/harness/cutover` 是 Desktop/Tutor 的准入依据；不能用旧 plan/session
   本地缓存替代它。
+- interactive 输入成功不依赖 Celery publish 成功：`tutor_interactive_dispatch_jobs` 是
+  PostgreSQL authority，`tutor.interactive.dispatch` 只是高优先级 wakeup，beat 的
+  `tutor.interactive.reconcile` 会恢复 pending/retry_wait/lease-expired job。
 - 背景 worker 的 `scan_due_signals` 生产语义是 global scan。fixture 需要隔离时
   使用显式 user scope 的 service seam，不要改生产 task 名或队列行为。
 - 需要重启或变更 skills、MCP、model catalog 时，按本机工具要求新开会话/重启；

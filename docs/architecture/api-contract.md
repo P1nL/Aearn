@@ -1,6 +1,6 @@
 # Aearn Tutor HTTP 与 SSE API 契约
 
-**状态：** 当前公共 API 契约，2026-08-12。
+**状态：** 当前公共 API 契约，2026-08-14。
 **权威来源：** `aearn/services/api/app/main.py` 中注册的路由、Pydantic model、
 `services/tutor/public_api.py`、`services/learning/`、`services/tutor/cutover.py` 与 API 测试。
 **不适用：** 已移除的 Graph、Dashboard、Onboarding、Learning Session、Review、
@@ -14,8 +14,9 @@ Notes 和旧 streaming endpoint。历史文档不构成当前可调用 API。
 - 请求和响应使用 UTF-8 JSON，SSE endpoint 使用 `text/event-stream`。
 - 用户、conversation、run、memory、inbox 与 plan revision 公开 ID 都按 UUID
   处理；服务端会校验范围，客户端不能用另一个用户 ID 读取/修改数据。
-- 时间使用 ISO-8601 UTC 字符串。`event_sequence` 是单个 run 内单调递增的整数，
-  不是跨 run 的 cursor 或客户端 acknowledgement store。
+- 时间使用 ISO-8601 UTC 字符串。旧 run SSE 的 `event_sequence` 仍是单个 run 内的
+  单调整数；新 conversation SSE 使用服务端签名的 opaque cursor，内部绑定 user、
+  conversation、cursor version 与 conversation-global sequence，二者不能互换。
 
 ### 统一错误信封
 
@@ -199,12 +200,15 @@ NFKC 单行且最多 48 字符的 `conversation_title`，并以 `WHERE title IS 
   "input_revision": 1,
   "message_id": "uuid",
   "event_cursor": 1,
+  "dispatch_job_id": "uuid",
   "merged": false,
   "input_replayed": false,
   "idempotent_replayed": false,
   "replaced_run_id": "uuid-or-null",
   "process": {
     "kind": "process",
+    "id": "uuid",
+    "turn_id": "uuid",
     "run_id": "uuid",
     "display_state": "thinking",
     "steps": [{"key": "input_received", "state": "completed", "label": "已接收你的问题"}],
@@ -219,20 +223,29 @@ NFKC 单行且最多 48 字符的 `conversation_title`，并以 `WHERE title IS 
     "status": "queued",
     "input_revision": 1,
     "terminal_outcome": null,
-    "continuation_kind": null
+    "continuation_kind": null,
+    "interaction_protocol_version": "thread_turn_v2",
+    "retry_of_turn_id": null,
+    "retry_root_turn_id": null
   }
 }
 ```
 
-接受输入的事务完成后，路由才安排 post-commit interactive dispatch。接受响应不泄露
-dispatcher/provider 异常；run read、SSE 和 history 只反映服务端安全投影。
+新 public fresh turn 使用 `interaction_protocol_version=thread_turn_v2`；历史与内部
+run 保持 `legacy_v1`。同一输入事务会同时创建或重新武装一条 one-row-per-run
+`tutor_interactive_dispatch_jobs`，并返回 opaque `dispatch_job_id`。事务提交后路由只做
+best-effort Celery wakeup 和本地低延迟 claim；PostgreSQL job/lease/generation 才是 dispatch
+authority。wakeup 丢失、进程崩溃或 lease 过期由周期 reconciler 恢复。接受响应不泄露
+dispatcher/provider 异常；run read、SSE、snapshot 和 history 只反映服务端安全投影。
 
 ### Conversation list、history 与 public process
 
 | Method | Path | 查询 | 响应 |
 | --- | --- | --- | --- |
 | `GET` | `/api/tutor/conversations` | `user_id`、`limit=1..40`、可选 opaque `cursor` | learner-visible conversation summaries，按 `(last_public_activity_at DESC, id DESC)` 排序 |
-| `GET` | `/api/tutor/conversations/{conversation_id}/history` | `user_id`、`limit=1..40`、可选 opaque `cursor` | 服务端权威的倒序 public timeline、`next_cursor`、`has_more`、可选 active foreground run |
+| `GET` | `/api/tutor/conversations/{conversation_id}/history` | `user_id`、`limit=1..40`、可选 opaque `cursor` | 旧客户端兼容的倒序 message/process timeline、`next_cursor`、`has_more`、可选 active foreground run |
+| `GET` | `/api/tutor/conversations/{conversation_id}/snapshot` | `user_id`、`limit=1..40`、可选 history cursor | `tutor_conversation_snapshot_v1`：conversation/control version、public active turn、空的 typed-request/queue 占位、typed timeline page 与 `stream_cursor` |
+| `GET` | `/api/tutor/conversations/{conversation_id}/events` | `user_id`；可选 opaque `Last-Event-ID` | conversation-global append-only SSE；只读取 public event 表，不调用 provider |
 
 list item 只含 `conversation_id`、服务端投影 title、`last_public_activity_at` 与可选
 `active_run={run_id,status,continuation_kind}`；不返回 learner 原文 preview、provider/model
@@ -245,10 +258,15 @@ JSON 契约、经 safety validation 后与成功 Tutor message 原子持久化�
 Responses/DeepSeek 的原生 reasoning item。旧 `tutor_messages` 没有 process row 或公开思路
 字段时仍以 message-only history 返回，服务器不会伪造思路、步骤、duration 或 title。
 
-cursor 由服务端签名并绑定 cursor kind、user 和（history 时）conversation scope。篡改、
-跨用户、跨 conversation、错误版本或不合法 token 一律返回 `400 CURSOR_INVALID`，不返回
-SQL/签名细节。公开 process 的状态仅可为 `thinking`、`completed`、`superseded` 或
-`unavailable`；步骤文本来自服务端固定 allowlist，时长为非负且 bounded 的服务器计算值。
+history cursor 由服务端签名并绑定 cursor kind、user 和 conversation scope。篡改、跨用户、
+跨 conversation、错误版本或不合法 token 一律返回 `400 CURSOR_INVALID`，不返回 SQL/签名
+细节。snapshot timeline 使用严格 `TutorPublicItem` union：`message | process | elicitation |
+approval | error`；本 child 只实际投影现有 message/process 与 durable-dispatch terminal error，
+`pending_requests`/`queue` 保持空数组供后续 typed-request/control child 接管。公开 process 的
+状态仅可为 `thinking | waiting_input | waiting_approval | waiting_authority | completed |
+interrupted | superseded | unavailable | failed`；步骤文本来自服务端固定 allowlist，时长为
+非负且 bounded 的服务器计算值。旧 `/history` 保持既有 message/process 字段集，不新增
+`turn_id` 或 error item。
 
 ### Run 状态
 
@@ -289,6 +307,18 @@ reasoning、transport detail 或 credential。
 SSE 不提供 raw learner messages、traces、selected Skill instructions、capability
 arguments、effect payload、curation envelope、provider diagnostics 或 checkpoint
 payload。
+
+### `GET /api/tutor/conversations/{conversation_id}/events?user_id={uuid}`
+
+- `Last-Event-ID` 是 opaque conversation cursor，不接受 run-local 数字 cursor。cursor
+  tamper、版本不匹配、跨 user/conversation、超前或早于保留窗口返回
+  `400 CONVERSATION_CURSOR_INVALID`；客户端应重新读取 snapshot。
+- event `id` 为下一次重连应保存的 opaque cursor；data 只含 `event_id`、conversation-global
+  `sequence`、闭合 `kind`、可选 turn/item reference、strict safe payload 与时间。
+- kind 固定为 `turn_created | turn_updated | item_added | item_updated | control_updated |
+  dispatch_delayed | dispatch_dead`。heartbeat 是 SSE comment，不写数据库、不推进 cursor。
+- 事件写入与 owning mutation 同 transaction；相同 `(conversation_id,event_key)` 只允许完全
+  相同的 public facts 幂等重放。SSE 不读取或转换 raw `tutor_run_events` payload。
 
 ## 7. LearningTrack 路线与计划接口
 
