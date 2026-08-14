@@ -1,0 +1,43 @@
+{
+  "id": "dsh-derived-ui-foundation",
+  "name": "dsh-derived-ui-foundation",
+  "title": "建立 DSH 派生 UI Foundation",
+  "description": "建立 Aearn 白色浅色 semantic tokens、DSH-derived primitives/icons、许可证来源记录和组件测试基础。",
+  "status": "completed",
+  "dev_type": null,
+  "scope": "aearn/apps/desktop DSH-derived tokens、primitives、icons、NOTICE 与组件测试基础",
+  "package": null,
+  "priority": "P1",
+  "creator": "PINKING",
+  "assignee": "PINKING",
+  "createdAt": "2026-08-14",
+  "completedAt": "2026-08-15",
+  "branch": "codex/codex-like-tutor-conversation",
+  "base_branch": "main",
+  "worktree_path": "E:\\codee\\Aearn-dsh-ui-reuse",
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "08-13-codex-like-tutor-conversation-experience",
+  "relatedFiles": [
+    ".trellis/tasks/08-13-codex-like-tutor-conversation-experience/research/dsh-ui-reuse-audit.md",
+    "aearn/apps/desktop/package.json",
+    "aearn/apps/desktop/src/styles.css"
+  ],
+  "notes": "执行顺序 2；无代码前置依赖。只建立 UI foundation，不实现 Tutor 业务状态机。",
+  "meta": {
+    "execution_order": 2,
+    "depends_on": [],
+    "upstream_repository": "https://github.com/deepseek-ai/deepseek-harness",
+    "upstream_revision": "47f943859bef60e4160492346772ded9b24f765a",
+    "upstream_license": "MIT",
+    "runtime_dependencies_excluded": [
+      "Cordis",
+      "DSH runtime"
+    ],
+    "initial_theme": "light_white",
+    "brand_identity": "aearn",
+    "brand_color": "aearn_green"
+  }
+}
