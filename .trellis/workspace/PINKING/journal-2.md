@@ -1436,3 +1436,25 @@ Closed the planning-only Tutor Harness rearchitecture parent after all nine inde
 ### Next Steps
 
 - 真实 provider smoke、reviewed container image fleet、push、deploy 与生产迁移仍需单独批准。
+
+
+## Session 100: Tutor 会话事件与持久调度底座
+
+**Date**: 2026-08-14
+**Task**: Tutor 会话事件与持久调度底座
+**Branch**: `codex/codex-like-tutor-conversation`
+
+### Summary
+
+完成 Codex-like Tutor Child 1：建立 thread_turn_v2 公开会话/轮次/条目契约、conversation-global append-only 事件与 snapshot/SSE、PostgreSQL 权威 durable dispatch job、Celery wakeup/reconciler、legacy_v1 兼容、规格与架构文档；完整 API 测试 548 passed、1 skipped，Ruff、Mypy、lock、compileall、Trellis validate 与 diff check 通过。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `19dbd2e` | (see git log) |
+| `b04898d` | (see git log) |
+
+### Status
+
+[OK] **Completed**
