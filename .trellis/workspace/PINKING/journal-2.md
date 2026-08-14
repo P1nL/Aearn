@@ -1458,3 +1458,43 @@ Closed the planning-only Tutor Harness rearchitecture parent after all nine inde
 ### Status
 
 [OK] **Completed**
+
+
+## Session 101: 完成 DSH 派生 UI Foundation
+
+**Date**: 2026-08-15
+**Task**: 完成 DSH 派生 UI Foundation
+**Branch**: `codex/codex-like-tutor-conversation`
+
+### Summary
+
+完成白色浅色 Aearn semantic tokens、DSH-derived primitives/icons、sonner adapter、MIT NOTICE/upstream mapping 与 Vitest 组件测试基础，并归档 Child 2。
+
+### Main Changes
+
+- 新增 aearn/apps/desktop/src/ui/dsh-derived 的 tokens、primitives、icons、feedback 与公共 exports。
+- 新增 THIRD_PARTY_NOTICES.md、UPSTREAM.md，并把 UI foundation 可执行契约同步到 frontend component code-spec。
+- 新增 Vitest、Testing Library、jsdom 配置与 14 个组件/边界测试，不接入 Tutor 业务状态。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `555bc06f` | (see git log) |
+| `c2e89987` | (see git log) |
+| `49fb4140` | (see git log) |
+
+### Testing
+
+- [OK] pnpm --dir .\aearn\apps\desktop test：2 files / 14 tests passed。
+- [OK] pnpm --dir .\aearn desktop:check：TypeScript 与 Vite production build passed。
+- [OK] cargo check：Tauri Rust shell passed；生成 schema 的仅换行变化已恢复。
+- [OK] task.py validate、pnpm frozen lockfile、git diff --check passed。
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 启动 08-14-tutor-typed-request-authority-turns，先核对 Child 1 已归档并读取后端 specs/source-of-truth。
