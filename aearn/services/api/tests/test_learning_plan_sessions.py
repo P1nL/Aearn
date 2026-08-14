@@ -143,12 +143,7 @@ def test_capability_appends_typed_draft_and_confirm_creates_one_track(
     tutor_client: TestClient,
     tutor_api_settings: Settings,
 ) -> None:
-    dispatcher, _provider = waiting_dispatcher(
-        settings=tutor_api_settings,
-        message="计划信息已足够。",
-        continuation_kind=TutorContinuationKind.PLANNING_INPUT,
-        question_key="goal_text",
-    )
+    dispatcher = RecordingTutorDispatcher()
     monkeypatch.setattr(tutor_route, "build_tutor_run_dispatcher", lambda _settings: dispatcher)
     user_id = str(create_tutor_user(tutor_client)["id"])
     session = _create_session(tutor_client, user_id, "plan-confirm-session")
@@ -243,12 +238,7 @@ def test_confirm_rejects_stale_draft_metadata(
     tutor_client: TestClient,
     tutor_api_settings: Settings,
 ) -> None:
-    dispatcher, _provider = waiting_dispatcher(
-        settings=tutor_api_settings,
-        message="计划已准备。",
-        continuation_kind=TutorContinuationKind.PLANNING_INPUT,
-        question_key="goal_text",
-    )
+    dispatcher = RecordingTutorDispatcher()
     monkeypatch.setattr(tutor_route, "build_tutor_run_dispatcher", lambda _settings: dispatcher)
     user_id = str(create_tutor_user(tutor_client)["id"])
     session = _create_session(tutor_client, user_id, "plan-stale-session")

@@ -65,6 +65,7 @@ class TutorPublicTurn(_StrictPublicModel):
     status: TutorPublicTurnStatus
     retry_of_turn_id: str | None = Field(default=None, min_length=1, max_length=120)
     retry_root_turn_id: str | None = Field(default=None, min_length=1, max_length=120)
+    completion_reason: Literal["awaiting_user", "awaiting_approval", "awaiting_authority"] | None = None
     created_at: str = Field(min_length=1, max_length=80)
     updated_at: str = Field(min_length=1, max_length=80)
 
@@ -83,6 +84,7 @@ class TutorPublicMessageItem(_StrictPublicModel):
     content: str = Field(max_length=16_000)
     public_thinking_steps: list[str] = Field(default_factory=list, max_length=4)
     context_references: list[dict[str, object]] = Field(default_factory=list, max_length=6)
+    in_reply_to_item_id: str | None = Field(default=None, min_length=1, max_length=120)
     created_at: str = Field(min_length=1, max_length=80)
 
 
@@ -98,22 +100,96 @@ class TutorPublicProcessItem(_StrictPublicModel):
     finished_at: str | None = Field(default=None, min_length=1, max_length=80)
 
 
+class TutorPublicOption(_StrictPublicModel):
+    value: str = Field(min_length=1, max_length=120)
+    label: str = Field(min_length=1, max_length=160)
+
+
+class TutorPublicTextPresentation(_StrictPublicModel):
+    type: Literal["text"]
+    field_key: str | None = Field(default=None, min_length=1, max_length=120)
+    minimum_length: int = Field(ge=1, le=16_000)
+    maximum_length: int = Field(ge=1, le=16_000)
+    multiline: bool
+
+
+class TutorPublicIntegerPresentation(_StrictPublicModel):
+    type: Literal["integer"]
+    field_key: str = Field(min_length=1, max_length=120)
+    minimum: int
+    maximum: int
+    step: int = Field(ge=1)
+    recommended: int | None = None
+    unit: str = Field(min_length=1, max_length=80)
+
+
+class TutorPublicSingleSelectPresentation(_StrictPublicModel):
+    type: Literal["single_select"]
+    field_key: str = Field(min_length=1, max_length=120)
+    options: list[TutorPublicOption] = Field(min_length=1, max_length=24)
+    recommended: str | None = Field(default=None, min_length=1, max_length=120)
+
+
+class TutorPublicMultiSelectPresentation(_StrictPublicModel):
+    type: Literal["multi_select"]
+    field_key: str = Field(min_length=1, max_length=120)
+    options: list[TutorPublicOption] = Field(min_length=1, max_length=24)
+    recommended: list[str] = Field(default_factory=list, max_length=4)
+    maximum_selections: int = Field(ge=1, le=4)
+
+
+class TutorPublicApprovalPresentation(_StrictPublicModel):
+    type: Literal["approval"]
+    proposal_id: str = Field(min_length=1, max_length=160)
+    authority_key: str = Field(min_length=1, max_length=160)
+    risk_level: Literal["low", "medium", "high"]
+    summary: str = Field(min_length=1, max_length=1_200)
+
+
+TutorPublicRequestPresentation = Annotated[
+    TutorPublicTextPresentation
+    | TutorPublicIntegerPresentation
+    | TutorPublicSingleSelectPresentation
+    | TutorPublicMultiSelectPresentation
+    | TutorPublicApprovalPresentation,
+    Field(discriminator="type"),
+]
+
+
 class TutorPublicElicitationItem(_StrictPublicModel):
     kind: Literal["elicitation"]
     id: str = Field(min_length=1, max_length=120)
+    request_id: str = Field(min_length=1, max_length=120)
     turn_id: str = Field(min_length=1, max_length=120)
-    state: Literal["pending", "resolved", "cancelled"]
+    request_kind: Literal["clarification", "planning_input", "capability_result", "external_result"]
+    actor: Literal["learner", "authority"]
+    state: Literal["pending", "answered", "cancelled", "expired"]
+    version: int = Field(ge=1)
+    required: Literal[True]
     prompt: str = Field(min_length=1, max_length=1_200)
+    presentation: TutorPublicRequestPresentation
+    allowed_actions: list[Literal["respond"]] = Field(default_factory=list, max_length=1)
+    answer_turn_id: str | None = Field(default=None, min_length=1, max_length=120)
     created_at: str = Field(min_length=1, max_length=80)
+    resolved_at: str | None = Field(default=None, min_length=1, max_length=80)
 
 
 class TutorPublicApprovalItem(_StrictPublicModel):
     kind: Literal["approval"]
     id: str = Field(min_length=1, max_length=120)
+    request_id: str = Field(min_length=1, max_length=120)
     turn_id: str = Field(min_length=1, max_length=120)
-    state: Literal["pending", "approved", "declined", "cancelled"]
+    request_kind: Literal["approval"]
+    actor: Literal["learner"]
+    state: Literal["pending", "answered", "denied", "cancelled", "expired"]
+    version: int = Field(ge=1)
+    required: Literal[True]
     prompt: str = Field(min_length=1, max_length=1_200)
+    presentation: TutorPublicApprovalPresentation
+    allowed_actions: list[Literal["approve", "deny"]] = Field(default_factory=list, max_length=2)
+    answer_turn_id: str | None = Field(default=None, min_length=1, max_length=120)
     created_at: str = Field(min_length=1, max_length=80)
+    resolved_at: str | None = Field(default=None, min_length=1, max_length=80)
 
 
 class TutorPublicErrorItem(_StrictPublicModel):

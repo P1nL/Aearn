@@ -341,3 +341,12 @@ const payload: unknown = await response.json();
 const result = parseModelReviewResult(payload);
 ```
 只有 exact parser 与服务端结果建立类型和评分权威。
+
+
+## 场景：Tutor typed request API seam
+
+- `TutorInteractionRequestItem` 必须按 `kind=elicitation|approval` exact-parse；request kind、actor、state、version、presentation、allowed actions 与 nullable answer lineage 均为 closed union。
+- `TutorRequestPresentation` 只接受 `text | integer | single_select | multi_select | approval` 的 exact server-owned shape；未知 type、extra key、非法 option/risk/state 整体拒绝。
+- response mutation 只发送 clarification text、planning exact key/catalog/value 或 approval exact proposal identity/decision；不得发送 capability/external receipt。
+- response 成功必须解析 fresh run 的 `response_to_request_id`、`completion_reason`、`dispatch_job_id` 和 returned request；客户端不得根据 prompt 文案推断 kind、approval 或 authority success。
+- 在最终 QuestionComposer child 前，Desktop 可以只读显示 request placeholder，但 history/snapshot parser 不得丢弃或宽松 cast request。

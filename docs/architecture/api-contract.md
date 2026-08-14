@@ -137,13 +137,14 @@ checkpoint scope 或验证失败都不产生半完成删除。代码回滚之后
 所有本节接口均要求 verified user；所有 UUID、idempotency replay、cursor 和读取范围都
 同时受当前 `user_id` 约束。
 
-### 首发、普通输入与显式 continuation
+### 首发、普通输入与类型化 request response
 
 | Method | Path | 请求/查询 | 成功响应 |
 | --- | --- | --- | --- |
 | `POST` | `/api/tutor/conversations/first-turn` | `user_id`、`client_action_id`、`content`、可选 `learning_scope` / `context_references` | 202（新首发）或 200（同 key 重放）；原子返回新 `conversation_id`、新 `run_id` 与初始公开 process |
 | `POST` | `/api/tutor/conversations/{conversation_id}/inputs` | `user_id`、`client_action_id`、`content`、可选 `learning_scope` / `context_references` | 202（新普通 TurnRun）或 200（同 key 重放）；见下方 turn response |
-| `POST` | `/api/tutor/runs/{run_id}/inputs` | 同上 | 只接受服务端持久化授权的 explicit continuation；202（新接受）或 200（重放） |
+| `POST` | `/api/tutor/conversations/{conversation_id}/requests/{item_id}/responses` | `user_id`、`client_action_id`、`expected_request_version` 与 clarification/planning/approval closed-union response | 202（创建 fresh answer turn）或 200（API 幂等重放）；同 request/body 的跨 key 重放返回同一 answer turn |
+| `POST` | `/api/tutor/runs/{run_id}/inputs` | 同上 | 仅保留 `legacy_v1` 兼容读取/写入；`thread_turn_v2` 不通过该入口恢复来源 run，最终退役由全局 cutover child 收口 |
 | `POST` | `/api/tutor/conversations` | `user_id`、`client_action_id`、可选 `conversation_id` / `learning_scope` | 兼容 create/resume 入口；Desktop draft 不调用它创建空 conversation |
 | `GET` | `/api/tutor/runs/{run_id}?user_id={uuid}` | — | 当前 `TutorRun` 安全状态 |
 
@@ -177,15 +178,26 @@ conversation 不会因为请求里出现这些字段而获得 planning authority
 idempotency key 的 request hash 包含这两个字段，因此变更事实或 reopen 集合不会被
 误判为同请求重放。
 
-`/runs/{run_id}/inputs` 不是普通聊天快捷方式：仅当 run 仍属于当前用户、尚未
-terminal/cancelled/superseded、状态为 `waiting_for_input`，且已持久化精确
-`continuation_kind` 时允许继续。枚举固定为 `clarification | planning_input | approval |
-capability_result | external_result`：普通歧义、单项计划事实、明确授权、已授权能力结果、
-外部步骤结果分别使用对应值。只有 `planning_input` 携带 allowlisted `question_key`；其他类型
-不得携带。ordinary input 创建 fresh run 并重新快照 conversation scope；explicit continuation
-复用同一 immutable run scope，若请求携带新的 `learning_scope` 则返回
-`409 LEARNING_SCOPE_CONFLICT`。普通 completed、normal-chat 或被替代 run 一律返回
-`409 RUN_NOT_ACTIVE`。
+五种阻塞意图固定为 `clarification | planning_input | approval | capability_result |
+external_result`。`thread_turn_v2` provider 只能选择 kind、`planning_input` 的 allowlisted
+`question_key` 与 bounded learner-safe 问题文本；presentation/options/limits、proposal identity
+和 authority scope/hash 全部由服务端构造。来源 turn 在同一 transaction 创建
+`tutor_interaction_requests` item，并以 `completed` + `completion_reason=awaiting_user |
+awaiting_approval | awaiting_authority` 终结，不保留可继续消耗旧 deadline/counter/lease 的
+`waiting_for_input`。
+
+learner response route 只接受：`clarification.answer_text`、`planning_input` 的 exact
+`question_key + tutor_planning_questions_v1 + typed value`，或 `approval` 的 exact
+`proposal_identity + approve|deny + optional reason`。`expected_request_version`、request state、
+user/conversation/item scope 与 canonical response hash 共同执行 CAS；成功后创建新的
+`thread_turn_v2`、新的 policy deadline/counters/lease、learner message/input event、process、
+dispatch job，并写 `response_to_request_id` 与 message `in_reply_to_item_id`。同 body 重放返回
+同一 answer turn，不同 body、stale version、普通文本冒充 approval 或 pending request 下的
+ordinary input 返回 `409 TUTOR_REQUEST_CONFLICT | TUTOR_REQUEST_PENDING`。
+
+`capability_result | external_result` 没有 learner mutation route。内部 authority service 必须提交
+issuer、subject、exact scope、request/result SHA-256、verification result 与 receipt identity；
+只有 `verified` 才解决 request 并创建 fresh authority turn，`ambiguous | rejected` 保持 pending。
 
 安全 title 只能在同次成功 Tutor decision 写入 learner-visible reply 时尝试写入，使用
 NFKC 单行且最多 48 字符的 `conversation_title`，并以 `WHERE title IS NULL` 固定一次。
@@ -226,7 +238,9 @@ NFKC 单行且最多 48 字符的 `conversation_title`，并以 `WHERE title IS 
     "continuation_kind": null,
     "interaction_protocol_version": "thread_turn_v2",
     "retry_of_turn_id": null,
-    "retry_root_turn_id": null
+    "retry_root_turn_id": null,
+    "response_to_request_id": null,
+    "completion_reason": null
   }
 }
 ```
@@ -244,7 +258,7 @@ dispatcher/provider 异常；run read、SSE、snapshot 和 history 只反映服�
 | --- | --- | --- | --- |
 | `GET` | `/api/tutor/conversations` | `user_id`、`limit=1..40`、可选 opaque `cursor` | learner-visible conversation summaries，按 `(last_public_activity_at DESC, id DESC)` 排序 |
 | `GET` | `/api/tutor/conversations/{conversation_id}/history` | `user_id`、`limit=1..40`、可选 opaque `cursor` | 旧客户端兼容的倒序 message/process timeline、`next_cursor`、`has_more`、可选 active foreground run |
-| `GET` | `/api/tutor/conversations/{conversation_id}/snapshot` | `user_id`、`limit=1..40`、可选 history cursor | `tutor_conversation_snapshot_v1`：conversation/control version、public active turn、空的 typed-request/queue 占位、typed timeline page 与 `stream_cursor` |
+| `GET` | `/api/tutor/conversations/{conversation_id}/snapshot` | `user_id`、`limit=1..40`、可选 history cursor | `tutor_conversation_snapshot_v1`：conversation/control version、public active turn、最多一个 pending typed request、typed timeline page、Queue 占位与 `stream_cursor` |
 | `GET` | `/api/tutor/conversations/{conversation_id}/events` | `user_id`；可选 opaque `Last-Event-ID` | conversation-global append-only SSE；只读取 public event 表，不调用 provider |
 
 list item 只含 `conversation_id`、服务端投影 title、`last_public_activity_at` 与可选
@@ -261,12 +275,14 @@ Responses/DeepSeek 的原生 reasoning item。旧 `tutor_messages` 没有 proces
 history cursor 由服务端签名并绑定 cursor kind、user 和 conversation scope。篡改、跨用户、
 跨 conversation、错误版本或不合法 token 一律返回 `400 CURSOR_INVALID`，不返回 SQL/签名
 细节。snapshot timeline 使用严格 `TutorPublicItem` union：`message | process | elicitation |
-approval | error`；本 child 只实际投影现有 message/process 与 durable-dispatch terminal error，
-`pending_requests`/`queue` 保持空数组供后续 typed-request/control child 接管。公开 process 的
+approval | error`。`elicitation | approval` 来自 typed request row，只公开 stable ID、来源 turn、
+kind/actor/state/version、bounded prompt、服务端 presentation、allowed actions 与 answer lineage；
+issuer secret、raw result、capability args、provider schema 和 validation internals 不进入 public
+payload。`pending_requests` 是当前 unresolved request authority，`queue` 仍由后续 control child 接管。公开 process 的
 状态仅可为 `thinking | waiting_input | waiting_approval | waiting_authority | completed |
 interrupted | superseded | unavailable | failed`；步骤文本来自服务端固定 allowlist，时长为
-非负且 bounded 的服务器计算值。旧 `/history` 保持既有 message/process 字段集，不新增
-`turn_id` 或 error item。
+非负且 bounded 的服务器计算值。旧 `/history` 继续兼容 message/process，并 additive 返回
+request item；response learner/authority message 可带 `in_reply_to_item_id`，不从文案猜测关联。
 
 ### Run 状态
 

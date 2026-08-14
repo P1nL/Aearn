@@ -599,18 +599,28 @@ export function TutorConversationSurface({
                 onToggle={() => setOpenProcessRuns((current) => ({ ...current, [item.run_id]: !current[item.run_id] }))}
               />
             )
-            : (
-              <article className={`tutor-timeline-entry ${item.role === "learner" ? "learner" : "tutor"}`} key={`message:${item.id}`}>
-                <span className="tutor-timeline-label">{item.role === "learner" ? "你" : "Tutor"}</span>
-                <div className="tutor-message-content">
-                  {item.role === "tutor" && item.public_thinking_steps.length > 0 && (
-                    <TutorPublicThinkingDisclosure messageId={item.id} steps={item.public_thinking_steps} />
-                  )}
-                  <p>{item.content}</p>
-                  {item.context_references.length > 0 ? <TutorReferenceCards references={item.context_references} /> : null}
-                </div>
-              </article>
-            ))}
+            : item.kind === "message"
+              ? (
+                <article className={`tutor-timeline-entry ${item.role === "learner" ? "learner" : "tutor"}`} key={`message:${item.id}`}>
+                  <span className="tutor-timeline-label">{item.role === "learner" ? "你" : "Tutor"}</span>
+                  <div className="tutor-message-content">
+                    {item.role === "tutor" && item.public_thinking_steps.length > 0 && (
+                      <TutorPublicThinkingDisclosure messageId={item.id} steps={item.public_thinking_steps} />
+                    )}
+                    <p>{item.content}</p>
+                    {item.context_references.length > 0 ? <TutorReferenceCards references={item.context_references} /> : null}
+                  </div>
+                </article>
+              )
+              : (
+                <article className="tutor-timeline-entry tutor" key={`request:${item.id}`} data-request-state={item.state}>
+                  <span className="tutor-timeline-label">Tutor 请求</span>
+                  <div className="tutor-message-content">
+                    <p>{item.prompt}</p>
+                    <small>{item.actor === "authority" ? "正在等待受信结果" : "请在支持类型化请求的新界面中完成响应"}</small>
+                  </div>
+                </article>
+              ))}
         </section>
 
         {continuationKind && (

@@ -573,6 +573,59 @@ class PostgresLearningTrackRepository:
         )
         return expected
 
+    def inherit_run_scope(
+        self,
+        *,
+        user_id: str,
+        run_id: str,
+        source_run_id: str,
+    ) -> ScopeSnapshot:
+        target = self._conn.execute(
+            "SELECT conversation_id FROM tutor_runs WHERE id = %s AND user_id = %s AND origin = 'interactive' FOR UPDATE",
+            (run_id, user_id),
+        ).fetchone()
+        source = self.read_run_scope(user_id=user_id, run_id=source_run_id)
+        if target is None or str(target["conversation_id"]) != source.conversation_id:
+            raise LearningScopeConflict("response run scope source is inconsistent")
+        expected = ScopeSnapshot(
+            run_id=run_id,
+            user_id=user_id,
+            conversation_id=source.conversation_id,
+            scope_kind=source.scope_kind,
+            learning_track_id=source.learning_track_id,
+            task_kind=source.task_kind,
+            knowledge_key=source.knowledge_key,
+            scope_version=source.scope_version,
+        )
+        existing = self._conn.execute(
+            "SELECT * FROM tutor_run_learning_scopes WHERE run_id = %s AND user_id = %s",
+            (run_id, user_id),
+        ).fetchone()
+        if existing is not None:
+            snapshot = _scope_snapshot_from_row(existing)
+            if snapshot != expected:
+                raise LearningScopeConflict("response run scope snapshot is immutable")
+            return snapshot
+        self._conn.execute(
+            """
+            INSERT INTO tutor_run_learning_scopes (
+              run_id, user_id, conversation_id, scope_kind, learning_track_id,
+              task_kind, knowledge_key, scope_version
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                run_id,
+                user_id,
+                source.conversation_id,
+                source.scope_kind.value,
+                source.learning_track_id,
+                source.task_kind.value,
+                source.knowledge_key,
+                source.scope_version,
+            ),
+        )
+        return expected
+
     def read_run_scope(self, *, user_id: str, run_id: str) -> ScopeSnapshot:
         row = self._conn.execute(
             """

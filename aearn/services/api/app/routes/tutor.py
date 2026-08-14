@@ -17,6 +17,7 @@ from app.models.tutor import (
     CorrectTutorMemoryRequest,
     CreateTutorConversationRequest,
     TutorInputRequest,
+    TutorInteractionRequestResponseRequest,
     TutorMutationRequest,
     UpdateTutorPreferencesRequest,
 )
@@ -220,6 +221,43 @@ def create_conversation_input(
             planning_facts=payload.planning_facts,
             reopen_fact_fields=tuple(payload.reopen_fact_fields),
             context_references=tuple(item.model_dump(mode="json") for item in payload.context_references),
+            idempotency_key=_idempotency_key(request, payload.client_action_id),
+        ),
+        commit=True,
+    )
+    if isinstance(response, JSONResponse):
+        return response
+    _schedule_interactive_dispatch(
+        background_tasks=background_tasks,
+        dispatcher=build_tutor_run_dispatcher(get_settings()),
+        user_id=payload.user_id,
+        response=response,
+    )
+    return JSONResponse(
+        status_code=status.HTTP_200_OK if bool(response.get("idempotent_replayed")) else status.HTTP_202_ACCEPTED,
+        content=jsonable_encoder(response),
+    )
+
+
+@router.post("/conversations/{conversation_id}/requests/{item_id}/responses", response_model=None)
+def respond_to_interaction_request(
+    conversation_id: str,
+    item_id: str,
+    payload: TutorInteractionRequestResponseRequest,
+    request: Request,
+    background_tasks: BackgroundTasks,
+) -> JSONResponse:
+    unavailable = _require_tutor_route(request, payload.user_id)
+    if unavailable is not None:
+        return unavailable
+    response = _call_service(
+        request,
+        lambda service: service.respond_to_interaction_request(
+            user_id=payload.user_id,
+            conversation_id=conversation_id,
+            item_id=item_id,
+            expected_request_version=payload.expected_request_version,
+            response=payload.response.model_dump(mode="json", exclude_none=False),
             idempotency_key=_idempotency_key(request, payload.client_action_id),
         ),
         commit=True,

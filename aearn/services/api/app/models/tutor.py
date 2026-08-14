@@ -115,6 +115,57 @@ class TutorInputRequest(TutorMutationRequest):
         return value
 
 
+class TutorClarificationResponse(_StrictReferenceModel):
+    kind: Literal["clarification"]
+    answer_text: str = Field(min_length=1, max_length=16_000)
+
+    @field_validator("answer_text")
+    @classmethod
+    def require_visible_answer(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("answer_text must not be blank")
+        return stripped
+
+
+class TutorPlanningInputResponse(_StrictReferenceModel):
+    kind: Literal["planning_input"]
+    question_key: Literal[
+        "language_id", "goal_text", "target_level", "weekly_minutes",
+        "experience_level", "teaching_preferences", "pace_constraints",
+    ]
+    catalog_version: Literal["tutor_planning_questions_v1"]
+    value: object
+
+
+class TutorApprovalResponse(_StrictReferenceModel):
+    kind: Literal["approval"]
+    proposal_identity: str = Field(min_length=1, max_length=160)
+    decision: Literal["approve", "deny"]
+    reason: str | None = Field(default=None, max_length=400)
+
+    @field_validator("reason")
+    @classmethod
+    def normalize_reason(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = " ".join(value.split())
+        return normalized or None
+
+
+TutorInteractionResponseInput = Annotated[
+    TutorClarificationResponse | TutorPlanningInputResponse | TutorApprovalResponse,
+    Field(discriminator="kind"),
+]
+
+
+class TutorInteractionRequestResponseRequest(TutorMutationRequest):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_request_version: int = Field(ge=1)
+    response: TutorInteractionResponseInput
+
+
 class CorrectTutorMemoryRequest(TutorMutationRequest):
     statement: str = Field(min_length=1, max_length=180)
 

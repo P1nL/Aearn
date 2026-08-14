@@ -123,6 +123,14 @@ class TutorContinuationKind(str, Enum):
     EXTERNAL_RESULT = "external_result"
 
 
+class TutorTurnCompletionReason(str, Enum):
+    """Learner-safe reason a completed source turn yielded a blocking request."""
+
+    AWAITING_USER = "awaiting_user"
+    AWAITING_APPROVAL = "awaiting_approval"
+    AWAITING_AUTHORITY = "awaiting_authority"
+
+
 class TutorCompactionTrigger(str, Enum):
     TERMINAL = "terminal"
     SAFE_CHECKPOINT = "safe_checkpoint"
@@ -1108,6 +1116,7 @@ class TutorRunSnapshot:
     cancelled: bool = False
     # Only a persisted server-authorized checkpoint may expose this on a live run.
     continuation_kind: TutorContinuationKind | None = None
+    interaction_protocol_version: Literal["legacy_v1", "thread_turn_v2"] = "legacy_v1"
 
     def __post_init__(self) -> None:
         if self.input_revision < 0:
@@ -1138,6 +1147,7 @@ class TutorRunResult:
     conversation_title: str | None = None
     # A normal completed TurnRun has no continuation.
     continuation_kind: TutorContinuationKind | None = None
+    completion_reason: TutorTurnCompletionReason | None = None
     diagnostic_code: str | None = None
     effect_results: tuple[TutorEffectResult, ...] = ()
 
@@ -1164,6 +1174,9 @@ class TutorRunResult:
         if self.continuation_kind is not None:
             if self.status is not TutorRunStatus.WAITING_FOR_INPUT or self.terminal_outcome is not None:
                 raise ValueError("Tutor continuation result must be a non-terminal waiting state")
+        if self.completion_reason is not None:
+            if self.status is not TutorRunStatus.COMPLETED or self.terminal_outcome is not TutorTerminalOutcome.COMPLETED:
+                raise ValueError("Tutor completion reason requires a completed terminal source turn")
         if self.diagnostic_code is not None:
             object.__setattr__(self, "diagnostic_code", _safe_identifier(self.diagnostic_code))
         object.__setattr__(self, "effect_results", tuple(self.effect_results))

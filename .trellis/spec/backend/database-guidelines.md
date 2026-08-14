@@ -849,3 +849,13 @@ best_effort_enqueue(job.id)  # PostgreSQL reconciler remains authoritative.
 ```
 
 The owning mutation, public ordering authority, and recoverable dispatch job commit together; wakeup loss does not lose accepted work.
+
+
+## 场景：Tutor 类型化请求与 fresh response turn
+
+- v2 continuation 必须创建 `tutor_interaction_requests` 并 terminalize source turn；禁止把新 v2 run 写成 `waiting_for_input` 后恢复同一 budget。
+- request kind/actor、planning key/catalog、approval identity、authority scope/hash 使用 closed CHECK + typed serializer；每 conversation 只允许一个 partial-unique pending request。
+- learner response 和 authority receipt 都锁 conversation/request，比较 exact scope、state、version 与 canonical body hash，再创建 fresh `thread_turn_v2`、revision 1 input、process/event/job 和 `response_to_request_id`。
+- 相同 body/receipt identity 重放同一 answer turn；不同 body/hash、stale version、跨 user/conversation、ambiguous authority verification 必须 fail closed，ambiguous 不得伪造 solved。
+- public item 只能从 allowlisted descriptor/presentation 投影；不得保存或公开 provider schema、raw reasoning、capability args、raw authority result 或 secret。
+- 必测：bootstrap twice、partial unique/FK/CHECK、request CAS、fresh deadline/counters、planning catalog、approval identity、authority receipt、pending normal-input block、snapshot/event allowlist、cutover inventory。

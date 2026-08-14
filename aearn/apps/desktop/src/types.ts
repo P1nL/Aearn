@@ -82,6 +82,8 @@ export type TutorTerminalOutcome =
   | "failed";
 
 export type TutorContinuationKind = "clarification" | "planning_input" | "approval" | "capability_result" | "external_result";
+export type TutorInteractionProtocolVersion = "legacy_v1" | "thread_turn_v2";
+export type TutorTurnCompletionReason = "awaiting_user" | "awaiting_approval" | "awaiting_authority";
 
 export type TutorRunState = {
   run_id: string;
@@ -96,6 +98,11 @@ export type TutorRunState = {
   effect_count: number;
   terminal_outcome: TutorTerminalOutcome | null;
   continuation_kind: TutorContinuationKind | null;
+  interaction_protocol_version: TutorInteractionProtocolVersion;
+  retry_of_turn_id: string | null;
+  retry_root_turn_id: string | null;
+  response_to_request_id: string | null;
+  completion_reason: TutorTurnCompletionReason | null;
   created_at: string | null;
   updated_at: string | null;
 };
@@ -129,7 +136,7 @@ export type TutorPublicProcess = {
   kind: "process";
   id: string;
   run_id: string;
-  display_state: "thinking" | "completed" | "superseded" | "unavailable";
+  display_state: "thinking" | "waiting_input" | "waiting_approval" | "waiting_authority" | "completed" | "interrupted" | "superseded" | "unavailable" | "failed";
   steps: TutorPublicProcessStep[];
   elapsed_seconds: number;
   created_at: string | null;
@@ -143,10 +150,57 @@ export type TutorHistoryMessage = {
   content: string;
   public_thinking_steps: string[];
   context_references: TutorContextReference[];
+  in_reply_to_item_id: string | null;
   created_at: string | null;
 };
 
-export type TutorHistoryItem = TutorHistoryMessage | TutorPublicProcess;
+export type TutorRequestOption = { value: string; label: string };
+
+export type TutorRequestPresentation =
+  | { type: "text"; field_key: string | null; minimum_length: number; maximum_length: number; multiline: boolean }
+  | { type: "integer"; field_key: string; minimum: number; maximum: number; step: number; recommended: number | null; unit: string }
+  | { type: "single_select"; field_key: string; options: TutorRequestOption[]; recommended: string | null }
+  | { type: "multi_select"; field_key: string; options: TutorRequestOption[]; recommended: string[]; maximum_selections: number }
+  | { type: "approval"; proposal_id: string; authority_key: string; risk_level: "low" | "medium" | "high"; summary: string };
+
+export type TutorElicitationItem = {
+  kind: "elicitation";
+  id: string;
+  request_id: string;
+  turn_id: string;
+  request_kind: Exclude<TutorContinuationKind, "approval">;
+  actor: "learner" | "authority";
+  state: "pending" | "answered" | "cancelled" | "expired";
+  version: number;
+  required: true;
+  prompt: string;
+  presentation: TutorRequestPresentation;
+  allowed_actions: "respond"[];
+  answer_turn_id: string | null;
+  created_at: string | null;
+  resolved_at: string | null;
+};
+
+export type TutorApprovalItem = {
+  kind: "approval";
+  id: string;
+  request_id: string;
+  turn_id: string;
+  request_kind: "approval";
+  actor: "learner";
+  state: "pending" | "answered" | "denied" | "cancelled" | "expired";
+  version: number;
+  required: true;
+  prompt: string;
+  presentation: Extract<TutorRequestPresentation, { type: "approval" }>;
+  allowed_actions: ("approve" | "deny")[];
+  answer_turn_id: string | null;
+  created_at: string | null;
+  resolved_at: string | null;
+};
+
+export type TutorInteractionRequestItem = TutorElicitationItem | TutorApprovalItem;
+export type TutorHistoryItem = TutorHistoryMessage | TutorPublicProcess | TutorInteractionRequestItem;
 
 export type TutorConversationHistoryResponse = {
   items: TutorHistoryItem[];
@@ -167,6 +221,7 @@ export type TutorInputAcceptedResponse = {
   input_revision: number;
   message_id: string;
   event_cursor: number;
+  dispatch_job_id: string | null;
   merged: boolean;
   input_replayed: boolean;
   idempotent_replayed: boolean;
@@ -175,6 +230,40 @@ export type TutorInputAcceptedResponse = {
   replaced_run_id: string | null;
   replaced_process: TutorPublicProcess | null;
   context_references: TutorContextReference[];
+};
+
+export type TutorInteractionResponseDraft =
+  | { kind: "clarification"; answer_text: string }
+  | { kind: "planning_input"; question_key: "language_id" | "goal_text" | "target_level" | "weekly_minutes" | "experience_level" | "teaching_preferences" | "pace_constraints"; catalog_version: "tutor_planning_questions_v1"; value: unknown }
+  | { kind: "approval"; proposal_identity: string; decision: "approve" | "deny"; reason?: string | null };
+
+export type TutorInteractionResponseAccepted = TutorInputAcceptedResponse & {
+  request: TutorInteractionRequestItem;
+  response_replayed: boolean;
+};
+
+export type TutorPublicTurn = {
+  turn_id: string;
+  conversation_id: string;
+  interaction_protocol_version: TutorInteractionProtocolVersion;
+  status: "in_progress" | "completed" | "interrupted" | "failed";
+  retry_of_turn_id: string | null;
+  retry_root_turn_id: string | null;
+  completion_reason: TutorTurnCompletionReason | null;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+export type TutorConversationSnapshotResponse = {
+  snapshot_version: "tutor_conversation_snapshot_v1";
+  conversation: { conversation_id: string; title: string; control_version: number };
+  active_turn: TutorPublicTurn | null;
+  pending_requests: TutorInteractionRequestItem[];
+  queue: Record<string, unknown>[];
+  timeline: TutorHistoryItem[];
+  next_cursor: string | null;
+  has_more: boolean;
+  stream_cursor: string;
 };
 
 export type TutorActivityItem = {

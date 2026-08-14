@@ -114,9 +114,45 @@ class PostgresTutorContextLoader:
             current_created_at = current_row.get("created_at")
             if not isinstance(current_created_at, datetime):
                 raise TutorContextError("TUTOR_CURRENT_INPUT_EVIDENCE_INVALID")
+            request_id = current_row.get("response_to_request_id")
+            raw_request_descriptor = current_row.get("request_descriptor")
+            safe_request_descriptor = (
+                dict(raw_request_descriptor)
+                if isinstance(raw_request_descriptor, Mapping)
+                else {}
+            )
+            current_content: object = str(current_row.get("content") or "")
+            if request_id is not None:
+                current_content = {
+                    "role": (
+                        "authority"
+                        if str(current_row.get("request_actor") or "") == "authority"
+                        else "user"
+                    ),
+                    "content": str(current_row.get("content") or ""),
+                    "response_to_request": {
+                        "request_id": str(request_id),
+                        "item_id": str(current_row.get("request_item_id") or ""),
+                        "kind": str(current_row.get("request_kind") or ""),
+                        "question_key": current_row.get("question_key"),
+                        "prompt": str(current_row.get("request_prompt") or ""),
+                        "descriptor": safe_request_descriptor,
+                        "authority_receipt": (
+                            {
+                                "issuer": str(current_row.get("authority_issuer") or ""),
+                                "subject": str(current_row.get("authority_subject") or ""),
+                                "request_hash": str(current_row.get("authority_request_hash") or ""),
+                                "result_hash": str(current_row.get("authority_result_hash") or ""),
+                                "verification_result": str(current_row.get("authority_verification_result") or ""),
+                            }
+                            if str(current_row.get("request_actor") or "") == "authority"
+                            else None
+                        ),
+                    },
+                }
             current_input = TutorContextSource(
                 source_id=f"message:{current_message_id}",
-                content=str(current_row.get("content") or ""),
+                content=current_content,
             )
             summary = self._learner_state.latest_context_summary_for_conversation(
                 user_id=snapshot.user_id,
@@ -335,13 +371,29 @@ class PostgresTutorContextLoader:
             raise TutorContextError("TUTOR_CURRENT_INPUT_REVISION_INVALID")
         rows = self._conn.execute(
             """
-            SELECT inputs.message_id::text AS message_id, messages.role, messages.content, messages.created_at
+            SELECT inputs.message_id::text AS message_id, messages.role, messages.content, messages.created_at,
+                   requests.id::text AS response_to_request_id,
+                   requests.item_id::text AS request_item_id,
+                   requests.kind AS request_kind,
+                   requests.actor AS request_actor,
+                   requests.question_key,
+                   requests.descriptor_json ->> 'prompt' AS request_prompt,
+                   requests.descriptor_json AS request_descriptor,
+                   requests.authority_issuer,
+                   requests.authority_subject,
+                   requests.authority_request_hash,
+                   requests.authority_result_hash,
+                   requests.authority_verification_result
             FROM tutor_runs AS runs
             JOIN tutor_run_input_events AS inputs
               ON inputs.run_id = runs.id
              AND inputs.input_revision = %s
             JOIN tutor_messages AS messages
               ON messages.id = inputs.message_id
+            LEFT JOIN tutor_interaction_requests AS requests
+              ON requests.id = runs.response_to_request_id
+             AND requests.user_id = runs.user_id
+             AND requests.conversation_id = runs.conversation_id
             WHERE runs.id = %s
               AND runs.user_id = %s
               AND runs.conversation_id = %s
@@ -360,7 +412,9 @@ class PostgresTutorContextLoader:
         if len(rows) != 1:
             raise TutorContextError("TUTOR_CURRENT_INPUT_EVIDENCE_INVALID")
         row = rows[0]
-        if str(row.get("role")) != "learner":
+        role = str(row.get("role") or "")
+        request_actor = str(row.get("request_actor") or "")
+        if role != "learner" and not (role == "tutor" and request_actor == "authority"):
             raise TutorContextError("TUTOR_CURRENT_INPUT_ROLE_INVALID")
         if not str(row.get("content") or "").strip():
             raise TutorContextError("TUTOR_CURRENT_INPUT_EMPTY")
