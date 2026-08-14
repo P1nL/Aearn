@@ -144,7 +144,7 @@ checkpoint scope 或验证失败都不产生半完成删除。代码回滚之后
 | `POST` | `/api/tutor/conversations/first-turn` | `user_id`、`client_action_id`、`content`、可选 `learning_scope` / `context_references` | 202（新首发）或 200（同 key 重放）；原子返回新 `conversation_id`、新 `run_id` 与初始公开 process |
 | `POST` | `/api/tutor/conversations/{conversation_id}/inputs` | `user_id`、`client_action_id`、`content`、可选 `learning_scope` / `planning_facts` / `reopen_fact_fields` / `context_references` | idle 时 202 创建 fresh TurnRun；已有 active turn、pending request 或 Queue pause 时 202 进入 Queue；同 key 重放为 200 |
 | `POST` | `/api/tutor/conversations/{conversation_id}/requests/{item_id}/responses` | `user_id`、`client_action_id`、`expected_request_version` 与 clarification/planning/approval closed-union response | 202（创建 fresh answer turn）或 200（API 幂等重放）；同 request/body 的跨 key 重放返回同一 answer turn |
-| `POST` | `/api/tutor/runs/{run_id}/inputs` | 同上 | 仅保留 `legacy_v1` 兼容读取/写入；`thread_turn_v2` 不通过该入口恢复来源 run，最终退役由全局 cutover child 收口 |
+| `POST` | `/api/tutor/runs/{run_id}/inputs` | legacy request shape | 永久 `410 Gone` tombstone；无论 protocol 都不写 message/event/job，不恢复 legacy continuation |
 | `POST` | `/api/tutor/conversations` | `user_id`、`client_action_id`、可选 `conversation_id` / `learning_scope` | 兼容 create/resume 入口；Desktop draft 不调用它创建空 conversation |
 | `GET` | `/api/tutor/runs/{run_id}?user_id={uuid}` | — | 当前 `TutorRun` 安全状态 |
 
@@ -303,7 +303,7 @@ dispatcher/provider 异常；run read、SSE、snapshot 和 history 只反映服�
 | --- | --- | --- | --- |
 | `GET` | `/api/tutor/conversations` | `user_id`、`limit=1..40`、可选 opaque `cursor` | learner-visible conversation summaries，按 `(last_public_activity_at DESC, id DESC)` 排序 |
 | `GET` | `/api/tutor/conversations/{conversation_id}/history` | `user_id`、`limit=1..40`、可选 opaque `cursor` | 旧客户端兼容的倒序 message/process timeline、`next_cursor`、`has_more`、可选 active foreground run |
-| `GET` | `/api/tutor/conversations/{conversation_id}/snapshot` | `user_id`、`limit=1..40`、可选 history cursor | `tutor_conversation_snapshot_v1`：conversation/control version、public active turn、最多一个 pending typed request、typed timeline page、Queue 占位与 `stream_cursor` |
+| `GET` | `/api/tutor/conversations/{conversation_id}/snapshot` | `user_id`、`limit=1..40`、可选 history cursor | `tutor_conversation_snapshot_v1`：conversation/control version、public active turn（含 CAS `input_revision`）、最多一个 pending typed request、typed timeline page、Queue 与 opaque `stream_cursor` |
 | `GET` | `/api/tutor/conversations/{conversation_id}/events` | `user_id`；可选 opaque `Last-Event-ID` | conversation-global append-only SSE；只读取 public event 表，不调用 provider |
 
 list item 只含 `conversation_id`、服务端投影 title、`last_public_activity_at` 与可选

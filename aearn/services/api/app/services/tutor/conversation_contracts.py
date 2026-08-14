@@ -63,6 +63,7 @@ class TutorPublicTurn(_StrictPublicModel):
     conversation_id: str = Field(min_length=1, max_length=120)
     interaction_protocol_version: TutorInteractionProtocolVersion
     status: TutorPublicTurnStatus
+    input_revision: int = Field(default=0, ge=0)
     retry_of_turn_id: str | None = Field(default=None, min_length=1, max_length=120)
     retry_root_turn_id: str | None = Field(default=None, min_length=1, max_length=120)
     completion_reason: Literal["awaiting_user", "awaiting_approval", "awaiting_authority"] | None = None

@@ -46,13 +46,11 @@ Runtime API types must follow `docs/architecture/api-contract.md`; do not invent
 - Do not duplicate enum strings with different casing or labels.
 - Do not model backend-internal Attempt types as visible user labels.
 
-## Scenario: Tutor Cursor SSE and Non-Durable Error Frames
+## Scenario: Legacy Tutor Run Cursor SSE (retired from v2 Desktop)
 
 ### 1. Scope / Trigger
 
-- Trigger: adding or changing `GET /api/tutor/runs/{run_id}/events`,
-  `buildTutorRunEventsUrl()`, `useTutorSSE`, `TutorSseEvent`, or a Tutor
-  workspace timeline.
+- Trigger: maintaining backend/legacy compatibility for `GET /api/tutor/runs/{run_id}/events`. The v2 Desktop deletes `buildTutorRunEventsUrl()` and `useTutorSSE`; no production Tutor surface may reintroduce them.
 - Scope: `aearn/apps/desktop/src/{api,types}.ts`,
   `hooks/useTutorSSE.ts`, and pre-cutover Tutor components only. It does not
   change the existing learning/onboarding/review SSE hooks or the default app
@@ -369,3 +367,11 @@ const result = parseModelReviewResult(payload);
 - `GET /api/tutor/capabilities/thread-turn-v2` 必须 exact-parse `tutor_thread_turn_v2_capability_v1`，包括 cutover/desktop contract version、env、state、generation、summary/block、effective gate、安全 counts 与时间。
 - state 只允许 `idle|preparing|blocked|ready|enabled`；未知字段、负 generation、未知 nested count 值整体拒绝。
 - Desktop 不从 localStorage、本地 env 或旧 harness cutover receipt 猜测 v2 已启用。
+
+
+## Tutor v2 exact turn and timeline additions (2026-08-14)
+
+- `TutorPublicTurn.input_revision` is a required non-negative Desktop field even though backend validation supplies `0` for replaying older stored event payloads. Snapshot producers must project the current persisted revision.
+- `TutorHistoryItem` includes exact learner-safe `error { id, turn_id, code, message, recoverable, created_at }`; unknown/extra error fields reject the item.
+- The v2 renderer exhaustively handles message/request/error and intentionally returns `null` for standalone process. This is a display rule, not permission to skip process validation at the API boundary.
+- Conversation SSE cursors are opaque strings; only event `sequence` participates in duplicate/gap checks.

@@ -78,6 +78,8 @@ def test_queue_edit_reorder_steer_interrupt_resume_and_execute(
 
     state = _queue(tutor_client, user_id=user_id, conversation_id=conversation_id)
     assert state["control_state"] == "running"
+    assert state["active_turn"]["turn_id"] == turn_id
+    assert state["active_turn"]["input_revision"] == 1
     assert state["queue_paused"] is False
     assert [item["content"] for item in state["items"]] == ["排队输入 1", "排队输入 2", "排队输入 3"]
 

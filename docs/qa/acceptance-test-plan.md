@@ -364,3 +364,24 @@ contract，不访问真实 provider、不启动或批准生产 container fleet�
 | FE-09 | P1 | capability exact DTO | Desktop parser/build 拒绝 unknown state/field，客户端不猜测 enable | Desktop Vitest + `desktop:check` |
 
 默认验证不调用真实 provider、不执行生产 cutover、不部署。
+
+
+## 2026-08-14：Codex-like Tutor Desktop migration 验收增量
+
+| ID | 优先级 | 范围 | 验收 | 证据 |
+| --- | --- | --- | --- | --- |
+| FE-10 | P0 | Snapshot / SSE authority | Desktop 首屏只用 conversation snapshot；opaque cursor、重复 sequence、gap/cursor invalid/reconnect 均 fail closed 并重新 snapshot；主 UI 无 run-local SSE | `useTutorConversationStream.test.ts`、Desktop Vitest、browser reconnect smoke |
+| FE-11 | P0 | Composer / typed request | running Send 默认 Queue；pending request 完全占 composer；clarification/planning/approval 使用 exact request version；authority 只读等待；无 `/runs/{id}/inputs` caller | source guard test、typed fixture browser flow、API request tests |
+| FE-12 | P0 | Queue / controls | Queue n/10、edit/up/down/delete/Steer/execute/resume、Stop 与 Retry 使用 snapshot expected versions；409 后刷新 snapshot 并保留本地 draft | Queue API tests、Desktop build、browser keyboard/responsive smoke |
+| FE-13 | P1 | Timeline / migration / accessibility | process 不渲染；Tutor message 仅以 `public_thinking_steps[]` 显示 DSH-derived Think；legacy waiting 显示 fresh-turn card；interrupted 为中性终态；390/900/1440、focus、reduced motion、console clean | Desktop Vitest、Browser/Tauri smoke |
+
+上述 Desktop 验收使用 fake/disabled provider 与本地 fixture；不调用真实 provider、不执行生产 cutover、不部署。
+
+
+### 本地集成证据（2026-08-14）
+
+- Desktop：Vitest `21 passed`；`pnpm --dir .\aearn desktop:check` 通过；Tauri dev 完成编译并启动。
+- API：本 child focused suite `18 passed`；完整 API pytest `569 passed, 1 skipped`；Ruff、Mypy、`uv lock --check`、`compileall` 通过。
+- Browser/Tauri：验证 snapshot-first timeline、DSH-derived Think、`process` 不渲染、running Send 入 Queue、Queue edit/reorder/delete/Steer/execute、Stop/Retry 状态、390×844 与 900×900 无横向溢出、键盘发送、reduced-motion、SSE 断线可见错误与恢复后重连；console error 为 0。
+- pending request 的 composer-seat 替换与 exact request version 由 Desktop component test 和 API request suite 覆盖；本地 fake dispatcher fixture 未作为真实 provider 或发布就绪证据。
+- 未调用真实 provider，未执行生产 cutover、部署或生产数据修改。

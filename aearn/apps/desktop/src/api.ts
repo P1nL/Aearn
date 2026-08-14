@@ -123,7 +123,7 @@ export async function fetchTutorThreadTurnV2Capability(
   userId: string,
   signal?: AbortSignal,
 ): Promise<TutorThreadTurnV2Capability> {
-  const payload = await requestJson(`/api/tutor/capabilities/thread-turn-v2?user_id=${encodeURIComponent(userId)}`, { signal });
+  const payload = await requestJson(`${API_BASE_URL}/api/tutor/capabilities/thread-turn-v2?user_id=${encodeURIComponent(userId)}`, { signal });
   const parsed = parseTutorThreadTurnV2Capability(payload);
   if (!parsed) throw new Error("Tutor thread/turn v2 capability API returned an invalid payload");
   return parsed;
@@ -450,30 +450,6 @@ export async function retryTutorTurn(input: {
   );
   const response = toTutorControlledTurnResponse(payload, false)?.turn;
   if (!response) throw new Error("Tutor retry API returned an invalid payload");
-  return response;
-}
-
-export async function acceptTutorRunInput(input: {
-  userId: string;
-  runId: string;
-  content: string;
-  clientActionId: string;
-  learningScope?: LearningScopeInput;
-  contextReferences?: TutorContextReferenceDraft[];
-}): Promise<TutorInputAcceptedResponse> {
-  const payload = await requestJson(`${API_BASE_URL}/api/tutor/runs/${encodeURIComponent(input.runId)}/inputs`, {
-    method: "POST",
-    headers: tutorMutationHeaders(input.clientActionId),
-    body: JSON.stringify({
-      user_id: input.userId,
-      content: input.content,
-      client_action_id: input.clientActionId,
-      ...(input.learningScope ? { learning_scope: input.learningScope } : {}),
-      ...(input.contextReferences ? { context_references: input.contextReferences } : {}),
-    }),
-  });
-  const response = toTutorInputAcceptedResponse(payload);
-  if (!response) throw new Error("Tutor run-input API returned an invalid payload");
   return response;
 }
 
@@ -1188,8 +1164,8 @@ export async function confirmLearningPlanSession(input: {
   return { session, track };
 }
 
-export function buildTutorRunEventsUrl(runId: string, userId: string): string {
-  const url = new URL(`/api/tutor/runs/${encodeURIComponent(runId)}/events`, API_BASE_URL);
+export function buildTutorConversationEventsUrl(conversationId: string, userId: string): string {
+  const url = new URL(`/api/tutor/conversations/${encodeURIComponent(conversationId)}/events`, API_BASE_URL);
   url.searchParams.set("user_id", userId);
   return url.toString();
 }
@@ -2325,6 +2301,12 @@ function hasExactKeys(value: Record<string, unknown>, expected: string[]): boole
   return keys.length === expected.length && keys.every((key, index) => key === [...expected].sort()[index]);
 }
 
+function hasRequiredAndOptionalKeys(value: Record<string, unknown>, required: string[], optional: string[]): boolean {
+  const allowed = new Set([...required, ...optional]);
+  const keys = Object.keys(value);
+  return required.every((key) => keys.includes(key)) && keys.every((key) => allowed.has(key));
+}
+
 function toLearningLanguageCatalogItem(payload: unknown): LearningLanguageCatalogItem | null {
   if (
     !isRecord(payload) ||
@@ -2752,6 +2734,15 @@ function toTutorHistoryItem(payload: unknown): TutorHistoryItem | null {
   if (payload.kind === "process") {
     return toTutorPublicProcess(payload);
   }
+  if (payload.kind === "error") {
+    if (!hasExactKeys(payload, ["kind", "id", "turn_id", "code", "message", "recoverable", "created_at"]) ||
+        !isNullableString(payload.turn_id) || !isString(payload.code) || !isString(payload.message) ||
+        typeof payload.recoverable !== "boolean") return null;
+    return {
+      kind: "error", id: payload.id, turn_id: payload.turn_id, code: payload.code,
+      message: payload.message, recoverable: payload.recoverable, created_at: payload.created_at,
+    };
+  }
   if (payload.kind === "elicitation" || payload.kind === "approval") {
     return toTutorInteractionRequestItem(payload);
   }
@@ -2988,21 +2979,21 @@ function toTutorConversationSnapshotResponse(payload: unknown): TutorConversatio
 }
 
 function toTutorPublicTurn(payload: unknown): TutorConversationSnapshotResponse["active_turn"] {
-  if (!isRecord(payload) || !hasExactKeys(payload, [
-    "turn_id", "conversation_id", "interaction_protocol_version", "status", "retry_of_turn_id", "retry_root_turn_id", "completion_reason", "created_at", "updated_at",
-  ]) || !isString(payload.turn_id) || !isString(payload.conversation_id) || !isTutorInteractionProtocolVersion(payload.interaction_protocol_version) ||
-      !isTutorPublicTurnStatus(payload.status) || !isNullableString(payload.retry_of_turn_id) || !isNullableString(payload.retry_root_turn_id) ||
-      !isNullableTutorCompletionReason(payload.completion_reason) || !isNullableString(payload.created_at) || !isNullableString(payload.updated_at)) return null;
+  const required = ["turn_id", "conversation_id", "interaction_protocol_version", "status", "input_revision", "created_at", "updated_at"];
+  const optional = ["retry_of_turn_id", "retry_root_turn_id", "completion_reason"];
+  if (!isRecord(payload) || !hasRequiredAndOptionalKeys(payload, required, optional) ||
+      !isString(payload.turn_id) || !isString(payload.conversation_id) || !isTutorInteractionProtocolVersion(payload.interaction_protocol_version) ||
+      !isTutorPublicTurnStatus(payload.status) || !isNonNegativeSafeInteger(payload.input_revision) ||
+      !(payload.retry_of_turn_id === undefined || isNullableString(payload.retry_of_turn_id)) ||
+      !(payload.retry_root_turn_id === undefined || isNullableString(payload.retry_root_turn_id)) ||
+      !(payload.completion_reason === undefined || isNullableTutorCompletionReason(payload.completion_reason)) ||
+      !isNullableString(payload.created_at) || !isNullableString(payload.updated_at)) return null;
   return {
-    turn_id: payload.turn_id,
-    conversation_id: payload.conversation_id,
-    interaction_protocol_version: payload.interaction_protocol_version,
-    status: payload.status,
-    retry_of_turn_id: payload.retry_of_turn_id,
-    retry_root_turn_id: payload.retry_root_turn_id,
-    completion_reason: payload.completion_reason,
-    created_at: payload.created_at,
-    updated_at: payload.updated_at,
+    turn_id: payload.turn_id, conversation_id: payload.conversation_id,
+    interaction_protocol_version: payload.interaction_protocol_version, status: payload.status,
+    input_revision: payload.input_revision, retry_of_turn_id: payload.retry_of_turn_id ?? null,
+    retry_root_turn_id: payload.retry_root_turn_id ?? null, completion_reason: payload.completion_reason ?? null,
+    created_at: payload.created_at, updated_at: payload.updated_at,
   };
 }
 
