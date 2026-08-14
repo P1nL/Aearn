@@ -1,0 +1,62 @@
+{
+  "id": "codex-like-tutor-desktop-migration-qa",
+  "name": "codex-like-tutor-desktop-migration-qa",
+  "title": "类 Codex Tutor Desktop 与集成迁移验收",
+  "description": "实现 Codex-like Tutor Desktop 时间线与 composer，完成兼容迁移、端到端验收和文档同步。",
+  "status": "completed",
+  "dev_type": null,
+  "scope": "Desktop Tutor v2 对话 UI、统一 stream 消费、兼容迁移、浏览器 QA 与文档",
+  "package": null,
+  "priority": "P1",
+  "creator": "PINKING",
+  "assignee": "PINKING",
+  "createdAt": "2026-08-13",
+  "completedAt": "2026-08-14",
+  "branch": "codex/codex-like-tutor-conversation",
+  "base_branch": "main",
+  "worktree_path": "E:\\codee\\Aearn-dsh-ui-reuse",
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "08-13-codex-like-tutor-conversation-experience",
+  "relatedFiles": [
+    "aearn/apps/desktop/src/api.ts",
+    "aearn/apps/desktop/src/types.ts",
+    "aearn/apps/desktop/src/features/tutor/TutorConversationSurface.tsx",
+    "aearn/apps/desktop/src/hooks/useTutorSSE.ts",
+    "docs/product/frontend-interaction-spec.md",
+    "docs/architecture/api-contract.md",
+    "docs/architecture/database-schema.md",
+    "docs/architecture/tutor-harness-runtime.md",
+    "docs/qa/acceptance-test-plan.md"
+  ],
+  "notes": "执行顺序 6；依赖前五个 child，不能从 UI 重新定义后端或 cutover 语义。",
+  "meta": {
+    "execution_order": 6,
+    "depends_on": [
+      "08-13-tutor-thread-turn-item-event-foundation",
+      "08-14-dsh-derived-ui-foundation",
+      "08-14-tutor-typed-request-authority-turns",
+      "08-13-tutor-queue-steer-interrupt-control",
+      "08-14-tutor-thread-turn-v2-global-cutover"
+    ],
+    "desktop_process_visibility": "hidden",
+    "desktop_think_source": "message_public_thinking_steps_only",
+    "backend_process_authority": "retained",
+    "queue_max_pending": 10,
+    "queue_capacity_configurable": false,
+    "queue_operations": [
+      "edit",
+      "delete",
+      "reorder",
+      "steer",
+      "execute"
+    ],
+    "queue_reorder_ui": "keyboard_up_down",
+    "typed_question_composer_takeover": true,
+    "typed_question_skip_close": false,
+    "dsh_visual_fidelity": "near_pixel_selected_surfaces",
+    "plan_inspector": "right_floating_bottom_sheet_narrow"
+  }
+}
