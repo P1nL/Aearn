@@ -6242,3 +6242,57 @@ ALTER TABLE tutor_queued_inputs
   DROP CONSTRAINT IF EXISTS chk_tutor_queued_inputs_metadata;
 ALTER TABLE tutor_queued_inputs
   ADD CONSTRAINT chk_tutor_queued_inputs_metadata CHECK (jsonb_typeof(input_metadata_json) = 'object');
+
+
+-- Child 08-14 Tutor thread/turn v2 global protocol cutover authority.
+CREATE TABLE IF NOT EXISTS tutor_thread_turn_cutovers (
+  cutover_version text PRIMARY KEY CHECK (char_length(cutover_version) BETWEEN 1 AND 120),
+  state text NOT NULL DEFAULT 'idle' CHECK (state IN ('idle','preparing','blocked','ready','enabled')),
+  generation bigint NOT NULL DEFAULT 0 CHECK (generation >= 0),
+  summary_hash text CHECK (summary_hash IS NULL OR summary_hash ~ '^[0-9a-f]{64}$'),
+  counts_json jsonb NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(counts_json) = 'object'),
+  block_code text CHECK (block_code IS NULL OR char_length(block_code) BETWEEN 1 AND 160),
+  last_operation text CHECK (last_operation IS NULL OR last_operation IN ('prepare','enable','rollback')),
+  last_idempotency_key text CHECK (last_idempotency_key IS NULL OR char_length(last_idempotency_key) BETWEEN 1 AND 160),
+  last_request_hash text CHECK (last_request_hash IS NULL OR last_request_hash ~ '^[0-9a-f]{64}$'),
+  prepared_at timestamptz,
+  ready_at timestamptz,
+  enabled_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT chk_tutor_thread_turn_cutover_block CHECK ((state = 'blocked') = (block_code IS NOT NULL)),
+  CONSTRAINT chk_tutor_thread_turn_cutover_ready_hash CHECK (state NOT IN ('ready','enabled') OR summary_hash IS NOT NULL)
+);
+
+CREATE TABLE IF NOT EXISTS tutor_thread_turn_cutover_events (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  cutover_version text NOT NULL REFERENCES tutor_thread_turn_cutovers(cutover_version) ON DELETE RESTRICT,
+  generation bigint NOT NULL CHECK (generation >= 0),
+  event_key text NOT NULL CHECK (char_length(event_key) BETWEEN 1 AND 160),
+  kind text NOT NULL CHECK (kind IN ('preparing','preflight','enabled','rollback')),
+  state text NOT NULL CHECK (state IN ('preparing','blocked','ready','enabled')),
+  counts_json jsonb NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(counts_json) = 'object'),
+  block_code text CHECK (block_code IS NULL OR char_length(block_code) BETWEEN 1 AND 160),
+  occurred_at timestamptz NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (cutover_version, event_key)
+);
+
+INSERT INTO tutor_thread_turn_cutovers (cutover_version)
+VALUES ('tutor_thread_turn_v2_global_v1')
+ON CONFLICT (cutover_version) DO NOTHING;
+
+DROP TRIGGER IF EXISTS trg_tutor_thread_turn_cutovers_updated_at ON tutor_thread_turn_cutovers;
+CREATE TRIGGER trg_tutor_thread_turn_cutovers_updated_at
+BEFORE UPDATE ON tutor_thread_turn_cutovers FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE OR REPLACE FUNCTION enforce_tutor_thread_turn_cutover_event_append_only()
+RETURNS trigger AS $$
+BEGIN
+  RAISE EXCEPTION 'Tutor thread/turn cutover events are append-only' USING ERRCODE = '23514';
+END;
+$$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS trg_tutor_thread_turn_cutover_events_immutable ON tutor_thread_turn_cutover_events;
+CREATE TRIGGER trg_tutor_thread_turn_cutover_events_immutable
+BEFORE UPDATE OR DELETE ON tutor_thread_turn_cutover_events
+FOR EACH ROW EXECUTE FUNCTION enforce_tutor_thread_turn_cutover_event_append_only();

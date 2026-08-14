@@ -117,6 +117,8 @@ CUTOVER_SHARED_TUTOR_TABLES = frozenset(
         "tutor_exercise_versions",
         "tutor_exercise_private_rubrics",
         "tutor_module_diagnostic_versions",
+        "tutor_thread_turn_cutovers",
+        "tutor_thread_turn_cutover_events",
     }
 )
 _TARGET_COUNT_SQL: tuple[tuple[str, str], ...] = (

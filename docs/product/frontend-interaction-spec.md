@@ -288,3 +288,8 @@ Review feedback 引用、Lesson selection 引用和 console/exception smoke 均�
 当前 `aearn/apps/desktop/src/pages/` 只保留 `HarnessCutoverPage.tsx`。学习产品页面全部位于 `src/features/learning/`：`LearningHomePage`、`LearningPlanBuilderPage` 与正式 `TrackLearningWorkspace`。不存在当前 `OnboardingPage`、`LearningWorkspacePage`、`ReviewPage`、`NotesPage` 或 `SettingsPage` 路由；不得从历史指南恢复这些入口。
 
 `App.tsx` 只在 verified 后装配 Learning Home、planning 与 `learning_workspace`。旧 general conversation 不出现在主导航；右侧 Tutor 是 track-scoped conversation surface，引用、task kind 和 knowledge scope 必须随 workspace pointer 一起切换。Desktop 不自行推导 execution tier、Gate pass、mastery、review due 或 Action verification 状态。
+
+
+## 2026-08-14：thread/turn v2 capability 与 migration state
+
+Desktop 通过 `GET /api/tutor/capabilities/thread-turn-v2` 读取 exact server capability。`effective_enabled=false` 时保留历史读取并显示只读 unavailable/migration 状态，不发送 Tutor mutation、不恢复旧 continuation。`blocked` 显示安全 block code；legacy waiting 失败可引导 fresh turn；普通 cutover cancellation 继续使用 interrupted 视觉。最终 migration card、Queue/QuestionComposer 视觉与响应式验收由 Desktop integration child 完成。

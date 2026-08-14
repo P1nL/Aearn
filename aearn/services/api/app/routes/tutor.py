@@ -31,6 +31,10 @@ from app.services.streaming.sse import sse_event, stream_response
 from app.services.tutor.interactive import TutorRunDispatcher, build_tutor_run_dispatcher
 from app.services.tutor.interactive_worker import TutorInteractiveWorker, enqueue_tutor_interactive_dispatch
 from app.services.tutor.cutover import runtime_gate_error
+from app.services.tutor.thread_turn_cutover import (
+    TutorThreadTurnCutoverService,
+    thread_turn_v2_gate_error,
+)
 from app.services.tutor.public_api import (
     TutorPublicApiError,
     TutorPublicConversationSseEvent,
@@ -44,6 +48,19 @@ T = TypeVar("T")
 logger = logging.getLogger(__name__)
 
 
+@router.get("/capabilities/thread-turn-v2", response_model=None)
+def read_thread_turn_v2_capability(
+    request: Request,
+    user_id: str = Query(min_length=1),
+) -> JSONResponse:
+    unavailable = _require_tutor_route(request, user_id)
+    if unavailable is not None:
+        return unavailable
+    with connect() as conn:
+        capability = TutorThreadTurnCutoverService(conn).status(settings=get_settings())
+    return JSONResponse(status_code=status.HTTP_200_OK, content=jsonable_encoder(capability))
+
+
 @router.post("/conversations/first-turn", response_model=None)
 def create_first_conversation_turn(
     payload: TutorInputRequest,
@@ -52,7 +69,7 @@ def create_first_conversation_turn(
 ) -> JSONResponse:
     """Atomically create a draft conversation and its first finite TurnRun."""
 
-    unavailable = _require_tutor_route(request, payload.user_id)
+    unavailable = _require_tutor_route(request, payload.user_id, mutation=True)
     if unavailable is not None:
         return unavailable
     response = _call_service(
@@ -184,7 +201,7 @@ def create_or_resume_conversation(
     payload: CreateTutorConversationRequest,
     request: Request,
 ) -> JSONResponse:
-    unavailable = _require_tutor_route(request, payload.user_id)
+    unavailable = _require_tutor_route(request, payload.user_id, mutation=True)
     if unavailable is not None:
         return unavailable
     response = _call_service(
@@ -214,7 +231,7 @@ def create_conversation_input(
     request: Request,
     background_tasks: BackgroundTasks,
 ) -> JSONResponse:
-    unavailable = _require_tutor_route(request, payload.user_id)
+    unavailable = _require_tutor_route(request, payload.user_id, mutation=True)
     if unavailable is not None:
         return unavailable
     response = _call_service(
@@ -253,7 +270,7 @@ def respond_to_interaction_request(
     request: Request,
     background_tasks: BackgroundTasks,
 ) -> JSONResponse:
-    unavailable = _require_tutor_route(request, payload.user_id)
+    unavailable = _require_tutor_route(request, payload.user_id, mutation=True)
     if unavailable is not None:
         return unavailable
     response = _call_service(
@@ -293,7 +310,7 @@ def read_queue(conversation_id: str, request: Request, user_id: str = Query(min_
 
 @router.patch("/conversations/{conversation_id}/queue/{item_id}", response_model=None)
 def edit_queue_item(conversation_id: str, item_id: str, payload: TutorQueueEditRequest, request: Request) -> JSONResponse:
-    unavailable = _require_tutor_route(request, payload.user_id)
+    unavailable = _require_tutor_route(request, payload.user_id, mutation=True)
     if unavailable is not None:
         return unavailable
     response = _call_service(request, lambda service: service.edit_queue_item(
@@ -307,7 +324,7 @@ def edit_queue_item(conversation_id: str, item_id: str, payload: TutorQueueEditR
 
 @router.delete("/conversations/{conversation_id}/queue/{item_id}", response_model=None)
 def delete_queue_item(conversation_id: str, item_id: str, payload: TutorQueueDeleteRequest, request: Request) -> JSONResponse:
-    unavailable = _require_tutor_route(request, payload.user_id)
+    unavailable = _require_tutor_route(request, payload.user_id, mutation=True)
     if unavailable is not None:
         return unavailable
     response = _call_service(request, lambda service: service.delete_queue_item(
@@ -321,7 +338,7 @@ def delete_queue_item(conversation_id: str, item_id: str, payload: TutorQueueDel
 
 @router.post("/conversations/{conversation_id}/queue/reorder", response_model=None)
 def reorder_queue(conversation_id: str, payload: TutorQueueReorderRequest, request: Request) -> JSONResponse:
-    unavailable = _require_tutor_route(request, payload.user_id)
+    unavailable = _require_tutor_route(request, payload.user_id, mutation=True)
     if unavailable is not None:
         return unavailable
     response = _call_service(request, lambda service: service.reorder_queue(
@@ -335,7 +352,7 @@ def reorder_queue(conversation_id: str, payload: TutorQueueReorderRequest, reque
 
 @router.post("/conversations/{conversation_id}/queue/{item_id}/steer", response_model=None)
 def steer_queue_item(conversation_id: str, item_id: str, payload: TutorQueueSteerRequest, request: Request) -> JSONResponse:
-    unavailable = _require_tutor_route(request, payload.user_id)
+    unavailable = _require_tutor_route(request, payload.user_id, mutation=True)
     if unavailable is not None:
         return unavailable
     response = _call_service(request, lambda service: service.steer_queue_item(
@@ -350,7 +367,7 @@ def steer_queue_item(conversation_id: str, item_id: str, payload: TutorQueueStee
 
 @router.post("/conversations/{conversation_id}/interrupt", response_model=None)
 def interrupt_turn(conversation_id: str, payload: TutorInterruptRequest, request: Request) -> JSONResponse:
-    unavailable = _require_tutor_route(request, payload.user_id)
+    unavailable = _require_tutor_route(request, payload.user_id, mutation=True)
     if unavailable is not None:
         return unavailable
     response = _call_service(request, lambda service: service.interrupt_turn(
@@ -365,7 +382,7 @@ def interrupt_turn(conversation_id: str, payload: TutorInterruptRequest, request
 
 @router.post("/conversations/{conversation_id}/queue/resume", response_model=None)
 def resume_queue(conversation_id: str, payload: TutorControlMutationRequest, request: Request, background_tasks: BackgroundTasks) -> JSONResponse:
-    unavailable = _require_tutor_route(request, payload.user_id)
+    unavailable = _require_tutor_route(request, payload.user_id, mutation=True)
     if unavailable is not None:
         return unavailable
     response = _call_service(request, lambda service: service.resume_queue(
@@ -381,7 +398,7 @@ def resume_queue(conversation_id: str, payload: TutorControlMutationRequest, req
 
 @router.post("/conversations/{conversation_id}/queue/{item_id}/execute", response_model=None)
 def execute_queue_item(conversation_id: str, item_id: str, payload: TutorControlMutationRequest, request: Request, background_tasks: BackgroundTasks) -> JSONResponse:
-    unavailable = _require_tutor_route(request, payload.user_id)
+    unavailable = _require_tutor_route(request, payload.user_id, mutation=True)
     if unavailable is not None:
         return unavailable
     response = _call_service(request, lambda service: service.execute_queue_item(
@@ -397,7 +414,7 @@ def execute_queue_item(conversation_id: str, item_id: str, payload: TutorControl
 
 @router.post("/conversations/{conversation_id}/turns/{turn_id}/retry", response_model=None)
 def retry_turn(conversation_id: str, turn_id: str, payload: TutorControlMutationRequest, request: Request, background_tasks: BackgroundTasks) -> JSONResponse:
-    unavailable = _require_tutor_route(request, payload.user_id)
+    unavailable = _require_tutor_route(request, payload.user_id, mutation=True)
     if unavailable is not None:
         return unavailable
     response = _call_service(request, lambda service: service.retry_turn(
@@ -418,34 +435,14 @@ def create_run_input(
     request: Request,
     background_tasks: BackgroundTasks,
 ) -> JSONResponse:
-    unavailable = _require_tutor_route(request, payload.user_id)
-    if unavailable is not None:
-        return unavailable
-    response = _call_service(
+    del run_id, payload, background_tasks
+    return error_response(
         request,
-        lambda service: service.accept_run_input(
-            user_id=payload.user_id,
-            run_id=run_id,
-            content=payload.content,
-            learning_scope=payload.learning_scope.to_domain() if payload.learning_scope is not None else None,
-            planning_facts=payload.planning_facts,
-            reopen_fact_fields=tuple(payload.reopen_fact_fields),
-            context_references=tuple(item.model_dump(mode="json") for item in payload.context_references),
-            idempotency_key=_idempotency_key(request, payload.client_action_id),
-        ),
-        commit=True,
-    )
-    if isinstance(response, JSONResponse):
-        return response
-    _schedule_interactive_dispatch(
-        background_tasks=background_tasks,
-        dispatcher=build_tutor_run_dispatcher(get_settings()),
-        user_id=payload.user_id,
-        response=response,
-    )
-    return JSONResponse(
-        status_code=status.HTTP_200_OK if bool(response.get("idempotent_replayed")) else status.HTTP_202_ACCEPTED,
-        content=jsonable_encoder(response),
+        code="TUTOR_LEGACY_CONTINUATION_DISABLED",
+        message="旧 Tutor continuation 已关闭；请开始新的 v2 turn。",
+        status_code=status.HTTP_410_GONE,
+        details={"next_action": "start_new_turn"},
+        recoverable=True,
     )
 
 
@@ -529,7 +526,7 @@ def mark_inbox_read(
     payload: TutorMutationRequest,
     request: Request,
 ) -> JSONResponse:
-    unavailable = _require_tutor_route(request, payload.user_id)
+    unavailable = _require_tutor_route(request, payload.user_id, mutation=True)
     if unavailable is not None:
         return unavailable
     response = _call_service(
@@ -550,7 +547,7 @@ def dismiss_inbox(
     payload: TutorMutationRequest,
     request: Request,
 ) -> JSONResponse:
-    unavailable = _require_tutor_route(request, payload.user_id)
+    unavailable = _require_tutor_route(request, payload.user_id, mutation=True)
     if unavailable is not None:
         return unavailable
     response = _call_service(
@@ -592,7 +589,7 @@ def correct_memory(
     payload: CorrectTutorMemoryRequest,
     request: Request,
 ) -> JSONResponse:
-    unavailable = _require_tutor_route(request, payload.user_id)
+    unavailable = _require_tutor_route(request, payload.user_id, mutation=True)
     if unavailable is not None:
         return unavailable
     response = _call_service(
@@ -614,7 +611,7 @@ def delete_memory(
     payload: TutorMutationRequest,
     request: Request,
 ) -> JSONResponse:
-    unavailable = _require_tutor_route(request, payload.user_id)
+    unavailable = _require_tutor_route(request, payload.user_id, mutation=True)
     if unavailable is not None:
         return unavailable
     response = _call_service(
@@ -647,7 +644,7 @@ def rollback_plan(
     payload: TutorMutationRequest,
     request: Request,
 ) -> JSONResponse:
-    unavailable = _require_tutor_route(request, payload.user_id)
+    unavailable = _require_tutor_route(request, payload.user_id, mutation=True)
     if unavailable is not None:
         return unavailable
     response = _call_service(
@@ -678,7 +675,7 @@ def update_preferences(
     payload: UpdateTutorPreferencesRequest,
     request: Request,
 ) -> JSONResponse:
-    unavailable = _require_tutor_route(request, payload.user_id)
+    unavailable = _require_tutor_route(request, payload.user_id, mutation=True)
     if unavailable is not None:
         return unavailable
     response = _call_service(
@@ -812,8 +809,15 @@ def _parse_last_event_id(value: str | None) -> int:
     return int(normalized)
 
 
-def _require_tutor_route(request: Request, user_id: str) -> JSONResponse | None:
+def _require_tutor_route(
+    request: Request,
+    user_id: str,
+    *,
+    mutation: bool = False,
+) -> JSONResponse | None:
     gate_error = runtime_gate_error(user_id=user_id)
+    if gate_error is None and mutation:
+        gate_error = thread_turn_v2_gate_error(settings=get_settings())
     if gate_error is not None:
         return error_response(
             request,
@@ -842,13 +846,9 @@ def _schedule_interactive_dispatch(
     if bool(response.get("idempotent_replayed")):
         return
     job_id = response.get("dispatch_job_id")
-    run_id = response.get("run_id")
     if isinstance(job_id, str) and job_id:
         background_tasks.add_task(_wake_and_dispatch_interactive_job, dispatcher, job_id)
         return
-    if isinstance(run_id, str) and run_id:
-        # Bounded legacy compatibility until the later global cutover child retires it.
-        background_tasks.add_task(_dispatch_legacy_interactive_run, dispatcher, user_id, run_id)
 
 
 def _wake_and_dispatch_interactive_job(dispatcher: TutorRunDispatcher, job_id: str) -> None:
@@ -862,14 +862,6 @@ def _wake_and_dispatch_interactive_job(dispatcher: TutorRunDispatcher, job_id: s
     except Exception:  # noqa: BLE001 - PostgreSQL reconciler owns recovery.
         logger.warning("Tutor interactive local wakeup failed job_id=%s code=dispatch_deferred", job_id)
 
-
-def _dispatch_legacy_interactive_run(dispatcher: TutorRunDispatcher, user_id: str, run_id: str) -> None:
-    """Keep the bounded legacy post-response behavior until global v2 cutover."""
-
-    try:
-        dispatcher.dispatch(user_id=user_id, run_id=run_id)
-    except Exception:  # noqa: BLE001 - legacy route response is already committed.
-        logger.warning("Tutor legacy dispatcher failed run_id=%s code=dispatch_failed", run_id)
 
 
 def _call_service(

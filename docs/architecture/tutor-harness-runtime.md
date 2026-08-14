@@ -806,3 +806,8 @@ The final integration boundary is deterministic and repository-grounded:
 - Planning, Review, code-review validation, and the right-side Tutor consume persisted authoritative snapshots or verified Action receipts. Execution completion and verification success remain distinct, and stale/superseded authority cannot publish an effect, mastery fact, unlock, or message.
 
 This is local integration evidence, not a release approval, provider-quality claim, image-supply-chain approval, push, deployment, or production-data migration.
+
+
+### Global thread/turn v2 cutover (2026-08-14)
+
+The effective v2 runtime gate is the conjunction of `TUTOR_THREAD_TURN_V2_ENABLED` and the PostgreSQL singleton state `enabled`. Preparing freezes public mutations and worker claims before inventory convergence. Safe legacy waiting turns fail with a fresh-turn migration code; other cancellable active turns become ordinary interrupted projections with leases/jobs cleared. Ambiguous effects block activation. Reads remain available, the legacy continuation POST is a permanent 410 tombstone, and rollback is read-only disablement rather than legacy resurrection. Operator commands are documented in `docs/setup/tutor-thread-turn-v2-cutover.md`.

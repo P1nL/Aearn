@@ -2,7 +2,7 @@
 
 ## Current runtime status
 
-**Updated: 2026-08-13.** Aearn's active product runtime is the **Tutor Harness**.
+**Updated: 2026-08-14.** Aearn's active product runtime is the **Tutor Harness**.
 The desktop starts from a local learner identity, asks the server for a
 cutover decision, and admits a learner to the Tutor workspace only after a
 server-authoritative `verified` receipt. The current learning runtime also includes
@@ -37,6 +37,7 @@ That ledger records the controlled verified-only proactive-delivery proof and it
 | Database | [`architecture/database-schema.md`](./architecture/database-schema.md) | `tutor_*`, `harness_cutovers`, scoped persistence, deletion/preservation, and historical legacy tables. |
 | Local development | [`setup/development-environment.md`](./setup/development-environment.md) | Required tooling, local services, dependency commands, worker/executor posture, and safe verification commands. |
 | Executor operations | [`setup/container-sandbox-executor.md`](./setup/container-sandbox-executor.md) | Explicit-only container executor enablement and isolation rules. |
+| Tutor v2 protocol cutover | [`setup/tutor-thread-turn-v2-cutover.md`](./setup/tutor-thread-turn-v2-cutover.md) | Global preflight, generation/CAS, enable, blocked recovery, rollback, and non-production boundary. |
 | Acceptance matrix | [`qa/acceptance-test-plan.md`](./qa/acceptance-test-plan.md) | Required automated and fixture-only manual checks. |
 | Release evidence | [`qa/tutor-harness-release-readiness.md`](./qa/tutor-harness-release-readiness.md) | Exact command results, audits, smoke evidence, non-claims, and residual risks. |
 

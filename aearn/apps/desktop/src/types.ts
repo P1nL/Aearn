@@ -37,6 +37,24 @@ export type HarnessCutoverSummary = {
   target_state_present: boolean;
 };
 
+export type TutorThreadTurnV2CutoverState = "idle" | "preparing" | "blocked" | "ready" | "enabled";
+
+export type TutorThreadTurnV2Capability = {
+  schema_version: "tutor_thread_turn_v2_capability_v1";
+  cutover_version: "tutor_thread_turn_v2_global_v1";
+  desktop_contract_version: "tutor_thread_turn_v2_desktop_v1";
+  env_allowed: boolean;
+  state: TutorThreadTurnV2CutoverState;
+  generation: number;
+  summary_hash: string | null;
+  block_code: string | null;
+  effective_enabled: boolean;
+  counts: Record<string, boolean | number | string | Record<string, number>>;
+  prepared_at: string | null;
+  enabled_at: string | null;
+  updated_at: string | null;
+};
+
 export type HarnessCutoverDecision = {
   cutover_version: string;
   rollout_active: true;

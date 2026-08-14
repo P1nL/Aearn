@@ -87,7 +87,7 @@ def test_ordinary_inputs_queue_behind_the_active_foreground_turn(
         f"/api/tutor/runs/{run_id}/inputs",
         json=action_payload(user_id, "ordinary-run-input-rejected", content="普通聊天不能复用当前 run。"),
     )
-    assert_error(normal_run_input, "RUN_NOT_ACTIVE", 409)
+    assert_error(normal_run_input, "TUTOR_LEGACY_CONTINUATION_DISABLED", 410)
 
     with connect() as conn:
         row = conn.execute(
@@ -139,7 +139,7 @@ def test_ordinary_inputs_queue_behind_the_active_foreground_turn(
         f"/api/tutor/runs/{run_id}/inputs",
         json=action_payload(str(other_user["id"]), "cross-user-run-input", content="不属于当前用户的 run。"),
     )
-    assert_error(cross_user, "TUTOR_RUN_NOT_FOUND", 404)
+    assert_error(cross_user, "TUTOR_LEGACY_CONTINUATION_DISABLED", 410)
 
 
 def test_interactive_turn_uses_deepseek_v4_flash_context_window_after_output_reservation(
@@ -148,7 +148,7 @@ def test_interactive_turn_uses_deepseek_v4_flash_context_window_after_output_res
     tutor_api_settings: Settings,
 ) -> None:
     del tutor_api_settings
-    settings = Settings(llm_type="deepseek", deepseek_model="deepseek-v4-flash")
+    settings = Settings(llm_type="deepseek", deepseek_model="deepseek-v4-flash", tutor_thread_turn_v2_enabled=True)
     dispatcher = RecordingTutorDispatcher()
     monkeypatch.setattr(tutor_route, "get_settings", lambda: settings)
     monkeypatch.setattr(tutor_route, "build_tutor_run_dispatcher", lambda _settings: dispatcher)

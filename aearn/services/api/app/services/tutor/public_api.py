@@ -1511,7 +1511,7 @@ class TutorPublicService:
                         "public_message": public_message,
                     },
                 )
-            code = _terminal_error_code(terminal)
+            code = _terminal_error_code(terminal, diagnostic_code=state.diagnostic_code)
             return TutorPublicSseEvent(
                 sequence=event.event_sequence,
                 event_type="error",
@@ -1521,7 +1521,7 @@ class TutorPublicService:
                         "code": code,
                         "message": _terminal_error_message(code),
                         "details": {"run_id": event.run_id},
-                        "recoverable": code in {"MODEL_UNAVAILABLE", "TUTOR_RUN_UNAVAILABLE"},
+                        "recoverable": code in {"MODEL_UNAVAILABLE", "TUTOR_RUN_UNAVAILABLE", "TUTOR_LEGACY_CONTINUATION_REQUIRES_NEW_TURN"},
                     },
                     "public_message": public_message,
                 },
@@ -1858,7 +1858,13 @@ def _preferences_payload(*, memory: TutorMemoryPreference, proactive: TutorProac
     }
 
 
-def _terminal_error_code(outcome: TutorTerminalOutcome | None) -> str:
+def _terminal_error_code(
+    outcome: TutorTerminalOutcome | None,
+    *,
+    diagnostic_code: str | None = None,
+) -> str:
+    if diagnostic_code == "legacy_continuation_requires_new_turn":
+        return "TUTOR_LEGACY_CONTINUATION_REQUIRES_NEW_TURN"
     if outcome is TutorTerminalOutcome.MODEL_UNAVAILABLE:
         return "MODEL_UNAVAILABLE"
     if outcome is TutorTerminalOutcome.BLOCKED_POLICY:
@@ -1877,6 +1883,7 @@ def _terminal_error_message(code: str) -> str:
         "RUN_NOT_ACTIVE": "Tutor run is no longer active.",
         "TUTOR_RUN_UNAVAILABLE": "Tutor run reached a temporary limit.",
         "TUTOR_RUN_FAILED": "Tutor run could not complete safely.",
+        "TUTOR_LEGACY_CONTINUATION_REQUIRES_NEW_TURN": "This legacy turn cannot continue; start a new Tutor turn.",
     }[code]
 
 

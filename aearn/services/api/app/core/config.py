@@ -229,6 +229,9 @@ class Settings(BaseModel):
     tutor_executor_enabled: bool = Field(
         default_factory=lambda: _env_str("TUTOR_EXECUTOR_ENABLED", "false").lower() in ("true", "1", "yes")
     )
+    tutor_thread_turn_v2_enabled: bool = Field(
+        default_factory=lambda: _env_bool("TUTOR_THREAD_TURN_V2_ENABLED", "false")
+    )
     tutor_proactive_scheduler_enabled: bool = Field(
         default_factory=lambda: _env_bool("TUTOR_PROACTIVE_SCHEDULER_ENABLED", "true")
     )

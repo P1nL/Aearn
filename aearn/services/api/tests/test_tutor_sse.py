@@ -168,7 +168,8 @@ def test_tutor_typed_request_response_creates_a_fresh_turn(
         f"/api/tutor/runs/{source_turn_id}/inputs",
         json=action_payload(user_id, "typed-follow-up-legacy", content="我完全没有基础。"),
     )
-    assert legacy_follow_up.status_code == 409
+    assert legacy_follow_up.status_code == 410
+    assert legacy_follow_up.json()["error"]["code"] == "TUTOR_LEGACY_CONTINUATION_DISABLED"
 
     response_body = {
         "user_id": user_id,

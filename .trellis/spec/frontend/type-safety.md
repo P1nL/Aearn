@@ -362,3 +362,10 @@ const result = parseModelReviewResult(payload);
 - 在最终 Queue UI child 前，现有 composer 收到 queued response 必须安全清空/刷新，不得把它当成 accepted turn 崩溃或本地伪造 active run。
 
 必须运行 Desktop Vitest 与 `desktop:check`；parser 应覆盖合法 accepted/queued/control payload 及 extra/unknown/missing 字段拒绝。
+
+
+## 场景：Tutor thread/turn v2 capability exact DTO（2026-08-14）
+
+- `GET /api/tutor/capabilities/thread-turn-v2` 必须 exact-parse `tutor_thread_turn_v2_capability_v1`，包括 cutover/desktop contract version、env、state、generation、summary/block、effective gate、安全 counts 与时间。
+- state 只允许 `idle|preparing|blocked|ready|enabled`；未知字段、负 generation、未知 nested count 值整体拒绝。
+- Desktop 不从 localStorage、本地 env 或旧 harness cutover receipt 猜测 v2 已启用。

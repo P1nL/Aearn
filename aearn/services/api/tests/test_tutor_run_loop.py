@@ -725,7 +725,7 @@ def test_harness_and_tutor_modules_do_not_depend_on_retired_runtime_or_storage_b
             # the target database connection, but never imports legacy Graph,
             # route, streaming, or product-conversation boundaries.
             forbidden_for_path = tuple(marker for marker in forbidden if marker != "app.db")
-        if path.name in {"cutover.py", "interactive.py"}:
+        if path.name in {"cutover.py", "thread_turn_cutover.py", "thread_turn_cutover_cli.py", "interactive.py"}:
             # Children 06/07 own these target database-backed adapters. Their
             # explicit database access is allowed; Graph, route, and legacy
             # conversation dependencies remain forbidden.

@@ -14,6 +14,7 @@ from app.db.connection import connect
 from app.services.tutor.interactive import TutorRunDispatcher, build_tutor_run_dispatcher
 from app.services.tutor.persistence import PostgresTutorRepository
 from app.services.tutor.queue_control import PostgresTutorQueueController, build_queue_turn_policy
+from app.services.tutor.thread_turn_cutover import TutorThreadTurnCutoverService
 from app.agents.harness.contracts import TutorTerminalOutcome
 from app.agents.harness.skill_catalog import compile_published_skill_catalog
 
@@ -48,6 +49,12 @@ class TutorInteractiveWorker:
         self._owner_id = owner_id or f"tutor-interactive:{uuid4().hex}"
 
     def dispatch_job(self, *, job_id: str | None = None) -> dict[str, object]:
+        with connect() as conn:
+            try:
+                TutorThreadTurnCutoverService(conn).assert_mutation_allowed(settings=self._settings)
+            except Exception as exc:
+                code = getattr(exc, "code", "TUTOR_THREAD_TURN_V2_UNAVAILABLE")
+                return {"status": "blocked_policy", "processed": 0, "job_id": job_id, "code": code}
         claimed_at = self._clock.now()
         with connect() as conn:
             repository = PostgresTutorRepository(conn)
