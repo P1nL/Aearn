@@ -196,4 +196,3 @@ def test_legacy_continuation_route_is_side_effect_free_410() -> None:
     with connect() as conn:
         after = conn.execute("SELECT count(*) AS count FROM tutor_api_idempotency_records").fetchone()
     assert after == before
-
