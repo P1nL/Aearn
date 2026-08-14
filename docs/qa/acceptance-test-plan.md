@@ -382,6 +382,6 @@ contract，不访问真实 provider、不启动或批准生产 container fleet�
 
 - Desktop：Vitest `21 passed`；`pnpm --dir .\aearn desktop:check` 通过；Tauri dev 完成编译并启动。
 - API：本 child focused suite `18 passed`；完整 API pytest `569 passed, 1 skipped`；Ruff、Mypy、`uv lock --check`、`compileall` 通过。
-- Browser/Tauri：验证 snapshot-first timeline、DSH-derived Think、`process` 不渲染、running Send 入 Queue、Queue edit/reorder/delete/Steer/execute、Stop/Retry 状态、390×844 与 900×900 无横向溢出、键盘发送、reduced-motion、SSE 断线可见错误与恢复后重连；console error 为 0。
+- Browser/Tauri：验证 snapshot-first timeline、DSH-derived Think、`process` 不渲染、running Send 入 Queue、Queue edit/reorder/delete/Steer/execute、Stop/Retry 状态、390×844、900×900 与 1440×900 无横向溢出、键盘发送、reduced-motion、SSE 断线可见错误与恢复后重连；console error 为 0。
 - pending request 的 composer-seat 替换与 exact request version 由 Desktop component test 和 API request suite 覆盖；本地 fake dispatcher fixture 未作为真实 provider 或发布就绪证据。
 - 未调用真实 provider，未执行生产 cutover、部署或生产数据修改。

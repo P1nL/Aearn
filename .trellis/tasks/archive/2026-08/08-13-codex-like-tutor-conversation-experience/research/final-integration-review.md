@@ -79,7 +79,7 @@
 - Vitest：`5 test files / 21 tests passed`。
 - `pnpm --dir .\aearn desktop:check`：TypeScript 与 Vite production build 通过。
 - `pnpm --dir .\aearn dev:status`：PostgreSQL、Redis healthy；API/Desktop 已停止，无残留 tracked PID。
-- Browser/Tauri fixture：snapshot-first timeline、公开 Think、process 隐藏、running Queue、Queue edit/reorder/delete/Steer/execute、Stop、键盘发送、390×844 与 900×900 无横向溢出、reduced-motion、SSE 断线错误与恢复后重连、console error 为 0。
+- Browser/Tauri fixture：snapshot-first timeline、公开 Think、process 隐藏、running Queue、Queue edit/reorder/delete/Steer/execute、Stop、键盘发送、390×844、900×900 与 1440×900 无横向溢出、reduced-motion、SSE 断线错误与恢复后重连、console error 为 0。
 - typed request composer-seat 与 exact request version 由 Desktop component test 和 API request suite 覆盖；本地 fake dispatcher fixture 不作为真实 provider 或发布批准证据。
 
 ### Trellis 与 diff hygiene
