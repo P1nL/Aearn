@@ -1,0 +1,46 @@
+{
+  "id": "tutor-typed-request-authority-turns",
+  "name": "tutor-typed-request-authority-turns",
+  "title": "建立 Tutor 类型化请求与权威续轮",
+  "description": "将 clarification、planning_input、approval 与 authority receipt 建模为稳定 typed item/request，并以 fresh turn 响应。",
+  "status": "completed",
+  "dev_type": null,
+  "scope": "Tutor typed request/approval/authority receipt、受控 planning catalog、fresh response turn 与 contract tests",
+  "package": null,
+  "priority": "P0",
+  "creator": "PINKING",
+  "assignee": "PINKING",
+  "createdAt": "2026-08-14",
+  "completedAt": "2026-08-15",
+  "branch": "codex/codex-like-tutor-conversation",
+  "base_branch": "main",
+  "worktree_path": "E:\\codee\\Aearn-dsh-ui-reuse",
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "08-13-codex-like-tutor-conversation-experience",
+  "relatedFiles": [
+    "aearn/services/api/app/db/schema.sql",
+    "aearn/services/api/app/agents/harness/contracts.py",
+    "aearn/services/api/app/services/tutor/decision_protocol.py",
+    "aearn/services/api/app/services/tutor/run_loop.py",
+    "aearn/services/api/app/services/tutor/persistence.py",
+    "aearn/services/api/app/services/tutor/public_api.py",
+    "aearn/services/api/app/services/learning/planning_facts.py",
+    "aearn/services/api/app/routes/tutor.py",
+    "aearn/apps/desktop/src/types.ts",
+    "aearn/apps/desktop/src/api.ts"
+  ],
+  "notes": "执行顺序 3；依赖 Thread/Turn/Item/Event 底座。回答/receipt 必须创建 fresh turn，不恢复旧 run。",
+  "meta": {
+    "execution_order": 3,
+    "depends_on": [
+      "08-13-tutor-thread-turn-item-event-foundation"
+    ],
+    "source_planning_task": "08-13-tutor-controlled-pending-inputs",
+    "response_turn_policy": "fresh_budget",
+    "typed_question_composer_takeover": true,
+    "learner_authority_receipts": false
+  }
+}
