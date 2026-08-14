@@ -145,6 +145,16 @@ class TutorLifecyclePersistence(Protocol):
         compaction_request: TutorCompactionRequest,
     ) -> TutorRunResult: ...
 
+    def persist_interaction_request(
+        self,
+        *,
+        snapshot: TutorRunSnapshot,
+        lease: TutorLease,
+        decision: TutorDecision,
+        result: TutorRunResult,
+        created_at: datetime,
+    ) -> TutorRunResult: ...
+
     def persist_waiting_result(
         self,
         *,

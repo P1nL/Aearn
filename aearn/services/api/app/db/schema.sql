@@ -6027,3 +6027,144 @@ DROP TRIGGER IF EXISTS trg_tutor_interactive_dispatch_jobs_updated_at ON tutor_i
 CREATE TRIGGER trg_tutor_interactive_dispatch_jobs_updated_at
 BEFORE UPDATE ON tutor_interactive_dispatch_jobs
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- Child 08-14 Tutor typed interaction requests and fresh authority turns.
+CREATE TABLE IF NOT EXISTS tutor_interaction_requests (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  item_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  conversation_id uuid NOT NULL REFERENCES tutor_conversations(id) ON DELETE RESTRICT,
+  source_turn_id uuid NOT NULL,
+  kind text NOT NULL CHECK (kind IN (
+    'clarification', 'planning_input', 'approval', 'capability_result', 'external_result'
+  )),
+  actor text NOT NULL CHECK (actor IN ('learner', 'authority')),
+  schema_version text NOT NULL DEFAULT 'tutor_interaction_request_v1'
+    CHECK (schema_version = 'tutor_interaction_request_v1'),
+  catalog_version text,
+  question_key text,
+  descriptor_json jsonb NOT NULL CHECK (jsonb_typeof(descriptor_json) = 'object'),
+  presentation_json jsonb NOT NULL CHECK (jsonb_typeof(presentation_json) = 'object'),
+  descriptor_hash text NOT NULL CHECK (descriptor_hash ~ '^[0-9a-f]{64}$'),
+  proposal_identity text,
+  authority_key text,
+  risk_level text CHECK (risk_level IS NULL OR risk_level IN ('low', 'medium', 'high')),
+  authority_issuer text,
+  authority_subject text,
+  authority_scope_json jsonb,
+  authority_request_hash text CHECK (authority_request_hash IS NULL OR authority_request_hash ~ '^[0-9a-f]{64}$'),
+  authority_result_hash text CHECK (authority_result_hash IS NULL OR authority_result_hash ~ '^[0-9a-f]{64}$'),
+  authority_verification_result text CHECK (
+    authority_verification_result IS NULL OR authority_verification_result IN ('verified', 'ambiguous', 'rejected')
+  ),
+  receipt_identity text,
+  receipt_hash text CHECK (receipt_hash IS NULL OR receipt_hash ~ '^[0-9a-f]{64}$'),
+  state text NOT NULL DEFAULT 'pending' CHECK (state IN (
+    'pending', 'answered', 'denied', 'cancelled', 'expired'
+  )),
+  version integer NOT NULL DEFAULT 1 CHECK (version >= 1),
+  response_hash text CHECK (response_hash IS NULL OR response_hash ~ '^[0-9a-f]{64}$'),
+  answer_turn_id uuid,
+  answer_message_id uuid,
+  resolved_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_tutor_interaction_requests_item UNIQUE (item_id),
+  CONSTRAINT uq_tutor_interaction_requests_id_scope UNIQUE (id, user_id, conversation_id),
+  CONSTRAINT uq_tutor_interaction_requests_item_scope UNIQUE (item_id, user_id, conversation_id),
+  CONSTRAINT fk_tutor_interaction_request_conversation_user
+    FOREIGN KEY (conversation_id, user_id)
+    REFERENCES tutor_conversations(id, user_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_interaction_request_source_turn_scope
+    FOREIGN KEY (source_turn_id, user_id, conversation_id)
+    REFERENCES tutor_runs(id, user_id, conversation_id) ON DELETE CASCADE,
+  CONSTRAINT fk_tutor_interaction_request_answer_turn_scope
+    FOREIGN KEY (answer_turn_id, user_id, conversation_id)
+    REFERENCES tutor_runs(id, user_id, conversation_id) ON DELETE SET NULL (answer_turn_id),
+  CONSTRAINT fk_tutor_interaction_request_answer_message_scope
+    FOREIGN KEY (answer_message_id, conversation_id)
+    REFERENCES tutor_messages(id, conversation_id) ON DELETE SET NULL (answer_message_id),
+  CONSTRAINT chk_tutor_interaction_request_actor_kind CHECK (
+    (actor = 'learner' AND kind IN ('clarification', 'planning_input', 'approval'))
+    OR (actor = 'authority' AND kind IN ('capability_result', 'external_result'))
+  ),
+  CONSTRAINT chk_tutor_interaction_request_planning_shape CHECK (
+    (kind = 'planning_input' AND question_key IN (
+      'language_id', 'goal_text', 'target_level', 'weekly_minutes',
+      'experience_level', 'teaching_preferences', 'pace_constraints'
+    ) AND catalog_version = 'tutor_planning_questions_v1')
+    OR (kind <> 'planning_input' AND question_key IS NULL AND catalog_version IS NULL)
+  ),
+  CONSTRAINT chk_tutor_interaction_request_approval_shape CHECK (
+    (kind = 'approval' AND proposal_identity IS NOT NULL AND authority_key IS NOT NULL AND risk_level IS NOT NULL)
+    OR (kind <> 'approval' AND proposal_identity IS NULL AND risk_level IS NULL)
+  ),
+  CONSTRAINT chk_tutor_interaction_request_authority_shape CHECK (
+    (actor = 'authority' AND authority_request_hash IS NOT NULL)
+    OR (actor = 'learner' AND authority_issuer IS NULL AND authority_subject IS NULL
+      AND authority_scope_json IS NULL AND authority_result_hash IS NULL
+      AND authority_verification_result IS NULL AND receipt_identity IS NULL AND receipt_hash IS NULL)
+  ),
+  CONSTRAINT chk_tutor_interaction_request_resolution CHECK (
+    (state = 'pending' AND response_hash IS NULL AND receipt_hash IS NULL
+      AND answer_turn_id IS NULL AND answer_message_id IS NULL AND resolved_at IS NULL)
+    OR (state <> 'pending' AND resolved_at IS NOT NULL)
+  )
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_tutor_interaction_requests_pending_conversation
+  ON tutor_interaction_requests(conversation_id)
+  WHERE state = 'pending';
+CREATE UNIQUE INDEX IF NOT EXISTS uq_tutor_interaction_requests_receipt_identity
+  ON tutor_interaction_requests(user_id, receipt_identity)
+  WHERE receipt_identity IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_tutor_interaction_requests_conversation_history
+  ON tutor_interaction_requests(conversation_id, created_at DESC, item_id DESC);
+CREATE INDEX IF NOT EXISTS idx_tutor_interaction_requests_source_turn
+  ON tutor_interaction_requests(source_turn_id);
+
+ALTER TABLE tutor_runs
+  ADD COLUMN IF NOT EXISTS response_to_request_id uuid;
+ALTER TABLE tutor_runs
+  ADD COLUMN IF NOT EXISTS completion_reason text;
+ALTER TABLE tutor_runs
+  DROP CONSTRAINT IF EXISTS chk_tutor_runs_completion_reason;
+ALTER TABLE tutor_runs
+  ADD CONSTRAINT chk_tutor_runs_completion_reason CHECK (
+    completion_reason IS NULL OR completion_reason IN (
+      'awaiting_user', 'awaiting_approval', 'awaiting_authority'
+    )
+  );
+ALTER TABLE tutor_interaction_requests
+  DROP CONSTRAINT IF EXISTS fk_tutor_interaction_request_answer_turn_scope;
+ALTER TABLE tutor_interaction_requests
+  ADD CONSTRAINT fk_tutor_interaction_request_answer_turn_scope
+  FOREIGN KEY (answer_turn_id, user_id, conversation_id)
+  REFERENCES tutor_runs(id, user_id, conversation_id) ON DELETE SET NULL (answer_turn_id);
+ALTER TABLE tutor_interaction_requests
+  DROP CONSTRAINT IF EXISTS fk_tutor_interaction_request_answer_message_scope;
+ALTER TABLE tutor_interaction_requests
+  ADD CONSTRAINT fk_tutor_interaction_request_answer_message_scope
+  FOREIGN KEY (answer_message_id, conversation_id)
+  REFERENCES tutor_messages(id, conversation_id) ON DELETE SET NULL (answer_message_id);
+ALTER TABLE tutor_runs
+  DROP CONSTRAINT IF EXISTS fk_tutor_runs_response_request_scope;
+ALTER TABLE tutor_runs
+  ADD CONSTRAINT fk_tutor_runs_response_request_scope
+  FOREIGN KEY (response_to_request_id, user_id, conversation_id)
+  REFERENCES tutor_interaction_requests(id, user_id, conversation_id)
+  ON DELETE SET NULL (response_to_request_id);
+ALTER TABLE tutor_runs
+  DROP CONSTRAINT IF EXISTS chk_tutor_runs_request_lineage_shape;
+ALTER TABLE tutor_runs
+  ADD CONSTRAINT chk_tutor_runs_request_lineage_shape CHECK (
+    (response_to_request_id IS NULL OR interaction_protocol_version = 'thread_turn_v2')
+    AND (completion_reason IS NULL OR terminal_outcome = 'completed')
+  );
+
+DROP TRIGGER IF EXISTS trg_tutor_interaction_requests_updated_at ON tutor_interaction_requests;
+CREATE TRIGGER trg_tutor_interaction_requests_updated_at
+BEFORE UPDATE ON tutor_interaction_requests
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+CREATE UNIQUE INDEX IF NOT EXISTS uq_tutor_interaction_requests_source_turn
+  ON tutor_interaction_requests(source_turn_id);

@@ -257,21 +257,45 @@ def test_tutor_scope_snapshot_defaults_to_general_and_continuation_is_immutable(
         "scope_version": 1,
     }
 
-    continuation = tutor_client.post(
+    legacy_continuation = tutor_client.post(
         f"/api/tutor/runs/{run_id}/inputs",
-        json=action_payload(user_id, "scope-continuation", content="我准备好了。"),
+        json=action_payload(user_id, "scope-legacy-continuation", content="我准备好了。"),
+    )
+    assert_error(legacy_continuation, "RUN_NOT_ACTIVE", 409)
+
+    snapshot = tutor_client.get(
+        f"/api/tutor/conversations/{scoped.json()['conversation_id']}/snapshot?user_id={user_id}"
+    )
+    request = snapshot.json()["pending_requests"][0]
+    continuation = tutor_client.post(
+        f"/api/tutor/conversations/{scoped.json()['conversation_id']}/requests/{request['id']}/responses",
+        json={
+            "user_id": user_id,
+            "client_action_id": "scope-request-response",
+            "expected_request_version": request["version"],
+            "response": {"kind": "clarification", "answer_text": "我准备好了。"},
+        },
     )
     assert continuation.status_code == 202
+    answer_turn_id = str(continuation.json()["run_id"])
+    with connect() as conn:
+        answer_scope = conn.execute(
+            "SELECT scope_kind, learning_track_id::text, task_kind, knowledge_key, scope_version FROM tutor_run_learning_scopes WHERE run_id = %s",
+            (answer_turn_id,),
+        ).fetchone()
+    assert answer_scope == scope_row
+
     conflicting = tutor_client.post(
-        f"/api/tutor/runs/{run_id}/inputs",
-        json=action_payload(
-            user_id,
-            "scope-continuation-conflict",
-            content="改成普通对话。",
-            learning_scope={"scope_kind": "general"},
-        ),
+        f"/api/tutor/conversations/{scoped.json()['conversation_id']}/requests/{request['id']}/responses",
+        json={
+            "user_id": user_id,
+            "client_action_id": "scope-response-conflict",
+            "expected_request_version": request["version"],
+            "learning_scope": {"scope_kind": "general"},
+            "response": {"kind": "clarification", "answer_text": "改成普通对话。"},
+        },
     )
-    assert_error(conflicting, "LEARNING_SCOPE_CONFLICT", 409)
+    assert conflicting.status_code == 400
 
     general = tutor_client.post(
         "/api/tutor/conversations/first-turn",

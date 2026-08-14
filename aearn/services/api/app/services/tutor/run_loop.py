@@ -22,6 +22,7 @@ from app.agents.harness.contracts import (
     TutorRunSnapshot,
     TutorRunStatus,
     TutorTerminalOutcome,
+    TutorTurnCompletionReason,
     build_compaction_request,
     empty_checkpoint_metadata,
     terminal_status,
@@ -311,6 +312,8 @@ class TutorRunLoop:
                     )
 
                 if decision.continuation_kind is not None:
+                    if snapshot.interaction_protocol_version == "thread_turn_v2":
+                        return self._interaction_request(snapshot, decision=decision, effect_results=effect_results)
                     return self._waiting_for_input(snapshot, decision=decision, effect_results=effect_results)
 
                 return self._terminal(
@@ -589,6 +592,51 @@ class TutorRunLoop:
             )
         self._store.save_checkpoint(checkpoint)
         self._compaction_publisher.publish(request)
+        self._store.record_result(result)
+        return result
+
+    def _interaction_request(
+        self,
+        snapshot: TutorRunSnapshot,
+        *,
+        decision: TutorDecision,
+        effect_results: list[TutorEffectResult],
+    ) -> TutorRunResult:
+        kind = decision.continuation_kind
+        if kind is None:
+            raise RuntimeError("typed interaction request requires a continuation kind")
+        completion_reason = (
+            TutorTurnCompletionReason.AWAITING_APPROVAL
+            if kind.value == "approval"
+            else TutorTurnCompletionReason.AWAITING_AUTHORITY
+            if kind.value in {"capability_result", "external_result"}
+            else TutorTurnCompletionReason.AWAITING_USER
+        )
+        result = TutorRunResult(
+            run_id=snapshot.run_id,
+            status=TutorRunStatus.COMPLETED,
+            input_revision=snapshot.input_revision,
+            iteration_count=snapshot.iteration_count,
+            model_call_count=snapshot.model_call_count,
+            capability_call_count=snapshot.capability_call_count,
+            effect_count=snapshot.effect_count,
+            terminal_outcome=TutorTerminalOutcome.COMPLETED,
+            public_message=decision.public_message,
+            public_thinking_steps=decision.public_thinking_steps,
+            conversation_title=decision.conversation_title,
+            completion_reason=completion_reason,
+            effect_results=tuple(effect_results),
+        )
+        if self._lifecycle is not None:
+            if snapshot.lease is None:
+                raise RuntimeError("owned Tutor lifecycle is missing a lease")
+            return self._lifecycle.persist_interaction_request(
+                snapshot=snapshot,
+                lease=snapshot.lease,
+                decision=decision,
+                result=result,
+                created_at=self._clock.now(),
+            )
         self._store.record_result(result)
         return result
 

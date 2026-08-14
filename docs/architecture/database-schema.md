@@ -61,12 +61,13 @@ projection 的唯一 durable authority；Desktop、Celery 和 provider 不拥有
 | `tutor_messages` | canonical learner/Tutor public message body + bounded public thinking narration | 唯一允许存放原始 learner 文本的 Tutor 表；Tutor 回复可保存最多 4 条 learner-visible `public_thinking_steps_json`，它不是 provider-native reasoning；不可作为 trace/export dump；旧 message-only conversation 继续可读并投影空数组 |
 | `tutor_message_context_references` | learner message/run revision 的 append-only learner-safe artifact snapshot | 复合 FK 固定 user/conversation/run/message/input revision；只保存 bounded safe projection/hash，不复制 learner content、submission、hidden/private artifact 或 raw execution/provider 数据 |
 | `tutor_catalog_snapshots` | reviewed Skill catalog digest snapshot | run 只能引用已持久化的 digest |
-| `tutor_runs` | 有限 loop / public turn 的 durable snapshot | `origin` 为 `interactive/proactive`；`interaction_protocol_version` 区分 `legacy_v1/thread_turn_v2`；retry predecessor/root 通过 user+conversation scoped FK；lease、budget counter、`input_revision`、terminal outcome 和 `next_event_sequence` 都由 DB 保护；`continuation_kind` 只允许 `clarification/planning_input/approval/capability_result/external_result` |
+| `tutor_runs` | 有限 loop / public turn 的 durable snapshot | `origin` 为 `interactive/proactive`；`interaction_protocol_version` 区分 `legacy_v1/thread_turn_v2`；retry predecessor/root 与 `response_to_request_id` 通过 user+conversation scoped FK；lease、budget counter、`input_revision`、terminal outcome、`completion_reason` 和 `next_event_sequence` 都由 DB 保护；新 v2 request 来源 turn 不持久化 waiting continuation |
+| `tutor_interaction_requests` | typed learner/authority blocking request 与 resolution lineage | kind/actor closed union；每 conversation partial unique pending；source/answer turn 与 answer message 复合 scope；server-owned descriptor/presentation、planning catalog、approval identity、authority scope/hash、state/version/response-or-receipt hash 受 CHECK/FK/CAS 约束 |
 | `tutor_provider_attempt_receipts` | 每个实际 provider HTTP attempt 的 append-only usage 事实 | identity 为 `(run_id,input_revision,decision_iteration,attempt_index)`；复合 FK 固定 user/run/conversation scope；只保存受限 provider/model/protocol、outcome/diagnostic 和非负 token 数，不保存 prompt、response body、reasoning 文本、URL/header 或 credential |
 | `tutor_run_public_processes` | 一条新 interactive run 对应一条 server-safe public-process projection | 只允许 `thinking/waiting_input/waiting_approval/waiting_authority/completed/interrupted/superseded/unavailable/failed`，只保留 timestamps、关联 public Tutor message 和固定 step key；不存 reasoning、provider payload、prompt、trace 或工具参数 |
 | `tutor_run_public_process_steps` | append-only public-process step order | `(run_id, ordinal)` 唯一；step key/state 均有 DB + repository allowlist；公开 label 在 read projection 映射而非存自由文本 |
 | `tutor_run_skill_selections` | exact Skill evidence | `(run_id, input_revision)` 唯一；保存 id/version 与 manifest/instruction/evaluation hash |
-| `tutor_run_input_events` | 已接受输入的 revision/event receipt | revision 在同一 run 内单调；普通消息一条一个 fresh run，只有 explicit continuation 才在同 run 增加 revision；用于 replay 与 stale-effect gate |
+| `tutor_run_input_events` | 已接受输入的 revision/event receipt | 普通消息与 typed response/verified authority receipt 都在 fresh run 上从 revision 1 开始；legacy continuation 才可能在旧 run 增加 revision；用于 replay 与 stale-effect gate |
 | `tutor_run_checkpoints` | metadata-only checkpoint | 不保存 assembled prompt、raw history 或 provider payload |
 | `tutor_run_events` | run-local ordered event log | `event_sequence` 在 locked run row 上分配；SSE 只读取其安全后缀 |
 | `tutor_conversation_events` | learner-safe conversation-global append-only event log | conversation row lock 分配严格递增 sequence；`event_key` 幂等；kind/payload version 闭合；turn/item reference 与 payload identity 必须一致；普通 UPDATE/DELETE 被 trigger 拒绝 |
@@ -83,10 +84,11 @@ conversation、fresh run、首条 learner message/input event 和 `input_receive
 cancelled 或 superseded 的 interactive foreground run。
 
 历史与内部 run 明确保持 `legacy_v1`；新 learner-visible fresh turn 显式写
-`thread_turn_v2`。同一输入事务还会插入/重新武装 dispatch job，并按 turn-created、message-added、
+`thread_turn_v2`。同一输入事务还会插入 dispatch job，并按 turn-created、message-added、
 process-added 等 owning mutation 追加 conversation event；任何一步失败都会连同 message/run/job/event
-整体回滚。continuation 重用同一 job row，但重置本次 dispatch 的 attempt budget，并递增 lease
-generation 以 fence 仍在完成旧 revision 的 worker。
+整体回滚。v2 continuation intent 创建 typed request 并终结来源 run；response/receipt 解决 exact
+request 后创建另一条 fresh run/job。旧 `/runs/{run_id}/inputs` 的 same-run revision/job rearm 仅属
+legacy compatibility，不得被新 v2 mutation 调用。
 
 conversation event payload 只保存 turn 或 item reference、control version、safe dispatch code 和
 attempt，不复制 learner content、Tutor message、prompt、reasoning、trace、provider body 或 capability
@@ -393,3 +395,17 @@ inventory 把该表视为 pre-verification target state。bootstrap twice 必须
 `test_cutover_inventory_explicitly_classifies_every_tutor_table` 读取真实 PostgreSQL `information_schema.tables`，要求 schema 中所有 `tutor_*` 表恰好等于 target inventory 与 shared allowlist 的并集；新增表若未分类会直接失败。target 任一行存在都会阻断 clean-slate cutover，防止把当前 Tutor/LearningTrack 状态与旧数据混合删除。
 
 迁移策略保持非转换：旧 `learning_*`、user-level Tutor plan、旧 review/notes、旧 checkpoint 只参与 exact inventory/deletion，不会生成 LearningTrack、Lesson、Attempt、mastery 或 ReviewSession。普通 reset/delete 清理当前用户拥有的学习状态和私有提交，但保留共享 immutable exercise/catalog；feature rollback 不执行数据删除，也不把 verified receipt 回退为旧 runtime 入口。
+
+
+## 2026-08-14：类型化请求与权威续轮
+
+`tutor_interaction_requests` 使用 `(id,user_id,conversation_id)` 与 `(item_id,user_id,conversation_id)`
+复合 identity，`source_turn_id`、`answer_turn_id`、`answer_message_id` 和
+`tutor_runs.response_to_request_id` 不能跨 user/conversation。`state=pending` 时 response/receipt hash、
+answer lineage 与 `resolved_at` 必须为空；resolved state 必须有 `resolved_at`。partial unique index
+`uq_tutor_interaction_requests_pending_conversation` 保证同一 conversation 最多一个 blocking request。
+
+`planning_input` 只能保存七个 allowlisted key 与 `tutor_planning_questions_v1`；approval 必须保存
+server-owned proposal identity/authority key/risk；authority request 必须保存 exact request hash，receipt
+则绑定 issuer/subject/scope/request/result hash 与 verification result。公开 projection 从 typed columns 和
+allowlisted JSON serializer 构造，不直接回放 provider JSON。cutover target inventory 已显式包含该表。

@@ -396,7 +396,7 @@ def test_catalog_and_tutor_source_never_import_retired_or_unbounded_execution_su
             # Child 04 uses a bounded API-side worker adapter only; routes and
             # legacy Graph/runner surfaces remain forbidden.
             forbidden_for_path = tuple(marker for marker in forbidden_for_path if marker != "app.db")
-        if path.name in {"cutover.py", "interactive.py", "public_api.py"}:
+        if path.name in {"cutover.py", "interactive.py", "interaction_authority.py", "public_api.py"}:
             # Children 06/07 own these database-backed target adapters. They may
             # open target connections, but they must remain independent from
             # Graph/router/tool/runner implementation paths.

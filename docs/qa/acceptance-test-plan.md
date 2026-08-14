@@ -329,3 +329,16 @@ contract，不访问真实 provider、不启动或批准生产 container fleet�
 
 本增量不调用真实 provider，也不批准生产 executor image。受控 template 和 fake result 只证明合同、
 隔离和 fail-closed 行为；真实生成质量与 runtime/container conformance 仍需独立批准。
+
+
+## 2026-08-14：类型化 request / fresh authority turn 验收
+
+| ID | 优先级 | 区域 | 验收 | 证据 |
+| --- | --- | --- | --- | --- |
+| RT-46 | P0 | Request authority | 五种 kind/actor/schema 在 DB、Python、API、snapshot/events、TypeScript 一致；同 conversation 最多一个 pending；跨 user/conversation 与 provider-authored schema fail closed | `test_db_bootstrap.py`、`test_tutor_interaction_requests.py` |
+| RT-47 | P0 | Fresh response turn | clarification/planning/approval 终结来源 turn，response CAS 创建不同 fresh run/job，deadline/counters/lease 不继承；同 body 重放、不同 body/stale version 冲突 | `test_tutor_sse.py`、`test_tutor_interaction_requests.py` |
+| RT-48 | P0 | Planning catalog | 七字段 immutable catalog、published language options、整数/文本/单选/多选边界与 confirmed reask gate；typed answer 写 exact planning fact | `test_tutor_interaction_requests.py`、`test_learning_plan_sessions.py` |
+| RT-49 | P0 | Approval/authority | approval 必须匹配 proposal identity；普通文本不可批准；learner 不可写 capability/external receipt；issuer/scope/hash/identity 幂等与 ambiguous pending | `test_tutor_interaction_requests.py`、`test_tutor_action_runtime.py` |
+| RT-50 | P0 | Public safety | request/item/event 只含 bounded prompt/presentation/IDs/enums；raw learner input 不进入 SSE event，authority raw result/args/secret 不进入 snapshot/history | `test_tutor_sse.py`、public allowlist tests |
+
+上述验证默认使用 fake provider 和本地 PostgreSQL；不调用真实 provider、不执行生产 cutover、不部署。

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from app.agents.harness.contracts import (
     TutorContextBudgetPolicy,
     TutorContextInput,
     TutorContextSource,
+    TutorContinuationKind,
     TutorDecision,
     TutorDecisionGateResult,
     TutorDecisionGateStatus,
@@ -471,6 +473,7 @@ class _RecordingLifecycle:
         self.high_water: list[TutorCompactionRequest] = []
         self.terminals: list[tuple[TutorLease, TutorCheckpoint, TutorRunResult, TutorCompactionRequest]] = []
         self.waiting: list[TutorRunResult] = []
+        self.interaction_requests: list[tuple[TutorDecision, TutorRunResult]] = []
 
     def persist_provider_attempts(
         self,
@@ -516,6 +519,19 @@ class _RecordingLifecycle:
     ) -> TutorRunResult:
         del snapshot
         self.terminals.append((lease, checkpoint, result, compaction_request))
+        return result
+
+    def persist_interaction_request(
+        self,
+        *,
+        snapshot: TutorRunSnapshot,
+        lease: TutorLease,
+        decision: TutorDecision,
+        result: TutorRunResult,
+        created_at: datetime,
+    ) -> TutorRunResult:
+        del snapshot, lease, created_at
+        self.interaction_requests.append((decision, result))
         return result
 
     def persist_waiting_result(
@@ -877,3 +893,32 @@ def test_full_serialized_required_overflow_stops_before_provider_call() -> None:
     assert result.diagnostic_code == "TUTOR_CONTEXT_REQUIRED_OVERFLOW"
     assert result.model_call_count == 0
     assert provider.calls == []
+
+
+def test_thread_turn_v2_continuation_completes_source_and_persists_typed_request() -> None:
+    snapshot = replace(_snapshot(), interaction_protocol_version="thread_turn_v2")
+    store = InMemoryTutorRunStore([snapshot])
+    decision = TutorDecision(
+        public_message="请说明你当前最想解决的问题。",
+        checkpoint_reason=TutorCheckpointReason.CAPABILITY_RESULT,
+        continuation_kind=TutorContinuationKind.CLARIFICATION,
+    )
+    provider = SequenceTutorProvider([TutorProviderResult(decision=decision)])
+    lifecycle = _RecordingLifecycle()
+    loop, _publisher = _loop(
+        store=store,
+        contexts={("run-loop", 0): _context(0)},
+        provider=provider,
+        lifecycle=lifecycle,
+    )
+
+    result = loop.run(run_id="run-loop", lease_owner_id="worker-request")
+
+    assert result.status is TutorRunStatus.COMPLETED
+    assert result.terminal_outcome is TutorTerminalOutcome.COMPLETED
+    assert result.completion_reason is not None
+    assert result.completion_reason.value == "awaiting_user"
+    assert result.continuation_kind is None
+    assert lifecycle.interaction_requests == [(decision, result)]
+    assert lifecycle.waiting == []
+    assert store.results == []

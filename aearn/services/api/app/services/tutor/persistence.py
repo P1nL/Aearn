@@ -14,7 +14,7 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Final, cast
+from typing import Final, Literal, cast
 from uuid import uuid4
 
 from psycopg import Connection
@@ -33,6 +33,7 @@ from app.agents.harness.contracts import (
     TutorContextBudgetMode,
     TutorContextBudgetPolicy,
     TutorContinuationKind,
+    TutorDecision,
     TutorEffectProposal,
     TutorEffectResult,
     TutorEffectStatus,
@@ -46,6 +47,7 @@ from app.agents.harness.contracts import (
     TutorRunSnapshot,
     TutorRunStatus,
     TutorTerminalOutcome,
+    TutorTurnCompletionReason,
     normalize_tutor_conversation_title,
     payload_mapping_from_fields,
 )
@@ -61,8 +63,25 @@ from app.services.tutor.conversation_contracts import (
     TutorDispatchJobState,
     TutorInteractionProtocolVersion,
     TutorPublicTurn,
+    validate_public_item,
     public_turn_status,
     validate_conversation_event_payload,
+)
+from app.services.learning.planning_questions import (
+    PLANNING_QUESTION_CATALOG_VERSION,
+    build_planning_question_presentation,
+    validate_planning_question_value,
+)
+from app.services.tutor.interaction_requests import (
+    TUTOR_AUTHORITY_RECEIPT_SCHEMA_VERSION,
+    TUTOR_INTERACTION_REQUEST_SCHEMA_VERSION,
+    TutorInteractionRequestActor,
+    TutorInteractionRequestKind,
+    TutorInteractionRequestState,
+    actor_for_request,
+    canonical_payload_hash,
+    completion_reason_for_request,
+    public_item_kind,
 )
 from app.services.tutor.ports import TutorLifecycleConflict, TutorLifecyclePersistence, TutorRunStore
 from app.services.tutor.safe_projection import TutorSafeProjection
@@ -87,6 +106,7 @@ _DURABLE_EVENT_KINDS: Final[frozenset[str]] = frozenset(
         "capability_invoked",
         "compaction_requested",
         "waiting_for_input",
+        "interaction_request",
         "curation_proposal_recorded",
         "effect_result",
         "checkpoint_saved",
@@ -162,6 +182,14 @@ class TutorCursorInvalid(TutorPersistenceError):
     pass
 
 
+class TutorInteractionRequestConflict(TutorPersistenceError):
+    pass
+
+
+class TutorInteractionRequestNotFound(TutorPersistenceError):
+    pass
+
+
 @dataclass(frozen=True)
 class TutorDurableEvent:
     event_id: str
@@ -196,6 +224,8 @@ class TutorRunReadState:
     interaction_protocol_version: TutorInteractionProtocolVersion = TutorInteractionProtocolVersion.LEGACY_V1
     retry_of_turn_id: str | None = None
     retry_root_turn_id: str | None = None
+    response_to_request_id: str | None = None
+    completion_reason: TutorTurnCompletionReason | None = None
 
 
 @dataclass(frozen=True)
@@ -219,6 +249,37 @@ class TutorConversationSummary:
     active_run_id: str | None
     active_run_status: str | None
     active_run_continuation_kind: TutorContinuationKind | None
+
+
+@dataclass(frozen=True)
+class TutorInteractionRequestRecord:
+    request_id: str
+    item_id: str
+    user_id: str
+    conversation_id: str
+    source_turn_id: str
+    kind: TutorInteractionRequestKind
+    actor: TutorInteractionRequestActor
+    state: TutorInteractionRequestState
+    version: int
+    schema_version: str
+    catalog_version: str | None
+    question_key: str | None
+    descriptor: dict[str, object]
+    presentation: dict[str, object]
+    answer_turn_id: str | None
+    answer_message_id: str | None
+    created_at: datetime
+    resolved_at: datetime | None
+    public_item: dict[str, object]
+
+
+@dataclass(frozen=True)
+class TutorInteractionResponseAcceptance:
+    request: TutorInteractionRequestRecord
+    turn: "TutorInteractiveTurnAcceptance" | None
+    planning_facts: dict[str, object]
+    replayed: bool
 
 
 @dataclass(frozen=True)
@@ -257,6 +318,8 @@ class TutorConversationTimelineRecord:
     turn_id: str | None = None
     error_code: str | None = None
     error_recoverable: bool = False
+    in_reply_to_item_id: str | None = None
+    request: TutorInteractionRequestRecord | None = None
 
 
 @dataclass(frozen=True)
@@ -511,6 +574,7 @@ class PostgresTutorRepository:
         interaction_protocol_version: TutorInteractionProtocolVersion = TutorInteractionProtocolVersion.LEGACY_V1,
         retry_of_turn_id: str | None = None,
         retry_root_turn_id: str | None = None,
+        response_to_request_id: str | None = None,
     ) -> TutorRunSnapshot:
         if origin not in {"interactive", "proactive"}:
             raise ValueError("Tutor run origin is invalid")
@@ -540,9 +604,10 @@ class PostgresTutorRepository:
             INSERT INTO tutor_runs (
               id, user_id, conversation_id, origin, status, policy_json,
               policy_version, policy_fingerprint, catalog_digest, continuation_kind,
-              interaction_protocol_version, retry_of_turn_id, retry_root_turn_id
+              interaction_protocol_version, retry_of_turn_id, retry_root_turn_id,
+              response_to_request_id
             )
-            VALUES (%s, %s, %s, %s, 'queued', %s::jsonb, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, 'queued', %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING *
             """,
             (
@@ -558,6 +623,7 @@ class PostgresTutorRepository:
                 protocol_version.value,
                 retry_of_turn_id,
                 retry_root_turn_id,
+                response_to_request_id,
             ),
         ).fetchone()
         if row is None:
@@ -713,6 +779,16 @@ class PostgresTutorRepository:
         policy_version: str,
     ) -> TutorInteractiveTurnAcceptance:
         conversation_id = str(conversation["id"])
+        pending_request = self._conn.execute(
+            """
+            SELECT id FROM tutor_interaction_requests
+            WHERE user_id = %s AND conversation_id = %s AND state = 'pending'
+            FOR UPDATE
+            """,
+            (user_id, conversation_id),
+        ).fetchone()
+        if pending_request is not None:
+            raise TutorInteractionRequestConflict("Tutor interaction request must be resolved before a normal input")
         foreground = self._conn.execute(
             """
             SELECT *
@@ -817,6 +893,462 @@ class PostgresTutorRepository:
             replaced_process=replaced_process,
         )
 
+    def read_interaction_request(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str,
+        item_id: str,
+    ) -> TutorInteractionRequestRecord:
+        row = self._conn.execute(
+            """
+            SELECT * FROM tutor_interaction_requests
+            WHERE user_id = %s AND conversation_id = %s AND item_id = %s
+            """,
+            (user_id, conversation_id, item_id),
+        ).fetchone()
+        if row is None:
+            raise TutorInteractionRequestNotFound("Tutor interaction request not found")
+        return _interaction_request_from_row(row)
+
+    def read_pending_interaction_requests(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str,
+    ) -> tuple[TutorInteractionRequestRecord, ...]:
+        rows = self._conn.execute(
+            """
+            SELECT * FROM tutor_interaction_requests
+            WHERE user_id = %s AND conversation_id = %s AND state = 'pending'
+            ORDER BY created_at, item_id
+            """,
+            (user_id, conversation_id),
+        ).fetchall()
+        return tuple(_interaction_request_from_row(row) for row in rows)
+
+    def respond_to_interaction_request(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str,
+        item_id: str,
+        expected_version: int,
+        response: Mapping[str, object],
+        idempotency_key: str,
+        catalog_digest: str,
+        policy: TutorPolicySnapshot,
+        received_at: datetime,
+    ) -> TutorInteractionResponseAcceptance:
+        if expected_version < 1:
+            raise TutorInteractionRequestConflict("Tutor interaction request version is invalid")
+        with self._conn.transaction():
+            conversation = self._lock_learner_conversation(
+                user_id=user_id,
+                conversation_id=conversation_id,
+            )
+            request_row = self._conn.execute(
+                """
+                SELECT * FROM tutor_interaction_requests
+                WHERE user_id = %s AND conversation_id = %s AND item_id = %s
+                FOR UPDATE
+                """,
+                (user_id, conversation_id, item_id),
+            ).fetchone()
+            if request_row is None:
+                raise TutorInteractionRequestNotFound("Tutor interaction request not found")
+            kind = TutorInteractionRequestKind(str(request_row["kind"]))
+            if TutorInteractionRequestActor(str(request_row["actor"])) is not TutorInteractionRequestActor.LEARNER:
+                raise TutorInteractionRequestConflict("authority request has no learner mutation")
+            normalized, content, planning_facts, denied = self._normalize_learner_request_response(
+                request_row=request_row,
+                response=response,
+            )
+            response_hash = canonical_payload_hash(normalized)
+            if str(request_row["state"]) != TutorInteractionRequestState.PENDING.value:
+                if (
+                    str(request_row.get("response_hash") or "") == response_hash
+                    and request_row.get("answer_turn_id") is not None
+                ):
+                    return TutorInteractionResponseAcceptance(
+                        request=_interaction_request_from_row(request_row),
+                        turn=self._resolved_request_turn_locked(request_row=request_row),
+                        planning_facts=planning_facts,
+                        replayed=True,
+                    )
+                raise TutorInteractionRequestConflict("Tutor interaction request is already resolved")
+            if _as_int(request_row.get("version"), 0) != expected_version:
+                raise TutorInteractionRequestConflict("Tutor interaction request version is stale")
+            descriptor = _as_mapping(request_row.get("descriptor_json"))
+            if canonical_payload_hash(descriptor) != str(request_row["descriptor_hash"]):
+                raise TutorInteractionRequestConflict("Tutor interaction request authority changed")
+            turn = self._create_response_turn_locked(
+                conversation=conversation,
+                request_row=request_row,
+                user_id=user_id,
+                catalog_digest=catalog_digest,
+                policy=policy,
+                idempotency_key=idempotency_key,
+                content=content,
+                source="interaction_request_response",
+                role="learner",
+                received_at=received_at,
+            )
+            next_state = (
+                TutorInteractionRequestState.DENIED.value
+                if denied and kind is TutorInteractionRequestKind.APPROVAL
+                else TutorInteractionRequestState.ANSWERED.value
+            )
+            updated = self._conn.execute(
+                """
+                UPDATE tutor_interaction_requests
+                SET state = %s, version = version + 1, response_hash = %s,
+                    answer_turn_id = %s, answer_message_id = %s, resolved_at = %s
+                WHERE id = %s AND user_id = %s AND conversation_id = %s
+                  AND state = 'pending' AND version = %s
+                RETURNING *
+                """,
+                (
+                    next_state,
+                    response_hash,
+                    turn.run.run_id,
+                    turn.acceptance.message_id,
+                    received_at,
+                    request_row["id"],
+                    user_id,
+                    conversation_id,
+                    expected_version,
+                ),
+            ).fetchone()
+            if updated is None:
+                raise TutorInteractionRequestConflict("Tutor interaction request changed before response")
+            source_run = self._lock_run(user_id=user_id, run_id=str(request_row["source_turn_id"]))
+            self._append_item_reference_event_locked(
+                run=source_run,
+                event_key=f"item:request:{item_id}:resolved:{expected_version + 1}",
+                kind=TutorConversationEventKind.ITEM_UPDATED,
+                item_id=item_id,
+                item_kind=public_item_kind(kind),
+                occurred_at=received_at,
+            )
+            self._increment_control_version_locked(
+                user_id=user_id,
+                conversation_id=conversation_id,
+                event_key=f"control:request:{item_id}:resolved:{expected_version + 1}",
+                occurred_at=received_at,
+                turn_id=turn.run.run_id,
+            )
+            return TutorInteractionResponseAcceptance(
+                request=_interaction_request_from_row(updated),
+                turn=turn,
+                planning_facts=planning_facts,
+                replayed=False,
+            )
+
+    def accept_authority_receipt(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str,
+        item_id: str,
+        expected_version: int,
+        issuer: str,
+        subject: str,
+        scope: Mapping[str, object],
+        request_hash: str,
+        result_hash: str,
+        verification_result: str,
+        receipt_identity: str,
+        catalog_digest: str,
+        policy: TutorPolicySnapshot,
+        received_at: datetime,
+    ) -> TutorInteractionResponseAcceptance:
+        _safe_key(issuer, label="authority issuer")
+        _safe_key(subject, label="authority subject")
+        _safe_key(receipt_identity, label="authority receipt identity")
+        if not _SHA256.fullmatch(request_hash) or not _SHA256.fullmatch(result_hash):
+            raise TutorInteractionRequestConflict("authority receipt hashes are invalid")
+        if verification_result not in {"verified", "ambiguous", "rejected"}:
+            raise TutorInteractionRequestConflict("authority receipt verification result is invalid")
+        with self._conn.transaction():
+            conversation = self._lock_learner_conversation(user_id=user_id, conversation_id=conversation_id)
+            request_row = self._conn.execute(
+                """
+                SELECT * FROM tutor_interaction_requests
+                WHERE user_id = %s AND conversation_id = %s AND item_id = %s
+                FOR UPDATE
+                """,
+                (user_id, conversation_id, item_id),
+            ).fetchone()
+            if request_row is None:
+                raise TutorInteractionRequestNotFound("Tutor interaction request not found")
+            if TutorInteractionRequestActor(str(request_row["actor"])) is not TutorInteractionRequestActor.AUTHORITY:
+                raise TutorInteractionRequestConflict("learner request cannot accept an authority receipt")
+            expected_scope = _as_mapping(request_row.get("authority_scope_json"))
+            if canonical_payload_hash(scope) != canonical_payload_hash(expected_scope):
+                raise TutorInteractionRequestConflict("authority receipt scope does not match the request")
+            if subject != str(request_row["id"]) or request_hash != str(request_row["authority_request_hash"]):
+                raise TutorInteractionRequestConflict("authority receipt identity does not match the request")
+            receipt_body = {
+                "schema_version": TUTOR_AUTHORITY_RECEIPT_SCHEMA_VERSION,
+                "issuer": issuer,
+                "subject": subject,
+                "scope": dict(scope),
+                "request_hash": request_hash,
+                "result_hash": result_hash,
+                "verification_result": verification_result,
+            }
+            receipt_hash = canonical_payload_hash(receipt_body)
+            if str(request_row["state"]) != TutorInteractionRequestState.PENDING.value:
+                if (
+                    str(request_row.get("receipt_identity") or "") == receipt_identity
+                    and str(request_row.get("receipt_hash") or "") == receipt_hash
+                    and request_row.get("answer_turn_id") is not None
+                ):
+                    return TutorInteractionResponseAcceptance(
+                        request=_interaction_request_from_row(request_row),
+                        turn=self._resolved_request_turn_locked(request_row=request_row),
+                        planning_facts={},
+                        replayed=True,
+                    )
+                raise TutorInteractionRequestConflict("authority request is already resolved")
+            if _as_int(request_row.get("version"), 0) != expected_version:
+                raise TutorInteractionRequestConflict("authority request version is stale")
+            if verification_result != "verified":
+                updated = self._conn.execute(
+                    """
+                    UPDATE tutor_interaction_requests
+                    SET version = version + 1, authority_issuer = %s, authority_subject = %s,
+                        authority_result_hash = %s, authority_verification_result = %s
+                    WHERE id = %s AND state = 'pending' AND version = %s
+                    RETURNING *
+                    """,
+                    (issuer, subject, result_hash, verification_result, request_row["id"], expected_version),
+                ).fetchone()
+                if updated is None:
+                    raise TutorInteractionRequestConflict("authority request changed before verification")
+                return TutorInteractionResponseAcceptance(
+                    request=_interaction_request_from_row(updated),
+                    turn=None,
+                    planning_facts={},
+                    replayed=False,
+                )
+            turn = self._create_response_turn_locked(
+                conversation=conversation,
+                request_row=request_row,
+                user_id=user_id,
+                catalog_digest=catalog_digest,
+                policy=policy,
+                idempotency_key=f"authority:{receipt_identity}",
+                content="已接收并验证受信结果。",
+                source="authority_receipt",
+                role="tutor",
+                received_at=received_at,
+            )
+            updated = self._conn.execute(
+                """
+                UPDATE tutor_interaction_requests
+                SET state = 'answered', version = version + 1,
+                    authority_issuer = %s, authority_subject = %s,
+                    authority_result_hash = %s, authority_verification_result = 'verified',
+                    receipt_identity = %s, receipt_hash = %s,
+                    answer_turn_id = %s, answer_message_id = %s, resolved_at = %s
+                WHERE id = %s AND state = 'pending' AND version = %s
+                RETURNING *
+                """,
+                (
+                    issuer,
+                    subject,
+                    result_hash,
+                    receipt_identity,
+                    receipt_hash,
+                    turn.run.run_id,
+                    turn.acceptance.message_id,
+                    received_at,
+                    request_row["id"],
+                    expected_version,
+                ),
+            ).fetchone()
+            if updated is None:
+                raise TutorInteractionRequestConflict("authority request changed before receipt commit")
+            source_run = self._lock_run(user_id=user_id, run_id=str(request_row["source_turn_id"]))
+            request_kind = TutorInteractionRequestKind(str(request_row["kind"]))
+            self._append_item_reference_event_locked(
+                run=source_run,
+                event_key=f"item:request:{item_id}:authority:{expected_version + 1}",
+                kind=TutorConversationEventKind.ITEM_UPDATED,
+                item_id=item_id,
+                item_kind=public_item_kind(request_kind),
+                occurred_at=received_at,
+            )
+            self._increment_control_version_locked(
+                user_id=user_id,
+                conversation_id=conversation_id,
+                event_key=f"control:request:{item_id}:authority:{expected_version + 1}",
+                occurred_at=received_at,
+                turn_id=turn.run.run_id,
+            )
+            return TutorInteractionResponseAcceptance(
+                request=_interaction_request_from_row(updated),
+                turn=turn,
+                planning_facts={},
+                replayed=False,
+            )
+
+    def _normalize_learner_request_response(
+        self,
+        *,
+        request_row: Mapping[str, object],
+        response: Mapping[str, object],
+    ) -> tuple[dict[str, object], str, dict[str, object], bool]:
+        kind = TutorInteractionRequestKind(str(request_row["kind"]))
+        response_kind = str(response.get("kind") or "")
+        if response_kind != kind.value:
+            raise TutorInteractionRequestConflict("Tutor response kind does not match the request")
+        if kind is TutorInteractionRequestKind.CLARIFICATION:
+            answer = str(response.get("answer_text") or "").strip()
+            if not answer or len(answer) > 16_000:
+                raise TutorInteractionRequestConflict("clarification answer is invalid")
+            return {"kind": kind.value, "answer_text": answer}, answer, {}, False
+        if kind is TutorInteractionRequestKind.PLANNING_INPUT:
+            question_key = str(response.get("question_key") or "")
+            catalog_version = str(response.get("catalog_version") or "")
+            if question_key != str(request_row.get("question_key") or ""):
+                raise TutorInteractionRequestConflict("planning response question key does not match")
+            normalized = validate_planning_question_value(
+                self._conn,
+                question_key=question_key,
+                catalog_version=catalog_version,
+                value=response.get("value"),
+            )
+            safe = {
+                "kind": kind.value,
+                "question_key": question_key,
+                "catalog_version": catalog_version,
+                "value": normalized,
+            }
+            return safe, f"{question_key}: {_json(normalized)}", {question_key: normalized}, False
+        if kind is TutorInteractionRequestKind.APPROVAL:
+            decision = str(response.get("decision") or "")
+            proposal_identity = str(response.get("proposal_identity") or "")
+            if decision not in {"approve", "deny"}:
+                raise TutorInteractionRequestConflict("approval decision is invalid")
+            if proposal_identity != str(request_row.get("proposal_identity") or ""):
+                raise TutorInteractionRequestConflict("approval proposal identity does not match")
+            reason = " ".join(str(response.get("reason") or "").split())
+            if len(reason) > 400:
+                raise TutorInteractionRequestConflict("approval reason is too long")
+            safe = {
+                "kind": kind.value,
+                "proposal_identity": proposal_identity,
+                "decision": decision,
+                "reason": reason or None,
+            }
+            content = "已批准该操作。" if decision == "approve" else "已拒绝该操作。"
+            if reason:
+                content = f"{content} 原因：{reason}"
+            return safe, content, {}, decision == "deny"
+        raise TutorInteractionRequestConflict("authority request has no learner response")
+
+    def _create_response_turn_locked(
+        self,
+        *,
+        conversation: Mapping[str, object],
+        request_row: Mapping[str, object],
+        user_id: str,
+        catalog_digest: str,
+        policy: TutorPolicySnapshot,
+        idempotency_key: str,
+        content: str,
+        source: str,
+        role: str,
+        received_at: datetime,
+    ) -> TutorInteractiveTurnAcceptance:
+        conversation_id = str(conversation["id"])
+        foreground = self._conn.execute(
+            """
+            SELECT id FROM tutor_runs
+            WHERE user_id = %s AND conversation_id = %s AND origin = 'interactive'
+              AND terminal_outcome IS NULL AND cancelled_at IS NULL AND superseded_by_run_id IS NULL
+            FOR UPDATE
+            """,
+            (user_id, conversation_id),
+        ).fetchone()
+        if foreground is not None:
+            raise TutorInteractionRequestConflict("conversation already has an active Tutor turn")
+        run = self.create_run(
+            user_id=user_id,
+            conversation_id=conversation_id,
+            catalog_digest=catalog_digest,
+            policy=policy,
+            origin="interactive",
+            policy_version="tutor_interaction_response_policy_v1",
+            interaction_protocol_version=TutorInteractionProtocolVersion.THREAD_TURN_V2,
+            response_to_request_id=str(request_row["id"]),
+        )
+        acceptance = self.accept_input(
+            user_id=user_id,
+            run_id=run.run_id,
+            idempotency_key=idempotency_key,
+            content=content,
+            source=source,
+            role=role,
+            received_at=received_at,
+        )
+        fresh = self._lock_run(user_id=user_id, run_id=run.run_id)
+        self._ensure_public_process_locked(run=fresh, occurred_at=received_at)
+        return TutorInteractiveTurnAcceptance(
+            run=self.load_snapshot(user_id=user_id, run_id=run.run_id) or run,
+            acceptance=acceptance,
+            replaced_run_id=None,
+            process=self.read_public_process(user_id=user_id, run_id=run.run_id),
+            replaced_process=None,
+        )
+
+    def _resolved_request_turn_locked(
+        self,
+        *,
+        request_row: Mapping[str, object],
+    ) -> TutorInteractiveTurnAcceptance:
+        run_id = str(request_row.get("answer_turn_id") or "")
+        message_id = str(request_row.get("answer_message_id") or "")
+        run_row = self._conn.execute("SELECT * FROM tutor_runs WHERE id = %s", (run_id,)).fetchone()
+        input_row = self._conn.execute(
+            """
+            SELECT * FROM tutor_run_input_events
+            WHERE run_id = %s AND message_id = %s
+            """,
+            (run_id, message_id),
+        ).fetchone()
+        if run_row is None or input_row is None:
+            raise TutorInteractionRequestConflict("resolved request answer turn is missing")
+        event = self._event_by_key_locked(
+            run_id=run_id,
+            event_key=f"input:{input_row['idempotency_key']}",
+        )
+        if event is None:
+            raise TutorInteractionRequestConflict("resolved request input event is missing")
+        dispatch = self._conn.execute(
+            "SELECT id FROM tutor_interactive_dispatch_jobs WHERE run_id = %s",
+            (run_id,),
+        ).fetchone()
+        acceptance = TutorInputAcceptance(
+            run_id=run_id,
+            message_id=message_id,
+            input_revision=_as_int(input_row.get("input_revision"), 1),
+            event=event,
+            replayed=True,
+            dispatch_job_id=str(dispatch["id"]) if dispatch is not None else None,
+        )
+        snapshot = _snapshot_from_row(run_row)
+        return TutorInteractiveTurnAcceptance(
+            run=snapshot,
+            acceptance=acceptance,
+            replaced_run_id=None,
+            process=self.read_public_process(user_id=str(run_row["user_id"]), run_id=run_id),
+            replaced_process=None,
+        )
+
     def _lock_conversation(
         self,
         *,
@@ -887,6 +1419,37 @@ class PostgresTutorRepository:
         ).fetchone()
         if updated is None:
             raise TutorRunNotFound("tutor conversation not found")
+
+    def _increment_control_version_locked(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str,
+        event_key: str,
+        occurred_at: datetime,
+        turn_id: str | None,
+    ) -> int:
+        row = self._conn.execute(
+            """
+            UPDATE tutor_conversations
+            SET control_version = control_version + 1
+            WHERE id = %s AND user_id = %s
+            RETURNING control_version
+            """,
+            (conversation_id, user_id),
+        ).fetchone()
+        if row is None:
+            raise TutorRunNotFound("tutor conversation not found")
+        version = max(1, _as_int(row.get("control_version"), 1))
+        self._append_conversation_event_locked(
+            user_id=user_id,
+            conversation_id=conversation_id,
+            event_key=event_key,
+            kind=TutorConversationEventKind.CONTROL_UPDATED,
+            payload={"control_version": version},
+            occurred_at=occurred_at,
+        )
+        return version
 
     def _ensure_public_process_locked(
         self,
@@ -1322,10 +1885,15 @@ class PostgresTutorRepository:
                 NULL::uuid AS process_run_id,
                 COALESCE(input_events.run_id, tutor_process.run_id) AS turn_id,
                 NULL::text AS error_code,
-                NULL::boolean AS error_recoverable
+                NULL::boolean AS error_recoverable,
+                replied_requests.item_id AS in_reply_to_item_id,
+                NULL::uuid AS interaction_request_id
               FROM tutor_messages AS messages
               JOIN tutor_conversations AS conversations ON conversations.id = messages.conversation_id
               LEFT JOIN tutor_run_input_events AS input_events ON input_events.message_id = messages.id
+              LEFT JOIN tutor_runs AS response_runs ON response_runs.id = input_events.run_id
+              LEFT JOIN tutor_interaction_requests AS replied_requests
+                ON replied_requests.id = response_runs.response_to_request_id
               LEFT JOIN tutor_run_public_processes AS tutor_process ON tutor_process.tutor_message_id = messages.id
               WHERE conversations.id = %s
                 AND conversations.user_id = %s
@@ -1344,7 +1912,9 @@ class PostgresTutorRepository:
                 processes.run_id AS process_run_id,
                 processes.run_id AS turn_id,
                 NULL::text AS error_code,
-                NULL::boolean AS error_recoverable
+                NULL::boolean AS error_recoverable,
+                NULL::uuid AS in_reply_to_item_id,
+                NULL::uuid AS interaction_request_id
               FROM tutor_run_public_processes AS processes
               JOIN tutor_conversations AS conversations ON conversations.id = processes.conversation_id
               WHERE processes.conversation_id = %s
@@ -1352,8 +1922,34 @@ class PostgresTutorRepository:
                 AND conversations.visibility = 'learner'
                 AND conversations.kind = 'interactive'
                 AND conversations.status = 'active'
+              UNION ALL
+              SELECT
+                CASE WHEN requests.kind = 'approval' THEN 'approval' ELSE 'elicitation' END AS kind,
+                requests.item_id AS item_id,
+                requests.created_at AS created_at,
+                25 AS sort_rank,
+                NULL::text AS role,
+                NULL::text AS content,
+                '[]'::jsonb AS public_thinking_steps_json,
+                NULL::uuid AS process_run_id,
+                requests.source_turn_id AS turn_id,
+                NULL::text AS error_code,
+                NULL::boolean AS error_recoverable,
+                NULL::uuid AS in_reply_to_item_id,
+                requests.id AS interaction_request_id
+              FROM tutor_interaction_requests AS requests
+              JOIN tutor_conversations AS conversations ON conversations.id = requests.conversation_id
+              WHERE requests.conversation_id = %s
+                AND requests.user_id = %s
+                AND conversations.visibility = 'learner'
+                AND conversations.kind = 'interactive'
+                AND conversations.status = 'active'
         """
-        params: list[object] = [conversation_id, user_id, conversation_id, user_id]
+        params: list[object] = [
+            conversation_id, user_id,
+            conversation_id, user_id,
+            conversation_id, user_id,
+        ]
         if include_errors:
             timeline += """
               UNION ALL
@@ -1368,7 +1964,9 @@ class PostgresTutorRepository:
                 NULL::uuid AS process_run_id,
                 jobs.run_id AS turn_id,
                 'TUTOR_DISPATCH_FAILED'::text AS error_code,
-                true AS error_recoverable
+                true AS error_recoverable,
+                NULL::uuid AS in_reply_to_item_id,
+                NULL::uuid AS interaction_request_id
               FROM tutor_interactive_dispatch_jobs AS jobs
               JOIN tutor_conversations AS conversations ON conversations.id = jobs.conversation_id
               WHERE jobs.conversation_id = %s
@@ -1446,8 +2044,30 @@ class PostgresTutorRepository:
                         ),
                         context_references=references_by_message.get(str(row["item_id"]), ()),
                         turn_id=str(row["turn_id"]) if row.get("turn_id") is not None else None,
+                        in_reply_to_item_id=_optional_string(row.get("in_reply_to_item_id")),
                     )
                 )
+                continue
+            if kind in {"elicitation", "approval"}:
+                request_id = _optional_string(row.get("interaction_request_id"))
+                if request_id is None:
+                    continue
+                request_row = self._conn.execute(
+                    "SELECT * FROM tutor_interaction_requests WHERE id = %s AND user_id = %s",
+                    (request_id, user_id),
+                ).fetchone()
+                if request_row is not None:
+                    request = _interaction_request_from_row(request_row)
+                    records.append(
+                        TutorConversationTimelineRecord(
+                            kind=kind,
+                            item_id=request.item_id,
+                            created_at=created_at,
+                            sort_rank=_as_int(row.get("sort_rank"), 0),
+                            turn_id=request.source_turn_id,
+                            request=request,
+                        )
+                    )
                 continue
             if kind == "error":
                 records.append(
@@ -1594,13 +2214,17 @@ class PostgresTutorRepository:
             """,
             (user_id, conversation_id),
         ).fetchone()
+        pending_requests = self.read_pending_interaction_requests(
+            user_id=user_id,
+            conversation_id=conversation_id,
+        )
         current_sequence = max(0, _as_int(conversation.get("next_public_event_sequence"), 1) - 1)
         return TutorConversationSnapshot(
             conversation_id=conversation_id,
             title=str(conversation["title"]) if conversation.get("title") is not None else None,
             control_version=max(1, _as_int(conversation.get("control_version"), 1)),
             active_turn=self._public_turn_from_row(active) if active is not None else None,
-            pending_requests=(),
+            pending_requests=tuple(item.public_item for item in pending_requests),
             queue=(),
             timeline=timeline,
             next_cursor=next_cursor,
@@ -2154,6 +2778,10 @@ class PostgresTutorRepository:
             ),
             retry_of_turn_id=_optional_string(row.get("retry_of_turn_id")),
             retry_root_turn_id=_optional_string(row.get("retry_root_turn_id")),
+            completion_reason=cast(
+                Literal["awaiting_user", "awaiting_approval", "awaiting_authority"] | None,
+                _optional_string(row.get("completion_reason")),
+            ),
             created_at=(_as_datetime(row.get("created_at")) or datetime.now(UTC)).astimezone(UTC).isoformat(),
             updated_at=(_as_datetime(row.get("updated_at")) or datetime.now(UTC)).astimezone(UTC).isoformat(),
         )
@@ -2238,6 +2866,16 @@ class PostgresTutorRepository:
             interaction_protocol_version=_protocol_version_from_row(row),
             retry_of_turn_id=str(row["retry_of_turn_id"]) if row.get("retry_of_turn_id") is not None else None,
             retry_root_turn_id=str(row["retry_root_turn_id"]) if row.get("retry_root_turn_id") is not None else None,
+            response_to_request_id=(
+                str(row["response_to_request_id"])
+                if row.get("response_to_request_id") is not None
+                else None
+            ),
+            completion_reason=(
+                TutorTurnCompletionReason(str(row["completion_reason"]))
+                if row.get("completion_reason") is not None
+                else None
+            ),
         )
 
     def acquire_lease(
@@ -2415,10 +3053,13 @@ class PostgresTutorRepository:
         content: str,
         body_hash: str | None = None,
         source: str = "learner",
+        role: str = "learner",
         received_at: datetime | None = None,
     ) -> TutorInputAcceptance:
         _safe_key(idempotency_key, label="input idempotency key")
         _safe_key(source, label="input source")
+        if role not in {"learner", "tutor"} or (role == "tutor" and source != "authority_receipt"):
+            raise ValueError("Tutor input role is invalid")
         raw_content = str(content)
         if not raw_content or len(raw_content) > 16_000:
             raise ValueError("learner message must be non-empty and bounded")
@@ -2465,10 +3106,10 @@ class PostgresTutorRepository:
             message = self._conn.execute(
                 """
                 INSERT INTO tutor_messages (conversation_id, role, content, created_at)
-                VALUES (%s, 'learner', %s, %s)
+                VALUES (%s, %s, %s, %s)
                 RETURNING id
                 """,
-                (run["conversation_id"], raw_content, accepted_at),
+                (run["conversation_id"], role, raw_content, accepted_at),
             ).fetchone()
             if message is None:
                 raise RuntimeError("tutor learner message insert failed")
@@ -3430,6 +4071,278 @@ class PostgresTutorRepository:
                 occurred_at=checkpoint.created_at,
             )
             del trace
+            return result
+
+    def record_interaction_request(
+        self,
+        *,
+        user_id: str,
+        lease: TutorLease,
+        decision: "TutorDecision",
+        result: TutorRunResult,
+        created_at: datetime,
+    ) -> TutorRunResult:
+        if decision.continuation_kind is None:
+            raise ValueError("typed request requires a continuation kind")
+        if (
+            result.status is not TutorRunStatus.COMPLETED
+            or result.terminal_outcome is not TutorTerminalOutcome.COMPLETED
+            or result.completion_reason is None
+        ):
+            raise ValueError("typed request must complete its source turn")
+        kind = TutorInteractionRequestKind(decision.continuation_kind.value)
+        actor = actor_for_request(kind)
+        expected_reason = completion_reason_for_request(kind)
+        if result.completion_reason is not expected_reason:
+            raise ValueError("typed request completion reason does not match request kind")
+        prompt = sanitize_summary_text(decision.public_message or "", max_length=1_200)
+        if not prompt:
+            raise TutorInteractionRequestConflict("typed request requires a learner-safe prompt")
+        with self._conn.transaction():
+            conversation, run = self._lock_run_with_conversation(
+                user_id=user_id,
+                run_id=result.run_id,
+                learner_only=False,
+            )
+            if _protocol_version_from_row(run) is not TutorInteractionProtocolVersion.THREAD_TURN_V2:
+                raise TutorInteractionRequestConflict("typed request requires thread_turn_v2")
+            existing = self._conn.execute(
+                "SELECT * FROM tutor_interaction_requests WHERE source_turn_id = %s FOR UPDATE",
+                (result.run_id,),
+            ).fetchone()
+            if existing is not None:
+                return _result_from_row(run)
+            _assert_active_lease(run, lease=lease, now=created_at)
+            _assert_not_terminal(run)
+            _assert_not_cancelled(run)
+            _assert_not_superseded(run)
+            if result.input_revision != _as_int(run.get("input_revision"), 0):
+                raise TutorLeaseConflict("typed request result revision is stale")
+            pending = self._conn.execute(
+                """
+                SELECT id FROM tutor_interaction_requests
+                WHERE user_id = %s AND conversation_id = %s AND state = 'pending'
+                FOR UPDATE
+                """,
+                (user_id, run["conversation_id"]),
+            ).fetchone()
+            if pending is not None:
+                raise TutorInteractionRequestConflict("conversation already has a pending request")
+            request_id = str(uuid4())
+            item_id = str(uuid4())
+            catalog_version: str | None = None
+            question_key: str | None = None
+            proposal_identity: str | None = None
+            authority_key: str | None = None
+            risk_level: str | None = None
+            authority_request_hash: str | None = None
+            authority_scope: dict[str, object] | None = None
+            descriptor: dict[str, object] = {
+                "prompt": prompt,
+                "required": True,
+                "kind": kind.value,
+                "actor": actor.value,
+                "source_turn_id": result.run_id,
+            }
+            if kind is TutorInteractionRequestKind.PLANNING_INPUT:
+                question_key = str(decision.question_key or "")
+                presentation = build_planning_question_presentation(
+                    self._conn,
+                    question_key=question_key,
+                )
+                catalog_version = PLANNING_QUESTION_CATALOG_VERSION
+                descriptor.update(
+                    {"question_key": question_key, "catalog_version": catalog_version}
+                )
+            elif kind is TutorInteractionRequestKind.CLARIFICATION:
+                presentation = {
+                    "type": "text",
+                    "field_key": None,
+                    "minimum_length": 1,
+                    "maximum_length": 16_000,
+                    "multiline": True,
+                }
+            elif kind is TutorInteractionRequestKind.APPROVAL:
+                proposal_identity = f"proposal:{canonical_payload_hash({'run_id': result.run_id, 'input_revision': result.input_revision, 'model_call_count': result.model_call_count, 'prompt': prompt})}"
+                authority_key = "tutor.approval"
+                risk_level = "medium"
+                descriptor.update(
+                    {
+                        "proposal_identity": proposal_identity,
+                        "authority_key": authority_key,
+                        "risk_level": risk_level,
+                    }
+                )
+                presentation = {
+                    "type": "approval",
+                    "proposal_id": proposal_identity,
+                    "authority_key": authority_key,
+                    "risk_level": risk_level,
+                    "summary": prompt,
+                }
+            else:
+                authority_key = f"tutor.{kind.value}"
+                authority_scope = {
+                    "conversation_id": str(run["conversation_id"]),
+                    "source_turn_id": result.run_id,
+                    "kind": kind.value,
+                }
+                authority_request_hash = canonical_payload_hash(
+                    {
+                        "request_id": request_id,
+                        "kind": kind.value,
+                        "scope": authority_scope,
+                    }
+                )
+                descriptor.update(
+                    {
+                        "authority_key": authority_key,
+                        "authority_subject": request_id,
+                        "request_hash": authority_request_hash,
+                    }
+                )
+                presentation = {
+                    "type": "text",
+                    "field_key": None,
+                    "minimum_length": 1,
+                    "maximum_length": 1,
+                    "multiline": False,
+                }
+            descriptor_hash = canonical_payload_hash(descriptor)
+            request_row = self._conn.execute(
+                """
+                INSERT INTO tutor_interaction_requests (
+                  id, item_id, user_id, conversation_id, source_turn_id,
+                  kind, actor, schema_version, catalog_version, question_key,
+                  descriptor_json, presentation_json, descriptor_hash,
+                  proposal_identity, authority_key, risk_level,
+                  authority_subject, authority_scope_json, authority_request_hash,
+                  state, version, created_at
+                ) VALUES (
+                  %s, %s, %s, %s, %s,
+                  %s, %s, %s, %s, %s,
+                  %s::jsonb, %s::jsonb, %s,
+                  %s, %s, %s,
+                  %s, %s::jsonb, %s,
+                  'pending', 1, %s
+                )
+                RETURNING *
+                """,
+                (
+                    request_id,
+                    item_id,
+                    user_id,
+                    run["conversation_id"],
+                    result.run_id,
+                    kind.value,
+                    actor.value,
+                    TUTOR_INTERACTION_REQUEST_SCHEMA_VERSION,
+                    catalog_version,
+                    question_key,
+                    _json(descriptor),
+                    _json(presentation),
+                    descriptor_hash,
+                    proposal_identity,
+                    authority_key,
+                    risk_level,
+                    request_id if actor is TutorInteractionRequestActor.AUTHORITY else None,
+                    _json(authority_scope) if authority_scope is not None else None,
+                    authority_request_hash,
+                    created_at,
+                ),
+            ).fetchone()
+            if request_row is None:
+                raise RuntimeError("Tutor interaction request insert failed")
+            request_event = self._append_event_locked(
+                run_id=result.run_id,
+                event_key=f"interaction-request:{request_id}",
+                kind="interaction_request",
+                input_revision=result.input_revision,
+                payload={
+                    "kind": "interaction_request",
+                    "request_id": request_id,
+                    "item_id": item_id,
+                    "request_kind": kind.value,
+                    "actor": actor.value,
+                    "input_revision": result.input_revision,
+                },
+            )
+            self._append_event_locked(
+                run_id=result.run_id,
+                event_key=f"terminal:request:{request_id}",
+                kind="terminal_result",
+                input_revision=result.input_revision,
+                payload={
+                    "kind": "terminal_result",
+                    "status": "completed",
+                    "run_id": result.run_id,
+                    "input_revision": result.input_revision,
+                    "request_id": request_id,
+                    "item_id": item_id,
+                },
+            )
+            updated = self._conn.execute(
+                """
+                UPDATE tutor_runs
+                SET status = 'completed', iteration_count = %s, model_call_count = %s,
+                    capability_call_count = %s, effect_count = %s,
+                    terminal_outcome = 'completed', terminal_at = %s,
+                    completion_reason = %s, continuation_kind = NULL,
+                    active_lease_owner_id = NULL, active_lease_expires_at = NULL
+                WHERE id = %s AND user_id = %s
+                  AND active_lease_owner_id = %s AND active_lease_generation = %s
+                  AND terminal_outcome IS NULL AND cancelled_at IS NULL
+                  AND superseded_by_run_id IS NULL
+                RETURNING *
+                """,
+                (
+                    result.iteration_count,
+                    result.model_call_count,
+                    result.capability_call_count,
+                    result.effect_count,
+                    created_at,
+                    result.completion_reason.value,
+                    result.run_id,
+                    user_id,
+                    lease.owner_id,
+                    lease.generation,
+                ),
+            ).fetchone()
+            if updated is None:
+                raise TutorLeaseConflict("typed request result lease was lost")
+            self._freeze_public_process_locked(
+                run=updated,
+                display_state="completed",
+                step_key=None,
+                occurred_at=created_at,
+            )
+            self._append_item_reference_event_locked(
+                run=updated,
+                event_key=f"item:request:{item_id}:added",
+                kind=TutorConversationEventKind.ITEM_ADDED,
+                item_id=item_id,
+                item_kind=public_item_kind(kind),
+                occurred_at=created_at,
+            )
+            self._append_turn_event_locked(
+                run=updated,
+                kind=TutorConversationEventKind.TURN_UPDATED,
+                event_key=f"turn:{result.run_id}:request:{request_id}",
+                occurred_at=created_at,
+            )
+            self._increment_control_version_locked(
+                user_id=user_id,
+                conversation_id=str(conversation["id"]),
+                event_key=f"control:request:{item_id}:pending",
+                occurred_at=created_at,
+                turn_id=result.run_id,
+            )
+            self._write_conversation_title_once_locked(
+                user_id=user_id,
+                conversation_id=str(conversation["id"]),
+                candidate=result.conversation_title,
+            )
+            del request_event
             return result
 
     def record_waiting_result(
@@ -4446,6 +5359,30 @@ class PostgresTutorLifecycle(TutorLifecyclePersistence):
         except (TutorLeaseConflict, TutorTerminalStateConflict) as exc:
             raise TutorLifecycleConflict("Tutor terminal lifecycle lost ownership") from exc
 
+    def persist_interaction_request(
+        self,
+        *,
+        snapshot: TutorRunSnapshot,
+        lease: TutorLease,
+        decision: "TutorDecision",
+        result: TutorRunResult,
+        created_at: datetime,
+    ) -> TutorRunResult:
+        try:
+            return self._repository.record_interaction_request(
+                user_id=snapshot.user_id,
+                lease=lease,
+                decision=decision,
+                result=result,
+                created_at=created_at,
+            )
+        except (
+            TutorInteractionRequestConflict,
+            TutorLeaseConflict,
+            TutorTerminalStateConflict,
+        ) as exc:
+            raise TutorLifecycleConflict("Tutor interaction-request lifecycle lost ownership") from exc
+
     def persist_waiting_result(
         self,
         *,
@@ -4693,6 +5630,63 @@ def _selection_from_row(row: Mapping[str, object]) -> tuple[str, int, str, str, 
     )
 
 
+def _interaction_request_from_row(row: Mapping[str, object]) -> TutorInteractionRequestRecord:
+    kind = TutorInteractionRequestKind(str(row["kind"]))
+    actor = TutorInteractionRequestActor(str(row["actor"]))
+    state = TutorInteractionRequestState(str(row["state"]))
+    descriptor = _as_mapping(row.get("descriptor_json"))
+    presentation = _as_mapping(row.get("presentation_json"))
+    prompt = sanitize_summary_text(str(descriptor.get("prompt") or ""), max_length=1_200)
+    allowed_actions: list[str]
+    if state is not TutorInteractionRequestState.PENDING or actor is TutorInteractionRequestActor.AUTHORITY:
+        allowed_actions = []
+    elif kind is TutorInteractionRequestKind.APPROVAL:
+        allowed_actions = ["approve", "deny"]
+    else:
+        allowed_actions = ["respond"]
+    resolved_at = _as_datetime(row.get("resolved_at"))
+    public_item = validate_public_item(
+        {
+            "kind": public_item_kind(kind),
+            "id": str(row["item_id"]),
+            "request_id": str(row["id"]),
+            "turn_id": str(row["source_turn_id"]),
+            "request_kind": kind.value,
+            "actor": actor.value,
+            "state": state.value,
+            "version": _as_int(row.get("version"), 1),
+            "required": True,
+            "prompt": prompt,
+            "presentation": presentation,
+            "allowed_actions": allowed_actions,
+            "answer_turn_id": _optional_string(row.get("answer_turn_id")),
+            "created_at": (_as_datetime(row.get("created_at")) or datetime.now(UTC)).astimezone(UTC).isoformat(),
+            "resolved_at": resolved_at.astimezone(UTC).isoformat() if resolved_at is not None else None,
+        }
+    )
+    return TutorInteractionRequestRecord(
+        request_id=str(row["id"]),
+        item_id=str(row["item_id"]),
+        user_id=str(row["user_id"]),
+        conversation_id=str(row["conversation_id"]),
+        source_turn_id=str(row["source_turn_id"]),
+        kind=kind,
+        actor=actor,
+        state=state,
+        version=_as_int(row.get("version"), 1),
+        schema_version=str(row.get("schema_version") or TUTOR_INTERACTION_REQUEST_SCHEMA_VERSION),
+        catalog_version=_optional_string(row.get("catalog_version")),
+        question_key=_optional_string(row.get("question_key")),
+        descriptor=descriptor,
+        presentation=presentation,
+        answer_turn_id=_optional_string(row.get("answer_turn_id")),
+        answer_message_id=_optional_string(row.get("answer_message_id")),
+        created_at=_as_datetime(row.get("created_at")) or datetime.now(UTC),
+        resolved_at=resolved_at,
+        public_item=public_item,
+    )
+
+
 def _snapshot_from_row(row: Mapping[str, object]) -> TutorRunSnapshot:
     policy_data = _as_mapping(row.get("policy_json"))
     deadline = _as_datetime(policy_data.get("deadline"))
@@ -4738,6 +5732,7 @@ def _snapshot_from_row(row: Mapping[str, object]) -> TutorRunSnapshot:
             if row.get("continuation_kind") is not None
             else None
         ),
+        interaction_protocol_version=_protocol_version_from_row(row).value,
     )
 
 
@@ -4753,6 +5748,11 @@ def _result_from_row(row: Mapping[str, object]) -> TutorRunResult:
         capability_call_count=_as_int(row.get("capability_call_count"), 0),
         effect_count=_as_int(row.get("effect_count"), 0),
         terminal_outcome=outcome,
+        completion_reason=(
+            TutorTurnCompletionReason(str(row["completion_reason"]))
+            if row.get("completion_reason") is not None
+            else None
+        ),
         diagnostic_code=str(row["terminal_diagnostic_code"]) if row.get("terminal_diagnostic_code") else None,
     )
 

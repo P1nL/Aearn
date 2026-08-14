@@ -51,9 +51,10 @@ existing conversation + ordinary learner message
   -> POST /conversations/{conversation_id}/inputs
   -> supersede old foreground run + fresh TurnRun
 
-explicit server-authorized continuation only
-  -> POST /runs/{run_id}/inputs
-  -> same waiting run receives the next revision
+typed blocking request
+  -> source TurnRun completes with awaiting_* reason
+  -> POST /conversations/{conversation_id}/requests/{item_id}/responses
+  -> fresh answer TurnRun + fresh dispatch job
 ```
 
 1. Selecting “新对话” creates only local Desktop draft state. The first nonblank
@@ -67,11 +68,14 @@ explicit server-authorized continuation only
    creates a fresh run with new policy deadline/counters/lease, accepts the new
    learner message, and dispatches only that new run. The partial unique
    foreground index is the durable one-run invariant.
-3. `POST /api/tutor/runs/{run_id}/inputs` is not an ordinary follow-up route. It
-   is allowed only for a current interactive `waiting_for_input` run whose
-   persisted `continuation_kind` explicitly authorizes it. The accepted
-   continuation clears the consumed kind, advances the same run revision, and
-   may acquire a fresh lease.
+3. A `thread_turn_v2` continuation decision never reopens its source run. It atomically
+   creates one `tutor_interaction_requests` row/item, terminalizes the source turn as
+   completed with `awaiting_user | awaiting_approval | awaiting_authority`, releases the
+   lease, and increments conversation control authority. Learner response or verified
+   authority receipt CAS-resolves that exact request and creates a new run with fresh
+   policy deadline, zeroed counters, revision 1, `response_to_request_id`, a new process,
+   and a new one-row dispatch job. `/runs/{run_id}/inputs` remains legacy-only until the
+   global cutover child retires it.
 4. Raw learner text is stored only in `tutor_messages`; normal input acceptance
    appends an ordered safe event and updates `last_public_activity_at`. The
    conversation list/history reads never reconstruct raw content from events,
@@ -115,8 +119,8 @@ explicit server-authorized continuation only
    `tutor_run_learning_scopes` snapshot containing `scope_kind`, `task_kind`,
    optional track, and optional knowledge key. Missing scope remains
    `general/general_tutor`; old conversations are never classified from natural
-   language. Explicit continuation reuses the persisted snapshot and rejects a
-   supplied replacement scope.
+   language. A typed response/authority turn snapshots the same immutable conversation
+   scope onto its fresh run; the response contract has no scope override field.
 
 ### LearningTrack context seam
 
@@ -159,14 +163,20 @@ reopened answer without a replacement fact is added to
 `summary_blocked_by_unprojected_fact`. Structured summary remains continuity-only
 and cannot override the typed fact authority.
 
-`wait_for_input.continuation_kind` 是精确五分支枚举：`clarification` 只处理一处普通歧义；
+provider continuation intent 是精确五分支枚举：`clarification` 只处理一处普通歧义；
 `planning_input` 只补齐一项计划事实；`approval` 只请求明确授权；`capability_result` 与
-`external_result` 只等待当前 run 已声明的依赖结果。只有 `planning_input` 必须携带
-`question_key`，且该键只能来自七项 planning fact allowlist；其他四类必须省略
-`question_key`。planning decision gate 只处理 `planning_input`：没有 active planning session
-时拒绝，记录 `asked`，阻止已确认字段被重复询问并写入 safe reask counter。显式 correction/reopen
-创建新 lineage 后才允许再次提问。Public API/SSE 不暴露 gate reason、fact/event hash、prompt
-或 provider payload。
+`external_result` 只等待已声明的受信结果。只有 `planning_input` 必须携带 allowlisted
+`question_key`；provider 不得定义 options/schema/proposal/authority receipt。server-side
+`tutor_planning_questions_v1` 为七字段构造 immutable presentation，并复用
+`normalize_planning_fact()` value contract。planning decision gate 记录 `asked`、拒绝无 active
+session 或 confirmed-field reask。typed request public payload 不包含 provider body、raw reasoning、
+capability args、issuer secret 或 raw authority result。
+
+learner request response 是 closed union 并以 request item ID + expected version + response hash CAS；
+approval 还必须匹配 exact proposal identity。authority receipt 没有 learner route，内部 service
+验证 issuer/subject/scope/request hash/result hash/receipt identity；ambiguous verification 保持 pending。
+fresh response context 固定包含来源 request identity、safe descriptor、learner answer或 verified receipt
+摘要和 `in_reply_to_item_id`，不从自由文本猜测批准或 authority success。
 
 ### Public conversation history and process projection
 
@@ -174,8 +184,8 @@ and cannot override the typed fact authority.
 summaries in public-activity order. The legacy `/history` endpoint keeps its existing
 reverse-chronological message/process shape. The v1 snapshot exposes a strict
 `message | process | elicitation | approval | error` item union, public active-turn
-status (`in_progress | completed | interrupted | failed`), empty request/queue slots
-for later children, and a stream cursor. Current process states are `thinking`,
+status (`in_progress | completed | interrupted | failed`), typed pending request/item projection,
+an empty Queue slot for the control child, and a stream cursor. Current process states are `thinking`,
 `waiting_input`, `waiting_approval`, `waiting_authority`, `completed`, `interrupted`,
 `superseded`, `unavailable`, or `failed`; labels remain server allowlisted and elapsed
 time remains bounded. Legacy message-only rows remain visible without invented cards,

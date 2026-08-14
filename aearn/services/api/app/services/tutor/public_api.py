@@ -27,6 +27,7 @@ from app.services.learning.context_references import (
 )
 from app.services.learning.contracts import LearningScope, LearningScopeKind, LearningTaskKind
 from app.services.learning.planning_facts import PlanningFactError, PostgresPlanningFactRepository
+from app.services.learning.planning_questions import PlanningQuestionCatalogError
 from app.services.learning.track_repository import (
     LearningScopeConflict,
     LearningTrackNotFound,
@@ -56,6 +57,8 @@ from app.services.tutor.persistence import (
     TutorInteractiveTurnAcceptance,
     TutorPublicProcessState,
     TutorIdempotencyConflict,
+    TutorInteractionRequestConflict,
+    TutorInteractionRequestNotFound,
     TutorRunNotFound,
     TutorRunReadState,
     TutorTerminalStateConflict,
@@ -249,6 +252,39 @@ class TutorPublicService:
                 planning_facts=planning_facts,
                 reopen_fact_fields=reopen_fact_fields,
                 context_references=context_references,
+                idempotency_key=idempotency_key,
+            ),
+        )
+
+    def respond_to_interaction_request(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str,
+        item_id: str,
+        expected_request_version: int,
+        response: Mapping[str, object],
+        idempotency_key: str,
+    ) -> dict[str, object]:
+        normalized_user_id = _uuid_identifier(user_id, label="user_id")
+        normalized_conversation_id = _uuid_identifier(conversation_id, label="conversation_id")
+        normalized_item_id = _uuid_identifier(item_id, label="item_id")
+        return self._mutate(
+            user_id=normalized_user_id,
+            operation="tutor.interaction_request.response",
+            idempotency_key=idempotency_key,
+            request_body={
+                "conversation_id": normalized_conversation_id,
+                "item_id": normalized_item_id,
+                "expected_request_version": expected_request_version,
+                "response": dict(response),
+            },
+            action=lambda: self._respond_to_interaction_request(
+                user_id=normalized_user_id,
+                conversation_id=normalized_conversation_id,
+                item_id=normalized_item_id,
+                expected_request_version=expected_request_version,
+                response=response,
                 idempotency_key=idempotency_key,
             ),
         )
@@ -773,9 +809,94 @@ class TutorPublicService:
             ) from exc
         except TutorIdempotencyConflict as exc:
             raise _idempotency_conflict() from exc
+        except TutorInteractionRequestConflict as exc:
+            raise TutorPublicApiError(
+                "TUTOR_REQUEST_PENDING",
+                "Resolve the pending Tutor request before sending a normal message.",
+                status_code=409,
+                details={"conversation_id": conversation_id},
+            ) from exc
         except TutorTerminalStateConflict as exc:
             raise _run_not_active(conversation_id=conversation_id) from exc
         return _turn_acceptance_payload(accepted, state=state, references=references, first_turn=False)
+
+    def _respond_to_interaction_request(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str,
+        item_id: str,
+        expected_request_version: int,
+        response: Mapping[str, object],
+        idempotency_key: str,
+    ) -> dict[str, object]:
+        self._assert_user_exists(user_id)
+        now = datetime.now(UTC)
+        try:
+            catalog = compile_published_skill_catalog()
+            self._repository.record_catalog_snapshot(catalog)
+            accepted = self._repository.respond_to_interaction_request(
+                user_id=user_id,
+                conversation_id=conversation_id,
+                item_id=item_id,
+                expected_version=expected_request_version,
+                response=response,
+                idempotency_key=idempotency_key,
+                catalog_digest=catalog.digest,
+                policy=_interactive_policy(now, settings=self._settings),
+                received_at=now,
+            )
+            if accepted.turn is None:
+                raise TutorInteractionRequestConflict("learner response did not create a fresh Tutor turn")
+            scope = self._learning_tracks.inherit_run_scope(
+                user_id=user_id,
+                run_id=accepted.turn.run.run_id,
+                source_run_id=accepted.request.source_turn_id,
+            )
+            if scope.scope_kind is LearningScopeKind.PLAN_DRAFTING and accepted.planning_facts:
+                self._planning_facts.record_input(
+                    user_id=user_id,
+                    run_id=accepted.turn.run.run_id,
+                    conversation_id=conversation_id,
+                    message_id=accepted.turn.acceptance.message_id,
+                    input_revision=accepted.turn.acceptance.input_revision,
+                    content="",
+                    explicit_facts=accepted.planning_facts,
+                )
+            state = self._repository.read_run_state(
+                user_id=user_id,
+                run_id=accepted.turn.run.run_id,
+            )
+        except TutorInteractionRequestNotFound as exc:
+            raise TutorPublicApiError(
+                "TUTOR_REQUEST_NOT_FOUND",
+                "Tutor interaction request was not found for this conversation.",
+                status_code=404,
+                details={"conversation_id": conversation_id, "item_id": item_id},
+            ) from exc
+        except (TutorInteractionRequestConflict, PlanningQuestionCatalogError) as exc:
+            raise TutorPublicApiError(
+                "TUTOR_REQUEST_CONFLICT",
+                "Tutor interaction request is stale, mismatched, or already resolved.",
+                status_code=409,
+                details={"conversation_id": conversation_id, "item_id": item_id},
+            ) from exc
+        except PlanningFactError as exc:
+            raise TutorPublicApiError(
+                "VALIDATION_ERROR",
+                "计划事实未通过服务器校验。",
+                status_code=400,
+                details={"field": "response.value"},
+            ) from exc
+        payload = _turn_acceptance_payload(
+            accepted.turn,
+            state=state,
+            references=(),
+            first_turn=False,
+        )
+        payload["request"] = dict(accepted.request.public_item)
+        payload["response_replayed"] = accepted.replayed
+        return payload
 
     def _accept_existing_run_input(
         self,
@@ -1264,6 +1385,8 @@ def _run_payload(state: TutorRunReadState) -> dict[str, object]:
         "interaction_protocol_version": state.interaction_protocol_version.value,
         "retry_of_turn_id": state.retry_of_turn_id,
         "retry_root_turn_id": state.retry_root_turn_id,
+        "response_to_request_id": state.response_to_request_id,
+        "completion_reason": state.completion_reason.value if state.completion_reason is not None else None,
     }
 
 
@@ -1338,13 +1461,16 @@ def _public_process_payload(item: TutorPublicProcessState) -> dict[str, object]:
 
 def _legacy_timeline_payload(item: TutorConversationTimelineRecord) -> dict[str, object]:
     payload = _timeline_payload(item)
-    payload.pop("turn_id", None)
+    if item.kind not in {"elicitation", "approval"}:
+        payload.pop("turn_id", None)
     return payload
 
 
 def _timeline_payload(item: TutorConversationTimelineRecord) -> dict[str, object]:
     if item.kind == "process" and item.process is not None:
         return _public_process_payload(item.process)
+    if item.kind in {"elicitation", "approval"} and item.request is not None:
+        return dict(item.request.public_item)
     if item.kind == "error" and item.error_code is not None:
         return validate_public_item(
             {
@@ -1366,6 +1492,7 @@ def _timeline_payload(item: TutorConversationTimelineRecord) -> dict[str, object
             "content": item.content or "",
             "public_thinking_steps": list(item.public_thinking_steps),
             "context_references": [dict(reference) for reference in item.context_references],
+            "in_reply_to_item_id": item.in_reply_to_item_id,
             "created_at": _iso(item.created_at),
         }
     )
