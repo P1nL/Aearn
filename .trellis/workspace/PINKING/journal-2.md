@@ -1536,3 +1536,41 @@ Closed the planning-only Tutor Harness rearchitecture parent after all nine inde
 ### Next Steps
 
 - 启动 08-13-tutor-queue-steer-interrupt-control，消费 pending request authority，不重定义 request contract。
+
+
+## Session 103: 完成 Tutor Queue、Steer 与 Interrupt 控制
+
+**Date**: 2026-08-15
+**Task**: 完成 Tutor Queue、Steer 与 Interrupt 控制
+**Branch**: `codex/codex-like-tutor-conversation`
+
+### Summary
+
+完成 Child 4 的 Queue、Steer、Interrupt、Resume、Execute、Retry、队列 drain 与逻辑 effect 去重契约，并同步 API、数据库、运行时、验收文档和可执行规格。
+
+### Main Changes
+
+- 新增 tutor_queued_inputs、队列暂停状态、CAS 控制和完整公共 API。
+- 实现完成态 FIFO drain、显式 Steer/Interrupt/Resume/Execute/Retry 以及 pending request 阻断。
+- 同步 Desktop typed seam、后端/前端 Trellis 规格和 source-of-truth 文档。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `6e768da8` | (see git log) |
+| `0554563b` | (see git log) |
+
+### Testing
+
+- [OK] API pytest：565 passed, 1 skipped。
+- [OK] Ruff、Mypy、uv lock --check、compileall、task.py validate、git diff --check 均通过。
+- [OK] Desktop Vitest：14 passed；desktop:check（tsc + Vite build）通过。
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 启动 08-14-tutor-thread-turn-v2-global-cutover，完成全局 v2 cutover。
