@@ -49,7 +49,14 @@ local draft
 
 existing conversation + ordinary learner message
   -> POST /conversations/{conversation_id}/inputs
-  -> supersede old foreground run + fresh TurnRun
+  -> idle: fresh TurnRun
+  -> active/waiting/paused: pending FIFO Queue item
+
+explicit control
+  -> Steer: same active turn + next input revision
+  -> Interrupt: public interrupted + optional Queue pause
+  -> resume/execute: fresh claimed TurnRun
+  -> Retry: fresh retry lineage
 
 typed blocking request
   -> source TurnRun completes with awaiting_* reason
@@ -62,12 +69,12 @@ typed blocking request
    creates the learner-visible conversation, fresh run, learner message/input
    event, and `input_received` public-process projection. API idempotency owns
    replay; a rollback cannot leave an empty conversation or duplicate dispatch.
-2. `POST /api/tutor/conversations/{conversation_id}/inputs` never merges normal
-   chat into a live run. Under the conversation lock, it terminalizes the prior
-   foreground interactive run as cancelled/superseded, freezes its process card,
-   creates a fresh run with new policy deadline/counters/lease, accepts the new
-   learner message, and dispatches only that new run. The partial unique
-   foreground index is the durable one-run invariant.
+2. `POST /api/tutor/conversations/{conversation_id}/inputs` never implicitly supersedes
+   or resumes a live run. Under the conversation lock it creates a fresh turn only when idle;
+   otherwise it appends a pending `tutor_queued_inputs` item (maximum 10) with immutable
+   input metadata and increments `control_version`. FIFO claim creates the learner message,
+   input event, process, fresh policy and dispatch job atomically. Explicit `Steer` alone may
+   claim one pending item into the current run by advancing its input revision.
 3. A `thread_turn_v2` continuation decision never reopens its source run. It atomically
    creates one `tutor_interaction_requests` row/item, terminalizes the source turn as
    completed with `awaiting_user | awaiting_approval | awaiting_authority`, releases the
@@ -88,17 +95,13 @@ typed blocking request
    dispatch without winning the PostgreSQL job lease; expired leases and lost wakeups
    are recovered by `tutor.interactive.reconcile` from Celery beat.
 6. A claimed dispatcher obtains the existing run lease and runs the finite Harness loop.
-   Its provider call is outside an implicit PostgreSQL transaction: lifecycle
-   methods own short atomic transactions, so a new ordinary turn can acquire the
-   conversation lock while a provider response is pending. The loop refreshes
-   cancellation/supersede and revision state immediately after every provider
-   return, before decision gating, capability dispatch, effect commit and
-   terminal persistence. A heartbeat that arrives after nominal expiry may renew
-   only while the exact owner and lease generation still match; a replacement
-   claim increments the generation and permanently fences the stale worker. A
-   stale run converges to a safe cancelled/superseded
-   projection and cannot write a Tutor message, conversation title, capability
-   receipt or effect.
+   Its provider call is outside an implicit PostgreSQL transaction. Normal Send can enqueue
+   while the provider is pending without invalidating the current turn; explicit Steer or
+   Interrupt changes revision/cancel authority. The loop refreshes cancellation, lease and
+   revision immediately after every provider return and before decision, capability, effect
+   and terminal writes. A stale revision/interrupted run cannot publish a message/title or
+   commit capability/effect. After a normally completed job, the worker alone performs
+   completed-only FIFO drain; failed/interrupted/request-pending paths pause instead.
 7. Each interactive context load resolves the authoritative learner input from the exact
    `tutor_run_input_events(run_id, input_revision).message_id` evidence within the
    snapshot's user/run/conversation scope. The Harness carries that input separately
@@ -178,6 +181,20 @@ approval 还必须匹配 exact proposal identity。authority receipt 没有 lear
 fresh response context 固定包含来源 request identity、safe descriptor、learner answer或 verified receipt
 摘要和 `in_reply_to_item_id`，不从自由文本猜测批准或 authority success。
 
+### Queue 与显式 conversation control（2026-08-14）
+
+Queue authority 存在 PostgreSQL，而不是 Desktop 本地数组或 Celery。所有 edit/delete/reorder/
+Steer/Interrupt/resume/execute/Retry 都先锁 conversation 并校验 expected `control_version`；item mutation
+还校验 item version。pending request 阻塞所有执行型 control，但普通 Send 仍可排队。Interrupt 将
+当前 turn 投影为 `interrupted` 并在仍有 pending item 时设置 `queue_paused`; failed completion 使用
+reason=`failed`，request 使用 reason=`pending_request`。普通 Send 不清除 pause。
+
+`resume` 仅在 idle、无 pending request 时解除 pause 并 FIFO claim；`execute` 可原子 interrupt 当前
+turn 后 claim 指定 item；`Steer` 不创建新 run，只把指定 item 的原始 metadata 应用到同一 scope 的
+下一 input revision。completed-only drain 与 duplicate worker 由 conversation lock、partial position unique、
+item state CAS 和 one-foreground-run invariant 去重。Retry 创建 fresh run，并沿稳定 retry root 对 effect
+logical action receipt 去重；不明确的 proposed authority 禁止再次调用 handler。
+
 ### Public conversation history and process projection
 
 `GET /api/tutor/conversations` returns only learner-visible conversation
@@ -185,7 +202,7 @@ summaries in public-activity order. The legacy `/history` endpoint keeps its exi
 reverse-chronological message/process shape. The v1 snapshot exposes a strict
 `message | process | elicitation | approval | error` item union, public active-turn
 status (`in_progress | completed | interrupted | failed`), typed pending request/item projection,
-an empty Queue slot for the control child, and a stream cursor. Current process states are `thinking`,
+the typed pending Queue, control/pause authority, and a stream cursor. Current process states are `thinking`,
 `waiting_input`, `waiting_approval`, `waiting_authority`, `completed`, `interrupted`,
 `superseded`, `unavailable`, or `failed`; labels remain server allowlisted and elapsed
 time remains bounded. Legacy message-only rows remain visible without invented cards,

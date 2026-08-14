@@ -350,3 +350,15 @@ const result = parseModelReviewResult(payload);
 - response mutation 只发送 clarification text、planning exact key/catalog/value 或 approval exact proposal identity/decision；不得发送 capability/external receipt。
 - response 成功必须解析 fresh run 的 `response_to_request_id`、`completion_reason`、`dispatch_job_id` 和 returned request；客户端不得根据 prompt 文案推断 kind、approval 或 authority success。
 - 在最终 QuestionComposer child 前，Desktop 可以只读显示 request placeholder，但 history/snapshot parser 不得丢弃或宽松 cast request。
+
+
+## 场景：Tutor Queue 与 control mutation exact DTO（2026-08-14）
+
+- `TutorConversationInputResponse` 必须是 `TutorInputAcceptedResponse | TutorQueuedInputAcceptedResponse` closed union；用 `"queued" in response` 缩窄，不能读取不存在的 `run`。
+- `TutorQueuedInput` exact-parse `item_id/state/position/version/content/created_at/updated_at`；未知 state、extra key、非正 position/version 整体拒绝。
+- snapshot conversation exact-parse `control_version/control_state/queue_paused/queue_pause_reason/pending_count/max_pending`，Queue 不得保留为 `Record<string, unknown>[]`。
+- Queue read/edit/delete/reorder/Interrupt 响应按 `TutorQueueStateResponse` exact-parse；Steer/execute/Retry fresh-turn 响应必须先剥离并验证 additive `control_version`/`queue_item`，再复用 exact turn parser。
+- `control_state` 只允许 `idle|running|waiting|queue_paused`，pause reason 只允许 `pending_request|interrupted|failed|null`。
+- 在最终 Queue UI child 前，现有 composer 收到 queued response 必须安全清空/刷新，不得把它当成 accepted turn 崩溃或本地伪造 active run。
+
+必须运行 Desktop Vitest 与 `desktop:check`；parser 应覆盖合法 accepted/queued/control payload 及 extra/unknown/missing 字段拒绝。

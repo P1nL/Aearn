@@ -41,7 +41,7 @@ release approval，任何未通过或未执行 gate 都必须在 ledger 中保�
 | RT-01 | P0 | Provider boundary | 只调用配置的 primary provider；配置/响应/guardrail 失败映射 `MODEL_UNAVAILABLE`，无 cross-provider/model fallback | `test_tutor_provider_gateway.py`、`test_tutor_run_loop.py` |
 | RT-02 | P0 | Bounded run loop | iteration/model/capability/effect/context/lease budget 有界；取消与 lost lease 安全结束 | `test_tutor_run_loop.py`、`test_tutor_execution_contracts.py` |
 | RT-03 | P0 | Skill/capability/grounding | exact `id@version` evidence、descriptor default-deny、registry-only grounding；不能传 URL/path/shell/SQL/任意 user target | `test_tutor_skill_catalog.py`、`test_tutor_capability_gateway.py`、`test_tutor_grounding_policy.py` |
-| RT-04 | P0 | Durable input/effect/replay | input revision merge、idempotency、ordered events、stale effect rejection、trace redaction 和 current lease CAS | `test_tutor_run_repository.py`、`test_tutor_input_merge.py`、`test_tutor_trace_redaction.py` |
+| RT-04 | P0 | Durable input/effect/replay | first-turn/fresh-turn、active normal Send FIFO Queue、显式 Steer revision、idempotency、ordered events、stale effect 与 retry logical receipt rejection/reuse、trace redaction 和 current lease CAS | `test_tutor_run_repository.py`、`test_tutor_input_merge.py`、`test_tutor_queue_control.py`、`test_tutor_effect_commit.py`、`test_tutor_trace_redaction.py` |
 | RT-05 | P0 | Learner-state | immutable plan、direct-predecessor rollback、memory correction/delete、activity/inbox scope | `test_tutor_memory.py`、`test_tutor_activity.py`、Tutor route tests |
 | RT-06 | P0 | API/SSE | verified gate、stable error envelope、cursor suffix、terminal ordering、stream never calls provider | `test_tutor_routes.py`、`test_tutor_sse.py` |
 | RT-07 | P0 | Cutover | exact server summary/nonce/hash, atomic deletion verification, retained identity/preferences, target contamination/checkpoint fail-closed, legacy denial | `test_harness_cutover.py`、`test_db_bootstrap.py` |
@@ -75,12 +75,10 @@ release approval，任何未通过或未执行 gate 都必须在 ledger 中保�
 ### FI-02：interactive run、SSE 与 safe projection
 
 1. Use a deterministic provider/dispatcher seam and a verified fixture user.
-2. Create a Tutor conversation, submit input, then submit a follow-up while the
-   first interactive run is non-terminal.
-3. Verify monotonic `input_revision`, idempotent replay, run-local cursor,
-   `input_accepted` before terminal frame, and a read-only SSE replay.
-4. Inject provider/config/policy failure and assert stable public code without
-   provider body or internal trace.
+2. Create a Tutor conversation and one non-terminal foreground turn; submit ordinary follow-ups and assert they enter a maximum-10 FIFO Queue without superseding the active turn.
+3. Verify edit/delete/reorder CAS, explicit Steer monotonic `input_revision`, Interrupt pause, ordinary Send without implicit resume, explicit resume/execute fresh claim, completed-only duplicate-safe drain, pending-request block and Retry lineage/effect dedupe.
+4. Verify idempotent replay, run-local/conversation cursor, `input_accepted` before terminal frame, and read-only SSE replay.
+5. Inject provider/config/policy failure and assert stable public code without provider body or internal trace.
 
 ### FI-03：verified-only proactive default path
 
@@ -342,3 +340,15 @@ contract，不访问真实 provider、不启动或批准生产 container fleet�
 | RT-50 | P0 | Public safety | request/item/event 只含 bounded prompt/presentation/IDs/enums；raw learner input 不进入 SSE event，authority raw result/args/secret 不进入 snapshot/history | `test_tutor_sse.py`、public allowlist tests |
 
 上述验证默认使用 fake provider 和本地 PostgreSQL；不调用真实 provider、不执行生产 cutover、不部署。
+
+
+## 2026-08-14：Tutor Queue 与显式控制验收增量
+
+| ID | 优先级 | 区域 | 验收 | 证据 |
+| --- | --- | --- | --- | --- |
+| RT-43 | P0 | Queue/control state | active Send 只排队；10 项上限；edit/delete/reorder 全量 CAS；Steer 同 run 新 revision；Interrupt public interrupted + pause；普通 Send 不 resume；resume/execute fresh claim | `test_tutor_queue_control.py`、`test_tutor_input_merge.py`、route/snapshot/SSE regression |
+| RT-44 | P0 | Drain/Retry/effect lineage | 只有 completed 自动 FIFO drain；failed/interrupted/pending request pause；duplicate worker 不重复 claim；Retry fresh predecessor/root；committed logical effect receipt 复用，ambiguous fail closed | `test_tutor_queue_control.py`、`test_tutor_effect_commit.py`、`test_tutor_execution_effect.py`、worker/repository regression |
+| FE-08 | P1 | Typed API seam | snapshot/Queue exact DTO、queued input union、control mutation parser 拒绝 extra/unknown state；现有 UI 对 queued response 不崩溃，最终 Queue UI 由 Desktop migration child 完成 | Desktop `tsc && vite build`、Vitest |
+
+默认验证使用 fake/disabled provider 与本地 PostgreSQL，不调用真实 provider、不执行生产 cutover、
+不部署，也不据此宣称真实模型质量或 release approval。

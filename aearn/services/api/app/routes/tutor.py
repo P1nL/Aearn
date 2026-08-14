@@ -17,6 +17,12 @@ from app.models.tutor import (
     CorrectTutorMemoryRequest,
     CreateTutorConversationRequest,
     TutorInputRequest,
+    TutorControlMutationRequest,
+    TutorInterruptRequest,
+    TutorQueueDeleteRequest,
+    TutorQueueEditRequest,
+    TutorQueueReorderRequest,
+    TutorQueueSteerRequest,
     TutorInteractionRequestResponseRequest,
     TutorMutationRequest,
     UpdateTutorPreferencesRequest,
@@ -274,6 +280,135 @@ def respond_to_interaction_request(
         status_code=status.HTTP_200_OK if bool(response.get("idempotent_replayed")) else status.HTTP_202_ACCEPTED,
         content=jsonable_encoder(response),
     )
+
+
+@router.get("/conversations/{conversation_id}/queue", response_model=None)
+def read_queue(conversation_id: str, request: Request, user_id: str = Query(min_length=1)) -> JSONResponse:
+    unavailable = _require_tutor_route(request, user_id)
+    if unavailable is not None:
+        return unavailable
+    response = _call_service(request, lambda service: service.read_queue(user_id=user_id, conversation_id=conversation_id))
+    return response if isinstance(response, JSONResponse) else JSONResponse(status_code=200, content=jsonable_encoder(response))
+
+
+@router.patch("/conversations/{conversation_id}/queue/{item_id}", response_model=None)
+def edit_queue_item(conversation_id: str, item_id: str, payload: TutorQueueEditRequest, request: Request) -> JSONResponse:
+    unavailable = _require_tutor_route(request, payload.user_id)
+    if unavailable is not None:
+        return unavailable
+    response = _call_service(request, lambda service: service.edit_queue_item(
+        user_id=payload.user_id, conversation_id=conversation_id, item_id=item_id,
+        expected_control_version=payload.expected_control_version,
+        expected_item_version=payload.expected_item_version, content=payload.content,
+        idempotency_key=_idempotency_key(request, payload.client_action_id),
+    ), commit=True)
+    return response if isinstance(response, JSONResponse) else JSONResponse(status_code=200, content=jsonable_encoder(response))
+
+
+@router.delete("/conversations/{conversation_id}/queue/{item_id}", response_model=None)
+def delete_queue_item(conversation_id: str, item_id: str, payload: TutorQueueDeleteRequest, request: Request) -> JSONResponse:
+    unavailable = _require_tutor_route(request, payload.user_id)
+    if unavailable is not None:
+        return unavailable
+    response = _call_service(request, lambda service: service.delete_queue_item(
+        user_id=payload.user_id, conversation_id=conversation_id, item_id=item_id,
+        expected_control_version=payload.expected_control_version,
+        expected_item_version=payload.expected_item_version,
+        idempotency_key=_idempotency_key(request, payload.client_action_id),
+    ), commit=True)
+    return response if isinstance(response, JSONResponse) else JSONResponse(status_code=200, content=jsonable_encoder(response))
+
+
+@router.post("/conversations/{conversation_id}/queue/reorder", response_model=None)
+def reorder_queue(conversation_id: str, payload: TutorQueueReorderRequest, request: Request) -> JSONResponse:
+    unavailable = _require_tutor_route(request, payload.user_id)
+    if unavailable is not None:
+        return unavailable
+    response = _call_service(request, lambda service: service.reorder_queue(
+        user_id=payload.user_id, conversation_id=conversation_id,
+        item_ids=tuple(str(item) for item in payload.item_ids),
+        expected_control_version=payload.expected_control_version,
+        idempotency_key=_idempotency_key(request, payload.client_action_id),
+    ), commit=True)
+    return response if isinstance(response, JSONResponse) else JSONResponse(status_code=200, content=jsonable_encoder(response))
+
+
+@router.post("/conversations/{conversation_id}/queue/{item_id}/steer", response_model=None)
+def steer_queue_item(conversation_id: str, item_id: str, payload: TutorQueueSteerRequest, request: Request) -> JSONResponse:
+    unavailable = _require_tutor_route(request, payload.user_id)
+    if unavailable is not None:
+        return unavailable
+    response = _call_service(request, lambda service: service.steer_queue_item(
+        user_id=payload.user_id, conversation_id=conversation_id, item_id=item_id,
+        expected_control_version=payload.expected_control_version,
+        expected_turn_id=str(payload.expected_turn_id),
+        expected_input_revision=payload.expected_input_revision,
+        idempotency_key=_idempotency_key(request, payload.client_action_id),
+    ), commit=True)
+    return response if isinstance(response, JSONResponse) else JSONResponse(status_code=202, content=jsonable_encoder(response))
+
+
+@router.post("/conversations/{conversation_id}/interrupt", response_model=None)
+def interrupt_turn(conversation_id: str, payload: TutorInterruptRequest, request: Request) -> JSONResponse:
+    unavailable = _require_tutor_route(request, payload.user_id)
+    if unavailable is not None:
+        return unavailable
+    response = _call_service(request, lambda service: service.interrupt_turn(
+        user_id=payload.user_id, conversation_id=conversation_id,
+        expected_control_version=payload.expected_control_version,
+        expected_turn_id=str(payload.expected_turn_id),
+        expected_input_revision=payload.expected_input_revision,
+        idempotency_key=_idempotency_key(request, payload.client_action_id),
+    ), commit=True)
+    return response if isinstance(response, JSONResponse) else JSONResponse(status_code=200, content=jsonable_encoder(response))
+
+
+@router.post("/conversations/{conversation_id}/queue/resume", response_model=None)
+def resume_queue(conversation_id: str, payload: TutorControlMutationRequest, request: Request, background_tasks: BackgroundTasks) -> JSONResponse:
+    unavailable = _require_tutor_route(request, payload.user_id)
+    if unavailable is not None:
+        return unavailable
+    response = _call_service(request, lambda service: service.resume_queue(
+        user_id=payload.user_id, conversation_id=conversation_id,
+        expected_control_version=payload.expected_control_version,
+        idempotency_key=_idempotency_key(request, payload.client_action_id),
+    ), commit=True)
+    if isinstance(response, JSONResponse):
+        return response
+    _schedule_interactive_dispatch(background_tasks=background_tasks, dispatcher=build_tutor_run_dispatcher(get_settings()), user_id=payload.user_id, response=response)
+    return JSONResponse(status_code=202 if response.get("run_id") else 200, content=jsonable_encoder(response))
+
+
+@router.post("/conversations/{conversation_id}/queue/{item_id}/execute", response_model=None)
+def execute_queue_item(conversation_id: str, item_id: str, payload: TutorControlMutationRequest, request: Request, background_tasks: BackgroundTasks) -> JSONResponse:
+    unavailable = _require_tutor_route(request, payload.user_id)
+    if unavailable is not None:
+        return unavailable
+    response = _call_service(request, lambda service: service.execute_queue_item(
+        user_id=payload.user_id, conversation_id=conversation_id, item_id=item_id,
+        expected_control_version=payload.expected_control_version,
+        idempotency_key=_idempotency_key(request, payload.client_action_id),
+    ), commit=True)
+    if isinstance(response, JSONResponse):
+        return response
+    _schedule_interactive_dispatch(background_tasks=background_tasks, dispatcher=build_tutor_run_dispatcher(get_settings()), user_id=payload.user_id, response=response)
+    return JSONResponse(status_code=202, content=jsonable_encoder(response))
+
+
+@router.post("/conversations/{conversation_id}/turns/{turn_id}/retry", response_model=None)
+def retry_turn(conversation_id: str, turn_id: str, payload: TutorControlMutationRequest, request: Request, background_tasks: BackgroundTasks) -> JSONResponse:
+    unavailable = _require_tutor_route(request, payload.user_id)
+    if unavailable is not None:
+        return unavailable
+    response = _call_service(request, lambda service: service.retry_turn(
+        user_id=payload.user_id, conversation_id=conversation_id, turn_id=turn_id,
+        expected_control_version=payload.expected_control_version,
+        idempotency_key=_idempotency_key(request, payload.client_action_id),
+    ), commit=True)
+    if isinstance(response, JSONResponse):
+        return response
+    _schedule_interactive_dispatch(background_tasks=background_tasks, dispatcher=build_tutor_run_dispatcher(get_settings()), user_id=payload.user_id, response=response)
+    return JSONResponse(status_code=202, content=jsonable_encoder(response))
 
 
 @router.post("/runs/{run_id}/inputs", response_model=None)

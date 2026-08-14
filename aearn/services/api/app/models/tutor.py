@@ -166,6 +166,49 @@ class TutorInteractionRequestResponseRequest(TutorMutationRequest):
     response: TutorInteractionResponseInput
 
 
+class TutorControlMutationRequest(TutorMutationRequest):
+    model_config = ConfigDict(extra="forbid")
+    expected_control_version: int = Field(ge=1)
+
+
+class TutorQueueEditRequest(TutorControlMutationRequest):
+    expected_item_version: int = Field(ge=1)
+    content: str = Field(min_length=1, max_length=16_000)
+
+    @field_validator("content")
+    @classmethod
+    def normalize_content(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("content must not be blank")
+        return normalized
+
+
+class TutorQueueDeleteRequest(TutorControlMutationRequest):
+    expected_item_version: int = Field(ge=1)
+
+
+class TutorQueueReorderRequest(TutorControlMutationRequest):
+    item_ids: list[UUID] = Field(max_length=10)
+
+    @field_validator("item_ids")
+    @classmethod
+    def unique_items(cls, value: list[UUID]) -> list[UUID]:
+        if len(value) != len(set(value)):
+            raise ValueError("item_ids must be unique")
+        return value
+
+
+class TutorQueueSteerRequest(TutorControlMutationRequest):
+    expected_turn_id: UUID
+    expected_input_revision: int = Field(ge=1)
+
+
+class TutorInterruptRequest(TutorControlMutationRequest):
+    expected_turn_id: UUID
+    expected_input_revision: int = Field(ge=1)
+
+
 class CorrectTutorMemoryRequest(TutorMutationRequest):
     statement: str = Field(min_length=1, max_length=180)
 

@@ -72,16 +72,17 @@ projection 的唯一 durable authority；Desktop、Celery 和 provider 不拥有
 | `tutor_run_events` | run-local ordered event log | `event_sequence` 在 locked run row 上分配；SSE 只读取其安全后缀 |
 | `tutor_conversation_events` | learner-safe conversation-global append-only event log | conversation row lock 分配严格递增 sequence；`event_key` 幂等；kind/payload version 闭合；turn/item reference 与 payload identity 必须一致；普通 UPDATE/DELETE 被 trigger 拒绝 |
 | `tutor_interactive_dispatch_jobs` | one-row-per-run durable interactive dispatch authority | PostgreSQL state 为 `pending/leased/retry_wait/completed/dead`；claim 使用 `FOR UPDATE SKIP LOCKED`、owner/generation/expiry CAS、bounded retry/backoff；Celery 仅是 wakeup |
-| `tutor_capability_invocations`、`tutor_effects` | capability/effect receipt | 当前 revision、lease、Skill evidence 与 policy 必须同时通过；stale/superseded effect 不调用 handler |
+| `tutor_queued_inputs` | conversation-scoped pending input authority | `pending/claimed/cancelled` closed lifecycle；pending position partial unique；最多 10 项由 conversation lock 保护；enqueue key、item version、claimed turn/revision/mode 与原始结构化 input metadata 可重放 |
+| `tutor_capability_invocations`、`tutor_effects` | capability/effect receipt | 当前 revision、lease、Skill evidence 与 policy 必须同时通过；stale/interrupted effect 不调用 handler；effect 可保存 retry-root logical action key，committed 语义动作全局唯一复用 |
 | `tutor_run_traces` | redacted diagnostic trace | trace 写入和导出都再次走 allowlist projection |
 | `tutor_api_idempotency_records` | public Tutor / LearningTrack mutation replay | `(user_id, operation, idempotency_key)` 唯一；Tutor 输入与 `learning_track.*` mutation 都绑定 request hash 与安全 response JSON |
 
 `POST /conversations/first-turn` 的 repository mutation 在一个 transaction 内创建 learner
 conversation、fresh run、首条 learner message/input event 和 `input_received` process；任何
 中间失败都会回滚，不留下空 conversation。普通 conversation-input 在 conversation lock
-下先结束旧 foreground run、冻结其 process，再创建新 run。partial unique index
-`uq_tutor_runs_interactive_foreground` 只允许同一 conversation 存在一条尚未 terminal、
-cancelled 或 superseded 的 interactive foreground run。
+下仅在 idle 时创建 fresh run；active、pending request 或 paused 状态写入 `tutor_queued_inputs`。
+partial unique index `uq_tutor_runs_interactive_foreground` 继续保证每 conversation 至多一个 active
+interactive foreground run，`uq_tutor_queued_inputs_pending_position` 保证 pending FIFO position 不重复。
 
 历史与内部 run 明确保持 `legacy_v1`；新 learner-visible fresh turn 显式写
 `thread_turn_v2`。同一输入事务还会插入 dispatch job，并按 turn-created、message-added、
@@ -89,6 +90,12 @@ process-added 等 owning mutation 追加 conversation event；任何一步失败
 整体回滚。v2 continuation intent 创建 typed request 并终结来源 run；response/receipt 解决 exact
 request 后创建另一条 fresh run/job。旧 `/runs/{run_id}/inputs` 的 same-run revision/job rearm 仅属
 legacy compatibility，不得被新 v2 mutation 调用。
+
+Queue edit/delete/reorder/claim 与 `queue_paused/queue_pause_reason` 都在 conversation lock 下执行。
+claim transaction 才创建 message/run/input/process/job，并把 item 写为 claimed；重复 drain 因 active run
+或 item state CAS 返回 no-op。`logical_action_key` 由 user、conversation、stable retry root、effect type 与
+payload hash 计算；同 run/effect 先走原 receipt replay，不同 retry turn 遇到 committed key 复用 commit ID，
+遇到 proposed/ambiguous key fail closed。
 
 conversation event payload 只保存 turn 或 item reference、control version、safe dispatch code 和
 attempt，不复制 learner content、Tutor message、prompt、reasoning、trace、provider body 或 capability

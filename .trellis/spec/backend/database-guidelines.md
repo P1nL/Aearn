@@ -859,3 +859,39 @@ The owning mutation, public ordering authority, and recoverable dispatch job com
 - 相同 body/receipt identity 重放同一 answer turn；不同 body/hash、stale version、跨 user/conversation、ambiguous authority verification 必须 fail closed，ambiguous 不得伪造 solved。
 - public item 只能从 allowlisted descriptor/presentation 投影；不得保存或公开 provider schema、raw reasoning、capability args、raw authority result 或 secret。
 - 必测：bootstrap twice、partial unique/FK/CHECK、request CAS、fresh deadline/counters、planning catalog、approval identity、authority receipt、pending normal-input block、snapshot/event allowlist、cutover inventory。
+
+
+## 场景：Tutor conversation Queue 与 retry logical effect authority（2026-08-14）
+
+### 1. 适用范围与触发条件
+- 修改 `tutor_conversations.queue_*`、`tutor_queued_inputs`、conversation control mutation、completed-only drain、Retry lineage 或 `tutor_effects.logical_action_key` 时适用。
+
+### 2. 数据库契约
+- 所有 Queue mutation 固定锁序为 conversation -> pending request/queue -> run -> dependent rows；`control_version` 是公开 CAS authority。
+- pending item 最多 10 项，`(conversation_id, position) WHERE state='pending'` 唯一；reorder 必须提交完整 pending ID 集合，并通过临时 offset 后重写连续 position。
+- item lifecycle 仅为 `pending -> claimed|cancelled`。claim 必须同时写 claimed turn/input revision/mode/time；cancelled 必须写 cancelled time；两者都不能回到 pending。
+- enqueue idempotency 绑定 conversation + enqueue key + canonical content/metadata hash。原始 learner 文本只在 pending Queue row 暂存，claim 后 canonical message 仍写 `tutor_messages`；event/idempotency payload 不复制正文。
+- claim transaction 原子创建 fresh run、learner message/input event、scope/context/planning metadata、public process、dispatch job，并标记 item claimed。duplicate drain 遇到 active run 或非 pending item必须 no-op。
+- `queue_paused=true` 只允许 `pending_request|interrupted|failed`；普通 Send 不能清除 pause。
+- retry logical action key 绑定 user、conversation、stable retry root、effect type 与 payload hash。相同 run/effect identity 先返回原 receipt；跨 retry turn 的 committed key 复用 commit ID 且不调用 handler；proposed/ambiguous key fail closed。
+
+### 3. 验证矩阵
+- bootstrap twice，检查 table/columns/check/FK/index/trigger 与 cutover inventory。
+- 并发 enqueue 不超过 10；duplicate enqueue/reorder/drain 不重复；stale control/item/revision 拒绝。
+- Steer 保持同一 run/scope 并递增 revision；Interrupt/execute 不能留下两个 foreground run。
+- completed 自动 drain；failed/interrupted/pending request pause；普通 Send 只排队。
+- Retry predecessor/root 正确；同 logical effect 只产生一次领域写，ambiguous receipt 不重试。
+
+### 4. 错误与正确写法
+#### 错误
+```sql
+SELECT max(position) + 1 FROM tutor_queued_inputs WHERE conversation_id = $1;
+```
+这没有锁 conversation，也不能同时保护容量、完整 reorder 与 claim。
+
+#### 正确
+```sql
+SELECT * FROM tutor_conversations WHERE id = $1 AND user_id = $2 FOR UPDATE;
+SELECT count(*) FROM tutor_queued_inputs WHERE conversation_id = $1 AND state = 'pending';
+```
+先取得 conversation authority，再执行 Queue/item/run CAS。

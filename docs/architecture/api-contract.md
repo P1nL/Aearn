@@ -142,7 +142,7 @@ checkpoint scope 或验证失败都不产生半完成删除。代码回滚之后
 | Method | Path | 请求/查询 | 成功响应 |
 | --- | --- | --- | --- |
 | `POST` | `/api/tutor/conversations/first-turn` | `user_id`、`client_action_id`、`content`、可选 `learning_scope` / `context_references` | 202（新首发）或 200（同 key 重放）；原子返回新 `conversation_id`、新 `run_id` 与初始公开 process |
-| `POST` | `/api/tutor/conversations/{conversation_id}/inputs` | `user_id`、`client_action_id`、`content`、可选 `learning_scope` / `context_references` | 202（新普通 TurnRun）或 200（同 key 重放）；见下方 turn response |
+| `POST` | `/api/tutor/conversations/{conversation_id}/inputs` | `user_id`、`client_action_id`、`content`、可选 `learning_scope` / `planning_facts` / `reopen_fact_fields` / `context_references` | idle 时 202 创建 fresh TurnRun；已有 active turn、pending request 或 Queue pause 时 202 进入 Queue；同 key 重放为 200 |
 | `POST` | `/api/tutor/conversations/{conversation_id}/requests/{item_id}/responses` | `user_id`、`client_action_id`、`expected_request_version` 与 clarification/planning/approval closed-union response | 202（创建 fresh answer turn）或 200（API 幂等重放）；同 request/body 的跨 key 重放返回同一 answer turn |
 | `POST` | `/api/tutor/runs/{run_id}/inputs` | 同上 | 仅保留 `legacy_v1` 兼容读取/写入；`thread_turn_v2` 不通过该入口恢复来源 run，最终退役由全局 cutover child 收口 |
 | `POST` | `/api/tutor/conversations` | `user_id`、`client_action_id`、可选 `conversation_id` / `learning_scope` | 兼容 create/resume 入口；Desktop draft 不调用它创建空 conversation |
@@ -155,11 +155,12 @@ conversation、fresh interactive `TurnRun`、learner message/input event 和
 idempotency key/body 重放返回相同 conversation/run ID，且不重复 dispatch；同 key
 不同 body 返回 `409 IDEMPOTENCY_CONFLICT`。
 
-每条普通 learner 消息都调用 conversation-input 并创建独立、有限的 `TurnRun`，不会
-复用旧 run 的 deadline、budget、lease 或 counter。事务在 conversation lock 下将旧的
-foreground interactive run 标记为 `cancelled` + `superseded_by_run_id`，冻结旧公开
-process 为 `superseded`，再创建并只 dispatch 新 run。因此每个 conversation 同时至多
-一条 foreground run；旧 run 的公开卡片只显示“已根据你的新消息更新本轮处理”。
+每条普通 learner 消息都调用 conversation-input。conversation idle 时创建独立、有限的
+`thread_turn_v2`；已有 active foreground turn、pending typed request 或 Queue pause 时，消息不会
+supersede 当前 turn，而是在 conversation row lock 下进入最多 10 项的 FIFO Queue。Queue item 保存
+原始输入的结构化 scope/context/planning metadata，claim 后才创建 fresh turn、learner message/input
+event、process 和 dispatch job。显式 `Steer` 是唯一允许把指定 pending item 合并到当前 active
+turn 的控制操作，并通过 expected control version、turn id、input revision 与 item version 执行 CAS。
 
 `learning_scope` 是 additive 结构化输入：`scope_kind` 为 `general | plan_drafting |
 learning_track`；first-turn/ordinary-turn 的 track scope 还可固定 run-only
@@ -192,12 +193,56 @@ learner response route 只接受：`clarification.answer_text`、`planning_input
 user/conversation/item scope 与 canonical response hash 共同执行 CAS；成功后创建新的
 `thread_turn_v2`、新的 policy deadline/counters/lease、learner message/input event、process、
 dispatch job，并写 `response_to_request_id` 与 message `in_reply_to_item_id`。同 body 重放返回
-同一 answer turn，不同 body、stale version、普通文本冒充 approval 或 pending request 下的
-ordinary input 返回 `409 TUTOR_REQUEST_CONFLICT | TUTOR_REQUEST_PENDING`。
+同一 answer turn，不同 body、stale version 或普通文本冒充 approval 返回
+`409 TUTOR_REQUEST_CONFLICT`。pending request 下的普通 Send 只进入 Queue，不解决 request、
+不隐式 resume，也不把自由文本解释为 approval/authority response。
 
 `capability_result | external_result` 没有 learner mutation route。内部 authority service 必须提交
 issuer、subject、exact scope、request/result SHA-256、verification result 与 receipt identity；
 只有 `verified` 才解决 request 并创建 fresh authority turn，`ambiguous | rejected` 保持 pending。
+
+### Queue、Steer、Interrupt、resume、execute 与 Retry
+
+| Method | Path | 请求/查询 | 成功响应 |
+| --- | --- | --- | --- |
+| `GET` | `/api/tutor/conversations/{conversation_id}/queue` | `user_id` | `control_state`、`control_version`、pause reason、pending count/max、typed items、active turn、pending request |
+| `PATCH` | `/api/tutor/conversations/{conversation_id}/queue/{item_id}` | `expected_control_version`、`expected_item_version`、`content` | 编辑 pending item 并递增 item/control version |
+| `DELETE` | `/api/tutor/conversations/{conversation_id}/queue/{item_id}` | `expected_control_version`、`expected_item_version` | 取消 pending item 并连续重排 position |
+| `POST` | `/api/tutor/conversations/{conversation_id}/queue/reorder` | 完整 pending `item_ids[]`、`expected_control_version` | 原子重排完整 pending 集合 |
+| `POST` | `/api/tutor/conversations/{conversation_id}/queue/{item_id}/steer` | expected control/turn/input revision | 同一 active turn 增加 input revision；不创建新 run |
+| `POST` | `/api/tutor/conversations/{conversation_id}/interrupt` | expected control/turn/input revision | public turn 进入 `interrupted`；有 Queue 时 pause reason=`interrupted` |
+| `POST` | `/api/tutor/conversations/{conversation_id}/queue/resume` | `expected_control_version` | 显式解除 pause 并 FIFO claim；空 Queue 幂等返回 idle |
+| `POST` | `/api/tutor/conversations/{conversation_id}/queue/{item_id}/execute` | `expected_control_version` | 原子 interrupt 当前 turn（如有）并 fresh-claim 指定 item |
+| `POST` | `/api/tutor/conversations/{conversation_id}/turns/{turn_id}/retry` | `expected_control_version` | recoverable failed/model-unavailable turn 创建 fresh retry lineage |
+
+Queue mutation 都使用 API idempotency 与 conversation `control_version` CAS。pending request 阻塞
+Steer/resume/execute/Retry，但不阻塞普通 Send 进入 Queue。只有正常 `completed` 的 worker completion
+会自动 claim FIFO 队首；`interrupted`、`failed` 与 pending request 都 pause，必须由显式 resume/execute
+或 request-owning fresh turn 的后续正常完成推进。`Retry` 固定 `retry_of_turn_id` 与稳定
+`retry_root_turn_id`；effect logical action key 绑定 user/conversation/retry root/effect type/payload hash，
+已 committed receipt 安全复用，proposed/ambiguous authority fail closed。
+
+Queue 接受响应示例：
+
+```json
+{
+  "conversation_id": "uuid",
+  "queued": true,
+  "queue_item": {
+    "item_id": "uuid",
+    "state": "pending",
+    "position": 1,
+    "version": 1,
+    "content": "继续解释这个例子",
+    "created_at": "timestamp",
+    "updated_at": "timestamp"
+  },
+  "control_version": 3,
+  "pending_count": 1,
+  "max_pending": 10,
+  "idempotent_replayed": false
+}
+```
 
 安全 title 只能在同次成功 Tutor decision 写入 learner-visible reply 时尝试写入，使用
 NFKC 单行且最多 48 字符的 `conversation_title`，并以 `WHERE title IS NULL` 固定一次。
@@ -216,7 +261,7 @@ NFKC 单行且最多 48 字符的 `conversation_title`，并以 `WHERE title IS 
   "merged": false,
   "input_replayed": false,
   "idempotent_replayed": false,
-  "replaced_run_id": "uuid-or-null",
+  "replaced_run_id": null,
   "process": {
     "kind": "process",
     "id": "uuid",
@@ -226,7 +271,7 @@ NFKC 单行且最多 48 字符的 `conversation_title`，并以 `WHERE title IS 
     "steps": [{"key": "input_received", "state": "completed", "label": "已接收你的问题"}],
     "elapsed_seconds": 0
   },
-  "replaced_process": {"kind": "process", "display_state": "superseded"},
+  "replaced_process": null,
   "context_references": [],
   "run": {
     "run_id": "uuid",
@@ -278,7 +323,7 @@ history cursor 由服务端签名并绑定 cursor kind、user 和 conversation s
 approval | error`。`elicitation | approval` 来自 typed request row，只公开 stable ID、来源 turn、
 kind/actor/state/version、bounded prompt、服务端 presentation、allowed actions 与 answer lineage；
 issuer secret、raw result、capability args、provider schema 和 validation internals 不进入 public
-payload。`pending_requests` 是当前 unresolved request authority，`queue` 仍由后续 control child 接管。公开 process 的
+payload。`pending_requests` 是当前 unresolved request authority；`queue` 是按 position 排序的 pending `TutorQueuedInput` exact projection。conversation 同时返回 `control_state=idle|running|waiting|queue_paused`、pause reason、pending count 与 max=10。公开 process 的
 状态仅可为 `thinking | waiting_input | waiting_approval | waiting_authority | completed |
 interrupted | superseded | unavailable | failed`；步骤文本来自服务端固定 allowlist，时长为
 非负且 bounded 的服务器计算值。旧 `/history` 继续兼容 message/process，并 additive 返回

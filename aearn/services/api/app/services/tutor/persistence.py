@@ -152,6 +152,7 @@ _CURSOR_VERSION: Final[int] = 1
 _CONVERSATION_EVENT_CURSOR_KIND: Final[str] = "conversation-events"
 _DISPATCH_JOB_LEASE_SECONDS: Final[int] = 420
 _DISPATCH_JOB_MAX_ATTEMPTS: Final[int] = 5
+_QUEUE_MAX_PENDING: Final[int] = 10
 
 
 class TutorPersistenceError(ValueError):
@@ -249,6 +250,40 @@ class TutorConversationSummary:
     active_run_id: str | None
     active_run_status: str | None
     active_run_continuation_kind: TutorContinuationKind | None
+
+
+@dataclass(frozen=True)
+class TutorQueuedInput:
+    item_id: str
+    user_id: str
+    conversation_id: str
+    content: str
+    state: str
+    position: int
+    version: int
+    claimed_turn_id: str | None
+    claimed_input_revision: int | None
+    claimed_mode: str | None
+    created_at: datetime
+    updated_at: datetime
+
+    def as_public_dict(self) -> dict[str, object]:
+        return {
+            "item_id": self.item_id,
+            "state": self.state,
+            "position": self.position,
+            "version": self.version,
+            "content": self.content,
+            "created_at": self.created_at.astimezone(UTC).isoformat(),
+            "updated_at": self.updated_at.astimezone(UTC).isoformat(),
+        }
+
+
+@dataclass(frozen=True)
+class TutorQueueAcceptance:
+    turn: "TutorInteractiveTurnAcceptance" | None
+    queued_item: TutorQueuedInput | None
+    control_version: int
 
 
 @dataclass(frozen=True)
@@ -360,6 +395,11 @@ class TutorConversationSnapshot:
     conversation_id: str
     title: str | None
     control_version: int
+    control_state: str
+    queue_paused: bool
+    queue_pause_reason: str | None
+    pending_count: int
+    max_pending: int
     active_turn: dict[str, object] | None
     pending_requests: tuple[dict[str, object], ...]
     queue: tuple[dict[str, object], ...]
@@ -1265,6 +1305,10 @@ class PostgresTutorRepository:
         received_at: datetime,
     ) -> TutorInteractiveTurnAcceptance:
         conversation_id = str(conversation["id"])
+        self._conn.execute(
+            "UPDATE tutor_conversations SET queue_paused = false, queue_pause_reason = NULL WHERE id = %s AND user_id = %s AND queue_pause_reason = 'pending_request'",
+            (conversation_id, user_id),
+        )
         foreground = self._conn.execute(
             """
             SELECT id FROM tutor_runs
@@ -2218,14 +2262,31 @@ class PostgresTutorRepository:
             user_id=user_id,
             conversation_id=conversation_id,
         )
+        queue_rows = self._conn.execute(
+            "SELECT * FROM tutor_queued_inputs WHERE user_id = %s AND conversation_id = %s AND state = 'pending' ORDER BY position, created_at, id",
+            (user_id, conversation_id),
+        ).fetchall()
+        queued_inputs = tuple(_queued_input_from_row(row) for row in queue_rows)
+        queue_paused = bool(conversation.get("queue_paused"))
+        control_state = (
+            "waiting" if pending_requests else
+            "running" if active is not None else
+            "queue_paused" if queue_paused else
+            "idle"
+        )
         current_sequence = max(0, _as_int(conversation.get("next_public_event_sequence"), 1) - 1)
         return TutorConversationSnapshot(
             conversation_id=conversation_id,
             title=str(conversation["title"]) if conversation.get("title") is not None else None,
             control_version=max(1, _as_int(conversation.get("control_version"), 1)),
+            control_state=control_state,
+            queue_paused=queue_paused,
+            queue_pause_reason=_optional_string(conversation.get("queue_pause_reason")),
+            pending_count=len(queued_inputs),
+            max_pending=_QUEUE_MAX_PENDING,
             active_turn=self._public_turn_from_row(active) if active is not None else None,
             pending_requests=tuple(item.public_item for item in pending_requests),
-            queue=(),
+            queue=tuple(item.as_public_dict() for item in queued_inputs),
             timeline=timeline,
             next_cursor=next_cursor,
             has_more=has_more,
@@ -3055,10 +3116,11 @@ class PostgresTutorRepository:
         source: str = "learner",
         role: str = "learner",
         received_at: datetime | None = None,
+        ensure_dispatch: bool = True,
     ) -> TutorInputAcceptance:
         _safe_key(idempotency_key, label="input idempotency key")
         _safe_key(source, label="input source")
-        if role not in {"learner", "tutor"} or (role == "tutor" and source != "authority_receipt"):
+        if role not in {"learner", "tutor"} or (role == "tutor" and source not in {"authority_receipt", "retry"}):
             raise ValueError("Tutor input role is invalid")
         raw_content = str(content)
         if not raw_content or len(raw_content) > 16_000:
@@ -3172,9 +3234,10 @@ class PostgresTutorRepository:
                 conversation_id=str(run["conversation_id"]),
                 occurred_at=accepted_at,
             )
-            dispatch_job = self._ensure_interactive_dispatch_job_locked(
-                run=updated,
-                available_at=accepted_at,
+            dispatch_job = (
+                self._ensure_interactive_dispatch_job_locked(run=updated, available_at=accepted_at)
+                if ensure_dispatch
+                else None
             )
             self._trip_failpoint("after_interactive_dispatch_job")
             if _protocol_version_from_row(updated) is TutorInteractionProtocolVersion.THREAD_TURN_V2:
@@ -3586,12 +3649,21 @@ class PostgresTutorRepository:
         effective_now = now or datetime.now(UTC)
         payload_hash = _payload_fields_hash(proposal.payload)
         event_key = f"effect:{proposal.effect_id}"
+        logical_action_key: str | None = None
         with self._conn.transaction():
             _conversation, run = self._lock_run_with_conversation(
                 user_id=user_id,
                 run_id=run_id,
                 learner_only=False,
             )
+            retry_root = _optional_string(run.get("retry_root_turn_id")) or str(run["id"])
+            logical_action_key = _sha256_json({
+                "user_id": user_id,
+                "conversation_id": str(run["conversation_id"]),
+                "retry_root_turn_id": retry_root,
+                "effect_type": proposal.effect_type,
+                "payload_hash": payload_hash,
+            })
             existing = self._conn.execute(
                 "SELECT * FROM tutor_effects WHERE run_id = %s AND effect_id = %s",
                 (run_id, proposal.effect_id),
@@ -3604,8 +3676,8 @@ class PostgresTutorRepository:
                     or str(existing["payload_hash"]) != payload_hash
                 ):
                     raise TutorIdempotencyConflict("effect identity conflicts with a prior request")
-                event = self._event_by_key_locked(run_id=run_id, event_key=event_key)
-                if event is None:
+                replay_event = self._event_by_key_locked(run_id=run_id, event_key=event_key)
+                if replay_event is None:
                     raise RuntimeError("effect replay event is missing")
                 return TutorEffectCommitReceipt(
                     result=TutorEffectResult(
@@ -3613,7 +3685,7 @@ class PostgresTutorRepository:
                         status=TutorEffectStatus(str(existing["status"])),
                         commit_id=str(existing["commit_id"]) if existing.get("commit_id") else None,
                     ),
-                    event=event,
+                    event=replay_event,
                     replayed=True,
                     committer_invoked=False,
                 )
@@ -3673,13 +3745,43 @@ class PostgresTutorRepository:
                 )
                 return TutorEffectCommitReceipt(result=result, event=event, replayed=False, committer_invoked=False)
 
+            self._conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtext(%s), hashtext(%s))",
+                ("tutor-effect-logical", logical_action_key),
+            )
+            prior_logical = self._conn.execute(
+                "SELECT * FROM tutor_effects WHERE logical_action_key = %s ORDER BY created_at, id LIMIT 1 FOR UPDATE",
+                (logical_action_key,),
+            ).fetchone()
+            if prior_logical is not None and str(prior_logical.get("status")) == "committed":
+                result = TutorEffectResult(
+                    effect_id=proposal.effect_id,
+                    status=TutorEffectStatus.COMMITTED,
+                    commit_id=_optional_string(prior_logical.get("commit_id")),
+                )
+                event = self._append_event_locked(
+                    run_id=run_id,
+                    event_key=event_key,
+                    kind="effect_result",
+                    input_revision=proposal.expected_input_revision,
+                    payload={
+                        "kind": "effect_result",
+                        "status": "committed",
+                        "effect_id": proposal.effect_id,
+                        "logical_replay": True,
+                    },
+                )
+                return TutorEffectCommitReceipt(result=result, event=event, replayed=True, committer_invoked=False)
+            if prior_logical is not None:
+                raise TutorTerminalStateConflict("logical effect authority is ambiguous")
+
             provisional = self._conn.execute(
                 """
                 INSERT INTO tutor_effects (
                   run_id, effect_id, idempotency_key, effect_type, expected_input_revision,
-                  payload_hash, lease_owner_id, lease_generation, status, safe_outcome_json, safe_outcome_hash
+                  payload_hash, logical_action_key, lease_owner_id, lease_generation, status, safe_outcome_json, safe_outcome_hash
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'proposed', %s::jsonb, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'proposed', %s::jsonb, %s)
                 RETURNING id
                 """,
                 (
@@ -3689,6 +3791,7 @@ class PostgresTutorRepository:
                     proposal.effect_type,
                     proposal.expected_input_revision,
                     payload_hash,
+                    logical_action_key,
                     lease.owner_id,
                     lease.generation,
                     _json(self._projector.project({"effect_id": proposal.effect_id, "status": "proposed"})),
@@ -4253,6 +4356,10 @@ class PostgresTutorRepository:
             ).fetchone()
             if request_row is None:
                 raise RuntimeError("Tutor interaction request insert failed")
+            self._conn.execute(
+                "UPDATE tutor_conversations SET queue_paused = true, queue_pause_reason = 'pending_request' WHERE id = %s AND user_id = %s",
+                (run["conversation_id"], user_id),
+            )
             request_event = self._append_event_locked(
                 run_id=result.run_id,
                 event_key=f"interaction-request:{request_id}",
@@ -5627,6 +5734,27 @@ def _selection_from_row(row: Mapping[str, object]) -> tuple[str, int, str, str, 
         str(row["manifest_hash"]),
         str(row["instruction_hash"]),
         str(row["evaluation_hash"]),
+    )
+
+
+def _queued_input_from_row(row: Mapping[str, object]) -> TutorQueuedInput:
+    return TutorQueuedInput(
+        item_id=str(row["id"]),
+        user_id=str(row["user_id"]),
+        conversation_id=str(row["conversation_id"]),
+        content=str(row.get("content") or ""),
+        state=str(row.get("state") or "pending"),
+        position=_as_int(row.get("position"), 1),
+        version=_as_int(row.get("version"), 1),
+        claimed_turn_id=_optional_string(row.get("claimed_turn_id")),
+        claimed_input_revision=(
+            _as_int(row.get("claimed_input_revision"), 0)
+            if row.get("claimed_input_revision") is not None
+            else None
+        ),
+        claimed_mode=_optional_string(row.get("claimed_mode")),
+        created_at=_as_datetime(row.get("created_at")) or datetime.now(UTC),
+        updated_at=_as_datetime(row.get("updated_at")) or datetime.now(UTC),
     )
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 import psycopg
@@ -17,6 +18,9 @@ from app.agents.harness.contracts import (
     TutorDecisionGateResult,
     TutorDecisionGateStatus,
     TutorContextSection,
+    TutorRunResult,
+    TutorRunStatus,
+    TutorTerminalOutcome,
 )
 from app.core.config import Settings
 from app.db.connection import connect
@@ -47,6 +51,42 @@ from tutor_public_api_support import (
 
 
 pytest_plugins = ("tutor_public_api_support",)
+
+
+@dataclass
+class CompletingTutorDispatcher:
+    calls: list[tuple[str, str]] = field(default_factory=list)
+
+    def dispatch(self, *, user_id: str, run_id: str) -> TutorRunResult:
+        self.calls.append((user_id, run_id))
+        completed_at = datetime.now(UTC)
+        with connect() as conn:
+            row = conn.execute(
+                "SELECT input_revision FROM tutor_runs WHERE id = %s AND user_id = %s",
+                (run_id, user_id),
+            ).fetchone()
+            assert row is not None
+            input_revision = int(row["input_revision"])
+            conn.execute(
+                """
+                UPDATE tutor_runs
+                SET status = 'completed', terminal_outcome = 'completed', terminal_diagnostic_code = 'completed',
+                    terminal_at = %s, active_lease_owner_id = NULL, active_lease_expires_at = NULL
+                WHERE id = %s AND user_id = %s AND terminal_outcome IS NULL
+                """,
+                (completed_at, run_id, user_id),
+            )
+            conn.commit()
+        return TutorRunResult(
+            run_id=run_id,
+            status=TutorRunStatus.COMPLETED,
+            input_revision=input_revision,
+            iteration_count=1,
+            model_call_count=1,
+            capability_call_count=0,
+            effect_count=0,
+            terminal_outcome=TutorTerminalOutcome.COMPLETED,
+        )
 
 
 def _capability_input() -> LearningPlanDraftCapabilityInput:
@@ -307,8 +347,10 @@ def _planning_profile_facts(*, weekly_minutes: int) -> dict[str, object]:
 def test_confirmed_planning_fact_survives_long_history_correction_and_reset(
     monkeypatch: pytest.MonkeyPatch,
     tutor_client: TestClient,
+    tutor_api_settings: Settings,
 ) -> None:
-    dispatcher = RecordingTutorDispatcher()
+    del tutor_api_settings
+    dispatcher = CompletingTutorDispatcher()
     monkeypatch.setattr(tutor_route, "build_tutor_run_dispatcher", lambda _settings: dispatcher)
     user_id = str(create_tutor_user(tutor_client)["id"])
     session = _create_session(tutor_client, user_id, "plan-facts-session")
@@ -396,7 +438,7 @@ def test_confirmed_planning_fact_survives_long_history_correction_and_reset(
     ]
     assert len(required_items) == 7
     assert any('"field_key":"weekly_minutes"' in item.content and '"value":1800' in item.content for item in required_items)
-    assert f"message:{first_message_id}" in recent_ids
+    assert f"message:{first_message_id}" not in recent_ids
     assert selection.checkpoint_metadata.required_fact_selected_count == 7
     assert selection.checkpoint_metadata.required_fact_missing_count == 0
     assert selection.checkpoint_metadata.confirmed_question_reasked_count == 0
@@ -542,9 +584,11 @@ def test_confirmed_planning_fact_survives_long_history_correction_and_reset(
 def test_unconfirmed_answer_source_is_pinned_and_blocks_compaction(
     monkeypatch: pytest.MonkeyPatch,
     tutor_client: TestClient,
+    tutor_api_settings: Settings,
 ) -> None:
-    dispatcher = RecordingTutorDispatcher()
-    monkeypatch.setattr(tutor_route, "build_tutor_run_dispatcher", lambda _settings: dispatcher)
+    del tutor_api_settings
+    active_dispatcher = RecordingTutorDispatcher()
+    monkeypatch.setattr(tutor_route, "build_tutor_run_dispatcher", lambda _settings: active_dispatcher)
     user_id = str(create_tutor_user(tutor_client)["id"])
     session = _create_session(tutor_client, user_id, "plan-unconfirmed-session")
     conversation_id = str(session["conversation_id"])
@@ -577,18 +621,64 @@ def test_unconfirmed_answer_source_is_pinned_and_blocks_compaction(
             user_id,
             "plan-unconfirmed-answer",
             content="工作日晚上和周末都可以安排一些时间。",
+            learning_scope={"scope_kind": "plan_drafting", "task_kind": "plan_drafting"},
         ),
     )
     assert answered.status_code == 202
-    answered_message_id = str(answered.json()["message_id"])
-    latest = answered
+    assert answered.json()["queued"] is True
+    queue_state = tutor_client.get(
+        f"/api/tutor/conversations/{conversation_id}/queue?user_id={user_id}"
+    ).json()
+    steered = tutor_client.post(
+        f"/api/tutor/conversations/{conversation_id}/queue/{answered.json()['queue_item']['item_id']}/steer",
+        json=action_payload(
+            user_id,
+            "plan-unconfirmed-steer",
+            expected_control_version=queue_state["control_version"],
+            expected_turn_id=str(asked.json()["run_id"]),
+            expected_input_revision=1,
+        ),
+    )
+    assert steered.status_code == 202
+    answered_message_id = str(steered.json()["message_id"])
+    with connect() as conn:
+        planning_events = conn.execute(
+            """
+            SELECT status, source_message_id::text AS source_message_id
+            FROM tutor_planning_question_events
+            WHERE session_id = %s AND user_id = %s
+            ORDER BY created_at, id
+            """,
+            (session["session_id"], user_id),
+        ).fetchall()
+        assert planning_events[-1] == {
+            "status": "answered_unconfirmed",
+            "source_message_id": answered_message_id,
+        }
+    latest = steered
     for index in range(6):
-        latest = tutor_client.post(
+        followup = tutor_client.post(
             f"/api/tutor/conversations/{conversation_id}/inputs",
             json=action_payload(
                 user_id,
                 f"plan-unconfirmed-followup-{index}",
                 content=f"继续讨论其他计划细节 {index}。",
+                learning_scope={"scope_kind": "plan_drafting", "task_kind": "plan_drafting"},
+            ),
+        )
+        assert followup.status_code == 202
+        assert followup.json()["queued"] is True
+        followup_state = tutor_client.get(
+            f"/api/tutor/conversations/{conversation_id}/queue?user_id={user_id}"
+        ).json()
+        latest = tutor_client.post(
+            f"/api/tutor/conversations/{conversation_id}/queue/{followup.json()['queue_item']['item_id']}/steer",
+            json=action_payload(
+                user_id,
+                f"plan-unconfirmed-followup-steer-{index}",
+                expected_control_version=followup_state["control_version"],
+                expected_turn_id=str(asked.json()["run_id"]),
+                expected_input_revision=int(latest.json()["input_revision"]),
             ),
         )
         assert latest.status_code == 202
@@ -691,7 +781,9 @@ def test_confirmed_question_reask_is_blocked_and_checkpoint_metric_is_persisted(
 def test_fact_correction_invalidates_existing_draft_even_with_latest_session_version(
     monkeypatch: pytest.MonkeyPatch,
     tutor_client: TestClient,
+    tutor_api_settings: Settings,
 ) -> None:
+    del tutor_api_settings
     dispatcher = RecordingTutorDispatcher()
     monkeypatch.setattr(tutor_route, "build_tutor_run_dispatcher", lambda _settings: dispatcher)
     user_id = str(create_tutor_user(tutor_client)["id"])
@@ -734,6 +826,23 @@ def test_fact_correction_invalidates_existing_draft_even_with_latest_session_ver
         ),
     )
     assert corrected.status_code == 202
+    assert corrected.json()["queued"] is True
+    queue_state = tutor_client.get(
+        f"/api/tutor/conversations/{conversation_id}/queue?user_id={user_id}"
+    ).json()
+    steered = tutor_client.post(
+        f"/api/tutor/conversations/{conversation_id}/queue/{corrected.json()['queue_item']['item_id']}/steer",
+        json=action_payload(
+            user_id,
+            "plan-fact-stale-steer",
+            expected_control_version=queue_state["control_version"],
+            expected_turn_id=run_id,
+            expected_input_revision=1,
+        ),
+    )
+    assert steered.status_code == 202
+    assert steered.json()["run_id"] == run_id
+    assert steered.json()["input_revision"] == 2
     latest = tutor_client.get(
         f"/api/learning-plan-sessions/{session['session_id']}?user_id={user_id}"
     ).json()["session"]

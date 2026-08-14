@@ -249,7 +249,11 @@ def test_approval_requires_exact_proposal_identity_and_creates_fresh_turn(
         f"/api/tutor/conversations/{conversation_id}/inputs",
         json=action_payload(user_id, "typed-approval-plain-text", content="我批准。"),
     )
-    assert ordinary_text.status_code == 409
+    assert ordinary_text.status_code == 202
+    assert ordinary_text.json()["queued"] is True
+    pending_after_queue = _snapshot(tutor_client, user_id=user_id, conversation_id=conversation_id)
+    assert pending_after_queue["pending_requests"][0]["id"] == request["id"]
+    assert pending_after_queue["queue"][0]["content"] == "我批准。"
 
     mismatch = tutor_client.post(
         f"/api/tutor/conversations/{conversation_id}/requests/{request['id']}/responses",
