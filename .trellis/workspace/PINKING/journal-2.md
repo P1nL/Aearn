@@ -1574,3 +1574,41 @@ Closed the planning-only Tutor Harness rearchitecture parent after all nine inde
 ### Next Steps
 
 - 启动 08-14-tutor-thread-turn-v2-global-cutover，完成全局 v2 cutover。
+
+
+## Session 104: 完成 Tutor thread/turn v2 全局切换
+
+**Date**: 2026-08-15
+**Task**: 完成 Tutor thread/turn v2 全局切换
+**Branch**: `codex/codex-like-tutor-conversation`
+
+### Summary
+
+完成全局协议 cutover singleton、generation/CAS、legacy 收口、ambiguous effect 阻塞、410 tombstone、effective gate、operator CLI、Desktop capability seam 与规格同步。
+
+### Main Changes
+
+- 新增 tutor_thread_turn_cutovers 与 append-only audit events。
+- 实现 prepare/preflight/enable/rollback、legacy waiting/active 收口及 worker/mutation gate。
+- 同步 API、数据库、runtime、frontend、QA 与 operator runbook。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `c7cd6724` | (see git log) |
+| `a112f006` | (see git log) |
+
+### Testing
+
+- [OK] API pytest：569 passed, 1 skipped。
+- [OK] Ruff、Mypy、uv lock --check、compileall、task.py validate、git diff --check 均通过。
+- [OK] Desktop Vitest：14 passed；desktop:check 通过。
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 启动 08-13-codex-like-tutor-desktop-migration-qa。
