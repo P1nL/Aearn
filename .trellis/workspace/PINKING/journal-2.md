@@ -1650,3 +1650,47 @@ Closed the planning-only Tutor Harness rearchitecture parent after all nine inde
 ### Next Steps
 
 - 执行父任务最终 integration review、全量质量门与归档。
+
+
+## Session 106: 完成 Codex-like Tutor 对话体验父任务集成验收
+
+**Date**: 2026-08-14
+**Task**: 完成 Codex-like Tutor 对话体验父任务集成验收
+**Branch**: `codex/codex-like-tutor-conversation`
+
+### Summary
+
+完成六个 child 的最终集成审核，确认 Thread/Turn/Item/Event、typed request、Queue/Steer/Interrupt/Retry、global cutover、DSH-derived Desktop 与迁移 QA 一致，并归档父任务。
+
+### Main Changes
+
+- 复核六个 child 均已归档且 completedAt 为 2026-08-14，父任务保持 coordination-only。
+- 在父任务 research 中记录 commit、契约、测试、Browser/Tauri 证据、未执行项与 blocker 结论。
+- 确认旧 continuation production caller、DSH runtime import 和受保护原型变更均为零。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `b04898d9` | (see git log) |
+| `555bc06f` | (see git log) |
+| `c2e89987` | (see git log) |
+| `a1523e5f` | (see git log) |
+| `6e768da8` | (see git log) |
+| `c7cd6724` | (see git log) |
+| `a112f006` | (see git log) |
+| `04b2b85d` | (see git log) |
+
+### Testing
+
+- [OK] 完整 API：569 passed, 1 skipped；父任务 focused backend/worker：49 passed。
+- [OK] Ruff、Mypy、uv lock --check、compileall、Desktop 21 tests、desktop:check、7 个 Trellis validate 与 git diff --check 通过。
+- [OK] Browser/Tauri：Queue/Steer/Stop/execute、响应式、键盘、reduced-motion、SSE reconnect 与 console clean 通过。
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 无；等待用户决定是否推送或创建 PR。
