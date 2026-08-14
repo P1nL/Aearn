@@ -2011,18 +2011,19 @@ decision = parse_tutor_provider_items(response.content, run=run)
 The provider supplies one typed intent; the server assembles authority, the repair receives only safe issue metadata, and raw diagnostics remain encrypted and non-public.
 
 
-## Scenario: Tutor Interactive TurnRun, Post-Provider Supersede, and Clock-Consistent CAS
+## Scenario: Tutor Interactive Queue、显式控制与 Clock-Consistent CAS
 
 ### 1. Scope / Trigger
 
-- Trigger: changing ordinary Tutor conversation input, first-turn creation, interactive dispatch, terminal persistence, public-process history, run-loop cancellation/supersede guards, or a proactive effect path that accepts an injected `Clock`.
+- Trigger: changing ordinary Tutor conversation input, Queue/Steer/Interrupt/resume/execute/Retry, first-turn creation, interactive dispatch/drain, terminal persistence, public-process history, run-loop cancellation/revision guards, or a proactive effect path that accepts an injected `Clock`.
 - Scope: `app/routes/tutor.py`, `app/services/tutor/{public_api,interactive,run_loop,persistence,proactive_worker}.py`, additive `tutor_*` schema, and focused PostgreSQL/fake-provider/Desktop contract tests.
 - This scenario owns the durable interactive TurnRun boundary. It does not authorize manual title rename, raw reasoning/provider projection, provider/model/protocol fallback, or a background run inheriting interactive authority.
 
 ### 2. Signatures
 
 - First turn: `POST /api/tutor/conversations/first-turn` -> `PostgresTutorRepository.create_first_interactive_turn(...)`.
-- Ordinary turn: `POST /api/tutor/conversations/{conversation_id}/inputs` -> `PostgresTutorRepository.create_interactive_turn(...)`.
+- Ordinary input: `POST /api/tutor/conversations/{conversation_id}/inputs` -> `PostgresTutorQueueController.accept_or_queue(...)`.
+- Explicit control: Queue CRUD/reorder, `steer(...)`, `interrupt(...)`, `resume(...)`, `execute(...)`, `retry(...)`, and `drain_completed(...)`.
 - Explicit continuation only: `POST /api/tutor/runs/{run_id}/inputs`.
 - Interactive dispatcher: `TutorInteractiveRunDispatcher.dispatch(user_id, run_id) -> TutorRunResult`.
 - Unsafe-boundary guard: `TutorRunLoop._refresh_before_unsafe_boundary(snapshot, lease, metadata, effect_results)`.
@@ -2031,20 +2032,22 @@ The provider supplies one typed intent; the server assembles authority, the repa
 
 ### 3. Contracts
 
-- A learner-visible `TutorConversation` is long-lived context/history scope. Every ordinary message creates a fresh finite interactive `TurnRun` with fresh policy deadline, counters, lease, and SSE lifecycle. Only a persisted explicit continuation can reuse its waiting run.
+- A learner-visible `TutorConversation` is long-lived context/history scope. An ordinary message creates a fresh finite `TurnRun` only when idle; while active, waiting, or paused it enters a maximum-10 pending FIFO Queue. Only explicit Steer may add a revision to the current active run.
 - First nonblank draft submit is one idempotent atomic mutation: conversation, run, learner message, input event, and initial allowlisted public-process projection either all commit or all roll back. Selecting a draft alone never persists a conversation.
-- Under the conversation lock, a normal turn supersedes/cancels the current foreground run before inserting the replacement. The partial unique foreground predicate is the database authority; application-level selection alone is insufficient.
+- Under the conversation lock, normal Send never supersedes or resumes the current foreground run. Queue position/state and `control_version` are database authority. Interrupt/execute may cancel the current turn only through exact expected control/turn/revision CAS.
 - Interactive provider calls must not inherit an implicit PostgreSQL transaction or hold a foreground/conversation lock. `TutorInteractiveRunDispatcher` uses an autocommit connection; repository lifecycle methods own short atomic transactions at durable boundaries.
-- Immediately after every provider return, and again before decision gate, capability dispatch, effect commit, and terminal public persistence, the loop refreshes cancellation/supersede, lease, and input revision. If the run was superseded, it converges to a safe cancelled/superseded process result and must not invoke the decision gate, capability gateway, effect committer, or stale learner-visible terminal write.
+- Immediately after every provider return, and again before decision gate, capability dispatch, effect commit, and terminal public persistence, the loop refreshes cancellation, lease, and input revision. A Steer revision or Interrupt fences stale provider output; queued ordinary input alone does not invalidate the current result.
 - A provider boundary may outlast the nominal lease duration. `heartbeat_lease(...)` may renew after `active_lease_expires_at` only while the exact `owner_id + lease_generation` CAS still matches and the run remains active. Any replacement claim increments the generation first and permanently fences the stale worker. Nominal expiry alone must not strand an otherwise completed provider result in a nonterminal run.
-- Terminal persistence repeats the foreground/cancel/supersede check while locked. A stale run may finalize only its safe cancellation/process projection; it cannot insert a Tutor message, write a conversation title, append a capability receipt, commit an effect, or advance public activity as a successful response.
+- Terminal persistence repeats the foreground/cancel/revision check while locked. A stale/interrupted run may finalize only its safe process projection. A normally completed worker may atomically claim one FIFO item; failed/interrupted/pending-request paths pause and never auto-drain.
 - Any composition that accepts an injected `Clock` must propagate `clock.now()` into every repository mutation whose lease/CAS eligibility compares time. Do not mix a test/scheduler `FixedClock` with `datetime.now()` or an omitted repository `now` default, because an otherwise valid lease can be incorrectly rejected as expired.
 - Conversation list/history/cursors and public-process labels are server projections. They remain user/conversation scoped and never reconstruct reasoning, traces, prompts, provider payloads, capability arguments, diagnostics, or secrets.
 
 ### 4. Validation & Error Matrix
 
-- New ordinary input while an old provider call is pending -> old run is safely superseded after provider return; no Tutor message/title/capability/effect success from the old run.
-- Terminal persistence observes cancellation/supersede/foreground loss under lock -> safe superseded/cancelled result only; no learner-visible success write.
+- New ordinary input while a provider call is pending -> create one pending Queue item; current provider result remains eligible if lease/revision are unchanged.
+- Explicit Steer/Interrupt while provider is pending -> stale revision/cancel authority rejects old message/title/capability/effect writes.
+- Terminal completed -> at most one FIFO claim; duplicate worker/reconciler -> no duplicate run/item claim.
+- Failed/interrupted/pending request -> Queue paused; ordinary Send remains queued and does not resume.
 - Normal completed/cancelled/superseded run passed to `POST /runs/{run_id}/inputs` -> `RUN_NOT_ACTIVE`; only a persisted authorized continuation is accepted.
 - Same first-turn or ordinary-turn idempotency key/body -> replay the original safe IDs/result; same key with a different body -> `IDEMPOTENCY_CONFLICT`.
 - Invalid, malformed, cross-user, or cross-conversation history/list cursor -> stable `CURSOR_INVALID`; no SQL/provider detail.
@@ -2052,8 +2055,9 @@ The provider supplies one typed intent; the server assembles authority, the repa
 
 ### 5. Good / Base / Bad Cases
 
-- Good: ten ordinary messages retain one conversation id but create ten distinct run ids; each later run starts with fresh counters/deadline and the old foreground process becomes a safe superseded record.
-- Good: a fake provider supersedes its run during `decide`; the post-provider guard returns cancellation before decision/capability/effect/public-terminal work, and the replacement run remains the only foreground run.
+- Good: ten ordinary messages sent during one active turn retain one run id, create nine ordered Queue items, and dispatch only the foreground run.
+- Good: a normal Send during provider `decide` enters Queue and does not invalidate the current result; an explicit Interrupt or Steer does invalidate stale provider authority.
+- Good: edit/delete/reorder use expected control/item version; completed-only drain and duplicate workers claim exactly once; Retry creates a fresh predecessor/root lineage and reuses a committed logical effect receipt.
 - Good: a proactive test injects `FixedClock`; the committer passes that same clock value into the repository CAS so the claimed lease is judged against the test timeline.
 - Good: a provider returns after the original lease timestamp but before another worker claims the run; the same owner/generation renews, refreshes stale state, and persists the terminal result. If a replacement owner already incremented the generation, the old heartbeat fails.
 - Base: legacy message-only history remains readable without a fabricated process card or duration; title absence projects as `新对话`.
@@ -2061,8 +2065,8 @@ The provider supplies one typed intent; the server assembles authority, the repa
 
 ### 6. Tests Required
 
-- `tests/test_tutor_input_merge.py`: first-turn atomic rollback/replay, distinct normal turns, foreground uniqueness, normal run-input denial, and provider-return supersede suppression.
-- `tests/test_tutor_run_loop.py`: post-provider terminal/supersede refresh before decision, capability, effect, and terminal persistence; a provider result arriving after nominal lease expiry still completes when no replacement claim exists.
+- `tests/test_tutor_input_merge.py` and `tests/test_tutor_queue_control.py`: first-turn atomic replay, normal Send Queue, capacity/FIFO, edit/delete/reorder, Steer, Interrupt/pause/resume/execute, pending-request block, duplicate drain, Retry lineage, and normal run-input denial.
+- `tests/test_tutor_run_loop.py`: post-provider cancellation/revision refresh before decision, capability, effect, and terminal persistence; a provider result arriving after nominal lease expiry still completes when no replacement claim exists.
 - `tests/test_tutor_conversation_history.py`, `tests/test_tutor_sse.py`, and route/public API tests: user/conversation cursor scope, legacy history, allowlisted process projection, and selected-run-only transport behavior.
 - `tests/test_tutor_proactive_default_delivery.py`, `tests/test_tutor_evals.py`, and provider/persistence tests: injected-clock effect/CAS behavior, late same-generation renewal, stale post-replacement denial, stable safe diagnostics, and no live provider call.
 - Run `uv --directory .\aearn\services\api lock --check && uv --directory .\aearn\services\api run python -m pytest -q`, then `ruff check app tests`, `python -m mypy app`, `pnpm --dir .\aearn desktop:check`, and `git diff --check`.

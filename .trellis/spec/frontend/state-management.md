@@ -141,3 +141,11 @@ Persist the user boundary before rendering new facts, then persist the plan only
 - Gate status/version、`allowed_actions`、Attempt/result、score/pass、mastery、route change、diagnostic state/impact/cooldown 全部来自 API。
 - 提交后只能合并服务器返回 projection；不得先乐观写 passed/unlock。发生 conflict、路由变化或 confirm 后重新读取 Lesson/Gate authority。
 - 页面卸载、track/key 改变或新 Attempt 替换旧 Attempt 时清理 poll timer，旧 callback 不得覆盖新 scope。
+
+
+## Tutor Queue 服务端权威（2026-08-14）
+
+- Queue item/order/version、active turn、pending request、pause reason、control version 全部是 server state；Desktop 不得乐观重排、推算 pending count 或本地 resume。
+- Composer 普通 Send 的返回可能是 accepted turn 或 queued item；queued 分支只合并服务器响应并触发 snapshot/Queue refresh。
+- edit/delete/reorder/Steer/Interrupt/resume/execute/Retry mutation 必须携带最后一次服务器读取的 expected version；409 后重读 authority，不重放本地猜测状态。
+- 最终 Desktop migration 可为 Queue 增加临时编辑/drag state，但 mutation 成功前不得覆盖 authoritative items；SSE reconnect 或 snapshot rebuild 应替换而非拼接 Queue。

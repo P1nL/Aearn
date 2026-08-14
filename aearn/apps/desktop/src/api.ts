@@ -51,6 +51,8 @@ import {
   type TutorConversationHistoryResponse,
   type TutorConversationResponse,
   type TutorConversationSnapshotResponse,
+  type TutorConversationInputResponse,
+  type TutorControlledTurnResponse,
   type TutorContextReference,
   type TutorContextReferenceDraft,
   type TutorConversationListResponse,
@@ -69,6 +71,10 @@ import {
   type TutorPreferences,
   type TutorPublicProcess,
   type TutorPublicProcessStep,
+  type TutorQueuedInput,
+  type TutorQueueResumeResponse,
+  type TutorQueueStateResponse,
+  type TutorQueueSteerResponse,
   type TutorRunState,
   type ReviewAttempt,
   type ReviewHint,
@@ -271,7 +277,7 @@ export async function acceptTutorConversationInput(input: {
   clientActionId: string;
   learningScope?: LearningScopeInput;
   contextReferences?: TutorContextReferenceDraft[];
-}): Promise<TutorInputAcceptedResponse> {
+}): Promise<TutorConversationInputResponse> {
   const payload = await requestJson(
     `${API_BASE_URL}/api/tutor/conversations/${encodeURIComponent(input.conversationId)}/inputs`,
     {
@@ -286,8 +292,153 @@ export async function acceptTutorConversationInput(input: {
       }),
     },
   );
-  const response = toTutorInputAcceptedResponse(payload);
+  const response = toTutorConversationInputResponse(payload);
   if (!response) throw new Error("Tutor input API returned an invalid payload");
+  return response;
+}
+
+export async function fetchTutorQueue(input: {
+  userId: string;
+  conversationId: string;
+  signal?: AbortSignal;
+}): Promise<TutorQueueStateResponse> {
+  const query = new URLSearchParams({ user_id: input.userId });
+  const payload = await requestJson(
+    `${API_BASE_URL}/api/tutor/conversations/${encodeURIComponent(input.conversationId)}/queue?${query.toString()}`,
+    { signal: input.signal },
+  );
+  const response = toTutorQueueStateResponse(payload);
+  if (!response) throw new Error("Tutor queue API returned an invalid payload");
+  return response;
+}
+
+export async function editTutorQueueItem(input: {
+  userId: string; conversationId: string; itemId: string; content: string;
+  expectedControlVersion: number; expectedItemVersion: number; clientActionId: string;
+}): Promise<TutorQueueStateResponse & { queue_item: TutorQueuedInput }> {
+  const payload = await requestJson(
+    `${API_BASE_URL}/api/tutor/conversations/${encodeURIComponent(input.conversationId)}/queue/${encodeURIComponent(input.itemId)}`,
+    { method: "PATCH", headers: tutorMutationHeaders(input.clientActionId), body: JSON.stringify({
+      user_id: input.userId, client_action_id: input.clientActionId, content: input.content,
+      expected_control_version: input.expectedControlVersion, expected_item_version: input.expectedItemVersion,
+    }) },
+  );
+  const response = toTutorQueueMutationResponse(payload);
+  if (!response?.queue_item) throw new Error("Tutor queue-edit API returned an invalid payload");
+  return { ...response.state, queue_item: response.queue_item };
+}
+
+export async function deleteTutorQueueItem(input: {
+  userId: string; conversationId: string; itemId: string;
+  expectedControlVersion: number; expectedItemVersion: number; clientActionId: string;
+}): Promise<TutorQueueStateResponse> {
+  const payload = await requestJson(
+    `${API_BASE_URL}/api/tutor/conversations/${encodeURIComponent(input.conversationId)}/queue/${encodeURIComponent(input.itemId)}`,
+    { method: "DELETE", headers: tutorMutationHeaders(input.clientActionId), body: JSON.stringify({
+      user_id: input.userId, client_action_id: input.clientActionId,
+      expected_control_version: input.expectedControlVersion, expected_item_version: input.expectedItemVersion,
+    }) },
+  );
+  const response = toTutorQueueStateResponse(payload);
+  if (!response) throw new Error("Tutor queue-delete API returned an invalid payload");
+  return response;
+}
+
+export async function reorderTutorQueue(input: {
+  userId: string; conversationId: string; itemIds: string[];
+  expectedControlVersion: number; clientActionId: string;
+}): Promise<TutorQueueStateResponse> {
+  const payload = await requestJson(
+    `${API_BASE_URL}/api/tutor/conversations/${encodeURIComponent(input.conversationId)}/queue/reorder`,
+    { method: "POST", headers: tutorMutationHeaders(input.clientActionId), body: JSON.stringify({
+      user_id: input.userId, client_action_id: input.clientActionId, item_ids: input.itemIds,
+      expected_control_version: input.expectedControlVersion,
+    }) },
+  );
+  const response = toTutorQueueStateResponse(payload);
+  if (!response) throw new Error("Tutor queue-reorder API returned an invalid payload");
+  return response;
+}
+
+export async function interruptTutorTurn(input: {
+  userId: string; conversationId: string; expectedTurnId: string; expectedInputRevision: number;
+  expectedControlVersion: number; clientActionId: string;
+}): Promise<TutorQueueStateResponse> {
+  const payload = await requestJson(
+    `${API_BASE_URL}/api/tutor/conversations/${encodeURIComponent(input.conversationId)}/interrupt`,
+    { method: "POST", headers: tutorMutationHeaders(input.clientActionId), body: JSON.stringify({
+      user_id: input.userId, client_action_id: input.clientActionId,
+      expected_control_version: input.expectedControlVersion, expected_turn_id: input.expectedTurnId,
+      expected_input_revision: input.expectedInputRevision,
+    }) },
+  );
+  const response = toTutorQueueStateResponse(payload);
+  if (!response) throw new Error("Tutor interrupt API returned an invalid payload");
+  return response;
+}
+
+export async function steerTutorQueueItem(input: {
+  userId: string; conversationId: string; itemId: string; expectedTurnId: string;
+  expectedInputRevision: number; expectedControlVersion: number; clientActionId: string;
+}): Promise<TutorQueueSteerResponse> {
+  const payload = await requestJson(
+    `${API_BASE_URL}/api/tutor/conversations/${encodeURIComponent(input.conversationId)}/queue/${encodeURIComponent(input.itemId)}/steer`,
+    { method: "POST", headers: tutorMutationHeaders(input.clientActionId), body: JSON.stringify({
+      user_id: input.userId, client_action_id: input.clientActionId,
+      expected_control_version: input.expectedControlVersion, expected_turn_id: input.expectedTurnId,
+      expected_input_revision: input.expectedInputRevision,
+    }) },
+  );
+  const response = toTutorControlledTurnResponse(payload, true);
+  if (!response?.queue_item) throw new Error("Tutor queue-steer API returned an invalid payload");
+  return { ...response.turn, queue_item: response.queue_item };
+}
+
+export async function resumeTutorQueue(input: {
+  userId: string; conversationId: string; expectedControlVersion: number; clientActionId: string;
+}): Promise<TutorQueueResumeResponse> {
+  const payload = await requestJson(
+    `${API_BASE_URL}/api/tutor/conversations/${encodeURIComponent(input.conversationId)}/queue/resume`,
+    { method: "POST", headers: tutorMutationHeaders(input.clientActionId), body: JSON.stringify({
+      user_id: input.userId, client_action_id: input.clientActionId,
+      expected_control_version: input.expectedControlVersion,
+    }) },
+  );
+  const turn = toTutorControlledTurnResponse(payload, false)?.turn;
+  const state = toTutorQueueStateResponse(payload);
+  if (!turn && !state) throw new Error("Tutor queue-resume API returned an invalid payload");
+  return turn ?? state!;
+}
+
+export async function executeTutorQueueItem(input: {
+  userId: string; conversationId: string; itemId: string;
+  expectedControlVersion: number; clientActionId: string;
+}): Promise<TutorControlledTurnResponse> {
+  const payload = await requestJson(
+    `${API_BASE_URL}/api/tutor/conversations/${encodeURIComponent(input.conversationId)}/queue/${encodeURIComponent(input.itemId)}/execute`,
+    { method: "POST", headers: tutorMutationHeaders(input.clientActionId), body: JSON.stringify({
+      user_id: input.userId, client_action_id: input.clientActionId,
+      expected_control_version: input.expectedControlVersion,
+    }) },
+  );
+  const response = toTutorControlledTurnResponse(payload, false)?.turn;
+  if (!response) throw new Error("Tutor queue-execute API returned an invalid payload");
+  return response;
+}
+
+export async function retryTutorTurn(input: {
+  userId: string; conversationId: string; turnId: string;
+  expectedControlVersion: number; clientActionId: string;
+}): Promise<TutorControlledTurnResponse> {
+  const payload = await requestJson(
+    `${API_BASE_URL}/api/tutor/conversations/${encodeURIComponent(input.conversationId)}/turns/${encodeURIComponent(input.turnId)}/retry`,
+    { method: "POST", headers: tutorMutationHeaders(input.clientActionId), body: JSON.stringify({
+      user_id: input.userId, client_action_id: input.clientActionId,
+      expected_control_version: input.expectedControlVersion,
+    }) },
+  );
+  const response = toTutorControlledTurnResponse(payload, false)?.turn;
+  if (!response) throw new Error("Tutor retry API returned an invalid payload");
   return response;
 }
 
@@ -2638,6 +2789,92 @@ function toTutorRunState(payload: unknown): TutorRunState | null {
   };
 }
 
+function toTutorConversationInputResponse(payload: unknown): TutorConversationInputResponse | null {
+  return toTutorInputAcceptedResponse(payload) ?? toTutorQueuedInputAcceptedResponse(payload);
+}
+
+function toTutorQueuedInputAcceptedResponse(payload: unknown): TutorConversationInputResponse | null {
+  if (!isRecord(payload) || !hasExactKeys(payload, [
+    "conversation_id", "queued", "queue_item", "control_version", "pending_count", "max_pending", "idempotent_replayed",
+  ]) || !isString(payload.conversation_id) || payload.queued !== true ||
+      !isPositiveSafeInteger(payload.control_version) || !isNonNegativeSafeInteger(payload.pending_count) ||
+      !isPositiveSafeInteger(payload.max_pending) || typeof payload.idempotent_replayed !== "boolean") return null;
+  const queueItem = toTutorQueuedInput(payload.queue_item);
+  return queueItem ? {
+    conversation_id: payload.conversation_id, queued: true, queue_item: queueItem,
+    control_version: payload.control_version, pending_count: payload.pending_count, max_pending: payload.max_pending,
+    idempotent_replayed: payload.idempotent_replayed,
+  } : null;
+}
+
+function toTutorQueuedInput(payload: unknown): TutorQueuedInput | null {
+  if (!isRecord(payload) || !hasExactKeys(payload, [
+    "item_id", "state", "position", "version", "content", "created_at", "updated_at",
+  ]) || !isString(payload.item_id) || !isTutorQueueItemState(payload.state) ||
+      !isPositiveSafeInteger(payload.position) || !isPositiveSafeInteger(payload.version) || !isString(payload.content) ||
+      !isString(payload.created_at) || !isString(payload.updated_at)) return null;
+  return {
+    item_id: payload.item_id, state: payload.state, position: payload.position, version: payload.version,
+    content: payload.content, created_at: payload.created_at, updated_at: payload.updated_at,
+  };
+}
+
+function toTutorQueueStateResponse(payload: unknown): TutorQueueStateResponse | null {
+  if (!isRecord(payload)) return null;
+  const required = [
+    "conversation_id", "control_version", "control_state", "queue_paused", "queue_pause_reason",
+    "pending_count", "max_pending", "items", "active_turn", "pending_request",
+  ];
+  const keys = Object.keys(payload);
+  if (!required.every((key) => keys.includes(key)) ||
+      keys.some((key) => !required.includes(key) && key !== "idempotent_replayed") ||
+      !isString(payload.conversation_id) || !isPositiveSafeInteger(payload.control_version) ||
+      !isTutorConversationControlState(payload.control_state) || typeof payload.queue_paused !== "boolean" ||
+      !isTutorQueuePauseReason(payload.queue_pause_reason) || !isNonNegativeSafeInteger(payload.pending_count) ||
+      !isPositiveSafeInteger(payload.max_pending) || !Array.isArray(payload.items) ||
+      ("idempotent_replayed" in payload && typeof payload.idempotent_replayed !== "boolean")) return null;
+  const items = payload.items.map(toTutorQueuedInput);
+  const activeTurn = payload.active_turn === null ? null : toTutorPublicTurn(payload.active_turn);
+  const pendingRequest = payload.pending_request === null ? null : toTutorInteractionRequestItem(payload.pending_request);
+  if (items.some((item) => item === null) || (activeTurn === null && payload.active_turn !== null) ||
+      (pendingRequest === null && payload.pending_request !== null)) return null;
+  return {
+    conversation_id: payload.conversation_id, control_version: payload.control_version,
+    control_state: payload.control_state, queue_paused: payload.queue_paused, queue_pause_reason: payload.queue_pause_reason,
+    pending_count: payload.pending_count, max_pending: payload.max_pending,
+    items: items.filter((item): item is TutorQueuedInput => item !== null), active_turn: activeTurn,
+    pending_request: pendingRequest,
+    ...(typeof payload.idempotent_replayed === "boolean" ? { idempotent_replayed: payload.idempotent_replayed } : {}),
+  };
+}
+
+function toTutorQueueMutationResponse(payload: unknown): { state: TutorQueueStateResponse; queue_item: TutorQueuedInput | null } | null {
+  if (!isRecord(payload) || !("queue_item" in payload)) return null;
+  const queueItem = toTutorQueuedInput(payload.queue_item);
+  if (!queueItem) return null;
+  const { queue_item: _queueItem, ...statePayload } = payload;
+  const state = toTutorQueueStateResponse(statePayload);
+  return state ? { state, queue_item: queueItem } : null;
+}
+
+function toTutorControlledTurnResponse(
+  payload: unknown,
+  requireQueueItem: boolean,
+): { turn: TutorControlledTurnResponse; queue_item: TutorQueuedInput | null } | null {
+  if (!isRecord(payload) || !isPositiveSafeInteger(payload.control_version)) return null;
+  const allowedExtra = new Set(["control_version", ...(requireQueueItem ? ["queue_item"] : [])]);
+  const turnKeys = [
+    "conversation_id", "run_id", "input_revision", "message_id", "event_cursor", "dispatch_job_id", "merged",
+    "input_replayed", "idempotent_replayed", "run", "process", "replaced_run_id", "replaced_process", "context_references",
+  ];
+  if (Object.keys(payload).some((key) => !turnKeys.includes(key) && !allowedExtra.has(key))) return null;
+  const projected = Object.fromEntries(turnKeys.map((key) => [key, payload[key]]));
+  const accepted = toTutorInputAcceptedResponse(projected);
+  const queueItem = requireQueueItem ? toTutorQueuedInput(payload.queue_item) : null;
+  if (!accepted || (requireQueueItem && !queueItem)) return null;
+  return { turn: { ...accepted, control_version: payload.control_version }, queue_item: queueItem };
+}
+
 function toTutorInteractionResponseAccepted(payload: unknown): TutorInteractionResponseAccepted | null {
   if (!isRecord(payload) || !hasExactKeys(payload, [
     "conversation_id", "run_id", "input_revision", "message_id", "event_cursor", "dispatch_job_id", "merged", "input_replayed",
@@ -2668,14 +2905,20 @@ function toTutorConversationSnapshotResponse(payload: unknown): TutorConversatio
   if (!isRecord(payload) || !hasExactKeys(payload, [
     "snapshot_version", "conversation", "active_turn", "pending_requests", "queue", "timeline", "next_cursor", "has_more", "stream_cursor",
   ]) || payload.snapshot_version !== "tutor_conversation_snapshot_v1" || !isRecord(payload.conversation) ||
-      !hasExactKeys(payload.conversation, ["conversation_id", "title", "control_version"]) ||
-      !isString(payload.conversation.conversation_id) || !isString(payload.conversation.title) ||
-      !isPositiveSafeInteger(payload.conversation.control_version) || !Array.isArray(payload.pending_requests) ||
-      !Array.isArray(payload.queue) || !payload.queue.every(isRecord) || !Array.isArray(payload.timeline) ||
+      !hasExactKeys(payload.conversation, [
+        "conversation_id", "title", "control_version", "control_state", "queue_paused",
+        "queue_pause_reason", "pending_count", "max_pending",
+      ]) || !isString(payload.conversation.conversation_id) || !isString(payload.conversation.title) ||
+      !isPositiveSafeInteger(payload.conversation.control_version) ||
+      !isTutorConversationControlState(payload.conversation.control_state) ||
+      typeof payload.conversation.queue_paused !== "boolean" || !isTutorQueuePauseReason(payload.conversation.queue_pause_reason) ||
+      !isNonNegativeSafeInteger(payload.conversation.pending_count) || !isPositiveSafeInteger(payload.conversation.max_pending) ||
+      !Array.isArray(payload.pending_requests) || !Array.isArray(payload.queue) || !Array.isArray(payload.timeline) ||
       !isNullableString(payload.next_cursor) || typeof payload.has_more !== "boolean" || !isString(payload.stream_cursor)) return null;
   const pendingRequests = payload.pending_requests.map(toTutorInteractionRequestItem);
+  const queue = payload.queue.map(toTutorQueuedInput);
   const timeline = payload.timeline.map(toTutorHistoryItem);
-  if (pendingRequests.some((item) => item === null) || timeline.some((item) => item === null)) return null;
+  if (pendingRequests.some((item) => item === null) || queue.some((item) => item === null) || timeline.some((item) => item === null)) return null;
   const activeTurn = payload.active_turn === null ? null : toTutorPublicTurn(payload.active_turn);
   if (activeTurn === null && payload.active_turn !== null) return null;
   return {
@@ -2684,10 +2927,15 @@ function toTutorConversationSnapshotResponse(payload: unknown): TutorConversatio
       conversation_id: payload.conversation.conversation_id,
       title: payload.conversation.title,
       control_version: payload.conversation.control_version,
+      control_state: payload.conversation.control_state,
+      queue_paused: payload.conversation.queue_paused,
+      queue_pause_reason: payload.conversation.queue_pause_reason,
+      pending_count: payload.conversation.pending_count,
+      max_pending: payload.conversation.max_pending,
     },
     active_turn: activeTurn,
     pending_requests: pendingRequests.filter((item): item is TutorInteractionRequestItem => item !== null),
-    queue: payload.queue,
+    queue: queue.filter((item): item is TutorQueuedInput => item !== null),
     timeline: timeline.filter((item): item is TutorHistoryItem => item !== null),
     next_cursor: payload.next_cursor,
     has_more: payload.has_more,
@@ -2841,6 +3089,18 @@ function isTutorInteractionProtocolVersion(value: unknown): value is "legacy_v1"
 
 function isNullableTutorCompletionReason(value: unknown): value is "awaiting_user" | "awaiting_approval" | "awaiting_authority" | null {
   return value === null || value === "awaiting_user" || value === "awaiting_approval" || value === "awaiting_authority";
+}
+
+function isTutorConversationControlState(value: unknown): value is TutorQueueStateResponse["control_state"] {
+  return value === "idle" || value === "running" || value === "waiting" || value === "queue_paused";
+}
+
+function isTutorQueuePauseReason(value: unknown): value is TutorQueueStateResponse["queue_pause_reason"] {
+  return value === null || value === "pending_request" || value === "interrupted" || value === "failed";
+}
+
+function isTutorQueueItemState(value: unknown): value is TutorQueuedInput["state"] {
+  return value === "pending" || value === "claimed" || value === "cancelled";
 }
 
 function isTutorPublicTurnStatus(value: unknown): value is "in_progress" | "completed" | "interrupted" | "failed" {

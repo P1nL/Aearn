@@ -64,6 +64,7 @@ from app.services.tutor.persistence import (
     TutorTerminalStateConflict,
 )
 from app.services.tutor.proactive import TutorProactivePreference
+from app.services.tutor.queue_control import PostgresTutorQueueController, QUEUE_MAX_PENDING
 from app.services.tutor.proactive_repository import PostgresTutorProactiveRepository
 
 
@@ -118,6 +119,7 @@ class TutorPublicService:
         self._context_references = PostgresTutorContextReferenceRepository(conn)
         self._learner_state = TutorLearnerStateRepository(conn)
         self._proactive = PostgresTutorProactiveRepository(conn)
+        self._queue = PostgresTutorQueueController(conn)
 
     def create_or_resume_conversation(
         self,
@@ -287,6 +289,92 @@ class TutorPublicService:
                 response=response,
                 idempotency_key=idempotency_key,
             ),
+        )
+
+    def read_queue(self, *, user_id: str, conversation_id: str) -> dict[str, object]:
+        user_id = _uuid_identifier(user_id, label="user_id")
+        conversation_id = _uuid_identifier(conversation_id, label="conversation_id")
+        self._assert_user_exists(user_id)
+        return self._queue_state_payload(user_id=user_id, conversation_id=conversation_id)
+
+    def edit_queue_item(self, *, user_id: str, conversation_id: str, item_id: str, expected_control_version: int, expected_item_version: int, content: str, idempotency_key: str) -> dict[str, object]:
+        user_id = _uuid_identifier(user_id, label="user_id")
+        conversation_id = _uuid_identifier(conversation_id, label="conversation_id")
+        item_id = _uuid_identifier(item_id, label="item_id")
+        return self._mutate(
+            user_id=user_id, operation="tutor.queue.edit", idempotency_key=idempotency_key,
+            request_body={"conversation_id": conversation_id, "item_id": item_id, "expected_control_version": expected_control_version, "expected_item_version": expected_item_version, "content": content},
+            action=lambda: self._edit_queue_item(user_id, conversation_id, item_id, expected_control_version, expected_item_version, content),
+        )
+
+    def delete_queue_item(self, *, user_id: str, conversation_id: str, item_id: str, expected_control_version: int, expected_item_version: int, idempotency_key: str) -> dict[str, object]:
+        user_id = _uuid_identifier(user_id, label="user_id")
+        conversation_id = _uuid_identifier(conversation_id, label="conversation_id")
+        item_id = _uuid_identifier(item_id, label="item_id")
+        return self._mutate(
+            user_id=user_id, operation="tutor.queue.delete", idempotency_key=idempotency_key,
+            request_body={"conversation_id": conversation_id, "item_id": item_id, "expected_control_version": expected_control_version, "expected_item_version": expected_item_version},
+            action=lambda: self._delete_queue_item(user_id, conversation_id, item_id, expected_control_version, expected_item_version),
+        )
+
+    def reorder_queue(self, *, user_id: str, conversation_id: str, item_ids: Sequence[str], expected_control_version: int, idempotency_key: str) -> dict[str, object]:
+        user_id = _uuid_identifier(user_id, label="user_id")
+        conversation_id = _uuid_identifier(conversation_id, label="conversation_id")
+        normalized_ids = tuple(_uuid_identifier(item, label="item_id") for item in item_ids)
+        return self._mutate(
+            user_id=user_id, operation="tutor.queue.reorder", idempotency_key=idempotency_key,
+            request_body={"conversation_id": conversation_id, "item_ids": list(normalized_ids), "expected_control_version": expected_control_version},
+            action=lambda: self._reorder_queue(user_id, conversation_id, normalized_ids, expected_control_version),
+        )
+
+    def steer_queue_item(self, *, user_id: str, conversation_id: str, item_id: str, expected_control_version: int, expected_turn_id: str, expected_input_revision: int, idempotency_key: str) -> dict[str, object]:
+        user_id = _uuid_identifier(user_id, label="user_id")
+        conversation_id = _uuid_identifier(conversation_id, label="conversation_id")
+        item_id = _uuid_identifier(item_id, label="item_id")
+        expected_turn_id = _uuid_identifier(expected_turn_id, label="expected_turn_id")
+        return self._mutate(
+            user_id=user_id, operation="tutor.queue.steer", idempotency_key=idempotency_key,
+            request_body={"conversation_id": conversation_id, "item_id": item_id, "expected_control_version": expected_control_version, "expected_turn_id": expected_turn_id, "expected_input_revision": expected_input_revision},
+            action=lambda: self._steer_queue_item(user_id, conversation_id, item_id, expected_control_version, expected_turn_id, expected_input_revision),
+        )
+
+    def interrupt_turn(self, *, user_id: str, conversation_id: str, expected_control_version: int, expected_turn_id: str, expected_input_revision: int, idempotency_key: str) -> dict[str, object]:
+        user_id = _uuid_identifier(user_id, label="user_id")
+        conversation_id = _uuid_identifier(conversation_id, label="conversation_id")
+        expected_turn_id = _uuid_identifier(expected_turn_id, label="expected_turn_id")
+        return self._mutate(
+            user_id=user_id, operation="tutor.turn.interrupt", idempotency_key=idempotency_key,
+            request_body={"conversation_id": conversation_id, "expected_control_version": expected_control_version, "expected_turn_id": expected_turn_id, "expected_input_revision": expected_input_revision},
+            action=lambda: self._interrupt_turn(user_id, conversation_id, expected_control_version, expected_turn_id, expected_input_revision),
+        )
+
+    def resume_queue(self, *, user_id: str, conversation_id: str, expected_control_version: int, idempotency_key: str) -> dict[str, object]:
+        user_id = _uuid_identifier(user_id, label="user_id")
+        conversation_id = _uuid_identifier(conversation_id, label="conversation_id")
+        return self._mutate(
+            user_id=user_id, operation="tutor.queue.resume", idempotency_key=idempotency_key,
+            request_body={"conversation_id": conversation_id, "expected_control_version": expected_control_version},
+            action=lambda: self._resume_queue(user_id, conversation_id, expected_control_version),
+        )
+
+    def execute_queue_item(self, *, user_id: str, conversation_id: str, item_id: str, expected_control_version: int, idempotency_key: str) -> dict[str, object]:
+        user_id = _uuid_identifier(user_id, label="user_id")
+        conversation_id = _uuid_identifier(conversation_id, label="conversation_id")
+        item_id = _uuid_identifier(item_id, label="item_id")
+        return self._mutate(
+            user_id=user_id, operation="tutor.queue.execute", idempotency_key=idempotency_key,
+            request_body={"conversation_id": conversation_id, "item_id": item_id, "expected_control_version": expected_control_version},
+            action=lambda: self._execute_queue_item(user_id, conversation_id, item_id, expected_control_version),
+        )
+
+    def retry_turn(self, *, user_id: str, conversation_id: str, turn_id: str, expected_control_version: int, idempotency_key: str) -> dict[str, object]:
+        user_id = _uuid_identifier(user_id, label="user_id")
+        conversation_id = _uuid_identifier(conversation_id, label="conversation_id")
+        turn_id = _uuid_identifier(turn_id, label="turn_id")
+        return self._mutate(
+            user_id=user_id, operation="tutor.turn.retry", idempotency_key=idempotency_key,
+            request_body={"conversation_id": conversation_id, "turn_id": turn_id, "expected_control_version": expected_control_version},
+            action=lambda: self._retry_turn(user_id, conversation_id, turn_id, expected_control_version),
         )
 
     def read_run(self, *, user_id: str, run_id: str) -> dict[str, object]:
@@ -753,15 +841,34 @@ class TutorPublicService:
         try:
             catalog = compile_published_skill_catalog()
             self._repository.record_catalog_snapshot(catalog)
-            accepted = self._repository.create_interactive_turn(
+            queue_acceptance = self._queue.accept_or_queue(
                 user_id=user_id,
                 conversation_id=conversation_id,
                 catalog_digest=catalog.digest,
                 policy=_interactive_policy(now, settings=self._settings),
                 idempotency_key=idempotency_key,
                 content=content,
+                metadata={
+                    "learning_scope": _learning_scope_payload(learning_scope),
+                    "planning_facts": dict(planning_facts) if planning_facts is not None else None,
+                    "reopen_fact_fields": list(reopen_fact_fields),
+                    "context_references": [dict(item) for item in context_references],
+                },
                 received_at=now,
             )
+            if queue_acceptance.queued_item is not None:
+                pending = self._queue.list_pending(user_id=user_id, conversation_id=conversation_id)
+                return {
+                    "conversation_id": conversation_id,
+                    "queued": True,
+                    "queue_item": queue_acceptance.queued_item.as_public_dict(),
+                    "control_version": queue_acceptance.control_version,
+                    "pending_count": len(pending),
+                    "max_pending": QUEUE_MAX_PENDING,
+                }
+            accepted = queue_acceptance.turn
+            if accepted is None:
+                raise TutorInteractionRequestConflict("Tutor input was neither queued nor accepted")
             scope = self._snapshot_learning_scope(
                 user_id=user_id,
                 run_id=accepted.run.run_id,
@@ -810,12 +917,7 @@ class TutorPublicService:
         except TutorIdempotencyConflict as exc:
             raise _idempotency_conflict() from exc
         except TutorInteractionRequestConflict as exc:
-            raise TutorPublicApiError(
-                "TUTOR_REQUEST_PENDING",
-                "Resolve the pending Tutor request before sending a normal message.",
-                status_code=409,
-                details={"conversation_id": conversation_id},
-            ) from exc
+            raise self._queue_conflict(exc, conversation_id=conversation_id) from exc
         except TutorTerminalStateConflict as exc:
             raise _run_not_active(conversation_id=conversation_id) from exc
         return _turn_acceptance_payload(accepted, state=state, references=references, first_turn=False)
@@ -990,6 +1092,161 @@ class TutorPublicService:
             "replaced_process": None,
             "context_references": list(references),
         }
+
+    def _queue_state_payload(self, *, user_id: str, conversation_id: str) -> dict[str, object]:
+        try:
+            snapshot = self._repository.read_conversation_snapshot(
+                user_id=user_id, conversation_id=conversation_id, limit=1, now=datetime.now(UTC)
+            )
+        except TutorRunNotFound as exc:
+            raise TutorPublicApiError("TUTOR_CONVERSATION_NOT_FOUND", "Tutor conversation was not found for the current learner.", status_code=404) from exc
+        return {
+            "conversation_id": conversation_id,
+            "control_version": snapshot.control_version,
+            "control_state": snapshot.control_state,
+            "queue_paused": snapshot.queue_paused,
+            "queue_pause_reason": snapshot.queue_pause_reason,
+            "pending_count": snapshot.pending_count,
+            "max_pending": snapshot.max_pending,
+            "items": [dict(item) for item in snapshot.queue],
+            "active_turn": dict(snapshot.active_turn) if snapshot.active_turn is not None else None,
+            "pending_request": dict(snapshot.pending_requests[0]) if snapshot.pending_requests else None,
+        }
+
+    def _queue_conflict(self, exc: Exception, *, conversation_id: str) -> TutorPublicApiError:
+        message = str(exc)
+        code = "TUTOR_QUEUE_FULL" if "queue is full" in message else "TUTOR_CONTROL_CONFLICT"
+        return TutorPublicApiError(
+            code,
+            "Tutor queue is full." if code == "TUTOR_QUEUE_FULL" else "Tutor conversation control state changed or does not allow this action.",
+            status_code=409,
+            details={"conversation_id": conversation_id},
+        )
+
+    def _edit_queue_item(self, user_id: str, conversation_id: str, item_id: str, control: int, item_version: int, content: str) -> dict[str, object]:
+        try:
+            item, version = self._queue.edit(
+                user_id=user_id, conversation_id=conversation_id, item_id=item_id,
+                expected_control_version=control, expected_item_version=item_version,
+                content=content, occurred_at=datetime.now(UTC),
+            )
+        except TutorInteractionRequestConflict as exc:
+            raise self._queue_conflict(exc, conversation_id=conversation_id) from exc
+        result = self._queue_state_payload(user_id=user_id, conversation_id=conversation_id)
+        result.update({"queue_item": item.as_public_dict(), "control_version": version})
+        return result
+
+    def _delete_queue_item(self, user_id: str, conversation_id: str, item_id: str, control: int, item_version: int) -> dict[str, object]:
+        try:
+            version = self._queue.delete(
+                user_id=user_id, conversation_id=conversation_id, item_id=item_id,
+                expected_control_version=control, expected_item_version=item_version,
+                occurred_at=datetime.now(UTC),
+            )
+        except TutorInteractionRequestConflict as exc:
+            raise self._queue_conflict(exc, conversation_id=conversation_id) from exc
+        result = self._queue_state_payload(user_id=user_id, conversation_id=conversation_id)
+        result["control_version"] = version
+        return result
+
+    def _reorder_queue(self, user_id: str, conversation_id: str, item_ids: Sequence[str], control: int) -> dict[str, object]:
+        try:
+            items, version = self._queue.reorder(
+                user_id=user_id, conversation_id=conversation_id, item_ids=item_ids,
+                expected_control_version=control, occurred_at=datetime.now(UTC),
+            )
+        except TutorInteractionRequestConflict as exc:
+            raise self._queue_conflict(exc, conversation_id=conversation_id) from exc
+        result = self._queue_state_payload(user_id=user_id, conversation_id=conversation_id)
+        result.update({"items": [item.as_public_dict() for item in items], "control_version": version})
+        return result
+
+    def _steer_queue_item(self, user_id: str, conversation_id: str, item_id: str, control: int, turn_id: str, revision: int) -> dict[str, object]:
+        try:
+            acceptance, item, version = self._queue.steer(
+                user_id=user_id, conversation_id=conversation_id, item_id=item_id,
+                expected_control_version=control, expected_turn_id=turn_id,
+                expected_input_revision=revision, occurred_at=datetime.now(UTC),
+            )
+            state = self._repository.read_run_state(user_id=user_id, run_id=turn_id)
+        except TutorInteractionRequestConflict as exc:
+            raise self._queue_conflict(exc, conversation_id=conversation_id) from exc
+        process = self._repository.read_public_process(user_id=user_id, run_id=turn_id)
+        return {
+            "conversation_id": conversation_id, "run_id": turn_id,
+            "input_revision": acceptance.input_revision, "message_id": acceptance.message_id,
+            "event_cursor": acceptance.event.event_sequence, "dispatch_job_id": acceptance.dispatch_job_id,
+            "merged": True, "input_replayed": acceptance.replayed,
+            "run": _run_payload(state), "process": _public_process_payload(process) if process else None,
+            "replaced_run_id": None, "replaced_process": None, "context_references": [],
+            "queue_item": item.as_public_dict(), "control_version": version,
+        }
+
+    def _interrupt_turn(self, user_id: str, conversation_id: str, control: int, turn_id: str, revision: int) -> dict[str, object]:
+        try:
+            self._queue.interrupt(
+                user_id=user_id, conversation_id=conversation_id,
+                expected_control_version=control, expected_turn_id=turn_id,
+                expected_input_revision=revision, occurred_at=datetime.now(UTC),
+            )
+        except TutorInteractionRequestConflict as exc:
+            raise self._queue_conflict(exc, conversation_id=conversation_id) from exc
+        return self._queue_state_payload(user_id=user_id, conversation_id=conversation_id)
+
+    def _resume_queue(self, user_id: str, conversation_id: str, control: int) -> dict[str, object]:
+        now = datetime.now(UTC)
+        try:
+            catalog = compile_published_skill_catalog()
+            self._repository.record_catalog_snapshot(catalog)
+            turn, version = self._queue.resume(
+                user_id=user_id, conversation_id=conversation_id,
+                expected_control_version=control, catalog_digest=catalog.digest,
+                policy=_interactive_policy(now, settings=self._settings), occurred_at=now,
+            )
+        except TutorInteractionRequestConflict as exc:
+            raise self._queue_conflict(exc, conversation_id=conversation_id) from exc
+        if turn is None:
+            result = self._queue_state_payload(user_id=user_id, conversation_id=conversation_id)
+            result["control_version"] = version
+            return result
+        state = self._repository.read_run_state(user_id=user_id, run_id=turn.run.run_id)
+        result = _turn_acceptance_payload(turn, state=state, references=(), first_turn=False)
+        result["control_version"] = version
+        return result
+
+    def _execute_queue_item(self, user_id: str, conversation_id: str, item_id: str, control: int) -> dict[str, object]:
+        now = datetime.now(UTC)
+        try:
+            catalog = compile_published_skill_catalog()
+            self._repository.record_catalog_snapshot(catalog)
+            turn, version = self._queue.execute(
+                user_id=user_id, conversation_id=conversation_id, item_id=item_id,
+                expected_control_version=control, catalog_digest=catalog.digest,
+                policy=_interactive_policy(now, settings=self._settings), occurred_at=now,
+            )
+            state = self._repository.read_run_state(user_id=user_id, run_id=turn.run.run_id)
+        except TutorInteractionRequestConflict as exc:
+            raise self._queue_conflict(exc, conversation_id=conversation_id) from exc
+        result = _turn_acceptance_payload(turn, state=state, references=(), first_turn=False)
+        result["control_version"] = version
+        return result
+
+    def _retry_turn(self, user_id: str, conversation_id: str, turn_id: str, control: int) -> dict[str, object]:
+        now = datetime.now(UTC)
+        try:
+            catalog = compile_published_skill_catalog()
+            self._repository.record_catalog_snapshot(catalog)
+            turn, version = self._queue.retry(
+                user_id=user_id, conversation_id=conversation_id, turn_id=turn_id,
+                expected_control_version=control, catalog_digest=catalog.digest,
+                policy=_interactive_policy(now, settings=self._settings), occurred_at=now,
+            )
+            state = self._repository.read_run_state(user_id=user_id, run_id=turn.run.run_id)
+        except TutorInteractionRequestConflict as exc:
+            raise self._queue_conflict(exc, conversation_id=conversation_id) from exc
+        result = _turn_acceptance_payload(turn, state=state, references=(), first_turn=False)
+        result["control_version"] = version
+        return result
 
     def _snapshot_learning_scope(
         self,
@@ -1505,6 +1762,11 @@ def _conversation_snapshot_payload(snapshot: TutorConversationSnapshot) -> dict[
             "conversation_id": snapshot.conversation_id,
             "title": snapshot.title or "新对话",
             "control_version": snapshot.control_version,
+            "control_state": snapshot.control_state,
+            "queue_paused": snapshot.queue_paused,
+            "queue_pause_reason": snapshot.queue_pause_reason,
+            "pending_count": snapshot.pending_count,
+            "max_pending": snapshot.max_pending,
         },
         "active_turn": dict(snapshot.active_turn) if snapshot.active_turn is not None else None,
         "pending_requests": [dict(item) for item in snapshot.pending_requests],

@@ -372,6 +372,12 @@ export function TutorConversationSurface({
 
       setComposerText("");
       setComposerMode("ordinary");
+      if ("queued" in accepted) {
+        onConversationsChanged?.();
+        scrollToLatestRef.current = true;
+        refreshCurrentHistory();
+        return;
+      }
       if (contextReferences.length === accepted.context_references.length) onReferencesAccepted?.(accepted.context_references);
       setActiveRun({
         run_id: accepted.run.run_id,

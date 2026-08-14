@@ -125,6 +125,7 @@ _TARGET_COUNT_SQL: tuple[tuple[str, str], ...] = (
     ("tutor_conversation_events", "SELECT count(*)::int AS count FROM tutor_conversation_events WHERE user_id = %s"),
     ("tutor_interactive_dispatch_jobs", "SELECT count(*)::int AS count FROM tutor_interactive_dispatch_jobs WHERE user_id = %s"),
     ("tutor_interaction_requests", "SELECT count(*)::int AS count FROM tutor_interaction_requests WHERE user_id = %s"),
+    ("tutor_queued_inputs", "SELECT count(*)::int AS count FROM tutor_queued_inputs WHERE user_id = %s"),
     ("tutor_messages", "SELECT count(*)::int AS count FROM tutor_messages AS messages JOIN tutor_conversations AS conversations ON conversations.id = messages.conversation_id WHERE conversations.user_id = %s"),
     ("tutor_run_input_events", "SELECT count(*)::int AS count FROM tutor_run_input_events AS input_events JOIN tutor_runs AS runs ON runs.id = input_events.run_id WHERE runs.user_id = %s"),
     ("tutor_run_events", "SELECT count(*)::int AS count FROM tutor_run_events AS events JOIN tutor_runs AS runs ON runs.id = events.run_id WHERE runs.user_id = %s"),

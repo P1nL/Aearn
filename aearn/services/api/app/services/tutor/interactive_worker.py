@@ -13,6 +13,9 @@ from app.core.config import Settings, get_settings
 from app.db.connection import connect
 from app.services.tutor.interactive import TutorRunDispatcher, build_tutor_run_dispatcher
 from app.services.tutor.persistence import PostgresTutorRepository
+from app.services.tutor.queue_control import PostgresTutorQueueController, build_queue_turn_policy
+from app.agents.harness.contracts import TutorTerminalOutcome
+from app.agents.harness.skill_catalog import compile_published_skill_catalog
 
 
 logger = logging.getLogger(__name__)
@@ -58,7 +61,7 @@ class TutorInteractiveWorker:
             return {"status": "no_action", "processed": 0, "job_id": job_id}
         claim = claims[0]
         try:
-            self._dispatcher.dispatch(user_id=claim.user_id, run_id=claim.run_id)
+            run_result = self._dispatcher.dispatch(user_id=claim.user_id, run_id=claim.run_id)
         except Exception as exc:  # noqa: BLE001 - boundary maps exceptions to a bounded safe code.
             error_code = _safe_dispatch_error_code(exc)
             failed_at = self._clock.now()
@@ -89,6 +92,7 @@ class TutorInteractiveWorker:
                 "code": error_code,
             }
         completed_at = self._clock.now()
+        next_job_id: str | None = None
         with connect() as conn:
             repository = PostgresTutorRepository(conn)
             completed = repository.complete_interactive_dispatch_job(
@@ -97,12 +101,28 @@ class TutorInteractiveWorker:
                 lease_generation=claim.lease_generation,
                 completed_at=completed_at,
             )
+            queue = PostgresTutorQueueController(conn)
+            if completed and run_result.terminal_outcome is TutorTerminalOutcome.COMPLETED:
+                catalog = compile_published_skill_catalog()
+                repository.record_catalog_snapshot(catalog)
+                drained = queue.drain_completed(
+                    user_id=claim.user_id, conversation_id=claim.conversation_id,
+                    catalog_digest=catalog.digest,
+                    policy=build_queue_turn_policy(completed_at, settings=self._settings),
+                    occurred_at=completed_at,
+                )
+                next_job_id = drained.acceptance.dispatch_job_id if drained is not None else None
+            elif completed:
+                queue.pause_failed(user_id=claim.user_id, conversation_id=claim.conversation_id)
+        if next_job_id is not None:
+            enqueue_tutor_interactive_dispatch(next_job_id)
         return {
             "status": "completed" if completed else "stale",
             "processed": 1,
             "job_id": claim.job_id,
             "run_id": claim.run_id,
             "attempt": claim.attempt_count,
+            "next_job_id": next_job_id,
         }
 
     def reconcile(self, *, limit: int = 10) -> dict[str, object]:

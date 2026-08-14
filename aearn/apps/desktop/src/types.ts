@@ -232,6 +232,48 @@ export type TutorInputAcceptedResponse = {
   context_references: TutorContextReference[];
 };
 
+export type TutorConversationControlState = "idle" | "running" | "waiting" | "queue_paused";
+export type TutorQueuePauseReason = "pending_request" | "interrupted" | "failed" | null;
+
+export type TutorQueuedInput = {
+  item_id: string;
+  state: "pending" | "claimed" | "cancelled";
+  position: number;
+  version: number;
+  content: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type TutorQueuedInputAcceptedResponse = {
+  conversation_id: string;
+  queued: true;
+  queue_item: TutorQueuedInput;
+  control_version: number;
+  pending_count: number;
+  max_pending: number;
+  idempotent_replayed: boolean;
+};
+
+export type TutorConversationInputResponse = TutorInputAcceptedResponse | TutorQueuedInputAcceptedResponse;
+export type TutorControlledTurnResponse = TutorInputAcceptedResponse & { control_version: number };
+export type TutorQueueSteerResponse = TutorControlledTurnResponse & { queue_item: TutorQueuedInput };
+export type TutorQueueResumeResponse = TutorControlledTurnResponse | TutorQueueStateResponse;
+
+export type TutorQueueStateResponse = {
+  conversation_id: string;
+  control_version: number;
+  control_state: TutorConversationControlState;
+  queue_paused: boolean;
+  queue_pause_reason: TutorQueuePauseReason;
+  pending_count: number;
+  max_pending: number;
+  items: TutorQueuedInput[];
+  active_turn: TutorPublicTurn | null;
+  pending_request: TutorInteractionRequestItem | null;
+  idempotent_replayed?: boolean;
+};
+
 export type TutorInteractionResponseDraft =
   | { kind: "clarification"; answer_text: string }
   | { kind: "planning_input"; question_key: "language_id" | "goal_text" | "target_level" | "weekly_minutes" | "experience_level" | "teaching_preferences" | "pace_constraints"; catalog_version: "tutor_planning_questions_v1"; value: unknown }
@@ -256,10 +298,19 @@ export type TutorPublicTurn = {
 
 export type TutorConversationSnapshotResponse = {
   snapshot_version: "tutor_conversation_snapshot_v1";
-  conversation: { conversation_id: string; title: string; control_version: number };
+  conversation: {
+    conversation_id: string;
+    title: string;
+    control_version: number;
+    control_state: TutorConversationControlState;
+    queue_paused: boolean;
+    queue_pause_reason: TutorQueuePauseReason;
+    pending_count: number;
+    max_pending: number;
+  };
   active_turn: TutorPublicTurn | null;
   pending_requests: TutorInteractionRequestItem[];
-  queue: Record<string, unknown>[];
+  queue: TutorQueuedInput[];
   timeline: TutorHistoryItem[];
   next_cursor: string | null;
   has_more: boolean;

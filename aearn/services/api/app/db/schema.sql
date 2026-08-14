@@ -6168,3 +6168,77 @@ BEFORE UPDATE ON tutor_interaction_requests
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE UNIQUE INDEX IF NOT EXISTS uq_tutor_interaction_requests_source_turn
   ON tutor_interaction_requests(source_turn_id);
+
+-- Child 08-13 Tutor Queue, Steer, Interrupt, Resume, Execute, and Retry control.
+ALTER TABLE tutor_conversations
+  ADD COLUMN IF NOT EXISTS queue_paused boolean NOT NULL DEFAULT false;
+ALTER TABLE tutor_conversations
+  ADD COLUMN IF NOT EXISTS queue_pause_reason text;
+ALTER TABLE tutor_conversations
+  DROP CONSTRAINT IF EXISTS chk_tutor_conversations_queue_pause;
+ALTER TABLE tutor_conversations
+  ADD CONSTRAINT chk_tutor_conversations_queue_pause CHECK (
+    (queue_paused = false AND queue_pause_reason IS NULL)
+    OR (queue_paused = true AND queue_pause_reason IN ('pending_request', 'interrupted', 'failed'))
+  );
+
+CREATE TABLE IF NOT EXISTS tutor_queued_inputs (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  conversation_id uuid NOT NULL REFERENCES tutor_conversations(id) ON DELETE RESTRICT,
+  content text NOT NULL CHECK (char_length(content) BETWEEN 1 AND 16000),
+  content_hash text NOT NULL CHECK (content_hash ~ '^[0-9a-f]{64}$'),
+  state text NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'claimed', 'cancelled')),
+  position integer NOT NULL CHECK (position >= 1),
+  version integer NOT NULL DEFAULT 1 CHECK (version >= 1),
+  enqueue_key text NOT NULL CHECK (char_length(enqueue_key) BETWEEN 1 AND 160),
+  claimed_turn_id uuid,
+  claimed_input_revision integer CHECK (claimed_input_revision IS NULL OR claimed_input_revision >= 1),
+  claimed_mode text CHECK (claimed_mode IS NULL OR claimed_mode IN ('drain', 'steer', 'execute')),
+  claimed_at timestamptz,
+  cancelled_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_tutor_queued_inputs_id_scope UNIQUE (id, user_id, conversation_id),
+  CONSTRAINT uq_tutor_queued_inputs_enqueue UNIQUE (conversation_id, enqueue_key),
+  CONSTRAINT fk_tutor_queued_input_conversation_user
+    FOREIGN KEY (conversation_id, user_id)
+    REFERENCES tutor_conversations(id, user_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_queued_input_claimed_turn_scope
+    FOREIGN KEY (claimed_turn_id, user_id, conversation_id)
+    REFERENCES tutor_runs(id, user_id, conversation_id) ON DELETE RESTRICT,
+  CONSTRAINT chk_tutor_queued_input_resolution CHECK (
+    (state = 'pending' AND claimed_turn_id IS NULL AND claimed_input_revision IS NULL
+      AND claimed_mode IS NULL AND claimed_at IS NULL AND cancelled_at IS NULL)
+    OR (state = 'claimed' AND claimed_turn_id IS NOT NULL AND claimed_input_revision IS NOT NULL
+      AND claimed_mode IS NOT NULL AND claimed_at IS NOT NULL AND cancelled_at IS NULL)
+    OR (state = 'cancelled' AND claimed_turn_id IS NULL AND claimed_input_revision IS NULL
+      AND claimed_mode IS NULL AND claimed_at IS NULL AND cancelled_at IS NOT NULL)
+  )
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_tutor_queued_inputs_pending_position
+  ON tutor_queued_inputs(conversation_id, position) WHERE state = 'pending';
+CREATE INDEX IF NOT EXISTS idx_tutor_queued_inputs_pending
+  ON tutor_queued_inputs(conversation_id, position, created_at, id) WHERE state = 'pending';
+DROP TRIGGER IF EXISTS trg_tutor_queued_inputs_updated_at ON tutor_queued_inputs;
+CREATE TRIGGER trg_tutor_queued_inputs_updated_at
+BEFORE UPDATE ON tutor_queued_inputs
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+ALTER TABLE tutor_effects
+  ADD COLUMN IF NOT EXISTS logical_action_key text;
+ALTER TABLE tutor_effects
+  DROP CONSTRAINT IF EXISTS chk_tutor_effects_logical_action_key;
+ALTER TABLE tutor_effects
+  ADD CONSTRAINT chk_tutor_effects_logical_action_key CHECK (
+    logical_action_key IS NULL OR logical_action_key ~ '^[0-9a-f]{64}$'
+  );
+CREATE UNIQUE INDEX IF NOT EXISTS uq_tutor_effects_committed_logical_action
+  ON tutor_effects(logical_action_key)
+  WHERE logical_action_key IS NOT NULL AND status = 'committed';
+ALTER TABLE tutor_queued_inputs
+  ADD COLUMN IF NOT EXISTS input_metadata_json jsonb NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE tutor_queued_inputs
+  DROP CONSTRAINT IF EXISTS chk_tutor_queued_inputs_metadata;
+ALTER TABLE tutor_queued_inputs
+  ADD CONSTRAINT chk_tutor_queued_inputs_metadata CHECK (jsonb_typeof(input_metadata_json) = 'object');
