@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-2.md`
-- **Total Sessions**: 103
-- **Last Active**: 2026-08-14
+- **Total Sessions**: 104
+- **Last Active**: 2026-08-15
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-2.md` | ~1576 | Active |
+| `journal-2.md` | ~1614 | Active |
 | `journal-1.md` | ~1979 | Archived |
 <!-- @@@/auto:active-documents -->
 
@@ -30,6 +30,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 104 | 2026-08-15 | 完成 Tutor thread/turn v2 全局切换 | `c7cd6724`, `a112f006` | `codex/codex-like-tutor-conversation` |
 | 103 | 2026-08-14 | 完成 Tutor Queue、Steer 与 Interrupt 控制 | `6e768da8`, `0554563b` | `codex/codex-like-tutor-conversation` |
 | 102 | 2026-08-14 | 完成 Tutor 类型化请求与权威续轮 | `a1523e5f`, `90ad4a57` | `codex/codex-like-tutor-conversation` |
 | 101 | 2026-08-14 | 完成 DSH 派生 UI Foundation | `555bc06f`, `c2e89987`, `49fb4140` | `codex/codex-like-tutor-conversation` |
