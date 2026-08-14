@@ -1612,3 +1612,41 @@ Closed the planning-only Tutor Harness rearchitecture parent after all nine inde
 ### Next Steps
 
 - 启动 08-13-codex-like-tutor-desktop-migration-qa。
+
+
+## Session 105: 完成 Codex-like Tutor Desktop 迁移与 QA
+
+**Date**: 2026-08-14
+**Task**: 完成 Codex-like Tutor Desktop 迁移与 QA
+**Branch**: `codex/codex-like-tutor-conversation`
+
+### Summary
+
+完成 Desktop snapshot-first conversation SSE、typed request composer seat、Queue/Steer/Stop/Retry、DSH-derived Think、全局 v2 gate、legacy migration card、响应式/可访问性与集成验收。
+
+### Main Changes
+
+- Desktop 改用 conversation snapshot 与 opaque SSE，删除 run-local SSE 和旧 continuation write caller。
+- 实现 typed request、Queue 全量控制、active execute interrupt+fresh turn、Stop/Retry 与 learner-safe timeline。
+- 同步 frontend/API/QA code-spec，并记录 Browser/Tauri、响应式、键盘、reduced-motion 与 reconnect 证据。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `04b2b85d` | (see git log) |
+| `d7ecb3ac` | (see git log) |
+
+### Testing
+
+- [OK] Desktop Vitest：21 passed；desktop:check 通过。
+- [OK] focused API：18 passed；完整 API：569 passed, 1 skipped。
+- [OK] Ruff、Mypy、uv lock --check、compileall、task.py validate、git diff --check 通过。
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 执行父任务最终 integration review、全量质量门与归档。
