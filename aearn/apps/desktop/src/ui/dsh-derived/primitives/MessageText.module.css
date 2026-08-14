@@ -1,0 +1,7 @@
+.text {
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: inherit;
+  line-height: inherit;
+}

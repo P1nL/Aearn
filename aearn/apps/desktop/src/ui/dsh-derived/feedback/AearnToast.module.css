@@ -1,0 +1,43 @@
+.toast {
+  border: 1px solid var(--aearn-border) !important;
+  border-radius: var(--aearn-radius-md) !important;
+  color: var(--aearn-label-primary) !important;
+  background: var(--aearn-surface-elevated) !important;
+  box-shadow: var(--aearn-shadow-floating) !important;
+}
+
+.title {
+  color: var(--aearn-label-primary) !important;
+  font-weight: 650 !important;
+}
+
+.description {
+  color: var(--aearn-label-secondary) !important;
+}
+
+.action,
+.cancel,
+.close {
+  border-radius: var(--aearn-radius-capsule) !important;
+}
+
+.action {
+  color: var(--aearn-label-on-brand) !important;
+  background: var(--aearn-brand) !important;
+}
+
+.cancel {
+  color: var(--aearn-label-secondary) !important;
+  background: var(--aearn-surface-muted) !important;
+}
+
+.close {
+  border-color: var(--aearn-border) !important;
+  color: var(--aearn-label-secondary) !important;
+  background: var(--aearn-surface) !important;
+}
+
+.success { border-left: 3px solid var(--aearn-positive) !important; }
+.warning { border-left: 3px solid var(--aearn-warning) !important; }
+.error { border-left: 3px solid var(--aearn-danger) !important; }
+.info { border-left: 3px solid var(--aearn-brand) !important; }

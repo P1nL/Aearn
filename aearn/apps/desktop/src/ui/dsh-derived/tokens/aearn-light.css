@@ -1,0 +1,68 @@
+/* Aearn-owned light semantic token layer, adapted from upstream UI theme
+ * revision 47f943859bef60e4160492346772ded9b24f765a (MIT).
+ * Public consumers must use only --aearn-* names. */
+:root {
+  color-scheme: light;
+
+  --aearn-canvas: #ffffff;
+  --aearn-surface: #ffffff;
+  --aearn-surface-subtle: #f7f9f8;
+  --aearn-surface-muted: #f0f4f2;
+  --aearn-surface-elevated: #ffffff;
+  --aearn-overlay: rgba(16, 24, 20, 0.46);
+
+  --aearn-border-subtle: rgba(15, 35, 25, 0.06);
+  --aearn-border: rgba(15, 35, 25, 0.12);
+  --aearn-border-strong: rgba(15, 35, 25, 0.2);
+
+  --aearn-label-primary: #101713;
+  --aearn-label-secondary: #526159;
+  --aearn-label-tertiary: #727f78;
+  --aearn-label-dimmed: #a8b2ac;
+  --aearn-label-on-brand: #ffffff;
+
+  --aearn-brand: #14804a;
+  --aearn-brand-hover: #0f6c3e;
+  --aearn-brand-active: #0b5a34;
+  --aearn-brand-soft: #e8f6ee;
+  --aearn-focus: #1b8f57;
+  --aearn-selection: #dff2e7;
+
+  --aearn-positive: #1f9d5a;
+  --aearn-positive-soft: #e8f7ef;
+  --aearn-warning: #d18415;
+  --aearn-warning-soft: #fff4df;
+  --aearn-danger: #d73737;
+  --aearn-danger-soft: #fff0f0;
+  --aearn-running: #2d7d5a;
+  --aearn-idle: #87938c;
+
+  --aearn-interactive-hover: rgba(22, 73, 48, 0.07);
+  --aearn-interactive-active: rgba(22, 73, 48, 0.12);
+  --aearn-tooltip: #252b28;
+  --aearn-toast: #252b28;
+
+  --aearn-shadow-sm: 0 1px 2px rgba(15, 35, 25, 0.08);
+  --aearn-shadow-md: 0 10px 30px rgba(15, 35, 25, 0.12);
+  --aearn-shadow-floating: 0 18px 48px rgba(15, 35, 25, 0.16);
+
+  --aearn-radius-sm: 8px;
+  --aearn-radius-md: 12px;
+  --aearn-radius-lg: 18px;
+  --aearn-radius-capsule: 999px;
+
+  --aearn-composer-radius: 22px;
+  --aearn-composer-min-height: 52px;
+  --aearn-composer-max-width: 760px;
+
+  --aearn-motion-fast: 120ms;
+  --aearn-motion-normal: 180ms;
+  --aearn-ease-standard: cubic-bezier(0.2, 0, 0, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --aearn-motion-fast: 0ms;
+    --aearn-motion-normal: 0ms;
+  }
+}

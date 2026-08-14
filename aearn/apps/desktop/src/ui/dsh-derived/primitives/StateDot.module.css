@@ -1,0 +1,56 @@
+.dot,
+.matrix {
+  flex: none;
+  color: var(--aearn-idle);
+}
+
+.dot {
+  position: relative;
+  display: inline-block;
+}
+
+.dot::before,
+.dot::after {
+  content: "";
+  position: absolute;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.dot::before {
+  inset: 0;
+  opacity: 0.13;
+}
+
+.dot::after {
+  inset: 20%;
+}
+
+.dot[data-state="positive"] { color: var(--aearn-positive); }
+.dot[data-state="warning"] { color: var(--aearn-warning); }
+.dot[data-state="danger"] { color: var(--aearn-danger); }
+.dot[data-state="idle"] { color: var(--aearn-idle); }
+
+.matrix {
+  color: var(--aearn-running);
+}
+
+.cell {
+  fill: currentColor;
+  opacity: 0.15;
+  animation: aearn-state-dot-chase 1s steps(1, end) infinite;
+}
+
+@keyframes aearn-state-dot-chase {
+  0%, 12.4% { opacity: 1; }
+  12.5%, 24.9% { opacity: 0.6; }
+  25%, 37.4% { opacity: 0.35; }
+  37.5%, 100% { opacity: 0.15; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cell {
+    animation: none;
+    opacity: 0.72;
+  }
+}
