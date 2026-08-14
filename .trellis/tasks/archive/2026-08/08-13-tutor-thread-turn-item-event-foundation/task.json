@@ -1,0 +1,41 @@
+{
+  "id": "tutor-thread-turn-item-event-foundation",
+  "name": "tutor-thread-turn-item-event-foundation",
+  "title": "Tutor 会话/轮次/条目与统一事件底座",
+  "description": "建立 conversation/thread、fresh turn、公开 item/event、统一流与持久化调度底座。",
+  "status": "completed",
+  "dev_type": null,
+  "scope": "PostgreSQL、Tutor persistence/public API、conversation SSE、worker 与 durable dispatch",
+  "package": null,
+  "priority": "P1",
+  "creator": "PINKING",
+  "assignee": "PINKING",
+  "createdAt": "2026-08-13",
+  "completedAt": "2026-08-14",
+  "branch": "codex/codex-like-tutor-conversation",
+  "base_branch": "main",
+  "worktree_path": "E:\\codee\\Aearn-dsh-ui-reuse",
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "08-13-codex-like-tutor-conversation-experience",
+  "relatedFiles": [
+    "aearn/services/api/app/db/schema.sql",
+    "aearn/services/api/app/services/tutor/persistence.py",
+    "aearn/services/api/app/services/tutor/public_api.py",
+    "aearn/services/api/app/services/tutor/interactive.py",
+    "aearn/services/api/app/routes/tutor.py",
+    "aearn/services/worker/aearn_worker/worker_app.py",
+    "aearn/scripts/start-dev.ps1",
+    "docs/architecture/api-contract.md",
+    "docs/architecture/database-schema.md",
+    "docs/architecture/tutor-harness-runtime.md"
+  ],
+  "notes": "执行顺序 1；冻结 v2 authority、event、snapshot 与 durable dispatch contract。",
+  "meta": {
+    "execution_order": 1,
+    "depends_on": [],
+    "owns_global_cutover": false
+  }
+}
