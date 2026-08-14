@@ -1,0 +1,44 @@
+{
+  "id": "tutor-dsh-conversation-integration",
+  "name": "tutor-dsh-conversation-integration",
+  "title": "集成 DSH Tutor 对话 UI",
+  "description": "将 UI foundation、Pending Input、Queue/Stop 集成到 Tutor Desktop，迁移 Think/Plan/Composer 并完成文档与浏览器验收。",
+  "status": "completed",
+  "dev_type": null,
+  "scope": "Tutor Desktop Composer/Queue/Question/Think/Plan 近像素集成、响应式、文档与浏览器 QA",
+  "package": null,
+  "priority": "P1",
+  "creator": "PINKING",
+  "assignee": "PINKING",
+  "createdAt": "2026-08-13",
+  "completedAt": "2026-08-14",
+  "branch": "codex/dsh-ui-reuse",
+  "base_branch": "main",
+  "worktree_path": "E:\\codee\\Aearn-dsh-ui-reuse",
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "08-13-deepseek-harness-ui-reuse",
+  "relatedFiles": [
+    "aearn/apps/desktop/src/features/tutor/TutorConversationSurface.tsx",
+    "aearn/apps/desktop/src/api.ts",
+    "aearn/apps/desktop/src/types.ts",
+    "aearn/apps/desktop/src/styles.css",
+    "docs/product/frontend-interaction-spec.md",
+    "docs/product/user-flows.md"
+  ],
+  "notes": "必须在 UI foundation、Pending Input、Queue/Stop 三个 child 全部完成后实施；完成后回到 parent 做集成复核。 已被 08-13-codex-like-tutor-desktop-migration-qa 取代；不得继续实施。",
+  "meta": {
+    "dependencies": [
+      "08-13-dsh-derived-ui-foundation",
+      "08-13-tutor-controlled-pending-inputs",
+      "08-13-tutor-persistent-queue-stop"
+    ],
+    "parent_requirement_source": ".trellis/tasks/08-13-deepseek-harness-ui-reuse/prd.md",
+    "upstream_revision": "47f943859bef60e4160492346772ded9b24f765a",
+    "superseded_by": "08-13-codex-like-tutor-desktop-migration-qa",
+    "superseded_on": "2026-08-14",
+    "superseded_reason": "已合并到 Codex-like Tutor conversation 唯一六子任务树；保留归档供来源审计。"
+  }
+}

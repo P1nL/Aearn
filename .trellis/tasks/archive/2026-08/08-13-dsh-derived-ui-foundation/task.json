@@ -1,0 +1,37 @@
+{
+  "id": "dsh-derived-ui-foundation",
+  "name": "dsh-derived-ui-foundation",
+  "title": "建立 DSH 派生 UI Foundation",
+  "description": "建立 Aearn 白色浅色 semantic tokens、DSH-derived primitives/icons、许可证来源记录和组件测试基础。",
+  "status": "completed",
+  "dev_type": null,
+  "scope": "aearn/apps/desktop DSH-derived tokens、primitives、icons、NOTICE 与组件测试基础",
+  "package": null,
+  "priority": "P1",
+  "creator": "PINKING",
+  "assignee": "PINKING",
+  "createdAt": "2026-08-13",
+  "completedAt": "2026-08-14",
+  "branch": "codex/dsh-ui-reuse",
+  "base_branch": "main",
+  "worktree_path": "E:\\codee\\Aearn-dsh-ui-reuse",
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "08-13-deepseek-harness-ui-reuse",
+  "relatedFiles": [
+    ".trellis/tasks/08-13-deepseek-harness-ui-reuse/research/dsh-ui-reuse-audit.md",
+    "aearn/apps/desktop/package.json",
+    "aearn/apps/desktop/src/styles.css"
+  ],
+  "notes": "无代码前置依赖；完成后供 Tutor integration 使用。不得引入 Cordis/DSH runtime 或修改 Tutor 业务行为。 已被 08-14-dsh-derived-ui-foundation 取代；不得继续实施。",
+  "meta": {
+    "dependencies": [],
+    "parent_requirement_source": ".trellis/tasks/08-13-deepseek-harness-ui-reuse/prd.md",
+    "upstream_revision": "47f943859bef60e4160492346772ded9b24f765a",
+    "superseded_by": "08-14-dsh-derived-ui-foundation",
+    "superseded_on": "2026-08-14",
+    "superseded_reason": "已合并到 Codex-like Tutor conversation 唯一六子任务树；保留归档供来源审计。"
+  }
+}

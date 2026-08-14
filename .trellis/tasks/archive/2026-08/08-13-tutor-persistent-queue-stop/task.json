@@ -1,0 +1,43 @@
+{
+  "id": "tutor-persistent-queue-stop",
+  "name": "tutor-persistent-queue-stop",
+  "title": "建立 Tutor 持久化 Queue 与 Stop",
+  "description": "实现 conversation-scoped 持久化 FIFO Queue、编辑删除 Steer、自动消费暂停唤醒和 run-level stop authority。",
+  "status": "completed",
+  "dev_type": null,
+  "scope": "Tutor conversation-scoped persistent FIFO Queue、Steer、drain/pause/wake、run cancel API/SSE/DB",
+  "package": null,
+  "priority": "P0",
+  "creator": "PINKING",
+  "assignee": "PINKING",
+  "createdAt": "2026-08-13",
+  "completedAt": "2026-08-14",
+  "branch": "codex/dsh-ui-reuse",
+  "base_branch": "main",
+  "worktree_path": "E:\\codee\\Aearn-dsh-ui-reuse",
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "08-13-deepseek-harness-ui-reuse",
+  "relatedFiles": [
+    "aearn/services/api/app/db/schema.sql",
+    "aearn/services/api/app/services/tutor/persistence.py",
+    "aearn/services/api/app/services/tutor/public_api.py",
+    "aearn/services/api/app/services/tutor/run_loop.py",
+    "aearn/services/api/app/routes/tutor.py",
+    "aearn/apps/desktop/src/api.ts",
+    "aearn/apps/desktop/src/types.ts"
+  ],
+  "notes": "不依赖 UI foundation；实施前核对 pending-input 状态边界。completed 唯一自动 drain，stop 保留并暂停 Queue。 已被 08-13-tutor-queue-steer-interrupt-control 取代；不得继续实施。",
+  "meta": {
+    "dependencies": [
+      "pending-input contract conflict check"
+    ],
+    "parent_requirement_source": ".trellis/tasks/08-13-deepseek-harness-ui-reuse/prd.md",
+    "upstream_revision": "47f943859bef60e4160492346772ded9b24f765a",
+    "superseded_by": "08-13-tutor-queue-steer-interrupt-control",
+    "superseded_on": "2026-08-14",
+    "superseded_reason": "已合并到 Codex-like Tutor conversation 唯一六子任务树；保留归档供来源审计。"
+  }
+}

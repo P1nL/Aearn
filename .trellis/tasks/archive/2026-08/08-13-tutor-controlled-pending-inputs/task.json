@@ -1,0 +1,43 @@
+{
+  "id": "tutor-controlled-pending-inputs",
+  "name": "tutor-controlled-pending-inputs",
+  "title": "建立 Tutor 受控 Pending Input",
+  "description": "实现准确 clarification/planning_input enum、服务端 pending-input projection、受控 question catalog/template、typed answer 校验与 prompt 示例。",
+  "status": "completed",
+  "dev_type": null,
+  "scope": "Tutor continuation enum、pending-input persistence/question catalog、typed answer、prompts 与 contract tests",
+  "package": null,
+  "priority": "P0",
+  "creator": "PINKING",
+  "assignee": "PINKING",
+  "createdAt": "2026-08-13",
+  "completedAt": "2026-08-14",
+  "branch": "codex/dsh-ui-reuse",
+  "base_branch": "main",
+  "worktree_path": "E:\\codee\\Aearn-dsh-ui-reuse",
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "08-13-deepseek-harness-ui-reuse",
+  "relatedFiles": [
+    "aearn/services/api/app/agents/harness/contracts.py",
+    "aearn/services/api/app/services/tutor/decision_protocol.py",
+    "aearn/services/api/app/services/learning/planning_facts.py",
+    "aearn/services/api/app/services/tutor/public_api.py",
+    "aearn/apps/desktop/src/types.ts",
+    "aearn/apps/desktop/src/api.ts"
+  ],
+  "notes": "实施前必须逐文件核对 E:\\codee\\Aearn 原始 dirty worktree 的 continuation/prompt 修改；不依赖 UI foundation。 已被 08-14-tutor-typed-request-authority-turns 取代；不得继续实施。",
+  "meta": {
+    "dependencies": [
+      "parent research",
+      "source worktree overlap audit"
+    ],
+    "parent_requirement_source": ".trellis/tasks/08-13-deepseek-harness-ui-reuse/prd.md",
+    "upstream_revision": "47f943859bef60e4160492346772ded9b24f765a",
+    "superseded_by": "08-14-tutor-typed-request-authority-turns",
+    "superseded_on": "2026-08-14",
+    "superseded_reason": "已合并到 Codex-like Tutor conversation 唯一六子任务树；保留归档供来源审计。"
+  }
+}
