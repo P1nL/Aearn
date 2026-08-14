@@ -215,7 +215,7 @@ def test_proactive_run_reservation_uses_an_internal_background_conversation_and_
         (reservation.conversation_id,),
     ).fetchone()
     run = fixture.connection.execute(
-        "SELECT origin FROM tutor_runs WHERE id = %s",
+        "SELECT origin, interaction_protocol_version FROM tutor_runs WHERE id = %s",
         (reservation.run_id,),
     ).fetchone()
     messages = fixture.connection.execute(
@@ -226,6 +226,6 @@ def test_proactive_run_reservation_uses_an_internal_background_conversation_and_
 
     assert reservation.replayed is False
     assert conversation == {"visibility": "internal", "kind": "proactive"}
-    assert run == {"origin": "proactive"}
+    assert run == {"origin": "proactive", "interaction_protocol_version": "legacy_v1"}
     assert messages == {"count": 0}
     assert snapshot is not None and snapshot.origin == "proactive"

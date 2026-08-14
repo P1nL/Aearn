@@ -1303,6 +1303,18 @@ def _delete_model_review_internal_runs(
         return
     run_id_values = list(run_ids)
     conversation_id_values = list(conversation_ids)
+    conn.execute(
+        "DELETE FROM tutor_interactive_dispatch_jobs WHERE run_id = ANY(%s::uuid[])",
+        (run_id_values,),
+    )
+    conn.execute(
+        """
+        DELETE FROM tutor_conversation_events
+        WHERE user_id = %s
+          AND (turn_id = ANY(%s::uuid[]) OR conversation_id = ANY(%s::uuid[]))
+        """,
+        (user_id, run_id_values, conversation_id_values),
+    )
     for table_name in (
         "tutor_capability_invocations",
         "tutor_run_public_process_steps",

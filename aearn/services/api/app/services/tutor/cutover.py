@@ -122,6 +122,8 @@ CUTOVER_SHARED_TUTOR_TABLES = frozenset(
 _TARGET_COUNT_SQL: tuple[tuple[str, str], ...] = (
     ("tutor_conversations", "SELECT count(*)::int AS count FROM tutor_conversations WHERE user_id = %s"),
     ("tutor_runs", "SELECT count(*)::int AS count FROM tutor_runs WHERE user_id = %s"),
+    ("tutor_conversation_events", "SELECT count(*)::int AS count FROM tutor_conversation_events WHERE user_id = %s"),
+    ("tutor_interactive_dispatch_jobs", "SELECT count(*)::int AS count FROM tutor_interactive_dispatch_jobs WHERE user_id = %s"),
     ("tutor_messages", "SELECT count(*)::int AS count FROM tutor_messages AS messages JOIN tutor_conversations AS conversations ON conversations.id = messages.conversation_id WHERE conversations.user_id = %s"),
     ("tutor_run_input_events", "SELECT count(*)::int AS count FROM tutor_run_input_events AS input_events JOIN tutor_runs AS runs ON runs.id = input_events.run_id WHERE runs.user_id = %s"),
     ("tutor_run_events", "SELECT count(*)::int AS count FROM tutor_run_events AS events JOIN tutor_runs AS runs ON runs.id = events.run_id WHERE runs.user_id = %s"),

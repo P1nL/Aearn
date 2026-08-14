@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 
-from celery import Celery
+from celery import Celery  # type: ignore[import-untyped]
 from dotenv import load_dotenv
 
 
@@ -14,11 +14,40 @@ celery_app = Celery(
     backend=os.getenv("CELERY_RESULT_BACKEND", "redis://127.0.0.1:6379/1"),
 )
 celery_app.conf.update(timezone="Asia/Shanghai", enable_utc=True)
+celery_app.conf.beat_schedule = {
+    "tutor-interactive-reconcile": {
+        "task": "tutor.interactive.reconcile",
+        "schedule": 5.0,
+        "args": (10,),
+        "options": {"queue": "tutor-interactive", "priority": 8},
+    }
+}
 celery_app.conf.task_routes = {
+    "tutor.interactive.dispatch": {"queue": "tutor-interactive", "priority": 9},
+    "tutor.interactive.reconcile": {"queue": "tutor-interactive", "priority": 8},
     "tutor.proactive.scan_due_signals": {"queue": "tutor-proactive", "priority": 5},
     "tutor.proactive.drain_candidates": {"queue": "tutor-proactive", "priority": 5},
     "tutor.curation.drain": {"queue": "tutor-curation", "priority": 1},
 }
+
+
+def _run_tutor_interactive_task(
+    operation: str,
+    *,
+    job_id: str | None = None,
+    limit: int = 10,
+) -> dict[str, object]:
+    """Keep Celery thin: API-side services own dispatch leases and Harness policy."""
+
+    try:
+        from app.services.tutor.interactive_worker import run_tutor_interactive_worker_operation
+    except ImportError:
+        return {
+            "status": "blocked_policy",
+            "code": "api_interactive_worker_unavailable",
+            "processed": 0,
+        }
+    return run_tutor_interactive_worker_operation(operation=operation, job_id=job_id, limit=limit)
 
 
 def _run_tutor_scheduler_task(operation: str, *, limit: int) -> dict[str, object]:
@@ -37,6 +66,16 @@ def _run_tutor_scheduler_task(operation: str, *, limit: int) -> dict[str, object
 @celery_app.task(name="health.ping")
 def ping() -> str:
     return "pong"
+
+
+@celery_app.task(name="tutor.interactive.dispatch", queue="tutor-interactive", priority=9)
+def dispatch_interactive_run(job_id: str | None = None) -> dict[str, object]:
+    return _run_tutor_interactive_task("dispatch", job_id=job_id, limit=1)
+
+
+@celery_app.task(name="tutor.interactive.reconcile", queue="tutor-interactive", priority=8)
+def reconcile_interactive_runs(limit: int = 10) -> dict[str, object]:
+    return _run_tutor_interactive_task("reconcile", limit=limit)
 
 
 @celery_app.task(name="tutor.proactive.scan_due_signals", queue="tutor-proactive", priority=5)

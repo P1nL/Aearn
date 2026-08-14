@@ -1,6 +1,6 @@
 # Tutor Harness Runtime Architecture
 
-**Status:** Current runtime contract as of 2026-08-12.
+**Status:** Current runtime contract as of 2026-08-14.
 **Authority:** Current route registration, `aearn/services/api/app`,
 `aearn/apps/desktop`, `aearn/services/worker`, `services/learning/`,
 `schema.sql`, and their tests.
@@ -31,10 +31,10 @@ legacy learner history.
 | --- | --- | --- |
 | Public adapter | `routes/tutor.py`, `services/tutor/public_api.py` | Validates user scope and idempotency, exposes learner-safe projections, and never performs Graph/router compatibility work. |
 | Learning domain | `routes/learning_tracks.py`, `routes/exercise_gates.py`, `routes/learning_track_reviews.py`, `services/learning/` | Owns track-scoped plans, progress/mastery, immutable LessonDocument/source snapshots/assignments, exercise Gate/Attempt/module-diagnostic authority, spaced-review schedule/session authority, execution-tier projection, immutable scope snapshots, and a read-only Tutor context adapter. |
-| Interactive dispatch | `services/tutor/interactive.py` | Starts an already accepted input only after its transaction commits, composes a bounded loop, and keeps provider failures out of the accepted-input response. |
+| Interactive dispatch | `services/tutor/interactive_worker.py`, `services/tutor/interactive.py` | Claims a PostgreSQL durable job after commit, invokes the existing bounded Harness dispatcher, and maps wakeup/worker failure to retry/dead state without exposing provider errors in the accepted-input response. |
 | Harness | `agents/harness/`, `services/tutor/run_loop.py` | Bounded run loop, lease ownership, input-revision reload, exact Skill selection, capability/effect gate, checkpoint lifecycle, and typed terminal outcome. |
-| Durable state | `services/tutor/persistence.py`, `learner_state.py`, `proactive_repository.py` | PostgreSQL owns user/run/conversation scope, ordered events, idempotency, CAS effects, redacted projections, plan/memory/activity state, and queue leases. |
-| Worker | `services/worker/aearn_worker/worker_app.py` | Thin Celery wrappers for `health.ping`, `tutor.proactive.scan_due_signals`, `tutor.proactive.drain_candidates`, and `tutor.curation.drain`. |
+| Durable state | `services/tutor/persistence.py`, `conversation_contracts.py`, `learner_state.py`, `proactive_repository.py` | PostgreSQL owns protocol version, user/run/conversation scope, run-local and conversation-global ordered events, snapshots, idempotency, durable dispatch leases, CAS effects, redacted projections, and background queues. |
+| Worker | `services/worker/aearn_worker/worker_app.py` | Thin Celery wrappers for `health.ping`, high-priority `tutor.interactive.dispatch/reconcile`, proactive scan/drain, and low-priority curation. Celery is wakeup/periodic scheduling, never the interactive authority. |
 | Desktop | `apps/desktop/src/` | Bootstraps `loading -> welcome -> cutover -> tutor`; it presents server decisions and cannot override them. |
 
 ## 3. Interactive Tutor conversation and finite TurnRun
@@ -76,7 +76,14 @@ explicit server-authorized continuation only
    appends an ordered safe event and updates `last_public_activity_at`. The
    conversation list/history reads never reconstruct raw content from events,
    trace, provider output, or diagnostics.
-5. A post-commit dispatcher obtains a lease and runs the finite Harness loop.
+5. Every new learner-visible fresh turn is explicitly `thread_turn_v2`; historical,
+   proactive, and internal runs remain `legacy_v1`. The accepting transaction creates
+   or rearms exactly one `tutor_interactive_dispatch_jobs` row and appends initial
+   conversation events with the owning mutations. After commit, FastAPI performs a
+   best-effort Celery wakeup plus a local low-latency claim. A duplicate task cannot
+   dispatch without winning the PostgreSQL job lease; expired leases and lost wakeups
+   are recovered by `tutor.interactive.reconcile` from Celery beat.
+6. A claimed dispatcher obtains the existing run lease and runs the finite Harness loop.
    Its provider call is outside an implicit PostgreSQL transaction: lifecycle
    methods own short atomic transactions, so a new ordinary turn can acquire the
    conversation lock while a provider response is pending. The loop refreshes
@@ -88,7 +95,7 @@ explicit server-authorized continuation only
    stale run converges to a safe cancelled/superseded
    projection and cannot write a Tutor message, conversation title, capability
    receipt or effect.
-6. Each interactive context load resolves the authoritative learner input from the exact
+7. Each interactive context load resolves the authoritative learner input from the exact
    `tutor_run_input_events(run_id, input_revision).message_id` evidence within the
    snapshot's user/run/conversation scope. The Harness carries that input separately
    from optional history, reserves its bounded token cost before every optional
@@ -97,10 +104,13 @@ explicit server-authorized continuation only
    suffix using stable `created_at, id` ordering, and presents the selected suffix in
    chronological order. Proactive runs explicitly declare that no learner input is
    required; they never invent chat text.
-7. `GET /api/tutor/runs/{run_id}/events` remains incremental run-local transport
-   using a non-negative `Last-Event-ID` cursor. It never calls a provider while
-   streaming; Desktop history remains the server-authoritative conversation read.
-8. Conversation creation, first-turn, and ordinary-turn requests may carry an
+8. `GET /api/tutor/runs/{run_id}/events` remains incremental run-local compatibility
+   transport using a non-negative `Last-Event-ID` cursor. New
+   `GET /api/tutor/conversations/{conversation_id}/snapshot` returns
+   `tutor_conversation_snapshot_v1`, while `/events` replays only
+   `tutor_conversation_events` with a signed, user/conversation-scoped opaque cursor.
+   Neither stream calls a provider; heartbeat comments do not advance durable sequence.
+9. Conversation creation, first-turn, and ordinary-turn requests may carry an
    additive structured `learning_scope`. Each fresh run writes one immutable
    `tutor_run_learning_scopes` snapshot containing `scope_kind`, `task_kind`,
    optional track, and optional knowledge key. Missing scope remains
@@ -161,13 +171,15 @@ and cannot override the typed fact authority.
 ### Public conversation history and process projection
 
 `GET /api/tutor/conversations` returns only learner-visible conversation
-summaries in public-activity order. `GET /api/tutor/conversations/{id}/history`
-returns reverse chronological public message/process items with a server-signed,
-user- and conversation-scoped opaque cursor. A process item is a durable,
-server-owned projection with one of `thinking`, `completed`, `superseded`, or
-`unavailable`, fixed allowlisted symbolic steps, and server-calculated bounded
-elapsed seconds. Legacy message-only rows remain visible without invented cards
-or durations.
+summaries in public-activity order. The legacy `/history` endpoint keeps its existing
+reverse-chronological message/process shape. The v1 snapshot exposes a strict
+`message | process | elicitation | approval | error` item union, public active-turn
+status (`in_progress | completed | interrupted | failed`), empty request/queue slots
+for later children, and a stream cursor. Current process states are `thinking`,
+`waiting_input`, `waiting_approval`, `waiting_authority`, `completed`, `interrupted`,
+`superseded`, `unavailable`, or `failed`; labels remain server allowlisted and elapsed
+time remains bounded. Legacy message-only rows remain visible without invented cards,
+events, or durations.
 
 The only title source is the same successful `TutorDecision.conversation_title`
 that writes a learner-visible Tutor reply. It is normalized/validated and stored

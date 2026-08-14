@@ -33,6 +33,7 @@ from app.services.learning.track_repository import (
     PostgresLearningTrackRepository,
     ScopeSnapshot,
 )
+from app.services.tutor.conversation_contracts import validate_public_item
 from app.services.tutor.learner_state import (
     TutorActivityRecord,
     TutorInboxItem,
@@ -45,6 +46,8 @@ from app.services.tutor.learner_state import (
 )
 from app.services.tutor.persistence import (
     PostgresTutorRepository,
+    TutorConversationEvent,
+    TutorConversationSnapshot,
     TutorConversationSummary,
     TutorConversationTimelineRecord,
     TutorCursorInvalid,
@@ -90,6 +93,14 @@ class TutorPublicSseEvent:
     event_type: str
     data: dict[str, object]
     terminal: bool = False
+
+
+@dataclass(frozen=True)
+class TutorPublicConversationSseEvent:
+    sequence: int
+    cursor: str
+    event_type: str
+    data: dict[str, object]
 
 
 class TutorPublicService:
@@ -307,11 +318,76 @@ class TutorPublicService:
                 details={"conversation_id": normalized_conversation_id},
             ) from exc
         return {
-            "items": [_timeline_payload(item) for item in items],
+            "items": [_legacy_timeline_payload(item) for item in items],
             "next_cursor": next_cursor,
             "has_more": has_more,
             "active_run": _foreground_run_payload(active_run),
         }
+
+    def read_conversation_snapshot(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str,
+        limit: int,
+        cursor: str | None,
+    ) -> dict[str, object]:
+        normalized_user_id = _uuid_identifier(user_id, label="user_id")
+        normalized_conversation_id = _uuid_identifier(conversation_id, label="conversation_id")
+        self._assert_user_exists(normalized_user_id)
+        try:
+            snapshot = self._repository.read_conversation_snapshot(
+                user_id=normalized_user_id,
+                conversation_id=normalized_conversation_id,
+                limit=limit,
+                cursor=cursor,
+                now=datetime.now(UTC),
+            )
+        except TutorCursorInvalid as exc:
+            raise _cursor_invalid() from exc
+        except TutorRunNotFound as exc:
+            raise TutorPublicApiError(
+                "TUTOR_CONVERSATION_NOT_FOUND",
+                "Tutor conversation was not found for the current learner.",
+                status_code=404,
+                details={"conversation_id": normalized_conversation_id},
+            ) from exc
+        return _conversation_snapshot_payload(snapshot)
+
+    def replay_conversation_events(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str,
+        cursor: str | None,
+        limit: int = 100,
+    ) -> tuple[TutorPublicConversationSseEvent, ...]:
+        normalized_user_id = _uuid_identifier(user_id, label="user_id")
+        normalized_conversation_id = _uuid_identifier(conversation_id, label="conversation_id")
+        self._assert_user_exists(normalized_user_id)
+        try:
+            events = self._repository.conversation_events_after(
+                user_id=normalized_user_id,
+                conversation_id=normalized_conversation_id,
+                cursor=cursor,
+                limit=limit,
+            )
+        except TutorCursorInvalid as exc:
+            raise TutorPublicApiError(
+                "CONVERSATION_CURSOR_INVALID",
+                "The Tutor conversation event cursor is invalid or requires a fresh snapshot.",
+                status_code=400,
+                recoverable=True,
+                details={"conversation_id": normalized_conversation_id},
+            ) from exc
+        except TutorRunNotFound as exc:
+            raise TutorPublicApiError(
+                "TUTOR_CONVERSATION_NOT_FOUND",
+                "Tutor conversation was not found for the current learner.",
+                status_code=404,
+                details={"conversation_id": normalized_conversation_id},
+            ) from exc
+        return tuple(_conversation_sse_event(event) for event in events)
 
     def replay_events(
         self,
@@ -784,6 +860,7 @@ class TutorPublicService:
             "input_revision": acceptance.input_revision,
             "message_id": acceptance.message_id,
             "event_cursor": acceptance.event.event_sequence,
+            "dispatch_job_id": acceptance.dispatch_job_id,
             "merged": True,
             "input_replayed": acceptance.replayed,
             "run": _run_payload(updated),
@@ -1184,6 +1261,9 @@ def _run_payload(state: TutorRunReadState) -> dict[str, object]:
         "continuation_kind": continuation_kind,
         "created_at": _iso(state.created_at),
         "updated_at": _iso(state.updated_at),
+        "interaction_protocol_version": state.interaction_protocol_version.value,
+        "retry_of_turn_id": state.retry_of_turn_id,
+        "retry_root_turn_id": state.retry_root_turn_id,
     }
 
 
@@ -1201,6 +1281,7 @@ def _turn_acceptance_payload(
         "input_revision": accepted.acceptance.input_revision,
         "message_id": accepted.acceptance.message_id,
         "event_cursor": accepted.acceptance.event.event_sequence,
+        "dispatch_job_id": accepted.acceptance.dispatch_job_id,
         "merged": False,
         "input_replayed": accepted.acceptance.replayed,
         "run": _run_payload(state),
@@ -1240,30 +1321,90 @@ def _conversation_summary_payload(item: TutorConversationSummary) -> dict[str, o
 
 
 def _public_process_payload(item: TutorPublicProcessState) -> dict[str, object]:
-    return {
-        "kind": "process",
-        "id": item.run_id,
-        "run_id": item.run_id,
-        "display_state": item.display_state,
-        "steps": [dict(step) for step in item.steps],
-        "elapsed_seconds": item.elapsed_seconds,
-        "created_at": _iso(item.created_at),
-        "finished_at": _iso(item.finished_at),
-    }
+    return validate_public_item(
+        {
+            "kind": "process",
+            "id": item.run_id,
+            "turn_id": item.run_id,
+            "run_id": item.run_id,
+            "display_state": item.display_state,
+            "steps": [dict(step) for step in item.steps],
+            "elapsed_seconds": item.elapsed_seconds,
+            "created_at": _iso(item.created_at),
+            "finished_at": _iso(item.finished_at),
+        }
+    )
+
+
+def _legacy_timeline_payload(item: TutorConversationTimelineRecord) -> dict[str, object]:
+    payload = _timeline_payload(item)
+    payload.pop("turn_id", None)
+    return payload
 
 
 def _timeline_payload(item: TutorConversationTimelineRecord) -> dict[str, object]:
     if item.kind == "process" and item.process is not None:
         return _public_process_payload(item.process)
+    if item.kind == "error" and item.error_code is not None:
+        return validate_public_item(
+            {
+                "kind": "error",
+                "id": item.item_id,
+                "turn_id": item.turn_id,
+                "code": item.error_code,
+                "message": "Tutor 暂时无法完成本轮处理，请重试。",
+                "recoverable": item.error_recoverable,
+                "created_at": _iso(item.created_at),
+            }
+        )
+    return validate_public_item(
+        {
+            "kind": "message",
+            "id": item.item_id,
+            "turn_id": item.turn_id,
+            "role": item.role,
+            "content": item.content or "",
+            "public_thinking_steps": list(item.public_thinking_steps),
+            "context_references": [dict(reference) for reference in item.context_references],
+            "created_at": _iso(item.created_at),
+        }
+    )
+
+
+def _conversation_snapshot_payload(snapshot: TutorConversationSnapshot) -> dict[str, object]:
     return {
-        "kind": "message",
-        "id": item.item_id,
-        "role": item.role,
-        "content": item.content or "",
-        "public_thinking_steps": list(item.public_thinking_steps),
-        "context_references": [dict(reference) for reference in item.context_references],
-        "created_at": _iso(item.created_at),
+        "snapshot_version": snapshot.snapshot_version,
+        "conversation": {
+            "conversation_id": snapshot.conversation_id,
+            "title": snapshot.title or "新对话",
+            "control_version": snapshot.control_version,
+        },
+        "active_turn": dict(snapshot.active_turn) if snapshot.active_turn is not None else None,
+        "pending_requests": [dict(item) for item in snapshot.pending_requests],
+        "queue": [dict(item) for item in snapshot.queue],
+        "timeline": [_timeline_payload(item) for item in snapshot.timeline],
+        "next_cursor": snapshot.next_cursor,
+        "has_more": snapshot.has_more,
+        "stream_cursor": snapshot.stream_cursor,
     }
+
+
+def _conversation_sse_event(event: TutorConversationEvent) -> TutorPublicConversationSseEvent:
+    return TutorPublicConversationSseEvent(
+        sequence=event.sequence,
+        cursor=event.cursor,
+        event_type=event.kind.value,
+        data={
+            "event_id": event.event_id,
+            "sequence": event.sequence,
+            "kind": event.kind.value,
+            "turn_id": event.turn_id,
+            "item_id": event.item_id,
+            "item_kind": event.item_kind,
+            "payload": dict(event.payload),
+            "occurred_at": _iso(event.occurred_at),
+        },
+    )
 
 
 def _plan_revision_payload(item: TutorPlanRevision) -> dict[str, object]:

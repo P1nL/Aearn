@@ -758,3 +758,94 @@ WHERE schedules.user_id = $1
 ```
 
 Then compute `critical_prerequisite_gate` only from the active plan's direct/transitive prerequisite graph. The repository and track-card projection must share this actionable rule, while session creation separately allows only due or critical schedules.
+
+## Scenario: Tutor Conversation Events and Durable Interactive Dispatch
+
+### 1. Scope / Trigger
+
+- Trigger: changing Tutor conversation/thread snapshots, fresh turn creation, learner-safe timeline items, conversation SSE, public event replay, interactive dispatch jobs, worker wakeups, or retry/dead recovery.
+- Scope: `tutor_conversations`, `tutor_runs`, `tutor_conversation_events`, `tutor_interactive_dispatch_jobs`, the Tutor persistence/public service boundary, API routes, and thin Celery adapters.
+- PostgreSQL is the durable authority. Celery and FastAPI background tasks are wakeup mechanisms only and must never become the only copy of accepted work.
+
+### 2. Signatures
+
+- Conversation authority: `tutor_conversations(next_public_event_sequence bigint, control_version bigint)`.
+- Run protocol: `tutor_runs.interaction_protocol_version in (legacy_v1, thread_turn_v2)` with scoped retry lineage foreign keys.
+- Event identity: `(conversation_id, event_sequence)` plus idempotent `(conversation_id, event_key)`; payloads use `tutor_conversation_event_v1`.
+- Dispatch identity: one `tutor_interactive_dispatch_jobs` row per run with `state`, `attempt_count`, `available_at`, `lease_owner`, `lease_generation`, and `lease_expires_at`.
+- Public reads: `GET /api/tutor/conversations/{conversation_id}/snapshot` and `GET /api/tutor/conversations/{conversation_id}/events` with a signed, conversation-scoped cursor.
+- Worker operations: `dispatch(job_id?)` claims at most one job; `reconcile(limit)` repeatedly claims bounded eligible work.
+
+### 3. Contracts
+
+- A fresh `thread_turn_v2` mutation must create the run, learner input/process projection, initial public events, and dispatch job in one database transaction.
+- Allocate `event_sequence` by locking the owning conversation row, incrementing `next_public_event_sequence`, and inserting the event before commit. Do not derive sequence from timestamps, UUIDs, or run-local input revisions.
+- Validate every event payload against a closed learner-safe schema before persistence. Public events contain IDs, enums, versions, attempts, and safe codes; they never contain raw reasoning, prompts, provider bodies, capability arguments, hidden tests, credentials, paths, or commands.
+- A repeated event key is an idempotent replay only when kind, scoped identity, and canonical payload match. Conflicting reuse fails closed.
+- The signed stream cursor binds version, conversation ID, and sequence. Cross-conversation, malformed, future, or unsupported cursors produce a stable recoverable API error; heartbeats do not write events or advance the cursor.
+- Claiming a dispatch job requires a lease owner and generation. Completion or retry must compare both values so a stale worker cannot finalize work after lease recovery.
+- Retry exhaustion moves the job to `dead`, terminalizes the owning run/process with a safe public error projection, and appends dispatch/turn/item events in the same transaction.
+- Historical `legacy_v1` conversations do not require event backfill. Snapshot may project their existing message/process history, while conversation SSE remains event-table-only.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required result |
+| --- | --- |
+| Initial event or dispatch-job insert fails | Roll back the complete fresh-turn mutation; no orphan run or accepted input |
+| Duplicate event key with identical canonical identity/payload | Return the existing event without advancing sequence |
+| Duplicate event key with different kind, identity, or payload | Fail closed; do not overwrite the existing event |
+| Cursor belongs to another conversation, has an unknown version, or is malformed | Stable recoverable cursor error; client rebuilds from snapshot |
+| Cursor sequence is ahead of committed conversation authority | Reject as invalid/future; do not silently clamp |
+| Celery publish or local background wakeup fails | Keep job pending/retryable; periodic reconciler remains able to claim it |
+| Worker crashes after lease claim | Lease expiry permits a later generation to reclaim; stale generation cannot complete |
+| Retry budget is exhausted | Job `dead`, run/process terminal, learner-safe error item/event, no raw exception text |
+| Legacy conversation has no public events | Snapshot projects bounded legacy history; no synthetic event backfill |
+
+### 5. Good / Base / Bad Cases
+
+- Good: one transaction creates a fresh v2 turn, input/process items, ordered events, and one pending job; either the API fast path or Celery claims it, and duplicate wakeups lose the same lease/CAS authority.
+- Good: two concurrent event writers serialize on the conversation row and commit distinct contiguous sequences; replaying one event key returns its original event.
+- Base: the broker is unavailable. The HTTP mutation still commits durable work, logs only job/run IDs and a safe diagnostic code, and the reconciler dispatches it later.
+- Base: a legacy conversation has no event rows. Snapshot returns its existing message/process timeline and an empty event cursor without changing historical data.
+- Bad: create a run and use only `BackgroundTasks.add_task(...)`; process loss after the response silently drops accepted learner work.
+- Bad: use `MAX(event_sequence) + 1`, `created_at`, UUID order, or a run-local revision as conversation-global ordering authority.
+- Bad: put raw `tutor_run_events` payloads, provider errors, prompts, reasoning, or learner content into the public event log or worker logs.
+
+### 6. Tests Required
+
+- Bootstrap twice and assert conversation authority columns, protocol checks, event/job tables, indexes, scoped foreign keys, append-only trigger, and cleanup/cutover inventory.
+- Transaction rollback test: force an event/job failure and assert no run, input, item, event, or job residue remains.
+- Event tests: concurrent contiguous allocation, idempotent replay, conflicting-key rejection, append-only enforcement, identity scoping, and canonical payload validation.
+- Snapshot/SSE tests: scoped signed cursor, reconnect replay, duplicate-item prevention, heartbeat behavior, future/version/cross-conversation errors, and legacy projection without event backfill.
+- Dispatch tests: duplicate wakeup, single claimant, lease expiry, stale-generation rejection, retry/backoff, continuation retry-budget reset, dead terminalization, and safe error projection.
+- Worker tests: Celery task names/routes/priorities, periodic reconciler schedule, thin adapter imports, and broker-loss recovery without real network/provider calls.
+- Run the complete API pytest suite, Ruff, Mypy, `uv lock --check`, compileall, Trellis validation, and `git diff --check` before commit.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+run = repository.create_run(input_payload)
+background_tasks.add_task(dispatcher.dispatch, run.id)
+return {"run_id": run.id}
+```
+
+The accepted work has no durable dispatch authority, and process loss can leave an orphan in-progress turn.
+
+#### Correct
+
+```python
+with transaction(conn):
+    run = repository.create_fresh_v2_turn(input_payload)
+    event = repository.append_conversation_event(
+        conversation_id=run.conversation_id,
+        event_key=f"turn:{run.id}:created",
+        payload=learner_safe_turn_reference(run),
+    )
+    job = repository.create_interactive_dispatch_job(run_id=run.id)
+
+best_effort_enqueue(job.id)  # PostgreSQL reconciler remains authoritative.
+```
+
+The owning mutation, public ordering authority, and recoverable dispatch job commit together; wakeup loss does not lose accepted work.

@@ -1,4 +1,4 @@
-# pnpm --dir .\aearn dev：启动 Docker 依赖、bootstrap DB、API、Celery worker、Tauri desktop
+# pnpm --dir .\aearn dev：启动 Docker 依赖、bootstrap DB、API、Celery worker/beat、Tauri desktop
 # pnpm --dir .\aearn dev:status：查看状态
 # pnpm --dir .\aearn dev:restart：重启本脚本拉起的进程
 # pnpm --dir .\aearn dev:stop：停止本脚本拉起的 API/worker/desktop
@@ -114,7 +114,8 @@ function Find-ProcessIdByCommand([string]$Regex) {
 function Get-TrackedProcessPattern([string]$Key) {
   switch ($Key) {
     "apiPid" { return "uv --directory .*python -m uvicorn app\.main:app" }
-    "workerPid" { return "aearn_worker\.worker_app:celery_app" }
+    "workerPid" { return "aearn_worker\.worker_app:celery_app worker" }
+    "beatPid" { return "aearn_worker\.worker_app:celery_app beat" }
     "desktopPid" { return "pnpm --dir .*desktop:dev" }
     default { return $null }
   }
@@ -164,7 +165,7 @@ function Stop-ProcessTree([int]$ProcessId) {
 
 function Stop-TrackedProcesses {
   $state = Read-State
-  foreach ($key in @("apiPid", "workerPid", "desktopPid")) {
+  foreach ($key in @("apiPid", "workerPid", "beatPid", "desktopPid")) {
     if ($state.Contains($key) -and $state[$key]) {
       $processId = [int]$state[$key]
       $tracked = Get-TrackedProcessStatus -Key $key -ProcessId $processId
@@ -232,7 +233,7 @@ function Show-Status {
     Write-Host "    startedAt: $($state.startedAt)"
   }
   $printedPid = $false
-  foreach ($key in @("apiPid", "workerPid", "desktopPid")) {
+  foreach ($key in @("apiPid", "workerPid", "beatPid", "desktopPid")) {
     if ($state.Contains($key) -and $state[$key]) {
       $printedPid = $true
       $processId = [int]$state[$key]
@@ -303,7 +304,7 @@ if (Test-Http $apiHealthUrl) {
 }
 
 if (-not $NoWorker) {
-  $workerPid = Find-ProcessIdByCommand "aearn_worker\.worker_app:celery_app"
+  $workerPid = Find-ProcessIdByCommand "aearn_worker\.worker_app:celery_app worker"
   if ($workerPid) {
     Write-Step "worker already running, pid=$workerPid"
     $state.workerPid = $workerPid
@@ -316,6 +317,21 @@ if (-not $NoWorker) {
       -OutLog $workerOutLog `
       -ErrLog $workerErrLog
     Wait-LogContains -Paths @($workerOutLog, $workerErrLog) -Pattern "ready" -Name "worker"
+  }
+
+  $beatPid = Find-ProcessIdByCommand "aearn_worker\.worker_app:celery_app beat"
+  if ($beatPid) {
+    Write-Step "beat already running, pid=$beatPid"
+    $state.beatPid = $beatPid
+  } else {
+    $beatOutLog = Join-Path $LogDir "beat-dev.out.log"
+    $beatErrLog = Join-Path $LogDir "beat-dev.err.log"
+    $state.beatPid = Start-ManagedProcess `
+      -Name "beat" `
+      -Command "uv --directory `"$ApiDir`" run python -m celery -A aearn_worker.worker_app:celery_app beat --loglevel=info --pidfile=" `
+      -OutLog $beatOutLog `
+      -ErrLog $beatErrLog
+    Wait-LogContains -Paths @($beatOutLog, $beatErrLog) -Pattern "beat: Starting" -Name "beat"
   }
 }
 

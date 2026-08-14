@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from time import monotonic
 from collections.abc import AsyncGenerator, Callable
 from typing import TypeVar
 
@@ -21,8 +22,14 @@ from app.models.tutor import (
 )
 from app.services.streaming.sse import sse_event, stream_response
 from app.services.tutor.interactive import TutorRunDispatcher, build_tutor_run_dispatcher
+from app.services.tutor.interactive_worker import TutorInteractiveWorker, enqueue_tutor_interactive_dispatch
 from app.services.tutor.cutover import runtime_gate_error
-from app.services.tutor.public_api import TutorPublicApiError, TutorPublicService, TutorPublicSseEvent
+from app.services.tutor.public_api import (
+    TutorPublicApiError,
+    TutorPublicConversationSseEvent,
+    TutorPublicService,
+    TutorPublicSseEvent,
+)
 
 
 router = APIRouter(prefix="/api/tutor", tags=["tutor"])
@@ -106,6 +113,63 @@ def read_conversation_history(
         ),
     )
     return response if isinstance(response, JSONResponse) else JSONResponse(status_code=status.HTTP_200_OK, content=jsonable_encoder(response))
+
+
+@router.get("/conversations/{conversation_id}/snapshot", response_model=None)
+def read_conversation_snapshot(
+    conversation_id: str,
+    request: Request,
+    user_id: str = Query(min_length=1),
+    limit: int = Query(default=40, ge=1, le=40),
+    cursor: str | None = Query(default=None, min_length=1, max_length=2048),
+) -> JSONResponse:
+    unavailable = _require_tutor_route(request, user_id)
+    if unavailable is not None:
+        return unavailable
+    response = _call_service(
+        request,
+        lambda service: service.read_conversation_snapshot(
+            user_id=user_id,
+            conversation_id=conversation_id,
+            limit=limit,
+            cursor=cursor,
+        ),
+    )
+    return response if isinstance(response, JSONResponse) else JSONResponse(
+        status_code=status.HTTP_200_OK,
+        content=jsonable_encoder(response),
+    )
+
+
+@router.get("/conversations/{conversation_id}/events", response_model=None)
+async def stream_conversation_events(
+    conversation_id: str,
+    request: Request,
+    user_id: str = Query(min_length=1),
+) -> JSONResponse | StreamingResponse:
+    unavailable = _require_tutor_route(request, user_id)
+    if unavailable is not None:
+        return unavailable
+    cursor = request.headers.get("Last-Event-ID") or None
+    preflight = _call_service(
+        request,
+        lambda service: service.replay_conversation_events(
+            user_id=user_id,
+            conversation_id=conversation_id,
+            cursor=cursor,
+            limit=1,
+        ),
+    )
+    if isinstance(preflight, JSONResponse):
+        return preflight
+    return stream_response(
+        _conversation_event_stream(
+            request=request,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            cursor=cursor,
+        )
+    )
 
 
 @router.post("/conversations", response_model=None)
@@ -458,6 +522,46 @@ def update_preferences(
     return response if isinstance(response, JSONResponse) else JSONResponse(status_code=status.HTTP_200_OK, content=jsonable_encoder(response))
 
 
+async def _conversation_event_stream(
+    *,
+    request: Request,
+    user_id: str,
+    conversation_id: str,
+    cursor: str | None,
+) -> AsyncGenerator[str, None]:
+    current_cursor = cursor
+    request_id = request_id_from(request)
+    last_heartbeat = monotonic()
+    while True:
+        try:
+            with connect() as conn:
+                service = TutorPublicService(conn, settings=get_settings())
+                events = service.replay_conversation_events(
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                    cursor=current_cursor,
+                    limit=100,
+                )
+        except TutorPublicApiError as exc:
+            yield _sse_error_frame(request_id=request_id, error=exc)
+            return
+        for event in events:
+            yield _conversation_sse_frame(request_id=request_id, event=event)
+            current_cursor = event.cursor
+        if await request.is_disconnected():
+            return
+        if monotonic() - last_heartbeat >= 15:
+            yield ": heartbeat\n\n"
+            last_heartbeat = monotonic()
+        await asyncio.sleep(0.25)
+
+
+def _conversation_sse_frame(*, request_id: str, event: TutorPublicConversationSseEvent) -> str:
+    data = dict(event.data)
+    data.setdefault("request_id", request_id)
+    return sse_event(event.event_type, data, event_id=event.cursor)
+
+
 async def _event_stream(
     *,
     request: Request,
@@ -560,31 +664,47 @@ def _schedule_interactive_dispatch(
     user_id: str,
     response: dict[str, object],
 ) -> None:
-    """Start only newly accepted inputs after their transaction has committed."""
+    """Wake the durable job after commit; a local fast path preserves low latency."""
 
     if bool(response.get("idempotent_replayed")):
         return
+    job_id = response.get("dispatch_job_id")
     run_id = response.get("run_id")
-    if not isinstance(run_id, str) or not run_id:
+    if isinstance(job_id, str) and job_id:
+        background_tasks.add_task(_wake_and_dispatch_interactive_job, dispatcher, job_id)
         return
-    background_tasks.add_task(_dispatch_interactive_run, dispatcher, user_id, run_id)
+    if isinstance(run_id, str) and run_id:
+        # Bounded legacy compatibility until the later global cutover child retires it.
+        background_tasks.add_task(_dispatch_legacy_interactive_run, dispatcher, user_id, run_id)
 
 
-def _dispatch_interactive_run(dispatcher: TutorRunDispatcher, user_id: str, run_id: str) -> None:
-    """Keep post-response failures out of the learner-facing accepted-input reply."""
+def _wake_and_dispatch_interactive_job(dispatcher: TutorRunDispatcher, job_id: str) -> None:
+    enqueue_tutor_interactive_dispatch(job_id)
+    try:
+        TutorInteractiveWorker(
+            settings=get_settings(),
+            dispatcher=dispatcher,
+            owner_id=f"tutor-api:{job_id}",
+        ).dispatch_job(job_id=job_id)
+    except Exception:  # noqa: BLE001 - PostgreSQL reconciler owns recovery.
+        logger.warning("Tutor interactive local wakeup failed job_id=%s code=dispatch_deferred", job_id)
+
+
+def _dispatch_legacy_interactive_run(dispatcher: TutorRunDispatcher, user_id: str, run_id: str) -> None:
+    """Keep the bounded legacy post-response behavior until global v2 cutover."""
 
     try:
         dispatcher.dispatch(user_id=user_id, run_id=run_id)
-    except Exception:
-        logger.exception("Tutor interactive dispatcher failed for run_id=%s", run_id)
+    except Exception:  # noqa: BLE001 - legacy route response is already committed.
+        logger.warning("Tutor legacy dispatcher failed run_id=%s code=dispatch_failed", run_id)
 
 
 def _call_service(
     request: Request,
-    action: Callable[[TutorPublicService], dict[str, object]],
+    action: Callable[[TutorPublicService], T],
     *,
     commit: bool = False,
-) -> dict[str, object] | JSONResponse:
+) -> T | JSONResponse:
     with connect() as conn:
         service = TutorPublicService(conn, settings=get_settings())
         try:

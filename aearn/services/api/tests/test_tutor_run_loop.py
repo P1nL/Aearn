@@ -704,7 +704,7 @@ def test_harness_and_tutor_modules_do_not_depend_on_retired_runtime_or_storage_b
     for path in files:
         source = path.read_text(encoding="utf-8")
         forbidden_for_path = forbidden
-        if path.name == "proactive_worker.py":
+        if path.name in {"proactive_worker.py", "interactive_worker.py"}:
             # Child 04 owns the one bounded API-side worker adapter. It may open
             # the target database connection, but never imports legacy Graph,
             # route, streaming, or product-conversation boundaries.
