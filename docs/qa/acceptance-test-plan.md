@@ -352,3 +352,15 @@ contract，不访问真实 provider、不启动或批准生产 container fleet�
 
 默认验证使用 fake/disabled provider 与本地 PostgreSQL，不调用真实 provider、不执行生产 cutover、
 不部署，也不据此宣称真实模型质量或 release approval。
+
+
+## 2026-08-14：thread/turn v2 全局 cutover 验收增量
+
+| ID | 优先级 | 范围 | 证据 |
+| --- | --- | --- | --- |
+| RT-45 | P0 | singleton/advisory/generation | 并发 prepare 单 winner、同 key replay、不同 generation conflict | `test_tutor_thread_turn_cutover.py` |
+| RT-46 | P0 | legacy convergence/effect block | waiting fresh-turn error、active interrupted/lease clear、ambiguous effect blocked、late write fenced | cutover + run-loop/effect tests |
+| RT-47 | P0 | effective gate/rollback/410 | env+DB matrix、worker/reconciler block、legacy POST no-side-effect 410、rollback no reopen | route/worker/cutover tests |
+| FE-09 | P1 | capability exact DTO | Desktop parser/build 拒绝 unknown state/field，客户端不猜测 enable | Desktop Vitest + `desktop:check` |
+
+默认验证不调用真实 provider、不执行生产 cutover、不部署。

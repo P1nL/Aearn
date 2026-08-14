@@ -895,3 +895,12 @@ SELECT * FROM tutor_conversations WHERE id = $1 AND user_id = $2 FOR UPDATE;
 SELECT count(*) FROM tutor_queued_inputs WHERE conversation_id = $1 AND state = 'pending';
 ```
 先取得 conversation authority，再执行 Queue/item/run CAS。
+
+
+## 场景：Tutor thread/turn v2 全局 cutover authority（2026-08-14）
+
+- `tutor_thread_turn_cutovers` 是全局 singleton，状态仅为 `idle|preparing|blocked|ready|enabled`；所有 operator mutation 使用固定 PostgreSQL advisory lock、generation CAS 与 idempotency body hash。
+- 有效 mutation gate 为 `TUTOR_THREAD_TURN_V2_ENABLED=true` 且 DB state=`enabled`。环境变量只是 kill switch，DB row 是跨进程原子 authority。
+- preparing 后 legacy active run 只按闭合分类收口：`waiting_for_input` -> failed + `legacy_continuation_requires_new_turn`；`queued|leased|running|waiting_for_capability` -> cancelled + `legacy_protocol_cutover`，并清 lease/job。
+- `awaiting_effect_commit`、`tutor_effects.status=proposed` 或未终态 Action receipt 必须 blocked；不得猜测成功/失败。
+- `tutor_thread_turn_cutover_events` append-only，只保存 generation、state、safe counts/code/timestamp，不保存 learner/provider 内容。两张全局表属于 shared cutover infrastructure，不是 user-owned target state。

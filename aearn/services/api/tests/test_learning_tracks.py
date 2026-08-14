@@ -261,7 +261,7 @@ def test_tutor_scope_snapshot_defaults_to_general_and_continuation_is_immutable(
         f"/api/tutor/runs/{run_id}/inputs",
         json=action_payload(user_id, "scope-legacy-continuation", content="我准备好了。"),
     )
-    assert_error(legacy_continuation, "RUN_NOT_ACTIVE", 409)
+    assert_error(legacy_continuation, "TUTOR_LEGACY_CONTINUATION_DISABLED", 410)
 
     snapshot = tutor_client.get(
         f"/api/tutor/conversations/{scoped.json()['conversation_id']}/snapshot?user_id={user_id}"
@@ -312,7 +312,9 @@ def test_tutor_scope_snapshot_defaults_to_general_and_continuation_is_immutable(
 
 def test_conversation_binding_rejects_run_only_scope_fields(
     tutor_client: TestClient,
+    tutor_api_settings: Settings,
 ) -> None:
+    del tutor_api_settings
     user = create_tutor_user(tutor_client)
     user_id = str(user["id"])
     created = tutor_client.post(

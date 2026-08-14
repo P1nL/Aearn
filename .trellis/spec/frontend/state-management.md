@@ -149,3 +149,9 @@ Persist the user boundary before rendering new facts, then persist the plan only
 - Composer 普通 Send 的返回可能是 accepted turn 或 queued item；queued 分支只合并服务器响应并触发 snapshot/Queue refresh。
 - edit/delete/reorder/Steer/Interrupt/resume/execute/Retry mutation 必须携带最后一次服务器读取的 expected version；409 后重读 authority，不重放本地猜测状态。
 - 最终 Desktop migration 可为 Queue 增加临时编辑/drag state，但 mutation 成功前不得覆盖 authoritative items；SSE reconnect 或 snapshot rebuild 应替换而非拼接 Queue。
+
+
+## Tutor v2 capability 服务端权威（2026-08-14）
+
+- Desktop bootstrap/恢复必须把 thread-turn capability 当服务器状态；`effective_enabled=false` 时 mutation 进入只读 unavailable，不回退 legacy continuation。
+- capability refresh 替换本地 projection；不得本地推进 generation/state、恢复已收口 legacy run 或绕过 blocked。

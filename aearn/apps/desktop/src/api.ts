@@ -3,6 +3,7 @@ import {
   type ApiError,
   type ApiHealth,
   type HarnessCutoverDecision,
+  type TutorThreadTurnV2Capability,
   type LanguageCourse,
   type LessonAssignment,
   type LessonAuthoringRun,
@@ -116,6 +117,16 @@ export async function fetchUserProfile(userId: string, signal?: AbortSignal): Pr
   const payload = await requestJson(`${API_BASE_URL}/api/users/${encodeURIComponent(userId)}`, { signal });
   if (!isRecord(payload) || !isUserProfile(payload.user)) throw new Error("User profile API returned an invalid payload");
   return payload.user;
+}
+
+export async function fetchTutorThreadTurnV2Capability(
+  userId: string,
+  signal?: AbortSignal,
+): Promise<TutorThreadTurnV2Capability> {
+  const payload = await requestJson(`/api/tutor/capabilities/thread-turn-v2?user_id=${encodeURIComponent(userId)}`, { signal });
+  const parsed = parseTutorThreadTurnV2Capability(payload);
+  if (!parsed) throw new Error("Tutor thread/turn v2 capability API returned an invalid payload");
+  return parsed;
 }
 
 export async function fetchHarnessCutover(userId: string, signal?: AbortSignal): Promise<HarnessCutoverDecision> {
@@ -1236,6 +1247,39 @@ function isUserProfile(payload: unknown): payload is UserProfile {
     isString(payload.created_at) &&
     isString(payload.updated_at)
   );
+}
+
+function parseTutorThreadTurnV2Capability(payload: unknown): TutorThreadTurnV2Capability | null {
+  const keys = [
+    "schema_version", "cutover_version", "desktop_contract_version", "env_allowed", "state",
+    "generation", "summary_hash", "block_code", "effective_enabled", "counts",
+    "prepared_at", "enabled_at", "updated_at",
+  ];
+  if (!isRecord(payload) || !hasExactKeys(payload, keys)) return null;
+  if (payload.schema_version !== "tutor_thread_turn_v2_capability_v1" ||
+      payload.cutover_version !== "tutor_thread_turn_v2_global_v1" ||
+      payload.desktop_contract_version !== "tutor_thread_turn_v2_desktop_v1" ||
+      typeof payload.env_allowed !== "boolean" || typeof payload.effective_enabled !== "boolean" ||
+      !isNonNegativeSafeInteger(payload.generation) || !isNullableString(payload.summary_hash) ||
+      !isNullableString(payload.block_code) || !isNullableString(payload.prepared_at) ||
+      !isNullableString(payload.enabled_at) || !isNullableString(payload.updated_at) ||
+      !isRecord(payload.counts) || !isTutorThreadTurnV2State(payload.state)) return null;
+  for (const value of Object.values(payload.counts)) {
+    if (typeof value === "boolean" || typeof value === "string" || isNonNegativeSafeInteger(value)) continue;
+    if (!isRecord(value) || Object.values(value).some((item) => !isNonNegativeSafeInteger(item))) return null;
+  }
+  return {
+    schema_version: "tutor_thread_turn_v2_capability_v1", cutover_version: "tutor_thread_turn_v2_global_v1",
+    desktop_contract_version: "tutor_thread_turn_v2_desktop_v1", env_allowed: payload.env_allowed,
+    state: payload.state, generation: payload.generation, summary_hash: payload.summary_hash,
+    block_code: payload.block_code, effective_enabled: payload.effective_enabled,
+    counts: payload.counts as TutorThreadTurnV2Capability["counts"], prepared_at: payload.prepared_at,
+    enabled_at: payload.enabled_at, updated_at: payload.updated_at,
+  };
+}
+
+function isTutorThreadTurnV2State(value: unknown): value is TutorThreadTurnV2Capability["state"] {
+  return value === "idle" || value === "preparing" || value === "blocked" || value === "ready" || value === "enabled";
 }
 
 function isHarnessCutoverDecision(payload: unknown): payload is HarnessCutoverDecision {

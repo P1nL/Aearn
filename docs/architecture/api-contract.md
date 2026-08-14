@@ -614,3 +614,11 @@ Attempt 不存在为 `404 CONTEXT_REFERENCE_NOT_FOUND`；缺少真实 execution 
 `tests/test_learning_agent_integration_matrix.py` 对 Python、JavaScript、TypeScript、SQL 逐一验证 track/plan、source-backed Lesson、active assignment、Gate、terminal feedback、private submission persistence、mastery/progress、due review、ReviewSession finalization 与 learner-safe projection。相同 fixture 同时断言：空 `image-locks.json` 下 public execution-required Gate 没有 `allowed_actions`，development fixture 只能返回 `teaching_local`。
 
 公开响应的敏感字段审计按字段名递归执行，覆盖 Gate/Attempt/Review projections；既有专项测试继续覆盖 SSE/history/public process/trace/checkpoint/activity/inbox/export。任何完整 submission、private test/rubric/reference answer、raw provider/executor body、command/path/container/secret 都只能留在私有存储或被完全省略。
+
+
+## 2026-08-14：Tutor thread/turn v2 全局 cutover API
+
+- `GET /api/tutor/capabilities/thread-turn-v2?user_id=...` 返回 `tutor_thread_turn_v2_capability_v1`：`cutover_version=tutor_thread_turn_v2_global_v1`、`desktop_contract_version=tutor_thread_turn_v2_desktop_v1`、env/state/generation/summary/block/effective gate、安全 counts 与时间。
+- 所有 Tutor mutation 仅在 `TUTOR_THREAD_TURN_V2_ENABLED=true` 且 DB state=`enabled` 时开放；否则返回 `503 TUTOR_THREAD_TURN_V2_UNAVAILABLE|PREPARING|BLOCKED`。history/snapshot/run detail/SSE 继续只读。
+- `POST /api/tutor/runs/{run_id}/inputs` 对任意 run 固定返回无副作用 `410 TUTOR_LEGACY_CONTINUATION_DISABLED`，`next_action=start_new_turn`。
+- legacy waiting migration 的 run SSE 公开 `TUTOR_LEGACY_CONTINUATION_REQUIRES_NEW_TURN`；其他 cutover cancellation 仍投影普通 interrupted/RUN_NOT_ACTIVE，不新增专用卡片。

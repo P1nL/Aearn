@@ -53,6 +53,18 @@ def _run_tutor_interactive_task(
 def _run_tutor_scheduler_task(operation: str, *, limit: int) -> dict[str, object]:
     """Keep Celery thin: API-side services own PostgreSQL state and policy."""
     try:
+        from app.core.config import get_settings
+        from app.db.connection import connect
+        from app.services.tutor.thread_turn_cutover import TutorThreadTurnCutoverService
+        with connect() as conn:
+            TutorThreadTurnCutoverService(conn).assert_mutation_allowed(settings=get_settings())
+    except Exception as exc:
+        return {
+            "status": "blocked_policy",
+            "code": getattr(exc, "code", "api_scheduler_service_unavailable"),
+            "processed": 0,
+        }
+    try:
         from app.services.tutor.proactive_worker import run_tutor_scheduler_operation
     except ImportError:
         return {

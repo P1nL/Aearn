@@ -416,3 +416,8 @@ answer lineage 与 `resolved_at` 必须为空；resolved state 必须有 `resolv
 server-owned proposal identity/authority key/risk；authority request 必须保存 exact request hash，receipt
 则绑定 issuer/subject/scope/request/result hash 与 verification result。公开 projection 从 typed columns 和
 allowlisted JSON serializer 构造，不直接回放 provider JSON。cutover target inventory 已显式包含该表。
+
+
+## 2026-08-14：thread/turn v2 全局 cutover authority
+
+`tutor_thread_turn_cutovers` 保存单例 state/generation/summary hash/safe counts/block code/operator idempotency/timestamps；`tutor_thread_turn_cutover_events` 是 append-only 安全审计。两表是 shared infrastructure。preparing 下 legacy waiting run 失败并要求 fresh v2 turn，其他可取消 active run 立即 cancelled/清 lease；ambiguous effect/action receipt 保持原状并使 singleton blocked。enable 只允许 ready 的 exact generation+summary，rollback 只回到 ready/read-only，不恢复 legacy mutation 或数据。

@@ -21,8 +21,10 @@ from app.agents.harness.contracts import (
 )
 from app.core.config import Settings, get_settings
 from app.db.bootstrap import bootstrap_database
+from app.db.connection import connect
 from app.main import app
 from app.services.tutor.interactive import TutorInteractiveRunDispatcher
+from app.services.tutor.thread_turn_cutover import THREAD_TURN_CUTOVER_VERSION
 
 
 def tutor_database_available() -> bool:
@@ -45,7 +47,7 @@ def tutor_client() -> Iterator[TestClient]:
 
 @pytest.fixture
 def tutor_api_settings(monkeypatch: pytest.MonkeyPatch) -> Settings:
-    settings = Settings(llm_type="disabled")
+    settings = Settings(llm_type="disabled", tutor_thread_turn_v2_enabled=True)
     monkeypatch.setattr(tutor_route, "get_settings", lambda: settings)
     return settings
 
@@ -63,6 +65,20 @@ def create_tutor_user(client: TestClient) -> dict[str, object]:
     decision = client.get(f"/api/harness/cutover?user_id={user['id']}")
     assert decision.status_code == 200
     assert decision.json()["state"] == "verified"
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO tutor_thread_turn_cutovers (
+              cutover_version, state, generation, summary_hash, counts_json, ready_at, enabled_at
+            ) VALUES (%s, 'enabled', 1, %s, '{}'::jsonb, now(), now())
+            ON CONFLICT (cutover_version) DO UPDATE
+            SET state = 'enabled', generation = GREATEST(tutor_thread_turn_cutovers.generation, 1),
+                summary_hash = EXCLUDED.summary_hash, counts_json = '{}'::jsonb,
+                block_code = NULL, ready_at = now(), enabled_at = now()
+            """,
+            (THREAD_TURN_CUTOVER_VERSION, "0" * 64),
+        )
+        conn.commit()
     return user
 
 

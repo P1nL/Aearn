@@ -3606,3 +3606,12 @@ The strict candidate, evidence set, quality report, and final persisted authorit
 - validation completion 必须匹配 exact runtime、test count/order/visibility 和服务端 expected outcome。
   executor 可读取 private DSL，但传给 sandbox 前必须剥离 template test id、expected-pass 与 proof metadata。
 - 默认测试使用 fake provider 与 deterministic template，不把真实 provider 或生产 image fleet 视为已验证。
+
+
+## 场景：Tutor thread/turn v2 全局切换质量门（2026-08-14）
+
+- 所有 Tutor mutation、interactive worker/reconciler 与 Celery scheduler wakeup 必须读取 env+DB effective gate；history/snapshot/run detail/SSE read 保持可用。
+- `POST /api/tutor/runs/{run_id}/inputs` 是 service 前 `410 TUTOR_LEGACY_CONTINUATION_DISABLED` tombstone，不得打开 target service transaction、写 idempotency 或调度任务。
+- prepare 先提交 `preparing` freeze，再 inventory/terminalize；并发 prepare 只有一个 generation winner，重放同 key/body 不递增。
+- late provider/capability/effect 依赖 terminal/cancel/lease CAS 屏障，不能在 cutover 后写 learner message、effect 或 public success。
+- rollback 只把 DB authority 从 enabled 退回 ready/read-only；旧 POST 仍 410，legacy run 不复活。默认测试不访问真实 provider、不执行生产 cutover。
