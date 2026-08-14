@@ -1,0 +1,55 @@
+{
+  "id": "tutor-queue-steer-interrupt-control",
+  "name": "tutor-queue-steer-interrupt-control",
+  "title": "Tutor 队列、引导、中断与重试控制",
+  "description": "实现默认 Queue、显式 Steer、Interrupt、pause/resume/execute、Retry 与确定性并发控制。",
+  "status": "completed",
+  "dev_type": null,
+  "scope": "Tutor Queue、Steer、Interrupt、pause/resume/execute、Retry 与 run-loop 安全",
+  "package": null,
+  "priority": "P1",
+  "creator": "PINKING",
+  "assignee": "PINKING",
+  "createdAt": "2026-08-13",
+  "completedAt": "2026-08-15",
+  "branch": "codex/codex-like-tutor-conversation",
+  "base_branch": "main",
+  "worktree_path": "E:\\codee\\Aearn-dsh-ui-reuse",
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "08-13-codex-like-tutor-conversation-experience",
+  "relatedFiles": [
+    "aearn/services/api/app/db/schema.sql",
+    "aearn/services/api/app/services/tutor/run_loop.py",
+    "aearn/services/api/app/services/tutor/persistence.py",
+    "aearn/services/api/app/services/tutor/public_api.py",
+    "aearn/services/api/app/services/tutor/interactive.py",
+    "aearn/services/api/app/routes/tutor.py",
+    "aearn/services/worker/aearn_worker/worker_app.py"
+  ],
+  "notes": "执行顺序 4；依赖 Thread/Turn/Event 底座与 typed request authority，不拥有全局 cutover。",
+  "meta": {
+    "execution_order": 4,
+    "depends_on": [
+      "08-13-tutor-thread-turn-item-event-foundation",
+      "08-14-tutor-typed-request-authority-turns"
+    ],
+    "default_running_input_mode": "queue",
+    "interrupt_queue_policy": "pause_until_explicit_resume",
+    "automatic_queue_drain_terminal": "completed_only",
+    "queue_max_pending": 10,
+    "queue_capacity_configurable": false,
+    "queue_operations": [
+      "edit",
+      "delete",
+      "reorder",
+      "steer",
+      "execute"
+    ],
+    "queue_reorder_ui": "keyboard_up_down",
+    "owns_typed_request_authority": false,
+    "owns_global_cutover": false
+  }
+}
