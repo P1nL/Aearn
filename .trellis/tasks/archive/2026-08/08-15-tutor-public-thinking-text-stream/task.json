@@ -34,6 +34,6 @@
     "docs/architecture/api-contract.md",
     "docs/product/frontend-interaction-spec.md"
   ],
-  "notes": "实施与最终回归已完成：公开思考 append/incomplete snapshot 仅进入 provisional buffer，只有同 generation 的 validated complete 与 350ms 稳定窗口同时满足后才启用 disclosure；正式回答保持 authority-first。工作提交为 fbe6e59c，等待本次归档收尾。",
+  "notes": "实施与最终回归已完成：公开思考 append/incomplete snapshot 仅进入 provisional buffer，只有同 generation 的 validated complete 与 350ms 稳定窗口同时满足后才启用 disclosure；正式回答保持 authority-first。工作提交为 fbe6e59c，已于 2026-08-17 完成归档收尾。",
   "meta": {}
 }
