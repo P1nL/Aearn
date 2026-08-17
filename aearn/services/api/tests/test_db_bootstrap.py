@@ -108,6 +108,14 @@ CONVERSATION_TURNRUN_CONSTRAINTS = (
     "fk_tutor_runs_superseded_by_run",
     "chk_tutor_conversations_title",
     "chk_tutor_runs_continuation_kind",
+    "chk_tutor_messages_public_thinking_text",
+    "chk_tutor_messages_public_thinking_single_representation",
+    "uq_tutor_turn_public_thinking_streams_scope",
+    "fk_tutor_turn_public_thinking_stream_run_scope",
+    "fk_tutor_turn_public_thinking_stream_event",
+    "chk_tutor_turn_public_thinking_stream_timestamps",
+    "chk_tutor_conversation_events_kind",
+    "chk_tutor_conversation_events_projection_version",
 )
 
 CONTEXT_SUMMARY_CONSTRAINTS = (
@@ -345,6 +353,7 @@ TARGET_TUTOR_TABLES = (
     "tutor_planning_question_events",
     "tutor_run_public_processes",
     "tutor_run_public_process_steps",
+    "tutor_turn_public_thinking_streams",
     "tutor_lesson_documents",
     "tutor_lesson_source_snapshots",
     "tutor_lesson_block_citations",

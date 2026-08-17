@@ -10,7 +10,7 @@ import urllib.request
 from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Literal, TypeVar
+from typing import Literal, Protocol, TypeVar
 
 from app.core.config import DEEPSEEK_V4_FLASH_MODEL, Settings, get_settings
 from app.services.llm.contracts import LLMUsage
@@ -34,6 +34,18 @@ _RETRYABLE_TRANSPORT_ERRORS = (
     http.client.RemoteDisconnected,
 )
 T = TypeVar("T")
+
+
+class LLMVisibleOutputObserver(Protocol):
+    """Receives provider-visible output text only; never reasoning items."""
+
+    def on_stream_start(self) -> None: ...
+
+    def on_text_delta(self, delta: str) -> None: ...
+
+    def on_stream_restart(self) -> None: ...
+
+    def on_stream_complete(self) -> None: ...
 
 
 class LLMConfigurationError(RuntimeError):
@@ -165,6 +177,7 @@ class OpenAICompatibleClient:
         schema_name: str | None = None,
         thinking_mode: Literal["enabled", "disabled"] | None = None,
         capture_provider_body: bool = False,
+        visible_output_observer: LLMVisibleOutputObserver | None = None,
     ) -> LLMJsonResponse:
         """Return one strict JSON object through the exact selected provider protocol."""
 
@@ -204,6 +217,7 @@ class OpenAICompatibleClient:
                 ),
                 diagnostic_capture=diagnostic_capture,
                 thinking_mode=thinking_mode,
+                visible_output_observer=visible_output_observer,
             )
         except (LLMCallError, LLMInvalidResponseError) as exc:
             exc.attach_diagnostic_capture(diagnostic_capture)
@@ -332,6 +346,7 @@ class OpenAICompatibleClient:
         use_json_schema: bool,
         diagnostic_capture: ProviderBodyCapture | None,
         thinking_mode: Literal["enabled", "disabled"] | None,
+        visible_output_observer: LLMVisibleOutputObserver | None,
     ) -> LLMJsonResponse:
         instructions, input_text = _messages_to_responses_input(messages)
         text_format: dict[str, object] = {"type": "json_object"}
@@ -367,6 +382,7 @@ class OpenAICompatibleClient:
             headers=headers,
             timeout_seconds=timeout_seconds,
             diagnostic_capture=diagnostic_capture,
+            visible_output_observer=visible_output_observer,
         )
         usage = _extract_llm_usage(provider_response, protocol=LLMProtocol.RESPONSES)
         model = _response_model(provider_response) or self.model
@@ -392,16 +408,16 @@ class OpenAICompatibleClient:
         headers: Mapping[str, str],
         timeout_seconds: float | None = None,
         diagnostic_capture: ProviderBodyCapture | None = None,
+        visible_output_observer: LLMVisibleOutputObserver | None = None,
     ) -> Mapping[str, object]:
         timeout = _resolve_timeout_seconds(self._settings.llm_timeout_seconds, timeout_seconds)
         if self._transport is not None:
+            if visible_output_observer is not None:
+                visible_output_observer.on_stream_start()
             try:
                 response = _require_provider_response_object(
                     self._transport(url, headers, payload, timeout)
                 )
-                if diagnostic_capture is not None:
-                    diagnostic_capture.append_mapping(response)
-                return response
             except (LLMCallError, LLMInvalidResponseError):
                 raise
             except urllib.error.HTTPError as exc:
@@ -409,12 +425,19 @@ class OpenAICompatibleClient:
                 raise LLMCallError(f"LLM provider returned HTTP {exc.code}") from exc
             except Exception as exc:
                 raise LLMCallError("LLM provider transport failed") from exc
+            if diagnostic_capture is not None:
+                diagnostic_capture.append_mapping(response)
+            if visible_output_observer is not None:
+                visible_output_observer.on_text_delta(_extract_message_content(response))
+                visible_output_observer.on_stream_complete()
+            return response
         return _post_json_stream(
             url,
             headers,
             payload,
             timeout,
             diagnostic_capture=diagnostic_capture,
+            visible_output_observer=visible_output_observer,
         )
 
     def _complete_deepseek_chat_json(
@@ -490,11 +513,27 @@ def _post_json_stream(
     timeout: float,
     *,
     diagnostic_capture: ProviderBodyCapture | None = None,
+    visible_output_observer: LLMVisibleOutputObserver | None = None,
 ) -> Mapping[str, object]:
+    request_count = 0
+
     def request_once() -> Mapping[str, object]:
+        nonlocal request_count
+        request_count += 1
+        if visible_output_observer is not None:
+            if request_count > 1:
+                visible_output_observer.on_stream_restart()
+            visible_output_observer.on_stream_start()
         request = _provider_request(url, headers, payload)
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            return _parse_responses_stream(response, diagnostic_capture=diagnostic_capture)
+            parsed = _parse_responses_stream(
+                response,
+                diagnostic_capture=diagnostic_capture,
+                visible_output_observer=visible_output_observer,
+            )
+        if visible_output_observer is not None:
+            visible_output_observer.on_stream_complete()
+        return parsed
 
     return _request_with_retries(
         "JSON stream",
@@ -730,6 +769,7 @@ def _parse_responses_stream(
     response: Iterable[bytes],
     *,
     diagnostic_capture: ProviderBodyCapture | None = None,
+    visible_output_observer: LLMVisibleOutputObserver | None = None,
 ) -> Mapping[str, object]:
     latest_response: dict[str, object] | None = None
     latest_text: str | None = None
@@ -763,6 +803,8 @@ def _parse_responses_stream(
             delta = parsed.get("delta")
             if isinstance(delta, str):
                 latest_text = (latest_text or "") + delta
+                if visible_output_observer is not None and delta:
+                    visible_output_observer.on_text_delta(delta)
         elif event_type == "response.output_text.done":
             text = parsed.get("text")
             if isinstance(text, str) and text.strip():

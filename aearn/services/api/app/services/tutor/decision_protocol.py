@@ -15,8 +15,7 @@ from app.agents.harness.contracts import (
     MAX_TUTOR_PAYLOAD_FIELDS,
     MAX_TUTOR_PAYLOAD_VALUE_LENGTH,
     MAX_TUTOR_PUBLIC_MESSAGE_LENGTH,
-    MAX_TUTOR_PUBLIC_THINKING_STEP_LENGTH,
-    MAX_TUTOR_PUBLIC_THINKING_STEPS,
+    MAX_TUTOR_PUBLIC_THINKING_TEXT_LENGTH,
     TUTOR_PLANNING_QUESTION_KEYS,
     TutorCapabilityRequest,
     TutorCheckpointReason,
@@ -32,8 +31,8 @@ from app.agents.harness.contracts import (
 from app.services.llm.llm_client import LLMInvalidResponseError
 
 
-TUTOR_PROVIDER_ITEMS_SCHEMA_VERSION = "tutor_provider_items_v3"
-TUTOR_PROVIDER_ITEMS_SCHEMA_NAME = "tutor_provider_items_v3"
+TUTOR_PROVIDER_ITEMS_SCHEMA_VERSION = "tutor_provider_items_v4"
+TUTOR_PROVIDER_ITEMS_SCHEMA_NAME = "tutor_provider_items_v4"
 
 _FORBIDDEN_NESTED_PAYLOAD_FIELD_NAMES = frozenset(
     {
@@ -56,10 +55,6 @@ _FORBIDDEN_NESTED_PAYLOAD_FIELD_NAMES = frozenset(
 )
 
 TutorProviderValue: TypeAlias = str | int | float | bool | None | list[str]
-TutorProviderPublicThinkingStep: TypeAlias = Annotated[
-    str,
-    Field(min_length=1, max_length=MAX_TUTOR_PUBLIC_THINKING_STEP_LENGTH),
-]
 
 
 @dataclass(frozen=True)
@@ -121,11 +116,11 @@ class TutorProviderPayloadField(_StrictProviderModel):
 
 class TutorProviderAgentMessageItem(_StrictProviderModel):
     type: Literal["agent_message"]
-    text: str = Field(min_length=1, max_length=MAX_TUTOR_PUBLIC_MESSAGE_LENGTH)
-    public_thinking_steps: list[TutorProviderPublicThinkingStep] = Field(
+    public_thinking_text: str = Field(
         min_length=1,
-        max_length=MAX_TUTOR_PUBLIC_THINKING_STEPS,
+        max_length=MAX_TUTOR_PUBLIC_THINKING_TEXT_LENGTH,
     )
+    text: str = Field(min_length=1, max_length=MAX_TUTOR_PUBLIC_MESSAGE_LENGTH)
     conversation_title: str | None = Field(max_length=48)
 
 
@@ -199,7 +194,7 @@ TutorProviderActionItem: TypeAlias = Annotated[
 
 
 class TutorProviderItemsEnvelope(_StrictProviderModel):
-    schema_version: Literal["tutor_provider_items_v3"]
+    schema_version: Literal["tutor_provider_items_v4"]
     message: TutorProviderAgentMessageItem
     action: TutorProviderActionItem
 
@@ -274,9 +269,9 @@ def canonical_tutor_provider_items_example() -> str:
 
     return _canonical_provider_example(
         text="请从一个很小的练习开始。",
-        thinking_steps=(
-            "把目标缩小到一个可以立即验证的函数练习，更容易发现理解偏差。",
-            "一次输入输出检查可以判断是否需要补充参数与返回值知识。",
+        thinking_text=(
+            "把目标缩小到一个可以立即验证的函数练习，更容易发现理解偏差。\n\n"
+            "一次输入输出检查可以判断是否需要补充参数与返回值知识。"
         ),
         title="函数基础练习",
         action={"type": "turn_completed"},
@@ -289,13 +284,13 @@ def canonical_tutor_wait_for_input_examples() -> str:
     examples = {
         "clarification": _canonical_provider_example(
             text="你说的“基础”是指语法基础，还是已经会写简单函数？",
-            thinking_steps=("这个词有两种常见含义，先澄清可以避免给出不匹配的内容。",),
+            thinking_text="这个词有两种常见含义，先澄清可以避免给出不匹配的内容。",
             title="澄清学习起点",
             action={"type": "wait_for_input", "continuation_kind": "clarification"},
         ),
         "planning_input": _canonical_provider_example(
             text="你每周大约能安排多少分钟学习？",
-            thinking_steps=("学习时长会直接影响计划节奏，因此需要先补齐这一项计划事实。",),
+            thinking_text="学习时长会直接影响计划节奏，因此需要先补齐这一项计划事实。",
             title="制定学习计划",
             action={
                 "type": "wait_for_input",
@@ -304,20 +299,20 @@ def canonical_tutor_wait_for_input_examples() -> str:
             },
         ),
         "approval": _canonical_provider_example(
-            text="是否确认采用这份学习计划并进入下一步？",
-            thinking_steps=("计划内容已经完整，下一步会执行需要你明确授权的变更。",),
-            title="确认学习计划",
+            text="是否允许执行这项需要明确授权的受控操作？",
+            thinking_text="这项操作会改变受控状态，执行前需要你的明确授权。",
+            title="确认受控操作",
             action={"type": "wait_for_input", "continuation_kind": "approval"},
         ),
         "capability_result": _canonical_provider_example(
             text="请在已授权的能力检查完成后继续本轮。",
-            thinking_steps=("后续判断依赖能力检查结果，现在不应猜测结果。",),
+            thinking_text="后续判断依赖能力检查结果，现在不应猜测结果。",
             title="等待能力检查",
             action={"type": "wait_for_input", "continuation_kind": "capability_result"},
         ),
         "external_result": _canonical_provider_example(
             text="请在外部步骤完成并返回结果后继续本轮。",
-            thinking_steps=("外部结果尚未到达，继续推断会产生不可靠结论。",),
+            thinking_text="外部结果尚未到达，继续推断会产生不可靠结论。",
             title="等待外部结果",
             action={"type": "wait_for_input", "continuation_kind": "external_result"},
         ),
@@ -328,7 +323,7 @@ def canonical_tutor_wait_for_input_examples() -> str:
 def _canonical_provider_example(
     *,
     text: str,
-    thinking_steps: tuple[str, ...],
+    thinking_text: str,
     title: str,
     action: Mapping[str, object],
 ) -> str:
@@ -337,8 +332,8 @@ def _canonical_provider_example(
             "schema_version": TUTOR_PROVIDER_ITEMS_SCHEMA_VERSION,
             "message": {
                 "type": "agent_message",
+                "public_thinking_text": thinking_text,
                 "text": text,
-                "public_thinking_steps": list(thinking_steps),
                 "conversation_title": title,
             },
             "action": dict(action),
@@ -410,7 +405,7 @@ def parse_tutor_provider_items(
 
         return TutorDecision(
             public_message=message.text,
-            public_thinking_steps=tuple(message.public_thinking_steps),
+            public_thinking_text=message.public_thinking_text,
             conversation_title=message.conversation_title,
             question_key=question_key,
             skill_references=skill_references,
@@ -445,9 +440,9 @@ def build_tutor_replacement_message(
         "Return exactly one JSON object and no Markdown or explanation. "
         f"Use schema_version={TUTOR_PROVIDER_ITEMS_SCHEMA_VERSION}. "
         "Return exactly one agent_message in message and exactly one typed action. "
-        "message.public_thinking_steps must contain one to four fresh learner-visible public explanation steps. "
-        "Choose their wording, tone, ordering, and granularity naturally for the current request; do not force a fixed "
-        "linguistic template or transition sequence. These are authored public explanations, not provider-native hidden "
+        "message.public_thinking_text must contain one fresh learner-visible public explanation text block before message.text. "
+        "Choose its wording, paragraphs, line breaks, tone, and granularity naturally for the current request; do not force "
+        "numbered steps or a fixed linguistic template. It is authored public explanation text, not provider-native hidden "
         "reasoning, and must not mention prompts, policies, diagnostics, or secrets. "
         "wait_for_input.continuation_kind must be clarification, planning_input, approval, capability_result, or "
         "external_result. planning_input requires exactly one allowlisted question_key; every other continuation must omit it. "

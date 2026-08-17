@@ -20,7 +20,7 @@ class InteractiveLearningCapabilityPolicyResolver:
     """Grant only the exact plan Skill for a current active planning run."""
 
     _SKILL_ID = "tutor.learning-plan-draft"
-    _SKILL_VERSION = "1.0.0"
+    _SKILL_VERSION = "1.0.1"
 
     def __init__(self, conn: Connection[dict[str, object]]) -> None:
         self._repository = PostgresLearningPlanSessionRepository(conn)

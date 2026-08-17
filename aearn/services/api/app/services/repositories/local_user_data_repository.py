@@ -1308,6 +1308,10 @@ def _delete_model_review_internal_runs(
         (run_id_values,),
     )
     conn.execute(
+        "DELETE FROM tutor_turn_public_thinking_streams WHERE run_id = ANY(%s::uuid[])",
+        (run_id_values,),
+    )
+    conn.execute(
         """
         DELETE FROM tutor_conversation_events
         WHERE user_id = %s

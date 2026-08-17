@@ -1720,6 +1720,10 @@ def _legacy_timeline_payload(item: TutorConversationTimelineRecord) -> dict[str,
     payload = _timeline_payload(item)
     if item.kind not in {"elicitation", "approval"}:
         payload.pop("turn_id", None)
+    if item.kind == "message":
+        if not payload.get("public_thinking_steps") and item.public_thinking_text:
+            payload["public_thinking_steps"] = [item.public_thinking_text]
+        payload.pop("public_thinking_text", None)
     return payload
 
 
@@ -1747,6 +1751,7 @@ def _timeline_payload(item: TutorConversationTimelineRecord) -> dict[str, object
             "turn_id": item.turn_id,
             "role": item.role,
             "content": item.content or "",
+            "public_thinking_text": item.public_thinking_text,
             "public_thinking_steps": list(item.public_thinking_steps),
             "context_references": [dict(reference) for reference in item.context_references],
             "in_reply_to_item_id": item.in_reply_to_item_id,
@@ -1769,6 +1774,11 @@ def _conversation_snapshot_payload(snapshot: TutorConversationSnapshot) -> dict[
             "max_pending": snapshot.max_pending,
         },
         "active_turn": dict(snapshot.active_turn) if snapshot.active_turn is not None else None,
+        "active_thinking": (
+            dict(snapshot.active_thinking)
+            if snapshot.active_thinking is not None
+            else None
+        ),
         "pending_requests": [dict(item) for item in snapshot.pending_requests],
         "queue": [dict(item) for item in snapshot.queue],
         "timeline": [_timeline_payload(item) for item in snapshot.timeline],

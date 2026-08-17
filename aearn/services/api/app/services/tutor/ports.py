@@ -28,6 +28,7 @@ from app.agents.harness.contracts import (
     TutorRunResult,
     TutorRunSnapshot,
 )
+from app.services.tutor.public_thinking_stream import TutorPublicThinkingSink
 
 
 class TutorRunStore(Protocol):
@@ -71,6 +72,7 @@ class TutorProviderGateway(Protocol):
         *,
         run: TutorRunSnapshot,
         context: TutorContextSelection,
+        thinking_sink: TutorPublicThinkingSink | None = None,
     ) -> TutorProviderResult: ...
 
 
@@ -107,6 +109,15 @@ class TutorCompactionPublisher(Protocol):
 
 class TutorLifecyclePersistence(Protocol):
     """Atomic persistence seam for the composed target adapter only."""
+
+    def create_public_thinking_sink(
+        self,
+        *,
+        snapshot: TutorRunSnapshot,
+        lease: TutorLease,
+        decision_iteration: int,
+        now: Callable[[], datetime],
+    ) -> TutorPublicThinkingSink: ...
 
     def persist_provider_attempts(
         self,
@@ -323,7 +334,14 @@ class SequenceTutorProvider:
         self._on_decide = on_decide
         self.calls: list[tuple[TutorRunSnapshot, TutorContextSelection]] = []
 
-    def decide(self, *, run: TutorRunSnapshot, context: TutorContextSelection) -> TutorProviderResult:
+    def decide(
+        self,
+        *,
+        run: TutorRunSnapshot,
+        context: TutorContextSelection,
+        thinking_sink: TutorPublicThinkingSink | None = None,
+    ) -> TutorProviderResult:
+        del thinking_sink
         self.calls.append((run, context))
         if self._on_decide is not None:
             self._on_decide(run, context)

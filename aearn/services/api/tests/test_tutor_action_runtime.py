@@ -27,8 +27,10 @@ from app.agents.harness.actions import (
 )
 from app.agents.harness.contracts import (
     TutorCapabilityRequest,
+    TutorCapabilityResult,
     TutorCapabilityStatus,
     TutorLease,
+    TutorPayloadField,
     TutorPolicySnapshot,
     TutorRunSnapshot,
     payload_fields_from_mapping,
@@ -47,6 +49,7 @@ from app.services.tutor.action_adapters import (
     ControlledCapabilityGateway,
     ExistingExecutionJobActionAdapter,
     ExistingExecutionJobEvidence,
+    _capability_output,
     PostgresGroundingActionVerifier,
 )
 from app.services.tutor.action_persistence import PostgresActionFence, PostgresActionReceiptStore
@@ -144,6 +147,30 @@ def _runtime(*, adapter=None, fence=None, store=None, budget=None) -> Controlled
         approved_source_ids=("python-tutorial",),
         budget=budget,
     )
+
+
+def test_plan_capability_safe_result_preserves_raw_authority_fields() -> None:
+    descriptor = next(
+        item for item in default_action_descriptors() if item.action_id == "learning.plan.draft"
+    )
+    result = TutorCapabilityResult(
+        request_id="plan-result",
+        status=TutorCapabilityStatus.COMPLETED,
+        safe_result=(
+            TutorPayloadField("draft_id", "53e9d886-ad02-44f7-b466-ca3efa9961a0"),
+            TutorPayloadField("draft_version", "2"),
+            TutorPayloadField("content_hash", "a" * 64),
+            TutorPayloadField("quality_status", "passed"),
+        ),
+    )
+
+    assert _capability_output(descriptor, result) == {
+        "status": "completed",
+        "draft_id": "53e9d886-ad02-44f7-b466-ca3efa9961a0",
+        "draft_version": 2,
+        "content_hash": "a" * 64,
+        "quality_status": "passed",
+    }
 
 
 def test_action_descriptors_are_stable_and_cover_first_migration_set() -> None:

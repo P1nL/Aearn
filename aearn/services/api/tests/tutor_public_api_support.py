@@ -113,21 +113,24 @@ class RecordingTutorDispatcher:
 @dataclass
 class TerminalTutorProvider:
     message: str
-    public_thinking_steps: tuple[str, ...] = (
-        "我先定位学习者当前最需要澄清的概念。",
-        "接着选择一个能够马上验证理解的小例子。",
-    )
+    public_thinking_text: str = "我先定位学习者当前最需要澄清的概念。\n\n接着选择一个能够马上验证理解的小例子。"
     outcome: TutorTerminalOutcome = TutorTerminalOutcome.COMPLETED
     conversation_title: str | None = None
+    stream_public_thinking: bool = False
     calls: list[tuple[str, int]] = field(default_factory=list)
 
-    def decide(self, *, run, context) -> TutorProviderResult:  # type: ignore[no-untyped-def]
+    def decide(self, *, run, context, thinking_sink=None) -> TutorProviderResult:  # type: ignore[no-untyped-def]
+        del context
         self.calls.append((run.run_id, run.input_revision))
+        if self.stream_public_thinking and thinking_sink is not None and self.outcome is TutorTerminalOutcome.COMPLETED:
+            thinking_sink.begin_attempt(1)
+            thinking_sink.append_text(1, self.public_thinking_text)
+            thinking_sink.complete_attempt(1)
         if self.outcome is TutorTerminalOutcome.COMPLETED:
             return TutorProviderResult(
                 decision=TutorDecision(
                     public_message=self.message,
-                    public_thinking_steps=self.public_thinking_steps,
+                    public_thinking_text=self.public_thinking_text,
                     conversation_title=self.conversation_title,
                     terminal_outcome=TutorTerminalOutcome.COMPLETED,
                 )
@@ -140,15 +143,14 @@ def terminal_dispatcher(
     settings: Settings,
     message: str = "请先比较变量声明的位置与可见范围。",
     conversation_title: str | None = None,
-    public_thinking_steps: tuple[str, ...] = (
-        "我先定位学习者当前最需要澄清的概念。",
-        "接着选择一个能够马上验证理解的小例子。",
-    ),
+    public_thinking_text: str = "我先定位学习者当前最需要澄清的概念。\n\n接着选择一个能够马上验证理解的小例子。",
+    stream_public_thinking: bool = False,
 ) -> tuple[TutorInteractiveRunDispatcher, TerminalTutorProvider]:
     provider = TerminalTutorProvider(
         message=message,
-        public_thinking_steps=public_thinking_steps,
+        public_thinking_text=public_thinking_text,
         conversation_title=conversation_title,
+        stream_public_thinking=stream_public_thinking,
     )
     return (
         TutorInteractiveRunDispatcher(settings=settings, provider_factory=lambda _settings: provider),
@@ -161,18 +163,21 @@ class WaitingTutorProvider:
     message: str
     continuation_kind: TutorContinuationKind = TutorContinuationKind.CLARIFICATION
     question_key: str | None = None
-    public_thinking_steps: tuple[str, ...] = (
-        "我先确认当前信息还不足以安全给出下一步。",
-    )
+    public_thinking_text: str = "我先确认当前信息还不足以安全给出下一步。"
+    stream_public_thinking: bool = False
     calls: list[tuple[str, int]] = field(default_factory=list)
 
-    def decide(self, *, run, context) -> TutorProviderResult:  # type: ignore[no-untyped-def]
+    def decide(self, *, run, context, thinking_sink=None) -> TutorProviderResult:  # type: ignore[no-untyped-def]
         del context
         self.calls.append((run.run_id, run.input_revision))
+        if self.stream_public_thinking and thinking_sink is not None:
+            thinking_sink.begin_attempt(1)
+            thinking_sink.append_text(1, self.public_thinking_text)
+            thinking_sink.complete_attempt(1)
         return TutorProviderResult(
             decision=TutorDecision(
                 public_message=self.message,
-                public_thinking_steps=self.public_thinking_steps,
+                public_thinking_text=self.public_thinking_text,
                 question_key=self.question_key,
                 checkpoint_reason=TutorCheckpointReason.CAPABILITY_RESULT,
                 continuation_kind=self.continuation_kind,
@@ -186,11 +191,15 @@ def waiting_dispatcher(
     message: str,
     continuation_kind: TutorContinuationKind = TutorContinuationKind.CLARIFICATION,
     question_key: str | None = None,
+    public_thinking_text: str = "我先确认当前信息还不足以安全给出下一步。",
+    stream_public_thinking: bool = False,
 ) -> tuple[TutorInteractiveRunDispatcher, WaitingTutorProvider]:
     provider = WaitingTutorProvider(
         message=message,
         continuation_kind=continuation_kind,
         question_key=question_key,
+        public_thinking_text=public_thinking_text,
+        stream_public_thinking=stream_public_thinking,
     )
     return (
         TutorInteractiveRunDispatcher(settings=settings, provider_factory=lambda _settings: provider),

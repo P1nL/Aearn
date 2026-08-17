@@ -7,6 +7,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 
 from app.agents.harness.context_builder import TutorContextBuilder, TutorContextBuilderConfig
 from app.agents.harness.contracts import (
@@ -26,7 +27,11 @@ from app.agents.harness.contracts import (
 )
 from app.agents.harness.skill_catalog import SkillCatalogSnapshot, compile_published_skill_catalog
 from app.core.config import Settings
-from app.services.llm.llm_client import LLMCallError, LLMJsonResponse
+from app.services.llm.llm_client import (
+    LLMCallError,
+    LLMJsonResponse,
+    LLMVisibleOutputObserver,
+)
 from app.services.tutor.ports import (
     AllowTutorDecisionGate,
     DefaultDenyCapabilityGateway,
@@ -240,11 +245,11 @@ def _strict_provider_rejection_observed() -> dict[str, object]:
         settings=Settings(llm_type="openai", openai_api_key="fixture-key", openai_base_url="https://provider.example", openai_model="fixture"),
         client=_FakeJsonClient(
             {
-                "schema_version": "tutor_provider_items_v3",
+                "schema_version": "tutor_provider_items_v4",
                 "message": {
                     "type": "agent_message",
                     "text": "safe",
-                    "public_thinking_steps": ["当前目标可以收敛为一个可验证的小步骤。"],
+                    "public_thinking_text": "当前目标可以收敛为一个可验证的小步骤。",
                     "conversation_title": None,
                 },
                 "action": {"type": "turn_completed"},
@@ -526,10 +531,21 @@ class _FakeJsonClient:
         timeout_seconds: float | None = None,
         output_schema: Mapping[str, object] | None = None,
         schema_name: str | None = None,
-        thinking_mode: str | None = None,
+        thinking_mode: Literal["enabled", "disabled"] | None = None,
         capture_provider_body: bool = False,
+        visible_output_observer: LLMVisibleOutputObserver | None = None,
     ) -> LLMJsonResponse:
-        del messages, temperature, max_tokens, timeout_seconds, output_schema, schema_name, thinking_mode, capture_provider_body
+        del (
+            messages,
+            temperature,
+            max_tokens,
+            timeout_seconds,
+            output_schema,
+            schema_name,
+            thinking_mode,
+            capture_provider_body,
+            visible_output_observer,
+        )
         self.calls += 1
         if self._error is not None:
             raise self._error

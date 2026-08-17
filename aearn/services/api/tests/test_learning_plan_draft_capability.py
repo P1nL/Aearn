@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 
 import pytest
 from pydantic import ValidationError
 
 from app.agents.harness.capabilities import LearningPlanDraftCapabilityInput
+from app.agents.harness.contracts import TutorCapabilityStatus
+from app.services.learning.plan_capability import LearningPlanDraftCapabilityError
 from app.services.learning.plan_drafting import (
     LearningPlanSourceSummary,
     decode_plan_draft,
@@ -43,6 +46,24 @@ def _module(key: str, node: str, *, prerequisite: str | None = None) -> str:
         item["nodes"][0]["prerequisite_keys"] = [prerequisite]  # type: ignore[index]
     return json.dumps(item, separators=(",", ":"))
 
+
+
+
+def test_capability_error_crosses_generator_context_manager_without_masking() -> None:
+    @contextmanager
+    def transaction_boundary():  # type: ignore[no-untyped-def]
+        yield
+
+    with pytest.raises(LearningPlanDraftCapabilityError) as captured:
+        with transaction_boundary():
+            raise LearningPlanDraftCapabilityError(
+                code="LEARNING_PLAN_DRAFT_INVALID",
+                diagnostic_code="learning_plan_draft_invalid",
+                status=TutorCapabilityStatus.DENIED,
+            )
+
+    assert captured.value.code == "LEARNING_PLAN_DRAFT_INVALID"
+    assert captured.value.diagnostic_code == "learning_plan_draft_invalid"
 
 def test_compact_plan_decode_is_deterministic_and_preserves_server_versions() -> None:
     sources = (LearningPlanSourceSummary("python-tutorial", "Python Tutorial", "official"),)

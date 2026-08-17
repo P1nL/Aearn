@@ -14,11 +14,14 @@ from app.agents.harness.contracts import (
     TutorContextInput,
     TutorContextSelection,
     TutorContextSource,
+    TutorDecision,
     TutorPolicySnapshot,
+    TutorProviderResult,
     TutorProviderAttemptOutcome,
     TutorRunSnapshot,
 )
 from app.core.config import Settings
+from app.services.learning.plan_repository import LearningPlanSessionNotFound
 from app.services.llm.llm_client import (
     LLMCallError,
     LLMInvalidResponseError,
@@ -37,8 +40,11 @@ from app.services.tutor.decision_protocol import (
     TUTOR_PROVIDER_ITEMS_SCHEMA_VERSION,
     TutorDecisionValidationIssue,
     build_tutor_replacement_message,
+    canonical_tutor_wait_for_input_examples,
     tutor_provider_output_schema,
 )
+from app.services.tutor.interactive import PlanDraftingProviderGateway
+from app.services.tutor.ports import SequenceTutorProvider
 from app.services.tutor.provider_gateway import (
     PrimaryTutorProviderGateway,
     _build_messages,
@@ -109,6 +115,29 @@ class FalseyJsonClient(FakeJsonClient):
         return False
 
 
+class RecordingThinkingSink:
+    def __init__(self) -> None:
+        self.operations: list[tuple[str, int, str]] = []
+
+    def begin_attempt(self, attempt_index: int) -> None:
+        self.operations.append(("begin", attempt_index, ""))
+
+    def append_text(self, attempt_index: int, text: str) -> None:
+        self.operations.append(("append", attempt_index, text))
+
+    def complete_attempt(self, attempt_index: int) -> None:
+        self.operations.append(("complete", attempt_index, ""))
+
+    def reset_attempt(self, attempt_index: int) -> None:
+        self.operations.append(("reset", attempt_index, ""))
+
+    def discard_attempt(self, attempt_index: int) -> None:
+        self.operations.append(("discard", attempt_index, ""))
+
+    def discard_current(self) -> None:
+        self.operations.append(("discard_current", 0, ""))
+
+
 def _run() -> TutorRunSnapshot:
     return TutorRunSnapshot(
         run_id="run-provider",
@@ -159,7 +188,7 @@ def _valid_payload() -> dict[str, object]:
         "message": {
             "type": "agent_message",
             "text": "先检查变量是在回调外定义，还是只在回调内部可见。",
-            "public_thinking_steps": ["当前目标可以收敛为一个可验证的小步骤。"],
+            "public_thinking_text": "当前目标可以收敛为一个可验证的小步骤。",
             "conversation_title": None,
         },
         "action": {"type": "turn_completed"},
@@ -286,7 +315,7 @@ def test_deepseek_repair_disables_thinking_only_for_the_replacement_attempt() ->
             "message": {
                 "type": "agent_message",
                 "text": "继续。",
-                "public_thinking_steps": ["当前目标可以收敛为一个可验证的小步骤。"],
+                "public_thinking_text": "当前目标可以收敛为一个可验证的小步骤。",
                 "conversation_title": None,
             },
             "action": {"type": "unknown_action"},
@@ -336,6 +365,62 @@ def test_deepseek_repair_disables_thinking_only_for_the_replacement_attempt() ->
     assert len(payloads) == 2
     assert "thinking" not in payloads[0]
     assert payloads[1]["thinking"] == {"type": "disabled"}
+
+
+def test_visible_thinking_complete_is_emitted_only_after_decision_validation() -> None:
+    rejected = _valid_payload()
+    rejected["action"] = {"type": "unknown_action"}
+    accepted = _valid_payload()
+    provider_contents = [rejected, accepted]
+
+    def transport(
+        url: str,
+        headers: Mapping[str, str],
+        payload: Mapping[str, object],
+        timeout: float,
+    ) -> Mapping[str, object]:
+        del url, headers, payload, timeout
+        content = provider_contents.pop(0)
+        return {
+            "type": "response.completed",
+            "response": {
+                "model": "deepseek-v4-flash",
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": json.dumps(content, ensure_ascii=False),
+                            }
+                        ],
+                    }
+                ],
+            },
+        }
+
+    settings = Settings(
+        llm_type="deepseek",
+        deepseek_api_key="test-key",
+        deepseek_base_url="https://api.deepseek.com/v1",
+        deepseek_model="deepseek-v4-flash",
+    )
+    sink = RecordingThinkingSink()
+    result = PrimaryTutorProviderGateway(
+        settings=settings,
+        client=OpenAICompatibleClient(settings, transport=transport),
+    ).decide(run=_run(), context=_context(), thinking_sink=sink)
+
+    assert result.decision is not None
+    assert ("complete", 1, "") not in sink.operations
+    assert ("discard", 1, "") in sink.operations
+    assert ("complete", 2, "") in sink.operations
+    assert sink.operations[-1] == ("complete", 2, "")
+    assert "".join(
+        value
+        for operation, attempt_index, value in sink.operations
+        if operation == "append" and attempt_index == 1
+    ) == rejected["message"]["public_thinking_text"]
 
 
 def test_deepseek_responses_json_schema_requires_explicit_verified_gateway_opt_in() -> None:
@@ -841,7 +926,7 @@ def test_parse_tutor_decision_accepts_each_exact_continuation_contract(
             "message": {
                 "type": "agent_message",
                 "text": "请补充这一项信息。",
-                "public_thinking_steps": ["这一项输入是继续当前有限步骤所必需的。"],
+                "public_thinking_text": "这一项输入是继续当前有限步骤所必需的。",
                 "conversation_title": None,
             },
             "action": action,
@@ -882,7 +967,7 @@ def test_parse_tutor_decision_rejects_continuation_question_key_mismatch(
                 "message": {
                     "type": "agent_message",
                     "text": "继续。",
-                    "public_thinking_steps": ["当前需要一项明确输入。"],
+                    "public_thinking_text": "当前需要一项明确输入。",
                     "conversation_title": None,
                 },
                 "action": action,
@@ -898,7 +983,7 @@ def test_parse_tutor_decision_accepts_safe_title_and_explicit_continuation() -> 
             "message": {
                 "type": "agent_message",
                 "text": "请确认是否要继续执行下一步。",
-                "public_thinking_steps": ["当前目标可以收敛为一个可验证的小步骤。"],
+                "public_thinking_text": "当前目标可以收敛为一个可验证的小步骤。",
                 "conversation_title": "  函数基础练习  ",
             },
             "action": {
@@ -923,7 +1008,7 @@ def test_parse_tutor_decision_accepts_safe_title_and_explicit_continuation() -> 
             "message": {
                 "type": "agent_message",
                 "text": "继续。",
-                "public_thinking_steps": ["当前目标可以收敛为一个可验证的小步骤。"],
+                "public_thinking_text": "当前目标可以收敛为一个可验证的小步骤。",
                 "conversation_title": "x" * 49,
             },
             "action": {"type": "turn_completed"},
@@ -933,7 +1018,7 @@ def test_parse_tutor_decision_accepts_safe_title_and_explicit_continuation() -> 
             "message": {
                 "type": "agent_message",
                 "text": "继续。",
-                "public_thinking_steps": ["当前目标可以收敛为一个可验证的小步骤。"],
+                "public_thinking_text": "当前目标可以收敛为一个可验证的小步骤。",
                 "conversation_title": "private\nname",
             },
             "action": {"type": "turn_completed"},
@@ -943,7 +1028,7 @@ def test_parse_tutor_decision_accepts_safe_title_and_explicit_continuation() -> 
             "message": {
                 "type": "agent_message",
                 "text": "继续。",
-                "public_thinking_steps": ["当前目标可以收敛为一个可验证的小步骤。"],
+                "public_thinking_text": "当前目标可以收敛为一个可验证的小步骤。",
                 "conversation_title": "raw prompt summary",
             },
             "action": {"type": "turn_completed"},
@@ -953,7 +1038,7 @@ def test_parse_tutor_decision_accepts_safe_title_and_explicit_continuation() -> 
             "message": {
                 "type": "agent_message",
                 "text": "继续。",
-                "public_thinking_steps": ["当前目标可以收敛为一个可验证的小步骤。"],
+                "public_thinking_text": "当前目标可以收敛为一个可验证的小步骤。",
                 "conversation_title": None,
             },
             "action": {
@@ -966,7 +1051,7 @@ def test_parse_tutor_decision_accepts_safe_title_and_explicit_continuation() -> 
             "message": {
                 "type": "agent_message",
                 "text": "继续。",
-                "public_thinking_steps": ["当前目标可以收敛为一个可验证的小步骤。"],
+                "public_thinking_text": "当前目标可以收敛为一个可验证的小步骤。",
                 "conversation_title": None,
             },
             "action": {"type": "turn_completed", "terminal_intent": "completed"},
@@ -976,7 +1061,7 @@ def test_parse_tutor_decision_accepts_safe_title_and_explicit_continuation() -> 
             "message": {
                 "type": "agent_message",
                 "text": "继续。",
-                "public_thinking_steps": ["当前目标可以收敛为一个可验证的小步骤。"],
+                "public_thinking_text": "当前目标可以收敛为一个可验证的小步骤。",
                 "conversation_title": None,
             },
         },
@@ -987,6 +1072,61 @@ def test_parse_tutor_decision_rejects_invalid_title_or_ambiguous_continuation(
 ) -> None:
     with pytest.raises(LLMInvalidResponseError):
         parse_tutor_decision(payload, run=_run())
+
+
+class _ActivePlanRepository:
+    def active_session_for_run(self, **_kwargs: object) -> dict[str, object]:
+        return {"id": "session-1", "status": "draft_ready"}
+
+
+class _MissingPlanRepository:
+    def active_session_for_run(self, **_kwargs: object) -> dict[str, object]:
+        raise LearningPlanSessionNotFound("not a planning run")
+
+
+def test_plan_drafting_provider_gateway_completes_redundant_plan_approval() -> None:
+    delegate = SequenceTutorProvider([
+        TutorProviderResult(decision=TutorDecision(
+            public_message="计划已经可以审阅。",
+            checkpoint_reason=TutorCheckpointReason.CAPABILITY_RESULT,
+            continuation_kind=TutorContinuationKind.APPROVAL,
+        )),
+    ])
+    result = PlanDraftingProviderGateway(
+        delegate=delegate,
+        plans=_ActivePlanRepository(),  # type: ignore[arg-type]
+    ).decide(run=_run(), context=_context())
+
+    assert result.decision is not None
+    assert result.decision.public_message == "计划已经可以审阅。"
+    assert result.decision.continuation_kind is None
+    assert result.decision.checkpoint_reason is None
+
+
+def test_plan_drafting_provider_gateway_preserves_non_plan_approval() -> None:
+    delegate = SequenceTutorProvider([
+        TutorProviderResult(decision=TutorDecision(
+            public_message="是否允许执行受控操作？",
+            checkpoint_reason=TutorCheckpointReason.CAPABILITY_RESULT,
+            continuation_kind=TutorContinuationKind.APPROVAL,
+        )),
+    ])
+    result = PlanDraftingProviderGateway(
+        delegate=delegate,
+        plans=_MissingPlanRepository(),  # type: ignore[arg-type]
+    ).decide(run=_run(), context=_context())
+
+    assert result.decision is not None
+    assert result.decision.continuation_kind is TutorContinuationKind.APPROVAL
+
+
+def test_canonical_approval_example_preserves_generic_authorization_without_plan_confirmation() -> None:
+    examples = canonical_tutor_wait_for_input_examples()
+
+    assert '"continuation_kind":"approval"' in examples
+    assert "受控操作" in examples
+    assert "确认学习计划" not in examples
+    assert "这份学习计划" not in examples
 
 
 def test_tutor_decision_prompt_and_generated_schema_share_one_typed_protocol() -> None:
@@ -1004,8 +1144,8 @@ def test_tutor_decision_prompt_and_generated_schema_share_one_typed_protocol() -
     assert "request_id, effect_id, expected_input_revision" in initial_system
     assert "Managed actions are two-phase" in initial_system
     assert "only then request a capability or propose an effect" in initial_system
-    assert "Choose their wording, tone, ordering, and granularity naturally" in initial_system
-    assert "fixed linguistic template or transition sequence" in initial_system
+    assert "Choose its wording, paragraphs, line breaks, tone, and granularity naturally" in initial_system
+    assert "do not force numbering, a list, or a fixed linguistic template" in initial_system
     assert "我先判断" not in initial_system
     assert "接着比较" not in initial_system
     assert "最后决定" not in initial_system
@@ -1014,12 +1154,12 @@ def test_tutor_decision_prompt_and_generated_schema_share_one_typed_protocol() -
     message_schema = schema["$defs"]["TutorProviderAgentMessageItem"]
     assert message_schema["required"] == [
         "type",
+        "public_thinking_text",
         "text",
-        "public_thinking_steps",
         "conversation_title",
     ]
-    assert message_schema["properties"]["public_thinking_steps"]["minItems"] == 1
-    assert message_schema["properties"]["public_thinking_steps"]["maxItems"] == 4
+    assert message_schema["properties"]["public_thinking_text"]["minLength"] == 1
+    assert message_schema["properties"]["public_thinking_text"]["maxLength"] == 1280
     wait_schema = schema["$defs"]["TutorProviderWaitForInputItem"]
     wait_branches = wait_schema["anyOf"]
     assert {branch["properties"]["continuation_kind"]["const"] for branch in wait_branches} == {
@@ -1062,23 +1202,21 @@ def test_tutor_decision_prompt_and_generated_schema_share_one_typed_protocol() -
     assert '"question_key":"weekly_minutes"' in replacement_message
     assert "action.type:invalid_literal" in replacement_message
     assert "never emit them" in replacement_message
-    assert "Choose their wording, tone, ordering, and granularity naturally" in replacement_message
-    assert "fixed linguistic template or transition sequence" in replacement_message
+    assert "Choose its wording, paragraphs, line breaks, tone, and granularity naturally" in replacement_message
+    assert "do not force numbered steps or a fixed linguistic template" in replacement_message
     assert "private chain" not in replacement_message
 
 
-def test_parse_tutor_decision_requires_bounded_public_thinking_steps() -> None:
+def test_parse_tutor_decision_requires_bounded_public_thinking_text() -> None:
     missing = _valid_payload()
     assert isinstance(missing["message"], dict)
-    missing["message"].pop("public_thinking_steps")
+    missing["message"].pop("public_thinking_text")
     with pytest.raises(LLMInvalidResponseError):
         parse_tutor_decision(missing, run=_run())
 
     oversized = _valid_payload()
     assert isinstance(oversized["message"], dict)
-    oversized["message"]["public_thinking_steps"] = [
-        "我先检查一个公开步骤。",
-    ] * 5
+    oversized["message"]["public_thinking_text"] = "公开思考" * 321
     with pytest.raises(LLMInvalidResponseError):
         parse_tutor_decision(oversized, run=_run())
 
@@ -1086,7 +1224,7 @@ def test_parse_tutor_decision_requires_bounded_public_thinking_steps() -> None:
 def test_primary_gateway_rejects_unsafe_public_thinking_before_domain_assembly() -> None:
     payload = _valid_payload()
     assert isinstance(payload["message"], dict)
-    payload["message"]["public_thinking_steps"] = ["raw prompt summary"]
+    payload["message"]["public_thinking_text"] = "raw prompt summary"
     result = PrimaryTutorProviderGateway(
         settings=Settings(llm_type="disabled"),
         client=FakeJsonClient(content=payload),
@@ -1105,7 +1243,7 @@ def test_primary_gateway_retries_one_invalid_envelope_on_the_same_primary_model(
                 "message": {
                     "type": "agent_message",
                     "text": "先看一个小例子。",
-                    "public_thinking_steps": ["当前目标可以收敛为一个可验证的小步骤。"],
+                    "public_thinking_text": "当前目标可以收敛为一个可验证的小步骤。",
                     "conversation_title": None,
                 },
                 "action": {"type": "initialization"},
@@ -1139,7 +1277,7 @@ def test_primary_gateway_rejects_unknown_or_guardrail_blocked_envelopes_as_model
     blocked_payload["message"] = {
         "type": "agent_message",
         "text": "完整答案如下：...",
-        "public_thinking_steps": ["当前目标可以收敛为一个可验证的小步骤。"],
+        "public_thinking_text": "当前目标可以收敛为一个可验证的小步骤。",
         "conversation_title": None,
     }
     unknown = PrimaryTutorProviderGateway(
@@ -1190,7 +1328,7 @@ def test_primary_gateway_rejects_internal_nested_payload_fields_as_model_unavail
                 "message": {
                     "type": "agent_message",
                     "text": "准备保存学习笔记。",
-                    "public_thinking_steps": ["当前目标可以收敛为一个可验证的小步骤。"],
+                    "public_thinking_text": "当前目标可以收敛为一个可验证的小步骤。",
                     "conversation_title": None,
                 },
                 "action": {
@@ -1241,7 +1379,7 @@ def test_provider_keeps_bounded_string_list_arguments_and_server_owns_action_ids
             "message": {
                 "type": "agent_message",
                 "text": "先检索一个函数返回值示例。",
-                "public_thinking_steps": ["当前目标可以收敛为一个可验证的小步骤。"],
+                "public_thinking_text": "当前目标可以收敛为一个可验证的小步骤。",
                 "conversation_title": None,
             },
             "action": {
@@ -1277,7 +1415,7 @@ def test_provider_payload_values_must_be_finite_and_round_trip_within_domain_bou
         "message": {
             "type": "agent_message",
             "text": "准备调用能力。",
-            "public_thinking_steps": ["当前目标可以收敛为一个可验证的小步骤。"],
+            "public_thinking_text": "当前目标可以收敛为一个可验证的小步骤。",
             "conversation_title": None,
         },
         "action": {
@@ -1297,7 +1435,7 @@ def test_server_owned_effect_id_and_revision_are_deterministic() -> None:
         "message": {
             "type": "agent_message",
             "text": "准备保存学习笔记。",
-            "public_thinking_steps": ["当前目标可以收敛为一个可验证的小步骤。"],
+            "public_thinking_text": "当前目标可以收敛为一个可验证的小步骤。",
             "conversation_title": None,
         },
         "action": {

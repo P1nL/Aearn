@@ -6,10 +6,14 @@ from typing import Annotated, Literal, Mapping
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
+from app.agents.harness.contracts import MAX_TUTOR_PUBLIC_THINKING_TEXT_LENGTH
+from app.services.tutor.public_thinking_stream import PUBLIC_THINKING_CHUNK_MAX_LENGTH
 
-TUTOR_CONVERSATION_EVENT_PROJECTION_VERSION = "tutor_conversation_event_v1"
-TUTOR_CONVERSATION_SNAPSHOT_VERSION = "tutor_conversation_snapshot_v1"
-TUTOR_CONVERSATION_STREAM_CURSOR_VERSION = 1
+
+TUTOR_CONVERSATION_EVENT_PROJECTION_VERSION = "tutor_conversation_event_v2"
+TUTOR_CONVERSATION_SNAPSHOT_VERSION = "tutor_conversation_snapshot_v2"
+TUTOR_CONVERSATION_STREAM_CURSOR_VERSION = 2
+TUTOR_PUBLIC_THINKING_STREAM_VERSION = "tutor_public_thinking_stream_v1"
 
 
 class TutorInteractionProtocolVersion(StrEnum):
@@ -41,6 +45,7 @@ class TutorConversationEventKind(StrEnum):
     TURN_UPDATED = "turn_updated"
     ITEM_ADDED = "item_added"
     ITEM_UPDATED = "item_updated"
+    TURN_OUTPUT = "turn_output"
     CONTROL_UPDATED = "control_updated"
     DISPATCH_DELAYED = "dispatch_delayed"
     DISPATCH_DEAD = "dispatch_dead"
@@ -83,6 +88,7 @@ class TutorPublicMessageItem(_StrictPublicModel):
     turn_id: str | None = Field(default=None, min_length=1, max_length=120)
     role: Literal["learner", "tutor"]
     content: str = Field(max_length=16_000)
+    public_thinking_text: str = Field(default="", max_length=MAX_TUTOR_PUBLIC_THINKING_TEXT_LENGTH)
     public_thinking_steps: list[str] = Field(default_factory=list, max_length=4)
     context_references: list[dict[str, object]] = Field(default_factory=list, max_length=6)
     in_reply_to_item_id: str | None = Field(default=None, min_length=1, max_length=120)
@@ -168,6 +174,7 @@ class TutorPublicElicitationItem(_StrictPublicModel):
     version: int = Field(ge=1)
     required: Literal[True]
     prompt: str = Field(min_length=1, max_length=1_200)
+    public_thinking_text: str = Field(default="", max_length=MAX_TUTOR_PUBLIC_THINKING_TEXT_LENGTH)
     presentation: TutorPublicRequestPresentation
     allowed_actions: list[Literal["respond"]] = Field(default_factory=list, max_length=1)
     answer_turn_id: str | None = Field(default=None, min_length=1, max_length=120)
@@ -186,6 +193,7 @@ class TutorPublicApprovalItem(_StrictPublicModel):
     version: int = Field(ge=1)
     required: Literal[True]
     prompt: str = Field(min_length=1, max_length=1_200)
+    public_thinking_text: str = Field(default="", max_length=MAX_TUTOR_PUBLIC_THINKING_TEXT_LENGTH)
     presentation: TutorPublicApprovalPresentation
     allowed_actions: list[Literal["approve", "deny"]] = Field(default_factory=list, max_length=2)
     answer_turn_id: str | None = Field(default=None, min_length=1, max_length=120)
@@ -228,6 +236,29 @@ class TutorItemEventPayload(_StrictPublicModel):
     item: TutorPublicItemReference
 
 
+class TutorTurnOutputAppendPayload(_StrictPublicModel):
+    output_version: Literal["tutor_public_thinking_stream_v1"]
+    input_revision: int = Field(ge=0)
+    generation: int = Field(ge=1)
+    operation: Literal["append"]
+    chunk_sequence: int = Field(ge=1)
+    text: str = Field(min_length=1, max_length=PUBLIC_THINKING_CHUNK_MAX_LENGTH)
+
+
+class TutorTurnOutputStatePayload(_StrictPublicModel):
+    output_version: Literal["tutor_public_thinking_stream_v1"]
+    input_revision: int = Field(ge=0)
+    generation: int = Field(ge=1)
+    operation: Literal["reset", "complete", "discard"]
+    chunk_sequence: int = Field(ge=0)
+
+
+TutorTurnOutputPayload = Annotated[
+    TutorTurnOutputAppendPayload | TutorTurnOutputStatePayload,
+    Field(discriminator="operation"),
+]
+
+
 class TutorControlEventPayload(_StrictPublicModel):
     control_version: int = Field(ge=1)
 
@@ -243,6 +274,7 @@ _EVENT_PAYLOAD_ADAPTERS: Mapping[TutorConversationEventKind, TypeAdapter[object]
     TutorConversationEventKind.TURN_UPDATED: TypeAdapter(TutorTurnEventPayload),
     TutorConversationEventKind.ITEM_ADDED: TypeAdapter(TutorItemEventPayload),
     TutorConversationEventKind.ITEM_UPDATED: TypeAdapter(TutorItemEventPayload),
+    TutorConversationEventKind.TURN_OUTPUT: TypeAdapter(TutorTurnOutputPayload),
     TutorConversationEventKind.CONTROL_UPDATED: TypeAdapter(TutorControlEventPayload),
     TutorConversationEventKind.DISPATCH_DELAYED: TypeAdapter(TutorDispatchEventPayload),
     TutorConversationEventKind.DISPATCH_DEAD: TypeAdapter(TutorDispatchEventPayload),

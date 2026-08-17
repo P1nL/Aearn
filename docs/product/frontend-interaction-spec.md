@@ -119,14 +119,27 @@ stateDiagram-v2
   也不会因 legacy waiting 状态恢复旧 continuation。
 - pending typed request 完全占用 composer 席位。clarification、planning input 与 approval
   使用服务端 presentation/allowed action；authority request 只显示等待状态。此时普通 composer、
-  Queue tray 与 conversation control mutation 不可触达。
+  Queue tray 与 conversation control mutation 不可触达。学习者提交后继续沿用普通用户消息气泡，
+  只显示 presentation 对应的自然语言结果；`question_key`、`field_key`、内部 option value、JSON 与引号不进入可见文本。
 - Composer 最多 16,000 个字符，可用 Ctrl/⌘+Enter 提交；pending 时禁用重复动作。
   timeline 是独立纵向滚动区，Composer 在 desktop view 保持可见，新的 snapshot 条目
   不得把它持续挤出主要可视区。
-- timeline 只渲染 server public `message`、typed request 与 learner-safe `error`。
-  独立 `process` item 仅为兼容解析和 cursor 顺序存在，不进入主 renderer。Tutor message 的
-  bounded `public_thinking_steps[]` 通过 DSH-derived `Think` disclosure 默认展开；不得从 process、
-  SSE/raw trace、tool/category 或 provider reasoning 合成公开思路。
+- `plan_drafting` 的当前学习计划草案确认不是 generic typed approval：Skill 在 draft capability
+  成功后必须以 `turn_completed` 结束，普通 Composer 继续用于提出修改；创建正式 LearningTrack
+  只能由右侧计划 inspector 调用 learning-plan session confirm endpoint。非计划场景的 approval
+  仍按上一条规则接管 Composer。
+- timeline 只渲染 server public `message`、typed request 与 learner-safe `error`。同一 Turn 同时存在正式
+  Tutor `message` 与配套 `elicitation/approval` 记录时，主时间线只渲染正式 message；pending request 的交互控件
+  只在底部 typed request 席位出现一次。只有 legacy/request-only 快照缺少正式 message 时，才回退渲染 request history。
+  独立 `process` item 仅为兼容解析和 cursor 顺序存在，不进入主 renderer。Tutor message/request 的
+  bounded `public_thinking_text` 通过 DSH-derived `Think` disclosure 展示；legacy steps 只在 API 边界
+  合并为纯文本。不得从 process、任意 SSE/raw trace、tool/category 或 provider reasoning 合成公开思路。
+- 当权威 snapshot 存在当前 running `active_turn` 时，timeline 末尾立即渲染且只渲染
+  `StateDot + Think`。尚无 validated `active_thinking.complete` 时整行不是 button、无 chevron、不可聚焦、
+  无正文或辅助文案；候选文本通过 complete authority 与首段稳定窗口后才原位变为默认展开的 disclosure，
+  并按模型原始段落/换行逐 grapheme 显示。
+  成功 snapshot 用同一 turn 的持久化 `public_thinking_text + 回答` 接替临时节点；回答揭示完成后 `Think`
+  自动折叠一次，之后普通 snapshot refresh 不得覆盖用户手动展开选择。
 - legacy waiting 的 `TUTOR_LEGACY_CONTINUATION_REQUIRES_NEW_TURN` 显示 fresh-turn 迁移卡；
   ordinary cutover cancellation 使用普通 interrupted 视觉，不显示系统故障或自动动作。
 
@@ -288,3 +301,29 @@ Review feedback 引用、Lesson selection 引用和 console/exception smoke 均�
 ## 2026-08-14：thread/turn v2 capability 与 migration state
 
 Desktop 通过 `GET /api/tutor/capabilities/thread-turn-v2` 读取 exact server capability。`effective_enabled=false` 时保留 snapshot/history 读取并显示只读 unavailable 状态，不发送 Tutor mutation、不恢复旧 continuation。`blocked` 只显示安全 block code；legacy waiting 失败显示 fresh-turn 迁移卡，普通 cutover cancellation 继续使用 interrupted 视觉。v2 页面以 snapshot-first + conversation SSE 工作，Queue tray、typed request composer、Stop/Steer/Retry、键盘、窄屏与 reduced-motion 均由 `TutorConversationSurface` 统一实现。
+
+## 2026-08-15：`Think` 公开文本实时状态机
+
+1. learner message 进入 timeline 后，同一 active Turn 立即出现 `● Think`；普通 composer 与 typed request response
+   都必须直接采用 accepted mutation 返回的 fresh run identity 挂载该行，不能先丢弃响应再等待 snapshot/SSE。除状态圆点
+   与固定标题外，不显示“正在思考”、完成提示、步骤数、时长、summary、footer 或任何辅助文字。
+2. 后端尚未提供 `public_thinking_text` 时，`Think` 是静态状态，不渲染 button/chevron，不接受鼠标或键盘展开。
+3. 首个 live `turn_output append` 先进入仅内存的 `350ms` 稳定窗口，同时保持 provisional：无论等待
+   多久，只有同 generation 收到 validated `complete` 后才可进入 DOM。`complete` 早于窗口结束时继续
+   等待剩余窗口；窗口已结束时收到 `complete` 则立即原位启用 disclosure 并默认展开，正文按
+   `18ms/grapheme` 显示。`reset/discard` 在 `complete` 前到达时，候选前缀永不展示。snapshot 只有在
+   `active_thinking.complete=true` 时可直接恢复既有文本；incomplete snapshot 继续保持静态 Think。
+   正文是 literal plain text，`white-space: pre-wrap` 保留模型段落、换行、标点和空白；前端不编号、
+   不排序、不解析 Markdown/HTML。
+4. Desktop 按 `turn_id + input_revision + generation + chunk_sequence` 去重并追加；每个视觉 tick 只显示一个
+   grapheme。gap/mismatch/cursor recovery 只能标记 recovery 并请求 snapshot，不得在 snapshot 返回前预先清空
+   当前可见安全前缀；同 Turn/Revision 的旧 generation snapshot 也不得回退较新的 live generation。
+   authoritative reset/discard、conversation 切换、Interrupt、Retry、repair 或 supersede 仍清理错误 generation。
+5. 正式回答只从成功持久化 message/request snapshot 获得。若 active Turn 已从 snapshot 消失但同 Turn 的最终
+   message/request 尚未出现，Desktop 必须继续保留当前 live-thinking 行，禁止出现整行闪退。最终项到达后先按统一
+   `18ms/grapheme` 追平思考队列，再按相同速度揭示回答；两条队列均完成且最后一个 grapheme 已显示 `240ms` 后，
+   `Think` 才自动折叠一次。用户随后重新展开不会被普通刷新再次折叠。
+6. 历史/刷新后加载的完成项直接显示完整回答，`Think` 默认折叠且不重放动画。旧 steps 以双换行合并，
+   不显示列表编号。不支持 structured visible stream 的 provider 不伪造实时思考，只在最终项显示完整文本。
+7. `prefers-reduced-motion: reduce` 直接同步已批准文本，但保留首文本解禁、最终一次折叠和所有 authority 规则。
+8. DOM、前端 state、network public payload 均不得包含 provider reasoning、prompt、raw event/body、trace、diagnostic 或 secret。

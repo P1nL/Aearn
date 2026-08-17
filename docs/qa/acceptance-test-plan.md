@@ -385,3 +385,17 @@ contract，不访问真实 provider、不启动或批准生产 container fleet�
 - Browser/Tauri：验证 snapshot-first timeline、DSH-derived Think、`process` 不渲染、running Send 入 Queue、Queue edit/reorder/delete/Steer/execute、Stop/Retry 状态、390×844、900×900 与 1440×900 无横向溢出、键盘发送、reduced-motion、SSE 断线可见错误与恢复后重连；console error 为 0。
 - pending request 的 composer-seat 替换与 exact request version 由 Desktop component test 和 API request suite 覆盖；本地 fake dispatcher fixture 未作为真实 provider 或发布就绪证据。
 - 未调用真实 provider，未执行生产 cutover、部署或生产数据修改。
+
+## 2026-08-15：Tutor 公开思考文本流验收增量
+
+| ID | 优先级 | 范围 | 验收 | 证据 |
+| --- | --- | --- | --- | --- |
+| RT-51 | P0 | Provider/projector | v4 exact field；任意 JSON 分片、escape、Unicode/surrogate；只观察 `output_text.delta`；reasoning 忽略；累计安全、160 字分片与最终文本一致 | `test_tutor_public_thinking_stream.py`、`test_tutor_provider_gateway.py`、LLM adapter regression |
+| RT-52 | P0 | Durable lifecycle | begin/append/reset/complete/discard/accept 的 run/revision/generation/lease fence；repair、Interrupt、supersede、stale callback 不混流；message/request 原子接受 | `test_tutor_conversation_runtime.py`、`test_tutor_run_loop.py`、`test_db_bootstrap.py` |
+| RT-53 | P0 | Snapshot/SSE/privacy | snapshot/event/cursor v2；`active_thinking` exact；`turn_output` closed payload；duplicate/gap/reconnect fresh snapshot；legacy steps/text兼容；无 reasoning/prompt/body/diagnostic | conversation history/SSE/routes/public API suites、Desktop parser tests |
+| FE-14 | P0 | Think 状态机 | accepted 后静态 `● Think` 无 button；首文本默认展开；每 tick 一个 grapheme；换行保留；final answer 后一次折叠；重开/refresh 不抢状态；历史不重放 | `TutorConversationSurface.test.tsx`、`useGraphemeTypewriter.test.tsx`、stream hook tests |
+| FE-15 | P1 | Browser/a11y | 1440×900、900×900、390×844；普通/慢/burst/reset/reconnect/success；无溢出/overlay/console warning；focus 与 reduced motion 正确；DOM/network 无 protected marker | disposable fake API/provider 浏览器证据 |
+
+默认验证使用 fake/local provider transport 与本地 PostgreSQL；不调用真实 provider、不执行生产 cutover、
+不部署，也不把确定性 contract 测试解释为真实模型质量或发布批准。数据库相关 pytest 必须串行运行，
+避免并发 schema bootstrap 造成测试环境死锁。

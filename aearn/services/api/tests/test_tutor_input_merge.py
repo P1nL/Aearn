@@ -330,8 +330,8 @@ def test_post_provider_normal_send_is_queued_without_invalidating_the_current_re
             self.calls: list[str] = []
             self.queued_item_id: str | None = None
 
-        def decide(self, *, run, context):  # type: ignore[no-untyped-def]
-            del context
+        def decide(self, *, run, context, thinking_sink=None):  # type: ignore[no-untyped-def]
+            del context, thinking_sink
             self.calls.append(run.run_id)
             with connect() as queue_conn:
                 queued = TutorPublicService(queue_conn).accept_conversation_input(

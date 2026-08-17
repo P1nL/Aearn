@@ -353,7 +353,14 @@ class PostgresTutorQueueController:
                 "SELECT * FROM tutor_runs WHERE id = %s AND user_id = %s AND conversation_id = %s FOR UPDATE",
                 (turn_id, user_id, conversation_id),
             ).fetchone()
-            if failed is None or str(failed.get("terminal_outcome") or "") not in {"failed", "model_unavailable"}:
+            outcome = str(failed.get("terminal_outcome") or "") if failed is not None else ""
+            diagnostic = str(failed.get("terminal_diagnostic_code") or "") if failed is not None else ""
+            recoverable = (
+                outcome in {"failed", "model_unavailable"}
+                or (outcome == "blocked_policy" and diagnostic == "capability_denied")
+                or (outcome == "budget_exhausted" and diagnostic == "deadline_exhausted")
+            )
+            if failed is None or not recoverable:
                 raise TutorInteractionRequestConflict("Tutor turn is not recoverable")
             input_row = self._conn.execute(
                 """

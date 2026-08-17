@@ -97,7 +97,8 @@ non-negative `input_revision`, retry lineage, completion reason, and timestamps.
   planning, and approval use the exact request version; authority requests are
   read-only. Ordinary composer and conversation Queue controls are absent.
 - Render public `message`, typed request, and safe `error`; parse but do not
-  render standalone `process`. `Think` reads only `public_thinking_steps[]`.
+  render standalone `process`. `Think` reads only exact `public_thinking_text` plus
+  fenced `active_thinking`/`turn_output`; legacy steps normalize at the API boundary.
 - `effective_enabled=false` preserves reads and disables all v2 writes without
   falling back to legacy run-local input.
 
@@ -156,4 +157,70 @@ await interruptTutorTurn({
   expectedInputRevision: snapshot.active_turn.input_revision,
   expectedControlVersion: snapshot.conversation.control_version,
 });
+```
+
+## 场景：Tutor `turn_output` reducer 与 grapheme 队列（2026-08-15）
+
+### 1. 适用范围与触发条件
+
+- 触发：修改 conversation SSE、`active_thinking` hydration、live-thinking reducer 或 `useGraphemeTypewriter`。
+
+### 2. Hook 签名
+
+```ts
+useTutorConversationStream(endpoint, { initialCursor, onEvent, onResetRequired })
+useGraphemeTypewriter(targetText, { animate, initialText, resetKey, intervalMs })
+```
+
+### 3. 契约
+
+- 只有 exact `turn_output` payload 可局部消费；其他 event 仍只触发节流 snapshot refresh。
+- reducer identity 为 `turnId + inputRevision + generation`，append 还要求连续 `chunkSequence`。
+- `append` 只更新 off-DOM received buffer；`complete` 是 validated reveal fence。组件必须同时满足 complete 与首文本稳定窗口才把 buffer 交给 grapheme 队列；snapshot hydrate 也只有 `complete=true` 可直接显示。
+- duplicate/older event 幂等忽略；gap、extra/unknown field、wrong identity 立即请求 fresh snapshot；recovery 返回前保留已经 validated 且可见的文本，但不得显示 incomplete buffer。
+- typewriter 使用 `Intl.Segmenter(grapheme)`，fallback `Array.from`；Tutor 思考、回答与请求 prompt 显式共享 `18ms` 的 `intervalMs`，每 tick 仅追加一个 grapheme，并在 reset/unmount 清 timer。
+- active Turn 已结束但同 Turn 的持久化 message/request 尚未出现在 snapshot 时，保留 live-thinking 节点与 turn identity；只有 final item 接管后才清理临时节点。
+- 自动折叠必须同时满足思考队列 complete、回答/request prompt 队列 complete，并在最后一个 grapheme 已渲染后等待 `240ms`；不得以服务端 complete 或 active Turn 消失直接折叠。
+
+### 4. 验证与错误矩阵
+
+| 输入 | 结果 |
+| --- | --- |
+| `reset` sequence 0 | 新 generation 清空队列 |
+| 连续 `append`、尚无 complete | 只追加 received buffer，不进入 DOM |
+| validated `complete` | 若稳定窗口已结束则启动 grapheme 队列，否则等待剩余窗口 |
+| duplicate append | 不重复文本 |
+| gap/wrong turn/revision/generation | `onResetRequired` + fresh snapshot |
+| `discard` | 清除 live state/queue |
+| Turn 先消失、final item 后到达 | 保留 live-thinking，下一份含 final item 的 snapshot 完成交接 |
+| 回答完成但折叠延迟未结束 | `Think` 仍保持展开 |
+| reduced motion | 直接同步 target，无悬挂 timer，仍遵守一次性折叠延迟 |
+
+### 5. 正常、基础与错误案例
+
+- 正常：incomplete snapshot/append 只累计候选前缀，validated complete 后才进入 grapheme 队列且不回退。
+- 基础：conversation 切换改变 reset key，旧 timer 与文本被清理。
+- 错误：把所有 SSE payload merge 到 timeline、用 code unit 切 emoji、gap 后继续猜测。
+
+### 6. 必须测试
+
+- stream parser：exact append/reset/complete/discard、extra field、protected field、wrong identity、gap reset。
+- typewriter：一 grapheme/tick、emoji/组合字符、换行、initial prefix、reset、reduced motion、unmount cleanup。
+- component integration：稳定窗口结束但尚无 complete 仍不可见、慢速 rejected attempt 直接 discard、incomplete snapshot、repair reset、conversation switch、Turn 消失早于 final item 的 snapshot handoff、完整思考与回答显示后再折叠，以及 final reconciliation。
+
+### 7. 错误与正确写法
+
+#### 错误
+
+```ts
+setText((value) => value + payload.text);
+setDisplayed(target.slice(0, displayed.length + 1));
+```
+
+#### 正确
+
+```ts
+if (!matchesFence(event, live) || !isNextChunk(event, live)) requireSnapshot();
+const graphemes = segmentGraphemes(target);
+setDisplayed(graphemes.slice(0, visibleCount + 1).join(""));
 ```

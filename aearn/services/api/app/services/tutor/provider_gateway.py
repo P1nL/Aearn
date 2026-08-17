@@ -30,6 +30,7 @@ from app.services.llm.llm_client import (
     LLMInvalidResponseError,
     LLMInvalidResponseKind,
     LLMJsonResponse,
+    LLMVisibleOutputObserver,
     OpenAICompatibleClient,
     select_llm_protocol,
 )
@@ -37,6 +38,13 @@ from app.services.llm.provider_diagnostics import (
     ProviderBodyCapture,
     ProviderDiagnosticMetadata,
     ProviderDiagnosticStore,
+)
+from app.services.tutor.ports import TutorLifecycleConflict
+from app.services.tutor.public_thinking_stream import (
+    TutorProviderPublicTextProjector,
+    TutorPublicThinkingSafetyError,
+    TutorPublicThinkingSink,
+    TutorPublicThinkingStreamError,
 )
 from app.services.tutor.decision_protocol import (
     TUTOR_PROVIDER_ITEMS_SCHEMA_NAME,
@@ -100,6 +108,7 @@ class TutorJsonClient(Protocol):
         schema_name: str | None = None,
         thinking_mode: Literal["enabled", "disabled"] | None = None,
         capture_provider_body: bool = False,
+        visible_output_observer: LLMVisibleOutputObserver | None = None,
     ) -> LLMJsonResponse: ...
 
 
@@ -142,6 +151,7 @@ class PrimaryTutorProviderGateway:
         *,
         run: TutorRunSnapshot,
         context: TutorContextSelection,
+        thinking_sink: TutorPublicThinkingSink | None = None,
     ) -> TutorProviderResult:
         attempts: list[TutorProviderAttemptReceipt] = []
         try:
@@ -153,6 +163,11 @@ class PrimaryTutorProviderGateway:
             messages = _build_messages(run=run, context=context)
             protocol = select_llm_protocol(self._settings).value
             provider_type = self._settings.llm_provider_type
+            supports_visible_stream = (
+                thinking_sink is not None
+                and protocol in {"responses", "deepseek_responses"}
+                and isinstance(client, OpenAICompatibleClient)
+            )
         except LLMConfigurationError as exc:
             logger.warning(
                 "Tutor primary model configuration was unavailable: %s",
@@ -174,6 +189,13 @@ class PrimaryTutorProviderGateway:
         for attempt_index in range(1, PRIMARY_PROVIDER_DECISION_ATTEMPTS + 1):
             response: LLMJsonResponse | None = None
             rejected_capture: ProviderBodyCapture | None = None
+            projector: TutorProviderPublicTextProjector | None = None
+            if supports_visible_stream and thinking_sink is not None:
+                thinking_sink.begin_attempt(attempt_index)
+                projector = TutorProviderPublicTextProjector(
+                    attempt_index=attempt_index,
+                    sink=thinking_sink,
+                )
             if attempt_index > 1:
                 messages = _build_messages(run=run, context=context)
                 messages.append(
@@ -186,28 +208,65 @@ class PrimaryTutorProviderGateway:
                     }
                 )
             try:
-                response = client.complete_json(
-                    messages,
-                    temperature=None,
-                    max_tokens=self._max_output_tokens,
-                    timeout_seconds=self._timeout_seconds,
-                    output_schema=self._output_schema,
-                    schema_name=TUTOR_PROVIDER_ITEMS_SCHEMA_NAME,
-                    thinking_mode=(
-                        "disabled"
-                        if (
-                            attempt_index > 1
-                            and provider_type == "deepseek"
-                            and self._settings.tutor_deepseek_repair_thinking_disabled
-                        )
-                        else None
-                    ),
-                    capture_provider_body=True,
+                thinking_mode: Literal["enabled", "disabled"] | None = (
+                    "disabled"
+                    if (
+                        attempt_index > 1
+                        and provider_type == "deepseek"
+                        and self._settings.tutor_deepseek_repair_thinking_disabled
+                    )
+                    else None
                 )
+                if projector is None:
+                    response = client.complete_json(
+                        messages,
+                        temperature=None,
+                        max_tokens=self._max_output_tokens,
+                        timeout_seconds=self._timeout_seconds,
+                        output_schema=self._output_schema,
+                        schema_name=TUTOR_PROVIDER_ITEMS_SCHEMA_NAME,
+                        thinking_mode=thinking_mode,
+                        capture_provider_body=True,
+                    )
+                else:
+                    response = client.complete_json(
+                        messages,
+                        temperature=None,
+                        max_tokens=self._max_output_tokens,
+                        timeout_seconds=self._timeout_seconds,
+                        output_schema=self._output_schema,
+                        schema_name=TUTOR_PROVIDER_ITEMS_SCHEMA_NAME,
+                        thinking_mode=thinking_mode,
+                        capture_provider_body=True,
+                        visible_output_observer=projector,
+                    )
                 _assert_raw_provider_text_safe(response.content)
                 decision = parse_tutor_provider_items(response.content, run=run)
                 _assert_decision_text_safe(decision)
+                if projector is not None and thinking_sink is not None:
+                    raw_message = response.content.get("message")
+                    raw_thinking = (
+                        raw_message.get("public_thinking_text")
+                        if isinstance(raw_message, Mapping)
+                        else None
+                    )
+                    if not isinstance(raw_thinking, str) or projector.text != raw_thinking:
+                        raise TutorDecisionValidationError(
+                            "Tutor streamed public thinking did not match the final provider object",
+                            issues=(
+                                TutorDecisionValidationIssue(
+                                    path="message.public_thinking_text",
+                                    category="stream_mismatch",
+                                ),
+                            ),
+                        )
+                    # ``complete`` is the public validation barrier, not merely the
+                    # provider transport EOF. Invalid attempts must go straight from
+                    # provisional append events to discard without becoming visible.
+                    thinking_sink.complete_attempt(attempt_index)
             except LLMConfigurationError as exc:
+                if projector is not None and thinking_sink is not None:
+                    thinking_sink.discard_attempt(attempt_index)
                 logger.warning(
                     "Tutor primary model configuration was unavailable: %s",
                     type(exc).__name__,
@@ -217,6 +276,8 @@ class PrimaryTutorProviderGateway:
                     attempts=tuple(attempts),
                 )
             except LLMCallError as exc:
+                if projector is not None and thinking_sink is not None:
+                    thinking_sink.discard_attempt(attempt_index)
                 diagnostic_code = _provider_call_diagnostic_code(exc)
                 _commit_provider_diagnostic(
                     exc.diagnostic_capture,
@@ -245,6 +306,32 @@ class PrimaryTutorProviderGateway:
                     safe_code=diagnostic_code,
                     attempts=tuple(attempts),
                 )
+            except TutorPublicThinkingSafetyError as exc:
+                diagnostic_code = _PROVIDER_OUTPUT_SAFETY_REJECTED
+                exception_type = type(exc).__name__
+                repairable = True
+                replacement_issues = (
+                    TutorDecisionValidationIssue(
+                        path="message.public_thinking_text",
+                        category="unsafe_output",
+                    ),
+                )
+                rejected_capture = response.diagnostic_capture if response is not None else None
+                usage = response.usage if response is not None else None
+                model = (response.model if response is not None else None) or client.model
+            except TutorPublicThinkingStreamError as exc:
+                diagnostic_code = _PROVIDER_DECISION_INVALID
+                exception_type = type(exc).__name__
+                repairable = True
+                replacement_issues = (
+                    TutorDecisionValidationIssue(
+                        path="message.public_thinking_text",
+                        category="invalid_stream",
+                    ),
+                )
+                rejected_capture = response.diagnostic_capture if response is not None else None
+                usage = response.usage if response is not None else None
+                model = (response.model if response is not None else None) or client.model
             except TutorOutputSafetyError as exc:
                 diagnostic_code = _PROVIDER_OUTPUT_SAFETY_REJECTED
                 exception_type = type(exc).__name__
@@ -306,7 +393,11 @@ class PrimaryTutorProviderGateway:
                 )
                 usage = response.usage if response is not None else None
                 model = (response.model if response is not None else None) or client.model
+            except TutorLifecycleConflict:
+                raise
             except Exception as exc:
+                if projector is not None and thinking_sink is not None:
+                    thinking_sink.discard_attempt(attempt_index)
                 diagnostic_code = _PROVIDER_ADAPTER_FAILED
                 if response is not None:
                     _commit_provider_diagnostic(
@@ -357,6 +448,8 @@ class PrimaryTutorProviderGateway:
                     attempts=tuple(attempts),
                 )
 
+            if projector is not None and thinking_sink is not None:
+                thinking_sink.discard_attempt(attempt_index)
             _commit_provider_diagnostic(
                 rejected_capture,
                 run=run,
@@ -510,13 +603,9 @@ def _assert_raw_provider_text_safe(payload: Mapping[str, object]) -> None:
             value = message.get(key)
             if isinstance(value, str):
                 _assert_safe_tutor_output(value)
-        public_thinking_steps = message.get("public_thinking_steps")
-        if isinstance(public_thinking_steps, Sequence) and not isinstance(
-            public_thinking_steps, (str, bytes)
-        ):
-            for step in public_thinking_steps:
-                if isinstance(step, str):
-                    _assert_safe_tutor_output(step)
+        public_thinking_text = message.get("public_thinking_text")
+        if isinstance(public_thinking_text, str):
+            _assert_safe_tutor_output(public_thinking_text)
     action = payload.get("action")
     if not isinstance(action, Mapping):
         return
@@ -540,8 +629,8 @@ def _assert_raw_provider_text_safe(payload: Mapping[str, object]) -> None:
 def _assert_decision_text_safe(decision: TutorDecision) -> None:
     if decision.public_message is not None:
         _assert_safe_tutor_output(decision.public_message)
-    for step in decision.public_thinking_steps:
-        _assert_safe_tutor_output(step)
+    if decision.public_thinking_text:
+        _assert_safe_tutor_output(decision.public_thinking_text)
     if decision.conversation_title is not None:
         _assert_safe_tutor_output(decision.conversation_title)
     _assert_payload_text_safe(decision.capability_requests, decision.effect_proposals)

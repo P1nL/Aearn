@@ -21,12 +21,20 @@ from app.services.tutor.conversation_contracts import (
     validate_public_item,
 )
 from app.services.tutor.persistence import (
+    PostgresTutorLifecycle,
     PostgresTutorRepository,
     TutorCursorInvalid,
     TutorIdempotencyConflict,
+    TutorLifecycleConflict,
 )
 from app.services.tutor.public_api import TutorPublicService
-from tutor_public_api_support import action_payload, assert_error, create_tutor_user, terminal_dispatcher
+from tutor_public_api_support import (
+    action_payload,
+    assert_error,
+    create_tutor_user,
+    terminal_dispatcher,
+    waiting_dispatcher,
+)
 
 
 def _create_v2_turn(fixture, *, action_id: str = "thread-turn-v2"):
@@ -370,6 +378,187 @@ def test_legacy_snapshot_projects_history_without_event_backfill(
         headers={"Last-Event-ID": "not-an-opaque-conversation-cursor"},
     )
     assert_error(invalid, "CONVERSATION_CURSOR_INVALID", 400)
+
+
+def test_active_public_thinking_snapshot_recovers_the_safe_prefix_and_isolates_repair_generations(
+    tutor_persistence,
+) -> None:
+    fixture = tutor_persistence
+    accepted, occurred_at = _create_v2_turn(fixture, action_id="active-thinking-snapshot")
+    lease = fixture.repository.acquire_lease(
+        user_id=fixture.user_id,
+        run_id=accepted.run.run_id,
+        owner_id="thinking-worker",
+        now=occurred_at,
+        duration_seconds=60,
+    )
+    assert lease is not None
+    snapshot = fixture.repository.load_snapshot(
+        user_id=fixture.user_id,
+        run_id=accepted.run.run_id,
+    )
+    assert snapshot is not None
+    lifecycle = PostgresTutorLifecycle(repository=fixture.repository)
+    sink = lifecycle.create_public_thinking_sink(
+        snapshot=snapshot,
+        lease=lease,
+        decision_iteration=1,
+        now=lambda: occurred_at,
+    )
+
+    sink.begin_attempt(1)
+    sink.append_text(1, "先确认目标。")
+    active = fixture.repository.read_conversation_snapshot(
+        user_id=fixture.user_id,
+        conversation_id=accepted.run.conversation_id,
+        limit=40,
+        cursor=None,
+        now=occurred_at,
+    )
+    assert active.active_thinking == {
+        "turn_id": accepted.run.run_id,
+        "input_revision": accepted.run.input_revision,
+        "generation": 10001,
+        "state": "active",
+        "text": "先确认目标。",
+        "complete": False,
+        "last_event_sequence": active.active_thinking["last_event_sequence"],
+    }
+
+    sink.reset_attempt(2)
+    with pytest.raises(TutorLifecycleConflict, match="stale provider attempt"):
+        sink.append_text(1, "不能混入新尝试。")
+    reset = fixture.repository.read_conversation_snapshot(
+        user_id=fixture.user_id,
+        conversation_id=accepted.run.conversation_id,
+        limit=40,
+        cursor=None,
+        now=occurred_at,
+    )
+    assert reset.active_thinking is not None
+    assert reset.active_thinking["generation"] == 10002
+    assert reset.active_thinking["text"] == ""
+
+    sink.discard_attempt(2)
+    discarded = fixture.repository.read_conversation_snapshot(
+        user_id=fixture.user_id,
+        conversation_id=accepted.run.conversation_id,
+        limit=40,
+        cursor=None,
+        now=occurred_at,
+    )
+    assert discarded.active_thinking is None
+
+
+def test_public_thinking_stream_is_replayable_and_atomically_accepted_with_terminal_message(
+    monkeypatch: pytest.MonkeyPatch,
+    tutor_client: TestClient,
+    tutor_api_settings: Settings,
+) -> None:
+    thinking_text = "先确认目标。\n\n再选择一个最小例子。"
+    dispatcher, _provider = terminal_dispatcher(
+        settings=tutor_api_settings,
+        message="我们先从最小例子开始。",
+        public_thinking_text=thinking_text,
+        stream_public_thinking=True,
+    )
+    monkeypatch.setattr(tutor_route, "build_tutor_run_dispatcher", lambda _settings: dispatcher)
+    user = create_tutor_user(tutor_client)
+    user_id = str(user["id"])
+
+    accepted = tutor_client.post(
+        "/api/tutor/conversations/first-turn",
+        json=action_payload(user_id, "thinking-stream-terminal", content="请解释闭包。"),
+    )
+    assert accepted.status_code == 202
+    body = accepted.json()
+    conversation_id = str(body["conversation_id"])
+    run_id = str(body["run_id"])
+
+    snapshot_response = tutor_client.get(
+        f"/api/tutor/conversations/{conversation_id}/snapshot?user_id={user_id}&limit=40"
+    )
+    assert snapshot_response.status_code == 200
+    snapshot = snapshot_response.json()
+    assert snapshot["snapshot_version"] == TUTOR_CONVERSATION_SNAPSHOT_VERSION
+    assert snapshot["active_turn"] is None
+    assert snapshot["active_thinking"] is None
+    tutor_message = next(item for item in snapshot["timeline"] if item["kind"] == "message" and item["role"] == "tutor")
+    assert tutor_message["turn_id"] == run_id
+    assert tutor_message["public_thinking_text"] == thinking_text
+    assert tutor_message["public_thinking_steps"] == []
+
+    with connect() as conn:
+        stream_row = conn.execute(
+            "SELECT state, thinking_text, provider_attempt FROM tutor_turn_public_thinking_streams WHERE run_id = %s",
+            (run_id,),
+        ).fetchone()
+        replay = TutorPublicService(conn, settings=tutor_api_settings).replay_conversation_events(
+            user_id=user_id,
+            conversation_id=conversation_id,
+            cursor=None,
+        )
+    assert stream_row == {"state": "accepted", "thinking_text": thinking_text, "provider_attempt": 1}
+    output_events = [event.data for event in replay if event.event_type == "turn_output"]
+    assert [event["payload"]["operation"] for event in output_events] == ["reset", "append", "complete"]
+    assert [event["payload"]["chunk_sequence"] for event in output_events] == [0, 1, 2]
+    assert output_events[1]["payload"]["text"] == thinking_text
+    assert "reasoning" not in json.dumps(output_events, ensure_ascii=False).lower()
+
+
+def test_typed_request_accepts_public_thinking_and_persists_formal_message(
+    monkeypatch: pytest.MonkeyPatch,
+    tutor_client: TestClient,
+    tutor_api_settings: Settings,
+) -> None:
+    thinking_text = "我先确认当前缺少哪一项必要信息。"
+    dispatcher, _provider = waiting_dispatcher(
+        settings=tutor_api_settings,
+        message="请补充你的每周可投入时间。",
+        public_thinking_text=thinking_text,
+        stream_public_thinking=True,
+    )
+    monkeypatch.setattr(tutor_route, "build_tutor_run_dispatcher", lambda _settings: dispatcher)
+    user = create_tutor_user(tutor_client)
+    user_id = str(user["id"])
+
+    accepted = tutor_client.post(
+        "/api/tutor/conversations/first-turn",
+        json=action_payload(user_id, "thinking-stream-request", content="帮我制定学习计划。"),
+    )
+    assert accepted.status_code == 202
+    body = accepted.json()
+    conversation_id = str(body["conversation_id"])
+    run_id = str(body["run_id"])
+
+    snapshot_response = tutor_client.get(
+        f"/api/tutor/conversations/{conversation_id}/snapshot?user_id={user_id}&limit=40"
+    )
+    assert snapshot_response.status_code == 200
+    snapshot = snapshot_response.json()
+    assert snapshot["active_turn"] is None
+    assert snapshot["active_thinking"] is None
+    assert snapshot["pending_requests"][0]["turn_id"] == run_id
+    assert snapshot["pending_requests"][0]["public_thinking_text"] == thinking_text
+
+    with connect() as conn:
+        stream_row = conn.execute(
+            "SELECT state, thinking_text FROM tutor_turn_public_thinking_streams WHERE run_id = %s",
+            (run_id,),
+        ).fetchone()
+        message_row = conn.execute(
+            """
+            SELECT content, public_thinking_text
+            FROM tutor_messages
+            WHERE conversation_id = %s AND role = 'tutor'
+            """,
+            (conversation_id,),
+        ).fetchone()
+    assert stream_row == {"state": "accepted", "thinking_text": thinking_text}
+    assert message_row == {
+        "content": "请补充你的每周可投入时间。",
+        "public_thinking_text": thinking_text,
+    }
 
 
 def test_concurrent_event_append_allocates_one_contiguous_conversation_sequence(

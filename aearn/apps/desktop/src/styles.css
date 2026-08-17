@@ -5112,7 +5112,12 @@ img {
   outline: none;
 }
 
-.tutor-composer textarea:focus,
+.tutor-composer textarea:focus {
+  border-color: var(--line-strong);
+  outline: none;
+  box-shadow: none;
+}
+
 .tutor-memory-editor textarea:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px rgba(47, 125, 99, .12);
@@ -6234,6 +6239,7 @@ img {
 /* LearningTrack home and conversational plan builder. */
 .desktop.learning-focus-shell {
   grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: 34px minmax(0, 1fr);
 }
 
 .desktop.learning-focus-shell .main {
@@ -6511,6 +6517,22 @@ article.learning-track-card {
   min-width: 0;
   min-height: 0;
   flex-direction: column;
+}
+
+.tutor-surface-root {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.tutor-surface-root > .tutor-workspace:not(.tutor-workspace-boundary) {
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 .tutor-workspace.tutor-conversation-only {
@@ -7593,7 +7615,9 @@ article.learning-track-card {
 
 @media (max-width: 767px) {
   .desktop { min-height: 0; }
+  .desktop.learning-focus-shell { height: 100dvh; max-height: 100dvh; }
   .desktop.learning-focus-shell .topbar { display: none; }
+  .desktop.learning-focus-shell .main { grid-template-rows: minmax(0, 1fr); }
   .desktop.learning-focus-shell .workspace-shell { min-height: 0; }
   .learning-workspace-toolbar { grid-template-columns: auto minmax(0, 1fr) auto; min-height: 54px; padding: 6px 10px; }
   .learning-workspace-toolbar > div:nth-child(2) { justify-items: start; }
@@ -7664,27 +7688,44 @@ article.learning-track-card {
 .tutor-running-controls span { color: var(--muted); font-size: 10px; line-height: 1.5; }
 .tutor-running-controls { background: color-mix(in srgb, var(--surface) 96%, #eef6ff); }
 
-.tutor-request-seat { display: grid; gap: 14px; padding: 16px; }
-.tutor-request-seat-heading { display: grid; gap: 4px; }
-.tutor-request-seat-heading > span { color: var(--accent-dark); font-size: 9px; font-weight: 850; letter-spacing: .09em; text-transform: uppercase; }
-.tutor-request-seat-heading > strong { font-size: 14px; line-height: 1.45; }
-.tutor-request-seat > small { color: var(--muted); font-size: 9px; line-height: 1.5; }
+.tutor-request-seat { display: grid; gap: 12px; padding: 16px; }
+.tutor-request-seat-heading { margin: 0; color: var(--ink); font-size: 14px; line-height: 1.45; }
 .tutor-request-form,
 .tutor-approval-card { display: grid; gap: 12px; }
 .tutor-approval-card { padding: 13px; border: 1px solid rgba(181, 121, 47, .22); border-radius: 13px; background: rgba(255, 248, 235, .72); }
 .tutor-approval-card p { margin: 0; font-size: 11px; line-height: 1.6; }
 .tutor-approval-card > span { color: #87612d; font-size: 9px; font-weight: 800; text-transform: uppercase; }
 .tutor-request-textarea,
-.tutor-request-select,
 .tutor-queue-edit textarea { width: 100%; border: 1px solid rgba(54, 69, 63, .18); border-radius: 11px; color: var(--ink); background: rgba(255,255,255,.88); font: inherit; line-height: 1.55; }
 .tutor-request-textarea,
 .tutor-queue-edit textarea { min-height: 72px; padding: 10px 11px; resize: vertical; }
-.tutor-request-select { min-height: 40px; padding: 0 10px; }
-.tutor-request-textarea:focus,
-.tutor-request-select:focus,
+.tutor-request-textarea:focus { outline: none; border-color: rgba(54,69,63,.18); box-shadow: none; }
+.tutor-request-input:focus-within { border-color: var(--aearn-border); outline: none; box-shadow: none; }
 .tutor-queue-edit textarea:focus { outline: 2px solid color-mix(in srgb, var(--accent) 28%, transparent); outline-offset: 2px; }
 .tutor-request-options { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; padding: 0; border: 0; }
-.tutor-request-options label { display: inline-flex; align-items: center; gap: 7px; min-height: 36px; padding: 7px 10px; border: 1px solid rgba(54,69,63,.14); border-radius: 10px; background: rgba(255,255,255,.68); font-size: 10px; }
+.tutor-request-options-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+.tutor-request-options label {
+  display: inline-flex;
+  min-height: 42px;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 12px;
+  border: 1px solid rgba(54,69,63,.14);
+  border-radius: 11px;
+  color: var(--ink);
+  background: rgba(255,255,255,.72);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1.4;
+  transition: border-color .15s var(--ease), background-color .15s var(--ease), box-shadow .15s var(--ease);
+}
+.tutor-request-options label:hover { border-color: rgba(47,125,99,.3); background: rgba(255,255,255,.96); }
+.tutor-request-options label:has(input:checked) { border-color: rgba(47,125,99,.38); color: var(--accent-dark); background: color-mix(in srgb, var(--accent-soft) 72%, #fff); box-shadow: inset 0 0 0 1px rgba(47,125,99,.12); }
+.tutor-request-options label:focus-within { outline: none; box-shadow: none; }
+.tutor-request-options input:focus { outline: none; box-shadow: none; }
+.tutor-request-options label:has(input:disabled) { cursor: not-allowed; opacity: .56; }
+.tutor-request-options input { width: 15px; height: 15px; flex: none; margin: 0; accent-color: var(--accent); }
+.tutor-request-options span { min-width: 0; }
 
 .tutor-queue-tray { display: grid; gap: 10px; padding: 13px; }
 .tutor-queue-tray > header { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
@@ -7700,12 +7741,57 @@ article.learning-track-card {
 .tutor-queue-edit { grid-column: 1 / -1; display: grid; gap: 8px; }
 .tutor-queue-edit > div { display: flex; justify-content: flex-end; gap: 6px; }
 
-.tutor-thinking-disclosure { margin-bottom: 10px; border-radius: 12px; background: color-mix(in srgb, var(--accent-soft) 55%, transparent); }
-.tutor-thinking-disclosure ol { display: grid; gap: 7px; margin: 0; padding: 4px 8px 8px; list-style: none; }
-.tutor-thinking-disclosure li { display: grid; grid-template-columns: 20px minmax(0, 1fr); gap: 7px; align-items: start; }
-.tutor-thinking-disclosure li > span { display: grid; place-items: center; width: 19px; height: 19px; border-radius: 50%; color: #fff; background: var(--accent); font-size: 8px; font-weight: 850; }
-.tutor-thinking-disclosure li p { margin: 0; font-size: 10px; line-height: 1.55; }
-.tutor-thinking-disclosure ol + small { display: block; padding: 0 8px 9px 35px; color: var(--muted); font-size: 8.5px; }
+.tutor-running-placeholder { min-height: 52px; }
+.tutor-thinking-static {
+  display: flex;
+  min-height: 36px;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 6px;
+  color: var(--muted);
+}
+.tutor-thinking-static strong {
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 24px;
+}
+
+.tutor-thinking-disclosure {
+  width: min(100%, 680px);
+  margin: 0 0 4px;
+  color: var(--muted);
+}
+.tutor-thinking-disclosure > button {
+  color: var(--muted);
+}
+.tutor-thinking-disclosure > div {
+  padding: 0 6px 3px 29px;
+}
+.tutor-thinking-text {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.tutor-thinking-text.is-streaming::after,
+.tutor-answer-text.is-streaming::after {
+  display: inline-block;
+  width: 1px;
+  height: 1em;
+  margin-left: 2px;
+  background: currentColor;
+  content: "";
+  opacity: .58;
+  vertical-align: -.12em;
+  animation: tutor-text-caret 850ms steps(1, end) infinite;
+}
+@keyframes tutor-text-caret {
+  0%, 48% { opacity: .58; }
+  49%, 100% { opacity: 0; }
+}
 .tutor-request-history[data-request-state="pending"] { border-color: color-mix(in srgb, var(--accent) 26%, transparent); }
 .tutor-timeline-entry.error .tutor-message-content > strong { display: block; margin-bottom: 5px; color: #9a3d32; font-size: 11px; }
 
@@ -7717,6 +7803,7 @@ article.learning-track-card {
   .tutor-queue-actions { flex-wrap: wrap; justify-content: flex-start; }
   .tutor-queue-tray li > p { white-space: normal; }
   .tutor-request-seat { padding: 13px; }
+  .tutor-request-options-grid { grid-template-columns: minmax(0, 1fr); }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -7725,4 +7812,6 @@ article.learning-track-card {
   .tutor-request-seat *,
   .tutor-queue-tray *,
   .tutor-thinking-disclosure * { animation: none !important; scroll-behavior: auto !important; transition: none !important; }
+  .tutor-thinking-text.is-streaming::after,
+  .tutor-answer-text.is-streaming::after { display: none; animation: none; }
 }

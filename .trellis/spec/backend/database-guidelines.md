@@ -904,3 +904,69 @@ SELECT count(*) FROM tutor_queued_inputs WHERE conversation_id = $1 AND state = 
 - preparing 后 legacy active run 只按闭合分类收口：`waiting_for_input` -> failed + `legacy_continuation_requires_new_turn`；`queued|leased|running|waiting_for_capability` -> cancelled + `legacy_protocol_cutover`，并清 lease/job。
 - `awaiting_effect_commit`、`tutor_effects.status=proposed` 或未终态 Action receipt 必须 blocked；不得猜测成功/失败。
 - `tutor_thread_turn_cutover_events` append-only，只保存 generation、state、safe counts/code/timestamp，不保存 learner/provider 内容。两张全局表属于 shared cutover infrastructure，不是 user-owned target state。
+
+## 场景：Tutor 公开思考文本的 durable stream authority（2026-08-15）
+
+### 1. 适用范围与触发条件
+
+- 触发：修改 `public_thinking_text`、`tutor_turn_public_thinking_streams`、`turn_output`、terminal message/request、reset/delete/cutover。
+- 该能力跨 Provider、Harness、PostgreSQL、SSE 与 Desktop，必须保持 learner-safe preview 与最终回答 authority 分离。
+
+### 2. 接口与数据库签名
+
+- `tutor_messages.public_thinking_text text NOT NULL DEFAULT '' CHECK (char_length(...) <= 1280)`。
+- `tutor_turn_public_thinking_streams(run_id PK,user_id,conversation_id,input_revision,decision_iteration,generation,provider_attempt,state,thinking_text,next_chunk_sequence,last_public_event_sequence,...)`。
+- lifecycle：`begin_attempt/append_text/complete_attempt/reset_attempt/discard_attempt/discard_current`。
+- event：`turn_output` + `tutor_public_thinking_stream_v1`，`append.text` 最多 160 字符。
+
+### 3. 契约
+
+- stream row 只保存已通过累计 safety 的公开纯文本；禁止 raw JSON/reasoning/prompt/body/trace/diagnostic。
+- 每次 mutation 与 conversation event 同一短事务，校验 foreground、lease、input revision、decision iteration、generation 与 provider attempt。
+- terminal message 或 typed request 只有在 final decision 文本与 complete stream 完全一致时才能原子标记 `accepted`。
+- legacy steps 只读，以双换行合并；新行禁止同时写 text 与非空 steps。
+
+### 4. 验证与错误矩阵
+
+| 条件 | 结果 |
+| --- | --- |
+| stale revision/generation/lease/foreground | `TutorLifecycleConflict`，不追加文本 |
+| append 超 160、累计超 1280、sequence 非单调 | fail closed，事务无半写 |
+| repair/restart/context rebuild | reset 新 generation；旧回调拒绝 |
+| interrupt/supersede/failure | stream `discarded`，snapshot 不再投影 |
+| final decision 与 stream 不一致 | 拒绝 terminal public item，不接受 stream |
+| text 与 legacy steps 同时非空 | PostgreSQL CHECK 拒绝 |
+
+### 5. 正常、基础与错误案例
+
+- 正常：三次 append 后 complete，terminal transaction 写同文本 message 并将 row 置 `accepted`。
+- 基础：provider 不支持 visible stream，active row 为空；最终 message 直接保存完整 text。
+- 错误：repair 后继续向旧 generation 追加，或先写 message 再单独接受 stream。
+
+### 6. 必须测试
+
+- bootstrap twice：表、列、CHECK、复合 FK、index、updated trigger、event kind 与 cutover inventory。
+- active snapshot 恢复安全前缀；reset 后 stale attempt 拒绝；discard 清除 projection。
+- terminal message 与 typed request 原子接受 exact stream；失败路径不留半完成 public item。
+- DB 测试串行执行，不能并发运行多个 schema bootstrap 组。
+
+### 7. 错误与正确写法
+
+#### 错误
+
+```python
+insert_message(public_thinking_text=provider_partial_text)
+mark_stream_accepted(run_id)
+```
+
+#### 正确
+
+```python
+repository.complete_turn_with_message_if_current(
+    run=run,
+    public_thinking_text=validated_decision.public_thinking_text,
+    expected_stream_generation=generation,
+)
+```
+
+同一事务同时建立最终消息 authority 与 stream acceptance，任何 fence 失败都整体回滚。

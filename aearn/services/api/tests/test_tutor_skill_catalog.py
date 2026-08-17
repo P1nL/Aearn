@@ -7,7 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from app.agents.harness.capabilities import CapabilitySchemaExporter, GROUNDING_RETRIEVE_DESCRIPTOR
+from app.agents.harness.capabilities import (
+    CapabilitySchemaExporter,
+    GROUNDING_RETRIEVE_DESCRIPTOR,
+    LEARNING_PLAN_DRAFT_DESCRIPTOR,
+)
 from app.agents.harness.skill_catalog import (
     SkillCatalogCompiler,
     SkillCatalogSnapshot,
@@ -68,6 +72,7 @@ def test_published_catalog_is_exact_versioned_immutable_and_deterministic() -> N
     assert tuple(skill.reference.key for skill in first.skills) == (
         "tutor.learner-state@1.0.0",
         "tutor.learning-plan-draft@1.0.0",
+        "tutor.learning-plan-draft@1.0.1",
         "tutor.registry-grounding@1.0.0",
         "tutor.runner-execution@1.0.0",
     )
@@ -83,6 +88,32 @@ def test_published_catalog_is_exact_versioned_immutable_and_deterministic() -> N
     assert isinstance(first.skills, tuple)
     with pytest.raises((AttributeError, TypeError)):
         first.skills += ()  # type: ignore[misc]
+
+
+def test_learning_plan_skill_and_schema_publish_exact_nested_json_contract() -> None:
+    catalog = compile_published_skill_catalog()
+    skill = catalog.resolve_skill("tutor.learning-plan-draft", "1.0.1")
+    assert skill is not None
+    for required in (
+        "goal_text",
+        "target_level",
+        "teaching_preferences",
+        "pace_summary",
+        "module_key",
+        "nodes",
+        "prerequisite_keys",
+        "required_capabilities",
+    ):
+        assert required in skill.instruction
+    assert "Do not use aliases such as `goal`" in skill.instruction
+    assert "finish the current turn with `turn_completed`" in skill.instruction
+    assert "never use `continuation_kind=approval`" in skill.instruction
+
+    schema = CapabilitySchemaExporter.export(LEARNING_PLAN_DRAFT_DESCRIPTOR)["inputSchema"]
+    assert isinstance(schema, dict)
+    properties = schema["properties"]
+    assert "goal_text" in properties["profile_json"]["description"]
+    assert "nodes" in properties["module_1"]["description"]
 
 
 def test_catalog_exports_mcp_compatible_grounding_schema() -> None:

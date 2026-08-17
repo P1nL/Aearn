@@ -1,28 +1,34 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import type { ApiError } from "../types";
+import type { ApiError, TutorTurnOutputPayload } from "../types";
 
 export type TutorConversationEventKind =
   | "turn_created"
   | "turn_updated"
   | "item_added"
   | "item_updated"
+  | "turn_output"
   | "control_updated"
   | "dispatch_delayed"
   | "dispatch_dead";
 
-export type TutorConversationEvent = {
+type TutorConversationEventBase = {
   cursor: string;
   event_id: string;
   sequence: number;
-  kind: TutorConversationEventKind;
   turn_id: string | null;
   item_id: string | null;
   item_kind: string | null;
-  payload: Record<string, unknown>;
   occurred_at: string;
   request_id: string | null;
 };
+
+export type TutorConversationEvent =
+  | (TutorConversationEventBase & { kind: "turn_output"; payload: TutorTurnOutputPayload })
+  | (TutorConversationEventBase & {
+      kind: Exclude<TutorConversationEventKind, "turn_output">;
+      payload: Record<string, unknown>;
+    });
 
 export type TutorConversationStreamStatus = "idle" | "connecting" | "streaming" | "reconnecting" | "error";
 
@@ -44,7 +50,7 @@ export type TutorConversationStream = {
 };
 
 const EVENT_KINDS = new Set<TutorConversationEventKind>([
-  "turn_created", "turn_updated", "item_added", "item_updated", "control_updated", "dispatch_delayed", "dispatch_dead",
+  "turn_created", "turn_updated", "item_added", "item_updated", "turn_output", "control_updated", "dispatch_delayed", "dispatch_dead",
 ]);
 
 export function useTutorConversationStream(endpoint: string | null, options: Options = {}): TutorConversationStream {
@@ -229,14 +235,52 @@ export function parseTutorConversationFrame(frame: string): ParsedFrame {
         !isRecord(payload.payload) || !isString(payload.occurred_at) || !(payload.request_id === undefined || isString(payload.request_id))) {
       return { kind: "error", error: streamError("TUTOR_SSE_PROTOCOL_ERROR", "Tutor 对话流事件不符合公开契约。"), resetRequired: true };
     }
-    return { kind: "event", event: {
-      cursor, event_id: payload.event_id, sequence: payload.sequence, kind: type as TutorConversationEventKind,
-      turn_id: payload.turn_id, item_id: payload.item_id, item_kind: payload.item_kind, payload: payload.payload,
+    const base: TutorConversationEventBase = {
+      cursor, event_id: payload.event_id, sequence: payload.sequence,
+      turn_id: payload.turn_id, item_id: payload.item_id, item_kind: payload.item_kind,
       occurred_at: payload.occurred_at, request_id: payload.request_id ?? null,
+    };
+    if (type === "turn_output") {
+      const output = toTutorTurnOutputPayload(payload.payload);
+      if (!output || !payload.turn_id || payload.item_id !== null || payload.item_kind !== null) {
+        return { kind: "error", error: streamError("TUTOR_SSE_PROTOCOL_ERROR", "Tutor 对话输出事件不符合公开契约。"), resetRequired: true };
+      }
+      return { kind: "event", event: { ...base, kind: "turn_output", payload: output } };
+    }
+    return { kind: "event", event: {
+      ...base, kind: type as Exclude<TutorConversationEventKind, "turn_output">, payload: payload.payload,
     } };
   } catch {
     return { kind: "error", error: streamError("TUTOR_SSE_PROTOCOL_ERROR", "Tutor 对话流事件无法解析。"), resetRequired: true };
   }
+}
+
+function toTutorTurnOutputPayload(value: unknown): TutorTurnOutputPayload | null {
+  if (!isRecord(value) || value.output_version !== "tutor_public_thinking_stream_v1" ||
+      !isNonNegativeSafeInteger(value.input_revision) || !isPositiveSafeInteger(value.generation) ||
+      !isNonNegativeSafeInteger(value.chunk_sequence) || !isString(value.operation)) return null;
+  if (value.operation === "append") {
+    if (!hasExactKeys(value, ["output_version", "input_revision", "generation", "operation", "chunk_sequence", "text"]) ||
+        value.chunk_sequence < 1 || !isString(value.text) || value.text.length < 1 || value.text.length > 160) return null;
+    return {
+      output_version: "tutor_public_thinking_stream_v1", input_revision: value.input_revision,
+      generation: value.generation, operation: "append", chunk_sequence: value.chunk_sequence, text: value.text,
+    };
+  }
+  if ((value.operation !== "reset" && value.operation !== "complete" && value.operation !== "discard") ||
+      !hasExactKeys(value, ["output_version", "input_revision", "generation", "operation", "chunk_sequence"])) return null;
+  return {
+    output_version: "tutor_public_thinking_stream_v1", input_revision: value.input_revision,
+    generation: value.generation, operation: value.operation, chunk_sequence: value.chunk_sequence,
+  };
+}
+
+function hasExactKeys(value: Record<string, unknown>, expected: string[]): boolean {
+  const keys = Object.keys(value);
+  return keys.length === expected.length && expected.every((key) => keys.includes(key));
+}
+function isPositiveSafeInteger(value: unknown): value is number {
+  return isNonNegativeSafeInteger(value) && value > 0;
 }
 
 function drainFrames(buffer: string): { frames: string[]; rest: string } {

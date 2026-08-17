@@ -164,8 +164,10 @@ export type TutorPublicProcess = {
 export type TutorHistoryMessage = {
   kind: "message";
   id: string;
+  turn_id: string | null;
   role: "learner" | "tutor";
   content: string;
+  public_thinking_text: string;
   public_thinking_steps: string[];
   context_references: TutorContextReference[];
   in_reply_to_item_id: string | null;
@@ -192,6 +194,7 @@ export type TutorElicitationItem = {
   version: number;
   required: true;
   prompt: string;
+  public_thinking_text: string;
   presentation: TutorRequestPresentation;
   allowed_actions: "respond"[];
   answer_turn_id: string | null;
@@ -210,6 +213,7 @@ export type TutorApprovalItem = {
   version: number;
   required: true;
   prompt: string;
+  public_thinking_text: string;
   presentation: Extract<TutorRequestPresentation, { type: "approval" }>;
   allowed_actions: ("approve" | "deny")[];
   answer_turn_id: string | null;
@@ -324,8 +328,35 @@ export type TutorPublicTurn = {
   updated_at: string | null;
 };
 
+export type TutorActiveThinking = {
+  turn_id: string;
+  input_revision: number;
+  generation: number;
+  state: "active" | "complete";
+  text: string;
+  complete: boolean;
+  last_event_sequence: number;
+};
+
+export type TutorTurnOutputPayload =
+  | {
+      output_version: "tutor_public_thinking_stream_v1";
+      input_revision: number;
+      generation: number;
+      operation: "append";
+      chunk_sequence: number;
+      text: string;
+    }
+  | {
+      output_version: "tutor_public_thinking_stream_v1";
+      input_revision: number;
+      generation: number;
+      operation: "reset" | "complete" | "discard";
+      chunk_sequence: number;
+    };
+
 export type TutorConversationSnapshotResponse = {
-  snapshot_version: "tutor_conversation_snapshot_v1";
+  snapshot_version: "tutor_conversation_snapshot_v2";
   conversation: {
     conversation_id: string;
     title: string;
@@ -337,6 +368,7 @@ export type TutorConversationSnapshotResponse = {
     max_pending: number;
   };
   active_turn: TutorPublicTurn | null;
+  active_thinking: TutorActiveThinking | null;
   pending_requests: TutorInteractionRequestItem[];
   queue: TutorQueuedInput[];
   timeline: TutorHistoryItem[];

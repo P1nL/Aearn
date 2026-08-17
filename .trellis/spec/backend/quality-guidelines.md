@@ -3615,3 +3615,159 @@ The strict candidate, evidence set, quality report, and final persisted authorit
 - prepare 先提交 `preparing` freeze，再 inventory/terminalize；并发 prepare 只有一个 generation winner，重放同 key/body 不递增。
 - late provider/capability/effect 依赖 terminal/cancel/lease CAS 屏障，不能在 cutover 后写 learner message、effect 或 public success。
 - rollback 只把 DB authority 从 enabled 退回 ready/read-only；旧 POST 仍 410，legacy run 不复活。默认测试不访问真实 provider、不执行生产 cutover。
+
+## 场景：Tutor visible-output 与公开思考质量门（2026-08-15）
+
+### 1. 适用范围与触发条件
+
+- 触发：修改 LLM streaming adapter、Tutor v4 schema/projector、public-thinking sink、run lifecycle 或公共投影。
+
+### 2. 接口签名
+
+```python
+complete_json(..., visible_output_observer: LLMVisibleOutputObserver | None = None) -> LLMJsonResponse
+decide(*, run, context, thinking_sink: TutorPublicThinkingSink | None = None) -> TutorProviderResult
+```
+
+### 3. 契约
+
+- 通用 LLM 层只观察 provider-visible output；Responses 仅转发 `response.output_text.delta`。
+- projector 只解析 exact `message.public_thinking_text`，累计前缀安全后再按最多 160 字符发布。
+- provider transport EOF 只允许 projector 校验根对象闭合并 flush 候选文本；projector 不得调用
+  `thinking_sink.complete_attempt()`。只有 gateway 完成 schema/domain validation、公开文本安全检查和
+  stream/final exact match 后，才发出 `complete`。repairable/terminal rejected attempt 必须是
+  provisional `append -> discard`，不能出现 `append -> complete -> discard`。
+- observer/sink 的 lifecycle conflict 必须原样向上抛出；不能包装成普通 `LLMCallError` 后继续 repair。
+- 无 projector 时不要把新 keyword 强制传给历史 fake/protocol adapter；有 projector 时使用显式 typed 参数调用。
+
+### 4. 验证与错误矩阵
+
+| 缺陷 | 必须结果 |
+| --- | --- |
+| reasoning/reasoning_content item | 忽略，不调用 observer |
+| observer 抛异常 | 关闭/中止当前 stream，异常向上冒泡 |
+| duplicate/invalid/missing target field | projector fail closed，discard attempt |
+| transport retry after output | `on_stream_restart()`，旧 generation reset |
+| provider EOF 后 action/schema/domain validation 失败 | 已有 append 保持 provisional，直接 discard；不发 complete |
+| final parsed text mismatch | validation error + discard/repair，不写 final message |
+
+### 5. 正常、基础与错误案例
+
+- 正常：任意 chunk/escape/emoji 被还原为同一 v4 string；完整 decision 验证通过后才发 complete，
+  stream 与 final decision 完全一致。
+- 基础：非 Responses/不支持 structured stream 的 client 只返回最终 decision，不伪造 preview。
+- 错误：把 observer `on_stream_complete()` 当作业务验证完成，导致无效 action 在 repair 前先进入公开 UI；
+  或正则搜索 raw JSON 字段、转发 reasoning delta、吞掉 observer exception、用 `**dict[str, object]` 绕过协议类型。
+
+### 6. 必须测试
+
+- projector unit：chunk boundary、quote/backslash/newline、Unicode/surrogate、field reorder、duplicate/type/missing/object closure。
+- LLM adapter：visible delta、reasoning-only、restart、observer exception propagation。
+- gateway/run loop：repair、mismatch、safety、lifecycle conflict、unsupported client fallback；必须断言
+  慢速无效 attempt 即使已经 append 多段也没有 complete，随后 discard，replacement 验证后才 complete。
+- 运行 Ruff、Mypy、compileall、lock check 与相关串行 pytest。
+
+### 7. 错误与正确写法
+
+#### 错误
+
+```python
+for event in provider_events:
+    observer.on_text_delta(event.get("reasoning", "") or event.get("text", ""))
+```
+
+#### 正确
+
+```python
+if event.type == "response.output_text.delta":
+    observer.on_text_delta(event.delta)
+```
+
+只有 provider 明确声明的 visible output text 可进入公开 projector。
+
+## Scenario: Tutor Opaque JSON Capability Contracts and Failure Projection
+
+### 1. Scope / Trigger
+
+- Trigger: adding or changing a Tutor capability whose generic `{key,value}` envelope carries JSON strings, changing a Skill that authors those strings, or changing capability failure handling.
+- Scope: capability Pydantic schemas, exact-versioned Skill bundles, catalog policy selection, domain handlers, controlled Action Runtime, terminal persistence, and learner-visible Tutor output.
+
+### 2. Signatures
+
+- Capability: `learning.plan.draft@1.0.0`.
+- Selected Skill: `tutor.learning-plan-draft@1.0.1`.
+- `profile_json` exact keys: `language_id`, `goal_text`, `target_level`, `weekly_minutes`, `experience_level`, `teaching_preferences`, `pace_summary`, `title`.
+- `module_1..module_8` exact module keys: `module_key`, `title`, `description`, `is_core`, `is_skippable`, `nodes`; every node uses `knowledge_key`, `title`, `description`, `is_core`, `prerequisite_keys`, `required_capabilities`.
+- Safe terminal fallback for a denied plan capability: `计划草稿暂时没有生成成功，请重试。`
+
+### 3. Contracts
+
+- An opaque JSON string is not self-describing merely because the outer capability schema says `type=string`. The exported capability field description and the selected exact Skill instruction must both list the complete nested keys and forbid aliases.
+- Published Skill content is immutable by semantic version. Correcting instructions creates a new version and updates the policy resolver; do not rewrite an already published bundle in place.
+- Domain exceptions that cross `contextmanager`, Psycopg transaction, or traceback boundaries must be ordinary mutable exception classes. Do not use `@dataclass(frozen=True)` for `Exception`, `ValueError`, or `RuntimeError` subclasses.
+- Capability safe-result fields are already bounded strings. Adapters must map them directly; do not pass them back through `payload_mapping_from_fields`, which expects JSON-encoded argument values and can erase UUID/hash authority.
+- Structured context-summary curation idempotency includes `run_id` and `input_revision`; high-water and terminal triggers deduplicate only inside the same run.
+- A rejected capability must preserve only learner-safe public thinking and persist a server-owned formal fallback message. It must never expose capability arguments, provider payloads, stack traces, or diagnostic codes.
+- A `thread_turn_v2` typed request persists the validated `public_message` as a Tutor message in the same transaction as the elicitation/approval item. Timeline rank places the Tutor message before the composer item; the request card is not a substitute for a formal answer.
+- Safe session error recording occurs after the failed transaction/savepoint rolls back so the error update is not rolled back with the rejected draft.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required result |
+| --- | --- |
+| Nested profile uses `goal` instead of `goal_text` or omits required keys | `learning_plan_draft_invalid`; no draft; safe session error recorded |
+| Module uses `knowledge_keys` instead of `nodes`, has non-contiguous slots, or invalid prerequisites | typed capability denial; no partial draft |
+| Domain failure crosses a transaction context | original `LearningPlanDraftCapabilityError` remains observable; never degrade to `action_adapter_failed` |
+| Completed plan result contains UUID/hash safe fields | Action output preserves draft id/version/hash and verifies `plan_draft` authority |
+| Same summary coverage appears in a fresh retry run | distinct run-scoped curation key; no cross-run outbox conflict |
+| Capability is denied/unavailable after public thinking completes | terminal run plus learner-safe formal fallback; no Think-only terminal state |
+| A completed Turn creates a typed request | one formal Tutor message followed by one elicitation/approval item; both carry the same accepted public-thinking authority |
+| Retry targets a controlled terminal | allow only exact `blocked_policy/capability_denied` or `budget_exhausted/deadline_exhausted`; other policy/budget denials remain non-recoverable |
+| Skill instructions change | publish a new exact version and route new runs to it |
+
+### 5. Good/Base/Bad Cases
+
+- Good: schema descriptions and `tutor.learning-plan-draft@1.0.1` agree on all nested keys; a real provider response validates into `LearningPlanDraftCapabilityInput` and a typed draft.
+- Base: the provider still returns invalid compact JSON; the run records a typed denial and the learner sees the safe retry message.
+- Bad: the outer schema says only `string`, the Skill example omits required nested fields, and unit tests exercise only hand-authored valid Python payloads.
+- Bad: a frozen dataclass exception blocks `__traceback__` assignment, masking the domain error as `action_adapter_failed`.
+
+### 6. Tests Required
+
+- Compile the published catalog and assert the corrected exact Skill version and manifest hashes.
+- Assert exported capability descriptions contain the exact profile and module/node keys.
+- Raise the domain exception through a generator context manager and assert its type/code survive.
+- PostgreSQL integration: invalid nested JSON records `LEARNING_PLAN_DRAFT_INVALID`, creates no draft, and does not raise `TypeError`.
+- Action adapter regression: raw UUID/hash safe-result fields produce a typed plan output and valid authority reference.
+- Context-summary regression: same-run triggers share a curation key, while a different run receives a different key.
+- Run-loop regression: denied `learning.plan.draft` preserves completed public thinking and emits the formal retry message.
+- Queue regression: exact `blocked_policy/capability_denied` and `budget_exhausted/deadline_exhausted` create fresh retry lineage; unrelated terminal diagnostics remain blocked.
+- Interaction-request regression: completed public thinking is accepted once, one Tutor message is persisted, and chronological timeline order is message before elicitation/approval.
+- Provider contract smoke when explicitly authorized: validate the returned arguments with `LearningPlanDraftCapabilityInput` and decode the full draft without committing database state.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+@dataclass(frozen=True, slots=True)
+class PlanCapabilityError(ValueError):
+    code: str
+```
+
+```json
+{"profile_json":"{\"language_id\":\"python\",\"goal\":\"automation\"}"}
+```
+
+#### Correct
+
+```python
+class PlanCapabilityError(ValueError):
+    def __init__(self, *, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+```
+
+```json
+{"profile_json":"{\"language_id\":\"python\",\"goal_text\":\"automation\",\"target_level\":\"beginner\",\"weekly_minutes\":180,\"experience_level\":\"new\",\"teaching_preferences\":[],\"pace_summary\":\"three sessions\",\"title\":\"Python Automation\"}"}
+```

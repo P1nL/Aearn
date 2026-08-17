@@ -2,8 +2,6 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
-
 from psycopg import Connection
 
 from app.agents.harness.capabilities import (
@@ -32,14 +30,20 @@ from app.services.runners.language_capabilities import (
 )
 
 
-@dataclass(frozen=True, slots=True)
 class LearningPlanDraftCapabilityError(ValueError):
-    code: str
-    diagnostic_code: str
-    status: TutorCapabilityStatus
+    """Typed learner-safe capability failure that can cross transaction boundaries."""
 
-    def __str__(self) -> str:
-        return self.code
+    def __init__(
+        self,
+        *,
+        code: str,
+        diagnostic_code: str,
+        status: TutorCapabilityStatus,
+    ) -> None:
+        super().__init__(code)
+        self.code = code
+        self.diagnostic_code = diagnostic_code
+        self.status = status
 
 
 class LearningPlanDraftCapabilityHandler:
@@ -56,6 +60,7 @@ class LearningPlanDraftCapabilityHandler:
         run: TutorRunSnapshot,
         capability_input: LearningPlanDraftCapabilityInput,
     ) -> LearningPlanDraftCapabilityOutput:
+        session_id: str | None = None
         try:
             with self._conn.transaction():
                 session = self._repository.active_session_for_run(
@@ -64,36 +69,22 @@ class LearningPlanDraftCapabilityHandler:
                     input_revision=run.input_revision,
                     for_update=True,
                 )
-                try:
-                    artifact = self._artifact(session=session, capability_input=capability_input)
-                    facts_fingerprint, facts_revision = self._facts.validate_profile(
-                        user_id=run.user_id,
-                        session_id=str(session["id"]),
-                        profile=artifact.profile.model_dump(mode="json"),
-                        require_complete=False,
-                    )
-                    row, _replayed = self._repository.append_draft(
-                        user_id=run.user_id,
-                        run_id=run.run_id,
-                        input_revision=run.input_revision,
-                        artifact=artifact,
-                        facts_fingerprint=facts_fingerprint,
-                        facts_revision=facts_revision,
-                    )
-                except PlanningFactError as exc:
-                    self._repository.record_safe_error(
-                        user_id=run.user_id,
-                        session_id=str(session["id"]),
-                        code="LEARNING_PLAN_DRAFT_INVALID",
-                    )
-                    raise _invalid() from exc
-                except LearningPlanDraftCapabilityError as exc:
-                    self._repository.record_safe_error(
-                        user_id=run.user_id,
-                        session_id=str(session["id"]),
-                        code=exc.code,
-                    )
-                    raise
+                session_id = str(session["id"])
+                artifact = self._artifact(session=session, capability_input=capability_input)
+                facts_fingerprint, facts_revision = self._facts.validate_profile(
+                    user_id=run.user_id,
+                    session_id=session_id,
+                    profile=artifact.profile.model_dump(mode="json"),
+                    require_complete=False,
+                )
+                row, _replayed = self._repository.append_draft(
+                    user_id=run.user_id,
+                    run_id=run.run_id,
+                    input_revision=run.input_revision,
+                    artifact=artifact,
+                    facts_fingerprint=facts_fingerprint,
+                    facts_revision=facts_revision,
+                )
                 return LearningPlanDraftCapabilityOutput(
                     status="completed",
                     draft_id=str(row["id"]),
@@ -101,6 +92,22 @@ class LearningPlanDraftCapabilityHandler:
                     content_hash=str(row["content_hash"]),
                     quality_status="passed",
                 )
+        except PlanningFactError as exc:
+            if session_id is not None:
+                self._repository.record_safe_error(
+                    user_id=run.user_id,
+                    session_id=session_id,
+                    code="LEARNING_PLAN_DRAFT_INVALID",
+                )
+            raise _invalid() from exc
+        except LearningPlanDraftCapabilityError as exc:
+            if session_id is not None:
+                self._repository.record_safe_error(
+                    user_id=run.user_id,
+                    session_id=session_id,
+                    code=exc.code,
+                )
+            raise
         except LearningPlanSessionNotFound as exc:
             raise LearningPlanDraftCapabilityError(
                 code="LEARNING_PLAN_CAPABILITY_UNAVAILABLE",
@@ -108,6 +115,12 @@ class LearningPlanDraftCapabilityHandler:
                 status=TutorCapabilityStatus.DENIED,
             ) from exc
         except (LearningPlanDraftConflict, LearningPlanSessionConflict) as exc:
+            if session_id is not None:
+                self._repository.record_safe_error(
+                    user_id=run.user_id,
+                    session_id=session_id,
+                    code="LEARNING_PLAN_DRAFT_INVALID",
+                )
             raise LearningPlanDraftCapabilityError(
                 code="LEARNING_PLAN_DRAFT_INVALID",
                 diagnostic_code="learning_plan_draft_conflict",

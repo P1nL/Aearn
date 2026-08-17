@@ -24,6 +24,7 @@ from app.agents.harness.capabilities import EffectDescriptor, default_effect_des
 from app.agents.harness.contracts import (
     MAX_TUTOR_PUBLIC_THINKING_STEP_LENGTH,
     MAX_TUTOR_PUBLIC_THINKING_STEPS,
+    MAX_TUTOR_PUBLIC_THINKING_TEXT_LENGTH,
     TutorCapabilityRequest,
     TutorCapabilityResult,
     TutorCapabilityStatus,
@@ -53,12 +54,13 @@ from app.agents.harness.contracts import (
 )
 from app.agents.harness.skill_catalog import CatalogSkillReference, SkillCatalogSnapshot
 from app.core.config import get_settings
-from app.core.teaching_safety import sanitize_summary_text
+from app.core.teaching_safety import check_teaching_output, sanitize_summary_text
 from app.services.llm.contracts import LLMUsage
 from app.services.tutor.conversation_contracts import (
     TUTOR_CONVERSATION_EVENT_PROJECTION_VERSION,
     TUTOR_CONVERSATION_SNAPSHOT_VERSION,
     TUTOR_CONVERSATION_STREAM_CURSOR_VERSION,
+    TUTOR_PUBLIC_THINKING_STREAM_VERSION,
     TutorConversationEventKind,
     TutorDispatchJobState,
     TutorInteractionProtocolVersion,
@@ -70,6 +72,7 @@ from app.services.tutor.conversation_contracts import (
 from app.services.learning.planning_questions import (
     PLANNING_QUESTION_CATALOG_VERSION,
     build_planning_question_presentation,
+    format_planning_question_value,
     validate_planning_question_value,
 )
 from app.services.tutor.interaction_requests import (
@@ -84,6 +87,10 @@ from app.services.tutor.interaction_requests import (
     public_item_kind,
 )
 from app.services.tutor.ports import TutorLifecycleConflict, TutorLifecyclePersistence, TutorRunStore
+from app.services.tutor.public_thinking_stream import (
+    PUBLIC_THINKING_CHUNK_MAX_LENGTH,
+    TutorPublicThinkingSink,
+)
 from app.services.tutor.safe_projection import TutorSafeProjection
 from app.services.tutor.skill_selection import TutorSkillSelection
 
@@ -347,6 +354,7 @@ class TutorConversationTimelineRecord:
     sort_rank: int
     role: str | None = None
     content: str | None = None
+    public_thinking_text: str = ""
     public_thinking_steps: tuple[str, ...] = ()
     context_references: tuple[dict[str, object], ...] = ()
     process: TutorPublicProcessState | None = None
@@ -401,6 +409,7 @@ class TutorConversationSnapshot:
     pending_count: int
     max_pending: int
     active_turn: dict[str, object] | None
+    active_thinking: dict[str, object] | None
     pending_requests: tuple[dict[str, object], ...]
     queue: tuple[dict[str, object], ...]
     timeline: tuple[TutorConversationTimelineRecord, ...]
@@ -1267,7 +1276,11 @@ class PostgresTutorRepository:
                 "catalog_version": catalog_version,
                 "value": normalized,
             }
-            return safe, f"{question_key}: {_json(normalized)}", {question_key: normalized}, False
+            content = format_planning_question_value(
+                presentation=_as_mapping(request_row.get("presentation_json")),
+                value=normalized,
+            )
+            return safe, content, {question_key: normalized}, False
         if kind is TutorInteractionRequestKind.APPROVAL:
             decision = str(response.get("decision") or "")
             proposal_identity = str(response.get("proposal_identity") or "")
@@ -1925,6 +1938,7 @@ class PostgresTutorRepository:
                 CASE WHEN messages.role = 'learner' THEN 10 ELSE 30 END AS sort_rank,
                 messages.role AS role,
                 messages.content AS content,
+                messages.public_thinking_text AS public_thinking_text,
                 messages.public_thinking_steps_json AS public_thinking_steps_json,
                 NULL::uuid AS process_run_id,
                 COALESCE(input_events.run_id, tutor_process.run_id) AS turn_id,
@@ -1952,6 +1966,7 @@ class PostgresTutorRepository:
                 20 AS sort_rank,
                 NULL::text AS role,
                 NULL::text AS content,
+                ''::text AS public_thinking_text,
                 '[]'::jsonb AS public_thinking_steps_json,
                 processes.run_id AS process_run_id,
                 processes.run_id AS turn_id,
@@ -1971,9 +1986,10 @@ class PostgresTutorRepository:
                 CASE WHEN requests.kind = 'approval' THEN 'approval' ELSE 'elicitation' END AS kind,
                 requests.item_id AS item_id,
                 requests.created_at AS created_at,
-                25 AS sort_rank,
+                35 AS sort_rank,
                 NULL::text AS role,
                 NULL::text AS content,
+                ''::text AS public_thinking_text,
                 '[]'::jsonb AS public_thinking_steps_json,
                 NULL::uuid AS process_run_id,
                 requests.source_turn_id AS turn_id,
@@ -2004,6 +2020,7 @@ class PostgresTutorRepository:
                 40 AS sort_rank,
                 NULL::text AS role,
                 NULL::text AS content,
+                ''::text AS public_thinking_text,
                 '[]'::jsonb AS public_thinking_steps_json,
                 NULL::uuid AS process_run_id,
                 jobs.run_id AS turn_id,
@@ -2079,6 +2096,14 @@ class PostgresTutorRepository:
                         sort_rank=_as_int(row.get("sort_rank"), 0),
                         role=role,
                         content=str(row.get("content") or ""),
+                        public_thinking_text=(
+                            _public_thinking_text_from_values(
+                                row.get("public_thinking_text"),
+                                row.get("public_thinking_steps_json"),
+                            )
+                            if role == "tutor"
+                            else ""
+                        ),
                         public_thinking_steps=(
                             _public_thinking_steps_from_value(
                                 row.get("public_thinking_steps_json")
@@ -2285,6 +2310,11 @@ class PostgresTutorRepository:
             pending_count=len(queued_inputs),
             max_pending=_QUEUE_MAX_PENDING,
             active_turn=self._public_turn_from_row(active) if active is not None else None,
+            active_thinking=(
+                self._public_active_thinking_from_row(active)
+                if active is not None
+                else None
+            ),
             pending_requests=tuple(item.public_item for item in pending_requests),
             queue=tuple(item.as_public_dict() for item in queued_inputs),
             timeline=timeline,
@@ -2322,6 +2352,273 @@ class PostgresTutorRepository:
                 item_id=item_id,
                 item_kind=item_kind,
             )
+
+    def begin_public_thinking_stream(
+        self,
+        *,
+        snapshot: TutorRunSnapshot,
+        lease: TutorLease,
+        decision_iteration: int,
+        generation: int,
+        provider_attempt: int,
+        occurred_at: datetime,
+    ) -> None:
+        if decision_iteration < 1 or generation < 1 or provider_attempt < 1:
+            raise ValueError("public thinking stream identity is invalid")
+        with self._conn.transaction():
+            _conversation, run = self._lock_run_with_conversation(
+                user_id=snapshot.user_id,
+                run_id=snapshot.run_id,
+                learner_only=False,
+            )
+            _assert_active_lease(run, lease=lease, now=occurred_at)
+            _assert_not_terminal(run)
+            _assert_not_cancelled(run)
+            _assert_not_superseded(run)
+            if snapshot.input_revision != _as_int(run.get("input_revision"), 0):
+                raise TutorLeaseConflict("public thinking stream revision is stale")
+            existing = self._conn.execute(
+                "SELECT * FROM tutor_turn_public_thinking_streams WHERE run_id = %s FOR UPDATE",
+                (snapshot.run_id,),
+            ).fetchone()
+            if existing is not None and generation <= _as_int(existing.get("generation"), 0):
+                raise TutorIdempotencyConflict("public thinking generation did not advance")
+            if existing is None:
+                self._conn.execute(
+                    """
+                    INSERT INTO tutor_turn_public_thinking_streams (
+                      run_id, user_id, conversation_id, input_revision, decision_iteration,
+                      generation, provider_attempt, state, thinking_text, next_chunk_sequence,
+                      created_at, updated_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, 'active', '', 1, %s, %s)
+                    """,
+                    (
+                        snapshot.run_id, snapshot.user_id, snapshot.conversation_id,
+                        snapshot.input_revision, decision_iteration, generation,
+                        provider_attempt, occurred_at, occurred_at,
+                    ),
+                )
+            else:
+                self._conn.execute(
+                    """
+                    UPDATE tutor_turn_public_thinking_streams
+                    SET input_revision = %s, decision_iteration = %s, generation = %s,
+                        provider_attempt = %s, state = 'active', thinking_text = '',
+                        next_chunk_sequence = 1, last_public_event_sequence = NULL,
+                        completed_at = NULL, discarded_at = NULL, accepted_at = NULL,
+                        updated_at = %s
+                    WHERE run_id = %s
+                    """,
+                    (
+                        snapshot.input_revision, decision_iteration, generation,
+                        provider_attempt, occurred_at, snapshot.run_id,
+                    ),
+                )
+            event = self._append_conversation_event_locked(
+                user_id=snapshot.user_id,
+                conversation_id=snapshot.conversation_id,
+                event_key=f"turn-output:{snapshot.run_id}:{generation}:reset",
+                kind=TutorConversationEventKind.TURN_OUTPUT,
+                turn_id=snapshot.run_id,
+                payload={
+                    "output_version": TUTOR_PUBLIC_THINKING_STREAM_VERSION,
+                    "input_revision": snapshot.input_revision,
+                    "generation": generation,
+                    "operation": "reset",
+                    "chunk_sequence": 0,
+                },
+                occurred_at=occurred_at,
+            )
+            self._conn.execute(
+                "UPDATE tutor_turn_public_thinking_streams SET last_public_event_sequence = %s WHERE run_id = %s",
+                (event.sequence, snapshot.run_id),
+            )
+
+    def append_public_thinking_text(
+        self,
+        *,
+        snapshot: TutorRunSnapshot,
+        lease: TutorLease,
+        generation: int,
+        provider_attempt: int,
+        text: str,
+        occurred_at: datetime,
+    ) -> None:
+        if not text or len(text) > PUBLIC_THINKING_CHUNK_MAX_LENGTH:
+            raise ValueError("public thinking chunk is empty or oversized")
+        with self._conn.transaction():
+            _conversation, run = self._lock_run_with_conversation(
+                user_id=snapshot.user_id, run_id=snapshot.run_id, learner_only=False
+            )
+            _assert_active_lease(run, lease=lease, now=occurred_at)
+            _assert_not_terminal(run)
+            _assert_not_cancelled(run)
+            _assert_not_superseded(run)
+            if snapshot.input_revision != _as_int(run.get("input_revision"), 0):
+                raise TutorLeaseConflict("public thinking stream revision is stale")
+            stream = self._lock_public_thinking_stream(
+                snapshot=snapshot, generation=generation, provider_attempt=provider_attempt
+            )
+            if str(stream.get("state")) != "active":
+                raise TutorTerminalStateConflict("public thinking stream is not active")
+            current_text = str(stream.get("thinking_text") or "")
+            cumulative = current_text + text
+            if len(cumulative) > MAX_TUTOR_PUBLIC_THINKING_TEXT_LENGTH:
+                raise TutorTerminalStateConflict("public thinking stream exceeded its bound")
+            if check_teaching_output(cumulative).blocked:
+                raise TutorTerminalStateConflict("public thinking stream failed teaching safety")
+            chunk_sequence = _as_int(stream.get("next_chunk_sequence"), 1)
+            event = self._append_conversation_event_locked(
+                user_id=snapshot.user_id,
+                conversation_id=snapshot.conversation_id,
+                event_key=f"turn-output:{snapshot.run_id}:{generation}:{chunk_sequence}:append",
+                kind=TutorConversationEventKind.TURN_OUTPUT,
+                turn_id=snapshot.run_id,
+                payload={
+                    "output_version": TUTOR_PUBLIC_THINKING_STREAM_VERSION,
+                    "input_revision": snapshot.input_revision,
+                    "generation": generation,
+                    "operation": "append",
+                    "chunk_sequence": chunk_sequence,
+                    "text": text,
+                },
+                occurred_at=occurred_at,
+            )
+            updated = self._conn.execute(
+                """
+                UPDATE tutor_turn_public_thinking_streams
+                SET thinking_text = %s, next_chunk_sequence = %s,
+                    last_public_event_sequence = %s, updated_at = %s
+                WHERE run_id = %s AND generation = %s AND state = 'active'
+                RETURNING run_id
+                """,
+                (
+                    cumulative, chunk_sequence + 1, event.sequence, occurred_at,
+                    snapshot.run_id, generation,
+                ),
+            ).fetchone()
+            if updated is None:
+                raise TutorLifecycleConflict("public thinking append lost generation ownership")
+
+    def complete_public_thinking_stream(
+        self,
+        *,
+        snapshot: TutorRunSnapshot,
+        lease: TutorLease,
+        generation: int,
+        provider_attempt: int,
+        occurred_at: datetime,
+    ) -> None:
+        self._finish_public_thinking_stream(
+            snapshot=snapshot, lease=lease, generation=generation,
+            provider_attempt=provider_attempt, state="complete", operation="complete",
+            occurred_at=occurred_at,
+        )
+
+    def discard_public_thinking_stream(
+        self,
+        *,
+        snapshot: TutorRunSnapshot,
+        lease: TutorLease,
+        generation: int,
+        provider_attempt: int,
+        occurred_at: datetime,
+    ) -> None:
+        self._finish_public_thinking_stream(
+            snapshot=snapshot, lease=lease, generation=generation,
+            provider_attempt=provider_attempt, state="discarded", operation="discard",
+            occurred_at=occurred_at,
+        )
+
+    def _finish_public_thinking_stream(
+        self,
+        *,
+        snapshot: TutorRunSnapshot,
+        lease: TutorLease,
+        generation: int,
+        provider_attempt: int,
+        state: Literal["complete", "discarded"],
+        operation: Literal["complete", "discard"],
+        occurred_at: datetime,
+    ) -> None:
+        with self._conn.transaction():
+            _conversation, run = self._lock_run_with_conversation(
+                user_id=snapshot.user_id, run_id=snapshot.run_id, learner_only=False
+            )
+            _assert_active_lease(run, lease=lease, now=occurred_at)
+            _assert_not_terminal(run)
+            _assert_not_cancelled(run)
+            _assert_not_superseded(run)
+            if snapshot.input_revision != _as_int(run.get("input_revision"), 0):
+                raise TutorLeaseConflict("public thinking stream revision is stale")
+            stream = self._lock_public_thinking_stream(
+                snapshot=snapshot, generation=generation, provider_attempt=provider_attempt
+            )
+            current_state = str(stream.get("state") or "")
+            if current_state == state:
+                return
+            allowed_states = {"active", "complete"} if state == "discarded" else {"active"}
+            if current_state not in allowed_states:
+                raise TutorTerminalStateConflict("public thinking stream transition is invalid")
+            if state == "complete" and not str(stream.get("thinking_text") or "").strip():
+                raise TutorTerminalStateConflict("public thinking stream cannot complete empty")
+            chunk_sequence = _as_int(stream.get("next_chunk_sequence"), 1)
+            event = self._append_conversation_event_locked(
+                user_id=snapshot.user_id,
+                conversation_id=snapshot.conversation_id,
+                event_key=f"turn-output:{snapshot.run_id}:{generation}:{chunk_sequence}:{operation}",
+                kind=TutorConversationEventKind.TURN_OUTPUT,
+                turn_id=snapshot.run_id,
+                payload={
+                    "output_version": TUTOR_PUBLIC_THINKING_STREAM_VERSION,
+                    "input_revision": snapshot.input_revision,
+                    "generation": generation,
+                    "operation": operation,
+                    "chunk_sequence": chunk_sequence,
+                },
+                occurred_at=occurred_at,
+            )
+            completed_at = occurred_at if state == "complete" else None
+            discarded_at = occurred_at if state == "discarded" else None
+            updated = self._conn.execute(
+                """
+                UPDATE tutor_turn_public_thinking_streams
+                SET state = %s, next_chunk_sequence = %s, last_public_event_sequence = %s,
+                    completed_at = COALESCE(completed_at, %s), discarded_at = %s,
+                    accepted_at = NULL, updated_at = %s
+                WHERE run_id = %s AND generation = %s
+                RETURNING run_id
+                """,
+                (
+                    state, chunk_sequence + 1, event.sequence, completed_at, discarded_at,
+                    occurred_at, snapshot.run_id, generation,
+                ),
+            ).fetchone()
+            if updated is None:
+                raise TutorLifecycleConflict("public thinking completion lost generation ownership")
+
+    def _lock_public_thinking_stream(
+        self,
+        *,
+        snapshot: TutorRunSnapshot,
+        generation: int,
+        provider_attempt: int,
+    ) -> Mapping[str, object]:
+        stream = self._conn.execute(
+            "SELECT * FROM tutor_turn_public_thinking_streams WHERE run_id = %s FOR UPDATE",
+            (snapshot.run_id,),
+        ).fetchone()
+        if stream is None:
+            raise TutorLifecycleConflict("public thinking stream row is missing")
+        if (
+            str(stream.get("user_id")) != snapshot.user_id
+            or str(stream.get("conversation_id")) != snapshot.conversation_id
+            or _as_int(stream.get("input_revision"), -1) != snapshot.input_revision
+            or _as_int(stream.get("generation"), -1) != generation
+            or _as_int(stream.get("provider_attempt"), -1) != provider_attempt
+        ):
+            raise TutorLifecycleConflict("public thinking stream scope or generation is stale")
+        return stream
 
     def conversation_events_after(
         self,
@@ -2826,6 +3123,31 @@ class PostgresTutorRepository:
                 sequence=sequence,
             ),
         )
+
+    def _public_active_thinking_from_row(
+        self,
+        run: Mapping[str, object],
+    ) -> dict[str, object] | None:
+        row = self._conn.execute(
+            """
+            SELECT *
+            FROM tutor_turn_public_thinking_streams
+            WHERE run_id = %s AND user_id = %s AND conversation_id = %s
+              AND input_revision = %s AND state IN ('active', 'complete')
+            """,
+            (run["id"], run["user_id"], run["conversation_id"], run["input_revision"]),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "turn_id": str(row["run_id"]),
+            "input_revision": _as_int(row.get("input_revision"), 0),
+            "generation": _as_int(row.get("generation"), 1),
+            "state": str(row.get("state") or "active"),
+            "text": str(row.get("thinking_text") or ""),
+            "complete": str(row.get("state") or "") == "complete",
+            "last_event_sequence": _as_int(row.get("last_public_event_sequence"), 0),
+        }
 
     def _public_turn_from_row(self, row: Mapping[str, object]) -> dict[str, object]:
         turn = TutorPublicTurn(
@@ -4232,6 +4554,13 @@ class PostgresTutorRepository:
             ).fetchone()
             if pending is not None:
                 raise TutorInteractionRequestConflict("conversation already has a pending request")
+            public_message_id = self._record_public_message_locked(
+                run=run,
+                result=result,
+                created_at=created_at,
+            )
+            if public_message_id is None:
+                raise TutorInteractionRequestConflict("typed request requires a learner-safe public message")
             request_id = str(uuid4())
             item_id = str(uuid4())
             catalog_version: str | None = None
@@ -4243,6 +4572,7 @@ class PostgresTutorRepository:
             authority_scope: dict[str, object] | None = None
             descriptor: dict[str, object] = {
                 "prompt": prompt,
+                "public_thinking_text": result.public_thinking_text,
                 "required": True,
                 "kind": kind.value,
                 "actor": actor.value,
@@ -4421,8 +4751,9 @@ class PostgresTutorRepository:
             self._freeze_public_process_locked(
                 run=updated,
                 display_state="completed",
-                step_key=None,
+                step_key="learning_reply_generated",
                 occurred_at=created_at,
+                tutor_message_id=public_message_id,
             )
             self._append_item_reference_event_locked(
                 run=updated,
@@ -5128,6 +5459,40 @@ class PostgresTutorRepository:
         self._trip_failpoint("after_outbox")
         return trace
 
+    def _accept_public_thinking_stream_locked(
+        self,
+        *,
+        run: Mapping[str, object],
+        result: TutorRunResult,
+        accepted_at: datetime,
+    ) -> None:
+        stream = self._conn.execute(
+            "SELECT * FROM tutor_turn_public_thinking_streams WHERE run_id = %s FOR UPDATE",
+            (run["id"],),
+        ).fetchone()
+        if stream is None:
+            return
+        if (
+            str(stream.get("state") or "") != "complete"
+            or _as_int(stream.get("input_revision"), -1) != result.input_revision
+            or _as_int(stream.get("decision_iteration"), -1) != result.model_call_count
+            or str(stream.get("thinking_text") or "") != result.public_thinking_text
+        ):
+            raise TutorTerminalStateConflict(
+                "public thinking stream does not match the authoritative Tutor result"
+            )
+        updated = self._conn.execute(
+            """
+            UPDATE tutor_turn_public_thinking_streams
+            SET state = 'accepted', accepted_at = %s, updated_at = %s
+            WHERE run_id = %s AND state = 'complete'
+            RETURNING run_id
+            """,
+            (accepted_at, accepted_at, run["id"]),
+        ).fetchone()
+        if updated is None:
+            raise TutorLifecycleConflict("public thinking stream acceptance lost ownership")
+
     def _record_public_message_locked(
         self,
         *,
@@ -5138,18 +5503,24 @@ class PostgresTutorRepository:
         public_message = sanitize_summary_text(result.public_message or "", max_length=1_200)
         if not public_message:
             return None
+        self._accept_public_thinking_stream_locked(
+            run=run,
+            result=result,
+            accepted_at=created_at,
+        )
         row = self._conn.execute(
             """
             INSERT INTO tutor_messages (
-              conversation_id, role, content, public_thinking_steps_json, created_at
+              conversation_id, role, content, public_thinking_text,
+              public_thinking_steps_json, created_at
             )
-            VALUES (%s, 'tutor', %s, %s::jsonb, %s)
+            VALUES (%s, 'tutor', %s, %s, '[]'::jsonb, %s)
             RETURNING id
             """,
             (
                 run["conversation_id"],
                 public_message,
-                _json(list(result.public_thinking_steps)),
+                result.public_thinking_text,
                 created_at,
             ),
         ).fetchone()
@@ -5378,6 +5749,123 @@ class PostgresTutorSkillSelectionStore:
         )
 
 
+class PostgresTutorPublicThinkingSink(TutorPublicThinkingSink):
+    """Short-transaction public thinking writer fenced by run lease and revision."""
+
+    def __init__(
+        self,
+        *,
+        repository: PostgresTutorRepository,
+        snapshot: TutorRunSnapshot,
+        lease: TutorLease,
+        decision_iteration: int,
+        now: Callable[[], datetime],
+    ) -> None:
+        self._repository = repository
+        self._snapshot = snapshot
+        self._lease = lease
+        self._decision_iteration = decision_iteration
+        self._now = now
+        self._generation_counter = 0
+        self._generation: int | None = None
+        self._attempt_index: int | None = None
+
+    def begin_attempt(self, attempt_index: int) -> None:
+        self._start_generation(attempt_index)
+
+    def append_text(self, attempt_index: int, text: str) -> None:
+        generation = self._require_current(attempt_index)
+        occurred_at = self._renew_lease()
+        try:
+            self._repository.append_public_thinking_text(
+                snapshot=self._snapshot,
+                lease=self._lease,
+                generation=generation,
+                provider_attempt=attempt_index,
+                text=text,
+                occurred_at=occurred_at,
+            )
+        except TutorPersistenceError as exc:
+            raise TutorLifecycleConflict("public thinking append lost lifecycle ownership") from exc
+
+    def complete_attempt(self, attempt_index: int) -> None:
+        generation = self._require_current(attempt_index)
+        occurred_at = self._renew_lease()
+        try:
+            self._repository.complete_public_thinking_stream(
+                snapshot=self._snapshot,
+                lease=self._lease,
+                generation=generation,
+                provider_attempt=attempt_index,
+                occurred_at=occurred_at,
+            )
+        except TutorPersistenceError as exc:
+            raise TutorLifecycleConflict("public thinking completion lost lifecycle ownership") from exc
+
+    def reset_attempt(self, attempt_index: int) -> None:
+        self._start_generation(attempt_index)
+
+    def discard_attempt(self, attempt_index: int) -> None:
+        generation = self._require_current(attempt_index)
+        self._discard(generation=generation, attempt_index=attempt_index)
+
+    def discard_current(self) -> None:
+        if self._generation is None or self._attempt_index is None:
+            return
+        self._discard(generation=self._generation, attempt_index=self._attempt_index)
+
+    def _start_generation(self, attempt_index: int) -> None:
+        if attempt_index < 1:
+            raise ValueError("provider attempt index must be positive")
+        self._generation_counter += 1
+        generation = self._decision_iteration * 10_000 + self._generation_counter
+        occurred_at = self._renew_lease()
+        try:
+            self._repository.begin_public_thinking_stream(
+                snapshot=self._snapshot,
+                lease=self._lease,
+                decision_iteration=self._decision_iteration,
+                generation=generation,
+                provider_attempt=attempt_index,
+                occurred_at=occurred_at,
+            )
+        except TutorPersistenceError as exc:
+            raise TutorLifecycleConflict("public thinking generation lost lifecycle ownership") from exc
+        self._generation = generation
+        self._attempt_index = attempt_index
+
+    def _discard(self, *, generation: int, attempt_index: int) -> None:
+        occurred_at = self._renew_lease()
+        try:
+            self._repository.discard_public_thinking_stream(
+                snapshot=self._snapshot,
+                lease=self._lease,
+                generation=generation,
+                provider_attempt=attempt_index,
+                occurred_at=occurred_at,
+            )
+        except TutorPersistenceError as exc:
+            raise TutorLifecycleConflict("public thinking discard lost lifecycle ownership") from exc
+
+    def _renew_lease(self) -> datetime:
+        occurred_at = self._now()
+        renewed = self._repository.heartbeat_lease(
+            user_id=self._snapshot.user_id,
+            lease=self._lease,
+            now=occurred_at,
+            duration_seconds=self._snapshot.policy.lease_duration_seconds,
+        )
+        if renewed is None:
+            raise TutorLifecycleConflict("public thinking stream lease is unavailable")
+        self._lease = renewed
+        return occurred_at
+
+    def _require_current(self, attempt_index: int) -> int:
+        if self._generation is None or self._attempt_index != attempt_index:
+            raise TutorLifecycleConflict("public thinking callback used a stale provider attempt")
+        return self._generation
+
+
 class PostgresTutorLifecycle(TutorLifecyclePersistence):
     """Adapter that gives ``TutorRunLoop`` one atomic persistence boundary."""
 
@@ -5391,6 +5879,22 @@ class PostgresTutorLifecycle(TutorLifecyclePersistence):
         self._repository = repository
         self._memory_setting_version = memory_setting_version
         self._priority = priority
+
+    def create_public_thinking_sink(
+        self,
+        *,
+        snapshot: TutorRunSnapshot,
+        lease: TutorLease,
+        decision_iteration: int,
+        now: Callable[[], datetime],
+    ) -> TutorPublicThinkingSink:
+        return PostgresTutorPublicThinkingSink(
+            repository=self._repository,
+            snapshot=snapshot,
+            lease=lease,
+            decision_iteration=decision_iteration,
+            now=now,
+        )
 
     def persist_provider_attempts(
         self,
@@ -5594,6 +6098,10 @@ def _validate_conversation_event_identity(
         ):
             raise ValueError("conversation item event identity does not match its payload")
         return
+    if kind is TutorConversationEventKind.TURN_OUTPUT:
+        if turn_id is None or item_id is not None:
+            raise ValueError("conversation turn-output event requires only a turn identity")
+        return
     if kind is TutorConversationEventKind.CONTROL_UPDATED:
         if turn_id is not None or item_id is not None:
             raise ValueError("conversation control event cannot reference a turn or item")
@@ -5786,6 +6294,10 @@ def _interaction_request_from_row(row: Mapping[str, object]) -> TutorInteraction
             "version": _as_int(row.get("version"), 1),
             "required": True,
             "prompt": prompt,
+            "public_thinking_text": _public_thinking_text_from_values(
+                descriptor.get("public_thinking_text"),
+                (),
+            ),
             "presentation": presentation,
             "allowed_actions": allowed_actions,
             "answer_turn_id": _optional_string(row.get("answer_turn_id")),
@@ -6058,6 +6570,17 @@ def _base64url_encode(value: bytes) -> str:
 def _base64url_decode(value: str) -> bytes:
     padding = "=" * (-len(value) % 4)
     return base64.urlsafe_b64decode(f"{value}{padding}".encode("ascii"))
+
+
+def _public_thinking_text_from_values(text_value: object, steps_value: object) -> str:
+    if isinstance(text_value, str):
+        text = text_value.strip()
+        if text:
+            if len(text) > MAX_TUTOR_PUBLIC_THINKING_TEXT_LENGTH:
+                text = text[:MAX_TUTOR_PUBLIC_THINKING_TEXT_LENGTH]
+            if not check_teaching_output(text).blocked:
+                return text
+    return "\n\n".join(_public_thinking_steps_from_value(steps_value))
 
 
 def _public_thinking_steps_from_value(value: object) -> tuple[str, ...]:

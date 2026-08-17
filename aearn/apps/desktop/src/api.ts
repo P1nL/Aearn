@@ -2715,16 +2715,27 @@ function toTutorHistoryItem(payload: unknown): TutorHistoryItem | null {
   if (!isRecord(payload) || !isString(payload.kind) || !isString(payload.id) || !isNullableString(payload.created_at)) return null;
   if (payload.kind === "message") {
     const legacyKeys = ["kind", "id", "role", "content", "public_thinking_steps", "context_references", "in_reply_to_item_id", "created_at"];
-    if (!hasExactKeys(payload, legacyKeys) && !hasExactKeys(payload, [...legacyKeys, "turn_id"])) return null;
-    if ((payload.role !== "learner" && payload.role !== "tutor") || !isString(payload.content) || !isStringArray(payload.public_thinking_steps) || !isNullableString(payload.in_reply_to_item_id)) return null;
+    const snapshotKeys = ["kind", "id", "turn_id", "role", "content", "public_thinking_text", "public_thinking_steps", "context_references", "in_reply_to_item_id", "created_at"];
+    const legacy = hasExactKeys(payload, legacyKeys);
+    if (!legacy && !hasExactKeys(payload, snapshotKeys)) return null;
+    if ((payload.role !== "learner" && payload.role !== "tutor") || !isString(payload.content) ||
+        !isStringArray(payload.public_thinking_steps) || !isNullableString(payload.in_reply_to_item_id) ||
+        (!legacy && (!isNullableString(payload.turn_id) || !isString(payload.public_thinking_text)))) return null;
     if (payload.public_thinking_steps.length > 4 || payload.public_thinking_steps.some((step) => step.length === 0 || step.length > 320)) return null;
+    const publicThinkingText: string = legacy
+      ? payload.public_thinking_steps.join("\n\n")
+      : String(payload.public_thinking_text);
+    const turnId: string | null = legacy ? null : (payload.turn_id === null ? null : String(payload.turn_id));
+    if (publicThinkingText.length > 1280) return null;
     const contextReferences = toTutorContextReferences(payload.context_references);
     if (!contextReferences || (payload.role === "tutor" && contextReferences.length > 0)) return null;
     return {
       kind: "message",
       id: payload.id,
+      turn_id: turnId,
       role: payload.role,
       content: payload.content,
+      public_thinking_text: payload.role === "tutor" ? publicThinkingText : "",
       public_thinking_steps: payload.role === "tutor" ? payload.public_thinking_steps : [],
       context_references: contextReferences,
       in_reply_to_item_id: payload.in_reply_to_item_id,
@@ -2938,8 +2949,8 @@ function toTutorInteractionResponseAccepted(payload: unknown): TutorInteractionR
 
 function toTutorConversationSnapshotResponse(payload: unknown): TutorConversationSnapshotResponse | null {
   if (!isRecord(payload) || !hasExactKeys(payload, [
-    "snapshot_version", "conversation", "active_turn", "pending_requests", "queue", "timeline", "next_cursor", "has_more", "stream_cursor",
-  ]) || payload.snapshot_version !== "tutor_conversation_snapshot_v1" || !isRecord(payload.conversation) ||
+    "snapshot_version", "conversation", "active_turn", "active_thinking", "pending_requests", "queue", "timeline", "next_cursor", "has_more", "stream_cursor",
+  ]) || payload.snapshot_version !== "tutor_conversation_snapshot_v2" || !isRecord(payload.conversation) ||
       !hasExactKeys(payload.conversation, [
         "conversation_id", "title", "control_version", "control_state", "queue_paused",
         "queue_pause_reason", "pending_count", "max_pending",
@@ -2955,9 +2966,12 @@ function toTutorConversationSnapshotResponse(payload: unknown): TutorConversatio
   const timeline = payload.timeline.map(toTutorHistoryItem);
   if (pendingRequests.some((item) => item === null) || queue.some((item) => item === null) || timeline.some((item) => item === null)) return null;
   const activeTurn = payload.active_turn === null ? null : toTutorPublicTurn(payload.active_turn);
-  if (activeTurn === null && payload.active_turn !== null) return null;
+  const activeThinking = payload.active_thinking === null ? null : toTutorActiveThinking(payload.active_thinking);
+  if ((activeTurn === null && payload.active_turn !== null) ||
+      (activeThinking === null && payload.active_thinking !== null) ||
+      (activeThinking !== null && (activeTurn === null || activeThinking.turn_id !== activeTurn.turn_id || activeThinking.input_revision !== activeTurn.input_revision))) return null;
   return {
-    snapshot_version: "tutor_conversation_snapshot_v1",
+    snapshot_version: "tutor_conversation_snapshot_v2",
     conversation: {
       conversation_id: payload.conversation.conversation_id,
       title: payload.conversation.title,
@@ -2969,12 +2983,27 @@ function toTutorConversationSnapshotResponse(payload: unknown): TutorConversatio
       max_pending: payload.conversation.max_pending,
     },
     active_turn: activeTurn,
+    active_thinking: activeThinking,
     pending_requests: pendingRequests.filter((item): item is TutorInteractionRequestItem => item !== null),
     queue: queue.filter((item): item is TutorQueuedInput => item !== null),
     timeline: timeline.filter((item): item is TutorHistoryItem => item !== null),
     next_cursor: payload.next_cursor,
     has_more: payload.has_more,
     stream_cursor: payload.stream_cursor,
+  };
+}
+
+function toTutorActiveThinking(payload: unknown): TutorConversationSnapshotResponse["active_thinking"] {
+  if (!isRecord(payload) || !hasExactKeys(payload, [
+    "turn_id", "input_revision", "generation", "state", "text", "complete", "last_event_sequence",
+  ]) || !isString(payload.turn_id) || !isNonNegativeSafeInteger(payload.input_revision) ||
+      !isPositiveSafeInteger(payload.generation) || (payload.state !== "active" && payload.state !== "complete") ||
+      !isString(payload.text) || payload.text.length > 1280 || typeof payload.complete !== "boolean" ||
+      payload.complete !== (payload.state === "complete") || !isNonNegativeSafeInteger(payload.last_event_sequence)) return null;
+  return {
+    turn_id: payload.turn_id, input_revision: payload.input_revision, generation: payload.generation,
+    state: payload.state, text: payload.text, complete: payload.complete,
+    last_event_sequence: payload.last_event_sequence,
   };
 }
 
@@ -2999,11 +3028,11 @@ function toTutorPublicTurn(payload: unknown): TutorConversationSnapshotResponse[
 
 function toTutorInteractionRequestItem(payload: unknown): TutorInteractionRequestItem | null {
   if (!isRecord(payload) || !hasExactKeys(payload, [
-    "kind", "id", "request_id", "turn_id", "request_kind", "actor", "state", "version", "required", "prompt", "presentation", "allowed_actions", "answer_turn_id", "created_at", "resolved_at",
+    "kind", "id", "request_id", "turn_id", "request_kind", "actor", "state", "version", "required", "prompt", "public_thinking_text", "presentation", "allowed_actions", "answer_turn_id", "created_at", "resolved_at",
   ]) || (payload.kind !== "elicitation" && payload.kind !== "approval") || !isString(payload.id) || !isString(payload.request_id) ||
       !isString(payload.turn_id) || !isTutorContinuationKind(payload.request_kind) ||
       (payload.actor !== "learner" && payload.actor !== "authority") || !isPositiveSafeInteger(payload.version) ||
-      payload.required !== true || !isString(payload.prompt) || !Array.isArray(payload.allowed_actions) ||
+      payload.required !== true || !isString(payload.prompt) || !isString(payload.public_thinking_text) || payload.public_thinking_text.length > 1280 || !Array.isArray(payload.allowed_actions) ||
       !isNullableString(payload.answer_turn_id) || !isNullableString(payload.created_at) || !isNullableString(payload.resolved_at)) return null;
   const presentation = toTutorRequestPresentation(payload.presentation);
   if (!presentation) return null;
@@ -3013,7 +3042,7 @@ function toTutorInteractionRequestItem(payload: unknown): TutorInteractionReques
     return {
       kind: "approval", id: payload.id, request_id: payload.request_id, turn_id: payload.turn_id,
       request_kind: "approval", actor: "learner", state: payload.state, version: payload.version,
-      required: true, prompt: payload.prompt, presentation, allowed_actions: payload.allowed_actions,
+      required: true, prompt: payload.prompt, public_thinking_text: payload.public_thinking_text, presentation, allowed_actions: payload.allowed_actions,
       answer_turn_id: payload.answer_turn_id, created_at: payload.created_at, resolved_at: payload.resolved_at,
     };
   }
@@ -3022,7 +3051,7 @@ function toTutorInteractionRequestItem(payload: unknown): TutorInteractionReques
   return {
     kind: "elicitation", id: payload.id, request_id: payload.request_id, turn_id: payload.turn_id,
     request_kind: payload.request_kind, actor: payload.actor, state: payload.state, version: payload.version,
-    required: true, prompt: payload.prompt, presentation, allowed_actions: payload.allowed_actions,
+    required: true, prompt: payload.prompt, public_thinking_text: payload.public_thinking_text, presentation, allowed_actions: payload.allowed_actions,
     answer_turn_id: payload.answer_turn_id, created_at: payload.created_at, resolved_at: payload.resolved_at,
   };
 }

@@ -161,11 +161,11 @@ def test_gateway_commits_rejected_provider_bodies_but_discards_accepted_body(
     _, key_base64 = _capture_key()
     settings = _settings(tmp_path, key_base64=key_base64)
     rejected_body = {
-        "schema_version": "tutor_provider_items_v3",
+        "schema_version": "tutor_provider_items_v4",
         "message": {
             "type": "agent_message",
             "text": "继续。",
-            "public_thinking_steps": ["当前目标可以收敛为一个可验证的小步骤。"],
+            "public_thinking_text": "当前目标可以收敛为一个可验证的小步骤。",
             "conversation_title": None,
         },
         "action": {"type": "turn_completed"},
@@ -194,11 +194,11 @@ def test_gateway_commits_rejected_provider_bodies_but_discards_accepted_body(
     )
 
     accepted_body = {
-        "schema_version": "tutor_provider_items_v3",
+        "schema_version": "tutor_provider_items_v4",
         "message": {
             "type": "agent_message",
             "text": "先看一个小例子。",
-            "public_thinking_steps": ["当前目标可以收敛为一个可验证的小步骤。"],
+            "public_thinking_text": "当前目标可以收敛为一个可验证的小步骤。",
             "conversation_title": None,
         },
         "action": {"type": "turn_completed"},

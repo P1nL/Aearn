@@ -22,6 +22,7 @@ from app.services.llm.contracts import LLMUsage
 
 MAX_TUTOR_IDENTIFIER_LENGTH = 120
 MAX_TUTOR_PUBLIC_MESSAGE_LENGTH = 1600
+MAX_TUTOR_PUBLIC_THINKING_TEXT_LENGTH = 1280
 MAX_TUTOR_PUBLIC_THINKING_STEPS = 4
 MAX_TUTOR_PUBLIC_THINKING_STEP_LENGTH = 320
 MAX_TUTOR_CONVERSATION_TITLE_LENGTH = 48
@@ -956,6 +957,7 @@ class TutorEffectResult:
 @dataclass(frozen=True)
 class TutorDecision:
     public_message: str | None = None
+    public_thinking_text: str = ""
     public_thinking_steps: tuple[str, ...] = ()
     conversation_title: str | None = None
     question_key: TutorPlanningQuestionKey | None = None
@@ -970,11 +972,12 @@ class TutorDecision:
         if self.public_message is not None:
             public_message = sanitize_summary_text(self.public_message, max_length=MAX_TUTOR_PUBLIC_MESSAGE_LENGTH)
             object.__setattr__(self, "public_message", public_message or None)
-        object.__setattr__(
-            self,
-            "public_thinking_steps",
-            _bounded_public_thinking_steps(self.public_thinking_steps),
-        )
+        legacy_steps = _bounded_public_thinking_steps(self.public_thinking_steps)
+        public_thinking_text = _bounded_public_thinking_text(self.public_thinking_text)
+        if not public_thinking_text and legacy_steps:
+            public_thinking_text = "\n\n".join(legacy_steps)
+        object.__setattr__(self, "public_thinking_text", public_thinking_text)
+        object.__setattr__(self, "public_thinking_steps", legacy_steps)
         if self.conversation_title is not None:
             object.__setattr__(self, "conversation_title", normalize_tutor_conversation_title(self.conversation_title))
         if self.question_key is not None:
@@ -1142,6 +1145,7 @@ class TutorRunResult:
     effect_count: int
     terminal_outcome: TutorTerminalOutcome | None = None
     public_message: str | None = None
+    public_thinking_text: str = ""
     public_thinking_steps: tuple[str, ...] = ()
     # The decision candidate is persisted only with the same successful public reply.
     conversation_title: str | None = None
@@ -1164,11 +1168,12 @@ class TutorRunResult:
                 "public_message",
                 sanitize_summary_text(self.public_message, max_length=MAX_TUTOR_PUBLIC_MESSAGE_LENGTH) or None,
             )
-        object.__setattr__(
-            self,
-            "public_thinking_steps",
-            _bounded_public_thinking_steps(self.public_thinking_steps),
-        )
+        legacy_steps = _bounded_public_thinking_steps(self.public_thinking_steps)
+        public_thinking_text = _bounded_public_thinking_text(self.public_thinking_text)
+        if not public_thinking_text and legacy_steps:
+            public_thinking_text = "\n\n".join(legacy_steps)
+        object.__setattr__(self, "public_thinking_text", public_thinking_text)
+        object.__setattr__(self, "public_thinking_steps", legacy_steps)
         if self.conversation_title is not None:
             object.__setattr__(self, "conversation_title", normalize_tutor_conversation_title(self.conversation_title))
         if self.continuation_kind is not None:
@@ -1217,7 +1222,9 @@ def build_compaction_request(
         curation_idempotency_key = f"tutor-compaction:{digest}"
     else:
         curation_payload = {
+            "run_id": _safe_identifier(run_id),
             "conversation_id": _safe_identifier(conversation_id),
+            "input_revision": input_revision,
             "summary_schema_version": compaction.summary_schema_version,
             "summary_policy_version": compaction.summary_policy_version,
             "prior_summary_id": compaction.prior_summary_id,
@@ -1378,6 +1385,20 @@ def _bounded_payload_fields(fields: object) -> tuple[TutorPayloadField, ...]:
     if not isinstance(fields, tuple | list):
         return ()
     return tuple(item for item in fields if isinstance(item, TutorPayloadField))[:MAX_TUTOR_PAYLOAD_FIELDS]
+
+
+def _bounded_public_thinking_text(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    text = value.strip()
+    if not text:
+        return ""
+    if len(text) > MAX_TUTOR_PUBLIC_THINKING_TEXT_LENGTH:
+        text = text[:MAX_TUTOR_PUBLIC_THINKING_TEXT_LENGTH]
+    check = check_teaching_output(text)
+    if check.blocked:
+        return ""
+    return text
 
 
 def _bounded_public_thinking_steps(steps: object) -> tuple[str, ...]:
