@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-2.md`
-- **Total Sessions**: 106
-- **Last Active**: 2026-08-14
+- **Total Sessions**: 107
+- **Last Active**: 2026-08-17
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-2.md` | ~1696 | Active |
+| `journal-2.md` | ~1717 | Active |
 | `journal-1.md` | ~1979 | Archived |
 <!-- @@@/auto:active-documents -->
 
@@ -30,6 +30,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 107 | 2026-08-17 | 统一计划确认入口与公开思考验证屏障 | `fbe6e59c` | `main` |
 | 106 | 2026-08-14 | 完成 Codex-like Tutor 对话体验父任务集成验收 | `b04898d9`, `555bc06f`, `c2e89987`, `a1523e5f`, `6e768da8`, `c7cd6724`, `a112f006`, `04b2b85d` | `codex/codex-like-tutor-conversation` |
 | 105 | 2026-08-14 | 完成 Codex-like Tutor Desktop 迁移与 QA | `04b2b85d`, `d7ecb3ac` | `codex/codex-like-tutor-conversation` |
 | 104 | 2026-08-14 | 完成 Tutor thread/turn v2 全局切换 | `c7cd6724`, `a112f006` | `codex/codex-like-tutor-conversation` |

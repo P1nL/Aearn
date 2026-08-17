@@ -1694,3 +1694,24 @@ Closed the planning-only Tutor Harness rearchitecture parent after all nine inde
 ### Next Steps
 
 - 无；等待用户决定是否推送或创建 PR。
+
+
+## Session 107: 统一计划确认入口与公开思考验证屏障
+
+**Date**: 2026-08-17
+**Task**: 统一计划确认入口与公开思考验证屏障
+**Branch**: `main`
+
+### Summary
+
+统一计划草案确认职责，消除同 Turn 重复渲染，并以 validated complete 权威屏障修复公开思考候选文本闪现；完整后端、Desktop、静态检查和文档规范均通过。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `fbe6e59c` | (see git log) |
+
+### Status
+
+[OK] **Completed**
