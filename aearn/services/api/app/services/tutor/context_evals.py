@@ -40,7 +40,11 @@ from app.services.learning.planning_facts import (
     planning_fact_value_hash,
 )
 from app.services.llm.contracts import LLMUsage
-from app.services.llm.llm_client import LLMCallError, LLMJsonResponse
+from app.services.llm.llm_client import (
+    LLMCallError,
+    LLMJsonResponse,
+    LLMVisibleOutputObserver,
+)
 from app.services.tutor.provider_gateway import PrimaryTutorProviderGateway, _build_messages
 
 
@@ -937,11 +941,11 @@ def _fixture_responses(raw_attempts: Sequence[Mapping[str, object]]) -> tuple[LL
             {"public_message": "fixture", "checkpoint_reason": "invalid"}
             if outcome == TutorProviderAttemptOutcome.REPAIRABLE_REJECTED.value
             else {
-                "schema_version": "tutor_provider_items_v3",
+                "schema_version": "tutor_provider_items_v4",
                 "message": {
                     "type": "agent_message",
                     "text": "fixture learner-safe reply",
-                    "public_thinking_steps": ["当前目标可以收敛为一个可验证的小步骤。"],
+                    "public_thinking_text": "当前目标可以收敛为一个可验证的小步骤。",
                     "conversation_title": None,
                 },
                 "action": {"type": "turn_completed"},
@@ -969,10 +973,21 @@ class _FixtureJsonClient:
         timeout_seconds: float | None = None,
         output_schema: Mapping[str, object] | None = None,
         schema_name: str | None = None,
-        thinking_mode: str | None = None,
+        thinking_mode: Literal["enabled", "disabled"] | None = None,
         capture_provider_body: bool = False,
+        visible_output_observer: LLMVisibleOutputObserver | None = None,
     ) -> LLMJsonResponse:
-        del messages, temperature, max_tokens, timeout_seconds, output_schema, schema_name, thinking_mode, capture_provider_body
+        del (
+            messages,
+            temperature,
+            max_tokens,
+            timeout_seconds,
+            output_schema,
+            schema_name,
+            thinking_mode,
+            capture_provider_body,
+            visible_output_observer,
+        )
         self.calls += 1
         if not self._responses:
             raise LLMCallError("fixture response sequence exhausted")

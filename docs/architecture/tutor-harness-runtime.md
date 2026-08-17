@@ -1,6 +1,6 @@
 # Tutor Harness Runtime Architecture
 
-**Status:** Current runtime contract as of 2026-08-14.
+**Status:** Current runtime contract as of 2026-08-15.
 **Authority:** Current route registration, `aearn/services/api/app`,
 `aearn/apps/desktop`, `aearn/services/worker`, `services/learning/`,
 `schema.sql`, and their tests.
@@ -112,10 +112,12 @@ typed blocking request
    chronological order. Proactive runs explicitly declare that no learner input is
    required; they never invent chat text.
 8. `GET /api/tutor/runs/{run_id}/events` remains incremental run-local compatibility
-   transport using a non-negative `Last-Event-ID` cursor. New
+   transport using a non-negative `Last-Event-ID` cursor. The current
    `GET /api/tutor/conversations/{conversation_id}/snapshot` returns
-   `tutor_conversation_snapshot_v1`, while `/events` replays only
-   `tutor_conversation_events` with a signed, user/conversation-scoped opaque cursor.
+   `tutor_conversation_snapshot_v2`, while `/events` replays only
+   `tutor_conversation_event_v2` rows with a signed, user/conversation-scoped opaque
+   cursor v2. `turn_output` is the sole event whose bounded public-thinking payload may
+   be consumed locally by Desktop; every other event still invalidates the snapshot.
    Neither stream calls a provider; heartbeat comments do not advance durable sequence.
 9. Conversation creation, first-turn, and ordinary-turn requests may carry an
    additive structured `learning_scope`. Each fresh run writes one immutable
@@ -173,7 +175,9 @@ provider continuation intent 是精确五分支枚举：`clarification` 只处�
 `tutor_planning_questions_v1` 为七字段构造 immutable presentation，并复用
 `normalize_planning_fact()` value contract。planning decision gate 记录 `asked`、拒绝无 active
 session 或 confirmed-field reask。typed request public payload 不包含 provider body、raw reasoning、
-capability args、issuer secret 或 raw authority result。
+capability args、issuer secret 或 raw authority result。每个 typed request 在同一事务中同时持久化
+一条 `tutor_messages` 正式回答和一个 elicitation/approval item；时间线固定先显示正式回答，再显示
+composer/审批栏，不能让请求卡片替代正式回答。
 
 learner request response 是 closed union 并以 request item ID + expected version + response hash CAS；
 approval 还必须匹配 exact proposal identity。authority receipt 没有 learner route，内部 service
@@ -284,6 +288,49 @@ for a retry or failure:
 - every other DeepSeek model retains the Chat Completions path at
   `/chat/completions` with `response_format=json_object` and the conservative
   `TUTOR_DECISION_MAX_OUTPUT_TOKENS` budget.
+
+### Learner-visible public thinking text stream
+
+Tutor provider output uses `tutor_provider_items_v4`. A successful `agent_message`
+contains one bounded `public_thinking_text` string before the authority-first answer
+`text`; the model owns paragraphs and line breaks, while the client must not number,
+sort, or reinterpret it. Legacy `public_thinking_steps_json` remains read-only history
+compatibility and is joined with `"\n\n"`; new rows never dual-write both
+representations.
+
+`OpenAICompatibleClient` exposes a generic `LLMVisibleOutputObserver`. The Responses
+adapter forwards only `response.output_text.delta`; provider `reasoning`,
+`reasoning_content`, prompts, raw events, bodies, trace, and diagnostics never enter the
+observer. `TutorProviderPublicTextProjector` incrementally decodes only the exact JSON
+path `message.public_thinking_text`, handles arbitrary chunking and JSON escapes, and
+publishes learner-safe cumulative prefixes in at most 160-character durable chunks.
+Those `append` chunks remain provisional even when provider transport reaches EOF. The
+projector only closes and flushes its parser at EOF; `PrimaryTutorProviderGateway` emits
+the durable `complete` event only after the entire object passes schema/domain validation,
+public-output safety checks, and exact stream/final text matching. Duplicate/invalid fields,
+a transport restart, cumulative safety failure, final-text mismatch, lease loss, stale
+revision, repair, interrupt, or supersede reset/discard the current generation and fail
+closed. A rejected attempt therefore has no `complete` event.
+
+`tutor_turn_public_thinking_streams` stores only the approved prefix and its exact
+run/input-revision/decision-iteration/generation/provider-attempt fence. Each mutation
+and matching `turn_output` event is one short PostgreSQL transaction. Snapshot v2 may
+project an exact active row as `active_thinking`; a terminal Tutor message, or the formal
+Tutor message plus its typed request, accepts the completed stream atomically only when it equals
+the validated decision.
+The final answer is never streamed from partial provider JSON and remains hidden until
+normal decision, action/effect, stale-authority, and terminal persistence gates pass.
+
+Desktop displays a non-interactive `StateDot + Think` immediately for a running active
+turn. Live `append` text is buffered off-DOM and becomes a native disclosure only after
+both the fixed first-text stability window and the validated `complete` event are satisfied.
+A completed snapshot may restore its text immediately; an active incomplete snapshot stays
+buffered. The disclosure defaults expanded, preserves literal whitespace, and reveals one
+grapheme per visual tick. The newly persisted answer starts only after the thinking queue
+catches up; `Think` remains expanded until the answer queue completes, then auto-collapses
+once. Historical messages render immediately and collapsed. Reduced motion synchronizes
+approved text without animation but preserves the same authority and one-time collapse
+semantics.
 
 ### Adaptive context budget planning
 
@@ -719,7 +766,11 @@ deployment, task archive, or release approval.
 
 ## 2026-08-10 Learning-plan drafting composition
 
-The interactive dispatcher remains deny-by-default. A PostgreSQL-backed policy resolver grants only `tutor.learning-plan-draft@1.0.0` and `learning.plan.draft@1.0.0` for a current, non-terminal, non-superseded interactive `plan_drafting` run whose conversation owns an active planning session. The capability validates compact nested JSON, server-owned language/source/runtime facts and the frozen LearningPlan DAG, then appends one typed draft. Generic capability receipts contain only draft id/version/hash/status. Effects remain denied and HTTP confirmation is the only track-creation action. The learning context decorator appends bounded scope/session/current-draft descriptors without changing current-input pinning, adaptive budget order, usage/cache accounting or summary compaction.
+The interactive dispatcher remains deny-by-default. A PostgreSQL-backed policy resolver grants only `tutor.learning-plan-draft@1.0.1` and `learning.plan.draft@1.0.0` for a current, non-terminal, non-superseded interactive `plan_drafting` run whose conversation owns an active planning session. The capability validates compact nested JSON, server-owned language/source/runtime facts and the frozen LearningPlan DAG, then appends one typed draft. Generic capability receipts contain only draft id/version/hash/status. Effects remain denied and HTTP confirmation from the plan inspector is the only track-creation action. After a draft capability succeeds, the selected Skill must return a learner-visible review message with `turn_completed`; it must not create a generic `approval` continuation for plan confirmation, so the ordinary planning Composer remains available for revision requests. The interactive provider boundary also converts an accidental `approval` decision to ordinary completion only when the exact run owns an active `plan_drafting` session; outside that scope the generic approval decision is preserved unchanged. Generic approval remains valid for unrelated gated operations. The learning context decorator appends bounded scope/session/current-draft descriptors without changing current-input pinning, adaptive budget order, usage/cache accounting or summary compaction.
+
+The corrected Skill and exported capability schema both declare the complete opaque JSON contract. `profile_json` uses `language_id`, `goal_text`, `target_level`, `weekly_minutes`, `experience_level`, `teaching_preferences`, `pace_summary`, and `title`; each module contains typed `nodes` rather than shorthand aliases. Invalid nested input remains a typed capability denial across Psycopg transaction boundaries, records a safe session error after rollback, creates no draft, and terminal persistence emits a learner-safe retry message so a completed public-thinking stream never becomes the only visible output. A fresh Turn retry is allowed only for exact `blocked_policy/capability_denied` or `budget_exhausted/deadline_exhausted` diagnostics so a corrected catalog/Skill or a fresh finite deadline may recover the same source input without reopening unrelated policy or budget denials.
+
+Capability result fields are bounded raw strings, so the Action adapter maps draft id/version/hash directly before constructing `plan_draft` authority; it never reuses the JSON argument decoder. Structured context-summary curation keys include exact run/input identity, preventing fresh retries with the same retired history from conflicting with another run while still deduplicating high-water and terminal triggers inside one run.
 
 ### LessonDocument authoring boundary (2026-08-11)
 

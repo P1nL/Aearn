@@ -137,6 +137,7 @@ export function LearningPlanBuilderPage({ user, initialSession, onBack, onConfir
             onSelectConversation={() => undefined}
             onConversationsChanged={() => window.setTimeout(() => void refresh(), 120)}
             mode="plan_drafting"
+            planningComposerPlaceholder={draft ? "对计划有修改意见？直接告诉我……" : undefined}
             showControls={false}
           />
         </div>

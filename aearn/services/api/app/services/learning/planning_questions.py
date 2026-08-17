@@ -95,6 +95,49 @@ def build_planning_question_presentation(
     }
 
 
+def format_planning_question_value(
+    *,
+    presentation: Mapping[str, object],
+    value: object,
+) -> str:
+    presentation_type = str(presentation.get("type") or "")
+    if presentation_type == "text":
+        display = str(value).strip()
+        if display:
+            return display
+        raise PlanningQuestionCatalogError("planning question display text is empty")
+    if presentation_type == "integer":
+        if presentation.get("unit") == "minutes_per_week" and isinstance(value, int):
+            return f"每周 {value} 分钟"
+        raise PlanningQuestionCatalogError("planning question integer display is unsupported")
+    if presentation_type in {"single_select", "multi_select"}:
+        raw_values = [value] if presentation_type == "single_select" else value
+        if not isinstance(raw_values, list):
+            raise PlanningQuestionCatalogError("planning question selection display is invalid")
+        labels_by_value: dict[str, str] = {}
+        raw_options = presentation.get("options")
+        if not isinstance(raw_options, list):
+            raise PlanningQuestionCatalogError("planning question display options are invalid")
+        for option in raw_options:
+            if not isinstance(option, Mapping):
+                raise PlanningQuestionCatalogError("planning question display option is invalid")
+            option_value = str(option.get("value") or "")
+            option_label = str(option.get("label") or "").strip()
+            if not option_value or not option_label:
+                raise PlanningQuestionCatalogError("planning question display option is invalid")
+            labels_by_value[option_value] = option_label
+        labels: list[str] = []
+        for selected in raw_values:
+            label = labels_by_value.get(str(selected))
+            if label is None:
+                raise PlanningQuestionCatalogError("planning question display value is outside the catalog")
+            labels.append(label)
+        if labels:
+            return "、".join(labels)
+        raise PlanningQuestionCatalogError("planning question display selection is empty")
+    raise PlanningQuestionCatalogError("planning question display type is unsupported")
+
+
 def validate_planning_question_value(
     conn: Connection[dict[str, object]],
     *,

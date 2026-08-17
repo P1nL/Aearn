@@ -303,19 +303,20 @@ dispatcher/provider 异常；run read、SSE、snapshot 和 history 只反映服�
 | --- | --- | --- | --- |
 | `GET` | `/api/tutor/conversations` | `user_id`、`limit=1..40`、可选 opaque `cursor` | learner-visible conversation summaries，按 `(last_public_activity_at DESC, id DESC)` 排序 |
 | `GET` | `/api/tutor/conversations/{conversation_id}/history` | `user_id`、`limit=1..40`、可选 opaque `cursor` | 旧客户端兼容的倒序 message/process timeline、`next_cursor`、`has_more`、可选 active foreground run |
-| `GET` | `/api/tutor/conversations/{conversation_id}/snapshot` | `user_id`、`limit=1..40`、可选 history cursor | `tutor_conversation_snapshot_v1`：conversation/control version、public active turn（含 CAS `input_revision`）、最多一个 pending typed request、typed timeline page、Queue 与 opaque `stream_cursor` |
+| `GET` | `/api/tutor/conversations/{conversation_id}/snapshot` | `user_id`、`limit=1..40`、可选 history cursor | `tutor_conversation_snapshot_v2`：conversation/control version、public active turn（含 CAS `input_revision`）、可选 exact `active_thinking`、最多一个 pending typed request、typed timeline page、Queue 与 opaque v2 `stream_cursor` |
 | `GET` | `/api/tutor/conversations/{conversation_id}/events` | `user_id`；可选 opaque `Last-Event-ID` | conversation-global append-only SSE；只读取 public event 表，不调用 provider |
 
 list item 只含 `conversation_id`、服务端投影 title、`last_public_activity_at` 与可选
 `active_run={run_id,status,continuation_kind}`；不返回 learner 原文 preview、provider/model
-信息、trace 或诊断。history item 是 `message`（含 public learner/Tutor `content`、必需的
-`context_references[]`，并为 Tutor message 返回 bounded `public_thinking_steps[]`；Tutor message
-和无引用 learner/legacy message 的引用数组为空）或 `process`（只含 `display_state`、固定
-allowlisted `steps[].label`、server-calculated
-`elapsed_seconds` 与时间字段）。`public_thinking_steps` 是 provider 明确写入最终可见
-JSON 契约、经 safety validation 后与成功 Tutor message 原子持久化的公开说明；它不是
-Responses/DeepSeek 的原生 reasoning item。旧 `tutor_messages` 没有 process row 或公开思路
-字段时仍以 message-only history 返回，服务器不会伪造思路、步骤、duration 或 title。
+信息、trace 或诊断。snapshot v2 的 history item 是 `message`（含 public learner/Tutor
+`content`、必需的 `context_references[]`，并为 Tutor message 返回 bounded
+`public_thinking_text`；Tutor message 和无引用 learner/legacy message 的引用数组为空）或
+`process`（只含 `display_state`、固定 allowlisted `steps[].label`、server-calculated
+`elapsed_seconds` 与时间字段）。`public_thinking_text` 是 provider v4 明确写入最终可见 JSON
+契约、经累计 safety validation 后与成功 Tutor message 或 typed request 原子持久化的纯文本；
+它不是 Responses/DeepSeek 的原生 reasoning item。旧 `public_thinking_steps_json` 读取时以双换行
+稳定连接；旧 `/history` 为兼容客户端继续把新文本投影为单元素 `public_thinking_steps[]`。
+服务器不会伪造思路、步骤、duration 或 title。
 
 history cursor 由服务端签名并绑定 cursor kind、user 和 conversation scope。篡改、跨用户、
 跨 conversation、错误版本或不合法 token 一律返回 `400 CURSOR_INVALID`，不返回 SQL/签名
@@ -376,8 +377,11 @@ payload。
   `400 CONVERSATION_CURSOR_INVALID`；客户端应重新读取 snapshot。
 - event `id` 为下一次重连应保存的 opaque cursor；data 只含 `event_id`、conversation-global
   `sequence`、闭合 `kind`、可选 turn/item reference、strict safe payload 与时间。
-- kind 固定为 `turn_created | turn_updated | item_added | item_updated | control_updated |
-  dispatch_delayed | dispatch_dead`。heartbeat 是 SSE comment，不写数据库、不推进 cursor。
+- kind 固定为 `turn_created | turn_updated | item_added | item_updated | turn_output |
+  control_updated | dispatch_delayed | dispatch_dead`。heartbeat 是 SSE comment，不写数据库、不推进 cursor。
+- `turn_output` 只允许 `tutor_public_thinking_stream_v1`：exact turn identity、`input_revision`、
+  `generation`、`operation=reset|append|complete|discard` 与单调 `chunk_sequence`；只有 `append`
+  可带 1..160 字符 `text`。Desktop 可局部消费该事件，identity/order/shape 不匹配时必须 fresh snapshot。
 - 事件写入与 owning mutation 同 transaction；相同 `(conversation_id,event_key)` 只允许完全
   相同的 public facts 幂等重放。SSE 不读取或转换 raw `tutor_run_events` payload。
 
@@ -622,3 +626,23 @@ Attempt 不存在为 `404 CONTEXT_REFERENCE_NOT_FOUND`；缺少真实 execution 
 - 所有 Tutor mutation 仅在 `TUTOR_THREAD_TURN_V2_ENABLED=true` 且 DB state=`enabled` 时开放；否则返回 `503 TUTOR_THREAD_TURN_V2_UNAVAILABLE|PREPARING|BLOCKED`。history/snapshot/run detail/SSE 继续只读。
 - `POST /api/tutor/runs/{run_id}/inputs` 对任意 run 固定返回无副作用 `410 TUTOR_LEGACY_CONTINUATION_DISABLED`，`next_action=start_new_turn`。
 - legacy waiting migration 的 run SSE 公开 `TUTOR_LEGACY_CONTINUATION_REQUIRES_NEW_TURN`；其他 cutover cancellation 仍投影普通 interrupted/RUN_NOT_ACTIVE，不新增专用卡片。
+
+## 2026-08-15：Tutor 公开思考文本流契约
+
+- provider decision schema 为 `tutor_provider_items_v4`，新 `agent_message` 使用
+  `public_thinking_text`（0..1280 字符纯文本）与最终 `text`；公共接口不暴露 raw reasoning。
+- snapshot 为 `tutor_conversation_snapshot_v2`，可返回
+  `active_thinking={turn_id,input_revision,generation,state,text,complete,last_event_sequence}`；
+  它必须与 `active_turn` identity/revision 完全一致，否则省略或拒绝投影。
+- conversation event projection 为 `tutor_conversation_event_v2`，opaque cursor version 为 2。
+  `turn_output` 是唯一允许 Desktop 局部应用的事件；重复忽略、sequence/generation/chunk gap、
+  extra field、错误 turn/revision 或旧 cursor 均回到 fresh snapshot。
+- `append` 只表示通过累计文本安全检查的候选前缀，不构成展示 authority。`complete` 只能在完整
+  provider object 已通过 schema/domain validation、公开文本安全检查以及 stream/final exact match 后发出；
+  被 repair/reject 的 attempt 必须从 provisional `append` 直接进入 `discard`，不得先发 `complete`。
+- 成功 `message` 与 `elicitation|approval` request item 都可携带 exact
+  `public_thinking_text`。正式回答/问题文本只来自已持久化 snapshot；partial provider JSON 不构成回答 authority。
+- legacy `/history` 继续返回旧形状：新文本投影为单元素 `public_thinking_steps[]`，旧 steps 原样读取；
+  snapshot v2 只返回统一后的 `public_thinking_text`，不产生编号、说明或补写历史。
+- API、SSE 与 snapshot 禁止包含 `reasoning`、`reasoning_content`、prompt、provider body/raw event、
+  trace、diagnostic、credential、secret 或内部安全拒绝原因。

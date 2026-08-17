@@ -375,3 +375,60 @@ const result = parseModelReviewResult(payload);
 - `TutorHistoryItem` includes exact learner-safe `error { id, turn_id, code, message, recoverable, created_at }`; unknown/extra error fields reject the item.
 - The v2 renderer exhaustively handles message/request/error and intentionally returns `null` for standalone process. This is a display rule, not permission to skip process validation at the API boundary.
 - Conversation SSE cursors are opaque strings; only event `sequence` participates in duplicate/gap checks.
+
+## 场景：Tutor public-thinking v2 exact DTO（2026-08-15）
+
+### 1. 适用范围与触发条件
+
+- 触发：修改 Tutor snapshot/message/request/event/parser 中的公开思考字段。
+
+### 2. 类型签名
+
+```ts
+type TutorConversationSnapshotResponse = { snapshot_version: "tutor_conversation_snapshot_v2"; active_thinking: TutorActiveThinking | null; ... };
+type TutorTurnOutputPayload = AppendPayload | ResetCompleteDiscardPayload;
+```
+
+### 3. 契约
+
+- `active_thinking` exact keys：`turn_id,input_revision,generation,state,text,complete,last_event_sequence`；必须匹配 active turn identity/revision。
+- `turn_output` exact closed union；append 唯一允许 `text`，长度 1..160；总 message/request `public_thinking_text` 最多 1280。
+- snapshot/message/request 从 `unknown` 构造，extra/unknown/missing/protected field 整体拒绝。
+- legacy steps 只在 API compatibility boundary 转为文本；组件内部统一只消费 `public_thinking_text`。
+
+### 4. 验证与错误矩阵
+
+| 缺陷 | 前端结果 |
+| --- | --- |
+| snapshot/event version 非 v2 | contract error / reset |
+| active thinking 与 active turn 不匹配 | 拒绝 snapshot |
+| append 空文本、超 160 或多字段 | 拒绝 event并 fresh snapshot |
+| state/complete 不一致或 text 超 1280 | 拒绝 payload |
+| payload 含 reasoning/prompt/body | extra/protected field 拒绝 |
+
+### 5. 正常、基础与错误案例
+
+- 正常：v2 snapshot + exact active thinking +连续 append。
+- 基础：`active_thinking=null`，running UI 保持静态 `Think`。
+- 错误：`response.json() as TutorConversationSnapshotResponse`、宽泛 `Record<string, unknown>` 直传组件。
+
+### 6. 必须测试
+
+- 合法 v2 snapshot/message/request/event；所有 missing/extra/unknown/越界/identity mismatch 拒绝。
+- protected marker fixture：reasoning、reasoning_content、prompt、provider_body、diagnostic。
+- `pnpm --dir .\aearn\apps\desktop test` 与 `pnpm --dir .\aearn desktop:check`。
+
+### 7. 错误与正确写法
+
+#### 错误
+
+```ts
+const snapshot = await response.json() as TutorConversationSnapshotResponse;
+```
+
+#### 正确
+
+```ts
+const payload: unknown = await response.json();
+return requireTutorConversationSnapshotV2(payload);
+```

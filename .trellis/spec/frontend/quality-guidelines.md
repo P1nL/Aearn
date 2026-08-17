@@ -387,7 +387,7 @@ Composer state stays controlled by assistant-ui and review navigation follows th
 - If no active session exists, show disabled guidance and do not call the backend.
 - A stream that closes without `done` or `error` must become a visible recoverable error state.
 - The frontend must not derive scoring, final exercise result, review scheduling, or hidden-test facts from conversation messages.
-- The frontend must not render "导师判断", provider-native chain-of-thought/reasoning, or inferred hidden thinking; do not regex-split assistant text or parse prompt-policy markers from normal content. A separately typed, server-persisted `public_thinking_steps[]` field is allowed only as an explicitly learner-visible public explanation and must never be relabeled as hidden/internal reasoning.
+- The frontend must not render "导师判断", provider-native chain-of-thought/reasoning, or inferred hidden thinking; do not regex-split assistant text or parse prompt-policy markers from normal content. Only separately typed, server-validated `public_thinking_text` and its exact fenced active stream are allowed as learner-visible public explanation; legacy steps are compatibility input only and none may be relabeled as hidden/internal reasoning.
 - Public frontend types and render paths must ignore/drop `internal_review`; that field is backend-private and must never appear in the UI or app store.
 
 ### 4. Validation & Error Matrix
@@ -886,3 +886,58 @@ Open http://127.0.0.1:1420 with a disposable stateful API fixture, exercise the 
 - 检查 protected markers 不出现在 DOM/network public payload：private test、reference answer、rubric hash、container/image、Docker socket、command/path。
 - 1440px、精确 900px、390px 均检查 `scrollWidth <= clientWidth`、modal viewport fit、键盘 focus、console 0 error/warning、无 framework overlay。
 - Desktop/Tauri build 不是此完成门；独立 `tsc --noEmit` 可作为类型补充，但不能代替真实浏览器交互。
+
+## 场景：Tutor `Think` 流式交互网页完成门（2026-08-15）
+
+### 1. 适用范围与触发条件
+
+- 触发：交付 `Think` public text streaming、typewriter、final reconciliation 或 auto-collapse UI。
+
+### 2. 验证入口
+
+- 浏览器目标：`http://127.0.0.1:1420`，使用 disposable fake API/provider。
+- 视口：`1440x900`、`900x900`、`390x844`；另测 `prefers-reduced-motion: reduce`。
+
+### 3. 契约
+
+- 必须真实观察 empty Think、first append、慢流/burst、reset/discard/reconnect、final answer、manual reopen。
+- 检查 DOM 只有一份匹配 turn 的 Think/answer；network/DOM 不含 reasoning/prompt/provider body/diagnostic。
+- 所有视口 `scrollWidth <= clientWidth`，Composer 可触达，focus 可见，无 framework overlay，相关 console error/warning 为零。
+
+### 4. 验证与错误矩阵
+
+| 观察 | 结果 |
+| --- | --- |
+| empty Think 是 button/有 helper copy | fail |
+| 一 tick 多 grapheme、换行丢失或编号出现 | fail |
+| reset/reconnect 混入旧 generation | fail |
+| final 前回答可见或 final 后重复节点 | fail |
+| 自动折叠反复覆盖用户 reopen | fail |
+| reduced motion 仍逐字或状态语义变化 | fail |
+| protected marker 出现在 DOM/network | fail |
+
+### 5. 正常、基础与错误案例
+
+- 正常：慢流两段文本，回答完成后折叠一次，重开并刷新保持展开。
+- 基础：unsupported stream provider 直到 final 都只有静态 Think，final 直接完整显示。
+- 错误：只凭 Vitest/build 宣称交互完成，或调用真实 provider 制造演示。
+
+### 6. 必须测试
+
+- 自动化：Desktop Vitest、`desktop:check`、backend focused/static checks。
+- 浏览器：三视口、键盘 disclosure、reduced motion、reset/reconnect、console/network/DOM audit。
+- 截图/临时 fixture 放仓库外，结束后停止验证服务；不修改生产数据。
+
+### 7. 错误与正确写法
+
+#### 错误
+
+```text
+desktop:check 通过，所以逐字、折叠和重连已验收。
+```
+
+#### 正确
+
+```text
+运行 fake stream，逐状态检查 DOM/焦点/队列/唯一性/console/network，并在三视口与 reduced motion 下复验。
+```

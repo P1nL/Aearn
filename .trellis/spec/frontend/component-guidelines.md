@@ -222,6 +222,14 @@ surfaces with this foundation.
     {publicSteps}
   </DisclosureRow>
 </DshDerivedRoot>
+
+<DshDerivedRoot className="tutor-surface-root">
+  <main className="tutor-workspace tutor-conversation-only">
+    {activeTurn?.status === "in_progress" && controlState === "running"
+      ? <TutorRunningPlaceholder turn={activeTurn} />
+      : null}
+  </main>
+</DshDerivedRoot>
 ```
 
 Public entrypoint: `aearn/apps/desktop/src/ui/dsh-derived/index.ts`.
@@ -232,6 +240,9 @@ which internal `--dsw-*` compatibility aliases may exist.
 
 - Components are controlled, presentational React 19 components. They accept typed props/callbacks and never read Tutor APIs, Zustand stores, session state, or upstream runtime context.
 - `DshDerivedRoot` establishes the compatibility scope. Product code consumes public exports and `--aearn-*` tokens rather than importing implementation CSS directly.
+- `DshDerivedRoot` renders a real `div`; it does not transparently forward a parent flex/grid height contract. A height-constrained product surface must add a product-owned layout class that carries `width: 100%`, `height: 100%`, `min-width: 0`, `min-height: 0`, and the required flex behavior to the root before relying on a descendant `height: 100%`. Keep this layout adapter outside `ui/dsh-derived`.
+- A Tutor feature may derive an ephemeral `Think` row from authoritative `active_turn.status === "in_progress"` plus `control_state === "running"`. Before validated public text it is a non-interactive `StateDot + Think` status with `data-turn-id`; exact `active_thinking`/`turn_output append` only fills a provisional buffer, and the row becomes a controlled disclosure only after validated `complete` plus the first-text stability window. It never consumes `process`, raw trace, provider reasoning, prompt, or arbitrary SSE payload. The successful snapshot reconciles the row by turn identity with persisted `public_thinking_text + answer` instead of rendering a duplicate.
+- A typed-request learner response reuses the ordinary learner message bubble and renders only the server-projected natural-language result. Never expose `question_key`, `field_key`, internal option values, serialized JSON, or quoted raw values such as `experience_level: "new"`.
 - `Button`, `Input`, `DisclosureRow`, and `Tooltip` preserve native keyboard semantics, visible focus, disabled/busy behavior, and refs where the native element has one.
 - `MessageText` renders literal text only. It does not parse Markdown or HTML.
 - `AearnToast` and `showAearnToast` adapt the existing `sonner` runtime; do not add another toast store or provider implementation.
@@ -243,6 +254,11 @@ which internal `--dsw-*` compatibility aliases may exist.
 | Condition | Required behavior |
 | --- | --- |
 | Component needs Tutor/server state | create an Aearn feature adapter outside `ui/dsh-derived`; pass typed props/callbacks down |
+| A full-height surface becomes content-height after adding `DshDerivedRoot` | add a product-owned root layout class and verify the root/workspace heights match the available parent area; do not patch the generic foundation root with product layout |
+| Snapshot reports an in-progress active turn with running control state but no text | append one static `StateDot + Think`; no button, chevron, focus target, body, or helper copy |
+| First exact public-thinking text arrives without validated complete | keep the native row static and buffer text off-DOM |
+| Validated complete and the stability window are both satisfied | enable the native disclosure in place, default expanded, preserve literal line breaks, and begin grapheme reveal |
+| Snapshot terminalizes the turn and returns the Tutor message/request | reconcile by turn identity, finish queues, reveal authority text, then auto-collapse `Think` once without duplicating the row |
 | Upstream CSS references `--dsw-*` | map only the required aliases inside `.aearn-dsh-derived`; do not expose them as public tokens |
 | Target control is disabled but still needs a tooltip | use `disabledTarget` so the wrapper provides focus/title fallback |
 | Motion is decorative | disable or reduce it under `prefers-reduced-motion: reduce` |
@@ -252,8 +268,12 @@ which internal `--dsw-*` compatibility aliases may exist.
 ### 5. Good / Base / Bad Cases
 
 - Good: a Tutor feature owns Queue state and passes item text plus callbacks into foundation controls inside `DshDerivedRoot`.
+- Good: `TutorConversationSurface` uses `tutor-surface-root` to propagate the parent height through the DSH scope into `.tutor-workspace`.
+- Good: a running active turn renders only `StateDot + Think`; the first approved text enables an expanded disclosure, and the persisted item reuses the same visual row.
 - Base: a static `Pill` renders as text; an interactive `Pill` renders as a native button.
 - Bad: import a Tutor store or `api.ts` from `ui/dsh-derived`.
+- Bad: insert the root wrapper into a full-height flex/grid chain without a layout adapter, leaving the Composer positioned against an approximately content-height root.
+- Bad: render “Tutor 正在思考”/helper copy, make the empty row a disabled button, stream provider reasoning, number model text, or retain live and persisted copies together.
 - Bad: use `--dsw-*` in product CSS, copy brand icons, or install an upstream UI/runtime package.
 
 ### 6. Tests Required
@@ -261,6 +281,8 @@ which internal `--dsw-*` compatibility aliases may exist.
 - `pnpm --dir .\aearn\apps\desktop test` covers keyboard focus, busy/disabled, refs, controlled disclosure, tooltip association/fallback, literal text, semantic tokens, reduced motion, narrow-container CSS, import boundaries, and brand/runtime exclusion.
 - `pnpm --dir .\aearn desktop:check` proves strict TypeScript and Vite production build compatibility.
 - When the foundation is integrated into a visible product surface, add real browser checks at the required wide, medium, and narrow viewports; this foundation task alone does not authorize Tutor behavior changes.
+- For full-height integrations, browser assertions must compare the DSH root and product workspace rectangles with the available parent height, hit-test the Composer center, focus the input without a position change, and assert `scrollWidth <= clientWidth`.
+- Running-turn regression tests must assert `data-turn-id`, static `Think` without button before text, first-text default expansion, literal multiline content, unique persisted replacement, answer-complete one-time collapse, and manual reopen surviving snapshot refresh.
 
 ### 7. Wrong vs Correct
 
@@ -286,4 +308,71 @@ export interface QueueButtonProps {
 export function QueueButton({ count, onOpen }: QueueButtonProps) {
   return <Button variant="ghost" onClick={onOpen}>Queue {count}</Button>;
 }
+```
+
+## 场景：Tutor `Think` 行与最终回答接替（2026-08-15）
+
+### 1. 适用范围与触发条件
+
+- 触发：修改 `TutorConversationSurface` 的 active turn、Tutor message/request、`DisclosureRow`、typewriter 或相关样式。
+
+### 2. 组件签名
+
+```tsx
+<TutorRunningPlaceholder turn={turn} hasText={hasText} text={displayedText} complete={complete} />
+<TutorThinking messageId={id} text={text} expanded={expanded} complete={complete} onExpandedChange={setExpanded} />
+```
+
+### 3. 契约
+
+- 无文本时只渲染 `StateDot + Think`，不是 button，不含 chevron/helper/body。
+- 首个 live chunk 先进入仅内存的 `350ms` 稳定窗口，并始终保持 provisional；只有同 generation 的 validated `complete` 到达后才允许进入 DOM。`complete` 与稳定窗口必须同时满足：先 complete 则等待窗口，先结束窗口则等待 complete。reset/discard 在 complete 前到达时正文永不出现。snapshot 仅在 `active_thinking.complete=true` 时直接恢复；incomplete snapshot 继续显示静态 Think。解禁后使用 controlled native disclosure，默认展开；正文 literal + `pre-wrap`，不解析 Markdown/HTML、不编号。
+- SSE gap/mismatch recovery 在请求 snapshot 前不得清空已显示文本；snapshot 对同 Turn/Revision 的有效 generation 做单调合并，只有 recovery snapshot 明确缺少 active thinking、或 authoritative reset/discard/terminal 状态时才清除。
+- learner 普通输入或 typed request 响应的 accepted mutation 返回 fresh run 后，组件必须立即把该 authoritative run 投影为新的静态 `● Think`，并更新 turn identity；不能丢弃 mutation response 后只等待下一次 snapshot。
+- live 与 persisted item 通过 turn identity 原位接替；回答队列完成后只自动折叠一次，随后尊重用户选择。
+- 历史项完整显示、默认折叠、不重放动画；reduced motion 直接同步。
+
+### 4. 验证与错误矩阵
+
+| 状态 | 组件行为 |
+| --- | --- |
+| accepted input/request response 返回 fresh run | 立即在最新 learner 输入后挂载该 run 的静态 `● Think` |
+| active + empty text | 静态状态，不可聚焦/点击 |
+| first live text、稳定窗口未结束 | 继续显示静态 Think；文本不进入 DOM |
+| 稳定窗口已结束、尚无 complete | 继续静态 Think；provisional 文本仍不进入 DOM |
+| validated complete + 稳定窗口结束 | disclosure 出现并展开 |
+| complete 前 reset/discard | 取消待显示 generation，正文无论已等待多久都不闪现 |
+| complete 后 append | contract mismatch，fresh snapshot；不能继续猜测 |
+| gap/mismatch recovery pending | 保留当前可见文本，等待 snapshot 裁决 |
+| recovery snapshot 无 active thinking | 清除 live 文本并恢复静态 Think/安全终态 |
+| final item matched | 不重复节点，先完成 thinking 再揭示 answer |
+| answer complete | 折叠一次；用户重开后 refresh 不再折叠 |
+| fail/interrupt/discard | 移除 live row，由现有安全终态接管 |
+
+### 5. 正常、基础与错误案例
+
+- 正常：首段先稳定、完整 decision 验证后收到 complete，`Think` 文本两段逐字出现；回答完成后折叠，用户重新展开保持。
+- 基础：无 structured stream，final snapshot 直接显示完整、默认折叠的 `Think`。
+- 错误：只凭 `350ms` timer 展示 provisional chunk；把 transport EOF 当作 validated complete；recovery 请求前清空已显示文本；disabled disclosure 占位、显示步骤数/时长、同时渲染 live 和 final、用 `dangerouslySetInnerHTML`。
+
+### 6. 必须测试
+
+- Testing Library 断言 role/button/tab stop、普通输入与 typed request accepted response 的立即新 Turn 挂载、首个 `turn_output` 的 `350ms` 稳定窗口、超过窗口仍未 complete 不进入 DOM、慢速无效 generation discard 永不闪现、incomplete snapshot 保持静态、validated complete 后默认展开、gap recovery 保留文本直到 snapshot 裁决、换行、唯一节点、折叠一次、refresh 与历史行为。
+- fake timers 断言每 tick 一个 grapheme、emoji/组合字符完整、timer cleanup。
+- 真实浏览器验证 1440/900/390、focus、reduced motion、无溢出/overlay/console warning。
+
+### 7. 错误与正确写法
+
+#### 错误
+
+```tsx
+<DisclosureRow disabled title="Tutor 正在思考" summary="完成后显示" />
+```
+
+#### 正确
+
+```tsx
+return hasText
+  ? <TutorThinking title="Think" text={text} expanded={expanded} />
+  : <div role="status"><StateDot state="running" /><strong>Think</strong></div>;
 ```

@@ -13,6 +13,7 @@ from app.agents.harness.capabilities import LearningPlanDraftCapabilityInput
 from app.agents.harness.context_builder import TutorContextBuilder
 from app.agents.harness.contracts import (
     TutorCheckpointReason,
+    TutorCapabilityStatus,
     TutorContinuationKind,
     TutorDecision,
     TutorDecisionGateResult,
@@ -24,7 +25,10 @@ from app.agents.harness.contracts import (
 )
 from app.core.config import Settings
 from app.db.connection import connect
-from app.services.learning.plan_capability import LearningPlanDraftCapabilityHandler
+from app.services.learning.plan_capability import (
+    LearningPlanDraftCapabilityError,
+    LearningPlanDraftCapabilityHandler,
+)
 from app.services.learning.planning_facts import (
     PlanningFactField,
     PlanningQuestionDecisionGate,
@@ -176,6 +180,62 @@ def test_session_create_resume_cancel_and_cross_user_scope(
     assert cancelled.status_code == 200
     assert cancelled.json()["session"]["status"] == "cancelled"
     assert tutor_client.get(f"/api/learning-plan-sessions/current?user_id={owner_id}").json()["session"] is None
+
+
+def test_invalid_nested_plan_payload_records_safe_error_without_masking(
+    monkeypatch: pytest.MonkeyPatch,
+    tutor_client: TestClient,
+    tutor_api_settings: Settings,
+) -> None:
+    dispatcher = RecordingTutorDispatcher()
+    monkeypatch.setattr(tutor_route, "build_tutor_run_dispatcher", lambda _settings: dispatcher)
+    user_id = str(create_tutor_user(tutor_client)["id"])
+    session = _create_session(tutor_client, user_id, "plan-invalid-nested-session")
+    conversation_id = str(session["conversation_id"])
+    accepted = tutor_client.post(
+        f"/api/tutor/conversations/{conversation_id}/inputs",
+        json=action_payload(
+            user_id,
+            "plan-invalid-nested-input",
+            content="请生成计划。",
+            learning_scope={"scope_kind": "plan_drafting", "task_kind": "plan_drafting"},
+        ),
+    )
+    assert accepted.status_code == 202
+    run_id = str(accepted.json()["run_id"])
+    invalid = _capability_input().model_copy(
+        update={
+            "profile_json": json.dumps(
+                {
+                    "language_id": "python",
+                    "goal": "Build reliable automation tools",
+                    "weekly_minutes": 240,
+                    "experience_level": "beginner",
+                },
+                separators=(",", ":"),
+            )
+        }
+    )
+
+    with connect() as conn:
+        run = PostgresTutorRepository(conn).load_snapshot(user_id=user_id, run_id=run_id)
+        assert run is not None
+        with pytest.raises(LearningPlanDraftCapabilityError) as captured:
+            LearningPlanDraftCapabilityHandler(conn).generate(run=run, capability_input=invalid)
+        conn.commit()
+
+    assert captured.value.status is TutorCapabilityStatus.DENIED
+    assert captured.value.diagnostic_code == "learning_plan_draft_invalid"
+    current = tutor_client.get(
+        f"/api/learning-plan-sessions/{session['session_id']}?user_id={user_id}"
+    ).json()["session"]
+    assert current["current_draft"] is None
+    with connect() as conn:
+        error = conn.execute(
+            "SELECT last_error_code FROM tutor_learning_plan_sessions WHERE id = %s AND user_id = %s",
+            (session["session_id"], user_id),
+        ).fetchone()
+    assert error == {"last_error_code": "LEARNING_PLAN_DRAFT_INVALID"}
 
 
 def test_capability_appends_typed_draft_and_confirm_creates_one_track(

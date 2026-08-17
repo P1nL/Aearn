@@ -573,9 +573,15 @@ def _capability_output(
     descriptor: ActionDescriptor,
     result: TutorCapabilityResult,
 ) -> dict[str, object]:
-    fields = payload_mapping_from_fields(result.safe_result) or {}
+    fields = {field.key: field.value for field in result.safe_result}
     if descriptor.action_id == "learning.plan.draft":
-        return {"status": "completed", **fields}
+        return {
+            "status": "completed",
+            "draft_id": str(fields.get("draft_id") or ""),
+            "draft_version": _int(fields.get("draft_version")),
+            "content_hash": str(fields.get("content_hash") or ""),
+            "quality_status": str(fields.get("quality_status") or ""),
+        }
     source_ids: list[str] = []
     citation_ids: list[str] = []
     content_hashes: list[str] = []
@@ -602,6 +608,17 @@ def _capability_output(
         "citation_ids": citation_ids,
         "content_hashes": content_hashes,
     }
+
+
+def _int(value: object) -> int:
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return value
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _verification_failed(

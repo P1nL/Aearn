@@ -58,7 +58,7 @@ projection 的唯一 durable authority；Desktop、Celery 和 provider 不拥有
 | 表 | 责任 | 关键不变量 |
 | --- | --- | --- |
 | `tutor_conversations` | user-scoped learner-visible/internal conversation 根 | `visibility` 与 `kind` 区分公开交互和内部 proactive conversation；learner conversation 的 `title` 只能保存安全模型简述，`NULL` 对外投影为“新对话”；`last_public_activity_at` 是列表排序 authority；`next_public_event_sequence` 与 `control_version` 均从 1 开始 |
-| `tutor_messages` | canonical learner/Tutor public message body + bounded public thinking narration | 唯一允许存放原始 learner 文本的 Tutor 表；Tutor 回复可保存最多 4 条 learner-visible `public_thinking_steps_json`，它不是 provider-native reasoning；不可作为 trace/export dump；旧 message-only conversation 继续可读并投影空数组 |
+| `tutor_messages` | canonical learner/Tutor public message body + bounded public thinking narration | 唯一允许存放原始 learner 文本的 Tutor 表；新 Tutor 回复保存最多 1280 字符 `public_thinking_text`，legacy `public_thinking_steps_json` 只读兼容，CHECK 禁止双表示同时非空；二者都不是 provider-native reasoning |
 | `tutor_message_context_references` | learner message/run revision 的 append-only learner-safe artifact snapshot | 复合 FK 固定 user/conversation/run/message/input revision；只保存 bounded safe projection/hash，不复制 learner content、submission、hidden/private artifact 或 raw execution/provider 数据 |
 | `tutor_catalog_snapshots` | reviewed Skill catalog digest snapshot | run 只能引用已持久化的 digest |
 | `tutor_runs` | 有限 loop / public turn 的 durable snapshot | `origin` 为 `interactive/proactive`；`interaction_protocol_version` 区分 `legacy_v1/thread_turn_v2`；retry predecessor/root 与 `response_to_request_id` 通过 user+conversation scoped FK；lease、budget counter、`input_revision`、terminal outcome、`completion_reason` 和 `next_event_sequence` 都由 DB 保护；新 v2 request 来源 turn 不持久化 waiting continuation |
@@ -70,7 +70,8 @@ projection 的唯一 durable authority；Desktop、Celery 和 provider 不拥有
 | `tutor_run_input_events` | 已接受输入的 revision/event receipt | 普通消息与 typed response/verified authority receipt 都在 fresh run 上从 revision 1 开始；legacy continuation 才可能在旧 run 增加 revision；用于 replay 与 stale-effect gate |
 | `tutor_run_checkpoints` | metadata-only checkpoint | 不保存 assembled prompt、raw history 或 provider payload |
 | `tutor_run_events` | run-local ordered event log | `event_sequence` 在 locked run row 上分配；SSE 只读取其安全后缀 |
-| `tutor_conversation_events` | learner-safe conversation-global append-only event log | conversation row lock 分配严格递增 sequence；`event_key` 幂等；kind/payload version 闭合；turn/item reference 与 payload identity 必须一致；普通 UPDATE/DELETE 被 trigger 拒绝 |
+| `tutor_conversation_events` | learner-safe conversation-global append-only event log | conversation row lock 分配严格递增 sequence；v2 kind 包含 bounded `turn_output`；`event_key` 幂等；turn/item reference 与 payload identity 必须一致；普通 UPDATE/DELETE 被 trigger 拒绝 |
+| `tutor_turn_public_thinking_streams` | 当前 foreground Turn 的可恢复公开思考前缀 | one-row-per-run；exact user/conversation/run/revision/decision/generation/provider-attempt fence；state=`active|complete|discarded|accepted`；`active` 文本仅通过累计安全检查、仍是 provisional，`complete` 表示完整 provider decision 已验证并与 stream exact match；不保存 raw provider 数据 |
 | `tutor_interactive_dispatch_jobs` | one-row-per-run durable interactive dispatch authority | PostgreSQL state 为 `pending/leased/retry_wait/completed/dead`；claim 使用 `FOR UPDATE SKIP LOCKED`、owner/generation/expiry CAS、bounded retry/backoff；Celery 仅是 wakeup |
 | `tutor_queued_inputs` | conversation-scoped pending input authority | `pending/claimed/cancelled` closed lifecycle；pending position partial unique；最多 10 项由 conversation lock 保护；enqueue key、item version、claimed turn/revision/mode 与原始结构化 input metadata 可重放 |
 | `tutor_capability_invocations`、`tutor_effects` | capability/effect receipt | 当前 revision、lease、Skill evidence 与 policy 必须同时通过；stale/interrupted effect 不调用 handler；effect 可保存 retry-root logical action key，committed 语义动作全局唯一复用 |
@@ -421,3 +422,29 @@ allowlisted JSON serializer 构造，不直接回放 provider JSON。cutover tar
 ## 2026-08-14：thread/turn v2 全局 cutover authority
 
 `tutor_thread_turn_cutovers` 保存单例 state/generation/summary hash/safe counts/block code/operator idempotency/timestamps；`tutor_thread_turn_cutover_events` 是 append-only 安全审计。两表是 shared infrastructure。preparing 下 legacy waiting run 失败并要求 fresh v2 turn，其他可取消 active run 立即 cancelled/清 lease；ambiguous effect/action receipt 保持原状并使 singleton blocked。enable 只允许 ready 的 exact generation+summary，rollback 只回到 ready/read-only，不恢复 legacy mutation 或数据。
+
+## 2026-08-15：Tutor 公开思考文本流 authority
+
+`tutor_messages` additive 新增 `public_thinking_text text NOT NULL DEFAULT ''` 与
+`char_length <= 1280` CHECK；`chk_tutor_messages_public_thinking_single_representation` 要求
+新文本非空时 `public_thinking_steps_json` 必为空。旧 steps 不回填、不改写，读取层以
+`"\n\n"` 连接为统一纯文本；新消息只写文本列。
+
+`tutor_turn_public_thinking_streams` 以 `run_id` 为主键，并通过
+`(run_id,user_id,conversation_id)` 复合 FK 固定作用域。`input_revision`、
+`decision_iteration`、`generation`、`provider_attempt` 建立 stale fence；state 仅为
+`active | complete | discarded | accepted`，时间戳 CHECK 保证状态与
+`completed_at/discarded_at/accepted_at` 一致。`thinking_text` 最多 1280 字符，
+`next_chunk_sequence >= 1`，可选 `last_public_event_sequence` 复合 FK 指向同 conversation event。
+
+begin/append/reset/complete/discard 每次都锁定当前 run/stream，验证 foreground、lease、revision、
+generation 后，在同一短事务更新文本并追加 `turn_output`。`append` 只写累计安全的 provisional
+前缀；provider transport EOF 只结束 projector 解析，不得把 stream 置为 `complete`。只有完整 decision
+通过 schema/domain/安全校验并与 streamed text exact match 后，gateway 才调用 complete。成功终态消息
+或 typed request 必须在同一事务比较最终 decision 文本、写 canonical public item、把 stream 置为
+`accepted` 并追加 owning conversation events；任一步失败全部回滚。repair、context rebuild、Interrupt、
+supersede、stale revision、lease loss 或失败路径只能 reset/discard，不得接受旧 generation。
+
+该表纳入 cutover target inventory、local export/reset/delete child-first 清单与 bootstrap-twice
+验证。公共表只保存 learner-safe 文本；raw JSON、provider reasoning/body/event、prompt、trace、
+diagnostic、credential 和 secret 禁止落入该表、message 列或 conversation event。

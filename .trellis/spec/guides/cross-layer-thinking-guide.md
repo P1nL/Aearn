@@ -153,6 +153,28 @@ When a CLI auto-detects a mode by probing a remote resource (e.g., checking if `
 
 ---
 
+## Provisional Stream vs Business Authority
+
+A transport or parser lifecycle milestone is not automatically a product authority milestone.
+For streamed model output, name and test the stages explicitly:
+
+```
+observed delta -> safely buffered prefix -> parser EOF -> full decision validated -> durable business acceptance
+```
+
+Checklist:
+
+- [ ] Which layer owns the final schema/domain/safety decision? That layer must emit the reveal/commit signal.
+- [ ] Can a parser or transport report completion before a later validator rejects the object? If yes, do not expose that completion as UI authority.
+- [ ] Are provisional events distinguishable from validated events in both naming and consumer behavior?
+- [ ] Does the UI keep provisional content off-DOM regardless of elapsed debounce/stability time?
+- [ ] Is there a regression where a rejected attempt lasts longer than every frontend timer and still follows `append -> discard` with no `complete`?
+
+**Failure pattern:** a fixed frontend delay hid only fast rejects. Slow invalid Tutor attempts emitted
+`append -> complete -> discard` because projector EOF was mistaken for validated decision completion.
+The deterministic boundary is to let the gateway emit `complete` only after full decision validation,
+then require that authority signal before the frontend reveals its buffered text.
+
 ## When to Create Flow Documentation
 
 Create detailed flow docs when:
@@ -182,3 +204,17 @@ shared database queue:
   inherit leaked singleton/queue state.
 - [ ] Read language/capability state from the current registry/source of truth,
   not from an older fixture expectation.
+
+## Opaque JSON Action Boundary Checklist
+
+When a model-authored generic `{key,value}` action carries nested JSON as strings:
+
+- [ ] Does the exported machine schema describe every nested key, not only `type=string`?
+- [ ] Does the selected exact-versioned Skill repeat the same nested contract and forbid aliases?
+- [ ] Did an instruction correction publish a new semantic version instead of rewriting an old bundle?
+- [ ] Does one integration test pass an invalid nested object through the real transaction/context-manager boundary?
+- [ ] Are custom exceptions at that boundary ordinary mutable exceptions rather than frozen dataclasses?
+- [ ] If the action fails after public thinking is visible, does terminal persistence still write one learner-safe formal message?
+- [ ] If the final decision creates a typed request, are both the formal Tutor message and composer/approval item persisted atomically and ordered message-first?
+
+**Failure pattern**: hand-authored valid fixtures can prove the domain decoder while missing that the real provider was taught an incomplete nested schema. The resulting domain rejection may then be masked again by exception mechanics, leaving the UI with only intermediate text.

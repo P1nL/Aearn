@@ -26,7 +26,10 @@ from app.agents.harness.contracts import (
     TutorContextCompactionPlan,
     TutorContextError,
     TutorContextInput,
+    TutorContextSelection,
     TutorContextSource,
+    TutorContinuationKind,
+    TutorProviderResult,
     TutorRunResult,
     TutorRunSnapshot,
     build_tutor_message_evidence_hash,
@@ -70,6 +73,7 @@ from app.services.tutor.ports import (
 )
 from app.services.tutor.grounding_lookup import InMemoryGroundingLookup
 from app.services.tutor.provider_gateway import PrimaryTutorProviderGateway
+from app.services.tutor.public_thinking_stream import TutorPublicThinkingSink
 from app.services.tutor.run_loop import TutorHarnessService, TutorRunLoop
 
 
@@ -648,6 +652,40 @@ def _action_verifier(
 ProviderFactory = Callable[[Settings], TutorProviderGateway]
 
 
+class PlanDraftingProviderGateway:
+    """Keep learning-plan confirmation on the session endpoint, not generic approval."""
+
+    def __init__(
+        self,
+        *,
+        delegate: TutorProviderGateway,
+        plans: PostgresLearningPlanSessionRepository,
+    ) -> None:
+        self._delegate = delegate
+        self._plans = plans
+
+    def decide(
+        self,
+        *,
+        run: TutorRunSnapshot,
+        context: TutorContextSelection,
+        thinking_sink: TutorPublicThinkingSink | None = None,
+    ) -> TutorProviderResult:
+        result = self._delegate.decide(run=run, context=context, thinking_sink=thinking_sink)
+        decision = result.decision
+        if decision is None or decision.continuation_kind is not TutorContinuationKind.APPROVAL:
+            return result
+        try:
+            self._plans.active_session_for_run(
+                user_id=run.user_id,
+                run_id=run.run_id,
+                input_revision=run.input_revision,
+            )
+        except LearningPlanSessionNotFound:
+            return result
+        return replace(result, decision=replace(decision, continuation_kind=None, checkpoint_reason=None))
+
+
 class TutorInteractiveRunDispatcher:
     """Execute one persisted interactive run through the finite Harness loop.
 
@@ -692,7 +730,10 @@ class TutorInteractiveRunDispatcher:
                 ),
                 context_builder=TutorContextBuilder(),
                 context_budget_planner=TutorContextBudgetPlanner(),
-                provider=self._provider_factory(self._settings),
+                provider=PlanDraftingProviderGateway(
+                    delegate=self._provider_factory(self._settings),
+                    plans=PostgresLearningPlanSessionRepository(conn),
+                ),
                 capability_gateway=ControlledCapabilityGateway(
                     catalog=catalog,
                     policy_resolver=policy_resolver,

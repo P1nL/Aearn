@@ -9,17 +9,18 @@ import {
   respondToTutorInteractionRequest, resumeTutorQueue, retryTutorTurn, rollbackTutorPlan,
   steerTutorQueueItem, updateTutorPreferences,
 } from "../../api";
-import { useTutorConversationStream } from "../../hooks/useTutorConversationStream";
+import { useGraphemeTypewriter } from "../../hooks/useGraphemeTypewriter";
+import { useTutorConversationStream, type TutorConversationEvent } from "../../hooks/useTutorConversationStream";
 import { getErrorInfo } from "../../lib/errorMessages";
 import type {
   ExerciseAttemptOutcome, LearningScopeInput, TutorActivityItem, TutorContextReference,
-  TutorContextReferenceDraft, TutorHistoryItem, TutorInboxItem, TutorInteractionRequestItem,
-  TutorInteractionResponseDraft, TutorMemoryItem, TutorPlanRevisionList, TutorPreferences,
+  TutorContextReferenceDraft, TutorHistoryItem, TutorHistoryMessage, TutorInboxItem, TutorInputAcceptedResponse,
+  TutorInteractionRequestItem, TutorInteractionResponseDraft, TutorMemoryItem, TutorPlanRevisionList, TutorPreferences,
   TutorPublicTurn, TutorQueuedInput, TutorThreadTurnV2Capability, UserProfile,
 } from "../../types";
 import {
   Button, DisclosureRow, DshDerivedRoot, IconChevronDown, IconChevronUp, IconDelete,
-  IconEdit, IconQueue, IconSend, IconStop, Input,
+  IconEdit, IconQueue, IconSend, IconStop, Input, StateDot,
 } from "../../ui/dsh-derived";
 import { TutorActivityPanel } from "./TutorActivityPanel";
 import { TutorMemoryPanel } from "./TutorMemoryPanel";
@@ -30,6 +31,7 @@ export type TutorConversationSurfaceProps = {
   user: UserProfile | null; enabled?: boolean; isActive?: boolean;
   selectedConversationId: string | null; onSelectConversation: (conversationId: string | null) => void;
   onConversationsChanged?: () => void; mode?: "general" | "plan_drafting"; showControls?: boolean;
+  planningComposerPlaceholder?: string;
   learningScope?: LearningScopeInput; scopeLabel?: string; contextReferences?: TutorComposerReference[];
   onRemoveContextReference?: (referenceId: string) => void;
   onReferencesAccepted?: (references: TutorContextReference[]) => void;
@@ -38,12 +40,30 @@ type LoadStatus = "idle" | "loading" | "ready" | "error";
 type PreferenceUpdate = { inferredMemoryEnabled?: boolean; expectedMemorySettingVersion?: string; proactivePaused?: boolean };
 type RequestDraft = string | string[];
 type ScrollAnchor = { top: number; height: number };
+type TutorLiveThinkingState = {
+  turnId: string;
+  inputRevision: number;
+  generation: number;
+  receivedText: string;
+  complete: boolean;
+  lastChunkSequence: number | null;
+  initialText: string;
+};
+type TutorRecentCompletion = {
+  itemId: string;
+  turnId: string;
+  initialThinkingText: string;
+  streamedThinking: boolean;
+};
 const PAGE_SIZE = 40;
+const TUTOR_TEXT_REVEAL_INTERVAL_MS = 18;
+const TUTOR_THINKING_STABILITY_DELAY_MS = 350;
+const TUTOR_THINKING_AUTO_COLLAPSE_DELAY_MS = 240;
 const GENERAL_EXAMPLES = ["帮我理清闭包和作用域", "我想系统复习 DOM 事件", "这个报错我不知道从哪里开始看"] as const;
 
 export function TutorConversationSurface({
   user, enabled = false, isActive = true, selectedConversationId, onSelectConversation,
-  onConversationsChanged, mode = "general", showControls = true, learningScope, scopeLabel,
+  onConversationsChanged, mode = "general", showControls = true, planningComposerPlaceholder, learningScope, scopeLabel,
   contextReferences = [], onRemoveContextReference, onReferencesAccepted,
 }: TutorConversationSurfaceProps) {
   const [timeline, setTimeline] = useState<TutorHistoryItem[]>([]);
@@ -56,6 +76,10 @@ export function TutorConversationSurface({
   const [capability, setCapability] = useState<TutorThreadTurnV2Capability | null>(null);
   const [capabilityStatus, setCapabilityStatus] = useState<LoadStatus>("idle");
   const [activeTurn, setActiveTurn] = useState<TutorPublicTurn | null>(null);
+  const [thinkingTurn, setThinkingTurn] = useState<TutorPublicTurn | null>(null);
+  const [liveThinking, setLiveThinking] = useState<TutorLiveThinkingState | null>(null);
+  const [stableThinkingKey, setStableThinkingKey] = useState<string | null>(null);
+  const [recentCompletion, setRecentCompletion] = useState<TutorRecentCompletion | null>(null);
   const [controlVersion, setControlVersion] = useState(0);
   const [controlState, setControlState] = useState<"idle" | "running" | "waiting" | "queue_paused">("idle");
   const [queuePaused, setQueuePaused] = useState(false);
@@ -92,12 +116,132 @@ export function TutorConversationSurface({
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const prependAnchorRef = useRef<ScrollAnchor | null>(null);
   const scrollToLatestRef = useRef(false);
+  const activeTurnRef = useRef<TutorPublicTurn | null>(null);
+  const liveThinkingRef = useRef<TutorLiveThinkingState | null>(null);
+  const displayedThinkingRef = useRef("");
+  const thinkingRecoveryPendingRef = useRef(false);
   selectedRef.current = selectedConversationId;
 
+  const replaceLiveThinking = useCallback((next: TutorLiveThinkingState | null) => {
+    liveThinkingRef.current = next;
+    setLiveThinking(next);
+  }, []);
+  const adoptAcceptedTurn = useCallback((accepted: TutorInputAcceptedResponse) => {
+    if (accepted.run.terminal_outcome !== null || accepted.run.cancelled) return;
+    const turn: TutorPublicTurn = {
+      turn_id: accepted.run_id,
+      conversation_id: accepted.conversation_id,
+      interaction_protocol_version: accepted.run.interaction_protocol_version,
+      status: "in_progress",
+      input_revision: accepted.input_revision,
+      retry_of_turn_id: accepted.run.retry_of_turn_id,
+      retry_root_turn_id: accepted.run.retry_root_turn_id,
+      completion_reason: accepted.run.completion_reason,
+      created_at: accepted.run.created_at,
+      updated_at: accepted.run.updated_at,
+    };
+    activeTurnRef.current = turn;
+    setActiveTurn(turn);
+    setThinkingTurn(turn);
+    replaceLiveThinking(null);
+    setControlState("running");
+    setPendingRequest(null);
+    scrollToLatestRef.current = true;
+  }, [replaceLiveThinking]);
+  const liveThinkingKey = liveThinking ? `${liveThinking.turnId}:${liveThinking.inputRevision}:${liveThinking.generation}` : null;
+  const hasBufferedThinkingText = Boolean(liveThinking?.receivedText);
+  const restoredThinkingText = Boolean(liveThinking?.initialText && liveThinking.complete);
+  useEffect(() => {
+    if (!liveThinkingKey || !hasBufferedThinkingText || restoredThinkingText) {
+      setStableThinkingKey(null);
+      return;
+    }
+    const timer = window.setTimeout(() => setStableThinkingKey(liveThinkingKey), TUTOR_THINKING_STABILITY_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [hasBufferedThinkingText, liveThinkingKey, restoredThinkingText]);
+  const revealLiveThinking = restoredThinkingText || Boolean(liveThinking?.complete && stableThinkingKey === liveThinkingKey);
+  const liveThinkingTargetText = revealLiveThinking ? liveThinking?.receivedText ?? "" : "";
+  const liveThinkingTypewriter = useGraphemeTypewriter(liveThinkingTargetText, {
+    animate: revealLiveThinking,
+    initialText: revealLiveThinking ? liveThinking?.initialText ?? "" : "",
+    resetKey: liveThinkingKey ?? "none",
+    intervalMs: TUTOR_TEXT_REVEAL_INTERVAL_MS,
+  });
+  displayedThinkingRef.current = liveThinkingTypewriter.text;
+
   const applySnapshot = useCallback((snapshot: Awaited<ReturnType<typeof fetchTutorConversationSnapshot>>, placement: "replace" | "prepend") => {
-    const visible = snapshot.timeline.filter((item) => item.kind !== "process").reverse();
-    setTimeline((current) => dedupeTimeline(placement === "prepend" ? [...visible, ...current] : visible));
+    const visible = reconcileVisibleTimeline(snapshot.timeline.filter((item) => item.kind !== "process").reverse());
+    let preserveThinkingHandoff = false;
+    if (placement === "replace") {
+      const previousTurn = activeTurnRef.current;
+      if (previousTurn && snapshot.active_turn?.turn_id !== previousTurn.turn_id) {
+        const completedItem = visible.find((item) =>
+          ((item.kind === "message" && item.role === "tutor") || item.kind === "elicitation" || item.kind === "approval") &&
+          item.turn_id === previousTurn.turn_id,
+        );
+        const terminalError = visible.find((item) => item.kind === "error" && item.turn_id === previousTurn.turn_id);
+        if (completedItem) {
+          const previousLive = liveThinkingRef.current;
+          setRecentCompletion({
+            itemId: completedItem.id,
+            turnId: previousTurn.turn_id,
+            initialThinkingText: displayedThinkingRef.current,
+            streamedThinking: Boolean(previousLive?.receivedText),
+          });
+        } else if (!terminalError && !snapshot.active_turn && liveThinkingRef.current?.turnId === previousTurn.turn_id && liveThinkingRef.current.receivedText) {
+          preserveThinkingHandoff = true;
+          setThinkingTurn(previousTurn);
+        } else {
+          setRecentCompletion(null);
+        }
+      }
+    }
+    setTimeline((current) => reconcileVisibleTimeline(placement === "prepend" ? [...visible, ...current] : visible));
+    if (!preserveThinkingHandoff) {
+      activeTurnRef.current = snapshot.active_turn;
+      setThinkingTurn(snapshot.active_turn);
+    }
     setActiveTurn(snapshot.active_turn);
+
+    if (placement === "replace") {
+      const incomingTurn = snapshot.active_turn;
+      const incomingThinking = snapshot.active_thinking;
+      const current = liveThinkingRef.current;
+      const recoveringThinking = thinkingRecoveryPendingRef.current;
+      if (!incomingTurn) {
+        if (!preserveThinkingHandoff) replaceLiveThinking(null);
+      } else if (incomingThinking && incomingThinking.turn_id === incomingTurn.turn_id && incomingThinking.input_revision === incomingTurn.input_revision) {
+        const sameTurnRevision = current && current.turnId === incomingThinking.turn_id &&
+          current.inputRevision === incomingThinking.input_revision;
+        if (!sameTurnRevision || incomingThinking.generation >= current.generation) {
+          const sameGeneration = sameTurnRevision && current.generation === incomingThinking.generation;
+          let receivedText = incomingThinking.text;
+          let initialText = incomingThinking.text;
+          let complete = incomingThinking.complete;
+          let lastChunkSequence: number | null = null;
+          if (sameGeneration) {
+            if (incomingThinking.text.startsWith(current.receivedText)) receivedText = incomingThinking.text;
+            else if (current.receivedText.startsWith(incomingThinking.text)) receivedText = current.receivedText;
+            initialText = current.initialText;
+            complete = current.complete || incomingThinking.complete;
+            lastChunkSequence = current.lastChunkSequence;
+          }
+          replaceLiveThinking({
+            turnId: incomingThinking.turn_id,
+            inputRevision: incomingThinking.input_revision,
+            generation: incomingThinking.generation,
+            receivedText,
+            complete,
+            lastChunkSequence,
+            initialText,
+          });
+        }
+      } else if (recoveringThinking || !current || current.turnId !== incomingTurn.turn_id || current.inputRevision !== incomingTurn.input_revision) {
+        replaceLiveThinking(null);
+      }
+      thinkingRecoveryPendingRef.current = false;
+    }
+
     setControlVersion(snapshot.conversation.control_version);
     setControlState(snapshot.conversation.control_state);
     setQueuePaused(snapshot.conversation.queue_paused);
@@ -110,7 +254,7 @@ export function TutorConversationSurface({
       setHistoryCursor(snapshot.next_cursor); setHistoryHasMore(snapshot.has_more);
       setLoadStatus("ready"); setLoadError(null); scrollToLatestRef.current = true;
     }
-  }, []);
+  }, [replaceLiveThinking]);
 
   const loadSnapshot = useCallback(async (conversationId: string, options: { cursor?: string | null; placement?: "replace" | "prepend"; showLoading?: boolean } = {}) => {
     if (!mayReadTutor || !userId || selectedRef.current !== conversationId) return null;
@@ -134,6 +278,87 @@ export function TutorConversationSurface({
     refreshTimerRef.current = window.setTimeout(() => { refreshTimerRef.current = null; refreshSnapshot(); }, 80);
   }, [refreshSnapshot]);
 
+  const requireThinkingSnapshot = useCallback(() => {
+    thinkingRecoveryPendingRef.current = true;
+    refreshSnapshot();
+  }, [refreshSnapshot]);
+
+  const consumeTurnOutput = useCallback((event: Extract<TutorConversationEvent, { kind: "turn_output" }>) => {
+    const turn = activeTurnRef.current;
+    const { payload } = event;
+    if (!turn || !event.turn_id || event.turn_id !== turn.turn_id || payload.input_revision !== turn.input_revision) {
+      requireThinkingSnapshot();
+      return;
+    }
+    const current = liveThinkingRef.current;
+    if (payload.operation === "reset") {
+      if (payload.chunk_sequence !== 0) {
+        requireThinkingSnapshot();
+        return;
+      }
+      thinkingRecoveryPendingRef.current = false;
+      replaceLiveThinking({
+        turnId: turn.turn_id,
+        inputRevision: payload.input_revision,
+        generation: payload.generation,
+        receivedText: "",
+        complete: false,
+        lastChunkSequence: 0,
+        initialText: "",
+      });
+      return;
+    }
+    if (!current) {
+      if (payload.operation !== "append" || payload.chunk_sequence !== 1) {
+        requireThinkingSnapshot();
+        return;
+      }
+      thinkingRecoveryPendingRef.current = false;
+      replaceLiveThinking({
+        turnId: turn.turn_id,
+        inputRevision: payload.input_revision,
+        generation: payload.generation,
+        receivedText: payload.text,
+        complete: false,
+        lastChunkSequence: payload.chunk_sequence,
+        initialText: "",
+      });
+      return;
+    }
+    if (current.turnId !== turn.turn_id || current.inputRevision !== payload.input_revision || current.generation !== payload.generation) {
+      requireThinkingSnapshot();
+      return;
+    }
+    if (current.lastChunkSequence !== null) {
+      if (payload.chunk_sequence <= current.lastChunkSequence) return;
+      if (payload.chunk_sequence !== current.lastChunkSequence + 1) {
+        requireThinkingSnapshot();
+        return;
+      }
+    }
+    if (payload.operation === "discard") {
+      thinkingRecoveryPendingRef.current = false;
+      replaceLiveThinking(null);
+      return;
+    }
+    if (payload.operation === "complete") {
+      thinkingRecoveryPendingRef.current = false;
+      replaceLiveThinking({ ...current, complete: true, lastChunkSequence: payload.chunk_sequence });
+      return;
+    }
+    if (payload.operation !== "append") {
+      requireThinkingSnapshot();
+      return;
+    }
+    const receivedText = current.receivedText + payload.text;
+    if (receivedText.length > 1280) {
+      requireThinkingSnapshot();
+      return;
+    }
+    thinkingRecoveryPendingRef.current = false;
+    replaceLiveThinking({ ...current, receivedText, lastChunkSequence: payload.chunk_sequence });
+  }, [replaceLiveThinking, requireThinkingSnapshot]);
+
   const loadCapability = useCallback(async (signal?: AbortSignal) => {
     if (!mayReadTutor || !userId) { setCapability(null); setCapabilityStatus("idle"); return; }
     setCapabilityStatus("loading");
@@ -155,8 +380,11 @@ export function TutorConversationSurface({
   const streamUrl = mayReadTutor && userId && selectedConversationId ? buildTutorConversationEventsUrl(selectedConversationId, userId) : null;
   const stream = useTutorConversationStream(streamUrl, {
     enabled: Boolean(streamUrl && streamCursor), initialCursor: streamCursor, maxReconnectAttempts: 3,
-    onEvent: () => { scheduleRefresh(); onConversationsChanged?.(); },
-    onResetRequired: refreshSnapshot,
+    onEvent: (event) => {
+      if (event.kind === "turn_output") consumeTurnOutput(event);
+      else { scheduleRefresh(); onConversationsChanged?.(); }
+    },
+    onResetRequired: requireThinkingSnapshot,
   });
 
   useEffect(() => { const controller = new AbortController(); void loadCapability(controller.signal); return () => controller.abort(); }, [loadCapability]);
@@ -164,12 +392,15 @@ export function TutorConversationSurface({
     requestRef.current?.abort();
     if (refreshTimerRef.current !== null) window.clearTimeout(refreshTimerRef.current);
     setComposerText(""); setActionError(null); setEditingQueueId(null); setRequestDraft("");
+    setRecentCompletion(null); setStableThinkingKey(null); replaceLiveThinking(null); displayedThinkingRef.current = "";
+    thinkingRecoveryPendingRef.current = false;
+    activeTurnRef.current = null; setActiveTurn(null); setThinkingTurn(null);
     if (!mayReadTutor || !selectedConversationId) {
-      setTimeline([]); setLoadStatus("idle"); setLoadError(null); setActiveTurn(null);
+      setTimeline([]); setLoadStatus("idle"); setLoadError(null);
       setQueue([]); setPendingRequest(null); setStreamCursor(null); return;
     }
     void loadSnapshot(selectedConversationId, { placement: "replace", showLoading: true });
-  }, [loadSnapshot, mayReadTutor, selectedConversationId]);
+  }, [loadSnapshot, mayReadTutor, replaceLiveThinking, selectedConversationId]);
   useEffect(() => { if (!mayReadTutor || !userId) return; const controller = new AbortController(); void loadControls(controller.signal); return () => controller.abort(); }, [loadControls, mayReadTutor, userId]);
   useEffect(() => { setRequestDraft(initialRequestDraft(pendingRequest)); }, [pendingRequest?.id, pendingRequest?.version]);
   useEffect(() => () => { requestRef.current?.abort(); if (refreshTimerRef.current !== null) window.clearTimeout(refreshTimerRef.current); }, []);
@@ -177,7 +408,7 @@ export function TutorConversationSurface({
     const element = timelineRef.current; if (!element) return;
     if (prependAnchorRef.current) { const anchor = prependAnchorRef.current; element.scrollTop = anchor.top + element.scrollHeight - anchor.height; prependAnchorRef.current = null; }
     else if (scrollToLatestRef.current) { element.scrollTop = element.scrollHeight; scrollToLatestRef.current = false; }
-  }, [timeline]);
+  }, [activeTurn?.turn_id, timeline]);
 
   async function loadOlder() {
     if (!selectedConversationId || !historyCursor || loadingOlder) return;
@@ -209,6 +440,7 @@ export function TutorConversationSurface({
           })
         : await acceptTutorFirstTurn({ userId, content, clientActionId: createTutorActionId("tutor-first-turn"), ...(learningScope ? { learningScope } : {}), ...(contextReferences.length ? { contextReferences: contextReferences.map((item) => item.draft) } : {}) });
       setComposerText("");
+      if (!("queued" in accepted)) adoptAcceptedTurn(accepted);
       if (!("queued" in accepted) && contextReferences.length === accepted.context_references.length) onReferencesAccepted?.(accepted.context_references);
       onConversationsChanged?.();
       if (selectedConversationId !== accepted.conversation_id) onSelectConversation(accepted.conversation_id); else refreshSnapshot();
@@ -219,7 +451,11 @@ export function TutorConversationSurface({
   function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) { if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) { event.preventDefault(); void submitComposer(); } }
   function respondToPendingRequest(response: TutorInteractionResponseDraft) {
     if (!userId || !selectedConversationId || !pendingRequest) return;
-    void runMutation(`request:${pendingRequest.id}`, () => respondToTutorInteractionRequest({ userId, conversationId: selectedConversationId, itemId: pendingRequest.id, expectedRequestVersion: pendingRequest.version, response, clientActionId: createTutorActionId("tutor-request-response") }));
+    void runMutation(`request:${pendingRequest.id}`, async () => {
+      const accepted = await respondToTutorInteractionRequest({ userId, conversationId: selectedConversationId, itemId: pendingRequest.id, expectedRequestVersion: pendingRequest.version, response, clientActionId: createTutorActionId("tutor-request-response") });
+      adoptAcceptedTurn(accepted);
+      return accepted;
+    });
   }
   function submitRequestDraft() {
     if (!pendingRequest || pendingRequest.kind === "approval" || pendingRequest.actor !== "learner") return;
@@ -258,7 +494,7 @@ export function TutorConversationSurface({
   const sendLabel = composerStatus === "submitting" ? "正在确认……" : running ? "加入 Queue" : selectedConversationId ? "发送消息" : "开始对话";
 
 
-  return <DshDerivedRoot><main className={workspaceClassName} aria-label={planning ? "学习计划对话" : undefined} aria-labelledby={planning ? undefined : "tutor-workspace-title"}>
+  return <DshDerivedRoot className="tutor-surface-root"><main className={workspaceClassName} aria-label={planning ? "学习计划对话" : undefined} aria-labelledby={planning ? undefined : "tutor-workspace-title"}>
     <section className="tutor-main-column">
       {!planning && <header className="tutor-hero"><div><p className="tutor-panel-eyebrow">Tutor 学习对话</p><h1 id="tutor-workspace-title">{selectedConversationId ? "当前学习对话" : "新对话"}</h1><p>快照是可见状态权威来源；对话事件流只负责触发增量恢复。</p></div><div className="tutor-run-summary" aria-live="polite"><span>当前状态</span><strong>{displayControlState(controlState, activeTurn)}</strong>{streamUrl && <small>对话流：{displayStreamStatus(stream.status)}</small>}</div></header>}
       {scopeLabel ? <div className="tutor-learning-scope" role="status"><span>当前学习范围</span><strong>{scopeLabel}</strong></div> : null}
@@ -271,8 +507,15 @@ export function TutorConversationSurface({
         {historyHasMore && <button className="tutor-load-earlier" type="button" onClick={() => void loadOlder()} disabled={loadingOlder}>{loadingOlder ? "正在加载更早记录……" : "加载更早记录"}</button>}
         {loadStatus === "loading" && timeline.length === 0 && <div className="tutor-empty-timeline"><strong>正在恢复权威对话快照……</strong></div>}
         {loadStatus === "error" && loadError && <div className="tutor-inline-error" role="alert"><div><strong>{loadError.code}</strong><span>{loadError.message}</span></div><Button size="sm" variant="outline" onClick={refreshSnapshot}>重试</Button></div>}
-        {loadStatus !== "loading" && timeline.length === 0 && !loadError && !planning && <div className="tutor-empty-timeline"><strong>{selectedConversationId ? "这里还没有可见记录" : "可以从一个模糊目标开始"}</strong><p>运行过程行不会进入主对话；Tutor 的公开思路只来自消息的 `public_thinking_steps[]`。</p></div>}
-        {timeline.map((item) => <TimelineItem key={`${item.kind}:${item.id}`} item={item} writeEnabled={writeEnabled} mutationBusy={mutationBusy} onRetry={(turnId) => { if (!userId || !selectedConversationId) return; void runMutation(`retry:${turnId}`, () => retryTutorTurn({ userId, conversationId: selectedConversationId, turnId, expectedControlVersion: controlVersion, clientActionId: createTutorActionId("tutor-turn-retry") })); }} />)}
+        {loadStatus !== "loading" && timeline.length === 0 && !loadError && !planning && !thinkingTurn && <div className="tutor-empty-timeline"><strong>{selectedConversationId ? "这里还没有可见记录" : "可以从一个模糊目标开始"}</strong></div>}
+        {timeline.map((item) => <TimelineItem key={`${item.kind}:${item.id}`} item={item} recentCompletion={recentCompletion} writeEnabled={writeEnabled} mutationBusy={mutationBusy} onRetry={(turnId) => { if (!userId || !selectedConversationId) return; void runMutation(`retry:${turnId}`, () => retryTutorTurn({ userId, conversationId: selectedConversationId, turnId, expectedControlVersion: controlVersion, clientActionId: createTutorActionId("tutor-turn-retry") })); }} />)}
+        {thinkingTurn && (running || Boolean(liveThinking?.receivedText)) ? <TutorRunningPlaceholder
+          key={`${thinkingTurn.turn_id}:${liveThinking?.generation ?? "pending"}`}
+          turn={thinkingTurn}
+          hasText={Boolean(liveThinkingTargetText)}
+          text={liveThinkingTypewriter.text}
+          complete={Boolean(liveThinking?.complete && liveThinkingTypewriter.complete)}
+        /> : null}
       </section>
 
       {pendingRequest ? <TypedRequestSeat request={pendingRequest} draft={requestDraft} busy={mutationBusy === `request:${pendingRequest.id}`} disabled={!writeEnabled} onDraftChange={setRequestDraft} onSubmit={submitRequestDraft} onApprove={(decision) => respondToPendingRequest({ kind: "approval", proposal_identity: pendingRequest.kind === "approval" ? pendingRequest.presentation.proposal_id : "", decision })} /> : <>
@@ -286,7 +529,7 @@ export function TutorConversationSurface({
           onResume={() => { if (!userId || !selectedConversationId) return; void runMutation("resume", () => resumeTutorQueue({ userId, conversationId: selectedConversationId, expectedControlVersion: controlVersion, clientActionId: createTutorActionId("tutor-queue-resume") })); }}
         />}
         {running && selectedConversationId && activeTurn && <div className="tutor-running-controls" role="status"><span>当前 Turn 正在运行；发送新消息会进入 Queue。</span><Button variant="outline" size="sm" icon={<IconStop />} busy={mutationBusy === "interrupt"} disabled={!writeEnabled || Boolean(mutationBusy)} onClick={() => { if (!userId) return; void runMutation("interrupt", () => interruptTutorTurn({ userId, conversationId: selectedConversationId, expectedTurnId: activeTurn.turn_id, expectedInputRevision: activeTurn.input_revision, expectedControlVersion: controlVersion, clientActionId: createTutorActionId("tutor-turn-interrupt") })); }}>停止</Button></div>}
-        <Composer planning={planning} planningIdle={planningIdle} selectedConversationId={selectedConversationId} text={composerText} status={composerStatus} disabled={!writeEnabled} sendLabel={sendLabel} contextReferences={contextReferences} composerRef={composerRef} onTextChange={setComposerText} onKeyDown={handleComposerKeyDown} onSubmit={() => void submitComposer()} onRemoveReference={onRemoveContextReference} />
+        <Composer planning={planning} planningIdle={planningIdle} planningPlaceholder={planningComposerPlaceholder} selectedConversationId={selectedConversationId} text={composerText} status={composerStatus} disabled={!writeEnabled} sendLabel={sendLabel} contextReferences={contextReferences} composerRef={composerRef} onTextChange={setComposerText} onKeyDown={handleComposerKeyDown} onSubmit={() => void submitComposer()} onRemoveReference={onRemoveContextReference} />
       </>}
     </section>
 
@@ -300,15 +543,15 @@ export function TutorConversationSurface({
 
 function Boundary({ eyebrow, title, children }: { eyebrow: string; title: string; children: string }) { return <section className="tutor-workspace tutor-workspace-boundary" aria-labelledby="tutor-workspace-title"><p className="tutor-panel-eyebrow">{eyebrow}</p><h1 id="tutor-workspace-title">{title}</h1><p>{children}</p></section>; }
 
-function Composer({ planning, planningIdle, selectedConversationId, text, status, disabled, sendLabel, contextReferences, composerRef, onTextChange, onKeyDown, onSubmit, onRemoveReference }: {
-  planning: boolean; planningIdle: boolean; selectedConversationId: string | null; text: string; status: "idle" | "submitting"; disabled: boolean; sendLabel: string;
+function Composer({ planning, planningIdle, planningPlaceholder, selectedConversationId, text, status, disabled, sendLabel, contextReferences, composerRef, onTextChange, onKeyDown, onSubmit, onRemoveReference }: {
+  planning: boolean; planningIdle: boolean; planningPlaceholder?: string; selectedConversationId: string | null; text: string; status: "idle" | "submitting"; disabled: boolean; sendLabel: string;
   contextReferences: TutorComposerReference[]; composerRef: RefObject<HTMLTextAreaElement | null>;
   onTextChange: (value: string) => void; onKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => void; onSubmit: () => void; onRemoveReference?: (id: string) => void;
 }) {
   const form = <form className={`tutor-composer${planning ? " tutor-composer-chatgpt" : ""}`} onSubmit={(event) => { event.preventDefault(); onSubmit(); }}>
     <label className={planning ? "visually-hidden" : undefined} htmlFor="tutor-composer-input">{planning ? "告诉 Tutor 你的目标或调整意见" : selectedConversationId ? "继续当前对话" : "从你的学习目标开始"}</label>
     {contextReferences.length > 0 ? <TutorReferenceDraftChips references={contextReferences} disabled={status === "submitting" || disabled} onRemove={onRemoveReference} /> : null}
-    {planning ? <div className="tutor-composer-chatgpt-shell"><textarea ref={composerRef} id="tutor-composer-input" value={text} rows={2} maxLength={16_000} placeholder="描述你想学习什么" disabled={disabled || status === "submitting"} onChange={(event) => onTextChange(event.target.value)} onKeyDown={onKeyDown} /><button className="tutor-composer-send" type="submit" aria-label={sendLabel} title={sendLabel} disabled={disabled || status === "submitting" || !text.trim()}><IconSend /></button></div> : <><textarea ref={composerRef} id="tutor-composer-input" value={text} rows={4} maxLength={16_000} placeholder="例如：我会写基础 JavaScript，但总弄不清闭包里的变量什么时候会保留。" disabled={disabled || status === "submitting"} onChange={(event) => onTextChange(event.target.value)} onKeyDown={onKeyDown} /><div className="tutor-composer-footer"><div className="tutor-goal-examples" aria-label="目标示例">{GENERAL_EXAMPLES.map((example) => <button key={example} type="button" onClick={() => onTextChange(example)} disabled={disabled || status === "submitting"}>{example}</button>)}</div><Button variant="primary" type="submit" busy={status === "submitting"} disabled={disabled || !text.trim()} icon={<IconSend />}>{sendLabel}</Button></div></>}
+    {planning ? <div className="tutor-composer-chatgpt-shell"><textarea ref={composerRef} id="tutor-composer-input" value={text} rows={2} maxLength={16_000} placeholder={planningPlaceholder ?? "描述你想学习什么"} disabled={disabled || status === "submitting"} onChange={(event) => onTextChange(event.target.value)} onKeyDown={onKeyDown} /><button className="tutor-composer-send" type="submit" aria-label={sendLabel} title={sendLabel} disabled={disabled || status === "submitting" || !text.trim()}><IconSend /></button></div> : <><textarea ref={composerRef} id="tutor-composer-input" value={text} rows={4} maxLength={16_000} placeholder="例如：我会写基础 JavaScript，但总弄不清闭包里的变量什么时候会保留。" disabled={disabled || status === "submitting"} onChange={(event) => onTextChange(event.target.value)} onKeyDown={onKeyDown} /><div className="tutor-composer-footer"><div className="tutor-goal-examples" aria-label="目标示例">{GENERAL_EXAMPLES.map((example) => <button key={example} type="button" onClick={() => onTextChange(example)} disabled={disabled || status === "submitting"}>{example}</button>)}</div><Button variant="primary" type="submit" busy={status === "submitting"} disabled={disabled || !text.trim()} icon={<IconSend />}>{sendLabel}</Button></div></>}
     {!planningIdle && <p className="tutor-composer-hint">按 Ctrl / ⌘ + Enter 发送。运行中发送会排入 Queue，不会隐式打断当前 Turn。</p>}
   </form>;
   return planning ? <div className={`tutor-chatgpt-composer-area${planningIdle ? " idle" : ""}`}>{form}</div> : form;
@@ -320,19 +563,21 @@ function TypedRequestSeat({ request, draft, busy, disabled, onDraftChange, onSub
   onDraftChange: (draft: RequestDraft) => void; onSubmit: () => void; onApprove: (decision: "approve" | "deny") => void;
 }) {
   return <section className="tutor-request-seat" aria-labelledby={`request-${request.id}`}>
-    <div className="tutor-request-seat-heading"><span>需要你的输入</span><strong id={`request-${request.id}`}>{request.prompt}</strong></div>
+    <strong className="tutor-request-seat-heading" id={`request-${request.id}`}>{request.prompt}</strong>
     {request.actor === "authority" ? <p className="tutor-muted-copy">此请求等待受信 authority 结果，普通 composer 与 Queue 控制保持锁定。</p> : request.kind === "approval" ? <div className="tutor-approval-card"><p>{request.presentation.summary}</p><span>风险级别：{request.presentation.risk_level}</span><div className="tutor-inline-actions"><Button variant="primary" busy={busy} disabled={disabled || busy} onClick={() => onApprove("approve")}>批准</Button><Button variant="outline" disabled={disabled || busy} onClick={() => onApprove("deny")}>拒绝</Button></div></div> : <form onSubmit={(event) => { event.preventDefault(); onSubmit(); }} className="tutor-request-form">
       <RequestControl request={request} draft={draft} disabled={disabled || busy} onDraftChange={onDraftChange} />
       <Button variant="primary" type="submit" busy={busy} disabled={disabled || busy || !requestDraftValid(request, draft)}>提交响应</Button>
     </form>}
-    <small>类型化请求完全占用 composer 席位；响应使用 `request.version` 乐观并发控制。</small>
   </section>;
 }
 
 function RequestControl({ request, draft, disabled, onDraftChange }: { request: Extract<TutorInteractionRequestItem, { kind: "elicitation" }>; draft: RequestDraft; disabled: boolean; onDraftChange: (draft: RequestDraft) => void }) {
   const presentation = request.presentation;
-  if (presentation.type === "integer") return <Input type="number" min={presentation.minimum} max={presentation.maximum} step={presentation.step} value={typeof draft === "string" ? draft : ""} disabled={disabled} onChange={(event) => onDraftChange(event.target.value)} aria-label={request.prompt} />;
-  if (presentation.type === "single_select") return <select className="tutor-request-select" value={typeof draft === "string" ? draft : ""} disabled={disabled} onChange={(event) => onDraftChange(event.target.value)} aria-label={request.prompt}><option value="">请选择</option>{presentation.options.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}</select>;
+  if (presentation.type === "integer") return <Input className="tutor-request-input" type="number" min={presentation.minimum} max={presentation.maximum} step={presentation.step} value={typeof draft === "string" ? draft : ""} disabled={disabled} onChange={(event) => onDraftChange(event.target.value)} aria-label={request.prompt} />;
+  if (presentation.type === "single_select") {
+    const selected = typeof draft === "string" ? draft : "";
+    return <fieldset className="tutor-request-options tutor-request-options-grid"><legend className="visually-hidden">{request.prompt}</legend>{presentation.options.map((option) => <label key={option.value}><input type="radio" name={`request-${request.id}`} value={option.value} checked={selected === option.value} disabled={disabled} onChange={() => onDraftChange(option.value)} /><span>{option.label}</span></label>)}</fieldset>;
+  }
   if (presentation.type === "multi_select") {
     const selected = Array.isArray(draft) ? draft : [];
     return <fieldset className="tutor-request-options"><legend className="visually-hidden">{request.prompt}</legend>{presentation.options.map((option) => <label key={option.value}><input type="checkbox" checked={selected.includes(option.value)} disabled={disabled || (!selected.includes(option.value) && selected.length >= presentation.maximum_selections)} onChange={(event) => onDraftChange(event.target.checked ? [...selected, option.value] : selected.filter((value) => value !== option.value))} /><span>{option.label}</span></label>)}</fieldset>;
@@ -349,19 +594,146 @@ function QueueTray({ items, maxPending, activeTurn, paused, pauseReason, disable
   </li>)}</ol></section>;
 }
 
-function TimelineItem({ item, writeEnabled, mutationBusy, onRetry }: { item: TutorHistoryItem; writeEnabled: boolean; mutationBusy: string | null; onRetry: (turnId: string) => void }) {
+function TimelineItem({ item, recentCompletion, writeEnabled, mutationBusy, onRetry }: {
+  item: TutorHistoryItem;
+  recentCompletion: TutorRecentCompletion | null;
+  writeEnabled: boolean;
+  mutationBusy: string | null;
+  onRetry: (turnId: string) => void;
+}) {
   if (item.kind === "process") return null;
-  if (item.kind === "message") return <article className={`tutor-timeline-entry ${item.role === "learner" ? "learner" : "tutor"}`}><span className="tutor-timeline-label">{item.role === "learner" ? "你" : "Tutor"}</span><div className="tutor-message-content">{item.role === "tutor" && item.public_thinking_steps.length > 0 && <TutorThinking messageId={item.id} steps={item.public_thinking_steps} />}<p>{item.content}</p>{item.context_references.length > 0 && <TutorReferenceCards references={item.context_references} />}</div></article>;
+  if (item.kind === "message") {
+    if (item.role === "tutor") {
+      return <TutorMessage item={item} recentCompletion={recentCompletion?.itemId === item.id ? recentCompletion : null} />;
+    }
+    return <article className="tutor-timeline-entry learner"><span className="tutor-timeline-label">你</span><div className="tutor-message-content"><p>{item.content}</p>{item.context_references.length > 0 && <TutorReferenceCards references={item.context_references} />}</div></article>;
+  }
   if (item.kind === "error") {
     const migration = item.code === "TUTOR_LEGACY_CONTINUATION_REQUIRES_NEW_TURN";
     return <article className="tutor-timeline-entry error"><span className="tutor-timeline-label">{migration ? "迁移提示" : "处理失败"}</span><div className="tutor-message-content"><strong>{migration ? "旧等待步骤已安全终止" : item.code}</strong><p>{migration ? "请在普通 composer 中发送一条新消息继续；Desktop 不会回退到旧 continuation 写入路径。" : item.message}</p>{item.recoverable && item.turn_id && <Button size="sm" variant="outline" disabled={!writeEnabled} busy={mutationBusy === `retry:${item.turn_id}`} onClick={() => onRetry(item.turn_id!)}>重试本轮</Button>}</div></article>;
   }
-  return <article className="tutor-timeline-entry tutor tutor-request-history" data-request-state={item.state}><span className="tutor-timeline-label">Tutor 请求</span><div className="tutor-message-content"><p>{item.prompt}</p><small>{item.state === "pending" ? "请在下方类型化请求席位中响应" : `请求状态：${item.state}`}</small></div></article>;
+  return <TutorRequestHistory item={item} recentCompletion={recentCompletion?.itemId === item.id ? recentCompletion : null} />;
 }
 
-function TutorThinking({ messageId, steps }: { messageId: string; steps: string[] }) {
+function TutorRequestHistory({ item, recentCompletion }: { item: TutorInteractionRequestItem; recentCompletion: TutorRecentCompletion | null }) {
+  const animateThinking = Boolean(recentCompletion?.streamedThinking);
+  const thinking = useGraphemeTypewriter(item.public_thinking_text, {
+    animate: animateThinking,
+    initialText: recentCompletion ? (animateThinking ? recentCompletion.initialThinkingText : item.public_thinking_text) : item.public_thinking_text,
+    resetKey: `request-thinking:${item.id}`,
+    intervalMs: TUTOR_TEXT_REVEAL_INTERVAL_MS,
+  });
+  const promptTarget = recentCompletion && !thinking.complete ? "" : item.prompt;
+  const promptReveal = useGraphemeTypewriter(promptTarget, {
+    animate: recentCompletion !== null,
+    initialText: recentCompletion ? "" : item.prompt,
+    resetKey: `request-prompt:${item.id}`,
+    intervalMs: TUTOR_TEXT_REVEAL_INTERVAL_MS,
+  });
+  const [expanded, setExpanded] = useState(recentCompletion !== null);
+  const autoCollapsedRef = useRef(false);
+
+  useEffect(() => {
+    autoCollapsedRef.current = false;
+    if (recentCompletion) setExpanded(true);
+  }, [recentCompletion?.itemId]);
+  useEffect(() => {
+    if (!recentCompletion || autoCollapsedRef.current || !thinking.complete || promptTarget !== item.prompt || !promptReveal.complete) return;
+    const timer = window.setTimeout(() => {
+      autoCollapsedRef.current = true;
+      setExpanded(false);
+    }, TUTOR_THINKING_AUTO_COLLAPSE_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [item.prompt, promptReveal.complete, promptTarget, recentCompletion, thinking.complete]);
+
+  return <article className="tutor-timeline-entry tutor tutor-request-history" data-request-state={item.state} data-turn-id={item.turn_id}>
+    <span className="tutor-timeline-label">Tutor 请求</span>
+    <div className="tutor-message-content">
+      {item.public_thinking_text ? <TutorThinking messageId={item.id} text={thinking.text} expanded={expanded} complete={thinking.complete} onExpandedChange={setExpanded} /> : null}
+      <p className={`tutor-answer-text${recentCompletion && !promptReveal.complete ? " is-streaming" : ""}`}>{promptReveal.text}</p>
+    </div>
+  </article>;
+}
+
+function TutorMessage({ item, recentCompletion }: { item: TutorHistoryMessage; recentCompletion: TutorRecentCompletion | null }) {
+  const animateThinking = Boolean(recentCompletion?.streamedThinking);
+  const thinking = useGraphemeTypewriter(item.public_thinking_text, {
+    animate: animateThinking,
+    initialText: recentCompletion ? (animateThinking ? recentCompletion.initialThinkingText : item.public_thinking_text) : item.public_thinking_text,
+    resetKey: `message-thinking:${item.id}`,
+    intervalMs: TUTOR_TEXT_REVEAL_INTERVAL_MS,
+  });
+  const answerTarget = recentCompletion && !thinking.complete ? "" : item.content;
+  const answer = useGraphemeTypewriter(answerTarget, {
+    animate: recentCompletion !== null,
+    initialText: recentCompletion ? "" : item.content,
+    resetKey: `message-answer:${item.id}`,
+    intervalMs: TUTOR_TEXT_REVEAL_INTERVAL_MS,
+  });
+  const [expanded, setExpanded] = useState(recentCompletion !== null);
+  const autoCollapsedRef = useRef(false);
+
+  useEffect(() => {
+    autoCollapsedRef.current = false;
+    if (recentCompletion) setExpanded(true);
+  }, [recentCompletion?.itemId]);
+  useEffect(() => {
+    if (!recentCompletion || autoCollapsedRef.current || !thinking.complete || answerTarget !== item.content || !answer.complete) return;
+    const timer = window.setTimeout(() => {
+      autoCollapsedRef.current = true;
+      setExpanded(false);
+    }, TUTOR_THINKING_AUTO_COLLAPSE_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [answer.complete, answerTarget, item.content, recentCompletion, thinking.complete]);
+
+  return <article className="tutor-timeline-entry tutor" data-turn-id={item.turn_id ?? undefined}>
+    <span className="tutor-timeline-label">Tutor</span>
+    <div className="tutor-message-content">
+      {item.public_thinking_text ? <TutorThinking
+        messageId={item.id}
+        text={thinking.text}
+        expanded={expanded}
+        complete={thinking.complete}
+        onExpandedChange={setExpanded}
+      /> : null}
+      <p className={`tutor-answer-text${recentCompletion && !answer.complete ? " is-streaming" : ""}`}>{answer.text}</p>
+    </div>
+  </article>;
+}
+
+function TutorRunningPlaceholder({ turn, hasText, text, complete }: { turn: TutorPublicTurn; hasText: boolean; text: string; complete: boolean }) {
   const [expanded, setExpanded] = useState(true);
-  return <DisclosureRow className="tutor-thinking-disclosure" title="Think" summary={`${steps.length} 个公开步骤`} expanded={expanded} onExpandedChange={setExpanded} contentId={`tutor-thinking-${messageId}`}><ol>{steps.map((step, index) => <li key={`${messageId}:${index}`}><span>{index + 1}</span><p>{step}</p></li>)}</ol><small>这是面向学习者的公开说明，不包含模型内部隐藏推理。</small></DisclosureRow>;
+  return <article className="tutor-timeline-entry tutor tutor-running-placeholder" data-turn-id={turn.turn_id}>
+    <span className="tutor-timeline-label">Tutor</span>
+    <div className="tutor-message-content">
+      {hasText ? <TutorThinking
+        messageId={`active-${turn.turn_id}`}
+        text={text}
+        expanded={expanded}
+        complete={complete}
+        running
+        onExpandedChange={setExpanded}
+      /> : <div className="tutor-thinking-static" role="status" aria-label="Think"><StateDot state="running" size={14} /><strong>Think</strong></div>}
+    </div>
+  </article>;
+}
+
+function TutorThinking({ messageId, text, expanded, complete, running = false, onExpandedChange }: {
+  messageId: string;
+  text: string;
+  expanded: boolean;
+  complete: boolean;
+  running?: boolean;
+  onExpandedChange: (expanded: boolean) => void;
+}) {
+  return <DisclosureRow
+    className="tutor-thinking-disclosure"
+    title="Think"
+    icon={<StateDot state={running && !complete ? "running" : "positive"} size={14} />}
+    expanded={expanded}
+    onExpandedChange={onExpandedChange}
+    contentId={`tutor-thinking-${messageId}`}
+  ><p className={`tutor-thinking-text${complete ? "" : " is-streaming"}`} aria-live="off">{text}</p></DisclosureRow>;
 }
 
 function TutorReferenceDraftChips({ references, disabled, onRemove }: { references: TutorComposerReference[]; disabled: boolean; onRemove?: (referenceId: string) => void }) { return <div className="tutor-reference-drafts" aria-label="待发送结构化引用">{references.map((reference) => <span key={reference.id} data-kind={reference.draft.kind}><span aria-hidden="true">{referenceIcon(reference.draft.kind)}</span><strong>{reference.label}</strong>{onRemove ? <button type="button" disabled={disabled} aria-label={`移除引用：${reference.label}`} onClick={() => onRemove(reference.id)}>×</button> : null}</span>)}</div>; }
@@ -372,6 +744,15 @@ function referenceSummary(reference: TutorContextReference): string { if (refere
 function outcomeReferenceLabel(outcome: ExerciseAttemptOutcome): string { return { passed: "通过", failed: "未通过", timed_out: "超时", cancelled: "已取消", unavailable: "不可用", invalid: "无效" }[outcome]; }
 
 function dedupeTimeline(items: TutorHistoryItem[]): TutorHistoryItem[] { const seen = new Set<string>(); return items.filter((item) => { const key = `${item.kind}:${item.id}`; if (seen.has(key)) return false; seen.add(key); return true; }); }
+function reconcileVisibleTimeline(items: TutorHistoryItem[]): TutorHistoryItem[] {
+  const deduped = dedupeTimeline(items);
+  const formalTutorTurnIds = new Set(deduped.flatMap((item) =>
+    item.kind === "message" && item.role === "tutor" && item.turn_id ? [item.turn_id] : [],
+  ));
+  return deduped.filter((item) =>
+    (item.kind !== "elicitation" && item.kind !== "approval") || !formalTutorTurnIds.has(item.turn_id),
+  );
+}
 function initialRequestDraft(request: TutorInteractionRequestItem | null): RequestDraft { if (!request || request.kind === "approval") return ""; const p = request.presentation; if (p.type === "integer") return p.recommended === null ? "" : String(p.recommended); if (p.type === "single_select") return p.recommended ?? ""; if (p.type === "multi_select") return p.recommended; return ""; }
 function requestDraftValid(request: TutorInteractionRequestItem, draft: RequestDraft): boolean { if (request.kind === "approval") return true; if (request.presentation.type === "multi_select") return Array.isArray(draft) && draft.length > 0; if (typeof draft !== "string" || !draft.trim()) return false; if (request.presentation.type === "integer") { const value = Number(draft); return Number.isFinite(value) && value >= request.presentation.minimum && value <= request.presentation.maximum; } if (request.presentation.type === "text") return draft.trim().length >= request.presentation.minimum_length && draft.trim().length <= request.presentation.maximum_length; return true; }
 function presentationFieldKey(presentation: Extract<TutorInteractionRequestItem, { kind: "elicitation" }>["presentation"]): string | null { return presentation.type === "approval" ? null : presentation.field_key; }

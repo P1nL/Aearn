@@ -269,6 +269,64 @@ def test_retry_creates_fresh_lineage_for_recoverable_turn(
 
 
 
+@pytest.mark.parametrize(
+    ("terminal_outcome", "diagnostic_code"),
+    [
+        ("blocked_policy", "capability_denied"),
+        ("budget_exhausted", "deadline_exhausted"),
+    ],
+)
+def test_retry_allows_exact_recoverable_terminal_turn(
+    terminal_outcome: str,
+    diagnostic_code: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tutor_client: TestClient,
+    tutor_api_settings: Settings,
+) -> None:
+    dispatcher = RecordingTutorDispatcher()
+    monkeypatch.setattr(tutor_route, "build_tutor_run_dispatcher", lambda _settings: dispatcher)
+    user_id = str(create_tutor_user(tutor_client)["id"])
+    conversation_id = _conversation(tutor_client, user_id, "queue-capability-retry-conversation")
+    failed = _send(
+        tutor_client,
+        user_id=user_id,
+        conversation_id=conversation_id,
+        key="queue-capability-retry-first",
+        content="请生成计划。",
+    )
+    assert failed.status_code == 202
+    failed_turn_id = str(failed.json()["run_id"])
+    with connect() as conn:
+        conn.execute(
+            """
+            UPDATE tutor_runs
+            SET status = %s, terminal_outcome = %s,
+                terminal_diagnostic_code = %s, terminal_at = %s,
+                active_lease_owner_id = NULL, active_lease_expires_at = NULL
+            WHERE id = %s AND user_id = %s
+            """,
+            (terminal_outcome, terminal_outcome, diagnostic_code, datetime.now(UTC), failed_turn_id, user_id),
+        )
+        conn.commit()
+
+    state = _queue(tutor_client, user_id=user_id, conversation_id=conversation_id)
+    retried = tutor_client.post(
+        f"/api/tutor/conversations/{conversation_id}/turns/{failed_turn_id}/retry",
+        json=action_payload(
+            user_id,
+            "queue-capability-retry-action",
+            expected_control_version=state["control_version"],
+        ),
+    )
+
+    assert retried.status_code == 202
+    body = retried.json()
+    assert body["run_id"] != failed_turn_id
+    assert body["run"]["retry_of_turn_id"] == failed_turn_id
+    assert body["run"]["retry_root_turn_id"] == failed_turn_id
+
+
+
 def test_completed_only_drain_is_duplicate_safe(
     monkeypatch: pytest.MonkeyPatch,
     tutor_client: TestClient,

@@ -192,10 +192,7 @@ def test_one_iteration_completes_an_ordinary_turn_without_graph_semantics() -> N
         TutorProviderResult(
             decision=TutorDecision(
                 public_message="先确认变量在哪个作用域。",
-                public_thinking_steps=(
-                    "我先区分变量声明位置与实际读取位置。",
-                    "接着用一次回调执行验证闭包是否保留外层绑定。",
-                ),
+                public_thinking_text="我先区分变量声明位置与实际读取位置。\n\n接着用一次回调执行验证闭包是否保留外层绑定。",
             )
         )
     ])
@@ -207,10 +204,7 @@ def test_one_iteration_completes_an_ordinary_turn_without_graph_semantics() -> N
     assert result.terminal_outcome is TutorTerminalOutcome.COMPLETED
     assert result.iteration_count == 1
     assert result.model_call_count == 1
-    assert result.public_thinking_steps == (
-        "我先区分变量声明位置与实际读取位置。",
-        "接着用一次回调执行验证闭包是否保留外层绑定。",
-    )
+    assert result.public_thinking_text == "我先区分变量声明位置与实际读取位置。\n\n接着用一次回调执行验证闭包是否保留外层绑定。"
     assert len(provider.calls) == 1
 
 
@@ -243,6 +237,45 @@ def test_multiple_bounded_iterations_continue_only_through_injected_capability_r
     assert result.model_call_count == 2
     assert result.capability_call_count == 1
     assert len(capabilities.calls) == 1
+
+
+def test_denied_plan_capability_keeps_completed_public_thinking_and_emits_formal_fallback() -> None:
+    thinking = "我已经整理好制定计划需要的关键信息。"
+    store = InMemoryTutorRunStore([_snapshot()])
+    provider = SequenceTutorProvider(
+        [
+            TutorProviderResult(
+                decision=TutorDecision(
+                    public_message="我现在生成计划。",
+                    public_thinking_text=thinking,
+                    capability_requests=(
+                        TutorCapabilityRequest("plan-capability", "learning.plan.draft"),
+                    ),
+                )
+            )
+        ]
+    )
+    capabilities = SequenceCapabilityGateway(
+        [
+            TutorCapabilityResult(
+                "plan-capability",
+                TutorCapabilityStatus.DENIED,
+                diagnostic_code="learning_plan_draft_invalid",
+            )
+        ]
+    )
+    loop, _ = _loop(
+        store=store,
+        contexts={("run-loop", 0): _context(0)},
+        provider=provider,
+        capability_gateway=capabilities,
+    )
+
+    result = loop.run(run_id="run-loop", lease_owner_id="worker-1")
+
+    assert result.status is TutorRunStatus.BLOCKED_POLICY
+    assert result.public_thinking_text == thinking
+    assert result.public_message == "计划草稿暂时没有生成成功，请重试。"
 
 
 def test_late_provider_result_renews_unclaimed_expired_lease_and_persists_terminal() -> None:

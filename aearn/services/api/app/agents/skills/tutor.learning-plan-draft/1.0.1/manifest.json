@@ -1,0 +1,26 @@
+{
+  "id": "tutor.learning-plan-draft",
+  "version": "1.0.1",
+  "owner": "aearn-core",
+  "kind": "tutoring",
+  "summary": "Create one bounded typed learning plan draft for an active planning session.",
+  "instruction_file": "instructions.md",
+  "evaluation_suite_file": "evals.json",
+  "content_hashes": {
+    "instructions.md": "ae0df92467993f653f582c91eb8279267cdc5b6f2368f94b7619b6cac274070e",
+    "evals.json": "2c36e54ff39d63a66ecf9d17721d0568aed98ccb0f97072d1c3efe66b0d0308c"
+  },
+  "resource_refs": [
+    "registry:grounding_sources"
+  ],
+  "requires_capabilities": [
+    "learning.plan.draft"
+  ],
+  "allowed_effect_types": [],
+  "policy_tags": [
+    "plan-drafting"
+  ],
+  "input_contract": "tutor.skill-input.v1",
+  "output_contract": "tutor.skill-decision.v1",
+  "deprecated": false
+}

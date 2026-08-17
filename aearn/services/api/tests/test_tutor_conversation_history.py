@@ -93,8 +93,7 @@ def test_public_conversation_list_and_history_cursors_are_ordered_and_scoped(
     assert [item["kind"] for item in history_page_body["items"]] == ["message", "process"]
     assert history_page_body["items"][0]["role"] == "tutor"
     assert history_page_body["items"][0]["public_thinking_steps"] == [
-        "我先定位学习者当前最需要澄清的概念。",
-        "接着选择一个能够马上验证理解的小例子。",
+        "我先定位学习者当前最需要澄清的概念。\n\n接着选择一个能够马上验证理解的小例子。",
     ]
     history_cursor = history_page_body["next_cursor"]
     assert isinstance(history_cursor, str) and history_cursor

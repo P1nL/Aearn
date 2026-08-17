@@ -714,16 +714,35 @@ CREATE TABLE IF NOT EXISTS tutor_messages (
   conversation_id uuid NOT NULL REFERENCES tutor_conversations(id) ON DELETE RESTRICT,
   role text NOT NULL CHECK (role IN ('learner', 'tutor')),
   content text NOT NULL,
+  public_thinking_text text NOT NULL DEFAULT ''
+    CONSTRAINT chk_tutor_messages_public_thinking_text
+    CHECK (char_length(public_thinking_text) <= 1280),
   public_thinking_steps_json jsonb NOT NULL DEFAULT '[]'::jsonb
     CONSTRAINT chk_tutor_messages_public_thinking_steps
     CHECK (jsonb_typeof(public_thinking_steps_json) = 'array'
       AND jsonb_array_length(public_thinking_steps_json) <= 4),
   created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT chk_tutor_messages_public_thinking_single_representation CHECK (
+    public_thinking_text = '' OR jsonb_array_length(public_thinking_steps_json) = 0
+  ),
   CONSTRAINT uq_tutor_messages_id_conversation UNIQUE (id, conversation_id)
 );
 
 ALTER TABLE tutor_messages
   ADD COLUMN IF NOT EXISTS public_thinking_steps_json jsonb NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE tutor_messages
+  ADD COLUMN IF NOT EXISTS public_thinking_text text NOT NULL DEFAULT '';
+ALTER TABLE tutor_messages
+  DROP CONSTRAINT IF EXISTS chk_tutor_messages_public_thinking_text;
+ALTER TABLE tutor_messages
+  ADD CONSTRAINT chk_tutor_messages_public_thinking_text
+  CHECK (char_length(public_thinking_text) <= 1280);
+ALTER TABLE tutor_messages
+  DROP CONSTRAINT IF EXISTS chk_tutor_messages_public_thinking_single_representation;
+ALTER TABLE tutor_messages
+  ADD CONSTRAINT chk_tutor_messages_public_thinking_single_representation CHECK (
+    public_thinking_text = '' OR jsonb_array_length(public_thinking_steps_json) = 0
+  );
 
 CREATE TABLE IF NOT EXISTS tutor_catalog_snapshots (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -5933,7 +5952,7 @@ CREATE TABLE IF NOT EXISTS tutor_conversation_events (
   event_sequence bigint NOT NULL CHECK (event_sequence > 0),
   event_key text NOT NULL CHECK (char_length(event_key) BETWEEN 1 AND 160),
   kind text NOT NULL CHECK (kind IN (
-    'turn_created', 'turn_updated', 'item_added', 'item_updated',
+    'turn_created', 'turn_updated', 'item_added', 'item_updated', 'turn_output',
     'control_updated', 'dispatch_delayed', 'dispatch_dead'
   )),
   turn_id uuid,
@@ -5941,8 +5960,8 @@ CREATE TABLE IF NOT EXISTS tutor_conversation_events (
   item_kind text CHECK (item_kind IS NULL OR item_kind IN (
     'message', 'process', 'elicitation', 'approval', 'error'
   )),
-  projection_version text NOT NULL DEFAULT 'tutor_conversation_event_v1'
-    CHECK (projection_version = 'tutor_conversation_event_v1'),
+  projection_version text NOT NULL DEFAULT 'tutor_conversation_event_v2'
+    CHECK (projection_version IN ('tutor_conversation_event_v1', 'tutor_conversation_event_v2')),
   payload_json jsonb NOT NULL CHECK (jsonb_typeof(payload_json) = 'object'),
   payload_hash text NOT NULL CHECK (payload_hash ~ '^[0-9a-f]{64}$'),
   occurred_at timestamptz NOT NULL,
@@ -5959,6 +5978,58 @@ CREATE TABLE IF NOT EXISTS tutor_conversation_events (
   CONSTRAINT chk_tutor_conversation_event_item_shape CHECK (
     (item_id IS NULL AND item_kind IS NULL)
     OR (item_id IS NOT NULL AND item_kind IS NOT NULL)
+  )
+);
+
+ALTER TABLE tutor_conversation_events
+  DROP CONSTRAINT IF EXISTS tutor_conversation_events_kind_check;
+ALTER TABLE tutor_conversation_events
+  DROP CONSTRAINT IF EXISTS chk_tutor_conversation_events_kind;
+ALTER TABLE tutor_conversation_events
+  ADD CONSTRAINT chk_tutor_conversation_events_kind CHECK (kind IN (
+    'turn_created', 'turn_updated', 'item_added', 'item_updated', 'turn_output',
+    'control_updated', 'dispatch_delayed', 'dispatch_dead'
+  ));
+ALTER TABLE tutor_conversation_events
+  ALTER COLUMN projection_version SET DEFAULT 'tutor_conversation_event_v2';
+ALTER TABLE tutor_conversation_events
+  DROP CONSTRAINT IF EXISTS tutor_conversation_events_projection_version_check;
+ALTER TABLE tutor_conversation_events
+  DROP CONSTRAINT IF EXISTS chk_tutor_conversation_events_projection_version;
+ALTER TABLE tutor_conversation_events
+  ADD CONSTRAINT chk_tutor_conversation_events_projection_version CHECK (
+    projection_version IN ('tutor_conversation_event_v1', 'tutor_conversation_event_v2')
+  );
+
+CREATE TABLE IF NOT EXISTS tutor_turn_public_thinking_streams (
+  run_id uuid PRIMARY KEY REFERENCES tutor_runs(id) ON DELETE RESTRICT,
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  conversation_id uuid NOT NULL REFERENCES tutor_conversations(id) ON DELETE RESTRICT,
+  input_revision integer NOT NULL CHECK (input_revision >= 0),
+  decision_iteration integer NOT NULL CHECK (decision_iteration >= 1),
+  generation bigint NOT NULL CHECK (generation >= 1),
+  provider_attempt integer NOT NULL CHECK (provider_attempt >= 1),
+  state text NOT NULL CHECK (state IN ('active', 'complete', 'discarded', 'accepted')),
+  thinking_text text NOT NULL DEFAULT '' CHECK (char_length(thinking_text) <= 1280),
+  next_chunk_sequence bigint NOT NULL DEFAULT 1 CHECK (next_chunk_sequence >= 1),
+  last_public_event_sequence bigint,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  completed_at timestamptz,
+  discarded_at timestamptz,
+  accepted_at timestamptz,
+  CONSTRAINT uq_tutor_turn_public_thinking_streams_scope UNIQUE (run_id, user_id, conversation_id),
+  CONSTRAINT fk_tutor_turn_public_thinking_stream_run_scope
+    FOREIGN KEY (run_id, user_id, conversation_id)
+    REFERENCES tutor_runs(id, user_id, conversation_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_turn_public_thinking_stream_event
+    FOREIGN KEY (conversation_id, last_public_event_sequence)
+    REFERENCES tutor_conversation_events(conversation_id, event_sequence) ON DELETE RESTRICT,
+  CONSTRAINT chk_tutor_turn_public_thinking_stream_timestamps CHECK (
+    (state = 'active' AND completed_at IS NULL AND discarded_at IS NULL AND accepted_at IS NULL)
+    OR (state = 'complete' AND completed_at IS NOT NULL AND discarded_at IS NULL AND accepted_at IS NULL)
+    OR (state = 'discarded' AND discarded_at IS NOT NULL AND accepted_at IS NULL)
+    OR (state = 'accepted' AND completed_at IS NOT NULL AND accepted_at IS NOT NULL AND discarded_at IS NULL)
   )
 );
 
@@ -6002,6 +6073,8 @@ CREATE INDEX IF NOT EXISTS idx_tutor_conversation_events_replay
   ON tutor_conversation_events(conversation_id, event_sequence);
 CREATE INDEX IF NOT EXISTS idx_tutor_conversation_events_turn
   ON tutor_conversation_events(turn_id, event_sequence) WHERE turn_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_tutor_public_thinking_streams_conversation_state
+  ON tutor_turn_public_thinking_streams(conversation_id, state, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tutor_interactive_dispatch_jobs_claim
   ON tutor_interactive_dispatch_jobs(available_at, created_at, id)
   WHERE state IN ('pending', 'retry_wait', 'leased');
@@ -6022,6 +6095,11 @@ DROP TRIGGER IF EXISTS trg_tutor_conversation_events_immutable ON tutor_conversa
 CREATE TRIGGER trg_tutor_conversation_events_immutable
 BEFORE UPDATE OR DELETE ON tutor_conversation_events
 FOR EACH ROW EXECUTE FUNCTION enforce_tutor_conversation_event_append_only();
+
+DROP TRIGGER IF EXISTS trg_tutor_public_thinking_streams_updated_at ON tutor_turn_public_thinking_streams;
+CREATE TRIGGER trg_tutor_public_thinking_streams_updated_at
+BEFORE UPDATE ON tutor_turn_public_thinking_streams
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
 DROP TRIGGER IF EXISTS trg_tutor_interactive_dispatch_jobs_updated_at ON tutor_interactive_dispatch_jobs;
 CREATE TRIGGER trg_tutor_interactive_dispatch_jobs_updated_at

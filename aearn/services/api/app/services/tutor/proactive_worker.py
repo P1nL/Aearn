@@ -46,6 +46,7 @@ from app.services.tutor.proactive import (
 )
 from app.services.tutor.proactive_repository import PostgresTutorProactiveRepository
 from app.services.tutor.provider_gateway import PrimaryTutorProviderGateway
+from app.services.tutor.public_thinking_stream import TutorPublicThinkingSink
 from app.services.tutor.run_loop import TutorRunLoop
 
 
@@ -62,7 +63,14 @@ class ProactiveDeliveryProviderGateway:
     def __init__(self, delegate: TutorProviderGateway) -> None:
         self._delegate = delegate
 
-    def decide(self, *, run: TutorRunSnapshot, context: TutorContextSelection) -> TutorProviderResult:
+    def decide(
+        self,
+        *,
+        run: TutorRunSnapshot,
+        context: TutorContextSelection,
+        thinking_sink: TutorPublicThinkingSink | None = None,
+    ) -> TutorProviderResult:
+        del thinking_sink
         result = self._delegate.decide(run=run, context=context)
         if result.decision is None or result.decision.public_message is None:
             return result

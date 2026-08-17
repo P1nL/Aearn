@@ -1,0 +1,30 @@
+{
+  "suite": "tutor.learning-plan-draft@1.0.1",
+  "cases": [
+    {
+      "id": "ask-one-missing-field",
+      "input": "I want to learn Python.",
+      "expected": "Ask one high-value planning question and do not call the capability."
+    },
+    {
+      "id": "complete-plan-draft",
+      "input": "The learner supplied language, experience, goal, and weekly time.",
+      "expected": "Request one complete typed draft whose profile and module JSON use every exact nested contract key."
+    },
+    {
+      "id": "reject-shorthand-profile",
+      "input": "The draft action is ready.",
+      "expected": "Never use goal or knowledge_keys aliases; emit goal_text and module nodes with complete required keys."
+    },
+    {
+      "id": "revision-replaces-draft",
+      "input": "Make the current plan slower and add testing fundamentals.",
+      "expected": "Submit one complete replacement plan rather than a partial diff."
+    },
+    {
+      "id": "review-uses-session-confirmation",
+      "input": "The typed learning plan draft was created successfully.",
+      "expected": "Tell the learner the draft is ready to review, finish with turn_completed, and never request approval for plan confirmation."
+    }
+  ]
+}

@@ -216,6 +216,14 @@ def _prepare_structured_outbox(fixture):
         trigger=TutorCompactionTrigger.TERMINAL,
         metadata=selection.checkpoint_metadata,
     )
+    other_run_request = build_compaction_request(
+        run_id="other-summary-run",
+        conversation_id=snapshot.conversation_id,
+        input_revision=accepted.input_revision,
+        trigger=TutorCompactionTrigger.TERMINAL,
+        metadata=selection.checkpoint_metadata,
+    )
+    assert other_run_request.curation_idempotency_key != terminal_request.curation_idempotency_key
     checkpoint = TutorCheckpoint(
         run_id=snapshot.run_id,
         input_revision=accepted.input_revision,

@@ -27,6 +27,7 @@ from app.agents.harness.contracts import (
     empty_checkpoint_metadata,
     terminal_status,
 )
+from app.services.tutor.public_thinking_stream import TutorPublicThinkingSink
 from app.services.tutor.ports import (
     Clock,
     DefaultDenyTutorDecisionGate,
@@ -93,6 +94,7 @@ class TutorRunLoop:
         effect_results: list[TutorEffectResult] = []
         context_expansion_count = 0
         metadata = empty_checkpoint_metadata(token_budget=snapshot.policy.context_token_budget)
+        thinking_sink: TutorPublicThinkingSink | None = None
 
         try:
             initial_stop = self._stop_outcome(snapshot)
@@ -131,6 +133,7 @@ class TutorRunLoop:
 
                 lease = self._heartbeat(lease, snapshot)
                 if lease is None:
+                    _discard_public_thinking(thinking_sink)
                     return self._terminal(
                         snapshot,
                         outcome=TutorTerminalOutcome.BLOCKED_POLICY,
@@ -178,7 +181,29 @@ class TutorRunLoop:
                     continue
 
                 decision_iteration = snapshot.model_call_count + 1
-                provider_result = self._provider.decide(run=snapshot, context=context)
+                thinking_sink = None
+                if (
+                    self._lifecycle is not None
+                    and snapshot.origin == "interactive"
+                    and snapshot.interaction_protocol_version == "thread_turn_v2"
+                ):
+                    create_sink = getattr(self._lifecycle, "create_public_thinking_sink", None)
+                    if callable(create_sink):
+                        thinking_sink = create_sink(
+                            snapshot=snapshot,
+                            lease=lease,
+                            decision_iteration=decision_iteration,
+                            now=self._clock.now,
+                        )
+                provider_result = (
+                    self._provider.decide(
+                        run=snapshot,
+                        context=context,
+                        thinking_sink=thinking_sink,
+                    )
+                    if thinking_sink is not None
+                    else self._provider.decide(run=snapshot, context=context)
+                )
                 if self._lifecycle is not None and provider_result.attempts:
                     self._lifecycle.persist_provider_attempts(
                         snapshot=snapshot,
@@ -198,8 +223,10 @@ class TutorRunLoop:
                     effect_results=effect_results,
                 )
                 if terminal is not None:
+                    _discard_public_thinking(thinking_sink)
                     return terminal
                 if refreshed.input_revision != snapshot.input_revision:
+                    _discard_public_thinking(thinking_sink)
                     context_expansion_count = 0
                     snapshot = refreshed
                     continue
@@ -207,6 +234,7 @@ class TutorRunLoop:
                 lease = snapshot.lease or lease
 
                 if provider_result.terminal_outcome is not None:
+                    _discard_public_thinking(thinking_sink)
                     return self._terminal(
                         snapshot,
                         outcome=provider_result.terminal_outcome,
@@ -217,6 +245,7 @@ class TutorRunLoop:
 
                 decision = provider_result.decision
                 if decision is None:
+                    _discard_public_thinking(thinking_sink)
                     return self._terminal(
                         snapshot,
                         outcome=TutorTerminalOutcome.MODEL_UNAVAILABLE,
@@ -234,6 +263,7 @@ class TutorRunLoop:
                                 metadata.confirmed_question_reasked_count + 1
                             ),
                         )
+                    _discard_public_thinking(thinking_sink)
                     return self._terminal(
                         snapshot,
                         outcome=TutorTerminalOutcome.BLOCKED_POLICY,
@@ -249,6 +279,7 @@ class TutorRunLoop:
                     )
                     if context_expansion_count < max_expansions:
                         context_expansion_count += 1
+                    _discard_public_thinking(thinking_sink)
                     continue
 
                 refreshed, terminal = self._refresh_before_unsafe_boundary(
@@ -258,8 +289,10 @@ class TutorRunLoop:
                     effect_results=effect_results,
                 )
                 if terminal is not None:
+                    _discard_public_thinking(thinking_sink)
                     return terminal
                 if refreshed.input_revision != snapshot.input_revision:
+                    _discard_public_thinking(thinking_sink)
                     snapshot = refreshed
                     continue
                 snapshot = refreshed
@@ -282,8 +315,10 @@ class TutorRunLoop:
                 )
                 lease = snapshot.lease or lease
                 if terminal is not None:
+                    _discard_public_thinking(thinking_sink)
                     return terminal
                 if needs_rebuild:
+                    _discard_public_thinking(thinking_sink)
                     continue
 
                 snapshot, needs_rebuild, terminal = self._commit_effects(
@@ -295,8 +330,10 @@ class TutorRunLoop:
                 )
                 lease = snapshot.lease or lease
                 if terminal is not None:
+                    _discard_public_thinking(thinking_sink)
                     return terminal
                 if needs_rebuild:
+                    _discard_public_thinking(thinking_sink)
                     continue
 
                 if decision.terminal_outcome is not None:
@@ -307,6 +344,7 @@ class TutorRunLoop:
                         metadata=metadata,
                         effect_results=effect_results,
                         public_message=decision.public_message,
+                        public_thinking_text=decision.public_thinking_text,
                         public_thinking_steps=decision.public_thinking_steps,
                         conversation_title=decision.conversation_title,
                     )
@@ -323,12 +361,14 @@ class TutorRunLoop:
                     metadata=metadata,
                     effect_results=effect_results,
                     public_message=decision.public_message,
+                    public_thinking_text=decision.public_thinking_text,
                     public_thinking_steps=decision.public_thinking_steps,
                     conversation_title=decision.conversation_title,
                 )
         except TutorLifecycleConflict:
             return _lease_unavailable_result(snapshot, effect_results=effect_results)
         except TutorContextError as exc:
+            _discard_public_thinking(thinking_sink)
             return self._terminal(
                 snapshot,
                 outcome=TutorTerminalOutcome.FAILED,
@@ -337,6 +377,7 @@ class TutorRunLoop:
                 effect_results=effect_results,
             )
         except Exception:
+            _discard_public_thinking(thinking_sink)
             return self._terminal(
                 snapshot,
                 outcome=TutorTerminalOutcome.FAILED,
@@ -404,6 +445,9 @@ class TutorRunLoop:
                     diagnostic_code="capability_denied",
                     metadata=metadata,
                     effect_results=effect_results,
+                    public_message=_capability_failure_public_message(request.capability_id),
+                    public_thinking_text=decision.public_thinking_text,
+                    public_thinking_steps=decision.public_thinking_steps,
                 )
             if result.continue_run:
                 return snapshot, True, None
@@ -545,6 +589,7 @@ class TutorRunLoop:
         metadata: TutorCheckpointMetadata | None = None,
         effect_results: list[TutorEffectResult] | tuple[TutorEffectResult, ...] = (),
         public_message: str | None = None,
+        public_thinking_text: str = "",
         public_thinking_steps: tuple[str, ...] = (),
         conversation_title: str | None = None,
     ) -> TutorRunResult:
@@ -575,6 +620,7 @@ class TutorRunLoop:
             effect_count=snapshot.effect_count,
             terminal_outcome=outcome,
             public_message=public_message,
+            public_thinking_text=public_thinking_text,
             public_thinking_steps=public_thinking_steps,
             conversation_title=conversation_title,
             diagnostic_code=diagnostic_code,
@@ -622,6 +668,7 @@ class TutorRunLoop:
             effect_count=snapshot.effect_count,
             terminal_outcome=TutorTerminalOutcome.COMPLETED,
             public_message=decision.public_message,
+            public_thinking_text=decision.public_thinking_text,
             public_thinking_steps=decision.public_thinking_steps,
             conversation_title=decision.conversation_title,
             completion_reason=completion_reason,
@@ -656,6 +703,7 @@ class TutorRunLoop:
             capability_call_count=snapshot.capability_call_count,
             effect_count=snapshot.effect_count,
             public_message=decision.public_message,
+            public_thinking_text=decision.public_thinking_text,
             public_thinking_steps=decision.public_thinking_steps,
             continuation_kind=decision.continuation_kind,
             effect_results=tuple(effect_results),
@@ -688,6 +736,21 @@ class TutorHarnessService:
         if not self._enabled:
             return self._loop.feature_disabled_result(run_id=run_id)
         return self._loop.run(run_id=run_id, lease_owner_id=lease_owner_id)
+
+
+def _discard_public_thinking(sink: TutorPublicThinkingSink | None) -> None:
+    if sink is None:
+        return
+    try:
+        sink.discard_current()
+    except TutorLifecycleConflict:
+        return
+
+
+def _capability_failure_public_message(capability_id: str) -> str:
+    if capability_id == "learning.plan.draft":
+        return "计划草稿暂时没有生成成功，请重试。"
+    return "这一步暂时没有完成，请重试。"
 
 
 def _lease_unavailable_result(

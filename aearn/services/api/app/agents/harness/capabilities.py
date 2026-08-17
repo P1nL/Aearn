@@ -113,18 +113,28 @@ class GroundingRetrieveOutput(_FrozenSchema):
     snippets: tuple[GroundingSnippetOutput, ...] = Field(default=(), max_length=4)
 
 
+_LEARNING_PLAN_PROFILE_JSON_DESCRIPTION = (
+    "Compact JSON object with exactly language_id, goal_text, target_level, weekly_minutes, "
+    "experience_level, teaching_preferences, pace_summary, and title."
+)
+_LEARNING_PLAN_MODULE_JSON_DESCRIPTION = (
+    "Compact JSON object with module_key, title, description, is_core, is_skippable, and nodes; "
+    "each node uses knowledge_key, title, description, is_core, prerequisite_keys, and required_capabilities."
+)
+
+
 class LearningPlanDraftCapabilityInput(_FrozenSchema):
     """Compact strings keep the generic Tutor envelope bounded at 12 fields."""
 
-    profile_json: str = Field(min_length=2, max_length=360)
-    module_1: str = Field(min_length=2, max_length=360)
-    module_2: str = Field(min_length=2, max_length=360)
-    module_3: str | None = Field(default=None, min_length=2, max_length=360)
-    module_4: str | None = Field(default=None, min_length=2, max_length=360)
-    module_5: str | None = Field(default=None, min_length=2, max_length=360)
-    module_6: str | None = Field(default=None, min_length=2, max_length=360)
-    module_7: str | None = Field(default=None, min_length=2, max_length=360)
-    module_8: str | None = Field(default=None, min_length=2, max_length=360)
+    profile_json: str = Field(min_length=2, max_length=360, description=_LEARNING_PLAN_PROFILE_JSON_DESCRIPTION)
+    module_1: str = Field(min_length=2, max_length=360, description=_LEARNING_PLAN_MODULE_JSON_DESCRIPTION)
+    module_2: str = Field(min_length=2, max_length=360, description=_LEARNING_PLAN_MODULE_JSON_DESCRIPTION)
+    module_3: str | None = Field(default=None, min_length=2, max_length=360, description=_LEARNING_PLAN_MODULE_JSON_DESCRIPTION)
+    module_4: str | None = Field(default=None, min_length=2, max_length=360, description=_LEARNING_PLAN_MODULE_JSON_DESCRIPTION)
+    module_5: str | None = Field(default=None, min_length=2, max_length=360, description=_LEARNING_PLAN_MODULE_JSON_DESCRIPTION)
+    module_6: str | None = Field(default=None, min_length=2, max_length=360, description=_LEARNING_PLAN_MODULE_JSON_DESCRIPTION)
+    module_7: str | None = Field(default=None, min_length=2, max_length=360, description=_LEARNING_PLAN_MODULE_JSON_DESCRIPTION)
+    module_8: str | None = Field(default=None, min_length=2, max_length=360, description=_LEARNING_PLAN_MODULE_JSON_DESCRIPTION)
 
     @field_validator("profile_json", "module_1", "module_2", "module_3", "module_4", "module_5", "module_6", "module_7", "module_8")
     @classmethod

@@ -15,6 +15,7 @@ from app.services.learning.planning_questions import (
     PLANNING_QUESTION_CATALOG_VERSION,
     PlanningQuestionCatalogError,
     build_planning_question_presentation,
+    format_planning_question_value,
     validate_planning_question_value,
 )
 from app.services.tutor.interaction_authority import TutorInteractionAuthorityService
@@ -104,6 +105,17 @@ def test_all_planning_question_catalog_fields_are_typed_and_validate(
             value=value,
         )
 
+def test_planning_question_display_uses_natural_option_label(tutor_persistence) -> None:
+    presentation = build_planning_question_presentation(
+        tutor_persistence.connection,
+        question_key="experience_level",
+    )
+    assert format_planning_question_value(
+        presentation=presentation,
+        value="new",
+    ) == "完全没有经验"
+
+
 def _snapshot(client: TestClient, *, user_id: str, conversation_id: str) -> dict[str, object]:
     response = client.get(
         f"/api/tutor/conversations/{conversation_id}/snapshot?user_id={user_id}"
@@ -152,8 +164,31 @@ def test_planning_request_uses_server_catalog_and_records_exact_fact(
     )
     assert accepted.status_code == 202
     source_turn_id = str(accepted.json()["run_id"])
-    pending = _snapshot(tutor_client, user_id=user_id, conversation_id=conversation_id)["pending_requests"]
+    source_snapshot = _snapshot(tutor_client, user_id=user_id, conversation_id=conversation_id)
+    pending = source_snapshot["pending_requests"]
     assert isinstance(pending, list) and len(pending) == 1
+    source_messages = [
+        item
+        for item in source_snapshot["timeline"]
+        if item["kind"] == "message"
+        and item["role"] == "tutor"
+        and item["content"] == "你每周准备投入多少分钟？"
+    ]
+    assert len(source_messages) == 1
+    chronological_timeline = list(reversed(source_snapshot["timeline"]))
+    tutor_message_index = next(
+        index
+        for index, item in enumerate(chronological_timeline)
+        if item["kind"] == "message"
+        and item["role"] == "tutor"
+        and item["content"] == "你每周准备投入多少分钟？"
+    )
+    request_index = next(
+        index
+        for index, item in enumerate(chronological_timeline)
+        if item["kind"] == "elicitation" and item["turn_id"] == source_turn_id
+    )
+    assert tutor_message_index < request_index
     request = pending[0]
     assert request["request_kind"] == "planning_input"
     assert request["presentation"] == {
@@ -200,6 +235,17 @@ def test_planning_request_uses_server_catalog_and_records_exact_fact(
     answer_turn_id = str(response.json()["run_id"])
     assert answer_turn_id != source_turn_id
     assert provider.calls == [(source_turn_id, 1), (answer_turn_id, 1)]
+    answered_snapshot = _snapshot(tutor_client, user_id=user_id, conversation_id=conversation_id)
+    response_messages = [
+        item
+        for item in answered_snapshot["timeline"]
+        if item["kind"] == "message"
+        and item["role"] == "learner"
+        and item["in_reply_to_item_id"] == request["id"]
+    ]
+    assert len(response_messages) == 1
+    assert response_messages[0]["content"] == "每周 240 分钟"
+    assert "weekly_minutes" not in response_messages[0]["content"]
 
     with connect() as conn:
         fact = conn.execute(
