@@ -564,6 +564,8 @@ class PostgresTutorRuntimeProjectionRepository:
             return event.turn_id is not None and (bound_turn is None or str(bound_turn) == event.turn_id)
         if event.kind == "warning" and event.turn_id is None:
             return True
+        if event.kind == "turn_completed" and bound_turn is None:
+            return event.turn_id is None
         return bound_turn is not None and event.turn_id == str(bound_turn)
 
     @staticmethod

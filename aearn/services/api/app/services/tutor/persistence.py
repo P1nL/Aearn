@@ -758,6 +758,7 @@ class PostgresTutorRepository:
         received_at: datetime,
         conversation_id: str | None = None,
         policy_version: str = "tutor_interactive_policy_v1",
+        runtime_kind: Literal["harness_v1", "codex_sidecar_v1"] = "harness_v1",
     ) -> TutorInteractiveTurnAcceptance:
         """Create a learner-visible conversation only together with its first turn.
 
@@ -786,6 +787,7 @@ class PostgresTutorRepository:
                 content=content,
                 received_at=received_at,
                 policy_version=policy_version,
+                runtime_kind=runtime_kind,
             )
 
     def create_interactive_turn(
@@ -799,6 +801,7 @@ class PostgresTutorRepository:
         content: str,
         received_at: datetime,
         policy_version: str = "tutor_interactive_policy_v1",
+        runtime_kind: Literal["harness_v1", "codex_sidecar_v1"] = "harness_v1",
     ) -> TutorInteractiveTurnAcceptance:
         """Accept one normal message as a fresh finite TurnRun.
 
@@ -821,6 +824,7 @@ class PostgresTutorRepository:
                 content=content,
                 received_at=received_at,
                 policy_version=policy_version,
+                runtime_kind=runtime_kind,
             )
 
     def _create_interactive_turn_locked(
@@ -834,6 +838,7 @@ class PostgresTutorRepository:
         content: str,
         received_at: datetime,
         policy_version: str,
+        runtime_kind: Literal["harness_v1", "codex_sidecar_v1"] = "harness_v1",
     ) -> TutorInteractiveTurnAcceptance:
         conversation_id = str(conversation["id"])
         pending_request = self._conn.execute(
@@ -917,6 +922,7 @@ class PostgresTutorRepository:
             origin="interactive",
             policy_version=policy_version,
             interaction_protocol_version=TutorInteractionProtocolVersion.THREAD_TURN_V2,
+            runtime_kind=runtime_kind,
         )
         self._trip_failpoint("after_fresh_turn_run")
         if replaced_run_id is not None:
@@ -1341,6 +1347,12 @@ class PostgresTutorRepository:
         ).fetchone()
         if foreground is not None:
             raise TutorInteractionRequestConflict("conversation already has an active Tutor turn")
+        source_run = self._conn.execute(
+            "SELECT runtime_kind FROM tutor_runs WHERE id = %s AND user_id = %s AND conversation_id = %s",
+            (request_row["source_turn_id"], user_id, conversation_id),
+        ).fetchone()
+        if source_run is None:
+            raise TutorInteractionRequestConflict("interaction request source turn is missing")
         run = self.create_run(
             user_id=user_id,
             conversation_id=conversation_id,
@@ -1350,6 +1362,10 @@ class PostgresTutorRepository:
             policy_version="tutor_interaction_response_policy_v1",
             interaction_protocol_version=TutorInteractionProtocolVersion.THREAD_TURN_V2,
             response_to_request_id=str(request_row["id"]),
+            runtime_kind=cast(
+                Literal["harness_v1", "codex_sidecar_v1"],
+                str(source_run.get("runtime_kind") or "harness_v1"),
+            ),
         )
         acceptance = self.accept_input(
             user_id=user_id,
@@ -2730,6 +2746,7 @@ class PostgresTutorRepository:
         limit: int = 1,
         job_id: str | None = None,
         lease_seconds: int = _DISPATCH_JOB_LEASE_SECONDS,
+        runtime_kind: Literal["harness_v1", "codex_sidecar_v1"] | None = None,
     ) -> tuple[TutorInteractiveDispatchJob, ...]:
         _safe_key(owner_id, label="dispatch owner")
         if limit < 1 or limit > 50 or lease_seconds < 1:
@@ -2766,6 +2783,9 @@ class PostgresTutorRepository:
                     AND runs.superseded_by_run_id IS NULL
             """
             params: list[object] = [now, now]
+            if runtime_kind is not None:
+                query += " AND runs.runtime_kind = %s"
+                params.append(runtime_kind)
             if job_id is not None:
                 query += " AND jobs.id = %s::uuid"
                 params.append(job_id)

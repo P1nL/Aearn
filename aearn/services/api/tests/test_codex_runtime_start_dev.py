@@ -19,7 +19,18 @@ def test_start_dev_starts_codex_worker_by_default_with_explicit_opt_out() -> Non
     assert "worker(?!.*tutor-codex)" in script
     assert package["scripts"]["dev:no-codex"].endswith("-NoCodexWorker")
 
+    worker_app = (
+        aearn_root / "services" / "worker" / "aearn_worker" / "worker_app.py"
+    ).read_text(encoding="utf-8")
+    assert '"tutor.codex.dispatch"' in worker_app
+    assert '"tutor.codex.reconcile"' in worker_app
+    assert '"tutor.codex.runtime_health"' in worker_app
+    assert 'queue="tutor-codex"' in worker_app
+
 
 def test_codex_runtime_config_defaults_enabled(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.delenv("CODEX_RUNTIME_ENABLED", raising=False)
-    assert Settings().codex_runtime_enabled is True
+    settings = Settings()
+    assert settings.codex_runtime_enabled is True
+    assert settings.tutor_codex_plan_drafting_enabled is True
+    assert settings.tutor_codex_runtime_health_max_age_seconds == 90

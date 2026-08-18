@@ -47,7 +47,11 @@ def tutor_client() -> Iterator[TestClient]:
 
 @pytest.fixture
 def tutor_api_settings(monkeypatch: pytest.MonkeyPatch) -> Settings:
-    settings = Settings(llm_type="disabled", tutor_thread_turn_v2_enabled=True)
+    settings = Settings(
+        llm_type="disabled",
+        tutor_thread_turn_v2_enabled=True,
+        tutor_codex_plan_drafting_enabled=False,
+    )
     monkeypatch.setattr(tutor_route, "get_settings", lambda: settings)
     return settings
 

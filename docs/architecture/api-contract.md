@@ -491,6 +491,12 @@ message/run/revision identity；`questions[]` 只暴露 `question_key`、`field_
 
 稳定错误包括 `LEARNING_PLAN_SESSION_NOT_FOUND`、`LEARNING_PLAN_SESSION_CONFLICT`、`LEARNING_PLAN_SESSION_ALREADY_CONFIRMED`、`LEARNING_PLAN_DRAFT_NOT_READY`、`LEARNING_PLAN_DRAFT_INVALID`、`LEARNING_PLAN_DRAFT_QUALITY_BLOCKED`、`LEARNING_PLAN_DRAFT_STALE` 和 `LEARNING_LANGUAGE_NOT_SELECTABLE`。
 
+## 2026-08-18：Codex plan-drafting Runtime admission
+
+Tutor public input DTO 不新增 Runtime 字段。服务端仅对没有既有 Runtime lineage 的全新 `plan_drafting` conversation 执行 exact readiness admission；通过后在 run insert 时冻结 `runtime_kind=codex_sidecar_v1`。feature off 时新 plan-drafting 仍走 `harness_v1`；feature on 但 worker readiness 缺失、过期、不健康或 version/model/provider/protocol 不匹配时，输入返回 `503 TUTOR_RUNTIME_UNAVAILABLE`，且 first-turn 不留下空 conversation。general、learning-track、proactive 与既有 Harness conversation 不依赖 Codex health。
+
+Queue/Steer/Interrupt/Retry 的公共路径和响应结构不变：Queue 接受时保存服务端冻结 Runtime；active Codex turn 的新 revision 映射为 `turn/steer`，cancel/supersede/lease loss 映射为 `turn/interrupt`；Retry 创建 fresh run 但复制 retry root Runtime，禁止跨 Runtime fallback。Codex 只可通过 typed tool 追加计划草案；`POST /api/learning-plan-sessions/{id}/confirm` 及 LearningTrack 创建仍由现有 Aearn transaction 执行。
+
 ## 2026-08-11：LessonDocument API
 
 所有 Lesson 路由都要求 verified user，并按 `user_id + track_id + knowledge_key`

@@ -862,3 +862,10 @@ This is local integration evidence, not a release approval, provider-quality cla
 ### Global thread/turn v2 cutover (2026-08-14)
 
 The effective v2 runtime gate is the conjunction of `TUTOR_THREAD_TURN_V2_ENABLED` and the PostgreSQL singleton state `enabled`. Preparing freezes public mutations and worker claims before inventory convergence. Safe legacy waiting turns fail with a fresh-turn migration code; other cancellable active turns become ordinary interrupted projections with leases/jobs cleared. Ambiguous effects block activation. Reads remain available, the legacy continuation POST is a permanent 410 tombstone, and rollback is read-only disablement rather than legacy resurrection. Operator commands are documented in `docs/setup/tutor-thread-turn-v2-cutover.md`.
+
+
+## Controlled Codex plan-drafting cutover (2026-08-18)
+
+Harness remains the default implementation for general, learning-track, proactive, historical, and feature-off traffic. The server freezes `runtime_kind` only when a fresh TurnRun is created. A new `plan_drafting` conversation may select `codex_sidecar_v1` only from fresh shared worker readiness matching the allowlisted Runtime version plus exact `deepseek-v4-flash` / `aearn_deepseek` / `responses`; an enabled cohort with failed readiness receives safe unavailable instead of Harness fallback. Existing conversations and retry roots inherit their original Runtime.
+
+The durable interactive job table remains the authority. Harness and Codex workers claim it with disjoint Runtime filters, and `TutorRuntimeDispatchRouter` routes only from the persisted run snapshot. The Codex dispatcher does not wrap `TutorRunLoop`: it owns the Runtime thread/turn, typed LearningPlan tool registry, lease heartbeat, steer/interrupt monitor, and durable Runtime projector. LearningPlan confirmation and LearningTrack creation stay outside Codex in the existing Aearn HTTP/domain transaction.

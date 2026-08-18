@@ -763,7 +763,15 @@ def test_harness_and_tutor_modules_do_not_depend_on_retired_runtime_or_storage_b
             # explicit database access is allowed; Graph, route, and legacy
             # conversation dependencies remain forbidden.
             forbidden_for_path = tuple(marker for marker in forbidden if marker != "app.db")
-        assert not any(marker in source for marker in retired_module_prefixes), path
+        if path.name == "codex_dispatcher.py":
+            # Child 08-17 owns the one approved Tutor-to-Runtime adapter.
+            forbidden_for_path = tuple(marker for marker in forbidden if marker != "app.db")
+        prohibited_agent_prefixes = (
+            tuple(marker for marker in retired_module_prefixes if marker != "app.agents.runtime")
+            if path.name == "codex_dispatcher.py"
+            else retired_module_prefixes
+        )
+        assert not any(marker in source for marker in prohibited_agent_prefixes), path
         assert not any(marker in source for marker in forbidden_for_path), path
 
 

@@ -61,9 +61,11 @@ projection 的唯一 durable authority；Desktop、Celery 和 provider 不拥有
 | `tutor_messages` | canonical learner/Tutor public message body + bounded public thinking narration | 唯一允许存放原始 learner 文本的 Tutor 表；新 Tutor 回复保存最多 1280 字符 `public_thinking_text`，legacy `public_thinking_steps_json` 只读兼容，CHECK 禁止双表示同时非空；二者都不是 provider-native reasoning |
 | `tutor_message_context_references` | learner message/run revision 的 append-only learner-safe artifact snapshot | 复合 FK 固定 user/conversation/run/message/input revision；只保存 bounded safe projection/hash，不复制 learner content、submission、hidden/private artifact 或 raw execution/provider 数据 |
 | `tutor_catalog_snapshots` | reviewed Skill catalog digest snapshot | run 只能引用已持久化的 digest |
-| `tutor_runs` | 有限 loop / public turn 的 durable snapshot | `origin` 为 `interactive/proactive`；`interaction_protocol_version` 区分 `legacy_v1/thread_turn_v2`；retry predecessor/root 与 `response_to_request_id` 通过 user+conversation scoped FK；lease、budget counter、`input_revision`、terminal outcome、`completion_reason` 和 `next_event_sequence` 都由 DB 保护；新 v2 request 来源 turn 不持久化 waiting continuation |
+| `tutor_codex_runtime_health` | dedicated `tutor-codex` worker 的共享 readiness authority | 仅保存 bounded status/generation/version/model/provider/protocol/safe code 与 heartbeat；新 Codex admission 必须读取 fresh exact row |
+| `tutor_runs` | 有限 loop / public turn 的 durable snapshot | `origin` 为 `interactive/proactive`；`runtime_kind` 在创建时冻结为 `harness_v1/codex_sidecar_v1` 且不可更新；`interaction_protocol_version` 区分 `legacy_v1/thread_turn_v2`；retry predecessor/root 与 `response_to_request_id` 通过 user+conversation scoped FK；lease、budget counter、`input_revision`、terminal outcome、`completion_reason` 和 `next_event_sequence` 都由 DB 保护；新 v2 request 来源 turn 不持久化 waiting continuation |
 | `tutor_interaction_requests` | typed learner/authority blocking request 与 resolution lineage | kind/actor closed union；每 conversation partial unique pending；source/answer turn 与 answer message 复合 scope；server-owned descriptor/presentation、planning catalog、approval identity、authority scope/hash、state/version/response-or-receipt hash 受 CHECK/FK/CAS 约束 |
 | `tutor_provider_attempt_receipts` | 每个实际 provider HTTP attempt 的 append-only usage 事实 | identity 为 `(run_id,input_revision,decision_iteration,attempt_index)`；复合 FK 固定 user/run/conversation scope；只保存受限 provider/model/protocol、outcome/diagnostic 和非负 token 数，不保存 prompt、response body、reasoning 文本、URL/header 或 credential |
+| `tutor_run_runtime_bindings`、`tutor_runtime_item_receipts`、`tutor_runtime_public_errors` | Codex private correlation、append-only safe receipt 与 Aearn public error | external thread/turn/item identity 不进入公共 DTO；binding/receipt 受 input/lease/Runtime generation fence，只有 final-answer message 可公开 |
 | `tutor_run_public_processes` | 一条新 interactive run 对应一条 server-safe public-process projection | 只允许 `thinking/waiting_input/waiting_approval/waiting_authority/completed/interrupted/superseded/unavailable/failed`，只保留 timestamps、关联 public Tutor message 和固定 step key；不存 reasoning、provider payload、prompt、trace 或工具参数 |
 | `tutor_run_public_process_steps` | append-only public-process step order | `(run_id, ordinal)` 唯一；step key/state 均有 DB + repository allowlist；公开 label 在 read projection 映射而非存自由文本 |
 | `tutor_run_skill_selections` | exact Skill evidence | `(run_id, input_revision)` 唯一；保存 id/version 与 manifest/instruction/evaluation hash |
@@ -111,6 +113,11 @@ item projection 与 `dispatch_dead` event。
 stale run 只能收敛到安全 cancelled/superseded projection，不能写 Tutor message、title、
 capability receipt 或 effect commit。
 已经真实发生的 provider attempt 是独立执行/成本事实：run loop 在 provider 返回后、业务结果门禁前持久化其安全 receipt，因此 superseded/cancelled run 可以保留 usage，但仍不能获得 message、title、capability 或 effect 写权限。`input_tokens` 已包含缓存读取；`uncached_input_tokens = input_tokens - cached_input_tokens`，不得把 cached 再加回总输入。provider reported `total_tokens` 与 calculated `input_tokens + output_tokens` 分列保存；usage 缺失用 `usage_available=false` 与 `NULL` 表示，不能伪装成零。
+
+
+## 2026-08-18：Codex plan-drafting 受控切换
+
+`tutor_codex_runtime_health` 是无 learner ownership 的 shared infrastructure。server-side policy 只有在 feature enabled 且 latest heartbeat 对 exact allowlisted Runtime version、`deepseek-v4-flash`、`aearn_deepseek`、`responses`、generation 和 freshness 全部通过时，才为全新 `plan_drafting` conversation 冻结 `codex_sidecar_v1`。既有 conversation 后续 fresh turn 与 Retry 继承原 Runtime；Queue item 只保存服务端冻结值，客户端字段不能影响。Harness/Codex worker 对同一 durable dispatch queue 按 `runtime_kind` 精确 claim，关闭 admission 不删除历史 binding/receipt，也不让 active run 跨 Runtime 续跑。
 
 ## 5. LearningTrack、计划路线、掌握度与教学 scope
 

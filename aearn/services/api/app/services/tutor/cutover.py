@@ -113,6 +113,7 @@ _LEGACY_COUNT_SQL: tuple[tuple[str, str], ...] = (
 CUTOVER_SHARED_TUTOR_TABLES = frozenset(
     {
         "tutor_catalog_snapshots",
+        "tutor_codex_runtime_health",
         "tutor_executor_health",
         "tutor_exercise_versions",
         "tutor_exercise_private_rubrics",

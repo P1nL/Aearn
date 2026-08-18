@@ -52,6 +52,7 @@ class PostgresTutorQueueController:
         content: str,
         metadata: Mapping[str, object],
         received_at: datetime,
+        runtime_kind: Literal["harness_v1", "codex_sidecar_v1"] = "harness_v1",
     ) -> TutorQueueAcceptance:
         with self._conn.transaction():
             conversation = self._repository._lock_learner_conversation(user_id=user_id, conversation_id=conversation_id)
@@ -67,6 +68,7 @@ class PostgresTutorQueueController:
                     content=content,
                     received_at=received_at,
                     policy_version="tutor_interactive_policy_v1",
+                    runtime_kind=runtime_kind,
                 )
                 return TutorQueueAcceptance(
                     turn=turn,
@@ -78,7 +80,7 @@ class PostgresTutorQueueController:
                 user_id=user_id,
                 idempotency_key=idempotency_key,
                 content=content,
-                metadata=metadata,
+                metadata={**dict(metadata), "_server_runtime_kind": runtime_kind},
                 received_at=received_at,
             )
             if pending_request is not None:
@@ -454,10 +456,15 @@ class PostgresTutorQueueController:
         )
         if item is None:
             return None
+        metadata = _mapping(item.get("input_metadata_json"))
+        runtime_kind = str(metadata.get("_server_runtime_kind") or "harness_v1")
+        if runtime_kind not in {"harness_v1", "codex_sidecar_v1"}:
+            raise TutorInteractionRequestConflict("queued Tutor Runtime kind is invalid")
         run = self._repository.create_run(
             user_id=user_id, conversation_id=conversation_id, catalog_digest=catalog_digest,
             policy=policy, origin="interactive", policy_version="tutor_queue_claim_policy_v1",
             interaction_protocol_version=TutorInteractionProtocolVersion.THREAD_TURN_V2,
+            runtime_kind=cast(Literal["harness_v1", "codex_sidecar_v1"], runtime_kind),
         )
         acceptance = self._repository.accept_input(
             user_id=user_id, run_id=run.run_id, idempotency_key=f"queue:{item['id']}:{mode}",
@@ -465,7 +472,7 @@ class PostgresTutorQueueController:
         )
         self._apply_metadata(
             user_id=user_id, run_id=run.run_id, acceptance=acceptance,
-            metadata=_mapping(item.get("input_metadata_json")), inherit_existing_scope=False,
+            metadata=metadata, inherit_existing_scope=False,
         )
         fresh = self._repository._lock_run(user_id=user_id, run_id=run.run_id)
         self._repository._ensure_public_process_locked(run=fresh, occurred_at=occurred_at)
