@@ -131,6 +131,9 @@ class RuntimeEvent:
     content_sha256: str | None = None
     safe_code: str | None = None
     terminal_status: RuntimeTerminalStatus | None = None
+    tool_name: str | None = None
+    input_sha256: str | None = None
+    result_sha256: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

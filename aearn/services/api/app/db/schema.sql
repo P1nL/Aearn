@@ -6374,3 +6374,190 @@ DROP TRIGGER IF EXISTS trg_tutor_thread_turn_cutover_events_immutable ON tutor_t
 CREATE TRIGGER trg_tutor_thread_turn_cutover_events_immutable
 BEFORE UPDATE OR DELETE ON tutor_thread_turn_cutover_events
 FOR EACH ROW EXECUTE FUNCTION enforce_tutor_thread_turn_cutover_event_append_only();
+
+
+-- Child 08-17 Codex runtime durable correlation and safe public projection.
+ALTER TABLE tutor_runs
+  ADD COLUMN IF NOT EXISTS runtime_kind text NOT NULL DEFAULT 'harness_v1';
+ALTER TABLE tutor_runs
+  DROP CONSTRAINT IF EXISTS chk_tutor_runs_runtime_kind;
+ALTER TABLE tutor_runs
+  ADD CONSTRAINT chk_tutor_runs_runtime_kind
+  CHECK (runtime_kind IN ('harness_v1', 'codex_sidecar_v1'));
+
+CREATE OR REPLACE FUNCTION enforce_tutor_run_runtime_kind_immutable()
+RETURNS trigger AS $$
+BEGIN
+  IF NEW.runtime_kind IS DISTINCT FROM OLD.runtime_kind THEN
+    RAISE EXCEPTION 'Tutor run runtime kind is immutable' USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS trg_tutor_runs_runtime_kind_immutable ON tutor_runs;
+CREATE TRIGGER trg_tutor_runs_runtime_kind_immutable
+BEFORE UPDATE ON tutor_runs
+FOR EACH ROW EXECUTE FUNCTION enforce_tutor_run_runtime_kind_immutable();
+
+CREATE TABLE IF NOT EXISTS tutor_run_runtime_bindings (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  run_id uuid NOT NULL UNIQUE REFERENCES tutor_runs(id) ON DELETE RESTRICT,
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  conversation_id uuid NOT NULL REFERENCES tutor_conversations(id) ON DELETE RESTRICT,
+  runtime_kind text NOT NULL CHECK (runtime_kind = 'codex_sidecar_v1'),
+  runtime_version text NOT NULL CHECK (char_length(runtime_version) BETWEEN 1 AND 120),
+  protocol_version text NOT NULL CHECK (char_length(protocol_version) BETWEEN 1 AND 120),
+  external_thread_id text NOT NULL CHECK (char_length(external_thread_id) BETWEEN 1 AND 240),
+  external_turn_id text CHECK (external_turn_id IS NULL OR char_length(external_turn_id) BETWEEN 1 AND 240),
+  connection_generation bigint NOT NULL CHECK (connection_generation >= 1),
+  state text NOT NULL CHECK (state IN (
+    'thread_bound', 'running', 'completed', 'interrupted', 'unavailable', 'failed'
+  )),
+  final_message_id uuid,
+  final_message_blocked boolean NOT NULL DEFAULT false,
+  safe_error_code text CHECK (safe_error_code IS NULL OR safe_error_code ~ '^[A-Za-z0-9][A-Za-z0-9._:@-]{0,119}$'),
+  started_at timestamptz,
+  terminal_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_tutor_runtime_bindings_scope UNIQUE (id, run_id, user_id, conversation_id),
+  CONSTRAINT uq_tutor_runtime_bindings_thread UNIQUE (runtime_kind, external_thread_id),
+  CONSTRAINT fk_tutor_runtime_binding_run_scope
+    FOREIGN KEY (run_id, user_id, conversation_id)
+    REFERENCES tutor_runs(id, user_id, conversation_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_runtime_binding_message_scope
+    FOREIGN KEY (final_message_id, conversation_id)
+    REFERENCES tutor_messages(id, conversation_id) ON DELETE RESTRICT,
+  CONSTRAINT chk_tutor_runtime_binding_terminal CHECK (
+    (state IN ('thread_bound', 'running') AND terminal_at IS NULL)
+    OR (state IN ('completed', 'interrupted', 'unavailable', 'failed') AND terminal_at IS NOT NULL)
+  )
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_tutor_runtime_bindings_turn
+  ON tutor_run_runtime_bindings(runtime_kind, external_turn_id)
+  WHERE external_turn_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_tutor_runtime_bindings_run_state
+  ON tutor_run_runtime_bindings(user_id, run_id, state, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS tutor_runtime_item_receipts (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  binding_id uuid NOT NULL REFERENCES tutor_run_runtime_bindings(id) ON DELETE RESTRICT,
+  run_id uuid NOT NULL REFERENCES tutor_runs(id) ON DELETE RESTRICT,
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  conversation_id uuid NOT NULL REFERENCES tutor_conversations(id) ON DELETE RESTRICT,
+  event_key text NOT NULL CHECK (event_key ~ '^[0-9a-f]{64}$'),
+  event_kind text NOT NULL CHECK (event_kind IN (
+    'turn_started', 'message_delta', 'message_completed', 'tool_started',
+    'tool_completed', 'turn_completed', 'warning'
+  )),
+  external_item_hash text CHECK (external_item_hash IS NULL OR external_item_hash ~ '^[0-9a-f]{64}$'),
+  event_sequence integer NOT NULL CHECK (event_sequence >= 1),
+  item_kind text CHECK (item_kind IS NULL OR item_kind IN ('turn', 'message', 'tool', 'warning')),
+  item_status text CHECK (item_status IS NULL OR char_length(item_status) BETWEEN 1 AND 80),
+  tool_name text CHECK (tool_name IS NULL OR tool_name ~ '^[A-Za-z0-9_-]{1,64}$'),
+  input_hash text CHECK (input_hash IS NULL OR input_hash ~ '^[0-9a-f]{64}$'),
+  result_hash text CHECK (result_hash IS NULL OR result_hash ~ '^[0-9a-f]{64}$'),
+  content_hash text CHECK (content_hash IS NULL OR content_hash ~ '^[0-9a-f]{64}$'),
+  safe_code text CHECK (safe_code IS NULL OR safe_code ~ '^[A-Za-z0-9][A-Za-z0-9._:@-]{0,119}$'),
+  projection_status text NOT NULL CHECK (projection_status IN (
+    'applied', 'ignored_nonpublic', 'ignored_stale', 'blocked_unsafe'
+  )),
+  public_item_id uuid,
+  public_item_kind text CHECK (public_item_kind IS NULL OR public_item_kind IN ('message', 'process', 'error')),
+  occurred_at timestamptz NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_tutor_runtime_item_receipts_event UNIQUE (binding_id, event_key),
+  CONSTRAINT uq_tutor_runtime_item_receipts_sequence UNIQUE (binding_id, event_sequence),
+  CONSTRAINT fk_tutor_runtime_receipt_binding_scope
+    FOREIGN KEY (binding_id, run_id, user_id, conversation_id)
+    REFERENCES tutor_run_runtime_bindings(id, run_id, user_id, conversation_id) ON DELETE RESTRICT,
+  CONSTRAINT chk_tutor_runtime_receipt_public_item CHECK (
+    (public_item_id IS NULL AND public_item_kind IS NULL)
+    OR (public_item_id IS NOT NULL AND public_item_kind IS NOT NULL)
+  )
+);
+CREATE INDEX IF NOT EXISTS idx_tutor_runtime_receipts_run_sequence
+  ON tutor_runtime_item_receipts(user_id, run_id, event_sequence, created_at);
+
+CREATE TABLE IF NOT EXISTS tutor_runtime_public_errors (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  binding_id uuid NOT NULL UNIQUE REFERENCES tutor_run_runtime_bindings(id) ON DELETE RESTRICT,
+  run_id uuid NOT NULL REFERENCES tutor_runs(id) ON DELETE RESTRICT,
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  conversation_id uuid NOT NULL REFERENCES tutor_conversations(id) ON DELETE RESTRICT,
+  code text NOT NULL CHECK (code ~ '^[A-Z][A-Z0-9_]{0,119}$'),
+  recoverable boolean NOT NULL,
+  created_at timestamptz NOT NULL,
+  CONSTRAINT fk_tutor_runtime_error_binding_scope
+    FOREIGN KEY (binding_id, run_id, user_id, conversation_id)
+    REFERENCES tutor_run_runtime_bindings(id, run_id, user_id, conversation_id) ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_tutor_runtime_errors_conversation
+  ON tutor_runtime_public_errors(user_id, conversation_id, created_at DESC);
+
+CREATE OR REPLACE FUNCTION enforce_tutor_runtime_binding_lifecycle()
+RETURNS trigger AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'Tutor runtime bindings are retained audit state' USING ERRCODE = '23514';
+  END IF;
+  IF NEW.run_id IS DISTINCT FROM OLD.run_id
+     OR NEW.user_id IS DISTINCT FROM OLD.user_id
+     OR NEW.conversation_id IS DISTINCT FROM OLD.conversation_id
+     OR NEW.runtime_kind IS DISTINCT FROM OLD.runtime_kind
+     OR NEW.runtime_version IS DISTINCT FROM OLD.runtime_version
+     OR NEW.protocol_version IS DISTINCT FROM OLD.protocol_version
+     OR NEW.external_thread_id IS DISTINCT FROM OLD.external_thread_id
+     OR NEW.connection_generation IS DISTINCT FROM OLD.connection_generation THEN
+    RAISE EXCEPTION 'Tutor runtime binding identity is immutable' USING ERRCODE = '23514';
+  END IF;
+  IF OLD.state IN ('completed', 'interrupted', 'unavailable', 'failed') AND NEW IS DISTINCT FROM OLD THEN
+    RAISE EXCEPTION 'Tutor runtime terminal binding is immutable' USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS trg_tutor_runtime_bindings_lifecycle ON tutor_run_runtime_bindings;
+CREATE TRIGGER trg_tutor_runtime_bindings_lifecycle
+BEFORE UPDATE OR DELETE ON tutor_run_runtime_bindings
+FOR EACH ROW EXECUTE FUNCTION enforce_tutor_runtime_binding_lifecycle();
+DROP TRIGGER IF EXISTS trg_tutor_runtime_bindings_updated_at ON tutor_run_runtime_bindings;
+CREATE TRIGGER trg_tutor_runtime_bindings_updated_at
+BEFORE UPDATE ON tutor_run_runtime_bindings
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE OR REPLACE FUNCTION enforce_tutor_runtime_append_only()
+RETURNS trigger AS $$
+BEGIN
+  RAISE EXCEPTION 'Tutor runtime receipts and public errors are append-only' USING ERRCODE = '23514';
+END;
+$$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS trg_tutor_runtime_receipts_immutable ON tutor_runtime_item_receipts;
+CREATE TRIGGER trg_tutor_runtime_receipts_immutable
+BEFORE UPDATE OR DELETE ON tutor_runtime_item_receipts
+FOR EACH ROW EXECUTE FUNCTION enforce_tutor_runtime_append_only();
+DROP TRIGGER IF EXISTS trg_tutor_runtime_errors_immutable ON tutor_runtime_public_errors;
+CREATE TRIGGER trg_tutor_runtime_errors_immutable
+BEFORE UPDATE OR DELETE ON tutor_runtime_public_errors
+FOR EACH ROW EXECUTE FUNCTION enforce_tutor_runtime_append_only();
+
+ALTER TABLE tutor_run_public_processes
+  DROP CONSTRAINT IF EXISTS tutor_run_public_processes_current_step_key_check;
+ALTER TABLE tutor_run_public_processes
+  DROP CONSTRAINT IF EXISTS chk_tutor_public_process_current_step_key;
+ALTER TABLE tutor_run_public_processes
+  ADD CONSTRAINT chk_tutor_public_process_current_step_key CHECK (current_step_key IN (
+    'input_received', 'context_prepared', 'authorized_resource_checked',
+    'runtime_started', 'domain_tool_running', 'domain_tool_completed',
+    'learning_reply_generated', 'replaced_by_newer_input'
+  ));
+ALTER TABLE tutor_run_public_process_steps
+  DROP CONSTRAINT IF EXISTS tutor_run_public_process_steps_step_key_check;
+ALTER TABLE tutor_run_public_process_steps
+  DROP CONSTRAINT IF EXISTS chk_tutor_public_process_step_key;
+ALTER TABLE tutor_run_public_process_steps
+  ADD CONSTRAINT chk_tutor_public_process_step_key CHECK (step_key IN (
+    'input_received', 'context_prepared', 'authorized_resource_checked',
+    'runtime_started', 'domain_tool_running', 'domain_tool_completed',
+    'learning_reply_generated', 'replaced_by_newer_input'
+  ));

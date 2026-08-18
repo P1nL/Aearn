@@ -61,6 +61,7 @@ def run_tool_calls(
         tool_result = read()
         success = bool((tool_result.get("result") or {}).get("success"))
         item["status"] = "completed" if success else "failed"
+        item["result"] = tool_result.get("result")
         send({"method": "item/completed", "params": {"threadId": thread_id, "turnId": turn_id, "item": item}})
         if not success:
             send(
@@ -205,6 +206,8 @@ def main() -> int:
                 continue
             reasoning = {"id": "reasoning_1", "type": "reasoning", "text": "raw reasoning must stay hidden"}
             send({"method": "item/completed", "params": {"threadId": thread_id, "turnId": turn_id, "item": reasoning}})
+            commentary = {"id": "commentary_1", "type": "agentMessage", "text": "private commentary", "phase": "commentary"}
+            send({"method": "item/completed", "params": {"threadId": thread_id, "turnId": turn_id, "item": commentary}})
             message = {"id": "message_1", "type": "agentMessage", "text": "safe final", "phase": "final_answer"}
             send({"method": "item/completed", "params": {"threadId": thread_id, "turnId": turn_id, "item": message}})
             send({"method": "turn/completed", "params": {"threadId": thread_id, "turn": {"id": turn_id, "status": "completed", "items": [message]}}})

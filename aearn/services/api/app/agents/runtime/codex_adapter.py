@@ -3,11 +3,15 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
+import re
 from collections.abc import AsyncIterator, Mapping
 
 from .codex_connection import JsonRpcError, JsonRpcNotification
 from .codex_supervisor import CodexRuntimeSupervisor, RuntimeUnavailableError
 from .contracts import AgentRuntimePort, RuntimeEvent, RuntimeEventKind, RuntimeHealthSnapshot, RuntimeInput, RuntimeTerminalStatus, RuntimeThreadHandle, RuntimeThreadRequest, RuntimeTurnRequest, RuntimeTurnResult
+
+_TOOL_NAME = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
 class RuntimeBusyError(RuntimeError):
@@ -144,8 +148,23 @@ def _map_notification(notification: JsonRpcNotification, thread_id: str, turn_id
         item_id = str(item.get("id", "")) or None
         if item_type == "dynamicToolCall":
             kind = RuntimeEventKind.TOOL_STARTED if method == "item/started" else RuntimeEventKind.TOOL_COMPLETED
-            return RuntimeEvent(kind, thread_id, turn_id, item_id=item_id, safe_code=str(item.get("status") or "") or None)
+            return RuntimeEvent(
+                kind,
+                thread_id,
+                turn_id,
+                item_id=item_id,
+                safe_code=str(item.get("status") or "") or None,
+                tool_name=_safe_tool_name(item.get("tool") or item.get("name")),
+                input_sha256=_hash_json(item.get("arguments")),
+                result_sha256=(
+                    _hash_json(item.get("result") if item.get("result") is not None else item.get("content"))
+                    if method == "item/completed"
+                    else None
+                ),
+            )
         if item_type == "agentMessage" and method == "item/completed":
+            if str(item.get("phase") or "") != "final_answer":
+                return None
             text = str(item.get("text", ""))
             return RuntimeEvent(RuntimeEventKind.MESSAGE_COMPLETED, thread_id, turn_id, item_id=item_id, visible_text=text, content_sha256=_hash(text))
         return None
@@ -165,3 +184,15 @@ def _map_notification(notification: JsonRpcNotification, thread_id: str, turn_id
 
 def _hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _hash_json(value: object) -> str | None:
+    if value is None:
+        return None
+    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _safe_tool_name(value: object) -> str | None:
+    name = str(value or "")
+    return name if _TOOL_NAME.fullmatch(name) is not None else None
