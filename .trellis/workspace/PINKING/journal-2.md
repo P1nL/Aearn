@@ -1799,3 +1799,25 @@ Closed the planning-only Tutor Harness rearchitecture parent after all nine inde
 ### Status
 
 [OK] **Completed**
+
+
+## Session 112: 完成 Codex plan-drafting 受控切换
+
+**Date**: 2026-08-19
+**Task**: 完成 Codex plan-drafting 受控切换
+**Branch**: `main`
+
+### Summary
+
+完成默认开启但 exact readiness fail-closed 的 Codex plan-drafting admission、runtime_kind 冻结、Harness/Codex worker 隔离路由、typed tools/event projection、steer/interrupt 与 same-runtime Retry；全量 API 660 passed、Ruff/Mypy/Desktop/DB/Trellis 均通过。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `a0a154c1` | (see git log) |
+| `34d6a00c` | (see git log) |
+
+### Status
+
+[OK] **Completed**
