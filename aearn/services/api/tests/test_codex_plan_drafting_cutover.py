@@ -547,4 +547,3 @@ def test_controlled_runtime_maps_cancel_to_interrupt() -> None:
     )
     assert runtime.interrupts == ["turn-1"]
     assert result.terminal_status is RuntimeTerminalStatus.INTERRUPTED
-
