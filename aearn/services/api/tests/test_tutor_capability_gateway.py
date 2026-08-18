@@ -384,7 +384,7 @@ def test_catalog_and_tutor_source_never_import_retired_or_unbounded_execution_su
         if path.name in {
             "persistence.py", "proactive_repository.py", "learner_state.py",
             "action_adapters.py", "action_persistence.py", "queue_control.py",
-            "runtime_projection.py",
+            "runtime_projection.py", "runtime_selection.py",
         }:
             # Child 02 owns durable replay; later children own scheduler queue
             # leases and bounded Runtime projection persistence. Keep the SQL exception narrow while retaining every
@@ -405,5 +405,15 @@ def test_catalog_and_tutor_source_never_import_retired_or_unbounded_execution_su
             # open target connections, but they must remain independent from
             # Graph/router/tool/runner implementation paths.
             forbidden_for_path = tuple(marker for marker in forbidden if marker not in {"app.db", "psycopg"})
-        assert not any(marker in source for marker in retired_module_prefixes), path
+        if path.name == "codex_dispatcher.py":
+            # Child 08-17 owns the one approved Tutor-to-Runtime adapter.
+            forbidden_for_path = tuple(
+                marker for marker in forbidden if marker not in {"app.db", "psycopg"}
+            )
+        prohibited_agent_prefixes = (
+            tuple(marker for marker in retired_module_prefixes if marker != "app.agents.runtime")
+            if path.name == "codex_dispatcher.py"
+            else retired_module_prefixes
+        )
+        assert not any(marker in source for marker in prohibited_agent_prefixes), path
         assert not any(marker in source for marker in forbidden_for_path), path

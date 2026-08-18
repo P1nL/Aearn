@@ -66,7 +66,9 @@ def _modules() -> list[dict[str, object]]:
 async def test_postgres_typed_tools_build_server_profile_append_once_and_fence_generation(
     monkeypatch: pytest.MonkeyPatch,
     tutor_client: TestClient,
+    tutor_api_settings: object,
 ) -> None:
+    del tutor_api_settings
     dispatcher = RecordingTutorDispatcher()
     monkeypatch.setattr(tutor_route, "build_tutor_run_dispatcher", lambda _settings: dispatcher)
     user_id = str(create_tutor_user(tutor_client)["id"])
@@ -207,7 +209,9 @@ async def test_postgres_typed_tools_build_server_profile_append_once_and_fence_g
 async def test_postgres_context_reports_awaiting_user_for_missing_authoritative_facts(
     monkeypatch: pytest.MonkeyPatch,
     tutor_client: TestClient,
+    tutor_api_settings: object,
 ) -> None:
+    del tutor_api_settings
     dispatcher = RecordingTutorDispatcher()
     monkeypatch.setattr(tutor_route, "build_tutor_run_dispatcher", lambda _settings: dispatcher)
     user_id = str(create_tutor_user(tutor_client)["id"])

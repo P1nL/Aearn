@@ -83,6 +83,39 @@ class TutorRunDispatcher(Protocol):
     def dispatch(self, *, user_id: str, run_id: str) -> TutorRunResult: ...
 
 
+class TutorRuntimeDispatchRouter:
+    """Route strictly from the immutable Runtime kind persisted on the run."""
+
+    def __init__(
+        self,
+        *,
+        harness: TutorRunDispatcher,
+        codex: TutorRunDispatcher,
+    ) -> None:
+        self._harness = harness
+        self._codex = codex
+
+    def dispatch(self, *, user_id: str, run_id: str) -> TutorRunResult:
+        with connect() as conn:
+            snapshot = PostgresTutorRepository(conn).load_snapshot(
+                user_id=user_id,
+                run_id=run_id,
+            )
+        if snapshot is None:
+            raise ValueError("Tutor run was not found")
+        if snapshot.runtime_kind == "harness_v1":
+            return self._harness.dispatch(user_id=user_id, run_id=run_id)
+        if snapshot.runtime_kind == "codex_sidecar_v1":
+            return self._codex.dispatch(user_id=user_id, run_id=run_id)
+        raise ValueError("Tutor run Runtime kind is invalid")
+
+
+class _CodexDispatchUnavailable:
+    def dispatch(self, *, user_id: str, run_id: str) -> TutorRunResult:
+        del user_id, run_id
+        raise RuntimeError("codex_dispatch_requires_dedicated_worker")
+
+
 class UtcClock:
     """Small production clock adapter; tests inject a deterministic provider instead."""
 
@@ -773,10 +806,17 @@ class TutorInteractiveRunDispatcher:
             return result
 
 
-def build_tutor_run_dispatcher(settings: Settings) -> TutorRunDispatcher:
-    """Construct a route-owned dispatcher without caching cross-request state."""
+def build_tutor_run_dispatcher(
+    settings: Settings,
+    *,
+    codex_dispatcher: TutorRunDispatcher | None = None,
+) -> TutorRunDispatcher:
+    """Construct a frozen-kind router; Codex is opt-in only in its worker."""
 
-    return TutorInteractiveRunDispatcher(settings=settings)
+    return TutorRuntimeDispatchRouter(
+        harness=TutorInteractiveRunDispatcher(settings=settings),
+        codex=codex_dispatcher or _CodexDispatchUnavailable(),
+    )
 
 
 def _primary_provider(settings: Settings) -> TutorProviderGateway:

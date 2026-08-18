@@ -6399,6 +6399,28 @@ CREATE TRIGGER trg_tutor_runs_runtime_kind_immutable
 BEFORE UPDATE ON tutor_runs
 FOR EACH ROW EXECUTE FUNCTION enforce_tutor_run_runtime_kind_immutable();
 
+CREATE TABLE IF NOT EXISTS tutor_codex_runtime_health (
+  worker_id text PRIMARY KEY CHECK (char_length(worker_id) BETWEEN 1 AND 160),
+  status text NOT NULL CHECK (status IN ('stopped', 'starting', 'ready', 'unavailable', 'failed')),
+  generation bigint NOT NULL DEFAULT 0 CHECK (generation >= 0),
+  runtime_version text CHECK (runtime_version IS NULL OR char_length(runtime_version) BETWEEN 1 AND 120),
+  model text CHECK (model IS NULL OR char_length(model) BETWEEN 1 AND 120),
+  model_provider text CHECK (model_provider IS NULL OR char_length(model_provider) BETWEEN 1 AND 120),
+  protocol text CHECK (protocol IS NULL OR char_length(protocol) BETWEEN 1 AND 40),
+  safe_error_code text CHECK (
+    safe_error_code IS NULL OR safe_error_code ~ '^[A-Za-z0-9][A-Za-z0-9._:@-]{0,119}$'
+  ),
+  observed_at timestamptz NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_tutor_codex_runtime_health_observed
+  ON tutor_codex_runtime_health(observed_at DESC, updated_at DESC);
+DROP TRIGGER IF EXISTS trg_tutor_codex_runtime_health_updated_at ON tutor_codex_runtime_health;
+CREATE TRIGGER trg_tutor_codex_runtime_health_updated_at
+BEFORE UPDATE ON tutor_codex_runtime_health
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
 CREATE TABLE IF NOT EXISTS tutor_run_runtime_bindings (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   run_id uuid NOT NULL UNIQUE REFERENCES tutor_runs(id) ON DELETE RESTRICT,

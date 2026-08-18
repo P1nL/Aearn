@@ -65,6 +65,11 @@ from app.services.tutor.persistence import (
 )
 from app.services.tutor.proactive import TutorProactivePreference
 from app.services.tutor.queue_control import PostgresTutorQueueController, QUEUE_MAX_PENDING
+from app.services.tutor.runtime_selection import (
+    TutorCodexRuntimeUnavailable,
+    TutorRuntimeKindValue,
+    TutorRuntimeSelectionPolicy,
+)
 from app.services.tutor.proactive_repository import PostgresTutorProactiveRepository
 
 
@@ -120,6 +125,7 @@ class TutorPublicService:
         self._learner_state = TutorLearnerStateRepository(conn)
         self._proactive = PostgresTutorProactiveRepository(conn)
         self._queue = PostgresTutorQueueController(conn)
+        self._runtime_selection = TutorRuntimeSelectionPolicy(conn, settings=self._settings)
 
     def create_or_resume_conversation(
         self,
@@ -772,6 +778,11 @@ class TutorPublicService:
         try:
             catalog = compile_published_skill_catalog()
             self._repository.record_catalog_snapshot(catalog)
+            runtime_kind = self._select_runtime_kind(
+                user_id=user_id,
+                conversation_id=None,
+                learning_scope=learning_scope,
+            )
             accepted = self._repository.create_first_interactive_turn(
                 user_id=user_id,
                 catalog_digest=catalog.digest,
@@ -779,6 +790,7 @@ class TutorPublicService:
                 idempotency_key=idempotency_key,
                 content=content,
                 received_at=now,
+                runtime_kind=runtime_kind,
             )
             scope = self._snapshot_learning_scope(
                 user_id=user_id,
@@ -804,6 +816,13 @@ class TutorPublicService:
                     reopen_fields=reopen_fact_fields,
                 )
             state = self._repository.read_run_state(user_id=user_id, run_id=accepted.run.run_id)
+        except TutorCodexRuntimeUnavailable as exc:
+            raise TutorPublicApiError(
+                "TUTOR_RUNTIME_UNAVAILABLE",
+                "Codex planning Runtime is not ready for a new plan drafting turn.",
+                status_code=503,
+                details={"reason": exc.reason_code},
+            ) from exc
         except ContextReferenceError as exc:
             raise TutorPublicApiError(
                 exc.code,
@@ -841,6 +860,11 @@ class TutorPublicService:
         try:
             catalog = compile_published_skill_catalog()
             self._repository.record_catalog_snapshot(catalog)
+            runtime_kind = self._select_runtime_kind(
+                user_id=user_id,
+                conversation_id=conversation_id,
+                learning_scope=learning_scope,
+            )
             queue_acceptance = self._queue.accept_or_queue(
                 user_id=user_id,
                 conversation_id=conversation_id,
@@ -855,6 +879,7 @@ class TutorPublicService:
                     "context_references": [dict(item) for item in context_references],
                 },
                 received_at=now,
+                runtime_kind=runtime_kind,
             )
             if queue_acceptance.queued_item is not None:
                 pending = self._queue.list_pending(user_id=user_id, conversation_id=conversation_id)
@@ -899,6 +924,13 @@ class TutorPublicService:
                 "Tutor conversation was not found for the current learner.",
                 status_code=404,
                 details={"conversation_id": conversation_id},
+            ) from exc
+        except TutorCodexRuntimeUnavailable as exc:
+            raise TutorPublicApiError(
+                "TUTOR_RUNTIME_UNAVAILABLE",
+                "Codex planning Runtime is not ready for a new plan drafting turn.",
+                status_code=503,
+                details={"reason": exc.reason_code},
             ) from exc
         except ContextReferenceError as exc:
             raise TutorPublicApiError(
@@ -1092,6 +1124,44 @@ class TutorPublicService:
             "replaced_process": None,
             "context_references": list(references),
         }
+
+    def _select_runtime_kind(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str | None,
+        learning_scope: LearningScope | None,
+    ) -> TutorRuntimeKindValue:
+        conversation_runtime = (
+            self._runtime_selection.conversation_runtime_kind(
+                user_id=user_id,
+                conversation_id=conversation_id,
+            )
+            if conversation_id is not None
+            else None
+        )
+        if learning_scope is not None:
+            scope_kind = learning_scope.scope_kind
+        elif conversation_id is None:
+            scope_kind = LearningScopeKind.GENERAL
+        else:
+            row = self._conn.execute(
+                """
+                SELECT scope_kind
+                FROM tutor_conversation_learning_scopes
+                WHERE user_id = %s AND conversation_id = %s
+                """,
+                (user_id, conversation_id),
+            ).fetchone()
+            scope_kind = (
+                LearningScopeKind(str(row["scope_kind"]))
+                if row is not None
+                else LearningScopeKind.GENERAL
+            )
+        return self._runtime_selection.select(
+            scope_kind=scope_kind,
+            conversation_runtime_kind=conversation_runtime,
+        ).runtime_kind
 
     def _queue_state_payload(self, *, user_id: str, conversation_id: str) -> dict[str, object]:
         try:

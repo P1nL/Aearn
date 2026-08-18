@@ -79,6 +79,14 @@ class Settings(BaseModel):
     codex_runtime_turn_timeout_seconds: float = Field(default_factory=lambda: _env_float("CODEX_RUNTIME_TURN_TIMEOUT_SECONDS", "300"), gt=0, le=3600)
     codex_runtime_shutdown_timeout_seconds: float = Field(default_factory=lambda: _env_float("CODEX_RUNTIME_SHUTDOWN_TIMEOUT_SECONDS", "5"), gt=0, le=60)
     codex_runtime_notification_queue_size: int = Field(default_factory=lambda: _env_int("CODEX_RUNTIME_NOTIFICATION_QUEUE_SIZE", "256"), ge=16, le=4096)
+    tutor_codex_plan_drafting_enabled: bool = Field(
+        default_factory=lambda: _env_bool("TUTOR_CODEX_PLAN_DRAFTING_ENABLED", "true")
+    )
+    tutor_codex_runtime_health_max_age_seconds: int = Field(
+        default_factory=lambda: _env_int("TUTOR_CODEX_RUNTIME_HEALTH_MAX_AGE_SECONDS", "90"),
+        ge=5,
+        le=600,
+    )
     llm_timeout_seconds: float = Field(default_factory=lambda: float(_env_str("LLM_TIMEOUT_SECONDS", "20")))
     tutor_provider_debug_capture_mode: str = Field(
         default_factory=lambda: _env_str(

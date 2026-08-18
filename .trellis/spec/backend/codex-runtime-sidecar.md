@@ -6,7 +6,7 @@
 
 Apply this contract when changing the Codex App Server connection, runtime adapter, supervisor, worker ownership, lifecycle configuration, dynamic tool callbacks, or local `tutor-codex` worker startup.
 
-The runtime process is enabled by default, but Tutor business admission is separate. Runtime availability must never imply that a Tutor run is routed to Codex.
+The runtime process and plan-drafting admission are enabled by default, but remain separate controls. Runtime availability alone never routes a Tutor run to Codex; the server-side policy must verify exact fresh readiness and freeze `runtime_kind`.
 
 ### 2. Signatures
 
@@ -30,7 +30,7 @@ Dedicated worker command:
 python -m celery -A aearn_worker.worker_app:celery_app worker --pool=solo --concurrency=1 -Q tutor-codex -n tutor-codex@%h
 ~~~
 
-Lifecycle tasks are `tutor.codex.runtime_health` and `tutor.codex.runtime_shutdown`. There must be no `tutor.codex.dispatch` task until controlled cutover explicitly adds business admission.
+Lifecycle tasks are `tutor.codex.runtime_health` and `tutor.codex.runtime_shutdown`. Controlled plan-drafting cutover additionally owns `tutor.codex.dispatch` and `tutor.codex.reconcile`; both stay on the dedicated `tutor-codex` queue.
 
 ### 3. Contracts
 
@@ -46,6 +46,8 @@ CODEX_RUNTIME_REQUEST_TIMEOUT_SECONDS=15
 CODEX_RUNTIME_TURN_TIMEOUT_SECONDS=300
 CODEX_RUNTIME_SHUTDOWN_TIMEOUT_SECONDS=5
 CODEX_RUNTIME_NOTIFICATION_QUEUE_SIZE=256
+TUTOR_CODEX_PLAN_DRAFTING_ENABLED=true
+TUTOR_CODEX_RUNTIME_HEALTH_MAX_AGE_SECONDS=90
 ~~~
 
 Required behavior:
@@ -347,3 +349,88 @@ receipt = projector.project(
 ~~~
 
 The adapter removes wire-private data; the projector rechecks database authority and writes only safe Aearn-owned public state plus an append-only receipt.
+
+
+## Scenario: Controlled plan-drafting Runtime cutover
+
+### 1. Scope / Trigger
+
+Apply this contract when changing Codex plan-drafting admission, worker readiness persistence, Runtime routing, Queue/Steer/Interrupt control, or same-runtime Retry behavior.
+
+### 2. Signatures
+
+~~~text
+TUTOR_CODEX_PLAN_DRAFTING_ENABLED=true
+TUTOR_CODEX_RUNTIME_HEALTH_MAX_AGE_SECONDS=90
+
+tutor_codex_runtime_health(worker_id, status, generation, runtime_version,
+  model, model_provider, protocol, safe_error_code, observed_at)
+
+TutorRuntimeSelectionPolicy.select(scope_kind, inherited_runtime_kind,
+  conversation_runtime_kind) -> harness_v1 | codex_sidecar_v1
+~~~
+
+### 3. Contracts
+
+- Only a brand-new `plan_drafting` conversation without a frozen Runtime may enter `codex_sidecar_v1`.
+- Exact admission requires feature enabled, `CODEX_RUNTIME_ENABLED=true`, a fresh `ready` row, generation >= 1, an allowlisted Runtime version, model `deepseek-v4-flash`, provider `aearn_deepseek`, and protocol `responses`.
+- Feature disabled routes new plan-drafting work to Harness. Feature enabled with missing, stale, unhealthy, or mismatched readiness fails closed with `TUTOR_RUNTIME_UNAVAILABLE`; general/track/proactive scopes remain Harness and unaffected.
+- The first interactive Runtime kind in a conversation is inherited by later fresh turns. Retry always copies the failed root Runtime kind. Clients, models, queued metadata, and public DTOs cannot select or mutate it.
+- Harness and Codex workers claim the same durable job table with an exact Runtime filter. `TutorRuntimeDispatchRouter` reads only the immutable run snapshot; it never re-evaluates feature or health.
+- `CodexTutorRunDispatcher` never composes `TutorRunLoop`. It acquires the Tutor lease, registers only the typed LearningPlan tools, binds the private Runtime thread, projects normalized events, and returns the existing Aearn run result.
+- During an active Codex turn, a higher durable input revision becomes `turn/steer`; cancellation, supersede, lease loss, or control failure becomes `turn/interrupt`. Control failure terminates unavailable rather than leaving an orphan task.
+- A recovered dispatch with an existing private binding does not start another external turn. It terminalizes the same run as unavailable so a learner Retry can create a fresh same-Runtime run without duplicating model or tool side effects.
+- Codex may append a draft through the typed tool but cannot confirm it. LearningPlan confirm and LearningTrack creation remain existing HTTP/domain authority.
+- Readiness, logs, receipts, errors, history, SSE, and Desktop payloads remain Aearn-owned and redacted; Runtime thread/turn IDs and tool arguments never become public.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required result |
+| --- | --- |
+| Feature off | New plan-drafting run uses `harness_v1` |
+| General, learning-track, proactive, or historical conversation | Preserve `harness_v1` or the conversation's frozen Runtime |
+| Missing/stale/unhealthy/mismatched readiness | `503 TUTOR_RUNTIME_UNAVAILABLE`; no conversation/run is created |
+| Harness worker sees Codex job or Codex worker sees Harness job | No claim/no action |
+| New input revision while Codex turn is active | One ordered `turn/steer` with the accepted input text |
+| Cancel, supersede, or lease loss | `turn/interrupt`; late Runtime projection is stale/no public overwrite |
+| Retry of failed Codex run | Fresh run with `codex_sidecar_v1`; no cross-Runtime fallback |
+| Existing binding recovered after dispatch failure | Same run becomes unavailable; no second external turn |
+
+### 5. Good / Base / Bad Cases
+
+- Good: a fresh plan-drafting conversation sees one current exact readiness row, freezes Codex, runs through the dedicated worker, steers one later accepted revision, projects one final answer, and leaves confirmation to Aearn.
+- Base: admission is disabled; the same public request creates a normal Harness run without starting or depending on the Codex worker.
+- Good recovery: a failed Codex run creates a fresh Retry with `codex_sidecar_v1`; committed draft/message receipts remain and no Harness fallback occurs.
+- Bad: route from current health instead of persisted `runtime_kind`, let the client set Runtime, let both workers claim the same job, or start a second external turn for a run that already has a binding.
+
+### 6. Tests Required
+
+- Default-enabled configuration plus explicit feature-off behavior.
+- Exact readiness matrix for version, model, provider, protocol, generation, freshness, and status.
+- Public acceptance proving only a new plan-drafting run freezes Codex and no Runtime control field enters the DTO.
+- Runtime-filtered durable claims, frozen-kind router, Codex dispatcher projection without Harness composition, revision-to-steer, cancel-to-interrupt, and same-Runtime retry.
+- Full non-real-provider API suite, Ruff, Mypy, database bootstrap/cutover inventory, Desktop check, Trellis validation, and `git diff --check`.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+~~~python
+runtime_kind = "codex_sidecar_v1" if health.ready else "harness_v1"
+dispatcher = codex if health.ready else harness
+~~~
+
+This silently crosses Runtime after admission and lets a transient health change alter an existing run.
+
+#### Correct
+
+~~~python
+selection = runtime_policy.select(scope_kind=scope.scope_kind)
+run = repository.create_run(runtime_kind=selection.runtime_kind, ...)
+result = TutorRuntimeDispatchRouter(harness=harness, codex=codex).dispatch(
+    user_id=run.user_id,
+    run_id=run.run_id,
+)
+~~~
+
+Selection happens once at the server-owned creation boundary; dispatch reads only the immutable persisted Runtime.

@@ -5,7 +5,7 @@ import logging
 import socket
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Protocol
+from typing import Literal, Protocol
 from urllib.parse import urlparse
 from uuid import uuid4
 
@@ -42,11 +42,24 @@ class TutorInteractiveWorker:
         dispatcher: TutorRunDispatcher | None = None,
         clock: Clock | None = None,
         owner_id: str | None = None,
+        runtime_kind: Literal["harness_v1", "codex_sidecar_v1"] = "harness_v1",
     ) -> None:
         self._settings = settings or get_settings()
-        self._dispatcher = dispatcher or build_tutor_run_dispatcher(self._settings)
+        self._runtime_kind = runtime_kind
+        if dispatcher is not None:
+            self._dispatcher = dispatcher
+        elif runtime_kind == "codex_sidecar_v1":
+            from app.services.tutor.codex_dispatcher import CodexTutorRunDispatcher
+
+            self._dispatcher = build_tutor_run_dispatcher(
+                self._settings,
+                codex_dispatcher=CodexTutorRunDispatcher(settings=self._settings),
+            )
+        else:
+            self._dispatcher = build_tutor_run_dispatcher(self._settings)
         self._clock = clock or UtcClock()
-        self._owner_id = owner_id or f"tutor-interactive:{uuid4().hex}"
+        worker_name = "tutor-codex" if runtime_kind == "codex_sidecar_v1" else "tutor-interactive"
+        self._owner_id = owner_id or f"{worker_name}:{uuid4().hex}"
 
     def dispatch_job(self, *, job_id: str | None = None) -> dict[str, object]:
         with connect() as conn:
@@ -63,6 +76,7 @@ class TutorInteractiveWorker:
                 now=claimed_at,
                 limit=1,
                 job_id=job_id,
+                runtime_kind=self._runtime_kind,
             )
         if not claims:
             return {"status": "no_action", "processed": 0, "job_id": job_id}
@@ -100,6 +114,7 @@ class TutorInteractiveWorker:
             }
         completed_at = self._clock.now()
         next_job_id: str | None = None
+        next_runtime_kind: Literal["harness_v1", "codex_sidecar_v1"] | None = None
         with connect() as conn:
             repository = PostgresTutorRepository(conn)
             completed = repository.complete_interactive_dispatch_job(
@@ -119,10 +134,11 @@ class TutorInteractiveWorker:
                     occurred_at=completed_at,
                 )
                 next_job_id = drained.acceptance.dispatch_job_id if drained is not None else None
+                next_runtime_kind = drained.run.runtime_kind if drained is not None else None
             elif completed:
                 queue.pause_failed(user_id=claim.user_id, conversation_id=claim.conversation_id)
         if next_job_id is not None:
-            enqueue_tutor_interactive_dispatch(next_job_id)
+            enqueue_tutor_interactive_dispatch(next_job_id, runtime_kind=next_runtime_kind)
         return {
             "status": "completed" if completed else "stale",
             "processed": 1,
@@ -154,8 +170,9 @@ def run_tutor_interactive_worker_operation(
     operation: str,
     job_id: str | None = None,
     limit: int = 10,
+    runtime_kind: Literal["harness_v1", "codex_sidecar_v1"] = "harness_v1",
 ) -> dict[str, object]:
-    worker = TutorInteractiveWorker()
+    worker = TutorInteractiveWorker(runtime_kind=runtime_kind)
     if operation == "dispatch":
         return worker.dispatch_job(job_id=job_id)
     if operation == "reconcile":
@@ -163,21 +180,55 @@ def run_tutor_interactive_worker_operation(
     raise ValueError("unsupported Tutor interactive worker operation")
 
 
-def enqueue_tutor_interactive_dispatch(job_id: str) -> bool:
-    """Best-effort Celery wakeup; PostgreSQL reconciliation remains authoritative."""
+def enqueue_tutor_interactive_dispatch(
+    job_id: str,
+    *,
+    runtime_kind: Literal["harness_v1", "codex_sidecar_v1"] | None = None,
+) -> bool:
+    """Best-effort wakeup to the queue that owns the frozen Runtime kind."""
 
     settings = get_settings()
     broker_url = getattr(settings, "celery_broker_url", None) or "redis://127.0.0.1:6379/0"
     if not _broker_endpoint_reachable(str(broker_url)):
         return False
+    selected = runtime_kind or _dispatch_runtime_kind(job_id)
+    if selected is None:
+        return False
     try:
-        from aearn_worker.worker_app import dispatch_interactive_run
+        if selected == "codex_sidecar_v1":
+            from aearn_worker.worker_app import dispatch_codex_run
 
-        dispatch_interactive_run.apply_async(args=[job_id], queue="tutor-interactive", priority=9, retry=False)
+            dispatch_codex_run.apply_async(args=[job_id], queue="tutor-codex", priority=9, retry=False)
+        else:
+            from aearn_worker.worker_app import dispatch_interactive_run
+
+            dispatch_interactive_run.apply_async(args=[job_id], queue="tutor-interactive", priority=9, retry=False)
         return True
     except Exception:  # noqa: BLE001 - wakeup loss is recovered from PostgreSQL.
         logger.warning("Tutor interactive Celery wakeup failed job_id=%s code=broker_unavailable", job_id)
         return False
+
+
+def _dispatch_runtime_kind(
+    job_id: str,
+) -> Literal["harness_v1", "codex_sidecar_v1"] | None:
+    try:
+        with connect() as conn:
+            row = conn.execute(
+                """
+                SELECT runs.runtime_kind
+                FROM tutor_interactive_dispatch_jobs AS jobs
+                JOIN tutor_runs AS runs ON runs.id = jobs.run_id
+                WHERE jobs.id = %s
+                """,
+                (job_id,),
+            ).fetchone()
+    except Exception:
+        return None
+    if row is None:
+        return None
+    value = str(row.get("runtime_kind") or "harness_v1")
+    return "codex_sidecar_v1" if value == "codex_sidecar_v1" else "harness_v1"
 
 
 def _safe_dispatch_error_code(exc: Exception) -> str:
