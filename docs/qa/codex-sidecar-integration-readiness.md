@@ -1,7 +1,7 @@
 # Codex Sidecar 集成验收证据
 
-**日期：** 2026-08-18  
-**任务：** `08-17-codex-sidecar-integration-qa-docs`  
+**日期：** 2026-08-18
+**任务：** `08-17-codex-sidecar-integration-qa-docs`
 **结论：** 本地集成通过；不是 production/release approval。
 
 ## 支持矩阵
