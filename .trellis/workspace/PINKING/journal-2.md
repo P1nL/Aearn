@@ -1736,3 +1736,24 @@ Closed the planning-only Tutor Harness rearchitecture parent after all nine inde
 ### Status
 
 [OK] **Completed**
+
+
+## Session 109: 完成 Codex Sidecar 协议 Spike 与 Runtime Adapter
+
+**Date**: 2026-08-18
+**Task**: 完成 Codex Sidecar 协议 Spike 与 Runtime Adapter
+**Branch**: `main`
+
+### Summary
+
+完成 deepseek-v4-flash Responses 真实 tool-repair Go 验证；实现 Aearn-owned Codex Runtime contracts、stdio connection、Adapter、Supervisor、generation/ownership/file lock、默认启用的独立 tutor-codex worker 与显式 opt-out；最终 47 passed、1 skipped，Ruff/Mypy/Desktop/Trellis 校验通过；归档 Child 1 与 Child 2。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `5804d628` | (see git log) |
+
+### Status
+
+[OK] **Completed**
