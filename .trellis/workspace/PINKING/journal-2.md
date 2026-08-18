@@ -1757,3 +1757,24 @@ Closed the planning-only Tutor Harness rearchitecture parent after all nine inde
 ### Status
 
 [OK] **Completed**
+
+
+## Session 110: 完成 Codex 学习计划 typed tools 与恢复闭环
+
+**Date**: 2026-08-18
+**Task**: 完成 Codex 学习计划 typed tools 与恢复闭环
+**Branch**: `main`
+
+### Summary
+
+完成 Child 3：新增 server-authoritative planning context/draft tools、七类安全结果、tool/repair/conflict/wall/payload/output 预算、run/lease/input/facts/runtime generation fence、PostgreSQL durable replay；fake App Server 与完整 API 回归通过，正式 Tutor admission 保持未接入。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `515ed267` | (see git log) |
+
+### Status
+
+[OK] **Completed**
