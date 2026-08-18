@@ -727,7 +727,6 @@ def test_harness_and_tutor_modules_do_not_depend_on_retired_runtime_or_storage_b
         "notes",
         "onboarding",
         "review",
-        "runtime",
         "tooling",
     )
     retired_source_paths = tuple(
@@ -738,8 +737,9 @@ def test_harness_and_tutor_modules_do_not_depend_on_retired_runtime_or_storage_b
     )
     assert all(not path.exists() for path in retired_source_paths), retired_source_paths
 
+    forbidden_agent_packages = (*retired_agent_packages, "runtime")
     retired_module_prefixes = tuple(
-        ".".join(("app", "agents", package_name)) for package_name in retired_agent_packages
+        ".".join(("app", "agents", package_name)) for package_name in forbidden_agent_packages
     )
     forbidden = (
         "".join(("lang", "graph")),

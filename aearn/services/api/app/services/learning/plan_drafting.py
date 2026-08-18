@@ -133,18 +133,20 @@ def decode_compact_profile(profile_json: str) -> CompactPlanProfile:
     return CompactPlanProfile.model_validate(_json_object(profile_json, label="profile_json"))
 
 
-def decode_plan_draft(
-    *,
-    profile_json: str,
-    module_json_values: tuple[str, ...],
-    sources: tuple[LearningPlanSourceSummary, ...],
-    change_reason: str,
-) -> LearningPlanDraftArtifact:
-    profile = decode_compact_profile(profile_json)
-    modules = tuple(
+def decode_compact_modules(module_json_values: tuple[str, ...]) -> tuple[CompactPlanModule, ...]:
+    return tuple(
         CompactPlanModule.model_validate(_json_object(value, label=f"module_{index}"))
         for index, value in enumerate(module_json_values, start=1)
     )
+
+
+def build_plan_draft(
+    *,
+    profile: CompactPlanProfile,
+    modules: tuple[CompactPlanModule, ...],
+    sources: tuple[LearningPlanSourceSummary, ...],
+    change_reason: str,
+) -> LearningPlanDraftArtifact:
     if not 2 <= len(modules) <= 8:
         raise ValueError("plan draft must contain 2..8 modules")
     domain_modules = tuple(
@@ -179,6 +181,21 @@ def decode_plan_draft(
         modules=domain_modules,
     )
     return LearningPlanDraftArtifact(profile=profile, plan=plan, sources=sources)
+
+
+def decode_plan_draft(
+    *,
+    profile_json: str,
+    module_json_values: tuple[str, ...],
+    sources: tuple[LearningPlanSourceSummary, ...],
+    change_reason: str,
+) -> LearningPlanDraftArtifact:
+    return build_plan_draft(
+        profile=decode_compact_profile(profile_json),
+        modules=decode_compact_modules(module_json_values),
+        sources=sources,
+        change_reason=change_reason,
+    )
 
 
 def draft_artifact_from_row(row: Mapping[str, object]) -> LearningPlanDraftArtifact:

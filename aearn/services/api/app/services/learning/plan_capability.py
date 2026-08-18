@@ -1,7 +1,8 @@
 """Server-owned handler for the exact learning.plan.draft capability."""
 from __future__ import annotations
 
-import json
+from collections.abc import Mapping
+
 from psycopg import Connection
 
 from app.agents.harness.capabilities import (
@@ -11,10 +12,13 @@ from app.agents.harness.capabilities import (
 from app.agents.harness.contracts import TutorCapabilityStatus, TutorRunSnapshot
 from app.services.grounding.grounding_sources import GroundingSource, sources_for_language
 from app.services.learning.plan_drafting import (
+    CompactPlanModule,
+    CompactPlanProfile,
     LearningPlanDraftArtifact,
     LearningPlanSourceSummary,
+    build_plan_draft,
+    decode_compact_modules,
     decode_compact_profile,
-    decode_plan_draft,
 )
 from app.services.learning.planning_facts import PlanningFactError, PostgresPlanningFactRepository
 from app.services.learning.plan_repository import (
@@ -135,46 +139,62 @@ class LearningPlanDraftCapabilityHandler:
     ) -> LearningPlanDraftArtifact:
         try:
             profile = decode_compact_profile(capability_input.profile_json)
+            modules = decode_compact_modules(capability_input.module_values())
+            return build_validated_learning_plan_artifact(
+                session=session,
+                profile=profile,
+                modules=modules,
+            )
+        except LearningPlanDraftCapabilityError:
+            raise
         except ValueError as exc:
             raise _invalid() from exc
-        canonical, language_capabilities = _language(profile.language_id)
-        if not language_capabilities or not all(item.enabled_for_public_selection for item in language_capabilities):
-            raise LearningPlanDraftCapabilityError(
-                code="LEARNING_LANGUAGE_NOT_SELECTABLE",
-                diagnostic_code="learning_language_not_selectable",
-                status=TutorCapabilityStatus.DENIED,
-            )
-        preferred = str(session.get("preferred_language_id") or "")
-        if preferred and preferred != canonical:
-            raise _invalid()
-        sources = _source_summaries(language_capabilities)
-        if not sources:
-            raise LearningPlanDraftCapabilityError(
-                code="LEARNING_PLAN_DRAFT_QUALITY_BLOCKED",
-                diagnostic_code="learning_plan_source_quality_blocked",
-                status=TutorCapabilityStatus.UNAVAILABLE,
-            )
-        normalized_profile = profile.model_copy(update={"language_id": canonical})
-        try:
-            artifact = decode_plan_draft(
-                profile_json=json.dumps(
-                    normalized_profile.model_dump(mode="json"),
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                ),
-                module_json_values=capability_input.module_values(),
-                sources=sources,
-                change_reason=(
-                    "Create the learner-confirmable initial learning plan draft."
-                    if session.get("current_draft_id") is None
-                    else "Replace the current learning plan draft after learner-requested changes."
-                ),
-            )
-        except ValueError as exc:
-            raise _invalid() from exc
-        _validate_quality(artifact=artifact, capabilities=language_capabilities, canonical_language_id=canonical)
-        return artifact
+
+
+def build_validated_learning_plan_artifact(
+    *,
+    session: Mapping[str, object],
+    profile: CompactPlanProfile,
+    modules: tuple[CompactPlanModule, ...],
+    change_reason: str | None = None,
+) -> LearningPlanDraftArtifact:
+    """Build one domain artifact for both Harness and Codex typed tool facades."""
+
+    canonical, language_capabilities = _language(profile.language_id)
+    if not language_capabilities or not all(item.enabled_for_public_selection for item in language_capabilities):
+        raise LearningPlanDraftCapabilityError(
+            code="LEARNING_LANGUAGE_NOT_SELECTABLE",
+            diagnostic_code="learning_language_not_selectable",
+            status=TutorCapabilityStatus.DENIED,
+        )
+    preferred = str(session.get("preferred_language_id") or "")
+    if preferred and preferred != canonical:
+        raise _invalid()
+    sources = _source_summaries(language_capabilities)
+    if not sources:
+        raise LearningPlanDraftCapabilityError(
+            code="LEARNING_PLAN_DRAFT_QUALITY_BLOCKED",
+            diagnostic_code="learning_plan_source_quality_blocked",
+            status=TutorCapabilityStatus.UNAVAILABLE,
+        )
+    normalized_profile = profile.model_copy(update={"language_id": canonical})
+    artifact = build_plan_draft(
+        profile=normalized_profile,
+        modules=modules,
+        sources=sources,
+        change_reason=change_reason
+        or (
+            "Create the learner-confirmable initial learning plan draft."
+            if session.get("current_draft_id") is None
+            else "Replace the current learning plan draft after learner-requested changes."
+        ),
+    )
+    _validate_quality(
+        artifact=artifact,
+        capabilities=language_capabilities,
+        canonical_language_id=canonical,
+    )
+    return artifact
 
 
 def _language(value: str) -> tuple[str, tuple[LanguageCapability, ...]]:
