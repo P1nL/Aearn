@@ -1778,3 +1778,24 @@ Closed the planning-only Tutor Harness rearchitecture parent after all nine inde
 ### Status
 
 [OK] **Completed**
+
+
+## Session 111: 完成 Codex Tutor 持久化与公开投影
+
+**Date**: 2026-08-18
+**Task**: 完成 Codex Tutor 持久化与公开投影
+**Branch**: `main`
+
+### Summary
+
+新增不可变 runtime_kind、Runtime binding/receipt/公开错误持久化和安全事件投影；覆盖 final_answer、tool hash、重放、stale generation、interrupt/failure/unavailable/unsafe final，并保持 Harness、SSE 与 Desktop 兼容。验证 652 passed、Ruff、Mypy、Desktop build、Trellis validate 和 diff check 全部通过。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `6a1f4c61` | (see git log) |
+
+### Status
+
+[OK] **Completed**
