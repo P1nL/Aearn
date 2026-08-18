@@ -99,6 +99,10 @@ def test_runtime_selection_is_exact_fail_closed_and_scope_bounded(tutor_persiste
         now_provider=lambda: _NOW,
     )
     assert disabled.select(scope_kind=LearningScopeKind.PLAN_DRAFTING).runtime_kind == "harness_v1"
+    assert disabled.select(
+        scope_kind=LearningScopeKind.PLAN_DRAFTING,
+        conversation_runtime_kind="codex_sidecar_v1",
+    ).runtime_kind == "codex_sidecar_v1"
 
     conn.execute("DELETE FROM tutor_codex_runtime_health")
     _record_ready(conn, observed_at=_NOW - timedelta(seconds=91))

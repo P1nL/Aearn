@@ -1,6 +1,6 @@
 # Aearn 本地开发环境
 
-**状态：** 当前 Tutor Harness 开发/验证环境，2026-08-14。
+**状态：** 当前 Tutor Harness + controlled Codex Sidecar 开发/验证环境，2026-08-18。
 **权威来源：** `aearn/package.json`、`aearn/services/api/pyproject.toml`、
 `aearn/infra/docker-compose.yml`、`aearn/scripts/start-dev.ps1` 与
 `.env.example`。
@@ -272,3 +272,8 @@ git diff --check
 ```
 
 真实 provider smoke、Docker conformance、reviewed image build/sign/publish 与生产 executor smoke 都是独立、显式批准的发布前步骤；不运行它们时应记录为未执行，而不是由 fixture 结果推断通过。
+
+
+## Codex Sidecar worker
+
+`pnpm --dir .\aearn dev` 默认同时启动独立 `tutor-codex` solo worker；`pnpm --dir .\aearn dev:no-codex` 是显式 opt-out。Runtime 与 plan-drafting admission 默认开启但各自独立；新 Codex admission 还必须通过 PostgreSQL fresh exact readiness。配置、隔离 Home、health、失败码、日志边界和回滚步骤见 [Codex Sidecar 本地运行与运维边界](./codex-sidecar-runtime.md)。默认测试不调用真实 provider。

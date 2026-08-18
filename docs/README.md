@@ -2,7 +2,7 @@
 
 ## Current runtime status
 
-**Updated: 2026-08-14.** Aearn's active product runtime is the **Tutor Harness**.
+**Updated: 2026-08-18.** Aearn's active product runtime is the **Tutor Harness** with a controlled Codex Sidecar path for eligible new `plan_drafting` turns.
 The desktop starts from a local learner identity, asks the server for a
 cutover decision, and admits a learner to the Tutor workspace only after a
 server-authoritative `verified` receipt. The current learning runtime also includes
@@ -16,7 +16,7 @@ server roadmap, Lesson/Practice, Review, and a scoped Tutor conversation.
 Learner messages may carry validated append-only `lesson_selection`,
 `exercise_feedback`, `execution_result`, and `review_feedback` references;
 these are injected as separate learner-safe structured context rather than
-being concatenated into learner text. The former graph/router/SDK product
+being concatenated into learner text. The Codex path uses exact `deepseek-v4-flash` Responses readiness, immutable server-side Runtime selection, and Aearn-owned public projection; general, track, proactive, historical, and feature-off traffic remains Harness. The former graph/router/SDK product
 runtime has been physically removed from the active source tree and its
 runtime-specific documents are preserved under
 [`archive/2026-07-29/`](./archive/2026-07-29/).
@@ -36,10 +36,12 @@ That ledger records the controlled verified-only proactive-delivery proof and it
 | HTTP and SSE API | [`architecture/api-contract.md`](./architecture/api-contract.md) | Current public routes, idempotency, cursor replay, errors, and privacy rules. |
 | Database | [`architecture/database-schema.md`](./architecture/database-schema.md) | `tutor_*`, `harness_cutovers`, scoped persistence, deletion/preservation, and historical legacy tables. |
 | Local development | [`setup/development-environment.md`](./setup/development-environment.md) | Required tooling, local services, dependency commands, worker/executor posture, and safe verification commands. |
+| Codex Sidecar operations | [`setup/codex-sidecar-runtime.md`](./setup/codex-sidecar-runtime.md) | Exact version/provider/protocol, isolated Home, readiness, worker lifecycle, observability, rollback, and real-smoke approval boundary. |
 | Executor operations | [`setup/container-sandbox-executor.md`](./setup/container-sandbox-executor.md) | Explicit-only container executor enablement and isolation rules. |
 | Tutor v2 protocol cutover | [`setup/tutor-thread-turn-v2-cutover.md`](./setup/tutor-thread-turn-v2-cutover.md) | Global preflight, generation/CAS, enable, blocked recovery, rollback, and non-production boundary. |
 | Acceptance matrix | [`qa/acceptance-test-plan.md`](./qa/acceptance-test-plan.md) | Required automated and fixture-only manual checks. |
 | Release evidence | [`qa/tutor-harness-release-readiness.md`](./qa/tutor-harness-release-readiness.md) | Exact command results, audits, smoke evidence, non-claims, and residual risks. |
+| Codex Sidecar integration evidence | [`qa/codex-sidecar-integration-readiness.md`](./qa/codex-sidecar-integration-readiness.md) | Protocol-to-product failure matrix, approved real smoke reuse, rollback proof, safety scan, and non-claims. |
 
 ## Historical material
 
