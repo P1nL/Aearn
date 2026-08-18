@@ -9,6 +9,7 @@ param(
   [switch]$SkipDocker,
   [switch]$SkipBootstrap,
   [switch]$NoWorker,
+  [switch]$NoCodexWorker,
   [switch]$NoDesktop
 )
 
@@ -114,7 +115,8 @@ function Find-ProcessIdByCommand([string]$Regex) {
 function Get-TrackedProcessPattern([string]$Key) {
   switch ($Key) {
     "apiPid" { return "uv --directory .*python -m uvicorn app\.main:app" }
-    "workerPid" { return "aearn_worker\.worker_app:celery_app worker" }
+    "workerPid" { return "aearn_worker\.worker_app:celery_app worker(?!.*tutor-codex)" }
+    "codexWorkerPid" { return "aearn_worker\.worker_app:celery_app worker.*tutor-codex" }
     "beatPid" { return "aearn_worker\.worker_app:celery_app beat" }
     "desktopPid" { return "pnpm --dir .*desktop:dev" }
     default { return $null }
@@ -165,7 +167,7 @@ function Stop-ProcessTree([int]$ProcessId) {
 
 function Stop-TrackedProcesses {
   $state = Read-State
-  foreach ($key in @("apiPid", "workerPid", "beatPid", "desktopPid")) {
+  foreach ($key in @("apiPid", "workerPid", "codexWorkerPid", "beatPid", "desktopPid")) {
     if ($state.Contains($key) -and $state[$key]) {
       $processId = [int]$state[$key]
       $tracked = Get-TrackedProcessStatus -Key $key -ProcessId $processId
@@ -233,7 +235,7 @@ function Show-Status {
     Write-Host "    startedAt: $($state.startedAt)"
   }
   $printedPid = $false
-  foreach ($key in @("apiPid", "workerPid", "beatPid", "desktopPid")) {
+  foreach ($key in @("apiPid", "workerPid", "codexWorkerPid", "beatPid", "desktopPid")) {
     if ($state.Contains($key) -and $state[$key]) {
       $printedPid = $true
       $processId = [int]$state[$key]
@@ -304,7 +306,7 @@ if (Test-Http $apiHealthUrl) {
 }
 
 if (-not $NoWorker) {
-  $workerPid = Find-ProcessIdByCommand "aearn_worker\.worker_app:celery_app worker"
+  $workerPid = Find-ProcessIdByCommand "aearn_worker\.worker_app:celery_app worker(?!.*tutor-codex)"
   if ($workerPid) {
     Write-Step "worker already running, pid=$workerPid"
     $state.workerPid = $workerPid
@@ -317,6 +319,23 @@ if (-not $NoWorker) {
       -OutLog $workerOutLog `
       -ErrLog $workerErrLog
     Wait-LogContains -Paths @($workerOutLog, $workerErrLog) -Pattern "ready" -Name "worker"
+  }
+
+  if (-not $NoCodexWorker) {
+    $codexWorkerPid = Find-ProcessIdByCommand "aearn_worker\.worker_app:celery_app worker.*tutor-codex"
+    if ($codexWorkerPid) {
+      Write-Step "tutor-codex worker already running, pid=$codexWorkerPid"
+      $state.codexWorkerPid = $codexWorkerPid
+    } else {
+      $codexWorkerOutLog = Join-Path $LogDir "codex-worker-dev.out.log"
+      $codexWorkerErrLog = Join-Path $LogDir "codex-worker-dev.err.log"
+      $state.codexWorkerPid = Start-ManagedProcess `
+        -Name "tutor-codex worker" `
+        -Command "uv --directory `"$ApiDir`" run python -m celery -A aearn_worker.worker_app:celery_app worker --loglevel=info --pool=solo --concurrency=1 -Q tutor-codex -n tutor-codex@%h" `
+        -OutLog $codexWorkerOutLog `
+        -ErrLog $codexWorkerErrLog
+      Wait-LogContains -Paths @($codexWorkerOutLog, $codexWorkerErrLog) -Pattern "ready" -Name "tutor-codex worker"
+    }
   }
 
   $beatPid = Find-ProcessIdByCommand "aearn_worker\.worker_app:celery_app beat"

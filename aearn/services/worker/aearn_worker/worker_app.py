@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 
 from celery import Celery  # type: ignore[import-untyped]
+from celery.signals import worker_shutdown  # type: ignore[import-untyped]
 from dotenv import load_dotenv
 
 
@@ -28,6 +29,8 @@ celery_app.conf.task_routes = {
     "tutor.proactive.scan_due_signals": {"queue": "tutor-proactive", "priority": 5},
     "tutor.proactive.drain_candidates": {"queue": "tutor-proactive", "priority": 5},
     "tutor.curation.drain": {"queue": "tutor-curation", "priority": 1},
+    "tutor.codex.runtime_health": {"queue": "tutor-codex", "priority": 9},
+    "tutor.codex.runtime_shutdown": {"queue": "tutor-codex", "priority": 9},
 }
 
 
@@ -48,6 +51,18 @@ def _run_tutor_interactive_task(
             "processed": 0,
         }
     return run_tutor_interactive_worker_operation(operation=operation, job_id=job_id, limit=limit)
+
+
+def _run_tutor_codex_task(operation: str) -> dict[str, object]:
+    """Expose only lifecycle operations; business admission remains disabled."""
+    try:
+        from app.agents.runtime.worker_host import run_codex_worker_operation
+    except ImportError:
+        return {"status": "unavailable", "safe_error_code": "api_codex_runtime_unavailable"}
+    try:
+        return run_codex_worker_operation(operation)
+    except Exception:
+        return {"status": "unavailable", "safe_error_code": "codex_runtime_operation_failed"}
 
 
 def _run_tutor_scheduler_task(operation: str, *, limit: int) -> dict[str, object]:
@@ -103,3 +118,18 @@ def drain_proactive_candidates(limit: int = 10) -> dict[str, object]:
 @celery_app.task(name="tutor.curation.drain", queue="tutor-curation", priority=1)
 def drain_curation(limit: int = 10) -> dict[str, object]:
     return _run_tutor_scheduler_task("drain_curation", limit=limit)
+
+
+@celery_app.task(name="tutor.codex.runtime_health", queue="tutor-codex", priority=9)
+def codex_runtime_health() -> dict[str, object]:
+    return _run_tutor_codex_task("health")
+
+
+@celery_app.task(name="tutor.codex.runtime_shutdown", queue="tutor-codex", priority=9)
+def codex_runtime_shutdown() -> dict[str, object]:
+    return _run_tutor_codex_task("shutdown")
+
+
+@worker_shutdown.connect
+def shutdown_codex_runtime_on_worker_exit(**_: object) -> None:
+    _run_tutor_codex_task("shutdown")

@@ -70,6 +70,15 @@ class Settings(BaseModel):
     deepseek_api_key: str | None = Field(default_factory=lambda: _env_optional("DEEPSEEK_API_KEY"))
     deepseek_base_url: str | None = Field(default_factory=lambda: _env_optional("DEEPSEEK_BASE_URL"))
     deepseek_model: str | None = Field(default_factory=lambda: _env_optional("DEEPSEEK_MODEL"))
+    codex_runtime_enabled: bool = Field(default_factory=lambda: _env_bool("CODEX_RUNTIME_ENABLED", "true"))
+    codex_runtime_binary_path: str | None = Field(default_factory=lambda: _env_optional("CODEX_RUNTIME_BINARY_PATH"))
+    codex_runtime_home_directory: str | None = Field(default_factory=lambda: _env_optional("CODEX_RUNTIME_HOME"))
+    codex_runtime_allowed_versions: str = Field(default_factory=lambda: _env_str("CODEX_RUNTIME_ALLOWED_VERSIONS", "0.142.0-cometix"))
+    codex_runtime_startup_timeout_seconds: float = Field(default_factory=lambda: _env_float("CODEX_RUNTIME_STARTUP_TIMEOUT_SECONDS", "15"), gt=0, le=120)
+    codex_runtime_request_timeout_seconds: float = Field(default_factory=lambda: _env_float("CODEX_RUNTIME_REQUEST_TIMEOUT_SECONDS", "15"), gt=0, le=300)
+    codex_runtime_turn_timeout_seconds: float = Field(default_factory=lambda: _env_float("CODEX_RUNTIME_TURN_TIMEOUT_SECONDS", "300"), gt=0, le=3600)
+    codex_runtime_shutdown_timeout_seconds: float = Field(default_factory=lambda: _env_float("CODEX_RUNTIME_SHUTDOWN_TIMEOUT_SECONDS", "5"), gt=0, le=60)
+    codex_runtime_notification_queue_size: int = Field(default_factory=lambda: _env_int("CODEX_RUNTIME_NOTIFICATION_QUEUE_SIZE", "256"), ge=16, le=4096)
     llm_timeout_seconds: float = Field(default_factory=lambda: float(_env_str("LLM_TIMEOUT_SECONDS", "20")))
     tutor_provider_debug_capture_mode: str = Field(
         default_factory=lambda: _env_str(
@@ -328,6 +337,18 @@ class Settings(BaseModel):
         if self.tutor_context_fixed_mode not in {None, "compact", "normal", "complex", "extended"}:
             raise ValueError("TUTOR_CONTEXT_FIXED_MODE is invalid")
         return self
+
+    @property
+    def codex_runtime_home_path(self) -> Path:
+        if self.codex_runtime_home_directory is not None:
+            return Path(self.codex_runtime_home_directory)
+        local_app_data = os.getenv("LOCALAPPDATA")
+        if local_app_data:
+            return Path(local_app_data) / "Aearn" / "codex-runtime"
+        state_home = os.getenv("XDG_STATE_HOME")
+        if state_home:
+            return Path(state_home) / "aearn" / "codex-runtime"
+        return Path.home() / ".local" / "state" / "aearn" / "codex-runtime"
 
     @property
     def tutor_provider_debug_capture_path(self) -> Path:
