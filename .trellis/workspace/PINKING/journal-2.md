@@ -1821,3 +1821,25 @@ Closed the planning-only Tutor Harness rearchitecture parent after all nine inde
 ### Status
 
 [OK] **Completed**
+
+
+## Session 113: 完成 Codex Sidecar 集成 QA 与父任务收口
+
+**Date**: 2026-08-19
+**Task**: 完成 Codex Sidecar 集成 QA 与父任务收口
+**Branch**: `main`
+
+### Summary
+
+完成 Child 6 failure matrix、scope isolation、rollback、安全扫描与source-of-truth文档；复用Child 1获批真实deepseek-v4-flash Responses tool-repair smoke且未重复调用。全量API 660 passed、Ruff/Mypy/Desktop/DB/Trellis通过，并归档Child 6与父任务。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `b61e515e` | (see git log) |
+| `890391f7` | (see git log) |
+
+### Status
+
+[OK] **Completed**
