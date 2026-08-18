@@ -1120,6 +1120,7 @@ class TutorRunSnapshot:
     # Only a persisted server-authorized checkpoint may expose this on a live run.
     continuation_kind: TutorContinuationKind | None = None
     interaction_protocol_version: Literal["legacy_v1", "thread_turn_v2"] = "legacy_v1"
+    runtime_kind: Literal["harness_v1", "codex_sidecar_v1"] = "harness_v1"
 
     def __post_init__(self) -> None:
         if self.input_revision < 0:

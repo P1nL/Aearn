@@ -295,6 +295,20 @@ PRACTICE_SCHEMA_CONSTRAINTS = (
     "fk_tutor_exercise_execution_link_job_scope",
 )
 
+RUNTIME_PROJECTION_SCHEMA_CONSTRAINTS = (
+    "chk_tutor_runs_runtime_kind",
+    "uq_tutor_runtime_bindings_scope",
+    "uq_tutor_runtime_bindings_thread",
+    "fk_tutor_runtime_binding_run_scope",
+    "fk_tutor_runtime_binding_message_scope",
+    "chk_tutor_runtime_binding_terminal",
+    "uq_tutor_runtime_item_receipts_event",
+    "uq_tutor_runtime_item_receipts_sequence",
+    "fk_tutor_runtime_receipt_binding_scope",
+    "chk_tutor_runtime_receipt_public_item",
+    "fk_tutor_runtime_error_binding_scope",
+)
+
 TUTOR_SCHEMA_CONSTRAINTS = (
     EXECUTION_SCOPE_CONSTRAINTS
     + EXECUTION_LIFECYCLE_CONSTRAINTS
@@ -308,6 +322,7 @@ TUTOR_SCHEMA_CONSTRAINTS = (
     + REVIEW_SCHEMA_CONSTRAINTS
     + CONTEXT_REFERENCE_SCHEMA_CONSTRAINTS
     + MODEL_REVIEW_SCHEMA_CONSTRAINTS
+    + RUNTIME_PROJECTION_SCHEMA_CONSTRAINTS
 )
 
 TARGET_TUTOR_TABLES = (
@@ -316,6 +331,9 @@ TARGET_TUTOR_TABLES = (
     "tutor_message_context_references",
     "tutor_catalog_snapshots",
     "tutor_runs",
+    "tutor_run_runtime_bindings",
+    "tutor_runtime_item_receipts",
+    "tutor_runtime_public_errors",
     "tutor_provider_attempt_receipts",
     "tutor_run_skill_selections",
     "tutor_run_input_events",
@@ -419,6 +437,11 @@ def test_tutor_target_schema_is_repeatable_and_enforces_run_event_identity() -> 
                     "trg_tutor_action_invocations_updated_at",
                     "trg_tutor_conversations_updated_at",
                     "trg_tutor_runs_updated_at",
+                    "trg_tutor_runs_runtime_kind_immutable",
+                    "trg_tutor_runtime_bindings_lifecycle",
+                    "trg_tutor_runtime_bindings_updated_at",
+                    "trg_tutor_runtime_receipts_immutable",
+                    "trg_tutor_runtime_errors_immutable",
                     "trg_tutor_effects_updated_at",
                     "trg_tutor_execution_jobs_updated_at",
                     "trg_tutor_execution_jobs_lifecycle_guard",
@@ -536,6 +559,11 @@ def test_tutor_target_schema_is_repeatable_and_enforces_run_event_identity() -> 
             "trg_tutor_action_invocations_updated_at",
             "trg_tutor_conversations_updated_at",
             "trg_tutor_runs_updated_at",
+            "trg_tutor_runs_runtime_kind_immutable",
+            "trg_tutor_runtime_bindings_lifecycle",
+            "trg_tutor_runtime_bindings_updated_at",
+            "trg_tutor_runtime_receipts_immutable",
+            "trg_tutor_runtime_errors_immutable",
             "trg_tutor_effects_updated_at",
             "trg_tutor_execution_jobs_updated_at",
             "trg_tutor_execution_jobs_lifecycle_guard",
@@ -623,6 +651,10 @@ def test_tutor_target_schema_is_repeatable_and_enforces_run_event_identity() -> 
                     "idx_tutor_action_receipts_run_terminal",
                     "uq_tutor_action_receipts_current_verified",
                     "uq_tutor_runs_interactive_foreground",
+                    "uq_tutor_runtime_bindings_turn",
+                    "idx_tutor_runtime_bindings_run_state",
+                    "idx_tutor_runtime_receipts_run_sequence",
+                    "idx_tutor_runtime_errors_conversation",
                     "idx_tutor_conversations_public_activity",
                     "idx_tutor_public_processes_conversation_activity",
                     "idx_tutor_public_process_steps_run_ordinal",
@@ -674,6 +706,10 @@ def test_tutor_target_schema_is_repeatable_and_enforces_run_event_identity() -> 
             "idx_tutor_action_receipts_run_terminal",
             "uq_tutor_action_receipts_current_verified",
             "uq_tutor_runs_interactive_foreground",
+            "uq_tutor_runtime_bindings_turn",
+            "idx_tutor_runtime_bindings_run_state",
+            "idx_tutor_runtime_receipts_run_sequence",
+            "idx_tutor_runtime_errors_conversation",
             "idx_tutor_conversations_public_activity",
             "idx_tutor_public_processes_conversation_activity",
             "idx_tutor_public_process_steps_run_ordinal",

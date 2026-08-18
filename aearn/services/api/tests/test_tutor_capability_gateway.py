@@ -384,9 +384,10 @@ def test_catalog_and_tutor_source_never_import_retired_or_unbounded_execution_su
         if path.name in {
             "persistence.py", "proactive_repository.py", "learner_state.py",
             "action_adapters.py", "action_persistence.py", "queue_control.py",
+            "runtime_projection.py",
         }:
-            # Child 02 owns durable replay and Child 04 owns scheduler queue
-            # leases. Keep the SQL exception narrow while retaining every
+            # Child 02 owns durable replay; later children own scheduler queue
+            # leases and bounded Runtime projection persistence. Keep the SQL exception narrow while retaining every
             # execution, legacy, route, and unbounded-runtime boundary.
             forbidden_for_path = tuple(marker for marker in forbidden if marker not in {"app.db", "psycopg"})
         if path.name == "execution.py":

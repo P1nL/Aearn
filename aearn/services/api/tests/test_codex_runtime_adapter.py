@@ -103,9 +103,30 @@ async def test_adapter_maps_repair_events_without_exposing_tool_arguments(tmp_pa
 
     assert result.terminal_status is RuntimeTerminalStatus.COMPLETED
     assert [call.arguments["attempt"] for call in registry.calls] == [1, 2]
-    assert any(event.kind is RuntimeEventKind.TOOL_STARTED for event in result.events)
-    assert any(event.kind is RuntimeEventKind.MESSAGE_COMPLETED and event.visible_text == "safe final" for event in result.events)
-    encoded_events = json.dumps([{"kind": event.kind.value, "safe_code": event.safe_code} for event in result.events])
+    tool_events = [
+        event
+        for event in result.events
+        if event.kind in {RuntimeEventKind.TOOL_STARTED, RuntimeEventKind.TOOL_COMPLETED}
+    ]
+    assert tool_events and all(event.tool_name == "aearn_runtime_probe" for event in tool_events)
+    assert all(event.input_sha256 is not None for event in tool_events)
+    assert all(
+        event.result_sha256 is not None
+        for event in tool_events
+        if event.kind is RuntimeEventKind.TOOL_COMPLETED
+    )
+    message_events = [event for event in result.events if event.kind is RuntimeEventKind.MESSAGE_COMPLETED]
+    assert [event.visible_text for event in message_events] == ["safe final"]
+    encoded_events = json.dumps([
+        {
+            "kind": event.kind.value,
+            "safe_code": event.safe_code,
+            "tool_name": event.tool_name,
+            "input_sha256": event.input_sha256,
+            "result_sha256": event.result_sha256,
+        }
+        for event in result.events
+    ])
     assert "attempt" not in encoded_events
     assert "fixture-secret" not in encoded_events
     resumed = await runtime.resume_thread(thread.thread_id)

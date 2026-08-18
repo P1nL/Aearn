@@ -5,7 +5,7 @@ import hashlib
 import json
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
-from typing import Final
+from typing import Final, Literal, cast
 
 from psycopg import Connection
 
@@ -380,6 +380,10 @@ class PostgresTutorQueueController:
                 interaction_protocol_version=TutorInteractionProtocolVersion.THREAD_TURN_V2,
                 retry_of_turn_id=turn_id, retry_root_turn_id=root,
                 response_to_request_id=_optional(failed.get("response_to_request_id")),
+                runtime_kind=cast(
+                    Literal["harness_v1", "codex_sidecar_v1"],
+                    str(failed.get("runtime_kind") or "harness_v1"),
+                ),
             )
             acceptance = self._repository.accept_input(
                 user_id=user_id, run_id=run.run_id, idempotency_key=f"retry:{turn_id}",

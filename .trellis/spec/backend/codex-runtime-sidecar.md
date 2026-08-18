@@ -226,3 +226,124 @@ thread = await runtime.start_thread(
 ~~~
 
 The registry exposes typed module input only; the service refreshes authority, builds the profile from confirmed facts, and reuses the existing domain/repository path.
+
+## Scenario: Durable Tutor projection for Codex Runtime events
+
+### 1. Scope / Trigger
+
+Apply this contract when changing `tutor_runs.runtime_kind`, Runtime binding/receipt tables, normalized Runtime event fields, final-message persistence, or the mapping from Codex lifecycle events into Tutor turn/process/message/error items.
+
+Runtime projection is persistence and public-contract work, not business admission. A run reaches this path only after a caller has already created it with `runtime_kind = "codex_sidecar_v1"` and acquired the authoritative Tutor lease.
+
+### 2. Signatures
+
+~~~python
+@dataclass(frozen=True, slots=True)
+class TutorRuntimeProjectionFence:
+    input_revision: int
+    lease_owner_id: str
+    lease_generation: int
+    connection_generation: int
+
+class PostgresTutorRuntimeProjectionRepository:
+    def bind_run(
+        self, *, user_id: str, run_id: str,
+        fence: TutorRuntimeProjectionFence,
+        runtime_version: str, protocol_version: str,
+        external_thread_id: str, occurred_at: datetime,
+    ) -> TutorRuntimeBinding: ...
+
+    def project(
+        self, *, binding_id: str,
+        fence: TutorRuntimeProjectionFence,
+        event: TutorRuntimeProjectionEvent,
+    ) -> TutorRuntimeProjectionReceipt: ...
+~~~
+
+Database signatures:
+
+~~~text
+tutor_runs.runtime_kind = harness_v1 | codex_sidecar_v1, default harness_v1, immutable
+tutor_run_runtime_bindings(run/user/conversation scope, runtime/protocol version, external thread/turn, connection generation, state)
+tutor_runtime_item_receipts(binding scope, semantic event key, unique sequence, allowlisted hashes/status, projection status)
+tutor_runtime_public_errors(binding scope, Aearn-safe public code, recoverable, created_at)
+~~~
+
+### 3. Contracts
+
+- `runtime_kind` is chosen when the run is inserted, copied to retries, and cannot be updated in place.
+- Binding requires an interactive `thread_turn_v2` run with an active matching Tutor lease, current input revision, and the exact Runtime connection generation.
+- External thread/turn/item IDs stay in private binding state or one-way hashes. They never enter public URLs, Tutor public DTOs, conversation events, SSE payloads, or Desktop types.
+- Runtime receipts contain only allowlisted kind/status/tool name, input/result/content hashes, safe code, sequence, timestamps, and an optional Aearn public item reference. They never contain raw prompt, reasoning, commentary, tool arguments/results, command/path, credentials, or provider bodies.
+- Only `agentMessage` items with `phase = "final_answer"` become `MESSAGE_COMPLETED`. Commentary and reasoning stay non-public.
+- A final message is inserted only after content-hash verification, teaching-output safety, run ownership, input revision, lease owner/generation, Runtime generation, and non-terminal checks all pass.
+- Exact semantic replay returns the original receipt even if the transport repeats the event. A reused sequence with different safe facts is an idempotency conflict. A late revision/generation/turn callback writes one `ignored_stale` receipt and performs no public mutation.
+- A safe message and a domain tool commit are independent durable facts. Later Runtime failure may mark the process failed but must not delete an already accepted safe message or an existing domain receipt. Unsafe output must not roll back an earlier domain commit.
+- Public lifecycle mapping remains Aearn-owned: turn started -> running/process; tool activity -> bounded process steps; completed -> completed; interrupted -> cancelled/interrupted; unavailable -> model_unavailable/unavailable plus `TUTOR_RUNTIME_UNAVAILABLE`; failed or blocked final -> failed plus an Aearn-safe Runtime error code.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required result |
+| --- | --- |
+| Historical or ordinary run omits `runtime_kind` | Persist `harness_v1` |
+| Caller tries to update `runtime_kind` | PostgreSQL check violation from immutable trigger |
+| Run is not Codex, interactive, or `thread_turn_v2` | Reject binding |
+| Lease owner/generation, input revision, expiry, or Runtime generation differs | Reject binding or receipt `ignored_stale`; no public write |
+| Event thread/turn differs from binding | Receipt `ignored_stale`; no public write |
+| Duplicate semantic event | Return existing receipt with `replayed=true` |
+| Same binding sequence carries different safe facts | `TutorIdempotencyConflict` |
+| Tool name is outside `[A-Za-z0-9_-]{1,64}` | Omit at adapter boundary or reject normalized projection DTO |
+| Commentary/reasoning/command/path item | No final-message event and no public payload |
+| Final text is missing, hash-mismatched, oversized, or teaching-unsafe | `blocked_unsafe`; completed terminal is converted to failed |
+| Runtime completed without an accepted final message | Failed with `TUTOR_RUNTIME_OUTPUT_MISSING` |
+| Runtime interrupted | Tutor outcome `cancelled`, process `interrupted`, no invented message |
+| Runtime unavailable | Tutor outcome `model_unavailable`, process `unavailable`, public `TUTOR_RUNTIME_UNAVAILABLE` |
+| Runtime failed | Tutor outcome/process `failed`, public `TUTOR_RUNTIME_FAILED` or bounded output-blocked code |
+
+### 5. Good / Base / Bad Cases
+
+- Good: a current leased Codex run binds one private thread, records tool input/result hashes, accepts one safe `final_answer`, and publishes the existing Tutor message/process/turn events.
+- Good replay: reconnect repeats the same five normalized events; message, process, error, and receipt counts do not increase.
+- Base: Harness-created runs keep `runtime_kind = "harness_v1"` and never create Runtime bindings or receipts.
+- Bad: persist the App Server item JSON in a generic JSONB receipt column.
+- Bad: accept every completed `agentMessage` as final; commentary may then win before the real final answer.
+- Bad: treat a stale callback as a failed current run instead of an ignored audited receipt.
+
+### 6. Tests Required
+
+- Bootstrap twice and assert the Runtime tables, indexes, constraints, immutable triggers, and `harness_v1` default.
+- Assert `runtime_kind`, binding identity, terminal binding state, receipts, and public errors cannot be mutated after their allowed lifecycle point.
+- PostgreSQL integration must cover completed, interrupted, failed, unavailable, unsafe/missing final, duplicate replay, conflicting sequence, and stale connection generation.
+- Assert a successful projection produces only existing Tutor public turn/process/message/error records and conversation events.
+- Serialize public history/events and assert external thread/turn/item IDs, reasoning, commentary, tool arguments/results, provider diagnostics, and credentials are absent.
+- Adapter tests must prove tool names and argument/result hashes are present while raw arguments/results are absent, and only `phase = "final_answer"` becomes a final-message event.
+- Keep the full non-real-provider API suite, Ruff, Mypy, database bootstrap, Harness routes/SSE, and Desktop build green.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+~~~python
+if item["type"] == "agentMessage":
+    repository.save_tutor_message(item["text"])
+~~~
+
+This trusts wire DTOs, ignores phase/safety/fences, and can expose commentary or a stale generation.
+
+#### Correct
+
+~~~python
+runtime_event = adapter.normalize(item)  # final_answer only; IDs/arguments stay private
+receipt = projector.project(
+    binding_id=binding.id,
+    fence=TutorRuntimeProjectionFence(
+        input_revision=run.input_revision,
+        lease_owner_id=lease.owner_id,
+        lease_generation=lease.generation,
+        connection_generation=thread.generation,
+    ),
+    event=runtime_event,
+)
+~~~
+
+The adapter removes wire-private data; the projector rechecks database authority and writes only safe Aearn-owned public state plus an append-only receipt.

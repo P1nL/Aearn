@@ -142,6 +142,9 @@ _PUBLIC_PROCESS_STEP_KEYS: Final[frozenset[str]] = frozenset(
         "input_received",
         "context_prepared",
         "authorized_resource_checked",
+        "runtime_started",
+        "domain_tool_running",
+        "domain_tool_completed",
         "learning_reply_generated",
         "replaced_by_newer_input",
     }
@@ -151,6 +154,9 @@ _PUBLIC_PROCESS_STEP_LABELS: Final[dict[str, str]] = {
     "input_received": "已接收你的问题",
     "context_prepared": "已整理最近的对话与学习目标",
     "authorized_resource_checked": "已查阅已授权的学习资料",
+    "runtime_started": "已启动受控 Agent Runtime",
+    "domain_tool_running": "正在执行受控学习工具",
+    "domain_tool_completed": "已完成受控学习工具",
     "learning_reply_generated": "已完成一次受控学习建议生成",
     "replaced_by_newer_input": "已根据你的新消息更新本轮处理",
 }
@@ -624,6 +630,7 @@ class PostgresTutorRepository:
         retry_of_turn_id: str | None = None,
         retry_root_turn_id: str | None = None,
         response_to_request_id: str | None = None,
+        runtime_kind: Literal["harness_v1", "codex_sidecar_v1"] = "harness_v1",
     ) -> TutorRunSnapshot:
         if origin not in {"interactive", "proactive"}:
             raise ValueError("Tutor run origin is invalid")
@@ -654,9 +661,9 @@ class PostgresTutorRepository:
               id, user_id, conversation_id, origin, status, policy_json,
               policy_version, policy_fingerprint, catalog_digest, continuation_kind,
               interaction_protocol_version, retry_of_turn_id, retry_root_turn_id,
-              response_to_request_id
+              response_to_request_id, runtime_kind
             )
-            VALUES (%s, %s, %s, %s, 'queued', %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, 'queued', %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING *
             """,
             (
@@ -673,6 +680,7 @@ class PostgresTutorRepository:
                 retry_of_turn_id,
                 retry_root_turn_id,
                 response_to_request_id,
+                runtime_kind,
             ),
         ).fetchone()
         if row is None:
@@ -2036,8 +2044,31 @@ class PostgresTutorRepository:
                 AND conversations.visibility = 'learner'
                 AND conversations.kind = 'interactive'
                 AND conversations.status = 'active'
+              UNION ALL
+              SELECT
+                'error'::text AS kind,
+                errors.id AS item_id,
+                errors.created_at AS created_at,
+                40 AS sort_rank,
+                NULL::text AS role,
+                NULL::text AS content,
+                ''::text AS public_thinking_text,
+                '[]'::jsonb AS public_thinking_steps_json,
+                NULL::uuid AS process_run_id,
+                errors.run_id AS turn_id,
+                errors.code AS error_code,
+                errors.recoverable AS error_recoverable,
+                NULL::uuid AS in_reply_to_item_id,
+                NULL::uuid AS interaction_request_id
+              FROM tutor_runtime_public_errors AS errors
+              JOIN tutor_conversations AS conversations ON conversations.id = errors.conversation_id
+              WHERE errors.conversation_id = %s
+                AND errors.user_id = %s
+                AND conversations.visibility = 'learner'
+                AND conversations.kind = 'interactive'
+                AND conversations.status = 'active'
             """
-            params.extend((conversation_id, user_id))
+            params.extend((conversation_id, user_id, conversation_id, user_id))
         timeline += """
             )
             SELECT * FROM timeline
@@ -6374,6 +6405,10 @@ def _snapshot_from_row(row: Mapping[str, object]) -> TutorRunSnapshot:
             else None
         ),
         interaction_protocol_version=_protocol_version_from_row(row).value,
+        runtime_kind=cast(
+            Literal["harness_v1", "codex_sidecar_v1"],
+            str(row.get("runtime_kind") or "harness_v1"),
+        ),
     )
 
 
