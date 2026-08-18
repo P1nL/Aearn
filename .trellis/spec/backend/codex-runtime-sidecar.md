@@ -128,3 +128,101 @@ finally:
 ~~~
 
 Thread-level preparation closes the response/callback scheduling race; final cleanup prevents stale callbacks from crossing turn or generation boundaries.
+
+
+## Scenario: Server-authoritative LearningPlan dynamic tools
+
+### 1. Scope / Trigger
+
+Apply this contract when adding or changing Codex dynamic tools for `plan_drafting`, planning-fact projection, LearningPlan draft validation, tool repair/rebuild budgets, or tool-call fencing. This facade is test-only until a later cutover task admits Tutor runs to the Codex runtime.
+
+### 2. Signatures
+
+Registered tools:
+
+~~~text
+aearn_planning_context_read({schema_version?})
+aearn_learning_plan_draft({schema_version?, modules[2..8]})
+~~~
+
+Each module has `stable_key`, `title`, bounded optional `description`, `is_core`, `is_skippable`, and `nodes[1..8]`. Each node has `stable_key`, `title`, bounded optional `description`, `is_core`, `prerequisites[]`, and `required_capabilities[]`.
+
+The draft schema must not contain `profile_json`, `module_1..8`, user/session/run/database IDs, source selection, runtime selection, or confirmation fields.
+
+### 3. Contracts
+
+- Build `CompactPlanProfile` only from current confirmed `PlanningFact` leaves. Map `pace_constraints` to `pace_summary`; derive the draft title on the server.
+- Reuse the same LearningPlan artifact builder, language/source policy, graph validation, quality checks, and append-only repository as the Harness capability.
+- Freeze run ID, conversation/user scope, input revision, Tutor lease owner/generation, Runtime connection generation, and planning-facts fingerprint/revision when the registry is created.
+- Refresh the fence before every tool call and again immediately before `append_draft`.
+- Tool-visible status is exactly `completed | repairable_invalid | awaiting_user | conflict | policy_blocked | unavailable | fatal`.
+- `repairable_invalid`, `awaiting_user`, and the first bounded `conflict` are normal tool outputs. Policy, unavailable, fatal, deadline, and exhausted repair/conflict budgets fail the tool call.
+- Default registry budgets are 6 tool calls, 2 repairs, 1 conflict rebuild, 32,000 input bytes, 30 seconds wall time, and 8,000 output bytes.
+- Safe issues contain allowlisted `path`, `code`, and generic `hint` only. Never echo the invalid value, Pydantic input, internal exception, profile object, prompt, reasoning, credential, or full path.
+- Durable duplicate replay is owned by the existing `(source_run_id, source_input_revision)` draft identity. When rebuilding a replay candidate, reuse the stored `change_reason`; deriving a replacement reason from the now-updated session would change the content hash and incorrectly convert an identical replay into a conflict.
+- Success returns only draft ID, version, content hash, bounded counts, and a deterministic safe receipt hash. Confirmation and LearningTrack creation remain HTTP/domain authority outside the tool.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required result |
+| --- | --- |
+| Unknown field, malformed type, module/node bound, duplicate stable key, missing/self/cyclic prerequisite | `repairable_invalid` with safe issue path/code |
+| Confirmed planning facts are incomplete | `awaiting_user / planning_facts_missing` |
+| Input revision, lease, Runtime generation, or facts revision/fingerprint changed | `conflict` |
+| More than one conflict rebuild | `fatal / tool_conflict_budget_exhausted` |
+| Repair count exceeded | `fatal / tool_repair_budget_exhausted` |
+| Tool call/wall/output budget exceeded | stable `fatal` budget code |
+| Language is not selectable or policy callback denies | `policy_blocked` |
+| Active planning session or approved source set is unavailable | `unavailable` |
+| Corrupt server-owned facts or unexpected service failure | `fatal` without raw exception text |
+| Same valid draft is replayed after commit | original draft/receipt, `replayed=true`, no second row |
+| Same source identity carries a different candidate | `conflict`, no second row |
+
+### 5. Good / Base / Bad Cases
+
+- Good: Codex reads bounded confirmed facts, submits one invalid prerequisite graph, receives a safe repair issue, submits a corrected typed graph in the same turn, and receives one durable draft receipt.
+- Base: facts are incomplete; the context tool returns `awaiting_user` and missing stable fact keys so Codex can create a typed planning request later.
+- Good replay: the App Server disconnects after commit and repeats the same tool call; the repository returns the original draft and safe receipt.
+- Bad: accepting a model-authored user ID, profile, source list, facts revision, or confirm action.
+- Bad: mapping a stale lease or policy denial to `repairable_invalid`, allowing the model to bypass server authority.
+- Bad: rebuilding replay content with a new `change_reason`, producing a false content-hash conflict.
+
+### 6. Tests Required
+
+- Assert generated JSON Schema contains typed `modules[]`/`stable_key` and excludes every authority/profile/confirmation field.
+- Cover unknown fields, item bounds, duplicate keys, unknown/self/cyclic prerequisites, payload/output/call/repair/conflict/wall budgets, and raw invalid-value redaction.
+- Fake App Server loop: `repairable_invalid -> completed` in one turn; separately cover awaiting-user, conflict, policy, unavailable, fatal, timeout, and duplicate replay terminal mapping.
+- PostgreSQL integration: construct profile from confirmed facts, append exactly one draft, replay the same safe result, detect facts and Runtime generation staleness, and preserve policy denial.
+- Keep the legacy Harness capability decode/persistence tests passing through the shared artifact builder.
+- Run the full API suite, Ruff, Mypy, lock check, compileall, and database bootstrap twice.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+~~~python
+payload = LearningPlanDraftCapabilityInput(
+    profile_json=model_args["profile_json"],
+    module_1=model_args["module_1"],
+    module_2=model_args["module_2"],
+)
+handler.generate(run=run, capability_input=payload)
+~~~
+
+This lets the model repeat server facts and preserves the double-encoded JSON boundary.
+
+#### Correct
+
+~~~python
+registry = LearningPlanRuntimeToolRegistry.from_postgres(
+    conn,
+    run=leased_run,
+    runtime_generation=connection_generation,
+    runtime_generation_reader=current_connection_generation,
+)
+thread = await runtime.start_thread(
+    RuntimeThreadRequest(cwd=workspace, tools=registry.definitions)
+)
+~~~
+
+The registry exposes typed module input only; the service refreshes authority, builds the profile from confirmed facts, and reuses the existing domain/repository path.

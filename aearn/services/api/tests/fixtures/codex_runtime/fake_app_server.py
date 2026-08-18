@@ -27,6 +27,83 @@ def reply(request: dict[str, Any], result: dict[str, Any]) -> None:
     send({"id": request["id"], "result": result})
 
 
+
+
+def run_tool_calls(
+    *,
+    thread_id: str,
+    turn_id: str,
+    calls: tuple[tuple[str, dict[str, Any]], ...],
+    request_id_start: int,
+) -> bool:
+    for index, (tool_name, arguments) in enumerate(calls, start=1):
+        item = {
+            "id": f"tool_{request_id_start}_{index}",
+            "type": "dynamicToolCall",
+            "tool": tool_name,
+            "arguments": arguments,
+            "status": "inProgress",
+        }
+        send({"method": "item/started", "params": {"threadId": thread_id, "turnId": turn_id, "item": item}})
+        send(
+            {
+                "id": request_id_start + index,
+                "method": "item/tool/call",
+                "params": {
+                    "threadId": thread_id,
+                    "turnId": turn_id,
+                    "callId": f"call_{request_id_start}_{index}",
+                    "tool": tool_name,
+                    "arguments": arguments,
+                },
+            }
+        )
+        tool_result = read()
+        success = bool((tool_result.get("result") or {}).get("success"))
+        item["status"] = "completed" if success else "failed"
+        send({"method": "item/completed", "params": {"threadId": thread_id, "turnId": turn_id, "item": item}})
+        if not success:
+            send(
+                {
+                    "method": "turn/completed",
+                    "params": {
+                        "threadId": thread_id,
+                        "turn": {"id": turn_id, "status": "failed", "items": []},
+                    },
+                }
+            )
+            return False
+    return True
+
+
+def valid_plan_modules() -> list[dict[str, Any]]:
+    return [
+        {
+            "stable_key": "foundations",
+            "title": "Foundations",
+            "nodes": [
+                {
+                    "stable_key": "python.variables",
+                    "title": "Variables",
+                    "required_capabilities": ["python"],
+                }
+            ],
+        },
+        {
+            "stable_key": "automation",
+            "title": "Automation",
+            "nodes": [
+                {
+                    "stable_key": "python.files",
+                    "title": "Files",
+                    "prerequisites": ["python.variables"],
+                    "required_capabilities": ["python"],
+                }
+            ],
+        },
+    ]
+
+
 def main() -> int:
     scenario = argparse.ArgumentParser()
     scenario.add_argument("--scenario", required=True)
@@ -68,18 +145,64 @@ def main() -> int:
                 os._exit(26)
             if mode == "slow_turn":
                 time.sleep(0.35)
+            turn_succeeded = True
             if mode == "repair":
-                for attempt in (1, 2):
-                    item = {"id": f"tool_{attempt}", "type": "dynamicToolCall", "tool": "aearn_runtime_probe", "arguments": {"attempt": attempt}, "status": "inProgress"}
-                    send({"method": "item/started", "params": {"threadId": thread_id, "turnId": turn_id, "item": item}})
-                    send({"id": 900 + attempt, "method": "item/tool/call", "params": {"threadId": thread_id, "turnId": turn_id, "callId": f"call_{attempt}", "tool": "aearn_runtime_probe", "arguments": {"attempt": attempt}}})
-                    tool_result = read()
-                    success = bool((tool_result.get("result") or {}).get("success"))
-                    item["status"] = "completed" if success else "failed"
-                    send({"method": "item/completed", "params": {"threadId": thread_id, "turnId": turn_id, "item": item}})
-                    if not success:
-                        send({"method": "turn/completed", "params": {"threadId": thread_id, "turn": {"id": turn_id, "status": "failed", "items": []}}})
-                        break
+                turn_succeeded = run_tool_calls(
+                    thread_id=thread_id,
+                    turn_id=turn_id,
+                    calls=tuple(
+                        ("aearn_runtime_probe", {"attempt": attempt})
+                        for attempt in (1, 2)
+                    ),
+                    request_id_start=900,
+                )
+            if mode == "learning_plan_repair":
+                turn_succeeded = run_tool_calls(
+                    thread_id=thread_id,
+                    turn_id=turn_id,
+                    calls=(
+                        ("aearn_planning_context_read", {}),
+                        (
+                            "aearn_learning_plan_draft",
+                            {
+                                "modules": [
+                                    {
+                                        "stable_key": "foundations",
+                                        "title": "Foundations",
+                                        "nodes": [
+                                            {
+                                                "stable_key": "python.variables",
+                                                "title": "Variables",
+                                            }
+                                        ],
+                                    }
+                                ]
+                            },
+                        ),
+                        ("aearn_learning_plan_draft", {"modules": valid_plan_modules()}),
+                    ),
+                    request_id_start=950,
+                )
+            if mode == "learning_plan_context":
+                turn_succeeded = run_tool_calls(
+                    thread_id=thread_id,
+                    turn_id=turn_id,
+                    calls=(("aearn_planning_context_read", {}),),
+                    request_id_start=970,
+                )
+            if mode == "learning_plan_duplicate":
+                arguments = {"modules": valid_plan_modules()}
+                turn_succeeded = run_tool_calls(
+                    thread_id=thread_id,
+                    turn_id=turn_id,
+                    calls=(
+                        ("aearn_learning_plan_draft", arguments),
+                        ("aearn_learning_plan_draft", arguments),
+                    ),
+                    request_id_start=980,
+                )
+            if not turn_succeeded:
+                continue
             reasoning = {"id": "reasoning_1", "type": "reasoning", "text": "raw reasoning must stay hidden"}
             send({"method": "item/completed", "params": {"threadId": thread_id, "turnId": turn_id, "item": reasoning}})
             message = {"id": "message_1", "type": "agentMessage", "text": "safe final", "phase": "final_answer"}

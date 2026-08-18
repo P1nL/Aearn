@@ -128,6 +128,20 @@ class PostgresLearningPlanSessionRepository:
             raise LearningPlanSessionNotFound("active learning plan session not found for run")
         return dict(row)
 
+    def draft_for_source(
+        self,
+        *,
+        user_id: str,
+        run_id: str,
+        input_revision: int,
+    ) -> dict[str, object] | None:
+        row = self._conn.execute(
+            self._DRAFT_READ_SQL
+            + " WHERE drafts.user_id = %s AND drafts.source_run_id = %s AND drafts.source_input_revision = %s",
+            (user_id, run_id, input_revision),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
     def append_draft(
         self,
         *,

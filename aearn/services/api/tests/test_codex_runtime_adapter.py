@@ -8,10 +8,11 @@ from pathlib import Path
 
 import pytest
 
-from app.agents.runtime import AgentRuntimePort, CodexAppServerRuntime, CodexRuntimeConfig, CodexRuntimeSupervisor, RuntimeBusyError, RuntimeEventKind, RuntimeHealthStatus, RuntimeInput, RuntimeTerminalStatus, RuntimeThreadRequest, RuntimeToolCall, RuntimeToolDefinition, RuntimeToolResult, RuntimeTurnRequest
+from app.agents.runtime import AgentRuntimePort, CodexAppServerRuntime, CodexRuntimeConfig, CodexRuntimeSupervisor, LearningPlanRuntimeToolRegistry, RuntimeBusyError, RuntimeEventKind, RuntimeHealthStatus, RuntimeInput, RuntimeTerminalStatus, RuntimeThreadRequest, RuntimeToolCall, RuntimeToolDefinition, RuntimeToolResult, RuntimeTurnRequest
 from app.agents.runtime.codex_config import CODEX_ENV_KEY, resolve_codex_executable
 from app.agents.runtime.codex_connection import ServerRequestHandler, StdioJsonRpcClient
 from app.agents.runtime.codex_supervisor import RuntimeGenerationError, RuntimeProcessLock
+from app.services.learning.plan_tools import LearningPlanAgentToolResult, LearningPlanDraftToolInput, LearningPlanToolStatus
 
 FIXTURE = Path(__file__).parent / "fixtures" / "codex_runtime" / "fake_app_server.py"
 
@@ -186,3 +187,172 @@ def test_runtime_process_lock_rejects_second_os_owner(tmp_path: Path) -> None:
     first.release()
     assert second.acquire() is True
     second.release()
+
+
+class FakeLearningPlanToolService:
+    def __init__(self) -> None:
+        self.drafts: list[LearningPlanDraftToolInput] = []
+
+    def read_context(self) -> LearningPlanAgentToolResult:
+        return LearningPlanAgentToolResult(
+            status=LearningPlanToolStatus.COMPLETED,
+            code="planning_context_ready",
+            data={"facts_revision": 7, "missing_facts": []},
+        )
+
+    def draft(self, tool_input: LearningPlanDraftToolInput) -> LearningPlanAgentToolResult:
+        self.drafts.append(tool_input)
+        return LearningPlanAgentToolResult(
+            status=LearningPlanToolStatus.COMPLETED,
+            code="learning_plan_draft_completed",
+            data={"draft_id": "draft-safe", "draft_version": 1, "content_hash": "a" * 64},
+        )
+
+
+@pytest.mark.asyncio
+async def test_runtime_learning_plan_tool_repairs_typed_input_in_same_turn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(CODEX_ENV_KEY, "fixture-secret")
+    supervisor = CodexRuntimeSupervisor(
+        _config(tmp_path),
+        connection_factory=_factory("learning_plan_repair"),
+    )
+    runtime = CodexAppServerRuntime(supervisor)
+    service = FakeLearningPlanToolService()
+    registry = LearningPlanRuntimeToolRegistry(service)
+    thread = await runtime.start_thread(
+        RuntimeThreadRequest(cwd=str(tmp_path), tools=registry.definitions)
+    )
+    result = await runtime.run_turn(
+        RuntimeTurnRequest(
+            thread,
+            (RuntimeInput("Read planning context and create a typed draft."),),
+            registry,
+        )
+    )
+
+    assert result.terminal_status is RuntimeTerminalStatus.COMPLETED
+    assert [item.status for item in registry.results] == [
+        LearningPlanToolStatus.COMPLETED,
+        LearningPlanToolStatus.REPAIRABLE_INVALID,
+        LearningPlanToolStatus.COMPLETED,
+    ]
+    assert registry.repair_count == 1
+    assert len(service.drafts) == 1
+    assert [module.stable_key for module in service.drafts[0].modules] == [
+        "foundations",
+        "automation",
+    ]
+    await runtime.shutdown()
+
+
+class StatusLearningPlanToolService(FakeLearningPlanToolService):
+    def __init__(self, status: LearningPlanToolStatus, *, replayed: bool = False) -> None:
+        super().__init__()
+        self._status = status
+        self._replayed = replayed
+
+    def read_context(self) -> LearningPlanAgentToolResult:
+        return LearningPlanAgentToolResult(
+            status=self._status,
+            code=f"safe_{self._status.value}",
+        )
+
+    def draft(self, tool_input: LearningPlanDraftToolInput) -> LearningPlanAgentToolResult:
+        self.drafts.append(tool_input)
+        return LearningPlanAgentToolResult(
+            status=self._status,
+            code=f"safe_{self._status.value}",
+            data={"draft_id": "draft-safe", "receipt": "b" * 64},
+            replayed=self._replayed,
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "terminal"),
+    [
+        (LearningPlanToolStatus.AWAITING_USER, RuntimeTerminalStatus.COMPLETED),
+        (LearningPlanToolStatus.CONFLICT, RuntimeTerminalStatus.COMPLETED),
+        (LearningPlanToolStatus.POLICY_BLOCKED, RuntimeTerminalStatus.FAILED),
+        (LearningPlanToolStatus.UNAVAILABLE, RuntimeTerminalStatus.FAILED),
+        (LearningPlanToolStatus.FATAL, RuntimeTerminalStatus.FAILED),
+    ],
+)
+async def test_runtime_learning_plan_tool_status_controls_fake_turn_terminal(
+    status: LearningPlanToolStatus,
+    terminal: RuntimeTerminalStatus,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(CODEX_ENV_KEY, "fixture-secret")
+    supervisor = CodexRuntimeSupervisor(
+        _config(tmp_path),
+        connection_factory=_factory("learning_plan_context"),
+    )
+    runtime = CodexAppServerRuntime(supervisor)
+    registry = LearningPlanRuntimeToolRegistry(StatusLearningPlanToolService(status))
+    thread = await runtime.start_thread(
+        RuntimeThreadRequest(cwd=str(tmp_path), tools=registry.definitions)
+    )
+    result = await runtime.run_turn(
+        RuntimeTurnRequest(thread, (RuntimeInput("Read context."),), registry)
+    )
+    assert result.terminal_status is terminal
+    assert registry.results[0].status is status
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_runtime_learning_plan_tool_timeout_fails_fake_turn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(CODEX_ENV_KEY, "fixture-secret")
+    supervisor = CodexRuntimeSupervisor(
+        _config(tmp_path),
+        connection_factory=_factory("learning_plan_context"),
+    )
+    runtime = CodexAppServerRuntime(supervisor)
+    moments = iter((0.0, 31.0))
+    registry = LearningPlanRuntimeToolRegistry(
+        StatusLearningPlanToolService(LearningPlanToolStatus.COMPLETED),
+        clock=lambda: next(moments),
+    )
+    thread = await runtime.start_thread(
+        RuntimeThreadRequest(cwd=str(tmp_path), tools=registry.definitions)
+    )
+    result = await runtime.run_turn(
+        RuntimeTurnRequest(thread, (RuntimeInput("Read context."),), registry)
+    )
+    assert result.terminal_status is RuntimeTerminalStatus.FAILED
+    assert registry.results[0].code == "tool_deadline_exhausted"
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_runtime_learning_plan_tool_duplicate_replay_keeps_one_safe_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(CODEX_ENV_KEY, "fixture-secret")
+    supervisor = CodexRuntimeSupervisor(
+        _config(tmp_path),
+        connection_factory=_factory("learning_plan_duplicate"),
+    )
+    runtime = CodexAppServerRuntime(supervisor)
+    service = StatusLearningPlanToolService(
+        LearningPlanToolStatus.COMPLETED,
+        replayed=True,
+    )
+    registry = LearningPlanRuntimeToolRegistry(service)
+    thread = await runtime.start_thread(
+        RuntimeThreadRequest(cwd=str(tmp_path), tools=registry.definitions)
+    )
+    result = await runtime.run_turn(
+        RuntimeTurnRequest(thread, (RuntimeInput("Replay the same draft."),), registry)
+    )
+    assert result.terminal_status is RuntimeTerminalStatus.COMPLETED
+    assert len(service.drafts) == 2
+    assert registry.results[0].content() == registry.results[1].content()
+    assert all(item.replayed for item in registry.results)
+    await runtime.shutdown()

@@ -4,6 +4,7 @@ from .codex_adapter import CodexAppServerRuntime, RuntimeBusyError
 from .codex_config import CodexRuntimeConfig
 from .codex_supervisor import CodexRuntimeSupervisor, RuntimeGenerationError, RuntimeOwnershipError, RuntimeUnavailableError
 from .contracts import AgentRuntimePort, RuntimeEvent, RuntimeEventKind, RuntimeHealthSnapshot, RuntimeHealthStatus, RuntimeInput, RuntimeTerminalStatus, RuntimeThreadHandle, RuntimeThreadRequest, RuntimeToolCall, RuntimeToolDefinition, RuntimeToolRegistry, RuntimeToolResult, RuntimeTurnRequest, RuntimeTurnResult
+from .learning_plan_tools import LearningPlanRuntimeToolRegistry, LearningPlanToolBudget
 
 __all__ = [
     "AgentRuntimePort", "CodexAppServerRuntime", "CodexRuntimeConfig", "CodexRuntimeSupervisor",
@@ -11,5 +12,6 @@ __all__ = [
     "RuntimeHealthSnapshot", "RuntimeHealthStatus", "RuntimeInput", "RuntimeOwnershipError",
     "RuntimeTerminalStatus", "RuntimeThreadHandle", "RuntimeThreadRequest", "RuntimeToolCall",
     "RuntimeToolDefinition", "RuntimeToolRegistry", "RuntimeToolResult", "RuntimeTurnRequest",
-    "RuntimeTurnResult", "RuntimeUnavailableError",
+    "RuntimeTurnResult", "RuntimeUnavailableError", "LearningPlanRuntimeToolRegistry",
+    "LearningPlanToolBudget",
 ]
