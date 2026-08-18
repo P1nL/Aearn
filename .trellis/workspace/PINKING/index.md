@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-2.md`
-- **Total Sessions**: 111
-- **Last Active**: 2026-08-18
+- **Total Sessions**: 112
+- **Last Active**: 2026-08-19
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-2.md` | ~1801 | Active |
+| `journal-2.md` | ~1823 | Active |
 | `journal-1.md` | ~1979 | Archived |
 <!-- @@@/auto:active-documents -->
 
@@ -30,6 +30,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 112 | 2026-08-19 | 完成 Codex plan-drafting 受控切换 | `a0a154c1`, `34d6a00c` | `main` |
 | 111 | 2026-08-18 | 完成 Codex Tutor 持久化与公开投影 | `6a1f4c61` | `main` |
 | 110 | 2026-08-18 | 完成 Codex 学习计划 typed tools 与恢复闭环 | `515ed267` | `main` |
 | 109 | 2026-08-18 | 完成 Codex Sidecar 协议 Spike 与 Runtime Adapter | `5804d628` | `main` |
