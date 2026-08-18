@@ -1,0 +1,31 @@
+{
+  "id": "codex-sidecar-protocol-spike",
+  "name": "codex-sidecar-protocol-spike",
+  "title": "Codex Sidecar 协议可行性验证",
+  "description": "隔离验证 Windows stdio App Server 与精确模型 deepseek-v4-flash Responses 的 custom provider、dynamic tool 修复、interrupt 和崩溃收口，产出 DeepSeek-specific Go/No-Go。",
+  "status": "completed",
+  "dev_type": null,
+  "scope": "隔离 spike 模块、fake app-server、fake DeepSeek Responses fixture、可选真实 deepseek-v4-flash smoke 与 research/result.md",
+  "package": null,
+  "priority": "P1",
+  "creator": "PINKING",
+  "assignee": "PINKING",
+  "createdAt": "2026-08-17",
+  "completedAt": "2026-08-18",
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "08-17-codex-runtime-sidecar-integration",
+  "relatedFiles": [
+    "aearn/services/api/app/core/config.py",
+    "aearn/services/api/app/services/llm/llm_client.py",
+    "aearn/services/api/app/services/llm/llm_urls.py",
+    ".trellis/tasks/08-17-codex-runtime-sidecar-integration/research/codex-app-server-contract.md"
+  ],
+  "notes": "首个实施入口；deepseek-v4-flash + Responses 是 mandatory Go 条件。未单独授权真实 smoke 时保持 pending，不得启动 Child 2；不得以 OpenAI、其他 DeepSeek 或 Chat Completions替代。",
+  "meta": {}
+}
