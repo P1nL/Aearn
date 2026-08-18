@@ -334,3 +334,10 @@ local export/reset/cutover，以及 verified-only API。旧 `review_states`、`r
 - real-provider smoke 是唯一自动化 skip，原因是未设置 `TUTOR_REAL_PROVIDER_SMOKE=1` 和显式 provider 配置；没有从 fake/offline 结果推断真实模型质量。
 - 未运行 Docker conformance、reviewed image build/sign/publish、生产 executor smoke、Tauri installer、push、deploy 或生产数据迁移。
 - 本地代码、测试、文档、Trellis child/parent closeout 只证明 repository readiness，不是发布批准。
+
+
+## Codex Sidecar 集成证据（2026-08-18）
+
+Child 1-6 的 protocol、Runtime、typed tools、durable projection、controlled plan-drafting cutover 与 QA/doc evidence 已在本地集成。完整 API suite 为 **660 passed, 2 skipped**；Codex focused matrix 为 **66 passed**，public/SSE/redaction focused matrix 为 **21 passed**；Ruff、Mypy（192 source files）、compileall、lock、bootstrap twice 与 Desktop build 均通过。进程泄漏计数和 credential literal scan 均为 0。
+
+一次真实 `deepseek-v4-flash` Responses tool-repair smoke 已在 Child 1 获用户明确批准后通过；本 QA 不重复产生第二次付费调用。详细 exact target、failure matrix、rollback、evidence retention 和 non-claims 见 [`codex-sidecar-integration-readiness.md`](./codex-sidecar-integration-readiness.md)。这些本地结果不批准生产 rollout、push、deploy、Codex 安装/升级或所有 Tutor scope 切换。

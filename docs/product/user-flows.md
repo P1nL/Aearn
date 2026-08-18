@@ -276,3 +276,10 @@ Python、JavaScript、TypeScript、SQL 通过上述完整 PostgreSQL fixture。J
 旧 `learning_*`、user-level Tutor plan、旧 review/notes 和历史 checkpoint 不会静默导入到 LearningTrack。cutover 必须先生成 exact server summary，再由用户确认；检测到任意当前 `tutor_*` user-owned state 时 fail closed，不删除旧数据。reset/delete 使用当前领域的 child-to-root 清理；代码 rollback 不删除已写证据，也不能绕过 cutover receipt。
 
 所有 public API、SSE、history、process、activity/inbox、export 与 release evidence 只保留 learner-safe projection。完整提交、hidden tests、reference answer/private rubric、raw provider body/reasoning、命令、路径、容器和 secret 不进入这些表面。
+
+
+## 2026-08-18：plan-drafting Runtime 选择
+
+用户和 Desktop 不选择 Runtime，也不会看到 Codex thread/turn/tool 控制面。没有既有 Runtime lineage 的全新 `plan_drafting` conversation 在服务端 exact readiness 通过时使用 `codex_sidecar_v1`；feature off 时使用 Harness，feature on 但 Runtime 不可用时显示现有 Aearn safe error/retry 状态且 first-turn 不留下空 conversation。既有 conversation、Retry 和其他 scope 保留原 Runtime。
+
+Codex 只能读取服务端权威 planning context并追加 typed draft。右侧计划窗口仍是唯一确认入口；确认 transaction、LearningTrack 创建、history/SSE 与 Desktop DTO 均由 Aearn 控制。关闭 admission 只阻止新 Codex conversation，不删除已生成 draft、message、binding 或 receipt。
