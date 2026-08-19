@@ -145,7 +145,15 @@ export type TutorConversationListResponse = {
 };
 
 export type TutorPublicProcessStep = {
-  key: "input_received" | "context_prepared" | "authorized_resource_checked" | "learning_reply_generated" | "replaced_by_newer_input";
+  key:
+    | "input_received"
+    | "context_prepared"
+    | "authorized_resource_checked"
+    | "runtime_started"
+    | "domain_tool_running"
+    | "domain_tool_completed"
+    | "learning_reply_generated"
+    | "replaced_by_newer_input";
   state: "completed" | "current";
   label: string;
 };

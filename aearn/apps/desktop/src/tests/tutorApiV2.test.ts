@@ -38,6 +38,51 @@ describe("Tutor v2 API boundary", () => {
     await expect(fetchTutorConversationSnapshot({ userId: "user-1", conversationId: "conversation-1" })).rejects.toThrow("Tutor snapshot API returned an invalid payload");
   });
 
+  it("accepts Codex runtime process steps and rejects unknown step keys", async () => {
+    const process = {
+      kind: "process",
+      id: "turn-1",
+      turn_id: "turn-1",
+      run_id: "turn-1",
+      display_state: "completed",
+      steps: [
+        { key: "input_received", state: "completed", label: "已接收你的问题" },
+        { key: "runtime_started", state: "completed", label: "已启动受控 Agent Runtime" },
+        { key: "domain_tool_running", state: "completed", label: "正在执行受控学习工具" },
+        { key: "domain_tool_completed", state: "completed", label: "已完成受控学习工具" },
+        { key: "learning_reply_generated", state: "completed", label: "已完成一次受控学习建议生成" },
+      ],
+      elapsed_seconds: 11,
+      created_at: "2026-08-19T10:57:14Z",
+      finished_at: "2026-08-19T10:57:26Z",
+    };
+    const snapshot = {
+      snapshot_version: "tutor_conversation_snapshot_v2",
+      conversation: { conversation_id: "conversation-1", title: "测试", control_version: 2, control_state: "idle", queue_paused: false, queue_pause_reason: null, pending_count: 0, max_pending: 10 },
+      active_turn: null,
+      active_thinking: null,
+      pending_requests: [], queue: [], timeline: [process], next_cursor: null, has_more: false, stream_cursor: "opaque.cursor",
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(snapshot), { status: 200, headers: { "Content-Type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ...snapshot,
+        timeline: [{ ...process, steps: [{ key: "provider_reasoning", state: "completed", label: "protected" }] }],
+      }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchTutorConversationSnapshot({ userId: "user-1", conversationId: "conversation-1" })).resolves.toMatchObject({
+      timeline: [{ kind: "process", steps: [
+        { key: "input_received" },
+        { key: "runtime_started" },
+        { key: "domain_tool_running" },
+        { key: "domain_tool_completed" },
+        { key: "learning_reply_generated" },
+      ] }],
+    });
+    await expect(fetchTutorConversationSnapshot({ userId: "user-1", conversationId: "conversation-1" })).rejects.toThrow("Tutor snapshot API returned an invalid payload");
+  });
+
   it("routes capability bootstrap to the API origin", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       schema_version: "tutor_thread_turn_v2_capability_v1", cutover_version: "tutor_thread_turn_v2_global_v1", desktop_contract_version: "tutor_thread_turn_v2_desktop_v1",
