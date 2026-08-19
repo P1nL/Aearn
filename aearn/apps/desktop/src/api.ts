@@ -3188,7 +3188,9 @@ function isTutorProcessDisplayState(value: unknown): value is TutorPublicProcess
 }
 
 function isTutorProcessStepKey(value: unknown): value is TutorPublicProcessStep["key"] {
-  return value === "input_received" || value === "context_prepared" || value === "authorized_resource_checked" || value === "learning_reply_generated" || value === "replaced_by_newer_input";
+  return value === "input_received" || value === "context_prepared" || value === "authorized_resource_checked" ||
+    value === "runtime_started" || value === "domain_tool_running" || value === "domain_tool_completed" ||
+    value === "learning_reply_generated" || value === "replaced_by_newer_input";
 }
 
 function isTutorProcessStepState(value: unknown): value is TutorPublicProcessStep["state"] {

@@ -376,6 +376,78 @@ const result = parseModelReviewResult(payload);
 - The v2 renderer exhaustively handles message/request/error and intentionally returns `null` for standalone process. This is a display rule, not permission to skip process validation at the API boundary.
 - Conversation SSE cursors are opaque strings; only event `sequence` participates in duplicate/gap checks.
 
+## 场景：Tutor public process step 跨层 allowlist 同步（2026-08-19）
+
+### 1. 适用范围与触发条件
+
+- 触发：后端新增或移除 Tutor public process step key，或修改 snapshot/history/process parser。
+- 目的：防止服务端已发布的安全步骤被 Desktop 误判为 invalid payload，同时继续拒绝未知或受保护阶段。
+
+### 2. 类型签名
+
+```ts
+type TutorPublicProcessStep = {
+  key: "input_received" | "context_prepared" | "authorized_resource_checked"
+    | "runtime_started" | "domain_tool_running" | "domain_tool_completed"
+    | "learning_reply_generated" | "replaced_by_newer_input";
+  state: "completed" | "current";
+  label: string;
+};
+```
+
+服务端权威是 `persistence.py` 的 `_PUBLIC_PROCESS_STEP_KEYS` 与 `schema.sql` 的 process step check constraint；Desktop 的 literal union 和 `isTutorProcessStepKey` 必须同步。
+
+### 3. 契约
+
+- snapshot/history 的 `process.steps[]` 从 `unknown` 逐项验证 key、state 与 label，不得直接 cast。
+- Codex sidecar 的 `runtime_started | domain_tool_running | domain_tool_completed` 是 learner-safe Aearn projection，不代表可以公开 raw tool、provider 或 reasoning payload。
+- 新增后端 key 时必须在同一变更链中审计 Desktop type、runtime guard 和 API boundary fixture；不得只更新数据库或后端 repository allowlist。
+- standalone process 即使不在 v2 timeline 中渲染，也必须先通过 API boundary validation。
+
+### 4. 验证与错误矩阵
+
+| 条件 | Desktop 结果 |
+| --- | --- |
+| key 属于完整 allowlist，state/label 合法 | 接受 snapshot/process DTO |
+| key 未知，例如 `provider_reasoning` | 拒绝整个 payload，显示稳定 contract error |
+| state 未知或 label 非字符串 | 拒绝整个 payload |
+| step 带 raw arguments/result/reasoning 等受保护结构 | exact parser 或 public API 审计拒绝，不进入应用状态 |
+
+### 5. 正常、基础与错误案例
+
+- 正常：Codex turn 返回 `input_received -> runtime_started -> domain_tool_running -> domain_tool_completed -> learning_reply_generated`，Desktop 恢复完整消息时间线。
+- 基础：Harness turn 继续只返回旧 `context_prepared` / `authorized_resource_checked` 步骤，仍可解析。
+- 错误：后端扩展 `_PUBLIC_PROCESS_STEP_KEYS` 后只更新 backend test，导致 Desktop 在 `toTutorPublicProcess` 返回 `null`。
+
+### 6. 必须测试
+
+- `fetchTutorConversationSnapshot` API boundary fixture 接受 Codex runtime step 序列。
+- 同一 fixture 将 key 替换为未知值后必须抛出 `Tutor snapshot API returned an invalid payload`。
+- 运行 Desktop Vitest 与 `pnpm --dir .\aearn desktop:check`。
+- 真实浏览器恢复至少一个包含 Codex process steps 的 conversation，并断言错误横幅不存在、learner/Tutor message 可见、console clean。
+
+### 7. 错误与正确写法
+
+#### 错误
+
+```ts
+return value === "input_received" || value === "learning_reply_generated";
+```
+
+后端新增正式 allowlisted key 后，陈旧 guard 会把整个合法 snapshot 误判为无效。
+
+#### 正确
+
+```ts
+return value === "input_received"
+  || value === "runtime_started"
+  || value === "domain_tool_running"
+  || value === "domain_tool_completed"
+  || value === "learning_reply_generated";
+```
+
+实际实现必须覆盖服务端完整 allowlist，而不是只复制示例子集；未知值仍然 fail closed。
+
 ## 场景：Tutor public-thinking v2 exact DTO（2026-08-15）
 
 ### 1. 适用范围与触发条件
