@@ -1,0 +1,37 @@
+{
+  "id": "tutor-snapshot-runtime-step-contract",
+  "name": "tutor-snapshot-runtime-step-contract",
+  "title": "修复 Tutor snapshot 运行步骤契约回归",
+  "description": "同步 Codex sidecar 新增的 public process step key 与 Desktop runtime parser，避免合法 snapshot 被错误拒绝。",
+  "status": "completed",
+  "dev_type": null,
+  "scope": "同步 Desktop Tutor public process step 契约并补充 snapshot parser 回归验证",
+  "package": null,
+  "priority": "P1",
+  "creator": "PINKING",
+  "assignee": "PINKING",
+  "createdAt": "2026-08-19",
+  "completedAt": "2026-08-19",
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    "aearn/apps/desktop/src/types.ts",
+    "aearn/apps/desktop/src/api.ts",
+    "aearn/apps/desktop/src/tests/tutorApiV2.test.ts",
+    "aearn/services/api/app/services/tutor/persistence.py",
+    "aearn/services/api/app/services/tutor/runtime_projection.py",
+    "aearn/services/api/app/db/schema.sql",
+    "docs/architecture/api-contract.md"
+  ],
+  "notes": "轻量 PRD-only bugfix；代码、回归测试、Desktop 全量测试/build 与真实浏览器验证均通过。按仓库规则未提交，任务保持 in_progress 等待用户提交或明确授权提交后归档。",
+  "meta": {
+    "execution_mode": "inline",
+    "root_cause": "desktop_process_step_allowlist_stale"
+  }
+}
