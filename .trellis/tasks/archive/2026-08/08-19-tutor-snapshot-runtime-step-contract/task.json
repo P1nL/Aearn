@@ -29,7 +29,7 @@
     "aearn/services/api/app/db/schema.sql",
     "docs/architecture/api-contract.md"
   ],
-  "notes": "轻量 PRD-only bugfix；代码、回归测试、Desktop 全量测试/build 与真实浏览器验证均通过。按仓库规则未提交，任务保持 in_progress 等待用户提交或明确授权提交后归档。",
+  "notes": "轻量 PRD-only bugfix；代码、回归测试、Desktop 全量测试/build 与真实浏览器验证均通过。业务改动已提交为 b671e027，任务已于 2026-08-19 完成并归档。",
   "meta": {
     "execution_mode": "inline",
     "root_cause": "desktop_process_step_allowlist_stale"
