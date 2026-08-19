@@ -1843,3 +1843,24 @@ Closed the planning-only Tutor Harness rearchitecture parent after all nine inde
 ### Status
 
 [OK] **Completed**
+
+
+## Session 114: 修复 Tutor snapshot 运行步骤契约回归
+
+**Date**: 2026-08-19
+**Task**: 修复 Tutor snapshot 运行步骤契约回归
+**Branch**: `main`
+
+### Summary
+
+同步 Desktop Tutor public process step allowlist，补充合法 Codex runtime steps 与未知 key 拒绝回归测试；Desktop 全量测试、构建和真实浏览器恢复验证通过。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `b671e027` | (see git log) |
+
+### Status
+
+[OK] **Completed**
