@@ -1,6 +1,6 @@
 # Tutor Harness Runtime Architecture
 
-**Status:** Current runtime contract as of 2026-08-15.
+**Status:** Current runtime contract as of 2026-08-20.
 **Authority:** Current route registration, `aearn/services/api/app`,
 `aearn/apps/desktop`, `aearn/services/worker`, `services/learning/`,
 `schema.sql`, and their tests.
@@ -114,10 +114,11 @@ typed blocking request
 8. `GET /api/tutor/runs/{run_id}/events` remains incremental run-local compatibility
    transport using a non-negative `Last-Event-ID` cursor. The current
    `GET /api/tutor/conversations/{conversation_id}/snapshot` returns
-   `tutor_conversation_snapshot_v2`, while `/events` replays only
-   `tutor_conversation_event_v2` rows with a signed, user/conversation-scoped opaque
-   cursor v2. `turn_output` is the sole event whose bounded public-thinking payload may
-   be consumed locally by Desktop; every other event still invalidates the snapshot.
+   `tutor_conversation_snapshot_v3`, while Desktop keeps read compatibility with v2.
+   `/events` replays only `tutor_conversation_event_v2` rows with a signed,
+   user/conversation-scoped opaque cursor v2. `turn_output` may carry either the
+   Harness-compatible `tutor_public_thinking_stream_v1` or the Codex-only
+   `tutor_runtime_item_stream_v1`; every other event still invalidates the snapshot.
    Neither stream calls a provider; heartbeat comments do not advance durable sequence.
 9. Conversation creation, first-turn, and ordinary-turn requests may carry an
    additive structured `learning_scope`. Each fresh run writes one immutable
@@ -869,3 +870,15 @@ The effective v2 runtime gate is the conjunction of `TUTOR_THREAD_TURN_V2_ENABLE
 Harness remains the default implementation for general, learning-track, proactive, historical, and feature-off traffic. The server freezes `runtime_kind` only when a fresh TurnRun is created. A new `plan_drafting` conversation may select `codex_sidecar_v1` only from fresh shared worker readiness matching the allowlisted Runtime version plus exact `deepseek-v4-flash` / `aearn_deepseek` / `responses`; an enabled cohort with failed readiness receives safe unavailable instead of Harness fallback. Existing conversations and retry roots inherit their original Runtime.
 
 The durable interactive job table remains the authority. Harness and Codex workers claim it with disjoint Runtime filters, and `TutorRuntimeDispatchRouter` routes only from the persisted run snapshot. The Codex dispatcher does not wrap `TutorRunLoop`: it owns the Runtime thread/turn, typed LearningPlan tool registry, lease heartbeat, steer/interrupt monitor, and durable Runtime projector. LearningPlan confirmation and LearningTrack creation stay outside Codex in the existing Aearn HTTP/domain transaction.
+
+## 2026-08-20：Codex conversation thread、local compaction 与原始运行流
+
+`codex_sidecar_v1` 的长期上下文边界从 run 提升为 learner conversation：每个 `TutorConversation` 最多拥有一个 active `tutor_conversation_runtime_threads` 记录和一个持久 Codex App Server thread；每个 fresh `TutorRun` 只在该 thread 内执行新的 `turn/start`。worker/App Server 重启后必须用持久 external thread identity 执行 `thread/resume`，但 external thread/turn/item identity 始终是 private correlation，不进入公共 DTO。旧 run-level binding 只有在一个 conversation 恰好对应一个 legacy thread 时才可自动采用；歧义历史创建新 thread，并用一次性 bounded learner-visible timeline + confirmed planning facts reseed，随后仍须重新调用 Aearn planning context tool。
+
+当前 `aearn_deepseek` 只允许本地 Codex compaction。`CodexRuntimeConfig` 从同一 verified capability 派生 `model_context_window=1_000_000`、`model_max_output_tokens=384_000` 和 `model_auto_compact_token_limit=616_000`，以 `model_auto_compact_token_limit_scope="total"` 写入 isolated `CODEX_HOME`。`thread/compact/start` 与 turn 内 `contextCompaction` lifecycle 都属于 local App Server control；当前 provider 不声明、发送或回退到 remote compaction request。
+
+Codex item stream 使用闭合 phase/channel 规则：raw `reasoning` text 进入 private owner-scoped reasoning projection；`agentMessage phase=final_answer` 进入 answer projection；`commentary` 只留下 nonpublic safe receipt；reasoning summary 保持独立内部事件，不冒充 raw reasoning。delta 先经 run input revision、lease owner/generation、Runtime connection generation、thread/turn identity 和单调 sequence fence，再写入 `tutor_runtime_text_items` 并发布版本化 `turn_output`。completed item 用完整 text/hash 原子校准；若 completed phase 把先前 provisional `final_answer` 校正为 `commentary`，服务端必须清空并 discard 该暂存 item，发布无 text 的 discard 事件。任何 turn terminal 都必须清空并 discard 剩余 streaming item，避免刷新后残留卡住状态；final answer 仍必须通过 teaching safety 后才能关联正式 Tutor message。Runtime publisher 对短时队列饱和使用有界异步背压，只有 subscriber 在等待窗口后仍未释放容量时才以 `runtime_event_backpressure_exhausted` fail closed。
+
+planning context tool 返回 confirmed facts、missing fields、facts revision/fingerprint 和 server question catalog version。出现 `awaiting_user` 时，Aearn 还会为第一个缺失字段返回 `next_missing_fact {field_key, meaning, exact_question, wording_policy, response_authority}`；字段语义和问题文案由同一 server question catalog 派生。`language_id` 固定表示要学习的编程语言或已发布课程，不表示教学内容使用的自然语言；模型可以简短确认已知事实，但必须把 `exact_question` 逐字作为唯一问题，不得自行补充括号示例、选项或第二个问题。服务端持久 Tutor message 与 generated UI 同样复用该 question source of truth，然后创建 durable `planning_input` request 并 terminalize source turn；模型不能自定义 question key、presentation 或 catalog。typed response 写入 confirmed fact 后创建 fresh run，并 resume 同一 Codex conversation thread。PostgreSQL planning facts、typed request、LearningPlan、Queue、权限和 effect commit 继续是 Aearn authority。
+
+该 Codex raw-runtime contract 仅替代 `codex_sidecar_v1` 对 provider-native reasoning 一律禁止公开的旧规则。Harness `tutor_public_thinking_stream_v1` 与 legacy `public_thinking_text` 继续作为兼容路径，不得把二者和 raw Runtime reasoning 混写、拼接或互相推导。

@@ -38,6 +38,40 @@ describe("Tutor v2 API boundary", () => {
     await expect(fetchTutorConversationSnapshot({ userId: "user-1", conversationId: "conversation-1" })).rejects.toThrow("Tutor snapshot API returned an invalid payload");
   });
 
+  it("accepts snapshot v3 raw Runtime output and rejects provider metadata", async () => {
+    const runtimeOutput = {
+      output_version: "tutor_runtime_output_v1",
+      input_revision: 3,
+      generation: 7,
+      reasoning_items: [{ item_id: "reasoning-1", text: "先读取 confirmed facts。", state: "streaming", last_sequence: 8 }],
+      final_answer_item: { item_id: "answer-1", text: "接下来只询问学习目标。", state: "streaming", last_sequence: 9 },
+    };
+    const base = {
+      snapshot_version: "tutor_conversation_snapshot_v3",
+      conversation: { conversation_id: "conversation-1", title: "测试", control_version: 2, control_state: "running", queue_paused: false, queue_pause_reason: null, pending_count: 0, max_pending: 10 },
+      active_turn: { turn_id: "turn-1", conversation_id: "conversation-1", interaction_protocol_version: "thread_turn_v2", status: "in_progress", input_revision: 3, retry_of_turn_id: null, retry_root_turn_id: null, completion_reason: null, created_at: "2026-08-20T00:00:00Z", updated_at: "2026-08-20T00:00:01Z" },
+      active_thinking: null,
+      active_runtime_output: runtimeOutput,
+      pending_requests: [], queue: [], timeline: [], next_cursor: null, has_more: false, stream_cursor: "opaque.cursor",
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(base), { status: 200, headers: { "Content-Type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ...base,
+        active_runtime_output: { ...runtimeOutput, model_provider: "private" },
+      }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchTutorConversationSnapshot({ userId: "user-1", conversationId: "conversation-1" })).resolves.toMatchObject({
+      snapshot_version: "tutor_conversation_snapshot_v3",
+      active_runtime_output: {
+        reasoning_items: [{ text: "先读取 confirmed facts。" }],
+        final_answer_item: { text: "接下来只询问学习目标。" },
+      },
+    });
+    await expect(fetchTutorConversationSnapshot({ userId: "user-1", conversationId: "conversation-1" })).rejects.toThrow("Tutor snapshot API returned an invalid payload");
+  });
+
   it("accepts Codex runtime process steps and rejects unknown step keys", async () => {
     const process = {
       kind: "process",

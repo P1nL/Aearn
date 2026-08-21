@@ -504,3 +504,68 @@ const snapshot = await response.json() as TutorConversationSnapshotResponse;
 const payload: unknown = await response.json();
 return requireTutorConversationSnapshotV2(payload);
 ```
+
+## 场景：Tutor Codex Runtime output exact DTO（2026-08-20）
+
+### 1. 适用范围与触发条件
+
+- 触发：修改 snapshot v3、history message `runtime_output`、Runtime `turn_output` SSE 或 Desktop parser/types。
+
+### 2. 类型签名
+
+```ts
+type TutorRuntimeOutput = {
+  output_version: "tutor_runtime_output_v1";
+  input_revision: number;
+  generation: number;
+  reasoning_items: TutorRuntimeOutputItem[];
+  final_answer_item: TutorRuntimeOutputItem | null;
+};
+type TutorRuntimeOutputItem = { item_id: string; text: string; state: "streaming" | "completed"; last_sequence: number };
+```
+
+### 3. 契约
+
+- snapshot v3 exact 包含 `active_runtime_output`；历史 Tutor message 可选 exact `runtime_output`。item ID 是 Aearn projection ID，不是 Codex external item ID。
+- Runtime SSE closed union 仅允许 `output_version,input_revision,generation,operation,chunk_sequence,item_id,channel`，append/complete 才允许 `text`；channel 仅 `reasoning|final_answer`。
+- parser 从 `unknown` 构造，reasoning 最多 64 项、单项 text 最多 1,000,000、generation 正数、sequence 非负；model/provider/protocol/commentary/external thread/turn ID 等 extra key 整体拒绝。
+- 旧 `active_thinking/public_thinking_text` contract 继续服务 Harness；不得把两种 payload 宽松合并为 `Record<string, unknown>`。
+
+### 4. 验证与错误矩阵
+
+| 缺陷 | 前端结果 |
+| --- | --- |
+| snapshot v3 缺 `active_runtime_output` key | 拒绝 snapshot |
+| runtime output revision 与 active turn 不一致 | 拒绝 snapshot |
+| item state/channel/operation 未知 | 拒绝 payload并 fresh snapshot |
+| extra provider/commentary/external ID | 拒绝 payload |
+| complete text 为空且 reducer 已有同 item 文本 | 类型接受；reducer 保留累计文本并完成 |
+
+### 5. 正常、基础与错误案例
+
+- 正常：v3 snapshot 恢复两个 reasoning item 与一个 streaming final answer，后续 exact complete 接管。
+- 基础：`reasoning_items=[]` 且 final answer completed。
+- 错误：`response.json() as TutorRuntimeOutput`、接受 `model_provider` extra key、把 external item ID 当公开 identity。
+
+### 6. 必须测试
+
+- `tutorApiV2.test.ts` 覆盖 snapshot/history 合法 runtime output、extra provider metadata 拒绝、identity mismatch。
+- `useTutorConversationStream.test.ts` 覆盖 append/complete/reset/discard exact union、unknown/extra/gap recovery。
+- `TutorConversationSurface.test.tsx` 覆盖 reducer 单调合并与 transient null snapshot。
+
+### 7. 错误与正确写法
+
+#### 错误
+
+```ts
+const runtime = payload.active_runtime_output as TutorRuntimeOutput;
+```
+
+#### 正确
+
+```ts
+const runtime = payload.active_runtime_output === null
+  ? null
+  : toTutorRuntimeOutput(payload.active_runtime_output);
+if (payload.active_runtime_output !== null && runtime === null) return null;
+```

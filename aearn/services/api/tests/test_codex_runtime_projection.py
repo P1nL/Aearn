@@ -140,6 +140,7 @@ def test_runtime_events_project_to_existing_public_turn_items_and_replay(tutor_p
     replayed = projector.project_result(result, occurred_at=now + timedelta(seconds=2))
     assert all(receipt.replayed for receipt in replayed)
     assert len(projection.receipts_for_run(user_id=tutor_persistence.user_id, run_id=run_id)) == 5
+    assert projection.next_event_sequence(binding_id=binding.binding_id) == 6
     with pytest.raises(TutorIdempotencyConflict, match="sequence conflicts"):
         projection.project(
             binding_id=binding.binding_id,
@@ -183,6 +184,205 @@ def test_runtime_events_project_to_existing_public_turn_items_and_replay(tutor_p
     assert "private-thread-success" not in encoded_public
     assert "private-turn-success" not in encoded_public
     assert "private-tool-item" not in encoded_public
+
+
+def test_raw_runtime_items_are_owner_scoped_reconnectable_and_phase_separated(
+    tutor_persistence,
+) -> None:  # type: ignore[no-untyped-def]
+    repository, projection, binding, fence, conversation_id, run_id, now = _codex_turn(
+        tutor_persistence, suffix="raw-items"
+    )
+    thread_id = "private-thread-raw-items"
+    turn_id = "private-turn-raw-items"
+    events = (
+        TutorRuntimeProjectionEvent(
+            kind="turn_started", thread_id=thread_id, turn_id=turn_id,
+            sequence=1, occurred_at=now + timedelta(seconds=2),
+        ),
+        TutorRuntimeProjectionEvent(
+            kind="reasoning_started", thread_id=thread_id, turn_id=turn_id,
+            item_id="private-reasoning", sequence=2, occurred_at=now + timedelta(seconds=3),
+        ),
+        TutorRuntimeProjectionEvent(
+            kind="reasoning_delta", thread_id=thread_id, turn_id=turn_id,
+            item_id="private-reasoning", sequence=3, occurred_at=now + timedelta(seconds=4),
+            visible_text="先读取 confirmed facts。\n", content_hash=_sha256("先读取 confirmed facts。\n"),
+        ),
+        TutorRuntimeProjectionEvent(
+            kind="reasoning_summary_delta", thread_id=thread_id, turn_id=turn_id,
+            item_id="private-reasoning", sequence=4, occurred_at=now + timedelta(seconds=5),
+            visible_text="private summary", content_hash=_sha256("private summary"),
+        ),
+        TutorRuntimeProjectionEvent(
+            kind="message_started", thread_id=thread_id, turn_id=turn_id,
+            item_id="private-commentary", item_type="agentMessage", phase="commentary",
+            sequence=5, occurred_at=now + timedelta(seconds=6),
+        ),
+        TutorRuntimeProjectionEvent(
+            kind="message_delta", thread_id=thread_id, turn_id=turn_id,
+            item_id="private-commentary", item_type="agentMessage", phase="commentary",
+            sequence=6, occurred_at=now + timedelta(seconds=7),
+            visible_text="internal commentary", content_hash=_sha256("internal commentary"),
+        ),
+        TutorRuntimeProjectionEvent(
+            kind="message_started", thread_id=thread_id, turn_id=turn_id,
+            item_id="private-answer", item_type="agentMessage", phase="final_answer",
+            sequence=7, occurred_at=now + timedelta(seconds=8),
+        ),
+        TutorRuntimeProjectionEvent(
+            kind="message_delta", thread_id=thread_id, turn_id=turn_id,
+            item_id="private-answer", item_type="agentMessage", phase="final_answer",
+            sequence=8, occurred_at=now + timedelta(seconds=9),
+            visible_text="只询问", content_hash=_sha256("只询问"),
+        ),
+    )
+    receipts = [
+        projection.project(binding_id=binding.binding_id, fence=fence, event=event)
+        for event in events
+    ]
+    assert receipts[3].projection_status is TutorRuntimeProjectionStatus.IGNORED_NONPUBLIC
+    assert receipts[4].projection_status is TutorRuntimeProjectionStatus.IGNORED_NONPUBLIC
+    assert receipts[5].projection_status is TutorRuntimeProjectionStatus.IGNORED_NONPUBLIC
+
+    snapshot = repository.read_conversation_snapshot(
+        user_id=tutor_persistence.user_id,
+        conversation_id=conversation_id,
+    )
+    assert snapshot.active_runtime_output == {
+        "output_version": "tutor_runtime_output_v1",
+        "input_revision": fence.input_revision,
+        "generation": fence.connection_generation,
+        "reasoning_items": [{
+            "item_id": projection.runtime_output_for_run(user_id=tutor_persistence.user_id, run_id=run_id)["reasoning_items"][0]["item_id"],  # type: ignore[index]
+            "text": "先读取 confirmed facts。\n",
+            "state": "streaming",
+            "last_sequence": 3,
+        }],
+        "final_answer_item": {
+            "item_id": projection.runtime_output_for_run(user_id=tutor_persistence.user_id, run_id=run_id)["final_answer_item"]["item_id"],  # type: ignore[index]
+            "text": "只询问",
+            "state": "streaming",
+            "last_sequence": 8,
+        },
+    }
+    assert projection.runtime_output_for_run(user_id=str(__import__("uuid").uuid4()), run_id=run_id) is None
+
+    full_reasoning = "先读取 confirmed facts。\n再确认缺失字段。"
+    full_answer = "只询问学习目标。"
+    terminal_events = (
+        TutorRuntimeProjectionEvent(
+            kind="reasoning_delta", thread_id=thread_id, turn_id=turn_id,
+            item_id="private-reasoning", sequence=9, occurred_at=now + timedelta(seconds=10),
+            visible_text="再确认缺失字段。", content_hash=_sha256("再确认缺失字段。"),
+        ),
+        TutorRuntimeProjectionEvent(
+            kind="reasoning_completed", thread_id=thread_id, turn_id=turn_id,
+            item_id="private-reasoning", sequence=10, occurred_at=now + timedelta(seconds=11),
+            visible_text=None, content_hash=None,
+        ),
+        TutorRuntimeProjectionEvent(
+            kind="message_completed", thread_id=thread_id, turn_id=turn_id,
+            item_id="private-answer", item_type="agentMessage", phase="final_answer",
+            sequence=11, occurred_at=now + timedelta(seconds=12),
+            visible_text=full_answer, content_hash=_sha256(full_answer),
+        ),
+        TutorRuntimeProjectionEvent(
+            kind="turn_completed", thread_id=thread_id, turn_id=turn_id,
+            sequence=12, occurred_at=now + timedelta(seconds=13), terminal_status="completed",
+        ),
+    )
+    for event in terminal_events:
+        projection.project(binding_id=binding.binding_id, fence=fence, event=event)
+
+    history, _, _ = repository.read_public_history(
+        user_id=tutor_persistence.user_id,
+        conversation_id=conversation_id,
+        limit=20,
+    )
+    tutor_message = next(item for item in history if item.kind == "message" and item.role == "tutor")
+    assert tutor_message.content == full_answer
+    assert tutor_message.runtime_output is not None
+    assert [item["text"] for item in tutor_message.runtime_output["reasoning_items"]] == [full_reasoning]  # type: ignore[index]
+    assert tutor_message.runtime_output["final_answer_item"]["text"] == full_answer  # type: ignore[index]
+    receipts_json = tutor_persistence.connection.execute(
+        "SELECT jsonb_agg(to_jsonb(receipts))::text AS payload FROM tutor_runtime_item_receipts AS receipts WHERE run_id = %s",
+        (run_id,),
+    ).fetchone()
+    encoded_receipts = str(receipts_json["payload"] if receipts_json is not None else "")
+    assert full_reasoning not in encoded_receipts
+    assert full_answer not in encoded_receipts
+    assert "internal commentary" not in encoded_receipts
+
+
+def test_commentary_completion_discards_provisional_final_answer_stream(
+    tutor_persistence,
+) -> None:  # type: ignore[no-untyped-def]
+    _repository, projection, binding, fence, _conversation_id, run_id, now = _codex_turn(
+        tutor_persistence, suffix="commentary-correction"
+    )
+    thread_id = "private-thread-commentary-correction"
+    turn_id = "private-turn-commentary-correction"
+    provisional = "即将重新提交计划草案。"
+    for event in (
+        TutorRuntimeProjectionEvent(
+            kind="turn_started", thread_id=thread_id, turn_id=turn_id,
+            sequence=1, occurred_at=now + timedelta(seconds=2),
+        ),
+        TutorRuntimeProjectionEvent(
+            kind="message_started", thread_id=thread_id, turn_id=turn_id,
+            item_id="phase-corrected-message", item_type="agentMessage", phase="final_answer",
+            sequence=2, occurred_at=now + timedelta(seconds=3),
+        ),
+        TutorRuntimeProjectionEvent(
+            kind="message_delta", thread_id=thread_id, turn_id=turn_id,
+            item_id="phase-corrected-message", item_type="agentMessage", phase="final_answer",
+            sequence=3, occurred_at=now + timedelta(seconds=4),
+            visible_text=provisional, content_hash=_sha256(provisional),
+        ),
+    ):
+        projection.project(binding_id=binding.binding_id, fence=fence, event=event)
+
+    corrected = projection.project(
+        binding_id=binding.binding_id,
+        fence=fence,
+        event=TutorRuntimeProjectionEvent(
+            kind="message_completed", thread_id=thread_id, turn_id=turn_id,
+            item_id="phase-corrected-message", item_type="agentMessage", phase="commentary",
+            sequence=4, occurred_at=now + timedelta(seconds=5),
+            visible_text=provisional, content_hash=_sha256(provisional),
+        ),
+    )
+    assert corrected.projection_status is TutorRuntimeProjectionStatus.APPLIED
+    row = tutor_persistence.connection.execute(
+        """
+        SELECT state, text, content_hash, completed_at
+        FROM tutor_runtime_text_items
+        WHERE run_id = %s
+        """,
+        (run_id,),
+    ).fetchone()
+    assert row is not None
+    assert row["state"] == "discarded"
+    assert row["text"] == ""
+    assert row["content_hash"] is None
+    assert row["completed_at"] is not None
+    assert projection.runtime_output_for_run(
+        user_id=tutor_persistence.user_id,
+        run_id=run_id,
+    ) is None
+    events = tutor_persistence.repository.conversation_events_after(
+        user_id=tutor_persistence.user_id,
+        conversation_id=str(binding.conversation_id),
+        cursor=None,
+    )
+    discard_payloads = [
+        event.payload
+        for event in events
+        if event.kind == "turn_output" and event.payload.get("operation") == "discard"
+    ]
+    assert len(discard_payloads) == 1
+    assert discard_payloads[0]["channel"] == "final_answer"
+    assert "text" not in discard_payloads[0]
 
 
 def test_unsafe_final_message_is_blocked_and_terminal_fails_closed(tutor_persistence) -> None:  # type: ignore[no-untyped-def]
@@ -370,8 +570,28 @@ def test_runtime_interrupt_and_failure_terminal_mapping(
         binding_id=binding.binding_id,
         fence=fence,
         event=TutorRuntimeProjectionEvent(
+            kind="reasoning_started", thread_id=thread_id, turn_id=turn_id,
+            item_id=f"private-reasoning-{suffix}", sequence=2,
+            occurred_at=now + timedelta(seconds=3),
+        ),
+    )
+    partial_reasoning = "unfinished reasoning"
+    projection.project(
+        binding_id=binding.binding_id,
+        fence=fence,
+        event=TutorRuntimeProjectionEvent(
+            kind="reasoning_delta", thread_id=thread_id, turn_id=turn_id,
+            item_id=f"private-reasoning-{suffix}", sequence=3,
+            occurred_at=now + timedelta(seconds=4),
+            visible_text=partial_reasoning, content_hash=_sha256(partial_reasoning),
+        ),
+    )
+    projection.project(
+        binding_id=binding.binding_id,
+        fence=fence,
+        event=TutorRuntimeProjectionEvent(
             kind="turn_completed", thread_id=thread_id, turn_id=turn_id,
-            sequence=2, occurred_at=now + timedelta(seconds=3),
+            sequence=4, occurred_at=now + timedelta(seconds=5),
             terminal_status=terminal_status, safe_code=f"runtime_{suffix}",
         ),
     )
@@ -379,6 +599,23 @@ def test_runtime_interrupt_and_failure_terminal_mapping(
     assert state.terminal_outcome is not None and state.terminal_outcome.value == terminal_outcome
     process = repository.read_public_process(user_id=tutor_persistence.user_id, run_id=run_id)
     assert process is not None and process.display_state == process_state
+    text_item = tutor_persistence.connection.execute(
+        """
+        SELECT state, text, content_hash, completed_at
+        FROM tutor_runtime_text_items
+        WHERE run_id = %s
+        """,
+        (run_id,),
+    ).fetchone()
+    assert text_item is not None
+    assert text_item["state"] == "discarded"
+    assert text_item["text"] == ""
+    assert text_item["content_hash"] is None
+    assert text_item["completed_at"] is not None
+    assert projection.runtime_output_for_run(
+        user_id=tutor_persistence.user_id,
+        run_id=run_id,
+    ) is None
     history, _, _ = repository.read_public_history(
         user_id=tutor_persistence.user_id, conversation_id=conversation_id,
         limit=20, include_errors=True,

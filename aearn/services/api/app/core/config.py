@@ -402,13 +402,19 @@ class Settings(BaseModel):
     @property
     def tutor_context_token_budget(self) -> int:
         if self.uses_deepseek_v4_flash_responses:
-            return (
-                self.tutor_deepseek_v4_flash_context_window_tokens
-                - self.tutor_deepseek_v4_flash_max_output_tokens
-            )
+            return self.deepseek_v4_flash_input_hard_limit_tokens
         return min(
             DEFAULT_TUTOR_CONTEXT_TOKEN_BUDGET,
             self.tutor_context_max_dynamic_target_tokens,
+        )
+
+    @property
+    def deepseek_v4_flash_input_hard_limit_tokens(self) -> int:
+        """Verified physical input budget shared by Tutor and Codex Runtime."""
+
+        return (
+            self.tutor_deepseek_v4_flash_context_window_tokens
+            - self.tutor_deepseek_v4_flash_max_output_tokens
         )
 
     @property

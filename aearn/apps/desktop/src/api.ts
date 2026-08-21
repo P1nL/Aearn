@@ -2715,9 +2715,12 @@ function toTutorHistoryItem(payload: unknown): TutorHistoryItem | null {
   if (!isRecord(payload) || !isString(payload.kind) || !isString(payload.id) || !isNullableString(payload.created_at)) return null;
   if (payload.kind === "message") {
     const legacyKeys = ["kind", "id", "role", "content", "public_thinking_steps", "context_references", "in_reply_to_item_id", "created_at"];
-    const snapshotKeys = ["kind", "id", "turn_id", "role", "content", "public_thinking_text", "public_thinking_steps", "context_references", "in_reply_to_item_id", "created_at"];
+    const snapshotV2Keys = ["kind", "id", "turn_id", "role", "content", "public_thinking_text", "public_thinking_steps", "context_references", "in_reply_to_item_id", "created_at"];
+    const snapshotV3Keys = ["kind", "id", "turn_id", "role", "content", "public_thinking_text", "public_thinking_steps", "runtime_output", "context_references", "in_reply_to_item_id", "created_at"];
     const legacy = hasExactKeys(payload, legacyKeys);
-    if (!legacy && !hasExactKeys(payload, snapshotKeys)) return null;
+    const snapshotV2 = hasExactKeys(payload, snapshotV2Keys);
+    const snapshotV3 = hasExactKeys(payload, snapshotV3Keys);
+    if (!legacy && !snapshotV2 && !snapshotV3) return null;
     if ((payload.role !== "learner" && payload.role !== "tutor") || !isString(payload.content) ||
         !isStringArray(payload.public_thinking_steps) || !isNullableString(payload.in_reply_to_item_id) ||
         (!legacy && (!isNullableString(payload.turn_id) || !isString(payload.public_thinking_text)))) return null;
@@ -2728,7 +2731,12 @@ function toTutorHistoryItem(payload: unknown): TutorHistoryItem | null {
     const turnId: string | null = legacy ? null : (payload.turn_id === null ? null : String(payload.turn_id));
     if (publicThinkingText.length > 1280) return null;
     const contextReferences = toTutorContextReferences(payload.context_references);
-    if (!contextReferences || (payload.role === "tutor" && contextReferences.length > 0)) return null;
+    const runtimeOutput = snapshotV3 && payload.runtime_output !== null
+      ? toTutorRuntimeOutput(payload.runtime_output)
+      : null;
+    if (!contextReferences || (payload.role === "tutor" && contextReferences.length > 0) ||
+        (snapshotV3 && payload.runtime_output !== null && runtimeOutput === null) ||
+        (payload.role === "learner" && runtimeOutput !== null)) return null;
     return {
       kind: "message",
       id: payload.id,
@@ -2737,6 +2745,7 @@ function toTutorHistoryItem(payload: unknown): TutorHistoryItem | null {
       content: payload.content,
       public_thinking_text: payload.role === "tutor" ? publicThinkingText : "",
       public_thinking_steps: payload.role === "tutor" ? payload.public_thinking_steps : [],
+      runtime_output: payload.role === "tutor" ? runtimeOutput : null,
       context_references: contextReferences,
       in_reply_to_item_id: payload.in_reply_to_item_id,
       created_at: payload.created_at,
@@ -2948,9 +2957,12 @@ function toTutorInteractionResponseAccepted(payload: unknown): TutorInteractionR
 }
 
 function toTutorConversationSnapshotResponse(payload: unknown): TutorConversationSnapshotResponse | null {
-  if (!isRecord(payload) || !hasExactKeys(payload, [
-    "snapshot_version", "conversation", "active_turn", "active_thinking", "pending_requests", "queue", "timeline", "next_cursor", "has_more", "stream_cursor",
-  ]) || payload.snapshot_version !== "tutor_conversation_snapshot_v2" || !isRecord(payload.conversation) ||
+  if (!isRecord(payload) || (payload.snapshot_version !== "tutor_conversation_snapshot_v2" && payload.snapshot_version !== "tutor_conversation_snapshot_v3")) return null;
+  const version = payload.snapshot_version;
+  const expectedKeys = version === "tutor_conversation_snapshot_v3"
+    ? ["snapshot_version", "conversation", "active_turn", "active_thinking", "active_runtime_output", "pending_requests", "queue", "timeline", "next_cursor", "has_more", "stream_cursor"]
+    : ["snapshot_version", "conversation", "active_turn", "active_thinking", "pending_requests", "queue", "timeline", "next_cursor", "has_more", "stream_cursor"];
+  if (!hasExactKeys(payload, expectedKeys) || !isRecord(payload.conversation) ||
       !hasExactKeys(payload.conversation, [
         "conversation_id", "title", "control_version", "control_state", "queue_paused",
         "queue_pause_reason", "pending_count", "max_pending",
@@ -2967,11 +2979,16 @@ function toTutorConversationSnapshotResponse(payload: unknown): TutorConversatio
   if (pendingRequests.some((item) => item === null) || queue.some((item) => item === null) || timeline.some((item) => item === null)) return null;
   const activeTurn = payload.active_turn === null ? null : toTutorPublicTurn(payload.active_turn);
   const activeThinking = payload.active_thinking === null ? null : toTutorActiveThinking(payload.active_thinking);
+  const activeRuntimeOutput = version === "tutor_conversation_snapshot_v3" && payload.active_runtime_output !== null
+    ? toTutorRuntimeOutput(payload.active_runtime_output)
+    : null;
   if ((activeTurn === null && payload.active_turn !== null) ||
       (activeThinking === null && payload.active_thinking !== null) ||
-      (activeThinking !== null && (activeTurn === null || activeThinking.turn_id !== activeTurn.turn_id || activeThinking.input_revision !== activeTurn.input_revision))) return null;
+      (version === "tutor_conversation_snapshot_v3" && payload.active_runtime_output !== null && activeRuntimeOutput === null) ||
+      (activeThinking !== null && (activeTurn === null || activeThinking.turn_id !== activeTurn.turn_id || activeThinking.input_revision !== activeTurn.input_revision)) ||
+      (activeRuntimeOutput !== null && (activeTurn === null || activeRuntimeOutput.input_revision !== activeTurn.input_revision))) return null;
   return {
-    snapshot_version: "tutor_conversation_snapshot_v2",
+    snapshot_version: version,
     conversation: {
       conversation_id: payload.conversation.conversation_id,
       title: payload.conversation.title,
@@ -2984,6 +3001,7 @@ function toTutorConversationSnapshotResponse(payload: unknown): TutorConversatio
     },
     active_turn: activeTurn,
     active_thinking: activeThinking,
+    active_runtime_output: activeRuntimeOutput,
     pending_requests: pendingRequests.filter((item): item is TutorInteractionRequestItem => item !== null),
     queue: queue.filter((item): item is TutorQueuedInput => item !== null),
     timeline: timeline.filter((item): item is TutorHistoryItem => item !== null),
@@ -2991,6 +3009,37 @@ function toTutorConversationSnapshotResponse(payload: unknown): TutorConversatio
     has_more: payload.has_more,
     stream_cursor: payload.stream_cursor,
   };
+}
+
+function toTutorRuntimeOutput(payload: unknown): TutorConversationSnapshotResponse["active_runtime_output"] {
+  if (!isRecord(payload) || !hasExactKeys(payload, [
+    "output_version", "input_revision", "generation", "reasoning_items", "final_answer_item",
+  ]) || payload.output_version !== "tutor_runtime_output_v1" ||
+      !isNonNegativeSafeInteger(payload.input_revision) || !isPositiveSafeInteger(payload.generation) ||
+      !Array.isArray(payload.reasoning_items) || payload.reasoning_items.length > 64) return null;
+  const reasoningItems = payload.reasoning_items.map(toTutorRuntimeOutputItem);
+  const finalAnswerItem = payload.final_answer_item === null ? null : toTutorRuntimeOutputItem(payload.final_answer_item);
+  if (reasoningItems.some((item) => item === null) || (payload.final_answer_item !== null && finalAnswerItem === null)) return null;
+  return {
+    output_version: "tutor_runtime_output_v1",
+    input_revision: payload.input_revision,
+    generation: payload.generation,
+    reasoning_items: reasoningItems.filter((item): item is NonNullable<typeof item> => item !== null),
+    final_answer_item: finalAnswerItem,
+  };
+}
+
+function toTutorRuntimeOutputItem(payload: unknown) {
+  if (!isRecord(payload) || !hasExactKeys(payload, ["item_id", "text", "state", "last_sequence"]) ||
+      !isString(payload.item_id) || !isString(payload.text) || payload.text.length > 1_000_000 ||
+      (payload.state !== "streaming" && payload.state !== "completed") ||
+      !isNonNegativeSafeInteger(payload.last_sequence)) return null;
+  return {
+    item_id: payload.item_id,
+    text: payload.text,
+    state: payload.state,
+    last_sequence: payload.last_sequence,
+  } as const;
 }
 
 function toTutorActiveThinking(payload: unknown): TutorConversationSnapshotResponse["active_thinking"] {

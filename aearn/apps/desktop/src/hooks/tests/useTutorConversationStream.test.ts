@@ -58,6 +58,55 @@ describe("Tutor conversation SSE contract", () => {
     ].join("\n"))).toMatchObject({ kind: "error", resetRequired: true });
   });
 
+  it("accepts raw Runtime reasoning and final-answer item streams", () => {
+    const base = {
+      event_id: "event-runtime-output", sequence: 9, kind: "turn_output", turn_id: "turn-1",
+      item_id: null, item_kind: null, occurred_at: "2026-08-20T00:00:00+00:00",
+    };
+    const reasoning = parseTutorConversationFrame([
+      "id: opaque.runtime.reasoning", "event: turn_output", `data: ${JSON.stringify({
+        ...base,
+        payload: {
+          output_version: "tutor_runtime_item_stream_v1", input_revision: 3,
+          generation: 7, operation: "append", chunk_sequence: 2,
+          item_id: "reasoning-1", channel: "reasoning", text: "先核对服务端事实。",
+        },
+      })}`,
+    ].join("\n"));
+    expect(reasoning).toMatchObject({
+      kind: "event",
+      event: { payload: { channel: "reasoning", operation: "append", text: "先核对服务端事实。" } },
+    });
+
+    const answer = parseTutorConversationFrame([
+      "id: opaque.runtime.answer", "event: turn_output", `data: ${JSON.stringify({
+        ...base,
+        sequence: 10,
+        payload: {
+          output_version: "tutor_runtime_item_stream_v1", input_revision: 3,
+          generation: 7, operation: "complete", chunk_sequence: 3,
+          item_id: "answer-1", channel: "final_answer", text: "接下来只询问学习目标。",
+        },
+      })}`,
+    ].join("\n"));
+    expect(answer).toMatchObject({
+      kind: "event",
+      event: { payload: { channel: "final_answer", operation: "complete", text: "接下来只询问学习目标。" } },
+    });
+
+    const commentary = parseTutorConversationFrame([
+      "id: opaque.runtime.commentary", "event: turn_output", `data: ${JSON.stringify({
+        ...base,
+        payload: {
+          output_version: "tutor_runtime_item_stream_v1", input_revision: 3,
+          generation: 7, operation: "append", chunk_sequence: 4,
+          item_id: "commentary-1", channel: "commentary", text: "private",
+        },
+      })}`,
+    ].join("\n"));
+    expect(commentary).toMatchObject({ kind: "error", resetRequired: true });
+  });
+
   it("requires a fresh snapshot for cursor and protocol failures", () => {
     const cursorError = parseTutorConversationFrame(`event: error\ndata: ${JSON.stringify({ error: {
       code: "CONVERSATION_CURSOR_INVALID", message: "refresh", details: {}, request_id: "request-2", recoverable: true,

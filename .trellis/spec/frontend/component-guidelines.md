@@ -241,7 +241,7 @@ which internal `--dsw-*` compatibility aliases may exist.
 - Components are controlled, presentational React 19 components. They accept typed props/callbacks and never read Tutor APIs, Zustand stores, session state, or upstream runtime context.
 - `DshDerivedRoot` establishes the compatibility scope. Product code consumes public exports and `--aearn-*` tokens rather than importing implementation CSS directly.
 - `DshDerivedRoot` renders a real `div`; it does not transparently forward a parent flex/grid height contract. A height-constrained product surface must add a product-owned layout class that carries `width: 100%`, `height: 100%`, `min-width: 0`, `min-height: 0`, and the required flex behavior to the root before relying on a descendant `height: 100%`. Keep this layout adapter outside `ui/dsh-derived`.
-- A Tutor feature may derive an ephemeral `Think` row from authoritative `active_turn.status === "in_progress"` plus `control_state === "running"`. Before validated public text it is a non-interactive `StateDot + Think` status with `data-turn-id`; exact `active_thinking`/`turn_output append` only fills a provisional buffer, and the row becomes a controlled disclosure only after validated `complete` plus the first-text stability window. It never consumes `process`, raw trace, provider reasoning, prompt, or arbitrary SSE payload. The successful snapshot reconciles the row by turn identity with persisted `public_thinking_text + answer` instead of rendering a duplicate.
+- A Tutor feature may derive an ephemeral `think` row from authoritative `active_turn.status === "in_progress"` plus `control_state === "running"`. Harness/public-thinking uses exact `active_thinking`; Codex sidecar uses only the exact owner-scoped `active_runtime_output` / `tutor_runtime_item_stream_v1` projection. It never consumes `process`, arbitrary provider objects, raw trace, prompt, commentary, reasoning summary, or arbitrary SSE payload. The successful snapshot reconciles by turn identity with persisted `public_thinking_text + answer` or `runtime_output` instead of rendering a duplicate.
 - A typed-request learner response reuses the ordinary learner message bubble and renders only the server-projected natural-language result. Never expose `question_key`, `field_key`, internal option values, serialized JSON, or quoted raw values such as `experience_level: "new"`.
 - `Button`, `Input`, `DisclosureRow`, and `Tooltip` preserve native keyboard semantics, visible focus, disabled/busy behavior, and refs where the native element has one.
 - `MessageText` renders literal text only. It does not parse Markdown or HTML.
@@ -273,7 +273,7 @@ which internal `--dsw-*` compatibility aliases may exist.
 - Base: a static `Pill` renders as text; an interactive `Pill` renders as a native button.
 - Bad: import a Tutor store or `api.ts` from `ui/dsh-derived`.
 - Bad: insert the root wrapper into a full-height flex/grid chain without a layout adapter, leaving the Composer positioned against an approximately content-height root.
-- Bad: render “Tutor 正在思考”/helper copy, make the empty row a disabled button, stream provider reasoning, number model text, or retain live and persisted copies together.
+- Bad: render “Tutor 正在思考”/helper copy, make the empty row a disabled button, consume arbitrary provider reasoning instead of the exact Aearn Runtime projection, number model text, or retain live and persisted copies together.
 - Bad: use `--dsw-*` in product CSS, copy brand icons, or install an upstream UI/runtime package.
 
 ### 6. Tests Required
@@ -375,4 +375,65 @@ export function QueueButton({ count, onOpen }: QueueButtonProps) {
 return hasText
   ? <TutorThinking title="Think" text={text} expanded={expanded} />
   : <div role="status"><StateDot state="running" /><strong>Think</strong></div>;
+```
+
+## 场景：Tutor Codex raw Runtime reasoning 与 answer 同项接替（2026-08-20）
+
+### 1. 适用范围与触发条件
+
+- 触发：修改 `TutorConversationSurface` 的 `active_runtime_output`、`tutor_runtime_item_stream_v1` reducer、Codex 历史消息或恢复快照。
+
+### 2. 组件签名
+
+```tsx
+<TutorRunningPlaceholder turn={turn} runtimeOutput={liveRuntimeOutput} ... />
+<TutorRuntimeMessage item={message} output={message.runtime_output} />
+```
+
+### 3. 契约
+
+- 当前 Codex Tutor entry 内先显示小写 `think`，reasoning 使用左边框 disclosure，`final_answer_item` 在其下直接流式显示；commentary 与 reasoning summary 没有渲染入口。
+- identity 为 `turnId + input_revision + generation + item_id + channel`；append 连续累加，complete 使用后端返回的完整文本。若 complete 文本为空但本地已有非空前缀，保留前缀并只切换 `state=completed`。
+- 同 Turn/Revision 的 recovery snapshot 暂时没有 `active_runtime_output` 时保留当前已验证内容；只有 Turn 改变/终态 handoff、显式 discard/reset 或不同 revision 才清理。
+- 多个 reasoning item 按创建顺序以双换行拼接。当前 reasoning 默认展开；历史 reasoning 默认折叠；终态无 reasoning 时不渲染空 `think`。
+- fresh typed-response run 立即接管当前 entry；后端可以创建新 Turn，但 UI 必须连续显示下一项 generated UI，不要求学习者再发普通消息。
+
+### 4. 验证与错误矩阵
+
+| 状态 | 组件行为 |
+| --- | --- |
+| reasoning append | 同 item 原位追加，不清空其他 reasoning item |
+| reasoning complete 文本为空且已有前缀 | 保留前缀，标记 completed |
+| recovery snapshot 同 Turn 但 runtime output 暂缺 | 保留当前内容，等待后续 SSE/snapshot |
+| incoming generation 较旧 | 忽略 |
+| explicit discard | 仅删除对应 item |
+| 历史 runtime_output 有 reasoning | 默认折叠显示 `think` 与下方 answer |
+| 历史 runtime_output 无 reasoning | 仅显示 answer，无空 disclosure |
+
+### 5. 正常、基础与错误案例
+
+- 正常：两个 reasoning item 连续流式出现，首项 text-less complete 后文本不变，answer 在下方继续流式，刷新后历史仍可展开完整 reasoning。
+- 基础：只有 final answer，终态不出现空 `think`。
+- 错误：snapshot 的瞬时 null 清空当前 reasoning；complete 空字符串覆盖累计 delta；把 commentary 拼进 `think`；为每个 fresh backend Turn 重置整个可见对话。
+
+### 6. 必须测试
+
+- Testing Library：raw reasoning/answer 同项流式、空 complete 保留文本、同 Turn snapshot gap 保留、历史默认折叠、无 reasoning 无空行、fresh typed response 立即挂载。
+- API parser：v3 snapshot 与历史 `runtime_output` exact keys/limits/identity；provider metadata、commentary、external IDs 和 extra key 拒绝。
+- 真实浏览器 fake/offline smoke：当前展开、历史折叠、刷新/重连、下一项 generated UI 连续出现、console clean，禁止调用真实 provider。
+
+### 7. 错误与正确写法
+
+#### 错误
+
+```ts
+if (!snapshot.active_runtime_output) setRuntimeOutput(null);
+```
+
+#### 正确
+
+```ts
+if (!snapshot.active_turn) clearRuntimeOutput();
+else if (snapshot.active_runtime_output) mergeByTurnRevisionGeneration(snapshot.active_runtime_output);
+else preserveValidatedCurrentRuntimeOutput();
 ```

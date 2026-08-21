@@ -18,6 +18,7 @@ class AgentRuntimePort(Protocol):
     async def health(self) -> RuntimeHealthSnapshot: ...
     async def start_thread(self, request: RuntimeThreadRequest) -> RuntimeThreadHandle: ...
     async def resume_thread(self, thread_id: str) -> RuntimeThreadHandle: ...
+    async def compact_thread(self, thread: RuntimeThreadHandle) -> None: ...
     async def run_turn(self, request: RuntimeTurnRequest) -> RuntimeTurnResult: ...
     async def steer(self, thread: RuntimeThreadHandle, turn_id: str, input: tuple[RuntimeInput, ...]) -> None: ...
     async def interrupt(self, thread: RuntimeThreadHandle, turn_id: str) -> None: ...
@@ -58,8 +59,13 @@ Required behavior:
 - Preserve a monotonic connection generation. Old thread handles cannot write after restart.
 - Hold both a process-local owner registry and an OS-level file lock for one Runtime Home.
 - Pre-register the tool registry by thread before sending `turn/start`; bind it to the turn after receiving the response.
-- Ignore reasoning items. Do not put tool arguments into normal Runtime events.
-- Bound notification and Runtime event queues. Queue exhaustion fails closed.
+- Normalize `item/reasoning/textDelta` and `item/reasoning/summaryTextDelta` separately; only raw reasoning text delta enters the owner-scoped Tutor Runtime text projection. Reasoning summary and commentary remain nonpublic.
+- Codex `item/completed` for a reasoning item may omit `text`. Preserve `visible_text=None/content_sha256=None` through the adapter so the projector finalizes the already accumulated delta text instead of overwriting it with `""`.
+- `item/tool/requestUserInput` is a known but prohibited client-side elicitation request. Return a schema-valid empty answer map without accepting model-owned questions/options and without killing the sidecar; every other unknown server request remains fatal.
+- Live Runtime event delivery must use a turn-scoped subscription created before `run_turn` is scheduled and closed in the controlled-turn `finally` block. Never retain one process-global event queue across turns: an observer may legitimately finish with undrained events, and those events must be dropped with that subscription rather than replayed into the next turn.
+- Runtime event `sequence` is turn-local. A synthetic control/recovery terminal uses `max(observed_or_persisted_sequence) + 1`; it must never restart at `1` and collide with an existing receipt.
+- Do not put tool arguments, tool results, prompts, provider bodies, or credentials into normal Runtime events.
+- Bound notification and Runtime event queues. Runtime event publication must apply bounded async backpressure so an active consumer can drain burst traffic; only a subscriber that remains full through the bounded wait fails closed.
 - Logs and health payloads may include method, version, generation, safe code, hashes, and duration only; exclude prompts, model bodies, reasoning, tool arguments, credentials, and full temporary paths.
 - `pnpm --dir .\aearn dev` starts the dedicated worker by default. `pnpm --dir .\aearn dev:no-codex` is the explicit local opt-out.
 
@@ -76,18 +82,25 @@ Required behavior:
 | Old handle uses a replaced generation | `RuntimeGenerationError("stale_runtime_generation")` |
 | Second concurrent writer starts a turn | `RuntimeBusyError("runtime_writer_busy")` |
 | Tool callback arrives immediately after turn response | thread-prepared registry handles it |
-| Unknown server request or invalid JSON | current generation fails closed |
+| `item/tool/requestUserInput` arrives | reply with `{answers:{question_id:{answers:[]}}}`; connection stays healthy; no Aearn request is created from model payload |
+| Prior turn finishes before its observer drains every live event | closing that turn's subscription drops the undrained backlog; the next turn observes only its own thread/turn events and starts sequence at `1` |
+| Synthetic control/recovery terminal follows persisted receipts | allocate the next sequence after the maximum persisted/observed sequence; terminalize once without idempotency conflict |
+| Active turn-scoped subscriber queue is temporarily full while its observer is draining | publisher awaits bounded capacity and preserves every event in order |
+| Active turn-scoped subscriber remains full through the bounded wait | current turn fails closed with `runtime_event_backpressure_exhausted`; no event is carried into a later turn |
+| Other unknown server request or invalid JSON | current generation fails closed |
 | Child exits with pending work | pending operations receive a connection error |
 | Runtime event queue is full | `runtime_event_backpressure_exhausted` |
 | Worker shuts down | interrupt, close stdio, terminate if needed, release ownership |
 
 ### 5. Good / Base / Bad Cases
 
-- Good: one worker preflights the exact version and isolated Home, then one adapter owns the active turn and receives an immediate typed tool callback through the thread-prepared registry.
+- Good: one worker preflights the exact version and isolated Home, then one adapter owns the active turn, receives an immediate typed tool callback, streams raw reasoning text through a turn-scoped subscription, finalizes a text-less reasoning completion from accumulated deltas, closes the subscription, and starts the next turn without replaying any undrained event.
 - Base: Runtime infrastructure and the dedicated worker are enabled, but no Tutor Codex dispatch task exists; Tutor runs continue through Harness.
 - Bad: two worker processes write the same Runtime Home without a file lock.
 - Bad: code waits for `turn/start` to return before registering any tool registry, causing intermittent callback failure.
-- Bad: reasoning or tool arguments enter Runtime events, logs, health responses, snapshots, or public DTOs.
+- Bad: one process-global live event queue survives turn completion. Undrained events from an earlier turn or conversation can then consume the next binding's sequence numbers, trigger idempotency conflicts, interrupt valid reasoning, and leave the Runtime binding falsely `running`.
+- Bad: converting a missing completed-item `text` to `""`, which clears the current UI and destroys historical reasoning.
+- Bad: accepting Codex `request_user_input` questions as Aearn authority, or exposing reasoning through logs/receipts instead of the dedicated owner-scoped text projection.
 
 ### 6. Tests Required
 
@@ -97,8 +110,11 @@ Required behavior:
 - Repeat the immediate callback regression enough to expose scheduler races.
 - Assert single active writer and second process/file-lock rejection.
 - Assert child crash fails pending work and leaves no reader/process.
-- Assert reasoning omission and stderr secret/path redaction.
-- Assert event backpressure returns a stable safe code instead of hanging.
+- Assert raw reasoning delta mapping, text-less reasoning completion, summary/commentary separation, and stderr secret/path redaction.
+- Assert `item/tool/requestUserInput` receives empty answers without a fatal connection, while an unrelated unknown server request remains fail-closed.
+- Run two burst turns on one resumed thread and then a turn on another conversation; assert each controlled-turn observer sees only its own turn IDs and unique turn-local sequences even when the prior observer intentionally leaves backlog.
+- Assert control/recovery terminal projection continues after the maximum observed/persisted receipt sequence instead of colliding at sequence `1`.
+- Assert a slow active subscriber drains a burst larger than its queue without event loss, while an undrained subscriber returns the stable `runtime_event_backpressure_exhausted` safe code instead of hanging.
 - Assert Celery lifecycle tasks use `tutor-codex` and business dispatch is absent.
 - Assert PowerShell default startup and `dev:no-codex` opt-out.
 - Run Harness, health, environment doctor, and Desktop regressions.
@@ -131,6 +147,26 @@ finally:
 
 Thread-level preparation closes the response/callback scheduling race; final cleanup prevents stale callbacks from crossing turn or generation boundaries.
 
+#### Wrong: process-global live event backlog
+
+~~~python
+self._events = asyncio.Queue(maxsize=256)
+# Every turn publishes here; the next turn consumes anything the prior observer left behind.
+~~~
+
+#### Correct: turn-scoped live event subscription
+
+~~~python
+event_iterator = runtime.events().__aiter__()  # registers a fresh subscription synchronously
+turn_task = asyncio.create_task(runtime.run_turn(request))
+try:
+    ...  # consume only this turn's live events
+finally:
+    await event_iterator.aclose()
+~~~
+
+The durable `RuntimeTurnResult.events` remains the final replay authority. The live subscription is only a bounded low-latency channel and must not persist beyond its controlled turn.
+
 
 ## Scenario: Server-authoritative LearningPlan dynamic tools
 
@@ -147,6 +183,24 @@ aearn_planning_context_read({schema_version?})
 aearn_learning_plan_draft({schema_version?, modules[2..8]})
 ~~~
 
+When planning facts are incomplete, `aearn_planning_context_read` returns:
+
+~~~json
+{
+  "status": "awaiting_user",
+  "data": {
+    "missing_facts": ["..."],
+    "next_missing_fact": {
+      "field_key": "language_id",
+      "meaning": "server-owned field semantics",
+      "exact_question": "你想学习哪门编程语言？",
+      "wording_policy": "use exact_question as the only question",
+      "response_authority": "aearn_typed_request"
+    }
+  }
+}
+~~~
+
 Each module has `stable_key`, `title`, bounded optional `description`, `is_core`, `is_skippable`, and `nodes[1..8]`. Each node has `stable_key`, `title`, bounded optional `description`, `is_core`, `prerequisites[]`, and `required_capabilities[]`.
 
 The draft schema must not contain `profile_json`, `module_1..8`, user/session/run/database IDs, source selection, runtime selection, or confirmation fields.
@@ -156,7 +210,11 @@ The draft schema must not contain `profile_json`, `module_1..8`, user/session/ru
 - Build `CompactPlanProfile` only from current confirmed `PlanningFact` leaves. Map `pace_constraints` to `pace_summary`; derive the draft title on the server.
 - Reuse the same LearningPlan artifact builder, language/source policy, graph validation, quality checks, and append-only repository as the Harness capability.
 - Freeze run ID, conversation/user scope, input revision, Tutor lease owner/generation, Runtime connection generation, and planning-facts fingerprint/revision when the registry is created.
-- Refresh the fence before every tool call and again immediately before `append_draft`.
+- Before starting the model Turn, call `registry.prime_context()` once to read the same server-authoritative planning context without consuming a model tool-call budget. This guarantees the dispatcher knows the first missing field even if the model omits or misuses the context tool.
+- When facts are incomplete, both the primed result and the model-visible tool result must expose one `next_missing_fact` descriptor derived from the server question catalog: exact `field_key`, explicit semantic `meaning`, server-owned `exact_question`, bounded `wording_policy`, and `response_authority=aearn_typed_request`.
+- `language_id` always means the programming language or published course the learner wants to study. It never means the natural language used by lesson copy or the interface. The model may briefly acknowledge confirmed facts, but it must copy `exact_question` verbatim as the only question and must not invent parenthetical examples, options, or a second question.
+- The dispatcher-created durable Tutor message and generated UI prompt must reuse the same `planning_question_prompt(...)` source of truth as `next_missing_fact.exact_question`; do not maintain a second prompt mapping in Runtime code.
+- Refresh the fence before every model tool call and again immediately before `append_draft`.
 - Tool-visible status is exactly `completed | repairable_invalid | awaiting_user | conflict | policy_blocked | unavailable | fatal`.
 - `repairable_invalid`, `awaiting_user`, and the first bounded `conflict` are normal tool outputs. Policy, unavailable, fatal, deadline, and exhausted repair/conflict budgets fail the tool call.
 - Default registry budgets are 6 tool calls, 2 repairs, 1 conflict rebuild, 32,000 input bytes, 30 seconds wall time, and 8,000 output bytes.
@@ -169,7 +227,8 @@ The draft schema must not contain `profile_json`, `module_1..8`, user/session/ru
 | Condition | Required result |
 | --- | --- |
 | Unknown field, malformed type, module/node bound, duplicate stable key, missing/self/cyclic prerequisite | `repairable_invalid` with safe issue path/code |
-| Confirmed planning facts are incomplete | `awaiting_user / planning_facts_missing` |
+| Confirmed planning facts are incomplete | `awaiting_user / planning_facts_missing` plus one first-missing `next_missing_fact` descriptor |
+| `next_missing_fact` is absent, semantically ambiguous, or its `exact_question` differs from the durable prompt | contract regression; do not let the model infer wording from the raw field key |
 | Input revision, lease, Runtime generation, or facts revision/fingerprint changed | `conflict` |
 | More than one conflict rebuild | `fatal / tool_conflict_budget_exhausted` |
 | Repair count exceeded | `fatal / tool_repair_budget_exhausted` |
@@ -183,7 +242,9 @@ The draft schema must not contain `profile_json`, `module_1..8`, user/session/ru
 ### 5. Good / Base / Bad Cases
 
 - Good: Codex reads bounded confirmed facts, submits one invalid prerequisite graph, receives a safe repair issue, submits a corrected typed graph in the same turn, and receives one durable draft receipt.
-- Base: facts are incomplete; the context tool returns `awaiting_user` and missing stable fact keys so Codex can create a typed planning request later.
+- Base: facts are incomplete; primed context and the model-visible context tool both return `awaiting_user`, while Aearn—not Codex—selects exactly the first missing stable field, supplies its semantic descriptor and exact question, and creates one typed planning request.
+- Good: `language_id` is missing after experience and goal are confirmed; the model may acknowledge those facts, then asks exactly `你想学习哪门编程语言？`, while the generated UI independently renders the server catalog options from the same field key.
+- Bad: exposing only `missing_facts=["language_id"]` and asking the model to infer its meaning. The model can misread it as lesson/interface language and produce a natural-language question that contradicts the programming-course generated UI.
 - Good replay: the App Server disconnects after commit and repeats the same tool call; the repository returns the original draft and safe receipt.
 - Bad: accepting a model-authored user ID, profile, source list, facts revision, or confirm action.
 - Bad: mapping a stale lease or policy denial to `repairable_invalid`, allowing the model to bypass server authority.
@@ -193,7 +254,10 @@ The draft schema must not contain `profile_json`, `module_1..8`, user/session/ru
 
 - Assert generated JSON Schema contains typed `modules[]`/`stable_key` and excludes every authority/profile/confirmation field.
 - Cover unknown fields, item bounds, duplicate keys, unknown/self/cyclic prerequisites, payload/output/call/repair/conflict/wall budgets, and raw invalid-value redaction.
-- Fake App Server loop: `repairable_invalid -> completed` in one turn; separately cover awaiting-user, conflict, policy, unavailable, fatal, timeout, and duplicate replay terminal mapping.
+- Fake App Server loop: `repairable_invalid -> completed` in one turn; separately cover awaiting-user, conflict, policy, unavailable, fatal, timeout, duplicate replay, prohibited `request_user_input`, and empty-answer continuation.
+- Integration must prove a typed response creates a fresh TutorRun/new Codex turn on the same persistent conversation thread and deterministically creates the next server-owned question when facts remain missing, even if the fake model omits the context tool call.
+- Assert every `awaiting_user` context contains `next_missing_fact` for the first entry in `missing_facts`; `language_id` must be described as a programming language/course, its exact question must be `你想学习哪门编程语言？`, and the model-visible descriptor/instructions must not contain natural-language option examples.
+- Assert the Runtime instructions require verbatim `exact_question`, and the persisted Tutor interaction prompt equals `planning_question_prompt(field)` so raw final-answer wording and generated UI cannot drift across separate prompt maps.
 - PostgreSQL integration: construct profile from confirmed facts, append exactly one draft, replay the same safe result, detect facts and Runtime generation staleness, and preserve policy denial.
 - Keep the legacy Harness capability decode/persistence tests passing through the shared artifact builder.
 - Run the full API suite, Ruff, Mypy, lock check, compileall, and database bootstrap twice.
@@ -228,6 +292,19 @@ thread = await runtime.start_thread(
 ~~~
 
 The registry exposes typed module input only; the service refreshes authority, builds the profile from confirmed facts, and reuses the existing domain/repository path.
+
+For elicitation, do not infer learner-facing semantics from a raw stable key:
+
+~~~python
+# Wrong: model invents the meaning and examples for "language_id".
+missing = result.data["missing_facts"][0]
+ask_model_to_phrase_question(missing)
+
+# Correct: server catalog owns semantics and exact wording.
+next_fact = result.data["next_missing_fact"]
+assert next_fact["field_key"] == result.data["missing_facts"][0]
+final_question = next_fact["exact_question"]
+~~~
 
 ## Scenario: Durable Tutor projection for Codex Runtime events
 
@@ -266,8 +343,10 @@ Database signatures:
 
 ~~~text
 tutor_runs.runtime_kind = harness_v1 | codex_sidecar_v1, default harness_v1, immutable
-tutor_run_runtime_bindings(run/user/conversation scope, runtime/protocol version, external thread/turn, connection generation, state)
-tutor_runtime_item_receipts(binding scope, semantic event key, unique sequence, allowlisted hashes/status, projection status)
+tutor_conversation_runtime_threads(one active persistent Codex thread per user/conversation)
+tutor_run_runtime_bindings(run/user/conversation scope, persistent thread binding, external turn, connection generation, state)
+tutor_runtime_text_items(binding scope, hashed external item identity, reasoning/final_answer channel, cumulative text, streaming/completed/discarded/blocked state, owner scope)
+tutor_runtime_item_receipts(binding scope, semantic event key, unique sequence, allowlisted hashes/status, projection status; no raw text)
 tutor_runtime_public_errors(binding scope, Aearn-safe public code, recoverable, created_at)
 ~~~
 
@@ -275,9 +354,11 @@ tutor_runtime_public_errors(binding scope, Aearn-safe public code, recoverable, 
 
 - `runtime_kind` is chosen when the run is inserted, copied to retries, and cannot be updated in place.
 - Binding requires an interactive `thread_turn_v2` run with an active matching Tutor lease, current input revision, and the exact Runtime connection generation.
-- External thread/turn/item IDs stay in private binding state or one-way hashes. They never enter public URLs, Tutor public DTOs, conversation events, SSE payloads, or Desktop types.
-- Runtime receipts contain only allowlisted kind/status/tool name, input/result/content hashes, safe code, sequence, timestamps, and an optional Aearn public item reference. They never contain raw prompt, reasoning, commentary, tool arguments/results, command/path, credentials, or provider bodies.
-- Only `agentMessage` items with `phase = "final_answer"` become `MESSAGE_COMPLETED`. Commentary and reasoning stay non-public.
+- External thread/turn/item IDs stay in private binding state or one-way hashes. They never enter public URLs, Tutor DTOs, conversation events, SSE payloads, or Desktop types; clients receive only Aearn-owned text-item IDs.
+- Runtime receipts contain only allowlisted kind/status/tool name, input/result/content hashes, safe code, sequence, timestamps, and an optional Aearn public item reference. Raw text is stored only in owner-scoped `tutor_runtime_text_items`, never in receipts/logs/health.
+- Raw reasoning and raw `final_answer` deltas are separate text channels. Reasoning summary and `agentMessage.phase=commentary` are ignored. Only `agentMessage.phase=final_answer` may become the formal Tutor message. If a provisional stream was classified as `final_answer` but its completed item is authoritatively `commentary`, zero and mark that text item `discarded` and emit a text-free `discard` event.
+- A text-less completed reasoning item finalizes the stored cumulative text/hash. It never replaces non-empty text with empty; explicit `discard` is the only removal authority. Every terminal turn also zeroes and marks any remaining `streaming` text item `discarded`, then emits text-free discard events before the terminal projection.
+- Completed text items link to the accepted Tutor message, so owner-scoped history/reconnect/refresh returns `runtime_output {reasoning_items[], final_answer_item}`. Current items may be streaming; historical items are completed.
 - A final message is inserted only after content-hash verification, teaching-output safety, run ownership, input revision, lease owner/generation, Runtime generation, and non-terminal checks all pass.
 - Exact semantic replay returns the original receipt even if the transport repeats the event. A reused sequence with different safe facts is an idempotency conflict. A late revision/generation/turn callback writes one `ignored_stale` receipt and performs no public mutation.
 - A safe message and a domain tool commit are independent durable facts. Later Runtime failure may mark the process failed but must not delete an already accepted safe message or an existing domain receipt. Unsafe output must not roll back an earlier domain commit.
@@ -295,8 +376,12 @@ tutor_runtime_public_errors(binding scope, Aearn-safe public code, recoverable, 
 | Duplicate semantic event | Return existing receipt with `replayed=true` |
 | Same binding sequence carries different safe facts | `TutorIdempotencyConflict` |
 | Tool name is outside `[A-Za-z0-9_-]{1,64}` | Omit at adapter boundary or reject normalized projection DTO |
-| Commentary/reasoning/command/path item | No final-message event and no public payload |
-| Final text is missing, hash-mismatched, oversized, or teaching-unsafe | `blocked_unsafe`; completed terminal is converted to failed |
+| Reasoning summary, commentary, command, or path item | `ignored_nonpublic`; no runtime text/public message |
+| Completed item corrects a provisional `final_answer` stream to `commentary` | zero the provisional text, mark it `discarded`, emit a text-free discard event, and create no Tutor message |
+| Any terminal event finds remaining `streaming` runtime text | zero and mark every remaining item `discarded`; terminal snapshot/history contains no stuck stream |
+| Raw reasoning delta | append to owner-scoped reasoning text item and emit exact `tutor_runtime_item_stream_v1` event |
+| Reasoning completion omits `text` | mark existing cumulative item completed and emit its full stored text; never clear it |
+| Final text is missing with no accumulated answer, hash-mismatched, oversized, or teaching-unsafe | `blocked_unsafe`; completed terminal is converted to failed |
 | Runtime completed without an accepted final message | Failed with `TUTOR_RUNTIME_OUTPUT_MISSING` |
 | Runtime interrupted | Tutor outcome `cancelled`, process `interrupted`, no invented message |
 | Runtime unavailable | Tutor outcome `model_unavailable`, process `unavailable`, public `TUTOR_RUNTIME_UNAVAILABLE` |
@@ -304,21 +389,22 @@ tutor_runtime_public_errors(binding scope, Aearn-safe public code, recoverable, 
 
 ### 5. Good / Base / Bad Cases
 
-- Good: a current leased Codex run binds one private thread, records tool input/result hashes, accepts one safe `final_answer`, and publishes the existing Tutor message/process/turn events.
-- Good replay: reconnect repeats the same five normalized events; message, process, error, and receipt counts do not increase.
+- Good: a current leased Codex run binds the conversation's persistent thread, appends multiple reasoning deltas, drains a burst larger than the live subscriber queue under bounded backpressure, discards any phase-corrected commentary stream, finalizes a text-less reasoning completion without loss, accepts one safe `final_answer`, and links only completed public channels to the historical Tutor message.
+- Good replay: reconnect repeats the same normalized events; message, text item, process, error, and receipt counts do not increase.
+- Base: a terminal answer has no reasoning items; history renders the answer without an empty `think` row.
 - Base: Harness-created runs keep `runtime_kind = "harness_v1"` and never create Runtime bindings or receipts.
-- Bad: persist the App Server item JSON in a generic JSONB receipt column.
-- Bad: accept every completed `agentMessage` as final; commentary may then win before the real final answer.
+- Bad: persist the App Server item JSON in a generic JSONB receipt column or copy raw reasoning into audit receipts/logs.
+- Bad: accept every completed `agentMessage` as final, or leave a provisional answer/reasoning row in `streaming` after commentary correction or turn terminal; commentary may then flash, persist, or leave the UI stuck before the real final answer.
 - Bad: treat a stale callback as a failed current run instead of an ignored audited receipt.
 
 ### 6. Tests Required
 
 - Bootstrap twice and assert the Runtime tables, indexes, constraints, immutable triggers, and `harness_v1` default.
 - Assert `runtime_kind`, binding identity, terminal binding state, receipts, and public errors cannot be mutated after their allowed lifecycle point.
-- PostgreSQL integration must cover completed, interrupted, failed, unavailable, unsafe/missing final, duplicate replay, conflicting sequence, and stale connection generation.
-- Assert a successful projection produces only existing Tutor public turn/process/message/error records and conversation events.
-- Serialize public history/events and assert external thread/turn/item IDs, reasoning, commentary, tool arguments/results, provider diagnostics, and credentials are absent.
-- Adapter tests must prove tool names and argument/result hashes are present while raw arguments/results are absent, and only `phase = "final_answer"` becomes a final-message event.
+- PostgreSQL integration must cover multi-delta reasoning plus text-less completion, provisional-final-to-commentary discard, terminal cleanup of unfinished text, completed/interrupted/failed/unavailable, unsafe/missing final, duplicate replay, conflicting sequence, and stale connection generation.
+- Assert current snapshot, reconnect, refresh, and historical message return owner-scoped raw reasoning/final answer from `tutor_runtime_text_items`; terminal no-reasoning output has no empty row.
+- Serialize receipts/log-safe evidence and assert raw reasoning/final text, commentary, tool arguments/results, provider diagnostics, credentials, and external thread/turn/item IDs are absent. Serialize owner history and assert only Aearn text-item IDs plus the allowed runtime text channels appear.
+- Adapter tests must prove tool names and argument/result hashes are present while raw arguments/results are absent, reasoning summary/commentary are separated, only `phase = "final_answer"` becomes a final-message event, a slow observer drains burst traffic beyond queue capacity, and an abandoned subscriber still fails closed.
 - Keep the full non-real-provider API suite, Ruff, Mypy, database bootstrap, Harness routes/SSE, and Desktop build green.
 
 ### 7. Wrong vs Correct
@@ -335,7 +421,7 @@ This trusts wire DTOs, ignores phase/safety/fences, and can expose commentary or
 #### Correct
 
 ~~~python
-runtime_event = adapter.normalize(item)  # final_answer only; IDs/arguments stay private
+runtime_event = adapter.normalize(item)  # typed reasoning/final_answer; external IDs/arguments stay private
 receipt = projector.project(
     binding_id=binding.id,
     fence=TutorRuntimeProjectionFence(
@@ -375,11 +461,12 @@ TutorRuntimeSelectionPolicy.select(scope_kind, inherited_runtime_kind,
 - Only a brand-new `plan_drafting` conversation without a frozen Runtime may enter `codex_sidecar_v1`.
 - Exact admission requires feature enabled, `CODEX_RUNTIME_ENABLED=true`, a fresh `ready` row, generation >= 1, an allowlisted Runtime version, model `deepseek-v4-flash`, provider `aearn_deepseek`, and protocol `responses`.
 - Feature disabled routes new plan-drafting work to Harness. Feature enabled with missing, stale, unhealthy, or mismatched readiness fails closed with `TUTOR_RUNTIME_UNAVAILABLE`; general/track/proactive scopes remain Harness and unaffected.
-- The first interactive Runtime kind in a conversation is inherited by later fresh turns. Retry always copies the failed root Runtime kind. Clients, models, queued metadata, and public DTOs cannot select or mutate it.
+- One `TutorConversation` owns one persistent Codex App Server thread. Every fresh `TutorRun`—including a typed-request response—starts a new turn inside that same thread. The first interactive Runtime kind is inherited; Retry copies the failed root Runtime kind. Clients, models, queued metadata, and public DTOs cannot select or mutate it.
 - Harness and Codex workers claim the same durable job table with an exact Runtime filter. `TutorRuntimeDispatchRouter` reads only the immutable run snapshot; it never re-evaluates feature or health.
 - `CodexTutorRunDispatcher` never composes `TutorRunLoop`. It acquires the Tutor lease, registers only the typed LearningPlan tools, binds the private Runtime thread, projects normalized events, and returns the existing Aearn run result.
 - During an active Codex turn, a higher durable input revision becomes `turn/steer`; cancellation, supersede, lease loss, or control failure becomes `turn/interrupt`. Control failure terminates unavailable rather than leaving an orphan task.
 - A recovered dispatch with an existing private binding does not start another external turn. It terminalizes the same run as unavailable so a learner Retry can create a fresh same-Runtime run without duplicating model or tool side effects.
+- The dispatcher primes planning context before each model turn. When facts are incomplete it selects only the first missing field and creates one server-catalog typed request after the turn; a learner response creates a fresh run/turn and repeats until complete. Codex built-in `request_user_input` never creates Aearn state.
 - Codex may append a draft through the typed tool but cannot confirm it. LearningPlan confirm and LearningTrack creation remain existing HTTP/domain authority.
 - Readiness, logs, receipts, errors, history, SSE, and Desktop payloads remain Aearn-owned and redacted; Runtime thread/turn IDs and tool arguments never become public.
 
@@ -395,6 +482,8 @@ TutorRuntimeSelectionPolicy.select(scope_kind, inherited_runtime_kind,
 | Cancel, supersede, or lease loss | `turn/interrupt`; late Runtime projection is stale/no public overwrite |
 | Retry of failed Codex run | Fresh run with `codex_sidecar_v1`; no cross-Runtime fallback |
 | Existing binding recovered after dispatch failure | Same run becomes unavailable; no second external turn |
+| Model calls Codex `request_user_input` | empty client response, sidecar stays alive, Aearn creates at most one server-owned typed request from primed facts |
+| Typed response leaves more missing facts | fresh run/new turn on same thread, next first-missing catalog request appears without ordinary composer input |
 
 ### 5. Good / Base / Bad Cases
 
@@ -408,7 +497,7 @@ TutorRuntimeSelectionPolicy.select(scope_kind, inherited_runtime_kind,
 - Default-enabled configuration plus explicit feature-off behavior.
 - Exact readiness matrix for version, model, provider, protocol, generation, freshness, and status.
 - Public acceptance proving only a new plan-drafting run freezes Codex and no Runtime control field enters the DTO.
-- Runtime-filtered durable claims, frozen-kind router, Codex dispatcher projection without Harness composition, revision-to-steer, cancel-to-interrupt, and same-Runtime retry.
+- Runtime-filtered durable claims, frozen-kind router, one persistent conversation thread with fresh run turns, deterministic next typed request, prohibited client elicitation, Codex dispatcher projection without Harness composition, revision-to-steer, cancel-to-interrupt, and same-Runtime retry.
 - Full non-real-provider API suite, Ruff, Mypy, database bootstrap/cutover inventory, Desktop check, Trellis validation, and `git diff --check`.
 
 ### 7. Wrong vs Correct

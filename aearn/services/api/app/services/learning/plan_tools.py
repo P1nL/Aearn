@@ -34,6 +34,10 @@ from app.services.learning.planning_facts import (
     PlanningFactField,
     PostgresPlanningFactRepository,
 )
+from app.services.learning.planning_questions import (
+    PLANNING_QUESTION_CATALOG_VERSION,
+    build_planning_question_model_descriptor,
+)
 
 PLANNING_CONTEXT_TOOL_NAME = "aearn_planning_context_read"
 LEARNING_PLAN_DRAFT_TOOL_NAME = "aearn_learning_plan_draft"
@@ -289,7 +293,7 @@ class LearningPlanToolService:
             )
         except LearningPlanSessionNotFound:
             return _result(LearningPlanToolStatus.UNAVAILABLE, "planning_session_unavailable")
-        context = {
+        context: dict[str, object] = {
             "schema_version": LEARNING_PLAN_TOOL_SCHEMA_VERSION,
             "confirmed_facts": [
                 {"field_key": field.value, "value": values[field]}
@@ -298,6 +302,7 @@ class LearningPlanToolService:
             "missing_facts": [field.value for field in missing],
             "facts_revision": revision,
             "facts_fingerprint": fingerprint,
+            "question_catalog_version": PLANNING_QUESTION_CATALOG_VERSION,
             "current_draft": _current_draft_summary(session),
             "constraints": {
                 "scope_kind": "plan_drafting",
@@ -307,6 +312,7 @@ class LearningPlanToolService:
             },
         }
         if missing:
+            context["next_missing_fact"] = build_planning_question_model_descriptor(missing[0])
             return _result(
                 LearningPlanToolStatus.AWAITING_USER,
                 "planning_facts_missing",

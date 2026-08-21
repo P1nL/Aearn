@@ -7763,16 +7763,24 @@ article.learning-track-card {
   color: var(--muted);
 }
 .tutor-thinking-disclosure > button {
+  min-height: 44px;
   color: var(--muted);
+  text-transform: lowercase;
 }
 .tutor-thinking-disclosure > div {
-  padding: 0 6px 3px 29px;
+  margin-left: 12px;
+  padding: 0 6px 3px 16px;
+  border-left: 1px solid color-mix(in srgb, var(--muted) 32%, transparent);
 }
 .tutor-thinking-text {
   margin: 0;
   color: var(--muted);
   font-size: 13px;
   line-height: 1.5;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.tutor-answer-text {
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }

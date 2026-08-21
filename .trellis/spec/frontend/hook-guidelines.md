@@ -97,8 +97,8 @@ non-negative `input_revision`, retry lineage, completion reason, and timestamps.
   planning, and approval use the exact request version; authority requests are
   read-only. Ordinary composer and conversation Queue controls are absent.
 - Render public `message`, typed request, and safe `error`; parse but do not
-  render standalone `process`. `Think` reads only exact `public_thinking_text` plus
-  fenced `active_thinking`/`turn_output`; legacy steps normalize at the API boundary.
+  render standalone `process`. Harness `Think` reads exact `public_thinking_text` plus fenced
+  `active_thinking`; Codex `think` reads only exact owner-scoped `active_runtime_output` / runtime `turn_output`. Legacy steps normalize at the API boundary; arbitrary provider/reasoning payloads remain forbidden.
 - `effective_enabled=false` preserves reads and disables all v2 writes without
   falling back to legacy run-local input.
 

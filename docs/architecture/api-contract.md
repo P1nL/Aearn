@@ -1,6 +1,6 @@
 # Aearn Tutor HTTP 与 SSE API 契约
 
-**状态：** 当前公共 API 契约，2026-08-14。
+**状态：** 当前公共 API 契约，2026-08-20。
 **权威来源：** `aearn/services/api/app/main.py` 中注册的路由、Pydantic model、
 `services/tutor/public_api.py`、`services/learning/`、`services/tutor/cutover.py` 与 API 测试。
 **不适用：** 已移除的 Graph、Dashboard、Onboarding、Learning Session、Review、
@@ -303,7 +303,7 @@ dispatcher/provider 异常；run read、SSE、snapshot 和 history 只反映服�
 | --- | --- | --- | --- |
 | `GET` | `/api/tutor/conversations` | `user_id`、`limit=1..40`、可选 opaque `cursor` | learner-visible conversation summaries，按 `(last_public_activity_at DESC, id DESC)` 排序 |
 | `GET` | `/api/tutor/conversations/{conversation_id}/history` | `user_id`、`limit=1..40`、可选 opaque `cursor` | 旧客户端兼容的倒序 message/process timeline、`next_cursor`、`has_more`、可选 active foreground run |
-| `GET` | `/api/tutor/conversations/{conversation_id}/snapshot` | `user_id`、`limit=1..40`、可选 history cursor | `tutor_conversation_snapshot_v2`：conversation/control version、public active turn（含 CAS `input_revision`）、可选 exact `active_thinking`、最多一个 pending typed request、typed timeline page、Queue 与 opaque v2 `stream_cursor` |
+| `GET` | `/api/tutor/conversations/{conversation_id}/snapshot` | `user_id`、`limit=1..40`、可选 history cursor | `tutor_conversation_snapshot_v3`：保留 conversation/control version、public active turn、可选 exact `active_thinking`、pending typed request、typed timeline、Queue 与 opaque v2 `stream_cursor`，并新增可选 `active_runtime_output`；Desktop 保持 v2 read compatibility |
 | `GET` | `/api/tutor/conversations/{conversation_id}/events` | `user_id`；可选 opaque `Last-Event-ID` | conversation-global append-only SSE；只读取 public event 表，不调用 provider |
 
 list item 只含 `conversation_id`、服务端投影 title、`last_public_activity_at` 与可选
@@ -379,9 +379,12 @@ payload。
   `sequence`、闭合 `kind`、可选 turn/item reference、strict safe payload 与时间。
 - kind 固定为 `turn_created | turn_updated | item_added | item_updated | turn_output |
   control_updated | dispatch_delayed | dispatch_dead`。heartbeat 是 SSE comment，不写数据库、不推进 cursor。
-- `turn_output` 只允许 `tutor_public_thinking_stream_v1`：exact turn identity、`input_revision`、
-  `generation`、`operation=reset|append|complete|discard` 与单调 `chunk_sequence`；只有 `append`
-  可带 1..160 字符 `text`。Desktop 可局部消费该事件，identity/order/shape 不匹配时必须 fresh snapshot。
+- `turn_output` 允许两个闭合版本：Harness compatibility 使用
+  `tutor_public_thinking_stream_v1`；Codex raw Runtime 使用
+  `tutor_runtime_item_stream_v1`，并额外携带 Aearn `item_id` 与
+  `channel=reasoning|final_answer`。两者都绑定 exact turn identity、`input_revision`、
+  `generation`、单调 `chunk_sequence` 与 closed operation；Desktop 可局部消费，
+  identity/order/generation/shape 不匹配时必须 fresh snapshot。
 - 事件写入与 owning mutation 同 transaction；相同 `(conversation_id,event_key)` 只允许完全
   相同的 public facts 幂等重放。SSE 不读取或转换 raw `tutor_run_events` payload。
 
@@ -652,3 +655,21 @@ Attempt 不存在为 `404 CONTEXT_REFERENCE_NOT_FOUND`；缺少真实 execution 
   snapshot v2 只返回统一后的 `public_thinking_text`，不产生编号、说明或补写历史。
 - API、SSE 与 snapshot 禁止包含 `reasoning`、`reasoning_content`、prompt、provider body/raw event、
   trace、diagnostic、credential、secret 或内部安全拒绝原因。
+
+## 2026-08-20：Tutor snapshot v3 与 Codex raw Runtime item stream
+
+`GET /api/tutor/conversations/{conversation_id}/snapshot` 当前返回 `tutor_conversation_snapshot_v3`。v3 保留 v2 的 conversation/control、`active_turn`、`active_thinking`、typed requests、Queue、timeline、opaque cursor，并新增可选 `active_runtime_output`：
+
+- `output_version="tutor_runtime_output_v1"`；
+- `input_revision` 与 active turn 完全一致，`generation` 为当前 Runtime connection generation；
+- `reasoning_items[]` 与可选 `final_answer_item` 只包含 Aearn item ID、text、`streaming|completed` 和最后 public sequence；
+- completed Tutor message 的 timeline item 可携带同形 `runtime_output`，用于刷新和历史恢复；无非空 reasoning 时不返回可见 Think 内容。
+
+Desktop 必须继续兼容读取 v2；v2 没有 `active_runtime_output`。v3 public serializer 不返回 external thread/turn/item ID、provider/model metadata、prompt、tool arguments/results、reasoning summary、commentary、trace、diagnostic 或 credential。
+
+conversation SSE 的 `turn_output` 现在接受两种闭合版本：
+
+1. `tutor_public_thinking_stream_v1`：保留 Harness compatibility；
+2. `tutor_runtime_item_stream_v1`：包含 `input_revision`、`generation`、`item_id`、`channel=reasoning|final_answer`、`operation=reset|append|complete|discard` 与单调 `chunk_sequence`。`append` 携带 delta text，`complete` 携带 authoritative full text，`reset|discard` 不携带 text。
+
+commentary、reasoning summary 和未知 phase/channel 不得进入 public text stream。若 completed item 将 provisional `final_answer` 校正为 `commentary`，或 turn terminal 时仍有 streaming item，服务端发送不带 text 的 `discard` 并从 snapshot/history 排除该 item。重复或旧 sequence 可忽略；conversation-global gap、identity/revision/generation mismatch、closed-shape failure 或超限 text 必须停止局部 reducer 并 fresh snapshot recovery。
