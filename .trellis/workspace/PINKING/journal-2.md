@@ -1864,3 +1864,24 @@ Closed the planning-only Tutor Harness rearchitecture parent after all nine inde
 ### Status
 
 [OK] **Completed**
+
+
+## Session 115: Codex Runtime 持久线程与原始流收尾
+
+**Date**: 2026-08-21
+**Task**: Codex Runtime 持久线程与原始流收尾
+**Branch**: `main`
+
+### Summary
+
+完成 conversation 级 Codex thread、turn 级运行、local compaction、typed planning request、raw reasoning/final-answer projection、Desktop 展示与真实计划流程验收；修复编程语言问题语义、Runtime 事件背压和 terminal/commentary 残流清理。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `4adbb1e2` | (see git log) |
+
+### Status
+
+[OK] **Completed**
