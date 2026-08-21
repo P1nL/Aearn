@@ -46,6 +46,15 @@ class CodexRuntimeConfig:
     turn_timeout_s: float
     shutdown_timeout_s: float
     notification_queue_size: int
+    delta_coalescing_enabled: bool = True
+    delta_flush_delay_ms: int = 25
+    delta_flush_chars: int = 1_024
+    delta_flush_bytes: int = 4_096
+    max_pending_bytes: int = 16_000
+    max_raw_notifications: int = 100_000
+    max_items: int = 2_048
+    max_tools: int = 256
+    max_visible_text_chars: int = 2_000_000
     model_context_window: int = DEEPSEEK_V4_FLASH_CONTEXT_WINDOW_TOKENS
     model_max_output_tokens: int = DEEPSEEK_V4_FLASH_MAX_OUTPUT_TOKENS
     model_auto_compact_token_limit: int = (
@@ -73,6 +82,15 @@ class CodexRuntimeConfig:
             turn_timeout_s=settings.codex_runtime_turn_timeout_seconds,
             shutdown_timeout_s=settings.codex_runtime_shutdown_timeout_seconds,
             notification_queue_size=settings.codex_runtime_notification_queue_size,
+            delta_coalescing_enabled=settings.codex_runtime_delta_coalescing_enabled,
+            delta_flush_delay_ms=settings.codex_runtime_delta_flush_delay_ms,
+            delta_flush_chars=settings.codex_runtime_delta_flush_chars,
+            delta_flush_bytes=settings.codex_runtime_delta_flush_bytes,
+            max_pending_bytes=settings.codex_runtime_max_pending_bytes,
+            max_raw_notifications=settings.codex_runtime_max_raw_notifications,
+            max_items=settings.codex_runtime_max_items,
+            max_tools=settings.codex_runtime_max_tools,
+            max_visible_text_chars=settings.codex_runtime_max_visible_text_chars,
             model_context_window=settings.tutor_deepseek_v4_flash_context_window_tokens,
             model_max_output_tokens=settings.tutor_deepseek_v4_flash_max_output_tokens,
             model_auto_compact_token_limit=settings.deepseek_v4_flash_input_hard_limit_tokens,

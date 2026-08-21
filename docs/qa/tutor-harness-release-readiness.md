@@ -341,3 +341,7 @@ local export/reset/cutover，以及 verified-only API。旧 `review_states`、`r
 Child 1-6 的 protocol、Runtime、typed tools、durable projection、controlled plan-drafting cutover 与 QA/doc evidence 已在本地集成。完整 API suite 为 **660 passed, 2 skipped**；Codex focused matrix 为 **66 passed**，public/SSE/redaction focused matrix 为 **21 passed**；Ruff、Mypy（192 source files）、compileall、lock、bootstrap twice 与 Desktop build 均通过。进程泄漏计数和 credential literal scan 均为 0。
 
 一次真实 `deepseek-v4-flash` Responses tool-repair smoke 已在 Child 1 获用户明确批准后通过；本 QA 不重复产生第二次付费调用。详细 exact target、failure matrix、rollback、evidence retention 和 non-claims 见 [`codex-sidecar-integration-readiness.md`](./codex-sidecar-integration-readiness.md)。这些本地结果不批准生产 rollout、push、deploy、Codex 安装/升级或所有 Tutor scope 切换。
+
+## Runtime delta coalescing 本地证据（2026-08-21）
+
+Child `08-21-reasoning-delta-coalescing-runtime-budget` 使用 fake App Server 与本地 PostgreSQL 完成：5,000 单字符 reasoning delta、2,500-delta LearningPlan tool repair、timer/size/boundary flush、feature-off、独立语义预算、source/projection receipt 与 terminal/replay/gap 回归。完整 API suite 为 **689 passed, 2 skipped**；Ruff、Mypy（194 source files）、lock、compileall、bootstrap twice、Desktop 48 tests/build、Child/Parent Trellis validate 与 `git diff --check` 通过。三视口本地浏览器 smoke 无溢出、overlay 或 console error/warning。未调用真实 provider；该证据不构成 push、部署或生产发布批准。

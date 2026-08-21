@@ -9,8 +9,14 @@ from pathlib import Path
 
 import pytest
 
-from app.agents.runtime import AgentRuntimePort, CodexAppServerRuntime, CodexRuntimeConfig, CodexRuntimeSupervisor, LearningPlanRuntimeToolRegistry, RuntimeBusyError, RuntimeEventKind, RuntimeHealthStatus, RuntimeInput, RuntimeTerminalStatus, RuntimeThreadRequest, RuntimeToolCall, RuntimeToolDefinition, RuntimeToolResult, RuntimeTurnRequest
+from app.agents.runtime import AgentRuntimePort, CodexAppServerRuntime, CodexRuntimeConfig, CodexRuntimeSupervisor, LearningPlanRuntimeToolRegistry, RuntimeBusyError, RuntimeEvent, RuntimeEventKind, RuntimeHealthStatus, RuntimeInput, RuntimeTerminalStatus, RuntimeThreadRequest, RuntimeToolCall, RuntimeToolDefinition, RuntimeToolResult, RuntimeTurnRequest
 from app.agents.runtime.codex_config import CODEX_ENV_KEY, resolve_codex_executable
+from app.agents.runtime.delta_coalescer import (
+    RuntimeDeltaBudgetError,
+    RuntimeDeltaCoalescer,
+    RuntimeDeltaCoalescingConfig,
+    RuntimeDeltaFlushReason,
+)
 from app.agents.runtime.codex_connection import ServerRequestHandler, StdioJsonRpcClient
 from app.agents.runtime.codex_supervisor import RuntimeGenerationError, RuntimeProcessLock
 from app.agents.runtime.worker_host import RuntimeTurnControlDirective, _run_controlled_turn
@@ -23,7 +29,7 @@ def _config(tmp_path: Path, *, enabled: bool = True, allowed_versions: frozenset
     executable = resolve_codex_executable()
     if executable is None:
         pytest.skip("Codex executable is not installed")
-    return CodexRuntimeConfig(enabled=enabled, executable_path=executable, home_root=tmp_path / "codex-runtime", model="deepseek-v4-flash", model_provider="aearn_deepseek", base_url="https://api.deepseek.example", env_key=CODEX_ENV_KEY, allowed_versions=allowed_versions, startup_timeout_s=3, request_timeout_s=2, turn_timeout_s=2, shutdown_timeout_s=2, notification_queue_size=64)
+    return CodexRuntimeConfig(enabled=enabled, executable_path=executable, home_root=tmp_path / "codex-runtime", model="deepseek-v4-flash", model_provider="aearn_deepseek", base_url="https://api.deepseek.example", env_key=CODEX_ENV_KEY, allowed_versions=allowed_versions, startup_timeout_s=3, request_timeout_s=2, turn_timeout_s=10, shutdown_timeout_s=2, notification_queue_size=64)
 
 
 def _factory(scenario: str):  # type: ignore[no-untyped-def]
@@ -176,8 +182,9 @@ async def test_adapter_maps_local_compaction_and_raw_item_phases(
         "private summary"
     ]
     message_deltas = [event for event in result.events if event.kind is RuntimeEventKind.MESSAGE_DELTA]
-    assert [event.phase for event in message_deltas] == ["final_answer", "final_answer"]
-    assert [event.visible_text for event in message_deltas] == ["只询问", "学习目标。"]
+    assert [event.phase for event in message_deltas] == ["final_answer"]
+    assert [event.visible_text for event in message_deltas] == ["只询问学习目标。"]
+    assert message_deltas[0].source_delta_count == 2
     completed = [event for event in result.events if event.kind is RuntimeEventKind.MESSAGE_COMPLETED]
     assert [(event.phase, event.visible_text) for event in completed] == [
         ("commentary", "private commentary"),
@@ -525,4 +532,313 @@ async def test_runtime_learning_plan_tool_duplicate_replay_keeps_one_safe_result
     assert len(service.drafts) == 2
     assert registry.results[0].content() == registry.results[1].content()
     assert all(item.replayed for item in registry.results)
+    await runtime.shutdown()
+
+
+def _source_delta(
+    *,
+    sequence: int,
+    kind: RuntimeEventKind = RuntimeEventKind.REASONING_DELTA,
+    item_id: str = "reasoning-1",
+    text: str = "x",
+    phase: str | None = None,
+    item_index: int = 0,
+) -> RuntimeEvent:
+    digest = __import__("hashlib").sha256(text.encode("utf-8")).hexdigest()
+    return RuntimeEvent(
+        kind,
+        "thread-coalescer",
+        "turn-coalescer",
+        item_id=item_id,
+        visible_text=text,
+        content_sha256=digest,
+        item_type="reasoning" if kind is RuntimeEventKind.REASONING_DELTA else "agentMessage",
+        phase=phase,
+        item_index=item_index,
+        source_sequence_start=sequence,
+        source_sequence_end=sequence,
+        source_delta_count=1,
+        source_content_sha256=digest,
+    )
+
+
+def test_runtime_delta_coalescer_preserves_text_and_all_boundaries() -> None:
+    coalescer = RuntimeDeltaCoalescer(
+        RuntimeDeltaCoalescingConfig(
+            flush_delay_ms=25,
+            flush_chars=32,
+            flush_bytes=128,
+            max_pending_bytes=256,
+        )
+    )
+    projected: list[RuntimeEvent] = []
+    projected.extend(coalescer.push(_source_delta(sequence=1, text="A"), now=0.0))
+    projected.extend(coalescer.push(_source_delta(sequence=2, text="🙂"), now=0.001))
+    projected.extend(
+        coalescer.push(
+            _source_delta(sequence=3, item_id="reasoning-2", text="B"),
+            now=0.002,
+        )
+    )
+    projected.extend(
+        coalescer.push(
+            _source_delta(
+                sequence=4,
+                kind=RuntimeEventKind.MESSAGE_DELTA,
+                item_id="answer-1",
+                text="C",
+                phase="final_answer",
+            ),
+            now=0.003,
+        )
+    )
+    projected.extend(coalescer.flush(RuntimeDeltaFlushReason.TERMINAL))
+
+    assert [event.visible_text for event in projected] == ["A🙂", "B", "C"]
+    assert [event.source_delta_count for event in projected] == [2, 1, 1]
+    assert [event.source_sequence_start for event in projected] == [1, 3, 4]
+    assert [event.source_sequence_end for event in projected] == [2, 3, 4]
+    assert [event.projection_sequence for event in projected] == [1, 2, 3]
+
+
+def test_runtime_delta_coalescer_flushes_sparse_delta_on_timer() -> None:
+    coalescer = RuntimeDeltaCoalescer(
+        RuntimeDeltaCoalescingConfig(
+            flush_delay_ms=25,
+            flush_chars=32,
+            flush_bytes=128,
+            max_pending_bytes=256,
+        )
+    )
+    assert coalescer.push(_source_delta(sequence=1, text="sparse"), now=1.0) == ()
+    assert coalescer.flush_due(now=1.024) == ()
+    flushed = coalescer.flush_due(now=1.025)
+    assert len(flushed) == 1
+    assert flushed[0].visible_text == "sparse"
+    assert dict(coalescer.metrics().flush_reasons) == {"timer": 1}
+
+
+def test_runtime_delta_coalescer_feature_off_keeps_source_and_projection_separate() -> None:
+    coalescer = RuntimeDeltaCoalescer(
+        RuntimeDeltaCoalescingConfig(
+            enabled=False,
+            flush_delay_ms=25,
+            flush_chars=32,
+            flush_bytes=128,
+            max_pending_bytes=256,
+        )
+    )
+    projected = [
+        coalescer.push(_source_delta(sequence=index, text=str(index)), now=float(index))[0]
+        for index in range(1, 4)
+    ]
+    assert [event.visible_text for event in projected] == ["1", "2", "3"]
+    assert [event.source_sequence_start for event in projected] == [1, 2, 3]
+    assert [event.projection_sequence for event in projected] == [1, 2, 3]
+
+
+def test_runtime_delta_coalescer_rejects_one_oversized_pending_delta() -> None:
+    coalescer = RuntimeDeltaCoalescer(
+        RuntimeDeltaCoalescingConfig(
+            flush_delay_ms=25,
+            flush_chars=4_096,
+            flush_bytes=16_000,
+            max_pending_bytes=16_000,
+        )
+    )
+    with pytest.raises(RuntimeDeltaBudgetError, match="runtime_pending_bytes_exhausted"):
+        coalescer.push(_source_delta(sequence=1, text="界" * 6_000), now=0.0)
+
+
+@pytest.mark.asyncio
+async def test_adapter_coalesces_five_thousand_single_character_reasoning_deltas(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(CODEX_ENV_KEY, "fixture-secret")
+    supervisor = CodexRuntimeSupervisor(
+        _config(tmp_path),
+        connection_factory=_factory("five_thousand_deltas"),
+    )
+    runtime = CodexAppServerRuntime(supervisor)
+    thread = await runtime.start_thread(RuntimeThreadRequest(cwd=str(tmp_path)))
+    result = await runtime.run_turn(
+        RuntimeTurnRequest(
+            thread,
+            (RuntimeInput("Generate a long safe planning trace."),),
+            RepairRegistry(),
+        )
+    )
+
+    assert result.terminal_status is RuntimeTerminalStatus.COMPLETED
+    assert result.safe_error_code != "runtime_event_budget_exhausted"
+    assert result.metrics.source_delta_count == 5_000
+    reasoning = [
+        event for event in result.events
+        if event.kind is RuntimeEventKind.REASONING_DELTA
+    ]
+    assert "".join(event.visible_text or "" for event in reasoning) == "思" * 5_000
+    assert sum(event.source_delta_count for event in reasoning) == 5_000
+    assert len(reasoning) < 20
+    assert [event.projection_sequence for event in result.events] == list(
+        range(1, len(result.events) + 1)
+    )
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_adapter_timer_flushes_sparse_reasoning_without_waiting_for_completion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(CODEX_ENV_KEY, "fixture-secret")
+    supervisor = CodexRuntimeSupervisor(
+        _config(tmp_path),
+        connection_factory=_factory("sparse_deltas"),
+    )
+    runtime = CodexAppServerRuntime(supervisor)
+    thread = await runtime.start_thread(RuntimeThreadRequest(cwd=str(tmp_path)))
+    observed: list[str] = []
+
+    async def consume() -> None:
+        stream = runtime.events().__aiter__()
+        try:
+            while True:
+                event = await anext(stream)
+                if event.kind is RuntimeEventKind.REASONING_DELTA:
+                    observed.append(event.visible_text or "")
+                if event.kind is RuntimeEventKind.TURN_COMPLETED:
+                    return
+        finally:
+            await stream.aclose()  # type: ignore[attr-defined]
+
+    consumer = asyncio.create_task(consume())
+    result = await runtime.run_turn(
+        RuntimeTurnRequest(thread, (RuntimeInput("Stream sparse reasoning."),), RepairRegistry())
+    )
+    await consumer
+    assert result.terminal_status is RuntimeTerminalStatus.COMPLETED
+    assert observed == ["first", "second"]
+    assert dict(result.metrics.flush_reasons)["timer"] >= 1
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_adapter_feature_off_projects_every_delta_without_restoring_legacy_budget(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(CODEX_ENV_KEY, "fixture-secret")
+    config = replace(_config(tmp_path), delta_coalescing_enabled=False)
+    supervisor = CodexRuntimeSupervisor(
+        config,
+        connection_factory=_factory("five_thousand_deltas"),
+    )
+    runtime = CodexAppServerRuntime(supervisor)
+    thread = await runtime.start_thread(RuntimeThreadRequest(cwd=str(tmp_path)))
+    result = await runtime.run_turn(
+        RuntimeTurnRequest(thread, (RuntimeInput("Project raw deltas safely."),), RepairRegistry())
+    )
+
+    assert result.terminal_status is RuntimeTerminalStatus.COMPLETED
+    assert result.safe_error_code != "runtime_event_budget_exhausted"
+    assert len(
+        [event for event in result.events if event.kind is RuntimeEventKind.REASONING_DELTA]
+    ) == 5_000
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("scenario", "config_overrides", "safe_code"),
+    [
+        (
+            "five_thousand_deltas",
+            {"max_raw_notifications": 5_000},
+            "runtime_raw_notification_runaway",
+        ),
+        (
+            "many_items",
+            {"max_items": 16},
+            "runtime_item_budget_exhausted",
+        ),
+        (
+            "repair",
+            {"max_tools": 1},
+            "runtime_tool_budget_exhausted",
+        ),
+        (
+            "text_budget",
+            {"max_visible_text_chars": 16_000},
+            "runtime_text_budget_exhausted",
+        ),
+        (
+            "slow_turn",
+            {"turn_timeout_s": 0.05},
+            "runtime_turn_time_exhausted",
+        ),
+    ],
+)
+async def test_adapter_semantic_runtime_budgets_have_independent_safe_codes(
+    scenario: str,
+    config_overrides: dict[str, object],
+    safe_code: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(CODEX_ENV_KEY, "fixture-secret")
+    config = replace(_config(tmp_path), **config_overrides)
+    supervisor = CodexRuntimeSupervisor(config, connection_factory=_factory(scenario))
+    runtime = CodexAppServerRuntime(supervisor)
+    tools = (
+        RuntimeToolDefinition(
+            "aearn_runtime_probe",
+            "Validate semantic Runtime budgets.",
+            {"type": "object"},
+        ),
+    )
+    thread = await runtime.start_thread(RuntimeThreadRequest(cwd=str(tmp_path), tools=tools))
+    result = await runtime.run_turn(
+        RuntimeTurnRequest(thread, (RuntimeInput("Exercise a bounded Runtime."),), RepairRegistry())
+    )
+
+    assert result.terminal_status is RuntimeTerminalStatus.UNAVAILABLE
+    assert result.safe_error_code == safe_code
+    assert result.safe_error_code != "runtime_event_budget_exhausted"
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_learning_plan_tool_repair_can_continue_through_more_than_two_thousand_deltas(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(CODEX_ENV_KEY, "fixture-secret")
+    supervisor = CodexRuntimeSupervisor(
+        _config(tmp_path),
+        connection_factory=_factory("long_learning_plan_repair"),
+    )
+    runtime = CodexAppServerRuntime(supervisor)
+    service = FakeLearningPlanToolService()
+    registry = LearningPlanRuntimeToolRegistry(service)
+    thread = await runtime.start_thread(
+        RuntimeThreadRequest(cwd=str(tmp_path), tools=registry.definitions)
+    )
+    result = await runtime.run_turn(
+        RuntimeTurnRequest(
+            thread,
+            (RuntimeInput("Repair the draft, then continue reasoning."),),
+            registry,
+        )
+    )
+
+    assert result.terminal_status is RuntimeTerminalStatus.COMPLETED
+    assert registry.repair_count == 1
+    assert result.metrics.source_delta_count == 2_500
+    assert result.safe_error_code != "runtime_event_budget_exhausted"
+    assert "".join(
+        event.visible_text or ""
+        for event in result.events
+        if event.kind is RuntimeEventKind.REASONING_DELTA
+    ) == "r" * 2_500
     await runtime.shutdown()

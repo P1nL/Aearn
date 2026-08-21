@@ -353,6 +353,8 @@ RUNTIME_PROJECTION_SCHEMA_CONSTRAINTS = (
     "chk_tutor_runtime_text_item_terminal",
     "uq_tutor_runtime_item_receipts_event",
     "uq_tutor_runtime_item_receipts_sequence",
+    "chk_tutor_runtime_receipt_projection_sequence",
+    "chk_tutor_runtime_receipt_source_range",
     "fk_tutor_runtime_receipt_binding_scope",
     "chk_tutor_runtime_receipt_public_item",
     "chk_tutor_runtime_item_receipts_event_kind",
@@ -608,6 +610,31 @@ def test_tutor_target_schema_is_repeatable_and_enforces_run_event_identity() -> 
             ("tutor_context_summaries", "covered_through_created_at"),
             ("tutor_context_summaries", "covered_through_message_id"),
         }.issubset(summary_columns)
+        runtime_receipt_columns = conn.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'tutor_runtime_item_receipts'
+              AND column_name = ANY(%s)
+            """,
+            (
+                [
+                    "projection_sequence",
+                    "source_sequence_start",
+                    "source_sequence_end",
+                    "source_delta_count",
+                    "source_content_hash",
+                ],
+            ),
+        ).fetchall()
+        assert {str(row["column_name"]) for row in runtime_receipt_columns} == {
+            "projection_sequence",
+            "source_sequence_start",
+            "source_sequence_end",
+            "source_delta_count",
+            "source_content_hash",
+        }
         assert {str(row["tgname"]) for row in trigger_rows} == {
             "trg_tutor_provider_attempt_receipts_immutable",
             "trg_tutor_planning_intake_facts_immutable",

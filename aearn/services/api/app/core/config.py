@@ -79,6 +79,49 @@ class Settings(BaseModel):
     codex_runtime_turn_timeout_seconds: float = Field(default_factory=lambda: _env_float("CODEX_RUNTIME_TURN_TIMEOUT_SECONDS", "300"), gt=0, le=3600)
     codex_runtime_shutdown_timeout_seconds: float = Field(default_factory=lambda: _env_float("CODEX_RUNTIME_SHUTDOWN_TIMEOUT_SECONDS", "5"), gt=0, le=60)
     codex_runtime_notification_queue_size: int = Field(default_factory=lambda: _env_int("CODEX_RUNTIME_NOTIFICATION_QUEUE_SIZE", "256"), ge=16, le=4096)
+    codex_runtime_delta_coalescing_enabled: bool = Field(
+        default_factory=lambda: _env_bool("CODEX_RUNTIME_DELTA_COALESCING_ENABLED", "true")
+    )
+    codex_runtime_delta_flush_delay_ms: int = Field(
+        default_factory=lambda: _env_int("CODEX_RUNTIME_DELTA_FLUSH_DELAY_MS", "25"),
+        ge=1,
+        le=1_000,
+    )
+    codex_runtime_delta_flush_chars: int = Field(
+        default_factory=lambda: _env_int("CODEX_RUNTIME_DELTA_FLUSH_CHARS", "1024"),
+        ge=1,
+        le=4_096,
+    )
+    codex_runtime_delta_flush_bytes: int = Field(
+        default_factory=lambda: _env_int("CODEX_RUNTIME_DELTA_FLUSH_BYTES", "4096"),
+        ge=64,
+        le=16_000,
+    )
+    codex_runtime_max_pending_bytes: int = Field(
+        default_factory=lambda: _env_int("CODEX_RUNTIME_MAX_PENDING_BYTES", "16000"),
+        ge=64,
+        le=16_000,
+    )
+    codex_runtime_max_raw_notifications: int = Field(
+        default_factory=lambda: _env_int("CODEX_RUNTIME_MAX_RAW_NOTIFICATIONS", "100000"),
+        ge=5_000,
+        le=1_000_000,
+    )
+    codex_runtime_max_items: int = Field(
+        default_factory=lambda: _env_int("CODEX_RUNTIME_MAX_ITEMS", "2048"),
+        ge=16,
+        le=16_384,
+    )
+    codex_runtime_max_tools: int = Field(
+        default_factory=lambda: _env_int("CODEX_RUNTIME_MAX_TOOLS", "256"),
+        ge=1,
+        le=4_096,
+    )
+    codex_runtime_max_visible_text_chars: int = Field(
+        default_factory=lambda: _env_int("CODEX_RUNTIME_MAX_VISIBLE_TEXT_CHARS", "2000000"),
+        ge=16_000,
+        le=8_000_000,
+    )
     tutor_codex_plan_drafting_enabled: bool = Field(
         default_factory=lambda: _env_bool("TUTOR_CODEX_PLAN_DRAFTING_ENABLED", "true")
     )
@@ -314,6 +357,8 @@ class Settings(BaseModel):
 
     @model_validator(mode="after")
     def _validate_tutor_context_limits(self) -> "Settings":
+        if self.codex_runtime_delta_flush_bytes > self.codex_runtime_max_pending_bytes:
+            raise ValueError("Codex Runtime pending bytes must cover the delta flush threshold")
         if self.tutor_provider_debug_capture_mode not in {"off", "rejected"}:
             raise ValueError("TUTOR_PROVIDER_DEBUG_CAPTURE_MODE must be off or rejected")
         if (

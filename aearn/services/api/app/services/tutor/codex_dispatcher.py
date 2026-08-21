@@ -4,6 +4,8 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from contextlib import AbstractContextManager
 from datetime import UTC, datetime, timedelta
+import logging
+from time import perf_counter
 from typing import Protocol, cast
 from uuid import uuid4
 
@@ -43,6 +45,7 @@ from app.core.config import Settings
 from app.db.connection import connect
 from app.services.learning.contracts import LearningScopeKind
 from app.services.learning.plan_tools import LearningPlanToolStatus
+
 from app.services.learning.planning_facts import PlanningFactField, PostgresPlanningFactRepository
 from app.services.learning.planning_questions import planning_question_prompt
 from app.services.learning.track_repository import PostgresLearningTrackRepository
@@ -55,6 +58,8 @@ from app.services.tutor.runtime_projection import (
     PostgresTutorRuntimeProjectionRepository,
     TutorRuntimeProjectionFence,
 )
+
+logger = logging.getLogger(__name__)
 
 _BASE_INSTRUCTIONS = """你是 Aearn 的计划草拟 Runtime。只处理当前服务端绑定的 plan_drafting Turn。
 每个 Turn 必须先调用 aearn_planning_context_read 获取服务端权威事实；事实完整时可调用 aearn_learning_plan_draft 提交 typed draft。
@@ -268,7 +273,8 @@ class CodexTutorRunDispatcher:
                 awaiting_field = _awaiting_planning_field(registry)
                 if awaiting_field is not None and event.kind is RuntimeEventKind.TURN_COMPLETED:
                     return
-                TutorRuntimeEventProjector(
+                projection_started = perf_counter()
+                receipt = TutorRuntimeEventProjector(
                     projection_repository,
                     binding_id=binding.binding_id,
                     fence=TutorRuntimeProjectionFence(
@@ -286,6 +292,19 @@ class CodexTutorRunDispatcher:
                         and event.kind is RuntimeEventKind.MESSAGE_COMPLETED
                         and event.phase in {None, "final_answer"}
                     ),
+                )
+                logger.info(
+                    "codex_runtime_projection",
+                    extra={
+                        "run_id": run_id,
+                        "runtime_event_kind": event.kind.value,
+                        "runtime_projection_sequence": receipt.projection_sequence,
+                        "runtime_source_delta_count": receipt.source_delta_count,
+                        "runtime_projection_duration_ms": max(
+                            0, round((perf_counter() - projection_started) * 1_000)
+                        ),
+                        "runtime_projection_status": receipt.projection_status.value,
+                    },
                 )
 
             result = self._host.run_turn(

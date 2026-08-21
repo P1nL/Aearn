@@ -6700,6 +6700,11 @@ CREATE TABLE IF NOT EXISTS tutor_runtime_item_receipts (
   )),
   external_item_hash text CHECK (external_item_hash IS NULL OR external_item_hash ~ '^[0-9a-f]{64}$'),
   event_sequence integer NOT NULL CHECK (event_sequence >= 1),
+  projection_sequence integer NOT NULL CHECK (projection_sequence >= 1),
+  source_sequence_start bigint,
+  source_sequence_end bigint,
+  source_delta_count integer,
+  source_content_hash text CHECK (source_content_hash IS NULL OR source_content_hash ~ '^[0-9a-f]{64}$'),
   item_kind text CHECK (item_kind IS NULL OR item_kind IN ('turn', 'message', 'tool', 'warning')),
   item_status text CHECK (item_status IS NULL OR char_length(item_status) BETWEEN 1 AND 80),
   tool_name text CHECK (tool_name IS NULL OR tool_name ~ '^[A-Za-z0-9_-]{1,64}$'),
@@ -6716,6 +6721,27 @@ CREATE TABLE IF NOT EXISTS tutor_runtime_item_receipts (
   created_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT uq_tutor_runtime_item_receipts_event UNIQUE (binding_id, event_key),
   CONSTRAINT uq_tutor_runtime_item_receipts_sequence UNIQUE (binding_id, event_sequence),
+  CONSTRAINT chk_tutor_runtime_receipt_projection_sequence
+    CHECK (event_sequence = projection_sequence),
+  CONSTRAINT chk_tutor_runtime_receipt_source_range CHECK (
+    (
+      source_sequence_start IS NULL
+      AND source_sequence_end IS NULL
+      AND source_delta_count IS NULL
+      AND source_content_hash IS NULL
+    )
+    OR (
+      source_sequence_start IS NOT NULL
+      AND source_sequence_end IS NOT NULL
+      AND source_delta_count IS NOT NULL
+      AND source_content_hash IS NOT NULL
+      AND source_sequence_start >= 1
+      AND source_sequence_end >= source_sequence_start
+      AND source_delta_count >= 1
+      AND source_delta_count = source_sequence_end - source_sequence_start + 1
+      AND source_content_hash ~ '^[0-9a-f]{64}$'
+    )
+  ),
   CONSTRAINT fk_tutor_runtime_receipt_binding_scope
     FOREIGN KEY (binding_id, run_id, user_id, conversation_id)
     REFERENCES tutor_run_runtime_bindings(id, run_id, user_id, conversation_id) ON DELETE RESTRICT,
@@ -6724,6 +6750,52 @@ CREATE TABLE IF NOT EXISTS tutor_runtime_item_receipts (
     OR (public_item_id IS NOT NULL AND public_item_kind IS NOT NULL)
   )
 );
+DROP TRIGGER IF EXISTS trg_tutor_runtime_receipts_immutable
+  ON tutor_runtime_item_receipts;
+ALTER TABLE tutor_runtime_item_receipts
+  ADD COLUMN IF NOT EXISTS projection_sequence integer;
+ALTER TABLE tutor_runtime_item_receipts
+  ADD COLUMN IF NOT EXISTS source_sequence_start bigint;
+ALTER TABLE tutor_runtime_item_receipts
+  ADD COLUMN IF NOT EXISTS source_sequence_end bigint;
+ALTER TABLE tutor_runtime_item_receipts
+  ADD COLUMN IF NOT EXISTS source_delta_count integer;
+ALTER TABLE tutor_runtime_item_receipts
+  ADD COLUMN IF NOT EXISTS source_content_hash text;
+UPDATE tutor_runtime_item_receipts
+SET projection_sequence = event_sequence
+WHERE projection_sequence IS NULL;
+ALTER TABLE tutor_runtime_item_receipts
+  ALTER COLUMN projection_sequence SET NOT NULL;
+ALTER TABLE tutor_runtime_item_receipts
+  DROP CONSTRAINT IF EXISTS chk_tutor_runtime_receipt_projection_sequence;
+ALTER TABLE tutor_runtime_item_receipts
+  ADD CONSTRAINT chk_tutor_runtime_receipt_projection_sequence
+  CHECK (event_sequence = projection_sequence);
+ALTER TABLE tutor_runtime_item_receipts
+  DROP CONSTRAINT IF EXISTS chk_tutor_runtime_receipt_source_range;
+ALTER TABLE tutor_runtime_item_receipts
+  ADD CONSTRAINT chk_tutor_runtime_receipt_source_range CHECK (
+    (
+      source_sequence_start IS NULL
+      AND source_sequence_end IS NULL
+      AND source_delta_count IS NULL
+      AND source_content_hash IS NULL
+    )
+    OR (
+      source_sequence_start IS NOT NULL
+      AND source_sequence_end IS NOT NULL
+      AND source_delta_count IS NOT NULL
+      AND source_content_hash IS NOT NULL
+      AND source_sequence_start >= 1
+      AND source_sequence_end >= source_sequence_start
+      AND source_delta_count >= 1
+      AND source_delta_count = source_sequence_end - source_sequence_start + 1
+      AND source_content_hash ~ '^[0-9a-f]{64}$'
+    )
+  );
+CREATE UNIQUE INDEX IF NOT EXISTS uq_tutor_runtime_item_receipts_projection_sequence
+  ON tutor_runtime_item_receipts(binding_id, projection_sequence);
 ALTER TABLE tutor_runtime_item_receipts
   DROP CONSTRAINT IF EXISTS tutor_runtime_item_receipts_event_kind_check;
 ALTER TABLE tutor_runtime_item_receipts
@@ -6754,7 +6826,7 @@ ALTER TABLE tutor_runtime_item_receipts
     item_kind IS NULL OR item_kind IN ('turn', 'reasoning', 'reasoning_summary', 'message', 'context_compaction', 'tool', 'warning')
   );
 CREATE INDEX IF NOT EXISTS idx_tutor_runtime_receipts_run_sequence
-  ON tutor_runtime_item_receipts(user_id, run_id, event_sequence, created_at);
+  ON tutor_runtime_item_receipts(user_id, run_id, projection_sequence, created_at);
 
 CREATE TABLE IF NOT EXISTS tutor_runtime_public_errors (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
