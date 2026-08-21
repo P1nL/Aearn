@@ -1,0 +1,35 @@
+{
+  "id": "tutor-planning-intent-runtime-stream-reliability",
+  "name": "tutor-planning-intent-runtime-stream-reliability",
+  "title": "Tutor 计划意图解析与 Runtime 流可靠性",
+  "description": "统一修复计划制定中的语言/方向意图解析、课程动态候选与 reasoning delta 事件预算问题，保持 Aearn planning facts、课程目录和 Runtime projection authority。",
+  "status": "completed",
+  "dev_type": null,
+  "scope": "plan_drafting",
+  "package": null,
+  "priority": "P0",
+  "creator": "PINKING",
+  "assignee": "PINKING",
+  "createdAt": "2026-08-21",
+  "completedAt": "2026-08-21",
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [
+    "08-21-planning-course-intent-dynamic-generated-ui",
+    "08-21-reasoning-delta-coalescing-runtime-budget"
+  ],
+  "parent": null,
+  "relatedFiles": [
+    "aearn/services/api/app/services/learning",
+    "aearn/services/api/app/agents/runtime",
+    "aearn/apps/desktop/src/features/tutor",
+    "docs/architecture",
+    "docs/product"
+  ],
+  "notes": "Parent 仅负责跨 child 需求、顺序和最终集成验收；先完成课程意图 child，再完成 delta coalescing child。",
+  "meta": {}
+}
