@@ -1944,3 +1944,43 @@ Closed the planning-only Tutor Harness rearchitecture parent after all nine inde
 ### Next Steps
 
 - 仅在用户明确要求后执行 Parent 08-21-tutor-planning-intent-runtime-stream-reliability 的最终集成复核；不要恢复 stale 08-13。
+
+
+## Session 118: 完成 Tutor 课程意图与 Runtime 流可靠性 Parent 最终集成
+
+**Date**: 2026-08-21
+**Task**: 完成 Tutor 课程意图与 Runtime 流可靠性 Parent 最终集成
+**Branch**: `main`
+
+### Summary
+
+两个 Child 已按顺序独立提交并归档；Parent 完成跨 Child 验收、全量离线质量门、三视口浏览器复验、QA 文档同步与归档。
+
+### Main Changes
+
+- 确认课程意图 authority 使用 PostgreSQL taxonomy/tag，唯一明确语言自动写 deterministic_input，方向/多语言/conflict 仅生成无默认选择的 durable shortlist。
+- 确认 Runtime 以 item/index/phase-aware coalescing、projection sequence、source range/count/hash 与独立语义预算处理 5,000 delta 和 LearningPlan repair。
+- 更新 Parent 验收矩阵、final-integration-evidence 与 tutor-harness release-readiness 文档。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `f45ffdc5` | (see git log) |
+| `5699d97e` | (see git log) |
+| `d8d7b67a` | (see git log) |
+| `e22a8198` | (see git log) |
+
+### Testing
+
+- [OK] Full backend 689 passed, 2 skipped；Ruff、Mypy 194 files、lock、compileall、bootstrap twice 通过。
+- [OK] Desktop 7 files/48 tests 与 tsc/vite build 通过；三视口 DOM/交互/刷新无溢出、overlay 或 console warning/error。
+- [OK] Parent Trellis validate 与 git diff --check 通过；未调用真实 provider。
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- Parent 任务树已完成；后续只按用户新的明确任务继续，不恢复 stale 08-13 fallback。
