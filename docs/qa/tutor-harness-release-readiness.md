@@ -342,6 +342,8 @@ Child 1-6 的 protocol、Runtime、typed tools、durable projection、controlled
 
 一次真实 `deepseek-v4-flash` Responses tool-repair smoke 已在 Child 1 获用户明确批准后通过；本 QA 不重复产生第二次付费调用。详细 exact target、failure matrix、rollback、evidence retention 和 non-claims 见 [`codex-sidecar-integration-readiness.md`](./codex-sidecar-integration-readiness.md)。这些本地结果不批准生产 rollout、push、deploy、Codex 安装/升级或所有 Tutor scope 切换。
 
-## Runtime delta coalescing 本地证据（2026-08-21）
+## 课程意图与 Runtime 流 Parent 最终集成证据（2026-08-21）
 
-Child `08-21-reasoning-delta-coalescing-runtime-budget` 使用 fake App Server 与本地 PostgreSQL 完成：5,000 单字符 reasoning delta、2,500-delta LearningPlan tool repair、timer/size/boundary flush、feature-off、独立语义预算、source/projection receipt 与 terminal/replay/gap 回归。完整 API suite 为 **689 passed, 2 skipped**；Ruff、Mypy（194 source files）、lock、compileall、bootstrap twice、Desktop 48 tests/build、Child/Parent Trellis validate 与 `git diff --check` 通过。三视口本地浏览器 smoke 无溢出、overlay 或 console error/warning。未调用真实 provider；该证据不构成 push、部署或生产发布批准。
+Parent `08-21-tutor-planning-intent-runtime-stream-reliability` 已在课程意图 Generated UI 与 Runtime delta coalescing 两个 Child 独立提交、验证和归档后完成最终集成复核。PostgreSQL deterministic matrix 覆盖 Python 自动确认、frontend/backend、多语言、conflict 与 full catalog；fake App Server 覆盖 5,000 单字符 reasoning delta、2,500-delta LearningPlan tool repair、timer/size/boundary flush、feature-off、独立语义预算、source/projection receipt 与 terminal/replay/gap/restart 回归。
+
+Parent 最终质量门为完整 API suite **689 passed, 2 skipped**、Ruff、Mypy（194 source files）、lock、compileall、bootstrap twice、Desktop 48 tests/build、Parent Trellis validate 与 `git diff --check` 全部通过。新一轮三视口 DOM/交互/刷新复验无溢出、overlay 或 console error/warning；截图调用超时，因此截图证据沿用同一工作区 Child 2 已保存的三张临时目录截图，不宣称产生了新的 Parent 截图。详细验收映射见 Parent `research/final-integration-evidence.md`。未调用真实 provider；该证据不构成 push、部署或生产发布批准。
