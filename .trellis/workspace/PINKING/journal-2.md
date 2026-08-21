@@ -1885,3 +1885,24 @@ Closed the planning-only Tutor Harness rearchitecture parent after all nine inde
 ### Status
 
 [OK] **Completed**
+
+
+## Session 116: 完成课程意图 taxonomy 与动态 Generated UI
+
+**Date**: 2026-08-21
+**Task**: 完成课程意图 taxonomy 与动态 Generated UI
+**Branch**: `main`
+
+### Summary
+
+完成 PostgreSQL 课程意图 taxonomy/coverage gate、确定性语言自动确认、方向与多语言 shortlist、durable Generated UI metadata、Desktop 无默认选择与刷新草稿恢复；通过 backend full pytest、Ruff、Mypy、Desktop tests/check、bootstrap twice 和离线 browser smoke。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `f45ffdc5` | (see git log) |
+
+### Status
+
+[OK] **Completed**
