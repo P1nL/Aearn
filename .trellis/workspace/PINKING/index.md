@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-2.md`
-- **Total Sessions**: 116
+- **Total Sessions**: 117
 - **Last Active**: 2026-08-21
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-2.md` | ~1908 | Active |
+| `journal-2.md` | ~1946 | Active |
 | `journal-1.md` | ~1979 | Archived |
 <!-- @@@/auto:active-documents -->
 
@@ -30,6 +30,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 117 | 2026-08-21 | 完成 Runtime delta 合并与语义预算 Child | `5699d97e`, `a82deb59` | `main` |
 | 116 | 2026-08-21 | 完成课程意图 taxonomy 与动态 Generated UI | `f45ffdc5` | `main` |
 | 115 | 2026-08-21 | Codex Runtime 持久线程与原始流收尾 | `4adbb1e2` | `main` |
 | 114 | 2026-08-19 | 修复 Tutor snapshot 运行步骤契约回归 | `b671e027` | `main` |
