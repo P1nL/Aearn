@@ -532,3 +532,67 @@ Selection happens once at the server-owned creation boundary; dispatch reads onl
 - An optional model hint is exact `planning-intent-hint-v1` with closed `intent_tags` only. Extra fields, unknown tags, or inactive tags are ignored at the resolver boundary and cannot define a fact, course ID, option, or recommendation.
 - A durable `planning_input` request persists exact language options plus `selection_scope`, `selection_reason_code`, and `intent_policy_version`. `recommended` is null for language requests, and response validation uses the persisted presentation rather than a rebuilt catalog.
 - Required coverage: deterministic language auto-confirm, frontend/backend/multi-language/conflict/full-catalog resolution, title/description independence, closed-hint rejection, durable option replay, and no real provider call in default tests.
+
+## Scenario: Bounded Runtime delta coalescing and semantic budgets (2026-08-21)
+
+### 1. Scope / Trigger
+
+Apply when changing Codex reasoning/final-answer delta mapping, Runtime turn budgets, source/projection sequence, PostgreSQL Runtime receipts, or conversation `turn_output` projection. This does not authorize provider/model fallback, public source telemetry, or live-provider tests.
+
+### 2. Signatures
+
+```python
+RuntimeDeltaCoalescer.push(event, now) -> tuple[RuntimeEvent, ...]
+RuntimeEvent(source_sequence_start, source_sequence_end, source_delta_count,
+             source_content_sha256, projection_sequence)
+```
+
+DB receipt fields are `projection_sequence`, `source_sequence_start/end`, `source_delta_count`, and `source_content_hash`. Environment keys are `CODEX_RUNTIME_DELTA_COALESCING_ENABLED`, `CODEX_RUNTIME_DELTA_FLUSH_{DELAY_MS,CHARS,BYTES}`, `CODEX_RUNTIME_MAX_{PENDING_BYTES,RAW_NOTIFICATIONS,ITEMS,TOOLS,VISIBLE_TEXT_CHARS}`.
+
+### 3. Contracts
+
+- Each turn owns one coalescer. Only consecutive equal `thread/turn/item/kind/channel/index/phase` reasoning or final-answer deltas merge.
+- Default flush is 25ms, 1,024 characters, or 4KB; item/phase/summary/tool/compaction/completed/terminal/error boundaries flush first and pending bytes never exceed 16,000.
+- PostgreSQL/SSE/Desktop consume projection sequence. Receipt source evidence contains only continuous range/count/SHA-256, never raw text/body/external identity.
+- `item/completed` remains final calibration authority; commentary, reasoning summary, terminal discard, subscriber backpressure, and snapshot recovery stay unchanged.
+- Feature-off restores per-delta projection under the new semantic budgets and never restores the retired 2,000-event failure.
+
+### 4. Validation & Error Matrix
+
+| Condition | Stable result |
+| --- | --- |
+| Normal 5,000 tiny deltas | completed; bounded projection chunks |
+| Raw notifications exceed runaway guard | `runtime_raw_notification_runaway` |
+| Item/tool/text/time budget exceeded | matching `runtime_*_budget_exhausted` / `runtime_turn_time_exhausted` |
+| One pending delta exceeds byte bound | `runtime_pending_bytes_exhausted` |
+| Projection gap at Desktop | fresh snapshot; model turn unchanged |
+| Incomplete source receipt range | PostgreSQL CHECK rejection |
+
+### 5. Good / Base / Bad Cases
+
+- Good: 5,000 one-character reasoning deltas become a small number of exact chunks and completed text matches source byte-for-byte.
+- Base: coalescing disabled; 5,000 projection events still complete because source count is not a normal business budget.
+- Bad: increasing 2,000 to another fixed number, merging across item/tool/phase, or exposing source range in public SSE.
+
+### 6. Tests Required
+
+- Adapter: 5,000 deltas, sparse timer flush, Unicode/whitespace, item/phase boundaries, long LearningPlan repair, feature-off, independent semantic safe codes.
+- PostgreSQL: bootstrap twice, source-range CHECK, projection uniqueness, replay/conflict, completed calibration, commentary correction, terminal discard, receipt redaction.
+- Desktop/browser: existing exact DTO and gap/snapshot tests, three viewport overflow/console smoke. Default tests use fake App Server/local PostgreSQL only.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+if len(collected) >= 2_000:
+    raise RuntimeUnavailableError("runtime_event_budget_exhausted")
+```
+
+#### Correct
+
+```python
+for projected in coalescer.push(source_event, now=clock()):
+    await publish(projected)
+# raw runaway, item, tool, text, time, and pending-byte budgets remain independent.
+```

@@ -190,7 +190,7 @@ def main() -> int:
                     ),
                     request_id_start=900,
                 )
-            if mode == "learning_plan_repair":
+            if mode in {"learning_plan_repair", "long_learning_plan_repair"}:
                 turn_succeeded = run_tool_calls(
                     thread_id=thread_id,
                     turn_id=turn_id,
@@ -237,7 +237,205 @@ def main() -> int:
                 )
             if not turn_succeeded:
                 continue
-            if mode == "burst_turns":
+            if mode == "long_learning_plan_repair":
+                reasoning = {"id": f"reasoning_{turn_count}", "type": "reasoning", "index": 0}
+                send(
+                    {
+                        "method": "item/started",
+                        "params": {
+                            "threadId": thread_id,
+                            "turnId": turn_id,
+                            "item": reasoning,
+                        },
+                    }
+                )
+                for _index in range(2_500):
+                    send(
+                        {
+                            "method": "item/reasoning/textDelta",
+                            "params": {
+                                "threadId": thread_id,
+                                "turnId": turn_id,
+                                "itemId": reasoning["id"],
+                                "index": 0,
+                                "delta": "r",
+                            },
+                        }
+                    )
+                send(
+                    {
+                        "method": "item/completed",
+                        "params": {
+                            "threadId": thread_id,
+                            "turnId": turn_id,
+                            "item": reasoning,
+                        },
+                    }
+                )
+                message = {
+                    "id": f"message_{turn_count}",
+                    "type": "agentMessage",
+                    "text": f"safe final {turn_count}",
+                    "phase": "final_answer",
+                }
+            elif mode == "many_items":
+                for index in range(17):
+                    reasoning = {
+                        "id": f"reasoning_{turn_count}_{index}",
+                        "type": "reasoning",
+                        "index": index,
+                    }
+                    send(
+                        {
+                            "method": "item/started",
+                            "params": {
+                                "threadId": thread_id,
+                                "turnId": turn_id,
+                                "item": reasoning,
+                            },
+                        }
+                    )
+                    send(
+                        {
+                            "method": "item/completed",
+                            "params": {
+                                "threadId": thread_id,
+                                "turnId": turn_id,
+                                "item": reasoning,
+                            },
+                        }
+                    )
+                message = {
+                    "id": f"message_{turn_count}",
+                    "type": "agentMessage",
+                    "text": f"safe final {turn_count}",
+                    "phase": "final_answer",
+                }
+            elif mode == "text_budget":
+                reasoning = {"id": f"reasoning_{turn_count}", "type": "reasoning", "index": 0}
+                send(
+                    {
+                        "method": "item/started",
+                        "params": {
+                            "threadId": thread_id,
+                            "turnId": turn_id,
+                            "item": reasoning,
+                        },
+                    }
+                )
+                send(
+                    {
+                        "method": "item/reasoning/textDelta",
+                        "params": {
+                            "threadId": thread_id,
+                            "turnId": turn_id,
+                            "itemId": reasoning["id"],
+                            "index": 0,
+                            "delta": "x" * 16_001,
+                        },
+                    }
+                )
+                message = {
+                    "id": f"message_{turn_count}",
+                    "type": "agentMessage",
+                    "text": f"safe final {turn_count}",
+                    "phase": "final_answer",
+                }
+            elif mode == "five_thousand_deltas":
+                reasoning = {"id": f"reasoning_{turn_count}", "type": "reasoning", "index": 0}
+                send(
+                    {
+                        "method": "item/started",
+                        "params": {
+                            "threadId": thread_id,
+                            "turnId": turn_id,
+                            "item": reasoning,
+                        },
+                    }
+                )
+                for _index in range(5_000):
+                    send(
+                        {
+                            "method": "item/reasoning/textDelta",
+                            "params": {
+                                "threadId": thread_id,
+                                "turnId": turn_id,
+                                "itemId": reasoning["id"],
+                                "index": 0,
+                                "delta": "思",
+                            },
+                        }
+                    )
+                send(
+                    {
+                        "method": "item/completed",
+                        "params": {
+                            "threadId": thread_id,
+                            "turnId": turn_id,
+                            "item": reasoning,
+                        },
+                    }
+                )
+                message = {
+                    "id": f"message_{turn_count}",
+                    "type": "agentMessage",
+                    "text": f"safe final {turn_count}",
+                    "phase": "final_answer",
+                }
+            elif mode == "sparse_deltas":
+                reasoning = {"id": f"reasoning_{turn_count}", "type": "reasoning", "index": 0}
+                send(
+                    {
+                        "method": "item/started",
+                        "params": {
+                            "threadId": thread_id,
+                            "turnId": turn_id,
+                            "item": reasoning,
+                        },
+                    }
+                )
+                send(
+                    {
+                        "method": "item/reasoning/textDelta",
+                        "params": {
+                            "threadId": thread_id,
+                            "turnId": turn_id,
+                            "itemId": reasoning["id"],
+                            "index": 0,
+                            "delta": "first",
+                        },
+                    }
+                )
+                time.sleep(0.08)
+                send(
+                    {
+                        "method": "item/reasoning/textDelta",
+                        "params": {
+                            "threadId": thread_id,
+                            "turnId": turn_id,
+                            "itemId": reasoning["id"],
+                            "index": 0,
+                            "delta": "second",
+                        },
+                    }
+                )
+                send(
+                    {
+                        "method": "item/completed",
+                        "params": {
+                            "threadId": thread_id,
+                            "turnId": turn_id,
+                            "item": reasoning,
+                        },
+                    }
+                )
+                message = {
+                    "id": f"message_{turn_count}",
+                    "type": "agentMessage",
+                    "text": f"safe final {turn_count}",
+                    "phase": "final_answer",
+                }
+            elif mode == "burst_turns":
                 reasoning = {"id": f"reasoning_{turn_count}", "type": "reasoning"}
                 send(
                     {

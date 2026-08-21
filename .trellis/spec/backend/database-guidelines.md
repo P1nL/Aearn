@@ -978,3 +978,10 @@ repository.complete_turn_with_message_if_current(
 - Bootstrap seeds intents and performs the only slug-based backfill, then runs `language_course_intent_coverage()` and `assert_language_course_intent_coverage()`. Runtime queries never branch on slug, title, or description.
 - `tutor_learning_intents` is shared cutover metadata, not user-owned target state. Neither taxonomy table belongs in user export/reset/delete.
 - PostgreSQL tests must run bootstrap twice, inspect tables/indexes/triggers, prove an untagged active course fails at the transaction boundary, and keep the exhaustive Tutor table classification green.
+
+## Scenario: Runtime projection receipt source ranges (2026-08-21)
+
+- `tutor_runtime_item_receipts.projection_sequence` is the durable reducer sequence; legacy `event_sequence` remains equal for compatibility.
+- Source audit columns are all-null or all-present: `source_sequence_start/end`, `source_delta_count`, `source_content_hash`. Present ranges are continuous and `count=end-start+1`.
+- Receipt source evidence contains only integers and SHA-256. Raw Runtime text remains only in owner-scoped `tutor_runtime_text_items`; provider bodies and external identities remain forbidden.
+- Bootstrap must drop the append-only trigger only around the idempotent projection-sequence backfill, then recreate it. Bootstrap twice and append-only mutation tests are mandatory.

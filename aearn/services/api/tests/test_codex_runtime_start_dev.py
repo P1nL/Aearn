@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from app.core.config import Settings
 
 
@@ -34,3 +36,17 @@ def test_codex_runtime_config_defaults_enabled(monkeypatch) -> None:  # type: ig
     assert settings.codex_runtime_enabled is True
     assert settings.tutor_codex_plan_drafting_enabled is True
     assert settings.tutor_codex_runtime_health_max_age_seconds == 90
+    assert settings.codex_runtime_delta_coalescing_enabled is True
+    assert settings.codex_runtime_delta_flush_delay_ms == 25
+    assert settings.codex_runtime_delta_flush_chars == 1_024
+    assert settings.codex_runtime_delta_flush_bytes == 4_096
+    assert settings.codex_runtime_max_pending_bytes == 16_000
+    assert settings.codex_runtime_max_raw_notifications == 100_000
+
+
+def test_codex_runtime_config_rejects_pending_bytes_below_flush_threshold() -> None:
+    with pytest.raises(ValueError, match="pending bytes must cover"):
+        Settings(
+            codex_runtime_delta_flush_bytes=4_096,
+            codex_runtime_max_pending_bytes=2_048,
+        )

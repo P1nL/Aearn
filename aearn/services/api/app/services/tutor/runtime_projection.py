@@ -68,6 +68,11 @@ class TutorRuntimeProjectionEvent:
     thread_id: str
     sequence: int
     occurred_at: datetime
+    projection_sequence: int | None = None
+    source_sequence_start: int | None = None
+    source_sequence_end: int | None = None
+    source_delta_count: int = 1
+    source_content_hash: str | None = None
     turn_id: str | None = None
     item_id: str | None = None
     visible_text: str | None = None
@@ -91,9 +96,33 @@ class TutorRuntimeProjectionEvent:
             "tool_started", "tool_completed", "turn_completed", "warning",
         }:
             raise ValueError("runtime projection event kind is invalid")
-        if not self.thread_id or self.sequence < 1:
+        projection_sequence = self.projection_sequence or self.sequence
+        if not self.thread_id or self.sequence < 1 or projection_sequence < 1:
             raise ValueError("runtime projection event identity is invalid")
-        for value in (self.content_hash, self.input_hash, self.result_hash):
+        if projection_sequence != self.sequence:
+            raise ValueError("runtime projection sequence must match the compatibility sequence")
+        object.__setattr__(self, "projection_sequence", projection_sequence)
+        source_values = (self.source_sequence_start, self.source_sequence_end)
+        if any(value is not None for value in source_values):
+            if (
+                self.source_sequence_start is None
+                or self.source_sequence_end is None
+                or self.source_sequence_start < 1
+                or self.source_sequence_end < self.source_sequence_start
+                or self.source_delta_count < 1
+                or self.source_delta_count
+                != self.source_sequence_end - self.source_sequence_start + 1
+                or self.source_content_hash is None
+            ):
+                raise ValueError("runtime projection source range is invalid")
+        elif self.source_delta_count != 1 or self.source_content_hash is not None:
+            raise ValueError("runtime projection source metadata is incomplete")
+        for value in (
+            self.content_hash,
+            self.input_hash,
+            self.result_hash,
+            self.source_content_hash,
+        ):
             if value is not None and _SHA256.fullmatch(value) is None:
                 raise ValueError("runtime projection event hash is invalid")
         if self.safe_code is not None and _SAFE_CODE.fullmatch(self.safe_code) is None:
@@ -129,6 +158,11 @@ class TutorRuntimeProjectionReceipt:
     event_key: str
     event_kind: str
     event_sequence: int
+    projection_sequence: int
+    source_sequence_start: int | None
+    source_sequence_end: int | None
+    source_delta_count: int | None
+    source_content_hash: str | None
     projection_status: TutorRuntimeProjectionStatus
     public_item_id: str | None
     public_item_kind: str | None
@@ -377,7 +411,7 @@ class PostgresTutorRuntimeProjectionRepository:
                 """
                 SELECT * FROM tutor_runtime_item_receipts
                 WHERE binding_id = %s
-                  AND (event_key = %s OR event_sequence = %s)
+                  AND (event_key = %s OR projection_sequence = %s)
                 ORDER BY CASE WHEN event_key = %s THEN 0 ELSE 1 END
                 LIMIT 1
                 """,
@@ -419,7 +453,7 @@ class PostgresTutorRuntimeProjectionRepository:
     def next_event_sequence(self, *, binding_id: str) -> int:
         row = self._conn.execute(
             """
-            SELECT COALESCE(max(event_sequence), 0)::int + 1 AS next_sequence
+            SELECT COALESCE(max(projection_sequence), 0)::int + 1 AS next_sequence
             FROM tutor_runtime_item_receipts
             WHERE binding_id = %s
             """,
@@ -434,7 +468,7 @@ class PostgresTutorRuntimeProjectionRepository:
             FROM tutor_runtime_item_receipts AS receipts
             JOIN tutor_run_runtime_bindings AS bindings ON bindings.id = receipts.binding_id
             WHERE bindings.user_id = %s AND bindings.run_id = %s
-            ORDER BY receipts.event_sequence, receipts.created_at, receipts.id
+            ORDER BY receipts.projection_sequence, receipts.created_at, receipts.id
             """,
             (user_id, run_id),
         ).fetchall()
@@ -1008,16 +1042,24 @@ class PostgresTutorRuntimeProjectionRepository:
             """
             INSERT INTO tutor_runtime_item_receipts (
               binding_id, run_id, user_id, conversation_id, event_key, event_kind,
-              external_item_hash, event_sequence, item_kind, item_status, tool_name,
+              external_item_hash, event_sequence, projection_sequence,
+              source_sequence_start, source_sequence_end, source_delta_count,
+              source_content_hash, item_kind, item_status, tool_name,
               input_hash, result_hash, content_hash, safe_code, projection_status,
               public_item_id, public_item_kind, occurred_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ) VALUES (
+              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+            )
             RETURNING *
             """,
             (
                 binding["id"], binding["run_id"], binding["user_id"], binding["conversation_id"],
                 event_key, event.kind, self._hash_optional(event.item_id), event.sequence,
-                self._item_kind(event), self._item_status(event),
+                event.projection_sequence, event.source_sequence_start,
+                event.source_sequence_end,
+                event.source_delta_count if event.source_sequence_start is not None else None,
+                event.source_content_hash, self._item_kind(event), self._item_status(event),
                 event.tool_name, event.input_hash, event.result_hash, event.content_hash,
                 event.safe_code, status.value, public_item_id, public_item_kind, event.occurred_at,
             ),
@@ -1071,7 +1113,12 @@ class PostgresTutorRuntimeProjectionRepository:
             "item": PostgresTutorRuntimeProjectionRepository._hash_optional(event.item_id),
             "content": event.content_hash, "code": event.safe_code, "terminal": event.terminal_status,
             "tool": event.tool_name, "input": event.input_hash, "result": event.result_hash,
-            "item_type": event.item_type, "phase": event.phase, "sequence": event.sequence,
+            "item_type": event.item_type, "phase": event.phase,
+            "projection_sequence": event.projection_sequence,
+            "source_sequence_start": event.source_sequence_start,
+            "source_sequence_end": event.source_sequence_end,
+            "source_delta_count": event.source_delta_count,
+            "source_content_hash": event.source_content_hash,
         }
         return hashlib.sha256(
             json.dumps(safe, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -1163,6 +1210,29 @@ class PostgresTutorRuntimeProjectionRepository:
             receipt_id=str(row["id"]), binding_id=str(row["binding_id"]),
             event_key=str(row["event_key"]), event_kind=str(row["event_kind"]),
             event_sequence=_as_int(row["event_sequence"]),
+            projection_sequence=_as_int(
+                row.get("projection_sequence"), _as_int(row["event_sequence"])
+            ),
+            source_sequence_start=(
+                _as_int(row.get("source_sequence_start"))
+                if row.get("source_sequence_start") is not None
+                else None
+            ),
+            source_sequence_end=(
+                _as_int(row.get("source_sequence_end"))
+                if row.get("source_sequence_end") is not None
+                else None
+            ),
+            source_delta_count=(
+                _as_int(row.get("source_delta_count"))
+                if row.get("source_delta_count") is not None
+                else None
+            ),
+            source_content_hash=(
+                str(row["source_content_hash"])
+                if row.get("source_content_hash")
+                else None
+            ),
             projection_status=TutorRuntimeProjectionStatus(str(row["projection_status"])),
             public_item_id=str(row["public_item_id"]) if row.get("public_item_id") else None,
             public_item_kind=str(row["public_item_kind"]) if row.get("public_item_kind") else None,

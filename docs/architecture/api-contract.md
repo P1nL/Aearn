@@ -679,3 +679,7 @@ commentary、reasoning summary 和未知 phase/channel 不得进入 public text 
 For `plan_drafting`, Aearn deterministically resolves an exact learner input before provider execution. A single explicit language with an active published course appends a confirmed `language_id` fact with `source_kind=deterministic_input` and `policy_version=planning-language-intent-v1`; the next request therefore targets the next missing fact. Multiple languages, direction-only input, unsupported input, or language/direction conflict never create a language fact.
 
 A language `planning_input` presentation persists exact `options`, `recommended=null`, `selection_scope`, `selection_reason_code`, and `intent_policy_version`. Public option values remain canonical course-language values; internal course UUIDs and classification evidence are omitted. Refresh, reconnect, history, and response validation use the stored presentation as authority even if the catalog later changes. The optional model contract is exact `planning-intent-hint-v1` and may contain only closed intent tags; it cannot provide facts, course IDs, options, or recommendations.
+
+## 2026-08-21：Runtime projection sequence 兼容说明
+
+`tutor_runtime_item_stream_v1.chunk_sequence` 是 Aearn projection sequence，不是 provider/source notification sequence。服务端可以把多个连续同 item/kind/channel/index/phase delta 合并成一个 append；客户端只需按现有 closed union、identity 和连续 projection sequence 处理。source range/count/hash 仅存在于私有 PostgreSQL receipt，不加入 snapshot、history、SSE 或 Desktop DTO。gap 仍要求停止局部 reducer并读取 fresh snapshot；不得把缺口解释为模型 unavailable。

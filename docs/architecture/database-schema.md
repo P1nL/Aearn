@@ -476,3 +476,9 @@ diagnostic、credential 和 secret 禁止落入该表、message 列或 conversat
 | `language_course_intent_tags` | Course UUID to intent-key relation | composite primary key, rank `0..100`, primary marker, policy version, and restrictive foreign keys |
 
 `assert_language_course_intent_coverage()` requires every active course to have an active tag and every active intent to have an active course. Deferred constraint triggers check the final transaction state for course publication, intent activation, and tag mutation. Bootstrap performs the only slug-based backfill, validates coverage, and is repeatable. Runtime shortlist queries join active course UUIDs and active tags and never inspect course slug, title, or description.
+
+## 2026-08-21：Runtime source/projection sequence 与合并审计
+
+`tutor_runtime_item_receipts.event_sequence` 保留为兼容列并与新增 `projection_sequence` 严格相等；所有 PostgreSQL reducer、`tutor_runtime_text_items.last_event_sequence`、conversation `turn_output.chunk_sequence` 与 Desktop reducer 都以 projection sequence 为顺序 authority。provider-normalized source sequence 不进入公共 DTO。
+
+每个有 source evidence 的 receipt 必须同时保存 `source_sequence_start`、`source_sequence_end`、`source_delta_count` 与 `source_content_hash`。四者要么全部为空（仅允许本地 synthetic control/recovery event），要么形成闭合连续范围且 count 精确等于范围长度。字段只保存数字与 SHA-256；raw delta、reasoning/final text、provider body、external identity 和工具参数仍禁止进入 receipt。`tutor_runtime_text_items` 是 owner-scoped text authority，completed item 继续校准全文。

@@ -625,3 +625,111 @@ def test_runtime_interrupt_and_failure_terminal_mapping(
         assert errors == []
     else:
         assert len(errors) == 1 and errors[0].error_code == error_code
+
+
+def test_coalesced_receipt_persists_projection_and_safe_source_range(
+    tutor_persistence,
+) -> None:  # type: ignore[no-untyped-def]
+    _repository, projection, binding, fence, _conversation_id, run_id, now = _codex_turn(
+        tutor_persistence, suffix="source-range"
+    )
+    thread_id = "private-thread-source-range"
+    turn_id = "private-turn-source-range"
+    projector = TutorRuntimeEventProjector(
+        projection, binding_id=binding.binding_id, fence=fence
+    )
+    projector.project_event(
+        RuntimeEvent(
+            RuntimeEventKind.TURN_STARTED,
+            thread_id,
+            turn_id,
+            source_sequence_start=1,
+            source_sequence_end=1,
+            source_delta_count=1,
+            source_content_sha256="a" * 64,
+            projection_sequence=1,
+            sequence=1,
+        ),
+        sequence=1,
+        occurred_at=now + timedelta(seconds=2),
+    )
+    chunk = "思" * 5_000
+    receipt = projector.project_event(
+        RuntimeEvent(
+            RuntimeEventKind.REASONING_DELTA,
+            thread_id,
+            turn_id,
+            item_id="private-reasoning-source-range",
+            visible_text=chunk,
+            content_sha256=_sha256(chunk),
+            item_type="reasoning",
+            item_index=0,
+            source_sequence_start=2,
+            source_sequence_end=5_001,
+            source_delta_count=5_000,
+            source_content_sha256=_sha256(chunk),
+            projection_sequence=2,
+            sequence=2,
+        ),
+        sequence=2,
+        occurred_at=now + timedelta(seconds=3),
+    )
+
+    assert receipt.projection_sequence == 2
+    assert receipt.source_sequence_start == 2
+    assert receipt.source_sequence_end == 5_001
+    assert receipt.source_delta_count == 5_000
+    assert receipt.source_content_hash == _sha256(chunk)
+    row = tutor_persistence.connection.execute(
+        """
+        SELECT event_sequence, projection_sequence, source_sequence_start,
+               source_sequence_end, source_delta_count, source_content_hash
+        FROM tutor_runtime_item_receipts
+        WHERE id = %s
+        """,
+        (receipt.receipt_id,),
+    ).fetchone()
+    assert row == {
+        "event_sequence": 2,
+        "projection_sequence": 2,
+        "source_sequence_start": 2,
+        "source_sequence_end": 5_001,
+        "source_delta_count": 5_000,
+        "source_content_hash": _sha256(chunk),
+    }
+    encoded = json.dumps(dict(row), ensure_ascii=False)
+    assert chunk not in encoded
+    output = projection.runtime_output_for_run(
+        user_id=tutor_persistence.user_id,
+        run_id=run_id,
+    )
+    assert output is not None
+    assert output["reasoning_items"][0]["text"] == chunk  # type: ignore[index]
+
+
+def test_runtime_receipt_source_range_constraint_rejects_partial_metadata(
+    tutor_persistence,
+) -> None:  # type: ignore[no-untyped-def]
+    _repository, _projection, binding, _fence, _conversation_id, _run_id, now = _codex_turn(
+        tutor_persistence, suffix="source-range-check"
+    )
+    with pytest.raises(psycopg.errors.CheckViolation):
+        with tutor_persistence.connection.transaction():
+            tutor_persistence.connection.execute(
+                """
+                INSERT INTO tutor_runtime_item_receipts (
+                  binding_id, run_id, user_id, conversation_id, event_key, event_kind,
+                  event_sequence, projection_sequence, source_sequence_start,
+                  projection_status, occurred_at
+                )
+                VALUES (%s, %s, %s, %s, %s, 'warning', 1, 1, 1, 'ignored_nonpublic', %s)
+                """,
+                (
+                    binding.binding_id,
+                    binding.run_id,
+                    binding.user_id,
+                    binding.conversation_id,
+                    "f" * 64,
+                    now + timedelta(seconds=2),
+                ),
+            )

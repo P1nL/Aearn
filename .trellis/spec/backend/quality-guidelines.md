@@ -3778,3 +3778,10 @@ class PlanCapabilityError(ValueError):
 - Test the complete flow `learner input -> resolver -> deterministic fact or candidate UUIDs -> persisted typed presentation -> Desktop response`, including feature-off full-catalog fallback.
 - A title/description-only course update must not change candidate UUIDs. A new active untagged course must fail both bootstrap coverage and the deferred publication constraint.
 - Default suites use PostgreSQL and fake/offline Tutor infrastructure only. A real provider is never required to validate planning intent.
+
+## Scenario: Runtime delta coalescing quality gate (2026-08-21)
+
+- Prove 5,000 single-character reasoning deltas complete with exact final text and bounded projection count; do not accept a larger fixed event cap as the fix.
+- Cover timer/size/boundary flush, Unicode/whitespace preservation, tool repair after more than 2,000 source deltas, feature-off per-delta projection, and raw/item/tool/text/time/pending safe codes.
+- PostgreSQL tests assert projection/source columns, closed range checks, replay/conflict, completed calibration, commentary correction, terminal discard, and no raw text in receipts/logs.
+- Desktop public DTO stays unchanged. Existing gap/snapshot/reconnect tests and three-viewport browser smoke must remain green. Default validation is fake/offline; real provider requires new explicit approval.

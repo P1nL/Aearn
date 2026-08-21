@@ -888,3 +888,11 @@ planning context tool 返回 confirmed facts、missing fields、facts revision/f
 `PostgresPlanningFactRepository.record_input()` invokes the versioned deterministic planning resolver for accepted `plan_drafting` input. The resolver uses the exact learner message, current confirmed language, active courses, and PostgreSQL intent tags. Compatible single-language evidence becomes a confirmed fact before context reconstruction, so Harness and Codex both see `language_id` as required authority and cannot re-ask it. Direction, multiple-language, conflict, unsupported, and feature-disabled results remain request-shaping context only.
 
 When a language request is still needed, request persistence resolves candidate course UUIDs and writes an immutable public presentation. The model supplies only the stable `question_key`; it never defines the shortlist. Response validation reads the persisted options, while the next fresh TurnRun records the learner's selected public language value through the existing typed fact path.
+
+## 2026-08-21：Codex Runtime delta 合并与语义预算
+
+Codex adapter 为每个 turn 建立独立 `RuntimeDeltaCoalescer`。仅连续同 `thread/turn/item/kind/channel/index/phase` 的 reasoning/final-answer delta 可合并；默认 25ms、1,024 字符或 4KB flush，任意 item/phase/summary/tool/compaction/completed/terminal 边界强制 flush。合并后的文本必须逐字等于 source delta 串联，`item/completed` 仍是最终文本校准 authority，commentary、reasoning summary 与 terminal discard 规则不变。
+
+source sequence 与 projection sequence 分离。Runtime result、PostgreSQL text reducer、conversation SSE 与 Desktop 只按 projection sequence 工作；append-only receipt 保存安全 source range/count/hash。关闭 `CODEX_RUNTIME_DELTA_COALESCING_ENABLED` 时恢复逐 delta projection，但不会恢复 `len(events) >= 2000` 或 `runtime_event_budget_exhausted` 正常失败。
+
+Runtime 资源限制现在是独立语义预算：100,000 raw notification runaway guard、item、tool、累计可见文本、turn time 与 pending bytes。普通日志只记录 source delta/projection/flush 数、maximum pending bytes、duration 与 safe code，不记录文本。UI/SSE gap、refresh 和 reconnect 继续通过 fresh snapshot 恢复，不 terminalize 模型 turn。

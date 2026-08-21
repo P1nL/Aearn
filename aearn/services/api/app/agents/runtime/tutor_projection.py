@@ -39,7 +39,12 @@ class TutorRuntimeEventProjector:
             event=TutorRuntimeProjectionEvent(
                 kind=event.kind.value,
                 thread_id=event.thread_id,
-                sequence=sequence,
+                sequence=event.projection_sequence or sequence,
+                projection_sequence=event.projection_sequence or sequence,
+                source_sequence_start=event.source_sequence_start,
+                source_sequence_end=event.source_sequence_end,
+                source_delta_count=event.source_delta_count,
+                source_content_hash=event.source_content_sha256,
                 occurred_at=occurred_at,
                 turn_id=event.turn_id,
                 item_id=event.item_id,
