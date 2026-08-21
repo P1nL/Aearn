@@ -31,6 +31,7 @@ class TutorRuntimeEventProjector:
         *,
         sequence: int,
         occurred_at: datetime,
+        defer_public_message: bool = False,
     ) -> TutorRuntimeProjectionReceipt:
         return self._repository.project(
             binding_id=self._binding_id,
@@ -51,6 +52,9 @@ class TutorRuntimeEventProjector:
                 tool_name=event.tool_name,
                 input_hash=event.input_sha256,
                 result_hash=event.result_sha256,
+                item_type=event.item_type,
+                phase=event.phase,
+                defer_public_message=defer_public_message,
             ),
         )
 
@@ -63,6 +67,10 @@ class TutorRuntimeEventProjector:
         if result.thread.generation != self._fence.connection_generation:
             raise ValueError("runtime result connection generation is stale")
         return tuple(
-            self.project_event(event, sequence=index, occurred_at=occurred_at)
+            self.project_event(
+                event,
+                sequence=event.sequence or index,
+                occurred_at=occurred_at,
+            )
             for index, event in enumerate(result.events, start=1)
         )

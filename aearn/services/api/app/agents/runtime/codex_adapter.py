@@ -6,12 +6,41 @@ import hashlib
 import json
 import re
 from collections.abc import AsyncIterator, Mapping
+from dataclasses import replace
 
 from .codex_connection import JsonRpcError, JsonRpcNotification
 from .codex_supervisor import CodexRuntimeSupervisor, RuntimeUnavailableError
 from .contracts import AgentRuntimePort, RuntimeEvent, RuntimeEventKind, RuntimeHealthSnapshot, RuntimeInput, RuntimeTerminalStatus, RuntimeThreadHandle, RuntimeThreadRequest, RuntimeTurnRequest, RuntimeTurnResult
 
 _TOOL_NAME = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_EVENT_BACKPRESSURE_TIMEOUT_SECONDS = 1.0
+
+
+class _RuntimeEventSubscription(AsyncIterator[RuntimeEvent]):
+    def __init__(
+        self,
+        subscribers: set[asyncio.Queue[RuntimeEvent]],
+        *,
+        queue_size: int,
+    ) -> None:
+        self._subscribers = subscribers
+        self._queue: asyncio.Queue[RuntimeEvent] = asyncio.Queue(maxsize=queue_size)
+        self._closed = False
+        subscribers.add(self._queue)
+
+    def __aiter__(self) -> _RuntimeEventSubscription:
+        return self
+
+    async def __anext__(self) -> RuntimeEvent:
+        if self._closed:
+            raise StopAsyncIteration
+        return await self._queue.get()
+
+    async def aclose(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._subscribers.discard(self._queue)
 
 
 class RuntimeBusyError(RuntimeError):
@@ -22,7 +51,8 @@ class CodexAppServerRuntime(AgentRuntimePort):
     def __init__(self, supervisor: CodexRuntimeSupervisor, *, event_queue_size: int = 256) -> None:
         self.supervisor = supervisor
         self._turn_lock = asyncio.Lock()
-        self._events: asyncio.Queue[RuntimeEvent] = asyncio.Queue(maxsize=event_queue_size)
+        self._event_queue_size = event_queue_size
+        self._event_subscribers: set[asyncio.Queue[RuntimeEvent]] = set()
 
     async def start(self) -> RuntimeHealthSnapshot:
         return await self.supervisor.start()
@@ -53,6 +83,13 @@ class CodexAppServerRuntime(AgentRuntimePort):
             raise RuntimeUnavailableError("thread_resume_contract_mismatch")
         return RuntimeThreadHandle(thread_id, health.generation)
 
+    async def compact_thread(self, thread: RuntimeThreadHandle) -> None:
+        await self.supervisor.request(
+            "thread/compact/start",
+            {"threadId": thread.thread_id},
+            generation=thread.generation,
+        )
+
     async def run_turn(self, request: RuntimeTurnRequest) -> RuntimeTurnResult:
         if self._turn_lock.locked():
             raise RuntimeBusyError("runtime_writer_busy")
@@ -61,6 +98,7 @@ class CodexAppServerRuntime(AgentRuntimePort):
             self.supervisor.prepare_turn(request.thread.thread_id, request.tools, request.thread.generation)
             turn_id = ""
             collected: list[RuntimeEvent] = []
+            item_phases: dict[str, str] = {}
             terminal = RuntimeTerminalStatus.FAILED
             safe_error: str | None = None
             try:
@@ -71,16 +109,19 @@ class CodexAppServerRuntime(AgentRuntimePort):
                 self.supervisor.register_turn(request.thread.thread_id, turn_id, request.tools, request.thread.generation)
                 while True:
                     notification = await self.supervisor.next_notification(generation=request.thread.generation, timeout_s=self.supervisor.config.turn_timeout_s)
-                    event = _map_notification(notification, request.thread.thread_id, turn_id)
+                    event = _map_notification(
+                        notification,
+                        request.thread.thread_id,
+                        turn_id,
+                        item_phases=item_phases,
+                    )
                     if event is None:
                         continue
                     if len(collected) >= 2_000:
                         raise RuntimeUnavailableError("runtime_event_budget_exhausted")
+                    event = replace(event, sequence=len(collected) + 1)
                     collected.append(event)
-                    try:
-                        self._events.put_nowait(event)
-                    except asyncio.QueueFull as exc:
-                        raise RuntimeUnavailableError("runtime_event_backpressure_exhausted") from exc
+                    await self._publish_event(event)
                     if event.kind is RuntimeEventKind.TURN_COMPLETED:
                         terminal = event.terminal_status or RuntimeTerminalStatus.FAILED
                         safe_error = event.safe_code
@@ -88,17 +129,15 @@ class CodexAppServerRuntime(AgentRuntimePort):
             except RuntimeUnavailableError as exc:
                 terminal = RuntimeTerminalStatus.UNAVAILABLE
                 safe_error = str(exc)
-                failure_event = RuntimeEvent(RuntimeEventKind.TURN_COMPLETED, request.thread.thread_id, turn_id or None, terminal_status=terminal, safe_code=safe_error)
+                failure_event = RuntimeEvent(RuntimeEventKind.TURN_COMPLETED, request.thread.thread_id, turn_id or None, terminal_status=terminal, safe_code=safe_error, sequence=len(collected) + 1)
                 collected.append(failure_event)
-                if not self._events.full():
-                    self._events.put_nowait(failure_event)
+                self._publish_event_best_effort(failure_event)
             except JsonRpcError:
                 terminal = RuntimeTerminalStatus.UNAVAILABLE
                 safe_error = "runtime_connection_failed"
-                failure_event = RuntimeEvent(RuntimeEventKind.TURN_COMPLETED, request.thread.thread_id, turn_id or None, terminal_status=terminal, safe_code=safe_error)
+                failure_event = RuntimeEvent(RuntimeEventKind.TURN_COMPLETED, request.thread.thread_id, turn_id or None, terminal_status=terminal, safe_code=safe_error, sequence=len(collected) + 1)
                 collected.append(failure_event)
-                if not self._events.full():
-                    self._events.put_nowait(failure_event)
+                self._publish_event_best_effort(failure_event)
             finally:
                 self.supervisor.unregister_turn(request.thread.thread_id, turn_id)
             return RuntimeTurnResult(request.thread, turn_id, terminal, tuple(collected), safe_error)
@@ -109,9 +148,26 @@ class CodexAppServerRuntime(AgentRuntimePort):
     async def interrupt(self, thread: RuntimeThreadHandle, turn_id: str) -> None:
         await self.supervisor.request("turn/interrupt", {"threadId": thread.thread_id, "turnId": turn_id}, generation=thread.generation)
 
-    async def events(self) -> AsyncIterator[RuntimeEvent]:
-        while True:
-            yield await self._events.get()
+    def events(self) -> AsyncIterator[RuntimeEvent]:
+        return _RuntimeEventSubscription(
+            self._event_subscribers,
+            queue_size=self._event_queue_size,
+        )
+
+    async def _publish_event(self, event: RuntimeEvent) -> None:
+        for queue in tuple(self._event_subscribers):
+            try:
+                await asyncio.wait_for(
+                    queue.put(event),
+                    timeout=_EVENT_BACKPRESSURE_TIMEOUT_SECONDS,
+                )
+            except TimeoutError as exc:
+                raise RuntimeUnavailableError("runtime_event_backpressure_exhausted") from exc
+
+    def _publish_event_best_effort(self, event: RuntimeEvent) -> None:
+        for queue in tuple(self._event_subscribers):
+            if not queue.full():
+                queue.put_nowait(event)
 
     async def shutdown(self) -> None:
         await self.supervisor.shutdown()
@@ -124,7 +180,13 @@ def _tool_wire(tool: object) -> Mapping[str, object]:
     return {"name": tool.name, "description": tool.description, "inputSchema": dict(tool.input_schema)}
 
 
-def _map_notification(notification: JsonRpcNotification, thread_id: str, turn_id: str) -> RuntimeEvent | None:
+def _map_notification(
+    notification: JsonRpcNotification,
+    thread_id: str,
+    turn_id: str,
+    *,
+    item_phases: dict[str, str] | None = None,
+) -> RuntimeEvent | None:
     params = notification.params
     method = notification.method
     notification_thread = str(params.get("threadId") or thread_id)
@@ -139,13 +201,55 @@ def _map_notification(notification: JsonRpcNotification, thread_id: str, turn_id
         if str(params.get("turnId", "")) != turn_id:
             return None
         delta = str(params.get("delta", ""))
-        return RuntimeEvent(RuntimeEventKind.MESSAGE_DELTA, thread_id, turn_id, item_id=str(params.get("itemId") or "") or None, visible_text=delta, content_sha256=_hash(delta))
+        item_id = str(params.get("itemId") or "") or None
+        phase = str(params.get("phase") or "") or None
+        if phase is None and item_id is not None and item_phases is not None:
+            phase = item_phases.get(item_id)
+        return RuntimeEvent(RuntimeEventKind.MESSAGE_DELTA, thread_id, turn_id, item_id=item_id, visible_text=delta, content_sha256=_hash(delta), item_type="agentMessage", phase=phase)
+    if method in {"item/reasoning/textDelta", "item/reasoning/summaryTextDelta"}:
+        if str(params.get("turnId", "")) != turn_id:
+            return None
+        delta = str(params.get("delta", ""))
+        kind = (
+            RuntimeEventKind.REASONING_DELTA
+            if method == "item/reasoning/textDelta"
+            else RuntimeEventKind.REASONING_SUMMARY_DELTA
+        )
+        return RuntimeEvent(kind, thread_id, turn_id, item_id=str(params.get("itemId") or "") or None, visible_text=delta, content_sha256=_hash(delta), item_type="reasoning")
     if method in {"item/started", "item/completed"}:
         if str(params.get("turnId", "")) != turn_id:
             return None
         item = params.get("item") or {}
         item_type = str(item.get("type", ""))
         item_id = str(item.get("id", "")) or None
+        if item_type == "reasoning":
+            if method == "item/started":
+                return RuntimeEvent(RuntimeEventKind.REASONING_STARTED, thread_id, turn_id, item_id=item_id, item_type=item_type)
+            raw_text = item.get("text")
+            text = raw_text if isinstance(raw_text, str) else None
+            return RuntimeEvent(
+                RuntimeEventKind.REASONING_COMPLETED,
+                thread_id,
+                turn_id,
+                item_id=item_id,
+                visible_text=text,
+                content_sha256=_hash(text) if text is not None else None,
+                item_type=item_type,
+            )
+        if item_type == "contextCompaction":
+            return RuntimeEvent(
+                RuntimeEventKind.CONTEXT_COMPACTION_STARTED if method == "item/started" else RuntimeEventKind.CONTEXT_COMPACTION_COMPLETED,
+                thread_id,
+                turn_id,
+                item_id=item_id,
+                item_type=item_type,
+                safe_code="local",
+            )
+        if item_type == "agentMessage" and method == "item/started":
+            phase = str(item.get("phase") or "") or None
+            if item_id is not None and phase is not None and item_phases is not None:
+                item_phases[item_id] = phase
+            return RuntimeEvent(RuntimeEventKind.MESSAGE_STARTED, thread_id, turn_id, item_id=item_id, item_type=item_type, phase=phase)
         if item_type == "dynamicToolCall":
             kind = RuntimeEventKind.TOOL_STARTED if method == "item/started" else RuntimeEventKind.TOOL_COMPLETED
             return RuntimeEvent(
@@ -163,10 +267,21 @@ def _map_notification(notification: JsonRpcNotification, thread_id: str, turn_id
                 ),
             )
         if item_type == "agentMessage" and method == "item/completed":
-            if str(item.get("phase") or "") != "final_answer":
-                return None
-            text = str(item.get("text", ""))
-            return RuntimeEvent(RuntimeEventKind.MESSAGE_COMPLETED, thread_id, turn_id, item_id=item_id, visible_text=text, content_sha256=_hash(text))
+            phase = str(item.get("phase") or "") or None
+            if phase is None and item_id is not None and item_phases is not None:
+                phase = item_phases.get(item_id)
+            raw_text = item.get("text")
+            text = raw_text if isinstance(raw_text, str) else None
+            return RuntimeEvent(
+                RuntimeEventKind.MESSAGE_COMPLETED,
+                thread_id,
+                turn_id,
+                item_id=item_id,
+                visible_text=text,
+                content_sha256=_hash(text) if text is not None else None,
+                item_type=item_type,
+                phase=phase,
+            )
         return None
     if method == "turn/completed":
         wire_turn = params.get("turn") or {}

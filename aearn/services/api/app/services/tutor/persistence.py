@@ -61,6 +61,7 @@ from app.services.tutor.conversation_contracts import (
     TUTOR_CONVERSATION_SNAPSHOT_VERSION,
     TUTOR_CONVERSATION_STREAM_CURSOR_VERSION,
     TUTOR_PUBLIC_THINKING_STREAM_VERSION,
+    TUTOR_RUNTIME_OUTPUT_VERSION,
     TutorConversationEventKind,
     TutorDispatchJobState,
     TutorInteractionProtocolVersion,
@@ -362,6 +363,7 @@ class TutorConversationTimelineRecord:
     content: str | None = None
     public_thinking_text: str = ""
     public_thinking_steps: tuple[str, ...] = ()
+    runtime_output: dict[str, object] | None = None
     context_references: tuple[dict[str, object], ...] = ()
     process: TutorPublicProcessState | None = None
     turn_id: str | None = None
@@ -416,6 +418,7 @@ class TutorConversationSnapshot:
     max_pending: int
     active_turn: dict[str, object] | None
     active_thinking: dict[str, object] | None
+    active_runtime_output: dict[str, object] | None
     pending_requests: tuple[dict[str, object], ...]
     queue: tuple[dict[str, object], ...]
     timeline: tuple[TutorConversationTimelineRecord, ...]
@@ -1934,6 +1937,78 @@ class PostgresTutorRepository:
             continuation_kind=continuation_kind,
         )
 
+    def _runtime_output_for_message(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str,
+        message_id: str,
+    ) -> dict[str, object] | None:
+        rows = self._conn.execute(
+            """
+            SELECT items.id, items.channel, items.state, items.text, items.last_event_sequence,
+                   items.connection_generation, runs.input_revision AS run_input_revision
+            FROM tutor_runtime_text_items AS items
+            JOIN tutor_runs AS runs ON runs.id = items.run_id
+            JOIN tutor_messages AS messages ON messages.id = items.public_message_id
+            JOIN tutor_conversations AS conversations ON conversations.id = messages.conversation_id
+            WHERE items.user_id = %s AND items.conversation_id = %s
+              AND items.public_message_id = %s
+              AND conversations.user_id = %s AND conversations.id = %s
+              AND items.state = 'completed' AND items.text <> ''
+            ORDER BY items.created_at, items.id
+            """,
+            (user_id, conversation_id, message_id, user_id, conversation_id),
+        ).fetchall()
+        return self._runtime_output_payload(rows) if rows else None
+
+    def _runtime_output_for_run(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str,
+        run_id: str,
+    ) -> dict[str, object] | None:
+        rows = self._conn.execute(
+            """
+            SELECT items.id, items.channel, items.state, items.text, items.last_event_sequence,
+                   items.connection_generation, runs.input_revision AS run_input_revision
+            FROM tutor_runtime_text_items AS items
+            JOIN tutor_runs AS runs ON runs.id = items.run_id
+            WHERE items.user_id = %s AND items.conversation_id = %s AND items.run_id = %s
+              AND runs.user_id = %s AND runs.conversation_id = %s
+              AND items.state IN ('streaming', 'completed')
+              AND items.text <> ''
+            ORDER BY items.created_at, items.id
+            """,
+            (user_id, conversation_id, run_id, user_id, conversation_id),
+        ).fetchall()
+        return self._runtime_output_payload(rows) if rows else None
+
+    @staticmethod
+    def _runtime_output_payload(rows: Sequence[Mapping[str, object]]) -> dict[str, object]:
+        reasoning_items: list[dict[str, object]] = []
+        final_answer_item: dict[str, object] | None = None
+        for row in rows:
+            item = {
+                "item_id": str(row["id"]),
+                "text": str(row.get("text") or ""),
+                "state": str(row.get("state") or "streaming"),
+                "last_sequence": _as_int(row.get("last_event_sequence"), 0),
+            }
+            if str(row.get("channel") or "") == "reasoning":
+                reasoning_items.append(item)
+            elif str(row.get("channel") or "") == "final_answer":
+                final_answer_item = item
+        first = rows[0]
+        return {
+            "output_version": TUTOR_RUNTIME_OUTPUT_VERSION,
+            "input_revision": _as_int(first.get("run_input_revision"), 0),
+            "generation": _as_int(first.get("connection_generation"), 1),
+            "reasoning_items": reasoning_items,
+            "final_answer_item": final_answer_item,
+        }
+
     def read_public_history(
         self,
         *,
@@ -2158,6 +2233,15 @@ class PostgresTutorRepository:
                             if role == "tutor"
                             else ()
                         ),
+                        runtime_output=(
+                            self._runtime_output_for_message(
+                                user_id=user_id,
+                                conversation_id=conversation_id,
+                                message_id=str(row["item_id"]),
+                            )
+                            if role == "tutor"
+                            else None
+                        ),
                         context_references=references_by_message.get(str(row["item_id"]), ()),
                         turn_id=str(row["turn_id"]) if row.get("turn_id") is not None else None,
                         in_reply_to_item_id=_optional_string(row.get("in_reply_to_item_id")),
@@ -2360,6 +2444,16 @@ class PostgresTutorRepository:
             active_thinking=(
                 self._public_active_thinking_from_row(active)
                 if active is not None
+                else None
+            ),
+            active_runtime_output=(
+                self._runtime_output_for_run(
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                    run_id=str(active["id"]),
+                )
+                if active is not None
+                and str(active.get("runtime_kind") or "") == "codex_sidecar_v1"
                 else None
             ),
             pending_requests=tuple(item.public_item for item in pending_requests),

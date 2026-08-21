@@ -1,6 +1,6 @@
 # Codex Sidecar 本地运行与运维边界
 
-**状态：** 2026-08-18 本地受控集成契约；不是生产发布批准。
+**状态：** 2026-08-20 本地受控集成契约；不是生产发布批准。
 
 ## 支持范围
 
@@ -81,3 +81,11 @@ feature off 时新计划对话走 Harness。feature on 但 readiness 不通过�
 ## 真实 Smoke 门
 
 真实 provider smoke 不是默认命令。执行前必须明确模型、endpoint、调用次数、隔离 Home、合成输入和日志/保留边界并获得批准。默认测试使用 fake App Server/Responses fixture。2026-08-18 已有一次获批的 `deepseek-v4-flash` Responses tool-repair smoke；集成 QA 不重复产生第二次付费调用。
+
+## 2026-08-20 持久 thread 与 compaction 配置
+
+- 一个 `TutorConversation` 对应一个持久 App Server thread；fresh run 只创建新 turn。重启后执行 `thread/resume`，不能因 worker restart 创建第二个 conversation thread。
+- isolated config 必须同时包含 `model_context_window = 1000000`、`model_auto_compact_token_limit = 616000`、`model_auto_compact_token_limit_scope = "total"`。384000 output reserve 与 616000 input/auto-compact limit 从同一 capability 派生。
+- 当前 `aearn_deepseek` 只支持 local compaction；禁止配置或发送 remote compaction request。manual `thread/compact/start` 和 turn 内 `contextCompaction` 使用 fake App Server 验证。
+- owner-scoped raw reasoning/final answer 持久化在 PostgreSQL private runtime projection；public receipt 不含 raw text。commentary/summary 不显示。
+- 默认验证仍使用 fixture，不调用真实 provider。真实 provider smoke 继续要求新的明确批准，本任务没有授权调用。

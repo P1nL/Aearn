@@ -1,6 +1,6 @@
 # Aearn 本地开发环境
 
-**状态：** 当前 Tutor Harness + controlled Codex Sidecar 开发/验证环境，2026-08-18。
+**状态：** 当前 Tutor Harness + controlled Codex Sidecar 开发/验证环境，2026-08-20。
 **权威来源：** `aearn/package.json`、`aearn/services/api/pyproject.toml`、
 `aearn/infra/docker-compose.yml`、`aearn/scripts/start-dev.ps1` 与
 `.env.example`。
@@ -277,3 +277,15 @@ git diff --check
 ## Codex Sidecar worker
 
 `pnpm --dir .\aearn dev` 默认同时启动独立 `tutor-codex` solo worker；`pnpm --dir .\aearn dev:no-codex` 是显式 opt-out。Runtime 与 plan-drafting admission 默认开启但各自独立；新 Codex admission 还必须通过 PostgreSQL fresh exact readiness。配置、隔离 Home、health、失败码、日志边界和回滚步骤见 [Codex Sidecar 本地运行与运维边界](./codex-sidecar-runtime.md)。默认测试不调用真实 provider。
+
+## 2026-08-20 Codex raw-runtime 离线验证
+
+本地 contract 验证不需要真实 provider。推荐顺序：
+
+```powershell
+uv --directory .\aearn\services\api run pytest tests/test_codex_runtime_config.py tests/test_codex_runtime_adapter.py tests/test_codex_runtime_projection.py tests/test_codex_plan_drafting_cutover.py tests/test_tutor_conversation_runtime.py tests/test_tutor_conversation_history.py tests/test_db_bootstrap.py
+pnpm --dir .\aearn\apps\desktop test -- --run
+pnpm --dir .\aearn desktop:check
+```
+
+fixture 覆盖 isolated strict config、manual/local compaction、reasoning/summary/commentary/final-answer phase、conversation thread resume、typed planning request、snapshot/SSE reconnect 与 history reducer。不要在该验证序列中设置真实 provider key 或启用 real smoke。

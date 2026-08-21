@@ -1,6 +1,6 @@
 # Aearn Tutor Harness 验收计划
 
-**状态：** 当前 integration/QA 契约，2026-08-10。
+**状态：** 当前 integration/QA 契约，2026-08-20。
 **范围：** 当前 Tutor runtime、cutover、provider attempt 计量、LearningTrack、
 Desktop、background scheduler、executor boundary、legacy retirement 与文档一致性。
 **权威来源：** 当前代码/测试/schema；实测命令结果进入
@@ -400,3 +400,15 @@ contract，不访问真实 provider、不启动或批准生产 container fleet�
 默认验证使用 fake/local provider transport 与本地 PostgreSQL；不调用真实 provider、不执行生产 cutover、
 不部署，也不把确定性 contract 测试解释为真实模型质量或发布批准。数据库相关 pytest 必须串行运行，
 避免并发 schema bootstrap 造成测试环境死锁。
+
+## 2026-08-20 Codex thread/context/raw-stream 增量矩阵
+
+| ID | 优先级 | Gate | 必须证明 | 主要证据 |
+| --- | --- | --- | --- | --- |
+| RT-20 | P0 | Conversation thread continuity | 同 conversation 多个 fresh run 只创建一个 persistent Codex thread，每 run 具有不同 turn；restart 使用 resume；ambiguous legacy 只允许 bounded reseed | `test_codex_plan_drafting_cutover.py`、`test_codex_runtime_worker_host.py` |
+| RT-21 | P0 | Local compaction | exact 1M/384K/616K 同源配置；manual/mid-turn local compaction lifecycle；当前 provider 无 remote compaction | `test_codex_runtime_config.py`、`test_codex_runtime_adapter.py` |
+| RT-22 | P0 | Raw text projection | reasoning/final-answer 分 channel；commentary/summary nonpublic；sequence/fence/replay/stale/owner/terminal 校验；raw text 不复制进 receipt | `test_codex_runtime_projection.py`、`test_db_bootstrap.py` |
+| RT-23 | P0 | Typed planning authority | Python/零基础 confirmed facts 后只请求一个 missing field；request schema/catalog/server presentation 持久化；typed response fresh run resume 同 thread | `test_codex_plan_drafting_cutover.py`、planning fact/conversation tests |
+| UX-09 | P1 | Raw stream UI | snapshot v3 + dual-channel SSE；current `think` 展开、history 折叠、answer 同 entry 流式；commentary/空 reasoning 不渲染；gap/reconnect snapshot recovery | Desktop API/stream/component tests + 1440×900、900×900、390×844 browser smoke |
+
+Fixture/browser 证据不得包含 external Runtime identity、provider metadata、prompt、commentary、reasoning summary、credential 或真实学习者内容。真实 provider smoke 不属于本增量默认验收。

@@ -78,6 +78,7 @@ class LearningPlanRuntimeToolRegistry(RuntimeToolRegistry):
         self._calls = 0
         self._repairs = 0
         self._conflicts = 0
+        self._planning_context_result: LearningPlanAgentToolResult | None = None
         self.results: list[LearningPlanAgentToolResult] = []
 
     @classmethod
@@ -116,7 +117,9 @@ class LearningPlanRuntimeToolRegistry(RuntimeToolRegistry):
                 name=PLANNING_CONTEXT_TOOL_NAME,
                 description=(
                     "Read bounded server-authoritative planning facts, missing facts, draft summary, "
-                    "and revision constraints. Do not supply user, session, run, or database identifiers."
+                    "and revision constraints. When awaiting_user, next_missing_fact defines the field "
+                    "meaning and exact_question; use that question verbatim without invented examples "
+                    "or options. Do not supply user, session, run, or database identifiers."
                 ),
                 input_schema=PlanningContextReadInput.model_json_schema(),
             ),
@@ -129,6 +132,19 @@ class LearningPlanRuntimeToolRegistry(RuntimeToolRegistry):
                 input_schema=LearningPlanDraftToolInput.model_json_schema(),
             ),
         )
+
+    @property
+    def planning_context_result(self) -> LearningPlanAgentToolResult | None:
+        return self._planning_context_result
+
+    def prime_context(self) -> LearningPlanAgentToolResult:
+        """Read authoritative planning state before the model turn for deterministic elicitation."""
+        if self._planning_context_result is None:
+            try:
+                self._planning_context_result = self._service.read_context()
+            except Exception:
+                self._planning_context_result = _fatal("learning_plan_tool_failed")
+        return self._planning_context_result
 
     @property
     def call_count(self) -> int:

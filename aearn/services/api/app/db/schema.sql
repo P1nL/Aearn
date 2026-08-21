@@ -6421,9 +6421,37 @@ CREATE TRIGGER trg_tutor_codex_runtime_health_updated_at
 BEFORE UPDATE ON tutor_codex_runtime_health
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
+CREATE TABLE IF NOT EXISTS tutor_conversation_runtime_threads (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  conversation_id uuid NOT NULL REFERENCES tutor_conversations(id) ON DELETE RESTRICT,
+  runtime_kind text NOT NULL CHECK (runtime_kind = 'codex_sidecar_v1'),
+  runtime_version text NOT NULL CHECK (char_length(runtime_version) BETWEEN 1 AND 120),
+  protocol_version text NOT NULL CHECK (char_length(protocol_version) BETWEEN 1 AND 120),
+  model text NOT NULL CHECK (model = 'deepseek-v4-flash'),
+  model_provider text NOT NULL CHECK (model_provider = 'aearn_deepseek'),
+  external_thread_id text NOT NULL UNIQUE CHECK (char_length(external_thread_id) BETWEEN 1 AND 240),
+  state text NOT NULL DEFAULT 'active' CHECK (state IN ('active', 'unavailable', 'retired')),
+  migration_mode text NOT NULL DEFAULT 'native' CHECK (migration_mode IN ('native', 'adopted_legacy', 'legacy_reseed')),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  last_resumed_at timestamptz,
+  last_compacted_at timestamptz,
+  CONSTRAINT uq_tutor_conversation_runtime_threads_scope UNIQUE (id, user_id, conversation_id),
+  CONSTRAINT fk_tutor_conversation_runtime_thread_conversation_scope
+    FOREIGN KEY (conversation_id, user_id)
+    REFERENCES tutor_conversations(id, user_id) ON DELETE RESTRICT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_tutor_conversation_runtime_threads_active
+  ON tutor_conversation_runtime_threads(user_id, conversation_id, runtime_kind)
+  WHERE state = 'active';
+CREATE INDEX IF NOT EXISTS idx_tutor_conversation_runtime_threads_owner
+  ON tutor_conversation_runtime_threads(user_id, conversation_id, state, updated_at DESC);
+
 CREATE TABLE IF NOT EXISTS tutor_run_runtime_bindings (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   run_id uuid NOT NULL UNIQUE REFERENCES tutor_runs(id) ON DELETE RESTRICT,
+  conversation_runtime_thread_id uuid,
   user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
   conversation_id uuid NOT NULL REFERENCES tutor_conversations(id) ON DELETE RESTRICT,
   runtime_kind text NOT NULL CHECK (runtime_kind = 'codex_sidecar_v1'),
@@ -6443,7 +6471,6 @@ CREATE TABLE IF NOT EXISTS tutor_run_runtime_bindings (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT uq_tutor_runtime_bindings_scope UNIQUE (id, run_id, user_id, conversation_id),
-  CONSTRAINT uq_tutor_runtime_bindings_thread UNIQUE (runtime_kind, external_thread_id),
   CONSTRAINT fk_tutor_runtime_binding_run_scope
     FOREIGN KEY (run_id, user_id, conversation_id)
     REFERENCES tutor_runs(id, user_id, conversation_id) ON DELETE RESTRICT,
@@ -6455,11 +6482,106 @@ CREATE TABLE IF NOT EXISTS tutor_run_runtime_bindings (
     OR (state IN ('completed', 'interrupted', 'unavailable', 'failed') AND terminal_at IS NOT NULL)
   )
 );
+ALTER TABLE tutor_run_runtime_bindings
+  ADD COLUMN IF NOT EXISTS conversation_runtime_thread_id uuid;
+ALTER TABLE tutor_run_runtime_bindings
+  DROP CONSTRAINT IF EXISTS uq_tutor_runtime_bindings_thread;
+-- Existing installations may already have immutable/update-timestamp triggers from
+-- a prior bootstrap. Disable them while the additive conversation-thread backfill runs;
+-- both triggers are recreated below after all migration updates are complete.
+DROP TRIGGER IF EXISTS trg_tutor_runtime_bindings_lifecycle ON tutor_run_runtime_bindings;
+DROP TRIGGER IF EXISTS trg_tutor_runtime_bindings_updated_at ON tutor_run_runtime_bindings;
+
+INSERT INTO tutor_conversation_runtime_threads (
+  user_id, conversation_id, runtime_kind, runtime_version, protocol_version,
+  model, model_provider, external_thread_id, state, migration_mode,
+  created_at, updated_at, last_resumed_at
+)
+SELECT legacy.user_id, legacy.conversation_id, 'codex_sidecar_v1',
+       min(legacy.runtime_version), min(legacy.protocol_version),
+       'deepseek-v4-flash', 'aearn_deepseek', min(legacy.external_thread_id),
+       'active', 'adopted_legacy', min(legacy.created_at), max(legacy.updated_at), max(legacy.updated_at)
+FROM tutor_run_runtime_bindings AS legacy
+WHERE NOT EXISTS (
+  SELECT 1 FROM tutor_conversation_runtime_threads AS existing
+  WHERE existing.user_id = legacy.user_id
+    AND existing.conversation_id = legacy.conversation_id
+    AND existing.runtime_kind = 'codex_sidecar_v1'
+)
+GROUP BY legacy.user_id, legacy.conversation_id
+HAVING count(DISTINCT legacy.external_thread_id) = 1
+ON CONFLICT DO NOTHING;
+
+UPDATE tutor_run_runtime_bindings AS bindings
+SET conversation_runtime_thread_id = threads.id
+FROM tutor_conversation_runtime_threads AS threads
+WHERE bindings.conversation_runtime_thread_id IS NULL
+  AND threads.user_id = bindings.user_id
+  AND threads.conversation_id = bindings.conversation_id
+  AND threads.runtime_kind = bindings.runtime_kind
+  AND threads.external_thread_id = bindings.external_thread_id;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'fk_tutor_runtime_binding_conversation_thread_scope'
+  ) THEN
+    ALTER TABLE tutor_run_runtime_bindings
+      ADD CONSTRAINT fk_tutor_runtime_binding_conversation_thread_scope
+      FOREIGN KEY (conversation_runtime_thread_id, user_id, conversation_id)
+      REFERENCES tutor_conversation_runtime_threads(id, user_id, conversation_id)
+      ON DELETE RESTRICT NOT VALID;
+  END IF;
+END;
+$$;
+CREATE INDEX IF NOT EXISTS idx_tutor_runtime_bindings_conversation_thread
+  ON tutor_run_runtime_bindings(conversation_runtime_thread_id, created_at, id);
 CREATE UNIQUE INDEX IF NOT EXISTS uq_tutor_runtime_bindings_turn
   ON tutor_run_runtime_bindings(runtime_kind, external_turn_id)
   WHERE external_turn_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_tutor_runtime_bindings_run_state
   ON tutor_run_runtime_bindings(user_id, run_id, state, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS tutor_runtime_text_items (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  binding_id uuid NOT NULL REFERENCES tutor_run_runtime_bindings(id) ON DELETE RESTRICT,
+  conversation_runtime_thread_id uuid NOT NULL REFERENCES tutor_conversation_runtime_threads(id) ON DELETE RESTRICT,
+  run_id uuid NOT NULL REFERENCES tutor_runs(id) ON DELETE RESTRICT,
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  conversation_id uuid NOT NULL REFERENCES tutor_conversations(id) ON DELETE RESTRICT,
+  external_item_hash text NOT NULL CHECK (external_item_hash ~ '^[0-9a-f]{64}$'),
+  channel text NOT NULL CHECK (channel IN ('reasoning', 'final_answer')),
+  state text NOT NULL CHECK (state IN ('streaming', 'completed', 'discarded', 'blocked')),
+  text text NOT NULL DEFAULT '' CHECK (char_length(text) <= 1000000),
+  last_event_sequence integer NOT NULL DEFAULT 0 CHECK (last_event_sequence >= 0),
+  content_hash text CHECK (content_hash IS NULL OR content_hash ~ '^[0-9a-f]{64}$'),
+  connection_generation bigint NOT NULL CHECK (connection_generation >= 1),
+  public_message_id uuid,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  completed_at timestamptz,
+  CONSTRAINT uq_tutor_runtime_text_items_identity UNIQUE (binding_id, external_item_hash, channel),
+  CONSTRAINT uq_tutor_runtime_text_items_scope UNIQUE (id, user_id, conversation_id),
+  CONSTRAINT fk_tutor_runtime_text_item_binding_scope
+    FOREIGN KEY (binding_id, run_id, user_id, conversation_id)
+    REFERENCES tutor_run_runtime_bindings(id, run_id, user_id, conversation_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_runtime_text_item_conversation_thread_scope
+    FOREIGN KEY (conversation_runtime_thread_id, user_id, conversation_id)
+    REFERENCES tutor_conversation_runtime_threads(id, user_id, conversation_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_runtime_text_item_message_scope
+    FOREIGN KEY (public_message_id, conversation_id)
+    REFERENCES tutor_messages(id, conversation_id) ON DELETE RESTRICT,
+  CONSTRAINT chk_tutor_runtime_text_item_terminal CHECK (
+    (state = 'streaming' AND completed_at IS NULL)
+    OR (state IN ('completed', 'discarded', 'blocked') AND completed_at IS NOT NULL)
+  )
+);
+CREATE INDEX IF NOT EXISTS idx_tutor_runtime_text_items_active
+  ON tutor_runtime_text_items(user_id, conversation_id, run_id, channel, state, created_at, id);
+CREATE INDEX IF NOT EXISTS idx_tutor_runtime_text_items_message
+  ON tutor_runtime_text_items(user_id, public_message_id, channel, created_at, id)
+  WHERE public_message_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS tutor_runtime_item_receipts (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -6485,7 +6607,7 @@ CREATE TABLE IF NOT EXISTS tutor_runtime_item_receipts (
     'applied', 'ignored_nonpublic', 'ignored_stale', 'blocked_unsafe'
   )),
   public_item_id uuid,
-  public_item_kind text CHECK (public_item_kind IS NULL OR public_item_kind IN ('message', 'process', 'error')),
+  public_item_kind text CHECK (public_item_kind IS NULL OR public_item_kind IN ('message', 'process', 'error', 'runtime_output')),
   occurred_at timestamptz NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT uq_tutor_runtime_item_receipts_event UNIQUE (binding_id, event_key),
@@ -6498,6 +6620,35 @@ CREATE TABLE IF NOT EXISTS tutor_runtime_item_receipts (
     OR (public_item_id IS NOT NULL AND public_item_kind IS NOT NULL)
   )
 );
+ALTER TABLE tutor_runtime_item_receipts
+  DROP CONSTRAINT IF EXISTS tutor_runtime_item_receipts_event_kind_check;
+ALTER TABLE tutor_runtime_item_receipts
+  DROP CONSTRAINT IF EXISTS chk_tutor_runtime_item_receipts_event_kind;
+ALTER TABLE tutor_runtime_item_receipts
+  ADD CONSTRAINT chk_tutor_runtime_item_receipts_event_kind CHECK (event_kind IN (
+    'turn_started',
+    'reasoning_started', 'reasoning_delta', 'reasoning_completed',
+    'reasoning_summary_started', 'reasoning_summary_delta', 'reasoning_summary_completed',
+    'message_started', 'message_delta', 'message_completed',
+    'context_compaction_started', 'context_compaction_completed',
+    'tool_started', 'tool_completed', 'turn_completed', 'warning'
+  ));
+ALTER TABLE tutor_runtime_item_receipts
+  DROP CONSTRAINT IF EXISTS tutor_runtime_item_receipts_public_item_kind_check;
+ALTER TABLE tutor_runtime_item_receipts
+  DROP CONSTRAINT IF EXISTS chk_tutor_runtime_item_receipts_public_item_kind;
+ALTER TABLE tutor_runtime_item_receipts
+  ADD CONSTRAINT chk_tutor_runtime_item_receipts_public_item_kind CHECK (
+    public_item_kind IS NULL OR public_item_kind IN ('message', 'process', 'error', 'runtime_output')
+  );
+ALTER TABLE tutor_runtime_item_receipts
+  DROP CONSTRAINT IF EXISTS tutor_runtime_item_receipts_item_kind_check;
+ALTER TABLE tutor_runtime_item_receipts
+  DROP CONSTRAINT IF EXISTS chk_tutor_runtime_item_receipts_item_kind;
+ALTER TABLE tutor_runtime_item_receipts
+  ADD CONSTRAINT chk_tutor_runtime_item_receipts_item_kind CHECK (
+    item_kind IS NULL OR item_kind IN ('turn', 'reasoning', 'reasoning_summary', 'message', 'context_compaction', 'tool', 'warning')
+  );
 CREATE INDEX IF NOT EXISTS idx_tutor_runtime_receipts_run_sequence
   ON tutor_runtime_item_receipts(user_id, run_id, event_sequence, created_at);
 
@@ -6517,13 +6668,93 @@ CREATE TABLE IF NOT EXISTS tutor_runtime_public_errors (
 CREATE INDEX IF NOT EXISTS idx_tutor_runtime_errors_conversation
   ON tutor_runtime_public_errors(user_id, conversation_id, created_at DESC);
 
+CREATE OR REPLACE FUNCTION enforce_tutor_conversation_runtime_thread_lifecycle()
+RETURNS trigger AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    IF tutor_learning_track_purge_allowed(OLD.user_id) THEN RETURN OLD; END IF;
+    RAISE EXCEPTION 'Tutor conversation runtime threads are retained private state' USING ERRCODE = '23514';
+  END IF;
+  IF NEW.id IS DISTINCT FROM OLD.id
+     OR NEW.user_id IS DISTINCT FROM OLD.user_id
+     OR NEW.conversation_id IS DISTINCT FROM OLD.conversation_id
+     OR NEW.runtime_kind IS DISTINCT FROM OLD.runtime_kind
+     OR NEW.runtime_version IS DISTINCT FROM OLD.runtime_version
+     OR NEW.protocol_version IS DISTINCT FROM OLD.protocol_version
+     OR NEW.model IS DISTINCT FROM OLD.model
+     OR NEW.model_provider IS DISTINCT FROM OLD.model_provider
+     OR NEW.external_thread_id IS DISTINCT FROM OLD.external_thread_id
+     OR NEW.migration_mode IS DISTINCT FROM OLD.migration_mode THEN
+    RAISE EXCEPTION 'Tutor conversation runtime thread identity is immutable' USING ERRCODE = '23514';
+  END IF;
+  IF OLD.state = 'retired' AND NEW IS DISTINCT FROM OLD THEN
+    RAISE EXCEPTION 'Retired Tutor conversation runtime thread is immutable' USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS trg_tutor_conversation_runtime_threads_lifecycle ON tutor_conversation_runtime_threads;
+CREATE TRIGGER trg_tutor_conversation_runtime_threads_lifecycle
+BEFORE UPDATE OR DELETE ON tutor_conversation_runtime_threads
+FOR EACH ROW EXECUTE FUNCTION enforce_tutor_conversation_runtime_thread_lifecycle();
+DROP TRIGGER IF EXISTS trg_tutor_conversation_runtime_threads_updated_at ON tutor_conversation_runtime_threads;
+CREATE TRIGGER trg_tutor_conversation_runtime_threads_updated_at
+BEFORE UPDATE ON tutor_conversation_runtime_threads
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE OR REPLACE FUNCTION enforce_tutor_runtime_text_item_lifecycle()
+RETURNS trigger AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    IF tutor_learning_track_purge_allowed(OLD.user_id) THEN RETURN OLD; END IF;
+    RAISE EXCEPTION 'Tutor runtime text items are private retained state' USING ERRCODE = '23514';
+  END IF;
+  IF NEW.id IS DISTINCT FROM OLD.id
+     OR NEW.binding_id IS DISTINCT FROM OLD.binding_id
+     OR NEW.conversation_runtime_thread_id IS DISTINCT FROM OLD.conversation_runtime_thread_id
+     OR NEW.run_id IS DISTINCT FROM OLD.run_id
+     OR NEW.user_id IS DISTINCT FROM OLD.user_id
+     OR NEW.conversation_id IS DISTINCT FROM OLD.conversation_id
+     OR NEW.external_item_hash IS DISTINCT FROM OLD.external_item_hash
+     OR NEW.channel IS DISTINCT FROM OLD.channel
+     OR NEW.connection_generation IS DISTINCT FROM OLD.connection_generation
+     OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+    RAISE EXCEPTION 'Tutor runtime text item identity is immutable' USING ERRCODE = '23514';
+  END IF;
+  IF OLD.state = 'completed'
+     AND OLD.public_message_id IS NULL
+     AND NEW.public_message_id IS NOT NULL
+     AND NEW.state IS NOT DISTINCT FROM OLD.state
+     AND NEW.text IS NOT DISTINCT FROM OLD.text
+     AND NEW.last_event_sequence IS NOT DISTINCT FROM OLD.last_event_sequence
+     AND NEW.content_hash IS NOT DISTINCT FROM OLD.content_hash
+     AND NEW.completed_at IS NOT DISTINCT FROM OLD.completed_at THEN
+    RETURN NEW;
+  END IF;
+  IF OLD.state IN ('completed', 'discarded', 'blocked') AND NEW IS DISTINCT FROM OLD THEN
+    RAISE EXCEPTION 'Terminal Tutor runtime text item is immutable' USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS trg_tutor_runtime_text_items_lifecycle ON tutor_runtime_text_items;
+CREATE TRIGGER trg_tutor_runtime_text_items_lifecycle
+BEFORE UPDATE OR DELETE ON tutor_runtime_text_items
+FOR EACH ROW EXECUTE FUNCTION enforce_tutor_runtime_text_item_lifecycle();
+DROP TRIGGER IF EXISTS trg_tutor_runtime_text_items_updated_at ON tutor_runtime_text_items;
+CREATE TRIGGER trg_tutor_runtime_text_items_updated_at
+BEFORE UPDATE ON tutor_runtime_text_items
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
 CREATE OR REPLACE FUNCTION enforce_tutor_runtime_binding_lifecycle()
 RETURNS trigger AS $$
 BEGIN
   IF TG_OP = 'DELETE' THEN
+    IF tutor_learning_track_purge_allowed(OLD.user_id) THEN RETURN OLD; END IF;
     RAISE EXCEPTION 'Tutor runtime bindings are retained audit state' USING ERRCODE = '23514';
   END IF;
   IF NEW.run_id IS DISTINCT FROM OLD.run_id
+     OR NEW.conversation_runtime_thread_id IS DISTINCT FROM OLD.conversation_runtime_thread_id
      OR NEW.user_id IS DISTINCT FROM OLD.user_id
      OR NEW.conversation_id IS DISTINCT FROM OLD.conversation_id
      OR NEW.runtime_kind IS DISTINCT FROM OLD.runtime_kind
@@ -6551,6 +6782,7 @@ FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE OR REPLACE FUNCTION enforce_tutor_runtime_append_only()
 RETURNS trigger AS $$
 BEGIN
+  IF TG_OP = 'DELETE' AND tutor_learning_track_purge_allowed(OLD.user_id) THEN RETURN OLD; END IF;
   RAISE EXCEPTION 'Tutor runtime receipts and public errors are append-only' USING ERRCODE = '23514';
 END;
 $$ LANGUAGE plpgsql;

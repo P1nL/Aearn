@@ -1794,6 +1794,7 @@ def _legacy_timeline_payload(item: TutorConversationTimelineRecord) -> dict[str,
         if not payload.get("public_thinking_steps") and item.public_thinking_text:
             payload["public_thinking_steps"] = [item.public_thinking_text]
         payload.pop("public_thinking_text", None)
+        payload.pop("runtime_output", None)
     return payload
 
 
@@ -1823,6 +1824,7 @@ def _timeline_payload(item: TutorConversationTimelineRecord) -> dict[str, object
             "content": item.content or "",
             "public_thinking_text": item.public_thinking_text,
             "public_thinking_steps": list(item.public_thinking_steps),
+            "runtime_output": dict(item.runtime_output) if item.runtime_output is not None else None,
             "context_references": [dict(reference) for reference in item.context_references],
             "in_reply_to_item_id": item.in_reply_to_item_id,
             "created_at": _iso(item.created_at),
@@ -1847,6 +1849,11 @@ def _conversation_snapshot_payload(snapshot: TutorConversationSnapshot) -> dict[
         "active_thinking": (
             dict(snapshot.active_thinking)
             if snapshot.active_thinking is not None
+            else None
+        ),
+        "active_runtime_output": (
+            dict(snapshot.active_runtime_output)
+            if snapshot.active_runtime_output is not None
             else None
         ),
         "pending_requests": [dict(item) for item in snapshot.pending_requests],

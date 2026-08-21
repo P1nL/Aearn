@@ -1,6 +1,6 @@
 # Aearn Tutor 桌面端交互规格
 
-**状态：** 当前 Desktop 交互契约，2026-08-12。
+**状态：** 当前 Desktop 交互契约，2026-08-20。
 **适用范围：** `aearn/apps/desktop/src/` 的 React + Tauri UI。
 **权威来源：** `App.tsx`、`stores/useAppStore.ts`、`api.ts`、
 `pages/HarnessCutoverPage.tsx`、`features/learning/TrackLearningWorkspace.tsx`、`features/learning/ReviewSessionPanel.tsx`、`features/tutor/TutorConversationSurface.tsx` 与类型/测试。
@@ -327,3 +327,11 @@ Desktop 通过 `GET /api/tutor/capabilities/thread-turn-v2` 读取 exact server 
    不显示列表编号。不支持 structured visible stream 的 provider 不伪造实时思考，只在最终项显示完整文本。
 7. `prefers-reduced-motion: reduce` 直接同步已批准文本，但保留首文本解禁、最终一次折叠和所有 authority 规则。
 8. DOM、前端 state、network public payload 均不得包含 provider reasoning、prompt、raw event/body、trace、diagnostic 或 secret。
+
+## 2026-08-20：Codex raw reasoning/final answer 同 entry 展示
+
+当 snapshot/SSE 提供 `tutor_runtime_output_v1` / `tutor_runtime_item_stream_v1` 时，Desktop 在同一个 Tutor timeline entry 内渲染：上方小写 `think` disclosure，下方直接流式 answer。reasoning 保留原始 whitespace，内容区使用低对比左边框；当前 turn 默认展开，历史完成项默认折叠并支持键盘切换。final-answer delta 到达后立即追加，completed full text 只做 authoritative 校准，不重播、不重复插入第二条消息。
+
+commentary 与 reasoning summary 永不渲染。收到 item-scoped `discard` 时必须立即移除对应 provisional reasoning/answer；turn terminal 后 snapshot 不得恢复任何仍为 streaming 的残项。当前 turn 尚无任何 Runtime item 时可显示静态小写 `think` 状态；一旦 answer 已开始且没有 reasoning，不再保留空 Think。terminal/history item 若 reasoning 为空，DOM 中不得存在空 disclosure。Harness `public_thinking_text` 的旧稳定窗口、grapheme reveal 与 handoff 逻辑继续独立工作，不能和 raw Runtime reducer 共享文本或 generation。
+
+双 channel reducer 以 active turn、input revision、generation、Aearn item ID 和 last sequence 校验；duplicate/out-of-order 旧事件忽略，conversation event gap 或 identity mismatch fresh snapshot。1440×900、900×900 与 390×844 都保持单 entry、无横向溢出；disclosure 控件最小触摸高度 44px，`prefers-reduced-motion` 不影响 authority 和展开状态。

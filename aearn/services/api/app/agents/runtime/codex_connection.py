@@ -83,6 +83,21 @@ def redact_protocol_value(value: object, *, secrets: Sequence[str] = (), path_ro
     return value
 
 
+def _empty_user_input_response(raw_params: object) -> JsonObject:
+    """Decline Codex client-side elicitation without accepting model-owned questions as authority."""
+    answers: JsonObject = {}
+    if isinstance(raw_params, Mapping):
+        questions = raw_params.get("questions")
+        if isinstance(questions, Sequence) and not isinstance(questions, (str, bytes, bytearray)):
+            for question in questions[:3]:
+                if not isinstance(question, Mapping):
+                    continue
+                question_id = question.get("id")
+                if isinstance(question_id, str) and 0 < len(question_id) <= 120:
+                    answers[question_id] = {"answers": []}
+    return {"answers": answers}
+
+
 class StdioJsonRpcClient:
     """Own one child process and fail closed on malformed or unknown requests."""
 
@@ -282,6 +297,9 @@ class StdioJsonRpcClient:
             if not isinstance(request_id, int):
                 raise JsonRpcProtocolError("server request id must be an integer")
             handler = self._handlers.get(method)
+            if handler is None and method == "item/tool/requestUserInput":
+                await self._write({"id": request_id, "result": _empty_user_input_response(message.get("params"))})
+                return
             if handler is None:
                 await self._write_error(request_id, -32601, "unsupported server request")
                 raise JsonRpcProtocolError(f"unknown server request: {method}")

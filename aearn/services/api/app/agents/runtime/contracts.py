@@ -27,8 +27,17 @@ class RuntimeTerminalStatus(StrEnum):
 
 class RuntimeEventKind(StrEnum):
     TURN_STARTED = "turn_started"
+    REASONING_STARTED = "reasoning_started"
+    REASONING_DELTA = "reasoning_delta"
+    REASONING_COMPLETED = "reasoning_completed"
+    REASONING_SUMMARY_STARTED = "reasoning_summary_started"
+    REASONING_SUMMARY_DELTA = "reasoning_summary_delta"
+    REASONING_SUMMARY_COMPLETED = "reasoning_summary_completed"
+    MESSAGE_STARTED = "message_started"
     MESSAGE_DELTA = "message_delta"
     MESSAGE_COMPLETED = "message_completed"
+    CONTEXT_COMPACTION_STARTED = "context_compaction_started"
+    CONTEXT_COMPACTION_COMPLETED = "context_compaction_completed"
     TOOL_STARTED = "tool_started"
     TOOL_COMPLETED = "tool_completed"
     TURN_COMPLETED = "turn_completed"
@@ -134,6 +143,9 @@ class RuntimeEvent:
     tool_name: str | None = None
     input_sha256: str | None = None
     result_sha256: str | None = None
+    item_type: str | None = None
+    phase: str | None = None
+    sequence: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,6 +175,7 @@ class AgentRuntimePort(Protocol):
     async def health(self) -> RuntimeHealthSnapshot: ...
     async def start_thread(self, request: RuntimeThreadRequest) -> RuntimeThreadHandle: ...
     async def resume_thread(self, thread_id: str) -> RuntimeThreadHandle: ...
+    async def compact_thread(self, thread: RuntimeThreadHandle) -> None: ...
     async def run_turn(self, request: RuntimeTurnRequest) -> RuntimeTurnResult: ...
     async def steer(self, thread: RuntimeThreadHandle, turn_id: str, input: tuple[RuntimeInput, ...]) -> None: ...
     async def interrupt(self, thread: RuntimeThreadHandle, turn_id: str) -> None: ...

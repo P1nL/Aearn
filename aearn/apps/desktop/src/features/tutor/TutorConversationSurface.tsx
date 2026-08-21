@@ -16,7 +16,8 @@ import type {
   ExerciseAttemptOutcome, LearningScopeInput, TutorActivityItem, TutorContextReference,
   TutorContextReferenceDraft, TutorHistoryItem, TutorHistoryMessage, TutorInboxItem, TutorInputAcceptedResponse,
   TutorInteractionRequestItem, TutorInteractionResponseDraft, TutorMemoryItem, TutorPlanRevisionList, TutorPreferences,
-  TutorPublicTurn, TutorQueuedInput, TutorThreadTurnV2Capability, UserProfile,
+  TutorPublicTurn, TutorQueuedInput, TutorRuntimeOutput, TutorRuntimeOutputItem,
+  TutorThreadTurnV2Capability, TutorTurnOutputPayload, UserProfile,
 } from "../../types";
 import {
   Button, DisclosureRow, DshDerivedRoot, IconChevronDown, IconChevronUp, IconDelete,
@@ -49,6 +50,7 @@ type TutorLiveThinkingState = {
   lastChunkSequence: number | null;
   initialText: string;
 };
+type TutorLiveRuntimeOutputState = TutorRuntimeOutput & { turnId: string };
 type TutorRecentCompletion = {
   itemId: string;
   turnId: string;
@@ -78,6 +80,7 @@ export function TutorConversationSurface({
   const [activeTurn, setActiveTurn] = useState<TutorPublicTurn | null>(null);
   const [thinkingTurn, setThinkingTurn] = useState<TutorPublicTurn | null>(null);
   const [liveThinking, setLiveThinking] = useState<TutorLiveThinkingState | null>(null);
+  const [liveRuntimeOutput, setLiveRuntimeOutput] = useState<TutorLiveRuntimeOutputState | null>(null);
   const [stableThinkingKey, setStableThinkingKey] = useState<string | null>(null);
   const [recentCompletion, setRecentCompletion] = useState<TutorRecentCompletion | null>(null);
   const [controlVersion, setControlVersion] = useState(0);
@@ -118,6 +121,7 @@ export function TutorConversationSurface({
   const scrollToLatestRef = useRef(false);
   const activeTurnRef = useRef<TutorPublicTurn | null>(null);
   const liveThinkingRef = useRef<TutorLiveThinkingState | null>(null);
+  const liveRuntimeOutputRef = useRef<TutorLiveRuntimeOutputState | null>(null);
   const displayedThinkingRef = useRef("");
   const thinkingRecoveryPendingRef = useRef(false);
   selectedRef.current = selectedConversationId;
@@ -125,6 +129,10 @@ export function TutorConversationSurface({
   const replaceLiveThinking = useCallback((next: TutorLiveThinkingState | null) => {
     liveThinkingRef.current = next;
     setLiveThinking(next);
+  }, []);
+  const replaceLiveRuntimeOutput = useCallback((next: TutorLiveRuntimeOutputState | null) => {
+    liveRuntimeOutputRef.current = next;
+    setLiveRuntimeOutput(next);
   }, []);
   const adoptAcceptedTurn = useCallback((accepted: TutorInputAcceptedResponse) => {
     if (accepted.run.terminal_outcome !== null || accepted.run.cancelled) return;
@@ -144,10 +152,11 @@ export function TutorConversationSurface({
     setActiveTurn(turn);
     setThinkingTurn(turn);
     replaceLiveThinking(null);
+    replaceLiveRuntimeOutput(null);
     setControlState("running");
     setPendingRequest(null);
     scrollToLatestRef.current = true;
-  }, [replaceLiveThinking]);
+  }, [replaceLiveRuntimeOutput, replaceLiveThinking]);
   const liveThinkingKey = liveThinking ? `${liveThinking.turnId}:${liveThinking.inputRevision}:${liveThinking.generation}` : null;
   const hasBufferedThinkingText = Boolean(liveThinking?.receivedText);
   const restoredThinkingText = Boolean(liveThinking?.initialText && liveThinking.complete);
@@ -240,6 +249,28 @@ export function TutorConversationSurface({
         replaceLiveThinking(null);
       }
       thinkingRecoveryPendingRef.current = false;
+      const incomingRuntime = snapshot.active_runtime_output;
+      const currentRuntime = liveRuntimeOutputRef.current;
+      if (!incomingTurn) {
+        replaceLiveRuntimeOutput(null);
+      } else if (!incomingRuntime) {
+        if (currentRuntime && (currentRuntime.turnId !== incomingTurn.turn_id ||
+            currentRuntime.input_revision !== incomingTurn.input_revision)) {
+          replaceLiveRuntimeOutput(null);
+        }
+      } else {
+        const nextRuntime: TutorLiveRuntimeOutputState = {
+          ...incomingRuntime,
+          turnId: incomingTurn.turn_id,
+        };
+        if (currentRuntime && currentRuntime.turnId === incomingTurn.turn_id &&
+            currentRuntime.input_revision === incomingRuntime.input_revision &&
+            currentRuntime.generation === incomingRuntime.generation) {
+          replaceLiveRuntimeOutput(mergeRuntimeOutputs(currentRuntime, nextRuntime));
+        } else if (!currentRuntime || incomingRuntime.generation >= currentRuntime.generation) {
+          replaceLiveRuntimeOutput(nextRuntime);
+        }
+      }
     }
 
     setControlVersion(snapshot.conversation.control_version);
@@ -254,7 +285,7 @@ export function TutorConversationSurface({
       setHistoryCursor(snapshot.next_cursor); setHistoryHasMore(snapshot.has_more);
       setLoadStatus("ready"); setLoadError(null); scrollToLatestRef.current = true;
     }
-  }, [replaceLiveThinking]);
+  }, [replaceLiveRuntimeOutput, replaceLiveThinking]);
 
   const loadSnapshot = useCallback(async (conversationId: string, options: { cursor?: string | null; placement?: "replace" | "prepend"; showLoading?: boolean } = {}) => {
     if (!mayReadTutor || !userId || selectedRef.current !== conversationId) return null;
@@ -283,7 +314,32 @@ export function TutorConversationSurface({
     refreshSnapshot();
   }, [refreshSnapshot]);
 
+  const consumeRuntimeOutput = useCallback((
+    event: Extract<TutorConversationEvent, { kind: "turn_output" }>,
+  ) => {
+    const turn = activeTurnRef.current;
+    const { payload } = event;
+    if (payload.output_version !== "tutor_runtime_item_stream_v1") return false;
+    if (!turn || !event.turn_id || event.turn_id !== turn.turn_id ||
+        payload.input_revision !== turn.input_revision) {
+      requireThinkingSnapshot();
+      return true;
+    }
+    const reduced = reduceRuntimeOutput(
+      liveRuntimeOutputRef.current,
+      turn.turn_id,
+      payload,
+    );
+    if (reduced === undefined) {
+      requireThinkingSnapshot();
+      return true;
+    }
+    replaceLiveRuntimeOutput(reduced);
+    return true;
+  }, [replaceLiveRuntimeOutput, requireThinkingSnapshot]);
+
   const consumeTurnOutput = useCallback((event: Extract<TutorConversationEvent, { kind: "turn_output" }>) => {
+    if (consumeRuntimeOutput(event)) return;
     const turn = activeTurnRef.current;
     const { payload } = event;
     if (!turn || !event.turn_id || event.turn_id !== turn.turn_id || payload.input_revision !== turn.input_revision) {
@@ -357,7 +413,7 @@ export function TutorConversationSurface({
     }
     thinkingRecoveryPendingRef.current = false;
     replaceLiveThinking({ ...current, receivedText, lastChunkSequence: payload.chunk_sequence });
-  }, [replaceLiveThinking, requireThinkingSnapshot]);
+  }, [consumeRuntimeOutput, replaceLiveThinking, requireThinkingSnapshot]);
 
   const loadCapability = useCallback(async (signal?: AbortSignal) => {
     if (!mayReadTutor || !userId) { setCapability(null); setCapabilityStatus("idle"); return; }
@@ -392,7 +448,7 @@ export function TutorConversationSurface({
     requestRef.current?.abort();
     if (refreshTimerRef.current !== null) window.clearTimeout(refreshTimerRef.current);
     setComposerText(""); setActionError(null); setEditingQueueId(null); setRequestDraft("");
-    setRecentCompletion(null); setStableThinkingKey(null); replaceLiveThinking(null); displayedThinkingRef.current = "";
+    setRecentCompletion(null); setStableThinkingKey(null); replaceLiveThinking(null); replaceLiveRuntimeOutput(null); displayedThinkingRef.current = "";
     thinkingRecoveryPendingRef.current = false;
     activeTurnRef.current = null; setActiveTurn(null); setThinkingTurn(null);
     if (!mayReadTutor || !selectedConversationId) {
@@ -400,7 +456,7 @@ export function TutorConversationSurface({
       setQueue([]); setPendingRequest(null); setStreamCursor(null); return;
     }
     void loadSnapshot(selectedConversationId, { placement: "replace", showLoading: true });
-  }, [loadSnapshot, mayReadTutor, replaceLiveThinking, selectedConversationId]);
+  }, [loadSnapshot, mayReadTutor, replaceLiveRuntimeOutput, replaceLiveThinking, selectedConversationId]);
   useEffect(() => { if (!mayReadTutor || !userId) return; const controller = new AbortController(); void loadControls(controller.signal); return () => controller.abort(); }, [loadControls, mayReadTutor, userId]);
   useEffect(() => { setRequestDraft(initialRequestDraft(pendingRequest)); }, [pendingRequest?.id, pendingRequest?.version]);
   useEffect(() => () => { requestRef.current?.abort(); if (refreshTimerRef.current !== null) window.clearTimeout(refreshTimerRef.current); }, []);
@@ -509,12 +565,13 @@ export function TutorConversationSurface({
         {loadStatus === "error" && loadError && <div className="tutor-inline-error" role="alert"><div><strong>{loadError.code}</strong><span>{loadError.message}</span></div><Button size="sm" variant="outline" onClick={refreshSnapshot}>重试</Button></div>}
         {loadStatus !== "loading" && timeline.length === 0 && !loadError && !planning && !thinkingTurn && <div className="tutor-empty-timeline"><strong>{selectedConversationId ? "这里还没有可见记录" : "可以从一个模糊目标开始"}</strong></div>}
         {timeline.map((item) => <TimelineItem key={`${item.kind}:${item.id}`} item={item} recentCompletion={recentCompletion} writeEnabled={writeEnabled} mutationBusy={mutationBusy} onRetry={(turnId) => { if (!userId || !selectedConversationId) return; void runMutation(`retry:${turnId}`, () => retryTutorTurn({ userId, conversationId: selectedConversationId, turnId, expectedControlVersion: controlVersion, clientActionId: createTutorActionId("tutor-turn-retry") })); }} />)}
-        {thinkingTurn && (running || Boolean(liveThinking?.receivedText)) ? <TutorRunningPlaceholder
-          key={`${thinkingTurn.turn_id}:${liveThinking?.generation ?? "pending"}`}
+        {thinkingTurn && (running || Boolean(liveThinking?.receivedText) || runtimeOutputHasContent(liveRuntimeOutput)) ? <TutorRunningPlaceholder
+          key={`${thinkingTurn.turn_id}:${liveRuntimeOutput?.generation ?? liveThinking?.generation ?? "pending"}`}
           turn={thinkingTurn}
           hasText={Boolean(liveThinkingTargetText)}
           text={liveThinkingTypewriter.text}
           complete={Boolean(liveThinking?.complete && liveThinkingTypewriter.complete)}
+          runtimeOutput={liveRuntimeOutput}
         /> : null}
       </section>
 
@@ -656,6 +713,9 @@ function TutorRequestHistory({ item, recentCompletion }: { item: TutorInteractio
 }
 
 function TutorMessage({ item, recentCompletion }: { item: TutorHistoryMessage; recentCompletion: TutorRecentCompletion | null }) {
+  if (item.runtime_output) {
+    return <TutorRuntimeMessage item={item} output={item.runtime_output} />;
+  }
   const animateThinking = Boolean(recentCompletion?.streamedThinking);
   const thinking = useGraphemeTypewriter(item.public_thinking_text, {
     animate: animateThinking,
@@ -701,19 +761,56 @@ function TutorMessage({ item, recentCompletion }: { item: TutorHistoryMessage; r
   </article>;
 }
 
-function TutorRunningPlaceholder({ turn, hasText, text, complete }: { turn: TutorPublicTurn; hasText: boolean; text: string; complete: boolean }) {
+function TutorRuntimeMessage({ item, output }: { item: TutorHistoryMessage; output: TutorRuntimeOutput }) {
+  const [expanded, setExpanded] = useState(false);
+  const reasoningText = runtimeReasoningText(output);
+  const answerText = output.final_answer_item?.text || item.content;
+  return <article className="tutor-timeline-entry tutor" data-turn-id={item.turn_id ?? undefined}>
+    <span className="tutor-timeline-label">Tutor</span>
+    <div className="tutor-message-content">
+      {reasoningText ? <TutorThinking
+        messageId={item.id}
+        text={reasoningText}
+        expanded={expanded}
+        complete
+        onExpandedChange={setExpanded}
+      /> : null}
+      <p className="tutor-answer-text">{answerText}</p>
+    </div>
+  </article>;
+}
+
+function TutorRunningPlaceholder({ turn, hasText, text, complete, runtimeOutput }: {
+  turn: TutorPublicTurn;
+  hasText: boolean;
+  text: string;
+  complete: boolean;
+  runtimeOutput: TutorLiveRuntimeOutputState | null;
+}) {
   const [expanded, setExpanded] = useState(true);
+  const reasoningText = runtimeReasoningText(runtimeOutput);
+  const answerItem = runtimeOutput?.final_answer_item ?? null;
+  const hasRuntimeContent = Boolean(reasoningText || answerItem?.text);
   return <article className="tutor-timeline-entry tutor tutor-running-placeholder" data-turn-id={turn.turn_id}>
     <span className="tutor-timeline-label">Tutor</span>
     <div className="tutor-message-content">
-      {hasText ? <TutorThinking
+      {reasoningText ? <TutorThinking
         messageId={`active-${turn.turn_id}`}
+        text={reasoningText}
+        expanded={expanded}
+        complete={runtimeOutput?.reasoning_items.every((item) => item.state === "completed") ?? false}
+        running
+        onExpandedChange={setExpanded}
+      /> : null}
+      {answerItem?.text ? <p className={`tutor-answer-text${answerItem.state === "streaming" ? " is-streaming" : ""}`} aria-live="polite">{answerItem.text}</p> : null}
+      {!hasRuntimeContent && (hasText ? <TutorThinking
+        messageId={`active-legacy-${turn.turn_id}`}
         text={text}
         expanded={expanded}
         complete={complete}
         running
         onExpandedChange={setExpanded}
-      /> : <div className="tutor-thinking-static" role="status" aria-label="Think"><StateDot state="running" size={14} /><strong>Think</strong></div>}
+      /> : <div className="tutor-thinking-static" role="status" aria-label="think"><StateDot state="running" size={14} /><strong>think</strong></div>)}
     </div>
   </article>;
 }
@@ -728,7 +825,7 @@ function TutorThinking({ messageId, text, expanded, complete, running = false, o
 }) {
   return <DisclosureRow
     className="tutor-thinking-disclosure"
-    title="Think"
+    title="think"
     icon={<StateDot state={running && !complete ? "running" : "positive"} size={14} />}
     expanded={expanded}
     onExpandedChange={onExpandedChange}
@@ -743,7 +840,97 @@ function referenceTitle(reference: TutorContextReference): string { return { les
 function referenceSummary(reference: TutorContextReference): string { if (reference.kind === "lesson_selection") return reference.safe_excerpt; const summary = `${outcomeReferenceLabel(reference.outcome)} · ${Math.round(reference.score * 100)}% · ${reference.feedback_summary}`; return reference.kind === "execution_result" ? `${summary} · ${reference.execution_job_state}` : summary; }
 function outcomeReferenceLabel(outcome: ExerciseAttemptOutcome): string { return { passed: "通过", failed: "未通过", timed_out: "超时", cancelled: "已取消", unavailable: "不可用", invalid: "无效" }[outcome]; }
 
-function dedupeTimeline(items: TutorHistoryItem[]): TutorHistoryItem[] { const seen = new Set<string>(); return items.filter((item) => { const key = `${item.kind}:${item.id}`; if (seen.has(key)) return false; seen.add(key); return true; }); }
+type TutorRuntimeStreamPayload = Extract<TutorTurnOutputPayload, { output_version: "tutor_runtime_item_stream_v1" }>;
+
+function runtimeOutputHasContent(output: TutorLiveRuntimeOutputState | null): boolean {
+  return Boolean(runtimeReasoningText(output) || output?.final_answer_item?.text);
+}
+
+function runtimeReasoningText(output: TutorRuntimeOutput | TutorLiveRuntimeOutputState | null): string {
+  return output?.reasoning_items.filter((item) => item.text.length > 0).map((item) => item.text).join("\n\n") ?? "";
+}
+
+function reduceRuntimeOutput(
+  current: TutorLiveRuntimeOutputState | null,
+  turnId: string,
+  payload: TutorRuntimeStreamPayload,
+): TutorLiveRuntimeOutputState | undefined {
+  if (current && current.turnId === turnId && current.input_revision === payload.input_revision &&
+      current.generation > payload.generation) return current;
+  const sameGeneration = current && current.turnId === turnId &&
+    current.input_revision === payload.input_revision && current.generation === payload.generation;
+  const base: TutorLiveRuntimeOutputState = sameGeneration ? current : {
+    turnId,
+    output_version: "tutor_runtime_output_v1",
+    input_revision: payload.input_revision,
+    generation: payload.generation,
+    reasoning_items: [],
+    final_answer_item: null,
+  };
+  const existing = payload.channel === "reasoning"
+    ? base.reasoning_items.find((item) => item.item_id === payload.item_id) ?? null
+    : base.final_answer_item?.item_id === payload.item_id ? base.final_answer_item : null;
+  if (existing && payload.chunk_sequence <= existing.last_sequence) return base;
+  if (payload.operation === "discard") {
+    return payload.channel === "reasoning"
+      ? { ...base, reasoning_items: base.reasoning_items.filter((item) => item.item_id !== payload.item_id) }
+      : { ...base, final_answer_item: base.final_answer_item?.item_id === payload.item_id ? null : base.final_answer_item };
+  }
+  let nextItem: TutorRuntimeOutputItem;
+  if (payload.operation === "reset") {
+    nextItem = { item_id: payload.item_id, text: "", state: "streaming", last_sequence: payload.chunk_sequence };
+  } else if (payload.operation === "append") {
+    const text = (existing?.text ?? "") + payload.text;
+    if (text.length > 1_000_000) return undefined;
+    nextItem = { item_id: payload.item_id, text, state: "streaming", last_sequence: payload.chunk_sequence };
+  } else if (payload.operation === "complete") {
+    const text = payload.text || existing?.text || "";
+    nextItem = { item_id: payload.item_id, text, state: "completed", last_sequence: payload.chunk_sequence };
+  } else {
+    return undefined;
+  }
+  if (payload.channel === "final_answer") return { ...base, final_answer_item: nextItem };
+  const reasoningItems = base.reasoning_items.some((item) => item.item_id === payload.item_id)
+    ? base.reasoning_items.map((item) => item.item_id === payload.item_id ? nextItem : item)
+    : [...base.reasoning_items, nextItem];
+  return { ...base, reasoning_items: reasoningItems };
+}
+
+function mergeRuntimeOutputs(
+  current: TutorLiveRuntimeOutputState,
+  incoming: TutorLiveRuntimeOutputState,
+): TutorLiveRuntimeOutputState {
+  const currentById = new Map(current.reasoning_items.map((item) => [item.item_id, item]));
+  const incomingIds = new Set(incoming.reasoning_items.map((item) => item.item_id));
+  const reasoningItems = incoming.reasoning_items.map((item) => preferRuntimeItem(currentById.get(item.item_id) ?? null, item) ?? item);
+  for (const item of current.reasoning_items) {
+    if (!incomingIds.has(item.item_id)) reasoningItems.push(item);
+  }
+  return {
+    ...incoming,
+    reasoning_items: reasoningItems,
+    final_answer_item: preferRuntimeItem(current.final_answer_item, incoming.final_answer_item),
+  };
+}
+
+function preferRuntimeItem(
+  current: TutorRuntimeOutputItem | null,
+  incoming: TutorRuntimeOutputItem | null,
+): TutorRuntimeOutputItem | null {
+  if (!current) return incoming;
+  if (!incoming) return current;
+  if (current.item_id !== incoming.item_id) return incoming;
+  if (current.last_sequence > incoming.last_sequence) return current;
+  if (!incoming.text && current.text) {
+    return incoming.state === "completed"
+      ? { ...current, state: "completed", last_sequence: incoming.last_sequence }
+      : current;
+  }
+  if (current.text.startsWith(incoming.text) && current.state === "streaming" && incoming.state === "streaming") return current;
+  return incoming;
+}
+
+function dedupeTimeline(items: TutorHistoryItem[]): TutorHistoryItem[] { const seen = new Set<string>(); return items.filter((item) => { const key = item.kind + ":" + item.id; if (seen.has(key)) return false; seen.add(key); return true; }); }
 function reconcileVisibleTimeline(items: TutorHistoryItem[]): TutorHistoryItem[] {
   const deduped = dedupeTimeline(items);
   const formalTutorTurnIds = new Set(deduped.flatMap((item) =>

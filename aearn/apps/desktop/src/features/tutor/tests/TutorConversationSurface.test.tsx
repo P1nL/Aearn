@@ -105,7 +105,7 @@ describe("TutorConversationSurface typed request seat", () => {
     expect(document.querySelectorAll(".tutor-request-history")).toHaveLength(0);
     expect(screen.queryByText("Tutor 请求")).not.toBeInTheDocument();
     expect(screen.getAllByText(prompt)).toHaveLength(2);
-    expect(screen.getAllByRole("button", { name: "Think" })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "think" })).toHaveLength(1);
   });
 
   it("fully replaces ordinary composer and Queue controls, then sends exact request version", async () => {
@@ -160,7 +160,7 @@ describe("TutorConversationSurface typed request seat", () => {
     expect(submit).toBeEnabled();
   });
 
-  it("mounts the fresh answer-turn Think immediately after a typed request response", async () => {
+  it("mounts the fresh answer-turn think immediately after a typed request response", async () => {
     const user = userEvent.setup();
     const requestItem = {
       ...snapshot.pending_requests[0],
@@ -205,8 +205,8 @@ describe("TutorConversationSurface typed request seat", () => {
     await user.click(await screen.findByRole("radio", { name: "HTML/CSS Interaction Beginner" }));
     await user.click(screen.getByRole("button", { name: "提交响应" }));
 
-    const freshThink = await screen.findByRole("status", { name: "Think" });
-    expect(freshThink.closest("article")).toHaveAttribute("data-turn-id", "turn-answer");
+    const freshthink = await screen.findByRole("status", { name: "think" });
+    expect(freshthink.closest("article")).toHaveAttribute("data-turn-id", "turn-answer");
     expect(screen.queryByRole("button", { name: "提交响应" })).not.toBeInTheDocument();
     expect(api.fetchTutorConversationSnapshot).toHaveBeenCalledTimes(2);
 
@@ -243,7 +243,7 @@ describe("TutorConversationSurface typed request seat", () => {
     expect(workspace.parentElement).toHaveClass("aearn-dsh-derived", "tutor-surface-root");
   });
 
-  it("shows only a static Think row before public text arrives", async () => {
+  it("shows only a static think row before public text arrives", async () => {
     const user = userEvent.setup();
     api.fetchTutorConversationSnapshot.mockResolvedValue({
       ...snapshot,
@@ -253,10 +253,10 @@ describe("TutorConversationSurface typed request seat", () => {
     });
     renderSurface();
     const execute = await screen.findByRole("button", { name: "中断并执行" });
-    const think = screen.getByRole("status", { name: "Think" });
-    expect(think).toHaveTextContent("Think");
+    const think = screen.getByRole("status", { name: "think" });
+    expect(think).toHaveTextContent("think");
     expect(think.closest("article")).toHaveAttribute("data-turn-id", "turn-active");
-    expect(screen.queryByRole("button", { name: "Think" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "think" })).not.toBeInTheDocument();
     expect(screen.queryByText("Tutor 正在思考")).not.toBeInTheDocument();
     expect(screen.queryByText(/完成后会显示/)).not.toBeInTheDocument();
     expect(execute).toBeEnabled();
@@ -266,7 +266,7 @@ describe("TutorConversationSurface typed request seat", () => {
     })));
   });
 
-  it("reveals streamed Think only after the generation is validated and stable", async () => {
+  it("reveals streamed think only after the generation is validated and stable", async () => {
     api.fetchTutorConversationSnapshot.mockResolvedValue({
       ...snapshot,
       conversation: { ...snapshot.conversation, control_state: "running", pending_count: 0, queue_paused: false, queue_pause_reason: null },
@@ -275,7 +275,7 @@ describe("TutorConversationSurface typed request seat", () => {
       queue: [],
     });
     renderSurface();
-    await screen.findByRole("status", { name: "Think" });
+    await screen.findByRole("status", { name: "think" });
 
     emitStreamEvent({
       cursor: "cursor-2", event_id: "event-2", sequence: 2, kind: "turn_output", turn_id: "turn-active",
@@ -283,12 +283,12 @@ describe("TutorConversationSurface typed request seat", () => {
       payload: { output_version: "tutor_public_thinking_stream_v1", input_revision: 5, generation: 10001, operation: "append", chunk_sequence: 1, text: "先确认目标。\n再缩小范围。" },
     });
 
-    expect(screen.getByRole("status", { name: "Think" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Think" })).not.toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "think" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "think" })).not.toBeInTheDocument();
     expect(screen.queryByText("先确认目标。\n再缩小范围。")).not.toBeInTheDocument();
 
     await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 400)); });
-    expect(screen.queryByRole("button", { name: "Think" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "think" })).not.toBeInTheDocument();
     expect(screen.queryByText("先确认目标。\n再缩小范围。")).not.toBeInTheDocument();
 
     emitStreamEvent({
@@ -297,7 +297,7 @@ describe("TutorConversationSurface typed request seat", () => {
       payload: { output_version: "tutor_public_thinking_stream_v1", input_revision: 5, generation: 10001, operation: "complete", chunk_sequence: 2 },
     });
 
-    const disclosure = await screen.findByRole("button", { name: "Think" }, { timeout: 1_500 });
+    const disclosure = await screen.findByRole("button", { name: "think" }, { timeout: 1_500 });
     expect(disclosure).toHaveAttribute("aria-expanded", "true");
     await waitFor(() => expect(document.querySelector(".tutor-thinking-text")).toHaveTextContent("先确认目标。 再缩小范围。"));
     expect(screen.queryByRole("list")).not.toBeInTheDocument();
@@ -312,7 +312,7 @@ describe("TutorConversationSurface typed request seat", () => {
       queue: [],
     });
     renderSurface();
-    await screen.findByRole("status", { name: "Think" });
+    await screen.findByRole("status", { name: "think" });
 
     emitStreamEvent({
       cursor: "cursor-buffer-1", event_id: "event-buffer-1", sequence: 2, kind: "turn_output", turn_id: "turn-active",
@@ -320,11 +320,11 @@ describe("TutorConversationSurface typed request seat", () => {
       payload: { output_version: "tutor_public_thinking_stream_v1", input_revision: 5, generation: 10001, operation: "append", chunk_sequence: 1, text: "这段内容不应闪现。" },
     });
     expect(screen.queryByText("这段内容不应闪现。")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Think" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "think" })).not.toBeInTheDocument();
 
     await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 400)); });
     expect(screen.queryByText("这段内容不应闪现。")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Think" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "think" })).not.toBeInTheDocument();
 
     emitStreamEvent({
       cursor: "cursor-buffer-2", event_id: "event-buffer-2", sequence: 3, kind: "turn_output", turn_id: "turn-active",
@@ -333,8 +333,8 @@ describe("TutorConversationSurface typed request seat", () => {
     });
 
     expect(screen.queryByText("这段内容不应闪现。")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Think" })).not.toBeInTheDocument();
-    expect(screen.getByRole("status", { name: "Think" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "think" })).not.toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "think" })).toBeInTheDocument();
   });
 
   it("preserves displayed thinking until a recovery snapshot authoritatively clears it", async () => {
@@ -351,7 +351,7 @@ describe("TutorConversationSurface typed request seat", () => {
       .mockResolvedValueOnce(activeSnapshot)
       .mockImplementationOnce(() => new Promise((resolve) => { resolveRecovery = resolve; }));
     renderSurface();
-    await screen.findByRole("status", { name: "Think" });
+    await screen.findByRole("status", { name: "think" });
 
     emitStreamEvent({
       cursor: "cursor-recovery-1", event_id: "event-recovery-1", sequence: 2, kind: "turn_output", turn_id: "turn-active",
@@ -375,7 +375,7 @@ describe("TutorConversationSurface typed request seat", () => {
 
     await act(async () => { resolveRecovery(activeSnapshot); });
     await waitFor(() => expect(screen.queryByText("恢复前保持显示。")).not.toBeInTheDocument());
-    expect(screen.getByRole("status", { name: "Think" })).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "think" })).toBeInTheDocument();
   });
 
   it("resets and discards stale public-thinking generations without mixing text", async () => {
@@ -387,7 +387,7 @@ describe("TutorConversationSurface typed request seat", () => {
       queue: [],
     });
     renderSurface();
-    await screen.findByRole("status", { name: "Think" });
+    await screen.findByRole("status", { name: "think" });
 
     emitStreamEvent({
       cursor: "cursor-2", event_id: "event-2", sequence: 2, kind: "turn_output", turn_id: "turn-active",
@@ -396,7 +396,7 @@ describe("TutorConversationSurface typed request seat", () => {
     });
     await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 400)); });
     expect(screen.queryByText("旧尝试。")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Think" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "think" })).not.toBeInTheDocument();
 
     emitStreamEvent({
       cursor: "cursor-3", event_id: "event-3", sequence: 3, kind: "turn_output", turn_id: "turn-active",
@@ -404,7 +404,7 @@ describe("TutorConversationSurface typed request seat", () => {
       payload: { output_version: "tutor_public_thinking_stream_v1", input_revision: 5, generation: 10002, operation: "reset", chunk_sequence: 0 },
     });
     await waitFor(() => expect(screen.queryByText("旧尝试。")).not.toBeInTheDocument());
-    expect(screen.getByRole("status", { name: "Think" })).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "think" })).toBeInTheDocument();
 
     emitStreamEvent({
       cursor: "cursor-4", event_id: "event-4", sequence: 4, kind: "turn_output", turn_id: "turn-active",
@@ -424,8 +424,8 @@ describe("TutorConversationSurface typed request seat", () => {
       payload: { output_version: "tutor_public_thinking_stream_v1", input_revision: 5, generation: 10002, operation: "discard", chunk_sequence: 3 },
     });
     await waitFor(() => expect(screen.queryByText("新尝试。")).not.toBeInTheDocument());
-    expect(screen.getByRole("status", { name: "Think" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Think" })).not.toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "think" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "think" })).not.toBeInTheDocument();
   });
 
   it("keeps incomplete snapshot thinking buffered until a validated complete event arrives", async () => {
@@ -438,11 +438,11 @@ describe("TutorConversationSurface typed request seat", () => {
       queue: [],
     });
     renderSurface();
-    await screen.findByRole("status", { name: "Think" });
+    await screen.findByRole("status", { name: "think" });
 
     await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 400)); });
     expect(screen.queryByText("快照中的候选文本。")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Think" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "think" })).not.toBeInTheDocument();
 
     emitStreamEvent({
       cursor: "cursor-snapshot-complete", event_id: "event-snapshot-complete", sequence: 8, kind: "turn_output", turn_id: "turn-active",
@@ -451,12 +451,12 @@ describe("TutorConversationSurface typed request seat", () => {
     });
 
     expect(await screen.findByText("快照中的候选文本。", {}, { timeout: 1_500 })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Think" })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("button", { name: "think" })).toHaveAttribute("aria-expanded", "true");
   });
 
   it("keeps streamed thinking visible through snapshot handoff, then collapses only after every character is revealed", async () => {
     const user = userEvent.setup();
-    const finalThinking = "先确认目标，再明确最小页面范围。";
+    const finalthinking = "先确认目标，再明确最小页面范围。";
     const finalAnswer = "我们先确定网站目标。";
     const liveSnapshot = {
       ...snapshot,
@@ -479,7 +479,7 @@ describe("TutorConversationSurface typed request seat", () => {
       ...handoffSnapshot,
       timeline: [{
         kind: "message" as const, id: "message-tutor", turn_id: "turn-active", role: "tutor" as const,
-        content: finalAnswer, public_thinking_text: finalThinking, public_thinking_steps: [],
+        content: finalAnswer, public_thinking_text: finalthinking, public_thinking_steps: [],
         context_references: [], in_reply_to_item_id: null, created_at: "2026-08-14T00:00:02Z",
       }],
     };
@@ -492,18 +492,18 @@ describe("TutorConversationSurface typed request seat", () => {
 
     emitStreamEvent({ kind: "turn_updated" });
     await waitFor(() => expect(api.fetchTutorConversationSnapshot).toHaveBeenCalledTimes(2));
-    const preservedThinking = document.querySelector(".tutor-thinking-text");
-    expect(preservedThinking).not.toBeNull();
-    expect(preservedThinking?.textContent).not.toBe("");
-    expect(screen.getByRole("button", { name: "Think" })).toHaveAttribute("aria-expanded", "true");
+    const preservedthinking = document.querySelector(".tutor-thinking-text");
+    expect(preservedthinking).not.toBeNull();
+    expect(preservedthinking?.textContent).not.toBe("");
+    expect(screen.getByRole("button", { name: "think" })).toHaveAttribute("aria-expanded", "true");
 
     emitStreamEvent({ kind: "item_added" });
     await waitFor(() => expect(api.fetchTutorConversationSnapshot).toHaveBeenCalledTimes(3));
-    const disclosure = screen.getByRole("button", { name: "Think" });
+    const disclosure = screen.getByRole("button", { name: "think" });
     expect(disclosure).toHaveAttribute("aria-expanded", "true");
-    expect(screen.queryByText(finalThinking)).not.toBeInTheDocument();
+    expect(screen.queryByText(finalthinking)).not.toBeInTheDocument();
 
-    expect(await screen.findByText(finalThinking, {}, { timeout: 2_000 })).toBeInTheDocument();
+    expect(await screen.findByText(finalthinking, {}, { timeout: 2_000 })).toBeInTheDocument();
     expect(disclosure).toHaveAttribute("aria-expanded", "true");
     expect(await screen.findByText(finalAnswer, {}, { timeout: 2_000 })).toBeInTheDocument();
     expect(disclosure).toHaveAttribute("aria-expanded", "true");
@@ -516,7 +516,140 @@ describe("TutorConversationSurface typed request seat", () => {
     expect(disclosure).toHaveAttribute("aria-expanded", "true");
   });
 
-  it("renders historical Think as plain text, collapsed by default, and supports keyboard expansion", async () => {
+  it("streams raw Runtime reasoning above the answer in the same current Tutor entry", async () => {
+    api.fetchTutorConversationSnapshot.mockResolvedValue({
+      ...snapshot,
+      snapshot_version: "tutor_conversation_snapshot_v3",
+      conversation: { ...snapshot.conversation, control_state: "running", pending_count: 0, queue_paused: false, queue_pause_reason: null },
+      active_turn: activeTurn,
+      active_thinking: null,
+      active_runtime_output: {
+        output_version: "tutor_runtime_output_v1",
+        input_revision: activeTurn.input_revision,
+        generation: 7,
+        reasoning_items: [{ item_id: "reasoning-1", text: "先读取 confirmed facts。", state: "streaming", last_sequence: 8 }],
+        final_answer_item: { item_id: "answer-1", text: "接下来", state: "streaming", last_sequence: 9 },
+      },
+      pending_requests: [],
+      queue: [],
+      timeline: [],
+    });
+
+    renderSurface();
+
+    expect(await screen.findByText("先读取 confirmed facts。")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "think" })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("接下来")).toHaveClass("is-streaming");
+    emitStreamEvent({
+      kind: "turn_output",
+      turn_id: activeTurn.turn_id,
+      payload: {
+        output_version: "tutor_runtime_item_stream_v1",
+        input_revision: activeTurn.input_revision,
+        generation: 7,
+        operation: "append",
+        chunk_sequence: 10,
+        item_id: "answer-1",
+        channel: "final_answer",
+        text: "只询问学习目标。",
+      },
+    });
+    expect(await screen.findByText("接下来只询问学习目标。")).toBeInTheDocument();
+  });
+
+  it("keeps current raw Runtime output when a recovery snapshot temporarily omits it", async () => {
+    const liveSnapshot = {
+      ...snapshot,
+      snapshot_version: "tutor_conversation_snapshot_v3" as const,
+      conversation: { ...snapshot.conversation, control_state: "running" as const, pending_count: 0, queue_paused: false, queue_pause_reason: null },
+      active_turn: activeTurn,
+      active_thinking: null,
+      active_runtime_output: {
+        output_version: "tutor_runtime_output_v1" as const,
+        input_revision: activeTurn.input_revision,
+        generation: 7,
+        reasoning_items: [{ item_id: "reasoning-gap", text: "恢复期间保持这段推理。", state: "streaming" as const, last_sequence: 8 }],
+        final_answer_item: { item_id: "answer-gap", text: "回答仍在生成", state: "streaming" as const, last_sequence: 9 },
+      },
+      pending_requests: [],
+      queue: [],
+      timeline: [],
+    };
+    api.fetchTutorConversationSnapshot
+      .mockResolvedValueOnce(liveSnapshot)
+      .mockResolvedValueOnce({ ...liveSnapshot, active_runtime_output: null });
+
+    renderSurface();
+    expect(await screen.findByText("恢复期间保持这段推理。")).toBeInTheDocument();
+    expect(screen.getByText("回答仍在生成")).toBeInTheDocument();
+
+    emitStreamEvent({ kind: "turn_updated" });
+    await waitFor(() => expect(api.fetchTutorConversationSnapshot).toHaveBeenCalledTimes(2));
+    expect(screen.getByText("恢复期间保持这段推理。")).toBeInTheDocument();
+    expect(screen.getByText("回答仍在生成")).toBeInTheDocument();
+  });
+
+
+  it("keeps completed raw Runtime reasoning collapsed in history", async () => {
+    api.fetchTutorConversationSnapshot.mockResolvedValue({
+      ...snapshot,
+      snapshot_version: "tutor_conversation_snapshot_v3",
+      conversation: { ...snapshot.conversation, control_state: "idle", pending_count: 0, queue_paused: false, queue_pause_reason: null },
+      active_turn: null,
+      active_thinking: null,
+      active_runtime_output: null,
+      pending_requests: [],
+      queue: [],
+      timeline: [{
+        kind: "message", id: "message-runtime", turn_id: "turn-runtime", role: "tutor", content: "正式回答。",
+        public_thinking_text: "", public_thinking_steps: [],
+        runtime_output: {
+          output_version: "tutor_runtime_output_v1", input_revision: 1, generation: 7,
+          reasoning_items: [{ item_id: "reasoning-history", text: "原始推理文本。", state: "completed", last_sequence: 5 }],
+          final_answer_item: { item_id: "answer-history", text: "原始最终回答。", state: "completed", last_sequence: 6 },
+        },
+        context_references: [], in_reply_to_item_id: null, created_at: "2026-08-20T00:00:02Z",
+      }],
+    });
+
+    renderSurface();
+
+    expect(await screen.findByText("原始最终回答。")).toBeInTheDocument();
+    const disclosure = screen.getByRole("button", { name: "think" });
+    expect(disclosure).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("原始推理文本。")).not.toBeVisible();
+  });
+
+  it("does not render an empty think row for a terminal Runtime answer without reasoning", async () => {
+    api.fetchTutorConversationSnapshot.mockResolvedValue({
+      ...snapshot,
+      snapshot_version: "tutor_conversation_snapshot_v3",
+      conversation: { ...snapshot.conversation, control_state: "idle", pending_count: 0, queue_paused: false, queue_pause_reason: null },
+      active_turn: null,
+      active_thinking: null,
+      active_runtime_output: null,
+      pending_requests: [],
+      queue: [],
+      timeline: [{
+        kind: "message", id: "message-no-reasoning", turn_id: "turn-no-reasoning", role: "tutor", content: "无推理正式回答。",
+        public_thinking_text: "", public_thinking_steps: [],
+        runtime_output: {
+          output_version: "tutor_runtime_output_v1", input_revision: 1, generation: 7,
+          reasoning_items: [],
+          final_answer_item: { item_id: "answer-only", text: "无推理最终回答。", state: "completed", last_sequence: 2 },
+        },
+        context_references: [], in_reply_to_item_id: null, created_at: "2026-08-20T00:00:02Z",
+      }],
+    });
+
+    renderSurface();
+
+    expect(await screen.findByText("无推理最终回答。")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "think" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("status", { name: "think" })).not.toBeInTheDocument();
+  });
+
+  it("renders historical think as plain text, collapsed by default, and supports keyboard expansion", async () => {
     const user = userEvent.setup();
     api.fetchTutorConversationSnapshot.mockResolvedValue({
       ...snapshot,
@@ -534,13 +667,13 @@ describe("TutorConversationSurface typed request seat", () => {
     renderSurface();
 
     expect(await screen.findByText("我们先确定网站目标和最小页面。")).toBeInTheDocument();
-    const disclosure = screen.getByRole("button", { name: "Think" });
+    const disclosure = screen.getByRole("button", { name: "think" });
     expect(disclosure).toHaveAttribute("aria-expanded", "false");
     disclosure.focus();
     expect(disclosure).toHaveFocus();
     await user.keyboard("{Enter}");
     expect(disclosure).toHaveAttribute("aria-expanded", "true");
-    expect(screen.queryByRole("status", { name: "Think" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("status", { name: "think" })).not.toBeInTheDocument();
     expect(screen.queryByRole("list")).not.toBeInTheDocument();
   });
 });

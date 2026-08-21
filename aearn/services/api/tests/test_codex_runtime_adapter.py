@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from app.agents.runtime import AgentRuntimePort, CodexAppServerRuntime, CodexRun
 from app.agents.runtime.codex_config import CODEX_ENV_KEY, resolve_codex_executable
 from app.agents.runtime.codex_connection import ServerRequestHandler, StdioJsonRpcClient
 from app.agents.runtime.codex_supervisor import RuntimeGenerationError, RuntimeProcessLock
+from app.agents.runtime.worker_host import RuntimeTurnControlDirective, _run_controlled_turn
 from app.services.learning.plan_tools import LearningPlanAgentToolResult, LearningPlanDraftToolInput, LearningPlanToolStatus
 
 FIXTURE = Path(__file__).parent / "fixtures" / "codex_runtime" / "fake_app_server.py"
@@ -26,7 +28,7 @@ def _config(tmp_path: Path, *, enabled: bool = True, allowed_versions: frozenset
 
 def _factory(scenario: str):  # type: ignore[no-untyped-def]
     def create(config, home, env, tool_handler: ServerRequestHandler):  # type: ignore[no-untyped-def]
-        return StdioJsonRpcClient([sys.executable, str(FIXTURE), "--scenario", scenario], cwd=home.workspace, env=env, notification_methods=("thread/started", "turn/started", "item/agentMessage/delta", "item/started", "item/completed", "turn/completed", "warning"), server_request_handlers={"item/tool/call": tool_handler}, request_timeout_s=config.request_timeout_s, server_request_timeout_s=config.request_timeout_s, notification_queue_size=config.notification_queue_size, secrets=(env.get(config.env_key, ""),), path_roots=(home.root,))
+        return StdioJsonRpcClient([sys.executable, str(FIXTURE), "--scenario", scenario], cwd=home.workspace, env=env, notification_methods=("thread/started", "turn/started", "item/agentMessage/delta", "item/reasoning/textDelta", "item/reasoning/summaryTextDelta", "item/started", "item/completed", "turn/completed", "warning"), server_request_handlers={"item/tool/call": tool_handler}, request_timeout_s=config.request_timeout_s, server_request_timeout_s=config.request_timeout_s, notification_queue_size=config.notification_queue_size, secrets=(env.get(config.env_key, ""),), path_roots=(home.root,))
     return create
 
 
@@ -116,7 +118,11 @@ async def test_adapter_maps_repair_events_without_exposing_tool_arguments(tmp_pa
         if event.kind is RuntimeEventKind.TOOL_COMPLETED
     )
     message_events = [event for event in result.events if event.kind is RuntimeEventKind.MESSAGE_COMPLETED]
-    assert [event.visible_text for event in message_events] == ["safe final"]
+    assert [(event.phase, event.visible_text) for event in message_events] == [
+        ("commentary", "private commentary"),
+        ("final_answer", "safe final"),
+    ]
+    assert [event.sequence for event in result.events] == list(range(1, len(result.events) + 1))
     encoded_events = json.dumps([
         {
             "kind": event.kind.value,
@@ -134,6 +140,71 @@ async def test_adapter_maps_repair_events_without_exposing_tool_arguments(tmp_pa
     assert resumed.generation == thread.generation
     await runtime.steer(thread, "turn_control", (RuntimeInput("steer"),))
     await runtime.interrupt(thread, "turn_control")
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_adapter_maps_local_compaction_and_raw_item_phases(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(CODEX_ENV_KEY, "fixture-secret")
+    supervisor = CodexRuntimeSupervisor(
+        _config(tmp_path),
+        connection_factory=_factory("compaction"),
+    )
+    runtime = CodexAppServerRuntime(supervisor)
+    thread = await runtime.start_thread(RuntimeThreadRequest(cwd=str(tmp_path)))
+    await runtime.compact_thread(thread)
+    result = await runtime.run_turn(
+        RuntimeTurnRequest(thread, (RuntimeInput("Continue after local compaction."),), RepairRegistry())
+    )
+
+    assert result.terminal_status is RuntimeTerminalStatus.COMPLETED
+    assert [event.kind for event in result.events].count(RuntimeEventKind.CONTEXT_COMPACTION_STARTED) == 1
+    assert [event.kind for event in result.events].count(RuntimeEventKind.CONTEXT_COMPACTION_COMPLETED) == 1
+    reasoning_deltas = [event for event in result.events if event.kind is RuntimeEventKind.REASONING_DELTA]
+    assert [event.visible_text for event in reasoning_deltas] == [
+        "先读取服务端事实。\n",
+        "再确认缺失字段。",
+    ]
+    reasoning_completed = [event for event in result.events if event.kind is RuntimeEventKind.REASONING_COMPLETED]
+    assert len(reasoning_completed) == 1
+    assert reasoning_completed[0].visible_text is None
+    assert reasoning_completed[0].content_sha256 is None
+    assert [event.visible_text for event in result.events if event.kind is RuntimeEventKind.REASONING_SUMMARY_DELTA] == [
+        "private summary"
+    ]
+    message_deltas = [event for event in result.events if event.kind is RuntimeEventKind.MESSAGE_DELTA]
+    assert [event.phase for event in message_deltas] == ["final_answer", "final_answer"]
+    assert [event.visible_text for event in message_deltas] == ["只询问", "学习目标。"]
+    completed = [event for event in result.events if event.kind is RuntimeEventKind.MESSAGE_COMPLETED]
+    assert [(event.phase, event.visible_text) for event in completed] == [
+        ("commentary", "private commentary"),
+        ("final_answer", "只询问学习目标。"),
+    ]
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_codex_request_user_input_is_declined_without_killing_the_sidecar(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(CODEX_ENV_KEY, "fixture-secret")
+    supervisor = CodexRuntimeSupervisor(
+        _config(tmp_path),
+        connection_factory=_factory("request_user_input"),
+    )
+    runtime = CodexAppServerRuntime(supervisor)
+    thread = await runtime.start_thread(RuntimeThreadRequest(cwd=str(tmp_path)))
+    result = await runtime.run_turn(
+        RuntimeTurnRequest(thread, (RuntimeInput("Collect planning facts safely."),), RepairRegistry())
+    )
+
+    assert result.terminal_status is RuntimeTerminalStatus.COMPLETED
+    assert supervisor.require_connection(thread.generation).fatal_error is None
+    assert [event.visible_text for event in result.events if event.kind is RuntimeEventKind.MESSAGE_COMPLETED][-1] == "safe final"
     await runtime.shutdown()
 
 
@@ -178,9 +249,87 @@ async def test_runtime_event_backpressure_fails_closed(tmp_path: Path, monkeypat
     supervisor = CodexRuntimeSupervisor(_config(tmp_path), connection_factory=_factory("repair"))
     runtime = CodexAppServerRuntime(supervisor, event_queue_size=1)
     thread = await runtime.start_thread(RuntimeThreadRequest(cwd=str(tmp_path), tools=(RuntimeToolDefinition("aearn_runtime_probe", "Validate runtime repair.", {"type": "object"}),)))
-    result = await runtime.run_turn(RuntimeTurnRequest(thread, (RuntimeInput("backpressure"),), RepairRegistry()))
+    event_stream = runtime.events()
+    try:
+        result = await runtime.run_turn(RuntimeTurnRequest(thread, (RuntimeInput("backpressure"),), RepairRegistry()))
+    finally:
+        await event_stream.aclose()  # type: ignore[attr-defined]
     assert result.terminal_status is RuntimeTerminalStatus.UNAVAILABLE
     assert result.safe_error_code == "runtime_event_backpressure_exhausted"
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_controlled_turn_event_subscription_drops_previous_turn_backlog(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(CODEX_ENV_KEY, "fixture-secret")
+    supervisor = CodexRuntimeSupervisor(
+        _config(tmp_path),
+        connection_factory=_factory("burst_turns"),
+    )
+    runtime = CodexAppServerRuntime(supervisor, event_queue_size=16)
+    thread = await runtime.start_thread(RuntimeThreadRequest(cwd=str(tmp_path)))
+
+    def no_control(_turn_id: str, applied_revision: int) -> RuntimeTurnControlDirective:
+        return RuntimeTurnControlDirective(applied_revision)
+
+    first_observed: list[tuple[str | None, int]] = []
+
+    def observe_first(event, sequence: int) -> None:  # type: ignore[no-untyped-def]
+        time.sleep(0.001)
+        first_observed.append((event.turn_id, sequence))
+
+    first = await _run_controlled_turn(
+        runtime,
+        RuntimeTurnRequest(thread, (RuntimeInput("first burst"),), RepairRegistry()),
+        control_reader=no_control,
+        initial_input_revision=1,
+        event_observer=observe_first,
+        poll_interval_s=0.001,
+    )
+    resumed = await runtime.resume_thread(thread.thread_id)
+    second_observed: list[tuple[str | None, int]] = []
+    second = await _run_controlled_turn(
+        runtime,
+        RuntimeTurnRequest(resumed, (RuntimeInput("second burst"),), RepairRegistry()),
+        control_reader=no_control,
+        initial_input_revision=1,
+        event_observer=lambda event, sequence: second_observed.append(
+            (event.turn_id, sequence)
+        ),
+        poll_interval_s=0.001,
+    )
+
+    assert first.terminal_status is RuntimeTerminalStatus.COMPLETED
+    assert second.terminal_status is RuntimeTerminalStatus.COMPLETED
+    assert first.turn_id != second.turn_id
+    assert first_observed
+    assert second_observed
+    assert {turn_id for turn_id, _sequence in second_observed if turn_id is not None} == {
+        second.turn_id
+    }
+    assert len({sequence for _turn_id, sequence in second_observed}) == len(second_observed)
+
+    other_thread = await runtime.start_thread(RuntimeThreadRequest(cwd=str(tmp_path)))
+    third_observed: list[tuple[str | None, int]] = []
+    third = await _run_controlled_turn(
+        runtime,
+        RuntimeTurnRequest(other_thread, (RuntimeInput("other conversation"),), RepairRegistry()),
+        control_reader=no_control,
+        initial_input_revision=1,
+        event_observer=lambda event, sequence: third_observed.append(
+            (event.turn_id, sequence)
+        ),
+        poll_interval_s=0.001,
+    )
+    assert third.terminal_status is RuntimeTerminalStatus.COMPLETED
+    assert other_thread.thread_id != thread.thread_id
+    assert {turn_id for turn_id, _sequence in third_observed if turn_id is not None} == {
+        third.turn_id
+    }
+    assert len({sequence for _turn_id, sequence in third_observed}) == len(third_observed)
     await runtime.shutdown()
 
 

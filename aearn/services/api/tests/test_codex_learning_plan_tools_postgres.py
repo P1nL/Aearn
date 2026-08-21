@@ -263,6 +263,16 @@ async def test_postgres_context_reports_awaiting_user_for_missing_authoritative_
         assert payload["status"] == "awaiting_user"
         assert payload["code"] == "planning_facts_missing"
         assert "goal_text" in payload["data"]["missing_facts"]
+        assert payload["data"]["next_missing_fact"] == {
+            "field_key": "experience_level",
+            "meaning": "学习者此前与编程相关的经验等级。",
+            "exact_question": "你目前有多少相关编程经验？",
+            "wording_policy": (
+                "可先简短确认已知事实，然后必须逐字使用 exact_question 作为唯一问题；"
+                "不得改写字段含义、补充括号示例、添加选项或提出第二个问题。"
+            ),
+            "response_authority": "aearn_typed_request",
+        }
         encoded = json.dumps(payload, ensure_ascii=False)
         assert user_id not in encoded
         assert conversation_id not in encoded

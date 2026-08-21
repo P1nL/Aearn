@@ -9,7 +9,12 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from app.core.config import DEEPSEEK_V4_FLASH_MODEL, Settings
+from app.core.config import (
+    DEEPSEEK_V4_FLASH_CONTEXT_WINDOW_TOKENS,
+    DEEPSEEK_V4_FLASH_MAX_OUTPUT_TOKENS,
+    DEEPSEEK_V4_FLASH_MODEL,
+    Settings,
+)
 from app.services.llm.llm_urls import normalize_deepseek_base_url
 
 CODEX_MODEL_PROVIDER = "aearn_deepseek"
@@ -41,6 +46,12 @@ class CodexRuntimeConfig:
     turn_timeout_s: float
     shutdown_timeout_s: float
     notification_queue_size: int
+    model_context_window: int = DEEPSEEK_V4_FLASH_CONTEXT_WINDOW_TOKENS
+    model_max_output_tokens: int = DEEPSEEK_V4_FLASH_MAX_OUTPUT_TOKENS
+    model_auto_compact_token_limit: int = (
+        DEEPSEEK_V4_FLASH_CONTEXT_WINDOW_TOKENS - DEEPSEEK_V4_FLASH_MAX_OUTPUT_TOKENS
+    )
+    remote_compaction_supported: bool = False
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "CodexRuntimeConfig":
@@ -62,6 +73,10 @@ class CodexRuntimeConfig:
             turn_timeout_s=settings.codex_runtime_turn_timeout_seconds,
             shutdown_timeout_s=settings.codex_runtime_shutdown_timeout_seconds,
             notification_queue_size=settings.codex_runtime_notification_queue_size,
+            model_context_window=settings.tutor_deepseek_v4_flash_context_window_tokens,
+            model_max_output_tokens=settings.tutor_deepseek_v4_flash_max_output_tokens,
+            model_auto_compact_token_limit=settings.deepseek_v4_flash_input_hard_limit_tokens,
+            remote_compaction_supported=False,
         )
 
 
@@ -109,6 +124,15 @@ def ensure_codex_runtime_home(config: CodexRuntimeConfig, *, allow_existing: boo
         raise ValueError("Codex runtime requires exact deepseek-v4-flash")
     if config.model_provider != CODEX_MODEL_PROVIDER:
         raise ValueError("Codex runtime provider is invalid")
+    if config.remote_compaction_supported:
+        raise ValueError("Codex runtime remote compaction is not supported for aearn_deepseek")
+    if (
+        config.model_context_window != DEEPSEEK_V4_FLASH_CONTEXT_WINDOW_TOKENS
+        or config.model_max_output_tokens != DEEPSEEK_V4_FLASH_MAX_OUTPUT_TOKENS
+        or config.model_auto_compact_token_limit
+        != config.model_context_window - config.model_max_output_tokens
+    ):
+        raise ValueError("Codex runtime context capability is not the verified DeepSeek V4 Flash contract")
     if not config.base_url:
         raise ValueError("Codex runtime DeepSeek base URL is required")
     if any(character in config.base_url for character in ("\r", "\n", '"', "\\")):
@@ -123,6 +147,9 @@ def ensure_codex_runtime_home(config: CodexRuntimeConfig, *, allow_existing: boo
     text = (
         f'model = "{config.model}"\n'
         f'model_provider = "{config.model_provider}"\n'
+        f'model_context_window = {config.model_context_window}\n'
+        f'model_auto_compact_token_limit = {config.model_auto_compact_token_limit}\n'
+        'model_auto_compact_token_limit_scope = "total"\n'
         'approval_policy = "never"\n'
         'sandbox_mode = "read-only"\n\n'
         f'[model_providers.{config.model_provider}]\n'

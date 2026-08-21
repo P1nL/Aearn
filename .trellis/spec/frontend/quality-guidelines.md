@@ -387,7 +387,7 @@ Composer state stays controlled by assistant-ui and review navigation follows th
 - If no active session exists, show disabled guidance and do not call the backend.
 - A stream that closes without `done` or `error` must become a visible recoverable error state.
 - The frontend must not derive scoring, final exercise result, review scheduling, or hidden-test facts from conversation messages.
-- The frontend must not render "导师判断", provider-native chain-of-thought/reasoning, or inferred hidden thinking; do not regex-split assistant text or parse prompt-policy markers from normal content. Only separately typed, server-validated `public_thinking_text` and its exact fenced active stream are allowed as learner-visible public explanation; legacy steps are compatibility input only and none may be relabeled as hidden/internal reasoning.
+- The frontend must not infer hidden thinking, regex-split assistant text, or consume arbitrary provider chain-of-thought/reasoning. Learner-visible explanation is allowed only through separately typed Aearn authority: Harness `public_thinking_text` or Codex owner-scoped `TutorRuntimeOutput.reasoning_items`. Commentary, reasoning summary, prompts, provider bodies, diagnostics, and legacy steps never become raw reasoning UI.
 - Public frontend types and render paths must ignore/drop `internal_review`; that field is backend-private and must never appear in the UI or app store.
 
 ### 4. Validation & Error Matrix
@@ -901,7 +901,7 @@ Open http://127.0.0.1:1420 with a disposable stateful API fixture, exercise the 
 ### 3. 契约
 
 - 必须真实观察 empty Think、first append、慢流/burst、reset/discard/reconnect、final answer、manual reopen。
-- 检查 DOM 只有一份匹配 turn 的 Think/answer；network/DOM 不含 reasoning/prompt/provider body/diagnostic。
+- 检查 DOM 只有一份匹配 turn 的 `think`/answer；network/DOM 只允许 exact owner-scoped `runtime_output.reasoning_items[].text`，不含 commentary、reasoning summary、prompt、provider body、diagnostic 或 external Runtime IDs。
 - 所有视口 `scrollWidth <= clientWidth`，Composer 可触达，focus 可见，无 framework overlay，相关 console error/warning 为零。
 
 ### 4. 验证与错误矩阵

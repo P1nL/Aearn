@@ -37,15 +37,66 @@ class PlanningQuestionCatalogError(ValueError):
     pass
 
 
+_PLANNING_QUESTION_PROMPTS: Mapping[PlanningFactField, str] = {
+    PlanningFactField.LANGUAGE_ID: "你想学习哪门编程语言？",
+    PlanningFactField.EXPERIENCE_LEVEL: "你目前有多少相关编程经验？",
+    PlanningFactField.GOAL_TEXT: "你希望通过这次学习完成什么具体目标？",
+    PlanningFactField.TARGET_LEVEL: "你希望达到什么学习层级？",
+    PlanningFactField.WEEKLY_MINUTES: "你每周大约能投入多少学习时间？",
+    PlanningFactField.TEACHING_PREFERENCES: "你偏好怎样的教学方式？",
+    PlanningFactField.PACE_CONSTRAINTS: "你的学习节奏还有哪些限制或偏好？",
+}
+
+_PLANNING_FACT_MEANINGS: Mapping[PlanningFactField, str] = {
+    PlanningFactField.LANGUAGE_ID: (
+        "学习者要学习的编程语言或已发布课程；不是教学内容或界面使用的自然语言。"
+    ),
+    PlanningFactField.EXPERIENCE_LEVEL: "学习者此前与编程相关的经验等级。",
+    PlanningFactField.GOAL_TEXT: "学习者希望通过本次学习完成的具体目标或应用方向。",
+    PlanningFactField.TARGET_LEVEL: "学习者希望达到的课程掌握层级。",
+    PlanningFactField.WEEKLY_MINUTES: "学习者每周可以投入的学习时间。",
+    PlanningFactField.TEACHING_PREFERENCES: "学习者偏好的教学方式。",
+    PlanningFactField.PACE_CONSTRAINTS: "学习者对进度安排、频率或节奏的限制与偏好。",
+}
+
+
+def planning_question_prompt(question_key: str | PlanningFactField) -> str:
+    """Return the exact server-owned learner-facing question for one planning fact."""
+    return _PLANNING_QUESTION_PROMPTS[_planning_question_field(question_key)]
+
+
+def build_planning_question_model_descriptor(
+    question_key: str | PlanningFactField,
+) -> dict[str, object]:
+    """Describe one missing fact without giving the model authority over its question."""
+    field = _planning_question_field(question_key)
+    return {
+        "field_key": field.value,
+        "meaning": _PLANNING_FACT_MEANINGS[field],
+        "exact_question": _PLANNING_QUESTION_PROMPTS[field],
+        "wording_policy": (
+            "可先简短确认已知事实，然后必须逐字使用 exact_question 作为唯一问题；"
+            "不得改写字段含义、补充括号示例、添加选项或提出第二个问题。"
+        ),
+        "response_authority": "aearn_typed_request",
+    }
+
+
+def _planning_question_field(question_key: str | PlanningFactField) -> PlanningFactField:
+    if isinstance(question_key, PlanningFactField):
+        return question_key
+    try:
+        return PlanningFactField(str(question_key))
+    except ValueError as exc:
+        raise PlanningQuestionCatalogError("planning question key is unsupported") from exc
+
+
 def build_planning_question_presentation(
     conn: Connection[dict[str, object]],
     *,
     question_key: str,
 ) -> dict[str, object]:
-    try:
-        field = PlanningFactField(question_key)
-    except ValueError as exc:
-        raise PlanningQuestionCatalogError("planning question key is unsupported") from exc
+    field = _planning_question_field(question_key)
 
     if field is PlanningFactField.LANGUAGE_ID:
         rows = conn.execute(
@@ -148,7 +199,7 @@ def validate_planning_question_value(
     if catalog_version != PLANNING_QUESTION_CATALOG_VERSION:
         raise PlanningQuestionCatalogError("planning question catalog version is stale")
     try:
-        field = PlanningFactField(question_key)
+        field = _planning_question_field(question_key)
         normalized = normalize_planning_fact(field, value)
     except (ValueError, PlanningFactError) as exc:
         raise PlanningQuestionCatalogError("planning question value is invalid") from exc

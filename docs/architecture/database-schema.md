@@ -1,6 +1,6 @@
 # Aearn 数据库 Schema 与持久化契约
 
-**状态：** 当前 schema 说明，2026-08-14。
+**状态：** 当前 schema 说明，2026-08-20。
 **权威来源：** `aearn/services/api/app/db/schema.sql`、PostgreSQL bootstrap、
 Tutor/LearningTrack repositories 与 schema/cutover tests。
 **范围：** PostgreSQL 是 Tutor run、cutover receipt、背景队列和 learner-safe
@@ -65,7 +65,9 @@ projection 的唯一 durable authority；Desktop、Celery 和 provider 不拥有
 | `tutor_runs` | 有限 loop / public turn 的 durable snapshot | `origin` 为 `interactive/proactive`；`runtime_kind` 在创建时冻结为 `harness_v1/codex_sidecar_v1` 且不可更新；`interaction_protocol_version` 区分 `legacy_v1/thread_turn_v2`；retry predecessor/root 与 `response_to_request_id` 通过 user+conversation scoped FK；lease、budget counter、`input_revision`、terminal outcome、`completion_reason` 和 `next_event_sequence` 都由 DB 保护；新 v2 request 来源 turn 不持久化 waiting continuation |
 | `tutor_interaction_requests` | typed learner/authority blocking request 与 resolution lineage | kind/actor closed union；每 conversation partial unique pending；source/answer turn 与 answer message 复合 scope；server-owned descriptor/presentation、planning catalog、approval identity、authority scope/hash、state/version/response-or-receipt hash 受 CHECK/FK/CAS 约束 |
 | `tutor_provider_attempt_receipts` | 每个实际 provider HTTP attempt 的 append-only usage 事实 | identity 为 `(run_id,input_revision,decision_iteration,attempt_index)`；复合 FK 固定 user/run/conversation scope；只保存受限 provider/model/protocol、outcome/diagnostic 和非负 token 数，不保存 prompt、response body、reasoning 文本、URL/header 或 credential |
-| `tutor_run_runtime_bindings`、`tutor_runtime_item_receipts`、`tutor_runtime_public_errors` | Codex private correlation、append-only safe receipt 与 Aearn public error | external thread/turn/item identity 不进入公共 DTO；binding/receipt 受 input/lease/Runtime generation fence，只有 final-answer message 可公开 |
+| `tutor_conversation_runtime_threads` | conversation-scoped Codex App Server thread authority | 一个 learner conversation/runtime 至多一个 active thread；external identity immutable/private；resume/compaction 只更新时间事实 |
+| `tutor_run_runtime_bindings`、`tutor_runtime_item_receipts`、`tutor_runtime_public_errors` | fresh run/turn private correlation、append-only safe receipt 与 Aearn public error | external thread/turn/item identity 不进入公共 DTO；binding/receipt 受 input/lease/Runtime generation fence；receipt 不复制 raw text |
+| `tutor_runtime_text_items` | owner-scoped raw reasoning/final-answer projection | reasoning 与 final answer 分 channel；sequence/hash/state/owner/FK 受约束；commentary/summary 不写入 text projection，只有安全 final answer 关联正式 Tutor message |
 | `tutor_run_public_processes` | 一条新 interactive run 对应一条 server-safe public-process projection | 只允许 `thinking/waiting_input/waiting_approval/waiting_authority/completed/interrupted/superseded/unavailable/failed`，只保留 timestamps、关联 public Tutor message 和固定 step key；不存 reasoning、provider payload、prompt、trace 或工具参数 |
 | `tutor_run_public_process_steps` | append-only public-process step order | `(run_id, ordinal)` 唯一；step key/state 均有 DB + repository allowlist；公开 label 在 read projection 映射而非存自由文本 |
 | `tutor_run_skill_selections` | exact Skill evidence | `(run_id, input_revision)` 唯一；保存 id/version 与 manifest/instruction/evaluation hash |
@@ -455,3 +457,13 @@ supersede、stale revision、lease loss 或失败路径只能 reset/discard，�
 该表纳入 cutover target inventory、local export/reset/delete child-first 清单与 bootstrap-twice
 验证。公共表只保存 learner-safe 文本；raw JSON、provider reasoning/body/event、prompt、trace、
 diagnostic、credential 和 secret 禁止落入该表、message 列或 conversation event。
+
+## 2026-08-20：Conversation Runtime thread 与 raw text projection
+
+| 表 | 责任 | 关键不变量 |
+| --- | --- | --- |
+| `tutor_conversation_runtime_threads` | 一个 learner conversation 对应的持久 Codex App Server thread | owner/conversation scoped FK；每 conversation/runtime 最多一个 active row；固定 `deepseek-v4-flash` + `aearn_deepseek`；external identity immutable/private；记录 native/adopted legacy/reseed lineage 与 resume/compaction 时间 |
+| `tutor_run_runtime_bindings` | fresh TutorRun 到同 conversation thread 内一个新 Codex turn 的绑定 | 增加 conversation thread FK；run 仍唯一，external turn 唯一；不再要求 external thread 在 run binding 中唯一；input/lease/connection generation fence 仍控制投影 |
+| `tutor_runtime_text_items` | owner-scoped raw reasoning 与 final-answer current/history projection | `(binding, external item hash, channel)` 唯一；channel/state/sequence/hash/connection generation 闭合；streaming 可追加，completed/discarded/blocked terminal immutable；completed item 仅允许一次关联同 conversation 正式 message |
+
+`reasoning` 和 `final_answer` raw text 只存在 `tutor_runtime_text_items`，不得复制进 runtime receipt。phase 校正为 commentary 或任意 turn terminal 遇到未完成 item 时，必须把 row 转为 `discarded`，同时将 `text=''`、`content_hash=NULL` 并写入 terminal 时间，禁止留下可恢复的 commentary 或永久 `streaming` row。`tutor_runtime_item_receipts` 仍只保存 event/item kind、sequence、hash、safe code、projection status 和 Aearn public reference；commentary/summary 只能形成 nonpublic receipt。新表纳入 bootstrap twice、cutover inventory、owner-scope FK 和 transaction-local purge guard。删除顺序必须先 text item/receipt/error，再 run binding，再 conversation thread，最后才允许删除 owning run/conversation。

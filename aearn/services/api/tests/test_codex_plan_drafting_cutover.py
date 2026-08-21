@@ -26,6 +26,7 @@ from app.agents.runtime.contracts import (
     RuntimeTerminalStatus,
     RuntimeThreadHandle,
     RuntimeThreadRequest,
+    RuntimeToolCall,
     RuntimeTurnRequest,
     RuntimeTurnResult,
 )
@@ -36,6 +37,7 @@ from app.agents.runtime.worker_host import (
 from app.core.config import DEEPSEEK_V4_FLASH_MODEL, Settings
 from app.services.learning.contracts import LearningScope, LearningScopeKind
 from app.services.learning.plan_repository import PostgresLearningPlanSessionRepository
+from app.services.learning.planning_facts import PostgresPlanningFactRepository
 from app.services.learning.track_repository import PostgresLearningTrackRepository
 from app.services.tutor.codex_dispatcher import CodexTutorRunDispatcher
 from app.services.tutor.interactive import TutorRuntimeDispatchRouter
@@ -178,9 +180,12 @@ def test_plan_drafting_unhealthy_admission_creates_no_conversation(tutor_persist
 
 
 class _FakeCodexHost:
-    def __init__(self) -> None:
+    def __init__(self, *, awaiting_context: bool = False) -> None:
+        self.awaiting_context = awaiting_context
         self.thread_requests: list[RuntimeThreadRequest] = []
+        self.resumed_thread_ids: list[str] = []
         self.turn_requests: list[RuntimeTurnRequest] = []
+        self.turn_count = 0
 
     def health_snapshot(self, *, timeout_s: float = 20.0) -> RuntimeHealthSnapshot:
         del timeout_s
@@ -202,38 +207,75 @@ class _FakeCodexHost:
         self.thread_requests.append(request)
         return RuntimeThreadHandle("thread-cutover", 7)
 
+    def resume_thread(
+        self,
+        thread_id: str,
+        *,
+        timeout_s: float = 30.0,
+    ) -> RuntimeThreadHandle:
+        del timeout_s
+        self.resumed_thread_ids.append(thread_id)
+        return RuntimeThreadHandle(thread_id, 7)
+
+    def compact_thread(
+        self,
+        thread: RuntimeThreadHandle,
+        *,
+        timeout_s: float = 30.0,
+    ) -> None:
+        del thread, timeout_s
+
     def run_turn(
         self,
         request: RuntimeTurnRequest,
         *,
         control_reader,  # type: ignore[no-untyped-def]
         initial_input_revision: int,
+        event_observer=None,  # type: ignore[no-untyped-def]
         poll_interval_s: float = 0.2,
         timeout_s: float = 330.0,
     ) -> RuntimeTurnResult:
         del control_reader, initial_input_revision, poll_interval_s, timeout_s
         self.turn_requests.append(request)
+        self.turn_count += 1
+        turn_id = f"turn-cutover-{self.turn_count}"
+        if self.awaiting_context:
+            asyncio.run(
+                request.tools.invoke(
+                    RuntimeToolCall(
+                        request.thread.thread_id,
+                        turn_id,
+                        f"context-call-{self.turn_count}",
+                        "aearn_planning_context_read",
+                        {"schema_version": "aearn-learning-plan-tools-v1"},
+                    )
+                )
+            )
         text = "我已根据当前信息准备计划草稿；请在右侧检查后由 Aearn 确认。"
         events = (
-            RuntimeEvent(RuntimeEventKind.TURN_STARTED, "thread-cutover", "turn-cutover"),
+            RuntimeEvent(RuntimeEventKind.TURN_STARTED, "thread-cutover", turn_id),
             RuntimeEvent(
                 RuntimeEventKind.MESSAGE_COMPLETED,
                 "thread-cutover",
-                "turn-cutover",
-                item_id="message-final",
+                turn_id,
+                item_id=f"message-final-{self.turn_count}",
                 visible_text=text,
                 content_sha256=__import__("hashlib").sha256(text.encode("utf-8")).hexdigest(),
+                phase="final_answer",
             ),
             RuntimeEvent(
                 RuntimeEventKind.TURN_COMPLETED,
                 "thread-cutover",
-                "turn-cutover",
+                turn_id,
                 terminal_status=RuntimeTerminalStatus.COMPLETED,
             ),
         )
+        if event_observer is not None:
+            for sequence, event in enumerate(events, start=1):
+                event_observer(event, sequence)
         return RuntimeTurnResult(
             request.thread,
-            "turn-cutover",
+            turn_id,
             RuntimeTerminalStatus.COMPLETED,
             events,
         )
@@ -272,7 +314,7 @@ def test_codex_dispatcher_projects_without_harness_loop(tutor_persistence, tmp_p
         interaction_protocol_version="thread_turn_v2",
         runtime_kind="codex_sidecar_v1",
     )
-    repository.accept_input(
+    accepted = repository.accept_input(
         user_id=tutor_persistence.user_id,
         run_id=run.run_id,
         idempotency_key=f"codex-dispatch-{uuid4().hex}",
@@ -283,6 +325,23 @@ def test_codex_dispatcher_projects_without_harness_loop(tutor_persistence, tmp_p
         user_id=tutor_persistence.user_id,
         run_id=run.run_id,
         explicit_scope=LearningScope(scope_kind=LearningScopeKind.PLAN_DRAFTING),
+    )
+    PostgresPlanningFactRepository(conn).record_input(
+        user_id=tutor_persistence.user_id,
+        run_id=run.run_id,
+        conversation_id=conversation_id,
+        message_id=accepted.message_id,
+        input_revision=accepted.input_revision,
+        content="",
+        explicit_facts={
+            "language_id": "python",
+            "goal_text": "构建可靠的自动化工具",
+            "target_level": "intermediate",
+            "weekly_minutes": 240,
+            "experience_level": "beginner",
+            "teaching_preferences": ["examples_first", "practice_heavy"],
+            "pace_constraints": "每周安排四次专注学习",
+        },
     )
 
     @contextmanager
@@ -299,6 +358,14 @@ def test_codex_dispatcher_projects_without_harness_loop(tutor_persistence, tmp_p
 
     assert result.terminal_outcome is TutorTerminalOutcome.COMPLETED
     assert len(host.thread_requests) == 1
+    instructions = str(host.thread_requests[0].base_instructions)
+    assert "禁止调用 Codex 内置 request_user_input" in instructions
+    assert "data.next_missing_fact" in instructions
+    assert "逐字使用 exact_question" in instructions
+    assert "language_id 始终表示要学习的编程语言或课程" in instructions
+    assert "不表示教学内容使用的自然语言" in instructions
+    assert "中文、英文" not in instructions
+    assert "英文" not in instructions
     assert {tool.name for tool in host.thread_requests[0].tools} == {
         "aearn_planning_context_read",
         "aearn_learning_plan_draft",
@@ -319,6 +386,324 @@ def test_codex_dispatcher_projects_without_harness_loop(tutor_persistence, tmp_p
     ).fetchall()
     assert [row["role"] for row in messages] == ["learner", "tutor"]
     assert "Aearn 确认" in str(messages[-1]["content"])
+
+
+def test_codex_dispatcher_reuses_one_conversation_thread_for_fresh_runs(
+    tutor_persistence,
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
+    conn = tutor_persistence.connection
+    repository = PostgresTutorRepository(conn)
+    conversation_id = repository.create_conversation(user_id=tutor_persistence.user_id)
+    PostgresLearningTrackRepository(conn).bind_conversation_scope(
+        user_id=tutor_persistence.user_id,
+        conversation_id=conversation_id,
+        scope=LearningScope(scope_kind=LearningScopeKind.PLAN_DRAFTING),
+    )
+    PostgresLearningPlanSessionRepository(conn).create_session(
+        user_id=tutor_persistence.user_id,
+        conversation_id=conversation_id,
+        preferred_language_id="python",
+    )
+
+    def create_run(content: str):  # type: ignore[no-untyped-def]
+        run = repository.create_run(
+            user_id=tutor_persistence.user_id,
+            conversation_id=conversation_id,
+            catalog_digest=tutor_persistence.catalog.digest,
+            policy=TutorPolicySnapshot(
+                deadline=datetime.now(UTC) + timedelta(minutes=5),
+                max_iterations=3,
+                max_model_calls=2,
+                max_capability_calls=2,
+                max_effects=0,
+                context_token_budget=512,
+            ),
+            origin="interactive",
+            interaction_protocol_version="thread_turn_v2",
+            runtime_kind="codex_sidecar_v1",
+        )
+        accepted = repository.accept_input(
+            user_id=tutor_persistence.user_id,
+            run_id=run.run_id,
+            idempotency_key=f"codex-thread-reuse-{uuid4().hex}",
+            content=content,
+            received_at=datetime.now(UTC),
+        )
+        PostgresLearningTrackRepository(conn).snapshot_run_scope(
+            user_id=tutor_persistence.user_id,
+            run_id=run.run_id,
+            explicit_scope=LearningScope(scope_kind=LearningScopeKind.PLAN_DRAFTING),
+        )
+        return run, accepted
+
+    @contextmanager
+    def same_connection():  # type: ignore[no-untyped-def]
+        yield conn
+
+    host = _FakeCodexHost()
+    dispatcher = CodexTutorRunDispatcher(
+        settings=_settings(codex_runtime_home_directory=str(tmp_path / "runtime-home")),
+        host=host,
+        connection_factory=same_connection,
+        manage_autocommit=False,
+    )
+    first, first_input = create_run("请先给我一个 Python 学习建议。")
+    PostgresPlanningFactRepository(conn).record_input(
+        user_id=tutor_persistence.user_id,
+        run_id=first.run_id,
+        conversation_id=conversation_id,
+        message_id=first_input.message_id,
+        input_revision=first_input.input_revision,
+        content="",
+        explicit_facts={
+            "language_id": "python",
+            "goal_text": "构建可靠的自动化工具",
+            "target_level": "intermediate",
+            "weekly_minutes": 240,
+            "experience_level": "beginner",
+            "teaching_preferences": ["examples_first", "practice_heavy"],
+            "pace_constraints": "每周安排四次专注学习",
+        },
+    )
+    dispatcher.dispatch(user_id=tutor_persistence.user_id, run_id=first.run_id)
+    second, _second_input = create_run("继续补充下一步。")
+    dispatcher.dispatch(user_id=tutor_persistence.user_id, run_id=second.run_id)
+
+    assert len(host.thread_requests) == 1
+    assert host.resumed_thread_ids == ["thread-cutover"]
+    thread_rows = conn.execute(
+        "SELECT external_thread_id, migration_mode FROM tutor_conversation_runtime_threads WHERE user_id = %s AND conversation_id = %s",
+        (tutor_persistence.user_id, conversation_id),
+    ).fetchall()
+    assert thread_rows == [{"external_thread_id": "thread-cutover", "migration_mode": "native"}]
+    binding_rows = conn.execute(
+        """
+        SELECT external_thread_id, external_turn_id
+        FROM tutor_run_runtime_bindings
+        WHERE user_id = %s AND conversation_id = %s
+        ORDER BY created_at, id
+        """,
+        (tutor_persistence.user_id, conversation_id),
+    ).fetchall()
+    assert [str(row["external_thread_id"]) for row in binding_rows] == [
+        "thread-cutover",
+        "thread-cutover",
+    ]
+    assert len({str(row["external_turn_id"]) for row in binding_rows}) == 2
+
+
+def test_codex_missing_facts_create_server_typed_request(
+    tutor_persistence,
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
+    conn = tutor_persistence.connection
+    repository = PostgresTutorRepository(conn)
+    conversation_id = repository.create_conversation(user_id=tutor_persistence.user_id)
+    PostgresLearningTrackRepository(conn).bind_conversation_scope(
+        user_id=tutor_persistence.user_id,
+        conversation_id=conversation_id,
+        scope=LearningScope(scope_kind=LearningScopeKind.PLAN_DRAFTING),
+    )
+    PostgresLearningPlanSessionRepository(conn).create_session(
+        user_id=tutor_persistence.user_id,
+        conversation_id=conversation_id,
+        preferred_language_id="python",
+    )
+    run = repository.create_run(
+        user_id=tutor_persistence.user_id,
+        conversation_id=conversation_id,
+        catalog_digest=tutor_persistence.catalog.digest,
+        policy=TutorPolicySnapshot(
+            deadline=datetime.now(UTC) + timedelta(minutes=5),
+            max_iterations=3,
+            max_model_calls=2,
+            max_capability_calls=2,
+            max_effects=0,
+            context_token_budget=512,
+        ),
+        origin="interactive",
+        interaction_protocol_version="thread_turn_v2",
+        runtime_kind="codex_sidecar_v1",
+    )
+    accepted = repository.accept_input(
+        user_id=tutor_persistence.user_id,
+        run_id=run.run_id,
+        idempotency_key=f"codex-typed-request-{uuid4().hex}",
+        content="我想学习 Python，而且目前是零基础。",
+        received_at=datetime.now(UTC),
+    )
+    PostgresLearningTrackRepository(conn).snapshot_run_scope(
+        user_id=tutor_persistence.user_id,
+        run_id=run.run_id,
+        explicit_scope=LearningScope(scope_kind=LearningScopeKind.PLAN_DRAFTING),
+    )
+    PostgresPlanningFactRepository(conn).record_input(
+        user_id=tutor_persistence.user_id,
+        run_id=run.run_id,
+        conversation_id=conversation_id,
+        message_id=accepted.message_id,
+        input_revision=accepted.input_revision,
+        content="我想学习 Python，而且目前是零基础。",
+        explicit_facts={"language_id": "python", "experience_level": "new"},
+    )
+
+    @contextmanager
+    def same_connection():  # type: ignore[no-untyped-def]
+        yield conn
+
+    result = CodexTutorRunDispatcher(
+        settings=_settings(codex_runtime_home_directory=str(tmp_path / "runtime-home")),
+        host=_FakeCodexHost(awaiting_context=True),
+        connection_factory=same_connection,
+        manage_autocommit=False,
+    ).dispatch(user_id=tutor_persistence.user_id, run_id=run.run_id)
+
+    assert result.terminal_outcome is TutorTerminalOutcome.COMPLETED
+    assert result.completion_reason is not None
+    request = conn.execute(
+        """
+        SELECT question_key, state, descriptor_json
+        FROM tutor_interaction_requests
+        WHERE source_turn_id = %s
+        """,
+        (run.run_id,),
+    ).fetchone()
+    assert request is not None
+    assert request["question_key"] == "goal_text"
+    assert request["state"] == "pending"
+    assert request["descriptor_json"]["prompt"] == "你希望通过这次学习完成什么具体目标？"
+    binding = conn.execute(
+        "SELECT state, final_message_id FROM tutor_run_runtime_bindings WHERE run_id = %s",
+        (run.run_id,),
+    ).fetchone()
+    assert binding is not None and binding["state"] == "completed"
+    text_items = conn.execute(
+        "SELECT channel, state, public_message_id FROM tutor_runtime_text_items WHERE run_id = %s",
+        (run.run_id,),
+    ).fetchall()
+    assert text_items == [
+        {
+            "channel": "final_answer",
+            "state": "completed",
+            "public_message_id": binding["final_message_id"],
+        }
+    ]
+
+
+def test_codex_typed_response_fresh_turn_continues_with_next_server_question(
+    tutor_persistence,
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
+    conn = tutor_persistence.connection
+    repository = PostgresTutorRepository(conn)
+    conversation_id = repository.create_conversation(user_id=tutor_persistence.user_id)
+    PostgresLearningTrackRepository(conn).bind_conversation_scope(
+        user_id=tutor_persistence.user_id,
+        conversation_id=conversation_id,
+        scope=LearningScope(scope_kind=LearningScopeKind.PLAN_DRAFTING),
+    )
+    PostgresLearningPlanSessionRepository(conn).create_session(
+        user_id=tutor_persistence.user_id,
+        conversation_id=conversation_id,
+        preferred_language_id="python",
+    )
+    run = repository.create_run(
+        user_id=tutor_persistence.user_id,
+        conversation_id=conversation_id,
+        catalog_digest=tutor_persistence.catalog.digest,
+        policy=TutorPolicySnapshot(
+            deadline=datetime.now(UTC) + timedelta(minutes=5),
+            max_iterations=3,
+            max_model_calls=2,
+            max_capability_calls=2,
+            max_effects=0,
+            context_token_budget=512,
+        ),
+        origin="interactive",
+        interaction_protocol_version="thread_turn_v2",
+        runtime_kind="codex_sidecar_v1",
+    )
+    accepted = repository.accept_input(
+        user_id=tutor_persistence.user_id,
+        run_id=run.run_id,
+        idempotency_key=f"codex-continuous-source-{uuid4().hex}",
+        content="我想学习 Python，而且目前是零基础。",
+        received_at=datetime.now(UTC),
+    )
+    PostgresLearningTrackRepository(conn).snapshot_run_scope(
+        user_id=tutor_persistence.user_id,
+        run_id=run.run_id,
+        explicit_scope=LearningScope(scope_kind=LearningScopeKind.PLAN_DRAFTING),
+    )
+    facts = PostgresPlanningFactRepository(conn)
+    facts.record_input(
+        user_id=tutor_persistence.user_id,
+        run_id=run.run_id,
+        conversation_id=conversation_id,
+        message_id=accepted.message_id,
+        input_revision=accepted.input_revision,
+        content="",
+        explicit_facts={"language_id": "python", "experience_level": "new"},
+    )
+
+    @contextmanager
+    def same_connection():  # type: ignore[no-untyped-def]
+        yield conn
+
+    host = _FakeCodexHost(awaiting_context=False)
+    dispatcher = CodexTutorRunDispatcher(
+        settings=_settings(codex_runtime_home_directory=str(tmp_path / "runtime-home")),
+        host=host,
+        connection_factory=same_connection,
+        manage_autocommit=False,
+    )
+    dispatcher.dispatch(user_id=tutor_persistence.user_id, run_id=run.run_id)
+    first_request = conn.execute(
+        "SELECT item_id::text AS item_id, version, question_key FROM tutor_interaction_requests WHERE source_turn_id = %s",
+        (run.run_id,),
+    ).fetchone()
+    assert first_request is not None and first_request["question_key"] == "goal_text"
+
+    response = repository.respond_to_interaction_request(
+        user_id=tutor_persistence.user_id,
+        conversation_id=conversation_id,
+        item_id=str(first_request["item_id"]),
+        expected_version=int(first_request["version"]),
+        response={
+            "kind": "planning_input",
+            "question_key": "goal_text",
+            "catalog_version": "tutor_planning_questions_v1",
+            "value": "构建可靠的自动化工具",
+        },
+        idempotency_key=f"codex-continuous-answer-{uuid4().hex}",
+        catalog_digest=tutor_persistence.catalog.digest,
+        policy=run.policy,
+        received_at=datetime.now(UTC),
+    )
+    assert response.turn is not None
+    PostgresLearningTrackRepository(conn).inherit_run_scope(
+        user_id=tutor_persistence.user_id,
+        run_id=response.turn.run.run_id,
+        source_run_id=run.run_id,
+    )
+    facts.record_input(
+        user_id=tutor_persistence.user_id,
+        run_id=response.turn.run.run_id,
+        conversation_id=conversation_id,
+        message_id=response.turn.acceptance.message_id,
+        input_revision=response.turn.acceptance.input_revision,
+        content="",
+        explicit_facts=response.planning_facts,
+    )
+
+    dispatcher.dispatch(user_id=tutor_persistence.user_id, run_id=response.turn.run.run_id)
+    next_request = conn.execute(
+        "SELECT question_key, state FROM tutor_interaction_requests WHERE source_turn_id = %s",
+        (response.turn.run.run_id,),
+    ).fetchone()
+    assert next_request == {"question_key": "pace_constraints", "state": "pending"}
+    assert host.resumed_thread_ids == ["thread-cutover"]
 
 
 def test_retry_and_dispatch_claim_preserve_codex_runtime(tutor_persistence) -> None:  # type: ignore[no-untyped-def]

@@ -17,6 +17,7 @@ from app.services.learning.plan_tools import (
     LearningPlanDraftToolInput,
     LearningPlanToolStatus,
 )
+from app.services.learning.planning_questions import build_planning_question_model_descriptor
 
 
 @dataclass
@@ -76,6 +77,19 @@ def _valid_modules() -> list[dict[str, object]]:
     ]
 
 
+def test_language_question_descriptor_prevents_natural_language_ambiguity() -> None:
+    descriptor = build_planning_question_model_descriptor("language_id")
+
+    assert descriptor["field_key"] == "language_id"
+    assert descriptor["exact_question"] == "你想学习哪门编程语言？"
+    assert "编程语言" in str(descriptor["meaning"])
+    assert "自然语言" in str(descriptor["meaning"])
+    assert "中文" not in str(descriptor)
+    assert "英文" not in str(descriptor)
+    assert "补充括号示例" in str(descriptor["wording_policy"])
+    assert descriptor["response_authority"] == "aearn_typed_request"
+
+
 def test_tool_definitions_expose_only_typed_modules_and_no_authority_fields() -> None:
     service = FakeService(
         _result(LearningPlanToolStatus.COMPLETED, "planning_context_ready"),
@@ -84,8 +98,11 @@ def test_tool_definitions_expose_only_typed_modules_and_no_authority_fields() ->
     registry = LearningPlanRuntimeToolRegistry(service)
     definitions = {definition.name: definition for definition in registry.definitions}
     assert set(definitions) == {PLANNING_CONTEXT_TOOL_NAME, LEARNING_PLAN_DRAFT_TOOL_NAME}
-    context_schema = definitions[PLANNING_CONTEXT_TOOL_NAME].input_schema
+    context_definition = definitions[PLANNING_CONTEXT_TOOL_NAME]
+    context_schema = context_definition.input_schema
     assert context_schema.get("type") == "object"
+    assert "next_missing_fact" in context_definition.description
+    assert "exact_question" in context_definition.description
     draft_schema = json.dumps(
         definitions[LEARNING_PLAN_DRAFT_TOOL_NAME].input_schema,
         ensure_ascii=False,
