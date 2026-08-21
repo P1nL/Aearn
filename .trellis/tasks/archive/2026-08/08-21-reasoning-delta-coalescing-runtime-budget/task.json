@@ -1,0 +1,32 @@
+{
+  "id": "reasoning-delta-coalescing-runtime-budget",
+  "name": "reasoning-delta-coalescing-runtime-budget",
+  "title": "Reasoning delta 合并与 Runtime 预算修复",
+  "description": "对 Codex reasoning/final-answer delta 做 item/index/phase-aware 合并，拆分 source/projection sequence 与语义预算，移除 2,000 delta 正常 turn 失败。",
+  "status": "completed",
+  "dev_type": null,
+  "scope": "codex_sidecar_v1 plan_drafting",
+  "package": null,
+  "priority": "P0",
+  "creator": "PINKING",
+  "assignee": "PINKING",
+  "createdAt": "2026-08-21",
+  "completedAt": "2026-08-21",
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "08-21-tutor-planning-intent-runtime-stream-reliability",
+  "relatedFiles": [
+    "aearn/services/api/app/agents/runtime/codex_adapter.py",
+    "aearn/services/api/app/agents/runtime/contracts.py",
+    "aearn/services/api/app/services/tutor/runtime_projection.py",
+    "aearn/services/api/app/db/schema.sql",
+    "aearn/apps/desktop/src/hooks/useTutorConversationStream.ts"
+  ],
+  "notes": "第二实施 child；核心逻辑可独立开发，真实跨 child browser 验收依赖课程意图 child 完成。",
+  "meta": {}
+}
