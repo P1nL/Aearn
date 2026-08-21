@@ -1906,3 +1906,41 @@ Closed the planning-only Tutor Harness rearchitecture parent after all nine inde
 ### Status
 
 [OK] **Completed**
+
+
+## Session 117: 完成 Runtime delta 合并与语义预算 Child
+
+**Date**: 2026-08-21
+**Task**: 完成 Runtime delta 合并与语义预算 Child
+**Branch**: `main`
+
+### Summary
+
+完成 Child 2：引入 item/index/phase-aware delta coalescing、source/projection sequence、PostgreSQL 安全 source receipt 与独立 Runtime 预算；默认 fake/offline 全门通过并归档。
+
+### Main Changes
+
+- 5,000 单字符 reasoning 与 2,500-delta LearningPlan repair 不再触发 2,000-event 失败
+- PostgreSQL receipt 保存 projection sequence 与安全 source range/count/hash，公共 SSE/DTO 保持兼容
+- 补齐 Runtime 配置、无文本可观测性、source-of-truth docs 与 Trellis code-spec
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `5699d97e` | (see git log) |
+| `a82deb59` | (see git log) |
+
+### Testing
+
+- [OK] Full backend: 689 passed, 2 skipped；Ruff/Mypy/lock/compileall 通过
+- [OK] Desktop: 48 passed；desktop:check 通过；bootstrap twice 通过
+- [OK] Browser: 1440x900、900x900、390x844 无溢出/overlay/console error，未调用真实 provider
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 仅在用户明确要求后执行 Parent 08-21-tutor-planning-intent-runtime-stream-reliability 的最终集成复核；不要恢复 stale 08-13。
