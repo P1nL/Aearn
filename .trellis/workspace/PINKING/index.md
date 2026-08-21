@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-2.md`
-- **Total Sessions**: 114
-- **Last Active**: 2026-08-19
+- **Total Sessions**: 115
+- **Last Active**: 2026-08-21
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-2.md` | ~1866 | Active |
+| `journal-2.md` | ~1887 | Active |
 | `journal-1.md` | ~1979 | Archived |
 <!-- @@@/auto:active-documents -->
 
@@ -30,6 +30,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 115 | 2026-08-21 | Codex Runtime 持久线程与原始流收尾 | `4adbb1e2` | `main` |
 | 114 | 2026-08-19 | 修复 Tutor snapshot 运行步骤契约回归 | `b671e027` | `main` |
 | 113 | 2026-08-19 | 完成 Codex Sidecar 集成 QA 与父任务收口 | `b61e515e`, `890391f7` | `main` |
 | 112 | 2026-08-19 | 完成 Codex plan-drafting 受控切换 | `a0a154c1`, `34d6a00c` | `main` |
