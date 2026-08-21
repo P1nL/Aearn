@@ -188,7 +188,15 @@ export type TutorRequestOption = { value: string; label: string };
 export type TutorRequestPresentation =
   | { type: "text"; field_key: string | null; minimum_length: number; maximum_length: number; multiline: boolean }
   | { type: "integer"; field_key: string; minimum: number; maximum: number; step: number; recommended: number | null; unit: string }
-  | { type: "single_select"; field_key: string; options: TutorRequestOption[]; recommended: string | null }
+  | {
+      type: "single_select";
+      field_key: string;
+      options: TutorRequestOption[];
+      recommended: string | null;
+      selection_scope: "explicit_shortlist" | "intent_shortlist" | "conflict_shortlist" | "full_catalog" | null;
+      selection_reason_code: string | null;
+      intent_policy_version: string | null;
+    }
   | { type: "multi_select"; field_key: string; options: TutorRequestOption[]; recommended: string[]; maximum_selections: number }
   | { type: "approval"; proposal_id: string; authority_key: string; risk_level: "low" | "medium" | "high"; summary: string };
 

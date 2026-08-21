@@ -124,7 +124,10 @@ class TutorPublicService:
         self._context_references = PostgresTutorContextReferenceRepository(conn)
         self._learner_state = TutorLearnerStateRepository(conn)
         self._proactive = PostgresTutorProactiveRepository(conn)
-        self._queue = PostgresTutorQueueController(conn)
+        self._queue = PostgresTutorQueueController(
+            conn,
+            intent_resolution_enabled=self._settings.tutor_planning_intent_enabled,
+        )
         self._runtime_selection = TutorRuntimeSelectionPolicy(conn, settings=self._settings)
 
     def create_or_resume_conversation(
@@ -814,6 +817,7 @@ class TutorPublicService:
                     content=content,
                     explicit_facts=planning_facts,
                     reopen_fields=reopen_fact_fields,
+                    intent_resolution_enabled=self._settings.tutor_planning_intent_enabled,
                 )
             state = self._repository.read_run_state(user_id=user_id, run_id=accepted.run.run_id)
         except TutorCodexRuntimeUnavailable as exc:
@@ -916,6 +920,7 @@ class TutorPublicService:
                     content=content,
                     explicit_facts=planning_facts,
                     reopen_fields=reopen_fact_fields,
+                    intent_resolution_enabled=self._settings.tutor_planning_intent_enabled,
                 )
             state = self._repository.read_run_state(user_id=user_id, run_id=accepted.run.run_id)
         except TutorRunNotFound as exc:
@@ -996,6 +1001,7 @@ class TutorPublicService:
                     input_revision=accepted.turn.acceptance.input_revision,
                     content="",
                     explicit_facts=accepted.planning_facts,
+                    intent_resolution_enabled=self._settings.tutor_planning_intent_enabled,
                 )
             state = self._repository.read_run_state(
                 user_id=user_id,
@@ -1086,6 +1092,7 @@ class TutorPublicService:
                     content=content,
                     explicit_facts=planning_facts,
                     reopen_fields=reopen_fact_fields,
+                    intent_resolution_enabled=self._settings.tutor_planning_intent_enabled,
                 )
             updated = self._repository.read_run_state(user_id=user_id, run_id=run_id)
         except TutorRunNotFound as exc:

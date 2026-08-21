@@ -289,3 +289,14 @@ pnpm --dir .\aearn desktop:check
 ```
 
 fixture 覆盖 isolated strict config、manual/local compaction、reasoning/summary/commentary/final-answer phase、conversation thread resume、typed planning request、snapshot/SSE reconnect 与 history reducer。不要在该验证序列中设置真实 provider key 或启用 real smoke。
+
+## Course intent metadata checks
+
+Database bootstrap now seeds `tutor_learning_intents` and `language_course_intent_tags` after the published course catalog, then validates bidirectional active coverage. Run bootstrap twice after catalog metadata changes:
+
+```powershell
+uv --directory .\aearn\services\api run python -m app.db.bootstrap
+uv --directory .\aearn\services\api run python -m app.db.bootstrap
+```
+
+A new active course must add intent tags in the same transaction or bootstrap/publication fails with `language_course_intent_coverage_missing`. Course slug is allowed only in the idempotent bootstrap backfill; runtime code must use course UUID/tag joins. `TUTOR_PLANNING_INTENT_ENABLED=false` disables automatic intent admission and falls back to the full active catalog, but the language selector still has no default selection.

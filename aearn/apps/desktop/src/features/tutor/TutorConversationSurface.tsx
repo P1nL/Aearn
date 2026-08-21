@@ -505,10 +505,16 @@ export function TutorConversationSurface({
   }
 
   function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) { if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) { event.preventDefault(); void submitComposer(); } }
+  function updateRequestDraft(draft: RequestDraft) {
+    setRequestDraft(draft);
+    persistRequestDraft(pendingRequest, draft);
+  }
   function respondToPendingRequest(response: TutorInteractionResponseDraft) {
     if (!userId || !selectedConversationId || !pendingRequest) return;
-    void runMutation(`request:${pendingRequest.id}`, async () => {
-      const accepted = await respondToTutorInteractionRequest({ userId, conversationId: selectedConversationId, itemId: pendingRequest.id, expectedRequestVersion: pendingRequest.version, response, clientActionId: createTutorActionId("tutor-request-response") });
+    const answeredRequest = pendingRequest;
+    void runMutation(`request:${answeredRequest.id}`, async () => {
+      const accepted = await respondToTutorInteractionRequest({ userId, conversationId: selectedConversationId, itemId: answeredRequest.id, expectedRequestVersion: answeredRequest.version, response, clientActionId: createTutorActionId("tutor-request-response") });
+      clearPersistedRequestDraft(answeredRequest);
       adoptAcceptedTurn(accepted);
       return accepted;
     });
@@ -575,7 +581,7 @@ export function TutorConversationSurface({
         /> : null}
       </section>
 
-      {pendingRequest ? <TypedRequestSeat request={pendingRequest} draft={requestDraft} busy={mutationBusy === `request:${pendingRequest.id}`} disabled={!writeEnabled} onDraftChange={setRequestDraft} onSubmit={submitRequestDraft} onApprove={(decision) => respondToPendingRequest({ kind: "approval", proposal_identity: pendingRequest.kind === "approval" ? pendingRequest.presentation.proposal_id : "", decision })} /> : <>
+      {pendingRequest ? <TypedRequestSeat request={pendingRequest} draft={requestDraft} busy={mutationBusy === `request:${pendingRequest.id}`} disabled={!writeEnabled} onDraftChange={updateRequestDraft} onSubmit={submitRequestDraft} onApprove={(decision) => respondToPendingRequest({ kind: "approval", proposal_identity: pendingRequest.kind === "approval" ? pendingRequest.presentation.proposal_id : "", decision })} /> : <>
         {selectedConversationId && queue.length > 0 && <QueueTray
           items={queue} maxPending={maxPending} activeTurn={activeTurn} paused={queuePaused} pauseReason={queuePauseReason}
           disabled={mutationsLocked} busyKey={mutationBusy} editingId={editingQueueId} editDraft={queueEditDraft}
@@ -940,7 +946,35 @@ function reconcileVisibleTimeline(items: TutorHistoryItem[]): TutorHistoryItem[]
     (item.kind !== "elicitation" && item.kind !== "approval") || !formalTutorTurnIds.has(item.turn_id),
   );
 }
-function initialRequestDraft(request: TutorInteractionRequestItem | null): RequestDraft { if (!request || request.kind === "approval") return ""; const p = request.presentation; if (p.type === "integer") return p.recommended === null ? "" : String(p.recommended); if (p.type === "single_select") return p.recommended ?? ""; if (p.type === "multi_select") return p.recommended; return ""; }
+function initialRequestDraft(request: TutorInteractionRequestItem | null): RequestDraft {
+  if (!request || request.kind === "approval") return "";
+  const stored = readPersistedRequestDraft(request);
+  if (stored !== null) return stored;
+  const p = request.presentation;
+  if (p.type === "integer") return p.recommended === null ? "" : String(p.recommended);
+  if (p.type === "single_select") return p.recommended ?? "";
+  if (p.type === "multi_select") return p.recommended;
+  return "";
+}
+function requestDraftStorageKey(request: TutorInteractionRequestItem): string { return `aearn.tutor-request-draft:${request.id}:${request.version}`; }
+function persistRequestDraft(request: TutorInteractionRequestItem | null, draft: RequestDraft) {
+  if (!request || request.kind === "approval" || (request.presentation.type !== "single_select" && request.presentation.type !== "multi_select")) return;
+  try { window.sessionStorage.setItem(requestDraftStorageKey(request), JSON.stringify(draft)); } catch { /* storage is best-effort */ }
+}
+function clearPersistedRequestDraft(request: TutorInteractionRequestItem) {
+  try { window.sessionStorage.removeItem(requestDraftStorageKey(request)); } catch { /* storage is best-effort */ }
+}
+function readPersistedRequestDraft(request: TutorInteractionRequestItem): RequestDraft | null {
+  if (request.kind === "approval" || (request.presentation.type !== "single_select" && request.presentation.type !== "multi_select")) return null;
+  try {
+    const raw = window.sessionStorage.getItem(requestDraftStorageKey(request));
+    if (raw === null) return null;
+    const parsed: unknown = JSON.parse(raw);
+    const allowed = new Set(request.presentation.options.map((option) => option.value));
+    if (request.presentation.type === "single_select") return typeof parsed === "string" && allowed.has(parsed) ? parsed : null;
+    return Array.isArray(parsed) && parsed.length > 0 && parsed.length <= request.presentation.maximum_selections && parsed.every((value) => typeof value === "string" && allowed.has(value)) ? parsed : null;
+  } catch { return null; }
+}
 function requestDraftValid(request: TutorInteractionRequestItem, draft: RequestDraft): boolean { if (request.kind === "approval") return true; if (request.presentation.type === "multi_select") return Array.isArray(draft) && draft.length > 0; if (typeof draft !== "string" || !draft.trim()) return false; if (request.presentation.type === "integer") { const value = Number(draft); return Number.isFinite(value) && value >= request.presentation.minimum && value <= request.presentation.maximum; } if (request.presentation.type === "text") return draft.trim().length >= request.presentation.minimum_length && draft.trim().length <= request.presentation.maximum_length; return true; }
 function presentationFieldKey(presentation: Extract<TutorInteractionRequestItem, { kind: "elicitation" }>["presentation"]): string | null { return presentation.type === "approval" ? null : presentation.field_key; }
 function planningQuestionKey(value: string | null): Extract<TutorInteractionResponseDraft, { kind: "planning_input" }>["question_key"] | null { return value === "language_id" || value === "goal_text" || value === "target_level" || value === "weekly_minutes" || value === "experience_level" || value === "teaching_preferences" || value === "pace_constraints" ? value : null; }

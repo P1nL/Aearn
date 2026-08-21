@@ -82,6 +82,9 @@ class Settings(BaseModel):
     tutor_codex_plan_drafting_enabled: bool = Field(
         default_factory=lambda: _env_bool("TUTOR_CODEX_PLAN_DRAFTING_ENABLED", "true")
     )
+    tutor_planning_intent_enabled: bool = Field(
+        default_factory=lambda: _env_bool("TUTOR_PLANNING_INTENT_ENABLED", "true")
+    )
     tutor_codex_runtime_health_max_age_seconds: int = Field(
         default_factory=lambda: _env_int("TUTOR_CODEX_RUNTIME_HEALTH_MAX_AGE_SECONDS", "90"),
         ge=5,

@@ -6,7 +6,7 @@ import psycopg
 import pytest
 
 from app.core.config import get_settings
-from app.db.bootstrap import bootstrap_database
+from app.db.bootstrap import bootstrap_database, language_course_intent_coverage
 from app.db.connection import connect
 from tutor_execution_support import create_pending_execution_job
 
@@ -72,6 +72,47 @@ def test_bootstrap_is_repeatable_and_seeds_catalog() -> None:
     assert sql_runtime["runner"] == "sql"
     assert sql_runtime["sandbox_policy"]["dialect"] == "sqlite"
     assert active_cpp_course is None
+
+
+def test_language_course_intent_schema_coverage_and_publication_gate() -> None:
+    bootstrap_database()
+    bootstrap_database()
+    with connect() as conn:
+        tables = {
+            str(row["table_name"])
+            for row in conn.execute(
+                """
+                SELECT table_name FROM information_schema.tables
+                WHERE table_schema = 'public'
+                  AND table_name IN ('tutor_learning_intents', 'language_course_intent_tags')
+                """
+            ).fetchall()
+        }
+        assert tables == {"tutor_learning_intents", "language_course_intent_tags"}
+        assert language_course_intent_coverage(conn) == {
+            "missing_course_ids": [],
+            "missing_course_slugs": [],
+            "missing_intent_keys": [],
+        }
+        runtime = conn.execute(
+            "SELECT id FROM runtime_profiles WHERE slug = 'rt_python_stdout'"
+        ).fetchone()
+        assert runtime is not None
+        with pytest.raises(psycopg.errors.CheckViolation, match="language_course_intent_coverage_missing"):
+            with conn.transaction():
+                conn.execute(
+                    """
+                    INSERT INTO language_courses (
+                      slug, language, title, description, level, runtime_profile_id,
+                      supported_exercise_types_json
+                    ) VALUES (
+                      'course_missing_intent_tags', 'python', 'Missing tags', 'coverage gate',
+                      'beginner', %s, '[]'::jsonb
+                    )
+                    """,
+                    (runtime["id"],),
+                )
+                conn.execute("SET CONSTRAINTS ALL IMMEDIATE")
 
 
 EXECUTION_SCOPE_CONSTRAINTS = (

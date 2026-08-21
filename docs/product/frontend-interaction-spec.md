@@ -335,3 +335,9 @@ Desktop 通过 `GET /api/tutor/capabilities/thread-turn-v2` 读取 exact server 
 commentary 与 reasoning summary 永不渲染。收到 item-scoped `discard` 时必须立即移除对应 provisional reasoning/answer；turn terminal 后 snapshot 不得恢复任何仍为 streaming 的残项。当前 turn 尚无任何 Runtime item 时可显示静态小写 `think` 状态；一旦 answer 已开始且没有 reasoning，不再保留空 Think。terminal/history item 若 reasoning 为空，DOM 中不得存在空 disclosure。Harness `public_thinking_text` 的旧稳定窗口、grapheme reveal 与 handoff 逻辑继续独立工作，不能和 raw Runtime reducer 共享文本或 generation。
 
 双 channel reducer 以 active turn、input revision、generation、Aearn item ID 和 last sequence 校验；duplicate/out-of-order 旧事件忽略，conversation event gap 或 identity mismatch fresh snapshot。1440×900、900×900 与 390×844 都保持单 entry、无横向溢出；disclosure 控件最小触摸高度 44px，`prefers-reduced-motion` 不影响 authority 和展开状态。
+
+## 2026-08-21: Dynamic language request interaction
+
+The planning language request renders the exact durable server options. `recommended=null` means no radio is selected on first render and the primary Submit action is disabled. Selecting one option enables Submit; the frontend never highlights the first catalog item by position and never computes a recommendation from labels.
+
+The server may provide `explicit_shortlist`, `intent_shortlist`, `conflict_shortlist`, or `full_catalog`, but these metadata fields are not rendered as learner evidence or model rationale. A select draft is stored only by exact request ID/version in session storage and is restored only if its value remains in the persisted option set. Reload/reconnect must preserve options and order; catalog changes affect only future requests.

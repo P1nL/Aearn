@@ -224,3 +224,9 @@ if (!matchesFence(event, live) || !isNextChunk(event, live)) requireSnapshot();
 const graphemes = segmentGraphemes(target);
 setDisplayed(graphemes.slice(0, visibleCount + 1).join(""));
 ```
+
+## Dynamic typed-request recovery (2026-08-21)
+
+- Snapshot and conversation SSE remain the authority for request identity/version and exact options. Reconnect must replace the request projection, not merge a newly fetched catalog into it.
+- A local select draft is valid only for the same request ID/version and only while every stored value remains in the server option set and within `maximum_selections`.
+- Resolving the request clears its stored draft. Text and integer answers are not persisted as select-draft recovery state.

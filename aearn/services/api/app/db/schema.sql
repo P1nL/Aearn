@@ -69,6 +69,110 @@ CREATE TABLE IF NOT EXISTS language_courses (
   archived_at timestamptz
 );
 
+-- Child 08-21 closed planning-intent taxonomy and published-course metadata.
+CREATE TABLE IF NOT EXISTS tutor_learning_intents (
+  intent_key text PRIMARY KEY CHECK (intent_key ~ '^[a-z][a-z0-9_]{1,63}$'),
+  display_name text NOT NULL CHECK (char_length(display_name) BETWEEN 1 AND 120),
+  state text NOT NULL DEFAULT 'active' CHECK (state IN ('active', 'planned', 'retired')),
+  policy_version text NOT NULL CHECK (char_length(policy_version) BETWEEN 1 AND 160),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS language_course_intent_tags (
+  course_id uuid NOT NULL REFERENCES language_courses(id) ON DELETE RESTRICT,
+  intent_key text NOT NULL REFERENCES tutor_learning_intents(intent_key) ON DELETE RESTRICT,
+  relevance_rank integer NOT NULL CHECK (relevance_rank BETWEEN 0 AND 100),
+  is_primary boolean NOT NULL DEFAULT false,
+  policy_version text NOT NULL CHECK (char_length(policy_version) BETWEEN 1 AND 160),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (course_id, intent_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_language_course_intent_tags_intent_rank
+  ON language_course_intent_tags(intent_key, relevance_rank DESC, course_id);
+CREATE INDEX IF NOT EXISTS idx_language_course_intent_tags_course_rank
+  ON language_course_intent_tags(course_id, relevance_rank DESC, intent_key);
+
+DROP TRIGGER IF EXISTS trg_tutor_learning_intents_updated_at ON tutor_learning_intents;
+CREATE TRIGGER trg_tutor_learning_intents_updated_at
+BEFORE UPDATE ON tutor_learning_intents
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_language_course_intent_tags_updated_at ON language_course_intent_tags;
+CREATE TRIGGER trg_language_course_intent_tags_updated_at
+BEFORE UPDATE ON language_course_intent_tags
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE OR REPLACE FUNCTION assert_language_course_intent_coverage()
+RETURNS void AS $$
+DECLARE
+  missing_courses text;
+  missing_intents text;
+BEGIN
+  SELECT string_agg(courses.slug, ',' ORDER BY courses.slug)
+  INTO missing_courses
+  FROM language_courses AS courses
+  WHERE courses.archived_at IS NULL
+    AND NOT EXISTS (
+      SELECT 1
+      FROM language_course_intent_tags AS tags
+      JOIN tutor_learning_intents AS intents
+        ON intents.intent_key = tags.intent_key AND intents.state = 'active'
+      WHERE tags.course_id = courses.id
+    );
+
+  IF missing_courses IS NOT NULL THEN
+    RAISE EXCEPTION 'language_course_intent_coverage_missing: active courses without tags: %', missing_courses
+      USING ERRCODE = '23514';
+  END IF;
+
+  SELECT string_agg(intents.intent_key, ',' ORDER BY intents.intent_key)
+  INTO missing_intents
+  FROM tutor_learning_intents AS intents
+  WHERE intents.state = 'active'
+    AND NOT EXISTS (
+      SELECT 1
+      FROM language_course_intent_tags AS tags
+      JOIN language_courses AS courses
+        ON courses.id = tags.course_id AND courses.archived_at IS NULL
+      WHERE tags.intent_key = intents.intent_key
+    );
+
+  IF missing_intents IS NOT NULL THEN
+    RAISE EXCEPTION 'language_course_intent_coverage_missing: active intents without courses: %', missing_intents
+      USING ERRCODE = '23514';
+  END IF;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION enforce_language_course_intent_coverage()
+RETURNS trigger AS $$
+BEGIN
+  PERFORM assert_language_course_intent_coverage();
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_language_courses_intent_coverage ON language_courses;
+CREATE CONSTRAINT TRIGGER trg_language_courses_intent_coverage
+AFTER INSERT OR UPDATE OF archived_at ON language_courses
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION enforce_language_course_intent_coverage();
+
+DROP TRIGGER IF EXISTS trg_learning_intents_course_coverage ON tutor_learning_intents;
+CREATE CONSTRAINT TRIGGER trg_learning_intents_course_coverage
+AFTER INSERT OR UPDATE OF state ON tutor_learning_intents
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION enforce_language_course_intent_coverage();
+
+DROP TRIGGER IF EXISTS trg_language_course_intent_tags_coverage ON language_course_intent_tags;
+CREATE CONSTRAINT TRIGGER trg_language_course_intent_tags_coverage
+AFTER INSERT OR UPDATE OR DELETE ON language_course_intent_tags
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION enforce_language_course_intent_coverage();
+
 CREATE TABLE IF NOT EXISTS learning_plans (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,

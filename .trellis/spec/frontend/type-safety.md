@@ -569,3 +569,9 @@ const runtime = payload.active_runtime_output === null
   : toTutorRuntimeOutput(payload.active_runtime_output);
 if (payload.active_runtime_output !== null && runtime === null) return null;
 ```
+
+## Planning language presentation exact DTO (2026-08-21)
+
+- `single_select` accepts optional compatibility fields `selection_scope`, `selection_reason_code`, and `intent_policy_version`; current language requests provide the closed scope union `explicit_shortlist | intent_shortlist | conflict_shortlist | full_catalog`.
+- Parse from `unknown`, validate option values/labels and nullable recommendation, and reject unknown extra keys. Internal course UUIDs, learner evidence, regex matches, and model rationale are not public fields.
+- The response continues to send the exact public option value under `planning_input.value`; the client never submits candidate course IDs.

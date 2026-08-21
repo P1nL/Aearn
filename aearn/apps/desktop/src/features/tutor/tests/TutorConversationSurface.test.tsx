@@ -55,6 +55,7 @@ describe("TutorConversationSurface typed request seat", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     streamHarness.options = null;
+    window.sessionStorage.clear();
     api.fetchTutorThreadTurnV2Capability.mockResolvedValue({ schema_version: "tutor_thread_turn_v2_capability_v1", cutover_version: "tutor_thread_turn_v2_global_v1", desktop_contract_version: "tutor_thread_turn_v2_desktop_v1", env_allowed: true, state: "enabled", generation: 1, summary_hash: "0".repeat(64), block_code: null, effective_enabled: true, counts: {}, prepared_at: null, enabled_at: null, updated_at: null });
     api.fetchTutorConversationSnapshot.mockResolvedValue(snapshot);
     api.respondToTutorInteractionRequest.mockResolvedValue({});
@@ -133,6 +134,9 @@ describe("TutorConversationSurface typed request seat", () => {
           { value: "basic", label: "了解基础" },
         ],
         recommended: null,
+        selection_scope: null,
+        selection_reason_code: null,
+        intent_policy_version: null,
       },
     };
     api.fetchTutorConversationSnapshot.mockResolvedValue({
@@ -141,7 +145,7 @@ describe("TutorConversationSurface typed request seat", () => {
       timeline: [selectRequest],
     });
 
-    renderSurface();
+    const firstRender = renderSurface();
 
     const none = await screen.findByRole("radio", { name: "完全没有经验" });
     expect(document.querySelectorAll(".tutor-request-history")).toHaveLength(1);
@@ -158,6 +162,13 @@ describe("TutorConversationSurface typed request seat", () => {
     await user.click(basic);
     expect(basic).toBeChecked();
     expect(submit).toBeEnabled();
+    expect(window.sessionStorage.getItem("aearn.tutor-request-draft:item-1:2")).toBe('"basic"');
+
+    firstRender.unmount();
+    renderSurface();
+    await screen.findByRole("radio", { name: "了解基础" });
+    await waitFor(() => expect(screen.getByRole("radio", { name: "了解基础" })).toBeChecked());
+    expect(screen.getByRole("button", { name: "提交响应" })).toBeEnabled();
   });
 
   it("mounts the fresh answer-turn think immediately after a typed request response", async () => {
@@ -171,6 +182,9 @@ describe("TutorConversationSurface typed request seat", () => {
         field_key: "experience_level",
         options: [{ value: "beginner", label: "HTML/CSS Interaction Beginner" }],
         recommended: null,
+        selection_scope: null,
+        selection_reason_code: null,
+        intent_policy_version: null,
       },
     };
     const answerTurn = { ...activeTurn, turn_id: "turn-answer", input_revision: 1 };
