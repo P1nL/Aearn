@@ -76,6 +76,7 @@ from app.services.learning.planning_questions import (
     format_planning_question_value,
     validate_planning_question_value,
 )
+from app.services.learning.planning_intent import PlanningIntentResolver
 from app.services.tutor.interaction_requests import (
     TUTOR_AUTHORITY_RECEIPT_SCHEMA_VERSION,
     TUTOR_INTERACTION_REQUEST_SCHEMA_VERSION,
@@ -1286,6 +1287,7 @@ class PostgresTutorRepository:
                 question_key=question_key,
                 catalog_version=catalog_version,
                 value=response.get("value"),
+                presentation=_as_mapping(request_row.get("presentation_json")),
             )
             safe = {
                 "kind": kind.value,
@@ -4652,6 +4654,7 @@ class PostgresTutorRepository:
         decision: "TutorDecision",
         result: TutorRunResult,
         created_at: datetime,
+        intent_resolution_enabled: bool = True,
     ) -> TutorRunResult:
         if decision.continuation_kind is None:
             raise ValueError("typed request requires a continuation kind")
@@ -4725,9 +4728,15 @@ class PostgresTutorRepository:
             }
             if kind is TutorInteractionRequestKind.PLANNING_INPUT:
                 question_key = str(decision.question_key or "")
+                language_intent = PlanningIntentResolver(self._conn).resolve_for_run(
+                    user_id=user_id,
+                    run_id=result.run_id,
+                    enabled=intent_resolution_enabled,
+                )
                 presentation = build_planning_question_presentation(
                     self._conn,
                     question_key=question_key,
+                    language_intent=(language_intent if question_key == "language_id" else None),
                 )
                 catalog_version = PLANNING_QUESTION_CATALOG_VERSION
                 descriptor.update(
@@ -6020,10 +6029,12 @@ class PostgresTutorLifecycle(TutorLifecyclePersistence):
         repository: PostgresTutorRepository,
         memory_setting_version: str = _DEFAULT_MEMORY_SETTING_VERSION,
         priority: int = 0,
+        intent_resolution_enabled: bool = True,
     ) -> None:
         self._repository = repository
         self._memory_setting_version = memory_setting_version
         self._priority = priority
+        self._intent_resolution_enabled = intent_resolution_enabled
 
     def create_public_thinking_sink(
         self,
@@ -6132,6 +6143,7 @@ class PostgresTutorLifecycle(TutorLifecyclePersistence):
                 decision=decision,
                 result=result,
                 created_at=created_at,
+                intent_resolution_enabled=self._intent_resolution_enabled,
             )
         except (
             TutorInteractionRequestConflict,

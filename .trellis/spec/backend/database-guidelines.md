@@ -970,3 +970,11 @@ repository.complete_turn_with_message_if_current(
 ```
 
 同一事务同时建立最终消息 authority 与 stream acceptance，任何 fence 失败都整体回滚。
+
+## Scenario: Published course intent taxonomy and coverage gate (2026-08-21)
+
+- `tutor_learning_intents` is a closed shared taxonomy; `language_course_intent_tags` owns the many-to-many course relation, relevance rank, primary marker, and policy version.
+- Every active course must have at least one active intent tag, and every active intent must have at least one active course. Deferred constraint triggers enforce the final transaction state so course publication and tag writes can commit atomically.
+- Bootstrap seeds intents and performs the only slug-based backfill, then runs `language_course_intent_coverage()` and `assert_language_course_intent_coverage()`. Runtime queries never branch on slug, title, or description.
+- `tutor_learning_intents` is shared cutover metadata, not user-owned target state. Neither taxonomy table belongs in user export/reset/delete.
+- PostgreSQL tests must run bootstrap twice, inspect tables/indexes/triggers, prove an untagged active course fails at the transaction boundary, and keep the exhaustive Tutor table classification green.

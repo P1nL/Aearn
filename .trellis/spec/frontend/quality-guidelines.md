@@ -941,3 +941,10 @@ desktop:check 通过，所以逐字、折叠和重连已验收。
 ```text
 运行 fake stream，逐状态检查 DOM/焦点/队列/唯一性/console/network，并在三视口与 reduced motion 下复验。
 ```
+
+## Scenario: Planning language Generated UI browser gate (2026-08-21)
+
+- Use a disposable local PostgreSQL/fake-runtime fixture; do not call a real provider merely to create the language request.
+- Verify Python auto-confirm advances to the next missing fact with no language selector. Verify frontend, backend, multi-language, conflict, and no-signal catalogs against exact visible radio labels and values.
+- For every language selector, assert zero initial checked radios and disabled Submit; after one selection, assert exactly one checked radio and enabled Submit. Reload/re-enter and verify exact options/order and the safe select draft survive.
+- Check `scrollWidth <= clientWidth`, framework overlay absence, and clean app console at 1440x900, 900x900, and 390x844. A screenshot timeout does not replace DOM/interaction/console evidence and must be reported honestly.

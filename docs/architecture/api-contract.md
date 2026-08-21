@@ -673,3 +673,9 @@ conversation SSE 的 `turn_output` 现在接受两种闭合版本：
 2. `tutor_runtime_item_stream_v1`：包含 `input_revision`、`generation`、`item_id`、`channel=reasoning|final_answer`、`operation=reset|append|complete|discard` 与单调 `chunk_sequence`。`append` 携带 delta text，`complete` 携带 authoritative full text，`reset|discard` 不携带 text。
 
 commentary、reasoning summary 和未知 phase/channel 不得进入 public text stream。若 completed item 将 provisional `final_answer` 校正为 `commentary`，或 turn terminal 时仍有 streaming item，服务端发送不带 text 的 `discard` 并从 snapshot/history 排除该 item。重复或旧 sequence 可忽略；conversation-global gap、identity/revision/generation mismatch、closed-shape failure 或超限 text 必须停止局部 reducer 并 fresh snapshot recovery。
+
+## 2026-08-21: Planning language intent and dynamic presentation
+
+For `plan_drafting`, Aearn deterministically resolves an exact learner input before provider execution. A single explicit language with an active published course appends a confirmed `language_id` fact with `source_kind=deterministic_input` and `policy_version=planning-language-intent-v1`; the next request therefore targets the next missing fact. Multiple languages, direction-only input, unsupported input, or language/direction conflict never create a language fact.
+
+A language `planning_input` presentation persists exact `options`, `recommended=null`, `selection_scope`, `selection_reason_code`, and `intent_policy_version`. Public option values remain canonical course-language values; internal course UUIDs and classification evidence are omitted. Refresh, reconnect, history, and response validation use the stored presentation as authority even if the catalog later changes. The optional model contract is exact `planning-intent-hint-v1` and may contain only closed intent tags; it cannot provide facts, course IDs, options, or recommendations.

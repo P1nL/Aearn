@@ -10,6 +10,7 @@ from app.services.learning.planning_facts import (
     PlanningFactField,
     normalize_planning_fact,
 )
+from app.services.learning.planning_intent import PlanningLanguageIntent
 
 
 PLANNING_QUESTION_CATALOG_VERSION = "tutor_planning_questions_v1"
@@ -95,25 +96,33 @@ def build_planning_question_presentation(
     conn: Connection[dict[str, object]],
     *,
     question_key: str,
+    language_intent: PlanningLanguageIntent | None = None,
 ) -> dict[str, object]:
     field = _planning_question_field(question_key)
 
     if field is PlanningFactField.LANGUAGE_ID:
-        rows = conn.execute(
-            """
-            SELECT DISTINCT ON (language) language, title
-            FROM language_courses
-            WHERE archived_at IS NULL
-            ORDER BY language, level, title, id
-            """
-        ).fetchall()
-        options: list[dict[str, object]] = [
-            {"value": str(row["language"]), "label": str(row["title"])}
-            for row in rows[:24]
-        ]
+        rows = _language_course_rows(conn, language_intent=language_intent)
+        options: list[dict[str, object]] = []
+        seen_languages: set[str] = set()
+        for row in rows:
+            language = str(row["language"])
+            if language in seen_languages:
+                continue
+            seen_languages.add(language)
+            options.append({"value": language, "label": str(row["title"])})
+            if len(options) >= 24:
+                break
         if not options:
             raise PlanningQuestionCatalogError("published language catalog is empty")
-        return _selection(field, options=options, multiple=False, recommended=options[0]["value"])
+        return _selection(
+            field,
+            options=options,
+            multiple=False,
+            recommended=None,
+            selection_scope=(language_intent.selection_scope if language_intent is not None else "full_catalog"),
+            selection_reason_code=(language_intent.reason_code if language_intent is not None else "no_intent_signal"),
+            intent_policy_version=(language_intent.policy_version if language_intent is not None else None),
+        )
     if field is PlanningFactField.TARGET_LEVEL:
         return _selection(field, options=list(_TARGET_LEVEL_OPTIONS), multiple=False, recommended="beginner")
     if field is PlanningFactField.EXPERIENCE_LEVEL:
@@ -195,6 +204,7 @@ def validate_planning_question_value(
     question_key: str,
     catalog_version: str,
     value: object,
+    presentation: Mapping[str, object] | None = None,
 ) -> object:
     if catalog_version != PLANNING_QUESTION_CATALOG_VERSION:
         raise PlanningQuestionCatalogError("planning question catalog version is stale")
@@ -203,7 +213,7 @@ def validate_planning_question_value(
         normalized = normalize_planning_fact(field, value)
     except (ValueError, PlanningFactError) as exc:
         raise PlanningQuestionCatalogError("planning question value is invalid") from exc
-    presentation = build_planning_question_presentation(conn, question_key=question_key)
+    presentation = presentation or build_planning_question_presentation(conn, question_key=question_key)
     if presentation["type"] == "single_select":
         allowed = _option_values(presentation)
         if str(normalized) not in allowed:
@@ -215,6 +225,35 @@ def validate_planning_question_value(
     return normalized
 
 
+def _language_course_rows(
+    conn: Connection[dict[str, object]],
+    *,
+    language_intent: PlanningLanguageIntent | None,
+) -> list[dict[str, object]]:
+    candidate_ids = language_intent.candidate_course_ids if language_intent is not None else ()
+    if candidate_ids:
+        rows = conn.execute(
+            """
+            SELECT courses.id, courses.language, courses.title, courses.level, candidates.ordinality
+            FROM unnest(%s::uuid[]) WITH ORDINALITY AS candidates(course_id, ordinality)
+            JOIN language_courses AS courses ON courses.id = candidates.course_id
+            WHERE courses.archived_at IS NULL
+            ORDER BY candidates.ordinality
+            """,
+            (list(candidate_ids),),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT id, language, title, level
+            FROM language_courses
+            WHERE archived_at IS NULL
+            ORDER BY language, level, title, id
+            """
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def _selection(
     field: PlanningFactField,
     *,
@@ -222,6 +261,9 @@ def _selection(
     multiple: bool,
     recommended: object,
     maximum_selections: int | None = None,
+    selection_scope: str | None = None,
+    selection_reason_code: str | None = None,
+    intent_policy_version: str | None = None,
 ) -> dict[str, object]:
     payload: dict[str, object] = {
         "type": "multi_select" if multiple else "single_select",
@@ -231,6 +273,10 @@ def _selection(
     }
     if maximum_selections is not None:
         payload["maximum_selections"] = maximum_selections
+    if selection_scope is not None:
+        payload["selection_scope"] = selection_scope
+        payload["selection_reason_code"] = selection_reason_code
+        payload["intent_policy_version"] = intent_policy_version
     return payload
 
 

@@ -10,6 +10,13 @@ import app.routes.tutor as tutor_route
 from app.agents.runtime import LearningPlanRuntimeToolRegistry, RuntimeToolCall
 from app.db.connection import connect
 from app.services.learning.planning_facts import PostgresPlanningFactRepository
+from app.services.learning.planning_intent import (
+    PLANNING_INTENT_HINT_SCHEMA_VERSION,
+    PlanningIntentResolver,
+    PlanningIntentHintError,
+    validate_closed_intent_hint,
+)
+from app.services.learning.planning_questions import build_planning_question_presentation
 from app.services.learning.plan_tools import (
     LEARNING_PLAN_DRAFT_TOOL_NAME,
     PLANNING_CONTEXT_TOOL_NAME,
@@ -232,13 +239,25 @@ async def test_postgres_context_reports_awaiting_user_for_missing_authoritative_
             "codex-tool-missing-input",
             content="我想学习 Python。",
             learning_scope={"scope_kind": "plan_drafting", "task_kind": "plan_drafting"},
-            planning_facts={"language_id": "python"},
         ),
     )
     assert accepted.status_code == 202
     run_id = str(accepted.json()["run_id"])
 
     with connect() as conn:
+        language_fact = conn.execute(
+            """
+            SELECT value_json, source_kind, policy_version
+            FROM tutor_planning_intake_facts
+            WHERE source_run_id = %s AND field_key = 'language_id'
+            """,
+            (run_id,),
+        ).fetchone()
+        assert language_fact == {
+            "value_json": "python",
+            "source_kind": "deterministic_input",
+            "policy_version": "planning-language-intent-v1",
+        }
         repository = PostgresTutorRepository(conn)
         assert repository.acquire_lease(
             user_id=user_id,
@@ -277,3 +296,68 @@ async def test_postgres_context_reports_awaiting_user_for_missing_authoritative_
         assert user_id not in encoded
         assert conversation_id not in encoded
         assert run_id not in encoded
+
+
+def test_planning_intent_resolver_uses_postgres_metadata_and_closed_hints() -> None:
+    with connect() as conn:
+        resolver = PlanningIntentResolver(conn)
+        frontend = resolver.resolve("我想学前端")
+        frontend_presentation = build_planning_question_presentation(
+            conn,
+            question_key="language_id",
+            language_intent=frontend,
+        )
+        assert frontend.resolution == "shortlist"
+        assert frontend.intent_tags == ("frontend",)
+        assert [item["value"] for item in frontend_presentation["options"]] == [
+            "html_css",
+            "javascript",
+            "typescript",
+        ]
+        assert frontend_presentation["recommended"] is None
+        assert frontend_presentation["selection_scope"] == "intent_shortlist"
+
+        multiple = resolver.resolve("Python 和 Go 哪个适合后端")
+        multiple_presentation = build_planning_question_presentation(
+            conn,
+            question_key="language_id",
+            language_intent=multiple,
+        )
+        assert multiple.resolution == "shortlist"
+        assert multiple.explicit_language_ids == ("python", "go")
+        assert [item["value"] for item in multiple_presentation["options"]] == ["python", "go"]
+
+        before = resolver.resolve("我想学前端").candidate_course_ids
+        conn.execute(
+            "UPDATE language_courses SET title = title || ' renamed', description = 'changed' WHERE id = ANY(%s::uuid[])",
+            (list(before),),
+        )
+        after = resolver.resolve("我想学前端").candidate_course_ids
+        assert after == before
+        conn.rollback()
+
+        hinted = resolver.resolve(
+            "请帮我选择方向",
+            model_hint={
+                "schema_version": PLANNING_INTENT_HINT_SCHEMA_VERSION,
+                "intent_tags": ["frontend"],
+            },
+        )
+        assert hinted.intent_tags == ("frontend",)
+        ignored = resolver.resolve(
+            "请帮我选择方向",
+            model_hint={
+                "schema_version": PLANNING_INTENT_HINT_SCHEMA_VERSION,
+                "intent_tags": ["frontend"],
+                "course_id": "forbidden",
+            },
+        )
+        assert ignored.intent_tags == ()
+        with pytest.raises(PlanningIntentHintError):
+            validate_closed_intent_hint(
+                conn,
+                {
+                    "schema_version": PLANNING_INTENT_HINT_SCHEMA_VERSION,
+                    "intent_tags": ["unknown"],
+                },
+            )

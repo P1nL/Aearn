@@ -3771,3 +3771,10 @@ class PlanCapabilityError(ValueError):
 ```json
 {"profile_json":"{\"language_id\":\"python\",\"goal_text\":\"automation\",\"target_level\":\"beginner\",\"weekly_minutes\":180,\"experience_level\":\"new\",\"teaching_preferences\":[],\"pace_summary\":\"three sessions\",\"title\":\"Python Automation\"}"}
 ```
+
+## Scenario: Planning intent quality gate (2026-08-21)
+
+- Test language aliases with Chinese/English strong signals, word boundaries, short-token false positives, unsupported languages, and HTML/CSS public-course normalization.
+- Test the complete flow `learner input -> resolver -> deterministic fact or candidate UUIDs -> persisted typed presentation -> Desktop response`, including feature-off full-catalog fallback.
+- A title/description-only course update must not change candidate UUIDs. A new active untagged course must fail both bootstrap coverage and the deferred publication constraint.
+- Default suites use PostgreSQL and fake/offline Tutor infrastructure only. A real provider is never required to validate planning intent.

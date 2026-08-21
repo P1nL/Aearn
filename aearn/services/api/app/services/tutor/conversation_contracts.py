@@ -153,6 +153,14 @@ class TutorPublicSingleSelectPresentation(_StrictPublicModel):
     field_key: str = Field(min_length=1, max_length=120)
     options: list[TutorPublicOption] = Field(min_length=1, max_length=24)
     recommended: str | None = Field(default=None, min_length=1, max_length=120)
+    selection_scope: Literal[
+        "explicit_shortlist",
+        "intent_shortlist",
+        "conflict_shortlist",
+        "full_catalog",
+    ] | None = None
+    selection_reason_code: str | None = Field(default=None, min_length=1, max_length=120)
+    intent_policy_version: str | None = Field(default=None, min_length=1, max_length=160)
 
 
 class TutorPublicMultiSelectPresentation(_StrictPublicModel):

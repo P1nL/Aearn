@@ -412,3 +412,11 @@ contract，不访问真实 provider、不启动或批准生产 container fleet�
 | UX-09 | P1 | Raw stream UI | snapshot v3 + dual-channel SSE；current `think` 展开、history 折叠、answer 同 entry 流式；commentary/空 reasoning 不渲染；gap/reconnect snapshot recovery | Desktop API/stream/component tests + 1440×900、900×900、390×844 browser smoke |
 
 Fixture/browser 证据不得包含 external Runtime identity、provider metadata、prompt、commentary、reasoning summary、credential 或真实学习者内容。真实 provider smoke 不属于本增量默认验收。
+
+## 2026-08-21: Planning intent and dynamic Generated UI matrix
+
+- Backend: explicit Python plus data-analysis auto-confirms `language_id=python` as deterministic input; direction-only input writes no language fact.
+- PostgreSQL: frontend/backend/multi-language/conflict/full-catalog candidates come from intent-tag joins; title/description changes do not alter candidate UUIDs; an active untagged course fails the deferred coverage gate.
+- Contract: unknown/extra model hint fields are rejected or ignored safely; durable request response validation uses stored options after catalog change.
+- Desktop/browser: language radio starts empty and Submit disabled; selection enables Submit; reload/re-enter restores exact options/order and safe draft at 1440x900, 900x900, and 390x844 with no overlay, console error, or horizontal overflow.
+- Default validation is offline/fake plus local PostgreSQL. Real provider execution is out of scope without separate approval.

@@ -3117,7 +3117,25 @@ function toTutorRequestPresentation(payload: unknown): TutorRequestPresentation 
     const options = payload.options.map((option) => isRecord(option) && hasExactKeys(option, ["value", "label"]) && isString(option.value) && isString(option.label) ? { value: option.value, label: option.label } : null);
     if (options.some((option) => option === null)) return null;
     const validOptions = options.filter((option): option is { value: string; label: string } => option !== null);
-    if (payload.type === "single_select" && hasExactKeys(payload, ["type", "field_key", "options", "recommended"]) && isNullableString(payload.recommended)) return { type: "single_select", field_key: payload.field_key, options: validOptions, recommended: payload.recommended };
+    if (payload.type === "single_select" && hasRequiredAndOptionalKeys(
+      payload,
+      ["type", "field_key", "options", "recommended"],
+      ["selection_scope", "selection_reason_code", "intent_policy_version"],
+    ) && isNullableString(payload.recommended)) {
+      const selectionScope = payload.selection_scope ?? null;
+      const selectionReasonCode = payload.selection_reason_code ?? null;
+      const intentPolicyVersion = payload.intent_policy_version ?? null;
+      if (!isNullablePlanningSelectionScope(selectionScope) || !isNullableString(selectionReasonCode) || !isNullableString(intentPolicyVersion)) return null;
+      return {
+        type: "single_select",
+        field_key: payload.field_key,
+        options: validOptions,
+        recommended: payload.recommended,
+        selection_scope: selectionScope,
+        selection_reason_code: selectionReasonCode,
+        intent_policy_version: intentPolicyVersion,
+      };
+    }
     if (payload.type === "multi_select" && hasExactKeys(payload, ["type", "field_key", "options", "recommended", "maximum_selections"]) && isStringArray(payload.recommended) && isPositiveSafeInteger(payload.maximum_selections)) return { type: "multi_select", field_key: payload.field_key, options: validOptions, recommended: payload.recommended, maximum_selections: payload.maximum_selections };
   }
   if (payload.type === "approval" && hasExactKeys(payload, ["type", "proposal_id", "authority_key", "risk_level", "summary"]) &&
@@ -3182,6 +3200,13 @@ function toTutorPreferences(payload: unknown): TutorPreferences | null {
     proactive_paused: payload.proactive_paused,
     proactive_enabled: payload.proactive_enabled,
   };
+}
+
+function isNullablePlanningSelectionScope(
+  value: unknown,
+): value is "explicit_shortlist" | "intent_shortlist" | "conflict_shortlist" | "full_catalog" | null {
+  return value === null || value === "explicit_shortlist" || value === "intent_shortlist" ||
+    value === "conflict_shortlist" || value === "full_catalog";
 }
 
 function isTutorRunStatus(value: unknown): value is TutorRunState["status"] {

@@ -467,3 +467,12 @@ diagnostic、credential 和 secret 禁止落入该表、message 列或 conversat
 | `tutor_runtime_text_items` | owner-scoped raw reasoning 与 final-answer current/history projection | `(binding, external item hash, channel)` 唯一；channel/state/sequence/hash/connection generation 闭合；streaming 可追加，completed/discarded/blocked terminal immutable；completed item 仅允许一次关联同 conversation 正式 message |
 
 `reasoning` 和 `final_answer` raw text 只存在 `tutor_runtime_text_items`，不得复制进 runtime receipt。phase 校正为 commentary 或任意 turn terminal 遇到未完成 item 时，必须把 row 转为 `discarded`，同时将 `text=''`、`content_hash=NULL` 并写入 terminal 时间，禁止留下可恢复的 commentary 或永久 `streaming` row。`tutor_runtime_item_receipts` 仍只保存 event/item kind、sequence、hash、safe code、projection status 和 Aearn public reference；commentary/summary 只能形成 nonpublic receipt。新表纳入 bootstrap twice、cutover inventory、owner-scope FK 和 transaction-local purge guard。删除顺序必须先 text item/receipt/error，再 run binding，再 conversation thread，最后才允许删除 owning run/conversation。
+
+## 2026-08-21: Course intent taxonomy
+
+| Table | Purpose | Boundary |
+| --- | --- | --- |
+| `tutor_learning_intents` | Shared closed planning-direction taxonomy | `intent_key`, state, display name, and policy version; classified as shared Tutor metadata |
+| `language_course_intent_tags` | Course UUID to intent-key relation | composite primary key, rank `0..100`, primary marker, policy version, and restrictive foreign keys |
+
+`assert_language_course_intent_coverage()` requires every active course to have an active tag and every active intent to have an active course. Deferred constraint triggers check the final transaction state for course publication, intent activation, and tag mutation. Bootstrap performs the only slug-based backfill, validates coverage, and is repeatable. Runtime shortlist queries join active course UUIDs and active tags and never inspect course slug, title, or description.

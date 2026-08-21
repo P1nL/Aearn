@@ -437,3 +437,10 @@ if (!snapshot.active_turn) clearRuntimeOutput();
 else if (snapshot.active_runtime_output) mergeByTurnRevisionGeneration(snapshot.active_runtime_output);
 else preserveValidatedCurrentRuntimeOutput();
 ```
+
+## Scenario: Dynamic planning language selector (2026-08-21)
+
+- The language `single_select` renders only the durable request's exact options and order. It never refetches or reconstructs the course catalog while the request is pending.
+- Language requests have `recommended=null`; no radio is initially selected and Submit remains disabled until the learner selects one option. Non-language recommendation behavior remains unchanged.
+- Safe select drafts may be retained in `sessionStorage` by exact request ID/version so reload/reconnect restores only a value still present in the durable options. Free text is not stored by this mechanism.
+- Required browser states are explicit-language skip, frontend/backend/multi-language/conflict/full catalog, refresh recovery, keyboard focus, and no horizontal overflow at 1440x900, 900x900, and 390x844.

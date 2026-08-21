@@ -796,7 +796,10 @@ class TutorInteractiveRunDispatcher:
                     ),
                     facts=planning_facts,
                 ),
-                lifecycle=PostgresTutorLifecycle(repository=repository),
+                lifecycle=PostgresTutorLifecycle(
+                    repository=repository,
+                    intent_resolution_enabled=self._settings.tutor_planning_intent_enabled,
+                ),
             )
             result = TutorHarnessService.enabled(loop=loop).run(
                 run_id=run_id,

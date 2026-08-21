@@ -361,6 +361,7 @@ class CodexTutorRunDispatcher:
                     ),
                     result=typed_result,
                     created_at=occurred_at,
+                    intent_resolution_enabled=self._settings.tutor_planning_intent_enabled,
                 )
                 message = conn.execute(
                     "SELECT tutor_message_id FROM tutor_run_public_processes WHERE run_id = %s",
