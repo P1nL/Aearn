@@ -1,0 +1,7 @@
+{"file": ".trellis/spec/backend/codex-runtime-sidecar.md", "reason": "实现持久 conversation thread、local compaction、raw reasoning/final-answer 分流、禁止客户端 elicitation、typed planning authority，以及 turn-scoped live event subscription 与恢复终态 sequence 续接。"}
+{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "遵循 owner-scoped PostgreSQL、append-only receipt、lease/revision/generation fence 与历史恢复规则。"}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "实现同一 Tutor entry 内小写 think、当前展开、历史折叠、answer 下方流式与 snapshot handoff。"}
+{"file": ".trellis/spec/frontend/hook-guidelines.md", "reason": "实现 exact SSE closed union、generation/sequence 单调合并与 gap/reconnect snapshot recovery。"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "实现 snapshot v3、runtime output item 与 typed request 的 unknown exact parser 边界。"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "核对 PostgreSQL 到 service、snapshot/SSE、Desktop 的完整读写与失败终态链路。"}
+{"file": ".trellis/tasks/08-19-codex-thread-context-raw-runtime-stream/research/codex-runtime-compaction.md", "reason": "依据本机 Codex App Server 协议与 local compaction 研究保持同一配置 source of truth。"}
