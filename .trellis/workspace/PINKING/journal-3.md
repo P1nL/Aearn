@@ -124,3 +124,42 @@
 ### Next Steps
 
 - 复核父任务 08-22-harness-led-adaptive-learning-workspace 的四个 child archive 与 PRD 验收映射；不自动归档父任务，等待用户收尾决定。
+
+
+## Session 123: 归档 Harness 主导的长期自适应学习工作区父任务
+
+**Date**: 2026-08-23
+**Task**: 归档 Harness 主导的长期自适应学习工作区父任务
+**Branch**: `main`
+
+### Summary
+
+四个 child 已按依赖顺序完成、提交、归档；父任务验收映射、质量门、source-of-truth docs 与工作树边界复核通过，现已完成父任务 closeout。
+
+### Main Changes
+
+- 确认 teaching authority、closed teaching loop、Guided/Free Reading Desktop 与 adaptive integration 四个 child 均为 completed archive。
+- 确认父任务 4/4 done、validate 通过，并归档 08-22-harness-led-adaptive-learning-workspace。
+- 保留另一个 LearningPlan 五分钟窗口任务及其六个用户修改，不暂存、不提交、不覆盖。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `f88cea72` | (see git log) |
+| `5e3b05bc` | (see git log) |
+| `57be45fc` | (see git log) |
+| `ad1cd13e` | (see git log) |
+
+### Testing
+
+- [OK] 最终证据：完整 API 716 passed, 2 skipped；Ruff、Mypy、Desktop 58 tests/build、bootstrap twice 与 browser smoke 通过。
+- [OK] 父任务 Trellis validate 与归档后 task tree/status 复核通过。
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 该父任务树已完成；后续如继续 LearningPlan 五分钟窗口任务，应在其独立会话和既有修改基础上执行。
