@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-3.md`
-- **Total Sessions**: 120
+- **Total Sessions**: 121
 - **Last Active**: 2026-08-23
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-3.md` | ~49 | Active |
+| `journal-3.md` | ~88 | Active |
 | `journal-2.md` | ~1986 | Archived |
 | `journal-1.md` | ~1979 | Archived |
 <!-- @@@/auto:active-documents -->
@@ -31,6 +31,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 121 | 2026-08-23 | 完成 Guided/自由阅读工作区与 Composer Action Shelf | `57be45fc`, `eb55a21b` | `main` |
 | 120 | 2026-08-23 | 完成 Harness closed teaching action Loop | `5e3b05bc` | `main` |
 | 119 | 2026-08-23 | 完成教学会话 authority 与结构化 Turn 触发 | `f88cea72` | `main` |
 | 118 | 2026-08-21 | 完成 Tutor 课程意图与 Runtime 流可靠性 Parent 最终集成 | `f45ffdc5`, `5699d97e`, `d8d7b67a`, `e22a8198` | `main` |
