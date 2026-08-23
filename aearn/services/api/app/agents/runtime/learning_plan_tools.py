@@ -43,7 +43,7 @@ class LearningPlanToolBudget:
     max_repairs: int = 2
     max_conflicts: int = 1
     max_payload_bytes: int = 32_000
-    max_wall_seconds: float = 30.0
+    max_wall_seconds: float = 300.0
     max_output_bytes: int = 8_000
 
     def __post_init__(self) -> None:

@@ -491,7 +491,7 @@ async def test_runtime_learning_plan_tool_timeout_fails_fake_turn(
         connection_factory=_factory("learning_plan_context"),
     )
     runtime = CodexAppServerRuntime(supervisor)
-    moments = iter((0.0, 31.0))
+    moments = iter((0.0, 301.0))
     registry = LearningPlanRuntimeToolRegistry(
         StatusLearningPlanToolService(LearningPlanToolStatus.COMPLETED),
         clock=lambda: next(moments),

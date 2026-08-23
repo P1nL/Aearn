@@ -217,7 +217,7 @@ The draft schema must not contain `profile_json`, `module_1..8`, user/session/ru
 - Refresh the fence before every model tool call and again immediately before `append_draft`.
 - Tool-visible status is exactly `completed | repairable_invalid | awaiting_user | conflict | policy_blocked | unavailable | fatal`.
 - `repairable_invalid`, `awaiting_user`, and the first bounded `conflict` are normal tool outputs. Policy, unavailable, fatal, deadline, and exhausted repair/conflict budgets fail the tool call.
-- Default registry budgets are 6 tool calls, 2 repairs, 1 conflict rebuild, 32,000 input bytes, 30 seconds wall time, and 8,000 output bytes.
+- Default registry budgets are 6 tool calls, 2 repairs, 1 conflict rebuild, 32,000 input bytes, 300 seconds wall time, and 8,000 output bytes.
 - Safe issues contain allowlisted `path`, `code`, and generic `hint` only. Never echo the invalid value, Pydantic input, internal exception, profile object, prompt, reasoning, credential, or full path.
 - Durable duplicate replay is owned by the existing `(source_run_id, source_input_revision)` draft identity. When rebuilding a replay candidate, reuse the stored `change_reason`; deriving a replacement reason from the now-updated session would change the content hash and incorrectly convert an identical replay into a conflict.
 - Success returns only draft ID, version, content hash, bounded counts, and a deterministic safe receipt hash. Confirmation and LearningTrack creation remain HTTP/domain authority outside the tool.
