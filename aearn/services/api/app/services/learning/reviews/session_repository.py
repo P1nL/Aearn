@@ -250,8 +250,8 @@ class PostgresReviewSessionRepository:
         lock = " FOR UPDATE OF sessions" if for_update else ""
         row = self._conn.execute(
             """
-            SELECT sessions.*, finalizations.rating, finalizations.aggregate_json,
-                   finalizations.result_hash AS finalization_result_hash
+            SELECT sessions.*, finalizations.id::text AS finalization_id, finalizations.rating,
+                   finalizations.aggregate_json, finalizations.result_hash AS finalization_result_hash
             FROM tutor_review_sessions AS sessions
             LEFT JOIN tutor_review_finalizations AS finalizations ON finalizations.session_id = sessions.id
             WHERE sessions.id = %s AND sessions.user_id = %s AND sessions.track_id = %s

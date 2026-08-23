@@ -700,3 +700,9 @@ closed control 包括 `continue`、`return_focus`、`change_example`、`pause`�
 `TeachingActionShelfV1` 最多一个 primary、三个 visible secondary；active runtime 与 blocking typed request 时普通 shelf 为空。普通 shelf 的 label、emphasis、target、expected versions 均由服务端生成，provider/客户端不能定义。open/action 返回 `pending_run.dispatch_job_id` 时，HTTP layer 只做 best-effort worker wakeup；durable dispatch job 才是执行 authority，幂等 replay 或重复 wakeup 不产生第二个 run。
 
 `TutorTurnStimulus` 是 strict one-of：普通 learner input 绑定 exact learner message/input revision；explicit teaching control 或 domain event 可创建没有 learner message 的 fresh interactive TurnRun。公共 response/snapshot 只 additive 返回 safe teaching session/run-scope/Action Shelf metadata。稳定错误包括 `TEACHING_SESSION_NOT_FOUND`、`TEACHING_AUTHORITY_CONFLICT`、`TEACHING_ACTION_INVALID`、`TEACHING_STIMULUS_INVALID` 与既有 `IDEMPOTENCY_CONFLICT`；跨用户、跨 track/conversation、stale checkpoint/session/progress/assignment/document/stimulus 一律 fail closed。
+
+## 2026-08-23：内部 teaching domain event 与 summary context
+
+本轮不新增 public HTTP route。Gate、Review 与 Lesson migration 的现有 mutation 在 owner transaction 内完成业务 authority 后，调用统一 adapter 尝试 admission 一个 learner-safe `domain_event` Turn。没有 open teaching session、source version stale、重复 source 或竞争 foreground run 时，owner mutation 仍按自身 contract 完成；adapter 返回内部 ignored/replayed receipt，不把完整提交、rubric、provider body 或内部原因加入 public response。
+
+`domain_event` 仍是 exact-one stimulus，不创建 learner message、不使用 proactive origin。Gate completion coalesce 为一个 `progress_changed` Turn并保留 gate safe handle；非 completion Gate、Review finalization与 assignment migration分别使用 `gate_terminal | review_terminal | assignment_changed`。Free Reading 对普通 learner input 仍是 reactive-only；typed domain event 可以执行 bounded evidence/completion action，但不会隐式改变 session mode。

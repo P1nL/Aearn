@@ -501,12 +501,30 @@ class PostgresTutorLearningContextLoader:
             (
                 TutorContextSource(
                     source_id=f"teaching-session:{teaching_session['session_id']}",
-                    content=teaching_context,
+                    content=_bounded_teaching_context(teaching_context),
                 ),
             )
             if teaching_context is not None and isinstance(teaching_session, Mapping)
             else ()
         )
+        teaching_working_sources: tuple[TutorContextSource, ...] = ()
+        if teaching_context is not None:
+            current_summary = teaching_context.get("structured_summary")
+            historical = teaching_context.get("related_historical_summaries")
+            summary_sources: list[TutorContextSource] = []
+            if isinstance(current_summary, Mapping):
+                summary_sources.append(TutorContextSource(
+                    source_id=f"teaching-summary:{current_summary['source_checkpoint_id']}",
+                    content=dict(current_summary),
+                ))
+            if isinstance(historical, list):
+                for item in historical[:1]:
+                    if isinstance(item, Mapping):
+                        summary_sources.append(TutorContextSource(
+                            source_id=f"teaching-summary:{item['source_checkpoint_id']}",
+                            content=dict(item),
+                        ))
+            teaching_working_sources = tuple(summary_sources)
         descriptors = list(base.system_descriptors)
         descriptors.extend(learning.sources)
         action_receipts = tuple(
@@ -543,6 +561,38 @@ class PostgresTutorLearningContextLoader:
         recent_messages = base.recent_messages
         compaction_plan = base.compaction_plan
         summary_blocked = 0
+        if teaching_context is not None:
+            correction_ids, unresolved_ids = self._teaching.teaching_message_semantics(
+                user_id=snapshot.user_id, run_id=snapshot.run_id,
+            )
+            correction_set = set(correction_ids)
+            unresolved_set = set(unresolved_ids)
+            recent_messages = tuple(
+                replace(
+                    source,
+                    semantic_class=(
+                        "unresolved_question"
+                        if source.source_id.removeprefix("message:") in unresolved_set
+                        else (
+                            "correction"
+                            if source.source_id.removeprefix("message:") in correction_set
+                            else source.semantic_class
+                        )
+                    ),
+                )
+                for source in recent_messages
+            )
+            if compaction_plan is not None:
+                protected = tuple(
+                    candidate.message_id for candidate in compaction_plan.candidates
+                    if candidate.message_id in correction_set or candidate.message_id in unresolved_set
+                )
+                if protected:
+                    summary_blocked += 1
+                    compaction_plan = replace(
+                        compaction_plan,
+                        protected_message_ids=tuple(dict.fromkeys((*compaction_plan.protected_message_ids, *protected))),
+                    )
         if learning.scope.scope_kind.value == "plan_drafting":
             try:
                 session = self._plans.active_session_for_run(
@@ -613,6 +663,7 @@ class PostgresTutorLearningContextLoader:
             required_facts=required_facts,
             action_receipts=authoritative.action_receipts,
             recent_messages=recent_messages,
+            working_summary=(*teaching_working_sources, *base.working_summary),
             compaction_plan=compaction_plan,
             authoritative_snapshot_schema_version=authoritative.schema_version,
             authoritative_snapshot_hash=authoritative.snapshot_hash,
@@ -621,6 +672,39 @@ class PostgresTutorLearningContextLoader:
             summary_blocked_by_unprojected_fact=summary_blocked,
         )
 
+
+def _bounded_teaching_context(context: Mapping[str, object]) -> dict[str, object]:
+    objective = context.get("objective")
+    active_focus = context.get("active_focus")
+    suspended = context.get("suspended_focuses")
+    questions = context.get("unresolved_questions")
+    return {
+        "schema_version": context.get("schema_version"),
+        "session": context.get("session"),
+        "stimulus": context.get("stimulus"),
+        "objective": (
+            {key: objective.get(key) for key in ("objective_id", "summary")}
+            if isinstance(objective, Mapping) else None
+        ),
+        "active_focus": (
+            {key: active_focus.get(key) for key in ("focus_id", "focus_kind", "summary")}
+            if isinstance(active_focus, Mapping) else None
+        ),
+        "suspended_focuses": [
+            {key: item.get(key) for key in ("focus_id", "focus_kind", "summary")}
+            for item in suspended if isinstance(item, Mapping)
+        ] if isinstance(suspended, list) else [],
+        "unresolved_questions": [
+            {key: item.get(key) for key in ("question_id", "summary", "state")}
+            for item in questions if isinstance(item, Mapping)
+        ] if isinstance(questions, list) else [],
+        "covered_concepts": context.get("covered_concepts"),
+        "pause_kind": context.get("pause_kind"),
+        "recommended_action_key": context.get("recommended_action_key"),
+        "candidate_focus_id": context.get("candidate_focus_id"),
+        "allowed_source_handles": context.get("allowed_source_handles"),
+        "action_policy": context.get("action_policy"),
+    }
 
 def _bounded_current_draft(session: Mapping[str, object]) -> dict[str, object] | None:
     plan = session.get("plan_json")

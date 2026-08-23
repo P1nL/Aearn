@@ -212,3 +212,60 @@ PostgreSQL 继续复用 user-owned append-only `tutor_message_context_references
 #### Correct
 
 客户端只发送 `teaching_session_id + message_id`；repository 验证 exact source turn scope，公开 projection 只存中性元数据，内部 context loader 才按 authority 读取正文。
+
+## 场景：Durable domain event 与 checkpoint-backed teaching summary（2026-08-23）
+
+### 1. 适用范围 / Trigger
+
+- 触发：Gate/Attempt terminal、Review finalization、progress completion、Lesson assignment migration，或 teaching context/compaction/跨日恢复逻辑变化。
+
+### 2. Signatures
+
+`TeachingDomainEventAdapter.admit_gate_terminal(...)`、`admit_review_terminal(...)`、`admit_progress_changed(...)`、`admit_assignment_changed(...)` 只读取 owner 已提交的 durable authority，并输出 exact `DomainEventStimulus(kind, source_id, source_version, safe_handles)`。`TeachingSessionRepository.structured_summary(...)` 从 current append-only checkpoint 生成 `teaching_session_summary_v1`；`teaching_message_semantics(...)` 返回 correction/unresolved message IDs 供 compaction fence 使用。
+
+### 3. Contracts
+
+- domain owner 先原子提交 score/mastery/schedule/progress/assignment；adapter 不重算业务结果，只校验 durable source identity/version。
+- duplicate identity 先读取既有 stimulus/run receipt；不得先创建新 run 再依赖 unique violation 回滚。
+- authority 变化通过既有 `open_or_resume` 阻断 predecessor 并创建 successor；没有 open teaching session、旧 source version 或竞争 foreground run 时 fail closed，不伪造 learner message。
+- Gate completion coalesce 为 `progress_changed` 一次 bounded Turn，并保留 gate safe handle；非 completion Gate 使用 `gate_terminal`。Review 与 assignment 使用各自 immutable receipt/assignment version。
+- teaching summary 不新增重复表：checkpoint 本身就是 predecessor-linked append-only source。summary 必须重新计算 checkpoint source hash、验证 session/current checkpoint/version 与 authority snapshot，失配即 `TeachingSessionConflict`。
+- required `TEACHING_SESSION` 使用 <=1200 字符 compact projection；完整 structured summary 进入 optional `WORKING_SUMMARY`。current summary 优先于 generic conversation summary，最多附带一个 exact predecessor summary，不默认重放全量历史。
+- unresolved question source message、focus 中 exact `message:*` handle 与当前 session 最新 learner input 进入 `protected_message_ids`；旧 summary 不得退休这些消息或覆盖 current input。
+- Free Reading learner input 仍只允许 reactive action；typed `domain_event` 可使用 bounded evidence/completion actions，但不隐式切换 session mode。
+
+### 4. Validation & Error Matrix
+
+| Condition | Required result |
+| --- | --- |
+| durable source 不存在、跨 user/track 或 source version stale | `event_status=ignored`，无 run/stimulus/message |
+| exact domain event replay | 返回同一 run/stimulus，`idempotent_replayed=true` |
+| session authority 变化且无 active foreground run | predecessor `authority_pause + blocked`，successor 冻结新 authority并 admission 一次 |
+| checkpoint/session/version/authority/hash 不一致 | `TeachingSessionConflict`；summary 不进入 context，provider 前 fail closed |
+| required teaching projection超界 | `TUTOR_TEACHING_SESSION_UNREPRESENTABLE`；不得靠截断 required authority 继续 |
+| Free Reading 普通 learner turn 返回 `summarize_progress` | `free_reading_action_invalid` |
+| Free Reading typed completion event 返回 `summarize_progress + completion_pause` | 允许一次 closed commit，mode 保持 `free_reading` |
+
+### 5. Good / Base / Bad Cases
+
+- Good：required Gate 完成使 progress version 增加；旧 session blocked，successor 收到一个 `progress_changed` run；重复 source version 返回同一 run。
+- Good：assignment migration 激活新 version 后创建 successor 与一个 `assignment_changed` run，旧 assignment/session 只读。
+- Base：没有 teaching session 时 Review/Gate 仍正常提交 owner authority，adapter 返回 ignored，不影响主事务。
+- Bad：把完整 submission/rubric/provider body 放进 `safe_handles`，或为 progress 与同一 Gate completion 并发创建两个前台 Turn。
+
+### 6. Tests Required
+
+- `test_tutor_adaptive_teaching_evals.py`：Gate completion、assignment migration、duplicate/stale source、summary hash fencing、closed focus path、explicit next。
+- Review/Gate/Lesson owner regression：terminal authority 不因 adapter ignored/duplicate 回滚；重复 finalization/migration 保持 owner 幂等。
+- Context/compaction：compact required source 可表示；current summary ordering；protected correction/unresolved IDs；stale summary provider-before fail closed。
+- Full serial PostgreSQL pytest、Ruff、Mypy、bootstrap twice、Desktop tests/build、三视口 Browser smoke、cutover/export/reset/privacy、Trellis validate 与 diff hygiene。
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+先创建 run，再插入 domain stimulus并期待 unique index处理重复；或另建 mutable summary 表复制 checkpoint 状态。
+
+#### Correct
+
+先以 `(session,event_kind,source_id,source_version)` 查 exact receipt；只在 durable source/current authority 可证明时创建 run。summary 从 validated append-only checkpoint 投影，hash/source lineage 不匹配立即 fail closed。

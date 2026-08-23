@@ -432,3 +432,12 @@ Fixture/browser 证据不得包含 external Runtime identity、provider metadata
 | RT-58 | P0 | Schema/governance/privacy | 五张 user-owned teaching 表；bootstrap twice；source-stimulus deferred `NO ACTION`；append-only receipt；cutover exhaustive；export/reset child-to-root；无 public message/provider/prompt/reasoning/protected body | `test_tutor_teaching_session_postgres.py`、`test_tutor_teaching_action_loop.py`、cutover/local-data regressions |
 
 默认验证使用 fake provider 与本地 PostgreSQL，数据库 pytest 串行执行。该矩阵不调用真实 provider、不改变 Desktop 主次布局、不批准 push、部署、生产数据修改或发布。
+
+## RT-59 / RT-60：Adaptive teaching integration final gate（2026-08-23）
+
+| ID | Priority | Area | Contract | Evidence |
+| --- | --- | --- | --- | --- |
+| RT-59 | P0 | Domain event + summary | Gate/Review/progress/assignment durable source 至多一个 typed Turn；checkpoint-backed summary hash/authority stale fail closed；correction/unresolved compaction protected；无 auto-next | `test_tutor_adaptive_teaching_evals.py`、teaching/Gate/Review/Lesson/context regression |
+| RT-60 | P0 | Final integration/privacy | serial full PostgreSQL suite、disposable bootstrap twice、cutover exhaustive、export/reset/privacy、Desktop tests/build、1440/900/390 Browser DOM/console/overflow audit；默认 fake provider | Child 4 release-readiness ledger |
+
+Browser fake 只验证当前 Desktop contract、mode swap、reload/reconnect 与三视口 DOM；Gate/Review terminal authority 必须由真实 PostgreSQL service/repository测试证明，不能用 mock UI代替。
