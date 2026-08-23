@@ -1,0 +1,43 @@
+{
+  "id": "adaptive-learning-integration-evals",
+  "name": "adaptive-learning-integration-evals",
+  "title": "长期自适应教学集成、评估与文档",
+  "description": "完成 Gate/Review/长期上下文集成、deterministic eval、迁移与隐私门，并同步 source-of-truth docs/spec。",
+  "status": "completed",
+  "dev_type": null,
+  "scope": "adaptive_learning_integration",
+  "package": null,
+  "priority": "P1",
+  "creator": "PINKING",
+  "assignee": "PINKING",
+  "createdAt": "2026-08-22",
+  "completedAt": "2026-08-23",
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "08-22-harness-led-adaptive-learning-workspace",
+  "relatedFiles": [
+    "aearn/services/api/app/services/learning",
+    "aearn/services/api/app/services/tutor",
+    "aearn/services/api/tests",
+    "aearn/apps/desktop/src",
+    "docs/architecture",
+    "docs/product",
+    ".trellis/spec/backend",
+    ".trellis/spec/frontend"
+  ],
+  "notes": "Child 4；依赖前三个 child。完成后复核父任务，不自动归档父任务。",
+  "meta": {
+    "sequence": 4,
+    "depends_on": [
+      "08-22-harness-teaching-session-authority",
+      "08-22-harness-closed-teaching-action-loop",
+      "08-22-guided-free-reading-workspace-ui"
+    ],
+    "workflow_mode": "inline"
+  }
+}
