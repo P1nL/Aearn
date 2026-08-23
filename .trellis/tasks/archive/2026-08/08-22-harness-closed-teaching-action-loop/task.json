@@ -1,0 +1,37 @@
+{
+  "id": "harness-closed-teaching-action-loop",
+  "name": "harness-closed-teaching-action-loop",
+  "title": "Harness closed teaching action 与自然教学 Loop",
+  "description": "在 durable teaching session 上实现 closed teaching action、required context、单步停顿、中断恢复、completion 与服务端 Action Shelf projection。",
+  "status": "completed",
+  "dev_type": null,
+  "scope": "teaching_action_loop",
+  "package": null,
+  "priority": "P0",
+  "creator": "PINKING",
+  "assignee": "PINKING",
+  "createdAt": "2026-08-22",
+  "completedAt": "2026-08-23",
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "08-22-harness-led-adaptive-learning-workspace",
+  "relatedFiles": [
+    "aearn/services/api/app/agents/harness",
+    "aearn/services/api/app/services/tutor",
+    "aearn/services/api/app/services/learning",
+    "aearn/services/api/tests"
+  ],
+  "notes": "Child 2；依赖 Child 1 已完成并归档。完成后停止，不自动启动 Desktop child。",
+  "meta": {
+    "sequence": 2,
+    "depends_on": [
+      "08-22-harness-teaching-session-authority"
+    ],
+    "workflow_mode": "inline"
+  }
+}
