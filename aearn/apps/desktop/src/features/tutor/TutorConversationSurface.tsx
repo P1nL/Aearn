@@ -16,6 +16,7 @@ import type {
   ExerciseAttemptOutcome, LearningScopeInput, TutorActivityItem, TutorContextReference,
   TutorContextReferenceDraft, TutorHistoryItem, TutorHistoryMessage, TutorInboxItem, TutorInputAcceptedResponse,
   TutorInteractionRequestItem, TutorInteractionResponseDraft, TutorMemoryItem, TutorPlanRevisionList, TutorPreferences,
+  TeachingActionDescriptor, TeachingActionShelf, TeachingSessionGroupProjection,
   TutorPublicTurn, TutorQueuedInput, TutorRuntimeOutput, TutorRuntimeOutputItem,
   TutorThreadTurnV2Capability, TutorTurnOutputPayload, UserProfile,
 } from "../../types";
@@ -23,6 +24,7 @@ import {
   Button, DisclosureRow, DshDerivedRoot, IconChevronDown, IconChevronUp, IconDelete,
   IconEdit, IconQueue, IconSend, IconStop, Input, StateDot,
 } from "../../ui/dsh-derived";
+import { ComposerActionShelf } from "./ComposerActionShelf";
 import { TutorActivityPanel } from "./TutorActivityPanel";
 import { TutorMemoryPanel } from "./TutorMemoryPanel";
 import { TutorPlanPreferencesPanel } from "./TutorPlanPreferencesPanel";
@@ -36,6 +38,12 @@ export type TutorConversationSurfaceProps = {
   learningScope?: LearningScopeInput; scopeLabel?: string; contextReferences?: TutorComposerReference[];
   onRemoveContextReference?: (referenceId: string) => void;
   onReferencesAccepted?: (references: TutorContextReference[]) => void;
+  onHistoricalMessageReference?: (reference: TutorContextReferenceDraft, label: string) => void;
+  activeTeachingSessionId?: string | null;
+  teachingActionShelf?: TeachingActionShelf | null;
+  pendingTeachingActionKey?: string | null;
+  onTeachingAction?: (descriptor: TeachingActionDescriptor) => void;
+  onTeachingAuthorityChanged?: () => void;
 };
 type LoadStatus = "idle" | "loading" | "ready" | "error";
 type PreferenceUpdate = { inferredMemoryEnabled?: boolean; expectedMemorySettingVersion?: string; proactivePaused?: boolean };
@@ -66,7 +74,9 @@ const GENERAL_EXAMPLES = ["帮我理清闭包和作用域", "我想系统复习 
 export function TutorConversationSurface({
   user, enabled = false, isActive = true, selectedConversationId, onSelectConversation,
   onConversationsChanged, mode = "general", showControls = true, planningComposerPlaceholder, learningScope, scopeLabel,
-  contextReferences = [], onRemoveContextReference, onReferencesAccepted,
+  contextReferences = [], onRemoveContextReference, onReferencesAccepted, onHistoricalMessageReference,
+  activeTeachingSessionId = null, teachingActionShelf = null, pendingTeachingActionKey = null,
+  onTeachingAction, onTeachingAuthorityChanged,
 }: TutorConversationSurfaceProps) {
   const [timeline, setTimeline] = useState<TutorHistoryItem[]>([]);
   const [loadStatus, setLoadStatus] = useState<LoadStatus>("idle");
@@ -90,6 +100,7 @@ export function TutorConversationSurface({
   const [queue, setQueue] = useState<TutorQueuedInput[]>([]);
   const [maxPending, setMaxPending] = useState(10);
   const [pendingRequest, setPendingRequest] = useState<TutorInteractionRequestItem | null>(null);
+  const [teachingSessionGroups, setTeachingSessionGroups] = useState<TeachingSessionGroupProjection[]>([]);
   const [composerText, setComposerText] = useState("");
   const [composerStatus, setComposerStatus] = useState<"idle" | "submitting">("idle");
   const [actionError, setActionError] = useState<{ code: string; message: string } | null>(null);
@@ -280,6 +291,7 @@ export function TutorConversationSurface({
     setQueue(snapshot.queue);
     setMaxPending(snapshot.conversation.max_pending);
     setPendingRequest(snapshot.pending_requests.find((request) => request.state === "pending") ?? null);
+    setTeachingSessionGroups(snapshot.teaching_sessions ?? []);
     setStreamCursor(snapshot.stream_cursor);
     if (placement === "replace") {
       setHistoryCursor(snapshot.next_cursor); setHistoryHasMore(snapshot.has_more);
@@ -438,7 +450,7 @@ export function TutorConversationSurface({
     enabled: Boolean(streamUrl && streamCursor), initialCursor: streamCursor, maxReconnectAttempts: 3,
     onEvent: (event) => {
       if (event.kind === "turn_output") consumeTurnOutput(event);
-      else { scheduleRefresh(); onConversationsChanged?.(); }
+      else { scheduleRefresh(); onConversationsChanged?.(); onTeachingAuthorityChanged?.(); }
     },
     onResetRequired: requireThinkingSnapshot,
   });
@@ -453,7 +465,7 @@ export function TutorConversationSurface({
     activeTurnRef.current = null; setActiveTurn(null); setThinkingTurn(null);
     if (!mayReadTutor || !selectedConversationId) {
       setTimeline([]); setLoadStatus("idle"); setLoadError(null);
-      setQueue([]); setPendingRequest(null); setStreamCursor(null); return;
+      setQueue([]); setPendingRequest(null); setTeachingSessionGroups([]); setStreamCursor(null); return;
     }
     void loadSnapshot(selectedConversationId, { placement: "replace", showLoading: true });
   }, [loadSnapshot, mayReadTutor, replaceLiveRuntimeOutput, replaceLiveThinking, selectedConversationId]);
@@ -556,6 +568,8 @@ export function TutorConversationSurface({
   const sendLabel = composerStatus === "submitting" ? "正在确认……" : running ? "加入 Queue" : selectedConversationId ? "发送消息" : "开始对话";
 
 
+  const groupedTimeline = groupTeachingTimeline(timeline, teachingSessionGroups, activeTeachingSessionId);
+
   return <DshDerivedRoot className="tutor-surface-root"><main className={workspaceClassName} aria-label={planning ? "学习计划对话" : undefined} aria-labelledby={planning ? undefined : "tutor-workspace-title"}>
     <section className="tutor-main-column">
       {!planning && <header className="tutor-hero"><div><p className="tutor-panel-eyebrow">Tutor 学习对话</p><h1 id="tutor-workspace-title">{selectedConversationId ? "当前学习对话" : "新对话"}</h1><p>快照是可见状态权威来源；对话事件流只负责触发增量恢复。</p></div><div className="tutor-run-summary" aria-live="polite"><span>当前状态</span><strong>{displayControlState(controlState, activeTurn)}</strong>{streamUrl && <small>对话流：{displayStreamStatus(stream.status)}</small>}</div></header>}
@@ -570,7 +584,16 @@ export function TutorConversationSurface({
         {loadStatus === "loading" && timeline.length === 0 && <div className="tutor-empty-timeline"><strong>正在恢复权威对话快照……</strong></div>}
         {loadStatus === "error" && loadError && <div className="tutor-inline-error" role="alert"><div><strong>{loadError.code}</strong><span>{loadError.message}</span></div><Button size="sm" variant="outline" onClick={refreshSnapshot}>重试</Button></div>}
         {loadStatus !== "loading" && timeline.length === 0 && !loadError && !planning && !thinkingTurn && <div className="tutor-empty-timeline"><strong>{selectedConversationId ? "这里还没有可见记录" : "可以从一个模糊目标开始"}</strong></div>}
-        {timeline.map((item) => <TimelineItem key={`${item.kind}:${item.id}`} item={item} recentCompletion={recentCompletion} writeEnabled={writeEnabled} mutationBusy={mutationBusy} onRetry={(turnId) => { if (!userId || !selectedConversationId) return; void runMutation(`retry:${turnId}`, () => retryTutorTurn({ userId, conversationId: selectedConversationId, turnId, expectedControlVersion: controlVersion, clientActionId: createTutorActionId("tutor-turn-retry") })); }} />)}
+        <TeachingSessionTimeline
+          groups={groupedTimeline.history}
+          legacyItems={groupedTimeline.legacy}
+          recentCompletion={recentCompletion}
+          writeEnabled={writeEnabled}
+          mutationBusy={mutationBusy}
+          onRetry={(turnId) => { if (!userId || !selectedConversationId) return; void runMutation(`retry:${turnId}`, () => retryTutorTurn({ userId, conversationId: selectedConversationId, turnId, expectedControlVersion: controlVersion, clientActionId: createTutorActionId("tutor-turn-retry") })); }}
+          onReference={onHistoricalMessageReference}
+        />
+        {groupedTimeline.current.map((item) => <TimelineItem key={`${item.kind}:${item.id}`} item={item} recentCompletion={recentCompletion} writeEnabled={writeEnabled} mutationBusy={mutationBusy} onRetry={(turnId) => { if (!userId || !selectedConversationId) return; void runMutation(`retry:${turnId}`, () => retryTutorTurn({ userId, conversationId: selectedConversationId, turnId, expectedControlVersion: controlVersion, clientActionId: createTutorActionId("tutor-turn-retry") })); }} />)}
         {thinkingTurn && (running || Boolean(liveThinking?.receivedText) || runtimeOutputHasContent(liveRuntimeOutput)) ? <TutorRunningPlaceholder
           key={`${thinkingTurn.turn_id}:${liveRuntimeOutput?.generation ?? liveThinking?.generation ?? "pending"}`}
           turn={thinkingTurn}
@@ -591,7 +614,7 @@ export function TutorConversationSurface({
           onExecute={(item) => { if (!userId || !selectedConversationId) return; void runMutation(`execute:${item.item_id}`, () => executeTutorQueueItem({ userId, conversationId: selectedConversationId, itemId: item.item_id, expectedControlVersion: controlVersion, clientActionId: createTutorActionId("tutor-queue-execute") })); }}
           onResume={() => { if (!userId || !selectedConversationId) return; void runMutation("resume", () => resumeTutorQueue({ userId, conversationId: selectedConversationId, expectedControlVersion: controlVersion, clientActionId: createTutorActionId("tutor-queue-resume") })); }}
         />}
-        {running && selectedConversationId && activeTurn && <div className="tutor-running-controls" role="status"><span>当前 Turn 正在运行；发送新消息会进入 Queue。</span><Button variant="outline" size="sm" icon={<IconStop />} busy={mutationBusy === "interrupt"} disabled={!writeEnabled || Boolean(mutationBusy)} onClick={() => { if (!userId) return; void runMutation("interrupt", () => interruptTutorTurn({ userId, conversationId: selectedConversationId, expectedTurnId: activeTurn.turn_id, expectedInputRevision: activeTurn.input_revision, expectedControlVersion: controlVersion, clientActionId: createTutorActionId("tutor-turn-interrupt") })); }}>停止</Button></div>}
+        {running && selectedConversationId && activeTurn ? <div className="tutor-running-controls" role="status"><span>{activeTurn.input_revision > 0 ? "当前 Turn 正在运行；发送新消息会进入 Queue。" : "教学控制正在运行；完成前由 runtime controls 接管 Action Shelf。"}</span>{activeTurn.input_revision > 0 ? <Button variant="outline" size="sm" icon={<IconStop />} busy={mutationBusy === "interrupt"} disabled={!writeEnabled || Boolean(mutationBusy)} onClick={() => { if (!userId) return; void runMutation("interrupt", () => interruptTutorTurn({ userId, conversationId: selectedConversationId, expectedTurnId: activeTurn.turn_id, expectedInputRevision: activeTurn.input_revision, expectedControlVersion: controlVersion, clientActionId: createTutorActionId("tutor-turn-interrupt") })); }}>停止</Button> : null}</div> : onTeachingAction ? <ComposerActionShelf projection={teachingActionShelf} pendingActionKey={pendingTeachingActionKey} onAction={onTeachingAction} /> : null}
         <Composer planning={planning} planningIdle={planningIdle} planningPlaceholder={planningComposerPlaceholder} selectedConversationId={selectedConversationId} text={composerText} status={composerStatus} disabled={!writeEnabled} sendLabel={sendLabel} contextReferences={contextReferences} composerRef={composerRef} onTextChange={setComposerText} onKeyDown={handleComposerKeyDown} onSubmit={() => void submitComposer()} onRemoveReference={onRemoveContextReference} />
       </>}
     </section>
@@ -655,6 +678,94 @@ function QueueTray({ items, maxPending, activeTurn, paused, pauseReason, disable
   return <section className="tutor-queue-tray" aria-label="待处理 Queue"><header><div><IconQueue /><strong>Queue</strong><span>{items.length}/{maxPending}</span></div>{paused && <Button size="sm" variant="outline" disabled={disabled} busy={busyKey === "resume"} onClick={onResume}>继续队列</Button>}</header>{paused && <p className="tutor-queue-pause">队列已暂停：{displayQueuePauseReason(pauseReason)}</p>}{activeTurn && <p className="tutor-queue-active-hint">Steer 会影响当前处理并共享本 Turn 预算；中断并执行会结束当前 Turn 并创建 fresh Turn。</p>}<ol>{items.map((item, index) => <li key={item.item_id}>
     {editingId === item.item_id ? <div className="tutor-queue-edit"><textarea value={editDraft} onChange={(event) => onEditDraft(event.target.value)} disabled={disabled} rows={2} autoFocus /><div><Button size="sm" variant="primary" busy={busyKey === `edit:${item.item_id}`} disabled={disabled || !editDraft.trim()} onClick={() => onSaveEdit(item)}>保存</Button><Button size="sm" onClick={onCancelEdit}>取消</Button></div></div> : <><p>{item.content}</p><div className="tutor-queue-actions"><Button variant="icon" aria-label="编辑 Queue 项" title="编辑" disabled={disabled} icon={<IconEdit />} onClick={() => onBeginEdit(item)} /><Button variant="icon" aria-label="上移 Queue 项" title="上移" disabled={disabled || index === 0} icon={<IconChevronUp />} onClick={() => onMove(item.item_id, -1)} /><Button variant="icon" aria-label="下移 Queue 项" title="下移" disabled={disabled || index === items.length - 1} icon={<IconChevronDown />} onClick={() => onMove(item.item_id, 1)} /><Button variant="icon" aria-label="删除 Queue 项" title="删除" disabled={disabled} busy={busyKey === `delete:${item.item_id}`} icon={<IconDelete />} onClick={() => onDelete(item)} />{activeTurn && <Button size="sm" variant="outline" disabled={disabled} busy={busyKey === `steer:${item.item_id}`} onClick={() => onSteer(item)}>Steer</Button>}<Button size="sm" variant="primary" disabled={disabled} busy={busyKey === `execute:${item.item_id}`} title={activeTurn ? "中断当前 Turn，并以该 Queue 项创建 fresh Turn" : "以该 Queue 项创建 fresh Turn"} onClick={() => onExecute(item)}>{activeTurn ? "中断并执行" : "立即执行"}</Button></div></>}
   </li>)}</ol></section>;
+}
+
+type GroupedTeachingTimeline = {
+  current: TutorHistoryItem[];
+  history: Array<{ session: TeachingSessionGroupProjection; items: TutorHistoryItem[] }>;
+  legacy: TutorHistoryItem[];
+};
+
+export function groupTeachingTimeline(
+  timeline: TutorHistoryItem[],
+  groups: TeachingSessionGroupProjection[],
+  activeSessionId: string | null,
+): GroupedTeachingTimeline {
+  if (groups.length === 0 || !activeSessionId) return { current: timeline, history: [], legacy: [] };
+  const active = groups.find((group) => group.session_id === activeSessionId) ?? null;
+  if (!active) return { current: timeline, history: [], legacy: [] };
+  const ownership = new Map<string, TeachingSessionGroupProjection>();
+  for (const group of groups) for (const turnId of group.turn_ids) ownership.set(turnId, group);
+  const current: TutorHistoryItem[] = [];
+  const legacy: TutorHistoryItem[] = [];
+  const historical = new Map<string, TutorHistoryItem[]>();
+  for (const item of timeline) {
+    const turnId = historyItemTurnId(item);
+    const group = turnId ? ownership.get(turnId) : null;
+    if (group?.session_id === activeSessionId) current.push(item);
+    else if (group) historical.set(group.session_id, [...(historical.get(group.session_id) ?? []), item]);
+    else legacy.push(item);
+  }
+  return {
+    current,
+    history: groups.filter((group) => group.session_id !== activeSessionId).map((session) => ({ session, items: historical.get(session.session_id) ?? [] })),
+    legacy,
+  };
+}
+
+function TeachingSessionTimeline({ groups, legacyItems, recentCompletion, writeEnabled, mutationBusy, onRetry, onReference }: {
+  groups: GroupedTeachingTimeline["history"];
+  legacyItems: TutorHistoryItem[];
+  recentCompletion: TutorRecentCompletion | null;
+  writeEnabled: boolean;
+  mutationBusy: string | null;
+  onRetry: (turnId: string) => void;
+  onReference?: (reference: TutorContextReferenceDraft, label: string) => void;
+}) {
+  if (groups.length === 0 && legacyItems.length === 0) return null;
+  return <section className="teaching-session-history" aria-label="历史教学分段">
+    {groups.map(({ session, items }) => <details key={session.session_id} className="teaching-session-group">
+      <summary><span><strong>{session.knowledge_key}</strong><small>{displayTeachingSessionStatus(session.status)} · {displayTeachingMode(session.mode)}</small></span><time>{formatTeachingSessionTime(session.last_activity_at)}</time></summary>
+      <div className="teaching-session-readonly" aria-label={`${session.knowledge_key} 历史分段，只读`}>
+        <p>历史 teaching session · 只读。展开不会改变当前 Composer、mode 或下一步。</p>
+        {items.length > 0 ? items.map((item) => <div key={`history:${session.session_id}:${item.kind}:${item.id}`} className="teaching-session-history-item">
+          <TimelineItem item={item} recentCompletion={recentCompletion} writeEnabled={false} mutationBusy={mutationBusy} onRetry={onRetry} />
+          {item.kind === "message" && item.turn_id && onReference ? <button
+            className="tutor-text-button teaching-session-reference-button"
+            type="button"
+            disabled={!writeEnabled}
+            onClick={() => onReference({
+              kind: "teaching_session_message",
+              learning_track_id: session.track_id,
+              knowledge_key: session.knowledge_key,
+              teaching_session_id: session.session_id,
+              message_id: item.id,
+            }, `历史${item.role === "learner" ? "提问" : "讲解"} · ${session.knowledge_key}`)}
+          >引用此消息</button> : null}
+        </div>) : <span>当前 bounded snapshot 中没有该分段的消息；可使用“加载更早记录”继续读取。</span>}
+      </div>
+    </details>)}
+    {legacyItems.length > 0 ? <details className="teaching-session-group legacy"><summary><span><strong>教学分段启用前的对话</strong><small>Track conversation history · 只读</small></span></summary><div className="teaching-session-readonly">{legacyItems.map((item) => <TimelineItem key={`legacy:${item.kind}:${item.id}`} item={item} recentCompletion={recentCompletion} writeEnabled={false} mutationBusy={mutationBusy} onRetry={onRetry} />)}</div></details> : null}
+  </section>;
+}
+
+function historyItemTurnId(item: TutorHistoryItem): string | null {
+  if (item.kind === "process") return item.run_id;
+  return item.turn_id;
+}
+
+function displayTeachingSessionStatus(status: TeachingSessionGroupProjection["status"]): string {
+  return { active: "进行中", paused: "已暂停", completed: "已完成", blocked: "authority 已变化" }[status];
+}
+
+function displayTeachingMode(mode: TeachingSessionGroupProjection["mode"]): string {
+  return mode === "guided" ? "Guided" : "自由阅读";
+}
+
+function formatTeachingSessionTime(value: string | null): string {
+  if (!value) return "";
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.valueOf()) ? "" : new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(parsed);
 }
 
 function TimelineItem({ item, recentCompletion, writeEnabled, mutationBusy, onRetry }: {
@@ -841,9 +952,14 @@ function TutorThinking({ messageId, text, expanded, complete, running = false, o
 
 function TutorReferenceDraftChips({ references, disabled, onRemove }: { references: TutorComposerReference[]; disabled: boolean; onRemove?: (referenceId: string) => void }) { return <div className="tutor-reference-drafts" aria-label="待发送结构化引用">{references.map((reference) => <span key={reference.id} data-kind={reference.draft.kind}><span aria-hidden="true">{referenceIcon(reference.draft.kind)}</span><strong>{reference.label}</strong>{onRemove ? <button type="button" disabled={disabled} aria-label={`移除引用：${reference.label}`} onClick={() => onRemove(reference.id)}>×</button> : null}</span>)}</div>; }
 function TutorReferenceCards({ references }: { references: TutorContextReference[] }) { return <div className="tutor-reference-cards" aria-label="本条消息的结构化引用">{references.map((reference) => <article key={reference.reference_id} data-kind={reference.kind}><span aria-hidden="true">{referenceIcon(reference.kind)}</span><div><strong>{referenceTitle(reference)}</strong><small>{referenceSummary(reference)}</small></div></article>)}</div>; }
-function referenceIcon(kind: TutorContextReference["kind"] | TutorContextReferenceDraft["kind"]): string { return { lesson_selection: "§", exercise_feedback: "✓", execution_result: "⌘", review_feedback: "↺" }[kind]; }
-function referenceTitle(reference: TutorContextReference): string { return { lesson_selection: "课程选段", exercise_feedback: "练习反馈", execution_result: "执行结果", review_feedback: "复习反馈" }[reference.kind]; }
-function referenceSummary(reference: TutorContextReference): string { if (reference.kind === "lesson_selection") return reference.safe_excerpt; const summary = `${outcomeReferenceLabel(reference.outcome)} · ${Math.round(reference.score * 100)}% · ${reference.feedback_summary}`; return reference.kind === "execution_result" ? `${summary} · ${reference.execution_job_state}` : summary; }
+function referenceIcon(kind: TutorContextReference["kind"] | TutorContextReferenceDraft["kind"]): string { return { lesson_selection: "§", exercise_feedback: "✓", execution_result: "⌘", review_feedback: "↺", teaching_session_message: "↗" }[kind]; }
+function referenceTitle(reference: TutorContextReference): string { return { lesson_selection: "课程选段", exercise_feedback: "练习反馈", execution_result: "执行结果", review_feedback: "复习反馈", teaching_session_message: "历史教学消息" }[reference.kind]; }
+function referenceSummary(reference: TutorContextReference): string {
+  if (reference.kind === "lesson_selection") return reference.safe_excerpt;
+  if (reference.kind === "teaching_session_message") return `${reference.role === "learner" ? "提问" : "讲解"} · ${reference.knowledge_key} · ${reference.message_summary}`;
+  const summary = `${outcomeReferenceLabel(reference.outcome)} · ${Math.round(reference.score * 100)}% · ${reference.feedback_summary}`;
+  return reference.kind === "execution_result" ? `${summary} · ${reference.execution_job_state}` : summary;
+}
 function outcomeReferenceLabel(outcome: ExerciseAttemptOutcome): string { return { passed: "通过", failed: "未通过", timed_out: "超时", cancelled: "已取消", unavailable: "不可用", invalid: "无效" }[outcome]; }
 
 type TutorRuntimeStreamPayload = Extract<TutorTurnOutputPayload, { output_version: "tutor_runtime_item_stream_v1" }>;

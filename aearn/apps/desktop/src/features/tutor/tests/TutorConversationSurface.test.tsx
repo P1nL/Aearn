@@ -1,4 +1,5 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
+import type { ComponentProps } from "react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -20,7 +21,7 @@ vi.mock("../../../hooks/useTutorConversationStream", () => ({
   },
 }));
 
-import { TutorConversationSurface } from "../TutorConversationSurface";
+import { TutorConversationSurface, groupTeachingTimeline } from "../TutorConversationSurface";
 
 const prompt = "请说明你希望先学习事件循环的哪一部分？";
 const userProfile = {
@@ -43,7 +44,7 @@ const snapshot = {
   timeline: [], next_cursor: null, has_more: false, stream_cursor: "opaque.cursor",
 };
 
-function renderSurface(options: { mode?: "general" | "plan_drafting"; planningComposerPlaceholder?: string } = {}) {
+function renderSurface(options: Partial<ComponentProps<typeof TutorConversationSurface>> = {}) {
   return render(<TutorConversationSurface user={userProfile} enabled isActive selectedConversationId="conversation-1" onSelectConversation={vi.fn()} showControls={false} {...options} />);
 }
 
@@ -253,7 +254,7 @@ describe("TutorConversationSurface typed request seat", () => {
 
     await screen.findByRole("textbox", { name: "告诉 Tutor 你的目标或调整意见" });
     const workspace = screen.getByRole("main", { name: "学习计划对话" });
-    expect(workspace).toHaveClass("tutor-conversation-idle");
+    await waitFor(() => expect(workspace).toHaveClass("tutor-conversation-idle"));
     expect(workspace.parentElement).toHaveClass("aearn-dsh-derived", "tutor-surface-root");
   });
 
@@ -690,4 +691,112 @@ describe("TutorConversationSurface typed request seat", () => {
     expect(screen.queryByRole("status", { name: "think" })).not.toBeInTheDocument();
     expect(screen.queryByRole("list")).not.toBeInTheDocument();
   });
+
+  it("groups timeline by exact server-projected turn ids without inferring message text", () => {
+    const currentMessage = { kind: "message" as const, id: "message-current", turn_id: "turn-current", role: "tutor" as const, content: "相同正文", public_thinking_text: "", public_thinking_steps: [], runtime_output: null, context_references: [], in_reply_to_item_id: null, created_at: null };
+    const historyMessage = { ...currentMessage, id: "message-history", turn_id: "turn-history" };
+    const legacyMessage = { ...currentMessage, id: "message-legacy", turn_id: "turn-legacy" };
+    const baseGroup = {
+      track_id: "track-1", track_version: 1, conversation_id: "conversation-1", knowledge_key: "javascript.closure",
+      status: "active" as const, mode: "guided" as const, session_version: 1, progress_version: 1,
+      assignment_id: "assignment-1", assignment_version: 1, document_id: "document-1",
+      checkpoint_id: "checkpoint-1", paused_at: null, completed_at: null, last_activity_at: null,
+    };
+    const grouped = groupTeachingTimeline([currentMessage, historyMessage, legacyMessage], [
+      { ...baseGroup, session_id: "session-current", turn_ids: ["turn-current"] },
+      { ...baseGroup, session_id: "session-history", knowledge_key: "javascript.scope", status: "completed", turn_ids: ["turn-history"] },
+    ], "session-current");
+
+    expect(grouped.current.map((item) => item.id)).toEqual(["message-current"]);
+    expect(grouped.history[0]?.items.map((item) => item.id)).toEqual(["message-history"]);
+    expect(grouped.legacy.map((item) => item.id)).toEqual(["message-legacy"]);
+  });
+
+  it("creates an exact historical teaching-session message reference without changing the composer draft", async () => {
+    const user = userEvent.setup();
+    const onReference = vi.fn();
+    const historicalMessage = {
+      kind: "message" as const, id: "message-history", turn_id: "turn-history", role: "tutor" as const,
+      content: "历史讲解正文。", public_thinking_text: "", public_thinking_steps: [], runtime_output: null,
+      context_references: [], in_reply_to_item_id: null, created_at: "2026-08-22T08:00:00Z",
+    };
+    const group = {
+      track_id: "track-1", track_version: 1, conversation_id: "conversation-1", knowledge_key: "javascript.scope",
+      status: "completed" as const, mode: "guided" as const, session_version: 2, progress_version: 1,
+      assignment_id: "assignment-1", assignment_version: 1, document_id: "document-1",
+      checkpoint_id: "checkpoint-1", paused_at: null, completed_at: "2026-08-22T08:05:00Z",
+      last_activity_at: "2026-08-22T08:05:00Z", action_shelf: null, allowed_actions: [], turn_ids: ["turn-history"],
+    };
+    api.fetchTutorConversationSnapshot.mockResolvedValue({
+      ...snapshot,
+      conversation: { ...snapshot.conversation, control_state: "idle", pending_count: 0, queue_paused: false, queue_pause_reason: null },
+      pending_requests: [], queue: [], timeline: [historicalMessage],
+      teaching_sessions: [
+        { ...group, session_id: "session-current", knowledge_key: "javascript.closure", status: "active", completed_at: null, turn_ids: [] },
+        { ...group, session_id: "session-history" },
+      ],
+    });
+
+    renderSurface({ activeTeachingSessionId: "session-current", onHistoricalMessageReference: onReference });
+    const composer = await screen.findByRole("textbox", { name: "继续当前对话" });
+    await user.type(composer, "仍保留的草稿");
+    await user.click(screen.getByText("javascript.scope"));
+    await user.click(screen.getByRole("button", { name: "引用此消息" }));
+
+    expect(onReference).toHaveBeenCalledWith({
+      kind: "teaching_session_message",
+      learning_track_id: "track-1",
+      knowledge_key: "javascript.scope",
+      teaching_session_id: "session-history",
+      message_id: "message-history",
+    }, "历史讲解 · javascript.scope");
+    expect(composer).toHaveValue("仍保留的草稿");
+  });
+
+  it("renders the server-owned Action Shelf below runtime/request authority and preserves the composer draft", async () => {
+    const user = userEvent.setup();
+    const onTeachingAction = vi.fn();
+    api.fetchTutorConversationSnapshot.mockResolvedValue({
+      ...snapshot,
+      conversation: { ...snapshot.conversation, control_state: "idle", pending_count: 0, queue_paused: false, queue_pause_reason: null },
+      pending_requests: [],
+      queue: [],
+      teaching_sessions: [],
+    });
+    const shelf = {
+      schema_version: "teaching_action_shelf_v1" as const,
+      teaching_session_id: "session-1", session_version: 2, checkpoint_id: "checkpoint-1", state: "ready" as const,
+      primary_action: { key: "continue", label: "继续", emphasis: "primary" as const, enabled: true, disabled_reason: null, target_kind: "teaching_control" as const, target_id: null, expected_versions: { session: 2, track: 3, progress: 4, assignment: 5 } },
+      secondary_actions: [
+        { key: "change_example", label: "换个例子", emphasis: "secondary" as const, enabled: true, disabled_reason: null, target_kind: "teaching_control" as const, target_id: null, expected_versions: { session: 2, track: 3, progress: 4, assignment: 5 } },
+        { key: "pause", label: "暂停", emphasis: "quiet" as const, enabled: true, disabled_reason: null, target_kind: "teaching_control" as const, target_id: null, expected_versions: { session: 2, track: 3, progress: 4, assignment: 5 } },
+      ],
+      overflow_actions: [],
+    };
+    const rendered = renderSurface({ teachingActionShelf: shelf, onTeachingAction });
+    const composer = await screen.findByRole("textbox", { name: "继续当前对话" });
+    await user.type(composer, "保留这个草稿");
+    expect(screen.getByRole("region", { name: "教学下一步" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "继续" }));
+    expect(onTeachingAction).toHaveBeenCalledWith(shelf.primary_action);
+
+    rendered.rerender(<TutorConversationSurface user={userProfile} enabled isActive selectedConversationId="conversation-1" onSelectConversation={vi.fn()} showControls={false} teachingActionShelf={{ ...shelf, state: "completion", primary_action: null }} onTeachingAction={onTeachingAction} />);
+    expect(screen.getByRole("textbox", { name: "继续当前对话" })).toHaveValue("保留这个草稿");
+  });
+
+
+  it("does not expose the learner interrupt mutation for input-revision zero teaching-control runs", async () => {
+    api.fetchTutorConversationSnapshot.mockResolvedValue({
+      ...snapshot,
+      conversation: { ...snapshot.conversation, control_state: "running", pending_count: 0, queue_paused: false, queue_pause_reason: null },
+      active_turn: { ...activeTurn, input_revision: 0 },
+      pending_requests: [],
+      queue: [],
+      teaching_sessions: [],
+    });
+    renderSurface();
+    expect(await screen.findByText("教学控制正在运行；完成前由 runtime controls 接管 Action Shelf。")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "停止" })).not.toBeInTheDocument();
+  });
+
 });

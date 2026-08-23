@@ -575,3 +575,43 @@ if (payload.active_runtime_output !== null && runtime === null) return null;
 - `single_select` accepts optional compatibility fields `selection_scope`, `selection_reason_code`, and `intent_policy_version`; current language requests provide the closed scope union `explicit_shortlist | intent_shortlist | conflict_shortlist | full_catalog`.
 - Parse from `unknown`, validate option values/labels and nullable recommendation, and reject unknown extra keys. Internal course UUIDs, learner evidence, regex matches, and model rationale are not public fields.
 - The response continues to send the exact public option value under `planning_input.value`; the client never submits candidate course IDs.
+
+## 场景：Teaching workspace 与历史消息引用 exact DTO（2026-08-23）
+
+### 1. 适用范围与触发条件
+
+- 触发：教学 session list/current/action、conversation snapshot grouping、Action Shelf、follow target 或 context reference parser。
+
+### 2. 类型签名
+
+- list/group projection 必须含 safe session summary、`action_shelf:null`、`allowed_actions:[]`；group 额外含唯一且最多 200 个 `turn_ids`。
+- detailed current/mutation projection 必须含 exact checkpoint、非空 server shelf 和与 descriptor 顺序一致的 `allowed_actions`。
+- mutation response 的 `idempotent_replayed` 是必填 boolean。
+- `teaching_session_message` draft 只含 `learning_track_id,knowledge_key,teaching_session_id,message_id`；saved public DTO 额外含 exact `turn_id,role,message_summary,message_created_at` 和 hash/version，绝不含 `message_content`。
+
+### 3. 契约
+
+- 所有 payload 从 `unknown` exact-parse；snapshot 可为旧兼容 payload 缺少 `teaching_sessions`，但字段存在时必须完整严格验证。
+- 公共教学 projection 不包含 `document_content_hash`、raw checkpoint/authority、prompt/reasoning/provider body、完整问题或提交。
+- 历史消息完整正文仅由后端内部 context loader 根据 exact IDs 再解析；Desktop 类型没有该字段。
+
+### 4. 验证与错误矩阵
+
+- duplicate/oversized `turn_ids`、unknown mode/status/action/extra key -> 拒绝整个 payload。
+- saved historical reference 出现 `message_content` 或 provider 字段 -> contract error。
+- mutation 缺少 `idempotent_replayed` -> invalid payload。
+
+### 5. 正常、基础与错误案例
+
+- 正常：v3 snapshot 带 bounded groups 和 exact turn ownership。
+- 基础：旧 mock/snapshot 无 teaching groups 时解析为空数组。
+- 错误：`response.json() as TeachingSessionProjection`，或把 public list projection 当 detailed current 使用。
+
+### 6. 必须测试
+
+- parser good/base/bad、extra protected fields、list/detail 差异、turn ID uniqueness、historical reference public/internal field边界。
+
+### 7. 错误与正确写法
+
+- 错误：前端从 message content 推断 session，并把正文塞入 reference。
+- 正确：消费 server `turn_ids`，提交 exact IDs，公开 parser 拒绝任何完整历史正文。

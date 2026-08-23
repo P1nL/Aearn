@@ -52,11 +52,20 @@ class ReviewFeedbackReferenceInput(_StrictReferenceModel):
     attempt_id: UUID
 
 
+class TeachingSessionMessageReferenceInput(_StrictReferenceModel):
+    kind: Literal["teaching_session_message"]
+    learning_track_id: UUID
+    knowledge_key: str = Field(min_length=1, max_length=160)
+    teaching_session_id: UUID
+    message_id: UUID
+
+
 TutorContextReferenceInput = Annotated[
     LessonSelectionReferenceInput
     | ExerciseFeedbackReferenceInput
     | ExecutionResultReferenceInput
-    | ReviewFeedbackReferenceInput,
+    | ReviewFeedbackReferenceInput
+    | TeachingSessionMessageReferenceInput,
     Field(discriminator="kind"),
 ]
 

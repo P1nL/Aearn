@@ -522,7 +522,7 @@ class PostgresTutorLearningContextLoader:
             input_revision=input_revision,
             action_receipts=action_receipts,
         )
-        reference_items = self._context_references.read_for_input(
+        reference_items = self._context_references.read_for_context(
             user_id=snapshot.user_id,
             run_id=snapshot.run_id,
             input_revision=input_revision,

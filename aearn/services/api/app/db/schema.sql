@@ -6257,7 +6257,8 @@ CREATE TABLE IF NOT EXISTS tutor_message_context_references (
   input_revision integer NOT NULL CHECK (input_revision > 0),
   reference_index integer NOT NULL CHECK (reference_index BETWEEN 0 AND 5),
   reference_kind text NOT NULL CHECK (reference_kind IN (
-    'lesson_selection', 'exercise_feedback', 'execution_result', 'review_feedback'
+    'lesson_selection', 'exercise_feedback', 'execution_result', 'review_feedback',
+    'teaching_session_message'
   )),
   track_id uuid NOT NULL,
   knowledge_key text NOT NULL CHECK (knowledge_key ~ '^[a-z0-9][a-z0-9._:-]{0,159}$'),
@@ -6306,8 +6307,42 @@ CREATE TABLE IF NOT EXISTS tutor_message_context_references (
     (reference_kind = 'review_feedback'
       AND document_id IS NULL AND attempt_id IS NOT NULL
       AND review_session_id IS NOT NULL AND exercise_version_id IS NOT NULL)
+    OR
+    (reference_kind = 'teaching_session_message'
+      AND document_id IS NULL AND attempt_id IS NULL
+      AND review_session_id IS NULL AND exercise_version_id IS NULL)
   )
 );
+
+ALTER TABLE tutor_message_context_references
+  DROP CONSTRAINT IF EXISTS tutor_message_context_references_reference_kind_check;
+ALTER TABLE tutor_message_context_references
+  DROP CONSTRAINT IF EXISTS chk_tutor_message_context_reference_kind;
+ALTER TABLE tutor_message_context_references
+  ADD CONSTRAINT chk_tutor_message_context_reference_kind CHECK (reference_kind IN (
+    'lesson_selection', 'exercise_feedback', 'execution_result', 'review_feedback',
+    'teaching_session_message'
+  ));
+ALTER TABLE tutor_message_context_references
+  DROP CONSTRAINT IF EXISTS chk_tutor_message_context_reference_shape;
+ALTER TABLE tutor_message_context_references
+  ADD CONSTRAINT chk_tutor_message_context_reference_shape CHECK (
+    (reference_kind = 'lesson_selection'
+      AND document_id IS NOT NULL AND attempt_id IS NULL
+      AND review_session_id IS NULL AND exercise_version_id IS NULL)
+    OR
+    (reference_kind IN ('exercise_feedback', 'execution_result')
+      AND document_id IS NULL AND attempt_id IS NOT NULL
+      AND review_session_id IS NULL AND exercise_version_id IS NOT NULL)
+    OR
+    (reference_kind = 'review_feedback'
+      AND document_id IS NULL AND attempt_id IS NOT NULL
+      AND review_session_id IS NOT NULL AND exercise_version_id IS NOT NULL)
+    OR
+    (reference_kind = 'teaching_session_message'
+      AND document_id IS NULL AND attempt_id IS NULL
+      AND review_session_id IS NULL AND exercise_version_id IS NULL)
+  );
 
 CREATE OR REPLACE FUNCTION enforce_tutor_message_context_reference_immutable()
 RETURNS trigger AS $$

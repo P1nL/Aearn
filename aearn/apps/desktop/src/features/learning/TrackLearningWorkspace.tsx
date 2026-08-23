@@ -11,7 +11,12 @@ import type {
   LearningRoadmap,
   LearningScopeInput,
   LearningTrackDetail,
+  LessonDocumentState,
+  LessonFollowState,
+  LessonFollowTarget,
   ReviewQueue,
+  TeachingActionDescriptor,
+  TeachingSessionProjection,
   TutorContextReference,
   TutorContextReferenceDraft,
   UserProfile,
@@ -20,6 +25,7 @@ import { TutorConversationSurface, type TutorComposerReference } from "../tutor/
 import { LearningRoadmapPanel } from "./LearningRoadmapPanel";
 import { LessonDocumentPage } from "./LessonDocumentPage";
 import { ReviewSessionPanel } from "./ReviewSessionPanel";
+import { type TeachingAuthorityInput, useTeachingWorkspaceController } from "./useTeachingWorkspaceController";
 
 export type LearningWorkspaceMode = "lesson" | "review";
 
@@ -65,9 +71,47 @@ export function TrackLearningWorkspace({
   const [referenceTaskKind, setReferenceTaskKind] = useState<NonNullable<LearningScopeInput["task_kind"]> | null>(null);
   const [activePanel, setActivePanel] = useState<WorkspacePanel>("learning");
   const [roadmapDrawerOpen, setRoadmapDrawerOpen] = useState(false);
+  const [lessonAuthority, setLessonAuthority] = useState<LessonDocumentState | null>(null);
+  const [followState, setFollowState] = useState<LessonFollowState>("following");
+  const [followConflict, setFollowConflict] = useState<string | null>(null);
   const roadmapDrawerRef = useRef<HTMLElement | null>(null);
   const roadmapDrawerTriggerRef = useRef<HTMLButtonElement | null>(null);
   const roadmapDrawerCloseRef = useRef<HTMLButtonElement | null>(null);
+  const loadAuthorityRef = useRef<(() => Promise<void>) | null>(null);
+  const openedAuthorityKeyRef = useRef<string | null>(null);
+  const previousSessionIdentityRef = useRef<string | null>(null);
+
+  const handleTeachingTransition = useCallback((next: TeachingSessionProjection) => {
+    setKnowledgeKey(next.knowledge_key);
+    setMode("lesson");
+    setReviewSessionId(null);
+    setFollowState("following");
+    setFollowConflict(null);
+    setActivePanel("learning");
+    openedAuthorityKeyRef.current = null;
+  }, []);
+
+  const handleNavigationAction = useCallback((descriptor: TeachingActionDescriptor) => {
+    if (descriptor.key === "return_roadmap") {
+      setRoadmapDrawerOpen(true);
+      setActivePanel("roadmap");
+      return;
+    }
+    if (descriptor.key === "view_feedback" || descriptor.key === "start_review") {
+      setMode("review");
+      setActivePanel("learning");
+      return;
+    }
+    if (descriptor.key === "open_evidence" || descriptor.key === "continue_reading") {
+      setActivePanel("learning");
+    }
+  }, []);
+
+  const teaching = useTeachingWorkspaceController({
+    onConflictRefresh: () => loadAuthorityRef.current?.(),
+    onTransition: handleTeachingTransition,
+    onNavigationAction: handleNavigationAction,
+  });
 
   const loadAuthority = useCallback(async (signal?: AbortSignal) => {
     setStatus("loading");
@@ -107,6 +151,7 @@ export function TrackLearningWorkspace({
       if (info.code === "LEARNING_TRACK_NOT_FOUND" || info.code === "NOT_FOUND") clearLearningWorkspaceNavigation(user.id);
     }
   }, [initialKnowledgeKey, initialReviewSessionId, trackId, user.id]);
+  loadAuthorityRef.current = () => loadAuthority();
 
   useEffect(() => {
     const controller = new AbortController();
@@ -130,8 +175,39 @@ export function TrackLearningWorkspace({
     return () => globalThis.cancelAnimationFrame(frame);
   }, [roadmapDrawerOpen]);
 
+  useEffect(() => {
+    const identity = teaching.session ? `${teaching.session.knowledge_key}:${teaching.session.session_id}` : null;
+    if (identity && previousSessionIdentityRef.current && identity !== previousSessionIdentityRef.current) {
+      setFollowState("following");
+      setFollowConflict(null);
+    }
+    previousSessionIdentityRef.current = identity;
+  }, [teaching.session]);
+
+  const handleLessonAuthorityChange = useCallback((next: LessonDocumentState | null) => {
+    setLessonAuthority(next);
+    if (next?.status !== "ready" || !next.assignment || !conversationId || next.knowledge_key !== knowledgeKey) return;
+    const authority: TeachingAuthorityInput = {
+      userId: user.id,
+      trackId,
+      conversationId,
+      knowledgeKey: next.knowledge_key,
+      trackVersion: next.track_version,
+      progressVersion: next.progress_version,
+      assignmentVersion: next.assignment.assignment_version,
+    };
+    const authorityKey = [authority.userId, authority.trackId, authority.conversationId, authority.knowledgeKey, authority.trackVersion, authority.progressVersion, authority.assignmentVersion].join(":");
+    const current = teaching.session;
+    const currentMatches = current && current.conversation_id === conversationId && current.knowledge_key === next.knowledge_key &&
+      current.track_version === next.track_version && current.progress_version === next.progress_version &&
+      current.assignment_version === next.assignment.assignment_version && current.document_id === next.assignment.document_id;
+    if (currentMatches || openedAuthorityKeyRef.current === authorityKey) return;
+    openedAuthorityKeyRef.current = authorityKey;
+    void teaching.open(authority).then((opened) => { if (!opened) openedAuthorityKeyRef.current = null; });
+  }, [conversationId, knowledgeKey, teaching, trackId, user.id]);
+
   const tutorScope = useMemo<LearningScopeInput>(() => {
-    const scopedKey = references[0]?.draft.knowledge_key ?? knowledgeKey ?? undefined;
+    const scopedKey = references.find((item) => item.draft.kind !== "teaching_session_message")?.draft.knowledge_key ?? knowledgeKey ?? undefined;
     const taskKind = referenceTaskKind ?? (mode === "review" ? "review_coaching" : "lesson_teaching");
     return {
       scope_kind: "learning_track",
@@ -141,23 +217,40 @@ export function TrackLearningWorkspace({
     };
   }, [knowledgeKey, mode, referenceTaskKind, references, trackId]);
 
-  function addReference(draft: TutorContextReferenceDraft, label: string, taskKind: NonNullable<LearningScopeInput["task_kind"]>) {
+  const followTarget = useMemo(() => teachingFollowTarget(teaching.session, lessonAuthority), [lessonAuthority, teaching.session]);
+  const teachingMode = teaching.session?.mode ?? "guided";
+  const teachingReady = mode === "lesson" && teaching.session !== null;
+
+  function addReference(
+    draft: TutorContextReferenceDraft,
+    label: string,
+    taskKind: NonNullable<LearningScopeInput["task_kind"]>,
+    activateTutor = true,
+  ) {
     const identity = referenceIdentity(draft);
     setReferences((current) => {
-      const sameScope = current.length === 0 || (current[0].draft.knowledge_key === draft.knowledge_key && referenceTaskKind === taskKind);
+      const targetsCurrentScope = (reference: TutorContextReferenceDraft) =>
+        reference.kind === "teaching_session_message" || reference.knowledge_key === knowledgeKey;
+      const sameScope = current.length === 0 || (
+        referenceTaskKind === taskKind && targetsCurrentScope(draft) && current.every((item) => targetsCurrentScope(item.draft))
+      );
       const base = sameScope ? current : [];
       if (base.some((item) => referenceIdentity(item.draft) === identity)) return base;
       if (base.length >= 6) return base;
       return [...base, { id: identity, draft, label }];
     });
     setReferenceTaskKind(taskKind);
-    setActivePanel("tutor");
+    if (activateTutor) setActivePanel("tutor");
   }
 
   function openLesson(nextKnowledgeKey: string) {
     setMode("lesson");
     setKnowledgeKey(nextKnowledgeKey);
     setReviewSessionId(null);
+    setLessonAuthority(null);
+    openedAuthorityKeyRef.current = null;
+    setFollowState("following");
+    setFollowConflict(null);
     setRoadmapDrawerOpen(false);
     setActivePanel("learning");
   }
@@ -208,6 +301,7 @@ export function TrackLearningWorkspace({
   }
 
   const scopeTitle = `${track.language_display_name} · ${knowledgeTitle(roadmap, tutorScope.knowledge_key ?? null)} · ${taskLabel(tutorScope.task_kind)}`;
+  const workspaceClassName = `learning-workspace-grid content-${mode} teaching-${teachingMode}`;
 
   return (
     <main className="track-learning-workspace" aria-label={`${track.language_display_name} 学习工作区`}>
@@ -221,23 +315,48 @@ export function TrackLearningWorkspace({
       </header>
 
       <nav className="learning-workspace-tabs" aria-label="工作区面板">
-        {(["roadmap", "learning", "tutor"] as const).map((panel) => <button key={panel} className={activePanel === panel ? "active" : ""} type="button" aria-pressed={activePanel === panel} onClick={() => setActivePanel(panel)}>{panelLabel(panel, mode, references.length)}</button>)}
+        {(["roadmap", "learning", "tutor"] as const).map((panel) => <button key={panel} className={activePanel === panel ? "active" : ""} type="button" aria-pressed={activePanel === panel} onClick={() => setActivePanel(panel)}>{panelLabel(panel, mode, teachingMode, references.length)}</button>)}
       </nav>
 
-      <div className="learning-workspace-grid">
+      <div className={workspaceClassName}>
         <aside className={`learning-workspace-roadmap ${activePanel === "roadmap" ? "mobile-active" : ""}`} aria-label="路线面板">
           <LearningRoadmapPanel roadmap={roadmap} reviewQueue={reviewQueue} selectedKnowledgeKey={knowledgeKey} mode={mode} onSelectLesson={openLesson} onOpenReview={openReview} />
         </aside>
 
-        <section className={`learning-workspace-center ${activePanel === "learning" ? "mobile-active" : ""}`} aria-label={mode === "review" ? "复习面板" : "课程面板"}>
-          {mode === "lesson" && knowledgeKey ? (
-            <LessonDocumentPage userId={user.id} trackId={trackId} knowledgeKey={knowledgeKey} embedded onContextReference={addReference} />
-          ) : (
-            <ReviewSessionPanel userId={user.id} track={track} queue={reviewQueue} initialKnowledgeKey={knowledgeKey} initialSessionId={reviewSessionId} onSessionChange={setReviewSessionId} onQueueRefresh={refreshAuthority} onContextReference={(draft, label) => addReference(draft, label, "review_coaching")} />
-          )}
+        {mode === "lesson" ? <div className="learning-workspace-mode-controls" role="group" aria-label="教学工作区模式">
+          {followState === "follow_paused" && followTarget ? <button className="learning-follow-resume" type="button" onClick={() => { setFollowConflict(null); setFollowState("following"); }} title={`回到 ${followTarget.label}`}>回到当前讲解</button> : null}
+          <button
+            className="learning-workspace-mode-switch"
+            type="button"
+            aria-label={teachingMode === "guided" ? "切换到自由阅读，课程成为主区域" : "切换到 Guided，Tutor 成为主区域"}
+            title={teachingMode === "guided" ? "切换到自由阅读" : "切换到 Guided"}
+            aria-busy={teaching.pendingActionKey === "switch-mode" || teaching.pendingActionKey === "escalate-guided"}
+            disabled={!teachingReady || teaching.pendingActionKey !== null}
+            onClick={() => { if (teachingMode === "guided") setFollowState("follow_paused"); void teaching.switchMode(); }}
+          ><span aria-hidden="true">⇄</span><span>{teaching.pendingActionKey ? "确认中" : teachingMode === "guided" ? "自由阅读" : "Guided"}</span></button>
+        </div> : null}
+
+        <section className={`learning-workspace-lesson ${mode === "lesson" && ((teachingMode === "free_reading" && activePanel === "learning") || (teachingMode === "guided" && activePanel === "tutor")) ? "mobile-active" : ""}`} aria-label="课程面板" aria-hidden={mode === "review"}>
+          {knowledgeKey ? <LessonDocumentPage
+            key={knowledgeKey}
+            userId={user.id}
+            trackId={trackId}
+            knowledgeKey={knowledgeKey}
+            embedded
+            onContextReference={addReference}
+            onAuthorityChange={handleLessonAuthorityChange}
+            followTarget={followTarget}
+            followEnabled={mode === "lesson" && teachingMode === "guided" && followState === "following"}
+            onFollowPause={() => { if (mode === "lesson" && teachingMode === "guided") setFollowState("follow_paused"); }}
+            onFollowConflict={(message) => { setFollowConflict(message); if (message) setFollowState("follow_paused"); }}
+          /> : null}
         </section>
 
-        <aside className={`learning-workspace-tutor ${activePanel === "tutor" ? "mobile-active" : ""}`} aria-label="Tutor 面板">
+        <section className={`learning-workspace-review ${mode === "review" && activePanel === "learning" ? "mobile-active" : ""}`} aria-label="复习面板" aria-hidden={mode !== "review"}>
+          {mode === "review" ? <ReviewSessionPanel userId={user.id} track={track} queue={reviewQueue} initialKnowledgeKey={knowledgeKey} initialSessionId={reviewSessionId} onSessionChange={setReviewSessionId} onQueueRefresh={refreshAuthority} onContextReference={(draft, label) => addReference(draft, label, "review_coaching")} /> : null}
+        </section>
+
+        <aside className={`learning-workspace-tutor ${(mode === "review" && activePanel === "tutor") || (mode === "lesson" && ((teachingMode === "guided" && activePanel === "learning") || (teachingMode === "free_reading" && activePanel === "tutor"))) ? "mobile-active" : ""}`} aria-label="Tutor 面板">
           <TutorConversationSurface
             user={user}
             enabled
@@ -249,15 +368,23 @@ export function TrackLearningWorkspace({
             learningScope={tutorScope}
             scopeLabel={scopeTitle}
             contextReferences={references}
+            activeTeachingSessionId={teaching.session?.session_id ?? null}
+            teachingActionShelf={mode === "lesson" ? teaching.session?.action_shelf ?? null : null}
+            pendingTeachingActionKey={teaching.pendingActionKey}
+            onTeachingAction={(descriptor) => void teaching.performAction(descriptor)}
+            onTeachingAuthorityChanged={() => { if (mode === "lesson") void teaching.refresh(); }}
             onRemoveContextReference={(id) => setReferences((current) => {
               const next = current.filter((item) => item.id !== id);
               if (next.length === 0) setReferenceTaskKind(null);
               return next;
             })}
             onReferencesAccepted={(_saved: TutorContextReference[]) => { setReferences([]); setReferenceTaskKind(null); }}
+            onHistoricalMessageReference={mode === "lesson" ? (draft, label) => addReference(draft, label, "lesson_teaching", false) : undefined}
           />
         </aside>
       </div>
+
+      {(teaching.error || followConflict) ? <div className="learning-workspace-authority-notice" role="alert"><strong>{teaching.error?.code ?? "LESSON_FOLLOW_CONFLICT"}</strong><span>{teaching.error?.message ?? followConflict}</span><button className="tutor-text-button" type="button" onClick={() => { setFollowConflict(null); void teaching.refresh(); }}>刷新 authority</button></div> : null}
 
       {roadmapDrawerOpen ? <div className="learning-roadmap-drawer-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeRoadmapDrawer(); }}><aside ref={roadmapDrawerRef} id="learning-roadmap-drawer" className="learning-roadmap-drawer" role="dialog" aria-modal="true" aria-label="学习路线抽屉" onKeyDown={handleRoadmapDrawerKeyDown}><header><strong>学习路线</strong><button ref={roadmapDrawerCloseRef} className="tutor-text-button" type="button" onClick={closeRoadmapDrawer}>关闭</button></header><LearningRoadmapPanel roadmap={roadmap} reviewQueue={reviewQueue} selectedKnowledgeKey={knowledgeKey} mode={mode} onSelectLesson={openLesson} onOpenReview={openReview} /></aside></div> : null}
     </main>
@@ -288,11 +415,21 @@ function workspaceConversationActionId(userId: string, trackId: string): string 
 function referenceIdentity(reference: TutorContextReferenceDraft): string {
   if (reference.kind === "lesson_selection") return `${reference.kind}:${reference.document_id}:${reference.block_id}:${reference.start_offset}:${reference.end_offset}`;
   if (reference.kind === "review_feedback") return `${reference.kind}:${reference.review_session_id}:${reference.attempt_id}`;
+  if (reference.kind === "teaching_session_message") return `${reference.kind}:${reference.teaching_session_id}:${reference.message_id}`;
   return `${reference.kind}:${reference.attempt_id}`;
+}
+function teachingFollowTarget(session: TeachingSessionProjection | null, lesson: LessonDocumentState | null): LessonFollowTarget | null {
+  if (!session?.checkpoint?.active_focus || session.checkpoint.active_focus.focus_kind !== "lesson_block" || lesson?.status !== "ready" || !lesson.assignment || !lesson.document) return null;
+  const handle = session.checkpoint.active_focus.source_handles.find((item) => item.startsWith("lesson_block:"));
+  if (!handle) return null;
+  const blockId = handle.slice("lesson_block:".length);
+  if (!blockId || !lesson.document.blocks.some((block) => block.block_id === blockId)) return null;
+  if (session.assignment_id !== lesson.assignment.assignment_id || session.assignment_version !== lesson.assignment.assignment_version || session.document_id !== lesson.assignment.document_id) return null;
+  return { block_id: blockId, document_id: session.document_id, document_content_hash: lesson.document.content_hash, label: session.checkpoint.active_focus.summary };
 }
 function knowledgeTitle(roadmap: LearningRoadmap, knowledgeKey: string | null): string { return roadmap.modules.flatMap((module) => module.nodes).find((node) => node.knowledge_key === knowledgeKey)?.title ?? knowledgeKey ?? "Track 范围"; }
 function taskLabel(task: LearningScopeInput["task_kind"]): string { return { general_tutor: "一般辅导", plan_drafting: "计划制定", lesson_teaching: "课程讲解", exercise_feedback: "练习反馈", review_coaching: "复习辅导", model_code_review: "代码审核", remediation: "补救学习" }[task ?? "lesson_teaching"]; }
-function panelLabel(panel: WorkspacePanel, mode: LearningWorkspaceMode, referenceCount: number): string { if (panel === "roadmap") return "路线"; if (panel === "learning") return mode === "review" ? "复习" : "课程"; return referenceCount > 0 ? `Tutor · ${referenceCount}` : "Tutor"; }
+function panelLabel(panel: WorkspacePanel, mode: LearningWorkspaceMode, teachingMode: "guided" | "free_reading", referenceCount: number): string { if (panel === "roadmap") return "路线"; if (panel === "learning") return mode === "review" ? "复习" : teachingMode === "guided" ? "Tutor 主区" : "课程主区"; return referenceCount > 0 ? `Tutor · ${referenceCount}` : teachingMode === "guided" ? "课程" : "Tutor"; }
 function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === "object" && value !== null && !Array.isArray(value); }
 function isString(value: unknown): value is string { return typeof value === "string"; }
 function isNullableString(value: unknown): value is string | null { return value === null || typeof value === "string"; }

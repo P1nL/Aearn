@@ -77,6 +77,17 @@ import {
   type TutorQueueStateResponse,
   type TutorQueueSteerResponse,
   type TutorRunState,
+  type TeachingActionDescriptor,
+  type TeachingActionShelf,
+  type TeachingCheckpointProjection,
+  type TeachingControlKey,
+  type TeachingFocusProjection,
+  type TeachingSessionActionResponse,
+  type TeachingSessionGroupProjection,
+  type TeachingSessionListResponse,
+  type TeachingSessionMode,
+  type TeachingSessionOpenResponse,
+  type TeachingSessionProjection,
   type ReviewAttempt,
   type ReviewHint,
   type ReviewQueue,
@@ -619,6 +630,87 @@ export async function fetchLearningRoadmap(
   const roadmap = isRecord(payload) && hasExactKeys(payload, ["roadmap"]) ? toLearningRoadmap(payload.roadmap) : null;
   if (!roadmap) throw new Error("Learning roadmap API returned an invalid payload");
   return roadmap;
+}
+
+export async function fetchTeachingSessions(
+  userId: string,
+  trackId: string,
+  signal?: AbortSignal,
+): Promise<TeachingSessionListResponse> {
+  const query = new URLSearchParams({ user_id: userId });
+  const payload = await requestJson(`${API_BASE_URL}/api/learning-tracks/${encodeURIComponent(trackId)}/teaching-sessions?${query.toString()}`, { signal });
+  const parsed = toTeachingSessionListResponse(payload);
+  if (!parsed) throw new Error("Teaching session list API returned an invalid payload");
+  return parsed;
+}
+
+export async function openTeachingSession(input: {
+  userId: string;
+  trackId: string;
+  knowledgeKey: string;
+  conversationId: string;
+  expectedTrackVersion: number;
+  expectedProgressVersion: number;
+  expectedAssignmentVersion: number;
+  mode: TeachingSessionMode;
+  clientActionId: string;
+  signal?: AbortSignal;
+}): Promise<TeachingSessionOpenResponse> {
+  const payload = await requestJson(`${API_BASE_URL}/api/learning-tracks/${encodeURIComponent(input.trackId)}/teaching-sessions/${encodeURIComponent(input.knowledgeKey)}/open`, {
+    method: "POST",
+    headers: tutorMutationHeaders(input.clientActionId),
+    body: JSON.stringify({
+      user_id: input.userId,
+      conversation_id: input.conversationId,
+      expected_track_version: input.expectedTrackVersion,
+      expected_progress_version: input.expectedProgressVersion,
+      expected_assignment_version: input.expectedAssignmentVersion,
+      mode: input.mode,
+      client_action_id: input.clientActionId,
+    }),
+    signal: input.signal,
+  });
+  const parsed = toTeachingSessionOpenResponse(payload);
+  if (!parsed) throw new Error("Teaching session open API returned an invalid payload");
+  return parsed;
+}
+
+export async function mutateTeachingSession(input: {
+  userId: string;
+  trackId: string;
+  sessionId: string;
+  controlKey: TeachingControlKey;
+  expectedSessionVersion: number;
+  expectedTrackVersion: number;
+  expectedProgressVersion: number;
+  expectedAssignmentVersion: number;
+  targetMode?: TeachingSessionMode;
+  targetKnowledgeKey?: string;
+  reasonCode?: string;
+  clientActionId: string;
+  signal?: AbortSignal;
+}): Promise<TeachingSessionActionResponse> {
+  const payload = await requestJson(`${API_BASE_URL}/api/learning-tracks/${encodeURIComponent(input.trackId)}/teaching-sessions/${encodeURIComponent(input.sessionId)}/actions`, {
+    method: "POST",
+    headers: tutorMutationHeaders(input.clientActionId),
+    body: JSON.stringify({
+      user_id: input.userId,
+      control_key: input.controlKey,
+      expected_session_version: input.expectedSessionVersion,
+      expected_track_version: input.expectedTrackVersion,
+      expected_progress_version: input.expectedProgressVersion,
+      expected_assignment_version: input.expectedAssignmentVersion,
+      ...(input.targetMode ? { target_mode: input.targetMode } : {}),
+      ...(input.targetKnowledgeKey ? { target_knowledge_key: input.targetKnowledgeKey } : {}),
+      ...(input.reasonCode ? { reason_code: input.reasonCode } : {}),
+      admit_run: false,
+      client_action_id: input.clientActionId,
+    }),
+    signal: input.signal,
+  });
+  const parsed = toTeachingSessionActionResponse(payload);
+  if (!parsed) throw new Error("Teaching session action API returned an invalid payload");
+  return parsed;
 }
 
 export async function fetchReviewQueue(
@@ -2623,6 +2715,17 @@ function toTutorContextReference(payload: unknown): TutorContextReference | null
       assignment_version: payload.assignment_version, block_id: payload.block_id, start_offset: payload.start_offset,
       end_offset: payload.end_offset, safe_excerpt: payload.safe_excerpt };
   }
+  if (payload.kind === "teaching_session_message") {
+    if (
+      !hasExactKeys(payload, [...baseKeys, "teaching_session_id", "message_id", "turn_id", "role", "message_summary", "message_created_at"]) ||
+      !isString(payload.teaching_session_id) || !isString(payload.message_id) || !isString(payload.turn_id) ||
+      (payload.role !== "learner" && payload.role !== "tutor") || !isBoundedString(payload.message_summary, 160) ||
+      !isNullableString(payload.message_created_at)
+    ) return null;
+    return { ...base, kind: "teaching_session_message", teaching_session_id: payload.teaching_session_id,
+      message_id: payload.message_id, turn_id: payload.turn_id, role: payload.role,
+      message_summary: payload.message_summary, message_created_at: payload.message_created_at };
+  }
   const feedbackKeys = [
     ...baseKeys, "attempt_id", "exercise_version_id", "outcome", "score", "assistance_kind",
     "feedback_summary", "capability_scores", "terminal_at",
@@ -2667,6 +2770,179 @@ function toTutorContextReference(payload: unknown): TutorContextReference | null
   }
   return null;
 }
+
+function toTeachingSessionListResponse(payload: unknown): TeachingSessionListResponse | null {
+  if (!isRecord(payload) || !hasExactKeys(payload, ["items"]) || !Array.isArray(payload.items) || payload.items.length > 50) return null;
+  const items = payload.items.map((item) => toTeachingSessionProjection(item, false));
+  if (items.some((item) => item === null)) return null;
+  return { items: items.filter((item): item is TeachingSessionProjection => item !== null) };
+}
+
+function toTeachingSessionOpenResponse(payload: unknown): TeachingSessionOpenResponse | null {
+  if (!isRecord(payload) || !hasExactKeys(payload, ["teaching_session", "created", "pending_run", "idempotent_replayed"]) || typeof payload.created !== "boolean" || typeof payload.idempotent_replayed !== "boolean") return null;
+  const session = toTeachingSessionProjection(payload.teaching_session, true);
+  if (!session || !isNullableRecord(payload.pending_run)) return null;
+  return { teaching_session: session, created: payload.created, pending_run: payload.pending_run, idempotent_replayed: payload.idempotent_replayed };
+}
+
+function toTeachingSessionActionResponse(payload: unknown): TeachingSessionActionResponse | null {
+  if (!isRecord(payload)) return null;
+  const transition = "next_teaching_session" in payload;
+  const expected = transition
+    ? ["teaching_session", "next_teaching_session", "transitioned", "created", "pending_run", "idempotent_replayed"]
+    : ["teaching_session", "pending_run", "idempotent_replayed"];
+  if (!hasExactKeys(payload, expected) || !isNullableRecord(payload.pending_run) || typeof payload.idempotent_replayed !== "boolean") return null;
+  const session = toTeachingSessionProjection(payload.teaching_session, true);
+  if (!session) return null;
+  if (!transition) return { teaching_session: session, pending_run: payload.pending_run, idempotent_replayed: payload.idempotent_replayed };
+  const next = toTeachingSessionProjection(payload.next_teaching_session, true);
+  if (!next || payload.transitioned !== true || typeof payload.created !== "boolean") return null;
+  return { teaching_session: session, next_teaching_session: next, transitioned: true, created: payload.created, pending_run: payload.pending_run, idempotent_replayed: payload.idempotent_replayed };
+}
+
+function toTeachingSessionProjection(payload: unknown, requireDetails: boolean): TeachingSessionProjection | null {
+  const baseKeys = [
+    "session_id", "track_id", "track_version", "conversation_id", "knowledge_key", "status", "mode",
+    "session_version", "progress_version", "assignment_id", "assignment_version", "document_id", "checkpoint_id",
+    "paused_at", "completed_at", "last_activity_at", "action_shelf", "allowed_actions",
+  ];
+  const detailedKeys = [...baseKeys, "checkpoint"];
+  if (!isRecord(payload) || !hasExactKeys(payload, requireDetails ? detailedKeys : baseKeys)) return null;
+  if (!isString(payload.session_id) || !isString(payload.track_id) || !isPositiveSafeInteger(payload.track_version) ||
+      !isString(payload.conversation_id) || !isStableIdentifier(payload.knowledge_key) || !isTeachingSessionStatus(payload.status) ||
+      !isTeachingSessionMode(payload.mode) || !isPositiveSafeInteger(payload.session_version) ||
+      !isPositiveSafeInteger(payload.progress_version) || !isString(payload.assignment_id) ||
+      !isPositiveSafeInteger(payload.assignment_version) || !isString(payload.document_id) || !isNullableString(payload.checkpoint_id) ||
+      !isNullableString(payload.paused_at) || !isNullableString(payload.completed_at) || !isNullableString(payload.last_activity_at)) return null;
+  const base: TeachingSessionProjection = {
+    session_id: payload.session_id,
+    track_id: payload.track_id,
+    track_version: payload.track_version,
+    conversation_id: payload.conversation_id,
+    knowledge_key: payload.knowledge_key,
+    status: payload.status,
+    mode: payload.mode,
+    session_version: payload.session_version,
+    progress_version: payload.progress_version,
+    assignment_id: payload.assignment_id,
+    assignment_version: payload.assignment_version,
+    document_id: payload.document_id,
+    checkpoint_id: payload.checkpoint_id,
+    paused_at: payload.paused_at,
+    completed_at: payload.completed_at,
+    last_activity_at: payload.last_activity_at,
+  };
+  if (!isStringArray(payload.allowed_actions) || payload.allowed_actions.length > 12) return null;
+  const shelf = payload.action_shelf === null ? null : toTeachingActionShelf(payload.action_shelf);
+  if ((payload.action_shelf !== null && shelf === null) || (!requireDetails && (shelf !== null || payload.allowed_actions.length > 0))) return null;
+  if (!requireDetails) return { ...base, action_shelf: null, allowed_actions: [] };
+  const checkpoint = payload.checkpoint === null ? null : toTeachingCheckpointProjection(payload.checkpoint);
+  if (!checkpoint || !shelf) return null;
+  const shelfKeys = [shelf.primary_action, ...shelf.secondary_actions, ...shelf.overflow_actions].filter((item): item is TeachingActionDescriptor => item !== null).map((item) => item.key);
+  if (payload.allowed_actions.length !== shelfKeys.length || payload.allowed_actions.some((key, index) => key !== shelfKeys[index])) return null;
+  return { ...base, checkpoint, action_shelf: shelf, allowed_actions: payload.allowed_actions };
+}
+
+function toTeachingSessionGroupProjection(payload: unknown): TeachingSessionGroupProjection | null {
+  if (!isRecord(payload) || !("turn_ids" in payload)) return null;
+  const { turn_ids: turnIds, ...sessionPayload } = payload;
+  const session = toTeachingSessionProjection(sessionPayload, false);
+  if (!session || !isStringArray(turnIds) || turnIds.length > 200 || new Set(turnIds).size !== turnIds.length) return null;
+  return { ...session, turn_ids: turnIds };
+}
+
+function toTeachingCheckpointProjection(payload: unknown): TeachingCheckpointProjection | null {
+  const keys = ["checkpoint_id", "session_version", "objective", "active_focus", "suspended_focuses", "unresolved_questions", "covered_concepts", "evidence_cursors", "pause_reason", "recommended_action_key"];
+  if (!isRecord(payload) || !hasExactKeys(payload, keys) || !isString(payload.checkpoint_id) || !isPositiveSafeInteger(payload.session_version) ||
+      !isRecord(payload.objective) || !hasExactKeys(payload.objective, ["objective_id", "summary", "source_handles"]) ||
+      !isStableIdentifier(payload.objective.objective_id) || !isBoundedString(payload.objective.summary, 240) ||
+      !isStableStringArray(payload.objective.source_handles, 8) || !Array.isArray(payload.suspended_focuses) || payload.suspended_focuses.length > 8 ||
+      !Array.isArray(payload.unresolved_questions) || payload.unresolved_questions.length > 12 ||
+      !isStableStringArray(payload.covered_concepts, 32) || !Array.isArray(payload.evidence_cursors) || payload.evidence_cursors.length > 16 ||
+      !isTeachingPauseReason(payload.pause_reason) || !isNullableStableIdentifier(payload.recommended_action_key)) return null;
+  const activeFocus = payload.active_focus === null ? null : toTeachingFocusProjection(payload.active_focus);
+  const suspended = payload.suspended_focuses.map(toTeachingFocusProjection);
+  const questions = payload.unresolved_questions.map(toTeachingQuestionProjection);
+  const evidence = payload.evidence_cursors.map(toTeachingEvidenceCursor);
+  if ((payload.active_focus !== null && activeFocus === null) || suspended.some((item) => item === null) || questions.some((item) => item === null) || evidence.some((item) => item === null)) return null;
+  return {
+    checkpoint_id: payload.checkpoint_id,
+    session_version: payload.session_version,
+    objective: { objective_id: payload.objective.objective_id, summary: payload.objective.summary, source_handles: payload.objective.source_handles },
+    active_focus: activeFocus,
+    suspended_focuses: suspended.filter((item): item is TeachingFocusProjection => item !== null),
+    unresolved_questions: questions.filter((item): item is TeachingCheckpointProjection["unresolved_questions"][number] => item !== null),
+    covered_concepts: payload.covered_concepts,
+    evidence_cursors: evidence.filter((item): item is TeachingCheckpointProjection["evidence_cursors"][number] => item !== null),
+    pause_reason: payload.pause_reason,
+    recommended_action_key: payload.recommended_action_key,
+  };
+}
+
+function toTeachingFocusProjection(payload: unknown): TeachingFocusProjection | null {
+  if (!isRecord(payload) || !hasExactKeys(payload, ["focus_id", "focus_kind", "summary", "source_handles"]) ||
+      !isStableIdentifier(payload.focus_id) || !isTeachingFocusKind(payload.focus_kind) || !isBoundedString(payload.summary, 240) ||
+      !isStableStringArray(payload.source_handles, 8)) return null;
+  return { focus_id: payload.focus_id, focus_kind: payload.focus_kind, summary: payload.summary, source_handles: payload.source_handles };
+}
+
+function toTeachingQuestionProjection(payload: unknown): TeachingCheckpointProjection["unresolved_questions"][number] | null {
+  if (!isRecord(payload) || !hasExactKeys(payload, ["question_id", "summary", "state", "source_message_id"]) ||
+      !isStableIdentifier(payload.question_id) || !isBoundedString(payload.summary, 180) ||
+      (payload.state !== "open" && payload.state !== "answered" && payload.state !== "deferred") || !isNullableString(payload.source_message_id)) return null;
+  return { question_id: payload.question_id, summary: payload.summary, state: payload.state, source_message_id: payload.source_message_id };
+}
+
+function toTeachingEvidenceCursor(payload: unknown): TeachingCheckpointProjection["evidence_cursors"][number] | null {
+  if (!isRecord(payload) || !hasExactKeys(payload, ["evidence_kind", "source_id", "source_version"]) ||
+      (payload.evidence_kind !== "gate" && payload.evidence_kind !== "review" && payload.evidence_kind !== "progress" && payload.evidence_kind !== "assignment") ||
+      !isString(payload.source_id) || !isPositiveSafeInteger(payload.source_version)) return null;
+  return { evidence_kind: payload.evidence_kind, source_id: payload.source_id, source_version: payload.source_version };
+}
+
+function toTeachingActionShelf(payload: unknown): TeachingActionShelf | null {
+  if (!isRecord(payload) || !hasExactKeys(payload, ["schema_version", "teaching_session_id", "session_version", "checkpoint_id", "state", "primary_action", "secondary_actions", "overflow_actions"]) ||
+      payload.schema_version !== "teaching_action_shelf_v1" || !isString(payload.teaching_session_id) || !isPositiveSafeInteger(payload.session_version) ||
+      !isString(payload.checkpoint_id) || !isTeachingShelfState(payload.state) || !Array.isArray(payload.secondary_actions) || payload.secondary_actions.length > 3 ||
+      !Array.isArray(payload.overflow_actions) || payload.overflow_actions.length > 8) return null;
+  const primary = payload.primary_action === null ? null : toTeachingActionDescriptor(payload.primary_action);
+  const secondary = payload.secondary_actions.map(toTeachingActionDescriptor);
+  const overflow = payload.overflow_actions.map(toTeachingActionDescriptor);
+  if ((payload.primary_action !== null && primary === null) || secondary.some((item) => item === null) || overflow.some((item) => item === null)) return null;
+  const actions = [primary, ...secondary, ...overflow].filter((item): item is TeachingActionDescriptor => item !== null);
+  if ((primary && primary.emphasis !== "primary") || new Set(actions.map((item) => item.key)).size !== actions.length ||
+      (["runtime_active", "blocking_request"].includes(payload.state) && actions.length > 0)) return null;
+  return { schema_version: "teaching_action_shelf_v1", teaching_session_id: payload.teaching_session_id, session_version: payload.session_version,
+    checkpoint_id: payload.checkpoint_id, state: payload.state, primary_action: primary,
+    secondary_actions: secondary.filter((item): item is TeachingActionDescriptor => item !== null),
+    overflow_actions: overflow.filter((item): item is TeachingActionDescriptor => item !== null) };
+}
+
+function toTeachingActionDescriptor(payload: unknown): TeachingActionDescriptor | null {
+  if (!isRecord(payload) || !hasExactKeys(payload, ["key", "label", "emphasis", "enabled", "disabled_reason", "target_kind", "target_id", "expected_versions"]) ||
+      !isStableIdentifier(payload.key) || !isBoundedString(payload.label, 80) ||
+      (payload.emphasis !== "primary" && payload.emphasis !== "secondary" && payload.emphasis !== "quiet") || typeof payload.enabled !== "boolean" ||
+      !isNullableBoundedString(payload.disabled_reason, 160) || (payload.target_kind !== "teaching_control" && payload.target_kind !== "navigation" && payload.target_kind !== "artifact") ||
+      !isNullableString(payload.target_id) || !isRecord(payload.expected_versions)) return null;
+  const versionKeys = Object.keys(payload.expected_versions);
+  if (versionKeys.some((key) => !["session", "track", "progress", "assignment"].includes(key)) ||
+      Object.values(payload.expected_versions).some((value) => !isPositiveSafeInteger(value))) return null;
+  return { key: payload.key, label: payload.label, emphasis: payload.emphasis, enabled: payload.enabled,
+    disabled_reason: payload.disabled_reason, target_kind: payload.target_kind, target_id: payload.target_id,
+    expected_versions: payload.expected_versions as TeachingActionDescriptor["expected_versions"] };
+}
+
+function isTeachingSessionMode(value: unknown): value is TeachingSessionMode { return value === "guided" || value === "free_reading"; }
+function isTeachingSessionStatus(value: unknown): value is TeachingSessionProjection["status"] { return value === "active" || value === "paused" || value === "completed" || value === "blocked"; }
+function isTeachingPauseReason(value: unknown): value is TeachingCheckpointProjection["pause_reason"] { return value === "soft_pause" || value === "evidence_pause" || value === "authority_pause" || value === "session_pause" || value === "completion_pause"; }
+function isTeachingFocusKind(value: unknown): value is TeachingFocusProjection["focus_kind"] { return value === "knowledge" || value === "lesson_block" || value === "question" || value === "prerequisite" || value === "feedback"; }
+function isTeachingShelfState(value: unknown): value is TeachingActionShelf["state"] { return value === "ready" || value === "runtime_active" || value === "blocking_request" || value === "completion" || value === "free_reading"; }
+function isStableIdentifier(value: unknown): value is string { return typeof value === "string" && /^[a-z0-9][a-z0-9._:-]{0,159}$/.test(value); }
+function isNullableStableIdentifier(value: unknown): value is string | null { return value === null || isStableIdentifier(value); }
+function isBoundedString(value: unknown, maximum: number): value is string { return typeof value === "string" && value.length > 0 && value.length <= maximum; }
+function isNullableBoundedString(value: unknown, maximum: number): value is string | null { return value === null || isBoundedString(value, maximum); }
+function isStableStringArray(value: unknown, maximum: number): value is string[] { return Array.isArray(value) && value.length <= maximum && value.every(isStableIdentifier) && new Set(value).size === value.length; }
+function isNullableRecord(value: unknown): value is Record<string, unknown> | null { return value === null || isRecord(value); }
 
 function toTutorConversationListResponse(payload: unknown): TutorConversationListResponse | null {
   if (!isRecord(payload) || !Array.isArray(payload.items) || !isNullableString(payload.next_cursor) || typeof payload.has_more !== "boolean") return null;
@@ -2959,9 +3235,10 @@ function toTutorInteractionResponseAccepted(payload: unknown): TutorInteractionR
 function toTutorConversationSnapshotResponse(payload: unknown): TutorConversationSnapshotResponse | null {
   if (!isRecord(payload) || (payload.snapshot_version !== "tutor_conversation_snapshot_v2" && payload.snapshot_version !== "tutor_conversation_snapshot_v3")) return null;
   const version = payload.snapshot_version;
-  const expectedKeys = version === "tutor_conversation_snapshot_v3"
+  const baseKeys = version === "tutor_conversation_snapshot_v3"
     ? ["snapshot_version", "conversation", "active_turn", "active_thinking", "active_runtime_output", "pending_requests", "queue", "timeline", "next_cursor", "has_more", "stream_cursor"]
     : ["snapshot_version", "conversation", "active_turn", "active_thinking", "pending_requests", "queue", "timeline", "next_cursor", "has_more", "stream_cursor"];
+  const expectedKeys = "teaching_sessions" in payload ? [...baseKeys, "teaching_sessions"] : baseKeys;
   if (!hasExactKeys(payload, expectedKeys) || !isRecord(payload.conversation) ||
       !hasExactKeys(payload.conversation, [
         "conversation_id", "title", "control_version", "control_state", "queue_paused",
@@ -2976,7 +3253,13 @@ function toTutorConversationSnapshotResponse(payload: unknown): TutorConversatio
   const pendingRequests = payload.pending_requests.map(toTutorInteractionRequestItem);
   const queue = payload.queue.map(toTutorQueuedInput);
   const timeline = payload.timeline.map(toTutorHistoryItem);
-  if (pendingRequests.some((item) => item === null) || queue.some((item) => item === null) || timeline.some((item) => item === null)) return null;
+  const teachingSessions = "teaching_sessions" in payload && Array.isArray(payload.teaching_sessions)
+    ? payload.teaching_sessions.map(toTeachingSessionGroupProjection)
+    : [];
+  const teachingTurnIds = teachingSessions.flatMap((item) => item?.turn_ids ?? []);
+  if (pendingRequests.some((item) => item === null) || queue.some((item) => item === null) || timeline.some((item) => item === null) ||
+      teachingSessions.some((item) => item === null) || teachingSessions.length > 50 ||
+      new Set(teachingTurnIds).size !== teachingTurnIds.length) return null;
   const activeTurn = payload.active_turn === null ? null : toTutorPublicTurn(payload.active_turn);
   const activeThinking = payload.active_thinking === null ? null : toTutorActiveThinking(payload.active_thinking);
   const activeRuntimeOutput = version === "tutor_conversation_snapshot_v3" && payload.active_runtime_output !== null
@@ -3008,6 +3291,7 @@ function toTutorConversationSnapshotResponse(payload: unknown): TutorConversatio
     next_cursor: payload.next_cursor,
     has_more: payload.has_more,
     stream_cursor: payload.stream_cursor,
+    teaching_sessions: teachingSessions.filter((item): item is TeachingSessionGroupProjection => item !== null),
   };
 }
 

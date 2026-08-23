@@ -1,7 +1,7 @@
-import type { MouseEvent, ReactNode } from "react";
-import { useState } from "react";
+import type { KeyboardEvent, MouseEvent, ReactNode } from "react";
+import { useEffect, useRef, useState } from "react";
 
-import type { LessonAssignment, LessonBlock, LessonCitation, LessonDocument, LessonExerciseGateBlock, LessonSelectionReferenceDraft } from "../../../types";
+import type { LessonAssignment, LessonBlock, LessonCitation, LessonDocument, LessonExerciseGateBlock, LessonSelectionReferenceDraft, LessonFollowTarget } from "../../../types";
 import { LessonBlockRenderer } from "./LessonBlockRenderer";
 import { LessonSourcesPanel } from "./LessonSourcesPanel";
 
@@ -12,6 +12,10 @@ type LessonDocumentViewProps = {
   renderExerciseGate?: (block: LessonExerciseGateBlock) => ReactNode;
   onSelectionReference?: (draft: LessonSelectionReferenceDraft, label: string) => void;
   learningTrackId?: string;
+  followTarget?: LessonFollowTarget | null;
+  followEnabled?: boolean;
+  onFollowPause?: () => void;
+  onFollowConflict?: (message: string | null) => void;
 };
 
 type SelectionCandidate = {
@@ -21,10 +25,41 @@ type SelectionCandidate = {
   excerpt: string;
 };
 
-export function LessonDocumentView({ document, assignment, sources, renderExerciseGate, onSelectionReference, learningTrackId }: LessonDocumentViewProps) {
+export function LessonDocumentView({ document, assignment, sources, renderExerciseGate, onSelectionReference, learningTrackId, followTarget = null, followEnabled = false, onFollowPause, onFollowConflict }: LessonDocumentViewProps) {
   const [selectedCitationId, setSelectedCitationId] = useState<string | null>(sources[0]?.citation_id ?? null);
   const [selectionCandidate, setSelectionCandidate] = useState<SelectionCandidate | null>(null);
   const [selectionMessage, setSelectionMessage] = useState<string | null>(null);
+  const programmaticFollowRef = useRef(false);
+
+  useEffect(() => {
+    if (!followEnabled || !followTarget) return;
+    if (followTarget.document_id !== assignment.document_id || followTarget.document_content_hash !== document.content_hash) {
+      onFollowConflict?.("当前讲解目标不属于 active frozen LessonDocument，已停止自动定位。");
+      return;
+    }
+    const target = globalThis.document?.querySelector<HTMLElement>(`[data-lesson-block-id="${cssEscape(followTarget.block_id)}"]`) ?? null;
+    if (!target) {
+      onFollowConflict?.("当前讲解对应的课程块不存在，已停止自动定位。");
+      return;
+    }
+    onFollowConflict?.(null);
+    programmaticFollowRef.current = true;
+    const reduced = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+    let releaseFrame = 0;
+    const frame = globalThis.requestAnimationFrame(() => {
+      target.scrollIntoView({ behavior: reduced ? "auto" : "smooth", block: "start" });
+      releaseFrame = globalThis.requestAnimationFrame(() => { programmaticFollowRef.current = false; });
+    });
+    return () => { globalThis.cancelAnimationFrame(frame); if (releaseFrame) globalThis.cancelAnimationFrame(releaseFrame); };
+  }, [assignment.document_id, document.content_hash, followEnabled, followTarget, onFollowConflict]);
+
+  function pauseFollow() {
+    if (!programmaticFollowRef.current) onFollowPause?.();
+  }
+
+  function handleReadingKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)) pauseFollow();
+  }
 
   function focusCitation(citationId: string) {
     setSelectedCitationId(citationId);
@@ -33,6 +68,7 @@ export function LessonDocumentView({ document, assignment, sources, renderExerci
   }
 
   function captureSelection(event: MouseEvent<HTMLElement>) {
+    pauseFollow();
     if (!onSelectionReference || !learningTrackId) return;
     const selection = globalThis.getSelection?.();
     const excerpt = normalizeSelection(selection?.toString() ?? "");
@@ -85,7 +121,7 @@ export function LessonDocumentView({ document, assignment, sources, renderExerci
   }
 
   return (
-    <div className="lesson-reading-layout">
+    <div className="lesson-reading-layout" onWheelCapture={pauseFollow} onTouchStartCapture={pauseFollow} onPointerDownCapture={pauseFollow} onKeyDownCapture={handleReadingKeyDown}>
       <article className="lesson-document" aria-label={document.title} onMouseUp={captureSelection}>
         <div className="lesson-document-meta"><span>版本 {assignment.assignment_version}</span><span>{assignment.started_at ? "已开始 · 内容已冻结" : "尚未开始 · 可冻结当前版本"}</span><span>{document.content_standard_version}</span></div>
         {onSelectionReference && learningTrackId ? (
@@ -124,6 +160,10 @@ function lessonBlockPublicText(block: LessonBlock): string {
 
 function normalizeSelection(value: string): string {
   return value.normalize("NFKC").replace(/\r\n?/g, "\n").split(/\s+/u).filter(Boolean).join(" ");
+}
+
+function cssEscape(value: string): string {
+  return globalThis.CSS?.escape ? globalThis.CSS.escape(value) : value.replace(/["\\\\]/g, "\\$&");
 }
 
 function documentRef(citationId: string): HTMLElement | null {
