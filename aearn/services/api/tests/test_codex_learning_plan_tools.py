@@ -186,8 +186,21 @@ async def test_registry_rejects_unknown_fields_cycles_and_expired_wall_clock() -
     invalid = await registry.invoke(_call(LEARNING_PLAN_DRAFT_TOOL_NAME, {"modules": cyclic}))
     assert json.loads(invalid.content)["issues"][0]["code"] == "prerequisite_cycle"
 
-    moments = iter((0.0, 31.0))
-    expired = LearningPlanRuntimeToolRegistry(service, clock=lambda: next(moments))
+    assert LearningPlanToolBudget().max_wall_seconds == 300.0
+
+    within_window_moments = iter((0.0, 299.0))
+    within_window = LearningPlanRuntimeToolRegistry(
+        service,
+        clock=lambda: next(within_window_moments),
+    )
+    accepted = await within_window.invoke(_call(PLANNING_CONTEXT_TOOL_NAME, {}))
+    assert accepted.success is True
+
+    expired_moments = iter((0.0, 301.0))
+    expired = LearningPlanRuntimeToolRegistry(
+        service,
+        clock=lambda: next(expired_moments),
+    )
     timed_out = await expired.invoke(_call(PLANNING_CONTEXT_TOOL_NAME, {}))
     assert timed_out.success is False
     assert json.loads(timed_out.content)["code"] == "tool_deadline_exhausted"
