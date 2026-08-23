@@ -21,6 +21,7 @@ This directory contains guidelines for backend development. Fill in each file wi
 | [Logging Guidelines](./logging-guidelines.md) | Structured logging, log levels | Filled |
 | [Tutor Context References](./tutor-context-references.md) | Cross-layer typed reference, safe snapshot, history, and context-injection contract | Filled |
 | [Learning Agent Integration and QA](./learning-agent-integration-qa.md) | Final language matrix, execution-tier truthfulness, cutover schema inventory, and readiness contract | Filled |
+| [Teaching Session Authority](./teaching-session-authority.md) | Durable knowledge-scoped session/checkpoint, exact Turn stimulus, stale-fence, projection, and governance contract | Filled |
 | [Codex Runtime Sidecar](./codex-runtime-sidecar.md) | Aearn-owned App Server contracts, ownership, typed LearningPlan tools, bounded repair/fencing, and dedicated worker lifecycle | Filled |
 
 ---

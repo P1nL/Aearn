@@ -15,6 +15,7 @@ from app.core.config import Settings
 from app.services.learning.context_references import PostgresTutorContextReferenceRepository
 from app.services.learning.contracts import LearningScope, LearningScopeKind, LearningTaskKind
 from app.services.learning.planning_facts import PostgresPlanningFactRepository
+from app.services.learning.teaching_sessions import TeachingSessionConflict, TeachingSessionRepository
 from app.services.learning.track_repository import PostgresLearningTrackRepository
 from app.services.tutor.conversation_contracts import TutorConversationEventKind, TutorInteractionProtocolVersion
 from app.services.tutor.persistence import (
@@ -44,6 +45,7 @@ class PostgresTutorQueueController:
         self._intent_resolution_enabled = intent_resolution_enabled
         self._repository = PostgresTutorRepository(conn)
         self._tracks = PostgresLearningTrackRepository(conn)
+        self._teaching_sessions = TeachingSessionRepository(conn)
         self._references = PostgresTutorContextReferenceRepository(conn)
         self._facts = PostgresPlanningFactRepository(conn)
 
@@ -523,6 +525,20 @@ class PostgresTutorQueueController:
             user_id=user_id, scope=scope, message_id=acceptance.message_id,
             input_revision=acceptance.input_revision, references=references,
         )
+        if (
+            scope.scope_kind is LearningScopeKind.LEARNING_TRACK
+            and scope.task_kind is LearningTaskKind.LESSON_TEACHING
+            and scope.learning_track_id is not None
+            and scope.knowledge_key is not None
+        ):
+            try:
+                self._teaching_sessions.bind_learner_message_run(
+                    user_id=user_id, run_id=run_id, conversation_id=scope.conversation_id,
+                    track_id=scope.learning_track_id, knowledge_key=scope.knowledge_key,
+                    message_id=acceptance.message_id, input_revision=acceptance.input_revision,
+                )
+            except TeachingSessionConflict as exc:
+                raise TutorInteractionRequestConflict("queued teaching-session authority is stale") from exc
         if scope.scope_kind is LearningScopeKind.PLAN_DRAFTING:
             raw_facts = metadata.get("planning_facts")
             raw_reopen = metadata.get("reopen_fact_fields")

@@ -482,3 +482,13 @@ diagnostic、credential 和 secret 禁止落入该表、message 列或 conversat
 `tutor_runtime_item_receipts.event_sequence` 保留为兼容列并与新增 `projection_sequence` 严格相等；所有 PostgreSQL reducer、`tutor_runtime_text_items.last_event_sequence`、conversation `turn_output.chunk_sequence` 与 Desktop reducer 都以 projection sequence 为顺序 authority。provider-normalized source sequence 不进入公共 DTO。
 
 每个有 source evidence 的 receipt 必须同时保存 `source_sequence_start`、`source_sequence_end`、`source_delta_count` 与 `source_content_hash`。四者要么全部为空（仅允许本地 synthetic control/recovery event），要么形成闭合连续范围且 count 精确等于范围长度。字段只保存数字与 SHA-256；raw delta、reasoning/final text、provider body、external identity 和工具参数仍禁止进入 receipt。`tutor_runtime_text_items` 是 owner-scoped text authority，completed item 继续校准全文。
+
+## 2026-08-23：TeachingSession durable authority
+
+一条 LearningTrack 继续只绑定一条长期 learner-visible Tutor conversation；知识点教学分段由 `tutor_teaching_sessions` 持久化，不创建并行聊天根。session 冻结 exact `user_id + track_id + conversation_id + knowledge_key`，以及 track version、active plan revision、progress version、active Lesson assignment/version、LessonDocument/content hash。partial unique 保证同一精确 scope 最多一条 `active | paused | blocked` session；旧 conversation/history 不从聊天正文猜测或回填 session。
+
+`tutor_teaching_session_checkpoints` 是 predecessor-linked append-only CAS 链。`session_version=1` 必须没有 predecessor，后继版本必须引用唯一 predecessor；session 的 `current_checkpoint_id` 与 `version` 一起推进。checkpoint 的 bounded typed state 只包含 objective、active/suspended focus、unresolved-question 摘要、covered concept、evidence cursor、pause reason 与 recommended action；raw prompt、provider reasoning/body、完整题目/提交、private test/rubric、command/path/secret 不进入公共投影或 export。
+
+`tutor_run_stimulus_events` 对每个 teaching-scoped fresh run 保存且只保存一个 exact stimulus：`learner_message | teaching_control | domain_event`。learner stimulus 必须复合引用 exact `tutor_run_input_events(run_id,message_id,input_revision)`；control/domain stimulus 不创建伪 learner message，run origin 仍为 `interactive`，不能滥用 proactive。`tutor_run_teaching_scopes` immutable 冻结 session/checkpoint/stimulus 与 track/plan/progress/assignment/document fence。effect commit、waiting-result 和 terminal-result 持久化前重新读取 current authority；任一 scope/version/pointer 已变化都 fail closed，不能写 effect 或 learner-visible terminal output。
+
+四张 user-owned 表全部属于 cutover exhaustive target inventory，并进入 local summary/export/reset/delete。删除在 transaction-local purge capability 下按 `run teaching scope -> stimulus -> checkpoint -> session` 执行，再清 Lesson/track root；current-checkpoint 与 predecessor 循环使用 deferred `NO ACTION`，使同一事务 child-to-root 清理可验证且 bootstrap twice 幂等。

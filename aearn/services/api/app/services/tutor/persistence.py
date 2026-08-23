@@ -4182,6 +4182,7 @@ class PostgresTutorRepository:
                 )
                 return TutorEffectCommitReceipt(result=result, event=event, replayed=False, committer_invoked=False)
 
+            self._assert_teaching_authority_current_locked(run=run)
             handler = self._effect_handlers.get(proposal.effect_type)
             descriptor = self._effect_descriptors.get(proposal.effect_type)
             payload = payload_mapping_from_fields(proposal.payload)
@@ -4486,6 +4487,56 @@ class PostgresTutorRepository:
         ).fetchall()
         return tuple(_provider_attempt_record_from_row(row) for row in rows)
 
+    def _assert_teaching_authority_current_locked(self, *, run: Mapping[str, object]) -> None:
+        scope = self._conn.execute(
+            "SELECT run_id FROM tutor_run_teaching_scopes WHERE run_id=%s AND user_id=%s",
+            (run["id"], run["user_id"]),
+        ).fetchone()
+        if scope is None:
+            return
+        live = self._conn.execute(
+            """SELECT scopes.*, sessions.current_checkpoint_id, sessions.version AS live_session_version,
+                      sessions.status AS live_session_status, tracks.version AS live_track_version,
+                      active.revision_id AS live_plan_revision_id, progress.version AS live_progress_version,
+                      assignments.id AS live_assignment_id, assignments.assignment_version AS live_assignment_version,
+                      documents.id AS live_document_id, documents.content_hash AS live_document_content_hash
+               FROM tutor_run_teaching_scopes AS scopes
+               JOIN tutor_teaching_sessions AS sessions ON sessions.id=scopes.teaching_session_id
+                 AND sessions.user_id=scopes.user_id AND sessions.conversation_id=scopes.conversation_id
+               JOIN tutor_learning_tracks AS tracks ON tracks.id=scopes.track_id AND tracks.user_id=scopes.user_id
+               JOIN tutor_track_active_plans AS active ON active.track_id=scopes.track_id AND active.user_id=scopes.user_id
+               JOIN tutor_track_node_progress AS progress ON progress.track_id=scopes.track_id
+                 AND progress.user_id=scopes.user_id AND progress.knowledge_key=scopes.knowledge_key
+               JOIN tutor_lesson_assignments AS assignments ON assignments.user_id=scopes.user_id
+                 AND assignments.track_id=scopes.track_id AND assignments.knowledge_key=scopes.knowledge_key
+                 AND assignments.status='active'
+               JOIN tutor_lesson_documents AS documents ON documents.id=assignments.document_id
+                 AND documents.user_id=assignments.user_id AND documents.track_id=assignments.track_id
+                 AND documents.knowledge_key=assignments.knowledge_key
+               JOIN tutor_run_stimulus_events AS stimuli ON stimuli.id=scopes.stimulus_id
+                 AND stimuli.run_id=scopes.run_id AND stimuli.user_id=scopes.user_id
+                 AND stimuli.conversation_id=scopes.conversation_id AND stimuli.teaching_session_id=scopes.teaching_session_id
+               WHERE scopes.run_id=%s AND scopes.user_id=%s
+               FOR UPDATE OF sessions,tracks,progress,assignments""",
+            (run["id"], run["user_id"]),
+        ).fetchone()
+        if live is None:
+            raise TutorTerminalStateConflict("Tutor teaching authority is unavailable")
+        expected = (
+            str(live["checkpoint_id"]), _as_int(live["session_version"], 0),
+            _as_int(live["track_version"], 0), str(live["active_plan_revision_id"]),
+            _as_int(live["progress_version"], 0), str(live["lesson_assignment_id"]),
+            _as_int(live["assignment_version"], 0), str(live["document_id"]), str(live["document_content_hash"]),
+        )
+        observed = (
+            str(live["current_checkpoint_id"]), _as_int(live["live_session_version"], 0),
+            _as_int(live["live_track_version"], 0), str(live["live_plan_revision_id"]),
+            _as_int(live["live_progress_version"], 0), str(live["live_assignment_id"]),
+            _as_int(live["live_assignment_version"], 0), str(live["live_document_id"]), str(live["live_document_content_hash"]),
+        )
+        if expected != observed or str(live["live_session_status"]) not in {"active", "paused"}:
+            raise TutorTerminalStateConflict("Tutor teaching authority is stale")
+
     def complete_run(
         self,
         *,
@@ -4567,6 +4618,7 @@ class PostgresTutorRepository:
             _assert_active_lease(run, lease=lease, now=checkpoint.created_at)
             if checkpoint.input_revision != _as_int(run["input_revision"], 0) or result.input_revision != checkpoint.input_revision:
                 raise TutorLeaseConflict("terminal lifecycle revision is stale")
+            self._assert_teaching_authority_current_locked(run=run)
             terminal_message_id = self._record_public_message_locked(
                 run=run,
                 result=result,
@@ -4965,6 +5017,7 @@ class PostgresTutorRepository:
                 raise TutorTerminalStateConflict("waiting continuation kind conflicts with persisted run state")
             if result.input_revision != _as_int(run["input_revision"], 0):
                 raise TutorLeaseConflict("waiting result revision is stale")
+            self._assert_teaching_authority_current_locked(run=run)
             public_message_id = self._record_public_message_locked(
                 run=run,
                 result=result,
