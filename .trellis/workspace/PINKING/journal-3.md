@@ -163,3 +163,39 @@
 ### Next Steps
 
 - 该父任务树已完成；后续如继续 LearningPlan 五分钟窗口任务，应在其独立会话和既有修改基础上执行。
+
+
+## Session 124: LearningPlan 工具五分钟窗口收尾
+
+**Date**: 2026-08-23
+**Task**: LearningPlan 工具五分钟窗口收尾
+**Branch**: `main`
+
+### Summary
+
+将 Codex plan_drafting LearningPlan Runtime 工具默认 wall-time 从 30 秒调整为 300 秒，补充窗口内与超时回归，完成全量离线质量门并归档任务。
+
+### Main Changes
+
+- 默认 LearningPlanToolBudget.max_wall_seconds 调整为 300.0，保留既有范围校验和 fail-closed 超时语义。
+- 同步 Codex Runtime sidecar 规格，并更新 LearningPlan 工具与 Runtime adapter 回归测试。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `9e8d5511` | (see git log) |
+
+### Testing
+
+- [OK] focused pytest: 46 passed
+- [OK] full API pytest: 716 passed, 2 skipped
+- [OK] Ruff、Mypy、lock check、compileall、bootstrap twice、Trellis validate、git diff --check 均通过
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 保留 .trellis/tasks/.obsidian 下两项用户修改，不纳入本任务提交。
