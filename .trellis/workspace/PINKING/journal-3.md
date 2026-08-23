@@ -86,3 +86,41 @@
 ### Next Steps
 
 - 仅在下一次明确执行指令后启动 08-22-adaptive-learning-integration-evals；不要自动启动父任务或其他 child。
+
+
+## Session 122: 完成长期自适应教学集成 Child 4
+
+**Date**: 2026-08-23
+**Task**: 完成长期自适应教学集成 Child 4
+**Branch**: `main`
+
+### Summary
+
+完成 domain event admission、checkpoint-backed teaching summary、deterministic eval、隐私治理与最终质量门，并归档 Child 4。
+
+### Main Changes
+
+- Gate/Attempt、Review、progress 与 assignment owner 接入统一 durable domain-event adapter，重复/陈旧 source fail closed。
+- Teaching checkpoint 生成结构化 summary，扩展 current-session context precedence 与 correction/unresolved compaction protection。
+- 新增 deterministic adaptive teaching eval，并同步 backend specs 与 source-of-truth docs。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `ad1cd13e` | (see git log) |
+| `e1b9d2c3` | (see git log) |
+
+### Testing
+
+- [OK] Focused Child 4 50 passed；teaching/Gate/Review/Lesson regression 33 passed；adaptive eval 4 passed。
+- [OK] 完整 API 716 passed, 2 skipped；Ruff、Mypy 200 files、Desktop 58 tests/build、bootstrap twice 通过。
+- [OK] Browser Guided↔Free Reading、reload/reconnect、1440/900/390 无溢出、overlay、console error/warning 或 protected marker。
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 复核父任务 08-22-harness-led-adaptive-learning-workspace 的四个 child archive 与 PRD 验收映射；不自动归档父任务，等待用户收尾决定。
