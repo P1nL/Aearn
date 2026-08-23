@@ -28,6 +28,12 @@ from app.agents.harness.contracts import (
     TutorTerminalOutcome,
     payload_fields_from_mapping,
 )
+from app.services.learning.teaching_contracts import (
+    TeachingAction,
+    TeachingFocusResolution,
+    TeachingPauseReason,
+    TeachingStepDecision,
+)
 from app.services.llm.llm_client import LLMInvalidResponseError
 
 
@@ -168,6 +174,25 @@ class TutorProviderProposeEffectItem(_StrictProviderModel):
         return value
 
 
+class TutorProviderTeachingStepItem(_StrictProviderModel):
+    type: Literal["teaching_step"]
+    action: TeachingAction
+    objective_id: str = Field(min_length=1, max_length=160)
+    focus_id: str = Field(min_length=1, max_length=160)
+    source_handles: list[str] = Field(default_factory=list, max_length=8)
+    public_message: str = Field(min_length=1, max_length=4000)
+    focus_resolution: TeachingFocusResolution
+    pause_kind: TeachingPauseReason
+    escalation_hint: str | None = Field(default=None, min_length=1, max_length=180)
+
+    @field_validator("source_handles")
+    @classmethod
+    def _unique_handles(cls, value: list[str]) -> list[str]:
+        if len(value) != len(set(value)):
+            raise ValueError("teaching source handles must be unique")
+        return value
+
+
 class TutorProviderWaitForInputItem(_StrictProviderModel):
     type: Literal["wait_for_input"]
     continuation_kind: TutorContinuationKind
@@ -188,6 +213,7 @@ TutorProviderActionItem: TypeAlias = Annotated[
     | TutorProviderSelectSkillItem
     | TutorProviderRequestCapabilityItem
     | TutorProviderProposeEffectItem
+    | TutorProviderTeachingStepItem
     | TutorProviderWaitForInputItem,
     Field(discriminator="type"),
 ]
@@ -275,6 +301,21 @@ def canonical_tutor_provider_items_example() -> str:
         ),
         title="函数基础练习",
         action={"type": "turn_completed"},
+    )
+
+
+def canonical_tutor_teaching_step_example() -> str:
+    return _canonical_provider_example(
+        text="变量让名称引用一个值。先看一个最小赋值例子。",
+        thinking_text="当前教学目标是理解变量绑定，这一步只解释一个核心概念并在完成后停顿。",
+        title="变量绑定",
+        action={
+            "type": "teaching_step", "action": "explain_concept",
+            "objective_id": "knowledge:python.variables", "focus_id": "knowledge:python.variables",
+            "source_handles": ["knowledge:python.variables"],
+            "public_message": "变量让名称引用一个值。先看一个最小赋值例子。",
+            "focus_resolution": "stay", "pause_kind": "soft_pause", "escalation_hint": None,
+        },
     )
 
 
@@ -367,6 +408,7 @@ def parse_tutor_provider_items(
     continuation_kind: TutorContinuationKind | None = None
     terminal_outcome: TutorTerminalOutcome | None = None
     question_key: TutorPlanningQuestionKey | None = None
+    teaching_step: TeachingStepDecision | None = None
 
     try:
         if isinstance(action, TutorProviderTurnCompletedItem):
@@ -396,6 +438,16 @@ def parse_tutor_provider_items(
                     ),
                 ),
             )
+        elif isinstance(action, TutorProviderTeachingStepItem):
+            if action.public_message != message.text:
+                raise ValueError("teaching action message must match agent message text")
+            teaching_step = TeachingStepDecision(
+                action=action.action, objective_id=action.objective_id, focus_id=action.focus_id,
+                source_handles=tuple(action.source_handles), public_message=action.public_message,
+                focus_resolution=action.focus_resolution, pause_kind=action.pause_kind,
+                escalation_hint=action.escalation_hint,
+            )
+            terminal_outcome = TutorTerminalOutcome.COMPLETED
         elif isinstance(action, TutorProviderWaitForInputItem):
             checkpoint_reason = TutorCheckpointReason.CAPABILITY_RESULT
             continuation_kind = action.continuation_kind
@@ -414,6 +466,7 @@ def parse_tutor_provider_items(
             checkpoint_reason=checkpoint_reason,
             continuation_kind=continuation_kind,
             terminal_outcome=terminal_outcome,
+            teaching_step=teaching_step,
         )
     except (TypeError, ValueError) as exc:
         raise TutorDecisionValidationError(
@@ -444,11 +497,13 @@ def build_tutor_replacement_message(
         "Choose its wording, paragraphs, line breaks, tone, and granularity naturally for the current request; do not force "
         "numbered steps or a fixed linguistic template. It is authored public explanation text, not provider-native hidden "
         "reasoning, and must not mention prompts, policies, diagnostics, or secrets. "
+        "teaching_step must use one closed action, exact objective/focus/source handles, one focus_resolution, and one pause_kind. "
         "wait_for_input.continuation_kind must be clarification, planning_input, approval, capability_result, or "
         "external_result. planning_input requires exactly one allowlisted question_key; every other continuation must omit it. "
         "The server owns request_id, effect_id, expected_input_revision, checkpoints, and terminal state; never emit them. "
         f"Validation issues (safe field paths and categories only): {issue_text}. "
         f"Minimal valid direct-reply example: {canonical_tutor_provider_items_example()} "
+        f"Valid teaching-step example: {canonical_tutor_teaching_step_example()} "
         f"Valid continuation branch examples: {canonical_tutor_wait_for_input_examples()} "
         f"Keep following this teaching policy: {teaching_policy}"
     )

@@ -41,6 +41,8 @@ class TeachingControlKey(StrEnum):
     OPEN_SESSION = "open_session"
     CONTINUE = "continue"
     RETURN_FOCUS = "return_focus"
+    CHANGE_EXAMPLE = "change_example"
+    ESCALATE_GUIDED = "escalate_guided"
     SWITCH_MODE = "switch_mode"
     PAUSE = "pause"
     RESUME = "resume"
@@ -241,3 +243,118 @@ def text(value: str, maximum: int, label: str) -> str:
     if not normalized or len(normalized) > maximum:
         raise ValueError(f"{label} must contain 1..{maximum} characters")
     return normalized
+
+
+class TeachingAction(StrEnum):
+    ORIENT = "orient"
+    EXPLAIN_CONCEPT = "explain_concept"
+    ANSWER_QUESTION = "answer_question"
+    SHOW_EXAMPLE = "show_example"
+    COMPARE_EXAMPLES = "compare_examples"
+    CHECK_UNDERSTANDING = "check_understanding"
+    RECOMMEND_PRACTICE = "recommend_practice"
+    EXPLAIN_FEEDBACK = "explain_feedback"
+    REMEDIATE_PREREQUISITE = "remediate_prerequisite"
+    SUMMARIZE_PROGRESS = "summarize_progress"
+    RECOMMEND_PAUSE = "recommend_pause"
+    WAIT_FOR_INPUT = "wait_for_input"
+
+
+class TeachingFocusResolution(StrEnum):
+    STAY = "stay"
+    PUSH_CHILD = "push_child"
+    RESOLVE_AND_RESUME_PARENT = "resolve_and_resume_parent"
+    REPLACE_OBJECTIVE = "replace_objective"
+    ABANDON_BRANCH = "abandon_branch"
+    WAIT = "wait"
+
+
+class TeachingStepDecision(_Strict):
+    action: TeachingAction
+    objective_id: str = Field(min_length=1, max_length=160)
+    focus_id: str = Field(min_length=1, max_length=160)
+    source_handles: tuple[str, ...] = Field(default=(), max_length=8)
+    public_message: str = Field(min_length=1, max_length=4000)
+    focus_resolution: TeachingFocusResolution
+    pause_kind: TeachingPauseReason
+    escalation_hint: str | None = Field(default=None, min_length=1, max_length=180)
+
+    @field_validator("objective_id", "focus_id")
+    @classmethod
+    def stable_identity(cls, value: str) -> str:
+        return stable(value, "teaching identity")
+
+    @field_validator("source_handles")
+    @classmethod
+    def bounded_handles(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return stable_tuple(value, "source handle")
+
+    @field_validator("public_message")
+    @classmethod
+    def bounded_message(cls, value: str) -> str:
+        return text(value, 4000, "public_message")
+
+    @field_validator("escalation_hint")
+    @classmethod
+    def bounded_hint(cls, value: str | None) -> str | None:
+        return text(value, 180, "escalation_hint") if value is not None else None
+
+    @model_validator(mode="after")
+    def validate_semantics(self) -> "TeachingStepDecision":
+        if self.focus_resolution is TeachingFocusResolution.PUSH_CHILD and self.focus_id == self.objective_id:
+            raise ValueError("push_child requires a child focus identity")
+        if self.pause_kind is TeachingPauseReason.COMPLETION_PAUSE and self.action is not TeachingAction.SUMMARIZE_PROGRESS:
+            raise ValueError("completion_pause requires summarize_progress")
+        return self
+
+
+class TeachingActionDescriptor(_Strict):
+    key: str = Field(min_length=1, max_length=160)
+    label: str = Field(min_length=1, max_length=80)
+    emphasis: Literal["primary", "secondary", "quiet"]
+    enabled: bool = True
+    disabled_reason: str | None = Field(default=None, min_length=1, max_length=160)
+    target_kind: Literal["teaching_control", "navigation", "artifact"]
+    target_id: str | None = Field(default=None, min_length=1, max_length=160)
+    expected_versions: dict[str, int] = Field(default_factory=dict)
+
+    @field_validator("key")
+    @classmethod
+    def descriptor_key(cls, value: str) -> str:
+        return stable(value, "action key")
+
+    @field_validator("label")
+    @classmethod
+    def descriptor_label(cls, value: str) -> str:
+        return text(value, 80, "action label")
+
+    @field_validator("expected_versions")
+    @classmethod
+    def version_map(cls, value: dict[str, int]) -> dict[str, int]:
+        allowed = {"session", "track", "progress", "assignment"}
+        if not set(value).issubset(allowed) or any(item < 1 for item in value.values()):
+            raise ValueError("expected_versions contains invalid fields")
+        return value
+
+
+class TeachingActionShelfV1(_Strict):
+    schema_version: Literal["teaching_action_shelf_v1"] = "teaching_action_shelf_v1"
+    teaching_session_id: str = Field(min_length=1, max_length=120)
+    session_version: int = Field(ge=1)
+    checkpoint_id: str = Field(min_length=1, max_length=120)
+    state: Literal["ready", "runtime_active", "blocking_request", "completion", "free_reading"]
+    primary_action: TeachingActionDescriptor | None = None
+    secondary_actions: tuple[TeachingActionDescriptor, ...] = Field(default=(), max_length=3)
+    overflow_actions: tuple[TeachingActionDescriptor, ...] = Field(default=(), max_length=8)
+
+    @model_validator(mode="after")
+    def unique_actions(self) -> "TeachingActionShelfV1":
+        actions = tuple(item for item in (self.primary_action, *self.secondary_actions, *self.overflow_actions) if item is not None)
+        keys = tuple(item.key for item in actions)
+        if len(keys) != len(set(keys)):
+            raise ValueError("Action Shelf keys must be unique")
+        if self.primary_action is not None and self.primary_action.emphasis != "primary":
+            raise ValueError("primary_action must use primary emphasis")
+        if self.state in {"runtime_active", "blocking_request"} and actions:
+            raise ValueError("runtime/request authority excludes ordinary Action Shelf actions")
+        return self

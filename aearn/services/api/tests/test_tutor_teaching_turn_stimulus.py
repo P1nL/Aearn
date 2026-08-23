@@ -25,7 +25,7 @@ def _open(conn, scope):  # type: ignore[no-untyped-def]
         user_id=str(scope["user_id"]), track_id=str(scope["track_id"]), knowledge_key="python.variables",
         conversation_id=str(scope["conversation_id"]), expected_track_version=1,
         expected_progress_version=1, expected_assignment_version=1,
-        mode=TeachingSessionMode.GUIDED, idempotency_key=f"open-{uuid4()}",
+        mode=TeachingSessionMode.FREE_READING, idempotency_key=f"open-{uuid4()}",
     )["teaching_session"]
 
 

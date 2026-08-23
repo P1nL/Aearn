@@ -73,6 +73,7 @@ def test_published_catalog_is_exact_versioned_immutable_and_deterministic() -> N
         "tutor.learner-state@1.0.0",
         "tutor.learning-plan-draft@1.0.0",
         "tutor.learning-plan-draft@1.0.1",
+        "tutor.lesson-teaching@1.0.0",
         "tutor.registry-grounding@1.0.0",
         "tutor.runner-execution@1.0.0",
     )

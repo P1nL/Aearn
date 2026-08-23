@@ -4,22 +4,23 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 from psycopg import Connection
 from pydantic import TypeAdapter, ValidationError
 
-from app.agents.harness.context_budget import build_tutor_context_budget_policy
 from app.agents.harness.contracts import TutorPolicySnapshot
 from app.agents.harness.skill_catalog import compile_published_skill_catalog
 from app.core.config import Settings, get_settings
+from app.services.learning.teaching_loop import build_teaching_action_shelf
 from app.services.learning.teaching_contracts import (
     DomainEventStimulus,
     LearnerMessageStimulus,
     TeachingAuthoritySnapshot,
     TeachingCheckpointState,
+    TeachingControlKey,
     TeachingControlStimulus,
     TeachingPauseReason,
     TeachingSessionMode,
@@ -135,7 +136,8 @@ class TeachingSessionRepository:
     def read_current(self, *, user_id: str, track_id: str, knowledge_key: str, for_update: bool = False) -> Mapping[str, object]:
         row = self._conn.execute(
             "SELECT * FROM tutor_teaching_sessions WHERE user_id=%s AND track_id=%s AND knowledge_key=%s "
-            "AND status IN ('active','paused','blocked') ORDER BY created_at DESC LIMIT 1" + (" FOR UPDATE" if for_update else ""),
+            "ORDER BY CASE WHEN status IN ('active','paused') THEN 0 WHEN status='completed' THEN 1 ELSE 2 END, "
+            "created_at DESC,id DESC LIMIT 1" + (" FOR UPDATE" if for_update else ""),
             (user_id, track_id, stable(knowledge_key, "knowledge_key")),
         ).fetchone()
         if row is None:
@@ -161,21 +163,28 @@ class TeachingSessionRepository:
     def open_or_resume(self, *, authority: TeachingAuthority, mode: TeachingSessionMode) -> tuple[Mapping[str, object], bool]:
         existing = self._conn.execute(
             "SELECT * FROM tutor_teaching_sessions WHERE user_id=%s AND track_id=%s AND conversation_id=%s "
-            "AND knowledge_key=%s AND status IN ('active','paused','blocked') ORDER BY created_at DESC LIMIT 1 FOR UPDATE",
+            "AND knowledge_key=%s AND status IN ('active','paused') ORDER BY created_at DESC LIMIT 1 FOR UPDATE",
             (authority.user_id, authority.track_id, authority.conversation_id, authority.knowledge_key),
         ).fetchone()
+        predecessor_session_id: str | None = None
         if existing is not None:
-            self._assert_authority(existing, authority)
-            return existing, False
+            try:
+                self._assert_authority(existing, authority)
+            except TeachingSessionConflict:
+                predecessor_session_id = self._block_stale_session(existing)
+            else:
+                return existing, False
         session_id = str(uuid4())
         row = self._conn.execute(
             """INSERT INTO tutor_teaching_sessions (
                  id,user_id,track_id,conversation_id,knowledge_key,track_version,active_plan_revision_id,progress_version,
-                 lesson_assignment_id,assignment_version,document_id,document_content_hash,status,mode,version,last_activity_at
-               ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'active',%s,1,now()) RETURNING *""",
+                 lesson_assignment_id,assignment_version,document_id,document_content_hash,predecessor_session_id,
+                 status,mode,version,last_activity_at
+               ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'active',%s,1,now()) RETURNING *""",
             (session_id, authority.user_id, authority.track_id, authority.conversation_id, authority.knowledge_key,
-             authority.track_version, authority.plan_revision_id, authority.progress_version, authority.assignment_id, authority.assignment_version,
-             authority.document_id, authority.document_content_hash, mode.value),
+             authority.track_version, authority.plan_revision_id, authority.progress_version, authority.assignment_id,
+             authority.assignment_version, authority.document_id, authority.document_content_hash,
+             predecessor_session_id, mode.value),
         ).fetchone()
         if row is None:
             raise RuntimeError("teaching session insert failed")
@@ -197,6 +206,51 @@ class TeachingSessionRepository:
         if updated is None:
             raise RuntimeError("teaching session checkpoint binding failed")
         return updated, True
+
+    def _block_stale_session(self, session: Mapping[str, object]) -> str:
+        active_run = self._conn.execute(
+            """SELECT runs.id FROM tutor_runs AS runs
+               JOIN tutor_run_teaching_scopes AS scopes ON scopes.run_id=runs.id
+               WHERE scopes.teaching_session_id=%s AND runs.user_id=%s
+                 AND runs.terminal_outcome IS NULL AND runs.cancelled_at IS NULL
+                 AND runs.superseded_by_run_id IS NULL
+               LIMIT 1 FOR UPDATE OF runs""",
+            (session["id"], session["user_id"]),
+        ).fetchone()
+        if active_run is not None:
+            raise TeachingSessionConflict("stale teaching session still has an active run")
+        checkpoint = self.current_checkpoint(
+            session_id=str(session["id"]), user_id=str(session["user_id"]),
+        )
+        state = self._checkpoint_state(checkpoint).model_copy(update={
+            "pause_reason": TeachingPauseReason.AUTHORITY_PAUSE,
+            "recommended_action_key": "refresh_session",
+        })
+        authority = TeachingAuthoritySnapshot(
+            track_version=_int(session["track_version"]),
+            plan_revision_id=str(session["active_plan_revision_id"]),
+            progress_version=_int(session["progress_version"]),
+            assignment_id=str(session["lesson_assignment_id"]),
+            assignment_version=_int(session["assignment_version"]),
+            document_id=str(session["document_id"]),
+            document_content_hash=str(session["document_content_hash"]),
+        )
+        next_version = _int(session["version"]) + 1
+        next_checkpoint = self._insert_checkpoint(
+            session=session, predecessor_id=str(checkpoint["id"]), session_version=next_version,
+            state=state, authority=authority, source_run_id=None, source_stimulus_id=None,
+        )
+        updated = self._conn.execute(
+            """UPDATE tutor_teaching_sessions SET status='blocked',current_checkpoint_id=%s,
+                 version=version+1,paused_at=NULL,last_activity_at=now(),
+                 last_mutation_key='authority-refresh',last_mutation_hash=%s
+               WHERE id=%s AND user_id=%s AND version=%s RETURNING id""",
+            (next_checkpoint["id"], canonical_hash({"session_id": str(session["id"]), "reason": "authority_stale"}),
+             session["id"], session["user_id"], session["version"]),
+        ).fetchone()
+        if updated is None:
+            raise TeachingSessionConflict("stale teaching session changed before refresh")
+        return str(session["id"])
 
     def current_checkpoint(self, *, session_id: str, user_id: str) -> Mapping[str, object]:
         row = self._conn.execute(
@@ -223,10 +277,31 @@ class TeachingSessionRepository:
             if target_mode is None:
                 raise TeachingSessionInvalid("switch_mode requires target mode")
             mode = target_mode
+        elif control.control_key.value == "escalate_guided":
+            mode = TeachingSessionMode.GUIDED
+            status, paused_at = TeachingSessionStatus.ACTIVE, None
+        elif control.control_key.value == "return_focus":
+            suspended = list(state.suspended_focuses)
+            if not suspended:
+                raise TeachingSessionConflict("no suspended teaching focus is available")
+            resolved = state.active_focus.focus_id if state.active_focus is not None else None
+            state = state.model_copy(update={
+                "active_focus": suspended.pop(),
+                "suspended_focuses": tuple(suspended),
+                "unresolved_questions": tuple(
+                    item for item in state.unresolved_questions if item.question_id != resolved
+                ),
+                "recommended_action_key": "continue",
+            })
+        elif control.control_key.value == "change_example":
+            state = state.model_copy(update={"recommended_action_key": "continue"})
         elif control.control_key.value == "pause":
             status, paused_at = TeachingSessionStatus.PAUSED, datetime.now(UTC)
             state = state.model_copy(update={"pause_reason": TeachingPauseReason.SESSION_PAUSE})
         elif control.control_key.value == "resume":
+            status, paused_at = TeachingSessionStatus.ACTIVE, None
+            state = state.model_copy(update={"pause_reason": TeachingPauseReason.SOFT_PAUSE})
+        elif control.control_key.value == "continue":
             status, paused_at = TeachingSessionStatus.ACTIVE, None
             state = state.model_copy(update={"pause_reason": TeachingPauseReason.SOFT_PAUSE})
         next_version = expected_session_version + 1
@@ -324,6 +399,116 @@ class TeachingSessionRepository:
             raise TeachingSessionConflict("run LessonDocument authority is stale")
         return row
 
+    def teaching_context(self, *, user_id: str, run_id: str) -> dict[str, object] | None:
+        scope_exists = self._conn.execute(
+            "SELECT 1 FROM tutor_run_teaching_scopes WHERE run_id=%s AND user_id=%s", (run_id, user_id),
+        ).fetchone()
+        if scope_exists is None:
+            return None
+        self.assert_run_scope_current(user_id=user_id, run_id=run_id)
+        row = self._conn.execute(
+            """SELECT scopes.*, sessions.status AS session_status, sessions.current_checkpoint_id,
+                      checkpoints.state_json, stimuli.stimulus_kind, stimuli.message_id, stimuli.input_revision,
+                      stimuli.control_key, stimuli.client_action_id, stimuli.domain_event_kind, stimuli.source_id,
+                      stimuli.source_version, stimuli.safe_payload_json,
+                      progress.status AS progress_status
+               FROM tutor_run_teaching_scopes AS scopes
+               JOIN tutor_teaching_sessions AS sessions ON sessions.id=scopes.teaching_session_id
+                 AND sessions.user_id=scopes.user_id AND sessions.conversation_id=scopes.conversation_id
+               JOIN tutor_teaching_session_checkpoints AS checkpoints ON checkpoints.id=scopes.checkpoint_id
+                 AND checkpoints.teaching_session_id=scopes.teaching_session_id
+               JOIN tutor_run_stimulus_events AS stimuli ON stimuli.id=scopes.stimulus_id AND stimuli.run_id=scopes.run_id
+               JOIN tutor_track_node_progress AS progress ON progress.track_id=scopes.track_id
+                 AND progress.user_id=scopes.user_id AND progress.knowledge_key=scopes.knowledge_key
+               WHERE scopes.run_id=%s AND scopes.user_id=%s""",
+            (run_id, user_id),
+        ).fetchone()
+        if row is None:
+            raise TeachingSessionConflict("teaching context authority is missing")
+        if str(row["current_checkpoint_id"]) != str(row["checkpoint_id"]):
+            raise TeachingSessionConflict("teaching context checkpoint is stale")
+        state = self._checkpoint_state(row)
+        handles: set[str] = {
+            f"knowledge:{row['knowledge_key']}", f"stimulus:{row['stimulus_id']}",
+            *state.objective.source_handles,
+        }
+        if state.active_focus is not None:
+            handles.update(state.active_focus.source_handles)
+        for focus in state.suspended_focuses:
+            handles.update(focus.source_handles)
+        for evidence in state.evidence_cursors:
+            handles.add(f"{evidence.evidence_kind}:{evidence.source_id}")
+        references = self._conn.execute(
+            "SELECT id FROM tutor_message_context_references WHERE run_id=%s AND user_id=%s ORDER BY reference_index",
+            (run_id, user_id),
+        ).fetchall()
+        handles.update(f"context-reference:{item['id']}" for item in references)
+        stimulus_kind = str(row["stimulus_kind"])
+        raw_safe_payload = row.get("safe_payload_json")
+        safe_payload = (
+            {str(key): value for key, value in raw_safe_payload.items()}
+            if isinstance(raw_safe_payload, Mapping)
+            else {}
+        )
+        stimulus: dict[str, object] = {
+            "stimulus_id": str(row["stimulus_id"]),
+            "kind": stimulus_kind,
+            "safe_payload": safe_payload,
+        }
+        if stimulus_kind == "learner_message":
+            stimulus.update(message_id=_optional_str(row.get("message_id")), input_revision=row.get("input_revision"))
+        elif stimulus_kind == "teaching_control":
+            stimulus["control_key"] = _optional_str(row.get("control_key"))
+        elif stimulus_kind == "domain_event":
+            stimulus.update(
+                event_kind=_optional_str(row.get("domain_event_kind")),
+                source_id=_optional_str(row.get("source_id")),
+                source_version=row.get("source_version"),
+            )
+        else:
+            raise TeachingSessionConflict("teaching stimulus kind is invalid")
+        candidate_focus_id = stable(f"stimulus:{row['stimulus_id']}", "stimulus focus")
+        return {
+            "schema_version": "teaching_session_context_v1",
+            "session": {
+                "session_id": str(row["teaching_session_id"]), "session_version": _int(row["session_version"]),
+                "checkpoint_id": str(row["checkpoint_id"]), "status": str(row["session_status"]),
+                "mode": str(row["mode"]), "knowledge_key": str(row["knowledge_key"]),
+                "track_version": _int(row["track_version"]), "progress_version": _int(row["progress_version"]),
+                "progress_status": str(row["progress_status"]), "assignment_version": _int(row["assignment_version"]),
+            },
+            "stimulus": stimulus,
+            "objective": state.objective.model_dump(mode="json"),
+            "active_focus": state.active_focus.model_dump(mode="json") if state.active_focus is not None else None,
+            "suspended_focuses": [item.model_dump(mode="json") for item in state.suspended_focuses],
+            "unresolved_questions": [item.model_dump(mode="json") for item in state.unresolved_questions],
+            "covered_concepts": list(state.covered_concepts),
+            "pause_kind": state.pause_reason.value,
+            "recommended_action_key": state.recommended_action_key,
+            "candidate_focus_id": candidate_focus_id,
+            "allowed_source_handles": sorted(handles),
+            "action_policy": "lesson_teaching_v1",
+        }
+
+    def next_available_knowledge_key(
+        self, *, user_id: str, track_id: str, current_knowledge_key: str,
+        for_update: bool = False,
+    ) -> str | None:
+        lock = " FOR UPDATE OF progress" if for_update else ""
+        row = self._conn.execute(
+            """SELECT nodes.knowledge_key FROM tutor_track_active_plans AS active
+               JOIN tutor_track_plan_nodes AS nodes ON nodes.revision_id=active.revision_id
+                 AND nodes.track_id=active.track_id AND nodes.user_id=active.user_id
+               JOIN tutor_track_plan_modules AS modules ON modules.id=nodes.module_id
+               JOIN tutor_track_node_progress AS progress ON progress.track_id=nodes.track_id
+                 AND progress.user_id=nodes.user_id AND progress.knowledge_key=nodes.knowledge_key
+               WHERE active.track_id=%s AND active.user_id=%s AND progress.status='available'
+                 AND nodes.knowledge_key<>%s
+               ORDER BY modules.order_index,nodes.order_index,nodes.knowledge_key LIMIT 1""" + lock,
+            (track_id, user_id, stable(current_knowledge_key, "current_knowledge_key")),
+        ).fetchone()
+        return str(row["knowledge_key"]) if row is not None else None
+
     def project_session(self, row: Mapping[str, object], *, include_checkpoint: bool = True) -> dict[str, object]:
         result: dict[str, object] = {
             "session_id": str(row["id"]), "track_id": str(row["track_id"]), "track_version": _int(row["track_version"]),
@@ -333,7 +518,7 @@ class TeachingSessionRepository:
             "assignment_version": _int(row["assignment_version"]), "document_id": str(row["document_id"]),
             "checkpoint_id": _optional_str(row.get("current_checkpoint_id")),
             "paused_at": _iso(row.get("paused_at")), "completed_at": _iso(row.get("completed_at")),
-            "last_activity_at": _iso(row.get("last_activity_at")), "allowed_actions": [],
+            "last_activity_at": _iso(row.get("last_activity_at")),
         }
         if include_checkpoint and row.get("current_checkpoint_id") is not None:
             checkpoint = self.current_checkpoint(session_id=str(row["id"]), user_id=str(row["user_id"]))
@@ -347,6 +532,52 @@ class TeachingSessionRepository:
                 "covered_concepts": list(state.covered_concepts), "evidence_cursors": [item.model_dump(mode="json") for item in state.evidence_cursors],
                 "pause_reason": state.pause_reason.value, "recommended_action_key": state.recommended_action_key,
             }
+            live = self._conn.execute(
+                """SELECT progress.status AS progress_status, progress.version AS live_progress_version,
+                          tracks.version AS live_track_version, assignments.assignment_version AS live_assignment_version,
+                          EXISTS (SELECT 1 FROM tutor_runs AS runs JOIN tutor_run_teaching_scopes AS scopes ON scopes.run_id=runs.id
+                            WHERE scopes.teaching_session_id=%s AND runs.user_id=%s AND runs.terminal_outcome IS NULL
+                              AND runs.cancelled_at IS NULL AND runs.superseded_by_run_id IS NULL) AS runtime_active,
+                          EXISTS (SELECT 1 FROM tutor_interaction_requests AS requests
+                            WHERE requests.user_id=%s AND requests.conversation_id=%s AND requests.state='pending') AS blocking_request
+                   FROM tutor_track_node_progress AS progress
+                   JOIN tutor_learning_tracks AS tracks ON tracks.id=progress.track_id AND tracks.user_id=progress.user_id
+                   JOIN tutor_lesson_assignments AS assignments ON assignments.track_id=progress.track_id
+                     AND assignments.user_id=progress.user_id AND assignments.knowledge_key=progress.knowledge_key
+                     AND assignments.status='active'
+                   WHERE progress.track_id=%s AND progress.user_id=%s AND progress.knowledge_key=%s""",
+                (row["id"], row["user_id"], row["user_id"], row["conversation_id"],
+                 row["track_id"], row["user_id"], row["knowledge_key"]),
+            ).fetchone()
+            next_knowledge_key = self.next_available_knowledge_key(
+                user_id=str(row["user_id"]), track_id=str(row["track_id"]),
+                current_knowledge_key=str(row["knowledge_key"]),
+            )
+            shelf = build_teaching_action_shelf(
+                session_id=str(row["id"]), session_version=_int(row["version"]),
+                checkpoint_id=str(checkpoint["id"]), mode=TeachingSessionMode(str(row["mode"])),
+                state=state, track_version=_int(live["live_track_version"] if live else row["track_version"]),
+                progress_version=_int(live["live_progress_version"] if live else row["progress_version"]),
+                assignment_version=_int(live["live_assignment_version"] if live else row["assignment_version"]),
+                runtime_active=bool(live and live.get("runtime_active")),
+                blocking_request=bool(live and live.get("blocking_request")),
+                progress_status=str(live.get("progress_status") if live else ""),
+                next_knowledge_key=next_knowledge_key,
+            )
+            shelf_payload: dict[str, object] = shelf.model_dump(mode="json")
+            result["action_shelf"] = shelf_payload
+            primary = shelf_payload.get("primary_action")
+            secondary = shelf_payload.get("secondary_actions")
+            overflow = shelf_payload.get("overflow_actions")
+            candidates = (
+                ([primary] if isinstance(primary, dict) else [])
+                + (list(secondary) if isinstance(secondary, list) else [])
+                + (list(overflow) if isinstance(overflow, list) else [])
+            )
+            result["allowed_actions"] = [str(item["key"]) for item in candidates if isinstance(item, dict)]
+        else:
+            result["action_shelf"] = None
+            result["allowed_actions"] = []
         return result
 
     def conversation_projection(self, *, user_id: str, conversation_id: str) -> list[dict[str, object]]:
@@ -463,6 +694,8 @@ class TeachingSessionRepository:
         repository.record_catalog_snapshot(catalog)
         config = settings or get_settings()
         now = datetime.now(UTC)
+        from app.agents.harness.context_budget import build_tutor_context_budget_policy
+
         policy = TutorPolicySnapshot(
             deadline=now + timedelta(minutes=5), max_iterations=4, max_model_calls=3,
             max_capability_calls=2, max_effects=2, context_token_budget=config.tutor_context_token_budget,
@@ -476,7 +709,13 @@ class TeachingSessionRepository:
         )
         self._ensure_run_learning_scope(run_id=run.run_id, authority=authority)
         projection = self._insert_stimulus_scope(run_id=run.run_id, session=session, authority=authority, stimulus=stimulus)
-        return {**projection, "run_id": run.run_id, "origin": run.origin, "status": run.status.value}
+        run_row = repository._lock_run(user_id=authority.user_id, run_id=run.run_id)
+        repository._ensure_public_process_locked(run=run_row, occurred_at=now)
+        dispatch = repository._ensure_interactive_dispatch_job_locked(run=run_row, available_at=now)
+        return {
+            **projection, "run_id": run.run_id, "origin": run.origin, "status": run.status.value,
+            "dispatch_job_id": dispatch.job_id if dispatch is not None else None,
+        }
 
     def _assert_authority(self, session: Mapping[str, object], authority: TeachingAuthority) -> None:
         expected = (
@@ -576,6 +815,7 @@ class TeachingSessionService:
                 user_id=user, track_id=track, knowledge_key=str(request["knowledge_key"]), conversation_id=conversation,
                 expected_track_version=expected_track_version, expected_progress_version=expected_progress_version,
                 expected_assignment_version=expected_assignment_version, mode=mode,
+                client_action_id=idempotency_key,
             ),
         )
 
@@ -600,7 +840,7 @@ class TeachingSessionService:
     def _open(
         self, *, user_id: str, track_id: str, knowledge_key: str, conversation_id: str | None,
         expected_track_version: int, expected_progress_version: int, expected_assignment_version: int,
-        mode: TeachingSessionMode,
+        mode: TeachingSessionMode, client_action_id: str,
     ) -> dict[str, object]:
         try:
             authority = self._repository.resolve_authority(
@@ -609,22 +849,60 @@ class TeachingSessionService:
             )
             self._assert_expected(authority, expected_track_version, expected_progress_version, expected_assignment_version)
             row, created = self._repository.open_or_resume(authority=authority, mode=mode)
+            pending_run = None
+            if created and mode is TeachingSessionMode.GUIDED:
+                pending_run = self._repository.admit_control_run(
+                    authority=authority, session=row,
+                    stimulus=TeachingControlStimulus(
+                        control_key=TeachingControlKey.OPEN_SESSION, client_action_id=client_action_id,
+                        expected_session_version=_int(row["version"]),
+                        expected_track_version=authority.track_version,
+                        expected_progress_version=authority.progress_version,
+                        expected_assignment_version=authority.assignment_version,
+                    ),
+                    settings=self._settings,
+                )
         except TeachingSessionNotFound as exc:
             raise self._not_found(track_id, knowledge_key) from exc
         except TeachingSessionConflict as exc:
             raise self._conflict(str(exc)) from exc
-        return {"teaching_session": self._repository.project_session(row), "created": created}
+        return {
+            "teaching_session": self._repository.project_session(row),
+            "created": created, "pending_run": pending_run,
+        }
 
     def _action(
         self, *, user_id: str, track_id: str, session_id: str, control: TeachingControlStimulus,
         target_mode: TeachingSessionMode | None, admit_run: bool,
     ) -> dict[str, object]:
-        if admit_run and control.control_key.value not in {"continue", "return_focus", "enter_next_knowledge"}:
-            raise TeachingSessionServiceError(
-                "TEACHING_STIMULUS_INVALID", "该教学控制不能创建 Tutor Turn。", status_code=409, recoverable=False,
+        del admit_run
+        control_key = control.control_key
+        if control_key is TeachingControlKey.ENTER_NEXT_KNOWLEDGE:
+            return self._enter_next_knowledge(
+                user_id=user_id, track_id=track_id, session_id=session_id, control=control,
             )
         try:
             session = self._repository.read_by_id(user_id=user_id, track_id=track_id, session_id=session_id, for_update=True)
+            session_mode = TeachingSessionMode(str(session["mode"]))
+            if session_mode is TeachingSessionMode.FREE_READING and control_key in {
+                TeachingControlKey.CONTINUE,
+                TeachingControlKey.RETURN_FOCUS,
+                TeachingControlKey.CHANGE_EXAMPLE,
+            }:
+                raise TeachingSessionInvalid("free reading accepts learner input or explicit guided escalation")
+            if control_key is TeachingControlKey.ESCALATE_GUIDED and session_mode is not TeachingSessionMode.FREE_READING:
+                raise TeachingSessionInvalid("guided escalation requires free-reading mode")
+            if (
+                control_key is TeachingControlKey.SWITCH_MODE
+                and target_mode is TeachingSessionMode.GUIDED
+            ):
+                raise TeachingSessionInvalid("switching to guided mode requires explicit guided escalation")
+            auto_admit = control_key in {
+                TeachingControlKey.CONTINUE,
+                TeachingControlKey.RETURN_FOCUS,
+                TeachingControlKey.CHANGE_EXAMPLE,
+                TeachingControlKey.ESCALATE_GUIDED,
+            } or (control_key is TeachingControlKey.RESUME and session_mode is TeachingSessionMode.GUIDED)
             authority = self._repository.resolve_authority(
                 user_id=user_id, track_id=track_id, knowledge_key=str(session["knowledge_key"]),
                 conversation_id=str(session["conversation_id"]), for_update=True,
@@ -634,7 +912,7 @@ class TeachingSessionService:
                 control=control, target_mode=target_mode,
             )
             pending_run = None
-            if admit_run:
+            if auto_admit:
                 admitted_control = control.model_copy(update={"expected_session_version": _int(updated["version"])})
                 pending_run = self._repository.admit_control_run(
                     authority=authority, session=updated, stimulus=admitted_control, settings=self._settings,
@@ -646,6 +924,82 @@ class TeachingSessionService:
         except TeachingSessionInvalid as exc:
             raise TeachingSessionServiceError("TEACHING_ACTION_INVALID", str(exc), status_code=400) from exc
         return {"teaching_session": self._repository.project_session(updated), "pending_run": pending_run}
+
+    def _enter_next_knowledge(
+        self, *, user_id: str, track_id: str, session_id: str, control: TeachingControlStimulus,
+    ) -> dict[str, object]:
+        target_key = str(control.safe_payload.get("target_knowledge_key") or "")
+        try:
+            target_key = stable(target_key, "target_knowledge_key")
+        except ValueError as exc:
+            raise TeachingSessionServiceError(
+                "TEACHING_NEXT_KNOWLEDGE_INVALID", "下一知识点目标不合法。", status_code=400, recoverable=False,
+            ) from exc
+        source = self._repository.read_by_id(
+            user_id=user_id, track_id=track_id, session_id=session_id, for_update=True,
+        )
+        if _int(source["version"]) != control.expected_session_version:
+            raise self._conflict("teaching session version is stale")
+        if str(source["status"]) != "completed":
+            raise self._conflict("teaching session is not in completion pause")
+        live = self._conn.execute(
+            """SELECT tracks.version AS track_version, progress.status AS progress_status,
+                      progress.version AS progress_version, assignments.assignment_version
+               FROM tutor_learning_tracks AS tracks
+               JOIN tutor_track_node_progress AS progress ON progress.track_id=tracks.id
+                 AND progress.user_id=tracks.user_id AND progress.knowledge_key=%s
+               JOIN tutor_lesson_assignments AS assignments ON assignments.track_id=tracks.id
+                 AND assignments.user_id=tracks.user_id AND assignments.knowledge_key=progress.knowledge_key
+                 AND assignments.status='active'
+               WHERE tracks.id=%s AND tracks.user_id=%s FOR UPDATE OF tracks,progress,assignments""",
+            (source["knowledge_key"], track_id, user_id),
+        ).fetchone()
+        if live is None or str(live["progress_status"]) != "completed":
+            raise self._conflict("current knowledge point is not completed")
+        if (
+            _int(live["track_version"]) != control.expected_track_version
+            or _int(live["progress_version"]) != control.expected_progress_version
+            or _int(live["assignment_version"]) != control.expected_assignment_version
+        ):
+            raise self._conflict("next-knowledge authority version is stale")
+        latest_candidate = self._repository.next_available_knowledge_key(
+            user_id=user_id, track_id=track_id,
+            current_knowledge_key=str(source["knowledge_key"]), for_update=True,
+        )
+        if latest_candidate is None or latest_candidate != target_key:
+            raise self._conflict("next knowledge candidate changed")
+        target = self._repository.resolve_authority(
+            user_id=user_id, track_id=track_id, knowledge_key=target_key,
+            conversation_id=str(source["conversation_id"]), for_update=True,
+        )
+        if target.progress_status != "available":
+            raise self._conflict("target knowledge point is no longer available")
+        updated_track = self._conn.execute(
+            """UPDATE tutor_learning_tracks SET current_knowledge_key=%s,version=version+1
+               WHERE id=%s AND user_id=%s AND version=%s RETURNING version""",
+            (target_key, track_id, user_id, control.expected_track_version),
+        ).fetchone()
+        if updated_track is None:
+            raise self._conflict("LearningTrack version changed")
+        target = replace(target, track_version=_int(updated_track["version"]))
+        target_session, created = self._repository.open_or_resume(
+            authority=target, mode=TeachingSessionMode.GUIDED,
+        )
+        target_control = TeachingControlStimulus(
+            control_key=TeachingControlKey.OPEN_SESSION, client_action_id=control.client_action_id,
+            expected_session_version=_int(target_session["version"]),
+            expected_track_version=target.track_version, expected_progress_version=target.progress_version,
+            expected_assignment_version=target.assignment_version,
+            safe_payload={"target_knowledge_key": target_key},
+        )
+        pending = self._repository.admit_control_run(
+            authority=target, session=target_session, stimulus=target_control, settings=self._settings,
+        )
+        return {
+            "teaching_session": self._repository.project_session(source),
+            "next_teaching_session": self._repository.project_session(target_session),
+            "transitioned": True, "created": created, "pending_run": pending,
+        }
 
     @staticmethod
     def _assert_expected(authority: TeachingAuthority, track_version: int, progress_version: int, assignment_version: int) -> None:

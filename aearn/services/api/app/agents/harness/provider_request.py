@@ -3,10 +3,16 @@ from __future__ import annotations
 
 import json
 
-from app.agents.harness.contracts import TUTOR_PLANNING_QUESTION_KEYS, TutorContextSelection, TutorRunSnapshot
+from app.agents.harness.contracts import (
+    TUTOR_PLANNING_QUESTION_KEYS,
+    TutorContextSection,
+    TutorContextSelection,
+    TutorRunSnapshot,
+)
 from app.services.tutor.decision_protocol import (
     TUTOR_PROVIDER_ITEMS_SCHEMA_VERSION,
     canonical_tutor_provider_items_example,
+    canonical_tutor_teaching_step_example,
     canonical_tutor_wait_for_input_examples,
 )
 
@@ -64,13 +70,22 @@ class TutorProviderRequestSerializer:
             "Managed actions are two-phase: when eligible Skill summaries are present but no selected Skill instruction "
             "is present, emit select_skill first. The server will rebuild context; only then request a capability or "
             "propose an effect. Do not select a Skill when a normal direct reply is sufficient. "
-            "For a normal direct reply, use action.type=turn_completed. "
+            "For a normal non-teaching direct reply, use action.type=turn_completed. "
             "Minimal valid direct-reply example: "
             f"{canonical_tutor_provider_items_example()} "
             "Valid wait_for_input examples for every continuation branch: "
             f"{canonical_tutor_wait_for_input_examples()} "
             f"Teaching policy: {TUTOR_TEACHING_POLICY}"
         )
+        if any(item.section is TutorContextSection.TEACHING_SESSION for item in context.items):
+            system += (
+                " This teaching request also permits action.type=teaching_step. "
+                "First select exact tutor.lesson-teaching@1.0.0 if it is not selected; after its instruction is present, "
+                "use exactly one teaching_step and never use turn_completed as a teaching shortcut. teaching_step may "
+                "reference only objective_id, focus_id, and source_handles listed by the server, and its public_message "
+                "must exactly equal message.text. Valid teaching-step example: "
+                f"{canonical_tutor_teaching_step_example()}"
+            )
         payload = {
             "input_revision": run.input_revision,
             "current_input": (

@@ -13,7 +13,7 @@ track-scoped spaced-review authority with finite `ReviewSession` batches,
 server-projected critical-prerequisite Gates, exactly-once mastery/schedule
 finalization, and a responsive track learning workspace that combines the
 server roadmap, Lesson/Practice, Review, and a scoped Tutor conversation.
-The backend now also persists knowledge-scoped TeachingSession/checkpoint authority and exact learner-message, teaching-control, or domain-event Turn stimuli while keeping one long-lived track conversation.
+The backend now also persists knowledge-scoped TeachingSession/checkpoint authority and exact learner-message, teaching-control, or domain-event Turn stimuli while keeping one long-lived track conversation. Teaching runs use required `TEACHING_SESSION` context, exact `tutor.lesson-teaching@1.0.0`, one closed `teaching_step`, atomic checkpoint/action-receipt/message commit, server-owned Action Shelf projection, reactive Free Reading, authority-refresh successor sessions, and explicit completion-to-next-node transition.
 Learner messages may carry validated append-only `lesson_selection`,
 `exercise_feedback`, `execution_result`, and `review_feedback` references;
 these are injected as separate learner-safe structured context rather than

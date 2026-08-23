@@ -684,15 +684,19 @@ A language `planning_input` presentation persists exact `options`, `recommended=
 
 `tutor_runtime_item_stream_v1.chunk_sequence` 是 Aearn projection sequence，不是 provider/source notification sequence。服务端可以把多个连续同 item/kind/channel/index/phase delta 合并成一个 append；客户端只需按现有 closed union、identity 和连续 projection sequence 处理。source range/count/hash 仅存在于私有 PostgreSQL receipt，不加入 snapshot、history、SSE 或 Desktop DTO。gap 仍要求停止局部 reducer并读取 fresh snapshot；不得把缺口解释为模型 unavailable。
 
-## 2026-08-23：TeachingSession authority API
+## 2026-08-23：TeachingSession authority、Action Shelf 与 control API
 
 所有 TeachingSession 路由均位于 verified-only `/api/learning-tracks` 边界，并按 exact `user_id + track_id + conversation_id + knowledge_key` 校验。mutation 复用 `client_action_id` / `Idempotency-Key`、request hash、PostgreSQL advisory lock 与 expected session/track/progress/assignment version；同 key 同请求返回原响应，同 key 不同请求返回 `409 IDEMPOTENCY_CONFLICT`。
 
 | Method | Path | Contract |
 | --- | --- | --- |
 | `GET` | `/api/learning-tracks/{track_id}/teaching-sessions?user_id=...` | 返回该 track 的 bounded session summaries，不返回 checkpoint raw JSON、prompt、reasoning 或 provider body |
-| `GET` | `/api/learning-tracks/{track_id}/teaching-sessions/{knowledge_key}?user_id=...` | 返回当前 nonterminal session、current checkpoint 的 learner-safe typed projection 与空/受控 `allowed_actions` |
-| `POST` | `/api/learning-tracks/{track_id}/teaching-sessions/{knowledge_key}/open` | 输入 conversation、expected track/progress/assignment version 与 `guided | free_reading`；创建或恢复 exact current session，201 或幂等 200 |
-| `POST` | `/api/learning-tracks/{track_id}/teaching-sessions/{session_id}/actions` | 输入 closed `control_key`、expected session/track/progress/assignment version、可选 target mode/knowledge/reason 与显式 `admit_run`；追加 checkpoint 并 CAS 推进 session |
+| `GET` | `/api/learning-tracks/{track_id}/teaching-sessions/{knowledge_key}?user_id=...` | 返回优先级为 `active/paused -> latest completed -> blocked` 的 current projection、bounded checkpoint 与 server-owned `TeachingActionShelfV1` |
+| `POST` | `/api/learning-tracks/{track_id}/teaching-sessions/{knowledge_key}/open` | 输入 conversation、expected track/progress/assignment version 与 `guided | free_reading`；创建/恢复 exact current session；authority 变化时阻断旧 session 并创建 successor；Guided 新建时 admission 一个 `open_session` run；201 或幂等 200 |
+| `POST` | `/api/learning-tracks/{track_id}/teaching-sessions/{session_id}/actions` | 输入 closed `control_key`、expected session/track/progress/assignment version、可选 target mode/knowledge/reason；服务端忽略客户端 `admit_run` 偏好并按 control/mode policy 决定是否 admission run |
 
-`TutorTurnStimulus` 是 strict one-of：普通 learner input 绑定 exact learner message/input revision；explicit teaching control 或 domain event 可创建没有 learner message 的 fresh interactive TurnRun。公共 response/snapshot 只 additive 返回 safe teaching session/run-scope metadata。稳定错误包括 `TEACHING_SESSION_NOT_FOUND`、`TEACHING_AUTHORITY_CONFLICT`、`TEACHING_ACTION_INVALID`、`TEACHING_STIMULUS_INVALID` 与既有 `IDEMPOTENCY_CONFLICT`；跨用户、跨 track/conversation、stale checkpoint/session/progress/assignment/document/stimulus 一律 fail closed。
+closed control 包括 `continue`、`return_focus`、`change_example`、`pause`、`resume`、`escalate_guided`、`switch_mode` 与 `enter_next_knowledge`。Free Reading 中 `continue/return_focus/change_example` 返回 `400 TEACHING_ACTION_INVALID`，只有显式 `escalate_guided` 才切 Guided 并 admission 一个 run；Free Reading resume 只恢复 session，不调用 provider。completion shelf 只在 completed authority 上投影显式 next/navigation；`enter_next_knowledge` 必须携带 candidate key 与最新 expected versions，服务端重新验证 active plan/availability 后才推进 track pointer，并在同一长期 conversation open/resume 下一 session。
+
+`TeachingActionShelfV1` 最多一个 primary、三个 visible secondary；active runtime 与 blocking typed request 时普通 shelf 为空。普通 shelf 的 label、emphasis、target、expected versions 均由服务端生成，provider/客户端不能定义。open/action 返回 `pending_run.dispatch_job_id` 时，HTTP layer 只做 best-effort worker wakeup；durable dispatch job 才是执行 authority，幂等 replay 或重复 wakeup 不产生第二个 run。
+
+`TutorTurnStimulus` 是 strict one-of：普通 learner input 绑定 exact learner message/input revision；explicit teaching control 或 domain event 可创建没有 learner message 的 fresh interactive TurnRun。公共 response/snapshot 只 additive 返回 safe teaching session/run-scope/Action Shelf metadata。稳定错误包括 `TEACHING_SESSION_NOT_FOUND`、`TEACHING_AUTHORITY_CONFLICT`、`TEACHING_ACTION_INVALID`、`TEACHING_STIMULUS_INVALID` 与既有 `IDEMPOTENCY_CONFLICT`；跨用户、跨 track/conversation、stale checkpoint/session/progress/assignment/document/stimulus 一律 fail closed。

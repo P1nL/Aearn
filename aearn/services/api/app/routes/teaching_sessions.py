@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from fastapi import APIRouter, Query, Request, status
+from fastapi import APIRouter, BackgroundTasks, Query, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 
@@ -13,6 +13,7 @@ from app.models.teaching_sessions import OpenTeachingSessionRequest, TeachingSes
 from app.services.learning.teaching_contracts import TeachingControlStimulus
 from app.services.learning.teaching_sessions import TeachingSessionService, TeachingSessionServiceError
 from app.services.tutor.cutover import runtime_gate_error
+from app.services.tutor.interactive_worker import enqueue_tutor_interactive_dispatch
 
 router = APIRouter(prefix="/api/learning-tracks", tags=["teaching-sessions"])
 
@@ -35,6 +36,7 @@ def read_current_teaching_session(
 @router.post("/{track_id}/teaching-sessions/{knowledge_key}/open", response_model=None)
 def open_teaching_session(
     track_id: str, knowledge_key: str, payload: OpenTeachingSessionRequest, request: Request,
+    background_tasks: BackgroundTasks,
 ) -> JSONResponse:
     unavailable = _require_verified(request, str(payload.user_id))
     if unavailable is not None:
@@ -52,6 +54,7 @@ def open_teaching_session(
     )
     if isinstance(response, JSONResponse):
         return response
+    _schedule_pending_run(response, background_tasks)
     code = status.HTTP_201_CREATED if response.get("created") and not response.get("idempotent_replayed") else status.HTTP_200_OK
     return JSONResponse(status_code=code, content=jsonable_encoder(response))
 
@@ -59,6 +62,7 @@ def open_teaching_session(
 @router.post("/{track_id}/teaching-sessions/{session_id}/actions", response_model=None)
 def mutate_teaching_session(
     track_id: str, session_id: str, payload: TeachingSessionActionRequest, request: Request,
+    background_tasks: BackgroundTasks,
 ) -> JSONResponse:
     unavailable = _require_verified(request, str(payload.user_id))
     if unavailable is not None:
@@ -86,7 +90,19 @@ def mutate_teaching_session(
             idempotency_key=_idempotency_key(request, payload.client_action_id),
         ),
     )
-    return response if isinstance(response, JSONResponse) else JSONResponse(status_code=200, content=jsonable_encoder(response))
+    if isinstance(response, JSONResponse):
+        return response
+    _schedule_pending_run(response, background_tasks)
+    return JSONResponse(status_code=200, content=jsonable_encoder(response))
+
+
+def _schedule_pending_run(response: dict[str, object], background_tasks: BackgroundTasks) -> None:
+    pending = response.get("pending_run")
+    if not isinstance(pending, dict):
+        return
+    job_id = pending.get("dispatch_job_id")
+    if isinstance(job_id, str) and job_id:
+        background_tasks.add_task(enqueue_tutor_interactive_dispatch, job_id, runtime_kind="harness_v1")
 
 
 def _read(request: Request, user_id: str, action: Callable[[TeachingSessionService], dict[str, object]]) -> JSONResponse:
