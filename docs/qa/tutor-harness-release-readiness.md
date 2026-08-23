@@ -365,3 +365,12 @@ Trellis Child `08-22-harness-closed-teaching-action-loop` 已在本地 PostgreSQ
 验证额外复现并修正了两个数据库/authority 问题：早期 `fk_tutor_teaching_checkpoint_source_stimulus` 的 `RESTRICT` 会使已有 action checkpoint 的 local reset 在中途失败，bootstrap 现只在旧 predicate/constraint 存在时迁移为 deferred `NO ACTION`；progress authority 更新后旧 active session 现追加 `authority_pause` checkpoint 并置为 blocked，successor 冻结新 authority，避免把 completed evidence 写入 stale session。
 
 本轮未调用真实 provider，未运行 Desktop/Tauri、未 push、未部署、未修改生产数据，也不构成发布批准。Desktop 主次布局与 closed teaching action 的跨 Gate/Review 自动触发仍由后续 child 验证。
+
+## 2026-08-23：Adaptive teaching integration Child 4 本地证据
+
+- Focused Child 4 batch：**50 passed**；teaching/Gate/Review/Lesson regression：**33 passed**；`test_tutor_adaptive_teaching_evals.py`：**4 passed**。
+- 完整 API suite：**716 passed, 2 skipped**（单进程串行，182.93s）。Ruff 全通过；Mypy：**200 source files**。
+- Desktop Vitest：**58 passed**；`desktop:check` / Vite production build通过。
+- 生成 disposable PostgreSQL database，空库执行 bootstrap 两次后为 **134 public tables**、`tutor_teaching_sessions=0`，随后强制关闭连接并删除该临时 database。
+- Browser 使用 disposable stateful fake API/provider验证 Guided ↔ Free Reading、草稿跨 mode保留、reload/reconnect、Action Shelf与 1440×900 / 900×900 / 390×844；三个视口 `scrollWidth == clientWidth`、overlay=false、console error/warning=0、protected marker=[]。fake SSE主动关闭用于触发可恢复 `STREAM_INCOMPLETE`，未当作生产流稳定性证明。
+- 未调用真实 provider、真实 executor或生产数据；未 push、部署或发布。以上仅为本地工程就绪证据，不构成 provider、部署、production migration或 release批准。

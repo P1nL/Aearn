@@ -366,3 +366,7 @@ conversation snapshot 的 `teaching_sessions[]` 提供 safe session summary 与 
 ### Composer Action Shelf 与完成态
 
 interaction dock 的 authority 顺序是 blocking typed request > active runtime controls > ordinary server-owned Action Shelf。Shelf 只有一个 primary、最多三个 visible secondary，其余进入“更多”；组件不修改 label/target/payload/enabled。`input_revision=0` 的 teaching-control run 不显示 generic Stop。Free Reading 普通问答结束后保持当前 mode；只有显式“转为引导讲解”才切 Guided。completed session 显示服务器 completion summary 与下一步，绝不自动导航；只有显式 next-node action 成功才进入下一 session。
+
+## 2026-08-23：Domain event 恢复与模式保持
+
+Gate/Review/progress/assignment 触发的后台教学 Turn 不伪装 learner message，也不强制 Guided/Free Reading 角色换位。Desktop 继续只渲染 server-owned session/checkpoint/Action Shelf projection：Free Reading 收到 typed evidence/completion 更新时仍保持课程主区，Guided 仍保持 Tutor 主区；authority successor、reload/reconnect 后按最新 session identity 恢复。任何冲突都通过可恢复 notice/Action Shelf 暴露，不显示 prompt、reasoning、provider body、完整 submission、hidden tests/rubric、命令、路径或 secrets。

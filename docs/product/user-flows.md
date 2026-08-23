@@ -283,3 +283,12 @@ Python、JavaScript、TypeScript、SQL 通过上述完整 PostgreSQL fixture。J
 用户和 Desktop 不选择 Runtime，也不会看到 Codex thread/turn/tool 控制面。没有既有 Runtime lineage 的全新 `plan_drafting` conversation 在服务端 exact readiness 通过时使用 `codex_sidecar_v1`；feature off 时使用 Harness，feature on 但 Runtime 不可用时显示现有 Aearn safe error/retry 状态且 first-turn 不留下空 conversation。既有 conversation、Retry 和其他 scope 保留原 Runtime。
 
 Codex 只能读取服务端权威 planning context并追加 typed draft。右侧计划窗口仍是唯一确认入口；确认 transaction、LearningTrack 创建、history/SSE 与 Desktop DTO 均由 Aearn 控制。关闭 admission 只阻止新 Codex conversation，不删除已生成 draft、message、binding 或 receipt。
+
+## 2026-08-23：Gate / Review / migration 驱动的教学恢复
+
+1. 学习者在 Lesson Gate 或 ReviewSession 完成真实受控操作；owner service 先写 terminal result、mastery/schedule/progress。
+2. 若当前知识点已有 TeachingSession，服务端以 durable source ID/version admission 至多一个 `domain_event` Turn；重复回调复用同一 run。
+3. progress/assignment authority 已变化时，旧 session 进入 authority pause/blocked，successor 继承同一 track conversation并冻结新 authority。
+4. Tutor 只执行一个 evidence feedback 或 completion summary 后停顿；完成知识点仍停在 completion shelf，不自动进入下一知识点。
+5. 学习者显式选择“进入下一知识点”时，服务端重新验证最新 roadmap、availability 与 expected versions，才推进 track pointer并创建下一 session first unit。
+6. reload/reconnect 从 durable session/checkpoint/action shelf恢复；旧 summary、stale event 或 provider unavailable 都不能产生第二条消息、自动 mastery 或自动 next。

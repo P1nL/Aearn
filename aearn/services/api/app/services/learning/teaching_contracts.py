@@ -173,6 +173,50 @@ class TeachingCheckpointState(_Strict):
         return self
 
 
+class TeachingSessionSummaryV1(_Strict):
+    schema_version: Literal["teaching_session_summary_v1"] = "teaching_session_summary_v1"
+    teaching_session_id: str = Field(min_length=1, max_length=120)
+    knowledge_key: str = Field(min_length=1, max_length=160)
+    session_version: int = Field(ge=1)
+    status: TeachingSessionStatus
+    mode: TeachingSessionMode
+    objective: TeachingObjective
+    active_focus: TeachingFocus | None = None
+    suspended_focuses: tuple[TeachingFocus, ...] = Field(default=(), max_length=8)
+    unresolved_questions: tuple[TeachingQuestion, ...] = Field(default=(), max_length=12)
+    covered_concepts: tuple[str, ...] = Field(default=(), max_length=32)
+    evidence_cursors: tuple[TeachingEvidenceCursor, ...] = Field(default=(), max_length=16)
+    pause_reason: TeachingPauseReason
+    recommended_action_key: str | None = Field(default=None, min_length=1, max_length=160)
+    source_checkpoint_id: str = Field(min_length=1, max_length=120)
+    predecessor_checkpoint_id: str | None = Field(default=None, min_length=1, max_length=120)
+    source_checkpoint_hash: str = Field(min_length=64, max_length=64)
+    authority_snapshot_hash: str = Field(min_length=64, max_length=64)
+
+    @field_validator("knowledge_key")
+    @classmethod
+    def summary_knowledge_key(cls, value: str) -> str:
+        return stable(value, "knowledge_key")
+
+    @field_validator("covered_concepts")
+    @classmethod
+    def summary_concepts(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return stable_tuple(value, "covered concept")
+
+    @field_validator("recommended_action_key")
+    @classmethod
+    def summary_action_key(cls, value: str | None) -> str | None:
+        return stable(value, "recommended_action_key") if value is not None else None
+
+    @field_validator("source_checkpoint_hash", "authority_snapshot_hash")
+    @classmethod
+    def summary_hash(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if not _SHA256.fullmatch(normalized):
+            raise ValueError("teaching summary hashes must be SHA-256")
+        return normalized
+
+
 class LearnerMessageStimulus(_Strict):
     kind: Literal["learner_message"] = "learner_message"
     message_id: str = Field(min_length=1, max_length=120)

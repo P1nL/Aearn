@@ -258,6 +258,10 @@ class TeachingTutorDecisionGate:
     _FREE_READING_ACTIONS = frozenset({
         "answer_question", "explain_concept", "show_example", "compare_examples", "wait_for_input",
     })
+    _FREE_READING_DOMAIN_ACTIONS = frozenset({
+        "summarize_progress", "explain_feedback", "remediate_prerequisite", "recommend_pause",
+        "wait_for_input",
+    })
 
     def __init__(
         self, *, base: _DecisionGate, catalog: SkillCatalogSnapshot,
@@ -324,7 +328,13 @@ class TeachingTutorDecisionGate:
         if resolution == "wait" and step.focus_id not in {active_focus_id, candidate_focus_id}:
             return _deny("teaching_wait_focus_invalid")
         mode = str(session.get("mode") or "")
-        if mode == "free_reading" and step.action.value not in self._FREE_READING_ACTIONS:
+        stimulus = context.get("stimulus")
+        domain_event = isinstance(stimulus, dict) and stimulus.get("kind") == "domain_event"
+        free_reading_actions = (
+            self._FREE_READING_ACTIONS | self._FREE_READING_DOMAIN_ACTIONS
+            if domain_event else self._FREE_READING_ACTIONS
+        )
+        if mode == "free_reading" and step.action.value not in free_reading_actions:
             return _deny("free_reading_action_invalid")
         progress_completed = str(session.get("progress_status") or "") == "completed"
         completion_pause = step.pause_kind.value == "completion_pause"

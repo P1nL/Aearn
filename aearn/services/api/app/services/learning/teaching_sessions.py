@@ -25,6 +25,7 @@ from app.services.learning.teaching_contracts import (
     TeachingPauseReason,
     TeachingSessionMode,
     TeachingSessionStatus,
+    TeachingSessionSummaryV1,
     TutorTurnStimulus,
     canonical_hash,
     stable,
@@ -358,6 +359,35 @@ class TeachingSessionRepository:
             authority=authority, session=session, stimulus=stimulus, settings=settings,
         )
 
+    def find_domain_event_admission(
+        self, *, user_id: str, track_id: str, knowledge_key: str, stimulus: DomainEventStimulus,
+    ) -> dict[str, object] | None:
+        row = self._conn.execute(
+            """SELECT stimuli.id AS stimulus_id, scopes.teaching_session_id, scopes.checkpoint_id,
+                      scopes.session_version, scopes.track_id, scopes.knowledge_key, scopes.mode,
+                      runs.id AS run_id, runs.origin, runs.status, jobs.id AS dispatch_job_id
+               FROM tutor_run_stimulus_events AS stimuli
+               JOIN tutor_run_teaching_scopes AS scopes ON scopes.stimulus_id=stimuli.id
+               JOIN tutor_runs AS runs ON runs.id=stimuli.run_id AND runs.user_id=stimuli.user_id
+               LEFT JOIN tutor_interactive_dispatch_jobs AS jobs ON jobs.run_id=runs.id
+               WHERE stimuli.user_id=%s AND scopes.track_id=%s AND scopes.knowledge_key=%s
+                 AND stimuli.stimulus_kind='domain_event' AND stimuli.domain_event_kind=%s
+                 AND stimuli.source_id=%s AND stimuli.source_version=%s""",
+            (user_id, track_id, stable(knowledge_key, "knowledge_key"), stimulus.event_kind.value,
+             stimulus.source_id, stimulus.source_version),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "stimulus_id": str(row["stimulus_id"]), "stimulus_kind": "domain_event",
+            "session_id": str(row["teaching_session_id"]), "checkpoint_id": str(row["checkpoint_id"]),
+            "session_version": _int(row["session_version"]), "track_id": str(row["track_id"]),
+            "knowledge_key": str(row["knowledge_key"]), "mode": str(row["mode"]),
+            "run_id": str(row["run_id"]), "origin": str(row["origin"]),
+            "status": str(row["status"]),
+            "dispatch_job_id": _optional_str(row.get("dispatch_job_id")),
+        }
+
     def admit_domain_event_run(
         self, *, authority: TeachingAuthority, session: Mapping[str, object], stimulus: DomainEventStimulus,
         settings: Settings | None = None,
@@ -398,6 +428,99 @@ class TeachingSessionRepository:
         if authority.document_id != str(row["document_id"]) or authority.document_content_hash != str(row["document_content_hash"]):
             raise TeachingSessionConflict("run LessonDocument authority is stale")
         return row
+
+    def structured_summary(
+        self, *, session: Mapping[str, object], checkpoint: Mapping[str, object] | None = None,
+    ) -> dict[str, object]:
+        selected = checkpoint or self.current_checkpoint(
+            session_id=str(session["id"]), user_id=str(session["user_id"]),
+        )
+        if (
+            str(selected["teaching_session_id"]) != str(session["id"])
+            or str(selected["user_id"]) != str(session["user_id"])
+            or str(selected["conversation_id"]) != str(session["conversation_id"])
+            or str(session.get("current_checkpoint_id") or "") != str(selected["id"])
+            or _int(selected["session_version"]) != _int(session["version"])
+        ):
+            raise TeachingSessionConflict("teaching summary checkpoint is stale")
+        state = self._checkpoint_state(selected)
+        try:
+            authority = TeachingAuthoritySnapshot.model_validate(selected["authority_snapshot_json"])
+        except ValidationError as exc:
+            raise TeachingSessionConflict("stored teaching summary authority is invalid") from exc
+        expected_authority = (
+            _int(session["track_version"]), str(session["active_plan_revision_id"]),
+            _int(session["progress_version"]), str(session["lesson_assignment_id"]),
+            _int(session["assignment_version"]), str(session["document_id"]),
+            str(session["document_content_hash"]),
+        )
+        observed_authority = (
+            authority.track_version, authority.plan_revision_id, authority.progress_version,
+            authority.assignment_id, authority.assignment_version, authority.document_id,
+            authority.document_content_hash,
+        )
+        if observed_authority != expected_authority:
+            raise TeachingSessionConflict("teaching summary authority is stale")
+        state_json = state.model_dump(mode="json")
+        authority_json = authority.model_dump(mode="json")
+        source_run_id = _optional_str(selected.get("source_run_id"))
+        source_stimulus_id = _optional_str(selected.get("source_stimulus_id"))
+        expected_hash = canonical_hash({
+            "state": state_json, "authority": authority_json,
+            "session_version": _int(selected["session_version"]),
+            "source_run_id": source_run_id, "source_stimulus_id": source_stimulus_id,
+        })
+        if expected_hash != str(selected["source_hash"]):
+            raise TeachingSessionConflict("teaching summary source hash is stale")
+        summary = TeachingSessionSummaryV1(
+            teaching_session_id=str(session["id"]), knowledge_key=str(session["knowledge_key"]),
+            session_version=_int(session["version"]), status=TeachingSessionStatus(str(session["status"])),
+            mode=TeachingSessionMode(str(session["mode"])), objective=state.objective,
+            active_focus=state.active_focus, suspended_focuses=state.suspended_focuses,
+            unresolved_questions=state.unresolved_questions, covered_concepts=state.covered_concepts,
+            evidence_cursors=state.evidence_cursors, pause_reason=state.pause_reason,
+            recommended_action_key=state.recommended_action_key, source_checkpoint_id=str(selected["id"]),
+            predecessor_checkpoint_id=_optional_str(selected.get("predecessor_checkpoint_id")),
+            source_checkpoint_hash=expected_hash, authority_snapshot_hash=canonical_hash(authority_json),
+        )
+        return summary.model_dump(mode="json")
+
+    def teaching_message_semantics(
+        self, *, user_id: str, run_id: str,
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        scope = self._conn.execute(
+            "SELECT teaching_session_id FROM tutor_run_teaching_scopes WHERE run_id=%s AND user_id=%s",
+            (run_id, user_id),
+        ).fetchone()
+        if scope is None:
+            return (), ()
+        session_id = str(scope["teaching_session_id"])
+        checkpoint = self.current_checkpoint(session_id=session_id, user_id=user_id)
+        state = self._checkpoint_state(checkpoint)
+        unresolved = tuple(
+            dict.fromkeys(
+                item.source_message_id for item in state.unresolved_questions
+                if item.source_message_id is not None
+            )
+        )
+        handle_ids: list[str] = []
+        focus_items = (state.objective, *(state.suspended_focuses), *(() if state.active_focus is None else (state.active_focus,)))
+        for item in focus_items:
+            handle_ids.extend(
+                handle.removeprefix("message:")
+                for handle in item.source_handles if handle.startswith("message:")
+            )
+        latest = self._conn.execute(
+            """SELECT inputs.message_id::text AS message_id
+               FROM tutor_run_teaching_scopes AS scopes
+               JOIN tutor_run_input_events AS inputs ON inputs.run_id=scopes.run_id
+               JOIN tutor_messages AS messages ON messages.id=inputs.message_id
+               WHERE scopes.teaching_session_id=%s AND scopes.user_id=%s
+               ORDER BY messages.created_at DESC,messages.id DESC LIMIT 1""",
+            (session_id, user_id),
+        ).fetchone()
+        corrections = tuple(dict.fromkeys((*handle_ids, *(() if latest is None else (str(latest["message_id"]),)))))
+        return corrections, unresolved
 
     def teaching_context(self, *, user_id: str, run_id: str) -> dict[str, object] | None:
         scope_exists = self._conn.execute(
@@ -468,6 +591,20 @@ class TeachingSessionRepository:
         else:
             raise TeachingSessionConflict("teaching stimulus kind is invalid")
         candidate_focus_id = stable(f"stimulus:{row['stimulus_id']}", "stimulus focus")
+        session_row = self.read_by_id(
+            user_id=user_id, track_id=str(row["track_id"]), session_id=str(row["teaching_session_id"]),
+        )
+        checkpoint_row = self.current_checkpoint(
+            session_id=str(row["teaching_session_id"]), user_id=user_id,
+        )
+        structured_summary = self.structured_summary(session=session_row, checkpoint=checkpoint_row)
+        historical_summaries: list[dict[str, object]] = []
+        predecessor_id = session_row.get("predecessor_session_id")
+        if predecessor_id is not None:
+            predecessor = self.read_by_id(
+                user_id=user_id, track_id=str(row["track_id"]), session_id=str(predecessor_id),
+            )
+            historical_summaries.append(self.structured_summary(session=predecessor))
         return {
             "schema_version": "teaching_session_context_v1",
             "session": {
@@ -486,6 +623,8 @@ class TeachingSessionRepository:
             "pause_kind": state.pause_reason.value,
             "recommended_action_key": state.recommended_action_key,
             "candidate_focus_id": candidate_focus_id,
+            "structured_summary": structured_summary,
+            "related_historical_summaries": historical_summaries,
             "allowed_source_handles": sorted(handles),
             "action_policy": "lesson_teaching_v1",
         }
