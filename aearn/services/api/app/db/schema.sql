@@ -4027,6 +4027,291 @@ CREATE TRIGGER trg_tutor_lesson_authoring_attempt_receipts_immutable
 BEFORE UPDATE OR DELETE ON tutor_lesson_authoring_attempt_receipts
 FOR EACH ROW EXECUTE FUNCTION enforce_tutor_lesson_immutable();
 
+-- Child 08-22 durable teaching-session authority and structured Turn stimulus.
+CREATE TABLE IF NOT EXISTS tutor_teaching_sessions (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL,
+  track_id uuid NOT NULL,
+  conversation_id uuid NOT NULL,
+  knowledge_key text NOT NULL CHECK (knowledge_key ~ '^[a-z0-9][a-z0-9._:-]{0,159}$'),
+  track_version integer NOT NULL CHECK (track_version >= 1),
+  active_plan_revision_id uuid NOT NULL,
+  progress_version integer NOT NULL CHECK (progress_version >= 1),
+  lesson_assignment_id uuid NOT NULL,
+  assignment_version integer NOT NULL CHECK (assignment_version >= 1),
+  document_id uuid NOT NULL,
+  document_content_hash text NOT NULL CHECK (document_content_hash ~ '^[0-9a-f]{64}$'),
+  predecessor_session_id uuid,
+  status text NOT NULL DEFAULT 'active' CHECK (status IN ('active','paused','completed','blocked')),
+  mode text NOT NULL DEFAULT 'guided' CHECK (mode IN ('guided','free_reading')),
+  current_checkpoint_id uuid,
+  version integer NOT NULL DEFAULT 1 CHECK (version >= 1),
+  last_mutation_key text CHECK (last_mutation_key IS NULL OR char_length(last_mutation_key) BETWEEN 1 AND 160),
+  last_mutation_hash text CHECK (last_mutation_hash IS NULL OR last_mutation_hash ~ '^[0-9a-f]{64}$'),
+  paused_at timestamptz,
+  completed_at timestamptz,
+  last_activity_at timestamptz NOT NULL DEFAULT now(),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_tutor_teaching_sessions_id_scope UNIQUE (id,user_id,conversation_id),
+  CONSTRAINT fk_tutor_teaching_session_track_user FOREIGN KEY (track_id,user_id)
+    REFERENCES tutor_learning_tracks(id,user_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_teaching_session_conversation_user FOREIGN KEY (conversation_id,user_id)
+    REFERENCES tutor_conversations(id,user_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_teaching_session_progress FOREIGN KEY (track_id,user_id,knowledge_key)
+    REFERENCES tutor_track_node_progress(track_id,user_id,knowledge_key) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_teaching_session_revision FOREIGN KEY (active_plan_revision_id,track_id,user_id)
+    REFERENCES tutor_track_plan_revisions(id,track_id,user_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_teaching_session_assignment FOREIGN KEY (lesson_assignment_id,user_id,track_id,knowledge_key)
+    REFERENCES tutor_lesson_assignments(id,user_id,track_id,knowledge_key) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_teaching_session_document FOREIGN KEY (document_id,user_id,track_id,knowledge_key)
+    REFERENCES tutor_lesson_documents(id,user_id,track_id,knowledge_key) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_teaching_session_predecessor FOREIGN KEY (predecessor_session_id,user_id,conversation_id)
+    REFERENCES tutor_teaching_sessions(id,user_id,conversation_id) ON DELETE NO ACTION DEFERRABLE INITIALLY DEFERRED,
+  CONSTRAINT chk_tutor_teaching_session_timestamps CHECK (
+    (status='paused')=(paused_at IS NOT NULL) AND (status='completed')=(completed_at IS NOT NULL)
+  )
+);
+ALTER TABLE tutor_teaching_sessions ADD COLUMN IF NOT EXISTS track_version integer;
+ALTER TABLE tutor_teaching_sessions ALTER COLUMN track_version SET NOT NULL;
+ALTER TABLE tutor_teaching_sessions DROP CONSTRAINT IF EXISTS chk_tutor_teaching_sessions_track_version;
+ALTER TABLE tutor_teaching_sessions ADD CONSTRAINT chk_tutor_teaching_sessions_track_version CHECK (track_version>=1);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_tutor_teaching_sessions_one_current
+  ON tutor_teaching_sessions(user_id,track_id,conversation_id,knowledge_key)
+  WHERE status IN ('active','paused','blocked');
+CREATE INDEX IF NOT EXISTS idx_tutor_teaching_sessions_track_activity
+  ON tutor_teaching_sessions(user_id,track_id,last_activity_at DESC,id DESC);
+
+CREATE TABLE IF NOT EXISTS tutor_teaching_session_checkpoints (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  teaching_session_id uuid NOT NULL,
+  user_id uuid NOT NULL,
+  conversation_id uuid NOT NULL,
+  predecessor_checkpoint_id uuid,
+  session_version integer NOT NULL CHECK (session_version >= 1),
+  state_json jsonb NOT NULL CHECK (jsonb_typeof(state_json)='object' AND octet_length(state_json::text)<=16384),
+  authority_snapshot_json jsonb NOT NULL CHECK (jsonb_typeof(authority_snapshot_json)='object' AND octet_length(authority_snapshot_json::text)<=4096),
+  source_run_id uuid,
+  source_stimulus_id uuid,
+  schema_version text NOT NULL DEFAULT 'teaching_checkpoint_v1' CHECK (schema_version='teaching_checkpoint_v1'),
+  policy_version text NOT NULL DEFAULT 'teaching_authority_v1' CHECK (policy_version='teaching_authority_v1'),
+  source_hash text NOT NULL CHECK (source_hash ~ '^[0-9a-f]{64}$'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_tutor_teaching_checkpoints_id_scope UNIQUE (id,teaching_session_id,user_id,conversation_id),
+  CONSTRAINT uq_tutor_teaching_checkpoints_session_version UNIQUE (teaching_session_id,session_version),
+  CONSTRAINT uq_tutor_teaching_checkpoints_successor UNIQUE (predecessor_checkpoint_id),
+  CONSTRAINT fk_tutor_teaching_checkpoint_session FOREIGN KEY (teaching_session_id,user_id,conversation_id)
+    REFERENCES tutor_teaching_sessions(id,user_id,conversation_id) ON DELETE NO ACTION DEFERRABLE INITIALLY DEFERRED,
+  CONSTRAINT fk_tutor_teaching_checkpoint_predecessor FOREIGN KEY (predecessor_checkpoint_id,teaching_session_id,user_id,conversation_id)
+    REFERENCES tutor_teaching_session_checkpoints(id,teaching_session_id,user_id,conversation_id) ON DELETE NO ACTION DEFERRABLE INITIALLY DEFERRED,
+  CONSTRAINT fk_tutor_teaching_checkpoint_run FOREIGN KEY (source_run_id,user_id)
+    REFERENCES tutor_runs(id,user_id) ON DELETE RESTRICT,
+  CONSTRAINT chk_tutor_teaching_checkpoint_lineage CHECK (
+    (session_version=1 AND predecessor_checkpoint_id IS NULL) OR
+    (session_version>1 AND predecessor_checkpoint_id IS NOT NULL)
+  )
+);
+
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='uq_tutor_input_events_run_message_revision') THEN
+    ALTER TABLE tutor_run_input_events ADD CONSTRAINT uq_tutor_input_events_run_message_revision
+      UNIQUE (run_id,message_id,input_revision);
+  END IF;
+END $$;
+
+CREATE TABLE IF NOT EXISTS tutor_run_stimulus_events (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  run_id uuid NOT NULL UNIQUE,
+  user_id uuid NOT NULL,
+  conversation_id uuid NOT NULL,
+  teaching_session_id uuid NOT NULL,
+  stimulus_kind text NOT NULL CHECK (stimulus_kind IN ('learner_message','teaching_control','domain_event')),
+  message_id uuid,
+  input_revision integer CHECK (input_revision IS NULL OR input_revision>=1),
+  control_key text CHECK (control_key IS NULL OR control_key IN ('open_session','continue','return_focus','switch_mode','pause','resume','enter_next_knowledge')),
+  client_action_id text CHECK (client_action_id IS NULL OR char_length(client_action_id) BETWEEN 1 AND 160),
+  expected_session_version integer CHECK (expected_session_version IS NULL OR expected_session_version>=1),
+  expected_track_version integer CHECK (expected_track_version IS NULL OR expected_track_version>=1),
+  expected_progress_version integer CHECK (expected_progress_version IS NULL OR expected_progress_version>=1),
+  expected_assignment_version integer CHECK (expected_assignment_version IS NULL OR expected_assignment_version>=1),
+  domain_event_kind text CHECK (domain_event_kind IS NULL OR domain_event_kind IN ('gate_terminal','review_terminal','progress_changed','assignment_changed','authority_refresh')),
+  source_id text CHECK (source_id IS NULL OR char_length(source_id) BETWEEN 1 AND 160),
+  source_version integer CHECK (source_version IS NULL OR source_version>=1),
+  safe_payload_json jsonb NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(safe_payload_json)='object' AND octet_length(safe_payload_json::text)<=2048),
+  payload_hash text NOT NULL CHECK (payload_hash ~ '^[0-9a-f]{64}$'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_tutor_run_stimuli_id_scope UNIQUE (id,run_id,user_id,conversation_id,teaching_session_id),
+  CONSTRAINT fk_tutor_run_stimulus_run_user FOREIGN KEY (run_id,user_id)
+    REFERENCES tutor_runs(id,user_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_run_stimulus_run_conversation FOREIGN KEY (run_id,conversation_id)
+    REFERENCES tutor_runs(id,conversation_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_run_stimulus_session FOREIGN KEY (teaching_session_id,user_id,conversation_id)
+    REFERENCES tutor_teaching_sessions(id,user_id,conversation_id) ON DELETE NO ACTION DEFERRABLE INITIALLY DEFERRED,
+  CONSTRAINT fk_tutor_run_stimulus_message FOREIGN KEY (run_id,message_id,input_revision)
+    REFERENCES tutor_run_input_events(run_id,message_id,input_revision) ON DELETE RESTRICT,
+  CONSTRAINT chk_tutor_run_stimulus_exact_one CHECK (
+    (stimulus_kind='learner_message' AND message_id IS NOT NULL AND input_revision IS NOT NULL
+      AND control_key IS NULL AND client_action_id IS NULL AND expected_session_version IS NULL
+      AND expected_track_version IS NULL AND expected_progress_version IS NULL AND expected_assignment_version IS NULL
+      AND domain_event_kind IS NULL AND source_id IS NULL AND source_version IS NULL)
+    OR
+    (stimulus_kind='teaching_control' AND message_id IS NULL AND input_revision IS NULL
+      AND control_key IS NOT NULL AND client_action_id IS NOT NULL AND expected_session_version IS NOT NULL
+      AND expected_track_version IS NOT NULL AND expected_progress_version IS NOT NULL AND expected_assignment_version IS NOT NULL
+      AND domain_event_kind IS NULL AND source_id IS NULL AND source_version IS NULL)
+    OR
+    (stimulus_kind='domain_event' AND message_id IS NULL AND input_revision IS NULL
+      AND control_key IS NULL AND client_action_id IS NULL AND expected_session_version IS NULL
+      AND expected_track_version IS NULL AND expected_progress_version IS NULL AND expected_assignment_version IS NULL
+      AND domain_event_kind IS NOT NULL AND source_id IS NOT NULL AND source_version IS NOT NULL)
+  )
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_tutor_run_stimuli_control
+  ON tutor_run_stimulus_events(teaching_session_id,client_action_id) WHERE stimulus_kind='teaching_control';
+CREATE UNIQUE INDEX IF NOT EXISTS uq_tutor_run_stimuli_domain
+  ON tutor_run_stimulus_events(teaching_session_id,domain_event_kind,source_id,source_version) WHERE stimulus_kind='domain_event';
+
+CREATE TABLE IF NOT EXISTS tutor_run_teaching_scopes (
+  run_id uuid PRIMARY KEY,
+  user_id uuid NOT NULL,
+  conversation_id uuid NOT NULL,
+  teaching_session_id uuid NOT NULL,
+  checkpoint_id uuid NOT NULL,
+  stimulus_id uuid NOT NULL UNIQUE,
+  session_version integer NOT NULL CHECK (session_version>=1),
+  track_id uuid NOT NULL,
+  knowledge_key text NOT NULL CHECK (knowledge_key ~ '^[a-z0-9][a-z0-9._:-]{0,159}$'),
+  track_version integer NOT NULL CHECK (track_version>=1),
+  active_plan_revision_id uuid NOT NULL,
+  progress_version integer NOT NULL CHECK (progress_version>=1),
+  mode text NOT NULL CHECK (mode IN ('guided','free_reading')),
+  lesson_assignment_id uuid NOT NULL,
+  assignment_version integer NOT NULL CHECK (assignment_version>=1),
+  document_id uuid NOT NULL,
+  document_content_hash text NOT NULL CHECK (document_content_hash ~ '^[0-9a-f]{64}$'),
+  schema_version text NOT NULL DEFAULT 'run_teaching_scope_v1' CHECK (schema_version='run_teaching_scope_v1'),
+  policy_version text NOT NULL DEFAULT 'teaching_authority_v1' CHECK (policy_version='teaching_authority_v1'),
+  source_hash text NOT NULL CHECK (source_hash ~ '^[0-9a-f]{64}$'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_tutor_run_teaching_scopes_scope UNIQUE (run_id,user_id,conversation_id),
+  CONSTRAINT fk_tutor_run_teaching_scope_run_user FOREIGN KEY (run_id,user_id) REFERENCES tutor_runs(id,user_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_run_teaching_scope_run_conversation FOREIGN KEY (run_id,conversation_id) REFERENCES tutor_runs(id,conversation_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_run_teaching_scope_session FOREIGN KEY (teaching_session_id,user_id,conversation_id)
+    REFERENCES tutor_teaching_sessions(id,user_id,conversation_id) ON DELETE NO ACTION DEFERRABLE INITIALLY DEFERRED,
+  CONSTRAINT fk_tutor_run_teaching_scope_checkpoint FOREIGN KEY (checkpoint_id,teaching_session_id,user_id,conversation_id)
+    REFERENCES tutor_teaching_session_checkpoints(id,teaching_session_id,user_id,conversation_id) ON DELETE NO ACTION DEFERRABLE INITIALLY DEFERRED,
+  CONSTRAINT fk_tutor_run_teaching_scope_stimulus FOREIGN KEY (stimulus_id,run_id,user_id,conversation_id,teaching_session_id)
+    REFERENCES tutor_run_stimulus_events(id,run_id,user_id,conversation_id,teaching_session_id) ON DELETE NO ACTION DEFERRABLE INITIALLY DEFERRED,
+  CONSTRAINT fk_tutor_run_teaching_scope_revision FOREIGN KEY (active_plan_revision_id,track_id,user_id)
+    REFERENCES tutor_track_plan_revisions(id,track_id,user_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_run_teaching_scope_progress FOREIGN KEY (track_id,user_id,knowledge_key)
+    REFERENCES tutor_track_node_progress(track_id,user_id,knowledge_key) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_run_teaching_scope_assignment FOREIGN KEY (lesson_assignment_id,user_id,track_id,knowledge_key)
+    REFERENCES tutor_lesson_assignments(id,user_id,track_id,knowledge_key) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_run_teaching_scope_document FOREIGN KEY (document_id,user_id,track_id,knowledge_key)
+    REFERENCES tutor_lesson_documents(id,user_id,track_id,knowledge_key) ON DELETE RESTRICT
+);
+ALTER TABLE tutor_run_teaching_scopes ADD COLUMN IF NOT EXISTS track_version integer;
+ALTER TABLE tutor_run_teaching_scopes ADD COLUMN IF NOT EXISTS active_plan_revision_id uuid;
+ALTER TABLE tutor_run_teaching_scopes ADD COLUMN IF NOT EXISTS progress_version integer;
+ALTER TABLE tutor_run_teaching_scopes ALTER COLUMN track_version SET NOT NULL;
+ALTER TABLE tutor_run_teaching_scopes ALTER COLUMN active_plan_revision_id SET NOT NULL;
+ALTER TABLE tutor_run_teaching_scopes ALTER COLUMN progress_version SET NOT NULL;
+ALTER TABLE tutor_run_teaching_scopes DROP CONSTRAINT IF EXISTS chk_tutor_run_teaching_scope_versions;
+ALTER TABLE tutor_run_teaching_scopes ADD CONSTRAINT chk_tutor_run_teaching_scope_versions CHECK (track_version>=1 AND progress_version>=1);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fk_tutor_run_teaching_scope_revision') THEN
+    ALTER TABLE tutor_run_teaching_scopes ADD CONSTRAINT fk_tutor_run_teaching_scope_revision
+      FOREIGN KEY (active_plan_revision_id,track_id,user_id)
+      REFERENCES tutor_track_plan_revisions(id,track_id,user_id) ON DELETE RESTRICT;
+  END IF;
+END $$;
+CREATE INDEX IF NOT EXISTS idx_tutor_run_teaching_scopes_session_created
+  ON tutor_run_teaching_scopes(teaching_session_id,created_at DESC,run_id);
+
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fk_tutor_teaching_session_current_checkpoint') THEN
+    ALTER TABLE tutor_teaching_sessions ADD CONSTRAINT fk_tutor_teaching_session_current_checkpoint
+      FOREIGN KEY (current_checkpoint_id,id,user_id,conversation_id)
+      REFERENCES tutor_teaching_session_checkpoints(id,teaching_session_id,user_id,conversation_id)
+      ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fk_tutor_teaching_checkpoint_source_stimulus') THEN
+    ALTER TABLE tutor_teaching_session_checkpoints ADD CONSTRAINT fk_tutor_teaching_checkpoint_source_stimulus
+      FOREIGN KEY (source_stimulus_id,source_run_id,user_id,conversation_id,teaching_session_id)
+      REFERENCES tutor_run_stimulus_events(id,run_id,user_id,conversation_id,teaching_session_id)
+      ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED;
+  END IF;
+END $$;
+
+-- Repair early local bootstrap variants that used immediate RESTRICT on deferred teaching lineage.
+ALTER TABLE tutor_teaching_sessions DROP CONSTRAINT IF EXISTS fk_tutor_teaching_session_current_checkpoint;
+ALTER TABLE tutor_teaching_sessions ADD CONSTRAINT fk_tutor_teaching_session_current_checkpoint
+  FOREIGN KEY (current_checkpoint_id,id,user_id,conversation_id)
+  REFERENCES tutor_teaching_session_checkpoints(id,teaching_session_id,user_id,conversation_id)
+  ON DELETE NO ACTION DEFERRABLE INITIALLY DEFERRED;
+ALTER TABLE tutor_teaching_session_checkpoints DROP CONSTRAINT IF EXISTS fk_tutor_teaching_checkpoint_predecessor;
+ALTER TABLE tutor_teaching_session_checkpoints ADD CONSTRAINT fk_tutor_teaching_checkpoint_predecessor
+  FOREIGN KEY (predecessor_checkpoint_id,teaching_session_id,user_id,conversation_id)
+  REFERENCES tutor_teaching_session_checkpoints(id,teaching_session_id,user_id,conversation_id)
+  ON DELETE NO ACTION DEFERRABLE INITIALLY DEFERRED;
+
+CREATE OR REPLACE FUNCTION enforce_tutor_teaching_session_lifecycle() RETURNS trigger AS $$
+BEGIN
+  IF TG_OP='DELETE' THEN
+    IF tutor_learning_track_purge_allowed(OLD.user_id) THEN RETURN OLD; END IF;
+    RAISE EXCEPTION 'Tutor teaching sessions cannot be deleted' USING ERRCODE='23514';
+  END IF;
+  IF NEW.id IS DISTINCT FROM OLD.id OR NEW.user_id IS DISTINCT FROM OLD.user_id
+    OR NEW.track_id IS DISTINCT FROM OLD.track_id OR NEW.conversation_id IS DISTINCT FROM OLD.conversation_id
+    OR NEW.knowledge_key IS DISTINCT FROM OLD.knowledge_key
+    OR NEW.active_plan_revision_id IS DISTINCT FROM OLD.active_plan_revision_id
+    OR NEW.progress_version IS DISTINCT FROM OLD.progress_version
+    OR NEW.lesson_assignment_id IS DISTINCT FROM OLD.lesson_assignment_id
+    OR NEW.assignment_version IS DISTINCT FROM OLD.assignment_version
+    OR NEW.document_id IS DISTINCT FROM OLD.document_id
+    OR NEW.document_content_hash IS DISTINCT FROM OLD.document_content_hash
+    OR NEW.predecessor_session_id IS DISTINCT FROM OLD.predecessor_session_id
+    OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+    RAISE EXCEPTION 'Tutor teaching session authority is immutable' USING ERRCODE='23514';
+  END IF;
+  IF NEW.version NOT IN (OLD.version,OLD.version+1) THEN
+    RAISE EXCEPTION 'Tutor teaching session version must advance by one' USING ERRCODE='23514';
+  END IF;
+  IF NEW IS DISTINCT FROM OLD AND NEW.version=OLD.version
+    AND NOT (OLD.current_checkpoint_id IS NULL AND NEW.current_checkpoint_id IS NOT NULL AND OLD.version=1) THEN
+    RAISE EXCEPTION 'Tutor teaching session mutation requires version advance' USING ERRCODE='23514';
+  END IF;
+  IF OLD.status='completed' AND NEW IS DISTINCT FROM OLD THEN
+    RAISE EXCEPTION 'Completed Tutor teaching session is immutable' USING ERRCODE='23514';
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION enforce_tutor_teaching_append_only() RETURNS trigger AS $$
+BEGIN
+  IF TG_OP='DELETE' AND tutor_learning_track_purge_allowed(OLD.user_id) THEN RETURN OLD; END IF;
+  RAISE EXCEPTION 'Tutor teaching authority evidence is append-only' USING ERRCODE='23514';
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_tutor_teaching_sessions_updated_at ON tutor_teaching_sessions;
+CREATE TRIGGER trg_tutor_teaching_sessions_updated_at BEFORE UPDATE ON tutor_teaching_sessions
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+DROP TRIGGER IF EXISTS trg_tutor_teaching_sessions_lifecycle ON tutor_teaching_sessions;
+CREATE TRIGGER trg_tutor_teaching_sessions_lifecycle BEFORE UPDATE OR DELETE ON tutor_teaching_sessions
+FOR EACH ROW EXECUTE FUNCTION enforce_tutor_teaching_session_lifecycle();
+DROP TRIGGER IF EXISTS trg_tutor_teaching_checkpoints_immutable ON tutor_teaching_session_checkpoints;
+CREATE TRIGGER trg_tutor_teaching_checkpoints_immutable BEFORE UPDATE OR DELETE ON tutor_teaching_session_checkpoints
+FOR EACH ROW EXECUTE FUNCTION enforce_tutor_teaching_append_only();
+DROP TRIGGER IF EXISTS trg_tutor_run_stimuli_immutable ON tutor_run_stimulus_events;
+CREATE TRIGGER trg_tutor_run_stimuli_immutable BEFORE UPDATE OR DELETE ON tutor_run_stimulus_events
+FOR EACH ROW EXECUTE FUNCTION enforce_tutor_teaching_append_only();
+DROP TRIGGER IF EXISTS trg_tutor_run_teaching_scopes_immutable ON tutor_run_teaching_scopes;
+CREATE TRIGGER trg_tutor_run_teaching_scopes_immutable BEFORE UPDATE OR DELETE ON tutor_run_teaching_scopes
+FOR EACH ROW EXECUTE FUNCTION enforce_tutor_teaching_append_only();
+
 -- Lesson exercise Gate, append-only attempt, and module diagnostic authority.
 ALTER TABLE tutor_mastery_evidence
   ADD COLUMN IF NOT EXISTS evidence_effect text NOT NULL DEFAULT 'reinforcing';

@@ -985,3 +985,15 @@ repository.complete_turn_with_message_if_current(
 - Source audit columns are all-null or all-present: `source_sequence_start/end`, `source_delta_count`, `source_content_hash`. Present ranges are continuous and `count=end-start+1`.
 - Receipt source evidence contains only integers and SHA-256. Raw Runtime text remains only in owner-scoped `tutor_runtime_text_items`; provider bodies and external identities remain forbidden.
 - Bootstrap must drop the append-only trigger only around the idempotent projection-sequence backfill, then recreate it. Bootstrap twice and append-only mutation tests are mandatory.
+
+---
+
+## Scenario: Durable teaching-session authority and exact Turn stimulus
+
+- Keep the LearningTrack conversation long-lived; segment teaching with `tutor_teaching_sessions`, not new conversations.
+- Freeze track/plan/progress/active-assignment/document authority on both the session and immutable run teaching scope.
+- Append checkpoints by predecessor + session-version CAS. The session may point to only one current checkpoint; stale checkpoint, session, progress, assignment, document, user, track, or conversation scope fails closed.
+- Persist exactly one stimulus per teaching run. The database CHECK must prove `learner_message | teaching_control | domain_event`; learner-message stimuli require exact run/message/input evidence, while explicit controls/events must not create a learner message or use proactive origin.
+- Revalidate the immutable teaching scope before effect commit, waiting-result persistence, and terminal persistence.
+- Classify all new user-owned tables in exhaustive cutover inventory and delete them child-to-root under the transaction-local purge capability. Deferred lineage must use `NO ACTION`, not immediate `RESTRICT`, where the session/current-checkpoint cycle is cleared in one transaction.
+- Export only bounded summaries and IDs. Omit raw state/authority JSON, hashes used only for internal proof, prompts, reasoning, provider bodies, complete questions/submissions, private tests/rubrics, commands, paths, and secrets.

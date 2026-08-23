@@ -2,7 +2,7 @@
 
 ## Current runtime status
 
-**Updated: 2026-08-18.** Aearn's active product runtime is the **Tutor Harness** with a controlled Codex Sidecar path for eligible new `plan_drafting` turns.
+**Updated: 2026-08-23.** Aearn's active product runtime is the **Tutor Harness** with a controlled Codex Sidecar path for eligible new `plan_drafting` turns.
 The desktop starts from a local learner identity, asks the server for a
 cutover decision, and admits a learner to the Tutor workspace only after a
 server-authoritative `verified` receipt. The current learning runtime also includes
@@ -13,6 +13,7 @@ track-scoped spaced-review authority with finite `ReviewSession` batches,
 server-projected critical-prerequisite Gates, exactly-once mastery/schedule
 finalization, and a responsive track learning workspace that combines the
 server roadmap, Lesson/Practice, Review, and a scoped Tutor conversation.
+The backend now also persists knowledge-scoped TeachingSession/checkpoint authority and exact learner-message, teaching-control, or domain-event Turn stimuli while keeping one long-lived track conversation.
 Learner messages may carry validated append-only `lesson_selection`,
 `exercise_feedback`, `execution_result`, and `review_feedback` references;
 these are injected as separate learner-safe structured context rather than

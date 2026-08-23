@@ -896,3 +896,11 @@ Codex adapter 为每个 turn 建立独立 `RuntimeDeltaCoalescer`。仅连续同
 source sequence 与 projection sequence 分离。Runtime result、PostgreSQL text reducer、conversation SSE 与 Desktop 只按 projection sequence 工作；append-only receipt 保存安全 source range/count/hash。关闭 `CODEX_RUNTIME_DELTA_COALESCING_ENABLED` 时恢复逐 delta projection，但不会恢复 `len(events) >= 2000` 或 `runtime_event_budget_exhausted` 正常失败。
 
 Runtime 资源限制现在是独立语义预算：100,000 raw notification runaway guard、item、tool、累计可见文本、turn time 与 pending bytes。普通日志只记录 source delta/projection/flush 数、maximum pending bytes、duration 与 safe code，不记录文本。UI/SSE gap、refresh 和 reconnect 继续通过 fresh snapshot 恢复，不 terminalize 模型 turn。
+
+## 2026-08-23：Knowledge-scoped TeachingSession authority
+
+LearningTrack learner conversation 仍是长期 history/context scope；TeachingSession 是其中一个知识点的 durable authority segment，不是新 conversation，也不改变“普通 learner message = fresh finite TurnRun”的全局模型。server 在 open/resume 时读取 active plan node、progress、唯一 track-scoped learner conversation、active Lesson assignment 与 immutable LessonDocument，冻结 session authority 并创建首个 append-only checkpoint。旧 conversation 没有 session 时保持可读，不扫描聊天正文做猜测型 backfill。
+
+每个 teaching-scoped fresh run 额外冻结 `tutor_run_teaching_scopes`，并关联一个 exact `TutorTurnStimulus`：真实 learner message、显式 teaching control 或 server-owned domain event。control/event 不伪造 learner message，不使用 proactive origin；本阶段只建立 durable authority、repository/service/API 与治理基础，不定义 Child 2 的 closed teaching-action 策略，也不改变 Desktop 主次布局。
+
+Harness 在 effect commit、waiting result 和 terminal result 前重新验证 current session/checkpoint、track/active plan/progress、active assignment/document 与 stimulus scope。stale authority 在 provider 输出之后仍只能 fail closed，不能提交 effect、公开 Tutor message 或终态。conversation snapshot additive 返回 bounded teaching-session metadata；trace/export 不包含 raw checkpoint/authority JSON、prompt、reasoning、provider body、完整题目/提交、hidden test/rubric、command/path 或 secrets。
