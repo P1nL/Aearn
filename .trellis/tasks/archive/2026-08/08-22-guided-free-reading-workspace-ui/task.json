@@ -1,0 +1,39 @@
+{
+  "id": "guided-free-reading-workspace-ui",
+  "name": "guided-free-reading-workspace-ui",
+  "title": "Guided/自由阅读工作区与 Composer Action Shelf",
+  "description": "实现 Guided/Free Reading 主次换位、教学 session 分段、文档混合跟随与 Composer Action Shelf，保持单一 conversation/document/SSE authority。",
+  "status": "completed",
+  "dev_type": null,
+  "scope": "learning_workspace_ui",
+  "package": null,
+  "priority": "P0",
+  "creator": "PINKING",
+  "assignee": "PINKING",
+  "createdAt": "2026-08-22",
+  "completedAt": "2026-08-23",
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "08-22-harness-led-adaptive-learning-workspace",
+  "relatedFiles": [
+    "aearn/apps/desktop/src/features/learning",
+    "aearn/apps/desktop/src/features/tutor",
+    "aearn/apps/desktop/src/api.ts",
+    "aearn/apps/desktop/src/types.ts",
+    "aearn/apps/desktop/src/styles.css"
+  ],
+  "notes": "Child 3；依赖 Child 1/2。完成后停止，不自动启动最终集成 child。",
+  "meta": {
+    "sequence": 3,
+    "depends_on": [
+      "08-22-harness-teaching-session-authority",
+      "08-22-harness-closed-teaching-action-loop"
+    ],
+    "workflow_mode": "inline"
+  }
+}
