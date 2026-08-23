@@ -948,3 +948,43 @@ desktop:check 通过，所以逐字、折叠和重连已验收。
 - Verify Python auto-confirm advances to the next missing fact with no language selector. Verify frontend, backend, multi-language, conflict, and no-signal catalogs against exact visible radio labels and values.
 - For every language selector, assert zero initial checked radios and disabled Submit; after one selection, assert exactly one checked radio and enabled Submit. Reload/re-enter and verify exact options/order and the safe select draft survive.
 - Check `scrollWidth <= clientWidth`, framework overlay absence, and clean app console at 1440x900, 900x900, and 390x844. A screenshot timeout does not replace DOM/interaction/console evidence and must be reported honestly.
+
+## 场景：Guided/自由阅读学习工作区网页完成门（2026-08-23）
+
+### 1. 适用范围与触发条件
+
+- 触发：教学 mode/session、主次换位、follow、session history、Action Shelf、completion 或学习工作区响应式变更。
+
+### 2. 验证入口
+
+- 目标：`http://127.0.0.1:1420`；disposable local PostgreSQL + fake/disabled provider。
+- 视口：`1440x900`、`900x900`、`390x844`，另测 `prefers-reduced-motion: reduce`。
+
+### 3. 契约
+
+- 三个视口均断言 body/workspace `scrollWidth <= clientWidth`，且 DOM 恰有一个 Composer、一个 Tutor surface/SSE root、一个 Lesson document。
+- 双向 mode 切换保持 conversation/document/run/draft/reference/selection 与两块 scroll；返回 Guided 不抢滚动，显式恢复定位 exact block。
+- current session 完整，history 默认折叠只读；引用按钮提交 exact session/message IDs。runtime/request/shelf 三种槽位互斥；completion 不自动导航。
+- 409 conflict 只刷新且不重放；相关 console error/warning 为零，无 framework overlay。
+
+### 4. 验证与错误矩阵
+
+- 900px 页面高度被内容撑开、390px 任一隐藏 panel 仍占布局、横向溢出 -> fail。
+- reduced motion 仍平滑滚动或逐帧装饰动画 -> fail。
+- in-app Browser 截图单独超时 -> DOM/交互/console 证据仍有效；仅截图可回退 standalone Playwright并记录边界。
+
+### 5. 正常、基础与错误案例
+
+- 正常：三视口完成 role swap、follow pause/resume、history reference、shelf/runtime/request/conflict。
+- 基础：fixture 没有历史消息或 active focus 时显示稳定空态，不造数据。
+- 错误：只凭 Vitest/build 或静态源码宣称视觉验收；调用真实 provider 制造 demo。
+
+### 6. 必须测试
+
+- Desktop Vitest、用户明确要求的 `desktop:check`、后端 focused/PostgreSQL、Ruff、Mypy、bootstrap twice、Trellis validate、`git diff --check`。
+- 截图与临时 fixture 放仓库外；结束后删除测试用户并停止临时服务。
+
+### 7. 错误与正确写法
+
+- 错误：`desktop:check` 通过即宣称 mode/follow/responsive 完成。
+- 正确：Browser plugin 优先完成真实 DOM、交互、console、overflow、focus 与 reduced-motion；截图超时才只对截图使用 Playwright fallback。

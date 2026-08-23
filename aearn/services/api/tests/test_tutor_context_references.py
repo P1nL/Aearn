@@ -18,7 +18,7 @@ from app.services.tutor.learner_state import TutorLearnerStateRepository
 from app.services.tutor.persistence import PostgresTutorRepository
 from learning_track_support import sample_plan_payload
 from test_lesson_document_authoring import FakeLessonAuthor
-from tutor_public_api_support import action_payload, assert_error, create_tutor_user, waiting_dispatcher
+from tutor_public_api_support import action_payload, assert_error, create_tutor_user, terminal_dispatcher, waiting_dispatcher
 
 
 @pytest.fixture()
@@ -190,6 +190,117 @@ def test_lesson_selection_reference_is_atomic_replayable_and_injected_as_structu
                     "UPDATE tutor_message_context_references SET reference_index = 1 WHERE run_id = %s",
                     (run_id,),
                 )
+
+
+def test_teaching_session_message_reference_uses_exact_session_and_message_authority(
+    monkeypatch: pytest.MonkeyPatch,
+    reference_client: TestClient,
+    tutor_api_settings: Settings,
+) -> None:
+    dispatcher, _provider = terminal_dispatcher(
+        settings=tutor_api_settings,
+        message="已完成当前自由阅读问题。",
+        public_thinking_text="",
+    )
+    monkeypatch.setattr(tutor_route, "build_tutor_run_dispatcher", lambda _settings: dispatcher)
+    user_id = str(create_tutor_user(reference_client)["id"])
+    track_id, lesson = _create_ready_lesson(reference_client, user_id=user_id)
+    assignment = lesson["assignment"]
+    assert isinstance(assignment, Mapping)
+
+    conversation = reference_client.post(
+        "/api/tutor/conversations",
+        json=action_payload(
+            user_id,
+            f"history-reference-conversation-{uuid4()}",
+            learning_scope={"scope_kind": "learning_track", "learning_track_id": track_id},
+        ),
+    )
+    assert conversation.status_code in {200, 201}
+    conversation_id = str(conversation.json()["conversation_id"])
+    opened = reference_client.post(
+        f"/api/learning-tracks/{track_id}/teaching-sessions/python.variables/open",
+        json=action_payload(
+            user_id,
+            f"history-reference-session-{uuid4()}",
+            conversation_id=conversation_id,
+            expected_track_version=1,
+            expected_progress_version=1,
+            expected_assignment_version=int(assignment["assignment_version"]),
+            mode="free_reading",
+        ),
+    )
+    assert opened.status_code == 201
+    session_id = str(opened.json()["teaching_session"]["session_id"])
+
+    source = reference_client.post(
+        f"/api/tutor/conversations/{conversation_id}/inputs",
+        json=action_payload(
+            user_id,
+            f"history-reference-source-{uuid4()}",
+            content="请先说明变量绑定。",
+            learning_scope=_scope(track_id),
+        ),
+    )
+    assert source.status_code == 202
+    source_message_id = str(source.json()["message_id"])
+
+    reference = {
+        "kind": "teaching_session_message",
+        "learning_track_id": track_id,
+        "knowledge_key": "python.variables",
+        "teaching_session_id": session_id,
+        "message_id": source_message_id,
+    }
+    accepted = reference_client.post(
+        f"/api/tutor/conversations/{conversation_id}/inputs",
+        json=action_payload(
+            user_id,
+            f"history-reference-use-{uuid4()}",
+            content="沿用上一条消息的上下文继续解释。",
+            learning_scope=_scope(track_id),
+            context_references=[reference],
+        ),
+    )
+    assert accepted.status_code == 202
+    saved = accepted.json()["context_references"]
+    assert len(saved) == 1
+    assert saved[0]["kind"] == "teaching_session_message"
+    assert saved[0]["teaching_session_id"] == session_id
+    assert saved[0]["message_id"] == source_message_id
+    assert saved[0]["turn_id"] == source.json()["run_id"]
+    assert saved[0]["role"] == "learner"
+    assert saved[0]["message_summary"] == "历史提问（exact session/message reference）"
+    assert "content" not in saved[0]
+    assert "请先说明变量绑定" not in str(saved[0])
+
+    with connect() as conn:
+        repository = PostgresTutorRepository(conn)
+        snapshot = repository.load_snapshot(user_id=user_id, run_id=str(accepted.json()["run_id"]))
+        assert snapshot is not None
+        base_loader = PostgresTutorContextLoader(
+            conn=conn,
+            learner_state=TutorLearnerStateRepository(conn),
+        )
+        context = PostgresTutorLearningContextLoader(conn=conn, base_loader=base_loader).load_context(
+            snapshot,
+            input_revision=int(accepted.json()["input_revision"]),
+        )
+        source_fact = next(item for item in context.required_facts if item.source_id.startswith("context-reference:"))
+        assert isinstance(source_fact.content, dict)
+        assert source_fact.content["message_content"] == "请先说明变量绑定。"
+
+    rejected = reference_client.post(
+        f"/api/tutor/conversations/{conversation_id}/inputs",
+        json=action_payload(
+            user_id,
+            f"history-reference-stale-{uuid4()}",
+            content="这次引用必须 fail closed。",
+            learning_scope=_scope(track_id),
+            context_references=[{**reference, "teaching_session_id": str(uuid4())}],
+        ),
+    )
+    assert_error(rejected, "CONTEXT_REFERENCE_NOT_FOUND", 404)
 
 
 def test_stale_reference_rolls_back_the_entire_first_turn(

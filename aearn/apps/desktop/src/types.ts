@@ -427,6 +427,7 @@ export type TutorConversationSnapshotResponse = {
   next_cursor: string | null;
   has_more: boolean;
   stream_cursor: string;
+  teaching_sessions: TeachingSessionGroupProjection[];
 };
 
 export type TutorActivityItem = {
@@ -612,11 +613,20 @@ export type ReviewFeedbackReferenceDraft = {
   attempt_id: string;
 };
 
+export type TeachingSessionMessageReferenceDraft = {
+  kind: "teaching_session_message";
+  learning_track_id: string;
+  knowledge_key: string;
+  teaching_session_id: string;
+  message_id: string;
+};
+
 export type TutorContextReferenceDraft =
   | LessonSelectionReferenceDraft
   | ExerciseFeedbackReferenceDraft
   | ExecutionResultReferenceDraft
-  | ReviewFeedbackReferenceDraft;
+  | ReviewFeedbackReferenceDraft
+  | TeachingSessionMessageReferenceDraft;
 
 type TutorContextReferenceBase = {
   reference_id: string;
@@ -675,11 +685,111 @@ export type ReviewFeedbackContextReference = TutorContextReferenceBase & {
   terminal_at: string | null;
 };
 
+export type TeachingSessionMessageContextReference = TutorContextReferenceBase & {
+  kind: "teaching_session_message";
+  teaching_session_id: string;
+  message_id: string;
+  turn_id: string;
+  role: "learner" | "tutor";
+  message_summary: string;
+  message_created_at: string | null;
+};
+
 export type TutorContextReference =
   | LessonSelectionContextReference
   | ExerciseFeedbackContextReference
   | ExecutionResultContextReference
-  | ReviewFeedbackContextReference;
+  | ReviewFeedbackContextReference
+  | TeachingSessionMessageContextReference;
+
+export type TeachingSessionMode = "guided" | "free_reading";
+export type TeachingSessionStatus = "active" | "paused" | "completed" | "blocked";
+export type TeachingPauseReason = "soft_pause" | "evidence_pause" | "authority_pause" | "session_pause" | "completion_pause";
+export type TeachingControlKey = "open_session" | "continue" | "return_focus" | "change_example" | "escalate_guided" | "switch_mode" | "pause" | "resume" | "enter_next_knowledge";
+
+export type TeachingFocusProjection = {
+  focus_id: string;
+  focus_kind: "knowledge" | "lesson_block" | "question" | "prerequisite" | "feedback";
+  summary: string;
+  source_handles: string[];
+};
+
+export type TeachingCheckpointProjection = {
+  checkpoint_id: string;
+  session_version: number;
+  objective: { objective_id: string; summary: string; source_handles: string[] };
+  active_focus: TeachingFocusProjection | null;
+  suspended_focuses: TeachingFocusProjection[];
+  unresolved_questions: Array<{ question_id: string; summary: string; state: "open" | "answered" | "deferred"; source_message_id: string | null }>;
+  covered_concepts: string[];
+  evidence_cursors: Array<{ evidence_kind: "gate" | "review" | "progress" | "assignment"; source_id: string; source_version: number }>;
+  pause_reason: TeachingPauseReason;
+  recommended_action_key: string | null;
+};
+
+export type TeachingActionDescriptor = {
+  key: string;
+  label: string;
+  emphasis: "primary" | "secondary" | "quiet";
+  enabled: boolean;
+  disabled_reason: string | null;
+  target_kind: "teaching_control" | "navigation" | "artifact";
+  target_id: string | null;
+  expected_versions: Partial<Record<"session" | "track" | "progress" | "assignment", number>>;
+};
+
+export type TeachingActionShelf = {
+  schema_version: "teaching_action_shelf_v1";
+  teaching_session_id: string;
+  session_version: number;
+  checkpoint_id: string;
+  state: "ready" | "runtime_active" | "blocking_request" | "completion" | "free_reading";
+  primary_action: TeachingActionDescriptor | null;
+  secondary_actions: TeachingActionDescriptor[];
+  overflow_actions: TeachingActionDescriptor[];
+};
+
+export type TeachingSessionProjection = {
+  session_id: string;
+  track_id: string;
+  track_version: number;
+  conversation_id: string;
+  knowledge_key: string;
+  status: TeachingSessionStatus;
+  mode: TeachingSessionMode;
+  session_version: number;
+  progress_version: number;
+  assignment_id: string;
+  assignment_version: number;
+  document_id: string;
+  checkpoint_id: string | null;
+  paused_at: string | null;
+  completed_at: string | null;
+  last_activity_at: string | null;
+  checkpoint?: TeachingCheckpointProjection;
+  action_shelf?: TeachingActionShelf | null;
+  allowed_actions?: string[];
+};
+
+export type TeachingSessionGroupProjection = TeachingSessionProjection & { turn_ids: string[] };
+export type TeachingSessionListResponse = { items: TeachingSessionProjection[] };
+export type TeachingSessionOpenResponse = { teaching_session: TeachingSessionProjection; created: boolean; pending_run: Record<string, unknown> | null; idempotent_replayed: boolean };
+export type TeachingSessionActionResponse = {
+  teaching_session: TeachingSessionProjection;
+  next_teaching_session?: TeachingSessionProjection;
+  transitioned?: true;
+  created?: boolean;
+  pending_run: Record<string, unknown> | null;
+  idempotent_replayed: boolean;
+};
+
+export type LessonFollowState = "following" | "follow_paused";
+export type LessonFollowTarget = {
+  block_id: string;
+  document_id: string;
+  document_content_hash: string;
+  label: string;
+};
 
 export type LearningTrackSummary = {
   track_id: string;

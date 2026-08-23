@@ -444,3 +444,41 @@ else preserveValidatedCurrentRuntimeOutput();
 - Language requests have `recommended=null`; no radio is initially selected and Submit remains disabled until the learner selects one option. Non-language recommendation behavior remains unchanged.
 - Safe select drafts may be retained in `sessionStorage` by exact request ID/version so reload/reconnect restores only a value still present in the durable options. Free text is not stored by this mechanism.
 - Required browser states are explicit-language skip, frontend/backend/multi-language/conflict/full catalog, refresh recovery, keyboard focus, and no horizontal overflow at 1440x900, 900x900, and 390x844.
+
+## 场景：Guided/自由阅读稳定双面板与历史引用（2026-08-23）
+
+### 1. 适用范围与触发条件
+
+- 触发：学习工作区布局、`WorkspaceModeSwitch`、`ComposerActionShelf`、教学 session timeline 或历史消息引用按钮。
+
+### 2. 组件签名
+
+`TrackLearningWorkspace` 始终渲染一个 `TutorConversationSurface` 和一个 `LessonDocumentPage`；`ComposerActionShelf` 是纯受控组件；历史消息通过 `onHistoricalMessageReference(draft,label)` 向工作区增加引用。
+
+### 3. 契约
+
+- Guided：路线 / Tutor 主区 / Lesson 次区；Free Reading：路线 / Lesson 主区 / 同一 Tutor 次区。模式按钮位于主区右上角，具有 accessible name、tooltip、visible focus、pending/disabled 与不小于 44px 的触控目标。
+- Action Shelf 只渲染 server descriptor，顺序为 blocking request > active runtime controls > ordinary shelf；一个 primary、最多三个 visible secondary，其他进入 overflow。
+- historical group 只按 server `turn_ids` 分组，默认折叠、展开只读；每条历史 message 的“引用此消息”只创建 `teaching_session_message` exact DTO，不复制正文、不改 mode/active scope。
+- `input_revision=0` 的 teaching-control run 不显示 generic Stop；该 Stop API 只接受正 revision。
+
+### 4. 验证与错误矩阵
+
+- unknown/extra descriptor -> API boundary 拒绝，不渲染 fallback action。
+- active runtime/request 出现 -> ordinary shelf 退出槽位，Composer draft/reference 保持。
+- history item 无 `turn_id` 或无 callback -> 不显示引用按钮。
+
+### 5. 正常、基础与错误案例
+
+- 正常：展开历史、引用一条 Tutor message，Composer chip 出现且原 draft 不变。
+- 基础：legacy history 独立只读分组，不提供猜测型 teaching-session reference。
+- 错误：按消息正文、标题或 DOM 顺序归组；复制历史正文进当前 learner content。
+
+### 6. 必须测试
+
+- 单一 Tutor/Lesson mount、mode role swap、Action Shelf 优先级、历史只读、exact callback DTO、键盘/focus、三视口。
+
+### 7. 错误与正确写法
+
+- 错误：为 Guided/Free 各挂一套 Tutor + SSE。
+- 正确：稳定 sibling surface + CSS role class，controller 只更换 server-authoritative mode projection。

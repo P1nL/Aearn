@@ -51,6 +51,19 @@ def test_open_resume_mode_cas_and_public_projection_are_safe() -> None:
         serialized = json.dumps(current, ensure_ascii=False)
         for protected in ("document_content_hash", "source_hash", "prompt", "reasoning", "hidden_tests", "command", "path"):
             assert protected not in serialized
+        from app.services.tutor.public_api import TutorPublicService
+
+        snapshot = TutorPublicService(conn).read_conversation_snapshot(
+            user_id=str(scope["user_id"]), conversation_id=str(scope["conversation_id"]), limit=40, cursor=None,
+        )
+        groups = snapshot["teaching_sessions"]
+        assert isinstance(groups, list) and len(groups) == 1
+        pending = opened["pending_run"]
+        assert isinstance(pending, dict)
+        assert groups[0]["turn_ids"] == [pending["run_id"]]
+        group_serialized = json.dumps(groups, ensure_ascii=False)
+        for protected in ("document_content_hash", "source_hash", "prompt", "reasoning", "provider", "hidden_tests", "command", "path"):
+            assert protected not in group_serialized
 
 
 def test_cross_user_and_stale_authority_fail_closed() -> None:

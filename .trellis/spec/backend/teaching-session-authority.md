@@ -158,3 +158,57 @@ assert run_scope["origin"] == "interactive"
 ```
 
 正确路径不伪造 learner message，冻结 exact authority，只允许 server-provided handles/focus，并可在任何 stale fence 上无公开副作用地拒绝。
+
+## 场景：Conversation teaching groups 与 exact 历史消息引用（2026-08-23）
+
+### 1. 适用范围 / Trigger
+
+- 触发：修改 conversation snapshot 的 `teaching_sessions[]`、历史教学分段、`tutor_message_context_references` 或模型上下文中的历史消息解析。
+
+### 2. Signatures
+
+`TeachingSessionRepository.conversation_projection(user_id, conversation_id)` 返回最多 50 个 safe session group；每组额外含由 `tutor_run_teaching_scopes` 投影的唯一、bounded `turn_ids`。`TutorInputRequest.context_references[]` 新增 `teaching_session_message { learning_track_id, knowledge_key, teaching_session_id, message_id }`。
+
+PostgreSQL 继续复用 user-owned append-only `tutor_message_context_references`，`reference_kind` 增加 `teaching_session_message`；该 kind 的 document/attempt/review/exercise FK 列必须全部为 NULL，不新增 user-owned table。
+
+### 3. Contracts
+
+- grouping 只从 durable run scope 取得 turn ownership，不根据聊天正文、标题、时间邻近或 DOM 顺序猜测。
+- exact historical reference 在接受当前 learner input 的同一事务内校验 source session/message 的 user、track、conversation、knowledge 与 source turn scope；任一不匹配 fail closed。
+- public saved reference 只包含 IDs、role、中性 `message_summary`、时间、version/hash；完整历史 `message_content` 不写入 public safe payload、response、timeline card 或 export。
+- 模型上下文使用独立 `read_for_context`，在每次加载时重新按 exact IDs 与同 conversation authority 解析完整 learner-visible message；解析失败为 stale reference，provider 前拒绝。
+- destination current Turn 的 knowledge scope 不因引用历史 knowledge 改变；cross-session reference 只是 confirmed fact source，不伪造 current focus/stimulus。
+
+### 4. Validation & Error Matrix
+
+| Condition | Required result |
+| --- | --- |
+| foreign user/track/conversation/session/message | scoped 404/409；不泄露 foreign existence |
+| message 不属于 session 的任一 `turn_id` | `CONTEXT_REFERENCE_NOT_FOUND`，整个 input mutation 回滚 |
+| public safe payload 含完整消息正文 | contract/privacy failure |
+| internal context 二次解析时 source authority 消失 | `CONTEXT_REFERENCE_STALE`；provider 不调用 |
+| unknown/extra reference field | request validation error |
+| duplicate exact session/message reference | `CONTEXT_REFERENCE_INVALID` |
+
+### 5. Good / Base / Bad Cases
+
+- Good：历史 Tutor message 的 exact IDs 经 session/run scope 校验，公开 response 只有中性摘要，内部 required fact 含受控解析的原消息。
+- Base：旧 conversation 无 teaching metadata 仍可读并进入 legacy group，不猜测 backfill。
+- Bad：把完整旧问题复制进 current learner content，或把完整正文存入 `safe_payload_json`/export。
+
+### 6. Tests Required
+
+- PostgreSQL：合法 exact reference、随机/foreign session、message/session scope mismatch、append-only、bootstrap twice。
+- Context：public response/export 不含完整消息；internal required fact 能取得 exact source content；stale 二次解析 provider-before fail closed。
+- Conversation projection：turn IDs bounded/unique，list group 的 `action_shelf=null` 与 `allowed_actions=[]`，protected fields 不出现。
+- 全部变更仍经过 focused tests、完整 API pytest、Ruff、Mypy、cutover inventory/reset/delete 与 `git diff --check`。
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+`reference = { "content": historical_message.content }`，或按消息正文猜所属 session。
+
+#### Correct
+
+客户端只发送 `teaching_session_id + message_id`；repository 验证 exact source turn scope，公开 projection 只存中性元数据，内部 context loader 才按 authority 读取正文。

@@ -585,7 +585,23 @@ class TeachingSessionRepository:
             "SELECT * FROM tutor_teaching_sessions WHERE user_id=%s AND conversation_id=%s ORDER BY last_activity_at DESC,id DESC LIMIT 50",
             (user_id, conversation_id),
         ).fetchall()
-        return [self.project_session(row, include_checkpoint=False) for row in rows]
+        turn_rows = self._conn.execute(
+            """SELECT scopes.teaching_session_id,scopes.run_id
+               FROM tutor_run_teaching_scopes AS scopes
+               JOIN tutor_teaching_sessions AS sessions ON sessions.id=scopes.teaching_session_id
+               WHERE sessions.user_id=%s AND sessions.conversation_id=%s
+               ORDER BY scopes.created_at,scopes.run_id""",
+            (user_id, conversation_id),
+        ).fetchall()
+        turn_ids: dict[str, list[str]] = {}
+        for turn in turn_rows:
+            turn_ids.setdefault(str(turn["teaching_session_id"]), []).append(str(turn["run_id"]))
+        result: list[dict[str, object]] = []
+        for row in rows:
+            projected = self.project_session(row, include_checkpoint=False)
+            projected["turn_ids"] = turn_ids.get(str(row["id"]), [])
+            result.append(projected)
+        return result
 
     def _insert_checkpoint(
         self, *, session: Mapping[str, object], predecessor_id: str | None, session_version: int,
