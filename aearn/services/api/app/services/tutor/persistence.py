@@ -55,6 +55,13 @@ from app.agents.harness.contracts import (
 from app.agents.harness.skill_catalog import CatalogSkillReference, SkillCatalogSnapshot
 from app.core.config import get_settings
 from app.core.teaching_safety import check_teaching_output, sanitize_summary_text
+from app.services.learning.teaching_contracts import (
+    TeachingAuthoritySnapshot,
+    TeachingCheckpointState,
+    TeachingSessionMode,
+    canonical_hash as teaching_canonical_hash,
+)
+from app.services.learning.teaching_loop import reduce_teaching_checkpoint
 from app.services.llm.contracts import LLMUsage
 from app.services.tutor.conversation_contracts import (
     TUTOR_CONVERSATION_EVENT_PROJECTION_VERSION,
@@ -3516,7 +3523,9 @@ class PostgresTutorRepository:
             raise TutorRunNotFound("tutor run not found")
         return row.get("superseded_by_run_id") is not None
 
-    def request_cancellation(self, *, user_id: str, run_id: str, now: datetime) -> None:
+    def request_cancellation(
+        self, *, user_id: str, run_id: str, now: datetime, diagnostic_code: str = "cancelled",
+    ) -> None:
         """Terminally cancel one run without allowing a post-provider public write.
 
         This uses the same conversation-then-run lock order as normal replacement
@@ -3524,6 +3533,7 @@ class PostgresTutorRepository:
         the stale check and the Tutor-message write of an in-flight run.
         """
 
+        _safe_key(diagnostic_code, label="cancellation diagnostic code")
         with self._conn.transaction():
             conversation, run = self._lock_run_with_conversation(
                 user_id=user_id,
@@ -3538,14 +3548,14 @@ class PostgresTutorRepository:
                 SET status = 'cancelled',
                     cancelled_at = COALESCE(cancelled_at, %s),
                     terminal_outcome = 'cancelled',
-                    terminal_diagnostic_code = COALESCE(terminal_diagnostic_code, 'cancelled'),
+                    terminal_diagnostic_code = COALESCE(terminal_diagnostic_code, %s),
                     terminal_at = COALESCE(terminal_at, %s),
                     active_lease_owner_id = NULL,
                     active_lease_expires_at = NULL
                 WHERE id = %s AND user_id = %s AND terminal_outcome IS NULL
                 RETURNING *
                 """,
-                (now, now, run_id, user_id),
+                (now, diagnostic_code, now, run_id, user_id),
             ).fetchone()
             if updated is None:
                 return
@@ -4537,6 +4547,101 @@ class PostgresTutorRepository:
         if expected != observed or str(live["live_session_status"]) not in {"active", "paused"}:
             raise TutorTerminalStateConflict("Tutor teaching authority is stale")
 
+    def _commit_teaching_step_locked(
+        self, *, run: Mapping[str, object], result: TutorRunResult,
+        checkpoint: TutorCheckpoint, created_at: datetime,
+    ) -> None:
+        scope = self._conn.execute(
+            """SELECT scopes.*, sessions.status AS session_status, sessions.version AS live_session_version,
+                      sessions.current_checkpoint_id, checkpoints.state_json, stimuli.message_id,
+                      progress.status AS progress_status
+               FROM tutor_run_teaching_scopes AS scopes
+               JOIN tutor_teaching_sessions AS sessions ON sessions.id=scopes.teaching_session_id
+                 AND sessions.user_id=scopes.user_id AND sessions.conversation_id=scopes.conversation_id
+               JOIN tutor_teaching_session_checkpoints AS checkpoints ON checkpoints.id=scopes.checkpoint_id
+                 AND checkpoints.teaching_session_id=scopes.teaching_session_id
+               JOIN tutor_run_stimulus_events AS stimuli ON stimuli.id=scopes.stimulus_id AND stimuli.run_id=scopes.run_id
+               JOIN tutor_track_node_progress AS progress ON progress.track_id=scopes.track_id
+                 AND progress.user_id=scopes.user_id AND progress.knowledge_key=scopes.knowledge_key
+               WHERE scopes.run_id=%s AND scopes.user_id=%s
+               FOR UPDATE OF sessions,progress""",
+            (run["id"], run["user_id"]),
+        ).fetchone()
+        if scope is None:
+            if result.teaching_step is not None:
+                raise TutorTerminalStateConflict("teaching step has no immutable teaching scope")
+            return
+        if result.teaching_step is None:
+            return
+        if str(scope["current_checkpoint_id"]) != str(scope["checkpoint_id"]):
+            raise TutorTerminalStateConflict("teaching checkpoint changed before commit")
+        if _as_int(scope["live_session_version"], 0) != _as_int(scope["session_version"], 0):
+            raise TutorTerminalStateConflict("teaching session version changed before commit")
+        try:
+            current_state = TeachingCheckpointState.model_validate(scope["state_json"])
+            next_state = reduce_teaching_checkpoint(
+                state=current_state, step=result.teaching_step,
+                mode=TeachingSessionMode(str(scope["mode"])),
+                stimulus_id=str(scope["stimulus_id"]),
+                source_message_id=_optional_string(scope.get("message_id")),
+            )
+            authority = TeachingAuthoritySnapshot(
+                track_version=_as_int(scope["track_version"], 0),
+                plan_revision_id=str(scope["active_plan_revision_id"]),
+                progress_version=_as_int(scope["progress_version"], 0),
+                assignment_id=str(scope["lesson_assignment_id"]),
+                assignment_version=_as_int(scope["assignment_version"], 0),
+                document_id=str(scope["document_id"]),
+                document_content_hash=str(scope["document_content_hash"]),
+            )
+        except (TypeError, ValueError, ValidationError) as exc:
+            raise TutorTerminalStateConflict("teaching checkpoint reduction failed") from exc
+        next_version = _as_int(scope["session_version"], 0) + 1
+        state_json = next_state.model_dump(mode="json")
+        authority_json = authority.model_dump(mode="json")
+        source_hash = teaching_canonical_hash({
+            "state": state_json, "authority": authority_json, "session_version": next_version,
+            "source_run_id": str(run["id"]), "source_stimulus_id": str(scope["stimulus_id"]),
+        })
+        next_checkpoint = self._conn.execute(
+            """INSERT INTO tutor_teaching_session_checkpoints (
+                 teaching_session_id,user_id,conversation_id,predecessor_checkpoint_id,session_version,
+                 state_json,authority_snapshot_json,source_run_id,source_stimulus_id,source_hash
+               ) VALUES (%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s,%s,%s) RETURNING id""",
+            (scope["teaching_session_id"], scope["user_id"], scope["conversation_id"], scope["checkpoint_id"],
+             next_version, _json(state_json), _json(authority_json), run["id"], scope["stimulus_id"], source_hash),
+        ).fetchone()
+        if next_checkpoint is None:
+            raise RuntimeError("teaching checkpoint commit failed")
+        completed = str(scope["progress_status"]) == "completed" or result.teaching_step.pause_kind.value == "completion_pause"
+        status = "completed" if completed else "paused" if result.teaching_step.pause_kind.value == "session_pause" else "active"
+        updated = self._conn.execute(
+            """UPDATE tutor_teaching_sessions SET current_checkpoint_id=%s,version=version+1,status=%s,
+                 paused_at=CASE WHEN %s='paused' THEN %s ELSE NULL END,
+                 completed_at=CASE WHEN %s='completed' THEN COALESCE(completed_at,%s) ELSE completed_at END,
+                 last_activity_at=%s,last_mutation_key=%s,last_mutation_hash=%s
+               WHERE id=%s AND user_id=%s AND version=%s RETURNING id""",
+            (next_checkpoint["id"], status, status, created_at, status, created_at, created_at,
+             f"teaching-run:{run['id']}", teaching_canonical_hash(result.teaching_step.model_dump(mode="json")),
+             scope["teaching_session_id"], scope["user_id"], scope["session_version"]),
+        ).fetchone()
+        if updated is None:
+            raise TutorTerminalStateConflict("teaching session CAS failed")
+        self._conn.execute(
+            """INSERT INTO tutor_teaching_action_receipts (
+                 run_id,user_id,conversation_id,teaching_session_id,checkpoint_id,stimulus_id,action,
+                 objective_id,focus_id,focus_resolution,pause_kind,source_handles_json,public_message_hash,
+                 context_source_ids_json,context_source_hashes_json
+               ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s::jsonb,%s::jsonb)""",
+            (run["id"], scope["user_id"], scope["conversation_id"], scope["teaching_session_id"],
+             next_checkpoint["id"], scope["stimulus_id"], result.teaching_step.action.value,
+             result.teaching_step.objective_id, result.teaching_step.focus_id,
+             result.teaching_step.focus_resolution.value, result.teaching_step.pause_kind.value,
+             _json(list(result.teaching_step.source_handles)),
+             hashlib.sha256(result.teaching_step.public_message.encode("utf-8")).hexdigest(),
+             _json(list(checkpoint.metadata.source_ids)), _json(list(checkpoint.metadata.source_hashes))),
+        )
+
     def complete_run(
         self,
         *,
@@ -4619,6 +4724,9 @@ class PostgresTutorRepository:
             if checkpoint.input_revision != _as_int(run["input_revision"], 0) or result.input_revision != checkpoint.input_revision:
                 raise TutorLeaseConflict("terminal lifecycle revision is stale")
             self._assert_teaching_authority_current_locked(run=run)
+            self._commit_teaching_step_locked(
+                run=run, result=result, checkpoint=checkpoint, created_at=checkpoint.created_at,
+            )
             terminal_message_id = self._record_public_message_locked(
                 run=run,
                 result=result,
@@ -6177,7 +6285,26 @@ class PostgresTutorLifecycle(TutorLifecyclePersistence):
                 result=result,
                 envelope=self._envelope(compaction_request, created_at=checkpoint.created_at),
             )
-        except (TutorLeaseConflict, TutorTerminalStateConflict) as exc:
+        except TutorTerminalStateConflict as exc:
+            teaching = self._repository._conn.execute(
+                "SELECT 1 FROM tutor_run_teaching_scopes WHERE run_id=%s AND user_id=%s",
+                (snapshot.run_id, snapshot.user_id),
+            ).fetchone()
+            if teaching is None:
+                raise TutorLifecycleConflict("Tutor terminal lifecycle lost ownership") from exc
+            self._repository.request_cancellation(
+                user_id=snapshot.user_id, run_id=snapshot.run_id, now=checkpoint.created_at,
+                diagnostic_code="teaching_authority_stale",
+            )
+            state = self._repository.read_run_state(user_id=snapshot.user_id, run_id=snapshot.run_id)
+            return TutorRunResult(
+                run_id=state.snapshot.run_id, status=state.snapshot.status,
+                input_revision=state.snapshot.input_revision, iteration_count=state.snapshot.iteration_count,
+                model_call_count=state.snapshot.model_call_count,
+                capability_call_count=state.snapshot.capability_call_count, effect_count=state.snapshot.effect_count,
+                terminal_outcome=state.terminal_outcome, diagnostic_code=state.diagnostic_code,
+            )
+        except TutorLeaseConflict as exc:
             raise TutorLifecycleConflict("Tutor terminal lifecycle lost ownership") from exc
 
     def persist_interaction_request(

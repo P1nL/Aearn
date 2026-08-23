@@ -420,3 +420,15 @@ Fixture/browser 证据不得包含 external Runtime identity、provider metadata
 - Contract: unknown/extra model hint fields are rejected or ignored safely; durable request response validation uses stored options after catalog change.
 - Desktop/browser: language radio starts empty and Submit disabled; selection enables Submit; reload/re-enter restores exact options/order and safe draft at 1440x900, 900x900, and 390x844 with no overlay, console error, or horizontal overflow.
 - Default validation is offline/fake plus local PostgreSQL. Real provider execution is out of scope without separate approval.
+
+## 2026-08-23：Closed teaching action Loop 验收矩阵
+
+| ID | 优先级 | 区域 | 验收 | 证据 |
+| --- | --- | --- | --- | --- |
+| RT-54 | P0 | Skill/provider/context | exact `tutor.lesson-teaching@1.0.0`；required `TEACHING_SESSION`；strict one `teaching_step`；unknown action/handle/focus、extra field、missing/oversized context provider-before fail closed；non-teaching request budget/contract 无回归 | `test_tutor_skill_catalog.py`、`test_tutor_provider_gateway.py`、`test_tutor_teaching_context.py`、`test_tutor_context_budget.py` |
+| RT-55 | P0 | Loop/atomicity | one stimulus -> one closed action -> one pause；message/checkpoint/action receipt/session/run terminal 同事务；provider unavailable、stale/superseded 无 message/receipt/checkpoint；terminal 后无自动 next run | `test_tutor_teaching_action_loop.py`、`test_tutor_run_loop.py`、persistence regression |
+| RT-56 | P0 | Focus/mode/Action Shelf | bounded focus stack/questions；resolved child question 移除；Free Reading reactive 且 guided-only control bypass 被拒；显式 escalation；runtime/request/shelf 互斥；最多一 primary/三 secondary；session/evidence/completion pause action 正确 | `test_tutor_teaching_focus_reducer.py`、`test_tutor_teaching_action_loop.py`、`test_tutor_teaching_sessions.py` |
+| RT-57 | P0 | Completion/authority refresh | progress/assignment authority 变化创建 blocked predecessor + successor；completed 只接受 `summarize_progress + completion_pause`；无显式 transition 不改 track/不建 run；`enter_next_knowledge` 重新验证 latest roadmap 并复用同 conversation | `test_tutor_teaching_action_loop.py`、PostgreSQL teaching session tests |
+| RT-58 | P0 | Schema/governance/privacy | 五张 user-owned teaching 表；bootstrap twice；source-stimulus deferred `NO ACTION`；append-only receipt；cutover exhaustive；export/reset child-to-root；无 public message/provider/prompt/reasoning/protected body | `test_tutor_teaching_session_postgres.py`、`test_tutor_teaching_action_loop.py`、cutover/local-data regressions |
+
+默认验证使用 fake provider 与本地 PostgreSQL，数据库 pytest 串行执行。该矩阵不调用真实 provider、不改变 Desktop 主次布局、不批准 push、部署、生产数据修改或发布。

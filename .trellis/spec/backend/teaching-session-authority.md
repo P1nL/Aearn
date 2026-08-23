@@ -1,10 +1,10 @@
-# Teaching Session Authority
+# Teaching Session Authority 与 Closed Teaching Loop
 
-## 1. Scope / Trigger
+## 1. 适用范围 / Trigger
 
-Use this contract whenever a long-lived LearningTrack Tutor conversation is segmented into knowledge-scoped teaching sessions, or when code touches teaching checkpoints, Tutor Turn admission, Harness commit fences, public projection, cutover inventory, or local export/reset/delete.
+当一条长期 LearningTrack Tutor conversation 需要按知识点分段教学，或代码触及 teaching session/checkpoint、Tutor Turn admission、required context、closed teaching action、Harness commit fence、Action Shelf、public projection、cutover inventory、local export/reset/delete 时，必须遵守本规范。
 
-The session is a durable authority segment inside one track conversation. It is not a second conversation and must never be reconstructed from chat text.
+TeachingSession 是同一 track conversation 内的 durable authority segment，不是第二条 conversation，也不得从聊天正文、Lesson 标题或 Desktop pointer 猜测重建。
 
 ## 2. Signatures
 
@@ -17,89 +17,126 @@ POST /api/learning-tracks/{track_id}/teaching-sessions/{knowledge_key}/open
 POST /api/learning-tracks/{track_id}/teaching-sessions/{session_id}/actions
 ```
 
-Mutation inputs use `client_action_id` or `Idempotency-Key` plus expected session/track/progress/assignment versions.
+mutation 使用 `client_action_id` / `Idempotency-Key` 与 expected session/track/progress/assignment versions。客户端 `admit_run` 不是 admission authority；服务端根据 closed control policy 决定是否创建 run。
+
+### Skill / provider
+
+```text
+tutor.lesson-teaching@1.0.0
+required context section: TEACHING_SESSION
+provider action: teaching_step
+```
+
+```python
+TeachingStepDecision(
+    action: TeachingAction,
+    objective_id: str,
+    focus_id: str,
+    source_handles: tuple[str, ...],
+    public_message: str,
+    focus_resolution: TeachingFocusResolution,
+    pause_kind: TeachingPauseReason,
+    escalation_hint: str | None,
+)
+```
 
 ### Python
 
 ```python
-TeachingSessionRepository.bind_learner_message_run(
-    user_id: str,
-    run_id: str,
-    conversation_id: str,
-    track_id: str,
-    knowledge_key: str,
-    message_id: str,
-    input_revision: int,
-) -> dict[str, object] | None
+TeachingSessionRepository.bind_learner_message_run(...) -> dict[str, object] | None
+TeachingSessionRepository.assert_run_scope_current(...) -> Mapping[str, object]
+TeachingSessionRepository.teaching_context(...) -> dict[str, object] | None
+TeachingSessionRepository.admit_control_run(...) -> dict[str, object]
+TeachingSessionRepository.admit_domain_event_run(...) -> dict[str, object]
 
-TeachingSessionRepository.assert_run_scope_current(
-    user_id: str,
-    run_id: str,
-) -> Mapping[str, object]
+reduce_teaching_checkpoint(...) -> TeachingCheckpointState
+build_teaching_action_shelf(...) -> TeachingActionShelfV1
 ```
 
 ### PostgreSQL
 
-User-owned tables are `tutor_teaching_sessions`, `tutor_teaching_session_checkpoints`, `tutor_run_stimulus_events`, and `tutor_run_teaching_scopes`.
+User-owned tables:
+
+```text
+tutor_teaching_sessions
+tutor_teaching_session_checkpoints
+tutor_run_stimulus_events
+tutor_run_teaching_scopes
+tutor_teaching_action_receipts
+```
 
 ## 3. Contracts
 
-- A LearningTrack keeps one long-lived track-scoped learner conversation. A teaching session owns one knowledge-point segment within it.
-- `tutor_teaching_sessions` freezes user, track, conversation, knowledge key, track/plan/progress, active Lesson assignment, and LessonDocument authority. At most one `active | paused | blocked` session exists for the exact scope.
-- `tutor_teaching_session_checkpoints` is an append-only predecessor chain. The session's `current_checkpoint_id` and `version` advance by CAS; old checkpoints are never rewritten.
-- Every teaching-scoped fresh run has exactly one immutable `TutorTurnStimulus`: `learner_message | teaching_control | domain_event`.
-- `learner_message` references exact `tutor_run_input_events(run_id,message_id,input_revision)` evidence. Controls/events create an `interactive` run without a forged learner message and without proactive origin.
-- `tutor_run_teaching_scopes` freezes session/checkpoint/stimulus plus track/plan/progress/assignment/document authority. Effect commit, waiting-result persistence, and terminal persistence revalidate it.
-- Public projections expose only stable IDs, versions, status/mode, bounded objective/focus summaries, counts, and safe action keys. Omit prompt, reasoning, provider body, raw checkpoint/authority JSON and proof hashes, complete question/submission, hidden tests/rubric, command, path, and secrets.
-- All four tables belong to exhaustive cutover target inventory and local summary/export/reset/delete. Delete run scopes -> stimuli -> checkpoints -> sessions under the transaction-local purge capability.
+- 一条 LearningTrack 只有一条长期 learner-visible Tutor conversation；TeachingSession 只拥有一个 knowledge-point segment。
+- session 冻结 user/track/conversation/knowledge、track/plan/progress、active Lesson assignment 与 LessonDocument authority。exact scope 最多一条 `active | paused` current session；authority 变化时旧 session 追加 `authority_pause` checkpoint 并置为 `blocked`，新 session 以 `predecessor_session_id` 建立 successor，不改写旧 authority。
+- checkpoint 是 append-only predecessor chain；`current_checkpoint_id + version` 以 CAS 推进。checkpoint、stimulus、run scope 与 action receipt 禁止普通 UPDATE/DELETE。
+- 每个 teaching-scoped fresh run 恰有一个 immutable stimulus：`learner_message | teaching_control | domain_event`。learner stimulus 引用 exact input receipt；control/event 不伪造 learner message，不使用 proactive origin。
+- `TEACHING_SESSION` 是 required context，位于 current input/current structured event 之后、optional history 之前。它只含 exact session/stimulus、bounded objective/focus/questions/covered summary、authority versions、pause/action policy 与 allowlisted handles；不可表示时在 provider 前 fail closed。
+- provider 必须先选择 exact `tutor.lesson-teaching@1.0.0`，再返回且只返回一个 strict `teaching_step`。closed action 为 `orient | explain_concept | answer_question | show_example | compare_examples | check_understanding | recommend_practice | explain_feedback | remediate_prerequisite | summarize_progress | recommend_pause | wait_for_input`。
+- focus resolution 只能是 `stay | push_child | resolve_and_resume_parent | replace_objective | abandon_branch | wait`，且 focus identity 必须来自 active/suspended/objective/current stimulus allowlist；模型不得创建任意 focus、UI、mastery、completion、unlock 或 next knowledge key。
+- terminal commit 在同一 PostgreSQL transaction 内完成：重新验证 lease/run/session/checkpoint/track/progress/assignment/document/stimulus，append next checkpoint，CAS session，insert safe action receipt，写 learner-visible Tutor message，terminalize run/outbox。任一步失败全部回滚。
+- 每个成功 stimulus 最多提交一个主要 teaching action，并写 `soft_pause | evidence_pause | authority_pause | session_pause | completion_pause`；terminal 后没有新 stimulus 时不得自动 admission 下一 Turn。
+- `free_reading` learner message 只允许 reactive finite answer；`continue/return_focus/change_example` 不能绕过服务端 policy 触发主动教学。只有显式 `escalate_guided` 才切 Guided 并 admission 一个 bounded Turn；Free Reading resume 不自动调用 provider。
+- `TeachingActionShelfV1` 完全由服务端生成：最多一个 primary、三个 visible secondary；active runtime、blocking request 与普通 shelf 互斥。completion shelf 只提供显式 next/navigation，不投影无法执行的 pause action。
+- completed progress 必须对应 `summarize_progress + completion_pause`。session 留在 completed 状态；只有 `enter_next_knowledge` typed control 才重新读取最新 roadmap/availability、推进 track pointer、open/resume 下一 session 并 admission 一个 first-unit run。
+- public projection/trace/export 只能包含 stable IDs、versions、enum、bounded summaries 与 hashes。禁止 prompt、reasoning、provider body、raw checkpoint/authority JSON、完整问题/提交、hidden tests/rubric、命令、路径或 secrets。
+- 五张表全部进入 cutover exhaustive inventory 与 local summary/export/reset/delete；删除先 action receipt，再 run scope/stimulus/checkpoint/session，并在同一事务使用 deferred `NO ACTION` lineage FK 与 transaction-local purge capability。
 
 ## 4. Validation & Error Matrix
 
 | Condition | Required result |
 | --- | --- |
-| Cross-user, cross-track, or cross-conversation read/mutation | `404` scoped not-found or `409 TEACHING_AUTHORITY_CONFLICT`; do not reveal foreign existence |
-| Expected session/track/progress/assignment version is stale | `409 TEACHING_AUTHORITY_CONFLICT`; no checkpoint, run, effect, or message write |
-| Current checkpoint/session pointer changed after run admission | Harness commit raises stale terminal/effect conflict |
-| Stimulus supplies zero or multiple union branches | PostgreSQL `23514` exact-one CHECK failure |
-| Learner stimulus lacks exact run/message/input receipt | composite FK or repository conflict |
-| Control/domain admission would create a competing foreground run | `409 TEACHING_AUTHORITY_CONFLICT` |
-| Same idempotency key with a different immutable request | `409 IDEMPOTENCY_CONFLICT` |
-| Ordinary UPDATE/DELETE of checkpoint, stimulus, or run teaching scope | append-only trigger rejection |
-| Reset/delete outside exact user purge scope | trigger/FK rejection |
+| Cross-user / cross-track / cross-conversation read or mutation | scoped `404` 或 `409 TEACHING_AUTHORITY_CONFLICT`；不泄露 foreign existence |
+| Missing/oversized required teaching context | `TUTOR_TEACHING_SESSION_STALE` 或 `TUTOR_TEACHING_SESSION_UNREPRESENTABLE`；provider 不调用 |
+| Unknown action、extra field、unknown handle 或 unlisted focus | policy denial；无 message/checkpoint/receipt |
+| teaching run 未选择 exact Skill 或未返回 `teaching_step` | `teaching_skill_required` / `teaching_step_required` policy denial |
+| completion pause 无 completed progress，或 completed progress 未使用 completion pause | `teaching_completion_pause_invalid`；无 durable commit |
+| Expected session/track/progress/assignment version stale | `409 TEACHING_AUTHORITY_CONFLICT`；无新 run/message/checkpoint |
+| Provider 返回后 session/checkpoint/assignment/progress 已变化 | source run durable `cancelled` + `teaching_authority_stale`；不公开旧 output |
+| Free Reading 调用 guided-only `continue/return_focus/change_example` | `400 TEACHING_ACTION_INVALID`；不 admission run |
+| Control/domain admission 会产生竞争 foreground run | `409 TEACHING_AUTHORITY_CONFLICT` |
+| 同 idempotency key 对应不同 immutable request | `409 IDEMPOTENCY_CONFLICT` |
+| 普通 UPDATE/DELETE checkpoint/stimulus/scope/receipt | PostgreSQL `23514` append-only trigger rejection |
+| reset/delete 不在 exact user purge scope | trigger/FK rejection |
 
 ## 5. Good / Base / Bad Cases
 
-- **Good:** an existing track conversation opens `python.variables`, appends checkpoint version 1, accepts a real learner message on a fresh run, and binds exact message/input evidence plus immutable teaching scope.
-- **Good:** an explicit `continue` control creates an interactive run with `input_revision=0`, one `teaching_control` stimulus, and no learner message row.
-- **Base:** an old track conversation has no teaching session. History remains readable; a normal run may remain on the legacy-compatible path until the user explicitly opens a session.
-- **Bad:** infer the current knowledge key from message text or backfill a session from conversation history.
-- **Bad:** store only `session_id` on the run and read mutable current progress/assignment later without freezing versions.
-- **Bad:** use proactive origin for a user-owned teaching control or insert a fake learner message to satisfy an old input shape.
+- **Good:** Guided open 创建 session/checkpoint 与一个 `open_session` teaching-control run；fake provider 两阶段选择 exact Skill，再提交一个 `explain_concept + soft_pause`，原子写 message/checkpoint/receipt，且不会自动创建第二个 run。
+- **Good:** Free Reading learner message 绑定真实 message/input receipt，得到一个 reactive answer 后仍保持 Free Reading；显式 `escalate_guided` 才创建下一个 control run。
+- **Good:** progress version 变化后，旧 active session 追加 authority-pause checkpoint 并置为 blocked；successor 冻结新 authority。completed evidence 只允许 `summarize_progress + completion_pause`。
+- **Good:** `enter_next_knowledge` 使用最新 expected versions 和 candidate key，重新验证 active plan/availability 后复用同一 conversation，推进 track pointer 并只 admission 一个 next-session run。
+- **Base:** 旧 conversation/history 没有 teaching metadata 时仍可读，不做聊天正文 backfill；未显式 open 前可保持 legacy-compatible path。
+- **Bad:** 根据 learner 文本猜 `continue`，插入伪 learner message，或以 proactive origin 处理用户控制。
+- **Bad:** 让客户端决定 Action Shelf label/target、mode mutation、mastery/completion/next node，或允许 provider 引用任意 focus/handle。
+- **Bad:** 先公开 message，再单独写 checkpoint/receipt；后续 stale/DB failure 会产生不可恢复的分叉 authority。
 
 ## 6. Tests Required
 
-- Bootstrap the same empty PostgreSQL schema twice and assert all tables, scoped FKs, partial unique index, exact-one CHECK, and immutable triggers.
-- Test open/resume idempotency, checkpoint CAS, mode/status mutation, and cross-owner/scope rejection.
-- Test real learner-message binding, explicit control/domain admission without a learner message, and `origin='interactive'`.
-- Change track/progress/assignment/document/session/checkpoint authority after admission and assert effect/waiting/terminal persistence fails before public output or effect commit.
-- Assert export contains only teaching summaries, reset/delete clears all four user-owned tables child-to-root, and cutover exhaustive inventory includes every table.
-- Run Child 1 focused tests, Ruff, Mypy, Trellis validation, and `git diff --check` without a real provider.
+- PostgreSQL bootstrap twice：五张表、owner/scope FK、partial unique `active | paused` predicate、exact-one CHECK、append-only trigger、source-stimulus deferred `NO ACTION` FK。
+- Skill/catalog/provider：published Skill identity、strict good/base/bad schema、extra field、unknown action/handle/focus、message exact binding、non-teaching compatibility。
+- Context：exact session/stimulus/handles、current-input priority、default budget 可表示、低预算 provider-before fail closed、optional context eviction 回归。
+- Loop/reducer：one stimulus -> one action -> one pause、focus push/resume/abandon/replace/wait、bounded stack/questions、resolved child question 移除、无新事件调用数稳定。
+- Free Reading：reactive answer mode 不变；guided-only control bypass 拒绝；显式 escalation 创建一个 control run；pause/resume 不错误触发 provider。
+- Completion：authority refresh successor、completion pause 原子 commit、无自动 next、stale roadmap conflict、显式 latest-roadmap transition 仍使用同一 conversation。
+- Governance/privacy：receipt append-only、export 无 public message/provider/protected body、reset child-to-root、cutover inventory exhaustive、trace/redaction regression。
+- 质量门：focused tests、完整 API pytest、Ruff、Mypy、bootstrap twice、Trellis validate 与 `git diff --check`；默认 fake provider，真实 provider 需再次明确批准。
 
 ## 7. Wrong vs Correct
 
 ### Wrong
 
 ```python
-# Guesses authority from mutable state and forges a learner input for a button click.
 knowledge_key = infer_from_chat(conversation.messages)
 message_id = repository.insert_message(role="learner", content="continue")
 run = repository.create_run(origin="proactive")
+provider_result = provider.decide(...)
+repository.insert_public_message(provider_result.text)
+repository.update_checkpoint_later(...)
 ```
 
 ### Correct
 
 ```python
-# Uses the explicit session/checkpoint authority and a closed structured control.
 control = TeachingControlStimulus(
     control_key="continue",
     client_action_id=client_action_id,
@@ -108,12 +145,16 @@ control = TeachingControlStimulus(
     expected_progress_version=progress_version,
     expected_assignment_version=assignment_version,
 )
+
 run_scope = teaching_sessions.admit_control_run(
     authority=authority,
     session=current_session,
     stimulus=control,
 )
+
+# provider 只能返回 one closed teaching_step；commit transaction 同时写
+# next checkpoint + session CAS + safe receipt + public message + terminal run。
 assert run_scope["origin"] == "interactive"
 ```
 
-The correct path produces no learner message, freezes exact authority, and can be rejected safely if any fence becomes stale.
+正确路径不伪造 learner message，冻结 exact authority，只允许 server-provided handles/focus，并可在任何 stale fence 上无公开副作用地拒绝。

@@ -1,6 +1,8 @@
 """Catalog-constrained decision validation before Tutor capability or effect boundaries."""
 from __future__ import annotations
 
+from typing import Protocol
+
 from pydantic import ValidationError
 
 from app.agents.harness.contracts import payload_mapping_from_fields
@@ -14,6 +16,14 @@ from app.agents.harness.contracts import (
 )
 from app.services.tutor.capability_policy import CapabilityPolicyContext, CapabilityPolicyResolver
 from app.services.tutor.skill_selection import TutorSkillSelection, TutorSkillSelectionStore
+
+
+class _TeachingContextRepository(Protocol):
+    def teaching_context(self, *, user_id: str, run_id: str) -> dict[str, object] | None: ...
+
+
+class _DecisionGate(Protocol):
+    def validate(self, *, run: TutorRunSnapshot, decision: TutorDecision) -> TutorDecisionGateResult: ...
 
 
 class CatalogTutorDecisionGate:
@@ -239,3 +249,85 @@ class CatalogTutorDecisionGate:
 
 def _deny(code: str) -> TutorDecisionGateResult:
     return TutorDecisionGateResult(status=TutorDecisionGateStatus.DENIED, diagnostic_code=code)
+
+class TeachingTutorDecisionGate:
+    """Require one exact lesson-teaching Skill and one closed action for teaching runs."""
+
+    _SKILL_ID = "tutor.lesson-teaching"
+    _SKILL_VERSION = "1.0.0"
+    _FREE_READING_ACTIONS = frozenset({
+        "answer_question", "explain_concept", "show_example", "compare_examples", "wait_for_input",
+    })
+
+    def __init__(
+        self, *, base: _DecisionGate, catalog: SkillCatalogSnapshot,
+        selection_store: TutorSkillSelectionStore, teaching: _TeachingContextRepository,
+    ) -> None:
+        self._base = base
+        self._catalog = catalog
+        self._selection_store = selection_store
+        self._teaching = teaching
+
+    def validate(self, *, run: TutorRunSnapshot, decision: TutorDecision) -> TutorDecisionGateResult:
+        try:
+            context = self._teaching.teaching_context(user_id=run.user_id, run_id=run.run_id)
+        except ValueError:
+            return _deny("teaching_authority_stale")
+        base_validate = self._base.validate
+        if context is None:
+            if decision.teaching_step is not None:
+                return _deny("teaching_scope_unexpected")
+            return base_validate(run=run, decision=decision)
+        base_result = base_validate(run=run, decision=decision)
+        if base_result.status is not TutorDecisionGateStatus.APPROVED:
+            return base_result
+        if decision.teaching_step is None:
+            return _deny("teaching_step_required")
+        selection = self._selection_store.get(run_id=run.run_id, input_revision=run.input_revision)
+        skill = self._catalog.resolve_skill(self._SKILL_ID, self._SKILL_VERSION)
+        if selection is None or skill is None or selection.reference != skill.reference:
+            return _deny("teaching_skill_required")
+        if selection.manifest_hash != skill.manifest_hash or selection.instruction_hash != skill.instruction_hash:
+            return _deny("teaching_skill_stale")
+        step = decision.teaching_step
+        objective = context.get("objective")
+        active_focus = context.get("active_focus")
+        suspended = context.get("suspended_focuses")
+        session = context.get("session")
+        if not isinstance(objective, dict) or not isinstance(session, dict):
+            return _deny("teaching_context_invalid")
+        if step.objective_id != str(objective.get("objective_id") or ""):
+            return _deny("teaching_objective_invalid")
+        allowed_handles = context.get("allowed_source_handles")
+        if not isinstance(allowed_handles, list) or not set(step.source_handles).issubset({str(item) for item in allowed_handles}):
+            return _deny("teaching_source_handle_invalid")
+        candidate_focus_id = str(context.get("candidate_focus_id") or "")
+        active_focus_id = str(active_focus.get("focus_id") or "") if isinstance(active_focus, dict) else ""
+        if not isinstance(suspended, list):
+            return _deny("teaching_context_invalid")
+        suspended_ids = {
+            str(item.get("focus_id") or "") for item in suspended if isinstance(item, dict)
+        }
+        resolution = step.focus_resolution.value
+        if resolution == "push_child" and step.focus_id != candidate_focus_id:
+            return _deny("teaching_child_focus_invalid")
+        if resolution == "stay" and step.focus_id not in {active_focus_id, candidate_focus_id}:
+            return _deny("teaching_active_focus_invalid")
+        if resolution == "resolve_and_resume_parent" and step.focus_id not in suspended_ids:
+            return _deny("teaching_parent_focus_invalid")
+        if resolution == "replace_objective" and step.focus_id not in {
+            str(objective.get("objective_id") or ""), candidate_focus_id,
+        }:
+            return _deny("teaching_replacement_focus_invalid")
+        if resolution == "abandon_branch" and step.focus_id != active_focus_id:
+            return _deny("teaching_abandoned_focus_invalid")
+        if resolution == "wait" and step.focus_id not in {active_focus_id, candidate_focus_id}:
+            return _deny("teaching_wait_focus_invalid")
+        mode = str(session.get("mode") or "")
+        if mode == "free_reading" and step.action.value not in self._FREE_READING_ACTIONS:
+            return _deny("free_reading_action_invalid")
+        progress_completed = str(session.get("progress_status") or "") == "completed"
+        completion_pause = step.pause_kind.value == "completion_pause"
+        if completion_pause != progress_completed:
+            return _deny("teaching_completion_pause_invalid")
+        return TutorDecisionGateResult(status=TutorDecisionGateStatus.APPROVED)

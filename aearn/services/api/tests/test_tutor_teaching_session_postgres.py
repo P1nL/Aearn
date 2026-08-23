@@ -18,7 +18,7 @@ def _open(conn, scope):  # type: ignore[no-untyped-def]
         user_id=str(scope["user_id"]), track_id=str(scope["track_id"]), knowledge_key="python.variables",
         conversation_id=str(scope["conversation_id"]), expected_track_version=1,
         expected_progress_version=1, expected_assignment_version=1,
-        mode=TeachingSessionMode.GUIDED, idempotency_key=f"open-{uuid4()}",
+        mode=TeachingSessionMode.FREE_READING, idempotency_key=f"open-{uuid4()}",
     )["teaching_session"]
 
 
@@ -46,16 +46,29 @@ def test_bootstrap_twice_installs_tables_partial_unique_and_immutable_triggers()
         tables = {str(row["table_name"]) for row in conn.execute(
             "SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND table_name LIKE 'tutor%teaching%'"
         ).fetchall()}
-        assert {"tutor_teaching_sessions", "tutor_teaching_session_checkpoints", "tutor_run_teaching_scopes"}.issubset(tables)
+        assert {
+            "tutor_teaching_sessions", "tutor_teaching_session_checkpoints",
+            "tutor_run_teaching_scopes", "tutor_teaching_action_receipts",
+        }.issubset(tables)
         index = conn.execute("SELECT indexdef FROM pg_indexes WHERE indexname='uq_tutor_teaching_sessions_one_current'").fetchone()
         assert index is not None and "WHERE" in str(index["indexdef"])
+        assert "'blocked'" not in str(index["indexdef"])
+        source_stimulus_fk = conn.execute(
+            """SELECT condeferrable,confdeltype FROM pg_constraint
+               WHERE conname='fk_tutor_teaching_checkpoint_source_stimulus'"""
+        ).fetchone()
+        assert source_stimulus_fk == {"condeferrable": True, "confdeltype": "a"}
         triggers = {str(row["tgname"]) for row in conn.execute(
-            "SELECT tgname FROM pg_trigger WHERE NOT tgisinternal AND tgrelid IN ('tutor_teaching_sessions'::regclass,'tutor_teaching_session_checkpoints'::regclass,'tutor_run_stimulus_events'::regclass,'tutor_run_teaching_scopes'::regclass)"
+            """SELECT tgname FROM pg_trigger WHERE NOT tgisinternal AND tgrelid IN (
+                 'tutor_teaching_sessions'::regclass,'tutor_teaching_session_checkpoints'::regclass,
+                 'tutor_run_stimulus_events'::regclass,'tutor_run_teaching_scopes'::regclass,
+                 'tutor_teaching_action_receipts'::regclass)"""
         ).fetchall()}
         assert "trg_tutor_teaching_sessions_lifecycle" in triggers
         assert "trg_tutor_teaching_checkpoints_immutable" in triggers
         assert "trg_tutor_run_stimuli_immutable" in triggers
         assert "trg_tutor_run_teaching_scopes_immutable" in triggers
+        assert "trg_tutor_teaching_action_receipts_immutable" in triggers
 
 
 def test_postgres_rejects_duplicate_current_append_mutation_and_bad_exact_one_of() -> None:

@@ -48,6 +48,7 @@ from app.services.learning.plan_repository import (
     LearningPlanSessionNotFound,
     PostgresLearningPlanSessionRepository,
 )
+from app.services.learning.teaching_sessions import TeachingSessionConflict, TeachingSessionRepository
 from app.services.tutor.action_adapters import (
     ControlledCapabilityGateway,
     PostgresCapabilityAuthorityVerifier,
@@ -58,7 +59,7 @@ from app.services.tutor.action_persistence import PostgresActionFence, PostgresA
 from app.services.tutor.action_runtime import ActionVerifier
 from app.services.tutor.capability_gateway import CatalogCapabilityGateway
 from app.services.learning.plan_policy import InteractiveLearningCapabilityPolicyResolver
-from app.services.tutor.decision_gate import CatalogTutorDecisionGate
+from app.services.tutor.decision_gate import CatalogTutorDecisionGate, TeachingTutorDecisionGate
 from app.services.tutor.learner_state import TutorContextSummaryProjection, TutorLearnerStateRepository
 from app.services.tutor.persistence import (
     PostgresTutorLifecycle,
@@ -396,7 +397,20 @@ class PostgresTutorContextLoader:
         proactive = self._proactive_candidate_kind is not None
         if proactive != (snapshot.origin == "proactive"):
             raise TutorContextError("TUTOR_CONTEXT_ORIGIN_INVALID")
-        return not proactive
+        if proactive:
+            return False
+        stimulus = self._conn.execute(
+            "SELECT stimulus_kind FROM tutor_run_stimulus_events WHERE run_id=%s AND user_id=%s",
+            (snapshot.run_id, snapshot.user_id),
+        ).fetchone()
+        if stimulus is None:
+            return True
+        kind = str(stimulus["stimulus_kind"])
+        if kind == "learner_message":
+            return True
+        if kind in {"teaching_control", "domain_event"}:
+            return False
+        raise TutorContextError("TUTOR_TEACHING_STIMULUS_INVALID")
 
     def _load_current_input_row(
         self,
@@ -469,6 +483,7 @@ class PostgresTutorLearningContextLoader:
     ) -> None:
         self._learning = TutorLearningContextAdapter(conn)
         self._context_references = PostgresTutorContextReferenceRepository(conn)
+        self._teaching = TeachingSessionRepository(conn)
         self._plans = PostgresLearningPlanSessionRepository(conn)
         self._facts = PostgresPlanningFactRepository(conn)
         self._actions = PostgresActionReceiptStore(conn)
@@ -477,6 +492,21 @@ class PostgresTutorLearningContextLoader:
     def load_context(self, snapshot: TutorRunSnapshot, *, input_revision: int) -> TutorContextInput:
         base = self._base_loader.load_context(snapshot, input_revision=input_revision)
         learning = self._learning.load(user_id=snapshot.user_id, run_id=snapshot.run_id)
+        try:
+            teaching_context = self._teaching.teaching_context(user_id=snapshot.user_id, run_id=snapshot.run_id)
+        except TeachingSessionConflict as exc:
+            raise TutorContextError("TUTOR_TEACHING_SESSION_STALE") from exc
+        teaching_session = teaching_context.get("session") if teaching_context is not None else None
+        teaching_sources = (
+            (
+                TutorContextSource(
+                    source_id=f"teaching-session:{teaching_session['session_id']}",
+                    content=teaching_context,
+                ),
+            )
+            if teaching_context is not None and isinstance(teaching_session, Mapping)
+            else ()
+        )
         descriptors = list(base.system_descriptors)
         descriptors.extend(learning.sources)
         action_receipts = tuple(
@@ -579,6 +609,7 @@ class PostgresTutorLearningContextLoader:
         return replace(
             base,
             system_descriptors=tuple(descriptors),
+            teaching_session=teaching_sources,
             required_facts=required_facts,
             action_receipts=authoritative.action_receipts,
             recent_messages=recent_messages,
@@ -789,10 +820,15 @@ class TutorInteractiveRunDispatcher:
                 clock=self._clock,
                 compaction_publisher=NoopTutorCompactionPublisher(),
                 decision_gate=PlanningQuestionDecisionGate(
-                    base=CatalogTutorDecisionGate(
+                    base=TeachingTutorDecisionGate(
+                        base=CatalogTutorDecisionGate(
+                            catalog=catalog,
+                            policy_resolver=policy_resolver,
+                            selection_store=selection_store,
+                        ),
                         catalog=catalog,
-                        policy_resolver=policy_resolver,
                         selection_store=selection_store,
+                        teaching=TeachingSessionRepository(conn),
                     ),
                     facts=planning_facts,
                 ),

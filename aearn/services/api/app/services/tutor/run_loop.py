@@ -27,6 +27,7 @@ from app.agents.harness.contracts import (
     empty_checkpoint_metadata,
     terminal_status,
 )
+from app.services.learning.teaching_contracts import TeachingStepDecision
 from app.services.tutor.public_thinking_stream import TutorPublicThinkingSink
 from app.services.tutor.ports import (
     Clock,
@@ -347,6 +348,7 @@ class TutorRunLoop:
                         public_thinking_text=decision.public_thinking_text,
                         public_thinking_steps=decision.public_thinking_steps,
                         conversation_title=decision.conversation_title,
+                        teaching_step=decision.teaching_step,
                     )
 
                 if decision.continuation_kind is not None:
@@ -592,6 +594,7 @@ class TutorRunLoop:
         public_thinking_text: str = "",
         public_thinking_steps: tuple[str, ...] = (),
         conversation_title: str | None = None,
+        teaching_step: TeachingStepDecision | None = None,
     ) -> TutorRunResult:
         checkpoint_metadata = metadata or empty_checkpoint_metadata(token_budget=snapshot.policy.context_token_budget)
         status = terminal_status(outcome)
@@ -625,6 +628,7 @@ class TutorRunLoop:
             conversation_title=conversation_title,
             diagnostic_code=diagnostic_code,
             effect_results=tuple(effect_results),
+            teaching_step=teaching_step,
         )
         if self._lifecycle is not None:
             if snapshot.lease is None:

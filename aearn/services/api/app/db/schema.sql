@@ -4076,9 +4076,19 @@ ALTER TABLE tutor_teaching_sessions ADD COLUMN IF NOT EXISTS track_version integ
 ALTER TABLE tutor_teaching_sessions ALTER COLUMN track_version SET NOT NULL;
 ALTER TABLE tutor_teaching_sessions DROP CONSTRAINT IF EXISTS chk_tutor_teaching_sessions_track_version;
 ALTER TABLE tutor_teaching_sessions ADD CONSTRAINT chk_tutor_teaching_sessions_track_version CHECK (track_version>=1);
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_indexes
+    WHERE schemaname='public' AND indexname='uq_tutor_teaching_sessions_one_current'
+      AND indexdef LIKE '%blocked%'
+  ) THEN
+    DROP INDEX uq_tutor_teaching_sessions_one_current;
+  END IF;
+END $$;
 CREATE UNIQUE INDEX IF NOT EXISTS uq_tutor_teaching_sessions_one_current
   ON tutor_teaching_sessions(user_id,track_id,conversation_id,knowledge_key)
-  WHERE status IN ('active','paused','blocked');
+  WHERE status IN ('active','paused');
 CREATE INDEX IF NOT EXISTS idx_tutor_teaching_sessions_track_activity
   ON tutor_teaching_sessions(user_id,track_id,last_activity_at DESC,id DESC);
 
@@ -4234,16 +4244,84 @@ DO $$ BEGIN
     ALTER TABLE tutor_teaching_sessions ADD CONSTRAINT fk_tutor_teaching_session_current_checkpoint
       FOREIGN KEY (current_checkpoint_id,id,user_id,conversation_id)
       REFERENCES tutor_teaching_session_checkpoints(id,teaching_session_id,user_id,conversation_id)
-      ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED;
+      ON DELETE NO ACTION DEFERRABLE INITIALLY DEFERRED;
   END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fk_tutor_teaching_checkpoint_source_stimulus') THEN
     ALTER TABLE tutor_teaching_session_checkpoints ADD CONSTRAINT fk_tutor_teaching_checkpoint_source_stimulus
       FOREIGN KEY (source_stimulus_id,source_run_id,user_id,conversation_id,teaching_session_id)
       REFERENCES tutor_run_stimulus_events(id,run_id,user_id,conversation_id,teaching_session_id)
-      ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED;
+      ON DELETE NO ACTION DEFERRABLE INITIALLY DEFERRED;
   END IF;
 END $$;
 
+ALTER TABLE tutor_run_stimulus_events
+  DROP CONSTRAINT IF EXISTS tutor_run_stimulus_events_control_key_check;
+ALTER TABLE tutor_run_stimulus_events
+  ADD CONSTRAINT tutor_run_stimulus_events_control_key_check CHECK (
+    control_key IS NULL OR control_key IN (
+      'open_session','continue','return_focus','change_example','escalate_guided',
+      'switch_mode','pause','resume','enter_next_knowledge'
+    )
+  );
+
+CREATE TABLE IF NOT EXISTS tutor_teaching_action_receipts (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  run_id uuid NOT NULL UNIQUE,
+  user_id uuid NOT NULL,
+  conversation_id uuid NOT NULL,
+  teaching_session_id uuid NOT NULL,
+  checkpoint_id uuid NOT NULL,
+  stimulus_id uuid NOT NULL,
+  action text NOT NULL CHECK (action IN (
+    'orient','explain_concept','answer_question','show_example','compare_examples',
+    'check_understanding','recommend_practice','explain_feedback','remediate_prerequisite',
+    'summarize_progress','recommend_pause','wait_for_input'
+  )),
+  objective_id text NOT NULL CHECK (objective_id ~ '^[a-z0-9][a-z0-9._:-]{0,159}$'),
+  focus_id text NOT NULL CHECK (focus_id ~ '^[a-z0-9][a-z0-9._:-]{0,159}$'),
+  focus_resolution text NOT NULL CHECK (focus_resolution IN (
+    'stay','push_child','resolve_and_resume_parent','replace_objective','abandon_branch','wait'
+  )),
+  pause_kind text NOT NULL CHECK (pause_kind IN (
+    'soft_pause','evidence_pause','authority_pause','session_pause','completion_pause'
+  )),
+  source_handles_json jsonb NOT NULL DEFAULT '[]'::jsonb CHECK (
+    jsonb_typeof(source_handles_json)='array' AND jsonb_array_length(source_handles_json)<=8
+    AND octet_length(source_handles_json::text)<=2048
+  ),
+  public_message_hash text NOT NULL CHECK (public_message_hash ~ '^[0-9a-f]{64}$'),
+  context_source_ids_json jsonb NOT NULL DEFAULT '[]'::jsonb CHECK (
+    jsonb_typeof(context_source_ids_json)='array' AND jsonb_array_length(context_source_ids_json)<=64
+    AND octet_length(context_source_ids_json::text)<=8192
+  ),
+  context_source_hashes_json jsonb NOT NULL DEFAULT '[]'::jsonb CHECK (
+    jsonb_typeof(context_source_hashes_json)='array' AND jsonb_array_length(context_source_hashes_json)<=64
+    AND octet_length(context_source_hashes_json::text)<=8192
+  ),
+  schema_version text NOT NULL DEFAULT 'teaching_action_receipt_v1'
+    CHECK (schema_version='teaching_action_receipt_v1'),
+  policy_version text NOT NULL DEFAULT 'lesson_teaching_policy_v1'
+    CHECK (policy_version='lesson_teaching_policy_v1'),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_tutor_teaching_action_receipts_scope
+    UNIQUE (id,run_id,user_id,conversation_id,teaching_session_id),
+  CONSTRAINT fk_tutor_teaching_action_receipt_run_user FOREIGN KEY (run_id,user_id)
+    REFERENCES tutor_runs(id,user_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_teaching_action_receipt_run_conversation FOREIGN KEY (run_id,conversation_id)
+    REFERENCES tutor_runs(id,conversation_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_tutor_teaching_action_receipt_session FOREIGN KEY (teaching_session_id,user_id,conversation_id)
+    REFERENCES tutor_teaching_sessions(id,user_id,conversation_id) ON DELETE NO ACTION DEFERRABLE INITIALLY DEFERRED,
+  CONSTRAINT fk_tutor_teaching_action_receipt_checkpoint
+    FOREIGN KEY (checkpoint_id,teaching_session_id,user_id,conversation_id)
+    REFERENCES tutor_teaching_session_checkpoints(id,teaching_session_id,user_id,conversation_id)
+    ON DELETE NO ACTION DEFERRABLE INITIALLY DEFERRED,
+  CONSTRAINT fk_tutor_teaching_action_receipt_stimulus
+    FOREIGN KEY (stimulus_id,run_id,user_id,conversation_id,teaching_session_id)
+    REFERENCES tutor_run_stimulus_events(id,run_id,user_id,conversation_id,teaching_session_id)
+    ON DELETE NO ACTION DEFERRABLE INITIALLY DEFERRED
+);
+CREATE INDEX IF NOT EXISTS idx_tutor_teaching_action_receipts_session_created
+  ON tutor_teaching_action_receipts(teaching_session_id,created_at DESC,id DESC);
 -- Repair early local bootstrap variants that used immediate RESTRICT on deferred teaching lineage.
 ALTER TABLE tutor_teaching_sessions DROP CONSTRAINT IF EXISTS fk_tutor_teaching_session_current_checkpoint;
 ALTER TABLE tutor_teaching_sessions ADD CONSTRAINT fk_tutor_teaching_session_current_checkpoint
@@ -4254,6 +4332,11 @@ ALTER TABLE tutor_teaching_session_checkpoints DROP CONSTRAINT IF EXISTS fk_tuto
 ALTER TABLE tutor_teaching_session_checkpoints ADD CONSTRAINT fk_tutor_teaching_checkpoint_predecessor
   FOREIGN KEY (predecessor_checkpoint_id,teaching_session_id,user_id,conversation_id)
   REFERENCES tutor_teaching_session_checkpoints(id,teaching_session_id,user_id,conversation_id)
+  ON DELETE NO ACTION DEFERRABLE INITIALLY DEFERRED;
+ALTER TABLE tutor_teaching_session_checkpoints DROP CONSTRAINT IF EXISTS fk_tutor_teaching_checkpoint_source_stimulus;
+ALTER TABLE tutor_teaching_session_checkpoints ADD CONSTRAINT fk_tutor_teaching_checkpoint_source_stimulus
+  FOREIGN KEY (source_stimulus_id,source_run_id,user_id,conversation_id,teaching_session_id)
+  REFERENCES tutor_run_stimulus_events(id,run_id,user_id,conversation_id,teaching_session_id)
   ON DELETE NO ACTION DEFERRABLE INITIALLY DEFERRED;
 
 CREATE OR REPLACE FUNCTION enforce_tutor_teaching_session_lifecycle() RETURNS trigger AS $$
@@ -4310,6 +4393,11 @@ CREATE TRIGGER trg_tutor_run_stimuli_immutable BEFORE UPDATE OR DELETE ON tutor_
 FOR EACH ROW EXECUTE FUNCTION enforce_tutor_teaching_append_only();
 DROP TRIGGER IF EXISTS trg_tutor_run_teaching_scopes_immutable ON tutor_run_teaching_scopes;
 CREATE TRIGGER trg_tutor_run_teaching_scopes_immutable BEFORE UPDATE OR DELETE ON tutor_run_teaching_scopes
+FOR EACH ROW EXECUTE FUNCTION enforce_tutor_teaching_append_only();
+
+DROP TRIGGER IF EXISTS trg_tutor_teaching_action_receipts_immutable ON tutor_teaching_action_receipts;
+CREATE TRIGGER trg_tutor_teaching_action_receipts_immutable
+BEFORE UPDATE OR DELETE ON tutor_teaching_action_receipts
 FOR EACH ROW EXECUTE FUNCTION enforce_tutor_teaching_append_only();
 
 -- Lesson exercise Gate, append-only attempt, and module diagnostic authority.
