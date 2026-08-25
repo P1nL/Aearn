@@ -67,7 +67,7 @@ Required behavior:
 - Do not put tool arguments, tool results, prompts, provider bodies, or credentials into normal Runtime events.
 - Bound notification and Runtime event queues. Runtime event publication must apply bounded async backpressure so an active consumer can drain burst traffic; only a subscriber that remains full through the bounded wait fails closed.
 - Logs and health payloads may include method, version, generation, safe code, hashes, and duration only; exclude prompts, model bodies, reasoning, tool arguments, credentials, and full temporary paths.
-- `pnpm --dir .\aearn dev` starts the dedicated worker by default. `pnpm --dir .\aearn dev:no-codex` is the explicit local opt-out.
+- `pnpm --dir .\aearn dev` starts a normal `tutor-main` worker for `celery,tutor-interactive,tutor-proactive,tutor-curation` plus the dedicated `tutor-codex` worker. `pnpm --dir .\aearn dev:no-codex` is the explicit local Codex opt-out; it must not disable Harness queue consumption.
 
 ### 4. Validation & Error Matrix
 

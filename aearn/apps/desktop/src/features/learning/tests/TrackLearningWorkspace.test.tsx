@@ -82,6 +82,8 @@ describe("TrackLearningWorkspace teaching role swap", () => {
     const rendered = render(<TrackLearningWorkspace user={userProfile} trackId={track.track_id} onBack={vi.fn()} />);
 
     const switcher = await screen.findByRole("button", { name: "切换到自由阅读，课程成为主区域" });
+    expect(switcher).toHaveTextContent("⇄");
+    expect(switcher).not.toHaveTextContent("自由阅读");
     const tutorDraft = screen.getByRole("textbox", { name: "Tutor 草稿" });
     const lessonSelection = screen.getByRole("textbox", { name: "Lesson 选择" });
     await user.type(tutorDraft, "不要丢失");
@@ -93,6 +95,28 @@ describe("TrackLearningWorkspace teaching role swap", () => {
     await waitFor(() => expect(rendered.container.querySelector(".learning-workspace-grid")).toHaveClass("teaching-free_reading"));
     expect(screen.getByRole("textbox", { name: "Tutor 草稿" })).toHaveValue("不要丢失");
     expect(screen.getByRole("textbox", { name: "Lesson 选择" })).toHaveValue("选区状态");
+    expect(mounts.tutor).toBe(1);
+    expect(mounts.lesson).toBe(1);
+  });
+
+  it("independently collapses and restores both desktop side panels", async () => {
+    const user = userEvent.setup();
+    const rendered = render(<TrackLearningWorkspace user={userProfile} trackId={track.track_id} onBack={vi.fn()} />);
+    const collapseRoadmap = await screen.findByRole("button", { name: "收起左侧学习路线" });
+    const grid = rendered.container.querySelector<HTMLElement>(".learning-workspace-grid")!;
+
+    await user.click(collapseRoadmap);
+    expect(grid).toHaveClass("roadmap-collapsed");
+    expect(screen.getByRole("button", { name: "展开左侧学习路线" })).toHaveAttribute("aria-expanded", "false");
+
+    await user.click(screen.getByRole("button", { name: "收起右侧辅助面板" }));
+    expect(grid).toHaveClass("secondary-collapsed");
+    expect(screen.getByRole("button", { name: "展开右侧辅助面板" })).toHaveAttribute("aria-expanded", "false");
+
+    await user.click(screen.getByRole("button", { name: "展开左侧学习路线" }));
+    await user.click(screen.getByRole("button", { name: "展开右侧辅助面板" }));
+    expect(grid).not.toHaveClass("roadmap-collapsed");
+    expect(grid).not.toHaveClass("secondary-collapsed");
     expect(mounts.tutor).toBe(1);
     expect(mounts.lesson).toBe(1);
   });

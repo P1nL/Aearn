@@ -65,8 +65,8 @@ ReviewService(...same execution-tier inputs...)
 
 ### 6. Tests Required
 
-- `tests/test_learning_agent_integration_matrix.py`: four core parameterized flows, public/local tier assertions, safe projection audit, extension/degraded capability matrix.
-- `tests/test_harness_cutover.py::test_cutover_inventory_explicitly_classifies_every_tutor_table`: real PostgreSQL schema reconciliation.
+- `tests/integration/test_learning_agent_integration_matrix.py`: four core parameterized flows, public/local tier assertions, safe projection audit, extension/degraded capability matrix.
+- `tests/integration/test_harness_cutover.py::test_cutover_inventory_explicitly_classifies_every_tutor_table`: real PostgreSQL schema reconciliation.
 - Full cutover, DB bootstrap, Action Runtime, context eval/facts/references, Gate, model review, ReviewSession, execution-tier, executor lifecycle, export/reset suites.
 - API lock, Ruff, Mypy, serial full pytest; executor lock/Ruff/Mypy/full pytest; Desktop build; DB smoke; Trellis validate; `git diff --check`.
 - Browser smoke is required when current UI code changes. Documentation/test-only integration work may rely on the previously recorded current-workspace browser proof, but must not claim new UI evidence.

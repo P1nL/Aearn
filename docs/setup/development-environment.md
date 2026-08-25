@@ -221,8 +221,8 @@ PostgreSQL bootstrap-heavy pytest 必须串行。不要并行运行同时调用
 `tuple concurrently updated`，那不是可忽略的成功。
 
 ```powershell
-uv --directory .\aearn\services\api run python -m pytest tests/test_db_bootstrap.py tests/test_harness_cutover.py -q
-uv --directory .\aearn\services\api run python -m pytest tests/test_tutor_proactive_default_delivery.py -q
+uv --directory .\aearn\services\api run python -m pytest tests/database/test_db_bootstrap.py tests/integration/test_harness_cutover.py -q
+uv --directory .\aearn\services\api run python -m pytest tests/tutor/test_tutor_proactive_default_delivery.py -q
 ```
 
 完整质量矩阵、fixture smoke 和实测结果见
@@ -249,7 +249,7 @@ uv --directory .\aearn\services\api run python -m pytest tests/test_tutor_proact
 核心语言闭环和 cutover/schema 对账必须使用真实本地 PostgreSQL，并保持串行：
 
 ```powershell
-uv --directory .\aearn\services\api run python -m pytest -q tests/test_learning_agent_integration_matrix.py tests/test_harness_cutover.py
+uv --directory .\aearn\services\api run python -m pytest -q tests/integration/test_learning_agent_integration_matrix.py tests/integration/test_harness_cutover.py
 ```
 
 最终质量门：
@@ -276,14 +276,14 @@ git diff --check
 
 ## Codex Sidecar worker
 
-`pnpm --dir .\aearn dev` 默认同时启动独立 `tutor-codex` solo worker；`pnpm --dir .\aearn dev:no-codex` 是显式 opt-out。Runtime 与 plan-drafting admission 默认开启但各自独立；新 Codex admission 还必须通过 PostgreSQL fresh exact readiness。配置、隔离 Home、health、失败码、日志边界和回滚步骤见 [Codex Sidecar 本地运行与运维边界](./codex-sidecar-runtime.md)。默认测试不调用真实 provider。
+`pnpm --dir .\aearn dev` 默认启动普通 `tutor-main` solo worker，并显式订阅 `celery,tutor-interactive,tutor-proactive,tutor-curation`；同时启动独立 `tutor-codex` solo worker。普通 Harness dispatch/reconcile 不得只留在默认 `celery` queue，否则 PostgreSQL 中的 pending TurnRun 会一直无人 claim；`pnpm --dir .\aearn dev:no-codex` 是显式 opt-out。Runtime 与 plan-drafting admission 默认开启但各自独立；新 Codex admission 还必须通过 PostgreSQL fresh exact readiness。配置、隔离 Home、health、失败码、日志边界和回滚步骤见 [Codex Sidecar 本地运行与运维边界](./codex-sidecar-runtime.md)。默认测试不调用真实 provider。
 
 ## 2026-08-20 Codex raw-runtime 离线验证
 
 本地 contract 验证不需要真实 provider。推荐顺序：
 
 ```powershell
-uv --directory .\aearn\services\api run pytest tests/test_codex_runtime_config.py tests/test_codex_runtime_adapter.py tests/test_codex_runtime_projection.py tests/test_codex_plan_drafting_cutover.py tests/test_tutor_conversation_runtime.py tests/test_tutor_conversation_history.py tests/test_db_bootstrap.py
+uv --directory .\aearn\services\api run pytest tests/codex_sidecar/test_codex_runtime_config.py tests/codex_sidecar/test_codex_runtime_adapter.py tests/codex_sidecar/test_codex_runtime_projection.py tests/codex_sidecar/test_codex_plan_drafting_cutover.py tests/tutor/test_tutor_conversation_runtime.py tests/tutor/test_tutor_conversation_history.py tests/database/test_db_bootstrap.py
 pnpm --dir .\aearn\apps\desktop test -- --run
 pnpm --dir .\aearn desktop:check
 ```

@@ -4,7 +4,7 @@
 **适用范围：** 本地 Aearn Desktop、`/api/harness`、`/api/tutor` 与受控
 Tutor Harness。
 **权威来源：** 当前路由注册、`aearn/services/api/app/services/tutor/`、
-`aearn/apps/desktop/src/`、`schema.sql` 与对应测试。旧 Graph/SDK 流程仅是
+`aearn/apps/desktop/src/`、manifest 驱动的 `aearn/services/api/app/db/schema/` 与对应测试。旧 Graph/SDK 流程仅是
 切换清理范围和历史归档，不是可恢复的产品入口。
 
 ## 目标与全局规则

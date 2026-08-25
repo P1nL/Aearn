@@ -1,0 +1,31 @@
+{
+  "id": "repository-structure-full-optimization",
+  "name": "repository-structure-full-optimization",
+  "title": "仓库结构全量优化",
+  "description": "在不改变产品行为和受控运行边界的前提下，完成仓库治理、前端模块化、后端持久化与测试模块化、数据库 Schema 有序模块化。",
+  "status": "completed",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P1",
+  "creator": "PINKING",
+  "assignee": "PINKING",
+  "createdAt": "2026-08-25",
+  "completedAt": "2026-08-25",
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [
+    "08-25-repository-governance-hygiene",
+    "08-25-desktop-frontend-modularization",
+    "08-25-api-persistence-test-modularization",
+    "08-25-database-schema-modularization"
+  ],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "父任务只负责范围、依赖和最终集成审计；按四个子任务顺序实施，不直接承载产品代码修改。",
+  "meta": {}
+}

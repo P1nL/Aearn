@@ -1,0 +1,62 @@
+/* Global slim auto-hiding scrollbars: transparent tracks inherit each surface background. */
+:root,
+:root * {
+  scrollbar-width: auto;
+  scrollbar-color: auto;
+}
+
+@supports (-moz-appearance: none) {
+  :root,
+  :root * {
+    scrollbar-width: thin;
+    scrollbar-color: transparent transparent;
+  }
+
+  :root.scrollbar-active,
+  :root:focus-within,
+  :root *:focus-within,
+  :root *.scrollbar-active {
+    scrollbar-color: color-mix(in srgb, var(--muted) 42%, transparent) transparent;
+  }
+}
+
+:root::-webkit-scrollbar,
+:root *::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+:root::-webkit-scrollbar-track,
+:root *::-webkit-scrollbar-track,
+:root::-webkit-scrollbar-corner,
+:root *::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+:root::-webkit-scrollbar-thumb,
+:root *::-webkit-scrollbar-thumb {
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  background-clip: border-box;
+  transition: background-color .16s var(--ease-out);
+}
+
+:root.scrollbar-active::-webkit-scrollbar-thumb,
+:root:focus-within::-webkit-scrollbar-thumb,
+:root *:focus-within::-webkit-scrollbar-thumb,
+:root *.scrollbar-active::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--muted) 42%, transparent);
+}
+
+:root::-webkit-scrollbar-thumb:hover,
+:root *::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--muted) 62%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root::-webkit-scrollbar-thumb,
+  :root *::-webkit-scrollbar-thumb {
+    transition: none;
+  }
+}

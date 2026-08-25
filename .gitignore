@@ -56,3 +56,10 @@ docs/current/.obsidian/
 docs/current/.trash/
 docs/current/semi-overt/
 tmp/
+
+# Enforce pnpm as the Aearn Desktop package manager.
+aearn/apps/desktop/package-lock.json
+
+# Volatile local Obsidian state for the Trellis task vault.
+.trellis/tasks/.obsidian/workspace*.json
+.trellis/tasks/.obsidian/plugins/*/data.json
