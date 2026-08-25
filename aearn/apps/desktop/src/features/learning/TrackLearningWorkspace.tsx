@@ -50,6 +50,13 @@ type WorkspaceStatus = "loading" | "ready" | "error";
 
 const STORAGE_VERSION = 1;
 
+function SidebarToggleIcon({ side }: { side: "left" | "right" }) {
+  return <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true" focusable="false">
+    <rect x="2.25" y="2.75" width="13.5" height="12.5" rx="2.8" stroke="currentColor" strokeWidth="1.25" />
+    <path d={side === "left" ? "M6 3.25V14.75" : "M12 3.25V14.75"} stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" />
+  </svg>;
+}
+
 export function TrackLearningWorkspace({
   user,
   trackId,
@@ -71,6 +78,8 @@ export function TrackLearningWorkspace({
   const [referenceTaskKind, setReferenceTaskKind] = useState<NonNullable<LearningScopeInput["task_kind"]> | null>(null);
   const [activePanel, setActivePanel] = useState<WorkspacePanel>("learning");
   const [roadmapDrawerOpen, setRoadmapDrawerOpen] = useState(false);
+  const [roadmapCollapsed, setRoadmapCollapsed] = useState(false);
+  const [secondaryCollapsed, setSecondaryCollapsed] = useState(false);
   const [lessonAuthority, setLessonAuthority] = useState<LessonDocumentState | null>(null);
   const [followState, setFollowState] = useState<LessonFollowState>("following");
   const [followConflict, setFollowConflict] = useState<string | null>(null);
@@ -301,7 +310,9 @@ export function TrackLearningWorkspace({
   }
 
   const scopeTitle = `${track.language_display_name} · ${knowledgeTitle(roadmap, tutorScope.knowledge_key ?? null)} · ${taskLabel(tutorScope.task_kind)}`;
-  const workspaceClassName = `learning-workspace-grid content-${mode} teaching-${teachingMode}`;
+  const workspaceClassName = "learning-workspace-grid content-" + mode + " teaching-" + teachingMode + (roadmapCollapsed ? " roadmap-collapsed" : "") + (secondaryCollapsed ? " secondary-collapsed" : "");
+  const roadmapToggleLabel = roadmapCollapsed ? "展开左侧学习路线" : "收起左侧学习路线";
+  const secondaryToggleLabel = secondaryCollapsed ? "展开右侧辅助面板" : "收起右侧辅助面板";
 
   return (
     <main className="track-learning-workspace" aria-label={`${track.language_display_name} 学习工作区`}>
@@ -319,7 +330,26 @@ export function TrackLearningWorkspace({
       </nav>
 
       <div className={workspaceClassName}>
-        <aside className={`learning-workspace-roadmap ${activePanel === "roadmap" ? "mobile-active" : ""}`} aria-label="路线面板">
+        <button
+          className="learning-workspace-sidebar-toggle left"
+          type="button"
+          aria-label={roadmapToggleLabel}
+          title={roadmapToggleLabel}
+          aria-expanded={!roadmapCollapsed}
+          aria-controls="learning-workspace-roadmap-panel"
+          onClick={() => setRoadmapCollapsed((current) => !current)}
+        ><SidebarToggleIcon side="left" /></button>
+        <button
+          className="learning-workspace-sidebar-toggle right"
+          type="button"
+          aria-label={secondaryToggleLabel}
+          title={secondaryToggleLabel}
+          aria-expanded={!secondaryCollapsed}
+          aria-controls="learning-workspace-lesson-panel learning-workspace-tutor-panel"
+          onClick={() => setSecondaryCollapsed((current) => !current)}
+        ><SidebarToggleIcon side="right" /></button>
+
+        <aside id="learning-workspace-roadmap-panel" className={`learning-workspace-roadmap ${activePanel === "roadmap" ? "mobile-active" : ""}`} aria-label="路线面板">
           <LearningRoadmapPanel roadmap={roadmap} reviewQueue={reviewQueue} selectedKnowledgeKey={knowledgeKey} mode={mode} onSelectLesson={openLesson} onOpenReview={openReview} />
         </aside>
 
@@ -333,10 +363,10 @@ export function TrackLearningWorkspace({
             aria-busy={teaching.pendingActionKey === "switch-mode" || teaching.pendingActionKey === "escalate-guided"}
             disabled={!teachingReady || teaching.pendingActionKey !== null}
             onClick={() => { if (teachingMode === "guided") setFollowState("follow_paused"); void teaching.switchMode(); }}
-          ><span aria-hidden="true">⇄</span><span>{teaching.pendingActionKey ? "确认中" : teachingMode === "guided" ? "自由阅读" : "Guided"}</span></button>
+          ><span aria-hidden="true">⇄</span></button>
         </div> : null}
 
-        <section className={`learning-workspace-lesson ${mode === "lesson" && ((teachingMode === "free_reading" && activePanel === "learning") || (teachingMode === "guided" && activePanel === "tutor")) ? "mobile-active" : ""}`} aria-label="课程面板" aria-hidden={mode === "review"}>
+        <section id="learning-workspace-lesson-panel" className={`learning-workspace-lesson ${mode === "lesson" && ((teachingMode === "free_reading" && activePanel === "learning") || (teachingMode === "guided" && activePanel === "tutor")) ? "mobile-active" : ""}`} aria-label="课程面板" aria-hidden={mode === "review"}>
           {knowledgeKey ? <LessonDocumentPage
             key={knowledgeKey}
             userId={user.id}
@@ -356,7 +386,7 @@ export function TrackLearningWorkspace({
           {mode === "review" ? <ReviewSessionPanel userId={user.id} track={track} queue={reviewQueue} initialKnowledgeKey={knowledgeKey} initialSessionId={reviewSessionId} onSessionChange={setReviewSessionId} onQueueRefresh={refreshAuthority} onContextReference={(draft, label) => addReference(draft, label, "review_coaching")} /> : null}
         </section>
 
-        <aside className={`learning-workspace-tutor ${(mode === "review" && activePanel === "tutor") || (mode === "lesson" && ((teachingMode === "guided" && activePanel === "learning") || (teachingMode === "free_reading" && activePanel === "tutor"))) ? "mobile-active" : ""}`} aria-label="Tutor 面板">
+        <aside id="learning-workspace-tutor-panel" className={`learning-workspace-tutor ${(mode === "review" && activePanel === "tutor") || (mode === "lesson" && ((teachingMode === "guided" && activePanel === "learning") || (teachingMode === "free_reading" && activePanel === "tutor"))) ? "mobile-active" : ""}`} aria-label="Tutor 面板">
           <TutorConversationSurface
             user={user}
             enabled
@@ -365,6 +395,7 @@ export function TrackLearningWorkspace({
             onSelectConversation={setConversationId}
             mode="general"
             showControls={false}
+            composerVariant="compact"
             learningScope={tutorScope}
             scopeLabel={scopeTitle}
             contextReferences={references}

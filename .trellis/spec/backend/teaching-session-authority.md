@@ -72,6 +72,7 @@ tutor_teaching_action_receipts
 - checkpoint 是 append-only predecessor chain；`current_checkpoint_id + version` 以 CAS 推进。checkpoint、stimulus、run scope 与 action receipt 禁止普通 UPDATE/DELETE。
 - 每个 teaching-scoped fresh run 恰有一个 immutable stimulus：`learner_message | teaching_control | domain_event`。learner stimulus 引用 exact input receipt；control/event 不伪造 learner message，不使用 proactive origin。
 - `TEACHING_SESSION` 是 required context，位于 current input/current structured event 之后、optional history 之前。它只含 exact session/stimulus、bounded objective/focus/questions/covered summary、authority versions、pause/action policy 与 allowlisted handles；不可表示时在 provider 前 fail closed。
+- `teaching_control | domain_event` 没有伪造的 `current_input`，但必须从 `tutor_run_teaching_scopes` 按 exact `teaching_session_id + user_id + conversation_id` 加载当前 run 之前的 bounded learner-visible messages 作为 optional `RECENT_MESSAGES`。顺序使用 frozen `session_version + scope.created_at + run_id`，不得混入 legacy group、predecessor/successor session、其他 knowledge 或未来消息。provider 对 `continue/resume` 必须从最新可见教学消息继续，不能重新开始或近义复述已讲解内容；只有 `change_example`、checkpoint remediation 或 summary authority 可以要求重述/重构。
 - provider 必须先选择 exact `tutor.lesson-teaching@1.0.0`，再返回且只返回一个 strict `teaching_step`。closed action 为 `orient | explain_concept | answer_question | show_example | compare_examples | check_understanding | recommend_practice | explain_feedback | remediate_prerequisite | summarize_progress | recommend_pause | wait_for_input`。
 - focus resolution 只能是 `stay | push_child | resolve_and_resume_parent | replace_objective | abandon_branch | wait`，且 focus identity 必须来自 active/suspended/objective/current stimulus allowlist；模型不得创建任意 focus、UI、mastery、completion、unlock 或 next knowledge key。
 - terminal commit 在同一 PostgreSQL transaction 内完成：重新验证 lease/run/session/checkpoint/track/progress/assignment/document/stimulus，append next checkpoint，CAS session，insert safe action receipt，写 learner-visible Tutor message，terminalize run/outbox。任一步失败全部回滚。
@@ -88,6 +89,7 @@ tutor_teaching_action_receipts
 | --- | --- |
 | Cross-user / cross-track / cross-conversation read or mutation | scoped `404` 或 `409 TEACHING_AUTHORITY_CONFLICT`；不泄露 foreign existence |
 | Missing/oversized required teaching context | `TUTOR_TEACHING_SESSION_STALE` 或 `TUTOR_TEACHING_SESSION_UNREPRESENTABLE`；provider 不调用 |
+| control/domain run 已有同 session 历史但 `RECENT_MESSAGES` 为空，或混入 legacy/其他 session/future message | context continuity contract failure；修复 loader/test，不通过提示词猜测补救 |
 | Unknown action、extra field、unknown handle 或 unlisted focus | policy denial；无 message/checkpoint/receipt |
 | teaching run 未选择 exact Skill 或未返回 `teaching_step` | `teaching_skill_required` / `teaching_step_required` policy denial |
 | completion pause 无 completed progress，或 completed progress 未使用 completion pause | `teaching_completion_pause_invalid`；无 durable commit |
@@ -102,11 +104,13 @@ tutor_teaching_action_receipts
 ## 5. Good / Base / Bad Cases
 
 - **Good:** Guided open 创建 session/checkpoint 与一个 `open_session` teaching-control run；fake provider 两阶段选择 exact Skill，再提交一个 `explain_concept + soft_pause`，原子写 message/checkpoint/receipt，且不会自动创建第二个 run。
+- **Good:** 第一个 teaching-control run 没有 prior session message；第二、第三次 `continue/resume` 分别看到同 session 的 1、2 条 prior messages，provider 在上一讲解后推进到示例/比较/理解检查。legacy history 与其他 TeachingSession 消息保持不可选。
 - **Good:** Free Reading learner message 绑定真实 message/input receipt，得到一个 reactive answer 后仍保持 Free Reading；显式 `escalate_guided` 才创建下一个 control run。
 - **Good:** progress version 变化后，旧 active session 追加 authority-pause checkpoint 并置为 blocked；successor 冻结新 authority。completed evidence 只允许 `summarize_progress + completion_pause`。
 - **Good:** `enter_next_knowledge` 使用最新 expected versions 和 candidate key，重新验证 active plan/availability 后复用同一 conversation，推进 track pointer 并只 admission 一个 next-session run。
 - **Base:** 旧 conversation/history 没有 teaching metadata 时仍可读，不做聊天正文 backfill；未显式 open 前可保持 legacy-compatible path。
 - **Bad:** 根据 learner 文本猜 `continue`，插入伪 learner message，或以 proactive origin 处理用户控制。
+- **Bad:** 因 control/domain 没有 current learner input 就把 `recent_messages` 留空，只反复发送同一个 objective/checkpoint summary，导致每次 `continue/resume` 重新讲同一段定义。
 - **Bad:** 让客户端决定 Action Shelf label/target、mode mutation、mastery/completion/next node，或允许 provider 引用任意 focus/handle。
 - **Bad:** 先公开 message，再单独写 checkpoint/receipt；后续 stale/DB failure 会产生不可恢复的分叉 authority。
 
@@ -114,7 +118,7 @@ tutor_teaching_action_receipts
 
 - PostgreSQL bootstrap twice：五张表、owner/scope FK、partial unique `active | paused` predicate、exact-one CHECK、append-only trigger、source-stimulus deferred `NO ACTION` FK。
 - Skill/catalog/provider：published Skill identity、strict good/base/bad schema、extra field、unknown action/handle/focus、message exact binding、non-teaching compatibility。
-- Context：exact session/stimulus/handles、current-input priority、default budget 可表示、低预算 provider-before fail closed、optional context eviction 回归。
+- Context：exact session/stimulus/handles、current-input priority、default budget 可表示、低预算 provider-before fail closed、optional context eviction 回归；control/domain 的第 N 次 run 精确选择同 session 前 N-1 次 learner-visible messages，并排除 legacy/其他 session/future rows。
 - Loop/reducer：one stimulus -> one action -> one pause、focus push/resume/abandon/replace/wait、bounded stack/questions、resolved child question 移除、无新事件调用数稳定。
 - Free Reading：reactive answer mode 不变；guided-only control bypass 拒绝；显式 escalation 创建一个 control run；pause/resume 不错误触发 provider。
 - Completion：authority refresh successor、completion pause 原子 commit、无自动 next、stale roadmap conflict、显式 latest-roadmap transition 仍使用同一 conversation。

@@ -54,7 +54,7 @@ The following files are dated evidence, not an active runtime contract:
 - [`archive/2026-07-29/agent-capability-hardening-demo-story.md`](./archive/2026-07-29/agent-capability-hardening-demo-story.md)
 - [`architecture/tutor-harness-transition.md`](./architecture/tutor-harness-transition.md), which remains migration evidence only.
 - [`architecture/fsrs-scheduling-spec.md`](./architecture/fsrs-scheduling-spec.md), the pre-cutover `review_states` / `/api/reviews` design.
-- [`current/Aearn/core-flows-current.md`](./current/Aearn/core-flows-current.md), a 2026-06-18 legacy runtime snapshot despite its historical filename.
+- [`archive/2026-06-18/current-state-audit/`](./archive/2026-06-18/current-state-audit/), the complete 2026-06-18 pre-Tutor runtime audit bundle formerly stored under the misleading `docs/current/Aearn/` path.
 - [`setup/newcomer-onboarding-guide.md`](./setup/newcomer-onboarding-guide.md), a pre-cutover implementation guide retained as historical onboarding evidence.
 
 Pre-cutover `Attempt`, FSRS, hidden-test, legacy plan, review, and note material

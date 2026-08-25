@@ -47,11 +47,14 @@ TUTOR_CODEX_RUNTIME_HEALTH_MAX_AGE_SECONDS=90
 pnpm --dir .\aearn dev
 ```
 
-它启动普通 Harness worker、Celery beat 和独立 worker：
+它启动 Celery beat、普通 Harness worker 和独立 Codex worker：
 
 ```text
+python -m celery -A aearn_worker.worker_app:celery_app worker --pool=solo --concurrency=1 -Q celery,tutor-interactive,tutor-proactive,tutor-curation -n tutor-main@%h
 python -m celery -A aearn_worker.worker_app:celery_app worker --pool=solo --concurrency=1 -Q tutor-codex -n tutor-codex@%h
 ```
+
+普通 worker 必须显式消费 `tutor-interactive`，否则 durable `harness_v1` dispatch job 会保持 `pending`，Desktop 只会持续显示运行占位。
 
 显式本地 opt-out：
 

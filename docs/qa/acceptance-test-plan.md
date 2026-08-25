@@ -173,7 +173,7 @@ pytest commands in parallel.
 
 ```powershell
 # Context governance focused gate; real-provider case is collected as skip by default.
-uv --directory .\aearn\services\api run python -m pytest tests/test_tutor_evals.py tests/test_tutor_context_eval_smoke.py tests/test_tutor_real_provider_smoke.py tests/test_tutor_context_builder.py tests/test_tutor_context_budget.py tests/test_tutor_provider_gateway.py tests/test_tutor_run_loop.py tests/test_tutor_context_loader.py tests/test_tutor_context_summary.py tests/test_tutor_run_repository.py tests/test_db_bootstrap.py -q
+uv --directory .\aearn\services\api run python -m pytest tests/tutor/test_tutor_evals.py tests/smoke/test_tutor_context_eval_smoke.py tests/smoke/test_tutor_real_provider_smoke.py tests/tutor/test_tutor_context_builder.py tests/tutor/test_tutor_context_budget.py tests/tutor/test_tutor_provider_gateway.py tests/tutor/test_tutor_run_loop.py tests/tutor/test_tutor_context_loader.py tests/tutor/test_tutor_context_summary.py tests/tutor/test_tutor_run_repository.py tests/database/test_db_bootstrap.py -q
 
 # API suite: serial execution only.
 uv --directory .\aearn\services\api run python -m pytest
@@ -198,7 +198,7 @@ Optional real-provider behavior sample; do not run without separate approval:
 
 ```powershell
 $env:TUTOR_REAL_PROVIDER_SMOKE = "1"
-uv --directory .\aearn\services\api run python -m pytest tests/test_tutor_real_provider_smoke.py -q -m real_provider
+uv --directory .\aearn\services\api run python -m pytest tests/smoke/test_tutor_real_provider_smoke.py -q -m real_provider
 ```
 
 The command must never be part of the default matrix and must not print provider
@@ -425,7 +425,7 @@ Fixture/browser 证据不得包含 external Runtime identity、provider metadata
 
 | ID | 优先级 | 区域 | 验收 | 证据 |
 | --- | --- | --- | --- | --- |
-| RT-54 | P0 | Skill/provider/context | exact `tutor.lesson-teaching@1.0.0`；required `TEACHING_SESSION`；strict one `teaching_step`；unknown action/handle/focus、extra field、missing/oversized context provider-before fail closed；non-teaching request budget/contract 无回归 | `test_tutor_skill_catalog.py`、`test_tutor_provider_gateway.py`、`test_tutor_teaching_context.py`、`test_tutor_context_budget.py` |
+| RT-54 | P0 | Skill/provider/context | exact `tutor.lesson-teaching@1.0.0`；required `TEACHING_SESSION`；control/domain 无 current input 时仍精确加载 same-session bounded `RECENT_MESSAGES` 并排除 legacy/其他 session/future rows；`continue/resume` 不重启或近义复述已讲内容；strict one `teaching_step`；unknown action/handle/focus、extra field、missing/oversized context provider-before fail closed；non-teaching request budget/contract 无回归 | `test_tutor_skill_catalog.py`、`test_tutor_provider_gateway.py`、`test_tutor_teaching_context.py`、`test_tutor_context_budget.py` |
 | RT-55 | P0 | Loop/atomicity | one stimulus -> one closed action -> one pause；message/checkpoint/action receipt/session/run terminal 同事务；provider unavailable、stale/superseded 无 message/receipt/checkpoint；terminal 后无自动 next run | `test_tutor_teaching_action_loop.py`、`test_tutor_run_loop.py`、persistence regression |
 | RT-56 | P0 | Focus/mode/Action Shelf | bounded focus stack/questions；resolved child question 移除；Free Reading reactive 且 guided-only control bypass 被拒；显式 escalation；runtime/request/shelf 互斥；最多一 primary/三 secondary；session/evidence/completion pause action 正确 | `test_tutor_teaching_focus_reducer.py`、`test_tutor_teaching_action_loop.py`、`test_tutor_teaching_sessions.py` |
 | RT-57 | P0 | Completion/authority refresh | progress/assignment authority 变化创建 blocked predecessor + successor；completed 只接受 `summarize_progress + completion_pause`；无显式 transition 不改 track/不建 run；`enter_next_knowledge` 重新验证 latest roadmap 并复用同 conversation | `test_tutor_teaching_action_loop.py`、PostgreSQL teaching session tests |

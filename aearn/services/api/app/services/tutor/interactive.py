@@ -142,7 +142,7 @@ class PostgresTutorContextLoader:
 
     def load_context(self, snapshot: TutorRunSnapshot, *, input_revision: int) -> TutorContextInput:
         current_input: TutorContextSource | None = None
-        current_input_required = self._current_input_required(snapshot)
+        current_input_required, stimulus_kind = self._context_input_mode(snapshot)
         recent_messages: tuple[TutorContextSource, ...] = ()
         working_summary: tuple[TutorContextSource, ...] = ()
         compaction_plan: TutorContextCompactionPlan | None = None
@@ -222,22 +222,15 @@ class PostgresTutorContextLoader:
                     MAX_TUTOR_CONTEXT_COMPACTION_CANDIDATES,
                 ),
             ).fetchall()
-            recent_messages = tuple(
-                TutorContextSource(
-                    source_id=f"message:{row['id']}",
-                    content={
-                        "role": "assistant" if str(row.get("role")) == "tutor" else "user",
-                        "content": str(row.get("content") or ""),
-                    },
-                )
-                for row in reversed(rows)
-            )
+            recent_messages = self._recent_message_sources(rows)
             compaction_plan = self._load_compaction_plan(
                 conversation_id=snapshot.conversation_id,
                 current_created_at=current_created_at,
                 current_message_id=current_message_id,
                 prior_summary=summary,
             )
+        elif stimulus_kind in {"teaching_control", "domain_event"}:
+            recent_messages = self._load_teaching_recent_messages(snapshot)
 
         active_plan = self._learner_state.active_plan_for_user(user_id=snapshot.user_id)
         active_plan_sources = (
@@ -324,6 +317,57 @@ class PostgresTutorContextLoader:
             compaction_plan=compaction_plan,
         )
 
+    def _load_teaching_recent_messages(
+        self,
+        snapshot: TutorRunSnapshot,
+    ) -> tuple[TutorContextSource, ...]:
+        rows = self._conn.execute(
+            """
+            SELECT messages.id::text AS id, messages.role, messages.content, messages.created_at
+            FROM tutor_run_teaching_scopes AS current_scopes
+            JOIN tutor_run_teaching_scopes AS prior_scopes
+              ON prior_scopes.teaching_session_id = current_scopes.teaching_session_id
+             AND prior_scopes.user_id = current_scopes.user_id
+             AND prior_scopes.conversation_id = current_scopes.conversation_id
+             AND (prior_scopes.session_version, prior_scopes.created_at, prior_scopes.run_id)
+                 < (current_scopes.session_version, current_scopes.created_at, current_scopes.run_id)
+            JOIN tutor_conversation_events AS events
+              ON events.turn_id = prior_scopes.run_id
+             AND events.user_id = prior_scopes.user_id
+             AND events.conversation_id = prior_scopes.conversation_id
+             AND events.kind = 'item_added'
+             AND events.item_kind = 'message'
+            JOIN tutor_messages AS messages
+              ON messages.id = events.item_id
+             AND messages.conversation_id = current_scopes.conversation_id
+            WHERE current_scopes.run_id = %s
+              AND current_scopes.user_id = %s
+              AND current_scopes.conversation_id = %s
+            ORDER BY messages.created_at DESC, messages.id DESC
+            LIMIT %s
+            """,
+            (
+                snapshot.run_id,
+                snapshot.user_id,
+                snapshot.conversation_id,
+                MAX_TUTOR_CONTEXT_COMPACTION_CANDIDATES,
+            ),
+        ).fetchall()
+        return self._recent_message_sources(rows)
+
+    @staticmethod
+    def _recent_message_sources(rows: list[dict[str, object]]) -> tuple[TutorContextSource, ...]:
+        return tuple(
+            TutorContextSource(
+                source_id=f"message:{row['id']}",
+                content={
+                    "role": "assistant" if str(row.get("role")) == "tutor" else "user",
+                    "content": str(row.get("content") or ""),
+                },
+            )
+            for row in reversed(rows)
+        )
+
     def _load_compaction_plan(
         self,
         *,
@@ -393,23 +437,23 @@ class PostgresTutorContextLoader:
         )
 
 
-    def _current_input_required(self, snapshot: TutorRunSnapshot) -> bool:
+    def _context_input_mode(self, snapshot: TutorRunSnapshot) -> tuple[bool, str | None]:
         proactive = self._proactive_candidate_kind is not None
         if proactive != (snapshot.origin == "proactive"):
             raise TutorContextError("TUTOR_CONTEXT_ORIGIN_INVALID")
         if proactive:
-            return False
+            return False, None
         stimulus = self._conn.execute(
             "SELECT stimulus_kind FROM tutor_run_stimulus_events WHERE run_id=%s AND user_id=%s",
             (snapshot.run_id, snapshot.user_id),
         ).fetchone()
         if stimulus is None:
-            return True
+            return True, None
         kind = str(stimulus["stimulus_kind"])
         if kind == "learner_message":
-            return True
+            return True, kind
         if kind in {"teaching_control", "domain_event"}:
-            return False
+            return False, kind
         raise TutorContextError("TUTOR_TEACHING_STIMULUS_INVALID")
 
     def _load_current_input_row(

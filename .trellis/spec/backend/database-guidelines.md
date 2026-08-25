@@ -25,6 +25,9 @@ The formal MVP runtime lives under `aearn/`, not under the historical `01_` thro
 ## Migrations
 
 - Milestone 1 must establish a repeatable migration baseline before features write business data.
+- 当前 bootstrap Schema 由 `app/db/schema/__init__.py` 的 `SCHEMA_FRAGMENT_NAMES` 显式排序；数字前缀只帮助阅读，loader 不得依赖目录自然排序或 `glob()` 顺序。
+- 每个 `app/db/schema/*.sql` fragment 只拥有连续职责范围，所有 fragment 必须在同一 caller-owned connection 和最终提交事务中执行；fragment/loader 不得 `commit` 或维护第二份聚合 SQL。
+- bootstrap 使用 transaction-scoped advisory lock 串行化多进程 schema owner，并对 deadlock/serialization failure 有界重试完整事务；不得在 fragment 之间提交以规避锁冲突。
 - Migration order must follow `docs/plans/learning-agent-implementation-plan.md`: base tables first, then learning/exercise core tables, then review and notes tables.
 - Use `CREATE EXTENSION IF NOT EXISTS pgcrypto;` before relying on `gen_random_uuid()`.
 - Add `set_updated_at()` triggers for mutable business tables.

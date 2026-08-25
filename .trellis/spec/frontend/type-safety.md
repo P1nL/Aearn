@@ -395,7 +395,7 @@ type TutorPublicProcessStep = {
 };
 ```
 
-服务端权威是 `persistence.py` 的 `_PUBLIC_PROCESS_STEP_KEYS` 与 `schema.sql` 的 process step check constraint；Desktop 的 literal union 和 `isTutorProcessStepKey` 必须同步。
+服务端权威是 `persistence/_dependencies.py` 的 `_PUBLIC_PROCESS_STEP_KEYS` 与 `app/db/schema/110_thread_turn_codex.sql` 的 process step check constraint；Desktop 的 literal union 和 `isTutorProcessStepKey` 必须同步。
 
 ### 3. 契约
 

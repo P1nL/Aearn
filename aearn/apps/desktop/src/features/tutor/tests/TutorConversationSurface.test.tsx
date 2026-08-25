@@ -78,6 +78,26 @@ describe("TutorConversationSurface typed request seat", () => {
     expect(screen.queryByRole("button", { name: "拒绝" })).not.toBeInTheDocument();
   });
 
+  it("reuses the compact planning Composer chrome in the learning workspace", async () => {
+    api.fetchTutorConversationSnapshot.mockResolvedValue({
+      ...snapshot,
+      conversation: { ...snapshot.conversation, control_state: "idle", pending_count: 0, queue_paused: false, queue_pause_reason: null },
+      pending_requests: [],
+      queue: [],
+    });
+
+    renderSurface({ composerVariant: "compact" });
+
+    const composer = await screen.findByRole("textbox", { name: "继续当前对话" });
+    const form = composer.closest("form");
+    expect(form).toHaveClass("tutor-composer-chatgpt");
+    expect(form?.parentElement).toHaveClass("tutor-chatgpt-composer-area");
+    expect(composer.parentElement).toHaveClass("tutor-composer-chatgpt-shell");
+    expect(composer).toHaveAttribute("rows", "2");
+    expect(screen.getByRole("button", { name: "发送消息" })).toHaveClass("tutor-composer-send");
+    expect(screen.queryByLabelText("目标示例")).not.toBeInTheDocument();
+  });
+
   it("renders a formal Tutor question once when the same Turn also contains its typed request record", async () => {
     const requestItem = {
       ...snapshot.pending_requests[0],

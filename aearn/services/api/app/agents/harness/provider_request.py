@@ -81,7 +81,12 @@ class TutorProviderRequestSerializer:
             system += (
                 " This teaching request also permits action.type=teaching_step. "
                 "First select exact tutor.lesson-teaching@1.0.0 if it is not selected; after its instruction is present, "
-                "use exactly one teaching_step and never use turn_completed as a teaching shortcut. teaching_step may "
+                "use exactly one teaching_step and never use turn_completed as a teaching shortcut. When current_input is "
+                "absent, recent_messages are bounded learner-visible continuity from this exact teaching session: continue "
+                "after the latest message instead of restarting or substantially paraphrasing an explanation already given. "
+                "Repeat or reframe only when the stimulus explicitly requests change_example, or checkpoint authority requires "
+                "remediation or summary. A covered concept should normally advance to an example, comparison, or understanding "
+                "check rather than receive the same introductory definition again. teaching_step may "
                 "reference only objective_id, focus_id, and source_handles listed by the server, and its public_message "
                 "must exactly equal message.text. Valid teaching-step example: "
                 f"{canonical_tutor_teaching_step_example()}"

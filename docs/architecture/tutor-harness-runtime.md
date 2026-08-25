@@ -3,7 +3,7 @@
 **Status:** Current runtime contract as of 2026-08-20.
 **Authority:** Current route registration, `aearn/services/api/app`,
 `aearn/apps/desktop`, `aearn/services/worker`, `services/learning/`,
-`schema.sql`, and their tests.
+the manifest-ordered `app/db/schema/` fragments, and their tests.
 The transition document is historical migration evidence; it is not the normal
 runtime specification.
 
@@ -33,7 +33,7 @@ legacy learner history.
 | Learning domain | `routes/learning_tracks.py`, `routes/exercise_gates.py`, `routes/learning_track_reviews.py`, `services/learning/` | Owns track-scoped plans, progress/mastery, immutable LessonDocument/source snapshots/assignments, exercise Gate/Attempt/module-diagnostic authority, spaced-review schedule/session authority, execution-tier projection, immutable scope snapshots, and a read-only Tutor context adapter. |
 | Interactive dispatch | `services/tutor/interactive_worker.py`, `services/tutor/interactive.py` | Claims a PostgreSQL durable job after commit, invokes the existing bounded Harness dispatcher, and maps wakeup/worker failure to retry/dead state without exposing provider errors in the accepted-input response. |
 | Harness | `agents/harness/`, `services/tutor/run_loop.py` | Bounded run loop, lease ownership, input-revision reload, exact Skill selection, capability/effect gate, checkpoint lifecycle, and typed terminal outcome. |
-| Durable state | `services/tutor/persistence.py`, `conversation_contracts.py`, `learner_state.py`, `proactive_repository.py` | PostgreSQL owns protocol version, user/run/conversation scope, run-local and conversation-global ordered events, snapshots, idempotency, durable dispatch leases, CAS effects, redacted projections, and background queues. |
+| Durable state | `services/tutor/persistence/`, `conversation_contracts.py`, `learner_state.py`, `proactive_repository.py` | PostgreSQL owns protocol version, user/run/conversation scope, run-local and conversation-global ordered events, snapshots, idempotency, durable dispatch leases, CAS effects, redacted projections, and background queues. |
 | Worker | `services/worker/aearn_worker/worker_app.py` | Thin Celery wrappers for `health.ping`, high-priority `tutor.interactive.dispatch/reconcile`, proactive scan/drain, and low-priority curation. Celery is wakeup/periodic scheduling, never the interactive authority. |
 | Desktop | `apps/desktop/src/` | Bootstraps `loading -> welcome -> cutover -> tutor`; it presents server decisions and cannot override them. |
 
@@ -653,7 +653,7 @@ disabled unless explicitly approved and enabled:
 
 ```powershell
 $env:TUTOR_REAL_PROVIDER_SMOKE = "1"
-uv --directory .\aearn\services\api run python -m pytest tests/test_tutor_real_provider_smoke.py -q -m real_provider
+uv --directory .\aearn\services\api run python -m pytest tests/smoke/test_tutor_real_provider_smoke.py -q -m real_provider
 ```
 
 It uses the fixed five learner turns from the acceptance plan, the production planner
@@ -915,4 +915,4 @@ Harness 在 effect commit、waiting result 和 terminal result 前重新验证 c
 
 长期 track conversation、知识点 TeachingSession 与单次 TurnRun 继续是三个不同时间尺度。owner domain event 只触发一个 fresh interactive Turn；每个 Turn提交一个 closed teaching action 后必须停顿。authority 变化时旧 session 写 `authority_pause` 并 blocked，successor 冻结新 progress/assignment/document；重复事件复用既有 run，stale source 被忽略。
 
-教学 context 优先级为 current input/typed stimulus → current session compact authority → exact references → bounded recent current-session messages → current checkpoint-backed summary → 至多一个 exact predecessor summary → generic conversation summary/memory/activity。active/suspended focus 中的 exact message handle、unresolved question source message 与当前 session 最新 learner input进入 compaction protected set。summary source hash、checkpoint cursor或 authority snapshot失配时 provider 前 fail closed，不允许旧 summary 覆盖最新纠正或完成事实。
+教学 context 优先级为 current input/typed stimulus → current session compact authority → exact references → bounded recent current-session messages → current checkpoint-backed summary → 至多一个 exact predecessor summary → generic conversation summary/memory/activity。`teaching_control | domain_event` 不伪造 current learner input，但 context loader 仍按 frozen `teaching_session_id + session_version + scope chronology` 读取当前 run 之前的 same-session learner-visible messages；legacy group、其他 session/knowledge 与未来消息不进入该窗口。`continue/resume` 必须在最新教学消息之后推进，不能仅凭相同 objective/checkpoint 重启或近义复述已讲解内容；`change_example`、remediation 与 summary authority 例外。active/suspended focus 中的 exact message handle、unresolved question source message 与当前 session 最新 learner input进入 compaction protected set。summary source hash、checkpoint cursor或 authority snapshot失配时 provider 前 fail closed，不允许旧 summary 覆盖最新纠正或完成事实。

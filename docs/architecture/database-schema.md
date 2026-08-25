@@ -1,7 +1,7 @@
 # Aearn 数据库 Schema 与持久化契约
 
-**状态：** 当前 schema 说明，2026-08-20。
-**权威来源：** `aearn/services/api/app/db/schema.sql`、PostgreSQL bootstrap、
+**状态：** 当前 schema 说明，2026-08-25。
+**权威来源：** `aearn/services/api/app/db/schema/__init__.py` 的显式 manifest、`aearn/services/api/app/db/schema/*.sql`、PostgreSQL bootstrap、
 Tutor/LearningTrack repositories 与 schema/cutover tests。
 **范围：** PostgreSQL 是 Tutor run、cutover receipt、背景队列和 learner-safe
 projection 的唯一 durable authority；Desktop、Celery 和 provider 不拥有并行
@@ -9,8 +9,9 @@ projection 的唯一 durable authority；Desktop、Celery 和 provider 不拥有
 
 ## 1. Bootstrap、迁移与范围原则
 
-- `python -m app.db.bootstrap` 重复执行 `schema.sql`。当前仓库没有另一个可与其
-  竞争的 Alembic/Graph migration path。
+- `python -m app.db.bootstrap` 按 `SCHEMA_FRAGMENT_NAMES` 的显式顺序重复执行 12 个 Schema fragment。数字前缀只帮助阅读，执行顺序不依赖目录自然排序。当前仓库没有另一个可与其竞争的 Alembic/Graph migration path。
+- 所有 fragment 在同一 caller-owned PostgreSQL connection 和最终提交事务中执行；loader 不 `commit`。bootstrap 使用 transaction advisory lock，并对 deadlock/serialization failure 做有界整事务重试，避免多进程启动或测试重复 bootstrap 留下部分 Schema。
+- `load_schema_text()` 只提供 manifest 组合的只读视图；仓库不维护第二份聚合 `schema.sql`。
 - `tutor_*` 与 `harness_cutovers` 是当前 runtime 的核心表族。所有可公开读取的
   内容必须从 repository 的安全投影产生，不能直接把 JSONB、trace 或 provider
   数据返回到 API/SSE。
@@ -252,8 +253,8 @@ projection，但不能因此删除或改写 `tutor_messages`。公开 export 默
 `tuple concurrently updated`：
 
 ```powershell
-uv --directory .\aearn\services\api run python -m pytest tests/test_db_bootstrap.py tests/test_learning_track_repository.py tests/test_harness_cutover.py
-uv --directory .\aearn\services\api run python -m pytest tests/test_tutor_run_repository.py tests/test_tutor_proactive_default_delivery.py
+uv --directory .\aearn\services\api run python -m pytest tests/database/test_db_bootstrap.py tests/learning/test_learning_track_repository.py tests/integration/test_harness_cutover.py
+uv --directory .\aearn\services\api run python -m pytest tests/tutor/test_tutor_run_repository.py tests/tutor/test_tutor_proactive_default_delivery.py
 ```
 
 完整命令、结果和 residual risk 以

@@ -1,9 +1,11 @@
 import json
-from pathlib import Path
+from time import sleep
 
 from psycopg import Connection
+from psycopg.errors import DeadlockDetected, SerializationFailure
 
 from app.db.connection import connect
+from app.db.schema import load_schema_fragments
 from app.db.seeds import (
     ARCHIVED_LANGUAGE_COURSE_SLUGS,
     LANGUAGE_COURSE_INTENT_TAG_SEEDS,
@@ -14,23 +16,38 @@ from app.db.seeds import (
 )
 
 
-SCHEMA_PATH = Path(__file__).with_name("schema.sql")
+_BOOTSTRAP_ADVISORY_LOCK_KEY = 0x414541524E534348
+_BOOTSTRAP_MAX_ATTEMPTS = 3
+_BOOTSTRAP_RETRY_DELAY_SECONDS = 0.05
+_RETRIABLE_BOOTSTRAP_ERRORS = (DeadlockDetected, SerializationFailure)
 
 
 def bootstrap_database() -> None:
-    with connect() as conn:
-        apply_schema(conn)
-        seed_runtime_profiles(conn)
-        seed_language_courses(conn)
-        archive_language_courses(conn)
-        seed_learning_intents(conn)
-        seed_language_course_intent_tags(conn)
-        require_language_course_intent_coverage(conn)
-        conn.commit()
+    for attempt in range(_BOOTSTRAP_MAX_ATTEMPTS):
+        try:
+            with connect() as conn:
+                # Serialize bootstrap owners across API, tests, and worker processes.
+                # Business DML does not take this lock, so deadlocks still retry the
+                # complete transaction instead of committing partial fragments.
+                conn.execute("SELECT pg_advisory_xact_lock(%s)", (_BOOTSTRAP_ADVISORY_LOCK_KEY,))
+                apply_schema(conn)
+                seed_runtime_profiles(conn)
+                seed_language_courses(conn)
+                archive_language_courses(conn)
+                seed_learning_intents(conn)
+                seed_language_course_intent_tags(conn)
+                require_language_course_intent_coverage(conn)
+                conn.commit()
+            return
+        except _RETRIABLE_BOOTSTRAP_ERRORS:
+            if attempt + 1 >= _BOOTSTRAP_MAX_ATTEMPTS:
+                raise
+            sleep(_BOOTSTRAP_RETRY_DELAY_SECONDS * (attempt + 1))
 
 
 def apply_schema(conn: Connection[dict[str, object]]) -> None:
-    conn.execute(SCHEMA_PATH.read_text(encoding="utf-8"))
+    for fragment in load_schema_fragments():
+        conn.execute(fragment.sql)
 
 
 def seed_runtime_profiles(conn: Connection[dict[str, object]]) -> None:
