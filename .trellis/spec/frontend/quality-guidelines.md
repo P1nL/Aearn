@@ -964,24 +964,27 @@ desktop:check 通过，所以逐字、折叠和重连已验收。
 
 - 三个视口均断言 body/workspace `scrollWidth <= clientWidth`，且 DOM 恰有一个 Composer、一个 Tutor surface/SSE root、一个 Lesson document。
 - 双向 mode 切换保持 conversation/document/run/draft/reference/selection 与两块 scroll；返回 Guided 不抢滚动，显式恢复定位 exact block。
-- current session 完整，history 默认折叠只读；引用按钮提交 exact session/message IDs。runtime/request/shelf 三种槽位互斥；completion 不自动导航。
+- current session 完整，history 默认折叠只读；引用按钮提交 exact session/message IDs。runtime/request/shelf 三种槽位互斥；Continue 只在 server descriptor 中出现，composer response 使用现有 Composer；空 shelf 无 DOM/`has-action-shelf`/placeholder；completion 不自动导航。
 - 409 conflict 只刷新且不重放；相关 console error/warning 为零，无 framework overlay。
 
 ### 4. 验证与错误矩阵
 
 - 900px 页面高度被内容撑开、390px 任一隐藏 panel 仍占布局、横向溢出 -> fail。
 - reduced motion 仍平滑滚动或逐帧装饰动画 -> fail。
+- 空 shelf 仍留下容器、`has-action-shelf`、placeholder 或伪 Continue -> fail。
+- `refresh_session` 未重新读取 server authority，或本地 admission run/mode change -> fail。
 - in-app Browser 截图单独超时 -> DOM/交互/console 证据仍有效；仅截图可回退 standalone Playwright并记录边界。
 
 ### 5. 正常、基础与错误案例
 
 - 正常：三视口完成 role swap、follow pause/resume、history reference、shelf/runtime/request/conflict。
-- 基础：fixture 没有历史消息或 active focus 时显示稳定空态，不造数据。
+- 基础：fixture 没有历史消息或 active focus 时显示稳定空态，不造数据；empty action shelf 完全省略且 Composer 可见。
 - 错误：只凭 Vitest/build 或静态源码宣称视觉验收；调用真实 provider 制造 demo。
 
 ### 6. 必须测试
 
-- Desktop Vitest、用户明确要求的 `desktop:check`、后端 focused/PostgreSQL、Ruff、Mypy、bootstrap twice、Trellis validate、`git diff --check`。
+- Desktop Vitest、用户明确要求时才运行的 `desktop:check`、后端 focused/PostgreSQL、Ruff、Mypy、bootstrap twice、Trellis validate、`git diff --check`。
+- Browser 必须覆盖 HTML 找错/composer、prediction/composer、解释/none、空 shelf 与 authority refresh；三视口均检查 DOM、console、overlay 与水平溢出。
 - 截图与临时 fixture 放仓库外；结束后删除测试用户并停止临时服务。
 
 ### 7. 错误与正确写法

@@ -22,9 +22,10 @@ mutation 使用 `client_action_id` / `Idempotency-Key` 与 expected session/trac
 ### Skill / provider
 
 ```text
-tutor.lesson-teaching@1.0.0
+tutor.lesson-teaching@1.1.0
 required context section: TEACHING_SESSION
 provider action: teaching_step
+output contract: tutor.teaching-step-decision.v2
 ```
 
 ```python
@@ -36,6 +37,8 @@ TeachingStepDecision(
     public_message: str,
     focus_resolution: TeachingFocusResolution,
     pause_kind: TeachingPauseReason,
+    teaching_moves: tuple[TeachingMove, ...],  # 2..4 unique
+    learner_response_mode: TeachingLearnerResponseMode,
     escalation_hint: str | None,
 )
 ```
@@ -73,12 +76,12 @@ tutor_teaching_action_receipts
 - 每个 teaching-scoped fresh run 恰有一个 immutable stimulus：`learner_message | teaching_control | domain_event`。learner stimulus 引用 exact input receipt；control/event 不伪造 learner message，不使用 proactive origin。
 - `TEACHING_SESSION` 是 required context，位于 current input/current structured event 之后、optional history 之前。它只含 exact session/stimulus、bounded objective/focus/questions/covered summary、authority versions、pause/action policy 与 allowlisted handles；不可表示时在 provider 前 fail closed。
 - `teaching_control | domain_event` 没有伪造的 `current_input`，但必须从 `tutor_run_teaching_scopes` 按 exact `teaching_session_id + user_id + conversation_id` 加载当前 run 之前的 bounded learner-visible messages 作为 optional `RECENT_MESSAGES`。顺序使用 frozen `session_version + scope.created_at + run_id`，不得混入 legacy group、predecessor/successor session、其他 knowledge 或未来消息。provider 对 `continue/resume` 必须从最新可见教学消息继续，不能重新开始或近义复述已讲解内容；只有 `change_example`、checkpoint remediation 或 summary authority 可以要求重述/重构。
-- provider 必须先选择 exact `tutor.lesson-teaching@1.0.0`，再返回且只返回一个 strict `teaching_step`。closed action 为 `orient | explain_concept | answer_question | show_example | compare_examples | check_understanding | recommend_practice | explain_feedback | remediate_prerequisite | summarize_progress | recommend_pause | wait_for_input`。
+- provider 必须先选择 exact `tutor.lesson-teaching@1.1.0`，再返回且只返回一个 strict `tutor.teaching-step-decision.v2` `teaching_step`。closed action 为 `orient | explain_concept | answer_question | show_example | compare_examples | check_understanding | recommend_practice | explain_feedback | remediate_prerequisite | summarize_progress | recommend_pause | wait_for_input`；还必须提供 2--4 个互不重复的 closed `teaching_moves` 与显式 `learner_response_mode=none | composer`。历史 `1.0.0` bundle 完全不可变，provider parser 可兼容缺少 v2 字段的旧 payload，但 v1.1 decision gate 必须拒绝。
 - focus resolution 只能是 `stay | push_child | resolve_and_resume_parent | replace_objective | abandon_branch | wait`，且 focus identity 必须来自 active/suspended/objective/current stimulus allowlist；模型不得创建任意 focus、UI、mastery、completion、unlock 或 next knowledge key。
 - terminal commit 在同一 PostgreSQL transaction 内完成：重新验证 lease/run/session/checkpoint/track/progress/assignment/document/stimulus，append next checkpoint，CAS session，insert safe action receipt，写 learner-visible Tutor message，terminalize run/outbox。任一步失败全部回滚。
 - 每个成功 stimulus 最多提交一个主要 teaching action，并写 `soft_pause | evidence_pause | authority_pause | session_pause | completion_pause`；terminal 后没有新 stimulus 时不得自动 admission 下一 Turn。
 - `free_reading` learner message 只允许 reactive finite answer；`continue/return_focus/change_example` 不能绕过服务端 policy 触发主动教学。只有显式 `escalate_guided` 才切 Guided 并 admission 一个 bounded Turn；Free Reading resume 不自动调用 provider。
-- `TeachingActionShelfV1` 完全由服务端生成：最多一个 primary、三个 visible secondary；active runtime、blocking request 与普通 shelf 互斥。completion shelf 只提供显式 next/navigation，不投影无法执行的 pause action。
+- `TeachingActionShelfV1` 完全由服务端生成：最多一个 primary、三个 visible secondary；active runtime、blocking request 与普通 shelf 互斥。只有 checkpoint 明确推荐 `continue` 才投影 Continue；`learner_response_mode=composer` 投影 `respond_in_composer`。没有 descriptor 时返回真正的空 shelf，Desktop 不挂载 shelf DOM或补 placeholder。completion shelf 只提供显式 next/navigation，不投影无法执行的 pause action。
 - completed progress 必须对应 `summarize_progress + completion_pause`。session 留在 completed 状态；只有 `enter_next_knowledge` typed control 才重新读取最新 roadmap/availability、推进 track pointer、open/resume 下一 session 并 admission 一个 first-unit run。
 - public projection/trace/export 只能包含 stable IDs、versions、enum、bounded summaries 与 hashes。禁止 prompt、reasoning、provider body、raw checkpoint/authority JSON、完整问题/提交、hidden tests/rubric、命令、路径或 secrets。
 - 五张表全部进入 cutover exhaustive inventory 与 local summary/export/reset/delete；删除先 action receipt，再 run scope/stimulus/checkpoint/session，并在同一事务使用 deferred `NO ACTION` lineage FK 与 transaction-local purge capability。
@@ -273,3 +276,73 @@ PostgreSQL 继续复用 user-owned append-only `tutor_message_context_references
 #### Correct
 
 先以 `(session,event_kind,source_id,source_version)` 查 exact receipt；只在 durable source/current authority 可证明时创建 run。summary 从 validated append-only checkpoint 投影，hash/source lineage 不匹配立即 fail closed。
+
+## 场景：Teaching step v2、recent-unit gate 与条件式 Shelf（2026-08-27）
+
+### 1. 适用范围 / Trigger
+
+- 触发：修改 `tutor.lesson-teaching` 版本、`TeachingStepDecision`、decision gate、teaching receipt、required `TEACHING_SESSION` 投影、checkpoint recommendation 或 Desktop Action Shelf。
+
+### 2. Signatures
+
+- Skill：exact `tutor.lesson-teaching@1.1.0`，output contract `tutor.teaching-step-decision.v2`；`1.0.0` 三个 bundle 文件及 hash 不得修改。
+- Provider：`teaching_moves: tuple[TeachingMove, ...] | None`、`learner_response_mode: none | composer | None`；optional 只为解析历史 payload，v1.1 gate 要求非空。
+- DB：`tutor_teaching_action_receipts(teaching_moves_json, learner_response_mode, schema_version, policy_version)`；新 row 写 `teaching_action_receipt_v2` / `lesson_teaching_policy_v2`。
+- Context：`recent_teaching_units` 最多四项，每项仅含 action、focus ID、moves、response mode、public-message hash 与 schema version。
+
+### 3. Contracts
+
+- 每个 v2 单元必须有 2--4 个互不重复的 closed moves：`targeted_explanation | worked_example | counterexample | misconception_contrast | guided_derivation | prediction | error_detection | micro_transfer | learner_feedback`。
+- `composer` 只允许 `check_understanding | wait_for_input`，且必须包含 `prediction | error_detection | micro_transfer | learner_feedback` 至少一种诊断 move；`none` 不允许这两个 action。`change_example` control 的 decision 必须包含 `worked_example | counterexample`。
+- recent-unit projection 不保存或复制消息正文；required projection 使用 compact authority subset并保持既有 1,200 字符上限。不能增加全局 budget 来掩盖重复字段造成的 overflow。
+- Continue 若与最近 v2 unit 的 public-message hash 相同，或 objective/focus/moves/response mode 的策略签名相同，必须在 durable commit 前拒绝 `teaching_unit_not_advanced`。
+- reducer 先处理 runtime/request/evidence/session/completion/Free Reading authority，再解释 response mode。只有推荐 `continue` 才显示主 Continue；composer 显示 `respond_in_composer`；无 descriptor 时 shelf 为空。
+
+### 4. Validation & Error Matrix
+
+| Condition | Required result |
+| --- | --- |
+| v1.1 decision 缺少 moves/mode，moves 少于 2、多于 4 或重复 | policy denial；无 message/checkpoint/receipt |
+| composer 搭配非 check/wait，或没有诊断 move | policy denial；无 durable commit |
+| none 搭配 check/wait | policy denial；无 durable commit |
+| `change_example` 未实际改变为 worked/counterexample | policy denial |
+| Continue 重复 exact hash 或相同策略签名 | `teaching_unit_not_advanced`；无第二条 message/receipt |
+| compact required projection 超过 1,200 字符 | `TUTOR_TEACHING_SESSION_UNREPRESENTABLE`；provider 不调用 |
+| empty shelf | `primary=null`、`secondary=[]`；Desktop 无 shelf DOM/placeholder |
+| same-authority `open` / reload 遇到 completed session | 返回原 completed session，`created=false`、`pending_run=null`；不得创建新 Turn 覆盖 completion shelf |
+
+### 5. Good / Base / Bad Cases
+
+- Good：HTML 误区单元使用 `misconception_contrast + error_detection` 与 composer，学习者回答后下一单元改用 `learner_feedback + micro_transfer`。
+- Good：Continue 改变例子或诊断策略后可提交，receipt v2 进入最近四项且不含 public message。
+- Base：历史 v1 receipt 以默认空 moves/none 继续读取；legacy provider payload可解析，但不能作为 v1.1 成功 decision。
+- Bad：每次 Continue 只改写同一 Lesson 段落，或由 Desktop 根据消息文本补“继续”按钮。
+
+### 6. Tests Required
+
+- Skill/catalog：v1.0 exact hash immutable，v1.1 manifest/instructions/evals hash、output contract 与 exact selection。
+- Provider/gate：good/base/bad v2 shape、legacy parse、count/unique、composer/action/diagnostic、change-example。
+- PostgreSQL/context：additive columns/default/CHECK、bootstrap twice、append-only、recent four、安全字段、消息正文缺失、serialized required projection `<=1200`。
+- Loop/reducer/Desktop：重复 hash/签名拒绝、改变策略允许、composer 无 Continue、empty shelf DOM/class/placeholder 缺失、secondary-only、`refresh_session`；completed session 的 same-authority reload/open 复用原 session 且 run count 不增加。
+- 完成前运行 focused serial pytest、Ruff、Mypy、lock、Desktop Vitest、三视口 fake/offline Browser、task validate 与 `git diff --check`。
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+context["recent_teaching_units"] = [receipt.public_message for receipt in receipts]
+policy.max_required_characters += 1000
+shelf.primary = local_continue_button
+```
+
+#### Correct
+
+```python
+context["recent_teaching_units"] = project_safe_recent_units(receipts[-4:])
+assert len(serialize_compact(context)) <= 1200
+decision_gate.reject_repeated_unit(decision, recent_units)
+shelf = build_teaching_action_shelf(checkpoint_state)
+```
+
+正确路径保留既有 required-section 预算、只传安全策略元数据，并让 backend reducer 成为唯一 Action Shelf authority。

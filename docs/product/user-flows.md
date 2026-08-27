@@ -1,6 +1,6 @@
 # Aearn Tutor 用户流程规格
 
-**状态：** 当前产品契约，2026-08-12。
+**状态：** 当前产品契约，2026-08-27。
 **适用范围：** 本地 Aearn Desktop、`/api/harness`、`/api/tutor` 与受控
 Tutor Harness。
 **权威来源：** 当前路由注册、`aearn/services/api/app/services/tutor/`、
@@ -292,3 +292,11 @@ Codex 只能读取服务端权威 planning context并追加 typed draft。右侧
 4. Tutor 只执行一个 evidence feedback 或 completion summary 后停顿；完成知识点仍停在 completion shelf，不自动进入下一知识点。
 5. 学习者显式选择“进入下一知识点”时，服务端重新验证最新 roadmap、availability 与 expected versions，才推进 track pointer并创建下一 session first unit。
 6. reload/reconnect 从 durable session/checkpoint/action shelf恢复；旧 summary、stale event 或 provider unavailable 都不能产生第二条消息、自动 mastery 或自动 next。
+
+## 2026-08-27：超越文档复述的教学单元
+
+1. 新 teaching Turn 只选择 exact `tutor.lesson-teaching@1.1.0`。Tutor 必须把 LessonDocument 当作证据与定位来源，而不是逐段改写；一个单元组合 2--4 个教学 move，例如误区对照、错误检测、预测、推导或微迁移。
+2. 需要学习者回答时，Tutor 停在现有 Composer，Action Shelf 不显示伪“继续”。不需要回答且 checkpoint 明确推荐继续时，才显示 Continue。
+3. 服务端把最近四个已提交教学单元的安全策略签名带入下一 Turn。重复相同公开消息 hash 或完全相同 focus/moves/response-mode 的 Continue 被拒绝，不写第二条消息或 receipt；真正改变例子、诊断方式、迁移任务或根据学习者反馈调整策略后才能推进。
+4. `change_example` 必须真的提供 worked example 或 counterexample。authority pause、session refresh、完成后显式进入下一知识点等原有边界保持不变。
+5. reload/reconnect 完全从 durable checkpoint、v2 receipt 与 server-owned shelf 恢复；Desktop 不从消息正文猜测教学策略，也不在本地补空按钮。

@@ -1,6 +1,6 @@
 # Aearn 数据库 Schema 与持久化契约
 
-**状态：** 当前 schema 说明，2026-08-25。
+**状态：** 当前 schema 说明，2026-08-27。
 **权威来源：** `aearn/services/api/app/db/schema/__init__.py` 的显式 manifest、`aearn/services/api/app/db/schema/*.sql`、PostgreSQL bootstrap、
 Tutor/LearningTrack repositories 与 schema/cutover tests。
 **范围：** PostgreSQL 是 Tutor run、cutover receipt、背景队列和 learner-safe
@@ -492,7 +492,7 @@ diagnostic、credential 和 secret 禁止落入该表、message 列或 conversat
 
 `tutor_run_stimulus_events` 对每个 teaching-scoped fresh run 保存且只保存一个 exact stimulus：`learner_message | teaching_control | domain_event`。learner stimulus 必须复合引用 exact `tutor_run_input_events(run_id,message_id,input_revision)`；control/domain stimulus 不创建伪 learner message，run origin 仍为 `interactive`，不能滥用 proactive。`tutor_run_teaching_scopes` immutable 冻结 session/checkpoint/stimulus 与 track/plan/progress/assignment/document fence。effect commit、waiting-result 和 terminal-result 持久化前重新读取 current authority；任一 scope/version/pointer 已变化都 fail closed，不能写 effect 或 learner-visible terminal output。
 
-`tutor_teaching_action_receipts` 每个 run 最多一条，复合引用 exact run/session/new checkpoint/stimulus。row 只保存 closed action、objective/focus identity、focus resolution、pause kind、bounded source handles、public-message SHA-256 与 selected context IDs/hashes；不保存 public message 正文、provider body、prompt 或 reasoning。receipt 与 message/checkpoint/session/run terminal 在同一事务提交，普通 UPDATE/DELETE 由 append-only trigger 拒绝。
+`tutor_teaching_action_receipts` 每个 run 最多一条，复合引用 exact run/session/new checkpoint/stimulus。v2 row 在既有 closed action、objective/focus identity、focus resolution、pause kind、bounded source handles、public-message SHA-256 与 selected context IDs/hashes 上，新增 `teaching_moves_json`、`learner_response_mode`、`schema_version=teaching_action_receipt_v2` 与 `policy_version=lesson_teaching_policy_v2`；不保存 public message 正文、provider body、prompt 或 reasoning。DB CHECK 要求 v2 有 2--4 个 closed、互不重复的 moves，并约束 composer/action 兼容；v1 默认空 moves/none 以兼容历史行。receipt 与 message/checkpoint/session/run terminal 在同一事务提交，普通 UPDATE/DELETE 由 append-only trigger 拒绝。
 
 五张 user-owned 表全部属于 cutover exhaustive target inventory，并进入 local summary/export/reset/delete。删除在 transaction-local purge capability 下按 `action receipt -> run teaching scope -> stimulus -> checkpoint -> session` 执行，再清 Lesson/track root；session current-checkpoint、checkpoint predecessor/source-stimulus 与 receipt lineage 使用 deferred `NO ACTION`，使同一事务 child-to-root 清理可验证且 bootstrap twice 幂等。早期本地 `RESTRICT` source-stimulus FK 必须在 bootstrap 时 drop/recreate 为 deferred `NO ACTION`，否则已有 action checkpoint 的 reset 会在中途失败。
 
@@ -501,3 +501,9 @@ diagnostic、credential 和 secret 禁止落入该表、message 列或 conversat
 Gate/Attempt terminal、Review finalization、progress completion 与 Lesson assignment migration 不新增第二套业务事实表。各 owner 先提交既有 result/evidence/schedule/progress/assignment authority，`TeachingDomainEventAdapter` 再以 durable source ID/version 生成 `domain_event` stimulus。`uq_tutor_run_stimuli_domain(teaching_session_id,domain_event_kind,source_id,source_version)` 与 admission 前 exact receipt lookup 共同保证重复事件返回同一 run，而不是依赖 unique violation 创建孤儿 run。
 
 长期 teaching summary 复用 `tutor_teaching_session_checkpoints` 的 append-only predecessor chain，不新增 mutable summary table。`teaching_session_summary_v1` 是受控投影：objective、active/suspended focus、unresolved questions、covered concepts、evidence cursors、pause/completion 与 source checkpoint/authority hashes。loader 每次重新验证 current checkpoint/session version、authority snapshot 与 canonical source hash；任一失配都不进入 provider context。current summary 进入 optional working-summary section，required teaching context 使用 compact authority projection；最多选择一个 exact predecessor summary，默认不全量重放长期 conversation。
+
+## 2026-08-27：Teaching action receipt v2
+
+`080_lesson_teaching_practice.sql` 对既有 `tutor_teaching_action_receipts` 做 additive bootstrap：`teaching_moves_json JSONB NOT NULL DEFAULT '[]'::jsonb`、`learner_response_mode TEXT NOT NULL DEFAULT 'none'`、`schema_version TEXT NOT NULL DEFAULT 'teaching_action_receipt_v1'` 与 `policy_version TEXT NOT NULL DEFAULT 'lesson_teaching_policy_v1'`。历史 v1 row 因默认值继续可读；新提交只能写 v2 schema/policy。
+
+repeatable bootstrap 先删除旧同名自动 CHECK，再建立稳定命名的 moves、response-mode 与 version-shape constraints。v2 moves 必须是长度 2--4 的 JSON string array，值属于 closed enum且位置不重复；composer 只与 `check_understanding | wait_for_input` 共存，none 禁止这两个 action。receipt 仍 append-only，local export 只增加 safe moves/mode，不增加 public message、prompt、provider body 或 reasoning。
