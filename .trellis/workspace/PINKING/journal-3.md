@@ -199,3 +199,42 @@
 ### Next Steps
 
 - 保留 .trellis/tasks/.obsidian 下两项用户修改，不纳入本任务提交。
+
+
+## Session 125: Tutor 教学单元 v1.1 收尾
+
+**Date**: 2026-08-28
+**Task**: Tutor 教学单元 v1.1 收尾
+**Branch**: `codex/repository-structure-full-optimization`
+
+### Summary
+
+完成 tutor.lesson-teaching@1.1.0、teaching-step v2、receipt/recent-unit gate、条件式 Action Shelf 与 Desktop 空 shelf/Composer 行为，并同步 source-of-truth。
+
+### Main Changes
+
+- 新增不可变的 tutor.lesson-teaching@1.1.0 与 tutor.teaching-step-decision.v2 契约。
+- 实现 evidence-driven teaching unit gate、recent safe units、条件式 Continue 与完成态恢复。
+- 更新 Desktop Action Shelf、Composer 响应及后端、前端和跨层规格。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `c30e3bb0045cae252afb050104a5e2deac23d03a` | (see git log) |
+| `75af13b265d7743d5b517038c31e57a7a6130a2b` | (see git log) |
+| `5ace83fbcdbdedb0e683b5e64d2ec7dfa429407d` | (see git log) |
+
+### Testing
+
+- [OK] 后端 focused matrix 124 passed；完整 API 729 passed, 2 skipped；Tutor eval 7 passed；action loop 16 passed。
+- [OK] Ruff、Mypy、uv lock --check、Desktop Vitest 61 tests、task validate 与 git diff --check 均通过。
+- [OK] 使用 disposable fake/offline 状态完成 1440x900、900x900、390x844 三视口浏览器验证。
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 无剩余非归档 Trellis 任务；等待下一项用户需求。
