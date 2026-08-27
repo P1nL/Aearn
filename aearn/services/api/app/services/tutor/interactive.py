@@ -718,36 +718,42 @@ class PostgresTutorLearningContextLoader:
 
 
 def _bounded_teaching_context(context: Mapping[str, object]) -> dict[str, object]:
+    session = context.get("session")
     objective = context.get("objective")
     active_focus = context.get("active_focus")
     suspended = context.get("suspended_focuses")
     questions = context.get("unresolved_questions")
     return {
         "schema_version": context.get("schema_version"),
-        "session": context.get("session"),
+        "session": (
+            {key: session.get(key) for key in (
+                "session_id", "session_version", "checkpoint_id", "mode", "track_version",
+                "progress_version", "progress_status", "assignment_version",
+            )}
+            if isinstance(session, Mapping) else None
+        ),
         "stimulus": context.get("stimulus"),
         "objective": (
-            {key: objective.get(key) for key in ("objective_id", "summary")}
+            {"objective_id": objective.get("objective_id")}
             if isinstance(objective, Mapping) else None
         ),
         "active_focus": (
-            {key: active_focus.get(key) for key in ("focus_id", "focus_kind", "summary")}
+            {key: active_focus.get(key) for key in ("focus_id", "focus_kind")}
             if isinstance(active_focus, Mapping) else None
         ),
         "suspended_focuses": [
-            {key: item.get(key) for key in ("focus_id", "focus_kind", "summary")}
+            {key: item.get(key) for key in ("focus_id", "focus_kind")}
             for item in suspended if isinstance(item, Mapping)
         ] if isinstance(suspended, list) else [],
         "unresolved_questions": [
-            {key: item.get(key) for key in ("question_id", "summary", "state")}
+            {key: item.get(key) for key in ("question_id", "state")}
             for item in questions if isinstance(item, Mapping)
         ] if isinstance(questions, list) else [],
         "covered_concepts": context.get("covered_concepts"),
         "pause_kind": context.get("pause_kind"),
-        "recommended_action_key": context.get("recommended_action_key"),
         "candidate_focus_id": context.get("candidate_focus_id"),
+        "recent_teaching_units": context.get("recent_teaching_units"),
         "allowed_source_handles": context.get("allowed_source_handles"),
-        "action_policy": context.get("action_policy"),
     }
 
 def _bounded_current_draft(session: Mapping[str, object]) -> dict[str, object] | None:

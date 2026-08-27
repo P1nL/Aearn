@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from app.agents.harness.context_builder import TutorContextBuilder, TutorContextBuilderConfig
@@ -115,7 +117,7 @@ def test_teaching_control_context_includes_prior_same_session_messages() -> None
     provider = SequenceTutorProvider((
         TutorProviderResult(
             decision=TutorDecision(
-                skill_references=(TutorSkillReference("tutor.lesson-teaching", "1.0.0"),),
+                skill_references=(TutorSkillReference("tutor.lesson-teaching", "1.1.0"),),
             ),
         ),
         TutorProviderResult(
@@ -132,6 +134,8 @@ def test_teaching_control_context_includes_prior_same_session_messages() -> None
                     focus_resolution="stay",
                     pause_kind="soft_pause",
                     escalation_hint=None,
+                    teaching_moves=("targeted_explanation", "worked_example"),
+                    learner_response_mode="none",
                 ),
             ),
         ),
@@ -177,6 +181,21 @@ def test_teaching_control_context_includes_prior_same_session_messages() -> None
         ).load_context(snapshot, input_revision=0)
 
         assert context_input.current_input is None
+        teaching_context = context_input.teaching_session[0].content
+        assert isinstance(teaching_context, dict)
+        serialized_teaching_context = json.dumps(
+            teaching_context, ensure_ascii=False, separators=(",", ":"),
+        )
+        assert len(serialized_teaching_context) <= 1200
+        assert teaching_context["recent_teaching_units"] == [{
+            "action": "explain_concept",
+            "focus_id": "knowledge:python.variables",
+            "teaching_moves": ["targeted_explanation", "worked_example"],
+            "learner_response_mode": "none",
+            "public_message_hash": teaching_context["recent_teaching_units"][0]["public_message_hash"],
+            "schema_version": "teaching_action_receipt_v2",
+        }]
+        assert first_message not in serialized_teaching_context
         assert [source.content for source in context_input.recent_messages] == [
             {"role": "assistant", "content": first_message},
         ]
@@ -193,4 +212,6 @@ def test_teaching_control_context_includes_prior_same_session_messages() -> None
         system = provider_messages[0]["content"]
         assert "recent_messages are bounded learner-visible continuity" in system
         assert "instead of restarting or substantially paraphrasing" in system
-        assert "advance to an example, comparison, or understanding check" in system
+        assert "First select exact tutor.lesson-teaching@1.1.0" in system
+        assert "recent_teaching_units" in system
+        assert "learner_response_mode=composer" in system

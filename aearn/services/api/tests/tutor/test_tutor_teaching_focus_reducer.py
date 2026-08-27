@@ -52,6 +52,27 @@ def test_focus_reducer_pushes_bounded_interruption_and_resumes_parent() -> None:
     assert resumed.unresolved_questions == ()
 
 
+def test_composer_response_recommendation_suppresses_continue_without_hiding_secondary_controls() -> None:
+    state = reduce_teaching_checkpoint(
+        state=_state(), mode=TeachingSessionMode.GUIDED, stimulus_id="stimulus-check", source_message_id=None,
+        step=TeachingStepDecision(
+            action="check_understanding", objective_id="knowledge:python.variables",
+            focus_id="knowledge:python.variables", source_handles=("knowledge:python.variables",),
+            public_message="预测下一行输出，并指出理由。", focus_resolution="stay", pause_kind="soft_pause",
+            teaching_moves=("guided_derivation", "prediction"), learner_response_mode="composer",
+        ),
+    )
+    assert state.recommended_action_key == "respond_in_composer"
+    shelf = build_teaching_action_shelf(
+        session_id="session-1", session_version=2, checkpoint_id="checkpoint-2",
+        mode=TeachingSessionMode.GUIDED, state=state, track_version=1,
+        progress_version=1, assignment_version=1, runtime_active=False,
+        blocking_request=False, progress_status="in_progress", next_knowledge_key=None,
+    )
+    assert shelf.primary_action is None
+    assert [item.key for item in shelf.secondary_actions] == ["change_example", "pause"]
+
+
 def test_free_reading_escalation_and_action_shelf_are_server_owned() -> None:
     state = reduce_teaching_checkpoint(
         state=_state(), mode=TeachingSessionMode.FREE_READING, stimulus_id="stimulus-free", source_message_id="message-free",

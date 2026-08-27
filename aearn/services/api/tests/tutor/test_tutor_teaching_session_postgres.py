@@ -58,6 +58,31 @@ def test_bootstrap_twice_installs_tables_partial_unique_and_immutable_triggers()
                WHERE conname='fk_tutor_teaching_checkpoint_source_stimulus'"""
         ).fetchone()
         assert source_stimulus_fk == {"condeferrable": True, "confdeltype": "a"}
+        receipt_columns = {str(row["column_name"]) for row in conn.execute(
+            """SELECT column_name FROM information_schema.columns
+               WHERE table_schema='public' AND table_name='tutor_teaching_action_receipts'
+                 AND column_name IN ('teaching_moves_json','learner_response_mode')"""
+        ).fetchall()}
+        assert receipt_columns == {"teaching_moves_json", "learner_response_mode"}
+        receipt_constraints = {
+            str(row["conname"]): str(row["definition"])
+            for row in conn.execute(
+                """SELECT conname,pg_get_constraintdef(oid) AS definition FROM pg_constraint
+                   WHERE conname IN (
+                     'chk_tutor_teaching_action_receipts_moves',
+                     'chk_tutor_teaching_action_receipts_response_mode',
+                     'chk_tutor_teaching_action_receipts_version_shape'
+                   )"""
+            ).fetchall()
+        }
+        assert set(receipt_constraints) == {
+            "chk_tutor_teaching_action_receipts_moves",
+            "chk_tutor_teaching_action_receipts_response_mode",
+            "chk_tutor_teaching_action_receipts_version_shape",
+        }
+        assert "teaching_action_receipt_v2" in receipt_constraints["chk_tutor_teaching_action_receipts_version_shape"]
+        assert "lesson_teaching_policy_v2" in receipt_constraints["chk_tutor_teaching_action_receipts_version_shape"]
+        assert "learner_feedback" in receipt_constraints["chk_tutor_teaching_action_receipts_moves"]
         triggers = {str(row["tgname"]) for row in conn.execute(
             """SELECT tgname FROM pg_trigger WHERE NOT tgisinternal AND tgrelid IN (
                  'tutor_teaching_sessions'::regclass,'tutor_teaching_session_checkpoints'::regclass,

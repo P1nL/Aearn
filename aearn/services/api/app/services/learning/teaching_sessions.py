@@ -164,7 +164,9 @@ class TeachingSessionRepository:
     def open_or_resume(self, *, authority: TeachingAuthority, mode: TeachingSessionMode) -> tuple[Mapping[str, object], bool]:
         existing = self._conn.execute(
             "SELECT * FROM tutor_teaching_sessions WHERE user_id=%s AND track_id=%s AND conversation_id=%s "
-            "AND knowledge_key=%s AND status IN ('active','paused') ORDER BY created_at DESC LIMIT 1 FOR UPDATE",
+            "AND knowledge_key=%s AND status IN ('active','paused','completed') "
+            "ORDER BY CASE WHEN status IN ('active','paused') THEN 0 ELSE 1 END, created_at DESC,id DESC "
+            "LIMIT 1 FOR UPDATE",
             (authority.user_id, authority.track_id, authority.conversation_id, authority.knowledge_key),
         ).fetchone()
         predecessor_session_id: str | None = None
@@ -598,6 +600,24 @@ class TeachingSessionRepository:
             session_id=str(row["teaching_session_id"]), user_id=user_id,
         )
         structured_summary = self.structured_summary(session=session_row, checkpoint=checkpoint_row)
+        recent_receipts = self._conn.execute(
+            """SELECT action,focus_id,teaching_moves_json,learner_response_mode,public_message_hash,schema_version
+               FROM tutor_teaching_action_receipts
+               WHERE teaching_session_id=%s AND user_id=%s
+               ORDER BY created_at DESC,id DESC LIMIT 4""",
+            (row["teaching_session_id"], user_id),
+        ).fetchall()
+        recent_teaching_units = [
+            {
+                "action": str(item["action"]),
+                "focus_id": str(item["focus_id"]),
+                "teaching_moves": _string_list(item["teaching_moves_json"]),
+                "learner_response_mode": str(item["learner_response_mode"]),
+                "public_message_hash": str(item["public_message_hash"]),
+                "schema_version": str(item["schema_version"]),
+            }
+            for item in reversed(recent_receipts)
+        ]
         historical_summaries: list[dict[str, object]] = []
         predecessor_id = session_row.get("predecessor_session_id")
         if predecessor_id is not None:
@@ -625,8 +645,9 @@ class TeachingSessionRepository:
             "candidate_focus_id": candidate_focus_id,
             "structured_summary": structured_summary,
             "related_historical_summaries": historical_summaries,
+            "recent_teaching_units": recent_teaching_units,
             "allowed_source_handles": sorted(handles),
-            "action_policy": "lesson_teaching_v1",
+            "action_policy": "lesson_teaching_v2",
         }
 
     def next_available_knowledge_key(
@@ -859,7 +880,7 @@ class TeachingSessionRepository:
         run = repository.create_run(
             user_id=authority.user_id, conversation_id=authority.conversation_id,
             catalog_digest=catalog.digest, policy=policy, origin="interactive",
-            policy_version="tutor_teaching_stimulus_policy_v1",
+            policy_version="tutor_teaching_stimulus_policy_v2",
             interaction_protocol_version=TutorInteractionProtocolVersion.THREAD_TURN_V2,
         )
         self._ensure_run_learning_scope(run_id=run.run_id, authority=authority)
@@ -1268,6 +1289,12 @@ def _int(value: object) -> int:
     if isinstance(value, bool):
         raise TeachingSessionConflict("stored integer is invalid")
     return int(str(value))
+
+
+def _string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value]
 
 
 def _optional_str(value: object) -> str | None:

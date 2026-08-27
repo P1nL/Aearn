@@ -1,6 +1,8 @@
 """Catalog-constrained decision validation before Tutor capability or effect boundaries."""
 from __future__ import annotations
 
+import hashlib
+
 from typing import Protocol
 
 from pydantic import ValidationError
@@ -254,7 +256,7 @@ class TeachingTutorDecisionGate:
     """Require one exact lesson-teaching Skill and one closed action for teaching runs."""
 
     _SKILL_ID = "tutor.lesson-teaching"
-    _SKILL_VERSION = "1.0.0"
+    _SKILL_VERSION = "1.1.0"
     _FREE_READING_ACTIONS = frozenset({
         "answer_question", "explain_concept", "show_example", "compare_examples", "wait_for_input",
     })
@@ -327,6 +329,17 @@ class TeachingTutorDecisionGate:
             return _deny("teaching_abandoned_focus_invalid")
         if resolution == "wait" and step.focus_id not in {active_focus_id, candidate_focus_id}:
             return _deny("teaching_wait_focus_invalid")
+        moves = tuple(item.value for item in step.teaching_moves or ())
+        response_mode = step.learner_response_mode.value if step.learner_response_mode is not None else None
+        if len(moves) < 2 or len(moves) > 4 or len(moves) != len(set(moves)) or response_mode is None:
+            return _deny("teaching_step_v2_required")
+        diagnostic_moves = {"prediction", "error_detection", "misconception_contrast", "micro_transfer"}
+        if response_mode == "composer":
+            if step.action.value not in {"check_understanding", "wait_for_input"} or not diagnostic_moves.intersection(moves):
+                return _deny("teaching_response_mode_invalid")
+        elif step.action.value in {"check_understanding", "wait_for_input"}:
+            return _deny("teaching_response_mode_invalid")
+
         mode = str(session.get("mode") or "")
         stimulus = context.get("stimulus")
         domain_event = isinstance(stimulus, dict) and stimulus.get("kind") == "domain_event"
@@ -336,6 +349,30 @@ class TeachingTutorDecisionGate:
         )
         if mode == "free_reading" and step.action.value not in free_reading_actions:
             return _deny("free_reading_action_invalid")
+        control_key = str(stimulus.get("control_key") or "") if isinstance(stimulus, dict) else ""
+        if control_key == "change_example" and not {"worked_example", "counterexample"}.intersection(moves):
+            return _deny("teaching_change_example_move_required")
+        if control_key == "continue":
+            recent_units = context.get("recent_teaching_units")
+            if not isinstance(recent_units, list):
+                return _deny("teaching_context_invalid")
+            candidate_hash = hashlib.sha256(step.public_message.encode("utf-8")).hexdigest()
+            candidate_signature = (step.action.value, tuple(sorted(moves)), response_mode)
+            for unit in recent_units:
+                if not isinstance(unit, dict) or unit.get("schema_version") != "teaching_action_receipt_v2":
+                    continue
+                if str(unit.get("public_message_hash") or "") == candidate_hash:
+                    return _deny("teaching_unit_not_advanced")
+                recent_moves = unit.get("teaching_moves")
+                if not isinstance(recent_moves, list):
+                    return _deny("teaching_context_invalid")
+                recent_signature = (
+                    str(unit.get("action") or ""),
+                    tuple(sorted(str(item) for item in recent_moves)),
+                    str(unit.get("learner_response_mode") or ""),
+                )
+                if str(unit.get("focus_id") or "") == step.focus_id and recent_signature == candidate_signature:
+                    return _deny("teaching_unit_not_advanced")
         progress_completed = str(session.get("progress_status") or "") == "completed"
         completion_pause = step.pause_kind.value == "completion_pause"
         if completion_pause != progress_completed:

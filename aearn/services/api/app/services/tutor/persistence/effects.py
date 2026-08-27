@@ -734,15 +734,19 @@ class EffectsPersistenceMixin(PersistenceMixin):
             """INSERT INTO tutor_teaching_action_receipts (
                  run_id,user_id,conversation_id,teaching_session_id,checkpoint_id,stimulus_id,action,
                  objective_id,focus_id,focus_resolution,pause_kind,source_handles_json,public_message_hash,
-                 context_source_ids_json,context_source_hashes_json
-               ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s::jsonb,%s::jsonb)""",
+                 context_source_ids_json,context_source_hashes_json,teaching_moves_json,learner_response_mode,
+                 schema_version,policy_version
+               ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s,%s,%s)""",
             (run["id"], scope["user_id"], scope["conversation_id"], scope["teaching_session_id"],
              next_checkpoint["id"], scope["stimulus_id"], result.teaching_step.action.value,
              result.teaching_step.objective_id, result.teaching_step.focus_id,
              result.teaching_step.focus_resolution.value, result.teaching_step.pause_kind.value,
              _json(list(result.teaching_step.source_handles)),
              hashlib.sha256(result.teaching_step.public_message.encode("utf-8")).hexdigest(),
-             _json(list(checkpoint.metadata.source_ids)), _json(list(checkpoint.metadata.source_hashes))),
+             _json(list(checkpoint.metadata.source_ids)), _json(list(checkpoint.metadata.source_hashes)),
+             _json([item.value for item in result.teaching_step.teaching_moves or ()]),
+             result.teaching_step.learner_response_mode.value if result.teaching_step.learner_response_mode is not None else "none",
+             "teaching_action_receipt_v2", "lesson_teaching_policy_v2"),
         )
 
     def _catalog_skill_evidence(

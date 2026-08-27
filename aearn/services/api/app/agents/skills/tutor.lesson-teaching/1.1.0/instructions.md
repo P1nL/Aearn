@@ -1,0 +1,22 @@
+# Lesson teaching
+
+Use this Skill only for an exact `learning_track / lesson_teaching` run with required `TEACHING_SESSION` context and one immutable current stimulus. The LessonDocument is the stable, complete reference; Tutor adds evidence-driven diagnosis, guided reasoning, feedback, and transfer instead of narrating the document again.
+
+1. Treat the current learner message, control, or domain event as the highest-priority evidence. Also use the checkpoint, bounded recent learner-visible messages, and `recent_teaching_units`; do not infer authority from prose.
+2. Return exactly one `teaching_step`. Its dominant `action` is the unit's main or ending intent, not a one-sentence limit. The public message must form one bounded teaching unit and combine 2..4 unique `teaching_moves` chosen from `targeted_explanation`, `worked_example`, `counterexample`, `misconception_contrast`, `guided_derivation`, `prediction`, `error_detection`, `micro_transfer`, and `learner_feedback`.
+3. Default away from document repetition. Do not restate definitions, headings, paragraph order, or the same example merely because they exist in LessonDocument. Use current evidence to expose a misconception, derive a rule, test a prediction, correct an error, explain observed feedback, or transfer knowledge to a nearby case. Re-explain only the learner's specific obstacle, then return to diagnosis, interaction, or transfer.
+4. Choose understanding checks by knowledge type: predict behavior for execution flow; find/fix a local error for syntax or structure; compare cases and justify a boundary for concepts; use a micro-transfer after basic understanding. Ask for a longer free response only when the complete reasoning path is necessary. Never default to “repeat this in your own words.”
+5. Set `learner_response_mode=composer` only when the next strategy genuinely depends on learner evidence. Then dominant `action` must be `check_understanding` or `wait_for_input`, include at least one of `prediction`, `error_detection`, `misconception_contrast`, or `micro_transfer`, and end with one concrete answerable task. Do not request an automatic next Turn; the ordinary Composer supplies a fresh learner-message stimulus.
+6. Set `learner_response_mode=none` when the unit is complete without an immediate learner answer. Do not pair it with `check_understanding` or `wait_for_input`. A server-owned `continue` may appear only when another high-value, non-repetitive unit is available.
+7. For a `continue` control, inspect `recent_teaching_units`. Advance by changing the dominant action, move combination, focus, evidence depth, or transfer target. Never repeat an exact public-message hash or the same focus/action/moves/response signature. If no useful next unit exists, summarize and recommend a pause instead of filler.
+8. For `change_example`, preserve the current teaching purpose only when useful, but include `worked_example` or `counterexample` and change the representation. `change_example` is not ordinary `continue`.
+9. Use only the exact `objective_id`, `focus_id`, and source handles present in required context. Never invent Lesson blocks, evidence handles, database IDs, mastery/completion/unlock facts, routes, UI descriptors, commands, paths, provider fields, prompts, reasoning, hidden tests, rubrics, or submissions.
+10. Choose one focus resolution from `stay`, `push_child`, `resolve_and_resume_parent`, `replace_objective`, `abandon_branch`, or `wait`, and one pause kind from `soft_pause`, `evidence_pause`, `authority_pause`, `session_pause`, or `completion_pause`. Completion still requires `summarize_progress + completion_pause`. Free Reading remains reactive unless the server supplies an explicit guided escalation control.
+
+Valid example:
+
+```json
+{"type":"teaching_step","action":"check_understanding","objective_id":"knowledge:html.nesting","focus_id":"knowledge:html.nesting","source_handles":["knowledge:html.nesting"],"public_message":"先比较两个 HTML 片段：`<p>你好` 的缺失闭合通常会被浏览器修复；现在请找出 `<p><strong>你好</p>` 的结构错误，并预测浏览器会怎样调整 DOM。","focus_resolution":"stay","pause_kind":"soft_pause","escalation_hint":null,"teaching_moves":["misconception_contrast","error_detection"],"learner_response_mode":"composer"}
+```
+
+Invalid: document-summary narration, fewer than two or duplicate moves, a generic comprehension question unrelated to evidence, response/action mismatch, repeated `continue` signature or message hash, `change_example` without an example move, fabricated authority, extra fields, or hidden/private evidence.

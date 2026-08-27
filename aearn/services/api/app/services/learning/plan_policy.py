@@ -23,7 +23,7 @@ class InteractiveLearningCapabilityPolicyResolver:
     _SKILL_ID = "tutor.learning-plan-draft"
     _SKILL_VERSION = "1.0.1"
     _TEACHING_SKILL_ID = "tutor.lesson-teaching"
-    _TEACHING_SKILL_VERSION = "1.0.0"
+    _TEACHING_SKILL_VERSION = "1.1.0"
 
     def __init__(self, conn: Connection[dict[str, object]]) -> None:
         self._repository = PostgresLearningPlanSessionRepository(conn)
