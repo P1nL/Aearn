@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-3.md`
-- **Total Sessions**: 124
-- **Last Active**: 2026-08-23
+- **Total Sessions**: 125
+- **Last Active**: 2026-08-28
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-3.md` | ~201 | Active |
+| `journal-3.md` | ~240 | Active |
 | `journal-2.md` | ~1986 | Archived |
 | `journal-1.md` | ~1979 | Archived |
 <!-- @@@/auto:active-documents -->
@@ -31,6 +31,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 125 | 2026-08-28 | Tutor 教学单元 v1.1 收尾 | `c30e3bb0045cae252afb050104a5e2deac23d03a`, `75af13b265d7743d5b517038c31e57a7a6130a2b`, `5ace83fbcdbdedb0e683b5e64d2ec7dfa429407d` | `codex/repository-structure-full-optimization` |
 | 124 | 2026-08-23 | LearningPlan 工具五分钟窗口收尾 | `9e8d5511` | `main` |
 | 123 | 2026-08-23 | 归档 Harness 主导的长期自适应学习工作区父任务 | `f88cea72`, `5e3b05bc`, `57be45fc`, `ad1cd13e` | `main` |
 | 122 | 2026-08-23 | 完成长期自适应教学集成 Child 4 | `ad1cd13e`, `e1b9d2c3` | `main` |
