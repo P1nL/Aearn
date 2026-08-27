@@ -161,6 +161,7 @@ export function useTeachingWorkspaceController(options: TeachingControllerOption
   const performAction = useCallback(async (descriptor: TeachingActionDescriptor) => {
     if (!descriptor.enabled || pendingActionKey) return null;
     if (descriptor.target_kind === "navigation" || descriptor.target_kind === "artifact") {
+      if (descriptor.key === "refresh_session") return refresh();
       onNavigationAction?.(descriptor);
       return null;
     }
@@ -175,7 +176,7 @@ export function useTeachingWorkspaceController(options: TeachingControllerOption
       descriptor.key === "switch_mode" && isTeachingSessionMode(descriptor.target_id) ? descriptor.target_id : undefined,
       descriptor.key === "enter_next_knowledge" ? descriptor.target_id ?? undefined : undefined,
     );
-  }, [onNavigationAction, pendingActionKey, runMutation]);
+  }, [onNavigationAction, pendingActionKey, refresh, runMutation]);
 
   useEffect(() => () => requestRef.current?.abort(), []);
 

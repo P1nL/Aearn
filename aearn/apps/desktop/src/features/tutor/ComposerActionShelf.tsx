@@ -24,9 +24,11 @@ export function ComposerActionShelf({ projection, pendingActionKey, onAction }: 
   if (!projection || projection.state === "runtime_active" || projection.state === "blocking_request") return null;
   const visibleSecondary = projection.secondary_actions.slice(0, 3);
   const overflow = [...projection.secondary_actions.slice(3), ...projection.overflow_actions];
+  const actionCount = (projection.primary_action ? 1 : 0) + visibleSecondary.length + overflow.length;
+  if (actionCount === 0) return null;
 
   return (
-    <section className={`composer-action-shelf state-${projection.state}`} aria-label="教学下一步">
+    <section className={`composer-action-shelf state-${projection.state}${projection.primary_action ? " has-primary" : " secondary-only"}`} aria-label="教学下一步">
       <div className="composer-action-shelf-secondary">
         {visibleSecondary.map((descriptor) => <ShelfButton key={descriptor.key} descriptor={descriptor} pendingActionKey={pendingActionKey} onAction={onAction} />)}
         {overflow.length > 0 ? (
@@ -36,7 +38,7 @@ export function ComposerActionShelf({ projection, pendingActionKey, onAction }: 
           </div>
         ) : null}
       </div>
-      {projection.primary_action ? <ShelfButton descriptor={projection.primary_action} pendingActionKey={pendingActionKey} onAction={onAction} primary /> : <span className="composer-action-shelf-placeholder" aria-live="polite">{projection.state === "completion" ? "当前知识点已完成，没有可用的下一节点。" : "继续阅读，或在 Composer 中提出问题。"}</span>}
+      {projection.primary_action ? <ShelfButton descriptor={projection.primary_action} pendingActionKey={pendingActionKey} onAction={onAction} primary /> : null}
     </section>
   );
 }

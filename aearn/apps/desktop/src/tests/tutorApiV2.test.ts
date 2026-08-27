@@ -223,9 +223,11 @@ describe("Tutor v2 API boundary", () => {
 
     await openTeachingSession({ userId: "user-1", trackId: session.track_id, knowledgeKey: session.knowledge_key, conversationId: session.conversation_id,
       expectedTrackVersion: 3, expectedProgressVersion: 2, expectedAssignmentVersion: 2, mode: "guided", clientActionId: "open:test" });
-    await mutateTeachingSession({ userId: "user-1", trackId: session.track_id, sessionId: session.session_id, controlKey: "switch_mode",
+    const mutated = await mutateTeachingSession({ userId: "user-1", trackId: session.track_id, sessionId: session.session_id, controlKey: "switch_mode",
       expectedSessionVersion: 1, expectedTrackVersion: 3, expectedProgressVersion: 2, expectedAssignmentVersion: 2,
       targetMode: "free_reading", clientActionId: "switch:test" });
+    expect(mutated.teaching_session.action_shelf).toMatchObject({ primary_action: null, secondary_actions: [], overflow_actions: [] });
+    expect(mutated.teaching_session.allowed_actions).toEqual([]);
 
     expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({ user_id: "user-1", conversation_id: session.conversation_id,
       expected_track_version: 3, expected_progress_version: 2, expected_assignment_version: 2, mode: "guided", client_action_id: "open:test" });

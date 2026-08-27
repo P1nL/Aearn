@@ -805,6 +805,32 @@ describe("TutorConversationSurface typed request seat", () => {
   });
 
 
+  it("omits an empty Action Shelf and renders a server-projected secondary-only shelf without placeholder copy", async () => {
+    api.fetchTutorConversationSnapshot.mockResolvedValue({
+      ...snapshot,
+      conversation: { ...snapshot.conversation, control_state: "idle", pending_count: 0, queue_paused: false, queue_pause_reason: null },
+      pending_requests: [], queue: [], teaching_sessions: [],
+    });
+    const emptyShelf = {
+      schema_version: "teaching_action_shelf_v1" as const,
+      teaching_session_id: "session-1", session_version: 2, checkpoint_id: "checkpoint-1", state: "ready" as const,
+      primary_action: null, secondary_actions: [], overflow_actions: [],
+    };
+    const onTeachingAction = vi.fn();
+    const rendered = renderSurface({ teachingActionShelf: emptyShelf, onTeachingAction });
+    await screen.findByRole("textbox", { name: "继续当前对话" });
+    expect(screen.queryByRole("region", { name: "教学下一步" })).not.toBeInTheDocument();
+    expect(screen.queryByText("继续阅读，或在 Composer 中提出问题。")).not.toBeInTheDocument();
+    expect(rendered.container.querySelector(".tutor-composer-dock")).not.toHaveClass("has-action-shelf");
+
+    const pause = { key: "pause", label: "暂停", emphasis: "quiet" as const, enabled: true, disabled_reason: null, target_kind: "teaching_control" as const, target_id: null, expected_versions: { session: 2, track: 3, progress: 4, assignment: 5 } };
+    rendered.rerender(<TutorConversationSurface user={userProfile} enabled isActive selectedConversationId="conversation-1" onSelectConversation={vi.fn()} showControls={false} teachingActionShelf={{ ...emptyShelf, secondary_actions: [pause] }} onTeachingAction={onTeachingAction} />);
+    expect(screen.getByRole("region", { name: "教学下一步" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "暂停" })).toBeInTheDocument();
+    expect(rendered.container.querySelector(".tutor-composer-dock")).toHaveClass("has-action-shelf");
+  });
+
+
   it("does not expose the learner interrupt mutation for input-revision zero teaching-control runs", async () => {
     api.fetchTutorConversationSnapshot.mockResolvedValue({
       ...snapshot,
