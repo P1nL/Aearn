@@ -568,6 +568,15 @@ export function TutorConversationSurface({
   const workspaceClassName = showControls ? "tutor-workspace" : `tutor-workspace tutor-conversation-only${planningIdle ? " tutor-conversation-idle" : ""}`;
   const mutationsLocked = !writeEnabled || Boolean(pendingRequest) || Boolean(mutationBusy);
   const running = activeTurn?.status === "in_progress" && controlState === "running";
+  const projectedTeachingActions = teachingActionShelf
+    ? [teachingActionShelf.primary_action, ...teachingActionShelf.secondary_actions, ...teachingActionShelf.overflow_actions].filter(Boolean).length
+    : 0;
+  const hasTeachingActionShelf = Boolean(
+    !running && onTeachingAction && teachingActionShelf
+    && teachingActionShelf.state !== "runtime_active"
+    && teachingActionShelf.state !== "blocking_request"
+    && projectedTeachingActions > 0,
+  );
   const sendLabel = composerStatus === "submitting" ? "正在确认……" : running ? "加入 Queue" : selectedConversationId ? "发送消息" : "开始对话";
 
 
@@ -617,8 +626,8 @@ export function TutorConversationSurface({
           onExecute={(item) => { if (!userId || !selectedConversationId) return; void runMutation(`execute:${item.item_id}`, () => executeTutorQueueItem({ userId, conversationId: selectedConversationId, itemId: item.item_id, expectedControlVersion: controlVersion, clientActionId: createTutorActionId("tutor-queue-execute") })); }}
           onResume={() => { if (!userId || !selectedConversationId) return; void runMutation("resume", () => resumeTutorQueue({ userId, conversationId: selectedConversationId, expectedControlVersion: controlVersion, clientActionId: createTutorActionId("tutor-queue-resume") })); }}
         />}
-        <div className={"tutor-composer-dock" + (!running && onTeachingAction ? " has-action-shelf" : "")}>
-          {running && selectedConversationId && activeTurn ? <div className="tutor-running-controls" role="status"><span>{activeTurn.input_revision > 0 ? "当前 Turn 正在运行；发送新消息会进入 Queue。" : "教学控制正在运行；完成前由 runtime controls 接管 Action Shelf。"}</span>{activeTurn.input_revision > 0 ? <Button variant="outline" size="sm" icon={<IconStop />} busy={mutationBusy === "interrupt"} disabled={!writeEnabled || Boolean(mutationBusy)} onClick={() => { if (!userId) return; void runMutation("interrupt", () => interruptTutorTurn({ userId, conversationId: selectedConversationId, expectedTurnId: activeTurn.turn_id, expectedInputRevision: activeTurn.input_revision, expectedControlVersion: controlVersion, clientActionId: createTutorActionId("tutor-turn-interrupt") })); }}>停止</Button> : null}</div> : onTeachingAction ? <ComposerActionShelf projection={teachingActionShelf} pendingActionKey={pendingTeachingActionKey} onAction={onTeachingAction} /> : null}
+        <div className={"tutor-composer-dock" + (hasTeachingActionShelf ? " has-action-shelf" : "")}>
+          {running && selectedConversationId && activeTurn ? <div className="tutor-running-controls" role="status"><span>{activeTurn.input_revision > 0 ? "当前 Turn 正在运行；发送新消息会进入 Queue。" : "教学控制正在运行；完成前由 runtime controls 接管 Action Shelf。"}</span>{activeTurn.input_revision > 0 ? <Button variant="outline" size="sm" icon={<IconStop />} busy={mutationBusy === "interrupt"} disabled={!writeEnabled || Boolean(mutationBusy)} onClick={() => { if (!userId) return; void runMutation("interrupt", () => interruptTutorTurn({ userId, conversationId: selectedConversationId, expectedTurnId: activeTurn.turn_id, expectedInputRevision: activeTurn.input_revision, expectedControlVersion: controlVersion, clientActionId: createTutorActionId("tutor-turn-interrupt") })); }}>停止</Button> : null}</div> : hasTeachingActionShelf && onTeachingAction ? <ComposerActionShelf projection={teachingActionShelf} pendingActionKey={pendingTeachingActionKey} onAction={onTeachingAction} /> : null}
         <Composer planning={planning} compact={compactComposer} planningIdle={planningIdle} planningPlaceholder={planningComposerPlaceholder} selectedConversationId={selectedConversationId} text={composerText} status={composerStatus} disabled={!writeEnabled} sendLabel={sendLabel} contextReferences={contextReferences} composerRef={composerRef} onTextChange={setComposerText} onKeyDown={handleComposerKeyDown} onSubmit={() => void submitComposer()} onRemoveReference={onRemoveContextReference} />
         </div>
       </>}

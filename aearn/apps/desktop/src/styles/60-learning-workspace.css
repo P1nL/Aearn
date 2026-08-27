@@ -595,7 +595,7 @@
 .composer-action-shelf button { pointer-events: auto; }
 .composer-action-shelf-secondary { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
 .composer-action-primary { flex: 0 0 auto; min-width: 112px; }
-.composer-action-shelf-placeholder { color: var(--muted); font-size: 10px; line-height: 1.45; text-align: right; }
+.composer-action-shelf.secondary-only { justify-content: flex-start; }
 .composer-action-shelf-overflow { position: relative; }
 .composer-action-shelf-menu {
   position: absolute;
