@@ -458,7 +458,7 @@ else preserveValidatedCurrentRuntimeOutput();
 ### 3. 契约
 
 - Guided：路线 / Tutor 主区 / Lesson 次区；Free Reading：路线 / Lesson 主区 / 同一 Tutor 次区。模式按钮位于主区右上角，具有 accessible name、tooltip、visible focus、pending/disabled 与不小于 44px 的触控目标。
-- Action Shelf 只渲染 server descriptor，顺序为 blocking request > active runtime controls > ordinary shelf；一个 primary、最多三个 visible secondary，其他进入 overflow。
+- Action Shelf 只渲染 server descriptor，顺序为 blocking request > active runtime controls > ordinary shelf；一个 primary、最多三个 visible secondary，其他进入 overflow。`primary=null` 且 `secondary=[]` 时 `ComposerActionShelf` 返回 `null`，surface 不设置 `has-action-shelf`，不显示 placeholder 或保留空白高度；仅有 secondary descriptor 时使用 secondary-only 布局。`respond_in_composer` 只指向现有 Composer，不创建第二个输入状态。
 - historical group 只按 server `turn_ids` 分组，默认折叠、展开只读；每条历史 message 的“引用此消息”只创建 `teaching_session_message` exact DTO，不复制正文、不改 mode/active scope。
 - `input_revision=0` 的 teaching-control run 不显示 generic Stop；该 Stop API 只接受正 revision。
 
@@ -466,19 +466,21 @@ else preserveValidatedCurrentRuntimeOutput();
 
 - unknown/extra descriptor -> API boundary 拒绝，不渲染 fallback action。
 - active runtime/request 出现 -> ordinary shelf 退出槽位，Composer draft/reference 保持。
+- empty ordinary shelf -> 无 shelf DOM、无 `has-action-shelf`、无本地 placeholder；Composer 仍保持可见可用。
+- navigation target=`refresh_session` -> 调用现有 workspace `refresh()` 重新读取 authority，不本地 admission run。
 - history item 无 `turn_id` 或无 callback -> 不显示引用按钮。
 
 ### 5. 正常、基础与错误案例
 
 - 正常：展开历史、引用一条 Tutor message，Composer chip 出现且原 draft 不变。
-- 基础：legacy history 独立只读分组，不提供猜测型 teaching-session reference。
+- 基础：legacy history 独立只读分组，不提供猜测型 teaching-session reference；server 返回空 shelf 时 Composer 周围没有空容器或伪按钮。
 - 错误：按消息正文、标题或 DOM 顺序归组；复制历史正文进当前 learner content。
 
 ### 6. 必须测试
 
-- 单一 Tutor/Lesson mount、mode role swap、Action Shelf 优先级、历史只读、exact callback DTO、键盘/focus、三视口。
+- 单一 Tutor/Lesson mount、mode role swap、Action Shelf 优先级、空 shelf DOM/class/placeholder 缺失、secondary-only、Composer response、`refresh_session`、历史只读、exact callback DTO、键盘/focus、三视口。
 
 ### 7. 错误与正确写法
 
-- 错误：为 Guided/Free 各挂一套 Tutor + SSE。
-- 正确：稳定 sibling surface + CSS role class，controller 只更换 server-authoritative mode projection。
+- 错误：为 Guided/Free 各挂一套 Tutor + SSE，或在空 descriptor 时渲染“暂无操作”并根据消息文本补 Continue。
+- 正确：稳定 sibling surface + CSS role class，controller 只更换 server-authoritative mode projection；shelf 只按 descriptor count 挂载，空数组直接省略 DOM。

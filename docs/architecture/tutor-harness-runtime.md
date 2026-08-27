@@ -1,6 +1,6 @@
 # Tutor Harness Runtime Architecture
 
-**Status:** Current runtime contract as of 2026-08-20.
+**Status:** Current runtime contract as of 2026-08-27.
 **Authority:** Current route registration, `aearn/services/api/app`,
 `aearn/apps/desktop`, `aearn/services/worker`, `services/learning/`,
 the manifest-ordered `app/db/schema/` fragments, and their tests.
@@ -903,11 +903,11 @@ LearningTrack learner conversation 仍是长期 history/context scope；Teaching
 
 每个 teaching-scoped fresh run 额外冻结 `tutor_run_teaching_scopes`，并关联一个 exact `TutorTurnStimulus`：真实 learner message、显式 teaching control 或 server-owned domain event。control/event 不伪造 learner message、不使用 proactive origin。authority version 变化时，旧 current session 追加 `authority_pause` checkpoint 并置为 blocked，successor 通过 `predecessor_session_id` 冻结新 authority；partial unique 只允许 exact scope 同时存在一条 `active | paused` session。
 
-Harness 为 teaching run 注入 required `TEACHING_SESSION` section，并只授权 `tutor.lesson-teaching@1.0.0`。provider 先选择 exact Skill，context rebuild 后只能返回一个 strict `teaching_step`：closed action、exact objective/focus/source handles、closed focus resolution、一个 pause kind 和 learner-safe public message。unknown handle/focus、extra field、missing required context、Free Reading 越权主动控制、伪造 completion 或 next node 均在 durable commit 前 fail closed。
+Harness 为 teaching run 注入 required `TEACHING_SESSION` section，并只授权 `tutor.lesson-teaching@1.1.0`。`tutor.lesson-teaching@1.0.0` 的 manifest、instructions 与 evals 保持不可变，仅作为历史 catalog evidence。provider 先选择 exact Skill，context rebuild 后只能返回一个 strict `tutor.teaching-step-decision.v2`：closed action、exact objective/focus/source handles、closed focus resolution、一个 pause kind、2--4 个互不重复的 `teaching_moves`、显式 `learner_response_mode` 和 learner-safe public message。unknown handle/focus、extra field、missing/duplicate move、response/action 不兼容、Free Reading 越权主动控制、伪造 completion 或 next node 均在 durable commit 前 fail closed。
 
-一次成功 Turn 在同一 PostgreSQL transaction 内 append next checkpoint、CAS session、insert `tutor_teaching_action_receipts`、写 Tutor public message、outbox/event 并 terminalize run。receipt 只保存 action/focus/pause、safe handles、context IDs/hashes 与 public-message hash。provider unavailable、stale/superseded/lease loss 不写 checkpoint/receipt/message；provider 返回后 authority 失效的 teaching run durable cancel 为 `teaching_authority_stale`。
+一次成功 Turn 在同一 PostgreSQL transaction 内 append next checkpoint、CAS session、insert `tutor_teaching_action_receipts`、写 Tutor public message、outbox/event 并 terminalize run。v2 receipt 只保存 action/focus/pause、safe handles、`teaching_moves`、`learner_response_mode`、schema/policy version、context IDs/hashes 与 public-message hash；最近四个 v2 单元以这些安全字段进入下一次 `TEACHING_SESSION`，不复制消息正文。provider unavailable、stale/superseded/lease loss 不写 checkpoint/receipt/message；provider 返回后 authority 失效的 teaching run durable cancel 为 `teaching_authority_stale`。
 
-Aearn 根据 checkpoint/pause/runtime/request/mode/completion 生成 `TeachingActionShelfV1`，最多一个 primary 与三个 visible secondary；active runtime、blocking request 和普通 shelf 互斥。Free Reading 普通问题只产生 reactive finite answer，只有显式 `escalate_guided` 才切 Guided 并 admission 一个新 Turn。completed progress 只接受 `summarize_progress + completion_pause`，不自动改 workspace knowledge key；只有显式 `enter_next_knowledge` 才重新验证最新 roadmap/availability、复用同一 conversation、推进 track pointer并 admission 下一 session 的 first-unit run。
+Aearn 根据 checkpoint/pause/runtime/request/mode/completion 与最近已提交教学单元生成 `TeachingActionShelfV1`，最多一个 primary 与三个 visible secondary；active runtime、blocking request 和普通 shelf 互斥。只有 `recommended_action_key=continue` 时才投影主操作“继续”，需要学习者回答的单元改投影 `respond_in_composer`，不存在真实 descriptor 时 shelf 为空。Free Reading 普通问题只产生 reactive finite answer，只有显式 `escalate_guided` 才切 Guided 并 admission 一个新 Turn。completed progress 只接受 `summarize_progress + completion_pause`，不自动改 workspace knowledge key；只有显式 `enter_next_knowledge` 才重新验证最新 roadmap/availability、复用同一 conversation、推进 track pointer并 admission 下一 session 的 first-unit run。
 
 Harness 在 effect commit、waiting result 和 terminal result 前重新验证 current session/checkpoint、track/active plan/progress、active assignment/document 与 stimulus scope。conversation snapshot/API additive 返回 bounded session/checkpoint/Action Shelf metadata；trace/export 不包含 raw checkpoint/authority JSON、prompt、reasoning、provider body、完整题目/提交、hidden test/rubric、command/path 或 secrets。五张 user-owned teaching 表全部进入 cutover exhaustive inventory 与 local export/reset/delete；删除 action receipt 后再按 run scope/stimulus/checkpoint/session 清理，deferred `NO ACTION` lineage FK 保证同一事务 child-to-root reset 与 bootstrap twice 可重复。
 
@@ -916,3 +916,11 @@ Harness 在 effect commit、waiting result 和 terminal result 前重新验证 c
 长期 track conversation、知识点 TeachingSession 与单次 TurnRun 继续是三个不同时间尺度。owner domain event 只触发一个 fresh interactive Turn；每个 Turn提交一个 closed teaching action 后必须停顿。authority 变化时旧 session 写 `authority_pause` 并 blocked，successor 冻结新 progress/assignment/document；重复事件复用既有 run，stale source 被忽略。
 
 教学 context 优先级为 current input/typed stimulus → current session compact authority → exact references → bounded recent current-session messages → current checkpoint-backed summary → 至多一个 exact predecessor summary → generic conversation summary/memory/activity。`teaching_control | domain_event` 不伪造 current learner input，但 context loader 仍按 frozen `teaching_session_id + session_version + scope chronology` 读取当前 run 之前的 same-session learner-visible messages；legacy group、其他 session/knowledge 与未来消息不进入该窗口。`continue/resume` 必须在最新教学消息之后推进，不能仅凭相同 objective/checkpoint 重启或近义复述已讲解内容；`change_example`、remediation 与 summary authority 例外。active/suspended focus 中的 exact message handle、unresolved question source message 与当前 session 最新 learner input进入 compaction protected set。summary source hash、checkpoint cursor或 authority snapshot失配时 provider 前 fail closed，不允许旧 summary 覆盖最新纠正或完成事实。
+
+## 2026-08-27：Teaching Skill v1.1 与教学单元推进门
+
+exact `tutor.lesson-teaching@1.1.0` 使用 `tutor.teaching-step-decision.v2`。每个教学单元必须选择 2--4 个互不重复的 closed `teaching_moves`：`targeted_explanation`、`worked_example`、`counterexample`、`misconception_contrast`、`guided_derivation`、`prediction`、`error_detection`、`micro_transfer` 或 `learner_feedback`。`learner_response_mode=composer` 只允许搭配 `check_understanding | wait_for_input`，并且必须包含至少一个诊断性 move；`none` 不允许这两个 action。`change_example` 必须实际包含 `worked_example | counterexample`。
+
+下一次 teaching run 的 required projection 包含最近四个已提交 v2 单元的 action、focus、moves、response mode、public-message hash 与 schema version。投影主动删除重复 summary/UI 字段并保持既有 1,200 字符 required-section 上限，不通过提高全局 context budget 掩盖溢出。`continue` 若与最近单元 public-message hash 完全相同，或 objective/focus/moves/response mode 形成相同策略签名，decision gate 以 `teaching_unit_not_advanced` fail closed；改变例子、诊断策略、迁移练习或学习者反馈等真实推进可以继续提交。
+
+checkpoint reducer 先尊重 session/evidence/completion/authority 状态，再解释 response mode。需要学习者作答时推荐 `respond_in_composer`；只有明确推荐继续才显示 Continue。这个决策只改变 server-owned projection，不增加新的客户端状态机、provider 控件或自动 next run。

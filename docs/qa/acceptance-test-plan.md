@@ -1,6 +1,6 @@
 # Aearn Tutor Harness 验收计划
 
-**状态：** 当前 integration/QA 契约，2026-08-20。
+**状态：** 当前 integration/QA 契约，2026-08-27。
 **范围：** 当前 Tutor runtime、cutover、provider attempt 计量、LearningTrack、
 Desktop、background scheduler、executor boundary、legacy retirement 与文档一致性。
 **权威来源：** 当前代码/测试/schema；实测命令结果进入
@@ -425,7 +425,7 @@ Fixture/browser 证据不得包含 external Runtime identity、provider metadata
 
 | ID | 优先级 | 区域 | 验收 | 证据 |
 | --- | --- | --- | --- | --- |
-| RT-54 | P0 | Skill/provider/context | exact `tutor.lesson-teaching@1.0.0`；required `TEACHING_SESSION`；control/domain 无 current input 时仍精确加载 same-session bounded `RECENT_MESSAGES` 并排除 legacy/其他 session/future rows；`continue/resume` 不重启或近义复述已讲内容；strict one `teaching_step`；unknown action/handle/focus、extra field、missing/oversized context provider-before fail closed；non-teaching request budget/contract 无回归 | `test_tutor_skill_catalog.py`、`test_tutor_provider_gateway.py`、`test_tutor_teaching_context.py`、`test_tutor_context_budget.py` |
+| RT-54 | P0 | Skill/provider/context | exact `tutor.lesson-teaching@1.1.0` / `tutor.teaching-step-decision.v2`；required `TEACHING_SESSION`；control/domain 无 current input 时仍精确加载 same-session bounded `RECENT_MESSAGES` 并排除 legacy/其他 session/future rows；`continue/resume` 不重启或近义复述已讲内容；strict one `teaching_step`；unknown action/handle/focus、extra field、missing/oversized context provider-before fail closed；non-teaching request budget/contract 无回归 | `test_tutor_skill_catalog.py`、`test_tutor_provider_gateway.py`、`test_tutor_teaching_context.py`、`test_tutor_context_budget.py` |
 | RT-55 | P0 | Loop/atomicity | one stimulus -> one closed action -> one pause；message/checkpoint/action receipt/session/run terminal 同事务；provider unavailable、stale/superseded 无 message/receipt/checkpoint；terminal 后无自动 next run | `test_tutor_teaching_action_loop.py`、`test_tutor_run_loop.py`、persistence regression |
 | RT-56 | P0 | Focus/mode/Action Shelf | bounded focus stack/questions；resolved child question 移除；Free Reading reactive 且 guided-only control bypass 被拒；显式 escalation；runtime/request/shelf 互斥；最多一 primary/三 secondary；session/evidence/completion pause action 正确 | `test_tutor_teaching_focus_reducer.py`、`test_tutor_teaching_action_loop.py`、`test_tutor_teaching_sessions.py` |
 | RT-57 | P0 | Completion/authority refresh | progress/assignment authority 变化创建 blocked predecessor + successor；completed 只接受 `summarize_progress + completion_pause`；无显式 transition 不改 track/不建 run；`enter_next_knowledge` 重新验证 latest roadmap 并复用同 conversation | `test_tutor_teaching_action_loop.py`、PostgreSQL teaching session tests |
@@ -441,3 +441,13 @@ Fixture/browser 证据不得包含 external Runtime identity、provider metadata
 | RT-60 | P0 | Final integration/privacy | serial full PostgreSQL suite、disposable bootstrap twice、cutover exhaustive、export/reset/privacy、Desktop tests/build、1440/900/390 Browser DOM/console/overflow audit；默认 fake provider | Child 4 release-readiness ledger |
 
 Browser fake 只验证当前 Desktop contract、mode swap、reload/reconnect 与三视口 DOM；Gate/Review terminal authority 必须由真实 PostgreSQL service/repository测试证明，不能用 mock UI代替。
+
+## 2026-08-27：Teaching value v1.1 验收增量
+
+| ID | 优先级 | 区域 | 验收 | 证据 |
+| --- | --- | --- | --- | --- |
+| RT-61 | P0 | Skill/provider/gate | `tutor.lesson-teaching@1.0.0` 三个文件 hash 完全不变；新 run exact 选择 `1.1.0` / `tutor.teaching-step-decision.v2`；2--4 unique moves；composer/action/diagnostic move 与 `change_example` 兼容；legacy provider payload 仍可解析但不能通过 v1.1 gate | `test_tutor_skill_catalog.py`、`test_tutor_provider_gateway.py`、`test_tutor_teaching_action_loop.py` |
+| RT-62 | P0 | Receipt/context/推进 | receipt v2 additive schema/default/CHECK/append-only；最近四个 safe teaching units 进入 required context 且不含消息正文；投影不超过既有 1,200 字符上限；重复 hash 或相同策略签名的 Continue 以 `teaching_unit_not_advanced` 拒绝，改变策略可提交 | `test_tutor_teaching_context.py`、`test_tutor_teaching_action_loop.py`、`test_tutor_teaching_session_postgres.py`、`test_db_bootstrap.py` |
+| UX-11 | P1 | Action Shelf/Composer | Continue 仅按服务端推荐出现；composer response 无伪 Continue；空 shelf 无 DOM、无 `has-action-shelf`、无 placeholder；secondary-only 可用；`refresh_session` 重新读取 authority；三视口无 overlay、console error 或水平溢出 | Desktop Vitest + disposable fake browser smoke at 1440×900、900×900、390×844 |
+
+默认只使用 fake/offline provider 与 disposable PostgreSQL/Desktop fixture；不执行真实 provider、真实 executor、生产迁移、生产数据修改、部署或发布。

@@ -1,6 +1,6 @@
 # Aearn Tutor 桌面端交互规格
 
-**状态：** 当前 Desktop 交互契约，2026-08-23。
+**状态：** 当前 Desktop 交互契约，2026-08-27。
 **适用范围：** `aearn/apps/desktop/src/` 的 React + Tauri UI。
 **权威来源：** `App.tsx`、`stores/useAppStore.ts`、`api.ts`、
 `pages/HarnessCutoverPage.tsx`、`features/learning/TrackLearningWorkspace.tsx`、`features/learning/ReviewSessionPanel.tsx`、`features/tutor/TutorConversationSurface.tsx` 与类型/测试。
@@ -365,8 +365,14 @@ conversation snapshot 的 `teaching_sessions[]` 提供 safe session summary 与 
 
 ### Composer Action Shelf 与完成态
 
-interaction dock 的 authority 顺序是 blocking typed request > active runtime controls > ordinary server-owned Action Shelf。Shelf 只有一个 primary、最多三个 visible secondary，其余进入“更多”；组件不修改 label/target/payload/enabled。`input_revision=0` 的 teaching-control run 不显示 generic Stop。Free Reading 普通问答结束后保持当前 mode；只有显式“转为引导讲解”才切 Guided。completed session 显示服务器 completion summary 与下一步，绝不自动导航；只有显式 next-node action 成功才进入下一 session。
+interaction dock 的 authority 顺序是 blocking typed request > active runtime controls > ordinary server-owned Action Shelf。Shelf 只有一个 primary、最多三个 visible secondary，其余进入“更多”；组件不修改 label/target/payload/enabled。没有任何 server descriptor 时，`ComposerActionShelf` 不挂载 DOM、不显示“暂无操作”等本地 placeholder，conversation surface 也不添加 `has-action-shelf` class；只有 secondary 时使用 secondary-only 布局。`learner_response_mode=composer` 由服务端投影 `respond_in_composer`，学习者直接使用现有 Composer 回答，不出现伪 Continue。`input_revision=0` 的 teaching-control run 不显示 generic Stop。Free Reading 普通问答结束后保持当前 mode；只有显式“转为引导讲解”才切 Guided。completed session 显示服务器 completion summary 与下一步，绝不自动导航；只有显式 next-node action 成功才进入下一 session。
 
 ## 2026-08-23：Domain event 恢复与模式保持
 
 Gate/Review/progress/assignment 触发的后台教学 Turn 不伪装 learner message，也不强制 Guided/Free Reading 角色换位。Desktop 继续只渲染 server-owned session/checkpoint/Action Shelf projection：Free Reading 收到 typed evidence/completion 更新时仍保持课程主区，Guided 仍保持 Tutor 主区；authority successor、reload/reconnect 后按最新 session identity 恢复。任何冲突都通过可恢复 notice/Action Shelf 暴露，不显示 prompt、reasoning、provider body、完整 submission、hidden tests/rubric、命令、路径或 secrets。
+
+## 2026-08-27：空 Shelf 与 Composer 回答
+
+`TutorConversationSurface` 只在至少存在一个 server-owned action descriptor 时挂载 `ComposerActionShelf` 并设置 `has-action-shelf`。空 shelf 不保留容器、占位文案、空白高度或伪 disabled action；仅有 secondary action 时使用紧凑 secondary-only 布局。该规则在 1440×900、900×900 与 390×844 一致。
+
+`respond_in_composer` 只是服务器对已有 Composer 的引导，不创建第二个输入框、typed request 或本地 action state。`refresh_session` 触发现有 workspace refresh 并重新读取服务端 authority；前端不得把它实现为本地 Continue、自动 admission 或 mode change。
