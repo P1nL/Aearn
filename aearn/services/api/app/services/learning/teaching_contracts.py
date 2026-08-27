@@ -313,6 +313,23 @@ class TeachingFocusResolution(StrEnum):
     WAIT = "wait"
 
 
+class TeachingMove(StrEnum):
+    TARGETED_EXPLANATION = "targeted_explanation"
+    WORKED_EXAMPLE = "worked_example"
+    COUNTEREXAMPLE = "counterexample"
+    MISCONCEPTION_CONTRAST = "misconception_contrast"
+    GUIDED_DERIVATION = "guided_derivation"
+    PREDICTION = "prediction"
+    ERROR_DETECTION = "error_detection"
+    MICRO_TRANSFER = "micro_transfer"
+    LEARNER_FEEDBACK = "learner_feedback"
+
+
+class TeachingLearnerResponseMode(StrEnum):
+    NONE = "none"
+    COMPOSER = "composer"
+
+
 class TeachingStepDecision(_Strict):
     action: TeachingAction
     objective_id: str = Field(min_length=1, max_length=160)
@@ -322,6 +339,8 @@ class TeachingStepDecision(_Strict):
     focus_resolution: TeachingFocusResolution
     pause_kind: TeachingPauseReason
     escalation_hint: str | None = Field(default=None, min_length=1, max_length=180)
+    teaching_moves: tuple[TeachingMove, ...] | None = Field(default=None, max_length=4)
+    learner_response_mode: TeachingLearnerResponseMode | None = None
 
     @field_validator("objective_id", "focus_id")
     @classmethod

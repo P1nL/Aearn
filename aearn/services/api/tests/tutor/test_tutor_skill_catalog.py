@@ -74,6 +74,7 @@ def test_published_catalog_is_exact_versioned_immutable_and_deterministic() -> N
         "tutor.learning-plan-draft@1.0.0",
         "tutor.learning-plan-draft@1.0.1",
         "tutor.lesson-teaching@1.0.0",
+        "tutor.lesson-teaching@1.1.0",
         "tutor.registry-grounding@1.0.0",
         "tutor.runner-execution@1.0.0",
     )
@@ -89,6 +90,23 @@ def test_published_catalog_is_exact_versioned_immutable_and_deterministic() -> N
     assert isinstance(first.skills, tuple)
     with pytest.raises((AttributeError, TypeError)):
         first.skills += ()  # type: ignore[misc]
+
+
+def test_lesson_teaching_v1_is_immutable_and_v11_publishes_the_v2_contract() -> None:
+    catalog = compile_published_skill_catalog()
+    legacy = catalog.resolve_skill("tutor.lesson-teaching", "1.0.0")
+    current = catalog.resolve_skill("tutor.lesson-teaching", "1.1.0")
+
+    assert legacy is not None and current is not None
+    assert legacy.manifest.content_hash_for("instructions.md") == "528b3537a6cc0c38f95260a29bcabcce2fcda7ebbd990c589365e53dcc1e9f80"
+    assert legacy.manifest.content_hash_for("evals.json") == "48d919600d7c5e10858692804b89880075fa90e163b3cf509382eb6dc32e6ada"
+    assert legacy.manifest.output_contract == "tutor.teaching-step-decision.v1"
+    assert current.manifest.output_contract == "tutor.teaching-step-decision.v2"
+    assert current.manifest.content_hash_for("instructions.md") == "93a6ddb6c8ab7b925d0fcf9a44ec1251c233b4c2a64fd4f752684b0dafbc409d"
+    assert current.manifest.content_hash_for("evals.json") == "8b8de505de9c39f4b66ba5968f637ca5f6ed22b0900c7ab40150747ea1a35b79"
+    assert "recent_teaching_units" in current.instruction
+    assert "learner_response_mode=composer" in current.instruction
+    assert "2..4 unique `teaching_moves`" in current.instruction
 
 
 def test_learning_plan_skill_and_schema_publish_exact_nested_json_contract() -> None:

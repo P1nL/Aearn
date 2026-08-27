@@ -27,6 +27,10 @@ class _TeachingProvider:
     def __init__(
         self, *, unavailable: bool = False, free_reading: bool = False, invalid_handle: bool = False,
         invalid_focus: bool = False, completion: bool = False,
+        action_override: str | None = None,
+        public_message_override: str | None = None,
+        teaching_moves: tuple[str, ...] | None = ("targeted_explanation", "worked_example"),
+        learner_response_mode: str | None = "none",
         before_teaching_step=None,  # type: ignore[no-untyped-def]
     ) -> None:
         self.calls = 0
@@ -35,6 +39,10 @@ class _TeachingProvider:
         self.invalid_handle = invalid_handle
         self.invalid_focus = invalid_focus
         self.completion = completion
+        self.action_override = action_override
+        self.public_message_override = public_message_override
+        self.teaching_moves = teaching_moves
+        self.learner_response_mode = learner_response_mode
         self.before_teaching_step = before_teaching_step
 
     def decide(self, *, run, context, thinking_sink: TutorPublicThinkingSink | None = None):  # type: ignore[no-untyped-def]
@@ -45,12 +53,12 @@ class _TeachingProvider:
             assert any(item["section"] == "teaching_session" for item in context.as_prompt_context())
             return TutorProviderResult(
                 decision=TutorDecision(
-                    skill_references=(TutorSkillReference("tutor.lesson-teaching", "1.0.0"),),
+                    skill_references=(TutorSkillReference("tutor.lesson-teaching", "1.1.0"),),
                 )
             )
         if self.before_teaching_step is not None:
             self.before_teaching_step()
-        public_message = (
+        public_message = self.public_message_override or (
             "你已完成变量知识点。这里先总结关键结论，并停在当前知识点等待你的下一步选择。"
             if self.completion
             else "先回答你当前阅读中的问题，并保持自由阅读。"
@@ -58,7 +66,7 @@ class _TeachingProvider:
             else "变量让名称引用一个值。先看一个最小赋值例子。"
         )
         step = TeachingStepDecision(
-            action="summarize_progress" if self.completion else "answer_question" if self.free_reading else "explain_concept",
+            action=self.action_override or ("summarize_progress" if self.completion else "answer_question" if self.free_reading else "explain_concept"),
             objective_id="knowledge:python.variables",
             focus_id="knowledge:invented" if self.invalid_focus else "knowledge:python.variables",
             source_handles=(("knowledge:unknown",) if self.invalid_handle else ("knowledge:python.variables",)),
@@ -66,8 +74,10 @@ class _TeachingProvider:
             focus_resolution="replace_objective" if self.invalid_focus else "stay",
             pause_kind="completion_pause" if self.completion else "soft_pause",
             escalation_hint=("如需连续讲解，可显式转为引导。" if self.free_reading else None),
+            teaching_moves=self.teaching_moves,
+            learner_response_mode=self.learner_response_mode,
         )
-        thinking = "当前只处理一个中心问题，并在完成后停顿。"
+        thinking = "当前教学单元组合互补动作，并在服务端权威边界停顿。"
         if thinking_sink is not None:
             thinking_sink.begin_attempt(1)
             thinking_sink.append_text(1, thinking)
@@ -114,6 +124,10 @@ def test_one_stimulus_commits_one_teaching_step_checkpoint_receipt_and_pause() -
         assert current["action_shelf"]["primary_action"]["key"] == "continue"
         receipt = conn.execute("SELECT * FROM tutor_teaching_action_receipts WHERE run_id=%s", (run_id,)).fetchone()
         assert receipt is not None and receipt["action"] == "explain_concept"
+        assert receipt["teaching_moves_json"] == ["targeted_explanation", "worked_example"]
+        assert receipt["learner_response_mode"] == "none"
+        assert receipt["schema_version"] == "teaching_action_receipt_v2"
+        assert receipt["policy_version"] == "lesson_teaching_policy_v2"
         assert "public_message" not in receipt
         messages = conn.execute(
             "SELECT content FROM tutor_messages WHERE conversation_id=%s AND role='tutor'",
@@ -126,6 +140,137 @@ def test_one_stimulus_commits_one_teaching_step_checkpoint_receipt_and_pause() -
         ).fetchone()
         assert runs is not None and runs["count"] == 1
         assert opened["teaching_session"]["session_version"] == 1
+
+
+def test_composer_response_unit_projects_no_continue_and_keeps_composer_as_next_step() -> None:
+    with connection() as conn:
+        scope, _opened, run_id = _open_guided(conn)
+    provider = _TeachingProvider(
+        action_override="check_understanding",
+        public_message_override="预测 `value += 1` 执行后会输出什么，并指出你的判断依据。",
+        teaching_moves=("guided_derivation", "prediction"),
+        learner_response_mode="composer",
+    )
+    result = TutorInteractiveRunDispatcher(
+        settings=Settings(llm_type="disabled", tutor_thread_turn_v2_enabled=True),
+        provider_factory=lambda settings: provider,
+    ).dispatch(user_id=str(scope["user_id"]), run_id=run_id)
+    assert result.terminal_outcome is TutorTerminalOutcome.COMPLETED
+
+    with connection() as conn:
+        current = TeachingSessionService(conn).current(
+            user_id=str(scope["user_id"]), track_id=str(scope["track_id"]), knowledge_key="python.variables",
+        )
+        assert current["checkpoint"]["recommended_action_key"] == "respond_in_composer"
+        assert current["action_shelf"]["primary_action"] is None
+        assert "continue" not in current["allowed_actions"]
+        assert current["allowed_actions"] == ["change_example", "pause"]
+
+
+@pytest.mark.parametrize(
+    ("teaching_moves", "learner_response_mode", "action"),
+    [
+        (None, None, "explain_concept"),
+        (("targeted_explanation",), "none", "explain_concept"),
+        (("targeted_explanation", "targeted_explanation"), "none", "explain_concept"),
+        (("targeted_explanation", "worked_example"), "composer", "explain_concept"),
+    ],
+)
+def test_selected_v11_gate_rejects_missing_invalid_or_mismatched_unit_fields(
+    teaching_moves: tuple[str, ...] | None,
+    learner_response_mode: str | None,
+    action: str,
+) -> None:
+    with connection() as conn:
+        scope, _opened, run_id = _open_guided(conn)
+    result = TutorInteractiveRunDispatcher(
+        settings=Settings(llm_type="disabled", tutor_thread_turn_v2_enabled=True),
+        provider_factory=lambda settings: _TeachingProvider(
+            action_override=action,
+            teaching_moves=teaching_moves,
+            learner_response_mode=learner_response_mode,
+        ),
+    ).dispatch(user_id=str(scope["user_id"]), run_id=run_id)
+    assert result.terminal_outcome is TutorTerminalOutcome.BLOCKED_POLICY
+
+    with connection() as conn:
+        assert conn.execute(
+            "SELECT count(*) AS count FROM tutor_teaching_action_receipts WHERE run_id=%s", (run_id,),
+        ).fetchone()["count"] == 0
+        assert conn.execute(
+            "SELECT count(*) AS count FROM tutor_messages WHERE conversation_id=%s AND role='tutor'",
+            (scope["conversation_id"],),
+        ).fetchone()["count"] == 0
+
+
+def test_continue_rejects_repeated_recent_unit_but_allows_changed_strategy() -> None:
+    with connection() as conn:
+        scope, _opened, first_run_id = _open_guided(conn)
+    first = TutorInteractiveRunDispatcher(
+        settings=Settings(llm_type="disabled", tutor_thread_turn_v2_enabled=True),
+        provider_factory=lambda settings: _TeachingProvider(),
+    ).dispatch(user_id=str(scope["user_id"]), run_id=first_run_id)
+    assert first.terminal_outcome is TutorTerminalOutcome.COMPLETED
+
+    with connection() as conn:
+        service = TeachingSessionService(conn)
+        current = service.current(
+            user_id=str(scope["user_id"]), track_id=str(scope["track_id"]), knowledge_key="python.variables",
+        )
+        repeated = service.action(
+            user_id=str(scope["user_id"]), track_id=str(scope["track_id"]), session_id=str(current["session_id"]),
+            control=TeachingControlStimulus(
+                control_key="continue", client_action_id="repeat-unit-continue",
+                expected_session_version=int(current["session_version"]), expected_track_version=int(current["track_version"]),
+                expected_progress_version=int(current["progress_version"]), expected_assignment_version=int(current["assignment_version"]),
+            ),
+            target_mode=None, admit_run=True, idempotency_key="repeat-unit-continue",
+        )
+        repeated_run = str(repeated["pending_run"]["run_id"])
+
+    denied = TutorInteractiveRunDispatcher(
+        settings=Settings(llm_type="disabled", tutor_thread_turn_v2_enabled=True),
+        provider_factory=lambda settings: _TeachingProvider(),
+    ).dispatch(user_id=str(scope["user_id"]), run_id=repeated_run)
+    assert denied.terminal_outcome is TutorTerminalOutcome.BLOCKED_POLICY
+    assert denied.diagnostic_code == "teaching_unit_not_advanced"
+
+    with connection() as conn:
+        service = TeachingSessionService(conn)
+        current = service.current(
+            user_id=str(scope["user_id"]), track_id=str(scope["track_id"]), knowledge_key="python.variables",
+        )
+        changed = service.action(
+            user_id=str(scope["user_id"]), track_id=str(scope["track_id"]), session_id=str(current["session_id"]),
+            control=TeachingControlStimulus(
+                control_key="continue", client_action_id="changed-unit-continue",
+                expected_session_version=int(current["session_version"]), expected_track_version=int(current["track_version"]),
+                expected_progress_version=int(current["progress_version"]), expected_assignment_version=int(current["assignment_version"]),
+            ),
+            target_mode=None, admit_run=True, idempotency_key="changed-unit-continue",
+        )
+        changed_run = str(changed["pending_run"]["run_id"])
+
+    approved = TutorInteractiveRunDispatcher(
+        settings=Settings(llm_type="disabled", tutor_thread_turn_v2_enabled=True),
+        provider_factory=lambda settings: _TeachingProvider(
+            action_override="show_example",
+            public_message_override="把变量看作贴在值上的标签；现在换到列表元素，预测重新赋值后哪个引用会变化。",
+            teaching_moves=("worked_example", "prediction"),
+            learner_response_mode="none",
+        ),
+    ).dispatch(user_id=str(scope["user_id"]), run_id=changed_run)
+    assert approved.terminal_outcome is TutorTerminalOutcome.COMPLETED
+
+    with connection() as conn:
+        assert conn.execute(
+            "SELECT count(*) AS count FROM tutor_teaching_action_receipts WHERE teaching_session_id=(SELECT teaching_session_id FROM tutor_run_teaching_scopes WHERE run_id=%s)",
+            (first_run_id,),
+        ).fetchone()["count"] == 2
+        assert conn.execute(
+            "SELECT count(*) AS count FROM tutor_messages WHERE conversation_id=%s AND role='tutor'",
+            (scope["conversation_id"],),
+        ).fetchone()["count"] == 2
 
 
 def test_teaching_action_receipt_is_append_only_exported_redacted_and_reset_child_first() -> None:
@@ -149,6 +294,9 @@ def test_teaching_action_receipt_is_append_only_exported_redacted_and_reset_chil
         assert exported["summary"]["counts"]["teaching_action_receipts"] == 1
         receipts = exported["teaching_action_receipt_summaries"]
         assert len(receipts) == 1 and receipts[0]["action"] == "explain_concept"
+        assert receipts[0]["teaching_moves_json"] == ["targeted_explanation", "worked_example"]
+        assert receipts[0]["learner_response_mode"] == "none"
+        assert receipts[0]["schema_version"] == "teaching_action_receipt_v2"
         serialized = json.dumps(receipts, ensure_ascii=False, sort_keys=True)
         assert "变量让名称引用一个值" not in serialized
         assert "public_message" not in serialized
@@ -159,7 +307,7 @@ def test_teaching_action_receipt_is_append_only_exported_redacted_and_reset_chil
         with pytest.raises(psycopg.errors.CheckViolation):
             with conn.transaction():
                 conn.execute(
-                    "UPDATE tutor_teaching_action_receipts SET policy_version='lesson_teaching_policy_v1' WHERE id=%s",
+                    "UPDATE tutor_teaching_action_receipts SET policy_version='lesson_teaching_policy_v2' WHERE id=%s",
                     (receipt_id,),
                 )
         reset = reset_user_data(conn, str(scope["user_id"]))
@@ -326,13 +474,25 @@ def test_teaching_step_provider_contract_is_strict_and_message_bound() -> None:
             "objective_id": "knowledge:python.variables", "focus_id": "knowledge:python.variables",
             "source_handles": ["knowledge:python.variables"], "public_message": "先解释变量绑定。",
             "focus_resolution": "stay", "pause_kind": "soft_pause", "escalation_hint": None,
+            "teaching_moves": ["targeted_explanation", "worked_example"],
+            "learner_response_mode": "none",
         },
     }
     decision = parse_tutor_provider_items(payload, run=run)
     assert decision.teaching_step is not None
+    assert decision.teaching_step.teaching_moves is not None
+    assert [move.value for move in decision.teaching_step.teaching_moves] == ["targeted_explanation", "worked_example"]
+    assert decision.teaching_step.learner_response_mode is not None
+    assert decision.teaching_step.learner_response_mode.value == "none"
     assert decision.terminal_outcome is TutorTerminalOutcome.COMPLETED
     schema_text = str(tutor_provider_output_schema())
-    assert "teaching_step" in schema_text and "explain_concept" in schema_text
+    assert "teaching_step" in schema_text and "teaching_moves" in schema_text and "learner_response_mode" in schema_text
+
+    legacy = {**payload, "action": {key: value for key, value in payload["action"].items() if key not in {"teaching_moves", "learner_response_mode"}}}
+    legacy_decision = parse_tutor_provider_items(legacy, run=run)
+    assert legacy_decision.teaching_step is not None
+    assert legacy_decision.teaching_step.teaching_moves is None
+    assert legacy_decision.teaching_step.learner_response_mode is None
 
     payload["action"]["unknown"] = True
     with pytest.raises(TutorDecisionValidationError):
@@ -438,6 +598,18 @@ def test_progress_authority_refresh_creates_successor_and_commits_completion_pau
         assert current["status"] == "completed"
         assert current["checkpoint"]["pause_reason"] == "completion_pause"
         assert current["action_shelf"]["state"] == "completion"
+        reopened = TeachingSessionService(conn).open(
+            user_id=str(scope["user_id"]), track_id=str(scope["track_id"]),
+            knowledge_key="python.variables", conversation_id=str(scope["conversation_id"]),
+            expected_track_version=1, expected_progress_version=2,
+            expected_assignment_version=1, mode=TeachingSessionMode.GUIDED,
+            idempotency_key="completion-reload-open",
+        )
+        assert reopened["created"] is False
+        assert reopened["pending_run"] is None
+        assert reopened["teaching_session"]["session_id"] == successor_id
+        assert reopened["teaching_session"]["status"] == "completed"
+        assert reopened["teaching_session"]["action_shelf"]["state"] == "completion"
         assert conn.execute(
             "SELECT count(*) AS count FROM tutor_runs WHERE conversation_id=%s",
             (scope["conversation_id"],),

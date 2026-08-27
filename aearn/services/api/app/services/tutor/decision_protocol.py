@@ -31,6 +31,8 @@ from app.agents.harness.contracts import (
 from app.services.learning.teaching_contracts import (
     TeachingAction,
     TeachingFocusResolution,
+    TeachingLearnerResponseMode,
+    TeachingMove,
     TeachingPauseReason,
     TeachingStepDecision,
 )
@@ -184,6 +186,8 @@ class TutorProviderTeachingStepItem(_StrictProviderModel):
     focus_resolution: TeachingFocusResolution
     pause_kind: TeachingPauseReason
     escalation_hint: str | None = Field(default=None, min_length=1, max_length=180)
+    teaching_moves: list[TeachingMove] | None = Field(default=None, max_length=4)
+    learner_response_mode: TeachingLearnerResponseMode | None = None
 
     @field_validator("source_handles")
     @classmethod
@@ -305,16 +309,25 @@ def canonical_tutor_provider_items_example() -> str:
 
 
 def canonical_tutor_teaching_step_example() -> str:
+    message = (
+        "先比较两个 HTML 片段：`<p>你好` 的缺失闭合通常会被浏览器修复；"
+        "现在请找出 `<p><strong>你好</p>` 的结构错误，并预测浏览器会怎样调整 DOM。"
+    )
     return _canonical_provider_example(
-        text="变量让名称引用一个值。先看一个最小赋值例子。",
-        thinking_text="当前教学目标是理解变量绑定，这一步只解释一个核心概念并在完成后停顿。",
-        title="变量绑定",
+        text=message,
+        thinking_text=(
+            "学习者已经在阅读 HTML 文档，因此本单元不复述标签定义；"
+            "用误区对比和找错任务检查其对嵌套规则的真实理解。"
+        ),
+        title="HTML 嵌套诊断",
         action={
-            "type": "teaching_step", "action": "explain_concept",
-            "objective_id": "knowledge:python.variables", "focus_id": "knowledge:python.variables",
-            "source_handles": ["knowledge:python.variables"],
-            "public_message": "变量让名称引用一个值。先看一个最小赋值例子。",
+            "type": "teaching_step", "action": "check_understanding",
+            "objective_id": "knowledge:html.nesting", "focus_id": "knowledge:html.nesting",
+            "source_handles": ["knowledge:html.nesting"],
+            "public_message": message,
             "focus_resolution": "stay", "pause_kind": "soft_pause", "escalation_hint": None,
+            "teaching_moves": ["misconception_contrast", "error_detection"],
+            "learner_response_mode": "composer",
         },
     )
 
@@ -446,6 +459,8 @@ def parse_tutor_provider_items(
                 source_handles=tuple(action.source_handles), public_message=action.public_message,
                 focus_resolution=action.focus_resolution, pause_kind=action.pause_kind,
                 escalation_hint=action.escalation_hint,
+                teaching_moves=(tuple(action.teaching_moves) if action.teaching_moves is not None else None),
+                learner_response_mode=action.learner_response_mode,
             )
             terminal_outcome = TutorTerminalOutcome.COMPLETED
         elif isinstance(action, TutorProviderWaitForInputItem):
@@ -497,7 +512,9 @@ def build_tutor_replacement_message(
         "Choose its wording, paragraphs, line breaks, tone, and granularity naturally for the current request; do not force "
         "numbered steps or a fixed linguistic template. It is authored public explanation text, not provider-native hidden "
         "reasoning, and must not mention prompts, policies, diagnostics, or secrets. "
-        "teaching_step must use one closed action, exact objective/focus/source handles, one focus_resolution, and one pause_kind. "
+        "teaching_step for tutor.lesson-teaching@1.1.0 must use one closed action, exact objective/focus/source handles, "
+        "one focus_resolution, one pause_kind, 2..4 unique teaching_moves, and learner_response_mode=none|composer. "
+        "composer requires check_understanding or wait_for_input plus a diagnostic move; none cannot use those waiting actions. "
         "wait_for_input.continuation_kind must be clarification, planning_input, approval, capability_result, or "
         "external_result. planning_input requires exactly one allowlisted question_key; every other continuation must omit it. "
         "The server owns request_id, effect_id, expected_input_revision, checkpoints, and terminal state; never emit them. "

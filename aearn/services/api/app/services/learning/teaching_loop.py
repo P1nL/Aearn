@@ -142,6 +142,13 @@ def build_teaching_action_shelf(
             primary_action=_navigation("open_evidence", "查看练习状态", emphasis="primary"),
             secondary_actions=(_action("pause", "稍后继续", "quiet", versions),),
         )
+    if state.pause_reason is TeachingPauseReason.AUTHORITY_PAUSE:
+        return TeachingActionShelfV1(
+            teaching_session_id=session_id, session_version=session_version,
+            checkpoint_id=checkpoint_id, state="ready",
+            primary_action=_navigation("refresh_session", "刷新教学状态", emphasis="primary"),
+            secondary_actions=(_navigation("return_roadmap", "返回路线"),),
+        )
     if mode is TeachingSessionMode.FREE_READING:
         primary = (
             _action("escalate_guided", "转为引导讲解", "primary", versions)
@@ -156,10 +163,14 @@ def build_teaching_action_shelf(
     if state.suspended_focuses:
         secondary.append(_action("return_focus", "返回主线", "secondary", versions))
     secondary.append(_action("pause", "暂停", "quiet", versions))
+    primary = (
+        _action("continue", "继续", "primary", versions)
+        if state.recommended_action_key == "continue" else None
+    )
     return TeachingActionShelfV1(
         teaching_session_id=session_id, session_version=session_version,
         checkpoint_id=checkpoint_id, state="ready",
-        primary_action=_action("continue", "继续", "primary", versions),
+        primary_action=primary,
         secondary_actions=tuple(secondary[:3]),
     )
 
@@ -167,14 +178,18 @@ def build_teaching_action_shelf(
 def _recommended_action(*, step: TeachingStepDecision, mode: TeachingSessionMode, has_parent: bool) -> str:
     if step.pause_kind is TeachingPauseReason.COMPLETION_PAUSE:
         return "enter_next_knowledge"
+    if step.pause_kind is TeachingPauseReason.EVIDENCE_PAUSE:
+        return "open_evidence"
+    if step.pause_kind is TeachingPauseReason.AUTHORITY_PAUSE:
+        return "refresh_session"
+    if step.pause_kind is TeachingPauseReason.SESSION_PAUSE:
+        return "resume"
+    if step.learner_response_mode is not None and step.learner_response_mode.value == "composer":
+        return "respond_in_composer"
     if mode is TeachingSessionMode.FREE_READING:
         return "escalate_guided" if step.escalation_hint is not None else "continue_reading"
     if has_parent and step.focus_resolution in {TeachingFocusResolution.STAY, TeachingFocusResolution.WAIT}:
         return "return_focus"
-    if step.pause_kind is TeachingPauseReason.EVIDENCE_PAUSE:
-        return "open_evidence"
-    if step.pause_kind in {TeachingPauseReason.AUTHORITY_PAUSE, TeachingPauseReason.SESSION_PAUSE}:
-        return "resume"
     return "continue"
 
 

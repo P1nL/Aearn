@@ -785,7 +785,7 @@ def _export_teaching_action_receipts(conn: Connection[dict[str, object]], user_i
     rows = conn.execute(
         """SELECT id,run_id,conversation_id,teaching_session_id,checkpoint_id,stimulus_id,action,
                   objective_id,focus_id,focus_resolution,pause_kind,source_handles_json,
-                  schema_version,policy_version,created_at
+                  teaching_moves_json,learner_response_mode,schema_version,policy_version,created_at
            FROM tutor_teaching_action_receipts WHERE user_id=%s ORDER BY created_at,id""",
         (user_id,),
     ).fetchall()

@@ -644,10 +644,10 @@ CREATE TABLE IF NOT EXISTS tutor_teaching_action_receipts (
     jsonb_typeof(context_source_hashes_json)='array' AND jsonb_array_length(context_source_hashes_json)<=64
     AND octet_length(context_source_hashes_json::text)<=8192
   ),
-  schema_version text NOT NULL DEFAULT 'teaching_action_receipt_v1'
-    CHECK (schema_version='teaching_action_receipt_v1'),
-  policy_version text NOT NULL DEFAULT 'lesson_teaching_policy_v1'
-    CHECK (policy_version='lesson_teaching_policy_v1'),
+  teaching_moves_json jsonb NOT NULL DEFAULT '[]'::jsonb,
+  learner_response_mode text NOT NULL DEFAULT 'none',
+  schema_version text NOT NULL DEFAULT 'teaching_action_receipt_v1',
+  policy_version text NOT NULL DEFAULT 'lesson_teaching_policy_v1',
   created_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT uq_tutor_teaching_action_receipts_scope
     UNIQUE (id,run_id,user_id,conversation_id,teaching_session_id),
@@ -666,6 +666,53 @@ CREATE TABLE IF NOT EXISTS tutor_teaching_action_receipts (
     REFERENCES tutor_run_stimulus_events(id,run_id,user_id,conversation_id,teaching_session_id)
     ON DELETE NO ACTION DEFERRABLE INITIALLY DEFERRED
 );
+ALTER TABLE tutor_teaching_action_receipts
+  ADD COLUMN IF NOT EXISTS teaching_moves_json jsonb NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE tutor_teaching_action_receipts
+  ADD COLUMN IF NOT EXISTS learner_response_mode text NOT NULL DEFAULT 'none';
+ALTER TABLE tutor_teaching_action_receipts
+  DROP CONSTRAINT IF EXISTS tutor_teaching_action_receipts_schema_version_check;
+ALTER TABLE tutor_teaching_action_receipts
+  DROP CONSTRAINT IF EXISTS tutor_teaching_action_receipts_policy_version_check;
+ALTER TABLE tutor_teaching_action_receipts
+  DROP CONSTRAINT IF EXISTS chk_tutor_teaching_action_receipts_moves;
+ALTER TABLE tutor_teaching_action_receipts
+  ADD CONSTRAINT chk_tutor_teaching_action_receipts_moves CHECK (
+    jsonb_typeof(teaching_moves_json)='array'
+    AND jsonb_array_length(teaching_moves_json)<=4
+    AND octet_length(teaching_moves_json::text)<=1024
+    AND teaching_moves_json <@ '["targeted_explanation","worked_example","counterexample","misconception_contrast","guided_derivation","prediction","error_detection","micro_transfer","learner_feedback"]'::jsonb
+    AND (jsonb_array_length(teaching_moves_json)<2 OR teaching_moves_json->>0<>teaching_moves_json->>1)
+    AND (jsonb_array_length(teaching_moves_json)<3 OR (
+      teaching_moves_json->>0<>teaching_moves_json->>2 AND teaching_moves_json->>1<>teaching_moves_json->>2
+    ))
+    AND (jsonb_array_length(teaching_moves_json)<4 OR (
+      teaching_moves_json->>0<>teaching_moves_json->>3 AND teaching_moves_json->>1<>teaching_moves_json->>3
+      AND teaching_moves_json->>2<>teaching_moves_json->>3
+    ))
+  );
+ALTER TABLE tutor_teaching_action_receipts
+  DROP CONSTRAINT IF EXISTS chk_tutor_teaching_action_receipts_response_mode;
+ALTER TABLE tutor_teaching_action_receipts
+  ADD CONSTRAINT chk_tutor_teaching_action_receipts_response_mode
+  CHECK (learner_response_mode IN ('none','composer'));
+ALTER TABLE tutor_teaching_action_receipts
+  DROP CONSTRAINT IF EXISTS chk_tutor_teaching_action_receipts_version_shape;
+ALTER TABLE tutor_teaching_action_receipts
+  ADD CONSTRAINT chk_tutor_teaching_action_receipts_version_shape CHECK (
+    (
+      schema_version='teaching_action_receipt_v1'
+      AND policy_version='lesson_teaching_policy_v1'
+      AND teaching_moves_json='[]'::jsonb
+      AND learner_response_mode='none'
+    )
+    OR
+    (
+      schema_version='teaching_action_receipt_v2'
+      AND policy_version='lesson_teaching_policy_v2'
+      AND jsonb_array_length(teaching_moves_json) BETWEEN 2 AND 4
+    )
+  );
 CREATE INDEX IF NOT EXISTS idx_tutor_teaching_action_receipts_session_created
   ON tutor_teaching_action_receipts(teaching_session_id,created_at DESC,id DESC);
 -- Repair early local bootstrap variants that used immediate RESTRICT on deferred teaching lineage.
