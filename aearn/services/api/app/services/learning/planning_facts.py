@@ -21,6 +21,10 @@ from app.agents.harness.contracts import (
     TutorDecisionGateStatus,
     TutorRunSnapshot,
 )
+from app.services.learning.planning_intent import (
+    PLANNING_LANGUAGE_INTENT_POLICY_VERSION,
+    PlanningIntentResolver,
+)
 
 
 PLANNING_FACT_POLICY_VERSION = "planning-intake-facts-v1"
@@ -88,6 +92,7 @@ class PlanningFact:
     source_run_id: str
     source_input_revision: int
     supersedes_fact_id: str | None
+    policy_version: str = PLANNING_FACT_POLICY_VERSION
 
     def as_public_dict(self) -> dict[str, object]:
         return {
@@ -105,7 +110,7 @@ class PlanningFact:
                 "field_key": self.field_key.value,
                 "value": self.value,
                 "fact_revision": self.revision,
-                "policy_version": PLANNING_FACT_POLICY_VERSION,
+                "policy_version": self.policy_version,
             },
         )
 
@@ -147,6 +152,7 @@ class PostgresPlanningFactRepository:
         content: str,
         explicit_facts: Mapping[str, object] | None = None,
         reopen_fields: Sequence[str] = (),
+        intent_resolution_enabled: bool = True,
     ) -> dict[str, object] | None:
         session = self._active_session_for_input(
             user_id=user_id,
@@ -164,11 +170,46 @@ class PostgresPlanningFactRepository:
             for key, value in (explicit_facts or {}).items()
             if value is not None
         }
+        reopened = {PlanningFactField(str(field)) for field in reopen_fields}
         extracted = extract_planning_facts(content)
-        merged: dict[PlanningFactField, tuple[object, str]] = {
-            field: (value, "deterministic_input") for field, value in extracted.items()
+        current_language = self._current_fact_row(
+            session_id=str(session["id"]),
+            field=PlanningFactField.LANGUAGE_ID,
+        )
+        language_intent = PlanningIntentResolver(self._conn).resolve(
+            content,
+            confirmed_language_id=(
+                None
+                if PlanningFactField.LANGUAGE_ID in reopened or current_language is None
+                else str(current_language["value_json"])
+            ),
+            enabled=intent_resolution_enabled,
+        )
+        auto_language = language_intent.auto_confirm_language_id
+        intent_policy_fields: set[PlanningFactField] = set()
+        if auto_language is not None and (
+            current_language is None
+            or str(current_language["value_json"]) == auto_language
+            or PlanningFactField.LANGUAGE_ID in reopened
+        ):
+            extracted[PlanningFactField.LANGUAGE_ID] = auto_language
+            intent_policy_fields.add(PlanningFactField.LANGUAGE_ID)
+        merged: dict[PlanningFactField, tuple[object, str, str]] = {
+            field: (
+                value,
+                "deterministic_input",
+                PLANNING_LANGUAGE_INTENT_POLICY_VERSION
+                if field in intent_policy_fields
+                else PLANNING_FACT_POLICY_VERSION,
+            )
+            for field, value in extracted.items()
         }
-        merged.update({field: (value, "explicit_input") for field, value in explicit.items()})
+        merged.update(
+            {
+                field: (value, "explicit_input", PLANNING_FACT_POLICY_VERSION)
+                for field, value in explicit.items()
+            }
+        )
 
         changed = False
         self._conn.execute(
@@ -213,9 +254,9 @@ class PostgresPlanningFactRepository:
                     )
                     changed = True
 
-        for field, (raw_value, source_kind) in merged.items():
+        for field, (raw_value, source_kind, policy_version) in merged.items():
             value = normalize_planning_fact(field, raw_value)
-            value_hash = planning_fact_value_hash(field, value)
+            value_hash = planning_fact_value_hash(field, value, policy_version=policy_version)
             current = self._current_fact_row(session_id=str(session["id"]), field=field)
             if current is not None and str(current["value_hash"]) == value_hash:
                 self._append_question_event(
@@ -271,7 +312,7 @@ class PostgresPlanningFactRepository:
                     run_id,
                     input_revision,
                     str(current["id"]) if current is not None else None,
-                    PLANNING_FACT_POLICY_VERSION,
+                    policy_version,
                 ),
             ).fetchone()
             if row is None:
@@ -855,9 +896,14 @@ def build_authoritative_context_snapshot(
     )
 
 
-def planning_fact_value_hash(field: PlanningFactField, value: object) -> str:
+def planning_fact_value_hash(
+    field: PlanningFactField,
+    value: object,
+    *,
+    policy_version: str = PLANNING_FACT_POLICY_VERSION,
+) -> str:
     return hashlib.sha256(
-        _json({"field_key": field.value, "value": value, "policy_version": PLANNING_FACT_POLICY_VERSION}).encode(
+        _json({"field_key": field.value, "value": value, "policy_version": policy_version}).encode(
             "utf-8"
         )
     ).hexdigest()
@@ -925,6 +971,7 @@ def _fact_from_row(row: Mapping[str, object]) -> PlanningFact:
             label="source input revision",
         ),
         supersedes_fact_id=(str(row["supersedes_fact_id"]) if row.get("supersedes_fact_id") else None),
+        policy_version=str(row.get("policy_version") or PLANNING_FACT_POLICY_VERSION),
     )
 
 

@@ -1,10 +1,10 @@
 # Aearn Tutor 用户流程规格
 
-**状态：** 当前产品契约，2026-08-12。
+**状态：** 当前产品契约，2026-08-27。
 **适用范围：** 本地 Aearn Desktop、`/api/harness`、`/api/tutor` 与受控
 Tutor Harness。
 **权威来源：** 当前路由注册、`aearn/services/api/app/services/tutor/`、
-`aearn/apps/desktop/src/`、`schema.sql` 与对应测试。旧 Graph/SDK 流程仅是
+`aearn/apps/desktop/src/`、manifest 驱动的 `aearn/services/api/app/db/schema/` 与对应测试。旧 Graph/SDK 流程仅是
 切换清理范围和历史归档，不是可恢复的产品入口。
 
 ## 目标与全局规则
@@ -283,3 +283,20 @@ Python、JavaScript、TypeScript、SQL 通过上述完整 PostgreSQL fixture。J
 用户和 Desktop 不选择 Runtime，也不会看到 Codex thread/turn/tool 控制面。没有既有 Runtime lineage 的全新 `plan_drafting` conversation 在服务端 exact readiness 通过时使用 `codex_sidecar_v1`；feature off 时使用 Harness，feature on 但 Runtime 不可用时显示现有 Aearn safe error/retry 状态且 first-turn 不留下空 conversation。既有 conversation、Retry 和其他 scope 保留原 Runtime。
 
 Codex 只能读取服务端权威 planning context并追加 typed draft。右侧计划窗口仍是唯一确认入口；确认 transaction、LearningTrack 创建、history/SSE 与 Desktop DTO 均由 Aearn 控制。关闭 admission 只阻止新 Codex conversation，不删除已生成 draft、message、binding 或 receipt。
+
+## 2026-08-23：Gate / Review / migration 驱动的教学恢复
+
+1. 学习者在 Lesson Gate 或 ReviewSession 完成真实受控操作；owner service 先写 terminal result、mastery/schedule/progress。
+2. 若当前知识点已有 TeachingSession，服务端以 durable source ID/version admission 至多一个 `domain_event` Turn；重复回调复用同一 run。
+3. progress/assignment authority 已变化时，旧 session 进入 authority pause/blocked，successor 继承同一 track conversation并冻结新 authority。
+4. Tutor 只执行一个 evidence feedback 或 completion summary 后停顿；完成知识点仍停在 completion shelf，不自动进入下一知识点。
+5. 学习者显式选择“进入下一知识点”时，服务端重新验证最新 roadmap、availability 与 expected versions，才推进 track pointer并创建下一 session first unit。
+6. reload/reconnect 从 durable session/checkpoint/action shelf恢复；旧 summary、stale event 或 provider unavailable 都不能产生第二条消息、自动 mastery 或自动 next。
+
+## 2026-08-27：超越文档复述的教学单元
+
+1. 新 teaching Turn 只选择 exact `tutor.lesson-teaching@1.1.0`。Tutor 必须把 LessonDocument 当作证据与定位来源，而不是逐段改写；一个单元组合 2--4 个教学 move，例如误区对照、错误检测、预测、推导或微迁移。
+2. 需要学习者回答时，Tutor 停在现有 Composer，Action Shelf 不显示伪“继续”。不需要回答且 checkpoint 明确推荐继续时，才显示 Continue。
+3. 服务端把最近四个已提交教学单元的安全策略签名带入下一 Turn。重复相同公开消息 hash 或完全相同 focus/moves/response-mode 的 Continue 被拒绝，不写第二条消息或 receipt；真正改变例子、诊断方式、迁移任务或根据学习者反馈调整策略后才能推进。
+4. `change_example` 必须真的提供 worked example 或 counterexample。authority pause、session refresh、完成后显式进入下一知识点等原有边界保持不变。
+5. reload/reconnect 完全从 durable checkpoint、v2 receipt 与 server-owned shelf 恢复；Desktop 不从消息正文猜测教学策略，也不在本地补空按钮。

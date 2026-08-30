@@ -1,0 +1,43 @@
+{
+  "id": "harness-led-adaptive-learning-workspace",
+  "name": "harness-led-adaptive-learning-workspace",
+  "title": "Harness 主导的长期自适应学习工作区",
+  "description": "将默认学习工作区升级为 Harness 单步主导教学、LessonDocument 证据辅助与可随时切换的自由阅读，并建立跨知识点长期教学会话、自然中断恢复和统一 Composer Action Shelf。",
+  "status": "completed",
+  "dev_type": null,
+  "scope": "learning_workspace",
+  "package": null,
+  "priority": "P0",
+  "creator": "PINKING",
+  "assignee": "PINKING",
+  "createdAt": "2026-08-22",
+  "completedAt": "2026-08-23",
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [
+    "08-22-harness-teaching-session-authority",
+    "08-22-harness-closed-teaching-action-loop",
+    "08-22-guided-free-reading-workspace-ui",
+    "08-22-adaptive-learning-integration-evals"
+  ],
+  "parent": null,
+  "relatedFiles": [
+    "aearn/services/api/app/db",
+    "aearn/services/api/app/agents/harness",
+    "aearn/services/api/app/services/tutor",
+    "aearn/services/api/app/services/learning",
+    "aearn/apps/desktop/src/features/learning",
+    "aearn/apps/desktop/src/features/tutor",
+    "docs/architecture",
+    "docs/product"
+  ],
+  "notes": "父任务只负责总需求、跨 child contract、顺序与最终集成验收；不直接启动实现。依次完成四个 child，每次只启动一个。",
+  "meta": {
+    "implementation_target": "children_only",
+    "workflow_mode": "inline"
+  }
+}

@@ -118,7 +118,7 @@ interactive effect is composed; it never imports the Docker client.
 
 ```powershell
 # API-side execution/effect boundary.
-uv --directory .\aearn\services\api run python -m pytest tests/test_tutor_execution_contracts.py -q
+uv --directory .\aearn\services\api run python -m pytest tests/runners/test_tutor_execution_contracts.py -q
 
 # Standalone executor contract tests.
 uv --directory .\aearn\services\executor run python -m pytest

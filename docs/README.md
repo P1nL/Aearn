@@ -2,7 +2,7 @@
 
 ## Current runtime status
 
-**Updated: 2026-08-18.** Aearn's active product runtime is the **Tutor Harness** with a controlled Codex Sidecar path for eligible new `plan_drafting` turns.
+**Updated: 2026-08-27.** Aearn's active product runtime is the **Tutor Harness** with a controlled Codex Sidecar path for eligible new `plan_drafting` turns.
 The desktop starts from a local learner identity, asks the server for a
 cutover decision, and admits a learner to the Tutor workspace only after a
 server-authoritative `verified` receipt. The current learning runtime also includes
@@ -13,6 +13,7 @@ track-scoped spaced-review authority with finite `ReviewSession` batches,
 server-projected critical-prerequisite Gates, exactly-once mastery/schedule
 finalization, and a responsive track learning workspace that combines the
 server roadmap, Lesson/Practice, Review, and a scoped Tutor conversation.
+The backend now also persists knowledge-scoped TeachingSession/checkpoint authority and exact learner-message, teaching-control, or domain-event Turn stimuli while keeping one long-lived track conversation. Teaching runs use required `TEACHING_SESSION` context, exact `tutor.lesson-teaching@1.1.0`, the strict `tutor.teaching-step-decision.v2` contract, two to four distinct teaching moves, explicit learner response mode, recent teaching-unit receipts, atomic checkpoint/action-receipt/message commit, conditional server-owned Action Shelf projection, reactive Free Reading, authority-refresh successor sessions, and explicit completion-to-next-node transition. Immutable `tutor.lesson-teaching@1.0.0` remains catalog history and is not selected for new teaching runs.
 Learner messages may carry validated append-only `lesson_selection`,
 `exercise_feedback`, `execution_result`, and `review_feedback` references;
 these are injected as separate learner-safe structured context rather than
@@ -53,7 +54,7 @@ The following files are dated evidence, not an active runtime contract:
 - [`archive/2026-07-29/agent-capability-hardening-demo-story.md`](./archive/2026-07-29/agent-capability-hardening-demo-story.md)
 - [`architecture/tutor-harness-transition.md`](./architecture/tutor-harness-transition.md), which remains migration evidence only.
 - [`architecture/fsrs-scheduling-spec.md`](./architecture/fsrs-scheduling-spec.md), the pre-cutover `review_states` / `/api/reviews` design.
-- [`current/Aearn/core-flows-current.md`](./current/Aearn/core-flows-current.md), a 2026-06-18 legacy runtime snapshot despite its historical filename.
+- [`archive/2026-06-18/current-state-audit/`](./archive/2026-06-18/current-state-audit/), the complete 2026-06-18 pre-Tutor runtime audit bundle formerly stored under the misleading `docs/current/Aearn/` path.
 - [`setup/newcomer-onboarding-guide.md`](./setup/newcomer-onboarding-guide.md), a pre-cutover implementation guide retained as historical onboarding evidence.
 
 Pre-cutover `Attempt`, FSRS, hidden-test, legacy plan, review, and note material

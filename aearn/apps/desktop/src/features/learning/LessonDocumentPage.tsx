@@ -26,6 +26,7 @@ import type {
   ModuleDiagnosticState,
   TutorContextReferenceDraft,
   LearningScopeInput,
+  LessonFollowTarget,
 } from "../../types";
 import { LessonDocumentView } from "./lesson/LessonDocumentView";
 import { LessonGatePanel } from "./lesson/LessonGatePanel";
@@ -38,6 +39,11 @@ type LessonDocumentPageProps = {
   onBack?: () => void;
   embedded?: boolean;
   onContextReference?: (draft: TutorContextReferenceDraft, label: string, taskKind: NonNullable<LearningScopeInput["task_kind"]>) => void;
+  onAuthorityChange?: (state: LessonDocumentState | null) => void;
+  followTarget?: LessonFollowTarget | null;
+  followEnabled?: boolean;
+  onFollowPause?: () => void;
+  onFollowConflict?: (message: string | null) => void;
 };
 
 type LessonAction = "idle" | "preparing" | "starting" | "refreshing" | "migrating";
@@ -48,7 +54,7 @@ type BusyGate = {
   action: GateAction;
 };
 
-export function LessonDocumentPage({ userId, trackId, knowledgeKey, onBack, embedded = false, onContextReference }: LessonDocumentPageProps) {
+export function LessonDocumentPage({ userId, trackId, knowledgeKey, onBack, embedded = false, onContextReference, onAuthorityChange, followTarget = null, followEnabled = false, onFollowPause, onFollowConflict }: LessonDocumentPageProps) {
   const [state, setState] = useState<LessonDocumentState | null>(null);
   const [loading, setLoading] = useState(true);
   const [action, setAction] = useState<LessonAction>("idle");
@@ -100,6 +106,10 @@ export function LessonDocumentPage({ userId, trackId, knowledgeKey, onBack, embe
     void load(controller.signal);
     return () => controller.abort();
   }, [load]);
+
+  useEffect(() => {
+    onAuthorityChange?.(state);
+  }, [onAuthorityChange, state]);
 
   useEffect(() => {
     if (state?.status !== "preparing") return undefined;
@@ -396,6 +406,10 @@ export function LessonDocumentPage({ userId, trackId, knowledgeKey, onBack, embe
             renderExerciseGate={renderExerciseGate}
             learningTrackId={trackId}
             onSelectionReference={onContextReference ? (draft, label) => onContextReference(draft, label, "lesson_teaching") : undefined}
+            followTarget={followTarget}
+            followEnabled={followEnabled}
+            onFollowPause={onFollowPause}
+            onFollowConflict={onFollowConflict}
           />
           <ModuleDiagnosticModal
             open={diagnosticOpen}

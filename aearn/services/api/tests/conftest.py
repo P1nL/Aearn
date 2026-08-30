@@ -19,7 +19,23 @@ from app.services.exercises.adaptive_exercise_service import GeneratedAdaptiveCa
 from app.services.tutor.cutover import CUTOVER_VERSION
 from app.services.tutor.persistence import PostgresTutorRepository
 
-pytest_plugins = ("tutor_public_api_support",)
+pytest_plugins = ("tests.support.tutor_public_api_support",)
+
+
+@pytest.fixture(autouse=True)
+def disable_external_tutor_dispatch_wakeup(monkeypatch: pytest.MonkeyPatch) -> None:
+    """测试只执行 API 的本地 fast path，禁止向真实 Celery broker 发送任务。"""
+
+    from app.routes import teaching_sessions as teaching_session_routes
+    from app.routes import tutor as tutor_routes
+    from app.services.tutor import interactive_worker
+
+    def _disabled_wakeup(*_args: object, **_kwargs: object) -> bool:
+        return False
+
+    monkeypatch.setattr(interactive_worker, "enqueue_tutor_interactive_dispatch", _disabled_wakeup)
+    monkeypatch.setattr(tutor_routes, "enqueue_tutor_interactive_dispatch", _disabled_wakeup)
+    monkeypatch.setattr(teaching_session_routes, "enqueue_tutor_interactive_dispatch", _disabled_wakeup)
 
 
 @pytest.fixture(autouse=True)

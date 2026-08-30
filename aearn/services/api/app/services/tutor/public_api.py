@@ -28,6 +28,10 @@ from app.services.learning.context_references import (
 from app.services.learning.contracts import LearningScope, LearningScopeKind, LearningTaskKind
 from app.services.learning.planning_facts import PlanningFactError, PostgresPlanningFactRepository
 from app.services.learning.planning_questions import PlanningQuestionCatalogError
+from app.services.learning.teaching_sessions import (
+    TeachingSessionConflict,
+    TeachingSessionRepository,
+)
 from app.services.learning.track_repository import (
     LearningScopeConflict,
     LearningTrackNotFound,
@@ -120,11 +124,15 @@ class TutorPublicService:
         self._settings = settings or get_settings()
         self._repository = PostgresTutorRepository(conn)
         self._learning_tracks = PostgresLearningTrackRepository(conn)
+        self._teaching_sessions = TeachingSessionRepository(conn)
         self._planning_facts = PostgresPlanningFactRepository(conn)
         self._context_references = PostgresTutorContextReferenceRepository(conn)
         self._learner_state = TutorLearnerStateRepository(conn)
         self._proactive = PostgresTutorProactiveRepository(conn)
-        self._queue = PostgresTutorQueueController(conn)
+        self._queue = PostgresTutorQueueController(
+            conn,
+            intent_resolution_enabled=self._settings.tutor_planning_intent_enabled,
+        )
         self._runtime_selection = TutorRuntimeSelectionPolicy(conn, settings=self._settings)
 
     def create_or_resume_conversation(
@@ -482,7 +490,11 @@ class TutorPublicService:
                 status_code=404,
                 details={"conversation_id": normalized_conversation_id},
             ) from exc
-        return _conversation_snapshot_payload(snapshot)
+        payload = _conversation_snapshot_payload(snapshot)
+        payload["teaching_sessions"] = self._teaching_sessions.conversation_projection(
+            user_id=normalized_user_id, conversation_id=normalized_conversation_id,
+        )
+        return payload
 
     def replay_conversation_events(
         self,
@@ -804,6 +816,10 @@ class TutorPublicService:
                 input_revision=accepted.acceptance.input_revision,
                 references=context_references,
             )
+            teaching_scope = self._bind_teaching_scope(
+                scope=scope, run_id=accepted.run.run_id,
+                message_id=accepted.acceptance.message_id, input_revision=accepted.acceptance.input_revision,
+            )
             if scope.scope_kind is LearningScopeKind.PLAN_DRAFTING:
                 self._planning_facts.record_input(
                     user_id=user_id,
@@ -814,6 +830,7 @@ class TutorPublicService:
                     content=content,
                     explicit_facts=planning_facts,
                     reopen_fields=reopen_fact_fields,
+                    intent_resolution_enabled=self._settings.tutor_planning_intent_enabled,
                 )
             state = self._repository.read_run_state(user_id=user_id, run_id=accepted.run.run_id)
         except TutorCodexRuntimeUnavailable as exc:
@@ -841,7 +858,10 @@ class TutorPublicService:
             raise _idempotency_conflict() from exc
         except TutorTerminalStateConflict as exc:
             raise _run_not_active() from exc
-        return _turn_acceptance_payload(accepted, state=state, references=references, first_turn=True)
+        payload = _turn_acceptance_payload(accepted, state=state, references=references, first_turn=True)
+        if teaching_scope is not None:
+            payload["teaching_scope"] = teaching_scope
+        return payload
 
     def _accept_conversation_input(
         self,
@@ -906,6 +926,10 @@ class TutorPublicService:
                 input_revision=accepted.acceptance.input_revision,
                 references=context_references,
             )
+            teaching_scope = self._bind_teaching_scope(
+                scope=scope, run_id=accepted.run.run_id,
+                message_id=accepted.acceptance.message_id, input_revision=accepted.acceptance.input_revision,
+            )
             if scope.scope_kind is LearningScopeKind.PLAN_DRAFTING:
                 self._planning_facts.record_input(
                     user_id=user_id,
@@ -916,6 +940,7 @@ class TutorPublicService:
                     content=content,
                     explicit_facts=planning_facts,
                     reopen_fields=reopen_fact_fields,
+                    intent_resolution_enabled=self._settings.tutor_planning_intent_enabled,
                 )
             state = self._repository.read_run_state(user_id=user_id, run_id=accepted.run.run_id)
         except TutorRunNotFound as exc:
@@ -952,7 +977,10 @@ class TutorPublicService:
             raise self._queue_conflict(exc, conversation_id=conversation_id) from exc
         except TutorTerminalStateConflict as exc:
             raise _run_not_active(conversation_id=conversation_id) from exc
-        return _turn_acceptance_payload(accepted, state=state, references=references, first_turn=False)
+        payload = _turn_acceptance_payload(accepted, state=state, references=references, first_turn=False)
+        if teaching_scope is not None:
+            payload["teaching_scope"] = teaching_scope
+        return payload
 
     def _respond_to_interaction_request(
         self,
@@ -987,6 +1015,11 @@ class TutorPublicService:
                 run_id=accepted.turn.run.run_id,
                 source_run_id=accepted.request.source_turn_id,
             )
+            teaching_scope = self._bind_teaching_scope(
+                scope=scope, run_id=accepted.turn.run.run_id,
+                message_id=accepted.turn.acceptance.message_id,
+                input_revision=accepted.turn.acceptance.input_revision,
+            )
             if scope.scope_kind is LearningScopeKind.PLAN_DRAFTING and accepted.planning_facts:
                 self._planning_facts.record_input(
                     user_id=user_id,
@@ -996,6 +1029,7 @@ class TutorPublicService:
                     input_revision=accepted.turn.acceptance.input_revision,
                     content="",
                     explicit_facts=accepted.planning_facts,
+                    intent_resolution_enabled=self._settings.tutor_planning_intent_enabled,
                 )
             state = self._repository.read_run_state(
                 user_id=user_id,
@@ -1030,6 +1064,8 @@ class TutorPublicService:
         )
         payload["request"] = dict(accepted.request.public_item)
         payload["response_replayed"] = accepted.replayed
+        if teaching_scope is not None:
+            payload["teaching_scope"] = teaching_scope
         return payload
 
     def _accept_existing_run_input(
@@ -1086,6 +1122,7 @@ class TutorPublicService:
                     content=content,
                     explicit_facts=planning_facts,
                     reopen_fields=reopen_fact_fields,
+                    intent_resolution_enabled=self._settings.tutor_planning_intent_enabled,
                 )
             updated = self._repository.read_run_state(user_id=user_id, run_id=run_id)
         except TutorRunNotFound as exc:
@@ -1607,6 +1644,29 @@ class TutorPublicService:
             terminal=state.terminal_outcome is not None,
         )
 
+    def _bind_teaching_scope(
+        self, *, scope: ScopeSnapshot, run_id: str, message_id: str, input_revision: int,
+    ) -> dict[str, object] | None:
+        if (
+            scope.scope_kind is not LearningScopeKind.LEARNING_TRACK
+            or scope.task_kind is not LearningTaskKind.LESSON_TEACHING
+            or scope.learning_track_id is None
+            or scope.knowledge_key is None
+        ):
+            return None
+        try:
+            return self._teaching_sessions.bind_learner_message_run(
+                user_id=scope.user_id, run_id=run_id, conversation_id=scope.conversation_id,
+                track_id=scope.learning_track_id, knowledge_key=scope.knowledge_key,
+                message_id=message_id, input_revision=input_revision,
+            )
+        except TeachingSessionConflict as exc:
+            raise TutorPublicApiError(
+                "TEACHING_AUTHORITY_CONFLICT",
+                "Tutor Turn 的教学会话 authority 已过期或范围不一致。",
+                status_code=409, details={"run_id": run_id},
+            ) from exc
+
     def _mutate(
         self,
         *,
@@ -1794,6 +1854,7 @@ def _legacy_timeline_payload(item: TutorConversationTimelineRecord) -> dict[str,
         if not payload.get("public_thinking_steps") and item.public_thinking_text:
             payload["public_thinking_steps"] = [item.public_thinking_text]
         payload.pop("public_thinking_text", None)
+        payload.pop("runtime_output", None)
     return payload
 
 
@@ -1823,6 +1884,7 @@ def _timeline_payload(item: TutorConversationTimelineRecord) -> dict[str, object
             "content": item.content or "",
             "public_thinking_text": item.public_thinking_text,
             "public_thinking_steps": list(item.public_thinking_steps),
+            "runtime_output": dict(item.runtime_output) if item.runtime_output is not None else None,
             "context_references": [dict(reference) for reference in item.context_references],
             "in_reply_to_item_id": item.in_reply_to_item_id,
             "created_at": _iso(item.created_at),
@@ -1847,6 +1909,11 @@ def _conversation_snapshot_payload(snapshot: TutorConversationSnapshot) -> dict[
         "active_thinking": (
             dict(snapshot.active_thinking)
             if snapshot.active_thinking is not None
+            else None
+        ),
+        "active_runtime_output": (
+            dict(snapshot.active_runtime_output)
+            if snapshot.active_runtime_output is not None
             else None
         ),
         "pending_requests": [dict(item) for item in snapshot.pending_requests],

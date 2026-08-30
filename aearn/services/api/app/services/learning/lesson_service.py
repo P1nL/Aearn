@@ -12,6 +12,7 @@ from psycopg import Connection
 
 from app.services.learning.contracts import stable_key
 from app.services.learning.lesson_contracts import LessonDocumentDraft, LessonSourceSnapshot, lesson_block_payload
+from app.services.learning.teaching_events import TeachingDomainEventAdapter
 from app.services.learning.lesson_repository import (
     LessonAssignmentConflict,
     LessonAuthoringRunRecord,
@@ -43,6 +44,7 @@ class LessonDocumentService:
     def __init__(self, conn: Connection[dict[str, object]]) -> None:
         self._conn = conn
         self._repository = PostgresLessonDocumentRepository(conn)
+        self._teaching_events = TeachingDomainEventAdapter(conn)
 
     def read(self, *, user_id: str, track_id: str, knowledge_key: str) -> dict[str, object]:
         user, track, key = _scope_ids(user_id, track_id, knowledge_key)
@@ -167,6 +169,7 @@ class LessonDocumentService:
             raise _not_found(track_id, knowledge_key) from exc
         except LessonAssignmentConflict as exc:
             raise _assignment_conflict() from exc
+        self._teaching_events.admit_assignment_changed(user_id=user_id, assignment_id=str(row["id"]))
         return {"assignment": _project_assignment(row), "migrated": True}
 
     def _assert_prepare_scope(self, scope: LessonScopeRecord, expected_track_version: int, expected_progress_version: int) -> None:

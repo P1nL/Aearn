@@ -7,9 +7,9 @@
 ## Current Status
 
 <!-- @@@auto:current-status -->
-- **Active File**: `journal-2.md`
-- **Total Sessions**: 114
-- **Last Active**: 2026-08-19
+- **Active File**: `journal-3.md`
+- **Total Sessions**: 125
+- **Last Active**: 2026-08-28
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,8 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-2.md` | ~1866 | Active |
+| `journal-3.md` | ~240 | Active |
+| `journal-2.md` | ~1986 | Archived |
 | `journal-1.md` | ~1979 | Archived |
 <!-- @@@/auto:active-documents -->
 
@@ -30,6 +31,17 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 125 | 2026-08-28 | Tutor 教学单元 v1.1 收尾 | `c30e3bb0045cae252afb050104a5e2deac23d03a`, `75af13b265d7743d5b517038c31e57a7a6130a2b`, `5ace83fbcdbdedb0e683b5e64d2ec7dfa429407d` | `codex/repository-structure-full-optimization` |
+| 124 | 2026-08-23 | LearningPlan 工具五分钟窗口收尾 | `9e8d5511` | `main` |
+| 123 | 2026-08-23 | 归档 Harness 主导的长期自适应学习工作区父任务 | `f88cea72`, `5e3b05bc`, `57be45fc`, `ad1cd13e` | `main` |
+| 122 | 2026-08-23 | 完成长期自适应教学集成 Child 4 | `ad1cd13e`, `e1b9d2c3` | `main` |
+| 121 | 2026-08-23 | 完成 Guided/自由阅读工作区与 Composer Action Shelf | `57be45fc`, `eb55a21b` | `main` |
+| 120 | 2026-08-23 | 完成 Harness closed teaching action Loop | `5e3b05bc` | `main` |
+| 119 | 2026-08-23 | 完成教学会话 authority 与结构化 Turn 触发 | `f88cea72` | `main` |
+| 118 | 2026-08-21 | 完成 Tutor 课程意图与 Runtime 流可靠性 Parent 最终集成 | `f45ffdc5`, `5699d97e`, `d8d7b67a`, `e22a8198` | `main` |
+| 117 | 2026-08-21 | 完成 Runtime delta 合并与语义预算 Child | `5699d97e`, `a82deb59` | `main` |
+| 116 | 2026-08-21 | 完成课程意图 taxonomy 与动态 Generated UI | `f45ffdc5` | `main` |
+| 115 | 2026-08-21 | Codex Runtime 持久线程与原始流收尾 | `4adbb1e2` | `main` |
 | 114 | 2026-08-19 | 修复 Tutor snapshot 运行步骤契约回归 | `b671e027` | `main` |
 | 113 | 2026-08-19 | 完成 Codex Sidecar 集成 QA 与父任务收口 | `b61e515e`, `890391f7` | `main` |
 | 112 | 2026-08-19 | 完成 Codex plan-drafting 受控切换 | `a0a154c1`, `34d6a00c` | `main` |

@@ -1,12 +1,12 @@
 # Backend Development Guidelines
 
-> Best practices for backend development in this project.
+> Current backend development rules for the Aearn Tutor Harness runtime.
 
 ---
 
 ## Overview
 
-This directory contains guidelines for backend development. Fill in each file with your project's specific conventions.
+The formal backend lives under `aearn/services/`. Runtime facts come from current code, tests, configuration, and the documents indexed by `docs/README.md`; historical plans and archived Agent/Graph material are evidence only.
 
 ---
 
@@ -14,14 +14,15 @@ This directory contains guidelines for backend development. Fill in each file wi
 
 | Guide | Description | Status |
 |-------|-------------|--------|
-| [Directory Structure](./directory-structure.md) | Module organization and file layout | Filled |
-| [Database Guidelines](./database-guidelines.md) | ORM patterns, queries, migrations | Filled |
-| [Error Handling](./error-handling.md) | Error types, handling strategies | Filled |
-| [Quality Guidelines](./quality-guidelines.md) | Code standards, forbidden patterns | Filled |
-| [Logging Guidelines](./logging-guidelines.md) | Structured logging, log levels | Filled |
-| [Tutor Context References](./tutor-context-references.md) | Cross-layer typed reference, safe snapshot, history, and context-injection contract | Filled |
-| [Learning Agent Integration and QA](./learning-agent-integration-qa.md) | Final language matrix, execution-tier truthfulness, cutover schema inventory, and readiness contract | Filled |
-| [Codex Runtime Sidecar](./codex-runtime-sidecar.md) | Aearn-owned App Server contracts, ownership, typed LearningPlan tools, bounded repair/fencing, and dedicated worker lifecycle | Filled |
+| [Directory Structure](./directory-structure.md) | Service ownership, package boundaries, and module layout | Filled |
+| [Database Guidelines](./database-guidelines.md) | PostgreSQL schema, transaction, query, and migration rules | Filled |
+| [Error Handling](./error-handling.md) | Error types and safe failure mapping | Filled |
+| [Quality Guidelines](./quality-guidelines.md) | Code standards, scenarios, and validation gates | Filled |
+| [Logging Guidelines](./logging-guidelines.md) | Structured logging and redaction | Filled |
+| [Tutor Context References](./tutor-context-references.md) | Typed reference, safe snapshot, history, and injection contracts | Filled |
+| [Learning Agent Integration and QA](./learning-agent-integration-qa.md) | Language matrix, execution-tier truthfulness, and readiness | Filled |
+| [Teaching Session Authority](./teaching-session-authority.md) | Durable teaching session, checkpoint, stimulus, and action authority | Filled |
+| [Codex Runtime Sidecar](./codex-runtime-sidecar.md) | App Server contracts, typed tools, fencing, and worker lifecycle | Filled |
 
 ---
 
@@ -29,12 +30,13 @@ This directory contains guidelines for backend development. Fill in each file wi
 
 Before backend work:
 
-1. Read the guide that matches the touched layer.
-2. Cross-check the task against `docs/architecture/api-contract.md`, `docs/architecture/database-schema.md`, and the current milestone in `docs/plans/learning-agent-implementation-plan.md`.
-3. Run commands from the owning subproject, not the repository root.
+1. Read the guide matching the touched layer.
+2. Start from `docs/README.md`, then read the current architecture, API, database, setup, or QA document it designates for the surface.
+3. Verify behavior against current code, route registration, schema, tests, and configuration; never restore archived runtime structure from historical plans.
+4. Run commands from the owning subproject, not the repository root.
 
-The goal is to help AI assistants and new team members follow the current Aearn runtime conventions instead of the historical tutorial projects.
+The goal is to preserve the current Tutor Harness and controlled Codex Sidecar boundaries rather than the removed tutorial, SDK-Agent, router, or LangGraph product runtime.
 
 ---
 
-**Language**: All documentation should be written in **English**.
+**Language**: Project specs may remain English unless a task-specific rule requires another language. Trellis task artifacts under `.trellis/tasks/**` follow the repository's Simplified Chinese rule.

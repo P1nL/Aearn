@@ -1864,3 +1864,123 @@ Closed the planning-only Tutor Harness rearchitecture parent after all nine inde
 ### Status
 
 [OK] **Completed**
+
+
+## Session 115: Codex Runtime 持久线程与原始流收尾
+
+**Date**: 2026-08-21
+**Task**: Codex Runtime 持久线程与原始流收尾
+**Branch**: `main`
+
+### Summary
+
+完成 conversation 级 Codex thread、turn 级运行、local compaction、typed planning request、raw reasoning/final-answer projection、Desktop 展示与真实计划流程验收；修复编程语言问题语义、Runtime 事件背压和 terminal/commentary 残流清理。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `4adbb1e2` | (see git log) |
+
+### Status
+
+[OK] **Completed**
+
+
+## Session 116: 完成课程意图 taxonomy 与动态 Generated UI
+
+**Date**: 2026-08-21
+**Task**: 完成课程意图 taxonomy 与动态 Generated UI
+**Branch**: `main`
+
+### Summary
+
+完成 PostgreSQL 课程意图 taxonomy/coverage gate、确定性语言自动确认、方向与多语言 shortlist、durable Generated UI metadata、Desktop 无默认选择与刷新草稿恢复；通过 backend full pytest、Ruff、Mypy、Desktop tests/check、bootstrap twice 和离线 browser smoke。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `f45ffdc5` | (see git log) |
+
+### Status
+
+[OK] **Completed**
+
+
+## Session 117: 完成 Runtime delta 合并与语义预算 Child
+
+**Date**: 2026-08-21
+**Task**: 完成 Runtime delta 合并与语义预算 Child
+**Branch**: `main`
+
+### Summary
+
+完成 Child 2：引入 item/index/phase-aware delta coalescing、source/projection sequence、PostgreSQL 安全 source receipt 与独立 Runtime 预算；默认 fake/offline 全门通过并归档。
+
+### Main Changes
+
+- 5,000 单字符 reasoning 与 2,500-delta LearningPlan repair 不再触发 2,000-event 失败
+- PostgreSQL receipt 保存 projection sequence 与安全 source range/count/hash，公共 SSE/DTO 保持兼容
+- 补齐 Runtime 配置、无文本可观测性、source-of-truth docs 与 Trellis code-spec
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `5699d97e` | (see git log) |
+| `a82deb59` | (see git log) |
+
+### Testing
+
+- [OK] Full backend: 689 passed, 2 skipped；Ruff/Mypy/lock/compileall 通过
+- [OK] Desktop: 48 passed；desktop:check 通过；bootstrap twice 通过
+- [OK] Browser: 1440x900、900x900、390x844 无溢出/overlay/console error，未调用真实 provider
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 仅在用户明确要求后执行 Parent 08-21-tutor-planning-intent-runtime-stream-reliability 的最终集成复核；不要恢复 stale 08-13。
+
+
+## Session 118: 完成 Tutor 课程意图与 Runtime 流可靠性 Parent 最终集成
+
+**Date**: 2026-08-21
+**Task**: 完成 Tutor 课程意图与 Runtime 流可靠性 Parent 最终集成
+**Branch**: `main`
+
+### Summary
+
+两个 Child 已按顺序独立提交并归档；Parent 完成跨 Child 验收、全量离线质量门、三视口浏览器复验、QA 文档同步与归档。
+
+### Main Changes
+
+- 确认课程意图 authority 使用 PostgreSQL taxonomy/tag，唯一明确语言自动写 deterministic_input，方向/多语言/conflict 仅生成无默认选择的 durable shortlist。
+- 确认 Runtime 以 item/index/phase-aware coalescing、projection sequence、source range/count/hash 与独立语义预算处理 5,000 delta 和 LearningPlan repair。
+- 更新 Parent 验收矩阵、final-integration-evidence 与 tutor-harness release-readiness 文档。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `f45ffdc5` | (see git log) |
+| `5699d97e` | (see git log) |
+| `d8d7b67a` | (see git log) |
+| `e22a8198` | (see git log) |
+
+### Testing
+
+- [OK] Full backend 689 passed, 2 skipped；Ruff、Mypy 194 files、lock、compileall、bootstrap twice 通过。
+- [OK] Desktop 7 files/48 tests 与 tsc/vite build 通过；三视口 DOM/交互/刷新无溢出、overlay 或 console warning/error。
+- [OK] Parent Trellis validate 与 git diff --check 通过；未调用真实 provider。
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- Parent 任务树已完成；后续只按用户新的明确任务继续，不恢复 stale 08-13 fallback。

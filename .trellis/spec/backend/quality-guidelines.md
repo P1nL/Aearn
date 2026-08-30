@@ -196,6 +196,7 @@ The object owner and idempotency owner are both checked before replay or mutatio
 
 - Startup order remains Docker PostgreSQL/Redis -> schema bootstrap -> API -> Celery worker -> Tauri desktop dev server.
 - Backend processes must use `python -m uvicorn` and `python -m celery` through `uv --directory .\aearn\services\api`; do not call bare `uvicorn` or `celery` executables on Windows.
+- The normal local `tutor-main` worker must explicitly subscribe to `celery,tutor-interactive,tutor-proactive,tutor-curation`; the dedicated `tutor-codex` worker subscribes only to `tutor-codex`. A registered/routed task without a subscribed local worker is a startup failure because durable jobs remain pending forever.
 - `dev:status` must report Docker service state, API readiness, desktop readiness, and tracked process state.
 - Tracked process state must distinguish `alive`, `stale`, and `untrusted`.
 - `dev:stop` and `dev:restart` may stop only tracked Aearn processes whose command line matches the expected startup command.
@@ -227,7 +228,7 @@ The object owner and idempotency owner are both checked before replay or mutatio
 - Run `pnpm --dir .\aearn dev`, then confirm `dev:status` shows API and desktop ready with verified tracked PIDs.
 - Run `pnpm --dir .\aearn dev:restart`, then confirm the same readiness and tracked PID behavior.
 - Run `pnpm --dir .\aearn dev:stop`, then confirm API and desktop are not ready and tracked PIDs are `none`.
-- Run focused backend smoke tests: `uv --directory .\aearn\services\api run python -m pytest tests/test_health.py tests/test_db_bootstrap.py tests/test_worker_import.py -q`.
+- Run focused backend smoke tests: `uv --directory .\aearn\services\api run python -m pytest tests/integration/test_health.py tests/database/test_db_bootstrap.py tests/integration/test_worker_import.py -q`.
 - Run `pnpm --dir .\aearn desktop:check`.
 
 ### 7. Wrong vs Correct
@@ -377,7 +378,7 @@ Route generation keeps documentation grounding in backend code and sends the mod
 ### 1. Scope / Trigger
 
 - Trigger: implementing or changing `POST /api/learning-sessions/start`, `run`, `hint`, `explain-error`, `check-explanation`, `submit`, their repository/service modules, or the `attempts` / `learning_sessions` schema contracts that back them.
-- Scope: `aearn/services/api/app/routes/learning_sessions.py`, `app/services/learning_session_repository.py`, runner/evaluation helpers, `app/services/exercise_guidance.py`, `app/db/schema.sql`, and M3 API tests.
+- Scope: `aearn/services/api/app/routes/learning_sessions.py`, `app/services/learning_session_repository.py`, runner/evaluation helpers, `app/services/exercise_guidance.py`, `app/db/schema/`, and M3 API tests.
 
 ### 2. Signatures
 
@@ -464,7 +465,7 @@ Keep retry safety on request identity and `idempotency_records`, while allowing 
 ### 1. Scope / Trigger
 
 - Trigger: implementing or changing shared review scheduling, `/api/reviews/*`, `review_logs`, `review_states`, or the due-count Celery task.
-- Scope: `app/services/review_scheduler.py`, `app/services/review_repository.py`, `app/routes/reviews.py`, `app/models/reviews.py`, `app/db/schema.sql`, `aearn_worker/worker_app.py`, and M4 API tests.
+- Scope: `app/services/review_scheduler.py`, `app/services/review_repository.py`, `app/routes/reviews.py`, `app/models/reviews.py`, `app/db/schema/`, `aearn_worker/worker_app.py`, and M4 API tests.
 
 ### 2. Signatures
 
@@ -688,7 +689,7 @@ The SDK layer only proposes validated coaching output; repository code still own
 ### 1. Scope / Trigger
 
 - Trigger: implementing or changing the pre-concept-check documentation reading stage, knowledge-point documentation endpoint, concept-check trigger endpoint, or plan-detail review preview fields.
-- Scope: `routes/learning_sessions.py`, `models/learning_sessions.py`, `learning_session_repository.py`, `plan_repository.py`, `learning_concept_agent.py`, learning graph/router/tool transitions, `schema.sql`, and M2/M3/M4 API tests.
+- Scope: `routes/learning_sessions.py`, `models/learning_sessions.py`, `learning_session_repository.py`, `plan_repository.py`, `learning_concept_agent.py`, learning graph/router/tool transitions, `app/db/schema/`, and M2/M3/M4 API tests.
 
 ### 2. Signatures
 
@@ -1036,7 +1037,7 @@ The shared SSE writer serializes a compact one-line JSON frame and keeps the eve
 ### 1. Scope / Trigger
 
 - Trigger: adding or changing agent-owned tools, side-effect queues, real code execution, learner profile memory, teaching-material retrieval, SDK handoffs, or LangGraph graph skeletons.
-- Scope: `app/agents/tools.py`, `app/agents/router.py`, `app/agents/sdk_runtime.py`, `app/agents/learning_graph.py`, `app/services/runtime_runner.py`, `app/services/sandbox*.py`, `app/services/learner_profile.py`, `app/services/teaching_chunks.py`, `app/core/config.py`, and `app/db/schema.sql`.
+- Scope: `app/agents/tools.py`, `app/agents/router.py`, `app/agents/sdk_runtime.py`, `app/agents/learning_graph.py`, `app/services/runtime_runner.py`, `app/services/sandbox*.py`, `app/services/learner_profile.py`, `app/services/teaching_chunks.py`, `app/core/config.py`, and `app/db/schema/`.
 
 ### 2. Signatures
 
@@ -1976,10 +1977,10 @@ history can be reduced without erasing the learner's current intent.
 
 ### 6. Tests Required
 
-- `tests/test_tutor_provider_gateway.py`: exact-model protocol/URL/request selection, raw Responses SSE delta/completed/incomplete/failed/reasoning-only handling, generated schema, typed actions, server-owned deterministic IDs/revision, DeepSeek JSON-object default and opt-in schema, repair-only thinking disablement, bounded output budgets, safe field-path replacement, safety-before-normalization, HTTP/transport categories, and no fallback.
-- `tests/test_tutor_capability_gateway.py`: explicit Skill selection, unique-action Skill recovery plus context rebuild before dispatch, ambiguous-action default denial, selected-Skill descriptor validation, and no unauthorized effect commit.
-- `tests/test_provider_diagnostics.py`: AES-GCM round-trip, plaintext/key absence in artifact, fail-closed settings, rejected-only commits, accepted discard, bounded capture, and no raw value in result/receipt repr.
-- `tests/test_tutor_evals.py` and context eval smoke: typed fixture compatibility, safe specific diagnostics, attempt-level usage, and no network by default.
+- `tests/tutor/test_tutor_provider_gateway.py`: exact-model protocol/URL/request selection, raw Responses SSE delta/completed/incomplete/failed/reasoning-only handling, generated schema, typed actions, server-owned deterministic IDs/revision, DeepSeek JSON-object default and opt-in schema, repair-only thinking disablement, bounded output budgets, safe field-path replacement, safety-before-normalization, HTTP/transport categories, and no fallback.
+- `tests/tutor/test_tutor_capability_gateway.py`: explicit Skill selection, unique-action Skill recovery plus context rebuild before dispatch, ambiguous-action default denial, selected-Skill descriptor validation, and no unauthorized effect commit.
+- `tests/integration/test_provider_diagnostics.py`: AES-GCM round-trip, plaintext/key absence in artifact, fail-closed settings, rejected-only commits, accepted discard, bounded capture, and no raw value in result/receipt repr.
+- `tests/tutor/test_tutor_evals.py` and context eval smoke: typed fixture compatibility, safe specific diagnostics, attempt-level usage, and no network by default.
 - Run focused pytest, then full pytest, `ruff check app tests`, `python -m mypy app --no-incremental`, `uv lock --check`, `pnpm --dir .\aearn desktop:check`, and `git diff --check`.
 
 ### 7. Wrong vs Correct
@@ -2065,10 +2066,10 @@ The provider supplies one typed intent; the server assembles authority, the repa
 
 ### 6. Tests Required
 
-- `tests/test_tutor_input_merge.py` and `tests/test_tutor_queue_control.py`: first-turn atomic replay, normal Send Queue, capacity/FIFO, edit/delete/reorder, Steer, Interrupt/pause/resume/execute, pending-request block, duplicate drain, Retry lineage, and normal run-input denial.
-- `tests/test_tutor_run_loop.py`: post-provider cancellation/revision refresh before decision, capability, effect, and terminal persistence; a provider result arriving after nominal lease expiry still completes when no replacement claim exists.
-- `tests/test_tutor_conversation_history.py`, `tests/test_tutor_sse.py`, and route/public API tests: user/conversation cursor scope, legacy history, allowlisted process projection, and selected-run-only transport behavior.
-- `tests/test_tutor_proactive_default_delivery.py`, `tests/test_tutor_evals.py`, and provider/persistence tests: injected-clock effect/CAS behavior, late same-generation renewal, stale post-replacement denial, stable safe diagnostics, and no live provider call.
+- `tests/tutor/test_tutor_input_merge.py` and `tests/tutor/test_tutor_queue_control.py`: first-turn atomic replay, normal Send Queue, capacity/FIFO, edit/delete/reorder, Steer, Interrupt/pause/resume/execute, pending-request block, duplicate drain, Retry lineage, and normal run-input denial.
+- `tests/tutor/test_tutor_run_loop.py`: post-provider cancellation/revision refresh before decision, capability, effect, and terminal persistence; a provider result arriving after nominal lease expiry still completes when no replacement claim exists.
+- `tests/tutor/test_tutor_conversation_history.py`, `tests/tutor/test_tutor_sse.py`, and route/public API tests: user/conversation cursor scope, legacy history, allowlisted process projection, and selected-run-only transport behavior.
+- `tests/tutor/test_tutor_proactive_default_delivery.py`, `tests/tutor/test_tutor_evals.py`, and provider/persistence tests: injected-clock effect/CAS behavior, late same-generation renewal, stale post-replacement denial, stable safe diagnostics, and no live provider call.
 - Run `uv --directory .\aearn\services\api lock --check && uv --directory .\aearn\services\api run python -m pytest -q`, then `ruff check app tests`, `python -m mypy app`, `pnpm --dir .\aearn desktop:check`, and `git diff --check`.
 
 ### 7. Wrong vs Correct
@@ -2282,7 +2283,7 @@ it can use.
 - Trigger: changing Child 02 target-only Tutor SQL, `PostgresTutorRepository`,
   `PostgresTutorLifecycle`, safe trace/export projection, curation envelope, or
   deterministic Tutor evaluation fixtures.
-- Scope: `app/db/schema.sql`, `app/services/tutor/{persistence,safe_projection,evals}.py`,
+- Scope: `app/db/schema/`, `app/services/tutor/{persistence,safe_projection,evals}.py`,
   the lifecycle adapter, and focused PostgreSQL/fake-only tests.
 - This owner may persist feature-off `tutor_*` state. It does not add a route,
   SSE/`Last-Event-ID` adapter, Desktop consumer, worker, Curator model call, or
@@ -2408,7 +2409,7 @@ it back without a visible partial event, trace, or outbox row.
   policy, PostgreSQL queue leases, curation-job mechanics, internal proactive
   conversations, `origin` propagation, or the three Tutor Celery wrappers.
 - Scope: `app/services/tutor/{proactive,proactive_repository,proactive_worker}.py`,
-  `TutorRunSnapshot`, `CapabilityPolicyContext`, `app/db/schema.sql`,
+  `TutorRunSnapshot`, `CapabilityPolicyContext`, `app/db/schema/`,
   `aearn_worker/worker_app.py`, and focused scheduler/database/worker tests.
 - This is a Child 04 background seam. It must not expose an API route, SSE frame,
   desktop state, normal-success chat message/notification, legacy review-worker
@@ -2541,7 +2542,7 @@ unbounded provider, direct domain-write, chat, or desktop side effect.
   worker composition.
 - Scope: `app/agents/harness/capabilities.py`, `app/agents/skills/`,
   `app/services/tutor/{persistence,learner_state,curation,proactive,proactive_worker}.py`,
-  `app/core/config.py`, `app/db/schema.sql`, and focused PostgreSQL/fake-only tests.
+  `app/core/config.py`, `app/db/schema/`, and focused PostgreSQL/fake-only tests.
 - This is a target-only domain layer. It must not add a public route, SSE frame,
   Desktop rendering, legacy Graph composition, legacy plan/profile write, review,
   FSRS, attempt, executor, provider/model fallback, cutover, or legacy retirement.
@@ -2647,22 +2648,22 @@ unbounded provider, direct domain-write, chat, or desktop side effect.
 
 ### 6. Tests Required
 
-- `tests/test_learning_plan_revisions.py`: activate/replay/second revision/
+- `tests/learning/test_learning_plan_revisions.py`: activate/replay/second revision/
   predecessor-only rollback, immutable revision trigger, and proof legacy plan,
   review, and attempt counts are unchanged.
-- `tests/test_tutor_memory.py`: objective-only effect evidence, setting-version
+- `tests/tutor/test_tutor_memory.py`: objective-only effect evidence, setting-version
   control, correction/delete lineage, unsafe raw payload rejection, and no
   direct inference row.
-- `tests/test_tutor_memory_curator.py`: redacted source shape, one fake-primary
+- `tests/tutor/test_tutor_memory_curator.py`: redacted source shape, one fake-primary
   call for an eligible job, one target projection plus receipt, preference-disable
   no-call, and zero-output-token no-call.
-- `tests/test_tutor_activity.py`: user scope, optional inbox lifecycle,
+- `tests/tutor/test_tutor_activity.py`: user scope, optional inbox lifecycle,
   safe activity fields, and descriptor denial before a handler write.
-- `tests/test_tutor_skill_catalog.py`, `tests/test_tutor_capability_gateway.py`,
+- `tests/tutor/test_tutor_skill_catalog.py`, `tests/tutor/test_tutor_capability_gateway.py`,
   and `tests/fixtures/tutor_evals/tutor_harness_foundation_v1.json`: exact Skill
   catalog order, effect descriptors, digest/hash identity, and no relaxation of
   the catalog gate.
-- `tests/test_db_bootstrap.py`: bootstrap twice, all new target tables, indexes,
+- `tests/database/test_db_bootstrap.py`: bootstrap twice, all new target tables, indexes,
   trigger names, scoped foreign keys, and immutable/lifecycle checks.
 - Run PostgreSQL/bootstrap-heavy Tutor tests sequentially, then `ruff check app tests`
   and `python -m mypy app` from `aearn/services/api` through `uv`.
@@ -2711,7 +2712,7 @@ projection through scoped repository contracts.
 - Trigger: adding or changing `harness_cutovers`, `/api/harness/cutover`,
   destructive legacy cleanup, Tutor/legacy runtime gates, legacy review-worker
   writes, or an ordinary local-user reset during a Tutor rollout.
-- Scope: `app/db/schema.sql`, `app/services/tutor/cutover.py`,
+- Scope: `app/db/schema/`, `app/services/tutor/cutover.py`,
   `app/routes/{harness_cutover,tutor,users}.py`, audited legacy routers,
   `aearn_worker/worker_app.py`, and focused PostgreSQL/API tests.
 - This is a one-way clean-slate transition. It is not history migration,
@@ -2787,14 +2788,14 @@ projection through scoped repository contracts.
 
 ### 6. Tests Required
 
-- `tests/test_harness_cutover.py`: exact confirmation/replay/stale/cross-user
+- `tests/integration/test_harness_cutover.py`: exact confirmation/replay/stale/cross-user
   behavior, full legacy hierarchy deletion, retained fields, target blocking,
   injected rollback receipt, malformed/unscoped legacy denial, verified legacy
   denial, public checkpoint ownership, unrelated checkpoint survival, and
   unresolved namespace/`NULL` thread denial.
 - `tests/test_local_user_data_boundary.py`: ordinary reset still preserves its
   legacy preference contract while the rollout-off baseline remains intact.
-- `tests/test_worker_import.py`: every active-rollout receipt state blocks the
+- `tests/integration/test_worker_import.py`: every active-rollout receipt state blocks the
   legacy review worker; a disabled rollout performs no gate query.
 - Run `bootstrap_database()` after schema edits, then focused pytest, `ruff
   check app tests`, and `python -m mypy app` through `uv`.
@@ -3020,7 +3021,7 @@ global production worker contract.
 
 ### 6. Tests Required
 
-- Run `tests/test_tutor_executor_job_store.py` serially; its independent
+- Run `tests/runners/test_tutor_executor_job_store.py` serially; its independent
   `FOR UPDATE SKIP LOCKED` test must complete cleanup and the following
   reserved-launch recovery test must seed health successfully.
 - Run the full API suite serially after fixture schema/root changes. A focused
@@ -3120,13 +3121,13 @@ incorrect only after the fixture's test-owned user is being destroyed.
 
 ### 6. Tests Required
 
-- `tests/test_tutor_provider_gateway.py`：Responses stream、Chat Completions、cached/no-cache、
+- `tests/tutor/test_tutor_provider_gateway.py`：Responses stream、Chat Completions、cached/no-cache、
   reasoning、partial/malformed/missing usage、invalid JSON repair、transport 与 primary-only 回归。
-- `tests/test_tutor_run_loop.py`：attempt receipts 在 stale-result 抑制前持久化，同时
+- `tests/tutor/test_tutor_run_loop.py`：attempt receipts 在 stale-result 抑制前持久化，同时
   public message/title/capability/effect 仍被 cancellation/supersede gate 阻止。
-- `tests/test_tutor_run_repository.py`：两个 attempt、missing usage、exact replay、冲突重放、
+- `tests/tutor/test_tutor_run_repository.py`：两个 attempt、missing usage、exact replay、冲突重放、
   跨 user/conversation、derived token CHECK、transport CHECK 和 UPDATE/DELETE trigger。
-- `tests/test_db_bootstrap.py`：bootstrap 两次并断言表、索引、约束与 immutable trigger。
+- `tests/database/test_db_bootstrap.py`：bootstrap 两次并断言表、索引、约束与 immutable trigger。
 - 最终串行运行 focused pytest、完整 pytest、`ruff check app tests`、
   `python -m mypy app --no-incremental`、`uv lock --check`、Trellis validate 和 `git diff --check`。
 
@@ -3302,7 +3303,7 @@ limit、current-input 权威性、确定性重放和 cache 计量语义。
   retrieval 或 provider context conflict policy。
 - Scope：`app/agents/harness/{contracts,context_builder,provider_request}.py`、
   `app/services/tutor/{interactive,persistence,learner_state,curation,proactive,proactive_repository,safe_projection}.py`、
-  `app/db/schema.sql`、focused unit/PostgreSQL tests 和 Tutor source-of-truth docs。
+  `app/db/schema/`、focused unit/PostgreSQL tests 和 Tutor source-of-truth docs。
 - 不授权删除/改写 `tutor_messages`、回退旧 Graph/router/SDK、引入向量数据库、把
   summary 暴露成公开聊天消息，或把 context summary 合并到 inferred-memory 设置。
 
@@ -3421,7 +3422,7 @@ compaction = build_compaction_input_from_selected_recent(plan, selection)
 - Execution：`run_tutor_context_eval_case(case) -> TutorContextEvalResult`；`run_tutor_context_eval_fixture(path) -> tuple[TutorContextEvalResult, ...]`。
 - Safe result：`TutorContextEvalReceipt.as_dict() -> dict[str, object]`，schema 为 `tutor_context_eval_receipt_v1`。
 - Calibration：`build_tutor_context_calibration_report(receipts, percentile_min_samples=5) -> TutorCalibrationReport`，schema 为 `tutor_context_calibration_v1`。
-- Optional smoke：`TUTOR_REAL_PROVIDER_SMOKE=1` + `pytest -m real_provider tests/test_tutor_real_provider_smoke.py`。
+- Optional smoke：`TUTOR_REAL_PROVIDER_SMOKE=1` + `pytest -m real_provider tests/smoke/test_tutor_real_provider_smoke.py`。
 
 ### 3. Contracts
 
@@ -3454,9 +3455,9 @@ compaction = build_compaction_input_from_selected_recent(plan, selection)
 
 ### 6. Tests Required
 
-- `tests/test_tutor_evals.py`：v1 compatibility、v2 required case set、safe receipt、attempt indexes/usage、physical limit、calibration grouping/threshold、invalid schema/usage，以及真实 PostgreSQL current/equal-timestamp history。
-- `tests/test_tutor_context_eval_smoke.py`：环境开关在 Settings/provider 构造前 fail-closed，rubric 对 correction/advice 保持有界。
-- `tests/test_tutor_real_provider_smoke.py`：`real_provider` marker + env skip；默认完整 suite 不访问网络。
+- `tests/tutor/test_tutor_evals.py`：v1 compatibility、v2 required case set、safe receipt、attempt indexes/usage、physical limit、calibration grouping/threshold、invalid schema/usage，以及真实 PostgreSQL current/equal-timestamp history。
+- `tests/smoke/test_tutor_context_eval_smoke.py`：环境开关在 Settings/provider 构造前 fail-closed，rubric 对 correction/advice 保持有界。
+- `tests/smoke/test_tutor_real_provider_smoke.py`：`real_provider` marker + env skip；默认完整 suite 不访问网络。
 - Owning regression：`test_tutor_context_builder.py`、`test_tutor_context_budget.py`、`test_tutor_provider_gateway.py`、`test_tutor_run_loop.py`、`test_tutor_context_loader.py`、`test_tutor_context_summary.py`、`test_tutor_run_repository.py`、`test_db_bootstrap.py`。
 - 最终串行运行完整 pytest，再运行 `ruff check app tests`、`python -m mypy app --no-incremental`、`uv lock --check`、Desktop check、Trellis validate 和 `git diff --check`；真实 smoke 只在另行批准后单独运行。
 
@@ -3771,3 +3772,17 @@ class PlanCapabilityError(ValueError):
 ```json
 {"profile_json":"{\"language_id\":\"python\",\"goal_text\":\"automation\",\"target_level\":\"beginner\",\"weekly_minutes\":180,\"experience_level\":\"new\",\"teaching_preferences\":[],\"pace_summary\":\"three sessions\",\"title\":\"Python Automation\"}"}
 ```
+
+## Scenario: Planning intent quality gate (2026-08-21)
+
+- Test language aliases with Chinese/English strong signals, word boundaries, short-token false positives, unsupported languages, and HTML/CSS public-course normalization.
+- Test the complete flow `learner input -> resolver -> deterministic fact or candidate UUIDs -> persisted typed presentation -> Desktop response`, including feature-off full-catalog fallback.
+- A title/description-only course update must not change candidate UUIDs. A new active untagged course must fail both bootstrap coverage and the deferred publication constraint.
+- Default suites use PostgreSQL and fake/offline Tutor infrastructure only. A real provider is never required to validate planning intent.
+
+## Scenario: Runtime delta coalescing quality gate (2026-08-21)
+
+- Prove 5,000 single-character reasoning deltas complete with exact final text and bounded projection count; do not accept a larger fixed event cap as the fix.
+- Cover timer/size/boundary flush, Unicode/whitespace preservation, tool repair after more than 2,000 source deltas, feature-off per-delta projection, and raw/item/tool/text/time/pending safe codes.
+- PostgreSQL tests assert projection/source columns, closed range checks, replay/conflict, completed calibration, commentary correction, terminal discard, and no raw text in receipts/logs.
+- Desktop public DTO stays unchanged. Existing gap/snapshot/reconnect tests and three-viewport browser smoke must remain green. Default validation is fake/offline; real provider requires new explicit approval.

@@ -1,6 +1,7 @@
 {
   "name": "aearn",
   "private": true,
+  "packageManager": "pnpm@10.8.0",
   "version": "0.1.0",
   "scripts": {
     "dev": "powershell -ExecutionPolicy Bypass -File ./scripts/start-dev.ps1",

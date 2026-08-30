@@ -11,9 +11,11 @@ from app.services.tutor.public_thinking_stream import PUBLIC_THINKING_CHUNK_MAX_
 
 
 TUTOR_CONVERSATION_EVENT_PROJECTION_VERSION = "tutor_conversation_event_v2"
-TUTOR_CONVERSATION_SNAPSHOT_VERSION = "tutor_conversation_snapshot_v2"
+TUTOR_CONVERSATION_SNAPSHOT_VERSION = "tutor_conversation_snapshot_v3"
 TUTOR_CONVERSATION_STREAM_CURSOR_VERSION = 2
 TUTOR_PUBLIC_THINKING_STREAM_VERSION = "tutor_public_thinking_stream_v1"
+TUTOR_RUNTIME_ITEM_STREAM_VERSION = "tutor_runtime_item_stream_v1"
+TUTOR_RUNTIME_OUTPUT_VERSION = "tutor_runtime_output_v1"
 
 
 class TutorInteractionProtocolVersion(StrEnum):
@@ -82,6 +84,21 @@ class TutorPublicProcessStep(_StrictPublicModel):
     label: str = Field(min_length=1, max_length=160)
 
 
+class TutorRuntimeOutputItem(_StrictPublicModel):
+    item_id: str = Field(min_length=1, max_length=120)
+    text: str = Field(max_length=1_000_000)
+    state: Literal["streaming", "completed"]
+    last_sequence: int = Field(ge=0)
+
+
+class TutorRuntimeOutput(_StrictPublicModel):
+    output_version: Literal["tutor_runtime_output_v1"]
+    input_revision: int = Field(ge=0)
+    generation: int = Field(ge=1)
+    reasoning_items: list[TutorRuntimeOutputItem] = Field(default_factory=list, max_length=64)
+    final_answer_item: TutorRuntimeOutputItem | None = None
+
+
 class TutorPublicMessageItem(_StrictPublicModel):
     kind: Literal["message"]
     id: str = Field(min_length=1, max_length=120)
@@ -90,6 +107,7 @@ class TutorPublicMessageItem(_StrictPublicModel):
     content: str = Field(max_length=16_000)
     public_thinking_text: str = Field(default="", max_length=MAX_TUTOR_PUBLIC_THINKING_TEXT_LENGTH)
     public_thinking_steps: list[str] = Field(default_factory=list, max_length=4)
+    runtime_output: TutorRuntimeOutput | None = None
     context_references: list[dict[str, object]] = Field(default_factory=list, max_length=6)
     in_reply_to_item_id: str | None = Field(default=None, min_length=1, max_length=120)
     created_at: str = Field(min_length=1, max_length=80)
@@ -135,6 +153,14 @@ class TutorPublicSingleSelectPresentation(_StrictPublicModel):
     field_key: str = Field(min_length=1, max_length=120)
     options: list[TutorPublicOption] = Field(min_length=1, max_length=24)
     recommended: str | None = Field(default=None, min_length=1, max_length=120)
+    selection_scope: Literal[
+        "explicit_shortlist",
+        "intent_shortlist",
+        "conflict_shortlist",
+        "full_catalog",
+    ] | None = None
+    selection_reason_code: str | None = Field(default=None, min_length=1, max_length=120)
+    intent_policy_version: str | None = Field(default=None, min_length=1, max_length=160)
 
 
 class TutorPublicMultiSelectPresentation(_StrictPublicModel):
@@ -253,10 +279,45 @@ class TutorTurnOutputStatePayload(_StrictPublicModel):
     chunk_sequence: int = Field(ge=0)
 
 
-TutorTurnOutputPayload = Annotated[
-    TutorTurnOutputAppendPayload | TutorTurnOutputStatePayload,
-    Field(discriminator="operation"),
-]
+class TutorRuntimeItemAppendPayload(_StrictPublicModel):
+    output_version: Literal["tutor_runtime_item_stream_v1"]
+    input_revision: int = Field(ge=0)
+    generation: int = Field(ge=1)
+    operation: Literal["append"]
+    chunk_sequence: int = Field(ge=1)
+    item_id: str = Field(min_length=1, max_length=120)
+    channel: Literal["reasoning", "final_answer"]
+    text: str = Field(min_length=1, max_length=16_000)
+
+
+class TutorRuntimeItemCompletePayload(_StrictPublicModel):
+    output_version: Literal["tutor_runtime_item_stream_v1"]
+    input_revision: int = Field(ge=0)
+    generation: int = Field(ge=1)
+    operation: Literal["complete"]
+    chunk_sequence: int = Field(ge=1)
+    item_id: str = Field(min_length=1, max_length=120)
+    channel: Literal["reasoning", "final_answer"]
+    text: str = Field(max_length=1_000_000)
+
+
+class TutorRuntimeItemStatePayload(_StrictPublicModel):
+    output_version: Literal["tutor_runtime_item_stream_v1"]
+    input_revision: int = Field(ge=0)
+    generation: int = Field(ge=1)
+    operation: Literal["reset", "discard"]
+    chunk_sequence: int = Field(ge=0)
+    item_id: str = Field(min_length=1, max_length=120)
+    channel: Literal["reasoning", "final_answer"]
+
+
+TutorTurnOutputPayload = (
+    TutorTurnOutputAppendPayload
+    | TutorTurnOutputStatePayload
+    | TutorRuntimeItemAppendPayload
+    | TutorRuntimeItemCompletePayload
+    | TutorRuntimeItemStatePayload
+)
 
 
 class TutorControlEventPayload(_StrictPublicModel):

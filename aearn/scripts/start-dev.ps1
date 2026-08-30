@@ -115,7 +115,7 @@ function Find-ProcessIdByCommand([string]$Regex) {
 function Get-TrackedProcessPattern([string]$Key) {
   switch ($Key) {
     "apiPid" { return "uv --directory .*python -m uvicorn app\.main:app" }
-    "workerPid" { return "aearn_worker\.worker_app:celery_app worker(?!.*tutor-codex)" }
+    "workerPid" { return "aearn_worker\.worker_app:celery_app worker.*-Q celery,tutor-interactive,tutor-proactive,tutor-curation.*-n tutor-main@%h" }
     "codexWorkerPid" { return "aearn_worker\.worker_app:celery_app worker.*tutor-codex" }
     "beatPid" { return "aearn_worker\.worker_app:celery_app beat" }
     "desktopPid" { return "pnpm --dir .*desktop:dev" }
@@ -306,7 +306,7 @@ if (Test-Http $apiHealthUrl) {
 }
 
 if (-not $NoWorker) {
-  $workerPid = Find-ProcessIdByCommand "aearn_worker\.worker_app:celery_app worker(?!.*tutor-codex)"
+  $workerPid = Find-ProcessIdByCommand "aearn_worker\.worker_app:celery_app worker.*-Q celery,tutor-interactive,tutor-proactive,tutor-curation.*-n tutor-main@%h"
   if ($workerPid) {
     Write-Step "worker already running, pid=$workerPid"
     $state.workerPid = $workerPid
@@ -315,7 +315,7 @@ if (-not $NoWorker) {
     $workerErrLog = Join-Path $LogDir "worker-dev.err.log"
     $state.workerPid = Start-ManagedProcess `
       -Name "worker" `
-      -Command "uv --directory `"$ApiDir`" run python -m celery -A aearn_worker.worker_app:celery_app worker --loglevel=info --pool=solo" `
+      -Command "uv --directory `"$ApiDir`" run python -m celery -A aearn_worker.worker_app:celery_app worker --loglevel=info --pool=solo --concurrency=1 -Q celery,tutor-interactive,tutor-proactive,tutor-curation -n tutor-main@%h" `
       -OutLog $workerOutLog `
       -ErrLog $workerErrLog
     Wait-LogContains -Paths @($workerOutLog, $workerErrLog) -Pattern "ready" -Name "worker"

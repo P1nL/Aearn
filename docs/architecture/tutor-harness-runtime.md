@@ -1,9 +1,9 @@
 # Tutor Harness Runtime Architecture
 
-**Status:** Current runtime contract as of 2026-08-15.
+**Status:** Current runtime contract as of 2026-08-27.
 **Authority:** Current route registration, `aearn/services/api/app`,
 `aearn/apps/desktop`, `aearn/services/worker`, `services/learning/`,
-`schema.sql`, and their tests.
+the manifest-ordered `app/db/schema/` fragments, and their tests.
 The transition document is historical migration evidence; it is not the normal
 runtime specification.
 
@@ -33,7 +33,7 @@ legacy learner history.
 | Learning domain | `routes/learning_tracks.py`, `routes/exercise_gates.py`, `routes/learning_track_reviews.py`, `services/learning/` | Owns track-scoped plans, progress/mastery, immutable LessonDocument/source snapshots/assignments, exercise Gate/Attempt/module-diagnostic authority, spaced-review schedule/session authority, execution-tier projection, immutable scope snapshots, and a read-only Tutor context adapter. |
 | Interactive dispatch | `services/tutor/interactive_worker.py`, `services/tutor/interactive.py` | Claims a PostgreSQL durable job after commit, invokes the existing bounded Harness dispatcher, and maps wakeup/worker failure to retry/dead state without exposing provider errors in the accepted-input response. |
 | Harness | `agents/harness/`, `services/tutor/run_loop.py` | Bounded run loop, lease ownership, input-revision reload, exact Skill selection, capability/effect gate, checkpoint lifecycle, and typed terminal outcome. |
-| Durable state | `services/tutor/persistence.py`, `conversation_contracts.py`, `learner_state.py`, `proactive_repository.py` | PostgreSQL owns protocol version, user/run/conversation scope, run-local and conversation-global ordered events, snapshots, idempotency, durable dispatch leases, CAS effects, redacted projections, and background queues. |
+| Durable state | `services/tutor/persistence/`, `conversation_contracts.py`, `learner_state.py`, `proactive_repository.py` | PostgreSQL owns protocol version, user/run/conversation scope, run-local and conversation-global ordered events, snapshots, idempotency, durable dispatch leases, CAS effects, redacted projections, and background queues. |
 | Worker | `services/worker/aearn_worker/worker_app.py` | Thin Celery wrappers for `health.ping`, high-priority `tutor.interactive.dispatch/reconcile`, proactive scan/drain, and low-priority curation. Celery is wakeup/periodic scheduling, never the interactive authority. |
 | Desktop | `apps/desktop/src/` | Bootstraps `loading -> welcome -> cutover -> tutor`; it presents server decisions and cannot override them. |
 
@@ -114,10 +114,11 @@ typed blocking request
 8. `GET /api/tutor/runs/{run_id}/events` remains incremental run-local compatibility
    transport using a non-negative `Last-Event-ID` cursor. The current
    `GET /api/tutor/conversations/{conversation_id}/snapshot` returns
-   `tutor_conversation_snapshot_v2`, while `/events` replays only
-   `tutor_conversation_event_v2` rows with a signed, user/conversation-scoped opaque
-   cursor v2. `turn_output` is the sole event whose bounded public-thinking payload may
-   be consumed locally by Desktop; every other event still invalidates the snapshot.
+   `tutor_conversation_snapshot_v3`, while Desktop keeps read compatibility with v2.
+   `/events` replays only `tutor_conversation_event_v2` rows with a signed,
+   user/conversation-scoped opaque cursor v2. `turn_output` may carry either the
+   Harness-compatible `tutor_public_thinking_stream_v1` or the Codex-only
+   `tutor_runtime_item_stream_v1`; every other event still invalidates the snapshot.
    Neither stream calls a provider; heartbeat comments do not advance durable sequence.
 9. Conversation creation, first-turn, and ordinary-turn requests may carry an
    additive structured `learning_scope`. Each fresh run writes one immutable
@@ -652,7 +653,7 @@ disabled unless explicitly approved and enabled:
 
 ```powershell
 $env:TUTOR_REAL_PROVIDER_SMOKE = "1"
-uv --directory .\aearn\services\api run python -m pytest tests/test_tutor_real_provider_smoke.py -q -m real_provider
+uv --directory .\aearn\services\api run python -m pytest tests/smoke/test_tutor_real_provider_smoke.py -q -m real_provider
 ```
 
 It uses the fixed five learner turns from the acceptance plan, the production planner
@@ -869,3 +870,57 @@ The effective v2 runtime gate is the conjunction of `TUTOR_THREAD_TURN_V2_ENABLE
 Harness remains the default implementation for general, learning-track, proactive, historical, and feature-off traffic. The server freezes `runtime_kind` only when a fresh TurnRun is created. A new `plan_drafting` conversation may select `codex_sidecar_v1` only from fresh shared worker readiness matching the allowlisted Runtime version plus exact `deepseek-v4-flash` / `aearn_deepseek` / `responses`; an enabled cohort with failed readiness receives safe unavailable instead of Harness fallback. Existing conversations and retry roots inherit their original Runtime.
 
 The durable interactive job table remains the authority. Harness and Codex workers claim it with disjoint Runtime filters, and `TutorRuntimeDispatchRouter` routes only from the persisted run snapshot. The Codex dispatcher does not wrap `TutorRunLoop`: it owns the Runtime thread/turn, typed LearningPlan tool registry, lease heartbeat, steer/interrupt monitor, and durable Runtime projector. LearningPlan confirmation and LearningTrack creation stay outside Codex in the existing Aearn HTTP/domain transaction.
+
+## 2026-08-20：Codex conversation thread、local compaction 与原始运行流
+
+`codex_sidecar_v1` 的长期上下文边界从 run 提升为 learner conversation：每个 `TutorConversation` 最多拥有一个 active `tutor_conversation_runtime_threads` 记录和一个持久 Codex App Server thread；每个 fresh `TutorRun` 只在该 thread 内执行新的 `turn/start`。worker/App Server 重启后必须用持久 external thread identity 执行 `thread/resume`，但 external thread/turn/item identity 始终是 private correlation，不进入公共 DTO。旧 run-level binding 只有在一个 conversation 恰好对应一个 legacy thread 时才可自动采用；歧义历史创建新 thread，并用一次性 bounded learner-visible timeline + confirmed planning facts reseed，随后仍须重新调用 Aearn planning context tool。
+
+当前 `aearn_deepseek` 只允许本地 Codex compaction。`CodexRuntimeConfig` 从同一 verified capability 派生 `model_context_window=1_000_000`、`model_max_output_tokens=384_000` 和 `model_auto_compact_token_limit=616_000`，以 `model_auto_compact_token_limit_scope="total"` 写入 isolated `CODEX_HOME`。`thread/compact/start` 与 turn 内 `contextCompaction` lifecycle 都属于 local App Server control；当前 provider 不声明、发送或回退到 remote compaction request。
+
+Codex item stream 使用闭合 phase/channel 规则：raw `reasoning` text 进入 private owner-scoped reasoning projection；`agentMessage phase=final_answer` 进入 answer projection；`commentary` 只留下 nonpublic safe receipt；reasoning summary 保持独立内部事件，不冒充 raw reasoning。delta 先经 run input revision、lease owner/generation、Runtime connection generation、thread/turn identity 和单调 sequence fence，再写入 `tutor_runtime_text_items` 并发布版本化 `turn_output`。completed item 用完整 text/hash 原子校准；若 completed phase 把先前 provisional `final_answer` 校正为 `commentary`，服务端必须清空并 discard 该暂存 item，发布无 text 的 discard 事件。任何 turn terminal 都必须清空并 discard 剩余 streaming item，避免刷新后残留卡住状态；final answer 仍必须通过 teaching safety 后才能关联正式 Tutor message。Runtime publisher 对短时队列饱和使用有界异步背压，只有 subscriber 在等待窗口后仍未释放容量时才以 `runtime_event_backpressure_exhausted` fail closed。
+
+planning context tool 返回 confirmed facts、missing fields、facts revision/fingerprint 和 server question catalog version。出现 `awaiting_user` 时，Aearn 还会为第一个缺失字段返回 `next_missing_fact {field_key, meaning, exact_question, wording_policy, response_authority}`；字段语义和问题文案由同一 server question catalog 派生。`language_id` 固定表示要学习的编程语言或已发布课程，不表示教学内容使用的自然语言；模型可以简短确认已知事实，但必须把 `exact_question` 逐字作为唯一问题，不得自行补充括号示例、选项或第二个问题。服务端持久 Tutor message 与 generated UI 同样复用该 question source of truth，然后创建 durable `planning_input` request 并 terminalize source turn；模型不能自定义 question key、presentation 或 catalog。typed response 写入 confirmed fact 后创建 fresh run，并 resume 同一 Codex conversation thread。PostgreSQL planning facts、typed request、LearningPlan、Queue、权限和 effect commit 继续是 Aearn authority。
+
+该 Codex raw-runtime contract 仅替代 `codex_sidecar_v1` 对 provider-native reasoning 一律禁止公开的旧规则。Harness `tutor_public_thinking_stream_v1` 与 legacy `public_thinking_text` 继续作为兼容路径，不得把二者和 raw Runtime reasoning 混写、拼接或互相推导。
+
+## 2026-08-21: Planning intent authority before provider execution
+
+`PostgresPlanningFactRepository.record_input()` invokes the versioned deterministic planning resolver for accepted `plan_drafting` input. The resolver uses the exact learner message, current confirmed language, active courses, and PostgreSQL intent tags. Compatible single-language evidence becomes a confirmed fact before context reconstruction, so Harness and Codex both see `language_id` as required authority and cannot re-ask it. Direction, multiple-language, conflict, unsupported, and feature-disabled results remain request-shaping context only.
+
+When a language request is still needed, request persistence resolves candidate course UUIDs and writes an immutable public presentation. The model supplies only the stable `question_key`; it never defines the shortlist. Response validation reads the persisted options, while the next fresh TurnRun records the learner's selected public language value through the existing typed fact path.
+
+## 2026-08-21：Codex Runtime delta 合并与语义预算
+
+Codex adapter 为每个 turn 建立独立 `RuntimeDeltaCoalescer`。仅连续同 `thread/turn/item/kind/channel/index/phase` 的 reasoning/final-answer delta 可合并；默认 25ms、1,024 字符或 4KB flush，任意 item/phase/summary/tool/compaction/completed/terminal 边界强制 flush。合并后的文本必须逐字等于 source delta 串联，`item/completed` 仍是最终文本校准 authority，commentary、reasoning summary 与 terminal discard 规则不变。
+
+source sequence 与 projection sequence 分离。Runtime result、PostgreSQL text reducer、conversation SSE 与 Desktop 只按 projection sequence 工作；append-only receipt 保存安全 source range/count/hash。关闭 `CODEX_RUNTIME_DELTA_COALESCING_ENABLED` 时恢复逐 delta projection，但不会恢复 `len(events) >= 2000` 或 `runtime_event_budget_exhausted` 正常失败。
+
+Runtime 资源限制现在是独立语义预算：100,000 raw notification runaway guard、item、tool、累计可见文本、turn time 与 pending bytes。普通日志只记录 source delta/projection/flush 数、maximum pending bytes、duration 与 safe code，不记录文本。UI/SSE gap、refresh 和 reconnect 继续通过 fresh snapshot 恢复，不 terminalize 模型 turn。
+
+## 2026-08-23：Knowledge-scoped TeachingSession 与 closed teaching action Loop
+
+LearningTrack learner conversation 仍是长期 history/context scope；TeachingSession 是其中一个知识点的 durable authority segment，不是新 conversation，也不改变“普通 learner message = fresh finite TurnRun”的全局模型。server 在 open/resume 时读取 active plan node、progress、唯一 track-scoped learner conversation、active Lesson assignment 与 immutable LessonDocument，冻结 session authority 并创建首个 append-only checkpoint。旧 conversation 没有 session 时保持可读，不扫描聊天正文做猜测型 backfill。
+
+每个 teaching-scoped fresh run 额外冻结 `tutor_run_teaching_scopes`，并关联一个 exact `TutorTurnStimulus`：真实 learner message、显式 teaching control 或 server-owned domain event。control/event 不伪造 learner message、不使用 proactive origin。authority version 变化时，旧 current session 追加 `authority_pause` checkpoint 并置为 blocked，successor 通过 `predecessor_session_id` 冻结新 authority；partial unique 只允许 exact scope 同时存在一条 `active | paused` session。
+
+Harness 为 teaching run 注入 required `TEACHING_SESSION` section，并只授权 `tutor.lesson-teaching@1.1.0`。`tutor.lesson-teaching@1.0.0` 的 manifest、instructions 与 evals 保持不可变，仅作为历史 catalog evidence。provider 先选择 exact Skill，context rebuild 后只能返回一个 strict `tutor.teaching-step-decision.v2`：closed action、exact objective/focus/source handles、closed focus resolution、一个 pause kind、2--4 个互不重复的 `teaching_moves`、显式 `learner_response_mode` 和 learner-safe public message。unknown handle/focus、extra field、missing/duplicate move、response/action 不兼容、Free Reading 越权主动控制、伪造 completion 或 next node 均在 durable commit 前 fail closed。
+
+一次成功 Turn 在同一 PostgreSQL transaction 内 append next checkpoint、CAS session、insert `tutor_teaching_action_receipts`、写 Tutor public message、outbox/event 并 terminalize run。v2 receipt 只保存 action/focus/pause、safe handles、`teaching_moves`、`learner_response_mode`、schema/policy version、context IDs/hashes 与 public-message hash；最近四个 v2 单元以这些安全字段进入下一次 `TEACHING_SESSION`，不复制消息正文。provider unavailable、stale/superseded/lease loss 不写 checkpoint/receipt/message；provider 返回后 authority 失效的 teaching run durable cancel 为 `teaching_authority_stale`。
+
+Aearn 根据 checkpoint/pause/runtime/request/mode/completion 与最近已提交教学单元生成 `TeachingActionShelfV1`，最多一个 primary 与三个 visible secondary；active runtime、blocking request 和普通 shelf 互斥。只有 `recommended_action_key=continue` 时才投影主操作“继续”，需要学习者回答的单元改投影 `respond_in_composer`，不存在真实 descriptor 时 shelf 为空。Free Reading 普通问题只产生 reactive finite answer，只有显式 `escalate_guided` 才切 Guided 并 admission 一个新 Turn。completed progress 只接受 `summarize_progress + completion_pause`，不自动改 workspace knowledge key；只有显式 `enter_next_knowledge` 才重新验证最新 roadmap/availability、复用同一 conversation、推进 track pointer并 admission 下一 session 的 first-unit run。
+
+Harness 在 effect commit、waiting result 和 terminal result 前重新验证 current session/checkpoint、track/active plan/progress、active assignment/document 与 stimulus scope。conversation snapshot/API additive 返回 bounded session/checkpoint/Action Shelf metadata；trace/export 不包含 raw checkpoint/authority JSON、prompt、reasoning、provider body、完整题目/提交、hidden test/rubric、command/path 或 secrets。五张 user-owned teaching 表全部进入 cutover exhaustive inventory 与 local export/reset/delete；删除 action receipt 后再按 run scope/stimulus/checkpoint/session 清理，deferred `NO ACTION` lineage FK 保证同一事务 child-to-root reset 与 bootstrap twice 可重复。
+
+## 2026-08-23：三时间尺度恢复、summary precedence 与 domain-event Turn
+
+长期 track conversation、知识点 TeachingSession 与单次 TurnRun 继续是三个不同时间尺度。owner domain event 只触发一个 fresh interactive Turn；每个 Turn提交一个 closed teaching action 后必须停顿。authority 变化时旧 session 写 `authority_pause` 并 blocked，successor 冻结新 progress/assignment/document；重复事件复用既有 run，stale source 被忽略。
+
+教学 context 优先级为 current input/typed stimulus → current session compact authority → exact references → bounded recent current-session messages → current checkpoint-backed summary → 至多一个 exact predecessor summary → generic conversation summary/memory/activity。`teaching_control | domain_event` 不伪造 current learner input，但 context loader 仍按 frozen `teaching_session_id + session_version + scope chronology` 读取当前 run 之前的 same-session learner-visible messages；legacy group、其他 session/knowledge 与未来消息不进入该窗口。`continue/resume` 必须在最新教学消息之后推进，不能仅凭相同 objective/checkpoint 重启或近义复述已讲解内容；`change_example`、remediation 与 summary authority 例外。active/suspended focus 中的 exact message handle、unresolved question source message 与当前 session 最新 learner input进入 compaction protected set。summary source hash、checkpoint cursor或 authority snapshot失配时 provider 前 fail closed，不允许旧 summary 覆盖最新纠正或完成事实。
+
+## 2026-08-27：Teaching Skill v1.1 与教学单元推进门
+
+exact `tutor.lesson-teaching@1.1.0` 使用 `tutor.teaching-step-decision.v2`。每个教学单元必须选择 2--4 个互不重复的 closed `teaching_moves`：`targeted_explanation`、`worked_example`、`counterexample`、`misconception_contrast`、`guided_derivation`、`prediction`、`error_detection`、`micro_transfer` 或 `learner_feedback`。`learner_response_mode=composer` 只允许搭配 `check_understanding | wait_for_input`，并且必须包含至少一个诊断性 move；`none` 不允许这两个 action。`change_example` 必须实际包含 `worked_example | counterexample`。
+
+下一次 teaching run 的 required projection 包含最近四个已提交 v2 单元的 action、focus、moves、response mode、public-message hash 与 schema version。投影主动删除重复 summary/UI 字段并保持既有 1,200 字符 required-section 上限，不通过提高全局 context budget 掩盖溢出。`continue` 若与最近单元 public-message hash 完全相同，或 objective/focus/moves/response mode 形成相同策略签名，decision gate 以 `teaching_unit_not_advanced` fail closed；改变例子、诊断策略、迁移练习或学习者反馈等真实推进可以继续提交。
+
+checkpoint reducer 先尊重 session/evidence/completion/authority 状态，再解释 response mode。需要学习者作答时推荐 `respond_in_composer`；只有明确推荐继续才显示 Continue。这个决策只改变 server-owned projection，不增加新的客户端状态机、provider 控件或自动 next run。

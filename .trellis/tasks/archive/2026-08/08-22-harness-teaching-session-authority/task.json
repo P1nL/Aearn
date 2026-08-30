@@ -1,0 +1,36 @@
+{
+  "id": "harness-teaching-session-authority",
+  "name": "harness-teaching-session-authority",
+  "title": "教学会话 authority 与结构化 Turn 触发",
+  "description": "建立 PostgreSQL teaching session/checkpoint/run scope authority、结构化 Turn stimulus、基础 API 与 cutover/export/reset/delete 边界。",
+  "status": "completed",
+  "dev_type": null,
+  "scope": "teaching_session_authority",
+  "package": null,
+  "priority": "P0",
+  "creator": "PINKING",
+  "assignee": "PINKING",
+  "createdAt": "2026-08-22",
+  "completedAt": "2026-08-23",
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "08-22-harness-led-adaptive-learning-workspace",
+  "relatedFiles": [
+    "aearn/services/api/app/db/schema.sql",
+    "aearn/services/api/app/services/learning",
+    "aearn/services/api/app/services/tutor",
+    "aearn/services/api/app/routes/tutor.py",
+    "aearn/services/api/tests"
+  ],
+  "notes": "Child 1；无前置 child。完成、提交并归档后停止，不自动启动 Child 2。",
+  "meta": {
+    "sequence": 1,
+    "depends_on": [],
+    "workflow_mode": "inline"
+  }
+}

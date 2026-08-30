@@ -1,21 +1,11 @@
-.env
-.env.*
-!.env.example
-
-node_modules/
-dist/
+# Frontend workspace caches.
 .turbo/
 .vite/
-.logs/
 
-.venv/
-__pycache__/
-.pytest_cache/
-.ruff_cache/
-.mypy_cache/
-*.egg-info/
+# Aearn local runtime state.
+apps/desktop/public/aearn-dev-bootstrap.json
+services/api/celerybeat-schedule
+services/api/celerybeat-schedule.*
 
-target/
-src-tauri/target/
-
-*.log
+# Enforce pnpm as the Aearn Desktop package manager.
+apps/desktop/package-lock.json

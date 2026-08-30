@@ -133,6 +133,11 @@ def export_user_data(conn: Connection[dict[str, object]], user_id: str) -> dict[
         "learning_track_nodes": _export_learning_track_nodes(conn, user_id),
         "lesson_documents": _export_lesson_documents(conn, user_id),
         "lesson_assignments": _export_lesson_assignments(conn, user_id),
+        "teaching_session_summaries": _export_teaching_sessions(conn, user_id),
+        "teaching_checkpoint_summaries": _export_teaching_checkpoints(conn, user_id),
+        "teaching_stimulus_summaries": _export_teaching_stimuli(conn, user_id),
+        "run_teaching_scope_summaries": _export_run_teaching_scopes(conn, user_id),
+        "teaching_action_receipt_summaries": _export_teaching_action_receipts(conn, user_id),
         "lesson_citations": _export_lesson_citations(conn, user_id),
         "lesson_gates": _export_lesson_gates(conn, user_id),
         "exercise_attempt_summaries": _export_exercise_attempt_summaries(conn, user_id),
@@ -163,6 +168,9 @@ def export_user_data(conn: Connection[dict[str, object]], user_id: str) -> dict[
             "planning_question_gate_reasons": "omitted",
             "review_context_snapshot_hashes": "omitted",
             "review_item_selection_hashes": "omitted",
+            "teaching_checkpoint_source_hashes": "omitted",
+            "teaching_document_content_hashes": "omitted",
+            "teaching_full_questions_and_submissions": "omitted",
             "secrets": "omitted",
         },
     }
@@ -273,6 +281,11 @@ def _summary_counts(conn: Connection[dict[str, object]], user_id: str) -> dict[s
         "mastery_states": _count(conn, "SELECT count(*) AS count FROM tutor_mastery_states WHERE user_id = %s", user_id),
         "lesson_documents": _count(conn, "SELECT count(*) AS count FROM tutor_lesson_documents WHERE user_id = %s AND document_kind = 'personalized'", user_id),
         "lesson_assignments": _count(conn, "SELECT count(*) AS count FROM tutor_lesson_assignments WHERE user_id = %s", user_id),
+        "teaching_sessions": _count(conn, "SELECT count(*) AS count FROM tutor_teaching_sessions WHERE user_id = %s", user_id),
+        "teaching_checkpoints": _count(conn, "SELECT count(*) AS count FROM tutor_teaching_session_checkpoints WHERE user_id = %s", user_id),
+        "teaching_stimuli": _count(conn, "SELECT count(*) AS count FROM tutor_run_stimulus_events WHERE user_id = %s", user_id),
+        "run_teaching_scopes": _count(conn, "SELECT count(*) AS count FROM tutor_run_teaching_scopes WHERE user_id = %s", user_id),
+        "teaching_action_receipts": _count(conn, "SELECT count(*) AS count FROM tutor_teaching_action_receipts WHERE user_id = %s", user_id),
         "lesson_authoring_runs": _count(conn, "SELECT count(*) AS count FROM tutor_lesson_authoring_runs WHERE user_id = %s", user_id),
         "lesson_gates": _count(conn, "SELECT count(*) AS count FROM tutor_lesson_gate_states WHERE user_id = %s", user_id),
         "exercise_attempts": _count(conn, "SELECT count(*) AS count FROM tutor_exercise_attempts WHERE user_id = %s", user_id),
@@ -722,6 +735,62 @@ def _export_lesson_assignments(conn: Connection[dict[str, object]], user_id: str
     return [_safe_row(row, exclude=()) for row in rows]
 
 
+
+def _export_teaching_sessions(conn: Connection[dict[str, object]], user_id: str) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """SELECT id,track_id,conversation_id,knowledge_key,status,mode,current_checkpoint_id,version,
+                  progress_version,lesson_assignment_id,assignment_version,document_id,paused_at,completed_at,
+                  last_activity_at,created_at,updated_at
+           FROM tutor_teaching_sessions WHERE user_id=%s ORDER BY track_id,created_at,id""",
+        (user_id,),
+    ).fetchall()
+    return [_safe_row(row, exclude=()) for row in rows]
+
+
+def _export_teaching_checkpoints(conn: Connection[dict[str, object]], user_id: str) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """SELECT id,teaching_session_id,conversation_id,predecessor_checkpoint_id,session_version,
+                  source_run_id,source_stimulus_id,schema_version,policy_version,created_at,
+                  jsonb_array_length(COALESCE(state_json->'suspended_focuses','[]'::jsonb)) AS suspended_focus_count,
+                  jsonb_array_length(COALESCE(state_json->'unresolved_questions','[]'::jsonb)) AS unresolved_question_count,
+                  jsonb_array_length(COALESCE(state_json->'covered_concepts','[]'::jsonb)) AS covered_concept_count
+           FROM tutor_teaching_session_checkpoints WHERE user_id=%s ORDER BY teaching_session_id,session_version""",
+        (user_id,),
+    ).fetchall()
+    return [_safe_row(row, exclude=()) for row in rows]
+
+
+def _export_teaching_stimuli(conn: Connection[dict[str, object]], user_id: str) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """SELECT id,run_id,conversation_id,teaching_session_id,stimulus_kind,message_id,input_revision,
+                  control_key,client_action_id,domain_event_kind,source_id,source_version,created_at
+           FROM tutor_run_stimulus_events WHERE user_id=%s ORDER BY created_at,id""",
+        (user_id,),
+    ).fetchall()
+    return [_safe_row(row, exclude=()) for row in rows]
+
+
+def _export_run_teaching_scopes(conn: Connection[dict[str, object]], user_id: str) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """SELECT run_id,conversation_id,teaching_session_id,checkpoint_id,stimulus_id,session_version,
+                  track_id,knowledge_key,mode,lesson_assignment_id,assignment_version,document_id,
+                  schema_version,policy_version,created_at
+           FROM tutor_run_teaching_scopes WHERE user_id=%s ORDER BY created_at,run_id""",
+        (user_id,),
+    ).fetchall()
+    return [_safe_row(row, exclude=()) for row in rows]
+
+
+def _export_teaching_action_receipts(conn: Connection[dict[str, object]], user_id: str) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """SELECT id,run_id,conversation_id,teaching_session_id,checkpoint_id,stimulus_id,action,
+                  objective_id,focus_id,focus_resolution,pause_kind,source_handles_json,
+                  teaching_moves_json,learner_response_mode,schema_version,policy_version,created_at
+           FROM tutor_teaching_action_receipts WHERE user_id=%s ORDER BY created_at,id""",
+        (user_id,),
+    ).fetchall()
+    return [_safe_row(row, exclude=()) for row in rows]
+
 def _export_lesson_citations(conn: Connection[dict[str, object]], user_id: str) -> list[dict[str, object]]:
     rows = conn.execute(
         """
@@ -1094,6 +1163,11 @@ def _delete_learning_track_data(conn: Connection[dict[str, object]], user_id: st
         )
     conn.execute("SELECT set_config('aearn.learning_track_purge_user_id', %s, true)", (user_id,))
     conn.execute("SET CONSTRAINTS ALL DEFERRED")
+    conn.execute("DELETE FROM tutor_teaching_action_receipts WHERE user_id = %s", (user_id,))
+    conn.execute("DELETE FROM tutor_run_teaching_scopes WHERE user_id = %s", (user_id,))
+    conn.execute("DELETE FROM tutor_run_stimulus_events WHERE user_id = %s", (user_id,))
+    conn.execute("DELETE FROM tutor_teaching_session_checkpoints WHERE user_id = %s", (user_id,))
+    conn.execute("DELETE FROM tutor_teaching_sessions WHERE user_id = %s", (user_id,))
     conn.execute("DELETE FROM tutor_message_context_references WHERE user_id = %s", (user_id,))
     conn.execute(
         """
@@ -1330,6 +1404,9 @@ def _delete_model_review_internal_runs(
         "tutor_run_events",
         "tutor_effects",
         "tutor_run_public_processes",
+        "tutor_teaching_action_receipts",
+        "tutor_run_teaching_scopes",
+        "tutor_run_stimulus_events",
         "tutor_run_learning_scopes",
     ):
         conn.execute(

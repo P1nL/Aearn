@@ -1,6 +1,6 @@
 # Aearn Tutor HTTP 与 SSE API 契约
 
-**状态：** 当前公共 API 契约，2026-08-14。
+**状态：** 当前公共 API 契约，2026-08-27。
 **权威来源：** `aearn/services/api/app/main.py` 中注册的路由、Pydantic model、
 `services/tutor/public_api.py`、`services/learning/`、`services/tutor/cutover.py` 与 API 测试。
 **不适用：** 已移除的 Graph、Dashboard、Onboarding、Learning Session、Review、
@@ -303,7 +303,7 @@ dispatcher/provider 异常；run read、SSE、snapshot 和 history 只反映服�
 | --- | --- | --- | --- |
 | `GET` | `/api/tutor/conversations` | `user_id`、`limit=1..40`、可选 opaque `cursor` | learner-visible conversation summaries，按 `(last_public_activity_at DESC, id DESC)` 排序 |
 | `GET` | `/api/tutor/conversations/{conversation_id}/history` | `user_id`、`limit=1..40`、可选 opaque `cursor` | 旧客户端兼容的倒序 message/process timeline、`next_cursor`、`has_more`、可选 active foreground run |
-| `GET` | `/api/tutor/conversations/{conversation_id}/snapshot` | `user_id`、`limit=1..40`、可选 history cursor | `tutor_conversation_snapshot_v2`：conversation/control version、public active turn（含 CAS `input_revision`）、可选 exact `active_thinking`、最多一个 pending typed request、typed timeline page、Queue 与 opaque v2 `stream_cursor` |
+| `GET` | `/api/tutor/conversations/{conversation_id}/snapshot` | `user_id`、`limit=1..40`、可选 history cursor | `tutor_conversation_snapshot_v3`：保留 conversation/control version、public active turn、可选 exact `active_thinking`、pending typed request、typed timeline、Queue 与 opaque v2 `stream_cursor`，并新增可选 `active_runtime_output`；Desktop 保持 v2 read compatibility |
 | `GET` | `/api/tutor/conversations/{conversation_id}/events` | `user_id`；可选 opaque `Last-Event-ID` | conversation-global append-only SSE；只读取 public event 表，不调用 provider |
 
 list item 只含 `conversation_id`、服务端投影 title、`last_public_activity_at` 与可选
@@ -379,9 +379,12 @@ payload。
   `sequence`、闭合 `kind`、可选 turn/item reference、strict safe payload 与时间。
 - kind 固定为 `turn_created | turn_updated | item_added | item_updated | turn_output |
   control_updated | dispatch_delayed | dispatch_dead`。heartbeat 是 SSE comment，不写数据库、不推进 cursor。
-- `turn_output` 只允许 `tutor_public_thinking_stream_v1`：exact turn identity、`input_revision`、
-  `generation`、`operation=reset|append|complete|discard` 与单调 `chunk_sequence`；只有 `append`
-  可带 1..160 字符 `text`。Desktop 可局部消费该事件，identity/order/shape 不匹配时必须 fresh snapshot。
+- `turn_output` 允许两个闭合版本：Harness compatibility 使用
+  `tutor_public_thinking_stream_v1`；Codex raw Runtime 使用
+  `tutor_runtime_item_stream_v1`，并额外携带 Aearn `item_id` 与
+  `channel=reasoning|final_answer`。两者都绑定 exact turn identity、`input_revision`、
+  `generation`、单调 `chunk_sequence` 与 closed operation；Desktop 可局部消费，
+  identity/order/generation/shape 不匹配时必须 fresh snapshot。
 - 事件写入与 owning mutation 同 transaction；相同 `(conversation_id,event_key)` 只允许完全
   相同的 public facts 幂等重放。SSE 不读取或转换 raw `tutor_run_events` payload。
 
@@ -621,7 +624,7 @@ Attempt 不存在为 `404 CONTEXT_REFERENCE_NOT_FOUND`；缺少真实 execution 
 
 最终集成没有新增第二套学习 API。LearningTrack、Lesson、Gate、ReviewSession 与 Tutor 输入继续使用本文件已列出的 verified-only 路由；旧 `/api/dashboard`、`/api/plans`、`/api/learning-sessions`、top-level `/api/reviews`、Graph/SDK specialist 路由仍未注册。
 
-`tests/test_learning_agent_integration_matrix.py` 对 Python、JavaScript、TypeScript、SQL 逐一验证 track/plan、source-backed Lesson、active assignment、Gate、terminal feedback、private submission persistence、mastery/progress、due review、ReviewSession finalization 与 learner-safe projection。相同 fixture 同时断言：空 `image-locks.json` 下 public execution-required Gate 没有 `allowed_actions`，development fixture 只能返回 `teaching_local`。
+`tests/integration/test_learning_agent_integration_matrix.py` 对 Python、JavaScript、TypeScript、SQL 逐一验证 track/plan、source-backed Lesson、active assignment、Gate、terminal feedback、private submission persistence、mastery/progress、due review、ReviewSession finalization 与 learner-safe projection。相同 fixture 同时断言：空 `image-locks.json` 下 public execution-required Gate 没有 `allowed_actions`，development fixture 只能返回 `teaching_local`。
 
 公开响应的敏感字段审计按字段名递归执行，覆盖 Gate/Attempt/Review projections；既有专项测试继续覆盖 SSE/history/public process/trace/checkpoint/activity/inbox/export。任何完整 submission、private test/rubric/reference answer、raw provider/executor body、command/path/container/secret 都只能留在私有存储或被完全省略。
 
@@ -652,3 +655,60 @@ Attempt 不存在为 `404 CONTEXT_REFERENCE_NOT_FOUND`；缺少真实 execution 
   snapshot v2 只返回统一后的 `public_thinking_text`，不产生编号、说明或补写历史。
 - API、SSE 与 snapshot 禁止包含 `reasoning`、`reasoning_content`、prompt、provider body/raw event、
   trace、diagnostic、credential、secret 或内部安全拒绝原因。
+
+## 2026-08-20：Tutor snapshot v3 与 Codex raw Runtime item stream
+
+`GET /api/tutor/conversations/{conversation_id}/snapshot` 当前返回 `tutor_conversation_snapshot_v3`。v3 保留 v2 的 conversation/control、`active_turn`、`active_thinking`、typed requests、Queue、timeline、opaque cursor，并新增可选 `active_runtime_output`：
+
+- `output_version="tutor_runtime_output_v1"`；
+- `input_revision` 与 active turn 完全一致，`generation` 为当前 Runtime connection generation；
+- `reasoning_items[]` 与可选 `final_answer_item` 只包含 Aearn item ID、text、`streaming|completed` 和最后 public sequence；
+- completed Tutor message 的 timeline item 可携带同形 `runtime_output`，用于刷新和历史恢复；无非空 reasoning 时不返回可见 Think 内容。
+
+Desktop 必须继续兼容读取 v2；v2 没有 `active_runtime_output`。v3 public serializer 不返回 external thread/turn/item ID、provider/model metadata、prompt、tool arguments/results、reasoning summary、commentary、trace、diagnostic 或 credential。
+
+conversation SSE 的 `turn_output` 现在接受两种闭合版本：
+
+1. `tutor_public_thinking_stream_v1`：保留 Harness compatibility；
+2. `tutor_runtime_item_stream_v1`：包含 `input_revision`、`generation`、`item_id`、`channel=reasoning|final_answer`、`operation=reset|append|complete|discard` 与单调 `chunk_sequence`。`append` 携带 delta text，`complete` 携带 authoritative full text，`reset|discard` 不携带 text。
+
+commentary、reasoning summary 和未知 phase/channel 不得进入 public text stream。若 completed item 将 provisional `final_answer` 校正为 `commentary`，或 turn terminal 时仍有 streaming item，服务端发送不带 text 的 `discard` 并从 snapshot/history 排除该 item。重复或旧 sequence 可忽略；conversation-global gap、identity/revision/generation mismatch、closed-shape failure 或超限 text 必须停止局部 reducer 并 fresh snapshot recovery。
+
+## 2026-08-21: Planning language intent and dynamic presentation
+
+For `plan_drafting`, Aearn deterministically resolves an exact learner input before provider execution. A single explicit language with an active published course appends a confirmed `language_id` fact with `source_kind=deterministic_input` and `policy_version=planning-language-intent-v1`; the next request therefore targets the next missing fact. Multiple languages, direction-only input, unsupported input, or language/direction conflict never create a language fact.
+
+A language `planning_input` presentation persists exact `options`, `recommended=null`, `selection_scope`, `selection_reason_code`, and `intent_policy_version`. Public option values remain canonical course-language values; internal course UUIDs and classification evidence are omitted. Refresh, reconnect, history, and response validation use the stored presentation as authority even if the catalog later changes. The optional model contract is exact `planning-intent-hint-v1` and may contain only closed intent tags; it cannot provide facts, course IDs, options, or recommendations.
+
+## 2026-08-21：Runtime projection sequence 兼容说明
+
+`tutor_runtime_item_stream_v1.chunk_sequence` 是 Aearn projection sequence，不是 provider/source notification sequence。服务端可以把多个连续同 item/kind/channel/index/phase delta 合并成一个 append；客户端只需按现有 closed union、identity 和连续 projection sequence 处理。source range/count/hash 仅存在于私有 PostgreSQL receipt，不加入 snapshot、history、SSE 或 Desktop DTO。gap 仍要求停止局部 reducer并读取 fresh snapshot；不得把缺口解释为模型 unavailable。
+
+## 2026-08-23：TeachingSession authority、Action Shelf 与 control API
+
+所有 TeachingSession 路由均位于 verified-only `/api/learning-tracks` 边界，并按 exact `user_id + track_id + conversation_id + knowledge_key` 校验。mutation 复用 `client_action_id` / `Idempotency-Key`、request hash、PostgreSQL advisory lock 与 expected session/track/progress/assignment version；同 key 同请求返回原响应，同 key 不同请求返回 `409 IDEMPOTENCY_CONFLICT`。
+
+| Method | Path | Contract |
+| --- | --- | --- |
+| `GET` | `/api/learning-tracks/{track_id}/teaching-sessions?user_id=...` | 返回该 track 的 bounded session summaries，不返回 checkpoint raw JSON、prompt、reasoning 或 provider body |
+| `GET` | `/api/learning-tracks/{track_id}/teaching-sessions/{knowledge_key}?user_id=...` | 返回优先级为 `active/paused -> latest completed -> blocked` 的 current projection、bounded checkpoint 与 server-owned `TeachingActionShelfV1` |
+| `POST` | `/api/learning-tracks/{track_id}/teaching-sessions/{knowledge_key}/open` | 输入 conversation、expected track/progress/assignment version 与 `guided | free_reading`；创建/恢复 exact current session；authority 变化时阻断旧 session 并创建 successor；Guided 新建时 admission 一个 `open_session` run；201 或幂等 200 |
+| `POST` | `/api/learning-tracks/{track_id}/teaching-sessions/{session_id}/actions` | 输入 closed `control_key`、expected session/track/progress/assignment version、可选 target mode/knowledge/reason；服务端忽略客户端 `admit_run` 偏好并按 control/mode policy 决定是否 admission run |
+
+closed control 包括 `continue`、`return_focus`、`change_example`、`pause`、`resume`、`escalate_guided`、`switch_mode` 与 `enter_next_knowledge`。Free Reading 中 `continue/return_focus/change_example` 返回 `400 TEACHING_ACTION_INVALID`，只有显式 `escalate_guided` 才切 Guided 并 admission 一个 run；Free Reading resume 只恢复 session，不调用 provider。completion shelf 只在 completed authority 上投影显式 next/navigation；`enter_next_knowledge` 必须携带 candidate key 与最新 expected versions，服务端重新验证 active plan/availability 后才推进 track pointer，并在同一长期 conversation open/resume 下一 session。
+
+`TeachingActionShelfV1` 最多一个 primary、三个 visible secondary；active runtime 与 blocking typed request 时普通 shelf 为空。普通 shelf 的 label、emphasis、target、expected versions 均由服务端生成，provider/客户端不能定义。`continue` 只在 checkpoint 推荐继续时出现；`learner_response_mode=composer` 投影 `respond_in_composer`，不存在任何真实 descriptor 时返回空 shelf，Desktop 不生成 placeholder。open/action 返回 `pending_run.dispatch_job_id` 时，HTTP layer 只做 best-effort worker wakeup；durable dispatch job 才是执行 authority，幂等 replay 或重复 wakeup 不产生第二个 run。
+
+`TutorTurnStimulus` 是 strict one-of：普通 learner input 绑定 exact learner message/input revision；explicit teaching control 或 domain event 可创建没有 learner message 的 fresh interactive TurnRun。公共 response/snapshot 只 additive 返回 safe teaching session/run-scope/Action Shelf metadata。稳定错误包括 `TEACHING_SESSION_NOT_FOUND`、`TEACHING_AUTHORITY_CONFLICT`、`TEACHING_ACTION_INVALID`、`TEACHING_STIMULUS_INVALID` 与既有 `IDEMPOTENCY_CONFLICT`；跨用户、跨 track/conversation、stale checkpoint/session/progress/assignment/document/stimulus 一律 fail closed。
+
+## 2026-08-23：内部 teaching domain event 与 summary context
+
+本轮不新增 public HTTP route。Gate、Review 与 Lesson migration 的现有 mutation 在 owner transaction 内完成业务 authority 后，调用统一 adapter 尝试 admission 一个 learner-safe `domain_event` Turn。没有 open teaching session、source version stale、重复 source 或竞争 foreground run 时，owner mutation 仍按自身 contract 完成；adapter 返回内部 ignored/replayed receipt，不把完整提交、rubric、provider body 或内部原因加入 public response。
+
+`domain_event` 仍是 exact-one stimulus，不创建 learner message、不使用 proactive origin。Gate completion coalesce 为一个 `progress_changed` Turn并保留 gate safe handle；非 completion Gate、Review finalization与 assignment migration分别使用 `gate_terminal | review_terminal | assignment_changed`。Free Reading 对普通 learner input 仍是 reactive-only；typed domain event 可以执行 bounded evidence/completion action，但不会隐式改变 session mode。
+
+## 2026-08-27：Teaching step v2 与条件式 Action Shelf
+
+本增量不新增 public route，也不允许客户端提交 `teaching_moves` 或 `learner_response_mode`。两者属于 exact `tutor.lesson-teaching@1.1.0` 的 provider decision 与服务端 receipt authority；旧 `tutor.lesson-teaching@1.0.0` 保持不可变但不再用于新 teaching run。
+
+conversation snapshot 与 TeachingSession API 继续返回 `TeachingActionShelfV1`。当 checkpoint 需要学习者回答时，服务端投影 `respond_in_composer`；只有推荐动作确实是 `continue` 时才返回 Continue。若没有 primary 或 secondary descriptor，`primary=null`、`secondary=[]` 是完整有效响应，Desktop 必须完全省略 shelf DOM。authority pause 的恢复导航使用 `refresh_session`，客户端只能重新读取 current projection，不能本地恢复或 admission run。

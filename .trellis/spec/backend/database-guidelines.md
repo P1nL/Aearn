@@ -25,6 +25,9 @@ The formal MVP runtime lives under `aearn/`, not under the historical `01_` thro
 ## Migrations
 
 - Milestone 1 must establish a repeatable migration baseline before features write business data.
+- 当前 bootstrap Schema 由 `app/db/schema/__init__.py` 的 `SCHEMA_FRAGMENT_NAMES` 显式排序；数字前缀只帮助阅读，loader 不得依赖目录自然排序或 `glob()` 顺序。
+- 每个 `app/db/schema/*.sql` fragment 只拥有连续职责范围，所有 fragment 必须在同一 caller-owned connection 和最终提交事务中执行；fragment/loader 不得 `commit` 或维护第二份聚合 SQL。
+- bootstrap 使用 transaction-scoped advisory lock 串行化多进程 schema owner，并对 deadlock/serialization failure 有界重试完整事务；不得在 fragment 之间提交以规避锁冲突。
 - Migration order must follow `docs/plans/learning-agent-implementation-plan.md`: base tables first, then learning/exercise core tables, then review and notes tables.
 - Use `CREATE EXTENSION IF NOT EXISTS pgcrypto;` before relying on `gen_random_uuid()`.
 - Add `set_updated_at()` triggers for mutable business tables.
@@ -970,3 +973,30 @@ repository.complete_turn_with_message_if_current(
 ```
 
 同一事务同时建立最终消息 authority 与 stream acceptance，任何 fence 失败都整体回滚。
+
+## Scenario: Published course intent taxonomy and coverage gate (2026-08-21)
+
+- `tutor_learning_intents` is a closed shared taxonomy; `language_course_intent_tags` owns the many-to-many course relation, relevance rank, primary marker, and policy version.
+- Every active course must have at least one active intent tag, and every active intent must have at least one active course. Deferred constraint triggers enforce the final transaction state so course publication and tag writes can commit atomically.
+- Bootstrap seeds intents and performs the only slug-based backfill, then runs `language_course_intent_coverage()` and `assert_language_course_intent_coverage()`. Runtime queries never branch on slug, title, or description.
+- `tutor_learning_intents` is shared cutover metadata, not user-owned target state. Neither taxonomy table belongs in user export/reset/delete.
+- PostgreSQL tests must run bootstrap twice, inspect tables/indexes/triggers, prove an untagged active course fails at the transaction boundary, and keep the exhaustive Tutor table classification green.
+
+## Scenario: Runtime projection receipt source ranges (2026-08-21)
+
+- `tutor_runtime_item_receipts.projection_sequence` is the durable reducer sequence; legacy `event_sequence` remains equal for compatibility.
+- Source audit columns are all-null or all-present: `source_sequence_start/end`, `source_delta_count`, `source_content_hash`. Present ranges are continuous and `count=end-start+1`.
+- Receipt source evidence contains only integers and SHA-256. Raw Runtime text remains only in owner-scoped `tutor_runtime_text_items`; provider bodies and external identities remain forbidden.
+- Bootstrap must drop the append-only trigger only around the idempotent projection-sequence backfill, then recreate it. Bootstrap twice and append-only mutation tests are mandatory.
+
+---
+
+## Scenario: Durable teaching-session authority and exact Turn stimulus
+
+- Keep the LearningTrack conversation long-lived; segment teaching with `tutor_teaching_sessions`, not new conversations.
+- Freeze track/plan/progress/active-assignment/document authority on both the session and immutable run teaching scope.
+- Append checkpoints by predecessor + session-version CAS. The session may point to only one current checkpoint; stale checkpoint, session, progress, assignment, document, user, track, or conversation scope fails closed.
+- Persist exactly one stimulus per teaching run. The database CHECK must prove `learner_message | teaching_control | domain_event`; learner-message stimuli require exact run/message/input evidence, while explicit controls/events must not create a learner message or use proactive origin.
+- Revalidate the immutable teaching scope before effect commit, waiting-result persistence, and terminal persistence.
+- Classify all new user-owned tables in exhaustive cutover inventory and delete them child-to-root under the transaction-local purge capability. Deferred lineage must use `NO ACTION`, not immediate `RESTRICT`, where the session/current-checkpoint cycle is cleared in one transaction.
+- Export only bounded summaries and IDs. Omit raw state/authority JSON, hashes used only for internal proof, prompts, reasoning, provider bodies, complete questions/submissions, private tests/rubrics, commands, paths, and secrets.

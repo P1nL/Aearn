@@ -1,0 +1,9 @@
+{
+  "cases": [
+    {"id": "guided-explain-one-step", "expected_action": "explain_concept", "expected_pause": "soft_pause"},
+    {"id": "learner-interruption-first", "expected_action": "answer_question", "expected_focus_resolution": "push_child"},
+    {"id": "free-reading-reactive", "expected_action": "answer_question", "mode_unchanged": true},
+    {"id": "completion-no-auto-next", "expected_action": "summarize_progress", "expected_pause": "completion_pause"},
+    {"id": "unknown-handle-denied", "expected": "policy_denied"}
+  ]
+}

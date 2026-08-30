@@ -1,6 +1,6 @@
 # Aearn Tutor Harness 验收计划
 
-**状态：** 当前 integration/QA 契约，2026-08-10。
+**状态：** 当前 integration/QA 契约，2026-08-27。
 **范围：** 当前 Tutor runtime、cutover、provider attempt 计量、LearningTrack、
 Desktop、background scheduler、executor boundary、legacy retirement 与文档一致性。
 **权威来源：** 当前代码/测试/schema；实测命令结果进入
@@ -173,7 +173,7 @@ pytest commands in parallel.
 
 ```powershell
 # Context governance focused gate; real-provider case is collected as skip by default.
-uv --directory .\aearn\services\api run python -m pytest tests/test_tutor_evals.py tests/test_tutor_context_eval_smoke.py tests/test_tutor_real_provider_smoke.py tests/test_tutor_context_builder.py tests/test_tutor_context_budget.py tests/test_tutor_provider_gateway.py tests/test_tutor_run_loop.py tests/test_tutor_context_loader.py tests/test_tutor_context_summary.py tests/test_tutor_run_repository.py tests/test_db_bootstrap.py -q
+uv --directory .\aearn\services\api run python -m pytest tests/tutor/test_tutor_evals.py tests/smoke/test_tutor_context_eval_smoke.py tests/smoke/test_tutor_real_provider_smoke.py tests/tutor/test_tutor_context_builder.py tests/tutor/test_tutor_context_budget.py tests/tutor/test_tutor_provider_gateway.py tests/tutor/test_tutor_run_loop.py tests/tutor/test_tutor_context_loader.py tests/tutor/test_tutor_context_summary.py tests/tutor/test_tutor_run_repository.py tests/database/test_db_bootstrap.py -q
 
 # API suite: serial execution only.
 uv --directory .\aearn\services\api run python -m pytest
@@ -198,7 +198,7 @@ Optional real-provider behavior sample; do not run without separate approval:
 
 ```powershell
 $env:TUTOR_REAL_PROVIDER_SMOKE = "1"
-uv --directory .\aearn\services\api run python -m pytest tests/test_tutor_real_provider_smoke.py -q -m real_provider
+uv --directory .\aearn\services\api run python -m pytest tests/smoke/test_tutor_real_provider_smoke.py -q -m real_provider
 ```
 
 The command must never be part of the default matrix and must not print provider
@@ -400,3 +400,54 @@ contract，不访问真实 provider、不启动或批准生产 container fleet�
 默认验证使用 fake/local provider transport 与本地 PostgreSQL；不调用真实 provider、不执行生产 cutover、
 不部署，也不把确定性 contract 测试解释为真实模型质量或发布批准。数据库相关 pytest 必须串行运行，
 避免并发 schema bootstrap 造成测试环境死锁。
+
+## 2026-08-20 Codex thread/context/raw-stream 增量矩阵
+
+| ID | 优先级 | Gate | 必须证明 | 主要证据 |
+| --- | --- | --- | --- | --- |
+| RT-20 | P0 | Conversation thread continuity | 同 conversation 多个 fresh run 只创建一个 persistent Codex thread，每 run 具有不同 turn；restart 使用 resume；ambiguous legacy 只允许 bounded reseed | `test_codex_plan_drafting_cutover.py`、`test_codex_runtime_worker_host.py` |
+| RT-21 | P0 | Local compaction | exact 1M/384K/616K 同源配置；manual/mid-turn local compaction lifecycle；当前 provider 无 remote compaction | `test_codex_runtime_config.py`、`test_codex_runtime_adapter.py` |
+| RT-22 | P0 | Raw text projection | reasoning/final-answer 分 channel；commentary/summary nonpublic；sequence/fence/replay/stale/owner/terminal 校验；raw text 不复制进 receipt | `test_codex_runtime_projection.py`、`test_db_bootstrap.py` |
+| RT-23 | P0 | Typed planning authority | Python/零基础 confirmed facts 后只请求一个 missing field；request schema/catalog/server presentation 持久化；typed response fresh run resume 同 thread | `test_codex_plan_drafting_cutover.py`、planning fact/conversation tests |
+| UX-09 | P1 | Raw stream UI | snapshot v3 + dual-channel SSE；current `think` 展开、history 折叠、answer 同 entry 流式；commentary/空 reasoning 不渲染；gap/reconnect snapshot recovery | Desktop API/stream/component tests + 1440×900、900×900、390×844 browser smoke |
+
+Fixture/browser 证据不得包含 external Runtime identity、provider metadata、prompt、commentary、reasoning summary、credential 或真实学习者内容。真实 provider smoke 不属于本增量默认验收。
+
+## 2026-08-21: Planning intent and dynamic Generated UI matrix
+
+- Backend: explicit Python plus data-analysis auto-confirms `language_id=python` as deterministic input; direction-only input writes no language fact.
+- PostgreSQL: frontend/backend/multi-language/conflict/full-catalog candidates come from intent-tag joins; title/description changes do not alter candidate UUIDs; an active untagged course fails the deferred coverage gate.
+- Contract: unknown/extra model hint fields are rejected or ignored safely; durable request response validation uses stored options after catalog change.
+- Desktop/browser: language radio starts empty and Submit disabled; selection enables Submit; reload/re-enter restores exact options/order and safe draft at 1440x900, 900x900, and 390x844 with no overlay, console error, or horizontal overflow.
+- Default validation is offline/fake plus local PostgreSQL. Real provider execution is out of scope without separate approval.
+
+## 2026-08-23：Closed teaching action Loop 验收矩阵
+
+| ID | 优先级 | 区域 | 验收 | 证据 |
+| --- | --- | --- | --- | --- |
+| RT-54 | P0 | Skill/provider/context | exact `tutor.lesson-teaching@1.1.0` / `tutor.teaching-step-decision.v2`；required `TEACHING_SESSION`；control/domain 无 current input 时仍精确加载 same-session bounded `RECENT_MESSAGES` 并排除 legacy/其他 session/future rows；`continue/resume` 不重启或近义复述已讲内容；strict one `teaching_step`；unknown action/handle/focus、extra field、missing/oversized context provider-before fail closed；non-teaching request budget/contract 无回归 | `test_tutor_skill_catalog.py`、`test_tutor_provider_gateway.py`、`test_tutor_teaching_context.py`、`test_tutor_context_budget.py` |
+| RT-55 | P0 | Loop/atomicity | one stimulus -> one closed action -> one pause；message/checkpoint/action receipt/session/run terminal 同事务；provider unavailable、stale/superseded 无 message/receipt/checkpoint；terminal 后无自动 next run | `test_tutor_teaching_action_loop.py`、`test_tutor_run_loop.py`、persistence regression |
+| RT-56 | P0 | Focus/mode/Action Shelf | bounded focus stack/questions；resolved child question 移除；Free Reading reactive 且 guided-only control bypass 被拒；显式 escalation；runtime/request/shelf 互斥；最多一 primary/三 secondary；session/evidence/completion pause action 正确 | `test_tutor_teaching_focus_reducer.py`、`test_tutor_teaching_action_loop.py`、`test_tutor_teaching_sessions.py` |
+| RT-57 | P0 | Completion/authority refresh | progress/assignment authority 变化创建 blocked predecessor + successor；completed 只接受 `summarize_progress + completion_pause`；无显式 transition 不改 track/不建 run；`enter_next_knowledge` 重新验证 latest roadmap 并复用同 conversation | `test_tutor_teaching_action_loop.py`、PostgreSQL teaching session tests |
+| RT-58 | P0 | Schema/governance/privacy | 五张 user-owned teaching 表；bootstrap twice；source-stimulus deferred `NO ACTION`；append-only receipt；cutover exhaustive；export/reset child-to-root；无 public message/provider/prompt/reasoning/protected body | `test_tutor_teaching_session_postgres.py`、`test_tutor_teaching_action_loop.py`、cutover/local-data regressions |
+
+默认验证使用 fake provider 与本地 PostgreSQL，数据库 pytest 串行执行。该矩阵不调用真实 provider、不改变 Desktop 主次布局、不批准 push、部署、生产数据修改或发布。
+
+## RT-59 / RT-60：Adaptive teaching integration final gate（2026-08-23）
+
+| ID | Priority | Area | Contract | Evidence |
+| --- | --- | --- | --- | --- |
+| RT-59 | P0 | Domain event + summary | Gate/Review/progress/assignment durable source 至多一个 typed Turn；checkpoint-backed summary hash/authority stale fail closed；correction/unresolved compaction protected；无 auto-next | `test_tutor_adaptive_teaching_evals.py`、teaching/Gate/Review/Lesson/context regression |
+| RT-60 | P0 | Final integration/privacy | serial full PostgreSQL suite、disposable bootstrap twice、cutover exhaustive、export/reset/privacy、Desktop tests/build、1440/900/390 Browser DOM/console/overflow audit；默认 fake provider | Child 4 release-readiness ledger |
+
+Browser fake 只验证当前 Desktop contract、mode swap、reload/reconnect 与三视口 DOM；Gate/Review terminal authority 必须由真实 PostgreSQL service/repository测试证明，不能用 mock UI代替。
+
+## 2026-08-27：Teaching value v1.1 验收增量
+
+| ID | 优先级 | 区域 | 验收 | 证据 |
+| --- | --- | --- | --- | --- |
+| RT-61 | P0 | Skill/provider/gate | `tutor.lesson-teaching@1.0.0` 三个文件 hash 完全不变；新 run exact 选择 `1.1.0` / `tutor.teaching-step-decision.v2`；2--4 unique moves；composer/action/diagnostic move 与 `change_example` 兼容；legacy provider payload 仍可解析但不能通过 v1.1 gate | `test_tutor_skill_catalog.py`、`test_tutor_provider_gateway.py`、`test_tutor_teaching_action_loop.py` |
+| RT-62 | P0 | Receipt/context/推进 | receipt v2 additive schema/default/CHECK/append-only；最近四个 safe teaching units 进入 required context 且不含消息正文；投影不超过既有 1,200 字符上限；重复 hash 或相同策略签名的 Continue 以 `teaching_unit_not_advanced` 拒绝，改变策略可提交 | `test_tutor_teaching_context.py`、`test_tutor_teaching_action_loop.py`、`test_tutor_teaching_session_postgres.py`、`test_db_bootstrap.py` |
+| UX-11 | P1 | Action Shelf/Composer | Continue 仅按服务端推荐出现；composer response 无伪 Continue；空 shelf 无 DOM、无 `has-action-shelf`、无 placeholder；secondary-only 可用；`refresh_session` 重新读取 authority；三视口无 overlay、console error 或水平溢出 | Desktop Vitest + disposable fake browser smoke at 1440×900、900×900、390×844 |
+
+默认只使用 fake/offline provider 与 disposable PostgreSQL/Desktop fixture；不执行真实 provider、真实 executor、生产迁移、生产数据修改、部署或发布。

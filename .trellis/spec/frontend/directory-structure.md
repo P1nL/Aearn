@@ -1,64 +1,79 @@
 # Directory Structure
 
-> How frontend code is organized in this project.
+> How the current Aearn desktop is organized and how large root modules are decomposed.
 
 ---
 
 ## Overview
 
-The formal desktop frontend lives under `aearn/apps/desktop/` and uses Vite, React, TypeScript, and Tauri 2. The static HTML prototype in `docs/design/` is reference material, not the runtime source tree.
+The runtime lives under `aearn/apps/desktop/` and uses Vite, React, TypeScript, and Tauri 2. The protected HTML prototype in `docs/design/` remains reference material and is never the production source tree.
 
 ---
 
-## Directory Layout
+## Desktop Layout
 
 ```text
 aearn/apps/desktop/
   src/
+    api/          # shared HTTP client plus domain endpoint modules
+    contracts/    # frontend copies/projections of public API contracts by domain
+    features/     # workflow-owned UI, hooks, tests, and feature-local styles
+    hooks/        # cross-feature hooks only
+    lib/          # pure helpers and labels
+    pages/        # route/shell-level pages
+    stores/       # application bootstrap and shared UI state
+    styles/       # base, shell, utilities, and cross-feature responsive rules
+    tests/        # cross-feature contract/integration tests
+    ui/           # reusable primitives and design-system-derived foundation
+    App.tsx
+    main.tsx
   src-tauri/
     capabilities/
     icons/
     src/
 ```
 
----
-
-## Module Organization
-
-- `src/` owns React application code and styling.
-- `src-tauri/` owns Tauri Rust shell code, capabilities, config, and native assets.
-- `src-tauri/icons/icon.ico` is required for Windows `cargo check` because `tauri-build` generates a Windows resource file even when bundling is disabled.
-- When the desktop UI grows beyond a single shell screen, split `src/` by responsibility instead of expanding one giant `App.tsx`:
-  - `pages/` for route-level screens
-  - `features/` for larger workflow-specific subtrees such as the M3 workbench
-  - `components/` for shared presentational/shell pieces
-  - `lib/` for pure labels, content seeds, and helper functions
-  - `appTypes.ts` for app-local shared UI types that do not belong in backend contract files
+During migration, root `api.ts`, `types.ts`, or `styles.css` may remain only as small compatibility/entry barrels. They must not regain cross-domain implementation ownership.
 
 ---
 
-## Naming Conventions
+## Ownership Rules
 
-- Keep the formal desktop runtime under `aearn/apps/desktop/`.
-- Use React component files with PascalCase when new components are introduced, such as `GeneratedCodeExerciseCard.tsx`.
-- Keep bootstrap files as `main.tsx`, `App.tsx`, and `styles.css` until the UI grows enough to split by feature.
-- After that split threshold is crossed, keep `App.tsx` as the app shell entry, not the home for page-local editors, workbench panels, or result cards.
-- Keep Tauri Rust code under `src-tauri/src/` and Tauri configuration under `src-tauri/`.
-- Do not treat `docs/design/learning-agent-claude-desktop-framework.html` as runtime source; it is a visual/reference prototype.
+### Application shell
+
+- `main.tsx` installs global providers and imports the style entrypoint.
+- `App.tsx` owns application-level route/shell composition only.
+- Page-local editors, timelines, workbenches, result panels, and feature state belong under `features/` or `pages/`.
+
+### Features
+
+Each substantial workflow owns its components, hooks, tests, and feature-local styles. Current primary roots are `features/learning/` and `features/tutor/`. A feature must not duplicate HTTP decoding, shared design primitives, or server-authority logic already owned elsewhere.
+
+### API and contracts
+
+- `api/client.ts` owns base URL, request execution, common headers, JSON/error decoding, and cancellation behavior.
+- Domain API modules own endpoint-specific request/response adaptation.
+- `contracts/` groups public types by domain such as Tutor, Learning, Lesson/Practice, Review, and Cutover.
+- Compatibility barrels may re-export stable names while imports migrate.
+- Runtime payload validation stays at the API boundary; components consume validated projections.
+
+### Styling
+
+- `styles/` owns reset/base, application shell, utilities, and truly cross-feature responsive rules.
+- Feature selectors stay next to their owning feature, preferably in CSS Modules where isolation is practical.
+- `ui/dsh-derived/` owns its tokens and primitives; feature code reuses them rather than copying token values or primitive CSS.
+- A single global stylesheet must not accumulate unrelated feature histories.
+
+### Tauri
+
+`src-tauri/` owns Rust shell code, capabilities, configuration, and native assets. `src-tauri/icons/icon.ico` remains required for Windows `cargo check` through `tauri-build`.
 
 ---
-
-## Examples
-
-- `aearn/apps/desktop/src/App.tsx`
-- `aearn/apps/desktop/src/main.tsx`
-- `aearn/apps/desktop/src/styles.css`
-- `aearn/apps/desktop/src-tauri/tauri.conf.json`
-- `aearn/apps/desktop/src-tauri/icons/icon.ico`
 
 ## Common Mistakes
 
-- Building the product UI inside `docs/design/` instead of the Tauri/Vite app.
-- Adding route or feature files before checking `docs/product/frontend-interaction-spec.md`.
-- Letting `App.tsx` keep route JSX, page-local state, and M3 feature panels after the app already has clear page/feature boundaries.
-- Removing `src-tauri/icons/icon.ico`; Windows `cargo check` needs it through `tauri-build`.
+- Building runtime UI in `docs/design/`.
+- Keeping all endpoint functions, public types, or feature CSS in one root file after domain boundaries exist.
+- Moving server-authority decisions into components or Zustand state.
+- Creating feature-local copies of API decoders, SSE ordering, tokens, or shared primitives.
+- Letting `App.tsx` or one surface component own data orchestration and every major visual subtree.

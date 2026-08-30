@@ -126,6 +126,8 @@ def main() -> int:
         sys.stderr.write(f"api_key={os.environ.get('DEEPSEEK_API_KEY', '')} prompt=hidden path={os.environ['CODEX_HOME']}\n")
         sys.stderr.flush()
 
+    thread_count = 0
+    turn_count = 0
     while True:
         try:
             request = read()
@@ -133,19 +135,50 @@ def main() -> int:
             return 0
         method = request.get("method")
         if method in {"thread/start", "thread/resume"}:
-            thread_id = str((request.get("params") or {}).get("threadId") or "thr_runtime")
+            if method == "thread/start":
+                thread_count += 1
+                thread_id = f"thr_runtime_{thread_count}"
+            else:
+                thread_id = str((request.get("params") or {}).get("threadId") or "")
             reply(request, {"thread": {"id": thread_id, "sessionId": thread_id, "ephemeral": False}, "model": "deepseek-v4-flash", "modelProvider": "aearn_deepseek", "cwd": os.getcwd(), "approvalPolicy": "never", "approvalsReviewer": "user", "sandbox": {"type": "readOnly"}})
             send({"method": "thread/started", "params": {"thread": {"id": thread_id}}})
             continue
         if method == "turn/start":
+            turn_count += 1
             thread_id = str(request["params"]["threadId"])
-            turn_id = "turn_runtime"
+            turn_id = f"turn_runtime_{turn_count}"
             reply(request, {"turn": {"id": turn_id, "status": "inProgress", "items": []}})
             send({"method": "turn/started", "params": {"threadId": thread_id, "turn": {"id": turn_id, "status": "inProgress", "items": []}}})
             if mode == "crash_on_turn":
                 os._exit(26)
             if mode == "slow_turn":
                 time.sleep(0.35)
+            if mode == "request_user_input":
+                send(
+                    {
+                        "id": 940,
+                        "method": "item/tool/requestUserInput",
+                        "params": {
+                            "threadId": thread_id,
+                            "turnId": turn_id,
+                            "itemId": "request_input_1",
+                            "questions": [
+                                {
+                                    "id": "experience_level",
+                                    "header": "经验",
+                                    "question": "你的经验如何？",
+                                    "options": [
+                                        {"label": "零基础", "description": "没有相关经验"},
+                                    ],
+                                }
+                            ],
+                        },
+                    }
+                )
+                response = read()
+                expected = {"experience_level": {"answers": []}}
+                if (response.get("result") or {}).get("answers") != expected:
+                    return 31
             turn_succeeded = True
             if mode == "repair":
                 turn_succeeded = run_tool_calls(
@@ -157,7 +190,7 @@ def main() -> int:
                     ),
                     request_id_start=900,
                 )
-            if mode == "learning_plan_repair":
+            if mode in {"learning_plan_repair", "long_learning_plan_repair"}:
                 turn_succeeded = run_tool_calls(
                     thread_id=thread_id,
                     turn_id=turn_id,
@@ -204,13 +237,269 @@ def main() -> int:
                 )
             if not turn_succeeded:
                 continue
-            reasoning = {"id": "reasoning_1", "type": "reasoning", "text": "raw reasoning must stay hidden"}
-            send({"method": "item/completed", "params": {"threadId": thread_id, "turnId": turn_id, "item": reasoning}})
+            if mode == "long_learning_plan_repair":
+                reasoning = {"id": f"reasoning_{turn_count}", "type": "reasoning", "index": 0}
+                send(
+                    {
+                        "method": "item/started",
+                        "params": {
+                            "threadId": thread_id,
+                            "turnId": turn_id,
+                            "item": reasoning,
+                        },
+                    }
+                )
+                for _index in range(2_500):
+                    send(
+                        {
+                            "method": "item/reasoning/textDelta",
+                            "params": {
+                                "threadId": thread_id,
+                                "turnId": turn_id,
+                                "itemId": reasoning["id"],
+                                "index": 0,
+                                "delta": "r",
+                            },
+                        }
+                    )
+                send(
+                    {
+                        "method": "item/completed",
+                        "params": {
+                            "threadId": thread_id,
+                            "turnId": turn_id,
+                            "item": reasoning,
+                        },
+                    }
+                )
+                message = {
+                    "id": f"message_{turn_count}",
+                    "type": "agentMessage",
+                    "text": f"safe final {turn_count}",
+                    "phase": "final_answer",
+                }
+            elif mode == "many_items":
+                for index in range(17):
+                    reasoning = {
+                        "id": f"reasoning_{turn_count}_{index}",
+                        "type": "reasoning",
+                        "index": index,
+                    }
+                    send(
+                        {
+                            "method": "item/started",
+                            "params": {
+                                "threadId": thread_id,
+                                "turnId": turn_id,
+                                "item": reasoning,
+                            },
+                        }
+                    )
+                    send(
+                        {
+                            "method": "item/completed",
+                            "params": {
+                                "threadId": thread_id,
+                                "turnId": turn_id,
+                                "item": reasoning,
+                            },
+                        }
+                    )
+                message = {
+                    "id": f"message_{turn_count}",
+                    "type": "agentMessage",
+                    "text": f"safe final {turn_count}",
+                    "phase": "final_answer",
+                }
+            elif mode == "text_budget":
+                reasoning = {"id": f"reasoning_{turn_count}", "type": "reasoning", "index": 0}
+                send(
+                    {
+                        "method": "item/started",
+                        "params": {
+                            "threadId": thread_id,
+                            "turnId": turn_id,
+                            "item": reasoning,
+                        },
+                    }
+                )
+                send(
+                    {
+                        "method": "item/reasoning/textDelta",
+                        "params": {
+                            "threadId": thread_id,
+                            "turnId": turn_id,
+                            "itemId": reasoning["id"],
+                            "index": 0,
+                            "delta": "x" * 16_001,
+                        },
+                    }
+                )
+                message = {
+                    "id": f"message_{turn_count}",
+                    "type": "agentMessage",
+                    "text": f"safe final {turn_count}",
+                    "phase": "final_answer",
+                }
+            elif mode == "five_thousand_deltas":
+                reasoning = {"id": f"reasoning_{turn_count}", "type": "reasoning", "index": 0}
+                send(
+                    {
+                        "method": "item/started",
+                        "params": {
+                            "threadId": thread_id,
+                            "turnId": turn_id,
+                            "item": reasoning,
+                        },
+                    }
+                )
+                for _index in range(5_000):
+                    send(
+                        {
+                            "method": "item/reasoning/textDelta",
+                            "params": {
+                                "threadId": thread_id,
+                                "turnId": turn_id,
+                                "itemId": reasoning["id"],
+                                "index": 0,
+                                "delta": "思",
+                            },
+                        }
+                    )
+                send(
+                    {
+                        "method": "item/completed",
+                        "params": {
+                            "threadId": thread_id,
+                            "turnId": turn_id,
+                            "item": reasoning,
+                        },
+                    }
+                )
+                message = {
+                    "id": f"message_{turn_count}",
+                    "type": "agentMessage",
+                    "text": f"safe final {turn_count}",
+                    "phase": "final_answer",
+                }
+            elif mode == "sparse_deltas":
+                reasoning = {"id": f"reasoning_{turn_count}", "type": "reasoning", "index": 0}
+                send(
+                    {
+                        "method": "item/started",
+                        "params": {
+                            "threadId": thread_id,
+                            "turnId": turn_id,
+                            "item": reasoning,
+                        },
+                    }
+                )
+                send(
+                    {
+                        "method": "item/reasoning/textDelta",
+                        "params": {
+                            "threadId": thread_id,
+                            "turnId": turn_id,
+                            "itemId": reasoning["id"],
+                            "index": 0,
+                            "delta": "first",
+                        },
+                    }
+                )
+                time.sleep(0.08)
+                send(
+                    {
+                        "method": "item/reasoning/textDelta",
+                        "params": {
+                            "threadId": thread_id,
+                            "turnId": turn_id,
+                            "itemId": reasoning["id"],
+                            "index": 0,
+                            "delta": "second",
+                        },
+                    }
+                )
+                send(
+                    {
+                        "method": "item/completed",
+                        "params": {
+                            "threadId": thread_id,
+                            "turnId": turn_id,
+                            "item": reasoning,
+                        },
+                    }
+                )
+                message = {
+                    "id": f"message_{turn_count}",
+                    "type": "agentMessage",
+                    "text": f"safe final {turn_count}",
+                    "phase": "final_answer",
+                }
+            elif mode == "burst_turns":
+                reasoning = {"id": f"reasoning_{turn_count}", "type": "reasoning"}
+                send(
+                    {
+                        "method": "item/started",
+                        "params": {
+                            "threadId": thread_id,
+                            "turnId": turn_id,
+                            "item": reasoning,
+                        },
+                    }
+                )
+                for index in range(180):
+                    send(
+                        {
+                            "method": "item/reasoning/textDelta",
+                            "params": {
+                                "threadId": thread_id,
+                                "turnId": turn_id,
+                                "itemId": reasoning["id"],
+                                "delta": f"{turn_count}:{index};",
+                            },
+                        }
+                    )
+                send(
+                    {
+                        "method": "item/completed",
+                        "params": {
+                            "threadId": thread_id,
+                            "turnId": turn_id,
+                            "item": reasoning,
+                        },
+                    }
+                )
+                message = {
+                    "id": f"message_{turn_count}",
+                    "type": "agentMessage",
+                    "text": f"safe final {turn_count}",
+                    "phase": "final_answer",
+                }
+            elif mode == "compaction":
+                compaction = {"id": "compact_1", "type": "contextCompaction"}
+                send({"method": "item/started", "params": {"threadId": thread_id, "turnId": turn_id, "item": compaction}})
+                send({"method": "item/completed", "params": {"threadId": thread_id, "turnId": turn_id, "item": compaction}})
+                reasoning = {"id": "reasoning_1", "type": "reasoning"}
+                send({"method": "item/started", "params": {"threadId": thread_id, "turnId": turn_id, "item": {"id": "reasoning_1", "type": "reasoning"}}})
+                send({"method": "item/reasoning/textDelta", "params": {"threadId": thread_id, "turnId": turn_id, "itemId": "reasoning_1", "delta": "先读取服务端事实。\n"}})
+                send({"method": "item/reasoning/summaryTextDelta", "params": {"threadId": thread_id, "turnId": turn_id, "itemId": "reasoning_1", "delta": "private summary"}})
+                send({"method": "item/reasoning/textDelta", "params": {"threadId": thread_id, "turnId": turn_id, "itemId": "reasoning_1", "delta": "再确认缺失字段。"}})
+                send({"method": "item/completed", "params": {"threadId": thread_id, "turnId": turn_id, "item": reasoning}})
+                message = {"id": "message_1", "type": "agentMessage", "text": "只询问学习目标。", "phase": "final_answer"}
+                send({"method": "item/started", "params": {"threadId": thread_id, "turnId": turn_id, "item": {"id": "message_1", "type": "agentMessage", "phase": "final_answer"}}})
+                send({"method": "item/agentMessage/delta", "params": {"threadId": thread_id, "turnId": turn_id, "itemId": "message_1", "delta": "只询问"}})
+                send({"method": "item/agentMessage/delta", "params": {"threadId": thread_id, "turnId": turn_id, "itemId": "message_1", "delta": "学习目标。"}})
+            else:
+                reasoning = {"id": "reasoning_1", "type": "reasoning", "text": "raw reasoning must stay hidden"}
+                send({"method": "item/completed", "params": {"threadId": thread_id, "turnId": turn_id, "item": reasoning}})
+                message = {"id": "message_1", "type": "agentMessage", "text": "safe final", "phase": "final_answer"}
             commentary = {"id": "commentary_1", "type": "agentMessage", "text": "private commentary", "phase": "commentary"}
             send({"method": "item/completed", "params": {"threadId": thread_id, "turnId": turn_id, "item": commentary}})
-            message = {"id": "message_1", "type": "agentMessage", "text": "safe final", "phase": "final_answer"}
             send({"method": "item/completed", "params": {"threadId": thread_id, "turnId": turn_id, "item": message}})
             send({"method": "turn/completed", "params": {"threadId": thread_id, "turn": {"id": turn_id, "status": "completed", "items": [message]}}})
+            continue
+        if method == "thread/compact/start":
+            reply(request, {})
             continue
         if method == "turn/steer":
             reply(request, {})

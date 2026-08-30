@@ -38,6 +38,7 @@ class RuntimeTurnControlDirective:
 
 
 RuntimeControlReader = Callable[[str, int], RuntimeTurnControlDirective]
+RuntimeEventObserver = Callable[[RuntimeEvent, int], None]
 
 
 class CodexRuntimeWorkerHost:
@@ -77,12 +78,28 @@ class CodexRuntimeWorkerHost:
             self._last_generation = handle.generation
         return handle
 
+    def resume_thread(self, thread_id: str, *, timeout_s: float = 30.0) -> RuntimeThreadHandle:
+        self._ensure_started(timeout_s=timeout_s)
+        handle: RuntimeThreadHandle = self._submit(
+            lambda runtime: runtime.resume_thread(thread_id), timeout_s=timeout_s
+        )
+        if not isinstance(handle, RuntimeThreadHandle):
+            raise TypeError("Codex worker thread resume returned an unexpected result")
+        with self._lock:
+            self._last_generation = handle.generation
+        return handle
+
+    def compact_thread(self, thread: RuntimeThreadHandle, *, timeout_s: float = 30.0) -> None:
+        self._ensure_started(timeout_s=timeout_s)
+        self._submit(lambda runtime: runtime.compact_thread(thread), timeout_s=timeout_s)
+
     def run_turn(
         self,
         request: RuntimeTurnRequest,
         *,
         control_reader: RuntimeControlReader,
         initial_input_revision: int,
+        event_observer: RuntimeEventObserver | None = None,
         poll_interval_s: float = 0.2,
         timeout_s: float = 330.0,
     ) -> RuntimeTurnResult:
@@ -92,6 +109,7 @@ class CodexRuntimeWorkerHost:
                 request,
                 control_reader=control_reader,
                 initial_input_revision=initial_input_revision,
+                event_observer=event_observer,
                 poll_interval_s=poll_interval_s,
             ),
             timeout_s=timeout_s,
@@ -170,13 +188,16 @@ async def _run_controlled_turn(
     *,
     control_reader: RuntimeControlReader,
     initial_input_revision: int,
-    poll_interval_s: float,
+    event_observer: RuntimeEventObserver | None = None,
+    poll_interval_s: float = 0.2,
 ) -> RuntimeTurnResult:
     turn_task = asyncio.create_task(runtime.run_turn(request))
     event_iterator = runtime.events().__aiter__()
     event_task: asyncio.Task[RuntimeEvent] = asyncio.create_task(_next_runtime_event(event_iterator))
     turn_id: str | None = None
     applied_revision = initial_input_revision
+    observed_sequence = 0
+    max_observed_sequence = 0
     interrupt_sent = False
     try:
         while not turn_task.done():
@@ -191,6 +212,11 @@ async def _run_controlled_turn(
                 except StopAsyncIteration:
                     event_task = asyncio.create_task(_next_runtime_event(event_iterator))
                 else:
+                    observed_sequence += 1
+                    sequence = event.sequence or observed_sequence
+                    max_observed_sequence = max(max_observed_sequence, sequence)
+                    if event_observer is not None:
+                        event_observer(event, sequence)
                     if (
                         event.kind is RuntimeEventKind.TURN_STARTED
                         and event.thread_id == request.thread.thread_id
@@ -222,6 +248,7 @@ async def _run_controlled_turn(
                             turn_id,
                             terminal_status=RuntimeTerminalStatus.UNAVAILABLE,
                             safe_code="runtime_control_failed",
+                            sequence=max_observed_sequence + 1,
                         )
                         return RuntimeTurnResult(
                             request.thread,
@@ -247,6 +274,7 @@ async def _run_controlled_turn(
             turn_id,
             terminal_status=RuntimeTerminalStatus.UNAVAILABLE,
             safe_code="runtime_control_failed",
+            sequence=max_observed_sequence + 1,
         )
         return RuntimeTurnResult(
             request.thread,
@@ -259,6 +287,9 @@ async def _run_controlled_turn(
         if not event_task.done():
             event_task.cancel()
         await asyncio.gather(event_task, return_exceptions=True)
+        close_event_iterator = getattr(event_iterator, "aclose", None)
+        if close_event_iterator is not None:
+            await close_event_iterator()
         if not turn_task.done():
             turn_task.cancel()
             await asyncio.gather(turn_task, return_exceptions=True)
