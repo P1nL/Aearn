@@ -12,7 +12,8 @@ from psycopg import Connection
 from aearn_shared.execution import ExecutionAction, SafeExecutionResultV1
 from app.services.learning.contracts import ExecutionComposition, ExecutionTier
 from app.services.learning.execution_tiers import ExecutionTierInputs, ExecutionTierResolver
-from app.services.learning.practice.contracts import ExerciseAttemptType, ExerciseType
+from app.services.learning.teaching_events import TeachingDomainEventAdapter
+from app.services.learning.practice.contracts import ExerciseAttemptResult, ExerciseAttemptType, ExerciseType
 from app.services.learning.practice.diagnostics import PostgresModuleDiagnosticRepository
 from app.services.learning.practice.model_review_repository import PostgresModelReviewRepository
 from app.services.learning.practice.model_review_contracts import (
@@ -91,6 +92,7 @@ class ExerciseGateService:
         self._local_runner_available = local_runner_available
         self._local_runner = local_runner
         self._tier_resolver = ExecutionTierResolver()
+        self._teaching_events = TeachingDomainEventAdapter(conn)
 
     def read_gates(self, *, user_id: str, track_id: str, knowledge_key: str) -> dict[str, object]:
         user, track, key = _scope_ids(user_id, track_id, knowledge_key)
@@ -374,7 +376,7 @@ class ExerciseGateService:
                                     now=datetime.now(UTC),
                                 )
                             )
-                        row = self._repository.finalize_gate_attempt(
+                        row = self._finalize_gate_attempt(
                             user_id=user,
                             attempt_id=attempt,
                             result=result,
@@ -667,7 +669,7 @@ class ExerciseGateService:
                         recoverable=False,
                     ) from exc
                 return self._project_attempt(
-                    self._repository.finalize_gate_attempt(
+                    self._finalize_gate_attempt(
                         user_id=str(attempt["user_id"]),
                         attempt_id=str(attempt["id"]),
                         result=result,
@@ -705,7 +707,7 @@ class ExerciseGateService:
                 now=datetime.now(UTC),
             )
             return self._project_attempt(
-                self._repository.finalize_gate_attempt(
+                self._finalize_gate_attempt(
                     user_id=str(attempt["user_id"]),
                     attempt_id=str(attempt["id"]),
                     result=result,
@@ -750,13 +752,22 @@ class ExerciseGateService:
                 )
             )
         return self._project_attempt(
-            self._repository.finalize_gate_attempt(
+            self._finalize_gate_attempt(
                 user_id=str(attempt["user_id"]),
                 attempt_id=str(attempt["id"]),
                 result=result,
                 now=datetime.now(UTC),
             )
         )
+
+    def _finalize_gate_attempt(
+        self, *, user_id: str, attempt_id: str, result: ExerciseAttemptResult, now: datetime,
+    ) -> dict[str, object]:
+        row = self._repository.finalize_gate_attempt(
+            user_id=user_id, attempt_id=attempt_id, result=result, now=now,
+        )
+        self._teaching_events.admit_gate_terminal(user_id=user_id, attempt_id=attempt_id)
+        return row
 
     def _execution_tier(self, row: Mapping[str, object]) -> dict[str, object]:
         language = require_language_capability(str(row["language_id"]))

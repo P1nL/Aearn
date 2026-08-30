@@ -1,0 +1,41 @@
+{
+  "id": "codex-thread-context-raw-runtime-stream",
+  "name": "codex-thread-context-raw-runtime-stream",
+  "title": "重构 Codex Runtime 持久上下文与原始运行流",
+  "description": "将计划会话映射为持久 Codex App Server thread，恢复 typed planning request，并持久化、展示 raw reasoning 与 raw final-answer delta。",
+  "status": "completed",
+  "dev_type": null,
+  "scope": "协调 conversation-level Codex Runtime thread、local compaction、typed planning request、raw reasoning/raw answer durable stream 与 Desktop 集成",
+  "package": null,
+  "priority": "P0",
+  "creator": "PINKING",
+  "assignee": "PINKING",
+  "createdAt": "2026-08-19",
+  "completedAt": "2026-08-21",
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    "aearn/services/api/app/services/tutor/codex_dispatcher.py",
+    "aearn/services/api/app/agents/runtime/codex_adapter.py",
+    "aearn/services/api/app/agents/runtime/codex_supervisor.py",
+    "aearn/services/api/app/services/tutor/runtime_projection.py",
+    "aearn/services/api/app/services/learning/planning_facts.py",
+    "aearn/services/api/app/db/schema.sql",
+    "aearn/apps/desktop/src/features/tutor/TutorConversationSurface.tsx",
+    "aearn/apps/desktop/src/hooks/useTutorConversationStream.ts",
+    "docs/architecture/tutor-harness-runtime.md",
+    "docs/architecture/api-contract.md"
+  ],
+  "notes": "复杂规划任务，inline 模式。Codex 指 Aearn 控制的本地 App Server sidecar，不是模型或业务 authority；DeepSeek 继续承担推理。raw reasoning 持久化已确认。用户已于 2026-08-19 明确批准最终规划，要求在新会话中启动并实施；不要启动 stale 的 08-13 任务，不要重建本任务。 2026-08-20 已完成 P0/P1 实现与规格同步。真实重启复现确认跨 turn 共享 live event 队列会把前一 turn 未排空事件带入下一 binding，造成 sequence 冲突、runtime_control_failed、reasoning 中断和 binding 假 running；已改为 turn-scoped subscription，并让 synthetic/recovery terminal 从最大 observed/persisted sequence 续接。最终门禁为 669 passed/2 skipped、Ruff/Mypy、Desktop 48 tests、Desktop build、Trellis validate 与 git diff --check 全绿；真实 deepseek-v4-flash 验收完成 5 个 fresh run，共用 1 个 external thread、拥有 5 个不同 turn，全部首次 dispatch 成功，reasoning/final answer completed，刷新后 5 个历史 think 持久化且折叠。未提交、未 push、未部署，任务保持 in_progress。",
+  "meta": {
+    "execution_mode": "inline",
+    "runtime_context_model": "conversation_thread",
+    "raw_runtime_output": "true"
+  }
+}

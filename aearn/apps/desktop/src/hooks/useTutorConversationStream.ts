@@ -256,22 +256,44 @@ export function parseTutorConversationFrame(frame: string): ParsedFrame {
 }
 
 function toTutorTurnOutputPayload(value: unknown): TutorTurnOutputPayload | null {
-  if (!isRecord(value) || value.output_version !== "tutor_public_thinking_stream_v1" ||
-      !isNonNegativeSafeInteger(value.input_revision) || !isPositiveSafeInteger(value.generation) ||
-      !isNonNegativeSafeInteger(value.chunk_sequence) || !isString(value.operation)) return null;
-  if (value.operation === "append") {
-    if (!hasExactKeys(value, ["output_version", "input_revision", "generation", "operation", "chunk_sequence", "text"]) ||
-        value.chunk_sequence < 1 || !isString(value.text) || value.text.length < 1 || value.text.length > 160) return null;
+  if (!isRecord(value) || !isNonNegativeSafeInteger(value.input_revision) ||
+      !isPositiveSafeInteger(value.generation) || !isNonNegativeSafeInteger(value.chunk_sequence) ||
+      !isString(value.operation)) return null;
+  if (value.output_version === "tutor_public_thinking_stream_v1") {
+    if (value.operation === "append") {
+      if (!hasExactKeys(value, ["output_version", "input_revision", "generation", "operation", "chunk_sequence", "text"]) ||
+          value.chunk_sequence < 1 || !isString(value.text) || value.text.length < 1 || value.text.length > 160) return null;
+      return {
+        output_version: "tutor_public_thinking_stream_v1", input_revision: value.input_revision,
+        generation: value.generation, operation: "append", chunk_sequence: value.chunk_sequence, text: value.text,
+      };
+    }
+    if ((value.operation !== "reset" && value.operation !== "complete" && value.operation !== "discard") ||
+        !hasExactKeys(value, ["output_version", "input_revision", "generation", "operation", "chunk_sequence"])) return null;
     return {
       output_version: "tutor_public_thinking_stream_v1", input_revision: value.input_revision,
-      generation: value.generation, operation: "append", chunk_sequence: value.chunk_sequence, text: value.text,
+      generation: value.generation, operation: value.operation, chunk_sequence: value.chunk_sequence,
     };
   }
-  if ((value.operation !== "reset" && value.operation !== "complete" && value.operation !== "discard") ||
-      !hasExactKeys(value, ["output_version", "input_revision", "generation", "operation", "chunk_sequence"])) return null;
+  if (value.output_version !== "tutor_runtime_item_stream_v1" || !isString(value.item_id) ||
+      (value.channel !== "reasoning" && value.channel !== "final_answer")) return null;
+  if (value.operation === "append" || value.operation === "complete") {
+    if (!hasExactKeys(value, ["output_version", "input_revision", "generation", "operation", "chunk_sequence", "item_id", "channel", "text"]) ||
+        value.chunk_sequence < 1 || !isString(value.text) ||
+        (value.operation === "append" && (value.text.length < 1 || value.text.length > 16_000)) ||
+        (value.operation === "complete" && value.text.length > 1_000_000)) return null;
+    return {
+      output_version: "tutor_runtime_item_stream_v1", input_revision: value.input_revision,
+      generation: value.generation, operation: value.operation, chunk_sequence: value.chunk_sequence,
+      item_id: value.item_id, channel: value.channel, text: value.text,
+    };
+  }
+  if ((value.operation !== "reset" && value.operation !== "discard") ||
+      !hasExactKeys(value, ["output_version", "input_revision", "generation", "operation", "chunk_sequence", "item_id", "channel"])) return null;
   return {
-    output_version: "tutor_public_thinking_stream_v1", input_revision: value.input_revision,
+    output_version: "tutor_runtime_item_stream_v1", input_revision: value.input_revision,
     generation: value.generation, operation: value.operation, chunk_sequence: value.chunk_sequence,
+    item_id: value.item_id, channel: value.channel,
   };
 }
 

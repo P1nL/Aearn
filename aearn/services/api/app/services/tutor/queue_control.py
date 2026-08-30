@@ -15,6 +15,7 @@ from app.core.config import Settings
 from app.services.learning.context_references import PostgresTutorContextReferenceRepository
 from app.services.learning.contracts import LearningScope, LearningScopeKind, LearningTaskKind
 from app.services.learning.planning_facts import PostgresPlanningFactRepository
+from app.services.learning.teaching_sessions import TeachingSessionConflict, TeachingSessionRepository
 from app.services.learning.track_repository import PostgresLearningTrackRepository
 from app.services.tutor.conversation_contracts import TutorConversationEventKind, TutorInteractionProtocolVersion
 from app.services.tutor.persistence import (
@@ -34,10 +35,17 @@ QUEUE_MAX_PENDING: Final[int] = 10
 class PostgresTutorQueueController:
     """Serialize every conversation control mutation on the conversation row."""
 
-    def __init__(self, conn: Connection[dict[str, object]]) -> None:
+    def __init__(
+        self,
+        conn: Connection[dict[str, object]],
+        *,
+        intent_resolution_enabled: bool = True,
+    ) -> None:
         self._conn = conn
+        self._intent_resolution_enabled = intent_resolution_enabled
         self._repository = PostgresTutorRepository(conn)
         self._tracks = PostgresLearningTrackRepository(conn)
+        self._teaching_sessions = TeachingSessionRepository(conn)
         self._references = PostgresTutorContextReferenceRepository(conn)
         self._facts = PostgresPlanningFactRepository(conn)
 
@@ -517,6 +525,20 @@ class PostgresTutorQueueController:
             user_id=user_id, scope=scope, message_id=acceptance.message_id,
             input_revision=acceptance.input_revision, references=references,
         )
+        if (
+            scope.scope_kind is LearningScopeKind.LEARNING_TRACK
+            and scope.task_kind is LearningTaskKind.LESSON_TEACHING
+            and scope.learning_track_id is not None
+            and scope.knowledge_key is not None
+        ):
+            try:
+                self._teaching_sessions.bind_learner_message_run(
+                    user_id=user_id, run_id=run_id, conversation_id=scope.conversation_id,
+                    track_id=scope.learning_track_id, knowledge_key=scope.knowledge_key,
+                    message_id=acceptance.message_id, input_revision=acceptance.input_revision,
+                )
+            except TeachingSessionConflict as exc:
+                raise TutorInteractionRequestConflict("queued teaching-session authority is stale") from exc
         if scope.scope_kind is LearningScopeKind.PLAN_DRAFTING:
             raw_facts = metadata.get("planning_facts")
             raw_reopen = metadata.get("reopen_fact_fields")
@@ -529,6 +551,7 @@ class PostgresTutorQueueController:
                 content=str(message["content"] if message is not None else ""),
                 explicit_facts=_mapping(raw_facts) if raw_facts is not None else None,
                 reopen_fields=tuple(str(item) for item in raw_reopen) if isinstance(raw_reopen, list) else (),
+                intent_resolution_enabled=self._intent_resolution_enabled,
             )
 
     def _turn_acceptance(self, run_id: str, acceptance: TutorInputAcceptance) -> TutorInteractiveTurnAcceptance:

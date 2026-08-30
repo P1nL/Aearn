@@ -11,7 +11,7 @@
 
 ```text
 Tutor input: context_references?: TutorContextReferenceDraft[0..6]
-Kinds: lesson_selection | exercise_feedback | execution_result | review_feedback
+Kinds: lesson_selection | exercise_feedback | execution_result | review_feedback | teaching_session_message
 DB identity: (user_id, conversation_id, run_id, message_id, input_revision, reference_index)
 History: learner message.context_references: TutorContextReference[]
 Context source: tutor-context-references:{message_id}
@@ -30,7 +30,7 @@ PostgresTutorContextReferenceRepository.record_for_input(
 - Exercise, execution, and review references must resolve to a real terminal Attempt in the same user/track/knowledge scope. `execution_result` additionally requires a real execution job.
 - The input transaction atomically binds learner message, run/input revision, run scope, and every reference. One invalid reference rolls back the entire input.
 - Persist only bounded learner-safe snapshots and canonical hashes. Never concatenate a reference into learner `content` and never store or expose full submissions, private rubrics/tests/reference answers, raw stdout/stderr, commands, paths, containers, provider bodies, reasoning, credentials, or secrets.
-- Desktop API parsers start from `unknown`, require exact keys for every union member, reject Tutor-message references, and clear draft chips only after the acceptance response confirms the saved references.
+- Desktop API parsers start from `unknown`, require exact keys for every union member, accept only the public `teaching_session_message` metadata shape, reject internal `message_content`/extra fields, and clear draft chips only after the acceptance response confirms the saved references.
 - Switching user, track, mode, knowledge key, or review session aborts old requests/SSE and clears drafts, editors, results, and composer scope.
 
 ### 4. Validation & Error Matrix

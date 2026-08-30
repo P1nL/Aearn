@@ -216,5 +216,6 @@ When a model-authored generic `{key,value}` action carries nested JSON as string
 - [ ] Are custom exceptions at that boundary ordinary mutable exceptions rather than frozen dataclasses?
 - [ ] If the action fails after public thinking is visible, does terminal persistence still write one learner-safe formal message?
 - [ ] If the final decision creates a typed request, are both the formal Tutor message and composer/approval item persisted atomically and ordered message-first?
+- [ ] Does reload/reconnect/open preserve a matching terminal authority state, or does a mount-time convenience call accidentally create fresh work and hide completion/recovery actions?
 
 **Failure pattern**: hand-authored valid fixtures can prove the domain decoder while missing that the real provider was taught an incomplete nested schema. The resulting domain rejection may then be masked again by exception mechanics, leaving the UI with only intermediate text.

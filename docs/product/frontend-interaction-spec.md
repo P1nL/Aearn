@@ -1,6 +1,6 @@
 # Aearn Tutor 桌面端交互规格
 
-**状态：** 当前 Desktop 交互契约，2026-08-12。
+**状态：** 当前 Desktop 交互契约，2026-08-27。
 **适用范围：** `aearn/apps/desktop/src/` 的 React + Tauri UI。
 **权威来源：** `App.tsx`、`stores/useAppStore.ts`、`api.ts`、
 `pages/HarnessCutoverPage.tsx`、`features/learning/TrackLearningWorkspace.tsx`、`features/learning/ReviewSessionPanel.tsx`、`features/tutor/TutorConversationSurface.tsx` 与类型/测试。
@@ -327,3 +327,52 @@ Desktop 通过 `GET /api/tutor/capabilities/thread-turn-v2` 读取 exact server 
    不显示列表编号。不支持 structured visible stream 的 provider 不伪造实时思考，只在最终项显示完整文本。
 7. `prefers-reduced-motion: reduce` 直接同步已批准文本，但保留首文本解禁、最终一次折叠和所有 authority 规则。
 8. DOM、前端 state、network public payload 均不得包含 provider reasoning、prompt、raw event/body、trace、diagnostic 或 secret。
+
+## 2026-08-20：Codex raw reasoning/final answer 同 entry 展示
+
+当 snapshot/SSE 提供 `tutor_runtime_output_v1` / `tutor_runtime_item_stream_v1` 时，Desktop 在同一个 Tutor timeline entry 内渲染：上方小写 `think` disclosure，下方直接流式 answer。reasoning 保留原始 whitespace，内容区使用低对比左边框；当前 turn 默认展开，历史完成项默认折叠并支持键盘切换。final-answer delta 到达后立即追加，completed full text 只做 authoritative 校准，不重播、不重复插入第二条消息。
+
+commentary 与 reasoning summary 永不渲染。收到 item-scoped `discard` 时必须立即移除对应 provisional reasoning/answer；turn terminal 后 snapshot 不得恢复任何仍为 streaming 的残项。当前 turn 尚无任何 Runtime item 时可显示静态小写 `think` 状态；一旦 answer 已开始且没有 reasoning，不再保留空 Think。terminal/history item 若 reasoning 为空，DOM 中不得存在空 disclosure。Harness `public_thinking_text` 的旧稳定窗口、grapheme reveal 与 handoff 逻辑继续独立工作，不能和 raw Runtime reducer 共享文本或 generation。
+
+双 channel reducer 以 active turn、input revision、generation、Aearn item ID 和 last sequence 校验；duplicate/out-of-order 旧事件忽略，conversation event gap 或 identity mismatch fresh snapshot。1440×900、900×900 与 390×844 都保持单 entry、无横向溢出；disclosure 控件最小触摸高度 44px，`prefers-reduced-motion` 不影响 authority 和展开状态。
+
+## 2026-08-21: Dynamic language request interaction
+
+The planning language request renders the exact durable server options. `recommended=null` means no radio is selected on first render and the primary Submit action is disabled. Selecting one option enables Submit; the frontend never highlights the first catalog item by position and never computes a recommendation from labels.
+
+The server may provide `explicit_shortlist`, `intent_shortlist`, `conflict_shortlist`, or `full_catalog`, but these metadata fields are not rendered as learner evidence or model rationale. A select draft is stored only by exact request ID/version in session storage and is restored only if its value remains in the persisted option set. Reload/reconnect must preserve options and order; catalog changes affect only future requests.
+
+## 2026-08-23：Guided/自由阅读教学工作区
+
+一条 LearningTrack 继续只拥有一条长期 learner-visible Tutor conversation 和一份 active LessonDocument。TeachingSession 只是同一 conversation 内按知识点划分的 durable authority segment；Desktop 不创建第二条 conversation、第二份 Lesson、第二个 Tutor surface 或第二套 SSE reducer。
+
+### 布局与模式
+
+- Guided：左侧路线，中间同一 Tutor teaching session 为主区，右侧 active Lesson 为次区。
+- Free Reading：左侧路线，中间同一 Lesson 为主区，右侧同一 Tutor conversation 为次区。
+- 主区右上角的双向模式按钮只提交服务端 closed mutation。pending 时显示确认状态；成功采用返回 projection；409 保留 draft/reference/selection/scroll，只刷新 authority，不自动重放。
+- 1440×900 为三栏；900×900 使用路线 drawer 并保持 Tutor/Lesson 双列；390×844 一次只显示一个 tab panel。所有视口页面无水平溢出，Composer 和主要动作可达。
+
+### Lesson 混合跟随
+
+Guided 只在服务器 `active_focus` 给出 exact `lesson_block:<block_id>`，且 assignment/version/document 与当前 Lesson 匹配时定位。用户滚动、键盘阅读、选择文本、展开 citation/source 或操作 Gate 后进入 `follow_paused`；新 focus 只更新“回到当前讲解”，不抢滚动或选区。Free Reading 永不自动跟随，返回 Guided 仍保持 paused；进入新 knowledge/session 或用户显式恢复才回到 following。reduced motion 使用即时定位。
+
+### TeachingSession 时间线与引用
+
+conversation snapshot 的 `teaching_sessions[]` 提供 safe session summary 与 exact `turn_ids`。当前 session 完整渲染并持有 Composer；历史 session 默认折叠、展开只读；legacy history 独立显示。不得按正文、标题或 DOM 顺序猜测分组。
+
+历史 message 的“引用此消息”只创建 `teaching_session_message`：客户端发送 source `learning_track_id + knowledge_key + teaching_session_id + message_id`。服务端重新校验 user/track/conversation/session/turn 归属，公开 acceptance/card/export 只返回 IDs、role 和中性摘要，不返回完整旧问题/讲解；完整 learner-visible source 仅在内部模型上下文按 exact authority 解析。引用不会改变 active scope、mode、next action 或 Composer draft。
+
+### Composer Action Shelf 与完成态
+
+interaction dock 的 authority 顺序是 blocking typed request > active runtime controls > ordinary server-owned Action Shelf。Shelf 只有一个 primary、最多三个 visible secondary，其余进入“更多”；组件不修改 label/target/payload/enabled。没有任何 server descriptor 时，`ComposerActionShelf` 不挂载 DOM、不显示“暂无操作”等本地 placeholder，conversation surface 也不添加 `has-action-shelf` class；只有 secondary 时使用 secondary-only 布局。`learner_response_mode=composer` 由服务端投影 `respond_in_composer`，学习者直接使用现有 Composer 回答，不出现伪 Continue。`input_revision=0` 的 teaching-control run 不显示 generic Stop。Free Reading 普通问答结束后保持当前 mode；只有显式“转为引导讲解”才切 Guided。completed session 显示服务器 completion summary 与下一步，绝不自动导航；只有显式 next-node action 成功才进入下一 session。
+
+## 2026-08-23：Domain event 恢复与模式保持
+
+Gate/Review/progress/assignment 触发的后台教学 Turn 不伪装 learner message，也不强制 Guided/Free Reading 角色换位。Desktop 继续只渲染 server-owned session/checkpoint/Action Shelf projection：Free Reading 收到 typed evidence/completion 更新时仍保持课程主区，Guided 仍保持 Tutor 主区；authority successor、reload/reconnect 后按最新 session identity 恢复。任何冲突都通过可恢复 notice/Action Shelf 暴露，不显示 prompt、reasoning、provider body、完整 submission、hidden tests/rubric、命令、路径或 secrets。
+
+## 2026-08-27：空 Shelf 与 Composer 回答
+
+`TutorConversationSurface` 只在至少存在一个 server-owned action descriptor 时挂载 `ComposerActionShelf` 并设置 `has-action-shelf`。空 shelf 不保留容器、占位文案、空白高度或伪 disabled action；仅有 secondary action 时使用紧凑 secondary-only 布局。该规则在 1440×900、900×900 与 390×844 一致。
+
+`respond_in_composer` 只是服务器对已有 Composer 的引导，不创建第二个输入框、typed request 或本地 action state。`refresh_session` 触发现有 workspace refresh 并重新读取服务端 authority；前端不得把它实现为本地 Continue、自动 admission 或 mode change。

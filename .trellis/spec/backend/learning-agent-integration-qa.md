@@ -65,8 +65,8 @@ ReviewService(...same execution-tier inputs...)
 
 ### 6. Tests Required
 
-- `tests/test_learning_agent_integration_matrix.py`: four core parameterized flows, public/local tier assertions, safe projection audit, extension/degraded capability matrix.
-- `tests/test_harness_cutover.py::test_cutover_inventory_explicitly_classifies_every_tutor_table`: real PostgreSQL schema reconciliation.
+- `tests/integration/test_learning_agent_integration_matrix.py`: four core parameterized flows, public/local tier assertions, safe projection audit, extension/degraded capability matrix.
+- `tests/integration/test_harness_cutover.py::test_cutover_inventory_explicitly_classifies_every_tutor_table`: real PostgreSQL schema reconciliation.
 - Full cutover, DB bootstrap, Action Runtime, context eval/facts/references, Gate, model review, ReviewSession, execution-tier, executor lifecycle, export/reset suites.
 - API lock, Ruff, Mypy, serial full pytest; executor lock/Ruff/Mypy/full pytest; Desktop build; DB smoke; Trellis validate; `git diff --check`.
 - Browser smoke is required when current UI code changes. Documentation/test-only integration work may rely on the previously recorded current-workspace browser proof, but must not claim new UI evidence.
@@ -99,3 +99,41 @@ assert projection.tier is ExecutionTier.CONTAINER_VERIFIED
 ```
 
 Both a reviewed immutable lock and compatible health are required; otherwise the public projection remains static-only or unavailable according to the exercise contract.
+
+## Scenario: Adaptive Teaching Integration Final Gate（2026-08-23）
+
+### 1. Scope / Trigger
+- Trigger: final integration of TeachingSession, domain events, long-context summaries, exact historical references, recovery, privacy, and Desktop role swap.
+
+### 2. Signatures
+- Focused gate: Child 4 `implement.md` listed pytest batch + Desktop tests/build.
+- Full gate: serial `pytest -q`, Ruff, Mypy, disposable database bootstrap twice, Browser 1440/900/390, Trellis validate, `git diff --check`.
+
+### 3. Contracts
+- Deterministic fake provider fixtures assert closed decisions, provider call count, checkpoint lineage, no auto-next, and protected-marker absence.
+- Gate/Review/Lesson services remain business owners; teaching adapters consume receipts rather than reimplementing outcomes.
+- Browser smoke may use a disposable stateful fake API/provider, but backend Gate/Review evidence must come from real PostgreSQL service/repository tests.
+- Bootstrap-heavy PostgreSQL tests are serial; parallel schema bootstrap evidence is invalid.
+
+### 4. Validation & Error Matrix
+| Condition | Required result |
+| --- | --- |
+| focused/full command fails | fix and rerun; do not record partial pass |
+| Browser shows overflow/overlay/console warning or protected marker | release gate fails |
+| real provider not explicitly authorized | keep `LLM_TYPE=disabled` / injected fake and record non-claim |
+| parent acceptance lacks child evidence mapping | do not auto-archive parent |
+
+### 5. Good / Base / Bad Cases
+- Good: one disposable Gate completion produces one typed progress event and a validated successor summary; browser role swap preserves draft and has no overflow at all three viewports.
+- Base: no frontend code changed; rerun current-workspace browser smoke and record it as regression evidence, not a new feature claim.
+- Bad: infer Review/Gate pass from a mock-only UI or call a real provider to make local evidence look stronger.
+
+### 6. Tests Required
+- Child 4 focused files plus teaching/Gate/Review/Lesson regression batch.
+- Full API, Desktop, bootstrap twice, cutover reconciliation, export/reset/privacy, browser DOM/network/console audit.
+
+### 7. Wrong vs Correct
+#### Wrong
+`Promise.all([bootstrap_test_a, bootstrap_test_b])` against one shared PostgreSQL schema.
+#### Correct
+Run one serial pytest process, then create a generated disposable database and execute bootstrap twice before dropping it.

@@ -1,0 +1,22 @@
+{
+  "id": "tutor.lesson-teaching",
+  "version": "1.0.0",
+  "owner": "aearn-core",
+  "kind": "tutoring",
+  "summary": "Choose one bounded closed teaching step from exact session authority and evidence handles.",
+  "instruction_file": "instructions.md",
+  "evaluation_suite_file": "evals.json",
+  "content_hashes": {
+    "instructions.md": "528b3537a6cc0c38f95260a29bcabcce2fcda7ebbd990c589365e53dcc1e9f80",
+    "evals.json": "48d919600d7c5e10858692804b89880075fa90e163b3cf509382eb6dc32e6ada"
+  },
+  "resource_refs": [],
+  "requires_capabilities": [],
+  "allowed_effect_types": [],
+  "policy_tags": [
+    "lesson-teaching"
+  ],
+  "input_contract": "tutor.teaching-session-input.v1",
+  "output_contract": "tutor.teaching-step-decision.v1",
+  "deprecated": false
+}

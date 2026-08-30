@@ -11,6 +11,7 @@ from psycopg import Connection
 from aearn_shared.execution import ExecutionAction, SafeExecutionResultV1
 from app.services.learning.contracts import ExecutionComposition, ExecutionTier
 from app.services.learning.execution_tiers import ExecutionTierInputs, ExecutionTierResolver
+from app.services.learning.teaching_events import TeachingDomainEventAdapter
 from app.services.learning.practice.contracts import ExerciseAttemptType, ExerciseType
 from app.services.learning.practice.model_review_contracts import (
     ModelReviewArtifactV1,
@@ -92,6 +93,7 @@ class ReviewService:
         self._local_runner_available = local_runner_available
         self._local_runner = local_runner
         self._tier_resolver = ExecutionTierResolver()
+        self._teaching_events = TeachingDomainEventAdapter(conn)
 
     def read_queue(self, *, user_id: str, track_id: str) -> dict[str, object]:
         user = _uuid(user_id, "user_id")
@@ -412,6 +414,11 @@ class ReviewService:
                     request_hash=content_hash(request),
                     now=datetime.now(UTC),
                 )
+                finalization_id = row.get("finalization_id")
+                if finalization_id is not None:
+                    self._teaching_events.admit_review_terminal(
+                        user_id=user, finalization_id=str(finalization_id),
+                    )
                 return self._project_session(row)
         except ReviewRepositoryError as exc:
             raise _map_error(exc) from exc

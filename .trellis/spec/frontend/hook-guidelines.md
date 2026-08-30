@@ -97,8 +97,8 @@ non-negative `input_revision`, retry lineage, completion reason, and timestamps.
   planning, and approval use the exact request version; authority requests are
   read-only. Ordinary composer and conversation Queue controls are absent.
 - Render public `message`, typed request, and safe `error`; parse but do not
-  render standalone `process`. `Think` reads only exact `public_thinking_text` plus
-  fenced `active_thinking`/`turn_output`; legacy steps normalize at the API boundary.
+  render standalone `process`. Harness `Think` reads exact `public_thinking_text` plus fenced
+  `active_thinking`; Codex `think` reads only exact owner-scoped `active_runtime_output` / runtime `turn_output`. Legacy steps normalize at the API boundary; arbitrary provider/reasoning payloads remain forbidden.
 - `effective_enabled=false` preserves reads and disables all v2 writes without
   falling back to legacy run-local input.
 
@@ -224,3 +224,15 @@ if (!matchesFence(event, live) || !isNextChunk(event, live)) requireSnapshot();
 const graphemes = segmentGraphemes(target);
 setDisplayed(graphemes.slice(0, visibleCount + 1).join(""));
 ```
+
+## Dynamic typed-request recovery (2026-08-21)
+
+- Snapshot and conversation SSE remain the authority for request identity/version and exact options. Reconnect must replace the request projection, not merge a newly fetched catalog into it.
+- A local select draft is valid only for the same request ID/version and only while every stored value remains in the server option set and within `maximum_selections`.
+- Resolving the request clears its stored draft. Text and integer answers are not persisted as select-draft recovery state.
+
+## Runtime coalesced projection recovery (2026-08-21)
+
+- `tutor_runtime_item_stream_v1.chunk_sequence` is a projection sequence. A single append may represent many private source deltas; Desktop never expects one event per provider delta.
+- Source range/count/hash are private receipt fields and must be rejected if they appear in public SSE/snapshot payloads.
+- Duplicate/older projection events remain idempotent; projection gaps still trigger `onResetRequired` and fresh snapshot without changing the model turn outcome.

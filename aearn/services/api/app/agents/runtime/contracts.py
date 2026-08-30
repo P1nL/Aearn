@@ -27,8 +27,17 @@ class RuntimeTerminalStatus(StrEnum):
 
 class RuntimeEventKind(StrEnum):
     TURN_STARTED = "turn_started"
+    REASONING_STARTED = "reasoning_started"
+    REASONING_DELTA = "reasoning_delta"
+    REASONING_COMPLETED = "reasoning_completed"
+    REASONING_SUMMARY_STARTED = "reasoning_summary_started"
+    REASONING_SUMMARY_DELTA = "reasoning_summary_delta"
+    REASONING_SUMMARY_COMPLETED = "reasoning_summary_completed"
+    MESSAGE_STARTED = "message_started"
     MESSAGE_DELTA = "message_delta"
     MESSAGE_COMPLETED = "message_completed"
+    CONTEXT_COMPACTION_STARTED = "context_compaction_started"
+    CONTEXT_COMPACTION_COMPLETED = "context_compaction_completed"
     TOOL_STARTED = "tool_started"
     TOOL_COMPLETED = "tool_completed"
     TURN_COMPLETED = "turn_completed"
@@ -134,6 +143,63 @@ class RuntimeEvent:
     tool_name: str | None = None
     input_sha256: str | None = None
     result_sha256: str | None = None
+    item_type: str | None = None
+    phase: str | None = None
+    item_index: int | None = None
+    source_sequence_start: int | None = None
+    source_sequence_end: int | None = None
+    source_delta_count: int = 1
+    source_content_sha256: str | None = None
+    projection_sequence: int | None = None
+    sequence: int | None = None
+
+    def __post_init__(self) -> None:
+        if not self.thread_id:
+            raise ValueError("runtime event thread id is required")
+        if self.item_index is not None and self.item_index < 0:
+            raise ValueError("runtime event item index must be non-negative")
+        source_values = (self.source_sequence_start, self.source_sequence_end)
+        if any(value is not None for value in source_values):
+            if (
+                self.source_sequence_start is None
+                or self.source_sequence_end is None
+                or self.source_sequence_start < 1
+                or self.source_sequence_end < self.source_sequence_start
+                or self.source_delta_count < 1
+                or self.source_delta_count
+                != self.source_sequence_end - self.source_sequence_start + 1
+            ):
+                raise ValueError("runtime event source range is invalid")
+        elif self.source_delta_count != 1:
+            raise ValueError("runtime event source count requires a source range")
+        if self.projection_sequence is not None and self.projection_sequence < 1:
+            raise ValueError("runtime event projection sequence is invalid")
+        if self.sequence is not None and self.sequence < 1:
+            raise ValueError("runtime event sequence is invalid")
+        if (
+            self.projection_sequence is not None
+            and self.sequence is not None
+            and self.projection_sequence != self.sequence
+        ):
+            raise ValueError("runtime event sequence must equal projection sequence")
+        for value in (self.content_sha256, self.source_content_sha256):
+            if value is not None and re.fullmatch(r"[0-9a-f]{64}", value) is None:
+                raise ValueError("runtime event content hash is invalid")
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeTurnMetrics:
+    raw_notification_count: int = 0
+    source_event_count: int = 0
+    source_delta_count: int = 0
+    projection_event_count: int = 0
+    coalesced_flush_count: int = 0
+    maximum_pending_bytes: int = 0
+    item_count: int = 0
+    tool_count: int = 0
+    visible_text_chars: int = 0
+    duration_ms: int = 0
+    flush_reasons: tuple[tuple[str, int], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,6 +209,7 @@ class RuntimeTurnResult:
     terminal_status: RuntimeTerminalStatus
     events: tuple[RuntimeEvent, ...]
     safe_error_code: str | None = None
+    metrics: RuntimeTurnMetrics = field(default_factory=RuntimeTurnMetrics)
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,6 +230,7 @@ class AgentRuntimePort(Protocol):
     async def health(self) -> RuntimeHealthSnapshot: ...
     async def start_thread(self, request: RuntimeThreadRequest) -> RuntimeThreadHandle: ...
     async def resume_thread(self, thread_id: str) -> RuntimeThreadHandle: ...
+    async def compact_thread(self, thread: RuntimeThreadHandle) -> None: ...
     async def run_turn(self, request: RuntimeTurnRequest) -> RuntimeTurnResult: ...
     async def steer(self, thread: RuntimeThreadHandle, turn_id: str, input: tuple[RuntimeInput, ...]) -> None: ...
     async def interrupt(self, thread: RuntimeThreadHandle, turn_id: str) -> None: ...

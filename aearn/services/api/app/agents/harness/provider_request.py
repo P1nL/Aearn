@@ -3,10 +3,16 @@ from __future__ import annotations
 
 import json
 
-from app.agents.harness.contracts import TUTOR_PLANNING_QUESTION_KEYS, TutorContextSelection, TutorRunSnapshot
+from app.agents.harness.contracts import (
+    TUTOR_PLANNING_QUESTION_KEYS,
+    TutorContextSection,
+    TutorContextSelection,
+    TutorRunSnapshot,
+)
 from app.services.tutor.decision_protocol import (
     TUTOR_PROVIDER_ITEMS_SCHEMA_VERSION,
     canonical_tutor_provider_items_example,
+    canonical_tutor_teaching_step_example,
     canonical_tutor_wait_for_input_examples,
 )
 
@@ -64,13 +70,33 @@ class TutorProviderRequestSerializer:
             "Managed actions are two-phase: when eligible Skill summaries are present but no selected Skill instruction "
             "is present, emit select_skill first. The server will rebuild context; only then request a capability or "
             "propose an effect. Do not select a Skill when a normal direct reply is sufficient. "
-            "For a normal direct reply, use action.type=turn_completed. "
+            "For a normal non-teaching direct reply, use action.type=turn_completed. "
             "Minimal valid direct-reply example: "
             f"{canonical_tutor_provider_items_example()} "
             "Valid wait_for_input examples for every continuation branch: "
             f"{canonical_tutor_wait_for_input_examples()} "
             f"Teaching policy: {TUTOR_TEACHING_POLICY}"
         )
+        if any(item.section is TutorContextSection.TEACHING_SESSION for item in context.items):
+            system += (
+                " This teaching request also permits action.type=teaching_step. "
+                "First select exact tutor.lesson-teaching@1.1.0 if it is not selected; after its instruction is present, "
+                "use exactly one teaching_step and never use turn_completed as a teaching shortcut. When current_input is "
+                "absent, recent_messages are bounded learner-visible continuity from this exact teaching session: continue "
+                "after the latest message instead of restarting or substantially paraphrasing an explanation already given. "
+                "Repeat or reframe only when the stimulus explicitly requests change_example, or checkpoint authority requires "
+                "remediation or summary. LessonDocument is the stable reference; Tutor must use current learner/stimulus evidence "
+                "for diagnosis, guided reasoning, immediate feedback, or transfer instead of restating document structure or definitions. "
+                "A teaching unit must combine 2..4 unique teaching_moves. learner_response_mode=composer means message.text ends with one "
+                "specific answerable task and the next step comes from a learner message; learner_response_mode=none permits a conditional "
+                "server-projected continue only when another non-repetitive high-value unit exists. For continue, inspect recent_teaching_units "
+                "and change action, move combination, focus, or transfer target; never replay the same message hash. change_example may preserve "
+                "the purpose but must use worked_example or counterexample. A covered concept should normally advance to an example, comparison, "
+                "prediction, error check, feedback, or micro-transfer rather than receive the same introductory definition again. teaching_step may "
+                "reference only objective_id, focus_id, and source_handles listed by the server, and its public_message "
+                "must exactly equal message.text. Valid teaching-step example: "
+                f"{canonical_tutor_teaching_step_example()}"
+            )
         payload = {
             "input_revision": run.input_revision,
             "current_input": (

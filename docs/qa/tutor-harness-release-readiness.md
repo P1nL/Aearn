@@ -44,16 +44,16 @@ active legacy source/dependency audit 为零匹配、current-doc link/whitespace
 | Gate | Contract / rejected behavior | 命令或测试 | 当前结果 | 残余风险 |
 | --- | --- | --- | --- | --- |
 | Config / static quality | proactive default config 与 worker composition 可 import、lint、type-check；Desktop 可编译 | `compileall -q app`、modified-path `ruff`、`mypy app`、`pnpm desktop:check` | **Pass（full matrix 已完成）** | no live provider claim |
-| Default proactive delivery | verified terminal signal → candidate → durable exact Skill selection → only `tutor.activity.record` → activity/inbox；unverified is `cutover_unverified` with no provider/run | `tests/test_tutor_proactive_default_delivery.py` + candidates/policy/curation/routes/worker set | **Pass — 23 tests** | fake provider proves boundary, not real teaching quality |
+| Default proactive delivery | verified terminal signal → candidate → durable exact Skill selection → only `tutor.activity.record` → activity/inbox；unverified is `cutover_unverified` with no provider/run | `tests/tutor/test_tutor_proactive_default_delivery.py` + candidates/policy/curation/routes/worker set | **Pass — 23 tests** | fake provider proves boundary, not real teaching quality |
 | Core Harness/effects | capability default-deny、finite loop、execution prohibition、run repository/selection evidence、activity projection | capability/run-loop/execution/run-repository/activity focused set | **Pass — 31 tests** | full API suite passed; fake/controlled boundary only |
-| Schema/cutover | repeatable bootstrap, exact clean-slate receipt, blocked contamination/checkpoint scope | `tests/test_db_bootstrap.py tests/test_harness_cutover.py` | **Pass — 13 tests** | full serial suite and audit passed; no real account data |
+| Schema/cutover | repeatable bootstrap, exact clean-slate receipt, blocked contamination/checkpoint scope | `tests/database/test_db_bootstrap.py tests/integration/test_harness_cutover.py` | **Pass — 13 tests** | full serial suite and audit passed; no real account data |
 | Background safety | background public text stripped; no chat/notification/runner/subprocess/memory direct write; curation remains default-off | `proactive_worker.py` composition + default-delivery regression | **Pass** | no long-running production worker soak test is claimed |
 | Legacy code/package retirement | active Graph/router/SDK source and direct package pins removed in current patch; dated docs moved to archive | current working-tree diff | **Pass — active source/dependency audit returned no matches** | archive/transition historical text remains intentionally retained |
 | Documentation split | current runtime/index docs added/updated; transition and four dated docs labelled historical | current documentation patch | **Pass — current-contract link and whitespace check found 0 broken links** | historical docs remain deliberately labelled |
 
 ## Proactive default fixture proof
 
-The regression in `tests/test_tutor_proactive_default_delivery.py` deliberately
+The regression in `tests/tutor/test_tutor_proactive_default_delivery.py` deliberately
 uses a disposable verified user, deterministic provider and explicit test clock.
 It proves all of the following without raw learner content:
 
@@ -91,7 +91,7 @@ result for this patch.
 ### Resolved full-suite fixture regression
 
 The first final API run reached **273 passed, 2 failed**. The failure was not
-hidden: `tests/test_tutor_executor_job_store.py` intentionally commits a
+hidden: `tests/runners/test_tutor_executor_job_store.py` intentionally commits a
 `tutor_persistence` fixture for independent connection/`SKIP LOCKED` coverage.
 The fixture now creates a verified `harness_cutovers` receipt, but its explicit
 cleanup still deleted `users` first. PostgreSQL correctly rejected the delete
@@ -144,8 +144,8 @@ PostgreSQL current/history 集成证据，以及默认禁用的固定五轮 real
 
 | Gate | 命令/证据 | 结果 | 边界 |
 | --- | --- | --- | --- |
-| Eval schema / safe receipt | `tests/test_tutor_evals.py` | **7 passed** | v1 兼容；v2 receipt 不含 raw prompt/history/provider body/reasoning/credential |
-| Smoke default boundary | `tests/test_tutor_context_eval_smoke.py tests/test_tutor_real_provider_smoke.py` | **2 passed, 1 skipped** | `TUTOR_REAL_PROVIDER_SMOKE` 未启用；未构造真实 provider |
+| Eval schema / safe receipt | `tests/tutor/test_tutor_evals.py` | **7 passed** | v1 兼容；v2 receipt 不含 raw prompt/history/provider body/reasoning/credential |
+| Smoke default boundary | `tests/smoke/test_tutor_context_eval_smoke.py tests/smoke/test_tutor_real_provider_smoke.py` | **2 passed, 1 skipped** | `TUTOR_REAL_PROVIDER_SMOKE` 未启用；未构造真实 provider |
 | Cross-contract focused batch | eval/smoke + context builder/budget/provider/run-loop/loader/summary/repository/bootstrap | **130 passed, 1 skipped in 4.11s** | PostgreSQL/bootstrap 串行；skip 是显式 real-provider case |
 | Calibration | versioned provider/protocol/capability/mode/estimator/config grouping | **Pass** | 样本不足不输出 P50/P95；报告只建议 review，不自动改生产配置 |
 | Complete API suite | `uv --directory .\aearn\services\api run python -m pytest -q` | **404 passed, 1 skipped in 33.41s** | 唯一 skip 为未启用的 `real_provider` smoke |
@@ -191,7 +191,7 @@ PostgreSQL current/history 集成证据，以及默认禁用的固定五轮 real
 
 | Gate | 命令或证据 | 结果 | 边界 |
 | --- | --- | --- | --- |
-| Lesson contract / quality / authoring | `tests/test_lesson_document_contracts.py tests/test_lesson_document_quality.py tests/test_lesson_document_authoring.py` | **9 passed** | 严格注册 block union、canonical hash、来源/引用/覆盖质量门和 fake author failure-closed |
+| Lesson contract / quality / authoring | `tests/learning/test_lesson_document_contracts.py tests/learning/test_lesson_document_quality.py tests/learning/test_lesson_document_authoring.py` | **9 passed** | 严格注册 block union、canonical hash、来源/引用/覆盖质量门和 fake author failure-closed |
 | Repository / API / bootstrap / cutover | Lesson repository、Lesson routes、`test_db_bootstrap.py`、LearningTrack repository、cutover | **26 passed** | PostgreSQL 串行；覆盖 7 张 Lesson 表、约束、索引、触发器、reindex 后快照、start freeze、proposal/migration、export/reset |
 | Grounding 回归 | source/fetch/processing/retrieval/citation/reindex/index/policy | **47 passed** | `source_version_label`、`source_version_kind` 与原始文档 hash/chunk hash 分离并 round-trip |
 | LearningTrack / Tutor 回归 | track routes、plan sessions、context builder、run loop | **40 passed** | Lesson authority 未扩大通用 Tutor capability payload，也未注入完整课程正文 |
@@ -304,7 +304,7 @@ local export/reset/cutover，以及 verified-only API。旧 `review_states`、`r
 
 | Gate | 命令或证据 | 结果 | 边界 |
 | --- | --- | --- | --- |
-| 核心语言 / tier matrix | `uv --directory .\aearn\services\api run python -m pytest -q tests/test_learning_agent_integration_matrix.py` | **5 passed** | 四种核心语言 + 扩展/降级/空 lock 真实性 |
+| 核心语言 / tier matrix | `uv --directory .\aearn\services\api run python -m pytest -q tests/integration/test_learning_agent_integration_matrix.py` | **5 passed** | 四种核心语言 + 扩展/降级/空 lock 真实性 |
 | 串行权威与隐私聚焦批次 | planning facts/context eval/references + Action/execution/redaction + cutover/bootstrap/Gate/Review/model-review/integration files | **84 passed in 29.72s** | PostgreSQL bootstrap-heavy tests 单进程串行 |
 | API dependency lock | `uv --directory .\aearn\services\api lock --check` | **Pass — Resolved 54 packages** | 无 lock drift |
 | API Ruff | `uv --directory .\aearn\services\api run ruff check app tests` | **Pass** | `All checks passed!` |
@@ -341,3 +341,36 @@ local export/reset/cutover，以及 verified-only API。旧 `review_states`、`r
 Child 1-6 的 protocol、Runtime、typed tools、durable projection、controlled plan-drafting cutover 与 QA/doc evidence 已在本地集成。完整 API suite 为 **660 passed, 2 skipped**；Codex focused matrix 为 **66 passed**，public/SSE/redaction focused matrix 为 **21 passed**；Ruff、Mypy（192 source files）、compileall、lock、bootstrap twice 与 Desktop build 均通过。进程泄漏计数和 credential literal scan 均为 0。
 
 一次真实 `deepseek-v4-flash` Responses tool-repair smoke 已在 Child 1 获用户明确批准后通过；本 QA 不重复产生第二次付费调用。详细 exact target、failure matrix、rollback、evidence retention 和 non-claims 见 [`codex-sidecar-integration-readiness.md`](./codex-sidecar-integration-readiness.md)。这些本地结果不批准生产 rollout、push、deploy、Codex 安装/升级或所有 Tutor scope 切换。
+
+## 课程意图与 Runtime 流 Parent 最终集成证据（2026-08-21）
+
+Parent `08-21-tutor-planning-intent-runtime-stream-reliability` 已在课程意图 Generated UI 与 Runtime delta coalescing 两个 Child 独立提交、验证和归档后完成最终集成复核。PostgreSQL deterministic matrix 覆盖 Python 自动确认、frontend/backend、多语言、conflict 与 full catalog；fake App Server 覆盖 5,000 单字符 reasoning delta、2,500-delta LearningPlan tool repair、timer/size/boundary flush、feature-off、独立语义预算、source/projection receipt 与 terminal/replay/gap/restart 回归。
+
+Parent 最终质量门为完整 API suite **689 passed, 2 skipped**、Ruff、Mypy（194 source files）、lock、compileall、bootstrap twice、Desktop 48 tests/build、Parent Trellis validate 与 `git diff --check` 全部通过。新一轮三视口 DOM/交互/刷新复验无溢出、overlay 或 console error/warning；截图调用超时，因此截图证据沿用同一工作区 Child 2 已保存的三张临时目录截图，不宣称产生了新的 Parent 截图。详细验收映射见 Parent `research/final-integration-evidence.md`。未调用真实 provider；该证据不构成 push、部署或生产发布批准。
+
+## Closed teaching action Loop 本地证据（2026-08-23）
+
+Trellis Child `08-22-harness-closed-teaching-action-loop` 已在本地 PostgreSQL 与 fake/disabled provider 上完成 backend-only 验证。实现覆盖 exact `tutor.lesson-teaching@1.0.0`、required `TEACHING_SESSION` context、strict one-action `teaching_step`、bounded focus reducer、atomic checkpoint/action-receipt/message/run commit、server-owned Action Shelf、Free Reading reactive policy、authority-refresh successor session、completion pause 与显式 latest-roadmap transition。
+
+最终证据：
+
+- Child 2 focused Harness/teaching/context/provider/eval matrix：**187 passed**；
+- PostgreSQL bootstrap 连续执行两次：均完成；bootstrap/cutover/teaching-governance smoke：**5 passed**；
+- 完整 API suite：**711 passed, 2 skipped in 213.87s**；两项 skip 保持既有显式 gated posture；
+- `ruff check app tests`：通过；
+- `mypy app --no-incremental`：**199 source files** 无问题；
+- Child Trellis validate 与 `git diff --check`：通过，只有已知工作树 line-ending warning；
+- standalone `TeachingSessionService` import smoke：通过，未保留新增 circular import。
+
+验证额外复现并修正了两个数据库/authority 问题：早期 `fk_tutor_teaching_checkpoint_source_stimulus` 的 `RESTRICT` 会使已有 action checkpoint 的 local reset 在中途失败，bootstrap 现只在旧 predicate/constraint 存在时迁移为 deferred `NO ACTION`；progress authority 更新后旧 active session 现追加 `authority_pause` checkpoint 并置为 blocked，successor 冻结新 authority，避免把 completed evidence 写入 stale session。
+
+本轮未调用真实 provider，未运行 Desktop/Tauri、未 push、未部署、未修改生产数据，也不构成发布批准。Desktop 主次布局与 closed teaching action 的跨 Gate/Review 自动触发仍由后续 child 验证。
+
+## 2026-08-23：Adaptive teaching integration Child 4 本地证据
+
+- Focused Child 4 batch：**50 passed**；teaching/Gate/Review/Lesson regression：**33 passed**；`test_tutor_adaptive_teaching_evals.py`：**4 passed**。
+- 完整 API suite：**716 passed, 2 skipped**（单进程串行，182.93s）。Ruff 全通过；Mypy：**200 source files**。
+- Desktop Vitest：**58 passed**；`desktop:check` / Vite production build通过。
+- 生成 disposable PostgreSQL database，空库执行 bootstrap 两次后为 **134 public tables**、`tutor_teaching_sessions=0`，随后强制关闭连接并删除该临时 database。
+- Browser 使用 disposable stateful fake API/provider验证 Guided ↔ Free Reading、草稿跨 mode保留、reload/reconnect、Action Shelf与 1440×900 / 900×900 / 390×844；三个视口 `scrollWidth == clientWidth`、overlay=false、console error/warning=0、protected marker=[]。fake SSE主动关闭用于触发可恢复 `STREAM_INCOMPLETE`，未当作生产流稳定性证明。
+- 未调用真实 provider、真实 executor或生产数据；未 push、部署或发布。以上仅为本地工程就绪证据，不构成 provider、部署、production migration或 release批准。

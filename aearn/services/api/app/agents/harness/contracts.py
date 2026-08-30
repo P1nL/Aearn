@@ -17,6 +17,7 @@ from app.core.teaching_safety import (
     sanitize_message_content,
     sanitize_summary_text,
 )
+from app.services.learning.teaching_contracts import TeachingStepDecision
 from app.services.llm.contracts import LLMUsage
 
 
@@ -83,6 +84,7 @@ class TutorTerminalOutcome(str, Enum):
 
 class TutorContextSection(str, Enum):
     SYSTEM = "system"
+    TEACHING_SESSION = "teaching_session"
     REQUIRED_FACTS = "required_facts"
     ACTION_RECEIPTS = "action_receipts"
     ACTIVE_PLAN = "active_plan"
@@ -96,6 +98,7 @@ class TutorContextSection(str, Enum):
 
 CONTEXT_SECTION_PRIORITY: tuple[TutorContextSection, ...] = (
     TutorContextSection.SYSTEM,
+    TutorContextSection.TEACHING_SESSION,
     TutorContextSection.REQUIRED_FACTS,
     TutorContextSection.ACTION_RECEIPTS,
     TutorContextSection.RECENT_MESSAGES,
@@ -485,6 +488,7 @@ class TutorContextInput:
     current_input_required: bool
     current_input: TutorContextSource | None = None
     system_descriptors: tuple[TutorContextSource, ...] = ()
+    teaching_session: tuple[TutorContextSource, ...] = ()
     required_facts: tuple[TutorContextSource, ...] = ()
     action_receipts: tuple[TutorContextSource, ...] = ()
     active_plan: tuple[TutorContextSource, ...] = ()
@@ -512,6 +516,7 @@ class TutorContextInput:
         object.__setattr__(self, "conversation_id", _safe_identifier(self.conversation_id))
         for name in (
             "system_descriptors",
+            "teaching_session",
             "required_facts",
             "action_receipts",
             "active_plan",
@@ -533,6 +538,7 @@ class TutorContextInput:
     def section_sources(self) -> tuple[tuple[TutorContextSection, tuple[TutorContextSource, ...]], ...]:
         return (
             (TutorContextSection.SYSTEM, self.system_descriptors),
+            (TutorContextSection.TEACHING_SESSION, self.teaching_session),
             (TutorContextSection.REQUIRED_FACTS, self.required_facts),
             (TutorContextSection.ACTION_RECEIPTS, self.action_receipts),
             (TutorContextSection.ACTIVE_PLAN, self.active_plan),
@@ -967,6 +973,7 @@ class TutorDecision:
     checkpoint_reason: TutorCheckpointReason | None = None
     continuation_kind: TutorContinuationKind | None = None
     terminal_outcome: TutorTerminalOutcome | None = None
+    teaching_step: TeachingStepDecision | None = None
 
     def __post_init__(self) -> None:
         if self.public_message is not None:
@@ -1002,6 +1009,13 @@ class TutorDecision:
                 raise ValueError("Tutor continuation cannot also be terminal")
         if self.terminal_outcome is not None and self.continuation_kind is not None:
             raise ValueError("Tutor decision cannot combine terminal and continuation intent")
+        if self.teaching_step is not None:
+            if self.public_message != self.teaching_step.public_message:
+                raise ValueError("teaching step public message must match the Tutor message")
+            if self.terminal_outcome is not TutorTerminalOutcome.COMPLETED:
+                raise ValueError("teaching step must complete one finite TurnRun")
+            if self.skill_references or self.capability_requests or self.effect_proposals or self.continuation_kind is not None:
+                raise ValueError("teaching step cannot combine another action")
         if not any(
             (
                 self.public_message,
@@ -1011,6 +1025,7 @@ class TutorDecision:
                 self.checkpoint_reason,
                 self.continuation_kind,
                 self.terminal_outcome,
+                self.teaching_step,
             )
         ):
             raise ValueError("Tutor decision must contain a bounded action or terminal intent")
@@ -1155,6 +1170,7 @@ class TutorRunResult:
     completion_reason: TutorTurnCompletionReason | None = None
     diagnostic_code: str | None = None
     effect_results: tuple[TutorEffectResult, ...] = ()
+    teaching_step: TeachingStepDecision | None = None
 
     def __post_init__(self) -> None:
         if self.input_revision < 0:
@@ -1185,6 +1201,11 @@ class TutorRunResult:
                 raise ValueError("Tutor completion reason requires a completed terminal source turn")
         if self.diagnostic_code is not None:
             object.__setattr__(self, "diagnostic_code", _safe_identifier(self.diagnostic_code))
+        if self.teaching_step is not None:
+            if self.public_message != self.teaching_step.public_message:
+                raise ValueError("teaching result message must match its teaching step")
+            if self.status is not TutorRunStatus.COMPLETED or self.terminal_outcome is not TutorTerminalOutcome.COMPLETED:
+                raise ValueError("teaching step result must be completed")
         object.__setattr__(self, "effect_results", tuple(self.effect_results))
 
 

@@ -1,12 +1,12 @@
 # Frontend Development Guidelines
 
-> Best practices for frontend development in this project.
+> Current development rules for the Aearn Tauri/React desktop.
 
 ---
 
 ## Overview
 
-This directory contains guidelines for frontend development. Fill in each file with your project's specific conventions.
+The formal desktop runtime lives under `aearn/apps/desktop/`. Current behavior is defined by the implementation and the documents indexed by `docs/README.md`; the protected HTML design under `docs/design/` is reference material, not runtime source.
 
 ---
 
@@ -14,12 +14,12 @@ This directory contains guidelines for frontend development. Fill in each file w
 
 | Guide | Description | Status |
 |-------|-------------|--------|
-| [Directory Structure](./directory-structure.md) | Module organization and file layout | Filled |
-| [Component Guidelines](./component-guidelines.md) | Component patterns, props, composition | Filled |
-| [Hook Guidelines](./hook-guidelines.md) | Custom hooks, data fetching patterns | Filled |
-| [State Management](./state-management.md) | Local state, global state, server state | Filled |
-| [Quality Guidelines](./quality-guidelines.md) | Code standards, forbidden patterns | Filled |
-| [Type Safety](./type-safety.md) | Type patterns, validation | Filled |
+| [Directory Structure](./directory-structure.md) | Application shell, feature, contract, API, UI, and style layout | Filled |
+| [Component Guidelines](./component-guidelines.md) | Component composition and interaction patterns | Filled |
+| [Hook Guidelines](./hook-guidelines.md) | Custom hooks and stream/data behavior | Filled |
+| [State Management](./state-management.md) | Local, global, server, and authority state | Filled |
+| [Quality Guidelines](./quality-guidelines.md) | Frontend gates and forbidden patterns | Filled |
+| [Type Safety](./type-safety.md) | Contract and validation patterns | Filled |
 
 ---
 
@@ -27,12 +27,11 @@ This directory contains guidelines for frontend development. Fill in each file w
 
 Before frontend work:
 
-1. Read the guide that matches the touched layer.
-2. Cross-check page and component behavior against `docs/product/frontend-interaction-spec.md`.
-3. Run desktop commands from `aearn/` or `aearn/apps/desktop/`, not the repository root.
-
-The goal is to help AI assistants and new team members preserve the Aearn desktop interaction boundary.
+1. Read the guide matching the touched surface.
+2. Start from `docs/README.md`, then cross-check behavior against `docs/product/frontend-interaction-spec.md`, `docs/product/user-flows.md`, and the current API contract.
+3. Treat the current Desktop implementation as the optimization baseline; do not rebuild the product inside `docs/design/`.
+4. Run commands from `aearn/` or `aearn/apps/desktop/`, not the repository root.
 
 ---
 
-**Language**: All documentation should be written in **English**.
+**Language**: Project specs may remain English unless a task-specific rule requires another language. Trellis task artifacts under `.trellis/tasks/**` follow the repository's Simplified Chinese rule.

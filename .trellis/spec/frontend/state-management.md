@@ -155,3 +155,42 @@ Persist the user boundary before rendering new facts, then persist the plan only
 
 - Desktop bootstrap/恢复必须把 thread-turn capability 当服务器状态；`effective_enabled=false` 时 mutation 进入只读 unavailable，不回退 legacy continuation。
 - capability refresh 替换本地 projection；不得本地推进 generation/state、恢复已收口 legacy run 或绕过 blocked。
+
+## 场景：Guided/自由阅读工作区 authority（2026-08-23）
+
+### 1. 适用范围与触发条件
+
+- 触发：修改 `TrackLearningWorkspace`、`useTeachingWorkspaceController`、教学 mode/session、Lesson follow 或历史 session 引用。
+
+### 2. 状态签名
+
+`useTeachingWorkspaceController` 独占 current teaching session、server mode/status/checkpoint、Action Shelf、pending action、conflict/error 与 abort；Tutor draft/reference/stream、Lesson selection/Gate/scroll 分别留在原组件内。
+
+### 3. 契约
+
+- Guided/Free Reading 通过一份稳定挂载的 Tutor 与一份稳定挂载的 Lesson 做 CSS grid-area 主次换位，不复制组件、conversation、document 或 SSE reducer。
+- `mode/status/checkpoint/action_shelf` 是 server state；切换成功后采用 mutation projection，409 只刷新 authority，不自动重放。
+- `following | follow_paused` 是本地展示状态。用户滚动、键盘阅读、选区、citation/Gate 交互或进入 Free Reading 都暂停跟随；返回 Guided 保持 paused，只有新 knowledge/session 或显式“回到当前讲解”恢复。
+- historical teaching reference 不改变 active `knowledge_key`、task kind、mode、Composer draft 或 panel；历史引用自己的 source knowledge 仅存在于 exact reference DTO。
+
+### 4. 验证与错误矩阵
+
+- stale session/checkpoint/version -> 显示 `TEACHING_AUTHORITY_CONFLICT`，保留 draft/reference/selection/scroll，刷新不重放。
+- assignment/document/block handle 不匹配 -> 暂停 follow 并显示可恢复 conflict，不猜测 block。
+- current session identity 变化 -> follow 可重置；普通 snapshot refresh 不重置。
+
+### 5. 正常、基础与错误案例
+
+- 正常：Free Reading 切回 Guided 后仍停在用户阅读位置，显式恢复才滚到最新 exact block。
+- 基础：历史分段无当前 bounded messages 时只显示加载更早记录提示。
+- 错误：用 mode 切换 key 强制 remount Tutor/Lesson，或在 409 后重放 mutation。
+
+### 6. 必须测试
+
+- single mount/SSE、draft/reference/scroll 保持、mode success/conflict、follow pause/resume/new-session reset。
+- exact historical reference 不能改 active scope，发送成功后才清空 reference chips。
+
+### 7. 错误与正确写法
+
+- 错误：`key={teachingMode}` 重建 Tutor/Lesson，或本地先写 server mode。
+- 正确：controller 接受 server projection；DOM 保持 mounted，仅用 role class/grid area 换位。

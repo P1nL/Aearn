@@ -241,7 +241,7 @@ which internal `--dsw-*` compatibility aliases may exist.
 - Components are controlled, presentational React 19 components. They accept typed props/callbacks and never read Tutor APIs, Zustand stores, session state, or upstream runtime context.
 - `DshDerivedRoot` establishes the compatibility scope. Product code consumes public exports and `--aearn-*` tokens rather than importing implementation CSS directly.
 - `DshDerivedRoot` renders a real `div`; it does not transparently forward a parent flex/grid height contract. A height-constrained product surface must add a product-owned layout class that carries `width: 100%`, `height: 100%`, `min-width: 0`, `min-height: 0`, and the required flex behavior to the root before relying on a descendant `height: 100%`. Keep this layout adapter outside `ui/dsh-derived`.
-- A Tutor feature may derive an ephemeral `Think` row from authoritative `active_turn.status === "in_progress"` plus `control_state === "running"`. Before validated public text it is a non-interactive `StateDot + Think` status with `data-turn-id`; exact `active_thinking`/`turn_output append` only fills a provisional buffer, and the row becomes a controlled disclosure only after validated `complete` plus the first-text stability window. It never consumes `process`, raw trace, provider reasoning, prompt, or arbitrary SSE payload. The successful snapshot reconciles the row by turn identity with persisted `public_thinking_text + answer` instead of rendering a duplicate.
+- A Tutor feature may derive an ephemeral `think` row from authoritative `active_turn.status === "in_progress"` plus `control_state === "running"`. Harness/public-thinking uses exact `active_thinking`; Codex sidecar uses only the exact owner-scoped `active_runtime_output` / `tutor_runtime_item_stream_v1` projection. It never consumes `process`, arbitrary provider objects, raw trace, prompt, commentary, reasoning summary, or arbitrary SSE payload. The successful snapshot reconciles by turn identity with persisted `public_thinking_text + answer` or `runtime_output` instead of rendering a duplicate.
 - A typed-request learner response reuses the ordinary learner message bubble and renders only the server-projected natural-language result. Never expose `question_key`, `field_key`, internal option values, serialized JSON, or quoted raw values such as `experience_level: "new"`.
 - `Button`, `Input`, `DisclosureRow`, and `Tooltip` preserve native keyboard semantics, visible focus, disabled/busy behavior, and refs where the native element has one.
 - `MessageText` renders literal text only. It does not parse Markdown or HTML.
@@ -273,7 +273,7 @@ which internal `--dsw-*` compatibility aliases may exist.
 - Base: a static `Pill` renders as text; an interactive `Pill` renders as a native button.
 - Bad: import a Tutor store or `api.ts` from `ui/dsh-derived`.
 - Bad: insert the root wrapper into a full-height flex/grid chain without a layout adapter, leaving the Composer positioned against an approximately content-height root.
-- Bad: render “Tutor 正在思考”/helper copy, make the empty row a disabled button, stream provider reasoning, number model text, or retain live and persisted copies together.
+- Bad: render “Tutor 正在思考”/helper copy, make the empty row a disabled button, consume arbitrary provider reasoning instead of the exact Aearn Runtime projection, number model text, or retain live and persisted copies together.
 - Bad: use `--dsw-*` in product CSS, copy brand icons, or install an upstream UI/runtime package.
 
 ### 6. Tests Required
@@ -376,3 +376,111 @@ return hasText
   ? <TutorThinking title="Think" text={text} expanded={expanded} />
   : <div role="status"><StateDot state="running" /><strong>Think</strong></div>;
 ```
+
+## 场景：Tutor Codex raw Runtime reasoning 与 answer 同项接替（2026-08-20）
+
+### 1. 适用范围与触发条件
+
+- 触发：修改 `TutorConversationSurface` 的 `active_runtime_output`、`tutor_runtime_item_stream_v1` reducer、Codex 历史消息或恢复快照。
+
+### 2. 组件签名
+
+```tsx
+<TutorRunningPlaceholder turn={turn} runtimeOutput={liveRuntimeOutput} ... />
+<TutorRuntimeMessage item={message} output={message.runtime_output} />
+```
+
+### 3. 契约
+
+- 当前 Codex Tutor entry 内先显示小写 `think`，reasoning 使用左边框 disclosure，`final_answer_item` 在其下直接流式显示；commentary 与 reasoning summary 没有渲染入口。
+- identity 为 `turnId + input_revision + generation + item_id + channel`；append 连续累加，complete 使用后端返回的完整文本。若 complete 文本为空但本地已有非空前缀，保留前缀并只切换 `state=completed`。
+- 同 Turn/Revision 的 recovery snapshot 暂时没有 `active_runtime_output` 时保留当前已验证内容；只有 Turn 改变/终态 handoff、显式 discard/reset 或不同 revision 才清理。
+- 多个 reasoning item 按创建顺序以双换行拼接。当前 reasoning 默认展开；历史 reasoning 默认折叠；终态无 reasoning 时不渲染空 `think`。
+- fresh typed-response run 立即接管当前 entry；后端可以创建新 Turn，但 UI 必须连续显示下一项 generated UI，不要求学习者再发普通消息。
+
+### 4. 验证与错误矩阵
+
+| 状态 | 组件行为 |
+| --- | --- |
+| reasoning append | 同 item 原位追加，不清空其他 reasoning item |
+| reasoning complete 文本为空且已有前缀 | 保留前缀，标记 completed |
+| recovery snapshot 同 Turn 但 runtime output 暂缺 | 保留当前内容，等待后续 SSE/snapshot |
+| incoming generation 较旧 | 忽略 |
+| explicit discard | 仅删除对应 item |
+| 历史 runtime_output 有 reasoning | 默认折叠显示 `think` 与下方 answer |
+| 历史 runtime_output 无 reasoning | 仅显示 answer，无空 disclosure |
+
+### 5. 正常、基础与错误案例
+
+- 正常：两个 reasoning item 连续流式出现，首项 text-less complete 后文本不变，answer 在下方继续流式，刷新后历史仍可展开完整 reasoning。
+- 基础：只有 final answer，终态不出现空 `think`。
+- 错误：snapshot 的瞬时 null 清空当前 reasoning；complete 空字符串覆盖累计 delta；把 commentary 拼进 `think`；为每个 fresh backend Turn 重置整个可见对话。
+
+### 6. 必须测试
+
+- Testing Library：raw reasoning/answer 同项流式、空 complete 保留文本、同 Turn snapshot gap 保留、历史默认折叠、无 reasoning 无空行、fresh typed response 立即挂载。
+- API parser：v3 snapshot 与历史 `runtime_output` exact keys/limits/identity；provider metadata、commentary、external IDs 和 extra key 拒绝。
+- 真实浏览器 fake/offline smoke：当前展开、历史折叠、刷新/重连、下一项 generated UI 连续出现、console clean，禁止调用真实 provider。
+
+### 7. 错误与正确写法
+
+#### 错误
+
+```ts
+if (!snapshot.active_runtime_output) setRuntimeOutput(null);
+```
+
+#### 正确
+
+```ts
+if (!snapshot.active_turn) clearRuntimeOutput();
+else if (snapshot.active_runtime_output) mergeByTurnRevisionGeneration(snapshot.active_runtime_output);
+else preserveValidatedCurrentRuntimeOutput();
+```
+
+## Scenario: Dynamic planning language selector (2026-08-21)
+
+- The language `single_select` renders only the durable request's exact options and order. It never refetches or reconstructs the course catalog while the request is pending.
+- Language requests have `recommended=null`; no radio is initially selected and Submit remains disabled until the learner selects one option. Non-language recommendation behavior remains unchanged.
+- Safe select drafts may be retained in `sessionStorage` by exact request ID/version so reload/reconnect restores only a value still present in the durable options. Free text is not stored by this mechanism.
+- Required browser states are explicit-language skip, frontend/backend/multi-language/conflict/full catalog, refresh recovery, keyboard focus, and no horizontal overflow at 1440x900, 900x900, and 390x844.
+
+## 场景：Guided/自由阅读稳定双面板与历史引用（2026-08-23）
+
+### 1. 适用范围与触发条件
+
+- 触发：学习工作区布局、`WorkspaceModeSwitch`、`ComposerActionShelf`、教学 session timeline 或历史消息引用按钮。
+
+### 2. 组件签名
+
+`TrackLearningWorkspace` 始终渲染一个 `TutorConversationSurface` 和一个 `LessonDocumentPage`；`ComposerActionShelf` 是纯受控组件；历史消息通过 `onHistoricalMessageReference(draft,label)` 向工作区增加引用。
+
+### 3. 契约
+
+- Guided：路线 / Tutor 主区 / Lesson 次区；Free Reading：路线 / Lesson 主区 / 同一 Tutor 次区。模式按钮位于主区右上角，具有 accessible name、tooltip、visible focus、pending/disabled 与不小于 44px 的触控目标。
+- Action Shelf 只渲染 server descriptor，顺序为 blocking request > active runtime controls > ordinary shelf；一个 primary、最多三个 visible secondary，其他进入 overflow。`primary=null` 且 `secondary=[]` 时 `ComposerActionShelf` 返回 `null`，surface 不设置 `has-action-shelf`，不显示 placeholder 或保留空白高度；仅有 secondary descriptor 时使用 secondary-only 布局。`respond_in_composer` 只指向现有 Composer，不创建第二个输入状态。
+- historical group 只按 server `turn_ids` 分组，默认折叠、展开只读；每条历史 message 的“引用此消息”只创建 `teaching_session_message` exact DTO，不复制正文、不改 mode/active scope。
+- `input_revision=0` 的 teaching-control run 不显示 generic Stop；该 Stop API 只接受正 revision。
+
+### 4. 验证与错误矩阵
+
+- unknown/extra descriptor -> API boundary 拒绝，不渲染 fallback action。
+- active runtime/request 出现 -> ordinary shelf 退出槽位，Composer draft/reference 保持。
+- empty ordinary shelf -> 无 shelf DOM、无 `has-action-shelf`、无本地 placeholder；Composer 仍保持可见可用。
+- navigation target=`refresh_session` -> 调用现有 workspace `refresh()` 重新读取 authority，不本地 admission run。
+- history item 无 `turn_id` 或无 callback -> 不显示引用按钮。
+
+### 5. 正常、基础与错误案例
+
+- 正常：展开历史、引用一条 Tutor message，Composer chip 出现且原 draft 不变。
+- 基础：legacy history 独立只读分组，不提供猜测型 teaching-session reference；server 返回空 shelf 时 Composer 周围没有空容器或伪按钮。
+- 错误：按消息正文、标题或 DOM 顺序归组；复制历史正文进当前 learner content。
+
+### 6. 必须测试
+
+- 单一 Tutor/Lesson mount、mode role swap、Action Shelf 优先级、空 shelf DOM/class/placeholder 缺失、secondary-only、Composer response、`refresh_session`、历史只读、exact callback DTO、键盘/focus、三视口。
+
+### 7. 错误与正确写法
+
+- 错误：为 Guided/Free 各挂一套 Tutor + SSE，或在空 descriptor 时渲染“暂无操作”并根据消息文本补 Continue。
+- 正确：稳定 sibling surface + CSS role class，controller 只更换 server-authoritative mode projection；shelf 只按 descriptor count 挂载，空数组直接省略 DOM。

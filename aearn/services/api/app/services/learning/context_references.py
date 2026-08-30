@@ -29,6 +29,7 @@ class ContextReferenceKind(StrEnum):
     EXERCISE_FEEDBACK = "exercise_feedback"
     EXECUTION_RESULT = "execution_result"
     REVIEW_FEEDBACK = "review_feedback"
+    TEACHING_SESSION_MESSAGE = "teaching_session_message"
 
 
 class ContextReferenceError(ValueError):
@@ -154,6 +155,63 @@ class PostgresTutorContextReferenceRepository:
         ).fetchall()
         return tuple(_public_row(row) for row in rows)
 
+    def read_for_context(
+        self,
+        *,
+        user_id: str,
+        run_id: str,
+        input_revision: int,
+    ) -> tuple[dict[str, object], ...]:
+        public_references = self.read_for_input(
+            user_id=user_id,
+            run_id=run_id,
+            input_revision=input_revision,
+        )
+        resolved: list[dict[str, object]] = []
+        for reference in public_references:
+            if reference.get("kind") != ContextReferenceKind.TEACHING_SESSION_MESSAGE.value:
+                resolved.append(reference)
+                continue
+            row = self._conn.execute(
+                """
+                SELECT messages.content
+                FROM tutor_runs AS destination_run
+                JOIN tutor_teaching_sessions AS sessions
+                  ON sessions.id = %s
+                 AND sessions.user_id = destination_run.user_id
+                 AND sessions.conversation_id = destination_run.conversation_id
+                 AND sessions.track_id = %s
+                 AND sessions.knowledge_key = %s
+                JOIN tutor_messages AS messages
+                  ON messages.id = %s AND messages.conversation_id = sessions.conversation_id
+                LEFT JOIN tutor_run_input_events AS input_events
+                  ON input_events.message_id = messages.id
+                LEFT JOIN tutor_run_public_processes AS tutor_process
+                  ON tutor_process.tutor_message_id = messages.id
+                JOIN tutor_run_teaching_scopes AS teaching_scopes
+                  ON teaching_scopes.run_id = COALESCE(input_events.run_id, tutor_process.run_id)
+                 AND teaching_scopes.teaching_session_id = sessions.id
+                 AND teaching_scopes.user_id = sessions.user_id
+                 AND teaching_scopes.conversation_id = sessions.conversation_id
+                WHERE destination_run.id = %s AND destination_run.user_id = %s
+                """,
+                (
+                    reference["teaching_session_id"],
+                    reference["learning_track_id"],
+                    reference["knowledge_key"],
+                    reference["message_id"],
+                    run_id,
+                    user_id,
+                ),
+            ).fetchone()
+            if row is None:
+                raise ContextReferenceError(
+                    "CONTEXT_REFERENCE_STALE",
+                    "历史教学消息引用的 authority 已变化。",
+                )
+            resolved.append({**reference, "message_content": str(row.get("content") or "")})
+        return tuple(resolved)
+
     def read_for_messages(
         self,
         *,
@@ -202,7 +260,11 @@ class PostgresTutorContextReferenceRepository:
                 "CONTEXT_REFERENCE_SCOPE_CONFLICT",
                 "引用不属于当前 Tutor Conversation 的 LearningTrack。",
             )
-        if scope.knowledge_key is not None and knowledge_key != scope.knowledge_key:
+        if (
+            kind is not ContextReferenceKind.TEACHING_SESSION_MESSAGE
+            and scope.knowledge_key is not None
+            and knowledge_key != scope.knowledge_key
+        ):
             raise ContextReferenceError(
                 "CONTEXT_REFERENCE_SCOPE_CONFLICT",
                 "引用不属于当前 TurnRun 的知识点。",
@@ -226,6 +288,10 @@ class PostgresTutorContextReferenceRepository:
                 LearningTaskKind.REVIEW_COACHING,
                 LearningTaskKind.REMEDIATION,
             },
+            ContextReferenceKind.TEACHING_SESSION_MESSAGE: {
+                LearningTaskKind.LESSON_TEACHING,
+                LearningTaskKind.REMEDIATION,
+            },
         }
         if scope.task_kind not in allowed_tasks[kind]:
             raise ContextReferenceError(
@@ -234,6 +300,14 @@ class PostgresTutorContextReferenceRepository:
             )
         if kind is ContextReferenceKind.LESSON_SELECTION:
             return self._lesson_selection(user_id=user_id, track_id=track_id, knowledge_key=knowledge_key, raw=raw)
+        if kind is ContextReferenceKind.TEACHING_SESSION_MESSAGE:
+            return self._teaching_session_message(
+                user_id=user_id,
+                track_id=track_id,
+                conversation_id=scope.conversation_id,
+                knowledge_key=knowledge_key,
+                raw=raw,
+            )
         if kind is ContextReferenceKind.REVIEW_FEEDBACK:
             return self._review_feedback(user_id=user_id, track_id=track_id, knowledge_key=knowledge_key, raw=raw)
         return self._exercise_feedback(
@@ -326,6 +400,83 @@ class PostgresTutorContextReferenceRepository:
             "safe_excerpt": excerpt,
             "source_version": str(row["content_standard_version"]),
             "source_hash": content_hash,
+        }
+
+    def _teaching_session_message(
+        self,
+        *,
+        user_id: str,
+        track_id: str,
+        conversation_id: str,
+        knowledge_key: str,
+        raw: Mapping[str, object],
+    ) -> dict[str, object]:
+        session_id = str(raw.get("teaching_session_id") or "")
+        message_id = str(raw.get("message_id") or "")
+        if not session_id or not message_id:
+            raise ContextReferenceError(
+                "CONTEXT_REFERENCE_INVALID",
+                "历史教学消息引用缺少 exact session/message identity。",
+                status_code=422,
+                recoverable=False,
+            )
+        row = self._conn.execute(
+            """
+            SELECT sessions.id::text AS teaching_session_id,
+                   sessions.version AS session_version,
+                   messages.id::text AS message_id,
+                   messages.role,
+                   messages.content,
+                   messages.created_at,
+                   COALESCE(input_events.run_id, tutor_process.run_id)::text AS turn_id
+            FROM tutor_teaching_sessions AS sessions
+            JOIN tutor_messages AS messages
+              ON messages.id = %s AND messages.conversation_id = sessions.conversation_id
+            LEFT JOIN tutor_run_input_events AS input_events
+              ON input_events.message_id = messages.id
+            LEFT JOIN tutor_run_public_processes AS tutor_process
+              ON tutor_process.tutor_message_id = messages.id
+            JOIN tutor_run_teaching_scopes AS teaching_scopes
+              ON teaching_scopes.run_id = COALESCE(input_events.run_id, tutor_process.run_id)
+             AND teaching_scopes.teaching_session_id = sessions.id
+             AND teaching_scopes.user_id = sessions.user_id
+             AND teaching_scopes.conversation_id = sessions.conversation_id
+            WHERE sessions.id = %s AND sessions.user_id = %s
+              AND sessions.track_id = %s AND sessions.conversation_id = %s
+              AND sessions.knowledge_key = %s
+            """,
+            (message_id, session_id, user_id, track_id, conversation_id, knowledge_key),
+        ).fetchone()
+        if row is None:
+            raise ContextReferenceError(
+                "CONTEXT_REFERENCE_NOT_FOUND",
+                "历史教学消息不存在或不属于指定 session、conversation 与 LearningTrack。",
+                status_code=404,
+            )
+        role = str(row["role"])
+        content = str(row.get("content") or "")
+        summary = f"历史{'提问' if role == 'learner' else '讲解'}（exact session/message reference）"
+        source_version = f"teaching-session:{_int(row.get('session_version'))}"
+        source_hash = _sha256_json({
+            "teaching_session_id": session_id,
+            "message_id": message_id,
+            "turn_id": str(row["turn_id"]),
+            "role": role,
+            "content": content,
+        })
+        return {
+            "schema_version": CONTEXT_REFERENCE_SCHEMA_VERSION,
+            "kind": ContextReferenceKind.TEACHING_SESSION_MESSAGE.value,
+            "learning_track_id": track_id,
+            "knowledge_key": knowledge_key,
+            "teaching_session_id": session_id,
+            "message_id": message_id,
+            "turn_id": str(row["turn_id"]),
+            "role": role,
+            "message_summary": summary,
+            "message_created_at": _iso(row.get("created_at")),
+            "source_version": source_version,
+            "source_hash": source_hash,
         }
 
     def _exercise_feedback(
@@ -533,6 +684,7 @@ def _reference_identity(reference: Mapping[str, object]) -> str:
             for key in (
                 "kind", "learning_track_id", "knowledge_key", "document_id", "block_id",
                 "start_offset", "end_offset", "attempt_id", "review_session_id",
+                "teaching_session_id", "message_id",
             )
         }
     )

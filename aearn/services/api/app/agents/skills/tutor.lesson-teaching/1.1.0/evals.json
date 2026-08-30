@@ -1,0 +1,68 @@
+{
+  "cases": [
+    {
+      "id": "reject-document-repetition",
+      "expected": "evidence_driven_unit",
+      "forbid": [
+        "document_outline_restatement"
+      ]
+    },
+    {
+      "id": "html-structure-error-detection",
+      "expected_action": "check_understanding",
+      "expected_moves": [
+        "misconception_contrast",
+        "error_detection"
+      ],
+      "learner_response_mode": "composer"
+    },
+    {
+      "id": "code-flow-prediction",
+      "expected_moves": [
+        "guided_derivation",
+        "prediction"
+      ],
+      "learner_response_mode": "composer"
+    },
+    {
+      "id": "misconception-remediation",
+      "expected_moves": [
+        "targeted_explanation",
+        "misconception_contrast"
+      ]
+    },
+    {
+      "id": "learner-answer-feedback",
+      "expected_moves": [
+        "learner_feedback",
+        "targeted_explanation"
+      ]
+    },
+    {
+      "id": "micro-transfer-after-basics",
+      "expected_moves": [
+        "worked_example",
+        "micro_transfer"
+      ],
+      "learner_response_mode": "composer"
+    },
+    {
+      "id": "continue-changes-strategy",
+      "stimulus": "continue",
+      "expected": "non_repeated_signature"
+    },
+    {
+      "id": "change-example-keeps-purpose",
+      "stimulus": "change_example",
+      "required_any_move": [
+        "worked_example",
+        "counterexample"
+      ]
+    },
+    {
+      "id": "no-useful-next-pauses",
+      "expected_action": "recommend_pause",
+      "learner_response_mode": "none"
+    }
+  ]
+}

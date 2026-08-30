@@ -242,3 +242,50 @@ LANGUAGE_COURSE_SEEDS = [
 
 
 ARCHIVED_LANGUAGE_COURSE_SLUGS = ("course_cpp_basic_placeholder",)
+
+PLANNING_INTENT_POLICY_VERSION = "planning-language-intent-v1"
+
+LEARNING_INTENT_SEEDS = [
+    {"intent_key": "frontend", "display_name": "前端开发", "state": "active"},
+    {"intent_key": "backend", "display_name": "后端开发", "state": "active"},
+    {"intent_key": "web", "display_name": "Web 开发", "state": "active"},
+    {"intent_key": "data_analysis", "display_name": "数据分析", "state": "active"},
+    {"intent_key": "data_science", "display_name": "数据科学", "state": "active"},
+    {"intent_key": "database", "display_name": "数据库", "state": "active"},
+    {"intent_key": "automation", "display_name": "自动化", "state": "active"},
+    {"intent_key": "general_programming", "display_name": "编程基础", "state": "active"},
+    {"intent_key": "mobile", "display_name": "移动开发", "state": "active"},
+    {"intent_key": "systems", "display_name": "系统编程", "state": "active"},
+]
+
+# Slugs are permitted only in this one-time/idempotent bootstrap backfill. Runtime
+# shortlist queries use course UUIDs joined through language_course_intent_tags.
+LANGUAGE_COURSE_INTENT_TAG_SEEDS = [
+    {"course_slug": "course_js_dom_beginner", "intent_key": "frontend", "relevance_rank": 92, "is_primary": True},
+    {"course_slug": "course_js_dom_beginner", "intent_key": "web", "relevance_rank": 90, "is_primary": True},
+    {"course_slug": "course_js_dom_beginner", "intent_key": "general_programming", "relevance_rank": 58, "is_primary": False},
+    {"course_slug": "course_html_css_interaction_beginner", "intent_key": "frontend", "relevance_rank": 100, "is_primary": True},
+    {"course_slug": "course_html_css_interaction_beginner", "intent_key": "web", "relevance_rank": 98, "is_primary": True},
+    {"course_slug": "course_python_basic_beginner", "intent_key": "backend", "relevance_rank": 88, "is_primary": True},
+    {"course_slug": "course_python_basic_beginner", "intent_key": "data_analysis", "relevance_rank": 100, "is_primary": True},
+    {"course_slug": "course_python_basic_beginner", "intent_key": "data_science", "relevance_rank": 96, "is_primary": True},
+    {"course_slug": "course_python_basic_beginner", "intent_key": "automation", "relevance_rank": 98, "is_primary": True},
+    {"course_slug": "course_python_basic_beginner", "intent_key": "general_programming", "relevance_rank": 94, "is_primary": True},
+    {"course_slug": "course_typescript_node_beginner", "intent_key": "frontend", "relevance_rank": 88, "is_primary": True},
+    {"course_slug": "course_typescript_node_beginner", "intent_key": "backend", "relevance_rank": 94, "is_primary": True},
+    {"course_slug": "course_typescript_node_beginner", "intent_key": "web", "relevance_rank": 92, "is_primary": True},
+    {"course_slug": "course_typescript_node_beginner", "intent_key": "automation", "relevance_rank": 72, "is_primary": False},
+    {"course_slug": "course_typescript_node_beginner", "intent_key": "general_programming", "relevance_rank": 76, "is_primary": False},
+    {"course_slug": "course_sql_query_beginner", "intent_key": "database", "relevance_rank": 100, "is_primary": True},
+    {"course_slug": "course_sql_query_beginner", "intent_key": "data_analysis", "relevance_rank": 94, "is_primary": True},
+    {"course_slug": "course_sql_query_beginner", "intent_key": "data_science", "relevance_rank": 82, "is_primary": False},
+    {"course_slug": "course_java_basic_placeholder", "intent_key": "backend", "relevance_rank": 90, "is_primary": True},
+    {"course_slug": "course_java_basic_placeholder", "intent_key": "mobile", "relevance_rank": 86, "is_primary": True},
+    {"course_slug": "course_java_basic_placeholder", "intent_key": "general_programming", "relevance_rank": 78, "is_primary": False},
+    {"course_slug": "course_go_basic_beginner", "intent_key": "backend", "relevance_rank": 96, "is_primary": True},
+    {"course_slug": "course_go_basic_beginner", "intent_key": "systems", "relevance_rank": 92, "is_primary": True},
+    {"course_slug": "course_go_basic_beginner", "intent_key": "general_programming", "relevance_rank": 74, "is_primary": False},
+    {"course_slug": "course_csharp_basic_beginner", "intent_key": "backend", "relevance_rank": 86, "is_primary": True},
+    {"course_slug": "course_csharp_basic_beginner", "intent_key": "mobile", "relevance_rank": 82, "is_primary": True},
+    {"course_slug": "course_csharp_basic_beginner", "intent_key": "general_programming", "relevance_rank": 76, "is_primary": False},
+]

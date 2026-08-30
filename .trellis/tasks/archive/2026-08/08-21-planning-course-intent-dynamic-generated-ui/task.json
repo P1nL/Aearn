@@ -1,0 +1,32 @@
+{
+  "id": "planning-course-intent-dynamic-generated-ui",
+  "name": "planning-course-intent-dynamic-generated-ui",
+  "title": "课程意图 taxonomy 与动态 Generated UI",
+  "description": "建立 PostgreSQL 课程意图 taxonomy 与动态 Generated UI；明确语言自动确认，方向/多语言生成受控 shortlist，语言选择不默认勾选。",
+  "status": "completed",
+  "dev_type": null,
+  "scope": "plan_drafting",
+  "package": null,
+  "priority": "P0",
+  "creator": "PINKING",
+  "assignee": "PINKING",
+  "createdAt": "2026-08-21",
+  "completedAt": "2026-08-21",
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "08-21-tutor-planning-intent-runtime-stream-reliability",
+  "relatedFiles": [
+    "aearn/services/api/app/db/schema.sql",
+    "aearn/services/api/app/services/learning/planning_questions.py",
+    "aearn/services/api/app/services/learning/planning_facts.py",
+    "aearn/services/api/app/services/runners/language_capabilities.py",
+    "aearn/apps/desktop/src/features/tutor/TutorConversationSurface.tsx"
+  ],
+  "notes": "第一实施 child；完成并归档后再执行 reasoning delta child 的最终集成验收。",
+  "meta": {}
+}

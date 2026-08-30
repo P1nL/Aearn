@@ -33,6 +33,7 @@ from app.core.teaching_safety import limit_text, redact_value, sanitize_message_
 
 DEFAULT_SECTION_ITEM_LIMITS: tuple[tuple[TutorContextSection, int], ...] = (
     (TutorContextSection.SYSTEM, 3),
+    (TutorContextSection.TEACHING_SESSION, 1),
     (TutorContextSection.REQUIRED_FACTS, 8),
     (TutorContextSection.ACTION_RECEIPTS, 4),
     (TutorContextSection.ACTIVE_PLAN, 1),
@@ -155,14 +156,19 @@ class TutorContextBuilder:
             skipped_count = 0
             item_limit = self._config.item_limit_for(section)
 
-            if section is TutorContextSection.REQUIRED_FACTS:
+            if section in {TutorContextSection.TEACHING_SESSION, TutorContextSection.REQUIRED_FACTS}:
+                error_code = (
+                    "TUTOR_TEACHING_SESSION_UNREPRESENTABLE"
+                    if section is TutorContextSection.TEACHING_SESSION
+                    else "TUTOR_REQUIRED_FACTS_UNREPRESENTABLE"
+                )
                 if len(sources) > item_limit:
-                    raise TutorContextError("TUTOR_REQUIRED_FACTS_UNREPRESENTABLE")
+                    raise TutorContextError(error_code)
                 for source in sources:
                     content, truncated = self._serialize_source(section, source)
                     estimate = max(1, self._estimator.estimate_tokens(content))
                     if truncated or consumed_tokens + estimate > token_budget:
-                        raise TutorContextError("TUTOR_REQUIRED_FACTS_UNREPRESENTABLE")
+                        raise TutorContextError(error_code)
                     source_hash = _source_hash(content)
                     selected_items.append(
                         TutorContextItem(

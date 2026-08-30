@@ -20,39 +20,47 @@ docs/.obsidian/
 **/.venv/
 **/target/
 **/.logs/
+**/.pnpm-store/
 
 # Python and packaging caches.
 **/__pycache__/
+**/*.py[cod]
 **/.pytest_cache/
 **/.ruff_cache/
 **/.mypy_cache/
 **/*.egg-info/
 
-# Local environment and logs.
+# Test reports and compiler caches.
+.coverage
+.coverage.*
+coverage.xml
+**/htmlcov/
+**/coverage/
+**/.nyc_output/
+**/.eslintcache
+**/*.tsbuildinfo
+
+# Local environment, logs, and process state.
 .env
 .env.*
 !.env.example
 *.log
-aearn/apps/desktop/public/aearn-dev-bootstrap.json
+*.pid
 
 # OS files.
 Thumbs.db
 Desktop.ini
 .DS_Store
 
-# Local Trellis planning and tool-synchronization artifacts.
-.trellis/agents/
+# Local Trellis active-task artifacts; archived tasks remain versioned.
 .trellis/tasks/[0-9][0-9]-*/
-.agents/skills/trellis-*/
-.claude/agents/trellis-*.md
-.claude/commands/trellis/
-.claude/skills/trellis-*/
-.codex/agents/trellis-*.toml
-.codex/hooks/inject-workflow-state.py
-.codex/skills/
 
 # Local documentation workspace state and temporary material.
 docs/current/.obsidian/
 docs/current/.trash/
 docs/current/semi-overt/
 tmp/
+
+# Volatile local Obsidian state for the Trellis task vault.
+.trellis/tasks/.obsidian/workspace*.json
+.trellis/tasks/.obsidian/plugins/*/data.json
