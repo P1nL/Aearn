@@ -211,6 +211,7 @@ class TutorConversationTimelineRecord:
     error_recoverable: bool = False
     in_reply_to_item_id: str | None = None
     request: TutorInteractionRequestRecord | None = None
+    artifact: TutorPublicArtifactItem | None = None
 
 
 @dataclass(frozen=True)
@@ -265,6 +266,7 @@ class TutorConversationSnapshot:
     next_cursor: str | None
     has_more: bool
     stream_cursor: str
+    active_artifact: TutorPublicArtifactItem | None = None
     snapshot_version: str = TUTOR_CONVERSATION_SNAPSHOT_VERSION
 
 

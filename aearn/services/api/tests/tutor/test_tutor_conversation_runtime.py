@@ -13,7 +13,7 @@ import app.routes.tutor as tutor_route
 from app.core.config import Settings
 from app.db.connection import connect
 from app.services.tutor.conversation_contracts import (
-    TUTOR_CONVERSATION_SNAPSHOT_VERSION,
+    TUTOR_CONVERSATION_SNAPSHOT_V3_VERSION,
     TutorConversationEventKind,
     TutorDispatchJobState,
     TutorPublicTurnStatus,
@@ -357,7 +357,7 @@ def test_legacy_snapshot_projects_history_without_event_backfill(
     )
     assert response.status_code == 200
     snapshot = response.json()
-    assert snapshot["snapshot_version"] == TUTOR_CONVERSATION_SNAPSHOT_VERSION
+    assert snapshot["snapshot_version"] == TUTOR_CONVERSATION_SNAPSHOT_V3_VERSION
     assert snapshot["active_turn"] is None
     assert snapshot["pending_requests"] == []
     assert snapshot["queue"] == []
@@ -480,7 +480,7 @@ def test_public_thinking_stream_is_replayable_and_atomically_accepted_with_termi
     )
     assert snapshot_response.status_code == 200
     snapshot = snapshot_response.json()
-    assert snapshot["snapshot_version"] == TUTOR_CONVERSATION_SNAPSHOT_VERSION
+    assert snapshot["snapshot_version"] == TUTOR_CONVERSATION_SNAPSHOT_V3_VERSION
     assert snapshot["active_turn"] is None
     assert snapshot["active_thinking"] is None
     tutor_message = next(item for item in snapshot["timeline"] if item["kind"] == "message" and item["role"] == "tutor")

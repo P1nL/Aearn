@@ -1,7 +1,6 @@
 import logging
 
 from fastapi import FastAPI, Request, status
-from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -11,6 +10,7 @@ from app.routes.environment import router as environment_router
 from app.routes.exercise_gates import router as exercise_gates_router
 from app.routes.health import router as health_router
 from app.routes.harness_cutover import router as harness_cutover_router
+from app.routes.learning_artifacts import router as learning_artifacts_router
 from app.routes.learning_plan_sessions import router as learning_plan_sessions_router
 from app.routes.lesson_documents import router as lesson_documents_router
 from app.routes.learning_tracks import router as learning_tracks_router
@@ -45,6 +45,7 @@ app.include_router(teaching_sessions_router)
 app.include_router(exercise_gates_router)
 app.include_router(reviews_router)
 app.include_router(learning_plan_sessions_router)
+app.include_router(learning_artifacts_router)
 app.include_router(tutor_router)
 
 
@@ -55,9 +56,37 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         code="VALIDATION_ERROR",
         message="请求字段不合法",
         status_code=status.HTTP_400_BAD_REQUEST,
-        details={"errors": jsonable_encoder(exc.errors(), custom_encoder={Exception: str})},
+        details={"errors": _safe_validation_errors(exc)},
         recoverable=True,
     )
+
+
+def _safe_validation_errors(exc: RequestValidationError) -> list[dict[str, object]]:
+    """Project validation diagnostics without echoing request values.
+
+    Pydantic includes the rejected ``input`` value in ``exc.errors()``. Artifact
+    actions can contain learner submissions or review prose, so returning that
+    structure verbatim would copy private input into the public error envelope.
+    Keep only bounded schema diagnostics that are sufficient for clients to mark
+    invalid fields.
+    """
+
+    projected: list[dict[str, object]] = []
+    for error in exc.errors():
+        location = error.get("loc")
+        safe_location = (
+            [part for part in location if isinstance(part, (str, int))]
+            if isinstance(location, (list, tuple))
+            else []
+        )
+        projected.append(
+            {
+                "type": str(error.get("type") or "validation_error")[:120],
+                "loc": safe_location[:16],
+                "msg": str(error.get("msg") or "Invalid value")[:240],
+            }
+        )
+    return projected[:64]
 
 
 @app.exception_handler(Exception)

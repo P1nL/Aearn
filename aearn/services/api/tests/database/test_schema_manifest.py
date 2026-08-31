@@ -27,6 +27,7 @@ EXPECTED_SCHEMA_FRAGMENT_NAMES = (
     "090_model_review.sql",
     "100_review_context.sql",
     "110_thread_turn_codex.sql",
+    "120_learning_artifacts.sql",
 )
 
 
@@ -51,7 +52,7 @@ def test_schema_combined_view_and_apply_order_match_the_manifest() -> None:
     assert tuple(fragment.name for fragment in fragments) == EXPECTED_SCHEMA_FRAGMENT_NAMES
     assert load_schema_text() == "".join(fragment.sql for fragment in fragments)
     assert fragments[0].sql.startswith("CREATE EXTENSION IF NOT EXISTS pgcrypto;")
-    assert "Tutor Thread/Turn v2 foundation" in fragments[-1].sql
+    assert "Learning Artifact authority" in fragments[-1].sql
 
     recorder = RecordingConnection()
     apply_schema(cast(Connection[dict[str, object]], recorder))

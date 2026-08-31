@@ -7,11 +7,23 @@ from typing import Annotated, Literal, Mapping
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 from app.agents.harness.contracts import MAX_TUTOR_PUBLIC_THINKING_TEXT_LENGTH
+from app.services.learning.artifacts.contracts import (
+    TutorPublicArtifactItem,
+    assert_public_artifact_safe,
+)
 from app.services.tutor.public_thinking_stream import PUBLIC_THINKING_CHUNK_MAX_LENGTH
 
 
-TUTOR_CONVERSATION_EVENT_PROJECTION_VERSION = "tutor_conversation_event_v2"
-TUTOR_CONVERSATION_SNAPSHOT_VERSION = "tutor_conversation_snapshot_v3"
+TUTOR_CONVERSATION_EVENT_PROJECTION_VERSION = "tutor_conversation_event_v3"
+TUTOR_CONVERSATION_SNAPSHOT_V3_VERSION = "tutor_conversation_snapshot_v3"
+TUTOR_CONVERSATION_SNAPSHOT_V4_VERSION = "tutor_conversation_snapshot_v4"
+TUTOR_CONVERSATION_SNAPSHOT_VERSION = TUTOR_CONVERSATION_SNAPSHOT_V4_VERSION
+TUTOR_CONVERSATION_READABLE_SNAPSHOT_VERSIONS = frozenset(
+    {
+        TUTOR_CONVERSATION_SNAPSHOT_V3_VERSION,
+        TUTOR_CONVERSATION_SNAPSHOT_V4_VERSION,
+    }
+)
 TUTOR_CONVERSATION_STREAM_CURSOR_VERSION = 2
 TUTOR_PUBLIC_THINKING_STREAM_VERSION = "tutor_public_thinking_stream_v1"
 TUTOR_RUNTIME_ITEM_STREAM_VERSION = "tutor_runtime_item_stream_v1"
@@ -242,7 +254,8 @@ TutorPublicItem = Annotated[
     | TutorPublicProcessItem
     | TutorPublicElicitationItem
     | TutorPublicApprovalItem
-    | TutorPublicErrorItem,
+    | TutorPublicErrorItem
+    | TutorPublicArtifactItem,
     Field(discriminator="kind"),
 ]
 _TUTOR_PUBLIC_ITEM_ADAPTER: TypeAdapter[TutorPublicItem] = TypeAdapter(TutorPublicItem)
@@ -250,7 +263,7 @@ _TUTOR_PUBLIC_ITEM_ADAPTER: TypeAdapter[TutorPublicItem] = TypeAdapter(TutorPubl
 
 class TutorPublicItemReference(_StrictPublicModel):
     item_id: str = Field(min_length=1, max_length=120)
-    item_kind: Literal["message", "process", "elicitation", "approval", "error"]
+    item_kind: Literal["message", "process", "elicitation", "approval", "error", "artifact"]
     turn_id: str | None = Field(default=None, min_length=1, max_length=120)
 
 
@@ -345,6 +358,8 @@ _EVENT_PAYLOAD_ADAPTERS: Mapping[TutorConversationEventKind, TypeAdapter[object]
 def validate_public_item(payload: object) -> dict[str, object]:
     item = _TUTOR_PUBLIC_ITEM_ADAPTER.validate_python(payload)
     dumped = item.model_dump(mode="json", exclude_none=False)
+    if isinstance(item, TutorPublicArtifactItem):
+        assert_public_artifact_safe(dumped)
     return dict(dumped)
 
 

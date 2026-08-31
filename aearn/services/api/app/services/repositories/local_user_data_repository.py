@@ -138,6 +138,10 @@ def export_user_data(conn: Connection[dict[str, object]], user_id: str) -> dict[
         "teaching_stimulus_summaries": _export_teaching_stimuli(conn, user_id),
         "run_teaching_scope_summaries": _export_run_teaching_scopes(conn, user_id),
         "teaching_action_receipt_summaries": _export_teaching_action_receipts(conn, user_id),
+        "learning_artifact_summaries": _export_learning_artifacts(conn, user_id),
+        "learning_artifact_event_summaries": _export_learning_artifact_events(conn, user_id),
+        "learning_artifact_reference_summaries": _export_learning_artifact_references(conn, user_id),
+        "learning_artifact_attempt_link_summaries": _export_learning_artifact_attempt_links(conn, user_id),
         "lesson_citations": _export_lesson_citations(conn, user_id),
         "lesson_gates": _export_lesson_gates(conn, user_id),
         "exercise_attempt_summaries": _export_exercise_attempt_summaries(conn, user_id),
@@ -171,6 +175,12 @@ def export_user_data(conn: Connection[dict[str, object]], user_id: str) -> dict[
             "teaching_checkpoint_source_hashes": "omitted",
             "teaching_document_content_hashes": "omitted",
             "teaching_full_questions_and_submissions": "omitted",
+            "artifact_instruction_markdown": "omitted",
+            "artifact_presentations": "omitted",
+            "artifact_active_attempt_payloads": "omitted",
+            "artifact_event_payloads": "omitted",
+            "artifact_action_request_hashes": "omitted",
+            "artifact_reference_content_hashes": "omitted",
             "secrets": "omitted",
         },
     }
@@ -286,6 +296,10 @@ def _summary_counts(conn: Connection[dict[str, object]], user_id: str) -> dict[s
         "teaching_stimuli": _count(conn, "SELECT count(*) AS count FROM tutor_run_stimulus_events WHERE user_id = %s", user_id),
         "run_teaching_scopes": _count(conn, "SELECT count(*) AS count FROM tutor_run_teaching_scopes WHERE user_id = %s", user_id),
         "teaching_action_receipts": _count(conn, "SELECT count(*) AS count FROM tutor_teaching_action_receipts WHERE user_id = %s", user_id),
+        "learning_artifacts": _count(conn, "SELECT count(*) AS count FROM tutor_learning_artifacts WHERE user_id = %s", user_id),
+        "learning_artifact_events": _count(conn, "SELECT count(*) AS count FROM tutor_learning_artifact_events WHERE user_id = %s", user_id),
+        "learning_artifact_references": _count(conn, "SELECT count(*) AS count FROM tutor_learning_artifact_references WHERE user_id = %s", user_id),
+        "learning_artifact_attempt_links": _count(conn, "SELECT count(*) AS count FROM tutor_learning_artifact_attempt_links WHERE user_id = %s", user_id),
         "lesson_authoring_runs": _count(conn, "SELECT count(*) AS count FROM tutor_lesson_authoring_runs WHERE user_id = %s", user_id),
         "lesson_gates": _count(conn, "SELECT count(*) AS count FROM tutor_lesson_gate_states WHERE user_id = %s", user_id),
         "exercise_attempts": _count(conn, "SELECT count(*) AS count FROM tutor_exercise_attempts WHERE user_id = %s", user_id),
@@ -791,6 +805,88 @@ def _export_teaching_action_receipts(conn: Connection[dict[str, object]], user_i
     ).fetchall()
     return [_safe_row(row, exclude=()) for row in rows]
 
+def _export_learning_artifacts(
+    conn: Connection[dict[str, object]],
+    user_id: str,
+) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """
+        SELECT artifacts.id, artifacts.conversation_id, artifacts.turn_id,
+               artifacts.learning_track_id, artifacts.knowledge_key, artifacts.teaching_session_id,
+               artifacts.checkpoint_id, artifacts.track_version, artifacts.progress_version,
+               artifacts.assignment_version, artifacts.owner_kind, artifacts.owner_id,
+               artifacts.owner_version, artifacts.owner_context_version,
+               artifacts.artifact_schema_version, artifacts.artifact_kind, artifacts.purpose,
+               artifacts.state, artifacts.blocking, artifacts.title, artifacts.difficulty,
+               artifacts.presentation_kind, artifacts.active_attempt_id, artifacts.version,
+               artifacts.terminal_at, artifacts.created_at, artifacts.updated_at,
+               jsonb_array_length(artifacts.allowed_actions_json) AS allowed_action_count,
+               (SELECT count(*)::int FROM tutor_learning_artifact_events AS events
+                WHERE events.artifact_id = artifacts.id) AS event_count,
+               (SELECT count(*)::int FROM tutor_learning_artifact_references AS refs
+                WHERE refs.artifact_id = artifacts.id) AS reference_count,
+               (SELECT count(*)::int FROM tutor_learning_artifact_attempt_links AS links
+                WHERE links.artifact_id = artifacts.id) AS attempt_link_count
+        FROM tutor_learning_artifacts AS artifacts
+        WHERE artifacts.user_id = %s
+        ORDER BY artifacts.created_at, artifacts.id
+        """,
+        (user_id,),
+    ).fetchall()
+    return [_safe_row(row, exclude=()) for row in rows]
+
+
+def _export_learning_artifact_events(
+    conn: Connection[dict[str, object]],
+    user_id: str,
+) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """
+        SELECT id, artifact_id, conversation_id, teaching_session_id, event_sequence,
+               event_kind, from_version, to_version, state, action_kind, client_action_id,
+               created_at
+        FROM tutor_learning_artifact_events
+        WHERE user_id = %s
+        ORDER BY artifact_id, event_sequence
+        """,
+        (user_id,),
+    ).fetchall()
+    return [_safe_row(row, exclude=()) for row in rows]
+
+
+def _export_learning_artifact_references(
+    conn: Connection[dict[str, object]],
+    user_id: str,
+) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """
+        SELECT id, artifact_id, conversation_id, teaching_session_id, reference_index,
+               reference_kind, reference_id, reference_version, label, created_at
+        FROM tutor_learning_artifact_references
+        WHERE user_id = %s
+        ORDER BY artifact_id, reference_index
+        """,
+        (user_id,),
+    ).fetchall()
+    return [_safe_row(row, exclude=()) for row in rows]
+
+
+def _export_learning_artifact_attempt_links(
+    conn: Connection[dict[str, object]],
+    user_id: str,
+) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """
+        SELECT id, artifact_id, conversation_id, teaching_session_id, learning_track_id,
+               attempt_id, artifact_version, created_at
+        FROM tutor_learning_artifact_attempt_links
+        WHERE user_id = %s
+        ORDER BY created_at, id
+        """,
+        (user_id,),
+    ).fetchall()
+    return [_safe_row(row, exclude=()) for row in rows]
+
 def _export_lesson_citations(conn: Connection[dict[str, object]], user_id: str) -> list[dict[str, object]]:
     rows = conn.execute(
         """
@@ -1163,6 +1259,21 @@ def _delete_learning_track_data(conn: Connection[dict[str, object]], user_id: st
         )
     conn.execute("SELECT set_config('aearn.learning_track_purge_user_id', %s, true)", (user_id,))
     conn.execute("SET CONSTRAINTS ALL DEFERRED")
+    conn.execute(
+        """
+        DELETE FROM tutor_conversation_events
+        WHERE user_id = %s
+          AND item_kind = 'artifact'
+          AND item_id IN (
+            SELECT id FROM tutor_learning_artifacts WHERE user_id = %s
+          )
+        """,
+        (user_id, user_id),
+    )
+    conn.execute("DELETE FROM tutor_learning_artifact_events WHERE user_id = %s", (user_id,))
+    conn.execute("DELETE FROM tutor_learning_artifact_references WHERE user_id = %s", (user_id,))
+    conn.execute("DELETE FROM tutor_learning_artifact_attempt_links WHERE user_id = %s", (user_id,))
+    conn.execute("DELETE FROM tutor_learning_artifacts WHERE user_id = %s", (user_id,))
     conn.execute("DELETE FROM tutor_teaching_action_receipts WHERE user_id = %s", (user_id,))
     conn.execute("DELETE FROM tutor_run_teaching_scopes WHERE user_id = %s", (user_id,))
     conn.execute("DELETE FROM tutor_run_stimulus_events WHERE user_id = %s", (user_id,))

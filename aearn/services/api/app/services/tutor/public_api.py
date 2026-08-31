@@ -38,7 +38,12 @@ from app.services.learning.track_repository import (
     PostgresLearningTrackRepository,
     ScopeSnapshot,
 )
-from app.services.tutor.conversation_contracts import validate_public_item
+from app.services.tutor.conversation_contracts import (
+    TUTOR_CONVERSATION_READABLE_SNAPSHOT_VERSIONS,
+    TUTOR_CONVERSATION_SNAPSHOT_V3_VERSION,
+    TUTOR_CONVERSATION_SNAPSHOT_V4_VERSION,
+    validate_public_item,
+)
 from app.services.tutor.learner_state import (
     TutorActivityRecord,
     TutorInboxItem,
@@ -1848,7 +1853,7 @@ def _public_process_payload(item: TutorPublicProcessState) -> dict[str, object]:
 
 def _legacy_timeline_payload(item: TutorConversationTimelineRecord) -> dict[str, object]:
     payload = _timeline_payload(item)
-    if item.kind not in {"elicitation", "approval"}:
+    if item.kind not in {"elicitation", "approval", "artifact"}:
         payload.pop("turn_id", None)
     if item.kind == "message":
         if not payload.get("public_thinking_steps") and item.public_thinking_text:
@@ -1859,6 +1864,10 @@ def _legacy_timeline_payload(item: TutorConversationTimelineRecord) -> dict[str,
 
 
 def _timeline_payload(item: TutorConversationTimelineRecord) -> dict[str, object]:
+    if item.kind == "artifact":
+        if item.artifact is None:
+            raise ValueError("artifact timeline record is missing its public projection")
+        return validate_public_item(item.artifact)
     if item.kind == "process" and item.process is not None:
         return _public_process_payload(item.process)
     if item.kind in {"elicitation", "approval"} and item.request is not None:
@@ -1893,7 +1902,14 @@ def _timeline_payload(item: TutorConversationTimelineRecord) -> dict[str, object
 
 
 def _conversation_snapshot_payload(snapshot: TutorConversationSnapshot) -> dict[str, object]:
-    return {
+    if snapshot.snapshot_version not in TUTOR_CONVERSATION_READABLE_SNAPSHOT_VERSIONS:
+        raise ValueError("Tutor conversation snapshot version is unsupported")
+    has_artifact = snapshot.active_artifact is not None or any(
+        item.kind == "artifact" for item in snapshot.timeline
+    )
+    if snapshot.snapshot_version == TUTOR_CONVERSATION_SNAPSHOT_V3_VERSION and has_artifact:
+        raise ValueError("Tutor conversation snapshot v3 cannot contain artifact projections")
+    payload: dict[str, object] = {
         "snapshot_version": snapshot.snapshot_version,
         "conversation": {
             "conversation_id": snapshot.conversation_id,
@@ -1923,6 +1939,13 @@ def _conversation_snapshot_payload(snapshot: TutorConversationSnapshot) -> dict[
         "has_more": snapshot.has_more,
         "stream_cursor": snapshot.stream_cursor,
     }
+    if snapshot.snapshot_version == TUTOR_CONVERSATION_SNAPSHOT_V4_VERSION:
+        payload["active_artifact"] = (
+            validate_public_item(snapshot.active_artifact)
+            if snapshot.active_artifact is not None
+            else None
+        )
+    return payload
 
 
 def _conversation_sse_event(event: TutorConversationEvent) -> TutorPublicConversationSseEvent:

@@ -105,10 +105,13 @@ CREATE TABLE IF NOT EXISTS tutor_conversation_events (
   turn_id uuid,
   item_id uuid,
   item_kind text CHECK (item_kind IS NULL OR item_kind IN (
-    'message', 'process', 'elicitation', 'approval', 'error'
+    'message', 'process', 'elicitation', 'approval', 'error', 'artifact'
   )),
-  projection_version text NOT NULL DEFAULT 'tutor_conversation_event_v2'
-    CHECK (projection_version IN ('tutor_conversation_event_v1', 'tutor_conversation_event_v2')),
+  projection_version text NOT NULL DEFAULT 'tutor_conversation_event_v3'
+    CHECK (projection_version IN (
+      'tutor_conversation_event_v1', 'tutor_conversation_event_v2',
+      'tutor_conversation_event_v3'
+    )),
   payload_json jsonb NOT NULL CHECK (jsonb_typeof(payload_json) = 'object'),
   payload_hash text NOT NULL CHECK (payload_hash ~ '^[0-9a-f]{64}$'),
   occurred_at timestamptz NOT NULL,
@@ -137,15 +140,20 @@ ALTER TABLE tutor_conversation_events
     'turn_created', 'turn_updated', 'item_added', 'item_updated', 'turn_output',
     'control_updated', 'dispatch_delayed', 'dispatch_dead'
   ));
+-- This owning fragment runs before later additive fragments on every bootstrap.
+-- Keep persisted v3 rows valid here so repeat bootstrap cannot fail before 120.
 ALTER TABLE tutor_conversation_events
-  ALTER COLUMN projection_version SET DEFAULT 'tutor_conversation_event_v2';
+  ALTER COLUMN projection_version SET DEFAULT 'tutor_conversation_event_v3';
 ALTER TABLE tutor_conversation_events
   DROP CONSTRAINT IF EXISTS tutor_conversation_events_projection_version_check;
 ALTER TABLE tutor_conversation_events
   DROP CONSTRAINT IF EXISTS chk_tutor_conversation_events_projection_version;
 ALTER TABLE tutor_conversation_events
   ADD CONSTRAINT chk_tutor_conversation_events_projection_version CHECK (
-    projection_version IN ('tutor_conversation_event_v1', 'tutor_conversation_event_v2')
+    projection_version IN (
+      'tutor_conversation_event_v1', 'tutor_conversation_event_v2',
+      'tutor_conversation_event_v3'
+    )
   );
 
 CREATE TABLE IF NOT EXISTS tutor_turn_public_thinking_streams (

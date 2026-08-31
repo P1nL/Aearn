@@ -292,6 +292,12 @@ class Settings(BaseModel):
     tutor_executor_enabled: bool = Field(
         default_factory=lambda: _env_str("TUTOR_EXECUTOR_ENABLED", "false").lower() in ("true", "1", "yes")
     )
+    tutor_learning_artifacts_enabled: bool = Field(
+        default_factory=lambda: _env_bool(
+            "TUTOR_LEARNING_ARTIFACTS_ENABLED",
+            "false",
+        )
+    )
     tutor_thread_turn_v2_enabled: bool = Field(
         default_factory=lambda: _env_bool("TUTOR_THREAD_TURN_V2_ENABLED", "false")
     )

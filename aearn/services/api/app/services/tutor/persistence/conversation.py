@@ -218,6 +218,12 @@ class ConversationPersistenceMixin(PersistenceMixin):
               AND (
                 EXISTS (SELECT 1 FROM tutor_messages AS messages WHERE messages.conversation_id = conversations.id)
                 OR EXISTS (SELECT 1 FROM tutor_run_public_processes AS processes WHERE processes.conversation_id = conversations.id)
+                OR EXISTS (
+                  SELECT 1
+                  FROM tutor_learning_artifacts AS artifacts
+                  WHERE artifacts.conversation_id = conversations.id
+                    AND artifacts.user_id = conversations.user_id
+                )
               )
         """
         params: list[object] = [user_id]
@@ -472,8 +478,32 @@ class ConversationPersistenceMixin(PersistenceMixin):
                 AND conversations.visibility = 'learner'
                 AND conversations.kind = 'interactive'
                 AND conversations.status = 'active'
+              UNION ALL
+              SELECT
+                'artifact'::text AS kind,
+                artifacts.id AS item_id,
+                artifacts.created_at AS created_at,
+                34 AS sort_rank,
+                NULL::text AS role,
+                NULL::text AS content,
+                ''::text AS public_thinking_text,
+                '[]'::jsonb AS public_thinking_steps_json,
+                NULL::uuid AS process_run_id,
+                artifacts.turn_id AS turn_id,
+                NULL::text AS error_code,
+                NULL::boolean AS error_recoverable,
+                NULL::uuid AS in_reply_to_item_id,
+                NULL::uuid AS interaction_request_id
+              FROM tutor_learning_artifacts AS artifacts
+              JOIN tutor_conversations AS conversations ON conversations.id = artifacts.conversation_id
+              WHERE artifacts.conversation_id = %s
+                AND artifacts.user_id = %s
+                AND conversations.visibility = 'learner'
+                AND conversations.kind = 'interactive'
+                AND conversations.status = 'active'
         """
         params: list[object] = [
+            conversation_id, user_id,
             conversation_id, user_id,
             conversation_id, user_id,
             conversation_id, user_id,
@@ -571,6 +601,11 @@ class ConversationPersistenceMixin(PersistenceMixin):
             conversation_id=conversation_id,
             message_ids=learner_message_ids,
         )
+        artifact_repository = None
+        if any(str(row.get("kind") or "") == "artifact" for row in page_rows):
+            from app.services.learning.artifacts.repository import PostgresLearningArtifactRepository
+
+            artifact_repository = PostgresLearningArtifactRepository(self._conn)
         records: list[TutorConversationTimelineRecord] = []
         for row in page_rows:
             kind = str(row["kind"])
@@ -614,6 +649,25 @@ class ConversationPersistenceMixin(PersistenceMixin):
                         context_references=references_by_message.get(str(row["item_id"]), ()),
                         turn_id=str(row["turn_id"]) if row.get("turn_id") is not None else None,
                         in_reply_to_item_id=_optional_string(row.get("in_reply_to_item_id")),
+                    )
+                )
+                continue
+            if kind == "artifact":
+                if artifact_repository is None:
+                    raise RuntimeError("artifact repository was not initialized for artifact timeline row")
+                artifact = artifact_repository.read_artifact(
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                    artifact_id=str(row["item_id"]),
+                )
+                records.append(
+                    TutorConversationTimelineRecord(
+                        kind="artifact",
+                        item_id=artifact.id,
+                        created_at=created_at,
+                        sort_rank=_as_int(row.get("sort_rank"), 0),
+                        turn_id=artifact.turn_id,
+                        artifact=artifact,
                     )
                 )
                 continue
@@ -783,6 +837,43 @@ class ConversationPersistenceMixin(PersistenceMixin):
             """,
             (user_id, conversation_id),
         ).fetchone()
+        artifact_state = self._conn.execute(
+            """
+            SELECT
+              EXISTS (
+                SELECT 1
+                FROM tutor_learning_artifacts
+                WHERE user_id = %s AND conversation_id = %s
+              ) AS has_artifacts,
+              (
+                SELECT id
+                FROM tutor_learning_artifacts
+                WHERE user_id = %s AND conversation_id = %s
+                  AND blocking
+                  AND state IN ('pending', 'ready', 'active', 'running')
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+              ) AS active_artifact_id
+            """,
+            (user_id, conversation_id, user_id, conversation_id),
+        ).fetchone()
+        active_artifact = None
+        active_artifact_id = (
+            _optional_string(artifact_state.get("active_artifact_id"))
+            if artifact_state is not None
+            else None
+        )
+        if active_artifact_id is not None:
+            from app.services.learning.artifacts.repository import PostgresLearningArtifactRepository
+
+            active_artifact = PostgresLearningArtifactRepository(self._conn).read_artifact(
+                user_id=user_id,
+                conversation_id=conversation_id,
+                artifact_id=active_artifact_id,
+            )
+        has_artifacts = bool(
+            artifact_state is not None and artifact_state.get("has_artifacts") is True
+        )
         pending_requests = self.read_pending_interaction_requests(
             user_id=user_id,
             conversation_id=conversation_id,
@@ -825,6 +916,7 @@ class ConversationPersistenceMixin(PersistenceMixin):
                 and str(active.get("runtime_kind") or "") == "codex_sidecar_v1"
                 else None
             ),
+            active_artifact=active_artifact,
             pending_requests=tuple(item.public_item for item in pending_requests),
             queue=tuple(item.as_public_dict() for item in queued_inputs),
             timeline=timeline,
@@ -834,6 +926,11 @@ class ConversationPersistenceMixin(PersistenceMixin):
                 user_id=user_id,
                 conversation_id=conversation_id,
                 sequence=current_sequence,
+            ),
+            snapshot_version=(
+                TUTOR_CONVERSATION_SNAPSHOT_V4_VERSION
+                if has_artifacts
+                else TUTOR_CONVERSATION_SNAPSHOT_V3_VERSION
             ),
         )
 
@@ -862,6 +959,48 @@ class ConversationPersistenceMixin(PersistenceMixin):
                 item_id=item_id,
                 item_kind=item_kind,
             )
+
+    def append_artifact_item_reference(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str,
+        artifact_id: str,
+        artifact_version: int,
+        turn_id: str | None,
+        kind: Literal["item_added", "item_updated"],
+        occurred_at: datetime,
+    ) -> TutorConversationEvent:
+        if artifact_version < 1:
+            raise ValueError("artifact item reference version must be positive")
+        normalized_kind = TutorConversationEventKind(kind)
+        event_key = (
+            f"item:artifact:{artifact_id}:{normalized_kind.value}:{artifact_version}"
+        )
+        with self._conn.transaction():
+            event = self._append_conversation_event_locked(
+                user_id=user_id,
+                conversation_id=conversation_id,
+                event_key=event_key,
+                kind=normalized_kind,
+                turn_id=turn_id,
+                item_id=artifact_id,
+                item_kind="artifact",
+                payload={
+                    "item": {
+                        "item_id": artifact_id,
+                        "item_kind": "artifact",
+                        "turn_id": turn_id,
+                    }
+                },
+                occurred_at=occurred_at,
+            )
+            self._touch_conversation_public_activity_locked(
+                user_id=user_id,
+                conversation_id=conversation_id,
+                occurred_at=event.occurred_at,
+            )
+            return event
 
     def conversation_events_after(
         self,
