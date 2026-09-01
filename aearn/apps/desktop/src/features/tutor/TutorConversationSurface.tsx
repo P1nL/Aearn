@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type RefObject } from "react";
 
 import {
-  acceptTutorConversationInput, acceptTutorFirstTurn, buildTutorConversationEventsUrl,
+  acceptTutorConversationInput, acceptTutorFirstTurn, actOnTutorArtifact, buildTutorConversationEventsUrl,
   correctTutorMemory, deleteTutorMemory, deleteTutorQueueItem, dismissTutorInbox,
   editTutorQueueItem, executeTutorQueueItem, fetchTutorActivity, fetchTutorArtifact, fetchTutorArtifactAttempt, fetchTutorConversationSnapshot,
   fetchTutorInbox, fetchTutorMemory, fetchTutorPlanRevisions, fetchTutorPreferences,
@@ -17,7 +17,7 @@ import type {
   TutorContextReferenceDraft, TutorHistoryItem, TutorHistoryMessage, TutorInboxItem, TutorInputAcceptedResponse,
   TutorInteractionRequestItem, TutorInteractionResponseDraft, TutorMemoryItem, TutorPlanRevisionList, TutorPreferences,
   TeachingActionDescriptor, TeachingActionShelf, TeachingSessionGroupProjection,
-  TutorPublicArtifactItem, TutorPublicBranchGroup, TutorPublicTurn, TutorQueuedInput, TutorRuntimeOutput, TutorRuntimeOutputItem,
+  TutorArtifactAction, TutorPublicArtifactItem, TutorPublicBranchGroup, TutorPublicTurn, TutorQueuedInput, TutorRuntimeOutput, TutorRuntimeOutputItem,
   TutorThreadTurnV2Capability, TutorTurnOutputPayload, UserProfile,
 } from "../../types";
 import {
@@ -25,7 +25,7 @@ import {
   IconEdit, IconQueue, IconSend, IconStop, Input, StateDot,
 } from "../../ui/dsh-derived";
 import { ComposerActionShelf } from "./ComposerActionShelf";
-import type { TutorArtifactActionRequest, TutorArtifactAttemptLoader, TutorArtifactReturnToSource } from "./artifacts";
+import type { TutorArtifactActionHandler, TutorArtifactActionRequest, TutorArtifactAttemptLoader, TutorArtifactReturnToSource } from "./artifacts";
 import { TutorActivityPanel } from "./TutorActivityPanel";
 import { TutorMemoryPanel } from "./TutorMemoryPanel";
 import { TutorPlanPreferencesPanel } from "./TutorPlanPreferencesPanel";
@@ -58,7 +58,7 @@ export type TutorConversationSurfaceProps = {
   pendingTeachingActionKey?: string | null;
   onTeachingAction?: (descriptor: TeachingActionDescriptor) => void;
   onTeachingAuthorityChanged?: () => void;
-  onArtifactAction?: (request: TutorArtifactActionRequest) => void;
+  onArtifactAction?: TutorArtifactActionHandler;
 };
 type LoadStatus = "idle" | "loading" | "ready" | "error";
 type PreferenceUpdate = { inferredMemoryEnabled?: boolean; expectedMemorySettingVersion?: string; proactivePaused?: boolean };
@@ -563,6 +563,51 @@ export function TutorConversationSurface({
     finally { setMutationBusy(null); }
   }
 
+  async function handleArtifactAction(request: TutorArtifactActionRequest): Promise<TutorPublicArtifactItem | void> {
+    if (onArtifactAction) return await onArtifactAction(request);
+    if (!writeEnabled || mutationBusy || !userId || selectedRef.current !== request.artifact.conversation_id) return;
+    const payload = request.payload ?? defaultArtifactActionPayload(request.action);
+    if (!payload || payload.action !== request.action) {
+      setActionError({ code: "ARTIFACT_ACTION_INPUT_REQUIRED", message: "该工件操作需要由对应的结构化界面提供输入。" });
+      return;
+    }
+    const key = `artifact:${request.artifact.id}:${request.action}`;
+    setMutationBusy(key);
+    setActionError(null);
+    try {
+      const response = await actOnTutorArtifact({
+        userId,
+        conversationId: request.artifact.conversation_id,
+        artifactId: request.artifact.id,
+        learningTrackId: request.artifact.learning_track_id,
+        teachingSessionId: request.artifact.teaching_session_id,
+        expectedArtifactVersion: request.artifact.version,
+        action: payload,
+        clientActionId: createTutorActionId(`tutor-artifact-${request.action}`),
+      });
+      setTimeline((current) => {
+        let replaced = false;
+        const next = current.map((item) => {
+          if (item.kind !== "artifact" || item.id !== response.artifact.id) return item;
+          replaced = true;
+          return response.artifact;
+        });
+        return replaced ? next : [...next, response.artifact];
+      });
+      onConversationsChanged?.();
+      onTeachingAuthorityChanged?.();
+      refreshSnapshot();
+      return response.artifact;
+    } catch (error) {
+      const info = getErrorInfo(error);
+      setActionError({ code: info.code, message: info.message });
+      refreshSnapshot();
+      return;
+    } finally {
+      setMutationBusy(null);
+    }
+  }
+
   async function submitComposer() {
     const content = composerText.trim();
     if (!content || !writeEnabled || !userId || composerStatus === "submitting" || pendingRequest) return;
@@ -674,7 +719,7 @@ export function TutorConversationSurface({
           mutationBusy={mutationBusy}
           onRetry={(turnId) => { if (!userId || !selectedConversationId) return; void runMutation(`retry:${turnId}`, () => retryTutorTurn({ userId, conversationId: selectedConversationId, turnId, expectedControlVersion: controlVersion, clientActionId: createTutorActionId("tutor-turn-retry") })); }}
           onReference={onHistoricalMessageReference}
-          onArtifactAction={onArtifactAction}
+          onArtifactAction={handleArtifactAction}
           loadArtifactDetail={loadArtifactDetail}
           loadArtifactAttempt={loadArtifactAttempt}
           onReturnToArtifactSource={returnToArtifactSource}
@@ -688,7 +733,7 @@ export function TutorConversationSurface({
           writeEnabled={writeEnabled}
           mutationBusy={mutationBusy}
           onRetry={(turnId) => { if (!userId || !selectedConversationId) return; void runMutation(`retry:${turnId}`, () => retryTutorTurn({ userId, conversationId: selectedConversationId, turnId, expectedControlVersion: controlVersion, clientActionId: createTutorActionId("tutor-turn-retry") })); }}
-          onArtifactAction={onArtifactAction}
+          onArtifactAction={handleArtifactAction}
           loadArtifactDetail={loadArtifactDetail}
           loadArtifactAttempt={loadArtifactAttempt}
           onReturnToArtifactSource={returnToArtifactSource}
@@ -726,4 +771,10 @@ export function TutorConversationSurface({
       <TutorPlanPreferencesPanel plans={plans} preferences={preferences} loading={controlsStatus === "loading"} errorMessage={controlsStatus === "error" ? controlsError : null} pendingAction={pendingPlanOrPreferenceAction} onRetry={() => void loadControls()} onRollback={handleRollbackPlan} onUpdatePreferences={handleUpdatePreferences} />
     </aside>}
   </main></DshDerivedRoot>;
+}
+
+function defaultArtifactActionPayload(action: TutorArtifactActionRequest["action"]): TutorArtifactAction | null {
+  if (action === "request_hint") return { action: "request_hint", hint_level: null };
+  if (action === "cancel") return { action: "cancel", reason: "learner_cancelled" };
+  return null;
 }

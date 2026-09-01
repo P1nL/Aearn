@@ -2,15 +2,19 @@ import type { ReactElement, ReactNode } from "react";
 
 import type { TutorPublicArtifactItem } from "../../../types";
 
+import { BrowserPreviewArtifact } from "./BrowserPreviewArtifact";
+import { CodeEditorArtifact } from "./CodeEditorArtifact";
 import { ExecutionResultArtifact } from "./ExecutionResultArtifact";
 import { SafeMarkdown } from "./SafeMarkdown";
-import type { TutorArtifactAttemptLoader, TutorArtifactReturnToSource } from "./artifactRendererTypes";
+import type { TutorArtifactActionHandler, TutorArtifactAttemptLoader, TutorArtifactReturnToSource } from "./artifactRendererTypes";
 import type { ArtifactRendererUiState } from "./artifactUiState";
 
 export type ArtifactRendererProps = {
   artifact: TutorPublicArtifactItem;
   uiState: ArtifactRendererUiState;
   onUiStateChange: (update: Partial<ArtifactRendererUiState>) => void;
+  onAction?: TutorArtifactActionHandler;
+  actionBusy?: boolean;
   loadAttempt?: TutorArtifactAttemptLoader;
   onReturnToSource?: TutorArtifactReturnToSource;
 };
@@ -19,8 +23,8 @@ export type ArtifactRenderer = (props: ArtifactRendererProps) => ReactElement;
 export type ArtifactPresentationType = TutorPublicArtifactItem["presentation"]["type"];
 
 const ARTIFACT_RENDERER_REGISTRY = {
-  exercise_workspace_v1: ExerciseWorkspacePlaceholder,
-  browser_preview_v1: BrowserPreviewPlaceholder,
+  exercise_workspace_v1: ExerciseWorkspaceRenderer,
+  browser_preview_v1: BrowserPreviewRenderer,
   test_result_v1: TestResultRenderer,
   knowledge_check_v1: KnowledgeCheckPlaceholder,
   model_code_review_v1: ModelCodeReviewPlaceholder,
@@ -36,15 +40,15 @@ export function artifactRendererFor(type: string): ArtifactRenderer | null {
   return ARTIFACT_RENDERER_REGISTRY[type as ArtifactPresentationType];
 }
 
-function ExerciseWorkspacePlaceholder({ artifact }: ArtifactRendererProps) {
+function ExerciseWorkspaceRenderer({ artifact, onAction, actionBusy }: ArtifactRendererProps) {
   const presentation = artifact.presentation;
   if (presentation.type !== "exercise_workspace_v1") return <ArtifactContractError />;
-  return <ArtifactPlaceholder label="代码练习"><span>{presentation.language_id} · {presentation.editor_mode}</span></ArtifactPlaceholder>;
+  return <CodeEditorArtifact artifact={artifact} onAction={onAction} actionBusy={actionBusy} />;
 }
 
-function BrowserPreviewPlaceholder({ artifact }: ArtifactRendererProps) {
+function BrowserPreviewRenderer({ artifact }: ArtifactRendererProps) {
   if (artifact.presentation.type !== "browser_preview_v1") return <ArtifactContractError />;
-  return <ArtifactPlaceholder label="浏览器预览"><span>隔离预览</span></ArtifactPlaceholder>;
+  return <BrowserPreviewArtifact artifact={artifact} />;
 }
 
 function TestResultRenderer({ artifact, loadAttempt, onReturnToSource }: ArtifactRendererProps) {

@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const api = vi.hoisted(() => ({
-  fetchTutorThreadTurnV2Capability: vi.fn(), fetchTutorArtifact: vi.fn(), fetchTutorArtifactAttempt: vi.fn(), fetchTutorConversationSnapshot: vi.fn(), respondToTutorInteractionRequest: vi.fn(),
+  fetchTutorThreadTurnV2Capability: vi.fn(), fetchTutorArtifact: vi.fn(), fetchTutorArtifactAttempt: vi.fn(), fetchTutorConversationSnapshot: vi.fn(), respondToTutorInteractionRequest: vi.fn(), actOnTutorArtifact: vi.fn(),
   acceptTutorConversationInput: vi.fn(), acceptTutorFirstTurn: vi.fn(), buildTutorConversationEventsUrl: vi.fn(() => "http://events.test"),
   correctTutorMemory: vi.fn(), deleteTutorMemory: vi.fn(), deleteTutorQueueItem: vi.fn(), dismissTutorInbox: vi.fn(), editTutorQueueItem: vi.fn(), executeTutorQueueItem: vi.fn(),
   fetchTutorActivity: vi.fn(), fetchTutorInbox: vi.fn(), fetchTutorMemory: vi.fn(), fetchTutorPlanRevisions: vi.fn(), fetchTutorPreferences: vi.fn(), interruptTutorTurn: vi.fn(),
@@ -20,8 +20,12 @@ vi.mock("../../../hooks/useTutorConversationStream", () => ({
     return { status: "streaming", error: null, cursor: "opaque", retry: vi.fn(), close: vi.fn() };
   },
 }));
+vi.mock("@monaco-editor/react", () => ({
+  default: (props: { value: string; options: { ariaLabel: string; readOnly: boolean }; onChange?: (value: string) => void }) =>
+    <textarea aria-label={props.options.ariaLabel} readOnly={props.options.readOnly} value={props.value} onChange={(event) => props.onChange?.(event.currentTarget.value)} />,
+}));
 
-import { resetArtifactUiStateCachesForTests } from "../artifacts";
+import { resetArtifactUiStateCachesForTests, resetCodeArtifactDraftsForTests } from "../artifacts";
 import { TutorConversationSurface, groupTeachingTimeline } from "../TutorConversationSurface";
 import { groupTimelineAroundArtifacts } from "../tutorConversationModel";
 
@@ -140,6 +144,27 @@ function resultArtifactItem(update: Record<string, unknown> = {}) {
   });
 }
 
+function exerciseArtifactItem(update: Record<string, unknown> = {}) {
+  return artifactItem({
+    artifact_kind: "exercise_workspace",
+    purpose: "exercise",
+    title: "浏览器练习",
+    presentation: {
+      type: "exercise_workspace_v1",
+      exercise_version_id: "exercise-1",
+      language_id: "html_css",
+      editor_mode: "code",
+      starter_content: "<button>Start</button>",
+      starter_content_hash: "a".repeat(64),
+      editable: true,
+      live_preview: false,
+      runtime_profile_key: "browser.preview",
+    },
+    allowed_actions: ["run"],
+    ...update,
+  });
+}
+
 function branchMessage(id: string, role: "learner" | "tutor", content: string) {
   return {
     kind: "message" as const,
@@ -191,6 +216,7 @@ describe("TutorConversationSurface typed request seat", () => {
     streamHarness.options = null;
     window.sessionStorage.clear();
     resetArtifactUiStateCachesForTests();
+    resetCodeArtifactDraftsForTests();
     vi.stubGlobal("matchMedia", vi.fn(() => ({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() })));
     api.fetchTutorThreadTurnV2Capability.mockResolvedValue({ schema_version: "tutor_thread_turn_v2_capability_v1", cutover_version: "tutor_thread_turn_v2_global_v1", desktop_contract_version: "tutor_thread_turn_v2_desktop_v1", env_allowed: true, state: "enabled", generation: 1, summary_hash: "0".repeat(64), block_code: null, effective_enabled: true, counts: {}, prepared_at: null, enabled_at: null, updated_at: null });
     api.fetchTutorConversationSnapshot.mockResolvedValue(snapshot);
@@ -1105,6 +1131,43 @@ describe("TutorConversationSurface typed request seat", () => {
     await waitFor(() => expect(api.fetchTutorConversationSnapshot).toHaveBeenCalledTimes(3));
     expect(artifactScroll).toHaveBeenCalledTimes(1);
     expect(composer).toHaveFocus();
+  });
+
+  it("sends the exact latest Monaco draft through the scoped Artifact action API only after explicit Run", async () => {
+    const user = userEvent.setup();
+    const source = exerciseArtifactItem();
+    const running = exerciseArtifactItem({ state: "running", version: 2, updated_at: "2026-09-01T00:00:02Z" });
+    api.fetchTutorConversationSnapshot.mockResolvedValue({
+      ...snapshot,
+      snapshot_version: "tutor_conversation_snapshot_v4",
+      conversation: { ...snapshot.conversation, control_state: "idle", pending_count: 0, queue_paused: false, queue_pause_reason: null },
+      active_artifact: source,
+      branches: [], pending_requests: [], queue: [], timeline: [source],
+    });
+    api.actOnTutorArtifact.mockResolvedValue({
+      artifact: running,
+      artifact_event_id: "artifact-event-2",
+      artifact_event_sequence: 2,
+      idempotent_replayed: false,
+    });
+
+    renderSurface();
+    const editor = await screen.findByRole("textbox", { name: "练习代码" });
+    await user.clear(editor);
+    await user.type(editor, "<button data-aearn-event=\"done\">Done</button>");
+    expect(api.actOnTutorArtifact).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "运行" }));
+    await waitFor(() => expect(api.actOnTutorArtifact).toHaveBeenCalledTimes(1));
+    expect(api.actOnTutorArtifact).toHaveBeenCalledWith(expect.objectContaining({
+      userId: "user-1",
+      conversationId: "conversation-1",
+      artifactId: "artifact-1",
+      learningTrackId: "track-1",
+      teachingSessionId: "session-1",
+      expectedArtifactVersion: 1,
+      action: { action: "run", submission: "<button data-aearn-event=\"done\">Done</button>" },
+      clientActionId: expect.stringMatching(/^tutor-artifact-run:/),
+    }));
   });
 
   it("loads an exact result Attempt and returns to its versioned source without requiring a source content hash", async () => {

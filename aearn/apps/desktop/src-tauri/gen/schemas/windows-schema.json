@@ -177,6 +177,66 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "Enables the preview_host_close command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-preview-host-close",
+          "markdownDescription": "Enables the preview_host_close command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the preview_host_create command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-preview-host-create",
+          "markdownDescription": "Enables the preview_host_create command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the preview_host_recreate command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-preview-host-recreate",
+          "markdownDescription": "Enables the preview_host_recreate command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the preview_host_set_bounds command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-preview-host-set-bounds",
+          "markdownDescription": "Enables the preview_host_set_bounds command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the preview_host_update_source command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-preview-host-update-source",
+          "markdownDescription": "Enables the preview_host_update_source command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the preview_host_close command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-preview-host-close",
+          "markdownDescription": "Denies the preview_host_close command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the preview_host_create command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-preview-host-create",
+          "markdownDescription": "Denies the preview_host_create command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the preview_host_recreate command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-preview-host-recreate",
+          "markdownDescription": "Denies the preview_host_recreate command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the preview_host_set_bounds command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-preview-host-set-bounds",
+          "markdownDescription": "Denies the preview_host_set_bounds command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the preview_host_update_source command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-preview-host-update-source",
+          "markdownDescription": "Denies the preview_host_update_source command without any pre-configured scope."
+        },
+        {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",
           "type": "string",
           "const": "core:default",

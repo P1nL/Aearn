@@ -2,6 +2,13 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Default capability for the desktop shell.",
-  "windows": ["main"],
-  "permissions": ["core:default"]
+  "webviews": ["main"],
+  "permissions": [
+    "core:default",
+    "allow-preview-host-create",
+    "allow-preview-host-update-source",
+    "allow-preview-host-set-bounds",
+    "allow-preview-host-recreate",
+    "allow-preview-host-close"
+  ]
 }

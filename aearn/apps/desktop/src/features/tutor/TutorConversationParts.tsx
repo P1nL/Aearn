@@ -10,7 +10,7 @@ import {
   Button, DisclosureRow, IconChevronDown, IconChevronUp, IconDelete, IconEdit, IconQueue,
   IconSend, IconStop, Input, StateDot,
 } from "../../ui/dsh-derived";
-import { ClarificationBranchGroup, InlineArtifactMessage, SafeMarkdown, type TutorArtifactActionRequest, type TutorArtifactAttemptLoader, type TutorArtifactReturnToSource } from "./artifacts";
+import { ClarificationBranchGroup, InlineArtifactMessage, SafeMarkdown, type TutorArtifactActionHandler, type TutorArtifactAttemptLoader, type TutorArtifactReturnToSource } from "./artifacts";
 import {
   displayQueuePauseReason, groupTimelineAroundArtifacts, requestDraftValid, runtimeReasoningText,
   TUTOR_TEXT_REVEAL_INTERVAL_MS, TUTOR_THINKING_AUTO_COLLAPSE_DELAY_MS,
@@ -136,7 +136,7 @@ export function TeachingSessionTimeline({ groups, legacyItems, branches, convers
   mutationBusy: string | null;
   onRetry: (turnId: string) => void;
   onReference?: (reference: TutorContextReferenceDraft, label: string) => void;
-  onArtifactAction?: (request: TutorArtifactActionRequest) => void;
+  onArtifactAction?: TutorArtifactActionHandler;
   loadArtifactDetail?: (artifact: TutorPublicArtifactItem) => Promise<TutorPublicArtifactItem>;
   loadArtifactAttempt?: TutorArtifactAttemptLoader;
   onReturnToArtifactSource?: TutorArtifactReturnToSource;
@@ -195,7 +195,7 @@ export function TimelineSequence({ items, branches, conversationId, newArtifactI
   writeEnabled: boolean;
   mutationBusy: string | null;
   onRetry: (turnId: string) => void;
-  onArtifactAction?: (request: TutorArtifactActionRequest) => void;
+  onArtifactAction?: TutorArtifactActionHandler;
   loadArtifactDetail?: (artifact: TutorPublicArtifactItem) => Promise<TutorPublicArtifactItem>;
   loadArtifactAttempt?: TutorArtifactAttemptLoader;
   onReturnToArtifactSource?: TutorArtifactReturnToSource;
@@ -222,13 +222,14 @@ export function TimelineSequence({ items, branches, conversationId, newArtifactI
         artifactAutoReveal={node.item.kind === "artifact" && newArtifactIds.has(node.item.id)}
         artifactTerminalCollapseMarker={node.terminalCollapseMarker}
         onArtifactAction={writeEnabled ? onArtifactAction : undefined}
+        artifactActionBusy={Boolean(mutationBusy)}
         loadArtifactDetail={loadArtifactDetail}
         loadArtifactAttempt={loadArtifactAttempt}
         onReturnToArtifactSource={onReturnToArtifactSource}
       />)}</>;
 }
 
-export function TimelineItem({ item, recentCompletion, writeEnabled, mutationBusy, onRetry, artifactAutoReveal = false, artifactTerminalCollapseMarker = null, onArtifactAction, loadArtifactDetail, loadArtifactAttempt, onReturnToArtifactSource }: {
+export function TimelineItem({ item, recentCompletion, writeEnabled, mutationBusy, onRetry, artifactAutoReveal = false, artifactTerminalCollapseMarker = null, artifactActionBusy = false, onArtifactAction, loadArtifactDetail, loadArtifactAttempt, onReturnToArtifactSource }: {
   item: TutorHistoryItem;
   recentCompletion: TutorRecentCompletion | null;
   writeEnabled: boolean;
@@ -236,13 +237,14 @@ export function TimelineItem({ item, recentCompletion, writeEnabled, mutationBus
   onRetry: (turnId: string) => void;
   artifactAutoReveal?: boolean;
   artifactTerminalCollapseMarker?: string | null;
-  onArtifactAction?: (request: TutorArtifactActionRequest) => void;
+  artifactActionBusy?: boolean;
+  onArtifactAction?: TutorArtifactActionHandler;
   loadArtifactDetail?: (artifact: TutorPublicArtifactItem) => Promise<TutorPublicArtifactItem>;
   loadArtifactAttempt?: TutorArtifactAttemptLoader;
   onReturnToArtifactSource?: TutorArtifactReturnToSource;
 }) {
   if (item.kind === "process") return null;
-  if (item.kind === "artifact") return <InlineArtifactMessage artifact={item} autoReveal={artifactAutoReveal} terminalCollapseMarker={artifactTerminalCollapseMarker} onAction={onArtifactAction} loadDetail={loadArtifactDetail} loadAttempt={loadArtifactAttempt} onReturnToSource={onReturnToArtifactSource} />;
+  if (item.kind === "artifact") return <InlineArtifactMessage artifact={item} autoReveal={artifactAutoReveal} terminalCollapseMarker={artifactTerminalCollapseMarker} onAction={onArtifactAction} actionBusy={artifactActionBusy} loadDetail={loadArtifactDetail} loadAttempt={loadArtifactAttempt} onReturnToSource={onReturnToArtifactSource} />;
   if (item.kind === "message") {
     if (item.role === "tutor") {
       return <TutorMessage item={item} recentCompletion={recentCompletion?.itemId === item.id ? recentCompletion : null} />;
