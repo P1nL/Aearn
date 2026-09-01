@@ -17,6 +17,11 @@ from app.services.learning.contracts import LearningScope, LearningScopeKind, Le
 from app.services.learning.planning_facts import PostgresPlanningFactRepository
 from app.services.learning.teaching_sessions import TeachingSessionConflict, TeachingSessionRepository
 from app.services.learning.track_repository import PostgresLearningTrackRepository
+from app.services.tutor.branching import (
+    TutorBranchError,
+    TutorClarificationBranchService,
+)
+from app.services.tutor.continuation import ContinuationIntentError
 from app.services.tutor.conversation_contracts import TutorConversationEventKind, TutorInteractionProtocolVersion
 from app.services.tutor.persistence import (
     PostgresTutorRepository,
@@ -46,6 +51,7 @@ class PostgresTutorQueueController:
         self._repository = PostgresTutorRepository(conn)
         self._tracks = PostgresLearningTrackRepository(conn)
         self._teaching_sessions = TeachingSessionRepository(conn)
+        self._branches = TutorClarificationBranchService(conn)
         self._references = PostgresTutorContextReferenceRepository(conn)
         self._facts = PostgresPlanningFactRepository(conn)
 
@@ -539,6 +545,20 @@ class PostgresTutorQueueController:
                 )
             except TeachingSessionConflict as exc:
                 raise TutorInteractionRequestConflict("queued teaching-session authority is stale") from exc
+            if not inherit_existing_scope:
+                try:
+                    self._branches.bind_learner_turn(
+                        user_id=user_id,
+                        conversation_id=scope.conversation_id,
+                        run_id=run_id,
+                        message_id=acceptance.message_id,
+                        input_revision=acceptance.input_revision,
+                        occurred_at=acceptance.event.created_at,
+                    )
+                except (TutorBranchError, ContinuationIntentError) as exc:
+                    raise TutorInteractionRequestConflict(
+                        "queued clarification branch authority is stale"
+                    ) from exc
         if scope.scope_kind is LearningScopeKind.PLAN_DRAFTING:
             raw_facts = metadata.get("planning_facts")
             raw_reopen = metadata.get("reopen_fact_fields")

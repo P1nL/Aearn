@@ -2,8 +2,21 @@
 # ruff: noqa: F403, F405
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from ._namespace import *
 from ._mixin import PersistenceMixin
+
+if TYPE_CHECKING:
+    from app.services.learning.artifacts.repository import LearningArtifactWriteResult
+    from app.services.learning.teaching_artifacts import PreparedTeachingArtifact
+
+
+@dataclass(frozen=True, slots=True)
+class _TeachingStepCommit:
+    scope: Mapping[str, object]
+    next_checkpoint_id: str
+    prepared_artifact: PreparedTeachingArtifact | None
 
 
 class EffectsPersistenceMixin(PersistenceMixin):
@@ -607,6 +620,25 @@ class EffectsPersistenceMixin(PersistenceMixin):
         ).fetchone()
         if scope is None:
             return
+        foreground = self._conn.execute(
+            """
+            SELECT id
+            FROM tutor_runs
+            WHERE user_id=%s AND conversation_id=%s AND origin='interactive'
+              AND terminal_outcome IS NULL AND cancelled_at IS NULL
+              AND superseded_by_run_id IS NULL
+            FOR UPDATE
+            """,
+            (run["user_id"], run["conversation_id"]),
+        ).fetchall()
+        if (
+            str(run.get("origin") or "") != "interactive"
+            or len(foreground) != 1
+            or str(foreground[0]["id"]) != str(run["id"])
+        ):
+            raise TutorTerminalStateConflict(
+                "Tutor teaching run is no longer the foreground authority"
+            )
         live = self._conn.execute(
             """SELECT scopes.*, sessions.current_checkpoint_id, sessions.version AS live_session_version,
                       sessions.status AS live_session_status, tracks.version AS live_track_version,
@@ -653,11 +685,12 @@ class EffectsPersistenceMixin(PersistenceMixin):
     def _commit_teaching_step_locked(
         self, *, run: Mapping[str, object], result: TutorRunResult,
         checkpoint: TutorCheckpoint, created_at: datetime,
-    ) -> None:
+    ) -> _TeachingStepCommit | None:
         scope = self._conn.execute(
             """SELECT scopes.*, sessions.status AS session_status, sessions.version AS live_session_version,
                       sessions.current_checkpoint_id, checkpoints.state_json, stimuli.message_id,
-                      progress.status AS progress_status
+                      progress.status AS progress_status,
+                      nodes.required_capabilities_json AS available_capabilities_json
                FROM tutor_run_teaching_scopes AS scopes
                JOIN tutor_teaching_sessions AS sessions ON sessions.id=scopes.teaching_session_id
                  AND sessions.user_id=scopes.user_id AND sessions.conversation_id=scopes.conversation_id
@@ -666,6 +699,9 @@ class EffectsPersistenceMixin(PersistenceMixin):
                JOIN tutor_run_stimulus_events AS stimuli ON stimuli.id=scopes.stimulus_id AND stimuli.run_id=scopes.run_id
                JOIN tutor_track_node_progress AS progress ON progress.track_id=scopes.track_id
                  AND progress.user_id=scopes.user_id AND progress.knowledge_key=scopes.knowledge_key
+               JOIN tutor_track_plan_nodes AS nodes ON nodes.revision_id=scopes.active_plan_revision_id
+                 AND nodes.track_id=scopes.track_id AND nodes.user_id=scopes.user_id
+                 AND nodes.knowledge_key=scopes.knowledge_key
                WHERE scopes.run_id=%s AND scopes.user_id=%s
                FOR UPDATE OF sessions,progress""",
             (run["id"], run["user_id"]),
@@ -673,9 +709,9 @@ class EffectsPersistenceMixin(PersistenceMixin):
         if scope is None:
             if result.teaching_step is not None:
                 raise TutorTerminalStateConflict("teaching step has no immutable teaching scope")
-            return
+            return None
         if result.teaching_step is None:
-            return
+            return None
         if str(scope["current_checkpoint_id"]) != str(scope["checkpoint_id"]):
             raise TutorTerminalStateConflict("teaching checkpoint changed before commit")
         if _as_int(scope["live_session_version"], 0) != _as_int(scope["session_version"], 0):
@@ -710,7 +746,8 @@ class EffectsPersistenceMixin(PersistenceMixin):
             """INSERT INTO tutor_teaching_session_checkpoints (
                  teaching_session_id,user_id,conversation_id,predecessor_checkpoint_id,session_version,
                  state_json,authority_snapshot_json,source_run_id,source_stimulus_id,source_hash
-               ) VALUES (%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s,%s,%s) RETURNING id""",
+               ) VALUES (%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s,%s,%s)
+               RETURNING id,source_hash""",
             (scope["teaching_session_id"], scope["user_id"], scope["conversation_id"], scope["checkpoint_id"],
              next_version, _json(state_json), _json(authority_json), run["id"], scope["stimulus_id"], source_hash),
         ).fetchone()
@@ -730,23 +767,152 @@ class EffectsPersistenceMixin(PersistenceMixin):
         ).fetchone()
         if updated is None:
             raise TutorTerminalStateConflict("teaching session CAS failed")
+        prepared_artifact: PreparedTeachingArtifact | None = None
+        interaction = result.teaching_step.interaction
+        if interaction is not None and interaction.mode.value == "artifact":
+            from app.services.learning.teaching_artifacts import (
+                PostgresTeachingArtifactMaterializer,
+                TeachingArtifactCommitError,
+            )
+
+            try:
+                prepared_artifact = PostgresTeachingArtifactMaterializer(
+                    self._conn,
+                    settings=self._settings,
+                ).prepare(
+                    step=result.teaching_step,
+                    run_id=str(run["id"]),
+                    user_id=str(scope["user_id"]),
+                    conversation_id=str(scope["conversation_id"]),
+                    teaching_session_id=str(scope["teaching_session_id"]),
+                    checkpoint_id=str(next_checkpoint["id"]),
+                    checkpoint_source_hash=str(next_checkpoint["source_hash"]),
+                    session_version=next_version,
+                    learning_track_id=str(scope["track_id"]),
+                    knowledge_key=str(scope["knowledge_key"]),
+                    track_version=_as_int(scope["track_version"], 0),
+                    progress_version=_as_int(scope["progress_version"], 0),
+                    assignment_version=_as_int(scope["assignment_version"], 0),
+                    available_capabilities=tuple(
+                        str(item)
+                        for item in _as_list(
+                            scope.get("available_capabilities_json")
+                        )
+                    ),
+                )
+            except (TeachingArtifactCommitError, ValidationError) as exc:
+                raise TutorTerminalStateConflict(
+                    "teaching Artifact authority changed before commit"
+                ) from exc
+        return _TeachingStepCommit(
+            scope=dict(scope),
+            next_checkpoint_id=str(next_checkpoint["id"]),
+            prepared_artifact=prepared_artifact,
+        )
+
+    def _finalize_teaching_step_locked(
+        self,
+        *,
+        commit: _TeachingStepCommit | None,
+        run: Mapping[str, object],
+        result: TutorRunResult,
+        checkpoint: TutorCheckpoint,
+        created_at: datetime,
+    ) -> None:
+        if commit is None:
+            return
+        step = result.teaching_step
+        if step is None:
+            raise TutorTerminalStateConflict(
+                "teaching commit lost its authoritative step"
+            )
+        artifact_result: LearningArtifactWriteResult | None = None
+        if commit.prepared_artifact is not None:
+            from app.services.learning.teaching_artifacts import (
+                PostgresTeachingArtifactMaterializer,
+                TeachingArtifactCommitError,
+            )
+
+            try:
+                artifact_result = PostgresTeachingArtifactMaterializer(
+                    self._conn,
+                    settings=self._settings,
+                ).create(commit.prepared_artifact, occurred_at=created_at)
+            except TeachingArtifactCommitError as exc:
+                raise TutorTerminalStateConflict(
+                    "teaching Artifact failed during atomic commit"
+                ) from exc
+
+        response_mode = (
+            step.learner_response_mode.value
+            if step.learner_response_mode is not None
+            else "none"
+        )
+        is_artifact = response_mode == "artifact"
+        if is_artifact != (artifact_result is not None):
+            raise TutorTerminalStateConflict(
+                "teaching Artifact receipt does not match the committed interaction"
+            )
+        if is_artifact:
+            prepared = commit.prepared_artifact
+            if prepared is None or artifact_result is None:
+                raise TutorTerminalStateConflict(
+                    "teaching Artifact receipt lost prepared authority"
+                )
+            schema_version = "teaching_action_receipt_v3"
+            policy_version = "lesson_teaching_policy_v3"
+            interaction_intent: str | None = prepared.interaction_intent.value
+            artifact_handle: str | None = prepared.artifact_handle
+            artifact_id: str | None = artifact_result.artifact.id
+            artifact_event_id: str | None = artifact_result.artifact_event_id
+            artifact_event_sequence: int | None = artifact_result.artifact_event_sequence
+        else:
+            schema_version = "teaching_action_receipt_v2"
+            policy_version = "lesson_teaching_policy_v2"
+            interaction_intent = None
+            artifact_handle = None
+            artifact_id = None
+            artifact_event_id = None
+            artifact_event_sequence = None
+
+        scope = commit.scope
         self._conn.execute(
             """INSERT INTO tutor_teaching_action_receipts (
                  run_id,user_id,conversation_id,teaching_session_id,checkpoint_id,stimulus_id,action,
                  objective_id,focus_id,focus_resolution,pause_kind,source_handles_json,public_message_hash,
                  context_source_ids_json,context_source_hashes_json,teaching_moves_json,learner_response_mode,
-                 schema_version,policy_version
-               ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s,%s,%s)""",
-            (run["id"], scope["user_id"], scope["conversation_id"], scope["teaching_session_id"],
-             next_checkpoint["id"], scope["stimulus_id"], result.teaching_step.action.value,
-             result.teaching_step.objective_id, result.teaching_step.focus_id,
-             result.teaching_step.focus_resolution.value, result.teaching_step.pause_kind.value,
-             _json(list(result.teaching_step.source_handles)),
-             hashlib.sha256(result.teaching_step.public_message.encode("utf-8")).hexdigest(),
-             _json(list(checkpoint.metadata.source_ids)), _json(list(checkpoint.metadata.source_hashes)),
-             _json([item.value for item in result.teaching_step.teaching_moves or ()]),
-             result.teaching_step.learner_response_mode.value if result.teaching_step.learner_response_mode is not None else "none",
-             "teaching_action_receipt_v2", "lesson_teaching_policy_v2"),
+                 schema_version,policy_version,interaction_intent,artifact_handle,artifact_id,
+                 artifact_event_id,artifact_event_sequence
+               ) VALUES (
+                 %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s,
+                 %s,%s,%s,%s,%s,%s,%s
+               )""",
+            (
+                run["id"],
+                scope["user_id"],
+                scope["conversation_id"],
+                scope["teaching_session_id"],
+                commit.next_checkpoint_id,
+                scope["stimulus_id"],
+                step.action.value,
+                step.objective_id,
+                step.focus_id,
+                step.focus_resolution.value,
+                step.pause_kind.value,
+                _json(list(step.source_handles)),
+                hashlib.sha256(step.public_message.encode("utf-8")).hexdigest(),
+                _json(list(checkpoint.metadata.source_ids)),
+                _json(list(checkpoint.metadata.source_hashes)),
+                _json([item.value for item in step.teaching_moves or ()]),
+                response_mode,
+                schema_version,
+                policy_version,
+                interaction_intent,
+                artifact_handle,
+                artifact_id,
+                artifact_event_id,
+                artifact_event_sequence,
+            ),
         )
 
     def _catalog_skill_evidence(

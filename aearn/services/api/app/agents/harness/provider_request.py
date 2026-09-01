@@ -80,21 +80,23 @@ class TutorProviderRequestSerializer:
         if any(item.section is TutorContextSection.TEACHING_SESSION for item in context.items):
             system += (
                 " This teaching request also permits action.type=teaching_step. "
-                "First select exact tutor.lesson-teaching@1.1.0 if it is not selected; after its instruction is present, "
+                "First select exact tutor.lesson-teaching@1.2.0 if it is not selected; after its instruction is present, "
                 "use exactly one teaching_step and never use turn_completed as a teaching shortcut. When current_input is "
                 "absent, recent_messages are bounded learner-visible continuity from this exact teaching session: continue "
                 "after the latest message instead of restarting or substantially paraphrasing an explanation already given. "
                 "Repeat or reframe only when the stimulus explicitly requests change_example, or checkpoint authority requires "
                 "remediation or summary. LessonDocument is the stable reference; Tutor must use current learner/stimulus evidence "
                 "for diagnosis, guided reasoning, immediate feedback, or transfer instead of restating document structure or definitions. "
-                "A teaching unit must combine 2..4 unique teaching_moves. learner_response_mode=composer means message.text ends with one "
-                "specific answerable task and the next step comes from a learner message; learner_response_mode=none permits a conditional "
+                "A teaching unit must combine 2..4 unique teaching_moves. interaction.mode=composer means message.text ends with one "
+                "specific answerable task and the next step comes from a learner message; interaction.mode=none permits a conditional "
                 "server-projected continue only when another non-repetitive high-value unit exists. For continue, inspect recent_teaching_units "
                 "and change action, move combination, focus, or transfer target; never replay the same message hash. change_example may preserve "
                 "the purpose but must use worked_example or counterexample. A covered concept should normally advance to an example, comparison, "
                 "prediction, error check, feedback, or micro-transfer rather than receive the same introductory definition again. teaching_step may "
                 "reference only objective_id, focus_id, and source_handles listed by the server, and its public_message "
-                "must exactly equal message.text. Valid teaching-step example: "
+                "must exactly equal message.text. v3 interaction is none/none/null, composer/text_answer/null, or artifact with "
+                "one exact handle+intent listed in artifact_candidates. Without that exact candidate, do not promise the interaction; "
+                "never invent private answers, tests, rubrics, source, commands, paths, or secrets. Valid teaching-step example: "
                 f"{canonical_tutor_teaching_step_example()}"
             )
         payload = {

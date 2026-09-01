@@ -142,6 +142,12 @@ def export_user_data(conn: Connection[dict[str, object]], user_id: str) -> dict[
         "learning_artifact_event_summaries": _export_learning_artifact_events(conn, user_id),
         "learning_artifact_reference_summaries": _export_learning_artifact_references(conn, user_id),
         "learning_artifact_attempt_link_summaries": _export_learning_artifact_attempt_links(conn, user_id),
+        "clarification_branch_summaries": _export_clarification_branches(conn, user_id),
+        "clarification_branch_event_summaries": _export_clarification_branch_events(conn, user_id),
+        "run_branch_scope_summaries": _export_run_branch_scopes(conn, user_id),
+        "clarification_branch_item_summaries": _export_clarification_branch_items(conn, user_id),
+        "continuation_intent_summaries": _export_continuation_intents(conn, user_id),
+        "continuation_intent_event_summaries": _export_continuation_intent_events(conn, user_id),
         "lesson_citations": _export_lesson_citations(conn, user_id),
         "lesson_gates": _export_lesson_gates(conn, user_id),
         "exercise_attempt_summaries": _export_exercise_attempt_summaries(conn, user_id),
@@ -181,6 +187,10 @@ def export_user_data(conn: Connection[dict[str, object]], user_id: str) -> dict[
             "artifact_event_payloads": "omitted",
             "artifact_action_request_hashes": "omitted",
             "artifact_reference_content_hashes": "omitted",
+            "branch_request_hashes": "omitted",
+            "continuation_request_hashes": "omitted",
+            "continuation_idempotency_keys": "omitted",
+            "continuation_claimant_ids": "omitted",
             "secrets": "omitted",
         },
     }
@@ -300,6 +310,12 @@ def _summary_counts(conn: Connection[dict[str, object]], user_id: str) -> dict[s
         "learning_artifact_events": _count(conn, "SELECT count(*) AS count FROM tutor_learning_artifact_events WHERE user_id = %s", user_id),
         "learning_artifact_references": _count(conn, "SELECT count(*) AS count FROM tutor_learning_artifact_references WHERE user_id = %s", user_id),
         "learning_artifact_attempt_links": _count(conn, "SELECT count(*) AS count FROM tutor_learning_artifact_attempt_links WHERE user_id = %s", user_id),
+        "clarification_branches": _count(conn, "SELECT count(*) AS count FROM tutor_conversation_branches WHERE user_id = %s", user_id),
+        "clarification_branch_events": _count(conn, "SELECT count(*) AS count FROM tutor_conversation_branch_events WHERE user_id = %s", user_id),
+        "run_branch_scopes": _count(conn, "SELECT count(*) AS count FROM tutor_run_branch_scopes WHERE user_id = %s", user_id),
+        "clarification_branch_items": _count(conn, "SELECT count(*) AS count FROM tutor_conversation_branch_items WHERE user_id = %s", user_id),
+        "continuation_intents": _count(conn, "SELECT count(*) AS count FROM tutor_continuation_intents WHERE user_id = %s", user_id),
+        "continuation_intent_events": _count(conn, "SELECT count(*) AS count FROM tutor_continuation_intent_events WHERE user_id = %s", user_id),
         "lesson_authoring_runs": _count(conn, "SELECT count(*) AS count FROM tutor_lesson_authoring_runs WHERE user_id = %s", user_id),
         "lesson_gates": _count(conn, "SELECT count(*) AS count FROM tutor_lesson_gate_states WHERE user_id = %s", user_id),
         "exercise_attempts": _count(conn, "SELECT count(*) AS count FROM tutor_exercise_attempts WHERE user_id = %s", user_id),
@@ -887,6 +903,126 @@ def _export_learning_artifact_attempt_links(
     ).fetchall()
     return [_safe_row(row, exclude=()) for row in rows]
 
+def _export_clarification_branches(
+    conn: Connection[dict[str, object]],
+    user_id: str,
+) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """
+        SELECT id, conversation_id, learning_track_id, knowledge_key,
+               teaching_session_id, checkpoint_id, artifact_id,
+               predecessor_branch_id, depth, state, version, round_count,
+               latest_disposition, opened_turn_id, opened_input_revision,
+               resolved_turn_id, created_at, updated_at, resolved_at
+        FROM tutor_conversation_branches
+        WHERE user_id = %s
+        ORDER BY created_at, id
+        """,
+        (user_id,),
+    ).fetchall()
+    return [_safe_row(row, exclude=()) for row in rows]
+
+
+def _export_clarification_branch_events(
+    conn: Connection[dict[str, object]],
+    user_id: str,
+) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """
+        SELECT id, branch_id, conversation_id, artifact_id,
+               predecessor_event_id, branch_version, event_kind,
+               message_classification, control_kind, disposition,
+               source_turn_id, source_input_revision, response_message_id,
+               assistance_kind, assistance_receipt_kind, assistance_receipt_id,
+               created_at
+        FROM tutor_conversation_branch_events
+        WHERE user_id = %s
+        ORDER BY branch_id, branch_version
+        """,
+        (user_id,),
+    ).fetchall()
+    return [_safe_row(row, exclude=()) for row in rows]
+
+
+def _export_run_branch_scopes(
+    conn: Connection[dict[str, object]],
+    user_id: str,
+) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """
+        SELECT run_id, conversation_id, branch_id, artifact_id,
+               teaching_session_id, checkpoint_id, learning_track_id,
+               knowledge_key, branch_version, branch_round,
+               source_input_revision, message_classification, control_kind,
+               created_at
+        FROM tutor_run_branch_scopes
+        WHERE user_id = %s
+        ORDER BY created_at, run_id
+        """,
+        (user_id,),
+    ).fetchall()
+    return [_safe_row(row, exclude=()) for row in rows]
+
+
+def _export_clarification_branch_items(
+    conn: Connection[dict[str, object]],
+    user_id: str,
+) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """
+        SELECT id, branch_id, conversation_id, artifact_id, run_id,
+               branch_round, item_sequence, item_kind, item_id, item_role,
+               created_at
+        FROM tutor_conversation_branch_items
+        WHERE user_id = %s
+        ORDER BY branch_id, item_sequence
+        """,
+        (user_id,),
+    ).fetchall()
+    return [_safe_row(row, exclude=()) for row in rows]
+
+
+def _export_continuation_intents(
+    conn: Connection[dict[str, object]],
+    user_id: str,
+) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """
+        SELECT id, conversation_id, learning_track_id, knowledge_key,
+               teaching_session_id, checkpoint_id, artifact_id, branch_id,
+               source_kind, source_id, source_version, priority,
+               session_version, artifact_version, track_version,
+               progress_version, assignment_version, state, version,
+               not_before, claim_generation, claim_expires_at,
+               consumed_run_id, terminal_reason, created_at, updated_at
+        FROM tutor_continuation_intents
+        WHERE user_id = %s
+        ORDER BY created_at, id
+        """,
+        (user_id,),
+    ).fetchall()
+    return [_safe_row(row, exclude=()) for row in rows]
+
+
+def _export_continuation_intent_events(
+    conn: Connection[dict[str, object]],
+    user_id: str,
+) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """
+        SELECT id, intent_id, conversation_id, artifact_id,
+               predecessor_event_id, intent_version, event_kind, state,
+               claim_generation, claim_expires_at, consumed_run_id,
+               reason_code, created_at
+        FROM tutor_continuation_intent_events
+        WHERE user_id = %s
+        ORDER BY intent_id, intent_version
+        """,
+        (user_id,),
+    ).fetchall()
+    return [_safe_row(row, exclude=()) for row in rows]
+
+
 def _export_lesson_citations(conn: Connection[dict[str, object]], user_id: str) -> list[dict[str, object]]:
     rows = conn.execute(
         """
@@ -1259,6 +1395,30 @@ def _delete_learning_track_data(conn: Connection[dict[str, object]], user_id: st
         )
     conn.execute("SELECT set_config('aearn.learning_track_purge_user_id', %s, true)", (user_id,))
     conn.execute("SET CONSTRAINTS ALL DEFERRED")
+    conn.execute(
+        "DELETE FROM tutor_continuation_intent_events WHERE user_id = %s",
+        (user_id,),
+    )
+    conn.execute(
+        "DELETE FROM tutor_continuation_intents WHERE user_id = %s",
+        (user_id,),
+    )
+    conn.execute(
+        "DELETE FROM tutor_conversation_branch_items WHERE user_id = %s",
+        (user_id,),
+    )
+    conn.execute(
+        "DELETE FROM tutor_run_branch_scopes WHERE user_id = %s",
+        (user_id,),
+    )
+    conn.execute(
+        "DELETE FROM tutor_conversation_branch_events WHERE user_id = %s",
+        (user_id,),
+    )
+    conn.execute(
+        "DELETE FROM tutor_conversation_branches WHERE user_id = %s",
+        (user_id,),
+    )
     conn.execute(
         """
         DELETE FROM tutor_conversation_events

@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 _STABLE = re.compile(r"^[a-z0-9][a-z0-9._:-]{0,159}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_LEARNING_ITEM_HANDLE = re.compile(r"^li:[0-9a-f]{64}$")
 
 
 class _Strict(BaseModel):
@@ -328,6 +329,148 @@ class TeachingMove(StrEnum):
 class TeachingLearnerResponseMode(StrEnum):
     NONE = "none"
     COMPOSER = "composer"
+    ARTIFACT = "artifact"
+
+
+class TeachingInteractionIntent(StrEnum):
+    NONE = "none"
+    TEXT_ANSWER = "text_answer"
+    STRUCTURED_ANSWER = "structured_answer"
+    EDIT_CODE = "edit_code"
+    RUN_CODE = "run_code"
+    REVIEW_DIFF = "review_diff"
+    EXECUTE_QUERY = "execute_query"
+    INTERACT_WITH_DEMO = "interact_with_demo"
+
+
+ARTIFACT_INTERACTION_INTENTS = frozenset({
+    TeachingInteractionIntent.STRUCTURED_ANSWER,
+    TeachingInteractionIntent.EDIT_CODE,
+    TeachingInteractionIntent.RUN_CODE,
+    TeachingInteractionIntent.REVIEW_DIFF,
+    TeachingInteractionIntent.EXECUTE_QUERY,
+    TeachingInteractionIntent.INTERACT_WITH_DEMO,
+})
+
+
+class TeachingInteractionDecision(_Strict):
+    mode: TeachingLearnerResponseMode
+    intent: TeachingInteractionIntent
+    artifact_handle: str | None = Field(default=None, min_length=67, max_length=67)
+
+    @field_validator("artifact_handle")
+    @classmethod
+    def exact_artifact_handle(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip().lower()
+        if not _LEARNING_ITEM_HANDLE.fullmatch(normalized):
+            raise ValueError("artifact_handle must be an exact Learning Item handle")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_pairing(self) -> "TeachingInteractionDecision":
+        if self.mode is TeachingLearnerResponseMode.NONE:
+            if self.intent is not TeachingInteractionIntent.NONE or self.artifact_handle is not None:
+                raise ValueError("none interaction requires intent=none and no artifact handle")
+        elif self.mode is TeachingLearnerResponseMode.COMPOSER:
+            if self.intent is not TeachingInteractionIntent.TEXT_ANSWER or self.artifact_handle is not None:
+                raise ValueError("composer interaction requires text_answer and no artifact handle")
+        elif self.intent not in ARTIFACT_INTERACTION_INTENTS or self.artifact_handle is None:
+            raise ValueError("artifact interaction requires one artifact intent and exact handle")
+        return self
+
+
+class TeachingArtifactCandidateScope(_Strict):
+    teaching_session_id: str = Field(min_length=1, max_length=120)
+    checkpoint_id: str = Field(min_length=1, max_length=120)
+    track_id: str = Field(min_length=1, max_length=120)
+    knowledge_key: str = Field(min_length=1, max_length=160)
+    session_version: int = Field(ge=1)
+    track_version: int = Field(ge=1)
+    progress_version: int = Field(ge=1)
+    assignment_id: str = Field(min_length=1, max_length=120)
+    assignment_version: int = Field(ge=1)
+
+    @field_validator("knowledge_key")
+    @classmethod
+    def stable_knowledge_key(cls, value: str) -> str:
+        return stable(value, "candidate knowledge_key")
+
+
+class TeachingArtifactCandidate(_Strict):
+    handle: str = Field(min_length=67, max_length=67)
+    kind: Literal["code", "sql", "demo", "knowledge_check", "model_review"]
+    purpose: Literal[
+        "exercise",
+        "demonstration",
+        "knowledge_check",
+        "remediation",
+        "transfer_check",
+        "code_review",
+        "sql_exploration",
+    ]
+    difficulty: Literal["D1", "D2", "D3", "D4", "D5"]
+    interaction_intents: tuple[TeachingInteractionIntent, ...] = Field(min_length=1, max_length=2)
+
+    @field_validator("handle")
+    @classmethod
+    def exact_candidate_handle(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if not _LEARNING_ITEM_HANDLE.fullmatch(normalized):
+            raise ValueError("candidate handle must be an exact Learning Item handle")
+        return normalized
+
+    @field_validator("interaction_intents")
+    @classmethod
+    def unique_artifact_intents(
+        cls,
+        value: tuple[TeachingInteractionIntent, ...],
+    ) -> tuple[TeachingInteractionIntent, ...]:
+        if len(value) != len(set(value)) or any(item not in ARTIFACT_INTERACTION_INTENTS for item in value):
+            raise ValueError("candidate interaction intents must be unique artifact intents")
+        return value
+
+    @model_validator(mode="after")
+    def validate_kind_intents(self) -> "TeachingArtifactCandidate":
+        allowed = {
+            "code": frozenset({TeachingInteractionIntent.EDIT_CODE, TeachingInteractionIntent.RUN_CODE}),
+            "sql": frozenset({TeachingInteractionIntent.EXECUTE_QUERY}),
+            "demo": frozenset({TeachingInteractionIntent.INTERACT_WITH_DEMO}),
+            "knowledge_check": frozenset({TeachingInteractionIntent.STRUCTURED_ANSWER}),
+            "model_review": frozenset({TeachingInteractionIntent.REVIEW_DIFF}),
+        }[self.kind]
+        if not set(self.interaction_intents).issubset(allowed):
+            raise ValueError("candidate intent is incompatible with its Learning Item kind")
+        return self
+
+    def provider_projection(self) -> dict[str, object]:
+        return {
+            "handle": self.handle,
+            "kind": self.kind,
+            "purpose": self.purpose,
+            "difficulty": self.difficulty,
+            "interaction_intents": [item.value for item in self.interaction_intents],
+        }
+
+
+class TeachingArtifactCandidateSet(_Strict):
+    schema_version: Literal["teaching_artifact_candidates_v1"] = "teaching_artifact_candidates_v1"
+    scope: TeachingArtifactCandidateScope
+    feature_enabled: bool
+    candidates: tuple[TeachingArtifactCandidate, ...] = Field(default=(), max_length=8)
+
+    @model_validator(mode="after")
+    def validate_candidates(self) -> "TeachingArtifactCandidateSet":
+        handles = tuple(item.handle for item in self.candidates)
+        if len(handles) != len(set(handles)):
+            raise ValueError("artifact candidate handles must be unique")
+        if not self.feature_enabled and self.candidates:
+            raise ValueError("disabled artifact teaching cannot expose candidates")
+        return self
+
+    def provider_projection(self) -> list[dict[str, object]]:
+        return [item.provider_projection() for item in self.candidates]
 
 
 class TeachingStepDecision(_Strict):
@@ -341,6 +484,7 @@ class TeachingStepDecision(_Strict):
     escalation_hint: str | None = Field(default=None, min_length=1, max_length=180)
     teaching_moves: tuple[TeachingMove, ...] | None = Field(default=None, max_length=4)
     learner_response_mode: TeachingLearnerResponseMode | None = None
+    interaction: TeachingInteractionDecision | None = None
 
     @field_validator("objective_id", "focus_id")
     @classmethod
@@ -368,6 +512,13 @@ class TeachingStepDecision(_Strict):
             raise ValueError("push_child requires a child focus identity")
         if self.pause_kind is TeachingPauseReason.COMPLETION_PAUSE and self.action is not TeachingAction.SUMMARIZE_PROGRESS:
             raise ValueError("completion_pause requires summarize_progress")
+        if self.interaction is not None:
+            if self.learner_response_mode is not None and self.learner_response_mode is not self.interaction.mode:
+                raise ValueError("interaction mode must match learner_response_mode")
+            if self.learner_response_mode is None:
+                object.__setattr__(self, "learner_response_mode", self.interaction.mode)
+        elif self.learner_response_mode is TeachingLearnerResponseMode.ARTIFACT:
+            raise ValueError("artifact response mode requires the v3 interaction contract")
         return self
 
 

@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from app.core.config import Settings, get_settings
 from app.db.connection import connect
+from app.services.tutor.continuation import TutorContinuationDispatcher
 from app.services.tutor.interactive import TutorRunDispatcher, build_tutor_run_dispatcher
 from app.services.tutor.persistence import PostgresTutorRepository
 from app.services.tutor.queue_control import PostgresTutorQueueController, build_queue_turn_policy
@@ -125,16 +126,35 @@ class TutorInteractiveWorker:
             )
             queue = PostgresTutorQueueController(conn)
             if completed and run_result.terminal_outcome is TutorTerminalOutcome.COMPLETED:
-                catalog = compile_published_skill_catalog()
-                repository.record_catalog_snapshot(catalog)
-                drained = queue.drain_completed(
-                    user_id=claim.user_id, conversation_id=claim.conversation_id,
-                    catalog_digest=catalog.digest,
-                    policy=build_queue_turn_policy(completed_at, settings=self._settings),
-                    occurred_at=completed_at,
+                continuation = TutorContinuationDispatcher(
+                    conn,
+                    settings=self._settings,
+                ).dispatch_next(
+                    user_id=claim.user_id,
+                    conversation_id=claim.conversation_id,
+                    claimant_id=f"{self._owner_id}:continuation",
+                    now=completed_at,
                 )
-                next_job_id = drained.acceptance.dispatch_job_id if drained is not None else None
-                next_runtime_kind = drained.run.runtime_kind if drained is not None else None
+                if continuation is not None:
+                    next_job_id = continuation.dispatch_job_id
+                    next_runtime_kind = continuation.runtime_kind
+                else:
+                    catalog = compile_published_skill_catalog()
+                    repository.record_catalog_snapshot(catalog)
+                    drained = queue.drain_completed(
+                        user_id=claim.user_id, conversation_id=claim.conversation_id,
+                        catalog_digest=catalog.digest,
+                        policy=build_queue_turn_policy(completed_at, settings=self._settings),
+                        occurred_at=completed_at,
+                    )
+                    next_job_id = (
+                        drained.acceptance.dispatch_job_id
+                        if drained is not None
+                        else None
+                    )
+                    next_runtime_kind = (
+                        drained.run.runtime_kind if drained is not None else None
+                    )
             elif completed:
                 queue.pause_failed(user_id=claim.user_id, conversation_id=claim.conversation_id)
         if next_job_id is not None:

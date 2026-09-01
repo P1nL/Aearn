@@ -9,6 +9,7 @@ from typing import Annotated, Literal, Mapping, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
 
+from app.services.tutor.branch_contracts import BranchResponseDisposition
 from app.services.learning.practice.model_review_contracts import ModelCodeReviewSubmissionV1
 
 
@@ -506,8 +507,18 @@ class TutorArtifactAttemptDetailV1(_StrictArtifactModel):
 class TutorArtifactBranchSummaryV1(_StrictArtifactModel):
     branch_id: str = Field(min_length=1, max_length=160)
     state: Literal["active", "resolved"]
+    disposition: BranchResponseDisposition | None = None
     round_count: int = Field(ge=1, le=100)
+    item_count: int = Field(ge=1, le=400)
     collapsed: bool
+
+    @model_validator(mode="after")
+    def validate_branch_summary(self) -> "TutorArtifactBranchSummaryV1":
+        if self.collapsed != (self.state == "resolved"):
+            raise ValueError("artifact branch collapsed state is inconsistent")
+        if self.state == "resolved" and self.disposition is None:
+            raise ValueError("resolved artifact branch requires a disposition")
+        return self
 
 
 class TutorPublicArtifactItem(_StrictArtifactModel):

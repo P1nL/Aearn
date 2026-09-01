@@ -31,6 +31,8 @@ from app.agents.harness.contracts import (
 from app.services.learning.teaching_contracts import (
     TeachingAction,
     TeachingFocusResolution,
+    TeachingInteractionDecision,
+    TeachingInteractionIntent,
     TeachingLearnerResponseMode,
     TeachingMove,
     TeachingPauseReason,
@@ -39,8 +41,8 @@ from app.services.learning.teaching_contracts import (
 from app.services.llm.llm_client import LLMInvalidResponseError
 
 
-TUTOR_PROVIDER_ITEMS_SCHEMA_VERSION = "tutor_provider_items_v4"
-TUTOR_PROVIDER_ITEMS_SCHEMA_NAME = "tutor_provider_items_v4"
+TUTOR_PROVIDER_ITEMS_SCHEMA_VERSION = "tutor_provider_items_v5"
+TUTOR_PROVIDER_ITEMS_SCHEMA_NAME = "tutor_provider_items_v5"
 
 _FORBIDDEN_NESTED_PAYLOAD_FIELD_NAMES = frozenset(
     {
@@ -188,6 +190,7 @@ class TutorProviderTeachingStepItem(_StrictProviderModel):
     escalation_hint: str | None = Field(default=None, min_length=1, max_length=180)
     teaching_moves: list[TeachingMove] | None = Field(default=None, max_length=4)
     learner_response_mode: TeachingLearnerResponseMode | None = None
+    interaction: TeachingInteractionDecision | None = None
 
     @field_validator("source_handles")
     @classmethod
@@ -195,6 +198,12 @@ class TutorProviderTeachingStepItem(_StrictProviderModel):
         if len(value) != len(set(value)):
             raise ValueError("teaching source handles must be unique")
         return value
+
+    @model_validator(mode="after")
+    def _one_interaction_contract(self) -> "TutorProviderTeachingStepItem":
+        if self.interaction is not None and self.learner_response_mode is not None:
+            raise ValueError("teaching_step cannot combine v2 and v3 interaction fields")
+        return self
 
 
 class TutorProviderWaitForInputItem(_StrictProviderModel):
@@ -224,9 +233,19 @@ TutorProviderActionItem: TypeAlias = Annotated[
 
 
 class TutorProviderItemsEnvelope(_StrictProviderModel):
-    schema_version: Literal["tutor_provider_items_v4"]
+    schema_version: Literal["tutor_provider_items_v4", "tutor_provider_items_v5"]
     message: TutorProviderAgentMessageItem
     action: TutorProviderActionItem
+
+    @model_validator(mode="after")
+    def _require_current_teaching_contract(self) -> "TutorProviderItemsEnvelope":
+        if (
+            self.schema_version == TUTOR_PROVIDER_ITEMS_SCHEMA_VERSION
+            and isinstance(self.action, TutorProviderTeachingStepItem)
+            and self.action.interaction is None
+        ):
+            raise ValueError("current teaching_step requires the v3 interaction contract")
+        return self
 
 
 def tutor_provider_output_schema() -> dict[str, object]:
@@ -237,6 +256,15 @@ def tutor_provider_output_schema() -> dict[str, object]:
     if not isinstance(definitions, dict):  # pragma: no cover - Pydantic schema invariant.
         raise RuntimeError("Tutor provider schema definitions are missing")
     definitions["TutorProviderWaitForInputItem"] = _wait_for_input_output_schema()
+    definitions["TutorProviderTeachingStepItem"] = _teaching_step_output_schema()
+    properties = schema.get("properties")
+    if not isinstance(properties, dict):  # pragma: no cover - Pydantic schema invariant.
+        raise RuntimeError("Tutor provider schema properties are missing")
+    properties["schema_version"] = {
+        "const": TUTOR_PROVIDER_ITEMS_SCHEMA_VERSION,
+        "title": "Schema Version",
+        "type": "string",
+    }
     return schema
 
 
@@ -284,6 +312,145 @@ def _wait_for_input_output_schema() -> dict[str, object]:
     return {"title": "TutorProviderWaitForInputItem", "anyOf": branches}
 
 
+def _teaching_step_output_schema() -> dict[str, object]:
+    interaction_branches: list[dict[str, object]] = [
+        _teaching_interaction_branch(
+            mode=TeachingLearnerResponseMode.NONE,
+            intent=TeachingInteractionIntent.NONE,
+            artifact=False,
+        ),
+        _teaching_interaction_branch(
+            mode=TeachingLearnerResponseMode.COMPOSER,
+            intent=TeachingInteractionIntent.TEXT_ANSWER,
+            artifact=False,
+        ),
+    ]
+    interaction_branches.extend(
+        _teaching_interaction_branch(
+            mode=TeachingLearnerResponseMode.ARTIFACT,
+            intent=intent,
+            artifact=True,
+        )
+        for intent in (
+            TeachingInteractionIntent.STRUCTURED_ANSWER,
+            TeachingInteractionIntent.EDIT_CODE,
+            TeachingInteractionIntent.RUN_CODE,
+            TeachingInteractionIntent.REVIEW_DIFF,
+            TeachingInteractionIntent.EXECUTE_QUERY,
+            TeachingInteractionIntent.INTERACT_WITH_DEMO,
+        )
+    )
+    return {
+        "title": "TutorProviderTeachingStepItem",
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "type": {"const": "teaching_step", "type": "string"},
+            "action": {
+                "enum": [item.value for item in TeachingAction],
+                "type": "string",
+            },
+            "objective_id": {
+                "minLength": 1,
+                "maxLength": 160,
+                "pattern": "^[a-z0-9][a-z0-9._:-]{0,159}$",
+                "type": "string",
+            },
+            "focus_id": {
+                "minLength": 1,
+                "maxLength": 160,
+                "pattern": "^[a-z0-9][a-z0-9._:-]{0,159}$",
+                "type": "string",
+            },
+            "source_handles": {
+                "type": "array",
+                "items": {
+                    "minLength": 1,
+                    "maxLength": 160,
+                    "pattern": "^[a-z0-9][a-z0-9._:-]{0,159}$",
+                    "type": "string",
+                },
+                "maxItems": 8,
+                "uniqueItems": True,
+            },
+            "public_message": {
+                "minLength": 1,
+                "maxLength": 4000,
+                "type": "string",
+            },
+            "focus_resolution": {
+                "enum": [item.value for item in TeachingFocusResolution],
+                "type": "string",
+            },
+            "pause_kind": {
+                "enum": [item.value for item in TeachingPauseReason],
+                "type": "string",
+            },
+            "escalation_hint": {
+                "anyOf": [
+                    {"minLength": 1, "maxLength": 180, "type": "string"},
+                    {"type": "null"},
+                ]
+            },
+            "teaching_moves": {
+                "type": "array",
+                "items": {
+                    "enum": [item.value for item in TeachingMove],
+                    "type": "string",
+                },
+                "minItems": 2,
+                "maxItems": 4,
+                "uniqueItems": True,
+            },
+            "interaction": {
+                "title": "TeachingInteractionDecision",
+                "anyOf": interaction_branches,
+            },
+        },
+        "required": [
+            "type",
+            "action",
+            "objective_id",
+            "focus_id",
+            "source_handles",
+            "public_message",
+            "focus_resolution",
+            "pause_kind",
+            "escalation_hint",
+            "teaching_moves",
+            "interaction",
+        ],
+    }
+
+
+def _teaching_interaction_branch(
+    *,
+    mode: TeachingLearnerResponseMode,
+    intent: TeachingInteractionIntent,
+    artifact: bool,
+) -> dict[str, object]:
+    artifact_handle: dict[str, object] = (
+        {
+            "type": "string",
+            "minLength": 67,
+            "maxLength": 67,
+            "pattern": "^li:[0-9a-f]{64}$",
+        }
+        if artifact
+        else {"type": "null"}
+    )
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "mode": {"const": mode.value, "type": "string"},
+            "intent": {"const": intent.value, "type": "string"},
+            "artifact_handle": artifact_handle,
+        },
+        "required": ["mode", "intent", "artifact_handle"],
+    }
+
+
 def tutor_provider_output_schema_hash() -> str:
     canonical = json.dumps(
         tutor_provider_output_schema(),
@@ -327,7 +494,11 @@ def canonical_tutor_teaching_step_example() -> str:
             "public_message": message,
             "focus_resolution": "stay", "pause_kind": "soft_pause", "escalation_hint": None,
             "teaching_moves": ["misconception_contrast", "error_detection"],
-            "learner_response_mode": "composer",
+            "interaction": {
+                "mode": "composer",
+                "intent": "text_answer",
+                "artifact_handle": None,
+            },
         },
     )
 
@@ -461,6 +632,7 @@ def parse_tutor_provider_items(
                 escalation_hint=action.escalation_hint,
                 teaching_moves=(tuple(action.teaching_moves) if action.teaching_moves is not None else None),
                 learner_response_mode=action.learner_response_mode,
+                interaction=action.interaction,
             )
             terminal_outcome = TutorTerminalOutcome.COMPLETED
         elif isinstance(action, TutorProviderWaitForInputItem):
@@ -512,9 +684,12 @@ def build_tutor_replacement_message(
         "Choose its wording, paragraphs, line breaks, tone, and granularity naturally for the current request; do not force "
         "numbered steps or a fixed linguistic template. It is authored public explanation text, not provider-native hidden "
         "reasoning, and must not mention prompts, policies, diagnostics, or secrets. "
-        "teaching_step for tutor.lesson-teaching@1.1.0 must use one closed action, exact objective/focus/source handles, "
-        "one focus_resolution, one pause_kind, 2..4 unique teaching_moves, and learner_response_mode=none|composer. "
-        "composer requires check_understanding or wait_for_input plus a diagnostic move; none cannot use those waiting actions. "
+        "teaching_step for tutor.lesson-teaching@1.2.0 must use one closed action, exact objective/focus/source handles, "
+        "one focus_resolution, one pause_kind, 2..4 unique teaching_moves, and one v3 interaction object. "
+        "interaction pairs are none/none/null, composer/text_answer/null, or artifact with one closed artifact intent and an "
+        "exact handle advertised for that intent in current artifact_candidates. No candidate or disabled artifact mode means "
+        "do not promise editing, running, review, query, structured-answer, or demo interaction. composer requires "
+        "check_understanding or wait_for_input plus a diagnostic move; none cannot use those waiting actions. "
         "wait_for_input.continuation_kind must be clarification, planning_input, approval, capability_result, or "
         "external_result. planning_input requires exactly one allowlisted question_key; every other continuation must omit it. "
         "The server owns request_id, effect_id, expected_input_revision, checkpoints, and terminal state; never emit them. "

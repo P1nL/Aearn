@@ -2,7 +2,7 @@
 
 ## Current runtime status
 
-**Updated: 2026-08-27.** Aearn's active product runtime is the **Tutor Harness** with a controlled Codex Sidecar path for eligible new `plan_drafting` turns.
+**Updated: 2026-09-01.** Aearn's active product runtime is the **Tutor Harness** with a controlled Codex Sidecar path for eligible new `plan_drafting` turns.
 The desktop starts from a local learner identity, asks the server for a
 cutover decision, and admits a learner to the Tutor workspace only after a
 server-authoritative `verified` receipt. The current learning runtime also includes
@@ -13,7 +13,7 @@ track-scoped spaced-review authority with finite `ReviewSession` batches,
 server-projected critical-prerequisite Gates, exactly-once mastery/schedule
 finalization, and a responsive track learning workspace that combines the
 server roadmap, Lesson/Practice, Review, and a scoped Tutor conversation.
-The backend now also persists knowledge-scoped TeachingSession/checkpoint authority and exact learner-message, teaching-control, or domain-event Turn stimuli while keeping one long-lived track conversation. Teaching runs use required `TEACHING_SESSION` context, exact `tutor.lesson-teaching@1.1.0`, the strict `tutor.teaching-step-decision.v2` contract, two to four distinct teaching moves, explicit learner response mode, recent teaching-unit receipts, atomic checkpoint/action-receipt/message commit, conditional server-owned Action Shelf projection, reactive Free Reading, authority-refresh successor sessions, and explicit completion-to-next-node transition. Immutable `tutor.lesson-teaching@1.0.0` remains catalog history and is not selected for new teaching runs.
+The backend now also persists knowledge-scoped TeachingSession/checkpoint authority and exact learner-message, teaching-control, or domain-event Turn stimuli while keeping one long-lived track conversation. Artifact-aware teaching uses exact `tutor.lesson-teaching@1.2.0` and decision v3, server-built published Learning Item handles, impossible-instruction gating, and an atomic message/checkpoint/receipt/Artifact/event/Turn commit while both Artifact flags remain default-off. Blocking Artifacts can anchor durable depth-one clarification branches, and a fixed-priority continuation arbiter orders learner messages ahead of explicit Artifact actions, expected events, timers, and background work; reconnect uses additive snapshot v5 only when branch history exists. Immutable `tutor.lesson-teaching@1.0.0` and `1.1.0` remain catalog history and are not rewritten.
 Learner messages may carry validated append-only `lesson_selection`,
 `exercise_feedback`, `execution_result`, and `review_feedback` references;
 these are injected as separate learner-safe structured context rather than

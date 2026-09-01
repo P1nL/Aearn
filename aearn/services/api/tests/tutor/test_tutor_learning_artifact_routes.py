@@ -35,6 +35,7 @@ from app.services.learning.artifacts.conversation_events import (
 from app.services.learning.artifacts.owner_adapters import (
     ArtifactMutation,
     ArtifactOwnerAdapterRegistry,
+    ArtifactOwnerUnavailable,
 )
 from app.services.learning.artifacts.repository import (
     LearningArtifactVersionConflict,
@@ -589,11 +590,19 @@ def test_learning_artifact_action_route_enforces_scope_header_idempotency_and_ca
         assert adapter.calls == 1
 
 
-def test_learning_artifact_action_route_has_no_owner_fallback(
+def test_learning_artifact_action_route_registers_teaching_owner_without_fallback(
     monkeypatch: pytest.MonkeyPatch,
     artifact_route_fixture: _ArtifactRouteFixture,
 ) -> None:
     _configure_artifact_routes(monkeypatch, enabled=True)
+    registry = artifact_routes.build_learning_artifact_owner_adapters()
+    assert registry.owner_kinds == (
+        TutorArtifactOwnerKind.LEARNING_ITEM,
+        TutorArtifactOwnerKind.TEACHING_PRACTICE,
+    )
+    with pytest.raises(ArtifactOwnerUnavailable):
+        registry.require(TutorArtifactOwnerKind.LESSON_GATE)
+
     with TestClient(app) as client:
         response = client.post(
             f"/api/tutor/conversations/{artifact_route_fixture.conversation_id}"
@@ -604,14 +613,15 @@ def test_learning_artifact_action_route_has_no_owner_fallback(
                 expected_version=1,
             ),
         )
-    _assert_error(response, "LEARNING_ARTIFACT_OWNER_UNAVAILABLE", 409)
+    assert response.status_code == 200
+    assert response.json()["artifact"]["state"] == "cancelled"
 
     with connect() as conn:
         row = conn.execute(
             "SELECT version, state FROM tutor_learning_artifacts WHERE id = %s",
             (artifact_route_fixture.artifact_id,),
         ).fetchone()
-    assert row == {"version": 1, "state": "active"}
+    assert row == {"version": 2, "state": "cancelled"}
 
 
 def test_learning_artifact_attempt_summary_cannot_diverge_from_attempt_authority(

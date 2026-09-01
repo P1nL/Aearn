@@ -451,3 +451,14 @@ Browser fake 只验证当前 Desktop contract、mode swap、reload/reconnect 与
 | UX-11 | P1 | Action Shelf/Composer | Continue 仅按服务端推荐出现；composer response 无伪 Continue；空 shelf 无 DOM、无 `has-action-shelf`、无 placeholder；secondary-only 可用；`refresh_session` 重新读取 authority；三视口无 overlay、console error 或水平溢出 | Desktop Vitest + disposable fake browser smoke at 1440×900、900×900、390×844 |
 
 默认只使用 fake/offline provider 与 disposable PostgreSQL/Desktop fixture；不执行真实 provider、真实 executor、生产迁移、生产数据修改、部署或发布。
+
+## 2026-09-01：Teaching Artifact orchestration 与 branch/continuation 验收增量
+
+| ID | 优先级 | 区域 | 验收 | 证据 |
+| --- | --- | --- | --- | --- |
+| RT-63 | P0 | Skill/candidate/gate | `tutor.lesson-teaching@1.2.0` + decision v3；1.1.0 不改写；三类 exact interaction pairing；候选来自 current published Item/Practice/runtime/capability/flags，最多八个且 provider projection 不超过既有 bound；unknown/stale/impossible intent 整条 decision 无消息泄漏 | `test_tutor_skill_catalog.py`、`test_tutor_teaching_candidates.py`、`test_tutor_teaching_context.py`、`test_tutor_teaching_action_loop.py` |
+| RT-64 | P0 | Atomic Artifact commit | 合法 decision 在一个 transaction 写 message/checkpoint/session CAS/receipt v3/Artifact/event/timeline/Turn terminal；publication race、event failure、stale fence 全部回滚；不写 Attempt/mastery/progress；feature-off fail closed | `test_tutor_teaching_artifact_commit.py`、Artifact route/repository regressions |
+| RT-65 | P0 | Branch/snapshot/assistance | blocking Artifact 下普通消息进入 exact depth-one branch；cross-scope/nested/stale 拒绝；answer/refocus 与 offer/confirm switch；Hint/direct answer 需 authoritative receipt；reconnect snapshot v5 恢复 anchor、round、membership；result Turn 回 mainline | `test_tutor_branch_continuation.py`、conversation snapshot/cutover/local-data regressions |
+| RT-66 | P0 | Continuation arbitration | learner > explicit action > expected event > timer > background；两 claimant 最多一个 claim generation；pending input/foreground/active branch block；timer/background Guided-only；producer 不调用 provider；stale authority cancel；reset/export redaction | `test_tutor_branch_continuation.py`、queue/interactive worker/bootstrap regressions |
+
+默认验收继续使用 fake provider 与本地 disposable PostgreSQL，bootstrap-sensitive 测试单进程串行。该增量不授权真实 provider smoke、Docker conformance、生产镜像、签名、push、deploy、发布或生产数据迁移。

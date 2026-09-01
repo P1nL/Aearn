@@ -52,6 +52,7 @@ from app.agents.harness.skill_catalog import CatalogSkillReference, SkillCatalog
 from app.core.config import get_settings
 from app.core.teaching_safety import check_teaching_output, sanitize_summary_text
 from app.services.learning.artifacts.contracts import TutorPublicArtifactItem
+from app.services.tutor.branch_contracts import TutorPublicBranchGroupV1
 from app.services.learning.teaching_contracts import (
     TeachingAuthoritySnapshot,
     TeachingCheckpointState,
@@ -64,6 +65,7 @@ from app.services.tutor.conversation_contracts import (
     TUTOR_CONVERSATION_EVENT_PROJECTION_VERSION,
     TUTOR_CONVERSATION_SNAPSHOT_V3_VERSION,
     TUTOR_CONVERSATION_SNAPSHOT_V4_VERSION,
+    TUTOR_CONVERSATION_SNAPSHOT_V5_VERSION,
     TUTOR_CONVERSATION_SNAPSHOT_VERSION,
     TUTOR_CONVERSATION_STREAM_CURSOR_VERSION,
     TUTOR_PUBLIC_THINKING_STREAM_VERSION,
@@ -233,6 +235,7 @@ __all__ = (
     'check_teaching_output',
     'sanitize_summary_text',
     'TutorPublicArtifactItem',
+    'TutorPublicBranchGroupV1',
     'TeachingAuthoritySnapshot',
     'TeachingCheckpointState',
     'TeachingSessionMode',
@@ -242,6 +245,7 @@ __all__ = (
     'TUTOR_CONVERSATION_EVENT_PROJECTION_VERSION',
     'TUTOR_CONVERSATION_SNAPSHOT_V3_VERSION',
     'TUTOR_CONVERSATION_SNAPSHOT_V4_VERSION',
+    'TUTOR_CONVERSATION_SNAPSHOT_V5_VERSION',
     'TUTOR_CONVERSATION_SNAPSHOT_VERSION',
     'TUTOR_CONVERSATION_STREAM_CURSOR_VERSION',
     'TUTOR_PUBLIC_THINKING_STREAM_VERSION',

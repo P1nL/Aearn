@@ -62,6 +62,7 @@ def test_required_teaching_context_contains_exact_session_stimulus_and_handles()
         assert teaching["stimulus"]["kind"] == "teaching_control"
         assert teaching["session"]["session_id"] == opened["teaching_session"]["session_id"]
         assert "knowledge:python.variables" in teaching["allowed_source_handles"]
+        assert "artifact_candidates" not in teaching
         selection = TutorContextBuilder(
             config=TutorContextBuilderConfig(max_source_characters=4000),
         ).build(context_input, token_budget=5000)
@@ -117,7 +118,7 @@ def test_teaching_control_context_includes_prior_same_session_messages() -> None
     provider = SequenceTutorProvider((
         TutorProviderResult(
             decision=TutorDecision(
-                skill_references=(TutorSkillReference("tutor.lesson-teaching", "1.1.0"),),
+                skill_references=(TutorSkillReference("tutor.lesson-teaching", "1.2.0"),),
             ),
         ),
         TutorProviderResult(
@@ -135,7 +136,11 @@ def test_teaching_control_context_includes_prior_same_session_messages() -> None
                     pause_kind="soft_pause",
                     escalation_hint=None,
                     teaching_moves=("targeted_explanation", "worked_example"),
-                    learner_response_mode="none",
+                    interaction={
+                        "mode": "none",
+                        "intent": "none",
+                        "artifact_handle": None,
+                    },
                 ),
             ),
         ),
@@ -212,6 +217,7 @@ def test_teaching_control_context_includes_prior_same_session_messages() -> None
         system = provider_messages[0]["content"]
         assert "recent_messages are bounded learner-visible continuity" in system
         assert "instead of restarting or substantially paraphrasing" in system
-        assert "First select exact tutor.lesson-teaching@1.1.0" in system
+        assert "First select exact tutor.lesson-teaching@1.2.0" in system
         assert "recent_teaching_units" in system
-        assert "learner_response_mode=composer" in system
+        assert "composer/text_answer/null" in system
+        assert "artifact_candidates" in system

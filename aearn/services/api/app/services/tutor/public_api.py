@@ -38,10 +38,18 @@ from app.services.learning.track_repository import (
     PostgresLearningTrackRepository,
     ScopeSnapshot,
 )
+from app.services.tutor.branching import (
+    TutorBranchConflict,
+    TutorBranchNotFound,
+    TutorBranchStale,
+    TutorClarificationBranchService,
+)
+from app.services.tutor.continuation import ContinuationIntentError
 from app.services.tutor.conversation_contracts import (
     TUTOR_CONVERSATION_READABLE_SNAPSHOT_VERSIONS,
     TUTOR_CONVERSATION_SNAPSHOT_V3_VERSION,
     TUTOR_CONVERSATION_SNAPSHOT_V4_VERSION,
+    TUTOR_CONVERSATION_SNAPSHOT_V5_VERSION,
     validate_public_item,
 )
 from app.services.tutor.learner_state import (
@@ -132,6 +140,7 @@ class TutorPublicService:
         self._teaching_sessions = TeachingSessionRepository(conn)
         self._planning_facts = PostgresPlanningFactRepository(conn)
         self._context_references = PostgresTutorContextReferenceRepository(conn)
+        self._branches = TutorClarificationBranchService(conn)
         self._learner_state = TutorLearnerStateRepository(conn)
         self._proactive = PostgresTutorProactiveRepository(conn)
         self._queue = PostgresTutorQueueController(
@@ -935,6 +944,15 @@ class TutorPublicService:
                 scope=scope, run_id=accepted.run.run_id,
                 message_id=accepted.acceptance.message_id, input_revision=accepted.acceptance.input_revision,
             )
+            if teaching_scope is not None:
+                self._bind_clarification_branch(
+                    user_id=user_id,
+                    conversation_id=accepted.run.conversation_id,
+                    run_id=accepted.run.run_id,
+                    message_id=accepted.acceptance.message_id,
+                    input_revision=accepted.acceptance.input_revision,
+                    occurred_at=now,
+                )
             if scope.scope_kind is LearningScopeKind.PLAN_DRAFTING:
                 self._planning_facts.record_input(
                     user_id=user_id,
@@ -1672,6 +1690,44 @@ class TutorPublicService:
                 status_code=409, details={"run_id": run_id},
             ) from exc
 
+    def _bind_clarification_branch(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str,
+        run_id: str,
+        message_id: str,
+        input_revision: int,
+        occurred_at: datetime,
+    ) -> None:
+        try:
+            self._branches.bind_learner_turn(
+                user_id=user_id,
+                conversation_id=conversation_id,
+                run_id=run_id,
+                message_id=message_id,
+                input_revision=input_revision,
+                occurred_at=occurred_at,
+            )
+        except TutorBranchNotFound as exc:
+            raise TutorPublicApiError(
+                "TUTOR_CONVERSATION_NOT_FOUND",
+                "Tutor conversation was not found for the current learner.",
+                status_code=404,
+                details={"conversation_id": conversation_id},
+            ) from exc
+        except (
+            TutorBranchConflict,
+            TutorBranchStale,
+            ContinuationIntentError,
+        ) as exc:
+            raise TutorPublicApiError(
+                "TEACHING_AUTHORITY_CONFLICT",
+                "Tutor clarification branch authority is stale or mismatched.",
+                status_code=409,
+                details={"run_id": run_id},
+            ) from exc
+
     def _mutate(
         self,
         *,
@@ -1909,6 +1965,11 @@ def _conversation_snapshot_payload(snapshot: TutorConversationSnapshot) -> dict[
     )
     if snapshot.snapshot_version == TUTOR_CONVERSATION_SNAPSHOT_V3_VERSION and has_artifact:
         raise ValueError("Tutor conversation snapshot v3 cannot contain artifact projections")
+    if (
+        snapshot.snapshot_version == TUTOR_CONVERSATION_SNAPSHOT_V4_VERSION
+        and snapshot.branch_groups
+    ):
+        raise ValueError("Tutor conversation snapshot v4 cannot contain branch projections")
     payload: dict[str, object] = {
         "snapshot_version": snapshot.snapshot_version,
         "conversation": {
@@ -1939,12 +2000,20 @@ def _conversation_snapshot_payload(snapshot: TutorConversationSnapshot) -> dict[
         "has_more": snapshot.has_more,
         "stream_cursor": snapshot.stream_cursor,
     }
-    if snapshot.snapshot_version == TUTOR_CONVERSATION_SNAPSHOT_V4_VERSION:
+    if snapshot.snapshot_version in {
+        TUTOR_CONVERSATION_SNAPSHOT_V4_VERSION,
+        TUTOR_CONVERSATION_SNAPSHOT_V5_VERSION,
+    }:
         payload["active_artifact"] = (
             validate_public_item(snapshot.active_artifact)
             if snapshot.active_artifact is not None
             else None
         )
+    if snapshot.snapshot_version == TUTOR_CONVERSATION_SNAPSHOT_V5_VERSION:
+        payload["branches"] = [
+            item.model_dump(mode="json", exclude_none=False)
+            for item in snapshot.branch_groups
+        ]
     return payload
 
 

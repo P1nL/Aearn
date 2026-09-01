@@ -22,6 +22,7 @@ from .contracts import (
     TutorArtifactAttemptDetailV1,
     TutorArtifactAttemptResultV1,
     TutorArtifactAttemptSummaryV1,
+    TutorArtifactBranchSummaryV1,
     TutorArtifactDifficulty,
     TutorArtifactKind,
     TutorArtifactOwnerKind,
@@ -1292,7 +1293,11 @@ class PostgresLearningArtifactRepository:
                 allowed_actions=actions,
                 source_references=self._read_references(artifact_id=str(row["id"])),
                 active_attempt=active_attempt,
-                branch_summary=None,
+                branch_summary=self._read_branch_summary(
+                    user_id=str(row["user_id"]),
+                    conversation_id=str(row["conversation_id"]),
+                    artifact_id=str(row["id"]),
+                ),
                 version=_int(row.get("version"), "version"),
                 created_at=_iso(row.get("created_at"), "created_at"),
                 updated_at=_iso(row.get("updated_at"), "updated_at"),
@@ -1309,6 +1314,51 @@ class PostgresLearningArtifactRepository:
             raise LearningArtifactProjectionError(
                 "stored learning artifact cannot be projected safely"
             ) from exc
+
+    def _read_branch_summary(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str,
+        artifact_id: str,
+    ) -> TutorArtifactBranchSummaryV1 | None:
+        row = self._conn.execute(
+            """
+            SELECT branches.id, branches.state, branches.latest_disposition,
+                   branches.round_count,
+                   count(items.id)::int AS item_count
+            FROM tutor_conversation_branches AS branches
+            LEFT JOIN tutor_conversation_branch_items AS items
+              ON items.branch_id = branches.id
+             AND items.user_id = branches.user_id
+             AND items.conversation_id = branches.conversation_id
+             AND items.artifact_id = branches.artifact_id
+            WHERE branches.user_id = %s AND branches.conversation_id = %s
+              AND branches.artifact_id = %s
+            GROUP BY branches.id
+            ORDER BY branches.created_at DESC, branches.id DESC
+            LIMIT 1
+            """,
+            (user_id, conversation_id, artifact_id),
+        ).fetchone()
+        if row is None:
+            return None
+        item_count = _int(row.get("item_count"), "item_count")
+        if item_count < 1:
+            raise LearningArtifactProjectionError(
+                "stored learning artifact branch has no item membership"
+            )
+        state = str(row["state"])
+        return TutorArtifactBranchSummaryV1.model_validate(
+            {
+                "branch_id": str(row["id"]),
+                "state": state,
+                "disposition": row.get("latest_disposition"),
+                "round_count": _int(row.get("round_count"), "round_count"),
+                "item_count": item_count,
+                "collapsed": state == "resolved",
+            }
+        )
 
     def _project_attempt_detail(
         self,

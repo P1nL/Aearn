@@ -298,6 +298,12 @@ class Settings(BaseModel):
             "false",
         )
     )
+    tutor_artifact_teaching_mode_enabled: bool = Field(
+        default_factory=lambda: _env_bool(
+            "TUTOR_ARTIFACT_TEACHING_MODE_ENABLED",
+            "false",
+        )
+    )
     learning_item_bank_agent_review_enabled: bool = Field(
         default_factory=lambda: _env_bool(
             "LEARNING_ITEM_BANK_AGENT_REVIEW_ENABLED",
