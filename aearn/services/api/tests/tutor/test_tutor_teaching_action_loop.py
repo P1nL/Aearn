@@ -31,6 +31,9 @@ class _TeachingProvider:
         public_message_override: str | None = None,
         teaching_moves: tuple[str, ...] | None = ("targeted_explanation", "worked_example"),
         learner_response_mode: str | None = "none",
+        interaction_intent: str | None = None,
+        artifact_handle: str | None = None,
+        include_interaction: bool = True,
         before_teaching_step=None,  # type: ignore[no-untyped-def]
     ) -> None:
         self.calls = 0
@@ -43,6 +46,9 @@ class _TeachingProvider:
         self.public_message_override = public_message_override
         self.teaching_moves = teaching_moves
         self.learner_response_mode = learner_response_mode
+        self.interaction_intent = interaction_intent
+        self.artifact_handle = artifact_handle
+        self.include_interaction = include_interaction
         self.before_teaching_step = before_teaching_step
 
     def decide(self, *, run, context, thinking_sink: TutorPublicThinkingSink | None = None):  # type: ignore[no-untyped-def]
@@ -53,7 +59,7 @@ class _TeachingProvider:
             assert any(item["section"] == "teaching_session" for item in context.as_prompt_context())
             return TutorProviderResult(
                 decision=TutorDecision(
-                    skill_references=(TutorSkillReference("tutor.lesson-teaching", "1.1.0"),),
+                    skill_references=(TutorSkillReference("tutor.lesson-teaching", "1.2.0"),),
                 )
             )
         if self.before_teaching_step is not None:
@@ -65,6 +71,15 @@ class _TeachingProvider:
             if self.free_reading
             else "变量让名称引用一个值。先看一个最小赋值例子。"
         )
+        interaction = None
+        if self.include_interaction and self.learner_response_mode is not None:
+            interaction = {
+                "mode": self.learner_response_mode,
+                "intent": self.interaction_intent or (
+                    "none" if self.learner_response_mode == "none" else "text_answer"
+                ),
+                "artifact_handle": self.artifact_handle,
+            }
         step = TeachingStepDecision(
             action=self.action_override or ("summarize_progress" if self.completion else "answer_question" if self.free_reading else "explain_concept"),
             objective_id="knowledge:python.variables",
@@ -75,7 +90,8 @@ class _TeachingProvider:
             pause_kind="completion_pause" if self.completion else "soft_pause",
             escalation_hint=("如需连续讲解，可显式转为引导。" if self.free_reading else None),
             teaching_moves=self.teaching_moves,
-            learner_response_mode=self.learner_response_mode,
+            learner_response_mode=(self.learner_response_mode if not self.include_interaction else None),
+            interaction=interaction,
         )
         thinking = "当前教学单元组合互补动作，并在服务端权威边界停顿。"
         if thinking_sink is not None:
@@ -176,7 +192,7 @@ def test_composer_response_unit_projects_no_continue_and_keeps_composer_as_next_
         (("targeted_explanation", "worked_example"), "composer", "explain_concept"),
     ],
 )
-def test_selected_v11_gate_rejects_missing_invalid_or_mismatched_unit_fields(
+def test_selected_v12_gate_rejects_missing_invalid_or_mismatched_unit_fields(
     teaching_moves: tuple[str, ...] | None,
     learner_response_mode: str | None,
     action: str,
@@ -189,6 +205,7 @@ def test_selected_v11_gate_rejects_missing_invalid_or_mismatched_unit_fields(
             action_override=action,
             teaching_moves=teaching_moves,
             learner_response_mode=learner_response_mode,
+            include_interaction=learner_response_mode is not None,
         ),
     ).dispatch(user_id=str(scope["user_id"]), run_id=run_id)
     assert result.terminal_outcome is TutorTerminalOutcome.BLOCKED_POLICY
@@ -453,6 +470,7 @@ def test_teaching_step_provider_contract_is_strict_and_message_bound() -> None:
 
     from app.agents.harness.contracts import TutorPolicySnapshot, TutorRunSnapshot
     from app.services.tutor.decision_protocol import (
+        TUTOR_PROVIDER_ITEMS_SCHEMA_VERSION,
         TutorDecisionValidationError,
         parse_tutor_provider_items,
         tutor_provider_output_schema,
@@ -464,7 +482,7 @@ def test_teaching_step_provider_contract_is_strict_and_message_bound() -> None:
         policy=TutorPolicySnapshot(deadline=datetime(2030, 1, 1, tzinfo=UTC)),
     )
     payload = {
-        "schema_version": "tutor_provider_items_v4",
+        "schema_version": TUTOR_PROVIDER_ITEMS_SCHEMA_VERSION,
         "message": {
             "type": "agent_message", "public_thinking_text": "只处理一个教学目的。",
             "text": "先解释变量绑定。", "conversation_title": "变量绑定",
@@ -475,7 +493,7 @@ def test_teaching_step_provider_contract_is_strict_and_message_bound() -> None:
             "source_handles": ["knowledge:python.variables"], "public_message": "先解释变量绑定。",
             "focus_resolution": "stay", "pause_kind": "soft_pause", "escalation_hint": None,
             "teaching_moves": ["targeted_explanation", "worked_example"],
-            "learner_response_mode": "none",
+            "interaction": {"mode": "none", "intent": "none", "artifact_handle": None},
         },
     }
     decision = parse_tutor_provider_items(payload, run=run)
@@ -484,15 +502,36 @@ def test_teaching_step_provider_contract_is_strict_and_message_bound() -> None:
     assert [move.value for move in decision.teaching_step.teaching_moves] == ["targeted_explanation", "worked_example"]
     assert decision.teaching_step.learner_response_mode is not None
     assert decision.teaching_step.learner_response_mode.value == "none"
+    assert decision.teaching_step.interaction is not None
+    assert decision.teaching_step.interaction.intent.value == "none"
     assert decision.terminal_outcome is TutorTerminalOutcome.COMPLETED
-    schema_text = str(tutor_provider_output_schema())
-    assert "teaching_step" in schema_text and "teaching_moves" in schema_text and "learner_response_mode" in schema_text
+    teaching_schema = tutor_provider_output_schema()["$defs"]["TutorProviderTeachingStepItem"]
+    assert teaching_schema["required"][-1] == "interaction"
+    assert "learner_response_mode" not in teaching_schema["properties"]
+    assert len(teaching_schema["properties"]["interaction"]["anyOf"]) == 8
 
-    legacy = {**payload, "action": {key: value for key, value in payload["action"].items() if key not in {"teaching_moves", "learner_response_mode"}}}
-    legacy_decision = parse_tutor_provider_items(legacy, run=run)
-    assert legacy_decision.teaching_step is not None
-    assert legacy_decision.teaching_step.teaching_moves is None
-    assert legacy_decision.teaching_step.learner_response_mode is None
+    legacy_v2_action = {
+        key: value for key, value in payload["action"].items() if key != "interaction"
+    }
+    legacy_v2_action["learner_response_mode"] = "none"
+    legacy_v2 = {**payload, "schema_version": "tutor_provider_items_v4", "action": legacy_v2_action}
+    legacy_v2_decision = parse_tutor_provider_items(legacy_v2, run=run)
+    assert legacy_v2_decision.teaching_step is not None
+    assert legacy_v2_decision.teaching_step.interaction is None
+    assert legacy_v2_decision.teaching_step.learner_response_mode is not None
+
+    legacy_v1 = {
+        **legacy_v2,
+        "action": {
+            key: value
+            for key, value in legacy_v2_action.items()
+            if key not in {"teaching_moves", "learner_response_mode"}
+        },
+    }
+    legacy_v1_decision = parse_tutor_provider_items(legacy_v1, run=run)
+    assert legacy_v1_decision.teaching_step is not None
+    assert legacy_v1_decision.teaching_step.teaching_moves is None
+    assert legacy_v1_decision.teaching_step.learner_response_mode is None
 
     payload["action"]["unknown"] = True
     with pytest.raises(TutorDecisionValidationError):

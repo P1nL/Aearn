@@ -692,12 +692,23 @@ class RunPersistenceMixin(PersistenceMixin):
             if checkpoint.input_revision != _as_int(run["input_revision"], 0) or result.input_revision != checkpoint.input_revision:
                 raise TutorLeaseConflict("terminal lifecycle revision is stale")
             self._assert_teaching_authority_current_locked(run=run)
-            self._commit_teaching_step_locked(
+            teaching_commit = self._commit_teaching_step_locked(
                 run=run, result=result, checkpoint=checkpoint, created_at=checkpoint.created_at,
             )
             terminal_message_id = self._record_public_message_locked(
                 run=run,
                 result=result,
+                created_at=checkpoint.created_at,
+            )
+            if teaching_commit is not None and terminal_message_id is None:
+                raise TutorTerminalStateConflict(
+                    "teaching step did not produce its required Tutor message"
+                )
+            self._finalize_teaching_step_locked(
+                commit=teaching_commit,
+                run=run,
+                result=result,
+                checkpoint=checkpoint,
                 created_at=checkpoint.created_at,
             )
             trace = self._persist_checkpoint_and_outbox_locked(
@@ -765,6 +776,21 @@ class RunPersistenceMixin(PersistenceMixin):
                         step_key=None,
                         occurred_at=checkpoint.created_at,
                     )
+            if (
+                result.terminal_outcome is TutorTerminalOutcome.COMPLETED
+                and terminal_message_id is not None
+            ):
+                from app.services.tutor.branching import (
+                    TutorClarificationBranchService,
+                )
+
+                TutorClarificationBranchService(self._conn).complete_turn(
+                    user_id=user_id,
+                    conversation_id=str(run["conversation_id"]),
+                    run_id=result.run_id,
+                    response_message_id=terminal_message_id,
+                    occurred_at=checkpoint.created_at,
+                )
             self._append_turn_event_locked(
                 run=updated,
                 kind=TutorConversationEventKind.TURN_UPDATED,

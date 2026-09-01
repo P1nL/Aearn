@@ -874,6 +874,12 @@ class ConversationPersistenceMixin(PersistenceMixin):
         has_artifacts = bool(
             artifact_state is not None and artifact_state.get("has_artifacts") is True
         )
+        from app.services.tutor.branching import PostgresTutorBranchRepository
+
+        branch_groups = PostgresTutorBranchRepository(self._conn).list_snapshot_groups(
+            user_id=user_id,
+            conversation_id=conversation_id,
+        )
         pending_requests = self.read_pending_interaction_requests(
             user_id=user_id,
             conversation_id=conversation_id,
@@ -917,6 +923,7 @@ class ConversationPersistenceMixin(PersistenceMixin):
                 else None
             ),
             active_artifact=active_artifact,
+            branch_groups=branch_groups,
             pending_requests=tuple(item.public_item for item in pending_requests),
             queue=tuple(item.as_public_dict() for item in queued_inputs),
             timeline=timeline,
@@ -928,7 +935,9 @@ class ConversationPersistenceMixin(PersistenceMixin):
                 sequence=current_sequence,
             ),
             snapshot_version=(
-                TUTOR_CONVERSATION_SNAPSHOT_V4_VERSION
+                TUTOR_CONVERSATION_SNAPSHOT_V5_VERSION
+                if branch_groups
+                else TUTOR_CONVERSATION_SNAPSHOT_V4_VERSION
                 if has_artifacts
                 else TUTOR_CONVERSATION_SNAPSHOT_V3_VERSION
             ),

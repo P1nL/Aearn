@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Annotated, TypeVar
 from uuid import UUID
 
-from fastapi import APIRouter, Header, Query, Request, status
+from fastapi import APIRouter, BackgroundTasks, Header, Query, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from psycopg import Connection
@@ -22,7 +23,20 @@ from app.services.learning.artifacts.service import (
     LearningArtifactService,
     LearningArtifactServiceError,
 )
+from app.services.learning.artifacts.teaching_owner_adapters import (
+    LearningItemArtifactOwnerAdapter,
+    TeachingPracticeArtifactOwnerAdapter,
+)
+from app.services.tutor.continuation import (
+    ContinuationIntentConflict,
+    ContinuationIntentError,
+    ContinuationIntentNotFound,
+    ContinuationIntentStale,
+    TutorContinuationDispatcher,
+    TutorContinuationIntentProducer,
+)
 from app.services.tutor.cutover import runtime_gate_error
+from app.services.tutor.interactive_worker import enqueue_tutor_interactive_dispatch
 from app.services.tutor.thread_turn_cutover import thread_turn_v2_gate_error
 
 
@@ -69,6 +83,7 @@ def act_on_learning_artifact(
     artifact_id: UUID,
     payload: TutorArtifactActionRequest,
     request: Request,
+    background_tasks: BackgroundTasks,
     idempotency_key: Annotated[str | None, _IDEMPOTENCY_KEY_HEADER] = None,
 ) -> JSONResponse:
     unavailable = _require_tutor_route(request, payload.user_id, mutation=True)
@@ -84,17 +99,51 @@ def act_on_learning_artifact(
             }
         )
     )
-    response = _call_service(
-        request,
-        lambda service: service.act(
-            conversation_id=str(conversation_id),
-            artifact_id=str(artifact_id),
-            request=action_request,
-        ),
-        commit=True,
-    )
-    if isinstance(response, JSONResponse):
-        return response
+    dispatch_job_id: str | None = None
+    with connect() as conn:
+        service = build_learning_artifact_service(conn)
+        try:
+            response = service.act(
+                conversation_id=str(conversation_id),
+                artifact_id=str(artifact_id),
+                request=action_request,
+            )
+            occurred_at = datetime.now(UTC)
+            intent = TutorContinuationIntentProducer(conn).record_artifact_action(
+                user_id=action_request.user_id,
+                conversation_id=response.artifact.conversation_id,
+                artifact_id=response.artifact.id,
+                artifact_event_id=response.artifact_event_id,
+                artifact_event_sequence=response.artifact_event_sequence,
+                action_kind=action_request.action.action,
+                occurred_at=occurred_at,
+            )
+            if intent.consumed_run_id is None:
+                dispatched = TutorContinuationDispatcher(
+                    conn,
+                    settings=get_settings(),
+                ).dispatch_next(
+                    user_id=action_request.user_id,
+                    conversation_id=response.artifact.conversation_id,
+                    claimant_id=f"artifact-route:{response.artifact_event_id}",
+                    now=occurred_at,
+                )
+                dispatch_job_id = (
+                    dispatched.dispatch_job_id if dispatched is not None else None
+                )
+        except LearningArtifactServiceError as exc:
+            conn.rollback()
+            return _service_error(request, exc)
+        except ContinuationIntentError as exc:
+            conn.rollback()
+            return _continuation_error(request, exc)
+        conn.commit()
+    if dispatch_job_id is not None:
+        background_tasks.add_task(
+            enqueue_tutor_interactive_dispatch,
+            dispatch_job_id,
+            runtime_kind="harness_v1",
+        )
     return _success(_project_action_response(response))
 
 
@@ -127,7 +176,12 @@ def read_learning_artifact_attempt(
 def build_learning_artifact_owner_adapters() -> ArtifactOwnerAdapterRegistry:
     """Return the exact registered owner adapters; no fallback owner exists."""
 
-    return ArtifactOwnerAdapterRegistry()
+    return ArtifactOwnerAdapterRegistry(
+        (
+            LearningItemArtifactOwnerAdapter(),
+            TeachingPracticeArtifactOwnerAdapter(),
+        )
+    )
 
 
 def build_learning_artifact_service(
@@ -201,6 +255,37 @@ def _service_error(
         status_code=error.status_code,
         details=error.details,
         recoverable=error.recoverable,
+    )
+
+
+def _continuation_error(
+    request: Request,
+    error: ContinuationIntentError,
+) -> JSONResponse:
+    if isinstance(error, ContinuationIntentNotFound):
+        code = "LEARNING_ARTIFACT_NOT_FOUND"
+        message = "Learning Artifact continuation scope was not found."
+        status_code = status.HTTP_404_NOT_FOUND
+        recoverable = False
+    elif isinstance(error, ContinuationIntentConflict) and "idempotency" in str(
+        error
+    ).casefold():
+        code = "IDEMPOTENCY_CONFLICT"
+        message = "The continuation identity was reused with a different request."
+        status_code = status.HTTP_409_CONFLICT
+        recoverable = False
+    else:
+        assert isinstance(error, (ContinuationIntentConflict, ContinuationIntentStale))
+        code = "TEACHING_AUTHORITY_CONFLICT"
+        message = "Teaching continuation authority is stale or already claimed."
+        status_code = status.HTTP_409_CONFLICT
+        recoverable = True
+    return error_response(
+        request,
+        code=code,
+        message=message,
+        status_code=status_code,
+        recoverable=recoverable,
     )
 
 

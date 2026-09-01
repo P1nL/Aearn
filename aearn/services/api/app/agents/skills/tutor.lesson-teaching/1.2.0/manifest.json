@@ -1,0 +1,22 @@
+{
+  "id": "tutor.lesson-teaching",
+  "version": "1.2.0",
+  "owner": "aearn-core",
+  "kind": "tutoring",
+  "summary": "Choose one evidence-driven teaching unit and only an exact executable learner interaction from current server candidates.",
+  "instruction_file": "instructions.md",
+  "evaluation_suite_file": "evals.json",
+  "content_hashes": {
+    "instructions.md": "30e45196fc90916f19baad0beb67fa548a4766cd7e8241eb455817cb61a66a5d",
+    "evals.json": "7f0b5613cb0ba34d8274907fa3464c61da4dcd176ee9c0362c5ae19591636862"
+  },
+  "resource_refs": [],
+  "requires_capabilities": [],
+  "allowed_effect_types": [],
+  "policy_tags": [
+    "lesson-teaching"
+  ],
+  "input_contract": "tutor.teaching-session-input.v2",
+  "output_contract": "tutor.teaching-step-decision.v3",
+  "deprecated": false
+}

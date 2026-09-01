@@ -6,6 +6,7 @@ from psycopg import Connection
 from app.agents.harness.capabilities import LEARNING_PLAN_DRAFT_CAPABILITY_ID
 from app.agents.harness.contracts import TutorRunSnapshot
 from app.agents.harness.skill_catalog import SkillCatalogSnapshot
+from app.core.config import Settings, get_settings
 from app.services.learning.teaching_sessions import TeachingSessionConflict, TeachingSessionRepository
 from app.services.learning.plan_repository import (
     LearningPlanSessionNotFound,
@@ -23,11 +24,17 @@ class InteractiveLearningCapabilityPolicyResolver:
     _SKILL_ID = "tutor.learning-plan-draft"
     _SKILL_VERSION = "1.0.1"
     _TEACHING_SKILL_ID = "tutor.lesson-teaching"
-    _TEACHING_SKILL_VERSION = "1.1.0"
+    _TEACHING_SKILL_VERSION = "1.2.0"
 
-    def __init__(self, conn: Connection[dict[str, object]]) -> None:
+    def __init__(
+        self,
+        conn: Connection[dict[str, object]],
+        *,
+        settings: Settings | None = None,
+    ) -> None:
+        resolved_settings = settings or get_settings()
         self._repository = PostgresLearningPlanSessionRepository(conn)
-        self._teaching = TeachingSessionRepository(conn)
+        self._teaching = TeachingSessionRepository(conn, settings=resolved_settings)
 
     def resolve(
         self,

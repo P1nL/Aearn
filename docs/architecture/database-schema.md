@@ -507,3 +507,15 @@ Gate/Attempt terminal、Review finalization、progress completion 与 Lesson ass
 `080_lesson_teaching_practice.sql` 对既有 `tutor_teaching_action_receipts` 做 additive bootstrap：`teaching_moves_json JSONB NOT NULL DEFAULT '[]'::jsonb`、`learner_response_mode TEXT NOT NULL DEFAULT 'none'`、`schema_version TEXT NOT NULL DEFAULT 'teaching_action_receipt_v1'` 与 `policy_version TEXT NOT NULL DEFAULT 'lesson_teaching_policy_v1'`。历史 v1 row 因默认值继续可读；新提交只能写 v2 schema/policy。
 
 repeatable bootstrap 先删除旧同名自动 CHECK，再建立稳定命名的 moves、response-mode 与 version-shape constraints。v2 moves 必须是长度 2--4 的 JSON string array，值属于 closed enum且位置不重复；composer 只与 `check_understanding | wait_for_input` 共存，none 禁止这两个 action。receipt 仍 append-only，local export 只增加 safe moves/mode，不增加 public message、prompt、provider body 或 reasoning。
+
+## 2026-09-01：Teaching Artifact commit、branch lineage 与 continuation intent
+
+`tutor_teaching_action_receipts` additive 支持 `teaching_action_receipt_v3 / lesson_teaching_policy_v3`。v3 仅在 learner response mode 为 Artifact 时保存 exact interaction intent、`li:<sha256>` handle、Artifact id、Artifact event id 与 sequence；none/composer 继续使用 v2 shape。receipt、Tutor message、next checkpoint/session CAS、Learning Artifact/event、conversation `item_added` 和 source Turn terminalization由同一 transaction 提交，任一 FK/CHECK/CAS/event failure 整体回滚。
+
+Learning Item-backed Artifact owner 固定 immutable version id 与 latest published state version。materialization 必须匹配 public/content hash、Practice exercise/rubric receipt、capability set、runtime profile 和 current TeachingSession fences；表约束不允许把 Learning Item facade误绑定为 Gate/Review authority，也不产生 Attempt、score、mastery 或 progress row。
+
+`tutor_conversation_branches` 保存一个 blocking Artifact 下的 durable depth-one branch root、predecessor branch、current event、version/round、latest disposition 与 resolved Turn。`tutor_conversation_branch_events` 是 predecessor-linked append-only CAS lineage；`tutor_conversation_branch_items` 显式记录 learner/Tutor message 与 process membership；`tutor_run_branch_scopes` 冻结 source input、branch round、Artifact、TeachingSession/checkpoint 与 closed classification/control。partial unique 与 scope FK 禁止同一 Artifact 多 active branch、nested branch、跨 conversation/user/track binding 和 item 重归属。
+
+`tutor_continuation_intents` 保存 exact Artifact/session/checkpoint/track/progress/assignment fence、source kind/id/version、fixed priority、idempotency hash、not-before、state/version、claim owner/generation/expiry 与 consumed run；`tutor_continuation_intent_events` 保存 append-only transition evidence。一个 conversation 同时最多一条 claimed intent。claim 前必须确认没有 active foreground run、pending learner input 或 active branch，并重新验证 Artifact/session versions 与 checkpoint ancestry；stale intent转 cancelled，过期 claim按 generation release。producer 只写 intent，不创建 run或调用 provider。
+
+branch/continuation 六张表属于 user-owned cutover target。local export 只能输出 bounded state/count/identity summary；reset/delete 按 event/item/run-scope/intent child-to-root 清理。conversation snapshot 仅在 branch history 存在时投影 v5。repeat bootstrap 必须保留早期 fragment 110 对 persisted `tutor_conversation_event_v3` row 的兼容，否则 schema 120 之前会因 projection-version CHECK 失败。

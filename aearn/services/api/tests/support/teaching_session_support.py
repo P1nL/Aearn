@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from uuid import uuid4
 
 import psycopg
@@ -26,15 +27,32 @@ def database_available() -> bool:
 pytestmark = pytest.mark.skipif(not database_available(), reason="PostgreSQL is not available")
 
 
-def create_teaching_scope(conn) -> dict[str, str | int]:  # type: ignore[no-untyped-def]
+def create_teaching_scope(
+    conn,  # type: ignore[no-untyped-def]
+    *,
+    required_capabilities: tuple[str, ...] = ("python",),
+) -> dict[str, str | int]:
     suffix = uuid4().hex
     user = conn.execute("INSERT INTO users (display_name) VALUES (%s) RETURNING id", (f"Teaching {suffix[:8]}",)).fetchone()
     assert user is not None
     user_id = str(user["id"])
     tracks = PostgresLearningTrackRepository(conn)
+    plan = sample_plan()
+    module = plan.modules[0]
+    variables = replace(
+        module.nodes[0],
+        required_capabilities=required_capabilities,
+    )
+    plan = replace(
+        plan,
+        modules=(
+            replace(module, nodes=(variables, *module.nodes[1:])),
+            *plan.modules[1:],
+        ),
+    )
     track_id = tracks.create_track(
         user_id=user_id, language_id="python", goal_text="Learn variables safely",
-        target_level="beginner", plan=sample_plan(),
+        target_level="beginner", plan=plan,
     )
     conversation_id = PostgresTutorRepository(conn).create_conversation(user_id=user_id)
     tracks.bind_conversation_scope(

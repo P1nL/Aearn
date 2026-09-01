@@ -35,7 +35,7 @@ from app.agents.harness.contracts import (
     build_tutor_message_evidence_hash,
 )
 from app.agents.harness.skill_catalog import compile_published_skill_catalog
-from app.core.config import Settings
+from app.core.config import Settings, get_settings
 from app.db.connection import connect
 from app.services.learning.context_adapter import TutorLearningContextAdapter
 from app.services.learning.context_references import PostgresTutorContextReferenceRepository
@@ -47,6 +47,10 @@ from app.services.learning.planning_facts import (
 from app.services.learning.plan_repository import (
     LearningPlanSessionNotFound,
     PostgresLearningPlanSessionRepository,
+)
+from app.services.learning.teaching_candidates import (
+    TeachingArtifactCandidateBuildError,
+    project_teaching_provider_context,
 )
 from app.services.learning.teaching_sessions import TeachingSessionConflict, TeachingSessionRepository
 from app.services.tutor.action_adapters import (
@@ -524,10 +528,12 @@ class PostgresTutorLearningContextLoader:
         *,
         conn: Connection[dict[str, object]],
         base_loader: PostgresTutorContextLoader,
+        settings: Settings | None = None,
     ) -> None:
+        resolved_settings = settings or get_settings()
         self._learning = TutorLearningContextAdapter(conn)
         self._context_references = PostgresTutorContextReferenceRepository(conn)
-        self._teaching = TeachingSessionRepository(conn)
+        self._teaching = TeachingSessionRepository(conn, settings=resolved_settings)
         self._plans = PostgresLearningPlanSessionRepository(conn)
         self._facts = PostgresPlanningFactRepository(conn)
         self._actions = PostgresActionReceiptStore(conn)
@@ -718,43 +724,10 @@ class PostgresTutorLearningContextLoader:
 
 
 def _bounded_teaching_context(context: Mapping[str, object]) -> dict[str, object]:
-    session = context.get("session")
-    objective = context.get("objective")
-    active_focus = context.get("active_focus")
-    suspended = context.get("suspended_focuses")
-    questions = context.get("unresolved_questions")
-    return {
-        "schema_version": context.get("schema_version"),
-        "session": (
-            {key: session.get(key) for key in (
-                "session_id", "session_version", "checkpoint_id", "mode", "track_version",
-                "progress_version", "progress_status", "assignment_version",
-            )}
-            if isinstance(session, Mapping) else None
-        ),
-        "stimulus": context.get("stimulus"),
-        "objective": (
-            {"objective_id": objective.get("objective_id")}
-            if isinstance(objective, Mapping) else None
-        ),
-        "active_focus": (
-            {key: active_focus.get(key) for key in ("focus_id", "focus_kind")}
-            if isinstance(active_focus, Mapping) else None
-        ),
-        "suspended_focuses": [
-            {key: item.get(key) for key in ("focus_id", "focus_kind")}
-            for item in suspended if isinstance(item, Mapping)
-        ] if isinstance(suspended, list) else [],
-        "unresolved_questions": [
-            {key: item.get(key) for key in ("question_id", "state")}
-            for item in questions if isinstance(item, Mapping)
-        ] if isinstance(questions, list) else [],
-        "covered_concepts": context.get("covered_concepts"),
-        "pause_kind": context.get("pause_kind"),
-        "candidate_focus_id": context.get("candidate_focus_id"),
-        "recent_teaching_units": context.get("recent_teaching_units"),
-        "allowed_source_handles": context.get("allowed_source_handles"),
-    }
+    try:
+        return project_teaching_provider_context(context)
+    except TeachingArtifactCandidateBuildError as exc:
+        raise TutorContextError("TUTOR_TEACHING_SESSION_STALE") from exc
 
 def _bounded_current_draft(session: Mapping[str, object]) -> dict[str, object] | None:
     plan = session.get("plan_json")
@@ -910,14 +883,21 @@ class TutorInteractiveRunDispatcher:
             # or hold a foreground-run lock. Repository lifecycle methods open their
             # own short atomic transactions around each durable boundary.
             conn.autocommit = True
-            repository = PostgresTutorRepository(conn)
+            repository = PostgresTutorRepository(conn, settings=self._settings)
             learner_state = TutorLearnerStateRepository(conn)
             catalog = compile_published_skill_catalog()
-            policy_resolver = InteractiveLearningCapabilityPolicyResolver(conn)
+            policy_resolver = InteractiveLearningCapabilityPolicyResolver(
+                conn,
+                settings=self._settings,
+            )
             selection_store = PostgresTutorSkillSelectionStore(repository=repository, user_id=user_id)
             planning_facts = PostgresPlanningFactRepository(conn)
             base_loader = PostgresTutorContextLoader(conn=conn, learner_state=learner_state)
-            learning_loader = PostgresTutorLearningContextLoader(conn=conn, base_loader=base_loader)
+            learning_loader = PostgresTutorLearningContextLoader(
+                conn=conn,
+                base_loader=base_loader,
+                settings=self._settings,
+            )
             loop = TutorRunLoop(
                 store=repository.as_run_store(user_id=user_id),
                 context_loader=CatalogContextLoader(
@@ -962,7 +942,7 @@ class TutorInteractiveRunDispatcher:
                         ),
                         catalog=catalog,
                         selection_store=selection_store,
-                        teaching=TeachingSessionRepository(conn),
+                        teaching=TeachingSessionRepository(conn, settings=self._settings),
                     ),
                     facts=planning_facts,
                 ),

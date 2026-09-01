@@ -11,6 +11,7 @@ from app.services.tutor.conversation_contracts import (
     TUTOR_CONVERSATION_READABLE_SNAPSHOT_VERSIONS,
     TUTOR_CONVERSATION_SNAPSHOT_V3_VERSION,
     TUTOR_CONVERSATION_SNAPSHOT_V4_VERSION,
+    TUTOR_CONVERSATION_SNAPSHOT_V5_VERSION,
     TUTOR_CONVERSATION_SNAPSHOT_VERSION,
     TutorConversationEventKind,
     validate_conversation_event_payload,
@@ -116,10 +117,11 @@ def test_artifact_conversation_event_is_reference_only_and_strict() -> None:
 
 def test_snapshot_v4_is_current_while_v3_remains_a_readable_contract() -> None:
     assert TUTOR_CONVERSATION_EVENT_PROJECTION_VERSION == "tutor_conversation_event_v3"
-    assert TUTOR_CONVERSATION_SNAPSHOT_VERSION == TUTOR_CONVERSATION_SNAPSHOT_V4_VERSION
+    assert TUTOR_CONVERSATION_SNAPSHOT_VERSION == TUTOR_CONVERSATION_SNAPSHOT_V5_VERSION
     assert TUTOR_CONVERSATION_READABLE_SNAPSHOT_VERSIONS == {
         TUTOR_CONVERSATION_SNAPSHOT_V3_VERSION,
         TUTOR_CONVERSATION_SNAPSHOT_V4_VERSION,
+        TUTOR_CONVERSATION_SNAPSHOT_V5_VERSION,
     }
 
     legacy = TutorConversationSnapshot(

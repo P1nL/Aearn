@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from app.core.config import Settings
+
 from ._namespace import *
 
 if TYPE_CHECKING:
@@ -38,14 +40,16 @@ class PostgresTutorRepository(
         failpoint: Failpoint | None = None,
         effect_handlers: Mapping[str, EffectHandler] | None = None,
         effect_descriptors: Sequence[EffectDescriptor] | None = None,
+        settings: Settings | None = None,
     ) -> None:
         self._conn = conn
+        self._settings = settings or get_settings()
         self._projector = projector or TutorSafeProjection()
         self._failpoint = failpoint
         self._effect_handlers = dict(effect_handlers or {})
         # This value is server configuration, never exposed in API payloads or logs.
         self._cursor_signing_key = hashlib.sha256(
-            get_settings().tutor_cursor_signing_key.encode("utf-8")
+            self._settings.tutor_cursor_signing_key.encode("utf-8")
         ).digest()
         descriptors = tuple(default_effect_descriptors() if effect_descriptors is None else effect_descriptors)
         self._effect_descriptors = {descriptor.effect_type: descriptor for descriptor in descriptors}

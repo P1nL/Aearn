@@ -712,3 +712,13 @@ closed control 包括 `continue`、`return_focus`、`change_example`、`pause`�
 本增量不新增 public route，也不允许客户端提交 `teaching_moves` 或 `learner_response_mode`。两者属于 exact `tutor.lesson-teaching@1.1.0` 的 provider decision 与服务端 receipt authority；旧 `tutor.lesson-teaching@1.0.0` 保持不可变但不再用于新 teaching run。
 
 conversation snapshot 与 TeachingSession API 继续返回 `TeachingActionShelfV1`。当 checkpoint 需要学习者回答时，服务端投影 `respond_in_composer`；只有推荐动作确实是 `continue` 时才返回 Continue。若没有 primary 或 secondary descriptor，`primary=null`、`secondary=[]` 是完整有效响应，Desktop 必须完全省略 shelf DOM。authority pause 的恢复导航使用 `refresh_session`，客户端只能重新读取 current projection，不能本地恢复或 admission run。
+
+## 2026-09-01：Teaching Artifact candidate、branch snapshot 与 continuation contract
+
+本增量不增加客户端可写的题目或调度字段。`tutor.lesson-teaching@1.2.0` 的 provider context additive 接收 server-built `artifact_candidates`，每项只含 exact `li:<sha256>` handle、closed kind/purpose/difficulty 与 allowed interaction intents；候选 scope 固定 current TeachingSession/checkpoint 和 track/progress/assignment versions。两个 Artifact flags 未同时开启、没有 compatible published candidate、context 超出既有 required-section bound 或任何 candidate authority stale 时，provider 前 fail closed 或返回空候选，不能截断成歧义 allowlist。
+
+decision v3 的 learner interaction 是 strict closed union：`none + none + null`、`composer + text_answer + null`、`artifact + one Artifact intent + exact advertised handle`。edit/run/review/query/demo/respond intent 没有 exact candidate 时整条 public decision 被拒绝，且不会写 Tutor message。合法 Artifact decision 的 message、checkpoint、receipt、Artifact/event、timeline item 与 Turn terminal 在同一 transaction 完成；公开 error 只返回 stable authority diagnostic，不包含 item private content、submission、rubric/test、provider body、command/path/runtime identity 或 secret。
+
+普通 learner input 在 blocking Artifact 下由服务端绑定 depth-one branch；客户端不提交 branch id，也不能把本地折叠状态当 authority。存在 branch history 时 conversation snapshot 升级为 `tutor_conversation_snapshot_v5`，additive `branches[]` 只返回 anchor Artifact id、TeachingSession/checkpoint id、state、disposition、round/item count、explicit message/process references 与时间；v3/v4 clients 在无 branch history 时继续得到原版本。topic switch 只能通过 closed control confirmation，hint/direct-answer branch completion 需要 exact server receipt。
+
+Artifact action、expected demo event、timer 与 background producer 只持久化 continuation intent。调度器按 learner message > explicit Artifact action > expected event > timer > background 选择一条 eligible intent；active foreground、pending learner input、active branch、Free Reading automatic intent 或 stale claim/authority 都不会创建 provider Turn。没有新增 timer-triggered HTTP provider route，SSE 仍只投影已提交的 conversation events。

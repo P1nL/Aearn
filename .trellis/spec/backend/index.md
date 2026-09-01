@@ -24,6 +24,7 @@ The formal backend lives under `aearn/services/`. Runtime facts come from curren
 | [Teaching Session Authority](./teaching-session-authority.md) | Durable teaching session, checkpoint, stimulus, and action authority | Filled |
 | [Learning Artifact Authority](./learning-artifact-authority.md) | Artifact lifecycle, owner delegation, snapshot v4, SSE, routes, redaction, and governance | Filled |
 | [Learning Item Bank Governance](./learning-item-bank-governance.md) | Git source compilation, deterministic validation, independent review, pilot, risk gates, and publication | Filled |
+| [Teaching Artifact Orchestration](./teaching-artifact-orchestration.md) | Candidate authority, atomic teaching commits, depth-one branches, and deterministic continuation scheduling | Filled |
 | [Codex Runtime Sidecar](./codex-runtime-sidecar.md) | App Server contracts, typed tools, fencing, and worker lifecycle | Filled |
 
 ---

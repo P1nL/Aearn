@@ -695,7 +695,7 @@ ALTER TABLE tutor_teaching_action_receipts
   DROP CONSTRAINT IF EXISTS chk_tutor_teaching_action_receipts_response_mode;
 ALTER TABLE tutor_teaching_action_receipts
   ADD CONSTRAINT chk_tutor_teaching_action_receipts_response_mode
-  CHECK (learner_response_mode IN ('none','composer'));
+  CHECK (learner_response_mode IN ('none','composer','artifact'));
 ALTER TABLE tutor_teaching_action_receipts
   DROP CONSTRAINT IF EXISTS chk_tutor_teaching_action_receipts_version_shape;
 ALTER TABLE tutor_teaching_action_receipts
@@ -711,6 +711,13 @@ ALTER TABLE tutor_teaching_action_receipts
       schema_version='teaching_action_receipt_v2'
       AND policy_version='lesson_teaching_policy_v2'
       AND jsonb_array_length(teaching_moves_json) BETWEEN 2 AND 4
+    )
+    OR
+    (
+      schema_version='teaching_action_receipt_v3'
+      AND policy_version='lesson_teaching_policy_v3'
+      AND jsonb_array_length(teaching_moves_json) BETWEEN 2 AND 4
+      AND learner_response_mode='artifact'
     )
   );
 CREATE INDEX IF NOT EXISTS idx_tutor_teaching_action_receipts_session_created

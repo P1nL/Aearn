@@ -14,10 +14,17 @@ from pydantic import TypeAdapter, ValidationError
 from app.agents.harness.contracts import TutorPolicySnapshot
 from app.agents.harness.skill_catalog import compile_published_skill_catalog
 from app.core.config import Settings, get_settings
+from app.services.learning.item_bank.repository import PostgresLearningItemBankRepository
+from app.services.learning.teaching_candidates import (
+    TeachingArtifactCandidateBuildError,
+    TeachingArtifactCandidateBuilder,
+    bound_teaching_artifact_candidates,
+)
 from app.services.learning.teaching_loop import build_teaching_action_shelf
 from app.services.learning.teaching_contracts import (
     DomainEventStimulus,
     LearnerMessageStimulus,
+    TeachingArtifactCandidateScope,
     TeachingAuthoritySnapshot,
     TeachingCheckpointState,
     TeachingControlKey,
@@ -82,8 +89,18 @@ class TeachingAuthority:
 
 
 class TeachingSessionRepository:
-    def __init__(self, conn: Connection[dict[str, object]]) -> None:
+    def __init__(
+        self,
+        conn: Connection[dict[str, object]],
+        *,
+        settings: Settings | None = None,
+        artifact_candidate_builder: TeachingArtifactCandidateBuilder | None = None,
+    ) -> None:
         self._conn = conn
+        self._settings = settings or get_settings()
+        self._artifact_candidate_builder = artifact_candidate_builder or TeachingArtifactCandidateBuilder(
+            PostgresLearningItemBankRepository(conn)
+        )
 
     def resolve_authority(
         self, *, user_id: str, track_id: str, knowledge_key: str,
@@ -536,7 +553,8 @@ class TeachingSessionRepository:
                       checkpoints.state_json, stimuli.stimulus_kind, stimuli.message_id, stimuli.input_revision,
                       stimuli.control_key, stimuli.client_action_id, stimuli.domain_event_kind, stimuli.source_id,
                       stimuli.source_version, stimuli.safe_payload_json,
-                      progress.status AS progress_status
+                      progress.status AS progress_status,
+                      nodes.required_capabilities_json AS available_capabilities_json
                FROM tutor_run_teaching_scopes AS scopes
                JOIN tutor_teaching_sessions AS sessions ON sessions.id=scopes.teaching_session_id
                  AND sessions.user_id=scopes.user_id AND sessions.conversation_id=scopes.conversation_id
@@ -545,6 +563,9 @@ class TeachingSessionRepository:
                JOIN tutor_run_stimulus_events AS stimuli ON stimuli.id=scopes.stimulus_id AND stimuli.run_id=scopes.run_id
                JOIN tutor_track_node_progress AS progress ON progress.track_id=scopes.track_id
                  AND progress.user_id=scopes.user_id AND progress.knowledge_key=scopes.knowledge_key
+               JOIN tutor_track_plan_nodes AS nodes ON nodes.revision_id=scopes.active_plan_revision_id
+                 AND nodes.track_id=scopes.track_id AND nodes.user_id=scopes.user_id
+                 AND nodes.knowledge_key=scopes.knowledge_key
                WHERE scopes.run_id=%s AND scopes.user_id=%s""",
             (run_id, user_id),
         ).fetchone()
@@ -625,12 +646,33 @@ class TeachingSessionRepository:
                 user_id=user_id, track_id=str(row["track_id"]), session_id=str(predecessor_id),
             )
             historical_summaries.append(self.structured_summary(session=predecessor))
-        return {
-            "schema_version": "teaching_session_context_v1",
+        candidate_scope = TeachingArtifactCandidateScope(
+            teaching_session_id=str(row["teaching_session_id"]),
+            checkpoint_id=str(row["checkpoint_id"]),
+            track_id=str(row["track_id"]),
+            knowledge_key=str(row["knowledge_key"]),
+            session_version=_int(row["session_version"]),
+            track_version=_int(row["track_version"]),
+            progress_version=_int(row["progress_version"]),
+            assignment_id=str(row["lesson_assignment_id"]),
+            assignment_version=_int(row["assignment_version"]),
+        )
+        try:
+            artifact_candidates = self._artifact_candidate_builder.build(
+                scope=candidate_scope,
+                available_capabilities=_string_list(row.get("available_capabilities_json")),
+                learning_artifacts_enabled=self._settings.tutor_learning_artifacts_enabled,
+                artifact_teaching_enabled=self._settings.tutor_artifact_teaching_mode_enabled,
+            )
+        except TeachingArtifactCandidateBuildError as exc:
+            raise TeachingSessionConflict("teaching artifact candidate authority is invalid") from exc
+        context: dict[str, object] = {
+            "schema_version": "teaching_session_context_v2",
             "session": {
                 "session_id": str(row["teaching_session_id"]), "session_version": _int(row["session_version"]),
                 "checkpoint_id": str(row["checkpoint_id"]), "status": str(row["session_status"]),
                 "mode": str(row["mode"]), "knowledge_key": str(row["knowledge_key"]),
+                "track_id": str(row["track_id"]), "assignment_id": str(row["lesson_assignment_id"]),
                 "track_version": _int(row["track_version"]), "progress_version": _int(row["progress_version"]),
                 "progress_status": str(row["progress_status"]), "assignment_version": _int(row["assignment_version"]),
             },
@@ -646,9 +688,21 @@ class TeachingSessionRepository:
             "structured_summary": structured_summary,
             "related_historical_summaries": historical_summaries,
             "recent_teaching_units": recent_teaching_units,
+            "artifact_candidates": artifact_candidates.model_dump(mode="json"),
             "allowed_source_handles": sorted(handles),
-            "action_policy": "lesson_teaching_v2",
+            "action_policy": "lesson_teaching_v3",
         }
+        try:
+            bounded_candidates = bound_teaching_artifact_candidates(
+                context=context,
+                candidates=artifact_candidates,
+            )
+        except (TypeError, ValueError) as exc:
+            raise TeachingSessionConflict(
+                "teaching artifact candidate projection is invalid"
+            ) from exc
+        context["artifact_candidates"] = bounded_candidates.model_dump(mode="json")
+        return context
 
     def next_available_knowledge_key(
         self, *, user_id: str, track_id: str, current_knowledge_key: str,
@@ -955,7 +1009,7 @@ class TeachingSessionService:
     def __init__(self, conn: Connection[dict[str, object]], *, settings: Settings | None = None) -> None:
         self._conn = conn
         self._settings = settings or get_settings()
-        self._repository = TeachingSessionRepository(conn)
+        self._repository = TeachingSessionRepository(conn, settings=self._settings)
 
     def list_sessions(self, *, user_id: str, track_id: str) -> dict[str, object]:
         user, track = _uuid(user_id, "user_id"), _uuid(track_id, "track_id")

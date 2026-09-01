@@ -8,6 +8,7 @@ class PersistenceMixin:
     """只声明 facade 注入的状态，并为跨职责调用提供动态类型边界。"""
 
     _conn: Any
+    _settings: Any
     _projector: Any
     _failpoint: Any
     _effect_handlers: Any
