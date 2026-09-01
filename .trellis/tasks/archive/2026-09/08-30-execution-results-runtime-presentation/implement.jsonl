@@ -1,0 +1,5 @@
+{"file":".trellis/spec/backend/learning-agent-integration-qa.md","reason":"执行层级、Safe result和隐私真实性"}
+{"file":".trellis/tasks/08-30-tutor-conversation-learning-artifacts/research/source-of-truth-contract-summary.md","reason":"公开结果、错误和SSE边界；Attempt/submission/result/execution link authority"}
+{"file":"docs/setup/container-sandbox-executor.md","reason":"executor非声明和redaction"}
+{"file":".trellis/tasks/08-30-tutor-conversation-learning-artifacts/research/repository-evidence.md","reason":"SafeExecutionResult和Gate scorer当前缺口"}
+{"file":".trellis/tasks/08-30-tutor-conversation-learning-artifacts/research/confirmed-product-decisions.md","reason":"结果内容和Run直接完成决策"}
