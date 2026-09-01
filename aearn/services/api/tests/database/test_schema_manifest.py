@@ -28,6 +28,8 @@ EXPECTED_SCHEMA_FRAGMENT_NAMES = (
     "100_review_context.sql",
     "110_thread_turn_codex.sql",
     "120_learning_artifacts.sql",
+    "130_learning_item_bank.sql",
+    "140_learning_item_governance.sql",
 )
 
 
@@ -52,7 +54,7 @@ def test_schema_combined_view_and_apply_order_match_the_manifest() -> None:
     assert tuple(fragment.name for fragment in fragments) == EXPECTED_SCHEMA_FRAGMENT_NAMES
     assert load_schema_text() == "".join(fragment.sql for fragment in fragments)
     assert fragments[0].sql.startswith("CREATE EXTENSION IF NOT EXISTS pgcrypto;")
-    assert "Learning Artifact authority" in fragments[-1].sql
+    assert "review/pilot/publication authority" in fragments[-1].sql
 
     recorder = RecordingConnection()
     apply_schema(cast(Connection[dict[str, object]], recorder))
@@ -106,6 +108,7 @@ def test_bootstrap_retries_the_complete_transaction_after_deadlock(monkeypatch) 
         "seed_learning_intents",
         "seed_language_course_intent_tags",
         "require_language_course_intent_coverage",
+        "import_curated_learning_item_sources",
     ):
         monkeypatch.setattr(bootstrap, name, lambda _conn: None)
 

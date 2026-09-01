@@ -298,6 +298,12 @@ class Settings(BaseModel):
             "false",
         )
     )
+    learning_item_bank_agent_review_enabled: bool = Field(
+        default_factory=lambda: _env_bool(
+            "LEARNING_ITEM_BANK_AGENT_REVIEW_ENABLED",
+            "false",
+        )
+    )
     tutor_thread_turn_v2_enabled: bool = Field(
         default_factory=lambda: _env_bool("TUTOR_THREAD_TURN_V2_ENABLED", "false")
     )

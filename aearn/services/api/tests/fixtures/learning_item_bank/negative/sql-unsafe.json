@@ -1,0 +1,141 @@
+{
+  "schema_version": "learning_item_source_v1",
+  "blueprint": {
+    "schema_version": "learning_item_blueprint_v1",
+    "blueprint_key": "sql.query.filter-track.blueprint",
+    "version": "v1",
+    "knowledge_key": "sql.fundamentals",
+    "item_kind": "sql",
+    "purpose": "sql_exploration",
+    "language_id": "sql",
+    "difficulty_profile": {
+      "base": "D2",
+      "reasoning_depth": 2,
+      "concept_count": 2,
+      "context_novelty": 2,
+      "transfer_distance": 2,
+      "response_complexity": 2,
+      "scaffolding": 4
+    },
+    "prerequisite_keys": [],
+    "required_capabilities": [
+      "sql.select.where",
+      "sql.order_by"
+    ],
+    "allowed_interactions": [
+      "query",
+      "run"
+    ],
+    "publication_policy": {
+      "risk_tier": "low",
+      "required_review_roles": [
+        "curriculum",
+        "difficulty",
+        "technical",
+        "ambiguity",
+        "security",
+        "adversarial"
+      ],
+      "agent_review_required": true,
+      "pilot_required": true,
+      "human_approval_required": false
+    },
+    "source_references": [
+      {
+        "source_id": "aearn.docs",
+        "source_version": "2026.08",
+        "locator": "sqlite.select.where",
+        "content_hash": "1d97ac95d8882812c97ee6b722af3b623ee9a64618f86aa56be59fa8b2efccaf"
+      }
+    ],
+    "runtime_profile_id": "sql_query_test"
+  },
+  "public": {
+    "schema_version": "learning_item_public_v1",
+    "item_key": "sql.query.filter-track",
+    "version": "v1",
+    "kind": "sql",
+    "purpose": "sql_exploration",
+    "title": "Sql Query Filter-Track",
+    "difficulty": "D2",
+    "instruction_markdown": "Complete the bounded learning task.",
+    "allowed_interactions": [
+      "query",
+      "run"
+    ],
+    "hints": [],
+    "source_references": [
+      {
+        "source_id": "aearn.docs",
+        "source_version": "2026.08",
+        "locator": "sqlite.select.where",
+        "content_hash": "1d97ac95d8882812c97ee6b722af3b623ee9a64618f86aa56be59fa8b2efccaf"
+      }
+    ],
+    "content": {
+      "type": "sql",
+      "dialect": "sqlite",
+      "starter_query": "SELECT name FROM learners WHERE track = 'python' ORDER BY id;",
+      "schema_markdown": "`learners(id INTEGER PRIMARY KEY, name TEXT, track TEXT)`",
+      "comparison": "ordered",
+      "max_rows": 20
+    }
+  },
+  "private": {
+    "schema_version": "learning_item_private_v1",
+    "item_key": "sql.query.filter-track",
+    "version": "v1",
+    "kind": "sql",
+    "content": {
+      "type": "sql",
+      "standard_query": "DELETE FROM learners;",
+      "setup_sql": [
+        "CREATE TABLE learners (id INTEGER PRIMARY KEY, name TEXT NOT NULL, track TEXT NOT NULL);",
+        "INSERT INTO learners (name, track) VALUES ('Ada', 'python'), ('Grace', 'sql');"
+      ],
+      "tests": [
+        {
+          "id": "visible_sql",
+          "case_type": "visible",
+          "input_json": {},
+          "expected_output_json": {
+            "columns": [
+              "name"
+            ],
+            "rows": [
+              {
+                "name": "Grace"
+              }
+            ]
+          },
+          "weight": 1,
+          "is_critical": true,
+          "order_index": 0
+        },
+        {
+          "id": "hidden_sql",
+          "case_type": "hidden",
+          "input_json": {},
+          "expected_output_json": {
+            "columns": [
+              "name"
+            ],
+            "rows": [
+              {
+                "name": "Grace"
+              }
+            ]
+          },
+          "weight": 1,
+          "is_critical": true,
+          "order_index": 1
+        }
+      ],
+      "score_policy": {
+        "kind": "all_tests",
+        "policy_version": "all_tests_v1",
+        "threshold": 1.0
+      }
+    }
+  }
+}

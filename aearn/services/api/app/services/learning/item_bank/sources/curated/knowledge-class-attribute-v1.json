@@ -1,0 +1,142 @@
+{
+  "schema_version": "learning_item_source_v1",
+  "blueprint": {
+    "schema_version": "learning_item_blueprint_v1",
+    "blueprint_key": "html.knowledge.class-attribute.blueprint",
+    "version": "v1",
+    "knowledge_key": "html_css.fundamentals",
+    "item_kind": "knowledge_check",
+    "purpose": "knowledge_check",
+    "language_id": "html_css",
+    "difficulty_profile": {
+      "base": "D1",
+      "reasoning_depth": 1,
+      "concept_count": 1,
+      "context_novelty": 1,
+      "transfer_distance": 1,
+      "response_complexity": 1,
+      "scaffolding": 5
+    },
+    "prerequisite_keys": [],
+    "required_capabilities": [
+      "html.attributes.class"
+    ],
+    "allowed_interactions": [
+      "respond"
+    ],
+    "publication_policy": {
+      "risk_tier": "low",
+      "required_review_roles": [
+        "curriculum",
+        "difficulty",
+        "technical",
+        "ambiguity",
+        "security",
+        "adversarial"
+      ],
+      "agent_review_required": true,
+      "pilot_required": true,
+      "human_approval_required": false
+    },
+    "source_references": [
+      {
+        "source_id": "aearn.docs",
+        "source_version": "2026.08",
+        "locator": "html.attributes.class",
+        "content_hash": "e6f0f68de300e086f46d820889edf0455ce251c9aa28fae717d18aee19de0acf"
+      }
+    ]
+  },
+  "public": {
+    "schema_version": "learning_item_public_v1",
+    "item_key": "html.knowledge.class-attribute",
+    "version": "v1",
+    "kind": "knowledge_check",
+    "purpose": "knowledge_check",
+    "title": "Html Knowledge Class-Attribute",
+    "difficulty": "D1",
+    "instruction_markdown": "Complete the bounded learning task.",
+    "allowed_interactions": [
+      "respond"
+    ],
+    "hints": [
+      {
+        "level": 1,
+        "markdown": "Recall which selector metadata can be shared."
+      }
+    ],
+    "source_references": [
+      {
+        "source_id": "aearn.docs",
+        "source_version": "2026.08",
+        "locator": "html.attributes.class",
+        "content_hash": "e6f0f68de300e086f46d820889edf0455ce251c9aa28fae717d18aee19de0acf"
+      }
+    ],
+    "content": {
+      "type": "knowledge_check",
+      "response_kind": "single_choice",
+      "prompt_markdown": "Which attribute is reusable across several styled elements?",
+      "options": [
+        {
+          "option_id": "class",
+          "label": "class attribute"
+        },
+        {
+          "option_id": "id",
+          "label": "id attribute"
+        },
+        {
+          "option_id": "title",
+          "label": "title attribute"
+        }
+      ]
+    }
+  },
+  "private": {
+    "schema_version": "learning_item_private_v1",
+    "item_key": "html.knowledge.class-attribute",
+    "version": "v1",
+    "kind": "knowledge_check",
+    "content": {
+      "type": "knowledge_check",
+      "accepted_answers": [
+        "class"
+      ],
+      "answer_explanation_markdown": "`class` is reusable and addressable by a class selector.",
+      "tests": [
+        {
+          "id": "visible_correct",
+          "case_type": "visible",
+          "input_json": {
+            "answer": "class"
+          },
+          "expected_output_json": {
+            "accepted": true
+          },
+          "weight": 1,
+          "is_critical": true,
+          "order_index": 0
+        },
+        {
+          "id": "hidden_wrong",
+          "case_type": "hidden",
+          "input_json": {
+            "answer": "id"
+          },
+          "expected_output_json": {
+            "accepted": false
+          },
+          "weight": 1,
+          "is_critical": false,
+          "order_index": 1
+        }
+      ],
+      "score_policy": {
+        "kind": "static_exact",
+        "policy_version": "static_exact_v1",
+        "threshold": 1.0
+      }
+    }
+  }
+}

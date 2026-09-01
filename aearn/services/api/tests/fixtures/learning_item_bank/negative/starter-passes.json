@@ -1,0 +1,145 @@
+{
+  "schema_version": "learning_item_source_v1",
+  "blueprint": {
+    "schema_version": "learning_item_blueprint_v1",
+    "blueprint_key": "html.browser.active-card.blueprint",
+    "version": "v1",
+    "knowledge_key": "html_css.fundamentals",
+    "item_kind": "code",
+    "purpose": "exercise",
+    "language_id": "html_css",
+    "difficulty_profile": {
+      "base": "D2",
+      "reasoning_depth": 2,
+      "concept_count": 2,
+      "context_novelty": 2,
+      "transfer_distance": 2,
+      "response_complexity": 2,
+      "scaffolding": 4
+    },
+    "prerequisite_keys": [],
+    "required_capabilities": [
+      "html.classes.state",
+      "css.layout.grid"
+    ],
+    "allowed_interactions": [
+      "edit",
+      "run"
+    ],
+    "publication_policy": {
+      "risk_tier": "low",
+      "required_review_roles": [
+        "curriculum",
+        "difficulty",
+        "technical",
+        "ambiguity",
+        "security",
+        "adversarial"
+      ],
+      "agent_review_required": true,
+      "pilot_required": true,
+      "human_approval_required": false
+    },
+    "source_references": [
+      {
+        "source_id": "aearn.docs",
+        "source_version": "2026.08",
+        "locator": "html.classes.card-state",
+        "content_hash": "8513b81c02132df4b211af49c9ed7b11fc9c786439e417feb27fd00c74973626"
+      }
+    ],
+    "runtime_profile_id": "browser_preview"
+  },
+  "public": {
+    "schema_version": "learning_item_public_v1",
+    "item_key": "html.browser.active-card",
+    "version": "v1",
+    "kind": "code",
+    "purpose": "exercise",
+    "title": "Html Browser Active-Card",
+    "difficulty": "D2",
+    "instruction_markdown": "Complete the bounded learning task.",
+    "allowed_interactions": [
+      "edit",
+      "run"
+    ],
+    "hints": [
+      {
+        "level": 1,
+        "markdown": "Check which state metadata is missing."
+      }
+    ],
+    "source_references": [
+      {
+        "source_id": "aearn.docs",
+        "source_version": "2026.08",
+        "locator": "html.classes.card-state",
+        "content_hash": "8513b81c02132df4b211af49c9ed7b11fc9c786439e417feb27fd00c74973626"
+      }
+    ],
+    "content": {
+      "type": "code",
+      "language_id": "html_css",
+      "editor_language": "html",
+      "exercise_type": "browser_preview",
+      "starter_code": "<style>.card { display: grid; }</style>\n<button class=\"pill active\">Preview</button>",
+      "code_blanks": [
+        {
+          "blank_key": "active_class",
+          "expected_concept": "state class",
+          "acceptable_patterns": [
+            {
+              "type": "literal",
+              "value": "active"
+            }
+          ],
+          "is_core": true
+        }
+      ],
+      "required_patterns": [
+        "pill active",
+        "display: grid"
+      ],
+      "browser_rule_family": "static_preview",
+      "preview_html": {
+        "success": "<button class=\"pill active\">Ready</button>",
+        "failure": "<button class=\"pill\">Incomplete</button>"
+      }
+    }
+  },
+  "private": {
+    "schema_version": "learning_item_private_v1",
+    "item_key": "html.browser.active-card",
+    "version": "v1",
+    "kind": "code",
+    "content": {
+      "type": "code",
+      "standard_answer": "<style>.card { display: grid; }</style>\n<button class=\"pill active\">Preview</button>",
+      "tests": [
+        {
+          "id": "visible_structure",
+          "case_type": "visible",
+          "input_json": {},
+          "expected_output_json": {},
+          "weight": 1,
+          "is_critical": true,
+          "order_index": 0
+        },
+        {
+          "id": "hidden_state",
+          "case_type": "hidden",
+          "input_json": {},
+          "expected_output_json": {},
+          "weight": 1,
+          "is_critical": true,
+          "order_index": 1
+        }
+      ],
+      "score_policy": {
+        "kind": "all_tests",
+        "policy_version": "all_tests_v1",
+        "threshold": 1.0
+      }
+    }
+  }
+}

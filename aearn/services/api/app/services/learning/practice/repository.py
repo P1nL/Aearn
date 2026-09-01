@@ -19,7 +19,9 @@ from app.services.learning.practice.contracts import (
     ExecutionRequirement,
     ExerciseAttemptResult,
     ExerciseAttemptType,
+    ExercisePrivateRubric,
     ExerciseType,
+    ExerciseVersion,
     GateRequirementKind,
     LessonGateBinding,
     canonical_hash,
@@ -119,7 +121,21 @@ class PostgresExerciseGateRepository:
         )
 
     def ensure_curated_fixture(self, fixture: CuratedExerciseFixture, *, now: datetime) -> str:
-        exercise = fixture.exercise
+        return self.ensure_exercise_authority(
+            fixture.exercise,
+            fixture.rubric,
+            now=now,
+        )
+
+    def ensure_exercise_authority(
+        self,
+        exercise: ExerciseVersion,
+        rubric: ExercisePrivateRubric,
+        *,
+        now: datetime,
+    ) -> str:
+        """Materialize or replay one exact immutable ExerciseVersion and rubric."""
+
         row = self._conn.execute(
             """
             INSERT INTO tutor_exercise_versions (
@@ -158,7 +174,6 @@ class PostgresExerciseGateRepository:
             if row is None or str(row["content_hash"]) != exercise.content_hash:
                 raise PracticeIdempotencyConflict("curated exercise identity conflicts with stored content")
         exercise_version_id = str(row["id"])
-        rubric = fixture.rubric
         inserted = self._conn.execute(
             """
             INSERT INTO tutor_exercise_private_rubrics (
