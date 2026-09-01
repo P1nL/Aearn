@@ -26,8 +26,10 @@ from aearn_shared.execution import (
     ExecutionJobV1,
     RuntimeCatalogRegistryV1,
     SafeExecutionResultV1,
+    SafeExecutionResultV2,
     SafeExecutionStatus,
     load_runtime_catalog_registry,
+    parse_safe_execution_result,
     runtime_id_for_profile,
 )
 from app.agents.harness.contracts import (
@@ -332,7 +334,7 @@ class ExecutionIntentRepository:
         )
         return _job_from_row(row)
 
-    def read_exercise_safe_result(self, *, user_id: str, attempt_id: str) -> SafeExecutionResultV1 | None:
+    def read_exercise_safe_result(self, *, user_id: str, attempt_id: str) -> SafeExecutionResultV2 | None:
         row = self._conn.execute(
             """
             SELECT jobs.result_json
@@ -347,13 +349,7 @@ class ExecutionIntentRepository:
         result = row.get("result_json")
         if not isinstance(result, Mapping):
             return None
-        try:
-            return SafeExecutionResultV1.model_validate(result)
-        except ValueError:
-            return SafeExecutionResultV1(
-                status=SafeExecutionStatus.FAILED,
-                diagnostic_code="stored_result_invalid",
-            )
+        return _parse_stored_safe_result(result)
 
     def availability_for_runtime(self, runtime_id: str, *, now: datetime | None = None) -> ExecutionAvailability:
         """Read cached executor health only; this path never contacts the runtime engine."""
@@ -537,7 +533,7 @@ class ExecutionIntentRepository:
                 if found is None:
                     raise ExecutionSubmissionError("execution_job_not_found")
 
-    def read_safe_result(self, *, user_id: str, run_id: str, job_id: str) -> SafeExecutionResultV1 | None:
+    def read_safe_result(self, *, user_id: str, run_id: str, job_id: str) -> SafeExecutionResultV2 | None:
         row = self._conn.execute(
             """
             SELECT jobs.result_json
@@ -552,10 +548,7 @@ class ExecutionIntentRepository:
         result = row.get("result_json")
         if not isinstance(result, Mapping):
             return None
-        try:
-            return SafeExecutionResultV1.model_validate(result)
-        except ValueError:
-            return SafeExecutionResultV1(status=SafeExecutionStatus.FAILED, diagnostic_code="stored_result_invalid")
+        return _parse_stored_safe_result(result)
 
     def _trusted_runtime_for_exercise(self, exercise_id: str) -> str:
         row = self._conn.execute(
@@ -611,9 +604,12 @@ def build_execution_effect_handlers(repository: ExecutionIntentRepository) -> di
     return {EXECUTION_EFFECT_TYPE: ExecutionEffectHandler(repository)}
 
 
-def safe_result_to_runtime_execution_result(result: SafeExecutionResultV1) -> RuntimeExecutionResult:
+def safe_result_to_runtime_execution_result(
+    result: SafeExecutionResultV1 | SafeExecutionResultV2,
+) -> RuntimeExecutionResult:
     """Pure adapter to the existing runner-result authority without invoking a legacy runner."""
 
+    result = parse_safe_execution_result(result)
     status = result.status
     runtime_status = {
         SafeExecutionStatus.SUCCESS: "success",
@@ -702,7 +698,7 @@ def _proof_matches_run(
 
 def _job_from_row(row: Mapping[str, object]) -> ExecutionJobV1:
     result_json = row.get("result_json")
-    result = SafeExecutionResultV1.model_validate(result_json) if isinstance(result_json, Mapping) else None
+    result = _parse_stored_safe_result(result_json) if isinstance(result_json, Mapping) else None
     lease_expires_at = _datetime_or_none(row.get("lease_expires_at"))
     cancellation_requested_at = _datetime_or_none(row.get("cancellation_requested_at"))
     raw_owner = str(row.get("owner_kind") or "tutor_effect")
@@ -741,6 +737,13 @@ def _job_from_row(row: Mapping[str, object]) -> ExecutionJobV1:
 
 def _reference_hash(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _parse_stored_safe_result(value: Mapping[str, object]) -> SafeExecutionResultV2:
+    try:
+        return parse_safe_execution_result(value)
+    except (TypeError, ValueError) as exc:
+        raise ExecutionSubmissionError("stored_result_invalid") from exc
 
 
 def _policy_max_effects(value: object) -> int:

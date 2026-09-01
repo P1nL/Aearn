@@ -9,6 +9,7 @@ from typing import Annotated, Literal, Mapping, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
 
+from aearn_shared.execution import SafeExecutionResultV2
 from app.services.tutor.branch_contracts import BranchResponseDisposition
 from app.services.learning.practice.model_review_contracts import ModelCodeReviewSubmissionV1
 
@@ -19,6 +20,9 @@ TUTOR_LEARNING_ARTIFACT_POLICY_VERSION = "tutor_learning_artifact_policy_v1"
 TUTOR_LEARNING_ARTIFACT_ATTEMPT_SCHEMA_VERSION: Literal[
     "tutor_learning_artifact_attempt_v1"
 ] = "tutor_learning_artifact_attempt_v1"
+TUTOR_LEARNING_ARTIFACT_ATTEMPT_V2_SCHEMA_VERSION: Literal[
+    "tutor_learning_artifact_attempt_v2"
+] = "tutor_learning_artifact_attempt_v2"
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _STABLE_KEY = re.compile(r"^[a-z0-9][a-z0-9._:-]{0,159}$")
@@ -504,6 +508,84 @@ class TutorArtifactAttemptDetailV1(_StrictArtifactModel):
         return self
 
 
+class TutorArtifactAttemptResultV2(_StrictArtifactModel):
+    """Terminal result with only the typed learner-safe execution authority."""
+
+    outcome: Literal["passed", "failed", "timed_out", "cancelled", "unavailable", "invalid"]
+    score: float = Field(ge=0, le=1)
+    execution_result: SafeExecutionResultV2 | None = None
+    capability_scores: dict[str, float] = Field(default_factory=dict)
+    policy_version: str = Field(min_length=1, max_length=160)
+    result_hash: str = Field(min_length=64, max_length=64)
+    terminal_at: str = Field(min_length=1, max_length=80)
+
+    @field_validator("policy_version")
+    @classmethod
+    def validate_policy_version(cls, value: str) -> str:
+        if not _STABLE_KEY.fullmatch(value):
+            raise ValueError("artifact Attempt policy version is invalid")
+        return value
+
+    @field_validator("capability_scores")
+    @classmethod
+    def validate_capability_scores(cls, values: dict[str, float]) -> dict[str, float]:
+        if len(values) > 64:
+            raise ValueError("artifact Attempt capability scores are too large")
+        if any(not _STABLE_KEY.fullmatch(key) for key in values):
+            raise ValueError("artifact Attempt capability score key is invalid")
+        return values
+
+    @model_validator(mode="after")
+    def validate_safe_result(self) -> "TutorArtifactAttemptResultV2":
+        if not _SHA256.fullmatch(self.result_hash):
+            raise ValueError("artifact Attempt result hash is invalid")
+        assert_public_artifact_safe(self.model_dump(mode="json"))
+        return self
+
+
+class TutorArtifactAttemptDetailV2(_StrictArtifactModel):
+    schema_version: Literal["tutor_learning_artifact_attempt_v2"] = (
+        TUTOR_LEARNING_ARTIFACT_ATTEMPT_V2_SCHEMA_VERSION
+    )
+    artifact_id: str = Field(min_length=1, max_length=160)
+    artifact_version: int = Field(ge=1)
+    conversation_id: str = Field(min_length=1, max_length=160)
+    learning_track_id: str = Field(min_length=1, max_length=160)
+    knowledge_key: str = Field(min_length=1, max_length=160)
+    teaching_session_id: str = Field(min_length=1, max_length=160)
+    attempt_id: str = Field(min_length=1, max_length=160)
+    attempt_type: Literal["run", "submit", "diagnostic_submit", "review_submit"]
+    exercise_version_id: str = Field(min_length=1, max_length=160)
+    submission_hash: str = Field(min_length=64, max_length=64)
+    independence: Literal["independent", "hinted", "remediated"]
+    assistance_kind: Literal[
+        "independent", "hinted", "validation_evidence_viewed", "remediated"
+    ]
+    status: Literal["pending", "terminal"]
+    execution_job_state: Literal[
+        "pending", "claimed", "launch_reserved", "running", "completed",
+        "timed_out", "cancelled", "unavailable", "launch_uncertain", "failed",
+    ] | None = None
+    accepted_at: str = Field(min_length=1, max_length=80)
+    result: TutorArtifactAttemptResultV2 | None = None
+
+    @field_validator("knowledge_key")
+    @classmethod
+    def validate_attempt_knowledge_key(cls, value: str) -> str:
+        if not _STABLE_KEY.fullmatch(value):
+            raise ValueError("artifact Attempt knowledge key is invalid")
+        return value
+
+    @model_validator(mode="after")
+    def validate_attempt_detail(self) -> "TutorArtifactAttemptDetailV2":
+        if not _SHA256.fullmatch(self.submission_hash):
+            raise ValueError("artifact Attempt submission hash is invalid")
+        if (self.status == "terminal") != (self.result is not None):
+            raise ValueError("artifact Attempt detail terminal fields are inconsistent")
+        assert_public_artifact_safe(self.model_dump(mode="json"))
+        return self
+
+
 class TutorArtifactBranchSummaryV1(_StrictArtifactModel):
     branch_id: str = Field(min_length=1, max_length=160)
     state: Literal["active", "resolved"]
@@ -589,6 +671,40 @@ class TutorPublicArtifactItem(_StrictArtifactModel):
             and self.active_attempt.status != "terminal"
         ):
             raise ValueError("terminal artifact cannot retain a pending Attempt")
+        if self.artifact_kind is TutorArtifactKind.TEST_RESULT:
+            if (
+                self.purpose is not TutorArtifactPurpose.RESULT
+                or self.state is not TutorArtifactState.COMPLETED
+                or self.blocking
+                or self.allowed_actions
+                or self.active_attempt is None
+                or self.active_attempt.status != "terminal"
+                or not isinstance(
+                    self.presentation,
+                    TutorArtifactTestResultPresentationV1,
+                )
+                or self.presentation.status != "terminal"
+                or self.presentation.attempt_id != self.active_attempt.attempt_id
+                or self.presentation.outcome != self.active_attempt.outcome
+                or self.presentation.result_hash != self.active_attempt.result_hash
+            ):
+                raise ValueError("test-result Artifact authority shape is invalid")
+            source_refs = [
+                item for item in self.source_references if item.kind == "artifact"
+            ]
+            attempt_refs = [
+                item
+                for item in self.source_references
+                if item.kind == "attempt_result"
+            ]
+            if (
+                len(source_refs) != 1
+                or source_refs[0].reference_version is None
+                or len(attempt_refs) != 1
+                or attempt_refs[0].reference_id != self.active_attempt.attempt_id
+                or attempt_refs[0].content_hash != self.active_attempt.result_hash
+            ):
+                raise ValueError("test-result Artifact source authority is invalid")
         reference_identities = {
             (
                 item.kind,
@@ -608,6 +724,12 @@ class TutorArtifactActionResponseV1(_StrictArtifactModel):
     artifact_event_id: str = Field(min_length=1, max_length=160)
     artifact_event_sequence: int = Field(ge=1)
     idempotent_replayed: bool
+
+    @model_validator(mode="after")
+    def validate_event_identity(self) -> "TutorArtifactActionResponseV1":
+        if self.artifact_event_sequence != self.artifact.version:
+            raise ValueError("artifact action response event does not own its version")
+        return self
 
 
 class TutorArtifactCreate(_StrictArtifactModel):
@@ -639,11 +761,39 @@ class TutorArtifactCreate(_StrictArtifactModel):
 
     @model_validator(mode="after")
     def validate_create_shape(self) -> "TutorArtifactCreate":
-        if self.state.terminal:
-            raise ValueError("new artifacts must start in a non-terminal state")
+        terminal_result = (
+            self.state is TutorArtifactState.COMPLETED
+            and self.artifact_kind is TutorArtifactKind.TEST_RESULT
+            and self.purpose is TutorArtifactPurpose.RESULT
+            and not self.blocking
+            and not self.allowed_actions
+            and self.active_attempt is not None
+            and self.active_attempt.status == "terminal"
+        )
+        if self.state.terminal and not terminal_result:
+            raise ValueError("only immutable completed test-result artifacts may start terminal")
+        if terminal_result:
+            if not isinstance(
+                self.presentation,
+                TutorArtifactTestResultPresentationV1,
+            ):
+                raise ValueError("terminal test-result Artifact presentation is invalid")
+            if (
+                self.active_attempt is None
+                or self.presentation.attempt_id != self.active_attempt.attempt_id
+                or self.presentation.outcome != self.active_attempt.outcome
+                or self.presentation.result_hash != self.active_attempt.result_hash
+            ):
+                raise ValueError(
+                    "terminal test-result Artifact Attempt identity is inconsistent"
+                )
         if len(self.allowed_actions) != len(set(self.allowed_actions)):
             raise ValueError("artifact allowed actions must be unique")
-        if self.active_attempt is not None and self.active_attempt.status != "pending":
+        if (
+            self.active_attempt is not None
+            and self.active_attempt.status != "pending"
+            and not terminal_result
+        ):
             raise ValueError("new artifact active attempt must be pending")
         if not _STABLE_KEY.fullmatch(self.knowledge_key):
             raise ValueError("artifact knowledge key is invalid")
@@ -833,6 +983,7 @@ def canonical_response_text(response: TutorArtifactResponseV1) -> str:
 __all__ = (
     "ARTIFACT_PROTECTED_MARKERS",
     "TUTOR_LEARNING_ARTIFACT_ATTEMPT_SCHEMA_VERSION",
+    "TUTOR_LEARNING_ARTIFACT_ATTEMPT_V2_SCHEMA_VERSION",
     "TUTOR_LEARNING_ARTIFACT_EVENT_SCHEMA_VERSION",
     "TUTOR_LEARNING_ARTIFACT_POLICY_VERSION",
     "TUTOR_LEARNING_ARTIFACT_SCHEMA_VERSION",
@@ -842,7 +993,9 @@ __all__ = (
     "TutorArtifactActionV1",
     "TutorArtifactAcknowledgeDemoEventAction",
     "TutorArtifactAttemptDetailV1",
+    "TutorArtifactAttemptDetailV2",
     "TutorArtifactAttemptResultV1",
+    "TutorArtifactAttemptResultV2",
     "TutorArtifactAttemptSummaryV1",
     "TutorArtifactBranchSummaryV1",
     "TutorArtifactCancelAction",

@@ -482,20 +482,31 @@ class ConversationPersistenceMixin(PersistenceMixin):
               SELECT
                 'artifact'::text AS kind,
                 artifacts.id AS item_id,
-                artifacts.created_at AS created_at,
+                publication.occurred_at AS created_at,
                 34 AS sort_rank,
                 NULL::text AS role,
                 NULL::text AS content,
                 ''::text AS public_thinking_text,
                 '[]'::jsonb AS public_thinking_steps_json,
                 NULL::uuid AS process_run_id,
-                artifacts.turn_id AS turn_id,
+                publication.turn_id AS turn_id,
                 NULL::text AS error_code,
                 NULL::boolean AS error_recoverable,
                 NULL::uuid AS in_reply_to_item_id,
                 NULL::uuid AS interaction_request_id
               FROM tutor_learning_artifacts AS artifacts
               JOIN tutor_conversations AS conversations ON conversations.id = artifacts.conversation_id
+              JOIN LATERAL (
+                SELECT events.occurred_at, events.turn_id
+                FROM tutor_conversation_events AS events
+                WHERE events.user_id = artifacts.user_id
+                  AND events.conversation_id = artifacts.conversation_id
+                  AND events.item_kind = 'artifact'
+                  AND events.item_id = artifacts.id
+                  AND events.kind = 'item_added'
+                ORDER BY events.event_sequence ASC
+                LIMIT 1
+              ) AS publication ON TRUE
               WHERE artifacts.conversation_id = %s
                 AND artifacts.user_id = %s
                 AND conversations.visibility = 'learner'
@@ -660,13 +671,22 @@ class ConversationPersistenceMixin(PersistenceMixin):
                     conversation_id=conversation_id,
                     artifact_id=str(row["item_id"]),
                 )
+                publication_turn_id = _optional_string(row.get("turn_id"))
+                if artifact.turn_id is None and publication_turn_id is not None:
+                    artifact = artifact.model_copy(
+                        update={"turn_id": publication_turn_id}
+                    )
+                elif artifact.turn_id != publication_turn_id:
+                    raise TutorIdempotencyConflict(
+                        "artifact timeline Turn identity conflicts with publication evidence"
+                    )
                 records.append(
                     TutorConversationTimelineRecord(
                         kind="artifact",
                         item_id=artifact.id,
                         created_at=created_at,
                         sort_rank=_as_int(row.get("sort_rank"), 0),
-                        turn_id=artifact.turn_id,
+                        turn_id=publication_turn_id,
                         artifact=artifact,
                     )
                 )

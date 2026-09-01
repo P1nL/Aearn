@@ -10,13 +10,25 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from enum import Enum
-from typing import Literal
+from typing import Annotated, Literal, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictFloat,
+    StrictInt,
+    StrictStr,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@-]{0,159}$")
 _RUNTIME_ID = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*-v[1-9][0-9]*$")
@@ -25,6 +37,14 @@ _PROTOCOL_VERSION = re.compile(r"^[a-z][a-z0-9-]*-v[1-9][0-9]*$")
 _USER = re.compile(r"^[1-9][0-9]{0,6}:[1-9][0-9]{0,6}$")
 _IMAGE_REPOSITORY_SEGMENT = re.compile(r"^[a-z0-9]+(?:[._-][a-z0-9]+)*$")
 _IMAGE_REGISTRY_SEGMENT = re.compile(r"^[a-z0-9]+(?:[.-][a-z0-9]+)*(?::[0-9]{1,5})?$")
+_SAFE_HIDDEN_CASE_ID = re.compile(r"^non-visible-[1-9][0-9]{0,2}$")
+
+MAX_TABLE_RESULT_COLUMNS = 32
+MAX_TABLE_RESULT_ROWS = 200
+MAX_TABLE_RESULT_COLUMN_CHARS = 120
+MAX_TABLE_RESULT_CELL_CHARS = 500
+MAX_TABLE_RESULT_NUMBER_ABS = 9_007_199_254_740_991
+MAX_TABLE_RESULT_PAYLOAD_BYTES = 65_536
 
 
 class _FrozenModel(BaseModel):
@@ -258,7 +278,7 @@ class ExecutionIntentProofV1(_FrozenModel):
         return _sha256(value, label="execution proof fingerprint")
 
     @model_validator(mode="after")
-    def validate_times(self) -> "ExecutionIntentProofV1":
+    def validate_times(self) -> ExecutionIntentProofV1:
         issued_at = _utc(self.issued_at)
         expires_at = _utc(self.expires_at)
         if expires_at <= issued_at:
@@ -290,6 +310,50 @@ class SafeTestFeedbackV1(_FrozenModel):
     @classmethod
     def validate_case_id(cls, value: str) -> str:
         return _identifier(value, label="test case id")
+
+
+class SafeExecutionLocationV1(_FrozenModel):
+    """Learner-visible source coordinates only; paths and runtime frames are forbidden."""
+
+    line: int = Field(ge=1, le=1_000_000)
+    column: int | None = Field(default=None, ge=1, le=100_000)
+    end_line: int | None = Field(default=None, ge=1, le=1_000_000)
+    end_column: int | None = Field(default=None, ge=1, le=100_000)
+
+    @model_validator(mode="after")
+    def validate_range(self) -> SafeExecutionLocationV1:
+        if self.end_column is not None and self.end_line is None:
+            raise ValueError("execution location end_column requires end_line")
+        if self.end_line is not None and self.end_line < self.line:
+            raise ValueError("execution location end_line precedes line")
+        if (
+            self.end_line == self.line
+            and self.column is not None
+            and self.end_column is not None
+            and self.end_column < self.column
+        ):
+            raise ValueError("execution location end_column precedes column")
+        return self
+
+
+class SafeTestFeedbackV2(_FrozenModel):
+    case_id: str = Field(min_length=1, max_length=120)
+    passed: bool
+    visible: bool
+    message: str = Field(default="", max_length=320)
+    duration_ms: int = Field(default=0, ge=0, le=120_000)
+    location: SafeExecutionLocationV1 | None = None
+
+    @field_validator("case_id")
+    @classmethod
+    def validate_case_id(cls, value: str) -> str:
+        return _identifier(value, label="test case id")
+
+    @model_validator(mode="after")
+    def validate_visibility(self) -> SafeTestFeedbackV2:
+        if not self.visible and self.location is not None:
+            raise ValueError("non-visible feedback cannot expose a source location")
+        return self
 
 
 class SandboxTestFeedbackV1(_FrozenModel):
@@ -352,7 +416,7 @@ class SandboxResultV1(_FrozenModel):
         return _identifier(value, label="sandbox diagnostic code")
 
     @model_validator(mode="after")
-    def validate_counts(self) -> "SandboxResultV1":
+    def validate_counts(self) -> SandboxResultV1:
         if self.passed_test_count > self.total_test_count:
             raise ValueError("passed tests cannot exceed total tests")
         return self
@@ -376,13 +440,13 @@ class SafeExecutionResultV1(_FrozenModel):
         return _identifier(value, label="safe execution diagnostic code")
 
     @model_validator(mode="after")
-    def validate_counts(self) -> "SafeExecutionResultV1":
+    def validate_counts(self) -> SafeExecutionResultV1:
         if self.passed_test_count > self.total_test_count:
             raise ValueError("passed tests cannot exceed total tests")
         return self
 
     @classmethod
-    def from_sandbox_result(cls, result: SandboxResultV1) -> "SafeExecutionResultV1":
+    def from_sandbox_result(cls, result: SandboxResultV1) -> SafeExecutionResultV1:
         from aearn_shared.execution.redaction import sanitize_execution_text
 
         feedback: list[SafeTestFeedbackV1] = []
@@ -421,6 +485,252 @@ class SafeExecutionResultV1(_FrozenModel):
         )
 
 
+SafeTableResultColumnV1: TypeAlias = Annotated[
+    StrictStr,
+    StringConstraints(min_length=1, max_length=MAX_TABLE_RESULT_COLUMN_CHARS),
+]
+SafeTableResultTextCellV1: TypeAlias = Annotated[
+    StrictStr,
+    StringConstraints(max_length=MAX_TABLE_RESULT_CELL_CHARS),
+]
+SafeTableResultIntegerCellV1: TypeAlias = Annotated[
+    StrictInt,
+    Field(ge=-MAX_TABLE_RESULT_NUMBER_ABS, le=MAX_TABLE_RESULT_NUMBER_ABS),
+]
+SafeTableResultFloatCellV1: TypeAlias = Annotated[
+    StrictFloat,
+    Field(ge=-MAX_TABLE_RESULT_NUMBER_ABS, le=MAX_TABLE_RESULT_NUMBER_ABS),
+]
+SafeTableResultCellV1: TypeAlias = (
+    SafeTableResultTextCellV1
+    | StrictBool
+    | SafeTableResultIntegerCellV1
+    | SafeTableResultFloatCellV1
+    | None
+)
+
+
+class SafeExecutionPresentationNoneV1(_FrozenModel):
+    """Explicit absence of a rich result presentation."""
+
+    kind: Literal["none"] = "none"
+
+
+class SafeTableResultPresentationV1(_FrozenModel):
+    """Bounded learner-visible positional table data, never hidden scorer data."""
+
+    kind: Literal["table_result_v1"] = "table_result_v1"
+    columns: tuple[SafeTableResultColumnV1, ...] = Field(
+        min_length=1,
+        max_length=MAX_TABLE_RESULT_COLUMNS,
+    )
+    rows: tuple[tuple[SafeTableResultCellV1, ...], ...] = Field(
+        default=(),
+        max_length=MAX_TABLE_RESULT_ROWS,
+    )
+
+    @field_validator("columns")
+    @classmethod
+    def validate_columns(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        from aearn_shared.execution.redaction import contains_protected_execution_text
+
+        if len(values) != len(set(values)):
+            raise ValueError("table result columns must be unique")
+        if any(contains_protected_execution_text(value) for value in values):
+            raise ValueError("table result columns contain protected execution content")
+        return values
+
+    @field_validator("rows")
+    @classmethod
+    def validate_cells(
+        cls,
+        rows: tuple[tuple[SafeTableResultCellV1, ...], ...],
+    ) -> tuple[tuple[SafeTableResultCellV1, ...], ...]:
+        from aearn_shared.execution.redaction import contains_protected_execution_text
+
+        for row in rows:
+            for cell in row:
+                if isinstance(cell, float) and not math.isfinite(cell):
+                    raise ValueError("table result numbers must be finite")
+                if isinstance(cell, str) and contains_protected_execution_text(cell):
+                    raise ValueError("table result cells contain protected execution content")
+        return rows
+
+    @model_validator(mode="after")
+    def validate_shape_and_payload(self) -> SafeTableResultPresentationV1:
+        if any(len(row) != len(self.columns) for row in self.rows):
+            raise ValueError("table result rows must align with columns")
+        payload = json.dumps(
+            self.model_dump(mode="json"),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        if len(payload) > MAX_TABLE_RESULT_PAYLOAD_BYTES:
+            raise ValueError("table result payload exceeds the learner-safe bound")
+        return self
+
+
+SafeExecutionPresentationV1: TypeAlias = Annotated[
+    SafeExecutionPresentationNoneV1 | SafeTableResultPresentationV1,
+    Field(discriminator="kind"),
+]
+
+
+class SafeExecutionResultV2(_FrozenModel):
+    """Strict learner-safe result with one closed, bounded presentation variant."""
+
+    schema_version: Literal["safe-execution-result-v2"]
+    status: SafeExecutionStatus
+    stdout: str = Field(default="", max_length=4_000)
+    stderr: str = Field(default="", max_length=2_000)
+    test_feedback: tuple[SafeTestFeedbackV2, ...] = Field(default=(), max_length=64)
+    passed_test_count: int = Field(default=0, ge=0, le=10_000)
+    total_test_count: int = Field(default=0, ge=0, le=10_000)
+    duration_ms: int = Field(default=0, ge=0, le=120_000)
+    diagnostic_code: str = Field(default="execution_result", min_length=1, max_length=120)
+    presentation: SafeExecutionPresentationV1
+
+    @field_validator("diagnostic_code")
+    @classmethod
+    def validate_diagnostic(cls, value: str) -> str:
+        return _identifier(value, label="safe execution diagnostic code")
+
+    @field_validator("stdout", "stderr")
+    @classmethod
+    def validate_output_text(cls, value: str) -> str:
+        from aearn_shared.execution.redaction import contains_protected_execution_text
+
+        if contains_protected_execution_text(value):
+            raise ValueError("safe execution output contains protected content")
+        return value
+
+    @model_validator(mode="after")
+    def validate_result(self) -> SafeExecutionResultV2:
+        from aearn_shared.execution.redaction import contains_protected_execution_text
+
+        if self.passed_test_count > self.total_test_count:
+            raise ValueError("passed tests cannot exceed total tests")
+        if len(self.test_feedback) > self.total_test_count:
+            raise ValueError("test feedback cannot exceed total tests")
+
+        seen_ids: set[str] = set()
+        hidden_ordinal = 0
+        feedback_passed = 0
+        for item in self.test_feedback:
+            if item.case_id in seen_ids:
+                raise ValueError("test feedback case ids must be unique")
+            seen_ids.add(item.case_id)
+            feedback_passed += int(item.passed)
+            if item.visible:
+                if contains_protected_execution_text(item.case_id) or contains_protected_execution_text(item.message):
+                    raise ValueError("visible test feedback contains protected content")
+                continue
+            hidden_ordinal += 1
+            expected_id = f"non-visible-{hidden_ordinal}"
+            expected_message = (
+                "A non-visible scenario passed."
+                if item.passed
+                else "A non-visible scenario still failed."
+            )
+            if not _SAFE_HIDDEN_CASE_ID.fullmatch(item.case_id) or item.case_id != expected_id:
+                raise ValueError("non-visible feedback must use opaque sequential ordinals")
+            if item.message != expected_message:
+                raise ValueError("non-visible feedback must use the fixed safe message")
+
+        if feedback_passed > self.passed_test_count:
+            raise ValueError("passing feedback cannot exceed the passed test count")
+        feedback_failed = len(self.test_feedback) - feedback_passed
+        if feedback_failed > self.total_test_count - self.passed_test_count:
+            raise ValueError("failing feedback cannot exceed the failed test count")
+        if isinstance(self.presentation, SafeTableResultPresentationV1) and self.status is not SafeExecutionStatus.SUCCESS:
+            raise ValueError("table result presentation requires successful runtime execution")
+        return self
+
+    @classmethod
+    def from_v1(cls, result: SafeExecutionResultV1) -> SafeExecutionResultV2:
+        """Convert a validated historical v1 result into the strict v2 shape."""
+
+        return adapt_safe_execution_result_v1(result)
+
+    @classmethod
+    def from_sandbox_result(cls, result: SandboxResultV1) -> SafeExecutionResultV2:
+        """Redact raw fixed-harness output and emit the new durable result version."""
+
+        return adapt_safe_execution_result_v1(SafeExecutionResultV1.from_sandbox_result(result))
+
+
+SafeExecutionResult: TypeAlias = SafeExecutionResultV1 | SafeExecutionResultV2
+
+
+def adapt_safe_execution_result_v1(result: SafeExecutionResultV1) -> SafeExecutionResultV2:
+    """Safely upgrade a historical v1 result without inventing rich presentation data."""
+
+    from aearn_shared.execution.redaction import (
+        contains_protected_execution_text,
+        sanitize_execution_text,
+    )
+
+    feedback: list[SafeTestFeedbackV2] = []
+    hidden_ordinal = 0
+    for index, item in enumerate(result.test_feedback, start=1):
+        if not item.visible:
+            hidden_ordinal += 1
+            feedback.append(
+                SafeTestFeedbackV2(
+                    case_id=f"non-visible-{hidden_ordinal}",
+                    passed=item.passed,
+                    visible=False,
+                    message=(
+                        "A non-visible scenario passed."
+                        if item.passed
+                        else "A non-visible scenario still failed."
+                    ),
+                    duration_ms=item.duration_ms,
+                )
+            )
+            continue
+        case_id = item.case_id
+        if contains_protected_execution_text(case_id):
+            case_id = f"visible-{index}"
+        feedback.append(
+            SafeTestFeedbackV2(
+                case_id=case_id,
+                passed=item.passed,
+                visible=True,
+                message=sanitize_execution_text(item.message, limit=320),
+                duration_ms=item.duration_ms,
+            )
+        )
+    return SafeExecutionResultV2(
+        schema_version="safe-execution-result-v2",
+        status=result.status,
+        stdout=sanitize_execution_text(result.stdout, limit=4_000),
+        stderr=sanitize_execution_text(result.stderr, limit=2_000),
+        test_feedback=tuple(feedback),
+        passed_test_count=result.passed_test_count,
+        total_test_count=result.total_test_count,
+        duration_ms=result.duration_ms,
+        diagnostic_code=result.diagnostic_code,
+        presentation=SafeExecutionPresentationNoneV1(),
+    )
+
+
+def parse_safe_execution_result(value: object) -> SafeExecutionResultV2:
+    """Read strict v2 data or explicitly adapt an unversioned historical v1 row."""
+
+    if isinstance(value, SafeExecutionResultV2):
+        return value
+    if isinstance(value, SafeExecutionResultV1):
+        return adapt_safe_execution_result_v1(value)
+    if not isinstance(value, Mapping):
+        raise TypeError("safe execution result must be an object")
+    if "schema_version" not in value:
+        return adapt_safe_execution_result_v1(SafeExecutionResultV1.model_validate(value))
+    if value.get("schema_version") != "safe-execution-result-v2":
+        raise ValueError("safe execution result schema version is unsupported")
+    return SafeExecutionResultV2.model_validate(value)
+
+
 class ExecutionJobV1(_FrozenModel):
     """Safe durable queue fact for either a Tutor effect or exercise Attempt."""
 
@@ -442,7 +752,7 @@ class ExecutionJobV1(_FrozenModel):
     launch_token: str | None = Field(default=None, max_length=160)
     launch_generation: int = Field(default=0, ge=0)
     cancellation_requested_at: datetime | None = None
-    result: SafeExecutionResultV1 | None = None
+    result: SafeExecutionResult | None = None
     safe_diagnostic_code: str | None = Field(default=None, max_length=120)
 
     @field_validator("job_id", "intent_proof_id", "user_id")
@@ -475,7 +785,7 @@ class ExecutionJobV1(_FrozenModel):
         return _sha256(value, label="lock fingerprint")
 
     @model_validator(mode="after")
-    def validate_owner(self) -> "ExecutionJobV1":
+    def validate_owner(self) -> ExecutionJobV1:
         tutor_shape = self.effect_id is not None and self.conversation_id is not None and self.run_id is not None
         gate_shape = self.exercise_attempt_id is not None
         review_shape = self.model_review_validation_id is not None and self.conversation_id is not None and self.run_id is not None

@@ -387,3 +387,11 @@ Tutor answer、Artifact instruction 与 server-authored safe feedback 通过内�
 Artifact header 只显示服务器 title、state、低存在感 `D(n)`、closed renderer body、终态摘要和 `allowed_actions`；unknown presentation 仅显示 contract error 且不暴露 action/payload。展开、component/model、内部 scroll 和 tab 是当前程序内 UI state，按 conversation/artifact/version 衔接；终态重量组件先保持 lightweight summary，用户展开时才从 scoped Artifact endpoint 读取 exact 同版本详情并存入进程内 cache，scope/version 不匹配时 fail closed。后端继续拥有 Artifact/Attempt/result/branch/continuation authority。新 Artifact 自动展开并只滚动一次到 shell 起点，不调用 focus；status/version refresh 原地更新且不重复滚动。终态 Artifact 保持展开到下一条主线 learner message，branch learner message 不触发；用户手动重开不被普通 refresh 覆盖。
 
 branch item 只按 v5 explicit references 从 mainline 移出并紧跟 anchor Artifact 渲染。active branch 始终展开；resolved branch 默认折叠为“答疑 · N 轮”，可手动展开。rail 只增加左侧缩进，learner bubble 右边界保持原主线对齐。Artifact/branch shell 使用 container query、内部 bounded scroll、44px control、visible focus 与 `prefers-reduced-motion`；1440×900、900×900、390×844 均不得产生页面级水平溢出。
+
+## 2026-09-01：权威运行结果 Artifact
+
+`test_result_v1` 使用独立 `ExecutionResultArtifact` renderer。展开 terminal result 时，Desktop 以当前 user/conversation/Artifact version/track/knowledge/TeachingSession/Attempt identity 调用 scoped Attempt endpoint，并从 `unknown` exact-parse historical Attempt v1 或 strict Attempt v2。v1 只显示历史结果可读提示，不检查任意 `safe_feedback`；v2 才渲染 typed `safe-execution-result-v2`。unknown/extra/protected、bad hash/count/location/table bounds 或任一 scope/version mismatch 使完整 detail fail closed。
+
+结果 UI 先显示 server outcome 与 `passed/total`，失败项在通过聚合之前。hidden case ID 永不进入 DOM，只允许固定“非公开测试”标签和 server-safe message；位置只显示数字行列。全部通过不重复显示“其他 N 项通过”；失败结果可在 failures 后显示一次 aggregate。`diagnostic_code` 不渲染。stdout/stderr 只有非空才出现原生 disclosure；`table_result_v1` 在可聚焦、有 visible focus 的内部横向滚动区显示，页面本身不得横向溢出。
+
+result instruction/terminal summary 只渲染一次，专用 renderer 不与通用 Artifact instruction 重复。非 passed result 在存在唯一 exact source Artifact ID/version reference 时显示“返回修改”；Artifact reference 的 `content_hash` 可为空，exact version 已构成定位 provenance。点击后按 reduced-motion 滚动并 focus 同一 timeline 中的 source toggle，不创建第二页面、第二 timeline、执行、评分或 navigation authority。Run 通过即完成，不显示第二 Submit。

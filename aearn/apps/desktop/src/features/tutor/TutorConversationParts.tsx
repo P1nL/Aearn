@@ -10,7 +10,7 @@ import {
   Button, DisclosureRow, IconChevronDown, IconChevronUp, IconDelete, IconEdit, IconQueue,
   IconSend, IconStop, Input, StateDot,
 } from "../../ui/dsh-derived";
-import { ClarificationBranchGroup, InlineArtifactMessage, SafeMarkdown, type TutorArtifactActionRequest } from "./artifacts";
+import { ClarificationBranchGroup, InlineArtifactMessage, SafeMarkdown, type TutorArtifactActionRequest, type TutorArtifactAttemptLoader, type TutorArtifactReturnToSource } from "./artifacts";
 import {
   displayQueuePauseReason, groupTimelineAroundArtifacts, requestDraftValid, runtimeReasoningText,
   TUTOR_TEXT_REVEAL_INTERVAL_MS, TUTOR_THINKING_AUTO_COLLAPSE_DELAY_MS,
@@ -125,7 +125,7 @@ export function groupTeachingTimeline(
   };
 }
 
-export function TeachingSessionTimeline({ groups, legacyItems, branches, conversationId, newArtifactIds, recentCompletion, writeEnabled, mutationBusy, onRetry, onReference, onArtifactAction, loadArtifactDetail }: {
+export function TeachingSessionTimeline({ groups, legacyItems, branches, conversationId, newArtifactIds, recentCompletion, writeEnabled, mutationBusy, onRetry, onReference, onArtifactAction, loadArtifactDetail, loadArtifactAttempt, onReturnToArtifactSource }: {
   groups: GroupedTeachingTimeline["history"];
   legacyItems: TutorHistoryItem[];
   branches: TutorPublicBranchGroup[];
@@ -138,6 +138,8 @@ export function TeachingSessionTimeline({ groups, legacyItems, branches, convers
   onReference?: (reference: TutorContextReferenceDraft, label: string) => void;
   onArtifactAction?: (request: TutorArtifactActionRequest) => void;
   loadArtifactDetail?: (artifact: TutorPublicArtifactItem) => Promise<TutorPublicArtifactItem>;
+  loadArtifactAttempt?: TutorArtifactAttemptLoader;
+  onReturnToArtifactSource?: TutorArtifactReturnToSource;
 }) {
   if (groups.length === 0 && legacyItems.length === 0) return null;
   return <section className="teaching-session-history" aria-label="历史教学分段">
@@ -145,7 +147,7 @@ export function TeachingSessionTimeline({ groups, legacyItems, branches, convers
       <summary><span><strong>{session.knowledge_key}</strong><small>{displayTeachingSessionStatus(session.status)} · {displayTeachingMode(session.mode)}</small></span><time>{formatTeachingSessionTime(session.last_activity_at)}</time></summary>
       <div className="teaching-session-readonly" aria-label={`${session.knowledge_key} 历史分段，只读`}>
         <p>历史 teaching session · 只读。展开不会改变当前 Composer、mode 或下一步。</p>
-        {items.length > 0 ? <TimelineSequence items={items} branches={branches} conversationId={conversationId} newArtifactIds={newArtifactIds} recentCompletion={recentCompletion} writeEnabled={false} mutationBusy={mutationBusy} onRetry={onRetry} loadArtifactDetail={loadArtifactDetail} /> : <span>当前 bounded snapshot 中没有该分段的消息；可使用“加载更早记录”继续读取。</span>}
+        {items.length > 0 ? <TimelineSequence items={items} branches={branches} conversationId={conversationId} newArtifactIds={newArtifactIds} recentCompletion={recentCompletion} writeEnabled={false} mutationBusy={mutationBusy} onRetry={onRetry} loadArtifactDetail={loadArtifactDetail} loadArtifactAttempt={loadArtifactAttempt} onReturnToArtifactSource={onReturnToArtifactSource} /> : <span>当前 bounded snapshot 中没有该分段的消息；可使用“加载更早记录”继续读取。</span>}
         {items.map((item) => item.kind === "message" && item.turn_id && onReference ? <button
           key={`reference:${session.session_id}:${item.id}`}
           className="tutor-text-button teaching-session-reference-button"
@@ -161,7 +163,7 @@ export function TeachingSessionTimeline({ groups, legacyItems, branches, convers
         >引用此消息</button> : null)}
       </div>
     </details>)}
-    {legacyItems.length > 0 ? <details className="teaching-session-group legacy"><summary><span><strong>教学分段启用前的对话</strong><small>Track conversation history · 只读</small></span></summary><div className="teaching-session-readonly"><TimelineSequence items={legacyItems} branches={branches} conversationId={conversationId} newArtifactIds={newArtifactIds} recentCompletion={recentCompletion} writeEnabled={false} mutationBusy={mutationBusy} onRetry={onRetry} onArtifactAction={onArtifactAction} loadArtifactDetail={loadArtifactDetail} /></div></details> : null}
+    {legacyItems.length > 0 ? <details className="teaching-session-group legacy"><summary><span><strong>教学分段启用前的对话</strong><small>Track conversation history · 只读</small></span></summary><div className="teaching-session-readonly"><TimelineSequence items={legacyItems} branches={branches} conversationId={conversationId} newArtifactIds={newArtifactIds} recentCompletion={recentCompletion} writeEnabled={false} mutationBusy={mutationBusy} onRetry={onRetry} onArtifactAction={onArtifactAction} loadArtifactDetail={loadArtifactDetail} loadArtifactAttempt={loadArtifactAttempt} onReturnToArtifactSource={onReturnToArtifactSource} /></div></details> : null}
   </section>;
 }
 
@@ -184,7 +186,7 @@ export function formatTeachingSessionTime(value: string | null): string {
   return Number.isNaN(parsed.valueOf()) ? "" : new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(parsed);
 }
 
-export function TimelineSequence({ items, branches, conversationId, newArtifactIds, recentCompletion, writeEnabled, mutationBusy, onRetry, onArtifactAction, loadArtifactDetail }: {
+export function TimelineSequence({ items, branches, conversationId, newArtifactIds, recentCompletion, writeEnabled, mutationBusy, onRetry, onArtifactAction, loadArtifactDetail, loadArtifactAttempt, onReturnToArtifactSource }: {
   items: TutorHistoryItem[];
   branches: TutorPublicBranchGroup[];
   conversationId: string;
@@ -195,6 +197,8 @@ export function TimelineSequence({ items, branches, conversationId, newArtifactI
   onRetry: (turnId: string) => void;
   onArtifactAction?: (request: TutorArtifactActionRequest) => void;
   loadArtifactDetail?: (artifact: TutorPublicArtifactItem) => Promise<TutorPublicArtifactItem>;
+  loadArtifactAttempt?: TutorArtifactAttemptLoader;
+  onReturnToArtifactSource?: TutorArtifactReturnToSource;
 }) {
   const nodes = groupTimelineAroundArtifacts(items, branches);
   return <>{nodes.map((node) => node.kind === "branch"
@@ -219,10 +223,12 @@ export function TimelineSequence({ items, branches, conversationId, newArtifactI
         artifactTerminalCollapseMarker={node.terminalCollapseMarker}
         onArtifactAction={writeEnabled ? onArtifactAction : undefined}
         loadArtifactDetail={loadArtifactDetail}
+        loadArtifactAttempt={loadArtifactAttempt}
+        onReturnToArtifactSource={onReturnToArtifactSource}
       />)}</>;
 }
 
-export function TimelineItem({ item, recentCompletion, writeEnabled, mutationBusy, onRetry, artifactAutoReveal = false, artifactTerminalCollapseMarker = null, onArtifactAction, loadArtifactDetail }: {
+export function TimelineItem({ item, recentCompletion, writeEnabled, mutationBusy, onRetry, artifactAutoReveal = false, artifactTerminalCollapseMarker = null, onArtifactAction, loadArtifactDetail, loadArtifactAttempt, onReturnToArtifactSource }: {
   item: TutorHistoryItem;
   recentCompletion: TutorRecentCompletion | null;
   writeEnabled: boolean;
@@ -232,9 +238,11 @@ export function TimelineItem({ item, recentCompletion, writeEnabled, mutationBus
   artifactTerminalCollapseMarker?: string | null;
   onArtifactAction?: (request: TutorArtifactActionRequest) => void;
   loadArtifactDetail?: (artifact: TutorPublicArtifactItem) => Promise<TutorPublicArtifactItem>;
+  loadArtifactAttempt?: TutorArtifactAttemptLoader;
+  onReturnToArtifactSource?: TutorArtifactReturnToSource;
 }) {
   if (item.kind === "process") return null;
-  if (item.kind === "artifact") return <InlineArtifactMessage artifact={item} autoReveal={artifactAutoReveal} terminalCollapseMarker={artifactTerminalCollapseMarker} onAction={onArtifactAction} loadDetail={loadArtifactDetail} />;
+  if (item.kind === "artifact") return <InlineArtifactMessage artifact={item} autoReveal={artifactAutoReveal} terminalCollapseMarker={artifactTerminalCollapseMarker} onAction={onArtifactAction} loadDetail={loadArtifactDetail} loadAttempt={loadArtifactAttempt} onReturnToSource={onReturnToArtifactSource} />;
   if (item.kind === "message") {
     if (item.role === "tutor") {
       return <TutorMessage item={item} recentCompletion={recentCompletion?.itemId === item.id ? recentCompletion : null} />;

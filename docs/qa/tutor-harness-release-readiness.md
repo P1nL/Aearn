@@ -374,3 +374,18 @@ Trellis Child `08-22-harness-closed-teaching-action-loop` 已在本地 PostgreSQ
 - 生成 disposable PostgreSQL database，空库执行 bootstrap 两次后为 **134 public tables**、`tutor_teaching_sessions=0`，随后强制关闭连接并删除该临时 database。
 - Browser 使用 disposable stateful fake API/provider验证 Guided ↔ Free Reading、草稿跨 mode保留、reload/reconnect、Action Shelf与 1440×900 / 900×900 / 390×844；三个视口 `scrollWidth == clientWidth`、overlay=false、console error/warning=0、protected marker=[]。fake SSE主动关闭用于触发可恢复 `STREAM_INCOMPLETE`，未当作生产流稳定性证明。
 - 未调用真实 provider、真实 executor或生产数据；未 push、部署或发布。以上仅为本地工程就绪证据，不构成 provider、部署、production migration或 release批准。
+
+## 2026-09-01：Execution result Artifact Child 05 本地证据
+
+本增量完成 strict `safe-execution-result-v2`、v1 history adapter、bounded public table/location/output、terminal Attempt 到唯一 result Artifact/source update 的幂等 projection、terminal-only result-evaluation continuation、bounded safe context，以及 exact result Turn 的 `MODEL_UNAVAILABLE` deterministic fallback。Desktop 完成 Attempt v1/v2 exact parser、failure-first result renderer、hidden identity/diagnostic omission、nonempty output disclosure、内部 table scroll、summary 单次展示和返回 source focus。
+
+验证证据：
+
+- shared execution contract：**34 passed**；executor full suite：**13 passed**，Ruff/Mypy 通过；
+- focused serial PostgreSQL/API matrix：**60 passed**；full API suite（显式排除 real-provider marker）：**827 passed, 2 deselected in 554.51s**；
+- changed-file API Ruff、13-file slice Mypy、compileall、`git diff --check`：通过；
+- Desktop full Vitest：**13 files / 110 tests passed**；`desktop:check`：Vite **109 modules transformed**；
+- persisted Artifact conversation event v3 后再次 bootstrap：通过；
+- disposable browser fixture 在 **1440×900 / 900×900 / 390×844 / 390×844 reduced-motion** 下 document/body/workspace 均 `scrollWidth == clientWidth`。窄屏 table 只在内部滚动（`318 / 532`），每个视口均为 one Tutor/Composer/source/result；failure/output/table/return focus 可交互，source Artifact scroll 恰好一次，reduced motion 使用 `auto`；无 hidden ID、diagnostic、Submit、protected marker、script、overlay、alert 或 console warning/error。
+
+本轮没有真实 provider smoke、真实 executor/container 运行、Docker conformance、生产 image build/sign/publish、Tauri installer、push、deploy 或生产迁移。以上只证明本地 repository contract 与 learner-safe UI readiness，不构成发布批准。

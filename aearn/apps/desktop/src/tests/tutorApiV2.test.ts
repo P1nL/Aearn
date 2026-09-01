@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   actOnTutorArtifact,
   fetchTutorArtifact,
+  fetchTutorArtifactAttempt,
   fetchTutorConversationSnapshot,
   fetchTutorThreadTurnV2Capability,
   mutateTeachingSession,
@@ -172,6 +173,73 @@ function artifactPresentations(): Array<{ artifactKind: string; purpose: string;
     },
   ];
 }
+
+function artifactAttemptFixture(
+  schemaVersion: "tutor_learning_artifact_attempt_v1" | "tutor_learning_artifact_attempt_v2",
+): Record<string, unknown> {
+  const base = {
+    schema_version: schemaVersion,
+    artifact_id: "artifact-result",
+    artifact_version: 2,
+    conversation_id: "conversation-1",
+    learning_track_id: "track-1",
+    knowledge_key: "javascript.variables",
+    teaching_session_id: "teaching-session-1",
+    attempt_id: "attempt-1",
+    attempt_type: "run",
+    exercise_version_id: "exercise-1",
+    submission_hash: digest("learner-submission"),
+    independence: "independent",
+    assistance_kind: "independent",
+    status: "terminal",
+    execution_job_state: "completed",
+    accepted_at: "2026-09-01T00:00:00Z",
+  };
+  const commonResult = {
+    outcome: "failed",
+    score: 0.5,
+    capability_scores: { correctness: 0.5 },
+    policy_version: "artifact.result.v2",
+    result_hash: digest("attempt-result"),
+    terminal_at: "2026-09-01T00:00:01Z",
+  };
+  if (schemaVersion === "tutor_learning_artifact_attempt_v1") {
+    return { ...base, result: { ...commonResult, safe_feedback: { summary: "Historical learner-safe result." } } };
+  }
+  return {
+    ...base,
+    result: {
+      ...commonResult,
+      execution_result: {
+        schema_version: "safe-execution-result-v2",
+        status: "success",
+        stdout: "query complete",
+        stderr: "",
+        test_feedback: [
+          { case_id: "visible.case", passed: false, visible: true, message: "Returned value did not match.", duration_ms: 7,
+            location: { line: 2, column: 3, end_line: 2, end_column: 8 } },
+          { case_id: "non-visible-1", passed: true, visible: false, message: "A non-visible scenario passed.", duration_ms: 4, location: null },
+        ],
+        passed_test_count: 1,
+        total_test_count: 2,
+        duration_ms: 11,
+        diagnostic_code: "visible_test_failure",
+        presentation: { kind: "table_result_v1", columns: ["id", "label"], rows: [[1, "alpha"], [2, null]] },
+      },
+    },
+  };
+}
+
+const artifactAttemptRequest = {
+  userId: "user-1",
+  conversationId: "conversation-1",
+  artifactId: "artifact-result",
+  artifactVersion: 2,
+  learningTrackId: "track-1",
+  knowledgeKey: "javascript.variables",
+  teachingSessionId: "teaching-session-1",
+  attemptId: "attempt-1",
+} as const;
 
 function snapshotFixture(
   version: "tutor_conversation_snapshot_v2" | "tutor_conversation_snapshot_v3" | "tutor_conversation_snapshot_v4" | "tutor_conversation_snapshot_v5",
@@ -355,6 +423,34 @@ describe("Tutor v2 API boundary", () => {
       presentation: item.presentation,
     }));
     artifacts[0] = { ...artifacts[0], blocking: true, allowed_actions: ["run"] };
+    artifacts[2] = {
+      ...artifacts[2],
+      state: "completed",
+      terminal_at: "2026-09-01T00:00:01Z",
+      active_attempt: {
+        attempt_id: "attempt-1",
+        attempt_type: "run",
+        status: "terminal",
+        outcome: "passed",
+        score: 1,
+        result_hash: digest("result-1"),
+        accepted_at: "2026-09-01T00:00:00Z",
+        terminal_at: "2026-09-01T00:00:01Z",
+      },
+      source_references: [{
+        kind: "artifact",
+        reference_id: "artifact-1",
+        reference_version: 1,
+        content_hash: null,
+        label: "Source Artifact",
+      }, {
+        kind: "attempt_result",
+        reference_id: "attempt-1",
+        reference_version: null,
+        content_hash: digest("result-1"),
+        label: "Authoritative Attempt result",
+      }],
+    };
     const payload = snapshotFixture("tutor_conversation_snapshot_v4", {
       timeline: artifacts,
       activeArtifact: structuredClone(artifacts[0]),
@@ -443,12 +539,23 @@ describe("Tutor v2 API boundary", () => {
       updated_at: "2026-09-01T00:02:00Z",
       terminal_at: "2026-09-01T00:02:00Z",
     };
+    const terminalRunProjection = {
+      ...cancelled,
+      version: 3,
+      updated_at: "2026-09-01T00:02:01Z",
+    };
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(jsonResponse(active))
       .mockResolvedValueOnce(jsonResponse({
         artifact: cancelled,
         artifact_event_id: "artifact-event-2",
         artifact_event_sequence: 2,
+        idempotent_replayed: false,
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        artifact: terminalRunProjection,
+        artifact_event_id: "artifact-event-3",
+        artifact_event_sequence: 3,
         idempotent_replayed: false,
       }))
       .mockResolvedValueOnce(jsonResponse({
@@ -487,6 +594,16 @@ describe("Tutor v2 API boundary", () => {
       learningTrackId: "track-1",
       teachingSessionId: "teaching-session-1",
       expectedArtifactVersion: 1,
+      action: { action: "run", submission: "print(1)" },
+      clientActionId: "artifact-action:terminal-run",
+    })).resolves.toMatchObject({ artifact: { version: 3 }, artifact_event_sequence: 3 });
+    await expect(actOnTutorArtifact({
+      userId: "user-1",
+      conversationId: "conversation-1",
+      artifactId: "artifact-action",
+      learningTrackId: "track-1",
+      teachingSessionId: "teaching-session-1",
+      expectedArtifactVersion: 1,
       action: { action: "cancel", reason: "learner_cancelled" },
       clientActionId: "artifact-action:bad-response",
     })).rejects.toThrow("Tutor Artifact action API returned an invalid payload");
@@ -511,6 +628,95 @@ describe("Tutor v2 API boundary", () => {
       expected_artifact_version: 1,
       action: { action: "cancel", reason: "learner_cancelled" },
     });
+  });
+
+  it("reads historical Attempt v1 and strict scoped Attempt v2 results", async () => {
+    const v1 = artifactAttemptFixture("tutor_learning_artifact_attempt_v1");
+    const v2 = artifactAttemptFixture("tutor_learning_artifact_attempt_v2");
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(v1))
+      .mockResolvedValueOnce(jsonResponse(v2));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchTutorArtifactAttempt(artifactAttemptRequest)).resolves.toMatchObject({
+      schema_version: "tutor_learning_artifact_attempt_v1",
+      result: { safe_feedback: { summary: "Historical learner-safe result." } },
+    });
+    await expect(fetchTutorArtifactAttempt(artifactAttemptRequest)).resolves.toMatchObject({
+      schema_version: "tutor_learning_artifact_attempt_v2",
+      result: {
+        execution_result: {
+          schema_version: "safe-execution-result-v2",
+          presentation: { kind: "table_result_v1", columns: ["id", "label"], rows: [[1, "alpha"], [2, null]] },
+        },
+      },
+    });
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
+      "http://127.0.0.1:8001/api/tutor/conversations/conversation-1/artifacts/artifact-result/attempts/attempt-1?user_id=user-1",
+    );
+  });
+
+  it("round-trips backend character bounds for astral execution text", async () => {
+    const payload = artifactAttemptFixture("tutor_learning_artifact_attempt_v2");
+    const result = (payload.result as Record<string, unknown>).execution_result as Record<string, unknown>;
+    result.stdout = "😀".repeat(4_000);
+    result.presentation = {
+      kind: "table_result_v1",
+      columns: ["😀".repeat(120)],
+      rows: [["😀".repeat(500)]],
+    };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(payload)));
+
+    const detail = await fetchTutorArtifactAttempt(artifactAttemptRequest);
+
+    expect(detail.schema_version).toBe("tutor_learning_artifact_attempt_v2");
+    if (detail.schema_version !== "tutor_learning_artifact_attempt_v2") return;
+    expect(Array.from(detail.result?.execution_result?.stdout ?? "")).toHaveLength(4_000);
+    const presentation = detail.result?.execution_result?.presentation;
+    expect(presentation?.kind).toBe("table_result_v1");
+  });
+
+  it("rejects extra, mixed, protected, bad-count, bad-location, hidden-id, table-bound, and scope-invalid Attempt v2 payloads", async () => {
+    const exact = artifactAttemptFixture("tutor_learning_artifact_attempt_v2");
+    const extra = { ...structuredClone(exact), provider_metadata: "private" };
+    const mixed = structuredClone(exact);
+    (mixed.result as Record<string, unknown>).safe_feedback = {};
+    const protectedOutput = structuredClone(exact);
+    (((protectedOutput.result as Record<string, unknown>).execution_result as Record<string, unknown>)).stdout = "/workspace/secret.py";
+    const badCount = structuredClone(exact);
+    (((badCount.result as Record<string, unknown>).execution_result as Record<string, unknown>)).passed_test_count = 3;
+    const badLocation = structuredClone(exact);
+    (((((badLocation.result as Record<string, unknown>).execution_result as Record<string, unknown>).test_feedback as Array<Record<string, unknown>>)[0].location as Record<string, unknown>)).end_line = null;
+    const hiddenId = structuredClone(exact);
+    (((((hiddenId.result as Record<string, unknown>).execution_result as Record<string, unknown>).test_feedback as Array<Record<string, unknown>>)[1])).case_id = "hidden-real-case";
+    const badTable = structuredClone(exact);
+    (((badTable.result as Record<string, unknown>).execution_result as Record<string, unknown>)).presentation = {
+      kind: "table_result_v1",
+      columns: ["id", "label"],
+      rows: [[1]],
+    };
+    const tooManyRows = structuredClone(exact);
+    (((tooManyRows.result as Record<string, unknown>).execution_result as Record<string, unknown>)).presentation = {
+      kind: "table_result_v1",
+      columns: ["id"],
+      rows: Array.from({ length: 201 }, (_, index) => [index]),
+    };
+    const unsafeNumber = structuredClone(exact);
+    (((unsafeNumber.result as Record<string, unknown>).execution_result as Record<string, unknown>)).presentation = {
+      kind: "table_result_v1",
+      columns: ["id"],
+      rows: [[Number.MAX_SAFE_INTEGER + 1]],
+    };
+    const wrongScope = { ...structuredClone(exact), learning_track_id: "track-other" };
+    const variants = [extra, mixed, protectedOutput, badCount, badLocation, hiddenId, badTable, tooManyRows, unsafeNumber, wrongScope];
+    const fetchMock = vi.fn();
+    variants.forEach((variant) => fetchMock.mockResolvedValueOnce(jsonResponse(variant)));
+    vi.stubGlobal("fetch", fetchMock);
+
+    for (const _variant of variants) {
+      await expect(fetchTutorArtifactAttempt(artifactAttemptRequest))
+        .rejects.toThrow("Tutor Artifact Attempt API returned an invalid payload");
+    }
   });
 
   it("rejects unknown, extra, protected, and kind-mismatched Artifact fields", async () => {

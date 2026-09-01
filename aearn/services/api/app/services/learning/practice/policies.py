@@ -5,7 +5,12 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Mapping, Sequence
 
-from aearn_shared.execution import SafeExecutionResultV1, SafeExecutionStatus
+from aearn_shared.execution import (
+    SafeExecutionResultV1,
+    SafeExecutionResultV2,
+    SafeExecutionStatus,
+    parse_safe_execution_result,
+)
 
 from app.services.learning.contracts import MasteryIndependence
 from app.services.learning.practice.contracts import (
@@ -32,11 +37,12 @@ class DiagnosticDecision:
 
 
 def score_execution_result(
-    result: SafeExecutionResultV1,
+    result: SafeExecutionResultV1 | SafeExecutionResultV2,
     *,
     required_capabilities: Sequence[str],
     threshold: float = DEFAULT_GATE_THRESHOLD,
 ) -> ExerciseAttemptResult:
+    result = parse_safe_execution_result(result)
     total = result.total_test_count
     score = result.passed_test_count / total if total > 0 else float(result.status is SafeExecutionStatus.SUCCESS)
     passed = result.status is SafeExecutionStatus.SUCCESS and score >= threshold
@@ -45,15 +51,7 @@ def score_execution_result(
         SafeExecutionStatus.CANCELLED: ExerciseAttemptOutcome.CANCELLED,
         SafeExecutionStatus.UNAVAILABLE: ExerciseAttemptOutcome.UNAVAILABLE,
     }.get(result.status, ExerciseAttemptOutcome.PASSED if passed else ExerciseAttemptOutcome.FAILED)
-    safe_feedback = {
-        "status": result.status.value,
-        "stdout": result.stdout,
-        "stderr": result.stderr,
-        "passed_test_count": result.passed_test_count,
-        "total_test_count": result.total_test_count,
-        "diagnostic_code": result.diagnostic_code,
-        "tests": [item.model_dump(mode="json") for item in result.test_feedback],
-    }
+    safe_feedback = result.model_dump(mode="json")
     return ExerciseAttemptResult(
         outcome=outcome,
         score=round(score, 4),

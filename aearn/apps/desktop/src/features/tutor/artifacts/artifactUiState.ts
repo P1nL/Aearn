@@ -1,4 +1,5 @@
-import type { TutorPublicArtifactItem, TutorPublicBranchGroup } from "../../../types";
+import type { TutorArtifactAttemptDetail, TutorPublicArtifactItem, TutorPublicBranchGroup } from "../../../types";
+import type { TutorArtifactAttemptLoader } from "./artifactRendererTypes";
 
 export type ArtifactRendererUiState = {
   expanded: boolean;
@@ -17,6 +18,7 @@ type BranchUiState = {
 const artifactUiStateCache = new Map<string, ArtifactRendererUiState>();
 const latestArtifactKeyByIdentity = new Map<string, string>();
 const artifactDetailCache = new Map<string, Promise<TutorPublicArtifactItem>>();
+const artifactAttemptCache = new Map<string, Promise<TutorArtifactAttemptDetail>>();
 const branchUiStateCache = new Map<string, BranchUiState>();
 
 export function artifactUiStateKey(artifact: TutorPublicArtifactItem): string {
@@ -80,6 +82,27 @@ export function loadArtifactDetailCached(
   return pending;
 }
 
+export function loadArtifactAttemptCached(
+  artifact: TutorPublicArtifactItem,
+  attemptId: string,
+  loader: TutorArtifactAttemptLoader,
+): Promise<TutorArtifactAttemptDetail> {
+  const key = `${artifactUiStateKey(artifact)}:attempt:${attemptId}`;
+  const existing = artifactAttemptCache.get(key);
+  if (existing) return existing;
+  const pending = loader({ artifact, attemptId }).then((detail) => {
+    if (!sameAttemptScope(artifact, attemptId, detail)) {
+      throw new Error("Tutor Artifact Attempt detail identity changed during lazy load");
+    }
+    return detail;
+  }).catch((error: unknown) => {
+    if (artifactAttemptCache.get(key) === pending) artifactAttemptCache.delete(key);
+    throw error;
+  });
+  artifactAttemptCache.set(key, pending);
+  return pending;
+}
+
 export function readBranchExpanded(conversationId: string, branch: TutorPublicBranchGroup): boolean {
   if (branch.state === "active") {
     branchUiStateCache.set(branchStateKey(conversationId, branch.branch_id), { expanded: true, serverState: "active" });
@@ -110,6 +133,7 @@ export function resetArtifactUiStateCachesForTests(): void {
   artifactUiStateCache.clear();
   latestArtifactKeyByIdentity.clear();
   artifactDetailCache.clear();
+  artifactAttemptCache.clear();
   branchUiStateCache.clear();
 }
 
@@ -123,4 +147,18 @@ function branchStateKey(conversationId: string, branchId: string): string {
 
 function sameArtifactProjection(left: TutorPublicArtifactItem, right: TutorPublicArtifactItem): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function sameAttemptScope(
+  artifact: TutorPublicArtifactItem,
+  attemptId: string,
+  detail: TutorArtifactAttemptDetail,
+): boolean {
+  return detail.artifact_id === artifact.id &&
+    detail.artifact_version === artifact.version &&
+    detail.conversation_id === artifact.conversation_id &&
+    detail.learning_track_id === artifact.learning_track_id &&
+    detail.knowledge_key === artifact.knowledge_key &&
+    detail.teaching_session_id === artifact.teaching_session_id &&
+    detail.attempt_id === attemptId;
 }

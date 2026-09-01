@@ -4,15 +4,25 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from aearn_shared.execution import (
+    ExecutionAction,
     ExecutionHealthV1,
     ExecutionJobClaimV1,
     ExecutionJobState,
     ExecutionJobV1,
     RuntimeImageLockV1,
+    SafeExecutionResultV2,
+    SandboxInputV1,
+    SandboxResultV1,
+    SandboxTestFeedbackV1,
     load_runtime_catalog_registry,
 )
 
-from aearn_executor.runtime import ClaimedExecutionJob, ContainerLookup
+from aearn_executor.runtime import (
+    ClaimedExecutionJob,
+    ContainerHandle,
+    ContainerLookup,
+    LaunchReservation,
+)
 from aearn_executor.service import ExecutorService
 from aearn_executor.settings import ExecutorSettings
 
@@ -204,3 +214,130 @@ def test_reserved_launch_without_a_matching_container_becomes_uncertain_without_
     assert service.run_once() is True
     assert store.uncertain == 1
     assert client.create_calls == 0
+
+
+class _ExecutingStore:
+    def __init__(self, claimed: ClaimedExecutionJob) -> None:
+        self._claimed: ClaimedExecutionJob | None = claimed
+        self.health: list[ExecutionHealthV1] = []
+        self.completed: SafeExecutionResultV2 | None = None
+        self.cleanup_succeeded = False
+
+    def record_health(self, health: ExecutionHealthV1) -> None:
+        self.health.append(health)
+
+    def claim_reserved_for_recovery(self, **_kwargs):
+        return None
+
+    def claim_next(self, **_kwargs):
+        claimed = self._claimed
+        self._claimed = None
+        return claimed
+
+    def reserve_launch(self, *, claimed: ClaimedExecutionJob, **_kwargs):
+        return LaunchReservation(
+            job=claimed.job.model_copy(
+                update={
+                    "state": ExecutionJobState.LAUNCH_RESERVED,
+                    "launch_token": "launch-token-v2",
+                    "launch_generation": claimed.claim.lease_generation,
+                }
+            ),
+            claim=claimed.claim,
+        )
+
+    def mark_running(self, *, reservation: LaunchReservation, **_kwargs):
+        return reservation.job.model_copy(update={"state": ExecutionJobState.RUNNING})
+
+    def complete(self, *, result: SafeExecutionResultV2, **_kwargs) -> None:
+        self.completed = result
+
+    def cancellation_requested(self, **_kwargs) -> bool:
+        return False
+
+    def record_cleanup(self, *, succeeded: bool, **_kwargs) -> None:
+        self.cleanup_succeeded = succeeded
+
+    def quarantine(self, **_kwargs) -> None:
+        raise AssertionError("successful cleanup must not quarantine executor health")
+
+
+class _ExecutingInputResolver:
+    def __init__(self, runtime_id: str) -> None:
+        self._runtime_id = runtime_id
+
+    def load(self, **_kwargs) -> SandboxInputV1:
+        return SandboxInputV1(
+            runtime_id=self._runtime_id,
+            action=ExecutionAction.RUN,
+            submission="print(1)",
+            source_reference_hash="d" * 64,
+            test_reference_hash="e" * 64,
+        )
+
+
+class _ExecutingClient(_Client):
+    def find_matching(self, spec):
+        return ContainerLookup(handle=None)
+
+    def create_and_start(self, **_kwargs):
+        self.create_calls += 1
+        return ContainerHandle(container=object(), name="executor-v2-test")
+
+    def wait_for_result(self, **_kwargs) -> SandboxResultV1:
+        return SandboxResultV1(
+            status="success",
+            test_feedback=(
+                SandboxTestFeedbackV1(
+                    case_id="private-hidden-id",
+                    passed=True,
+                    visibility="hidden",
+                    message="expected private value",
+                ),
+            ),
+            passed_test_count=1,
+            total_test_count=1,
+            diagnostic_code="completed",
+        )
+
+    def cleanup(self, _handle: ContainerHandle) -> None:
+        return None
+
+
+def test_completed_executor_job_writes_strict_v2_with_hidden_redaction() -> None:
+    registry, lock = _registry_with_lock()
+    job = ExecutionJobV1(
+        job_id="job-v2",
+        effect_id="effect-v2",
+        intent_proof_id="proof-v2",
+        user_id="user-v2",
+        conversation_id="conversation-v2",
+        run_id="run-v2",
+        runtime_id=lock.runtime_id,
+        lock_fingerprint=lock.fingerprint,
+        state=ExecutionJobState.CLAIMED,
+    )
+    claim = ExecutionJobClaimV1(
+        job_id=job.job_id,
+        executor_id="test-executor",
+        lease_generation=1,
+        lease_expires_at=NOW,
+    )
+    store = _ExecutingStore(ClaimedExecutionJob(job=job, claim=claim))
+    client = _ExecutingClient()
+    service = ExecutorService(
+        store=store,
+        input_resolver=_ExecutingInputResolver(lock.runtime_id),
+        runtime_client=client,
+        registry=registry,
+        settings=_settings(enabled=True),
+        clock=lambda: NOW,
+    )
+
+    assert service.run_once() is True
+    assert store.completed is not None
+    assert store.completed.schema_version == "safe-execution-result-v2"
+    assert store.completed.presentation.kind == "none"
+    assert store.completed.test_feedback[0].case_id == "non-visible-1"
+    assert store.completed.test_feedback[0].message == "A non-visible scenario passed."
+    assert store.cleanup_succeeded is True

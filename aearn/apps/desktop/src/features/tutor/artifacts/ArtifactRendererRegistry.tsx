@@ -2,13 +2,17 @@ import type { ReactElement, ReactNode } from "react";
 
 import type { TutorPublicArtifactItem } from "../../../types";
 
+import { ExecutionResultArtifact } from "./ExecutionResultArtifact";
 import { SafeMarkdown } from "./SafeMarkdown";
+import type { TutorArtifactAttemptLoader, TutorArtifactReturnToSource } from "./artifactRendererTypes";
 import type { ArtifactRendererUiState } from "./artifactUiState";
 
 export type ArtifactRendererProps = {
   artifact: TutorPublicArtifactItem;
   uiState: ArtifactRendererUiState;
   onUiStateChange: (update: Partial<ArtifactRendererUiState>) => void;
+  loadAttempt?: TutorArtifactAttemptLoader;
+  onReturnToSource?: TutorArtifactReturnToSource;
 };
 
 export type ArtifactRenderer = (props: ArtifactRendererProps) => ReactElement;
@@ -17,7 +21,7 @@ export type ArtifactPresentationType = TutorPublicArtifactItem["presentation"]["
 const ARTIFACT_RENDERER_REGISTRY = {
   exercise_workspace_v1: ExerciseWorkspacePlaceholder,
   browser_preview_v1: BrowserPreviewPlaceholder,
-  test_result_v1: TestResultPlaceholder,
+  test_result_v1: TestResultRenderer,
   knowledge_check_v1: KnowledgeCheckPlaceholder,
   model_code_review_v1: ModelCodeReviewPlaceholder,
   sql_workspace_v1: SqlWorkspacePlaceholder,
@@ -43,10 +47,9 @@ function BrowserPreviewPlaceholder({ artifact }: ArtifactRendererProps) {
   return <ArtifactPlaceholder label="浏览器预览"><span>隔离预览</span></ArtifactPlaceholder>;
 }
 
-function TestResultPlaceholder({ artifact }: ArtifactRendererProps) {
-  const presentation = artifact.presentation;
-  if (presentation.type !== "test_result_v1") return <ArtifactContractError />;
-  return <ArtifactPlaceholder label="测试结果"><span>{presentation.status === "terminal" ? "终态结果" : "结果生成中"}</span></ArtifactPlaceholder>;
+function TestResultRenderer({ artifact, loadAttempt, onReturnToSource }: ArtifactRendererProps) {
+  if (artifact.presentation.type !== "test_result_v1") return <ArtifactContractError />;
+  return <ExecutionResultArtifact artifact={artifact} loadAttempt={loadAttempt} onReturnToSource={onReturnToSource} />;
 }
 
 function KnowledgeCheckPlaceholder({ artifact }: ArtifactRendererProps) {

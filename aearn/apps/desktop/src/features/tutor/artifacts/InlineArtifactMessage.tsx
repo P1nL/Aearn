@@ -4,6 +4,7 @@ import type { TutorPublicArtifactItem } from "../../../types";
 import { Button } from "../../../ui/dsh-derived";
 import { artifactRendererFor } from "./ArtifactRendererRegistry";
 import { SafeMarkdown } from "./SafeMarkdown";
+import type { TutorArtifactAttemptLoader, TutorArtifactReturnToSource } from "./artifactRendererTypes";
 import {
   artifactUiStateKey,
   isTerminalArtifact,
@@ -25,6 +26,8 @@ export type InlineArtifactMessageProps = {
   terminalCollapseMarker?: string | null;
   onAction?: (request: TutorArtifactActionRequest) => void;
   loadDetail?: (artifact: TutorPublicArtifactItem) => Promise<TutorPublicArtifactItem>;
+  loadAttempt?: TutorArtifactAttemptLoader;
+  onReturnToSource?: TutorArtifactReturnToSource;
 };
 
 const ACTION_LABELS: Record<TutorArtifactAction, string> = {
@@ -47,7 +50,15 @@ const STATE_LABELS: Record<TutorPublicArtifactItem["state"], string> = {
   superseded: "已替换",
 };
 
-export function InlineArtifactMessage({ artifact, autoReveal = false, terminalCollapseMarker = null, onAction, loadDetail }: InlineArtifactMessageProps) {
+export function InlineArtifactMessage({
+  artifact,
+  autoReveal = false,
+  terminalCollapseMarker = null,
+  onAction,
+  loadDetail,
+  loadAttempt,
+  onReturnToSource,
+}: InlineArtifactMessageProps) {
   const terminal = isTerminalArtifact(artifact);
   const hasSeenNonTerminalRef = useRef(!terminal);
   if (!terminal) hasSeenNonTerminalRef.current = true;
@@ -69,6 +80,8 @@ export function InlineArtifactMessage({ artifact, autoReveal = false, terminalCo
   const detailStatus = lazyDetailRequired ? detailState.status : "ready";
   const renderedArtifact = lazyDetailRequired && detailState.status === "ready" ? detailState.artifact : artifact;
   const renderer = artifactRendererFor(renderedArtifact.presentation.type);
+  const rendererOwnsResultSummary = renderedArtifact.presentation.type === "test_result_v1"
+    && renderedArtifact.presentation.status === "terminal";
 
   useEffect(() => {
     let next = readArtifactUiState(artifact, autoReveal || !terminal);
@@ -149,13 +162,21 @@ export function InlineArtifactMessage({ artifact, autoReveal = false, terminalCo
       aria-busy={detailStatus === "loading" || undefined}
       onScroll={(event) => updateUiState({ scrollTop: event.currentTarget.scrollTop })}
     >
-      <SafeMarkdown markdown={artifact.instruction_markdown} surface="artifact" className="inline-artifact-instruction" />
+      {!rendererOwnsResultSummary
+        ? <SafeMarkdown markdown={artifact.instruction_markdown} surface="artifact" className="inline-artifact-instruction" />
+        : null}
       {detailStatus === "loading"
         ? <div className="inline-artifact-detail-status" role="status">正在加载工件内容…</div>
         : detailStatus === "error"
           ? <div className="inline-artifact-contract-error" role="alert"><strong>ARTIFACT_DETAIL_CONTRACT_ERROR</strong><span>工件内容暂不可用</span></div>
           : renderer
-            ? renderer({ artifact: renderedArtifact, uiState, onUiStateChange: updateUiState })
+            ? renderer({
+                artifact: renderedArtifact,
+                uiState,
+                onUiStateChange: updateUiState,
+                loadAttempt,
+                onReturnToSource,
+              })
             : <div className="inline-artifact-contract-error" role="alert"><strong>ARTIFACT_PRESENTATION_CONTRACT_ERROR</strong><span>展示类型不可用</span></div>}
       {terminal ? <ArtifactTerminalSummary artifact={artifact} /> : null}
       {renderer && artifact.allowed_actions.length > 0 ? <div className="inline-artifact-actions" aria-label="工件操作">

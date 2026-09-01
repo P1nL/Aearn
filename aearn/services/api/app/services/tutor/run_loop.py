@@ -1,6 +1,7 @@
 """Finite, feature-disabled Tutor Harness run loop."""
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from typing import Final
 
@@ -13,6 +14,8 @@ from app.agents.harness.contracts import (
     TutorCheckpointReason,
     TutorCompactionTrigger,
     TutorContextError,
+    TutorContextSection,
+    TutorContextSelection,
     TutorDecision,
     TutorDecisionGateStatus,
     TutorEffectResult,
@@ -159,6 +162,7 @@ class TutorRunLoop:
                     builder=self._context_builder,
                     expansion_count=context_expansion_count,
                 )
+                result_evaluation_fallback = _result_evaluation_fallback(context)
                 metadata = context.checkpoint_metadata
                 if context.high_water_compaction_request is not None:
                     if self._lifecycle is None:
@@ -242,6 +246,12 @@ class TutorRunLoop:
                         diagnostic_code=provider_result.safe_code,
                         metadata=metadata,
                         effect_results=effect_results,
+                        public_message=(
+                            result_evaluation_fallback
+                            if provider_result.terminal_outcome
+                            is TutorTerminalOutcome.MODEL_UNAVAILABLE
+                            else None
+                        ),
                     )
 
                 decision = provider_result.decision
@@ -253,6 +263,7 @@ class TutorRunLoop:
                         diagnostic_code="MODEL_UNAVAILABLE",
                         metadata=metadata,
                         effect_results=effect_results,
+                        public_message=result_evaluation_fallback,
                     )
 
                 gate_result = self._decision_gate.validate(run=snapshot, decision=decision)
@@ -755,6 +766,57 @@ def _capability_failure_public_message(capability_id: str) -> str:
     if capability_id == "learning.plan.draft":
         return "计划草稿暂时没有生成成功，请重试。"
     return "这一步暂时没有完成，请重试。"
+
+
+def _result_evaluation_fallback(
+    context: TutorContextSelection,
+) -> str | None:
+    teaching_items = tuple(
+        item
+        for item in context.items
+        if item.section is TutorContextSection.TEACHING_SESSION
+    )
+    if len(teaching_items) != 1:
+        return None
+    try:
+        payload = json.loads(teaching_items[0].content)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    stimulus = payload.get("stimulus")
+    handles = payload.get("allowed_source_handles")
+    if not isinstance(stimulus, dict) or not isinstance(handles, list):
+        return None
+    if (
+        stimulus.get("kind") != "teaching_control"
+        or stimulus.get("control_key") != "continue"
+    ):
+        return None
+    safe_payload = stimulus.get("safe_payload")
+    if not isinstance(safe_payload, dict) or set(safe_payload) != {
+        "reason_code",
+        "source_handle",
+        "result_summary",
+    }:
+        return None
+    source_handle = safe_payload.get("source_handle")
+    summary = safe_payload.get("result_summary")
+    if (
+        safe_payload.get("reason_code") != "result_evaluation"
+        or not isinstance(source_handle, str)
+        or not source_handle.startswith("artifact:")
+        or source_handle not in handles
+        or not isinstance(summary, str)
+        or not summary.strip()
+        or len(summary) > 320
+    ):
+        return None
+    return (
+        "**运行评价**\n\n"
+        "Tutor 暂时无法生成个性化评价，以下为服务器保存的权威结果摘要：\n\n"
+        f"{summary.strip()}"
+    )
 
 
 def _lease_unavailable_result(

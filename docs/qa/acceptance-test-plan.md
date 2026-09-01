@@ -473,3 +473,14 @@ Browser fake 只验证当前 Desktop contract、mode swap、reload/reconnect 与
 | UX-12 | P1 | Browser / responsive / focus | 新 Artifact 只滚动一次且不抢焦点；status/version refresh 不滚动；terminal 只在下一主线 learner 后折叠；branch learner 不触发；active/resolved branch 展开规则；1440×900、900×900、390×844、reduced motion、keyboard、`scrollWidth <= clientWidth`、无 overlay、console warning/error zero、DOM 无 protected marker/可执行 raw HTML | disposable local browser fixture at `http://127.0.0.1:1420` |
 
 默认 fixture 只装配 learner-safe public DTO，不创建真实用户/计划/教学数据，不调用真实 provider、executor、Docker/container、生产迁移、push、deploy 或发布。`desktop:check` 是本 child 已批准的附加静态门，不能替代网页端 DOM/交互/console/overflow 证据。
+
+## 2026-09-01：Execution result Artifact 验收增量
+
+| ID | 优先级 | 区域 | 验收 | 证据 |
+| --- | --- | --- | --- | --- |
+| RT-67 | P0 | Safe result v2 | 新 executor write 为 strict v2；v1 history explicit adapter；hidden ordinal/message/location redaction；stdout/stderr/path/command/secret gate；table 32×200、column/cell/UTF-8 bounds、public scalar、finite number、strict round trip | shared execution tests、executor tests、API parser/scoring tests |
+| RT-68 | P0 | Terminal projection/evaluation | pending 不投影/不调度；terminal source/result 原子、pass complete/failure active、每 Attempt 唯一 result、multiple Run history、replay/partial fail closed；action response version/event identity；exact context handle/320-char summary；MODEL_UNAVAILABLE fixed fallback且普通 Turn 不变 | `test_execution_result_artifacts.py`、`test_tutor_learning_artifact_routes.py`、`test_tutor_run_loop.py`、continuation/context regressions |
+| FE-18 | P0 | Desktop result contract | Attempt v1/v2 exact parse；v1 不解析 safe_feedback；failure-first、hidden ID omitted、numeric location、passed aggregate；diagnostic omitted；nonempty output disclosure；bounded table；summary不重复；无第二 Submit | `tutorApiV2.test.ts`、`ExecutionResultArtifact.test.tsx`、`InlineArtifactMessage.test.tsx`、source guards |
+| UX-13 | P1 | Browser/result recovery | 1440×900、900×900、390×844 + reduced motion；terminal detail load、output/table interaction、返回 source scroll/focus、one Tutor/Composer、no page overflow/overlay/protected marker、console warning/error zero | disposable learner-safe browser fixture at `http://127.0.0.1:1420` |
+
+默认使用 fake/offline provider、disposable PostgreSQL 与 learner-safe browser fixture；不调用真实 provider 或 executor，不执行 Docker conformance、生产镜像构建/签名/发布、push、deploy 或生产迁移。

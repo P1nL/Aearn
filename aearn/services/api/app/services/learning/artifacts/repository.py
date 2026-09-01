@@ -14,13 +14,18 @@ from psycopg import Connection
 from psycopg.errors import CheckViolation, ForeignKeyViolation, UniqueViolation
 from pydantic import TypeAdapter, ValidationError
 
+from aearn_shared.execution import (
+    SafeExecutionResultV1,
+    SafeExecutionResultV2,
+    parse_safe_execution_result,
+)
 from .contracts import (
     TUTOR_LEARNING_ARTIFACT_POLICY_VERSION,
     TUTOR_LEARNING_ARTIFACT_SCHEMA_VERSION,
     TutorArtifactActionKind,
     TutorArtifactActionRequest,
-    TutorArtifactAttemptDetailV1,
-    TutorArtifactAttemptResultV1,
+    TutorArtifactAttemptDetailV2,
+    TutorArtifactAttemptResultV2,
     TutorArtifactAttemptSummaryV1,
     TutorArtifactBranchSummaryV1,
     TutorArtifactDifficulty,
@@ -100,6 +105,16 @@ class LearningArtifactWriteResult:
     owner_callback_invoked: bool
 
 
+@dataclass(frozen=True, slots=True)
+class ExecutionResultProjectionSource:
+    artifact: TutorPublicArtifactItem
+    attempt: TutorArtifactAttemptDetailV2
+    track_version: int
+    progress_version: int
+    assignment_version: int
+    owner_context_version: int | None
+
+
 class PostgresLearningArtifactRepository:
     """The only database-row to learner-safe Artifact DTO boundary.
 
@@ -170,7 +185,7 @@ class PostgresLearningArtifactRepository:
         conversation_id: str,
         artifact_id: str,
         attempt_id: str,
-    ) -> TutorArtifactAttemptDetailV1:
+    ) -> TutorArtifactAttemptDetailV2:
         user = _uuid(user_id, "user_id")
         conversation = _uuid(conversation_id, "conversation_id")
         artifact = _uuid(artifact_id, "artifact_id")
@@ -197,7 +212,8 @@ class PostgresLearningArtifactRepository:
                    results.policy_version AS result_policy_version,
                    results.result_hash,
                    results.terminal_at,
-                   jobs.state AS execution_job_state
+                   jobs.state AS execution_job_state,
+                   jobs.result_json AS execution_result_json
             FROM tutor_learning_artifact_attempt_links AS artifact_links
             JOIN tutor_learning_artifacts AS artifacts
               ON artifacts.id = artifact_links.artifact_id
@@ -240,11 +256,251 @@ class PostgresLearningArtifactRepository:
             )
         return self._project_attempt_detail(row)
 
+    def read_execution_result_projection_source(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str,
+        artifact_id: str,
+        attempt_id: str,
+    ) -> ExecutionResultProjectionSource:
+        """Lock and read the exact source Artifact plus terminal Attempt authority.
+
+        The caller must own the surrounding transaction. The Artifact lock serializes
+        concurrent projectors while Attempt/result evidence remains append-only.
+        """
+
+        user = _uuid(user_id, "user_id")
+        conversation = _uuid(conversation_id, "conversation_id")
+        artifact = _uuid(artifact_id, "artifact_id")
+        attempt = _uuid(attempt_id, "attempt_id")
+        self._lock_conversation_scope(
+            user_id=user,
+            conversation_id=conversation,
+        )
+        row = self._conn.execute(
+            """
+            SELECT *
+            FROM tutor_learning_artifacts
+            WHERE id = %s AND user_id = %s AND conversation_id = %s
+            FOR UPDATE
+            """,
+            (artifact, user, conversation),
+        ).fetchone()
+        if row is None:
+            raise LearningArtifactNotFound(
+                "learning artifact was not found"
+            )
+        detail = self.read_attempt_detail(
+            user_id=user,
+            conversation_id=conversation,
+            artifact_id=artifact,
+            attempt_id=attempt,
+        )
+        if detail.result is None:
+            raise LearningArtifactStateConflict(
+                "execution result projection requires a terminal Attempt"
+            )
+        return ExecutionResultProjectionSource(
+            artifact=self._project_row(row, allow_stale_attempt=True),
+            attempt=detail,
+            track_version=_int(row.get("track_version"), "track_version"),
+            progress_version=_int(
+                row.get("progress_version"),
+                "progress_version",
+            ),
+            assignment_version=_int(
+                row.get("assignment_version"),
+                "assignment_version",
+            ),
+            owner_context_version=(
+                _int(
+                    row.get("owner_context_version"),
+                    "owner_context_version",
+                )
+                if row.get("owner_context_version") is not None
+                else None
+            ),
+        )
+
+    def read_owner_update_result(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str,
+        artifact_id: str,
+        event_key: str,
+        event_kind: ArtifactOwnerEventKind,
+        expected_owner_result: Mapping[str, object] | None = None,
+    ) -> LearningArtifactWriteResult | None:
+        artifact = _uuid(artifact_id, "artifact_id")
+        user = _uuid(user_id, "user_id")
+        conversation = _uuid(conversation_id, "conversation_id")
+        key = _stable_key(event_key, "event_key")
+        row = self._conn.execute(
+            """
+            SELECT *
+            FROM tutor_learning_artifacts
+            WHERE id = %s AND user_id = %s AND conversation_id = %s
+            """,
+            (artifact, user, conversation),
+        ).fetchone()
+        if row is None:
+            raise LearningArtifactNotFound(
+                "learning artifact was not found"
+            )
+        event = self._conn.execute(
+            """
+            SELECT *
+            FROM tutor_learning_artifact_events
+            WHERE artifact_id = %s AND event_key = %s AND event_kind = %s
+            """,
+            (artifact, key, event_kind),
+        ).fetchone()
+        if event is None:
+            return None
+        if expected_owner_result is not None:
+            safe_payload = _mapping(
+                event.get("safe_payload_json"),
+                "safe_payload_json",
+            )
+            owner_result = _mapping(
+                safe_payload.get("owner_result"),
+                "owner_result",
+            )
+            if owner_result != dict(expected_owner_result):
+                raise LearningArtifactIdempotencyConflict(
+                    "learning artifact owner event conflicts with Attempt result"
+                )
+        return self._write_result(
+            row,
+            event,
+            replayed=True,
+            owner_callback_invoked=False,
+        )
+
+    def read_current_artifact_write(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str,
+        artifact_id: str,
+    ) -> LearningArtifactWriteResult:
+        """Return the current Artifact with the event owning its exact version."""
+
+        artifact = _uuid(artifact_id, "artifact_id")
+        user = _uuid(user_id, "user_id")
+        conversation = _uuid(conversation_id, "conversation_id")
+        row = self._conn.execute(
+            """
+            SELECT *
+            FROM tutor_learning_artifacts
+            WHERE id = %s AND user_id = %s AND conversation_id = %s
+            """,
+            (artifact, user, conversation),
+        ).fetchone()
+        if row is None:
+            raise LearningArtifactNotFound("learning artifact was not found")
+        event = self._conn.execute(
+            """
+            SELECT *
+            FROM tutor_learning_artifact_events
+            WHERE artifact_id = %s AND event_sequence = %s AND to_version = %s
+            """,
+            (artifact, row["version"], row["version"]),
+        ).fetchone()
+        if event is None:
+            raise LearningArtifactProjectionError(
+                "learning artifact current version is missing its owning event"
+            )
+        return self._write_result(
+            row,
+            event,
+            replayed=True,
+            owner_callback_invoked=False,
+        )
+
+    def read_result_artifact_for_attempt(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str,
+        source_artifact_id: str,
+        attempt_id: str,
+        result_hash: str,
+    ) -> LearningArtifactWriteResult | None:
+        user = _uuid(user_id, "user_id")
+        conversation = _uuid(conversation_id, "conversation_id")
+        source_artifact = _uuid(source_artifact_id, "source_artifact_id")
+        attempt = _uuid(attempt_id, "attempt_id")
+        if not re.fullmatch(r"[0-9a-f]{64}", result_hash):
+            raise ValueError("result_hash must be a SHA-256 digest")
+        rows = self._conn.execute(
+            """
+            SELECT artifacts.*
+            FROM tutor_learning_artifacts AS artifacts
+            JOIN tutor_learning_artifact_references AS source_refs
+              ON source_refs.artifact_id = artifacts.id
+             AND source_refs.reference_kind = 'artifact'
+             AND source_refs.reference_id = %s
+            JOIN tutor_learning_artifact_references AS attempt_refs
+              ON attempt_refs.artifact_id = artifacts.id
+             AND attempt_refs.reference_kind = 'attempt_result'
+             AND attempt_refs.reference_id = %s
+             AND attempt_refs.content_hash = %s
+            WHERE artifacts.user_id = %s
+              AND artifacts.conversation_id = %s
+              AND artifacts.artifact_kind = 'test_result'
+              AND artifacts.purpose = 'result'
+              AND artifacts.state = 'completed'
+              AND NOT artifacts.blocking
+              AND artifacts.active_attempt_id = %s
+              AND artifacts.presentation_json->>'result_hash' = %s
+            ORDER BY artifacts.created_at ASC, artifacts.id ASC
+            LIMIT 2
+            """,
+            (
+                source_artifact,
+                attempt,
+                result_hash,
+                user,
+                conversation,
+                attempt,
+                result_hash,
+            ),
+        ).fetchall()
+        if not rows:
+            return None
+        if len(rows) != 1:
+            raise LearningArtifactProjectionError(
+                "multiple result artifacts exist for one Attempt"
+            )
+        row = rows[0]
+        event = self._conn.execute(
+            """
+            SELECT *
+            FROM tutor_learning_artifact_events
+            WHERE artifact_id = %s AND event_sequence = 1 AND event_kind = 'created'
+            """,
+            (str(row["id"]),),
+        ).fetchone()
+        if event is None:
+            raise LearningArtifactProjectionError(
+                "result artifact is missing its immutable creation evidence"
+            )
+        return self._write_result(
+            row,
+            event,
+            replayed=True,
+            owner_callback_invoked=False,
+        )
+
     def create_artifact(
         self,
         request: TutorArtifactCreate,
         *,
         creation_key: str,
+        publish_item: bool = True,
         occurred_at: datetime | None = None,
     ) -> LearningArtifactWriteResult:
         events = self._require_events()
@@ -352,7 +608,8 @@ class PostgresLearningArtifactRepository:
                       blocking, title, instruction_markdown, difficulty,
                       presentation_kind, presentation_json, presentation_hash,
                       allowed_actions_json, active_attempt_id,
-                      active_attempt_summary_json, version, created_at, updated_at
+                      active_attempt_summary_json, version, created_at, updated_at,
+                      terminal_at
                     )
                     VALUES (
                       %s, %s, %s, %s, %s,
@@ -363,7 +620,8 @@ class PostgresLearningArtifactRepository:
                       %s, %s, %s, %s,
                       %s, %s::jsonb, %s,
                       %s::jsonb, %s,
-                      %s::jsonb, 1, %s, %s
+                      %s::jsonb, 1, %s, %s,
+                      %s
                     )
                     RETURNING *
                     """,
@@ -405,6 +663,7 @@ class PostgresLearningArtifactRepository:
                         else None,
                         now,
                         now,
+                        now if create.state.terminal else None,
                     ),
                 ).fetchone()
             except ForeignKeyViolation as exc:
@@ -478,15 +737,16 @@ class PostgresLearningArtifactRepository:
                 occurred_at=now,
             )
             projected = self._project_row(row)
-            events.append_item_reference(
-                user_id=create.user_id,
-                conversation_id=create.conversation_id,
-                artifact_id=artifact_id,
-                artifact_version=1,
-                turn_id=create.turn_id,
-                kind="item_added",
-                occurred_at=now,
-            )
+            if publish_item:
+                events.append_item_reference(
+                    user_id=create.user_id,
+                    conversation_id=create.conversation_id,
+                    artifact_id=artifact_id,
+                    artifact_version=1,
+                    turn_id=create.turn_id,
+                    kind="item_added",
+                    occurred_at=now,
+                )
             return LearningArtifactWriteResult(
                 artifact=projected,
                 artifact_event_id=str(event["id"]),
@@ -1363,17 +1623,14 @@ class PostgresLearningArtifactRepository:
     def _project_attempt_detail(
         self,
         row: Mapping[str, object],
-    ) -> TutorArtifactAttemptDetailV1:
+    ) -> TutorArtifactAttemptDetailV2:
         try:
             result = (
-                TutorArtifactAttemptResultV1.model_validate(
+                TutorArtifactAttemptResultV2.model_validate(
                     {
                         "outcome": row["outcome"],
                         "score": row["score"],
-                        "safe_feedback": _mapping(
-                            row.get("safe_feedback_json"),
-                            "safe_feedback_json",
-                        ),
+                        "execution_result": _project_execution_result(row),
                         "capability_scores": _mapping(
                             row.get("capability_scores_json"),
                             "capability_scores_json",
@@ -1389,7 +1646,7 @@ class PostgresLearningArtifactRepository:
                 if row.get("outcome") is not None
                 else None
             )
-            detail = TutorArtifactAttemptDetailV1.model_validate(
+            detail = TutorArtifactAttemptDetailV2.model_validate(
                 {
                     "artifact_id": str(row["artifact_id"]),
                     "artifact_version": _int(
@@ -1454,6 +1711,71 @@ class PostgresLearningArtifactRepository:
             )
             for row in rows
         )
+
+
+def _project_execution_result(
+    row: Mapping[str, object],
+) -> SafeExecutionResultV2 | None:
+    job_payload = row.get("execution_result_json")
+    job_result = (
+        _parse_execution_result_payload(
+            job_payload,
+            label="execution job result",
+        )
+        if isinstance(job_payload, Mapping)
+        else None
+    )
+    feedback_result = _execution_result_from_safe_feedback(
+        row.get("safe_feedback_json")
+    )
+    if (
+        job_result is not None
+        and feedback_result is not None
+        and canonical_hash(job_result.model_dump(mode="json"))
+        != canonical_hash(feedback_result.model_dump(mode="json"))
+    ):
+        raise ValueError(
+            "execution job result differs from authoritative Attempt feedback"
+        )
+    return job_result or feedback_result
+
+
+def _execution_result_from_safe_feedback(
+    value: object,
+) -> SafeExecutionResultV2 | None:
+    if not isinstance(value, Mapping):
+        return None
+    payload = dict(value)
+    schema_version = payload.get("schema_version")
+    if schema_version is not None:
+        if schema_version != "safe-execution-result-v2":
+            if str(schema_version).startswith("safe-execution-result"):
+                raise ValueError(
+                    "Attempt feedback execution result version is unsupported"
+                )
+            return None
+        return _parse_execution_result_payload(
+            payload,
+            label="Attempt feedback execution result",
+        )
+    v1_fields = frozenset(SafeExecutionResultV1.model_fields)
+    if "status" not in payload or not set(payload).issubset(v1_fields):
+        return None
+    return _parse_execution_result_payload(
+        payload,
+        label="historical Attempt feedback execution result",
+    )
+
+
+def _parse_execution_result_payload(
+    value: object,
+    *,
+    label: str,
+) -> SafeExecutionResultV2:
+    try:
+        return parse_safe_execution_result(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{label} is invalid") from exc
 
 
 def _canonical_create(request: TutorArtifactCreate) -> TutorArtifactCreate:
@@ -1671,6 +1993,7 @@ def _json(value: object) -> str:
 __all__ = (
     "ArtifactActionCallback",
     "ArtifactOwnerEventKind",
+    "ExecutionResultProjectionSource",
     "LearningArtifactEventSinkUnavailable",
     "LearningArtifactIdempotencyConflict",
     "LearningArtifactNotFound",
