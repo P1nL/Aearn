@@ -6,6 +6,11 @@ const artifactDir = resolve(process.cwd(), "src/features/tutor/artifacts");
 const safeMarkdownSource = readFileSync(resolve(artifactDir, "SafeMarkdown.tsx"), "utf8");
 const registrySource = readFileSync(resolve(artifactDir, "ArtifactRendererRegistry.tsx"), "utf8");
 const executionResultSource = readFileSync(resolve(artifactDir, "ExecutionResultArtifact.tsx"), "utf8");
+const codeEditorSource = readFileSync(resolve(artifactDir, "CodeEditorArtifact.tsx"), "utf8");
+const browserPreviewSource = readFileSync(resolve(artifactDir, "BrowserPreviewArtifact.tsx"), "utf8");
+const previewHostSource = readFileSync(resolve(process.cwd(), "src-tauri/src/preview_host.rs"), "utf8");
+const tauriBuildSource = readFileSync(resolve(process.cwd(), "src-tauri/build.rs"), "utf8");
+const capability = JSON.parse(readFileSync(resolve(process.cwd(), "src-tauri/capabilities/default.json"), "utf8")) as Record<string, unknown>;
 const cssSource = readFileSync(resolve(process.cwd(), "src/styles/30-tutor-harness.css"), "utf8");
 
 describe("Artifact shell source guards", () => {
@@ -40,5 +45,34 @@ describe("Artifact shell source guards", () => {
     expect(section).toContain("summary:focus-visible");
     expect(section).not.toMatch(/resize\s*:/);
     expect(section).not.toMatch(/splitter|drag-handle|draggable/i);
+  });
+
+  it("keeps learner source out of the main DOM and isolates Preview capability", () => {
+    const frontend = `${codeEditorSource}\n${browserPreviewSource}`;
+    expect(frontend).not.toMatch(/dangerouslySetInnerHTML|srcDoc|<iframe|new Function|\beval\s*\(/);
+    expect(frontend).toContain("PREVIEW_HOST_UNAVAILABLE");
+    expect(previewHostSource).toContain("WebviewUrl::CustomProtocol(url)");
+    expect(previewHostSource).toContain('sandbox=\"allow-scripts\"');
+    expect(previewHostSource).toContain("NewWindowResponse::Deny");
+    expect(previewHostSource).toContain("DownloadEvent::Requested");
+    expect(tauriBuildSource).toContain("AppManifest::new().commands(APP_COMMANDS)");
+    expect(capability).toMatchObject({
+      webviews: ["main"],
+      permissions: [
+        "core:default",
+        "allow-preview-host-create",
+        "allow-preview-host-update-source",
+        "allow-preview-host-set-bounds",
+        "allow-preview-host-recreate",
+        "allow-preview-host-close",
+      ],
+    });
+    expect(capability).not.toHaveProperty("windows");
+  });
+
+  it("keeps the Editor/Preview split fixed at 50:50 and stacks it without a draggable seam", () => {
+    expect(cssSource).toContain("grid-template-columns: repeat(2, minmax(0, 1fr))");
+    expect(cssSource).toContain("grid-template-rows: repeat(2, minmax(240px, 1fr))");
+    expect(cssSource).not.toMatch(/splitter|drag-handle|draggable/i);
   });
 });

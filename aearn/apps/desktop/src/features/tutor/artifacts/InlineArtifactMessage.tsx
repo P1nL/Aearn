@@ -4,7 +4,7 @@ import type { TutorPublicArtifactItem } from "../../../types";
 import { Button } from "../../../ui/dsh-derived";
 import { artifactRendererFor } from "./ArtifactRendererRegistry";
 import { SafeMarkdown } from "./SafeMarkdown";
-import type { TutorArtifactAttemptLoader, TutorArtifactReturnToSource } from "./artifactRendererTypes";
+import type { TutorArtifactActionHandler, TutorArtifactActionRequest, TutorArtifactAttemptLoader, TutorArtifactReturnToSource } from "./artifactRendererTypes";
 import {
   artifactUiStateKey,
   isTerminalArtifact,
@@ -14,17 +14,15 @@ import {
   type ArtifactRendererUiState,
 } from "./artifactUiState";
 
+export type { TutorArtifactActionHandler, TutorArtifactActionRequest } from "./artifactRendererTypes";
 export type TutorArtifactAction = TutorPublicArtifactItem["allowed_actions"][number];
-export type TutorArtifactActionRequest = {
-  artifact: TutorPublicArtifactItem;
-  action: TutorArtifactAction;
-};
 
 export type InlineArtifactMessageProps = {
   artifact: TutorPublicArtifactItem;
   autoReveal?: boolean;
   terminalCollapseMarker?: string | null;
-  onAction?: (request: TutorArtifactActionRequest) => void;
+  onAction?: TutorArtifactActionHandler;
+  actionBusy?: boolean;
   loadDetail?: (artifact: TutorPublicArtifactItem) => Promise<TutorPublicArtifactItem>;
   loadAttempt?: TutorArtifactAttemptLoader;
   onReturnToSource?: TutorArtifactReturnToSource;
@@ -55,6 +53,7 @@ export function InlineArtifactMessage({
   autoReveal = false,
   terminalCollapseMarker = null,
   onAction,
+  actionBusy = false,
   loadDetail,
   loadAttempt,
   onReturnToSource,
@@ -82,6 +81,9 @@ export function InlineArtifactMessage({
   const renderer = artifactRendererFor(renderedArtifact.presentation.type);
   const rendererOwnsResultSummary = renderedArtifact.presentation.type === "test_result_v1"
     && renderedArtifact.presentation.status === "terminal";
+  const renderedActions = renderedArtifact.presentation.type === "exercise_workspace_v1"
+    ? artifact.allowed_actions.filter((action) => action !== "run")
+    : artifact.allowed_actions;
 
   useEffect(() => {
     let next = readArtifactUiState(artifact, autoReveal || !terminal);
@@ -174,16 +176,18 @@ export function InlineArtifactMessage({
                 artifact: renderedArtifact,
                 uiState,
                 onUiStateChange: updateUiState,
+                onAction,
+                actionBusy,
                 loadAttempt,
                 onReturnToSource,
               })
             : <div className="inline-artifact-contract-error" role="alert"><strong>ARTIFACT_PRESENTATION_CONTRACT_ERROR</strong><span>展示类型不可用</span></div>}
       {terminal ? <ArtifactTerminalSummary artifact={artifact} /> : null}
-      {renderer && artifact.allowed_actions.length > 0 ? <div className="inline-artifact-actions" aria-label="工件操作">
-        {artifact.allowed_actions.map((action) => {
+      {renderer && renderedActions.length > 0 ? <div className="inline-artifact-actions" aria-label="工件操作">
+        {renderedActions.map((action) => {
           const label = ACTION_LABELS[action];
           if (!label) return null;
-          return <Button key={action} variant={action === "run" || action === "respond" || action === "complete_review" ? "primary" : "outline"} disabled={!onAction} onClick={() => onAction?.({ artifact, action })}>{label}</Button>;
+          return <Button key={action} variant={action === "run" || action === "respond" || action === "complete_review" ? "primary" : "outline"} busy={actionBusy} disabled={!onAction || actionBusy} onClick={() => onAction?.({ artifact, action })}>{label}</Button>;
         })}
       </div> : null}
     </div> : null}

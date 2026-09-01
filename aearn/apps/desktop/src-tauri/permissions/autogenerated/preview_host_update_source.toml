@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-preview-host-update-source"
+description = "Enables the preview_host_update_source command without any pre-configured scope."
+commands.allow = ["preview_host_update_source"]
+
+[[permission]]
+identifier = "deny-preview-host-update-source"
+description = "Denies the preview_host_update_source command without any pre-configured scope."
+commands.deny = ["preview_host_update_source"]

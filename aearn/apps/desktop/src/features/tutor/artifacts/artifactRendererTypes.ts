@@ -1,8 +1,19 @@
 import type {
+  TutorArtifactAction,
   TutorArtifactAttemptDetail,
   TutorArtifactSourceReference,
   TutorPublicArtifactItem,
 } from "../../../types";
+
+export type TutorArtifactActionRequest = {
+  artifact: TutorPublicArtifactItem;
+  action: TutorPublicArtifactItem["allowed_actions"][number];
+  payload?: TutorArtifactAction;
+};
+
+export type TutorArtifactActionHandler = (
+  request: TutorArtifactActionRequest,
+) => Promise<TutorPublicArtifactItem | void> | TutorPublicArtifactItem | void;
 
 export type TutorArtifactAttemptLoadRequest = {
   artifact: TutorPublicArtifactItem;
