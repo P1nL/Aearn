@@ -14,6 +14,7 @@ from app.db.seeds import (
     PLANNING_INTENT_POLICY_VERSION,
     RUNTIME_PROFILE_SEEDS,
 )
+from app.services.learning.item_bank.importer import import_curated_learning_item_sources
 
 
 _BOOTSTRAP_ADVISORY_LOCK_KEY = 0x414541524E534348
@@ -37,6 +38,7 @@ def bootstrap_database() -> None:
                 seed_learning_intents(conn)
                 seed_language_course_intent_tags(conn)
                 require_language_course_intent_coverage(conn)
+                import_curated_learning_item_sources(conn)
                 conn.commit()
             return
         except _RETRIABLE_BOOTSTRAP_ERRORS:

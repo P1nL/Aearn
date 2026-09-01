@@ -1,0 +1,195 @@
+{
+  "schema_version": "learning_item_source_v1",
+  "blueprint": {
+    "schema_version": "learning_item_blueprint_v1",
+    "blueprint_key": "python.review.zero-boundary.blueprint",
+    "version": "v1",
+    "knowledge_key": "python.fundamentals",
+    "item_kind": "model_review",
+    "purpose": "code_review",
+    "language_id": "python",
+    "difficulty_profile": {
+      "base": "D3",
+      "reasoning_depth": 3,
+      "concept_count": 3,
+      "context_novelty": 3,
+      "transfer_distance": 3,
+      "response_complexity": 3,
+      "scaffolding": 3
+    },
+    "prerequisite_keys": [],
+    "required_capabilities": [
+      "python.functions.edge_cases"
+    ],
+    "allowed_interactions": [
+      "review"
+    ],
+    "publication_policy": {
+      "risk_tier": "low",
+      "required_review_roles": [
+        "curriculum",
+        "difficulty",
+        "technical",
+        "ambiguity",
+        "security",
+        "adversarial"
+      ],
+      "agent_review_required": true,
+      "pilot_required": true,
+      "human_approval_required": false
+    },
+    "source_references": [
+      {
+        "source_id": "aearn.docs",
+        "source_version": "2026.08",
+        "locator": "python.functions.zero-boundary",
+        "content_hash": "6914f74769142a97b1fb84ec59f8172f89478ab47553c6669bf04e207bee55f0"
+      }
+    ]
+  },
+  "public": {
+    "schema_version": "learning_item_public_v1",
+    "item_key": "python.review.zero-boundary",
+    "version": "v1",
+    "kind": "model_review",
+    "purpose": "code_review",
+    "title": "Python Review Zero-Boundary",
+    "difficulty": "D3",
+    "instruction_markdown": "Complete the bounded learning task.",
+    "allowed_interactions": [
+      "review"
+    ],
+    "hints": [],
+    "source_references": [
+      {
+        "source_id": "aearn.docs",
+        "source_version": "2026.08",
+        "locator": "python.functions.zero-boundary",
+        "content_hash": "6914f74769142a97b1fb84ec59f8172f89478ab47553c6669bf04e207bee55f0"
+      }
+    ],
+    "content": {
+      "type": "model_review",
+      "prompt": {
+        "schema_version": "model_code_review_prompt_v1",
+        "requirements": [
+          "Return total / count and return 0 when count is 0."
+        ],
+        "review_scope": [
+          "correctness",
+          "edge_case",
+          "evidence"
+        ],
+        "evidence_boundary": "prepublication_verified",
+        "learner_instruction": "Decide whether the implementation meets the requirement and give reproducible evidence."
+      },
+      "artifact": {
+        "schema_version": "model_code_review_artifact_v1",
+        "language_id": "python",
+        "runtime_label": "Python 3",
+        "model_code": "def average(total, count):\n    return total / count",
+        "code_hash": "0cc5a88ff71abf8b65cb3e6b8507d05fba02c26209d6b46e3071b7d88799b209",
+        "line_count": 2
+      }
+    }
+  },
+  "private": {
+    "schema_version": "learning_item_private_v1",
+    "item_key": "python.review.zero-boundary",
+    "version": "v1",
+    "kind": "model_review",
+    "content": {
+      "type": "model_review",
+      "rubric": {
+        "schema_version": "model_code_review_rubric_v1",
+        "scenario_kind": "single_correctness_issue",
+        "expected_verdict": "correctness_issue",
+        "expected_findings": [
+          {
+            "finding_key": "zero-division",
+            "finding_kind": "correctness",
+            "category": "edge_case",
+            "severity": "high",
+            "accepted_line_ranges": [
+              {
+                "start_line": 2,
+                "end_line": 2
+              }
+            ],
+            "matcher_tokens": [
+              "count",
+              "zero",
+              "guard",
+              "division"
+            ],
+            "reachability_proof_ids": [
+              "proof-zero-division"
+            ],
+            "minimum_token_matches": 1
+          }
+        ],
+        "visible_evidence_ids": [
+          "visible-summary-1"
+        ],
+        "coverage_policy": "model_review_coverage_v1",
+        "score_policy_version": "model_code_review_score_v1",
+        "feedback_policy_version": "model_code_review_feedback_v1"
+      },
+      "reference_submission": {
+        "schema_version": "model_code_review_submission_v1",
+        "verdict": "uncertain",
+        "findings": [
+          {
+            "client_finding_id": "finding-1",
+            "finding_kind": "correctness",
+            "start_line": 2,
+            "end_line": 2,
+            "category": "edge_case",
+            "severity": "high",
+            "trigger_condition": "count is zero and division is attempted",
+            "principle": "the requirement defines a zero count boundary",
+            "impact": "the function raises instead of returning zero",
+            "validation_method": "test input total=0 and count=0 and assert return 0",
+            "suggested_fix": "guard count == 0 before division and return zero"
+          }
+        ]
+      },
+      "tests": [
+        {
+          "id": "visible_nonzero",
+          "case_type": "visible",
+          "input_json": {
+            "total": 6,
+            "count": 2
+          },
+          "expected_output_json": {
+            "value": 3
+          },
+          "weight": 1,
+          "is_critical": true,
+          "order_index": 0
+        },
+        {
+          "id": "hidden_zero",
+          "case_type": "hidden",
+          "input_json": {
+            "total": 0,
+            "count": 0
+          },
+          "expected_output_json": {
+            "value": 0
+          },
+          "weight": 1,
+          "is_critical": true,
+          "order_index": 1
+        }
+      ],
+      "score_policy": {
+        "kind": "model_code_review",
+        "policy_version": "model_code_review_score_v1",
+        "threshold": 0.8
+      },
+      "validation_profile_version": "model_review_validation_v1"
+    }
+  }
+}

@@ -1,0 +1,104 @@
+{
+  "schema_version": "learning_item_source_v1",
+  "blueprint": {
+    "schema_version": "learning_item_blueprint_v1",
+    "blueprint_key": "javascript.demo.click-event.blueprint",
+    "version": "v1",
+    "knowledge_key": "javascript.fundamentals",
+    "item_kind": "demo",
+    "purpose": "demonstration",
+    "language_id": "javascript",
+    "difficulty_profile": {
+      "base": "D1",
+      "reasoning_depth": 1,
+      "concept_count": 1,
+      "context_novelty": 1,
+      "transfer_distance": 1,
+      "response_complexity": 1,
+      "scaffolding": 5
+    },
+    "prerequisite_keys": [],
+    "required_capabilities": [
+      "javascript.dom.events"
+    ],
+    "allowed_interactions": [
+      "observe"
+    ],
+    "publication_policy": {
+      "risk_tier": "low",
+      "required_review_roles": [
+        "curriculum",
+        "difficulty",
+        "technical",
+        "ambiguity",
+        "security",
+        "adversarial"
+      ],
+      "agent_review_required": true,
+      "pilot_required": true,
+      "human_approval_required": false
+    },
+    "source_references": [
+      {
+        "source_id": "aearn.docs",
+        "source_version": "2026.08",
+        "locator": "dom.events.click",
+        "content_hash": "09081999bcda5fd737ab0d1065b3fe49aa059191e516606e598023741ae9d353"
+      }
+    ],
+    "runtime_profile_id": "browser_preview"
+  },
+  "public": {
+    "schema_version": "learning_item_public_v1",
+    "item_key": "javascript.demo.click-event",
+    "version": "v1",
+    "kind": "demo",
+    "purpose": "demonstration",
+    "title": "Javascript Demo Click-Event",
+    "difficulty": "D1",
+    "instruction_markdown": "Complete the bounded learning task.",
+    "allowed_interactions": [
+      "observe"
+    ],
+    "hints": [],
+    "source_references": [
+      {
+        "source_id": "aearn.docs",
+        "source_version": "2026.08",
+        "locator": "dom.events.click",
+        "content_hash": "09081999bcda5fd737ab0d1065b3fe49aa059191e516606e598023741ae9d353"
+      }
+    ],
+    "content": {
+      "type": "demo",
+      "language_id": "javascript",
+      "source_code": "button.addEventListener(\"click\", () => { count += 1; });",
+      "read_only": true,
+      "completion_mode": "exact_event",
+      "expected_event": {
+        "event_name": "demo.click.completed",
+        "payload_json": {
+          "count": 1
+        }
+      }
+    }
+  },
+  "private": {
+    "schema_version": "learning_item_private_v1",
+    "item_key": "javascript.demo.click-event",
+    "version": "v1",
+    "kind": "demo",
+    "content": {
+      "type": "demo",
+      "expected_events": [
+        {
+          "event_name": "demo.click.completed",
+          "payload_json": {
+            "count": 2
+          }
+        }
+      ],
+      "validation_policy_version": "demo_event_v1"
+    }
+  }
+}
