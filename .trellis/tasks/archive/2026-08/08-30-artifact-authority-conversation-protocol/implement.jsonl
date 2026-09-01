@@ -1,0 +1,4 @@
+{"file":".trellis/tasks/08-30-tutor-conversation-learning-artifacts/research/source-of-truth-contract-summary.md","reason":"PostgreSQL scope、transaction、migration、append-only 和 bootstrap 规则；当前表族、cutover inventory、Attempt/Gate/Review/Teaching persistence；当前 snapshot/SSE/idempotency/privacy 契约"}
+{"file":".trellis/spec/backend/teaching-session-authority.md","reason":"TeachingSession/checkpoint/receipt 现有 authority"}
+{"file":".trellis/tasks/08-30-tutor-conversation-learning-artifacts/research/repository-evidence.md","reason":"当前 public item 和 SSE 缺口证据"}
+{"file":".trellis/tasks/08-30-tutor-conversation-learning-artifacts/research/confirmed-product-decisions.md","reason":"用户确认的产品和UI/UX边界"}
