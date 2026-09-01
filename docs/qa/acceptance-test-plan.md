@@ -1,6 +1,6 @@
 # Aearn Tutor Harness 验收计划
 
-**状态：** 当前 integration/QA 契约，2026-08-27。
+**状态：** 当前 integration/QA 契约，2026-09-01。
 **范围：** 当前 Tutor runtime、cutover、provider attempt 计量、LearningTrack、
 Desktop、background scheduler、executor boundary、legacy retirement 与文档一致性。
 **权威来源：** 当前代码/测试/schema；实测命令结果进入
@@ -462,3 +462,14 @@ Browser fake 只验证当前 Desktop contract、mode swap、reload/reconnect 与
 | RT-66 | P0 | Continuation arbitration | learner > explicit action > expected event > timer > background；两 claimant 最多一个 claim generation；pending input/foreground/active branch block；timer/background Guided-only；producer 不调用 provider；stale authority cancel；reset/export redaction | `test_tutor_branch_continuation.py`、queue/interactive worker/bootstrap regressions |
 
 默认验收继续使用 fake provider 与本地 disposable PostgreSQL，bootstrap-sensitive 测试单进程串行。该增量不授权真实 provider smoke、Docker conformance、生产镜像、签名、push、deploy、发布或生产数据迁移。
+
+
+## 2026-09-01：Inline Artifact shell / Safe Markdown 验收增量
+
+| ID | 优先级 | 区域 | 验收 | 证据 |
+| --- | --- | --- | --- | --- |
+| FE-16 | P0 | Desktop public contract | snapshot v2-v5 exact parsing/normalization；八种 current presentation；Artifact detail/action scope/version/event；unknown/extra/protected/duplicate/cross-scope/bad-hash/count/terminal shape 拒绝；branch sequence/identity/anchor fail closed | `src/tests/tutorApiV2.test.ts` |
+| FE-17 | P0 | Safe Markdown / shell | raw HTML/script/style inert；exact size/color/URL/contrast gate；partial fence stable；static exhaustive registry；unknown presentation 无 action/payload fallback；UI state 跨 version 保留；同 Artifact 原地更新无重复 | `SafeMarkdown.test.tsx`、`InlineArtifactMessage.test.tsx`、`ArtifactSourceGuards.test.ts`、`TutorConversationSurface.test.tsx` |
+| UX-12 | P1 | Browser / responsive / focus | 新 Artifact 只滚动一次且不抢焦点；status/version refresh 不滚动；terminal 只在下一主线 learner 后折叠；branch learner 不触发；active/resolved branch 展开规则；1440×900、900×900、390×844、reduced motion、keyboard、`scrollWidth <= clientWidth`、无 overlay、console warning/error zero、DOM 无 protected marker/可执行 raw HTML | disposable local browser fixture at `http://127.0.0.1:1420` |
+
+默认 fixture 只装配 learner-safe public DTO，不创建真实用户/计划/教学数据，不调用真实 provider、executor、Docker/container、生产迁移、push、deploy 或发布。`desktop:check` 是本 child 已批准的附加静态门，不能替代网页端 DOM/交互/console/overflow 证据。

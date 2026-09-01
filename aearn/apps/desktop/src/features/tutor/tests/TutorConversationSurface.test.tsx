@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const api = vi.hoisted(() => ({
-  fetchTutorThreadTurnV2Capability: vi.fn(), fetchTutorConversationSnapshot: vi.fn(), respondToTutorInteractionRequest: vi.fn(),
+  fetchTutorThreadTurnV2Capability: vi.fn(), fetchTutorArtifact: vi.fn(), fetchTutorConversationSnapshot: vi.fn(), respondToTutorInteractionRequest: vi.fn(),
   acceptTutorConversationInput: vi.fn(), acceptTutorFirstTurn: vi.fn(), buildTutorConversationEventsUrl: vi.fn(() => "http://events.test"),
   correctTutorMemory: vi.fn(), deleteTutorMemory: vi.fn(), deleteTutorQueueItem: vi.fn(), dismissTutorInbox: vi.fn(), editTutorQueueItem: vi.fn(), executeTutorQueueItem: vi.fn(),
   fetchTutorActivity: vi.fn(), fetchTutorInbox: vi.fn(), fetchTutorMemory: vi.fn(), fetchTutorPlanRevisions: vi.fn(), fetchTutorPreferences: vi.fn(), interruptTutorTurn: vi.fn(),
@@ -21,7 +21,9 @@ vi.mock("../../../hooks/useTutorConversationStream", () => ({
   },
 }));
 
+import { resetArtifactUiStateCachesForTests } from "../artifacts";
 import { TutorConversationSurface, groupTeachingTimeline } from "../TutorConversationSurface";
+import { groupTimelineAroundArtifacts } from "../tutorConversationModel";
 
 const prompt = "请说明你希望先学习事件循环的哪一部分？";
 const userProfile = {
@@ -44,6 +46,85 @@ const snapshot = {
   timeline: [], next_cursor: null, has_more: false, stream_cursor: "opaque.cursor",
 };
 
+function artifactItem(update: Record<string, unknown> = {}) {
+  return {
+    kind: "artifact" as const,
+    id: "artifact-1",
+    conversation_id: "conversation-1",
+    turn_id: "turn-artifact",
+    learning_track_id: "track-1",
+    knowledge_key: "javascript.dom",
+    teaching_session_id: "session-1",
+    checkpoint_id: "checkpoint-1",
+    artifact_version: 1 as const,
+    artifact_kind: "knowledge_check" as const,
+    purpose: "knowledge_check" as const,
+    owner_kind: "teaching_practice" as const,
+    owner_id: "owner-1",
+    owner_version: 1,
+    state: "active" as const,
+    blocking: true,
+    title: "变量检查",
+    instruction_markdown: "请选择 **正确答案**。",
+    difficulty: "D2" as const,
+    presentation: {
+      type: "knowledge_check_v1" as const,
+      response_kind: "single_select" as const,
+      prompt_markdown: "value 的值是什么？",
+      options: [{ value: "2", label: "2" }],
+      minimum_selections: 1,
+      maximum_selections: 1,
+      maximum_text_length: 200,
+    },
+    allowed_actions: ["respond" as const],
+    source_references: [],
+    active_attempt: null,
+    branch_summary: null,
+    version: 1,
+    created_at: "2026-09-01T00:00:00Z",
+    updated_at: "2026-09-01T00:00:00Z",
+    terminal_at: null,
+    ...update,
+  };
+}
+
+function branchMessage(id: string, role: "learner" | "tutor", content: string) {
+  return {
+    kind: "message" as const,
+    id,
+    turn_id: `turn-${id}`,
+    role,
+    content,
+    public_thinking_text: "",
+    public_thinking_steps: [],
+    runtime_output: null,
+    context_references: [],
+    in_reply_to_item_id: null,
+    created_at: "2026-09-01T00:00:01Z",
+  };
+}
+
+function branchGroup(state: "active" | "resolved") {
+  return {
+    schema_version: "tutor_conversation_branch_v1" as const,
+    branch_id: "branch-1",
+    anchor_artifact_id: "artifact-1",
+    teaching_session_id: "session-1",
+    checkpoint_id: "checkpoint-1",
+    state,
+    disposition: state === "resolved" ? "answer_and_refocus" as const : null,
+    round_count: 1,
+    item_count: 2,
+    collapsed: state === "resolved",
+    items: [
+      { item_sequence: 1, branch_round: 1, item_kind: "message" as const, item_id: "branch-learner", turn_id: "turn-branch-learner", item_role: "learner" as const },
+      { item_sequence: 2, branch_round: 1, item_kind: "message" as const, item_id: "branch-tutor", turn_id: "turn-branch-tutor", item_role: "tutor" as const },
+    ],
+    created_at: "2026-09-01T00:00:01Z",
+    resolved_at: state === "resolved" ? "2026-09-01T00:00:03Z" : null,
+  };
+}
+
 function renderSurface(options: Partial<ComponentProps<typeof TutorConversationSurface>> = {}) {
   return render(<TutorConversationSurface user={userProfile} enabled isActive selectedConversationId="conversation-1" onSelectConversation={vi.fn()} showControls={false} {...options} />);
 }
@@ -57,6 +138,8 @@ describe("TutorConversationSurface typed request seat", () => {
     vi.clearAllMocks();
     streamHarness.options = null;
     window.sessionStorage.clear();
+    resetArtifactUiStateCachesForTests();
+    vi.stubGlobal("matchMedia", vi.fn(() => ({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() })));
     api.fetchTutorThreadTurnV2Capability.mockResolvedValue({ schema_version: "tutor_thread_turn_v2_capability_v1", cutover_version: "tutor_thread_turn_v2_global_v1", desktop_contract_version: "tutor_thread_turn_v2_desktop_v1", env_allowed: true, state: "enabled", generation: 1, summary_hash: "0".repeat(64), block_code: null, effective_enabled: true, counts: {}, prepared_at: null, enabled_at: null, updated_at: null });
     api.fetchTutorConversationSnapshot.mockResolvedValue(snapshot);
     api.respondToTutorInteractionRequest.mockResolvedValue({});
@@ -732,6 +815,38 @@ describe("TutorConversationSurface typed request seat", () => {
     expect(grouped.legacy.map((item) => item.id)).toEqual(["message-legacy"]);
   });
 
+  it("does not collapse a terminal Artifact for a learner message that predates completion", () => {
+    const completed = artifactItem({ state: "completed", allowed_actions: [], terminal_at: "2026-09-01T00:00:05Z" });
+    const earlierLearner = { ...branchMessage("learner-before-terminal", "learner", "完成前的主线消息"), created_at: "2026-09-01T00:00:04Z" };
+    const laterLearner = { ...branchMessage("learner-after-terminal", "learner", "完成后的主线消息"), created_at: "2026-09-01T00:00:06Z" };
+
+    const beforeOnly = groupTimelineAroundArtifacts([completed, earlierLearner], []);
+    expect(beforeOnly[0]).toMatchObject({ kind: "item", terminalCollapseMarker: null });
+    const withLater = groupTimelineAroundArtifacts([completed, earlierLearner, laterLearner], []);
+    expect(withLater[0]).toMatchObject({ kind: "item", terminalCollapseMarker: "learner-after-terminal" });
+  });
+  it("keeps an Artifact and its exact branch items in the server-owned teaching session", () => {
+    const artifact = artifactItem({ turn_id: null, teaching_session_id: "session-1" });
+    const learner = branchMessage("branch-learner", "learner", "支线问题");
+    const tutor = branchMessage("branch-tutor", "tutor", "支线回答");
+    const baseGroup = {
+      track_id: "track-1", track_version: 1, conversation_id: "conversation-1", knowledge_key: "javascript.dom",
+      status: "active" as const, mode: "guided" as const, session_version: 1, progress_version: 1,
+      assignment_id: "assignment-1", assignment_version: 1, document_id: "document-1",
+      checkpoint_id: "checkpoint-1", paused_at: null, completed_at: null, last_activity_at: null,
+    };
+    const grouped = groupTeachingTimeline(
+      [artifact, learner, tutor],
+      [{ ...baseGroup, session_id: "session-1", turn_ids: [] }],
+      "session-1",
+      [branchGroup("active")],
+    );
+
+    expect(grouped.current.map((item) => item.id)).toEqual(["artifact-1", "branch-learner", "branch-tutor"]);
+    expect(grouped.history).toEqual([]);
+    expect(grouped.legacy).toEqual([]);
+  });
+
   it("creates an exact historical teaching-session message reference without changing the composer draft", async () => {
     const user = userEvent.setup();
     const onReference = vi.fn();
@@ -843,6 +958,162 @@ describe("TutorConversationSurface typed request seat", () => {
     renderSurface();
     expect(await screen.findByText("教学控制正在运行；完成前由 runtime controls 接管 Action Shelf。")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "停止" })).not.toBeInTheDocument();
+  });
+
+
+  it("renders Tutor answer Markdown while keeping public thinking literal", async () => {
+    const user = userEvent.setup();
+    api.fetchTutorConversationSnapshot.mockResolvedValue({
+      ...snapshot,
+      snapshot_version: "tutor_conversation_snapshot_v3",
+      conversation: { ...snapshot.conversation, control_state: "idle", pending_count: 0, queue_paused: false, queue_pause_reason: null },
+      active_turn: null,
+      active_thinking: null,
+      active_runtime_output: null,
+      pending_requests: [],
+      queue: [],
+      timeline: [{
+        ...branchMessage("markdown-answer", "tutor", "**安全回答**\n\n<script>nope</script>"),
+        public_thinking_text: "**保持字面量**",
+      }],
+    });
+
+    const rendered = renderSurface();
+    expect(await screen.findByText("安全回答")).toHaveTextContent("安全回答");
+    expect(screen.getByText("安全回答").tagName).toBe("STRONG");
+    expect(rendered.container.querySelector("script")).toBeNull();
+    const disclosure = screen.getByRole("button", { name: "think" });
+    await user.click(disclosure);
+    const thinking = screen.getByText("**保持字面量**");
+    expect(thinking.tagName).toBe("P");
+    expect(thinking.querySelector("strong")).toBeNull();
+  });
+
+  it("dedupes active_artifact against the timeline and updates the same shell in place", async () => {
+    const first = artifactItem();
+    const second = artifactItem({ state: "running", version: 2, updated_at: "2026-09-01T00:00:02Z" });
+    api.fetchTutorConversationSnapshot
+      .mockResolvedValueOnce({
+        ...snapshot,
+        snapshot_version: "tutor_conversation_snapshot_v4",
+        conversation: { ...snapshot.conversation, control_state: "idle", pending_count: 0, queue_paused: false, queue_pause_reason: null },
+        active_artifact: first,
+        branches: [],
+        pending_requests: [], queue: [], timeline: [first],
+      })
+      .mockResolvedValueOnce({
+        ...snapshot,
+        snapshot_version: "tutor_conversation_snapshot_v4",
+        conversation: { ...snapshot.conversation, control_state: "idle", pending_count: 0, queue_paused: false, queue_pause_reason: null },
+        active_artifact: second,
+        branches: [],
+        pending_requests: [], queue: [], timeline: [second],
+      });
+
+    const rendered = renderSurface();
+    expect(await screen.findByText("变量检查")).toBeInTheDocument();
+    expect(rendered.container.querySelectorAll('[data-artifact-id="artifact-1"]')).toHaveLength(1);
+    const shell = rendered.container.querySelector('[data-artifact-id="artifact-1"]');
+    emitStreamEvent({ kind: "item_updated" });
+    await waitFor(() => expect(api.fetchTutorConversationSnapshot).toHaveBeenCalledTimes(2));
+    expect(rendered.container.querySelectorAll('[data-artifact-id="artifact-1"]')).toHaveLength(1);
+    expect(rendered.container.querySelector('[data-artifact-id="artifact-1"]')).toBe(shell);
+    expect(shell).toHaveAttribute("data-artifact-version", "2");
+  });
+
+  it("scrolls a newly added artifact once without focus theft and does not re-scroll for status or version refresh", async () => {
+    const artifactScroll = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: artifactScroll });
+    const first = artifactItem();
+    const updated = artifactItem({ state: "running", version: 2, updated_at: "2026-09-01T00:00:02Z" });
+    const emptySnapshot = {
+      ...snapshot,
+      snapshot_version: "tutor_conversation_snapshot_v4" as const,
+      conversation: { ...snapshot.conversation, control_state: "idle" as const, pending_count: 0, queue_paused: false, queue_pause_reason: null },
+      active_artifact: null,
+      branches: [],
+      pending_requests: [], queue: [], timeline: [],
+    };
+    api.fetchTutorConversationSnapshot
+      .mockResolvedValueOnce(emptySnapshot)
+      .mockResolvedValueOnce({ ...emptySnapshot, active_artifact: first, timeline: [first] })
+      .mockResolvedValueOnce({ ...emptySnapshot, active_artifact: updated, timeline: [updated] });
+
+    renderSurface();
+    const composer = await screen.findByRole("textbox", { name: "继续当前对话" });
+    composer.focus();
+    expect(composer).toHaveFocus();
+
+    emitStreamEvent({ kind: "item_added" });
+    await waitFor(() => expect(api.fetchTutorConversationSnapshot).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(artifactScroll).toHaveBeenCalledTimes(1));
+    expect(composer).toHaveFocus();
+
+    emitStreamEvent({ kind: "item_updated" });
+    await waitFor(() => expect(api.fetchTutorConversationSnapshot).toHaveBeenCalledTimes(3));
+    expect(artifactScroll).toHaveBeenCalledTimes(1);
+    expect(composer).toHaveFocus();
+  });
+
+  it("anchors a depth-one branch to its exact Artifact, collapses resolved rounds, and excludes branch learners from terminal collapse", async () => {
+    const user = userEvent.setup();
+    const branchLearner = branchMessage("branch-learner", "learner", "支线问题");
+    const branchTutor = branchMessage("branch-tutor", "tutor", "支线回答");
+    const activeArtifact = artifactItem({ branch_summary: { branch_id: "branch-1", state: "active", disposition: null, round_count: 1, item_count: 2, collapsed: false } });
+    const completedArtifact = artifactItem({
+      state: "completed",
+      allowed_actions: [],
+      version: 2,
+      terminal_at: "2026-09-01T00:00:03Z",
+      branch_summary: { branch_id: "branch-1", state: "resolved", disposition: "answer_and_refocus", round_count: 1, item_count: 2, collapsed: true },
+    });
+    const activeSnapshot = {
+      ...snapshot,
+      snapshot_version: "tutor_conversation_snapshot_v5" as const,
+      conversation: { ...snapshot.conversation, control_state: "idle" as const, pending_count: 0, queue_paused: false, queue_pause_reason: null },
+      active_artifact: activeArtifact,
+      branches: [branchGroup("active")],
+      pending_requests: [], queue: [],
+      timeline: [branchTutor, branchLearner, activeArtifact],
+    };
+    const resolvedSnapshot = {
+      ...activeSnapshot,
+      active_artifact: null,
+      branches: [branchGroup("resolved")],
+      timeline: [branchTutor, branchLearner, completedArtifact],
+    };
+    const mainlineLearner = { ...branchMessage("mainline-learner", "learner", "主线下一条消息"), created_at: "2026-09-01T00:00:04Z" };
+    api.fetchTutorConversationSnapshot
+      .mockResolvedValueOnce(activeSnapshot)
+      .mockResolvedValueOnce(resolvedSnapshot)
+      .mockResolvedValueOnce(resolvedSnapshot)
+      .mockResolvedValueOnce({ ...resolvedSnapshot, timeline: [mainlineLearner, branchTutor, branchLearner, completedArtifact] });
+
+    const rendered = renderSurface();
+    expect(await screen.findByText("答疑进行中")).toBeInTheDocument();
+    const branchLearnerArticle = screen.getByText("支线问题").closest("article");
+    expect(branchLearnerArticle).toHaveClass("learner");
+    expect(branchLearnerArticle?.parentElement).toHaveClass("tutor-branch-items");
+    const artifactToggle = rendered.container.querySelector(".inline-artifact-toggle") as HTMLButtonElement;
+    expect(artifactToggle).toHaveAttribute("aria-expanded", "true");
+
+    emitStreamEvent({ kind: "item_updated" });
+    const summary = await screen.findByRole("button", { name: "答疑 · 1 轮" });
+    await waitFor(() => expect(summary).toHaveAttribute("aria-expanded", "false"));
+    expect(artifactToggle).toHaveAttribute("aria-expanded", "true");
+    expect(screen.queryByText("支线问题")).not.toBeInTheDocument();
+
+    await user.click(summary);
+    expect(summary).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("支线问题")).toBeInTheDocument();
+    emitStreamEvent({ kind: "turn_updated" });
+    await waitFor(() => expect(api.fetchTutorConversationSnapshot).toHaveBeenCalledTimes(3));
+    expect(summary).toHaveAttribute("aria-expanded", "true");
+
+    emitStreamEvent({ kind: "item_added" });
+    await waitFor(() => expect(api.fetchTutorConversationSnapshot).toHaveBeenCalledTimes(4));
+    await waitFor(() => expect(artifactToggle).toHaveAttribute("aria-expanded", "false"));
+    expect(screen.getByText("主线下一条消息")).toBeInTheDocument();
   });
 
 });

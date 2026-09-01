@@ -20,6 +20,7 @@ The formal desktop runtime lives under `aearn/apps/desktop/`. Current behavior i
 | [State Management](./state-management.md) | Local, global, server, and authority state | Filled |
 | [Quality Guidelines](./quality-guidelines.md) | Frontend gates and forbidden patterns | Filled |
 | [Type Safety](./type-safety.md) | Contract and validation patterns | Filled |
+| [Inline Artifact Shell and Safe Markdown](./inline-artifact-shell-markdown.md) | Snapshot v4/v5 parsing, safe Markdown, Artifact/branch UI state, scroll/focus, and browser gates | Filled |
 
 ---
 

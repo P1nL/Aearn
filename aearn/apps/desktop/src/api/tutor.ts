@@ -47,6 +47,20 @@ import type {
   LearningRoadmapModule,
   LearningRoadmapNode,
   TutorActivityItem,
+  TutorArtifactAction,
+  TutorArtifactActionKind,
+  TutorArtifactActionResponse,
+  TutorArtifactAttemptSummary,
+  TutorArtifactBranchSummary,
+  TutorArtifactDifficulty,
+  TutorArtifactKind,
+  TutorArtifactOutcome,
+  TutorArtifactOwnerKind,
+  TutorArtifactPresentation,
+  TutorArtifactPurpose,
+  TutorArtifactSourceReference,
+  TutorArtifactState,
+  TutorBranchResponseDisposition,
   TutorContinuationKind,
   TutorConversationHistoryResponse,
   TutorConversationResponse,
@@ -69,6 +83,9 @@ import type {
   TutorPlanRevision,
   TutorPlanRevisionList,
   TutorPreferences,
+  TutorPublicArtifactItem,
+  TutorPublicBranchGroup,
+  TutorPublicBranchItemReference,
   TutorPublicProcess,
   TutorPublicProcessStep,
   TutorQueuedInput,
@@ -197,6 +214,65 @@ export async function fetchTutorConversationSnapshot(input: {
   );
   const response = toTutorConversationSnapshotResponse(payload);
   if (!response) throw new Error("Tutor snapshot API returned an invalid payload");
+  return response;
+}
+
+export async function fetchTutorArtifact(input: {
+  userId: string;
+  conversationId: string;
+  artifactId: string;
+  signal?: AbortSignal;
+}): Promise<TutorPublicArtifactItem> {
+  const query = new URLSearchParams({ user_id: input.userId });
+  const payload = await requestJson(
+    `${API_BASE_URL}/api/tutor/conversations/${encodeURIComponent(input.conversationId)}/artifacts/${encodeURIComponent(input.artifactId)}?${query.toString()}`,
+    { signal: input.signal },
+  );
+  const artifact = toTutorPublicArtifactItem(payload);
+  if (!artifact || artifact.id !== input.artifactId || artifact.conversation_id !== input.conversationId) {
+    throw new Error("Tutor Artifact API returned an invalid payload");
+  }
+  return artifact;
+}
+
+export async function actOnTutorArtifact(input: {
+  userId: string;
+  conversationId: string;
+  artifactId: string;
+  learningTrackId: string;
+  teachingSessionId: string;
+  expectedArtifactVersion: number;
+  action: TutorArtifactAction;
+  clientActionId: string;
+  signal?: AbortSignal;
+}): Promise<TutorArtifactActionResponse> {
+  const payload = await requestJson(
+    `${API_BASE_URL}/api/tutor/conversations/${encodeURIComponent(input.conversationId)}/artifacts/${encodeURIComponent(input.artifactId)}/actions`,
+    {
+      method: "POST",
+      headers: tutorMutationHeaders(input.clientActionId),
+      body: JSON.stringify({
+        user_id: input.userId,
+        learning_track_id: input.learningTrackId,
+        teaching_session_id: input.teachingSessionId,
+        client_action_id: input.clientActionId,
+        expected_artifact_version: input.expectedArtifactVersion,
+        action: input.action,
+      }),
+      signal: input.signal,
+    },
+  );
+  const response = toTutorArtifactActionResponse(payload);
+  if (
+    !response ||
+    response.artifact.id !== input.artifactId ||
+    response.artifact.conversation_id !== input.conversationId ||
+    response.artifact.learning_track_id !== input.learningTrackId ||
+    response.artifact.teaching_session_id !== input.teachingSessionId ||
+    response.artifact.version !== input.expectedArtifactVersion + 1
+  ) {
+    throw new Error("Tutor Artifact action API returned an invalid payload");
+  }
   return response;
 }
 
@@ -943,6 +1019,7 @@ function toTutorForegroundRun(payload: unknown): TutorForegroundRun | null {
 }
 
 function toTutorHistoryItem(payload: unknown): TutorHistoryItem | null {
+  if (hasProtectedArtifactMarker(payload)) return null;
   if (!isRecord(payload) || !isString(payload.kind) || !isString(payload.id) || !isNullableString(payload.created_at)) return null;
   if (payload.kind === "message") {
     const legacyKeys = ["kind", "id", "role", "content", "public_thinking_steps", "context_references", "in_reply_to_item_id", "created_at"];
@@ -997,20 +1074,329 @@ function toTutorHistoryItem(payload: unknown): TutorHistoryItem | null {
   if (payload.kind === "elicitation" || payload.kind === "approval") {
     return toTutorInteractionRequestItem(payload);
   }
+  if (payload.kind === "artifact") {
+    return toTutorPublicArtifactItem(payload);
+  }
   return null;
 }
 
+const ARTIFACT_PROTECTED_MARKERS = [
+  "__AEARN_PRIVATE_SUBMISSION__",
+  "__AEARN_HIDDEN_TEST__",
+  "__AEARN_PRIVATE_RUBRIC__",
+  "__AEARN_REFERENCE_ANSWER__",
+  "__AEARN_PROVIDER_BODY__",
+  "__AEARN_PROVIDER_REASONING__",
+  "__AEARN_PRIVATE_COMMAND_PATH__",
+  "__AEARN_CONTAINER_SECRET__",
+] as const;
+
+const ARTIFACT_PROTECTED_KEYS = new Set([
+  "submission", "submitted_code", "content_text", "private_rubric", "private_rubric_json",
+  "private_test_bundle", "private_test_bundle_json", "hidden_test", "hidden_tests", "hidden_test_ids",
+  "reference_answer", "reference_answer_json", "solution_reference", "provider_body", "provider_payload",
+  "provider_response", "provider_reasoning", "reasoning", "reasoning_content", "raw_reasoning", "prompt",
+  "raw_prompt", "raw_result", "raw_payload", "rubric", "command", "command_line", "path", "file_path",
+  "filesystem_path", "working_directory", "mount", "mounts", "container", "container_id", "container_name",
+  "image", "image_id", "image_digest", "secret", "credential", "api_key",
+]);
+
+function toTutorPublicArtifactItem(payload: unknown): TutorPublicArtifactItem | null {
+  if (!isRecord(payload) || hasProtectedArtifactData(payload) || !hasExactKeys(payload, [
+    "kind", "id", "conversation_id", "turn_id", "learning_track_id", "knowledge_key",
+    "teaching_session_id", "checkpoint_id", "artifact_version", "artifact_kind", "purpose", "owner_kind",
+    "owner_id", "owner_version", "state", "blocking", "title", "instruction_markdown", "difficulty",
+    "presentation", "allowed_actions", "source_references", "active_attempt", "branch_summary", "version",
+    "created_at", "updated_at", "terminal_at",
+  ]) || payload.kind !== "artifact" || !isArtifactBoundedString(payload.id, 160) ||
+      !isArtifactBoundedString(payload.conversation_id, 160) || !isNullableArtifactBoundedString(payload.turn_id, 160) ||
+      !isArtifactBoundedString(payload.learning_track_id, 160) || !isArtifactStableKey(payload.knowledge_key) ||
+      !isArtifactBoundedString(payload.teaching_session_id, 160) || !isArtifactBoundedString(payload.checkpoint_id, 160) ||
+      payload.artifact_version !== 1 || !isTutorArtifactKind(payload.artifact_kind) ||
+      !isTutorArtifactPurpose(payload.purpose) || !isTutorArtifactOwnerKind(payload.owner_kind) ||
+      !isArtifactBoundedString(payload.owner_id, 160) || !isPositiveSafeInteger(payload.owner_version) ||
+      !isTutorArtifactState(payload.state) || typeof payload.blocking !== "boolean" ||
+      !isArtifactBoundedString(payload.title, 240) || !isArtifactBoundedString(payload.instruction_markdown, 8_000) ||
+      !(payload.difficulty === null || isTutorArtifactDifficulty(payload.difficulty)) ||
+      !isPositiveSafeInteger(payload.version) || !isArtifactBoundedString(payload.created_at, 80) ||
+      !isArtifactBoundedString(payload.updated_at, 80) || !isNullableArtifactBoundedString(payload.terminal_at, 80)) return null;
+
+  const presentation = toTutorArtifactPresentation(payload.presentation);
+  const allowedActions = toTutorArtifactActionKinds(payload.allowed_actions);
+  const sourceReferences = toTutorArtifactSourceReferences(payload.source_references);
+  const activeAttempt = payload.active_attempt === null ? null : toTutorArtifactAttemptSummary(payload.active_attempt);
+  const branchSummary = payload.branch_summary === null ? null : toTutorArtifactBranchSummary(payload.branch_summary);
+  if (!presentation || !allowedActions || !sourceReferences ||
+      (payload.active_attempt !== null && activeAttempt === null) ||
+      (payload.branch_summary !== null && branchSummary === null) ||
+      !doesTutorArtifactKindMatchPresentation(payload.artifact_kind, presentation.type)) return null;
+
+  const terminal = isTutorArtifactTerminalState(payload.state);
+  if (terminal !== (payload.terminal_at !== null) || (terminal && allowedActions.length > 0) ||
+      (terminal && activeAttempt !== null && activeAttempt.status !== "terminal")) return null;
+
+  return {
+    kind: "artifact",
+    id: payload.id,
+    conversation_id: payload.conversation_id,
+    turn_id: payload.turn_id,
+    learning_track_id: payload.learning_track_id,
+    knowledge_key: payload.knowledge_key,
+    teaching_session_id: payload.teaching_session_id,
+    checkpoint_id: payload.checkpoint_id,
+    artifact_version: 1,
+    artifact_kind: payload.artifact_kind,
+    purpose: payload.purpose,
+    owner_kind: payload.owner_kind,
+    owner_id: payload.owner_id,
+    owner_version: payload.owner_version,
+    state: payload.state,
+    blocking: payload.blocking,
+    title: payload.title,
+    instruction_markdown: payload.instruction_markdown,
+    difficulty: payload.difficulty,
+    presentation,
+    allowed_actions: allowedActions,
+    source_references: sourceReferences,
+    active_attempt: activeAttempt,
+    branch_summary: branchSummary,
+    version: payload.version,
+    created_at: payload.created_at,
+    updated_at: payload.updated_at,
+    terminal_at: payload.terminal_at,
+  };
+}
+
+function toTutorArtifactPresentation(payload: unknown): TutorArtifactPresentation | null {
+  if (!isRecord(payload) || !isString(payload.type)) return null;
+  if (payload.type === "exercise_workspace_v1" && hasExactKeys(payload, [
+    "type", "exercise_version_id", "language_id", "editor_mode", "starter_content", "starter_content_hash",
+    "editable", "live_preview", "runtime_profile_key",
+  ]) && isArtifactBoundedString(payload.exercise_version_id, 160) && isArtifactStableKey(payload.language_id) &&
+      (payload.editor_mode === "code" || payload.editor_mode === "sql" || payload.editor_mode === "structured_answer") &&
+      isArtifactString(payload.starter_content, 48_000) && isSha256(payload.starter_content_hash) &&
+      sha256Text(payload.starter_content) === payload.starter_content_hash && typeof payload.editable === "boolean" &&
+      typeof payload.live_preview === "boolean" && isNullableArtifactStableKey(payload.runtime_profile_key)) {
+    return {
+      type: "exercise_workspace_v1", exercise_version_id: payload.exercise_version_id, language_id: payload.language_id,
+      editor_mode: payload.editor_mode, starter_content: payload.starter_content,
+      starter_content_hash: payload.starter_content_hash, editable: payload.editable, live_preview: payload.live_preview,
+      runtime_profile_key: payload.runtime_profile_key,
+    };
+  }
+  if (payload.type === "browser_preview_v1" && hasExactKeys(payload, [
+    "type", "source_artifact_id", "source_content_hash", "experience_tier", "interactive",
+  ]) && isArtifactBoundedString(payload.source_artifact_id, 160) && isSha256(payload.source_content_hash) &&
+      payload.experience_tier === "local_non_authoritative" && typeof payload.interactive === "boolean") {
+    return { type: "browser_preview_v1", source_artifact_id: payload.source_artifact_id,
+      source_content_hash: payload.source_content_hash, experience_tier: "local_non_authoritative", interactive: payload.interactive };
+  }
+  if (payload.type === "test_result_v1" && hasExactKeys(payload, [
+    "type", "attempt_id", "status", "outcome", "passed_count", "total_count", "summary_markdown", "result_hash",
+  ]) && isArtifactBoundedString(payload.attempt_id, 160) && (payload.status === "pending" || payload.status === "terminal") &&
+      isNullableTutorArtifactOutcome(payload.outcome) && isArtifactIntegerInRange(payload.passed_count, 0, 10_000) &&
+      isArtifactIntegerInRange(payload.total_count, 0, 10_000) && payload.passed_count <= payload.total_count &&
+      isArtifactString(payload.summary_markdown, 4_000) && isNullableSha256(payload.result_hash) &&
+      ((payload.status === "terminal") === (payload.outcome !== null && payload.result_hash !== null))) {
+    return { type: "test_result_v1", attempt_id: payload.attempt_id, status: payload.status, outcome: payload.outcome,
+      passed_count: payload.passed_count, total_count: payload.total_count, summary_markdown: payload.summary_markdown,
+      result_hash: payload.result_hash };
+  }
+  if (payload.type === "knowledge_check_v1" && hasExactKeys(payload, [
+    "type", "response_kind", "prompt_markdown", "options", "minimum_selections", "maximum_selections", "maximum_text_length",
+  ]) && isTutorArtifactResponseKind(payload.response_kind) && isArtifactBoundedString(payload.prompt_markdown, 8_000) &&
+      isArtifactIntegerInRange(payload.minimum_selections, 1, 24) && isArtifactIntegerInRange(payload.maximum_selections, 1, 24) &&
+      isArtifactIntegerInRange(payload.maximum_text_length, 1, 8_000)) {
+    const options = toTutorArtifactOptions(payload.options);
+    const selectKind = payload.response_kind === "single_select" || payload.response_kind === "multi_select" || payload.response_kind === "ordering";
+    if (!options || selectKind !== (options.length > 0) || payload.maximum_selections < payload.minimum_selections ||
+        (payload.response_kind === "single_select" && payload.maximum_selections !== 1) ||
+        (options.length > 0 && payload.maximum_selections > options.length)) return null;
+    return { type: "knowledge_check_v1", response_kind: payload.response_kind, prompt_markdown: payload.prompt_markdown,
+      options, minimum_selections: payload.minimum_selections, maximum_selections: payload.maximum_selections,
+      maximum_text_length: payload.maximum_text_length };
+  }
+  if (payload.type === "model_code_review_v1" && hasExactKeys(payload, [
+    "type", "exercise_version_id", "language_id", "source_code", "source_code_hash", "line_count", "review_categories",
+  ]) && isArtifactBoundedString(payload.exercise_version_id, 160) && isArtifactStableKey(payload.language_id) &&
+      isArtifactBoundedString(payload.source_code, 48_000) && isSha256(payload.source_code_hash) &&
+      isArtifactIntegerInRange(payload.line_count, 1, 4_000)) {
+    const normalizedSource = normalizeArtifactNewlines(payload.source_code);
+    const categories = toArtifactStableKeyArray(payload.review_categories, 16);
+    if (!categories || sha256Text(normalizedSource) !== payload.source_code_hash ||
+        pythonSplitlinesCount(normalizedSource) !== payload.line_count) return null;
+    return { type: "model_code_review_v1", exercise_version_id: payload.exercise_version_id,
+      language_id: payload.language_id, source_code: payload.source_code, source_code_hash: payload.source_code_hash,
+      line_count: payload.line_count, review_categories: categories };
+  }
+  if (payload.type === "sql_workspace_v1" && hasExactKeys(payload, [
+    "type", "exercise_version_id", "dialect", "starter_query", "starter_query_hash", "schema_markdown", "max_rows",
+  ]) && isArtifactBoundedString(payload.exercise_version_id, 160) && payload.dialect === "sqlite" &&
+      isArtifactString(payload.starter_query, 48_000) && isSha256(payload.starter_query_hash) &&
+      sha256Text(payload.starter_query) === payload.starter_query_hash &&
+      isArtifactBoundedString(payload.schema_markdown, 12_000) && isArtifactIntegerInRange(payload.max_rows, 1, 200)) {
+    return { type: "sql_workspace_v1", exercise_version_id: payload.exercise_version_id, dialect: "sqlite",
+      starter_query: payload.starter_query, starter_query_hash: payload.starter_query_hash,
+      schema_markdown: payload.schema_markdown, max_rows: payload.max_rows };
+  }
+  if (payload.type === "demonstration_v1" && hasExactKeys(payload, [
+    "type", "demonstration_mode", "language_id", "source_content", "source_content_hash", "expected_event_key", "duration_seconds",
+  ]) && (payload.demonstration_mode === "interactive" || payload.demonstration_mode === "static") &&
+      isNullableArtifactStableKey(payload.language_id) && isArtifactBoundedString(payload.source_content, 48_000) &&
+      isSha256(payload.source_content_hash) && sha256Text(payload.source_content) === payload.source_content_hash &&
+      isNullableArtifactBoundedString(payload.expected_event_key, 160) &&
+      (payload.duration_seconds === null || isArtifactIntegerInRange(payload.duration_seconds, 6, 30))) {
+    if ((payload.demonstration_mode === "interactive" && (payload.expected_event_key === null || payload.duration_seconds !== null)) ||
+        (payload.demonstration_mode === "static" && (payload.duration_seconds === null || payload.expected_event_key !== null))) return null;
+    return { type: "demonstration_v1", demonstration_mode: payload.demonstration_mode, language_id: payload.language_id,
+      source_content: payload.source_content, source_content_hash: payload.source_content_hash,
+      expected_event_key: payload.expected_event_key, duration_seconds: payload.duration_seconds };
+  }
+  if (payload.type === "source_inspector_v1" && hasExactKeys(payload, [
+    "type", "document_id", "document_content_hash", "block_id", "excerpt", "citation_ids",
+  ]) && isArtifactBoundedString(payload.document_id, 160) && isSha256(payload.document_content_hash) &&
+      isArtifactBoundedString(payload.block_id, 160) && isArtifactBoundedString(payload.excerpt, 800)) {
+    const citationIds = toArtifactBoundedStringArray(payload.citation_ids, 12, 160);
+    if (!citationIds) return null;
+    return { type: "source_inspector_v1", document_id: payload.document_id,
+      document_content_hash: payload.document_content_hash, block_id: payload.block_id,
+      excerpt: payload.excerpt, citation_ids: citationIds };
+  }
+  return null;
+}
+
+function toTutorArtifactOptions(payload: unknown): Array<{ value: string; label: string }> | null {
+  if (!Array.isArray(payload) || payload.length > 24) return null;
+  const options: Array<{ value: string; label: string }> = [];
+  for (const item of payload) {
+    if (!isRecord(item) || !hasExactKeys(item, ["value", "label"]) ||
+        !isArtifactBoundedString(item.value, 160) || !isArtifactBoundedString(item.label, 320)) return null;
+    options.push({ value: item.value, label: item.label });
+  }
+  return new Set(options.map((item) => item.value)).size === options.length ? options : null;
+}
+
+function toTutorArtifactActionKinds(payload: unknown): TutorArtifactActionKind[] | null {
+  if (!Array.isArray(payload) || payload.length > 6 || !payload.every(isTutorArtifactActionKind)) return null;
+  return new Set(payload).size === payload.length ? [...payload] : null;
+}
+
+function toTutorArtifactSourceReferences(payload: unknown): TutorArtifactSourceReference[] | null {
+  if (!Array.isArray(payload) || payload.length > 12) return null;
+  const references: TutorArtifactSourceReference[] = [];
+  for (const item of payload) {
+    if (!isRecord(item) || !hasExactKeys(item, ["kind", "reference_id", "reference_version", "content_hash", "label"]) ||
+        !isTutorArtifactSourceReferenceKind(item.kind) || !isArtifactBoundedString(item.reference_id, 160) ||
+        !(item.reference_version === null || isPositiveSafeInteger(item.reference_version)) ||
+        !isNullableSha256(item.content_hash) || !isArtifactBoundedString(item.label, 240)) return null;
+    references.push({ kind: item.kind, reference_id: item.reference_id, reference_version: item.reference_version,
+      content_hash: item.content_hash, label: item.label });
+  }
+  const identities = references.map((item) => `${item.kind}\u0000${item.reference_id}\u0000${item.reference_version ?? ""}\u0000${item.content_hash ?? ""}`);
+  return new Set(identities).size === identities.length ? references : null;
+}
+
+function toTutorArtifactAttemptSummary(payload: unknown): TutorArtifactAttemptSummary | null {
+  if (!isRecord(payload) || !hasExactKeys(payload, [
+    "attempt_id", "attempt_type", "status", "outcome", "score", "result_hash", "accepted_at", "terminal_at",
+  ]) || !isArtifactBoundedString(payload.attempt_id, 160) || !isTutorArtifactAttemptType(payload.attempt_type) ||
+      (payload.status !== "pending" && payload.status !== "terminal") || !isNullableTutorArtifactOutcome(payload.outcome) ||
+      !(payload.score === null || isArtifactScore(payload.score)) || !isNullableSha256(payload.result_hash) ||
+      !isArtifactBoundedString(payload.accepted_at, 80) || !isNullableArtifactBoundedString(payload.terminal_at, 80)) return null;
+  const terminalFields = payload.outcome !== null && payload.score !== null && payload.result_hash !== null && payload.terminal_at !== null;
+  if ((payload.status === "terminal") !== terminalFields) return null;
+  return { attempt_id: payload.attempt_id, attempt_type: payload.attempt_type, status: payload.status,
+    outcome: payload.outcome, score: payload.score, result_hash: payload.result_hash,
+    accepted_at: payload.accepted_at, terminal_at: payload.terminal_at };
+}
+
+function toTutorArtifactBranchSummary(payload: unknown): TutorArtifactBranchSummary | null {
+  if (!isRecord(payload) || !hasExactKeys(payload, [
+    "branch_id", "state", "disposition", "round_count", "item_count", "collapsed",
+  ]) || !isArtifactBoundedString(payload.branch_id, 160) || (payload.state !== "active" && payload.state !== "resolved") ||
+      !isNullableTutorBranchDisposition(payload.disposition) || !isArtifactIntegerInRange(payload.round_count, 1, 100) ||
+      !isArtifactIntegerInRange(payload.item_count, 1, 400) || typeof payload.collapsed !== "boolean" ||
+      payload.collapsed !== (payload.state === "resolved") || (payload.state === "resolved" && payload.disposition === null)) return null;
+  return { branch_id: payload.branch_id, state: payload.state, disposition: payload.disposition,
+    round_count: payload.round_count, item_count: payload.item_count, collapsed: payload.collapsed };
+}
+
+function toTutorPublicBranchGroup(payload: unknown): TutorPublicBranchGroup | null {
+  if (!isRecord(payload) || !hasExactKeys(payload, [
+    "schema_version", "branch_id", "anchor_artifact_id", "teaching_session_id", "checkpoint_id", "state",
+    "disposition", "round_count", "item_count", "collapsed", "items", "created_at", "resolved_at",
+  ]) || payload.schema_version !== "tutor_conversation_branch_v1" || !isArtifactBoundedString(payload.branch_id, 160) ||
+      !isArtifactBoundedString(payload.anchor_artifact_id, 160) || !isArtifactBoundedString(payload.teaching_session_id, 160) ||
+      !isArtifactBoundedString(payload.checkpoint_id, 160) || (payload.state !== "active" && payload.state !== "resolved") ||
+      !isNullableTutorBranchDisposition(payload.disposition) || !isArtifactIntegerInRange(payload.round_count, 1, 100) ||
+      !isArtifactIntegerInRange(payload.item_count, 1, 400) || typeof payload.collapsed !== "boolean" ||
+      !Array.isArray(payload.items) || payload.items.length < 1 || payload.items.length > 400 ||
+      !isArtifactBoundedString(payload.created_at, 80) || !isNullableArtifactBoundedString(payload.resolved_at, 80)) return null;
+  const items = payload.items.map(toTutorPublicBranchItemReference);
+  if (items.some((item) => item === null)) return null;
+  const parsedItems = items.filter((item): item is TutorPublicBranchItemReference => item !== null);
+  const identities = parsedItems.map((item) => `${item.item_kind}\u0000${item.item_id}`);
+  const contiguous = parsedItems.every((item, index) => item.item_sequence === index + 1);
+  const roundCount = payload.round_count;
+  if ((payload.state === "resolved") !== (payload.resolved_at !== null) || payload.collapsed !== (payload.state === "resolved") ||
+      payload.item_count !== parsedItems.length || !contiguous || new Set(identities).size !== identities.length ||
+      parsedItems.some((item) => item.branch_round > roundCount) ||
+      (payload.state === "resolved" && payload.disposition === null)) return null;
+  return { schema_version: "tutor_conversation_branch_v1", branch_id: payload.branch_id,
+    anchor_artifact_id: payload.anchor_artifact_id, teaching_session_id: payload.teaching_session_id,
+    checkpoint_id: payload.checkpoint_id, state: payload.state, disposition: payload.disposition,
+    round_count: payload.round_count, item_count: payload.item_count, collapsed: payload.collapsed,
+    items: parsedItems, created_at: payload.created_at, resolved_at: payload.resolved_at };
+}
+
+function toTutorPublicBranchItemReference(payload: unknown): TutorPublicBranchItemReference | null {
+  if (!isRecord(payload) || !hasExactKeys(payload, [
+    "item_sequence", "branch_round", "item_kind", "item_id", "turn_id", "item_role",
+  ]) || !isArtifactIntegerInRange(payload.item_sequence, 1, 400) || !isArtifactIntegerInRange(payload.branch_round, 1, 100) ||
+      (payload.item_kind !== "message" && payload.item_kind !== "process") || !isArtifactBoundedString(payload.item_id, 160) ||
+      !isArtifactBoundedString(payload.turn_id, 160) ||
+      (payload.item_role !== "learner" && payload.item_role !== "tutor" && payload.item_role !== "process") ||
+      (payload.item_kind === "process" && payload.item_role !== "process") ||
+      (payload.item_kind === "message" && payload.item_role === "process")) return null;
+  return { item_sequence: payload.item_sequence, branch_round: payload.branch_round, item_kind: payload.item_kind,
+    item_id: payload.item_id, turn_id: payload.turn_id, item_role: payload.item_role };
+}
+
+function toTutorArtifactActionResponse(payload: unknown): TutorArtifactActionResponse | null {
+  if (!isRecord(payload) || !hasExactKeys(payload, [
+    "artifact", "artifact_event_id", "artifact_event_sequence", "idempotent_replayed",
+  ]) || !isArtifactBoundedString(payload.artifact_event_id, 160) ||
+      !isPositiveSafeInteger(payload.artifact_event_sequence) || typeof payload.idempotent_replayed !== "boolean") return null;
+  const artifact = toTutorPublicArtifactItem(payload.artifact);
+  if (!artifact || artifact.version !== payload.artifact_event_sequence) return null;
+  return { artifact, artifact_event_id: payload.artifact_event_id,
+    artifact_event_sequence: payload.artifact_event_sequence, idempotent_replayed: payload.idempotent_replayed };
+}
+
 function toTutorPublicProcess(payload: unknown): TutorPublicProcess | null {
-  if (!isRecord(payload) || payload.kind !== "process" || !isString(payload.id) || !isString(payload.run_id) || !isTutorProcessDisplayState(payload.display_state) || !Array.isArray(payload.steps) || !isNonNegativeSafeInteger(payload.elapsed_seconds) || !isNullableString(payload.created_at) || !isNullableString(payload.finished_at)) return null;
+  if (!isRecord(payload) || payload.kind !== "process") return null;
+  const legacy = hasExactKeys(payload, [
+    "kind", "id", "run_id", "display_state", "steps", "elapsed_seconds", "created_at", "finished_at",
+  ]);
+  const snapshot = hasExactKeys(payload, [
+    "kind", "id", "turn_id", "run_id", "display_state", "steps", "elapsed_seconds", "created_at", "finished_at",
+  ]);
+  if ((!legacy && !snapshot) || !isBoundedString(payload.id, 120) || !isBoundedString(payload.run_id, 120) ||
+      (snapshot && !isBoundedString(payload.turn_id, 120)) || !isTutorProcessDisplayState(payload.display_state) ||
+      !Array.isArray(payload.steps) || payload.steps.length > 16 || !isNonNegativeSafeInteger(payload.elapsed_seconds) ||
+      payload.elapsed_seconds > 3_600 || !isNullableBoundedString(payload.created_at, 80) ||
+      !isNullableBoundedString(payload.finished_at, 80)) return null;
   const steps: TutorPublicProcessStep[] = [];
   for (const step of payload.steps) {
     const parsed = toTutorPublicProcessStep(step);
     if (!parsed) return null;
     steps.push(parsed);
   }
+  const turnId = snapshot && isBoundedString(payload.turn_id, 120) ? payload.turn_id : null;
   return {
     kind: "process",
     id: payload.id,
+    turn_id: turnId,
     run_id: payload.run_id,
     display_state: payload.display_state,
     steps,
@@ -1021,7 +1407,9 @@ function toTutorPublicProcess(payload: unknown): TutorPublicProcess | null {
 }
 
 function toTutorPublicProcessStep(payload: unknown): TutorPublicProcessStep | null {
-  if (!isRecord(payload) || !isTutorProcessStepKey(payload.key) || !isTutorProcessStepState(payload.state) || !isString(payload.label)) return null;
+  if (!isRecord(payload) || !hasExactKeys(payload, ["key", "state", "label"]) ||
+      !isTutorProcessStepKey(payload.key) || !isTutorProcessStepState(payload.state) ||
+      !isBoundedString(payload.label, 160)) return null;
   return { key: payload.key, state: payload.state, label: payload.label };
 }
 
@@ -1188,11 +1576,16 @@ function toTutorInteractionResponseAccepted(payload: unknown): TutorInteractionR
 }
 
 function toTutorConversationSnapshotResponse(payload: unknown): TutorConversationSnapshotResponse | null {
-  if (!isRecord(payload) || (payload.snapshot_version !== "tutor_conversation_snapshot_v2" && payload.snapshot_version !== "tutor_conversation_snapshot_v3")) return null;
+  if (hasProtectedArtifactMarker(payload)) return null;
+  if (!isRecord(payload) || !isTutorConversationSnapshotVersion(payload.snapshot_version)) return null;
   const version = payload.snapshot_version;
-  const baseKeys = version === "tutor_conversation_snapshot_v3"
-    ? ["snapshot_version", "conversation", "active_turn", "active_thinking", "active_runtime_output", "pending_requests", "queue", "timeline", "next_cursor", "has_more", "stream_cursor"]
-    : ["snapshot_version", "conversation", "active_turn", "active_thinking", "pending_requests", "queue", "timeline", "next_cursor", "has_more", "stream_cursor"];
+  const baseKeys = [
+    "snapshot_version", "conversation", "active_turn", "active_thinking", "pending_requests", "queue", "timeline",
+    "next_cursor", "has_more", "stream_cursor",
+  ];
+  if (version !== "tutor_conversation_snapshot_v2") baseKeys.push("active_runtime_output");
+  if (version === "tutor_conversation_snapshot_v4" || version === "tutor_conversation_snapshot_v5") baseKeys.push("active_artifact");
+  if (version === "tutor_conversation_snapshot_v5") baseKeys.push("branches");
   const expectedKeys = "teaching_sessions" in payload ? [...baseKeys, "teaching_sessions"] : baseKeys;
   if (!hasExactKeys(payload, expectedKeys) || !isRecord(payload.conversation) ||
       !hasExactKeys(payload.conversation, [
@@ -1212,19 +1605,33 @@ function toTutorConversationSnapshotResponse(payload: unknown): TutorConversatio
     ? payload.teaching_sessions.map(toTeachingSessionGroupProjection)
     : [];
   const teachingTurnIds = teachingSessions.flatMap((item) => item?.turn_ids ?? []);
+  const timelineIdentities = timeline.map((item) => item === null ? null : `${item.kind}\u0000${item.id}`);
   if (pendingRequests.some((item) => item === null) || queue.some((item) => item === null) || timeline.some((item) => item === null) ||
       teachingSessions.some((item) => item === null) || teachingSessions.length > 50 ||
-      new Set(teachingTurnIds).size !== teachingTurnIds.length) return null;
+      new Set(teachingTurnIds).size !== teachingTurnIds.length || timelineIdentities.some((item) => item === null) ||
+      new Set(timelineIdentities).size !== timelineIdentities.length) return null;
   const activeTurn = payload.active_turn === null ? null : toTutorPublicTurn(payload.active_turn);
   const activeThinking = payload.active_thinking === null ? null : toTutorActiveThinking(payload.active_thinking);
-  const activeRuntimeOutput = version === "tutor_conversation_snapshot_v3" && payload.active_runtime_output !== null
+  const activeRuntimeOutput = version !== "tutor_conversation_snapshot_v2" && payload.active_runtime_output !== null
     ? toTutorRuntimeOutput(payload.active_runtime_output)
     : null;
+  const activeArtifact = (version === "tutor_conversation_snapshot_v4" || version === "tutor_conversation_snapshot_v5") && payload.active_artifact !== null
+    ? toTutorPublicArtifactItem(payload.active_artifact)
+    : null;
+  const branches = version === "tutor_conversation_snapshot_v5" && Array.isArray(payload.branches)
+    ? payload.branches.map(toTutorPublicBranchGroup)
+    : [];
+  const parsedTimeline = timeline.filter((item): item is TutorHistoryItem => item !== null);
+  const parsedBranches = branches.filter((item): item is TutorPublicBranchGroup => item !== null);
   if ((activeTurn === null && payload.active_turn !== null) ||
       (activeThinking === null && payload.active_thinking !== null) ||
-      (version === "tutor_conversation_snapshot_v3" && payload.active_runtime_output !== null && activeRuntimeOutput === null) ||
+      (version !== "tutor_conversation_snapshot_v2" && payload.active_runtime_output !== null && activeRuntimeOutput === null) ||
+      ((version === "tutor_conversation_snapshot_v4" || version === "tutor_conversation_snapshot_v5") && payload.active_artifact !== null && activeArtifact === null) ||
+      (version === "tutor_conversation_snapshot_v5" && (!Array.isArray(payload.branches) || branches.some((item) => item === null) || parsedBranches.length === 0)) ||
       (activeThinking !== null && (activeTurn === null || activeThinking.turn_id !== activeTurn.turn_id || activeThinking.input_revision !== activeTurn.input_revision)) ||
-      (activeRuntimeOutput !== null && (activeTurn === null || activeRuntimeOutput.input_revision !== activeTurn.input_revision))) return null;
+      (activeRuntimeOutput !== null && (activeTurn === null || activeRuntimeOutput.input_revision !== activeTurn.input_revision)) ||
+      (activeTurn !== null && activeTurn.conversation_id !== payload.conversation.conversation_id) ||
+      !validateTutorSnapshotArtifactProjection(version, payload.conversation.conversation_id, parsedTimeline, activeArtifact, parsedBranches)) return null;
   return {
     snapshot_version: version,
     conversation: {
@@ -1240,14 +1647,79 @@ function toTutorConversationSnapshotResponse(payload: unknown): TutorConversatio
     active_turn: activeTurn,
     active_thinking: activeThinking,
     active_runtime_output: activeRuntimeOutput,
+    active_artifact: activeArtifact,
+    branches: parsedBranches,
     pending_requests: pendingRequests.filter((item): item is TutorInteractionRequestItem => item !== null),
     queue: queue.filter((item): item is TutorQueuedInput => item !== null),
-    timeline: timeline.filter((item): item is TutorHistoryItem => item !== null),
+    timeline: parsedTimeline,
     next_cursor: payload.next_cursor,
     has_more: payload.has_more,
     stream_cursor: payload.stream_cursor,
     teaching_sessions: teachingSessions.filter((item): item is TeachingSessionGroupProjection => item !== null),
   };
+}
+
+function validateTutorSnapshotArtifactProjection(
+  version: TutorConversationSnapshotResponse["snapshot_version"],
+  conversationId: string,
+  timeline: TutorHistoryItem[],
+  activeArtifact: TutorPublicArtifactItem | null,
+  branches: TutorPublicBranchGroup[],
+): boolean {
+  const artifacts = timeline.filter((item): item is TutorPublicArtifactItem => item.kind === "artifact");
+  if (artifacts.some((item) => item.conversation_id !== conversationId)) return false;
+  if ((version === "tutor_conversation_snapshot_v2" || version === "tutor_conversation_snapshot_v3") &&
+      (artifacts.length > 0 || activeArtifact !== null || branches.length > 0)) return false;
+  if (version === "tutor_conversation_snapshot_v4" &&
+      (branches.length > 0 || artifacts.some((item) => item.branch_summary !== null) ||
+       (activeArtifact !== null && activeArtifact.branch_summary !== null))) return false;
+
+  const artifactById = new Map<string, TutorPublicArtifactItem>();
+  for (const artifact of artifacts) artifactById.set(artifact.id, artifact);
+  if (activeArtifact !== null) {
+    if (activeArtifact.conversation_id !== conversationId || !activeArtifact.blocking || isTutorArtifactTerminalState(activeArtifact.state)) return false;
+    const timelineArtifact = artifactById.get(activeArtifact.id);
+    if (timelineArtifact && JSON.stringify(timelineArtifact) !== JSON.stringify(activeArtifact)) return false;
+  }
+  const blocking = artifacts.filter((item) => item.blocking && !isTutorArtifactTerminalState(item.state));
+  if (blocking.length > 1 || (blocking.length === 1 && activeArtifact?.id !== blocking[0].id)) return false;
+
+  const branchIds = branches.map((item) => item.branch_id);
+  const branchItemIdentities = branches.flatMap((branch) => branch.items.map((item) => `${item.item_kind}\u0000${item.item_id}`));
+  if (new Set(branchIds).size !== branchIds.length || new Set(branchItemIdentities).size !== branchItemIdentities.length) return false;
+  const branchById = new Map(branches.map((item) => [item.branch_id, item]));
+  const activeBranches = branches.filter((item) => item.state === "active");
+  const activeAnchors = activeBranches.map((item) => item.anchor_artifact_id);
+  if (activeBranches.length > 1 || new Set(activeAnchors).size !== activeAnchors.length) return false;
+
+  const timelineByIdentity = new Map(timeline.map((item) => [`${item.kind}\u0000${item.id}`, item]));
+  for (const branch of branches) {
+    const anchor = artifactById.get(branch.anchor_artifact_id) ?? (activeArtifact?.id === branch.anchor_artifact_id ? activeArtifact : null);
+    if (anchor) {
+      if (anchor.teaching_session_id !== branch.teaching_session_id || anchor.checkpoint_id !== branch.checkpoint_id) return false;
+      const summary = anchor.branch_summary;
+      if (!summary || summary.branch_id !== branch.branch_id || summary.state !== branch.state ||
+          summary.disposition !== branch.disposition || summary.round_count !== branch.round_count ||
+          summary.item_count !== branch.item_count || summary.collapsed !== branch.collapsed) return false;
+    }
+    for (const reference of branch.items) {
+      const item = timelineByIdentity.get(`${reference.item_kind}\u0000${reference.item_id}`);
+      if (!item) continue;
+      if (item.kind === "message" && (item.turn_id !== reference.turn_id || item.role !== reference.item_role)) return false;
+      if (item.kind === "process" && (item.turn_id !== reference.turn_id || reference.item_role !== "process")) return false;
+    }
+  }
+
+  const artifactsWithSummary = [...artifacts, ...(activeArtifact && !artifactById.has(activeArtifact.id) ? [activeArtifact] : [])];
+  for (const artifact of artifactsWithSummary) {
+    const summary = artifact.branch_summary;
+    if (summary === null) continue;
+    const branch = branchById.get(summary.branch_id);
+    if (!branch || branch.anchor_artifact_id !== artifact.id || branch.state !== summary.state ||
+        branch.disposition !== summary.disposition || branch.round_count !== summary.round_count ||
+        branch.item_count !== summary.item_count || branch.collapsed !== summary.collapsed) return false;
+  }
+  return true;
 }
 
 function toTutorRuntimeOutput(payload: unknown): TutorConversationSnapshotResponse["active_runtime_output"] {
@@ -1315,6 +1787,7 @@ function toTutorPublicTurn(payload: unknown): TutorConversationSnapshotResponse[
 }
 
 function toTutorInteractionRequestItem(payload: unknown): TutorInteractionRequestItem | null {
+  if (hasProtectedArtifactMarker(payload)) return null;
   if (!isRecord(payload) || !hasExactKeys(payload, [
     "kind", "id", "request_id", "turn_id", "request_kind", "actor", "state", "version", "required", "prompt", "public_thinking_text", "presentation", "allowed_actions", "answer_turn_id", "created_at", "resolved_at",
   ]) || (payload.kind !== "elicitation" && payload.kind !== "approval") || !isString(payload.id) || !isString(payload.request_id) ||
@@ -1439,6 +1912,216 @@ function toTutorPreferences(payload: unknown): TutorPreferences | null {
     proactive_paused: payload.proactive_paused,
     proactive_enabled: payload.proactive_enabled,
   };
+}
+
+function hasProtectedArtifactMarker(value: unknown): boolean {
+  if (typeof value === "string") {
+    const normalized = value.toLowerCase();
+    return ARTIFACT_PROTECTED_MARKERS.some((marker) => normalized.includes(marker.toLowerCase()));
+  }
+  if (Array.isArray(value)) return value.some(hasProtectedArtifactMarker);
+  if (!isRecord(value)) return false;
+  return Object.values(value).some(hasProtectedArtifactMarker);
+}
+
+function hasProtectedArtifactData(value: unknown): boolean {
+  if (hasProtectedArtifactMarker(value)) return true;
+  if (Array.isArray(value)) return value.some(hasProtectedArtifactData);
+  if (!isRecord(value)) return false;
+  return Object.entries(value).some(([key, item]) => ARTIFACT_PROTECTED_KEYS.has(key.toLowerCase()) || hasProtectedArtifactData(item));
+}
+
+function isArtifactString(value: unknown, maximum: number): value is string {
+  return typeof value === "string" && value.length <= maximum;
+}
+
+function isArtifactBoundedString(value: unknown, maximum: number): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= maximum;
+}
+
+function isNullableArtifactBoundedString(value: unknown, maximum: number): value is string | null {
+  return value === null || isArtifactBoundedString(value, maximum);
+}
+
+function isArtifactStableKey(value: unknown): value is string {
+  return typeof value === "string" && /^[a-z0-9][a-z0-9._:-]{0,159}$/.test(value);
+}
+
+function isNullableArtifactStableKey(value: unknown): value is string | null {
+  return value === null || isArtifactStableKey(value);
+}
+
+function isArtifactIntegerInRange(value: unknown, minimum: number, maximum: number): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= minimum && value <= maximum;
+}
+
+function isArtifactScore(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1;
+}
+
+function isNullableSha256(value: unknown): value is string | null {
+  return value === null || isSha256(value);
+}
+
+function isTutorArtifactKind(value: unknown): value is TutorArtifactKind {
+  return value === "exercise_workspace" || value === "browser_preview" || value === "test_result" ||
+    value === "knowledge_check" || value === "model_code_review" || value === "sql_workspace" ||
+    value === "demonstration" || value === "source_inspector";
+}
+
+function isTutorArtifactPurpose(value: unknown): value is TutorArtifactPurpose {
+  return value === "exercise" || value === "demonstration" || value === "knowledge_check" || value === "remediation" ||
+    value === "transfer_check" || value === "code_review" || value === "sql_exploration" || value === "result";
+}
+
+function isTutorArtifactOwnerKind(value: unknown): value is TutorArtifactOwnerKind {
+  return value === "lesson_gate" || value === "review_item" || value === "teaching_practice" || value === "learning_item";
+}
+
+function isTutorArtifactState(value: unknown): value is TutorArtifactState {
+  return value === "pending" || value === "ready" || value === "active" || value === "running" ||
+    value === "completed" || value === "failed" || value === "cancelled" || value === "superseded";
+}
+
+function isTutorArtifactTerminalState(value: TutorArtifactState): boolean {
+  return value === "completed" || value === "failed" || value === "cancelled" || value === "superseded";
+}
+
+function isTutorArtifactDifficulty(value: unknown): value is TutorArtifactDifficulty {
+  return value === "D1" || value === "D2" || value === "D3" || value === "D4" || value === "D5";
+}
+
+function isTutorArtifactActionKind(value: unknown): value is TutorArtifactActionKind {
+  return value === "request_hint" || value === "run" || value === "respond" || value === "complete_review" ||
+    value === "cancel" || value === "acknowledge_demo_event";
+}
+
+function isTutorArtifactOutcome(value: unknown): value is TutorArtifactOutcome {
+  return value === "passed" || value === "failed" || value === "timed_out" || value === "cancelled" ||
+    value === "unavailable" || value === "invalid";
+}
+
+function isNullableTutorArtifactOutcome(value: unknown): value is TutorArtifactOutcome | null {
+  return value === null || isTutorArtifactOutcome(value);
+}
+
+function isTutorArtifactResponseKind(value: unknown): value is Extract<TutorArtifactPresentation, { type: "knowledge_check_v1" }>["response_kind"] {
+  return value === "single_select" || value === "multi_select" || value === "prediction" || value === "ordering" ||
+    value === "code_range" || value === "short_text";
+}
+
+function isTutorArtifactSourceReferenceKind(value: unknown): value is TutorArtifactSourceReference["kind"] {
+  return value === "lesson_document" || value === "exercise_version" || value === "attempt_result" ||
+    value === "review_session" || value === "teaching_checkpoint" || value === "source_citation" || value === "artifact";
+}
+
+function isTutorArtifactAttemptType(value: unknown): value is TutorArtifactAttemptSummary["attempt_type"] {
+  return value === "run" || value === "submit" || value === "diagnostic_submit" || value === "review_submit";
+}
+
+function isNullableTutorBranchDisposition(value: unknown): value is TutorBranchResponseDisposition | null {
+  return value === null || value === "answer_and_refocus" || value === "offer_switch" || value === "confirmed_switch";
+}
+
+function isTutorConversationSnapshotVersion(value: unknown): value is TutorConversationSnapshotResponse["snapshot_version"] {
+  return value === "tutor_conversation_snapshot_v2" || value === "tutor_conversation_snapshot_v3" ||
+    value === "tutor_conversation_snapshot_v4" || value === "tutor_conversation_snapshot_v5";
+}
+
+function doesTutorArtifactKindMatchPresentation(kind: TutorArtifactKind, presentation: TutorArtifactPresentation["type"]): boolean {
+  return (kind === "exercise_workspace" && presentation === "exercise_workspace_v1") ||
+    (kind === "browser_preview" && presentation === "browser_preview_v1") ||
+    (kind === "test_result" && presentation === "test_result_v1") ||
+    (kind === "knowledge_check" && presentation === "knowledge_check_v1") ||
+    (kind === "model_code_review" && presentation === "model_code_review_v1") ||
+    (kind === "sql_workspace" && presentation === "sql_workspace_v1") ||
+    (kind === "demonstration" && presentation === "demonstration_v1") ||
+    (kind === "source_inspector" && presentation === "source_inspector_v1");
+}
+
+function toArtifactStableKeyArray(value: unknown, maximumLength: number): string[] | null {
+  if (!Array.isArray(value) || value.length > maximumLength || !value.every(isArtifactStableKey)) return null;
+  return new Set(value).size === value.length ? [...value] : null;
+}
+
+function toArtifactBoundedStringArray(value: unknown, maximumLength: number, maximumItemLength: number): string[] | null {
+  if (!Array.isArray(value) || value.length > maximumLength ||
+      !value.every((item) => isArtifactBoundedString(item, maximumItemLength))) return null;
+  return new Set(value).size === value.length ? [...value] : null;
+}
+
+function normalizeArtifactNewlines(value: string): string {
+  return value.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+}
+
+function pythonSplitlinesCount(value: string): number {
+  if (value.length === 0) return 0;
+  const lines = value.split(/[\n\v\f\x1c-\x1e\x85\u2028\u2029]/);
+  return lines.length - (/[\n\v\f\x1c-\x1e\x85\u2028\u2029]$/.test(value) ? 1 : 0);
+}
+
+function sha256Text(value: string): string {
+  const constants = [
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+  ];
+  const bytes = new TextEncoder().encode(value);
+  const paddedLength = Math.ceil((bytes.length + 9) / 64) * 64;
+  const padded = new Uint8Array(paddedLength);
+  padded.set(bytes);
+  padded[bytes.length] = 0x80;
+  let bitLength = BigInt(bytes.length) * 8n;
+  for (let index = 0; index < 8; index += 1) {
+    padded[padded.length - 1 - index] = Number(bitLength & 0xffn);
+    bitLength >>= 8n;
+  }
+  const hashes = [
+    0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+    0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
+  ];
+  const words = new Uint32Array(64);
+  for (let offset = 0; offset < padded.length; offset += 64) {
+    for (let index = 0; index < 16; index += 1) {
+      const start = offset + index * 4;
+      words[index] = ((padded[start] << 24) | (padded[start + 1] << 16) | (padded[start + 2] << 8) | padded[start + 3]) >>> 0;
+    }
+    for (let index = 16; index < 64; index += 1) {
+      const previous15 = words[index - 15];
+      const previous2 = words[index - 2];
+      const sigma0 = (rotateRight(previous15, 7) ^ rotateRight(previous15, 18) ^ (previous15 >>> 3)) >>> 0;
+      const sigma1 = (rotateRight(previous2, 17) ^ rotateRight(previous2, 19) ^ (previous2 >>> 10)) >>> 0;
+      words[index] = (words[index - 16] + sigma0 + words[index - 7] + sigma1) >>> 0;
+    }
+    let [a, b, c, d, e, f, g, h] = hashes;
+    for (let index = 0; index < 64; index += 1) {
+      const sum1 = (rotateRight(e, 6) ^ rotateRight(e, 11) ^ rotateRight(e, 25)) >>> 0;
+      const choice = ((e & f) ^ (~e & g)) >>> 0;
+      const temp1 = (h + sum1 + choice + constants[index] + words[index]) >>> 0;
+      const sum0 = (rotateRight(a, 2) ^ rotateRight(a, 13) ^ rotateRight(a, 22)) >>> 0;
+      const majority = ((a & b) ^ (a & c) ^ (b & c)) >>> 0;
+      const temp2 = (sum0 + majority) >>> 0;
+      h = g; g = f; f = e; e = (d + temp1) >>> 0; d = c; c = b; b = a; a = (temp1 + temp2) >>> 0;
+    }
+    hashes[0] = (hashes[0] + a) >>> 0;
+    hashes[1] = (hashes[1] + b) >>> 0;
+    hashes[2] = (hashes[2] + c) >>> 0;
+    hashes[3] = (hashes[3] + d) >>> 0;
+    hashes[4] = (hashes[4] + e) >>> 0;
+    hashes[5] = (hashes[5] + f) >>> 0;
+    hashes[6] = (hashes[6] + g) >>> 0;
+    hashes[7] = (hashes[7] + h) >>> 0;
+  }
+  return hashes.map((item) => item.toString(16).padStart(8, "0")).join("");
+}
+
+function rotateRight(value: number, count: number): number {
+  return (value >>> count) | (value << (32 - count));
 }
 
 function isNullablePlanningSelectionScope(

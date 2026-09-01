@@ -1,6 +1,281 @@
+import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { fetchTutorConversationSnapshot, fetchTutorThreadTurnV2Capability, mutateTeachingSession, openTeachingSession } from "../api";
+import {
+  actOnTutorArtifact,
+  fetchTutorArtifact,
+  fetchTutorConversationSnapshot,
+  fetchTutorThreadTurnV2Capability,
+  mutateTeachingSession,
+  openTeachingSession,
+} from "../api";
+
+const jsonResponse = (value: unknown) => new Response(JSON.stringify(value), {
+  status: 200,
+  headers: { "Content-Type": "application/json" },
+});
+
+const digest = (value: string) => createHash("sha256").update(value).digest("hex");
+
+function artifactFixture(input: {
+  id: string;
+  artifactKind: string;
+  purpose: string;
+  presentation: Record<string, unknown>;
+  overrides?: Record<string, unknown>;
+}): Record<string, unknown> {
+  return {
+    kind: "artifact",
+    id: input.id,
+    conversation_id: "conversation-1",
+    turn_id: null,
+    learning_track_id: "track-1",
+    knowledge_key: "javascript.variables",
+    teaching_session_id: "teaching-session-1",
+    checkpoint_id: "checkpoint-1",
+    artifact_version: 1,
+    artifact_kind: input.artifactKind,
+    purpose: input.purpose,
+    owner_kind: "teaching_practice",
+    owner_id: "checkpoint-1",
+    owner_version: 1,
+    state: "active",
+    blocking: false,
+    title: `Artifact ${input.id}`,
+    instruction_markdown: "Complete the **server-owned** interaction.",
+    difficulty: "D2",
+    presentation: input.presentation,
+    allowed_actions: [],
+    source_references: [{
+      kind: "teaching_checkpoint",
+      reference_id: "checkpoint-1",
+      reference_version: 1,
+      content_hash: null,
+      label: "Current checkpoint",
+    }],
+    active_attempt: null,
+    branch_summary: null,
+    version: 1,
+    created_at: "2026-09-01T00:00:00Z",
+    updated_at: "2026-09-01T00:00:00Z",
+    terminal_at: null,
+    ...input.overrides,
+  };
+}
+
+function artifactPresentations(): Array<{ artifactKind: string; purpose: string; presentation: Record<string, unknown> }> {
+  const sourceCode = "const value = 2;\nconsole.log(value);\n";
+  return [
+    {
+      artifactKind: "exercise_workspace",
+      purpose: "exercise",
+      presentation: {
+        type: "exercise_workspace_v1",
+        exercise_version_id: "exercise-1",
+        language_id: "javascript",
+        editor_mode: "code",
+        starter_content: "const value = \"变量\";\n",
+        starter_content_hash: digest("const value = \"变量\";\n"),
+        editable: true,
+        live_preview: true,
+        runtime_profile_key: "javascript.browser",
+      },
+    },
+    {
+      artifactKind: "browser_preview",
+      purpose: "demonstration",
+      presentation: {
+        type: "browser_preview_v1",
+        source_artifact_id: "artifact-exercise",
+        source_content_hash: digest("const value = \"变量\";\n"),
+        experience_tier: "local_non_authoritative",
+        interactive: true,
+      },
+    },
+    {
+      artifactKind: "test_result",
+      purpose: "result",
+      presentation: {
+        type: "test_result_v1",
+        attempt_id: "attempt-1",
+        status: "terminal",
+        outcome: "passed",
+        passed_count: 3,
+        total_count: 3,
+        summary_markdown: "All visible checks passed.",
+        result_hash: digest("result-1"),
+      },
+    },
+    {
+      artifactKind: "knowledge_check",
+      purpose: "knowledge_check",
+      presentation: {
+        type: "knowledge_check_v1",
+        response_kind: "single_select",
+        prompt_markdown: "What value is assigned?",
+        options: [{ value: "2", label: "2" }, { value: "3", label: "3" }],
+        minimum_selections: 1,
+        maximum_selections: 1,
+        maximum_text_length: 2_000,
+      },
+    },
+    {
+      artifactKind: "model_code_review",
+      purpose: "code_review",
+      presentation: {
+        type: "model_code_review_v1",
+        exercise_version_id: "exercise-review-1",
+        language_id: "javascript",
+        source_code: sourceCode,
+        source_code_hash: digest(sourceCode),
+        line_count: 2,
+        review_categories: ["logic", "contract.integration"],
+      },
+    },
+    {
+      artifactKind: "sql_workspace",
+      purpose: "sql_exploration",
+      presentation: {
+        type: "sql_workspace_v1",
+        exercise_version_id: "exercise-sql-1",
+        dialect: "sqlite",
+        starter_query: "SELECT 1;\n",
+        starter_query_hash: digest("SELECT 1;\n"),
+        schema_markdown: "`numbers(value INTEGER)`",
+        max_rows: 100,
+      },
+    },
+    {
+      artifactKind: "demonstration",
+      purpose: "demonstration",
+      presentation: {
+        type: "demonstration_v1",
+        demonstration_mode: "static",
+        language_id: "javascript",
+        source_content: "button.click();",
+        source_content_hash: digest("button.click();"),
+        expected_event_key: null,
+        duration_seconds: 6,
+      },
+    },
+    {
+      artifactKind: "source_inspector",
+      purpose: "remediation",
+      presentation: {
+        type: "source_inspector_v1",
+        document_id: "document-1",
+        document_content_hash: digest("document-1"),
+        block_id: "block-1",
+        excerpt: "A bounded source excerpt.",
+        citation_ids: ["citation-1"],
+      },
+    },
+  ];
+}
+
+function snapshotFixture(
+  version: "tutor_conversation_snapshot_v2" | "tutor_conversation_snapshot_v3" | "tutor_conversation_snapshot_v4" | "tutor_conversation_snapshot_v5",
+  input: { timeline?: unknown[]; activeArtifact?: unknown; branches?: unknown[] } = {},
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = {
+    snapshot_version: version,
+    conversation: {
+      conversation_id: "conversation-1",
+      title: "Artifact contract",
+      control_version: 2,
+      control_state: "idle",
+      queue_paused: false,
+      queue_pause_reason: null,
+      pending_count: 0,
+      max_pending: 10,
+    },
+    active_turn: null,
+    active_thinking: null,
+    pending_requests: [],
+    queue: [],
+    timeline: input.timeline ?? [],
+    next_cursor: null,
+    has_more: false,
+    stream_cursor: "opaque.cursor",
+  };
+  if (version !== "tutor_conversation_snapshot_v2") payload.active_runtime_output = null;
+  if (version === "tutor_conversation_snapshot_v4" || version === "tutor_conversation_snapshot_v5") {
+    payload.active_artifact = input.activeArtifact ?? null;
+  }
+  if (version === "tutor_conversation_snapshot_v5") payload.branches = input.branches ?? [];
+  return payload;
+}
+
+function snapshotMessage(input: { id: string; turnId: string; role: "learner" | "tutor"; content: string }) {
+  return {
+    kind: "message",
+    id: input.id,
+    turn_id: input.turnId,
+    role: input.role,
+    content: input.content,
+    public_thinking_text: "",
+    public_thinking_steps: [],
+    runtime_output: null,
+    context_references: [],
+    in_reply_to_item_id: null,
+    created_at: "2026-09-01T00:01:00Z",
+  };
+}
+
+function branchSnapshotFixture(): Record<string, unknown> {
+  const branchSummary = {
+    branch_id: "branch-1",
+    state: "resolved",
+    disposition: "answer_and_refocus",
+    round_count: 1,
+    item_count: 3,
+    collapsed: true,
+  };
+  const artifact = artifactFixture({
+    id: "artifact-branch",
+    artifactKind: "knowledge_check",
+    purpose: "knowledge_check",
+    presentation: artifactPresentations()[3].presentation,
+    overrides: { blocking: true, allowed_actions: ["respond"], branch_summary: branchSummary },
+  });
+  const learner = snapshotMessage({ id: "message-learner", turnId: "turn-branch", role: "learner", content: "Why?" });
+  const process = {
+    kind: "process",
+    id: "process-branch",
+    turn_id: "turn-branch",
+    run_id: "turn-branch",
+    display_state: "completed",
+    steps: [{ key: "input_received", state: "completed", label: "Input received" }],
+    elapsed_seconds: 1,
+    created_at: "2026-09-01T00:01:00Z",
+    finished_at: "2026-09-01T00:01:01Z",
+  };
+  const tutor = snapshotMessage({ id: "message-tutor", turnId: "turn-branch", role: "tutor", content: "Because assignment binds the evaluated value." });
+  const branch = {
+    schema_version: "tutor_conversation_branch_v1",
+    branch_id: "branch-1",
+    anchor_artifact_id: "artifact-branch",
+    teaching_session_id: "teaching-session-1",
+    checkpoint_id: "checkpoint-1",
+    state: "resolved",
+    disposition: "answer_and_refocus",
+    round_count: 1,
+    item_count: 3,
+    collapsed: true,
+    items: [
+      { item_sequence: 1, branch_round: 1, item_kind: "message", item_id: "message-learner", turn_id: "turn-branch", item_role: "learner" },
+      { item_sequence: 2, branch_round: 1, item_kind: "process", item_id: "process-branch", turn_id: "turn-branch", item_role: "process" },
+      { item_sequence: 3, branch_round: 1, item_kind: "message", item_id: "message-tutor", turn_id: "turn-branch", item_role: "tutor" },
+    ],
+    created_at: "2026-09-01T00:01:00Z",
+    resolved_at: "2026-09-01T00:01:02Z",
+  };
+  return snapshotFixture("tutor_conversation_snapshot_v5", {
+    timeline: [artifact, learner, process, tutor],
+    activeArtifact: structuredClone(artifact),
+    branches: [branch],
+  });
+}
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -70,6 +345,340 @@ describe("Tutor v2 API boundary", () => {
       },
     });
     await expect(fetchTutorConversationSnapshot({ userId: "user-1", conversationId: "conversation-1" })).rejects.toThrow("Tutor snapshot API returned an invalid payload");
+  });
+
+  it("accepts snapshot v4 with active Artifact and every registered presentation", async () => {
+    const artifacts = artifactPresentations().map((item, index) => artifactFixture({
+      id: `artifact-${index + 1}`,
+      artifactKind: item.artifactKind,
+      purpose: item.purpose,
+      presentation: item.presentation,
+    }));
+    artifacts[0] = { ...artifacts[0], blocking: true, allowed_actions: ["run"] };
+    const payload = snapshotFixture("tutor_conversation_snapshot_v4", {
+      timeline: artifacts,
+      activeArtifact: structuredClone(artifacts[0]),
+    });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(payload)));
+
+    const snapshot = await fetchTutorConversationSnapshot({ userId: "user-1", conversationId: "conversation-1" });
+
+    expect(snapshot.snapshot_version).toBe("tutor_conversation_snapshot_v4");
+    expect(snapshot.active_artifact?.id).toBe("artifact-1");
+    expect(snapshot.branches).toEqual([]);
+    expect(snapshot.timeline.filter((item) => item.kind === "artifact").map((item) => item.presentation.type)).toEqual([
+      "exercise_workspace_v1",
+      "browser_preview_v1",
+      "test_result_v1",
+      "knowledge_check_v1",
+      "model_code_review_v1",
+      "sql_workspace_v1",
+      "demonstration_v1",
+      "source_inspector_v1",
+    ]);
+  });
+
+  it("accepts snapshot v5 with exact depth-one branch groups and timeline identity", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(branchSnapshotFixture())));
+
+    const snapshot = await fetchTutorConversationSnapshot({ userId: "user-1", conversationId: "conversation-1" });
+
+    expect(snapshot.snapshot_version).toBe("tutor_conversation_snapshot_v5");
+    expect(snapshot.active_artifact).toMatchObject({ id: "artifact-branch", branch_summary: { branch_id: "branch-1", item_count: 3 } });
+    expect(snapshot.branches).toEqual([expect.objectContaining({
+      branch_id: "branch-1",
+      state: "resolved",
+      disposition: "answer_and_refocus",
+      collapsed: true,
+      items: [
+        expect.objectContaining({ item_sequence: 1, item_role: "learner" }),
+        expect.objectContaining({ item_sequence: 2, item_role: "process" }),
+        expect.objectContaining({ item_sequence: 3, item_role: "tutor" }),
+      ],
+    })]);
+  });
+
+  it("normalizes snapshot v2 and v3 compatibility fields without accepting newer keys", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(snapshotFixture("tutor_conversation_snapshot_v2")))
+      .mockResolvedValueOnce(jsonResponse(snapshotFixture("tutor_conversation_snapshot_v3")));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchTutorConversationSnapshot({ userId: "user-1", conversationId: "conversation-1" })).resolves.toMatchObject({
+      snapshot_version: "tutor_conversation_snapshot_v2",
+      active_runtime_output: null,
+      active_artifact: null,
+      branches: [],
+    });
+    await expect(fetchTutorConversationSnapshot({ userId: "user-1", conversationId: "conversation-1" })).resolves.toMatchObject({
+      snapshot_version: "tutor_conversation_snapshot_v3",
+      active_runtime_output: null,
+      active_artifact: null,
+      branches: [],
+    });
+  });
+  it("rejects reserved private markers anywhere in a public snapshot", async () => {
+    const message = snapshotMessage({ id: "message-private-marker", turnId: "turn-private-marker", role: "tutor", content: "__AEARN_PROVIDER_REASONING__" });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(
+      snapshotFixture("tutor_conversation_snapshot_v3", { timeline: [message] }),
+    )));
+
+    await expect(fetchTutorConversationSnapshot({ userId: "user-1", conversationId: "conversation-1" }))
+      .rejects.toThrow("Tutor snapshot API returned an invalid payload");
+  });
+
+  it("reads exact Artifact detail and validates scoped Artifact action responses", async () => {
+    const active = artifactFixture({
+      id: "artifact-action",
+      artifactKind: "knowledge_check",
+      purpose: "knowledge_check",
+      presentation: artifactPresentations()[3].presentation,
+      overrides: { allowed_actions: ["cancel"] },
+    });
+    const cancelled = {
+      ...active,
+      state: "cancelled",
+      allowed_actions: [],
+      version: 2,
+      updated_at: "2026-09-01T00:02:00Z",
+      terminal_at: "2026-09-01T00:02:00Z",
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(active))
+      .mockResolvedValueOnce(jsonResponse({
+        artifact: cancelled,
+        artifact_event_id: "artifact-event-2",
+        artifact_event_sequence: 2,
+        idempotent_replayed: false,
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        artifact: cancelled,
+        artifact_event_id: "artifact-event-2",
+        artifact_event_sequence: 1,
+        idempotent_replayed: false,
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        artifact: cancelled,
+        artifact_event_id: "artifact-event-2",
+        artifact_event_sequence: 2,
+        idempotent_replayed: false,
+        dispatch_job_id: "private-continuation-detail",
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchTutorArtifact({ userId: "user-1", conversationId: "conversation-1", artifactId: "artifact-action" })).resolves.toMatchObject({
+      id: "artifact-action",
+      presentation: { type: "knowledge_check_v1" },
+    });
+    await expect(actOnTutorArtifact({
+      userId: "user-1",
+      conversationId: "conversation-1",
+      artifactId: "artifact-action",
+      learningTrackId: "track-1",
+      teachingSessionId: "teaching-session-1",
+      expectedArtifactVersion: 1,
+      action: { action: "cancel", reason: "learner_cancelled" },
+      clientActionId: "artifact-action:test",
+    })).resolves.toMatchObject({ artifact: { state: "cancelled", version: 2 }, artifact_event_sequence: 2 });
+    await expect(actOnTutorArtifact({
+      userId: "user-1",
+      conversationId: "conversation-1",
+      artifactId: "artifact-action",
+      learningTrackId: "track-1",
+      teachingSessionId: "teaching-session-1",
+      expectedArtifactVersion: 1,
+      action: { action: "cancel", reason: "learner_cancelled" },
+      clientActionId: "artifact-action:bad-response",
+    })).rejects.toThrow("Tutor Artifact action API returned an invalid payload");
+    await expect(actOnTutorArtifact({
+      userId: "user-1",
+      conversationId: "conversation-1",
+      artifactId: "artifact-action",
+      learningTrackId: "track-1",
+      teachingSessionId: "teaching-session-1",
+      expectedArtifactVersion: 1,
+      action: { action: "cancel", reason: "learner_cancelled" },
+      clientActionId: "artifact-action:extra-response",
+    })).rejects.toThrow("Tutor Artifact action API returned an invalid payload");
+
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe("http://127.0.0.1:8001/api/tutor/conversations/conversation-1/artifacts/artifact-action?user_id=user-1");
+    expect(fetchMock.mock.calls[1]?.[1]?.headers).toMatchObject({ "Idempotency-Key": "artifact-action:test" });
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({
+      user_id: "user-1",
+      learning_track_id: "track-1",
+      teaching_session_id: "teaching-session-1",
+      client_action_id: "artifact-action:test",
+      expected_artifact_version: 1,
+      action: { action: "cancel", reason: "learner_cancelled" },
+    });
+  });
+
+  it("rejects unknown, extra, protected, and kind-mismatched Artifact fields", async () => {
+    const base = artifactFixture({
+      id: "artifact-invalid",
+      artifactKind: "knowledge_check",
+      purpose: "knowledge_check",
+      presentation: artifactPresentations()[3].presentation,
+    });
+    const variants = [
+      { ...base, presentation: { type: "unknown_presentation_v1" } },
+      { ...base, provider_body: { secret: true } },
+      { ...base, title: "__AEARN_PRIVATE_SUBMISSION__" },
+      { ...base, artifact_kind: "sql_workspace" },
+      { ...base, allowed_actions: ["future_action"] },
+    ];
+    const fetchMock = vi.fn();
+    variants.forEach((variant) => fetchMock.mockResolvedValueOnce(jsonResponse(
+      snapshotFixture("tutor_conversation_snapshot_v4", { timeline: [variant] }),
+    )));
+    vi.stubGlobal("fetch", fetchMock);
+
+    for (const _variant of variants) {
+      await expect(fetchTutorConversationSnapshot({ userId: "user-1", conversationId: "conversation-1" }))
+        .rejects.toThrow("Tutor snapshot API returned an invalid payload");
+    }
+  });
+
+  it("rejects duplicate Artifact identities and cross-scope projection mismatches", async () => {
+    const base = artifactFixture({
+      id: "artifact-identity",
+      artifactKind: "knowledge_check",
+      purpose: "knowledge_check",
+      presentation: artifactPresentations()[3].presentation,
+    });
+    const duplicateActions = { ...base, allowed_actions: ["respond", "respond"] };
+    const sourceReferences = base.source_references as unknown[];
+    const duplicateReferences = { ...base, source_references: [sourceReferences[0], structuredClone(sourceReferences[0])] };
+    const blocking = { ...base, blocking: true, allowed_actions: ["respond"] };
+    const snapshots = [
+      snapshotFixture("tutor_conversation_snapshot_v4", { timeline: [duplicateActions] }),
+      snapshotFixture("tutor_conversation_snapshot_v4", { timeline: [duplicateReferences] }),
+      snapshotFixture("tutor_conversation_snapshot_v4", { timeline: [base, structuredClone(base)] }),
+      snapshotFixture("tutor_conversation_snapshot_v4", { timeline: [blocking], activeArtifact: { ...blocking, version: 2 } }),
+      snapshotFixture("tutor_conversation_snapshot_v4", { timeline: [{ ...base, conversation_id: "conversation-foreign" }] }),
+    ];
+    const fetchMock = vi.fn();
+    snapshots.forEach((snapshot) => fetchMock.mockResolvedValueOnce(jsonResponse(snapshot)));
+    vi.stubGlobal("fetch", fetchMock);
+
+    for (const _snapshot of snapshots) {
+      await expect(fetchTutorConversationSnapshot({ userId: "user-1", conversationId: "conversation-1" }))
+        .rejects.toThrow("Tutor snapshot API returned an invalid payload");
+    }
+  });
+
+  it("rejects bad Artifact hashes, counts, and terminal shapes", async () => {
+    const presentations = artifactPresentations();
+    const badHash = artifactFixture({
+      id: "artifact-bad-hash",
+      artifactKind: "exercise_workspace",
+      purpose: "exercise",
+      presentation: { ...presentations[0].presentation, starter_content_hash: "0".repeat(64) },
+    });
+    const badCounts = artifactFixture({
+      id: "artifact-bad-counts",
+      artifactKind: "test_result",
+      purpose: "result",
+      presentation: { ...presentations[2].presentation, passed_count: 4, total_count: 3 },
+    });
+    const badPresentationTerminal = artifactFixture({
+      id: "artifact-bad-result-terminal",
+      artifactKind: "test_result",
+      purpose: "result",
+      presentation: { ...presentations[2].presentation, result_hash: null },
+    });
+    const badAttemptTerminal = artifactFixture({
+      id: "artifact-bad-attempt-terminal",
+      artifactKind: "knowledge_check",
+      purpose: "knowledge_check",
+      presentation: presentations[3].presentation,
+      overrides: {
+        active_attempt: {
+          attempt_id: "attempt-2",
+          attempt_type: "run",
+          status: "terminal",
+          outcome: "passed",
+          score: null,
+          result_hash: digest("attempt-2"),
+          accepted_at: "2026-09-01T00:00:00Z",
+          terminal_at: "2026-09-01T00:00:01Z",
+        },
+      },
+    });
+    const badArtifactTerminal = artifactFixture({
+      id: "artifact-bad-artifact-terminal",
+      artifactKind: "knowledge_check",
+      purpose: "knowledge_check",
+      presentation: presentations[3].presentation,
+      overrides: { state: "completed", allowed_actions: ["respond"], terminal_at: null },
+    });
+    const badLineCount = artifactFixture({
+      id: "artifact-bad-line-count",
+      artifactKind: "model_code_review",
+      purpose: "code_review",
+      presentation: { ...presentations[4].presentation, line_count: 3 },
+    });
+    const variants = [badHash, badCounts, badPresentationTerminal, badAttemptTerminal, badArtifactTerminal, badLineCount];
+    const fetchMock = vi.fn();
+    variants.forEach((variant) => fetchMock.mockResolvedValueOnce(jsonResponse(
+      snapshotFixture("tutor_conversation_snapshot_v4", { timeline: [variant] }),
+    )));
+    vi.stubGlobal("fetch", fetchMock);
+
+    for (const _variant of variants) {
+      await expect(fetchTutorConversationSnapshot({ userId: "user-1", conversationId: "conversation-1" }))
+        .rejects.toThrow("Tutor snapshot API returned an invalid payload");
+    }
+  });
+
+  it("rejects branch duplicates, non-contiguous membership, bad counts, and timeline identity mismatch", async () => {
+    const variants: Record<string, unknown>[] = [];
+    const duplicateBranches = branchSnapshotFixture();
+    duplicateBranches.branches = [
+      structuredClone((duplicateBranches.branches as unknown[])[0]),
+      structuredClone((duplicateBranches.branches as unknown[])[0]),
+    ];
+    variants.push(duplicateBranches);
+
+    const nonContiguous = branchSnapshotFixture();
+    ((nonContiguous.branches as Array<Record<string, unknown>>)[0].items as Array<Record<string, unknown>>)[1].item_sequence = 3;
+    variants.push(nonContiguous);
+
+    const badCount = branchSnapshotFixture();
+    (badCount.branches as Array<Record<string, unknown>>)[0].item_count = 2;
+    variants.push(badCount);
+
+    const badResolvedShape = branchSnapshotFixture();
+    (badResolvedShape.branches as Array<Record<string, unknown>>)[0].collapsed = false;
+    variants.push(badResolvedShape);
+
+    const badRole = branchSnapshotFixture();
+    ((badRole.branches as Array<Record<string, unknown>>)[0].items as Array<Record<string, unknown>>)[1].item_role = "tutor";
+    variants.push(badRole);
+
+    const badIdentity = branchSnapshotFixture();
+    ((badIdentity.branches as Array<Record<string, unknown>>)[0].items as Array<Record<string, unknown>>)[0].turn_id = "turn-other";
+    variants.push(badIdentity);
+
+    const badSummary = branchSnapshotFixture();
+    ((badSummary.timeline as Array<Record<string, unknown>>)[0].branch_summary as Record<string, unknown>).item_count = 2;
+    (badSummary.active_artifact as Record<string, unknown>).branch_summary = structuredClone(
+      (badSummary.timeline as Array<Record<string, unknown>>)[0].branch_summary,
+    );
+    variants.push(badSummary);
+    const missingSummary = branchSnapshotFixture();
+    (missingSummary.timeline as Array<Record<string, unknown>>)[0].branch_summary = null;
+    (missingSummary.active_artifact as Record<string, unknown>).branch_summary = null;
+    variants.push(missingSummary);
+
+    const fetchMock = vi.fn();
+    variants.forEach((variant) => fetchMock.mockResolvedValueOnce(jsonResponse(variant)));
+    vi.stubGlobal("fetch", fetchMock);
+
+    for (const _variant of variants) {
+      await expect(fetchTutorConversationSnapshot({ userId: "user-1", conversationId: "conversation-1" }))
+        .rejects.toThrow("Tutor snapshot API returned an invalid payload");
+    }
   });
 
   it("accepts Codex runtime process steps and rejects unknown step keys", async () => {

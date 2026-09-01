@@ -4,14 +4,15 @@ import { useGraphemeTypewriter } from "../../hooks/useGraphemeTypewriter";
 import type {
   ExerciseAttemptOutcome, TeachingSessionGroupProjection, TutorContextReference,
   TutorContextReferenceDraft, TutorHistoryItem, TutorHistoryMessage, TutorInteractionRequestItem,
-  TutorPublicTurn, TutorQueuedInput, TutorRuntimeOutput,
+  TutorPublicArtifactItem, TutorPublicBranchGroup, TutorPublicTurn, TutorQueuedInput, TutorRuntimeOutput,
 } from "../../types";
 import {
   Button, DisclosureRow, IconChevronDown, IconChevronUp, IconDelete, IconEdit, IconQueue,
   IconSend, IconStop, Input, StateDot,
 } from "../../ui/dsh-derived";
+import { ClarificationBranchGroup, InlineArtifactMessage, SafeMarkdown, type TutorArtifactActionRequest } from "./artifacts";
 import {
-  displayQueuePauseReason, requestDraftValid, runtimeReasoningText,
+  displayQueuePauseReason, groupTimelineAroundArtifacts, requestDraftValid, runtimeReasoningText,
   TUTOR_TEXT_REVEAL_INTERVAL_MS, TUTOR_THINKING_AUTO_COLLAPSE_DELAY_MS,
   type RequestDraft, type TutorComposerReference, type TutorLiveRuntimeOutputState,
   type TutorRecentCompletion,
@@ -92,18 +93,27 @@ export function groupTeachingTimeline(
   timeline: TutorHistoryItem[],
   groups: TeachingSessionGroupProjection[],
   activeSessionId: string | null,
+  branches: TutorPublicBranchGroup[] = [],
 ): GroupedTeachingTimeline {
   if (groups.length === 0 || !activeSessionId) return { current: timeline, history: [], legacy: [] };
   const active = groups.find((group) => group.session_id === activeSessionId) ?? null;
   if (!active) return { current: timeline, history: [], legacy: [] };
-  const ownership = new Map<string, TeachingSessionGroupProjection>();
-  for (const group of groups) for (const turnId of group.turn_ids) ownership.set(turnId, group);
+  const sessionById = new Map(groups.map((group) => [group.session_id, group]));
+  const turnOwnership = new Map<string, TeachingSessionGroupProjection>();
+  for (const group of groups) for (const turnId of group.turn_ids) turnOwnership.set(turnId, group);
+  const branchItemOwnership = new Map<string, TeachingSessionGroupProjection>();
+  for (const branch of branches) {
+    const group = sessionById.get(branch.teaching_session_id);
+    if (!group) continue;
+    for (const reference of branch.items) branchItemOwnership.set(`${reference.item_kind}:${reference.item_id}`, group);
+  }
   const current: TutorHistoryItem[] = [];
   const legacy: TutorHistoryItem[] = [];
   const historical = new Map<string, TutorHistoryItem[]>();
   for (const item of timeline) {
-    const turnId = historyItemTurnId(item);
-    const group = turnId ? ownership.get(turnId) : null;
+    const group = item.kind === "artifact"
+      ? sessionById.get(item.teaching_session_id) ?? null
+      : branchItemOwnership.get(`${item.kind}:${item.id}`) ?? (historyItemTurnId(item) ? turnOwnership.get(historyItemTurnId(item)!) ?? null : null);
     if (group?.session_id === activeSessionId) current.push(item);
     else if (group) historical.set(group.session_id, [...(historical.get(group.session_id) ?? []), item]);
     else legacy.push(item);
@@ -115,14 +125,19 @@ export function groupTeachingTimeline(
   };
 }
 
-export function TeachingSessionTimeline({ groups, legacyItems, recentCompletion, writeEnabled, mutationBusy, onRetry, onReference }: {
+export function TeachingSessionTimeline({ groups, legacyItems, branches, conversationId, newArtifactIds, recentCompletion, writeEnabled, mutationBusy, onRetry, onReference, onArtifactAction, loadArtifactDetail }: {
   groups: GroupedTeachingTimeline["history"];
   legacyItems: TutorHistoryItem[];
+  branches: TutorPublicBranchGroup[];
+  conversationId: string;
+  newArtifactIds: ReadonlySet<string>;
   recentCompletion: TutorRecentCompletion | null;
   writeEnabled: boolean;
   mutationBusy: string | null;
   onRetry: (turnId: string) => void;
   onReference?: (reference: TutorContextReferenceDraft, label: string) => void;
+  onArtifactAction?: (request: TutorArtifactActionRequest) => void;
+  loadArtifactDetail?: (artifact: TutorPublicArtifactItem) => Promise<TutorPublicArtifactItem>;
 }) {
   if (groups.length === 0 && legacyItems.length === 0) return null;
   return <section className="teaching-session-history" aria-label="历史教学分段">
@@ -130,24 +145,23 @@ export function TeachingSessionTimeline({ groups, legacyItems, recentCompletion,
       <summary><span><strong>{session.knowledge_key}</strong><small>{displayTeachingSessionStatus(session.status)} · {displayTeachingMode(session.mode)}</small></span><time>{formatTeachingSessionTime(session.last_activity_at)}</time></summary>
       <div className="teaching-session-readonly" aria-label={`${session.knowledge_key} 历史分段，只读`}>
         <p>历史 teaching session · 只读。展开不会改变当前 Composer、mode 或下一步。</p>
-        {items.length > 0 ? items.map((item) => <div key={`history:${session.session_id}:${item.kind}:${item.id}`} className="teaching-session-history-item">
-          <TimelineItem item={item} recentCompletion={recentCompletion} writeEnabled={false} mutationBusy={mutationBusy} onRetry={onRetry} />
-          {item.kind === "message" && item.turn_id && onReference ? <button
-            className="tutor-text-button teaching-session-reference-button"
-            type="button"
-            disabled={!writeEnabled}
-            onClick={() => onReference({
-              kind: "teaching_session_message",
-              learning_track_id: session.track_id,
-              knowledge_key: session.knowledge_key,
-              teaching_session_id: session.session_id,
-              message_id: item.id,
-            }, `历史${item.role === "learner" ? "提问" : "讲解"} · ${session.knowledge_key}`)}
-          >引用此消息</button> : null}
-        </div>) : <span>当前 bounded snapshot 中没有该分段的消息；可使用“加载更早记录”继续读取。</span>}
+        {items.length > 0 ? <TimelineSequence items={items} branches={branches} conversationId={conversationId} newArtifactIds={newArtifactIds} recentCompletion={recentCompletion} writeEnabled={false} mutationBusy={mutationBusy} onRetry={onRetry} loadArtifactDetail={loadArtifactDetail} /> : <span>当前 bounded snapshot 中没有该分段的消息；可使用“加载更早记录”继续读取。</span>}
+        {items.map((item) => item.kind === "message" && item.turn_id && onReference ? <button
+          key={`reference:${session.session_id}:${item.id}`}
+          className="tutor-text-button teaching-session-reference-button"
+          type="button"
+          disabled={!writeEnabled}
+          onClick={() => onReference({
+            kind: "teaching_session_message",
+            learning_track_id: session.track_id,
+            knowledge_key: session.knowledge_key,
+            teaching_session_id: session.session_id,
+            message_id: item.id,
+          }, `历史${item.role === "learner" ? "提问" : "讲解"} · ${session.knowledge_key}`)}
+        >引用此消息</button> : null)}
       </div>
     </details>)}
-    {legacyItems.length > 0 ? <details className="teaching-session-group legacy"><summary><span><strong>教学分段启用前的对话</strong><small>Track conversation history · 只读</small></span></summary><div className="teaching-session-readonly">{legacyItems.map((item) => <TimelineItem key={`legacy:${item.kind}:${item.id}`} item={item} recentCompletion={recentCompletion} writeEnabled={false} mutationBusy={mutationBusy} onRetry={onRetry} />)}</div></details> : null}
+    {legacyItems.length > 0 ? <details className="teaching-session-group legacy"><summary><span><strong>教学分段启用前的对话</strong><small>Track conversation history · 只读</small></span></summary><div className="teaching-session-readonly"><TimelineSequence items={legacyItems} branches={branches} conversationId={conversationId} newArtifactIds={newArtifactIds} recentCompletion={recentCompletion} writeEnabled={false} mutationBusy={mutationBusy} onRetry={onRetry} onArtifactAction={onArtifactAction} loadArtifactDetail={loadArtifactDetail} /></div></details> : null}
   </section>;
 }
 
@@ -170,14 +184,57 @@ export function formatTeachingSessionTime(value: string | null): string {
   return Number.isNaN(parsed.valueOf()) ? "" : new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(parsed);
 }
 
-export function TimelineItem({ item, recentCompletion, writeEnabled, mutationBusy, onRetry }: {
+export function TimelineSequence({ items, branches, conversationId, newArtifactIds, recentCompletion, writeEnabled, mutationBusy, onRetry, onArtifactAction, loadArtifactDetail }: {
+  items: TutorHistoryItem[];
+  branches: TutorPublicBranchGroup[];
+  conversationId: string;
+  newArtifactIds: ReadonlySet<string>;
+  recentCompletion: TutorRecentCompletion | null;
+  writeEnabled: boolean;
+  mutationBusy: string | null;
+  onRetry: (turnId: string) => void;
+  onArtifactAction?: (request: TutorArtifactActionRequest) => void;
+  loadArtifactDetail?: (artifact: TutorPublicArtifactItem) => Promise<TutorPublicArtifactItem>;
+}) {
+  const nodes = groupTimelineAroundArtifacts(items, branches);
+  return <>{nodes.map((node) => node.kind === "branch"
+    ? <ClarificationBranchGroup key={`branch:${node.branch.branch_id}`} conversationId={conversationId} branch={node.branch}>
+        {node.items.map((item) => <TimelineItem
+          key={`branch-item:${node.branch.branch_id}:${item.kind}:${item.id}`}
+          item={item}
+          recentCompletion={recentCompletion}
+          writeEnabled={writeEnabled}
+          mutationBusy={mutationBusy}
+          onRetry={onRetry}
+        />)}
+      </ClarificationBranchGroup>
+    : <TimelineItem
+        key={`${node.item.kind}:${node.item.id}`}
+        item={node.item}
+        recentCompletion={recentCompletion}
+        writeEnabled={writeEnabled}
+        mutationBusy={mutationBusy}
+        onRetry={onRetry}
+        artifactAutoReveal={node.item.kind === "artifact" && newArtifactIds.has(node.item.id)}
+        artifactTerminalCollapseMarker={node.terminalCollapseMarker}
+        onArtifactAction={writeEnabled ? onArtifactAction : undefined}
+        loadArtifactDetail={loadArtifactDetail}
+      />)}</>;
+}
+
+export function TimelineItem({ item, recentCompletion, writeEnabled, mutationBusy, onRetry, artifactAutoReveal = false, artifactTerminalCollapseMarker = null, onArtifactAction, loadArtifactDetail }: {
   item: TutorHistoryItem;
   recentCompletion: TutorRecentCompletion | null;
   writeEnabled: boolean;
   mutationBusy: string | null;
   onRetry: (turnId: string) => void;
+  artifactAutoReveal?: boolean;
+  artifactTerminalCollapseMarker?: string | null;
+  onArtifactAction?: (request: TutorArtifactActionRequest) => void;
+  loadArtifactDetail?: (artifact: TutorPublicArtifactItem) => Promise<TutorPublicArtifactItem>;
 }) {
   if (item.kind === "process") return null;
+  if (item.kind === "artifact") return <InlineArtifactMessage artifact={item} autoReveal={artifactAutoReveal} terminalCollapseMarker={artifactTerminalCollapseMarker} onAction={onArtifactAction} loadDetail={loadArtifactDetail} />;
   if (item.kind === "message") {
     if (item.role === "tutor") {
       return <TutorMessage item={item} recentCompletion={recentCompletion?.itemId === item.id ? recentCompletion : null} />;
@@ -275,7 +332,7 @@ export function TutorMessage({ item, recentCompletion }: { item: TutorHistoryMes
         complete={thinking.complete}
         onExpandedChange={setExpanded}
       /> : null}
-      <p className={`tutor-answer-text${recentCompletion && !answer.complete ? " is-streaming" : ""}`}>{answer.text}</p>
+      <SafeMarkdown markdown={answer.text} surface="message" streaming={Boolean(recentCompletion && !answer.complete)} className="tutor-answer-text" />
     </div>
   </article>;
 }
@@ -294,7 +351,7 @@ export function TutorRuntimeMessage({ item, output }: { item: TutorHistoryMessag
         complete
         onExpandedChange={setExpanded}
       /> : null}
-      <p className="tutor-answer-text">{answerText}</p>
+      <SafeMarkdown markdown={answerText} surface="message" className="tutor-answer-text" />
     </div>
   </article>;
 }
@@ -321,7 +378,7 @@ export function TutorRunningPlaceholder({ turn, hasText, text, complete, runtime
         running
         onExpandedChange={setExpanded}
       /> : null}
-      {answerItem?.text ? <p className={`tutor-answer-text${answerItem.state === "streaming" ? " is-streaming" : ""}`} aria-live="polite">{answerItem.text}</p> : null}
+      {answerItem?.text ? <SafeMarkdown markdown={answerItem.text} surface="message" streaming={answerItem.state === "streaming"} className="tutor-answer-text" /> : null}
       {!hasRuntimeContent && (hasText ? <TutorThinking
         messageId={`active-legacy-${turn.turn_id}`}
         text={text}
