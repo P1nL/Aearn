@@ -389,6 +389,68 @@ class ReviewService:
         except (ReviewRepositoryError, ExecutionSubmissionError) as exc:
             raise _map_error(exc) from exc
 
+    def observe_artifact_attempt(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str,
+        artifact_id: str,
+        attempt_id: str,
+    ) -> dict[str, object]:
+        """Observe one exact Artifact-linked Review Attempt through owner authority."""
+
+        user = _uuid(user_id, "user_id")
+        conversation = _uuid(conversation_id, "conversation_id")
+        artifact = _uuid(artifact_id, "artifact_id")
+        attempt = _uuid(attempt_id, "attempt_id")
+        row = self._conn.execute(
+            """
+            SELECT attempts.track_id, attempts.review_session_id
+            FROM tutor_learning_artifact_attempt_links AS links
+            JOIN tutor_learning_artifacts AS artifacts
+              ON artifacts.id = links.artifact_id
+             AND artifacts.user_id = links.user_id
+             AND artifacts.conversation_id = links.conversation_id
+             AND artifacts.teaching_session_id = links.teaching_session_id
+             AND artifacts.learning_track_id = links.learning_track_id
+            JOIN tutor_exercise_attempts AS attempts
+              ON attempts.id = links.attempt_id
+             AND attempts.user_id = links.user_id
+             AND attempts.track_id = links.learning_track_id
+             AND attempts.knowledge_key = artifacts.knowledge_key
+            WHERE links.artifact_id = %s
+              AND links.attempt_id = %s
+              AND links.user_id = %s
+              AND links.conversation_id = %s
+              AND artifacts.artifact_kind <> 'test_result'
+              AND attempts.attempt_type = 'review_submit'
+              AND attempts.review_session_id IS NOT NULL
+              AND tutor_learning_artifact_attempt_owner_matches(
+                artifacts.user_id,
+                artifacts.conversation_id,
+                artifacts.learning_track_id,
+                artifacts.knowledge_key,
+                artifacts.teaching_session_id,
+                artifacts.owner_kind,
+                artifacts.owner_id,
+                attempts.id
+              )
+            """,
+            (artifact, attempt, user, conversation),
+        ).fetchone()
+        if row is None:
+            raise ReviewServiceError(
+                "REVIEW_NOT_FOUND",
+                "Review 资源不存在或不属于当前用户。",
+                status_code=404,
+            )
+        return self.read_attempt(
+            user_id=user,
+            track_id=str(row["track_id"]),
+            session_id=str(row["review_session_id"]),
+            attempt_id=attempt,
+        )
+
     def finalize_session(
         self,
         *,

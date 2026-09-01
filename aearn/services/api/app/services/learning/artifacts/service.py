@@ -9,7 +9,7 @@ from psycopg import Connection
 
 from .contracts import (
     TutorArtifactActionRequest,
-    TutorArtifactAttemptDetailV1,
+    TutorArtifactAttemptDetailV2,
     TutorArtifactCreate,
     TutorPublicArtifactItem,
 )
@@ -130,7 +130,7 @@ class LearningArtifactService:
         conversation_id: str,
         artifact_id: str,
         attempt_id: str,
-    ) -> TutorArtifactAttemptDetailV1:
+    ) -> TutorArtifactAttemptDetailV2:
         try:
             return self._repository.read_attempt_detail(
                 user_id=user_id,
@@ -148,12 +148,14 @@ class LearningArtifactService:
         request: TutorArtifactCreate,
         *,
         creation_key: str,
+        publish_item: bool = True,
     ) -> LearningArtifactWriteResult:
         self._require_enabled()
         try:
             return self._repository.create_artifact(
                 request,
                 creation_key=creation_key,
+                publish_item=publish_item,
                 occurred_at=self._clock(),
             )
         except LearningArtifactRepositoryError as exc:

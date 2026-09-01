@@ -10,7 +10,12 @@ from uuid import uuid4
 
 from psycopg import Connection
 
-from aearn_shared.execution import ExecutionAction, ExecutionJobState, ExecutionJobV1, SafeExecutionResultV1
+from aearn_shared.execution import (
+    ExecutionAction,
+    ExecutionJobState,
+    ExecutionJobV1,
+    parse_safe_execution_result,
+)
 from app.agents.harness.actions import ActionInvocation
 from app.agents.harness.contracts import TutorLease, TutorPolicySnapshot, TutorRunSnapshot
 from app.agents.harness.skill_catalog import compile_published_skill_catalog
@@ -1216,7 +1221,7 @@ def _job(row: Mapping[str, object]) -> ExecutionJobV1:
         launch_token=str(row["launch_token"]) if row.get("launch_token") else None,
         launch_generation=_int(row.get("launch_generation")),
         cancellation_requested_at=_datetime(row.get("cancellation_requested_at")),
-        result=SafeExecutionResultV1.model_validate(raw_result) if isinstance(raw_result, Mapping) else None,
+        result=parse_safe_execution_result(raw_result) if isinstance(raw_result, Mapping) else None,
         safe_diagnostic_code=str(row["safe_diagnostic_code"]) if row.get("safe_diagnostic_code") else None,
     )
 

@@ -234,6 +234,51 @@ export type TutorArtifactTestResultPresentation = {
   result_hash: string | null;
 };
 
+export type SafeExecutionStatus =
+  | "success"
+  | "compile_error"
+  | "runtime_error"
+  | "timeout"
+  | "cancelled"
+  | "unsupported"
+  | "unavailable"
+  | "failed";
+
+export type SafeExecutionLocation = {
+  line: number;
+  column: number | null;
+  end_line: number | null;
+  end_column: number | null;
+};
+
+export type SafeTestFeedbackV2 = {
+  case_id: string;
+  passed: boolean;
+  visible: boolean;
+  message: string;
+  duration_ms: number;
+  location: SafeExecutionLocation | null;
+};
+
+export type SafeTableResultCell = string | number | boolean | null;
+
+export type SafeExecutionPresentation =
+  | { kind: "none" }
+  | { kind: "table_result_v1"; columns: string[]; rows: SafeTableResultCell[][] };
+
+export type SafeExecutionResultV2 = {
+  schema_version: "safe-execution-result-v2";
+  status: SafeExecutionStatus;
+  stdout: string;
+  stderr: string;
+  test_feedback: SafeTestFeedbackV2[];
+  passed_test_count: number;
+  total_test_count: number;
+  duration_ms: number;
+  diagnostic_code: string;
+  presentation: SafeExecutionPresentation;
+};
+
 export type TutorArtifactKnowledgeCheckPresentation = {
   type: "knowledge_check_v1";
   response_kind: "single_select" | "multi_select" | "prediction" | "ordering" | "code_range" | "short_text";
@@ -311,6 +356,67 @@ export type TutorArtifactAttemptSummary = {
   accepted_at: string;
   terminal_at: string | null;
 };
+
+export type TutorArtifactAttemptResultV1 = {
+  outcome: TutorArtifactOutcome;
+  score: number;
+  safe_feedback: Readonly<Record<string, unknown>>;
+  capability_scores: Readonly<Record<string, number>>;
+  policy_version: string;
+  result_hash: string;
+  terminal_at: string;
+};
+
+export type TutorArtifactAttemptResultV2 = {
+  outcome: TutorArtifactOutcome;
+  score: number;
+  execution_result: SafeExecutionResultV2 | null;
+  capability_scores: Readonly<Record<string, number>>;
+  policy_version: string;
+  result_hash: string;
+  terminal_at: string;
+};
+
+type TutorArtifactAttemptDetailBase = {
+  artifact_id: string;
+  artifact_version: number;
+  conversation_id: string;
+  learning_track_id: string;
+  knowledge_key: string;
+  teaching_session_id: string;
+  attempt_id: string;
+  attempt_type: "run" | "submit" | "diagnostic_submit" | "review_submit";
+  exercise_version_id: string;
+  submission_hash: string;
+  independence: "independent" | "hinted" | "remediated";
+  assistance_kind: "independent" | "hinted" | "validation_evidence_viewed" | "remediated";
+  status: "pending" | "terminal";
+  execution_job_state:
+    | "pending"
+    | "claimed"
+    | "launch_reserved"
+    | "running"
+    | "completed"
+    | "timed_out"
+    | "cancelled"
+    | "unavailable"
+    | "launch_uncertain"
+    | "failed"
+    | null;
+  accepted_at: string;
+};
+
+export type TutorArtifactAttemptDetailV1 = TutorArtifactAttemptDetailBase & {
+  schema_version: "tutor_learning_artifact_attempt_v1";
+  result: TutorArtifactAttemptResultV1 | null;
+};
+
+export type TutorArtifactAttemptDetailV2 = TutorArtifactAttemptDetailBase & {
+  schema_version: "tutor_learning_artifact_attempt_v2";
+  result: TutorArtifactAttemptResultV2 | null;
+};
+
+export type TutorArtifactAttemptDetail = TutorArtifactAttemptDetailV1 | TutorArtifactAttemptDetailV2;
 
 export type TutorArtifactBranchSummary = {
   branch_id: string;

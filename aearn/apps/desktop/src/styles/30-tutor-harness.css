@@ -1694,6 +1694,153 @@
 
 .inline-artifact-actions button { min-height: 44px; }
 
+/* Child 05 authoritative execution result presentation. */
+.execution-result-artifact,
+.execution-result-detail {
+  display: grid;
+  min-width: 0;
+  gap: 11px;
+}
+
+.execution-result-overview {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid rgba(47, 125, 99, .18);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, .62);
+}
+
+.execution-result-overview > div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.execution-result-overview strong { color: var(--ink); font-size: 14px; }
+.execution-result-overview span,
+.execution-result-overview small,
+.execution-result-status { color: var(--muted); font-size: 12px; }
+.execution-result-overview.outcome-failed,
+.execution-result-overview.outcome-timed_out,
+.execution-result-overview.outcome-invalid { border-color: rgba(184, 70, 70, .25); }
+
+.execution-result-status {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  padding: 0 11px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, .45);
+}
+
+.execution-result-failures {
+  display: grid;
+  gap: 9px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.execution-result-failures li {
+  min-width: 0;
+  padding: 11px 12px;
+  border: 1px solid rgba(184, 70, 70, .22);
+  border-radius: 10px;
+  background: rgba(184, 70, 70, .055);
+}
+
+.execution-result-failure-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.execution-result-failure-heading strong { min-width: 0; overflow-wrap: anywhere; font-size: 13px; }
+.execution-result-failure-heading span,
+.execution-result-location { flex: 0 0 auto; color: var(--muted); font-size: 11px; }
+.execution-result-failures p { margin: 7px 0 0; overflow-wrap: anywhere; line-height: 1.55; }
+.execution-result-location { display: block; margin-top: 6px; }
+.execution-result-passed-summary { margin: 0; }
+.execution-result-passed-summary { color: var(--accent-dark); font-size: 12px; font-weight: 750; }
+
+.execution-result-output-disclosures {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+}
+
+.execution-result-output-disclosures details {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, .54);
+}
+
+.execution-result-output-disclosures summary {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  padding: 0 11px;
+  cursor: pointer;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.execution-result-output-disclosures pre {
+  max-width: 100%;
+  margin: 0;
+  padding: 11px;
+  overflow: auto;
+  border-top: 1px solid var(--line-soft);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+}
+
+.execution-result-output-disclosures summary:focus-visible,
+.execution-result-table-scroll:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--accent) 44%, transparent);
+  outline-offset: -3px;
+}
+
+.execution-result-table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: #fff;
+}
+
+.execution-result-table-scroll table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+}
+
+.execution-result-table-scroll th,
+.execution-result-table-scroll td {
+  max-width: 34ch;
+  padding: 9px 11px;
+  border-bottom: 1px solid var(--line-soft);
+  text-align: left;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+
+.execution-result-table-scroll th { color: var(--ink); background: rgba(47, 125, 99, .07); }
+.execution-result-table-scroll tbody tr:last-child td { border-bottom: 0; }
+.execution-result-return { display: flex; justify-content: flex-start; }
+.execution-result-return button { min-height: 44px; }
+
 .tutor-clarification-branch {
   position: relative;
   width: 100%;
@@ -1749,6 +1896,8 @@
   .inline-artifact-actions { display: grid; grid-template-columns: 1fr; }
   .inline-artifact-actions button { width: 100%; }
   .inline-artifact-body { max-height: min(68vh, 620px); padding-inline: 11px; }
+  .execution-result-overview { display: grid; }
+  .execution-result-return button { width: 100%; }
   .tutor-clarification-branch { padding-left: 20px; }
   .tutor-branch-rail { left: 6px; }
   .tutor-branch-items .tutor-timeline-entry.learner { margin-right: -20px; }

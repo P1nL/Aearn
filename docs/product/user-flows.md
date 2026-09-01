@@ -300,3 +300,11 @@ Codex 只能读取服务端权威 planning context并追加 typed draft。右侧
 3. 服务端把最近四个已提交教学单元的安全策略签名带入下一 Turn。重复相同公开消息 hash 或完全相同 focus/moves/response-mode 的 Continue 被拒绝，不写第二条消息或 receipt；真正改变例子、诊断方式、迁移任务或根据学习者反馈调整策略后才能推进。
 4. `change_example` 必须真的提供 worked example 或 counterexample。authority pause、session refresh、完成后显式进入下一知识点等原有边界保持不变。
 5. reload/reconnect 完全从 durable checkpoint、v2 receipt 与 server-owned shelf 恢复；Desktop 不从消息正文猜测教学策略，也不在本地补空按钮。
+
+## 2026-09-01：显式 Run、结果 Artifact 与 Tutor 评价
+
+1. 学习者只在 source Artifact 的 server `allowed_actions` 含 Run 时提交当前内容。服务端创建 append-only Attempt；pending/running 时 source Artifact 显示权威状态，不产生评价 Turn，也不存在第二 Submit。
+2. executor/owner 写入 terminal learner-safe result 后，下一次同请求重放或 scoped Attempt read 幂等完成 projection：passed 直接完成 source Artifact；failure/timeout/cancel/unavailable/invalid 保持 source active；每个 Attempt 追加一个独立非阻塞 result Artifact。
+3. result Artifact 展示失败优先、数字位置、其他通过数、非空 stdout/stderr 和 bounded public table。hidden case identity/input/expected、完整 submission、private test/rubric、path/stack/command/container/provider/secret 不进入 API、DOM 或评价上下文。
+4. terminal projection 先保存 result authority，但公开 timeline 等待 mainline result-evaluation Turn；Turn 完成时先追加 Tutor Markdown 评价，再追加 exact result Artifact，两项同事务发布。模型只生成教学评价，不能修改 outcome、score、test result、Artifact 或 mastery/progress。模型不可用时，Attempt/result 仍保留，服务端追加固定的安全评价；不会重跑代码。
+5. 失败 result 的“返回修改”定位同一 conversation 中 exact source Artifact version并恢复键盘焦点。多个 Run 的 result history 独立保留，source Artifact 的当前状态仍来自最新服务器 snapshot；Desktop 不合并、重算或覆盖历史结果。

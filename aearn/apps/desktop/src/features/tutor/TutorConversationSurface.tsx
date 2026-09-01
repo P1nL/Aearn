@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type RefO
 import {
   acceptTutorConversationInput, acceptTutorFirstTurn, buildTutorConversationEventsUrl,
   correctTutorMemory, deleteTutorMemory, deleteTutorQueueItem, dismissTutorInbox,
-  editTutorQueueItem, executeTutorQueueItem, fetchTutorActivity, fetchTutorArtifact, fetchTutorConversationSnapshot,
+  editTutorQueueItem, executeTutorQueueItem, fetchTutorActivity, fetchTutorArtifact, fetchTutorArtifactAttempt, fetchTutorConversationSnapshot,
   fetchTutorInbox, fetchTutorMemory, fetchTutorPlanRevisions, fetchTutorPreferences,
   fetchTutorThreadTurnV2Capability, interruptTutorTurn, markTutorInboxRead, reorderTutorQueue,
   respondToTutorInteractionRequest, resumeTutorQueue, retryTutorTurn, rollbackTutorPlan,
@@ -25,7 +25,7 @@ import {
   IconEdit, IconQueue, IconSend, IconStop, Input, StateDot,
 } from "../../ui/dsh-derived";
 import { ComposerActionShelf } from "./ComposerActionShelf";
-import type { TutorArtifactActionRequest } from "./artifacts";
+import type { TutorArtifactActionRequest, TutorArtifactAttemptLoader, TutorArtifactReturnToSource } from "./artifacts";
 import { TutorActivityPanel } from "./TutorActivityPanel";
 import { TutorMemoryPanel } from "./TutorMemoryPanel";
 import { TutorPlanPreferencesPanel } from "./TutorPlanPreferencesPanel";
@@ -351,6 +351,39 @@ export function TutorConversationSurface({
       artifactId: artifact.id,
     });
   }, [userId]);
+  const loadArtifactAttempt = useCallback<TutorArtifactAttemptLoader>(({ artifact, attemptId }) => {
+    if (!userId || selectedRef.current !== artifact.conversation_id) {
+      return Promise.reject(new Error("Tutor Artifact Attempt detail requires the active conversation"));
+    }
+    return fetchTutorArtifactAttempt({
+      userId,
+      conversationId: artifact.conversation_id,
+      artifactId: artifact.id,
+      artifactVersion: artifact.version,
+      learningTrackId: artifact.learning_track_id,
+      knowledgeKey: artifact.knowledge_key,
+      teachingSessionId: artifact.teaching_session_id,
+      attemptId,
+    });
+  }, [userId]);
+  const returnToArtifactSource = useCallback<TutorArtifactReturnToSource>(({ sourceArtifactReference }) => {
+    const expectedVersion = sourceArtifactReference.reference_version;
+    if (expectedVersion === null || !timelineRef.current) {
+      setActionError({ code: "ARTIFACT_SOURCE_STALE", message: "原工件定位信息已失效，请刷新当前对话。" });
+      return;
+    }
+    const source = Array.from(timelineRef.current.querySelectorAll<HTMLElement>("[data-artifact-id]"))
+      .find((node) => node.dataset.artifactId === sourceArtifactReference.reference_id &&
+        Number(node.dataset.artifactVersion) === expectedVersion);
+    if (!source) {
+      setActionError({ code: "ARTIFACT_SOURCE_STALE", message: "原工件版本已变化，请查看当前最新工件。" });
+      return;
+    }
+    const reducedMotion = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+    source.scrollIntoView({ behavior: reducedMotion ? "auto" : "smooth", block: "start" });
+    source.querySelector<HTMLButtonElement>(".inline-artifact-toggle")?.focus({ preventScroll: true });
+    setActionError(null);
+  }, []);
   const scheduleRefresh = useCallback(() => {
     if (refreshTimerRef.current !== null) return;
     refreshTimerRef.current = window.setTimeout(() => { refreshTimerRef.current = null; refreshSnapshot(); }, 80);
@@ -643,6 +676,8 @@ export function TutorConversationSurface({
           onReference={onHistoricalMessageReference}
           onArtifactAction={onArtifactAction}
           loadArtifactDetail={loadArtifactDetail}
+          loadArtifactAttempt={loadArtifactAttempt}
+          onReturnToArtifactSource={returnToArtifactSource}
         />
         <TimelineSequence
           items={groupedTimeline.current}
@@ -655,6 +690,8 @@ export function TutorConversationSurface({
           onRetry={(turnId) => { if (!userId || !selectedConversationId) return; void runMutation(`retry:${turnId}`, () => retryTutorTurn({ userId, conversationId: selectedConversationId, turnId, expectedControlVersion: controlVersion, clientActionId: createTutorActionId("tutor-turn-retry") })); }}
           onArtifactAction={onArtifactAction}
           loadArtifactDetail={loadArtifactDetail}
+          loadArtifactAttempt={loadArtifactAttempt}
+          onReturnToArtifactSource={returnToArtifactSource}
         />
         {thinkingTurn && (running || Boolean(liveThinking?.receivedText) || runtimeOutputHasContent(liveRuntimeOutput)) ? <TutorRunningPlaceholder
           key={`${thinkingTurn.turn_id}:${liveRuntimeOutput?.generation ?? liveThinking?.generation ?? "pending"}`}

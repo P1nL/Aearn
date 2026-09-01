@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const api = vi.hoisted(() => ({
-  fetchTutorThreadTurnV2Capability: vi.fn(), fetchTutorArtifact: vi.fn(), fetchTutorConversationSnapshot: vi.fn(), respondToTutorInteractionRequest: vi.fn(),
+  fetchTutorThreadTurnV2Capability: vi.fn(), fetchTutorArtifact: vi.fn(), fetchTutorArtifactAttempt: vi.fn(), fetchTutorConversationSnapshot: vi.fn(), respondToTutorInteractionRequest: vi.fn(),
   acceptTutorConversationInput: vi.fn(), acceptTutorFirstTurn: vi.fn(), buildTutorConversationEventsUrl: vi.fn(() => "http://events.test"),
   correctTutorMemory: vi.fn(), deleteTutorMemory: vi.fn(), deleteTutorQueueItem: vi.fn(), dismissTutorInbox: vi.fn(), editTutorQueueItem: vi.fn(), executeTutorQueueItem: vi.fn(),
   fetchTutorActivity: vi.fn(), fetchTutorInbox: vi.fn(), fetchTutorMemory: vi.fn(), fetchTutorPlanRevisions: vi.fn(), fetchTutorPreferences: vi.fn(), interruptTutorTurn: vi.fn(),
@@ -86,6 +86,58 @@ function artifactItem(update: Record<string, unknown> = {}) {
     terminal_at: null,
     ...update,
   };
+}
+
+function resultArtifactItem(update: Record<string, unknown> = {}) {
+  return artifactItem({
+    id: "artifact-result",
+    turn_id: null,
+    artifact_version: 2,
+    artifact_kind: "test_result",
+    purpose: "result",
+    state: "completed",
+    blocking: false,
+    title: "测试结果",
+    instruction_markdown: "**未通过**：请修改原工件后再次运行。",
+    difficulty: null,
+    presentation: {
+      type: "test_result_v1",
+      attempt_id: "attempt-result",
+      status: "terminal",
+      outcome: "failed",
+      passed_count: 1,
+      total_count: 2,
+      summary_markdown: "**未通过**：请修改原工件后再次运行。",
+      result_hash: "a".repeat(64),
+    },
+    allowed_actions: [],
+    source_references: [{
+      kind: "artifact",
+      reference_id: "artifact-1",
+      reference_version: 1,
+      content_hash: null,
+      label: "Source Artifact",
+    }, {
+      kind: "attempt_result",
+      reference_id: "attempt-result",
+      reference_version: null,
+      content_hash: "a".repeat(64),
+      label: "Authoritative Attempt result",
+    }],
+    active_attempt: {
+      attempt_id: "attempt-result",
+      attempt_type: "run",
+      status: "terminal",
+      outcome: "failed",
+      score: 0.5,
+      result_hash: "a".repeat(64),
+      accepted_at: "2026-09-01T00:00:00Z",
+      terminal_at: "2026-09-01T00:00:01Z",
+    },
+    version: 1,
+    terminal_at: "2026-09-01T00:00:01Z",
+    ...update,
+  });
 }
 
 function branchMessage(id: string, role: "learner" | "tutor", content: string) {
@@ -1053,6 +1105,89 @@ describe("TutorConversationSurface typed request seat", () => {
     await waitFor(() => expect(api.fetchTutorConversationSnapshot).toHaveBeenCalledTimes(3));
     expect(artifactScroll).toHaveBeenCalledTimes(1);
     expect(composer).toHaveFocus();
+  });
+
+  it("loads an exact result Attempt and returns to its versioned source without requiring a source content hash", async () => {
+    const user = userEvent.setup();
+    const returnScroll = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: returnScroll });
+    const source = artifactItem();
+    const result = resultArtifactItem();
+    api.fetchTutorArtifact.mockImplementation(async ({ artifactId }: { artifactId: string }) =>
+      artifactId === result.id ? result : source);
+    api.fetchTutorArtifactAttempt.mockResolvedValue({
+      schema_version: "tutor_learning_artifact_attempt_v2",
+      artifact_id: result.id,
+      artifact_version: result.version,
+      conversation_id: result.conversation_id,
+      learning_track_id: result.learning_track_id,
+      knowledge_key: result.knowledge_key,
+      teaching_session_id: result.teaching_session_id,
+      attempt_id: "attempt-result",
+      attempt_type: "run",
+      exercise_version_id: "exercise-1",
+      submission_hash: "b".repeat(64),
+      independence: "independent",
+      assistance_kind: "independent",
+      status: "terminal",
+      execution_job_state: "completed",
+      accepted_at: "2026-09-01T00:00:00Z",
+      result: {
+        outcome: "failed",
+        score: 0.5,
+        execution_result: {
+          schema_version: "safe-execution-result-v2",
+          status: "success",
+          stdout: "",
+          stderr: "",
+          test_feedback: [{
+            case_id: "visible.case",
+            passed: false,
+            visible: true,
+            message: "输出值不正确。",
+            duration_ms: 1,
+            location: { line: 3, column: 2, end_line: null, end_column: null },
+          }],
+          passed_test_count: 1,
+          total_test_count: 2,
+          duration_ms: 2,
+          diagnostic_code: "tests_complete",
+          presentation: { kind: "none" },
+        },
+        capability_scores: {},
+        policy_version: "lesson_gate_pass_v1",
+        result_hash: "a".repeat(64),
+        terminal_at: "2026-09-01T00:00:01Z",
+      },
+    });
+    api.fetchTutorConversationSnapshot.mockResolvedValue({
+      ...snapshot,
+      snapshot_version: "tutor_conversation_snapshot_v4",
+      conversation: { ...snapshot.conversation, control_state: "idle", pending_count: 0, queue_paused: false, queue_pause_reason: null },
+      active_artifact: source,
+      branches: [],
+      pending_requests: [],
+      queue: [],
+      timeline: [result, source],
+    });
+
+    const rendered = renderSurface();
+    const resultToggle = await screen.findByRole("button", { name: /测试结果/ });
+    await user.click(resultToggle);
+    expect(await screen.findByText("输出值不正确。")).toBeInTheDocument();
+    expect(api.fetchTutorArtifactAttempt).toHaveBeenCalledWith(expect.objectContaining({
+      artifactId: "artifact-result",
+      artifactVersion: 1,
+      attemptId: "attempt-result",
+    }));
+
+    const sourceToggle = rendered.container.querySelector('[data-artifact-id="artifact-1"] .inline-artifact-toggle') as HTMLButtonElement;
+    const focus = vi.spyOn(sourceToggle, "focus");
+    await user.click(screen.getByRole("button", { name: "返回修改" }));
+    expect(returnScroll).toHaveBeenCalledTimes(1);
+    expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+    expect(sourceToggle).toHaveFocus();
+    expect(screen.queryByText("ARTIFACT_SOURCE_STALE")).not.toBeInTheDocument();
   });
 
   it("anchors a depth-one branch to its exact Artifact, collapses resolved rounds, and excludes branch learners from terminal collapse", async () => {

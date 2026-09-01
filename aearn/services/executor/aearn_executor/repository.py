@@ -13,8 +13,10 @@ from aearn_shared.execution import (
     ExecutionJobClaimV1,
     ExecutionJobState,
     ExecutionJobV1,
-    SafeExecutionResultV1,
+    SafeExecutionPresentationNoneV1,
+    SafeExecutionResultV2,
     SafeExecutionStatus,
+    parse_safe_execution_result,
 )
 from psycopg import Connection
 
@@ -83,9 +85,9 @@ class PostgresExecutionJobStore:
                     row=row,
                     executor_id=executor_id,
                     lease_generation=_as_int(row.get("lease_generation")),
-                    result=SafeExecutionResultV1(
-                        status=SafeExecutionStatus.CANCELLED,
-                        diagnostic_code="execution_cancelled_before_claim",
+                    result=_safe_result(
+                        SafeExecutionStatus.CANCELLED,
+                        "execution_cancelled_before_claim",
                     ),
                     state=ExecutionJobState.CANCELLED,
                     now=now,
@@ -192,9 +194,9 @@ class PostgresExecutionJobStore:
                     row=row,
                     executor_id=claimed.claim.executor_id,
                     lease_generation=claimed.claim.lease_generation,
-                    result=SafeExecutionResultV1(
-                        status=SafeExecutionStatus.CANCELLED,
-                        diagnostic_code="execution_cancelled_before_launch",
+                    result=_safe_result(
+                        SafeExecutionStatus.CANCELLED,
+                        "execution_cancelled_before_launch",
                     ),
                     state=ExecutionJobState.CANCELLED,
                     now=now,
@@ -277,7 +279,7 @@ class PostgresExecutionJobStore:
                 row=row,
                 executor_id=claimed.claim.executor_id,
                 lease_generation=claimed.claim.lease_generation,
-                result=SafeExecutionResultV1(status=SafeExecutionStatus.UNAVAILABLE, diagnostic_code=code),
+                result=_safe_result(SafeExecutionStatus.UNAVAILABLE, code),
                 state=ExecutionJobState.UNAVAILABLE,
                 now=now,
                 cleanup_state="not_required",
@@ -290,10 +292,7 @@ class PostgresExecutionJobStore:
                 row=row,
                 executor_id=reservation.claim.executor_id,
                 lease_generation=reservation.claim.lease_generation,
-                result=SafeExecutionResultV1(
-                    status=SafeExecutionStatus.FAILED,
-                    diagnostic_code="launch_uncertain",
-                ),
+                result=_safe_result(SafeExecutionStatus.FAILED, "launch_uncertain"),
                 state=ExecutionJobState.LAUNCH_UNCERTAIN,
                 now=now,
                 cleanup_state="pending",
@@ -303,7 +302,7 @@ class PostgresExecutionJobStore:
         self,
         *,
         reservation: LaunchReservation,
-        result: SafeExecutionResultV1,
+        result: SafeExecutionResultV2,
         now: datetime,
     ) -> None:
         with self._conn.transaction():
@@ -342,7 +341,7 @@ class PostgresExecutionJobStore:
                 row=row,
                 executor_id=reservation.claim.executor_id,
                 lease_generation=reservation.claim.lease_generation,
-                result=SafeExecutionResultV1(status=SafeExecutionStatus.FAILED, diagnostic_code="cleanup_failed"),
+                result=_safe_result(SafeExecutionStatus.FAILED, "cleanup_failed"),
                 state=ExecutionJobState.FAILED,
                 now=now,
                 cleanup_state="failed",
@@ -434,7 +433,7 @@ class PostgresExecutionJobStore:
         row: Mapping[str, object],
         executor_id: str,
         lease_generation: int,
-        result: SafeExecutionResultV1,
+        result: SafeExecutionResultV2,
         state: ExecutionJobState,
         now: datetime,
         cleanup_state: str,
@@ -516,7 +515,7 @@ class PostgresExecutionJobStore:
 
 def _job_from_row(row: Mapping[str, object]) -> ExecutionJobV1:
     result_value = row.get("result_json")
-    result = SafeExecutionResultV1.model_validate(result_value) if isinstance(result_value, Mapping) else None
+    result = parse_safe_execution_result(result_value) if isinstance(result_value, Mapping) else None
     lease_expires_at = _datetime_or_none(row.get("lease_expires_at"))
     cancellation_requested_at = _datetime_or_none(row.get("cancellation_requested_at"))
     raw_owner = str(row.get("owner_kind") or "tutor_effect")
@@ -553,7 +552,7 @@ def _job_from_row(row: Mapping[str, object]) -> ExecutionJobV1:
     )
 
 
-def _terminal_state_for_result(result: SafeExecutionResultV1) -> ExecutionJobState:
+def _terminal_state_for_result(result: SafeExecutionResultV2) -> ExecutionJobState:
     if result.status is SafeExecutionStatus.SUCCESS:
         return ExecutionJobState.COMPLETED
     if result.status is SafeExecutionStatus.TIMEOUT:
@@ -563,6 +562,15 @@ def _terminal_state_for_result(result: SafeExecutionResultV1) -> ExecutionJobSta
     if result.status in {SafeExecutionStatus.UNAVAILABLE, SafeExecutionStatus.UNSUPPORTED}:
         return ExecutionJobState.UNAVAILABLE
     return ExecutionJobState.FAILED
+
+
+def _safe_result(status: SafeExecutionStatus, diagnostic_code: str) -> SafeExecutionResultV2:
+    return SafeExecutionResultV2(
+        schema_version="safe-execution-result-v2",
+        status=status,
+        diagnostic_code=diagnostic_code,
+        presentation=SafeExecutionPresentationNoneV1(),
+    )
 
 
 def _is_cancelled(row: Mapping[str, object]) -> bool:

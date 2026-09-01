@@ -46,10 +46,18 @@ import type {
   LearningRoadmap,
   LearningRoadmapModule,
   LearningRoadmapNode,
+  SafeExecutionLocation,
+  SafeExecutionPresentation,
+  SafeExecutionResultV2,
+  SafeTestFeedbackV2,
   TutorActivityItem,
   TutorArtifactAction,
   TutorArtifactActionKind,
   TutorArtifactActionResponse,
+  TutorArtifactAttemptDetail,
+  TutorArtifactAttemptDetailV2,
+  TutorArtifactAttemptResultV1,
+  TutorArtifactAttemptResultV2,
   TutorArtifactAttemptSummary,
   TutorArtifactBranchSummary,
   TutorArtifactDifficulty,
@@ -235,6 +243,38 @@ export async function fetchTutorArtifact(input: {
   return artifact;
 }
 
+export async function fetchTutorArtifactAttempt(input: {
+  userId: string;
+  conversationId: string;
+  artifactId: string;
+  artifactVersion: number;
+  learningTrackId: string;
+  knowledgeKey: string;
+  teachingSessionId: string;
+  attemptId: string;
+  signal?: AbortSignal;
+}): Promise<TutorArtifactAttemptDetail> {
+  const query = new URLSearchParams({ user_id: input.userId });
+  const payload = await requestJson(
+    `${API_BASE_URL}/api/tutor/conversations/${encodeURIComponent(input.conversationId)}/artifacts/${encodeURIComponent(input.artifactId)}/attempts/${encodeURIComponent(input.attemptId)}?${query.toString()}`,
+    { signal: input.signal },
+  );
+  const attempt = toTutorArtifactAttemptDetail(payload);
+  if (
+    !attempt ||
+    attempt.artifact_id !== input.artifactId ||
+    attempt.artifact_version !== input.artifactVersion ||
+    attempt.conversation_id !== input.conversationId ||
+    attempt.learning_track_id !== input.learningTrackId ||
+    attempt.knowledge_key !== input.knowledgeKey ||
+    attempt.teaching_session_id !== input.teachingSessionId ||
+    attempt.attempt_id !== input.attemptId
+  ) {
+    throw new Error("Tutor Artifact Attempt API returned an invalid payload");
+  }
+  return attempt;
+}
+
 export async function actOnTutorArtifact(input: {
   userId: string;
   conversationId: string;
@@ -269,7 +309,7 @@ export async function actOnTutorArtifact(input: {
     response.artifact.conversation_id !== input.conversationId ||
     response.artifact.learning_track_id !== input.learningTrackId ||
     response.artifact.teaching_session_id !== input.teachingSessionId ||
-    response.artifact.version !== input.expectedArtifactVersion + 1
+    response.artifact.version <= input.expectedArtifactVersion
   ) {
     throw new Error("Tutor Artifact action API returned an invalid payload");
   }
@@ -1101,6 +1141,8 @@ const ARTIFACT_PROTECTED_KEYS = new Set([
   "image", "image_id", "image_digest", "secret", "credential", "api_key",
 ]);
 
+const SAFE_EXECUTION_PROTECTED_LINE = /(?:docker|container|image[_ -]?(?:id|digest|reference)|sha256:|error response from daemon|hidden(?:[_ -]?test|[_ -]?case)|private(?:[_ -]?(?:test|rubric|payload))|solution[_ -]?(?:reference|answer)|reference[_ -]?answer|expected(?:[_ -]?(?:value|input|output))?|traceback|stack trace|^\s*at\s+[a-z0-9_.$<>]+|^\s*caused by:|\bfile "|[a-z]:[\\/]|\/(?:tmp|var|workspace|work|app|home|opt|etc|usr)(?:\/|\b)|```|\b(?:def|class|function)\s+[a-z_]|^\s*(?:return|raise|import|from)\b|\b(?:command|cmd(?:\.exe)?|powershell|pwsh|bash|sh\s+-c|subprocess)\b|(?:api[_ -]?key|authorization|bearer|access[_ -]?token|refresh[_ -]?token|client[_ -]?secret|password|passwd|credential|database[_ -]?url|redis[_ -]?url)\s*[:=]|\bbearer\s+[a-z0-9._~+/=-]{8,}|\bsk-[a-z0-9_-]{8,}|-----begin [a-z ]*private key-----|\bAKIA[0-9A-Z]{16}\b|\b[a-z0-9][a-z0-9.-]*\.[a-z0-9.-]+(?:\/[a-z0-9._-]+)+(?:@sha256:[0-9a-f]{64}|:[a-z0-9._-]+))/i;
+
 function toTutorPublicArtifactItem(payload: unknown): TutorPublicArtifactItem | null {
   if (!isRecord(payload) || hasProtectedArtifactData(payload) || !hasExactKeys(payload, [
     "kind", "id", "conversation_id", "turn_id", "learning_track_id", "knowledge_key",
@@ -1134,6 +1176,18 @@ function toTutorPublicArtifactItem(payload: unknown): TutorPublicArtifactItem | 
   const terminal = isTutorArtifactTerminalState(payload.state);
   if (terminal !== (payload.terminal_at !== null) || (terminal && allowedActions.length > 0) ||
       (terminal && activeAttempt !== null && activeAttempt.status !== "terminal")) return null;
+  if (payload.artifact_kind === "test_result") {
+    if (payload.purpose !== "result" || payload.state !== "completed" || payload.blocking ||
+        allowedActions.length > 0 || activeAttempt === null || activeAttempt.status !== "terminal" ||
+        presentation.type !== "test_result_v1" || presentation.status !== "terminal" ||
+        presentation.attempt_id !== activeAttempt.attempt_id || presentation.outcome !== activeAttempt.outcome ||
+        presentation.result_hash !== activeAttempt.result_hash) return null;
+    const sourceRefs = sourceReferences.filter((reference) => reference.kind === "artifact");
+    const attemptRefs = sourceReferences.filter((reference) => reference.kind === "attempt_result");
+    if (sourceRefs.length !== 1 || sourceRefs[0].reference_version === null || attemptRefs.length !== 1 ||
+        attemptRefs[0].reference_id !== activeAttempt.attempt_id ||
+        attemptRefs[0].content_hash !== activeAttempt.result_hash) return null;
+  }
 
   return {
     kind: "artifact",
@@ -1308,6 +1362,216 @@ function toTutorArtifactAttemptSummary(payload: unknown): TutorArtifactAttemptSu
   return { attempt_id: payload.attempt_id, attempt_type: payload.attempt_type, status: payload.status,
     outcome: payload.outcome, score: payload.score, result_hash: payload.result_hash,
     accepted_at: payload.accepted_at, terminal_at: payload.terminal_at };
+}
+
+function toTutorArtifactAttemptDetail(payload: unknown): TutorArtifactAttemptDetail | null {
+  if (!isRecord(payload) || hasProtectedArtifactData(payload) || !hasExactKeys(payload, [
+    "schema_version", "artifact_id", "artifact_version", "conversation_id", "learning_track_id", "knowledge_key",
+    "teaching_session_id", "attempt_id", "attempt_type", "exercise_version_id", "submission_hash", "independence",
+    "assistance_kind", "status", "execution_job_state", "accepted_at", "result",
+  ])) return null;
+  const base = toTutorArtifactAttemptBase(payload);
+  if (!base) return null;
+  if (payload.schema_version === "tutor_learning_artifact_attempt_v1") {
+    const result = payload.result === null ? null : toTutorArtifactAttemptResultV1(payload.result);
+    if ((payload.result !== null && result === null) || ((base.status === "terminal") !== (result !== null))) return null;
+    return { schema_version: "tutor_learning_artifact_attempt_v1", ...base, result };
+  }
+  if (payload.schema_version === "tutor_learning_artifact_attempt_v2") {
+    const result = payload.result === null ? null : toTutorArtifactAttemptResultV2(payload.result);
+    if ((payload.result !== null && result === null) || ((base.status === "terminal") !== (result !== null))) return null;
+    return { schema_version: "tutor_learning_artifact_attempt_v2", ...base, result };
+  }
+  return null;
+}
+
+function toTutorArtifactAttemptBase(
+  payload: Record<string, unknown>,
+): Omit<TutorArtifactAttemptDetailV2, "schema_version" | "result"> | null {
+  if (!isArtifactBoundedString(payload.artifact_id, 160) || !isPositiveSafeInteger(payload.artifact_version) ||
+      !isArtifactBoundedString(payload.conversation_id, 160) || !isArtifactBoundedString(payload.learning_track_id, 160) ||
+      !isArtifactStableKey(payload.knowledge_key) || !isArtifactBoundedString(payload.teaching_session_id, 160) ||
+      !isArtifactBoundedString(payload.attempt_id, 160) || !isTutorArtifactAttemptType(payload.attempt_type) ||
+      !isArtifactBoundedString(payload.exercise_version_id, 160) || !isSha256(payload.submission_hash) ||
+      !isTutorArtifactAttemptIndependence(payload.independence) || !isModelReviewAssistanceKind(payload.assistance_kind) ||
+      (payload.status !== "pending" && payload.status !== "terminal") || !isTutorArtifactExecutionJobState(payload.execution_job_state) ||
+      !isArtifactBoundedString(payload.accepted_at, 80)) return null;
+  return {
+    artifact_id: payload.artifact_id,
+    artifact_version: payload.artifact_version,
+    conversation_id: payload.conversation_id,
+    learning_track_id: payload.learning_track_id,
+    knowledge_key: payload.knowledge_key,
+    teaching_session_id: payload.teaching_session_id,
+    attempt_id: payload.attempt_id,
+    attempt_type: payload.attempt_type,
+    exercise_version_id: payload.exercise_version_id,
+    submission_hash: payload.submission_hash,
+    independence: payload.independence,
+    assistance_kind: payload.assistance_kind,
+    status: payload.status,
+    execution_job_state: payload.execution_job_state,
+    accepted_at: payload.accepted_at,
+  };
+}
+
+function toTutorArtifactAttemptResultV1(payload: unknown): TutorArtifactAttemptResultV1 | null {
+  if (!isRecord(payload) || !hasExactKeys(payload, [
+    "outcome", "score", "safe_feedback", "capability_scores", "policy_version", "result_hash", "terminal_at",
+  ]) || !isTutorArtifactOutcome(payload.outcome) || !isArtifactScore(payload.score) || !isRecord(payload.safe_feedback) ||
+      !isArtifactStableKey(payload.policy_version) || !isSha256(payload.result_hash) ||
+      !isArtifactBoundedString(payload.terminal_at, 80)) return null;
+  const capabilityScores = toTutorArtifactCapabilityScores(payload.capability_scores);
+  if (!capabilityScores) return null;
+  return {
+    outcome: payload.outcome,
+    score: payload.score,
+    safe_feedback: payload.safe_feedback,
+    capability_scores: capabilityScores,
+    policy_version: payload.policy_version,
+    result_hash: payload.result_hash,
+    terminal_at: payload.terminal_at,
+  };
+}
+
+function toTutorArtifactAttemptResultV2(payload: unknown): TutorArtifactAttemptResultV2 | null {
+  if (!isRecord(payload) || !hasExactKeys(payload, [
+    "outcome", "score", "execution_result", "capability_scores", "policy_version", "result_hash", "terminal_at",
+  ]) || !isTutorArtifactOutcome(payload.outcome) || !isArtifactScore(payload.score) ||
+      !isArtifactStableKey(payload.policy_version) || !isSha256(payload.result_hash) ||
+      !isArtifactBoundedString(payload.terminal_at, 80)) return null;
+  const executionResult = payload.execution_result === null ? null : toSafeExecutionResultV2(payload.execution_result);
+  const capabilityScores = toTutorArtifactCapabilityScores(payload.capability_scores);
+  if ((payload.execution_result !== null && executionResult === null) || !capabilityScores) return null;
+  return {
+    outcome: payload.outcome,
+    score: payload.score,
+    execution_result: executionResult,
+    capability_scores: capabilityScores,
+    policy_version: payload.policy_version,
+    result_hash: payload.result_hash,
+    terminal_at: payload.terminal_at,
+  };
+}
+
+function toTutorArtifactCapabilityScores(payload: unknown): Readonly<Record<string, number>> | null {
+  if (!isRecord(payload) || Object.keys(payload).length > 64) return null;
+  const scores: Record<string, number> = {};
+  for (const [key, value] of Object.entries(payload)) {
+    if (!isArtifactStableKey(key) || typeof value !== "number" || !Number.isFinite(value)) return null;
+    scores[key] = value;
+  }
+  return scores;
+}
+
+function toSafeExecutionResultV2(payload: unknown): SafeExecutionResultV2 | null {
+  if (!isRecord(payload) || !hasExactKeys(payload, [
+    "schema_version", "status", "stdout", "stderr", "test_feedback", "passed_test_count", "total_test_count",
+    "duration_ms", "diagnostic_code", "presentation",
+  ]) || payload.schema_version !== "safe-execution-result-v2" || !isSafeExecutionStatus(payload.status) ||
+      !isExecutionString(payload.stdout, 4_000) || !isExecutionString(payload.stderr, 2_000) ||
+      containsProtectedExecutionText(payload.stdout) || containsProtectedExecutionText(payload.stderr) ||
+      !Array.isArray(payload.test_feedback) || payload.test_feedback.length > 64 ||
+      !isArtifactIntegerInRange(payload.passed_test_count, 0, 10_000) ||
+      !isArtifactIntegerInRange(payload.total_test_count, 0, 10_000) ||
+      payload.passed_test_count > payload.total_test_count || payload.test_feedback.length > payload.total_test_count ||
+      !isArtifactIntegerInRange(payload.duration_ms, 0, 120_000) || !isSafeExecutionIdentifier(payload.diagnostic_code, 120)) return null;
+  const feedback: SafeTestFeedbackV2[] = [];
+  for (const item of payload.test_feedback) {
+    const parsed = toSafeTestFeedbackV2(item);
+    if (!parsed) return null;
+    feedback.push(parsed);
+  }
+  const identities = feedback.map((item) => item.case_id);
+  if (new Set(identities).size !== identities.length) return null;
+  let hiddenOrdinal = 0;
+  let feedbackPassed = 0;
+  for (const item of feedback) {
+    feedbackPassed += item.passed ? 1 : 0;
+    if (item.visible) continue;
+    hiddenOrdinal += 1;
+    const expectedMessage = item.passed
+      ? "A non-visible scenario passed."
+      : "A non-visible scenario still failed.";
+    if (item.case_id !== `non-visible-${hiddenOrdinal}` || item.message !== expectedMessage) return null;
+  }
+  const feedbackFailed = feedback.length - feedbackPassed;
+  if (feedbackPassed > payload.passed_test_count || feedbackFailed > payload.total_test_count - payload.passed_test_count) return null;
+  const presentation = toSafeExecutionPresentation(payload.presentation);
+  if (!presentation || (presentation.kind === "table_result_v1" && payload.status !== "success")) return null;
+  return {
+    schema_version: "safe-execution-result-v2",
+    status: payload.status,
+    stdout: payload.stdout,
+    stderr: payload.stderr,
+    test_feedback: feedback,
+    passed_test_count: payload.passed_test_count,
+    total_test_count: payload.total_test_count,
+    duration_ms: payload.duration_ms,
+    diagnostic_code: payload.diagnostic_code,
+    presentation,
+  };
+}
+
+function toSafeTestFeedbackV2(payload: unknown): SafeTestFeedbackV2 | null {
+  if (!isRecord(payload) || !hasExactKeys(payload, [
+    "case_id", "passed", "visible", "message", "duration_ms", "location",
+  ]) || !isSafeExecutionIdentifier(payload.case_id, 120) || typeof payload.passed !== "boolean" ||
+      typeof payload.visible !== "boolean" || !isExecutionString(payload.message, 320) ||
+      !isArtifactIntegerInRange(payload.duration_ms, 0, 120_000)) return null;
+  const location = payload.location === null ? null : toSafeExecutionLocation(payload.location);
+  if ((payload.location !== null && location === null) || (!payload.visible && location !== null)) return null;
+  if (payload.visible && (containsProtectedExecutionText(payload.case_id) || containsProtectedExecutionText(payload.message))) return null;
+  return {
+    case_id: payload.case_id,
+    passed: payload.passed,
+    visible: payload.visible,
+    message: payload.message,
+    duration_ms: payload.duration_ms,
+    location,
+  };
+}
+
+function toSafeExecutionLocation(payload: unknown): SafeExecutionLocation | null {
+  if (!isRecord(payload) || !hasExactKeys(payload, ["line", "column", "end_line", "end_column"]) ||
+      !isArtifactIntegerInRange(payload.line, 1, 1_000_000) ||
+      !(payload.column === null || isArtifactIntegerInRange(payload.column, 1, 100_000)) ||
+      !(payload.end_line === null || isArtifactIntegerInRange(payload.end_line, 1, 1_000_000)) ||
+      !(payload.end_column === null || isArtifactIntegerInRange(payload.end_column, 1, 100_000))) return null;
+  if ((payload.end_column !== null && payload.end_line === null) ||
+      (payload.end_line !== null && payload.end_line < payload.line) ||
+      (payload.end_line === payload.line && payload.column !== null && payload.end_column !== null && payload.end_column < payload.column)) return null;
+  return { line: payload.line, column: payload.column, end_line: payload.end_line, end_column: payload.end_column };
+}
+
+function toSafeExecutionPresentation(payload: unknown): SafeExecutionPresentation | null {
+  if (!isRecord(payload) || !isString(payload.kind)) return null;
+  if (payload.kind === "none") return hasExactKeys(payload, ["kind"]) ? { kind: "none" } : null;
+  if (payload.kind !== "table_result_v1" || !hasExactKeys(payload, ["kind", "columns", "rows"]) ||
+      !Array.isArray(payload.columns) || payload.columns.length < 1 || payload.columns.length > 32 ||
+      !payload.columns.every((column) => typeof column === "string" && isExecutionString(column, 120, true) &&
+        !containsProtectedExecutionText(column)) || new Set(payload.columns).size !== payload.columns.length ||
+      !Array.isArray(payload.rows) || payload.rows.length > 200) return null;
+  const rows: Array<Array<string | number | boolean | null>> = [];
+  for (const row of payload.rows) {
+    if (!Array.isArray(row) || row.length !== payload.columns.length) return null;
+    const cells: Array<string | number | boolean | null> = [];
+    for (const cell of row) {
+      if (!isSafeTableResultCell(cell)) return null;
+      cells.push(cell);
+    }
+    rows.push(cells);
+  }
+  if (new TextEncoder().encode(JSON.stringify(payload)).length > 65_536) return null;
+  return { kind: "table_result_v1", columns: [...payload.columns], rows };
+}
+
+function isSafeTableResultCell(value: unknown): value is string | number | boolean | null {
+  if (value === null || typeof value === "boolean") return true;
+  if (typeof value === "number") {
+    return Number.isFinite(value) && Math.abs(value) <= Number.MAX_SAFE_INTEGER;
+  }
+  return typeof value === "string" && isExecutionString(value, 500) && !containsProtectedExecutionText(value);
 }
 
 function toTutorArtifactBranchSummary(payload: unknown): TutorArtifactBranchSummary | null {
@@ -2017,6 +2281,40 @@ function isTutorArtifactSourceReferenceKind(value: unknown): value is TutorArtif
 
 function isTutorArtifactAttemptType(value: unknown): value is TutorArtifactAttemptSummary["attempt_type"] {
   return value === "run" || value === "submit" || value === "diagnostic_submit" || value === "review_submit";
+}
+
+function isTutorArtifactAttemptIndependence(
+  value: unknown,
+): value is TutorArtifactAttemptDetailV2["independence"] {
+  return value === "independent" || value === "hinted" || value === "remediated";
+}
+
+function isTutorArtifactExecutionJobState(
+  value: unknown,
+): value is TutorArtifactAttemptDetailV2["execution_job_state"] {
+  return value === null || value === "pending" || value === "claimed" || value === "launch_reserved" ||
+    value === "running" || value === "completed" || value === "timed_out" || value === "cancelled" ||
+    value === "unavailable" || value === "launch_uncertain" || value === "failed";
+}
+
+function isSafeExecutionStatus(value: unknown): value is SafeExecutionResultV2["status"] {
+  return value === "success" || value === "compile_error" || value === "runtime_error" || value === "timeout" ||
+    value === "cancelled" || value === "unsupported" || value === "unavailable" || value === "failed";
+}
+
+function isSafeExecutionIdentifier(value: unknown, maximum: number): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= maximum &&
+    /^[A-Za-z0-9][A-Za-z0-9._:@-]{0,159}$/.test(value);
+}
+
+function containsProtectedExecutionText(value: string): boolean {
+  return value.includes("\0") || value.split(/\r?\n/).some((line) => SAFE_EXECUTION_PROTECTED_LINE.test(line));
+}
+
+function isExecutionString(value: unknown, maximum: number, required = false): value is string {
+  if (typeof value !== "string") return false;
+  const length = Array.from(value).length;
+  return length <= maximum && (!required || length > 0);
 }
 
 function isNullableTutorBranchDisposition(value: unknown): value is TutorBranchResponseDisposition | null {

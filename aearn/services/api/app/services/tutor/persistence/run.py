@@ -700,6 +700,11 @@ class RunPersistenceMixin(PersistenceMixin):
                 result=result,
                 created_at=checkpoint.created_at,
             )
+            self._publish_result_evaluation_artifact_locked(
+                run=run,
+                terminal_message_id=terminal_message_id,
+                occurred_at=checkpoint.created_at,
+            )
             if teaching_commit is not None and terminal_message_id is None:
                 raise TutorTerminalStateConflict(
                     "teaching step did not produce its required Tutor message"
@@ -799,6 +804,73 @@ class RunPersistenceMixin(PersistenceMixin):
             )
             del trace
             return result
+
+    def _publish_result_evaluation_artifact_locked(
+        self,
+        *,
+        run: Mapping[str, object],
+        terminal_message_id: str | None,
+        occurred_at: datetime,
+    ) -> None:
+        """Publish the exact result Artifact after its evaluation message, atomically."""
+
+        rows = self._conn.execute(
+            """
+            SELECT artifacts.id::text AS artifact_id, artifacts.version
+            FROM tutor_continuation_intents AS intents
+            JOIN tutor_learning_artifacts AS artifacts
+              ON artifacts.id = intents.artifact_id
+             AND artifacts.user_id = intents.user_id
+             AND artifacts.conversation_id = intents.conversation_id
+             AND artifacts.teaching_session_id = intents.teaching_session_id
+             AND artifacts.learning_track_id = intents.learning_track_id
+             AND artifacts.knowledge_key = intents.knowledge_key
+            JOIN tutor_learning_artifact_events AS events
+              ON events.artifact_id = artifacts.id
+             AND events.id::text = intents.source_id
+             AND events.event_sequence = intents.source_version
+            WHERE intents.consumed_run_id = %s
+              AND intents.user_id = %s
+              AND intents.conversation_id = %s
+              AND intents.state = 'consumed'
+              AND intents.source_kind = 'explicit_artifact_action'
+              AND intents.idempotency_key = 'result-evaluation:' || intents.source_id
+              AND artifacts.artifact_kind = 'test_result'
+              AND artifacts.purpose = 'result'
+              AND artifacts.state = 'completed'
+              AND NOT artifacts.blocking
+              AND artifacts.presentation_kind = 'test_result_v1'
+              AND events.event_kind = 'created'
+            LIMIT 2
+            """,
+            (run["id"], run["user_id"], run["conversation_id"]),
+        ).fetchall()
+        if not rows:
+            return
+        if len(rows) != 1:
+            raise TutorTerminalStateConflict(
+                "result-evaluation Artifact publication authority is ambiguous"
+            )
+        if terminal_message_id is None:
+            raise TutorTerminalStateConflict(
+                "result-evaluation Turn requires a learner-safe evaluation message"
+            )
+        artifact_id = str(rows[0]["artifact_id"])
+        artifact_version = _as_int(rows[0]["version"], 0)
+        if artifact_version < 1:
+            raise TutorTerminalStateConflict(
+                "result-evaluation Artifact version is invalid"
+            )
+        self._append_item_reference_event_locked(
+            run=run,
+            event_key=(
+                f"item:artifact:{artifact_id}:item_added:{artifact_version}"
+            ),
+            kind=TutorConversationEventKind.ITEM_ADDED,
+            item_id=artifact_id,
+            item_kind="artifact",
+            occurred_at=occurred_at,
+        )
 
     def _lock_run(self, *, user_id: str, run_id: str) -> Mapping[str, object]:
         row = self._conn.execute(

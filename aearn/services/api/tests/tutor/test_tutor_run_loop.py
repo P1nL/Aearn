@@ -99,6 +99,35 @@ def _context(revision: int) -> TutorContextInput:
     )
 
 
+def _result_evaluation_context() -> TutorContextInput:
+    source_handle = "artifact:result-artifact"
+    return TutorContextInput(
+        run_id="run-loop",
+        conversation_id="conversation-loop",
+        input_revision=0,
+        current_input_required=False,
+        teaching_session=(
+            TutorContextSource(
+                "teaching-session:result-evaluation",
+                {
+                    "schema_version": "teaching_session_context_v2",
+                    "stimulus": {
+                        "stimulus_id": "stimulus-result-evaluation",
+                        "kind": "teaching_control",
+                        "control_key": "continue",
+                        "safe_payload": {
+                            "reason_code": "result_evaluation",
+                            "source_handle": source_handle,
+                            "result_summary": "**未通过**：请修改原工件后再次运行。",
+                        },
+                    },
+                    "allowed_source_handles": [source_handle],
+                },
+            ),
+        ),
+    )
+
+
 def _builder(*, high_water_ratio: float = 1.0) -> TutorContextBuilder:
     return TutorContextBuilder(
         estimator=OneTokenEstimator(),
@@ -206,6 +235,58 @@ def test_one_iteration_completes_an_ordinary_turn_without_graph_semantics() -> N
     assert result.model_call_count == 1
     assert result.public_thinking_text == "我先区分变量声明位置与实际读取位置。\n\n接着用一次回调执行验证闭包是否保留外层绑定。"
     assert len(provider.calls) == 1
+
+
+def test_exact_result_evaluation_model_unavailable_keeps_typed_outcome_and_fallback() -> None:
+    store = InMemoryTutorRunStore([_snapshot()])
+    provider = SequenceTutorProvider(
+        [
+            TutorProviderResult(
+                decision=None,
+                terminal_outcome=TutorTerminalOutcome.MODEL_UNAVAILABLE,
+                safe_code="MODEL_UNAVAILABLE",
+            )
+        ]
+    )
+    loop, _ = _loop(
+        store=store,
+        contexts={("run-loop", 0): _result_evaluation_context()},
+        provider=provider,
+    )
+
+    result = loop.run(run_id="run-loop", lease_owner_id="worker-result-evaluation")
+
+    assert result.status is TutorRunStatus.MODEL_UNAVAILABLE
+    assert result.terminal_outcome is TutorTerminalOutcome.MODEL_UNAVAILABLE
+    assert result.diagnostic_code == "MODEL_UNAVAILABLE"
+    assert result.public_message == (
+        "**运行评价**\n\n"
+        "Tutor 暂时无法生成个性化评价，以下为服务器保存的权威结果摘要：\n\n"
+        "**未通过**：请修改原工件后再次运行。"
+    )
+
+
+def test_ordinary_model_unavailable_does_not_publish_result_fallback() -> None:
+    store = InMemoryTutorRunStore([_snapshot()])
+    provider = SequenceTutorProvider(
+        [
+            TutorProviderResult(
+                decision=None,
+                terminal_outcome=TutorTerminalOutcome.MODEL_UNAVAILABLE,
+                safe_code="MODEL_UNAVAILABLE",
+            )
+        ]
+    )
+    loop, _ = _loop(
+        store=store,
+        contexts={("run-loop", 0): _context(0)},
+        provider=provider,
+    )
+
+    result = loop.run(run_id="run-loop", lease_owner_id="worker-ordinary")
+
+    assert result.terminal_outcome is TutorTerminalOutcome.MODEL_UNAVAILABLE
+    assert result.public_message is None
 
 
 def test_multiple_bounded_iterations_continue_only_through_injected_capability_result() -> None:

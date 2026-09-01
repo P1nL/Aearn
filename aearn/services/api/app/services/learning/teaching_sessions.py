@@ -14,6 +14,8 @@ from pydantic import TypeAdapter, ValidationError
 from app.agents.harness.contracts import TutorPolicySnapshot
 from app.agents.harness.skill_catalog import compile_published_skill_catalog
 from app.core.config import Settings, get_settings
+from app.core.teaching_safety import sanitize_summary_text
+from app.services.learning.artifacts.contracts import assert_public_artifact_safe
 from app.services.learning.item_bank.repository import PostgresLearningItemBankRepository
 from app.services.learning.teaching_candidates import (
     TeachingArtifactCandidateBuildError,
@@ -596,6 +598,18 @@ class TeachingSessionRepository:
             if isinstance(raw_safe_payload, Mapping)
             else {}
         )
+        result_evaluation_summary = self._result_evaluation_summary(
+            row=row,
+            safe_payload=safe_payload,
+        )
+        if result_evaluation_summary is not None:
+            source_handle = str(safe_payload["source_handle"])
+            safe_payload = {
+                "reason_code": "result_evaluation",
+                "source_handle": source_handle,
+                "result_summary": result_evaluation_summary,
+            }
+            handles.add(source_handle)
         stimulus: dict[str, object] = {
             "stimulus_id": str(row["stimulus_id"]),
             "kind": stimulus_kind,
@@ -666,6 +680,10 @@ class TeachingSessionRepository:
             )
         except TeachingArtifactCandidateBuildError as exc:
             raise TeachingSessionConflict("teaching artifact candidate authority is invalid") from exc
+        if result_evaluation_summary is not None:
+            artifact_candidates = artifact_candidates.model_copy(
+                update={"candidates": ()}
+            )
         context: dict[str, object] = {
             "schema_version": "teaching_session_context_v2",
             "session": {
@@ -703,6 +721,100 @@ class TeachingSessionRepository:
             ) from exc
         context["artifact_candidates"] = bounded_candidates.model_dump(mode="json")
         return context
+
+    def _result_evaluation_summary(
+        self,
+        *,
+        row: Mapping[str, object],
+        safe_payload: Mapping[str, object],
+    ) -> str | None:
+        if safe_payload.get("reason_code") != "result_evaluation":
+            return None
+        source_handle = str(safe_payload.get("source_handle") or "")
+        if not source_handle.startswith("artifact:"):
+            raise TeachingSessionConflict(
+                "result-evaluation source handle is invalid"
+            )
+        artifact_id = source_handle.removeprefix("artifact:")
+        rows = self._conn.execute(
+            """
+            SELECT artifacts.instruction_markdown, artifacts.active_attempt_id,
+                   artifacts.presentation_json
+            FROM tutor_continuation_intents AS intents
+            JOIN tutor_learning_artifacts AS artifacts
+              ON artifacts.id = intents.artifact_id
+             AND artifacts.user_id = intents.user_id
+             AND artifacts.conversation_id = intents.conversation_id
+             AND artifacts.teaching_session_id = intents.teaching_session_id
+             AND artifacts.learning_track_id = intents.learning_track_id
+             AND artifacts.knowledge_key = intents.knowledge_key
+            JOIN tutor_learning_artifact_events AS events
+              ON events.artifact_id = artifacts.id
+             AND events.id::text = intents.source_id
+             AND events.event_sequence = intents.source_version
+            WHERE intents.consumed_run_id = %s
+              AND intents.user_id = %s
+              AND intents.conversation_id = %s
+              AND intents.teaching_session_id = %s
+              AND intents.learning_track_id = %s
+              AND intents.knowledge_key = %s
+              AND intents.artifact_id = %s
+              AND intents.state = 'consumed'
+              AND intents.source_kind = 'explicit_artifact_action'
+              AND intents.idempotency_key = 'result-evaluation:' || intents.source_id
+              AND artifacts.artifact_kind = 'test_result'
+              AND artifacts.purpose = 'result'
+              AND artifacts.state = 'completed'
+              AND NOT artifacts.blocking
+              AND artifacts.presentation_kind = 'test_result_v1'
+              AND events.event_kind = 'created'
+            LIMIT 2
+            """,
+            (
+                row["run_id"],
+                row["user_id"],
+                row["conversation_id"],
+                row["teaching_session_id"],
+                row["track_id"],
+                row["knowledge_key"],
+                artifact_id,
+            ),
+        ).fetchall()
+        if len(rows) != 1:
+            raise TeachingSessionConflict(
+                "result-evaluation continuation authority is missing or ambiguous"
+            )
+        result = rows[0]
+        presentation = result.get("presentation_json")
+        if not isinstance(presentation, Mapping):
+            raise TeachingSessionConflict(
+                "result-evaluation Artifact presentation is invalid"
+            )
+        attempt_id = str(result.get("active_attempt_id") or "")
+        if not attempt_id or str(presentation.get("attempt_id") or "") != attempt_id:
+            raise TeachingSessionConflict(
+                "result-evaluation Attempt identity is invalid"
+            )
+        summary = sanitize_summary_text(
+            str(presentation.get("summary_markdown") or result["instruction_markdown"]),
+            max_length=320,
+        )
+        if not summary:
+            raise TeachingSessionConflict(
+                "result-evaluation summary is empty"
+            )
+        try:
+            assert_public_artifact_safe(
+                {
+                    "source_handle": source_handle,
+                    "result_summary": summary,
+                }
+            )
+        except ValueError as exc:
+            raise TeachingSessionConflict(
+                "result-evaluation summary is protected"
+            ) from exc
+        return summary
 
     def next_available_knowledge_key(
         self, *, user_id: str, track_id: str, current_knowledge_key: str,

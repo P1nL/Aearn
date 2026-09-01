@@ -7,7 +7,8 @@ from typing import Literal, Protocol
 from aearn_shared.execution import (
     ExecutionHealthV1,
     RuntimeCatalogRegistryV1,
-    SafeExecutionResultV1,
+    SafeExecutionPresentationNoneV1,
+    SafeExecutionResultV2,
     SafeExecutionStatus,
 )
 
@@ -147,19 +148,19 @@ class ExecutorService:
             )
             self._store.complete(
                 reservation=reservation,
-                result=SafeExecutionResultV1.from_sandbox_result(raw_result),
+                result=SafeExecutionResultV2.from_sandbox_result(raw_result),
                 now=self._now(),
             )
         except TrustedInputResolutionError:
             self._store.complete(
                 reservation=reservation,
-                result=SafeExecutionResultV1(status=SafeExecutionStatus.FAILED, diagnostic_code="trusted_input_unavailable"),
+                result=_safe_result(SafeExecutionStatus.FAILED, "trusted_input_unavailable"),
                 now=self._now(),
             )
         except RuntimeUnavailableError as exc:
             self._store.complete(
                 reservation=reservation,
-                result=SafeExecutionResultV1(status=SafeExecutionStatus.UNAVAILABLE, diagnostic_code=exc.code),
+                result=_safe_result(SafeExecutionStatus.UNAVAILABLE, exc.code),
                 now=self._now(),
             )
         except RuntimeLaunchUncertainError:
@@ -167,7 +168,7 @@ class ExecutorService:
         except RuntimeClientError as exc:
             self._store.complete(
                 reservation=reservation,
-                result=SafeExecutionResultV1(status=SafeExecutionStatus.FAILED, diagnostic_code=exc.code),
+                result=_safe_result(SafeExecutionStatus.FAILED, exc.code),
                 now=self._now(),
             )
         finally:
@@ -220,3 +221,12 @@ class ExecutorService:
     def _now(self) -> datetime:
         value = self._clock()
         return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
+def _safe_result(status: SafeExecutionStatus, diagnostic_code: str) -> SafeExecutionResultV2:
+    return SafeExecutionResultV2(
+        schema_version="safe-execution-result-v2",
+        status=status,
+        diagnostic_code=diagnostic_code,
+        presentation=SafeExecutionPresentationNoneV1(),
+    )

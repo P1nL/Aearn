@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from psycopg import Connection
 
 import app.routes.learning_artifacts as artifact_routes
+from app.agents.harness.contracts import TutorProviderResult, TutorTerminalOutcome
 from app.core.config import Settings
 from app.db.bootstrap import bootstrap_database
 from app.db.connection import connect
@@ -42,7 +43,14 @@ from app.services.learning.artifacts.repository import (
     PostgresLearningArtifactRepository,
 )
 from app.services.learning.teaching_contracts import TeachingSessionMode
-from app.services.learning.teaching_sessions import TeachingSessionService
+from app.services.learning.teaching_candidates import project_teaching_provider_context
+from app.services.learning.teaching_sessions import (
+    TeachingSessionRepository,
+    TeachingSessionService,
+)
+from app.services.tutor.interactive import TutorInteractiveRunDispatcher
+from app.services.tutor.persistence import PostgresTutorRepository
+from app.services.tutor.ports import SequenceTutorProvider
 from app.services.repositories.local_user_data_repository import reset_user_data
 from tests.support.teaching_session_support import (
     connection as teaching_connection,
@@ -93,6 +101,10 @@ def _hash(value: str) -> str:
 
 def _seed_artifact_route_fixture(
     conn: Connection[dict[str, object]],
+    *,
+    allowed_actions: tuple[TutorArtifactActionKind, ...] = (
+        TutorArtifactActionKind.CANCEL,
+    ),
 ) -> _ArtifactRouteFixture:
     scope = create_teaching_scope(conn)
     opened = TeachingSessionService(conn).open(
@@ -138,7 +150,7 @@ def _seed_artifact_route_fixture(
                 prompt_markdown="执行 count = 3 后，count 表示什么？",
                 maximum_text_length=400,
             ),
-            allowed_actions=(TutorArtifactActionKind.CANCEL,),
+            allowed_actions=allowed_actions,
         ),
         creation_key=f"artifact-route:{uuid4()}",
         occurred_at=_NOW,
@@ -373,12 +385,87 @@ def _action_payload(
     }
 
 
+def _run_action_payload(
+    fixture: _ArtifactRouteFixture,
+    *,
+    client_action_id: str,
+    expected_version: int,
+) -> dict[str, object]:
+    return {
+        "user_id": fixture.user_id,
+        "learning_track_id": fixture.learning_track_id,
+        "teaching_session_id": fixture.teaching_session_id,
+        "client_action_id": client_action_id,
+        "expected_artifact_version": expected_version,
+        "action": {
+            "action": "run",
+            "submission": "print(1)",
+        },
+    }
+
+
 def _assert_error(response, code: str, status_code: int) -> None:  # type: ignore[no-untyped-def]
     assert response.status_code == status_code
     body = response.json()
     assert body["error"]["code"] == code
     assert isinstance(body["error"]["request_id"], str)
     assert isinstance(body["error"]["recoverable"], bool)
+
+
+class _RunTeachingAdapter:
+    owner_kind = TutorArtifactOwnerKind.TEACHING_PRACTICE
+
+    def __init__(self, attempt_id: str) -> None:
+        self._attempt_id = attempt_id
+        self.calls = 0
+
+    def apply_action(
+        self,
+        *,
+        conn: Connection[dict[str, object]],
+        artifact: TutorPublicArtifactItem,
+        request: TutorArtifactActionRequest,
+    ) -> ArtifactMutation:
+        assert request.action.action == "run"
+        self.calls += 1
+        row = conn.execute(
+            """
+            SELECT attempts.id::text AS attempt_id, attempts.attempt_type,
+                   attempts.accepted_at, results.outcome, results.score,
+                   results.result_hash, results.terminal_at
+            FROM tutor_exercise_attempts AS attempts
+            LEFT JOIN tutor_exercise_attempt_results AS results
+              ON results.attempt_id = attempts.id AND results.user_id = attempts.user_id
+            WHERE attempts.id = %s AND attempts.user_id = %s
+            """,
+            (self._attempt_id, request.user_id),
+        ).fetchone()
+        assert row is not None
+        terminal = row.get("outcome") is not None
+        attempt = TutorArtifactAttemptSummaryV1(
+            attempt_id=str(row["attempt_id"]),
+            attempt_type=str(row["attempt_type"]),  # type: ignore[arg-type]
+            status="terminal" if terminal else "pending",
+            outcome=str(row["outcome"]) if terminal else None,  # type: ignore[arg-type]
+            score=float(str(row["score"])) if terminal else None,
+            result_hash=str(row["result_hash"]) if terminal else None,
+            accepted_at=row["accepted_at"].astimezone(UTC).isoformat(),
+            terminal_at=(
+                row["terminal_at"].astimezone(UTC).isoformat() if terminal else None
+            ),
+        )
+        return ArtifactMutation(
+            state=(TutorArtifactState.ACTIVE if terminal else TutorArtifactState.RUNNING),
+            owner_version=artifact.owner_version,
+            owner_context_version=artifact.owner_version,
+            presentation=artifact.presentation,
+            allowed_actions=(TutorArtifactActionKind.RUN,),
+            active_attempt=attempt,
+            safe_event_payload={
+                "attempt_id": attempt.attempt_id,
+                "status": attempt.status,
+            },
+        )
 
 
 class _CancellingTeachingAdapter:
@@ -436,10 +523,11 @@ def test_learning_artifact_setting_defaults_off_and_reads_remain_available(
         )
         assert attempt.status_code == 200
         attempt_body = attempt.json()
-        assert attempt_body["schema_version"] == "tutor_learning_artifact_attempt_v1"
+        assert attempt_body["schema_version"] == "tutor_learning_artifact_attempt_v2"
         assert attempt_body["status"] == "terminal"
         assert attempt_body["result"]["outcome"] == "passed"
-        assert attempt_body["result"]["safe_feedback"]["execution_claim"] == "not_run"
+        assert attempt_body["result"]["execution_result"] is None
+        assert "safe_feedback" not in attempt_body["result"]
         assert _PRIVATE_SUBMISSION not in json.dumps(attempt_body, ensure_ascii=False)
 
         disabled = client.post(
@@ -466,6 +554,362 @@ def test_learning_artifact_setting_defaults_off_and_reads_remain_available(
             (artifact_route_fixture.artifact_id,),
         ).fetchone()
     assert row == {"version": 1, "state": "active"}
+
+
+def test_terminal_attempt_read_projects_one_result_and_dispatches_one_evaluation(
+    monkeypatch: pytest.MonkeyPatch,
+    artifact_route_fixture: _ArtifactRouteFixture,
+) -> None:
+    _configure_artifact_routes(monkeypatch, enabled=True)
+    dispatched_jobs: list[tuple[str, str]] = []
+
+    def record_dispatch(job_id: str, *, runtime_kind: str) -> None:
+        dispatched_jobs.append((job_id, runtime_kind))
+
+    monkeypatch.setattr(
+        artifact_routes,
+        "enqueue_tutor_interactive_dispatch",
+        record_dispatch,
+    )
+    endpoint = (
+        f"/api/tutor/conversations/{artifact_route_fixture.conversation_id}"
+        f"/artifacts/{artifact_route_fixture.artifact_id}"
+        f"/attempts/{artifact_route_fixture.attempt_id}"
+    )
+
+    with TestClient(app) as client:
+        first = client.get(
+            endpoint,
+            params={"user_id": artifact_route_fixture.user_id},
+        )
+        replay = client.get(
+            endpoint,
+            params={"user_id": artifact_route_fixture.user_id},
+        )
+
+    assert first.status_code == 200
+    assert replay.status_code == 200
+    assert first.json()["status"] == "terminal"
+    assert replay.json()["status"] == "terminal"
+    assert first.json()["artifact_version"] == 2
+    assert replay.json()["artifact_version"] == 2
+    assert len(dispatched_jobs) == 1
+    assert dispatched_jobs[0][1] == "harness_v1"
+
+    with connect() as conn:
+        result_artifacts = conn.execute(
+            """
+            SELECT id::text AS id, instruction_markdown, active_attempt_id::text AS attempt_id
+            FROM tutor_learning_artifacts
+            WHERE user_id = %s AND conversation_id = %s
+              AND artifact_kind = 'test_result' AND purpose = 'result'
+            """,
+            (
+                artifact_route_fixture.user_id,
+                artifact_route_fixture.conversation_id,
+            ),
+        ).fetchall()
+        assert len(result_artifacts) == 1
+        assert result_artifacts[0]["attempt_id"] == artifact_route_fixture.attempt_id
+        assert result_artifacts[0]["instruction_markdown"] == "**通过**：本次运行已完成。"
+        intents = conn.execute(
+            """
+            SELECT id, state, consumed_run_id::text AS run_id, artifact_id::text AS artifact_id
+            FROM tutor_continuation_intents
+            WHERE user_id = %s AND conversation_id = %s
+              AND idempotency_key LIKE %s
+            """,
+            (
+                artifact_route_fixture.user_id,
+                artifact_route_fixture.conversation_id,
+                "result-evaluation:%",
+            ),
+        ).fetchall()
+        assert len(intents) == 1
+        assert intents[0]["state"] == "consumed"
+        assert intents[0]["artifact_id"] == result_artifacts[0]["id"]
+        run_id = str(intents[0]["run_id"])
+        assert run_id
+        assert conn.execute(
+            "SELECT count(*)::int AS count FROM tutor_runs WHERE user_id = %s",
+            (artifact_route_fixture.user_id,),
+        ).fetchone() == {"count": 1}
+        context = TeachingSessionRepository(
+            conn,
+            settings=Settings(
+                llm_type="disabled",
+                tutor_learning_artifacts_enabled=True,
+                tutor_artifact_teaching_mode_enabled=True,
+                tutor_thread_turn_v2_enabled=True,
+            ),
+        ).teaching_context(
+            user_id=artifact_route_fixture.user_id,
+            run_id=run_id,
+        )
+        assert context is not None
+        provider_context = project_teaching_provider_context(context)
+        serialized = json.dumps(
+            provider_context,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        assert len(serialized) <= 1_200
+        safe_payload = provider_context["stimulus"]["safe_payload"]
+        assert safe_payload == {
+            "reason_code": "result_evaluation",
+            "source_handle": f"artifact:{result_artifacts[0]['id']}",
+            "result_summary": "**通过**：本次运行已完成。",
+        }
+        assert safe_payload["source_handle"] in provider_context[
+            "allowed_source_handles"
+        ]
+        assert _PRIVATE_SUBMISSION not in serialized
+        for protected in ARTIFACT_PROTECTED_MARKERS:
+            assert protected not in serialized
+        assert conn.execute(
+            """
+            SELECT count(*)::int AS count
+            FROM tutor_conversation_events
+            WHERE conversation_id = %s AND item_kind = 'artifact' AND item_id = %s
+            """,
+            (
+                artifact_route_fixture.conversation_id,
+                result_artifacts[0]["id"],
+            ),
+        ).fetchone() == {"count": 0}
+        pending_timeline, _, _ = PostgresTutorRepository(conn).read_public_history(
+            user_id=artifact_route_fixture.user_id,
+            conversation_id=artifact_route_fixture.conversation_id,
+            limit=40,
+        )
+        assert result_artifacts[0]["id"] not in {
+            item.item_id for item in pending_timeline
+        }
+
+    provider = SequenceTutorProvider([TutorProviderResult.model_unavailable()])
+    evaluation = TutorInteractiveRunDispatcher(
+        settings=Settings(
+            llm_type="disabled",
+            tutor_learning_artifacts_enabled=True,
+            tutor_artifact_teaching_mode_enabled=True,
+            tutor_thread_turn_v2_enabled=True,
+        ),
+        provider_factory=lambda _settings: provider,
+    ).dispatch(
+        user_id=artifact_route_fixture.user_id,
+        run_id=run_id,
+    )
+    assert evaluation.terminal_outcome is TutorTerminalOutcome.MODEL_UNAVAILABLE
+    assert evaluation.public_message == (
+        "**运行评价**\n\n"
+        "Tutor 暂时无法生成个性化评价，以下为服务器保存的权威结果摘要：\n\n"
+        "**通过**：本次运行已完成。"
+    )
+    assert len(provider.calls) == 1
+    with connect() as conn:
+        messages = conn.execute(
+            """
+            SELECT id::text AS id, content FROM tutor_messages
+            WHERE conversation_id = %s AND role = 'tutor'
+            ORDER BY created_at, id
+            """,
+            (artifact_route_fixture.conversation_id,),
+        ).fetchall()
+        assert [str(row["content"]) for row in messages] == [
+            evaluation.public_message
+        ]
+        published_items = conn.execute(
+            """
+            SELECT event_sequence, item_kind, item_id::text AS item_id
+            FROM tutor_conversation_events
+            WHERE conversation_id = %s
+              AND ((item_kind = 'message' AND item_id = %s)
+                   OR (item_kind = 'artifact' AND item_id = %s))
+            ORDER BY event_sequence
+            """,
+            (
+                artifact_route_fixture.conversation_id,
+                messages[0]["id"],
+                result_artifacts[0]["id"],
+            ),
+        ).fetchall()
+        assert [(row["item_kind"], row["item_id"]) for row in published_items] == [
+            ("message", messages[0]["id"]),
+            ("artifact", result_artifacts[0]["id"]),
+        ]
+        published_timeline, _, _ = PostgresTutorRepository(conn).read_public_history(
+            user_id=artifact_route_fixture.user_id,
+            conversation_id=artifact_route_fixture.conversation_id,
+            limit=40,
+        )
+        published_ids = [item.item_id for item in published_timeline]
+        # History pages are newest-first, so the later result item precedes the
+        # evaluation message in this transport order while rendering chronologically.
+        assert published_ids.index(result_artifacts[0]["id"]) < published_ids.index(
+            messages[0]["id"]
+        )
+        result_item = next(
+            item
+            for item in published_timeline
+            if item.item_id == result_artifacts[0]["id"]
+        )
+        assert result_item.turn_id == run_id
+        assert conn.execute(
+            """
+            SELECT count(*)::int AS count FROM tutor_exercise_attempts
+            WHERE id = %s AND user_id = %s
+            """,
+            (artifact_route_fixture.attempt_id, artifact_route_fixture.user_id),
+        ).fetchone() == {"count": 1}
+
+
+def test_pending_attempt_read_does_not_project_or_schedule(
+    monkeypatch: pytest.MonkeyPatch,
+    artifact_route_fixture: _ArtifactRouteFixture,
+) -> None:
+    _configure_artifact_routes(monkeypatch, enabled=True)
+    dispatched_jobs: list[str] = []
+    monkeypatch.setattr(
+        artifact_routes,
+        "enqueue_tutor_interactive_dispatch",
+        lambda job_id, **_kwargs: dispatched_jobs.append(job_id),
+    )
+    with connect() as conn:
+        conn.execute(
+            "SELECT set_config('aearn.learning_track_purge_user_id', %s, true)",
+            (artifact_route_fixture.user_id,),
+        )
+        conn.execute(
+            "DELETE FROM tutor_exercise_attempt_results WHERE attempt_id = %s AND user_id = %s",
+            (artifact_route_fixture.attempt_id, artifact_route_fixture.user_id),
+        )
+        conn.commit()
+
+    with TestClient(app) as client:
+        response = client.get(
+            f"/api/tutor/conversations/{artifact_route_fixture.conversation_id}"
+            f"/artifacts/{artifact_route_fixture.artifact_id}"
+            f"/attempts/{artifact_route_fixture.attempt_id}",
+            params={"user_id": artifact_route_fixture.user_id},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "pending"
+    assert response.json()["result"] is None
+    assert dispatched_jobs == []
+    with connect() as conn:
+        assert conn.execute(
+            """
+            SELECT count(*)::int AS count FROM tutor_learning_artifacts
+            WHERE user_id = %s AND artifact_kind = 'test_result'
+            """,
+            (artifact_route_fixture.user_id,),
+        ).fetchone() == {"count": 0}
+        assert conn.execute(
+            """
+            SELECT count(*)::int AS count FROM tutor_continuation_intents
+            WHERE user_id = %s
+            """,
+            (artifact_route_fixture.user_id,),
+        ).fetchone() == {"count": 0}
+        assert conn.execute(
+            "SELECT version, state FROM tutor_learning_artifacts WHERE id = %s",
+            (artifact_route_fixture.artifact_id,),
+        ).fetchone() == {"version": 1, "state": "active"}
+
+
+def test_terminal_run_action_returns_the_projected_source_event_identity(
+    monkeypatch: pytest.MonkeyPatch,
+    artifact_route_fixture: _ArtifactRouteFixture,
+) -> None:
+    _configure_artifact_routes(monkeypatch, enabled=True)
+    with connect() as conn:
+        repository = PostgresLearningArtifactRepository(
+            conn,
+            conversation_events=PostgresTutorArtifactConversationEventSink(conn),
+        )
+        artifact = repository.read_artifact(
+            user_id=artifact_route_fixture.user_id,
+            conversation_id=artifact_route_fixture.conversation_id,
+            artifact_id=artifact_route_fixture.artifact_id,
+        )
+        detail = repository.read_attempt_detail(
+            user_id=artifact_route_fixture.user_id,
+            conversation_id=artifact_route_fixture.conversation_id,
+            artifact_id=artifact_route_fixture.artifact_id,
+            attempt_id=artifact_route_fixture.attempt_id,
+        )
+
+    assert detail.result is not None
+    attempt_summary = TutorArtifactAttemptSummaryV1(
+        attempt_id=detail.attempt_id,
+        attempt_type=detail.attempt_type,
+        status="terminal",
+        outcome=detail.result.outcome,
+        score=detail.result.score,
+        result_hash=detail.result.result_hash,
+        accepted_at=detail.accepted_at,
+        terminal_at=detail.result.terminal_at,
+    )
+    action_write = artifact_routes.LearningArtifactWriteResult(
+        artifact=artifact.model_copy(
+            update={"version": 2, "active_attempt": attempt_summary}
+        ),
+        artifact_event_id=str(uuid4()),
+        artifact_event_sequence=2,
+        idempotent_replayed=False,
+        owner_callback_invoked=True,
+    )
+    projected_write = artifact_routes.LearningArtifactWriteResult(
+        artifact=artifact.model_copy(
+            update={
+                "version": 3,
+                "state": TutorArtifactState.ACTIVE,
+                "active_attempt": attempt_summary,
+            }
+        ),
+        artifact_event_id=str(uuid4()),
+        artifact_event_sequence=3,
+        idempotent_replayed=False,
+        owner_callback_invoked=False,
+    )
+
+    class _TerminalRunService:
+        def act(self, **_kwargs: object):  # type: ignore[no-untyped-def]
+            return action_write
+
+    monkeypatch.setattr(
+        artifact_routes,
+        "build_learning_artifact_service",
+        lambda _conn: _TerminalRunService(),
+    )
+    monkeypatch.setattr(
+        artifact_routes,
+        "_observe_artifact_attempt",
+        lambda **_kwargs: artifact_routes._ArtifactAttemptObservation(
+            detail=detail.model_copy(update={"artifact_version": 3}),
+            source_write=projected_write,
+        ),
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            f"/api/tutor/conversations/{artifact_route_fixture.conversation_id}"
+            f"/artifacts/{artifact_route_fixture.artifact_id}/actions",
+            json={
+                "user_id": artifact_route_fixture.user_id,
+                "learning_track_id": artifact_route_fixture.learning_track_id,
+                "teaching_session_id": artifact_route_fixture.teaching_session_id,
+                "client_action_id": "terminal-run-response-identity",
+                "expected_artifact_version": 1,
+                "action": {"action": "run", "submission": "print(1)"},
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["artifact"]["version"] == 3
+    assert response.json()["artifact_event_sequence"] == 3
+    assert response.json()["artifact_event_id"] == projected_write.artifact_event_id
 
 
 def test_learning_artifact_action_route_enforces_scope_header_idempotency_and_cas(

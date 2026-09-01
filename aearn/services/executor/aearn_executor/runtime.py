@@ -11,7 +11,7 @@ from aearn_shared.execution import (
     ExecutionJobClaimV1,
     ExecutionJobV1,
     RuntimeImageLockV1,
-    SafeExecutionResultV1,
+    SafeExecutionResultV2,
     SandboxInputV1,
     SandboxResultV1,
 )
@@ -90,7 +90,7 @@ class ExecutionJobStore(Protocol):
 
     def mark_launch_uncertain(self, *, reservation: LaunchReservation, now: datetime) -> None: ...
 
-    def complete(self, *, reservation: LaunchReservation, result: SafeExecutionResultV1, now: datetime) -> None: ...
+    def complete(self, *, reservation: LaunchReservation, result: SafeExecutionResultV2, now: datetime) -> None: ...
 
     def record_cleanup(self, *, reservation: LaunchReservation, succeeded: bool, now: datetime) -> None: ...
 

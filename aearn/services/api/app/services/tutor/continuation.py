@@ -966,6 +966,7 @@ class TutorContinuationIntentProducer:
     """Safe producer facade; recording an intent never creates a Turn or calls a provider."""
 
     def __init__(self, conn: Connection[dict[str, object]]) -> None:
+        self._conn = conn
         self._repository = PostgresTutorContinuationIntentRepository(conn)
 
     def record_artifact_action(
@@ -1018,6 +1019,67 @@ class TutorContinuationIntentProducer:
                 + _hash({"timer_id": timer_id, "timer_version": timer_version})[:48]
             ),
             not_before=not_before,
+            occurred_at=occurred_at,
+        )
+
+    def record_result_evaluation(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str,
+        result_artifact_id: str,
+        result_artifact_event_id: str,
+        result_artifact_event_sequence: int,
+        attempt_id: str,
+        occurred_at: datetime | None = None,
+    ) -> ContinuationIntentRecord:
+        """Record one exact evaluation continuation for a projected terminal result."""
+
+        evidence = self._conn.execute(
+            """
+            SELECT artifacts.id
+            FROM tutor_learning_artifacts AS artifacts
+            JOIN tutor_learning_artifact_events AS events
+              ON events.artifact_id = artifacts.id
+             AND events.user_id = artifacts.user_id
+             AND events.conversation_id = artifacts.conversation_id
+             AND events.teaching_session_id = artifacts.teaching_session_id
+            WHERE artifacts.id = %s
+              AND artifacts.user_id = %s
+              AND artifacts.conversation_id = %s
+              AND artifacts.artifact_kind = 'test_result'
+              AND artifacts.purpose = 'result'
+              AND artifacts.state = 'completed'
+              AND NOT artifacts.blocking
+              AND artifacts.active_attempt_id = %s
+              AND artifacts.presentation_kind = 'test_result_v1'
+              AND artifacts.presentation_json->>'attempt_id' = %s
+              AND events.id = %s
+              AND events.event_sequence = %s
+              AND events.event_kind = 'created'
+            """,
+            (
+                result_artifact_id,
+                user_id,
+                conversation_id,
+                attempt_id,
+                attempt_id,
+                result_artifact_event_id,
+                result_artifact_event_sequence,
+            ),
+        ).fetchone()
+        if evidence is None:
+            raise ContinuationIntentStale(
+                "result-evaluation continuation lacks exact projected result evidence"
+            )
+        return self._repository.create_pending(
+            user_id=user_id,
+            conversation_id=conversation_id,
+            artifact_id=result_artifact_id,
+            source_kind=ContinuationSourceKind.EXPLICIT_ARTIFACT_ACTION,
+            source_id=result_artifact_event_id,
+            source_version=result_artifact_event_sequence,
+            idempotency_key=f"result-evaluation:{result_artifact_event_id}",
             occurred_at=occurred_at,
         )
 
@@ -1113,6 +1175,7 @@ class TutorContinuationDispatcher:
                         conversation_id=conversation_id,
                         for_update=True,
                     )
+                    result_evaluation = self._is_result_evaluation_intent(intent)
                     admitted = self._teaching.admit_control_run(
                         authority=authority,
                         session=session,
@@ -1124,7 +1187,11 @@ class TutorContinuationDispatcher:
                             expected_progress_version=authority.progress_version,
                             expected_assignment_version=authority.assignment_version,
                             safe_payload={
-                                "reason_code": intent.source_kind.value,
+                                "reason_code": (
+                                    "result_evaluation"
+                                    if result_evaluation
+                                    else intent.source_kind.value
+                                ),
                                 "source_handle": f"artifact:{intent.artifact_id}",
                             },
                         ),
@@ -1157,6 +1224,55 @@ class TutorContinuationDispatcher:
                     str(dispatch_job_id) if dispatch_job_id is not None else None
                 ),
             )
+
+    def _is_result_evaluation_intent(
+        self,
+        intent: ContinuationIntentRecord,
+    ) -> bool:
+        if intent.source_kind is not ContinuationSourceKind.EXPLICIT_ARTIFACT_ACTION:
+            return False
+        result_evaluation_key = f"result-evaluation:{intent.source_id}"
+        if intent.idempotency_key != result_evaluation_key:
+            if intent.idempotency_key.startswith("result-evaluation:"):
+                raise TeachingSessionConflict(
+                    "result-evaluation continuation identity is invalid"
+                )
+            return False
+        row = self._conn.execute(
+            """
+            SELECT 1
+            FROM tutor_learning_artifacts AS artifacts
+            JOIN tutor_learning_artifact_events AS events
+              ON events.artifact_id = artifacts.id
+             AND events.user_id = artifacts.user_id
+             AND events.conversation_id = artifacts.conversation_id
+             AND events.teaching_session_id = artifacts.teaching_session_id
+            WHERE artifacts.id = %s
+              AND artifacts.user_id = %s
+              AND artifacts.conversation_id = %s
+              AND artifacts.artifact_kind = 'test_result'
+              AND artifacts.purpose = 'result'
+              AND artifacts.state = 'completed'
+              AND NOT artifacts.blocking
+              AND artifacts.active_attempt_id IS NOT NULL
+              AND artifacts.presentation_kind = 'test_result_v1'
+              AND events.id::text = %s
+              AND events.event_sequence = %s
+              AND events.event_kind = 'created'
+            """,
+            (
+                intent.artifact_id,
+                intent.user_id,
+                intent.conversation_id,
+                intent.source_id,
+                intent.source_version,
+            ),
+        ).fetchone()
+        if row is None:
+            raise TeachingSessionConflict(
+                "result-evaluation continuation evidence is stale"
+            )
+        return True
 
 
 class TutorContinuationPriorityArbiter:
