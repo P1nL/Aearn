@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type RefO
 import {
   acceptTutorConversationInput, acceptTutorFirstTurn, buildTutorConversationEventsUrl,
   correctTutorMemory, deleteTutorMemory, deleteTutorQueueItem, dismissTutorInbox,
-  editTutorQueueItem, executeTutorQueueItem, fetchTutorActivity, fetchTutorConversationSnapshot,
+  editTutorQueueItem, executeTutorQueueItem, fetchTutorActivity, fetchTutorArtifact, fetchTutorConversationSnapshot,
   fetchTutorInbox, fetchTutorMemory, fetchTutorPlanRevisions, fetchTutorPreferences,
   fetchTutorThreadTurnV2Capability, interruptTutorTurn, markTutorInboxRead, reorderTutorQueue,
   respondToTutorInteractionRequest, resumeTutorQueue, retryTutorTurn, rollbackTutorPlan,
@@ -17,7 +17,7 @@ import type {
   TutorContextReferenceDraft, TutorHistoryItem, TutorHistoryMessage, TutorInboxItem, TutorInputAcceptedResponse,
   TutorInteractionRequestItem, TutorInteractionResponseDraft, TutorMemoryItem, TutorPlanRevisionList, TutorPreferences,
   TeachingActionDescriptor, TeachingActionShelf, TeachingSessionGroupProjection,
-  TutorPublicTurn, TutorQueuedInput, TutorRuntimeOutput, TutorRuntimeOutputItem,
+  TutorPublicArtifactItem, TutorPublicBranchGroup, TutorPublicTurn, TutorQueuedInput, TutorRuntimeOutput, TutorRuntimeOutputItem,
   TutorThreadTurnV2Capability, TutorTurnOutputPayload, UserProfile,
 } from "../../types";
 import {
@@ -25,16 +25,17 @@ import {
   IconEdit, IconQueue, IconSend, IconStop, Input, StateDot,
 } from "../../ui/dsh-derived";
 import { ComposerActionShelf } from "./ComposerActionShelf";
+import type { TutorArtifactActionRequest } from "./artifacts";
 import { TutorActivityPanel } from "./TutorActivityPanel";
 import { TutorMemoryPanel } from "./TutorMemoryPanel";
 import { TutorPlanPreferencesPanel } from "./TutorPlanPreferencesPanel";
 import {
   Boundary, Composer, groupTeachingTimeline, QueueTray, TeachingSessionTimeline,
-  TimelineItem, TutorRunningPlaceholder, TypedRequestSeat,
+  TimelineSequence, TutorRunningPlaceholder, TypedRequestSeat,
 } from "./TutorConversationParts";
 import {
-  clearPersistedRequestDraft, createTutorActionId, displayControlState, displayStreamStatus,
-  initialRequestDraft, mergeRuntimeOutputs, persistRequestDraft, planningQuestionKey,
+  artifactIdsInTimeline, clearPersistedRequestDraft, createTutorActionId, displayControlState, displayStreamStatus,
+  initialRequestDraft, mergeActiveArtifactIntoTimeline, mergeRuntimeOutputs, persistRequestDraft, planningQuestionKey,
   presentationFieldKey, reconcileVisibleTimeline, reduceRuntimeOutput, runtimeOutputHasContent,
   TUTOR_TEXT_REVEAL_INTERVAL_MS, type RequestDraft, type TutorComposerReference,
   type TutorLiveRuntimeOutputState, type TutorRecentCompletion,
@@ -57,6 +58,7 @@ export type TutorConversationSurfaceProps = {
   pendingTeachingActionKey?: string | null;
   onTeachingAction?: (descriptor: TeachingActionDescriptor) => void;
   onTeachingAuthorityChanged?: () => void;
+  onArtifactAction?: (request: TutorArtifactActionRequest) => void;
 };
 type LoadStatus = "idle" | "loading" | "ready" | "error";
 type PreferenceUpdate = { inferredMemoryEnabled?: boolean; expectedMemorySettingVersion?: string; proactivePaused?: boolean };
@@ -78,7 +80,7 @@ export function TutorConversationSurface({
   onConversationsChanged, mode = "general", showControls = true, planningComposerPlaceholder, composerVariant = "card", learningScope, scopeLabel,
   contextReferences = [], onRemoveContextReference, onReferencesAccepted, onHistoricalMessageReference,
   activeTeachingSessionId = null, teachingActionShelf = null, pendingTeachingActionKey = null,
-  onTeachingAction, onTeachingAuthorityChanged,
+  onTeachingAction, onTeachingAuthorityChanged, onArtifactAction,
 }: TutorConversationSurfaceProps) {
   const [timeline, setTimeline] = useState<TutorHistoryItem[]>([]);
   const [loadStatus, setLoadStatus] = useState<LoadStatus>("idle");
@@ -103,6 +105,8 @@ export function TutorConversationSurface({
   const [maxPending, setMaxPending] = useState(10);
   const [pendingRequest, setPendingRequest] = useState<TutorInteractionRequestItem | null>(null);
   const [teachingSessionGroups, setTeachingSessionGroups] = useState<TeachingSessionGroupProjection[]>([]);
+  const [branches, setBranches] = useState<TutorPublicBranchGroup[]>([]);
+  const [newArtifactIds, setNewArtifactIds] = useState<Set<string>>(() => new Set());
   const [composerText, setComposerText] = useState("");
   const [composerStatus, setComposerStatus] = useState<"idle" | "submitting">("idle");
   const [actionError, setActionError] = useState<{ code: string; message: string } | null>(null);
@@ -137,6 +141,8 @@ export function TutorConversationSurface({
   const liveRuntimeOutputRef = useRef<TutorLiveRuntimeOutputState | null>(null);
   const displayedThinkingRef = useRef("");
   const thinkingRecoveryPendingRef = useRef(false);
+  const hydratedConversationRef = useRef<string | null>(null);
+  const artifactIdsRef = useRef<Set<string>>(new Set());
   selectedRef.current = selectedConversationId;
 
   const replaceLiveThinking = useCallback((next: TutorLiveThinkingState | null) => {
@@ -192,7 +198,25 @@ export function TutorConversationSurface({
   displayedThinkingRef.current = liveThinkingTypewriter.text;
 
   const applySnapshot = useCallback((snapshot: Awaited<ReturnType<typeof fetchTutorConversationSnapshot>>, placement: "replace" | "prepend") => {
-    const visible = reconcileVisibleTimeline(snapshot.timeline.filter((item) => item.kind !== "process").reverse());
+    const mergedTimeline = mergeActiveArtifactIntoTimeline(
+      snapshot.timeline.filter((item) => item.kind !== "process"),
+      placement === "replace" ? snapshot.active_artifact ?? null : null,
+    );
+    const visible = reconcileVisibleTimeline(mergedTimeline.reverse());
+    const incomingArtifactIds = artifactIdsInTimeline(visible);
+    if (placement === "replace") {
+      const initialHydration = hydratedConversationRef.current !== snapshot.conversation.conversation_id;
+      if (initialHydration) {
+        hydratedConversationRef.current = snapshot.conversation.conversation_id;
+        setNewArtifactIds(new Set());
+        scrollToLatestRef.current = true;
+      } else {
+        setNewArtifactIds(new Set([...incomingArtifactIds].filter((id) => !artifactIdsRef.current.has(id))));
+      }
+      artifactIdsRef.current = incomingArtifactIds;
+    } else {
+      artifactIdsRef.current = new Set([...artifactIdsRef.current, ...incomingArtifactIds]);
+    }
     let preserveThinkingHandoff = false;
     if (placement === "replace") {
       const previousTurn = activeTurnRef.current;
@@ -294,10 +318,11 @@ export function TutorConversationSurface({
     setMaxPending(snapshot.conversation.max_pending);
     setPendingRequest(snapshot.pending_requests.find((request) => request.state === "pending") ?? null);
     setTeachingSessionGroups(snapshot.teaching_sessions ?? []);
+    setBranches(snapshot.branches ?? []);
     setStreamCursor(snapshot.stream_cursor);
     if (placement === "replace") {
       setHistoryCursor(snapshot.next_cursor); setHistoryHasMore(snapshot.has_more);
-      setLoadStatus("ready"); setLoadError(null); scrollToLatestRef.current = true;
+      setLoadStatus("ready"); setLoadError(null);
     }
   }, [replaceLiveRuntimeOutput, replaceLiveThinking]);
 
@@ -318,6 +343,14 @@ export function TutorConversationSurface({
   }, [applySnapshot, mayReadTutor, userId]);
 
   const refreshSnapshot = useCallback(() => { const id = selectedRef.current; if (id) void loadSnapshot(id); }, [loadSnapshot]);
+  const loadArtifactDetail = useCallback((artifact: TutorPublicArtifactItem) => {
+    if (!userId) return Promise.reject(new Error("Tutor Artifact detail requires an active user"));
+    return fetchTutorArtifact({
+      userId,
+      conversationId: artifact.conversation_id,
+      artifactId: artifact.id,
+    });
+  }, [userId]);
   const scheduleRefresh = useCallback(() => {
     if (refreshTimerRef.current !== null) return;
     refreshTimerRef.current = window.setTimeout(() => { refreshTimerRef.current = null; refreshSnapshot(); }, 80);
@@ -462,6 +495,7 @@ export function TutorConversationSurface({
     requestRef.current?.abort();
     if (refreshTimerRef.current !== null) window.clearTimeout(refreshTimerRef.current);
     setComposerText(""); setActionError(null); setEditingQueueId(null); setRequestDraft("");
+    setBranches([]); setNewArtifactIds(new Set()); hydratedConversationRef.current = null; artifactIdsRef.current = new Set();
     setRecentCompletion(null); setStableThinkingKey(null); replaceLiveThinking(null); replaceLiveRuntimeOutput(null); displayedThinkingRef.current = "";
     thinkingRecoveryPendingRef.current = false;
     activeTurnRef.current = null; setActiveTurn(null); setThinkingTurn(null);
@@ -580,7 +614,7 @@ export function TutorConversationSurface({
   const sendLabel = composerStatus === "submitting" ? "正在确认……" : running ? "加入 Queue" : selectedConversationId ? "发送消息" : "开始对话";
 
 
-  const groupedTimeline = groupTeachingTimeline(timeline, teachingSessionGroups, activeTeachingSessionId);
+  const groupedTimeline = groupTeachingTimeline(timeline, teachingSessionGroups, activeTeachingSessionId, branches);
 
   return <DshDerivedRoot className="tutor-surface-root"><main className={workspaceClassName} aria-label={planning ? "学习计划对话" : undefined} aria-labelledby={planning ? undefined : "tutor-workspace-title"}>
     <section className="tutor-main-column">
@@ -599,13 +633,29 @@ export function TutorConversationSurface({
         <TeachingSessionTimeline
           groups={groupedTimeline.history}
           legacyItems={groupedTimeline.legacy}
+          branches={branches}
+          conversationId={selectedConversationId ?? ""}
+          newArtifactIds={newArtifactIds}
           recentCompletion={recentCompletion}
           writeEnabled={writeEnabled}
           mutationBusy={mutationBusy}
           onRetry={(turnId) => { if (!userId || !selectedConversationId) return; void runMutation(`retry:${turnId}`, () => retryTutorTurn({ userId, conversationId: selectedConversationId, turnId, expectedControlVersion: controlVersion, clientActionId: createTutorActionId("tutor-turn-retry") })); }}
           onReference={onHistoricalMessageReference}
+          onArtifactAction={onArtifactAction}
+          loadArtifactDetail={loadArtifactDetail}
         />
-        {groupedTimeline.current.map((item) => <TimelineItem key={`${item.kind}:${item.id}`} item={item} recentCompletion={recentCompletion} writeEnabled={writeEnabled} mutationBusy={mutationBusy} onRetry={(turnId) => { if (!userId || !selectedConversationId) return; void runMutation(`retry:${turnId}`, () => retryTutorTurn({ userId, conversationId: selectedConversationId, turnId, expectedControlVersion: controlVersion, clientActionId: createTutorActionId("tutor-turn-retry") })); }} />)}
+        <TimelineSequence
+          items={groupedTimeline.current}
+          branches={branches}
+          conversationId={selectedConversationId ?? ""}
+          newArtifactIds={newArtifactIds}
+          recentCompletion={recentCompletion}
+          writeEnabled={writeEnabled}
+          mutationBusy={mutationBusy}
+          onRetry={(turnId) => { if (!userId || !selectedConversationId) return; void runMutation(`retry:${turnId}`, () => retryTutorTurn({ userId, conversationId: selectedConversationId, turnId, expectedControlVersion: controlVersion, clientActionId: createTutorActionId("tutor-turn-retry") })); }}
+          onArtifactAction={onArtifactAction}
+          loadArtifactDetail={loadArtifactDetail}
+        />
         {thinkingTurn && (running || Boolean(liveThinking?.receivedText) || runtimeOutputHasContent(liveRuntimeOutput)) ? <TutorRunningPlaceholder
           key={`${thinkingTurn.turn_id}:${liveRuntimeOutput?.generation ?? liveThinking?.generation ?? "pending"}`}
           turn={thinkingTurn}

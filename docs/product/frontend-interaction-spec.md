@@ -1,6 +1,6 @@
 # Aearn Tutor 桌面端交互规格
 
-**状态：** 当前 Desktop 交互契约，2026-08-27。
+**状态：** 当前 Desktop 交互契约，2026-09-01。
 **适用范围：** `aearn/apps/desktop/src/` 的 React + Tauri UI。
 **权威来源：** `App.tsx`、`stores/useAppStore.ts`、`api.ts`、
 `pages/HarnessCutoverPage.tsx`、`features/learning/TrackLearningWorkspace.tsx`、`features/learning/ReviewSessionPanel.tsx`、`features/tutor/TutorConversationSurface.tsx` 与类型/测试。
@@ -376,3 +376,14 @@ Gate/Review/progress/assignment 触发的后台教学 Turn 不伪装 learner mes
 `TutorConversationSurface` 只在至少存在一个 server-owned action descriptor 时挂载 `ComposerActionShelf` 并设置 `has-action-shelf`。空 shelf 不保留容器、占位文案、空白高度或伪 disabled action；仅有 secondary action 时使用紧凑 secondary-only 布局。该规则在 1440×900、900×900 与 390×844 一致。
 
 `respond_in_composer` 只是服务器对已有 Composer 的引导，不创建第二个输入框、typed request 或本地 action state。`refresh_session` 触发现有 workspace refresh 并重新读取服务端 authority；前端不得把它实现为本地 Continue、自动 admission 或 mode change。
+
+
+## 2026-09-01：对话内 Artifact shell、安全 Markdown 与答疑支线
+
+`TutorConversationSurface` 继续是唯一 timeline、snapshot、SSE、Composer reducer。Desktop 从 `unknown` exact-parse snapshot v2/v3/v4/v5；v2/v3 归一化为 `active_artifact=null`、`branches=[]`，v4 接受 Artifact，存在 branch history 时 v5 接受 explicit depth-one `branches[]`。同一 Artifact ID 的 active projection 与 timeline item 合并为一个 shell；unknown/extra/protected/cross-scope presentation、action、reference、Attempt 或 branch shape 整体 fail closed，不把任意 JSON 当作 UI。
+
+Tutor answer、Artifact instruction 与 server-authored safe feedback 通过内部 AST `SafeMarkdown` 渲染。允许 heading、paragraph、emphasis、code、table、quote、fragment 和使用 public-looking DNS hostname 的 credential-free http/https link；relative/protocol-relative/local/IP 导航不生成 link；raw HTML/CSS/script 永远只作为 inert text。受控扩展只接受 `:size[text]{value="sm|md|lg|xl"}` 与 `:color[text]{value="#RRGGBB"}`；颜色对 message 白底或 Artifact `#F6FAF8` 必须达到 4.5:1。非法/未闭合 directive 只保留可见正文且不暴露技术语法；protocol-relative、带 credential、control/backslash、`javascript:`、`data:` 等 URL 不生成 link。未闭合 fenced code 在流式阶段保持同一安全 code node。public thinking 继续是 literal plain text，不进入 Markdown。
+
+Artifact header 只显示服务器 title、state、低存在感 `D(n)`、closed renderer body、终态摘要和 `allowed_actions`；unknown presentation 仅显示 contract error 且不暴露 action/payload。展开、component/model、内部 scroll 和 tab 是当前程序内 UI state，按 conversation/artifact/version 衔接；终态重量组件先保持 lightweight summary，用户展开时才从 scoped Artifact endpoint 读取 exact 同版本详情并存入进程内 cache，scope/version 不匹配时 fail closed。后端继续拥有 Artifact/Attempt/result/branch/continuation authority。新 Artifact 自动展开并只滚动一次到 shell 起点，不调用 focus；status/version refresh 原地更新且不重复滚动。终态 Artifact 保持展开到下一条主线 learner message，branch learner message 不触发；用户手动重开不被普通 refresh 覆盖。
+
+branch item 只按 v5 explicit references 从 mainline 移出并紧跟 anchor Artifact 渲染。active branch 始终展开；resolved branch 默认折叠为“答疑 · N 轮”，可手动展开。rail 只增加左侧缩进，learner bubble 右边界保持原主线对齐。Artifact/branch shell 使用 container query、内部 bounded scroll、44px control、visible focus 与 `prefers-reduced-motion`；1440×900、900×900、390×844 均不得产生页面级水平溢出。

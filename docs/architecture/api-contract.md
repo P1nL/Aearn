@@ -1,6 +1,6 @@
 # Aearn Tutor HTTP 与 SSE API 契约
 
-**状态：** 当前公共 API 契约，2026-08-27。
+**状态：** 当前公共 API 契约，2026-09-01。
 **权威来源：** `aearn/services/api/app/main.py` 中注册的路由、Pydantic model、
 `services/tutor/public_api.py`、`services/learning/`、`services/tutor/cutover.py` 与 API 测试。
 **不适用：** 已移除的 Graph、Dashboard、Onboarding、Learning Session、Review、
@@ -722,3 +722,16 @@ decision v3 的 learner interaction 是 strict closed union：`none + none + nul
 普通 learner input 在 blocking Artifact 下由服务端绑定 depth-one branch；客户端不提交 branch id，也不能把本地折叠状态当 authority。存在 branch history 时 conversation snapshot 升级为 `tutor_conversation_snapshot_v5`，additive `branches[]` 只返回 anchor Artifact id、TeachingSession/checkpoint id、state、disposition、round/item count、explicit message/process references 与时间；v3/v4 clients 在无 branch history 时继续得到原版本。topic switch 只能通过 closed control confirmation，hint/direct-answer branch completion 需要 exact server receipt。
 
 Artifact action、expected demo event、timer 与 background producer 只持久化 continuation intent。调度器按 learner message > explicit Artifact action > expected event > timer > background 选择一条 eligible intent；active foreground、pending learner input、active branch、Free Reading automatic intent 或 stale claim/authority 都不会创建 provider Turn。没有新增 timer-triggered HTTP provider route，SSE 仍只投影已提交的 conversation events。
+
+
+## 2026-09-01：Desktop Artifact detail/action 与 snapshot v4/v5 consumer contract
+
+| Method | Path | Learner-safe contract |
+| --- | --- | --- |
+| `GET` | `/api/tutor/conversations/{conversation_id}/artifacts/{artifact_id}?user_id=...` | exact current `TutorPublicArtifactItem`; user/conversation/artifact scope mismatch is not exposed |
+| `POST` | `/api/tutor/conversations/{conversation_id}/artifacts/{artifact_id}/actions` | body carries user/track/session scope, `client_action_id`, `expected_artifact_version`, and one closed action payload; response returns fresh Artifact projection, event ID/sequence, and replay flag |
+| `GET` | `/api/tutor/conversations/{conversation_id}/artifacts/{artifact_id}/attempts/{attempt_id}?user_id=...` | scoped learner-safe Attempt detail only; private submission/rubric/tests/runtime identity remain nonpublic |
+
+Desktop accepts the additive snapshot family without widening it: v2/v3 normalize missing Artifact/branch fields to `null`/`[]`; v4 requires exact `active_artifact`; v5 additionally requires exact branch groups. Artifact timeline identity is `kind + id`; `active_artifact` may fill a bounded snapshot omission but may not disagree with a timeline copy. Branch references have contiguous sequence, exact role/kind/turn identity, depth one, server counts/state/disposition/timestamps, and anchor/scope agreement. Any duplicate, extra, protected, unknown, hash/count, terminal-state, action, reference, presentation-kind, or cross-scope mismatch rejects the whole response.
+
+The Desktop action facade sends only the exact server-advertised action plus version/scope/idempotency fields. It does not derive score, pass, mastery, Attempt outcome, continuation priority, or branch membership. Action responses must advance Artifact version, preserve requested scope identity, and return a positive event sequence; replay is accepted only as the same exact safe response.

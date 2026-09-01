@@ -1,5 +1,5 @@
 import type { ApiError } from "./core";
-import type { ExerciseAttemptOutcome, ModelReviewAssistanceKind } from "./lesson";
+import type { ExerciseAttemptOutcome, ModelCodeReviewSubmission, ModelReviewAssistanceKind } from "./lesson";
 
 export type TutorRunStatus =
   | "queued"
@@ -85,6 +85,7 @@ export type TutorPublicProcessStep = {
 export type TutorPublicProcess = {
   kind: "process";
   id: string;
+  turn_id: string | null;
   run_id: string;
   display_state: "thinking" | "waiting_input" | "waiting_approval" | "waiting_authority" | "completed" | "interrupted" | "superseded" | "unavailable" | "failed";
   steps: TutorPublicProcessStep[];
@@ -172,7 +173,233 @@ export type TutorHistoryError = {
   recoverable: boolean;
   created_at: string | null;
 };
-export type TutorHistoryItem = TutorHistoryMessage | TutorPublicProcess | TutorInteractionRequestItem | TutorHistoryError;
+
+export type TutorArtifactKind =
+  | "exercise_workspace"
+  | "browser_preview"
+  | "test_result"
+  | "knowledge_check"
+  | "model_code_review"
+  | "sql_workspace"
+  | "demonstration"
+  | "source_inspector";
+
+export type TutorArtifactPurpose =
+  | "exercise"
+  | "demonstration"
+  | "knowledge_check"
+  | "remediation"
+  | "transfer_check"
+  | "code_review"
+  | "sql_exploration"
+  | "result";
+
+export type TutorArtifactOwnerKind = "lesson_gate" | "review_item" | "teaching_practice" | "learning_item";
+export type TutorArtifactState = "pending" | "ready" | "active" | "running" | "completed" | "failed" | "cancelled" | "superseded";
+export type TutorArtifactActionKind = "request_hint" | "run" | "respond" | "complete_review" | "cancel" | "acknowledge_demo_event";
+export type TutorArtifactDifficulty = "D1" | "D2" | "D3" | "D4" | "D5";
+export type TutorArtifactOutcome = "passed" | "failed" | "timed_out" | "cancelled" | "unavailable" | "invalid";
+export type TutorBranchResponseDisposition = "answer_and_refocus" | "offer_switch" | "confirmed_switch";
+
+export type TutorArtifactOption = { value: string; label: string };
+
+export type TutorArtifactExerciseWorkspacePresentation = {
+  type: "exercise_workspace_v1";
+  exercise_version_id: string;
+  language_id: string;
+  editor_mode: "code" | "sql" | "structured_answer";
+  starter_content: string;
+  starter_content_hash: string;
+  editable: boolean;
+  live_preview: boolean;
+  runtime_profile_key: string | null;
+};
+
+export type TutorArtifactBrowserPreviewPresentation = {
+  type: "browser_preview_v1";
+  source_artifact_id: string;
+  source_content_hash: string;
+  experience_tier: "local_non_authoritative";
+  interactive: boolean;
+};
+
+export type TutorArtifactTestResultPresentation = {
+  type: "test_result_v1";
+  attempt_id: string;
+  status: "pending" | "terminal";
+  outcome: TutorArtifactOutcome | null;
+  passed_count: number;
+  total_count: number;
+  summary_markdown: string;
+  result_hash: string | null;
+};
+
+export type TutorArtifactKnowledgeCheckPresentation = {
+  type: "knowledge_check_v1";
+  response_kind: "single_select" | "multi_select" | "prediction" | "ordering" | "code_range" | "short_text";
+  prompt_markdown: string;
+  options: TutorArtifactOption[];
+  minimum_selections: number;
+  maximum_selections: number;
+  maximum_text_length: number;
+};
+
+export type TutorArtifactModelCodeReviewPresentation = {
+  type: "model_code_review_v1";
+  exercise_version_id: string;
+  language_id: string;
+  source_code: string;
+  source_code_hash: string;
+  line_count: number;
+  review_categories: string[];
+};
+
+export type TutorArtifactSqlWorkspacePresentation = {
+  type: "sql_workspace_v1";
+  exercise_version_id: string;
+  dialect: "sqlite";
+  starter_query: string;
+  starter_query_hash: string;
+  schema_markdown: string;
+  max_rows: number;
+};
+
+export type TutorArtifactDemonstrationPresentation = {
+  type: "demonstration_v1";
+  demonstration_mode: "interactive" | "static";
+  language_id: string | null;
+  source_content: string;
+  source_content_hash: string;
+  expected_event_key: string | null;
+  duration_seconds: number | null;
+};
+
+export type TutorArtifactSourceInspectorPresentation = {
+  type: "source_inspector_v1";
+  document_id: string;
+  document_content_hash: string;
+  block_id: string;
+  excerpt: string;
+  citation_ids: string[];
+};
+
+export type TutorArtifactPresentation =
+  | TutorArtifactExerciseWorkspacePresentation
+  | TutorArtifactBrowserPreviewPresentation
+  | TutorArtifactTestResultPresentation
+  | TutorArtifactKnowledgeCheckPresentation
+  | TutorArtifactModelCodeReviewPresentation
+  | TutorArtifactSqlWorkspacePresentation
+  | TutorArtifactDemonstrationPresentation
+  | TutorArtifactSourceInspectorPresentation;
+
+export type TutorArtifactSourceReference = {
+  kind: "lesson_document" | "exercise_version" | "attempt_result" | "review_session" | "teaching_checkpoint" | "source_citation" | "artifact";
+  reference_id: string;
+  reference_version: number | null;
+  content_hash: string | null;
+  label: string;
+};
+
+export type TutorArtifactAttemptSummary = {
+  attempt_id: string;
+  attempt_type: "run" | "submit" | "diagnostic_submit" | "review_submit";
+  status: "pending" | "terminal";
+  outcome: TutorArtifactOutcome | null;
+  score: number | null;
+  result_hash: string | null;
+  accepted_at: string;
+  terminal_at: string | null;
+};
+
+export type TutorArtifactBranchSummary = {
+  branch_id: string;
+  state: "active" | "resolved";
+  disposition: TutorBranchResponseDisposition | null;
+  round_count: number;
+  item_count: number;
+  collapsed: boolean;
+};
+
+export type TutorPublicArtifactItem = {
+  kind: "artifact";
+  id: string;
+  conversation_id: string;
+  turn_id: string | null;
+  learning_track_id: string;
+  knowledge_key: string;
+  teaching_session_id: string;
+  checkpoint_id: string;
+  artifact_version: 1;
+  artifact_kind: TutorArtifactKind;
+  purpose: TutorArtifactPurpose;
+  owner_kind: TutorArtifactOwnerKind;
+  owner_id: string;
+  owner_version: number;
+  state: TutorArtifactState;
+  blocking: boolean;
+  title: string;
+  instruction_markdown: string;
+  difficulty: TutorArtifactDifficulty | null;
+  presentation: TutorArtifactPresentation;
+  allowed_actions: TutorArtifactActionKind[];
+  source_references: TutorArtifactSourceReference[];
+  active_attempt: TutorArtifactAttemptSummary | null;
+  branch_summary: TutorArtifactBranchSummary | null;
+  version: number;
+  created_at: string;
+  updated_at: string;
+  terminal_at: string | null;
+};
+
+export type TutorArtifactResponse =
+  | { kind: "single_select"; value: string }
+  | { kind: "multi_select"; values: string[] }
+  | { kind: "prediction" | "short_text"; text: string }
+  | { kind: "ordering"; values: string[] }
+  | { kind: "code_range"; start_line: number; end_line: number; category: string; note: string };
+
+export type TutorArtifactAction =
+  | { action: "request_hint"; hint_level: number | null }
+  | { action: "run"; submission: string }
+  | { action: "respond"; response: TutorArtifactResponse }
+  | { action: "complete_review"; review_submission: ModelCodeReviewSubmission }
+  | { action: "cancel"; reason: "learner_cancelled" }
+  | { action: "acknowledge_demo_event"; event_key: string; event_nonce: string };
+
+export type TutorArtifactActionResponse = {
+  artifact: TutorPublicArtifactItem;
+  artifact_event_id: string;
+  artifact_event_sequence: number;
+  idempotent_replayed: boolean;
+};
+
+export type TutorPublicBranchItemReference = {
+  item_sequence: number;
+  branch_round: number;
+  item_kind: "message" | "process";
+  item_id: string;
+  turn_id: string;
+  item_role: "learner" | "tutor" | "process";
+};
+
+export type TutorPublicBranchGroup = {
+  schema_version: "tutor_conversation_branch_v1";
+  branch_id: string;
+  anchor_artifact_id: string;
+  teaching_session_id: string;
+  checkpoint_id: string;
+  state: "active" | "resolved";
+  disposition: TutorBranchResponseDisposition | null;
+  round_count: number;
+  item_count: number;
+  collapsed: boolean;
+  items: TutorPublicBranchItemReference[];
+  created_at: string;
+  resolved_at: string | null;
+};
+
+export type TutorHistoryItem = TutorHistoryMessage | TutorPublicProcess | TutorInteractionRequestItem | TutorHistoryError | TutorPublicArtifactItem;
 
 export type TutorConversationHistoryResponse = {
   items: TutorHistoryItem[];
@@ -331,7 +558,11 @@ export type TutorTurnOutputPayload =
     };
 
 export type TutorConversationSnapshotResponse = {
-  snapshot_version: "tutor_conversation_snapshot_v2" | "tutor_conversation_snapshot_v3";
+  snapshot_version:
+    | "tutor_conversation_snapshot_v2"
+    | "tutor_conversation_snapshot_v3"
+    | "tutor_conversation_snapshot_v4"
+    | "tutor_conversation_snapshot_v5";
   conversation: {
     conversation_id: string;
     title: string;
@@ -345,6 +576,8 @@ export type TutorConversationSnapshotResponse = {
   active_turn: TutorPublicTurn | null;
   active_thinking: TutorActiveThinking | null;
   active_runtime_output: TutorRuntimeOutput | null;
+  active_artifact: TutorPublicArtifactItem | null;
+  branches: TutorPublicBranchGroup[];
   pending_requests: TutorInteractionRequestItem[];
   queue: TutorQueuedInput[];
   timeline: TutorHistoryItem[];

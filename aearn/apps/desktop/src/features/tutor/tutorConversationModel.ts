@@ -1,6 +1,6 @@
 import type {
-  TutorContextReferenceDraft, TutorHistoryItem, TutorInteractionRequestItem,
-  TutorInteractionResponseDraft, TutorPublicProcess, TutorPublicTurn, TutorRuntimeOutput,
+  TutorContextReferenceDraft, TutorHistoryItem, TutorInteractionRequestItem, TutorPublicArtifactItem,
+  TutorInteractionResponseDraft, TutorPublicBranchGroup, TutorPublicProcess, TutorPublicTurn, TutorRuntimeOutput,
   TutorRuntimeOutputItem, TutorTurnOutputPayload,
 } from "../../types";
 
@@ -153,3 +153,87 @@ export function displayControlState(state: string, turn: TutorPublicTurn | null)
 export function displayQueuePauseReason(reason: string | null): string { return { pending_request: "等待类型化请求", interrupted: "当前 Turn 已停止", failed: "上一 Turn 失败" }[reason ?? ""] ?? "等待显式恢复"; }
 export function displayStreamStatus(status: string): string { return { idle: "待命", connecting: "连接中", streaming: "已连接", reconnecting: "正在重连", error: "需要恢复" }[status] ?? status; }
 export function createTutorActionId(prefix: string): string { const uuid = globalThis.crypto?.randomUUID?.(); return uuid ? `${prefix}:${uuid}` : `${prefix}:${Date.now()}:${Math.random().toString(16).slice(2)}`; }
+
+export type TutorTimelineRenderNode =
+  | { kind: "item"; item: TutorHistoryItem; terminalCollapseMarker: string | null }
+  | { kind: "branch"; branch: TutorPublicBranchGroup; items: TutorHistoryItem[] };
+
+export function mergeActiveArtifactIntoTimeline(
+  timeline: TutorHistoryItem[],
+  activeArtifact: TutorPublicArtifactItem | null,
+): TutorHistoryItem[] {
+  if (!activeArtifact || timeline.some((item) => item.kind === "artifact" && item.id === activeArtifact.id)) return timeline;
+  return [activeArtifact, ...timeline];
+}
+
+export function groupTimelineAroundArtifacts(
+  timeline: TutorHistoryItem[],
+  branches: TutorPublicBranchGroup[],
+): TutorTimelineRenderNode[] {
+  if (branches.length === 0) {
+    return timeline.map((item, index) => ({
+      kind: "item",
+      item,
+      terminalCollapseMarker: item.kind === "artifact" ? nextMainlineLearnerId(timeline, index, item.terminal_at) : null,
+    }));
+  }
+  const itemByIdentity = new Map(timeline.map((item) => [historyIdentity(item), item]));
+  const anchorIds = new Set(timeline.flatMap((item) => item.kind === "artifact" ? [item.id] : []));
+  const acceptedBranches: TutorPublicBranchGroup[] = [];
+  const seenBranches = new Set<string>();
+  for (const branch of branches) {
+    if (seenBranches.has(branch.branch_id) || !anchorIds.has(branch.anchor_artifact_id)) continue;
+    seenBranches.add(branch.branch_id);
+    acceptedBranches.push(branch);
+  }
+  const branchItemIdentities = new Set<string>();
+  for (const branch of acceptedBranches) {
+    for (const reference of branch.items) {
+      const identity = `${reference.item_kind}:${reference.item_id}`;
+      if (itemByIdentity.has(identity)) branchItemIdentities.add(identity);
+    }
+  }
+  const mainline = timeline.filter((item) => !branchItemIdentities.has(historyIdentity(item)));
+  const branchesByAnchor = new Map<string, TutorPublicBranchGroup[]>();
+  for (const branch of acceptedBranches) {
+    branchesByAnchor.set(branch.anchor_artifact_id, [...(branchesByAnchor.get(branch.anchor_artifact_id) ?? []), branch]);
+  }
+  const nodes: TutorTimelineRenderNode[] = [];
+  mainline.forEach((item, index) => {
+    nodes.push({
+      kind: "item",
+      item,
+      terminalCollapseMarker: item.kind === "artifact" ? nextMainlineLearnerId(mainline, index, item.terminal_at) : null,
+    });
+    if (item.kind !== "artifact") return;
+    for (const branch of branchesByAnchor.get(item.id) ?? []) {
+      const branchItems = branch.items.flatMap((reference) => {
+        const matched = itemByIdentity.get(`${reference.item_kind}:${reference.item_id}`);
+        return matched ? [matched] : [];
+      });
+      nodes.push({ kind: "branch", branch, items: branchItems });
+    }
+  });
+  return nodes;
+}
+
+export function artifactIdsInTimeline(timeline: TutorHistoryItem[]): Set<string> {
+  return new Set(timeline.flatMap((item) => item.kind === "artifact" ? [item.id] : []));
+}
+
+function historyIdentity(item: TutorHistoryItem): string {
+  return `${item.kind}:${item.id}`;
+}
+
+function nextMainlineLearnerId(timeline: TutorHistoryItem[], artifactIndex: number, terminalAt: string | null): string | null {
+  if (!terminalAt) return null;
+  const terminalTime = Date.parse(terminalAt);
+  if (!Number.isFinite(terminalTime)) return null;
+  for (let index = artifactIndex + 1; index < timeline.length; index += 1) {
+    const item = timeline[index];
+    if (item?.kind !== "message" || item.role !== "learner" || !item.created_at) continue;
+    const learnerTime = Date.parse(item.created_at);
+    if (Number.isFinite(learnerTime) && learnerTime >= terminalTime) return item.id;
+  }
+  return null;
+}
