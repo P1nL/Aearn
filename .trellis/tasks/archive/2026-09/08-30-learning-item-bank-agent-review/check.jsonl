@@ -1,0 +1,3 @@
+{"file":".trellis/tasks/08-30-tutor-conversation-learning-artifacts/research/qa-security-release-gates.md","reason":"fixture、真实模型非声明和发布验收"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"source->compiler->DB->candidate完整流"}
+{"file":".trellis/tasks/08-30-tutor-conversation-learning-artifacts/research/confirmed-product-decisions.md","reason":"核对代理角色与风险策略"}
