@@ -1,6 +1,6 @@
 # Aearn 本地开发环境
 
-**状态：** 当前 Tutor Harness + controlled Codex Sidecar 开发/验证环境，2026-08-20。
+**状态：** 当前 Tutor Harness + controlled Codex Sidecar 开发/验证环境，2026-09-02。
 **权威来源：** `aearn/package.json`、`aearn/services/api/pyproject.toml`、
 `aearn/infra/docker-compose.yml`、`aearn/scripts/start-dev.ps1` 与
 `.env.example`。
@@ -300,3 +300,37 @@ uv --directory .\aearn\services\api run python -m app.db.bootstrap
 ```
 
 A new active course must add intent tags in the same transaction or bootstrap/publication fails with `language_course_intent_coverage_missing`. Course slug is allowed only in the idempotent bootstrap backfill; runtime code must use course UUID/tag joins. `TUTOR_PLANNING_INTENT_ENABLED=false` disables automatic intent admission and falls back to the full active catalog, but the language selector still has no default selection.
+
+
+## 2026-09-02：Learning Artifact platform final local verification
+
+Run bootstrap-sensitive API tests in one process. Keep provider and public executor admission disabled unless a separate approval explicitly changes that boundary.
+
+~~~powershell
+$env:LLM_TYPE = "disabled"
+uv --directory .\aearn\services\api run python -m pytest -q -m "not real_provider"
+uv --directory .\aearn\services\api run ruff check app tests
+uv --directory .\aearn\services\api run python -m mypy app --no-incremental
+uv --directory .\aearn\services\api lock --check
+
+uv --directory .\aearn\services\api run python -m pytest -q ..\..\packages\shared\tests
+uv --directory .\aearn\services\executor run python -m pytest -q --ignore=tests/test_executor_docker_conformance.py
+uv --directory .\aearn\services\executor run ruff check aearn_executor tests
+uv --directory .\aearn\services\executor run python -m mypy aearn_executor --no-incremental
+uv --directory .\aearn\services\executor lock --check
+
+pnpm --dir .\aearn\apps\desktop test
+pnpm --dir .\aearn\apps\desktop build
+cargo fmt --manifest-path .\aearn\apps\desktop\src-tauri\Cargo.toml --check
+cargo check --manifest-path .\aearn\apps\desktop\src-tauri\Cargo.toml
+cargo clippy --manifest-path .\aearn\apps\desktop\src-tauri\Cargo.toml --all-targets --all-features -- -D warnings
+cargo test --manifest-path .\aearn\apps\desktop\src-tauri\Cargo.toml
+
+# Use a uniquely named disposable local PostgreSQL database, then run:
+uv --directory .\aearn\services\api run python -m app.db.bootstrap
+uv --directory .\aearn\services\api run python -m app.db.bootstrap
+~~~
+
+The browser matrix uses disposable learner-safe fixtures at 1440x900, 900x900, 390x844, and reduced motion. It must verify no page overflow, clean console, keyboard/focus return, isolated conversation/drawer/Artifact scrolling, and protected-marker absence. Native Preview security evidence may run only the local Tauri/WebView2 harness already defined by the Preview contract; it must not be described as Docker or production container conformance.
+
+Do not set the real-provider marker, enable Docker conformance, build/sign/publish production images, push, deploy, or migrate production data as part of this default matrix. Record those gates as not executed.

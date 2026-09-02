@@ -1,6 +1,6 @@
 # Tutor Harness Runtime Architecture
 
-**Status:** Current runtime contract as of 2026-08-27.
+**Status:** Current runtime contract as of 2026-09-02.
 **Authority:** Current route registration, `aearn/services/api/app`,
 `aearn/apps/desktop`, `aearn/services/worker`, `services/learning/`,
 the manifest-ordered `app/db/schema/` fragments, and their tests.
@@ -971,3 +971,16 @@ SQL source directly; any runtime/test failure keeps it editable, creates one imm
 one result-evaluation continuation. Neither the local runner nor the Tutor model can create a Gate, override score,
 write mastery/progress, expose private datasets, connect to Aearn PostgreSQL, or claim container verification.
 Desktop owns only draft/view/copy/stale state and submits the latest query on explicit Run.
+
+
+## 2026-09-02：Tutor Conversation Learning Artifact platform final composition
+
+The active runtime has one server-authoritative Learning Artifact protocol rather than per-widget authorities. tutor_learning_artifact_v1 owns stable public identity, state/version, a closed presentation/action union, safe source references, an optional Attempt summary, and branch summary. Gate, Review, Attempt, TeachingSession, mastery/progress, and Learning Item publication remain their existing owners. Artifact routes are facades over those owners; Desktop local state never changes an outcome, score, publication state, continuation priority, or progress.
+
+The current closed presentation matrix is exercise_workspace_v1, browser_preview_v1, test_result_v1, knowledge_check_v1, model_code_review_v1/v2, sql_workspace_v1/v2, demonstration_v1/v2, and source_inspector_v1. Artifact actions are request_hint, request_direct_answer, run, respond, complete_review, cancel, acknowledge_demo_event, and complete_demo. TutorPublicItem includes artifact; conversation events use tutor_conversation_event_v3; backend snapshots read v3/v4/v5 and Desktop retains v2-v5 compatibility. Large detail stays behind scoped reads; SSE carries stable item references and bounded safe deltas.
+
+Published Learning Item handles are the only online candidate source. The two write/admission gates TUTOR_LEARNING_ARTIFACTS_ENABLED and TUTOR_ARTIFACT_TEACHING_MODE_ENABLED, plus the offline review gate LEARNING_ITEM_BANK_AGENT_REVIEW_ENABLED, default false. When admission is off, candidate projection is empty and an Artifact interaction decision fails before a public Tutor message; existing rows remain readable. Rollback disables candidate/admission first, then Desktop/Preview presentation, while retaining additive history and never performing a destructive down migration.
+
+HTML editing uses a process-local Monaco draft and an app-owned isolated Preview; live Preview is non-authoritative and explicit Run alone creates an Attempt. Terminal execution, knowledge, review, SQL, and demonstration evidence enters exactly one existing owner/result/continuation path. A blocking Artifact can anchor only a depth-one clarification branch; the arbiter keeps learner messages above explicit actions, expected events, timers, and background continuations. Exact Lesson sources are resolved by user/conversation/track/document/version/block/hash and displayed in the isolated right drawer without text search, conversation scroll, or component remount.
+
+Public API/SSE/Desktop/export/readiness evidence excludes complete submissions, private rubric/tests/reference answers, hidden SQL data, provider body/reasoning, commands, paths, container identity, credentials, and secrets. Local fake-provider, SQLite, browser, WebView2, and empty-image-lock evidence is engineering verification only, not provider quality, production sandbox, image, deployment, or release approval.

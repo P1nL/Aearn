@@ -1,6 +1,5 @@
 import { useEffect } from "react";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { TutorPublicArtifactItem } from "../../../types";
@@ -111,17 +110,15 @@ describe("CodeEditorArtifact", () => {
   afterEach(() => cleanup());
 
   it("sends the exact latest draft only on explicit Run and marks later edits stale", async () => {
-    const user = userEvent.setup();
     const onAction = vi.fn().mockResolvedValue(artifact({ version: 2, state: "running" }));
     render(<CodeEditorArtifact artifact={artifact()} onAction={onAction} />);
     const editor = await screen.findByRole("textbox", { name: "练习代码" });
     expect(screen.getByText("代码已修改，上次运行结果已过期")).toBeInTheDocument();
-    await user.clear(editor);
-    await user.type(editor, "<button data-aearn-event=\"ok\">Run</button>");
+    fireEvent.change(editor, { target: { value: "<button data-aearn-event=\"ok\">Run</button>" } });
     expect(screen.getByText("代码已修改，上次运行结果已过期")).toBeInTheDocument();
     expect(onAction).not.toHaveBeenCalled();
 
-    await user.click(screen.getByRole("button", { name: "运行" }));
+    fireEvent.click(screen.getByRole("button", { name: "运行" }));
     await waitFor(() => expect(onAction).toHaveBeenCalledTimes(1));
     expect(onAction.mock.calls[0]?.[0]).toMatchObject({
       artifact: { id: "artifact-editor", version: 1 },
@@ -130,16 +127,14 @@ describe("CodeEditorArtifact", () => {
     });
     await waitFor(() => expect(screen.queryByText("代码已修改，上次运行结果已过期")).not.toBeInTheDocument());
 
-    await user.type(editor, "\n<!-- changed -->");
+    fireEvent.change(editor, { target: { value: "<button data-aearn-event=\"ok\">Run</button>\n<!-- changed -->" } });
     expect(screen.getByText("代码已修改，上次运行结果已过期")).toBeInTheDocument();
   });
 
   it("preserves the process-local draft across authoritative Artifact versions and never focuses Monaco", async () => {
-    const user = userEvent.setup();
     const rendered = render(<CodeEditorArtifact artifact={artifact({ active_attempt: null })} />);
     const editor = await screen.findByRole("textbox", { name: "练习代码" });
-    await user.clear(editor);
-    await user.type(editor, "const preserved = true;");
+    fireEvent.change(editor, { target: { value: "const preserved = true;" } });
     expect(editor).toHaveAttribute("data-model-path", expect.stringContaining("/1.html"));
     act(() => editorHarness.cursorListener?.());
 
