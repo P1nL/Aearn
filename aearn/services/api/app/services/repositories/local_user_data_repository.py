@@ -145,6 +145,7 @@ def export_user_data(conn: Connection[dict[str, object]], user_id: str) -> dict[
         "demonstration_completion_summaries": _export_demonstration_completions(conn, user_id),
         "knowledge_check_response_summaries": _export_knowledge_check_responses(conn, user_id),
         "knowledge_check_assistance_summaries": _export_knowledge_check_assistance(conn, user_id),
+        "model_review_artifact_summaries": _export_model_review_artifact_receipts(conn, user_id),
         "clarification_branch_summaries": _export_clarification_branches(conn, user_id),
         "clarification_branch_event_summaries": _export_clarification_branch_events(conn, user_id),
         "run_branch_scope_summaries": _export_run_branch_scopes(conn, user_id),
@@ -189,6 +190,7 @@ def export_user_data(conn: Connection[dict[str, object]], user_id: str) -> dict[
             "artifact_active_attempt_payloads": "omitted",
             "artifact_event_payloads": "omitted",
             "knowledge_check_response_payloads_and_hashes": "omitted",
+            "model_review_artifact_submissions_feedback_and_hashes": "omitted",
             "artifact_action_request_hashes": "omitted",
             "demonstration_completion_nonces_and_request_hashes": "omitted",
             "artifact_reference_content_hashes": "omitted",
@@ -318,6 +320,7 @@ def _summary_counts(conn: Connection[dict[str, object]], user_id: str) -> dict[s
         "demonstration_completions": _count(conn, "SELECT count(*) AS count FROM tutor_demonstration_completion_receipts WHERE user_id = %s", user_id),
         "knowledge_check_responses": _count(conn, "SELECT count(*) AS count FROM tutor_knowledge_check_response_receipts WHERE user_id = %s", user_id),
         "knowledge_check_assistance": _count(conn, "SELECT count(*) AS count FROM tutor_knowledge_check_assistance_receipts WHERE user_id = %s", user_id),
+        "model_review_artifact_receipts": _count(conn, "SELECT count(*) AS count FROM tutor_model_review_artifact_receipts WHERE user_id = %s", user_id),
         "clarification_branches": _count(conn, "SELECT count(*) AS count FROM tutor_conversation_branches WHERE user_id = %s", user_id),
         "clarification_branch_events": _count(conn, "SELECT count(*) AS count FROM tutor_conversation_branch_events WHERE user_id = %s", user_id),
         "run_branch_scopes": _count(conn, "SELECT count(*) AS count FROM tutor_run_branch_scopes WHERE user_id = %s", user_id),
@@ -947,6 +950,22 @@ def _export_knowledge_check_responses(
     return [_safe_row(row, exclude=()) for row in rows]
 
 
+def _export_model_review_artifact_receipts(
+    conn: Connection[dict[str, object]], user_id: str
+) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """
+        SELECT id,artifact_id,conversation_id,learning_track_id,knowledge_key,
+               teaching_session_id,artifact_version,exercise_version_id,verdict,
+               outcome,score,assistance_kind,remediation_handle,policy_version,created_at
+        FROM tutor_model_review_artifact_receipts
+        WHERE user_id=%s ORDER BY created_at,id
+        """,
+        (user_id,),
+    ).fetchall()
+    return [_safe_row(row, exclude=()) for row in rows]
+
+
 def _export_knowledge_check_assistance(
     conn: Connection[dict[str, object]], user_id: str
 ) -> list[dict[str, object]]:
@@ -1491,6 +1510,7 @@ def _delete_learning_track_data(conn: Connection[dict[str, object]], user_id: st
     )
     conn.execute("DELETE FROM tutor_knowledge_check_assistance_receipts WHERE user_id = %s", (user_id,))
     conn.execute("DELETE FROM tutor_knowledge_check_response_receipts WHERE user_id = %s", (user_id,))
+    conn.execute("DELETE FROM tutor_model_review_artifact_receipts WHERE user_id = %s", (user_id,))
     conn.execute("DELETE FROM tutor_learning_artifact_events WHERE user_id = %s", (user_id,))
     conn.execute("DELETE FROM tutor_learning_artifact_references WHERE user_id = %s", (user_id,))
     conn.execute("DELETE FROM tutor_learning_artifact_attempt_links WHERE user_id = %s", (user_id,))

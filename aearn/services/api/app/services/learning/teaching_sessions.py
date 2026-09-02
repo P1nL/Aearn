@@ -606,6 +606,10 @@ class TeachingSessionRepository:
             row=row,
             safe_payload=safe_payload,
         )
+        model_review_evaluation = self._model_review_evaluation(
+            row=row,
+            safe_payload=safe_payload,
+        )
         if result_evaluation_summary is not None:
             source_handle = str(safe_payload["source_handle"])
             safe_payload = {
@@ -619,6 +623,15 @@ class TeachingSessionRepository:
             evaluation_summary, successor_handle = knowledge_check_evaluation
             safe_payload = {
                 "reason_code": "knowledge_check_evaluation",
+                "source_handle": source_handle,
+                "evaluation_summary": evaluation_summary,
+            }
+            handles.add(source_handle)
+        elif model_review_evaluation is not None:
+            source_handle = str(safe_payload["source_handle"])
+            evaluation_summary, successor_handle = model_review_evaluation
+            safe_payload = {
+                "reason_code": "model_review_evaluation",
                 "source_handle": source_handle,
                 "evaluation_summary": evaluation_summary,
             }
@@ -685,10 +698,10 @@ class TeachingSessionRepository:
             assignment_version=_int(row["assignment_version"]),
         )
         try:
+            artifact_evaluation = knowledge_check_evaluation or model_review_evaluation
             required_successor_handles = (
-                (knowledge_check_evaluation[1],)
-                if knowledge_check_evaluation is not None
-                and knowledge_check_evaluation[1] is not None
+                (artifact_evaluation[1],)
+                if artifact_evaluation is not None and artifact_evaluation[1] is not None
                 else ()
             )
             artifact_candidates = self._artifact_candidate_builder.build(
@@ -705,8 +718,10 @@ class TeachingSessionRepository:
             artifact_candidates = artifact_candidates.model_copy(
                 update={"candidates": ()}
             )
-        elif knowledge_check_evaluation is not None:
-            _summary, successor_handle = knowledge_check_evaluation
+        elif knowledge_check_evaluation is not None or model_review_evaluation is not None:
+            artifact_evaluation = knowledge_check_evaluation or model_review_evaluation
+            assert artifact_evaluation is not None
+            _summary, successor_handle = artifact_evaluation
             candidates = tuple(
                 item
                 for item in artifact_candidates.candidates
@@ -714,7 +729,7 @@ class TeachingSessionRepository:
             )
             if successor_handle is not None and len(candidates) != 1:
                 raise TeachingSessionConflict(
-                    "knowledge-check successor is stale or unavailable"
+                    "Artifact evaluation successor is stale or unavailable"
                 )
             artifact_candidates = artifact_candidates.model_copy(
                 update={"candidates": candidates}
@@ -970,6 +985,94 @@ class TeachingSessionRepository:
                 "knowledge-check evaluation summary is protected"
             ) from exc
         return summary, successor_handle
+
+    def _model_review_evaluation(
+        self,
+        *,
+        row: Mapping[str, object],
+        safe_payload: Mapping[str, object],
+    ) -> tuple[str, str | None] | None:
+        if safe_payload.get("reason_code") != "model_review_evaluation":
+            return None
+        source_handle = str(safe_payload.get("source_handle") or "")
+        if not source_handle.startswith("artifact:"):
+            raise TeachingSessionConflict("model review evaluation source handle is invalid")
+        artifact_id = source_handle.removeprefix("artifact:")
+        rows = self._conn.execute(
+            """
+            SELECT artifacts.presentation_json,receipts.id::text AS receipt_id,
+                   receipts.outcome,receipts.assistance_kind,receipts.result_hash
+            FROM tutor_continuation_intents AS intents
+            JOIN tutor_learning_artifacts AS artifacts
+              ON artifacts.id=intents.artifact_id AND artifacts.user_id=intents.user_id
+             AND artifacts.conversation_id=intents.conversation_id
+             AND artifacts.teaching_session_id=intents.teaching_session_id
+             AND artifacts.learning_track_id=intents.learning_track_id
+             AND artifacts.knowledge_key=intents.knowledge_key
+            JOIN tutor_learning_artifact_events AS events
+              ON events.artifact_id=artifacts.id AND events.id::text=intents.source_id
+             AND events.event_sequence=intents.source_version
+            JOIN tutor_model_review_artifact_receipts AS receipts
+              ON receipts.artifact_id=artifacts.id AND receipts.user_id=artifacts.user_id
+             AND receipts.conversation_id=artifacts.conversation_id
+             AND receipts.teaching_session_id=artifacts.teaching_session_id
+             AND receipts.learning_track_id=artifacts.learning_track_id
+            WHERE intents.consumed_run_id=%s AND intents.user_id=%s
+              AND intents.conversation_id=%s AND intents.teaching_session_id=%s
+              AND intents.learning_track_id=%s AND intents.knowledge_key=%s
+              AND intents.artifact_id=%s AND intents.state='consumed'
+              AND intents.source_kind='explicit_artifact_action'
+              AND intents.idempotency_key='model-review-evaluation:' || intents.source_id
+              AND artifacts.artifact_kind='model_code_review' AND artifacts.state='completed'
+              AND artifacts.presentation_kind='model_code_review_v2'
+              AND artifacts.presentation_json->>'review_receipt_id'=receipts.id::text
+              AND artifacts.presentation_json->>'result_hash'=receipts.result_hash
+              AND events.event_kind='action' AND events.action_kind='complete_review'
+              AND events.safe_payload_json->'owner_result'->>'review_receipt_id'=receipts.id::text
+              AND events.safe_payload_json->'owner_result'->>'result_hash'=receipts.result_hash
+            LIMIT 2
+            """,
+            (
+                row["run_id"],row["user_id"],row["conversation_id"],
+                row["teaching_session_id"],row["track_id"],row["knowledge_key"],artifact_id,
+            ),
+        ).fetchall()
+        if len(rows) != 1:
+            raise TeachingSessionConflict(
+                "model review evaluation continuation authority is missing or ambiguous"
+            )
+        result = rows[0]
+        presentation = result.get("presentation_json")
+        if not isinstance(presentation, Mapping):
+            raise TeachingSessionConflict("model review evaluation presentation is invalid")
+        summary = sanitize_summary_text(
+            str(presentation.get("evaluation_markdown") or ""),
+            max_length=320,
+        )
+        if not summary:
+            raise TeachingSessionConflict("model review evaluation summary is empty")
+        successor = presentation.get("remediation_handle")
+        if successor is not None and (
+            not isinstance(successor, str)
+            or re.fullmatch(r"li:[0-9a-f]{64}", successor) is None
+        ):
+            raise TeachingSessionConflict("model review remediation identity is invalid")
+        if (str(result["outcome"]) == "failed") != (successor is not None):
+            raise TeachingSessionConflict("model review remediation outcome is inconsistent")
+        try:
+            assert_public_artifact_safe(
+                {
+                    "source_handle": source_handle,
+                    "evaluation_summary": summary,
+                    "successor_handle": successor,
+                    "outcome": str(result["outcome"]),
+                    "assistance_kind": str(result["assistance_kind"]),
+                }
+            )
+        except ValueError as exc:
+            raise TeachingSessionConflict("model review evaluation summary is protected") from exc
+        return summary, successor if isinstance(successor, str) else None
+
 
     def next_available_knowledge_key(
         self, *, user_id: str, track_id: str, current_knowledge_key: str,

@@ -934,3 +934,25 @@ checkpoint reducer 先尊重 session/evidence/completion/authority 状态，再�
 blocking Artifact 等待期间的普通 learner message 仍创建 fresh finite Turn，但额外绑定一条 durable depth-one clarification branch。branch anchor 固定 Artifact、TeachingSession、checkpoint lineage 与 explicit item membership；nested branch、跨 scope 或 stale ancestry fail closed。response disposition 只有 `answer_and_refocus | offer_switch | confirmed_switch`；topic switch 必须先 offer 再接受 typed confirmation。hint/direct answer 必须携带同 scope 的 authoritative Hint/Teaching receipt，不能从自由文本推断 assistance。
 
 Artifact action/event、static timer 与 background work 只追加 durable continuation intent，不直接调用 provider。single-turn arbiter 固定优先级为 learner message > explicit Artifact action > expected interactive event > static display timer > background continuation；active foreground run、pending learner input 或 active branch 会阻止 automatic continuation，timer/background 只允许 Guided mode。claim generation、lease、authority version 与 checkpoint ancestry共同保证竞争 claimant 最多 materialize 一条 mainline Turn；branch resolved 后 result continuation 才回到 mainline。存在 branch history 的 reconnect 使用 additive snapshot v5；v3/v4 conversation 兼容保持不变。
+
+
+## 2026-09-02：Conversation-native model review v2
+
+Published model-review Learning Items now materialize into an additive conversation Artifact rather than
+restoring or bypassing the existing Lesson Gate/Review runtime. The server converts the immutable published
+code into a deterministic `model_code_review_artifact_v2` code/diff target with stable hashes, hunks, sides,
+and line keys. The Desktop is a read-only Monaco presenter and structured-finding editor; it does not execute
+code or own scoring.
+
+`complete_review` is handled by the Learning Item owner adapter under the current TeachingSession and
+publication fences. The service validates exact presentation/hunk/range identity, upgrades the existing private
+v1 rubric into the closed v2 taxonomy, runs the deterministic server scorer, writes one immutable private
+submission receipt, and completes the Artifact without creating an Attempt or writing mastery/progress. A
+failed result requires a distinct published unused D(n-1)/D(n) remediation with smaller scope/lower difficulty;
+missing authority rolls back the complete action.
+
+One exact Artifact-event/receipt continuation admits a new teaching Turn. Its context contains only
+`reason_code=model_review_evaluation`, the source Artifact handle, a bounded safe evaluation, and at most the
+persisted remediation handle. Provider output can explain the already-saved result but cannot change score,
+outcome, successor, receipt, Gate, Review, mastery, or progress. Full submission, private rubric/tests/proofs,
+and provider internals remain absent from API/SSE/Desktop/context/export.

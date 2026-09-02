@@ -218,6 +218,7 @@ _TARGET_COUNT_SQL: tuple[tuple[str, str], ...] = (
     ("tutor_demonstration_completion_receipts", "SELECT count(*)::int AS count FROM tutor_demonstration_completion_receipts WHERE user_id = %s"),
     ("tutor_knowledge_check_response_receipts", "SELECT count(*)::int AS count FROM tutor_knowledge_check_response_receipts WHERE user_id = %s"),
     ("tutor_knowledge_check_assistance_receipts", "SELECT count(*)::int AS count FROM tutor_knowledge_check_assistance_receipts WHERE user_id = %s"),
+    ("tutor_model_review_artifact_receipts", "SELECT count(*)::int AS count FROM tutor_model_review_artifact_receipts WHERE user_id = %s"),
     ("tutor_conversation_branches", "SELECT count(*)::int AS count FROM tutor_conversation_branches WHERE user_id = %s"),
     ("tutor_conversation_branch_events", "SELECT count(*)::int AS count FROM tutor_conversation_branch_events WHERE user_id = %s"),
     ("tutor_run_branch_scopes", "SELECT count(*)::int AS count FROM tutor_run_branch_scopes WHERE user_id = %s"),

@@ -8,6 +8,7 @@ import { ExecutionResultArtifact } from "./ExecutionResultArtifact";
 import { DemonstrationArtifact } from "./DemonstrationArtifact";
 import { SafeMarkdown } from "./SafeMarkdown";
 import { KnowledgeCheckArtifact } from "./KnowledgeCheckArtifact";
+import { ModelCodeReviewArtifact } from "./ModelCodeReviewArtifact";
 import type { TutorArtifactActionHandler, TutorArtifactAttemptLoader, TutorArtifactReturnToSource } from "./artifactRendererTypes";
 import type { ArtifactRendererUiState } from "./artifactUiState";
 
@@ -30,6 +31,7 @@ const ARTIFACT_RENDERER_REGISTRY = {
   test_result_v1: TestResultRenderer,
   knowledge_check_v1: KnowledgeCheckRenderer,
   model_code_review_v1: ModelCodeReviewPlaceholder,
+  model_code_review_v2: ModelCodeReviewRenderer,
   sql_workspace_v1: SqlWorkspacePlaceholder,
   demonstration_v1: DemonstrationRenderer,
   demonstration_v2: DemonstrationRenderer,
@@ -62,6 +64,11 @@ function TestResultRenderer({ artifact, loadAttempt, onReturnToSource }: Artifac
 function KnowledgeCheckRenderer({ artifact, onAction, actionBusy }: ArtifactRendererProps) {
   if (artifact.presentation.type !== "knowledge_check_v1") return <ArtifactContractError />;
   return <KnowledgeCheckArtifact artifact={artifact} onAction={onAction} actionBusy={actionBusy} />;
+}
+
+function ModelCodeReviewRenderer({ artifact, onAction, actionBusy }: ArtifactRendererProps) {
+  if (artifact.presentation.type !== "model_code_review_v2") return <ArtifactContractError />;
+  return <ModelCodeReviewArtifact artifact={artifact} onAction={onAction} actionBusy={actionBusy} />;
 }
 
 function ModelCodeReviewPlaceholder({ artifact }: ArtifactRendererProps) {

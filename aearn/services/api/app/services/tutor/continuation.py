@@ -1113,6 +1113,59 @@ class TutorContinuationIntentProducer:
             occurred_at=occurred_at,
         )
 
+    def record_model_review_evaluation(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str,
+        artifact_id: str,
+        artifact_event_id: str,
+        artifact_event_sequence: int,
+        occurred_at: datetime | None = None,
+    ) -> ContinuationIntentRecord:
+        """Record one receipt-backed continuation for terminal model review v2."""
+
+        evidence = self._conn.execute(
+            """
+            SELECT receipts.id::text AS receipt_id
+            FROM tutor_model_review_artifact_receipts AS receipts
+            JOIN tutor_learning_artifacts AS artifacts
+              ON artifacts.id=receipts.artifact_id AND artifacts.user_id=receipts.user_id
+             AND artifacts.conversation_id=receipts.conversation_id
+             AND artifacts.teaching_session_id=receipts.teaching_session_id
+             AND artifacts.learning_track_id=receipts.learning_track_id
+            JOIN tutor_learning_artifact_events AS events
+              ON events.artifact_id=artifacts.id AND events.user_id=artifacts.user_id
+             AND events.conversation_id=artifacts.conversation_id
+             AND events.teaching_session_id=artifacts.teaching_session_id
+            WHERE artifacts.id=%s AND artifacts.user_id=%s AND artifacts.conversation_id=%s
+              AND artifacts.artifact_kind='model_code_review' AND artifacts.state='completed'
+              AND artifacts.presentation_kind='model_code_review_v2'
+              AND artifacts.presentation_json->>'review_receipt_id'=receipts.id::text
+              AND artifacts.presentation_json->>'result_hash'=receipts.result_hash
+              AND events.id::text=%s AND events.event_sequence=%s
+              AND events.event_kind='action' AND events.action_kind='complete_review'
+              AND events.safe_payload_json->'owner_result'->>'review_receipt_id'=receipts.id::text
+              AND events.safe_payload_json->'owner_result'->>'result_hash'=receipts.result_hash
+            """,
+            (artifact_id,user_id,conversation_id,artifact_event_id,artifact_event_sequence),
+        ).fetchone()
+        if evidence is None:
+            raise ContinuationIntentStale(
+                "model review continuation lacks exact submission evidence"
+            )
+        return self._repository.create_pending(
+            user_id=user_id,
+            conversation_id=conversation_id,
+            artifact_id=artifact_id,
+            source_kind=ContinuationSourceKind.EXPLICIT_ARTIFACT_ACTION,
+            source_id=artifact_event_id,
+            source_version=artifact_event_sequence,
+            idempotency_key=f"model-review-evaluation:{artifact_event_id}",
+            occurred_at=occurred_at,
+        )
+
+
     def record_demonstration_completion(
         self,
         *,
@@ -1364,11 +1417,14 @@ class TutorContinuationDispatcher:
                     )
                     result_evaluation = self._is_result_evaluation_intent(intent)
                     knowledge_check_evaluation = self._is_knowledge_check_evaluation_intent(intent)
+                    model_review_evaluation = self._is_model_review_evaluation_intent(intent)
                     evaluation_reason = (
                         "result_evaluation"
                         if result_evaluation
                         else "knowledge_check_evaluation"
                         if knowledge_check_evaluation
+                        else "model_review_evaluation"
+                        if model_review_evaluation
                         else intent.source_kind.value
                     )
                     admitted = self._teaching.admit_control_run(
@@ -1515,6 +1571,57 @@ class TutorContinuationDispatcher:
         if row is None:
             raise TeachingSessionConflict(
                 "knowledge-check evaluation continuation evidence is stale"
+            )
+        return True
+
+
+    def _is_model_review_evaluation_intent(
+        self,
+        intent: ContinuationIntentRecord,
+    ) -> bool:
+        if intent.source_kind is not ContinuationSourceKind.EXPLICIT_ARTIFACT_ACTION:
+            return False
+        expected_key = f"model-review-evaluation:{intent.source_id}"
+        if intent.idempotency_key != expected_key:
+            if intent.idempotency_key.startswith("model-review-evaluation:"):
+                raise TeachingSessionConflict(
+                    "model review evaluation continuation identity is invalid"
+                )
+            return False
+        row = self._conn.execute(
+            """
+            SELECT 1
+            FROM tutor_learning_artifacts AS artifacts
+            JOIN tutor_learning_artifact_events AS events
+              ON events.artifact_id=artifacts.id AND events.user_id=artifacts.user_id
+             AND events.conversation_id=artifacts.conversation_id
+             AND events.teaching_session_id=artifacts.teaching_session_id
+            JOIN tutor_model_review_artifact_receipts AS receipts
+              ON receipts.artifact_id=artifacts.id AND receipts.user_id=artifacts.user_id
+             AND receipts.conversation_id=artifacts.conversation_id
+             AND receipts.teaching_session_id=artifacts.teaching_session_id
+             AND receipts.learning_track_id=artifacts.learning_track_id
+            WHERE artifacts.id=%s AND artifacts.user_id=%s AND artifacts.conversation_id=%s
+              AND artifacts.artifact_kind='model_code_review' AND artifacts.state='completed'
+              AND artifacts.presentation_kind='model_code_review_v2'
+              AND artifacts.presentation_json->>'review_receipt_id'=receipts.id::text
+              AND artifacts.presentation_json->>'result_hash'=receipts.result_hash
+              AND events.id::text=%s AND events.event_sequence=%s
+              AND events.event_kind='action' AND events.action_kind='complete_review'
+              AND events.safe_payload_json->'owner_result'->>'review_receipt_id'=receipts.id::text
+              AND events.safe_payload_json->'owner_result'->>'result_hash'=receipts.result_hash
+            """,
+            (
+                intent.artifact_id,
+                intent.user_id,
+                intent.conversation_id,
+                intent.source_id,
+                intent.source_version,
+            ),
+        ).fetchone()
+        if row is None:
+            raise TeachingSessionConflict(
+                "model review evaluation continuation evidence is stale"
             )
         return True
 

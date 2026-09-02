@@ -1,6 +1,7 @@
 """Controlled Action adapter and verifier for model review publication validation."""
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, datetime
 
 from psycopg import Connection
@@ -15,6 +16,7 @@ from app.agents.harness.actions import (
     ActionVerificationResult,
     ActionVerificationStatus,
 )
+from app.services.learning.practice.model_review_contracts import MODEL_REVIEW_REQUIRED_VALIDATION_CHECKS
 from app.services.learning.practice.model_review_repository import (
     ModelReviewRepositoryError,
     PostgresModelReviewRepository,
@@ -105,7 +107,9 @@ class ModelReviewPublicationVerifier:
             """
             SELECT validations.state, validations.candidate_hash, validations.authority_hash,
                    count(checks.id)::int AS check_count,
-                   count(checks.id) FILTER (WHERE checks.status = 'passed')::int AS passed_count
+                   count(checks.id) FILTER (WHERE checks.status = 'passed')::int AS passed_count,
+                   array_agg(checks.check_type ORDER BY checks.check_type)
+                     FILTER (WHERE checks.check_type IS NOT NULL) AS check_types
             FROM tutor_model_review_validation_runs AS validations
             LEFT JOIN tutor_model_review_validation_checks AS checks
               ON checks.validation_run_id = validations.id AND checks.user_id = validations.user_id
@@ -120,8 +124,10 @@ class ModelReviewPublicationVerifier:
             or str(row["state"]) != "verified"
             or str(row["candidate_hash"]) != str(invocation.arguments.get("candidate_hash") or "")
             or str(row.get("authority_hash") or "") != str(authority.reference_hash or "")
-            or _as_int(row.get("check_count")) != 9
-            or _as_int(row.get("passed_count")) != 9
+            or _as_int(row.get("check_count")) != len(MODEL_REVIEW_REQUIRED_VALIDATION_CHECKS)
+            or _as_int(row.get("passed_count")) != len(MODEL_REVIEW_REQUIRED_VALIDATION_CHECKS)
+            or _string_tuple(row.get("check_types"))
+            != tuple(sorted(MODEL_REVIEW_REQUIRED_VALIDATION_CHECKS))
             or str(output.get("validation_id") or "") != authority.reference_id
             or str(output.get("authority_hash") or "") != str(authority.reference_hash or "")
         ):
@@ -196,3 +202,9 @@ def _as_int(value: object) -> int:
         return int(str(value or 0))
     except (TypeError, ValueError):
         return 0
+
+
+def _string_tuple(value: object) -> tuple[str, ...]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return ()
+    return tuple(str(item) for item in value)

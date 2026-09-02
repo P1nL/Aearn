@@ -87,6 +87,8 @@ export function InlineArtifactMessage({
     ? new Set<TutorArtifactAction>(["run"])
     : renderedArtifact.presentation.type === "knowledge_check_v1"
       ? new Set<TutorArtifactAction>(["request_hint", "request_direct_answer", "respond"])
+    : renderedArtifact.presentation.type === "model_code_review_v2"
+      ? new Set<TutorArtifactAction>(["complete_review"])
     : renderedArtifact.presentation.type === "demonstration_v2"
       ? new Set<TutorArtifactAction>(["complete_demo", "acknowledge_demo_event"])
       : new Set<TutorArtifactAction>();

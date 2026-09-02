@@ -1,6 +1,6 @@
 # Aearn 数据库 Schema 与持久化契约
 
-**状态：** 当前 schema 说明，2026-08-27。
+**状态：** 当前 schema 说明，2026-09-02。
 **权威来源：** `aearn/services/api/app/db/schema/__init__.py` 的显式 manifest、`aearn/services/api/app/db/schema/*.sql`、PostgreSQL bootstrap、
 Tutor/LearningTrack repositories 与 schema/cutover tests。
 **范围：** PostgreSQL 是 Tutor run、cutover receipt、背景队列和 learner-safe
@@ -9,7 +9,7 @@ projection 的唯一 durable authority；Desktop、Celery 和 provider 不拥有
 
 ## 1. Bootstrap、迁移与范围原则
 
-- `python -m app.db.bootstrap` 按 `SCHEMA_FRAGMENT_NAMES` 的显式顺序重复执行 18 个 Schema fragment。数字前缀只帮助阅读，执行顺序不依赖目录自然排序。当前仓库没有另一个可与其竞争的 Alembic/Graph migration path。
+- `python -m app.db.bootstrap` 按 `SCHEMA_FRAGMENT_NAMES` 的显式顺序重复执行 20 个 Schema fragment。数字前缀只帮助阅读，执行顺序不依赖目录自然排序。当前仓库没有另一个可与其竞争的 Alembic/Graph migration path。
 - 所有 fragment 在同一 caller-owned PostgreSQL connection 和最终提交事务中执行；loader 不 `commit`。bootstrap 使用 transaction advisory lock，并对 deadlock/serialization failure 做有界整事务重试，避免多进程启动或测试重复 bootstrap 留下部分 Schema。
 - `load_schema_text()` 只提供 manifest 组合的只读视图；仓库不维护第二份聚合 `schema.sql`。
 - `tutor_*` 与 `harness_cutovers` 是当前 runtime 的核心表族。所有可公开读取的
@@ -540,3 +540,27 @@ schema fragment `180_knowledge_checks.sql` 新增 user-owned append-only `tutor_
 assistance receipt 对每个 Artifact 的 H1/H2/H3 与 direct answer 分别 exactly-once。scope trigger 要求 Artifact 仍是 exact active/ready Learning Item knowledge check；普通 UPDATE/DELETE 以 `23514` 拒绝，transaction-local user purge 才允许删除。通用 trigger 必须先按 `TG_TABLE_NAME` 分支再读取 response 表专属字段，避免在 assistance trigger record 上解析不存在列。
 
 两张表属于 cutover target，并进入 local summary、安全 export、reset/delete 的 child-to-root 顺序。fragment 170 提前兼容 additive `request_direct_answer` action，fragment 110 继续在 schema 120/180 前接受 persisted `tutor_conversation_event_v3`；显式 bootstrap-twice 回归验证既有 v3 row、default 与 v1/v2/v3 CHECK 均保留。
+
+
+## 2026-09-02：对话内模型审查 Artifact receipt
+
+`190_model_review_artifacts.sql` additive 扩展 Learning Artifact presentation kind，使
+`model_code_review_v1 | model_code_review_v2` 同时可读，并把 presentation JSON 上限提高到
+196,608 bytes 以容纳 server-built code/diff line map。早期 `120_learning_artifacts.sql` 与
+`170_teaching_demonstrations.sql` 已提前接受 v2 kind，保证已有数据重复 bootstrap 在抵达 fragment
+190 之前不会暂时违反 CHECK；`110_thread_turn_codex.sql` 继续接受持久化
+`tutor_conversation_event_v3`。
+
+`tutor_model_review_artifact_receipts` 是 user-owned append-only private authority，一条 Artifact 最多
+一条 receipt。复合 FK 固定 artifact/user/conversation/TeachingSession/track，普通 FK 固定 exact
+Learning Item version 与 Practice exercise version；trigger 在 insert 前锁定并复核 active/ready v2
+Artifact、knowledge/checkpoint/owner/version/materialization。表保存完整 submission JSON/hash、verdict、
+outcome/score、assistance、safe feedback、result/remediation/policy/receipt hash；CHECK 要求 failed 必有
+`li:<sha256>` remediation、passed 必无 successor，submission schema/hash 必须匹配 presentation。
+普通 UPDATE/DELETE 由既有 Artifact append-only guard 拒绝；只有 transaction-local user purge 可
+child-first 删除。
+
+该表进入 exhaustive cutover target inventory、本地 summary count、safe export 与 reset/delete。export
+只列 scope、verdict、outcome、score、assistance、successor、policy 和时间；省略完整 submission、
+safe-feedback body、presentation/submission/result/receipt hash、private rubric/test/proof。删除顺序在
+Artifact event/root 之前清理 receipt，不能因新增 private child 破坏 confirmed reset。

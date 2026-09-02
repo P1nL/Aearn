@@ -70,6 +70,7 @@ describe("InlineArtifactMessage", () => {
       "test_result_v1",
       "knowledge_check_v1",
       "model_code_review_v1",
+      "model_code_review_v2",
       "sql_workspace_v1",
       "demonstration_v1",
       "demonstration_v2",

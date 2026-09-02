@@ -163,6 +163,15 @@ def act_on_learning_artifact(
                         artifact_event_sequence=response.artifact_event_sequence,
                         occurred_at=occurred_at,
                     )
+                elif action_request.action.action == "complete_review":
+                    intent = producer.record_model_review_evaluation(
+                        user_id=action_request.user_id,
+                        conversation_id=response.artifact.conversation_id,
+                        artifact_id=response.artifact.id,
+                        artifact_event_id=response.artifact_event_id,
+                        artifact_event_sequence=response.artifact_event_sequence,
+                        occurred_at=occurred_at,
+                    )
                 else:
                     intent = producer.record_artifact_action(
                         user_id=action_request.user_id,

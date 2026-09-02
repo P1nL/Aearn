@@ -70,7 +70,7 @@ CREATE TABLE IF NOT EXISTS tutor_learning_artifacts (
   difficulty text CHECK (difficulty IS NULL OR difficulty IN ('D1', 'D2', 'D3', 'D4', 'D5')),
   presentation_kind text NOT NULL CHECK (presentation_kind IN (
     'exercise_workspace_v1', 'browser_preview_v1', 'test_result_v1', 'knowledge_check_v1',
-    'model_code_review_v1', 'sql_workspace_v1', 'demonstration_v1', 'source_inspector_v1'
+    'model_code_review_v1', 'model_code_review_v2', 'sql_workspace_v1', 'demonstration_v1', 'source_inspector_v1'
   )),
   presentation_json jsonb NOT NULL CHECK (
     jsonb_typeof(presentation_json) = 'object'
@@ -125,7 +125,7 @@ CREATE TABLE IF NOT EXISTS tutor_learning_artifacts (
     (artifact_kind = 'browser_preview' AND presentation_kind = 'browser_preview_v1') OR
     (artifact_kind = 'test_result' AND presentation_kind = 'test_result_v1') OR
     (artifact_kind = 'knowledge_check' AND presentation_kind = 'knowledge_check_v1') OR
-    (artifact_kind = 'model_code_review' AND presentation_kind = 'model_code_review_v1') OR
+    (artifact_kind = 'model_code_review' AND presentation_kind IN ('model_code_review_v1', 'model_code_review_v2')) OR
     (artifact_kind = 'sql_workspace' AND presentation_kind = 'sql_workspace_v1') OR
     (artifact_kind = 'demonstration' AND presentation_kind = 'demonstration_v1') OR
     (artifact_kind = 'source_inspector' AND presentation_kind = 'source_inspector_v1')

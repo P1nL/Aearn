@@ -25,6 +25,7 @@ The formal desktop runtime lives under `aearn/apps/desktop/`. Current behavior i
 | [Code Editor and Isolated Browser Preview](./code-editor-browser-preview.md) | Monaco draft/stale/run behavior plus Tauri child-webview isolation, capability, nonce bridge, watchdog, and responsive split | Filled |
 | [Teaching Demonstrations](./teaching-demonstrations.md) | Published descriptor, isolated Preview event, visible-clock, and reduced-motion contract | Filled |
 | [Knowledge Check Artifacts](./knowledge-check-artifacts.md) | Structured response controls, immutable outcomes, and accessible Hint overlay behavior | Filled |
+| [Model Review Artifacts](./model-review-artifacts.md) | Read-only Monaco code/diff, exact finding ranges, closed categories, and server result presentation | Filled |
 
 ---
 

@@ -298,7 +298,7 @@ export type TutorArtifactKnowledgeCheckPresentation = {
   transfer_handle?: string | null;
 };
 
-export type TutorArtifactModelCodeReviewPresentation = {
+export type TutorArtifactModelCodeReviewPresentationV1 = {
   type: "model_code_review_v1";
   exercise_version_id: string;
   language_id: string;
@@ -306,6 +306,85 @@ export type TutorArtifactModelCodeReviewPresentation = {
   source_code_hash: string;
   line_count: number;
   review_categories: string[];
+};
+
+export type ModelReviewErrorCategoryV2 =
+  | "requirements_drift"
+  | "fabricated_api"
+  | "logic_boundary"
+  | "contract_integration"
+  | "async_lifecycle"
+  | "security_trust"
+  | "error_false_success"
+  | "weak_testing";
+
+export type ModelReviewDiffLineV2 = {
+  line_key: string;
+  kind: "context" | "added" | "removed";
+  text: string;
+  source_line: number | null;
+  modified_line: number | null;
+};
+
+export type ModelReviewDiffHunkV2 = {
+  hunk_id: string;
+  header: string;
+  source_start: number;
+  source_count: number;
+  modified_start: number;
+  modified_count: number;
+  lines: ModelReviewDiffLineV2[];
+};
+
+export type ModelReviewArtifactV2 = {
+  schema_version: "model_code_review_artifact_v2";
+  presentation_mode: "code" | "diff";
+  language_id: string;
+  runtime_label: string;
+  source_code: string | null;
+  modified_code: string;
+  source_hash: string | null;
+  modified_hash: string;
+  diff_hash: string;
+  line_count: number;
+  hunks: ModelReviewDiffHunkV2[];
+};
+
+export type TutorArtifactModelCodeReviewPresentationV2 = {
+  type: "model_code_review_v2";
+  exercise_version_id: string;
+  presentation_hash: string;
+  review_target: ModelReviewArtifactV2;
+  review_categories: ModelReviewErrorCategoryV2[];
+  submission_locked: boolean;
+  outcome: "passed" | "failed" | null;
+  score: number | null;
+  evaluation_markdown: string;
+  review_receipt_id: string | null;
+  result_hash: string | null;
+  remediation_handle: string | null;
+};
+
+export type TutorArtifactModelCodeReviewPresentation =
+  | TutorArtifactModelCodeReviewPresentationV1
+  | TutorArtifactModelCodeReviewPresentationV2;
+
+export type ModelReviewFindingV2 = {
+  client_finding_id: string;
+  hunk_id: string;
+  side: "source" | "modified";
+  start_line: number;
+  end_line: number;
+  category: ModelReviewErrorCategoryV2;
+  severity: "info" | "low" | "medium" | "high" | "critical";
+  explanation: string;
+};
+
+export type ModelCodeReviewSubmissionV2 = {
+  schema_version: "model_code_review_submission_v2";
+  presentation_hash: string;
+  verdict: "correctness_issue" | "no_correctness_issue" | "improvement_only" | "uncertain";
+  findings: ModelReviewFindingV2[];
 };
 
 export type TutorArtifactSqlWorkspacePresentation = {
@@ -507,7 +586,7 @@ export type TutorArtifactAction =
   | { action: "request_direct_answer" }
   | { action: "run"; submission: string }
   | { action: "respond"; response: TutorArtifactResponse }
-  | { action: "complete_review"; review_submission: ModelCodeReviewSubmission }
+  | { action: "complete_review"; review_submission: ModelCodeReviewSubmission | ModelCodeReviewSubmissionV2 }
   | { action: "cancel"; reason: "learner_cancelled" }
   | { action: "acknowledge_demo_event"; event_key: string; event_nonce: string }
   | {
