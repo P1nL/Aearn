@@ -1,0 +1,9 @@
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"跨数据库、API、SSE、Desktop、Tauri、Runner与题库的数据流和authority边界"}
+{"file":".trellis/spec/backend/teaching-session-authority.md","reason":"TeachingSession、checkpoint、stimulus、action receipt与教学继续规则"}
+{"file":".trellis/spec/backend/learning-agent-integration-qa.md","reason":"学习语言、执行tier、Gate/Review/Attempt与隐私边界"}
+{"file":".trellis/spec/backend/tutor-context-references.md","reason":"typed source reference与safe snapshot规则"}
+{"file":".trellis/spec/frontend/state-management.md","reason":"Snapshot/SSE、server authority和本地UI状态"}
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"Artifact、Popover、Drawer和交互组件规则"}
+{"file":".trellis/tasks/08-30-tutor-conversation-learning-artifacts/research/source-of-truth-contract-summary.md","reason":"当前source-of-truth合同的精简跨层摘要"}
+{"file":".trellis/tasks/08-30-tutor-conversation-learning-artifacts/research/repository-evidence.md","reason":"当前代码缺口和可复用证据"}
+{"file":".trellis/tasks/08-30-tutor-conversation-learning-artifacts/research/confirmed-product-decisions.md","reason":"用户逐项确认的UI/UX、教学、题库和风险决策"}

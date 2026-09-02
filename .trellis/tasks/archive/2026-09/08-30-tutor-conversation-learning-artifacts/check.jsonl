@@ -1,0 +1,5 @@
+{"file":".trellis/tasks/08-30-tutor-conversation-learning-artifacts/research/qa-security-release-gates.md","reason":"P0/P1、安全、响应式、命令和非声明门"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"检查跨层字段round-trip与单一authority"}
+{"file":".trellis/spec/backend/learning-agent-integration-qa.md","reason":"检查语言/执行tier/Gate/Review回归"}
+{"file":".trellis/spec/frontend/state-management.md","reason":"检查snapshot/reconnect和本地状态边界"}
+{"file":".trellis/tasks/08-30-tutor-conversation-learning-artifacts/research/confirmed-product-decisions.md","reason":"逐项核对用户可见行为"}
