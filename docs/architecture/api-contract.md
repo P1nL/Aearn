@@ -788,3 +788,25 @@ current hash/hunk/range 与 category，再以 private rubric 做确定性评分�
 remediation handle；缺失时整个 mutation fail closed。passed 结果没有 successor。terminal event 只产生
 一个 exact receipt-backed `model_review_evaluation` continuation；模型可写后续教学消息，但不能修改
 outcome、score、receipt、successor、mastery 或 progress。
+
+## 2026-09-02：对话内 SQL Learning Workspace
+
+历史 `sql_workspace_v1` 继续可读；新的 published SQL Learning Item 使用 additive
+`sql_workspace_v2`。公开 presentation 只含 exact `exercise_version_id`、SQLite/
+`teaching_local` 标识、starter query/hash、最多 8 张 published table 的 bounded column/type/PK/FK
+schema、`max_rows`，以及可选且绑定 exact query hash/Attempt ID 的 `table_result_v1`。公开 contract
+不含 setup SQL、private dataset、expected rows、standard query、application database identity 或任意连接目标。
+
+`POST /api/tutor/conversations/{conversation_id}/artifacts/{artifact_id}/actions` 的 SQL `run`
+只在第一段 caller-owned transaction 中创建并链接 exact Learning Item-owned pending Attempt；该 Attempt
+绑定 current user/conversation/track/TeachingSession/assignment、published item version 和 materialized
+ExerciseVersion，`gate_binding_id IS NULL`。route 提交 admission 后才在第二段 connection 上运行每次独立的
+in-memory SQLite public/private datasets，再通过既有 scorer/Attempt result authority finalization、source/result
+Artifact projection 和 result-evaluation continuation。GET Attempt 可幂等恢复已提交 pending Run；重放不重新创建
+Attempt 或结果。
+
+服务端只接受单条 SELECT/WITH，token gate、SQLite query-only/authorizer/resource limits 同时拒绝
+DDL/DML/ATTACH/PRAGMA、unpublished table、extension/file functions、超时、超过 32 列、200 行硬上限、
+500 字符 cell 或 65,536-byte table presentation。public dataset 的结果列/行原样进入 bounded grid；hidden
+dataset 只投影顺序化 `non-visible-N` pass/fail summary。本路径不新建 Gate/Review authority，也不写
+mastery/progress。

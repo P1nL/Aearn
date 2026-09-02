@@ -24,8 +24,14 @@ from app.services.learning.artifacts.contracts import (
 from app.services.learning.artifacts.execution_results import (
     ExecutionResultArtifactProjector,
 )
-from app.services.learning.artifacts.owner_adapters import ArtifactOwnerAdapterRegistry
+from app.services.learning.artifacts.owner_adapters import (
+    ArtifactOwnerAdapterRegistry,
+    ArtifactOwnerVersionConflict,
+)
 from app.services.learning.artifacts.repository import LearningArtifactWriteResult
+from app.services.learning.artifacts.sql_workspaces import (
+    observe_sql_workspace_attempt,
+)
 from app.services.learning.artifacts.service import (
     LearningArtifactService,
     LearningArtifactServiceError,
@@ -119,6 +125,7 @@ def act_on_learning_artifact(
         )
     )
     dispatch_job_id: str | None = None
+    deferred_sql_attempt: tuple[str, str, str, str] | None = None
     with connect() as conn:
         service = build_learning_artifact_service(conn)
         try:
@@ -131,18 +138,26 @@ def act_on_learning_artifact(
             if action_request.action.action == "run":
                 active_attempt = response.artifact.active_attempt
                 if active_attempt is not None:
-                    observation = _observe_artifact_attempt(
-                        conn=conn,
-                        service=service,
-                        user_id=action_request.user_id,
-                        conversation_id=response.artifact.conversation_id,
-                        artifact_id=response.artifact.id,
-                        attempt_id=active_attempt.attempt_id,
-                        occurred_at=occurred_at,
-                    )
-                    dispatch_job_id = observation.dispatch_job_id
-                    if observation.source_write is not None:
-                        response = observation.source_write
+                    if response.artifact.artifact_kind is TutorArtifactKind.SQL_WORKSPACE:
+                        deferred_sql_attempt = (
+                            action_request.user_id,
+                            response.artifact.conversation_id,
+                            response.artifact.id,
+                            active_attempt.attempt_id,
+                        )
+                    else:
+                        observation = _observe_artifact_attempt(
+                            conn=conn,
+                            service=service,
+                            user_id=action_request.user_id,
+                            conversation_id=response.artifact.conversation_id,
+                            artifact_id=response.artifact.id,
+                            attempt_id=active_attempt.attempt_id,
+                            occurred_at=occurred_at,
+                        )
+                        dispatch_job_id = observation.dispatch_job_id
+                        if observation.source_write is not None:
+                            response = observation.source_write
             elif action_request.action.action != "request_hint":
                 producer = TutorContinuationIntentProducer(conn)
                 if isinstance(action_request.action, TutorArtifactCompleteDemoAction):
@@ -205,6 +220,33 @@ def act_on_learning_artifact(
             conn.rollback()
             return _continuation_error(request, exc)
         conn.commit()
+    if deferred_sql_attempt is not None:
+        sql_user_id, sql_conversation_id, sql_artifact_id, sql_attempt_id = deferred_sql_attempt
+        with connect() as conn:
+            service = build_learning_artifact_service(conn)
+            try:
+                observation = _observe_artifact_attempt(
+                    conn=conn,
+                    service=service,
+                    user_id=sql_user_id,
+                    conversation_id=sql_conversation_id,
+                    artifact_id=sql_artifact_id,
+                    attempt_id=sql_attempt_id,
+                    occurred_at=datetime.now(UTC),
+                )
+                if observation.source_write is not None:
+                    response = observation.source_write
+                dispatch_job_id = observation.dispatch_job_id
+            except LearningArtifactServiceError as exc:
+                conn.rollback()
+                return _service_error(request, exc)
+            except (ExerciseGateServiceError, ReviewServiceError) as exc:
+                conn.rollback()
+                return _domain_error(request, exc)
+            except ContinuationIntentError as exc:
+                conn.rollback()
+                return _continuation_error(request, exc)
+            conn.commit()
     if dispatch_job_id is not None:
         background_tasks.add_task(
             enqueue_tutor_interactive_dispatch,
@@ -340,7 +382,22 @@ def _observe_artifact_attempt(
     ):
         return _ArtifactAttemptObservation(detail=detail)
     if detail.status != "terminal":
-        if detail.attempt_type == "review_submit":
+        if artifact.artifact_kind is TutorArtifactKind.SQL_WORKSPACE:
+            try:
+                observe_sql_workspace_attempt(
+                    conn,
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                    artifact_id=artifact_id,
+                    attempt_id=attempt_id,
+                )
+            except ArtifactOwnerVersionConflict as exc:
+                raise LearningArtifactServiceError(
+                    "LEARNING_ARTIFACT_VERSION_CONFLICT",
+                    "SQL Learning Artifact authority changed before execution.",
+                    status_code=409,
+                ) from exc
+        elif detail.attempt_type == "review_submit":
             ReviewService(conn).observe_artifact_attempt(
                 user_id=user_id,
                 conversation_id=conversation_id,

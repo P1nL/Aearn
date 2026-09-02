@@ -41,6 +41,7 @@ def score_execution_result(
     *,
     required_capabilities: Sequence[str],
     threshold: float = DEFAULT_GATE_THRESHOLD,
+    now: datetime | None = None,
 ) -> ExerciseAttemptResult:
     result = parse_safe_execution_result(result)
     total = result.total_test_count
@@ -58,7 +59,7 @@ def score_execution_result(
         safe_feedback=safe_feedback,
         capability_scores={str(item): round(score, 4) for item in required_capabilities},
         policy_version=GATE_PASS_POLICY_VERSION,
-        terminal_at=datetime.now(UTC),
+        terminal_at=now or datetime.now(UTC),
     )
 
 

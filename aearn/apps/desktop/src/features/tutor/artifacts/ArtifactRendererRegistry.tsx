@@ -9,6 +9,7 @@ import { DemonstrationArtifact } from "./DemonstrationArtifact";
 import { SafeMarkdown } from "./SafeMarkdown";
 import { KnowledgeCheckArtifact } from "./KnowledgeCheckArtifact";
 import { ModelCodeReviewArtifact } from "./ModelCodeReviewArtifact";
+import { SqlWorkspaceArtifact } from "./SqlWorkspaceArtifact";
 import type { TutorArtifactActionHandler, TutorArtifactAttemptLoader, TutorArtifactReturnToSource } from "./artifactRendererTypes";
 import type { ArtifactRendererUiState } from "./artifactUiState";
 
@@ -33,6 +34,7 @@ const ARTIFACT_RENDERER_REGISTRY = {
   model_code_review_v1: ModelCodeReviewPlaceholder,
   model_code_review_v2: ModelCodeReviewRenderer,
   sql_workspace_v1: SqlWorkspacePlaceholder,
+  sql_workspace_v2: SqlWorkspaceRenderer,
   demonstration_v1: DemonstrationRenderer,
   demonstration_v2: DemonstrationRenderer,
   source_inspector_v1: SourceInspectorPlaceholder,
@@ -75,6 +77,11 @@ function ModelCodeReviewPlaceholder({ artifact }: ArtifactRendererProps) {
   if (artifact.presentation.type !== "model_code_review_v1") return <ArtifactContractError />;
   const presentation = artifact.presentation;
   return <ArtifactPlaceholder label="代码审查"><span>{presentation.language_id} · {presentation.line_count} 行</span></ArtifactPlaceholder>;
+}
+
+function SqlWorkspaceRenderer({ artifact, onAction, actionBusy }: ArtifactRendererProps) {
+  if (artifact.presentation.type !== "sql_workspace_v2") return <ArtifactContractError />;
+  return <SqlWorkspaceArtifact artifact={artifact} onAction={onAction} actionBusy={actionBusy} />;
 }
 
 function SqlWorkspacePlaceholder({ artifact }: ArtifactRendererProps) {

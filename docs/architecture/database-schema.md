@@ -564,3 +564,18 @@ child-first 删除。
 只列 scope、verdict、outcome、score、assistance、successor、policy 和时间；省略完整 submission、
 safe-feedback body、presentation/submission/result/receipt hash、private rubric/test/proof。删除顺序在
 Artifact event/root 之前清理 receipt，不能因新增 private child 破坏 confirmed reset。
+
+## 2026-09-02：SQL Learning Workspace Attempt owner
+
+`200_sql_learning_workspace.sql` additive 允许 `sql_workspace_v1 | sql_workspace_v2` presentation，
+为 `tutor_exercise_attempts` 增加 nullable `learning_item_version_id`、FK 和 partial index，并扩展
+owner-shape/`tutor_learning_artifact_attempt_owner_matches`。Learning Item SQL Run 必须是 `attempt_type=run`、
+绑定当前 lesson assignment/document 与 materialized ExerciseVersion、没有 Gate/diagnostic/review binding，且 exact
+Learning Item latest publication state 为 `published`。普通 Gate/Review/Teaching Attempt 必须保持
+`learning_item_version_id IS NULL`。
+
+repeat bootstrap 在抵达 fragment 200 前会重新应用早期约束，因此 fragment 100 已提前声明该列并接受后来
+合法的 Learning Item-owned Run，fragment 160 允许 Learning Item source 的 `test_result/purpose=result`
+投影，fragment 170/190 提前接受持久化 `sql_workspace_v2`。fragment 110 的
+`tutor_conversation_event_v3` projection-version compatibility 保持不变。bootstrap twice 与 schema
+manifest test 必须同时覆盖已有 SQL v2 Artifact/Attempt 和完整显式 fragment 顺序。

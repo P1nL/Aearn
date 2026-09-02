@@ -387,7 +387,7 @@ export type ModelCodeReviewSubmissionV2 = {
   findings: ModelReviewFindingV2[];
 };
 
-export type TutorArtifactSqlWorkspacePresentation = {
+export type TutorArtifactSqlWorkspacePresentationV1 = {
   type: "sql_workspace_v1";
   exercise_version_id: string;
   dialect: "sqlite";
@@ -396,6 +396,43 @@ export type TutorArtifactSqlWorkspacePresentation = {
   schema_markdown: string;
   max_rows: number;
 };
+
+export type TutorArtifactSqlColumnV2 = {
+  name: string;
+  data_type: "INTEGER" | "REAL" | "TEXT";
+  nullable: boolean;
+  primary_key: boolean;
+};
+
+export type TutorArtifactSqlForeignKeyV2 = {
+  column: string;
+  references_table: string;
+  references_column: string;
+};
+
+export type TutorArtifactSqlTableV2 = {
+  name: string;
+  columns: TutorArtifactSqlColumnV2[];
+  foreign_keys: TutorArtifactSqlForeignKeyV2[];
+};
+
+export type TutorArtifactSqlWorkspacePresentationV2 = {
+  type: "sql_workspace_v2";
+  exercise_version_id: string;
+  dialect: "sqlite";
+  execution_tier: "teaching_local";
+  starter_query: string;
+  starter_query_hash: string;
+  tables: TutorArtifactSqlTableV2[];
+  max_rows: number;
+  public_result: Extract<SafeExecutionPresentation, { kind: "table_result_v1" }> | null;
+  public_result_query_hash: string | null;
+  public_result_attempt_id: string | null;
+};
+
+export type TutorArtifactSqlWorkspacePresentation =
+  | TutorArtifactSqlWorkspacePresentationV1
+  | TutorArtifactSqlWorkspacePresentationV2;
 
 export type TutorArtifactDemonstrationPresentation = {
   type: "demonstration_v1";

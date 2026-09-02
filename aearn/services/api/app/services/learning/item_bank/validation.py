@@ -25,7 +25,9 @@ from app.services.learning.item_bank.contracts import (
     LearningItemModelReviewPrivateV1,
     LearningItemSourceV1,
     LearningItemSqlContentV1,
+    LearningItemSqlContentV2,
     LearningItemSqlPrivateV1,
+    LearningItemSqlPrivateV2,
     LearningItemValidationCheckType,
     LearningItemValidationCheckV1,
     LearningItemValidationReceiptV1,
@@ -46,7 +48,10 @@ from app.services.learning.practice.model_review_quality import (
 from app.services.learning.practice.model_review_scoring import evaluate_model_code_review
 from app.services.learning.practice.quality import require_exercise_quality
 from app.services.runners.browser_preview_runner import execute_browser_preview_with_tests
-from app.services.runners.sql_query_runner import execute_sql_query_with_tests
+from app.services.runners.sql_query_runner import (
+    execute_sql_query_with_tests,
+    execute_sql_workspace_query,
+)
 
 
 _STATUS = Literal["passed", "failed", "not_applicable"]
@@ -226,7 +231,7 @@ def _hints(source: LearningItemSourceV1) -> _Outcome:
     leaked = False
     if isinstance(private, LearningItemCodePrivateV1):
         leaked = _answer_leaked(hints, private.standard_answer)
-    elif isinstance(private, LearningItemSqlPrivateV1):
+    elif isinstance(private, (LearningItemSqlPrivateV1, LearningItemSqlPrivateV2)):
         leaked = _answer_leaked(hints, private.standard_query)
     elif isinstance(private, LearningItemKnowledgeCheckPrivateV1) and isinstance(public, LearningItemKnowledgeCheckContentV1):
         labels = {item.option_id: item.label for item in public.options}
@@ -323,6 +328,34 @@ def _run_submission(source: LearningItemSourceV1, *, standard: bool) -> tuple[bo
             )
             passed = sql_result.status == "success" and all(item.passed for item in sql_result.test_results)
             return passed, sql_result.status, len(sql_result.test_results)
+        if isinstance(content, LearningItemSqlContentV2) and isinstance(private, LearningItemSqlPrivateV2):
+            if source.blueprint.runtime_profile_id != "sql_query_test":
+                return False, "unsupported", len(private.tests)
+            query = material.standard_submission if standard else material.starter_submission
+            if not _sql_read_only(query):
+                return False, "invalid", len(private.tests)
+            cases = [
+                {
+                    "id": item.id,
+                    "case_type": item.case_type,
+                    "dataset": item.dataset.model_dump(mode="json"),
+                    "expected_output": item.expected_output.model_dump(mode="json"),
+                    "weight": item.weight,
+                    "is_critical": item.is_critical,
+                    "order_index": item.order_index,
+                }
+                for item in private.tests
+            ]
+            sql_result = execute_sql_workspace_query(
+                query,
+                cases,
+                schema=[item.model_dump(mode="json") for item in content.tables],
+                public_dataset=content.public_dataset.model_dump(mode="json"),
+                comparison=content.comparison,
+                max_rows=content.max_rows,
+            )
+            passed = sql_result.status == "success" and all(item.passed for item in sql_result.test_results)
+            return passed, sql_result.status, len(sql_result.test_results)
     except (TypeError, ValueError, re.error):
         return False, "invalid", 0
     return None
@@ -370,6 +403,22 @@ def _runtime_or_event(source: LearningItemSourceV1) -> _Outcome:
         if any(not _sql_expected_shape(item.expected_output_json) for item in private.tests):
             return _bad("sql_result_expectation_invalid")
         return _ok({"setup_count": len(private.setup_sql), "test_count": len(private.tests)})
+    if isinstance(public, LearningItemSqlContentV2) and isinstance(private, LearningItemSqlPrivateV2):
+        if source.blueprint.runtime_profile_id != "sql_query_test":
+            return _bad("runtime_profile_mismatch")
+        if not _sql_read_only(private.standard_query) or not _sql_read_only(public.starter_query):
+            return _bad("sql_query_not_read_only")
+        return _ok(
+            {
+                "schema_hash": canonical_hash(
+                    [item.model_dump(mode="json") for item in public.tables]
+                ),
+                "public_dataset_hash": canonical_hash(
+                    public.public_dataset.model_dump(mode="json")
+                ),
+                "test_count": len(private.tests),
+            }
+        )
     if isinstance(public, LearningItemDemoContentV1) and isinstance(private, LearningItemDemoPrivateV1):
         if source.blueprint.runtime_profile_id != "browser_preview":
             return _bad("runtime_profile_mismatch")
@@ -460,7 +509,10 @@ def _sql_expected_shape(value: Mapping[str, object]) -> bool:
 def _scorer(source: LearningItemSourceV1) -> _Outcome:
     public = source.public.content
     private = source.private.content
-    if isinstance(private, (LearningItemCodePrivateV1, LearningItemSqlPrivateV1)):
+    if isinstance(
+        private,
+        (LearningItemCodePrivateV1, LearningItemSqlPrivateV1, LearningItemSqlPrivateV2),
+    ):
         if private.score_policy.kind != "all_tests" or private.score_policy.threshold != 1:
             return _bad("scorer_contract_invalid")
         return _ok({"policy_version": private.score_policy.policy_version, "threshold": 1.0})

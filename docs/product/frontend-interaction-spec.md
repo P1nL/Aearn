@@ -439,3 +439,21 @@ terminal review 移除 verdict/finding 控件，仅显示 server outcome、score
 中性 remediation 提示；完整 learner submission 不回显。Monaco 区域和 finding 列表使用内部 bounded
 scroll/响应式布局，1440x900、900x900、390x844 不得产生页面级 overflow，键盘 focus 与 reduced
 motion 只改变交互呈现，不改变 authority。
+
+## 2026-09-02：SQL Learning Workspace
+
+`sql_workspace_v2` 使用 conversation-native Artifact shell 和 lazy Monaco。宽屏 Editor/Schema 固定
+50:50；Tutor timeline container 宽度不超过 720px 时改为等高上下两 pane；公开结果始终是底部全宽
+section。Schema 只显示 server published table/column、INTEGER/REAL/TEXT、PK/FK/NULL 与 relation，不能读取
+hidden dataset、expected row、setup SQL 或 Aearn PostgreSQL metadata。
+
+编辑、resize、reconnect、Schema 展开或复制都不得自动 Run。复制 table/qualified column name 时 mouse down
+不得转移 Monaco focus，按钮只写 clipboard，不插入文本、不改变 selection、不触发 completion。Run 按钮只在
+active、非 pending/busy、query 非空且 handler 存在时发送最新完整 draft；pending/running 与 terminal 均禁止，
+terminal editor 为只读。stale 只是 process-local UI cue，不是 pass/score authority。
+
+公开 `table_result_v1` 复用 shared SafeTableResultGrid，NULL 显示为 `NULL`，长 cell 换行，最多 32 列/
+200 行/65,536 bytes，水平和垂直 overflow 保持在可聚焦 bounded container。1440x900 与 900x900 必须等宽，
+390x844 必须上下等高，三种视口和 reduced motion 都不得产生页面横向 overflow。客户端 exact parser 对
+unknown/extra field、nullable PK、非单一 PK 或类型不匹配的 FK、partial result identity、Attempt mismatch
+整体 fail closed；不得从 public grid 推导完成或解析 stdout 伪表格。

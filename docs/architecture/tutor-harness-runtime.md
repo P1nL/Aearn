@@ -956,3 +956,18 @@ One exact Artifact-event/receipt continuation admits a new teaching Turn. Its co
 persisted remediation handle. Provider output can explain the already-saved result but cannot change score,
 outcome, successor, receipt, Gate, Review, mastery, or progress. Full submission, private rubric/tests/proofs,
 and provider internals remain absent from API/SSE/Desktop/context/export.
+
+## 2026-09-02：Conversation-native SQL workspace
+
+Published structured SQL Learning Items materialize into `sql_workspace_v2` Artifacts. The public descriptor
+contains only SQLite teaching schema and one public dataset; private visible/hidden test cases retain independent
+datasets and exact expectations. The Learning Item owner adapter executes no runner under the Artifact lock: it
+only admits one exact pending Attempt. After commit, the route observer creates a fresh in-memory SQLite database
+for each dataset, applies read-only authorizer/resource limits, preserves the public query columns/rows, redacts
+hidden identities/values, and finalizes the same Attempt through the existing scorer.
+
+The standard execution-result projector remains the only Artifact result path. Passing every test completes the
+SQL source directly; any runtime/test failure keeps it editable, creates one immutable result Artifact, and admits
+one result-evaluation continuation. Neither the local runner nor the Tutor model can create a Gate, override score,
+write mastery/progress, expose private datasets, connect to Aearn PostgreSQL, or claim container verification.
+Desktop owns only draft/view/copy/stale state and submits the latest query on explicit Run.

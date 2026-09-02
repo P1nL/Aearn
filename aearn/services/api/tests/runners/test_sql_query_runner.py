@@ -3,7 +3,11 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 
 from app.services.runners.runtime_runner import run_exercise
-from app.services.runners.sql_query_runner import execute_sql_query_with_tests
+from app.services.runners.sql_query_runner import (
+    execute_sql_query_with_tests,
+    execute_sql_workspace_query,
+    sql_execution_result_to_safe_result,
+)
 
 
 def _sql_exercise() -> dict[str, object]:
@@ -174,3 +178,174 @@ def test_sql_query_runner_supports_unordered_result_comparison() -> None:
 
 def _fake_cases() -> Sequence[Mapping[str, object]]:
     return _sql_exercise()["test_cases"]  # type: ignore[return-value]
+
+
+def _sql_v2_schema() -> list[dict[str, object]]:
+    return [
+        {
+            "name": "mentors",
+            "columns": [
+                {"name": "id", "data_type": "INTEGER", "nullable": False, "primary_key": True},
+                {"name": "name", "data_type": "TEXT", "nullable": False, "primary_key": False},
+            ],
+            "foreign_keys": [],
+        },
+        {
+            "name": "learners",
+            "columns": [
+                {"name": "id", "data_type": "INTEGER", "nullable": False, "primary_key": True},
+                {"name": "name", "data_type": "TEXT", "nullable": False, "primary_key": False},
+                {"name": "track", "data_type": "TEXT", "nullable": False, "primary_key": False},
+                {"name": "mentor_id", "data_type": "INTEGER", "nullable": True, "primary_key": False},
+            ],
+            "foreign_keys": [
+                {"column": "mentor_id", "references_table": "mentors", "references_column": "id"}
+            ],
+        },
+    ]
+
+
+def _sql_v2_dataset(*, sql_name: str) -> dict[str, object]:
+    return {
+        "tables": [
+            {"table": "mentors", "rows": [[1, "Grace Hopper"]]},
+            {
+                "table": "learners",
+                "rows": [[1, "Ada", "python", 1], [2, sql_name, "sql", 1]],
+            },
+        ]
+    }
+
+
+def _sql_v2_cases() -> list[dict[str, object]]:
+    return [
+        {
+            "id": "visible_sql",
+            "case_type": "visible",
+            "dataset": _sql_v2_dataset(sql_name="Grace"),
+            "expected_output": {"kind": "table_result_v1", "columns": ["name"], "rows": [["Grace"]]},
+            "weight": 1,
+            "is_critical": True,
+        },
+        {
+            "id": "private_hidden_identity",
+            "case_type": "hidden",
+            "dataset": _sql_v2_dataset(sql_name="Barbara"),
+            "expected_output": {"kind": "table_result_v1", "columns": ["name"], "rows": [["Barbara"]]},
+            "weight": 1,
+            "is_critical": True,
+        },
+    ]
+
+
+def test_sql_workspace_executes_public_and_hidden_datasets_independently() -> None:
+    result = execute_sql_workspace_query(
+        "SELECT name FROM learners WHERE track = 'sql' ORDER BY id",
+        _sql_v2_cases(),
+        schema=_sql_v2_schema(),
+        public_dataset=_sql_v2_dataset(sql_name="Public Grace"),
+        max_rows=20,
+    )
+    safe = sql_execution_result_to_safe_result(result)
+
+    assert result.status == "success"
+    assert result.columns == ["name"]
+    assert result.rows == [["Public Grace"]]
+    assert all(item.passed for item in result.test_results)
+    assert safe.presentation.model_dump(mode="json") == {
+        "kind": "table_result_v1",
+        "columns": ["name"],
+        "rows": [["Public Grace"]],
+    }
+    serialized = repr(safe.model_dump(mode="json"))
+    assert "private_hidden_identity" not in serialized
+    assert "Barbara" not in serialized
+    assert safe.test_feedback[1].case_id == "non-visible-1"
+
+
+def test_sql_workspace_keeps_public_grid_when_hidden_dataset_fails() -> None:
+    result = execute_sql_workspace_query(
+        "SELECT name FROM learners WHERE track = 'python' ORDER BY id",
+        _sql_v2_cases(),
+        schema=_sql_v2_schema(),
+        public_dataset=_sql_v2_dataset(sql_name="Public Grace"),
+        max_rows=20,
+    )
+    safe = sql_execution_result_to_safe_result(result)
+
+    assert result.status == "success"
+    assert result.rows == [["Ada"]]
+    assert safe.status.value == "success"
+    assert safe.passed_test_count == 0
+    assert safe.presentation.kind == "table_result_v1"
+    assert safe.test_feedback[1].message == "A non-visible scenario still failed."
+
+
+def test_sql_workspace_rejects_unpublished_tables_and_excess_columns() -> None:
+    unauthorized = execute_sql_workspace_query(
+        "SELECT name FROM sqlite_master",
+        _sql_v2_cases(),
+        schema=_sql_v2_schema(),
+        public_dataset=_sql_v2_dataset(sql_name="Public Grace"),
+    )
+    too_wide = execute_sql_workspace_query(
+        "SELECT " + ",".join(f"{index} AS c{index}" for index in range(33)),
+        _sql_v2_cases(),
+        schema=_sql_v2_schema(),
+        public_dataset=_sql_v2_dataset(sql_name="Public Grace"),
+    )
+
+    assert unauthorized.status == "runtime_error"
+    assert too_wide.status == "runtime_error"
+    assert sql_execution_result_to_safe_result(unauthorized).presentation.kind == "none"
+
+
+def test_sql_workspace_schema_order_does_not_control_foreign_key_loading() -> None:
+    schema = list(reversed(_sql_v2_schema()))
+    dataset = _sql_v2_dataset(sql_name="Public Grace")
+    dataset["tables"] = list(reversed(dataset["tables"]))  # type: ignore[index]
+
+    result = execute_sql_workspace_query(
+        "SELECT name FROM learners WHERE track = 'sql'",
+        _sql_v2_cases(),
+        schema=schema,
+        public_dataset=dataset,
+    )
+
+    assert result.status == "success"
+    assert result.rows == [["Public Grace"]]
+
+
+def test_sql_workspace_rejects_non_primary_or_type_mismatched_foreign_keys() -> None:
+    non_primary = _sql_v2_schema()
+    non_primary[0]["columns"][0]["primary_key"] = False  # type: ignore[index]
+    mismatched = _sql_v2_schema()
+    mismatched[1]["columns"][3]["data_type"] = "TEXT"  # type: ignore[index]
+
+    for schema in (non_primary, mismatched):
+        result = execute_sql_workspace_query(
+            "SELECT name FROM learners",
+            _sql_v2_cases(),
+            schema=schema,
+            public_dataset=_sql_v2_dataset(sql_name="Public Grace"),
+        )
+        assert result.status == "runtime_error"
+        assert sql_execution_result_to_safe_result(result).presentation.kind == "none"
+
+
+def test_sql_workspace_applies_sqlite_output_resource_limits() -> None:
+    result = execute_sql_workspace_query(
+        "SELECT printf('%200000s', 'x') AS huge FROM learners LIMIT 1",
+        _sql_v2_cases(),
+        schema=_sql_v2_schema(),
+        public_dataset=_sql_v2_dataset(sql_name="Public Grace"),
+    )
+
+    assert result.status == "success"
+    assert result.rows == [[None]]
+    safe = sql_execution_result_to_safe_result(result)
+    assert safe.presentation.model_dump(mode="json") == {
+        "kind": "table_result_v1",
+        "columns": ["huge"],
+        "rows": [[None]],
+    }

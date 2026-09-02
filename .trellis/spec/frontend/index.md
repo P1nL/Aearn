@@ -26,6 +26,7 @@ The formal desktop runtime lives under `aearn/apps/desktop/`. Current behavior i
 | [Teaching Demonstrations](./teaching-demonstrations.md) | Published descriptor, isolated Preview event, visible-clock, and reduced-motion contract | Filled |
 | [Knowledge Check Artifacts](./knowledge-check-artifacts.md) | Structured response controls, immutable outcomes, and accessible Hint overlay behavior | Filled |
 | [Model Review Artifacts](./model-review-artifacts.md) | Read-only Monaco code/diff, exact finding ranges, closed categories, and server result presentation | Filled |
+| [SQL Learning Workspace](./sql-learning-workspace.md) | Explicit-run Monaco SQL, published Schema tree, bounded public result grid, and responsive/focus rules | Filled |
 
 ---
 
