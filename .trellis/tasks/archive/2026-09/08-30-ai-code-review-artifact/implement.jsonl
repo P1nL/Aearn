@@ -1,0 +1,4 @@
+{"file":".trellis/spec/backend/learning-agent-integration-qa.md","reason":"现有model review和执行/隐私边界"}
+{"file":".trellis/tasks/08-30-tutor-conversation-learning-artifacts/research/source-of-truth-contract-summary.md","reason":"model review authoring/publication/evidence表权威"}
+{"file":".trellis/tasks/08-30-tutor-conversation-learning-artifacts/research/qa-security-release-gates.md","reason":"model review RT-25..29验收"}
+{"file":".trellis/tasks/08-30-tutor-conversation-learning-artifacts/research/confirmed-product-decisions.md","reason":"AI错误分类和主观质量非评分决策"}
