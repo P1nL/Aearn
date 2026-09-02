@@ -151,6 +151,7 @@ class TutorArtifactState(StrEnum):
 
 class TutorArtifactActionKind(StrEnum):
     REQUEST_HINT = "request_hint"
+    REQUEST_DIRECT_ANSWER = "request_direct_answer"
     RUN = "run"
     RESPOND = "respond"
     COMPLETE_REVIEW = "complete_review"
@@ -235,6 +236,12 @@ class TutorArtifactTestResultPresentationV1(_StrictArtifactModel):
         return self
 
 
+class TutorArtifactHintPageV1(_StrictArtifactModel):
+    level: Literal[1, 2, 3]
+    label: Literal["方向", "概念", "结构"]
+    markdown: str = Field(min_length=1, max_length=2_000)
+
+
 class TutorArtifactKnowledgeCheckPresentationV1(_StrictArtifactModel):
     type: Literal["knowledge_check_v1"] = "knowledge_check_v1"
     response_kind: Literal[
@@ -250,6 +257,15 @@ class TutorArtifactKnowledgeCheckPresentationV1(_StrictArtifactModel):
     minimum_selections: int = Field(default=1, ge=1, le=24)
     maximum_selections: int = Field(default=1, ge=1, le=24)
     maximum_text_length: int = Field(default=2_000, ge=1, le=8_000)
+    hints: tuple[TutorArtifactHintPageV1, ...] = Field(default=(), max_length=3)
+    revealed_hint_levels: tuple[Literal[1, 2, 3], ...] = Field(default=(), max_length=3)
+    answer_locked: bool = False
+    outcome: Literal["correct", "incorrect"] | None = None
+    assistance_kind: Literal["independent", "hinted", "direct_answer", "remediated"] | None = None
+    evaluation_markdown: str = Field(default="", max_length=4_000)
+    response_receipt_id: str | None = Field(default=None, min_length=1, max_length=160)
+    remediation_handle: str | None = Field(default=None, min_length=67, max_length=67)
+    transfer_handle: str | None = Field(default=None, min_length=67, max_length=67)
 
     @model_validator(mode="after")
     def validate_response_shape(self) -> "TutorArtifactKnowledgeCheckPresentationV1":
@@ -263,8 +279,35 @@ class TutorArtifactKnowledgeCheckPresentationV1(_StrictArtifactModel):
             raise ValueError("artifact selection bounds are invalid")
         if self.response_kind == "single_select" and self.maximum_selections != 1:
             raise ValueError("single-select artifact must allow exactly one selection")
+        if self.response_kind == "ordering" and (
+            self.minimum_selections != len(self.options)
+            or self.maximum_selections != len(self.options)
+        ):
+            raise ValueError("ordering artifact must include every option exactly once")
         if self.options and self.maximum_selections > len(self.options):
             raise ValueError("artifact selection maximum exceeds option count")
+        hint_levels = tuple(item.level for item in self.hints)
+        if hint_levels != tuple(range(1, len(self.hints) + 1)):
+            raise ValueError("artifact hint pages must be contiguous from H1")
+        if self.revealed_hint_levels != tuple(range(1, len(self.revealed_hint_levels) + 1)):
+            raise ValueError("artifact revealed hint levels must be contiguous from H1")
+        if len(self.revealed_hint_levels) > len(self.hints):
+            raise ValueError("artifact revealed hint level exceeds available hints")
+        terminal_fields = (
+            self.outcome is not None,
+            self.assistance_kind is not None,
+            bool(self.evaluation_markdown),
+            self.response_receipt_id is not None,
+        )
+        if self.answer_locked and not all(terminal_fields):
+            raise ValueError("artifact knowledge-check terminal fields are inconsistent")
+        if not self.answer_locked and any(terminal_fields):
+            raise ValueError("active artifact knowledge check cannot expose result fields")
+        for handle in (self.remediation_handle, self.transfer_handle):
+            if handle is not None and not re.fullmatch(r"li:[0-9a-f]{64}", handle):
+                raise ValueError("artifact successor handle is invalid")
+        if self.outcome == "correct" and (self.remediation_handle or self.transfer_handle):
+            raise ValueError("correct knowledge check cannot expose a successor")
         return self
 
 
@@ -753,12 +796,24 @@ class TutorPublicArtifactItem(_StrictArtifactModel):
                 "demonstration_v1",
                 "demonstration_v2",
             }
+        if self.artifact_kind is TutorArtifactKind.KNOWLEDGE_CHECK:
+            presentation_matches = isinstance(
+                self.presentation,
+                TutorArtifactKnowledgeCheckPresentationV1,
+            )
         if not presentation_matches:
             raise ValueError("artifact kind does not match its presentation")
         if self.state.terminal != (self.terminal_at is not None):
             raise ValueError("artifact terminal timestamp is inconsistent")
         if self.state.terminal and self.allowed_actions:
             raise ValueError("terminal artifact cannot expose actions")
+        if (
+            self.artifact_kind is TutorArtifactKind.KNOWLEDGE_CHECK
+            and self.owner_kind is TutorArtifactOwnerKind.LEARNING_ITEM
+            and isinstance(self.presentation, TutorArtifactKnowledgeCheckPresentationV1)
+        ):
+            if (self.state is TutorArtifactState.COMPLETED) != self.presentation.answer_locked:
+                raise ValueError("knowledge-check Artifact lock state is inconsistent")
         if (
             self.state.terminal
             and self.active_attempt is not None
@@ -910,6 +965,10 @@ class TutorArtifactRequestHintAction(_StrictArtifactModel):
     hint_level: int | None = Field(default=None, ge=1, le=3)
 
 
+class TutorArtifactRequestDirectAnswerAction(_StrictArtifactModel):
+    action: Literal["request_direct_answer"] = "request_direct_answer"
+
+
 class TutorArtifactRunAction(_StrictArtifactModel):
     action: Literal["run"] = "run"
     submission: str = Field(min_length=1, max_length=48_000)
@@ -955,6 +1014,13 @@ class TutorArtifactCodeRangeResponse(_StrictArtifactModel):
     end_line: int = Field(ge=1, le=4_000)
     category: str = Field(min_length=1, max_length=160)
     note: str = Field(min_length=1, max_length=2_000)
+
+    @field_validator("category")
+    @classmethod
+    def validate_category(cls, value: str) -> str:
+        if not _STABLE_KEY.fullmatch(value):
+            raise ValueError("artifact code-range category is invalid")
+        return value
 
     @model_validator(mode="after")
     def validate_range(self) -> "TutorArtifactCodeRangeResponse":
@@ -1053,6 +1119,7 @@ class TutorArtifactCompleteDemoAction(_StrictArtifactModel):
 
 TutorArtifactActionV1 = Annotated[
     TutorArtifactRequestHintAction
+    | TutorArtifactRequestDirectAnswerAction
     | TutorArtifactRunAction
     | TutorArtifactRespondAction
     | TutorArtifactCompleteReviewAction
@@ -1166,6 +1233,7 @@ __all__ = (
     "TutorArtifactOwnerKind",
     "TutorArtifactPresentationV1",
     "TutorArtifactPurpose",
+    "TutorArtifactRequestDirectAnswerAction",
     "TutorArtifactRequestHintAction",
     "TutorArtifactRespondAction",
     "TutorArtifactResponseV1",

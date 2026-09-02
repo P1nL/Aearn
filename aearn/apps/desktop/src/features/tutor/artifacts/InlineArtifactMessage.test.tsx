@@ -113,8 +113,13 @@ describe("InlineArtifactMessage", () => {
     const item = artifact(presentations[3], { allowed_actions: ["request_hint", "respond", "cancel"] });
     render(<InlineArtifactMessage artifact={item} onAction={onAction} />);
 
-    await user.click(screen.getByRole("button", { name: "作答" }));
-    expect(onAction).toHaveBeenCalledWith({ artifact: item, action: "respond" });
+    await user.click(screen.getByRole("radio", { name: "A" }));
+    await user.click(screen.getByRole("button", { name: "提交回答" }));
+    expect(onAction).toHaveBeenCalledWith({
+      artifact: item,
+      action: "respond",
+      payload: { action: "respond", response: { kind: "single_select", value: "a" } },
+    });
     expect(screen.queryByText(/score|pass|Attempt/i)).not.toBeInTheDocument();
   });
 

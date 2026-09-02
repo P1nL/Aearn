@@ -196,7 +196,7 @@ export type TutorArtifactPurpose =
 
 export type TutorArtifactOwnerKind = "lesson_gate" | "review_item" | "teaching_practice" | "learning_item";
 export type TutorArtifactState = "pending" | "ready" | "active" | "running" | "completed" | "failed" | "cancelled" | "superseded";
-export type TutorArtifactActionKind = "request_hint" | "run" | "respond" | "complete_review" | "cancel" | "acknowledge_demo_event" | "complete_demo";
+export type TutorArtifactActionKind = "request_hint" | "request_direct_answer" | "run" | "respond" | "complete_review" | "cancel" | "acknowledge_demo_event" | "complete_demo";
 export type TutorArtifactDifficulty = "D1" | "D2" | "D3" | "D4" | "D5";
 export type TutorArtifactOutcome = "passed" | "failed" | "timed_out" | "cancelled" | "unavailable" | "invalid";
 export type TutorBranchResponseDisposition = "answer_and_refocus" | "offer_switch" | "confirmed_switch";
@@ -287,6 +287,15 @@ export type TutorArtifactKnowledgeCheckPresentation = {
   minimum_selections: number;
   maximum_selections: number;
   maximum_text_length: number;
+  hints?: { level: 1 | 2 | 3; label: "方向" | "概念" | "结构"; markdown: string }[];
+  revealed_hint_levels?: (1 | 2 | 3)[];
+  answer_locked?: boolean;
+  outcome?: "correct" | "incorrect" | null;
+  assistance_kind?: "independent" | "hinted" | "direct_answer" | "remediated" | null;
+  evaluation_markdown?: string;
+  response_receipt_id?: string | null;
+  remediation_handle?: string | null;
+  transfer_handle?: string | null;
 };
 
 export type TutorArtifactModelCodeReviewPresentation = {
@@ -495,6 +504,7 @@ export type TutorArtifactResponse =
 
 export type TutorArtifactAction =
   | { action: "request_hint"; hint_level: number | null }
+  | { action: "request_direct_answer" }
   | { action: "run"; submission: string }
   | { action: "respond"; response: TutorArtifactResponse }
   | { action: "complete_review"; review_submission: ModelCodeReviewSubmission }

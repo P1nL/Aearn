@@ -63,11 +63,15 @@ class _CandidateRepository:
         *,
         knowledge_key: str,
         available_capabilities: tuple[str, ...] | None = None,
+        required_handles: tuple[str, ...] = (),
+        excluded_purposes: tuple[str, ...] = (),
         limit: int = 8,
     ) -> tuple[PublishedLearningItemCandidate, ...]:
         self.calls.append({
             "knowledge_key": knowledge_key,
             "available_capabilities": available_capabilities,
+            "required_handles": required_handles,
+            "excluded_purposes": excluded_purposes,
             "limit": limit,
         })
         return self.candidates
@@ -176,6 +180,8 @@ def test_candidate_builder_forwards_exact_capability_scope_and_projects_safe_han
     assert repository.calls == [{
         "knowledge_key": "python.variables",
         "available_capabilities": ("python", "python.variables"),
+        "required_handles": (),
+        "excluded_purposes": ("remediation", "transfer_check"),
         "limit": 8,
     }]
     assert result.feature_enabled is True

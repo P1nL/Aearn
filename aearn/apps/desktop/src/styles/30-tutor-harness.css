@@ -1694,6 +1694,110 @@
 
 .inline-artifact-actions button { min-height: 44px; }
 
+.knowledge-check-artifact {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.knowledge-check-options,
+.knowledge-check-code-range {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.knowledge-check-options label {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  align-items: start;
+  gap: 9px;
+  min-height: 44px;
+  padding: 10px 11px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.knowledge-check-options input { margin-top: 2px; }
+.knowledge-check-artifact textarea { min-height: 108px; }
+.knowledge-check-actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+.knowledge-check-outcome { display: grid; gap: 6px; padding: 11px 12px; border-left: 3px solid var(--accent); background: rgba(47, 125, 99, .06); }
+.knowledge-check-outcome.incorrect { border-left-color: var(--danger); background: rgba(184, 70, 70, .06); }
+
+.knowledge-check-ordering {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: knowledge-order;
+}
+
+.knowledge-check-ordering > li {
+  counter-increment: knowledge-order;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 52px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.knowledge-check-ordering > li > span:first-child::before {
+  content: counter(knowledge-order) ". ";
+  color: var(--muted);
+}
+
+.knowledge-check-ordering-actions { display: flex; gap: 6px; }
+.knowledge-check-ordering-actions button { min-width: 44px; min-height: 44px; padding: 0; }
+
+.knowledge-check-code-range { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.knowledge-check-code-range label { display: grid; gap: 5px; min-width: 0; color: var(--muted); font-size: 12px; }
+.knowledge-check-code-range input { width: 100%; min-width: 0; min-height: 44px; }
+.knowledge-check-code-range-note { grid-column: 1 / -1; }
+
+.knowledge-check-hint-layer {
+  position: fixed;
+  z-index: 120;
+  inset: 0;
+  pointer-events: none;
+}
+
+.knowledge-check-hint-overlay {
+  position: fixed;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  overflow: hidden;
+  min-height: 220px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: 0 12px 32px rgba(21, 33, 29, .22);
+  pointer-events: auto;
+  overscroll-behavior: contain;
+}
+
+.knowledge-check-hint-overlay > header,
+.knowledge-check-hint-overlay > footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px; }
+.knowledge-check-hint-overlay > header { border-bottom: 1px solid var(--line); }
+.knowledge-check-hint-overlay > footer { border-top: 1px solid var(--line); }
+.knowledge-check-hint-overlay > header button { width: 44px; height: 44px; border: 0; background: transparent; font-size: 22px; cursor: pointer; }
+.knowledge-check-hint-pages { display: flex; min-width: 0; min-height: 0; overflow: hidden; transition: transform 180ms ease; }
+.knowledge-check-hint-pages > section { flex: 0 0 100%; width: 100%; min-width: 0; overflow: auto; padding: 14px; scroll-snap-align: start; overscroll-behavior: contain; }
+
+@media (max-width: 720px) {
+  .knowledge-check-actions { display: grid; grid-template-columns: 1fr; }
+  .knowledge-check-actions button { width: 100%; }
+  .knowledge-check-code-range { grid-template-columns: 1fr 1fr; }
+  .knowledge-check-code-range label:nth-of-type(3) { grid-column: 1 / -1; }
+  .knowledge-check-hint-overlay { right: 10px; bottom: 10px; left: 10px !important; top: auto !important; width: auto !important; max-height: min(72vh, 620px) !important; }
+}
+
 /* Child 04 single-file Monaco and isolated native browser preview. */
 .code-editor-artifact,
 .code-editor-preview-split,
@@ -2094,4 +2198,5 @@
   }
 
   .inline-artifact-message { scroll-behavior: auto; }
+  .knowledge-check-hint-pages { transition: none; }
 }

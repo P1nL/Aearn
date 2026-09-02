@@ -313,3 +313,10 @@ Codex 只能读取服务端权威 planning context并追加 typed draft。右侧
 ### Teaching demonstration flow
 
 The Tutor may select a published demonstration handle but cannot author or alter its code, steps, expected interaction, or duration. Interactive demonstrations complete only after the exact expected Preview event, whose current nonce/generation and continuous sequence originate from the isolated bridge rather than a forged parent message or synthetic click. Static demonstrations complete after uninterrupted accumulated eligible visible time; hiding, backgrounding, or navigating away pauses the clock, and closing before completion resets it. A learner message preempts any automatic continuation. Demonstrations never count as an Attempt or mastery/progress evidence.
+
+### Knowledge check, Hint, remediation, and transfer flow
+
+1. Tutor 只能从当前 TeachingSession 下已发布且 capability-compatible 的 knowledge-check handle 创建结构化工件；用户按题型提交 exact response，或按序显式查看 H1-H3。回看已解锁页不产生新 assistance。
+2. 回答后原工件锁定。正确且无 assistance 的回答可以作为 independent evidence；Hint、direct answer、remediation 或错误回答都不能冒充 independent mastery。
+3. 概念原题首次错误按 published policy 创建一个语义不同、D(n) 或 D(n-1) 的补救 successor；同知识点不在原题无限重试。补救再次错误或用户直接查看答案时，服务端公开权威解释并选择不同上下文的 transfer check。缺少 exact published successor 时整体 fail closed。
+4. terminal response receipt 产生一个 mainline knowledge-check evaluation continuation。provider context 只广告已持久化的 exact remediation/transfer handle；用户消息、branch 与既有 foreground Turn 仍按统一 arbiter 优先，不会产生重复 Tutor Turn。

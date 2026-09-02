@@ -523,7 +523,9 @@ class LearningItemDemoContentV2(_StrictModel):
 
 class LearningItemKnowledgeCheckContentV1(_StrictModel):
     type: Literal["knowledge_check"] = "knowledge_check"
-    response_kind: Literal["single_choice", "multiple_choice", "short_text"]
+    response_kind: Literal[
+        "single_choice", "multiple_choice", "prediction", "ordering", "code_range", "short_text"
+    ]
     prompt_markdown: str = Field(min_length=1, max_length=8_000)
     options: tuple[LearningItemOptionV1, ...] = Field(default=(), max_length=12)
 
@@ -538,10 +540,11 @@ class LearningItemKnowledgeCheckContentV1(_StrictModel):
         labels = tuple(normalize_answer(item.label) for item in self.options)
         if len(ids) != len(set(ids)) or len(labels) != len(set(labels)):
             raise ValueError("knowledge-check options must be unique")
-        if self.response_kind == "short_text" and self.options:
-            raise ValueError("short-text knowledge check cannot declare options")
-        if self.response_kind != "short_text" and not 2 <= len(self.options) <= 12:
-            raise ValueError("choice knowledge check requires 2..12 options")
+        option_kinds = {"single_choice", "multiple_choice", "ordering"}
+        if self.response_kind not in option_kinds and self.options:
+            raise ValueError("text, prediction, and code-range checks cannot declare options")
+        if self.response_kind in option_kinds and not 2 <= len(self.options) <= 12:
+            raise ValueError("choice and ordering checks require 2..12 options")
         return self
 
 
@@ -1039,6 +1042,19 @@ def normalize_answer(value: str) -> str:
     return " ".join(normalize_newlines(str(value)).strip().casefold().split())
 
 
+def parse_code_range_answer(value: str) -> tuple[int, int, str]:
+    match = re.fullmatch(
+        r"([1-9][0-9]{0,3}):([1-9][0-9]{0,3}):([a-z0-9][a-z0-9._:-]{0,159})",
+        normalize_answer(value),
+    )
+    if match is None:
+        raise ValueError("code-range accepted answer must use start:end:category")
+    start_line, end_line = int(match.group(1)), int(match.group(2))
+    if start_line > 4_000 or end_line > 4_000 or end_line < start_line:
+        raise ValueError("code-range accepted answer is outside the supported line range")
+    return start_line, end_line, match.group(3)
+
+
 def require_sha256(value: str, *, label: str) -> str:
     normalized = str(value).strip().lower()
     if not _SHA256.fullmatch(normalized):
@@ -1204,6 +1220,7 @@ __all__ = (
     "learning_item_uuid",
     "normalize_answer",
     "normalize_newlines",
+    "parse_code_range_answer",
     "raw_sha256",
     "require_sha256",
     "stable_key",

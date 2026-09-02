@@ -30,6 +30,8 @@ class _PublishedCandidateRepository(Protocol):
         *,
         knowledge_key: str,
         available_capabilities: Sequence[str] | None = None,
+        required_handles: Sequence[str] = (),
+        excluded_purposes: Sequence[str] = (),
         limit: int = 8,
     ) -> tuple[PublishedLearningItemCandidate, ...]: ...
 
@@ -51,6 +53,8 @@ class TeachingArtifactCandidateBuilder:
         available_capabilities: Sequence[str],
         learning_artifacts_enabled: bool,
         artifact_teaching_enabled: bool,
+        required_handles: Sequence[str] = (),
+        excluded_purposes: Sequence[str] = ("remediation", "transfer_check"),
     ) -> TeachingArtifactCandidateSet:
         feature_enabled = learning_artifacts_enabled and artifact_teaching_enabled
         if not feature_enabled:
@@ -63,6 +67,8 @@ class TeachingArtifactCandidateBuilder:
             published = self._repository.published_candidates(
                 knowledge_key=scope.knowledge_key,
                 available_capabilities=tuple(available_capabilities),
+                required_handles=tuple(required_handles),
+                excluded_purposes=tuple(excluded_purposes),
                 limit=8,
             )
             candidates = tuple(
@@ -85,6 +91,7 @@ def bound_teaching_artifact_candidates(
     context: Mapping[str, object],
     candidates: TeachingArtifactCandidateSet,
     max_characters: int = MAX_TEACHING_PROVIDER_CONTEXT_CHARACTERS,
+    minimum_candidates: int = 0,
 ) -> TeachingArtifactCandidateSet:
     """Select the exact candidate subset that can be advertised without truncation.
 
@@ -95,7 +102,11 @@ def bound_teaching_artifact_candidates(
 
     if max_characters <= 0:
         raise ValueError("teaching provider context bound must be positive")
+    if minimum_candidates < 0 or minimum_candidates > len(candidates.candidates):
+        raise ValueError("minimum teaching candidate count is invalid")
     if not candidates.feature_enabled or not candidates.candidates:
+        if minimum_candidates:
+            raise ValueError("required teaching artifact candidate is unavailable")
         return candidates
 
     base = _provider_teaching_context_base(context)
@@ -109,6 +120,8 @@ def bound_teaching_artifact_candidates(
         }
         if _serialized_characters(projected) <= max_characters:
             selected.append(candidate)
+    if len(selected) < minimum_candidates:
+        raise ValueError("required teaching artifact candidate is unrepresentable")
     return TeachingArtifactCandidateSet(
         scope=candidates.scope,
         feature_enabled=candidates.feature_enabled,
@@ -131,6 +144,7 @@ def project_teaching_provider_context(
             context=context,
             candidates=candidates,
             max_characters=max_characters,
+            minimum_candidates=_minimum_required_candidate_count(context),
         )
     except (TypeError, ValueError) as exc:
         raise TeachingArtifactCandidateBuildError(
@@ -144,6 +158,22 @@ def project_teaching_provider_context(
     return bounded
 
 
+def _minimum_required_candidate_count(context: Mapping[str, object]) -> int:
+    stimulus = context.get("stimulus")
+    if not isinstance(stimulus, Mapping):
+        return 0
+    safe_payload = stimulus.get("safe_payload")
+    if not isinstance(safe_payload, Mapping):
+        return 0
+    if safe_payload.get("reason_code") == "knowledge_check_evaluation":
+        candidates = context.get("artifact_candidates")
+        if isinstance(candidates, Mapping):
+            projected = candidates.get("candidates")
+            if isinstance(projected, list) and projected:
+                return 1
+    return 0
+
+
 def _provider_teaching_context_base(
     context: Mapping[str, object],
 ) -> dict[str, object]:
@@ -153,6 +183,16 @@ def _provider_teaching_context_base(
     suspended = context.get("suspended_focuses")
     questions = context.get("unresolved_questions")
     stimulus = context.get("stimulus")
+    safe_payload = (
+        stimulus.get("safe_payload")
+        if isinstance(stimulus, Mapping)
+        and isinstance(stimulus.get("safe_payload"), Mapping)
+        else None
+    )
+    knowledge_check_evaluation = (
+        isinstance(safe_payload, Mapping)
+        and safe_payload.get("reason_code") == "knowledge_check_evaluation"
+    )
     bounded: dict[str, object] = {
         "schema_version": context.get("schema_version"),
         "session": (
@@ -224,7 +264,7 @@ def _provider_teaching_context_base(
     if isinstance(covered, list) and covered:
         bounded["covered_concepts"] = covered
     recent_units = context.get("recent_teaching_units")
-    if isinstance(recent_units, list) and recent_units:
+    if isinstance(recent_units, list) and recent_units and not knowledge_check_evaluation:
         bounded["recent_teaching_units"] = recent_units
     return bounded
 

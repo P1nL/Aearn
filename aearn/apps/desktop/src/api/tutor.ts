@@ -1256,8 +1256,11 @@ function toTutorArtifactPresentation(payload: unknown): TutorArtifactPresentatio
       passed_count: payload.passed_count, total_count: payload.total_count, summary_markdown: payload.summary_markdown,
       result_hash: payload.result_hash };
   }
-  if (payload.type === "knowledge_check_v1" && hasExactKeys(payload, [
+  if (payload.type === "knowledge_check_v1" && hasRequiredAndOptionalKeys(payload, [
     "type", "response_kind", "prompt_markdown", "options", "minimum_selections", "maximum_selections", "maximum_text_length",
+  ], [
+    "hints", "revealed_hint_levels", "answer_locked", "outcome", "assistance_kind", "evaluation_markdown",
+    "response_receipt_id", "remediation_handle", "transfer_handle",
   ]) && isTutorArtifactResponseKind(payload.response_kind) && isArtifactBoundedString(payload.prompt_markdown, 8_000) &&
       isArtifactIntegerInRange(payload.minimum_selections, 1, 24) && isArtifactIntegerInRange(payload.maximum_selections, 1, 24) &&
       isArtifactIntegerInRange(payload.maximum_text_length, 1, 8_000)) {
@@ -1265,10 +1268,30 @@ function toTutorArtifactPresentation(payload: unknown): TutorArtifactPresentatio
     const selectKind = payload.response_kind === "single_select" || payload.response_kind === "multi_select" || payload.response_kind === "ordering";
     if (!options || selectKind !== (options.length > 0) || payload.maximum_selections < payload.minimum_selections ||
         (payload.response_kind === "single_select" && payload.maximum_selections !== 1) ||
+        (payload.response_kind === "ordering" && (payload.minimum_selections !== options.length || payload.maximum_selections !== options.length)) ||
         (options.length > 0 && payload.maximum_selections > options.length)) return null;
+    const hints = payload.hints === undefined ? [] : toKnowledgeCheckHints(payload.hints);
+    const revealedHintLevels = payload.revealed_hint_levels === undefined ? [] : toHintLevels(payload.revealed_hint_levels);
+    if (!hints || !revealedHintLevels || revealedHintLevels.length > hints.length ||
+        payload.answer_locked !== undefined && typeof payload.answer_locked !== "boolean" ||
+        payload.outcome !== undefined && payload.outcome !== null && payload.outcome !== "correct" && payload.outcome !== "incorrect" ||
+        payload.assistance_kind !== undefined && !isKnowledgeCheckAssistanceKind(payload.assistance_kind) ||
+        payload.evaluation_markdown !== undefined && !isArtifactString(payload.evaluation_markdown, 4_000) ||
+        payload.response_receipt_id !== undefined && !isNullableArtifactBoundedString(payload.response_receipt_id, 160) ||
+        payload.remediation_handle !== undefined && !isNullableLearningItemHandle(payload.remediation_handle) ||
+        payload.transfer_handle !== undefined && !isNullableLearningItemHandle(payload.transfer_handle)) return null;
+    const answerLocked = payload.answer_locked ?? false;
+    const outcome = payload.outcome ?? null;
+    const assistanceKind = payload.assistance_kind === undefined ? null : payload.assistance_kind;
+    const evaluationMarkdown = payload.evaluation_markdown ?? "";
+    const responseReceiptId = payload.response_receipt_id ?? null;
+    if (answerLocked !== (outcome !== null && assistanceKind !== null && evaluationMarkdown.length > 0 && responseReceiptId !== null)) return null;
     return { type: "knowledge_check_v1", response_kind: payload.response_kind, prompt_markdown: payload.prompt_markdown,
       options, minimum_selections: payload.minimum_selections, maximum_selections: payload.maximum_selections,
-      maximum_text_length: payload.maximum_text_length };
+      maximum_text_length: payload.maximum_text_length, hints, revealed_hint_levels: revealedHintLevels,
+      answer_locked: answerLocked, outcome, assistance_kind: assistanceKind, evaluation_markdown: evaluationMarkdown,
+      response_receipt_id: responseReceiptId, remediation_handle: payload.remediation_handle ?? null,
+      transfer_handle: payload.transfer_handle ?? null };
   }
   if (payload.type === "model_code_review_v1" && hasExactKeys(payload, [
     "type", "exercise_version_id", "language_id", "source_code", "source_code_hash", "line_count", "review_categories",
@@ -1398,6 +1421,28 @@ function toTutorArtifactOptions(payload: unknown): Array<{ value: string; label:
     options.push({ value: item.value, label: item.label });
   }
   return new Set(options.map((item) => item.value)).size === options.length ? options : null;
+}
+
+function toKnowledgeCheckHints(payload: unknown): Array<{ level: 1 | 2 | 3; label: "方向" | "概念" | "结构"; markdown: string }> | null {
+  if (!Array.isArray(payload) || payload.length > 3) return null;
+  const hints: Array<{ level: 1 | 2 | 3; label: "方向" | "概念" | "结构"; markdown: string }> = [];
+  const labels = ["方向", "概念", "结构"] as const;
+  for (const [index, item] of payload.entries()) {
+    if (!isRecord(item) || !hasExactKeys(item, ["level", "label", "markdown"]) || item.level !== index + 1 ||
+        item.label !== labels[index] || !isArtifactBoundedString(item.markdown, 2_000)) return null;
+    hints.push({ level: item.level as 1 | 2 | 3, label: labels[index], markdown: item.markdown });
+  }
+  return hints;
+}
+
+function toHintLevels(payload: unknown): Array<1 | 2 | 3> | null {
+  if (!Array.isArray(payload) || payload.length > 3) return null;
+  const levels: Array<1 | 2 | 3> = [];
+  for (const [index, item] of payload.entries()) {
+    if (item !== index + 1) return null;
+    levels.push(item as 1 | 2 | 3);
+  }
+  return levels;
 }
 
 function toTutorArtifactActionKinds(payload: unknown): TutorArtifactActionKind[] | null {
@@ -2277,6 +2322,10 @@ function isNullableArtifactBoundedString(value: unknown, maximum: number): value
   return value === null || isArtifactBoundedString(value, maximum);
 }
 
+function isNullableLearningItemHandle(value: unknown): value is string | null {
+  return value === null || typeof value === "string" && /^li:[0-9a-f]{64}$/.test(value);
+}
+
 function isArtifactStableKey(value: unknown): value is string {
   return typeof value === "string" && /^[a-z0-9][a-z0-9._:-]{0,159}$/.test(value);
 }
@@ -2326,7 +2375,7 @@ function isTutorArtifactDifficulty(value: unknown): value is TutorArtifactDiffic
 }
 
 function isTutorArtifactActionKind(value: unknown): value is TutorArtifactActionKind {
-  return value === "request_hint" || value === "run" || value === "respond" || value === "complete_review" ||
+  return value === "request_hint" || value === "request_direct_answer" || value === "run" || value === "respond" || value === "complete_review" ||
     value === "cancel" || value === "acknowledge_demo_event" || value === "complete_demo";
 }
 
@@ -2337,6 +2386,10 @@ function isTutorArtifactOutcome(value: unknown): value is TutorArtifactOutcome {
 
 function isNullableTutorArtifactOutcome(value: unknown): value is TutorArtifactOutcome | null {
   return value === null || isTutorArtifactOutcome(value);
+}
+
+function isKnowledgeCheckAssistanceKind(value: unknown): value is "independent" | "hinted" | "direct_answer" | "remediated" | null {
+  return value === null || value === "independent" || value === "hinted" || value === "direct_answer" || value === "remediated";
 }
 
 function isTutorArtifactResponseKind(value: unknown): value is Extract<TutorArtifactPresentation, { type: "knowledge_check_v1" }>["response_kind"] {

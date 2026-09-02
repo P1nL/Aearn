@@ -418,3 +418,17 @@ Trellis Child `08-22-harness-closed-teaching-action-loop` 已在本地 PostgreSQ
 - 未运行真实 provider/executor、Docker conformance、生产 image build/sign/publish、Tauri installer、push、deploy或生产迁移。本记录不构成 production sandbox认证或 release批准。
 
 本轮未调用真实 provider/executor，未运行 Docker conformance、生产 image build/sign/publish、Tauri installer、push、deploy或生产迁移；本记录不构成 production sandbox认证或 release批准。
+
+## 2026-09-02：Knowledge Check、Hint、Remediation Child07 本地证据
+
+本增量交付 strict `knowledge_check_v1` 多题型、server-owned scorer/disclosure、immutable response、H1-H3/direct-answer assistance receipt、D1-D5 base difficulty、capability-scoped remediation/transfer selector，以及 receipt-backed mainline evaluation continuation。普通 teaching context 排除 reserved successor purpose；evaluation context 只保留已持久化的 exact handle，且 required candidate 不能被 1,200 字符 bound 静默驱逐。Artifact facade 不写 Attempt、mastery 或 progress。
+
+验证证据：
+
+- focused serial PostgreSQL/API：**65 passed**；覆盖 action replay/conflict/stale、H1-H3/direct answer、receipt immutability、exact successor/capability/pre-limit filtering、evaluation continuation、route/branch/cutover/bootstrap/schema manifest；
+- complete API（`-m "not real_provider"`）：**845 passed, 2 deselected in 277.21s**；API Ruff 全通过，Mypy **243 source files**，lock check 通过；
+- Desktop final full Vitest：**19 files / 137 tests passed**；新增解锁页/focus regression 的 focused KnowledgeCheck：**5 passed**；`desktop:check` 通过，Vite **134 modules transformed**；
+- 真实 Chromium 临时 Vite harness 直接挂载正式组件/CSS：1440x900、900x900、390x844 与 reduced-motion 均 `document/body overflow=0`；portal parent 为 `BODY`，打开 overlay 的 main height delta 为 `0`；H1/H2/H3 仅产生三个显式 action，Arrow/Home/End 为 H2/H1/H3，非当前页 `aria-hidden + inert`，Escape 恢复 exact“提示”按钮，console warning/error 为零。临时 harness 与 1421 端口已清理；
+- persisted `tutor_conversation_event_v3` 后 bootstrap twice 的既有专门回归包含在 full API；Child task validate 与最终 `git diff --check` 在提交前复验。
+
+未运行真实 provider、真实 executor/container、Docker conformance、生产 image build/sign/publish、Tauri installer、push、deploy 或生产迁移。Chromium fake-action harness 证明正式组件交互与布局，不证明 Tauri installer 或生产教学质量，本记录不构成 release approval。

@@ -31,6 +31,7 @@ from app.services.learning.item_bank.contracts import (
     canonical_hash,
     learning_item_handle,
     normalize_answer,
+    parse_code_range_answer,
 )
 from app.services.learning.item_bank.practice_adapter import build_exercise_authority
 from app.services.learning.practice.model_review_contracts import (
@@ -499,12 +500,25 @@ def _knowledge_error(public: LearningItemKnowledgeCheckContentV1, private: Learn
     accepted = tuple(private.accepted_answers)
     if public.response_kind == "single_choice" and (len(accepted) != 1 or accepted[0] not in option_ids):
         return "knowledge_answer_not_unique"
-    if public.response_kind == "multiple_choice" and (len(accepted) < 2 or not set(accepted) <= option_ids):
+    if public.response_kind == "multiple_choice" and (not accepted or not set(accepted) <= option_ids):
         return "knowledge_answer_not_unique"
-    if public.response_kind == "short_text":
+    if public.response_kind == "ordering" and (
+        len(accepted) != len(public.options)
+        or len(accepted) != len(set(accepted))
+        or set(accepted) != option_ids
+    ):
+        return "knowledge_ordering_invalid"
+    if public.response_kind in {"short_text", "prediction"}:
         stronger = tuple(_normalized_answer(item) for item in accepted)
         if len(stronger) != len(set(stronger)):
             return "knowledge_answer_not_unique"
+    if public.response_kind == "code_range":
+        if len(accepted) != 1:
+            return "knowledge_code_range_not_unique"
+        try:
+            parse_code_range_answer(accepted[0])
+        except ValueError:
+            return "knowledge_code_range_invalid"
     for test in private.tests:
         answer = test.input_json.get("answer")
         expected = test.expected_output_json.get("accepted")

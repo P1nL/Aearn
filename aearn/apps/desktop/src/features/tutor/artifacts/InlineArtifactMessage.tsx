@@ -30,6 +30,7 @@ export type InlineArtifactMessageProps = {
 
 const ACTION_LABELS: Record<TutorArtifactAction, string> = {
   request_hint: "查看提示",
+  request_direct_answer: "查看答案",
   run: "运行",
   respond: "作答",
   complete_review: "完成审查",
@@ -84,6 +85,8 @@ export function InlineArtifactMessage({
     && renderedArtifact.presentation.status === "terminal";
   const rendererOwnedActions = renderedArtifact.presentation.type === "exercise_workspace_v1"
     ? new Set<TutorArtifactAction>(["run"])
+    : renderedArtifact.presentation.type === "knowledge_check_v1"
+      ? new Set<TutorArtifactAction>(["request_hint", "request_direct_answer", "respond"])
     : renderedArtifact.presentation.type === "demonstration_v2"
       ? new Set<TutorArtifactAction>(["complete_demo", "acknowledge_demo_event"])
       : new Set<TutorArtifactAction>();

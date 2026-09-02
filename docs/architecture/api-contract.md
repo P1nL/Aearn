@@ -750,3 +750,11 @@ result-evaluation Turn 的 provider context 只含 `reason_code=result_evaluatio
 ## Published teaching demonstration completion (Child06)
 
 `demonstration_v2` is materialized only from a published Learning Item handle. Provider output cannot author or alter source, steps, expected events, or durations. `complete_demo` accepts exact `interactive_event` evidence (event key, canonical payload, bounded Preview nonce/generation/continuous sequence) or `visible_clock` evidence. The published payload and public request reject JSON shapes that the isolated bridge cannot encode. One append-only completion receipt exists per Artifact; completion creates no Attempt, mastery evidence, or track progress. Interactive completion enters expected-event continuation priority and static completion enters static-timer priority; learner input remains higher priority.
+
+## 2026-09-02：Knowledge Check、Hint 与 evaluation continuation
+
+`knowledge_check_v1` action 为 closed union：`request_hint`、`request_direct_answer`、`respond` 与通用 `cancel`。`respond` 只接受 single/multi select、prediction、ordering、code range 或 short text 的 exact shape；所有 mutation 继续携带 user/track/TeachingSession、`client_action_id` 与 expected Artifact version。回答后原 Artifact terminal/read-only；重复 exact request 返回同一 event/receipt，同 key 不同 body 返回 `IDEMPOTENCY_CONFLICT`，stale version 不调用 scorer。
+
+H1-H3 必须按序解锁并各写一条 assistance receipt；回看和 action replay 不重复。`request_direct_answer` 不属于 Hint 页，写 direct-answer assistance + response receipt，公开内容只使用 server-owned explanation，且不能成为 independent mastery。原题需要补救、补救失败或直接答案均由服务端从 published、当前 capability-compatible、未使用且语义不同的 item 中选择 exact successor；普通教学不广告 `remediation/transfer_check`，knowledge-check evaluation continuation 只广告已写入 terminal presentation 的一个 exact handle。
+
+评价 continuation 的 required provider projection 保持既有 1,200 字符预算：省略可选 recent teaching units，不重复序列化 successor handle，并禁止 bounder 驱逐唯一 required candidate；仍无法表示时在 provider 前 fail closed。API/SSE/export 不返回 raw response、accepted answer、private test/rubric、request hash 或 provider payload。
