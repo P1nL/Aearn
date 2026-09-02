@@ -1,0 +1,4 @@
+{"file":".trellis/spec/backend/teaching-session-authority.md","reason":"演示步骤、checkpoint和continuation authority"}
+{"file":".trellis/spec/frontend/hook-guidelines.md","reason":"visibility/cleanup和切换会话hook规则"}
+{"file":".trellis/tasks/08-30-tutor-conversation-learning-artifacts/research/source-of-truth-contract-summary.md","reason":"Tutor时间线和responsive行为"}
+{"file":".trellis/tasks/08-30-tutor-conversation-learning-artifacts/research/confirmed-product-decisions.md","reason":"演示只读、计时、progress和优先级决策"}
