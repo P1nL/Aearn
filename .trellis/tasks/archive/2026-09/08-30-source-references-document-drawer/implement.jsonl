@@ -1,0 +1,4 @@
+{"file":".trellis/spec/backend/tutor-context-references.md","reason":"typed safe reference、scope、history和injection合同"}
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"drawer、focus和交互组件规则"}
+{"file":".trellis/tasks/08-30-tutor-conversation-learning-artifacts/research/source-of-truth-contract-summary.md","reason":"现有Lesson sources、selection引用和响应式右栏；source snapshots/context reference persistence"}
+{"file":".trellis/tasks/08-30-tutor-conversation-learning-artifacts/research/confirmed-product-decisions.md","reason":"右栏定位、虚线动画和窄屏覆盖决策"}
