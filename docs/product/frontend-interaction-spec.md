@@ -457,3 +457,12 @@ terminal editor 为只读。stale 只是 process-local UI cue，不是 pass/scor
 390x844 必须上下等高，三种视口和 reduced motion 都不得产生页面横向 overflow。客户端 exact parser 对
 unknown/extra field、nullable PK、非单一 PK 或类型不匹配的 FK、partial result identity、Attempt mismatch
 整体 fail closed；不得从 public grid 推导完成或解析 stdout 伪表格。
+
+
+## 2026-09-02：Exact 来源文档右栏与窄屏 Drawer
+
+Lesson inline citation、历史 learner message 的 lesson_selection card 与 source_inspector_v1 Artifact 统一调用 exact Lesson reference resolver。Desktop 从 unknown 严格解析 lesson_document_reference_v1，并复核 response 的 conversation/track/knowledge/source identity、assignment/document hash、current assignment、target block/citation 与 source set；任一 unknown/extra/mismatch 整体 fail closed，不做 excerpt 搜索或当前文档 fallback。
+
+Drawer 是 TrackLearningWorkspace 中 Tutor/Lesson 的稳定 sibling。打开或切换引用只替换 drawer request；Tutor conversation、Lesson、Artifact、Monaco、Preview 与进程内 draft 不 key-remount。服务端返回后，drawer 在自身 stage 中按 data-document-drawer-block-id 定位，等待 render/ResizeObserver 后只滚动 lesson-document-drawer-scroll；虚线 highlight 是 absolute overlay，不改变课程块尺寸或对话 scroll。historical 响应显示“内容已更新”并完整展示引用时的冻结文档。
+
+桌面/中等视口为右侧 bounded panel；390px 使用从右侧覆盖的 min(88vw, 440px) modal。Backdrop 点击不关闭；close button 或全局 Escape 关闭。关闭 commit 后恢复 exact source trigger focus且 preventScroll。窄屏只在 drawer 内循环 Tab；reduced motion 使用即时 auto 定位和静态虚线框。1440x900、900x900、390x844 必须无 document/body/workspace 横向 overflow，conversation scroll 不变，fresh console warning/error 为零。

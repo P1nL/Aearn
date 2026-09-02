@@ -502,3 +502,20 @@ check，主线程完成后续缺陷修复、全量验证、提交与归档。
 
 未运行真实 provider、真实 executor/container、Docker conformance、生产 image build/sign/publish、Tauri
 installer、push、deploy 或生产数据迁移。该记录是本地 contract/readiness 证据，不构成生产发布批准。
+
+
+## 2026-09-02：Exact 来源文档 Drawer Child10 本地证据
+
+本增量复用 immutable LessonDocument/source snapshots、persisted lesson_selection context reference 与 source_inspector_v1 Artifact provenance，新增 verified-only exact resolver 和一个稳定挂载的右侧 document drawer。请求只接受 document/hash/assignment/block/citation、context reference ID 或 Artifact ID/version；服务端校验 conversation/track/knowledge scope、safe payload hash、Artifact presentation/source ref、assignment/document/block/excerpt/range/citation。历史 assignment 返回原 frozen document 与“内容已更新”，不按文本或 DOM 顺序猜当前相似段落。Desktop exact parser 复核 source echo、scope、assignment/document/hash/status/citations；Drawer 只滚动自己的 panel，以 absolute dashed overlay 定位，并保持 Tutor/Lesson/Artifact/Monaco/Preview state。
+
+唯一一次原生 Child10 trellis-check 按 read-only、8 分钟范围和 2 分钟 focused-test cap 启动；超过有界等待仍未返回报告后已终止，未改文件，也未启动第二次 check。主线程随后发现并修复 retry 后快速 retarget 可能被旧 promise 覆盖，以及 close commit 前 requestAnimationFrame focus 的真实浏览器竞态；最终由 AbortController ownership 和 post-commit zero-delay timer 覆盖回归。
+
+最终验证证据：
+
+- focused PostgreSQL/API：6 passed；覆盖 direct Lesson、persisted context reference、source-inspector Artifact、strict extra field、stale hash/version、cross-user 与 migration historical；
+- complete API（LLM_TYPE=disabled、not real_provider）：865 passed, 2 deselected in 259.03s；Ruff、Mypy（248 source files）、compileall、uv lock --check（55 packages）和 Artifact/Lesson/Tutor import smoke 通过；
+- Desktop focused exact-source matrix：6 files / 35 tests；最终 full Vitest：24 files / 160 tests；tsc + Vite production build通过，139 modules transformed；
+- disposable Chromium 正式组件/CSS：1440x900、900x900、390x844 与 reduced motion 的 document/body/workspace overflow 全为 0，conversation scroll exact 不变；normal scroll 命中 exact block，historical retarget 保留旧文档；390px drawer 为 88vw，backdrop 不关闭，button/Escape 归还 exact trigger；mount count保持 1且 draft 不变；reduced motion 为 auto + animation none；fresh console warning/error 为 0/0；absolute highlight 期间 target offset/size 与 stage height不变；临时 harness、server、browser 均已清理；
+- Trellis validate（implement 4 / check 1）、docs/spec link/control-character audit（6 files / 0 errors）与 git diff --check 通过；artifacts/__init__.py 仍 contracts-only/lazy，schema fragment 110 未修改且 full API保留 event_v3 bootstrap regression。
+
+未调用真实 provider、真实 executor/container、Docker conformance、生产 image build/sign/publish、Tauri installer、push、deploy 或生产数据迁移。以上为本地 contract/UI readiness，不构成 release approval。

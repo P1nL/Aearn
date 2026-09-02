@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { LessonAssignment, LessonDocument } from "../../../types";
@@ -65,5 +66,51 @@ describe("LessonDocumentView guided follow", () => {
     await waitFor(() => expect(onConflict).toHaveBeenCalledWith(expect.stringContaining("active frozen LessonDocument")));
     expect(scrollIntoView).not.toHaveBeenCalled();
     expect(screen.getByRole("article", { name: "闭包基础" })).toBeInTheDocument();
+  });
+
+  it("hands a citation to the drawer with the exact active document, version, block, hash, and trigger", async () => {
+    const user = userEvent.setup();
+    const onOpenDocumentReference = vi.fn();
+    const citedDocument: LessonDocument = {
+      ...documentProjection,
+      blocks: documentProjection.blocks.map((block) => block.block_id === "closure-example"
+        ? { ...block, citation_ids: ["cite_1234567890abcdef"] }
+        : block),
+    };
+    render(<LessonDocumentView
+      document={citedDocument}
+      assignment={assignment}
+      sources={[{
+        citation_id: "cite_1234567890abcdef",
+        source_id: "mdn.closure",
+        display_name: "MDN Closure",
+        provider: "MDN",
+        trust_tier: "official",
+        source_type: "reference",
+        source_version_label: "2026-08",
+        source_version_kind: "fixed",
+        canonical_url: "https://developer.mozilla.org/docs/Web/JavaScript/Closures",
+        section_path: ["Closures"],
+        fetched_at: "2026-08-30T00:00:00Z",
+        snapshotted_at: "2026-08-30T00:00:01Z",
+        evidence_excerpt: "A closure retains its lexical environment.",
+      }]}
+      onOpenDocumentReference={onOpenDocumentReference}
+    />);
+
+    const trigger = screen.getByRole("button", { name: "查看引用来源 1" });
+    await user.click(trigger);
+    expect(onOpenDocumentReference).toHaveBeenCalledWith({
+      knowledgeKey: "javascript.closure",
+      source: {
+        kind: "lesson_block",
+        document_id: "document-1",
+        document_content_hash: documentProjection.content_hash,
+        assignment_version: 1,
+        block_id: "closure-example",
+        citation_id: "cite_1234567890abcdef",
+      },
+    }, trigger);
+    expect(scrollIntoView).not.toHaveBeenCalled();
   });
 });

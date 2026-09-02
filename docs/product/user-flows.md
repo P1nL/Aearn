@@ -351,3 +351,12 @@ The Tutor may select a published demonstration handle but cannot author or alter
    Tutor evaluation 按既有 exactly-once continuation 流程追加。
 5. replay/Attempt GET 只恢复同一 committed Attempt/result，不重复执行或评分。本流程不创建 counterfeit Gate、
    不连接 Aearn PostgreSQL、不更新 mastery/progress，也不把本地 SQLite 描述为 container verified。
+
+
+## 2026-09-02：对话与工件来源文档流程
+
+1. learner 点击当前 Lesson citation、历史 learner message 中的课程选段，或 source-inspector Artifact 的“查看来源文档”。客户端只发送 exact document/hash/version/block、persisted context reference ID，或 Artifact ID/version，不发送 selector、任意 URL 或文本搜索请求。
+2. server 校验 verified user、conversation/track/knowledge scope 和 immutable provenance，返回引用时的 frozen Lesson。若已有新版 active assignment，仍返回历史文档并显示“内容已更新”；身份失效时 fail closed，不猜相似段落。
+3. Desktop 复用一个右侧 document drawer，只滚动 drawer 内部并以 absolute dashed overlay 标记 exact block。完整文档和冻结 source snapshots 留在 drawer；Artifact 只保留必要 excerpt 与 source chips。
+4. 新引用在已打开 drawer 中原地 retarget。打开/关闭不会重挂载 Tutor、Lesson、Artifact、Editor 或 Preview，也不会改变 conversation scroll、Composer draft、Attempt/Gate/Review authority。
+5. 390px drawer 宽 88vw，outside click 保持打开；close button/Escape 关闭并在 commit 后把 focus 还给 exact trigger。reduced motion 立即定位且不播放 highlight animation。

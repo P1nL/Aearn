@@ -138,6 +138,41 @@ def test_lesson_selection_reference_is_atomic_replayable_and_injected_as_structu
     assert replay.json()["context_references"] == saved
 
     conversation_id = str(body["conversation_id"])
+    resolved = reference_client.post(
+        f"/api/learning-tracks/{track_id}/lesson-references/{conversation_id}/resolve",
+        json={
+            "user_id": user_id,
+            "knowledge_key": "python.variables",
+            "source": {
+                "kind": "context_reference",
+                "reference_id": saved[0]["reference_id"],
+            },
+        },
+    )
+    assert resolved.status_code == 200
+    resolved_body = resolved.json()
+    assert resolved_body["schema_version"] == "lesson_document_reference_v1"
+    assert resolved_body["source_kind"] == "context_reference"
+    assert resolved_body["reference_status"] == "current"
+    assert resolved_body["target"]["block_id"] == reference["block_id"]
+    assert resolved_body["target"]["safe_excerpt"] == reference["excerpt"]
+    assert resolved_body["document"]["content_hash"] == reference["document_content_hash"]
+    assert resolved_body["sources"]
+
+    other_user = str(create_tutor_user(reference_client)["id"])
+    cross_user = reference_client.post(
+        f"/api/learning-tracks/{track_id}/lesson-references/{conversation_id}/resolve",
+        json={
+            "user_id": other_user,
+            "knowledge_key": "python.variables",
+            "source": {
+                "kind": "context_reference",
+                "reference_id": saved[0]["reference_id"],
+            },
+        },
+    )
+    assert_error(cross_user, "DOCUMENT_REFERENCE_NOT_FOUND", 404)
+
     history = reference_client.get(
         f"/api/tutor/conversations/{conversation_id}/history?user_id={user_id}&limit=40"
     )

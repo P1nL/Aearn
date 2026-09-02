@@ -1,5 +1,6 @@
 /* Track-scoped learning workspace: roadmap, lesson/review, and Tutor. */
 .track-learning-workspace {
+  position: relative;
   display: flex;
   width: 100%;
   height: 100%;
@@ -208,9 +209,15 @@
 .tutor-reference-drafts strong { overflow: hidden; max-width: 210px; font-size: 9.5px; text-overflow: ellipsis; white-space: nowrap; }
 .tutor-reference-drafts button { display: grid; place-items: center; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 50%; color: var(--muted); background: rgba(255,255,255,.5); }
 .tutor-reference-cards { display: grid; gap: 6px; margin-top: 9px; }
-.tutor-reference-cards article { display: grid; grid-template-columns: 25px minmax(0, 1fr); gap: 8px; padding: 9px 10px; border: 1px solid rgba(47,125,99,.16); border-radius: 12px; background: rgba(255,255,255,.58); }
-.tutor-reference-cards article > span { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 8px; color: var(--accent-dark); background: var(--accent-soft); font-size: 11px; font-weight: 900; }
-.tutor-reference-cards article > div { display: grid; min-width: 0; gap: 2px; }
+.tutor-reference-cards > article,
+.tutor-reference-cards > button { display: grid; width: 100%; grid-template-columns: 25px minmax(0, 1fr); gap: 8px; padding: 9px 10px; border: 1px solid rgba(47,125,99,.16); border-radius: 12px; color: inherit; text-align: left; background: rgba(255,255,255,.58); }
+.tutor-reference-cards > button { cursor: pointer; }
+.tutor-reference-cards > button:hover { border-color: rgba(47,125,99,.34); background: rgba(47,125,99,.07); }
+.tutor-reference-cards > button:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent) 44%, transparent); outline-offset: 2px; }
+.tutor-reference-cards > article > span,
+.tutor-reference-cards > button > span { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 8px; color: var(--accent-dark); background: var(--accent-soft); font-size: 11px; font-weight: 900; }
+.tutor-reference-cards > article > div,
+.tutor-reference-cards > button > div { display: grid; min-width: 0; gap: 2px; }
 .tutor-reference-cards strong { font-size: 10px; }
 .tutor-reference-cards small { display: -webkit-box; overflow: hidden; color: var(--muted); font-size: 9px; line-height: 1.45; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
 
@@ -726,4 +733,131 @@
     grid-template-rows: 34px minmax(0, 1fr);
   }
   .desktop.learning-focus-shell .main { min-height: 0; }
+}
+
+
+/* Child 10 exact source document drawer. */
+.lesson-document-drawer-layer {
+  position: absolute;
+  z-index: 72;
+  top: 58px;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  width: min(460px, 46vw);
+  min-width: 0;
+  justify-content: flex-end;
+  pointer-events: none;
+}
+.lesson-document-drawer {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+  border-left: 1px solid rgba(28, 43, 37, .2);
+  background: var(--main);
+  box-shadow: -22px 0 56px rgba(20, 34, 28, .18);
+  pointer-events: auto;
+  animation: lesson-document-drawer-in .24s var(--ease-out);
+}
+.lesson-document-drawer-header {
+  display: flex;
+  min-height: 66px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line-soft);
+  background: rgba(251, 252, 247, .96);
+}
+.lesson-document-drawer-header > div { display: grid; gap: 1px; min-width: 0; }
+.lesson-document-drawer-header h2 { margin: 0; font-size: 18px; }
+.lesson-document-drawer-status {
+  display: grid;
+  flex: 1 1 auto;
+  place-items: center;
+  min-height: 140px;
+  padding: 20px;
+  color: var(--muted);
+  text-align: center;
+}
+.lesson-document-drawer-status.error { align-content: center; gap: 8px; color: #963e3e; }
+.lesson-document-version-notice {
+  display: grid;
+  gap: 2px;
+  padding: 9px 13px;
+  border-bottom: 1px solid rgba(176, 106, 37, .2);
+  color: #7f521f;
+  background: #fff6e6;
+}
+.lesson-document-version-notice strong { font-size: 11px; }
+.lesson-document-version-notice span { font-size: 10px; line-height: 1.45; }
+.lesson-document-drawer-scroll {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  scroll-behavior: smooth;
+}
+.lesson-document-drawer-document { min-width: 0; padding: 10px 10px 0; }
+.lesson-document-drawer-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 2px 4px 9px;
+  color: var(--muted);
+  font-size: 9px;
+}
+.lesson-document-drawer-stage { position: relative; min-width: 0; }
+.lesson-document-drawer-stage > [data-document-drawer-block-id] { position: relative; min-width: 0; }
+.lesson-document-drawer .lesson-block { min-width: 0; padding: 18px 16px; border-radius: 16px; }
+.lesson-document-drawer .lesson-heading { min-height: 210px; }
+.lesson-document-drawer .lesson-block h1 { font-size: clamp(29px, 5vw, 44px); }
+.lesson-document-drawer .lesson-block h2 { font-size: 20px; }
+.lesson-document-drawer-highlight {
+  position: absolute;
+  z-index: 8;
+  border: 2px dashed var(--accent);
+  border-radius: 17px;
+  box-shadow: 0 0 0 4px rgba(47, 125, 99, .09);
+  pointer-events: none;
+  animation: lesson-document-highlight 1.15s ease-out 2;
+}
+.lesson-document-drawer .lesson-sources {
+  position: static;
+  max-height: none;
+  margin: 12px 10px 18px;
+  border-radius: 18px;
+  box-shadow: none;
+}
+.lesson-document-drawer .lesson-source-list { max-height: none; }
+@keyframes lesson-document-drawer-in {
+  from { transform: translateX(28px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+@keyframes lesson-document-highlight {
+  0% { opacity: .15; transform: scale(.985); }
+  35%, 100% { opacity: 1; transform: scale(1); }
+}
+@media (max-width: 767px) {
+  .lesson-document-drawer-layer {
+    position: fixed;
+    z-index: 96;
+    inset: 0;
+    width: 100%;
+    align-items: stretch;
+    background: rgba(13, 21, 17, .34);
+    backdrop-filter: blur(3px);
+    pointer-events: auto;
+  }
+  .lesson-document-drawer { width: min(88vw, 440px); border-radius: 18px 0 0 18px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .lesson-document-drawer,
+  .lesson-document-drawer-highlight { animation: none; transition: none; }
+  .lesson-document-drawer-scroll { scroll-behavior: auto; }
 }

@@ -1,7 +1,7 @@
 import type { KeyboardEvent, MouseEvent, ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
 
-import type { LessonAssignment, LessonBlock, LessonCitation, LessonDocument, LessonExerciseGateBlock, LessonSelectionReferenceDraft, LessonFollowTarget } from "../../../types";
+import type { LessonAssignment, LessonBlock, LessonCitation, LessonDocument, LessonDocumentReferenceOpenRequest, LessonExerciseGateBlock, LessonSelectionReferenceDraft, LessonFollowTarget } from "../../../types";
 import { LessonBlockRenderer } from "./LessonBlockRenderer";
 import { LessonSourcesPanel } from "./LessonSourcesPanel";
 
@@ -16,6 +16,7 @@ type LessonDocumentViewProps = {
   followEnabled?: boolean;
   onFollowPause?: () => void;
   onFollowConflict?: (message: string | null) => void;
+  onOpenDocumentReference?: (request: LessonDocumentReferenceOpenRequest, trigger: HTMLElement) => void;
 };
 
 type SelectionCandidate = {
@@ -25,7 +26,7 @@ type SelectionCandidate = {
   excerpt: string;
 };
 
-export function LessonDocumentView({ document, assignment, sources, renderExerciseGate, onSelectionReference, learningTrackId, followTarget = null, followEnabled = false, onFollowPause, onFollowConflict }: LessonDocumentViewProps) {
+export function LessonDocumentView({ document, assignment, sources, renderExerciseGate, onSelectionReference, learningTrackId, followTarget = null, followEnabled = false, onFollowPause, onFollowConflict, onOpenDocumentReference }: LessonDocumentViewProps) {
   const [selectedCitationId, setSelectedCitationId] = useState<string | null>(sources[0]?.citation_id ?? null);
   const [selectionCandidate, setSelectionCandidate] = useState<SelectionCandidate | null>(null);
   const [selectionMessage, setSelectionMessage] = useState<string | null>(null);
@@ -65,6 +66,24 @@ export function LessonDocumentView({ document, assignment, sources, renderExerci
     setSelectedCitationId(citationId);
     const reduced = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
     globalThis.requestAnimationFrame(() => documentRef(citationId)?.scrollIntoView({ behavior: reduced ? "auto" : "smooth", block: "nearest" }));
+  }
+
+  function openBlockCitation(block: LessonBlock, citationId: string, trigger: HTMLButtonElement) {
+    if (!onOpenDocumentReference) {
+      focusCitation(citationId);
+      return;
+    }
+    onOpenDocumentReference({
+      knowledgeKey: document.knowledge_key,
+      source: {
+        kind: "lesson_block",
+        document_id: assignment.document_id,
+        document_content_hash: document.content_hash,
+        assignment_version: assignment.assignment_version,
+        block_id: block.block_id,
+        citation_id: citationId,
+      },
+    }, trigger);
   }
 
   function captureSelection(event: MouseEvent<HTMLElement>) {
@@ -129,7 +148,7 @@ export function LessonDocumentView({ document, assignment, sources, renderExerci
             {selectionCandidate ? <><span><strong>引用所选内容</strong><small>{selectionCandidate.excerpt}</small></span><button className="tutor-compact-button" type="button" onClick={addSelectionReference}>加入 Tutor</button><button className="tutor-text-button" type="button" onClick={() => setSelectionCandidate(null)}>取消</button></> : <span><strong>选择文本或代码可引用给 Tutor</strong><small>{selectionMessage ?? "引用会绑定当前 frozen document、block 与精确范围，不会拼进你的消息正文。"}</small></span>}
           </div>
         ) : null}
-        {document.blocks.map((block) => <div key={block.block_id} data-lesson-block-id={block.block_id}><LessonBlockRenderer block={block} onCitation={focusCitation} renderExerciseGate={renderExerciseGate} /></div>)}
+        {document.blocks.map((block) => <div key={block.block_id} data-lesson-block-id={block.block_id}><LessonBlockRenderer block={block} onCitation={(citationId, trigger) => openBlockCitation(block, citationId, trigger)} renderExerciseGate={renderExerciseGate} /></div>)}
       </article>
       <LessonSourcesPanel sources={sources} selectedCitationId={selectedCitationId} onSelect={setSelectedCitationId} />
     </div>

@@ -117,6 +117,52 @@ export type LessonDocumentState = {
   authoring_run: LessonAuthoringRun | null;
 };
 
+export type LessonDocumentReferenceSource =
+  | {
+      kind: "lesson_block";
+      document_id: string;
+      document_content_hash: string;
+      assignment_version: number;
+      block_id: string;
+      citation_id: string | null;
+    }
+  | { kind: "context_reference"; reference_id: string }
+  | { kind: "artifact"; artifact_id: string; artifact_version: number };
+
+export type LessonDocumentReferenceAssignment = {
+  assignment_id: string;
+  document_id: string;
+  assignment_version: number;
+  status: "active" | "proposed" | "superseded";
+  content_hash: string;
+};
+
+export type LessonDocumentReferenceResolution = {
+  schema_version: "lesson_document_reference_v1";
+  source_kind: LessonDocumentReferenceSource["kind"];
+  source_id: string;
+  conversation_id: string;
+  learning_track_id: string;
+  knowledge_key: string;
+  reference_status: "current" | "historical";
+  assignment: LessonDocumentReferenceAssignment;
+  current_assignment: LessonDocumentReferenceAssignment | null;
+  document: LessonDocument;
+  sources: LessonCitation[];
+  target: {
+    block_id: string;
+    block_content_hash: string;
+    safe_excerpt: string;
+    citation_ids: string[];
+    selected_citation_id: string | null;
+  };
+};
+
+export type LessonDocumentReferenceOpenRequest = {
+  knowledgeKey: string;
+  source: LessonDocumentReferenceSource;
+};
+
 export type LessonPrepareResponse = {
   status: "missing" | "preparing" | "ready" | "failed";
   track_id: string;

@@ -11,7 +11,8 @@ from uuid import UUID
 from psycopg import Connection
 
 from app.services.learning.contracts import stable_key
-from app.services.learning.lesson_contracts import LessonDocumentDraft, LessonSourceSnapshot, lesson_block_payload
+from app.services.learning.lesson_contracts import LessonDocumentDraft, LessonSourceSnapshot
+from app.services.learning.lesson_projection import project_lesson_document, project_lesson_source
 from app.services.learning.teaching_events import TeachingDomainEventAdapter
 from app.services.learning.lesson_repository import (
     LessonAssignmentConflict,
@@ -239,15 +240,8 @@ class LessonDocumentService:
             safe_sources = tuple(item for item in sources if isinstance(item, LessonSourceSnapshot)) if isinstance(sources, tuple | list) else ()
             base.update(
                 status="ready", assignment=_project_assignment(assignment),
-                document={
-                    "schema_version": document.schema_version, "title": document.title,
-                    "language_id": document.language_id, "knowledge_key": document.knowledge_key,
-                    "content_standard_version": document.content_standard_version,
-                    "coverage_keys": list(document.coverage_keys),
-                    "blocks": [lesson_block_payload(block) for block in document.blocks],
-                    "content_hash": document.content_hash,
-                },
-                sources=[_project_source(item) for item in safe_sources],
+                document=project_lesson_document(document),
+                sources=[project_lesson_source(item) for item in safe_sources],
                 update=_project_proposal(state.get("proposed_assignment")),
             )
             return base
@@ -276,19 +270,6 @@ def _project_proposal(value: object) -> dict[str, object] | None:
         "assignment_id": str(value["id"]), "assignment_version": _int(value["assignment_version"]),
         "document_id": str(value["document_id"]), "status": str(value["status"]),
         "impact": dict(impact) if isinstance(impact, Mapping) else {},
-    }
-
-
-def _project_source(snapshot: LessonSourceSnapshot) -> dict[str, object]:
-    return {
-        "citation_id": snapshot.citation_id, "source_id": snapshot.source_id,
-        "display_name": snapshot.display_name, "provider": snapshot.provider,
-        "trust_tier": snapshot.trust_tier, "source_type": snapshot.source_type,
-        "source_version_label": snapshot.source_version_label,
-        "source_version_kind": snapshot.source_version_kind,
-        "canonical_url": snapshot.canonical_url, "section_path": list(snapshot.section_path),
-        "fetched_at": snapshot.fetched_at.isoformat(), "snapshotted_at": snapshot.snapshotted_at.isoformat(),
-        "evidence_excerpt": snapshot.evidence_excerpt,
     }
 
 

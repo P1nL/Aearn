@@ -9,6 +9,9 @@ import type {
   LessonBlock,
   LessonCitation,
   LessonDocument,
+  LessonDocumentReferenceAssignment,
+  LessonDocumentReferenceResolution,
+  LessonDocumentReferenceSource,
   LessonDocumentState,
   LessonGateAction,
   LessonGateExercise,
@@ -163,6 +166,33 @@ export async function fetchLessonDocument(
   return state;
 }
 
+export async function fetchLessonDocumentReference(input: {
+  userId: string;
+  trackId: string;
+  conversationId: string;
+  knowledgeKey: string;
+  source: LessonDocumentReferenceSource;
+  signal?: AbortSignal;
+}): Promise<LessonDocumentReferenceResolution> {
+  const url = API_BASE_URL + "/api/learning-tracks/" + encodeURIComponent(input.trackId) +
+    "/lesson-references/" + encodeURIComponent(input.conversationId) + "/resolve";
+  const payload = await requestJson(url, {
+    method: "POST",
+    body: JSON.stringify({
+      user_id: input.userId,
+      knowledge_key: input.knowledgeKey,
+      source: input.source,
+    }),
+    signal: input.signal,
+  });
+  const reference = toLessonDocumentReferenceResolution(payload);
+  if (!reference || reference.learning_track_id !== input.trackId ||
+      reference.conversation_id !== input.conversationId || reference.knowledge_key !== input.knowledgeKey ||
+      reference.source_kind !== input.source.kind || !referenceMatchesRequestedSource(reference, input.source)) {
+    throw new Error("Lesson document reference API returned an invalid payload");
+  }
+  return reference;
+}
 export async function prepareLessonDocument(input: {
   userId: string;
   trackId: string;
@@ -721,6 +751,94 @@ export function toLessonDocumentState(payload: unknown): LessonDocumentState | n
   const run = toLessonAuthoringRun(payload.authoring_run);
   if (!run) return null;
   return { ...common, assignment: null, document: null, sources: [], update: null, authoring_run: run };
+}
+
+export function toLessonDocumentReferenceResolution(payload: unknown): LessonDocumentReferenceResolution | null {
+  if (!isRecord(payload) || !hasExactKeys(payload, [
+    "schema_version", "source_kind", "source_id", "conversation_id", "learning_track_id",
+    "knowledge_key", "reference_status", "assignment", "current_assignment", "document", "sources", "target",
+  ]) || payload.schema_version !== "lesson_document_reference_v1" ||
+      (payload.source_kind !== "lesson_block" && payload.source_kind !== "context_reference" && payload.source_kind !== "artifact") ||
+      !isString(payload.source_id) || !payload.source_id || !isString(payload.conversation_id) || !isString(payload.learning_track_id) ||
+      !isString(payload.knowledge_key) || (payload.reference_status !== "current" && payload.reference_status !== "historical")) return null;
+  const assignment = toLessonDocumentReferenceAssignment(payload.assignment);
+  const currentAssignment = payload.current_assignment === null ? null : toLessonDocumentReferenceAssignment(payload.current_assignment);
+  const document = toLessonDocument(payload.document);
+  if (!assignment || (payload.current_assignment !== null && !currentAssignment) || !document || !Array.isArray(payload.sources) || !isRecord(payload.target)) return null;
+  const sources = payload.sources.map(toLessonCitation);
+  const target = payload.target;
+  if (sources.some((item) => item === null) || !hasExactKeys(target, [
+    "block_id", "block_content_hash", "safe_excerpt", "citation_ids", "selected_citation_id",
+  ]) || !isString(target.block_id) || !isSha256(target.block_content_hash) ||
+      !isString(target.safe_excerpt) || target.safe_excerpt.length > 800 || !isStringArray(target.citation_ids) ||
+      !isNullableString(target.selected_citation_id) || new Set(target.citation_ids).size !== target.citation_ids.length) return null;
+  const validSources = sources.filter((item): item is LessonCitation => item !== null);
+  const sourceIds = new Set(validSources.map((item) => item.citation_id));
+  const block = document.blocks.find((item) => item.block_id === target.block_id);
+  if (!block || document.knowledge_key !== payload.knowledge_key || sourceIds.size !== validSources.length ||
+      target.citation_ids.some((id) => !block.citation_ids.includes(id) || !sourceIds.has(id)) ||
+      (target.selected_citation_id !== null && (!target.citation_ids.includes(target.selected_citation_id) || !sourceIds.has(target.selected_citation_id)))) return null;
+  if (assignment.content_hash !== document.content_hash ||
+      (currentAssignment !== null && currentAssignment.status !== "active") ||
+      (payload.reference_status === "current" && (assignment.status !== "active" || !currentAssignment || !sameReferenceAssignment(currentAssignment, assignment)))) return null;
+  return {
+    schema_version: "lesson_document_reference_v1",
+    source_kind: payload.source_kind,
+    source_id: payload.source_id,
+    conversation_id: payload.conversation_id,
+    learning_track_id: payload.learning_track_id,
+    knowledge_key: payload.knowledge_key,
+    reference_status: payload.reference_status,
+    assignment,
+    current_assignment: currentAssignment,
+    document,
+    sources: validSources,
+    target: {
+      block_id: target.block_id,
+      block_content_hash: target.block_content_hash,
+      safe_excerpt: target.safe_excerpt,
+      citation_ids: target.citation_ids,
+      selected_citation_id: target.selected_citation_id,
+    },
+  };
+}
+
+function referenceMatchesRequestedSource(
+  reference: LessonDocumentReferenceResolution,
+  source: LessonDocumentReferenceSource,
+): boolean {
+  if (source.kind === "context_reference") return reference.source_id === source.reference_id;
+  if (source.kind === "artifact") return reference.source_id === source.artifact_id;
+  return reference.source_id === source.document_id + ":" + source.block_id &&
+    reference.assignment.document_id === source.document_id &&
+    reference.assignment.content_hash === source.document_content_hash &&
+    reference.assignment.assignment_version === source.assignment_version &&
+    reference.target.block_id === source.block_id &&
+    reference.target.selected_citation_id === source.citation_id;
+}
+
+function sameReferenceAssignment(
+  left: LessonDocumentReferenceAssignment,
+  right: LessonDocumentReferenceAssignment,
+): boolean {
+  return left.assignment_id === right.assignment_id && left.document_id === right.document_id &&
+    left.assignment_version === right.assignment_version && left.status === right.status &&
+    left.content_hash === right.content_hash;
+}
+
+function toLessonDocumentReferenceAssignment(payload: unknown): LessonDocumentReferenceAssignment | null {
+  if (!isRecord(payload) || !hasExactKeys(payload, [
+    "assignment_id", "document_id", "assignment_version", "status", "content_hash",
+  ]) || !isString(payload.assignment_id) || !isString(payload.document_id) ||
+      !isPositiveSafeInteger(payload.assignment_version) || !isLessonAssignmentStatus(payload.status) ||
+      !isSha256(payload.content_hash)) return null;
+  return {
+    assignment_id: payload.assignment_id,
+    document_id: payload.document_id,
+    assignment_version: payload.assignment_version,
+    status: payload.status,
+    content_hash: payload.content_hash,
+  };
 }
 
 export function toLessonPrepareResponse(payload: unknown): LessonPrepareResponse | null {

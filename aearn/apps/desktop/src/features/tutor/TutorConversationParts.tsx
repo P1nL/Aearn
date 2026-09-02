@@ -10,7 +10,7 @@ import {
   Button, DisclosureRow, IconChevronDown, IconChevronUp, IconDelete, IconEdit, IconQueue,
   IconSend, IconStop, Input, StateDot,
 } from "../../ui/dsh-derived";
-import { ClarificationBranchGroup, InlineArtifactMessage, SafeMarkdown, type TutorArtifactActionHandler, type TutorArtifactAttemptLoader, type TutorArtifactReturnToSource } from "./artifacts";
+import { ClarificationBranchGroup, InlineArtifactMessage, SafeMarkdown, type TutorArtifactActionHandler, type TutorArtifactAttemptLoader, type TutorArtifactReturnToSource, type TutorDocumentReferenceOpener } from "./artifacts";
 import {
   displayQueuePauseReason, groupTimelineAroundArtifacts, requestDraftValid, runtimeReasoningText,
   TUTOR_TEXT_REVEAL_INTERVAL_MS, TUTOR_THINKING_AUTO_COLLAPSE_DELAY_MS,
@@ -125,7 +125,7 @@ export function groupTeachingTimeline(
   };
 }
 
-export function TeachingSessionTimeline({ groups, legacyItems, branches, conversationId, newArtifactIds, recentCompletion, writeEnabled, mutationBusy, onRetry, onReference, onArtifactAction, loadArtifactDetail, loadArtifactAttempt, onReturnToArtifactSource }: {
+export function TeachingSessionTimeline({ groups, legacyItems, branches, conversationId, newArtifactIds, recentCompletion, writeEnabled, mutationBusy, onRetry, onReference, onArtifactAction, loadArtifactDetail, loadArtifactAttempt, onReturnToArtifactSource, onOpenDocumentReference }: {
   groups: GroupedTeachingTimeline["history"];
   legacyItems: TutorHistoryItem[];
   branches: TutorPublicBranchGroup[];
@@ -140,6 +140,7 @@ export function TeachingSessionTimeline({ groups, legacyItems, branches, convers
   loadArtifactDetail?: (artifact: TutorPublicArtifactItem) => Promise<TutorPublicArtifactItem>;
   loadArtifactAttempt?: TutorArtifactAttemptLoader;
   onReturnToArtifactSource?: TutorArtifactReturnToSource;
+  onOpenDocumentReference?: TutorDocumentReferenceOpener;
 }) {
   if (groups.length === 0 && legacyItems.length === 0) return null;
   return <section className="teaching-session-history" aria-label="历史教学分段">
@@ -147,7 +148,7 @@ export function TeachingSessionTimeline({ groups, legacyItems, branches, convers
       <summary><span><strong>{session.knowledge_key}</strong><small>{displayTeachingSessionStatus(session.status)} · {displayTeachingMode(session.mode)}</small></span><time>{formatTeachingSessionTime(session.last_activity_at)}</time></summary>
       <div className="teaching-session-readonly" aria-label={`${session.knowledge_key} 历史分段，只读`}>
         <p>历史 teaching session · 只读。展开不会改变当前 Composer、mode 或下一步。</p>
-        {items.length > 0 ? <TimelineSequence items={items} branches={branches} conversationId={conversationId} newArtifactIds={newArtifactIds} recentCompletion={recentCompletion} writeEnabled={false} mutationBusy={mutationBusy} onRetry={onRetry} loadArtifactDetail={loadArtifactDetail} loadArtifactAttempt={loadArtifactAttempt} onReturnToArtifactSource={onReturnToArtifactSource} /> : <span>当前 bounded snapshot 中没有该分段的消息；可使用“加载更早记录”继续读取。</span>}
+        {items.length > 0 ? <TimelineSequence items={items} branches={branches} conversationId={conversationId} newArtifactIds={newArtifactIds} recentCompletion={recentCompletion} writeEnabled={false} mutationBusy={mutationBusy} onRetry={onRetry} loadArtifactDetail={loadArtifactDetail} loadArtifactAttempt={loadArtifactAttempt} onReturnToArtifactSource={onReturnToArtifactSource} onOpenDocumentReference={onOpenDocumentReference} /> : <span>当前 bounded snapshot 中没有该分段的消息；可使用“加载更早记录”继续读取。</span>}
         {items.map((item) => item.kind === "message" && item.turn_id && onReference ? <button
           key={`reference:${session.session_id}:${item.id}`}
           className="tutor-text-button teaching-session-reference-button"
@@ -163,7 +164,7 @@ export function TeachingSessionTimeline({ groups, legacyItems, branches, convers
         >引用此消息</button> : null)}
       </div>
     </details>)}
-    {legacyItems.length > 0 ? <details className="teaching-session-group legacy"><summary><span><strong>教学分段启用前的对话</strong><small>Track conversation history · 只读</small></span></summary><div className="teaching-session-readonly"><TimelineSequence items={legacyItems} branches={branches} conversationId={conversationId} newArtifactIds={newArtifactIds} recentCompletion={recentCompletion} writeEnabled={false} mutationBusy={mutationBusy} onRetry={onRetry} onArtifactAction={onArtifactAction} loadArtifactDetail={loadArtifactDetail} loadArtifactAttempt={loadArtifactAttempt} onReturnToArtifactSource={onReturnToArtifactSource} /></div></details> : null}
+    {legacyItems.length > 0 ? <details className="teaching-session-group legacy"><summary><span><strong>教学分段启用前的对话</strong><small>Track conversation history · 只读</small></span></summary><div className="teaching-session-readonly"><TimelineSequence items={legacyItems} branches={branches} conversationId={conversationId} newArtifactIds={newArtifactIds} recentCompletion={recentCompletion} writeEnabled={false} mutationBusy={mutationBusy} onRetry={onRetry} onArtifactAction={onArtifactAction} loadArtifactDetail={loadArtifactDetail} loadArtifactAttempt={loadArtifactAttempt} onReturnToArtifactSource={onReturnToArtifactSource} onOpenDocumentReference={onOpenDocumentReference} /></div></details> : null}
   </section>;
 }
 
@@ -186,7 +187,7 @@ export function formatTeachingSessionTime(value: string | null): string {
   return Number.isNaN(parsed.valueOf()) ? "" : new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(parsed);
 }
 
-export function TimelineSequence({ items, branches, conversationId, newArtifactIds, recentCompletion, writeEnabled, mutationBusy, onRetry, onArtifactAction, loadArtifactDetail, loadArtifactAttempt, onReturnToArtifactSource }: {
+export function TimelineSequence({ items, branches, conversationId, newArtifactIds, recentCompletion, writeEnabled, mutationBusy, onRetry, onArtifactAction, loadArtifactDetail, loadArtifactAttempt, onReturnToArtifactSource, onOpenDocumentReference }: {
   items: TutorHistoryItem[];
   branches: TutorPublicBranchGroup[];
   conversationId: string;
@@ -199,6 +200,7 @@ export function TimelineSequence({ items, branches, conversationId, newArtifactI
   loadArtifactDetail?: (artifact: TutorPublicArtifactItem) => Promise<TutorPublicArtifactItem>;
   loadArtifactAttempt?: TutorArtifactAttemptLoader;
   onReturnToArtifactSource?: TutorArtifactReturnToSource;
+  onOpenDocumentReference?: TutorDocumentReferenceOpener;
 }) {
   const nodes = groupTimelineAroundArtifacts(items, branches);
   return <>{nodes.map((node) => node.kind === "branch"
@@ -210,6 +212,7 @@ export function TimelineSequence({ items, branches, conversationId, newArtifactI
           writeEnabled={writeEnabled}
           mutationBusy={mutationBusy}
           onRetry={onRetry}
+          onOpenDocumentReference={onOpenDocumentReference}
         />)}
       </ClarificationBranchGroup>
     : <TimelineItem
@@ -226,10 +229,11 @@ export function TimelineSequence({ items, branches, conversationId, newArtifactI
         loadArtifactDetail={loadArtifactDetail}
         loadArtifactAttempt={loadArtifactAttempt}
         onReturnToArtifactSource={onReturnToArtifactSource}
+        onOpenDocumentReference={onOpenDocumentReference}
       />)}</>;
 }
 
-export function TimelineItem({ item, recentCompletion, writeEnabled, mutationBusy, onRetry, artifactAutoReveal = false, artifactTerminalCollapseMarker = null, artifactActionBusy = false, onArtifactAction, loadArtifactDetail, loadArtifactAttempt, onReturnToArtifactSource }: {
+export function TimelineItem({ item, recentCompletion, writeEnabled, mutationBusy, onRetry, artifactAutoReveal = false, artifactTerminalCollapseMarker = null, artifactActionBusy = false, onArtifactAction, loadArtifactDetail, loadArtifactAttempt, onReturnToArtifactSource, onOpenDocumentReference }: {
   item: TutorHistoryItem;
   recentCompletion: TutorRecentCompletion | null;
   writeEnabled: boolean;
@@ -242,14 +246,15 @@ export function TimelineItem({ item, recentCompletion, writeEnabled, mutationBus
   loadArtifactDetail?: (artifact: TutorPublicArtifactItem) => Promise<TutorPublicArtifactItem>;
   loadArtifactAttempt?: TutorArtifactAttemptLoader;
   onReturnToArtifactSource?: TutorArtifactReturnToSource;
+  onOpenDocumentReference?: TutorDocumentReferenceOpener;
 }) {
   if (item.kind === "process") return null;
-  if (item.kind === "artifact") return <InlineArtifactMessage artifact={item} autoReveal={artifactAutoReveal} terminalCollapseMarker={artifactTerminalCollapseMarker} onAction={onArtifactAction} actionBusy={artifactActionBusy} loadDetail={loadArtifactDetail} loadAttempt={loadArtifactAttempt} onReturnToSource={onReturnToArtifactSource} />;
+  if (item.kind === "artifact") return <InlineArtifactMessage artifact={item} autoReveal={artifactAutoReveal} terminalCollapseMarker={artifactTerminalCollapseMarker} onAction={onArtifactAction} actionBusy={artifactActionBusy} loadDetail={loadArtifactDetail} loadAttempt={loadArtifactAttempt} onReturnToSource={onReturnToArtifactSource} onOpenDocumentReference={onOpenDocumentReference} />;
   if (item.kind === "message") {
     if (item.role === "tutor") {
       return <TutorMessage item={item} recentCompletion={recentCompletion?.itemId === item.id ? recentCompletion : null} />;
     }
-    return <article className="tutor-timeline-entry learner"><span className="tutor-timeline-label">你</span><div className="tutor-message-content"><p>{item.content}</p>{item.context_references.length > 0 && <TutorReferenceCards references={item.context_references} />}</div></article>;
+    return <article className="tutor-timeline-entry learner"><span className="tutor-timeline-label">你</span><div className="tutor-message-content"><p>{item.content}</p>{item.context_references.length > 0 && <TutorReferenceCards references={item.context_references} onOpenDocumentReference={onOpenDocumentReference} />}</div></article>;
   }
   if (item.kind === "error") {
     const migration = item.code === "TUTOR_LEGACY_CONTINUATION_REQUIRES_NEW_TURN";
@@ -420,7 +425,23 @@ export function TutorThinking({ messageId, text, expanded, complete, running = f
 }
 
 export function TutorReferenceDraftChips({ references, disabled, onRemove }: { references: TutorComposerReference[]; disabled: boolean; onRemove?: (referenceId: string) => void }) { return <div className="tutor-reference-drafts" aria-label="待发送结构化引用">{references.map((reference) => <span key={reference.id} data-kind={reference.draft.kind}><span aria-hidden="true">{referenceIcon(reference.draft.kind)}</span><strong>{reference.label}</strong>{onRemove ? <button type="button" disabled={disabled} aria-label={`移除引用：${reference.label}`} onClick={() => onRemove(reference.id)}>×</button> : null}</span>)}</div>; }
-export function TutorReferenceCards({ references }: { references: TutorContextReference[] }) { return <div className="tutor-reference-cards" aria-label="本条消息的结构化引用">{references.map((reference) => <article key={reference.reference_id} data-kind={reference.kind}><span aria-hidden="true">{referenceIcon(reference.kind)}</span><div><strong>{referenceTitle(reference)}</strong><small>{referenceSummary(reference)}</small></div></article>)}</div>; }
+export function TutorReferenceCards({ references, onOpenDocumentReference }: { references: TutorContextReference[]; onOpenDocumentReference?: TutorDocumentReferenceOpener }) {
+  return <div className="tutor-reference-cards" aria-label="本条消息的结构化引用">{references.map((reference) => {
+    const body = <><span aria-hidden="true">{referenceIcon(reference.kind)}</span><div><strong>{referenceTitle(reference)}</strong><small>{referenceSummary(reference)}</small></div></>;
+    if (reference.kind === "lesson_selection" && onOpenDocumentReference) {
+      return <button
+        key={reference.reference_id}
+        type="button"
+        data-kind={reference.kind}
+        onClick={(event) => onOpenDocumentReference({
+          knowledgeKey: reference.knowledge_key,
+          source: { kind: "context_reference", reference_id: reference.reference_id },
+        }, event.currentTarget)}
+      >{body}</button>;
+    }
+    return <article key={reference.reference_id} data-kind={reference.kind}>{body}</article>;
+  })}</div>;
+}
 export function referenceIcon(kind: TutorContextReference["kind"] | TutorContextReferenceDraft["kind"]): string { return { lesson_selection: "§", exercise_feedback: "✓", execution_result: "⌘", review_feedback: "↺", teaching_session_message: "↗" }[kind]; }
 export function referenceTitle(reference: TutorContextReference): string { return { lesson_selection: "课程选段", exercise_feedback: "练习反馈", execution_result: "执行结果", review_feedback: "复习反馈", teaching_session_message: "历史教学消息" }[reference.kind]; }
 export function referenceSummary(reference: TutorContextReference): string {

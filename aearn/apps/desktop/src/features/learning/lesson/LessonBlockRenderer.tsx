@@ -4,7 +4,7 @@ import type { LessonBlock, LessonExerciseGateBlock } from "../../../types";
 
 type LessonBlockRendererProps = {
   block: LessonBlock;
-  onCitation: (citationId: string) => void;
+  onCitation: (citationId: string, trigger: HTMLButtonElement) => void;
   renderExerciseGate?: (block: LessonExerciseGateBlock) => ReactNode;
 };
 
@@ -42,9 +42,9 @@ function BlockTitle({ title }: { title: string }) {
   return <h2>{title}</h2>;
 }
 
-function CitationMarkers({ citationIds, onCitation }: { citationIds: string[]; onCitation: (citationId: string) => void }) {
+function CitationMarkers({ citationIds, onCitation }: { citationIds: string[]; onCitation: (citationId: string, trigger: HTMLButtonElement) => void }) {
   if (citationIds.length === 0) return null;
-  return <div className="lesson-citations" aria-label="本段引用来源">{citationIds.map((citationId, index) => <button key={citationId} type="button" onClick={() => onCitation(citationId)} aria-label={`查看引用来源 ${index + 1}`}>[{index + 1}]</button>)}</div>;
+  return <div className="lesson-citations" aria-label="本段引用来源">{citationIds.map((citationId, index) => <button key={citationId} type="button" onClick={(event) => onCitation(citationId, event.currentTarget)} aria-label={`查看引用来源 ${index + 1}`}>[{index + 1}]</button>)}</div>;
 }
 
 function gateKindLabel(kind: "knowledge_check" | "guided_practice" | "independent_practice"): string {
