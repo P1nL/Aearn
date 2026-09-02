@@ -24,6 +24,7 @@ SCHEMA_FRAGMENT_NAMES: tuple[str, ...] = (
     '140_learning_item_governance.sql',
     '150_tutor_branch_continuation.sql',
     '160_teaching_artifact_commit.sql',
+    '170_teaching_demonstrations.sql',
 )
 
 

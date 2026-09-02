@@ -308,3 +308,8 @@ Codex 只能读取服务端权威 planning context并追加 typed draft。右侧
 3. result Artifact 展示失败优先、数字位置、其他通过数、非空 stdout/stderr 和 bounded public table。hidden case identity/input/expected、完整 submission、private test/rubric、path/stack/command/container/provider/secret 不进入 API、DOM 或评价上下文。
 4. terminal projection 先保存 result authority，但公开 timeline 等待 mainline result-evaluation Turn；Turn 完成时先追加 Tutor Markdown 评价，再追加 exact result Artifact，两项同事务发布。模型只生成教学评价，不能修改 outcome、score、test result、Artifact 或 mastery/progress。模型不可用时，Attempt/result 仍保留，服务端追加固定的安全评价；不会重跑代码。
 5. 失败 result 的“返回修改”定位同一 conversation 中 exact source Artifact version并恢复键盘焦点。多个 Run 的 result history 独立保留，source Artifact 的当前状态仍来自最新服务器 snapshot；Desktop 不合并、重算或覆盖历史结果。
+
+
+### Teaching demonstration flow
+
+The Tutor may select a published demonstration handle but cannot author or alter its code, steps, expected interaction, or duration. Interactive demonstrations complete only after the exact expected Preview event, whose current nonce/generation and continuous sequence originate from the isolated bridge rather than a forged parent message or synthetic click. Static demonstrations complete after uninterrupted accumulated eligible visible time; hiding, backgrounding, or navigating away pauses the clock, and closing before completion resets it. A learner message preempts any automatic continuation. Demonstrations never count as an Attempt or mastery/progress evidence.

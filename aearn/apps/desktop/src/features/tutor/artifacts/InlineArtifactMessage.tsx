@@ -35,6 +35,7 @@ const ACTION_LABELS: Record<TutorArtifactAction, string> = {
   complete_review: "完成审查",
   cancel: "取消",
   acknowledge_demo_event: "我已完成互动",
+  complete_demo: "完成演示",
 };
 
 const STATE_LABELS: Record<TutorPublicArtifactItem["state"], string> = {
@@ -81,9 +82,12 @@ export function InlineArtifactMessage({
   const renderer = artifactRendererFor(renderedArtifact.presentation.type);
   const rendererOwnsResultSummary = renderedArtifact.presentation.type === "test_result_v1"
     && renderedArtifact.presentation.status === "terminal";
-  const renderedActions = renderedArtifact.presentation.type === "exercise_workspace_v1"
-    ? artifact.allowed_actions.filter((action) => action !== "run")
-    : artifact.allowed_actions;
+  const rendererOwnedActions = renderedArtifact.presentation.type === "exercise_workspace_v1"
+    ? new Set<TutorArtifactAction>(["run"])
+    : renderedArtifact.presentation.type === "demonstration_v2"
+      ? new Set<TutorArtifactAction>(["complete_demo", "acknowledge_demo_event"])
+      : new Set<TutorArtifactAction>();
+  const renderedActions = artifact.allowed_actions.filter((action) => !rendererOwnedActions.has(action));
 
   useEffect(() => {
     let next = readArtifactUiState(artifact, autoReveal || !terminal);

@@ -33,7 +33,7 @@ export type PreviewHostEvent = {
     | { kind: "ready" }
     | { kind: "console"; level: "log" | "info" | "warn" | "error"; message: string }
     | { kind: "runtime_error"; message: string }
-    | { kind: "interaction_event"; event_key: string };
+    | { kind: "interaction_event"; event_key: string; payload_json: Readonly<Record<string, unknown>> };
 };
 
 export type PreviewHostApi = {
@@ -140,8 +140,9 @@ export function parsePreviewHostEvent(value: unknown): PreviewHostEvent | null {
   if (event.kind === "runtime_error" && hasExactKeys(event, ["kind", "message"]) && isBoundedString(event.message, 1_024)) {
     return { ...descriptor, sequence: value.sequence, event: { kind: "runtime_error", message: event.message } };
   }
-  if (event.kind === "interaction_event" && hasExactKeys(event, ["kind", "event_key"]) && isIdentifier(event.event_key)) {
-    return { ...descriptor, sequence: value.sequence, event: { kind: "interaction_event", event_key: event.event_key } };
+  if (event.kind === "interaction_event" && hasExactKeys(event, ["kind", "event_key", "payload_json"]) &&
+      isIdentifier(event.event_key) && isSafeJsonObject(event.payload_json)) {
+    return { ...descriptor, sequence: value.sequence, event: { kind: "interaction_event", event_key: event.event_key, payload_json: event.payload_json } };
   }
   return null;
 }
@@ -183,4 +184,26 @@ function isPositiveSafeInteger(value: unknown): value is number {
 
 function isBoundedString(value: unknown, maximum: number): value is string {
   return typeof value === "string" && value.length > 0 && Array.from(value).length <= maximum;
+}
+
+function isSafeJsonObject(value: unknown): value is Readonly<Record<string, unknown>> {
+  if (!isRecord(value) || !isSafeJsonValue(value, 0)) return false;
+  try {
+    return new TextEncoder().encode(JSON.stringify(value)).byteLength <= 2_048;
+  } catch {
+    return false;
+  }
+}
+
+function isSafeJsonValue(value: unknown, depth: number): boolean {
+  if (depth > 6) return false;
+  if (value === null || typeof value === "boolean" || typeof value === "string") return true;
+  if (typeof value === "number") return Number.isFinite(value) && Math.abs(value) <= Number.MAX_SAFE_INTEGER;
+  if (Array.isArray(value)) return value.length <= 64 && value.every((item) => isSafeJsonValue(item, depth + 1));
+  if (!isRecord(value)) return false;
+  const entries = Object.entries(value);
+  return entries.length <= 64 && entries.every(([key, item]) =>
+    new TextEncoder().encode(key).byteLength >= 1
+    && new TextEncoder().encode(key).byteLength <= 160
+    && isSafeJsonValue(item, depth + 1));
 }

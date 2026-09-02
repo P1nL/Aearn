@@ -905,10 +905,18 @@ BEGIN
     IF artifact_row.id IS NULL OR session_row.id IS NULL
        OR artifact_row.version <> NEW.artifact_version
        OR (
-         NEW.source_kind IN (
-           'learner_message', 'static_display_timer', 'background_continuation'
+         artifact_row.state IN ('completed', 'failed', 'cancelled', 'superseded')
+         AND (
+           NEW.source_kind IN ('learner_message', 'background_continuation')
+           OR (
+             NEW.source_kind IN ('expected_interactive_event', 'static_display_timer')
+             AND NOT tutor_demo_completion_continuation_valid(
+               NEW.artifact_id, NEW.user_id, NEW.conversation_id,
+               NEW.source_kind, NEW.source_id, NEW.source_version,
+               NEW.artifact_version
+             )
+           )
          )
-         AND artifact_row.state IN ('completed', 'failed', 'cancelled', 'superseded')
        )
        OR session_row.status NOT IN ('active', 'paused')
        OR session_row.version < NEW.session_version

@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 
 import type { TutorPublicArtifactItem } from "../../../types";
 import { Button } from "../../../ui/dsh-derived";
@@ -46,6 +46,8 @@ export function BrowserPreviewSurface({
   source,
   enabled,
   ariaLabel = "浏览器预览",
+  onInteractionEvent,
+  onReadyChange,
 }: {
   artifactId: string;
   sourceArtifactId: string;
@@ -55,14 +57,29 @@ export function BrowserPreviewSurface({
   source: string;
   enabled: boolean;
   ariaLabel?: string;
+  onInteractionEvent?: (event: NonNullable<ReturnType<typeof useBrowserPreviewHost>["interactionEvent"]>) => void;
+  onReadyChange?: (ready: boolean) => void;
 }) {
   const viewportRef = useRef<HTMLDivElement | null>(null);
+  const forwardedInteractionRef = useRef<string | null>(null);
   const preview = useBrowserPreviewHost({
     enabled,
     scope: { artifactId, sourceArtifactId, sessionId, artifactVersion, languageId },
     source,
     containerRef: viewportRef,
   });
+  useEffect(() => { onReadyChange?.(preview.status === "ready"); }, [onReadyChange, preview.status]);
+  useEffect(() => {
+    const event = preview.interactionEvent;
+    if (!event) {
+      forwardedInteractionRef.current = null;
+      return;
+    }
+    const identity = [event.nonce, event.generation, event.sequence].join(":");
+    if (forwardedInteractionRef.current === identity) return;
+    forwardedInteractionRef.current = identity;
+    onInteractionEvent?.(event);
+  }, [onInteractionEvent, preview.interactionEvent]);
 
   return <section className={`browser-preview-artifact status-${preview.status}`} aria-label={ariaLabel}>
     <header className="browser-preview-toolbar">
@@ -79,7 +96,7 @@ export function BrowserPreviewSurface({
       <summary>Console · {preview.consoleItems.length}</summary>
       <ol>{preview.consoleItems.map((item) => <li key={item.id} data-level={item.level}><span>{item.level}</span><code>{item.message}</code></li>)}</ol>
     </details> : null}
-    {preview.interactionEventKey ? <span className="browser-preview-interaction" role="status">互动事件：{preview.interactionEventKey}</span> : null}
+    {preview.interactionEvent ? <span className="browser-preview-interaction" role="status">互动事件：{preview.interactionEvent.eventKey}</span> : null}
   </section>;
 }
 

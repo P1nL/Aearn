@@ -196,7 +196,7 @@ export type TutorArtifactPurpose =
 
 export type TutorArtifactOwnerKind = "lesson_gate" | "review_item" | "teaching_practice" | "learning_item";
 export type TutorArtifactState = "pending" | "ready" | "active" | "running" | "completed" | "failed" | "cancelled" | "superseded";
-export type TutorArtifactActionKind = "request_hint" | "run" | "respond" | "complete_review" | "cancel" | "acknowledge_demo_event";
+export type TutorArtifactActionKind = "request_hint" | "run" | "respond" | "complete_review" | "cancel" | "acknowledge_demo_event" | "complete_demo";
 export type TutorArtifactDifficulty = "D1" | "D2" | "D3" | "D4" | "D5";
 export type TutorArtifactOutcome = "passed" | "failed" | "timed_out" | "cancelled" | "unavailable" | "invalid";
 export type TutorBranchResponseDisposition = "answer_and_refocus" | "offer_switch" | "confirmed_switch";
@@ -319,6 +319,33 @@ export type TutorArtifactDemonstrationPresentation = {
   duration_seconds: number | null;
 };
 
+export type TutorArtifactDemonstrationEventV2 = {
+  event_key: string;
+  payload_json: Readonly<Record<string, unknown>>;
+  payload_hash: string;
+};
+
+export type TutorArtifactDemonstrationStepV2 = {
+  step_key: string;
+  title: string;
+  instruction_markdown: string;
+  source_content: string;
+  source_content_hash: string;
+  duration_seconds: number | null;
+};
+
+export type TutorArtifactDemonstrationPresentationV2 = {
+  type: "demonstration_v2";
+  descriptor_version: "demonstration_descriptor_v1";
+  demonstration_mode: "interactive" | "static";
+  source_version: string;
+  language_id: string;
+  steps: TutorArtifactDemonstrationStepV2[];
+  expected_event: TutorArtifactDemonstrationEventV2 | null;
+  total_duration_seconds: number | null;
+  completion_policy_version: "demonstration_completion_policy_v1";
+};
+
 export type TutorArtifactSourceInspectorPresentation = {
   type: "source_inspector_v1";
   document_id: string;
@@ -336,6 +363,7 @@ export type TutorArtifactPresentation =
   | TutorArtifactModelCodeReviewPresentation
   | TutorArtifactSqlWorkspacePresentation
   | TutorArtifactDemonstrationPresentation
+  | TutorArtifactDemonstrationPresentationV2
   | TutorArtifactSourceInspectorPresentation;
 
 export type TutorArtifactSourceReference = {
@@ -471,7 +499,13 @@ export type TutorArtifactAction =
   | { action: "respond"; response: TutorArtifactResponse }
   | { action: "complete_review"; review_submission: ModelCodeReviewSubmission }
   | { action: "cancel"; reason: "learner_cancelled" }
-  | { action: "acknowledge_demo_event"; event_key: string; event_nonce: string };
+  | { action: "acknowledge_demo_event"; event_key: string; event_nonce: string }
+  | {
+      action: "complete_demo";
+      evidence:
+        | { kind: "interactive_event"; event_key: string; payload_json: Readonly<Record<string, unknown>>; payload_hash: string; preview_nonce: string; preview_generation: number; preview_sequence: number }
+        | { kind: "visible_clock"; clock_session_id: string; visible_elapsed_ms: number; foreground: true; current: true; visible: true; render_ready: true };
+    };
 
 export type TutorArtifactActionResponse = {
   artifact: TutorPublicArtifactItem;

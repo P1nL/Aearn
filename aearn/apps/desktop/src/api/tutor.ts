@@ -1306,6 +1306,31 @@ function toTutorArtifactPresentation(payload: unknown): TutorArtifactPresentatio
       source_content: payload.source_content, source_content_hash: payload.source_content_hash,
       expected_event_key: payload.expected_event_key, duration_seconds: payload.duration_seconds };
   }
+  if (payload.type === "demonstration_v2" && hasExactKeys(payload, [
+    "type", "descriptor_version", "demonstration_mode", "source_version", "language_id", "steps",
+    "expected_event", "total_duration_seconds", "completion_policy_version",
+  ]) && payload.descriptor_version === "demonstration_descriptor_v1" &&
+      (payload.demonstration_mode === "interactive" || payload.demonstration_mode === "static") &&
+      isArtifactStableKey(payload.source_version) && isArtifactStableKey(payload.language_id) &&
+      payload.completion_policy_version === "demonstration_completion_policy_v1" && Array.isArray(payload.steps) &&
+      payload.steps.length >= 1 && payload.steps.length <= 8) {
+    const steps = payload.steps.map(toTutorDemonstrationStep);
+    if (steps.some((step) => step === null)) return null;
+    const safeSteps = steps.filter((step): step is NonNullable<typeof step> => step !== null);
+    const expected = payload.expected_event === null ? null : toTutorDemonstrationEvent(payload.expected_event);
+    if (payload.expected_event !== null && expected === null) return null;
+    const total = payload.total_duration_seconds;
+    if (total !== null && !isArtifactIntegerInRange(total, 6, 240)) return null;
+    const durations = safeSteps.map((step) => step.duration_seconds);
+    if (payload.demonstration_mode === "interactive") {
+      if (safeSteps.length !== 1 || expected === null || total !== null || durations.some((value) => value !== null)) return null;
+    } else if (expected !== null || total === null || durations.some((value) => value === null) ||
+        durations.reduce<number>((sum, value) => sum + (value ?? 0), 0) !== total) return null;
+    return { type: "demonstration_v2", descriptor_version: "demonstration_descriptor_v1",
+      demonstration_mode: payload.demonstration_mode, source_version: payload.source_version, language_id: payload.language_id,
+      steps: safeSteps, expected_event: expected, total_duration_seconds: total,
+      completion_policy_version: "demonstration_completion_policy_v1" };
+  }
   if (payload.type === "source_inspector_v1" && hasExactKeys(payload, [
     "type", "document_id", "document_content_hash", "block_id", "excerpt", "citation_ids",
   ]) && isArtifactBoundedString(payload.document_id, 160) && isSha256(payload.document_content_hash) &&
@@ -1317,6 +1342,51 @@ function toTutorArtifactPresentation(payload: unknown): TutorArtifactPresentatio
       excerpt: payload.excerpt, citation_ids: citationIds };
   }
   return null;
+}
+
+function toTutorDemonstrationStep(value: unknown) {
+  if (!isRecord(value) || !hasExactKeys(value, ["step_key", "title", "instruction_markdown", "source_content", "source_content_hash", "duration_seconds"]) ||
+      !isArtifactStableKey(value.step_key) || !isArtifactBoundedString(value.title, 160) ||
+      !isArtifactBoundedString(value.instruction_markdown, 2_000) || !isArtifactBoundedString(value.source_content, 12_000) ||
+      !isSha256(value.source_content_hash) || sha256Text(value.source_content) !== value.source_content_hash ||
+      (value.duration_seconds !== null && !isArtifactIntegerInRange(value.duration_seconds, 6, 30))) return null;
+  return { step_key: value.step_key, title: value.title, instruction_markdown: value.instruction_markdown,
+    source_content: value.source_content, source_content_hash: value.source_content_hash, duration_seconds: value.duration_seconds };
+}
+
+function toTutorDemonstrationEvent(value: unknown) {
+  if (!isRecord(value) || !hasExactKeys(value, ["event_key", "payload_json", "payload_hash"]) ||
+      !isArtifactStableKey(value.event_key) || !isSafeArtifactDemoPayload(value.payload_json) || !isSha256(value.payload_hash) ||
+      sha256Text(canonicalJson(value.payload_json)) !== value.payload_hash) return null;
+  return { event_key: value.event_key, payload_json: value.payload_json, payload_hash: value.payload_hash };
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (isRecord(value)) return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+  return JSON.stringify(value);
+}
+
+function isSafeArtifactDemoPayload(value: unknown): value is Readonly<Record<string, unknown>> {
+  if (!isRecord(value) || !isSafeArtifactDemoJsonValue(value, 0)) return false;
+  try {
+    return new TextEncoder().encode(canonicalJson(value)).byteLength <= 2_048;
+  } catch {
+    return false;
+  }
+}
+
+function isSafeArtifactDemoJsonValue(value: unknown, depth: number): boolean {
+  if (depth > 6) return false;
+  if (value === null || typeof value === "boolean" || typeof value === "string") return true;
+  if (typeof value === "number") return Number.isFinite(value) && Math.abs(value) <= Number.MAX_SAFE_INTEGER;
+  if (Array.isArray(value)) return value.length <= 64 && value.every((item) => isSafeArtifactDemoJsonValue(item, depth + 1));
+  if (!isRecord(value)) return false;
+  const entries = Object.entries(value);
+  return entries.length <= 64 && entries.every(([key, item]) =>
+    new TextEncoder().encode(key).byteLength >= 1
+    && new TextEncoder().encode(key).byteLength <= 160
+    && isSafeArtifactDemoJsonValue(item, depth + 1));
 }
 
 function toTutorArtifactOptions(payload: unknown): Array<{ value: string; label: string }> | null {
@@ -2257,7 +2327,7 @@ function isTutorArtifactDifficulty(value: unknown): value is TutorArtifactDiffic
 
 function isTutorArtifactActionKind(value: unknown): value is TutorArtifactActionKind {
   return value === "request_hint" || value === "run" || value === "respond" || value === "complete_review" ||
-    value === "cancel" || value === "acknowledge_demo_event";
+    value === "cancel" || value === "acknowledge_demo_event" || value === "complete_demo";
 }
 
 function isTutorArtifactOutcome(value: unknown): value is TutorArtifactOutcome {
@@ -2333,7 +2403,7 @@ function doesTutorArtifactKindMatchPresentation(kind: TutorArtifactKind, present
     (kind === "knowledge_check" && presentation === "knowledge_check_v1") ||
     (kind === "model_code_review" && presentation === "model_code_review_v1") ||
     (kind === "sql_workspace" && presentation === "sql_workspace_v1") ||
-    (kind === "demonstration" && presentation === "demonstration_v1") ||
+    (kind === "demonstration" && (presentation === "demonstration_v1" || presentation === "demonstration_v2")) ||
     (kind === "source_inspector" && presentation === "source_inspector_v1");
 }
 

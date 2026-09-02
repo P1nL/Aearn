@@ -12,7 +12,6 @@ from pydantic import ValidationError
 from app.core.config import Settings
 from app.services.learning.artifacts.contracts import (
     TutorArtifactActionKind,
-    TutorArtifactDemonstrationPresentationV1,
     TutorArtifactDifficulty,
     TutorArtifactExerciseWorkspacePresentationV1,
     TutorArtifactKind,
@@ -29,6 +28,7 @@ from app.services.learning.artifacts.contracts import (
     normalize_newlines,
     sha256_text,
 )
+from app.services.learning.artifacts.demonstrations import build_demonstration_presentation
 from app.services.learning.artifacts.conversation_events import (
     ArtifactConversationEventError,
     PostgresTutorArtifactConversationEventSink,
@@ -41,6 +41,7 @@ from app.services.learning.artifacts.repository import (
 from app.services.learning.item_bank.contracts import (
     LearningItemCodeContentV1,
     LearningItemDemoContentV1,
+    LearningItemDemoContentV2,
     LearningItemInteraction,
     LearningItemKnowledgeCheckContentV1,
     LearningItemModelReviewContentV1,
@@ -367,7 +368,10 @@ class PostgresTeachingArtifactMaterializer:
                 "Learning Item runtime profile is unavailable or ambiguous"
             )
         runtime = runtime_rows[0]
-        if isinstance(public.content, LearningItemDemoContentV1):
+        if isinstance(
+            public.content,
+            (LearningItemDemoContentV1, LearningItemDemoContentV2),
+        ):
             if (
                 str(runtime.get("runner") or "") != "browser"
                 or not bool(runtime.get("supports_realtime_preview"))
@@ -402,7 +406,10 @@ class PostgresTeachingArtifactMaterializer:
         row: Mapping[str, object],
         public: LearningItemPublicV1,
     ) -> str | None:
-        if isinstance(public.content, LearningItemDemoContentV1):
+        if isinstance(
+            public.content,
+            (LearningItemDemoContentV1, LearningItemDemoContentV2),
+        ):
             if row.get("materialization_id") is not None:
                 raise TeachingArtifactCommitError(
                     "demonstration Learning Item must remain its own authority"
@@ -498,22 +505,11 @@ def _artifact_presentation(
             schema_markdown=content.schema_markdown,
             max_rows=content.max_rows,
         )
-    if isinstance(content, LearningItemDemoContentV1):
-        return TutorArtifactDemonstrationPresentationV1(
-            demonstration_mode=(
-                "interactive"
-                if content.completion_mode == "exact_event"
-                else "static"
-            ),
-            language_id=content.language_id,
-            source_content=content.source_code,
-            source_content_hash=sha256_text(content.source_code),
-            expected_event_key=(
-                content.expected_event.event_name
-                if content.expected_event is not None
-                else None
-            ),
-            duration_seconds=content.duration_seconds,
+    if isinstance(content, (LearningItemDemoContentV1, LearningItemDemoContentV2)):
+        return build_demonstration_presentation(
+            content=content,
+            item_version=public.version,
+            instruction_markdown=public.instruction_markdown,
         )
     if isinstance(content, LearningItemKnowledgeCheckContentV1):
         response_kind = {
@@ -555,15 +551,17 @@ def _allowed_artifact_actions(
     actions: list[TutorArtifactActionKind] = []
     if public.hints:
         actions.append(TutorArtifactActionKind.REQUEST_HINT)
-    actions.append(
-        {
-            "code": TutorArtifactActionKind.RUN,
-            "sql": TutorArtifactActionKind.RUN,
-            "demo": TutorArtifactActionKind.ACKNOWLEDGE_DEMO_EVENT,
-            "knowledge_check": TutorArtifactActionKind.RESPOND,
-            "model_review": TutorArtifactActionKind.COMPLETE_REVIEW,
-        }[public.kind.value]
-    )
+    if isinstance(public.content, LearningItemDemoContentV2):
+        actions.append(TutorArtifactActionKind.COMPLETE_DEMO)
+    elif not isinstance(public.content, LearningItemDemoContentV1):
+        actions.append(
+            {
+                "code": TutorArtifactActionKind.RUN,
+                "sql": TutorArtifactActionKind.RUN,
+                "knowledge_check": TutorArtifactActionKind.RESPOND,
+                "model_review": TutorArtifactActionKind.COMPLETE_REVIEW,
+            }[public.kind.value]
+        )
     actions.append(TutorArtifactActionKind.CANCEL)
     return tuple(actions)
 

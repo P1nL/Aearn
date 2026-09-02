@@ -14,7 +14,9 @@ from app.services.learning.item_bank.contracts import (
     LearningItemCodeContentV1,
     LearningItemCodePrivateV1,
     LearningItemDemoContentV1,
+    LearningItemDemoContentV2,
     LearningItemDemoPrivateV1,
+    LearningItemDemoPrivateV2,
     LearningItemKnowledgeCheckContentV1,
     LearningItemKnowledgeCheckPrivateV1,
     LearningItemKind,
@@ -372,6 +374,17 @@ def _runtime_or_event(source: LearningItemSourceV1) -> _Outcome:
         elif private.expected_events or public.duration_seconds is None:
             return _bad("demo_duration_contract_mismatch")
         return _ok({"completion_mode": public.completion_mode})
+    if isinstance(public, LearningItemDemoContentV2) and isinstance(private, LearningItemDemoPrivateV2):
+        if source.blueprint.runtime_profile_id != "browser_preview":
+            return _bad("runtime_profile_mismatch")
+        if public.completion_mode == "exact_event":
+            if public.expected_event is None or private.expected_events != (public.expected_event,):
+                return _bad("demo_event_contract_mismatch")
+        elif private.expected_events:
+            return _bad("demo_duration_contract_mismatch")
+        if public.completion_mode == "exact_event" and len(public.steps[0].source_code) > 12_000:
+            return _bad("demo_step_source_too_large")
+        return _ok({"completion_mode": public.completion_mode, "step_count": len(public.steps)})
     return _na(source.public.kind)
 
 

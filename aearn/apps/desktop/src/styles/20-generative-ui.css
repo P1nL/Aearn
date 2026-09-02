@@ -944,3 +944,16 @@
     white-space: normal;
   }
 }
+
+
+/* Published teaching demonstrations */
+.demonstration-artifact { display: grid; gap: 12px; }
+.demonstration-steps, .demonstration-step { display: grid; gap: 10px; }
+.demonstration-step > header { display: flex; justify-content: space-between; gap: 12px; color: var(--ink); }
+.demonstration-step > header span { color: var(--muted); font-size: 12px; }
+.demonstration-code { max-height: 280px; margin: 0; padding: 14px; overflow: auto; border: 1px solid var(--line); border-radius: var(--radius-md); background: #1d2027; color: #f4f1e8; font: 12px/1.65 "Cascadia Code", Consolas, monospace; white-space: pre-wrap; }
+.demonstration-progress { height: 3px; overflow: hidden; border-radius: 999px; background: var(--line-soft); }
+.demonstration-progress > span { display: block; height: 100%; background: var(--accent); transition: width .12s linear; }
+.demonstration-completing { color: var(--muted); font-size: 12px; }
+@media (min-width: 900px) { .demonstration-artifact.mode-interactive .demonstration-step { grid-template-columns: minmax(0, 1fr) minmax(320px, .9fr); align-items: start; } .demonstration-artifact.mode-interactive .demonstration-step > header, .demonstration-artifact.mode-interactive .demonstration-step > .safe-markdown { grid-column: 1 / -1; } }
+@media (prefers-reduced-motion: reduce) { .demonstration-progress > span { transition: none; } }

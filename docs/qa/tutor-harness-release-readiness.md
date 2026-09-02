@@ -406,4 +406,15 @@ Trellis Child `08-22-harness-closed-teaching-action-loop` 已在本地 PostgreSQ
 - native smoke发现并修复两项自动化未覆盖问题：Windows CustomProtocol实际回调带默认 HTTPS port，allowlist现允许协议默认端口但拒绝非默认端口/userinfo/fragment；无限循环后复用同一 WebView2 data directory无法可靠恢复，recreate现轮换 generation directory。最终 hang序列为 `ready -> creating -> recreating -> creating -> error`，只自动重建一次并显示 `PREVIEW_HOST_UNRESPONSIVE`，main draft/focus保持；切回安全 source最终恢复 `ready`、console `safe:ready` 与 interaction `native.recovered`；
 - 临时 `main.tsx` 修改、fixture、backup与 native进程均已清理，1420/9333端口关闭；Child Trellis validate 与 `git diff --check` 通过。
 
+## 2026-09-02：Teaching Demonstration Artifact Child06 本地证据
+
+本增量只从 published `demo_v2` handle 物化静态/交互演示；模型不能修改 source、步骤、expected event 或 duration。交互完成要求 current isolated Preview 的 exact event key、canonical bounded JSON payload、nonce/generation/continuous sequence；静态完成仅累计 foreground/current/60%-visible/render-ready 的内存 visible clock。一个 append-only completion receipt 绑定一条 completion/continuation lineage，重复请求幂等、冲突证据 fail closed；演示不创建 Attempt、mastery 或 progress。Desktop 以只读代码、3px progress 和 reduced-motion discrete progress 呈现，interactive source 仍只在 Child04 native Preview 内运行。
+
+验证证据：
+
+- focused PostgreSQL/API 25 passed，覆盖 `complete_demo -> receipt -> continuation -> replay/conflict`、bootstrap twice、append-only、cutover/export/reset/delete、priority；full API（排除 `real_provider`）**837 passed, 2 deselected**；Ruff、Mypy（242 source files）、compileall 通过；
+- Desktop **18 files / 132 tests passed**，`desktop:check` 通过（Vite **131 modules transformed**）；覆盖 visibility/focus/IntersectionObserver/render-ready/remount/reduced-motion、read-only、exact bridge payload、replay/gap/spoof 和 renderer rerender；
+- Rust Preview host **9 passed**，fmt/check/clippy 通过；`task.py validate`、`git diff --check` 通过；
+- 未运行真实 provider/executor、Docker conformance、生产 image build/sign/publish、Tauri installer、push、deploy或生产迁移。本记录不构成 production sandbox认证或 release批准。
+
 本轮未调用真实 provider/executor，未运行 Docker conformance、生产 image build/sign/publish、Tauri installer、push、deploy或生产迁移；本记录不构成 production sandbox认证或 release批准。

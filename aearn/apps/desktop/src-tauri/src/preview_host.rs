@@ -10,6 +10,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use tauri::{
     http::{header, Request, Response, StatusCode},
@@ -24,6 +25,7 @@ const PREVIEW_SCHEME: &str = "aearn-preview";
 const MAX_SOURCE_CHARS: usize = 48_000;
 const MAX_MESSAGE_CHARS: usize = 1_024;
 const MAX_EVENT_KEY_CHARS: usize = 160;
+const MAX_EVENT_PAYLOAD_BYTES: usize = 2_048;
 const MAX_TITLE_BYTES: usize = 8_192;
 
 #[derive(Default)]
@@ -140,6 +142,7 @@ enum PreviewBridgeEvent {
     },
     InteractionEvent {
         event_key: String,
+        payload_json: Map<String, Value>,
     },
 }
 
@@ -240,7 +243,7 @@ impl PreviewHostManager {
             || envelope.artifact_version != record.scope.artifact_version
             || envelope.generation != record.generation
             || envelope.sequence == 0
-            || envelope.sequence <= record.last_event_sequence
+            || envelope.sequence != record.last_event_sequence.saturating_add(1)
             || !validate_bridge_event(&envelope.event)
         {
             return None;
@@ -588,10 +591,37 @@ fn validate_bridge_event(event: &PreviewBridgeEvent) -> bool {
         | PreviewBridgeEvent::RuntimeError { message } => {
             !message.is_empty() && message.chars().count() <= MAX_MESSAGE_CHARS
         }
-        PreviewBridgeEvent::InteractionEvent { event_key } => {
+        PreviewBridgeEvent::InteractionEvent {
+            event_key,
+            payload_json,
+        } => {
             !event_key.is_empty()
                 && event_key.chars().count() <= MAX_EVENT_KEY_CHARS
                 && valid_identifier(event_key)
+                && serde_json::to_vec(payload_json)
+                    .is_ok_and(|value| value.len() <= MAX_EVENT_PAYLOAD_BYTES)
+                && safe_json_value(&Value::Object(payload_json.clone()), 0)
+        }
+    }
+}
+
+fn safe_json_value(value: &Value, depth: usize) -> bool {
+    if depth > 6 {
+        return false;
+    }
+    match value {
+        Value::Null | Value::Bool(_) | Value::String(_) => true,
+        Value::Number(number) => number
+            .as_f64()
+            .is_some_and(|number| number.is_finite() && number.abs() <= 9_007_199_254_740_991.0),
+        Value::Array(items) => {
+            items.len() <= 64 && items.iter().all(|item| safe_json_value(item, depth + 1))
+        }
+        Value::Object(items) => {
+            items.len() <= 64
+                && items.iter().all(|(key, item)| {
+                    !key.is_empty() && key.len() <= 160 && safe_json_value(item, depth + 1)
+                })
         }
     }
 }
@@ -769,7 +799,13 @@ const PREVIEW_HOST_TEMPLATE: &str = r####"<!doctype html>
           return serialized === undefined ? String(value) : serialized;
         } catch { return String(value); }
       };
-      const report = (event) => parent.postMessage({ __aearnPreview: true, event }, '*');
+      const cryptoApi = globalThis.crypto;
+      if (!cryptoApi || typeof cryptoApi.getRandomValues !== 'function') return;
+      const tokenBytes = new Uint8Array(16);
+      cryptoApi.getRandomValues(tokenBytes);
+      const bridgeToken = Array.from(tokenBytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+      const postToParent = parent.postMessage.bind(parent);
+      const report = (event) => postToParent({ __aearnPreview: true, bridge_token: bridgeToken, event }, '*');
       report({ kind: 'ready' });
       setInterval(() => report({ kind: 'ready' }), 750);
       for (const level of ['log', 'info', 'warn', 'error']) {
@@ -782,9 +818,16 @@ const PREVIEW_HOST_TEMPLATE: &str = r####"<!doctype html>
       addEventListener('error', (event) => report({ kind: 'runtime_error', message: trim(event.message || 'Runtime error', 1024) }));
       addEventListener('unhandledrejection', (event) => report({ kind: 'runtime_error', message: trim(stringify(event.reason) || 'Unhandled rejection', 1024) }));
       addEventListener('click', (event) => {
+        if (!event.isTrusted) return;
         const target = event.target instanceof Element ? event.target.closest('[data-aearn-event]') : null;
         const eventKey = target?.getAttribute('data-aearn-event') || '';
-        if (/^[A-Za-z0-9_.:-]{1,160}$/.test(eventKey)) report({ kind: 'interaction_event', event_key: eventKey });
+        const payloadText = target?.getAttribute('data-aearn-event-payload') || '{}';
+        try {
+          const payload = JSON.parse(payloadText);
+          if (/^[A-Za-z0-9_.:-]{1,160}$/.test(eventKey) && payload && typeof payload === 'object' && !Array.isArray(payload) && JSON.stringify(payload).length <= 2048) {
+            report({ kind: 'interaction_event', event_key: eventKey, payload_json: payload });
+          }
+        } catch {}
       }, true);
     })();`;
     const instrumentTag = '<script>' + instrumentation + '<' + '/script>';
@@ -799,18 +842,26 @@ const PREVIEW_HOST_TEMPLATE: &str = r####"<!doctype html>
     } else {
       documentSource = instrumentTag + learnerSource;
     }
+    let bridgeToken = null;
+    const isBridgeToken = (value) => typeof value === 'string' && /^[a-f0-9]{32}$/.test(value);
     addEventListener('message', (message) => {
-      if (message.source !== frame.contentWindow || !message.data || message.data.__aearnPreview !== true) return;
+      if (message.source !== frame.contentWindow || !message.data || message.data.__aearnPreview !== true ||
+          Object.keys(message.data).length !== 3 || !isBridgeToken(message.data.bridge_token)) return;
       const event = message.data.event;
+      const token = message.data.bridge_token;
       if (!event || typeof event.kind !== 'string') return;
       if (event.kind === 'ready' && Object.keys(event).length === 1) {
+        if (bridgeToken !== null && bridgeToken !== token) return;
+        bridgeToken = token;
         emit({ kind: 'ready' });
+      } else if (bridgeToken === null || bridgeToken !== token) {
+        return;
       } else if (event.kind === 'console' && ['log', 'info', 'warn', 'error'].includes(event.level) && typeof event.message === 'string') {
         emit({ kind: 'console', level: event.level, message: trim(event.message, 1024) || '(empty)' });
       } else if (event.kind === 'runtime_error' && typeof event.message === 'string') {
         emit({ kind: 'runtime_error', message: trim(event.message, 1024) || 'Runtime error' });
-      } else if (event.kind === 'interaction_event' && typeof event.event_key === 'string' && /^[A-Za-z0-9_.:-]{1,160}$/.test(event.event_key)) {
-        emit({ kind: 'interaction_event', event_key: event.event_key });
+      } else if (event.kind === 'interaction_event' && typeof event.event_key === 'string' && /^[A-Za-z0-9_.:-]{1,160}$/.test(event.event_key) && event.payload_json && typeof event.payload_json === 'object' && !Array.isArray(event.payload_json) && JSON.stringify(event.payload_json).length <= 2048) {
+        emit({ kind: 'interaction_event', event_key: event.event_key, payload_json: event.payload_json });
       }
     });
     frame.srcdoc = documentSource;
@@ -949,6 +1000,9 @@ mod tests {
         let html = build_preview_host_html("host-1", &record());
         assert!(html.contains("frame.srcdoc = documentSource"));
         assert!(html.contains("setInterval(() => report({ kind: 'ready' }), 750)"));
+        assert!(html.contains("bridge_token: bridgeToken"));
+        assert!(html.contains("if (!event.isTrusted) return;"));
+        assert!(html.contains("bridgeToken === null"));
         assert!(!html.contains("setInterval(() => emit({ kind: 'ready' }), 750)"));
         assert!(!html.contains("Worker("));
     }
@@ -1028,8 +1082,30 @@ mod tests {
                 .is_none());
         }
 
+        let mut gap = valid.clone();
+        gap["sequence"] = serde_json::Value::Number(3.into());
+        gap["event"] = serde_json::json!({
+            "kind": "interaction_event",
+            "event_key": "demo.click.completed",
+            "payload_json": {"count": 1}
+        });
+        assert!(manager
+            .accept_title_event("host-1", &format!("{PREVIEW_EVENT_PREFIX}{gap}"))
+            .is_none());
+
+        let mut interaction = valid.clone();
+        interaction["sequence"] = serde_json::Value::Number(2.into());
+        interaction["event"] = serde_json::json!({
+            "kind": "interaction_event",
+            "event_key": "demo.click.completed",
+            "payload_json": {"count": 1}
+        });
+        assert!(manager
+            .accept_title_event("host-1", &format!("{PREVIEW_EVENT_PREFIX}{interaction}"))
+            .is_some());
+
         let mut oversized = valid;
-        oversized["sequence"] = serde_json::Value::Number(2.into());
+        oversized["sequence"] = serde_json::Value::Number(3.into());
         oversized["event"] = serde_json::json!({
             "kind": "runtime_error",
             "message": "x".repeat(MAX_MESSAGE_CHARS + 1)
@@ -1046,7 +1122,7 @@ mod tests {
             "sessionId": "session-1",
             "artifactVersion": 3,
             "generation": 1,
-            "sequence": 2,
+            "sequence": 3,
             "event": {"kind": "ready"},
             "extra": true
         });

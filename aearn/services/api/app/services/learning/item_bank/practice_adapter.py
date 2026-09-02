@@ -8,6 +8,7 @@ from app.services.learning.item_bank.contracts import (
     LearningItemCodeContentV1,
     LearningItemCodePrivateV1,
     LearningItemDemoContentV1,
+    LearningItemDemoContentV2,
     LearningItemKnowledgeCheckContentV1,
     LearningItemKnowledgeCheckPrivateV1,
     LearningItemModelReviewContentV1,
@@ -54,7 +55,7 @@ def build_exercise_authority(
     content = public.content
     private_content = private.content
 
-    if isinstance(content, LearningItemDemoContentV1):
+    if isinstance(content, (LearningItemDemoContentV1, LearningItemDemoContentV2)):
         return None
 
     exercise_type: ExerciseType
