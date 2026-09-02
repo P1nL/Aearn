@@ -745,3 +745,8 @@ The Desktop action facade sends only the exact server-advertised action plus ver
 Artifact `run` action 只在 terminal projection 完成后产生 result-evaluation continuation；pending Run 不再提前创建普通 Artifact continuation。terminal projection 会先保存 result Artifact authority，但在评价 Turn 完成前不把该 Artifact 加入公开 timeline。Turn terminal transaction 先发布 Tutor Markdown message，再发布绑定该 Turn 的 exact result Artifact item；任一步失败两项都不公开。若 action 内同步得到 terminal result，action response 返回最新 source Artifact write 及与其 `version` 相同的 event sequence，而不是返回旧 action event identity。passed 直接完成 source Artifact，不存在第二 Submit；非 passed source 保持 active 以便返回修改。
 
 result-evaluation Turn 的 provider context 只含 `reason_code=result_evaluation`、exact `artifact:<result-artifact-id>` handle 和最多 320 字符的 revalidated summary，不广告新 Artifact candidate。模型只生成评价正文；`MODEL_UNAVAILABLE` 时仍保留 Attempt/result Artifact，并由服务端写入固定 learner-safe Markdown 评价。普通 Turn 的 model-unavailable 语义不变。
+
+
+## Published teaching demonstration completion (Child06)
+
+`demonstration_v2` is materialized only from a published Learning Item handle. Provider output cannot author or alter source, steps, expected events, or durations. `complete_demo` accepts exact `interactive_event` evidence (event key, canonical payload, bounded Preview nonce/generation/continuous sequence) or `visible_clock` evidence. The published payload and public request reject JSON shapes that the isolated bridge cannot encode. One append-only completion receipt exists per Artifact; completion creates no Attempt, mastery evidence, or track progress. Interactive completion enters expected-event continuation priority and static completion enters static-timer priority; learner input remains higher priority.

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from enum import StrEnum
 from typing import Annotated, Literal, Mapping, Sequence
@@ -345,8 +346,35 @@ class LearningItemDemoEventV1(_StrictModel):
     @field_validator("payload_json")
     @classmethod
     def validate_payload(cls, value: dict[str, object]) -> dict[str, object]:
-        require_json_object(value, label="demo event payload", maximum=8_000)
-        return value
+        return validate_demo_event_payload(value)
+
+
+class LearningItemDemoStepV2(_StrictModel):
+    step_key: str = Field(min_length=1, max_length=160)
+    title: str = Field(min_length=1, max_length=160)
+    instruction_markdown: str = Field(min_length=1, max_length=2_000)
+    source_code: str = Field(min_length=1, max_length=48_000)
+    duration_seconds: int | None = Field(default=None, ge=6, le=30)
+
+    @field_validator("step_key")
+    @classmethod
+    def validate_step_key(cls, value: str) -> str:
+        return stable_key(value, label="demo step key")
+
+    @field_validator("title")
+    @classmethod
+    def normalize_title(cls, value: str) -> str:
+        return bounded_text(value, label="demo step title", maximum=160)
+
+    @field_validator("instruction_markdown")
+    @classmethod
+    def normalize_instruction(cls, value: str) -> str:
+        return normalized_text(value, label="demo step instruction", maximum=2_000)
+
+    @field_validator("source_code")
+    @classmethod
+    def normalize_source(cls, value: str) -> str:
+        return normalized_code(value, label="demo step source", maximum=48_000)
 
 
 class LearningItemCodeContentV1(_StrictModel):
@@ -451,6 +479,48 @@ class LearningItemDemoContentV1(_StrictModel):
         return self
 
 
+class LearningItemDemoContentV2(_StrictModel):
+    type: Literal["demo_v2"] = "demo_v2"
+    language_id: str = Field(min_length=1, max_length=160)
+    source_version: str = Field(min_length=1, max_length=160)
+    read_only: Literal[True] = True
+    completion_mode: Literal["exact_event", "static_duration"]
+    steps: tuple[LearningItemDemoStepV2, ...] = Field(min_length=1, max_length=8)
+    expected_event: LearningItemDemoEventV1 | None = None
+
+    @field_validator("language_id", "source_version")
+    @classmethod
+    def validate_keys(cls, value: str) -> str:
+        return stable_key(value, label="demo descriptor key")
+
+    @field_validator("steps")
+    @classmethod
+    def validate_steps(
+        cls,
+        values: tuple[LearningItemDemoStepV2, ...],
+    ) -> tuple[LearningItemDemoStepV2, ...]:
+        keys = tuple(item.step_key for item in values)
+        if len(keys) != len(set(keys)):
+            raise ValueError("demo step keys must be unique")
+        if sum(len(item.source_code) for item in values) > 48_000:
+            raise ValueError("demo descriptor source is too large")
+        return values
+
+    @model_validator(mode="after")
+    def validate_completion(self) -> "LearningItemDemoContentV2":
+        durations = tuple(item.duration_seconds for item in self.steps)
+        if self.completion_mode == "exact_event":
+            if self.expected_event is None or len(self.steps) != 1 or any(
+                item is not None for item in durations
+            ):
+                raise ValueError(
+                    "exact-event demo requires one untimed step and one expected event"
+                )
+        elif self.expected_event is not None:
+            raise ValueError("static demo cannot declare an expected event")
+        return self
+
+
 class LearningItemKnowledgeCheckContentV1(_StrictModel):
     type: Literal["knowledge_check"] = "knowledge_check"
     response_kind: Literal["single_choice", "multiple_choice", "short_text"]
@@ -485,6 +555,7 @@ LearningItemPublicContentV1 = Annotated[
     LearningItemCodeContentV1
     | LearningItemSqlContentV1
     | LearningItemDemoContentV1
+    | LearningItemDemoContentV2
     | LearningItemKnowledgeCheckContentV1
     | LearningItemModelReviewContentV1,
     Field(discriminator="type"),
@@ -546,7 +617,7 @@ class LearningItemPublicV1(_StrictModel):
 
     @model_validator(mode="after")
     def validate_kind_shape(self) -> "LearningItemPublicV1":
-        if LearningItemKind(self.content.type) is not self.kind:
+        if _content_kind(self.content) is not self.kind:
             raise ValueError("public item kind does not match content")
         if frozenset(self.allowed_interactions) != _expected_interactions(self.kind):
             raise ValueError("public item interactions do not match kind")
@@ -644,6 +715,17 @@ class LearningItemDemoPrivateV1(_StrictModel):
         return stable_key(value, label="demo validation policy")
 
 
+class LearningItemDemoPrivateV2(_StrictModel):
+    type: Literal["demo_v2"] = "demo_v2"
+    expected_events: tuple[LearningItemDemoEventV1, ...] = Field(default=(), max_length=1)
+    validation_policy_version: str = Field(min_length=1, max_length=160)
+
+    @field_validator("validation_policy_version")
+    @classmethod
+    def validate_version(cls, value: str) -> str:
+        return stable_key(value, label="demo validation policy")
+
+
 class LearningItemKnowledgeCheckPrivateV1(_StrictModel):
     type: Literal["knowledge_check"] = "knowledge_check"
     accepted_answers: tuple[str, ...] = Field(min_length=1, max_length=12)
@@ -698,6 +780,7 @@ LearningItemPrivateContentV1 = Annotated[
     LearningItemCodePrivateV1
     | LearningItemSqlPrivateV1
     | LearningItemDemoPrivateV1
+    | LearningItemDemoPrivateV2
     | LearningItemKnowledgeCheckPrivateV1
     | LearningItemModelReviewPrivateV1,
     Field(discriminator="type"),
@@ -718,7 +801,7 @@ class LearningItemPrivateV1(_StrictModel):
 
     @model_validator(mode="after")
     def validate_kind_shape(self) -> "LearningItemPrivateV1":
-        if LearningItemKind(self.content.type) is not self.kind:
+        if _content_kind(self.content) is not self.kind:
             raise ValueError("private item kind does not match content")
         return self
 
@@ -969,6 +1052,60 @@ def require_json_object(value: Mapping[str, object], *, label: str, maximum: int
         raise ValueError(f"{label} is too large")
 
 
+_DEMO_EVENT_MAX_BYTES = 2_048
+_DEMO_EVENT_MAX_DEPTH = 6
+_DEMO_EVENT_MAX_MEMBERS = 64
+_DEMO_EVENT_MAX_SAFE_INTEGER = 9_007_199_254_740_991
+
+
+def validate_demo_event_payload(value: Mapping[str, object]) -> dict[str, object]:
+    """Normalize the one JSON shape shared by published demo and Preview events.
+
+    This is intentionally stricter than a generic JSON object: the isolated
+    Preview bridge has the same byte, depth, fan-out, and JS-number bounds, so
+    a published descriptor can always be completed by the Desktop without a
+    parser/bridge mismatch.
+    """
+
+    payload = dict(value)
+    try:
+        encoded = canonical_json(payload).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise ValueError("demo event payload has an unsupported JSON shape") from exc
+    if len(encoded) > _DEMO_EVENT_MAX_BYTES:
+        raise ValueError("demo event payload is too large")
+    if not _is_safe_demo_json(payload, depth=0):
+        raise ValueError("demo event payload has an unsupported JSON shape")
+    return payload
+
+
+def _is_safe_demo_json(value: object, *, depth: int) -> bool:
+    if depth > _DEMO_EVENT_MAX_DEPTH:
+        return False
+    if value is None or isinstance(value, (bool, str)):
+        return True
+    if isinstance(value, int):
+        return -_DEMO_EVENT_MAX_SAFE_INTEGER <= value <= _DEMO_EVENT_MAX_SAFE_INTEGER
+    if isinstance(value, float):
+        return math.isfinite(value) and abs(value) <= _DEMO_EVENT_MAX_SAFE_INTEGER
+    if isinstance(value, Mapping):
+        return (
+            len(value) <= _DEMO_EVENT_MAX_MEMBERS
+            and all(
+                isinstance(key, str)
+                and 1 <= len(key.encode("utf-8")) <= 160
+                and _is_safe_demo_json(item, depth=depth + 1)
+                for key, item in value.items()
+            )
+        )
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return (
+            len(value) <= _DEMO_EVENT_MAX_MEMBERS
+            and all(_is_safe_demo_json(item, depth=depth + 1) for item in value)
+        )
+    return False
+
+
 def _expected_interactions(kind: LearningItemKind) -> frozenset[LearningItemInteraction]:
     return {
         LearningItemKind.CODE: frozenset({LearningItemInteraction.EDIT, LearningItemInteraction.RUN}),
@@ -980,13 +1117,26 @@ def _expected_interactions(kind: LearningItemKind) -> frozenset[LearningItemInte
 
 
 def _content_language(content: LearningItemPublicContentV1) -> str | None:
-    if isinstance(content, (LearningItemCodeContentV1, LearningItemDemoContentV1)):
+    if isinstance(
+        content,
+        (LearningItemCodeContentV1, LearningItemDemoContentV1, LearningItemDemoContentV2),
+    ):
         return content.language_id
     if isinstance(content, LearningItemModelReviewContentV1):
         return content.artifact.language_id
     if isinstance(content, LearningItemSqlContentV1):
         return "sql"
     return None
+
+
+def _content_kind(
+    content: LearningItemPublicContentV1 | LearningItemPrivateContentV1,
+) -> LearningItemKind:
+    if isinstance(content, (LearningItemDemoContentV1, LearningItemDemoContentV2)):
+        return LearningItemKind.DEMO
+    if isinstance(content, (LearningItemDemoPrivateV1, LearningItemDemoPrivateV2)):
+        return LearningItemKind.DEMO
+    return LearningItemKind(content.type)
 
 
 def _require_test_bundle(tests: Sequence[LearningItemRuntimeTestCaseV1]) -> None:
@@ -1015,8 +1165,11 @@ __all__ = (
     "LearningItemCodeContentV1",
     "LearningItemCodePrivateV1",
     "LearningItemDemoContentV1",
+    "LearningItemDemoContentV2",
     "LearningItemDemoEventV1",
     "LearningItemDemoPrivateV1",
+    "LearningItemDemoPrivateV2",
+    "LearningItemDemoStepV2",
     "LearningItemDifficulty",
     "LearningItemDifficultyProfileV1",
     "LearningItemHintV1",
@@ -1054,4 +1207,5 @@ __all__ = (
     "raw_sha256",
     "require_sha256",
     "stable_key",
+    "validate_demo_event_payload",
 )

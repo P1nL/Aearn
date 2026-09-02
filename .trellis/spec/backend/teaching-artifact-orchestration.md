@@ -42,6 +42,7 @@ TutorClarificationBranchService.bind_learner_turn(...) -> TutorBranchTurnBinding
 TutorClarificationBranchService.complete_turn(...) -> TutorBranchRecord | None
 
 TutorContinuationIntentProducer.record_artifact_action(...)
+TutorContinuationIntentProducer.record_demonstration_completion(...)
 TutorContinuationIntentProducer.record_static_display_timer(...)
 TutorContinuationIntentProducer.record_background_continuation(...)
 TutorContinuationDispatcher.dispatch_next(...) -> ContinuationDispatchResult | None
@@ -147,3 +148,11 @@ dispatcher.dispatch_next(**conversation_claim)
 ```
 
 The correct path advertises only server-proven handles, validates the exact decision, commits every public teaching effect atomically, records continuation as a durable fact, and lets one deterministic arbiter create the next mainline Turn.
+
+
+## Published demonstration contract
+
+- Materialize `demonstration_v2` only from the selected published Learning Item handle; provider output never owns source, steps, event, or duration.
+- Static fallback duration is deterministic and 6-30 seconds per materialized step; oversized static source may be split within the descriptor bounds.
+- Completion is exactly-once and receipt-backed. Exact Preview event and visible-clock evidence are mutually exclusive; Preview nonce/generation/sequence must fit the native bridge and receipt columns, and an event payload must fit the shared bounded bridge shape.
+- Demonstration completion must not create Attempts, mastery evidence, or track progress. Continuation priority is expected-event for interactive and static-timer for static, always below learner input.

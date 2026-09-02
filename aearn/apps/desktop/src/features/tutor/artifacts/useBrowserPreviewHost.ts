@@ -27,7 +27,7 @@ export type BrowserPreviewHostState = {
   errorCode: string | null;
   consoleItems: PreviewConsoleItem[];
   runtimeError: string | null;
-  interactionEventKey: string | null;
+  interactionEvent: { eventKey: string; payloadJson: Readonly<Record<string, unknown>>; nonce: string; generation: number; sequence: number } | null;
   recreate: () => void;
 };
 
@@ -43,7 +43,7 @@ export function useBrowserPreviewHost(input: {
   const [errorCode, setErrorCode] = useState<string | null>(null);
   const [consoleItems, setConsoleItems] = useState<PreviewConsoleItem[]>([]);
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
-  const [interactionEventKey, setInteractionEventKey] = useState<string | null>(null);
+  const [interactionEvent, setInteractionEvent] = useState<BrowserPreviewHostState["interactionEvent"]>(null);
   const descriptorRef = useRef<PreviewHostDescriptor | null>(null);
   const sourceRef = useRef(input.source);
   const syncedSourceRef = useRef<string | null>(null);
@@ -107,7 +107,7 @@ export function useBrowserPreviewHost(input: {
     setErrorCode(null);
     setConsoleItems([]);
     setRuntimeError(null);
-    setInteractionEventKey(null);
+    setInteractionEvent(null);
     const sourceAtCreate = sourceRef.current;
     void sha256TextAsync(sourceAtCreate).then((sourceHash) => api.create({
       scope: input.scope,
@@ -145,7 +145,7 @@ export function useBrowserPreviewHost(input: {
     let unlisten: (() => void) | null = null;
     void api.listen((event) => {
       if (!active || !matchesDescriptor(event, descriptorRef.current)
-          || event.sequence <= lastEventSequenceRef.current) return;
+          || event.sequence !== lastEventSequenceRef.current + 1) return;
       lastEventSequenceRef.current = event.sequence;
       if (event.event.kind === "ready") {
         lastReadyAtRef.current = Date.now();
@@ -166,7 +166,7 @@ export function useBrowserPreviewHost(input: {
         setRuntimeError(event.event.message);
         return;
       }
-      setInteractionEventKey(event.event.event_key);
+      setInteractionEvent({ eventKey: event.event.event_key, payloadJson: event.event.payload_json, nonce: event.nonce, generation: event.generation, sequence: event.sequence });
     }).then((dispose) => {
       if (!active) dispose();
       else unlisten = dispose;
@@ -201,7 +201,7 @@ export function useBrowserPreviewHost(input: {
         automaticRecreateCountRef.current = 0;
         setConsoleItems([]);
         setRuntimeError(null);
-        setInteractionEventKey(null);
+        setInteractionEvent(null);
         applyDescriptor(next, "creating");
       }).catch(() => {
         if (descriptorRef.current?.hostId !== expected.hostId) return;
@@ -263,7 +263,7 @@ export function useBrowserPreviewHost(input: {
     return () => window.clearInterval(timer);
   }, [descriptor, hideHost, recreateHost, status]);
 
-  return { status, errorCode, consoleItems, runtimeError, interactionEventKey, recreate };
+  return { status, errorCode, consoleItems, runtimeError, interactionEvent, recreate };
 }
 
 function matchesDescriptor(event: PreviewHostEvent, descriptor: PreviewHostDescriptor | null): boolean {

@@ -23,6 +23,7 @@ The formal desktop runtime lives under `aearn/apps/desktop/`. Current behavior i
 | [Inline Artifact Shell and Safe Markdown](./inline-artifact-shell-markdown.md) | Snapshot v4/v5 parsing, safe Markdown, Artifact/branch UI state, scroll/focus, and browser gates | Filled |
 | [Execution Result Artifact Presentation](./execution-result-artifacts.md) | Attempt v1/v2 parsing, concise result UI, output/table bounds, and return-to-source behavior | Filled |
 | [Code Editor and Isolated Browser Preview](./code-editor-browser-preview.md) | Monaco draft/stale/run behavior plus Tauri child-webview isolation, capability, nonce bridge, watchdog, and responsive split | Filled |
+| [Teaching Demonstrations](./teaching-demonstrations.md) | Published descriptor, isolated Preview event, visible-clock, and reduced-motion contract | Filled |
 
 ---
 

@@ -18,6 +18,7 @@ from app.services.learning.artifacts.contracts import (
     TutorArtifactActionRequest,
     TutorArtifactActionResponseV1,
     TutorArtifactAttemptDetailV2,
+    TutorArtifactCompleteDemoAction,
     TutorArtifactKind,
 )
 from app.services.learning.artifacts.execution_results import (
@@ -143,15 +144,26 @@ def act_on_learning_artifact(
                     if observation.source_write is not None:
                         response = observation.source_write
             else:
-                intent = TutorContinuationIntentProducer(conn).record_artifact_action(
-                    user_id=action_request.user_id,
-                    conversation_id=response.artifact.conversation_id,
-                    artifact_id=response.artifact.id,
-                    artifact_event_id=response.artifact_event_id,
-                    artifact_event_sequence=response.artifact_event_sequence,
-                    action_kind=action_request.action.action,
-                    occurred_at=occurred_at,
-                )
+                producer = TutorContinuationIntentProducer(conn)
+                if isinstance(action_request.action, TutorArtifactCompleteDemoAction):
+                    intent = producer.record_demonstration_completion(
+                        user_id=action_request.user_id,
+                        conversation_id=response.artifact.conversation_id,
+                        artifact_id=response.artifact.id,
+                        artifact_event_id=response.artifact_event_id,
+                        artifact_event_sequence=response.artifact_event_sequence,
+                        occurred_at=occurred_at,
+                    )
+                else:
+                    intent = producer.record_artifact_action(
+                        user_id=action_request.user_id,
+                        conversation_id=response.artifact.conversation_id,
+                        artifact_id=response.artifact.id,
+                        artifact_event_id=response.artifact_event_id,
+                        artifact_event_sequence=response.artifact_event_sequence,
+                        action_kind=action_request.action.action,
+                        occurred_at=occurred_at,
+                    )
                 if intent.consumed_run_id is None:
                     dispatched = TutorContinuationDispatcher(
                         conn,

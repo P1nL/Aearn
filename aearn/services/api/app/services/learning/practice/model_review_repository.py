@@ -607,6 +607,9 @@ class PostgresModelReviewRepository:
             raise PracticeVersionConflict("model review validation candidate is stale")
         if job.state is not ExecutionJobState.COMPLETED or job.result is None or job.result.status.value != "success":
             raise ModelReviewRepositoryError("MODEL_REVIEW_VALIDATION_FAILED")
+        # Validation jobs may contain the legacy safe-result shape; normalize it
+        # before reading feedback so both persisted generations share one contract.
+        result = parse_safe_execution_result(job.result)
         exercise, rubric = _candidate_material(candidate)
         if job.runtime_id != _runtime_id(candidate.public_payload):
             raise ModelReviewRepositoryError("MODEL_REVIEW_VALIDATION_FAILED")
@@ -616,12 +619,12 @@ class PostgresModelReviewRepository:
         private = ModelReviewRubricV1.model_validate(dict(rubric.reference_answer))
         coverage = model_review_template_coverage_proof(template=template, rubric=rubric)
         expected_outcomes = expected_model_review_test_outcomes(rubric)
-        feedback = tuple(job.result.test_feedback)
+        feedback = tuple(result.test_feedback)
         expected_passed_count = sum(expected_pass for _, expected_pass in expected_outcomes)
         if (
             len(feedback) != len(expected_outcomes)
-            or job.result.total_test_count != len(expected_outcomes)
-            or job.result.passed_test_count != expected_passed_count
+            or result.total_test_count != len(expected_outcomes)
+            or result.passed_test_count != expected_passed_count
         ):
             raise ModelReviewRepositoryError("MODEL_REVIEW_VALIDATION_FAILED")
         observed_outcomes = tuple((item.visible, item.passed) for item in feedback)
@@ -648,8 +651,8 @@ class PostgresModelReviewRepository:
             "compile_or_typecheck": {
                 "job_id": job.job_id,
                 "runtime_id": job.runtime_id,
-                "status": job.result.status.value,
-                "diagnostic_code": job.result.diagnostic_code,
+                "status": result.status.value,
+                "diagnostic_code": result.diagnostic_code,
             },
             "visible_tests": {
                 "expected": tuple(item[1] for item in expected_outcomes if item[0]),

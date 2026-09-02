@@ -7,10 +7,12 @@ from psycopg import Connection
 
 from .contracts import (
     TutorArtifactActionRequest,
+    TutorArtifactKind,
     TutorArtifactOwnerKind,
     TutorArtifactState,
     TutorPublicArtifactItem,
 )
+from .demonstrations import complete_demonstration
 from .owner_adapters import (
     ArtifactMutation,
     ArtifactOwnerActionInvalid,
@@ -72,6 +74,52 @@ class _TeachingArtifactOwnerAdapter:
 
 class LearningItemArtifactOwnerAdapter(_TeachingArtifactOwnerAdapter):
     owner_kind = TutorArtifactOwnerKind.LEARNING_ITEM
+
+    def apply_action(
+        self,
+        *,
+        conn: Connection[dict[str, object]],
+        artifact: TutorPublicArtifactItem,
+        request: TutorArtifactActionRequest,
+    ) -> ArtifactMutation:
+        if (
+            artifact.artifact_kind is TutorArtifactKind.DEMONSTRATION
+            and request.action.action == "complete_demo"
+        ):
+            row = _locked_owner_row(
+                conn,
+                artifact=artifact,
+                request=request,
+                owner_kind=self.owner_kind,
+            )
+            _validate_cancel_authority(
+                conn,
+                row=row,
+                artifact=artifact,
+                owner_kind=self.owner_kind,
+            )
+            receipt = complete_demonstration(
+                conn,
+                artifact=artifact,
+                request=request,
+            )
+            return ArtifactMutation(
+                state=TutorArtifactState.COMPLETED,
+                owner_version=artifact.owner_version,
+                owner_context_version=_positive_int(
+                    row.get("owner_context_version"),
+                    "owner_context_version",
+                ),
+                presentation=artifact.presentation,
+                allowed_actions=(),
+                active_attempt=None,
+                safe_event_payload={
+                    "completion_receipt_id": receipt.receipt_id,
+                    "completion_kind": receipt.completion_kind,
+                    "descriptor_hash": receipt.descriptor_hash,
+                },
+            )
+        return super().apply_action(conn=conn, artifact=artifact, request=request)
 
 
 class TeachingPracticeArtifactOwnerAdapter(_TeachingArtifactOwnerAdapter):

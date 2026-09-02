@@ -864,6 +864,130 @@ def test_fixed_priority_preempts_claimed_work_and_then_drains_in_order() -> None
             _cleanup_user(fixture.user_id)
 
 
+@pytest.mark.parametrize(
+    "completion_kind",
+    (
+        ContinuationSourceKind.EXPECTED_INTERACTIVE_EVENT,
+        ContinuationSourceKind.STATIC_DISPLAY_TIMER,
+    ),
+)
+def test_learner_message_preempts_duplicate_demo_completion_without_duplicate_next_turn(
+    completion_kind: ContinuationSourceKind,
+) -> None:
+    fixture: _ArtifactScope | None = None
+    try:
+        with connection() as conn:
+            fixture = _prepare_artifact(conn)
+            producer = TutorContinuationIntentProducer(conn)
+            source_id = f"demo-completion:{uuid4().hex}"
+            occurred_at = datetime.now(UTC)
+            if completion_kind is ContinuationSourceKind.EXPECTED_INTERACTIVE_EVENT:
+                first = producer.record_artifact_action(
+                    user_id=fixture.user_id,
+                    conversation_id=fixture.conversation_id,
+                    artifact_id=fixture.artifact_id,
+                    artifact_event_id=source_id,
+                    artifact_event_sequence=1,
+                    action_kind="acknowledge_demo_event",
+                    occurred_at=occurred_at,
+                )
+                replay = producer.record_artifact_action(
+                    user_id=fixture.user_id,
+                    conversation_id=fixture.conversation_id,
+                    artifact_id=fixture.artifact_id,
+                    artifact_event_id=source_id,
+                    artifact_event_sequence=1,
+                    action_kind="acknowledge_demo_event",
+                    occurred_at=occurred_at,
+                )
+            else:
+                first = producer.record_static_display_timer(
+                    user_id=fixture.user_id,
+                    conversation_id=fixture.conversation_id,
+                    artifact_id=fixture.artifact_id,
+                    timer_id=source_id,
+                    timer_version=1,
+                    not_before=occurred_at,
+                    occurred_at=occurred_at,
+                )
+                replay = producer.record_static_display_timer(
+                    user_id=fixture.user_id,
+                    conversation_id=fixture.conversation_id,
+                    artifact_id=fixture.artifact_id,
+                    timer_id=source_id,
+                    timer_version=1,
+                    not_before=occurred_at,
+                    occurred_at=occurred_at,
+                )
+            assert first.source_kind is completion_kind
+            assert replay.intent_id == first.intent_id
+            assert replay.replayed is True
+            assert conn.execute(
+                "SELECT count(*)::int AS count FROM tutor_continuation_intents WHERE artifact_id = %s",
+                (fixture.artifact_id,),
+            ).fetchone() == {"count": 1}
+
+            run_id, message_id, input_revision, branch_id = _create_branch_turn(
+                conn,
+                fixture,
+                use_service=False,
+                content="Please explain this demonstration before continuing.",
+            )
+            learner = PostgresTutorContinuationIntentRepository(conn).record_learner_turn(
+                user_id=fixture.user_id,
+                conversation_id=fixture.conversation_id,
+                artifact_id=fixture.artifact_id,
+                branch_id=branch_id,
+                message_id=message_id,
+                input_revision=input_revision,
+                run_id=run_id,
+            )
+            assert learner.source_kind is ContinuationSourceKind.LEARNER_MESSAGE
+            assert (
+                TutorContinuationDispatcher(conn, settings=_settings()).dispatch_next(
+                    user_id=fixture.user_id,
+                    conversation_id=fixture.conversation_id,
+                    claimant_id="demo-race-before-learner-answer",
+                    now=datetime.now(UTC),
+                )
+                is None
+            )
+
+            _resolve_branch(conn, fixture=fixture, run_id=run_id)
+            runs_before = conn.execute(
+                "SELECT count(*)::int AS count FROM tutor_runs WHERE user_id = %s",
+                (fixture.user_id,),
+            ).fetchone()
+            dispatched = TutorContinuationDispatcher(
+                conn,
+                settings=_settings(),
+            ).dispatch_next(
+                user_id=fixture.user_id,
+                conversation_id=fixture.conversation_id,
+                claimant_id="demo-race-after-learner-answer",
+                now=datetime.now(UTC),
+            )
+            assert dispatched is not None
+            assert dispatched.intent.intent_id == first.intent_id
+            assert dispatched.intent.source_kind is completion_kind
+            assert conn.execute(
+                "SELECT count(*)::int AS count FROM tutor_runs WHERE user_id = %s",
+                (fixture.user_id,),
+            ).fetchone() == {"count": int(runs_before["count"]) + 1}
+            assert (
+                TutorContinuationDispatcher(conn, settings=_settings()).dispatch_next(
+                    user_id=fixture.user_id,
+                    conversation_id=fixture.conversation_id,
+                    claimant_id="demo-race-duplicate-dispatch",
+                    now=datetime.now(UTC),
+                )
+                is None
+            )
+    finally:
+        if fixture is not None:
+            _cleanup_user(fixture.user_id)
+
+
 def test_positive_authoritative_hint_receipt_is_recorded_on_branch_response() -> None:
     fixture: _ArtifactScope | None = None
     try:

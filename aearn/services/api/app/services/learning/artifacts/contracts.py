@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator,
 
 from aearn_shared.execution import SafeExecutionResultV2
 from app.services.tutor.branch_contracts import BranchResponseDisposition
+from app.services.learning.item_bank.contracts import validate_demo_event_payload
 from app.services.learning.practice.model_review_contracts import ModelCodeReviewSubmissionV1
 
 
@@ -155,6 +156,7 @@ class TutorArtifactActionKind(StrEnum):
     COMPLETE_REVIEW = "complete_review"
     CANCEL = "cancel"
     ACKNOWLEDGE_DEMO_EVENT = "acknowledge_demo_event"
+    COMPLETE_DEMO = "complete_demo"
 
 
 class TutorArtifactDifficulty(StrEnum):
@@ -338,6 +340,91 @@ class TutorArtifactDemonstrationPresentationV1(_StrictArtifactModel):
         return self
 
 
+class TutorArtifactDemonstrationEventV2(_StrictArtifactModel):
+    event_key: str = Field(min_length=1, max_length=160)
+    payload_json: dict[str, object] = Field(default_factory=dict)
+    payload_hash: str = Field(min_length=64, max_length=64)
+
+    @field_validator("event_key")
+    @classmethod
+    def validate_event_key(cls, value: str) -> str:
+        if not _STABLE_KEY.fullmatch(value):
+            raise ValueError("artifact demonstration event key is invalid")
+        return value
+
+    @model_validator(mode="after")
+    def validate_payload_hash(self) -> "TutorArtifactDemonstrationEventV2":
+        assert_public_artifact_safe(self.payload_json)
+        validate_demo_event_payload(self.payload_json)
+        if canonical_hash(self.payload_json) != self.payload_hash:
+            raise ValueError("artifact demonstration event payload hash does not match")
+        return self
+
+
+class TutorArtifactDemonstrationStepV2(_StrictArtifactModel):
+    step_key: str = Field(min_length=1, max_length=160)
+    title: str = Field(min_length=1, max_length=160)
+    instruction_markdown: str = Field(min_length=1, max_length=2_000)
+    source_content: str = Field(min_length=1, max_length=12_000)
+    source_content_hash: str = Field(min_length=64, max_length=64)
+    duration_seconds: int | None = Field(default=None, ge=6, le=30)
+
+    @field_validator("step_key")
+    @classmethod
+    def validate_step_key(cls, value: str) -> str:
+        if not _STABLE_KEY.fullmatch(value):
+            raise ValueError("artifact demonstration step key is invalid")
+        return value
+
+    @model_validator(mode="after")
+    def validate_source_hash(self) -> "TutorArtifactDemonstrationStepV2":
+        if sha256_text(self.source_content) != self.source_content_hash:
+            raise ValueError("artifact demonstration step source hash does not match")
+        return self
+
+
+class TutorArtifactDemonstrationPresentationV2(_StrictArtifactModel):
+    type: Literal["demonstration_v2"] = "demonstration_v2"
+    descriptor_version: Literal["demonstration_descriptor_v1"] = "demonstration_descriptor_v1"
+    demonstration_mode: Literal["interactive", "static"]
+    source_version: str = Field(min_length=1, max_length=160)
+    language_id: str = Field(min_length=1, max_length=160)
+    steps: tuple[TutorArtifactDemonstrationStepV2, ...] = Field(min_length=1, max_length=8)
+    expected_event: TutorArtifactDemonstrationEventV2 | None = None
+    total_duration_seconds: int | None = Field(default=None, ge=6, le=240)
+    completion_policy_version: Literal["demonstration_completion_policy_v1"] = (
+        "demonstration_completion_policy_v1"
+    )
+
+    @field_validator("source_version", "language_id")
+    @classmethod
+    def validate_stable_keys(cls, value: str) -> str:
+        if not _STABLE_KEY.fullmatch(value):
+            raise ValueError("artifact demonstration descriptor key is invalid")
+        return value
+
+    @model_validator(mode="after")
+    def validate_descriptor_shape(self) -> "TutorArtifactDemonstrationPresentationV2":
+        keys = tuple(item.step_key for item in self.steps)
+        if len(keys) != len(set(keys)):
+            raise ValueError("artifact demonstration step keys must be unique")
+        durations = tuple(item.duration_seconds for item in self.steps)
+        if self.demonstration_mode == "interactive":
+            if (
+                len(self.steps) != 1
+                or self.expected_event is None
+                or self.total_duration_seconds is not None
+                or any(item is not None for item in durations)
+            ):
+                raise ValueError("interactive demonstration descriptor is inconsistent")
+        else:
+            if self.expected_event is not None or any(item is None for item in durations):
+                raise ValueError("static demonstration descriptor is inconsistent")
+            if self.total_duration_seconds != sum(int(item) for item in durations if item is not None):
+                raise ValueError("static demonstration total duration does not match its steps")
+        return self
+
+
 class TutorArtifactSourceInspectorPresentationV1(_StrictArtifactModel):
     type: Literal["source_inspector_v1"] = "source_inspector_v1"
     document_id: str = Field(min_length=1, max_length=160)
@@ -367,6 +454,7 @@ TutorArtifactPresentationV1 = Annotated[
     | TutorArtifactModelCodeReviewPresentationV1
     | TutorArtifactSqlWorkspacePresentationV1
     | TutorArtifactDemonstrationPresentationV1
+    | TutorArtifactDemonstrationPresentationV2
     | TutorArtifactSourceInspectorPresentationV1,
     Field(discriminator="type"),
 ]
@@ -659,7 +747,13 @@ class TutorPublicArtifactItem(_StrictArtifactModel):
             TutorArtifactKind.DEMONSTRATION: "demonstration_v1",
             TutorArtifactKind.SOURCE_INSPECTOR: "source_inspector_v1",
         }[self.artifact_kind]
-        if self.presentation.type != expected_presentation:
+        presentation_matches = self.presentation.type == expected_presentation
+        if self.artifact_kind is TutorArtifactKind.DEMONSTRATION:
+            presentation_matches = self.presentation.type in {
+                "demonstration_v1",
+                "demonstration_v2",
+            }
+        if not presentation_matches:
             raise ValueError("artifact kind does not match its presentation")
         if self.state.terminal != (self.terminal_at is not None):
             raise ValueError("artifact terminal timestamp is inconsistent")
@@ -900,13 +994,71 @@ class TutorArtifactAcknowledgeDemoEventAction(_StrictArtifactModel):
     event_nonce: str = Field(min_length=16, max_length=160)
 
 
+class TutorArtifactDemoInteractionEvidenceV1(_StrictArtifactModel):
+    kind: Literal["interactive_event"] = "interactive_event"
+    event_key: str = Field(min_length=1, max_length=160)
+    payload_json: dict[str, object] = Field(default_factory=dict)
+    payload_hash: str = Field(min_length=64, max_length=64)
+    preview_nonce: str = Field(min_length=64, max_length=64)
+    # The native receipt columns are PostgreSQL INTEGER and the Desktop bridge
+    # transports JavaScript numbers, so reject identities neither side can own.
+    preview_generation: int = Field(ge=1, le=2_147_483_647)
+    preview_sequence: int = Field(ge=1, le=2_147_483_647)
+
+    @field_validator("event_key")
+    @classmethod
+    def validate_event_key(cls, value: str) -> str:
+        if not _STABLE_KEY.fullmatch(value):
+            raise ValueError("artifact demonstration event key is invalid")
+        return value
+
+    @model_validator(mode="after")
+    def validate_evidence(self) -> "TutorArtifactDemoInteractionEvidenceV1":
+        if not _SHA256.fullmatch(self.preview_nonce):
+            raise ValueError("artifact demonstration Preview nonce is invalid")
+        assert_public_artifact_safe(self.payload_json)
+        validate_demo_event_payload(self.payload_json)
+        if canonical_hash(self.payload_json) != self.payload_hash:
+            raise ValueError("artifact demonstration event payload hash does not match")
+        return self
+
+
+class TutorArtifactDemoVisibleClockEvidenceV1(_StrictArtifactModel):
+    kind: Literal["visible_clock"] = "visible_clock"
+    clock_session_id: str = Field(min_length=1, max_length=160)
+    visible_elapsed_ms: int = Field(ge=6_000, le=240_000)
+    foreground: Literal[True] = True
+    current: Literal[True] = True
+    visible: Literal[True] = True
+    render_ready: Literal[True] = True
+
+    @field_validator("clock_session_id")
+    @classmethod
+    def validate_clock_session_id(cls, value: str) -> str:
+        if not _ACTION_ID.fullmatch(value):
+            raise ValueError("artifact demonstration clock identity is invalid")
+        return value
+
+
+TutorArtifactDemoCompletionEvidenceV1 = Annotated[
+    TutorArtifactDemoInteractionEvidenceV1 | TutorArtifactDemoVisibleClockEvidenceV1,
+    Field(discriminator="kind"),
+]
+
+
+class TutorArtifactCompleteDemoAction(_StrictArtifactModel):
+    action: Literal["complete_demo"] = "complete_demo"
+    evidence: TutorArtifactDemoCompletionEvidenceV1
+
+
 TutorArtifactActionV1 = Annotated[
     TutorArtifactRequestHintAction
     | TutorArtifactRunAction
     | TutorArtifactRespondAction
     | TutorArtifactCompleteReviewAction
     | TutorArtifactCancelAction
-    | TutorArtifactAcknowledgeDemoEventAction,
+    | TutorArtifactAcknowledgeDemoEventAction
+    | TutorArtifactCompleteDemoAction,
     Field(discriminator="action"),
 ]
 
@@ -999,8 +1151,16 @@ __all__ = (
     "TutorArtifactAttemptSummaryV1",
     "TutorArtifactBranchSummaryV1",
     "TutorArtifactCancelAction",
+    "TutorArtifactCompleteDemoAction",
     "TutorArtifactCompleteReviewAction",
     "TutorArtifactCreate",
+    "TutorArtifactDemoCompletionEvidenceV1",
+    "TutorArtifactDemoInteractionEvidenceV1",
+    "TutorArtifactDemoVisibleClockEvidenceV1",
+    "TutorArtifactDemonstrationEventV2",
+    "TutorArtifactDemonstrationPresentationV1",
+    "TutorArtifactDemonstrationPresentationV2",
+    "TutorArtifactDemonstrationStepV2",
     "TutorArtifactDifficulty",
     "TutorArtifactKind",
     "TutorArtifactOwnerKind",

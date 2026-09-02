@@ -1087,8 +1087,10 @@ class PostgresLearningArtifactRepository:
             raise LearningArtifactStateConflict(
                 "learning artifact lifecycle transition is invalid"
             )
-        expected_presentation = _presentation_for_kind(current.artifact_kind)
-        if presentation_kind(mutation.presentation) != expected_presentation:
+        if not _presentation_matches_kind(
+            current.artifact_kind,
+            presentation_kind(mutation.presentation),
+        ):
             raise LearningArtifactProjectionError(
                 "learning artifact kind does not match owner presentation"
             )
@@ -1912,17 +1914,20 @@ def _transition_allowed(
     return target in transitions.get(current, set())
 
 
-def _presentation_for_kind(kind: TutorArtifactKind) -> str:
-    return {
-        TutorArtifactKind.EXERCISE_WORKSPACE: "exercise_workspace_v1",
-        TutorArtifactKind.BROWSER_PREVIEW: "browser_preview_v1",
-        TutorArtifactKind.TEST_RESULT: "test_result_v1",
-        TutorArtifactKind.KNOWLEDGE_CHECK: "knowledge_check_v1",
-        TutorArtifactKind.MODEL_CODE_REVIEW: "model_code_review_v1",
-        TutorArtifactKind.SQL_WORKSPACE: "sql_workspace_v1",
-        TutorArtifactKind.DEMONSTRATION: "demonstration_v1",
-        TutorArtifactKind.SOURCE_INSPECTOR: "source_inspector_v1",
+def _presentation_matches_kind(kind: TutorArtifactKind, presentation: str) -> bool:
+    expected = {
+        TutorArtifactKind.EXERCISE_WORKSPACE: frozenset({"exercise_workspace_v1"}),
+        TutorArtifactKind.BROWSER_PREVIEW: frozenset({"browser_preview_v1"}),
+        TutorArtifactKind.TEST_RESULT: frozenset({"test_result_v1"}),
+        TutorArtifactKind.KNOWLEDGE_CHECK: frozenset({"knowledge_check_v1"}),
+        TutorArtifactKind.MODEL_CODE_REVIEW: frozenset({"model_code_review_v1"}),
+        TutorArtifactKind.SQL_WORKSPACE: frozenset({"sql_workspace_v1"}),
+        TutorArtifactKind.DEMONSTRATION: frozenset(
+            {"demonstration_v1", "demonstration_v2"}
+        ),
+        TutorArtifactKind.SOURCE_INSPECTOR: frozenset({"source_inspector_v1"}),
     }[kind]
+    return presentation in expected
 
 
 def _uuid(value: str, label: str) -> str:

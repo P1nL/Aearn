@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { sha256TextAsync } from "../../../lib/sha256Async";
 import {
+  parsePreviewHostEvent,
   setPreviewHostApiForTests,
   type PreviewHostApi,
   type PreviewHostDescriptor,
@@ -115,6 +116,8 @@ describe("useBrowserPreviewHost", () => {
     expect(screen.getByTestId("status")).toHaveTextContent("ready");
     act(() => listener?.(bridgeEvent({ kind: "runtime_error", message: "spoof" }, { nonce: "c".repeat(64) })));
     expect(screen.getByTestId("runtime")).toHaveTextContent("");
+    act(() => listener?.(bridgeEvent({ kind: "console", level: "warn", message: "gap" }, { sequence: 3 })));
+    expect(screen.getByTestId("console")).toHaveTextContent("");
     act(() => listener?.(bridgeEvent({ kind: "console", level: "warn", message: "safe log" }, { sequence: 2 })));
     act(() => listener?.(bridgeEvent({ kind: "runtime_error", message: "bounded runtime" }, { sequence: 3 })));
     act(() => listener?.(bridgeEvent({ kind: "console", level: "error", message: "replayed" }, { sequence: 2 })));
@@ -189,6 +192,34 @@ describe("useBrowserPreviewHost", () => {
 
     await act(async () => vi.advanceTimersByTime(4_000));
     expect(api.recreate).not.toHaveBeenCalled();
+  });
+
+  it("rejects malformed, oversized, and unsafe Preview interaction payloads before the hook sees them", () => {
+    const base = {
+      hostId: "host-1",
+      nonce: "a".repeat(64),
+      scope,
+      generation: 1,
+      sequence: 1,
+      event: {
+        kind: "interaction_event",
+        event_key: "demo.click.completed",
+        payload_json: { count: 1 },
+      },
+    };
+    expect(parsePreviewHostEvent(base)).not.toBeNull();
+    expect(parsePreviewHostEvent({ ...base, event: {
+      ...base.event,
+      payload_json: { nested: { one: { two: { three: { four: { five: { six: { seven: true } } } } } } } },
+    } })).toBeNull();
+    expect(parsePreviewHostEvent({ ...base, event: {
+      ...base.event,
+      payload_json: { message: "x".repeat(2_100) },
+    } })).toBeNull();
+    expect(parsePreviewHostEvent({ ...base, event: {
+      ...base.event,
+      payload_json: { count: Number.MAX_SAFE_INTEGER + 1 },
+    } })).toBeNull();
   });
 
   it("closes only its native host on unmount", async () => {

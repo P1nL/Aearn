@@ -9,7 +9,7 @@ projection 的唯一 durable authority；Desktop、Celery 和 provider 不拥有
 
 ## 1. Bootstrap、迁移与范围原则
 
-- `python -m app.db.bootstrap` 按 `SCHEMA_FRAGMENT_NAMES` 的显式顺序重复执行 12 个 Schema fragment。数字前缀只帮助阅读，执行顺序不依赖目录自然排序。当前仓库没有另一个可与其竞争的 Alembic/Graph migration path。
+- `python -m app.db.bootstrap` 按 `SCHEMA_FRAGMENT_NAMES` 的显式顺序重复执行 18 个 Schema fragment。数字前缀只帮助阅读，执行顺序不依赖目录自然排序。当前仓库没有另一个可与其竞争的 Alembic/Graph migration path。
 - 所有 fragment 在同一 caller-owned PostgreSQL connection 和最终提交事务中执行；loader 不 `commit`。bootstrap 使用 transaction advisory lock，并对 deadlock/serialization failure 做有界整事务重试，避免多进程启动或测试重复 bootstrap 留下部分 Schema。
 - `load_schema_text()` 只提供 manifest 组合的只读视图；仓库不维护第二份聚合 `schema.sql`。
 - `tutor_*` 与 `harness_cutovers` 是当前 runtime 的核心表族。所有可公开读取的
@@ -527,3 +527,8 @@ branch/continuation 六张表属于 user-owned cutover target。local export 只
 每个 terminal Artifact-linked Attempt 通过现有 `tutor_learning_artifacts / events / references / attempt_links` 投影：source Artifact 追加 exact `execution-result:<attempt_id>` owner event；result Artifact 使用 deterministic `execution-result:<attempt_id>` creation key，固定 `artifact_kind=test_result,purpose=result,state=completed,blocking=false`，并引用 source Artifact 的新 version 以及 exact Attempt result hash。该 durable result row 在评价 Turn 完成前不进入 conversation timeline；Turn terminal transaction 先追加 Tutor Markdown message item，再追加 exact result Artifact item，二者同事务提交或回滚。repository 在重放时同时验证 source event 与 result Artifact；只存在一侧视为 partial persistence 并 fail closed。多个 Attempt 保留独立 result Artifact，source Artifact 只投影最新 Attempt。
 
 result-evaluation 复用 `tutor_continuation_intents`。intent 的 Artifact 是 result Artifact，source ID/version 是其 exact created event，idempotency key 为 `result-evaluation:<event-id>`；调度和 Teaching context 重新验证 user/conversation/track/knowledge/session、Artifact kind/state/presentation、Attempt identity 与 event sequence 后才消费。pending Attempt 不写 result Artifact 或 intent。以上写入由 caller-owned transaction 包含；provider failure 不修改或删除已提交的 Attempt/result。
+
+
+### `tutor_demonstration_completion_receipts`
+
+Append-only, user-scoped receipt for one completed `demonstration_v2` Artifact. It binds the Artifact version and descriptor hash to either exact isolated-Preview event evidence or bounded visible-clock evidence. The table is purge-aware, exported only as a redacted summary, and is not an Attempt/mastery/progress authority.

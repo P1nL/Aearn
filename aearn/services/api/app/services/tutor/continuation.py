@@ -615,16 +615,73 @@ class PostgresTutorContinuationIntentRepository:
             and str(current["session_mode"]) != TeachingSessionMode.GUIDED.value
         ):
             return False
-        return not (
-            kind
-            in {
-                ContinuationSourceKind.LEARNER_MESSAGE,
-                ContinuationSourceKind.STATIC_DISPLAY_TIMER,
-                ContinuationSourceKind.BACKGROUND_CONTINUATION,
-            }
-            and str(current["artifact_state"])
-            in {"completed", "failed", "cancelled", "superseded"}
+        artifact_terminal = str(current["artifact_state"]) in {
+            "completed",
+            "failed",
+            "cancelled",
+            "superseded",
+        }
+        if not artifact_terminal:
+            return True
+        if kind in {
+            ContinuationSourceKind.EXPECTED_INTERACTIVE_EVENT,
+            ContinuationSourceKind.STATIC_DISPLAY_TIMER,
+        }:
+            return self._terminal_demonstration_completion_is_current(row)
+        return kind is ContinuationSourceKind.EXPLICIT_ARTIFACT_ACTION
+
+    def _terminal_demonstration_completion_is_current(
+        self,
+        row: Mapping[str, object],
+    ) -> bool:
+        completion_kind = (
+            "interactive_event"
+            if ContinuationSourceKind(str(row["source_kind"]))
+            is ContinuationSourceKind.EXPECTED_INTERACTIVE_EVENT
+            else "visible_clock"
         )
+        evidence = self._conn.execute(
+            """
+            SELECT 1
+            FROM tutor_demonstration_completion_receipts AS receipts
+            JOIN tutor_learning_artifacts AS artifacts
+              ON artifacts.id = receipts.artifact_id
+             AND artifacts.user_id = receipts.user_id
+             AND artifacts.conversation_id = receipts.conversation_id
+            JOIN tutor_learning_artifact_events AS events
+              ON events.artifact_id = artifacts.id
+             AND events.user_id = artifacts.user_id
+             AND events.conversation_id = artifacts.conversation_id
+             AND events.teaching_session_id = artifacts.teaching_session_id
+            WHERE artifacts.id = %s
+              AND artifacts.user_id = %s
+              AND artifacts.conversation_id = %s
+              AND artifacts.artifact_kind = 'demonstration'
+              AND artifacts.presentation_kind = 'demonstration_v2'
+              AND artifacts.state = 'completed'
+              AND artifacts.version = %s
+              AND artifacts.version = events.to_version
+              AND artifacts.presentation_hash = receipts.descriptor_hash
+              AND receipts.completion_kind = %s
+              AND events.id::text = %s
+              AND events.event_sequence = %s
+              AND events.event_kind = 'action'
+              AND events.action_kind = 'complete_demo'
+              AND events.safe_payload_json->'owner_result'->>'completion_receipt_id' = receipts.id::text
+              AND events.safe_payload_json->'owner_result'->>'completion_kind' = receipts.completion_kind
+              AND events.safe_payload_json->'owner_result'->>'descriptor_hash' = receipts.descriptor_hash
+            """,
+            (
+                row["artifact_id"],
+                row["user_id"],
+                row["conversation_id"],
+                row["artifact_version"],
+                completion_kind,
+                row["source_id"],
+                row["source_version"],
+            ),
+        ).fetchone()
+        return evidence is not None
 
     def _transition(
         self,
@@ -993,6 +1050,76 @@ class TutorContinuationIntentProducer:
             source_id=artifact_event_id,
             source_version=artifact_event_sequence,
             idempotency_key=f"artifact-event:{artifact_event_id}",
+            occurred_at=occurred_at,
+        )
+
+    def record_demonstration_completion(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str,
+        artifact_id: str,
+        artifact_event_id: str,
+        artifact_event_sequence: int,
+        occurred_at: datetime | None = None,
+    ) -> ContinuationIntentRecord:
+        """Record only an exact receipt-backed terminal demonstration event."""
+
+        evidence = self._conn.execute(
+            """
+            SELECT receipts.id::text AS receipt_id, receipts.completion_kind
+            FROM tutor_demonstration_completion_receipts AS receipts
+            JOIN tutor_learning_artifacts AS artifacts
+              ON artifacts.id = receipts.artifact_id
+             AND artifacts.user_id = receipts.user_id
+             AND artifacts.conversation_id = receipts.conversation_id
+            JOIN tutor_learning_artifact_events AS events
+              ON events.artifact_id = artifacts.id
+             AND events.user_id = artifacts.user_id
+             AND events.conversation_id = artifacts.conversation_id
+             AND events.teaching_session_id = artifacts.teaching_session_id
+            WHERE receipts.artifact_id = %s
+              AND receipts.user_id = %s
+              AND receipts.conversation_id = %s
+              AND artifacts.artifact_kind = 'demonstration'
+              AND artifacts.presentation_kind = 'demonstration_v2'
+              AND artifacts.state = 'completed'
+              AND artifacts.version = events.to_version
+              AND artifacts.presentation_hash = receipts.descriptor_hash
+              AND events.id::text = %s
+              AND events.event_sequence = %s
+              AND events.event_kind = 'action'
+              AND events.action_kind = 'complete_demo'
+              AND events.safe_payload_json->'owner_result'->>'completion_receipt_id' = receipts.id::text
+              AND events.safe_payload_json->'owner_result'->>'completion_kind' = receipts.completion_kind
+              AND events.safe_payload_json->'owner_result'->>'descriptor_hash' = receipts.descriptor_hash
+            """,
+            (
+                artifact_id,
+                user_id,
+                conversation_id,
+                artifact_event_id,
+                artifact_event_sequence,
+            ),
+        ).fetchone()
+        if evidence is None:
+            raise ContinuationIntentStale(
+                "demonstration continuation lacks exact completion evidence"
+            )
+        completion_kind = str(evidence["completion_kind"])
+        source_kind = (
+            ContinuationSourceKind.EXPECTED_INTERACTIVE_EVENT
+            if completion_kind == "interactive_event"
+            else ContinuationSourceKind.STATIC_DISPLAY_TIMER
+        )
+        return self._repository.create_pending(
+            user_id=user_id,
+            conversation_id=conversation_id,
+            artifact_id=artifact_id,
+            source_kind=source_kind,
+            source_id=artifact_event_id,
+            source_version=artifact_event_sequence,
+            idempotency_key=f"demo-completion:{evidence['receipt_id']}",
             occurred_at=occurred_at,
         )
 

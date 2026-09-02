@@ -1,8 +1,8 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { TutorPublicArtifactItem } from "../../../types";
-import { BrowserPreviewArtifact } from "./BrowserPreviewArtifact";
+import { BrowserPreviewArtifact, BrowserPreviewSurface } from "./BrowserPreviewArtifact";
 import { CodeEditorArtifact } from "./CodeEditorArtifact";
 import { resetCodeArtifactDraftsForTests } from "./artifactCodeState";
 
@@ -11,6 +11,13 @@ const previewHarness = vi.hoisted(() => ({
     enabled: boolean;
     scope: { languageId: string; sourceArtifactId: string };
     source: string;
+  },
+  interactionEvent: null as null | {
+    eventKey: string;
+    payloadJson: Readonly<Record<string, unknown>>;
+    nonce: string;
+    generation: number;
+    sequence: number;
   },
 }));
 
@@ -27,7 +34,7 @@ vi.mock("./useBrowserPreviewHost", () => ({
       errorCode: null,
       consoleItems: [],
       runtimeError: null,
-      interactionEventKey: null,
+      interactionEvent: previewHarness.interactionEvent,
       recreate: vi.fn(),
     };
   },
@@ -101,6 +108,7 @@ describe("BrowserPreviewArtifact source binding", () => {
   beforeEach(() => {
     resetCodeArtifactDraftsForTests();
     previewHarness.input = null;
+    previewHarness.interactionEvent = null;
   });
 
   afterEach(() => cleanup());
@@ -142,5 +150,59 @@ describe("BrowserPreviewArtifact source binding", () => {
     </>);
     expect(screen.getByText("PREVIEW_SOURCE_SCOPE_MISMATCH")).toBeInTheDocument();
     expect(previewHarness.input).toBeNull();
+  });
+
+  it("forwards each accepted Preview event once even if the parent callback changes", async () => {
+    previewHarness.interactionEvent = {
+      eventKey: "demo.click.completed",
+      payloadJson: { count: 1 },
+      nonce: "a".repeat(64),
+      generation: 1,
+      sequence: 1,
+    };
+    const first = vi.fn();
+    const rendered = render(<BrowserPreviewSurface
+      artifactId="artifact-preview"
+      sourceArtifactId="artifact-source"
+      sessionId="session-1"
+      artifactVersion={1}
+      languageId="javascript"
+      source="console.log('safe');"
+      enabled
+      onInteractionEvent={first}
+    />);
+    await waitFor(() => expect(first).toHaveBeenCalledTimes(1));
+
+    const second = vi.fn();
+    rendered.rerender(<BrowserPreviewSurface
+      artifactId="artifact-preview"
+      sourceArtifactId="artifact-source"
+      sessionId="session-1"
+      artifactVersion={1}
+      languageId="javascript"
+      source="console.log('safe');"
+      enabled
+      onInteractionEvent={second}
+    />);
+    expect(second).not.toHaveBeenCalled();
+
+    previewHarness.interactionEvent = {
+      eventKey: "demo.click.completed",
+      payloadJson: { count: 1 },
+      nonce: "a".repeat(64),
+      generation: 1,
+      sequence: 2,
+    };
+    rendered.rerender(<BrowserPreviewSurface
+      artifactId="artifact-preview"
+      sourceArtifactId="artifact-source"
+      sessionId="session-1"
+      artifactVersion={1}
+      languageId="javascript"
+      source="console.log('safe');"
+      enabled
+      onInteractionEvent={second}
+    />);
+    await waitFor(() => expect(second).toHaveBeenCalledTimes(1));
   });
 });

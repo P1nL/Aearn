@@ -72,6 +72,7 @@ describe("InlineArtifactMessage", () => {
       "model_code_review_v1",
       "sql_workspace_v1",
       "demonstration_v1",
+      "demonstration_v2",
       "source_inspector_v1",
     ]);
     for (const presentation of presentations) expect(artifactRendererFor(presentation.type)).not.toBeNull();

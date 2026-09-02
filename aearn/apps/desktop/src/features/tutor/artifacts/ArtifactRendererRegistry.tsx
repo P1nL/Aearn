@@ -5,6 +5,7 @@ import type { TutorPublicArtifactItem } from "../../../types";
 import { BrowserPreviewArtifact } from "./BrowserPreviewArtifact";
 import { CodeEditorArtifact } from "./CodeEditorArtifact";
 import { ExecutionResultArtifact } from "./ExecutionResultArtifact";
+import { DemonstrationArtifact } from "./DemonstrationArtifact";
 import { SafeMarkdown } from "./SafeMarkdown";
 import type { TutorArtifactActionHandler, TutorArtifactAttemptLoader, TutorArtifactReturnToSource } from "./artifactRendererTypes";
 import type { ArtifactRendererUiState } from "./artifactUiState";
@@ -29,7 +30,8 @@ const ARTIFACT_RENDERER_REGISTRY = {
   knowledge_check_v1: KnowledgeCheckPlaceholder,
   model_code_review_v1: ModelCodeReviewPlaceholder,
   sql_workspace_v1: SqlWorkspacePlaceholder,
-  demonstration_v1: DemonstrationPlaceholder,
+  demonstration_v1: DemonstrationRenderer,
+  demonstration_v2: DemonstrationRenderer,
   source_inspector_v1: SourceInspectorPlaceholder,
 } satisfies Record<ArtifactPresentationType, ArtifactRenderer>;
 
@@ -74,10 +76,9 @@ function SqlWorkspacePlaceholder({ artifact }: ArtifactRendererProps) {
   return <ArtifactPlaceholder label="SQL 工作区"><span>{presentation.dialect} · 最多 {presentation.max_rows} 行</span></ArtifactPlaceholder>;
 }
 
-function DemonstrationPlaceholder({ artifact }: ArtifactRendererProps) {
-  const presentation = artifact.presentation;
-  if (presentation.type !== "demonstration_v1") return <ArtifactContractError />;
-  return <ArtifactPlaceholder label="教学演示"><span>{presentation.demonstration_mode === "interactive" ? "交互演示" : "静态演示"}</span></ArtifactPlaceholder>;
+function DemonstrationRenderer({ artifact, onAction, actionBusy }: ArtifactRendererProps) {
+  if (artifact.presentation.type !== "demonstration_v1" && artifact.presentation.type !== "demonstration_v2") return <ArtifactContractError />;
+  return <DemonstrationArtifact artifact={artifact} onAction={onAction} actionBusy={actionBusy} />;
 }
 
 function SourceInspectorPlaceholder({ artifact }: ArtifactRendererProps) {
