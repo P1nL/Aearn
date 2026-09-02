@@ -4,17 +4,19 @@ type LessonSourcesPanelProps = {
   sources: LessonCitation[];
   selectedCitationId: string | null;
   onSelect: (citationId: string) => void;
+  idPrefix?: string;
 };
 
-export function LessonSourcesPanel({ sources, selectedCitationId, onSelect }: LessonSourcesPanelProps) {
+export function LessonSourcesPanel({ sources, selectedCitationId, onSelect, idPrefix = "source" }: LessonSourcesPanelProps) {
+  const titleId = idPrefix === "source" ? "lesson-sources-title" : idPrefix + "-lesson-sources-title";
   return (
-    <aside className="lesson-sources" aria-labelledby="lesson-sources-title">
-      <header><p className="tutor-panel-eyebrow">Evidence</p><h2 id="lesson-sources-title">权威来源</h2><span>{sources.length} 条冻结快照</span></header>
+    <aside className="lesson-sources" aria-labelledby={titleId}>
+      <header><p className="tutor-panel-eyebrow">Evidence</p><h2 id={titleId}>权威来源</h2><span>{sources.length} 条冻结快照</span></header>
       <div className="lesson-source-list">
         {sources.map((source, index) => {
           const selected = source.citation_id === selectedCitationId;
           return (
-            <article id={`source-${source.citation_id}`} key={source.citation_id} className={selected ? "lesson-source selected" : "lesson-source"}>
+            <article id={idPrefix + "-source-" + source.citation_id} key={source.citation_id} className={selected ? "lesson-source selected" : "lesson-source"}>
               <button type="button" className="lesson-source-heading" onClick={() => onSelect(source.citation_id)} aria-expanded={selected}>
                 <span>{index + 1}</span><span><strong>{source.display_name}</strong><small>{source.provider}</small></span>
               </button>

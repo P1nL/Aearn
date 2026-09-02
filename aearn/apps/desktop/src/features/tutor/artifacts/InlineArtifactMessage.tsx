@@ -4,7 +4,7 @@ import type { TutorPublicArtifactItem } from "../../../types";
 import { Button } from "../../../ui/dsh-derived";
 import { artifactRendererFor } from "./ArtifactRendererRegistry";
 import { SafeMarkdown } from "./SafeMarkdown";
-import type { TutorArtifactActionHandler, TutorArtifactActionRequest, TutorArtifactAttemptLoader, TutorArtifactReturnToSource } from "./artifactRendererTypes";
+import type { TutorArtifactActionHandler, TutorArtifactActionRequest, TutorArtifactAttemptLoader, TutorArtifactReturnToSource, TutorDocumentReferenceOpener } from "./artifactRendererTypes";
 import {
   artifactUiStateKey,
   isTerminalArtifact,
@@ -26,6 +26,7 @@ export type InlineArtifactMessageProps = {
   loadDetail?: (artifact: TutorPublicArtifactItem) => Promise<TutorPublicArtifactItem>;
   loadAttempt?: TutorArtifactAttemptLoader;
   onReturnToSource?: TutorArtifactReturnToSource;
+  onOpenDocumentReference?: TutorDocumentReferenceOpener;
 };
 
 const ACTION_LABELS: Record<TutorArtifactAction, string> = {
@@ -59,6 +60,7 @@ export function InlineArtifactMessage({
   loadDetail,
   loadAttempt,
   onReturnToSource,
+  onOpenDocumentReference,
 }: InlineArtifactMessageProps) {
   const terminal = isTerminalArtifact(artifact);
   const hasSeenNonTerminalRef = useRef(!terminal);
@@ -191,8 +193,10 @@ export function InlineArtifactMessage({
                 actionBusy,
                 loadAttempt,
                 onReturnToSource,
+                onOpenDocumentReference,
               })
             : <div className="inline-artifact-contract-error" role="alert"><strong>ARTIFACT_PRESENTATION_CONTRACT_ERROR</strong><span>展示类型不可用</span></div>}
+      {renderedArtifact.source_references.length > 0 ? <ArtifactSourceReferences artifact={renderedArtifact} /> : null}
       {terminal ? <ArtifactTerminalSummary artifact={artifact} /> : null}
       {renderer && renderedActions.length > 0 ? <div className="inline-artifact-actions" aria-label="工件操作">
         {renderedActions.map((action) => {
@@ -203,6 +207,16 @@ export function InlineArtifactMessage({
       </div> : null}
     </div> : null}
   </article>;
+}
+
+function ArtifactSourceReferences({ artifact }: { artifact: TutorPublicArtifactItem }) {
+  return <div className="artifact-source-reference-chips" aria-label="工件来源引用">
+    {artifact.source_references.map((reference) => <span
+      key={[reference.kind, reference.reference_id, reference.reference_version, reference.content_hash].join(":")}
+      data-kind={reference.kind}
+      title={reference.label}
+    ><span aria-hidden="true">§</span><strong>{reference.label}</strong></span>)}
+  </div>;
 }
 
 function ArtifactTerminalSummary({ artifact }: { artifact: TutorPublicArtifactItem }) {

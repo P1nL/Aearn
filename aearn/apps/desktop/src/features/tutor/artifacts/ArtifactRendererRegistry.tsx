@@ -10,7 +10,7 @@ import { SafeMarkdown } from "./SafeMarkdown";
 import { KnowledgeCheckArtifact } from "./KnowledgeCheckArtifact";
 import { ModelCodeReviewArtifact } from "./ModelCodeReviewArtifact";
 import { SqlWorkspaceArtifact } from "./SqlWorkspaceArtifact";
-import type { TutorArtifactActionHandler, TutorArtifactAttemptLoader, TutorArtifactReturnToSource } from "./artifactRendererTypes";
+import type { TutorArtifactActionHandler, TutorArtifactAttemptLoader, TutorArtifactReturnToSource, TutorDocumentReferenceOpener } from "./artifactRendererTypes";
 import type { ArtifactRendererUiState } from "./artifactUiState";
 
 export type ArtifactRendererProps = {
@@ -21,6 +21,7 @@ export type ArtifactRendererProps = {
   actionBusy?: boolean;
   loadAttempt?: TutorArtifactAttemptLoader;
   onReturnToSource?: TutorArtifactReturnToSource;
+  onOpenDocumentReference?: TutorDocumentReferenceOpener;
 };
 
 export type ArtifactRenderer = (props: ArtifactRendererProps) => ReactElement;
@@ -37,7 +38,7 @@ const ARTIFACT_RENDERER_REGISTRY = {
   sql_workspace_v2: SqlWorkspaceRenderer,
   demonstration_v1: DemonstrationRenderer,
   demonstration_v2: DemonstrationRenderer,
-  source_inspector_v1: SourceInspectorPlaceholder,
+  source_inspector_v1: SourceInspectorRenderer,
 } satisfies Record<ArtifactPresentationType, ArtifactRenderer>;
 
 export const ARTIFACT_PRESENTATION_TYPES = Object.freeze(Object.keys(ARTIFACT_RENDERER_REGISTRY) as ArtifactPresentationType[]);
@@ -95,10 +96,21 @@ function DemonstrationRenderer({ artifact, onAction, actionBusy }: ArtifactRende
   return <DemonstrationArtifact artifact={artifact} onAction={onAction} actionBusy={actionBusy} />;
 }
 
-function SourceInspectorPlaceholder({ artifact }: ArtifactRendererProps) {
+function SourceInspectorRenderer({ artifact, onOpenDocumentReference }: ArtifactRendererProps) {
   const presentation = artifact.presentation;
   if (presentation.type !== "source_inspector_v1") return <ArtifactContractError />;
-  return <ArtifactPlaceholder label="来源定位"><p>{presentation.excerpt}</p></ArtifactPlaceholder>;
+  return <section className="artifact-source-inspector" aria-label="来源定位">
+    <blockquote>{presentation.excerpt}</blockquote>
+    <button
+      className="tutor-compact-button"
+      type="button"
+      disabled={!onOpenDocumentReference}
+      onClick={(event) => onOpenDocumentReference?.({
+        knowledgeKey: artifact.knowledge_key,
+        source: { kind: "artifact", artifact_id: artifact.id, artifact_version: artifact.version },
+      }, event.currentTarget)}
+    >查看来源文档</button>
+  </section>;
 }
 
 function ArtifactPlaceholder({ label, children }: { label: string; children: ReactNode }) {

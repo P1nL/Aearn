@@ -237,6 +237,44 @@ class PostgresTutorContextReferenceRepository:
             result.setdefault(str(row["message_id"]), []).append(_public_row(row))
         return {key: tuple(value) for key, value in result.items()}
 
+    def read_lesson_selection_reference(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str,
+        track_id: str,
+        knowledge_key: str,
+        reference_id: str,
+    ) -> dict[str, object]:
+        row = self._conn.execute(
+            """
+            SELECT id::text AS reference_id,safe_payload_json,safe_payload_hash,created_at
+            FROM tutor_message_context_references
+            WHERE id=%s AND user_id=%s AND conversation_id=%s
+              AND track_id=%s AND knowledge_key=%s
+              AND reference_kind='lesson_selection'
+            """,
+            (reference_id, user_id, conversation_id, track_id, knowledge_key),
+        ).fetchone()
+        if row is None:
+            raise ContextReferenceError(
+                "CONTEXT_REFERENCE_NOT_FOUND",
+                "课程引用不存在或不属于当前 conversation 与 LearningTrack。",
+                status_code=404,
+                recoverable=False,
+            )
+        reference = _public_row(row)
+        if (
+            reference.get("kind") != ContextReferenceKind.LESSON_SELECTION.value
+            or reference.get("learning_track_id") != track_id
+            or reference.get("knowledge_key") != knowledge_key
+        ):
+            raise ContextReferenceError(
+                "CONTEXT_REFERENCE_STALE",
+                "课程引用的已保存 scope 已失效。",
+            )
+        return reference
+
     def _project_reference(
         self,
         *,

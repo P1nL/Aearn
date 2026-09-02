@@ -15,19 +15,22 @@ const api = vi.hoisted(() => ({
 const mounts = vi.hoisted(() => ({ tutor: 0, lesson: 0 }));
 vi.mock("../../../api", () => api);
 vi.mock("../../tutor/TutorConversationSurface", () => ({
-  TutorConversationSurface: () => {
+  TutorConversationSurface: ({ onOpenDocumentReference }: { onOpenDocumentReference?: (request: unknown, trigger: HTMLElement) => void }) => {
     const [draft, setDraft] = useState("");
     useEffect(() => { mounts.tutor += 1; }, []);
-    return <label>Tutor 草稿<input aria-label="Tutor 草稿" value={draft} onChange={(event) => setDraft(event.target.value)} /></label>;
+    return <div><label>Tutor 草稿<input aria-label="Tutor 草稿" value={draft} onChange={(event) => setDraft(event.target.value)} /></label><button type="button" onClick={(event) => onOpenDocumentReference?.({ knowledgeKey: "javascript.closure", source: { kind: "context_reference", reference_id: "88888888-8888-4888-8888-888888888888" } }, event.currentTarget)}>Tutor 来源</button></div>;
   },
 }));
 vi.mock("../LessonDocumentPage", () => ({
-  LessonDocumentPage: ({ onAuthorityChange }: { onAuthorityChange?: (state: unknown) => void }) => {
+  LessonDocumentPage: ({ onAuthorityChange, onOpenDocumentReference }: { onAuthorityChange?: (state: unknown) => void; onOpenDocumentReference?: (request: unknown, trigger: HTMLElement) => void }) => {
     const [selection, setSelection] = useState("");
     useEffect(() => { mounts.lesson += 1; }, []);
     useEffect(() => { onAuthorityChange?.(lessonState); }, [onAuthorityChange]);
-    return <label>Lesson 选择<input aria-label="Lesson 选择" value={selection} onChange={(event) => setSelection(event.target.value)} /></label>;
+    return <div><label>Lesson 选择<input aria-label="Lesson 选择" value={selection} onChange={(event) => setSelection(event.target.value)} /></label><button type="button" onClick={(event) => onOpenDocumentReference?.({ knowledgeKey: "javascript.closure", source: { kind: "lesson_block", document_id: lessonState.assignment.document_id, document_content_hash: lessonState.document.content_hash, assignment_version: 2, block_id: "concept", citation_id: null } }, event.currentTarget)}>Lesson 来源</button></div>;
   },
+}));
+vi.mock("../lesson/LessonDocumentDrawer", () => ({
+  LessonDocumentDrawer: ({ request, onClose }: { request: { source: { kind: string } }; onClose: () => void }) => <aside role="dialog" aria-label="来源文档测试抽屉"><span>{request.source.kind}</span><button type="button" onClick={onClose}>关闭来源文档</button></aside>,
 }));
 vi.mock("../LearningRoadmapPanel", () => ({ LearningRoadmapPanel: () => <div>Roadmap</div> }));
 vi.mock("../ReviewSessionPanel", () => ({ ReviewSessionPanel: () => <div>Review</div> }));
@@ -117,6 +120,32 @@ describe("TrackLearningWorkspace teaching role swap", () => {
     await user.click(screen.getByRole("button", { name: "展开右侧辅助面板" }));
     expect(grid).not.toHaveClass("roadmap-collapsed");
     expect(grid).not.toHaveClass("secondary-collapsed");
+    expect(mounts.tutor).toBe(1);
+    expect(mounts.lesson).toBe(1);
+  });
+
+  it("opens and closes the source drawer without remounting Tutor or Lesson and restores the exact trigger focus", async () => {
+    const user = userEvent.setup();
+    render(<TrackLearningWorkspace user={userProfile} trackId={track.track_id} onBack={vi.fn()} />);
+
+    const tutorDraft = await screen.findByRole("textbox", { name: "Tutor 草稿" });
+    const lessonSelection = screen.getByRole("textbox", { name: "Lesson 选择" });
+    await user.type(tutorDraft, "保留工件编辑状态");
+    await user.type(lessonSelection, "保留课程选区");
+    const trigger = screen.getByRole("button", { name: "Tutor 来源" });
+    await user.click(trigger);
+
+    expect(screen.getByRole("dialog", { name: "来源文档测试抽屉" })).toHaveTextContent("context_reference");
+    expect(screen.getByRole("textbox", { name: "Tutor 草稿" })).toHaveValue("保留工件编辑状态");
+    expect(screen.getByRole("textbox", { name: "Lesson 选择" })).toHaveValue("保留课程选区");
+    expect(mounts.tutor).toBe(1);
+    expect(mounts.lesson).toBe(1);
+
+    await user.click(screen.getByRole("button", { name: "关闭来源文档" }));
+    await waitFor(() => expect(trigger).toHaveFocus());
+    expect(screen.queryByRole("dialog", { name: "来源文档测试抽屉" })).not.toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Tutor 草稿" })).toHaveValue("保留工件编辑状态");
+    expect(screen.getByRole("textbox", { name: "Lesson 选择" })).toHaveValue("保留课程选区");
     expect(mounts.tutor).toBe(1);
     expect(mounts.lesson).toBe(1);
   });

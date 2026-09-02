@@ -1,4 +1,5 @@
 import type {
+  LessonDocumentReferenceOpenRequest,
   TutorArtifactAction,
   TutorArtifactAttemptDetail,
   TutorArtifactSourceReference,
@@ -31,4 +32,9 @@ export type TutorArtifactReturnToSourceRequest = {
 
 export type TutorArtifactReturnToSource = (
   request: TutorArtifactReturnToSourceRequest,
+) => void;
+
+export type TutorDocumentReferenceOpener = (
+  request: LessonDocumentReferenceOpenRequest,
+  trigger: HTMLElement,
 ) => void;

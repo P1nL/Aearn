@@ -225,4 +225,29 @@ describe("InlineArtifactMessage", () => {
     rendered.rerender(<StrictMode><InlineArtifactMessage artifact={{ ...item, version: 2, state: "running" }} autoReveal /></StrictMode>);
     expect(scrollIntoView).toHaveBeenCalledTimes(1);
   });
+
+  it("keeps a source-inspector artifact compact and opens the exact artifact version from its trigger", async () => {
+    const user = userEvent.setup();
+    const onOpenDocumentReference = vi.fn();
+    const item = artifact(presentations[7], {
+      source_references: [{
+        kind: "lesson_document",
+        reference_id: "document-1",
+        reference_version: 4,
+        content_hash: "f".repeat(64),
+        label: "闭包课程 · 版本 4",
+      }],
+    });
+    render(<InlineArtifactMessage artifact={item} onOpenDocumentReference={onOpenDocumentReference} />);
+
+    expect(screen.getByText("稳定来源摘录")).toBeInTheDocument();
+    expect(screen.getByLabelText("工件来源引用")).toHaveTextContent("闭包课程 · 版本 4");
+    const trigger = screen.getByRole("button", { name: "查看来源文档" });
+    await user.click(trigger);
+    expect(onOpenDocumentReference).toHaveBeenCalledWith({
+      knowledgeKey: "javascript.dom",
+      source: { kind: "artifact", artifact_id: "artifact-1", artifact_version: 1 },
+    }, trigger);
+    expect(screen.queryByText(/完整文档/)).not.toBeInTheDocument();
+  });
 });

@@ -11,6 +11,7 @@ import type {
   LearningRoadmap,
   LearningScopeInput,
   LearningTrackDetail,
+  LessonDocumentReferenceOpenRequest,
   LessonDocumentState,
   LessonFollowState,
   LessonFollowTarget,
@@ -24,6 +25,7 @@ import type {
 import { TutorConversationSurface, type TutorComposerReference } from "../tutor/TutorConversationSurface";
 import { LearningRoadmapPanel } from "./LearningRoadmapPanel";
 import { LessonDocumentPage } from "./LessonDocumentPage";
+import { LessonDocumentDrawer } from "./lesson/LessonDocumentDrawer";
 import { ReviewSessionPanel } from "./ReviewSessionPanel";
 import { type TeachingAuthorityInput, useTeachingWorkspaceController } from "./useTeachingWorkspaceController";
 
@@ -83,12 +85,14 @@ export function TrackLearningWorkspace({
   const [lessonAuthority, setLessonAuthority] = useState<LessonDocumentState | null>(null);
   const [followState, setFollowState] = useState<LessonFollowState>("following");
   const [followConflict, setFollowConflict] = useState<string | null>(null);
+  const [documentReference, setDocumentReference] = useState<LessonDocumentReferenceOpenRequest | null>(null);
   const roadmapDrawerRef = useRef<HTMLElement | null>(null);
   const roadmapDrawerTriggerRef = useRef<HTMLButtonElement | null>(null);
   const roadmapDrawerCloseRef = useRef<HTMLButtonElement | null>(null);
   const loadAuthorityRef = useRef<(() => Promise<void>) | null>(null);
   const openedAuthorityKeyRef = useRef<string | null>(null);
   const previousSessionIdentityRef = useRef<string | null>(null);
+  const documentDrawerTriggerRef = useRef<HTMLElement | null>(null);
 
   const handleTeachingTransition = useCallback((next: TeachingSessionProjection) => {
     setKnowledgeKey(next.knowledge_key);
@@ -176,7 +180,17 @@ export function TrackLearningWorkspace({
   useEffect(() => {
     setReferences([]);
     setReferenceTaskKind(null);
+    setDocumentReference(null);
+    documentDrawerTriggerRef.current = null;
   }, [mode, knowledgeKey, reviewSessionId, trackId, user.id]);
+
+  useEffect(() => {
+    if (documentReference !== null || !documentDrawerTriggerRef.current) return;
+    const trigger = documentDrawerTriggerRef.current;
+    documentDrawerTriggerRef.current = null;
+    const timer = globalThis.setTimeout(() => trigger.focus({ preventScroll: true }), 0);
+    return () => globalThis.clearTimeout(timer);
+  }, [documentReference]);
 
   useEffect(() => {
     if (!roadmapDrawerOpen) return;
@@ -274,6 +288,16 @@ export function TrackLearningWorkspace({
   async function refreshAuthority() {
     const controller = new AbortController();
     await loadAuthority(controller.signal);
+  }
+
+  function openDocumentReference(request: LessonDocumentReferenceOpenRequest, trigger: HTMLElement) {
+    documentDrawerTriggerRef.current = trigger;
+    setSecondaryCollapsed(false);
+    setDocumentReference(request);
+  }
+
+  function closeDocumentReference() {
+    setDocumentReference(null);
   }
 
   function closeRoadmapDrawer() {
@@ -379,6 +403,7 @@ export function TrackLearningWorkspace({
             followEnabled={mode === "lesson" && teachingMode === "guided" && followState === "following"}
             onFollowPause={() => { if (mode === "lesson" && teachingMode === "guided") setFollowState("follow_paused"); }}
             onFollowConflict={(message) => { setFollowConflict(message); if (message) setFollowState("follow_paused"); }}
+            onOpenDocumentReference={openDocumentReference}
           /> : null}
         </section>
 
@@ -411,9 +436,18 @@ export function TrackLearningWorkspace({
             })}
             onReferencesAccepted={(_saved: TutorContextReference[]) => { setReferences([]); setReferenceTaskKind(null); }}
             onHistoricalMessageReference={mode === "lesson" ? (draft, label) => addReference(draft, label, "lesson_teaching", false) : undefined}
+            onOpenDocumentReference={openDocumentReference}
           />
         </aside>
       </div>
+
+      {documentReference ? <LessonDocumentDrawer
+        userId={user.id}
+        trackId={trackId}
+        conversationId={conversationId}
+        request={documentReference}
+        onClose={closeDocumentReference}
+      /> : null}
 
       {(teaching.error || followConflict) ? <div className="learning-workspace-authority-notice" role="alert"><strong>{teaching.error?.code ?? "LESSON_FOLLOW_CONFLICT"}</strong><span>{teaching.error?.message ?? followConflict}</span><button className="tutor-text-button" type="button" onClick={() => { setFollowConflict(null); void teaching.refresh(); }}>刷新 authority</button></div> : null}
 

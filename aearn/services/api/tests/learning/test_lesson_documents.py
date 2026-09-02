@@ -13,6 +13,21 @@ from app.db.bootstrap import bootstrap_database
 from app.db.connection import connect
 from app.main import app
 from app.services.grounding.grounding_index_repository import run_and_persist_fixture_grounding_reindex
+from app.services.learning.artifacts.contracts import (
+    TutorArtifactCreate,
+    TutorArtifactKind,
+    TutorArtifactOwnerKind,
+    TutorArtifactPurpose,
+    TutorArtifactSourceInspectorPresentationV1,
+    TutorArtifactSourceReferenceV1,
+    TutorArtifactState,
+)
+from app.services.learning.artifacts.conversation_events import (
+    PostgresTutorArtifactConversationEventSink,
+)
+from app.services.learning.artifacts.repository import PostgresLearningArtifactRepository
+from app.services.learning.teaching_contracts import TeachingSessionMode
+from app.services.learning.teaching_sessions import TeachingSessionService
 from tests.support.learning_track_support import sample_plan_payload
 from tests.learning.test_lesson_document_authoring import FakeLessonAuthor
 from tests.support.tutor_public_api_support import assert_error
@@ -105,6 +120,148 @@ def test_missing_prepare_ready_start_refresh_and_explicit_migration(lesson_clien
     assert body["sources"][0]["evidence_excerpt"]
     assert body["document"]["blocks"][7]["type"] == "exercise_gate"
     assignment = body["assignment"]
+    document = body["document"]
+    concept = next(item for item in document["blocks"] if item["block_id"] == "concept")
+    conversation_id = str(uuid4())
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO tutor_conversations (id,user_id) VALUES (%s,%s)",
+            (conversation_id, user_id),
+        )
+        conn.execute(
+            """
+            INSERT INTO tutor_conversation_learning_scopes (
+              conversation_id,user_id,scope_kind,learning_track_id
+            ) VALUES (%s,%s,'learning_track',%s)
+            """,
+            (conversation_id, user_id, track_id),
+        )
+        conn.commit()
+    reference_path = f"/api/learning-tracks/{track_id}/lesson-references/{conversation_id}/resolve"
+    reference_request = {
+        "user_id": user_id,
+        "knowledge_key": "python.variables",
+        "source": {
+            "kind": "lesson_block",
+            "document_id": assignment["document_id"],
+            "document_content_hash": document["content_hash"],
+            "assignment_version": assignment["assignment_version"],
+            "block_id": concept["block_id"],
+            "citation_id": concept["citation_ids"][0],
+        },
+    }
+    current_reference = lesson_client.post(reference_path, json=reference_request)
+    assert current_reference.status_code == 200
+    assert current_reference.json()["reference_status"] == "current"
+    assert current_reference.json()["target"]["selected_citation_id"] == concept["citation_ids"][0]
+
+    malformed_reference = lesson_client.post(
+        reference_path,
+        json={**reference_request, "source": {**reference_request["source"], "selector": ".concept"}},
+    )
+    assert_error(malformed_reference, "VALIDATION_ERROR", 400)
+
+    with connect() as conn:
+        opened = TeachingSessionService(conn).open(
+            user_id=user_id,
+            track_id=track_id,
+            knowledge_key="python.variables",
+            conversation_id=conversation_id,
+            expected_track_version=int(body["track_version"]),
+            expected_progress_version=int(body["progress_version"]),
+            expected_assignment_version=int(assignment["assignment_version"]),
+            mode=TeachingSessionMode.FREE_READING,
+            idempotency_key=f"source-inspector-session-{uuid4()}",
+        )
+        session = opened["teaching_session"]
+        assert isinstance(session, dict)
+        artifact = PostgresLearningArtifactRepository(
+            conn,
+            conversation_events=PostgresTutorArtifactConversationEventSink(conn),
+        ).create_artifact(
+            TutorArtifactCreate(
+                user_id=user_id,
+                conversation_id=conversation_id,
+                learning_track_id=track_id,
+                knowledge_key="python.variables",
+                teaching_session_id=str(session["session_id"]),
+                checkpoint_id=str(session["checkpoint_id"]),
+                track_version=int(body["track_version"]),
+                progress_version=int(body["progress_version"]),
+                assignment_version=int(assignment["assignment_version"]),
+                owner_kind=TutorArtifactOwnerKind.TEACHING_PRACTICE,
+                owner_id=str(session["checkpoint_id"]),
+                owner_version=int(session["session_version"]),
+                owner_context_version=int(session["session_version"]),
+                artifact_kind=TutorArtifactKind.SOURCE_INSPECTOR,
+                purpose=TutorArtifactPurpose.REMEDIATION,
+                state=TutorArtifactState.ACTIVE,
+                blocking=False,
+                title="课程来源定位",
+                instruction_markdown="查看该课程块绑定的冻结来源。",
+                presentation=TutorArtifactSourceInspectorPresentationV1(
+                    document_id=str(assignment["document_id"]),
+                    document_content_hash=str(document["content_hash"]),
+                    block_id=str(concept["block_id"]),
+                    excerpt=str(concept["title"]),
+                    citation_ids=tuple(str(item) for item in concept["citation_ids"]),
+                ),
+                source_references=(
+                    TutorArtifactSourceReferenceV1(
+                        kind="lesson_document",
+                        reference_id=str(assignment["document_id"]),
+                        reference_version=int(assignment["assignment_version"]),
+                        content_hash=str(document["content_hash"]),
+                        label="Python 变量课程",
+                    ),
+                ),
+            ),
+            creation_key=f"source-inspector-{uuid4()}",
+        ).artifact
+        conn.commit()
+
+    artifact_reference = lesson_client.post(
+        reference_path,
+        json={
+            "user_id": user_id,
+            "knowledge_key": "python.variables",
+            "source": {
+                "kind": "artifact",
+                "artifact_id": artifact.id,
+                "artifact_version": artifact.version,
+            },
+        },
+    )
+    assert artifact_reference.status_code == 200
+    assert artifact_reference.json()["source_id"] == artifact.id
+    assert artifact_reference.json()["target"]["block_id"] == concept["block_id"]
+    assert artifact_reference.json()["target"]["citation_ids"] == concept["citation_ids"]
+
+    stale_artifact_version = lesson_client.post(
+        reference_path,
+        json={
+            "user_id": user_id,
+            "knowledge_key": "python.variables",
+            "source": {
+                "kind": "artifact",
+                "artifact_id": artifact.id,
+                "artifact_version": artifact.version + 1,
+            },
+        },
+    )
+    assert_error(stale_artifact_version, "DOCUMENT_REFERENCE_STALE", 409)
+
+    stale_hash = lesson_client.post(
+        reference_path,
+        json={
+            **reference_request,
+            "source": {
+                **reference_request["source"],
+                "document_content_hash": "f" * 64,
+            },
+        },
+    )
+    assert_error(stale_hash, "DOCUMENT_REFERENCE_STALE", 409)
 
     started = lesson_client.post(
         f"{path}/start",
@@ -147,6 +304,14 @@ def test_missing_prepare_ready_start_refresh_and_explicit_migration(lesson_clien
     assert activated.json()["assignment"]["status"] == "active"
     migrated = lesson_client.get(f"{path}?user_id={user_id}").json()
     assert migrated["document"]["title"] == "Python 变量：自动化目标版"
+
+    historical_reference = lesson_client.post(reference_path, json=reference_request)
+    assert historical_reference.status_code == 200
+    historical_body = historical_reference.json()
+    assert historical_body["reference_status"] == "historical"
+    assert historical_body["document"]["content_hash"] == document["content_hash"]
+    assert historical_body["current_assignment"]["document_id"] == migrated["assignment"]["document_id"]
+    assert historical_body["current_assignment"]["document_id"] != assignment["document_id"]
 
 
 def test_verified_scope_locked_node_cross_user_and_idempotency_conflict(lesson_client: TestClient) -> None:

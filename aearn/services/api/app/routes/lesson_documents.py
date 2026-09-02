@@ -13,8 +13,13 @@ from app.models.lesson_documents import (
     ActivateLessonMigrationRequest,
     PrepareLessonDocumentRequest,
     StartLessonDocumentRequest,
+    ResolveLessonDocumentReferenceRequest,
 )
 from app.services.learning.lesson_authoring import dispatch_lesson_authoring_run
+from app.services.learning.lesson_references import (
+    LessonDocumentReferenceError,
+    LessonDocumentReferenceResolver,
+)
 from app.services.learning.lesson_service import LessonDocumentService, LessonDocumentServiceError
 from app.services.tutor.cutover import runtime_gate_error
 
@@ -32,6 +37,37 @@ def read_lesson_document(
         return unavailable
     response = _call(request, lambda service: service.read(user_id=user_id, track_id=track_id, knowledge_key=knowledge_key))
     return response if isinstance(response, JSONResponse) else JSONResponse(status_code=200, content=jsonable_encoder(response))
+
+
+@router.post("/{track_id}/lesson-references/{conversation_id}/resolve", response_model=None)
+def resolve_lesson_document_reference(
+    track_id: str,
+    conversation_id: str,
+    payload: ResolveLessonDocumentReferenceRequest,
+    request: Request,
+) -> JSONResponse:
+    unavailable = _require_verified(request, payload.user_id)
+    if unavailable is not None:
+        return unavailable
+    with connect() as conn:
+        try:
+            response = LessonDocumentReferenceResolver(conn).resolve(
+                user_id=payload.user_id,
+                conversation_id=conversation_id,
+                track_id=track_id,
+                knowledge_key=payload.knowledge_key,
+                source=payload.source,
+            )
+        except LessonDocumentReferenceError as exc:
+            conn.rollback()
+            return error_response(
+                request,
+                code=exc.code,
+                message=exc.message,
+                status_code=exc.status_code,
+                recoverable=exc.recoverable,
+            )
+    return JSONResponse(status_code=200, content=jsonable_encoder(response))
 
 
 @router.post("/{track_id}/lessons/{knowledge_key}/prepare", response_model=None)

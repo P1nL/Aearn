@@ -1969,6 +1969,15 @@
 .code-editor-state { min-width: 0; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
 .code-editor-stale { color: #9a5b13; font-weight: 750; }
 
+/* Child 10 compact Artifact source references and exact document opener. */
+.artifact-source-reference-chips { display: flex; min-width: 0; flex-wrap: wrap; gap: 6px; }
+.artifact-source-reference-chips > span { display: inline-flex; max-width: 100%; align-items: center; gap: 5px; min-height: 28px; padding: 4px 8px; border: 1px solid rgba(47, 125, 99, .18); border-radius: 999px; color: var(--accent-dark); background: rgba(47, 125, 99, .06); }
+.artifact-source-reference-chips > span > span { font-size: 10px; }
+.artifact-source-reference-chips strong { overflow: hidden; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.artifact-source-inspector { display: grid; min-width: 0; gap: 10px; }
+.artifact-source-inspector blockquote { margin: 0; padding: 10px 12px; border-left: 3px dashed rgba(47, 125, 99, .5); color: var(--muted); background: rgba(47, 125, 99, .045); overflow-wrap: anywhere; }
+.artifact-source-inspector button { justify-self: start; min-height: 40px; }
+
 /* Child 09 structured SQL editor, public schema, and bounded result grid. */
 .sql-workspace-artifact,
 .sql-workspace-split,

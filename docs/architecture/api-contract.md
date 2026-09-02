@@ -810,3 +810,12 @@ DDL/DML/ATTACH/PRAGMA、unpublished table、extension/file functions、超时、
 500 字符 cell 或 65,536-byte table presentation。public dataset 的结果列/行原样进入 bounded grid；hidden
 dataset 只投影顺序化 `non-visible-N` pass/fail summary。本路径不新建 Gate/Review authority，也不写
 mastery/progress。
+
+
+## 2026-09-02：LessonDocument exact reference resolver
+
+新增 verified-only 读取端点 POST /api/learning-tracks/{track_id}/lesson-references/{conversation_id}/resolve。请求 body 为 {user_id, knowledge_key, source}，source 是严格判别 union：当前 Lesson citation 提交 document_id + content hash + assignment version + block + optional citation；历史消息提交 persisted context reference ID；来源工件提交 exact Artifact ID/version。unknown/extra field 不被忽略。
+
+服务端先校验 conversation 的 exact user/learning-track scope，再解析 immutable source identity。context reference 必须是同 conversation/track/knowledge 的 lesson_selection 且 safe payload hash 有效；Artifact 必须是同 scope、同版本的 source_inspector_v1，并且 presentation 与唯一 lesson_document source reference 的 document/hash/version 一致。随后按 exact assignment/document/version/hash/block/excerpt/range/citation 读取冻结 Lesson 与 source snapshots，不做文本、DOM 顺序或 active-document fallback。
+
+公开 lesson_document_reference_v1 返回 source identity、current/historical、exact assignment、current active assignment pointer、完整 learner-visible frozen Lesson、bounded source snapshots 和 target block/hash/safe excerpt/citations。跨 scope 或不存在对象返回 404 DOCUMENT_REFERENCE_NOT_FOUND；格式非法返回 validation/422 DOCUMENT_REFERENCE_INVALID；version/hash/block/range/citation/provenance 不一致返回 409 DOCUMENT_REFERENCE_STALE。历史 assignment 存在时返回旧文档并标记 historical，而不是误框当前相似段落。响应不含 submission、private rubric/test/reference answer、provider body/reasoning、命令、路径、容器或 secret。

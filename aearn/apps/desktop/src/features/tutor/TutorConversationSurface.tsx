@@ -25,7 +25,7 @@ import {
   IconEdit, IconQueue, IconSend, IconStop, Input, StateDot,
 } from "../../ui/dsh-derived";
 import { ComposerActionShelf } from "./ComposerActionShelf";
-import type { TutorArtifactActionHandler, TutorArtifactActionRequest, TutorArtifactAttemptLoader, TutorArtifactReturnToSource } from "./artifacts";
+import type { TutorArtifactActionHandler, TutorArtifactActionRequest, TutorArtifactAttemptLoader, TutorArtifactReturnToSource, TutorDocumentReferenceOpener } from "./artifacts";
 import { TutorActivityPanel } from "./TutorActivityPanel";
 import { TutorMemoryPanel } from "./TutorMemoryPanel";
 import { TutorPlanPreferencesPanel } from "./TutorPlanPreferencesPanel";
@@ -59,6 +59,7 @@ export type TutorConversationSurfaceProps = {
   onTeachingAction?: (descriptor: TeachingActionDescriptor) => void;
   onTeachingAuthorityChanged?: () => void;
   onArtifactAction?: TutorArtifactActionHandler;
+  onOpenDocumentReference?: TutorDocumentReferenceOpener;
 };
 type LoadStatus = "idle" | "loading" | "ready" | "error";
 type PreferenceUpdate = { inferredMemoryEnabled?: boolean; expectedMemorySettingVersion?: string; proactivePaused?: boolean };
@@ -80,7 +81,7 @@ export function TutorConversationSurface({
   onConversationsChanged, mode = "general", showControls = true, planningComposerPlaceholder, composerVariant = "card", learningScope, scopeLabel,
   contextReferences = [], onRemoveContextReference, onReferencesAccepted, onHistoricalMessageReference,
   activeTeachingSessionId = null, teachingActionShelf = null, pendingTeachingActionKey = null,
-  onTeachingAction, onTeachingAuthorityChanged, onArtifactAction,
+  onTeachingAction, onTeachingAuthorityChanged, onArtifactAction, onOpenDocumentReference,
 }: TutorConversationSurfaceProps) {
   const [timeline, setTimeline] = useState<TutorHistoryItem[]>([]);
   const [loadStatus, setLoadStatus] = useState<LoadStatus>("idle");
@@ -723,6 +724,7 @@ export function TutorConversationSurface({
           loadArtifactDetail={loadArtifactDetail}
           loadArtifactAttempt={loadArtifactAttempt}
           onReturnToArtifactSource={returnToArtifactSource}
+          onOpenDocumentReference={onOpenDocumentReference}
         />
         <TimelineSequence
           items={groupedTimeline.current}
@@ -737,6 +739,7 @@ export function TutorConversationSurface({
           loadArtifactDetail={loadArtifactDetail}
           loadArtifactAttempt={loadArtifactAttempt}
           onReturnToArtifactSource={returnToArtifactSource}
+          onOpenDocumentReference={onOpenDocumentReference}
         />
         {thinkingTurn && (running || Boolean(liveThinking?.receivedText) || runtimeOutputHasContent(liveRuntimeOutput)) ? <TutorRunningPlaceholder
           key={`${thinkingTurn.turn_id}:${liveRuntimeOutput?.generation ?? liveThinking?.generation ?? "pending"}`}

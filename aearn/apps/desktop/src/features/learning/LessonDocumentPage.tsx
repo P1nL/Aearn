@@ -15,6 +15,7 @@ import {
 import { getErrorInfo } from "../../lib/errorMessages";
 import type {
   ExerciseAttemptState,
+  LessonDocumentReferenceOpenRequest,
   LessonDocumentState,
   LessonExerciseGateBlock,
   LessonGateBoundItem,
@@ -44,6 +45,7 @@ type LessonDocumentPageProps = {
   followEnabled?: boolean;
   onFollowPause?: () => void;
   onFollowConflict?: (message: string | null) => void;
+  onOpenDocumentReference?: (request: LessonDocumentReferenceOpenRequest, trigger: HTMLElement) => void;
 };
 
 type LessonAction = "idle" | "preparing" | "starting" | "refreshing" | "migrating";
@@ -54,7 +56,7 @@ type BusyGate = {
   action: GateAction;
 };
 
-export function LessonDocumentPage({ userId, trackId, knowledgeKey, onBack, embedded = false, onContextReference, onAuthorityChange, followTarget = null, followEnabled = false, onFollowPause, onFollowConflict }: LessonDocumentPageProps) {
+export function LessonDocumentPage({ userId, trackId, knowledgeKey, onBack, embedded = false, onContextReference, onAuthorityChange, followTarget = null, followEnabled = false, onFollowPause, onFollowConflict, onOpenDocumentReference }: LessonDocumentPageProps) {
   const [state, setState] = useState<LessonDocumentState | null>(null);
   const [loading, setLoading] = useState(true);
   const [action, setAction] = useState<LessonAction>("idle");
@@ -410,6 +412,7 @@ export function LessonDocumentPage({ userId, trackId, knowledgeKey, onBack, embe
             followEnabled={followEnabled}
             onFollowPause={onFollowPause}
             onFollowConflict={onFollowConflict}
+            onOpenDocumentReference={onOpenDocumentReference}
           />
           <ModuleDiagnosticModal
             open={diagnosticOpen}
