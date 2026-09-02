@@ -1920,7 +1920,9 @@ def _presentation_matches_kind(kind: TutorArtifactKind, presentation: str) -> bo
         TutorArtifactKind.BROWSER_PREVIEW: frozenset({"browser_preview_v1"}),
         TutorArtifactKind.TEST_RESULT: frozenset({"test_result_v1"}),
         TutorArtifactKind.KNOWLEDGE_CHECK: frozenset({"knowledge_check_v1"}),
-        TutorArtifactKind.MODEL_CODE_REVIEW: frozenset({"model_code_review_v1"}),
+        TutorArtifactKind.MODEL_CODE_REVIEW: frozenset(
+            {"model_code_review_v1", "model_code_review_v2"}
+        ),
         TutorArtifactKind.SQL_WORKSPACE: frozenset({"sql_workspace_v1"}),
         TutorArtifactKind.DEMONSTRATION: frozenset(
             {"demonstration_v1", "demonstration_v2"}

@@ -12,7 +12,13 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator,
 from aearn_shared.execution import SafeExecutionResultV2
 from app.services.tutor.branch_contracts import BranchResponseDisposition
 from app.services.learning.item_bank.contracts import validate_demo_event_payload
-from app.services.learning.practice.model_review_contracts import ModelCodeReviewSubmissionV1
+from app.services.learning.practice.model_review_contracts import (
+    ModelCodeReviewSubmissionV1,
+    ModelCodeReviewSubmissionV2,
+    MODEL_REVIEW_CORE_CATEGORIES,
+    ModelReviewArtifactV2,
+    ModelReviewErrorCategoryV2,
+)
 
 
 TUTOR_LEARNING_ARTIFACT_SCHEMA_VERSION = "tutor_learning_artifact_v1"
@@ -344,6 +350,62 @@ class TutorArtifactModelCodeReviewPresentationV1(_StrictArtifactModel):
         return self
 
 
+class TutorArtifactModelCodeReviewPresentationV2(_StrictArtifactModel):
+    type: Literal["model_code_review_v2"] = "model_code_review_v2"
+    exercise_version_id: str = Field(min_length=1, max_length=160)
+    presentation_hash: str = Field(min_length=64, max_length=64)
+    review_target: ModelReviewArtifactV2
+    review_categories: tuple[ModelReviewErrorCategoryV2, ...] = Field(min_length=7, max_length=8)
+    submission_locked: bool = False
+    outcome: Literal["passed", "failed"] | None = None
+    score: float | None = Field(default=None, ge=0, le=1)
+    evaluation_markdown: str = Field(default="", max_length=4_000)
+    review_receipt_id: str | None = Field(default=None, min_length=1, max_length=160)
+    result_hash: str | None = Field(default=None, min_length=64, max_length=64)
+    remediation_handle: str | None = Field(default=None, min_length=67, max_length=67)
+
+    @field_validator("review_categories")
+    @classmethod
+    def validate_review_categories(
+        cls, values: tuple[ModelReviewErrorCategoryV2, ...]
+    ) -> tuple[ModelReviewErrorCategoryV2, ...]:
+        if len(values) != len(set(values)):
+            raise ValueError("artifact review taxonomy must be unique")
+        if not set(MODEL_REVIEW_CORE_CATEGORIES).issubset(values):
+            raise ValueError("artifact review taxonomy is incomplete")
+        return values
+
+    @field_validator("presentation_hash", "result_hash")
+    @classmethod
+    def validate_result_hash(cls, value: str | None) -> str | None:
+        return _require_sha256(value, label="artifact model review hash")
+
+    @model_validator(mode="after")
+    def validate_completion(self) -> "TutorArtifactModelCodeReviewPresentationV2":
+        if self.presentation_hash != self.review_target.presentation_hash:
+            raise ValueError("artifact model review presentation identity is stale")
+        terminal_fields = (
+            self.outcome is not None,
+            self.score is not None,
+            bool(self.evaluation_markdown),
+            self.review_receipt_id is not None,
+            self.result_hash is not None,
+        )
+        if self.submission_locked != all(terminal_fields):
+            raise ValueError("artifact model review terminal fields are inconsistent")
+        if not self.submission_locked and any(terminal_fields):
+            raise ValueError("active model review cannot expose result fields")
+        if self.remediation_handle is not None and not re.fullmatch(
+            r"li:[0-9a-f]{64}", self.remediation_handle
+        ):
+            raise ValueError("artifact model review remediation handle is invalid")
+        if self.submission_locked and (
+            (self.outcome == "failed") != (self.remediation_handle is not None)
+        ):
+            raise ValueError("artifact model review remediation outcome is inconsistent")
+        return self
+
+
 class TutorArtifactSqlWorkspacePresentationV1(_StrictArtifactModel):
     type: Literal["sql_workspace_v1"] = "sql_workspace_v1"
     exercise_version_id: str = Field(min_length=1, max_length=160)
@@ -495,6 +557,7 @@ TutorArtifactPresentationV1 = Annotated[
     | TutorArtifactTestResultPresentationV1
     | TutorArtifactKnowledgeCheckPresentationV1
     | TutorArtifactModelCodeReviewPresentationV1
+    | TutorArtifactModelCodeReviewPresentationV2
     | TutorArtifactSqlWorkspacePresentationV1
     | TutorArtifactDemonstrationPresentationV1
     | TutorArtifactDemonstrationPresentationV2
@@ -801,6 +864,14 @@ class TutorPublicArtifactItem(_StrictArtifactModel):
                 self.presentation,
                 TutorArtifactKnowledgeCheckPresentationV1,
             )
+        if self.artifact_kind is TutorArtifactKind.MODEL_CODE_REVIEW:
+            presentation_matches = isinstance(
+                self.presentation,
+                (
+                    TutorArtifactModelCodeReviewPresentationV1,
+                    TutorArtifactModelCodeReviewPresentationV2,
+                ),
+            )
         if not presentation_matches:
             raise ValueError("artifact kind does not match its presentation")
         if self.state.terminal != (self.terminal_at is not None):
@@ -814,6 +885,17 @@ class TutorPublicArtifactItem(_StrictArtifactModel):
         ):
             if (self.state is TutorArtifactState.COMPLETED) != self.presentation.answer_locked:
                 raise ValueError("knowledge-check Artifact lock state is inconsistent")
+        if isinstance(self.presentation, TutorArtifactModelCodeReviewPresentationV2):
+            if (
+                (self.state is TutorArtifactState.COMPLETED)
+                != self.presentation.submission_locked
+            ):
+                raise ValueError("model-review Artifact lock state is inconsistent")
+            if (
+                not self.state.terminal
+                and TutorArtifactActionKind.COMPLETE_REVIEW not in self.allowed_actions
+            ):
+                raise ValueError("active model-review Artifact lacks complete-review authority")
         if (
             self.state.terminal
             and self.active_attempt is not None
@@ -1044,9 +1126,15 @@ class TutorArtifactRespondAction(_StrictArtifactModel):
     response: TutorArtifactResponseV1
 
 
+ModelCodeReviewSubmission = Annotated[
+    ModelCodeReviewSubmissionV1 | ModelCodeReviewSubmissionV2,
+    Field(discriminator="schema_version"),
+]
+
+
 class TutorArtifactCompleteReviewAction(_StrictArtifactModel):
     action: Literal["complete_review"] = "complete_review"
-    review_submission: ModelCodeReviewSubmissionV1
+    review_submission: ModelCodeReviewSubmission
 
 
 class TutorArtifactCancelAction(_StrictArtifactModel):
@@ -1221,6 +1309,7 @@ __all__ = (
     "TutorArtifactCompleteDemoAction",
     "TutorArtifactCompleteReviewAction",
     "TutorArtifactCreate",
+    "TutorArtifactModelCodeReviewPresentationV2",
     "TutorArtifactDemoCompletionEvidenceV1",
     "TutorArtifactDemoInteractionEvidenceV1",
     "TutorArtifactDemoVisibleClockEvidenceV1",

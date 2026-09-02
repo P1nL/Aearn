@@ -12,6 +12,7 @@ from app.services.learning.item_bank.contracts import (
     LearningItemKnowledgeCheckContentV1,
     LearningItemKnowledgeCheckPrivateV1,
     LearningItemModelReviewContentV1,
+    LearningItemModelReviewContentV2,
     LearningItemModelReviewPrivateV1,
     LearningItemSourceV1,
     LearningItemSqlContentV1,
@@ -25,6 +26,7 @@ from app.services.learning.practice.contracts import (
     ExerciseVersion,
 )
 from app.services.learning.practice.model_review_contracts import (
+    ModelReviewArtifactV1,
     ModelReviewValidationCheckV1,
     ModelReviewValidationReceiptV1,
 )
@@ -185,13 +187,26 @@ def build_exercise_authority(
         runner_payload = {}
         standard_submission = private_content.accepted_answers[0]
         starter_submission = ""
-    elif isinstance(content, LearningItemModelReviewContentV1) and isinstance(
+    elif isinstance(
+        content,
+        (LearningItemModelReviewContentV1, LearningItemModelReviewContentV2),
+    ) and isinstance(
         private_content,
         LearningItemModelReviewPrivateV1,
     ):
         exercise_type = ExerciseType.MODEL_CODE_REVIEW
         learner_prompt = content.prompt.model_dump(mode="json")
-        starter_artifact = content.artifact.model_dump(mode="json")
+        if isinstance(content, LearningItemModelReviewContentV1):
+            starter_artifact = content.artifact.model_dump(mode="json")
+        else:
+            artifact = content.artifact
+            starter_artifact = ModelReviewArtifactV1(
+                language_id=artifact.language_id,
+                runtime_label=artifact.runtime_label,
+                model_code=artifact.modified_code,
+                code_hash=artifact.modified_hash,
+                line_count=artifact.line_count,
+            ).model_dump(mode="json")
         runtime_profile_id = None
         execution_required = False
         feedback_policy = "model_code_review_feedback_v1"

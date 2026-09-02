@@ -92,9 +92,11 @@ class _ArtifactTeachingProvider:
         *,
         artifact_handle: str,
         before_teaching_step: Callable[[str], None] | None = None,
+        interaction_intent: str = "structured_answer",
     ) -> None:
         self.artifact_handle = artifact_handle
         self.before_teaching_step = before_teaching_step
+        self.interaction_intent = interaction_intent
         self.calls = 0
         self.selected_handle: str | None = None
 
@@ -144,7 +146,7 @@ class _ArtifactTeachingProvider:
             teaching_moves=("worked_example", "micro_transfer"),
             interaction={
                 "mode": "artifact",
-                "intent": "structured_answer",
+                "intent": self.interaction_intent,
                 "artifact_handle": selected_handle,
             },
         )

@@ -1,6 +1,6 @@
 # Aearn Tutor 用户流程规格
 
-**状态：** 当前产品契约，2026-08-27。
+**状态：** 当前产品契约，2026-09-02。
 **适用范围：** 本地 Aearn Desktop、`/api/harness`、`/api/tutor` 与受控
 Tutor Harness。
 **权威来源：** 当前路由注册、`aearn/services/api/app/services/tutor/`、
@@ -320,3 +320,18 @@ The Tutor may select a published demonstration handle but cannot author or alter
 2. 回答后原工件锁定。正确且无 assistance 的回答可以作为 independent evidence；Hint、direct answer、remediation 或错误回答都不能冒充 independent mastery。
 3. 概念原题首次错误按 published policy 创建一个语义不同、D(n) 或 D(n-1) 的补救 successor；同知识点不在原题无限重试。补救再次错误或用户直接查看答案时，服务端公开权威解释并选择不同上下文的 transfer check。缺少 exact published successor 时整体 fail closed。
 4. terminal response receipt 产生一个 mainline knowledge-check evaluation continuation。provider context 只广告已持久化的 exact remediation/transfer handle；用户消息、branch 与既有 foreground Turn 仍按统一 arbiter 优先，不会产生重复 Tutor Turn。
+
+
+### 对话内 AI 代码审查与补救流程
+
+1. Tutor 只能从当前 TeachingSession 下已发布且 capability-compatible 的 model-review Learning Item
+   handle 创建审查工件；服务器生成 exact code/diff hash、hunk、side 和 line map，Desktop 只读展示。
+2. 学习者选择一个当前 hunk 内的完整范围、closed error category、severity 和简短 explanation，
+   再提交一次 `complete_review`。原 submission 成功接受后永久锁定；历史 v1 Gate/Review 不被迁移。
+3. server private rubric 确定性处理 verdict、发现、遗漏、概念证据、严重程度、误报与重复。模型不
+   参与评分，也不能修改已保存结果；本流程不创建第二个 Attempt、Gate、Review、mastery 或 progress。
+4. passed review 直接结束且没有 successor。failed review 必须原子选择语义不同、已发布、未使用、
+   D(n-1)/D(n) 且范围更小或难度更低的 remediation；找不到时整个提交失败，不留下半完成 receipt。
+5. terminal receipt 创建一个 mainline `model_review_evaluation` continuation。下一 Tutor Turn 只获得
+   bounded safe evaluation 与 exact remediation handle；完整 submission、expected finding、rubric/test/
+   proof、provider body/reasoning 永不进入对话、SSE、Desktop 或 export。

@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from app.services.learning.practice.model_review_contracts import (
     ModelCodeReviewSubmissionV1,
     ModelReviewArtifactV1,
+    ModelReviewArtifactV2,
     ModelReviewPromptV1,
     ModelReviewRubricV1,
 )
@@ -264,7 +265,10 @@ class LearningItemBlueprintV1(_StrictModel):
                 LearningItemPurpose.REMEDIATION,
                 LearningItemPurpose.TRANSFER_CHECK,
             },
-            LearningItemKind.MODEL_REVIEW: {LearningItemPurpose.CODE_REVIEW},
+            LearningItemKind.MODEL_REVIEW: {
+                LearningItemPurpose.CODE_REVIEW,
+                LearningItemPurpose.REMEDIATION,
+            },
         }
         if self.purpose not in purpose_by_kind[self.item_kind]:
             raise ValueError("learning item purpose is incompatible with item kind")
@@ -554,13 +558,20 @@ class LearningItemModelReviewContentV1(_StrictModel):
     artifact: ModelReviewArtifactV1
 
 
+class LearningItemModelReviewContentV2(_StrictModel):
+    type: Literal["model_review_v2"] = "model_review_v2"
+    prompt: ModelReviewPromptV1
+    artifact: ModelReviewArtifactV2
+
+
 LearningItemPublicContentV1 = Annotated[
     LearningItemCodeContentV1
     | LearningItemSqlContentV1
     | LearningItemDemoContentV1
     | LearningItemDemoContentV2
     | LearningItemKnowledgeCheckContentV1
-    | LearningItemModelReviewContentV1,
+    | LearningItemModelReviewContentV1
+    | LearningItemModelReviewContentV2,
     Field(discriminator="type"),
 ]
 
@@ -1138,7 +1149,10 @@ def _content_language(content: LearningItemPublicContentV1) -> str | None:
         (LearningItemCodeContentV1, LearningItemDemoContentV1, LearningItemDemoContentV2),
     ):
         return content.language_id
-    if isinstance(content, LearningItemModelReviewContentV1):
+    if isinstance(
+        content,
+        (LearningItemModelReviewContentV1, LearningItemModelReviewContentV2),
+    ):
         return content.artifact.language_id
     if isinstance(content, LearningItemSqlContentV1):
         return "sql"
@@ -1152,6 +1166,11 @@ def _content_kind(
         return LearningItemKind.DEMO
     if isinstance(content, (LearningItemDemoPrivateV1, LearningItemDemoPrivateV2)):
         return LearningItemKind.DEMO
+    if isinstance(
+        content,
+        (LearningItemModelReviewContentV1, LearningItemModelReviewContentV2),
+    ):
+        return LearningItemKind.MODEL_REVIEW
     return LearningItemKind(content.type)
 
 
@@ -1194,6 +1213,7 @@ __all__ = (
     "LearningItemKnowledgeCheckContentV1",
     "LearningItemKnowledgeCheckPrivateV1",
     "LearningItemModelReviewContentV1",
+    "LearningItemModelReviewContentV2",
     "LearningItemModelReviewPrivateV1",
     "LearningItemOptionV1",
     "LearningItemPrivateV1",

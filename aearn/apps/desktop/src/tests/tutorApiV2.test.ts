@@ -17,6 +17,15 @@ const jsonResponse = (value: unknown) => new Response(JSON.stringify(value), {
 });
 
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
+const canonicalJson = (value: unknown): string => {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+};
+const canonicalDigest = (value: unknown) => digest(canonicalJson(value));
 
 function artifactFixture(input: {
   id: string;
@@ -66,6 +75,40 @@ function artifactFixture(input: {
 
 function artifactPresentations(): Array<{ artifactKind: string; purpose: string; presentation: Record<string, unknown> }> {
   const sourceCode = "const value = 2;\nconsole.log(value);\n";
+  const reviewSource = "const ratio = 0;";
+  const reviewCode = "const ratio = total / count;";
+  const reviewHunks = [{
+    hunk_id: "diff.h1",
+    header: "@@ -1,1 +1,1 @@",
+    source_start: 1,
+    source_count: 1,
+    modified_start: 1,
+    modified_count: 1,
+    lines: [
+      { line_key: "h1.l1", kind: "removed", text: reviewSource, source_line: 1, modified_line: null },
+      { line_key: "h1.l2", kind: "added", text: reviewCode, source_line: null, modified_line: 1 },
+    ],
+  }];
+  const reviewSourceHash = canonicalDigest({ code: reviewSource });
+  const reviewModifiedHash = canonicalDigest({ code: reviewCode });
+  const reviewTarget = {
+    schema_version: "model_code_review_artifact_v2",
+    presentation_mode: "diff",
+    language_id: "javascript",
+    runtime_label: "Node.js",
+    source_code: reviewSource,
+    modified_code: reviewCode,
+    source_hash: reviewSourceHash,
+    modified_hash: reviewModifiedHash,
+    diff_hash: canonicalDigest({
+      presentation_mode: "diff",
+      source_hash: reviewSourceHash,
+      modified_hash: reviewModifiedHash,
+      hunks: reviewHunks,
+    }),
+    line_count: 1,
+    hunks: reviewHunks,
+  };
   return [
     {
       artifactKind: "exercise_workspace",
@@ -131,6 +174,27 @@ function artifactPresentations(): Array<{ artifactKind: string; purpose: string;
         source_code_hash: digest(sourceCode),
         line_count: 2,
         review_categories: ["logic", "contract.integration"],
+      },
+    },
+    {
+      artifactKind: "model_code_review",
+      purpose: "code_review",
+      presentation: {
+        type: "model_code_review_v2",
+        exercise_version_id: "exercise-review-2",
+        presentation_hash: canonicalDigest(reviewTarget),
+        review_target: reviewTarget,
+        review_categories: [
+          "requirements_drift", "fabricated_api", "logic_boundary", "contract_integration",
+          "async_lifecycle", "security_trust", "error_false_success",
+        ],
+        submission_locked: false,
+        outcome: null,
+        score: null,
+        evaluation_markdown: "",
+        review_receipt_id: null,
+        result_hash: null,
+        remediation_handle: null,
       },
     },
     {
@@ -423,6 +487,7 @@ describe("Tutor v2 API boundary", () => {
       presentation: item.presentation,
     }));
     artifacts[0] = { ...artifacts[0], blocking: true, allowed_actions: ["run"] };
+    artifacts[5] = { ...artifacts[5], allowed_actions: ["complete_review", "cancel"] };
     artifacts[2] = {
       ...artifacts[2],
       state: "completed",
@@ -468,6 +533,7 @@ describe("Tutor v2 API boundary", () => {
       "test_result_v1",
       "knowledge_check_v1",
       "model_code_review_v1",
+      "model_code_review_v2",
       "sql_workspace_v1",
       "demonstration_v1",
       "source_inspector_v1",
@@ -824,7 +890,95 @@ describe("Tutor v2 API boundary", () => {
       purpose: "code_review",
       presentation: { ...presentations[4].presentation, line_count: 3 },
     });
-    const variants = [badHash, badCounts, badPresentationTerminal, badAttemptTerminal, badArtifactTerminal, badLineCount];
+    const reviewV2 = presentations[5].presentation;
+    const failedWithoutRemediation = artifactFixture({
+      id: "artifact-review-missing-remediation",
+      artifactKind: "model_code_review",
+      purpose: "code_review",
+      presentation: {
+        ...reviewV2,
+        submission_locked: true,
+        outcome: "failed",
+        score: 0.4,
+        evaluation_markdown: "Server evaluation requires remediation.",
+        review_receipt_id: "receipt-review",
+        result_hash: digest("review-result"),
+      },
+      overrides: { state: "completed", allowed_actions: [], terminal_at: "2026-09-02T00:00:01Z" },
+    });
+    const terminalReviewInActiveArtifact = artifactFixture({
+      id: "artifact-review-active-terminal",
+      artifactKind: "model_code_review",
+      purpose: "code_review",
+      presentation: {
+        ...reviewV2,
+        submission_locked: true,
+        outcome: "passed",
+        score: 1,
+        evaluation_markdown: "Server evaluation passed.",
+        review_receipt_id: "receipt-review",
+        result_hash: digest("review-result"),
+      },
+    });
+    const missingReviewAction = artifactFixture({
+      id: "artifact-review-missing-action",
+      artifactKind: "model_code_review",
+      purpose: "code_review",
+      presentation: reviewV2,
+      overrides: { allowed_actions: ["cancel"] },
+    });
+    const malformedReview = (
+      id: string,
+      mutate: (target: Record<string, unknown>, hunk: Record<string, unknown>, lines: Array<Record<string, unknown>>) => void,
+    ) => {
+      const presentation = structuredClone(reviewV2) as Record<string, unknown>;
+      const target = presentation.review_target as Record<string, unknown>;
+      const hunks = target.hunks as Array<Record<string, unknown>>;
+      const hunk = hunks[0];
+      const lines = hunk.lines as Array<Record<string, unknown>>;
+      mutate(target, hunk, lines);
+      target.diff_hash = canonicalDigest({
+        presentation_mode: target.presentation_mode,
+        source_hash: target.source_hash,
+        modified_hash: target.modified_hash,
+        hunks,
+      });
+      presentation.presentation_hash = canonicalDigest(target);
+      return artifactFixture({
+        id,
+        artifactKind: "model_code_review",
+        purpose: "code_review",
+        presentation,
+        overrides: { allowed_actions: ["complete_review", "cancel"] },
+      });
+    };
+    const badReviewText = malformedReview("artifact-review-bad-text", (_target, _hunk, lines) => {
+      lines[0].text = "not the published code";
+    });
+    const badReviewLine = malformedReview("artifact-review-bad-line", (_target, _hunk, lines) => {
+      lines[0].source_line = 99;
+    });
+    const badReviewHeader = malformedReview("artifact-review-bad-header", (_target, hunk) => {
+      hunk.header = "@@ bogus @@";
+    });
+    const badReviewCount = malformedReview("artifact-review-bad-count", (_target, hunk) => {
+      hunk.source_count = 2;
+    });
+    const badReviewLineKey = malformedReview("artifact-review-bad-line-key", (_target, _hunk, lines) => {
+      lines[0].line_key = "code.m99";
+    });
+    const protectedReview = artifactFixture({
+      id: "artifact-review-protected",
+      artifactKind: "model_code_review",
+      purpose: "code_review",
+      presentation: { ...reviewV2, private_rubric: { expected_findings: [] } },
+      overrides: { allowed_actions: ["complete_review", "cancel"] },
+    });
+    const variants = [
+      badHash, badCounts, badPresentationTerminal, badAttemptTerminal, badArtifactTerminal,
+      badLineCount, failedWithoutRemediation, terminalReviewInActiveArtifact, missingReviewAction,
+      badReviewText, badReviewLine, badReviewHeader, badReviewCount, badReviewLineKey, protectedReview,
+    ];
     const fetchMock = vi.fn();
     variants.forEach((variant) => fetchMock.mockResolvedValueOnce(jsonResponse(
       snapshotFixture("tutor_conversation_snapshot_v4", { timeline: [variant] }),

@@ -165,7 +165,7 @@ def _minimum_required_candidate_count(context: Mapping[str, object]) -> int:
     safe_payload = stimulus.get("safe_payload")
     if not isinstance(safe_payload, Mapping):
         return 0
-    if safe_payload.get("reason_code") == "knowledge_check_evaluation":
+    if safe_payload.get("reason_code") in {"knowledge_check_evaluation", "model_review_evaluation"}:
         candidates = context.get("artifact_candidates")
         if isinstance(candidates, Mapping):
             projected = candidates.get("candidates")
@@ -189,9 +189,9 @@ def _provider_teaching_context_base(
         and isinstance(stimulus.get("safe_payload"), Mapping)
         else None
     )
-    knowledge_check_evaluation = (
+    artifact_evaluation = (
         isinstance(safe_payload, Mapping)
-        and safe_payload.get("reason_code") == "knowledge_check_evaluation"
+        and safe_payload.get("reason_code") in {"knowledge_check_evaluation", "model_review_evaluation"}
     )
     bounded: dict[str, object] = {
         "schema_version": context.get("schema_version"),
@@ -264,7 +264,7 @@ def _provider_teaching_context_base(
     if isinstance(covered, list) and covered:
         bounded["covered_concepts"] = covered
     recent_units = context.get("recent_teaching_units")
-    if isinstance(recent_units, list) and recent_units and not knowledge_check_evaluation:
+    if isinstance(recent_units, list) and recent_units and not artifact_evaluation:
         bounded["recent_teaching_units"] = recent_units
     return bounded
 

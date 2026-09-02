@@ -1,6 +1,6 @@
 # Aearn Tutor HTTP 与 SSE API 契约
 
-**状态：** 当前公共 API 契约，2026-09-01。
+**状态：** 当前公共 API 契约，2026-09-02。
 **权威来源：** `aearn/services/api/app/main.py` 中注册的路由、Pydantic model、
 `services/tutor/public_api.py`、`services/learning/`、`services/tutor/cutover.py` 与 API 测试。
 **不适用：** 已移除的 Graph、Dashboard、Onboarding、Learning Session、Review、
@@ -758,3 +758,33 @@ result-evaluation Turn 的 provider context 只含 `reason_code=result_evaluatio
 H1-H3 必须按序解锁并各写一条 assistance receipt；回看和 action replay 不重复。`request_direct_answer` 不属于 Hint 页，写 direct-answer assistance + response receipt，公开内容只使用 server-owned explanation，且不能成为 independent mastery。原题需要补救、补救失败或直接答案均由服务端从 published、当前 capability-compatible、未使用且语义不同的 item 中选择 exact successor；普通教学不广告 `remediation/transfer_check`，knowledge-check evaluation continuation 只广告已写入 terminal presentation 的一个 exact handle。
 
 评价 continuation 的 required provider projection 保持既有 1,200 字符预算：省略可选 recent teaching units，不重复序列化 successor handle，并禁止 bounder 驱逐唯一 required candidate；仍无法表示时在 provider 前 fail closed。API/SSE/export 不返回 raw response、accepted answer、private test/rubric、request hash 或 provider payload。
+
+
+## 2026-09-02：对话内 AI 代码审查 Artifact
+
+历史 `model_code_review_v1` Artifact 与既有 Lesson Gate review API 继续可读；新的 Learning
+Item-backed 对话内审查使用 additive `model_code_review_v2`，不迁移旧 submission 或改写既有
+Gate/Review/Attempt。`GET /api/tutor/conversations/{conversation_id}/artifacts/{artifact_id}`、
+conversation snapshot v4/v5 与 action response 只返回 learner-safe presentation：exact
+`exercise_version_id`、server-built `review_target`、closed `review_categories`、lock/outcome/score、
+safe evaluation、receipt/result identity 和可选 remediation handle。
+
+`review_target` 固定 `presentation_mode=code|diff`、normalized source/modified code、各自 SHA-256、
+server-built hunk/line map、`diff_hash` 与完整 `presentation_hash`。code-only 目标没有可提交的
+source side；每条 finding 必须在同一当前 hunk/side 中完整覆盖连续行，不能以一个重叠行接受
+跨 hunk 或越界 range。类别只允许需求偏离、虚构 API、逻辑边界、契约集成、异步生命周期、
+安全信任、错误处理虚假成功与可选弱测试。
+
+`POST .../artifacts/{artifact_id}/actions` 的 `complete_review` 必须携带 exact
+`model_code_review_submission_v2={presentation_hash,verdict,findings[]}`；finding 只含 bounded
+client ID、hunk、side、start/end、closed category、severity 和简短 explanation。服务端重新验证
+user/conversation/track/TeachingSession、Artifact version、published Learning Item/materialization、
+current hash/hunk/range 与 category，再以 private rubric 做确定性评分。相同 action key/body 重放
+同一 Artifact event；同 key 不同 body 返回 `409 IDEMPOTENCY_CONFLICT`。
+
+完整 submission、expected finding、matcher concept、private rubric/test/proof、provider body/reasoning
+不进入 Artifact、snapshot/history/SSE、Desktop、Tutor context、公开错误或 local export。failed 结果
+必须在同一事务绑定语义不同且已发布、未使用、D(n-1) 或 D(n) 且范围更小/难度更低的
+remediation handle；缺失时整个 mutation fail closed。passed 结果没有 successor。terminal event 只产生
+一个 exact receipt-backed `model_review_evaluation` continuation；模型可写后续教学消息，但不能修改
+outcome、score、receipt、successor、mastery 或 progress。

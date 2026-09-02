@@ -1,6 +1,6 @@
 # Aearn Tutor 桌面端交互规格
 
-**状态：** 当前 Desktop 交互契约，2026-09-01。
+**状态：** 当前 Desktop 交互契约，2026-09-02。
 **适用范围：** `aearn/apps/desktop/src/` 的 React + Tauri UI。
 **权威来源：** `App.tsx`、`stores/useAppStore.ts`、`api.ts`、
 `pages/HarnessCutoverPage.tsx`、`features/learning/TrackLearningWorkspace.tsx`、`features/learning/ReviewSessionPanel.tsx`、`features/tutor/TutorConversationSurface.tsx` 与类型/测试。
@@ -416,3 +416,26 @@ Demonstration source is rendered read-only. Interactive source executes only in 
 `KnowledgeCheckArtifact` 只渲染 server `knowledge_check_v1`：single/multi select、prediction/short text、ordering 和 code range 使用各自的封闭控件；提交前只在本地形成 action payload，不计算正确、答案、难度、掌握度或 successor。terminal projection 移除编辑与新 Hint 控件，保留 server outcome/evaluation。`D(n)` 继续由通用 Artifact shell 低存在感显示，Hint 不改变 base difficulty。
 
 Hint 使用 `document.body` portal + fixed overlay，不参与 Artifact/对话高度。H1-H3 只经显式 server action 解锁，已解锁页可用 ArrowLeft/ArrowRight/Home/End 或按钮手动横向分页；不自动轮播。非当前页同时 `aria-hidden` 与 `inert`。首次打开记录原触发点，server projection rerender 后使用当前 trigger ref；每次解锁后焦点回 dialog，Escape/关闭精确恢复“提示”按钮。窄屏为 bounded bottom sheet，reduced motion 将横向动画降到近零且不改变 receipt 行为。
+
+
+## 2026-09-02：对话内 AI 代码审查 Artifact
+
+`ModelCodeReviewArtifact` 只处理 exact `model_code_review_v2`。Desktop 在 unknown 边界重新计算
+normalized code hash、source/modified/diff/presentation identity，校验 hunk/line ordering、required
+category set、terminal/remediation shape 与 completed/locked 一致性；任一 unknown/extra/protected、
+bad hash/count/map 或 scope mismatch 使完整 Artifact fail closed。历史 v1 renderer 继续保留。
+
+代码与 diff 使用 lazy `@monaco-editor/react`，原始/修改侧均只读，不执行代码、不创建 file path、
+terminal、package manager 或 Attempt。cursor selection 只有在所有行完整属于同一 server hunk/side 时
+才成为当前 range；code-only 不产生 source-side finding，离开所有 hunk 会清空旧 selection。category
+select 只渲染 presentation 的 closed `review_categories`，不由客户端补可选 `weak_testing`。
+
+learner draft 只含 verdict 与最多 12 个 bounded findings。存在问题但无 finding、无问题却保留 finding、
+说明少于 8 字符、重复 client ID、busy/missing handler 或 terminal lock 时禁用完成。唯一提交是
+renderer-owned `complete_review` + exact `presentation_hash`；客户端不读取 rubric/test/proof、不评分、
+不选补救、不写 mastery/progress，也不生成 Tutor 评价。
+
+terminal review 移除 verdict/finding 控件，仅显示 server outcome、score、safe Markdown evaluation 与
+中性 remediation 提示；完整 learner submission 不回显。Monaco 区域和 finding 列表使用内部 bounded
+scroll/响应式布局，1440x900、900x900、390x844 不得产生页面级 overflow，键盘 focus 与 reduced
+motion 只改变交互呈现，不改变 authority。

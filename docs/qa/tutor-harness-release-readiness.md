@@ -432,3 +432,41 @@ Trellis Child `08-22-harness-closed-teaching-action-loop` 已在本地 PostgreSQ
 - persisted `tutor_conversation_event_v3` 后 bootstrap twice 的既有专门回归包含在 full API；Child task validate 与最终 `git diff --check` 在提交前复验。
 
 未运行真实 provider、真实 executor/container、Docker conformance、生产 image build/sign/publish、Tauri installer、push、deploy 或生产迁移。Chromium fake-action harness 证明正式组件交互与布局，不证明 Tauri installer 或生产教学质量，本记录不构成 release approval。
+
+
+## 2026-09-02：AI Code Review Artifact Child08 本地证据
+
+本增量将既有 model-review authoring/validation/Practice authority additive 接入 conversation-native
+`model_code_review_v2`。新的 immutable `LearningItemModelReviewContentV2` 可发布 exact source/modified
+diff；v1 item/history 继续 code-only。server canonical builder 生成并复核 code/hash/hunk/line map，
+结构化 finding 只接受 current presentation、single hunk/side、完整连续 range 和 presentation-enabled
+closed taxonomy。评分、receipt、successor 与 continuation 均为 server authority；不新增第二个
+Gate/Review/Attempt/mastery/progress。
+
+唯一一次只读、限时 Child08 Trellis check 报告 **0 P0 / 2 P1 / 3 P2**，随后由主线程全部修复：
+production diff 路径、self-hashed malformed map、`uncertain + findings`、缺少 `complete_review` authority
+以及 receipt/rollback/scope/export/bootstrap/Desktop 坏路径覆盖。检查子代理没有修改文件，完成后已关闭。
+
+最终验证证据：
+
+- focused serial PostgreSQL/API matrix：**105 passed in 87.62s**；post-check Action/model-review rerun：
+  **33 passed in 14.91s**；
+- complete API（`LLM_TYPE=disabled`、`-m "not real_provider"`）：
+  **856 passed, 2 deselected in 495.41s**；
+- API Ruff：通过；Mypy：**245 source files** 无问题；compileall 与 `uv lock --check`：通过，
+  **55 packages**；
+- Desktop full Vitest：**20 files / 143 tests passed**；`tsc && vite build`：通过，
+  **135 modules transformed**；
+- real Chromium temporary harness：1440x900 为 `1436/1436`，900x900 为 `896/896`，390x844 与
+  reduced-motion 均为 `386/386` document scroll/client width；Monaco 横向内容保持内部，不产生页面
+  overflow。真实交互覆盖 finding 添加、切换 uncertain 清空、再次提交 exact v2 payload、可选
+  `weak_testing` 不越权显示、terminal read-only；final console warning/error 为 **0/0**；
+- private submission 只进入 append-only receipt；UPDATE/DELETE `23514`、缺少 remediation 全回滚、
+  cross-scope/stale version、safe export、reset/delete、receipt 存在时 bootstrap twice、fragment 110 v3
+  compatibility、contracts-only `artifacts/__init__.py` 均有自动化或直接审计证据；
+- docs/spec link/whitespace audit：**10 files / 0 errors**；`git diff --check`：通过，仅配置的
+  LF-to-CRLF warning。临时 port 1422 已停止，临时 harness 目录已删除。
+
+本轮未调用真实 provider、真实 executor/container 或 Docker conformance；未执行生产 image
+build/sign/publish、Tauri installer、push、deploy 或生产数据迁移。以上是本地 repository/UI
+contract readiness，不是 live model quality、生产隔离或 release approval。

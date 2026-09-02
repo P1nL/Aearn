@@ -26,6 +26,7 @@ The formal backend lives under `aearn/services/`. Runtime facts come from curren
 | [Learning Item Bank Governance](./learning-item-bank-governance.md) | Git source compilation, deterministic validation, independent review, pilot, risk gates, and publication | Filled |
 | [Teaching Artifact Orchestration](./teaching-artifact-orchestration.md) | Candidate authority, atomic teaching commits, depth-one branches, and deterministic continuation scheduling | Filled |
 | [Knowledge Check Artifacts](./knowledge-check-artifacts.md) | Structured scoring, assistance receipts, remediation/transfer selection, and evaluation continuation | Filled |
+| [Model Review Artifacts](./model-review-artifacts.md) | Stable code/diff identity, deterministic findings, immutable receipts, remediation, and evaluation continuation | Filled |
 | [Authoritative Execution Result Artifacts](./execution-result-artifacts.md) | Safe result v2, terminal projection, evaluation continuation, fallback, and cross-layer response identity | Filled |
 | [Codex Runtime Sidecar](./codex-runtime-sidecar.md) | App Server contracts, typed tools, fencing, and worker lifecycle | Filled |
 

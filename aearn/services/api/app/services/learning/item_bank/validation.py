@@ -21,6 +21,7 @@ from app.services.learning.item_bank.contracts import (
     LearningItemKnowledgeCheckPrivateV1,
     LearningItemKind,
     LearningItemModelReviewContentV1,
+    LearningItemModelReviewContentV2,
     LearningItemModelReviewPrivateV1,
     LearningItemSourceV1,
     LearningItemSqlContentV1,
@@ -175,7 +176,10 @@ def _markdown(source: LearningItemSourceV1) -> _Outcome:
         values.append(content.schema_markdown)
     elif isinstance(content, LearningItemKnowledgeCheckContentV1):
         values.append(content.prompt_markdown)
-    elif isinstance(content, LearningItemModelReviewContentV1):
+    elif isinstance(
+        content,
+        (LearningItemModelReviewContentV1, LearningItemModelReviewContentV2),
+    ):
         values.extend((*content.prompt.requirements, content.prompt.learner_instruction))
     if isinstance(private, LearningItemKnowledgeCheckPrivateV1):
         values.append(private.answer_explanation_markdown)
@@ -465,7 +469,10 @@ def _scorer(source: LearningItemSourceV1) -> _Outcome:
         if error is not None:
             return _bad(error)
         return _ok({"accepted_count": len(private.accepted_answers), "policy_version": private.score_policy.policy_version})
-    if isinstance(public, LearningItemModelReviewContentV1) and isinstance(private, LearningItemModelReviewPrivateV1):
+    if isinstance(
+        public,
+        (LearningItemModelReviewContentV1, LearningItemModelReviewContentV2),
+    ) and isinstance(private, LearningItemModelReviewPrivateV1):
         try:
             material = build_exercise_authority(source)
             if material is None or material.model_review_validation is None:

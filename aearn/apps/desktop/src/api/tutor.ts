@@ -19,6 +19,10 @@ import type {
   LessonGateResult,
   LessonPrepareResponse,
   ModelCodeReviewSubmission,
+  ModelReviewArtifactV2,
+  ModelReviewDiffHunkV2,
+  ModelReviewDiffLineV2,
+  ModelReviewErrorCategoryV2,
   ModelReviewArtifact,
   ModelReviewAuthoringRun,
   ModelReviewEvidenceResponse,
@@ -1176,6 +1180,10 @@ function toTutorPublicArtifactItem(payload: unknown): TutorPublicArtifactItem | 
   const terminal = isTutorArtifactTerminalState(payload.state);
   if (terminal !== (payload.terminal_at !== null) || (terminal && allowedActions.length > 0) ||
       (terminal && activeAttempt !== null && activeAttempt.status !== "terminal")) return null;
+  if (presentation.type === "model_code_review_v2" && (
+      ((payload.state === "completed") !== presentation.submission_locked) ||
+      (!terminal && !allowedActions.includes("complete_review"))
+    )) return null;
   if (payload.artifact_kind === "test_result") {
     if (payload.purpose !== "result" || payload.state !== "completed" || payload.blocking ||
         allowedActions.length > 0 || activeAttempt === null || activeAttempt.status !== "terminal" ||
@@ -1306,6 +1314,34 @@ function toTutorArtifactPresentation(payload: unknown): TutorArtifactPresentatio
       language_id: payload.language_id, source_code: payload.source_code, source_code_hash: payload.source_code_hash,
       line_count: payload.line_count, review_categories: categories };
   }
+  if (payload.type === "model_code_review_v2" && hasExactKeys(payload, [
+    "type", "exercise_version_id", "presentation_hash", "review_target", "review_categories",
+    "submission_locked", "outcome", "score", "evaluation_markdown", "review_receipt_id", "result_hash",
+    "remediation_handle",
+  ]) && isArtifactBoundedString(payload.exercise_version_id, 160) && isSha256(payload.presentation_hash) &&
+      typeof payload.submission_locked === "boolean" &&
+      (payload.outcome === null || payload.outcome === "passed" || payload.outcome === "failed") &&
+      (payload.score === null || isArtifactScore(payload.score)) && isArtifactString(payload.evaluation_markdown, 4_000) &&
+      isNullableArtifactBoundedString(payload.review_receipt_id, 160) && isNullableSha256(payload.result_hash) &&
+      isNullableLearningItemHandle(payload.remediation_handle)) {
+    const reviewTarget = toModelReviewArtifactV2(payload.review_target);
+    const categories = toModelReviewCategoriesV2(payload.review_categories);
+    const terminalFields = payload.outcome !== null && payload.score !== null && payload.evaluation_markdown.length > 0 &&
+      payload.review_receipt_id !== null && payload.result_hash !== null;
+    if (!reviewTarget || !categories || payload.presentation_hash !== sha256Text(canonicalJson(reviewTarget)) ||
+        payload.submission_locked !== terminalFields || (!payload.submission_locked && (
+          payload.outcome !== null || payload.score !== null || payload.evaluation_markdown.length > 0 ||
+          payload.review_receipt_id !== null || payload.result_hash !== null || payload.remediation_handle !== null
+        )) || (payload.submission_locked &&
+          ((payload.outcome === "failed") !== (payload.remediation_handle !== null)))) return null;
+    return {
+      type: "model_code_review_v2", exercise_version_id: payload.exercise_version_id,
+      presentation_hash: payload.presentation_hash, review_target: reviewTarget, review_categories: categories,
+      submission_locked: payload.submission_locked, outcome: payload.outcome, score: payload.score,
+      evaluation_markdown: payload.evaluation_markdown, review_receipt_id: payload.review_receipt_id,
+      result_hash: payload.result_hash, remediation_handle: payload.remediation_handle,
+    };
+  }
   if (payload.type === "sql_workspace_v1" && hasExactKeys(payload, [
     "type", "exercise_version_id", "dialect", "starter_query", "starter_query_hash", "schema_markdown", "max_rows",
   ]) && isArtifactBoundedString(payload.exercise_version_id, 160) && payload.dialect === "sqlite" &&
@@ -1365,6 +1401,161 @@ function toTutorArtifactPresentation(payload: unknown): TutorArtifactPresentatio
       excerpt: payload.excerpt, citation_ids: citationIds };
   }
   return null;
+}
+
+const MODEL_REVIEW_REQUIRED_CATEGORIES = [
+  "requirements_drift", "fabricated_api", "logic_boundary", "contract_integration", "async_lifecycle",
+  "security_trust", "error_false_success",
+] as const;
+
+function toModelReviewCategoriesV2(value: unknown): ModelReviewErrorCategoryV2[] | null {
+  if (!Array.isArray(value) || value.length < 7 || value.length > 8 || !value.every(isModelReviewCategoryV2)) return null;
+  const categories = value as ModelReviewErrorCategoryV2[];
+  return new Set(categories).size === categories.length && MODEL_REVIEW_REQUIRED_CATEGORIES.every((item) => categories.includes(item))
+    ? [...categories]
+    : null;
+}
+
+function isModelReviewCategoryV2(value: unknown): value is ModelReviewErrorCategoryV2 {
+  return value === "requirements_drift" || value === "fabricated_api" || value === "logic_boundary" ||
+    value === "contract_integration" || value === "async_lifecycle" || value === "security_trust" ||
+    value === "error_false_success" || value === "weak_testing";
+}
+
+function toModelReviewArtifactV2(value: unknown): ModelReviewArtifactV2 | null {
+  if (!isRecord(value) || !hasExactKeys(value, [
+    "schema_version", "presentation_mode", "language_id", "runtime_label", "source_code", "modified_code",
+    "source_hash", "modified_hash", "diff_hash", "line_count", "hunks",
+  ]) || value.schema_version !== "model_code_review_artifact_v2" ||
+      (value.presentation_mode !== "code" && value.presentation_mode !== "diff") || !isArtifactStableKey(value.language_id) ||
+      !isArtifactBoundedString(value.runtime_label, 120) || !isNullableArtifactString(value.source_code, 48_000) ||
+      !isArtifactBoundedString(value.modified_code, 48_000) || !isNullableSha256(value.source_hash) ||
+      !isSha256(value.modified_hash) || !isSha256(value.diff_hash) || !isArtifactIntegerInRange(value.line_count, 1, 4_000) ||
+      !Array.isArray(value.hunks) || value.hunks.length < 1 || value.hunks.length > 80) return null;
+  const source = value.source_code === null ? null : normalizeArtifactNewlines(value.source_code);
+  const modified = normalizeArtifactNewlines(value.modified_code);
+  if (pythonSplitlinesCount(modified) !== value.line_count || modelReviewCodeHash(modified) !== value.modified_hash ||
+      (value.presentation_mode === "code" && (source !== null || value.source_hash !== null)) ||
+      (value.presentation_mode === "diff" && (source === null || value.source_hash !== modelReviewCodeHash(source) || source === modified))) return null;
+  const hunks = value.hunks.map(toModelReviewDiffHunkV2);
+  if (hunks.some((item) => item === null)) return null;
+  const safeHunks = hunks.filter((item): item is ModelReviewDiffHunkV2 => item !== null);
+  if (new Set(safeHunks.map((item) => item.hunk_id)).size !== safeHunks.length ||
+      !isModelReviewLineMapBoundToCode(value.presentation_mode, source, modified, safeHunks)) return null;
+  const identity = { presentation_mode: value.presentation_mode, source_hash: value.source_hash, modified_hash: value.modified_hash, hunks: safeHunks };
+  if (sha256Text(canonicalJson(identity)) !== value.diff_hash) return null;
+  return {
+    schema_version: "model_code_review_artifact_v2", presentation_mode: value.presentation_mode,
+    language_id: value.language_id, runtime_label: value.runtime_label, source_code: source,
+    modified_code: modified, source_hash: value.source_hash, modified_hash: value.modified_hash,
+    diff_hash: value.diff_hash, line_count: value.line_count, hunks: safeHunks,
+  };
+}
+
+function toModelReviewDiffHunkV2(value: unknown): ModelReviewDiffHunkV2 | null {
+  if (!isRecord(value) || !hasExactKeys(value, [
+    "hunk_id", "header", "source_start", "source_count", "modified_start", "modified_count", "lines",
+  ]) || !isArtifactStableKey(value.hunk_id) || !isArtifactBoundedString(value.header, 240) ||
+      !isArtifactIntegerInRange(value.source_start, 0, 4_000) || !isArtifactIntegerInRange(value.source_count, 0, 4_000) ||
+      !isArtifactIntegerInRange(value.modified_start, 0, 4_000) || !isArtifactIntegerInRange(value.modified_count, 0, 4_000) ||
+      !Array.isArray(value.lines) || value.lines.length < 1 || value.lines.length > 800) return null;
+  const lines = value.lines.map(toModelReviewDiffLineV2);
+  if (lines.some((item) => item === null)) return null;
+  const safeLines = lines.filter((item): item is ModelReviewDiffLineV2 => item !== null);
+  const sourceLines = safeLines.flatMap((item) => item.source_line === null ? [] : [item.source_line]);
+  const modifiedLines = safeLines.flatMap((item) => item.modified_line === null ? [] : [item.modified_line]);
+  if (new Set(safeLines.map((item) => item.line_key)).size !== safeLines.length ||
+      sourceLines.some((item, index) => index > 0 && item < sourceLines[index - 1]) ||
+      modifiedLines.some((item, index) => index > 0 && item < modifiedLines[index - 1])) return null;
+  return { hunk_id: value.hunk_id, header: value.header, source_start: value.source_start, source_count: value.source_count,
+    modified_start: value.modified_start, modified_count: value.modified_count, lines: safeLines };
+}
+
+function toModelReviewDiffLineV2(value: unknown): ModelReviewDiffLineV2 | null {
+  if (!isRecord(value) || !hasExactKeys(value, ["line_key", "kind", "text", "source_line", "modified_line"]) ||
+      !isArtifactStableKey(value.line_key) || (value.kind !== "context" && value.kind !== "added" && value.kind !== "removed") ||
+      !isArtifactString(value.text, 4_000) || !(value.source_line === null || isArtifactIntegerInRange(value.source_line, 1, 4_000)) ||
+      !(value.modified_line === null || isArtifactIntegerInRange(value.modified_line, 1, 4_000))) return null;
+  if ((value.kind === "added" && (value.source_line !== null || value.modified_line === null)) ||
+      (value.kind === "removed" && (value.source_line === null || value.modified_line !== null)) ||
+      (value.kind === "context" && (value.source_line === null || value.modified_line === null))) return null;
+  return { line_key: value.line_key, kind: value.kind, text: value.text, source_line: value.source_line, modified_line: value.modified_line };
+}
+
+function isModelReviewLineMapBoundToCode(
+  mode: "code" | "diff",
+  source: string | null,
+  modified: string,
+  hunks: ModelReviewDiffHunkV2[],
+): boolean {
+  const modifiedLines = pythonSplitlines(modified);
+  if (mode === "code") {
+    if (source !== null || hunks.length !== 1) return false;
+    const hunk = hunks[0];
+    if (hunk.hunk_id !== "code.h1" || hunk.header !== `@@ -1,${modifiedLines.length} +1,${modifiedLines.length} @@` ||
+        hunk.source_start !== 1 || hunk.source_count !== modifiedLines.length || hunk.modified_start !== 1 ||
+        hunk.modified_count !== modifiedLines.length || hunk.lines.length !== modifiedLines.length) return false;
+    return hunk.lines.every((line, index) => line.line_key === `code.m${index + 1}` && line.kind === "context" &&
+      line.text === modifiedLines[index] && line.source_line === index + 1 && line.modified_line === index + 1);
+  }
+  if (source === null) return false;
+  const sourceLines = pythonSplitlines(source);
+  let sourceCursor = 1;
+  let modifiedCursor = 1;
+  for (const [hunkIndex, hunk] of hunks.entries()) {
+    if (hunk.hunk_id !== `diff.h${hunkIndex + 1}` || hunk.source_count < 1 || hunk.modified_count < 1 ||
+        hunk.header !== `@@ -${hunk.source_start},${hunk.source_count} +${hunk.modified_start},${hunk.modified_count} @@` ||
+        hunk.source_start < sourceCursor || hunk.modified_start < modifiedCursor) return false;
+    const unchangedSource = sourceLines.slice(sourceCursor - 1, hunk.source_start - 1);
+    const unchangedModified = modifiedLines.slice(modifiedCursor - 1, hunk.modified_start - 1);
+    if (!sameStrings(unchangedSource, unchangedModified)) return false;
+    const projectedSource: string[] = [];
+    const projectedModified: string[] = [];
+    let changed = false;
+    for (const [lineIndex, line] of hunk.lines.entries()) {
+      if (line.line_key !== `h${hunkIndex + 1}.l${lineIndex + 1}`) return false;
+      if (line.source_line !== null) {
+        if (line.source_line < 1 || line.source_line > sourceLines.length || sourceLines[line.source_line - 1] !== line.text) return false;
+        projectedSource.push(line.text);
+      }
+      if (line.modified_line !== null) {
+        if (line.modified_line < 1 || line.modified_line > modifiedLines.length || modifiedLines[line.modified_line - 1] !== line.text) return false;
+        projectedModified.push(line.text);
+      }
+      if (line.kind === "context") {
+        if (line.source_line === null || line.modified_line === null ||
+            sourceLines[line.source_line - 1] !== modifiedLines[line.modified_line - 1]) return false;
+      } else {
+        changed = true;
+      }
+    }
+    if (!changed || projectedSource.length !== hunk.source_count || projectedModified.length !== hunk.modified_count ||
+        !sameStrings(projectedSource, sourceLines.slice(hunk.source_start - 1, hunk.source_start - 1 + hunk.source_count)) ||
+        !sameStrings(projectedModified, modifiedLines.slice(hunk.modified_start - 1, hunk.modified_start - 1 + hunk.modified_count))) return false;
+    const sourceNumbers = hunk.lines.flatMap((line) => line.source_line === null ? [] : [line.source_line]);
+    const modifiedNumbers = hunk.lines.flatMap((line) => line.modified_line === null ? [] : [line.modified_line]);
+    if (!isExactLineRange(sourceNumbers, hunk.source_start, hunk.source_count) ||
+        !isExactLineRange(modifiedNumbers, hunk.modified_start, hunk.modified_count)) return false;
+    sourceCursor = hunk.source_start + hunk.source_count;
+    modifiedCursor = hunk.modified_start + hunk.modified_count;
+  }
+  return sameStrings(sourceLines.slice(sourceCursor - 1), modifiedLines.slice(modifiedCursor - 1));
+}
+
+function isExactLineRange(values: number[], start: number, count: number): boolean {
+  return values.length === count && values.every((value, index) => value === start + index);
+}
+
+function sameStrings(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function modelReviewCodeHash(value: string): string {
+  return sha256Text(canonicalJson({ code: value }));
+}
+
+function isNullableArtifactString(value: unknown, maximum: number): value is string | null {
+  return value === null || isArtifactString(value, maximum);
 }
 
 function toTutorDemonstrationStep(value: unknown) {
@@ -2454,7 +2645,7 @@ function doesTutorArtifactKindMatchPresentation(kind: TutorArtifactKind, present
     (kind === "browser_preview" && presentation === "browser_preview_v1") ||
     (kind === "test_result" && presentation === "test_result_v1") ||
     (kind === "knowledge_check" && presentation === "knowledge_check_v1") ||
-    (kind === "model_code_review" && presentation === "model_code_review_v1") ||
+    (kind === "model_code_review" && (presentation === "model_code_review_v1" || presentation === "model_code_review_v2")) ||
     (kind === "sql_workspace" && presentation === "sql_workspace_v1") ||
     (kind === "demonstration" && (presentation === "demonstration_v1" || presentation === "demonstration_v2")) ||
     (kind === "source_inspector" && presentation === "source_inspector_v1");
@@ -2475,10 +2666,15 @@ function normalizeArtifactNewlines(value: string): string {
   return value.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 }
 
-function pythonSplitlinesCount(value: string): number {
-  if (value.length === 0) return 0;
+function pythonSplitlines(value: string): string[] {
+  if (value.length === 0) return [];
   const lines = value.split(/[\n\v\f\x1c-\x1e\x85\u2028\u2029]/);
-  return lines.length - (/[\n\v\f\x1c-\x1e\x85\u2028\u2029]$/.test(value) ? 1 : 0);
+  if (/[\n\v\f\x1c-\x1e\x85\u2028\u2029]$/.test(value)) lines.pop();
+  return lines;
+}
+
+function pythonSplitlinesCount(value: string): number {
+  return pythonSplitlines(value).length;
 }
 
 function sha256Text(value: string): string {

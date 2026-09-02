@@ -16,7 +16,7 @@ from app.services.learning.artifacts.contracts import (
     TutorArtifactExerciseWorkspacePresentationV1,
     TutorArtifactKind,
     TutorArtifactKnowledgeCheckPresentationV1,
-    TutorArtifactModelCodeReviewPresentationV1,
+    TutorArtifactModelCodeReviewPresentationV2,
     TutorArtifactOptionV1,
     TutorArtifactOwnerKind,
     TutorArtifactPresentationV1,
@@ -46,10 +46,15 @@ from app.services.learning.item_bank.contracts import (
     LearningItemInteraction,
     LearningItemKnowledgeCheckContentV1,
     LearningItemModelReviewContentV1,
+    LearningItemModelReviewContentV2,
     LearningItemPublicV1,
     LearningItemSourceReferenceV1,
     LearningItemSqlContentV1,
 )
+from app.services.learning.practice.model_review_contracts import (
+    MODEL_REVIEW_CORE_CATEGORIES,
+)
+from app.services.learning.practice.model_review_diff import build_model_review_artifact_v2
 from app.services.learning.teaching_contracts import (
     TeachingInteractionIntent,
     TeachingLearnerResponseMode,
@@ -534,16 +539,34 @@ def _artifact_presentation(
             maximum_text_length=2_000,
             hints=build_hint_pages(public),
         )
-    if isinstance(content, LearningItemModelReviewContentV1):
+    if isinstance(
+        content,
+        (LearningItemModelReviewContentV1, LearningItemModelReviewContentV2),
+    ):
         exercise_id = _required_string(exercise_version_id, "exercise_version_id")
-        source_code = normalize_newlines(content.artifact.model_code)
-        return TutorArtifactModelCodeReviewPresentationV1(
+        if isinstance(content, LearningItemModelReviewContentV1):
+            review_target = build_model_review_artifact_v2(
+                language_id=content.artifact.language_id,
+                runtime_label=content.artifact.runtime_label,
+                modified_code=normalize_newlines(content.artifact.model_code),
+            )
+        else:
+            artifact = content.artifact
+            review_target = build_model_review_artifact_v2(
+                language_id=artifact.language_id,
+                runtime_label=artifact.runtime_label,
+                source_code=artifact.source_code,
+                modified_code=artifact.modified_code,
+            )
+            if review_target != artifact:
+                raise TeachingArtifactCommitError(
+                    "published model review diff identity is not canonical"
+                )
+        return TutorArtifactModelCodeReviewPresentationV2(
             exercise_version_id=exercise_id,
-            language_id=content.artifact.language_id,
-            source_code=source_code,
-            source_code_hash=sha256_text(source_code),
-            line_count=content.artifact.line_count,
-            review_categories=tuple(content.prompt.review_scope),
+            presentation_hash=review_target.presentation_hash,
+            review_target=review_target,
+            review_categories=MODEL_REVIEW_CORE_CATEGORIES,
         )
     raise TeachingArtifactCommitError(
         "Learning Item public content cannot be materialized as an Artifact"
