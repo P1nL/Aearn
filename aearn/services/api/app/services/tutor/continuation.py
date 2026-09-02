@@ -1053,6 +1053,66 @@ class TutorContinuationIntentProducer:
             occurred_at=occurred_at,
         )
 
+    def record_knowledge_check_evaluation(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str,
+        artifact_id: str,
+        artifact_event_id: str,
+        artifact_event_sequence: int,
+        occurred_at: datetime | None = None,
+    ) -> ContinuationIntentRecord:
+        """Record one receipt-backed continuation for a terminal knowledge check."""
+
+        evidence = self._conn.execute(
+            """
+            SELECT receipts.id::text AS receipt_id
+            FROM tutor_knowledge_check_response_receipts AS receipts
+            JOIN tutor_learning_artifacts AS artifacts
+              ON artifacts.id=receipts.artifact_id
+             AND artifacts.user_id=receipts.user_id
+             AND artifacts.conversation_id=receipts.conversation_id
+             AND artifacts.teaching_session_id=receipts.teaching_session_id
+             AND artifacts.learning_track_id=receipts.learning_track_id
+            JOIN tutor_learning_artifact_events AS events
+              ON events.artifact_id=artifacts.id
+             AND events.user_id=artifacts.user_id
+             AND events.conversation_id=artifacts.conversation_id
+             AND events.teaching_session_id=artifacts.teaching_session_id
+            WHERE artifacts.id=%s AND artifacts.user_id=%s AND artifacts.conversation_id=%s
+              AND artifacts.artifact_kind='knowledge_check' AND artifacts.state='completed'
+              AND artifacts.presentation_kind='knowledge_check_v1'
+              AND artifacts.presentation_json->>'response_receipt_id'=receipts.id::text
+              AND events.id::text=%s AND events.event_sequence=%s
+              AND events.event_kind='action'
+              AND events.action_kind IN ('respond','request_direct_answer')
+              AND events.safe_payload_json->'owner_result'->>'response_receipt_id'=receipts.id::text
+              AND events.safe_payload_json->'owner_result'->>'result_hash'=receipts.result_hash
+            """,
+            (
+                artifact_id,
+                user_id,
+                conversation_id,
+                artifact_event_id,
+                artifact_event_sequence,
+            ),
+        ).fetchone()
+        if evidence is None:
+            raise ContinuationIntentStale(
+                "knowledge-check continuation lacks exact response evidence"
+            )
+        return self._repository.create_pending(
+            user_id=user_id,
+            conversation_id=conversation_id,
+            artifact_id=artifact_id,
+            source_kind=ContinuationSourceKind.EXPLICIT_ARTIFACT_ACTION,
+            source_id=artifact_event_id,
+            source_version=artifact_event_sequence,
+            idempotency_key=f"knowledge-check-evaluation:{artifact_event_id}",
+            occurred_at=occurred_at,
+        )
+
     def record_demonstration_completion(
         self,
         *,
@@ -1303,6 +1363,14 @@ class TutorContinuationDispatcher:
                         for_update=True,
                     )
                     result_evaluation = self._is_result_evaluation_intent(intent)
+                    knowledge_check_evaluation = self._is_knowledge_check_evaluation_intent(intent)
+                    evaluation_reason = (
+                        "result_evaluation"
+                        if result_evaluation
+                        else "knowledge_check_evaluation"
+                        if knowledge_check_evaluation
+                        else intent.source_kind.value
+                    )
                     admitted = self._teaching.admit_control_run(
                         authority=authority,
                         session=session,
@@ -1314,11 +1382,7 @@ class TutorContinuationDispatcher:
                             expected_progress_version=authority.progress_version,
                             expected_assignment_version=authority.assignment_version,
                             safe_payload={
-                                "reason_code": (
-                                    "result_evaluation"
-                                    if result_evaluation
-                                    else intent.source_kind.value
-                                ),
+                                "reason_code": evaluation_reason,
                                 "source_handle": f"artifact:{intent.artifact_id}",
                             },
                         ),
@@ -1398,6 +1462,59 @@ class TutorContinuationDispatcher:
         if row is None:
             raise TeachingSessionConflict(
                 "result-evaluation continuation evidence is stale"
+            )
+        return True
+
+
+    def _is_knowledge_check_evaluation_intent(
+        self,
+        intent: ContinuationIntentRecord,
+    ) -> bool:
+        if intent.source_kind is not ContinuationSourceKind.EXPLICIT_ARTIFACT_ACTION:
+            return False
+        expected_key = f"knowledge-check-evaluation:{intent.source_id}"
+        if intent.idempotency_key != expected_key:
+            if intent.idempotency_key.startswith("knowledge-check-evaluation:"):
+                raise TeachingSessionConflict(
+                    "knowledge-check evaluation continuation identity is invalid"
+                )
+            return False
+        row = self._conn.execute(
+            """
+            SELECT 1
+            FROM tutor_learning_artifacts AS artifacts
+            JOIN tutor_learning_artifact_events AS events
+              ON events.artifact_id=artifacts.id
+             AND events.user_id=artifacts.user_id
+             AND events.conversation_id=artifacts.conversation_id
+             AND events.teaching_session_id=artifacts.teaching_session_id
+            JOIN tutor_knowledge_check_response_receipts AS receipts
+              ON receipts.artifact_id=artifacts.id
+             AND receipts.user_id=artifacts.user_id
+             AND receipts.conversation_id=artifacts.conversation_id
+             AND receipts.teaching_session_id=artifacts.teaching_session_id
+             AND receipts.learning_track_id=artifacts.learning_track_id
+            WHERE artifacts.id=%s AND artifacts.user_id=%s AND artifacts.conversation_id=%s
+              AND artifacts.artifact_kind='knowledge_check' AND artifacts.state='completed'
+              AND artifacts.presentation_kind='knowledge_check_v1'
+              AND artifacts.presentation_json->>'response_receipt_id'=receipts.id::text
+              AND events.id::text=%s AND events.event_sequence=%s
+              AND events.event_kind='action'
+              AND events.action_kind IN ('respond','request_direct_answer')
+              AND events.safe_payload_json->'owner_result'->>'response_receipt_id'=receipts.id::text
+              AND events.safe_payload_json->'owner_result'->>'result_hash'=receipts.result_hash
+            """,
+            (
+                intent.artifact_id,
+                intent.user_id,
+                intent.conversation_id,
+                intent.source_id,
+                intent.source_version,
+            ),
+        ).fetchone()
+        if row is None:
+            raise TeachingSessionConflict(
+                "knowledge-check evaluation continuation evidence is stale"
             )
         return True
 

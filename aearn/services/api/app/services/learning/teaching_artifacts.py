@@ -29,6 +29,7 @@ from app.services.learning.artifacts.contracts import (
     sha256_text,
 )
 from app.services.learning.artifacts.demonstrations import build_demonstration_presentation
+from app.services.learning.artifacts.knowledge_checks import build_hint_pages
 from app.services.learning.artifacts.conversation_events import (
     ArtifactConversationEventError,
     PostgresTutorArtifactConversationEventSink,
@@ -515,6 +516,9 @@ def _artifact_presentation(
         response_kind = {
             "single_choice": "single_select",
             "multiple_choice": "multi_select",
+            "prediction": "prediction",
+            "ordering": "ordering",
+            "code_range": "code_range",
             "short_text": "short_text",
         }[content.response_kind]
         option_count = len(content.options)
@@ -525,9 +529,10 @@ def _artifact_presentation(
                 TutorArtifactOptionV1(value=item.option_id, label=item.label)
                 for item in content.options
             ),
-            minimum_selections=1,
-            maximum_selections=(option_count if response_kind == "multi_select" else 1),
+            minimum_selections=(option_count if response_kind == "ordering" else 1),
+            maximum_selections=(option_count if response_kind in {"multi_select", "ordering"} else 1),
             maximum_text_length=2_000,
+            hints=build_hint_pages(public),
         )
     if isinstance(content, LearningItemModelReviewContentV1):
         exercise_id = _required_string(exercise_version_id, "exercise_version_id")
@@ -551,6 +556,8 @@ def _allowed_artifact_actions(
     actions: list[TutorArtifactActionKind] = []
     if public.hints:
         actions.append(TutorArtifactActionKind.REQUEST_HINT)
+    if isinstance(public.content, LearningItemKnowledgeCheckContentV1):
+        actions.append(TutorArtifactActionKind.REQUEST_DIRECT_ANSWER)
     if isinstance(public.content, LearningItemDemoContentV2):
         actions.append(TutorArtifactActionKind.COMPLETE_DEMO)
     elif not isinstance(public.content, LearningItemDemoContentV1):

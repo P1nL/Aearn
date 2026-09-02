@@ -389,6 +389,8 @@ class PostgresLearningItemBankRepository:
         difficulties: Sequence[LearningItemDifficulty | str] = (),
         available_capabilities: Sequence[str] | None = None,
         unused_handles: Sequence[str] = (),
+        required_handles: Sequence[str] = (),
+        excluded_purposes: Sequence[LearningItemPurpose | str] = (),
         limit: int = 8,
     ) -> tuple[PublishedLearningItemCandidate, ...]:
         key = stable_key(knowledge_key, label="candidate knowledge key")
@@ -407,6 +409,14 @@ class PostgresLearningItemBankRepository:
         excluded = tuple(_handle(item) for item in unused_handles)
         if len(excluded) != len(set(excluded)) or len(excluded) > 128:
             raise ValueError("unused candidate handles must be unique and bounded")
+        required = tuple(_handle(item) for item in required_handles)
+        if len(required) != len(set(required)) or len(required) > 8:
+            raise ValueError("required candidate handles must be unique and bounded")
+        excluded_purpose_values = tuple(
+            LearningItemPurpose(item).value for item in excluded_purposes
+        )
+        if len(excluded_purpose_values) != len(set(excluded_purpose_values)):
+            raise ValueError("excluded candidate purposes must be unique")
         rows = self._conn.execute(
             """
             SELECT versions.handle,versions.item_key,versions.version,versions.item_kind,versions.purpose,
@@ -424,6 +434,8 @@ class PostgresLearningItemBankRepository:
               AND (cardinality(%s::text[]) = 0 OR versions.difficulty=ANY(%s::text[]))
               AND versions.required_capabilities_json <@ %s::jsonb
               AND (cardinality(%s::text[]) = 0 OR NOT versions.handle=ANY(%s::text[]))
+              AND (cardinality(%s::text[]) = 0 OR versions.handle=ANY(%s::text[]))
+              AND (cardinality(%s::text[]) = 0 OR NOT versions.purpose=ANY(%s::text[]))
             ORDER BY versions.difficulty,versions.item_key,versions.version,versions.handle
             LIMIT %s
             """,
@@ -436,6 +448,10 @@ class PostgresLearningItemBankRepository:
                 canonical_json(list(capabilities)),
                 list(excluded),
                 list(excluded),
+                list(required),
+                list(required),
+                list(excluded_purpose_values),
+                list(excluded_purpose_values),
                 limit,
             ),
         ).fetchall()

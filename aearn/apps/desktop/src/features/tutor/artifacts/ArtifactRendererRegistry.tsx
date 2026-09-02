@@ -7,6 +7,7 @@ import { CodeEditorArtifact } from "./CodeEditorArtifact";
 import { ExecutionResultArtifact } from "./ExecutionResultArtifact";
 import { DemonstrationArtifact } from "./DemonstrationArtifact";
 import { SafeMarkdown } from "./SafeMarkdown";
+import { KnowledgeCheckArtifact } from "./KnowledgeCheckArtifact";
 import type { TutorArtifactActionHandler, TutorArtifactAttemptLoader, TutorArtifactReturnToSource } from "./artifactRendererTypes";
 import type { ArtifactRendererUiState } from "./artifactUiState";
 
@@ -27,7 +28,7 @@ const ARTIFACT_RENDERER_REGISTRY = {
   exercise_workspace_v1: ExerciseWorkspaceRenderer,
   browser_preview_v1: BrowserPreviewRenderer,
   test_result_v1: TestResultRenderer,
-  knowledge_check_v1: KnowledgeCheckPlaceholder,
+  knowledge_check_v1: KnowledgeCheckRenderer,
   model_code_review_v1: ModelCodeReviewPlaceholder,
   sql_workspace_v1: SqlWorkspacePlaceholder,
   demonstration_v1: DemonstrationRenderer,
@@ -58,10 +59,9 @@ function TestResultRenderer({ artifact, loadAttempt, onReturnToSource }: Artifac
   return <ExecutionResultArtifact artifact={artifact} loadAttempt={loadAttempt} onReturnToSource={onReturnToSource} />;
 }
 
-function KnowledgeCheckPlaceholder({ artifact }: ArtifactRendererProps) {
-  const presentation = artifact.presentation;
-  if (presentation.type !== "knowledge_check_v1") return <ArtifactContractError />;
-  return <ArtifactPlaceholder label="结构化检查"><SafeMarkdown markdown={presentation.prompt_markdown} surface="artifact" /></ArtifactPlaceholder>;
+function KnowledgeCheckRenderer({ artifact, onAction, actionBusy }: ArtifactRendererProps) {
+  if (artifact.presentation.type !== "knowledge_check_v1") return <ArtifactContractError />;
+  return <KnowledgeCheckArtifact artifact={artifact} onAction={onAction} actionBusy={actionBusy} />;
 }
 
 function ModelCodeReviewPlaceholder({ artifact }: ArtifactRendererProps) {

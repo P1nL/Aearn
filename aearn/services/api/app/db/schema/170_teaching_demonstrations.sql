@@ -24,7 +24,7 @@ ALTER TABLE tutor_learning_artifacts
   ADD CONSTRAINT chk_tutor_learning_artifacts_allowed_actions CHECK (
     jsonb_typeof(allowed_actions_json) = 'array'
     AND jsonb_array_length(allowed_actions_json) <= 6
-    AND allowed_actions_json <@ '["request_hint","run","respond","complete_review","cancel","acknowledge_demo_event","complete_demo"]'::jsonb
+    AND allowed_actions_json <@ '["request_hint","request_direct_answer","run","respond","complete_review","cancel","acknowledge_demo_event","complete_demo"]'::jsonb
   );
 
 ALTER TABLE tutor_learning_artifact_events
@@ -34,7 +34,7 @@ ALTER TABLE tutor_learning_artifact_events
 ALTER TABLE tutor_learning_artifact_events
   ADD CONSTRAINT chk_tutor_learning_artifact_events_action_kind CHECK (
     action_kind IS NULL OR action_kind IN (
-      'request_hint', 'run', 'respond', 'complete_review', 'cancel',
+      'request_hint', 'request_direct_answer', 'run', 'respond', 'complete_review', 'cancel',
       'acknowledge_demo_event', 'complete_demo'
     )
   );

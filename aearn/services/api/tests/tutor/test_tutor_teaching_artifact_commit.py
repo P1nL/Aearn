@@ -7,6 +7,7 @@ from uuid import uuid4
 
 import pytest
 from psycopg import Connection
+from psycopg.errors import CheckViolation
 
 from app.agents.harness.contracts import (
     TutorDecision,
@@ -20,8 +21,11 @@ from app.services.learning.artifacts.contracts import (
     TutorArtifactActionRequest,
     TutorArtifactCancelAction,
     TutorArtifactOwnerKind,
+    TutorArtifactRequestDirectAnswerAction,
+    TutorArtifactRequestHintAction,
     TutorArtifactRespondAction,
     TutorArtifactSingleSelectResponse,
+    TutorArtifactTextResponse,
 )
 from app.services.learning.artifacts.conversation_events import (
     PostgresTutorArtifactConversationEventSink,
@@ -55,7 +59,16 @@ from app.services.learning.teaching_contracts import (
     TeachingSessionMode,
     TeachingStepDecision,
 )
-from app.services.learning.teaching_sessions import TeachingSessionService
+from app.services.learning.teaching_sessions import (
+    TeachingSessionRepository,
+    TeachingSessionService,
+)
+from app.services.tutor.continuation import (
+    ContinuationIntentState,
+    ContinuationSourceKind,
+    TutorContinuationDispatcher,
+    TutorContinuationIntentProducer,
+)
 from app.services.tutor.interactive import TutorInteractiveRunDispatcher
 from app.services.tutor.persistence import PostgresTutorRepository
 from app.services.tutor.public_thinking_stream import TutorPublicThinkingSink
@@ -179,10 +192,20 @@ def _artifact_settings() -> Settings:
 
 def _published_knowledge_item(
     conn: Connection[dict[str, object]],
+    *,
+    hints: tuple[dict[str, object], ...] = (),
+    item_key: str | None = None,
+    purpose: str = "knowledge_check",
+    difficulty: str = "D1",
+    required_capability: str | None = None,
+    remediation_item_key: str | None = None,
+    remediation_policy: dict[str, object] | None = None,
+    prompt_markdown: str = "After `value = 42`, which value is bound?",
 ) -> tuple[str, str, int, str]:
     suffix = uuid4().hex
-    item_key = f"python.variables.atomic.{suffix}"
-    required_capability = f"atomic.fixture.{suffix}"
+    item_key = item_key or f"python.variables.atomic.{suffix}"
+    required_capability = required_capability or f"atomic.fixture.{suffix}"
+    difficulty_level = int(difficulty[1:])
     source_reference = {
         "source_id": "python.tutorial",
         "source_version": "3.12",
@@ -198,22 +221,22 @@ def _published_knowledge_item(
                 "version": "v1",
                 "knowledge_key": "python.variables",
                 "item_kind": "knowledge_check",
-                "purpose": "knowledge_check",
+                "purpose": purpose,
                 "language_id": "python",
                 "difficulty_profile": {
-                    "base": "D1",
-                    "reasoning_depth": 1,
-                    "concept_count": 1,
-                    "context_novelty": 1,
-                    "transfer_distance": 1,
-                    "response_complexity": 1,
-                    "scaffolding": 5,
+                    "base": difficulty,
+                    "reasoning_depth": difficulty_level,
+                    "concept_count": difficulty_level,
+                    "context_novelty": difficulty_level,
+                    "transfer_distance": difficulty_level,
+                    "response_complexity": difficulty_level,
+                    "scaffolding": 6 - difficulty_level,
                 },
                 "prerequisite_keys": [],
                 "required_capabilities": [required_capability],
                 "runtime_profile_id": None,
                 "allowed_interactions": ["respond"],
-                "remediation_policy": None,
+                "remediation_policy": remediation_policy,
                 "publication_policy": {
                     "risk_tier": "low",
                     "required_review_roles": [
@@ -230,18 +253,18 @@ def _published_knowledge_item(
                 "item_key": item_key,
                 "version": "v1",
                 "kind": "knowledge_check",
-                "purpose": "knowledge_check",
-                "title": "Atomic variable check",
-                "difficulty": "D1",
+                "purpose": purpose,
+                "title": f"Atomic variable {purpose.replace('_', ' ')}",
+                "difficulty": difficulty,
                 "instruction_markdown": "Choose the value produced by the assignment.",
                 "allowed_interactions": ["respond"],
-                "hints": [],
-                "remediation_item_key": None,
+                "hints": list(hints),
+                "remediation_item_key": remediation_item_key,
                 "source_references": [source_reference],
                 "content": {
                     "type": "knowledge_check",
                     "response_kind": "single_choice",
-                    "prompt_markdown": "After `value = 42`, which value is bound?",
+                    "prompt_markdown": prompt_markdown,
                     "options": [
                         {"option_id": "forty_two", "label": "42"},
                         {"option_id": "forty_one", "label": "41"},
@@ -381,6 +404,70 @@ def _dispatch_artifact(
         settings=settings,
         provider_factory=lambda _settings: provider,
     ).dispatch(user_id=str(scope["user_id"]), run_id=run_id)
+
+
+def _artifact_service(
+    conn: Connection[dict[str, object]],
+) -> LearningArtifactService:
+    return LearningArtifactService(
+        conn,
+        repository=PostgresLearningArtifactRepository(
+            conn,
+            conversation_events=PostgresTutorArtifactConversationEventSink(conn),
+        ),
+        owner_adapters=build_learning_artifact_owner_adapters(),
+        enabled=lambda: True,
+        clock=lambda: _NOW,
+    )
+
+
+def _materialized_knowledge_artifact(
+    *,
+    hints: tuple[dict[str, object], ...] = (),
+) -> tuple[Settings, dict[str, str | int], str, str]:
+    settings = _artifact_settings()
+    with connection() as conn:
+        capability = f"atomic.fixture.{uuid4().hex}"
+        _transfer_handle, _transfer_version_id, _transfer_publication_version, _ = (
+            _published_knowledge_item(
+                conn,
+                purpose="transfer_check",
+                difficulty="D1",
+                required_capability=capability,
+                prompt_markdown="In a new context, which value is bound after `total = 42`?",
+            )
+        )
+        handle, _version_id, _publication_version, capability = (
+            _published_knowledge_item(
+                conn,
+                hints=hints,
+                required_capability=capability,
+            )
+        )
+        scope, run_id = _open_guided(
+            conn,
+            settings=settings,
+            required_capability=capability,
+        )
+    result = _dispatch_artifact(
+        settings=settings,
+        scope=scope,
+        run_id=run_id,
+        provider=_ArtifactTeachingProvider(artifact_handle=handle),
+    )
+    assert result.terminal_outcome is TutorTerminalOutcome.COMPLETED
+    with connection() as conn:
+        artifact = conn.execute(
+            "SELECT id::text AS id FROM tutor_learning_artifacts WHERE turn_id=%s",
+            (run_id,),
+        ).fetchone()
+        assert artifact is not None
+        session = TeachingSessionService(conn).current(
+            user_id=str(scope["user_id"]),
+            track_id=str(scope["track_id"]),
+            knowledge_key="python.variables",
+        )
+    return settings, scope, str(artifact["id"]), str(session["session_id"])
 
 
 def _assert_no_teaching_artifact_commit(
@@ -548,7 +635,7 @@ def test_artifact_teaching_commit_is_atomic_and_materializes_exact_learning_item
                     client_action_id=f"respond:{uuid4()}",
                     expected_artifact_version=1,
                     action=TutorArtifactRespondAction(
-                        response=TutorArtifactSingleSelectResponse(value="forty_two")
+                        response=TutorArtifactTextResponse(kind="short_text", text="42")
                     ),
                 ),
             )
@@ -572,6 +659,226 @@ def test_artifact_teaching_commit_is_atomic_and_materializes_exact_learning_item
         assert cancelled.artifact.state == "cancelled"
         assert conn.execute(
             "SELECT count(*)::int AS count FROM tutor_exercise_attempts WHERE user_id=%s",
+            (scope["user_id"],),
+        ).fetchone() == {"count": 0}
+
+
+def test_knowledge_check_receipts_replay_and_evaluation_continuation_are_authoritative() -> None:
+    settings, scope, artifact_id, session_id = _materialized_knowledge_artifact(
+        hints=(
+            {"level": 1, "markdown": "Inspect the assignment target."},
+            {"level": 2, "markdown": "A name is bound to the right-hand value."},
+            {"level": 3, "markdown": "Compare the two numeric options."},
+        )
+    )
+    with connection() as conn:
+        service = _artifact_service(conn)
+        first_hint_request = TutorArtifactActionRequest(
+            user_id=str(scope["user_id"]),
+            learning_track_id=str(scope["track_id"]),
+            teaching_session_id=session_id,
+            client_action_id=f"hint:{uuid4()}",
+            expected_artifact_version=1,
+            action=TutorArtifactRequestHintAction(hint_level=1),
+        )
+        first_hint = service.act(
+            artifact_id=artifact_id,
+            conversation_id=str(scope["conversation_id"]),
+            request=first_hint_request,
+        )
+        assert first_hint.artifact.version == 2
+        assert first_hint.artifact.presentation.revealed_hint_levels == (1,)
+
+        replay = service.act(
+            artifact_id=artifact_id,
+            conversation_id=str(scope["conversation_id"]),
+            request=first_hint_request,
+        )
+        assert replay.idempotent_replayed is True
+        assert replay.artifact_event_id == first_hint.artifact_event_id
+        assert replay.artifact.version == 2
+
+        with pytest.raises(LearningArtifactServiceError) as conflict:
+            service.act(
+                artifact_id=artifact_id,
+                conversation_id=str(scope["conversation_id"]),
+                request=TutorArtifactActionRequest(
+                    user_id=str(scope["user_id"]),
+                    learning_track_id=str(scope["track_id"]),
+                    teaching_session_id=session_id,
+                    client_action_id=first_hint_request.client_action_id,
+                    expected_artifact_version=1,
+                    action=TutorArtifactRequestHintAction(hint_level=2),
+                ),
+            )
+        assert conflict.value.code == "IDEMPOTENCY_CONFLICT"
+
+        second_hint = service.act(
+            artifact_id=artifact_id,
+            conversation_id=str(scope["conversation_id"]),
+            request=TutorArtifactActionRequest(
+                user_id=str(scope["user_id"]),
+                learning_track_id=str(scope["track_id"]),
+                teaching_session_id=session_id,
+                client_action_id=f"hint:{uuid4()}",
+                expected_artifact_version=2,
+                action=TutorArtifactRequestHintAction(hint_level=2),
+            ),
+        )
+        third_hint = service.act(
+            artifact_id=artifact_id,
+            conversation_id=str(scope["conversation_id"]),
+            request=TutorArtifactActionRequest(
+                user_id=str(scope["user_id"]),
+                learning_track_id=str(scope["track_id"]),
+                teaching_session_id=session_id,
+                client_action_id=f"hint:{uuid4()}",
+                expected_artifact_version=3,
+                action=TutorArtifactRequestHintAction(hint_level=3),
+            ),
+        )
+        assert second_hint.artifact.presentation.revealed_hint_levels == (1, 2)
+        assert third_hint.artifact.presentation.revealed_hint_levels == (1, 2, 3)
+
+        direct_request = TutorArtifactActionRequest(
+            user_id=str(scope["user_id"]),
+            learning_track_id=str(scope["track_id"]),
+            teaching_session_id=session_id,
+            client_action_id=f"direct-answer:{uuid4()}",
+            expected_artifact_version=4,
+            action=TutorArtifactRequestDirectAnswerAction(),
+        )
+        answered = service.act(
+            artifact_id=artifact_id,
+            conversation_id=str(scope["conversation_id"]),
+            request=direct_request,
+        )
+        assert answered.artifact.version == 5
+        assert answered.artifact.state == "completed"
+        assert answered.artifact.presentation.assistance_kind == "direct_answer"
+        assert answered.artifact.presentation.outcome == "incorrect"
+        transfer_handle = answered.artifact.presentation.transfer_handle
+        assert transfer_handle is not None
+        assert "The assignment binds 42." in answered.artifact.presentation.evaluation_markdown
+
+        answer_replay = service.act(
+            artifact_id=artifact_id,
+            conversation_id=str(scope["conversation_id"]),
+            request=direct_request,
+        )
+        assert answer_replay.idempotent_replayed is True
+        assert answer_replay.artifact_event_id == answered.artifact_event_id
+
+        with pytest.raises(LearningArtifactServiceError) as stale:
+            service.act(
+                artifact_id=artifact_id,
+                conversation_id=str(scope["conversation_id"]),
+                request=TutorArtifactActionRequest(
+                    user_id=str(scope["user_id"]),
+                    learning_track_id=str(scope["track_id"]),
+                    teaching_session_id=session_id,
+                    client_action_id=f"stale:{uuid4()}",
+                    expected_artifact_version=4,
+                    action=TutorArtifactRespondAction(
+                        response=TutorArtifactSingleSelectResponse(value="forty_two")
+                    ),
+                ),
+            )
+        assert stale.value.code == "LEARNING_ARTIFACT_VERSION_CONFLICT"
+
+        assistance = conn.execute(
+            """
+            SELECT assistance_kind,hint_level
+            FROM tutor_knowledge_check_assistance_receipts
+            WHERE artifact_id=%s
+            ORDER BY created_at,id
+            """,
+            (artifact_id,),
+        ).fetchall()
+        assert [(row["assistance_kind"], row["hint_level"]) for row in assistance] == [
+            ("hint", 1),
+            ("hint", 2),
+            ("hint", 3),
+            ("direct_answer", None),
+        ]
+        response = conn.execute(
+            """
+            SELECT id::text AS id,response_kind,outcome,assistance_kind,
+                   independent_mastery_eligible,response_json
+            FROM tutor_knowledge_check_response_receipts
+            WHERE artifact_id=%s
+            """,
+            (artifact_id,),
+        ).fetchone()
+        assert response is not None
+        assert response["response_kind"] == "direct_answer"
+        assert response["outcome"] == "incorrect"
+        assert response["assistance_kind"] == "direct_answer"
+        assert response["independent_mastery_eligible"] is False
+        assert response["response_json"] == {"kind": "direct_answer"}
+
+        with pytest.raises(CheckViolation):
+            with conn.transaction():
+                conn.execute(
+                    "UPDATE tutor_knowledge_check_response_receipts SET outcome='correct' WHERE artifact_id=%s",
+                    (artifact_id,),
+                )
+        with pytest.raises(CheckViolation):
+            with conn.transaction():
+                conn.execute(
+                    "UPDATE tutor_knowledge_check_assistance_receipts SET hint_level=2 WHERE artifact_id=%s AND hint_level=1",
+                    (artifact_id,),
+                )
+
+        producer = TutorContinuationIntentProducer(conn)
+        intent = producer.record_knowledge_check_evaluation(
+            user_id=str(scope["user_id"]),
+            conversation_id=str(scope["conversation_id"]),
+            artifact_id=artifact_id,
+            artifact_event_id=answered.artifact_event_id,
+            artifact_event_sequence=answered.artifact_event_sequence,
+            occurred_at=_NOW,
+        )
+        intent_replay = producer.record_knowledge_check_evaluation(
+            user_id=str(scope["user_id"]),
+            conversation_id=str(scope["conversation_id"]),
+            artifact_id=artifact_id,
+            artifact_event_id=answered.artifact_event_id,
+            artifact_event_sequence=answered.artifact_event_sequence,
+            occurred_at=_NOW,
+        )
+        assert intent.state is ContinuationIntentState.PENDING
+        assert intent_replay.intent_id == intent.intent_id
+        assert intent_replay.replayed is True
+
+        dispatched = TutorContinuationDispatcher(conn, settings=settings).dispatch_next(
+            user_id=str(scope["user_id"]),
+            conversation_id=str(scope["conversation_id"]),
+            claimant_id="knowledge-check-evaluation-test",
+            now=_NOW,
+        )
+        assert dispatched is not None
+        assert dispatched.intent.intent_id == intent.intent_id
+        assert dispatched.intent.source_kind is ContinuationSourceKind.EXPLICIT_ARTIFACT_ACTION
+        stimulus = conn.execute(
+            "SELECT safe_payload_json FROM tutor_run_stimulus_events WHERE run_id=%s",
+            (dispatched.run_id,),
+        ).fetchone()
+        assert stimulus is not None
+        assert stimulus["safe_payload_json"] == {
+            "reason_code": "knowledge_check_evaluation",
+            "source_handle": f"artifact:{artifact_id}",
+        }
+        context = TeachingSessionRepository(conn, settings=settings).teaching_context(
+            user_id=str(scope["user_id"]),
+            run_id=dispatched.run_id,
+        )
+        assert context is not None
+        candidates = context["artifact_candidates"]
+        assert isinstance(candidates, dict)
+        assert [item["handle"] for item in candidates["candidates"]] == [transfer_handle]
+        assert conn.execute(
+            "SELECT count(*)::int AS count FROM tutor_mastery_evidence WHERE user_id=%s",
             (scope["user_id"],),
         ).fetchone() == {"count": 0}
 

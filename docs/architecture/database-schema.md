@@ -532,3 +532,11 @@ result-evaluation 复用 `tutor_continuation_intents`。intent 的 Artifact 是 
 ### `tutor_demonstration_completion_receipts`
 
 Append-only, user-scoped receipt for one completed `demonstration_v2` Artifact. It binds the Artifact version and descriptor hash to either exact isolated-Preview event evidence or bounded visible-clock evidence. The table is purge-aware, exported only as a redacted summary, and is not an Attempt/mastery/progress authority.
+
+## 2026-09-02：Knowledge Check receipt authority
+
+schema fragment `180_knowledge_checks.sql` 新增 user-owned append-only `tutor_knowledge_check_response_receipts` 与 `tutor_knowledge_check_assistance_receipts`。response 每 Artifact 最多一条，绑定 exact user/conversation/track/knowledge/TeachingSession/checkpoint/Learning Item/Artifact version、closed response kind、response/result hash、outcome、assistance kind 与 scorer policy。数据库 CHECK 只允许 `outcome=correct AND assistance_kind=independent` 标记 independent mastery eligible；direct-answer response 固定为安全 marker shape，不保存公开答案 authority。
+
+assistance receipt 对每个 Artifact 的 H1/H2/H3 与 direct answer 分别 exactly-once。scope trigger 要求 Artifact 仍是 exact active/ready Learning Item knowledge check；普通 UPDATE/DELETE 以 `23514` 拒绝，transaction-local user purge 才允许删除。通用 trigger 必须先按 `TG_TABLE_NAME` 分支再读取 response 表专属字段，避免在 assistance trigger record 上解析不存在列。
+
+两张表属于 cutover target，并进入 local summary、安全 export、reset/delete 的 child-to-root 顺序。fragment 170 提前兼容 additive `request_direct_answer` action，fragment 110 继续在 schema 120/180 前接受 persisted `tutor_conversation_event_v3`；显式 bootstrap-twice 回归验证既有 v3 row、default 与 v1/v2/v3 CHECK 均保留。

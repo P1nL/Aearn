@@ -410,3 +410,9 @@ source update 旋转 generation/nonce；Rust bridge exact 校验 host/source Art
 ## Published teaching demonstrations
 
 Demonstration source is rendered read-only. Interactive source executes only in the app-owned isolated Preview host and is never evaluated in the main DOM. Completion accepts only the exact descriptor event key and canonical JSON payload. Static time accrues only while the app is foregrounded, the Artifact is current, at least 60% visible, and render-ready. The 3px progress indicator becomes discrete under reduced motion. An unfinished timer is process-memory-only, so closing and reopening restarts it.
+
+## 2026-09-02：结构化检查与 Hint overlay
+
+`KnowledgeCheckArtifact` 只渲染 server `knowledge_check_v1`：single/multi select、prediction/short text、ordering 和 code range 使用各自的封闭控件；提交前只在本地形成 action payload，不计算正确、答案、难度、掌握度或 successor。terminal projection 移除编辑与新 Hint 控件，保留 server outcome/evaluation。`D(n)` 继续由通用 Artifact shell 低存在感显示，Hint 不改变 base difficulty。
+
+Hint 使用 `document.body` portal + fixed overlay，不参与 Artifact/对话高度。H1-H3 只经显式 server action 解锁，已解锁页可用 ArrowLeft/ArrowRight/Home/End 或按钮手动横向分页；不自动轮播。非当前页同时 `aria-hidden` 与 `inert`。首次打开记录原触发点，server projection rerender 后使用当前 trigger ref；每次解锁后焦点回 dialog，Escape/关闭精确恢复“提示”按钮。窄屏为 bounded bottom sheet，reduced motion 将横向动画降到近零且不改变 receipt 行为。
