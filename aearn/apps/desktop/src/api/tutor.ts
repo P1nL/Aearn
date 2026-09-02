@@ -1184,6 +1184,8 @@ function toTutorPublicArtifactItem(payload: unknown): TutorPublicArtifactItem | 
       ((payload.state === "completed") !== presentation.submission_locked) ||
       (!terminal && !allowedActions.includes("complete_review"))
     )) return null;
+  if (presentation.type === "sql_workspace_v2" && presentation.public_result_attempt_id !== null &&
+      (activeAttempt === null || activeAttempt.attempt_id !== presentation.public_result_attempt_id)) return null;
   if (payload.artifact_kind === "test_result") {
     if (payload.purpose !== "result" || payload.state !== "completed" || payload.blocking ||
         allowedActions.length > 0 || activeAttempt === null || activeAttempt.status !== "terminal" ||
@@ -1352,6 +1354,38 @@ function toTutorArtifactPresentation(payload: unknown): TutorArtifactPresentatio
       starter_query: payload.starter_query, starter_query_hash: payload.starter_query_hash,
       schema_markdown: payload.schema_markdown, max_rows: payload.max_rows };
   }
+  if (payload.type === "sql_workspace_v2" && hasExactKeys(payload, [
+    "type", "exercise_version_id", "dialect", "execution_tier", "starter_query", "starter_query_hash",
+    "tables", "max_rows", "public_result", "public_result_query_hash", "public_result_attempt_id",
+  ]) && isArtifactBoundedString(payload.exercise_version_id, 160) && payload.dialect === "sqlite" &&
+      payload.execution_tier === "teaching_local" && isArtifactString(payload.starter_query, 48_000) &&
+      isSha256(payload.starter_query_hash) && sha256Text(payload.starter_query) === payload.starter_query_hash &&
+      isArtifactIntegerInRange(payload.max_rows, 1, 200) && Array.isArray(payload.tables) &&
+      payload.tables.length >= 1 && payload.tables.length <= 8 &&
+      isNullableSha256(payload.public_result_query_hash) &&
+      isNullableArtifactBoundedString(payload.public_result_attempt_id, 160)) {
+    const tables = payload.tables.map(toTutorArtifactSqlTableV2);
+    if (tables.some((table) => table === null)) return null;
+    const parsedTables = tables.filter((table): table is NonNullable<typeof table> => table !== null);
+    if (new Set(parsedTables.map((table) => table.name)).size !== parsedTables.length ||
+        !sqlForeignKeysReferencePublishedColumns(parsedTables)) return null;
+    const parsedResult = payload.public_result === null ? null : toSafeExecutionPresentation(payload.public_result);
+    if (payload.public_result !== null && (parsedResult === null || parsedResult.kind !== "table_result_v1")) return null;
+    const resultIdentityComplete = parsedResult !== null && payload.public_result_query_hash !== null &&
+      payload.public_result_attempt_id !== null;
+    const resultIdentityEmpty = parsedResult === null && payload.public_result_query_hash === null &&
+      payload.public_result_attempt_id === null;
+    if ((!resultIdentityComplete && !resultIdentityEmpty) ||
+        (parsedResult?.kind === "table_result_v1" && parsedResult.rows.length > payload.max_rows)) return null;
+    return {
+      type: "sql_workspace_v2", exercise_version_id: payload.exercise_version_id, dialect: "sqlite",
+      execution_tier: "teaching_local", starter_query: payload.starter_query,
+      starter_query_hash: payload.starter_query_hash, tables: parsedTables, max_rows: payload.max_rows,
+      public_result: parsedResult?.kind === "table_result_v1" ? parsedResult : null,
+      public_result_query_hash: payload.public_result_query_hash,
+      public_result_attempt_id: payload.public_result_attempt_id,
+    };
+  }
   if (payload.type === "demonstration_v1" && hasExactKeys(payload, [
     "type", "demonstration_mode", "language_id", "source_content", "source_content_hash", "expected_event_key", "duration_seconds",
   ]) && (payload.demonstration_mode === "interactive" || payload.demonstration_mode === "static") &&
@@ -1401,6 +1435,54 @@ function toTutorArtifactPresentation(payload: unknown): TutorArtifactPresentatio
       excerpt: payload.excerpt, citation_ids: citationIds };
   }
   return null;
+}
+
+type ParsedTutorSqlTableV2 = Extract<TutorArtifactPresentation, { type: "sql_workspace_v2" }>["tables"][number];
+
+function toTutorArtifactSqlTableV2(payload: unknown): ParsedTutorSqlTableV2 | null {
+  if (!isRecord(payload) || !hasExactKeys(payload, ["name", "columns", "foreign_keys"]) ||
+      !isSqlIdentifier(payload.name) || !Array.isArray(payload.columns) ||
+      payload.columns.length < 1 || payload.columns.length > 32 ||
+      !Array.isArray(payload.foreign_keys) || payload.foreign_keys.length > 16) return null;
+  const columns: ParsedTutorSqlTableV2["columns"] = [];
+  for (const column of payload.columns) {
+    if (!isRecord(column) || !hasExactKeys(column, ["name", "data_type", "nullable", "primary_key"]) ||
+        !isSqlIdentifier(column.name) ||
+        (column.data_type !== "INTEGER" && column.data_type !== "REAL" && column.data_type !== "TEXT") ||
+        typeof column.nullable !== "boolean" || typeof column.primary_key !== "boolean" ||
+        (column.primary_key && column.nullable)) return null;
+    columns.push({ name: column.name, data_type: column.data_type,
+      nullable: column.nullable, primary_key: column.primary_key });
+  }
+  if (new Set(columns.map((column) => column.name)).size !== columns.length) return null;
+  const foreignKeys: ParsedTutorSqlTableV2["foreign_keys"] = [];
+  for (const foreignKey of payload.foreign_keys) {
+    if (!isRecord(foreignKey) || !hasExactKeys(foreignKey, ["column", "references_table", "references_column"]) ||
+        !isSqlIdentifier(foreignKey.column) || !isSqlIdentifier(foreignKey.references_table) ||
+        !isSqlIdentifier(foreignKey.references_column) ||
+        !columns.some((column) => column.name === foreignKey.column)) return null;
+    foreignKeys.push({ column: foreignKey.column, references_table: foreignKey.references_table,
+      references_column: foreignKey.references_column });
+  }
+  if (new Set(foreignKeys.map((foreignKey) => foreignKey.column)).size !== foreignKeys.length) return null;
+  return { name: payload.name, columns, foreign_keys: foreignKeys };
+}
+
+function sqlForeignKeysReferencePublishedColumns(tables: ParsedTutorSqlTableV2[]): boolean {
+  const byName = new Map(tables.map((table) => [table.name, table]));
+  return tables.every((table) => table.foreign_keys.every((foreignKey) => {
+    const sourceColumn = table.columns.find((column) => column.name === foreignKey.column);
+    const target = byName.get(foreignKey.references_table);
+    const targetColumn = target?.columns.find((column) => column.name === foreignKey.references_column);
+    const targetPrimaryKeys = target?.columns.filter((column) => column.primary_key) ?? [];
+    return sourceColumn !== undefined && targetColumn !== undefined &&
+      targetPrimaryKeys.length === 1 && targetPrimaryKeys[0]?.name === targetColumn.name &&
+      sourceColumn.data_type === targetColumn.data_type;
+  }));
+}
+
+function isSqlIdentifier(value: unknown): value is string {
+  return typeof value === "string" && /^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(value);
 }
 
 const MODEL_REVIEW_REQUIRED_CATEGORIES = [
@@ -2646,7 +2728,7 @@ function doesTutorArtifactKindMatchPresentation(kind: TutorArtifactKind, present
     (kind === "test_result" && presentation === "test_result_v1") ||
     (kind === "knowledge_check" && presentation === "knowledge_check_v1") ||
     (kind === "model_code_review" && (presentation === "model_code_review_v1" || presentation === "model_code_review_v2")) ||
-    (kind === "sql_workspace" && presentation === "sql_workspace_v1") ||
+    (kind === "sql_workspace" && (presentation === "sql_workspace_v1" || presentation === "sql_workspace_v2")) ||
     (kind === "demonstration" && (presentation === "demonstration_v1" || presentation === "demonstration_v2")) ||
     (kind === "source_inspector" && presentation === "source_inspector_v1");
 }

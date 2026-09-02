@@ -651,6 +651,11 @@ def safe_result_to_runtime_execution_result(
         core_blank_gate=success,
         any_blank_passed=passed > 0,
         logic_pass=success,
+        presentation=(
+            result.presentation.model_dump(mode="json")
+            if result.presentation.kind == "table_result_v1"
+            else None
+        ),
     )
 
 

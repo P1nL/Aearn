@@ -335,3 +335,19 @@ The Tutor may select a published demonstration handle but cannot author or alter
 5. terminal receipt 创建一个 mainline `model_review_evaluation` continuation。下一 Tutor Turn 只获得
    bounded safe evaluation 与 exact remediation handle；完整 submission、expected finding、rubric/test/
    proof、provider body/reasoning 永不进入对话、SSE、Desktop 或 export。
+
+## 2026-09-02：对话内 SQL 学习工作区
+
+1. Tutor 只能从 current scope 中已经 published、capability-compatible 的 SQL Learning Item materialize
+   `sql_workspace_v2`；learner 看到 starter query、published Schema 和 public dataset 边界，看不到 hidden
+   dataset、standard query、expected rows 或数据库连接信息。
+2. learner 在 lazy Monaco 中编辑。Schema 名称可以复制，但复制不会插入/聚焦 editor；只有显式点击 Run
+   才提交最新 query，输入、resize、reconnect 和 Schema 操作都不会执行。
+3. server 在 Artifact transaction 中只 admission 一个 exact pending Learning Item Attempt并提交；之后才为
+   public dataset 和每个 private test dataset 分别创建独立内存 SQLite，执行单条只读 SELECT/WITH。任何
+   DDL/DML/ATTACH/PRAGMA、unpublished table、file/extension 或 bounds 违规都安全失败。
+4. public query columns/rows 显示在底部 bounded grid；hidden case 只返回 generic pass/fail summary。全部测试
+   通过时 existing Attempt/result authority 直接完成 source；失败时 source 可继续编辑，result Artifact 与
+   Tutor evaluation 按既有 exactly-once continuation 流程追加。
+5. replay/Attempt GET 只恢复同一 committed Attempt/result，不重复执行或评分。本流程不创建 counterfeit Gate、
+   不连接 Aearn PostgreSQL、不更新 mastery/progress，也不把本地 SQLite 描述为 container verified。

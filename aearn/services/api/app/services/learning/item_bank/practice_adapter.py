@@ -16,7 +16,9 @@ from app.services.learning.item_bank.contracts import (
     LearningItemModelReviewPrivateV1,
     LearningItemSourceV1,
     LearningItemSqlContentV1,
+    LearningItemSqlContentV2,
     LearningItemSqlPrivateV1,
+    LearningItemSqlPrivateV2,
     canonical_hash,
 )
 from app.services.learning.practice.contracts import (
@@ -152,6 +154,57 @@ def build_exercise_authority(
                 "sql": {
                     "dialect": content.dialect,
                     "setup_sql": list(private_content.setup_sql),
+                    "comparison": content.comparison,
+                    "max_rows": content.max_rows,
+                }
+            },
+        }
+        standard_submission = private_content.standard_query
+        starter_submission = content.starter_query
+    elif isinstance(content, LearningItemSqlContentV2) and isinstance(
+        private_content,
+        LearningItemSqlPrivateV2,
+    ):
+        exercise_type = ExerciseType.SQL_QUERY
+        learner_prompt = {
+            "schema_version": "learning_item_prompt_v1",
+            "instruction_markdown": public.instruction_markdown,
+        }
+        starter_artifact = {
+            "schema_version": "learning_item_sql_artifact_v2",
+            "dialect": content.dialect,
+            "starter_query": content.starter_query,
+            "schema": [item.model_dump(mode="json") for item in content.tables],
+        }
+        runtime_profile_id = blueprint.runtime_profile_id
+        execution_required = True
+        feedback_policy = "learning_item_sql_feedback_v2"
+        private_tests = tuple(
+            {
+                "id": item.id,
+                "case_type": item.case_type,
+                "dataset": item.dataset.model_dump(mode="json"),
+                "expected_output": item.expected_output.model_dump(mode="json"),
+                "weight": item.weight,
+                "is_critical": item.is_critical,
+                "order_index": item.order_index,
+            }
+            for item in private_content.tests
+        )
+        reference_answer = {"content": private_content.standard_query}
+        score_policy = private_content.score_policy.model_dump(mode="json")
+        runner_payload = {
+            "runtime_profile": _runtime_profile(
+                runtime_profile_id=runtime_profile_id,
+                language_id="sql",
+            ),
+            "code_blanks": [],
+            "test_cases": list(private_tests),
+            "metadata_json": {
+                "sql": {
+                    "dialect": content.dialect,
+                    "schema": [item.model_dump(mode="json") for item in content.tables],
+                    "public_dataset": content.public_dataset.model_dump(mode="json"),
                     "comparison": content.comparison,
                     "max_rows": content.max_rows,
                 }

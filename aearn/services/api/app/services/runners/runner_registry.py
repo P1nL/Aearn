@@ -650,6 +650,15 @@ def _sql_result_to_runtime_result(exercise: Mapping[str, object], sql_result: Sq
         core_blank_gate=logic_pass,
         any_blank_passed=passed_count > 0,
         logic_pass=logic_pass,
+        presentation=(
+            {
+                "kind": "table_result_v1",
+                "columns": list(sql_result.columns),
+                "rows": [list(row) for row in sql_result.rows],
+            }
+            if sql_result.columns
+            else None
+        ),
     )
 
 

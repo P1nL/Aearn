@@ -13,8 +13,10 @@ from app.services.learning.artifacts.contracts import (
     TutorArtifactAttemptSummaryV1,
     TutorArtifactCreate,
     TutorArtifactKind,
+    TutorArtifactPresentationV1,
     TutorArtifactPurpose,
     TutorArtifactSourceReferenceV1,
+    TutorArtifactSqlWorkspacePresentationV2,
     TutorArtifactState,
     TutorArtifactTestResultPresentationV1,
 )
@@ -126,6 +128,10 @@ class ExecutionResultArtifactProjector:
                 raise LearningArtifactProjectionError(
                     "execution result projection lost the current Attempt authority"
                 )
+            projected_presentation = _project_source_presentation(
+                source=source,
+                attempt_summary=attempt_summary,
+            )
             event_kind: ArtifactOwnerEventKind = (
                 "terminal"
                 if terminal_pass and projects_latest_attempt
@@ -206,7 +212,7 @@ class ExecutionResultArtifactProjector:
                     state=projected_state,
                     owner_version=source.artifact.owner_version,
                     owner_context_version=source.owner_context_version,
-                    presentation=source.artifact.presentation,
+                    presentation=projected_presentation,
                     allowed_actions=(
                         ()
                         if projects_latest_attempt and terminal_pass
@@ -324,6 +330,35 @@ def build_execution_result_summary(
     if execution_result.passed_test_count > 0:
         lines.append(f"- 其他 {execution_result.passed_test_count} 项通过。")
     return "\n".join(lines)
+
+
+def _project_source_presentation(
+    *,
+    source: ExecutionResultProjectionSource,
+    attempt_summary: TutorArtifactAttemptSummaryV1,
+) -> TutorArtifactPresentationV1:
+    presentation = source.artifact.presentation
+    if not isinstance(presentation, TutorArtifactSqlWorkspacePresentationV2):
+        return presentation
+    attempt_result = source.attempt.result
+    execution_result = attempt_result.execution_result if attempt_result is not None else None
+    public_result = (
+        execution_result.presentation
+        if execution_result is not None
+        and execution_result.presentation.kind == "table_result_v1"
+        else None
+    )
+    return presentation.model_copy(
+        update={
+            "public_result": public_result,
+            "public_result_query_hash": (
+                source.attempt.submission_hash if public_result is not None else None
+            ),
+            "public_result_attempt_id": (
+                attempt_summary.attempt_id if public_result is not None else None
+            ),
+        }
+    )
 
 
 def _attempt_summary(

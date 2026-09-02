@@ -1969,6 +1969,80 @@
 .code-editor-state { min-width: 0; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
 .code-editor-stale { color: #9a5b13; font-weight: 750; }
 
+/* Child 09 structured SQL editor, public schema, and bounded result grid. */
+.sql-workspace-artifact,
+.sql-workspace-split,
+.sql-editor-pane,
+.sql-schema-pane,
+.sql-public-result { min-width: 0; min-height: 0; }
+.sql-workspace-artifact { display: grid; gap: 10px; container-type: inline-size; }
+.sql-workspace-split {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  height: min(58vh, 560px);
+  overflow: hidden;
+  border: 1px solid rgba(28, 43, 37, .18);
+  border-radius: 12px;
+  background: #fff;
+}
+.sql-editor-pane,
+.sql-schema-pane { display: grid; grid-template-rows: auto minmax(0, 1fr); overflow: hidden; }
+.sql-editor-pane { border-right: 1px solid rgba(28, 43, 37, .16); }
+.sql-schema-toolbar {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 0 10px 0 12px;
+  border-bottom: 1px solid var(--line-soft);
+  background: #f8faf9;
+}
+.sql-schema-toolbar > div { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.sql-schema-toolbar strong { font-size: 12px; }
+.sql-schema-toolbar span { color: var(--muted); font-size: 11px; }
+.sql-copy-status { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sql-schema-tree { min-width: 0; overflow: auto; overscroll-behavior: contain; padding: 9px; }
+.sql-schema-tree details { border-bottom: 1px solid var(--line-soft); }
+.sql-schema-tree details:last-child { border-bottom: 0; }
+.sql-schema-tree summary {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  cursor: pointer;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 750;
+}
+.sql-schema-tree ul { display: grid; gap: 3px; margin: 0; padding: 0 0 9px 13px; list-style: none; }
+.sql-schema-tree li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 8px; min-width: 0; padding: 5px 0; }
+.sql-schema-tree li > div { display: flex; min-width: 0; align-items: center; flex-wrap: wrap; gap: 6px; }
+.sql-schema-tree code { color: var(--ink); overflow-wrap: anywhere; }
+.sql-schema-tree li span { color: var(--muted); font-size: 10px; }
+.sql-schema-tree li small { padding: 1px 5px; border-radius: 999px; background: rgba(47, 125, 99, .09); color: var(--accent-dark); font-size: 9px; font-weight: 800; }
+.sql-schema-tree li p { grid-column: 1 / -1; margin: 0; color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
+.sql-copy-name { min-width: 44px; min-height: 36px; padding: 0 8px; border: 0; border-radius: 8px; background: transparent; color: var(--accent-dark); font-size: 10px; font-weight: 750; cursor: pointer; }
+.sql-copy-name:hover { background: rgba(47, 125, 99, .08); }
+.sql-copy-name:focus-visible,
+.sql-schema-tree summary:focus-visible,
+.sql-result-table-scroll:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent) 44%, transparent); outline-offset: -3px; }
+.sql-workspace-footer { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 12px; }
+.sql-workspace-footer button { flex: 0 0 auto; min-height: 44px; }
+.sql-public-result { display: grid; min-height: 160px; gap: 8px; }
+.sql-public-result > header { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.sql-public-result > header strong { font-size: 12px; }
+.sql-public-result > header span,
+.sql-public-result > p { color: var(--muted); font-size: 11px; }
+.sql-public-result > p { margin: 0; padding: 12px; border: 1px dashed var(--line); border-radius: 10px; }
+.sql-result-table-scroll { max-width: 100%; max-height: 320px; overflow: auto; overscroll-behavior: contain; border: 1px solid var(--line-soft); border-radius: 10px; background: #fff; }
+.sql-result-table-scroll table { width: max-content; min-width: 100%; border-collapse: collapse; }
+.sql-result-table-scroll th,
+.sql-result-table-scroll td { max-width: 34ch; padding: 9px 11px; border-bottom: 1px solid var(--line-soft); text-align: left; vertical-align: top; overflow-wrap: anywhere; }
+.sql-result-table-scroll th { position: sticky; top: 0; color: var(--ink); background: #f2f7f5; }
+.sql-result-table-scroll tbody tr:last-child td { border-bottom: 0; }
+
 /* Child 05 authoritative execution result presentation. */
 .execution-result-artifact,
 .execution-result-detail {
@@ -2182,6 +2256,14 @@
   }
   .code-editor-footer { display: grid; }
   .code-editor-footer button { width: 100%; }
+  .sql-workspace-split {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: repeat(2, minmax(240px, 1fr));
+    height: min(76vh, 680px);
+  }
+  .sql-editor-pane { border-right: 0; border-bottom: 1px solid rgba(28, 43, 37, .16); }
+  .sql-workspace-footer { display: grid; }
+  .sql-workspace-footer button { width: 100%; }
   .execution-result-overview { display: grid; }
   .execution-result-return button { width: 100%; }
   .tutor-clarification-branch { padding-left: 20px; }

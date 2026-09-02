@@ -9,9 +9,15 @@ from typing import Annotated, Literal, Mapping, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
 
-from aearn_shared.execution import SafeExecutionResultV2
+from aearn_shared.execution import (
+    SafeExecutionResultV2,
+    SafeTableResultPresentationV1,
+)
 from app.services.tutor.branch_contracts import BranchResponseDisposition
-from app.services.learning.item_bank.contracts import validate_demo_event_payload
+from app.services.learning.item_bank.contracts import (
+    LearningItemSqlTableV2,
+    validate_demo_event_payload,
+)
 from app.services.learning.practice.model_review_contracts import (
     ModelCodeReviewSubmissionV1,
     ModelCodeReviewSubmissionV2,
@@ -422,6 +428,42 @@ class TutorArtifactSqlWorkspacePresentationV1(_StrictArtifactModel):
         return self
 
 
+class TutorArtifactSqlWorkspacePresentationV2(_StrictArtifactModel):
+    type: Literal["sql_workspace_v2"] = "sql_workspace_v2"
+    exercise_version_id: str = Field(min_length=1, max_length=160)
+    dialect: Literal["sqlite"] = "sqlite"
+    execution_tier: Literal["teaching_local"] = "teaching_local"
+    starter_query: str = Field(max_length=48_000)
+    starter_query_hash: str = Field(min_length=64, max_length=64)
+    tables: tuple[LearningItemSqlTableV2, ...] = Field(min_length=1, max_length=8)
+    max_rows: int = Field(default=50, ge=1, le=200)
+    public_result: SafeTableResultPresentationV1 | None = None
+    public_result_query_hash: str | None = Field(default=None, min_length=64, max_length=64)
+    public_result_attempt_id: str | None = Field(default=None, min_length=1, max_length=160)
+
+    @model_validator(mode="after")
+    def validate_workspace(self) -> "TutorArtifactSqlWorkspacePresentationV2":
+        if sha256_text(self.starter_query) != self.starter_query_hash:
+            raise ValueError("artifact starter query hash does not match")
+        table_names = tuple(item.name for item in self.tables)
+        if len(table_names) != len(set(table_names)):
+            raise ValueError("artifact SQL schema tables must be unique")
+        result_fields = (
+            self.public_result is not None,
+            self.public_result_query_hash is not None,
+            self.public_result_attempt_id is not None,
+        )
+        if any(result_fields) and not all(result_fields):
+            raise ValueError("artifact SQL public result identity is incomplete")
+        if self.public_result is not None and len(self.public_result.rows) > self.max_rows:
+            raise ValueError("artifact SQL public result exceeds its row bound")
+        _require_sha256(
+            self.public_result_query_hash,
+            label="artifact SQL public query hash",
+        )
+        return self
+
+
 class TutorArtifactDemonstrationPresentationV1(_StrictArtifactModel):
     type: Literal["demonstration_v1"] = "demonstration_v1"
     demonstration_mode: Literal["interactive", "static"]
@@ -559,6 +601,7 @@ TutorArtifactPresentationV1 = Annotated[
     | TutorArtifactModelCodeReviewPresentationV1
     | TutorArtifactModelCodeReviewPresentationV2
     | TutorArtifactSqlWorkspacePresentationV1
+    | TutorArtifactSqlWorkspacePresentationV2
     | TutorArtifactDemonstrationPresentationV1
     | TutorArtifactDemonstrationPresentationV2
     | TutorArtifactSourceInspectorPresentationV1,
@@ -872,6 +915,14 @@ class TutorPublicArtifactItem(_StrictArtifactModel):
                     TutorArtifactModelCodeReviewPresentationV2,
                 ),
             )
+        if self.artifact_kind is TutorArtifactKind.SQL_WORKSPACE:
+            presentation_matches = isinstance(
+                self.presentation,
+                (
+                    TutorArtifactSqlWorkspacePresentationV1,
+                    TutorArtifactSqlWorkspacePresentationV2,
+                ),
+            )
         if not presentation_matches:
             raise ValueError("artifact kind does not match its presentation")
         if self.state.terminal != (self.terminal_at is not None):
@@ -896,6 +947,13 @@ class TutorPublicArtifactItem(_StrictArtifactModel):
                 and TutorArtifactActionKind.COMPLETE_REVIEW not in self.allowed_actions
             ):
                 raise ValueError("active model-review Artifact lacks complete-review authority")
+        if isinstance(self.presentation, TutorArtifactSqlWorkspacePresentationV2):
+            if self.presentation.public_result_attempt_id is not None and (
+                self.active_attempt is None
+                or self.active_attempt.attempt_id
+                != self.presentation.public_result_attempt_id
+            ):
+                raise ValueError("SQL public result does not match the active Attempt")
         if (
             self.state.terminal
             and self.active_attempt is not None
@@ -1328,6 +1386,7 @@ __all__ = (
     "TutorArtifactResponseV1",
     "TutorArtifactRunAction",
     "TutorArtifactSourceReferenceV1",
+    "TutorArtifactSqlWorkspacePresentationV2",
     "TutorArtifactState",
     "TutorPublicArtifactItem",
     "assert_public_artifact_safe",

@@ -470,3 +470,35 @@ production diff 路径、self-hashed malformed map、`uncertain + findings`、�
 本轮未调用真实 provider、真实 executor/container 或 Docker conformance；未执行生产 image
 build/sign/publish、Tauri installer、push、deploy 或生产数据迁移。以上是本地 repository/UI
 contract readiness，不是 live model quality、生产隔离或 release approval。
+
+## 2026-09-02：SQL Learning Workspace Child09 本地证据
+
+本增量交付 structured `sql_workspace_v2` Learning Item、post-commit local SQLite Run、public grid/hidden
+summary redaction、Learning Item-owned Attempt 与 conversation-native Monaco/Schema/Result UI。历史 v1 继续
+可读；`artifacts/__init__.py` contracts-only/lazy、fragment 110 event-v3 compatibility 和受保护原型均未改。
+唯一一次原生 Child09 check 在明确 10 分钟边界内未返回报告，已强制终止且未修改文件；没有启动第二个
+check，主线程完成后续缺陷修复、全量验证、提交与归档。
+
+最终验证证据：
+
+- focused serial PostgreSQL/API matrix：**71 passed in 41.95s**；schema manifest/bootstrap/runner/compiler
+  post-fix：**40 passed in 5.67s**；
+- complete API（`LLM_TYPE=disabled`、`-m "not real_provider"`）：首次发现新增 fragment 未进入显式
+  manifest expectation，修复后为 **865 passed, 2 deselected in 426.02s**；
+- API Ruff 与 Mypy：通过，Mypy **246 source files**；compileall、`uv lock --check`、Artifact import smoke
+  通过；shared SafeExecutionResult **34 passed**；Executor 非 Docker conformance **11 passed**；
+- Desktop full Vitest：**21 files / 146 tests passed**；TypeScript check 与 Vite build 通过，
+  **138 modules transformed**；
+- real Chromium temporary harness：1440x900 Editor/Schema 为 **574/574px**，900x900 为 **434/434px**，
+  390x844 上下 pane 均为 **358x319.7px**；20-row result 在三视口均为内部滚动，document/body 无横向
+  overflow。复制 `learners.mentor_id` 前后 Monaco 文本、selection 与焦点不变；等待不自动 Run，点击后
+  只提交最新 query；reduced-motion 命中，fresh page console warning/error 为 **0/0**；临时 Vite/fixture 已清理；
+- public/hidden dataset 使用不同标记值并验证 public serialization 不含 private identity/value；SQL policy
+  覆盖 mutation/multiple statement/PRAGMA/ATTACH、sqlite catalog/unpublished table、extension/file function、
+  32-column、row/cell/payload、timeout/resource limit、FK target/type 与 table insertion order；
+- PostgreSQL 证据覆盖 admission commit before execution、exact item/materialization/scope、no Gate binding、
+  result-evaluation continuation、replay、no mastery write、persisted SQL v2 row bootstrap twice、cutover/export/
+  reset 与 explicit schema manifest；Trellis context 和 `git diff --check` 最终通过。
+
+未运行真实 provider、真实 executor/container、Docker conformance、生产 image build/sign/publish、Tauri
+installer、push、deploy 或生产数据迁移。该记录是本地 contract/readiness 证据，不构成生产发布批准。

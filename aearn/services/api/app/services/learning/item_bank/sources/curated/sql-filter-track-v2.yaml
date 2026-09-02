@@ -1,0 +1,164 @@
+schema_version: learning_item_source_v1
+blueprint:
+  schema_version: learning_item_blueprint_v1
+  blueprint_key: sql.query.filter-track.blueprint
+  version: v2
+  knowledge_key: sql.fundamentals
+  item_kind: sql
+  purpose: sql_exploration
+  language_id: sql
+  difficulty_profile:
+    base: D2
+    reasoning_depth: 2
+    concept_count: 2
+    context_novelty: 2
+    transfer_distance: 2
+    response_complexity: 2
+    scaffolding: 4
+  prerequisite_keys: []
+  required_capabilities:
+  - sql.select.where
+  - sql.order_by
+  allowed_interactions:
+  - query
+  - run
+  publication_policy:
+    risk_tier: low
+    required_review_roles:
+    - curriculum
+    - difficulty
+    - technical
+    - ambiguity
+    - security
+    - adversarial
+    agent_review_required: true
+    pilot_required: true
+    human_approval_required: false
+  source_references:
+  - source_id: aearn.docs
+    source_version: '2026.09'
+    locator: sqlite.select.where.v2
+    content_hash: 1d97ac95d8882812c97ee6b722af3b623ee9a64618f86aa56be59fa8b2efccaf
+  runtime_profile_id: sql_query_test
+public:
+  schema_version: learning_item_public_v1
+  item_key: sql.query.filter-track
+  version: v2
+  kind: sql
+  purpose: sql_exploration
+  title: SQL Query Filter Track
+  difficulty: D2
+  instruction_markdown: 查询 `sql` 学习方向的学习者，并按 `id` 排序。
+  allowed_interactions:
+  - query
+  - run
+  hints: []
+  source_references:
+  - source_id: aearn.docs
+    source_version: '2026.09'
+    locator: sqlite.select.where.v2
+    content_hash: 1d97ac95d8882812c97ee6b722af3b623ee9a64618f86aa56be59fa8b2efccaf
+  content:
+    type: sql_v2
+    dialect: sqlite
+    starter_query: SELECT name FROM learners WHERE track = 'python' ORDER BY id;
+    tables:
+    - name: mentors
+      columns:
+      - name: id
+        data_type: INTEGER
+        nullable: false
+        primary_key: true
+      - name: name
+        data_type: TEXT
+        nullable: false
+        primary_key: false
+      foreign_keys: []
+    - name: learners
+      columns:
+      - name: id
+        data_type: INTEGER
+        nullable: false
+        primary_key: true
+      - name: name
+        data_type: TEXT
+        nullable: false
+        primary_key: false
+      - name: track
+        data_type: TEXT
+        nullable: false
+        primary_key: false
+      - name: mentor_id
+        data_type: INTEGER
+        nullable: true
+        primary_key: false
+      foreign_keys:
+      - column: mentor_id
+        references_table: mentors
+        references_column: id
+    public_dataset:
+      tables:
+      - table: mentors
+        rows:
+        - [1, Grace Hopper]
+        - [2, Edgar Codd]
+      - table: learners
+        rows:
+        - [1, Ada, python, 1]
+        - [2, Grace, sql, 2]
+        - [3, Linus, systems, null]
+    comparison: ordered
+    max_rows: 20
+private:
+  schema_version: learning_item_private_v1
+  item_key: sql.query.filter-track
+  version: v2
+  kind: sql
+  content:
+    type: sql_v2
+    standard_query: SELECT name FROM learners WHERE track = 'sql' ORDER BY id;
+    tests:
+    - id: visible_sql
+      case_type: visible
+      dataset:
+        tables:
+        - table: mentors
+          rows:
+          - [1, Grace Hopper]
+          - [2, Edgar Codd]
+        - table: learners
+          rows:
+          - [1, Ada, python, 1]
+          - [2, Grace, sql, 2]
+          - [3, Linus, systems, null]
+      expected_output:
+        kind: table_result_v1
+        columns: [name]
+        rows:
+        - [Grace]
+      weight: 1
+      is_critical: true
+      order_index: 0
+    - id: hidden_sql
+      case_type: hidden
+      dataset:
+        tables:
+        - table: mentors
+          rows:
+          - [10, Katherine Johnson]
+        - table: learners
+          rows:
+          - [10, Barbara, sql, 10]
+          - [11, Margaret, python, 10]
+      expected_output:
+        kind: table_result_v1
+        columns: [name]
+        rows:
+        - [Barbara]
+      weight: 1
+      is_critical: true
+      order_index: 1
+    score_policy:
+      kind: all_tests
+      policy_version: all_tests_v1
+      threshold: 1.0

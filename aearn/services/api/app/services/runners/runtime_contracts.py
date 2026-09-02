@@ -18,3 +18,4 @@ class RuntimeExecutionResult:
     core_blank_gate: bool
     any_blank_passed: bool
     logic_pass: bool
+    presentation: dict[str, object] | None = None

@@ -345,13 +345,19 @@ BEGIN
       AND knowledge_key=NEW.knowledge_key;
     IF item_version_row.id IS NULL
        OR NEW.owner_context_version IS DISTINCT FROM session_row.version
-       OR item_version_row.purpose IS DISTINCT FROM NEW.purpose
        OR item_version_row.difficulty IS DISTINCT FROM NEW.difficulty
-       OR (item_version_row.item_kind='code' AND NEW.artifact_kind<>'exercise_workspace')
-       OR (item_version_row.item_kind='sql' AND NEW.artifact_kind<>'sql_workspace')
-       OR (item_version_row.item_kind='demo' AND NEW.artifact_kind<>'demonstration')
-       OR (item_version_row.item_kind='knowledge_check' AND NEW.artifact_kind<>'knowledge_check')
-       OR (item_version_row.item_kind='model_review' AND NEW.artifact_kind<>'model_code_review') THEN
+       OR (NEW.artifact_kind='test_result' AND NEW.purpose<>'result')
+       OR (
+         NEW.artifact_kind<>'test_result'
+         AND (
+           item_version_row.purpose IS DISTINCT FROM NEW.purpose
+           OR (item_version_row.item_kind='code' AND NEW.artifact_kind<>'exercise_workspace')
+           OR (item_version_row.item_kind='sql' AND NEW.artifact_kind<>'sql_workspace')
+           OR (item_version_row.item_kind='demo' AND NEW.artifact_kind<>'demonstration')
+           OR (item_version_row.item_kind='knowledge_check' AND NEW.artifact_kind<>'knowledge_check')
+           OR (item_version_row.item_kind='model_review' AND NEW.artifact_kind<>'model_code_review')
+         )
+       ) THEN
       RAISE EXCEPTION 'Learning Artifact Learning Item owner is stale or mismatched'
         USING ERRCODE='23514';
     END IF;

@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
+from fastapi.testclient import TestClient
 from psycopg import Connection
 from psycopg.errors import CheckViolation
 
@@ -15,7 +16,9 @@ from app.agents.harness.contracts import (
     TutorSkillReference,
     TutorTerminalOutcome,
 )
+import app.routes.learning_artifacts as artifact_routes
 from app.core.config import Settings
+from app.main import app
 from app.routes.learning_artifacts import build_learning_artifact_owner_adapters
 from app.services.learning.artifacts.contracts import (
     TutorArtifactActionRequest,
@@ -24,9 +27,15 @@ from app.services.learning.artifacts.contracts import (
     TutorArtifactRequestDirectAnswerAction,
     TutorArtifactRequestHintAction,
     TutorArtifactRespondAction,
+    TutorArtifactRunAction,
     TutorArtifactSingleSelectResponse,
+    TutorArtifactSqlWorkspacePresentationV2,
     TutorArtifactTextResponse,
 )
+from app.services.learning.artifacts.execution_results import (
+    ExecutionResultArtifactProjector,
+)
+from app.services.learning.artifacts.sql_workspaces import observe_sql_workspace_attempt
 from app.services.learning.artifacts.conversation_events import (
     PostgresTutorArtifactConversationEventSink,
 )
@@ -37,6 +46,10 @@ from app.services.learning.artifacts.repository import (
 from app.services.learning.artifacts.service import (
     LearningArtifactService,
     LearningArtifactServiceError,
+)
+from app.services.learning.item_bank.compiler import (
+    LearningItemCompiler,
+    curated_learning_item_source_root,
 )
 from app.services.learning.item_bank.contracts import (
     LearningItemSourceV1,
@@ -84,6 +97,7 @@ pytestmark = pytest.mark.skipif(
     reason="PostgreSQL is not available",
 )
 _NOW = datetime(2026, 9, 1, 8, 0, tzinfo=UTC)
+_SQL_NOW = datetime(2026, 9, 2, 8, 0, tzinfo=UTC)
 
 
 class _ArtifactTeachingProvider:
@@ -367,6 +381,89 @@ def _published_knowledge_item(
         publication.state_version,
         required_capability,
     )
+
+
+def _published_sql_item(
+    conn: Connection[dict[str, object]],
+) -> tuple[str, str, int, str]:
+    compiled = LearningItemCompiler().compile_file(
+        curated_learning_item_source_root(),
+        "sql-filter-track-v2.yaml",
+        require_valid=True,
+    )
+    payload = compiled.loaded.source.model_dump(mode="json")
+    suffix = uuid4().hex
+    item_key = f"sql.workspace.atomic.{suffix}"
+    capability = f"sql.workspace.{suffix}"
+    blueprint = payload["blueprint"]
+    public = payload["public"]
+    private = payload["private"]
+    assert isinstance(blueprint, dict)
+    assert isinstance(public, dict)
+    assert isinstance(private, dict)
+    blueprint.update(
+        {
+            "blueprint_key": f"blueprint.{item_key}",
+            "version": "v1",
+            "knowledge_key": "python.variables",
+            "required_capabilities": [capability],
+        }
+    )
+    public.update({"item_key": item_key, "version": "v1"})
+    private.update({"item_key": item_key, "version": "v1"})
+    source = LearningItemSourceV1.model_validate(payload)
+    validation = validate_learning_item(source)
+    assert validation.passed
+    imported = PostgresLearningItemBankRepository(conn).import_validated_source(
+        source=source,
+        validation=validation,
+        import_key=f"sql-atomic-import:{suffix}",
+        source_path=f"tests/sql-atomic-{suffix}.learning-item.yaml",
+        source_file_hash=canonical_hash({"source_hash": source.source_hash}),
+        imported_at=_SQL_NOW,
+    )
+    governance = PostgresLearningItemGovernanceRepository(conn)
+    subject = governance.load_review_subject(handle=imported.handle)
+    reports = tuple(
+        LearningItemReviewReportV1(
+            item_handle=imported.handle,
+            content_hash=source.content_hash,
+            review_input_hash=subject.blind_input(role).review_input_hash,
+            role=role,
+            reviewer_identity=f"sql.reviewer.{role.value}.{suffix[:8]}",
+            verdict="approved",
+        )
+        for role in REQUIRED_REVIEW_ROLES
+    )
+    review = governance.record_review_bundle(
+        subject=subject,
+        reports=reports,
+        bundle_key=f"sql-atomic-review:{suffix}",
+        occurred_at=_SQL_NOW,
+    )
+    assert review.publication is not None
+    pilot = governance.start_pilot(
+        handle=imported.handle,
+        transition_key=f"sql-atomic-pilot:{suffix}",
+        occurred_at=_SQL_NOW,
+    )
+    assert pilot.state == "pilot"
+    publication = governance.record_pilot_telemetry(
+        handle=imported.handle,
+        telemetry=LearningItemPilotTelemetryV1(
+            item_handle=imported.handle,
+            content_hash=source.content_hash,
+            observation_window_hash=canonical_hash({"sql_pilot": suffix}),
+            sample_count=1,
+            completed_count=1,
+            cohort_complete=True,
+        ),
+        expected_pilot_sequence=0,
+        telemetry_key=f"sql-atomic-telemetry:{suffix}",
+        occurred_at=_SQL_NOW,
+    ).publication
+    assert publication is not None and publication.state == "published"
+    return imported.handle, imported.version_id, publication.state_version, capability
 
 
 def _open_guided(
@@ -1012,3 +1109,249 @@ def test_artifact_event_failure_after_message_insert_rolls_back_every_public_wri
     assert result.diagnostic_code == "teaching_authority_stale"
     with connection() as conn:
         _assert_no_teaching_artifact_commit(conn, scope=scope, run_id=run_id)
+
+
+def test_sql_workspace_run_commits_pending_attempt_then_projects_public_grid() -> None:
+    settings = _artifact_settings()
+    with connection() as conn:
+        handle, version_id, publication_version, capability = _published_sql_item(conn)
+        scope, run_id = _open_guided(
+            conn,
+            settings=settings,
+            required_capability=capability,
+        )
+
+    dispatched = _dispatch_artifact(
+        settings=settings,
+        scope=scope,
+        run_id=run_id,
+        provider=_ArtifactTeachingProvider(
+            artifact_handle=handle,
+            interaction_intent="execute_query",
+        ),
+    )
+    assert dispatched.terminal_outcome is TutorTerminalOutcome.COMPLETED
+
+    with connection() as conn:
+        row = conn.execute(
+            "SELECT id::text AS id FROM tutor_learning_artifacts WHERE turn_id=%s",
+            (run_id,),
+        ).fetchone()
+        assert row is not None
+        artifact_id = str(row["id"])
+        service = LearningArtifactService(
+            conn,
+            repository=PostgresLearningArtifactRepository(
+                conn,
+                conversation_events=PostgresTutorArtifactConversationEventSink(conn),
+            ),
+            owner_adapters=build_learning_artifact_owner_adapters(),
+            enabled=lambda: True,
+            clock=lambda: _SQL_NOW,
+        )
+        artifact = service.read_artifact(
+            user_id=str(scope["user_id"]),
+            conversation_id=str(scope["conversation_id"]),
+            artifact_id=artifact_id,
+        )
+        assert artifact.owner_id == version_id
+        assert artifact.owner_version == publication_version
+        assert isinstance(
+            artifact.presentation,
+            TutorArtifactSqlWorkspacePresentationV2,
+        )
+        assert [table.name for table in artifact.presentation.tables] == [
+            "mentors",
+            "learners",
+        ]
+        admitted = service.act(
+            artifact_id=artifact.id,
+            conversation_id=artifact.conversation_id,
+            request=TutorArtifactActionRequest(
+                user_id=str(scope["user_id"]),
+                learning_track_id=str(scope["track_id"]),
+                teaching_session_id=artifact.teaching_session_id,
+                client_action_id=f"sql-run:{uuid4().hex}",
+                expected_artifact_version=artifact.version,
+                action=TutorArtifactRunAction(
+                    submission=(
+                        "SELECT name FROM learners "
+                        "WHERE track = 'sql' ORDER BY id;"
+                    )
+                ),
+            ),
+        )
+        assert admitted.artifact.state == "running"
+        assert admitted.artifact.active_attempt is not None
+        assert admitted.artifact.active_attempt.status == "pending"
+        attempt_id = admitted.artifact.active_attempt.attempt_id
+        attempt_row = conn.execute(
+            """
+            SELECT attempts.gate_binding_id,
+                   attempts.learning_item_version_id::text AS learning_item_version_id,
+                   results.result_hash
+            FROM tutor_exercise_attempts AS attempts
+            LEFT JOIN tutor_exercise_attempt_results AS results
+              ON results.attempt_id=attempts.id
+            WHERE attempts.id=%s
+            """,
+            (attempt_id,),
+        ).fetchone()
+        assert attempt_row == {
+            "gate_binding_id": None,
+            "learning_item_version_id": version_id,
+            "result_hash": None,
+        }
+        conn.commit()
+
+    with connection() as conn:
+        observe_sql_workspace_attempt(
+            conn,
+            user_id=str(scope["user_id"]),
+            conversation_id=str(scope["conversation_id"]),
+            artifact_id=artifact_id,
+            attempt_id=attempt_id,
+        )
+        projection = ExecutionResultArtifactProjector(
+            conn,
+            enabled=lambda: True,
+            clock=lambda: _SQL_NOW,
+        ).project(
+            user_id=str(scope["user_id"]),
+            conversation_id=str(scope["conversation_id"]),
+            source_artifact_id=artifact_id,
+            attempt_id=attempt_id,
+        )
+        conn.commit()
+
+    source = projection.source_artifact.artifact
+    assert source.state == "completed"
+    assert isinstance(source.presentation, TutorArtifactSqlWorkspacePresentationV2)
+    assert source.presentation.public_result is not None
+    assert source.presentation.public_result.columns == ("name",)
+    assert source.presentation.public_result.rows == (("Grace",),)
+    assert source.presentation.public_result_attempt_id == attempt_id
+    assert source.presentation.public_result_query_hash is not None
+
+    with connection() as conn:
+        detail = _artifact_service(conn).read_attempt_detail(
+            user_id=str(scope["user_id"]),
+            conversation_id=str(scope["conversation_id"]),
+            artifact_id=artifact_id,
+            attempt_id=attempt_id,
+        )
+        assert detail.status == "terminal"
+        assert detail.result is not None
+        assert source.presentation.public_result_query_hash == detail.submission_hash
+        assert detail.result.outcome == "passed"
+        assert detail.result.execution_result is not None
+        serialized = json.dumps(
+            detail.result.execution_result.model_dump(mode="json"),
+            ensure_ascii=False,
+        )
+        assert "Barbara" not in serialized
+        assert "hidden_sql" not in serialized
+        assert detail.result.execution_result.test_feedback[-1].case_id == "non-visible-1"
+        assert projection.result_artifact.artifact.presentation.outcome == "passed"
+        assert conn.execute(
+            "SELECT count(*)::int AS count FROM tutor_mastery_evidence WHERE user_id=%s",
+            (scope["user_id"],),
+        ).fetchone() == {"count": 0}
+
+
+def test_sql_workspace_action_route_executes_only_after_admission_commit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _artifact_settings()
+    with connection() as conn:
+        handle, _version_id, _publication_version, capability = _published_sql_item(conn)
+        scope, run_id = _open_guided(
+            conn,
+            settings=settings,
+            required_capability=capability,
+        )
+    dispatched = _dispatch_artifact(
+        settings=settings,
+        scope=scope,
+        run_id=run_id,
+        provider=_ArtifactTeachingProvider(
+            artifact_handle=handle,
+            interaction_intent="execute_query",
+        ),
+    )
+    assert dispatched.terminal_outcome is TutorTerminalOutcome.COMPLETED
+    with connection() as conn:
+        artifact = conn.execute(
+            """
+            SELECT id::text AS id,version,teaching_session_id::text AS teaching_session_id
+            FROM tutor_learning_artifacts WHERE turn_id=%s
+            """,
+            (run_id,),
+        ).fetchone()
+        assert artifact is not None
+
+    monkeypatch.setattr(artifact_routes, "get_settings", lambda: settings)
+    monkeypatch.setattr(artifact_routes, "runtime_gate_error", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        artifact_routes,
+        "thread_turn_v2_gate_error",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        artifact_routes,
+        "enqueue_tutor_interactive_dispatch",
+        lambda *_args, **_kwargs: False,
+    )
+    response = TestClient(app).post(
+        f"/api/tutor/conversations/{scope['conversation_id']}/artifacts/{artifact['id']}/actions",
+        json={
+            "user_id": str(scope["user_id"]),
+            "learning_track_id": str(scope["track_id"]),
+            "teaching_session_id": str(artifact["teaching_session_id"]),
+            "client_action_id": f"sql-route:{uuid4().hex}",
+            "expected_artifact_version": int(artifact["version"]),
+            "action": {
+                "action": "run",
+                "submission": (
+                    "SELECT name FROM learners "
+                    "WHERE track = 'sql' ORDER BY id;"
+                ),
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["artifact"]["state"] == "completed"
+    assert body["artifact"]["presentation"]["type"] == "sql_workspace_v2"
+    assert body["artifact"]["presentation"]["public_result"] == {
+        "kind": "table_result_v1",
+        "columns": ["name"],
+        "rows": [["Grace"]],
+    }
+    assert body["artifact_event_sequence"] == body["artifact"]["version"]
+    with connection() as conn:
+        attempt_id = body["artifact"]["active_attempt"]["attempt_id"]
+        assert conn.execute(
+            """
+            SELECT count(*)::int AS count
+            FROM tutor_exercise_attempt_results WHERE attempt_id=%s
+            """,
+            (attempt_id,),
+        ).fetchone() == {"count": 1}
+        intent = conn.execute(
+            """
+            SELECT intents.source_kind,
+                   artifacts.active_attempt_id::text AS attempt_id
+            FROM tutor_continuation_intents AS intents
+            JOIN tutor_learning_artifacts AS artifacts
+              ON artifacts.id=intents.artifact_id
+            WHERE intents.user_id=%s AND intents.conversation_id=%s
+              AND artifacts.active_attempt_id=%s
+            """,
+            (scope["user_id"], scope["conversation_id"], attempt_id),
+        ).fetchone()
+        assert intent == {
+            "source_kind": "explicit_artifact_action",
+            "attempt_id": attempt_id,
+        }

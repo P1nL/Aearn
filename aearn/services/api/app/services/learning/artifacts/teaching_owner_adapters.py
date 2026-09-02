@@ -13,12 +13,14 @@ from .contracts import (
     TutorArtifactRequestDirectAnswerAction,
     TutorArtifactRequestHintAction,
     TutorArtifactRespondAction,
+    TutorArtifactRunAction,
     TutorArtifactState,
     TutorPublicArtifactItem,
 )
 from .demonstrations import complete_demonstration
 from .knowledge_checks import apply_knowledge_check_action
 from .model_reviews import apply_model_review_action
+from .sql_workspaces import admit_sql_workspace_run
 from .owner_adapters import (
     ArtifactMutation,
     ArtifactOwnerActionInvalid,
@@ -115,6 +117,31 @@ class LearningItemArtifactOwnerAdapter(_TeachingArtifactOwnerAdapter):
                 conn,
                 artifact=artifact,
                 action=request.action,
+                owner_context_version=_positive_int(
+                    row.get("owner_context_version"),
+                    "owner_context_version",
+                ),
+            )
+        if (
+            artifact.artifact_kind is TutorArtifactKind.SQL_WORKSPACE
+            and isinstance(request.action, TutorArtifactRunAction)
+        ):
+            row = _locked_owner_row(
+                conn,
+                artifact=artifact,
+                request=request,
+                owner_kind=self.owner_kind,
+            )
+            _validate_cancel_authority(
+                conn,
+                row=row,
+                artifact=artifact,
+                owner_kind=self.owner_kind,
+            )
+            return admit_sql_workspace_run(
+                conn,
+                artifact=artifact,
+                request=request,
                 owner_context_version=_positive_int(
                     row.get("owner_context_version"),
                     "owner_context_version",

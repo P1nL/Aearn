@@ -211,6 +211,30 @@ function artifactPresentations(): Array<{ artifactKind: string; purpose: string;
       },
     },
     {
+      artifactKind: "sql_workspace",
+      purpose: "sql_exploration",
+      presentation: {
+        type: "sql_workspace_v2",
+        exercise_version_id: "exercise-sql-2",
+        dialect: "sqlite",
+        execution_tier: "teaching_local",
+        starter_query: "SELECT name FROM learners;\n",
+        starter_query_hash: digest("SELECT name FROM learners;\n"),
+        tables: [{
+          name: "learners",
+          columns: [
+            { name: "id", data_type: "INTEGER", nullable: false, primary_key: true },
+            { name: "name", data_type: "TEXT", nullable: false, primary_key: false },
+          ],
+          foreign_keys: [],
+        }],
+        max_rows: 50,
+        public_result: null,
+        public_result_query_hash: null,
+        public_result_attempt_id: null,
+      },
+    },
+    {
       artifactKind: "demonstration",
       purpose: "demonstration",
       presentation: {
@@ -535,6 +559,7 @@ describe("Tutor v2 API boundary", () => {
       "model_code_review_v1",
       "model_code_review_v2",
       "sql_workspace_v1",
+      "sql_workspace_v2",
       "demonstration_v1",
       "source_inspector_v1",
     ]);
@@ -974,10 +999,67 @@ describe("Tutor v2 API boundary", () => {
       presentation: { ...reviewV2, private_rubric: { expected_findings: [] } },
       overrides: { allowed_actions: ["complete_review", "cancel"] },
     });
+    const sqlV2 = presentations[7].presentation;
+    const sqlPartialResultIdentity = artifactFixture({
+      id: "artifact-sql-partial-result",
+      artifactKind: "sql_workspace",
+      purpose: "sql_exploration",
+      presentation: { ...sqlV2, public_result_query_hash: digest("query") },
+    });
+    const sqlUnknownForeignTable = artifactFixture({
+      id: "artifact-sql-foreign-table",
+      artifactKind: "sql_workspace",
+      purpose: "sql_exploration",
+      presentation: {
+        ...sqlV2,
+        tables: [{
+          name: "learners",
+          columns: [
+            { name: "id", data_type: "INTEGER", nullable: false, primary_key: true },
+            { name: "mentor_id", data_type: "INTEGER", nullable: true, primary_key: false },
+          ],
+          foreign_keys: [{ column: "mentor_id", references_table: "private_table", references_column: "id" }],
+        }],
+      },
+    });
+    const sqlForeignNonPrimaryTarget = artifactFixture({
+      id: "artifact-sql-foreign-non-primary",
+      artifactKind: "sql_workspace",
+      purpose: "sql_exploration",
+      presentation: {
+        ...sqlV2,
+        tables: [
+          {
+            name: "mentors",
+            columns: [{ name: "id", data_type: "INTEGER", nullable: false, primary_key: false }],
+            foreign_keys: [],
+          },
+          {
+            name: "learners",
+            columns: [{ name: "mentor_id", data_type: "INTEGER", nullable: true, primary_key: false }],
+            foreign_keys: [{ column: "mentor_id", references_table: "mentors", references_column: "id" }],
+          },
+        ],
+      },
+    });
+    const sqlNullablePrimaryKey = artifactFixture({
+      id: "artifact-sql-nullable-pk",
+      artifactKind: "sql_workspace",
+      purpose: "sql_exploration",
+      presentation: {
+        ...sqlV2,
+        tables: [{
+          name: "learners",
+          columns: [{ name: "id", data_type: "INTEGER", nullable: true, primary_key: true }],
+          foreign_keys: [],
+        }],
+      },
+    });
     const variants = [
       badHash, badCounts, badPresentationTerminal, badAttemptTerminal, badArtifactTerminal,
       badLineCount, failedWithoutRemediation, terminalReviewInActiveArtifact, missingReviewAction,
       badReviewText, badReviewLine, badReviewHeader, badReviewCount, badReviewLineKey, protectedReview,
+      sqlPartialResultIdentity, sqlUnknownForeignTable, sqlForeignNonPrimaryTarget, sqlNullablePrimaryKey,
     ];
     const fetchMock = vi.fn();
     variants.forEach((variant) => fetchMock.mockResolvedValueOnce(jsonResponse(

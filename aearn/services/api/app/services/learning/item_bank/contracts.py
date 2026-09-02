@@ -11,6 +11,12 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from aearn_shared.execution import (
+    MAX_TABLE_RESULT_PAYLOAD_BYTES,
+    SafeTableResultCellV1,
+    SafeTableResultPresentationV1,
+)
+
 from app.services.learning.practice.model_review_contracts import (
     ModelCodeReviewSubmissionV1,
     ModelReviewArtifactV1,
@@ -31,6 +37,7 @@ LEARNING_ITEM_VALIDATION_POLICY_VERSION: Literal["learning_item_validation_polic
 _STABLE_KEY = re.compile(r"^[a-z0-9][a-z0-9._:-]{0,159}$")
 _HANDLE = re.compile(r"^li:[0-9a-f]{64}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_SQL_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
 
 
 class _StrictModel(BaseModel):
@@ -454,6 +461,111 @@ class LearningItemSqlContentV1(_StrictModel):
         return normalized_text(value, label="schema markdown", maximum=12_000)
 
 
+class LearningItemSqlColumnV2(_StrictModel):
+    name: str = Field(min_length=1, max_length=64)
+    data_type: Literal["INTEGER", "REAL", "TEXT"]
+    nullable: bool = True
+    primary_key: bool = False
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        if not _SQL_IDENTIFIER.fullmatch(value):
+            raise ValueError("SQL column name must be a simple bounded identifier")
+        return value
+
+    @model_validator(mode="after")
+    def validate_primary_key(self) -> "LearningItemSqlColumnV2":
+        if self.primary_key and self.nullable:
+            raise ValueError("SQL primary-key columns cannot be nullable")
+        return self
+
+
+class LearningItemSqlForeignKeyV2(_StrictModel):
+    column: str = Field(min_length=1, max_length=64)
+    references_table: str = Field(min_length=1, max_length=64)
+    references_column: str = Field(min_length=1, max_length=64)
+
+    @field_validator("column", "references_table", "references_column")
+    @classmethod
+    def validate_identifier(cls, value: str) -> str:
+        if not _SQL_IDENTIFIER.fullmatch(value):
+            raise ValueError("SQL foreign-key identifiers must be simple and bounded")
+        return value
+
+
+class LearningItemSqlTableV2(_StrictModel):
+    name: str = Field(min_length=1, max_length=64)
+    columns: tuple[LearningItemSqlColumnV2, ...] = Field(min_length=1, max_length=32)
+    foreign_keys: tuple[LearningItemSqlForeignKeyV2, ...] = Field(default=(), max_length=16)
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        if not _SQL_IDENTIFIER.fullmatch(value):
+            raise ValueError("SQL table name must be a simple bounded identifier")
+        return value
+
+    @model_validator(mode="after")
+    def validate_table(self) -> "LearningItemSqlTableV2":
+        column_names = tuple(item.name for item in self.columns)
+        if len(column_names) != len(set(column_names)):
+            raise ValueError("SQL table columns must be unique")
+        foreign_columns = tuple(item.column for item in self.foreign_keys)
+        if len(foreign_columns) != len(set(foreign_columns)):
+            raise ValueError("SQL table foreign-key columns must be unique")
+        if any(item.column not in column_names for item in self.foreign_keys):
+            raise ValueError("SQL foreign key must reference a local column")
+        return self
+
+
+class LearningItemSqlDatasetTableV2(_StrictModel):
+    table: str = Field(min_length=1, max_length=64)
+    rows: tuple[tuple[SafeTableResultCellV1, ...], ...] = Field(default=(), max_length=200)
+
+    @field_validator("table")
+    @classmethod
+    def validate_table_name(cls, value: str) -> str:
+        if not _SQL_IDENTIFIER.fullmatch(value):
+            raise ValueError("SQL dataset table must be a simple bounded identifier")
+        return value
+
+
+class LearningItemSqlDatasetV2(_StrictModel):
+    tables: tuple[LearningItemSqlDatasetTableV2, ...] = Field(min_length=1, max_length=8)
+
+    @model_validator(mode="after")
+    def validate_tables(self) -> "LearningItemSqlDatasetV2":
+        names = tuple(item.table for item in self.tables)
+        if len(names) != len(set(names)):
+            raise ValueError("SQL dataset tables must be unique")
+        payload = canonical_json(self.model_dump(mode="json")).encode("utf-8")
+        if len(payload) > MAX_TABLE_RESULT_PAYLOAD_BYTES:
+            raise ValueError("SQL dataset exceeds the bounded payload size")
+        return self
+
+
+class LearningItemSqlContentV2(_StrictModel):
+    type: Literal["sql_v2"] = "sql_v2"
+    dialect: Literal["sqlite"] = "sqlite"
+    starter_query: str = Field(min_length=1, max_length=48_000)
+    tables: tuple[LearningItemSqlTableV2, ...] = Field(min_length=1, max_length=8)
+    public_dataset: LearningItemSqlDatasetV2
+    comparison: Literal["ordered", "unordered"] = "ordered"
+    max_rows: int = Field(default=50, ge=1, le=200)
+
+    @field_validator("starter_query")
+    @classmethod
+    def normalize_query(cls, value: str) -> str:
+        return normalized_code(value, label="starter query", maximum=48_000)
+
+    @model_validator(mode="after")
+    def validate_schema_and_dataset(self) -> "LearningItemSqlContentV2":
+        _validate_sql_schema(self.tables)
+        _validate_sql_dataset(self.tables, self.public_dataset, maximum_rows=50)
+        return self
+
+
 class LearningItemDemoContentV1(_StrictModel):
     type: Literal["demo"] = "demo"
     language_id: str = Field(min_length=1, max_length=160)
@@ -567,6 +679,7 @@ class LearningItemModelReviewContentV2(_StrictModel):
 LearningItemPublicContentV1 = Annotated[
     LearningItemCodeContentV1
     | LearningItemSqlContentV1
+    | LearningItemSqlContentV2
     | LearningItemDemoContentV1
     | LearningItemDemoContentV2
     | LearningItemKnowledgeCheckContentV1
@@ -718,6 +831,40 @@ class LearningItemSqlPrivateV1(_StrictModel):
         return self
 
 
+class LearningItemSqlTestCaseV2(_StrictModel):
+    id: str = Field(min_length=1, max_length=160)
+    case_type: Literal["visible", "hidden"]
+    dataset: LearningItemSqlDatasetV2
+    expected_output: SafeTableResultPresentationV1
+    weight: float = Field(default=1.0, gt=0, le=100)
+    is_critical: bool = False
+    order_index: int = Field(ge=0, le=1_000)
+
+    @field_validator("id")
+    @classmethod
+    def validate_id(cls, value: str) -> str:
+        return stable_key(value, label="SQL test case id")
+
+
+class LearningItemSqlPrivateV2(_StrictModel):
+    type: Literal["sql_v2"] = "sql_v2"
+    standard_query: str = Field(min_length=1, max_length=48_000)
+    tests: tuple[LearningItemSqlTestCaseV2, ...] = Field(min_length=1, max_length=48)
+    score_policy: LearningItemScorePolicyV1
+
+    @field_validator("standard_query")
+    @classmethod
+    def normalize_standard_query(cls, value: str) -> str:
+        return normalized_code(value, label="SQL standard answer", maximum=48_000)
+
+    @model_validator(mode="after")
+    def validate_tests(self) -> "LearningItemSqlPrivateV2":
+        _require_sql_test_bundle(self.tests)
+        if self.score_policy.kind != "all_tests":
+            raise ValueError("SQL item requires all-tests score policy")
+        return self
+
+
 class LearningItemDemoPrivateV1(_StrictModel):
     type: Literal["demo"] = "demo"
     expected_events: tuple[LearningItemDemoEventV1, ...] = Field(default=(), max_length=8)
@@ -793,6 +940,7 @@ class LearningItemModelReviewPrivateV1(_StrictModel):
 LearningItemPrivateContentV1 = Annotated[
     LearningItemCodePrivateV1
     | LearningItemSqlPrivateV1
+    | LearningItemSqlPrivateV2
     | LearningItemDemoPrivateV1
     | LearningItemDemoPrivateV2
     | LearningItemKnowledgeCheckPrivateV1
@@ -857,6 +1005,15 @@ class LearningItemSourceV1(_StrictModel):
             else None
         ):
             raise ValueError("public remediation identity does not match blueprint")
+        if isinstance(self.public.content, LearningItemSqlContentV2):
+            if not isinstance(self.private.content, LearningItemSqlPrivateV2):
+                raise ValueError("SQL v2 public content requires SQL v2 private content")
+            for test in self.private.content.tests:
+                _validate_sql_dataset(
+                    self.public.content.tables,
+                    test.dataset,
+                    maximum_rows=200,
+                )
         return self
 
     @property
@@ -1133,6 +1290,109 @@ def _is_safe_demo_json(value: object, *, depth: int) -> bool:
     return False
 
 
+def _validate_sql_schema(schema: Sequence[LearningItemSqlTableV2]) -> None:
+    table_names = tuple(item.name for item in schema)
+    if len(table_names) != len(set(table_names)):
+        raise ValueError("SQL schema tables must be unique")
+    tables = {item.name: item for item in schema}
+    for table in schema:
+        columns_by_name = {column.name: column for column in table.columns}
+        for foreign_key in table.foreign_keys:
+            referenced = tables.get(foreign_key.references_table)
+            if referenced is None:
+                raise ValueError("SQL foreign key references an unknown table")
+            referenced_by_name = {
+                column.name: column for column in referenced.columns
+            }
+            referenced_column = referenced_by_name.get(
+                foreign_key.references_column
+            )
+            referenced_primary = tuple(
+                column.name for column in referenced.columns if column.primary_key
+            )
+            if (
+                referenced_column is None
+                or referenced_primary != (foreign_key.references_column,)
+                or columns_by_name[foreign_key.column].data_type
+                != referenced_column.data_type
+            ):
+                raise ValueError(
+                    "SQL foreign key must reference one matching published primary key"
+                )
+
+
+def _validate_sql_dataset(
+    schema: Sequence[LearningItemSqlTableV2],
+    dataset: LearningItemSqlDatasetV2,
+    *,
+    maximum_rows: int,
+) -> None:
+    schema_by_name = {item.name: item for item in schema}
+    data_by_name = {item.table: item for item in dataset.tables}
+    if set(schema_by_name) != set(data_by_name):
+        raise ValueError("SQL dataset must provide every published table exactly once")
+
+    values_by_table: dict[str, dict[str, set[object]]] = {}
+    for table_name, table in schema_by_name.items():
+        data = data_by_name[table_name]
+        if len(data.rows) > maximum_rows:
+            raise ValueError("SQL dataset row count exceeds its bound")
+        column_names = tuple(column.name for column in table.columns)
+        SafeTableResultPresentationV1(columns=column_names, rows=data.rows)
+        column_values: dict[str, set[object]] = {
+            name: set() for name in column_names
+        }
+        primary_indexes = tuple(
+            index for index, column in enumerate(table.columns) if column.primary_key
+        )
+        primary_values: set[tuple[object, ...]] = set()
+        for row in data.rows:
+            if len(row) != len(table.columns):
+                raise ValueError("SQL dataset row width does not match its schema")
+            for index, (column, value) in enumerate(zip(table.columns, row, strict=True)):
+                if not _sql_cell_matches_column(value, column):
+                    raise ValueError("SQL dataset cell does not match its published type")
+                column_values[column.name].add(value)
+            if primary_indexes:
+                identity = tuple(row[index] for index in primary_indexes)
+                if any(value is None for value in identity) or identity in primary_values:
+                    raise ValueError("SQL dataset primary keys must be non-null and unique")
+                primary_values.add(identity)
+        values_by_table[table_name] = column_values
+
+    for table in schema:
+        data = data_by_name[table.name]
+        column_indexes = {
+            column.name: index for index, column in enumerate(table.columns)
+        }
+        for foreign_key in table.foreign_keys:
+            target_values = values_by_table[foreign_key.references_table][
+                foreign_key.references_column
+            ]
+            source_index = column_indexes[foreign_key.column]
+            for row in data.rows:
+                value = row[source_index]
+                if value is not None and value not in target_values:
+                    raise ValueError("SQL dataset foreign key does not reference a published row")
+
+
+def _sql_cell_matches_column(
+    value: SafeTableResultCellV1,
+    column: LearningItemSqlColumnV2,
+) -> bool:
+    if value is None:
+        return column.nullable and not column.primary_key
+    if column.data_type == "TEXT":
+        return isinstance(value, str)
+    if column.data_type == "INTEGER":
+        return isinstance(value, int) and not isinstance(value, bool)
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and (not isinstance(value, float) or math.isfinite(value))
+    )
+
+
 def _expected_interactions(kind: LearningItemKind) -> frozenset[LearningItemInteraction]:
     return {
         LearningItemKind.CODE: frozenset({LearningItemInteraction.EDIT, LearningItemInteraction.RUN}),
@@ -1154,7 +1414,7 @@ def _content_language(content: LearningItemPublicContentV1) -> str | None:
         (LearningItemModelReviewContentV1, LearningItemModelReviewContentV2),
     ):
         return content.artifact.language_id
-    if isinstance(content, LearningItemSqlContentV1):
+    if isinstance(content, (LearningItemSqlContentV1, LearningItemSqlContentV2)):
         return "sql"
     return None
 
@@ -1171,6 +1431,8 @@ def _content_kind(
         (LearningItemModelReviewContentV1, LearningItemModelReviewContentV2),
     ):
         return LearningItemKind.MODEL_REVIEW
+    if isinstance(content, (LearningItemSqlContentV2, LearningItemSqlPrivateV2)):
+        return LearningItemKind.SQL
     return LearningItemKind(content.type)
 
 
@@ -1185,6 +1447,19 @@ def _require_test_bundle(tests: Sequence[LearningItemRuntimeTestCaseV1]) -> None
         raise ValueError("private test bundle requires a visible case")
     if not any(item.case_type == "hidden" for item in tests):
         raise ValueError("private test bundle requires a hidden case")
+
+
+def _require_sql_test_bundle(tests: Sequence[LearningItemSqlTestCaseV2]) -> None:
+    ids = tuple(item.id for item in tests)
+    orders = tuple(item.order_index for item in tests)
+    if len(ids) != len(set(ids)):
+        raise ValueError("SQL private test ids must be unique")
+    if orders != tuple(range(len(tests))):
+        raise ValueError("SQL private test order must be contiguous from zero")
+    if not any(item.case_type == "visible" for item in tests):
+        raise ValueError("SQL private tests require a visible case")
+    if not any(item.case_type == "hidden" for item in tests):
+        raise ValueError("SQL private tests require a hidden case")
 
 
 __all__ = (
@@ -1227,8 +1502,16 @@ __all__ = (
     "LearningItemScorePolicyV1",
     "LearningItemSourceReferenceV1",
     "LearningItemSourceV1",
+    "LearningItemSqlColumnV2",
     "LearningItemSqlContentV1",
+    "LearningItemSqlContentV2",
+    "LearningItemSqlDatasetTableV2",
+    "LearningItemSqlDatasetV2",
+    "LearningItemSqlForeignKeyV2",
     "LearningItemSqlPrivateV1",
+    "LearningItemSqlPrivateV2",
+    "LearningItemSqlTableV2",
+    "LearningItemSqlTestCaseV2",
     "LearningItemValidationCheckType",
     "LearningItemValidationCheckV1",
     "LearningItemValidationReceiptV1",

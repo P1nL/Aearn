@@ -11,7 +11,7 @@ ALTER TABLE tutor_learning_artifacts
     (artifact_kind = 'test_result' AND presentation_kind = 'test_result_v1') OR
     (artifact_kind = 'knowledge_check' AND presentation_kind = 'knowledge_check_v1') OR
     (artifact_kind = 'model_code_review' AND presentation_kind IN ('model_code_review_v1', 'model_code_review_v2')) OR
-    (artifact_kind = 'sql_workspace' AND presentation_kind = 'sql_workspace_v1') OR
+    (artifact_kind = 'sql_workspace' AND presentation_kind IN ('sql_workspace_v1','sql_workspace_v2')) OR
     (artifact_kind = 'demonstration' AND presentation_kind IN ('demonstration_v1', 'demonstration_v2')) OR
     (artifact_kind = 'source_inspector' AND presentation_kind = 'source_inspector_v1')
   );

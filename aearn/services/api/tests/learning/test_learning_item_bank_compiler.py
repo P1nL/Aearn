@@ -124,7 +124,7 @@ def test_loader_enforces_utf8_size_and_root_relative_paths(tmp_path: Path) -> No
 @pytest.mark.parametrize(
     ("source_name", "runtime_profile"),
     [
-        ("sql-filter-track-v1.yaml", "browser_preview"),
+        ("sql-filter-track-v2.yaml", "browser_preview"),
         ("demo-click-event-v1.json", "sql_query_test"),
     ],
 )
@@ -149,16 +149,16 @@ def test_kind_specific_runtime_profiles_fail_closed(
     }
 
 
-def test_sql_setup_is_rejected_before_runner_execution() -> None:
+def test_sql_v2_rejects_mutating_standard_query_before_runner_execution() -> None:
     compiled = LearningItemCompiler().compile_file(
         curated_learning_item_source_root(),
-        "sql-filter-track-v1.yaml",
+        "sql-filter-track-v2.yaml",
         require_valid=True,
     )
     payload = compiled.loaded.source.model_dump(mode="json")
-    payload["private"]["content"]["setup_sql"] = [  # type: ignore[index]
-        "CREATE TABLE learners AS SELECT 1 AS id;",
-    ]
+    payload["private"]["content"]["standard_query"] = (  # type: ignore[index]
+        "UPDATE learners SET track = 'sql';"
+    )
     source = LearningItemSourceV1.model_validate(payload)
 
     receipt = validate_learning_item(source)
@@ -169,8 +169,21 @@ def test_sql_setup_is_rejected_before_runner_execution() -> None:
         for check in receipt.checks
         if check.status == "failed"
     }
-    assert failed["runtime_or_event"] == "sql_setup_unsafe"
+    assert failed["runtime_or_event"] == "sql_query_not_read_only"
     assert failed["standard_answer"] == "standard_answer_failed"
+
+
+def test_sql_v2_requires_foreign_keys_to_reference_one_matching_primary_key() -> None:
+    compiled = LearningItemCompiler().compile_file(
+        curated_learning_item_source_root(),
+        "sql-filter-track-v2.yaml",
+        require_valid=True,
+    )
+    payload = compiled.loaded.source.model_dump(mode="json")
+    payload["public"]["content"]["tables"][0]["columns"][0]["primary_key"] = False  # type: ignore[index]
+
+    with pytest.raises(ValueError, match="matching published primary key"):
+        LearningItemSourceV1.model_validate(payload)
 
 
 def test_loader_rejects_symlinked_sources_when_supported(tmp_path: Path) -> None:

@@ -23,6 +23,7 @@ from app.services.learning.artifacts.contracts import (
     TutorArtifactPurpose,
     TutorArtifactSourceReferenceV1,
     TutorArtifactSqlWorkspacePresentationV1,
+    TutorArtifactSqlWorkspacePresentationV2,
     TutorArtifactState,
     TutorArtifactCreate,
     normalize_newlines,
@@ -50,6 +51,7 @@ from app.services.learning.item_bank.contracts import (
     LearningItemPublicV1,
     LearningItemSourceReferenceV1,
     LearningItemSqlContentV1,
+    LearningItemSqlContentV2,
 )
 from app.services.learning.practice.model_review_contracts import (
     MODEL_REVIEW_CORE_CATEGORIES,
@@ -398,7 +400,7 @@ class PostgresTeachingArtifactMaterializer:
                 raise TeachingArtifactCommitError(
                     "code Artifact runtime is not ready"
                 )
-        elif isinstance(public.content, LearningItemSqlContentV1) and (
+        elif isinstance(public.content, (LearningItemSqlContentV1, LearningItemSqlContentV2)) and (
             str(runtime.get("runner") or "") != "sql"
             or not bool(runtime.get("supports_tests"))
         ):
@@ -509,6 +511,16 @@ def _artifact_presentation(
             starter_query=content.starter_query,
             starter_query_hash=sha256_text(content.starter_query),
             schema_markdown=content.schema_markdown,
+            max_rows=content.max_rows,
+        )
+    if isinstance(content, LearningItemSqlContentV2):
+        exercise_id = _required_string(exercise_version_id, "exercise_version_id")
+        return TutorArtifactSqlWorkspacePresentationV2(
+            exercise_version_id=exercise_id,
+            dialect=content.dialect,
+            starter_query=content.starter_query,
+            starter_query_hash=sha256_text(content.starter_query),
+            tables=content.tables,
             max_rows=content.max_rows,
         )
     if isinstance(content, (LearningItemDemoContentV1, LearningItemDemoContentV2)):

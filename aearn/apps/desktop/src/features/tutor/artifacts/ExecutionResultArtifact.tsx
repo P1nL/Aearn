@@ -3,7 +3,6 @@ import { useEffect, useState } from "react";
 import type {
   SafeExecutionLocation,
   SafeExecutionResultV2,
-  SafeTableResultCell,
   TutorArtifactAttemptDetail,
   TutorArtifactOutcome,
   TutorArtifactSourceReference,
@@ -12,6 +11,7 @@ import type {
 import { Button } from "../../../ui/dsh-derived";
 import type { TutorArtifactAttemptLoader, TutorArtifactReturnToSource } from "./artifactRendererTypes";
 import { loadArtifactAttemptCached } from "./artifactUiState";
+import { SafeTableResultGrid } from "./SafeTableResultGrid";
 
 export type ExecutionResultArtifactProps = {
   artifact: TutorPublicArtifactItem;
@@ -130,7 +130,7 @@ function ExecutionResultDetail({ result }: { result: SafeExecutionResultV2 }) {
       ? <p className="execution-result-passed-summary">其他 {result.passed_test_count} 项通过</p>
       : null}
     <ExecutionOutputDisclosures stdout={result.stdout} stderr={result.stderr} />
-    {result.presentation.kind === "table_result_v1" ? <ExecutionResultTable
+    {result.presentation.kind === "table_result_v1" ? <SafeTableResultGrid
       columns={result.presentation.columns}
       rows={result.presentation.rows}
     /> : null}
@@ -142,17 +142,6 @@ function ExecutionOutputDisclosures({ stdout, stderr }: { stdout: string; stderr
   return <div className="execution-result-output-disclosures">
     {stdout ? <details><summary>标准输出</summary><pre>{stdout}</pre></details> : null}
     {stderr ? <details><summary>错误输出</summary><pre>{stderr}</pre></details> : null}
-  </div>;
-}
-
-function ExecutionResultTable({ columns, rows }: { columns: string[]; rows: SafeTableResultCell[][] }) {
-  return <div className="execution-result-table-scroll" tabIndex={0} aria-label="公开查询结果表格">
-    <table>
-      <thead><tr>{columns.map((column) => <th key={column} scope="col">{column}</th>)}</tr></thead>
-      <tbody>{rows.map((row, rowIndex) => <tr key={rowIndex}>
-        {row.map((cell, cellIndex) => <td key={`${rowIndex}:${cellIndex}`}>{formatCell(cell)}</td>)}
-      </tr>)}</tbody>
-    </table>
   </div>;
 }
 
@@ -185,11 +174,6 @@ function formatLocation(location: SafeExecutionLocation): string {
     ? `第 ${location.end_line} 行`
     : `第 ${location.end_line} 行，第 ${location.end_column} 列`;
   return `${start} 至 ${end}`;
-}
-
-function formatCell(value: SafeTableResultCell): string {
-  if (value === null) return "NULL";
-  return String(value);
 }
 
 function ArtifactResultContractError() {

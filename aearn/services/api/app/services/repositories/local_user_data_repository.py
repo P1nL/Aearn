@@ -1155,6 +1155,7 @@ def _export_exercise_attempt_summaries(
                attempts.knowledge_key, attempts.lesson_assignment_id, attempts.gate_binding_id,
                attempts.diagnostic_session_id, attempts.diagnostic_item_id,
                attempts.review_session_id, attempts.review_item_id,
+               attempts.learning_item_version_id,
                attempts.exercise_version_id, attempts.submission_hash, attempts.hint_state_hash,
                attempts.independence, attempts.assistance_kind, attempts.accepted_at,
                submissions.submission_kind, submissions.content_text,

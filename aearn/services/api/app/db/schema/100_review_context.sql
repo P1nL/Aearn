@@ -166,6 +166,9 @@ ALTER TABLE tutor_exercise_attempts ADD COLUMN IF NOT EXISTS review_session_id u
 ALTER TABLE tutor_exercise_attempts ADD COLUMN IF NOT EXISTS review_item_id uuid;
 ALTER TABLE tutor_exercise_attempts ADD COLUMN IF NOT EXISTS expected_review_session_version integer;
 ALTER TABLE tutor_exercise_attempts ADD COLUMN IF NOT EXISTS expected_review_item_version integer;
+-- Declared here so repeat bootstrap can preserve later Learning Item-owned Run rows
+-- before fragment 200 reasserts the complete SQL workspace constraints.
+ALTER TABLE tutor_exercise_attempts ADD COLUMN IF NOT EXISTS learning_item_version_id uuid;
 
 ALTER TABLE tutor_exercise_attempts DROP CONSTRAINT IF EXISTS tutor_exercise_attempts_attempt_type_check;
 ALTER TABLE tutor_exercise_attempts DROP CONSTRAINT IF EXISTS chk_tutor_exercise_attempts_type;
@@ -181,6 +184,7 @@ ALTER TABLE tutor_exercise_attempts ADD CONSTRAINT chk_tutor_exercise_attempts_o
     AND review_session_id IS NULL AND review_item_id IS NULL
     AND expected_review_session_version IS NULL AND expected_review_item_version IS NULL
     AND expected_progress_version IS NOT NULL
+    AND learning_item_version_id IS NULL
   )
   OR (
     attempt_type = 'diagnostic_submit'
@@ -189,6 +193,7 @@ ALTER TABLE tutor_exercise_attempts ADD CONSTRAINT chk_tutor_exercise_attempts_o
     AND review_session_id IS NULL AND review_item_id IS NULL
     AND expected_review_session_version IS NULL AND expected_review_item_version IS NULL
     AND expected_progress_version IS NULL
+    AND learning_item_version_id IS NULL
   )
   OR (
     attempt_type = 'review_submit'
@@ -198,6 +203,16 @@ ALTER TABLE tutor_exercise_attempts ADD CONSTRAINT chk_tutor_exercise_attempts_o
     AND expected_review_session_version IS NOT NULL AND expected_review_session_version >= 1
     AND expected_review_item_version IS NOT NULL AND expected_review_item_version = 1
     AND expected_progress_version IS NULL
+    AND learning_item_version_id IS NULL
+  )
+  OR (
+    attempt_type = 'run'
+    AND lesson_assignment_id IS NOT NULL AND document_id IS NOT NULL AND gate_binding_id IS NULL
+    AND diagnostic_session_id IS NULL AND diagnostic_item_id IS NULL
+    AND review_session_id IS NULL AND review_item_id IS NULL
+    AND expected_review_session_version IS NULL AND expected_review_item_version IS NULL
+    AND expected_progress_version IS NOT NULL
+    AND learning_item_version_id IS NOT NULL
   )
 );
 DO $$

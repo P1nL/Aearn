@@ -85,6 +85,8 @@ export function InlineArtifactMessage({
     && renderedArtifact.presentation.status === "terminal";
   const rendererOwnedActions = renderedArtifact.presentation.type === "exercise_workspace_v1"
     ? new Set<TutorArtifactAction>(["run"])
+    : renderedArtifact.presentation.type === "sql_workspace_v2"
+      ? new Set<TutorArtifactAction>(["run"])
     : renderedArtifact.presentation.type === "knowledge_check_v1"
       ? new Set<TutorArtifactAction>(["request_hint", "request_direct_answer", "respond"])
     : renderedArtifact.presentation.type === "model_code_review_v2"
