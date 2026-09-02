@@ -133,15 +133,13 @@ describe("SqlWorkspaceArtifact", () => {
   afterEach(() => cleanup());
 
   it("runs only the exact latest query and renders the bounded public result", async () => {
-    const user = userEvent.setup();
     const onAction = vi.fn().mockResolvedValue(artifact({ version: 4, state: "running" }));
     render(<SqlWorkspaceArtifact artifact={artifact()} onAction={onAction} />);
 
     const editor = await screen.findByRole("textbox", { name: "SQL 查询" });
-    await user.clear(editor);
-    await user.type(editor, "SELECT name FROM learners WHERE track = 'sql' ORDER BY id;");
+    fireEvent.change(editor, { target: { value: "SELECT name FROM learners WHERE track = 'sql' ORDER BY id;" } });
     expect(onAction).not.toHaveBeenCalled();
-    await user.click(screen.getByRole("button", { name: "运行" }));
+    fireEvent.click(screen.getByRole("button", { name: "运行" }));
 
     await waitFor(() => expect(onAction).toHaveBeenCalledTimes(1));
     expect(onAction.mock.calls[0]?.[0]).toMatchObject({

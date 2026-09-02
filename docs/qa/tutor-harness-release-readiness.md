@@ -519,3 +519,22 @@ installer、push、deploy 或生产数据迁移。该记录是本地 contract/re
 - Trellis validate（implement 4 / check 1）、docs/spec link/control-character audit（6 files / 0 errors）与 git diff --check 通过；artifacts/__init__.py 仍 contracts-only/lazy，schema fragment 110 未修改且 full API保留 event_v3 bootstrap regression。
 
 未调用真实 provider、真实 executor/container、Docker conformance、生产 image build/sign/publish、Tauri installer、push、deploy 或生产数据迁移。以上为本地 contract/UI readiness，不构成 release approval。
+
+
+## 2026-09-02：Tutor Conversation Learning Artifact platform Child12 integration gate
+
+Child12 does not create another Artifact, Attempt, Result, Branch, Gate, Review, or Item authority. It owns the final executable contract/version reconciliation, AC1-AC20 evidence map, cross-family focused regression, source-of-truth correction, rollout/rollback order, and final local command ledger. The new integration audit compares backend Pydantic unions with the Desktop static registry/actions, required routes/default-off gates, 21-fragment schema order and fragment-110 event-v3 compatibility, contracts-only Artifact package imports, protected prototype presence, concrete family test modules, and current documentation markers.
+
+Pre-check evidence is 98 serial API/PostgreSQL tests and 13 Desktop files / 113 tests. The audit found and corrected one real docs drift: database-schema.md said 20 fragments although SCHEMA_FRAGMENT_NAMES contains 21. The single bounded read-only native check reported **0 P0 / 2 P1 / 2 P2**: family evidence initially proved only file presence, documentation markers were too generic, and the executable matrix did not yet pin every item-reference/action/snapshot boundary. Main-thread fixes converted those checks to exact happy/bad-path symbols, Child12-only headings, backend action fields, Artifact version/item-reference membership, and Desktop v2-v5 compatibility. The check agent changed no files and was closed; no second check ran.
+
+Final local gate:
+
+- complete serial API (`LLM_TYPE=disabled`, `-m "not real_provider"`): **869 passed, 2 deselected in 622.12s**;
+- API/worker/shared Ruff and compileall: passed; Mypy: **255 source files**; API lock: **55 packages**;
+- shared execution contracts: **34 passed**; executor non-Docker suite: **11 passed in 1.24s**, Ruff passed, Mypy **9 source files**, lock **29 packages**;
+- Desktop focused Monaco/SQL stabilization: **2 files / 6 tests**; final full Vitest: **24 files / 160 tests**; TypeScript + Vite production build: **139 modules transformed**. The integration run exposed resource-sensitive per-character `userEvent.type` timeouts in two Monaco mocks; replacing them with one React `change` event preserved the same explicit-action assertions without weakening the global timeout;
+- Tauri Rust `cargo fmt --check`, `cargo check`, strict Clippy and `cargo test`: passed, **9 tests**;
+- a uniquely named disposable local PostgreSQL database completed explicit bootstrap twice, then schema/bootstrap/cutover plus persisted event-v3 compatibility: **21 passed in 27.37s**; the database was dropped in the same guarded command;
+- source-of-truth link/control audit: **8 files / 33 relative links / 0 errors**; all **13** parent/child Trellis contexts validated; final `git diff --check` passed apart from configured LF-to-CRLF warnings.
+
+Child12 changes no product UI runtime. AC19 therefore reuses the recorded current-workspace Child03-10 Chromium/native matrices for 1440x900, 900x900, 390x844, keyboard/focus, reduced motion, scroll isolation, Preview attacks and clean console; this final task claims no new browser or native Preview run. Real provider, Docker conformance, reviewed image build/sign/publish, Tauri installer, production migration, push, deploy, release and production data changes remain not executed. These results are local engineering acceptance, not production release approval.

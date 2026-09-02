@@ -9,7 +9,7 @@ projection 的唯一 durable authority；Desktop、Celery 和 provider 不拥有
 
 ## 1. Bootstrap、迁移与范围原则
 
-- `python -m app.db.bootstrap` 按 `SCHEMA_FRAGMENT_NAMES` 的显式顺序重复执行 20 个 Schema fragment。数字前缀只帮助阅读，执行顺序不依赖目录自然排序。当前仓库没有另一个可与其竞争的 Alembic/Graph migration path。
+- `python -m app.db.bootstrap` 按 `SCHEMA_FRAGMENT_NAMES` 的显式顺序重复执行 21 个 Schema fragment。数字前缀只帮助阅读，执行顺序不依赖目录自然排序。当前仓库没有另一个可与其竞争的 Alembic/Graph migration path。
 - 所有 fragment 在同一 caller-owned PostgreSQL connection 和最终提交事务中执行；loader 不 `commit`。bootstrap 使用 transaction advisory lock，并对 deadlock/serialization failure 做有界整事务重试，避免多进程启动或测试重复 bootstrap 留下部分 Schema。
 - `load_schema_text()` 只提供 manifest 组合的只读视图；仓库不维护第二份聚合 `schema.sql`。
 - `tutor_*` 与 `harness_cutovers` 是当前 runtime 的核心表族。所有可公开读取的
@@ -579,3 +579,12 @@ repeat bootstrap 在抵达 fragment 200 前会重新应用早期约束，因此 
 投影，fragment 170/190 提前接受持久化 `sql_workspace_v2`。fragment 110 的
 `tutor_conversation_event_v3` projection-version compatibility 保持不变。bootstrap twice 与 schema
 manifest test 必须同时覆盖已有 SQL v2 Artifact/Attempt 和完整显式 fragment 顺序。
+
+
+## 2026-09-02：Learning Artifact platform final schema reconciliation
+
+The explicit manifest contains 21 fragments from 000_foundation.sql through 200_sql_learning_workspace.sql. Fragment 110 is the early owner of tutor_conversation_events and must accept tutor_conversation_event_v1/v2/v3 before every later Artifact fragment executes; repeat bootstrap over persisted v3 rows is a release gate. Fragments 120-200 add the shared Artifact, Learning Item/governance, branch/continuation, teaching commit, demonstration, knowledge-check, model-review, and SQL owner contracts without a second aggregate schema source.
+
+User-owned Artifact/branch/continuation/completion/assistance/private-receipt rows are explicit cutover target state and are deleted child-first by confirmed reset/delete. Shared immutable Learning Item versions, source/publication/governance evidence, private evaluation templates, and catalog infrastructure remain in the shared allowlist. test_cutover_inventory_explicitly_classifies_every_tutor_table requires the real information_schema tutor_* set to equal the disjoint target/shared union; a new table missing either classification fails the final gate.
+
+The source document drawer adds no table. It resolves immutable Lesson assignments/documents/source snapshots, persisted tutor_message_context_references, and current source-inspector Artifact provenance through a verified scoped read. Rollback keeps all additive rows/history and disables admission/presentation in reverse dependency order; there is no destructive down migration or invented Artifact backfill.

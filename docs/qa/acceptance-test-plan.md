@@ -1,6 +1,6 @@
 # Aearn Tutor Harness 验收计划
 
-**状态：** 当前 integration/QA 契约，2026-09-01。
+**状态：** 当前 integration/QA 契约，2026-09-02。
 **范围：** 当前 Tutor runtime、cutover、provider attempt 计量、LearningTrack、
 Desktop、background scheduler、executor boundary、legacy retirement 与文档一致性。
 **权威来源：** 当前代码/测试/schema；实测命令结果进入
@@ -484,3 +484,66 @@ Browser fake 只验证当前 Desktop contract、mode swap、reload/reconnect 与
 | UX-13 | P1 | Browser/result recovery | 1440×900、900×900、390×844 + reduced motion；terminal detail load、output/table interaction、返回 source scroll/focus、one Tutor/Composer、no page overflow/overlay/protected marker、console warning/error zero | disposable learner-safe browser fixture at `http://127.0.0.1:1420` |
 
 默认使用 fake/offline provider、disposable PostgreSQL 与 learner-safe browser fixture；不调用真实 provider 或 executor，不执行 Docker conformance、生产镜像构建/签名/发布、push、deploy 或生产迁移。
+
+
+## 2026-09-02 Tutor Conversation Learning Artifact platform final matrix
+
+### Contract/version reconciliation
+
+| Boundary | Current closed contract | Compatibility / failure rule |
+| --- | --- | --- |
+| Public Artifact | tutor_learning_artifact_v1; eight Artifact kinds; eleven presentation discriminators | unknown/extra/protected or kind/presentation mismatch rejects the whole item |
+| Artifact actions | request_hint, request_direct_answer, run, respond, complete_review, cancel, acknowledge_demo_event, complete_demo | every write carries user/track/TeachingSession, client action ID, expected Artifact version, and one exact action payload |
+| Conversation | TutorPublicItem includes artifact; item reference includes artifact; event projection tutor_conversation_event_v3 | item_added/item_updated plus snapshot recovery; no widget-specific SSE authority |
+| Snapshot | backend readable v3/v4/v5; Desktop exact-parses v2/v3/v4/v5 | v2/v3 normalize additive Artifact/branch fields; v4 owns active Artifact; v5 owns branch groups |
+| Teaching | tutor.lesson-teaching@1.2.0 + tutor.teaching-step-decision.v3 | old 1.0.0/1.1.0 remain immutable history; Artifact intent requires an exact advertised handle and both server flags |
+| Execution result | safe-execution-result-v2; explicit v1 history adapter | hidden ordinal/data, private tests, command/path/container and unsafe output remain nonpublic |
+| Learning Item | immutable content/version/hash, machine verification, independent role review, pilot/publication/retirement | deterministic/security/answer-uniqueness failure cannot be overridden by reviewer votes |
+| Desktop renderers | static registry for exercise, preview, result, knowledge, model review v1/v2, SQL v1/v2, demonstration v1/v2, source inspector | no model component name, raw HTML, arbitrary URL, selector, or dynamic module load |
+| Source document | lesson_document_reference_v1 | exact user/conversation/track/document/version/block/hash only; historical source is not replaced by current text |
+
+The executable cross-layer guard is tests/integration/test_tutor_artifact_platform_contract.py. It compares backend Pydantic discriminators/enums with Desktop static registry/action keys, verifies required routes, default-off gates, the 21-fragment manifest, fragment-110 event-v3 compatibility, the contracts-only Artifact package initializer, the protected prototype, family evidence files, and current source-of-truth markers.
+
+### Parent AC1-AC20 evidence map
+
+| AC | Required outcome | Reproducible evidence |
+| --- | --- | --- |
+| AC1 | One Tutor timeline supports task, edit, live Preview, explicit Run, result evaluation, and continuation | test_tutor_teaching_artifact_commit.py; CodeEditorArtifact.test.tsx; useBrowserPreviewHost.test.tsx; test_execution_result_artifacts.py; TutorConversationSurface.test.tsx; Child04/05 Chromium + native Preview ledger evidence |
+| AC2 | No executable instruction without a valid published compatible handle | test_tutor_teaching_candidates.py and test_tutor_teaching_artifact_commit.py feature-off/impossible-decision cases |
+| AC3 | Python/JSON/SSE/TypeScript Artifact/branch unions remain exact | test_tutor_artifact_platform_contract.py; test_tutor_artifact_conversation_projection.py; tutorApiV2.test.ts; ArtifactSourceGuards.test.ts |
+| AC4 | duplicate/gap/cursor invalid/reconnect/reload restore one authority | test_tutor_artifact_conversation_postgres.py; test_tutor_branch_continuation.py; useTutorConversationStream.test.ts; TutorConversationSurface.test.tsx |
+| AC5 | safe Markdown only; raw HTML/script/style/unsafe URLs stay inert | SafeMarkdown.test.tsx; ArtifactSourceGuards.test.ts; API public projection marker tests |
+| AC6 | Monaco + isolated Preview; navigation/network/popup/download/form/Tauri IPC/hang fail closed | CodeEditorArtifact.test.tsx; BrowserPreviewArtifact.test.tsx; useBrowserPreviewHost.test.tsx; src-tauri preview_host Rust tests; Child04 native WebView2 ledger |
+| AC7 | Run is explicit; pass completes, failure stays editable; result cannot be forged | CodeEditorArtifact.test.tsx; test_execution_result_artifacts.py; test_tutor_learning_artifact_routes.py |
+| AC8 | terminal Run creates one Tutor evaluation plus authoritative result Artifact with hidden redaction | test_execution_result_artifacts.py; ExecutionResultArtifact.test.tsx; TutorConversationSurface.test.tsx |
+| AC9 | terminal Artifact expansion and process-local UI state follow the next-mainline-message rule | InlineArtifactMessage.test.tsx; TutorConversationSurface.test.tsx; artifactUiState tests through renderer suites |
+| AC10 | demonstrations complete only through exact event or valid visible time, below learner priority | test_teaching_demonstrations.py; DemonstrationArtifact.test.tsx; test_tutor_branch_continuation.py |
+| AC11 | knowledge response immutable; D(n), direct-answer, remediation/transfer policy remains server-owned | test_knowledge_checks.py; KnowledgeCheckArtifact.test.tsx; Learning Item governance tests |
+| AC12 | H1-H3 overlay does not reflow, paginates manually, and writes exactly-once assistance | test_knowledge_checks.py; KnowledgeCheckArtifact.test.tsx; Child07 Chromium ledger |
+| AC13 | model review v2 uses exact diff/hunk/range and only verifiable errors determine result | test_model_review_artifacts.py; test_model_code_review_v2.py; ModelCodeReviewArtifact.test.tsx |
+| AC14 | SQL schema/editor/result/copy/read-only policy/public-hidden split/bounds pass | test_sql_query_runner.py; test_tutor_teaching_artifact_commit.py SQL cases; SqlWorkspaceArtifact.test.tsx; tutorApiV2.test.ts |
+| AC15 | source drawer exact target, historical display, no-reflow highlight, narrow/focus/scroll recovery | test_lesson_documents.py; test_tutor_context_references.py; lessonDocumentReferenceApi.test.ts; LessonDocumentDrawer.test.tsx; Child10 Chromium ledger |
+| AC16 | waiting messages use one depth-one branch and result continuation returns mainline | test_tutor_branch_continuation.py; test_tutor_artifact_conversation_postgres.py; TutorConversationSurface.test.tsx |
+| AC17 | unpublished/unverified/high-risk Learning Items cannot enter online candidates | test_learning_item_bank_compiler.py; test_learning_item_bank_review.py; test_learning_artifact_governance.py; test_tutor_teaching_candidates.py |
+| AC18 | all new tables are exhaustive cutover/reset/export categories and bootstrap twice succeeds | test_db_bootstrap.py; test_schema_manifest.py; test_harness_cutover.py::test_cutover_inventory_explicitly_classifies_every_tutor_table; family repository/export/reset tests |
+| AC19 | 1440x900, 900x900, 390x844, keyboard/screen-reader semantics/reduced motion/overflow pass | per-family Desktop tests and recorded current-workspace Chromium/native matrices for Child03-10; Child12 changes no UI runtime, reuses those exact records, and claims no new browser/native run |
+| AC20 | full API, executor/shared, Desktop, Tauri, security, Trellis, docs, and diff gates pass | final command ledger in tutor-harness-release-readiness.md and archived Child12 implement evidence |
+
+### Family happy/bad-path fixture matrix
+
+| Family | Happy path | Required bad path |
+| --- | --- | --- |
+| HTML/Preview | published handle -> exercise Artifact -> draft -> debounced isolated Preview -> explicit Run -> terminal result/evaluation | no handle, stale version/hash, preview off, network/navigation/popup/download/form/IPC/hang, no main-DOM fallback |
+| Knowledge/Hint | exact published item -> immutable response -> result -> optional successor; H1-H3/direct answer receipts | extra/unknown response, stale Artifact, repeat conflict, unavailable successor, Hint leakage or duplicate receipt |
+| Demonstration | exact descriptor -> isolated event or foreground/current/visible/render-ready clock -> one completion intent | wrong event/payload/nonce/generation/sequence, hidden/background clock, learner message race, duplicate completion |
+| Model review | exact v2 code/diff/hunk/range -> private receipt -> deterministic score -> optional exact remediation -> one evaluation | stale presentation/range, unsupported category, duplicate/overlap, private rubric leak, missing required remediation rollback |
+| SQL | exact v2 item -> pending Attempt commit -> isolated public/private SQLite -> bounded public grid -> result flow | DDL/DML/multi-statement/PRAGMA/ATTACH/catalog/file function/unpublished table, bounds/timeout, hidden dataset leak, no Aearn PostgreSQL target |
+| Source | direct/context/Artifact reference -> exact frozen Lesson -> drawer-only scroll/highlight -> focus restore | cross scope, stale hash/version/block/range/citation, retry-retarget race, text/DOM selector fallback, backdrop dismissal |
+| Item Bank | blueprint -> draft -> deterministic verify -> independent reviews -> pilot/publication -> online handle | self-review, answer ambiguity, starter already passes, private hint/rubric/test leak, content-hash drift, risk gate bypass |
+| Branch/recovery | blocking Artifact + learner message -> one branch -> answer/refocus -> resolved collapse -> mainline action/result | nested/cross-scope branch, duplicate claimant, gap/cursor invalid, active branch automatic continuation |
+
+### Rollout, rollback, and non-claims
+
+P0 failure blocks Child12 archive. The safe rollout order is server schema/contracts and default-off admission, then candidate/teaching gates, then Desktop renderers and isolated Preview. Rollback reverses behavior: first remove candidates/disable Artifact teaching admission, then disable new Artifact writes, then hide Desktop/Preview entry points while preserving read-only history. It never deletes Artifact/Attempt/Item/branch rows, rewrites old Skills, backfills invented history, or performs destructive down migration.
+
+The default final matrix uses LLM_TYPE=disabled, fake/deterministic provider seams, local PostgreSQL, in-memory SQLite, learner-safe browser fixtures, Rust unit/check tooling, and an empty reviewed image-lock posture. It does not run a real provider, Docker conformance, production image build/sign/publish, production migration, push, deploy, or release process. Those gates remain “not executed” until separately approved; no local result may imply them.
