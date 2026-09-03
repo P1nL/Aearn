@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/backend/learning-agent-integration-qa.md", "reason": "后端最小验证、测试与diff hygiene要求"}
+{"file": ".trellis/tasks/09-03-tutor-skill-catalog-eol-regression/research/eol-diagnosis.md", "reason": "当前500、raw-byte哈希与LF/CRLF证据及安全修复边界"}
