@@ -80,8 +80,14 @@ def test_bootstrap_twice_installs_tables_partial_unique_and_immutable_triggers()
             "chk_tutor_teaching_action_receipts_response_mode",
             "chk_tutor_teaching_action_receipts_version_shape",
         }
-        assert "teaching_action_receipt_v2" in receipt_constraints["chk_tutor_teaching_action_receipts_version_shape"]
-        assert "lesson_teaching_policy_v2" in receipt_constraints["chk_tutor_teaching_action_receipts_version_shape"]
+        response_mode = receipt_constraints["chk_tutor_teaching_action_receipts_response_mode"]
+        version_shape = receipt_constraints["chk_tutor_teaching_action_receipts_version_shape"]
+        assert "'artifact'::text" in response_mode
+        assert "teaching_action_receipt_v2" in version_shape
+        assert "lesson_teaching_policy_v2" in version_shape
+        assert "teaching_action_receipt_v3" in version_shape
+        assert "lesson_teaching_policy_v3" in version_shape
+        assert "learner_response_mode = 'artifact'::text" in version_shape
         assert "learner_feedback" in receipt_constraints["chk_tutor_teaching_action_receipts_moves"]
         triggers = {str(row["tgname"]) for row in conn.execute(
             """SELECT tgname FROM pg_trigger WHERE NOT tgisinternal AND tgrelid IN (

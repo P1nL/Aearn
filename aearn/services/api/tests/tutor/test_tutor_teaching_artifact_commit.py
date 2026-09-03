@@ -18,6 +18,7 @@ from app.agents.harness.contracts import (
 )
 import app.routes.learning_artifacts as artifact_routes
 from app.core.config import Settings
+from app.db.bootstrap import bootstrap_database
 from app.main import app
 from app.routes.learning_artifacts import build_learning_artifact_owner_adapters
 from app.services.learning.artifacts.contracts import (
@@ -760,6 +761,63 @@ def test_artifact_teaching_commit_is_atomic_and_materializes_exact_learning_item
             "SELECT count(*)::int AS count FROM tutor_exercise_attempts WHERE user_id=%s",
             (scope["user_id"],),
         ).fetchone() == {"count": 0}
+
+
+def test_bootstrap_twice_preserves_committed_v3_teaching_action_receipt() -> None:
+    settings = _artifact_settings()
+    with connection() as conn:
+        handle, _version_id, _publication_version, capability = (
+            _published_knowledge_item(conn)
+        )
+        scope, run_id = _open_guided(
+            conn,
+            settings=settings,
+            required_capability=capability,
+        )
+
+    result = _dispatch_artifact(
+        settings=settings,
+        scope=scope,
+        run_id=run_id,
+        provider=_ArtifactTeachingProvider(artifact_handle=handle),
+    )
+    assert result.terminal_outcome is TutorTerminalOutcome.COMPLETED
+
+    with connection() as conn:
+        receipt = conn.execute(
+            """
+            SELECT id::text AS id
+            FROM tutor_teaching_action_receipts
+            WHERE run_id=%s
+            """,
+            (run_id,),
+        ).fetchone()
+        assert receipt is not None
+        receipt_id = str(receipt["id"])
+
+    bootstrap_database()
+    bootstrap_database()
+
+    with connection() as conn:
+        persisted = conn.execute(
+            """
+            SELECT schema_version, policy_version, learner_response_mode,
+                   interaction_intent, artifact_handle, artifact_id,
+                   artifact_event_id, artifact_event_sequence
+            FROM tutor_teaching_action_receipts
+            WHERE id=%s
+            """,
+            (receipt_id,),
+        ).fetchone()
+        assert persisted is not None
+        assert persisted["schema_version"] == "teaching_action_receipt_v3"
+        assert persisted["policy_version"] == "lesson_teaching_policy_v3"
+        assert persisted["learner_response_mode"] == "artifact"
+        assert persisted["interaction_intent"] == "structured_answer"
+        assert persisted["artifact_handle"] == handle
+        assert persisted["artifact_id"] is not None
+        assert persisted["artifact_event_id"] is not None
+        assert persisted["artifact_event_sequence"] == 1
 
 
 def test_knowledge_check_receipts_replay_and_evaluation_continuation_are_authoritative() -> None:
