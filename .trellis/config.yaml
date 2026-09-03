@@ -126,8 +126,8 @@ channel:
 # hint lines in those files) — there is no config.yaml knob for this,
 # `trellis update` preserves your edits across regeneration.
 #
-codex:
-  dispatch_mode: inline  # 保持本项目既有的主会话内实现与检查模式
+# codex:
+#   dispatch_mode: auto  # or "inline"; legacy alias: "sub-agent"
 
 #-------------------------------------------------------------------------------
 # Sub-agent context injection limits
