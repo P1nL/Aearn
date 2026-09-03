@@ -7,3 +7,12 @@
 # picking either side (task state lives in task.json, not index.md). See
 # .trellis/spec/cli/backend/directory-structure.md for details.
 .trellis/workspace/*/journal-*.md merge=union
+
+# Published Skill bundles are byte-hashed immutable snapshots. Most reviewed
+# snapshots use LF; five legacy resources were originally published with CRLF.
+aearn/services/api/app/agents/skills/** text eol=lf
+aearn/services/api/app/agents/skills/tutor.learner-state/1.0.0/instructions.md text eol=crlf
+aearn/services/api/app/agents/skills/tutor.learning-plan-draft/1.0.0/instructions.md text eol=crlf
+aearn/services/api/app/agents/skills/tutor.registry-grounding/1.0.0/instructions.md text eol=crlf
+aearn/services/api/app/agents/skills/tutor.runner-execution/1.0.0/instructions.md text eol=crlf
+aearn/services/api/app/agents/skills/tutor.runner-execution/1.0.0/evals.json text eol=crlf

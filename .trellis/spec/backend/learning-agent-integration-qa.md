@@ -137,3 +137,76 @@ Both a reviewed immutable lock and compatible health are required; otherwise the
 `Promise.all([bootstrap_test_a, bootstrap_test_b])` against one shared PostgreSQL schema.
 #### Correct
 Run one serial pytest process, then create a generated disposable database and execute bootstrap twice before dropping it.
+
+## Scenario: Published Tutor Skill Raw-Byte Integrity on Windows（2026-09-03）
+
+### 1. Scope / Trigger
+
+- Trigger: adding or editing any published resource below `aearn/services/api/app/agents/skills/**`, changing its manifest hash, or changing repository EOL attributes.
+- This is a Git checkout → raw filesystem bytes → Skill Catalog compiler → Tutor input availability contract. A checkout-only EOL conversion can make the complete catalog fail closed even when the semantic text is unchanged.
+
+### 2. Signatures
+
+```text
+Manifest authority: content_hashes[resource_name] = SHA-256(exact resource bytes)
+Default checkout: aearn/services/api/app/agents/skills/** text eol=lf
+Legacy exceptions:
+  tutor.learner-state/1.0.0/instructions.md = crlf
+  tutor.learning-plan-draft/1.0.0/instructions.md = crlf
+  tutor.registry-grounding/1.0.0/instructions.md = crlf
+  tutor.runner-execution/1.0.0/instructions.md = crlf
+  tutor.runner-execution/1.0.0/evals.json = crlf
+Focused test: uv --directory ./aearn/services/api run python -m pytest tests/tutor/test_tutor_skill_catalog.py -q
+```
+
+### 3. Contracts
+
+- Published Skill hashes always cover raw bytes; decoding, newline normalization, canonical JSON, or platform-native text reads must not replace the byte contract.
+- Every new published resource defaults to LF. A CRLF exception is legal only when its reviewed manifest already hashes the CRLF bytes, and the exact path is explicitly listed after the default rule in `.gitattributes`.
+- With `core.autocrlf=true`, adding or changing `.gitattributes` does not retroactively repair an existing worktree. Verify `git ls-files --eol`; rematerialize only the affected files rather than renormalizing a dirty repository.
+- A repair must preserve manifest values and semantic content when the expected manifest hash already matches one exact LF/CRLF representation.
+- One invalid bundle rejects the complete catalog before Tutor input dispatch. The Desktop may display generic `CLIENT_ERROR / Failed to fetch`; inspect the API 500 and `SkillCatalogValidationError` before diagnosing CORS or provider availability.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required result |
+| --- | --- |
+| Raw resource hash differs from manifest | Reject the whole catalog with `SkillCatalogValidationError`; no partial fallback |
+| Manifest expected hash equals LF bytes but worktree is CRLF | Rematerialize that resource as LF and keep/add the default `eol=lf` rule |
+| Manifest expected hash equals a reviewed legacy CRLF resource | Preserve exact path-specific `eol=crlf`; do not rewrite the manifest |
+| New Skill resource has no explicit exception | `git check-attr` must resolve `text=set, eol=lf` |
+| Dirty checkout contains unrelated changes | No repository-wide `git add --renormalize`, reset, clean, or bulk rewrite |
+| Provider health is ready but Catalog compilation fails | Treat Catalog failure as the blocker; do not resend learner/provider input |
+
+### 5. Good / Base / Bad Cases
+
+- Good: a new `tutor.lesson-teaching/1.2.0` resource is stored and checked out as LF, its raw SHA-256 matches the manifest, and the full catalog compiles on Windows with `core.autocrlf=true`.
+- Base: a clean checkout already reports `i/lf w/lf attr/text eol=lf`; no resource rewrite is needed.
+- Bad: recompute the manifest against accidentally converted CRLF bytes, normalize all historical bundles to LF, or run repository-wide renormalization in a dirty checkout.
+
+### 6. Tests Required
+
+- Enumerate every published `manifest.json`, hash each declared resource with raw-byte SHA-256, and assert zero mismatches.
+- Call `compile_published_skill_catalog()` and assert the catalog is non-empty.
+- Run `tests/tutor/test_tutor_skill_catalog.py`.
+- On Windows, assert `git ls-files --eol` and `git check-attr text eol` for new LF resources and every path-specific CRLF exception.
+- Run `git diff --check` and confirm the repair did not create Skill content or manifest diffs.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+expected = sha256(path.read_text(encoding="utf-8").replace("\r\n", "\n").encode()).hexdigest()
+```
+
+This hides checkout-byte drift and no longer validates the immutable published resource.
+
+#### Correct
+
+```python
+actual = sha256(path.read_bytes()).hexdigest()
+assert actual == manifest["content_hashes"][path.name]
+```
+
+Keep checkout attributes aligned with the reviewed bytes so runtime validation and Git materialization enforce the same contract.
