@@ -73,6 +73,7 @@ def test_published_catalog_is_exact_versioned_immutable_and_deterministic() -> N
         "tutor.learner-state@1.0.0",
         "tutor.learning-plan-draft@1.0.0",
         "tutor.learning-plan-draft@1.0.1",
+        "tutor.learning-plan-draft@1.0.2",
         "tutor.lesson-teaching@1.0.0",
         "tutor.lesson-teaching@1.1.0",
         "tutor.lesson-teaching@1.2.0",
@@ -118,8 +119,13 @@ def test_lesson_teaching_history_is_immutable_and_v12_publishes_the_v3_contract(
 
 def test_learning_plan_skill_and_schema_publish_exact_nested_json_contract() -> None:
     catalog = compile_published_skill_catalog()
-    skill = catalog.resolve_skill("tutor.learning-plan-draft", "1.0.1")
-    assert skill is not None
+    legacy = catalog.resolve_skill("tutor.learning-plan-draft", "1.0.1")
+    skill = catalog.resolve_skill("tutor.learning-plan-draft", "1.0.2")
+    assert legacy is not None and skill is not None
+    assert legacy.manifest.content_hash_for("instructions.md") == "ae0df92467993f653f582c91eb8279267cdc5b6f2368f94b7619b6cac274070e"
+    assert legacy.manifest.content_hash_for("evals.json") == "2c36e54ff39d63a66ecf9d17721d0568aed98ccb0f97072d1c3efe66b0d0308c"
+    assert skill.manifest.content_hash_for("instructions.md") == "0c15970382c2f43e83f8bdb1bf739c523feee1ca65df4b0c6bde9802cf833d7a"
+    assert skill.manifest.content_hash_for("evals.json") == "5f27b5b38eb8f70e2322e85cc8af93c14b6ee0fb71bf8ee542db540271c12d27"
     for required in (
         "goal_text",
         "target_level",
@@ -132,6 +138,9 @@ def test_learning_plan_skill_and_schema_publish_exact_nested_json_contract() -> 
     ):
         assert required in skill.instruction
     assert "Do not use aliases such as `goal`" in skill.instruction
+    assert "planning-intent-hint-v2" in skill.instruction
+    assert "Semantic matches always require learner confirmation" in skill.instruction
+    assert "Never use a full course catalog as ambiguity fallback" in skill.instruction
     assert "finish the current turn with `turn_completed`" in skill.instruction
     assert "never use `continuation_kind=approval`" in skill.instruction
 
@@ -140,6 +149,29 @@ def test_learning_plan_skill_and_schema_publish_exact_nested_json_contract() -> 
     properties = schema["properties"]
     assert "goal_text" in properties["profile_json"]["description"]
     assert "nodes" in properties["module_1"]["description"]
+
+
+def test_published_skill_manifest_hashes_match_raw_bytes_and_v102_is_lf() -> None:
+    skill_root = Path(__file__).resolve().parents[2] / "app" / "agents" / "skills"
+    manifests = sorted(skill_root.glob("*/*/manifest.json"))
+    assert manifests
+    mismatches: list[str] = []
+    for manifest_path in manifests:
+        manifest = json.loads(manifest_path.read_bytes())
+        content_hashes = manifest.get("content_hashes")
+        assert isinstance(content_hashes, dict)
+        for resource_name, expected in content_hashes.items():
+            resource_path = manifest_path.parent / str(resource_name)
+            actual = hashlib.sha256(resource_path.read_bytes()).hexdigest()
+            if actual != expected:
+                mismatches.append(str(resource_path.relative_to(skill_root)))
+    assert mismatches == []
+
+    current = skill_root / "tutor.learning-plan-draft" / "1.0.2"
+    for name in ("instructions.md", "evals.json", "manifest.json"):
+        raw = (current / name).read_bytes()
+        assert b"\r\n" not in raw
+        assert raw.endswith(b"\n")
 
 
 def test_catalog_exports_mcp_compatible_grounding_schema() -> None:

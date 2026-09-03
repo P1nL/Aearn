@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -34,6 +35,10 @@ from app.services.learning.planning_facts import (
     PlanningFactField,
     PostgresPlanningFactRepository,
 )
+from app.services.learning.planning_intent import (
+    PLANNING_LANGUAGE_CANDIDATE_SCHEMA_VERSION,
+    PlanningIntentResolver,
+)
 from app.services.learning.planning_questions import (
     PLANNING_QUESTION_CATALOG_VERSION,
     build_planning_question_model_descriptor,
@@ -58,8 +63,40 @@ class _ToolModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
 
 
+class PlanningContextIntentHintV2(_ToolModel):
+    schema_version: Literal["planning-intent-hint-v2"] = "planning-intent-hint-v2"
+    candidate_language_ids: tuple[str, ...] = Field(min_length=1, max_length=3)
+    confidence: Literal["high", "medium"]
+    reason_code: Literal[
+        "technology_ecosystem_match",
+        "goal_domain_match",
+        "runtime_compatibility_match",
+        "mixed_semantic_match",
+    ]
+
+    @field_validator("candidate_language_ids")
+    @classmethod
+    def _validate_candidate_language_ids(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        if len(values) != len(set(values)):
+            raise ValueError("candidate language ids must be unique")
+        if any(
+            re.fullmatch(r"[a-z][a-z0-9_]{0,63}", value) is None
+            for value in values
+        ):
+            raise ValueError("candidate language ids must be canonical")
+        return values
+
+
 class PlanningContextReadInput(_ToolModel):
     schema_version: Literal["aearn-learning-plan-tools-v1"] = "aearn-learning-plan-tools-v1"
+    planning_intent_hint: PlanningContextIntentHintV2 | None = None
+    clarification_required: bool = False
+
+    @model_validator(mode="after")
+    def _one_language_resolution(self) -> "PlanningContextReadInput":
+        if self.planning_intent_hint is not None and self.clarification_required:
+            raise ValueError("planning intent hint and clarification are mutually exclusive")
+        return self
 
 
 class LearningPlanDraftNodeInput(_ToolModel):
@@ -277,7 +314,10 @@ class LearningPlanToolService:
         self._sessions = PostgresLearningPlanSessionRepository(conn)
         self._facts = PostgresPlanningFactRepository(conn)
 
-    def read_context(self) -> LearningPlanAgentToolResult:
+    def read_context(
+        self,
+        tool_input: PlanningContextReadInput | None = None,
+    ) -> LearningPlanAgentToolResult:
         fenced = self._fence_result()
         if fenced is not None:
             return fenced
@@ -312,7 +352,60 @@ class LearningPlanToolService:
             },
         }
         if missing:
-            context["next_missing_fact"] = build_planning_question_model_descriptor(missing[0])
+            next_missing = missing[0]
+            context["next_missing_fact"] = build_planning_question_model_descriptor(next_missing)
+            if next_missing is PlanningFactField.LANGUAGE_ID:
+                resolver = PlanningIntentResolver(self._conn)
+                candidates = resolver.language_candidates()
+                context["language_candidates_schema_version"] = PLANNING_LANGUAGE_CANDIDATE_SCHEMA_VERSION
+                context["language_candidates"] = [candidate.as_model_dict() for candidate in candidates]
+                if tool_input is not None and tool_input.planning_intent_hint is not None:
+                    resolution = resolver.resolve_for_run(
+                        user_id=self._run.user_id,
+                        run_id=self._run.run_id,
+                        expected_input_revision=self._run.input_revision,
+                        model_hint=tool_input.planning_intent_hint.model_dump(mode="json"),
+                    )
+                    if not resolution.semantic_language_ids or resolution.resolution != "shortlist":
+                        return _result(
+                            LearningPlanToolStatus.REPAIRABLE_INVALID,
+                            "planning_language_hint_invalid",
+                            issues=(
+                                LearningPlanToolIssue(
+                                    path="planning_intent_hint.candidate_language_ids",
+                                    code="candidate_not_active",
+                                    hint="Choose 1..3 unique canonical ids from the current language_candidates list.",
+                                ),
+                            ),
+                            data=context,
+                        )
+                    context["language_resolution"] = {
+                        "status": "semantic_shortlist",
+                        "candidate_language_ids": list(resolution.semantic_language_ids),
+                        "reason_code": resolution.reason_code,
+                        "policy_version": resolution.policy_version,
+                    }
+                elif tool_input is not None and tool_input.clarification_required:
+                    context["language_resolution"] = {
+                        "status": "clarification_required",
+                        "reason_code": "clarification_required_by_model",
+                        "policy_version": "planning-language-intent-v2",
+                    }
+            elif tool_input is not None and (
+                tool_input.planning_intent_hint is not None or tool_input.clarification_required
+            ):
+                return _result(
+                    LearningPlanToolStatus.REPAIRABLE_INVALID,
+                    "planning_language_resolution_not_applicable",
+                    issues=(
+                        LearningPlanToolIssue(
+                            path="planning_intent_hint",
+                            code="wrong_question",
+                            hint="Language resolution is allowed only when language_id is the next missing fact.",
+                        ),
+                    ),
+                    data=context,
+                )
             return _result(
                 LearningPlanToolStatus.AWAITING_USER,
                 "planning_facts_missing",
@@ -323,6 +416,21 @@ class LearningPlanToolService:
                         hint="Ask the learner for this planning fact through the typed planning request.",
                     )
                     for field in missing
+                ),
+                data=context,
+            )
+        if tool_input is not None and (
+            tool_input.planning_intent_hint is not None or tool_input.clarification_required
+        ):
+            return _result(
+                LearningPlanToolStatus.REPAIRABLE_INVALID,
+                "planning_language_resolution_stale",
+                issues=(
+                    LearningPlanToolIssue(
+                        path="planning_intent_hint",
+                        code="facts_complete",
+                        hint="Do not submit a language resolution after all planning facts are confirmed.",
+                    ),
                 ),
                 data=context,
             )

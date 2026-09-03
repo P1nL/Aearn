@@ -41,8 +41,13 @@ from app.services.learning.context_adapter import TutorLearningContextAdapter
 from app.services.learning.context_references import PostgresTutorContextReferenceRepository
 from app.services.learning.plan_capability import LearningPlanDraftCapabilityHandler
 from app.services.learning.planning_facts import (
+    PlanningFactField,
     PlanningQuestionDecisionGate,
     PostgresPlanningFactRepository,
+)
+from app.services.learning.planning_intent import (
+    PLANNING_LANGUAGE_CANDIDATE_SCHEMA_VERSION,
+    PlanningIntentResolver,
 )
 from app.services.learning.plan_repository import (
     LearningPlanSessionNotFound,
@@ -531,6 +536,7 @@ class PostgresTutorLearningContextLoader:
         settings: Settings | None = None,
     ) -> None:
         resolved_settings = settings or get_settings()
+        self._conn = conn
         self._learning = TutorLearningContextAdapter(conn)
         self._context_references = PostgresTutorContextReferenceRepository(conn)
         self._teaching = TeachingSessionRepository(conn, settings=resolved_settings)
@@ -653,19 +659,55 @@ class PostgresTutorLearningContextLoader:
             except LearningPlanSessionNotFound:
                 session = None
             if session is not None:
+                current_facts = self._facts.current_facts(
+                    user_id=snapshot.user_id,
+                    session_id=str(session["id"]),
+                )
+                if not any(fact.field_key is PlanningFactField.LANGUAGE_ID for fact in current_facts):
+                    candidates = PlanningIntentResolver(self._conn).language_candidates()
+                    descriptors.append(
+                        TutorContextSource(
+                            source_id=(
+                                "planning-language-candidates:"
+                                f"{PLANNING_LANGUAGE_CANDIDATE_SCHEMA_VERSION}"
+                            ),
+                            content={
+                                "kind": "planning_language_candidates",
+                                "schema_version": PLANNING_LANGUAGE_CANDIDATE_SCHEMA_VERSION,
+                                "fields": [
+                                    "language_id",
+                                    "course_title",
+                                    "level",
+                                    "capability_state",
+                                    "execution_family",
+                                ],
+                                "items": [
+                                    [
+                                        candidate.language_id,
+                                        candidate.course_title,
+                                        candidate.level,
+                                        candidate.capability_state,
+                                        candidate.execution_family,
+                                    ]
+                                    for candidate in candidates
+                                ],
+                            },
+                        )
+                    )
+                plan_context: dict[str, object] = {
+                    "status": str(session["status"]),
+                    "preferred_language_id": session.get("preferred_language_id"),
+                    "session_version": _context_int(session.get("version")),
+                    "current_draft_version": _context_int(session.get("draft_version")),
+                    "current_draft_hash": session.get("content_hash"),
+                    "facts_fingerprint": authoritative.facts_fingerprint,
+                    "fact_revision": authoritative.fact_revision,
+                    "question_states": dict(authoritative.question_states),
+                }
                 descriptors.append(
                     TutorContextSource(
                         source_id=f"learning-plan-session:{session['id']}",
-                        content={
-                            "status": str(session["status"]),
-                            "preferred_language_id": session.get("preferred_language_id"),
-                            "session_version": _context_int(session.get("version")),
-                            "current_draft_version": _context_int(session.get("draft_version")),
-                            "current_draft_hash": session.get("content_hash"),
-                            "facts_fingerprint": authoritative.facts_fingerprint,
-                            "fact_revision": authoritative.fact_revision,
-                            "question_states": dict(authoritative.question_states),
-                        },
+                        content=plan_context,
                     )
                 )
                 covered_message_ids, protected_message_ids = self._facts.message_semantics_for_session(
@@ -945,6 +987,7 @@ class TutorInteractiveRunDispatcher:
                         teaching=TeachingSessionRepository(conn, settings=self._settings),
                     ),
                     facts=planning_facts,
+                    intent_resolution_enabled=self._settings.tutor_planning_intent_enabled,
                 ),
                 lifecycle=PostgresTutorLifecycle(
                     repository=repository,

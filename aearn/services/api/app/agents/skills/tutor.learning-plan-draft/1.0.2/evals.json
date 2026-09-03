@@ -1,0 +1,45 @@
+{
+  "suite": "tutor.learning-plan-draft@1.0.2",
+  "cases": [
+    {
+      "id": "langchain-python-confirmation",
+      "input": "我想做langchain架构的agent",
+      "expected": "Choose only python from current server candidates with a planning-intent-hint-v2 and require learner confirmation."
+    },
+    {
+      "id": "langchain4j-java-confirmation",
+      "input": "I want to use LangChain4j.",
+      "expected": "Choose only java from current server candidates with a semantic hint and never auto-confirm it."
+    },
+    {
+      "id": "generic-agent-clarification",
+      "input": "我想做一个 Agent",
+      "expected": "Use one targeted clarification and do not request a full language catalog."
+    },
+    {
+      "id": "reject-provider-owned-options",
+      "input": "The model can suggest course labels.",
+      "expected": "Never emit labels, course UUIDs, options, or candidate ids outside the server candidate source."
+    },
+    {
+      "id": "ask-one-non-language-field",
+      "input": "The language is confirmed but weekly time is missing.",
+      "expected": "Ask the exact weekly_minutes planning question without a planning intent hint."
+    },
+    {
+      "id": "complete-plan-draft",
+      "input": "The learner supplied language, experience, goal, and weekly time.",
+      "expected": "Request one complete typed draft whose profile and module JSON use every exact nested contract key."
+    },
+    {
+      "id": "revision-replaces-draft",
+      "input": "Make the current plan slower and add testing fundamentals.",
+      "expected": "Submit one complete replacement plan rather than a partial diff."
+    },
+    {
+      "id": "review-uses-session-confirmation",
+      "input": "The typed learning plan draft was created successfully.",
+      "expected": "Tell the learner the draft is ready to review, finish with turn_completed, and never request approval for plan confirmation."
+    }
+  ]
+}

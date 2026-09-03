@@ -26,7 +26,8 @@ class FakeService:
     draft_result: LearningPlanAgentToolResult
     draft_calls: int = 0
 
-    def read_context(self) -> LearningPlanAgentToolResult:
+    def read_context(self, tool_input=None) -> LearningPlanAgentToolResult:  # type: ignore[no-untyped-def]
+        del tool_input
         return self.read_result
 
     def draft(self, tool_input: LearningPlanDraftToolInput) -> LearningPlanAgentToolResult:
@@ -86,7 +87,9 @@ def test_language_question_descriptor_prevents_natural_language_ambiguity() -> N
     assert "自然语言" in str(descriptor["meaning"])
     assert "中文" not in str(descriptor)
     assert "英文" not in str(descriptor)
-    assert "补充括号示例" in str(descriptor["wording_policy"])
+    assert "planning-intent-hint-v2" in str(descriptor["wording_policy"])
+    assert "clarification" in str(descriptor["wording_policy"])
+    assert "完整课程目录" in str(descriptor["wording_policy"])
     assert descriptor["response_authority"] == "aearn_typed_request"
 
 
@@ -102,7 +105,11 @@ def test_tool_definitions_expose_only_typed_modules_and_no_authority_fields() ->
     context_schema = context_definition.input_schema
     assert context_schema.get("type") == "object"
     assert "next_missing_fact" in context_definition.description
-    assert "exact_question" in context_definition.description
+    assert "planning_intent_hint" in context_definition.description
+    context_properties = context_schema["properties"]
+    hint_schema = context_properties["planning_intent_hint"]
+    assert "PlanningContextIntentHintV2" in json.dumps(hint_schema)
+    assert context_properties["clarification_required"]["default"] is False
     draft_schema = json.dumps(
         definitions[LEARNING_PLAN_DRAFT_TOOL_NAME].input_schema,
         ensure_ascii=False,

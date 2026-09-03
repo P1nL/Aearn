@@ -12,9 +12,11 @@ from app.db.connection import connect
 from app.services.learning.planning_facts import PostgresPlanningFactRepository
 from app.services.learning.planning_intent import (
     PLANNING_INTENT_HINT_SCHEMA_VERSION,
+    PLANNING_INTENT_HINT_V1_SCHEMA_VERSION,
     PlanningIntentResolver,
     PlanningIntentHintError,
     validate_closed_intent_hint,
+    validate_semantic_intent_hint,
 )
 from app.services.learning.planning_questions import build_planning_question_presentation
 from app.services.learning.plan_tools import (
@@ -256,7 +258,7 @@ async def test_postgres_context_reports_awaiting_user_for_missing_authoritative_
         assert language_fact == {
             "value_json": "python",
             "source_kind": "deterministic_input",
-            "policy_version": "planning-language-intent-v1",
+            "policy_version": "planning-language-intent-v2",
         }
         repository = PostgresTutorRepository(conn)
         assert repository.acquire_lease(
@@ -293,6 +295,129 @@ async def test_postgres_context_reports_awaiting_user_for_missing_authoritative_
             "response_authority": "aearn_typed_request",
         }
         encoded = json.dumps(payload, ensure_ascii=False)
+        assert user_id not in encoded
+        assert conversation_id not in encoded
+        assert run_id not in encoded
+
+
+@pytest.mark.asyncio
+async def test_postgres_context_exposes_bounded_language_candidates_and_accepts_only_current_hint(
+    monkeypatch: pytest.MonkeyPatch,
+    tutor_client: TestClient,
+    tutor_api_settings: object,
+) -> None:
+    del tutor_api_settings
+    dispatcher = RecordingTutorDispatcher()
+    monkeypatch.setattr(tutor_route, "build_tutor_run_dispatcher", lambda _settings: dispatcher)
+    user_id = str(create_tutor_user(tutor_client)["id"])
+    created = tutor_client.post(
+        "/api/learning-plan-sessions",
+        json={
+            "user_id": user_id,
+            "client_action_id": "codex-language-candidate-session",
+            "preferred_language_id": None,
+        },
+    )
+    session = created.json()["session"]
+    conversation_id = str(session["conversation_id"])
+    accepted = tutor_client.post(
+        f"/api/tutor/conversations/{conversation_id}/inputs",
+        json=action_payload(
+            user_id,
+            "codex-language-candidate-input",
+            content="我想做langchain架构的agent",
+            planning_facts={
+                "goal_text": "构建 LangChain Agent",
+                "target_level": "beginner",
+                "weekly_minutes": 240,
+                "experience_level": "new",
+                "teaching_preferences": [],
+                "pace_constraints": "每周四次练习",
+            },
+            learning_scope={"scope_kind": "plan_drafting", "task_kind": "plan_drafting"},
+        ),
+    )
+    assert accepted.status_code == 202
+    run_id = str(accepted.json()["run_id"])
+
+    with connect() as conn:
+        repository = PostgresTutorRepository(conn)
+        assert repository.acquire_lease(
+            user_id=user_id,
+            run_id=run_id,
+            owner_id="codex-language-candidate-worker",
+            now=datetime.now(UTC),
+            duration_seconds=60,
+        ) is not None
+        run = repository.load_snapshot(user_id=user_id, run_id=run_id)
+        assert run is not None and run.lease is not None
+        registry = LearningPlanRuntimeToolRegistry.from_postgres(
+            conn,
+            run=run,
+            runtime_generation=1,
+            runtime_generation_reader=lambda: 1,
+        )
+        premature = await registry.invoke(
+            _call(
+                PLANNING_CONTEXT_TOOL_NAME,
+                {
+                    "planning_intent_hint": {
+                        "schema_version": PLANNING_INTENT_HINT_SCHEMA_VERSION,
+                        "candidate_language_ids": ["python"],
+                        "confidence": "high",
+                        "reason_code": "technology_ecosystem_match",
+                    }
+                },
+                call_id="language-premature-semantic",
+            )
+        )
+        premature_payload = json.loads(premature.content)
+        assert premature_payload["status"] == "repairable_invalid"
+        assert premature_payload["issues"][0]["code"] == "language_candidates_not_read"
+        assert registry.planning_intent_hint is None
+
+        initial = await registry.invoke(
+            _call(PLANNING_CONTEXT_TOOL_NAME, {}, call_id="language-context")
+        )
+        initial_payload = json.loads(initial.content)
+        candidates = initial_payload["data"]["language_candidates"]
+        assert initial_payload["data"]["next_missing_fact"]["field_key"] == "language_id"
+        assert 1 <= len(candidates) <= 24
+        assert {candidate["language_id"] for candidate in candidates}.issuperset({"python", "java"})
+        assert all(
+            set(candidate) == {
+                "language_id",
+                "course_title",
+                "level",
+                "capability_state",
+                "execution_family",
+            }
+            for candidate in candidates
+        )
+        semantic = await registry.invoke(
+            _call(
+                PLANNING_CONTEXT_TOOL_NAME,
+                {
+                    "planning_intent_hint": {
+                        "schema_version": PLANNING_INTENT_HINT_SCHEMA_VERSION,
+                        "candidate_language_ids": ["python"],
+                        "confidence": "high",
+                        "reason_code": "technology_ecosystem_match",
+                    }
+                },
+                call_id="language-semantic",
+            )
+        )
+        semantic_payload = json.loads(semantic.content)
+        assert semantic_payload["status"] == "awaiting_user"
+        assert semantic_payload["data"]["language_resolution"] == {
+            "status": "semantic_shortlist",
+            "candidate_language_ids": ["python"],
+            "reason_code": "semantic_technology_ecosystem_match",
+            "policy_version": "planning-language-intent-v2",
+        }
+        assert registry.planning_intent_hint is not None
+        encoded = json.dumps(initial_payload, ensure_ascii=False)
         assert user_id not in encoded
         assert conversation_id not in encoded
         assert run_id not in encoded
@@ -339,7 +464,7 @@ def test_planning_intent_resolver_uses_postgres_metadata_and_closed_hints() -> N
         hinted = resolver.resolve(
             "请帮我选择方向",
             model_hint={
-                "schema_version": PLANNING_INTENT_HINT_SCHEMA_VERSION,
+                "schema_version": PLANNING_INTENT_HINT_V1_SCHEMA_VERSION,
                 "intent_tags": ["frontend"],
             },
         )
@@ -347,7 +472,7 @@ def test_planning_intent_resolver_uses_postgres_metadata_and_closed_hints() -> N
         ignored = resolver.resolve(
             "请帮我选择方向",
             model_hint={
-                "schema_version": PLANNING_INTENT_HINT_SCHEMA_VERSION,
+                "schema_version": PLANNING_INTENT_HINT_V1_SCHEMA_VERSION,
                 "intent_tags": ["frontend"],
                 "course_id": "forbidden",
             },
@@ -357,7 +482,110 @@ def test_planning_intent_resolver_uses_postgres_metadata_and_closed_hints() -> N
             validate_closed_intent_hint(
                 conn,
                 {
-                    "schema_version": PLANNING_INTENT_HINT_SCHEMA_VERSION,
+                    "schema_version": PLANNING_INTENT_HINT_V1_SCHEMA_VERSION,
                     "intent_tags": ["unknown"],
                 },
             )
+
+@pytest.mark.parametrize(
+    ("learner_text", "candidate", "expected_language"),
+    [
+        ("我想做langchain架构的agent", "python", "python"),
+        ("我想用 LangChain4j 做 Agent", "java", "java"),
+    ],
+)
+def test_semantic_language_hint_creates_only_a_user_confirmed_narrow_candidate(
+    learner_text: str,
+    candidate: str,
+    expected_language: str,
+) -> None:
+    with connect() as conn:
+        resolver = PlanningIntentResolver(conn)
+        intent = resolver.resolve(
+            learner_text,
+            model_hint={
+                "schema_version": PLANNING_INTENT_HINT_SCHEMA_VERSION,
+                "candidate_language_ids": [candidate],
+                "confidence": "high",
+                "reason_code": "technology_ecosystem_match",
+            },
+        )
+        presentation = build_planning_question_presentation(
+            conn,
+            question_key="language_id",
+            language_intent=intent,
+        )
+
+    assert intent.resolution == "shortlist"
+    assert intent.auto_confirm_language_id is None
+    assert intent.semantic_language_ids == (expected_language,)
+    assert presentation["options"] == [
+        {
+            "value": expected_language,
+            "label": presentation["options"][0]["label"],
+        }
+    ]
+    assert presentation["recommended"] is None
+    assert presentation["selection_scope"] == "intent_shortlist"
+    assert presentation["selection_reason_code"] == "semantic_technology_ecosystem_match"
+    assert presentation["intent_policy_version"] == "planning-language-intent-v2"
+
+
+def test_enabled_ambiguity_and_invalid_semantic_hint_never_expand_to_full_catalog() -> None:
+    with connect() as conn:
+        resolver = PlanningIntentResolver(conn)
+        ambiguous = resolver.resolve("我想做一个 Agent")
+        invalid = resolver.resolve(
+            "我想做langchain架构的agent",
+            model_hint={
+                "schema_version": PLANNING_INTENT_HINT_SCHEMA_VERSION,
+                "candidate_language_ids": ["inactive_language"],
+                "confidence": "high",
+                "reason_code": "technology_ecosystem_match",
+            },
+        )
+        rollback = resolver.resolve("我想做一个 Agent", enabled=False)
+
+    assert ambiguous.resolution == "clarification_required"
+    assert ambiguous.candidate_course_ids == ()
+    assert ambiguous.reason_code == "clarification_required_no_intent_signal"
+    assert invalid.resolution == "clarification_required"
+    assert invalid.candidate_course_ids == ()
+    assert invalid.reason_code == "invalid_model_hint"
+    assert rollback.resolution == "full_catalog"
+    assert rollback.reason_code == "feature_off_rollback"
+    assert rollback.candidate_course_ids
+
+
+def test_semantic_hint_validation_rejects_duplicate_overflow_extra_and_inactive_candidates() -> None:
+    with connect() as conn:
+        active = tuple(candidate.language_id for candidate in PlanningIntentResolver(conn).language_candidates())
+        for payload in (
+            {
+                "schema_version": PLANNING_INTENT_HINT_SCHEMA_VERSION,
+                "candidate_language_ids": ["python", "python"],
+                "confidence": "high",
+                "reason_code": "technology_ecosystem_match",
+            },
+            {
+                "schema_version": PLANNING_INTENT_HINT_SCHEMA_VERSION,
+                "candidate_language_ids": ["python", "java", "go", "sql"],
+                "confidence": "high",
+                "reason_code": "technology_ecosystem_match",
+            },
+            {
+                "schema_version": PLANNING_INTENT_HINT_SCHEMA_VERSION,
+                "candidate_language_ids": ["python"],
+                "confidence": "high",
+                "reason_code": "technology_ecosystem_match",
+                "label": "Python",
+            },
+            {
+                "schema_version": PLANNING_INTENT_HINT_SCHEMA_VERSION,
+                "candidate_language_ids": ["inactive_language"],
+                "confidence": "high",
+                "reason_code": "technology_ecosystem_match",
+            },
+        ):
+            with pytest.raises(PlanningIntentHintError):
+                validate_semantic_intent_hint(payload, active_language_ids=active)

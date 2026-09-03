@@ -353,6 +353,55 @@ describe("TutorConversationSurface typed request seat", () => {
     expect(screen.getByRole("button", { name: "提交响应" })).toBeEnabled();
   });
 
+  it("renders a semantic language shortlist with no default and submits only the persisted value", async () => {
+    const user = userEvent.setup();
+    const semanticRequest = {
+      ...snapshot.pending_requests[0],
+      request_kind: "planning_input" as const,
+      prompt: "你想学习哪门编程语言？",
+      presentation: {
+        type: "single_select" as const,
+        field_key: "language_id",
+        options: [{ value: "python", label: "Python Basic Beginner" }],
+        recommended: null,
+        selection_scope: "intent_shortlist" as const,
+        selection_reason_code: "semantic_technology_ecosystem_match",
+        intent_policy_version: "planning-language-intent-v2",
+      },
+    };
+    api.fetchTutorConversationSnapshot.mockResolvedValue({
+      ...snapshot,
+      pending_requests: [semanticRequest],
+      timeline: [semanticRequest],
+    });
+
+    renderSurface();
+
+    const python = await screen.findByRole("radio", { name: "Python Basic Beginner" });
+    const submit = screen.getByRole("button", { name: "提交响应" });
+    expect(screen.getAllByRole("radio")).toHaveLength(1);
+    expect(screen.queryByRole("radio", { name: /Java/i })).not.toBeInTheDocument();
+    expect(python).not.toBeChecked();
+    expect(submit).toBeDisabled();
+
+    await user.click(python);
+    expect(submit).toBeEnabled();
+    await user.click(submit);
+    await waitFor(() => expect(api.respondToTutorInteractionRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        itemId: "item-1",
+        expectedRequestVersion: 2,
+        response: {
+          kind: "planning_input",
+          question_key: "language_id",
+          catalog_version: "tutor_planning_questions_v1",
+          value: "python",
+        },
+      }),
+    ));
+  });
+
+
   it("mounts the fresh answer-turn think immediately after a typed request response", async () => {
     const user = userEvent.setup();
     const requestItem = {

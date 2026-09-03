@@ -570,11 +570,13 @@ const runtime = payload.active_runtime_output === null
 if (payload.active_runtime_output !== null && runtime === null) return null;
 ```
 
-## Planning language presentation exact DTO (2026-08-21)
+## Planning language presentation exact DTO (2026-09-03)
 
-- `single_select` accepts optional compatibility fields `selection_scope`, `selection_reason_code`, and `intent_policy_version`; current language requests provide the closed scope union `explicit_shortlist | intent_shortlist | conflict_shortlist | full_catalog`.
-- Parse from `unknown`, validate option values/labels and nullable recommendation, and reject unknown extra keys. Internal course UUIDs, learner evidence, regex matches, and model rationale are not public fields.
-- The response continues to send the exact public option value under `planning_input.value`; the client never submits candidate course IDs.
+- `single_select` accepts compatibility fields `selection_scope`, `selection_reason_code`, and `intent_policy_version`; the closed scope union remains `explicit_shortlist | intent_shortlist | conflict_shortlist | full_catalog` so historical and feature-off requests remain readable.
+- A semantic shortlist reuses `intent_shortlist`, carries a safe `semantic_*` reason and `planning-language-intent-v2`, has 1..3 exact persisted options, and always has `recommended=null`. Even a one-option request starts with no radio selected and disabled Submit.
+- Parse from `unknown`, validate option values/labels and nullable recommendation, and reject unknown extra keys. Confidence, raw rationale, server candidate context, internal course UUIDs, URLs, commands, paths, and provider fields are contract violations.
+- Clarification continues to use the existing exact text presentation; no new Desktop primitive is introduced. The response sends only the persisted public value under `planning_input.value`; the client never submits candidate course IDs or rebuilds options locally.
+- Session storage is scoped to exact request ID/version and restores a selection only when it remains in the persisted option set. Snapshot, SSE reconnect, and history preserve exact options/order.
 
 ## 场景：Teaching workspace 与历史消息引用 exact DTO（2026-08-23）
 

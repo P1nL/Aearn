@@ -976,6 +976,99 @@ def test_parse_tutor_decision_rejects_continuation_question_key_mismatch(
         )
 
 
+def test_parse_tutor_decision_accepts_strict_semantic_language_hint() -> None:
+    decision = parse_tutor_decision(
+        {
+            "schema_version": TUTOR_PROVIDER_ITEMS_SCHEMA_VERSION,
+            "message": {
+                "type": "agent_message",
+                "text": "你想学习哪门编程语言？",
+                "public_thinking_text": "LangChain 与当前 Python 课程生态匹配，但仍需学习者确认。",
+                "conversation_title": "确认实现语言",
+            },
+            "action": {
+                "type": "wait_for_input",
+                "continuation_kind": "planning_input",
+                "question_key": "language_id",
+                "planning_intent_hint": {
+                    "schema_version": "planning-intent-hint-v2",
+                    "candidate_language_ids": ["python"],
+                    "confidence": "high",
+                    "reason_code": "technology_ecosystem_match",
+                },
+            },
+        },
+        run=_run(),
+    )
+
+    assert decision.planning_intent_hint is not None
+    assert decision.planning_intent_hint.candidate_language_ids == ("python",)
+    assert decision.planning_intent_hint.confidence == "high"
+    assert decision.planning_intent_hint.reason_code == "technology_ecosystem_match"
+
+
+@pytest.mark.parametrize(
+    "hint",
+    [
+        {"schema_version": "planning-intent-hint-v2", "candidate_language_ids": [], "confidence": "high", "reason_code": "technology_ecosystem_match"},
+        {"schema_version": "planning-intent-hint-v2", "candidate_language_ids": ["python", "python"], "confidence": "high", "reason_code": "technology_ecosystem_match"},
+        {"schema_version": "planning-intent-hint-v2", "candidate_language_ids": ["python", "java", "go", "sql"], "confidence": "high", "reason_code": "technology_ecosystem_match"},
+        {"schema_version": "planning-intent-hint-v2", "candidate_language_ids": ["python"], "confidence": "low", "reason_code": "technology_ecosystem_match"},
+        {"schema_version": "planning-intent-hint-v2", "candidate_language_ids": ["python"], "confidence": "high", "reason_code": "free_text"},
+        {"schema_version": "planning-intent-hint-v2", "candidate_language_ids": ["python"], "confidence": "high", "reason_code": "technology_ecosystem_match", "label": "Python"},
+    ],
+)
+def test_parse_tutor_decision_rejects_invalid_semantic_language_hints(
+    hint: dict[str, object],
+) -> None:
+    with pytest.raises(LLMInvalidResponseError):
+        parse_tutor_decision(
+            {
+                "schema_version": TUTOR_PROVIDER_ITEMS_SCHEMA_VERSION,
+                "message": {
+                    "type": "agent_message",
+                    "text": "你想学习哪门编程语言？",
+                    "public_thinking_text": "先确认实现语言。",
+                    "conversation_title": None,
+                },
+                "action": {
+                    "type": "wait_for_input",
+                    "continuation_kind": "planning_input",
+                    "question_key": "language_id",
+                    "planning_intent_hint": hint,
+                },
+            },
+            run=_run(),
+        )
+
+
+def test_parse_tutor_decision_rejects_hint_on_non_language_or_clarification() -> None:
+    hint = {
+        "schema_version": "planning-intent-hint-v2",
+        "candidate_language_ids": ["python"],
+        "confidence": "high",
+        "reason_code": "technology_ecosystem_match",
+    }
+    for action in (
+        {"type": "wait_for_input", "continuation_kind": "planning_input", "question_key": "weekly_minutes", "planning_intent_hint": hint},
+        {"type": "wait_for_input", "continuation_kind": "clarification", "planning_intent_hint": hint},
+    ):
+        with pytest.raises(LLMInvalidResponseError):
+            parse_tutor_decision(
+                {
+                    "schema_version": TUTOR_PROVIDER_ITEMS_SCHEMA_VERSION,
+                    "message": {
+                        "type": "agent_message",
+                        "text": "请补充信息。",
+                        "public_thinking_text": "先确认当前缺失信息。",
+                        "conversation_title": None,
+                    },
+                    "action": action,
+                },
+                run=_run(),
+            )
+
+
 def test_parse_tutor_decision_accepts_safe_title_and_explicit_continuation() -> None:
     decision = parse_tutor_decision(
         {
@@ -1169,14 +1262,23 @@ def test_tutor_decision_prompt_and_generated_schema_share_one_typed_protocol() -
         "capability_result",
         "external_result",
     }
-    planning_branch = next(
+    planning_branches = [
         branch
         for branch in wait_branches
         if branch["properties"]["continuation_kind"]["const"] == "planning_input"
+    ]
+    assert len(planning_branches) == 2
+    language_branch = next(
+        branch
+        for branch in planning_branches
+        if branch["properties"]["question_key"].get("const") == "language_id"
     )
-    assert planning_branch["required"] == ["type", "continuation_kind", "question_key"]
-    assert set(planning_branch["properties"]["question_key"]["enum"]) == {
-        "language_id",
+    other_planning_branch = next(branch for branch in planning_branches if branch is not language_branch)
+    assert language_branch["required"] == ["type", "continuation_kind", "question_key"]
+    assert "TutorProviderPlanningIntentHintV2" in json.dumps(
+        language_branch["properties"]["planning_intent_hint"]
+    )
+    assert set(other_planning_branch["properties"]["question_key"]["enum"]) == {
         "goal_text",
         "target_level",
         "weekly_minutes",
@@ -1185,10 +1287,12 @@ def test_tutor_decision_prompt_and_generated_schema_share_one_typed_protocol() -
         "pace_constraints",
     }
     for branch in wait_branches:
-        if branch is planning_branch:
+        if branch in planning_branches:
+            assert branch["required"] == ["type", "continuation_kind", "question_key"]
             continue
         assert branch["required"] == ["type", "continuation_kind"]
         assert "question_key" not in branch["properties"]
+        assert "planning_intent_hint" not in branch["properties"]
     for continuation_kind in (
         "clarification",
         "planning_input",

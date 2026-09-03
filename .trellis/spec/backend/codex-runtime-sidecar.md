@@ -524,14 +524,16 @@ result = TutorRuntimeDispatchRouter(harness=harness, codex=codex).dispatch(
 
 Selection happens once at the server-owned creation boundary; dispatch reads only the immutable persisted Runtime.
 
-## Scenario: Deterministic planning intent and dynamic language requests (2026-08-21)
+## Scenario: Semantic planning language resolution and narrow durable requests (2026-09-03)
 
-- `PlanningIntentResolver` reads only the exact learner input, current confirmed planning facts, the active PostgreSQL catalog, and a versioned server policy. It must not read Tutor output, provider reasoning, course title/description, or Runtime item text.
-- A single explicit supported language writes `language_id` as a `deterministic_input` confirmed fact with `policy_version=planning-language-intent-v1`. Multiple languages or direction tags only shape a shortlist; a language/direction mismatch is a conflict and never auto-confirms.
-- `tutor_learning_intents` and `language_course_intent_tags` are the runtime authority. Course slugs are permitted only in idempotent bootstrap backfill; runtime selection joins course UUIDs and intent tags.
-- An optional model hint is exact `planning-intent-hint-v1` with closed `intent_tags` only. Extra fields, unknown tags, or inactive tags are ignored at the resolver boundary and cannot define a fact, course ID, option, or recommendation.
-- A durable `planning_input` request persists exact language options plus `selection_scope`, `selection_reason_code`, and `intent_policy_version`. `recommended` is null for language requests, and response validation uses the persisted presentation rather than a rebuilt catalog.
-- Required coverage: deterministic language auto-confirm, frontend/backend/multi-language/conflict/full-catalog resolution, title/description independence, closed-hint rejection, durable option replay, and no real provider call in default tests.
+- `PlanningIntentResolver` reads only exact current learner input, current confirmed facts, active PostgreSQL courses/capabilities, deterministic intent tags, and an optional validated hint. It never reads Tutor output, provider reasoning, course description, or Runtime item text.
+- One explicit active language is the only auto-confirm path and writes `policy_version=planning-language-intent-v2`. Multiple, unsupported, conflicting, deterministic-direction, or semantic evidence never auto-confirms.
+- Model context receives at most 24 server-built candidates with canonical language, course title, level, capability state, and execution family. It receives no course UUID, URL, command, path, runtime configuration, or secret.
+- `planning-intent-hint-v2` is extra-forbid and allows only 1..3 unique current canonical language values, `high|medium`, and one closed reason code. It is legal only on `planning_input + language_id`; low/insufficient evidence uses `clarification` without a hint.
+- Harness carries the hint through strict provider output and `TutorDecision`. Codex first reads candidates and then calls `aearn_planning_context_read` again with the same hint or `clarification_required=true`; the dispatcher converts only validated tool state into an existing typed request.
+- Decision gate and persistence re-resolve current input revision/catalog. Unknown, duplicate, inactive, stale, extra, or oversized candidates fail closed and never widen. Enabled no-signal becomes clarification; feature-off alone may use `full_catalog` with `feature_off_rollback`.
+- A durable semantic request persists 1..3 exact options, `recommended=null`, `selection_scope=intent_shortlist`, safe semantic reason, and v2 policy. Public snapshot/SSE/history omit confidence, rationale, candidate evidence, and course UUIDs; historical v1/full-catalog requests replay unchanged.
+- New runs select immutable `tutor.learning-plan-draft@1.0.2`; versions 1.0.0/1.0.1 remain untouched. Default tests use fake provider/App Server and local PostgreSQL only.
 
 ## Scenario: Bounded Runtime delta coalescing and semantic budgets (2026-08-21)
 

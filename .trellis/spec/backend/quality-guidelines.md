@@ -3773,12 +3773,15 @@ class PlanCapabilityError(ValueError):
 {"profile_json":"{\"language_id\":\"python\",\"goal_text\":\"automation\",\"target_level\":\"beginner\",\"weekly_minutes\":180,\"experience_level\":\"new\",\"teaching_preferences\":[],\"pace_summary\":\"three sessions\",\"title\":\"Python Automation\"}"}
 ```
 
-## Scenario: Planning intent quality gate (2026-08-21)
+## Scenario: Planning intent quality gate (2026-09-03)
 
-- Test language aliases with Chinese/English strong signals, word boundaries, short-token false positives, unsupported languages, and HTML/CSS public-course normalization.
-- Test the complete flow `learner input -> resolver -> deterministic fact or candidate UUIDs -> persisted typed presentation -> Desktop response`, including feature-off full-catalog fallback.
-- A title/description-only course update must not change candidate UUIDs. A new active untagged course must fail both bootstrap coverage and the deferred publication constraint.
-- Default suites use PostgreSQL and fake/offline Tutor infrastructure only. A real provider is never required to validate planning intent.
+- Test explicit-language aliases with Chinese/English strong signals, word boundaries, short-token false positives, unsupported languages, and HTML/CSS public-course normalization. Only one explicit active language may create a deterministic fact.
+- Test `learner input -> bounded server candidates -> strict v2 hint or clarification -> gate -> persistence -> exact Desktop request`. LangChain maps to Python only through a fake semantic hint; LangChain4j maps to Java only; generic Agent needs clarification.
+- Reject duplicate, unknown, inactive, stale, extra, low-confidence, and over-three semantic candidates at strict schema, gate, and unsafe persistence boundaries. Invalid enabled behavior must never produce a full catalog.
+- Assert semantic output never creates a language fact, recommendation, model-owned label, course UUID, URL, command, path, or arbitrary rationale. Public request metadata is safe and replay-stable.
+- Feature-off full catalog is a named rollback path. Historical requests remain immutable; response validation always uses stored presentation.
+- Compile the complete Skill Catalog, verify exact raw-byte hashes and LF for `tutor.learning-plan-draft@1.0.2`, and prove policy selection uses 1.0.2 without changing 1.0.0/1.0.1.
+- Default suites use PostgreSQL and fake/offline Tutor/Codex infrastructure only. A real provider is never required or permitted by routine validation.
 
 ## Scenario: Runtime delta coalescing quality gate (2026-08-21)
 

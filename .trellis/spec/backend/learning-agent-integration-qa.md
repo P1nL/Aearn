@@ -210,3 +210,40 @@ assert actual == manifest["content_hashes"][path.name]
 ```
 
 Keep checkout attributes aligned with the reviewed bytes so runtime validation and Git materialization enforce the same contract.
+
+## Scenario: Semantic planning language authority (2026-09-03)
+
+### 1. Scope / Trigger
+
+- Trigger: changing planning-language candidates, provider/TutorDecision hints, resolver precedence, typed request persistence, Codex planning tools, or plan-draft Skill selection.
+
+### 2. Signatures
+
+```text
+explicit active language -> deterministic confirmed fact
+validated planning-intent-hint-v2 -> 1..3 user-confirmed options
+insufficient evidence -> clarification
+feature off -> legacy full_catalog rollback
+```
+
+### 3. Contracts
+
+- Candidate membership, labels, order, capability summary, and persistence are server-owned. Models return only current canonical language values and closed hint metadata.
+- Semantic hints never auto-confirm. Gate and persistence revalidate current revision and active catalog; enabled invalid/no-signal behavior never widens.
+- Harness uses the strict provider decision. Codex uses a second validated planning-context tool call because its App Server path does not consume Harness provider actions.
+- Durable request replay is exact and public output omits confidence, rationale, course UUIDs, URLs, commands, paths, and provider data.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required result |
+| --- | --- |
+| explicit Python | confirmed v2 fact; no language selector |
+| LangChain + Python hint | Python-only selector; no default/fact |
+| generic Agent + insufficient evidence | one clarification |
+| inactive/stale/duplicate/extra hint | deny or clarify; never full catalog |
+| feature off | named legacy full-catalog rollback |
+
+### 5. Tests Required
+
+- Resolver/provider/gate/persistence unit and PostgreSQL tests, fake Codex cutover tests, Skill raw-byte/catalog tests, Desktop one-option radio regression, Ruff, Mypy, Desktop check, Trellis validation, and diff hygiene.
+- No real provider call and no mutation of an already persisted request.
