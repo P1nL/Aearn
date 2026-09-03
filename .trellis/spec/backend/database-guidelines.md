@@ -235,7 +235,7 @@ if coverage_miss:
 
 ### 1. Scope / Trigger
 
-- Trigger: any backend, worker, checkpoint, store, session, queue, or cache work for Aearn.
+- Trigger: any backend, worker, checkpoint, store, session, queue, or cache work for Aearn; also when switching checkouts/worktrees against an existing local database.
 - Scope: local development only; do not treat the historical tutorial project compose files as the formal runtime.
 
 ### 2. Signatures
@@ -243,6 +243,7 @@ if coverage_miss:
 - Compose command: `docker compose -f .\aearn\infra\docker-compose.yml up -d`
 - PostgreSQL health command: `docker exec aearn_postgres pg_isready -U postgres -d postgres`
 - Redis health command: `docker exec aearn_redis redis-cli ping`
+- Explicit destructive local reset (fresh user approval required): `docker compose -f .\aearn\infra\docker-compose.yml down -v`; this owns only the Compose project `aearn` named volumes.
 - Python PostgreSQL smoke check: `psycopg.connect("postgresql://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable", connect_timeout=10)`
 - Python Redis smoke check: `redis.from_url("redis://127.0.0.1:6379/0").ping()`
 
@@ -255,6 +256,8 @@ if coverage_miss:
 - PostgreSQL image: `postgres:15`
 - Redis image: `redis:latest`
 - Container names: `aearn_postgres`, `aearn_redis`
+- A checkout older than persisted schema versions must not reapply narrower early-fragment CHECK constraints. Fast-forward to the compatible runtime, or use a checkout-specific disposable database; do not patch the database back to the old contract.
+- Dropping Aearn volumes is allowed only after explicit user approval to abandon local data. Record the exact project/volume names and state that the deleted database is unrecoverable unless an independent volume/database backup exists. A Git patch is not a database backup.
 
 ### 4. Validation & Error Matrix
 
@@ -262,12 +265,15 @@ if coverage_miss:
 - `postgres:15` image missing or pull is slow -> run `docker pull postgres:15` separately, then retry Compose.
 - Python PostgreSQL `localhost` connection hangs on Windows -> use `127.0.0.1` in env defaults and smoke checks.
 - Port `5432` or `6379` already bound -> inspect `docker ps -a --format "table {{.Names}}\t{{.Ports}}"` before changing ports.
+- Bootstrap CHECK violation on a row written by a newer schema version -> compare checkout HEAD/schema manifest first; update to the compatible runtime or isolate the database. Never delete rows or relax only one old fragment before the complete versioned schema is present.
+- Git-owned Learning Item raw-file hashes differ only because LF/CRLF checkout bytes differ -> do not share that seeded database between checkouts for verification; use a uniquely named disposable database, or obtain a separate approved semantic-replay change.
 
 ### 5. Good/Base/Bad Cases
 
 - Good: both containers are `healthy`, `pg_isready` accepts connections, Redis returns `PONG`, and Python clients connect through `127.0.0.1`.
 - Base: Compose starts but health is still `starting`; wait and rerun `docker compose ps`.
-- Bad: reusing `06_` or `07_` compose files as the formal runtime, or committing a real `.env` with secrets.
+- Bad: reusing `06_` or `07_` compose files as the formal runtime, committing a real `.env` with secrets, or running an old checkout against newer persisted rows and narrowing their CHECK constraints.
+- Good reset: after the user explicitly abandons local data, stop only tracked Aearn processes, inventory `aearn_aearn_pgdata` / `aearn_aearn_redisdata`, run `down -v`, recreate healthy services, bootstrap twice, and verify startup.
 
 ### 6. Tests Required
 
@@ -275,6 +281,8 @@ if coverage_miss:
 - Run container health commands for PostgreSQL and Redis.
 - Run Python client smoke checks for PostgreSQL and Redis from `services/api` via `uv`.
 - Verify `.env.example` contains only local defaults and no real LLM keys.
+- For an early-fragment compatibility change, commit a synthetic row using the newest persisted receipt/event version, run `bootstrap_database()` twice, and assert the exact row survives. Run this in a disposable PostgreSQL database when another checkout owns the default local database.
+- After an approved volume reset, verify both fresh bootstrap invocations, API/Desktop readiness, worker/beat command identity, and a before/after volume ledger; do not infer production migration approval.
 
 ### 7. Wrong vs Correct
 
@@ -288,6 +296,27 @@ uv --directory .\aearn\services\api run python -c "import psycopg; psycopg.conne
 
 ```powershell
 uv --directory .\aearn\services\api run python -c "import psycopg; conn = psycopg.connect('postgresql://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable', connect_timeout=10); print(conn.execute('select 1').fetchone()[0]); conn.close()"
+```
+
+Checkout/schema compatibility is separate from connectivity:
+
+#### Wrong
+
+```powershell
+# An old checkout fails on a newer receipt, so delete the row or loosen one old CHECK.
+uv --directory .\aearn\services\api run python -m app.db.bootstrap
+```
+
+#### Correct
+
+```powershell
+# First move to the complete compatible schema/runtime. Use a disposable DB for cross-checkout tests.
+git merge --ff-only <compatible-local-branch>
+uv --directory .\aearn\services\api run python -m app.db.bootstrap
+uv --directory .\aearn\services\api run python -m app.db.bootstrap
+
+# Only after explicit approval to abandon Aearn local data:
+docker compose -f .\aearn\infra\docker-compose.yml down -v
 ```
 
 ---
