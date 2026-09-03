@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "检查strict DTO、closed union、unknown字段拒绝和public信息边界"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "检查invalid hint、stale candidate和clarification fail-closed错误映射"}
+{"file": ".trellis/tasks/09-03-semantic-planning-language-resolution/research/repository-evidence.md", "reason": "核对根因、接入点、兼容和无模型自授权边界"}
+{"file": ".trellis/tasks/09-03-semantic-planning-language-resolution/research/acceptance-matrix.md", "reason": "逐场景核对候选数量、确认规则、history replay和no full catalog"}
