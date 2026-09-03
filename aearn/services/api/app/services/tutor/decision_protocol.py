@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Annotated, Literal, TypeAlias
@@ -22,6 +23,7 @@ from app.agents.harness.contracts import (
     TutorContinuationKind,
     TutorDecision,
     TutorEffectProposal,
+    TutorPlanningIntentHint,
     TutorPlanningQuestionKey,
     TutorRunSnapshot,
     TutorSkillReference,
@@ -206,18 +208,45 @@ class TutorProviderTeachingStepItem(_StrictProviderModel):
         return self
 
 
+class TutorProviderPlanningIntentHintV2(_StrictProviderModel):
+    schema_version: Literal["planning-intent-hint-v2"]
+    candidate_language_ids: list[str] = Field(min_length=1, max_length=3)
+    confidence: Literal["high", "medium"]
+    reason_code: Literal[
+        "technology_ecosystem_match",
+        "goal_domain_match",
+        "runtime_compatibility_match",
+        "mixed_semantic_match",
+    ]
+
+    @field_validator("candidate_language_ids")
+    @classmethod
+    def _validate_candidates(cls, value: list[str]) -> list[str]:
+        if len(value) != len(set(value)):
+            raise ValueError("planning intent candidates must be unique")
+        if any(
+            re.fullmatch(r"[a-z][a-z0-9_]{0,63}", candidate) is None
+            for candidate in value
+        ):
+            raise ValueError("planning intent candidates must be canonical language ids")
+        return value
+
+
 class TutorProviderWaitForInputItem(_StrictProviderModel):
     type: Literal["wait_for_input"]
     continuation_kind: TutorContinuationKind
     question_key: TutorPlanningQuestionKey | None = None
+    planning_intent_hint: TutorProviderPlanningIntentHintV2 | None = None
 
     @model_validator(mode="after")
     def _validate_question_key_contract(self) -> "TutorProviderWaitForInputItem":
         if self.continuation_kind is TutorContinuationKind.PLANNING_INPUT:
             if self.question_key is None:
                 raise ValueError("planning_input requires question_key")
-        elif self.question_key is not None:
-            raise ValueError("question_key is only valid for planning_input")
+            if self.planning_intent_hint is not None and self.question_key != "language_id":
+                raise ValueError("planning_intent_hint is only valid for language_id")
+        elif self.question_key is not None or self.planning_intent_hint is not None:
+            raise ValueError("question_key and planning_intent_hint are only valid for planning_input")
         return self
 
 
@@ -290,6 +319,7 @@ def _wait_for_input_output_schema() -> dict[str, object]:
                 "required": ["type", "continuation_kind"],
             }
         )
+    non_language_question_keys = sorted(TUTOR_PLANNING_QUESTION_KEYS - {"language_id"})
     branches.insert(
         1,
         {
@@ -301,8 +331,30 @@ def _wait_for_input_output_schema() -> dict[str, object]:
                     "const": TutorContinuationKind.PLANNING_INPUT.value,
                     "type": "string",
                 },
+                "question_key": {"const": "language_id", "type": "string"},
+                "planning_intent_hint": {
+                    "anyOf": [
+                        {"$ref": "#/$defs/TutorProviderPlanningIntentHintV2"},
+                        {"type": "null"},
+                    ]
+                },
+            },
+            "required": ["type", "continuation_kind", "question_key"],
+        },
+    )
+    branches.insert(
+        2,
+        {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "type": {"const": "wait_for_input", "type": "string"},
+                "continuation_kind": {
+                    "const": TutorContinuationKind.PLANNING_INPUT.value,
+                    "type": "string",
+                },
                 "question_key": {
-                    "enum": sorted(TUTOR_PLANNING_QUESTION_KEYS),
+                    "enum": non_language_question_keys,
                     "type": "string",
                 },
             },
@@ -523,6 +575,22 @@ def canonical_tutor_wait_for_input_examples() -> str:
                 "question_key": "weekly_minutes",
             },
         ),
+        "planning_language_semantic": _canonical_provider_example(
+            text="你想学习哪门编程语言？",
+            thinking_text="当前目标与 Python 课程生态匹配，但语言事实仍需要你确认。",
+            title="确认实现语言",
+            action={
+                "type": "wait_for_input",
+                "continuation_kind": "planning_input",
+                "question_key": "language_id",
+                "planning_intent_hint": {
+                    "schema_version": "planning-intent-hint-v2",
+                    "candidate_language_ids": ["python"],
+                    "confidence": "high",
+                    "reason_code": "technology_ecosystem_match",
+                },
+            },
+        ),
         "approval": _canonical_provider_example(
             text="是否允许执行这项需要明确授权的受控操作？",
             thinking_text="这项操作会改变受控状态，执行前需要你的明确授权。",
@@ -592,6 +660,7 @@ def parse_tutor_provider_items(
     continuation_kind: TutorContinuationKind | None = None
     terminal_outcome: TutorTerminalOutcome | None = None
     question_key: TutorPlanningQuestionKey | None = None
+    planning_intent_hint: TutorPlanningIntentHint | None = None
     teaching_step: TeachingStepDecision | None = None
 
     try:
@@ -639,6 +708,13 @@ def parse_tutor_provider_items(
             checkpoint_reason = TutorCheckpointReason.CAPABILITY_RESULT
             continuation_kind = action.continuation_kind
             question_key = action.question_key
+            if action.planning_intent_hint is not None:
+                planning_intent_hint = TutorPlanningIntentHint(
+                    schema_version=action.planning_intent_hint.schema_version,
+                    candidate_language_ids=tuple(action.planning_intent_hint.candidate_language_ids),
+                    confidence=action.planning_intent_hint.confidence,
+                    reason_code=action.planning_intent_hint.reason_code,
+                )
         else:  # pragma: no cover - discriminated union is exhaustive.
             raise ValueError("unsupported provider action")
 
@@ -647,6 +723,7 @@ def parse_tutor_provider_items(
             public_thinking_text=message.public_thinking_text,
             conversation_title=message.conversation_title,
             question_key=question_key,
+            planning_intent_hint=planning_intent_hint,
             skill_references=skill_references,
             capability_requests=capability_requests,
             effect_proposals=effect_proposals,
@@ -692,6 +769,9 @@ def build_tutor_replacement_message(
         "check_understanding or wait_for_input plus a diagnostic move; none cannot use those waiting actions. "
         "wait_for_input.continuation_kind must be clarification, planning_input, approval, capability_result, or "
         "external_result. planning_input requires exactly one allowlisted question_key; every other continuation must omit it. "
+        "A language_id planning_input may include only planning-intent-hint-v2 with 1..3 unique current server candidate "
+        "language ids, high or medium confidence, and one closed reason code. Semantic candidates always require learner "
+        "confirmation. If evidence is insufficient, use clarification and omit planning_intent_hint. "
         "The server owns request_id, effect_id, expected_input_revision, checkpoints, and terminal state; never emit them. "
         f"Validation issues (safe field paths and categories only): {issue_text}. "
         f"Minimal valid direct-reply example: {canonical_tutor_provider_items_example()} "

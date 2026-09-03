@@ -299,7 +299,7 @@ uv --directory .\aearn\services\api run python -m app.db.bootstrap
 uv --directory .\aearn\services\api run python -m app.db.bootstrap
 ```
 
-A new active course must add intent tags in the same transaction or bootstrap/publication fails with `language_course_intent_coverage_missing`. Course slug is allowed only in the idempotent bootstrap backfill; runtime code must use course UUID/tag joins. `TUTOR_PLANNING_INTENT_ENABLED=false` disables automatic intent admission and falls back to the full active catalog, but the language selector still has no default selection.
+A new active course must add intent tags in the same transaction or bootstrap/publication fails with `language_course_intent_coverage_missing`. Course slug is allowed only in the idempotent bootstrap backfill; runtime code must use course UUID/tag joins. With `TUTOR_PLANNING_INTENT_ENABLED=true`, explicit language is the only auto-confirm path, semantic candidates require learner confirmation, and insufficient evidence uses clarification rather than the full catalog. `TUTOR_PLANNING_INTENT_ENABLED=false` is the explicit legacy rollback to the full active catalog; that selector still has no default selection. Routine verification uses fake provider/App Server fixtures only.
 
 
 ## 2026-09-02：Learning Artifact platform final local verification

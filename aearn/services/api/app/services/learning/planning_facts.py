@@ -766,9 +766,11 @@ class PlanningQuestionDecisionGate:
         *,
         base: TutorDecisionGate,
         facts: PostgresPlanningFactRepository,
+        intent_resolution_enabled: bool = True,
     ) -> None:
         self._base = base
         self._facts = facts
+        self._intent_resolution_enabled = intent_resolution_enabled
 
     def validate(
         self,
@@ -805,6 +807,38 @@ class PlanningQuestionDecisionGate:
                 status=TutorDecisionGateStatus.DENIED,
                 diagnostic_code="confirmed_question_reasked",
             )
+        if field is PlanningFactField.LANGUAGE_ID:
+            model_hint = (
+                decision.planning_intent_hint.as_mapping()
+                if decision.planning_intent_hint is not None
+                else None
+            )
+            language_intent = PlanningIntentResolver(self._facts._conn).resolve_for_run(
+                user_id=run.user_id,
+                run_id=run.run_id,
+                enabled=self._intent_resolution_enabled,
+                model_hint=model_hint,
+                expected_input_revision=run.input_revision,
+            )
+            if language_intent.resolution in {
+                "auto_confirm",
+                "clarification_required",
+                "unsupported",
+            }:
+                diagnostic_code = (
+                    "planning_language_hint_invalid"
+                    if language_intent.reason_code in {"invalid_model_hint", "stale_input_revision"}
+                    else "planning_language_clarification_required"
+                )
+                return TutorDecisionGateResult(
+                    status=TutorDecisionGateStatus.DENIED,
+                    diagnostic_code=diagnostic_code,
+                )
+            if decision.planning_intent_hint is not None and not language_intent.semantic_language_ids:
+                return TutorDecisionGateResult(
+                    status=TutorDecisionGateStatus.DENIED,
+                    diagnostic_code="planning_language_hint_invalid",
+                )
         self._facts.record_question_asked(run=run, field=field)
         return result
 

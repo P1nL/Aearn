@@ -7,7 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app.routes.tutor as tutor_route
-from app.agents.harness.contracts import TutorContinuationKind
+from app.agents.harness.contracts import TutorContinuationKind, TutorPlanningIntentHint
 from app.core.config import Settings
 from app.db.bootstrap import bootstrap_database
 from app.db.connection import connect
@@ -124,13 +124,18 @@ def _snapshot(client: TestClient, *, user_id: str, conversation_id: str) -> dict
     return response.json()
 
 
-def _create_plan_session(client: TestClient, *, user_id: str) -> dict[str, object]:
+def _create_plan_session(
+    client: TestClient,
+    *,
+    user_id: str,
+    preferred_language_id: str | None = "python",
+) -> dict[str, object]:
     response = client.post(
         "/api/learning-plan-sessions",
         json={
             "user_id": user_id,
             "client_action_id": "typed-plan-session",
-            "preferred_language_id": "python",
+            "preferred_language_id": preferred_language_id,
         },
     )
     assert response.status_code in {200, 201}
@@ -262,6 +267,208 @@ def test_planning_request_uses_server_catalog_and_records_exact_fact(
     assert fact["value_json"] == 240
     assert fact["state"] == "confirmed"
     assert fact["source_run_id"] == answer_turn_id
+
+
+@pytest.mark.parametrize(
+    ("learner_text", "candidate", "excluded_language", "source_key"),
+    [
+        ("我想做langchain架构的agent", "python", "java", "semantic-langchain-source"),
+        ("我想用 LangChain4j 做 Agent", "java", "python", "semantic-langchain4j-source"),
+    ],
+)
+def test_semantic_language_request_persists_only_validated_candidate_without_default_or_fact(
+    learner_text: str,
+    candidate: str,
+    excluded_language: str,
+    source_key: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tutor_client: TestClient,
+    tutor_api_settings: Settings,
+) -> None:
+    dispatcher, _provider = waiting_dispatcher(
+        settings=tutor_api_settings,
+        message="你想学习哪门编程语言？",
+        continuation_kind=TutorContinuationKind.PLANNING_INPUT,
+        question_key="language_id",
+        planning_intent_hint=TutorPlanningIntentHint(
+            schema_version="planning-intent-hint-v2",
+            candidate_language_ids=(candidate,),
+            confidence="high",
+            reason_code="technology_ecosystem_match",
+        ),
+    )
+    monkeypatch.setattr(tutor_route, "build_tutor_run_dispatcher", lambda _settings: dispatcher)
+    user_id = str(create_tutor_user(tutor_client)["id"])
+    session = _create_plan_session(
+        tutor_client,
+        user_id=user_id,
+        preferred_language_id=None,
+    )
+    conversation_id = str(session["conversation_id"])
+
+    accepted = tutor_client.post(
+        f"/api/tutor/conversations/{conversation_id}/inputs",
+        json=action_payload(
+            user_id,
+            source_key,
+            content=learner_text,
+            planning_facts={
+                "goal_text": "构建可靠的 Agent",
+                "target_level": "beginner",
+                "weekly_minutes": 240,
+                "experience_level": "new",
+                "teaching_preferences": [],
+                "pace_constraints": "每周四次练习",
+            },
+            learning_scope={"scope_kind": "plan_drafting", "task_kind": "plan_drafting"},
+        ),
+    )
+    assert accepted.status_code == 202
+    first_snapshot = _snapshot(tutor_client, user_id=user_id, conversation_id=conversation_id)
+    second_snapshot = _snapshot(tutor_client, user_id=user_id, conversation_id=conversation_id)
+    request = first_snapshot["pending_requests"][0]
+    assert second_snapshot["pending_requests"][0] == request
+    assert request["presentation"] == {
+        "type": "single_select",
+        "field_key": "language_id",
+        "options": [
+            {"value": candidate, "label": request["presentation"]["options"][0]["label"]}
+        ],
+        "recommended": None,
+        "selection_scope": "intent_shortlist",
+        "selection_reason_code": "semantic_technology_ecosystem_match",
+        "intent_policy_version": "planning-language-intent-v2",
+    }
+    assert excluded_language not in {
+        option["value"] for option in request["presentation"]["options"]
+    }
+    public_json = json.dumps(first_snapshot, ensure_ascii=False)
+    for protected in (
+        "confidence",
+        "candidate_language_ids",
+        "planning_intent_hint",
+        "rationale",
+    ):
+        assert protected not in public_json
+    with connect() as conn:
+        course = conn.execute(
+            """
+            SELECT id::text AS id
+            FROM language_courses
+            WHERE language = %s AND archived_at IS NULL
+            ORDER BY level, title, id
+            LIMIT 1
+            """,
+            (candidate,),
+        ).fetchone()
+        fact = conn.execute(
+            """
+            SELECT value_json FROM tutor_planning_intake_facts
+            WHERE user_id = %s AND conversation_id = %s AND field_key = 'language_id'
+            """,
+            (user_id, conversation_id),
+        ).fetchone()
+    assert course is not None
+    assert str(course["id"]) not in public_json
+    assert fact is None
+
+
+def test_feature_off_persists_named_legacy_full_catalog_without_rewriting_on_replay(
+    monkeypatch: pytest.MonkeyPatch,
+    tutor_client: TestClient,
+    tutor_api_settings: Settings,
+) -> None:
+    rollback_settings = tutor_api_settings.model_copy(
+        update={"tutor_planning_intent_enabled": False}
+    )
+    dispatcher, _provider = waiting_dispatcher(
+        settings=rollback_settings,
+        message="你想学习哪门编程语言？",
+        continuation_kind=TutorContinuationKind.PLANNING_INPUT,
+        question_key="language_id",
+    )
+    monkeypatch.setattr(tutor_route, "build_tutor_run_dispatcher", lambda _settings: dispatcher)
+    user_id = str(create_tutor_user(tutor_client)["id"])
+    session = _create_plan_session(
+        tutor_client,
+        user_id=user_id,
+        preferred_language_id=None,
+    )
+    conversation_id = str(session["conversation_id"])
+
+    accepted = tutor_client.post(
+        f"/api/tutor/conversations/{conversation_id}/inputs",
+        json=action_payload(
+            user_id,
+            "feature-off-language-source",
+            content="我想做一个 Agent",
+            learning_scope={"scope_kind": "plan_drafting", "task_kind": "plan_drafting"},
+        ),
+    )
+    assert accepted.status_code == 202
+    first = _snapshot(tutor_client, user_id=user_id, conversation_id=conversation_id)
+    second = _snapshot(tutor_client, user_id=user_id, conversation_id=conversation_id)
+    presentation = first["pending_requests"][0]["presentation"]
+    assert second["pending_requests"][0]["presentation"] == presentation
+    assert presentation["selection_scope"] == "full_catalog"
+    assert presentation["selection_reason_code"] == "feature_off_rollback"
+    assert presentation["intent_policy_version"] == "planning-language-intent-v2"
+    assert presentation["recommended"] is None
+    assert len(presentation["options"]) > 3
+
+
+def test_generic_agent_uses_clarification_and_clarification_response_writes_no_language_fact(
+    monkeypatch: pytest.MonkeyPatch,
+    tutor_client: TestClient,
+    tutor_api_settings: Settings,
+) -> None:
+    dispatcher, _provider = waiting_dispatcher(
+        settings=tutor_api_settings,
+        message="你更倾向使用哪种实现语言，或者目标框架需要哪种运行环境？",
+        continuation_kind=TutorContinuationKind.CLARIFICATION,
+    )
+    monkeypatch.setattr(tutor_route, "build_tutor_run_dispatcher", lambda _settings: dispatcher)
+    user_id = str(create_tutor_user(tutor_client)["id"])
+    session = _create_plan_session(tutor_client, user_id=user_id)
+    conversation_id = str(session["conversation_id"])
+
+    accepted = tutor_client.post(
+        f"/api/tutor/conversations/{conversation_id}/inputs",
+        json=action_payload(
+            user_id,
+            "generic-agent-source",
+            content="我想做一个 Agent",
+            learning_scope={"scope_kind": "plan_drafting", "task_kind": "plan_drafting"},
+        ),
+    )
+    assert accepted.status_code == 202
+    request = _snapshot(tutor_client, user_id=user_id, conversation_id=conversation_id)["pending_requests"][0]
+    assert request["request_kind"] == "clarification"
+    assert request["presentation"]["type"] == "text"
+    assert request["presentation"]["field_key"] is None
+
+    response = tutor_client.post(
+        f"/api/tutor/conversations/{conversation_id}/requests/{request['id']}/responses",
+        json={
+            "user_id": user_id,
+            "client_action_id": "generic-agent-clarification-answer",
+            "expected_request_version": request["version"],
+            "response": {
+                "kind": "clarification",
+                "answer_text": "我指的是服务端框架变体，还没决定实现语言。",
+            },
+        },
+    )
+    assert response.status_code == 202
+    with connect() as conn:
+        fact = conn.execute(
+            """
+            SELECT value_json FROM tutor_planning_intake_facts
+            WHERE user_id = %s AND conversation_id = %s AND field_key = 'language_id'
+            """,
+            (user_id, conversation_id),
+        ).fetchone()
+    assert fact is None
 
 
 def test_approval_requires_exact_proposal_identity_and_creates_fresh_turn(

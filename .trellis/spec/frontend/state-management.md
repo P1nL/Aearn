@@ -194,3 +194,9 @@ Persist the user boundary before rendering new facts, then persist the plan only
 
 - 错误：`key={teachingMode}` 重建 Tutor/Lesson，或本地先写 server mode。
 - 正确：controller 接受 server projection；DOM 保持 mounted，仅用 role class/grid area 换位。
+
+## Planning language request replay authority (2026-09-03)
+
+- Semantic language options, order, safe reason metadata, recommendation, request version, and pending state are server state. Desktop must not infer or expand candidates from labels or a local language catalog.
+- One-option semantic requests still begin with no local selection. A draft lives only under exact request ID/version and is restored only if the persisted option set still contains its value.
+- Clarification remains the existing text-request state. Refresh, SSE reconnect, and history replace local request state from the persisted projection and never rewrite an older full-catalog request into v2 behavior.

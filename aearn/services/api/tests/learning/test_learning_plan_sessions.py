@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 
 import psycopg
@@ -11,12 +11,14 @@ from fastapi.testclient import TestClient
 import app.routes.tutor as tutor_route
 from app.agents.harness.capabilities import LearningPlanDraftCapabilityInput
 from app.agents.harness.context_builder import TutorContextBuilder
+from app.agents.harness.skill_catalog import compile_published_skill_catalog
 from app.agents.harness.contracts import (
     TutorCheckpointReason,
     TutorCapabilityStatus,
     TutorContinuationKind,
     TutorDecision,
     TutorDecisionGateResult,
+    TutorPlanningIntentHint,
     TutorDecisionGateStatus,
     TutorContextSection,
     TutorRunResult,
@@ -25,6 +27,7 @@ from app.agents.harness.contracts import (
 )
 from app.core.config import Settings
 from app.db.connection import connect
+from app.services.learning.plan_policy import InteractiveLearningCapabilityPolicyResolver
 from app.services.learning.plan_capability import (
     LearningPlanDraftCapabilityError,
     LearningPlanDraftCapabilityHandler,
@@ -639,6 +642,121 @@ def test_confirmed_planning_fact_survives_long_history_correction_and_reset(
         ).fetchone()
         assert remaining == {"facts": 0, "questions": 0}
         conn.commit()
+
+
+def test_language_question_gate_revalidates_semantic_hint_staleness_and_feature_off(
+    monkeypatch: pytest.MonkeyPatch,
+    tutor_client: TestClient,
+    tutor_api_settings: Settings,
+) -> None:
+    dispatcher = RecordingTutorDispatcher()
+    monkeypatch.setattr(tutor_route, "build_tutor_run_dispatcher", lambda _settings: dispatcher)
+    user_id = str(create_tutor_user(tutor_client)["id"])
+    session = _create_session(tutor_client, user_id, "plan-language-gate-session")
+    conversation_id = str(session["conversation_id"])
+    accepted = tutor_client.post(
+        f"/api/tutor/conversations/{conversation_id}/inputs",
+        json=action_payload(
+            user_id,
+            "plan-language-gate-input",
+            content="我想做langchain架构的agent",
+            planning_facts={
+                "goal_text": "构建 LangChain Agent",
+                "target_level": "beginner",
+                "weekly_minutes": 240,
+                "experience_level": "new",
+                "teaching_preferences": [],
+                "pace_constraints": "每周四次练习",
+            },
+            learning_scope={"scope_kind": "plan_drafting", "task_kind": "plan_drafting"},
+        ),
+    )
+    assert accepted.status_code == 202
+    run_id = str(accepted.json()["run_id"])
+
+    with connect() as conn:
+        run = PostgresTutorRepository(conn).load_snapshot(user_id=user_id, run_id=run_id)
+        assert run is not None
+        facts = PostgresPlanningFactRepository(conn)
+        context_input = PostgresTutorLearningContextLoader(
+            conn=conn,
+            base_loader=PostgresTutorContextLoader(
+                conn=conn,
+                learner_state=TutorLearnerStateRepository(conn),
+            ),
+            settings=tutor_api_settings,
+        ).load_context(run, input_revision=run.input_revision)
+        candidate_source = next(
+            source
+            for source in context_input.system_descriptors
+            if source.source_id.startswith("planning-language-candidates:")
+        )
+        assert isinstance(candidate_source.content, dict)
+        assert candidate_source.content["fields"] == [
+            "language_id",
+            "course_title",
+            "level",
+            "capability_state",
+            "execution_family",
+        ]
+        candidate_items = candidate_source.content["items"]
+        assert isinstance(candidate_items, list)
+        assert 1 <= len(candidate_items) <= 24
+        assert {item[0] for item in candidate_items}.issuperset({"python", "java"})
+        assert "course_id" not in json.dumps(candidate_source.content)
+        policy = InteractiveLearningCapabilityPolicyResolver(
+            conn,
+            settings=tutor_api_settings,
+        ).resolve(run=run, catalog=compile_published_skill_catalog())
+        assert tuple(reference.key for reference in policy.eligible_skill_references) == (
+            "tutor.learning-plan-draft@1.0.2",
+        )
+        gate = PlanningQuestionDecisionGate(base=_ApprovedDecisionGate(), facts=facts)
+
+        def decision(candidate: str | None) -> TutorDecision:
+            return TutorDecision(
+                public_message="你想学习哪门编程语言？",
+                question_key="language_id",
+                planning_intent_hint=(
+                    TutorPlanningIntentHint(
+                        schema_version="planning-intent-hint-v2",
+                        candidate_language_ids=(candidate,),
+                        confidence="high",
+                        reason_code="technology_ecosystem_match",
+                    )
+                    if candidate is not None
+                    else None
+                ),
+                checkpoint_reason=TutorCheckpointReason.CAPABILITY_RESULT,
+                continuation_kind=TutorContinuationKind.PLANNING_INPUT,
+            )
+
+        inactive = gate.validate(run=run, decision=decision("inactive_language"))
+        assert inactive.status is TutorDecisionGateStatus.DENIED
+        assert inactive.diagnostic_code == "planning_language_hint_invalid"
+
+        stale = gate.validate(
+            run=replace(run, input_revision=run.input_revision + 1),
+            decision=decision("python"),
+        )
+        assert stale.status is TutorDecisionGateStatus.DENIED
+        assert stale.diagnostic_code == "planning_language_hint_invalid"
+
+        no_hint = gate.validate(run=run, decision=decision(None))
+        assert no_hint.status is TutorDecisionGateStatus.DENIED
+        assert no_hint.diagnostic_code == "planning_language_clarification_required"
+
+        semantic = gate.validate(run=run, decision=decision("python"))
+        assert semantic.status is TutorDecisionGateStatus.APPROVED
+
+        rollback_gate = PlanningQuestionDecisionGate(
+            base=_ApprovedDecisionGate(),
+            facts=facts,
+            intent_resolution_enabled=False,
+        )
+        rollback = rollback_gate.validate(run=run, decision=decision(None))
+        assert rollback.status is TutorDecisionGateStatus.APPROVED
+        conn.rollback()
 
 
 def test_unconfirmed_answer_source_is_pinned_and_blocks_compaction(

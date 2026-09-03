@@ -14,6 +14,7 @@ from app.agents.harness.contracts import (
     TutorCheckpointReason,
     TutorContinuationKind,
     TutorDecision,
+    TutorPlanningIntentHint,
     TutorProviderResult,
     TutorRunResult,
     TutorRunStatus,
@@ -167,6 +168,7 @@ class WaitingTutorProvider:
     message: str
     continuation_kind: TutorContinuationKind = TutorContinuationKind.CLARIFICATION
     question_key: str | None = None
+    planning_intent_hint: TutorPlanningIntentHint | None = None
     public_thinking_text: str = "我先确认当前信息还不足以安全给出下一步。"
     stream_public_thinking: bool = False
     calls: list[tuple[str, int]] = field(default_factory=list)
@@ -183,6 +185,7 @@ class WaitingTutorProvider:
                 public_message=self.message,
                 public_thinking_text=self.public_thinking_text,
                 question_key=self.question_key,
+                planning_intent_hint=self.planning_intent_hint,
                 checkpoint_reason=TutorCheckpointReason.CAPABILITY_RESULT,
                 continuation_kind=self.continuation_kind,
             )
@@ -195,6 +198,7 @@ def waiting_dispatcher(
     message: str,
     continuation_kind: TutorContinuationKind = TutorContinuationKind.CLARIFICATION,
     question_key: str | None = None,
+    planning_intent_hint: TutorPlanningIntentHint | None = None,
     public_thinking_text: str = "我先确认当前信息还不足以安全给出下一步。",
     stream_public_thinking: bool = False,
 ) -> tuple[TutorInteractiveRunDispatcher, WaitingTutorProvider]:
@@ -202,6 +206,7 @@ def waiting_dispatcher(
         message=message,
         continuation_kind=continuation_kind,
         question_key=question_key,
+        planning_intent_hint=planning_intent_hint,
         public_thinking_text=public_thinking_text,
         stream_public_thinking=stream_public_thinking,
     )

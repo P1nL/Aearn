@@ -413,13 +413,17 @@ contract，不访问真实 provider、不启动或批准生产 container fleet�
 
 Fixture/browser 证据不得包含 external Runtime identity、provider metadata、prompt、commentary、reasoning summary、credential 或真实学习者内容。真实 provider smoke 不属于本增量默认验收。
 
-## 2026-08-21: Planning intent and dynamic Generated UI matrix
+## 2026-09-03: Semantic planning language and durable Generated UI matrix
 
-- Backend: explicit Python plus data-analysis auto-confirms `language_id=python` as deterministic input; direction-only input writes no language fact.
-- PostgreSQL: frontend/backend/multi-language/conflict/full-catalog candidates come from intent-tag joins; title/description changes do not alter candidate UUIDs; an active untagged course fails the deferred coverage gate.
-- Contract: unknown/extra model hint fields are rejected or ignored safely; durable request response validation uses stored options after catalog change.
-- Desktop/browser: language radio starts empty and Submit disabled; selection enables Submit; reload/re-enter restores exact options/order and safe draft at 1440x900, 900x900, and 390x844 with no overlay, console error, or horizontal overflow.
-- Default validation is offline/fake plus local PostgreSQL. Real provider execution is out of scope without separate approval.
+- Explicit authority: explicit Python auto-confirms `language_id=python` with policy v2; multiple/unsupported/conflicting or model-semantic evidence writes no language fact.
+- Candidate context: Harness and Codex receive bounded active PostgreSQL candidates with safe capability summaries and no course UUID, URL, command, path, runtime configuration, or secret.
+- Strict hint: `planning-intent-hint-v2` accepts only 1..3 unique current canonical values, high/medium confidence, and a closed reason code; duplicate, extra, inactive, stale, unknown, or over-three candidates fail closed.
+- Scenarios: bare LangChain plus a valid fake hint persists Python only; LangChain4j persists Java only; generic Agent plus insufficient evidence persists one targeted clarification; deterministic frontend direction remains HTML/CSS, JavaScript, and TypeScript.
+- No silent widening: enabled ambiguity has no full-catalog path. Feature-off is the explicit legacy rollback. Historical full-catalog requests replay unchanged.
+- Durable/public: semantic requests use `recommended=null`, safe reason metadata, and no confidence/rationale. Snapshot, SSE reconnect, history, and response validation use stored options/order.
+- Desktop: a one-option language radio starts empty with Submit disabled, selects and submits only the persisted value, and restores only request/version-scoped valid drafts.
+- Skill/integration: new runs select immutable `tutor.learning-plan-draft@1.0.2`; `1.0.0`/`1.0.1` remain unchanged; raw-byte hashes and LF checkout are verified.
+- Default validation is fake/offline plus local PostgreSQL. No real provider call, current-request mutation, deployment, or release claim is allowed.
 
 ## 2026-08-23：Closed teaching action Loop 验收矩阵
 

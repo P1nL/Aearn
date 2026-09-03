@@ -336,11 +336,13 @@ commentary 与 reasoning summary 永不渲染。收到 item-scoped `discard` 时
 
 双 channel reducer 以 active turn、input revision、generation、Aearn item ID 和 last sequence 校验；duplicate/out-of-order 旧事件忽略，conversation event gap 或 identity mismatch fresh snapshot。1440×900、900×900 与 390×844 都保持单 entry、无横向溢出；disclosure 控件最小触摸高度 44px，`prefers-reduced-motion` 不影响 authority 和展开状态。
 
-## 2026-08-21: Dynamic language request interaction
+## 2026-09-03: Semantic language shortlist and clarification interaction
 
-The planning language request renders the exact durable server options. `recommended=null` means no radio is selected on first render and the primary Submit action is disabled. Selecting one option enables Submit; the frontend never highlights the first catalog item by position and never computes a recommendation from labels.
+The planning language request renders only the exact durable server options. `recommended=null` means no radio is selected on first render and Submit is disabled. Selecting one option enables Submit; the frontend never highlights the first option by position, derives a recommendation from labels, or expands a shortlist from its local catalog. A one-option semantic shortlist still starts unselected.
 
-The server may provide `explicit_shortlist`, `intent_shortlist`, `conflict_shortlist`, or `full_catalog`, but these metadata fields are not rendered as learner evidence or model rationale. A select draft is stored only by exact request ID/version in session storage and is restored only if its value remains in the persisted option set. Reload/reconnect must preserve options and order; catalog changes affect only future requests.
+`intent_shortlist` may represent deterministic direction matching or a server-validated semantic shortlist, distinguished only by safe reason metadata such as `semantic_technology_ecosystem_match`. Confidence, raw model rationale, candidate evidence, and course UUIDs are not public. `explicit_shortlist`, `conflict_shortlist`, and historical/feature-off `full_catalog` remain parser-compatible; enabled ambiguity creates the existing text clarification seat instead of a full catalog.
+
+A select draft is stored only by exact request ID/version in session storage and is restored only if its value remains in the persisted option set. Reload, SSE reconnect, and history preserve exact options/order and the old persisted request even when policy or catalog changes. The response sends only the selected persisted public value under `planning_input.value`.
 
 ## 2026-08-23：Guided/自由阅读教学工作区
 

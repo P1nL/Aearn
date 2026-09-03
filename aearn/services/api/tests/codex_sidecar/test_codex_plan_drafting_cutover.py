@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from typing import Iterator
+from typing import Iterator, Mapping
 from uuid import uuid4
 
 import pytest
@@ -14,6 +14,7 @@ import app.services.tutor.interactive as interactive_module
 from app.agents.harness.contracts import (
     TutorPolicySnapshot,
     TutorRunResult,
+    TutorRunSnapshot,
     TutorRunStatus,
     TutorTerminalOutcome,
 )
@@ -180,8 +181,18 @@ def test_plan_drafting_unhealthy_admission_creates_no_conversation(tutor_persist
 
 
 class _FakeCodexHost:
-    def __init__(self, *, awaiting_context: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        awaiting_context: bool = False,
+        planning_intent_hint: Mapping[str, object] | None = None,
+        clarification_required: bool = False,
+        final_text: str = "我已根据当前信息准备计划草稿；请在右侧检查后由 Aearn 确认。",
+    ) -> None:
         self.awaiting_context = awaiting_context
+        self.planning_intent_hint = dict(planning_intent_hint) if planning_intent_hint is not None else None
+        self.clarification_required = clarification_required
+        self.final_text = final_text
         self.thread_requests: list[RuntimeThreadRequest] = []
         self.resumed_thread_ids: list[str] = []
         self.turn_requests: list[RuntimeTurnRequest] = []
@@ -251,7 +262,26 @@ class _FakeCodexHost:
                     )
                 )
             )
-        text = "我已根据当前信息准备计划草稿；请在右侧检查后由 Aearn 确认。"
+            if self.planning_intent_hint is not None or self.clarification_required:
+                follow_up: dict[str, object] = {
+                    "schema_version": "aearn-learning-plan-tools-v1",
+                }
+                if self.planning_intent_hint is not None:
+                    follow_up["planning_intent_hint"] = self.planning_intent_hint
+                if self.clarification_required:
+                    follow_up["clarification_required"] = True
+                asyncio.run(
+                    request.tools.invoke(
+                        RuntimeToolCall(
+                            request.thread.thread_id,
+                            turn_id,
+                            f"language-resolution-{self.turn_count}",
+                            "aearn_planning_context_read",
+                            follow_up,
+                        )
+                    )
+                )
+        text = self.final_text
         events = (
             RuntimeEvent(RuntimeEventKind.TURN_STARTED, "thread-cutover", turn_id),
             RuntimeEvent(
@@ -591,6 +621,104 @@ def test_codex_missing_facts_create_server_typed_request(
     ]
 
 
+def test_codex_semantic_language_hint_persists_python_only_request(
+    tutor_persistence,
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
+    conn = tutor_persistence.connection
+    repository, conversation_id, run = _create_codex_run_missing_language(
+        conn,
+        user_id=tutor_persistence.user_id,
+        catalog_digest=tutor_persistence.catalog.digest,
+        content="我想做langchain架构的agent",
+    )
+
+    @contextmanager
+    def same_connection():  # type: ignore[no-untyped-def]
+        yield conn
+
+    host = _FakeCodexHost(
+        awaiting_context=True,
+        planning_intent_hint={
+            "schema_version": "planning-intent-hint-v2",
+            "candidate_language_ids": ["python"],
+            "confidence": "high",
+            "reason_code": "technology_ecosystem_match",
+        },
+        final_text="你想学习哪门编程语言？",
+    )
+    result = CodexTutorRunDispatcher(
+        settings=_settings(codex_runtime_home_directory=str(tmp_path / "runtime-home")),
+        host=host,
+        connection_factory=same_connection,
+        manage_autocommit=False,
+    ).dispatch(user_id=tutor_persistence.user_id, run_id=run.run_id)
+
+    assert result.terminal_outcome is TutorTerminalOutcome.COMPLETED
+    request = conn.execute(
+        "SELECT kind, question_key, presentation_json FROM tutor_interaction_requests WHERE source_turn_id = %s",
+        (run.run_id,),
+    ).fetchone()
+    assert request is not None
+    assert request["kind"] == "planning_input"
+    assert request["question_key"] == "language_id"
+    presentation = request["presentation_json"]
+    assert presentation["options"] == [
+        {"value": "python", "label": presentation["options"][0]["label"]}
+    ]
+    assert presentation["recommended"] is None
+    assert presentation["selection_scope"] == "intent_shortlist"
+    assert presentation["selection_reason_code"] == "semantic_technology_ecosystem_match"
+    assert presentation["intent_policy_version"] == "planning-language-intent-v2"
+    assert "confidence" not in str(presentation)
+    assert repository.load_snapshot(user_id=tutor_persistence.user_id, run_id=run.run_id) is not None
+
+
+def test_codex_insufficient_language_evidence_persists_targeted_clarification(
+    tutor_persistence,
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
+    conn = tutor_persistence.connection
+    _repository, _conversation_id, run = _create_codex_run_missing_language(
+        conn,
+        user_id=tutor_persistence.user_id,
+        catalog_digest=tutor_persistence.catalog.digest,
+        content="我想做一个 Agent",
+    )
+
+    @contextmanager
+    def same_connection():  # type: ignore[no-untyped-def]
+        yield conn
+
+    clarification = "你希望使用哪种实现语言，或者目标框架需要哪种运行环境？"
+    result = CodexTutorRunDispatcher(
+        settings=_settings(codex_runtime_home_directory=str(tmp_path / "runtime-home")),
+        host=_FakeCodexHost(
+            awaiting_context=True,
+            clarification_required=True,
+            final_text=clarification,
+        ),
+        connection_factory=same_connection,
+        manage_autocommit=False,
+    ).dispatch(user_id=tutor_persistence.user_id, run_id=run.run_id)
+
+    assert result.terminal_outcome is TutorTerminalOutcome.COMPLETED
+    request = conn.execute(
+        "SELECT kind, question_key, descriptor_json, presentation_json FROM tutor_interaction_requests WHERE source_turn_id = %s",
+        (run.run_id,),
+    ).fetchone()
+    assert request is not None
+    assert request["kind"] == "clarification"
+    assert request["question_key"] is None
+    assert request["descriptor_json"]["prompt"] == clarification
+    assert request["presentation_json"]["type"] == "text"
+    fact = conn.execute(
+        "SELECT value_json FROM tutor_planning_intake_facts WHERE source_run_id = %s AND field_key = 'language_id'",
+        (run.run_id,),
+    ).fetchone()
+    assert fact is None
+
+
 def test_codex_typed_response_fresh_turn_continues_with_next_server_question(
     tutor_persistence,
     tmp_path,
@@ -781,6 +909,72 @@ def test_retry_and_dispatch_claim_preserve_codex_runtime(tutor_persistence) -> N
     )
     assert retried.run.runtime_kind == "codex_sidecar_v1"
     assert retried.run.run_id != run.run_id
+
+
+def _create_codex_run_missing_language(
+    conn,  # type: ignore[no-untyped-def]
+    *,
+    user_id: str,
+    catalog_digest: str,
+    content: str,
+) -> tuple[PostgresTutorRepository, str, TutorRunSnapshot]:
+    repository = PostgresTutorRepository(conn)
+    conversation_id = repository.create_conversation(user_id=user_id)
+    PostgresLearningTrackRepository(conn).bind_conversation_scope(
+        user_id=user_id,
+        conversation_id=conversation_id,
+        scope=LearningScope(scope_kind=LearningScopeKind.PLAN_DRAFTING),
+    )
+    PostgresLearningPlanSessionRepository(conn).create_session(
+        user_id=user_id,
+        conversation_id=conversation_id,
+        preferred_language_id=None,
+    )
+    run = repository.create_run(
+        user_id=user_id,
+        conversation_id=conversation_id,
+        catalog_digest=catalog_digest,
+        policy=TutorPolicySnapshot(
+            deadline=datetime.now(UTC) + timedelta(minutes=5),
+            max_iterations=3,
+            max_model_calls=2,
+            max_capability_calls=3,
+            max_effects=0,
+            context_token_budget=512,
+        ),
+        origin="interactive",
+        interaction_protocol_version="thread_turn_v2",
+        runtime_kind="codex_sidecar_v1",
+    )
+    accepted = repository.accept_input(
+        user_id=user_id,
+        run_id=run.run_id,
+        idempotency_key=f"codex-language-source-{uuid4().hex}",
+        content=content,
+        received_at=datetime.now(UTC),
+    )
+    PostgresLearningTrackRepository(conn).snapshot_run_scope(
+        user_id=user_id,
+        run_id=run.run_id,
+        explicit_scope=LearningScope(scope_kind=LearningScopeKind.PLAN_DRAFTING),
+    )
+    PostgresPlanningFactRepository(conn).record_input(
+        user_id=user_id,
+        run_id=run.run_id,
+        conversation_id=conversation_id,
+        message_id=accepted.message_id,
+        input_revision=accepted.input_revision,
+        content=content,
+        explicit_facts={
+            "goal_text": "构建可靠的 Agent",
+            "target_level": "beginner",
+            "weekly_minutes": 240,
+            "experience_level": "new",
+            "teaching_preferences": [],
+            "pace_constraints": "每周四次练习",
+        },
+    )
+    return repository, conversation_id, run
 
 
 @dataclass

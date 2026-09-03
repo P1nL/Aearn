@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import unicodedata
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
@@ -47,6 +48,16 @@ TutorPlanningQuestionKey = Literal[
 ]
 TUTOR_PLANNING_QUESTION_KEYS: frozenset[str] = frozenset(
     get_args(TutorPlanningQuestionKey)
+)
+TutorPlanningIntentConfidence = Literal["high", "medium"]
+TutorPlanningIntentReasonCode = Literal[
+    "technology_ecosystem_match",
+    "goal_domain_match",
+    "runtime_compatibility_match",
+    "mixed_semantic_match",
+]
+TUTOR_PLANNING_INTENT_REASON_CODES: frozenset[str] = frozenset(
+    get_args(TutorPlanningIntentReasonCode)
 )
 
 
@@ -961,12 +972,46 @@ class TutorEffectResult:
 
 
 @dataclass(frozen=True)
+class TutorPlanningIntentHint:
+    schema_version: Literal["planning-intent-hint-v2"]
+    candidate_language_ids: tuple[str, ...]
+    confidence: TutorPlanningIntentConfidence
+    reason_code: TutorPlanningIntentReasonCode
+
+    def __post_init__(self) -> None:
+        if self.schema_version != "planning-intent-hint-v2":
+            raise ValueError("planning intent hint schema is unsupported")
+        candidates = tuple(_safe_identifier(item) for item in self.candidate_language_ids)
+        if not 1 <= len(candidates) <= 3 or len(candidates) != len(set(candidates)):
+            raise ValueError("planning intent hint candidates must contain 1..3 unique values")
+        if any(
+            re.fullmatch(r"[a-z][a-z0-9_]{0,63}", candidate) is None
+            for candidate in candidates
+        ):
+            raise ValueError("planning intent hint candidates must be canonical lowercase values")
+        object.__setattr__(self, "candidate_language_ids", candidates)
+        if self.confidence not in {"high", "medium"}:
+            raise ValueError("planning intent hint confidence is unsupported")
+        if self.reason_code not in TUTOR_PLANNING_INTENT_REASON_CODES:
+            raise ValueError("planning intent hint reason code is unsupported")
+
+    def as_mapping(self) -> dict[str, object]:
+        return {
+            "schema_version": self.schema_version,
+            "candidate_language_ids": list(self.candidate_language_ids),
+            "confidence": self.confidence,
+            "reason_code": self.reason_code,
+        }
+
+
+@dataclass(frozen=True)
 class TutorDecision:
     public_message: str | None = None
     public_thinking_text: str = ""
     public_thinking_steps: tuple[str, ...] = ()
     conversation_title: str | None = None
     question_key: TutorPlanningQuestionKey | None = None
+    planning_intent_hint: TutorPlanningIntentHint | None = None
     skill_references: tuple[TutorSkillReference, ...] = ()
     capability_requests: tuple[TutorCapabilityRequest, ...] = ()
     effect_proposals: tuple[TutorEffectProposal, ...] = ()
@@ -994,8 +1039,12 @@ class TutorDecision:
                 raise ValueError("planning_input continuation requires question_key")
             if self.question_key not in TUTOR_PLANNING_QUESTION_KEYS:
                 raise ValueError("planning_input continuation question_key is not allowlisted")
+            if self.planning_intent_hint is not None and self.question_key != "language_id":
+                raise ValueError("planning intent hint is reserved for language_id")
         elif self.question_key is not None:
             raise ValueError("question_key is reserved for planning_input continuation")
+        elif self.planning_intent_hint is not None:
+            raise ValueError("planning intent hint is reserved for planning_input continuation")
         object.__setattr__(self, "skill_references", tuple(self.skill_references[:4]))
         object.__setattr__(self, "capability_requests", tuple(self.capability_requests[:4]))
         object.__setattr__(self, "effect_proposals", tuple(self.effect_proposals[:4]))

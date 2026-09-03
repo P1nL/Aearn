@@ -33,7 +33,10 @@ from .contracts import (
 
 
 class LearningPlanToolServicePort(Protocol):
-    def read_context(self) -> LearningPlanAgentToolResult: ...
+    def read_context(
+        self,
+        tool_input: PlanningContextReadInput | None = None,
+    ) -> LearningPlanAgentToolResult: ...
     def draft(self, tool_input: LearningPlanDraftToolInput) -> LearningPlanAgentToolResult: ...
 
 
@@ -79,6 +82,9 @@ class LearningPlanRuntimeToolRegistry(RuntimeToolRegistry):
         self._repairs = 0
         self._conflicts = 0
         self._planning_context_result: LearningPlanAgentToolResult | None = None
+        self._planning_intent_hint: dict[str, object] | None = None
+        self._planning_clarification_required = False
+        self._model_language_candidates_read = False
         self.results: list[LearningPlanAgentToolResult] = []
 
     @classmethod
@@ -116,10 +122,9 @@ class LearningPlanRuntimeToolRegistry(RuntimeToolRegistry):
             RuntimeToolDefinition(
                 name=PLANNING_CONTEXT_TOOL_NAME,
                 description=(
-                    "Read bounded server-authoritative planning facts, missing facts, draft summary, "
-                    "and revision constraints. When awaiting_user, next_missing_fact defines the field "
-                    "meaning and exact_question; use that question verbatim without invented examples "
-                    "or options. Do not supply user, session, run, or database identifiers."
+                    "Read bounded server planning facts, next_missing_fact, and candidates. If language_id is missing, call again "
+                    "with a v2 planning_intent_hint for 1..3 current language ids, or clarification_required=true. "
+                    "Semantic candidates require learner confirmation; never send labels, course ids, options, or scope ids."
                 ),
                 input_schema=PlanningContextReadInput.model_json_schema(),
             ),
@@ -136,6 +141,14 @@ class LearningPlanRuntimeToolRegistry(RuntimeToolRegistry):
     @property
     def planning_context_result(self) -> LearningPlanAgentToolResult | None:
         return self._planning_context_result
+
+    @property
+    def planning_intent_hint(self) -> Mapping[str, object] | None:
+        return self._planning_intent_hint
+
+    @property
+    def planning_clarification_required(self) -> bool:
+        return self._planning_clarification_required
 
     def prime_context(self) -> LearningPlanAgentToolResult:
         """Read authoritative planning state before the model turn for deterministic elicitation."""
@@ -180,20 +193,49 @@ class LearningPlanRuntimeToolRegistry(RuntimeToolRegistry):
 
         if call.tool_name == PLANNING_CONTEXT_TOOL_NAME:
             try:
-                PlanningContextReadInput.model_validate(dict(call.arguments))
+                context_input = PlanningContextReadInput.model_validate(dict(call.arguments))
             except ValidationError as exc:
                 return self._record_repair(_validation_result(exc))
+            has_language_resolution = (
+                context_input.planning_intent_hint is not None
+                or context_input.clarification_required
+            )
+            if has_language_resolution and not self._model_language_candidates_read:
+                return self._record_repair(
+                    _repairable_issue(
+                        "planning_intent_hint",
+                        "language_candidates_not_read",
+                        "Read the current language_candidates first, then call this tool again with one resolution.",
+                    )
+                )
             try:
-                result = self._service.read_context()
+                result = (
+                    self._service.read_context(context_input)
+                    if has_language_resolution
+                    else self._service.read_context()
+                )
             except Exception:
                 result = _fatal("learning_plan_tool_failed")
+            self._planning_context_result = result
+            if result.status is LearningPlanToolStatus.AWAITING_USER:
+                if has_language_resolution:
+                    if context_input.planning_intent_hint is not None:
+                        self._planning_intent_hint = (
+                            context_input.planning_intent_hint.model_dump(mode="json")
+                        )
+                        self._planning_clarification_required = False
+                    else:
+                        self._planning_intent_hint = None
+                        self._planning_clarification_required = True
+                elif _awaiting_language_candidates(result):
+                    self._model_language_candidates_read = True
         elif call.tool_name == LEARNING_PLAN_DRAFT_TOOL_NAME:
             try:
-                tool_input = LearningPlanDraftToolInput.model_validate(dict(call.arguments))
+                draft_input = LearningPlanDraftToolInput.model_validate(dict(call.arguments))
             except ValidationError as exc:
                 return self._record_repair(_validation_result(exc))
             try:
-                result = self._service.draft(tool_input)
+                result = self._service.draft(draft_input)
             except Exception:
                 result = _fatal("learning_plan_tool_failed")
         else:
@@ -234,6 +276,17 @@ class LearningPlanRuntimeToolRegistry(RuntimeToolRegistry):
             LearningPlanToolStatus.CONFLICT,
         }
         return RuntimeToolResult(success=success, content=content, safe_code=result.code)
+
+
+def _awaiting_language_candidates(result: LearningPlanAgentToolResult) -> bool:
+    missing = result.data.get("missing_facts")
+    candidates = result.data.get("language_candidates")
+    return (
+        isinstance(missing, list | tuple)
+        and bool(missing)
+        and str(missing[0]) == "language_id"
+        and isinstance(candidates, list | tuple)
+    )
 
 
 def _validation_result(exc: ValidationError) -> LearningPlanAgentToolResult:

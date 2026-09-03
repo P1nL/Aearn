@@ -835,11 +835,34 @@ class InteractionPersistenceMixin(PersistenceMixin):
             }
             if kind is TutorInteractionRequestKind.PLANNING_INPUT:
                 question_key = str(decision.question_key or "")
+                model_hint = (
+                    decision.planning_intent_hint.as_mapping()
+                    if decision.planning_intent_hint is not None
+                    else None
+                )
                 language_intent = PlanningIntentResolver(self._conn).resolve_for_run(
                     user_id=user_id,
                     run_id=result.run_id,
                     enabled=intent_resolution_enabled,
+                    model_hint=model_hint,
+                    expected_input_revision=result.input_revision,
                 )
+                if question_key == "language_id" and language_intent.resolution in {
+                    "auto_confirm",
+                    "clarification_required",
+                    "unsupported",
+                }:
+                    raise TutorInteractionRequestConflict(
+                        "language planning request requires a current deterministic or semantic shortlist"
+                    )
+                if (
+                    question_key == "language_id"
+                    and decision.planning_intent_hint is not None
+                    and not language_intent.semantic_language_ids
+                ):
+                    raise TutorInteractionRequestConflict(
+                        "language planning request semantic hint is stale or invalid"
+                    )
                 presentation = build_planning_question_presentation(
                     self._conn,
                     question_key=question_key,

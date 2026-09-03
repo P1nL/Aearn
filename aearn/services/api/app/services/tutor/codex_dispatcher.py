@@ -15,6 +15,9 @@ from app.agents.harness.contracts import (
     TutorCheckpointReason,
     TutorContinuationKind,
     TutorDecision,
+    TutorPlanningIntentConfidence,
+    TutorPlanningIntentHint,
+    TutorPlanningIntentReasonCode,
     TutorPlanningQuestionKey,
     TutorRunResult,
     TutorRunSnapshot,
@@ -45,6 +48,7 @@ from app.core.config import Settings
 from app.db.connection import connect
 from app.services.learning.contracts import LearningScopeKind
 from app.services.learning.plan_tools import LearningPlanToolStatus
+from app.services.learning.planning_intent import PlanningIntentResolver
 
 from app.services.learning.planning_facts import PlanningFactField, PostgresPlanningFactRepository
 from app.services.learning.planning_questions import planning_question_prompt
@@ -64,7 +68,7 @@ logger = logging.getLogger(__name__)
 _BASE_INSTRUCTIONS = """你是 Aearn 的计划草拟 Runtime。只处理当前服务端绑定的 plan_drafting Turn。
 每个 Turn 必须先调用 aearn_planning_context_read 获取服务端权威事实；事实完整时可调用 aearn_learning_plan_draft 提交 typed draft。
 禁止调用 Codex 内置 request_user_input、MCP elicitation 或任何客户端交互请求，也禁止自行定义问题、选项或一次批量询问多个字段。
-工具返回 awaiting_user 时，读取 data.next_missing_fact。final_answer 可先用一句简短中文确认已知事实，然后必须逐字使用 exact_question 作为唯一问题并结束当前 Turn；不得改写字段含义、补充括号示例、添加选项或提出第二个问题。language_id 始终表示要学习的编程语言或课程，不表示教学内容使用的自然语言。Aearn 会根据服务端 catalog 创建持久化 generated UI。学习者回答后会进入同一 Codex thread 的新 Turn，届时重新调用 aearn_planning_context_read 并继续第一个缺失字段。
+工具返回 awaiting_user 时，读取 data.next_missing_fact。若缺失字段不是 language_id，final_answer 可先用一句简短中文确认已知事实，然后必须逐字使用 exact_question 作为唯一问题并结束当前 Turn；不得改写字段含义、补充括号示例、添加选项或提出第二个问题。若缺失 language_id，只能检查 data.language_candidates：有高或中置信语义匹配时，再调用一次 aearn_planning_context_read 并提交 planning-intent-hint-v2，只能列出 1..3 个当前 canonical language_id，然后逐字使用 exact_question；证据不足或候选接近时，再调用一次该工具并设置 clarification_required=true，final_answer 只问一个与实现语言、框架变体或运行环境相关的定向问题。不得请求完整目录、提供标签/课程 UUID/自定义选项或默认推荐，语义候选永远需要学习者确认。language_id 始终表示要学习的编程语言或课程，不表示教学内容使用的自然语言。Aearn 会根据服务端 catalog 创建持久化 generated UI。学习者回答后会进入同一 Codex thread 的新 Turn，届时重新调用 aearn_planning_context_read 并继续第一个缺失字段。
 你只能草拟，不能确认计划、创建 LearningTrack、选择 Runtime、修改用户或数据库范围，也不能执行命令、访问网络或输出内部控制面。
 工具返回 repairable_invalid 或 conflict 时按安全 issue 修复。
 最终回答只面向学习者，不能包含 reasoning、工具参数、provider 诊断、路径、凭据或内部 ID。"""
@@ -352,11 +356,34 @@ class CodexTutorRunDispatcher:
                             and event.phase in {None, "final_answer"}
                         ),
                     )
+                continuation_kind = TutorContinuationKind.PLANNING_INPUT
+                planning_intent_hint = None
                 prompt = planning_question_prompt(awaiting_field)
-                PostgresPlanningFactRepository(conn).record_question_asked(
-                    run=current,
-                    field=awaiting_field,
-                )
+                if (
+                    awaiting_field is PlanningFactField.LANGUAGE_ID
+                    and self._settings.tutor_planning_intent_enabled
+                ):
+                    planning_intent_hint = _planning_intent_hint(registry)
+                    deterministic = PlanningIntentResolver(conn).resolve_for_run(
+                        user_id=user_id,
+                        run_id=run_id,
+                        expected_input_revision=current.input_revision,
+                    )
+                    if (
+                        planning_intent_hint is None
+                        and deterministic.resolution not in {"shortlist", "conflict"}
+                    ):
+                        continuation_kind = TutorContinuationKind.CLARIFICATION
+                        prompt = (
+                            _final_answer_text(result)
+                            if registry.planning_clarification_required
+                            else "你希望使用哪种实现语言，或者具体是哪种框架变体与运行环境？"
+                        )
+                if continuation_kind is TutorContinuationKind.PLANNING_INPUT:
+                    PostgresPlanningFactRepository(conn).record_question_asked(
+                        run=current,
+                        field=awaiting_field,
+                    )
                 typed_result = TutorRunResult(
                     run_id=run_id,
                     status=TutorRunStatus.COMPLETED,
@@ -374,9 +401,14 @@ class CodexTutorRunDispatcher:
                     lease=lease,
                     decision=TutorDecision(
                         public_message=prompt,
-                        question_key=cast(TutorPlanningQuestionKey, awaiting_field.value),
+                        question_key=(
+                            cast(TutorPlanningQuestionKey, awaiting_field.value)
+                            if continuation_kind is TutorContinuationKind.PLANNING_INPUT
+                            else None
+                        ),
+                        planning_intent_hint=planning_intent_hint,
                         checkpoint_reason=TutorCheckpointReason.CAPABILITY_RESULT,
-                        continuation_kind=TutorContinuationKind.PLANNING_INPUT,
+                        continuation_kind=continuation_kind,
                     ),
                     result=typed_result,
                     created_at=occurred_at,
@@ -517,6 +549,37 @@ def _terminalize_recovered_binding(
         fence=fence,
     ).project_result(result, occurred_at=datetime.now(UTC))
     return _run_result(repository.read_run_state(user_id=user_id, run_id=run_id))
+
+
+def _planning_intent_hint(
+    registry: LearningPlanRuntimeToolRegistry,
+) -> TutorPlanningIntentHint | None:
+    payload = registry.planning_intent_hint
+    if payload is None:
+        return None
+    raw_candidates = payload.get("candidate_language_ids")
+    if not isinstance(raw_candidates, list | tuple):
+        return None
+    try:
+        return TutorPlanningIntentHint(
+            schema_version="planning-intent-hint-v2",
+            candidate_language_ids=tuple(str(item) for item in raw_candidates),
+            confidence=cast(TutorPlanningIntentConfidence, str(payload.get("confidence") or "")),
+            reason_code=cast(TutorPlanningIntentReasonCode, str(payload.get("reason_code") or "")),
+        )
+    except ValueError:
+        return None
+
+
+def _final_answer_text(result: RuntimeTurnResult) -> str:
+    for event in reversed(result.events):
+        if (
+            event.kind is RuntimeEventKind.MESSAGE_COMPLETED
+            and event.phase in {None, "final_answer"}
+            and event.visible_text
+        ):
+            return event.visible_text
+    return "你希望使用哪种实现语言，或者具体是哪种框架变体与运行环境？"
 
 
 def _awaiting_planning_field(

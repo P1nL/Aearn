@@ -71,14 +71,23 @@ def build_planning_question_model_descriptor(
 ) -> dict[str, object]:
     """Describe one missing fact without giving the model authority over its question."""
     field = _planning_question_field(question_key)
+    wording_policy = (
+        "可先简短确认已知事实，然后必须逐字使用 exact_question 作为唯一问题；"
+        "不得改写字段含义、补充括号示例、添加选项或提出第二个问题。"
+    )
+    if field is PlanningFactField.LANGUAGE_ID:
+        wording_policy = (
+            "只能从 server language_candidates 中选择 1..3 个 canonical language_id。"
+            "有高或中置信语义候选时，必须逐字使用 exact_question 作为唯一问题，并提交 "
+            "planning-intent-hint-v2；不得提供标签、课程 UUID、选项或默认推荐。"
+            "证据不足时改用 clarification，只问一个与实现语言、框架变体或运行环境有关的定向问题；"
+            "不得扩大为完整课程目录。"
+        )
     return {
         "field_key": field.value,
         "meaning": _PLANNING_FACT_MEANINGS[field],
         "exact_question": _PLANNING_QUESTION_PROMPTS[field],
-        "wording_policy": (
-            "可先简短确认已知事实，然后必须逐字使用 exact_question 作为唯一问题；"
-            "不得改写字段含义、补充括号示例、添加选项或提出第二个问题。"
-        ),
+        "wording_policy": wording_policy,
         "response_authority": "aearn_typed_request",
     }
 
@@ -242,7 +251,7 @@ def _language_course_rows(
             """,
             (list(candidate_ids),),
         ).fetchall()
-    else:
+    elif language_intent is None:
         rows = conn.execute(
             """
             SELECT id, language, title, level
@@ -251,6 +260,8 @@ def _language_course_rows(
             ORDER BY language, level, title, id
             """
         ).fetchall()
+    else:
+        rows = []
     return [dict(row) for row in rows]
 
 
