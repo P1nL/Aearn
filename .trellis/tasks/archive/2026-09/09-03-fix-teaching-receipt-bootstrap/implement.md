@@ -46,3 +46,10 @@ uv run python -m pytest -q `
 - `0d8d9d5` — 将旧 checkout / newer schema、disposable DB、显式 local-volume reset 边界写入 database code-spec。
 - 同一只读 trellis-check 的 2 high / 2 medium / 1 low findings 全部修复并复核；最终 re-check 无剩余 blocker。
 - 正式 checkout 已 fast-forward 到 `0d8d9d5`；运行中的 API/Desktop/worker/beat不需要重启，因为提交只涉及测试和 spec。
+
+
+## 归档后最终运行复验
+
+- 将 test/spec/archive commits fast-forward 到正式 checkout 时，Uvicorn `--reload` 检测到 test 文件变化；现有 Desktop SSE 长连接使旧 server 停在 graceful shutdown，短暂显示 API not ready。这不是 bootstrap/schema 回归。
+- 使用项目自带 `pnpm --dir .\aearn dev:restart`：只停止 state file 中 command-verified 的五个 Aearn 进程，bootstrap 再次成功，然后重新启动全部组件。
+- 最终状态：PostgreSQL/Redis healthy，API/Desktop ready；API PID 30428、main worker 34312、Codex worker 38580、beat 38384、Desktop 37624 均 alive 且 command verified。当前 stack 保持运行。

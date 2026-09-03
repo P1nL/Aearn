@@ -38,3 +38,11 @@
 - No production image/Tauri installer build, sign, or publish.
 - No push, deploy, production migration, or production data mutation.
 - No cleanup or commit of pre-existing unrelated dirty files.
+
+
+## Final reload/restart note
+
+- A formal-checkout run of the new three-test matrix reached 2 passed / 1 blocked before test setup because the user's pre-existing dirty published Skill bytes do not match their immutable manifest hash. This is separate from database bootstrap; the same exact receipt-v3 regression passed 3/3 in the clean disposable database. No Skill files or manifests were rewritten.
+- Fast-forwarding the test commit caused the running `uvicorn --reload` process to notice the changed test file. An existing Desktop SSE connection held graceful shutdown open, so one status probe temporarily reported API not ready while the tracked parent process remained alive.
+- Final recovery command: `pnpm --dir .\aearn dev:restart`. It stopped only the five command-verified tracked Aearn process trees, reran bootstrap successfully, and started fresh processes.
+- Final September 3, 2026 status: PostgreSQL/Redis healthy; API/Desktop ready; all five tracked process entries alive and command verified. No subsequent repository change touches the watched API directory.
