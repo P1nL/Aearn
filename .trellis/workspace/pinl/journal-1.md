@@ -41,3 +41,41 @@ Restored the published tutor.lesson-teaching 1.2.0 resources to manifest-authori
 ### Next Steps
 
 - No automatic learner-input retry was run; the user may retry in the Desktop when ready.
+
+
+## Session 2: Semantic planning language resolution
+<!-- trellis-session: v=2 fp=1e3a8670a74d82ab -->
+
+**Date**: 2026-09-03
+**Task**: Semantic planning language resolution
+**Branch**: `codex/semantic-planning-language-resolution`
+
+### Summary
+
+Implemented bounded semantic language resolution for learning-plan drafting while preserving server authority, explicit-language auto-confirm, durable request replay, and feature-off rollback.
+
+### Main Changes
+
+- Added planning-intent-hint-v2 across Harness, Codex sidecar, decision gate, resolver, and persistence.
+- Added immutable tutor.learning-plan-draft 1.0.2 and synchronized API/frontend/Trellis source-of-truth docs.
+- Preserved the existing eight-option pending request; v2 applies only after cancel/recreate.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `946e85c` | feat(tutor): add semantic planning language resolution |
+
+### Testing
+
+- [OK] Focused PostgreSQL regressions: 24 passed.
+- [OK] Isolated full API suite: 891 passed, 2 skipped; Ruff, Mypy, uv lock, Skill Catalog, Trellis validate, and git diff check passed.
+- [OK] Desktop: 24 files and 161 tests passed; desktop:check passed; dev stack restored healthy.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- Use the existing Cancel plan flow and create a new planning session to exercise v2 against the configured provider; no real-provider smoke was run in this task.
