@@ -197,6 +197,10 @@ def main() -> int:
                     calls=(
                         ("aearn_planning_context_read", {}),
                         (
+                            "aearn_planning_context_read",
+                            {"direction_action": "continue_mainline"},
+                        ),
+                        (
                             "aearn_learning_plan_draft",
                             {
                                 "modules": [
@@ -230,6 +234,11 @@ def main() -> int:
                     thread_id=thread_id,
                     turn_id=turn_id,
                     calls=(
+                        ("aearn_planning_context_read", {}),
+                        (
+                            "aearn_planning_context_read",
+                            {"direction_action": "continue_mainline"},
+                        ),
                         ("aearn_learning_plan_draft", arguments),
                         ("aearn_learning_plan_draft", arguments),
                     ),
@@ -475,6 +484,14 @@ def main() -> int:
                     "text": f"safe final {turn_count}",
                     "phase": "final_answer",
                 }
+            elif mode == "turn_profile":
+                effort = str((request.get("params") or {}).get("effort") or "unset")
+                message = {
+                    "id": f"message_{turn_count}",
+                    "type": "agentMessage",
+                    "text": f"effort:{effort}",
+                    "phase": "final_answer",
+                }
             elif mode == "compaction":
                 compaction = {"id": "compact_1", "type": "contextCompaction"}
                 send({"method": "item/started", "params": {"threadId": thread_id, "turnId": turn_id, "item": compaction}})
@@ -490,7 +507,7 @@ def main() -> int:
                 send({"method": "item/agentMessage/delta", "params": {"threadId": thread_id, "turnId": turn_id, "itemId": "message_1", "delta": "只询问"}})
                 send({"method": "item/agentMessage/delta", "params": {"threadId": thread_id, "turnId": turn_id, "itemId": "message_1", "delta": "学习目标。"}})
             else:
-                reasoning = {"id": "reasoning_1", "type": "reasoning", "text": "raw reasoning must stay hidden"}
+                reasoning = {"id": "reasoning_1", "type": "reasoning", "text": "raw reasoning for the owner Think projection"}
                 send({"method": "item/completed", "params": {"threadId": thread_id, "turnId": turn_id, "item": reasoning}})
                 message = {"id": "message_1", "type": "agentMessage", "text": "safe final", "phase": "final_answer"}
             commentary = {"id": "commentary_1", "type": "agentMessage", "text": "private commentary", "phase": "commentary"}

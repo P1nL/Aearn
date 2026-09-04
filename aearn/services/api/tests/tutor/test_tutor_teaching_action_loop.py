@@ -34,6 +34,7 @@ class _TeachingProvider:
         interaction_intent: str | None = None,
         artifact_handle: str | None = None,
         include_interaction: bool = True,
+        expected_current_input: str | None = None,
         before_teaching_step=None,  # type: ignore[no-untyped-def]
     ) -> None:
         self.calls = 0
@@ -49,17 +50,21 @@ class _TeachingProvider:
         self.interaction_intent = interaction_intent
         self.artifact_handle = artifact_handle
         self.include_interaction = include_interaction
+        self.expected_current_input = expected_current_input
         self.before_teaching_step = before_teaching_step
 
     def decide(self, *, run, context, thinking_sink: TutorPublicThinkingSink | None = None):  # type: ignore[no-untyped-def]
         self.calls += 1
+        if self.expected_current_input is not None:
+            assert context.current_input is not None
+            assert context.current_input.content == self.expected_current_input
         if self.unavailable:
             return TutorProviderResult.model_unavailable(safe_code="MODEL_UNAVAILABLE")
         if self.calls == 1:
             assert any(item["section"] == "teaching_session" for item in context.as_prompt_context())
             return TutorProviderResult(
                 decision=TutorDecision(
-                    skill_references=(TutorSkillReference("tutor.lesson-teaching", "1.2.0"),),
+                    skill_references=(TutorSkillReference("tutor.lesson-teaching", "1.2.1"),),
                 )
             )
         if self.before_teaching_step is not None:
@@ -358,6 +363,133 @@ def test_provider_unavailable_preserves_checkpoint_and_does_not_auto_admit() -> 
         ).fetchone()["count"] == 1
         state = PostgresTutorRepository(conn).read_run_state(user_id=str(scope["user_id"]), run_id=run_id)
         assert state.terminal_outcome is TutorTerminalOutcome.MODEL_UNAVAILABLE
+
+
+@pytest.mark.parametrize(
+    (
+        "latest_input",
+        "public_message",
+        "action",
+        "teaching_moves",
+        "response_mode",
+        "question_count",
+        "forbidden_fragment",
+    ),
+    [
+        (
+            "先问一个临时问题：DNS 是什么？然后继续变量练习。",
+            "DNS 把域名解析到网络地址。现在回到变量：用一个变量保存解析结果的字符串。",
+            "answer_question",
+            ("targeted_explanation", "micro_transfer"),
+            "none",
+            0,
+            "是否切换",
+        ),
+        (
+            "我也在考虑去学烘焙。",
+            "这是临时聊聊职业兴趣，还是你想停止变量学习并切换当前方向？",
+            "wait_for_input",
+            ("misconception_contrast", "prediction"),
+            "composer",
+            1,
+            "继续解释变量",
+        ),
+        (
+            "能用变量记录厨师作品的数量吗？",
+            "可以，这正是变量的同主题例子：用作品数量作为当前值继续练习赋值。",
+            "explain_concept",
+            ("targeted_explanation", "worked_example"),
+            "none",
+            0,
+            "是否切换",
+        ),
+        (
+            "停止变量方向，改学网络编程。",
+            "已停止重复变量步骤。请从当前路线选择网络编程对应目标后告诉我。",
+            "wait_for_input",
+            ("misconception_contrast", "micro_transfer"),
+            "composer",
+            0,
+            "是否确认切换",
+        ),
+    ],
+)
+def test_learner_direction_drift_preserves_current_input_and_teaching_authority(
+    latest_input: str,
+    public_message: str,
+    action: str,
+    teaching_moves: tuple[str, ...],
+    response_mode: str,
+    question_count: int,
+    forbidden_fragment: str,
+) -> None:
+    with connection() as conn:
+        scope = create_teaching_scope(conn)
+        opened = TeachingSessionService(conn).open(
+            user_id=str(scope["user_id"]),
+            track_id=str(scope["track_id"]),
+            knowledge_key="python.variables",
+            conversation_id=str(scope["conversation_id"]),
+            expected_track_version=1,
+            expected_progress_version=1,
+            expected_assignment_version=1,
+            mode=TeachingSessionMode.FREE_READING,
+            idempotency_key=f"direction-drift-open-{abs(hash(latest_input))}",
+        )
+        assert opened["pending_run"] is None
+        accepted = TutorPublicService(
+            conn,
+            settings=Settings(llm_type="disabled"),
+        ).accept_conversation_input(
+            user_id=str(scope["user_id"]),
+            conversation_id=str(scope["conversation_id"]),
+            content=latest_input,
+            idempotency_key=f"direction-drift-input-{abs(hash(latest_input))}",
+            learning_scope=LearningScope(
+                scope_kind=LearningScopeKind.LEARNING_TRACK,
+                learning_track_id=str(scope["track_id"]),
+                task_kind=LearningTaskKind.LESSON_TEACHING,
+                knowledge_key="python.variables",
+            ),
+        )
+        run_id = str(accepted["run"]["run_id"])
+
+    provider = _TeachingProvider(
+        free_reading=True,
+        action_override=action,
+        public_message_override=public_message,
+        teaching_moves=teaching_moves,
+        learner_response_mode=response_mode,
+        expected_current_input=latest_input,
+    )
+    result = TutorInteractiveRunDispatcher(
+        settings=Settings(llm_type="disabled", tutor_thread_turn_v2_enabled=True),
+        provider_factory=lambda settings: provider,
+    ).dispatch(user_id=str(scope["user_id"]), run_id=run_id)
+
+    assert result.terminal_outcome is TutorTerminalOutcome.COMPLETED
+    assert public_message.count("？") == question_count
+    assert forbidden_fragment not in public_message
+    with connection() as conn:
+        current = TeachingSessionService(conn).current(
+            user_id=str(scope["user_id"]),
+            track_id=str(scope["track_id"]),
+            knowledge_key="python.variables",
+        )
+        assert current["mode"] == "free_reading"
+        receipt = conn.execute(
+            "SELECT objective_id,focus_id FROM tutor_teaching_action_receipts WHERE run_id=%s",
+            (run_id,),
+        ).fetchone()
+        assert receipt == {
+            "objective_id": "knowledge:python.variables",
+            "focus_id": "knowledge:python.variables",
+        }
+        persisted = conn.execute(
+            "SELECT content FROM tutor_messages WHERE conversation_id=%s AND role='tutor' ORDER BY created_at DESC,id DESC LIMIT 1",
+            (scope["conversation_id"],),
+        ).fetchone()
+        assert persisted == {"content": public_message}
 
 
 def test_free_reading_question_is_reactive_and_does_not_switch_mode() -> None:

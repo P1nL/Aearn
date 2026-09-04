@@ -74,9 +74,11 @@ def test_published_catalog_is_exact_versioned_immutable_and_deterministic() -> N
         "tutor.learning-plan-draft@1.0.0",
         "tutor.learning-plan-draft@1.0.1",
         "tutor.learning-plan-draft@1.0.2",
+        "tutor.learning-plan-draft@1.0.3",
         "tutor.lesson-teaching@1.0.0",
         "tutor.lesson-teaching@1.1.0",
         "tutor.lesson-teaching@1.2.0",
+        "tutor.lesson-teaching@1.2.1",
         "tutor.registry-grounding@1.0.0",
         "tutor.runner-execution@1.0.0",
     )
@@ -94,38 +96,58 @@ def test_published_catalog_is_exact_versioned_immutable_and_deterministic() -> N
         first.skills += ()  # type: ignore[misc]
 
 
-def test_lesson_teaching_history_is_immutable_and_v12_publishes_the_v3_contract() -> None:
+def test_lesson_teaching_history_is_immutable_and_v121_publishes_mainline_recovery() -> None:
     catalog = compile_published_skill_catalog()
     legacy = catalog.resolve_skill("tutor.lesson-teaching", "1.0.0")
     v11 = catalog.resolve_skill("tutor.lesson-teaching", "1.1.0")
-    current = catalog.resolve_skill("tutor.lesson-teaching", "1.2.0")
+    v12 = catalog.resolve_skill("tutor.lesson-teaching", "1.2.0")
+    current = catalog.resolve_skill("tutor.lesson-teaching", "1.2.1")
 
-    assert legacy is not None and v11 is not None and current is not None
+    assert legacy is not None and v11 is not None and v12 is not None and current is not None
     assert legacy.manifest.content_hash_for("instructions.md") == "528b3537a6cc0c38f95260a29bcabcce2fcda7ebbd990c589365e53dcc1e9f80"
     assert legacy.manifest.content_hash_for("evals.json") == "48d919600d7c5e10858692804b89880075fa90e163b3cf509382eb6dc32e6ada"
     assert legacy.manifest.output_contract == "tutor.teaching-step-decision.v1"
     assert v11.manifest.output_contract == "tutor.teaching-step-decision.v2"
     assert v11.manifest.content_hash_for("instructions.md") == "93a6ddb6c8ab7b925d0fcf9a44ec1251c233b4c2a64fd4f752684b0dafbc409d"
     assert v11.manifest.content_hash_for("evals.json") == "8b8de505de9c39f4b66ba5968f637ca5f6ed22b0900c7ab40150747ea1a35b79"
+    assert v12.manifest.content_hash_for("instructions.md") == "30e45196fc90916f19baad0beb67fa548a4766cd7e8241eb455817cb61a66a5d"
+    assert v12.manifest.content_hash_for("evals.json") == "7f0b5613cb0ba34d8274907fa3464c61da4dcd176ee9c0362c5ae19591636862"
     assert current.manifest.input_contract == "tutor.teaching-session-input.v2"
     assert current.manifest.output_contract == "tutor.teaching-step-decision.v3"
-    assert current.manifest.content_hash_for("instructions.md") == "30e45196fc90916f19baad0beb67fa548a4766cd7e8241eb455817cb61a66a5d"
-    assert current.manifest.content_hash_for("evals.json") == "7f0b5613cb0ba34d8274907fa3464c61da4dcd176ee9c0362c5ae19591636862"
+    assert current.manifest.content_hash_for("instructions.md") == "d6af28de9f31657508fdd72c19142e13cdfbdbab38f6bec30e9564d121a5f7e9"
+    assert current.manifest.content_hash_for("evals.json") == "5b65408ad7642508ba4c89b1a33f29fc4e950b8cf2356d91cb9588d1fa623171"
     assert "recent_teaching_units" in current.instruction
     assert "artifact_candidates" in current.instruction
     assert "composer / text_answer / null" in current.instruction
     assert "2..4 unique teaching moves" in current.instruction
+    assert "answer_and_refocus" in current.instruction
+    assert "clarify_direction" in current.instruction
+    assert "confirmed_switch" in current.instruction
+    assert "do not create a second branch state machine" in current.instruction
+    eval_path = Path(__file__).resolve().parents[2] / "app" / "agents" / "skills" / "tutor.lesson-teaching" / "1.2.1" / "evals.json"
+    eval_ids = {case["id"] for case in json.loads(eval_path.read_bytes())["cases"]}
+    assert {
+        "sql-to-css-temporary-digression",
+        "python-variables-to-network-concept",
+        "ambiguous-new-topic-asks-one-question",
+        "related-extension-stays-on-focus",
+        "explicit-switch-cannot-invent-authority",
+        "blocking-artifact-keeps-server-branch-authority",
+    }.issubset(eval_ids)
 
 
 def test_learning_plan_skill_and_schema_publish_exact_nested_json_contract() -> None:
     catalog = compile_published_skill_catalog()
     legacy = catalog.resolve_skill("tutor.learning-plan-draft", "1.0.1")
-    skill = catalog.resolve_skill("tutor.learning-plan-draft", "1.0.2")
-    assert legacy is not None and skill is not None
+    v102 = catalog.resolve_skill("tutor.learning-plan-draft", "1.0.2")
+    skill = catalog.resolve_skill("tutor.learning-plan-draft", "1.0.3")
+    assert legacy is not None and v102 is not None and skill is not None
     assert legacy.manifest.content_hash_for("instructions.md") == "ae0df92467993f653f582c91eb8279267cdc5b6f2368f94b7619b6cac274070e"
     assert legacy.manifest.content_hash_for("evals.json") == "2c36e54ff39d63a66ecf9d17721d0568aed98ccb0f97072d1c3efe66b0d0308c"
-    assert skill.manifest.content_hash_for("instructions.md") == "0c15970382c2f43e83f8bdb1bf739c523feee1ca65df4b0c6bde9802cf833d7a"
-    assert skill.manifest.content_hash_for("evals.json") == "5f27b5b38eb8f70e2322e85cc8af93c14b6ee0fb71bf8ee542db540271c12d27"
+    assert v102.manifest.content_hash_for("instructions.md") == "0c15970382c2f43e83f8bdb1bf739c523feee1ca65df4b0c6bde9802cf833d7a"
+    assert v102.manifest.content_hash_for("evals.json") == "5f27b5b38eb8f70e2322e85cc8af93c14b6ee0fb71bf8ee542db540271c12d27"
+    assert skill.manifest.content_hash_for("instructions.md") == "bed76a0844b626ca5d29e2b82d2274f145d0b450b9b19921fa6b9535eeacf379"
+    assert skill.manifest.content_hash_for("evals.json") == "fa9d79081be1c1e128f1bd24c81865bf0017a6010e0ca4d732f2d88a01ec1525"
     for required in (
         "goal_text",
         "target_level",
@@ -143,6 +165,23 @@ def test_learning_plan_skill_and_schema_publish_exact_nested_json_contract() -> 
     assert "Never use a full course catalog as ambiguity fallback" in skill.instruction
     assert "finish the current turn with `turn_completed`" in skill.instruction
     assert "never use `continuation_kind=approval`" in skill.instruction
+    assert "continue_mainline" in skill.instruction
+    assert "answer_and_refocus" in skill.instruction
+    assert "clarify_direction" in skill.instruction
+    assert "confirmed_switch" in skill.instruction
+    assert "never by a keyword list" in skill.instruction
+
+    eval_path = Path(__file__).resolve().parents[2] / "app" / "agents" / "skills" / "tutor.learning-plan-draft" / "1.0.3" / "evals.json"
+    eval_ids = {case["id"] for case in json.loads(eval_path.read_bytes())["cases"]}
+    assert {
+        "non-programming-digression-needs-direction",
+        "cross-programming-topic-answer-and-refocus",
+        "ambiguous-theme-material",
+        "related-theme-extension-continues",
+        "explicit-goal-switch-stops-old-path",
+        "temporary-question-returns-to-mainline",
+        "langchain-python-confirmation",
+    }.issubset(eval_ids)
 
     schema = CapabilitySchemaExporter.export(LEARNING_PLAN_DRAFT_DESCRIPTOR)["inputSchema"]
     assert isinstance(schema, dict)
@@ -151,7 +190,7 @@ def test_learning_plan_skill_and_schema_publish_exact_nested_json_contract() -> 
     assert "nodes" in properties["module_1"]["description"]
 
 
-def test_published_skill_manifest_hashes_match_raw_bytes_and_v102_is_lf() -> None:
+def test_published_skill_manifest_hashes_match_raw_bytes_and_new_versions_are_lf() -> None:
     skill_root = Path(__file__).resolve().parents[2] / "app" / "agents" / "skills"
     manifests = sorted(skill_root.glob("*/*/manifest.json"))
     assert manifests
@@ -167,11 +206,15 @@ def test_published_skill_manifest_hashes_match_raw_bytes_and_v102_is_lf() -> Non
                 mismatches.append(str(resource_path.relative_to(skill_root)))
     assert mismatches == []
 
-    current = skill_root / "tutor.learning-plan-draft" / "1.0.2"
-    for name in ("instructions.md", "evals.json", "manifest.json"):
-        raw = (current / name).read_bytes()
-        assert b"\r\n" not in raw
-        assert raw.endswith(b"\n")
+    current_bundles = (
+        skill_root / "tutor.learning-plan-draft" / "1.0.3",
+        skill_root / "tutor.lesson-teaching" / "1.2.1",
+    )
+    for current in current_bundles:
+        for name in ("instructions.md", "evals.json", "manifest.json"):
+            raw = (current / name).read_bytes()
+            assert b"\r\n" not in raw
+            assert raw.endswith(b"\n")
 
 
 def test_catalog_exports_mcp_compatible_grounding_schema() -> None:

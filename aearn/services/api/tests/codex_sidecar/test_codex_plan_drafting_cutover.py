@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -31,6 +32,7 @@ from app.agents.runtime.contracts import (
     RuntimeTurnRequest,
     RuntimeTurnResult,
 )
+from app.agents.runtime.tutor_projection import TutorRuntimeEventProjector
 from app.agents.runtime.worker_host import (
     RuntimeTurnControlDirective,
     _run_controlled_turn,
@@ -38,7 +40,8 @@ from app.agents.runtime.worker_host import (
 from app.core.config import DEEPSEEK_V4_FLASH_MODEL, Settings
 from app.services.learning.contracts import LearningScope, LearningScopeKind
 from app.services.learning.plan_repository import PostgresLearningPlanSessionRepository
-from app.services.learning.planning_facts import PostgresPlanningFactRepository
+from app.services.learning.plan_tools import PlanningDirectionAction
+from app.services.learning.planning_facts import PlanningFactField, PostgresPlanningFactRepository
 from app.services.learning.track_repository import PostgresLearningTrackRepository
 from app.services.tutor.codex_dispatcher import CodexTutorRunDispatcher
 from app.services.tutor.interactive import TutorRuntimeDispatchRouter
@@ -54,6 +57,10 @@ from app.services.tutor.runtime_selection import (
 
 _NOW = datetime(2026, 8, 18, 12, 0, tzinfo=UTC)
 _VERSION = "0.142.0-cometix"
+_DIRECTION_CLARIFICATION = (
+    "你刚才的最新输入可能与当前计划方向不一致：这是对当前目标的补充、"
+    "一个临时问题，还是你希望切换学习方向？"
+)
 
 
 def _settings(**overrides: object) -> Settings:
@@ -180,19 +187,81 @@ def test_plan_drafting_unhealthy_admission_creates_no_conversation(tutor_persist
     assert before == after
 
 
+def _valid_draft_modules() -> list[dict[str, object]]:
+    return [
+        {
+            "stable_key": "foundations",
+            "title": "Python 基础",
+            "nodes": [
+                {
+                    "stable_key": "python.variables",
+                    "title": "变量与数据流",
+                    "required_capabilities": ["python"],
+                }
+            ],
+        },
+        {
+            "stable_key": "automation",
+            "title": "自动化实践",
+            "nodes": [
+                {
+                    "stable_key": "python.files",
+                    "title": "文件自动化",
+                    "prerequisites": ["python.variables"],
+                    "required_capabilities": ["python"],
+                }
+            ],
+        },
+    ]
+
+
+def _direction_receipt(conn, run_id: str) -> dict[str, object]:  # type: ignore[no-untyped-def]
+    rows = conn.execute(
+        """
+        SELECT payload_json
+        FROM tutor_run_events
+        WHERE run_id = %s AND kind = 'planning_direction_resolved'
+        ORDER BY event_sequence
+        """,
+        (run_id,),
+    ).fetchall()
+    assert len(rows) == 1
+    payload = rows[0]["payload_json"]
+    assert isinstance(payload, dict)
+    return payload
+
+
 class _FakeCodexHost:
     def __init__(
         self,
         *,
-        awaiting_context: bool = False,
+        direction_action: PlanningDirectionAction | None = (
+            PlanningDirectionAction.CONTINUE_MAINLINE
+        ),
         planning_intent_hint: Mapping[str, object] | None = None,
-        clarification_required: bool = False,
-        final_text: str = "我已根据当前信息准备计划草稿；请在右侧检查后由 Aearn 确认。",
+        extra_direction_action: PlanningDirectionAction | None = None,
+        final_text: str = (
+            "我已根据当前信息准备计划草稿；请在右侧检查后由 Aearn 确认。"
+        ),
+        safe_error_code: str | None = None,
+        include_reasoning: bool = False,
+        completed_reasoning_text: str = "先核对最新输入与当前服务端事实。",
+        streaming_reasoning_text: str | None = None,
+        streaming_final_answer_text: str | None = None,
     ) -> None:
-        self.awaiting_context = awaiting_context
-        self.planning_intent_hint = dict(planning_intent_hint) if planning_intent_hint is not None else None
-        self.clarification_required = clarification_required
+        self.direction_action = direction_action
+        self.planning_intent_hint = (
+            dict(planning_intent_hint)
+            if planning_intent_hint is not None
+            else None
+        )
+        self.extra_direction_action = extra_direction_action
         self.final_text = final_text
+        self.safe_error_code = safe_error_code
+        self.include_reasoning = include_reasoning
+        self.completed_reasoning_text = completed_reasoning_text
+        self.streaming_reasoning_text = streaming_reasoning_text
+        self.streaming_final_answer_text = streaming_final_answer_text
         self.thread_requests: list[RuntimeThreadRequest] = []
         self.resumed_thread_ids: list[str] = []
         self.turn_requests: list[RuntimeTurnRequest] = []
@@ -250,55 +319,170 @@ class _FakeCodexHost:
         self.turn_requests.append(request)
         self.turn_count += 1
         turn_id = f"turn-cutover-{self.turn_count}"
-        if self.awaiting_context:
+        read_result = asyncio.run(
+            request.tools.invoke(
+                RuntimeToolCall(
+                    request.thread.thread_id,
+                    turn_id,
+                    f"context-read-{self.turn_count}",
+                    "aearn_planning_context_read",
+                    {"schema_version": "aearn-learning-plan-tools-v1"},
+                )
+            )
+        )
+        action_result = None
+        if self.direction_action is not None:
+            follow_up: dict[str, object] = {
+                "schema_version": "aearn-learning-plan-tools-v1",
+                "direction_action": self.direction_action.value,
+            }
+            if self.planning_intent_hint is not None:
+                follow_up["planning_intent_hint"] = self.planning_intent_hint
+            action_result = asyncio.run(
+                request.tools.invoke(
+                    RuntimeToolCall(
+                        request.thread.thread_id,
+                        turn_id,
+                        f"direction-action-{self.turn_count}",
+                        "aearn_planning_context_read",
+                        follow_up,
+                    )
+                )
+            )
+        if self.extra_direction_action is not None:
             asyncio.run(
                 request.tools.invoke(
                     RuntimeToolCall(
                         request.thread.thread_id,
                         turn_id,
-                        f"context-call-{self.turn_count}",
+                        f"extra-direction-action-{self.turn_count}",
                         "aearn_planning_context_read",
-                        {"schema_version": "aearn-learning-plan-tools-v1"},
+                        {
+                            "schema_version": "aearn-learning-plan-tools-v1",
+                            "direction_action": self.extra_direction_action.value,
+                        },
                     )
                 )
             )
-            if self.planning_intent_hint is not None or self.clarification_required:
-                follow_up: dict[str, object] = {
-                    "schema_version": "aearn-learning-plan-tools-v1",
-                }
-                if self.planning_intent_hint is not None:
-                    follow_up["planning_intent_hint"] = self.planning_intent_hint
-                if self.clarification_required:
-                    follow_up["clarification_required"] = True
+        if action_result is not None:
+            action_payload = json.loads(action_result.content)
+            if (
+                self.direction_action is PlanningDirectionAction.CONTINUE_MAINLINE
+                and action_payload.get("status") == "completed"
+            ):
                 asyncio.run(
                     request.tools.invoke(
                         RuntimeToolCall(
                             request.thread.thread_id,
                             turn_id,
-                            f"language-resolution-{self.turn_count}",
-                            "aearn_planning_context_read",
-                            follow_up,
+                            f"draft-{self.turn_count}",
+                            "aearn_learning_plan_draft",
+                            {"modules": _valid_draft_modules()},
                         )
                     )
                 )
-        text = self.final_text
-        events = (
-            RuntimeEvent(RuntimeEventKind.TURN_STARTED, "thread-cutover", turn_id),
-            RuntimeEvent(
-                RuntimeEventKind.MESSAGE_COMPLETED,
-                "thread-cutover",
-                turn_id,
-                item_id=f"message-final-{self.turn_count}",
-                visible_text=text,
-                content_sha256=__import__("hashlib").sha256(text.encode("utf-8")).hexdigest(),
-                phase="final_answer",
-            ),
+        del read_result
+        events: list[RuntimeEvent] = [
+            RuntimeEvent(RuntimeEventKind.TURN_STARTED, "thread-cutover", turn_id)
+        ]
+        if self.include_reasoning:
+            reasoning_text = self.completed_reasoning_text
+            events.extend(
+                [
+                    RuntimeEvent(
+                        RuntimeEventKind.REASONING_STARTED,
+                        "thread-cutover",
+                        turn_id,
+                        item_id=f"reasoning-{self.turn_count}",
+                    ),
+                    RuntimeEvent(
+                        RuntimeEventKind.REASONING_DELTA,
+                        "thread-cutover",
+                        turn_id,
+                        item_id=f"reasoning-{self.turn_count}",
+                        visible_text=reasoning_text,
+                        content_sha256=__import__("hashlib").sha256(
+                            reasoning_text.encode("utf-8")
+                        ).hexdigest(),
+                    ),
+                    RuntimeEvent(
+                        RuntimeEventKind.REASONING_COMPLETED,
+                        "thread-cutover",
+                        turn_id,
+                        item_id=f"reasoning-{self.turn_count}",
+                    ),
+                ]
+            )
+        if self.streaming_reasoning_text is not None:
+            events.extend(
+                [
+                    RuntimeEvent(
+                        RuntimeEventKind.REASONING_STARTED,
+                        "thread-cutover",
+                        turn_id,
+                        item_id=f"reasoning-streaming-{self.turn_count}",
+                    ),
+                    RuntimeEvent(
+                        RuntimeEventKind.REASONING_DELTA,
+                        "thread-cutover",
+                        turn_id,
+                        item_id=f"reasoning-streaming-{self.turn_count}",
+                        visible_text=self.streaming_reasoning_text,
+                        content_sha256=__import__("hashlib").sha256(
+                            self.streaming_reasoning_text.encode("utf-8")
+                        ).hexdigest(),
+                    ),
+                ]
+            )
+        if self.streaming_final_answer_text is not None:
+            events.extend(
+                [
+                    RuntimeEvent(
+                        RuntimeEventKind.MESSAGE_STARTED,
+                        "thread-cutover",
+                        turn_id,
+                        item_id=f"message-final-{self.turn_count}",
+                        phase="final_answer",
+                    ),
+                    RuntimeEvent(
+                        RuntimeEventKind.MESSAGE_DELTA,
+                        "thread-cutover",
+                        turn_id,
+                        item_id=f"message-final-{self.turn_count}",
+                        visible_text=self.streaming_final_answer_text,
+                        content_sha256=__import__("hashlib").sha256(
+                            self.streaming_final_answer_text.encode("utf-8")
+                        ).hexdigest(),
+                        phase="final_answer",
+                    ),
+                ]
+            )
+        terminal = RuntimeTerminalStatus.COMPLETED
+        if self.safe_error_code is None:
+            text = self.final_text
+            events.append(
+                RuntimeEvent(
+                    RuntimeEventKind.MESSAGE_COMPLETED,
+                    "thread-cutover",
+                    turn_id,
+                    item_id=f"message-final-{self.turn_count}",
+                    visible_text=text,
+                    content_sha256=__import__("hashlib").sha256(
+                        text.encode("utf-8")
+                    ).hexdigest(),
+                    phase="final_answer",
+                )
+            )
+        else:
+            terminal = RuntimeTerminalStatus.UNAVAILABLE
+        events.append(
             RuntimeEvent(
                 RuntimeEventKind.TURN_COMPLETED,
                 "thread-cutover",
                 turn_id,
-                terminal_status=RuntimeTerminalStatus.COMPLETED,
-            ),
+                terminal_status=terminal,
+                safe_code=self.safe_error_code,
+            )
         )
         if event_observer is not None:
             for sequence, event in enumerate(events, start=1):
@@ -306,8 +490,9 @@ class _FakeCodexHost:
         return RuntimeTurnResult(
             request.thread,
             turn_id,
-            RuntimeTerminalStatus.COMPLETED,
-            events,
+            terminal,
+            tuple(events),
+            self.safe_error_code,
         )
 
     def current_generation(self) -> int:
@@ -391,9 +576,17 @@ def test_codex_dispatcher_projects_without_harness_loop(tutor_persistence, tmp_p
     instructions = str(host.thread_requests[0].base_instructions)
     assert "禁止调用 Codex 内置 request_user_input" in instructions
     assert "data.next_missing_fact" in instructions
-    assert "逐字使用 exact_question" in instructions
+    assert "逐字 exact_question" in instructions
     assert "language_id 始终表示要学习的编程语言或课程" in instructions
     assert "不表示教学内容使用的自然语言" in instructions
+    assert "最新 learner input" in instructions
+    assert "persistent Codex thread" in instructions
+    assert "continue_mainline" in instructions
+    assert "answer_and_refocus" in instructions
+    assert "clarify_direction" in instructions
+    assert "confirmed_switch" in instructions
+    assert "不使用关键词列表" in instructions
+    assert "固定的单一方向澄清问题" in instructions
     assert "中文、英文" not in instructions
     assert "英文" not in instructions
     assert {tool.name for tool in host.thread_requests[0].tools} == {
@@ -410,6 +603,12 @@ def test_codex_dispatcher_projects_without_harness_loop(tutor_persistence, tmp_p
         "runtime_kind": "codex_sidecar_v1",
         "protocol_version": "responses",
     }
+    receipt = _direction_receipt(conn, run.run_id)
+    assert receipt["direction_action"] == "continue_mainline"
+    assert receipt["result_kind"] == "plan_draft"
+    assert receipt["source"] == "model_candidate"
+    assert "learner_text" not in receipt
+    assert "rationale" not in receipt
     messages = conn.execute(
         "SELECT role, content FROM tutor_messages WHERE conversation_id = %s ORDER BY created_at, id",
         (conversation_id,),
@@ -497,11 +696,28 @@ def test_codex_dispatcher_reuses_one_conversation_thread_for_fresh_runs(
         },
     )
     dispatcher.dispatch(user_id=tutor_persistence.user_id, run_id=first.run_id)
-    second, _second_input = create_run("继续补充下一步。")
+    latest_direction = "停止旧网站方向，改为学习 Python 自动化。"
+    second, second_input = create_run(latest_direction)
+    facts = PostgresPlanningFactRepository(conn)
+    facts.record_input(
+        user_id=tutor_persistence.user_id,
+        run_id=second.run_id,
+        conversation_id=conversation_id,
+        message_id=second_input.message_id,
+        input_revision=second_input.input_revision,
+        content=latest_direction,
+    )
+    host.direction_action = PlanningDirectionAction.CONFIRMED_SWITCH
+    host.final_text = "已切换到新的学习方向。"
     dispatcher.dispatch(user_id=tutor_persistence.user_id, run_id=second.run_id)
 
     assert len(host.thread_requests) == 1
     assert host.resumed_thread_ids == ["thread-cutover"]
+    assert tuple(item.text for item in host.turn_requests[1].input) == (latest_direction,)
+    instructions = str(host.thread_requests[0].base_instructions)
+    assert "最新 learner input" in instructions
+    assert "旧 thread 只能帮助解释" in instructions
+    assert "不能无确认地补全网站、图片、HTML" in instructions
     thread_rows = conn.execute(
         "SELECT external_thread_id, migration_mode FROM tutor_conversation_runtime_threads WHERE user_id = %s AND conversation_id = %s",
         (tutor_persistence.user_id, conversation_id),
@@ -521,6 +737,43 @@ def test_codex_dispatcher_reuses_one_conversation_thread_for_fresh_runs(
         "thread-cutover",
     ]
     assert len({str(row["external_turn_id"]) for row in binding_rows}) == 2
+    switch_request = conn.execute(
+        """
+        SELECT kind, question_key, descriptor_json
+        FROM tutor_interaction_requests
+        WHERE source_turn_id = %s
+        """,
+        (second.run_id,),
+    ).fetchone()
+    assert switch_request is not None
+    assert switch_request["kind"] == "planning_input"
+    assert switch_request["question_key"] == "goal_text"
+    assert switch_request["descriptor_json"]["prompt"] == "你希望通过这次学习完成什么具体目标？"
+    session = conn.execute(
+        "SELECT id::text AS id FROM tutor_learning_plan_sessions WHERE user_id = %s AND conversation_id = %s",
+        (tutor_persistence.user_id, conversation_id),
+    ).fetchone()
+    assert session is not None
+    values, _fingerprint, _revision, missing = facts.profile_fact_state(
+        user_id=tutor_persistence.user_id,
+        session_id=str(session["id"]),
+    )
+    assert values[PlanningFactField.LANGUAGE_ID] == "python"
+    assert PlanningFactField.GOAL_TEXT in missing
+    assert PlanningFactField.TARGET_LEVEL in missing
+    assert PlanningFactField.EXPERIENCE_LEVEL in missing
+    assert values[PlanningFactField.WEEKLY_MINUTES] == 240
+    assert values[PlanningFactField.TEACHING_PREFERENCES] == [
+        "examples_first",
+        "practice_heavy",
+    ]
+    assert values[PlanningFactField.PACE_CONSTRAINTS] == (
+        "每周安排四次专注学习"
+    )
+    switch_receipt = _direction_receipt(conn, second.run_id)
+    assert switch_receipt["direction_action"] == "confirmed_switch"
+    assert switch_receipt["result_kind"] == "planning_input"
+    assert switch_receipt["question_key"] == "goal_text"
 
 
 def test_codex_missing_facts_create_server_typed_request(
@@ -582,9 +835,16 @@ def test_codex_missing_facts_create_server_typed_request(
     def same_connection():  # type: ignore[no-untyped-def]
         yield conn
 
+    answer_and_refocus = (
+        "DNS 是把域名映射到网络地址的系统。我们回到学习计划主线："
+        "你希望通过这次学习完成什么具体目标？"
+    )
     result = CodexTutorRunDispatcher(
         settings=_settings(codex_runtime_home_directory=str(tmp_path / "runtime-home")),
-        host=_FakeCodexHost(awaiting_context=True),
+        host=_FakeCodexHost(
+            direction_action=PlanningDirectionAction.ANSWER_AND_REFOCUS,
+            final_text=answer_and_refocus,
+        ),
         connection_factory=same_connection,
         manage_autocommit=False,
     ).dispatch(user_id=tutor_persistence.user_id, run_id=run.run_id)
@@ -603,6 +863,12 @@ def test_codex_missing_facts_create_server_typed_request(
     assert request["question_key"] == "goal_text"
     assert request["state"] == "pending"
     assert request["descriptor_json"]["prompt"] == "你希望通过这次学习完成什么具体目标？"
+    tutor_message = conn.execute(
+        "SELECT content FROM tutor_messages WHERE conversation_id = %s AND role = 'tutor'",
+        (conversation_id,),
+    ).fetchone()
+    assert tutor_message == {"content": answer_and_refocus}
+    assert answer_and_refocus.count("？") == 1
     binding = conn.execute(
         "SELECT state, final_message_id FROM tutor_run_runtime_bindings WHERE run_id = %s",
         (run.run_id,),
@@ -619,6 +885,58 @@ def test_codex_missing_facts_create_server_typed_request(
             "public_message_id": binding["final_message_id"],
         }
     ]
+    answer_receipt = _direction_receipt(conn, run.run_id)
+    assert answer_receipt["direction_action"] == "answer_and_refocus"
+    assert answer_receipt["result_kind"] == "planning_input"
+    assert answer_receipt["question_key"] == "goal_text"
+
+
+def test_codex_non_language_missing_fact_can_request_one_direction_clarification(
+    tutor_persistence,
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
+    conn = tutor_persistence.connection
+    _repository, _conversation_id, run = _create_codex_run_missing_goal(
+        conn,
+        user_id=tutor_persistence.user_id,
+        catalog_digest=tutor_persistence.catalog.digest,
+        content="我也在考虑烘焙。",
+    )
+
+    @contextmanager
+    def same_connection():  # type: ignore[no-untyped-def]
+        yield conn
+
+    clarification = "这是临时聊聊职业兴趣，还是你希望切换当前学习方向？"
+    result = CodexTutorRunDispatcher(
+        settings=_settings(codex_runtime_home_directory=str(tmp_path / "runtime-home")),
+        host=_FakeCodexHost(
+            direction_action=PlanningDirectionAction.CLARIFY_DIRECTION,
+            final_text=clarification,
+        ),
+        connection_factory=same_connection,
+        manage_autocommit=False,
+    ).dispatch(user_id=tutor_persistence.user_id, run_id=run.run_id)
+
+    assert result.terminal_outcome is TutorTerminalOutcome.COMPLETED
+    request = conn.execute(
+        """
+        SELECT kind, question_key, descriptor_json, presentation_json
+        FROM tutor_interaction_requests
+        WHERE source_turn_id = %s
+        """,
+        (run.run_id,),
+    ).fetchone()
+    assert request is not None
+    assert request["kind"] == "clarification"
+    assert request["question_key"] is None
+    assert request["descriptor_json"]["prompt"] == _DIRECTION_CLARIFICATION
+    assert request["presentation_json"]["field_key"] is None
+    assert _DIRECTION_CLARIFICATION.count("？") == 1
+    clarify_receipt = _direction_receipt(conn, run.run_id)
+    assert clarify_receipt["direction_action"] == "clarify_direction"
+    assert clarify_receipt["result_kind"] == "clarification"
+    assert clarify_receipt["source"] == "model_candidate"
 
 
 def test_codex_semantic_language_hint_persists_python_only_request(
@@ -638,7 +956,6 @@ def test_codex_semantic_language_hint_persists_python_only_request(
         yield conn
 
     host = _FakeCodexHost(
-        awaiting_context=True,
         planning_intent_hint={
             "schema_version": "planning-intent-hint-v2",
             "candidate_language_ids": ["python"],
@@ -672,6 +989,10 @@ def test_codex_semantic_language_hint_persists_python_only_request(
     assert presentation["intent_policy_version"] == "planning-language-intent-v2"
     assert "confidence" not in str(presentation)
     assert repository.load_snapshot(user_id=tutor_persistence.user_id, run_id=run.run_id) is not None
+    language_receipt = _direction_receipt(conn, run.run_id)
+    assert language_receipt["direction_action"] == "continue_mainline"
+    assert language_receipt["result_kind"] == "planning_input"
+    assert language_receipt["question_key"] == "language_id"
 
 
 def test_codex_insufficient_language_evidence_persists_targeted_clarification(
@@ -694,8 +1015,7 @@ def test_codex_insufficient_language_evidence_persists_targeted_clarification(
     result = CodexTutorRunDispatcher(
         settings=_settings(codex_runtime_home_directory=str(tmp_path / "runtime-home")),
         host=_FakeCodexHost(
-            awaiting_context=True,
-            clarification_required=True,
+            direction_action=PlanningDirectionAction.CLARIFY_DIRECTION,
             final_text=clarification,
         ),
         connection_factory=same_connection,
@@ -710,7 +1030,7 @@ def test_codex_insufficient_language_evidence_persists_targeted_clarification(
     assert request is not None
     assert request["kind"] == "clarification"
     assert request["question_key"] is None
-    assert request["descriptor_json"]["prompt"] == clarification
+    assert request["descriptor_json"]["prompt"] == _DIRECTION_CLARIFICATION
     assert request["presentation_json"]["type"] == "text"
     fact = conn.execute(
         "SELECT value_json FROM tutor_planning_intake_facts WHERE source_run_id = %s AND field_key = 'language_id'",
@@ -779,7 +1099,7 @@ def test_codex_typed_response_fresh_turn_continues_with_next_server_question(
     def same_connection():  # type: ignore[no-untyped-def]
         yield conn
 
-    host = _FakeCodexHost(awaiting_context=False)
+    host = _FakeCodexHost()
     dispatcher = CodexTutorRunDispatcher(
         settings=_settings(codex_runtime_home_directory=str(tmp_path / "runtime-home")),
         host=host,
@@ -832,6 +1152,430 @@ def test_codex_typed_response_fresh_turn_continues_with_next_server_question(
     ).fetchone()
     assert next_request == {"question_key": "pace_constraints", "state": "pending"}
     assert host.resumed_thread_ids == ["thread-cutover"]
+
+
+def test_codex_missing_direction_marker_ignores_stale_model_question(
+    tutor_persistence,
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
+    conn = tutor_persistence.connection
+    _repository, _conversation_id, run = _create_codex_run_missing_goal(
+        conn,
+        user_id=tutor_persistence.user_id,
+        catalog_digest=tutor_persistence.catalog.digest,
+        content="我想做厨师",
+    )
+
+    @contextmanager
+    def same_connection():  # type: ignore[no-untyped-def]
+        yield conn
+
+    stale_question = "你希望通过这次学习完成什么具体目标？"
+    host = _FakeCodexHost(
+        direction_action=None,
+        final_text=stale_question,
+    )
+    result = CodexTutorRunDispatcher(
+        settings=_settings(
+            codex_runtime_home_directory=str(tmp_path / "runtime-home")
+        ),
+        host=host,
+        connection_factory=same_connection,
+        manage_autocommit=False,
+    ).dispatch(user_id=tutor_persistence.user_id, run_id=run.run_id)
+
+    assert result.terminal_outcome is TutorTerminalOutcome.COMPLETED
+    request = conn.execute(
+        """
+        SELECT kind, question_key, descriptor_json
+        FROM tutor_interaction_requests
+        WHERE source_turn_id = %s
+        """,
+        (run.run_id,),
+    ).fetchone()
+    assert request is not None
+    assert request["kind"] == "clarification"
+    assert request["question_key"] is None
+    assert request["descriptor_json"]["prompt"] == _DIRECTION_CLARIFICATION
+    assert request["descriptor_json"]["prompt"] != stale_question
+    receipt = _direction_receipt(conn, run.run_id)
+    assert receipt["direction_action"] == "clarify_direction"
+    assert receipt["source"] == "server_fallback_missing_direction"
+    assert host.turn_requests[0].effort == "low"
+    assert host.turn_requests[0].timeout_seconds == 45.0
+    assert host.turn_requests[0].max_visible_text_chars == 2_000
+
+
+def test_codex_conflicting_direction_action_falls_back_to_fixed_clarification(
+    tutor_persistence,
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
+    conn = tutor_persistence.connection
+    _repository, _conversation_id, run = _create_codex_run_missing_goal(
+        conn,
+        user_id=tutor_persistence.user_id,
+        catalog_digest=tutor_persistence.catalog.digest,
+        content="先问网络问题，但也许要换方向。",
+    )
+
+    @contextmanager
+    def same_connection():  # type: ignore[no-untyped-def]
+        yield conn
+
+    CodexTutorRunDispatcher(
+        settings=_settings(
+            codex_runtime_home_directory=str(tmp_path / "runtime-home")
+        ),
+        host=_FakeCodexHost(
+            direction_action=PlanningDirectionAction.CONTINUE_MAINLINE,
+            extra_direction_action=PlanningDirectionAction.CONFIRMED_SWITCH,
+            final_text="你希望通过这次学习完成什么具体目标？",
+        ),
+        connection_factory=same_connection,
+        manage_autocommit=False,
+    ).dispatch(user_id=tutor_persistence.user_id, run_id=run.run_id)
+
+    request = conn.execute(
+        "SELECT kind, descriptor_json FROM tutor_interaction_requests WHERE source_turn_id = %s",
+        (run.run_id,),
+    ).fetchone()
+    assert request is not None
+    assert request["kind"] == "clarification"
+    assert request["descriptor_json"]["prompt"] == _DIRECTION_CLARIFICATION
+    receipt = _direction_receipt(conn, run.run_id)
+    assert receipt["source"] == "server_fallback_invalid_direction"
+
+
+def test_codex_direction_timeout_uses_the_same_server_clarification_fallback(
+    tutor_persistence,
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
+    conn = tutor_persistence.connection
+    _repository, _conversation_id, run = _create_codex_run_missing_goal(
+        conn,
+        user_id=tutor_persistence.user_id,
+        catalog_digest=tutor_persistence.catalog.digest,
+        content="一个没有明确关系的新主题。",
+    )
+
+    @contextmanager
+    def same_connection():  # type: ignore[no-untyped-def]
+        yield conn
+
+    result = CodexTutorRunDispatcher(
+        settings=_settings(
+            codex_runtime_home_directory=str(tmp_path / "runtime-home")
+        ),
+        host=_FakeCodexHost(
+            direction_action=None,
+            safe_error_code="runtime_turn_time_exhausted",
+        ),
+        connection_factory=same_connection,
+        manage_autocommit=False,
+    ).dispatch(user_id=tutor_persistence.user_id, run_id=run.run_id)
+
+    assert result.terminal_outcome is TutorTerminalOutcome.COMPLETED
+    request = conn.execute(
+        "SELECT kind, descriptor_json FROM tutor_interaction_requests WHERE source_turn_id = %s",
+        (run.run_id,),
+    ).fetchone()
+    assert request is not None
+    assert request["kind"] == "clarification"
+    assert request["descriptor_json"]["prompt"] == _DIRECTION_CLARIFICATION
+    receipt = _direction_receipt(conn, run.run_id)
+    assert receipt["source"] == "server_fallback_direction_bound"
+
+
+def test_codex_text_budget_fallback_discards_every_unfinished_text_item(
+    tutor_persistence,
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
+    conn = tutor_persistence.connection
+    repository, conversation_id, run = _create_codex_run_missing_goal(
+        conn,
+        user_id=tutor_persistence.user_id,
+        catalog_digest=tutor_persistence.catalog.digest,
+        content="一个没有明确关系的新主题。",
+    )
+
+    @contextmanager
+    def same_connection():  # type: ignore[no-untyped-def]
+        yield conn
+
+    completed_reasoning = "已完成推理" * 49
+    unfinished_reasoning = "未完成推理" * 280
+    unfinished_final_answer = "未完成回答" * 71
+    assert len(unfinished_reasoning) == 1_400
+    assert len(unfinished_final_answer) == 355
+    assert (
+        len(completed_reasoning)
+        + len(unfinished_reasoning)
+        + len(unfinished_final_answer)
+        == 2_000
+    )
+    result = CodexTutorRunDispatcher(
+        settings=_settings(
+            codex_runtime_home_directory=str(tmp_path / "runtime-home")
+        ),
+        host=_FakeCodexHost(
+            direction_action=None,
+            safe_error_code="runtime_text_budget_exhausted",
+            include_reasoning=True,
+            completed_reasoning_text=completed_reasoning,
+            streaming_reasoning_text=unfinished_reasoning,
+            streaming_final_answer_text=unfinished_final_answer,
+        ),
+        connection_factory=same_connection,
+        manage_autocommit=False,
+    ).dispatch(user_id=tutor_persistence.user_id, run_id=run.run_id)
+
+    assert result.terminal_outcome is TutorTerminalOutcome.COMPLETED
+    request = conn.execute(
+        "SELECT kind, question_key, descriptor_json "
+        "FROM tutor_interaction_requests WHERE source_turn_id = %s",
+        (run.run_id,),
+    ).fetchone()
+    assert request is not None
+    assert request["kind"] == "clarification"
+    assert request["question_key"] is None
+    assert request["descriptor_json"]["prompt"] == _DIRECTION_CLARIFICATION
+    receipt = _direction_receipt(conn, run.run_id)
+    assert receipt["direction_action"] == "clarify_direction"
+    assert receipt["source"] == "server_fallback_direction_bound"
+
+    binding = conn.execute(
+        "SELECT state, final_message_id FROM tutor_run_runtime_bindings WHERE run_id = %s",
+        (run.run_id,),
+    ).fetchone()
+    assert binding is not None
+    assert binding["state"] == "completed"
+    text_items = conn.execute(
+        """
+        SELECT channel, state, text, content_hash, completed_at, public_message_id
+        FROM tutor_runtime_text_items
+        WHERE run_id = %s
+        ORDER BY created_at, id
+        """,
+        (run.run_id,),
+    ).fetchall()
+    assert len(text_items) == 3
+    assert text_items[0]["channel"] == "reasoning"
+    assert text_items[0]["state"] == "completed"
+    assert text_items[0]["text"] == completed_reasoning
+    assert text_items[0]["content_hash"] is not None
+    assert text_items[0]["completed_at"] is not None
+    assert text_items[0]["public_message_id"] == binding["final_message_id"]
+    for item, channel in zip(
+        text_items[1:],
+        ("reasoning", "final_answer"),
+        strict=True,
+    ):
+        assert item["channel"] == channel
+        assert item["state"] == "discarded"
+        assert item["text"] == ""
+        assert item["content_hash"] is None
+        assert item["completed_at"] is not None
+        assert item["public_message_id"] is None
+    assert not [item for item in text_items if item["state"] == "streaming"]
+    conversation_events = repository.conversation_events_after(
+        user_id=tutor_persistence.user_id,
+        conversation_id=conversation_id,
+        cursor=None,
+    )
+    discard_indexes = [
+        index
+        for index, event in enumerate(conversation_events)
+        if event.kind == "turn_output"
+        and event.payload.get("operation") == "discard"
+    ]
+    assert len(discard_indexes) == 2
+    assert {
+        conversation_events[index].payload["channel"]
+        for index in discard_indexes
+    } == {"reasoning", "final_answer"}
+    assert all(
+        "text" not in conversation_events[index].payload
+        for index in discard_indexes
+    )
+    message_index = next(
+        index
+        for index, event in enumerate(conversation_events)
+        if event.kind == "item_added"
+        and event.item_id == str(binding["final_message_id"])
+    )
+    assert max(discard_indexes) < message_index
+    terminal_receipt = conn.execute(
+        """
+        SELECT projection_status, safe_code
+        FROM tutor_runtime_item_receipts
+        WHERE run_id = %s AND event_kind = 'turn_completed'
+        """,
+        (run.run_id,),
+    ).fetchone()
+    assert terminal_receipt == {
+        "projection_status": "ignored_stale",
+        "safe_code": "runtime_text_budget_exhausted",
+    }
+
+
+def test_codex_server_terminal_receipt_failure_rolls_back_clarification_cleanup(
+    tutor_persistence,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:  # type: ignore[no-untyped-def]
+    conn = tutor_persistence.connection
+    _repository, conversation_id, run = _create_codex_run_missing_goal(
+        conn,
+        user_id=tutor_persistence.user_id,
+        catalog_digest=tutor_persistence.catalog.digest,
+        content="一个没有明确关系的新主题。",
+    )
+
+    @contextmanager
+    def same_connection():  # type: ignore[no-untyped-def]
+        yield conn
+
+    original_project_event = TutorRuntimeEventProjector.project_event
+
+    def fail_terminal_projection(
+        self: TutorRuntimeEventProjector,
+        event: RuntimeEvent,
+        *,
+        sequence: int,
+        occurred_at: datetime,
+        defer_public_message: bool = False,
+    ):  # type: ignore[no-untyped-def]
+        if event.kind is RuntimeEventKind.TURN_COMPLETED:
+            raise RuntimeError("forced terminal receipt failure")
+        return original_project_event(
+            self,
+            event,
+            sequence=sequence,
+            occurred_at=occurred_at,
+            defer_public_message=defer_public_message,
+        )
+
+    monkeypatch.setattr(
+        TutorRuntimeEventProjector,
+        "project_event",
+        fail_terminal_projection,
+    )
+    unfinished_reasoning = "仍在生成的推理"
+    with pytest.raises(RuntimeError, match="forced terminal receipt failure"):
+        CodexTutorRunDispatcher(
+            settings=_settings(
+                codex_runtime_home_directory=str(tmp_path / "runtime-home")
+            ),
+            host=_FakeCodexHost(
+                direction_action=None,
+                safe_error_code="runtime_text_budget_exhausted",
+                streaming_reasoning_text=unfinished_reasoning,
+            ),
+            connection_factory=same_connection,
+            manage_autocommit=False,
+        ).dispatch(user_id=tutor_persistence.user_id, run_id=run.run_id)
+
+    assert conn.execute(
+        "SELECT count(*)::int AS count FROM tutor_interaction_requests "
+        "WHERE source_turn_id = %s",
+        (run.run_id,),
+    ).fetchone() == {"count": 0}
+    assert conn.execute(
+        "SELECT count(*)::int AS count FROM tutor_run_events "
+        "WHERE run_id = %s AND kind = 'planning_direction_resolved'",
+        (run.run_id,),
+    ).fetchone() == {"count": 0}
+    assert conn.execute(
+        "SELECT count(*)::int AS count FROM tutor_messages "
+        "WHERE conversation_id = %s AND role = 'tutor'",
+        (conversation_id,),
+    ).fetchone() == {"count": 0}
+    binding = conn.execute(
+        "SELECT state, final_message_id FROM tutor_run_runtime_bindings "
+        "WHERE run_id = %s",
+        (run.run_id,),
+    ).fetchone()
+    assert binding == {"state": "running", "final_message_id": None}
+    text_item = conn.execute(
+        """
+        SELECT state, text, content_hash, completed_at, public_message_id
+        FROM tutor_runtime_text_items
+        WHERE run_id = %s
+        """,
+        (run.run_id,),
+    ).fetchone()
+    assert text_item is not None
+    assert text_item["state"] == "streaming"
+    assert text_item["text"] == unfinished_reasoning
+    assert text_item["content_hash"] is not None
+    assert text_item["completed_at"] is None
+    assert text_item["public_message_id"] is None
+    assert conn.execute(
+        "SELECT count(*)::int AS count FROM tutor_runtime_item_receipts "
+        "WHERE run_id = %s AND event_kind = 'turn_completed'",
+        (run.run_id,),
+    ).fetchone() == {"count": 0}
+    run_row = conn.execute(
+        "SELECT status, terminal_outcome FROM tutor_runs WHERE id = %s",
+        (run.run_id,),
+    ).fetchone()
+    assert run_row == {"status": "running", "terminal_outcome": None}
+
+
+@pytest.mark.parametrize(
+    "safe_error_code",
+    ["runtime_connection_failed", "runtime_control_failed"],
+)
+def test_codex_non_direction_runtime_failure_does_not_create_clarification_success(
+    safe_error_code: str,
+    tutor_persistence,
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
+    conn = tutor_persistence.connection
+    _repository, conversation_id, run = _create_codex_run_missing_goal(
+        conn,
+        user_id=tutor_persistence.user_id,
+        catalog_digest=tutor_persistence.catalog.digest,
+        content="一个需要重新判断方向的输入。",
+    )
+
+    @contextmanager
+    def same_connection():  # type: ignore[no-untyped-def]
+        yield conn
+
+    result = CodexTutorRunDispatcher(
+        settings=_settings(
+            codex_runtime_home_directory=str(tmp_path / "runtime-home")
+        ),
+        host=_FakeCodexHost(
+            direction_action=PlanningDirectionAction.CLARIFY_DIRECTION,
+            safe_error_code=safe_error_code,
+        ),
+        connection_factory=same_connection,
+        manage_autocommit=False,
+    ).dispatch(user_id=tutor_persistence.user_id, run_id=run.run_id)
+
+    assert result.terminal_outcome is TutorTerminalOutcome.MODEL_UNAVAILABLE
+    assert conn.execute(
+        "SELECT count(*)::int AS count FROM tutor_interaction_requests "
+        "WHERE source_turn_id = %s",
+        (run.run_id,),
+    ).fetchone() == {"count": 0}
+    assert conn.execute(
+        "SELECT count(*)::int AS count FROM tutor_run_events "
+        "WHERE run_id = %s AND kind = 'planning_direction_resolved'",
+        (run.run_id,),
+    ).fetchone() == {"count": 0}
+    assert conn.execute(
+        "SELECT count(*)::int AS count FROM tutor_messages "
+        "WHERE conversation_id = %s AND role = 'tutor'",
+        (conversation_id,),
+    ).fetchone() == {"count": 0}
+    binding = conn.execute(
+        "SELECT state FROM tutor_run_runtime_bindings WHERE run_id = %s",
+        (run.run_id,),
+    ).fetchone()
+    assert binding == {"state": "unavailable"}
 
 
 def test_retry_and_dispatch_claim_preserve_codex_runtime(tutor_persistence) -> None:  # type: ignore[no-untyped-def]
@@ -909,6 +1653,72 @@ def test_retry_and_dispatch_claim_preserve_codex_runtime(tutor_persistence) -> N
     )
     assert retried.run.runtime_kind == "codex_sidecar_v1"
     assert retried.run.run_id != run.run_id
+
+
+def _create_codex_run_missing_goal(
+    conn,  # type: ignore[no-untyped-def]
+    *,
+    user_id: str,
+    catalog_digest: str,
+    content: str,
+) -> tuple[PostgresTutorRepository, str, TutorRunSnapshot]:
+    repository = PostgresTutorRepository(conn)
+    conversation_id = repository.create_conversation(user_id=user_id)
+    PostgresLearningTrackRepository(conn).bind_conversation_scope(
+        user_id=user_id,
+        conversation_id=conversation_id,
+        scope=LearningScope(scope_kind=LearningScopeKind.PLAN_DRAFTING),
+    )
+    PostgresLearningPlanSessionRepository(conn).create_session(
+        user_id=user_id,
+        conversation_id=conversation_id,
+        preferred_language_id="python",
+    )
+    run = repository.create_run(
+        user_id=user_id,
+        conversation_id=conversation_id,
+        catalog_digest=catalog_digest,
+        policy=TutorPolicySnapshot(
+            deadline=datetime.now(UTC) + timedelta(minutes=5),
+            max_iterations=3,
+            max_model_calls=2,
+            max_capability_calls=3,
+            max_effects=0,
+            context_token_budget=512,
+        ),
+        origin="interactive",
+        interaction_protocol_version="thread_turn_v2",
+        runtime_kind="codex_sidecar_v1",
+    )
+    accepted = repository.accept_input(
+        user_id=user_id,
+        run_id=run.run_id,
+        idempotency_key=f"codex-goal-source-{uuid4().hex}",
+        content=content,
+        received_at=datetime.now(UTC),
+    )
+    PostgresLearningTrackRepository(conn).snapshot_run_scope(
+        user_id=user_id,
+        run_id=run.run_id,
+        explicit_scope=LearningScope(scope_kind=LearningScopeKind.PLAN_DRAFTING),
+    )
+    PostgresPlanningFactRepository(conn).record_input(
+        user_id=user_id,
+        run_id=run.run_id,
+        conversation_id=conversation_id,
+        message_id=accepted.message_id,
+        input_revision=accepted.input_revision,
+        content=content,
+        explicit_facts={
+            "language_id": "python",
+            "target_level": "beginner",
+            "weekly_minutes": 240,
+            "experience_level": "new",
+            "teaching_preferences": [],
+            "pace_constraints": "每周四次练习",
+        },
+    )
+    return repository, conversation_id, run
 
 
 def _create_codex_run_missing_language(

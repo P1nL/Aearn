@@ -1,0 +1,22 @@
+{
+  "id": "tutor.lesson-teaching",
+  "version": "1.2.1",
+  "owner": "aearn-core",
+  "kind": "tutoring",
+  "summary": "Choose one evidence-driven teaching unit, recover semantic direction, and use only exact server-authorized learner interactions.",
+  "instruction_file": "instructions.md",
+  "evaluation_suite_file": "evals.json",
+  "content_hashes": {
+    "instructions.md": "d6af28de9f31657508fdd72c19142e13cdfbdbab38f6bec30e9564d121a5f7e9",
+    "evals.json": "5b65408ad7642508ba4c89b1a33f29fc4e950b8cf2356d91cb9588d1fa623171"
+  },
+  "resource_refs": [],
+  "requires_capabilities": [],
+  "allowed_effect_types": [],
+  "policy_tags": [
+    "lesson-teaching"
+  ],
+  "input_contract": "tutor.teaching-session-input.v2",
+  "output_contract": "tutor.teaching-step-decision.v3",
+  "deprecated": false
+}

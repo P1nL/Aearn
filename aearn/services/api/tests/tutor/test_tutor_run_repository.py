@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
@@ -637,3 +638,60 @@ def test_context_budget_policy_round_trips_and_participates_in_the_policy_finger
     ).fetchone()
     assert changed_row is not None
     assert row["policy_fingerprint"] != changed_row["policy_fingerprint"]
+
+
+def test_planning_direction_receipt_is_closed_idempotent_and_conflict_safe(
+    tutor_persistence,
+) -> None:
+    fixture = tutor_persistence
+    first = fixture.repository.record_planning_direction_resolution(
+        user_id=fixture.user_id,
+        run_id=fixture.run.run_id,
+        input_revision=fixture.run.input_revision,
+        direction_action="clarify_direction",
+        result_kind="clarification",
+        source="server_fallback_missing_direction",
+        facts_fingerprint="a" * 64,
+        public_message_hash="b" * 64,
+    )
+    replay = fixture.repository.record_planning_direction_resolution(
+        user_id=fixture.user_id,
+        run_id=fixture.run.run_id,
+        input_revision=fixture.run.input_revision,
+        direction_action="clarify_direction",
+        result_kind="clarification",
+        source="server_fallback_missing_direction",
+        facts_fingerprint="a" * 64,
+        public_message_hash="b" * 64,
+    )
+
+    assert replay.event_id == first.event_id
+    assert replay.event_sequence == first.event_sequence
+    assert first.kind == "planning_direction_resolved"
+    assert first.payload == {
+        "schema_version": "planning-direction-resolution-receipt-v1",
+        "redaction_version": "tutor_safe_projection_v1",
+        "kind": "planning_direction_resolved",
+        "status": "accepted",
+        "direction_action": "clarify_direction",
+        "result_kind": "clarification",
+        "source": "server_fallback_missing_direction",
+        "input_revision": fixture.run.input_revision,
+        "facts_fingerprint": "a" * 64,
+        "public_message_hash": "b" * 64,
+        "policy_version": "planning-direction-policy-v1",
+    }
+    assert "learner" not in json.dumps(first.payload, sort_keys=True)
+    assert "rationale" not in json.dumps(first.payload, sort_keys=True)
+
+    with pytest.raises(TutorIdempotencyConflict):
+        fixture.repository.record_planning_direction_resolution(
+            user_id=fixture.user_id,
+            run_id=fixture.run.run_id,
+            input_revision=fixture.run.input_revision,
+            direction_action="continue_mainline",
+            result_kind="plan_draft",
+            source="model_candidate",
+            facts_fingerprint="a" * 64,
+            public_message_hash="b" * 64,
+        )

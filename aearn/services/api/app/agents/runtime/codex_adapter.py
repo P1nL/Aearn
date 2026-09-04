@@ -120,7 +120,16 @@ class CodexAppServerRuntime(AgentRuntimePort):
             delta_item_ids: set[str] = set()
             loop = asyncio.get_running_loop()
             started_at = loop.time()
-            turn_deadline = started_at + self.supervisor.config.turn_timeout_s
+            turn_timeout = self.supervisor.config.turn_timeout_s
+            if request.timeout_seconds is not None:
+                turn_timeout = min(turn_timeout, request.timeout_seconds)
+            turn_deadline = started_at + turn_timeout
+            visible_text_limit = self.supervisor.config.max_visible_text_chars
+            if request.max_visible_text_chars is not None:
+                visible_text_limit = min(
+                    visible_text_limit,
+                    request.max_visible_text_chars,
+                )
             notification_task: asyncio.Task[JsonRpcNotification] | None = None
             coalescer = RuntimeDeltaCoalescer(
                 RuntimeDeltaCoalescingConfig(
@@ -146,15 +155,18 @@ class CodexAppServerRuntime(AgentRuntimePort):
                 return False
 
             try:
+                turn_params: dict[str, object] = {
+                    "threadId": request.thread.thread_id,
+                    "input": [
+                        {"type": "text", "text": item.text}
+                        for item in request.input
+                    ],
+                }
+                if request.effort is not None:
+                    turn_params["effort"] = request.effort
                 turn = await self.supervisor.request(
                     "turn/start",
-                    {
-                        "threadId": request.thread.thread_id,
-                        "input": [
-                            {"type": "text", "text": item.text}
-                            for item in request.input
-                        ],
-                    },
+                    turn_params,
                     generation=request.thread.generation,
                 )
                 turn_id = str((turn.get("turn") or {}).get("id", ""))
@@ -247,7 +259,7 @@ class CodexAppServerRuntime(AgentRuntimePort):
                         and event.item_id not in delta_item_ids
                     ):
                         visible_text_chars += len(event.visible_text or "")
-                    if visible_text_chars > self.supervisor.config.max_visible_text_chars:
+                    if visible_text_chars > visible_text_limit:
                         raise RuntimeUnavailableError("runtime_text_budget_exhausted")
                     if await publish(coalescer.push(event, now=loop.time())):
                         break

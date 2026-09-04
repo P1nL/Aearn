@@ -835,6 +835,7 @@ class InteractionPersistenceMixin(PersistenceMixin):
             }
             if kind is TutorInteractionRequestKind.PLANNING_INPUT:
                 question_key = str(decision.question_key or "")
+                descriptor["prompt"] = planning_question_prompt(question_key)
                 model_hint = (
                     decision.planning_intent_hint.as_mapping()
                     if decision.planning_intent_hint is not None

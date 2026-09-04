@@ -41,6 +41,14 @@ class PlanningFactField(StrEnum):
     PACE_CONSTRAINTS = "pace_constraints"
 
 
+PLANNING_DIRECTION_SWITCH_REOPEN_FIELDS: tuple[PlanningFactField, ...] = (
+    PlanningFactField.LANGUAGE_ID,
+    PlanningFactField.GOAL_TEXT,
+    PlanningFactField.TARGET_LEVEL,
+    PlanningFactField.EXPERIENCE_LEVEL,
+)
+
+
 if frozenset(item.value for item in PlanningFactField) != TUTOR_PLANNING_QUESTION_KEYS:
     raise RuntimeError("planning fact fields must match Tutor planning question keys")
 
@@ -364,7 +372,14 @@ class PostgresPlanningFactRepository:
             """,
             (session_id, user_id),
         ).fetchall()
-        return tuple(_fact_from_row(row) for row in rows)
+        facts = tuple(_fact_from_row(row) for row in rows)
+        question_states = self.current_question_states(user_id=user_id, session_id=session_id)
+        return tuple(
+            fact
+            for fact in facts
+            if question_states.get(fact.field_key, PlanningQuestionState.CONFIRMED)
+            is PlanningQuestionState.CONFIRMED
+        )
 
     def current_facts_for_run(self, *, user_id: str, run_id: str) -> tuple[PlanningFact, ...]:
         session = self._active_session_for_run(user_id=user_id, run_id=run_id)
@@ -382,10 +397,30 @@ class PostgresPlanningFactRepository:
         session_id: str,
     ) -> tuple[dict[PlanningFactField, object], str, int, tuple[PlanningFactField, ...]]:
         facts = self.current_facts(user_id=user_id, session_id=session_id)
-        values = {fact.field_key: fact.value for fact in facts}
+        question_states = self.current_question_states(user_id=user_id, session_id=session_id)
+        authoritative = tuple(
+            fact
+            for fact in facts
+            if question_states.get(fact.field_key) is not PlanningQuestionState.REOPENED
+        )
+        values = {fact.field_key: fact.value for fact in authoritative}
         missing = tuple(sorted(_REQUIRED_PROFILE_FIELDS - set(values), key=lambda item: item.value))
-        revision = sum(fact.revision for fact in facts)
-        return values, self.facts_fingerprint(facts), revision, missing
+        revision = sum(fact.revision for fact in authoritative)
+        return values, self.facts_fingerprint(authoritative), revision, missing
+
+    def missing_fields_for_run(
+        self,
+        *,
+        user_id: str,
+        run_id: str,
+    ) -> tuple[PlanningFactField, ...]:
+        session = self._active_session_for_run(user_id=user_id, run_id=run_id)
+        if session is None:
+            return ()
+        return self.profile_fact_state(
+            user_id=user_id,
+            session_id=str(session["id"]),
+        )[3]
 
     def validate_profile(
         self,

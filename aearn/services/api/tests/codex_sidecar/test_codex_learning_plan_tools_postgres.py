@@ -132,9 +132,22 @@ async def test_postgres_typed_tools_build_server_profile_append_once_and_fence_g
             runtime_generation=generation,
             runtime_generation_reader=lambda: generation,
         )
-        context = await registry.invoke(_call(PLANNING_CONTEXT_TOOL_NAME, {}, call_id="context"))
+        context = await registry.invoke(
+            _call(PLANNING_CONTEXT_TOOL_NAME, {}, call_id="context")
+        )
+        direction = await registry.invoke(
+            _call(
+                PLANNING_CONTEXT_TOOL_NAME,
+                {"direction_action": "continue_mainline"},
+                call_id="direction",
+            )
+        )
         first = await registry.invoke(
-            _call(LEARNING_PLAN_DRAFT_TOOL_NAME, {"modules": _modules()}, call_id="draft-1")
+            _call(
+                LEARNING_PLAN_DRAFT_TOOL_NAME,
+                {"modules": _modules()},
+                call_id="draft-1",
+            )
         )
         replay = await registry.invoke(
             _call(LEARNING_PLAN_DRAFT_TOOL_NAME, {"modules": _modules()}, call_id="draft-2")
@@ -142,10 +155,16 @@ async def test_postgres_typed_tools_build_server_profile_append_once_and_fence_g
         conn.commit()
 
         context_payload = json.loads(context.content)
+        direction_payload = json.loads(direction.content)
         first_payload = json.loads(first.content)
         replay_payload = json.loads(replay.content)
         assert context_payload["status"] == "completed"
         assert context_payload["data"]["missing_facts"] == []
+        assert direction_payload["code"] == "planning_direction_continue_ready"
+        assert direction_payload["data"]["direction_resolution"] == {
+            "status": "accepted",
+            "action": "continue_mainline",
+        }
         assert first_payload["status"] == "completed"
         assert replay_payload["status"] == "completed"
         assert replay_payload["replayed"] is True
@@ -181,6 +200,12 @@ async def test_postgres_typed_tools_build_server_profile_append_once_and_fence_g
         assert json.loads(stale.content)["code"] == "tool_runtime_generation_stale"
 
         generation = 3
+        facts_stale_registry = LearningPlanRuntimeToolRegistry.from_postgres(
+            conn,
+            run=run,
+            runtime_generation=3,
+            runtime_generation_reader=lambda: generation,
+        )
         source_message = conn.execute(
             "SELECT message_id AS id FROM tutor_run_input_events WHERE run_id = %s AND input_revision = %s",
             (run_id, run.input_revision),
@@ -195,7 +220,7 @@ async def test_postgres_typed_tools_build_server_profile_append_once_and_fence_g
             content="每周五小时。",
             explicit_facts={"weekly_minutes": 300},
         )
-        facts_stale = await registry.invoke(
+        facts_stale = await facts_stale_registry.invoke(
             _call(PLANNING_CONTEXT_TOOL_NAME, {}, call_id="facts-stale")
         )
         assert json.loads(facts_stale.content)["code"] == "planning_facts_stale"
@@ -357,24 +382,31 @@ async def test_postgres_context_exposes_bounded_language_candidates_and_accepts_
             runtime_generation=1,
             runtime_generation_reader=lambda: 1,
         )
-        premature = await registry.invoke(
+        premature_registry = LearningPlanRuntimeToolRegistry.from_postgres(
+            conn,
+            run=run,
+            runtime_generation=1,
+            runtime_generation_reader=lambda: 1,
+        )
+        premature = await premature_registry.invoke(
             _call(
                 PLANNING_CONTEXT_TOOL_NAME,
                 {
+                    "direction_action": "continue_mainline",
                     "planning_intent_hint": {
                         "schema_version": PLANNING_INTENT_HINT_SCHEMA_VERSION,
                         "candidate_language_ids": ["python"],
                         "confidence": "high",
                         "reason_code": "technology_ecosystem_match",
-                    }
+                    },
                 },
                 call_id="language-premature-semantic",
             )
         )
         premature_payload = json.loads(premature.content)
-        assert premature_payload["status"] == "repairable_invalid"
-        assert premature_payload["issues"][0]["code"] == "language_candidates_not_read"
-        assert registry.planning_intent_hint is None
+        assert premature.success is False
+        assert premature_payload["code"] == "planning_direction_context_read_required"
+        assert premature_registry.planning_intent_hint is None
 
         initial = await registry.invoke(
             _call(PLANNING_CONTEXT_TOOL_NAME, {}, call_id="language-context")
@@ -398,6 +430,7 @@ async def test_postgres_context_exposes_bounded_language_candidates_and_accepts_
             _call(
                 PLANNING_CONTEXT_TOOL_NAME,
                 {
+                    "direction_action": "continue_mainline",
                     "planning_intent_hint": {
                         "schema_version": PLANNING_INTENT_HINT_SCHEMA_VERSION,
                         "candidate_language_ids": ["python"],
@@ -410,6 +443,10 @@ async def test_postgres_context_exposes_bounded_language_candidates_and_accepts_
         )
         semantic_payload = json.loads(semantic.content)
         assert semantic_payload["status"] == "awaiting_user"
+        assert semantic_payload["data"]["direction_resolution"] == {
+            "status": "accepted",
+            "action": "continue_mainline",
+        }
         assert semantic_payload["data"]["language_resolution"] == {
             "status": "semantic_shortlist",
             "candidate_language_ids": ["python"],

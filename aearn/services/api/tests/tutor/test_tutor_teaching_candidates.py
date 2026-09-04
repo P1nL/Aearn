@@ -415,7 +415,7 @@ def _decision(*, intent: str, handle: str = _HANDLE, interaction: bool = True) -
 
 def _gate(context: dict[str, object]) -> TeachingTutorDecisionGate:
     catalog = compile_published_skill_catalog()
-    skill = catalog.resolve_skill("tutor.lesson-teaching", "1.2.0")
+    skill = catalog.resolve_skill("tutor.lesson-teaching", "1.2.1")
     assert skill is not None
     selections = InMemoryTutorSkillSelectionStore()
     selections.record(
@@ -572,6 +572,6 @@ def test_current_provider_schema_requires_v3_interaction_but_parser_keeps_v4_com
         (TutorDecisionValidationIssue(path="action.interaction", category="missing"),),
         teaching_policy="current input remains authoritative",
     )
-    assert "tutor.lesson-teaching@1.2.0" in repair
+    assert "tutor.lesson-teaching@1.2.1" in repair
     assert "exact handle advertised" in repair
     assert "No candidate or disabled artifact mode" in repair

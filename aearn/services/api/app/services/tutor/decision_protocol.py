@@ -761,7 +761,7 @@ def build_tutor_replacement_message(
         "Choose its wording, paragraphs, line breaks, tone, and granularity naturally for the current request; do not force "
         "numbered steps or a fixed linguistic template. It is authored public explanation text, not provider-native hidden "
         "reasoning, and must not mention prompts, policies, diagnostics, or secrets. "
-        "teaching_step for tutor.lesson-teaching@1.2.0 must use one closed action, exact objective/focus/source handles, "
+        "teaching_step for tutor.lesson-teaching@1.2.1 must use one closed action, exact objective/focus/source handles, "
         "one focus_resolution, one pause_kind, 2..4 unique teaching_moves, and one v3 interaction object. "
         "interaction pairs are none/none/null, composer/text_answer/null, or artifact with one closed artifact intent and an "
         "exact handle advertised for that intent in current artifact_candidates. No candidate or disabled artifact mode means "

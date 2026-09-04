@@ -179,7 +179,8 @@ Apply this contract when adding or changing Codex dynamic tools for `plan_drafti
 Registered tools:
 
 ~~~text
-aearn_planning_context_read({schema_version?})
+aearn_planning_context_read({schema_version?})  # initial read only
+aearn_planning_context_read({schema_version?, direction_action, planning_intent_hint?})  # exactly one action
 aearn_learning_plan_draft({schema_version?, modules[2..8]})
 ~~~
 
@@ -210,7 +211,7 @@ The draft schema must not contain `profile_json`, `module_1..8`, user/session/ru
 - Build `CompactPlanProfile` only from current confirmed `PlanningFact` leaves. Map `pace_constraints` to `pace_summary`; derive the draft title on the server.
 - Reuse the same LearningPlan artifact builder, language/source policy, graph validation, quality checks, and append-only repository as the Harness capability.
 - Freeze run ID, conversation/user scope, input revision, Tutor lease owner/generation, Runtime connection generation, and planning-facts fingerprint/revision when the registry is created.
-- Before starting the model Turn, call `registry.prime_context()` once to read the same server-authoritative planning context without consuming a model tool-call budget. This guarantees the dispatcher knows the first missing field even if the model omits or misuses the context tool.
+- Before starting the model Turn, call `registry.prime_context()` once to read the same server-authoritative planning context without consuming a model tool-call budget. Priming may identify the first missing field and select the bounded intake profile, but it never authorizes that field's question: the model must still perform the initial read and submit exactly one accepted `direction_action`, otherwise the server uses the fixed direction clarification or preserves a non-direction failure.
 - When facts are incomplete, both the primed result and the model-visible tool result must expose one `next_missing_fact` descriptor derived from the server question catalog: exact `field_key`, explicit semantic `meaning`, server-owned `exact_question`, bounded `wording_policy`, and `response_authority=aearn_typed_request`.
 - `language_id` always means the programming language or published course the learner wants to study. It never means the natural language used by lesson copy or the interface. The model may briefly acknowledge confirmed facts, but it must copy `exact_question` verbatim as the only question and must not invent parenthetical examples, options, or a second question.
 - The dispatcher-created durable Tutor message and generated UI prompt must reuse the same `planning_question_prompt(...)` source of truth as `next_missing_fact.exact_question`; do not maintain a second prompt mapping in Runtime code.
@@ -255,7 +256,7 @@ The draft schema must not contain `profile_json`, `module_1..8`, user/session/ru
 - Assert generated JSON Schema contains typed `modules[]`/`stable_key` and excludes every authority/profile/confirmation field.
 - Cover unknown fields, item bounds, duplicate keys, unknown/self/cyclic prerequisites, payload/output/call/repair/conflict/wall budgets, and raw invalid-value redaction.
 - Fake App Server loop: `repairable_invalid -> completed` in one turn; separately cover awaiting-user, conflict, policy, unavailable, fatal, timeout, duplicate replay, prohibited `request_user_input`, and empty-answer continuation.
-- Integration must prove a typed response creates a fresh TutorRun/new Codex turn on the same persistent conversation thread and deterministically creates the next server-owned question when facts remain missing, even if the fake model omits the context tool call.
+- Integration must prove a typed response creates a fresh TutorRun/new Codex turn on the same persistent conversation thread. When facts remain missing, only an accepted `continue_mainline` or `answer_and_refocus` action may produce the exact next server-owned fact question; an omitted, invalid, duplicate, conflicting, timed-out, or over-budget direction action must produce the fixed direction clarification instead, while Runtime connection/control and other non-direction failures remain failures.
 - Assert every `awaiting_user` context contains `next_missing_fact` for the first entry in `missing_facts`; `language_id` must be described as a programming language/course, its exact question must be `你想学习哪门编程语言？`, and the model-visible descriptor/instructions must not contain natural-language option examples.
 - Assert the Runtime instructions require verbatim `exact_question`, and the persisted Tutor interaction prompt equals `planning_question_prompt(field)` so raw final-answer wording and generated UI cannot drift across separate prompt maps.
 - PostgreSQL integration: construct profile from confirmed facts, append exactly one draft, replay the same safe result, detect facts and Runtime generation staleness, and preserve policy denial.
@@ -466,7 +467,7 @@ TutorRuntimeSelectionPolicy.select(scope_kind, inherited_runtime_kind,
 - `CodexTutorRunDispatcher` never composes `TutorRunLoop`. It acquires the Tutor lease, registers only the typed LearningPlan tools, binds the private Runtime thread, projects normalized events, and returns the existing Aearn run result.
 - During an active Codex turn, a higher durable input revision becomes `turn/steer`; cancellation, supersede, lease loss, or control failure becomes `turn/interrupt`. Control failure terminates unavailable rather than leaving an orphan task.
 - A recovered dispatch with an existing private binding does not start another external turn. It terminalizes the same run as unavailable so a learner Retry can create a fresh same-Runtime run without duplicating model or tool side effects.
-- The dispatcher primes planning context before each model turn. When facts are incomplete it selects only the first missing field and creates one server-catalog typed request after the turn; a learner response creates a fresh run/turn and repeats until complete. Codex built-in `request_user_input` never creates Aearn state.
+- The dispatcher primes planning context before each model turn only to freeze server authority and select the intake profile. The model then performs one read-only context call and exactly one closed `direction_action`; the server gate maps an accepted action to the exact fact question, bounded answer/refocus, fixed direction clarification, or append-only switch reopen, then writes one internal receipt after postconditions. Missing or invalid action never falls through to the primed first-missing question. A learner response creates a fresh run/turn, and Codex built-in `request_user_input` never creates Aearn state.
 - Codex may append a draft through the typed tool but cannot confirm it. LearningPlan confirm and LearningTrack creation remain existing HTTP/domain authority.
 - Readiness, logs, receipts, errors, history, SSE, and Desktop payloads remain Aearn-owned and redacted; Runtime thread/turn IDs and tool arguments never become public.
 
@@ -482,7 +483,7 @@ TutorRuntimeSelectionPolicy.select(scope_kind, inherited_runtime_kind,
 | Cancel, supersede, or lease loss | `turn/interrupt`; late Runtime projection is stale/no public overwrite |
 | Retry of failed Codex run | Fresh run with `codex_sidecar_v1`; no cross-Runtime fallback |
 | Existing binding recovered after dispatch failure | Same run becomes unavailable; no second external turn |
-| Model calls Codex `request_user_input` | empty client response, sidecar stays alive, Aearn creates at most one server-owned typed request from primed facts |
+| Model calls Codex `request_user_input` | empty client response, sidecar stays alive; primed facts alone create no request, and the normal accepted-direction or fixed-clarification gate remains authoritative |
 | Typed response leaves more missing facts | fresh run/new turn on same thread, next first-missing catalog request appears without ordinary composer input |
 
 ### 5. Good / Base / Bad Cases
@@ -530,10 +531,10 @@ Selection happens once at the server-owned creation boundary; dispatch reads onl
 - One explicit active language is the only auto-confirm path and writes `policy_version=planning-language-intent-v2`. Multiple, unsupported, conflicting, deterministic-direction, or semantic evidence never auto-confirms.
 - Model context receives at most 24 server-built candidates with canonical language, course title, level, capability state, and execution family. It receives no course UUID, URL, command, path, runtime configuration, or secret.
 - `planning-intent-hint-v2` is extra-forbid and allows only 1..3 unique current canonical language values, `high|medium`, and one closed reason code. It is legal only on `planning_input + language_id`; low/insufficient evidence uses `clarification` without a hint.
-- Harness carries the hint through strict provider output and `TutorDecision`. Codex first reads candidates and then calls `aearn_planning_context_read` again with the same hint or `clarification_required=true`; the dispatcher converts only validated tool state into an existing typed request.
+- Harness carries the hint through strict provider output and `TutorDecision`. Codex first reads candidates, then submits exactly one closed `direction_action`; `planning-intent-hint-v2` may accompany only `continue_mainline` while `language_id` is the current missing field. Insufficient evidence uses `clarify_direction`, and the dispatcher converts only the validated marker into an existing typed request.
 - Decision gate and persistence re-resolve current input revision/catalog. Unknown, duplicate, inactive, stale, extra, or oversized candidates fail closed and never widen. Enabled no-signal becomes clarification; feature-off alone may use `full_catalog` with `feature_off_rollback`.
 - A durable semantic request persists 1..3 exact options, `recommended=null`, `selection_scope=intent_shortlist`, safe semantic reason, and v2 policy. Public snapshot/SSE/history omit confidence, rationale, candidate evidence, and course UUIDs; historical v1/full-catalog requests replay unchanged.
-- New runs select immutable `tutor.learning-plan-draft@1.0.2`; versions 1.0.0/1.0.1 remain untouched. Default tests use fake provider/App Server and local PostgreSQL only.
+- New runs select immutable `tutor.learning-plan-draft@1.0.3`; versions 1.0.0/1.0.1/1.0.2 remain untouched. Default tests use fake provider/App Server and local PostgreSQL only.
 
 ## Scenario: Bounded Runtime delta coalescing and semantic budgets (2026-08-21)
 
@@ -598,3 +599,13 @@ for projected in coalescer.push(source_event, now=clock()):
     await publish(projected)
 # raw runaway, item, tool, text, time, and pending-byte budgets remain independent.
 ```
+
+## Scenario: Bounded planning direction authority (2026-09-04)
+
+- Codex plan drafting performs one model-visible read-only `aearn_planning_context_read`, then accepts exactly one internal closed `direction_action`: `continue_mainline | answer_and_refocus | clarify_direction | confirmed_switch`. The action is a candidate, not a planning fact or public enum.
+- The registry records an accepted marker only after a valid tool result. Omission, invalid input, duplicate/reclassified action, draft-before-marker, and intake draft attempts fail closed; they never authorize the primed `next_missing_fact`.
+- Server postconditions own the outcome: continue uses the exact server question or a committed draft; answer/refocus is bounded, learner-safe, contains exactly one question, and ends with the exact server question; clarify always uses the fixed server direction prompt; switch reopens exactly language, goal, target level, and experience through existing append-only lineage.
+- Primed `awaiting_user` turns use `effort=low`, a 45-second Runtime bound, a 2,000-character visible reasoning/text bound, and two tool calls (read plus action). Missing/invalid/timeout/budget outcomes create the same server-owned clarification rather than a stale fact question. Complete-fact draft turns retain normal quality limits.
+- After mapped postconditions succeed, the server appends one idempotent `planning_direction_resolved` event to existing `tutor_run_events`. Its closed payload contains only action/result/source, input revision, policy/schema versions, question key when applicable, and server-computed facts/message hashes. It contains no learner/model prose or rationale and is filtered from public run SSE; no database migration or Desktop direction field is added.
+- A successful server-terminalized clarification performs unfinished Runtime-text discard, typed-request persistence, binding finalization, `planning_direction_resolved`, and the original Runtime terminal receipt in one PostgreSQL transaction. Projecting the Runtime terminal only after finalizing the binding is forbidden: the receipt can become `ignored_stale`, leaving provisional reasoning or final-answer rows stuck in `streaming`. Receipt/idempotency failure rolls the whole server-terminalization transaction back.
+- Codex Runtime reasoning remains an owner-scoped `reasoning` channel in Runtime output, snapshot/history/SSE, and Desktop `think`. Commentary, unknown channels, provider metadata, prompts, credentials, and external Runtime IDs remain rejected.
