@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/backend/codex-runtime-sidecar.md", "reason": "验证 reasoning 保持公开、direction action 有界且 receipt 内部化"}
+{"file": ".trellis/spec/backend/learning-agent-integration-qa.md", "reason": "验证 Skill 版本、raw-byte hash 和计划非回归"}
+{"file": ".trellis/spec/backend/teaching-artifact-orchestration.md", "reason": "验证通用主线恢复不复制 Artifact branch 权威"}
+{"file": ".trellis/tasks/09-03-tutor-offtopic-mainline-recovery/research/direction-recovery-correction-final.md", "reason": "核对隐私误诊撤回、根因和最小实施边界"}
+{"file": ".trellis/tasks/09-03-tutor-offtopic-mainline-recovery/research/affected-files-tests-risks.md", "reason": "检查遗漏、公共合同非回归与风险矩阵"}
