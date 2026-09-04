@@ -79,3 +79,25 @@ Implemented bounded semantic language resolution for learning-plan drafting whil
 ### Next Steps
 
 - Use the existing Cancel plan flow and create a new planning session to exercise v2 against the configured provider; no real-provider smoke was run in this task.
+
+
+## Session 3: Tutor semantic direction recovery
+<!-- trellis-session: v=2 fp=a3b7a1c978da8157 -->
+
+**Date**: 2026-09-04
+**Task**: Tutor semantic direction recovery
+**Branch**: `codex/semantic-planning-language-resolution`
+
+### Summary
+
+Implemented generic semantic chat-direction recovery across Harness, Codex plan drafting, LearningPlan and LessonTeaching; added closed direction actions, durable correction receipts, bounded intake, atomic Runtime terminal cleanup, immutable Skill versions, regression coverage, and documented one approved real-provider turn. Related tests, Ruff, Mypy, Desktop checks, Trellis validation, and scoped diff checks passed.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `287d53d` | feat(tutor): recover from conversational direction drift |
+
+### Status
+
+[OK] **Completed**
