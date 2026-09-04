@@ -518,6 +518,56 @@ class PostgresTutorRuntimeProjectionRepository:
             (message_id, binding_id),
         )
 
+    def discard_streaming_text_items_for_server_terminalization(
+        self,
+        *,
+        binding_id: str,
+        fence: TutorRuntimeProjectionFence,
+        thread_id: str,
+        turn_id: str | None,
+        sequence: int,
+        occurred_at: datetime,
+    ) -> None:
+        event = TutorRuntimeProjectionEvent(
+            kind="turn_completed",
+            thread_id=thread_id,
+            turn_id=turn_id,
+            sequence=sequence,
+            occurred_at=occurred_at,
+        )
+        with self._conn.transaction():
+            binding = self._conn.execute(
+                """
+                SELECT bindings.*, runs.status AS run_status, runs.input_revision,
+                       runs.active_lease_owner_id, runs.active_lease_generation,
+                       runs.active_lease_expires_at, runs.terminal_outcome,
+                       runs.cancelled_at, runs.superseded_by_run_id, runs.origin,
+                       runs.interaction_protocol_version
+                FROM tutor_run_runtime_bindings AS bindings
+                JOIN tutor_runs AS runs ON runs.id = bindings.run_id
+                WHERE bindings.id = %s
+                FOR UPDATE OF bindings, runs
+                """,
+                (binding_id,),
+            ).fetchone()
+            if binding is None:
+                raise TutorRuntimeProjectionError("Tutor runtime binding was not found")
+            stale = (
+                event.thread_id != str(binding["external_thread_id"])
+                or str(binding["state"]) in _TERMINAL_BINDING_STATES
+                or not self._fence_matches(binding, fence, event.occurred_at)
+                or not self._turn_matches(binding, event)
+            )
+            if stale:
+                raise TutorRuntimeProjectionError(
+                    "Tutor runtime server terminal cleanup fence is stale"
+                )
+            self._discard_streaming_text_items(
+                binding=binding,
+                fence=fence,
+                event=event,
+            )
+
     def finalize_typed_request_binding(
         self,
         *,

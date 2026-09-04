@@ -576,6 +576,7 @@ class TutorPublicService:
         return tuple(
             self._public_sse_event(user_id=normalized_user_id, state=state, event=event)
             for event in events
+            if event.kind != "planning_direction_resolved"
         )
 
     def list_activity(self, *, user_id: str, limit: int) -> dict[str, object]:

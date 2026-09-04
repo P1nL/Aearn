@@ -422,7 +422,7 @@ Fixture/browser 证据不得包含 external Runtime identity、provider metadata
 - No silent widening: enabled ambiguity has no full-catalog path. Feature-off is the explicit legacy rollback. Historical full-catalog requests replay unchanged.
 - Durable/public: semantic requests use `recommended=null`, safe reason metadata, and no confidence/rationale. Snapshot, SSE reconnect, history, and response validation use stored options/order.
 - Desktop: a one-option language radio starts empty with Submit disabled, selects and submits only the persisted value, and restores only request/version-scoped valid drafts.
-- Skill/integration: new runs select immutable `tutor.learning-plan-draft@1.0.2`; `1.0.0`/`1.0.1` remain unchanged; raw-byte hashes and LF checkout are verified.
+- Skill/integration: new runs select immutable `tutor.learning-plan-draft@1.0.3`; `1.0.0`/`1.0.1`/`1.0.2` remain unchanged; raw-byte hashes and LF checkout are verified.
 - Default validation is fake/offline plus local PostgreSQL. No real provider call, current-request mutation, deployment, or release claim is allowed.
 
 ## 2026-08-23：Closed teaching action Loop 验收矩阵
@@ -551,3 +551,16 @@ The executable cross-layer guard is tests/integration/test_tutor_artifact_platfo
 P0 failure blocks Child12 archive. The safe rollout order is server schema/contracts and default-off admission, then candidate/teaching gates, then Desktop renderers and isolated Preview. Rollback reverses behavior: first remove candidates/disable Artifact teaching admission, then disable new Artifact writes, then hide Desktop/Preview entry points while preserving read-only history. It never deletes Artifact/Attempt/Item/branch rows, rewrites old Skills, backfills invented history, or performs destructive down migration.
 
 The default final matrix uses LLM_TYPE=disabled, fake/deterministic provider seams, local PostgreSQL, in-memory SQLite, learner-safe browser fixtures, Rust unit/check tooling, and an empty reviewed image-lock posture. It does not run a real provider, Docker conformance, production image build/sign/publish, production migration, push, deploy, or release process. Those gates remain “not executed” until separately approved; no local result may imply them.
+
+## 2026-09-04 — Codex planning direction recovery addendum
+
+| ID | Priority | Scenario | Acceptance | Evidence |
+| --- | --- | --- | --- | --- |
+| RT-DIR-01 | P0 | Closed direction action | One read-only context call is followed by exactly one accepted action; omitted/invalid/duplicate/conflicting action and draft-before-marker fail closed | `test_codex_learning_plan_tools.py` |
+| RT-DIR-02 | P0 | No stale-question fallback | Screenshot-like ambiguous input without a marker persists the fixed server clarification, never the old missing-fact question | `test_codex_plan_drafting_cutover.py` |
+| RT-DIR-03 | P0 | Four server mappings | Continue, bounded answer/refocus, deterministic clarify, and exact four-field switch reopen satisfy server-owned postconditions | `test_codex_plan_drafting_cutover.py` |
+| RT-DIR-04 | P0 | Intake hard bound and failure separation | Waiting-for-user turns carry low effort plus 45-second/2,000-character bounds; direction timeout/text-budget fallback uses the fixed clarification, while Runtime connection/control, stale authority, policy, conflict, and other non-direction failures remain failed and create no clarification receipt/request | `test_codex_runtime_adapter.py`, `test_codex_plan_drafting_cutover.py` |
+| RT-DIR-05 | P0 | Durable internal receipt | Exactly one idempotent/conflict-safe `planning_direction_resolved` event contains only closed metadata/hashes and adds no public SSE/Desktop direction field | `test_tutor_run_repository.py`, `test_tutor_conversation_runtime.py` |
+| RT-DIR-06 | P0 | Reasoning retraction | Positive Runtime projection, snapshot/history/SSE parsing, and live/history Desktop `think` rendering accept the owner-scoped reasoning channel; commentary and unknown channels remain rejected | Runtime projection and Desktop Tutor tests |
+
+Routine validation uses fake App Server/local PostgreSQL only. No real-provider latency or semantic-stability claim is authorized by this addendum.

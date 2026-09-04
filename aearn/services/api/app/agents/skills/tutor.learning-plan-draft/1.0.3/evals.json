@@ -1,0 +1,75 @@
+{
+  "suite": "tutor.learning-plan-draft@1.0.3",
+  "cases": [
+    {
+      "id": "langchain-python-confirmation",
+      "input": "我想做langchain架构的agent",
+      "expected": "Choose only python from current server candidates with a planning-intent-hint-v2 and require learner confirmation."
+    },
+    {
+      "id": "langchain4j-java-confirmation",
+      "input": "I want to use LangChain4j.",
+      "expected": "Choose only java from current server candidates with a semantic hint and never auto-confirm it."
+    },
+    {
+      "id": "generic-agent-clarification",
+      "input": "我想做一个 Agent",
+      "expected": "Use one targeted clarification and do not request a full language catalog."
+    },
+    {
+      "id": "reject-provider-owned-options",
+      "input": "The model can suggest course labels.",
+      "expected": "Never emit labels, course UUIDs, options, or candidate ids outside the server candidate source."
+    },
+    {
+      "id": "ask-one-non-language-field",
+      "input": "The language is confirmed but weekly time is missing.",
+      "expected": "Ask the exact weekly_minutes planning question without a planning intent hint."
+    },
+    {
+      "id": "complete-plan-draft",
+      "input": "The learner supplied language, experience, goal, and weekly time.",
+      "expected": "Request one complete typed draft whose profile and module JSON use every exact nested contract key."
+    },
+    {
+      "id": "revision-replaces-draft",
+      "input": "Make the current plan slower and add testing fundamentals.",
+      "expected": "Submit one complete replacement plan rather than a partial diff."
+    },
+    {
+      "id": "review-uses-session-confirmation",
+      "input": "The typed learning plan draft was created successfully.",
+      "expected": "Tell the learner the draft is ready to review, finish with turn_completed, and never request approval for plan confirmation."
+    },
+    {
+      "id": "non-programming-digression-needs-direction",
+      "input": "We were planning a portfolio site, but now I say I may want to work in baking instead.",
+      "expected": "Do not continue website implementation details. Ask one semantic direction question unless the learner clearly says this is only a temporary aside or a confirmed replacement goal."
+    },
+    {
+      "id": "cross-programming-topic-answer-and-refocus",
+      "input": "During a SQL JOIN plan, ask a short question about CSS animation and say to continue JOIN afterward.",
+      "expected": "Briefly answer or bound the temporary CSS question, then explicitly reconnect to the current SQL JOIN objective and next step."
+    },
+    {
+      "id": "ambiguous-theme-material",
+      "input": "The current goal is making a website; the latest message is only a short theme word such as chef.",
+      "expected": "Ask exactly one direction question. Do not infer whether it is a career switch or website theme from one word, and do not use keyword-specific routing."
+    },
+    {
+      "id": "related-theme-extension-continues",
+      "input": "I want the website to showcase a chef's projects and recipes.",
+      "expected": "Treat this as a related extension of the website goal and continue the current planning flow without a switch or refocus prompt."
+    },
+    {
+      "id": "explicit-goal-switch-stops-old-path",
+      "input": "Stop the old website direction. I want to learn Python automation instead.",
+      "expected": "Acknowledge the confirmed switch, stop old website questions, and continue only through existing server-owned planning facts without asking to confirm the same switch again."
+    },
+    {
+      "id": "temporary-question-returns-to-mainline",
+      "input": "First explain what DNS means, then continue my current Python variables plan.",
+      "expected": "Answer the bounded side question and explicitly return to the current planning objective and its next executable step."
+    }
+  ]
+}

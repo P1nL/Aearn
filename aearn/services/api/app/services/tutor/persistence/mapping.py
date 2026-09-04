@@ -138,7 +138,10 @@ def _event_from_row(row: Mapping[str, object], *, projector: TutorSafeProjection
         event_key=str(header.get("event_key") or "invalid_event_key"),
         kind=event_kind if event_kind in _DURABLE_EVENT_KINDS else "invalid_event",
         input_revision=_as_int(header.get("input_revision"), 0),
-        payload=projector.export(row.get("payload_json")),
+        payload=projector.export_event(
+            kind=event_kind,
+            value=row.get("payload_json"),
+        ),
         created_at=created_at,
     )
 

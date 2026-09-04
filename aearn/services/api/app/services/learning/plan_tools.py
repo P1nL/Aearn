@@ -59,6 +59,13 @@ class LearningPlanToolStatus(StrEnum):
     FATAL = "fatal"
 
 
+class PlanningDirectionAction(StrEnum):
+    CONTINUE_MAINLINE = "continue_mainline"
+    ANSWER_AND_REFOCUS = "answer_and_refocus"
+    CLARIFY_DIRECTION = "clarify_direction"
+    CONFIRMED_SWITCH = "confirmed_switch"
+
+
 class _ToolModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
 
@@ -89,13 +96,18 @@ class PlanningContextIntentHintV2(_ToolModel):
 
 class PlanningContextReadInput(_ToolModel):
     schema_version: Literal["aearn-learning-plan-tools-v1"] = "aearn-learning-plan-tools-v1"
+    direction_action: PlanningDirectionAction | None = None
     planning_intent_hint: PlanningContextIntentHintV2 | None = None
-    clarification_required: bool = False
 
     @model_validator(mode="after")
-    def _one_language_resolution(self) -> "PlanningContextReadInput":
-        if self.planning_intent_hint is not None and self.clarification_required:
-            raise ValueError("planning intent hint and clarification are mutually exclusive")
+    def _validate_direction_resolution(self) -> "PlanningContextReadInput":
+        if (
+            self.planning_intent_hint is not None
+            and self.direction_action is not PlanningDirectionAction.CONTINUE_MAINLINE
+        ):
+            raise ValueError(
+                "planning intent hint requires direction_action=continue_mainline"
+            )
         return self
 
 
@@ -351,14 +363,21 @@ class LearningPlanToolService:
                 "nodes_per_module": {"minimum": 1, "maximum": 8},
             },
         }
+        action = tool_input.direction_action if tool_input is not None else None
         if missing:
             next_missing = missing[0]
-            context["next_missing_fact"] = build_planning_question_model_descriptor(next_missing)
+            context["next_missing_fact"] = build_planning_question_model_descriptor(
+                next_missing
+            )
             if next_missing is PlanningFactField.LANGUAGE_ID:
                 resolver = PlanningIntentResolver(self._conn)
                 candidates = resolver.language_candidates()
-                context["language_candidates_schema_version"] = PLANNING_LANGUAGE_CANDIDATE_SCHEMA_VERSION
-                context["language_candidates"] = [candidate.as_model_dict() for candidate in candidates]
+                context["language_candidates_schema_version"] = (
+                    PLANNING_LANGUAGE_CANDIDATE_SCHEMA_VERSION
+                )
+                context["language_candidates"] = [
+                    candidate.as_model_dict() for candidate in candidates
+                ]
                 if tool_input is not None and tool_input.planning_intent_hint is not None:
                     resolution = resolver.resolve_for_run(
                         user_id=self._run.user_id,
@@ -366,7 +385,10 @@ class LearningPlanToolService:
                         expected_input_revision=self._run.input_revision,
                         model_hint=tool_input.planning_intent_hint.model_dump(mode="json"),
                     )
-                    if not resolution.semantic_language_ids or resolution.resolution != "shortlist":
+                    if (
+                        not resolution.semantic_language_ids
+                        or resolution.resolution != "shortlist"
+                    ):
                         return _result(
                             LearningPlanToolStatus.REPAIRABLE_INVALID,
                             "planning_language_hint_invalid",
@@ -374,26 +396,23 @@ class LearningPlanToolService:
                                 LearningPlanToolIssue(
                                     path="planning_intent_hint.candidate_language_ids",
                                     code="candidate_not_active",
-                                    hint="Choose 1..3 unique canonical ids from the current language_candidates list.",
+                                    hint=(
+                                        "Choose 1..3 unique canonical ids from the "
+                                        "current language_candidates list."
+                                    ),
                                 ),
                             ),
                             data=context,
                         )
                     context["language_resolution"] = {
                         "status": "semantic_shortlist",
-                        "candidate_language_ids": list(resolution.semantic_language_ids),
+                        "candidate_language_ids": list(
+                            resolution.semantic_language_ids
+                        ),
                         "reason_code": resolution.reason_code,
                         "policy_version": resolution.policy_version,
                     }
-                elif tool_input is not None and tool_input.clarification_required:
-                    context["language_resolution"] = {
-                        "status": "clarification_required",
-                        "reason_code": "clarification_required_by_model",
-                        "policy_version": "planning-language-intent-v2",
-                    }
-            elif tool_input is not None and (
-                tool_input.planning_intent_hint is not None or tool_input.clarification_required
-            ):
+            elif tool_input is not None and tool_input.planning_intent_hint is not None:
                 return _result(
                     LearningPlanToolStatus.REPAIRABLE_INVALID,
                     "planning_language_resolution_not_applicable",
@@ -401,27 +420,53 @@ class LearningPlanToolService:
                         LearningPlanToolIssue(
                             path="planning_intent_hint",
                             code="wrong_question",
-                            hint="Language resolution is allowed only when language_id is the next missing fact.",
+                            hint=(
+                                "Language resolution is allowed only when language_id "
+                                "is the next missing fact."
+                            ),
                         ),
                     ),
                     data=context,
                 )
+            if action is not None:
+                context["direction_resolution"] = {
+                    "status": "accepted",
+                    "action": action.value,
+                }
+            if action is None:
+                code = "planning_facts_missing"
+            else:
+                code = {
+                    PlanningDirectionAction.CONTINUE_MAINLINE: (
+                        "planning_direction_continue_accepted"
+                    ),
+                    PlanningDirectionAction.ANSWER_AND_REFOCUS: (
+                        "planning_direction_answer_refocus_accepted"
+                    ),
+                    PlanningDirectionAction.CLARIFY_DIRECTION: (
+                        "planning_direction_clarification_accepted"
+                    ),
+                    PlanningDirectionAction.CONFIRMED_SWITCH: (
+                        "planning_direction_switch_accepted"
+                    ),
+                }[action]
             return _result(
                 LearningPlanToolStatus.AWAITING_USER,
-                "planning_facts_missing",
+                code,
                 issues=tuple(
                     LearningPlanToolIssue(
                         path=f"confirmed_facts.{field.value}",
                         code="missing_fact",
-                        hint="Ask the learner for this planning fact through the typed planning request.",
+                        hint=(
+                            "Ask the learner for this planning fact through the "
+                            "typed planning request."
+                        ),
                     )
                     for field in missing
                 ),
                 data=context,
             )
-        if tool_input is not None and (
-            tool_input.planning_intent_hint is not None or tool_input.clarification_required
-        ):
+        if tool_input is not None and tool_input.planning_intent_hint is not None:
             return _result(
                 LearningPlanToolStatus.REPAIRABLE_INVALID,
                 "planning_language_resolution_stale",
@@ -429,12 +474,57 @@ class LearningPlanToolService:
                     LearningPlanToolIssue(
                         path="planning_intent_hint",
                         code="facts_complete",
-                        hint="Do not submit a language resolution after all planning facts are confirmed.",
+                        hint=(
+                            "Do not submit a language resolution after all planning "
+                            "facts are confirmed."
+                        ),
                     ),
                 ),
                 data=context,
             )
-        return _result(LearningPlanToolStatus.COMPLETED, "planning_context_ready", data=context)
+        if action is None:
+            return _result(
+                LearningPlanToolStatus.COMPLETED,
+                "planning_context_ready",
+                data=context,
+            )
+        if action is PlanningDirectionAction.ANSWER_AND_REFOCUS:
+            return _result(
+                LearningPlanToolStatus.REPAIRABLE_INVALID,
+                "planning_direction_answer_refocus_not_applicable",
+                issues=(
+                    LearningPlanToolIssue(
+                        path="direction_action",
+                        code="facts_complete",
+                        hint=(
+                            "Use continue_mainline to draft when facts are complete, "
+                            "or clarify_direction for one server-owned direction question."
+                        ),
+                    ),
+                ),
+                data=context,
+            )
+        context["direction_resolution"] = {
+            "status": "accepted",
+            "action": action.value,
+        }
+        if action is PlanningDirectionAction.CONTINUE_MAINLINE:
+            return _result(
+                LearningPlanToolStatus.COMPLETED,
+                "planning_direction_continue_ready",
+                data=context,
+            )
+        if action is PlanningDirectionAction.CLARIFY_DIRECTION:
+            return _result(
+                LearningPlanToolStatus.AWAITING_USER,
+                "planning_direction_clarification_accepted",
+                data=context,
+            )
+        return _result(
+            LearningPlanToolStatus.AWAITING_USER,
+            "planning_direction_switch_accepted",
+            data=context,
+        )
 
     def draft(self, tool_input: LearningPlanDraftToolInput) -> LearningPlanAgentToolResult:
         fenced = self._fence_result()
