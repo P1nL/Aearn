@@ -101,3 +101,26 @@ Implemented generic semantic chat-direction recovery across Harness, Codex plan 
 ### Status
 
 [OK] **Completed**
+
+
+## Session 4: 提交工作树并整理仓库结构
+<!-- trellis-session: v=2 fp=6cc00d3da6e1d884 -->
+
+**Date**: 2026-09-05
+**Task**: 提交工作树并整理仓库结构
+**Branch**: `codex/semantic-planning-language-resolution`
+
+### Summary
+
+核实并提交 executor CLI 入口修复；新增根目录导航，精确忽略 Python 欢迎缓存，截图迁移到 tmp/repository-cleanup 且 SHA256 不变。独立复核链接和忽略范围、diff 检查通过；未运行 executor。归档自动提交遇到未跟踪旧路径 pathspec，已按归档目录精确提交。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `30a92a5` | fix(executor): use registered CLI entry point |
+| `c1a8080` | chore(repo): organize repository navigation and local artifacts |
+
+### Status
+
+[OK] **Completed**
