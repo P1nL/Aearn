@@ -1,0 +1,6 @@
+{"file":".trellis/spec/backend/error-handling.md","reason":"Check learner-safe terminal errors and no raw exception/provider leakage."}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"Check exact Lesson and prepare response parsers remain strict and aligned."}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Check end-to-end feedback, receipt, API and Desktop data flow without contract drift."}
+{"file":".trellis/tasks/09-04-python-course-document-generation/research/implementation-contracts.md","reason":"Check strict quality, receipt/schema, public API, Desktop and RAG separation contracts from compact exact anchors."}
+{"file":".trellis/tasks/09-04-python-course-document-generation/research/backend-document-generation.md","reason":"Compare implementation against verified incident evidence and non-claims."}
+{"file":".trellis/tasks/09-04-python-course-document-generation/research/frontend-document-panel.md","reason":"Check response-shape edges and UI state/test coverage identified during research."}

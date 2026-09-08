@@ -1,0 +1,8 @@
+{"file":".trellis/spec/backend/error-handling.md","reason":"Owns stable learner-safe error codes, recoverability and protected exception mapping."}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"Owns safe diagnostics and prohibition on prompts, provider bodies, learner content and credentials in logs."}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"Owns LessonDocument unknown-boundary exact parsing and safe API failure handling."}
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"Owns LessonDocument state machine, failed retry UI and registered renderer behavior."}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Guides provider to validator to receipt to API to Desktop round-trip verification."}
+{"file":".trellis/tasks/09-04-python-course-document-generation/research/implementation-contracts.md","reason":"Compact exact-anchor summary of Lesson quality, database, API, Desktop and RAG boundaries that avoids context truncation."}
+{"file":".trellis/tasks/09-04-python-course-document-generation/research/backend-document-generation.md","reason":"Contains verified live DB/API/parser evidence and the actual invalid-then-success failure mode."}
+{"file":".trellis/tasks/09-04-python-course-document-generation/research/frontend-document-panel.md","reason":"Maps Desktop state, parser, API response edges, UI failure behavior and existing test gaps."}
