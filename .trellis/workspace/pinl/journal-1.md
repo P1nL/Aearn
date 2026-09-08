@@ -124,3 +124,25 @@ Implemented generic semantic chat-direction recovery across Harness, Codex plan 
 ### Status
 
 [OK] **Completed**
+
+
+## Session 5: Python LessonDocument 有界修复与安全诊断
+<!-- trellis-session: v=2 fp=f5c7934d3df8e2f9 -->
+
+**Date**: 2026-09-08
+**Task**: Python LessonDocument 有界修复与安全诊断
+**Branch**: `codex/semantic-planning-language-resolution`
+
+### Summary
+
+完成共享一次修复预算、安全反馈与私有审计、prepare replay DTO 和 Desktop 回归。独立审查通过；后端41测试、桌面最终38测试、Ruff/Mypy/tsc/lock及fake浏览器11块正文恢复通过。独立测试库已清理，未调用真实provider或修改用户课程数据。实际提交分支codex/semantic-planning-language-resolution；仅归档本任务，保留Obsidian并行改动，未push。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `ed2b1d6` | fix(lesson): add bounded authoring repair and safe diagnostics |
+
+### Status
+
+[OK] **Completed**
