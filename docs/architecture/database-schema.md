@@ -282,6 +282,12 @@ personalized document。standard 行没有 user/track owner；personalized 行�
 
 local export 包含 personalized blocks、assignment 与 citation metadata，但省略 evidence excerpt 全文、prompt/body/reasoning 和内部 quality details。reset/delete 在 transaction-local purge capability 下 child-to-root 删除 user-owned Lesson rows；共享 standard documents 与其 source snapshots 保留。cutover target inventory 只统计 personalized document、assignment 和 authoring run，不把共享 standard 内容归给某个用户。
 
+### 2026-09-08：Lesson attempt 安全诊断
+
+`tutor_lesson_authoring_attempt_receipts.diagnostic_json` 为 `jsonb NOT NULL DEFAULT '{}'`，数据库 CHECK 要求 object。fresh create 和 additive `ADD COLUMN IF NOT EXISTS` 同时维护；历史行保持空对象兼容，无新增 user-owned 表或删除顺序变更。
+
+新诊断只允许版本、standard/personalized document kind、文档内 attempt index、失败阶段、稳定 issue codes/locations 和 feedback hash。constraint 文本、prompt、provider body、reasoning、raw candidate、credential 不持久化。receipt 的 success 只在 parse/identity/quality 全部通过后记录；每次失败仍单独记录，`(run_id, attempt_index)` identity、append-only trigger 和 usage 缺失时 NULL 语义保留。
+
 ## 2026-08-11：练习 Gate、Attempt 与模块诊断 authority
 
 新练习 authority 由十二张 additive 表组成：`tutor_exercise_versions`、`tutor_exercise_private_rubrics`、`tutor_lesson_gate_bindings`、`tutor_lesson_gate_states`、`tutor_module_diagnostic_versions`、`tutor_module_diagnostic_sessions`、`tutor_module_diagnostic_items`、`tutor_exercise_attempts`、`tutor_exercise_attempt_submissions`、`tutor_exercise_attempt_results`、`tutor_exercise_hint_receipts` 和 `tutor_exercise_execution_links`。共享 exercise/diagnostic version 与 private rubric 不属于单个用户；binding/state、Attempt、submission/result/hint、diagnostic session/item 和 execution link 通过复合 FK 固定 exact user/track/plan/Lesson/diagnostic scope。

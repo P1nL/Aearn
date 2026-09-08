@@ -264,7 +264,7 @@ class TeachingTutorDecisionGate:
     """Require one exact lesson-teaching Skill and one closed action for teaching runs."""
 
     _SKILL_ID = "tutor.lesson-teaching"
-    _SKILL_VERSION = "1.2.0"
+    _SKILL_VERSION = "1.2.1"
     _FREE_READING_ACTIONS = frozenset({
         "answer_question", "explain_concept", "show_example", "compare_examples", "wait_for_input",
     })

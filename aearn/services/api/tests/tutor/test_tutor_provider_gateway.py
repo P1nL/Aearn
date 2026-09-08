@@ -166,16 +166,20 @@ def _context() -> TutorContextSelection:
     )
 
 
-def _interactive_context() -> TutorContextSelection:
+def _interactive_context(
+    *,
+    current_input: str = "我应该学哪些语言",
+    prior_direction: str = "我想做个网站",
+) -> TutorContextSelection:
     return TutorContextBuilder().build(
         TutorContextInput(
             run_id="run-provider",
             conversation_id="conversation-provider",
             input_revision=0,
-            current_input=TutorContextSource("message-current", "我应该学哪些语言"),
+            current_input=TutorContextSource("message-current", current_input),
             current_input_required=True,
             recent_messages=(
-                TutorContextSource("message-old", {"role": "user", "content": "我想做个网站"}),
+                TutorContextSource("message-old", {"role": "user", "content": prior_direction}),
             ),
         ),
         token_budget=1200,
@@ -204,13 +208,51 @@ def test_provider_payload_separates_authoritative_current_input_from_optional_hi
     assert [item["source_id"] for item in payload["context"]] == ["message-old"]
     assert payload["context_metadata"]["current_input"]["source_id"] == "message-current"
     assert "authoritative request" in system
-    assert "current_input, then recent_messages, then working_summary" in system
-    assert "a working summary must never overwrite a newer correction or completion" in system
-    assert "correction" in system
-    assert "already complete" in system
+    assert "current_input and explicit controls" in system
+    assert "then current server authority, then recent_messages" in system
+    assert "persistent-thread associations" in system
+    assert "continue_mainline" in system
+    assert "answer_and_refocus" in system
+    assert "clarify_direction" in system
+    assert "confirmed_switch" in system
+    assert "without keyword lists" in system
+    assert "ask exactly one direction question" in system
+    assert "never reconfirm the same switch" in system
     assert "answer directly first" in system
     assert "at most one necessary follow-up question" in system
     assert "website, image, or HTML" in system
+
+
+@pytest.mark.parametrize(
+    ("prior_direction", "latest_input"),
+    [
+        ("我们在规划作品集网站。", "我也在考虑转行做烘焙。"),
+        ("正在学习 SQL JOIN。", "先问一下 CSS hover 动画，然后继续 JOIN。"),
+        ("正在学习 Python 变量。", "DNS 是什么？问完继续变量练习。"),
+        ("我们在规划网站。", "我想做一个厨师作品展示网站。"),
+        ("我们在规划网站。", "停止网站方向，改学 Python 自动化。"),
+    ],
+)
+def test_direction_drift_scenarios_keep_latest_input_authoritative_without_keyword_routing(
+    prior_direction: str,
+    latest_input: str,
+) -> None:
+    messages = _build_messages(
+        run=_run(),
+        context=_interactive_context(
+            current_input=latest_input,
+            prior_direction=prior_direction,
+        ),
+    )
+
+    payload = json.loads(messages[1]["content"])
+    system = messages[0]["content"]
+    assert payload["current_input"]["content"] == latest_input
+    assert prior_direction in payload["context"][0]["content"]
+    assert "Judge the semantic relationship" in system
+    assert "without keyword lists" in system
+    assert "chef" not in system.casefold()
+    assert "厨师" not in system
 
 
 def test_repair_retry_preserves_current_input_and_latest_intent_teaching_policy() -> None:
@@ -232,8 +274,14 @@ def test_repair_retry_preserves_current_input_and_latest_intent_teaching_policy(
     assert retry_payload["current_input"]["content"] == "我应该学哪些语言"
     repair_message = client.messages[1][-1]["content"]
     assert "authoritative request" in repair_message
-    assert "current_input, then recent_messages, then working_summary" in repair_message
-    assert "a working summary must never overwrite a newer correction or completion" in repair_message
+    assert "current_input and explicit controls" in repair_message
+    assert "then current server authority, then recent_messages" in repair_message
+    assert "persistent-thread associations" in repair_message
+    assert "continue_mainline" in repair_message
+    assert "answer_and_refocus" in repair_message
+    assert "clarify_direction" in repair_message
+    assert "confirmed_switch" in repair_message
+    assert "without keyword lists" in repair_message
     assert "stop the stale path" in repair_message
     assert "answer directly first" in repair_message
 

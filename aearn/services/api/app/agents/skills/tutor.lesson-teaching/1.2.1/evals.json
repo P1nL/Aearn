@@ -1,0 +1,110 @@
+{
+  "cases": [
+    {
+      "id": "composer-v3-pairing",
+      "expected_action": "check_understanding",
+      "expected_interaction": {
+        "mode": "composer",
+        "intent": "text_answer",
+        "artifact_handle": null
+      }
+    },
+    {
+      "id": "exact-code-candidate",
+      "candidate_intents": [
+        "edit_code",
+        "run_code"
+      ],
+      "expected_interaction": {
+        "mode": "artifact",
+        "intent": "edit_code",
+        "artifact_handle": "exact_current_candidate"
+      }
+    },
+    {
+      "id": "structured-answer-candidate",
+      "candidate_kind": "knowledge_check",
+      "expected_intent": "structured_answer"
+    },
+    {
+      "id": "reject-unlisted-handle",
+      "forbid": [
+        "artifact_instruction",
+        "public_message_commit"
+      ]
+    },
+    {
+      "id": "reject-intent-kind-mismatch",
+      "candidate_kind": "sql",
+      "forbid_intent": "review_diff"
+    },
+    {
+      "id": "feature-off-falls-back",
+      "artifact_candidates": [],
+      "expected_modes": [
+        "none",
+        "composer"
+      ]
+    },
+    {
+      "id": "candidate-context-is-safe-only",
+      "forbid": [
+        "standard_answer",
+        "hidden_tests",
+        "private_rubric",
+        "full_private_source",
+        "provider_reasoning",
+        "command_or_path"
+      ]
+    },
+    {
+      "id": "continue-changes-strategy",
+      "stimulus": "continue",
+      "expected": "non_repeated_signature"
+    },
+    {
+      "id": "change-example-keeps-purpose",
+      "stimulus": "change_example",
+      "required_any_move": [
+        "worked_example",
+        "counterexample"
+      ]
+    },
+    {
+      "id": "sql-to-css-temporary-digression",
+      "current_focus": "sql.join",
+      "latest_input": "Before we continue JOIN, how does a CSS hover animation work?",
+      "expected": "Bound the side answer and explicitly refocus on the current SQL JOIN objective without changing server focus authority."
+    },
+    {
+      "id": "python-variables-to-network-concept",
+      "current_focus": "python.variables",
+      "latest_input": "Quick question: what is DNS? Then let's return to variables.",
+      "expected": "Use answer_and_refocus behavior: answer briefly, reconnect to python.variables, and preserve the exact objective and focus ids."
+    },
+    {
+      "id": "ambiguous-new-topic-asks-one-question",
+      "current_focus": "html.site_structure",
+      "latest_input": "Chef.",
+      "expected": "Use one composer direction question and do not infer a career switch or site theme from a keyword."
+    },
+    {
+      "id": "related-extension-stays-on-focus",
+      "current_focus": "html.site_structure",
+      "latest_input": "I want this site structure to present a chef portfolio.",
+      "expected": "Continue the existing focus as a related theme extension without a switch clarification."
+    },
+    {
+      "id": "explicit-switch-cannot-invent-authority",
+      "current_focus": "python.variables",
+      "latest_input": "Stop variables; switch to network programming.",
+      "expected": "Acknowledge the switch and stop the stale path, but do not fabricate a new objective or focus when server authority does not provide one."
+    },
+    {
+      "id": "blocking-artifact-keeps-server-branch-authority",
+      "artifact_state": "blocking",
+      "expected": "Follow the existing server branch disposition and never create a second free-text switch state machine."
+    }
+  ],
+  "suite": "tutor.lesson-teaching@1.2.1"
+}

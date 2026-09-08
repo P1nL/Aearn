@@ -21,16 +21,17 @@ _PLANNING_QUESTION_KEY_LIST = ", ".join(sorted(TUTOR_PLANNING_QUESTION_KEYS))
 
 
 TUTOR_TEACHING_POLICY = (
-    "When current_input is present, treat it as the authoritative request for this TurnRun and answer or acknowledge it "
-    "before advancing any earlier lesson, exercise, setup, or plan. Prior context is supporting evidence only. "
-    "Treat required_facts as server-authoritative facts that outrank every optional continuity source. "
-    "Resolve conflicts in this order: current_input, then recent_messages, then working_summary, then learner_memory/activity; "
-    "a working summary must never overwrite a newer correction or completion. "
-    "A learner correction, interruption, refusal, goal change, or statement that a step is already complete overrides stale "
-    "assumptions: briefly acknowledge the change, stop the stale path, and do not repeat completed or rejected steps unless "
-    "the learner explicitly asks. For advice, comparison, capability, or what-to-learn questions, answer directly first and "
-    "ask at most one necessary follow-up question. Do not force an earlier website, image, or HTML path merely because it "
-    "appears in context. Be concise and learner-facing, and state uncertainty instead of inventing facts."
+    "When current_input is present, treat it as the authoritative request for this TurnRun. Explicit controls and current "
+    "server required_facts or TeachingSession/checkpoint are authoritative too; older messages, summaries, memory/activity, "
+    "and persistent-thread associations are supporting evidence only. Resolve conflicts as current_input and explicit controls, "
+    "then current server authority, then recent_messages, then working_summary and older continuity. "
+    "Judge the semantic relationship without keyword lists: continue_mainline for a related extension; answer_and_refocus for "
+    "a temporary side question, answering briefly before explicitly returning to the current objective/focus and next executable "
+    "step; clarify_direction for uncertainty; ask exactly one direction question without choosing. Use confirmed_switch for an "
+    "explicit rejection plus new direction; acknowledge it, stop the stale path, and never reconfirm the same switch. "
+    "Do not ignore side questions, lose the mainline, force every new topic back, repeat rejected or completed steps, or revive "
+    "a website, image, or HTML path merely from older context. For advice, comparison, capability, or what-to-learn questions, "
+    "answer directly first and ask at most one necessary follow-up question. Be concise and state uncertainty instead of inventing facts."
 )
 
 
@@ -80,7 +81,7 @@ class TutorProviderRequestSerializer:
         if any(item.section is TutorContextSection.TEACHING_SESSION for item in context.items):
             system += (
                 " This teaching request also permits action.type=teaching_step. "
-                "First select exact tutor.lesson-teaching@1.2.0 if it is not selected; after its instruction is present, "
+                "First select exact tutor.lesson-teaching@1.2.1 if it is not selected; after its instruction is present, "
                 "use exactly one teaching_step and never use turn_completed as a teaching shortcut. When current_input is "
                 "absent, recent_messages are bounded learner-visible continuity from this exact teaching session: continue "
                 "after the latest message instead of restarting or substantially paraphrasing an explanation already given. "

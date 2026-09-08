@@ -20,7 +20,12 @@ from app.agents.runtime.delta_coalescer import (
 from app.agents.runtime.codex_connection import ServerRequestHandler, StdioJsonRpcClient
 from app.agents.runtime.codex_supervisor import RuntimeGenerationError, RuntimeProcessLock
 from app.agents.runtime.worker_host import RuntimeTurnControlDirective, _run_controlled_turn
-from app.services.learning.plan_tools import LearningPlanAgentToolResult, LearningPlanDraftToolInput, LearningPlanToolStatus
+from app.services.learning.plan_tools import (
+    LearningPlanAgentToolResult,
+    LearningPlanDraftToolInput,
+    LearningPlanToolStatus,
+    PlanningContextReadInput,
+)
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "codex_runtime" / "fake_app_server.py"
 
@@ -216,6 +221,98 @@ async def test_codex_request_user_input_is_declined_without_killing_the_sidecar(
 
 
 @pytest.mark.asyncio
+async def test_turn_profile_serializes_effort_and_enforces_request_bounds(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(CODEX_ENV_KEY, "fixture-secret")
+    supervisor = CodexRuntimeSupervisor(
+        _config(tmp_path / "effort"),
+        connection_factory=_factory("turn_profile"),
+    )
+    runtime = CodexAppServerRuntime(supervisor)
+    thread = await runtime.start_thread(RuntimeThreadRequest(cwd=str(tmp_path)))
+    with pytest.raises(ValueError, match="effort"):
+        RuntimeTurnRequest(
+            thread,
+            (RuntimeInput("Reject unsupported effort."),),
+            RepairRegistry(),
+            effort="medium",  # type: ignore[arg-type]
+        )
+    low = await runtime.run_turn(
+        RuntimeTurnRequest(
+            thread,
+            (RuntimeInput("Resolve direction."),),
+            RepairRegistry(),
+            effort="low",
+            timeout_seconds=1.0,
+            max_visible_text_chars=8_000,
+        )
+    )
+    low_text = [
+        event.visible_text
+        for event in low.events
+        if event.kind is RuntimeEventKind.MESSAGE_COMPLETED
+        and event.phase == "final_answer"
+    ]
+    assert low_text == ["effort:low"]
+    unset = await runtime.run_turn(
+        RuntimeTurnRequest(
+            thread,
+            (RuntimeInput("Use the backward-compatible default."),),
+            RepairRegistry(),
+        )
+    )
+    assert [
+        event.visible_text
+        for event in unset.events
+        if event.kind is RuntimeEventKind.MESSAGE_COMPLETED
+        and event.phase == "final_answer"
+    ] == ["effort:unset"]
+    await runtime.shutdown()
+
+    timeout_supervisor = CodexRuntimeSupervisor(
+        _config(tmp_path / "timeout"),
+        connection_factory=_factory("slow_turn"),
+    )
+    timeout_runtime = CodexAppServerRuntime(timeout_supervisor)
+    timeout_thread = await timeout_runtime.start_thread(
+        RuntimeThreadRequest(cwd=str(tmp_path))
+    )
+    timed_out = await timeout_runtime.run_turn(
+        RuntimeTurnRequest(
+            timeout_thread,
+            (RuntimeInput("Bound direction time."),),
+            RepairRegistry(),
+            timeout_seconds=0.1,
+        )
+    )
+    assert timed_out.terminal_status is RuntimeTerminalStatus.UNAVAILABLE
+    assert timed_out.safe_error_code == "runtime_turn_time_exhausted"
+    await timeout_runtime.shutdown()
+
+    text_supervisor = CodexRuntimeSupervisor(
+        _config(tmp_path / "text"),
+        connection_factory=_factory("text_budget"),
+    )
+    text_runtime = CodexAppServerRuntime(text_supervisor)
+    text_thread = await text_runtime.start_thread(
+        RuntimeThreadRequest(cwd=str(tmp_path))
+    )
+    text_bounded = await text_runtime.run_turn(
+        RuntimeTurnRequest(
+            text_thread,
+            (RuntimeInput("Bound visible direction text."),),
+            RepairRegistry(),
+            max_visible_text_chars=8_000,
+        )
+    )
+    assert text_bounded.terminal_status is RuntimeTerminalStatus.UNAVAILABLE
+    assert text_bounded.safe_error_code == "runtime_text_budget_exhausted"
+    await text_runtime.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_adapter_rejects_concurrent_writer_and_stale_generation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(CODEX_ENV_KEY, "fixture-secret")
     supervisor = CodexRuntimeSupervisor(_config(tmp_path), connection_factory=_factory("slow_turn"))
@@ -370,11 +467,22 @@ class FakeLearningPlanToolService:
     def __init__(self) -> None:
         self.drafts: list[LearningPlanDraftToolInput] = []
 
-    def read_context(self) -> LearningPlanAgentToolResult:
+    def read_context(
+        self,
+        tool_input: PlanningContextReadInput | None = None,
+    ) -> LearningPlanAgentToolResult:
+        data: dict[str, object] = {"facts_revision": 7, "missing_facts": []}
+        code = "planning_context_ready"
+        if tool_input is not None and tool_input.direction_action is not None:
+            data["direction_resolution"] = {
+                "status": "accepted",
+                "action": tool_input.direction_action.value,
+            }
+            code = "planning_direction_continue_ready"
         return LearningPlanAgentToolResult(
             status=LearningPlanToolStatus.COMPLETED,
-            code="planning_context_ready",
-            data={"facts_revision": 7, "missing_facts": []},
+            code=code,
+            data=data,
         )
 
     def draft(self, tool_input: LearningPlanDraftToolInput) -> LearningPlanAgentToolResult:
@@ -412,6 +520,7 @@ async def test_runtime_learning_plan_tool_repairs_typed_input_in_same_turn(
     assert result.terminal_status is RuntimeTerminalStatus.COMPLETED
     assert [item.status for item in registry.results] == [
         LearningPlanToolStatus.COMPLETED,
+        LearningPlanToolStatus.COMPLETED,
         LearningPlanToolStatus.REPAIRABLE_INVALID,
         LearningPlanToolStatus.COMPLETED,
     ]
@@ -430,7 +539,25 @@ class StatusLearningPlanToolService(FakeLearningPlanToolService):
         self._status = status
         self._replayed = replayed
 
-    def read_context(self) -> LearningPlanAgentToolResult:
+    def read_context(
+        self,
+        tool_input: PlanningContextReadInput | None = None,
+    ) -> LearningPlanAgentToolResult:
+        if (
+            tool_input is not None
+            and tool_input.direction_action is not None
+            and self._status is LearningPlanToolStatus.COMPLETED
+        ):
+            return LearningPlanAgentToolResult(
+                status=self._status,
+                code="planning_direction_continue_ready",
+                data={
+                    "direction_resolution": {
+                        "status": "accepted",
+                        "action": tool_input.direction_action.value,
+                    }
+                },
+            )
         return LearningPlanAgentToolResult(
             status=self._status,
             code=f"safe_{self._status.value}",
@@ -530,8 +657,8 @@ async def test_runtime_learning_plan_tool_duplicate_replay_keeps_one_safe_result
     )
     assert result.terminal_status is RuntimeTerminalStatus.COMPLETED
     assert len(service.drafts) == 2
-    assert registry.results[0].content() == registry.results[1].content()
-    assert all(item.replayed for item in registry.results)
+    assert registry.results[-2].content() == registry.results[-1].content()
+    assert all(item.replayed for item in registry.results[-2:])
     await runtime.shutdown()
 
 

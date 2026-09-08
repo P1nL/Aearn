@@ -130,6 +130,46 @@ ORDER BY field_key, ancestor_depth;
 
 ---
 
+## Scenario: Lesson Attempt Diagnostic Compatibility
+
+### 1. Scope / Trigger
+
+Changes to `tutor_lesson_authoring_attempt_receipts` or its repository writer.
+
+### 2. Signatures
+
+`diagnostic_json jsonb NOT NULL DEFAULT '{}'`, with an object CHECK, belongs to the existing receipt table.
+
+### 3. Contracts
+
+- Maintain fresh-create and additive bootstrap definitions; bootstrap twice must work.
+- Canonicalize an allowlisted diagnostic projection in the repository. Persist version, document kind/index, failure stage, issue codes/locations and optional feedback hash only; do not persist constraint text or candidate/provider content.
+- Preserve legacy `{}`, append-only UPDATE/DELETE rejection, unique `(run_id, attempt_index)`, and NULL usage semantics.
+- No new root table means no new reset/export/cutover ownership. Diagnostics remain private and must not enter learner DTO/export content.
+
+### 4. Validation & Error Matrix
+
+- Non-object diagnostic -> database CHECK rejection.
+- Unknown diagnostic fields or unsafe codes/locations -> repository validation rejection.
+- Duplicate identity or stale lease -> existing uniqueness/CAS boundary; never overwrite receipts.
+
+### 5. Good / Base / Bad Cases
+
+- Good: failed standard attempt records invalid outcome and a safe diagnostic; repaired attempt appends a new receipt.
+- Base: pre-migration row reads with empty diagnostic object.
+- Bad: update a failed receipt to success after a later retry, or serialize a validation exception containing candidate values.
+
+### 6. Tests Required
+
+Assert fresh/additive bootstrap, bootstrap twice, object CHECK, legacy default, immutable receipt trigger, safe projection and usage metadata compatibility.
+
+### 7. Wrong vs Correct
+
+Wrong: `diagnostic_json = exception.__dict__`.
+Correct: validate and canonicalize a closed projection from server-owned issue mappings before inserting the immutable receipt.
+
+---
+
 ## Naming Conventions
 
 - Table names are plural `snake_case`: `learning_plans`, `knowledge_points`, `review_states`.

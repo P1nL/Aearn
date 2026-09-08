@@ -1,0 +1,6 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "后端 Tutor 与 Codex Runtime 规则索引"}
+{"file": ".trellis/spec/backend/codex-runtime-sidecar.md", "reason": "Codex typed tool、turn budget、direction receipt 与持久线程合同"}
+{"file": ".trellis/spec/backend/learning-agent-integration-qa.md", "reason": "语义计划与 Skill raw-byte 完整性合同"}
+{"file": ".trellis/spec/backend/teaching-artifact-orchestration.md", "reason": "通用 direction semantics 与既有 Artifact branch 权威"}
+{"file": ".trellis/tasks/09-03-tutor-offtopic-mainline-recovery/research/current-behavior.md", "reason": "偏航复现、隐式缺省根因与修正范围"}
+{"file": ".trellis/tasks/09-03-tutor-offtopic-mainline-recovery/research/bounded-direction-authority-design.md", "reason": "closed direction action、终态 gate 和成功 receipt 设计"}

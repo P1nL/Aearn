@@ -5,7 +5,7 @@ import re
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Protocol, runtime_checkable
+from typing import Literal, Protocol, runtime_checkable
 
 _TOOL_NAME = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
@@ -124,11 +124,22 @@ class RuntimeTurnRequest:
     thread: RuntimeThreadHandle
     input: tuple[RuntimeInput, ...]
     tools: RuntimeToolRegistry
+    effort: Literal["low"] | None = None
+    timeout_seconds: float | None = None
+    max_visible_text_chars: int | None = None
 
     def __post_init__(self) -> None:
         if not self.input or len(self.input) > 20:
             raise ValueError("runtime turn requires 1..20 input items")
-
+        if self.effort not in {None, "low"}:
+            raise ValueError("runtime turn effort is invalid")
+        if self.timeout_seconds is not None and not 0.1 <= self.timeout_seconds <= 3_600:
+            raise ValueError("runtime turn timeout is invalid")
+        if (
+            self.max_visible_text_chars is not None
+            and not 256 <= self.max_visible_text_chars <= 8_000_000
+        ):
+            raise ValueError("runtime turn visible text budget is invalid")
 
 @dataclass(frozen=True, slots=True)
 class RuntimeEvent:

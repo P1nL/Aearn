@@ -215,6 +215,7 @@ CREATE TABLE IF NOT EXISTS tutor_lesson_authoring_attempt_receipts (
   protocol text NOT NULL CHECK (char_length(protocol) BETWEEN 1 AND 80),
   outcome text NOT NULL CHECK (outcome IN ('success', 'unavailable', 'invalid', 'failed')),
   diagnostic_code text,
+  diagnostic_json jsonb NOT NULL DEFAULT '{}'::jsonb,
   usage_available boolean NOT NULL DEFAULT false,
   input_tokens integer CHECK (input_tokens IS NULL OR input_tokens >= 0),
   output_tokens integer CHECK (output_tokens IS NULL OR output_tokens >= 0),
@@ -230,6 +231,17 @@ CREATE TABLE IF NOT EXISTS tutor_lesson_authoring_attempt_receipts (
     OR (NOT usage_available AND input_tokens IS NULL AND output_tokens IS NULL AND total_tokens IS NULL)
   )
 );
+
+ALTER TABLE tutor_lesson_authoring_attempt_receipts
+  ADD COLUMN IF NOT EXISTS diagnostic_json jsonb NOT NULL DEFAULT '{}'::jsonb;
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_lesson_authoring_attempt_diagnostic'
+    AND conrelid = 'tutor_lesson_authoring_attempt_receipts'::regclass) THEN
+    ALTER TABLE tutor_lesson_authoring_attempt_receipts ADD CONSTRAINT chk_lesson_authoring_attempt_diagnostic
+      CHECK (jsonb_typeof(diagnostic_json) = 'object');
+  END IF;
+END $$;
 
 CREATE OR REPLACE FUNCTION enforce_tutor_lesson_document_lineage()
 RETURNS trigger AS $$

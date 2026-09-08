@@ -20,6 +20,7 @@ from app.services.learning.plan_tools import (
     LearningPlanToolService,
     LearningPlanToolStatus,
     PlanningContextReadInput,
+    PlanningDirectionAction,
     PostgresLearningPlanToolFence,
     build_expected_learning_plan_tool_fence,
 )
@@ -81,10 +82,15 @@ class LearningPlanRuntimeToolRegistry(RuntimeToolRegistry):
         self._calls = 0
         self._repairs = 0
         self._conflicts = 0
+        self._primed_context_result: LearningPlanAgentToolResult | None = None
         self._planning_context_result: LearningPlanAgentToolResult | None = None
         self._planning_intent_hint: dict[str, object] | None = None
-        self._planning_clarification_required = False
-        self._model_language_candidates_read = False
+        self._model_context_read = False
+        self._accepted_direction_action: PlanningDirectionAction | None = None
+        self._accepted_direction_result: LearningPlanAgentToolResult | None = None
+        self._direction_protocol_invalid = False
+        self._intake_mode = False
+        self._draft_completed = False
         self.results: list[LearningPlanAgentToolResult] = []
 
     @classmethod
@@ -122,21 +128,30 @@ class LearningPlanRuntimeToolRegistry(RuntimeToolRegistry):
             RuntimeToolDefinition(
                 name=PLANNING_CONTEXT_TOOL_NAME,
                 description=(
-                    "Read bounded server planning facts, next_missing_fact, and candidates. If language_id is missing, call again "
-                    "with a v2 planning_intent_hint for 1..3 current language ids, or clarification_required=true. "
-                    "Semantic candidates require learner confirmation; never send labels, course ids, options, or scope ids."
+                    "First call once without direction_action to read current server facts, "
+                    "including data.next_missing_fact when facts are incomplete. "
+                    "Then call exactly once with direction_action: continue_mainline, "
+                    "answer_and_refocus, clarify_direction, or confirmed_switch. A "
+                    "planning_intent_hint is allowed only with continue_mainline after "
+                    "reading current language candidates. Never send rationale, learner "
+                    "text, labels, course ids, options, or scope ids."
                 ),
                 input_schema=PlanningContextReadInput.model_json_schema(),
             ),
             RuntimeToolDefinition(
                 name=LEARNING_PLAN_DRAFT_TOOL_NAME,
                 description=(
-                    "Submit 2..8 typed teaching modules for the current planning turn. The server owns "
-                    "the learner profile, facts, language/source policy, persistence scope, and confirmation."
+                    "Submit 2..8 typed teaching modules only after an accepted "
+                    "continue_mainline action and complete planning facts. The server owns "
+                    "the learner profile, language/source policy, persistence, and confirmation."
                 ),
                 input_schema=LearningPlanDraftToolInput.model_json_schema(),
             ),
         )
+
+    @property
+    def primed_context_result(self) -> LearningPlanAgentToolResult | None:
+        return self._primed_context_result
 
     @property
     def planning_context_result(self) -> LearningPlanAgentToolResult | None:
@@ -147,17 +162,64 @@ class LearningPlanRuntimeToolRegistry(RuntimeToolRegistry):
         return self._planning_intent_hint
 
     @property
-    def planning_clarification_required(self) -> bool:
-        return self._planning_clarification_required
+    def planning_direction_action(self) -> PlanningDirectionAction | None:
+        if self._direction_protocol_invalid:
+            return None
+        return self._accepted_direction_action
+
+    @property
+    def planning_direction_result(self) -> LearningPlanAgentToolResult | None:
+        if self._direction_protocol_invalid:
+            return None
+        return self._accepted_direction_result
+
+    @property
+    def direction_protocol_invalid(self) -> bool:
+        return self._direction_protocol_invalid
+
+    @property
+    def intake_mode(self) -> bool:
+        return self._intake_mode
+
+    @property
+    def draft_completed(self) -> bool:
+        return self._draft_completed and not self._direction_protocol_invalid
+
+    @property
+    def requires_server_terminalization(self) -> bool:
+        action = self.planning_direction_action
+        if action is None or self._intake_mode:
+            return True
+        if action is PlanningDirectionAction.CONTINUE_MAINLINE:
+            return not self.draft_completed
+        return True
 
     def prime_context(self) -> LearningPlanAgentToolResult:
-        """Read authoritative planning state before the model turn for deterministic elicitation."""
-        if self._planning_context_result is None:
+        """Read authoritative planning state before the model turn."""
+        if self._primed_context_result is None:
             try:
-                self._planning_context_result = self._service.read_context()
+                result = self._service.read_context()
             except Exception:
-                self._planning_context_result = _fatal("learning_plan_tool_failed")
-        return self._planning_context_result
+                result = _fatal("learning_plan_tool_failed")
+            self._primed_context_result = result
+            self._planning_context_result = result
+        return self._primed_context_result
+
+    def configure_direction_intake(
+        self,
+        *,
+        max_wall_seconds: float = 45.0,
+    ) -> None:
+        """Restrict an awaiting-user turn to one read and one resolution call."""
+        self._intake_mode = True
+        self._budget = LearningPlanToolBudget(
+            max_calls=min(self._budget.max_calls, 2),
+            max_repairs=min(self._budget.max_repairs, 1),
+            max_conflicts=0,
+            max_payload_bytes=self._budget.max_payload_bytes,
+            max_wall_seconds=min(self._budget.max_wall_seconds, max_wall_seconds),
+            max_output_bytes=self._budget.max_output_bytes,
+        )
 
     @property
     def call_count(self) -> int:
@@ -168,9 +230,33 @@ class LearningPlanRuntimeToolRegistry(RuntimeToolRegistry):
         return self._repairs
 
     async def invoke(self, call: RuntimeToolCall) -> RuntimeToolResult:
+        if (
+            call.tool_name == PLANNING_CONTEXT_TOOL_NAME
+            and self._accepted_direction_action is not None
+        ):
+            self._direction_protocol_invalid = True
+            try:
+                repeated = PlanningContextReadInput.model_validate(dict(call.arguments))
+            except ValidationError:
+                return self._runtime_result(
+                    _fatal("planning_direction_action_conflict")
+                )
+            code = (
+                "planning_direction_action_duplicate"
+                if repeated.direction_action is self._accepted_direction_action
+                else "planning_direction_action_conflict"
+            )
+            return self._runtime_result(_fatal(code))
+        if call.tool_name == LEARNING_PLAN_DRAFT_TOOL_NAME and self._intake_mode:
+            self._direction_protocol_invalid = True
+            return self._runtime_result(
+                _fatal("planning_direction_intake_draft_forbidden")
+            )
         if self._clock() - self._started_at > self._budget.max_wall_seconds:
+            self._direction_protocol_invalid = True
             return self._runtime_result(_fatal("tool_deadline_exhausted"))
         if self._calls >= self._budget.max_calls:
+            self._direction_protocol_invalid = True
             return self._runtime_result(_fatal("tool_call_budget_exhausted"))
         self._calls += 1
         try:
@@ -183,61 +269,28 @@ class LearningPlanRuntimeToolRegistry(RuntimeToolRegistry):
                 ).encode("utf-8")
             )
         except (TypeError, ValueError):
+            self._direction_protocol_invalid = True
             return self._record_repair(
-                _repairable_issue("arguments", "invalid_payload", "Send one JSON object matching the tool schema.")
+                _repairable_issue(
+                    "arguments",
+                    "invalid_payload",
+                    "Send one JSON object matching the tool schema.",
+                )
             )
         if payload_size > self._budget.max_payload_bytes:
+            self._direction_protocol_invalid = True
             return self._record_repair(
-                _repairable_issue("arguments", "payload_too_large", "Reduce titles, descriptions, modules, or nodes.")
+                _repairable_issue(
+                    "arguments",
+                    "payload_too_large",
+                    "Reduce titles, descriptions, modules, or nodes.",
+                )
             )
 
         if call.tool_name == PLANNING_CONTEXT_TOOL_NAME:
-            try:
-                context_input = PlanningContextReadInput.model_validate(dict(call.arguments))
-            except ValidationError as exc:
-                return self._record_repair(_validation_result(exc))
-            has_language_resolution = (
-                context_input.planning_intent_hint is not None
-                or context_input.clarification_required
-            )
-            if has_language_resolution and not self._model_language_candidates_read:
-                return self._record_repair(
-                    _repairable_issue(
-                        "planning_intent_hint",
-                        "language_candidates_not_read",
-                        "Read the current language_candidates first, then call this tool again with one resolution.",
-                    )
-                )
-            try:
-                result = (
-                    self._service.read_context(context_input)
-                    if has_language_resolution
-                    else self._service.read_context()
-                )
-            except Exception:
-                result = _fatal("learning_plan_tool_failed")
-            self._planning_context_result = result
-            if result.status is LearningPlanToolStatus.AWAITING_USER:
-                if has_language_resolution:
-                    if context_input.planning_intent_hint is not None:
-                        self._planning_intent_hint = (
-                            context_input.planning_intent_hint.model_dump(mode="json")
-                        )
-                        self._planning_clarification_required = False
-                    else:
-                        self._planning_intent_hint = None
-                        self._planning_clarification_required = True
-                elif _awaiting_language_candidates(result):
-                    self._model_language_candidates_read = True
+            result = self._invoke_context(call)
         elif call.tool_name == LEARNING_PLAN_DRAFT_TOOL_NAME:
-            try:
-                draft_input = LearningPlanDraftToolInput.model_validate(dict(call.arguments))
-            except ValidationError as exc:
-                return self._record_repair(_validation_result(exc))
-            try:
-                result = self._service.draft(draft_input)
-            except Exception:
-                result = _fatal("learning_plan_tool_failed")
+            result = self._invoke_draft(call)
         else:
             result = _fatal("unknown_learning_plan_tool")
 
@@ -248,7 +301,79 @@ class LearningPlanRuntimeToolRegistry(RuntimeToolRegistry):
             if self._conflicts > self._budget.max_conflicts:
                 return self._runtime_result(_fatal("tool_conflict_budget_exhausted"))
         remaining = max(0, self._budget.max_repairs - self._repairs)
-        return self._runtime_result(result.model_copy(update={"remaining_repair_attempts": remaining}))
+        return self._runtime_result(
+            result.model_copy(update={"remaining_repair_attempts": remaining})
+        )
+
+    def _invoke_context(self, call: RuntimeToolCall) -> LearningPlanAgentToolResult:
+        try:
+            context_input = PlanningContextReadInput.model_validate(dict(call.arguments))
+        except ValidationError as exc:
+            self._direction_protocol_invalid = True
+            return _validation_result(exc)
+        action = context_input.direction_action
+        if action is None:
+            if self._model_context_read or self._accepted_direction_action is not None:
+                self._direction_protocol_invalid = True
+                return _fatal("planning_direction_context_read_duplicate")
+            try:
+                result = self._service.read_context()
+            except Exception:
+                result = _fatal("learning_plan_tool_failed")
+            self._model_context_read = True
+            self._planning_context_result = result
+            return result
+        if not self._model_context_read:
+            self._direction_protocol_invalid = True
+            return _fatal("planning_direction_context_read_required")
+        if self._accepted_direction_action is not None:
+            self._direction_protocol_invalid = True
+            code = (
+                "planning_direction_action_duplicate"
+                if action is self._accepted_direction_action
+                else "planning_direction_action_conflict"
+            )
+            return _fatal(code)
+        if self._direction_protocol_invalid:
+            return _fatal("planning_direction_protocol_invalid")
+        try:
+            result = self._service.read_context(context_input)
+        except Exception:
+            result = _fatal("learning_plan_tool_failed")
+        self._planning_context_result = result
+        if _direction_result_is_accepted(action, result):
+            self._accepted_direction_action = action
+            self._accepted_direction_result = result
+            self._planning_intent_hint = (
+                context_input.planning_intent_hint.model_dump(mode="json")
+                if context_input.planning_intent_hint is not None
+                else None
+            )
+        else:
+            self._direction_protocol_invalid = True
+        return result
+
+    def _invoke_draft(self, call: RuntimeToolCall) -> LearningPlanAgentToolResult:
+        if self.planning_direction_action is not PlanningDirectionAction.CONTINUE_MAINLINE:
+            self._direction_protocol_invalid = True
+            return _fatal("planning_direction_action_required")
+        if self._intake_mode:
+            self._direction_protocol_invalid = True
+            return _fatal("planning_direction_intake_draft_forbidden")
+        try:
+            draft_input = LearningPlanDraftToolInput.model_validate(dict(call.arguments))
+        except ValidationError as exc:
+            return _validation_result(exc)
+        try:
+            result = self._service.draft(draft_input)
+        except Exception:
+            result = _fatal("learning_plan_tool_failed")
+        if (
+            result.status is LearningPlanToolStatus.COMPLETED
+            and result.code == "learning_plan_draft_completed"
+        ):
+            self._draft_completed = True
+        return result
 
     def _record_repair(self, result: LearningPlanAgentToolResult) -> RuntimeToolResult:
         self._repairs += 1
@@ -258,7 +383,8 @@ class LearningPlanRuntimeToolRegistry(RuntimeToolRegistry):
             result.model_copy(
                 update={
                     "retry_allowed": True,
-                    "remaining_repair_attempts": self._budget.max_repairs - self._repairs,
+                    "remaining_repair_attempts": self._budget.max_repairs
+                    - self._repairs,
                 }
             )
         )
@@ -266,6 +392,11 @@ class LearningPlanRuntimeToolRegistry(RuntimeToolRegistry):
     def _runtime_result(self, result: LearningPlanAgentToolResult) -> RuntimeToolResult:
         content = result.content()
         if len(content.encode("utf-8")) > self._budget.max_output_bytes:
+            self._accepted_direction_action = None
+            self._accepted_direction_result = None
+            self._planning_intent_hint = None
+            self._draft_completed = False
+            self._direction_protocol_invalid = True
             result = _fatal("tool_output_budget_exhausted")
             content = result.content()
         self.results.append(result)
@@ -276,6 +407,36 @@ class LearningPlanRuntimeToolRegistry(RuntimeToolRegistry):
             LearningPlanToolStatus.CONFLICT,
         }
         return RuntimeToolResult(success=success, content=content, safe_code=result.code)
+
+
+def _direction_result_is_accepted(
+    action: PlanningDirectionAction,
+    result: LearningPlanAgentToolResult,
+) -> bool:
+    resolution = result.data.get("direction_resolution")
+    if not isinstance(resolution, Mapping):
+        return False
+    if resolution.get("status") != "accepted" or resolution.get("action") != action.value:
+        return False
+    accepted_codes = {
+        PlanningDirectionAction.CONTINUE_MAINLINE: {
+            "planning_direction_continue_accepted",
+            "planning_direction_continue_ready",
+        },
+        PlanningDirectionAction.ANSWER_AND_REFOCUS: {
+            "planning_direction_answer_refocus_accepted",
+        },
+        PlanningDirectionAction.CLARIFY_DIRECTION: {
+            "planning_direction_clarification_accepted",
+        },
+        PlanningDirectionAction.CONFIRMED_SWITCH: {
+            "planning_direction_switch_accepted",
+        },
+    }
+    return result.code in accepted_codes[action] and result.status in {
+        LearningPlanToolStatus.COMPLETED,
+        LearningPlanToolStatus.AWAITING_USER,
+    }
 
 
 def _awaiting_language_candidates(result: LearningPlanAgentToolResult) -> bool:
