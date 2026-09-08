@@ -69,9 +69,10 @@ class LessonDocumentService:
                 scope = current["scope"]
                 assert isinstance(scope, LessonScopeRecord)
                 if run_kind == "prepare" and current.get("assignment") is not None:
-                    response = self._project_state(current)
-                    response.update(should_dispatch=False, idempotent_replayed=True)
-                    return response
+                    return {
+                        "status": "ready", "track_id": track, "knowledge_key": key,
+                        "authoring_run": None, "should_dispatch": False, "idempotent_replayed": True,
+                    }
                 self._assert_prepare_scope(scope, expected_track_version, expected_progress_version)
                 profile_hash = self._profile_hash(scope)
                 request_hash = _hash_json({
@@ -92,7 +93,7 @@ class LessonDocumentService:
                 ) from exc
         return {
             "status": _run_public_status(run), "track_id": track, "knowledge_key": key,
-            "authoring_run": _project_run(run), "should_dispatch": not replayed and run.state == "pending",
+            "authoring_run": _project_run(run) if _run_public_status(run) in {"preparing", "failed"} else None, "should_dispatch": not replayed and run.state == "pending",
             "idempotent_replayed": replayed,
         }
 
@@ -246,8 +247,10 @@ class LessonDocumentService:
             )
             return base
         if isinstance(latest_run, LessonAuthoringRunRecord):
-            base.update(status=_run_public_status(latest_run), authoring_run=_project_run(latest_run))
-            return base
+            status = _run_public_status(latest_run)
+            if status in {"preparing", "failed"}:
+                base.update(status=status, authoring_run=_project_run(latest_run))
+                return base
         base["status"] = "missing"
         return base
 
