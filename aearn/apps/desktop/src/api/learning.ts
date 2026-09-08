@@ -733,6 +733,7 @@ export function toLessonDocumentState(payload: unknown): LessonDocumentState | n
     const update = payload.update === null ? null : toLessonUpdateProposal(payload.update);
     if (payload.update !== null && !update) return null;
     const citationIds = new Set(sources.flatMap((source) => source ? [source.citation_id] : []));
+    if (citationIds.size !== sources.length) return null;
     if (document.blocks.some((block) => block.citation_ids.some((id) => !citationIds.has(id)))) return null;
     return {
       ...common,
@@ -1355,6 +1356,7 @@ export function toLessonBlock(payload: unknown): LessonBlock | null {
   if (
     !isRecord(payload) || !isString(payload.block_id) ||
     !isNonNegativeSafeInteger(payload.order_index) || !isStringArray(payload.citation_ids) ||
+    new Set(payload.citation_ids).size !== payload.citation_ids.length ||
     !isString(payload.type)
   ) return null;
   const base = { block_id: payload.block_id, order_index: payload.order_index, citation_ids: payload.citation_ids };

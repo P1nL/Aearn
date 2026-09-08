@@ -3583,6 +3583,52 @@ repository.publish_authoring_result(document=document, snapshots=snapshots, qual
 
 The strict candidate, evidence set, quality report, and final persisted authority remain separate and auditable.
 
+## Scenario: Lesson Authoring Bounded Repair
+
+### 1. Scope / Trigger
+
+Changes to Lesson provider feedback, candidate validation, retry orchestration or attempt receipts must preserve the preceding strict quality gate. This is the existing Lesson path, independent of default-off RAG v2 adapters.
+
+### 2. Signatures
+
+- Internal request feedback: `previous_attempt_feedback.schema_version=lesson_author_feedback_v1`.
+- Receipt projection: `diagnostic_json.schema_version=lesson_author_attempt_diagnostic_v1`; legacy rows may remain `{}`.
+- One run shares one repair budget across standard and personalized documents. Reclaimed runs conservatively receive no new semantic repair budget; normal candidate generation may restart after a crash. The three-call example below applies to an uninterrupted fresh dispatch, not an aggregate transport-call limit across crash/reclaim history.
+
+### 3. Contracts
+
+- Feedback identifies document kind, failure stage, previous document attempt index and at most 12 issues. Each issue uses a server-owned code, bounded safe location and fixed constraint; never echo candidate values or arbitrary exception text.
+- The second request preserves the original safe evidence and validated standard document when personalizing. Only the feedback is added; never attach the rejected candidate or switch provider/model/protocol.
+- Record each provider attempt after candidate identity and quality validation. A syntactically successful provider response is not a successful authoring attempt.
+- Keep transport retry separate. Final publication still revalidates current state and lease and atomically publishes complete documents and one assignment winner.
+
+### 4. Validation & Error Matrix
+
+| Condition | Repair behavior |
+| --- | --- |
+| Explicit repairable provider response subtype or candidate shape/contract/identity failure | Consume the shared budget once; otherwise fail with existing safe code |
+| Explicit allowlisted quality issues correctable from supplied evidence | Same bounded repair; never infer retryability by substring matching |
+| Source unavailable/integrity/stale, lease loss, configuration or exhausted transport, provider explicit failed response, unknown error | No semantic repair |
+| Standard already used repair and personalized fails | No additional attempt; no partial publication |
+
+### 5. Good / Base / Bad Cases
+
+- Good: standard invalid -> safe feedback -> valid standard -> valid personalized; three total author calls.
+- Base: both candidates valid on first call; two calls and two successful receipts.
+- Bad: standard and personalized each receive an independent retry budget, or a quality-blocked response is recorded as success.
+
+### 6. Tests Required
+
+- Fake-author recovery at either document stage; feedback exact shape/safe contents; deterministic feedback hash.
+- Shared budget exhaustion, second invalid, non-retryable matrix and no partial publication.
+- Provider subtype/model/usage preservation; invalid receipt outcome after successful transport.
+- DTO replay/cancelled exact shape and Desktop failed -> retry -> preparing -> ready regression.
+
+### 7. Wrong vs Correct
+
+Wrong: retry the original prompt blindly or serialize the complete failed candidate into feedback.
+Correct: construct bounded feedback from server-owned issue mappings, consume one run-level budget and record both outcomes before the existing atomic publication gate.
+
 ## 练习 Gate 与模块诊断质量门（2026-08-11）
 
 - Public exercise 与 private rubric 必须通过同一 version/hash quality boundary；public prompt/starter 禁止 hidden test、reference answer、rubric、credential、container/image、command/path marker。

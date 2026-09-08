@@ -538,3 +538,15 @@ Final local gate:
 - source-of-truth link/control audit: **8 files / 33 relative links / 0 errors**; all **13** parent/child Trellis contexts validated; final `git diff --check` passed apart from configured LF-to-CRLF warnings.
 
 Child12 changes no product UI runtime. AC19 therefore reuses the recorded current-workspace Child03-10 Chromium/native matrices for 1440x900, 900x900, 390x844, keyboard/focus, reduced motion, scroll isolation, Preview attacks and clean console; this final task claims no new browser or native Preview run. Real provider, Docker conformance, reviewed image build/sign/publish, Tauri installer, production migration, push, deploy, release and production data changes remain not executed. These results are local engineering acceptance, not production release approval.
+
+## 2026-09-08：Python LessonDocument 有界修复本地证据
+
+本轮对已有可信来源的 Lesson authoring 增加同 provider/model 的一次共享修复机会，发送服务端构造的安全反馈，持久化私有 attempt diagnostic，并统一 prepare replay/cancelled GET shape。Desktop 仅收紧重复 citation 校验，现有页面状态机保留。
+
+- 后端实施首轮：独立 PostgreSQL 数据库串行执行反馈、authoring、Lesson service 与 bootstrap 测试，38 passed in 19.04s；Ruff、Mypy app（249 source files）、lock check 通过。
+- Desktop 实施：5 files / 41 tests passed；独立审查 TypeScript noEmit 与 4 files / 37 tests passed。
+- 浏览器：Playwright CLI/Edge 在本地 Vite 渲染真实 LessonDocumentPage 与 strict API parser，fake failed -> explicit retry -> preparing -> ready，11 个合成正文块和来源可见。最终验证轮次无 console warning/error、pageerror 或 Vite overlay；浏览器本地网络权限修正后 HMR 正常。
+- 验证用 API 响应全为 fixture，外部请求阻断，未创建课程、未调用真实 provider。临时浏览器与 Vite 已关闭，初始 API/worker/Desktop 未运行状态保留。
+- 最终独立审查无阻塞项：补充 cancelled prepare replay、expired lease reclaim budget、fatal issue 截断保护与 Desktop missing prepare replay；后端 41 passed，Desktop 4 files / 38 passed，Ruff、Mypy app（249 files）、tsc --noEmit、lock check 与 diff check 通过。两轮各自独立测试库均已删除。
+
+不声明真实 provider 生成质量、RAG v2 或 LangChain corpus 发布、全量 Desktop build、生产迁移、push/deploy/release 或现有用户课程数据修改。
