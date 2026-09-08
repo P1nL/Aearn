@@ -118,7 +118,7 @@ def test_teaching_control_context_includes_prior_same_session_messages() -> None
     provider = SequenceTutorProvider((
         TutorProviderResult(
             decision=TutorDecision(
-                skill_references=(TutorSkillReference("tutor.lesson-teaching", "1.2.0"),),
+                skill_references=(TutorSkillReference("tutor.lesson-teaching", "1.2.1"),),
             ),
         ),
         TutorProviderResult(
@@ -217,7 +217,13 @@ def test_teaching_control_context_includes_prior_same_session_messages() -> None
         system = provider_messages[0]["content"]
         assert "recent_messages are bounded learner-visible continuity" in system
         assert "instead of restarting or substantially paraphrasing" in system
-        assert "First select exact tutor.lesson-teaching@1.2.0" in system
+        assert "First select exact tutor.lesson-teaching@1.2.1" in system
         assert "recent_teaching_units" in system
         assert "composer/text_answer/null" in system
         assert "artifact_candidates" in system
+        assert "continue_mainline" in system
+        assert "answer_and_refocus" in system
+        assert "clarify_direction" in system
+        assert "confirmed_switch" in system
+        assert "server required_facts or TeachingSession/checkpoint" in system
+        assert "without keyword lists" in system

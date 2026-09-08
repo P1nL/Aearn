@@ -23,6 +23,8 @@ docs/.obsidian/
 **/.pnpm-store/
 
 # Python and packaging caches.
+# Local Python welcome cache; keep other Python/ content visible to Git.
+/Python/_cache/
 **/__pycache__/
 **/*.py[cod]
 **/.pytest_cache/

@@ -143,7 +143,7 @@ class _ArtifactTeachingProvider:
             return TutorProviderResult(
                 decision=TutorDecision(
                     skill_references=(
-                        TutorSkillReference("tutor.lesson-teaching", "1.2.0"),
+                        TutorSkillReference("tutor.lesson-teaching", "1.2.1"),
                     ),
                 )
             )

@@ -488,6 +488,99 @@ class RunPersistenceMixin(PersistenceMixin):
                 payload=payload,
             )
 
+    def record_planning_direction_resolution(
+        self,
+        *,
+        user_id: str,
+        run_id: str,
+        input_revision: int,
+        direction_action: str,
+        result_kind: str,
+        source: str,
+        facts_fingerprint: str,
+        public_message_hash: str,
+        question_key: str | None = None,
+    ) -> TutorDurableEvent:
+        allowed_actions = {
+            "continue_mainline",
+            "answer_and_refocus",
+            "clarify_direction",
+            "confirmed_switch",
+        }
+        allowed_results = {"planning_input", "clarification", "plan_draft"}
+        allowed_action_results = {
+            "continue_mainline": {"planning_input", "plan_draft"},
+            "answer_and_refocus": {"planning_input"},
+            "clarify_direction": {"clarification"},
+            "confirmed_switch": {"planning_input", "clarification"},
+        }
+        allowed_sources = {
+            "model_candidate",
+            "server_fallback_missing_direction",
+            "server_fallback_invalid_direction",
+            "server_fallback_direction_bound",
+            "server_fallback_action_postcondition",
+        }
+        allowed_questions = {
+            "language_id",
+            "goal_text",
+            "target_level",
+            "weekly_minutes",
+            "experience_level",
+            "teaching_preferences",
+            "pace_constraints",
+        }
+        if direction_action not in allowed_actions:
+            raise ValueError("planning direction action is invalid")
+        if result_kind not in allowed_results:
+            raise ValueError("planning direction result kind is invalid")
+        if result_kind not in allowed_action_results[direction_action]:
+            raise ValueError("planning direction action/result pairing is invalid")
+        if source not in allowed_sources:
+            raise ValueError("planning direction source is invalid")
+        if source != "model_candidate" and (
+            direction_action != "clarify_direction"
+            or result_kind != "clarification"
+        ):
+            raise ValueError("planning direction fallback receipt is invalid")
+        if question_key is not None and question_key not in allowed_questions:
+            raise ValueError("planning direction question key is invalid")
+        if result_kind == "planning_input" and question_key is None:
+            raise ValueError("planning input direction receipt requires a question key")
+        if result_kind != "planning_input" and question_key is not None:
+            raise ValueError("non-planning direction receipt cannot carry a question key")
+        if not _SHA256.fullmatch(facts_fingerprint):
+            raise ValueError("planning facts fingerprint must be SHA-256")
+        if not _SHA256.fullmatch(public_message_hash):
+            raise ValueError("planning public message hash must be SHA-256")
+        with self._conn.transaction():
+            run = self._lock_run(user_id=user_id, run_id=run_id)
+            if input_revision != _as_int(run.get("input_revision"), 0):
+                raise TutorIdempotencyConflict(
+                    "planning direction receipt input revision is stale"
+                )
+            payload: dict[str, object] = {
+                "schema_version": "planning-direction-resolution-receipt-v1",
+                "kind": "planning_direction_resolved",
+                "status": "accepted",
+                "direction_action": direction_action,
+                "result_kind": result_kind,
+                "source": source,
+                "input_revision": input_revision,
+                "facts_fingerprint": facts_fingerprint,
+                "public_message_hash": public_message_hash,
+                "policy_version": "planning-direction-policy-v1",
+            }
+            if question_key is not None:
+                payload["question_key"] = question_key
+            return self._append_event_locked(
+                run_id=run_id,
+                event_key=f"planning-direction:{input_revision}",
+                kind="planning_direction_resolved",
+                input_revision=input_revision,
+                payload=payload,
+            )
+
     def events_after(
         self,
         *,
@@ -894,11 +987,17 @@ class RunPersistenceMixin(PersistenceMixin):
         _safe_key(kind, label="event kind")
         if kind not in _DURABLE_EVENT_KINDS:
             raise ValueError("event kind is not part of the Child 02 durable vocabulary")
-        safe_payload = self._projector.project(payload)
-        payload_hash = self._projector.fingerprint(safe_payload)
+        safe_payload = self._projector.project_event(kind=kind, value=payload)
+        payload_hash = self._projector.fingerprint_event(
+            kind=kind,
+            value=safe_payload,
+        )
         existing = self._event_by_key_locked(run_id=run_id, event_key=event_key)
         if existing is not None:
-            if existing.kind != kind or existing.input_revision != input_revision or self._projector.fingerprint(existing.payload) != payload_hash:
+            if existing.kind != kind or existing.input_revision != input_revision or self._projector.fingerprint_event(
+                kind=kind,
+                value=existing.payload,
+            ) != payload_hash:
                 raise TutorIdempotencyConflict("event key conflicts with a different safe payload")
             return existing
         sequence = self._conn.execute(

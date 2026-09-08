@@ -709,7 +709,7 @@ def test_language_question_gate_revalidates_semantic_hint_staleness_and_feature_
             settings=tutor_api_settings,
         ).resolve(run=run, catalog=compile_published_skill_catalog())
         assert tuple(reference.key for reference in policy.eligible_skill_references) == (
-            "tutor.learning-plan-draft@1.0.2",
+            "tutor.learning-plan-draft@1.0.3",
         )
         gate = PlanningQuestionDecisionGate(base=_ApprovedDecisionGate(), facts=facts)
 

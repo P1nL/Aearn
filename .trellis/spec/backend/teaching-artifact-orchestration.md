@@ -11,7 +11,7 @@ This layer coordinates existing authorities. It does not replace Learning Item p
 ### Versions and flags
 
 ```text
-tutor.lesson-teaching@1.2.0
+tutor.lesson-teaching@1.2.1
 tutor_teaching_decision_v3
 teaching_artifact_candidates_v1
 teaching_action_receipt_v3
@@ -61,6 +61,9 @@ tutor_continuation_intent_events
 
 ## 3. Contracts
 
+- Shared chat-direction semantics are instruction/test guidance, not a public enum: `continue_mainline` for related extensions; `answer_and_refocus` for a bounded answer followed by an explicit return to the current objective/focus and next executable step; `clarify_direction` for exactly one direction question; and `confirmed_switch` only after the learner explicitly rejects the old direction and names a new one.
+- Precedence is latest learner input or explicit control plus current server planning/TeachingSession/checkpoint authority > recent messages > summary > memory/activity or persistent-thread association. Older continuity cannot restore a corrected, completed, refused, or replaced direction. Classification is semantic rather than keyword-based, and a related theme or implementation constraint must not be treated as drift.
+- Direction handling creates no second authority. A non-blocking lesson turn may answer/refocus or wait through the existing composer; it cannot invent objective/focus/checkpoint/track/Artifact state. A blocking Artifact continues to use only the durable branch dispositions `answer_and_refocus`, `offer_switch`, and `confirmed_switch`.
 - The server builds candidate authority from the exact current TeachingSession/checkpoint scope, the latest `published` Learning Item event, capability compatibility, Practice materialization, runtime readiness, and both feature flags. The provider receives bounded learner-safe handles only; private item content, answers, tests, rubrics, provider payloads, commands, paths, and runtime secrets are forbidden.
 - A v3 interaction has exactly one of these shapes: `none / none / null`, `composer / text_answer / null`, or `artifact / closed Artifact intent / exact li:<sha256> handle`. Unknown modes, intents, handles, extra fields, stale scope, or impossible pairings reject the entire public decision before a Tutor message is published.
 - The Decision Gate revalidates mode, intent, handle, scope, feature flags, publication state/version, capability set, Practice authority, and runtime profile. It never trusts a provider-selected kind, payload, exercise identity, owner version, or learner-visible content.
@@ -105,7 +108,7 @@ tutor_continuation_intent_events
 
 ## 6. Tests Required
 
-- Skill catalog and strict-contract tests must prove 1.1.0 is unchanged, 1.2.0 compiles, decision v3 rejects unknown/extra fields, and every interaction mode/intent/handle pairing is exact.
+- Skill catalog and strict-contract tests must prove 1.1.0 and 1.2.0 are unchanged, 1.2.1 compiles with semantic direction-drift evals, decision v3 rejects unknown/extra fields, and every interaction mode/intent/handle pairing is exact.
 - Candidate tests cover feature-off behavior, publication states, capability mismatch, stale scope, private-field exclusion, deterministic ordering, the eight-item cap, and provider-context representation within the fixed budget.
 - Atomic PostgreSQL tests cover success, exact Learning Item/Practice materialization, receipt v3 linkage, stale publication between context and commit, event failure after message preparation, idempotency, and rollback of message/checkpoint/Artifact/Turn state.
 - Branch tests cover cross-scope rejection, depth-one enforcement, additional rounds, answer/refocus, offer/confirm switch, positive Hint receipt, direct-answer receipt, stale lineage, branch resolution, mainline result continuation, and snapshot reconnect.

@@ -90,6 +90,7 @@ __all__ = (
     'PLANNING_QUESTION_CATALOG_VERSION',
     'build_planning_question_presentation',
     'format_planning_question_value',
+    'planning_question_prompt',
     'validate_planning_question_value',
     'PlanningIntentResolver',
     'TUTOR_AUTHORITY_RECEIPT_SCHEMA_VERSION',

@@ -22,9 +22,9 @@ class InteractiveLearningCapabilityPolicyResolver:
     """Grant only the exact plan Skill for a current active planning run."""
 
     _SKILL_ID = "tutor.learning-plan-draft"
-    _SKILL_VERSION = "1.0.2"
+    _SKILL_VERSION = "1.0.3"
     _TEACHING_SKILL_ID = "tutor.lesson-teaching"
-    _TEACHING_SKILL_VERSION = "1.2.0"
+    _TEACHING_SKILL_VERSION = "1.2.1"
 
     def __init__(
         self,

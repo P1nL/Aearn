@@ -518,6 +518,13 @@ Queue/Steer/Interrupt/Retry 的公共路径和响应结构不变：Queue 接受�
 `LESSON_SOURCE_EVIDENCE_INSUFFICIENT`、`LESSON_DOCUMENT_GENERATION_UNAVAILABLE`、
 `LESSON_DOCUMENT_INVALID` 和 `LESSON_DOCUMENT_QUALITY_BLOCKED`。公共投影不包含 prompt、provider body、reasoning、内部 quality report、完整抓取原文、hidden test、reference answer、命令、路径或 credential。
 
+### 2026-09-08：有界生成修复与 replay shape
+
+- 一个 authoring run 内 standard/personalized 共享最多一次额外生成预算；只对服务端 allowlist 的结构、候选或可重写质量错误发送内部 `lesson_author_feedback_v1`。同 provider/model/protocol 修复，transport retry 保持原有边界。
+- 无来源、source integrity/stale、lease loss、配置/transport 失败和未知错误不进入该修复。standard 与 personalized 全部校验通过后才原子发布；预算耗尽继续返回原稳定失败码。
+- prepare 的新建、既有 assignment 和幂等 replay 统一返回 `status, track_id, knowledge_key, authoring_run, idempotent_replayed`；ready replay 使用 `authoring_run=null`。内部 `should_dispatch` 由 route 消费，不进入公共响应。
+- Lesson GET 仅 `preparing | failed` 携带 `authoring_run`；cancelled run 投影为 `missing` 时省略该字段。内部 feedback、diagnostic JSON、issue 和 hash 不进入 learner DTO。
+
 ## 2026-08-11：练习 Gate 与模块诊断 API
 
 所有 Gate 和模块诊断路由都位于 `/api/learning-tracks`、要求 verified user，并按 exact `user_id + track_id + active plan revision + knowledge/module scope` 校验。跨用户、跨 track、locked Lesson、失效 assignment/binding 和不存在对象不泄漏存在性。mutation 使用 `client_action_id`/`Idempotency-Key`、request hash 与 expected version；同 key 同请求重放原响应，同 key 不同请求返回冲突。

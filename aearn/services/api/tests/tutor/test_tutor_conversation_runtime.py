@@ -79,6 +79,41 @@ def test_public_item_union_is_strict_and_turn_status_is_bounded() -> None:
     assert public_turn_status(terminal_outcome="model_unavailable", cancelled=False, superseded=False) is TutorPublicTurnStatus.FAILED
 
 
+def test_internal_planning_direction_receipt_does_not_add_public_sse_fields(
+    tutor_persistence,
+) -> None:
+    fixture = tutor_persistence
+    fixture.repository.record_planning_direction_resolution(
+        user_id=fixture.user_id,
+        run_id=fixture.run.run_id,
+        input_revision=fixture.run.input_revision,
+        direction_action="clarify_direction",
+        result_kind="clarification",
+        source="server_fallback_missing_direction",
+        facts_fingerprint="a" * 64,
+        public_message_hash="b" * 64,
+    )
+
+    internal = fixture.repository.events_after(
+        user_id=fixture.user_id,
+        run_id=fixture.run.run_id,
+        after_sequence=0,
+    )
+    assert any(event.kind == "planning_direction_resolved" for event in internal)
+    public = TutorPublicService(
+        fixture.connection,
+        settings=Settings(),
+    ).replay_events(
+        user_id=fixture.user_id,
+        run_id=fixture.run.run_id,
+        after_sequence=0,
+    )
+    encoded = json.dumps([event.data for event in public], ensure_ascii=False)
+    assert "planning_direction_resolved" not in encoded
+    assert "direction_action" not in encoded
+    assert "facts_fingerprint" not in encoded
+
+
 def test_fresh_v2_turn_job_and_events_roll_back_together(tutor_persistence) -> None:
     fixture = tutor_persistence
 

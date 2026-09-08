@@ -36,6 +36,32 @@ _PATH_TOKEN = re.compile(r"(?:[A-Za-z]:[\\/]|/(?:home|tmp|var|workspace|app|cont
 _SHELL_TOKEN = re.compile(r"(?i)^\s*(?:bash|cmd(?:\.exe)?|powershell|pwsh|curl|wget|python(?:\.exe)?|node|npm|sh)\b")
 _SQL_TOKEN = re.compile(r"(?is)^\s*(?:select\b.+\bfrom\b|insert\s+into\b|update\s+\S+\s+set\b|delete\s+from\b|drop\s+(?:table|database)\b|alter\s+table\b)")
 _CODE_TOKEN = re.compile(r"(?is)(?:```|\bdef\s+[A-Za-z_]\w*\s*\(|\bfunction\s+[A-Za-z_]\w*\s*\(|\bclass\s+[A-Za-z_]\w*\s*\{|\bimport\s+[A-Za-z_])")
+_PLANNING_DIRECTION_ACTIONS = frozenset(
+    {"continue_mainline", "answer_and_refocus", "clarify_direction", "confirmed_switch"}
+)
+_PLANNING_DIRECTION_RESULTS = frozenset(
+    {"planning_input", "clarification", "plan_draft"}
+)
+_PLANNING_DIRECTION_SOURCES = frozenset(
+    {
+        "model_candidate",
+        "server_fallback_missing_direction",
+        "server_fallback_invalid_direction",
+        "server_fallback_direction_bound",
+        "server_fallback_action_postcondition",
+    }
+)
+_PLANNING_QUESTION_KEYS = frozenset(
+    {
+        "language_id",
+        "goal_text",
+        "target_level",
+        "weekly_minutes",
+        "experience_level",
+        "teaching_preferences",
+        "pace_constraints",
+    }
+)
 
 _SAFE_KEYS = frozenset(
     {
@@ -115,9 +141,65 @@ class TutorSafeProjection:
         """Defensively re-project a database value before exposing it."""
         return self.project(value)
 
+    def project_event(self, *, kind: str, value: object) -> dict[str, object]:
+        if kind == "planning_direction_resolved":
+            return self._project_planning_direction_resolution(value)
+        return self.project(value)
+
+    def export_event(self, *, kind: str, value: object) -> dict[str, object]:
+        return self.project_event(kind=kind, value=value)
+
     def fingerprint(self, value: object) -> str:
         canonical = json.dumps(self.project(value), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    def fingerprint_event(self, *, kind: str, value: object) -> str:
+        canonical = json.dumps(
+            self.project_event(kind=kind, value=value),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    def _project_planning_direction_resolution(
+        self,
+        value: object,
+    ) -> dict[str, object]:
+        if not isinstance(value, Mapping):
+            return {"redaction_version": self.version}
+        result: dict[str, object] = {
+            "redaction_version": self.version,
+        }
+        exact_identifiers = {
+            "schema_version": {"planning-direction-resolution-receipt-v1"},
+            "kind": {"planning_direction_resolved"},
+            "status": {"accepted"},
+            "direction_action": _PLANNING_DIRECTION_ACTIONS,
+            "result_kind": _PLANNING_DIRECTION_RESULTS,
+            "source": _PLANNING_DIRECTION_SOURCES,
+            "policy_version": {"planning-direction-policy-v1"},
+            "question_key": _PLANNING_QUESTION_KEYS,
+        }
+        for key, allowed in exact_identifiers.items():
+            raw = value.get(key)
+            if raw is None and key == "question_key":
+                continue
+            normalized = str(raw or "")
+            if normalized in allowed:
+                result[key] = normalized
+        input_revision = value.get("input_revision")
+        if (
+            isinstance(input_revision, int)
+            and not isinstance(input_revision, bool)
+            and input_revision >= 0
+        ):
+            result["input_revision"] = input_revision
+        for key in ("facts_fingerprint", "public_message_hash"):
+            normalized = str(value.get(key) or "").lower()
+            if re.fullmatch(r"[0-9a-f]{64}", normalized) is not None:
+                result[key] = normalized
+        return result
 
     def checkpoint(self, *, metadata: Mapping[str, object], status: str, reason: str, input_revision: int) -> dict[str, object]:
         return self.project(

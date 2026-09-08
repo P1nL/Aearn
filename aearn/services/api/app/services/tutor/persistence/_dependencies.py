@@ -82,6 +82,7 @@ from app.services.learning.planning_questions import (
     PLANNING_QUESTION_CATALOG_VERSION,
     build_planning_question_presentation,
     format_planning_question_value,
+    planning_question_prompt,
     validate_planning_question_value,
 )
 from app.services.learning.planning_intent import PlanningIntentResolver
@@ -124,6 +125,7 @@ _DURABLE_EVENT_KINDS: Final[frozenset[str]] = frozenset(
         "compaction_requested",
         "waiting_for_input",
         "interaction_request",
+        "planning_direction_resolved",
         "curation_proposal_recorded",
         "effect_result",
         "checkpoint_saved",
@@ -260,6 +262,7 @@ __all__ = (
     'PLANNING_QUESTION_CATALOG_VERSION',
     'build_planning_question_presentation',
     'format_planning_question_value',
+    'planning_question_prompt',
     'validate_planning_question_value',
     'PlanningIntentResolver',
     'TUTOR_AUTHORITY_RECEIPT_SCHEMA_VERSION',

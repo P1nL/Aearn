@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from typing import cast
 from uuid import uuid4
 
+from psycopg.types.json import Jsonb
 from psycopg import Connection
 
 from app.services.grounding.grounding_sources import SourceContentType, SourceTrustTier, SourceVersionKind
@@ -238,24 +239,40 @@ class PostgresLessonDocumentRepository:
         if row is None:
             raise LessonVersionConflict("Lesson authoring lease changed")
 
+    def assert_authoring_current(self, *, run: LessonAuthoringRunRecord) -> None:
+        current = self.read_authoring_run(run_id=run.run_id, for_update=True)
+        if current.state != "running" or current.lease_generation != run.lease_generation:
+            raise LessonVersionConflict("Lesson authoring lease changed")
+        scope = self.read_scope(user_id=run.user_id, track_id=run.track_id, knowledge_key=run.knowledge_key)
+        if (scope.track_version != run.expected_track_version
+                or scope.progress_version != run.expected_progress_version
+                or scope.active_plan_revision_id != run.active_plan_revision_id):
+            raise LessonVersionConflict("Lesson authoring scope changed")
+
     def record_authoring_attempt(
         self, *, run: LessonAuthoringRunRecord, attempt_index: int, provider: str, model: str, protocol: str,
         outcome: str, diagnostic_code: str | None, usage: Mapping[str, int] | None,
         request_hash: str, response_hash: str | None,
+        diagnostic: Mapping[str, object] | None = None,
     ) -> None:
+        from app.services.learning.lesson_authoring_feedback import validate_attempt_diagnostic
+        current = self.read_authoring_run(run_id=run.run_id, for_update=True)
+        if current.state != "running" or current.lease_generation != run.lease_generation:
+            raise LessonVersionConflict("Lesson authoring lease changed")
+        safe_diagnostic = validate_attempt_diagnostic(diagnostic or {})
         self._conn.execute(
             """
             INSERT INTO tutor_lesson_authoring_attempt_receipts (
               run_id, user_id, attempt_index, provider, model, protocol, outcome,
               diagnostic_code, usage_available, input_tokens, output_tokens,
-              total_tokens, request_hash, response_hash
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+              total_tokens, request_hash, response_hash, diagnostic_json
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (run_id, attempt_index) DO NOTHING
             """,
             (run.run_id, run.user_id, attempt_index, provider, model, protocol, outcome,
              diagnostic_code, usage is not None, usage.get("input_tokens") if usage else None,
              usage.get("output_tokens") if usage else None, usage.get("total_tokens") if usage else None,
-             request_hash, response_hash),
+             request_hash, response_hash, Jsonb(safe_diagnostic)),
         )
         self._conn.execute(
             "UPDATE tutor_lesson_authoring_runs SET attempt_count = GREATEST(attempt_count, %s) WHERE id = %s",

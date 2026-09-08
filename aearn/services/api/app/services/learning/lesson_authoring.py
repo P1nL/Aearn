@@ -4,7 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Protocol
 
@@ -17,6 +17,7 @@ from app.services.grounding.grounding_retrieval import GroundingRetrievalQuery
 from app.services.grounding.grounding_sources import get_grounding_source
 from app.services.learning.lesson_contracts import (
     LESSON_GENERATOR_VERSION,
+    LESSON_CONTENT_STANDARD_VERSION,
     LESSON_POLICY_VERSION,
     LessonDocumentDraft,
     LessonSourceSnapshot,
@@ -29,7 +30,10 @@ from app.services.learning.lesson_contracts import (
     lesson_author_output_schema,
     parse_lesson_document_candidate,
 )
-from app.services.learning.lesson_quality import LessonQualityError, require_lesson_quality
+from app.services.learning.lesson_quality import LessonQualityError, LessonQualityReport, require_lesson_quality
+from app.services.learning.lesson_authoring_feedback import (
+    CONSTRAINTS, REPAIRABLE, LessonAuthorFeedback, LessonFeedbackIssue, attempt_diagnostic,
+)
 from app.services.learning.lesson_repository import (
     LessonAuthoringRunRecord,
     LessonNotFound,
@@ -72,6 +76,8 @@ class LessonAuthoringRequest:
     mastery_confidence: float
     evidence: tuple[LessonAuthoringEvidence, ...]
     standard_document: LessonDocumentDraft | None = None
+    previous_attempt_feedback: LessonAuthorFeedback | None = None
+    citation_handles: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +100,12 @@ class LessonAuthoringFailure(RuntimeError):
         self.code = code
         self.message = message
         self.outcome = outcome
+        self.stage = "provider_response"
+        self.issues: tuple[LessonFeedbackIssue, ...] = (LessonFeedbackIssue("LESSON_PROVIDER_UNAVAILABLE" if outcome == "unavailable" else "LESSON_AUTHOR_INTERNAL_FAILURE"),)
+        self.provider = "configured-primary"
+        self.model = "configured-primary"
+        self.protocol = "unknown"
+        self.usage: LLMUsage | None = None
 
 
 class PrimaryLessonDocumentAuthor:
@@ -124,7 +136,14 @@ class PrimaryLessonDocumentAuthor:
         except LLMConfigurationError as exc:
             raise LessonAuthoringFailure("LESSON_DOCUMENT_GENERATION_UNAVAILABLE", "课程生成服务当前不可用。", outcome="unavailable") from exc
         except LLMInvalidResponseError as exc:
-            raise LessonAuthoringFailure("LESSON_DOCUMENT_INVALID", "课程生成结果未通过结构校验。", outcome="invalid") from exc
+            failure = LessonAuthoringFailure("LESSON_DOCUMENT_INVALID", "课程生成结果未通过结构校验。", outcome="invalid")
+            code = "LESSON_PROVIDER_" + exc.kind.value.upper()
+            failure.issues = (LessonFeedbackIssue(code if code in CONSTRAINTS else "LESSON_PROVIDER_UNKNOWN"),)
+            failure.provider = self._settings.llm_provider_type or "configured-primary"
+            failure.model = exc.model or self._settings.llm_model or "configured-primary"
+            failure.protocol = select_llm_protocol(self._settings).value
+            failure.usage = exc.usage
+            raise failure from exc
         except LLMCallError as exc:
             raise LessonAuthoringFailure("LESSON_DOCUMENT_GENERATION_UNAVAILABLE", "课程生成服务当前不可用。", outcome="unavailable") from exc
         return LessonAuthoringResponse(
@@ -191,26 +210,22 @@ def dispatch_lesson_authoring_run(
             required_capabilities=scope.required_capabilities, mastery_level="unseen", mastery_confidence=0.0,
             evidence=evidence,
         )
-        standard_response = _call_author_and_record(
-            port=port, request=standard_request, run=running, attempt_index=running.attempt_count,
+        budget = _RepairBudget(next_attempt=running.attempt_count, remaining=1 if running.attempt_count == 1 else 0)
+        standard, standard_quality = _author_and_validate(
+            port=port, request=standard_request, run=running, budget=budget,
+            handles=handles, snapshots=snapshots,
         )
-        standard = _parse_author_candidate(standard_response.candidate, handles)
-        _assert_candidate_identity(standard, standard_request)
-        standard_quality = require_lesson_quality(standard, snapshots)
 
         personalized_request = LessonAuthoringRequest(
             document_kind="personalized", language_id=scope.language_id, knowledge_key=scope.knowledge_key,
             title=scope.node_title, goal_text=scope.goal_text, target_level=scope.target_level,
             required_capabilities=scope.required_capabilities, mastery_level=scope.mastery_level,
             mastery_confidence=scope.mastery_confidence, evidence=evidence, standard_document=standard,
+            citation_handles=tuple(handles.items()),
         )
-        personalized_response = _call_author_and_record(
-            port=port, request=personalized_request, run=running, attempt_index=running.attempt_count + 1,
-        )
-        personalized = _parse_author_candidate(personalized_response.candidate, handles)
-        _assert_candidate_identity(personalized, personalized_request)
-        personalized_quality = require_lesson_quality(
-            personalized, snapshots, document_kind="personalized", standard_document=standard,
+        personalized, personalized_quality = _author_and_validate(
+            port=port, request=personalized_request, run=running, budget=budget,
+            handles=handles, snapshots=snapshots,
         )
         current_document = current_state.get("document")
         impact_base = current_document if isinstance(current_document, LessonDocumentDraft) else standard
@@ -243,33 +258,86 @@ def dispatch_lesson_authoring_run(
     except Exception:
         _safe_fail(run_id, claimed, "LESSON_DOCUMENT_GENERATION_UNAVAILABLE", "课程生成服务当前不可用。", clock())
 
-def _call_author_and_record(
+@dataclass(slots=True)
+class _RepairBudget:
+    next_attempt: int
+    remaining: int = 1
+
+
+def _author_and_validate(
     *, port: LessonDocumentAuthorPort, request: LessonAuthoringRequest,
-    run: LessonAuthoringRunRecord, attempt_index: int,
-) -> LessonAuthoringResponse:
-    request_payload = _safe_request_payload(request)
-    request_hash = _hash_json(request_payload)
-    try:
-        response = port.author(request)
-    except LessonAuthoringFailure as exc:
+    run: LessonAuthoringRunRecord, budget: _RepairBudget,
+    handles: Mapping[str, str], snapshots: tuple[LessonSourceSnapshot, ...],
+) -> tuple[LessonDocumentDraft, LessonQualityReport]:
+    document_attempt = 1
+    while True:
+        # Fence stale dispatchers before every additional provider call.
+        with connect() as conn:
+            with conn.transaction():
+                repository = PostgresLessonDocumentRepository(conn)
+                repository.assert_authoring_current(run=run)
+                if not repository.evidence_is_current(snapshots):
+                    raise LessonVersionConflict("Lesson evidence changed")
+        response: LessonAuthoringResponse | None = None
+        failure: LessonAuthoringFailure | None = None
+        feedback: LessonAuthorFeedback | None = None
+        document: LessonDocumentDraft | None = None
+        quality: LessonQualityReport | None = None
+        try:
+            response = port.author(request)
+            document = _parse_author_candidate(response.candidate, handles)
+            _assert_candidate_identity(document, request)
+            quality = require_lesson_quality(
+                document, snapshots,
+                document_kind="personalized" if request.document_kind == "personalized" else "standard",
+                standard_document=request.standard_document,
+            )
+        except LessonQualityError as exc:
+            failure = LessonAuthoringFailure("LESSON_DOCUMENT_QUALITY_BLOCKED", "课程内容未通过发布质量门。", outcome="invalid")
+            failure.stage = "quality_gate"
+            # Classify the entire report before bounding it: an omitted fatal issue must not enable repair.
+            issues = tuple(LessonFeedbackIssue(issue.code if issue.code in CONSTRAINTS else "LESSON_AUTHOR_INTERNAL_FAILURE",
+                next((f"blocks[{i}]" for i, block in enumerate(document.blocks) if block.block_id == issue.block_id), "document") if document else "document")
+                for issue in exc.report.issues)
+            fatal = tuple(issue for issue in issues if issue.code not in REPAIRABLE)
+            failure.issues = (fatal + tuple(issue for issue in issues if issue.code in REPAIRABLE))[:12]
+        except LessonAuthoringFailure as exc:
+            failure = exc
+        except LessonVersionConflict:
+            raise
+        except Exception:
+            failure = LessonAuthoringFailure("LESSON_DOCUMENT_GENERATION_UNAVAILABLE", "课程生成服务当前不可用。")
+        if failure is not None:
+            feedback = LessonAuthorFeedback(request.document_kind, failure.stage, document_attempt, failure.issues)
         with connect() as conn:
             with conn.transaction():
                 PostgresLessonDocumentRepository(conn).record_authoring_attempt(
-                    run=run, attempt_index=attempt_index, provider="configured-primary",
-                    model="configured-primary", protocol="unknown", outcome=exc.outcome,
-                    diagnostic_code=exc.code, usage=None, request_hash=request_hash, response_hash=None,
+                    run=run, attempt_index=budget.next_attempt,
+                    provider=response.provider if response else failure.provider if failure else "configured-primary",
+                    model=response.model if response else failure.model if failure else "configured-primary",
+                    protocol=response.protocol if response else failure.protocol if failure else "unknown",
+                    outcome=failure.outcome if failure else "success", diagnostic_code=failure.code if failure else None,
+                    usage=_usage_mapping(response.usage if response else failure.usage if failure else None),
+                    request_hash=_hash_json(_safe_request_payload(request)),
+                    response_hash=_hash_json(response.candidate) if response else None,
+                    diagnostic=attempt_diagnostic(request.document_kind, document_attempt, feedback),
                 )
-        raise
-    response_hash = _hash_json(response.candidate)
-    with connect() as conn:
-        with conn.transaction():
-            PostgresLessonDocumentRepository(conn).record_authoring_attempt(
-                run=run, attempt_index=attempt_index, provider=response.provider,
-                model=response.model, protocol=response.protocol, outcome="success",
-                diagnostic_code=None, usage=_usage_mapping(response.usage),
-                request_hash=request_hash, response_hash=response_hash,
-            )
-    return response
+        budget.next_attempt += 1
+        if failure is None:
+            assert document is not None and quality is not None
+            return document, quality
+        if feedback is None or not feedback.repairable or budget.remaining == 0:
+            raise failure
+        budget.remaining -= 1
+        document_attempt += 1
+        request = replace(request, previous_attempt_feedback=feedback)
+
+
+def _candidate_failure(code: str, stage: str, location: str = "document") -> LessonAuthoringFailure:
+    failure = LessonAuthoringFailure("LESSON_DOCUMENT_INVALID", "课程生成结果未通过结构校验。", outcome="invalid")
+    failure.stage = stage
+    failure.issues = (LessonFeedbackIssue(code, location),)
+    return failure
 
 
 def _load_evidence_snapshots(
@@ -341,34 +409,51 @@ def _authoring_evidence(
 
 
 def _parse_author_candidate(payload: Mapping[str, object], handles: Mapping[str, str]) -> LessonDocumentDraft:
+    expected = {"schema_version", "title", "language_id", "knowledge_key", "content_standard_version", "coverage_keys", "blocks"}
+    if set(payload) != expected or payload.get("content_standard_version") != LESSON_CONTENT_STANDARD_VERSION:
+        raise _candidate_failure("LESSON_DOCUMENT_FIELDS_INVALID", "candidate_shape")
     blocks = payload.get("blocks")
-    if not isinstance(blocks, Sequence) or isinstance(blocks, (str, bytes)):
-        raise LessonAuthoringFailure("LESSON_DOCUMENT_INVALID", "课程生成结果缺少 blocks。", outcome="invalid")
+    if not isinstance(blocks, list) or not 1 <= len(blocks) <= 64:
+        raise _candidate_failure("LESSON_DOCUMENT_FIELDS_INVALID", "candidate_shape", "blocks")
     rewritten = dict(payload)
     rewritten_blocks: list[object] = []
-    for raw in blocks:
+    for index, raw in enumerate(blocks):
+        location = f"blocks[{index}]"
         if not isinstance(raw, Mapping):
-            raise LessonAuthoringFailure("LESSON_DOCUMENT_INVALID", "课程 block 结构无效。", outcome="invalid")
+            raise _candidate_failure("LESSON_BLOCK_FIELDS_INVALID", "candidate_contract", location)
         block = dict(raw)
+        block_type = block.get("type")
+        examples = lesson_author_block_examples(language_id="python", citation_handle="S1")
+        if not isinstance(block_type, str) or block_type not in examples:
+            raise _candidate_failure("LESSON_BLOCK_TYPE_INVALID", "candidate_contract", location + ".type")
+        example = examples[block_type]
+        if isinstance(example, Mapping) and set(block) != set(example):
+            raise _candidate_failure("LESSON_BLOCK_FIELDS_INVALID", "candidate_contract", location)
         citations = block.get("citation_ids")
-        if not isinstance(citations, Sequence) or isinstance(citations, (str, bytes)):
-            raise LessonAuthoringFailure("LESSON_DOCUMENT_INVALID", "课程引用结构无效。", outcome="invalid")
-        mapped: list[str] = []
-        for item in citations:
-            handle = str(item)
-            citation_id = handles.get(handle)
-            if citation_id is None:
-                raise LessonAuthoringFailure("LESSON_DOCUMENT_INVALID", "课程引用了服务端未提供的证据。", outcome="invalid")
-            mapped.append(citation_id)
-        block["citation_ids"] = mapped
+        if not isinstance(citations, list) or any(not isinstance(item, str) or item not in handles for item in citations):
+            raise _candidate_failure("LESSON_CITATION_HANDLE_INVALID", "candidate_contract", location + ".citation_ids")
+        block["citation_ids"] = [handles[item] for item in citations]
+        # The same strict parser validates each block, adding a safe index without echoing its exception.
+        from app.services.learning.lesson_contracts import _parse_block
+        try:
+            _parse_block(block)
+        except (ValueError, TypeError):
+            raise _candidate_failure("LESSON_BLOCK_FIELDS_INVALID", "candidate_contract", location) from None
+        if block.get("order_index") != index:
+            raise _candidate_failure("LESSON_BLOCK_ORDER_INVALID", "candidate_contract", location + ".order_index")
         rewritten_blocks.append(block)
     rewritten["blocks"] = rewritten_blocks
-    return parse_lesson_document_candidate(rewritten)
+    try:
+        return parse_lesson_document_candidate(rewritten)
+    except (ValueError, TypeError):
+        raise _candidate_failure("LESSON_DOCUMENT_FIELDS_INVALID", "candidate_contract") from None
 
 
 def _assert_candidate_identity(document: LessonDocumentDraft, request: LessonAuthoringRequest) -> None:
-    if document.language_id != request.language_id or document.knowledge_key != request.knowledge_key:
-        raise LessonAuthoringFailure("LESSON_DOCUMENT_INVALID", "课程生成结果 scope 不匹配。", outcome="invalid")
+    if document.language_id != request.language_id:
+        raise _candidate_failure("LESSON_CANDIDATE_SCOPE_INVALID", "candidate_identity", "language_id")
+    if document.knowledge_key != request.knowledge_key:
+        raise _candidate_failure("LESSON_CANDIDATE_SCOPE_INVALID", "candidate_identity", "knowledge_key")
 
 
 def _safe_fail(
@@ -429,7 +514,6 @@ def _author_messages(request: LessonAuthoringRequest) -> tuple[dict[str, str], .
     )
     payload: dict[str, object] = _safe_request_payload(request)
     if request.standard_document is not None:
-        payload["standard_document"] = canonical_lesson_document_payload(request.standard_document)
         payload["personalization_rule"] = "Preserve all coverage keys and every exercise_gate contract exactly."
     return (
         {"role": "system", "content": instruction},
@@ -438,7 +522,7 @@ def _author_messages(request: LessonAuthoringRequest) -> tuple[dict[str, str], .
 
 
 def _safe_request_payload(request: LessonAuthoringRequest) -> dict[str, object]:
-    return {
+    payload: dict[str, object] = {
         "document_kind": request.document_kind,
         "language_id": request.language_id,
         "knowledge_key": request.knowledge_key,
@@ -462,6 +546,17 @@ def _safe_request_payload(request: LessonAuthoringRequest) -> dict[str, object]:
             for item in request.evidence
         ],
     }
+    if request.previous_attempt_feedback is not None:
+        payload["previous_attempt_feedback"] = request.previous_attempt_feedback.payload()
+    if request.standard_document is not None:
+        standard_payload = canonical_lesson_document_payload(request.standard_document)
+        reverse = {citation: handle for handle, citation in request.citation_handles}
+        standard_blocks = standard_payload["blocks"]
+        assert isinstance(standard_blocks, list)
+        for block in standard_blocks:
+            block["citation_ids"] = [reverse[citation] for citation in block["citation_ids"]]
+        payload["standard_document"] = standard_payload
+    return payload
 
 
 def _usage_mapping(usage: LLMUsage | None) -> dict[str, int] | None:

@@ -1,0 +1,26 @@
+{
+  "id": "tutor.learning-plan-draft",
+  "version": "1.0.3",
+  "owner": "aearn-core",
+  "kind": "tutoring",
+  "summary": "Create one bounded typed learning plan draft with server-bounded language confirmation and semantic mainline recovery.",
+  "instruction_file": "instructions.md",
+  "evaluation_suite_file": "evals.json",
+  "content_hashes": {
+    "instructions.md": "bed76a0844b626ca5d29e2b82d2274f145d0b450b9b19921fa6b9535eeacf379",
+    "evals.json": "fa9d79081be1c1e128f1bd24c81865bf0017a6010e0ca4d732f2d88a01ec1525"
+  },
+  "resource_refs": [
+    "registry:grounding_sources"
+  ],
+  "requires_capabilities": [
+    "learning.plan.draft"
+  ],
+  "allowed_effect_types": [],
+  "policy_tags": [
+    "plan-drafting"
+  ],
+  "input_contract": "tutor.skill-input.v1",
+  "output_contract": "tutor.skill-decision.v1",
+  "deprecated": false
+}
