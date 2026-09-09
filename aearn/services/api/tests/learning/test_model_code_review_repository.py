@@ -6,14 +6,25 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 from app.services.learning.lesson_contracts import ExerciseGateBlock
-from app.services.learning.practice.model_review_repository import PostgresModelReviewRepository
+from app.services.learning.practice.model_review_repository import (
+    PostgresModelReviewRepository,
+)
 from app.services.learning.practice.model_review_templates import (
     ModelReviewAuthorCandidateV2,
     select_model_review_template,
 )
 from app.services.learning.practice.repository import PostgresExerciseGateRepository
 from app.services.learning.practice.service import ExerciseGateService
-from app.services.repositories.local_user_data_repository import export_user_data, reset_user_data
+from app.services.learning.practice.model_review_semantics import (
+    SemanticReasonCode,
+    SemanticReviewReceipt,
+    SemanticVerdict,
+    StrictSemanticVerdict,
+)
+from app.services.repositories.local_user_data_repository import (
+    export_user_data,
+    reset_user_data,
+)
 from app.services.tutor.cutover import HarnessCutoverService
 from tests.support.lesson_document_support import sample_lesson_document
 from tests.learning.test_lesson_document_repository import _publish
@@ -109,7 +120,9 @@ def test_model_review_export_reset_and_cutover_inventory(lesson_repo) -> None:
         mastery_level=running.mastery_level,
     )
     exercise, rubric = template.build_exercise(
-        author=ModelReviewAuthorCandidateV2.model_validate(template.canonical_author_example()),
+        author=ModelReviewAuthorCandidateV2.model_validate(
+            template.canonical_author_example()
+        ),
         knowledge_key=running.knowledge_key,
         required_capabilities=running.required_capabilities,
     )
@@ -158,7 +171,11 @@ def test_model_review_export_reset_and_cutover_inventory(lesson_repo) -> None:
             terminal_at = %s
         WHERE id = %s
         """,
-        (authority_hash, datetime(2026, 8, 12, 3, tzinfo=UTC), validation.validation_id),
+        (
+            authority_hash,
+            datetime(2026, 8, 12, 3, tzinfo=UTC),
+            validation.validation_id,
+        ),
     )
     model_reviews.attach_action_receipt(
         validation_id=validation.validation_id,
@@ -169,11 +186,15 @@ def test_model_review_export_reset_and_cutover_inventory(lesson_repo) -> None:
         "UPDATE tutor_model_review_candidates SET state = 'verified' WHERE id = %s",
         (candidate.candidate_id,),
     )
-    validation = model_reviews.read_validation(validation_id=validation.validation_id, user_id=user_id)
+    validation = model_reviews.read_validation(
+        validation_id=validation.validation_id, user_id=user_id
+    )
     running = model_reviews.read_authoring_run(run_id=running.run_id, user_id=user_id)
     publication_id = model_reviews.publish(
         run=running,
-        candidate=model_reviews.read_candidate(candidate_id=candidate.candidate_id, user_id=user_id),
+        candidate=model_reviews.read_candidate(
+            candidate_id=candidate.candidate_id, user_id=user_id
+        ),
         validation=validation,
         now=datetime(2026, 8, 12, 4, tzinfo=UTC),
     )
@@ -190,7 +211,30 @@ def test_model_review_export_reset_and_cutover_inventory(lesson_repo) -> None:
         expected_gate_version=int(gate["gate_version"]),
         idempotency_key=f"evidence-{uuid4()}",
     )
-    attempt = ExerciseGateService(conn).attempt_gate(
+    gate_service = ExerciseGateService(conn)
+    attempt_key = f"attempt-{uuid4()}"
+    prepared = gate_service.prepare_model_review_attempt(
+        user_id=user_id,
+        track_id=track_id,
+        knowledge_key="python.variables",
+        gate_key="python.variables.basic",
+        review_submission=_finding_submission(),
+        expected_track_version=1,
+        expected_progress_version=int(started["progress_version"]),
+        expected_assignment_version=1,
+        expected_gate_version=int(evidence["gate_version"]),
+        idempotency_key=attempt_key,
+    )
+    semantic_receipt = SemanticReviewReceipt(
+        request_binding_hash=prepared.semantic_request.binding_hash,
+        verdict=StrictSemanticVerdict(
+            verdict=SemanticVerdict.VERIFIED,
+            reason_code=SemanticReasonCode.AUTHORITY_SUPPORTED,
+        ),
+        model="fake",
+        usage=None,
+    )
+    attempt = gate_service.attempt_gate(
         user_id=user_id,
         track_id=track_id,
         knowledge_key="python.variables",
@@ -202,7 +246,9 @@ def test_model_review_export_reset_and_cutover_inventory(lesson_repo) -> None:
         expected_progress_version=int(started["progress_version"]),
         expected_assignment_version=1,
         expected_gate_version=int(evidence["gate_version"]),
-        idempotency_key=f"attempt-{uuid4()}",
+        idempotency_key=attempt_key,
+        prepared_model_review=prepared,
+        semantic_receipt=semantic_receipt,
     )
     conn.commit()
     exercise_version_id = str(attempt["exercise_version_id"])
@@ -215,7 +261,9 @@ def test_model_review_export_reset_and_cutover_inventory(lesson_repo) -> None:
     assert exported["model_review_validation_summaries"][0]["check_count"] == 9
     assert exported["model_review_publication_summaries"][0]["id"] == publication_id
     assert len(exported["model_review_evidence_summaries"]) == 1
-    submission_summary = exported["exercise_attempt_summaries"][0]["review_submission_summary"]
+    submission_summary = exported["exercise_attempt_summaries"][0][
+        "review_submission_summary"
+    ]
     assert submission_summary == {
         "schema_version": "model_code_review_export_summary_v1",
         "verdict": "correctness_issue",
@@ -261,15 +309,24 @@ def test_model_review_export_reset_and_cutover_inventory(lesson_repo) -> None:
         "model_review_evidence_receipts",
     ):
         assert reset["summary"]["counts"][count_name] == 0
-    assert conn.execute(
-        "SELECT 1 FROM tutor_runs WHERE id = %s",
-        (internal_snapshot.run_id,),
-    ).fetchone() is None
-    assert conn.execute(
-        "SELECT 1 FROM tutor_conversations WHERE id = %s",
-        (internal_snapshot.conversation_id,),
-    ).fetchone() is None
-    assert conn.execute(
-        "SELECT 1 FROM tutor_exercise_versions WHERE id = %s",
-        (exercise_version_id,),
-    ).fetchone() is not None
+    assert (
+        conn.execute(
+            "SELECT 1 FROM tutor_runs WHERE id = %s",
+            (internal_snapshot.run_id,),
+        ).fetchone()
+        is None
+    )
+    assert (
+        conn.execute(
+            "SELECT 1 FROM tutor_conversations WHERE id = %s",
+            (internal_snapshot.conversation_id,),
+        ).fetchone()
+        is None
+    )
+    assert (
+        conn.execute(
+            "SELECT 1 FROM tutor_exercise_versions WHERE id = %s",
+            (exercise_version_id,),
+        ).fetchone()
+        is not None
+    )

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from functools import partial
 from uuid import uuid4
 
 import psycopg
@@ -47,6 +48,11 @@ pytestmark = pytest.mark.skipif(not _database_available(), reason="PostgreSQL is
 
 @pytest.fixture()
 def lesson_client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
+    # Paired with the fake author below; never enable fixtures in live composition.
+    monkeypatch.setattr(
+        lesson_authoring, "_load_evidence_snapshots",
+        partial(lesson_authoring._load_evidence_snapshots, allow_fixtures_for_tests=True),
+    )
     bootstrap_database()
     with connect() as conn:
         run_and_persist_fixture_grounding_reindex(conn)

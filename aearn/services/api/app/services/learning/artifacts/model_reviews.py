@@ -1,8 +1,10 @@
 """Conversation-native model review v2 backed by published item authority."""
+
 from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -16,12 +18,24 @@ from app.services.learning.item_bank.contracts import (
     LearningItemPrivateV1,
     LearningItemPublicV1,
 )
+from app.services.learning.practice.contracts import (
+    ExerciseAttemptOutcome,
+    ExerciseAttemptResult,
+)
 from app.services.learning.practice.model_review_contracts import (
     ModelCodeReviewSubmissionV2,
     ModelReviewAssistanceKind,
     upgrade_model_review_rubric_v1,
 )
-from app.services.learning.practice.model_review_scoring import evaluate_model_code_review_v2
+from app.services.learning.practice.model_review_scoring import (
+    evaluate_model_code_review_v2,
+)
+from app.services.learning.practice.model_review_semantics import (
+    SemanticReviewReceipt,
+    SemanticSurface,
+    ServerSemanticRequest,
+    combine_deterministic_and_semantic,
+)
 
 from .contracts import (
     TutorArtifactCompleteReviewAction,
@@ -30,24 +44,170 @@ from .contracts import (
     TutorPublicArtifactItem,
     canonical_hash,
 )
-from .owner_adapters import ArtifactMutation, ArtifactOwnerActionInvalid, ArtifactOwnerVersionConflict
+from .owner_adapters import (
+    ArtifactMutation,
+    ArtifactOwnerActionInvalid,
+    ArtifactOwnerVersionConflict,
+)
 
 
 MODEL_REVIEW_ARTIFACT_RECEIPT_VERSION = "model_review_artifact_receipt_v1"
+SEMANTIC_MODEL_REVIEW_POLICY_VERSION = "model_code_review_score_v2_semantic_v1"
 
 
-def apply_model_review_action(
+@dataclass(frozen=True, slots=True)
+class PreparedModelReviewV2:
+    artifact_id: str
+    artifact_version: int
+    owner_id: str
+    owner_version: int
+    owner_context_version: int
+    presentation_hash: str
+    submission_hash: str
+    deterministic_pass: bool
+    semantic_request: ServerSemanticRequest
+
+
+def prepare_model_review_action_v2(
     conn: Connection[dict[str, object]],
     *,
     artifact: TutorPublicArtifactItem,
     action: TutorArtifactCompleteReviewAction,
     owner_context_version: int,
+) -> PreparedModelReviewV2:
+    presentation = artifact.presentation
+    if not isinstance(presentation, TutorArtifactModelCodeReviewPresentationV2):
+        raise ArtifactOwnerActionInvalid(
+            "semantic model review requires a v2 presentation"
+        )
+    if presentation.submission_locked:
+        raise ArtifactOwnerActionInvalid(
+            "completed model review submission is immutable"
+        )
+    submission = action.review_submission
+    if not isinstance(submission, ModelCodeReviewSubmissionV2):
+        raise ArtifactOwnerActionInvalid("model review Artifact requires submission v2")
+    if any(
+        f.category not in presentation.review_categories for f in submission.findings
+    ):
+        raise ArtifactOwnerActionInvalid(
+            "model review finding category is not enabled by this presentation"
+        )
+    public, private, _exercise_version_id, required_capabilities = _load_authority(
+        conn, artifact=artifact
+    )
+    submission.validate_presentation(presentation.review_target)
+    rubric = upgrade_model_review_rubric_v1(private.rubric, presentation.review_target)
+    target = presentation.review_target
+    content = public.content
+    if not isinstance(
+        content, (LearningItemModelReviewContentV1, LearningItemModelReviewContentV2)
+    ):
+        raise ArtifactOwnerVersionConflict("model review public authority is invalid")
+    prompt = content.prompt
+    public_prompt = "\n".join(
+        (*prompt.requirements, *prompt.review_scope, prompt.learner_instruction)
+    )
+    public_code = (
+        target.modified_code
+        if target.source_code is None
+        else "\n--- SOURCE ---\n".join((target.modified_code, target.source_code))
+    )
+    semantic_request = ServerSemanticRequest.build(
+        surface=SemanticSurface.V2,
+        public_prompt=public_prompt,
+        public_code=public_code,
+        private_rubric=rubric.model_dump(mode="json"),
+        untrusted_submission=submission.canonical_json(),
+    )
+    return PreparedModelReviewV2(
+        artifact.id,
+        artifact.version,
+        artifact.owner_id,
+        artifact.owner_version,
+        owner_context_version,
+        target.presentation_hash,
+        submission.submission_hash,
+        _evaluate_model_review(
+            submission=submission,
+            presentation=presentation,
+            private=private,
+            required_capabilities=required_capabilities,
+        ).outcome.value
+        == "passed",
+        semantic_request,
+    )
+
+
+def apply_prepared_model_review_action_v2(
+    conn: Connection[dict[str, object]],
+    *,
+    artifact: TutorPublicArtifactItem,
+    action: TutorArtifactCompleteReviewAction,
+    owner_context_version: int,
+    prepared: PreparedModelReviewV2,
+    semantic_receipt: SemanticReviewReceipt | None,
+) -> ArtifactMutation:
+    current = prepare_model_review_action_v2(
+        conn,
+        artifact=artifact,
+        action=action,
+        owner_context_version=owner_context_version,
+    )
+    if current != prepared:
+        raise ArtifactOwnerVersionConflict(
+            "model review authority changed during semantic evaluation"
+        )
+    decision = combine_deterministic_and_semantic(
+        request=prepared.semantic_request,
+        deterministic_pass=prepared.deterministic_pass,
+        semantic_receipt=semantic_receipt,
+    )
+    return _apply_model_review_action_deterministic(
+        conn,
+        artifact=artifact,
+        action=action,
+        owner_context_version=owner_context_version,
+        forced_outcome=decision.outcome.value,
+    )
+
+
+def _evaluate_model_review(
+    *,
+    submission: ModelCodeReviewSubmissionV2,
+    presentation: TutorArtifactModelCodeReviewPresentationV2,
+    private: LearningItemModelReviewPrivateV1,
+    required_capabilities: tuple[str, ...],
+):
+    rubric = upgrade_model_review_rubric_v1(private.rubric, presentation.review_target)
+    return evaluate_model_code_review_v2(
+        submission=submission,
+        presentation=presentation.review_target,
+        rubric=rubric,
+        required_capabilities=required_capabilities,
+        assistance_kind=ModelReviewAssistanceKind.INDEPENDENT,
+        threshold=private.score_policy.threshold,
+        now=datetime.now(UTC),
+    )
+
+
+def _apply_model_review_action_deterministic(
+    conn: Connection[dict[str, object]],
+    *,
+    artifact: TutorPublicArtifactItem,
+    action: TutorArtifactCompleteReviewAction,
+    owner_context_version: int,
+    forced_outcome: str | None = None,
 ) -> ArtifactMutation:
     presentation = artifact.presentation
     if not isinstance(presentation, TutorArtifactModelCodeReviewPresentationV2):
-        raise ArtifactOwnerActionInvalid("model review v2 action requires a v2 presentation")
+        raise ArtifactOwnerActionInvalid(
+            "model review v2 action requires a v2 presentation"
+        )
     if presentation.submission_locked:
-        raise ArtifactOwnerActionInvalid("completed model review submission is immutable")
+        raise ArtifactOwnerActionInvalid(
+            "completed model review submission is immutable"
+        )
     submission = action.review_submission
     if not isinstance(submission, ModelCodeReviewSubmissionV2):
         raise ArtifactOwnerActionInvalid("model review Artifact requires submission v2")
@@ -58,19 +218,41 @@ def apply_model_review_action(
         raise ArtifactOwnerActionInvalid(
             "model review finding category is not enabled by this presentation"
         )
-    public, private, exercise_version_id, required_capabilities = _load_authority(conn, artifact=artifact)
-    submission.validate_presentation(presentation.review_target)
-    rubric = upgrade_model_review_rubric_v1(private.rubric, presentation.review_target)
-    result = evaluate_model_code_review_v2(
-        submission=submission,
-        presentation=presentation.review_target,
-        rubric=rubric,
-        required_capabilities=required_capabilities,
-        assistance_kind=ModelReviewAssistanceKind.INDEPENDENT,
-        threshold=private.score_policy.threshold,
-        now=datetime.now(UTC),
+    public, private, exercise_version_id, required_capabilities = _load_authority(
+        conn, artifact=artifact
     )
+    submission.validate_presentation(presentation.review_target)
+    result = _evaluate_model_review(
+        submission=submission,
+        presentation=presentation,
+        private=private,
+        required_capabilities=required_capabilities,
+    )
+    if forced_outcome == "failed" and result.outcome is ExerciseAttemptOutcome.PASSED:
+        capped_score = min(
+            result.score, max(0.0, private.score_policy.threshold - 0.01)
+        )
+        safe_feedback = dict(result.safe_feedback)
+        safe_feedback.update(
+            status="model_code_review_v2_semantic_rejected",
+            reason_code="semantic_authority_contradiction",
+            semantic_policy_version=SEMANTIC_MODEL_REVIEW_POLICY_VERSION,
+            message="本次审核的结构证据通过，但语义解释与题目权威不一致。",
+            next_action="review_variant",
+        )
+        result = ExerciseAttemptResult(
+            outcome=ExerciseAttemptOutcome.FAILED,
+            score=capped_score,
+            safe_feedback=safe_feedback,
+            capability_scores={
+                key: min(value, capped_score)
+                for key, value in result.capability_scores.items()
+            },
+            policy_version=result.policy_version,
+            terminal_at=result.terminal_at,
+        )
     outcome = result.outcome.value
+    safe_feedback = dict(result.safe_feedback)
     remediation_handle = None
     if outcome != "passed":
         remediation_handle = _select_remediation(
@@ -80,7 +262,9 @@ def apply_model_review_action(
             line_count=presentation.review_target.line_count,
         )
         if remediation_handle is None:
-            raise ArtifactOwnerVersionConflict("model review remediation successor is unavailable")
+            raise ArtifactOwnerVersionConflict(
+                "model review remediation successor is unavailable"
+            )
     receipt_id = str(uuid4())
     receipt_identity = {
         "artifact_id": artifact.id,
@@ -127,14 +311,14 @@ def apply_model_review_action(
             outcome,
             result.score,
             ModelReviewAssistanceKind.INDEPENDENT.value,
-            _json(result.safe_feedback),
+            _json(safe_feedback),
             result.result_hash,
             remediation_handle,
             result.policy_version,
             canonical_hash(receipt_identity),
         ),
     )
-    evaluation = str(result.safe_feedback.get("message") or "代码审查已由服务器评分。")
+    evaluation = str(safe_feedback.get("message") or "代码审查已由服务器评分。")
     if remediation_handle is not None:
         evaluation += " 已为你准备一个范围更小或难度更低的审查变体。"
     completed = presentation.model_copy(
@@ -170,7 +354,9 @@ def _load_authority(
     conn: Connection[dict[str, object]],
     *,
     artifact: TutorPublicArtifactItem,
-) -> tuple[LearningItemPublicV1, LearningItemModelReviewPrivateV1, str, tuple[str, ...]]:
+) -> tuple[
+    LearningItemPublicV1, LearningItemModelReviewPrivateV1, str, tuple[str, ...]
+]:
     row = conn.execute(
         """
         SELECT public.public_json,private.private_json,materializations.exercise_version_id,
@@ -190,7 +376,9 @@ def _load_authority(
         (artifact.owner_version, artifact.owner_id, artifact.knowledge_key),
     ).fetchone()
     if row is None:
-        raise ArtifactOwnerVersionConflict("Learning Item model review authority is stale")
+        raise ArtifactOwnerVersionConflict(
+            "Learning Item model review authority is stale"
+        )
     try:
         public = LearningItemPublicV1.model_validate(row["public_json"])
         private = LearningItemPrivateV1.model_validate(row["private_json"])
@@ -213,7 +401,9 @@ def _load_authority(
         ):
             raise TypeError("model review practice materialization is stale")
     except (KeyError, TypeError, ValidationError) as exc:
-        raise ArtifactOwnerVersionConflict("stored model review authority is invalid") from exc
+        raise ArtifactOwnerVersionConflict(
+            "stored model review authority is invalid"
+        ) from exc
     return public, private.content, exercise_version_id, required_capabilities
 
 
@@ -226,7 +416,9 @@ def _select_remediation(
 ) -> str | None:
     user_id = _owner_user_id(conn, artifact.id)
     difficulty = int(public.difficulty.value[1:])
-    difficulties = tuple(dict.fromkeys((f"D{max(1, difficulty - 1)}", f"D{difficulty}")))
+    difficulties = tuple(
+        dict.fromkeys((f"D{max(1, difficulty - 1)}", f"D{difficulty}"))
+    )
     rows = conn.execute(
         """
         SELECT versions.handle,versions.difficulty,public.public_json
@@ -278,16 +470,23 @@ def _select_remediation(
         try:
             candidate = LearningItemPublicV1.model_validate(row["public_json"])
         except ValidationError as exc:
-            raise ArtifactOwnerVersionConflict("model review remediation authority is invalid") from exc
+            raise ArtifactOwnerVersionConflict(
+                "model review remediation authority is invalid"
+            ) from exc
         if not isinstance(
             candidate.content,
             (LearningItemModelReviewContentV1, LearningItemModelReviewContentV2),
         ):
-            raise ArtifactOwnerVersionConflict("model review remediation content is invalid")
+            raise ArtifactOwnerVersionConflict(
+                "model review remediation content is invalid"
+            )
         if _review_signature(candidate) == current_signature:
             continue
         candidate_lines = candidate.content.artifact.line_count
-        if candidate.difficulty.value == public.difficulty.value and candidate_lines >= line_count:
+        if (
+            candidate.difficulty.value == public.difficulty.value
+            and candidate_lines >= line_count
+        ):
             continue
         return str(row["handle"])
     return None
@@ -332,10 +531,15 @@ def _owner_user_id(conn: Connection[dict[str, object]], artifact_id: str) -> str
 
 
 def _json(value: Mapping[str, object]) -> str:
-    return json.dumps(dict(value), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return json.dumps(
+        dict(value), ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
 
 
 __all__ = (
     "MODEL_REVIEW_ARTIFACT_RECEIPT_VERSION",
-    "apply_model_review_action",
+    "SEMANTIC_MODEL_REVIEW_POLICY_VERSION",
+    "PreparedModelReviewV2",
+    "apply_prepared_model_review_action_v2",
+    "prepare_model_review_action_v2",
 )

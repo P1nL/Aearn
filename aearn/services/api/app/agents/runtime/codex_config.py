@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from app.core.config import (
+    DEEPSEEK_V4_FLASH_CODEX_AUTO_COMPACT_TOKENS,
     DEEPSEEK_V4_FLASH_CONTEXT_WINDOW_TOKENS,
     DEEPSEEK_V4_FLASH_MAX_OUTPUT_TOKENS,
     DEEPSEEK_V4_FLASH_MODEL,
@@ -57,9 +58,7 @@ class CodexRuntimeConfig:
     max_visible_text_chars: int = 2_000_000
     model_context_window: int = DEEPSEEK_V4_FLASH_CONTEXT_WINDOW_TOKENS
     model_max_output_tokens: int = DEEPSEEK_V4_FLASH_MAX_OUTPUT_TOKENS
-    model_auto_compact_token_limit: int = (
-        DEEPSEEK_V4_FLASH_CONTEXT_WINDOW_TOKENS - DEEPSEEK_V4_FLASH_MAX_OUTPUT_TOKENS
-    )
+    model_auto_compact_token_limit: int = DEEPSEEK_V4_FLASH_CODEX_AUTO_COMPACT_TOKENS
     remote_compaction_supported: bool = False
 
     @classmethod
@@ -93,7 +92,7 @@ class CodexRuntimeConfig:
             max_visible_text_chars=settings.codex_runtime_max_visible_text_chars,
             model_context_window=settings.tutor_deepseek_v4_flash_context_window_tokens,
             model_max_output_tokens=settings.tutor_deepseek_v4_flash_max_output_tokens,
-            model_auto_compact_token_limit=settings.deepseek_v4_flash_input_hard_limit_tokens,
+            model_auto_compact_token_limit=DEEPSEEK_V4_FLASH_CODEX_AUTO_COMPACT_TOKENS,
             remote_compaction_supported=False,
         )
 
@@ -148,7 +147,8 @@ def ensure_codex_runtime_home(config: CodexRuntimeConfig, *, allow_existing: boo
         config.model_context_window != DEEPSEEK_V4_FLASH_CONTEXT_WINDOW_TOKENS
         or config.model_max_output_tokens != DEEPSEEK_V4_FLASH_MAX_OUTPUT_TOKENS
         or config.model_auto_compact_token_limit
-        != config.model_context_window - config.model_max_output_tokens
+        != DEEPSEEK_V4_FLASH_CODEX_AUTO_COMPACT_TOKENS
+        or config.model_auto_compact_token_limit >= config.model_context_window
     ):
         raise ValueError("Codex runtime context capability is not the verified DeepSeek V4 Flash contract")
     if not config.base_url:
@@ -166,6 +166,7 @@ def ensure_codex_runtime_home(config: CodexRuntimeConfig, *, allow_existing: boo
         f'model = "{config.model}"\n'
         f'model_provider = "{config.model_provider}"\n'
         f'model_context_window = {config.model_context_window}\n'
+        f'model_max_output_tokens = {config.model_max_output_tokens}\n'
         f'model_auto_compact_token_limit = {config.model_auto_compact_token_limit}\n'
         'model_auto_compact_token_limit_scope = "total"\n'
         'approval_policy = "never"\n'

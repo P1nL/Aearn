@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import cast
@@ -10,6 +10,7 @@ from psycopg import Connection
 
 from app.services.grounding.grounding_citations import AgentGroundingItem, grounding_results_for_agent
 from app.services.grounding.grounding_processing import GroundingChunk
+from app.services.grounding.grounding_provenance import provenance_from_metadata
 from app.services.grounding.grounding_reindex import GroundingReindexReport, run_fixture_grounding_reindex
 from app.services.grounding.grounding_retrieval import GroundingRetrievalQuery, GroundingRetrievalResult, retrieve_grounding_chunks
 from app.services.grounding.grounding_sources import SourceContentType, SourceTrustTier, SourceVersionKind
@@ -121,7 +122,7 @@ def replace_grounding_chunks(
                 chunk.content_hash,
                 chunk.text[:4000],
                 json.dumps(list(chunk.topic_tags), ensure_ascii=False),
-                json.dumps({}, ensure_ascii=False),
+                json.dumps({"provenance": chunk.provenance.payload()}, ensure_ascii=False),
             ),
         )
     return len(chunks)
@@ -130,11 +131,15 @@ def replace_grounding_chunks(
 def search_persisted_grounding_chunks(
     conn: Connection[dict[str, object]],
     query: GroundingRetrievalQuery,
+    *,
+    admission_filter: Callable[[GroundingChunk], bool] | None = None,
 ) -> tuple[GroundingRetrievalResult, ...]:
     language_ids = grounding_language_ids(query.language_id_or_alias)
     if not language_ids:
         return ()
     chunks = _load_grounding_chunks_for_languages(conn, language_ids)
+    if admission_filter is not None:
+        chunks = tuple(chunk for chunk in chunks if admission_filter(chunk))
     if not chunks:
         return ()
 
@@ -279,6 +284,7 @@ def _chunk_from_row(row: Mapping[str, object]) -> GroundingChunk:
         source_version_label=str(row.get("source_version_label") or "unversioned"),
         source_version_kind=cast(SourceVersionKind, str(row.get("source_version_kind") or "rolling")),
         document_content_hash=str(row.get("document_content_hash") or "0" * 64),
+        provenance=provenance_from_metadata(row.get("metadata_json")),
     )
 
 

@@ -32,6 +32,7 @@ from app.services.tutor.persistence import (
     TutorQueueAcceptance,
     TutorQueuedInput,
 )
+from app.services.tutor.terminal_error import terminal_is_recoverable
 
 
 QUEUE_MAX_PENDING: Final[int] = 10
@@ -371,11 +372,7 @@ class PostgresTutorQueueController:
             ).fetchone()
             outcome = str(failed.get("terminal_outcome") or "") if failed is not None else ""
             diagnostic = str(failed.get("terminal_diagnostic_code") or "") if failed is not None else ""
-            recoverable = (
-                outcome in {"failed", "model_unavailable"}
-                or (outcome == "blocked_policy" and diagnostic == "capability_denied")
-                or (outcome == "budget_exhausted" and diagnostic == "deadline_exhausted")
-            )
+            recoverable = terminal_is_recoverable(outcome, diagnostic)
             if failed is None or not recoverable:
                 raise TutorInteractionRequestConflict("Tutor turn is not recoverable")
             input_row = self._conn.execute(

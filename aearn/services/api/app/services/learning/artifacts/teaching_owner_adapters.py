@@ -1,4 +1,5 @@
 """Learning Item and legacy teaching-practice Artifact owner adapters."""
+
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -19,7 +20,12 @@ from .contracts import (
 )
 from .demonstrations import complete_demonstration
 from .knowledge_checks import apply_knowledge_check_action
-from .model_reviews import apply_model_review_action
+from .model_reviews import (
+    PreparedModelReviewV2,
+    apply_prepared_model_review_action_v2,
+    prepare_model_review_action_v2,
+)
+from app.services.learning.practice.model_review_semantics import SemanticReviewReceipt
 from .sql_workspaces import admit_sql_workspace_run
 from .owner_adapters import (
     ArtifactMutation,
@@ -90,16 +96,13 @@ class LearningItemArtifactOwnerAdapter(_TeachingArtifactOwnerAdapter):
         artifact: TutorPublicArtifactItem,
         request: TutorArtifactActionRequest,
     ) -> ArtifactMutation:
-        if (
-            artifact.artifact_kind is TutorArtifactKind.KNOWLEDGE_CHECK
-            and isinstance(
-                request.action,
-                (
-                    TutorArtifactRequestHintAction,
-                    TutorArtifactRequestDirectAnswerAction,
-                    TutorArtifactRespondAction,
-                ),
-            )
+        if artifact.artifact_kind is TutorArtifactKind.KNOWLEDGE_CHECK and isinstance(
+            request.action,
+            (
+                TutorArtifactRequestHintAction,
+                TutorArtifactRequestDirectAnswerAction,
+                TutorArtifactRespondAction,
+            ),
         ):
             row = _locked_owner_row(
                 conn,
@@ -122,9 +125,8 @@ class LearningItemArtifactOwnerAdapter(_TeachingArtifactOwnerAdapter):
                     "owner_context_version",
                 ),
             )
-        if (
-            artifact.artifact_kind is TutorArtifactKind.SQL_WORKSPACE
-            and isinstance(request.action, TutorArtifactRunAction)
+        if artifact.artifact_kind is TutorArtifactKind.SQL_WORKSPACE and isinstance(
+            request.action, TutorArtifactRunAction
         ):
             row = _locked_owner_row(
                 conn,
@@ -147,9 +149,8 @@ class LearningItemArtifactOwnerAdapter(_TeachingArtifactOwnerAdapter):
                     "owner_context_version",
                 ),
             )
-        if (
-            artifact.artifact_kind is TutorArtifactKind.MODEL_CODE_REVIEW
-            and isinstance(request.action, TutorArtifactCompleteReviewAction)
+        if artifact.artifact_kind is TutorArtifactKind.MODEL_CODE_REVIEW and isinstance(
+            request.action, TutorArtifactCompleteReviewAction
         ):
             row = _locked_owner_row(
                 conn,
@@ -163,14 +164,8 @@ class LearningItemArtifactOwnerAdapter(_TeachingArtifactOwnerAdapter):
                 artifact=artifact,
                 owner_kind=self.owner_kind,
             )
-            return apply_model_review_action(
-                conn,
-                artifact=artifact,
-                action=request.action,
-                owner_context_version=_positive_int(
-                    row.get("owner_context_version"),
-                    "owner_context_version",
-                ),
+            raise ArtifactOwnerActionInvalid(
+                "model review v2 requires the semantic prepare/finalize service path"
             )
         if (
             artifact.artifact_kind is TutorArtifactKind.DEMONSTRATION
@@ -210,6 +205,62 @@ class LearningItemArtifactOwnerAdapter(_TeachingArtifactOwnerAdapter):
                 },
             )
         return super().apply_action(conn=conn, artifact=artifact, request=request)
+
+    def prepare_model_review_v2(
+        self,
+        *,
+        conn: Connection[dict[str, object]],
+        artifact: TutorPublicArtifactItem,
+        request: TutorArtifactActionRequest,
+    ) -> PreparedModelReviewV2:
+        if not isinstance(request.action, TutorArtifactCompleteReviewAction):
+            raise ArtifactOwnerActionInvalid(
+                "model review prepare requires complete_review"
+            )
+        row = _locked_owner_row(
+            conn, artifact=artifact, request=request, owner_kind=self.owner_kind
+        )
+        _validate_cancel_authority(
+            conn, row=row, artifact=artifact, owner_kind=self.owner_kind
+        )
+        return prepare_model_review_action_v2(
+            conn,
+            artifact=artifact,
+            action=request.action,
+            owner_context_version=_positive_int(
+                row.get("owner_context_version"), "owner_context_version"
+            ),
+        )
+
+    def finalize_model_review_v2(
+        self,
+        *,
+        conn: Connection[dict[str, object]],
+        artifact: TutorPublicArtifactItem,
+        request: TutorArtifactActionRequest,
+        prepared: PreparedModelReviewV2,
+        semantic_receipt: SemanticReviewReceipt | None,
+    ) -> ArtifactMutation:
+        if not isinstance(request.action, TutorArtifactCompleteReviewAction):
+            raise ArtifactOwnerActionInvalid(
+                "model review finalize requires complete_review"
+            )
+        row = _locked_owner_row(
+            conn, artifact=artifact, request=request, owner_kind=self.owner_kind
+        )
+        _validate_cancel_authority(
+            conn, row=row, artifact=artifact, owner_kind=self.owner_kind
+        )
+        return apply_prepared_model_review_action_v2(
+            conn,
+            artifact=artifact,
+            action=request.action,
+            owner_context_version=_positive_int(
+                row.get("owner_context_version"), "owner_context_version"
+            ),
+            prepared=prepared,
+            semantic_receipt=semantic_receipt,
+        )
 
 
 class TeachingPracticeArtifactOwnerAdapter(_TeachingArtifactOwnerAdapter):
@@ -252,9 +303,7 @@ def _locked_owner_row(
         ),
     ).fetchone()
     if row is None:
-        raise ArtifactOwnerScopeConflict(
-            "teaching Artifact owner scope was not found"
-        )
+        raise ArtifactOwnerScopeConflict("teaching Artifact owner scope was not found")
     if (
         str(row.get("owner_kind") or "") != owner_kind.value
         or str(row.get("owner_id") or "") != artifact.owner_id

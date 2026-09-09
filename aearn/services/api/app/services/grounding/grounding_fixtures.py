@@ -4,6 +4,7 @@ import hashlib
 from datetime import UTC, datetime
 
 from app.services.grounding.grounding_fetcher import GroundingFetchDocument
+from app.services.grounding.grounding_provenance import GroundingProvenance
 from app.services.grounding.grounding_sources import sources_for_language
 from app.services.runners.language_capabilities import all_language_capabilities, get_language_capability
 
@@ -48,6 +49,10 @@ def fixture_documents_for_language(
             content_hash=_sha256(raw_content),
             source_version_label=source.source_version_label,
             source_version_kind=source.source_version_kind,
+            provenance=GroundingProvenance(
+                kind="fixture", source_id=source.source_id, requested_url=seed_url,
+                final_url=seed_url, document_content_hash=_sha256(raw_content),
+            ),
         ),
     )
 

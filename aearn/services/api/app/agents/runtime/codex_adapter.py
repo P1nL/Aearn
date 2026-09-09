@@ -9,9 +9,11 @@ import re
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import replace
 
+from app.core.safe_diagnostics import log_safe_event, safe_diagnostic_identifier
+
 from .codex_connection import JsonRpcError, JsonRpcNotification, JsonRpcTimeoutError
 from .codex_supervisor import CodexRuntimeSupervisor, RuntimeUnavailableError
-from .contracts import AgentRuntimePort, RuntimeEvent, RuntimeEventKind, RuntimeHealthSnapshot, RuntimeInput, RuntimeTerminalStatus, RuntimeThreadHandle, RuntimeThreadRequest, RuntimeTurnMetrics, RuntimeTurnRequest, RuntimeTurnResult
+from .contracts import AgentRuntimePort, RuntimeEvent, RuntimeEventKind, RuntimeHealthSnapshot, RuntimeHealthStatus, RuntimeInput, RuntimeTerminalStatus, RuntimeThreadHandle, RuntimeThreadRequest, RuntimeToolCall, RuntimeToolRegistry, RuntimeToolResult, RuntimeTurnMetrics, RuntimeTurnRequest, RuntimeTurnResult
 from .delta_coalescer import (
     RuntimeDeltaBudgetError,
     RuntimeDeltaCoalescer,
@@ -21,7 +23,32 @@ from .delta_coalescer import (
 
 _TOOL_NAME = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _EVENT_BACKPRESSURE_TIMEOUT_SECONDS = 1.0
+_TURN_STOP_TIMEOUT_SECONDS = 3.0
+_OWNED_SHUTDOWN_TIMEOUT_SECONDS = 6.0
+_NOTIFICATION_POLL_SECONDS = 0.25
 logger = logging.getLogger(__name__)
+
+
+class _TurnToolGuard:
+    """Turn-local fatal signal and callback fence, including pre-register callbacks."""
+
+    def __init__(self, tools: RuntimeToolRegistry) -> None:
+        self.tools = tools
+        self.fatal: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+        self.closed = False
+        self._lock = asyncio.Lock()
+
+    async def invoke(self, call: RuntimeToolCall) -> RuntimeToolResult:
+        async with self._lock:
+            if self.closed or self.fatal.done():
+                return RuntimeToolResult(False, '{"status":"fatal"}', "runtime_tool_stopped")
+            try:
+                result = await self.tools.invoke(call)
+            except Exception:
+                result = RuntimeToolResult(False, '{"status":"fatal"}', "runtime_tool_failed")
+            if not result.success:
+                self.fatal.set_result(result.safe_code or "runtime_tool_failed")
+            return result
 
 
 class _RuntimeEventSubscription(AsyncIterator[RuntimeEvent]):
@@ -61,14 +88,25 @@ class CodexAppServerRuntime(AgentRuntimePort):
         self._turn_lock = asyncio.Lock()
         self._event_queue_size = event_queue_size
         self._event_subscribers: set[asyncio.Queue[RuntimeEvent]] = set()
+        self._reuse_blocked = False
+
+    def _require_reusable(self) -> None:
+        if self._reuse_blocked:
+            raise RuntimeUnavailableError("runtime_stop_unconfirmed")
 
     async def start(self) -> RuntimeHealthSnapshot:
+        self._require_reusable()
         return await self.supervisor.start()
 
     async def health(self) -> RuntimeHealthSnapshot:
+        if self._reuse_blocked:
+            snapshot = await self.supervisor.health()
+            return replace(snapshot, status=RuntimeHealthStatus.UNAVAILABLE,
+                           safe_error_code="runtime_stop_unconfirmed")
         return await self.supervisor.health()
 
     async def start_thread(self, request: RuntimeThreadRequest) -> RuntimeThreadHandle:
+        self._require_reusable()
         health = await self.supervisor.start()
         if health.status.value != "ready":
             raise RuntimeUnavailableError(health.safe_error_code or "runtime_unavailable")
@@ -82,6 +120,7 @@ class CodexAppServerRuntime(AgentRuntimePort):
         return RuntimeThreadHandle(thread_id, health.generation)
 
     async def resume_thread(self, thread_id: str) -> RuntimeThreadHandle:
+        self._require_reusable()
         health = await self.supervisor.start()
         if health.status.value != "ready":
             raise RuntimeUnavailableError(health.safe_error_code or "runtime_unavailable")
@@ -92,6 +131,7 @@ class CodexAppServerRuntime(AgentRuntimePort):
         return RuntimeThreadHandle(thread_id, health.generation)
 
     async def compact_thread(self, thread: RuntimeThreadHandle) -> None:
+        self._require_reusable()
         await self.supervisor.request(
             "thread/compact/start",
             {"threadId": thread.thread_id},
@@ -102,9 +142,11 @@ class CodexAppServerRuntime(AgentRuntimePort):
         if self._turn_lock.locked():
             raise RuntimeBusyError("runtime_writer_busy")
         async with self._turn_lock:
+            self._require_reusable()
             self.supervisor.require_connection(request.thread.generation)
+            guarded_tools = _TurnToolGuard(request.tools)
             self.supervisor.prepare_turn(
-                request.thread.thread_id, request.tools, request.thread.generation
+                request.thread.thread_id, guarded_tools, request.thread.generation
             )
             turn_id = ""
             collected: list[RuntimeEvent] = []
@@ -115,9 +157,14 @@ class CodexAppServerRuntime(AgentRuntimePort):
             source_sequence = 0
             source_delta_count = 0
             visible_text_chars = 0
+            message_text_chars = 0
+            reasoning_text_chars = 0
+            terminal_observed = False
+            termination_reason = "natural_terminal"
+            cleanup_cancelled = False
             item_ids: set[str] = set()
             tool_ids: set[str] = set()
-            delta_item_ids: set[str] = set()
+            text_lengths: dict[tuple[str | None, str], int] = {}
             loop = asyncio.get_running_loop()
             started_at = loop.time()
             turn_timeout = self.supervisor.config.turn_timeout_s
@@ -130,6 +177,14 @@ class CodexAppServerRuntime(AgentRuntimePort):
                     visible_text_limit,
                     request.max_visible_text_chars,
                 )
+            split_text_budget = request.max_reasoning_text_chars is not None
+            total_text_limit = (
+                self.supervisor.config.max_visible_text_chars
+                if split_text_budget else visible_text_limit
+            )
+            reasoning_text_limit = min(
+                total_text_limit, request.max_reasoning_text_chars or total_text_limit
+            )
             notification_task: asyncio.Task[JsonRpcNotification] | None = None
             coalescer = RuntimeDeltaCoalescer(
                 RuntimeDeltaCoalescingConfig(
@@ -164,21 +219,25 @@ class CodexAppServerRuntime(AgentRuntimePort):
                 }
                 if request.effort is not None:
                     turn_params["effort"] = request.effort
-                turn = await self.supervisor.request(
-                    "turn/start",
-                    turn_params,
-                    generation=request.thread.generation,
-                )
+                async with asyncio.timeout(turn_timeout):
+                    turn = await self.supervisor.request(
+                        "turn/start",
+                        turn_params,
+                        generation=request.thread.generation,
+                        timeout_s=min(turn_timeout, self.supervisor.config.request_timeout_s),
+                    )
                 turn_id = str((turn.get("turn") or {}).get("id", ""))
                 if not turn_id:
                     raise RuntimeUnavailableError("turn_start_contract_mismatch")
                 self.supervisor.register_turn(
                     request.thread.thread_id,
                     turn_id,
-                    request.tools,
+                    guarded_tools,
                     request.thread.generation,
                 )
                 while True:
+                    if guarded_tools.fatal.done():
+                        raise RuntimeUnavailableError(guarded_tools.fatal.result())
                     now = loop.time()
                     remaining = turn_deadline - now
                     if remaining <= 0:
@@ -187,16 +246,21 @@ class CodexAppServerRuntime(AgentRuntimePort):
                         notification_task = asyncio.create_task(
                             self.supervisor.next_notification(
                                 generation=request.thread.generation,
-                                timeout_s=remaining,
+                                timeout_s=min(remaining, _NOTIFICATION_POLL_SECONDS),
                             )
                         )
                     flush_wait = coalescer.seconds_until_flush(now)
                     wait_timeout = remaining if flush_wait is None else min(remaining, flush_wait)
+                    waiters: set[asyncio.Future[JsonRpcNotification] | asyncio.Future[str]] = {
+                        notification_task, guarded_tools.fatal,
+                    }
                     done, _pending = await asyncio.wait(
-                        {notification_task},
+                        waiters,
                         timeout=wait_timeout,
                         return_when=asyncio.FIRST_COMPLETED,
                     )
+                    if guarded_tools.fatal in done:
+                        raise RuntimeUnavailableError(guarded_tools.fatal.result())
                     if notification_task not in done:
                         if await publish(coalescer.flush_due(now=loop.time())):
                             break
@@ -204,9 +268,11 @@ class CodexAppServerRuntime(AgentRuntimePort):
                     try:
                         notification = notification_task.result()
                     except JsonRpcTimeoutError as exc:
-                        raise RuntimeUnavailableError(
-                            "runtime_turn_time_exhausted"
-                        ) from exc
+                        if loop.time() >= turn_deadline:
+                            raise RuntimeUnavailableError(
+                                "runtime_turn_time_exhausted"
+                            ) from exc
+                        continue
                     finally:
                         notification_task = None
 
@@ -221,6 +287,8 @@ class CodexAppServerRuntime(AgentRuntimePort):
                     )
                     if event is None:
                         continue
+                    if event.kind is RuntimeEventKind.TURN_COMPLETED:
+                        terminal_observed = True
                     source_sequence += 1
                     source_hash = _source_event_hash(event)
                     event = replace(
@@ -234,6 +302,13 @@ class CodexAppServerRuntime(AgentRuntimePort):
                         item_ids.add(event.item_id)
                         if len(item_ids) > self.supervisor.config.max_items:
                             raise RuntimeUnavailableError("runtime_item_budget_exhausted")
+                    text_increment = 0
+                    text_channel = (
+                        "message" if event.item_type == "agentMessage" else
+                        "summary" if event.kind is RuntimeEventKind.REASONING_SUMMARY_DELTA
+                        else "reasoning"
+                    )
+                    text_key = (event.item_id, text_channel)
                     if event.kind in {
                         RuntimeEventKind.TOOL_STARTED,
                         RuntimeEventKind.TOOL_COMPLETED,
@@ -247,25 +322,43 @@ class CodexAppServerRuntime(AgentRuntimePort):
                         RuntimeEventKind.MESSAGE_DELTA,
                     }:
                         source_delta_count += 1
-                        visible_text_chars += len(event.visible_text or "")
-                        if event.item_id is not None:
-                            delta_item_ids.add(event.item_id)
+                        text_increment = len(event.visible_text or "")
+                        text_lengths[text_key] = text_lengths.get(text_key, 0) + text_increment
                     elif (
                         event.kind
                         in {
                             RuntimeEventKind.REASONING_COMPLETED,
                             RuntimeEventKind.MESSAGE_COMPLETED,
                         }
-                        and event.item_id not in delta_item_ids
                     ):
-                        visible_text_chars += len(event.visible_text or "")
-                    if visible_text_chars > visible_text_limit:
+                        # Completed content calibrates missing suffixes, never charges
+                        # delta+completed twice or refunds previously generated text.
+                        text_increment = max(
+                            0, len(event.visible_text or "") - text_lengths.get(text_key, 0)
+                        )
+                        text_lengths[text_key] = text_lengths.get(text_key, 0) + text_increment
+                    visible_text_chars += text_increment
+                    if text_channel == "message":
+                        message_text_chars += text_increment
+                    else:
+                        reasoning_text_chars += text_increment
+                    if visible_text_chars > total_text_limit or (
+                        split_text_budget and (
+                            message_text_chars > visible_text_limit
+                            or reasoning_text_chars > reasoning_text_limit
+                        )
+                    ):
                         raise RuntimeUnavailableError("runtime_text_budget_exhausted")
                     if await publish(coalescer.push(event, now=loop.time())):
                         break
-            except (RuntimeUnavailableError, RuntimeDeltaBudgetError) as exc:
+            except (RuntimeUnavailableError, RuntimeDeltaBudgetError, TimeoutError) as exc:
                 terminal = RuntimeTerminalStatus.UNAVAILABLE
-                safe_error = str(exc)
+                safe_error = "runtime_turn_time_exhausted" if isinstance(exc, TimeoutError) else str(exc)
+                if guarded_tools.fatal.done() and guarded_tools.fatal.result() == safe_error:
+                    terminal = RuntimeTerminalStatus.FAILED
+                guarded_tools.closed = True
+                if not terminal_observed:
+                    termination_reason, cleanup_cancelled = await self._stop_turn(request.thread, turn_id, notification_task)
                 for pending_event in coalescer.flush(RuntimeDeltaFlushReason.ERROR):
                     collected.append(pending_event)
                     self._publish_event_best_effort(pending_event)
@@ -282,6 +375,9 @@ class CodexAppServerRuntime(AgentRuntimePort):
             except JsonRpcError:
                 terminal = RuntimeTerminalStatus.UNAVAILABLE
                 safe_error = "runtime_connection_failed"
+                guarded_tools.closed = True
+                if not terminal_observed:
+                    termination_reason, cleanup_cancelled = await self._stop_turn(request.thread, turn_id, notification_task)
                 for pending_event in coalescer.flush(RuntimeDeltaFlushReason.ERROR):
                     collected.append(pending_event)
                     self._publish_event_best_effort(pending_event)
@@ -295,11 +391,39 @@ class CodexAppServerRuntime(AgentRuntimePort):
                 for projected in coalescer.push(failure_event, now=loop.time()):
                     collected.append(projected)
                     self._publish_event_best_effort(projected)
+            except asyncio.CancelledError:
+                safe_error = "runtime_turn_cancelled"
+                raise
             finally:
-                if notification_task is not None and not notification_task.done():
-                    notification_task.cancel()
+                guarded_tools.closed = True
+                # Cancellation (including external worker cancellation) must not
+                # release ownership while generation may still be active.
+                if not terminal_observed and termination_reason == "natural_terminal":
+                    termination_reason, cleanup_cancelled = await self._stop_turn(request.thread, turn_id, notification_task)
+                if notification_task is not None:
                     await asyncio.gather(notification_task, return_exceptions=True)
                 self.supervisor.unregister_turn(request.thread.thread_id, turn_id)
+                if not guarded_tools.fatal.done():
+                    guarded_tools.fatal.cancel()
+                log_safe_event(
+                    logger, "codex_runtime_turn_budget", level=logging.INFO,
+                    code=safe_error, termination_reason=termination_reason,
+                    action_identifier=safe_diagnostic_identifier(turn_id or request.thread.thread_id, trusted=False),
+                    runtime_generation=request.thread.generation,
+                    visible_chars=message_text_chars, reasoning_chars=reasoning_text_chars,
+                    total_text_chars=visible_text_chars,
+                    effective_max_visible_chars=visible_text_limit,
+                    effective_max_reasoning_chars=reasoning_text_limit,
+                    effective_max_total_chars=total_text_limit,
+                    effective_timeout_seconds=turn_timeout,
+                    raw_notification_count=raw_notification_count,
+                    source_delta_count=source_delta_count,
+                    projection_event_count=len(collected),
+                    item_count=len(item_ids), tool_count=len(tool_ids),
+                    duration_ms=max(0, round((loop.time() - started_at) * 1_000)),
+                )
+                if cleanup_cancelled:
+                    raise asyncio.CancelledError
 
             coalescing = coalescer.metrics()
             metrics = RuntimeTurnMetrics(
@@ -314,17 +438,13 @@ class CodexAppServerRuntime(AgentRuntimePort):
                 visible_text_chars=visible_text_chars,
                 duration_ms=max(0, round((loop.time() - started_at) * 1_000)),
                 flush_reasons=coalescing.flush_reasons,
-            )
-            logger.info(
-                "codex_runtime_turn_stream",
-                extra={
-                    "runtime_source_delta_count": metrics.source_delta_count,
-                    "runtime_projection_event_count": metrics.projection_event_count,
-                    "runtime_coalesced_flush_count": metrics.coalesced_flush_count,
-                    "runtime_maximum_pending_bytes": metrics.maximum_pending_bytes,
-                    "runtime_duration_ms": metrics.duration_ms,
-                    "runtime_safe_code": safe_error,
-                },
+                message_text_chars=message_text_chars,
+                reasoning_text_chars=reasoning_text_chars,
+                effective_max_visible_text_chars=visible_text_limit,
+                effective_max_reasoning_text_chars=reasoning_text_limit,
+                effective_max_total_text_chars=total_text_limit,
+                effective_timeout_seconds=turn_timeout,
+                termination_reason=termination_reason,
             )
             return RuntimeTurnResult(
                 request.thread,
@@ -335,10 +455,72 @@ class CodexAppServerRuntime(AgentRuntimePort):
                 metrics,
             )
 
+    async def _stop_turn(
+        self, thread: RuntimeThreadHandle, turn_id: str,
+        notification_task: asyncio.Task[JsonRpcNotification] | None,
+    ) -> tuple[str, bool]:
+        """ACK is not terminal evidence. Fence callbacks before this bounded drain."""
+        async def stop() -> str:
+            try:
+                if not turn_id:
+                    raise RuntimeUnavailableError("runtime_stop_turn_unknown")
+                deadline = asyncio.get_running_loop().time() + _TURN_STOP_TIMEOUT_SECONDS
+                async with asyncio.timeout(_TURN_STOP_TIMEOUT_SECONDS):
+                    await self.supervisor.request(
+                        "turn/interrupt", {"threadId": thread.thread_id, "turnId": turn_id},
+                        generation=thread.generation, timeout_s=_TURN_STOP_TIMEOUT_SECONDS,
+                    )
+                pending = notification_task
+                while asyncio.get_running_loop().time() < deadline:
+                    try:
+                        if pending is not None:
+                            notification = await asyncio.shield(pending)
+                            pending = None
+                        else:
+                            notification = await self.supervisor.next_notification(
+                                generation=thread.generation, timeout_s=_NOTIFICATION_POLL_SECONDS,
+                            )
+                    except JsonRpcTimeoutError:
+                        pending = None
+                        continue
+                    event = _map_notification(notification, thread.thread_id, turn_id)
+                    if (
+                        notification.params.get("threadId") == thread.thread_id
+                        and event is not None
+                        and event.kind is RuntimeEventKind.TURN_COMPLETED
+                        and (notification.params.get("turn") or {}).get("status")
+                        in {"completed", "interrupted", "failed"}
+                    ):
+                        return "interrupt_terminal_confirmed"
+            except (Exception, asyncio.CancelledError):
+                pass
+            # Unknown start ID, failed interrupt, ACK-only, or broken connection:
+            # stop only this supervisor's owned process, never reuse uncertain state.
+            self._reuse_blocked = True
+            try:
+                async with asyncio.timeout(_OWNED_SHUTDOWN_TIMEOUT_SECONDS):
+                    await self.supervisor.shutdown()
+                self._reuse_blocked = False
+                return "owned_runtime_stopped"
+            except (Exception, asyncio.CancelledError):
+                return "runtime_reuse_blocked"
+
+        cleanup = asyncio.create_task(stop())
+        cancelled = False
+        # A second cancellation cannot detach cleanup and release the turn lock.
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                cancelled = True
+        return cleanup.result(), cancelled
+
     async def steer(self, thread: RuntimeThreadHandle, turn_id: str, input: tuple[RuntimeInput, ...]) -> None:
+        self._require_reusable()
         await self.supervisor.request("turn/steer", {"threadId": thread.thread_id, "turnId": turn_id, "input": [{"type": "text", "text": item.text} for item in input]}, generation=thread.generation)
 
     async def interrupt(self, thread: RuntimeThreadHandle, turn_id: str) -> None:
+        self._require_reusable()
         await self.supervisor.request("turn/interrupt", {"threadId": thread.thread_id, "turnId": turn_id}, generation=thread.generation)
 
     def events(self) -> AsyncIterator[RuntimeEvent]:
@@ -364,6 +546,8 @@ class CodexAppServerRuntime(AgentRuntimePort):
 
     async def shutdown(self) -> None:
         await self.supervisor.shutdown()
+        # A previous incomplete close may be idempotently acknowledged on retry.
+        # That is not new stop evidence: poisoned adapters require host recreation.
 
 
 def _tool_wire(tool: object) -> Mapping[str, object]:

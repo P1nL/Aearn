@@ -1,0 +1,209 @@
+{
+  "schema_version": "learning_item_source_v1",
+  "blueprint": {
+    "schema_version": "learning_item_blueprint_v1",
+    "blueprint_key": "python.variables.stale-subtotal-review.blueprint",
+    "version": "v3",
+    "knowledge_key": "python.variables",
+    "item_kind": "model_review",
+    "purpose": "code_review",
+    "language_id": "python",
+    "difficulty_profile": {
+      "base": "D2",
+      "reasoning_depth": 2,
+      "concept_count": 2,
+      "context_novelty": 2,
+      "transfer_distance": 2,
+      "response_complexity": 2,
+      "scaffolding": 4
+    },
+    "prerequisite_keys": [],
+    "required_capabilities": [
+      "python"
+    ],
+    "allowed_interactions": [
+      "review"
+    ],
+    "remediation_policy": {
+      "first_failure": "explain_then_remediate",
+      "second_failure": "explain_then_transfer",
+      "successor_item_key": "python.variables.stale-derived-remediation"
+    },
+    "publication_policy": {
+      "risk_tier": "low",
+      "required_review_roles": [
+        "curriculum",
+        "difficulty",
+        "technical",
+        "ambiguity",
+        "security",
+        "adversarial"
+      ],
+      "agent_review_required": true,
+      "pilot_required": true,
+      "human_approval_required": false
+    },
+    "source_references": [
+      {
+        "source_id": "python-tutorial",
+        "source_version": "python-3.14.7",
+        "locator": "tutorial.introduction.first-steps-towards-programming",
+        "content_hash": "e900715b26a7b25339637eb1b83e7dc2ba5fbcabc6843e6a225845f155e40dc5"
+      }
+    ]
+  },
+  "public": {
+    "schema_version": "learning_item_public_v1",
+    "item_key": "python.variables.stale-subtotal-review",
+    "version": "v3",
+    "kind": "model_review",
+    "purpose": "code_review",
+    "title": "Python Variables: Stale Subtotal Review",
+    "difficulty": "D2",
+    "instruction_markdown": "Trace the assignments, compare the final value with the requirement, and support your verdict with evidence. The selectable finding target is the final assignment only.",
+    "allowed_interactions": [
+      "review"
+    ],
+    "hints": [
+      {
+        "level": 1,
+        "markdown": "Record each name and its value after each assignment, keeping a separate row for each name."
+      },
+      {
+        "level": 2,
+        "markdown": "Compare the final target value with the expression in the requirement. Describe how you would check their equality."
+      }
+    ],
+    "remediation_item_key": "python.variables.stale-derived-remediation",
+    "source_references": [
+      {
+        "source_id": "python-tutorial",
+        "source_version": "python-3.14.7",
+        "locator": "tutorial.introduction.first-steps-towards-programming",
+        "content_hash": "e900715b26a7b25339637eb1b83e7dc2ba5fbcabc6843e6a225845f155e40dc5"
+      }
+    ],
+    "content": {
+      "type": "model_review",
+      "prompt": {
+        "schema_version": "model_code_review_prompt_v1",
+        "requirements": [
+          "After `unit_price` changes to 12, `total` must equal the current `unit_price * quantity`."
+        ],
+        "review_scope": [
+          "correctness",
+          "assignment_order",
+          "evidence"
+        ],
+        "evidence_boundary": "prepublication_verified",
+        "learner_instruction": "Review only the final assignment to `total` on line 5 against the stated requirement. If you report a correctness finding, select line 5 alone. Explain the earlier assignments as supporting evidence in the finding text, not as additional finding locations. Include the observed and required values, a reproducible check, and a proposed correction. In your finding text, use both visible variable identifiers `total` and `subtotal` exactly as written, as separate words. Explain their relationship in this assignment; descriptive substitutes for either identifier are insufficient for this structured review. Other explanatory wording is unrestricted."
+      },
+      "artifact": {
+        "schema_version": "model_code_review_artifact_v1",
+        "language_id": "python",
+        "runtime_label": "Python 3",
+        "model_code": "unit_price = 10\nquantity = 2\nsubtotal = unit_price * quantity\nunit_price = 12\ntotal = subtotal",
+        "code_hash": "2c6b4ee38ea3f639806f3c6e4f5d024e2065b71841b49a52ca3a9ed112e1fd8c",
+        "line_count": 5
+      }
+    }
+  },
+  "private": {
+    "schema_version": "learning_item_private_v1",
+    "item_key": "python.variables.stale-subtotal-review",
+    "version": "v3",
+    "kind": "model_review",
+    "content": {
+      "type": "model_review",
+      "rubric": {
+        "schema_version": "model_code_review_rubric_v1",
+        "scenario_kind": "single_correctness_issue",
+        "expected_verdict": "correctness_issue",
+        "expected_findings": [
+          {
+            "finding_key": "stale-subtotal",
+            "finding_kind": "correctness",
+            "category": "assignment_order",
+            "severity": "high",
+            "accepted_line_ranges": [
+              {
+                "start_line": 5,
+                "end_line": 5
+              }
+            ],
+            "matcher_tokens": [
+              "total",
+              "subtotal"
+            ],
+            "reachability_proof_ids": [
+              "proof-stale-subtotal"
+            ],
+            "minimum_token_matches": 2
+          }
+        ],
+        "visible_evidence_ids": [
+          "visible-assignment-trace"
+        ],
+        "coverage_policy": "model_review_coverage_v1",
+        "score_policy_version": "model_code_review_score_v1",
+        "feedback_policy_version": "model_code_review_feedback_v1"
+      },
+      "reference_submission": {
+        "schema_version": "model_code_review_submission_v1",
+        "verdict": "correctness_issue",
+        "findings": [
+          {
+            "client_finding_id": "finding-1",
+            "finding_kind": "correctness",
+            "start_line": 5,
+            "end_line": 5,
+            "category": "assignment_order",
+            "severity": "high",
+            "trigger_condition": "unit_price is reassigned to 12 after subtotal was calculated from unit_price 10",
+            "principle": "derived values do not automatically recompute when an input name is rebound",
+            "impact": "total remains 20 instead of using the current unit_price and quantity to produce 24",
+            "validation_method": "test the final variables and assert total == unit_price * quantity == 24",
+            "suggested_fix": "change the final assignment to calculate unit_price * quantity after the reassignment"
+          }
+        ]
+      },
+      "tests": [
+        {
+          "id": "visible_assignment_trace",
+          "case_type": "visible",
+          "input_json": {
+            "unit_price": 12,
+            "quantity": 2
+          },
+          "expected_output_json": {
+            "value": 24
+          },
+          "weight": 1,
+          "is_critical": true,
+          "order_index": 0
+        },
+        {
+          "id": "hidden_reassignment_trace",
+          "case_type": "hidden",
+          "input_json": {
+            "unit_price": 12,
+            "quantity": 2,
+            "reassigned": true
+          },
+          "expected_output_json": {
+            "value": 24
+          },
+          "weight": 1,
+          "is_critical": true,
+          "order_index": 1
+        }
+      ],
+      "score_policy": {
+        "kind": "model_code_review",
+        "policy_version": "model_code_review_score_v1",
+        "threshold": 0.8
+      },
+      "validation_profile_version": "model_review_validation_v1"
+    }
+  }
+}

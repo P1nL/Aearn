@@ -1953,7 +1953,7 @@ history can be reduced without erasing the learner's current intent.
 - Responses accepts learner-visible content only from `output_text`; provider-native reasoning items, provider error objects, and arbitrary output items are never answer fallbacks. `public_thinking_steps` is parsed only from the validated final visible JSON object.
 - Non-DeepSeek Responses requests use the generated strict JSON Schema. DeepSeek remains JSON-object-compatible by default; JSON Schema for DeepSeek Responses is explicit opt-in for a verified gateway. The narrow decision output budget does not inherit the physical model output maximum.
 - A repairable rejection gets at most one fresh same-provider replacement request. It contains only safe field paths and bounded validation categories, never the rejected value/body or Pydantic/provider validation text.
-- The first DeepSeek attempt keeps normal thinking behavior for teaching quality. By default only the replacement sends `thinking.type=disabled`, making repair a narrow serializer; the setting can explicitly omit that override for an incompatible gateway.
+- The first DeepSeek attempt keeps normal thinking behavior for teaching quality. By default only the replacement sends `reasoning.effort=none` on Responses (`thinking.type=disabled` on Chat Completions), making repair a narrow serializer; the setting can explicitly omit that override for an incompatible gateway.
 - Raw body capture defaults to `off` and `OpenAICompatibleClient.complete_json()` requires explicit `capture_provider_body=True`; the Tutor gateway is the owner that constructs/injects the diagnostic store. `rejected` mode requires a base64-encoded 32-byte key, buffers a bounded body in memory, discards accepted bodies, encrypts rejected bodies with AES-GCM and a fresh 12-byte nonce, authenticates safe metadata as AAD, and prunes only fixed-suffix artifacts inside the configured local directory. Artifact IDs/paths never enter receipts, DB rows, API/SSE, exports, or learner-visible logs.
 
 ### 4. Validation & Error Matrix
@@ -1963,7 +1963,7 @@ history can be reduced without erasing the learner's current intent.
 - Missing/extra/invalid-literal/type/value/action -> safe `TUTOR_PROVIDER_DECISION_*` diagnostic; one same-provider replacement; final public result remains `MODEL_UNAVAILABLE`.
 - Unsafe raw message/title/public-thinking/payload value -> `TUTOR_PROVIDER_OUTPUT_SAFETY_REJECTED`; raw text is not normalized into an accepted domain value first.
 - DeepSeek JSON Schema flag disabled -> `text.format=json_object`; enabled only by explicit configuration -> generated `json_schema`.
-- First DeepSeek attempt -> no forced `thinking`; repair with the default setting -> `thinking.type=disabled`; setting disabled -> field omitted.
+- First DeepSeek attempt -> no forced `thinking`; repair with the default setting -> `reasoning.effort=none` on Responses (`thinking.type=disabled` on Chat Completions); setting disabled -> field omitted.
 - Capture mode other than `off|rejected`, or `rejected` without a key -> configuration failure before provider use; no plaintext fallback.
 - Invalid base64/wrong key length, write/encryption/prune failure -> safe internal capture failure; Tutor result and receipt never include the body, key, path, or raw exception.
 - Accepted provider attempt -> capture buffer is zeroed/discarded and no artifact is written.
@@ -3181,7 +3181,7 @@ persist(
   `input_hard_limit = context_window_tokens - max_output_reserve_tokens`。
 - Policy：`TutorContextBudgetPolicy(capability, mode_targets, warning_ratio, critical_ratio, max_expansions, estimator_version, policy_version, fixed_mode)`。
 - Modes：`compact | normal | complex | extended`；targets 必须逐档严格递增，初始默认
-  为 `16000/64000/192000/384000`，但始终被 capability 裁剪。
+  为 `16000/64000/96000/130688`，但始终被 capability 裁剪。
 - Planner：`TutorContextBudgetPlanner.build_context(run, context_input, builder, expansion_count=0) -> TutorContextSelection`。
 - Serializer：`TutorProviderRequestSerializer.build_messages(run, context) -> list[dict[str, str]]`，gateway 与 dry-run planner 必须共享同一实现。
 - Env：`TUTOR_CONTEXT_WINDOW_TOKENS`、`TUTOR_CONTEXT_OUTPUT_RESERVE_TOKENS`、
@@ -3190,7 +3190,9 @@ persist(
   `TUTOR_DEEPSEEK_V4_FLASH_MAX_DYNAMIC_TARGET_TOKENS`、四档 target、warning/critical ratio、
   `TUTOR_CONTEXT_MAX_EXPANSIONS` 与可选 `TUTOR_CONTEXT_FIXED_MODE`。
 - Exact registry：仅精确 `LLM_TYPE=deepseek` + `DEEPSEEK_MODEL=deepseek-v4-flash`
-  使用 `1_000_000` window / `384_000` output reserve；相似名字走显式保守默认。
+  保留 `1_000_000` physical window；普通 provider request 使用独立的 `131_072`
+  input hard limit 与 `61_440` output hard limit。Tutor capability 内部用 `192_512`
+  表达输入加输出 reserve 的核算包络，不得把它投影成模型物理能力；相似名字走显式保守默认。
 
 ### 3. Contracts
 
@@ -3202,7 +3204,7 @@ persist(
   JSON envelope，并额外加入 protocol reserve 与 safety margin。固定点 metadata 稳定过程
   必须把 required-only estimate 作为保守下界，不能因 prompt/metadata 长度变化让最终
   `estimated_total_input_tokens` 低于 required floor。只把剩余 optional budget 交给
-  builder；`616_000` 是 DeepSeek V4 Flash input hard limit，不是填满目标。
+  builder；`131_072` 是 DeepSeek V4 Flash input hard limit，不是填满目标。
 - current input 永远 required 且先保留。optional priority 固定为：system/selected Skill
   policy、最新既往消息、直接相关 active plan/review、working summary、memory、activity、
   非必要 capability schema。达到预算时跳过 optional item，不能删除 current input。
@@ -3270,8 +3272,8 @@ persist(
 #### Wrong
 
 ```python
-# cached 不能从物理输入中扣除；616K 也不是每轮 selection target。
-optional_budget = 616_000 - expected_cached_tokens
+# cached 不能从物理输入中扣除；128K 也不是每轮 selection target。
+optional_budget = 131_072 - expected_cached_tokens
 messages = build_gateway_messages(run, context)
 estimate = estimate_context_items_only(context)
 ```
@@ -3583,6 +3585,15 @@ repository.publish_authoring_result(document=document, snapshots=snapshots, qual
 
 The strict candidate, evidence set, quality report, and final persisted authority remain separate and auditable.
 
+## Scenario: Gate Assessment Selection and Durable Submission (2026-09-08)
+
+- `knowledge_check_v1` binds only compatible published static knowledge items, not the language's executable fixture. Apply exact knowledge/language/kind/capability filters before candidate LIMIT, require valid immutable Practice materialization, and derive required/forbidden execution from the exercise authority.
+- Model-authored slot capabilities do not grant themselves permission. Consult the current active node; no arbitrary capability-prefix expansion is allowed. The scoped legacy language/current-knowledge compatibility remains distinct from authorizing unrelated fixture capabilities.
+- Prepare only the requested Gate. `model_code_review_v1` retains its dedicated author path; unknown assessment/response contracts fail closed. Supported knowledge Gate responses are single_choice, prediction and short_text.
+- Historical wrong bindings remain readable and immutable but expose no new actions. Preserve valid historical generic static `lesson_gate_v1` bindings. Replay exact Hint/Attempt receipts before applying current mutable publication/compatibility checks.
+- Lock the exact Learning Item version and freshly reread publication before selection/mutation, sharing the publisher's lock boundary so retirement cannot race a new binding or action. Passed Gates expose no hint/run/submit actions.
+- Frontend renders only public question/options and forwards the selected option ID; it owns no scoring. A successful HTTP submit must be visible from another DB connection and survive refresh; a response-only passing score is not persistence evidence.
+
 ## Scenario: Lesson Authoring Bounded Repair
 
 ### 1. Scope / Trigger
@@ -3592,7 +3603,7 @@ Changes to Lesson provider feedback, candidate validation, retry orchestration o
 ### 2. Signatures
 
 - Internal request feedback: `previous_attempt_feedback.schema_version=lesson_author_feedback_v1`.
-- Receipt projection: `diagnostic_json.schema_version=lesson_author_attempt_diagnostic_v1`; legacy rows may remain `{}`.
+- Receipt projection: legacy `{}` and `lesson_author_attempt_diagnostic_v1` remain readable. New provider metadata uses `lesson_author_attempt_diagnostic_v2` with a closed `provider_response` object and nullable `reasoning_tokens`.
 - One run shares one repair budget across standard and personalized documents. Reclaimed runs conservatively receive no new semantic repair budget; normal candidate generation may restart after a crash. The three-call example below applies to an uninterrupted fresh dispatch, not an aggregate transport-call limit across crash/reclaim history.
 
 ### 3. Contracts
@@ -3601,6 +3612,9 @@ Changes to Lesson provider feedback, candidate validation, retry orchestration o
 - The second request preserves the original safe evidence and validated standard document when personalizing. Only the feedback is added; never attach the rejected candidate or switch provider/model/protocol.
 - Record each provider attempt after candidate identity and quality validation. A syntactically successful provider response is not a successful authoring attempt.
 - Keep transport retry separate. Final publication still revalidates current state and lease and atomically publishes complete documents and one assignment winner.
+- Exact DeepSeek V4 Flash Lesson authors request `reasoning.effort=none` through protocol-specific serialization and retain the 12,000 total output-token cap. Other model callers retain their own policies. Do not use Chat Completions `thinking.type` in a Responses request.
+- Private response diagnostics retain only closed status/incomplete-cause enums, requested output cap/effort and visible character count. Native reasoning content and raw provider bodies never enter receipts, feedback or public exports. Reasoning tokens are a subset of output usage, not an additional billable total; unknown is null, not zero.
+- For Responses with safe metadata, only confirmed `max_output_tokens` incompleteness is content-repairable. Filter/context/unknown causes and missing terminal completion fail closed; legacy injected responses without metadata keep their existing compatibility behavior.
 
 ### 4. Validation & Error Matrix
 

@@ -340,7 +340,8 @@ async def test_child_crash_invalidates_generation_and_pending_turn(tmp_path: Pat
     assert result.terminal_status is RuntimeTerminalStatus.UNAVAILABLE
     assert result.safe_error_code == "runtime_connection_failed"
     health = await runtime.health()
-    assert health.status is RuntimeHealthStatus.UNAVAILABLE
+    assert health.status is RuntimeHealthStatus.STOPPED
+    assert result.metrics.termination_reason == "owned_runtime_stopped"
     restarted = await runtime.start()
     assert restarted.status is RuntimeHealthStatus.READY
     assert restarted.generation == 2

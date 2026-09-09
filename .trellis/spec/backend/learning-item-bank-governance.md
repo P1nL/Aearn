@@ -77,6 +77,8 @@ Feature flag: `LEARNING_ITEM_BANK_AGENT_REVIEW_ENABLED=false` by default.
 - Publishing a non-demo item atomically materializes/replays the exact existing `tutor_exercise_versions` and `tutor_exercise_private_rubrics` authority. Demo items remain Learning Item authority. Materialization never creates Attempt, score, mastery, or progress evidence.
 - Online selection returns at most eight `published` safe candidates and requires an explicit compatible capability set. It returns only handle, kind, purpose, knowledge/language, difficulty, title/summary, capabilities, and allowed interactions.
 - Reviewer/provider exceptions are mapped to safe failures without chaining raw provider details. Routine tests use fake reviewer ports only.
+- Review approval is not proof that the production scorer rejects every known counterexample. Before promoting an item with an identified scoring risk, execute the exact counterexample through the real deterministic scorer. A confirmed factually incorrect response passing the threshold is a rubric/validation blocker even if an individual reviewer classified the hypothetical risk as minor. Retain reports and hash-bound audit evidence; quarantine the affected immutable version rather than rewriting it or fabricating a successful pilot.
+- Controlled model-only pilots must retain the exact public-only input, observed response, source hash, actual scorer result and usage locally. They are not human learner cohorts or usability evidence. Pilot counts must be derived from actual observations, preserve the existing risk thresholds, and never be copied from review votes or invented test-user counts.
 
 ## 4. Validation & Error Matrix
 

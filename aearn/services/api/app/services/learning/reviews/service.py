@@ -1,8 +1,10 @@
 """Verified-only orchestration for track-scoped ReviewSession."""
+
 from __future__ import annotations
 
 import re
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -10,17 +12,37 @@ from psycopg import Connection
 
 from aearn_shared.execution import ExecutionAction, SafeExecutionResultV1
 from app.services.learning.contracts import ExecutionComposition, ExecutionTier
-from app.services.learning.execution_tiers import ExecutionTierInputs, ExecutionTierResolver
+from app.services.learning.execution_tiers import (
+    ExecutionTierInputs,
+    ExecutionTierResolver,
+)
 from app.services.learning.teaching_events import TeachingDomainEventAdapter
-from app.services.learning.practice.contracts import ExerciseAttemptType, ExerciseType
+from app.services.learning.practice.contracts import (
+    ExerciseAttemptOutcome,
+    ExerciseAttemptResult,
+    ExerciseAttemptType,
+    ExerciseType,
+)
 from app.services.learning.practice.model_review_contracts import (
     ModelReviewArtifactV1,
     ModelReviewAssistanceKind,
     ModelReviewRubricV1,
     parse_model_review_submission,
 )
-from app.services.learning.practice.model_review_scoring import evaluate_model_code_review
-from app.services.learning.practice.policies import evaluate_static_reasoning, score_execution_result
+from app.services.learning.practice.model_review_scoring import (
+    evaluate_model_code_review,
+)
+from app.services.learning.practice.model_review_semantics import (
+    SemanticDecisionOutcome,
+    SemanticReviewReceipt,
+    SemanticSurface,
+    ServerSemanticRequest,
+    combine_deterministic_and_semantic,
+)
+from app.services.learning.practice.policies import (
+    evaluate_static_reasoning,
+    score_execution_result,
+)
 from app.services.learning.reviews.contracts import ReviewCandidate
 from app.services.learning.reviews.persistence import (
     ReviewIdempotencyConflict,
@@ -35,8 +57,12 @@ from app.services.learning.reviews.persistence import (
     iso,
     string_list,
 )
-from app.services.learning.reviews.schedule_repository import PostgresReviewScheduleRepository
-from app.services.learning.reviews.session_repository import PostgresReviewSessionRepository
+from app.services.learning.reviews.schedule_repository import (
+    PostgresReviewScheduleRepository,
+)
+from app.services.learning.reviews.session_repository import (
+    PostgresReviewSessionRepository,
+)
 from app.services.runners.language_capabilities import require_language_capability
 from app.services.tutor.execution import (
     ExecutionIntentRepository,
@@ -75,6 +101,15 @@ class _ExecutorAvailability:
         return self._repository.availability_for_runtime(runtime_id).available
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedReviewModelReview:
+    request_hash: str
+    normalized_submission: str
+    semantic_request: ServerSemanticRequest
+    deterministic_result: ExerciseAttemptResult | None
+    replay: dict[str, object] | None
+
+
 class ReviewService:
     def __init__(
         self,
@@ -100,7 +135,9 @@ class ReviewService:
         track = _uuid(track_id, "track_id")
         try:
             return self._project_queue(
-                self._schedules.read_queue(user_id=user, track_id=track, now=datetime.now(UTC))
+                self._schedules.read_queue(
+                    user_id=user, track_id=track, now=datetime.now(UTC)
+                )
             )
         except ReviewRepositoryError as exc:
             raise _map_error(exc) from exc
@@ -128,7 +165,9 @@ class ReviewService:
         }
         try:
             with self._conn.transaction():
-                candidates = self._candidates(user_id=user, track_id=track, knowledge_key=key)
+                candidates = self._candidates(
+                    user_id=user, track_id=track, knowledge_key=key
+                )
                 row = self._sessions.create_or_retry_session(
                     user_id=user,
                     track_id=track,
@@ -145,7 +184,9 @@ class ReviewService:
         except (ReviewRepositoryError, ExecutionSubmissionError) as exc:
             raise _map_error(exc) from exc
 
-    def read_session(self, *, user_id: str, track_id: str, session_id: str) -> dict[str, object]:
+    def read_session(
+        self, *, user_id: str, track_id: str, session_id: str
+    ) -> dict[str, object]:
         try:
             row = self._sessions.read_session(
                 user_id=_uuid(user_id, "user_id"),
@@ -169,10 +210,22 @@ class ReviewService:
     ) -> dict[str, object]:
         user, track, session = _ids(user_id, track_id, session_id)
         if response_kind not in {"answered", "skipped"}:
-            raise ReviewServiceError("VALIDATION_ERROR", "response_kind 必须是 answered 或 skipped。", status_code=422)
+            raise ReviewServiceError(
+                "VALIDATION_ERROR",
+                "response_kind 必须是 answered 或 skipped。",
+                status_code=422,
+            )
         if response_kind == "answered" and confidence not in {"low", "medium", "high"}:
-            raise ReviewServiceError("VALIDATION_ERROR", "answered warmup 需要有效 confidence。", status_code=422)
-        summary = {"confidence": confidence} if response_kind == "answered" else {"skipped": True}
+            raise ReviewServiceError(
+                "VALIDATION_ERROR",
+                "answered warmup 需要有效 confidence。",
+                status_code=422,
+            )
+        summary = (
+            {"confidence": confidence}
+            if response_kind == "answered"
+            else {"skipped": True}
+        )
         request = {
             "session_id": session,
             "response_kind": response_kind,
@@ -247,9 +300,128 @@ class ReviewService:
                 }
         except (KeyError, ReviewRepositoryError) as exc:
             if isinstance(exc, KeyError):
-                raise ReviewServiceError("VALIDATION_ERROR", "hint_level 必须在 1..3。", status_code=422) from exc
+                raise ReviewServiceError(
+                    "VALIDATION_ERROR", "hint_level 必须在 1..3。", status_code=422
+                ) from exc
             raise _map_error(exc) from exc
 
+    def prepare_model_review_attempt(
+        self,
+        *,
+        user_id: str,
+        track_id: str,
+        session_id: str,
+        item_id: str,
+        review_submission: Mapping[str, object],
+        expected_session_version: int,
+        expected_item_version: int,
+        idempotency_key: str,
+    ) -> PreparedReviewModelReview:
+        user, track, session = _ids(user_id, track_id, session_id)
+        item = _uuid(item_id, "item_id")
+        session_row = self._sessions.read_session(
+            user_id=user, track_id=track, session_id=session
+        )
+        item_row = _find_item(session_row, item)
+        if str(item_row["exercise_type"]) != ExerciseType.MODEL_CODE_REVIEW.value:
+            raise ReviewServiceError(
+                "MODEL_REVIEW_SUBMISSION_INVALID",
+                "Review item 不是模型审查。",
+                status_code=422,
+                recoverable=False,
+            )
+        artifact = ModelReviewArtifactV1.model_validate(
+            as_mapping(item_row.get("starter_artifact_json"))
+        )
+        parsed = parse_model_review_submission(review_submission)
+        parsed.validate_line_count(artifact.line_count)
+        normalized = parsed.canonical_json()
+        identity = {
+            "session_id": session,
+            "item_id": item,
+            "submission_hash": content_hash(normalized),
+            "expected_session_version": expected_session_version,
+            "expected_item_version": expected_item_version,
+        }
+        hashed = content_hash(identity)
+        existing = self._conn.execute(
+            "SELECT attempts.*, results.outcome, results.score, results.safe_feedback_json, results.capability_scores_json, results.policy_version, results.result_hash, results.terminal_at FROM tutor_exercise_attempts attempts LEFT JOIN tutor_exercise_attempt_results results ON results.attempt_id=attempts.id WHERE attempts.user_id=%s AND attempts.attempt_type='review_submit' AND attempts.idempotency_key=%s",
+            (user, _idempotency(idempotency_key)),
+        ).fetchone()
+        if existing is not None:
+            if str(existing["request_hash"]) != hashed:
+                raise ReviewServiceError(
+                    "IDEMPOTENCY_CONFLICT",
+                    "幂等标识冲突。",
+                    status_code=409,
+                    recoverable=False,
+                )
+            replay = dict(existing)
+            replay["idempotent_replayed"] = True
+            return PreparedReviewModelReview(
+                hashed,
+                normalized,
+                ServerSemanticRequest.build(
+                    surface=SemanticSurface.V1,
+                    public_prompt="replay",
+                    public_code=artifact.model_code,
+                    private_rubric={},
+                    untrusted_submission=normalized,
+                ),
+                None,
+                self._project_attempt(replay),
+            )
+        if (
+            as_int(session_row["version"]) != expected_session_version
+            or as_int(item_row["version"]) != expected_item_version
+        ):
+            raise ReviewServiceError(
+                "REVIEW_VERSION_CONFLICT", "Review authority 已变化。", status_code=409
+            )
+        authority = self._conn.execute(
+            """SELECT rubrics.reference_answer_json, rubrics.score_policy_json
+            FROM tutor_exercise_versions AS versions
+            JOIN tutor_exercise_private_rubrics AS rubrics
+              ON rubrics.exercise_version_id=versions.id
+            WHERE versions.id=%s AND versions.exercise_type='model_code_review'
+              AND versions.validation_status='ready'""",
+            (item_row["exercise_version_id"],),
+        ).fetchone()
+        if authority is None:
+            raise ReviewServiceError(
+                "REVIEW_CANDIDATE_INVALID",
+                "Review model authority 不可用。",
+                status_code=409,
+            )
+        rubric = ModelReviewRubricV1.model_validate(
+            as_mapping(authority.get("reference_answer_json"))
+        )
+        policy = as_mapping(authority.get("score_policy_json"))
+        deterministic = evaluate_model_code_review(
+            submission=parsed,
+            rubric=rubric,
+            line_count=artifact.line_count,
+            required_capabilities=tuple(
+                string_list(item_row.get("required_capabilities_json"))
+            ),
+            assistance_kind=ModelReviewAssistanceKind.INDEPENDENT,
+            threshold=as_float(policy.get("threshold") or 0.8),
+            now=datetime.now(UTC),
+        )
+        semantic = ServerSemanticRequest.build(
+            surface=SemanticSurface.V1,
+            public_prompt=str(
+                item_row.get("learner_prompt_json")
+                or item_row.get("prompt_markdown")
+                or "Review code"
+            ),
+            public_code=artifact.model_code,
+            private_rubric=rubric.model_dump(mode="json"),
+            untrusted_submission=normalized,
+        )
+        return PreparedReviewModelReview(
+            hashed, normalized, semantic, deterministic, None
+        )
 
     def attempt_item(
         self,
@@ -263,6 +435,8 @@ class ReviewService:
         expected_session_version: int,
         expected_item_version: int,
         idempotency_key: str,
+        prepared_model_review: PreparedReviewModelReview | None = None,
+        semantic_receipt: SemanticReviewReceipt | None = None,
     ) -> dict[str, object]:
         user, track, session = _ids(user_id, track_id, session_id)
         item = _uuid(item_id, "item_id")
@@ -298,6 +472,60 @@ class ReviewService:
                             recoverable=False,
                         )
                     normalized = submission
+                if exercise_type == ExerciseType.MODEL_CODE_REVIEW.value:
+                    if prepared_model_review is None:
+                        raise ReviewServiceError(
+                            "MODEL_REVIEW_SEMANTIC_REQUIRED",
+                            "ReviewSession 模型审查必须通过语义入口。",
+                            status_code=409,
+                        )
+                    request_identity = {
+                        "session_id": session,
+                        "item_id": item,
+                        "submission_hash": content_hash(normalized),
+                        "expected_session_version": expected_session_version,
+                        "expected_item_version": expected_item_version,
+                    }
+                    if (
+                        prepared_model_review.request_hash
+                        != content_hash(request_identity)
+                        or prepared_model_review.normalized_submission != normalized
+                    ):
+                        raise ReviewServiceError(
+                            "REVIEW_VERSION_CONFLICT",
+                            "ReviewSession authority 在语义评估期间发生变化。",
+                            status_code=409,
+                        )
+                if exercise_type == ExerciseType.MODEL_CODE_REVIEW.value:
+                    assert review_submission is not None
+                    assert prepared_model_review is not None
+                    refreshed = self.prepare_model_review_attempt(
+                        user_id=user,
+                        track_id=track,
+                        session_id=session,
+                        item_id=item,
+                        review_submission=review_submission,
+                        expected_session_version=expected_session_version,
+                        expected_item_version=expected_item_version,
+                        idempotency_key=idempotency_key,
+                    )
+                    if refreshed.replay is not None:
+                        return refreshed.replay
+                    if (
+                        refreshed.semantic_request
+                        != prepared_model_review.semantic_request
+                        or refreshed.deterministic_result is None
+                        or prepared_model_review.deterministic_result is None
+                        or refreshed.deterministic_result.outcome
+                        != prepared_model_review.deterministic_result.outcome
+                        or refreshed.deterministic_result.score
+                        != prepared_model_review.deterministic_result.score
+                    ):
+                        raise ReviewServiceError(
+                            "REVIEW_VERSION_CONFLICT",
+                            "ReviewSession authority 在语义评估期间发生变化。",
+                            status_code=409,
+                        )
                 tier = self._execution_tier(item_row)
                 if tier["execution_tier"] == ExecutionTier.STATIC_ONLY.value and bool(
                     item_row.get("execution_required")
@@ -330,6 +558,8 @@ class ReviewService:
                     attempt=attempt,
                     submission=normalized,
                     tier=tier,
+                    prepared_model_review=prepared_model_review,
+                    semantic_receipt=semantic_receipt,
                 )
                 projected["execution_tier"] = tier["execution_tier"]
                 projected["execution_disclosure"] = tier["execution_disclosure"]
@@ -366,7 +596,10 @@ class ReviewService:
                     session_id=session,
                     attempt_id=attempt,
                 )
-                if row.get("result_hash") is None and row.get("execution_job_id") is not None:
+                if (
+                    row.get("result_hash") is None
+                    and row.get("execution_job_id") is not None
+                ):
                     safe_result = self._execution.read_exercise_safe_result(
                         user_id=user,
                         attempt_id=attempt,
@@ -479,7 +712,8 @@ class ReviewService:
                 finalization_id = row.get("finalization_id")
                 if finalization_id is not None:
                     self._teaching_events.admit_review_terminal(
-                        user_id=user, finalization_id=str(finalization_id),
+                        user_id=user,
+                        finalization_id=str(finalization_id),
                     )
                 return self._project_session(row)
         except ReviewRepositoryError as exc:
@@ -513,7 +747,10 @@ class ReviewService:
                 ExecutionTier.TEACHING_LOCAL.value,
             }:
                 continue
-            if not bool(row.get("execution_required")) and tier["execution_tier"] == ExecutionTier.UNAVAILABLE.value:
+            if (
+                not bool(row.get("execution_required"))
+                and tier["execution_tier"] == ExecutionTier.UNAVAILABLE.value
+            ):
                 continue
             selected.append(
                 ReviewCandidate(
@@ -540,6 +777,8 @@ class ReviewService:
         attempt: Mapping[str, object],
         submission: str,
         tier: Mapping[str, object],
+        prepared_model_review: PreparedReviewModelReview | None = None,
+        semantic_receipt: SemanticReviewReceipt | None = None,
     ) -> dict[str, object]:
         if bool(attempt.get("idempotent_replayed")):
             stored = self._sessions.read_attempt(
@@ -548,10 +787,18 @@ class ReviewService:
                 session_id=str(attempt["review_session_id"]),
                 attempt_id=str(attempt["id"]),
             )
-            if stored.get("result_hash") is not None or stored.get("execution_job_id") is not None:
+            if (
+                stored.get("result_hash") is not None
+                or stored.get("execution_job_id") is not None
+            ):
                 return self._project_attempt(stored)
         if tier["execution_tier"] == ExecutionTier.STATIC_ONLY.value:
-            result = self._static_result(attempt=attempt, submission=submission)
+            result = self._static_result(
+                attempt=attempt,
+                submission=submission,
+                prepared_model_review=prepared_model_review,
+                semantic_receipt=semantic_receipt,
+            )
             return self._project_attempt(
                 self._sessions.finalize_attempt(
                     user_id=str(attempt["user_id"]),
@@ -585,7 +832,9 @@ class ReviewService:
         safe_result = self._local_runner(attempt, submission)
         result = score_execution_result(
             safe_result,
-            required_capabilities=string_list(attempt.get("required_capabilities_json")),
+            required_capabilities=string_list(
+                attempt.get("required_capabilities_json")
+            ),
         )
         return self._project_attempt(
             self._sessions.finalize_attempt(
@@ -597,12 +846,13 @@ class ReviewService:
             )
         )
 
-
     def _static_result(
         self,
         *,
         attempt: Mapping[str, object],
         submission: str,
+        prepared_model_review: PreparedReviewModelReview | None = None,
+        semantic_receipt: SemanticReviewReceipt | None = None,
     ):
         row = self._conn.execute(
             """SELECT versions.starter_artifact_json, rubrics.reference_answer_json,
@@ -623,25 +873,52 @@ class ReviewService:
             artifact = ModelReviewArtifactV1.model_validate(
                 as_mapping(row.get("starter_artifact_json"))
             )
-            rubric = ModelReviewRubricV1.model_validate(
-                as_mapping(row.get("reference_answer_json"))
-            )
             parsed = parse_model_review_submission(submission)
             parsed.validate_line_count(artifact.line_count)
             policy = as_mapping(row.get("score_policy_json"))
-            return evaluate_model_code_review(
-                submission=parsed,
-                rubric=rubric,
-                line_count=artifact.line_count,
-                required_capabilities=tuple(
-                    string_list(attempt.get("required_capabilities_json"))
-                ),
-                assistance_kind=ModelReviewAssistanceKind(
-                    str(attempt.get("assistance_kind") or "independent")
-                ),
-                threshold=as_float(policy.get("threshold") or 0.8),
-                now=datetime.now(UTC),
+            if prepared_model_review is None:
+                raise ReviewServiceError(
+                    "MODEL_REVIEW_SEMANTIC_REQUIRED",
+                    "ReviewSession 模型审查缺少语义 receipt。",
+                    status_code=409,
+                )
+            result = prepared_model_review.deterministic_result
+            if result is None:
+                raise ReviewServiceError(
+                    "MODEL_REVIEW_SEMANTIC_REQUIRED",
+                    "ReviewSession 模型审查缺少 qualification。",
+                    status_code=409,
+                )
+            decision = combine_deterministic_and_semantic(
+                request=prepared_model_review.semantic_request,
+                deterministic_pass=result.outcome is ExerciseAttemptOutcome.PASSED,
+                semantic_receipt=semantic_receipt,
             )
+            if (
+                decision.outcome is SemanticDecisionOutcome.FAILED
+                and result.outcome is ExerciseAttemptOutcome.PASSED
+            ):
+                threshold = as_float(policy.get("threshold") or 0.8)
+                capped = min(result.score, max(0.0, threshold - 0.01))
+                feedback = dict(result.safe_feedback)
+                feedback.update(
+                    status="model_code_review_v1_semantic_rejected",
+                    reason_code="semantic_authority_contradiction",
+                    semantic_policy_version="model_code_review_score_v1_semantic_v1",
+                    message="结构证据通过，但语义解释与题目权威不一致。",
+                    next_action="review_variant",
+                )
+                result = ExerciseAttemptResult(
+                    outcome=ExerciseAttemptOutcome.FAILED,
+                    score=capped,
+                    safe_feedback=feedback,
+                    capability_scores={
+                        k: min(v, capped) for k, v in result.capability_scores.items()
+                    },
+                    policy_version=result.policy_version,
+                    terminal_at=result.terminal_at,
+                )
+            return result
         reference = as_mapping(row.get("reference_answer_json"))
         raw_answers = reference.get("accepted_answers")
         accepted = (
@@ -669,8 +946,12 @@ class ReviewService:
         return evaluate_static_reasoning(
             answer=submission,
             accepted_answers=accepted,
-            required_capabilities=string_list(attempt.get("required_capabilities_json")),
-            threshold=as_float(as_mapping(row.get("score_policy_json")).get("threshold") or 0.8),
+            required_capabilities=string_list(
+                attempt.get("required_capabilities_json")
+            ),
+            threshold=as_float(
+                as_mapping(row.get("score_policy_json")).get("threshold") or 0.8
+            ),
             now=datetime.now(UTC),
         )
 
@@ -685,7 +966,10 @@ class ReviewService:
                 executor_availability=_ExecutorAvailability(self._execution),
             ),
         )
-        if bool(row.get("execution_required")) and projection.tier is ExecutionTier.STATIC_ONLY:
+        if (
+            bool(row.get("execution_required"))
+            and projection.tier is ExecutionTier.STATIC_ONLY
+        ):
             return {
                 "execution_tier": ExecutionTier.UNAVAILABLE.value,
                 "execution_disclosure": (
@@ -755,9 +1039,13 @@ class ReviewService:
             if item.get("attempt_id") is not None:
                 attempt = {
                     "attempt_id": str(item["attempt_id"]),
-                    "status": "terminal" if item.get("outcome") is not None else "pending",
+                    "status": "terminal"
+                    if item.get("outcome") is not None
+                    else "pending",
                     "independence": str(item.get("independence") or "independent"),
-                    "assistance_kind": str(item.get("assistance_kind") or "independent"),
+                    "assistance_kind": str(
+                        item.get("assistance_kind") or "independent"
+                    ),
                     "execution_job_id": str(item["execution_job_id"])
                     if item.get("execution_job_id")
                     else None,
@@ -789,7 +1077,9 @@ class ReviewService:
                         "exercise_type": str(item["exercise_type"]),
                         "title": str(item["title"]),
                         "learner_prompt": as_mapping(item.get("learner_prompt_json")),
-                        "starter_artifact": as_mapping(item.get("starter_artifact_json")),
+                        "starter_artifact": as_mapping(
+                            item.get("starter_artifact_json")
+                        ),
                         "required_capabilities": string_list(
                             item.get("required_capabilities_json")
                         ),
@@ -866,7 +1156,6 @@ class ReviewService:
         }
 
 
-
 def _find_item(session: Mapping[str, object], item_id: str) -> Mapping[str, object]:
     raw = session.get("items")
     for item in raw if isinstance(raw, list | tuple) else ():
@@ -917,7 +1206,11 @@ def _map_error(exc: Exception) -> ReviewServiceError:
 
 
 def _ids(user_id: str, track_id: str, session_id: str) -> tuple[str, str, str]:
-    return _uuid(user_id, "user_id"), _uuid(track_id, "track_id"), _uuid(session_id, "session_id")
+    return (
+        _uuid(user_id, "user_id"),
+        _uuid(track_id, "track_id"),
+        _uuid(session_id, "session_id"),
+    )
 
 
 def _uuid(value: str, label: str) -> str:
@@ -934,7 +1227,11 @@ def _uuid(value: str, label: str) -> str:
 
 def _stable_key(value: str, label: str) -> str:
     normalized = str(value or "").strip().lower()
-    if not normalized or len(normalized) > 160 or not re.fullmatch(r"[a-z0-9][a-z0-9._:-]*", normalized):
+    if (
+        not normalized
+        or len(normalized) > 160
+        or not re.fullmatch(r"[a-z0-9][a-z0-9._:-]*", normalized)
+    ):
         raise ReviewServiceError(
             "VALIDATION_ERROR",
             f"{label} 不是有效 stable key。",

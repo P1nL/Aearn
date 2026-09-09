@@ -1,0 +1,144 @@
+{
+  "schema_version": "learning_item_source_v1",
+  "blueprint": {
+    "schema_version": "learning_item_blueprint_v1",
+    "blueprint_key": "python.variables.rebinding-remediation.blueprint",
+    "version": "v1",
+    "knowledge_key": "python.variables",
+    "item_kind": "knowledge_check",
+    "purpose": "remediation",
+    "language_id": "python",
+    "difficulty_profile": {
+      "base": "D1",
+      "reasoning_depth": 1,
+      "concept_count": 1,
+      "context_novelty": 1,
+      "transfer_distance": 1,
+      "response_complexity": 1,
+      "scaffolding": 5
+    },
+    "prerequisite_keys": [],
+    "required_capabilities": [
+      "python"
+    ],
+    "allowed_interactions": [
+      "respond"
+    ],
+    "remediation_policy": null,
+    "publication_policy": {
+      "risk_tier": "low",
+      "required_review_roles": [
+        "curriculum",
+        "difficulty",
+        "technical",
+        "ambiguity",
+        "security",
+        "adversarial"
+      ],
+      "agent_review_required": true,
+      "pilot_required": true,
+      "human_approval_required": false
+    },
+    "source_references": [
+      {
+        "source_id": "python-tutorial",
+        "source_version": "python-3.14.7",
+        "locator": "tutorial.introduction.first-steps-towards-programming",
+        "content_hash": "e900715b26a7b25339637eb1b83e7dc2ba5fbcabc6843e6a225845f155e40dc5"
+      }
+    ]
+  },
+  "public": {
+    "schema_version": "learning_item_public_v1",
+    "item_key": "python.variables.rebinding-remediation",
+    "version": "v1",
+    "kind": "knowledge_check",
+    "purpose": "remediation",
+    "title": "Python Variables: Rebinding Remediation",
+    "difficulty": "D1",
+    "instruction_markdown": "Trace the assignments in order, then submit the resulting value.",
+    "allowed_interactions": [
+      "respond"
+    ],
+    "hints": [
+      {
+        "level": 1,
+        "markdown": "Trace the two names separately rather than treating one as a permanent alias."
+      }
+    ],
+    "remediation_item_key": null,
+    "source_references": [
+      {
+        "source_id": "python-tutorial",
+        "source_version": "python-3.14.7",
+        "locator": "tutorial.introduction.first-steps-towards-programming",
+        "content_hash": "e900715b26a7b25339637eb1b83e7dc2ba5fbcabc6843e6a225845f155e40dc5"
+      }
+    ],
+    "content": {
+      "type": "knowledge_check",
+      "response_kind": "single_choice",
+      "prompt_markdown": "What does this program print?\n\n```python\nlabel = \"draft\"\nsaved_label = label\nlabel = \"published\"\nprint(saved_label)\n```",
+      "options": [
+        {
+          "option_id": "prints_draft",
+          "label": "draft"
+        },
+        {
+          "option_id": "prints_published",
+          "label": "published"
+        },
+        {
+          "option_id": "prints_both",
+          "label": "draft published"
+        }
+      ]
+    }
+  },
+  "private": {
+    "schema_version": "learning_item_private_v1",
+    "item_key": "python.variables.rebinding-remediation",
+    "version": "v1",
+    "kind": "knowledge_check",
+    "content": {
+      "type": "knowledge_check",
+      "accepted_answers": [
+        "prints_draft"
+      ],
+      "answer_explanation_markdown": "`saved_label` is bound before `label` is rebound, so it still refers to the earlier string value.",
+      "tests": [
+        {
+          "id": "visible_correct",
+          "case_type": "visible",
+          "input_json": {
+            "answer": "prints_draft"
+          },
+          "expected_output_json": {
+            "accepted": true
+          },
+          "weight": 1,
+          "is_critical": true,
+          "order_index": 0
+        },
+        {
+          "id": "hidden_incorrect",
+          "case_type": "hidden",
+          "input_json": {
+            "answer": "prints_published"
+          },
+          "expected_output_json": {
+            "accepted": false
+          },
+          "weight": 1,
+          "is_critical": false,
+          "order_index": 1
+        }
+      ],
+      "score_policy": {
+        "kind": "static_exact",
+        "policy_version": "static_exact_v1",
+        "threshold": 1.0
+      }
+    }
+  }
+}

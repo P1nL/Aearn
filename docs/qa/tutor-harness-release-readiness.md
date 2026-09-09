@@ -1,5 +1,25 @@
 # Tutor Harness Release Readiness Ledger
 
+## 2026-09-08：Python 实测问题的有序本地修复
+
+**状态：代码修复与受控验证完成；真实课程作者仍有输出截断阻塞，不是全链路通过或发布许可。**
+
+| 检查 | 结果与边界 |
+| --- | --- |
+| 本地数据库兼容 | 先保存并检查 pg_dump 恢复目录，再应用既有080增量列/约束；重复执行幂等，原102条回执保留。不是生产迁移 |
+| 来源 | 实际抓取3个 Python tutorial seed，持久化74个 http_fetch 片段；原fixture已另存。来源身份不等于完整教学覆盖 |
+| 教学准入 | 真实 UI 返回409 TEACHING_NOT_READY；该负向验证未增加 run 或 provider receipt |
+| 历史错误显示 | 原 unavailable 教学记录刷新后出现安全错误，无数据回填，无误导重试按钮 |
+| API离线完整测试（不含smoke） | 1074 passed，2 failed，369.80s。两个eval断言在从HEAD导出的未修改 app/tests 上复现同样失败，属于已存在的catalog/评估基线不一致；没有重置fixture或降低断言 |
+| Desktop测试 | 28个文件、200 tests passed |
+| 静态/构建 | Ruff通过；Mypy 252源文件通过；desktop:check构建通过；diff空白检查通过 |
+| Runtime | 独立普通/Codex worker载入新代码，health ready；预算/停止确认通过离线App Server测试，未进行额外付费规划或真实上游停止验证 |
+| 课程作者真实回测 | 两个prepare run共4条invalid回执，均为LESSON_PROVIDER_RESPONSE_INCOMPLETE、约12000输出tokens；未生成课程/工件。仅针对模型thinking的实验没有改善结果，已撤回；原输出上限及共享重试次数不变 |
+
+测试仅在显式选择、校验过身份的独立数据库运行。原实测用户/主线/失败记录、原始日志、截图和私有数据库备份保留在本机，并已使用本地Git exclude防止误提交。未修改已发布Skill bundle、未提交、未push、未部署。不能将Celery succeeded、health ready或provider结构接受当作教学成功。
+
+以下保留此前按日期记录的历史验证信息，不能覆盖上述最新边界。
+
 **日期：** 2026-07-29
 **任务：** `07-22-tutor-integration-qa-and-docs`
 **状态：** **In progress — not a release approval**

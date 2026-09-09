@@ -40,6 +40,10 @@ from app.services.learning.artifacts.teaching_owner_adapters import (
     LearningItemArtifactOwnerAdapter,
     TeachingPracticeArtifactOwnerAdapter,
 )
+from app.services.learning.practice.model_review_semantics import (
+    PrimarySemanticReviewer,
+    SemanticReviewUnavailable,
+)
 from app.services.learning.practice.service import (
     ExerciseGateService,
     ExerciseGateServiceError,
@@ -126,6 +130,85 @@ def act_on_learning_artifact(
     )
     dispatch_job_id: str | None = None
     deferred_sql_attempt: tuple[str, str, str, str] | None = None
+    if (
+        action_request.action.action == "complete_review"
+        and action_request.action.review_submission.schema_version
+        == "model_code_review_submission_v2"
+    ):
+        try:
+            with connect() as prepare_conn:
+                prepare_service = build_learning_artifact_service(prepare_conn)
+                prepared_result = prepare_service.prepare_model_review_v2(
+                    conversation_id=str(conversation_id),
+                    artifact_id=str(artifact_id),
+                    request=action_request,
+                )
+                # End the read transaction before provider I/O. No owner write is
+                # admitted by prepare and closing rolls back its row locks.
+                prepare_conn.rollback()
+            if prepared_result.replay is not None:
+                response = prepared_result.replay
+                semantic_receipt = None
+            else:
+                assert prepared_result.prepared is not None
+                semantic_receipt = PrimarySemanticReviewer().review(
+                    prepared_result.prepared.semantic_request,
+                    deterministic_pass=prepared_result.prepared.deterministic_pass,
+                )
+            with connect() as finalize_conn:
+                if prepared_result.replay is None:
+                    finalize_service = build_learning_artifact_service(finalize_conn)
+                    assert prepared_result.prepared is not None
+                    response = finalize_service.finalize_model_review_v2(
+                        conversation_id=str(conversation_id),
+                        artifact_id=str(artifact_id),
+                        request=action_request,
+                        prepared=prepared_result.prepared,
+                        semantic_receipt=semantic_receipt,
+                    )
+                occurred_at = datetime.now(UTC)
+                intent = TutorContinuationIntentProducer(
+                    finalize_conn
+                ).record_model_review_evaluation(
+                    user_id=action_request.user_id,
+                    conversation_id=response.artifact.conversation_id,
+                    artifact_id=response.artifact.id,
+                    artifact_event_id=response.artifact_event_id,
+                    artifact_event_sequence=response.artifact_event_sequence,
+                    occurred_at=occurred_at,
+                )
+                if intent.consumed_run_id is None:
+                    dispatched = TutorContinuationDispatcher(
+                        finalize_conn, settings=get_settings()
+                    ).dispatch_next(
+                        user_id=action_request.user_id,
+                        conversation_id=response.artifact.conversation_id,
+                        claimant_id=f"artifact-route:{response.artifact_event_id}",
+                        now=occurred_at,
+                    )
+                    dispatch_job_id = (
+                        dispatched.dispatch_job_id if dispatched is not None else None
+                    )
+                finalize_conn.commit()
+        except SemanticReviewUnavailable:
+            return error_response(
+                request,
+                code="MODEL_REVIEW_SEMANTIC_UNAVAILABLE",
+                message="语义审查暂时不可用，请稍后重试。",
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                recoverable=True,
+            )
+        except LearningArtifactServiceError as exc:
+            return _service_error(request, exc)
+        except (ExerciseGateServiceError, ReviewServiceError) as exc:
+            return _domain_error(request, exc)
+        if dispatch_job_id is not None:
+            background_tasks.add_task(
+                enqueue_tutor_interactive_dispatch,
+                dispatch_job_id,
+                runtime_kind="harness_v1",
+            )
+        return _success(_project_action_response(response))
     with connect() as conn:
         service = build_learning_artifact_service(conn)
         try:
@@ -138,7 +221,10 @@ def act_on_learning_artifact(
             if action_request.action.action == "run":
                 active_attempt = response.artifact.active_attempt
                 if active_attempt is not None:
-                    if response.artifact.artifact_kind is TutorArtifactKind.SQL_WORKSPACE:
+                    if (
+                        response.artifact.artifact_kind
+                        is TutorArtifactKind.SQL_WORKSPACE
+                    ):
                         deferred_sql_attempt = (
                             action_request.user_id,
                             response.artifact.conversation_id,
@@ -169,7 +255,10 @@ def act_on_learning_artifact(
                         artifact_event_sequence=response.artifact_event_sequence,
                         occurred_at=occurred_at,
                     )
-                elif action_request.action.action in {"respond", "request_direct_answer"}:
+                elif action_request.action.action in {
+                    "respond",
+                    "request_direct_answer",
+                }:
                     intent = producer.record_knowledge_check_evaluation(
                         user_id=action_request.user_id,
                         conversation_id=response.artifact.conversation_id,
@@ -221,7 +310,9 @@ def act_on_learning_artifact(
             return _continuation_error(request, exc)
         conn.commit()
     if deferred_sql_attempt is not None:
-        sql_user_id, sql_conversation_id, sql_artifact_id, sql_attempt_id = deferred_sql_attempt
+        sql_user_id, sql_conversation_id, sql_artifact_id, sql_attempt_id = (
+            deferred_sql_attempt
+        )
         with connect() as conn:
             service = build_learning_artifact_service(conn)
             try:
@@ -513,9 +604,10 @@ def _continuation_error(
         message = "Learning Artifact continuation scope was not found."
         status_code = status.HTTP_404_NOT_FOUND
         recoverable = False
-    elif isinstance(error, ContinuationIntentConflict) and "idempotency" in str(
-        error
-    ).casefold():
+    elif (
+        isinstance(error, ContinuationIntentConflict)
+        and "idempotency" in str(error).casefold()
+    ):
         code = "IDEMPOTENCY_CONFLICT"
         message = "The continuation identity was reused with a different request."
         status_code = status.HTTP_409_CONFLICT

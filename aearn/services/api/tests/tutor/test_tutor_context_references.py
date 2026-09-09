@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
+from functools import partial
 from uuid import uuid4
 
 import pytest
@@ -23,6 +24,11 @@ from tests.support.tutor_public_api_support import action_payload, assert_error,
 
 @pytest.fixture()
 def reference_client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
+    # This fixture pairs offline grounding with a fake author, not live evidence.
+    monkeypatch.setattr(
+        lesson_authoring, "_load_evidence_snapshots",
+        partial(lesson_authoring._load_evidence_snapshots, allow_fixtures_for_tests=True),
+    )
     bootstrap_database()
     with connect() as conn:
         run_and_persist_fixture_grounding_reindex(conn)
@@ -118,7 +124,8 @@ def test_lesson_selection_reference_is_atomic_replayable_and_injected_as_structu
         user_id,
         f"lesson-selection-{uuid4()}",
         content="请解释这段内容为什么重要。",
-        learning_scope=_scope(track_id),
+        # Quoting a lesson in general track Q&A does not start managed teaching.
+        learning_scope={"scope_kind": "learning_track", "learning_track_id": track_id},
         context_references=[reference],
     )
 
@@ -371,7 +378,7 @@ def test_stale_reference_rolls_back_the_entire_first_turn(
             user_id,
             f"stale-reference-{uuid4()}",
             content="这条消息必须和失效引用一起回滚。",
-            learning_scope=_scope(track_id),
+            learning_scope={"scope_kind": "learning_track", "learning_track_id": track_id},
             context_references=[reference],
         ),
     )

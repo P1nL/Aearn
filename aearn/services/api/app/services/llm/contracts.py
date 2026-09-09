@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal, get_args
 
 
 @dataclass(frozen=True)
@@ -57,3 +58,42 @@ class LLMUsage:
         if self.input_tokens is None or self.output_tokens is None:
             return None
         return self.input_tokens + self.output_tokens
+
+
+LLMResponseStatus = Literal[
+    "completed", "incomplete", "failed", "in_progress", "queued", "cancelled",
+    "missing_terminal", "unknown",
+]
+LLMIncompleteReason = Literal[
+    "max_output_tokens", "content_filter", "context_length_exceeded", "unknown",
+]
+LLMReasoningEffort = Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+
+
+@dataclass(frozen=True)
+class LLMResponseDiagnostics:
+    """Allowlisted provider metadata only; never provider text or error details."""
+
+    response_status: LLMResponseStatus = "unknown"
+    incomplete_reason: LLMIncompleteReason | None = None
+    requested_max_output_tokens: int | None = None
+    requested_reasoning_effort: LLMReasoningEffort | None = None
+    visible_output_chars: int | None = None
+
+    def __post_init__(self) -> None:
+        for name, allowed, optional in (
+            ("response_status", get_args(LLMResponseStatus), False),
+            ("incomplete_reason", get_args(LLMIncompleteReason), True),
+            ("requested_reasoning_effort", get_args(LLMReasoningEffort), True),
+        ):
+            value = getattr(self, name)
+            if optional and value is None:
+                continue
+            if not isinstance(value, str) or value not in allowed:
+                raise ValueError(f"{name} must be an allowlisted literal")
+        for name in ("requested_max_output_tokens", "visible_output_chars"):
+            value = getattr(self, name)
+            if value is not None and (
+                isinstance(value, bool) or not isinstance(value, int) or value < 0
+            ):
+                raise ValueError(f"{name} must be a non-negative integer when present")

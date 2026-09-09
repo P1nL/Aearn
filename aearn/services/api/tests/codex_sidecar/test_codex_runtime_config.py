@@ -13,6 +13,7 @@ from app.agents.runtime.codex_config import (
     ensure_codex_runtime_home,
 )
 from app.core.config import (
+    DEEPSEEK_V4_FLASH_CODEX_AUTO_COMPACT_TOKENS,
     DEEPSEEK_V4_FLASH_CONTEXT_WINDOW_TOKENS,
     DEEPSEEK_V4_FLASH_MAX_OUTPUT_TOKENS,
     DEEPSEEK_V4_FLASH_MODEL,
@@ -42,10 +43,8 @@ def test_codex_runtime_home_uses_one_exact_local_compaction_contract(tmp_path: P
     text = home.config_path.read_text(encoding="utf-8")
 
     assert f"model_context_window = {DEEPSEEK_V4_FLASH_CONTEXT_WINDOW_TOKENS}" in text
-    assert (
-        "model_auto_compact_token_limit = "
-        f"{DEEPSEEK_V4_FLASH_CONTEXT_WINDOW_TOKENS - DEEPSEEK_V4_FLASH_MAX_OUTPUT_TOKENS}"
-    ) in text
+    assert f"model_max_output_tokens = {DEEPSEEK_V4_FLASH_MAX_OUTPUT_TOKENS}" in text
+    assert f"model_auto_compact_token_limit = {DEEPSEEK_V4_FLASH_CODEX_AUTO_COMPACT_TOKENS}" in text
     assert 'model_auto_compact_token_limit_scope = "total"' in text
     assert 'wire_api = "responses"' in text
     assert "remote_compaction" not in text
@@ -57,4 +56,4 @@ def test_codex_runtime_home_rejects_remote_or_drifted_compaction(tmp_path: Path)
     with pytest.raises(ValueError, match="remote compaction"):
         ensure_codex_runtime_home(replace(config, remote_compaction_supported=True))
     with pytest.raises(ValueError, match="verified DeepSeek V4 Flash contract"):
-        ensure_codex_runtime_home(replace(config, model_auto_compact_token_limit=615_999))
+        ensure_codex_runtime_home(replace(config, model_auto_compact_token_limit=949_999))

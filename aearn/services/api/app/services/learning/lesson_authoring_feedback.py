@@ -5,7 +5,9 @@ import hashlib
 import json
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+
+from app.services.llm.contracts import LLMResponseDiagnostics, LLMUsage
 
 # Constraints are server-owned. Never copy exception text or candidate values.
 CONSTRAINTS = {
@@ -13,6 +15,7 @@ CONSTRAINTS = {
     "LESSON_PROVIDER_CONTENT_MISSING": "Return a non-empty LessonDocument JSON object.",
     "LESSON_PROVIDER_CONTENT_NOT_JSON_OBJECT": "Return only one JSON object, without surrounding text.",
     "LESSON_PROVIDER_RESPONSE_INCOMPLETE": "Return a shorter complete JSON object within the output limit.",
+    "LESSON_PROVIDER_RESPONSE_INCOMPLETE_NONREPAIRABLE": "The response ended without a confirmed output-limit cause; no automatic content repair is allowed.",
     "LESSON_PROVIDER_RESPONSE_FAILED": "The provider reported failure; no automatic repair is allowed.",
     "LESSON_PROVIDER_UNKNOWN": "The provider response could not be classified safely.",
     "LESSON_PROVIDER_UNAVAILABLE": "The configured provider is unavailable.",
@@ -106,7 +109,10 @@ class LessonAuthorFeedback:
         return hashlib.sha256(encoded.encode()).hexdigest()
 
 
-def attempt_diagnostic(document_kind: str, attempt: int, feedback: LessonAuthorFeedback | None = None) -> dict[str, object]:
+def attempt_diagnostic(
+    document_kind: str, attempt: int, feedback: LessonAuthorFeedback | None = None, *,
+    response_diagnostics: LLMResponseDiagnostics | None = None, usage: LLMUsage | None = None,
+) -> dict[str, object]:
     value: dict[str, object] = {
         "schema_version": "lesson_author_attempt_diagnostic_v1", "document_kind": document_kind,
         "document_attempt_index": attempt, "failure_stage": feedback.failed_stage if feedback else None,
@@ -114,6 +120,10 @@ def attempt_diagnostic(document_kind: str, attempt: int, feedback: LessonAuthorF
         "issue_locations": [issue.location for issue in feedback.issues] if feedback else [],
         "feedback_hash": feedback.content_hash if feedback else None,
     }
+    if response_diagnostics is not None or (usage is not None and usage.reasoning_tokens is not None):
+        value["schema_version"] = "lesson_author_attempt_diagnostic_v2"
+        value["provider_response"] = asdict(response_diagnostics) if response_diagnostics is not None else None
+        value["reasoning_tokens"] = usage.reasoning_tokens if usage is not None else None
     return validate_attempt_diagnostic(value)
 
 
@@ -121,7 +131,11 @@ def validate_attempt_diagnostic(value: Mapping[str, object]) -> dict[str, object
     if not value:  # Legacy receipts have no diagnostic.
         return {}
     expected = {"schema_version", "document_kind", "document_attempt_index", "failure_stage", "issue_codes", "issue_locations", "feedback_hash"}
-    if set(value) != expected or value["schema_version"] != "lesson_author_attempt_diagnostic_v1":
+    version = value.get("schema_version")
+    if version == "lesson_author_attempt_diagnostic_v2":
+        expected |= {"provider_response", "reasoning_tokens"}
+        _validate_provider_diagnostic(value)
+    if set(value) != expected or version not in ("lesson_author_attempt_diagnostic_v1", "lesson_author_attempt_diagnostic_v2"):
         raise ValueError("Invalid Lesson diagnostic shape")
     if value["document_kind"] not in ("standard", "personalized") or type(value["document_attempt_index"]) is not int or value["document_attempt_index"] not in (1, 2):
         raise ValueError("Invalid Lesson diagnostic scope")
@@ -139,3 +153,21 @@ def validate_attempt_diagnostic(value: Mapping[str, object]) -> dict[str, object
     elif stage is not None or digest is not None:
         raise ValueError("Invalid Lesson diagnostic success")
     return {**value, "issue_codes": list(codes), "issue_locations": list(locations)}
+
+
+def _validate_provider_diagnostic(value: Mapping[str, object]) -> None:
+    reasoning = value.get("reasoning_tokens")
+    if reasoning is not None and (type(reasoning) is not int or reasoning < 0):
+        raise ValueError("Invalid Lesson diagnostic reasoning usage")
+    response = value.get("provider_response")
+    if response is None:
+        return
+    if not isinstance(response, dict) or set(response) != {
+        "response_status", "incomplete_reason", "requested_max_output_tokens",
+        "requested_reasoning_effort", "visible_output_chars",
+    }:
+        raise ValueError("Invalid Lesson provider diagnostic shape")
+    try:
+        LLMResponseDiagnostics(**response)
+    except (ValueError, TypeError):
+        raise ValueError("Invalid Lesson provider diagnostic values") from None

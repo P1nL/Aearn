@@ -13,6 +13,7 @@ from app.services.tutor.decision_protocol import (
     TUTOR_PROVIDER_ITEMS_SCHEMA_VERSION,
     canonical_tutor_provider_items_example,
     canonical_tutor_teaching_step_example,
+    tutor_teaching_enum_contract,
     canonical_tutor_wait_for_input_examples,
 )
 
@@ -80,24 +81,21 @@ class TutorProviderRequestSerializer:
         )
         if any(item.section is TutorContextSection.TEACHING_SESSION for item in context.items):
             system += (
-                " This teaching request also permits action.type=teaching_step. "
-                "First select exact tutor.lesson-teaching@1.2.1 if it is not selected; after its instruction is present, "
-                "use exactly one teaching_step and never use turn_completed as a teaching shortcut. When current_input is "
-                "absent, recent_messages are bounded learner-visible continuity from this exact teaching session: continue "
-                "after the latest message instead of restarting or substantially paraphrasing an explanation already given. "
-                "Repeat or reframe only when the stimulus explicitly requests change_example, or checkpoint authority requires "
-                "remediation or summary. LessonDocument is the stable reference; Tutor must use current learner/stimulus evidence "
-                "for diagnosis, guided reasoning, immediate feedback, or transfer instead of restating document structure or definitions. "
-                "A teaching unit must combine 2..4 unique teaching_moves. interaction.mode=composer means message.text ends with one "
-                "specific answerable task and the next step comes from a learner message; interaction.mode=none permits a conditional "
-                "server-projected continue only when another non-repetitive high-value unit exists. For continue, inspect recent_teaching_units "
-                "and change action, move combination, focus, or transfer target; never replay the same message hash. change_example may preserve "
-                "the purpose but must use worked_example or counterexample. A covered concept should normally advance to an example, comparison, "
-                "prediction, error check, feedback, or micro-transfer rather than receive the same introductory definition again. teaching_step may "
-                "reference only objective_id, focus_id, and source_handles listed by the server, and its public_message "
-                "must exactly equal message.text. v3 interaction is none/none/null, composer/text_answer/null, or artifact with "
-                "one exact handle+intent listed in artifact_candidates. Without that exact candidate, do not promise the interaction; "
-                "never invent private answers, tests, rubrics, source, commands, paths, or secrets. Valid teaching-step example: "
+                " Teaching: action.type=teaching_step is allowed. "
+                f"Exact teaching_step enums, no synonyms: {tutor_teaching_enum_contract()}. "
+                "First select exact tutor.lesson-teaching@1.2.1 if absent; with its instruction emit one teaching_step, never turn_completed. "
+                "Without current_input, recent_messages are bounded learner-visible continuity from this exact teaching session: continue "
+                "after the latest message instead of restarting or substantially paraphrasing; reframe only for change_example or checkpoint "
+                "remediation/summary. LessonDocument is reference authority; use current learner/stimulus evidence for diagnosis, guided "
+                "reasoning, feedback, or transfer, not repeated structure/definitions. Unit: 2..4 unique teaching_moves. composer: message.text "
+                "ends with one answerable task and the learner reply advances. none: server continue only for a distinct high-value unit. "
+                "continue: inspect recent_teaching_units; vary action, moves, focus, or transfer; never repeat a message hash. change_example: "
+                "worked_example or counterexample. Advance covered concepts via example, comparison, prediction, error check, feedback, or "
+                "micro-transfer. Use only server-listed objective_id, focus_id, source_handles; public_message must equal message.text. v3 "
+                "interaction is only none/none/null, composer/text_answer/null, or artifact with an exact artifact_candidates handle+intent; "
+                "otherwise do not promise it. In guided mode, use interaction.mode=artifact with pause_kind=evidence_pause, never "
+                "soft_pause; its exact Artifact response is the next evidence. Never invent private answers, "
+                "tests, rubrics, sources, commands, paths, or secrets. Valid teaching-step example: "
                 f"{canonical_tutor_teaching_step_example()}"
             )
         payload = {

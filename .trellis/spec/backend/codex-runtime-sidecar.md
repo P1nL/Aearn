@@ -605,7 +605,50 @@ for projected in coalescer.push(source_event, now=clock()):
 - Codex plan drafting performs one model-visible read-only `aearn_planning_context_read`, then accepts exactly one internal closed `direction_action`: `continue_mainline | answer_and_refocus | clarify_direction | confirmed_switch`. The action is a candidate, not a planning fact or public enum.
 - The registry records an accepted marker only after a valid tool result. Omission, invalid input, duplicate/reclassified action, draft-before-marker, and intake draft attempts fail closed; they never authorize the primed `next_missing_fact`.
 - Server postconditions own the outcome: continue uses the exact server question or a committed draft; answer/refocus is bounded, learner-safe, contains exactly one question, and ends with the exact server question; clarify always uses the fixed server direction prompt; switch reopens exactly language, goal, target level, and experience through existing append-only lineage.
-- Primed `awaiting_user` turns use `effort=low`, a 45-second Runtime bound, a 2,000-character visible reasoning/text bound, and two tool calls (read plus action). Missing/invalid/timeout/budget outcomes create the same server-owned clarification rather than a stale fact question. Complete-fact draft turns retain normal quality limits.
+- Primed `awaiting_user` turns use `effort=low`, a 45-second Runtime bound, a 2,000-character message bound and a separate 16,000-character reasoning bound (`RuntimeTurnRequest.max_reasoning_text_chars`). The global aggregate hard bound is unchanged. With the new field omitted, non-intake requests retain their legacy aggregate semantics. Delta and completed calibration must not count the same item twice.
+- Normal intake uses read plus one closed action. One action-before-read error may consume the existing repair allowance and use at most three actual calls; it never permits a second accepted action. Budget, timeout, fatal tool and interrupted Runtime outcomes fail visibly rather than masquerading as semantic ambiguity or reasking confirmed Python. Genuine missing/invalid direction resolution may still use its bounded server clarification.
 - After mapped postconditions succeed, the server appends one idempotent `planning_direction_resolved` event to existing `tutor_run_events`. Its closed payload contains only action/result/source, input revision, policy/schema versions, question key when applicable, and server-computed facts/message hashes. It contains no learner/model prose or rationale and is filtered from public run SSE; no database migration or Desktop direction field is added.
 - A successful server-terminalized clarification performs unfinished Runtime-text discard, typed-request persistence, binding finalization, `planning_direction_resolved`, and the original Runtime terminal receipt in one PostgreSQL transaction. Projecting the Runtime terminal only after finalizing the binding is forbidden: the receipt can become `ignored_stale`, leaving provisional reasoning or final-answer rows stuck in `streaming`. Receipt/idempotency failure rolls the whole server-terminalization transaction back.
 - Codex Runtime reasoning remains an owner-scoped `reasoning` channel in Runtime output, snapshot/history/SSE, and Desktop `think`. Commentary, unknown channels, provider metadata, prompts, credentials, and external Runtime IDs remain rejected.
+
+## Scenario: 1M physical context, 128K ordinary request input, 60K output, and 950K Codex compaction (2026-09-09)
+
+- Preserve the exact `deepseek-v4-flash` physical `model_context_window=1_000_000`. Ordinary `OpenAICompatibleClient` calls admit at most 131,072 input tokens and 61,440 generated-output tokens. Tutor's shared budget capability stores a 192,512 input-plus-output envelope for request planning only; it is not physical model metadata.
+- `OpenAICompatibleClient` explicitly serializes the 61,440 hard cap when an exact DeepSeek V4 Flash caller omits `max_tokens`, rejects a larger or non-positive request before transport, and preserves any smaller caller-owned budget. Tutor decisions (16,384), lesson authoring (12,000), model review (6,000), and adaptive exercise authoring (5,000) remain narrower policies.
+- Isolated Codex config writes `model_context_window=1000000`, `model_max_output_tokens=61440`, and `model_auto_compact_token_limit=950000` with total scope. Codex persistent App Server threads do not inherit the ordinary-client 128K per-request input limit. Since only 50K remains between 950K and 1M, the 60K value is a global maximum, not guaranteed remaining generation capacity at the trigger. Capability snapshots use `deepseek-v4-flash-responses-v2`; historical runs retain their persisted prior policy.
+
+## Scenario: Bounded stop confirmation (2026-09-08)
+
+### 1. Scope / Trigger
+
+Runtime budget, timeout, fatal tool, external cancellation and runtime adapter reuse.
+
+### 2. Signatures
+
+`RuntimeTurnRequest.max_reasoning_text_chars: int | None = None`; intake supplies 16,000. Runtime metrics distinguish message/reasoning/aggregate counters and effective limits. `log_safe_event` emits counters and bounded termination labels as message-rendered JSON.
+
+### 3. Contracts
+
+Close the tool callback entry before cleanup. Issue a bounded `turn/interrupt`, then require a terminal notification matching the exact thread/turn. An ACK alone is not evidence that generation stopped. If confirmation cannot be obtained, shut down the owned runtime; if shutdown itself fails, poison the adapter so it cannot be reused. Cleanup must remain bounded even during cancellation. Do not add a cross-provider fallback or expose raw model/tool content through logs.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+| --- | --- |
+| Message/reasoning/aggregate/time budget reached | Safe failed terminal, bounded cleanup, no direction fallback |
+| Interrupt ACK without matching terminal | Not confirmed; owned runtime shutdown |
+| Foreign thread/turn terminal | Ignore for stop confirmation |
+| Runtime shutdown failure | Future reuse rejected |
+| Wrong-order direction action | One repair within existing allowance; still one accepted action |
+
+### 5. Good / Base / Bad Cases
+
+Good: confirm an exact interrupted terminal before reusing the thread. Base: normal completed turns do not issue an unnecessary interrupt. Bad: unregister locally and call the run stopped while the provider continues generating.
+
+### 6. Tests Required
+
+`test_planning_runtime_limits.py` plus adapter, tool and cutover tests cover separate/legacy counters, calibration, ACK-only/foreign terminal, cleanup timeout/failure, cancellation, callback fencing, one repair and no budget-to-clarification conversion. Offline App Server tests do not prove upstream billing cancellation.
+
+### 7. Wrong vs Correct
+
+Wrong: budget exception -> synthesize terminal -> unregister. Correct: fence tools -> bounded interrupt -> exact terminal confirmation or owned runtime shutdown -> expose safe outcome.

@@ -58,6 +58,10 @@ class TeachingSessionConflict(TeachingSessionError):
     pass
 
 
+class TeachingSessionNotReady(TeachingSessionConflict):
+    """Managed teaching cannot be admitted until its authority is prepared."""
+
+
 class TeachingSessionInvalid(TeachingSessionError):
     pass
 
@@ -342,26 +346,40 @@ class TeachingSessionRepository:
             raise TeachingSessionConflict("teaching session version changed")
         return updated
 
+    def prepare_learner_message_admission(
+        self, *, user_id: str, track_id: str, knowledge_key: str,
+        conversation_id: str | None,
+    ) -> tuple[Mapping[str, object], TeachingAuthority]:
+        """Lock and validate existing authority; never open or repair a session here."""
+        try:
+            session = self.read_current(
+                user_id=user_id, track_id=track_id, knowledge_key=knowledge_key, for_update=True,
+            )
+            if str(session["status"]) not in {"active", "paused"}:
+                raise TeachingSessionNotReady("teaching session is not current")
+            authority = self.resolve_authority(
+                user_id=user_id, track_id=track_id, knowledge_key=knowledge_key,
+                conversation_id=conversation_id, for_update=True,
+            )
+            self._assert_authority(session, authority)
+            # Reuse the checkpoint identity/version/authority/hash fence, not a
+            # weaker existence check. No provider or artifact builder is invoked.
+            self.structured_summary(session=session)
+        except (TeachingSessionNotFound, TeachingSessionConflict) as exc:
+            raise TeachingSessionNotReady("teaching preparation is unavailable") from exc
+        return session, authority
+
     def bind_learner_message_run(
         self, *, user_id: str, run_id: str, conversation_id: str, track_id: str,
         knowledge_key: str, message_id: str, input_revision: int,
-    ) -> dict[str, object] | None:
+    ) -> dict[str, object]:
         scope = self._conn.execute(
             """SELECT * FROM tutor_run_learning_scopes WHERE run_id=%s AND user_id=%s AND conversation_id=%s
                AND scope_kind='learning_track' AND task_kind='lesson_teaching' AND learning_track_id=%s AND knowledge_key=%s""",
             (run_id, user_id, conversation_id, track_id, stable(knowledge_key, "knowledge_key")),
         ).fetchone()
         if scope is None:
-            return None
-        try:
-            session = self.read_current(user_id=user_id, track_id=track_id, knowledge_key=knowledge_key, for_update=True)
-        except TeachingSessionNotFound:
-            return None
-        authority = self.resolve_authority(
-            user_id=user_id, track_id=track_id, knowledge_key=knowledge_key,
-            conversation_id=conversation_id, for_update=True,
-        )
-        self._assert_authority(session, authority)
+            raise TeachingSessionNotReady("managed teaching run scope is missing")
         evidence = self._conn.execute(
             "SELECT id FROM tutor_run_input_events WHERE run_id=%s AND conversation_id=%s AND message_id=%s AND input_revision=%s",
             (run_id, conversation_id, message_id, input_revision),
@@ -369,6 +387,30 @@ class TeachingSessionRepository:
         if evidence is None:
             raise TeachingSessionConflict("learner message stimulus evidence is stale or mismatched")
         stimulus = LearnerMessageStimulus(message_id=message_id, input_revision=input_revision)
+        existing = self._conn.execute(
+            "SELECT * FROM tutor_run_stimulus_events WHERE run_id=%s AND user_id=%s AND conversation_id=%s",
+            (run_id, user_id, conversation_id),
+        ).fetchone()
+        if existing is not None:
+            # Binding replay is an immutable receipt read, not a fresh admission
+            # against a potentially advanced/closed/successor session.
+            if str(existing["payload_hash"]) != canonical_hash(stimulus.model_dump(mode="json")):
+                raise TeachingSessionConflict("run stimulus is immutable")
+            bound = self._conn.execute(
+                """SELECT * FROM tutor_run_teaching_scopes
+                   WHERE run_id=%s AND user_id=%s AND conversation_id=%s
+                     AND track_id=%s AND knowledge_key=%s AND stimulus_id=%s
+                     AND teaching_session_id=%s""",
+                (run_id, user_id, conversation_id, track_id, knowledge_key,
+                 existing["id"], existing["teaching_session_id"]),
+            ).fetchone()
+            if bound is None:
+                raise TeachingSessionConflict("run teaching scope is missing or mismatched")
+            return self._project_admission(existing, bound)
+        session, authority = self.prepare_learner_message_admission(
+            user_id=user_id, track_id=track_id, knowledge_key=knowledge_key,
+            conversation_id=conversation_id,
+        )
         return self._insert_stimulus_scope(run_id=run_id, session=session, authority=authority, stimulus=stimulus)
 
     def admit_control_run(

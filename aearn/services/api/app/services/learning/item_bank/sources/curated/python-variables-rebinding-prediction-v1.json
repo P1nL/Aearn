@@ -1,0 +1,152 @@
+{
+  "schema_version": "learning_item_source_v1",
+  "blueprint": {
+    "schema_version": "learning_item_blueprint_v1",
+    "blueprint_key": "python.variables.rebinding-prediction.blueprint",
+    "version": "v1",
+    "knowledge_key": "python.variables",
+    "item_kind": "knowledge_check",
+    "purpose": "knowledge_check",
+    "language_id": "python",
+    "difficulty_profile": {
+      "base": "D1",
+      "reasoning_depth": 1,
+      "concept_count": 1,
+      "context_novelty": 1,
+      "transfer_distance": 1,
+      "response_complexity": 1,
+      "scaffolding": 5
+    },
+    "prerequisite_keys": [],
+    "required_capabilities": [
+      "python"
+    ],
+    "allowed_interactions": [
+      "respond"
+    ],
+    "remediation_policy": {
+      "first_failure": "hint_then_remediate",
+      "second_failure": "explain_then_transfer",
+      "successor_item_key": "python.variables.rebinding-remediation"
+    },
+    "publication_policy": {
+      "risk_tier": "low",
+      "required_review_roles": [
+        "curriculum",
+        "difficulty",
+        "technical",
+        "ambiguity",
+        "security",
+        "adversarial"
+      ],
+      "agent_review_required": true,
+      "pilot_required": true,
+      "human_approval_required": false
+    },
+    "source_references": [
+      {
+        "source_id": "python-tutorial",
+        "source_version": "python-3.14.7",
+        "locator": "tutorial.introduction.first-steps-towards-programming",
+        "content_hash": "e900715b26a7b25339637eb1b83e7dc2ba5fbcabc6843e6a225845f155e40dc5"
+      }
+    ]
+  },
+  "public": {
+    "schema_version": "learning_item_public_v1",
+    "item_key": "python.variables.rebinding-prediction",
+    "version": "v1",
+    "kind": "knowledge_check",
+    "purpose": "knowledge_check",
+    "title": "Python Variables: Rebinding Prediction",
+    "difficulty": "D1",
+    "instruction_markdown": "Trace the assignments in order, then submit the resulting value.",
+    "allowed_interactions": [
+      "respond"
+    ],
+    "hints": [
+      {
+        "level": 1,
+        "markdown": "Write down the value bound to each name immediately after every assignment."
+      },
+      {
+        "level": 2,
+        "markdown": "A later assignment to one name does not retroactively update another name."
+      }
+    ],
+    "remediation_item_key": "python.variables.rebinding-remediation",
+    "source_references": [
+      {
+        "source_id": "python-tutorial",
+        "source_version": "python-3.14.7",
+        "locator": "tutorial.introduction.first-steps-towards-programming",
+        "content_hash": "e900715b26a7b25339637eb1b83e7dc2ba5fbcabc6843e6a225845f155e40dc5"
+      }
+    ],
+    "content": {
+      "type": "knowledge_check",
+      "response_kind": "single_choice",
+      "prompt_markdown": "What does this program print?\n\n```python\nfirst = 2\nsecond = first\nfirst = 5\nprint(second)\n```",
+      "options": [
+        {
+          "option_id": "prints_2",
+          "label": "2"
+        },
+        {
+          "option_id": "prints_5",
+          "label": "5"
+        },
+        {
+          "option_id": "raises_error",
+          "label": "It raises an error"
+        }
+      ]
+    }
+  },
+  "private": {
+    "schema_version": "learning_item_private_v1",
+    "item_key": "python.variables.rebinding-prediction",
+    "version": "v1",
+    "kind": "knowledge_check",
+    "content": {
+      "type": "knowledge_check",
+      "accepted_answers": [
+        "prints_2"
+      ],
+      "answer_explanation_markdown": "`second` keeps the value bound when `second = first` runs. Rebinding `first` later does not change `second`.",
+      "tests": [
+        {
+          "id": "visible_correct",
+          "case_type": "visible",
+          "input_json": {
+            "answer": "prints_2"
+          },
+          "expected_output_json": {
+            "accepted": true
+          },
+          "weight": 1,
+          "is_critical": true,
+          "order_index": 0
+        },
+        {
+          "id": "hidden_incorrect",
+          "case_type": "hidden",
+          "input_json": {
+            "answer": "prints_5"
+          },
+          "expected_output_json": {
+            "accepted": false
+          },
+          "weight": 1,
+          "is_critical": false,
+          "order_index": 1
+        }
+      ],
+      "score_policy": {
+        "kind": "static_exact",
+        "policy_version": "static_exact_v1",
+        "threshold": 1.0
+      }
+    }
+  }
+}

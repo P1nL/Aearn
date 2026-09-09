@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from app.services.grounding.grounding_provenance import GroundingProvenance
 from app.services.grounding.grounding_sources import GroundingSource, SourceVersionKind, get_grounding_source, sources_for_language
 
 
@@ -40,6 +41,7 @@ class GroundingFetchDocument:
     content_hash: str
     source_version_label: str = "unversioned"
     source_version_kind: SourceVersionKind = "rolling"
+    provenance: GroundingProvenance = GroundingProvenance()
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,10 +55,25 @@ class GroundingFetchResult:
     cache_hit: bool = False
 
 
+class GroundingRedirectBlocked(RuntimeError):
+    pass
+
+
 class HttpxGroundingHttpClient:
+    def __init__(self, *, source: GroundingSource | None = None) -> None:
+        self._source = source
+
     def get(self, url: str, timeout_seconds: float) -> GroundingHttpResponse:
-        with httpx.Client(timeout=timeout_seconds, follow_redirects=True) as client:
+        # Check each redirect before sending it. Final-URL validation alone is too late.
+        with httpx.Client(timeout=timeout_seconds, follow_redirects=False) as client:
             response = client.get(url)
+            for _ in range(5):
+                request = response.next_request
+                if request is None:
+                    break
+                if self._source is None or not _url_is_allowlisted(str(request.url), self._source):
+                    raise GroundingRedirectBlocked("Redirect is outside the grounding source allowlist")
+                response = client.send(request, follow_redirects=False)
         return GroundingHttpResponse(
             status_code=response.status_code,
             final_url=str(response.url),
@@ -73,7 +90,9 @@ class GroundingDocsFetcher:
         timeout_seconds: float = 5.0,
         now: Callable[[], datetime] | None = None,
     ) -> None:
-        self._http_client = http_client or HttpxGroundingHttpClient()
+        self._http_client = http_client
+        # An injected transport is not evidence of a real network ingestion.
+        self._origin = "http_fetch" if http_client is None else "unknown"
         self._timeout_seconds = timeout_seconds
         self._now = now or _utc_now
         self._cache: dict[tuple[str, str], GroundingFetchResult] = {}
@@ -109,7 +128,16 @@ class GroundingDocsFetcher:
             return result
 
         try:
-            response = self._http_client.get(canonical_url, self._timeout_seconds)
+            client = self._http_client if self._http_client is not None else HttpxGroundingHttpClient(source=source)
+            response = client.get(canonical_url, self._timeout_seconds)
+        except GroundingRedirectBlocked:
+            result = GroundingFetchResult(
+                source_id=source.source_id, url=canonical_url, status="blocked",
+                error_code="FINAL_URL_NOT_ALLOWLISTED",
+                error_message="Redirect is outside the grounding source allowlist",
+            )
+            self._cache[cache_key] = result
+            return result
         except Exception as exc:
             result = GroundingFetchResult(
                 source_id=source.source_id,
@@ -132,6 +160,22 @@ class GroundingDocsFetcher:
             self._cache[cache_key] = result
             return result
 
+        if not _url_is_allowlisted(response.final_url, source):
+            result = GroundingFetchResult(
+                source_id=source.source_id, url=canonical_url, status="blocked",
+                error_code="FINAL_URL_NOT_ALLOWLISTED",
+                error_message="Final URL is outside the grounding source allowlist",
+            )
+            self._cache[cache_key] = result
+            return result
+        if response.content_type.split(";", 1)[0].strip().lower() not in {"text/html", "application/xhtml+xml"}:
+            result = GroundingFetchResult(
+                source_id=source.source_id, url=canonical_url, status="failed",
+                error_code="CONTENT_TYPE_UNSUPPORTED", error_message="Expected documentation HTML",
+            )
+            self._cache[cache_key] = result
+            return result
+
         raw_content = response.text
         document = GroundingFetchDocument(
             source_id=source.source_id,
@@ -144,6 +188,12 @@ class GroundingDocsFetcher:
             content_hash=hashlib.sha256(raw_content.encode("utf-8")).hexdigest(),
             source_version_label=source.source_version_label,
             source_version_kind=source.source_version_kind,
+            provenance=GroundingProvenance(
+                kind="http_fetch" if self._origin == "http_fetch" else "unknown",
+                source_id=source.source_id, requested_url=canonical_url,
+                final_url=response.final_url,
+                document_content_hash=hashlib.sha256(raw_content.encode("utf-8")).hexdigest(),
+            ),
         )
         result = GroundingFetchResult(source_id=source.source_id, url=canonical_url, status="ok", document=document)
         self._cache[cache_key] = result
@@ -163,7 +213,14 @@ class GroundingDocsFetcher:
 
 
 def _url_is_allowlisted(url: str, source: GroundingSource) -> bool:
-    parsed_url = urlparse(url)
+    try:
+        parsed_url = urlparse(url)
+        if parsed_url.username is not None or parsed_url.password is not None:
+            return False
+        if parsed_url.port not in (None, 80, 443):
+            return False
+    except ValueError:
+        return False
     if parsed_url.scheme not in {"http", "https"}:
         return False
     hostname = (parsed_url.hostname or "").lower()

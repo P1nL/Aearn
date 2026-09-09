@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from functools import partial
 from uuid import uuid4
 
 import psycopg
@@ -63,7 +64,15 @@ class FakeLessonAuthor:
 
 
 @pytest.fixture()
-def authoring_scope():
+def authoring_scope(monkeypatch: pytest.MonkeyPatch):
+    import app.services.learning.lesson_authoring as lesson_authoring
+
+    # These tests deliberately index offline fixtures and inject fake authors.
+    # Scope the opt-in to this fixture; runtime and unrelated tests stay default-deny.
+    monkeypatch.setattr(
+        lesson_authoring, "_load_evidence_snapshots",
+        partial(lesson_authoring._load_evidence_snapshots, allow_fixtures_for_tests=True),
+    )
     bootstrap_database()
     with psycopg.connect(get_settings().database_url, row_factory=dict_row) as conn:
         run_and_persist_fixture_grounding_reindex(conn)
@@ -277,17 +286,24 @@ def test_provider_invalid_metadata_reaches_receipt_and_repairs(authoring_scope):
     from app.services.learning.lesson_authoring import PrimaryLessonDocumentAuthor
     from app.services.llm.llm_client import LLMInvalidResponseError, LLMInvalidResponseKind
     conn, _, _, run_id = authoring_scope
-    usage = LLMUsage(input_tokens=19, output_tokens=8, total_tokens=27)
+    from app.services.llm.contracts import LLMResponseDiagnostics
+    usage = LLMUsage(input_tokens=19, output_tokens=8, total_tokens=27, reasoning_tokens=2)
+    diagnostics = LLMResponseDiagnostics(response_status="completed", requested_max_output_tokens=12000,
+                                         requested_reasoning_effort="none", visible_output_chars=8)
     class Client:
         calls = 0
         def complete_json(self, messages, **kwargs):
             self.calls += 1
             if self.calls == 1:
-                raise LLMInvalidResponseError("PRIVATE RAW BODY", kind=LLMInvalidResponseKind.CONTENT_NOT_JSON_OBJECT, model="metadata-model", usage=usage)
+                raise LLMInvalidResponseError("PRIVATE RAW BODY", kind=LLMInvalidResponseKind.CONTENT_NOT_JSON_OBJECT, model="metadata-model", usage=usage, response_diagnostics=diagnostics)
             payload = json.loads(messages[1]["content"])
             return SimpleNamespace(content=author_candidate_payload(personalized=payload["document_kind"] == "personalized"), model="metadata-model", usage=usage)
     client = Client()
-    settings = get_settings().model_copy(update={"llm_provider_type": "deepseek", "llm_model": "deepseek-v4-flash"})
+    # Override stored fields, not computed properties; the injected client stays offline.
+    settings = get_settings().model_copy(update={
+        "llm_type": "deepseek", "deepseek_model": "deepseek-v4-flash",
+        "deepseek_api_key": "test-only", "deepseek_base_url": "https://provider.invalid",
+    })
     dispatch_lesson_authoring_run(run_id, author=PrimaryLessonDocumentAuthor(settings, client=client))
     assert client.calls == 3
     receipts = conn.execute("SELECT model, protocol, input_tokens, output_tokens, outcome, diagnostic_json FROM tutor_lesson_authoring_attempt_receipts WHERE run_id = %s ORDER BY attempt_index", (run_id,)).fetchall()
@@ -295,6 +311,8 @@ def test_provider_invalid_metadata_reaches_receipt_and_repairs(authoring_scope):
     assert receipts[0]["model"] == "metadata-model" and receipts[0]["protocol"] == "deepseek_responses"
     assert receipts[0]["input_tokens"] == 19 and receipts[0]["output_tokens"] == 8
     assert receipts[0]["diagnostic_json"]["issue_codes"] == ["LESSON_PROVIDER_CONTENT_NOT_JSON_OBJECT"]
+    assert receipts[0]["diagnostic_json"]["reasoning_tokens"] == 2
+    assert receipts[0]["diagnostic_json"]["provider_response"]["requested_reasoning_effort"] == "none"
     assert "PRIVATE RAW BODY" not in json.dumps(receipts)
 
 

@@ -33,8 +33,8 @@ def test_run_grounding_reindex_reports_successful_source_counts() -> None:
 
     assert report.status == "completed"
     assert report.total_sources == 1
-    assert report.total_documents == 1
-    assert report.total_chunks == 1
+    assert report.total_documents == 3
+    assert report.total_chunks == 3
     assert report.total_failures == 0
     assert report.source_reports[0].source_id == "python-tutorial"
     assert report.source_reports[0].status == "completed"
@@ -52,8 +52,8 @@ def test_run_grounding_reindex_isolates_mixed_source_failures() -> None:
     report = run_grounding_reindex(fetcher, source_ids=("python-tutorial", "mdn-javascript-guide"))
 
     assert report.status == "completed_with_failures"
-    assert report.total_documents == 1
-    assert report.total_chunks == 1
+    assert report.total_documents == 3
+    assert report.total_chunks == 3
     assert report.total_failures == 1
     assert [source.status for source in report.source_reports] == ["completed", "failed"]
     assert report.source_reports[1].error_codes == ("HTTP_STATUS",)

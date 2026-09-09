@@ -544,6 +544,12 @@ Queue/Steer/Interrupt/Retry 的公共路径和响应结构不变：Queue 接受�
 公共 Gate/Attempt/diagnostic 投影不包含完整 submission、private tests、reference answer、private rubric、container/image、command/path、raw executor/provider response 或内部异常。稳定错误包括 `LESSON_GATE_NOT_FOUND`、`LESSON_GATE_NOT_READY`、`LESSON_GATE_VERSION_CONFLICT`、`EXERCISE_ATTEMPT_CONFLICT`、`EXECUTION_UNAVAILABLE`、`MODULE_DIAGNOSTIC_NOT_ALLOWED`、`MODULE_DIAGNOSTIC_COOLDOWN` 和 `MODULE_DIAGNOSTIC_VERSION_CONFLICT`；validation error 使用 learner-safe `422`。
 
 
+### 2026-09-08：Gate 选题与持久化补充
+
+- prepare 只准备路径指定的 Gate，不同时绑定其他 slot。`knowledge_check_v1` 必须匹配当前语言、知识点和服务端能力范围内的已发布静态知识检查及其不可变 Practice materialization，不能退回代码执行 fixture；不兼容的历史绑定保留只读，不改写冻结版本。
+- `execution_requirement` 来自 exact exercise。静态知识检查没有容器执行证据，结果仍为 `not_run`；已经通过的静态 Gate 不再暴露提交动作。单选题发送真实 `option_id`，客户端不自行判分，不把静态通过展示为代码运行成功。
+- Gate mutation 成功响应前必须提交请求事务；service savepoint 成功不等于 HTTP 请求持久化。验收需用另一个数据库连接和刷新后的 GET 检查 receipt、Attempt 与 Gate state，不仅检查当前页面的成功提示。
+
 ## 2026-08-12：模型代码审核练习 API
 
 `model_code_review` 是现有 Lesson Gate/Attempt contract 的正式 exercise type，不是旧
@@ -711,6 +717,14 @@ closed control 包括 `continue`、`return_focus`、`change_example`、`pause`�
 `TeachingActionShelfV1` 最多一个 primary、三个 visible secondary；active runtime 与 blocking typed request 时普通 shelf 为空。普通 shelf 的 label、emphasis、target、expected versions 均由服务端生成，provider/客户端不能定义。`continue` 只在 checkpoint 推荐继续时出现；`learner_response_mode=composer` 投影 `respond_in_composer`，不存在任何真实 descriptor 时返回空 shelf，Desktop 不生成 placeholder。open/action 返回 `pending_run.dispatch_job_id` 时，HTTP layer 只做 best-effort worker wakeup；durable dispatch job 才是执行 authority，幂等 replay 或重复 wakeup 不产生第二个 run。
 
 `TutorTurnStimulus` 是 strict one-of：普通 learner input 绑定 exact learner message/input revision；explicit teaching control 或 domain event 可创建没有 learner message 的 fresh interactive TurnRun。公共 response/snapshot 只 additive 返回 safe teaching session/run-scope/Action Shelf metadata。稳定错误包括 `TEACHING_SESSION_NOT_FOUND`、`TEACHING_AUTHORITY_CONFLICT`、`TEACHING_ACTION_INVALID`、`TEACHING_STIMULUS_INVALID` 与既有 `IDEMPOTENCY_CONFLICT`；跨用户、跨 track/conversation、stale checkpoint/session/progress/assignment/document/stimulus 一律 fail closed。
+
+### 2026-09-08：教学准入与失败投影补充
+
+Knowledge-bound `learning_track/lesson_teaching` 输入在新建 run/message/job 前验证当前 TeachingSession、checkpoint 与 Lesson authority；未就绪返回 `409 TEACHING_NOT_READY`，`recoverable=true` 表示应先完成准备，不表示自动重试模型。已接受的同一幂等输入先重放原有 receipt/scope，不受之后 session 关闭影响。无 knowledge-bound 教学目标的普通 track 问答不自动推断或取得教学权限。
+
+Snapshot/history 为未产生既有 dead-dispatch/runtime error 的失败 Harness Turn 返回稳定的 `kind=error`；不重写历史运行，不重复报错，不将正常 cancelled/superseded 状态伪装成失败。`recoverable` 与 Queue retry 的统一终态判定一致：unknown capability/effect 拒绝不可自动重试。错误 code/message 均为服务端安全投影，不包含内部拒绝标识、原始模型输出或异常文本。
+
+新课程作者只准入来源/URL/正文哈希匹配的 `http_fetch` 片段；fixture 和未知 provenance 不因 official 标签而放行。无有效片段仍使用 `LESSON_SOURCE_EVIDENCE_INSUFFICIENT`，且不得调用 provider。此检查不修改历史冻结课程读取协议。
 
 ## 2026-08-23：内部 teaching domain event 与 summary context
 

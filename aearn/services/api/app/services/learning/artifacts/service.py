@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from psycopg import Connection
 
 from .contracts import (
+    canonical_hash,
     TutorArtifactActionRequest,
+    TutorArtifactCompleteReviewAction,
+    TutorArtifactKind,
+    TutorArtifactModelCodeReviewPresentationV2,
     TutorArtifactAttemptDetailV2,
     TutorArtifactCreate,
     TutorPublicArtifactItem,
@@ -28,6 +33,11 @@ from .owner_adapters import (
     ArtifactOwnerUnavailable,
     ArtifactOwnerVersionConflict,
 )
+from .model_reviews import PreparedModelReviewV2
+from app.services.learning.practice.model_review_semantics import (
+    SemanticReviewReceipt,
+)
+from .teaching_owner_adapters import LearningItemArtifactOwnerAdapter
 from .repository import (
     ArtifactOwnerEventKind,
     LearningArtifactEventSinkUnavailable,
@@ -58,6 +68,12 @@ class LearningArtifactServiceError(ValueError):
         self.status_code = status_code
         self.recoverable = recoverable
         self.details = dict(details or {})
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedArtifactModelReviewV2:
+    prepared: PreparedModelReviewV2 | None
+    replay: LearningArtifactWriteResult | None
 
 
 class LearningArtifactService:
@@ -160,6 +176,116 @@ class LearningArtifactService:
             )
         except LearningArtifactRepositoryError as exc:
             raise _map_repository_error(exc) from exc
+        except ArtifactConversationEventConflict as exc:
+            raise _idempotency_error() from exc
+        except ArtifactConversationEventUnavailable as exc:
+            raise _event_unavailable_error() from exc
+        except ValueError as exc:
+            raise _validation_error() from exc
+
+    def prepare_model_review_v2(
+        self,
+        *,
+        artifact_id: str,
+        request: TutorArtifactActionRequest,
+        conversation_id: str,
+    ) -> PreparedArtifactModelReviewV2:
+        self._require_enabled()
+        artifact = self.read_artifact(
+            user_id=request.user_id,
+            conversation_id=conversation_id,
+            artifact_id=artifact_id,
+        )
+        if (
+            artifact.artifact_kind is not TutorArtifactKind.MODEL_CODE_REVIEW
+            or not isinstance(
+                artifact.presentation, TutorArtifactModelCodeReviewPresentationV2
+            )
+            or not isinstance(request.action, TutorArtifactCompleteReviewAction)
+        ):
+            raise LearningArtifactServiceError(
+                "LEARNING_ARTIFACT_ACTION_INVALID",
+                "Learning Artifact 不是 model_review_v2 完成请求。",
+                status_code=400,
+                recoverable=False,
+            )
+        request_hash = canonical_hash(
+            request.model_dump(mode="json", exclude_none=False)
+        )
+        event = self._conn.execute(
+            "SELECT request_hash, action_kind FROM tutor_learning_artifact_events WHERE artifact_id=%s AND client_action_id=%s",
+            (artifact.id, request.client_action_id),
+        ).fetchone()
+        if event is not None:
+            if (
+                str(event.get("request_hash") or "") != request_hash
+                or str(event.get("action_kind") or "") != "complete_review"
+            ):
+                raise _idempotency_error()
+            return PreparedArtifactModelReviewV2(
+                prepared=None,
+                replay=self._repository.read_current_artifact_write(
+                    user_id=request.user_id,
+                    conversation_id=conversation_id,
+                    artifact_id=artifact.id,
+                ),
+            )
+        if artifact.version != request.expected_artifact_version:
+            raise _map_repository_error(
+                LearningArtifactVersionConflict(
+                    "learning artifact version changed before semantic prepare"
+                )
+            )
+        adapter = self._owner_adapters.require(artifact.owner_kind)
+        if not isinstance(adapter, LearningItemArtifactOwnerAdapter):
+            raise _map_owner_error(
+                ArtifactOwnerActionInvalid("model review requires Learning Item owner")
+            )
+        try:
+            prepared = adapter.prepare_model_review_v2(
+                conn=self._conn, artifact=artifact, request=request
+            )
+        except ArtifactOwnerAdapterError as exc:
+            raise _map_owner_error(exc) from exc
+        return PreparedArtifactModelReviewV2(prepared=prepared, replay=None)
+
+    def finalize_model_review_v2(
+        self,
+        *,
+        artifact_id: str,
+        request: TutorArtifactActionRequest,
+        conversation_id: str,
+        prepared: PreparedModelReviewV2,
+        semantic_receipt: SemanticReviewReceipt | None,
+    ) -> LearningArtifactWriteResult:
+        self._require_enabled()
+
+        def delegate(artifact: TutorPublicArtifactItem) -> ArtifactMutation:
+            adapter = self._owner_adapters.require(artifact.owner_kind)
+            if not isinstance(adapter, LearningItemArtifactOwnerAdapter):
+                raise ArtifactOwnerActionInvalid(
+                    "model review requires Learning Item owner"
+                )
+            return adapter.finalize_model_review_v2(
+                conn=self._conn,
+                artifact=artifact,
+                request=request,
+                prepared=prepared,
+                semantic_receipt=semantic_receipt,
+            )
+
+        try:
+            return self._repository.apply_action(
+                artifact_id=artifact_id,
+                request=request,
+                owner_callback=delegate,
+                conversation_id=conversation_id,
+                occurred_at=self._clock(),
+            )
+        except LearningArtifactRepositoryError as exc:
+            raise _map_repository_error(exc) from exc
+        except ArtifactOwnerAdapterError as exc:
+            raise _map_owner_error(exc) from exc
         except ArtifactConversationEventConflict as exc:
             raise _idempotency_error() from exc
         except ArtifactConversationEventUnavailable as exc:
@@ -356,5 +482,6 @@ def _event_unavailable_error() -> LearningArtifactServiceError:
 
 __all__ = (
     "LearningArtifactService",
+    "PreparedArtifactModelReviewV2",
     "LearningArtifactServiceError",
 )

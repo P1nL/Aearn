@@ -8,12 +8,15 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
-from typing import Literal, Protocol, TypeVar
+from typing import Literal, Protocol, TypeVar, cast, get_args
 
 from app.core.config import DEEPSEEK_V4_FLASH_MODEL, Settings, get_settings
-from app.services.llm.contracts import LLMUsage
+from app.services.llm.contracts import (
+    LLMIncompleteReason, LLMReasoningEffort, LLMResponseDiagnostics,
+    LLMResponseStatus, LLMUsage,
+)
 from app.services.llm.llm_urls import deepseek_chat_completions_url, deepseek_responses_url, responses_url
 from app.services.llm.provider_diagnostics import (
     ProviderBodyCapture,
@@ -103,14 +106,21 @@ class LLMInvalidResponseError(RuntimeError):
         kind: LLMInvalidResponseKind = LLMInvalidResponseKind.UNKNOWN,
         usage: LLMUsage | None = None,
         model: str | None = None,
+        response_diagnostics: LLMResponseDiagnostics | None = None,
     ) -> None:
         super().__init__(message)
         self.kind = kind
         self.usage = usage
         self.model = model
+        self.response_diagnostics = response_diagnostics
         self.diagnostic_capture: ProviderBodyCapture | None = None
 
-    def attach_response_metadata(self, *, usage: LLMUsage | None, model: str | None) -> None:
+    def attach_response_metadata(
+        self, *, usage: LLMUsage | None, model: str | None,
+        response_diagnostics: LLMResponseDiagnostics | None = None,
+    ) -> None:
+        if self.response_diagnostics is None:
+            self.response_diagnostics = response_diagnostics
         if self.usage is None:
             self.usage = usage
         if self.model is None:
@@ -131,6 +141,7 @@ class LLMJsonResponse:
         repr=False,
         compare=False,
     )
+    response_diagnostics: LLMResponseDiagnostics | None = None
 
 
 def _require_provider_response_object(value: object) -> Mapping[str, object]:
@@ -182,6 +193,10 @@ class OpenAICompatibleClient:
         """Return one strict JSON object through the exact selected provider protocol."""
 
         protocol = select_llm_protocol(self._settings)
+        max_tokens = _bounded_max_output_tokens(
+            settings=self._settings,
+            requested=max_tokens,
+        )
         diagnostic_capture = (
             self._diagnostic_store.begin_capture()
             if capture_provider_body and self._diagnostic_store is not None
@@ -235,6 +250,8 @@ class OpenAICompatibleClient:
                 "messages": _messages_to_chat_completions(messages),
                 "stream": True,
             }
+            if self._settings.uses_deepseek_v4_flash_responses:
+                payload["max_tokens"] = self._settings.tutor_deepseek_v4_flash_max_output_tokens
             if temperature is not None:
                 payload["temperature"] = temperature
             url = deepseek_chat_completions_url(str(self._settings.llm_base_url))
@@ -250,6 +267,7 @@ class OpenAICompatibleClient:
             if temperature is not None:
                 payload["temperature"] = temperature
             url = responses_url(str(self._settings.llm_base_url))
+        _enforce_request_input_limit(settings=self._settings, payload=payload)
         headers = {
             "Authorization": f"Bearer {self._settings.llm_api_key}",
             "Content-Type": "application/json",
@@ -291,6 +309,8 @@ class OpenAICompatibleClient:
                 "stream": True,
                 "response_format": {"type": "json_object"},
             }
+            if self._settings.uses_deepseek_v4_flash_responses:
+                payload["max_tokens"] = self._settings.tutor_deepseek_v4_flash_max_output_tokens
             if temperature is not None:
                 payload["temperature"] = temperature
             url = deepseek_chat_completions_url(str(self._settings.llm_base_url))
@@ -307,6 +327,7 @@ class OpenAICompatibleClient:
             if temperature is not None:
                 payload["temperature"] = temperature
             url = responses_url(str(self._settings.llm_base_url))
+        _enforce_request_input_limit(settings=self._settings, payload=payload)
         headers = {
             "Authorization": f"Bearer {self._settings.llm_api_key}",
             "Content-Type": "application/json",
@@ -366,23 +387,33 @@ class OpenAICompatibleClient:
         if instructions is not None:
             payload["instructions"] = instructions
         if thinking_mode is not None and self._settings.llm_provider_type == "deepseek":
-            payload["thinking"] = {"type": thinking_mode}
+            payload["reasoning"] = {"effort": "none" if thinking_mode == "disabled" else "high"}
         if temperature is not None:
             payload["temperature"] = temperature
         if max_tokens is not None:
             payload["max_output_tokens"] = max_tokens
+        _enforce_request_input_limit(settings=self._settings, payload=payload)
         headers = {
             "Authorization": f"Bearer {self._settings.llm_api_key}",
             "Content-Type": "application/json",
             "Accept": "text/event-stream",
         }
-        provider_response = self._request_responses_provider(
-            url=url,
-            payload=payload,
-            headers=headers,
-            timeout_seconds=timeout_seconds,
-            diagnostic_capture=diagnostic_capture,
-            visible_output_observer=visible_output_observer,
+        try:
+            provider_response = self._request_responses_provider(
+                url=url,
+                payload=payload,
+                headers=headers,
+                timeout_seconds=timeout_seconds,
+                diagnostic_capture=diagnostic_capture,
+                visible_output_observer=visible_output_observer,
+            )
+        except LLMInvalidResponseError as exc:
+            diagnostics = exc.response_diagnostics or LLMResponseDiagnostics()
+            exc.response_diagnostics = _with_request_diagnostics(diagnostics, payload)
+            exc.attach_response_metadata(usage=None, model=self.model)
+            raise
+        response_diagnostics = _with_request_diagnostics(
+            _extract_response_diagnostics(provider_response), payload,
         )
         usage = _extract_llm_usage(provider_response, protocol=LLMProtocol.RESPONSES)
         model = _response_model(provider_response) or self.model
@@ -391,12 +422,15 @@ class OpenAICompatibleClient:
             content = _extract_message_content(provider_response)
             parsed_content = _parse_json_object(content)
         except LLMInvalidResponseError as exc:
-            exc.attach_response_metadata(usage=usage, model=model)
+            exc.attach_response_metadata(
+                usage=usage, model=model, response_diagnostics=response_diagnostics,
+            )
             raise
         return LLMJsonResponse(
             content=parsed_content,
             model=model,
             usage=usage,
+            response_diagnostics=response_diagnostics,
             diagnostic_capture=diagnostic_capture,
         )
 
@@ -428,7 +462,16 @@ class OpenAICompatibleClient:
             if diagnostic_capture is not None:
                 diagnostic_capture.append_mapping(response)
             if visible_output_observer is not None:
-                visible_output_observer.on_text_delta(_extract_message_content(response))
+                try:
+                    _ensure_responses_completed(response)
+                    visible_output_observer.on_text_delta(_extract_message_content(response))
+                except LLMInvalidResponseError as exc:
+                    exc.attach_response_metadata(
+                        usage=_extract_llm_usage(response, protocol=LLMProtocol.RESPONSES),
+                        model=_response_model(response) or self.model,
+                        response_diagnostics=_extract_response_diagnostics(response),
+                    )
+                    raise
                 visible_output_observer.on_stream_complete()
             return response
         return _post_json_stream(
@@ -461,6 +504,7 @@ class OpenAICompatibleClient:
             payload["thinking"] = {"type": thinking_mode}
         if max_tokens is not None:
             payload["max_tokens"] = max_tokens
+        _enforce_request_input_limit(settings=self._settings, payload=payload)
         headers = {
             "Authorization": f"Bearer {self._settings.llm_api_key}",
             "Content-Type": "application/json",
@@ -593,6 +637,49 @@ def _resolve_timeout_seconds(configured_timeout: float, timeout_seconds: float |
     if timeout_seconds is None:
         return float(configured_timeout)
     return max(float(configured_timeout), float(timeout_seconds))
+
+
+def _bounded_max_output_tokens(
+    *,
+    settings: Settings,
+    requested: int | None,
+) -> int | None:
+    """Apply the exact model hard cap without widening smaller caller budgets."""
+
+    if not settings.uses_deepseek_v4_flash_responses:
+        return requested
+    maximum = settings.tutor_deepseek_v4_flash_max_output_tokens
+    if requested is None:
+        return maximum
+    if requested <= 0:
+        raise ValueError("max_tokens must be positive")
+    if requested > maximum:
+        raise ValueError("max_tokens exceeds the configured DeepSeek V4 Flash maximum")
+    return requested
+
+
+def _enforce_request_input_limit(
+    *,
+    settings: Settings,
+    payload: Mapping[str, object],
+) -> None:
+    """Reject oversized exact-model input before any provider transport."""
+
+    if not settings.uses_deepseek_v4_flash_responses:
+        return
+    input_payload = {
+        key: payload[key]
+        for key in ("instructions", "input", "messages", "text", "response_format")
+        if key in payload
+    }
+    encoded = json.dumps(
+        input_payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    estimated_tokens = max(1, (len(encoded) + 3) // 4)
+    if estimated_tokens > settings.tutor_deepseek_v4_flash_input_limit_tokens:
+        raise ValueError("LLM request input exceeds the configured DeepSeek V4 Flash maximum")
 
 
 def _post_text_stream(
@@ -773,10 +860,11 @@ def _parse_responses_stream(
 ) -> Mapping[str, object]:
     latest_response: dict[str, object] | None = None
     latest_text: str | None = None
+    observed_response: Mapping[str, object] = {}
     pending_data: list[str] = []
 
     def flush_frame() -> None:
-        nonlocal latest_response, latest_text, pending_data
+        nonlocal latest_response, latest_text, pending_data, observed_response
         if not pending_data:
             return
 
@@ -796,8 +884,11 @@ def _parse_responses_stream(
 
         event_type = str(parsed.get("type", ""))
         maybe_response = parsed.get("response")
-        if isinstance(maybe_response, Mapping) and event_type in {"response.completed", "response.incomplete", "response.failed"}:
+        if isinstance(maybe_response, Mapping):
+            observed_response = maybe_response
+        if isinstance(maybe_response, Mapping) and event_type == "response.completed":
             latest_response = dict(maybe_response)
+            latest_response.setdefault("status", "completed")
 
         if event_type == "response.output_text.delta":
             delta = parsed.get("delta")
@@ -816,6 +907,10 @@ def _parse_responses_stream(
                 kind=LLMInvalidResponseKind.RESPONSE_INCOMPLETE,
                 usage=_extract_llm_usage(response_metadata, protocol=LLMProtocol.RESPONSES),
                 model=_response_model(response_metadata) or None,
+                response_diagnostics=_extract_response_diagnostics(
+                    response_metadata, status_override=event_type.removeprefix("response."),
+                    visible_text=latest_text,
+                ),
             )
         elif event_type == "response.failed":
             response_metadata = maybe_response if isinstance(maybe_response, Mapping) else {}
@@ -824,30 +919,45 @@ def _parse_responses_stream(
                 kind=LLMInvalidResponseKind.RESPONSE_FAILED,
                 usage=_extract_llm_usage(response_metadata, protocol=LLMProtocol.RESPONSES),
                 model=_response_model(response_metadata) or None,
+                response_diagnostics=_extract_response_diagnostics(
+                    response_metadata, status_override=event_type.removeprefix("response."),
+                    visible_text=latest_text,
+                ),
             )
-        elif event_type == "response.completed" and isinstance(maybe_response, Mapping):
-            latest_response = dict(maybe_response)
 
-    for raw_line in response:
-        if diagnostic_capture is not None:
-            diagnostic_capture.append(raw_line)
-        line = raw_line.decode("utf-8", "replace").rstrip("\r\n")
-        if not line:
-            flush_frame()
-            continue
-        if line.startswith("event: "):
-            continue
-        if line.startswith("data: "):
-            pending_data.append(line[len("data: ") :])
-            continue
+    try:
+        for raw_line in response:
+            if diagnostic_capture is not None:
+                diagnostic_capture.append(raw_line)
+            line = raw_line.decode("utf-8", "replace").rstrip("\r\n")
+            if not line:
+                flush_frame()
+                continue
+            if line.startswith("event: "):
+                continue
+            if line.startswith("data: "):
+                pending_data.append(line[len("data: ") :])
+                continue
 
-    flush_frame()
+        flush_frame()
+    except LLMInvalidResponseError as exc:
+        exc.attach_response_metadata(
+            usage=_extract_llm_usage(observed_response, protocol=LLMProtocol.RESPONSES),
+            model=_response_model(observed_response) or None,
+            response_diagnostics=_extract_response_diagnostics(
+                observed_response, status_override="missing_terminal", visible_text=latest_text,
+            ),
+        )
+        raise
     if latest_response is None:
-        if latest_text is not None:
-            return _response_from_text(latest_text, model="")
         raise LLMInvalidResponseError(
-            "LLM provider stream ended without a response",
+            "LLM provider stream ended without a terminal response",
             kind=LLMInvalidResponseKind.ENVELOPE_INVALID,
+            usage=_extract_llm_usage(observed_response, protocol=LLMProtocol.RESPONSES),
+            model=_response_model(observed_response) or None,
+            response_diagnostics=_extract_response_diagnostics(
+                observed_response, status_override="missing_terminal", visible_text=latest_text,
+            ),
         )
     if latest_text is not None and not _has_message_content(latest_response):
         latest_response = dict(latest_response)
@@ -867,6 +977,57 @@ def _parse_responses_stream(
     return latest_response
 
 
+def _extract_response_diagnostics(
+    provider_response: Mapping[str, object], *, status_override: str | None = None,
+    visible_text: str | None = None,
+) -> LLMResponseDiagnostics:
+    response = _normalize_response_payload(provider_response)
+    status = status_override or response.get("status")
+    if status is None and provider_response.get("type") == "response.completed":
+        status = "completed"
+    safe_status = status if isinstance(status, str) and status in get_args(LLMResponseStatus) else "unknown"
+    details = response.get("incomplete_details")
+    reason = details.get("reason") if isinstance(details, Mapping) else None
+    safe_reason = (
+        reason if isinstance(reason, str) and reason in get_args(LLMIncompleteReason)
+        else "unknown" if reason is not None else None
+    )
+    visible_chars = 0
+    output = response.get("output")
+    if isinstance(output, Sequence) and not isinstance(output, (str, bytes)):
+        for item in output:
+            if not isinstance(item, Mapping) or item.get("type") != "message":
+                continue
+            content = item.get("content")
+            if not isinstance(content, Sequence) or isinstance(content, (str, bytes)):
+                continue
+            for part in content:
+                if isinstance(part, Mapping) and part.get("type") == "output_text":
+                    text = part.get("text")
+                    if isinstance(text, str):
+                        visible_chars += len(text)
+    if visible_text is not None:
+        visible_chars = max(visible_chars, len(visible_text))
+    return LLMResponseDiagnostics(
+        response_status=cast(LLMResponseStatus, safe_status),
+        incomplete_reason=cast(LLMIncompleteReason | None, safe_reason),
+        visible_output_chars=visible_chars,
+    )
+
+
+def _with_request_diagnostics(
+    diagnostics: LLMResponseDiagnostics, payload: Mapping[str, object],
+) -> LLMResponseDiagnostics:
+    _, budget = _optional_usage_int(payload, ("max_output_tokens",))
+    reasoning = payload.get("reasoning")
+    effort = reasoning.get("effort") if isinstance(reasoning, Mapping) else None
+    safe_effort = effort if isinstance(effort, str) and effort in get_args(LLMReasoningEffort) else None
+    return replace(
+        diagnostics, requested_max_output_tokens=budget,
+        requested_reasoning_effort=cast(LLMReasoningEffort | None, safe_effort),
+    )
+
+
 def _ensure_responses_completed(provider_response: Mapping[str, object]) -> None:
     """Reject nonterminal/failed Responses envelopes before reading visible output."""
 
@@ -883,7 +1044,7 @@ def _ensure_responses_completed(provider_response: Mapping[str, object]) -> None
             "LLM provider response failed",
             kind=LLMInvalidResponseKind.RESPONSE_FAILED,
         )
-    if response_type and response_type != "response.completed":
+    if (response_type and response_type != "response.completed") or (status and status != "completed"):
         raise LLMInvalidResponseError(
             "LLM provider response did not complete",
             kind=LLMInvalidResponseKind.ENVELOPE_INVALID,

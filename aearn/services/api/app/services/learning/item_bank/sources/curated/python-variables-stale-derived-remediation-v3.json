@@ -1,0 +1,203 @@
+{
+  "schema_version": "learning_item_source_v1",
+  "blueprint": {
+    "schema_version": "learning_item_blueprint_v1",
+    "blueprint_key": "python.variables.stale-derived-remediation.blueprint",
+    "version": "v3",
+    "knowledge_key": "python.variables",
+    "item_kind": "model_review",
+    "purpose": "remediation",
+    "language_id": "python",
+    "difficulty_profile": {
+      "base": "D2",
+      "reasoning_depth": 2,
+      "concept_count": 2,
+      "context_novelty": 1,
+      "transfer_distance": 1,
+      "response_complexity": 3,
+      "scaffolding": 3
+    },
+    "prerequisite_keys": [],
+    "required_capabilities": [
+      "python"
+    ],
+    "allowed_interactions": [
+      "review"
+    ],
+    "remediation_policy": null,
+    "publication_policy": {
+      "risk_tier": "low",
+      "required_review_roles": [
+        "curriculum",
+        "difficulty",
+        "technical",
+        "ambiguity",
+        "security",
+        "adversarial"
+      ],
+      "agent_review_required": true,
+      "pilot_required": true,
+      "human_approval_required": false
+    },
+    "source_references": [
+      {
+        "source_id": "python-tutorial",
+        "source_version": "python-3.14.7",
+        "locator": "tutorial.introduction.first-steps-towards-programming",
+        "content_hash": "e900715b26a7b25339637eb1b83e7dc2ba5fbcabc6843e6a225845f155e40dc5"
+      }
+    ]
+  },
+  "public": {
+    "schema_version": "learning_item_public_v1",
+    "item_key": "python.variables.stale-derived-remediation",
+    "version": "v3",
+    "kind": "model_review",
+    "purpose": "remediation",
+    "title": "Python Variables: Stale Derived Value Remediation",
+    "difficulty": "D2",
+    "instruction_markdown": "Trace the assignments, compare the final value with the requirement, and support your verdict with evidence. The selectable finding target is the final assignment only. Work in three steps: record the value computed before the rebinding; record the current input value; compare the final target with the requirement.",
+    "allowed_interactions": [
+      "review"
+    ],
+    "hints": [
+      {
+        "level": 1,
+        "markdown": "Record each name and its value after each assignment, keeping a separate row for each name."
+      },
+      {
+        "level": 2,
+        "markdown": "Compare the final target value with the expression in the requirement. Describe how you would check their equality."
+      }
+    ],
+    "remediation_item_key": null,
+    "source_references": [
+      {
+        "source_id": "python-tutorial",
+        "source_version": "python-3.14.7",
+        "locator": "tutorial.introduction.first-steps-towards-programming",
+        "content_hash": "e900715b26a7b25339637eb1b83e7dc2ba5fbcabc6843e6a225845f155e40dc5"
+      }
+    ],
+    "content": {
+      "type": "model_review",
+      "prompt": {
+        "schema_version": "model_code_review_prompt_v1",
+        "requirements": [
+          "After `base` changes to 4, `result` must equal the current `base * 2`."
+        ],
+        "review_scope": [
+          "correctness",
+          "assignment_order",
+          "evidence"
+        ],
+        "evidence_boundary": "prepublication_verified",
+        "learner_instruction": "Review only the final assignment to `result` on line 4 against the stated requirement. If you report a correctness finding, select line 4 alone. Explain the earlier assignments as supporting evidence in the finding text, not as additional finding locations. Include the observed and required values, a reproducible check, and a proposed correction. In your finding text, use both visible variable identifiers `result` and `doubled` exactly as written, as separate words. Explain their relationship in this assignment; descriptive substitutes for either identifier are insufficient for this structured review. Other explanatory wording is unrestricted."
+      },
+      "artifact": {
+        "schema_version": "model_code_review_artifact_v1",
+        "language_id": "python",
+        "runtime_label": "Python 3",
+        "model_code": "base = 3\ndoubled = base * 2\nbase = 4\nresult = doubled",
+        "code_hash": "0561b2febe06180f7294f2b1fb319f44787a77dd57c20934e62cc757ca72498f",
+        "line_count": 4
+      }
+    }
+  },
+  "private": {
+    "schema_version": "learning_item_private_v1",
+    "item_key": "python.variables.stale-derived-remediation",
+    "version": "v3",
+    "kind": "model_review",
+    "content": {
+      "type": "model_review",
+      "rubric": {
+        "schema_version": "model_code_review_rubric_v1",
+        "scenario_kind": "single_correctness_issue",
+        "expected_verdict": "correctness_issue",
+        "expected_findings": [
+          {
+            "finding_key": "stale-doubled",
+            "finding_kind": "correctness",
+            "category": "assignment_order",
+            "severity": "high",
+            "accepted_line_ranges": [
+              {
+                "start_line": 4,
+                "end_line": 4
+              }
+            ],
+            "matcher_tokens": [
+              "result",
+              "doubled"
+            ],
+            "reachability_proof_ids": [
+              "proof-stale-doubled"
+            ],
+            "minimum_token_matches": 2
+          }
+        ],
+        "visible_evidence_ids": [
+          "visible-assignment-trace"
+        ],
+        "coverage_policy": "model_review_coverage_v1",
+        "score_policy_version": "model_code_review_score_v1",
+        "feedback_policy_version": "model_code_review_feedback_v1"
+      },
+      "reference_submission": {
+        "schema_version": "model_code_review_submission_v1",
+        "verdict": "correctness_issue",
+        "findings": [
+          {
+            "client_finding_id": "finding-1",
+            "finding_kind": "correctness",
+            "start_line": 4,
+            "end_line": 4,
+            "category": "assignment_order",
+            "severity": "high",
+            "trigger_condition": "base is reassigned to 4 after doubled was calculated from base 3",
+            "principle": "a derived integer value stays unchanged when the source name is rebound",
+            "impact": "result remains 6 instead of reflecting the current base and producing 8",
+            "validation_method": "test the final variables and assert result == base * 2 == 8",
+            "suggested_fix": "change the final assignment to return base * 2 after the reassignment"
+          }
+        ]
+      },
+      "tests": [
+        {
+          "id": "visible_assignment_trace",
+          "case_type": "visible",
+          "input_json": {
+            "base": 4
+          },
+          "expected_output_json": {
+            "value": 8
+          },
+          "weight": 1,
+          "is_critical": true,
+          "order_index": 0
+        },
+        {
+          "id": "hidden_reassignment_trace",
+          "case_type": "hidden",
+          "input_json": {
+            "base": 4,
+            "reassigned": true
+          },
+          "expected_output_json": {
+            "value": 8
+          },
+          "weight": 1,
+          "is_critical": true,
+          "order_index": 1
+        }
+      ],
+      "score_policy": {
+        "kind": "model_code_review",
+        "policy_version": "model_code_review_score_v1",
+        "threshold": 0.8
+      },
+      "validation_profile_version": "model_review_validation_v1"
+    }
+  }
+}

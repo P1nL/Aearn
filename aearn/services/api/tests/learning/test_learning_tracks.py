@@ -233,12 +233,12 @@ def test_tutor_scope_snapshot_defaults_to_general_and_continuation_is_immutable(
         json=action_payload(
             user_id,
             "scope-first-turn",
-            content="开始变量课程。",
+            # Scope inheritance is general track Q&A, not session admission.
+            content="请说明这条 Python 学习路线。",
             learning_scope={
                 "scope_kind": "learning_track",
                 "learning_track_id": track_id,
                 "task_kind": "lesson_teaching",
-                "knowledge_key": "python.variables",
             },
         ),
     )
@@ -253,7 +253,7 @@ def test_tutor_scope_snapshot_defaults_to_general_and_continuation_is_immutable(
         "scope_kind": "learning_track",
         "learning_track_id": track_id,
         "task_kind": "lesson_teaching",
-        "knowledge_key": "python.variables",
+        "knowledge_key": None,
         "scope_version": 1,
     }
 

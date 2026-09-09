@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from functools import partial
 from uuid import uuid4
 
 import psycopg
@@ -32,6 +33,11 @@ pytestmark = pytest.mark.skipif(not _database_available(), reason="PostgreSQL is
 
 @pytest.fixture()
 def gate_client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
+    # This fixture pairs offline grounding with a fake author, not live evidence.
+    monkeypatch.setattr(
+        lesson_authoring, "_load_evidence_snapshots",
+        partial(lesson_authoring._load_evidence_snapshots, allow_fixtures_for_tests=True),
+    )
     bootstrap_database()
     with connect() as conn:
         run_and_persist_fixture_grounding_reindex(conn)
