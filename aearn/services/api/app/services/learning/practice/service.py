@@ -1,9 +1,11 @@
 """Verified-only service boundary for Lesson Gates and module diagnostics."""
+
 from __future__ import annotations
 
 import hashlib
 import json
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -11,19 +13,47 @@ from psycopg import Connection
 
 from aearn_shared.execution import ExecutionAction, SafeExecutionResultV1
 from app.services.learning.contracts import ExecutionComposition, ExecutionTier
-from app.services.learning.execution_tiers import ExecutionTierInputs, ExecutionTierResolver
+from app.services.learning.execution_tiers import (
+    ExecutionTierInputs,
+    ExecutionTierResolver,
+)
 from app.services.learning.teaching_events import TeachingDomainEventAdapter
-from app.services.learning.practice.contracts import ExerciseAttemptResult, ExerciseAttemptType, ExerciseType
-from app.services.learning.practice.diagnostics import PostgresModuleDiagnosticRepository
-from app.services.learning.practice.model_review_repository import PostgresModelReviewRepository
+from app.services.learning.practice.contracts import (
+    ExerciseAttemptOutcome,
+    ExerciseAttemptResult,
+    ExerciseAttemptType,
+    ExerciseType,
+)
+from app.services.learning.practice.diagnostics import (
+    PostgresModuleDiagnosticRepository,
+)
+from app.services.learning.practice.gate_selection import (
+    gate_binding_compatibility,
+    gate_slot_is_compatible,
+)
+from app.services.learning.practice.model_review_repository import (
+    PostgresModelReviewRepository,
+)
 from app.services.learning.practice.model_review_contracts import (
     ModelReviewArtifactV1,
     ModelReviewAssistanceKind,
     ModelReviewRubricV1,
     parse_model_review_submission,
 )
-from app.services.learning.practice.model_review_scoring import evaluate_model_code_review
-from app.services.learning.practice.policies import evaluate_static_reasoning, score_execution_result
+from app.services.learning.practice.model_review_scoring import (
+    evaluate_model_code_review,
+)
+from app.services.learning.practice.model_review_semantics import (
+    SemanticDecisionOutcome,
+    SemanticReviewReceipt,
+    SemanticSurface,
+    ServerSemanticRequest,
+    combine_deterministic_and_semantic,
+)
+from app.services.learning.practice.policies import (
+    evaluate_static_reasoning,
+    score_execution_result,
+)
 from app.services.learning.practice.repository import (
     PostgresExerciseGateRepository,
     PracticeIdempotencyConflict,
@@ -73,6 +103,15 @@ class _ExecutorAvailability:
         return self._repository.availability_for_runtime(runtime_id).available
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedGateModelReview:
+    request_hash: str
+    normalized_submission: str
+    semantic_request: ServerSemanticRequest
+    deterministic_result: ExerciseAttemptResult
+    replay: dict[str, object] | None
+
+
 class ExerciseGateService:
     def __init__(
         self,
@@ -94,11 +133,17 @@ class ExerciseGateService:
         self._tier_resolver = ExecutionTierResolver()
         self._teaching_events = TeachingDomainEventAdapter(conn)
 
-    def read_gates(self, *, user_id: str, track_id: str, knowledge_key: str) -> dict[str, object]:
+    def read_gates(
+        self, *, user_id: str, track_id: str, knowledge_key: str
+    ) -> dict[str, object]:
         user, track, key = _scope_ids(user_id, track_id, knowledge_key)
         try:
-            rows = self._repository.read_gates(user_id=user, track_id=track, knowledge_key=key)
-            scope = self._repository.read_scope(user_id=user, track_id=track, knowledge_key=key)
+            rows = self._repository.read_gates(
+                user_id=user, track_id=track, knowledge_key=key
+            )
+            scope = self._repository.read_scope(
+                user_id=user, track_id=track, knowledge_key=key
+            )
         except PracticeNotFound as exc:
             raise _not_found() from exc
         return {
@@ -235,6 +280,8 @@ class ExerciseGateService:
         expected_assignment_version: int,
         expected_gate_version: int,
         idempotency_key: str,
+        prepared_model_review: PreparedGateModelReview | None = None,
+        semantic_receipt: SemanticReviewReceipt | None = None,
     ) -> dict[str, object]:
         user, track, key = _scope_ids(user_id, track_id, knowledge_key)
         gate = _stable_key(gate_key, "gate_key")
@@ -248,7 +295,9 @@ class ExerciseGateService:
                 recoverable=False,
             ) from exc
         if kind is ExerciseAttemptType.DIAGNOSTIC_SUBMIT:
-            raise ExerciseGateServiceError("VALIDATION_ERROR", "Gate 不接受诊断提交类型。", status_code=422)
+            raise ExerciseGateServiceError(
+                "VALIDATION_ERROR", "Gate 不接受诊断提交类型。", status_code=422
+            )
         try:
             gate_row = self._repository.read_gate(
                 user_id=user,
@@ -260,7 +309,11 @@ class ExerciseGateService:
             raise _map_repository_error(exc) from exc
         exercise_type = str(gate_row.get("exercise_type") or "")
         if exercise_type == ExerciseType.MODEL_CODE_REVIEW.value:
-            if kind is not ExerciseAttemptType.SUBMIT or submission is not None or review_submission is None:
+            if (
+                kind is not ExerciseAttemptType.SUBMIT
+                or submission is not None
+                or review_submission is None
+            ):
                 raise ExerciseGateServiceError(
                     "MODEL_REVIEW_SUBMISSION_INVALID",
                     "模型代码审核必须提交结构化 review_submission，且不接受 Run 或普通 submission。",
@@ -268,7 +321,9 @@ class ExerciseGateService:
                     recoverable=False,
                 )
             try:
-                artifact = ModelReviewArtifactV1.model_validate(_mapping_dict(gate_row.get("starter_artifact_json")))
+                artifact = ModelReviewArtifactV1.model_validate(
+                    _mapping_dict(gate_row.get("starter_artifact_json"))
+                )
                 parsed_review = parse_model_review_submission(review_submission)
                 parsed_review.validate_line_count(artifact.line_count)
             except (TypeError, ValueError) as exc:
@@ -288,9 +343,95 @@ class ExerciseGateService:
                     recoverable=False,
                 )
             normalized_submission = submission
+        body = {
+            "track_id": track,
+            "knowledge_key": key,
+            "gate_key": gate,
+            "attempt_type": kind.value,
+            "submission_hash": hashlib.sha256(
+                normalized_submission.encode("utf-8")
+            ).hexdigest(),
+            "expected_track_version": expected_track_version,
+            "expected_progress_version": expected_progress_version,
+            "expected_assignment_version": expected_assignment_version,
+            "expected_gate_version": expected_gate_version,
+        }
+        hashed_request = request_hash(body)
+        if exercise_type == ExerciseType.MODEL_CODE_REVIEW.value:
+            if prepared_model_review is None:
+                raise ExerciseGateServiceError(
+                    "MODEL_REVIEW_SEMANTIC_REQUIRED",
+                    "模型代码审核必须通过语义 prepare/finalize 入口。",
+                    status_code=409,
+                )
+            if (
+                prepared_model_review.request_hash != hashed_request
+                or prepared_model_review.normalized_submission != normalized_submission
+            ):
+                raise ExerciseGateServiceError(
+                    "LESSON_GATE_VERSION_CONFLICT",
+                    "模型代码审核 authority 在语义评估期间发生变化。",
+                    status_code=409,
+                )
+            assert review_submission is not None
+            refreshed = self.prepare_model_review_attempt(
+                user_id=user,
+                track_id=track,
+                knowledge_key=key,
+                gate_key=gate,
+                review_submission=review_submission,
+                expected_track_version=expected_track_version,
+                expected_progress_version=expected_progress_version,
+                expected_assignment_version=expected_assignment_version,
+                expected_gate_version=expected_gate_version,
+                idempotency_key=idempotency_key,
+            )
+            if refreshed.replay is not None:
+                return refreshed.replay
+            if (
+                refreshed.request_hash != prepared_model_review.request_hash
+                or refreshed.normalized_submission
+                != prepared_model_review.normalized_submission
+                or refreshed.semantic_request != prepared_model_review.semantic_request
+                or refreshed.deterministic_result.outcome
+                != prepared_model_review.deterministic_result.outcome
+                or refreshed.deterministic_result.score
+                != prepared_model_review.deterministic_result.score
+            ):
+                raise ExerciseGateServiceError(
+                    "LESSON_GATE_VERSION_CONFLICT",
+                    "模型代码审核 authority 在语义评估期间发生变化。",
+                    status_code=409,
+                )
+        compatibility = gate_binding_compatibility(gate_row)
+        if not compatibility.actionable:
+            try:
+                with self._conn.transaction():
+                    replay = self._repository.replay_gate_attempt(
+                        user_id=user,
+                        attempt_type=kind,
+                        idempotency_key=_idempotency_key(idempotency_key),
+                        request_hash=hashed_request,
+                    )
+                    if replay is not None:
+                        response = self._project_attempt(replay)
+                        response["execution_tier"] = ExecutionTier.UNAVAILABLE.value
+                        response["execution_disclosure"] = str(
+                            compatibility.disclosure or "当前 Gate binding 不可用。"
+                        )
+                        return response
+            except PracticeRepositoryError as exc:
+                raise _map_repository_error(exc) from exc
+            raise ExerciseGateServiceError(
+                "LESSON_GATE_NOT_READY",
+                str(compatibility.disclosure or "当前 Gate binding 不可用。"),
+                status_code=409,
+            )
         tier = self._execution_tier(gate_row)
         if tier["execution_tier"] == ExecutionTier.STATIC_ONLY.value:
-            if kind is ExerciseAttemptType.RUN or bool(gate_row.get("execution_required")):
+            if kind is ExerciseAttemptType.RUN or bool(
+                gate_row.get("execution_required")
+            ):
                 raise ExerciseGateServiceError(
                     "EXECUTION_UNAVAILABLE",
                     "此练习只允许确定性静态提交，未运行任何代码。",
@@ -305,17 +446,6 @@ class ExerciseGateService:
                 str(tier["execution_disclosure"]),
                 status_code=503,
             )
-        body = {
-            "track_id": track,
-            "knowledge_key": key,
-            "gate_key": gate,
-            "attempt_type": kind.value,
-            "submission_hash": hashlib.sha256(normalized_submission.encode("utf-8")).hexdigest(),
-            "expected_track_version": expected_track_version,
-            "expected_progress_version": expected_progress_version,
-            "expected_assignment_version": expected_assignment_version,
-            "expected_gate_version": expected_gate_version,
-        }
         try:
             with self._conn.transaction():
                 attempt = self._repository.create_gate_attempt(
@@ -330,15 +460,156 @@ class ExerciseGateService:
                     expected_assignment_version=expected_assignment_version,
                     expected_gate_version=expected_gate_version,
                     idempotency_key=_idempotency_key(idempotency_key),
-                    request_hash=request_hash(body),
+                    request_hash=hashed_request,
                     now=datetime.now(UTC),
                 )
-                response = self._dispatch_attempt(attempt=attempt, submission=normalized_submission, tier=tier)
+                response = self._dispatch_attempt(
+                    attempt=attempt,
+                    submission=normalized_submission,
+                    tier=tier,
+                    prepared_model_review=prepared_model_review,
+                    semantic_receipt=semantic_receipt,
+                )
                 response["execution_tier"] = tier["execution_tier"]
                 response["execution_disclosure"] = tier["execution_disclosure"]
                 return response
         except (PracticeRepositoryError, ExecutionSubmissionError) as exc:
             raise _map_execution_or_repository_error(exc) from exc
+
+    def prepare_model_review_attempt(
+        self,
+        *,
+        user_id: str,
+        track_id: str,
+        knowledge_key: str,
+        gate_key: str,
+        review_submission: Mapping[str, object],
+        expected_track_version: int,
+        expected_progress_version: int,
+        expected_assignment_version: int,
+        expected_gate_version: int,
+        idempotency_key: str,
+    ) -> PreparedGateModelReview:
+        user, track = _uuid(user_id, "user_id"), _uuid(track_id, "track_id")
+        key, gate = (
+            _stable_key(knowledge_key, "knowledge_key"),
+            _stable_key(gate_key, "gate_key"),
+        )
+        gate_row = self._repository.read_gate(
+            user_id=user, track_id=track, knowledge_key=key, gate_key=gate
+        )
+        if (
+            str(gate_row.get("exercise_type") or "")
+            != ExerciseType.MODEL_CODE_REVIEW.value
+        ):
+            raise ExerciseGateServiceError(
+                "MODEL_REVIEW_SUBMISSION_INVALID",
+                "Gate 不是模型代码审核。",
+                status_code=422,
+                recoverable=False,
+            )
+        artifact = ModelReviewArtifactV1.model_validate(
+            _mapping_dict(gate_row.get("starter_artifact_json"))
+        )
+        parsed = parse_model_review_submission(review_submission)
+        parsed.validate_line_count(artifact.line_count)
+        normalized = parsed.canonical_json()
+        body = {
+            "track_id": track,
+            "knowledge_key": key,
+            "gate_key": gate,
+            "attempt_type": ExerciseAttemptType.SUBMIT.value,
+            "submission_hash": hashlib.sha256(normalized.encode("utf-8")).hexdigest(),
+            "expected_track_version": expected_track_version,
+            "expected_progress_version": expected_progress_version,
+            "expected_assignment_version": expected_assignment_version,
+            "expected_gate_version": expected_gate_version,
+        }
+        hashed = request_hash(body)
+        try:
+            replay = self._repository.replay_gate_attempt(
+                user_id=user,
+                attempt_type=ExerciseAttemptType.SUBMIT,
+                idempotency_key=_idempotency_key(idempotency_key),
+                request_hash=hashed,
+            )
+        except PracticeRepositoryError as exc:
+            raise _map_repository_error(exc) from exc
+        if replay is not None:
+            return PreparedGateModelReview(
+                hashed,
+                normalized,
+                ServerSemanticRequest.build(
+                    surface=SemanticSurface.V1,
+                    public_prompt="replay",
+                    public_code=artifact.model_code,
+                    private_rubric={},
+                    untrusted_submission=normalized,
+                ),
+                evaluate_model_code_review(
+                    submission=parsed,
+                    rubric=ModelReviewRubricV1.model_validate(
+                        _mapping_dict(gate_row.get("reference_answer_json"))
+                    ),
+                    line_count=artifact.line_count,
+                    required_capabilities=tuple(
+                        _string_list(gate_row.get("required_capabilities_json"))
+                    ),
+                    assistance_kind=ModelReviewAssistanceKind(
+                        str(gate_row.get("assistance_kind") or "independent")
+                    ),
+                    threshold=_float(
+                        _mapping_dict(gate_row.get("score_policy_json")).get(
+                            "threshold"
+                        )
+                        or gate_row.get("pass_threshold")
+                    ),
+                    now=datetime.now(UTC),
+                ),
+                self._project_attempt(replay),
+            )
+        if (
+            _int(gate_row["track_version"]) != expected_track_version
+            or _int(gate_row["progress_version"]) != expected_progress_version
+            or _int(gate_row["assignment_version"]) != expected_assignment_version
+            or _int(gate_row["gate_version"]) != expected_gate_version
+        ):
+            raise ExerciseGateServiceError(
+                "LESSON_GATE_VERSION_CONFLICT",
+                "Gate authority 已变化。",
+                status_code=409,
+            )
+        rubric = ModelReviewRubricV1.model_validate(
+            _mapping_dict(gate_row.get("reference_answer_json"))
+        )
+        threshold = _float(
+            _mapping_dict(gate_row.get("score_policy_json")).get("threshold")
+            or gate_row.get("pass_threshold")
+        )
+        deterministic = evaluate_model_code_review(
+            submission=parsed,
+            rubric=rubric,
+            line_count=artifact.line_count,
+            required_capabilities=tuple(
+                _string_list(gate_row.get("required_capabilities_json"))
+            ),
+            assistance_kind=ModelReviewAssistanceKind(
+                str(gate_row.get("assistance_kind") or "independent")
+            ),
+            threshold=threshold,
+            now=datetime.now(UTC),
+        )
+        prompt_json = _mapping_dict(gate_row.get("learner_prompt_json"))
+        semantic = ServerSemanticRequest.build(
+            surface=SemanticSurface.V1,
+            public_prompt=json.dumps(prompt_json, ensure_ascii=False, sort_keys=True),
+            public_code=artifact.model_code,
+            private_rubric=rubric.model_dump(mode="json"),
+            untrusted_submission=normalized,
+        )
+        return PreparedGateModelReview(
+            hashed, normalized, semantic, deterministic, None
+        )
 
     def read_attempt(
         self,
@@ -358,15 +629,28 @@ class ExerciseGateService:
                 if (
                     str(row["track_id"]) != track
                     or str(row["knowledge_key"]) != knowledge
-                    or str(row["attempt_type"]) == ExerciseAttemptType.DIAGNOSTIC_SUBMIT.value
+                    or str(row["attempt_type"])
+                    == ExerciseAttemptType.DIAGNOSTIC_SUBMIT.value
                 ):
                     raise PracticeNotFound("Lesson Gate Attempt was not found")
-                if row.get("result_hash") is None and row.get("execution_job_id") is not None:
-                    safe_result = self._execution.read_exercise_safe_result(user_id=user, attempt_id=attempt)
+                if (
+                    row.get("result_hash") is None
+                    and row.get("execution_job_id") is not None
+                ):
+                    safe_result = self._execution.read_exercise_safe_result(
+                        user_id=user, attempt_id=attempt
+                    )
                     if safe_result is not None:
-                        required = self._required_capabilities(str(row["exercise_version_id"]))
-                        result = score_execution_result(safe_result, required_capabilities=required)
-                        if str(row["attempt_type"]) == ExerciseAttemptType.DIAGNOSTIC_SUBMIT.value:
+                        required = self._required_capabilities(
+                            str(row["exercise_version_id"])
+                        )
+                        result = score_execution_result(
+                            safe_result, required_capabilities=required
+                        )
+                        if (
+                            str(row["attempt_type"])
+                            == ExerciseAttemptType.DIAGNOSTIC_SUBMIT.value
+                        ):
                             return self._project_diagnostic(
                                 self._diagnostics.finalize_attempt(
                                     user_id=user,
@@ -489,7 +773,9 @@ class ExerciseGateService:
         module = _stable_key(module_key, "module_key")
         session = _uuid(session_id, "session_id")
         try:
-            row = self._diagnostics.read_session(user_id=user, track_id=track, session_id=session)
+            row = self._diagnostics.read_session(
+                user_id=user, track_id=track, session_id=session
+            )
             if str(row["module_key"]) != module:
                 raise PracticeNotFound("module diagnostic session was not found")
             return self._project_diagnostic(row)
@@ -549,7 +835,9 @@ class ExerciseGateService:
                         str(tier["execution_disclosure"]),
                         status_code=503,
                     )
-                response = self._dispatch_attempt(attempt=attempt, submission=submission, tier=tier)
+                response = self._dispatch_attempt(
+                    attempt=attempt, submission=submission, tier=tier
+                )
                 response["execution_tier"] = tier["execution_tier"]
                 response["execution_disclosure"] = tier["execution_disclosure"]
                 return response
@@ -614,7 +902,19 @@ class ExerciseGateService:
                 knowledge_key=knowledge_key,
                 for_update=True,
             )
-            slot = self._model_reviews.read_slot(scope=scope, gate_key=gate_key, for_update=True)
+            slot = self._model_reviews.read_slot(
+                scope=scope, gate_key=gate_key, for_update=True
+            )
+            slot_scope = dict(slot)
+            slot_scope.update(
+                node_capabilities_json=list(scope.node_capabilities),
+                scope_language_id=scope.language_id,
+                scope_knowledge_key=scope.knowledge_key,
+            )
+            if not gate_slot_is_compatible(slot_scope):
+                raise PracticeNotReady(
+                    "Lesson Gate assessment contract or capability scope is unsupported"
+                )
             if self._model_reviews.is_model_review_slot(slot):
                 run, created = self._model_reviews.create_or_replay_authoring_run(
                     scope=scope,
@@ -625,21 +925,36 @@ class ExerciseGateService:
                 rows = self._repository.read_gates(
                     user_id=user_id, track_id=track_id, knowledge_key=knowledge_key
                 )
-                selected = next((row for row in rows if str(row["gate_key"]) == gate_key), None)
-                if run.state == "completed" and selected is not None and selected.get("binding_id") is not None:
-                    return {"gate": self._project_gate(selected), "status": "ready", "should_dispatch": False}
+                selected = next(
+                    (row for row in rows if str(row["gate_key"]) == gate_key), None
+                )
+                if (
+                    run.state == "completed"
+                    and selected is not None
+                    and selected.get("binding_id") is not None
+                ):
+                    return {
+                        "gate": self._project_gate(selected),
+                        "status": "ready",
+                        "should_dispatch": False,
+                    }
                 if run.state == "failed":
                     return {
-                        "gate": self._project_gate(selected) if selected is not None else None,
+                        "gate": self._project_gate(selected)
+                        if selected is not None
+                        else None,
                         "status": "failed",
                         "review_authoring_run": _project_model_review_authoring(run),
                         "should_dispatch": False,
                     }
                 return {
-                    "gate": self._project_gate(selected) if selected is not None else None,
+                    "gate": self._project_gate(selected)
+                    if selected is not None
+                    else None,
                     "status": "preparing",
                     "review_authoring_run": _project_model_review_authoring(run),
-                    "should_dispatch": created or run.state in {"pending", "claimed", "running", "validating"},
+                    "should_dispatch": created
+                    or run.state in {"pending", "claimed", "running", "validating"},
                 }
             rows = self._repository.prepare_gates(
                 user_id=user_id,
@@ -648,17 +963,22 @@ class ExerciseGateService:
                 expected_track_version=expected_track_version,
                 expected_progress_version=expected_progress_version,
                 now=datetime.now(UTC),
+                gate_key=gate_key,
             )
         except PracticeRepositoryError as exc:
             raise _map_repository_error(exc) from exc
         selected = next((row for row in rows if str(row["gate_key"]) == gate_key), None)
-        if selected is None:
+        if selected is None or selected.get("binding_id") is None:
             raise ExerciseGateServiceError(
                 "LESSON_GATE_NOT_READY",
                 "当前课程 Gate 尚未绑定可用练习。",
                 status_code=409,
             )
-        return {"gate": self._project_gate(selected), "status": "ready", "should_dispatch": False}
+        return {
+            "gate": self._project_gate(selected),
+            "status": "ready",
+            "should_dispatch": False,
+        }
 
     def _dispatch_attempt(
         self,
@@ -666,13 +986,18 @@ class ExerciseGateService:
         attempt: Mapping[str, object],
         submission: str,
         tier: Mapping[str, object],
+        prepared_model_review: PreparedGateModelReview | None = None,
+        semantic_receipt: SemanticReviewReceipt | None = None,
     ) -> dict[str, object]:
         if bool(attempt.get("idempotent_replayed")):
             stored = self._repository.read_attempt(
                 user_id=str(attempt["user_id"]),
                 attempt_id=str(attempt["id"]),
             )
-            if stored.get("result_hash") is not None or stored.get("execution_job_id") is not None:
+            if (
+                stored.get("result_hash") is not None
+                or stored.get("execution_job_id") is not None
+            ):
                 return self._project_attempt(stored)
         if tier["execution_tier"] == ExecutionTier.STATIC_ONLY.value:
             if str(attempt["attempt_type"]) != ExerciseAttemptType.SUBMIT.value:
@@ -681,7 +1006,10 @@ class ExerciseGateService:
                     "静态练习不提供 Run，未运行任何代码。",
                     status_code=503,
                 )
-            if str(attempt.get("exercise_type") or "") == ExerciseType.MODEL_CODE_REVIEW.value:
+            if (
+                str(attempt.get("exercise_type") or "")
+                == ExerciseType.MODEL_CODE_REVIEW.value
+            ):
                 row = self._conn.execute(
                     """
                     SELECT versions.starter_artifact_json, rubrics.reference_answer_json,
@@ -701,23 +1029,47 @@ class ExerciseGateService:
                         status_code=409,
                     )
                 try:
-                    artifact = ModelReviewArtifactV1.model_validate(_mapping_dict(row.get("starter_artifact_json")))
-                    rubric = ModelReviewRubricV1.model_validate(_mapping_dict(row.get("reference_answer_json")))
-                    parsed = parse_model_review_submission(submission)
                     score_policy = _mapping_dict(row.get("score_policy_json"))
-                    threshold = _float(score_policy.get("threshold") or attempt.get("pass_threshold"))
-                    assistance = (
-                        ModelReviewAssistanceKind(str(attempt.get("assistance_kind") or "independent"))
+                    threshold = _float(
+                        score_policy.get("threshold") or attempt.get("pass_threshold")
                     )
-                    result = evaluate_model_code_review(
-                        submission=parsed,
-                        rubric=rubric,
-                        line_count=artifact.line_count,
-                        required_capabilities=tuple(_string_list(attempt.get("required_capabilities_json"))),
-                        assistance_kind=assistance,
-                        threshold=threshold,
-                        now=datetime.now(UTC),
+                    if prepared_model_review is None:
+                        raise ExerciseGateServiceError(
+                            "MODEL_REVIEW_SEMANTIC_REQUIRED",
+                            "模型代码审核缺少已验证语义 receipt。",
+                            status_code=409,
+                        )
+                    decision = combine_deterministic_and_semantic(
+                        request=prepared_model_review.semantic_request,
+                        deterministic_pass=prepared_model_review.deterministic_result.outcome
+                        is ExerciseAttemptOutcome.PASSED,
+                        semantic_receipt=semantic_receipt,
                     )
+                    result = prepared_model_review.deterministic_result
+                    if (
+                        decision.outcome is SemanticDecisionOutcome.FAILED
+                        and result.outcome is ExerciseAttemptOutcome.PASSED
+                    ):
+                        capped = min(result.score, max(0.0, threshold - 0.01))
+                        feedback = dict(result.safe_feedback)
+                        feedback.update(
+                            status="model_code_review_v1_semantic_rejected",
+                            reason_code="semantic_authority_contradiction",
+                            semantic_policy_version="model_code_review_score_v1_semantic_v1",
+                            message="结构证据通过，但语义解释与题目权威不一致。",
+                            next_action="review_variant",
+                        )
+                        result = ExerciseAttemptResult(
+                            outcome=ExerciseAttemptOutcome.FAILED,
+                            score=capped,
+                            safe_feedback=feedback,
+                            capability_scores={
+                                key: min(value, capped)
+                                for key, value in result.capability_scores.items()
+                            },
+                            policy_version=result.policy_version,
+                            terminal_at=result.terminal_at,
+                        )
                 except (TypeError, ValueError) as exc:
                     raise ExerciseGateServiceError(
                         "MODEL_REVIEW_SUBMISSION_INVALID",
@@ -740,16 +1092,28 @@ class ExerciseGateService:
                 """,
                 (attempt["exercise_version_id"],),
             ).fetchone()
-            reference = _mapping_dict(rubric_row.get("reference_answer_json")) if rubric_row is not None else {}
+            reference = (
+                _mapping_dict(rubric_row.get("reference_answer_json"))
+                if rubric_row is not None
+                else {}
+            )
             raw_answers = reference.get("accepted_answers")
             accepted_answers = (
-                tuple(str(item) for item in raw_answers if isinstance(item, str) and item.strip())
+                tuple(
+                    str(item)
+                    for item in raw_answers
+                    if isinstance(item, str) and item.strip()
+                )
                 if isinstance(raw_answers, list | tuple)
                 else ()
             )
             if not accepted_answers:
                 fallback = reference.get("content") or reference.get("answer")
-                accepted_answers = (str(fallback),) if isinstance(fallback, str) and fallback.strip() else ()
+                accepted_answers = (
+                    (str(fallback),)
+                    if isinstance(fallback, str) and fallback.strip()
+                    else ()
+                )
             if not accepted_answers:
                 raise ExerciseGateServiceError(
                     "LESSON_GATE_NOT_READY",
@@ -759,7 +1123,9 @@ class ExerciseGateService:
             result = evaluate_static_reasoning(
                 answer=submission,
                 accepted_answers=accepted_answers,
-                required_capabilities=_string_list(attempt.get("required_capabilities_json")),
+                required_capabilities=_string_list(
+                    attempt.get("required_capabilities_json")
+                ),
                 threshold=_float(attempt.get("pass_threshold")),
                 now=datetime.now(UTC),
             )
@@ -785,7 +1151,11 @@ class ExerciseGateService:
                 action=action,
             )
             response = self._project_attempt(attempt)
-            response.update(status="pending", execution_job_id=job.job_id, execution_job_state=job.state.value)
+            response.update(
+                status="pending",
+                execution_job_id=job.job_id,
+                execution_job_state=job.state.value,
+            )
             return response
         if self._local_runner is None:
             raise ExerciseGateServiceError(
@@ -796,7 +1166,9 @@ class ExerciseGateService:
         safe_result = self._local_runner(attempt, submission)
         result = score_execution_result(
             safe_result,
-            required_capabilities=self._required_capabilities(str(attempt["exercise_version_id"])),
+            required_capabilities=self._required_capabilities(
+                str(attempt["exercise_version_id"])
+            ),
         )
         if str(attempt["attempt_type"]) == ExerciseAttemptType.DIAGNOSTIC_SUBMIT.value:
             return self._project_diagnostic(
@@ -818,12 +1190,22 @@ class ExerciseGateService:
         )
 
     def _finalize_gate_attempt(
-        self, *, user_id: str, attempt_id: str, result: ExerciseAttemptResult, now: datetime,
+        self,
+        *,
+        user_id: str,
+        attempt_id: str,
+        result: ExerciseAttemptResult,
+        now: datetime,
     ) -> dict[str, object]:
         row = self._repository.finalize_gate_attempt(
-            user_id=user_id, attempt_id=attempt_id, result=result, now=now,
+            user_id=user_id,
+            attempt_id=attempt_id,
+            result=result,
+            now=now,
         )
-        self._teaching_events.admit_gate_terminal(user_id=user_id, attempt_id=attempt_id)
+        self._teaching_events.admit_gate_terminal(
+            user_id=user_id, attempt_id=attempt_id
+        )
         return row
 
     def _execution_tier(self, row: Mapping[str, object]) -> dict[str, object]:
@@ -837,7 +1219,10 @@ class ExerciseGateService:
                 executor_availability=_ExecutorAvailability(self._execution),
             ),
         )
-        if bool(row.get("execution_required")) and projection.tier is ExecutionTier.STATIC_ONLY:
+        if (
+            bool(row.get("execution_required"))
+            and projection.tier is ExecutionTier.STATIC_ONLY
+        ):
             return {
                 "execution_tier": ExecutionTier.UNAVAILABLE.value,
                 "execution_disclosure": (
@@ -869,7 +1254,10 @@ class ExerciseGateService:
         if row.get("binding_id") is None or row.get("exercise_version_id") is None:
             status = "unbound"
             authoring = None
-            if str(row.get("assessment_contract_version") or "") == "model_code_review_v1":
+            if (
+                str(row.get("assessment_contract_version") or "")
+                == "model_code_review_v1"
+            ):
                 assignment_id = str(row.get("assignment_id") or "")
                 if assignment_id:
                     run = self._model_reviews.read_authoring_for_slot(
@@ -884,21 +1272,46 @@ class ExerciseGateService:
                 "gate_key": str(row["gate_key"]),
                 "gate_kind": str(row["gate_kind"]),
                 "assessment_contract_version": str(row["assessment_contract_version"]),
-                "required_capabilities": _string_list(row.get("slot_capabilities_json")),
+                "required_capabilities": _string_list(
+                    row.get("slot_capabilities_json")
+                ),
                 "learner_prompt": str(row["learner_prompt"]),
                 "status": status,
-                "allowed_actions": ["prepare"],
+                "allowed_actions": (
+                    ["prepare"] if gate_slot_is_compatible(row) else []
+                ),
                 "exercise": None,
                 "review_authoring_run": authoring,
             }
-        tier = self._execution_tier(row)
+        compatibility = gate_binding_compatibility(row)
+        tier = (
+            self._execution_tier(row)
+            if compatibility.actionable
+            else {
+                "execution_tier": ExecutionTier.UNAVAILABLE.value,
+                "execution_disclosure": str(
+                    compatibility.disclosure or "当前 Gate binding 不可用。"
+                ),
+                "runtime_id": None,
+            }
+        )
         allowed: list[str] = []
-        if tier["execution_tier"] in {
-            ExecutionTier.CONTAINER_VERIFIED.value,
-            ExecutionTier.TEACHING_LOCAL.value,
-        } and str(row.get("gate_state")) != "passed":
+        if (
+            compatibility.actionable
+            and tier["execution_tier"]
+            in {
+                ExecutionTier.CONTAINER_VERIFIED.value,
+                ExecutionTier.TEACHING_LOCAL.value,
+            }
+            and str(row.get("gate_state")) != "passed"
+        ):
             allowed = ["hint", "run", "submit"]
-        elif not bool(row.get("execution_required")) and tier["execution_tier"] == ExecutionTier.STATIC_ONLY.value:
+        elif (
+            compatibility.actionable
+            and not bool(row.get("execution_required"))
+            and tier["execution_tier"] == ExecutionTier.STATIC_ONLY.value
+            and str(row.get("gate_state")) != "passed"
+        ):
             allowed = ["hint", "submit"]
         latest_result = None
         if row.get("latest_outcome") is not None:
@@ -924,7 +1337,9 @@ class ExerciseGateService:
             "gate_version": _int(row.get("gate_version")),
             "attempt_count": _int(row.get("attempt_count")),
             "best_score": _float(row.get("best_score")),
-            "latest_attempt_id": str(row["latest_attempt_id"]) if row.get("latest_attempt_id") else None,
+            "latest_attempt_id": str(row["latest_attempt_id"])
+            if row.get("latest_attempt_id")
+            else None,
             "passed_at": _iso(row.get("passed_at")),
             "execution_tier": tier["execution_tier"],
             "execution_disclosure": tier["execution_disclosure"],
@@ -937,7 +1352,9 @@ class ExerciseGateService:
                 "title": str(row["exercise_title"]),
                 "learner_prompt": _mapping_dict(row.get("learner_prompt_json")),
                 "starter_artifact": _mapping_dict(row.get("starter_artifact_json")),
-                "required_capabilities": _string_list(row.get("required_capabilities_json")),
+                "required_capabilities": _string_list(
+                    row.get("required_capabilities_json")
+                ),
                 "content_hash": str(row["exercise_content_hash"]),
             },
             "latest_result": latest_result,
@@ -977,8 +1394,12 @@ class ExerciseGateService:
             "assistance_kind": str(row.get("assistance_kind") or row["independence"]),
             "accepted_at": _iso(row.get("accepted_at")),
             "status": "terminal" if result else "pending",
-            "execution_job_id": str(row["execution_job_id"]) if row.get("execution_job_id") else None,
-            "execution_job_state": str(row["execution_job_state"]) if row.get("execution_job_state") else None,
+            "execution_job_id": str(row["execution_job_id"])
+            if row.get("execution_job_id")
+            else None,
+            "execution_job_state": str(row["execution_job_state"])
+            if row.get("execution_job_state")
+            else None,
             "result": result,
             "projected": row.get("projected"),
             "route_changed": bool(row.get("route_changed", False)),
@@ -1024,7 +1445,9 @@ class ExerciseGateService:
                         if isinstance(item.get("starter_artifact_json"), Mapping)
                         else {},
                     },
-                    "attempt_id": str(item["attempt_id"]) if item.get("attempt_id") else None,
+                    "attempt_id": str(item["attempt_id"])
+                    if item.get("attempt_id")
+                    else None,
                     "execution_job_state": str(item["execution_job_state"])
                     if item.get("execution_job_state")
                     else None,
@@ -1084,8 +1507,14 @@ class ExerciseGateService:
                 ).fetchone()
                 if existing is not None:
                     if str(existing["request_hash"]) != hashed:
-                        raise PracticeIdempotencyConflict("idempotency key conflicts with stored request")
-                    response = dict(existing["response_json"]) if isinstance(existing["response_json"], Mapping) else {}
+                        raise PracticeIdempotencyConflict(
+                            "idempotency key conflicts with stored request"
+                        )
+                    response = (
+                        dict(existing["response_json"])
+                        if isinstance(existing["response_json"], Mapping)
+                        else {}
+                    )
                     response["idempotent_replayed"] = True
                     return response
                 response = action()
@@ -1096,7 +1525,13 @@ class ExerciseGateService:
                       user_id, operation, idempotency_key, request_hash, response_json
                     ) VALUES (%s, %s, %s, %s, %s::jsonb)
                     """,
-                    (user_id, operation, key, hashed, json.dumps(response, ensure_ascii=False, default=str)),
+                    (
+                        user_id,
+                        operation,
+                        key,
+                        hashed,
+                        json.dumps(response, ensure_ascii=False, default=str),
+                    ),
                 )
                 return response
         except ExerciseGateServiceError:
@@ -1122,7 +1557,11 @@ def _mapping_dict(value: object) -> dict[str, object]:
 
 
 def _scope_ids(user_id: str, track_id: str, knowledge_key: str) -> tuple[str, str, str]:
-    return _uuid(user_id, "user_id"), _uuid(track_id, "track_id"), _stable_key(knowledge_key, "knowledge_key")
+    return (
+        _uuid(user_id, "user_id"),
+        _uuid(track_id, "track_id"),
+        _stable_key(knowledge_key, "knowledge_key"),
+    )
 
 
 def _uuid(value: object, label: str) -> str:
@@ -1218,7 +1657,9 @@ def _map_diagnostic_error(error: PracticeRepositoryError) -> ExerciseGateService
     if isinstance(error, PracticeNotReady):
         cooldown = "cooldown" in str(error).casefold()
         return ExerciseGateServiceError(
-            "MODULE_DIAGNOSTIC_COOLDOWN" if cooldown else "MODULE_DIAGNOSTIC_NOT_ALLOWED",
+            "MODULE_DIAGNOSTIC_COOLDOWN"
+            if cooldown
+            else "MODULE_DIAGNOSTIC_NOT_ALLOWED",
             "模块诊断仍在冷却期内。" if cooldown else "当前模块不允许启动或继续诊断。",
             status_code=409,
         )
@@ -1233,7 +1674,11 @@ def _map_diagnostic_error(error: PracticeRepositoryError) -> ExerciseGateService
 def _map_execution_or_repository_error(error: Exception) -> ExerciseGateServiceError:
     if isinstance(error, PracticeRepositoryError):
         return _map_repository_error(error)
-    code = error.code if isinstance(error, ExecutionSubmissionError) else "execution_unavailable"
+    code = (
+        error.code
+        if isinstance(error, ExecutionSubmissionError)
+        else "execution_unavailable"
+    )
     return ExerciseGateServiceError(
         "EXECUTION_UNAVAILABLE",
         "当前没有可验证的受控执行环境，系统未回退到本机运行。",

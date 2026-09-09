@@ -37,7 +37,7 @@ def test_curated_catalog_compiles_all_minimum_kinds_deterministically() -> None:
 
     assert first == second
     assert first.digest == second.digest
-    assert len(first.items) == 5
+    assert len(first.items) == 16
     assert {item.loaded.source.public.kind.value for item in first.items} == {
         "code",
         "sql",
@@ -51,7 +51,7 @@ def test_curated_catalog_compiles_all_minimum_kinds_deterministically() -> None:
         == REQUIRED_LEARNING_ITEM_VALIDATION_CHECKS
         for item in first.items
     )
-    assert len({item.identity.version.handle for item in first.items}) == 5
+    assert len({item.identity.version.handle for item in first.items}) == 16
 
 
 @pytest.mark.parametrize("name", ["duplicate-key.json", "duplicate-key.yaml"])

@@ -68,6 +68,54 @@ _FORBIDDEN_NESTED_PAYLOAD_FIELD_NAMES = frozenset(
 
 TutorProviderValue: TypeAlias = str | int | float | bool | None | list[str]
 
+_TEACHING_PUBLIC_MESSAGE_MISMATCH = "public_message_mismatch"
+_TEACHING_CHILD_FOCUS_REQUIRED = "child_focus_required"
+_TEACHING_COMPLETION_ACTION_REQUIRED = "completion_action_required"
+_TEACHING_INTERACTION_MODE_MISMATCH = "interaction_mode_mismatch"
+
+_TEACHING_SEMANTIC_REPAIR_GUIDANCE: Mapping[str, str] = {
+    _TEACHING_PUBLIC_MESSAGE_MISMATCH: (
+        "Set action.public_message exactly equal to message.text; author one fresh "
+        "learner-visible message and place that same text in both fields."
+    ),
+    _TEACHING_CHILD_FOCUS_REQUIRED: (
+        "When focus_resolution is push_child, focus_id must be a distinct stable child "
+        "identity rather than objective_id."
+    ),
+    _TEACHING_COMPLETION_ACTION_REQUIRED: (
+        "Use pause_kind=completion_pause only with action=summarize_progress; otherwise "
+        "choose a non-completion pause allowed by current authority."
+    ),
+    _TEACHING_INTERACTION_MODE_MISMATCH: (
+        "For the current v5 contract, provide exactly one interaction object and omit the "
+        "legacy learner_response_mode field. Its mode, intent, and artifact_handle must use "
+        "one exact allowed pairing; artifact mode requires the v3 interaction object."
+    ),
+}
+
+_ALLOWLISTED_TEACHING_VALIDATION_ISSUES: Mapping[str, tuple[str, str]] = {
+    "current teaching_step requires the v3 interaction contract": (
+        "action.interaction",
+        "missing",
+    ),
+    "teaching_step cannot combine v2 and v3 interaction fields": (
+        "action.interaction",
+        _TEACHING_INTERACTION_MODE_MISMATCH,
+    ),
+    "none interaction requires intent=none and no artifact handle": (
+        "action.interaction",
+        _TEACHING_INTERACTION_MODE_MISMATCH,
+    ),
+    "composer interaction requires text_answer and no artifact handle": (
+        "action.interaction",
+        _TEACHING_INTERACTION_MODE_MISMATCH,
+    ),
+    "artifact interaction requires one artifact intent and exact handle": (
+        "action.interaction",
+        _TEACHING_INTERACTION_MODE_MISMATCH,
+    ),
+}
+
 
 @dataclass(frozen=True)
 class TutorDecisionValidationIssue:
@@ -527,6 +575,18 @@ def canonical_tutor_provider_items_example() -> str:
     )
 
 
+def tutor_teaching_enum_contract() -> str:
+    """Publish exact enum vocabulary, not guessed synonyms from a single example."""
+    fields = {
+        "action": TeachingAction, "focus_resolution": TeachingFocusResolution,
+        "pause_kind": TeachingPauseReason, "teaching_moves": TeachingMove,
+        "learner_response_mode / interaction.mode": TeachingLearnerResponseMode,
+        "interaction.intent": TeachingInteractionIntent,
+    }
+    return json.dumps({name: [item.value for item in enum_type] for name, enum_type in fields.items()},
+                      ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
 def canonical_tutor_teaching_step_example() -> str:
     message = (
         "先比较两个 HTML 片段：`<p>你好` 的缺失闭合通常会被浏览器修复；"
@@ -636,6 +696,58 @@ def _canonical_provider_example(
     )
 
 
+def _teaching_step_semantic_issues(
+    *,
+    action: TutorProviderTeachingStepItem,
+    message_text: str,
+) -> tuple[TutorDecisionValidationIssue, ...]:
+    """Project exact server-known semantic failures without candidate values."""
+
+    issues: list[TutorDecisionValidationIssue] = []
+    if action.public_message != message_text:
+        issues.append(
+            TutorDecisionValidationIssue(
+                path="action.public_message",
+                category=_TEACHING_PUBLIC_MESSAGE_MISMATCH,
+            )
+        )
+    if (
+        action.focus_resolution is TeachingFocusResolution.PUSH_CHILD
+        and action.focus_id == action.objective_id
+    ):
+        issues.append(
+            TutorDecisionValidationIssue(
+                path="action.focus_id",
+                category=_TEACHING_CHILD_FOCUS_REQUIRED,
+            )
+        )
+    if (
+        action.pause_kind is TeachingPauseReason.COMPLETION_PAUSE
+        and action.action is not TeachingAction.SUMMARIZE_PROGRESS
+    ):
+        issues.append(
+            TutorDecisionValidationIssue(
+                path="action.pause_kind",
+                category=_TEACHING_COMPLETION_ACTION_REQUIRED,
+            )
+        )
+    if (
+        action.interaction is not None
+        and action.learner_response_mode is not None
+        and action.learner_response_mode is not action.interaction.mode
+    ) or (
+        action.interaction is None
+        and action.learner_response_mode is TeachingLearnerResponseMode.ARTIFACT
+    ):
+        issues.append(
+            TutorDecisionValidationIssue(
+                path="action.interaction",
+                category=_TEACHING_INTERACTION_MODE_MISMATCH,
+            )
+        )
+    return tuple(issues)
+
+
 def parse_tutor_provider_items(
     payload: Mapping[str, object],
     *,
@@ -692,14 +804,29 @@ def parse_tutor_provider_items(
                 ),
             )
         elif isinstance(action, TutorProviderTeachingStepItem):
-            if action.public_message != message.text:
-                raise ValueError("teaching action message must match agent message text")
+            semantic_issues = _teaching_step_semantic_issues(
+                action=action,
+                message_text=message.text,
+            )
+            if semantic_issues:
+                raise TutorDecisionValidationError(
+                    "Tutor provider teaching step failed authoritative semantics",
+                    issues=semantic_issues,
+                )
             teaching_step = TeachingStepDecision(
-                action=action.action, objective_id=action.objective_id, focus_id=action.focus_id,
-                source_handles=tuple(action.source_handles), public_message=action.public_message,
-                focus_resolution=action.focus_resolution, pause_kind=action.pause_kind,
+                action=action.action,
+                objective_id=action.objective_id,
+                focus_id=action.focus_id,
+                source_handles=tuple(action.source_handles),
+                public_message=action.public_message,
+                focus_resolution=action.focus_resolution,
+                pause_kind=action.pause_kind,
                 escalation_hint=action.escalation_hint,
-                teaching_moves=(tuple(action.teaching_moves) if action.teaching_moves is not None else None),
+                teaching_moves=(
+                    tuple(action.teaching_moves)
+                    if action.teaching_moves is not None
+                    else None
+                ),
                 learner_response_mode=action.learner_response_mode,
                 interaction=action.interaction,
             )
@@ -752,6 +879,16 @@ def build_tutor_replacement_message(
         ", ".join(f"{issue.path}:{issue.category}" for issue in issues[:8])
         or "root:invalid_contract"
     )
+    repair_guidance = " ".join(
+        dict.fromkeys(
+            guidance
+            for issue in issues[:8]
+            if (guidance := _TEACHING_SEMANTIC_REPAIR_GUIDANCE.get(issue.category))
+        )
+    )
+    repair_guidance_text = (
+        f" Exact repair guidance: {repair_guidance}" if repair_guidance else ""
+    )
     return (
         "Your previous candidate was rejected. Generate a fresh replacement; do not quote or patch the earlier output. "
         "Return exactly one JSON object and no Markdown or explanation. "
@@ -773,7 +910,7 @@ def build_tutor_replacement_message(
         "language ids, high or medium confidence, and one closed reason code. Semantic candidates always require learner "
         "confirmation. If evidence is insufficient, use clarification and omit planning_intent_hint. "
         "The server owns request_id, effect_id, expected_input_revision, checkpoints, and terminal state; never emit them. "
-        f"Validation issues (safe field paths and categories only): {issue_text}. "
+        f"Validation issues (safe field paths and categories only): {issue_text}.{repair_guidance_text} "
         f"Minimal valid direct-reply example: {canonical_tutor_provider_items_example()} "
         f"Valid teaching-step example: {canonical_tutor_teaching_step_example()} "
         f"Valid continuation branch examples: {canonical_tutor_wait_for_input_examples()} "
@@ -790,6 +927,10 @@ def validation_diagnostic_code(issues: Sequence[TutorDecisionValidationIssue]) -
         "invalid_type": "INVALID_TYPE",
         "invalid_action": "INVALID_ACTION",
         "invalid_value": "INVALID_VALUE",
+        _TEACHING_PUBLIC_MESSAGE_MISMATCH: "PUBLIC_MESSAGE_MISMATCH",
+        _TEACHING_CHILD_FOCUS_REQUIRED: "CHILD_FOCUS_REQUIRED",
+        _TEACHING_COMPLETION_ACTION_REQUIRED: "COMPLETION_ACTION_REQUIRED",
+        _TEACHING_INTERACTION_MODE_MISMATCH: "INTERACTION_MODE_MISMATCH",
     }.get(category, "INVALID")
     return f"TUTOR_PROVIDER_DECISION_{suffix}"
 
@@ -816,13 +957,33 @@ def _server_action_id(*, run: TutorRunSnapshot, prefix: str) -> str:
     return f"{prefix}-{digest}"
 
 
+def _allowlisted_teaching_validation_issue(
+    error: Mapping[str, object],
+) -> TutorDecisionValidationIssue | None:
+    context = error.get("ctx")
+    if not isinstance(context, Mapping):
+        return None
+    validator_error = context.get("error")
+    if type(validator_error) is not ValueError:
+        return None
+    classification = _ALLOWLISTED_TEACHING_VALIDATION_ISSUES.get(str(validator_error))
+    if classification is None:
+        return None
+    path, category = classification
+    return TutorDecisionValidationIssue(path=path, category=category)
+
+
 def _sanitize_validation_issues(
     exc: ValidationError,
 ) -> tuple[TutorDecisionValidationIssue, ...]:
     issues: list[TutorDecisionValidationIssue] = []
     for error in exc.errors(
-        include_url=False, include_context=False, include_input=False
+        include_url=False, include_context=True, include_input=False
     )[:8]:
+        allowlisted_issue = _allowlisted_teaching_validation_issue(error)
+        if allowlisted_issue is not None:
+            issues.append(allowlisted_issue)
+            continue
         raw_location = error.get("loc", ())
         path = ".".join(str(part) for part in raw_location if str(part)) or "root"
         raw_type = str(error.get("type", ""))

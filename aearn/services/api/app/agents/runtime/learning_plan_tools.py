@@ -91,6 +91,7 @@ class LearningPlanRuntimeToolRegistry(RuntimeToolRegistry):
         self._direction_protocol_invalid = False
         self._intake_mode = False
         self._draft_completed = False
+        self._order_repair_used = False
         self.results: list[LearningPlanAgentToolResult] = []
 
     @classmethod
@@ -255,7 +256,9 @@ class LearningPlanRuntimeToolRegistry(RuntimeToolRegistry):
         if self._clock() - self._started_at > self._budget.max_wall_seconds:
             self._direction_protocol_invalid = True
             return self._runtime_result(_fatal("tool_deadline_exhausted"))
-        if self._calls >= self._budget.max_calls:
+        # One wrong-order attempt consumes a repair, not a read/action slot.
+        # Total physical calls remain bounded by max_calls + one granted repair.
+        if self._calls >= self._budget.max_calls + int(self._order_repair_used):
             self._direction_protocol_invalid = True
             return self._runtime_result(_fatal("tool_call_budget_exhausted"))
         self._calls += 1
@@ -324,6 +327,21 @@ class LearningPlanRuntimeToolRegistry(RuntimeToolRegistry):
             self._planning_context_result = result
             return result
         if not self._model_context_read:
+            if (
+                not self._direction_protocol_invalid
+                and not self._order_repair_used
+                and self._repairs < self._budget.max_repairs
+            ):
+                self._order_repair_used = True
+                return LearningPlanAgentToolResult(
+                    status=LearningPlanToolStatus.REPAIRABLE_INVALID,
+                    code="planning_direction_context_read_required",
+                    issues=(LearningPlanToolIssue(
+                        path="direction_action",
+                        code="context_read_required",
+                        hint="Call aearn_planning_context_read without direction_action first, then submit exactly one direction_action.",
+                    ),),
+                )
             self._direction_protocol_invalid = True
             return _fatal("planning_direction_context_read_required")
         if self._accepted_direction_action is not None:

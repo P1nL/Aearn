@@ -14,6 +14,7 @@ from psycopg import Connection
 from app.services.learning.item_bank.contracts import (
     LEARNING_ITEM_COMPILER_VERSION,
     LearningItemDifficulty,
+    LearningItemKind,
     LearningItemPurpose,
     LearningItemSourceV1,
     LearningItemValidationReceiptV1,
@@ -386,8 +387,11 @@ class PostgresLearningItemBankRepository:
         *,
         knowledge_key: str,
         purpose: LearningItemPurpose | str | None = None,
+        language_id: str | None = None,
+        kinds: Sequence[LearningItemKind | str] = (),
         difficulties: Sequence[LearningItemDifficulty | str] = (),
         available_capabilities: Sequence[str] | None = None,
+        exact_capabilities: bool = False,
         unused_handles: Sequence[str] = (),
         required_handles: Sequence[str] = (),
         excluded_purposes: Sequence[LearningItemPurpose | str] = (),
@@ -397,6 +401,14 @@ class PostgresLearningItemBankRepository:
         if not 1 <= limit <= 8:
             raise ValueError("candidate limit must be between 1 and 8")
         normalized_purpose = LearningItemPurpose(purpose).value if purpose is not None else None
+        normalized_language = (
+            stable_key(language_id, label="candidate language")
+            if language_id is not None
+            else None
+        )
+        kind_values = tuple(LearningItemKind(item).value for item in kinds)
+        if len(kind_values) != len(set(kind_values)):
+            raise ValueError("candidate kinds must be unique")
         difficulty_values = tuple(LearningItemDifficulty(item).value for item in difficulties)
         if available_capabilities is None:
             return ()
@@ -431,8 +443,11 @@ class PostgresLearningItemBankRepository:
             ) AS publication ON publication.state='published'
             WHERE versions.knowledge_key=%s
               AND (%s::text IS NULL OR versions.purpose=%s)
+              AND (%s::text IS NULL OR versions.language_id=%s)
+              AND (cardinality(%s::text[]) = 0 OR versions.item_kind=ANY(%s::text[]))
               AND (cardinality(%s::text[]) = 0 OR versions.difficulty=ANY(%s::text[]))
               AND versions.required_capabilities_json <@ %s::jsonb
+              AND (NOT %s OR %s::jsonb <@ versions.required_capabilities_json)
               AND (cardinality(%s::text[]) = 0 OR NOT versions.handle=ANY(%s::text[]))
               AND (cardinality(%s::text[]) = 0 OR versions.handle=ANY(%s::text[]))
               AND (cardinality(%s::text[]) = 0 OR NOT versions.purpose=ANY(%s::text[]))
@@ -443,8 +458,14 @@ class PostgresLearningItemBankRepository:
                 key,
                 normalized_purpose,
                 normalized_purpose,
+                normalized_language,
+                normalized_language,
+                list(kind_values),
+                list(kind_values),
                 list(difficulty_values),
                 list(difficulty_values),
+                canonical_json(list(capabilities)),
+                exact_capabilities,
                 canonical_json(list(capabilities)),
                 list(excluded),
                 list(excluded),

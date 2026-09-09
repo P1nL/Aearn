@@ -94,11 +94,13 @@ def test_capability_registry_uses_exact_deepseek_evidence_and_conservative_unkno
     deepseek = Settings(llm_type="deepseek", deepseek_model="deepseek-v4-flash")
     exact = resolve_tutor_provider_context_capability(deepseek)
 
-    assert exact.context_window_tokens == 1_000_000
-    assert exact.max_output_reserve_tokens == 384_000
-    assert exact.input_hard_limit == 616_000
-    assert exact.maximum_dynamic_target_tokens == 384_000
-    assert exact.capability_version == "deepseek-v4-flash-responses-v1"
+    assert deepseek.tutor_deepseek_v4_flash_context_window_tokens == 1_000_000
+    assert deepseek.tutor_deepseek_v4_flash_input_limit_tokens == 131_072
+    assert exact.context_window_tokens == 192_512
+    assert exact.max_output_reserve_tokens == 61_440
+    assert exact.input_hard_limit == 131_072
+    assert exact.maximum_dynamic_target_tokens == 130_688
+    assert exact.capability_version == "deepseek-v4-flash-responses-v2"
 
     unknown = resolve_tutor_provider_context_capability(
         Settings(llm_type="deepseek", deepseek_model="deepseek-v4-flash-preview")

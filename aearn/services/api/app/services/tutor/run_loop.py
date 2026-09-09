@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import replace
 from typing import Final
 
@@ -14,6 +15,7 @@ from app.agents.harness.contracts import (
     TutorCheckpointReason,
     TutorCompactionTrigger,
     TutorContextError,
+    TutorContextInput,
     TutorContextSection,
     TutorContextSelection,
     TutorDecision,
@@ -30,6 +32,8 @@ from app.agents.harness.contracts import (
     empty_checkpoint_metadata,
     terminal_status,
 )
+from app.core.safe_diagnostics import log_safe_event, safe_diagnostic_identifier
+from app.agents.harness.skill_catalog import SkillCatalogSnapshot
 from app.services.learning.teaching_contracts import TeachingStepDecision
 from app.services.tutor.public_thinking_stream import TutorPublicThinkingSink
 from app.services.tutor.ports import (
@@ -45,6 +49,9 @@ from app.services.tutor.ports import (
     TutorProviderGateway,
     TutorRunStore,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 _POLICY_BLOCKED: Final[str] = "blocked_policy"
@@ -268,6 +275,7 @@ class TutorRunLoop:
 
                 gate_result = self._decision_gate.validate(run=snapshot, decision=decision)
                 if gate_result.status is TutorDecisionGateStatus.DENIED:
+                    _log_gate_denial(snapshot, decision, gate_result.diagnostic_code, context_input, self._decision_gate)
                     if gate_result.diagnostic_code == "confirmed_question_reasked":
                         metadata = replace(
                             metadata,
@@ -850,3 +858,52 @@ def _missing_run_result(run_id: str) -> TutorRunResult:
         terminal_outcome=TutorTerminalOutcome.FAILED,
         diagnostic_code="run_not_found",
     )
+
+
+def _log_gate_denial(
+    run: TutorRunSnapshot, decision: TutorDecision, code: str | None,
+    context: TutorContextInput, gate: TutorDecisionGate,
+) -> None:
+    # Read only the concrete gate's frozen catalog, never call selection storage
+    # or serialize gate/context objects. This avoids new persistence contracts.
+    catalog: SkillCatalogSnapshot | None = None
+    candidate: object = gate
+    # Planning/teaching decorators wrap the catalog gate; bounded read-only
+    # traversal preserves the exact snapshot rather than recompiling a newer one.
+    for _ in range(4):
+        frozen_catalog = getattr(candidate, "_catalog", None)
+        if isinstance(frozen_catalog, SkillCatalogSnapshot):
+            catalog = frozen_catalog
+            break
+        candidate = getattr(candidate, "_base", None)
+    fields: dict[str, object] = {
+        "stage": "decision_gate", "code": code or _POLICY_BLOCKED,
+        "run_id": run.run_id, "conversation_id": run.conversation_id,
+        "input_revision": run.input_revision, "model_call_count": run.model_call_count,
+        "catalog_digest": catalog.digest if catalog else None,
+    }
+    for source in context.system_descriptors:
+        if source.source_id.startswith("catalog:selected:"):
+            fields["skill_reference"] = source.source_id.removeprefix("catalog:selected:")
+            break
+    actions: list[tuple[str, str, str, bool]] = []
+    for index, request in enumerate(decision.capability_requests):
+        actions.append(("capability", f"capability_requests[{index}].capability_id", request.capability_id,
+                        catalog is not None and catalog.capability(request.capability_id) is not None))
+    for index, proposal in enumerate(decision.effect_proposals):
+        actions.append(("effect", f"effect_proposals[{index}].effect_type", proposal.effect_type,
+                        catalog is not None and catalog.effect(proposal.effect_type) is not None))
+    for index, reference in enumerate(decision.skill_references):
+        actions.append(("skill", f"skill_references[{index}]", f"{reference.skill_id}@{reference.version}",
+                        catalog is not None and catalog.resolve_skill(reference.skill_id, reference.version) is not None))
+    if decision.teaching_step is not None:
+        actions.append(("teaching_step", "teaching_step.action", decision.teaching_step.action, True))
+    if not actions:
+        actions.append(("decision", "decision", "no_capability_or_effect", True))
+    # Each entry describes an action in the denied decision, not an inferred
+    # offending payload value. Unknown identifiers are fingerprinted, never echoed.
+    for category, path, identifier, trusted in actions:
+        log_safe_event(
+            logger, "tutor_decision_denied", level=logging.WARNING, exception=None, **fields, action_category=category,
+            field_path=path, action_identifier=safe_diagnostic_identifier(identifier, trusted=trusted),
+        )

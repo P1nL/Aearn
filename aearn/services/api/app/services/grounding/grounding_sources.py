@@ -40,7 +40,11 @@ GROUNDING_SOURCES: tuple[GroundingSource, ...] = (
         seed_policy="seed_urls_only",
         content_type="tutorial",
         allowlisted_domains=("docs.python.org",),
-        seed_urls=("https://docs.python.org/3/tutorial/index.html",),
+        seed_urls=(
+            "https://docs.python.org/3/tutorial/index.html",
+            "https://docs.python.org/3/tutorial/introduction.html",
+            "https://docs.python.org/3/tutorial/controlflow.html",
+        ),
         topic_tags=("basics", "control-flow", "functions", "modules", "io", "errors", "classes"),
         source_version_label="python-3",
         source_version_kind="rolling",

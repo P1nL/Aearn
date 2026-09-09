@@ -404,9 +404,13 @@ async def test_postgres_context_exposes_bounded_language_candidates_and_accepts_
             )
         )
         premature_payload = json.loads(premature.content)
-        assert premature.success is False
+        # Transport success supplies one safe protocol repair, not hint authority.
+        assert premature.success is True
+        assert premature_payload["status"] == "repairable_invalid"
         assert premature_payload["code"] == "planning_direction_context_read_required"
         assert premature_registry.planning_intent_hint is None
+        assert premature_registry.planning_direction_action is None
+        assert premature_registry.repair_count == 1
 
         initial = await registry.invoke(
             _call(PLANNING_CONTEXT_TOOL_NAME, {}, call_id="language-context")

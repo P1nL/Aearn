@@ -319,7 +319,8 @@ def test_gate_export_reset_and_cutover_inventory_redact_private_submission(lesso
     ).fetchone() is not None
 
 
-def test_static_only_gate_submit_is_deterministic_and_run_is_hidden_server_side(lesson_repo) -> None:
+@pytest.mark.parametrize("via_http", [False, True])
+def test_static_only_gate_submit_is_deterministic_and_run_is_hidden_server_side(lesson_repo, monkeypatch, via_http) -> None:
     conn, lesson_repository, user_id, track_id, snapshot = lesson_repo
     published = _publish(conn, lesson_repository, user_id, track_id, snapshot, action="initial")
     started = lesson_repository.start_assignment(
@@ -435,23 +436,51 @@ def test_static_only_gate_submit_is_deterministic_and_run_is_hidden_server_side(
         (user_id,),
     ).fetchone() == {"count": 0}
 
-    submitted = service.attempt_gate(
-        user_id=user_id,
-        track_id=track_id,
-        knowledge_key="python.variables",
-        gate_key="python.variables.basic",
-        attempt_type="submit",
-        submission=" IMMUTABLE ",
-        expected_track_version=1,
-        expected_progress_version=int(started["progress_version"]),
-        expected_assignment_version=1,
-        expected_gate_version=int(gate["gate_version"]),
-        idempotency_key=f"static-submit-{uuid4()}",
-    )
-    conn.commit()
+    if via_http:
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from app.routes import exercise_gates
+        from app.db.connection import connect
+        # This case isolates HTTP transaction ownership, not cutover admission.
+        monkeypatch.setattr(exercise_gates, "_require_verified", lambda *_args: None)
+        app = FastAPI()
+        app.include_router(exercise_gates.router)
+        with TestClient(app) as client:
+            response = client.post(
+                f"/api/learning-tracks/{track_id}/lessons/python.variables/gates/python.variables.basic/attempts",
+                json={"user_id": user_id, "attempt_type": "submit", "submission": " IMMUTABLE ",
+                      "expected_track_version": 1, "expected_progress_version": int(started["progress_version"]),
+                      "expected_assignment_version": 1, "expected_gate_version": int(gate["gate_version"]),
+                      "client_action_id": f"static-http-submit-{uuid4()}"},
+            )
+        assert response.status_code == 200, response.text
+        submitted = response.json()
+        # A different connection must see the durable result without conn.commit().
+        with connect() as observer:
+            stored = observer.execute(
+                "SELECT outcome FROM tutor_exercise_attempt_results WHERE attempt_id = %s",
+                (submitted["attempt_id"],),
+            ).fetchone()
+            assert stored == {"outcome": "passed"}
+    else:
+        submitted = service.attempt_gate(
+            user_id=user_id, track_id=track_id, knowledge_key="python.variables",
+            gate_key="python.variables.basic", attempt_type="submit", submission=" IMMUTABLE ",
+            expected_track_version=1, expected_progress_version=int(started["progress_version"]),
+            expected_assignment_version=1, expected_gate_version=int(gate["gate_version"]),
+            idempotency_key=f"static-submit-{uuid4()}",
+        )
+        conn.commit()
     assert submitted["status"] == "terminal"
     assert submitted["result"]["outcome"] == "passed"
     assert submitted["result"]["safe_feedback"]["execution_claim"] == "not_run"
     assert submitted["execution_tier"] == "static_only"
+    passed_gate = service.read_gates(
+        user_id=user_id,
+        track_id=track_id,
+        knowledge_key="python.variables",
+    )["items"][0]
+    assert passed_gate["status"] == "passed"
+    assert passed_gate["allowed_actions"] == []
     reset_user_data(conn, user_id)
     conn.commit()

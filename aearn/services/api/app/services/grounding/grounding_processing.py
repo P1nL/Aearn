@@ -5,7 +5,8 @@ import html.parser
 from dataclasses import dataclass
 from datetime import datetime
 
-from app.services.grounding.grounding_fetcher import GroundingFetchDocument
+from app.services.grounding.grounding_fetcher import GroundingFetchDocument, _url_is_allowlisted
+from app.services.grounding.grounding_provenance import GroundingProvenance
 from app.services.grounding.grounding_sources import SourceContentType, SourceTrustTier, SourceVersionKind, get_grounding_source
 
 
@@ -33,6 +34,7 @@ class GroundingChunk:
     source_version_label: str = "unversioned"
     source_version_kind: SourceVersionKind = "rolling"
     document_content_hash: str = ""
+    provenance: GroundingProvenance = GroundingProvenance()
 
 
 @dataclass(slots=True)
@@ -137,6 +139,15 @@ def clean_and_chunk_document(document: GroundingFetchDocument, *, max_chars: int
     if source is None or max_chars <= 0:
         return ()
 
+    provenance = document.provenance
+    if (
+        provenance.source_id != document.source_id
+        or provenance.requested_url != document.canonical_url
+        or provenance.final_url != document.final_url
+        or provenance.document_content_hash != document.content_hash
+        or document.content_hash != _sha256(document.raw_content)
+    ):
+        provenance = GroundingProvenance()
     parser = _DocumentationHTMLParser()
     parser.feed(document.raw_content)
 
@@ -164,9 +175,36 @@ def clean_and_chunk_document(document: GroundingFetchDocument, *, max_chars: int
                     source_version_label=document.source_version_label,
                     source_version_kind=document.source_version_kind,
                     document_content_hash=document.content_hash,
+                    provenance=provenance,
                 ),
             )
     return tuple(chunks)
+
+
+def is_admissible_lesson_source(chunk: GroundingChunk, *, allow_fixtures_for_tests: bool = False) -> bool:
+    """Admission for new managed lessons only; never relabel historical evidence."""
+    allowed = ("http_fetch", "fixture") if allow_fixtures_for_tests else ("http_fetch",)
+    provenance = chunk.provenance
+    source = get_grounding_source(chunk.source_id)
+    return (
+        provenance.kind in allowed
+        and source is not None
+        and source.language_id == chunk.language_id
+        and source.trust_tier in ("official", "trusted_de_facto")
+        and source.trust_tier == chunk.source_trust_tier
+        and source.content_type == chunk.source_type
+        and provenance.source_id == chunk.source_id
+        and provenance.requested_url == chunk.canonical_url
+        and _url_is_allowlisted(chunk.canonical_url, source)
+        and _url_is_allowlisted(provenance.final_url, source)
+        and provenance.document_content_hash == chunk.document_content_hash
+        and len(chunk.document_content_hash) == 64
+        and all(char in "0123456789abcdef" for char in chunk.document_content_hash)
+        and chunk.document_content_hash != "0" * 64
+        and bool(chunk.text.strip())
+        and chunk.content_hash == _sha256(chunk.text)
+        and chunk.fetched_at.tzinfo is not None
+    )
 
 
 def _split_text(text: str, *, max_chars: int) -> tuple[str, ...]:

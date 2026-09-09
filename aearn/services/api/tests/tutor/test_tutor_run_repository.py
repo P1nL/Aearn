@@ -600,7 +600,7 @@ def test_context_budget_policy_round_trips_and_participates_in_the_policy_finger
             max_model_calls=3,
             max_capability_calls=2,
             max_effects=2,
-            context_token_budget=616_000,
+            context_token_budget=131_072,
             context_budget_policy=budget_policy,
         ),
         origin="interactive",
@@ -621,7 +621,7 @@ def test_context_budget_policy_round_trips_and_participates_in_the_policy_finger
     assert isinstance(stored_budget, dict)
     assert stored_budget["estimator_version"] == "utf8_bytes_v1"
     assert stored_budget["policy_version"] == "tutor_context_budget_v1"
-    assert stored_budget["capability"]["capability_version"] == "deepseek-v4-flash-responses-v1"
+    assert stored_budget["capability"]["capability_version"] == "deepseek-v4-flash-responses-v2"
     changed_policy = replace(budget_policy, estimator_version="utf8_bytes_v2")
     changed_conversation_id = fixture.repository.create_conversation(user_id=fixture.user_id)
     changed_run = fixture.repository.create_run(

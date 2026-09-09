@@ -70,6 +70,12 @@ review authority instead uses `tutor_review_*` tables and track-scoped
 to protect hidden tests, source attribution, provider failure mapping, and
 learner content redaction.
 
+## 2026-09-08 local repair boundary
+
+New managed lessons require verified HTTP-ingestion provenance rather than fixture/unknown metadata. Knowledge-bound teaching input requires prepared session authority before admission. Failed Harness turns now have deterministic safe error history, and runtime diagnostics are message-rendered structured records. Planning intake separates message/reasoning budgets and confirms underlying stop rather than treating an interrupt ACK as completion. See the updated API, local setup, runtime and acceptance documents above.
+
+These changes do not constitute full real-model artifact acceptance: the retained Python test-course authoring attempts still returned incomplete provider responses at their bounded output limit. The ineffective model-output-policy experiment was reverted; no output cap, publication gate or retry count was relaxed. Offline pass counts and the two reproduced pre-existing eval-baseline failures are recorded in the release-readiness ledger.
+
 ## Documentation maintenance rules
 
 1. Treat route registration, current code, schema, tests, and configuration as

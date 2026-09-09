@@ -127,6 +127,9 @@ class RuntimeTurnRequest:
     effort: Literal["low"] | None = None
     timeout_seconds: float | None = None
     max_visible_text_chars: int | None = None
+    # Opt-in split: visible caps messages; reasoning includes raw and summary.
+    # None preserves the legacy aggregate request cap. Global aggregate always applies.
+    max_reasoning_text_chars: int | None = None
 
     def __post_init__(self) -> None:
         if not self.input or len(self.input) > 20:
@@ -140,6 +143,11 @@ class RuntimeTurnRequest:
             and not 256 <= self.max_visible_text_chars <= 8_000_000
         ):
             raise ValueError("runtime turn visible text budget is invalid")
+        if (
+            self.max_reasoning_text_chars is not None
+            and not 256 <= self.max_reasoning_text_chars <= 8_000_000
+        ):
+            raise ValueError("runtime turn reasoning text budget is invalid")
 
 @dataclass(frozen=True, slots=True)
 class RuntimeEvent:
@@ -211,6 +219,13 @@ class RuntimeTurnMetrics:
     visible_text_chars: int = 0
     duration_ms: int = 0
     flush_reasons: tuple[tuple[str, int], ...] = ()
+    message_text_chars: int = 0
+    reasoning_text_chars: int = 0
+    effective_max_visible_text_chars: int = 0
+    effective_max_reasoning_text_chars: int = 0
+    effective_max_total_text_chars: int = 0
+    effective_timeout_seconds: float = 0
+    termination_reason: str = "natural_terminal"
 
 
 @dataclass(frozen=True, slots=True)

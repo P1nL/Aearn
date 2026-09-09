@@ -7,9 +7,17 @@ import type {
   ModelCodeReviewSubmission,
   ModelReviewEvidenceResponse,
 } from "../../../types";
+import { SafeMarkdown } from "../../tutor/artifacts/SafeMarkdown";
 import { ModelCodeReviewPanel } from "./ModelCodeReviewPanel";
 
 type GateBusyAction = "prepare" | "hint" | "run" | "submit" | "evidence" | "poll" | null;
+
+type KnowledgeCheckOption = { optionId: string; label: string };
+type SupportedKnowledgePrompt = {
+  promptMarkdown: string;
+  responseKind: "single_select" | "short_text" | "prediction";
+  options: KnowledgeCheckOption[];
+};
 
 type LessonGatePanelProps = {
   block: LessonExerciseGateBlock;
@@ -98,8 +106,18 @@ export function LessonGatePanel({
 
   const result = attempt?.result ?? gate.latest_result;
   const historyOnly = !attempt && gate.latest_result !== null;
-  const showEditor = exercise.exercise_type !== "static_code_reasoning" || gate.allowed_actions.includes("submit");
-  const isUnavailable = gate.execution_tier === "unavailable";
+  const knowledgePromptCandidate = exercise.exercise_type === "static_code_reasoning"
+    && (exercise.learner_prompt.schema_version === "knowledge_check_prompt_v1"
+      || exercise.starter_artifact.schema_version === "knowledge_check_artifact_v1");
+  const knowledgePrompt = knowledgePromptCandidate
+    ? supportedKnowledgePrompt(exercise.learner_prompt, exercise.starter_artifact)
+    : null;
+  const knowledgePromptMismatch = knowledgePromptCandidate && knowledgePrompt === null;
+  const responseAuthorized = gate.allowed_actions.includes("run") || gate.allowed_actions.includes("submit");
+  const editorDisabled = gate.status === "passed" || busyAction !== null || !responseAuthorized;
+  const showGenericEditor = !knowledgePromptCandidate
+    && (exercise.exercise_type !== "static_code_reasoning" || gate.allowed_actions.includes("submit"));
+  const showGateActions = !knowledgePromptMismatch && gate.allowed_actions.some((action) => action === "hint" || action === "run" || action === "submit");
 
   return (
     <section className="lesson-block lesson-gate lesson-gate-panel" aria-labelledby={`gate-title-${block.block_id}`}>
@@ -107,7 +125,9 @@ export function LessonGatePanel({
         <div>
           <p className="tutor-panel-eyebrow">{requirementLabel(gate.requirement_kind)} · {gateKindLabel(gate.gate_kind)}</p>
           <h2 id={`gate-title-${block.block_id}`}>{exercise.title}</h2>
-          <p>{promptText(exercise.learner_prompt, gate.learner_prompt)}</p>
+          {knowledgePrompt
+            ? <SafeMarkdown markdown={knowledgePrompt.promptMarkdown} surface="artifact" />
+            : <p>{promptText(exercise.learner_prompt, gate.learner_prompt)}</p>}
         </div>
         <span className={`lesson-gate-state ${gate.status}`}>{gateStateLabel(gate.status)}</span>
       </div>
@@ -123,22 +143,52 @@ export function LessonGatePanel({
         <GateFact label="能力范围" value={exercise.required_capabilities?.join("、") ?? gate.required_capabilities.join("、")} />
       </dl>
 
-      {showEditor ? (
+      {knowledgePrompt?.responseKind === "single_select" ? (
+        <fieldset className="lesson-gate-editor knowledge-check-options" disabled={editorDisabled}>
+          <legend className="sr-only">请选择一个答案</legend>
+          {knowledgePrompt.options.map((option) => (
+            <label key={option.optionId}>
+              <input
+                type="radio"
+                name={`lesson-gate-${block.block_id}`}
+                value={option.optionId}
+                checked={editorValue === option.optionId}
+                onChange={() => onEditorChange(option.optionId)}
+              />
+              <span>{option.label}</span>
+            </label>
+          ))}
+        </fieldset>
+      ) : knowledgePrompt?.responseKind === "short_text" || knowledgePrompt?.responseKind === "prediction" ? (
+        <label className="lesson-gate-editor">
+          <span>{knowledgePrompt.responseKind === "prediction" ? "你的预测" : "你的回答"}</span>
+          <textarea
+            aria-label={knowledgePrompt.responseKind === "prediction" ? "你的预测" : "你的回答"}
+            value={editorValue}
+            rows={Math.min(16, Math.max(7, editorValue.split("\n").length + 2))}
+            spellCheck={false}
+            disabled={editorDisabled}
+            onChange={(event) => onEditorChange(event.target.value)}
+          />
+        </label>
+      ) : showGenericEditor ? (
         <label className="lesson-gate-editor">
           <span>{exercise.exercise_type === "static_code_reasoning" ? "你的回答" : "练习编辑区"}</span>
-          <textarea value={editorValue} rows={Math.min(16, Math.max(7, editorValue.split("\n").length + 2))} spellCheck={false} disabled={gate.status === "passed" || busyAction !== null} onChange={(event) => onEditorChange(event.target.value)} />
+          <textarea value={editorValue} rows={Math.min(16, Math.max(7, editorValue.split("\n").length + 2))} spellCheck={false} disabled={editorDisabled} onChange={(event) => onEditorChange(event.target.value)} />
         </label>
       ) : null}
 
+      {knowledgePromptMismatch ? <p className="lesson-gate-boundary" role="alert">当前知识检查的公开回答格式暂不受支持，已停止本地作答与提交。</p> : null}
+
       {hint ? <aside className="lesson-gate-hint" aria-live="polite"><span>提示 {hint.hint_level}</span><p>{safeFeedbackText(hint.safe_hint, "服务器已提供一条有界提示。")}</p></aside> : null}
 
-      <div className="lesson-gate-actions" aria-label="练习操作">
+      {showGateActions ? <div className="lesson-gate-actions" aria-label="练习操作">
         {gate.allowed_actions.includes("hint") ? <button className="tutor-compact-button quiet" type="button" disabled={busyAction !== null} onClick={onHint}>{busyAction === "hint" ? "正在请求提示……" : "获得提示"}</button> : null}
         {gate.allowed_actions.includes("run") ? <button className="tutor-compact-button quiet" type="button" disabled={busyAction !== null || attempt?.status === "pending" || !editorValue.trim()} onClick={onRun}>{busyAction === "run" ? "正在进入执行队列……" : "运行"}</button> : null}
         {gate.allowed_actions.includes("submit") ? <button className="tutor-primary-button" type="button" disabled={busyAction !== null || attempt?.status === "pending" || !editorValue.trim()} onClick={onSubmit}>{busyAction === "submit" ? "正在提交……" : "提交检查"}</button> : null}
-      </div>
+      </div> : null}
 
-      {isUnavailable ? <p className="lesson-gate-boundary">当前没有可验证执行环境，因此没有显示依赖执行的 Run/Submit；系统未回退到本机运行。</p> : gate.execution_tier === "static_only" ? <p className="lesson-gate-boundary">此练习只做确定性静态评估，不声称代码已编译、运行或通过测试。</p> : null}
+      {gate.execution_tier === "static_only" ? <p className="lesson-gate-boundary">此练习只做确定性静态评估，不声称代码已编译、运行或通过测试。</p> : null}
       {attempt?.status === "pending" ? <div className="lesson-gate-pending" role="status"><span className="lesson-status-pulse" aria-hidden="true" /><div><strong>已进入受控执行队列</strong><p>页面只读取同一 Attempt 的 learner-safe 结果，不会创建第二次提交。</p></div><button className="tutor-compact-button quiet" type="button" disabled={busyAction !== null} onClick={onPoll}>{busyAction === "poll" ? "正在刷新……" : "刷新结果"}</button></div> : null}
       {result ? <GateResultView result={result} stale={resultStale || historyOnly} historyOnly={historyOnly} /> : null}
       {errorMessage ? <p className="lesson-gate-error" role="alert">{errorMessage}</p> : null}
@@ -157,9 +207,52 @@ function GateResultView({ result, stale, historyOnly }: { result: LessonGateResu
   const stderr = stringField(result.safe_feedback, "stderr");
   return <section className={`lesson-gate-result ${result.outcome}`} aria-live="polite"><div><span>{stale ? (historyOnly ? "历史结果" : "结果已过期") : "当前结果"}</span><strong>{outcomeLabel(result.outcome)} · {Math.round(result.score * 100)}%</strong></div><p>{safeFeedbackText(result.safe_feedback, "服务器已记录本次练习结果。")}</p>{stdout ? <pre><code>{stdout}</code></pre> : null}{stderr ? <pre className="lesson-gate-stderr"><code>{stderr}</code></pre> : null}{stale ? <p className="lesson-gate-stale">编辑区内容已变化，或这是服务器记录的上一份提交；请勿把它当作当前答案的结果。</p> : null}</section>;
 }
-function promptText(payload: Record<string, unknown>, fallback: string): string { return stringField(payload, "text") ?? fallback; }
+function promptText(payload: Record<string, unknown>, fallback: string): string { return stringField(payload, "text") ?? stringField(payload, "prompt") ?? stringField(payload, "prompt_markdown") ?? fallback; }
 function safeFeedbackText(payload: Record<string, unknown>, fallback: string): string { return stringField(payload, "message") ?? stringField(payload, "text") ?? stringField(payload, "summary") ?? fallback; }
 function stringField(payload: Record<string, unknown>, key: string): string | null { const value = payload[key]; return typeof value === "string" && value.trim() ? value : null; }
+function supportedKnowledgePrompt(prompt: Record<string, unknown>, artifact: Record<string, unknown>): SupportedKnowledgePrompt | null {
+  if (
+    !hasExactKeys(prompt, ["schema_version", "prompt_markdown", "response_kind", "options"])
+    || !hasExactKeys(artifact, ["schema_version", "response_kind", "options"])
+    || prompt.schema_version !== "knowledge_check_prompt_v1"
+    || artifact.schema_version !== "knowledge_check_artifact_v1"
+    || typeof prompt.prompt_markdown !== "string"
+    || !prompt.prompt_markdown.trim()
+    || prompt.response_kind !== artifact.response_kind
+  ) return null;
+  const promptOptions = knowledgeCheckOptions(prompt.options);
+  const artifactOptions = knowledgeCheckOptions(artifact.options);
+  if (!promptOptions || !artifactOptions || !sameKnowledgeCheckOptions(promptOptions, artifactOptions)) return null;
+  if (prompt.response_kind === "single_choice" || prompt.response_kind === "single_select") {
+    return promptOptions.length >= 2 && promptOptions.length <= 12
+      ? { promptMarkdown: prompt.prompt_markdown, responseKind: "single_select", options: promptOptions }
+      : null;
+  }
+  if (prompt.response_kind === "short_text" || prompt.response_kind === "prediction") {
+    return promptOptions.length === 0
+      ? { promptMarkdown: prompt.prompt_markdown, responseKind: prompt.response_kind, options: [] }
+      : null;
+  }
+  return null;
+}
+function knowledgeCheckOptions(value: unknown): KnowledgeCheckOption[] | null {
+  if (!Array.isArray(value)) return null;
+  const options: KnowledgeCheckOption[] = [];
+  for (const item of value) {
+    if (!isRecord(item) || !hasExactKeys(item, ["option_id", "label"]) || typeof item.option_id !== "string" || !item.option_id.trim() || typeof item.label !== "string" || !item.label.trim()) return null;
+    options.push({ optionId: item.option_id, label: item.label });
+  }
+  return new Set(options.map((option) => option.optionId)).size === options.length ? options : null;
+}
+function sameKnowledgeCheckOptions(left: KnowledgeCheckOption[], right: KnowledgeCheckOption[]): boolean {
+  return left.length === right.length && left.every((option, index) => option.optionId === right[index]?.optionId && option.label === right[index]?.label);
+}
+function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === "object" && value !== null && !Array.isArray(value); }
+function hasExactKeys(value: Record<string, unknown>, keys: string[]): boolean {
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
+}
 function gateKindLabel(kind: LessonExerciseGateBlock["gate_kind"]): string { return { knowledge_check: "知识检查", guided_practice: "引导练习", independent_practice: "独立练习" }[kind]; }
 function requirementLabel(kind: "required" | "recommended" | "diagnostic"): string { return { required: "必修 Gate", recommended: "推荐练习", diagnostic: "诊断练习" }[kind]; }
 function gateStateLabel(state: "available" | "in_progress" | "passed" | "remediation_required"): string { return { available: "可开始", in_progress: "进行中", passed: "已通过", remediation_required: "需要补救" }[state]; }

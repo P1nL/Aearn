@@ -1,0 +1,66 @@
+"""Opt-in, message-rendered diagnostics. Never serialize arbitrary LogRecord extras.
+
+Callers pass server-owned labels/IDs only; untrusted action identifiers must use
+safe_diagnostic_identifier(..., trusted=False). No exception text or traceback.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+import math
+import re
+
+_IDENTIFIER = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.:@\[\]-]{0,127}\Z")
+_TEXT_FIELDS = frozenset({
+    "stage", "code", "primary_code", "primary_stage", "state", "request_id",
+    "job_id", "run_id", "conversation_id", "user_id", "runtime_kind",
+    "document_kind", "action_category", "field_path", "action_identifier",
+    "catalog_digest", "skill_reference", "manifest_hash", "instruction_hash",
+    "exception_class", "cause_class", "termination_reason",
+})
+_NUMBER_FIELDS = frozenset({
+    "runtime_generation", "total_text_chars", "effective_max_reasoning_chars",
+    "effective_max_total_chars", "effective_timeout_seconds", "raw_notification_count",
+    "source_delta_count", "projection_event_count", "item_count", "tool_count",
+    "projection_sequence", "tool_repair_count",
+    "visible_chars", "reasoning_chars", "effective_max_output_tokens",
+    "effective_max_visible_chars", "duration_ms", "attempt", "input_revision", "lease_generation",
+    "iteration_count", "model_call_count", "capability_call_count", "effect_count",
+    "required_fact_count", "required_fact_selected_count", "required_fact_missing_count",
+    "confirmed_question_reasked_count", "summary_blocked_by_unprojected_fact",
+})
+
+
+def safe_diagnostic_identifier(value: str, *, trusted: bool = True) -> str:
+    """Bound server identifiers; hash arbitrary/untrusted strings without echoing them."""
+    if trusted and _IDENTIFIER.fullmatch(value) and not value.lower().startswith(("sk-", "bearer")):
+        return value
+    return "sha256:" + hashlib.sha256(value.encode("utf-8", errors="replace")).hexdigest()
+
+
+def log_safe_event(
+    logger: logging.Logger, event: str, *, level: int = logging.WARNING,
+    exception: BaseException | None = None, **fields: object,
+) -> None:
+    """Emit one bounded JSON message under ordinary/Celery formatters.
+
+    Unknown keys and non-scalar values are discarded, not stringified. Exception
+    and explicit cause contribute class names only, never args/messages/frames.
+    """
+    data: dict[str, object] = {"event": safe_diagnostic_identifier(event)}
+    for key in _TEXT_FIELDS:
+        value = fields.get(key)
+        if isinstance(value, str):
+            data[key] = safe_diagnostic_identifier(value)
+    for key in _NUMBER_FIELDS:
+        value = fields.get(key)
+        if type(value) in (int, float) and isinstance(value, (int, float)):
+            if isinstance(value, float) and not math.isfinite(value):
+                continue
+            data[key] = round(min(max(value, 0), 1_000_000_000), 3)
+    if exception is not None:
+        data["exception_class"] = safe_diagnostic_identifier(type(exception).__name__)
+        if exception.__cause__ is not None:
+            data["cause_class"] = safe_diagnostic_identifier(type(exception.__cause__).__name__)
+    logger.log(level, "%s", json.dumps(data, sort_keys=True, separators=(",", ":")))

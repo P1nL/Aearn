@@ -1204,6 +1204,7 @@ def test_codex_missing_direction_marker_ignores_stale_model_question(
     assert host.turn_requests[0].effort == "low"
     assert host.turn_requests[0].timeout_seconds == 45.0
     assert host.turn_requests[0].max_visible_text_chars == 2_000
+    assert host.turn_requests[0].max_reasoning_text_chars == 16_000
 
 
 def test_codex_conflicting_direction_action_falls_back_to_fixed_clarification(
@@ -1246,7 +1247,7 @@ def test_codex_conflicting_direction_action_falls_back_to_fixed_clarification(
     assert receipt["source"] == "server_fallback_invalid_direction"
 
 
-def test_codex_direction_timeout_uses_the_same_server_clarification_fallback(
+def test_codex_direction_timeout_returns_runtime_error_without_clarification(
     tutor_persistence,
     tmp_path,
 ) -> None:  # type: ignore[no-untyped-def]
@@ -1274,19 +1275,18 @@ def test_codex_direction_timeout_uses_the_same_server_clarification_fallback(
         manage_autocommit=False,
     ).dispatch(user_id=tutor_persistence.user_id, run_id=run.run_id)
 
-    assert result.terminal_outcome is TutorTerminalOutcome.COMPLETED
+    assert result.terminal_outcome is TutorTerminalOutcome.MODEL_UNAVAILABLE
     request = conn.execute(
         "SELECT kind, descriptor_json FROM tutor_interaction_requests WHERE source_turn_id = %s",
         (run.run_id,),
     ).fetchone()
-    assert request is not None
-    assert request["kind"] == "clarification"
-    assert request["descriptor_json"]["prompt"] == _DIRECTION_CLARIFICATION
-    receipt = _direction_receipt(conn, run.run_id)
-    assert receipt["source"] == "server_fallback_direction_bound"
+    assert request is None
+    assert conn.execute(
+        "SELECT code FROM tutor_runtime_public_errors WHERE run_id = %s", (run.run_id,),
+    ).fetchone() == {"code": "TUTOR_RUNTIME_UNAVAILABLE"}
 
 
-def test_codex_text_budget_fallback_discards_every_unfinished_text_item(
+def test_codex_text_budget_error_discards_unfinished_text_without_reasking_confirmed_python(
     tutor_persistence,
     tmp_path,
 ) -> None:  # type: ignore[no-untyped-def]
@@ -1295,7 +1295,7 @@ def test_codex_text_budget_fallback_discards_every_unfinished_text_item(
         conn,
         user_id=tutor_persistence.user_id,
         catalog_digest=tutor_persistence.catalog.digest,
-        content="一个没有明确关系的新主题。",
+        content="继续学习已确认的 Python。",
     )
 
     @contextmanager
@@ -1329,26 +1329,28 @@ def test_codex_text_budget_fallback_discards_every_unfinished_text_item(
         manage_autocommit=False,
     ).dispatch(user_id=tutor_persistence.user_id, run_id=run.run_id)
 
-    assert result.terminal_outcome is TutorTerminalOutcome.COMPLETED
+    assert result.terminal_outcome is TutorTerminalOutcome.MODEL_UNAVAILABLE
     request = conn.execute(
         "SELECT kind, question_key, descriptor_json "
         "FROM tutor_interaction_requests WHERE source_turn_id = %s",
         (run.run_id,),
     ).fetchone()
-    assert request is not None
-    assert request["kind"] == "clarification"
-    assert request["question_key"] is None
-    assert request["descriptor_json"]["prompt"] == _DIRECTION_CLARIFICATION
-    receipt = _direction_receipt(conn, run.run_id)
-    assert receipt["direction_action"] == "clarify_direction"
-    assert receipt["source"] == "server_fallback_direction_bound"
+    assert request is None
+    assert conn.execute(
+        "SELECT count(*)::int AS count FROM tutor_run_events "
+        "WHERE run_id = %s AND kind = 'planning_direction_resolved'", (run.run_id,),
+    ).fetchone() == {"count": 0}
+    assert conn.execute(
+        "SELECT code, recoverable FROM tutor_runtime_public_errors WHERE run_id = %s", (run.run_id,),
+    ).fetchone() == {"code": "TUTOR_RUNTIME_UNAVAILABLE", "recoverable": True}
 
     binding = conn.execute(
         "SELECT state, final_message_id FROM tutor_run_runtime_bindings WHERE run_id = %s",
         (run.run_id,),
     ).fetchone()
     assert binding is not None
-    assert binding["state"] == "completed"
+    assert binding["state"] == "unavailable"
+    assert binding["final_message_id"] is None
     text_items = conn.execute(
         """
         SELECT channel, state, text, content_hash, completed_at, public_message_id
@@ -1397,13 +1399,10 @@ def test_codex_text_budget_fallback_discards_every_unfinished_text_item(
         "text" not in conversation_events[index].payload
         for index in discard_indexes
     )
-    message_index = next(
-        index
-        for index, event in enumerate(conversation_events)
-        if event.kind == "item_added"
-        and event.item_id == str(binding["final_message_id"])
-    )
-    assert max(discard_indexes) < message_index
+    assert conn.execute(
+        "SELECT count(*)::int AS count FROM tutor_messages "
+        "WHERE conversation_id = %s AND role = 'tutor'", (conversation_id,),
+    ).fetchone() == {"count": 0}
     terminal_receipt = conn.execute(
         """
         SELECT projection_status, safe_code
@@ -1413,7 +1412,7 @@ def test_codex_text_budget_fallback_discards_every_unfinished_text_item(
         (run.run_id,),
     ).fetchone()
     assert terminal_receipt == {
-        "projection_status": "ignored_stale",
+        "projection_status": "applied",
         "safe_code": "runtime_text_budget_exhausted",
     }
 
@@ -1468,7 +1467,6 @@ def test_codex_server_terminal_receipt_failure_rolls_back_clarification_cleanup(
             ),
             host=_FakeCodexHost(
                 direction_action=None,
-                safe_error_code="runtime_text_budget_exhausted",
                 streaming_reasoning_text=unfinished_reasoning,
             ),
             connection_factory=same_connection,
@@ -1500,7 +1498,7 @@ def test_codex_server_terminal_receipt_failure_rolls_back_clarification_cleanup(
         """
         SELECT state, text, content_hash, completed_at, public_message_id
         FROM tutor_runtime_text_items
-        WHERE run_id = %s
+        WHERE run_id = %s AND channel = 'reasoning'
         """,
         (run.run_id,),
     ).fetchone()

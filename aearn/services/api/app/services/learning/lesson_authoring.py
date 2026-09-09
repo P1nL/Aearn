@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+from time import monotonic
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -11,9 +13,11 @@ from typing import Protocol
 from psycopg import Connection
 from uuid import uuid4
 
+from app.core.safe_diagnostics import log_safe_event
 from app.db.connection import connect
 from app.services.grounding.grounding_index_repository import search_persisted_grounding_chunks
 from app.services.grounding.grounding_retrieval import GroundingRetrievalQuery
+from app.services.grounding.grounding_processing import GroundingChunk, is_admissible_lesson_source
 from app.services.grounding.grounding_sources import get_grounding_source
 from app.services.learning.lesson_contracts import (
     LESSON_GENERATOR_VERSION,
@@ -47,8 +51,18 @@ from app.services.llm.llm_client import (
     OpenAICompatibleClient,
     select_llm_protocol,
 )
-from app.services.llm.contracts import LLMUsage
+from app.services.llm.contracts import LLMResponseDiagnostics, LLMUsage
 from app.core.config import Settings, get_settings
+
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class _LessonDiagnostics:
+    stage: str = "claim"
+    primary_code: str | None = None
+    primary_stage: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +101,7 @@ class LessonAuthoringResponse:
     model: str
     protocol: str
     usage: LLMUsage | None = None
+    response_diagnostics: LLMResponseDiagnostics | None = None
 
 
 class LessonDocumentAuthorPort(Protocol):
@@ -106,6 +121,7 @@ class LessonAuthoringFailure(RuntimeError):
         self.model = "configured-primary"
         self.protocol = "unknown"
         self.usage: LLMUsage | None = None
+        self.response_diagnostics: LLMResponseDiagnostics | None = None
 
 
 class PrimaryLessonDocumentAuthor:
@@ -132,17 +148,29 @@ class PrimaryLessonDocumentAuthor:
                 max_tokens=12_000,
                 output_schema=lesson_author_output_schema(),
                 schema_name="lesson_document_v1",
+                thinking_mode="disabled" if (
+                    self._settings.llm_provider_type == "deepseek"
+                    and self._settings.llm_model == "deepseek-v4-flash"
+                ) else None,
             )
         except LLMConfigurationError as exc:
             raise LessonAuthoringFailure("LESSON_DOCUMENT_GENERATION_UNAVAILABLE", "课程生成服务当前不可用。", outcome="unavailable") from exc
         except LLMInvalidResponseError as exc:
             failure = LessonAuthoringFailure("LESSON_DOCUMENT_INVALID", "课程生成结果未通过结构校验。", outcome="invalid")
             code = "LESSON_PROVIDER_" + exc.kind.value.upper()
+            if (exc.response_diagnostics is not None and (
+                    exc.response_diagnostics.response_status in {"missing_terminal", "queued", "in_progress", "cancelled"}
+                    or (code == "LESSON_PROVIDER_ENVELOPE_INVALID"
+                        and exc.response_diagnostics.response_status == "unknown")
+                    or (code == "LESSON_PROVIDER_RESPONSE_INCOMPLETE"
+                        and exc.response_diagnostics.incomplete_reason != "max_output_tokens"))):
+                code = "LESSON_PROVIDER_RESPONSE_INCOMPLETE_NONREPAIRABLE"
             failure.issues = (LessonFeedbackIssue(code if code in CONSTRAINTS else "LESSON_PROVIDER_UNKNOWN"),)
             failure.provider = self._settings.llm_provider_type or "configured-primary"
             failure.model = exc.model or self._settings.llm_model or "configured-primary"
             failure.protocol = select_llm_protocol(self._settings).value
             failure.usage = exc.usage
+            failure.response_diagnostics = exc.response_diagnostics
             raise failure from exc
         except LLMCallError as exc:
             raise LessonAuthoringFailure("LESSON_DOCUMENT_GENERATION_UNAVAILABLE", "课程生成服务当前不可用。", outcome="unavailable") from exc
@@ -152,6 +180,7 @@ class PrimaryLessonDocumentAuthor:
             model=response.model,
             protocol=select_llm_protocol(self._settings).value,
             usage=response.usage,
+            response_diagnostics=getattr(response, "response_diagnostics", None),
         )
 
 
@@ -168,6 +197,8 @@ def dispatch_lesson_authoring_run(
     clock = now or (lambda: datetime.now(UTC))
     owner = f"lesson-author-{uuid4()}"
     claimed: LessonAuthoringRunRecord | None = None
+    diagnostics = _LessonDiagnostics()
+    started = monotonic()
     try:
         with connect() as conn:
             with conn.transaction():
@@ -181,6 +212,7 @@ def dispatch_lesson_authoring_run(
                 running = PostgresLessonDocumentRepository(conn).mark_authoring_running(
                     run_id=claimed.run_id, lease_generation=claimed.lease_generation,
                 )
+        diagnostics.stage = "source"
         with connect() as conn:
             repository = PostgresLessonDocumentRepository(conn)
             scope = repository.read_scope(
@@ -203,6 +235,7 @@ def dispatch_lesson_authoring_run(
                     run_id=running.run_id, lease_generation=running.lease_generation, source_set_hash=source_hash,
                 )
         evidence, handles = _authoring_evidence(snapshots)
+        diagnostics.stage = "provider"
         port = author or LESSON_AUTHOR_FACTORY()
         standard_request = LessonAuthoringRequest(
             document_kind="standard", language_id=scope.language_id, knowledge_key=scope.knowledge_key,
@@ -213,7 +246,7 @@ def dispatch_lesson_authoring_run(
         budget = _RepairBudget(next_attempt=running.attempt_count, remaining=1 if running.attempt_count == 1 else 0)
         standard, standard_quality = _author_and_validate(
             port=port, request=standard_request, run=running, budget=budget,
-            handles=handles, snapshots=snapshots,
+            handles=handles, snapshots=snapshots, diagnostics=diagnostics,
         )
 
         personalized_request = LessonAuthoringRequest(
@@ -225,8 +258,9 @@ def dispatch_lesson_authoring_run(
         )
         personalized, personalized_quality = _author_and_validate(
             port=port, request=personalized_request, run=running, budget=budget,
-            handles=handles, snapshots=snapshots,
+            handles=handles, snapshots=snapshots, diagnostics=diagnostics,
         )
+        diagnostics.stage = "validation"
         current_document = current_state.get("document")
         impact_base = current_document if isinstance(current_document, LessonDocumentDraft) else standard
         source_value = current_state.get("sources")
@@ -236,6 +270,7 @@ def dispatch_lesson_authoring_run(
             current_source_ids=tuple(snapshot.source_id for snapshot in current_sources if isinstance(snapshot, LessonSourceSnapshot)),
             candidate_source_ids=tuple(snapshot.source_id for snapshot in snapshots),
         )
+        diagnostics.stage = "publish"
         with connect() as conn:
             with conn.transaction():
                 PostgresLessonDocumentRepository(conn).publish_authoring_result(
@@ -247,16 +282,16 @@ def dispatch_lesson_authoring_run(
                     generator_version=LESSON_GENERATOR_VERSION, policy_version=LESSON_POLICY_VERSION,
                     source_set_hash=source_hash, impact=impact, now=clock(),
                 )
-    except LessonQualityError:
-        _safe_fail(run_id, claimed, "LESSON_DOCUMENT_QUALITY_BLOCKED", "课程内容未通过发布质量门。", clock())
-    except LessonVersionConflict:
-        _safe_fail(run_id, claimed, "LESSON_DOCUMENT_VERSION_CONFLICT", "课程生成期间学习路线或来源已更新。", clock())
+    except LessonQualityError as exc:
+        _safe_fail(run_id, claimed, "LESSON_DOCUMENT_QUALITY_BLOCKED", "课程内容未通过发布质量门。", clock(), diagnostics=diagnostics, exception=exc, duration_ms=(monotonic() - started) * 1000)
+    except LessonVersionConflict as exc:
+        _safe_fail(run_id, claimed, "LESSON_DOCUMENT_VERSION_CONFLICT", "课程生成期间学习路线或来源已更新。", clock(), diagnostics=diagnostics, exception=exc, duration_ms=(monotonic() - started) * 1000)
     except LessonAuthoringFailure as exc:
-        _safe_fail(run_id, claimed, exc.code, exc.message, clock())
-    except (LessonNotFound, ValueError):
-        _safe_fail(run_id, claimed, "LESSON_DOCUMENT_INVALID", "课程生成结果未通过结构校验。", clock())
-    except Exception:
-        _safe_fail(run_id, claimed, "LESSON_DOCUMENT_GENERATION_UNAVAILABLE", "课程生成服务当前不可用。", clock())
+        _safe_fail(run_id, claimed, exc.code, exc.message, clock(), diagnostics=diagnostics, exception=exc, duration_ms=(monotonic() - started) * 1000)
+    except (LessonNotFound, ValueError) as exc:
+        _safe_fail(run_id, claimed, "LESSON_DOCUMENT_INVALID", "课程生成结果未通过结构校验。", clock(), diagnostics=diagnostics, exception=exc, duration_ms=(monotonic() - started) * 1000)
+    except Exception as exc:
+        _safe_fail(run_id, claimed, "LESSON_DOCUMENT_GENERATION_UNAVAILABLE", "课程生成服务当前不可用。", clock(), diagnostics=diagnostics, exception=exc, duration_ms=(monotonic() - started) * 1000)
 
 @dataclass(slots=True)
 class _RepairBudget:
@@ -268,9 +303,12 @@ def _author_and_validate(
     *, port: LessonDocumentAuthorPort, request: LessonAuthoringRequest,
     run: LessonAuthoringRunRecord, budget: _RepairBudget,
     handles: Mapping[str, str], snapshots: tuple[LessonSourceSnapshot, ...],
+    diagnostics: _LessonDiagnostics | None = None,
 ) -> tuple[LessonDocumentDraft, LessonQualityReport]:
+    diagnostics = diagnostics or _LessonDiagnostics()
     document_attempt = 1
     while True:
+        diagnostics.stage = "source"
         # Fence stale dispatchers before every additional provider call.
         with connect() as conn:
             with conn.transaction():
@@ -283,8 +321,14 @@ def _author_and_validate(
         feedback: LessonAuthorFeedback | None = None
         document: LessonDocumentDraft | None = None
         quality: LessonQualityReport | None = None
+        original_exception: Exception | None = None
+        diagnostics.primary_code = None
+        diagnostics.primary_stage = None
+        diagnostics.stage = "provider"
+        attempt_started = monotonic()
         try:
             response = port.author(request)
+            diagnostics.stage = "validation"
             document = _parse_author_candidate(response.candidate, handles)
             _assert_candidate_identity(document, request)
             quality = require_lesson_quality(
@@ -293,6 +337,7 @@ def _author_and_validate(
                 standard_document=request.standard_document,
             )
         except LessonQualityError as exc:
+            original_exception = exc
             failure = LessonAuthoringFailure("LESSON_DOCUMENT_QUALITY_BLOCKED", "课程内容未通过发布质量门。", outcome="invalid")
             failure.stage = "quality_gate"
             # Classify the entire report before bounding it: an omitted fatal issue must not enable repair.
@@ -302,26 +347,51 @@ def _author_and_validate(
             fatal = tuple(issue for issue in issues if issue.code not in REPAIRABLE)
             failure.issues = (fatal + tuple(issue for issue in issues if issue.code in REPAIRABLE))[:12]
         except LessonAuthoringFailure as exc:
+            original_exception = exc
             failure = exc
         except LessonVersionConflict:
             raise
-        except Exception:
+        except Exception as exc:
+            original_exception = exc
             failure = LessonAuthoringFailure("LESSON_DOCUMENT_GENERATION_UNAVAILABLE", "课程生成服务当前不可用。")
         if failure is not None:
+            diagnostics.primary_code = failure.code
+            diagnostics.primary_stage = diagnostics.stage
+            log_safe_event(
+                logger, "lesson_attempt_failed", exception=original_exception,
+                run_id=run.run_id, stage=diagnostics.stage, code=failure.code,
+                document_kind=request.document_kind, attempt=budget.next_attempt,
+                duration_ms=(monotonic() - attempt_started) * 1000,
+            )
             feedback = LessonAuthorFeedback(request.document_kind, failure.stage, document_attempt, failure.issues)
-        with connect() as conn:
-            with conn.transaction():
-                PostgresLessonDocumentRepository(conn).record_authoring_attempt(
-                    run=run, attempt_index=budget.next_attempt,
-                    provider=response.provider if response else failure.provider if failure else "configured-primary",
-                    model=response.model if response else failure.model if failure else "configured-primary",
-                    protocol=response.protocol if response else failure.protocol if failure else "unknown",
-                    outcome=failure.outcome if failure else "success", diagnostic_code=failure.code if failure else None,
-                    usage=_usage_mapping(response.usage if response else failure.usage if failure else None),
-                    request_hash=_hash_json(_safe_request_payload(request)),
-                    response_hash=_hash_json(response.candidate) if response else None,
-                    diagnostic=attempt_diagnostic(request.document_kind, document_attempt, feedback),
-                )
+        diagnostics.stage = "receipt"
+        try:
+            with connect() as conn:
+                with conn.transaction():
+                    PostgresLessonDocumentRepository(conn).record_authoring_attempt(
+                        run=run, attempt_index=budget.next_attempt,
+                        provider=response.provider if response else failure.provider if failure else "configured-primary",
+                        model=response.model if response else failure.model if failure else "configured-primary",
+                        protocol=response.protocol if response else failure.protocol if failure else "unknown",
+                        outcome=failure.outcome if failure else "success", diagnostic_code=failure.code if failure else None,
+                        usage=_usage_mapping(response.usage if response else failure.usage if failure else None),
+                        request_hash=_hash_json(_safe_request_payload(request)),
+                        response_hash=_hash_json(response.candidate) if response else None,
+                        diagnostic=attempt_diagnostic(
+                            request.document_kind, document_attempt, feedback,
+                            response_diagnostics=response.response_diagnostics if response else failure.response_diagnostics if failure else None,
+                            usage=response.usage if response else failure.usage if failure else None,
+                        ),
+                    )
+        except Exception as exc:
+            log_safe_event(
+                logger, "lesson_receipt_failed", level=logging.ERROR, exception=exc,
+                run_id=run.run_id, stage="receipt", code="LESSON_RECEIPT_WRITE_FAILED",
+                primary_code=diagnostics.primary_code, primary_stage=diagnostics.primary_stage,
+                document_kind=request.document_kind, attempt=budget.next_attempt,
+            )
+            raise
+        diagnostics.stage = diagnostics.primary_stage or "validation"
         budget.next_attempt += 1
         if failure is None:
             assert document is not None and quality is not None
@@ -346,7 +416,13 @@ def _load_evidence_snapshots(
     knowledge_key: str,
     title: str,
     snapshotted_at: datetime,
+    *,
+    allow_fixtures_for_tests: bool = False,
 ) -> tuple[LessonSourceSnapshot, ...]:
+    # No route, setting, or live dispatcher enables this offline-test-only seam.
+    def admitted(chunk: GroundingChunk) -> bool:
+        return is_admissible_lesson_source(chunk, allow_fixtures_for_tests=allow_fixtures_for_tests)
+
     results = search_persisted_grounding_chunks(
         conn,
         GroundingRetrievalQuery(
@@ -357,13 +433,14 @@ def _load_evidence_snapshots(
             knowledge_point_title=title,
             top_k=4,
         ),
+        admission_filter=admitted,
     )
     snapshots: list[LessonSourceSnapshot] = []
     seen: set[str] = set()
     for result in results:
         chunk = result.chunk
         source = get_grounding_source(chunk.source_id)
-        if source is None:
+        if source is None or not admitted(chunk):
             continue
         citation_id = citation_id_for_chunk(chunk.chunk_id, chunk.content_hash)
         if citation_id in seen:
@@ -462,7 +539,15 @@ def _safe_fail(
     code: str,
     message: str,
     now: datetime,
+    *, diagnostics: _LessonDiagnostics | None = None,
+    exception: Exception | None = None, duration_ms: float | None = None,
 ) -> None:
+    log_safe_event(
+        logger, "lesson_authoring_failed", level=logging.ERROR, exception=exception,
+        run_id=run_id, code=code, stage=diagnostics.stage if diagnostics else "unknown",
+        primary_code=diagnostics.primary_code if diagnostics else None,
+        primary_stage=diagnostics.primary_stage if diagnostics else None, duration_ms=duration_ms,
+    )
     try:
         with connect() as conn:
             with conn.transaction():
@@ -475,7 +560,12 @@ def _safe_fail(
                     run_id=run_id, lease_generation=generation,
                     failure_code=code, failure_message=message, now=now,
                 )
-    except Exception:
+    except Exception as exc:
+        log_safe_event(
+            logger, "lesson_failure_receipt_failed", level=logging.ERROR, exception=exc,
+            run_id=run_id, stage="receipt", code="LESSON_FAILURE_RECEIPT_WRITE_FAILED",
+            primary_code=code, primary_stage=diagnostics.stage if diagnostics else "unknown",
+        )
         return
 
 

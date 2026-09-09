@@ -286,6 +286,8 @@ local export 包含 personalized blocks、assignment 与 citation metadata，但
 
 `tutor_lesson_authoring_attempt_receipts.diagnostic_json` 为 `jsonb NOT NULL DEFAULT '{}'`，数据库 CHECK 要求 object。fresh create 和 additive `ADD COLUMN IF NOT EXISTS` 同时维护；历史行保持空对象兼容，无新增 user-owned 表或删除顺序变更。
 
+2026-09-08：应用侧私有诊断继续读取空对象和 `lesson_author_attempt_diagnostic_v1`；新响应元数据使用 `lesson_author_attempt_diagnostic_v2`，增加封闭的 `provider_response`（状态、截断原因枚举、请求输出额度/思考强度、可见输出字符数）与可空的 `reasoning_tokens`。未知用量保留 NULL；reasoning 是 output 的子集，不再次累加总用量。不得存入原始响应、思考正文或任意 provider 错误文本；公共 API/SSE/用户导出不投影这些诊断。复用现有 JSONB 列，不需要新增数据库迁移或回填历史记录。
+
 新诊断只允许版本、standard/personalized document kind、文档内 attempt index、失败阶段、稳定 issue codes/locations 和 feedback hash。constraint 文本、prompt、provider body、reasoning、raw candidate、credential 不持久化。receipt 的 success 只在 parse/identity/quality 全部通过后记录；每次失败仍单独记录，`(run_id, attempt_index)` identity、append-only trigger 和 usage 缺失时 NULL 语义保留。
 
 ## 2026-08-11：练习 Gate、Attempt 与模块诊断 authority

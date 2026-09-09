@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Mapping, Sequence
 from typing import Protocol
 
@@ -18,6 +19,7 @@ from app.services.learning.teaching_contracts import (
 
 
 MAX_TEACHING_PROVIDER_CONTEXT_CHARACTERS = 1200
+logger = logging.getLogger(__name__)
 
 
 class TeachingArtifactCandidateBuildError(ValueError):
@@ -112,12 +114,10 @@ def bound_teaching_artifact_candidates(
     base = _provider_teaching_context_base(context)
     selected: list[TeachingArtifactCandidate] = []
     for candidate in candidates.candidates:
-        projected = {
-            **base,
-            "artifact_candidates": _provider_candidate_projections(
-                (*selected, candidate)
-            ),
-        }
+        projected = _compact_recent_units(
+            {**base, "artifact_candidates": _provider_candidate_projections((*selected, candidate))},
+            max_characters=max_characters,
+        )
         if _serialized_characters(projected) <= max_characters:
             selected.append(candidate)
     if len(selected) < minimum_candidates:
@@ -155,6 +155,9 @@ def project_teaching_provider_context(
     projections = _provider_candidate_projections(bounded_candidates.candidates)
     if projections:
         bounded["artifact_candidates"] = projections
+    bounded = _compact_recent_units(bounded, max_characters=max_characters)
+    if _serialized_characters(bounded) > max_characters:
+        raise TeachingArtifactCandidateBuildError("required teaching context is unrepresentable")
     return bounded
 
 
@@ -280,6 +283,27 @@ def _provider_candidate_projections(
         }
         for candidate in candidates
     ]
+
+
+def _compact_recent_units(value: Mapping[str, object], *, max_characters: int) -> dict[str, object]:
+    """Evict oldest optional units, never current authority or exact candidates."""
+    result = dict(value)
+    raw = result.get("recent_teaching_units")
+    recent = list(raw) if isinstance(raw, (tuple, list)) else []
+    before = _serialized_characters(result)
+    removed = 0
+    while recent and _serialized_characters(result) > max_characters:
+        recent.pop(0)
+        removed += 1
+        if recent:
+            result["recent_teaching_units"] = recent
+        else:
+            result.pop("recent_teaching_units", None)
+    if removed:
+        logger.debug("teaching_context_compacted before_chars=%d after_chars=%d removed_units=%d limit_chars=%d utf8_bytes=%d",
+                     before, _serialized_characters(result), removed, max_characters,
+                     len(json.dumps(result, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")))
+    return result
 
 
 def _serialized_characters(value: object) -> int:

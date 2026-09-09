@@ -16,7 +16,6 @@ from app.services.learning.contracts import (
     MasteryIndependence,
 )
 from app.services.learning.practice.contracts import (
-    ExecutionRequirement,
     ExerciseAttemptResult,
     ExerciseAttemptType,
     ExercisePrivateRubric,
@@ -28,6 +27,16 @@ from app.services.learning.practice.contracts import (
     canonical_submission_hash,
 )
 from app.services.learning.practice.fixtures import CuratedExerciseFixture, fixture_for_language
+from app.services.learning.practice.gate_selection import (
+    KNOWLEDGE_CHECK_GATE_CONTRACT,
+    LEGACY_GATE_CONTRACT,
+    MODEL_REVIEW_GATE_CONTRACT,
+    GateSelectionUnavailable,
+    execution_requirement_for,
+    gate_binding_compatibility,
+    gate_slot_is_compatible,
+    select_published_knowledge_check,
+)
 from app.services.learning.practice.policies import GATE_PASS_POLICY_VERSION, HINT_POLICY_VERSION
 from app.services.learning.track_repository import PostgresLearningTrackRepository
 
@@ -66,6 +75,7 @@ class GateScope:
     assignment_version: int
     assignment_started_at: datetime | None
     document_id: str
+    node_capabilities: tuple[str, ...]
 
 
 class PostgresExerciseGateRepository:
@@ -88,13 +98,17 @@ class PostgresExerciseGateRepository:
                    progress.status AS progress_status, progress.version AS progress_version,
                    assignments.id AS assignment_id, assignments.assignment_version,
                    assignments.started_at AS assignment_started_at,
-                   assignments.document_id
+                   assignments.document_id,
+                   nodes.required_capabilities_json AS node_capabilities_json
             FROM tutor_learning_tracks AS tracks
             JOIN tutor_track_active_plans AS active
               ON (active.track_id, active.user_id) = (tracks.id, tracks.user_id)
             JOIN tutor_track_node_progress AS progress
               ON (progress.track_id, progress.user_id) = (tracks.id, tracks.user_id)
              AND progress.knowledge_key = %s
+            JOIN tutor_track_plan_nodes AS nodes
+              ON (nodes.revision_id, nodes.track_id, nodes.user_id, nodes.knowledge_key) =
+                 (active.revision_id, tracks.id, tracks.user_id, progress.knowledge_key)
             JOIN tutor_lesson_assignments AS assignments
               ON (assignments.track_id, assignments.user_id, assignments.knowledge_key) =
                  (tracks.id, tracks.user_id, progress.knowledge_key)
@@ -118,6 +132,7 @@ class PostgresExerciseGateRepository:
             assignment_version=_int(row["assignment_version"]),
             assignment_started_at=_datetime_or_none(row.get("assignment_started_at")),
             document_id=str(row["document_id"]),
+            node_capabilities=tuple(_string_list(row.get("node_capabilities_json"))),
         )
 
     def ensure_curated_fixture(self, fixture: CuratedExerciseFixture, *, now: datetime) -> str:
@@ -211,6 +226,7 @@ class PostgresExerciseGateRepository:
         expected_track_version: int,
         expected_progress_version: int,
         now: datetime,
+        gate_key: str | None = None,
     ) -> tuple[dict[str, object], ...]:
         scope = self.read_scope(
             user_id=user_id,
@@ -222,31 +238,90 @@ class PostgresExerciseGateRepository:
             raise PracticeNotReady("Lesson is locked")
         if scope.track_version != expected_track_version or scope.progress_version != expected_progress_version:
             raise PracticeVersionConflict("LearningTrack or progress changed")
-        fixture = fixture_for_language(scope.language_id)
-        if fixture is None:
-            return ()
-        exercise_version_id = self.ensure_curated_fixture(fixture, now=now)
         slots = self._conn.execute(
-            "SELECT * FROM tutor_lesson_gate_slots WHERE document_id = %s ORDER BY block_id, gate_key",
-            (scope.document_id,),
+            """
+            SELECT * FROM tutor_lesson_gate_slots
+            WHERE document_id = %s AND (%s::text IS NULL OR gate_key = %s)
+            ORDER BY block_id, gate_key
+            """,
+            (scope.document_id, gate_key, gate_key),
         ).fetchall()
+        if gate_key is not None and not slots:
+            raise PracticeNotFound("Lesson Gate slot was not found")
         for slot in slots:
+            existing = self._conn.execute(
+                """
+                SELECT id FROM tutor_lesson_gate_bindings
+                WHERE document_id = %s AND gate_key = %s
+                """,
+                (scope.document_id, slot["gate_key"]),
+            ).fetchone()
+            if existing is not None:
+                # Bindings are immutable historical authority. Compatibility is enforced
+                # at projection/action time; preparation never rewrites or deletes them.
+                continue
+            assessment = str(slot["assessment_contract_version"])
+            slot_capabilities = tuple(_string_list(slot.get("required_capabilities_json")))
+            slot_scope = dict(slot)
+            slot_scope.update(
+                node_capabilities_json=list(scope.node_capabilities),
+                scope_language_id=scope.language_id,
+                scope_knowledge_key=scope.knowledge_key,
+            )
+            if not gate_slot_is_compatible(slot_scope):
+                continue
+            if assessment == MODEL_REVIEW_GATE_CONTRACT:
+                # The dedicated authoring repository is the sole publication path.
+                continue
+            if assessment == KNOWLEDGE_CHECK_GATE_CONTRACT:
+                if str(slot["gate_kind"]) != "knowledge_check":
+                    continue
+                try:
+                    selection = select_published_knowledge_check(
+                        self._conn,
+                        language_id=scope.language_id,
+                        knowledge_key=scope.knowledge_key,
+                        required_capabilities=slot_capabilities,
+                        available_capabilities=scope.node_capabilities,
+                    )
+                except GateSelectionUnavailable:
+                    continue
+                exercise_version_id = selection.exercise_version_id
+                exercise_key = selection.exercise_key
+                exercise_version = selection.exercise_version
+                execution_required = selection.execution_required
+                pass_threshold = selection.pass_threshold
+            elif assessment == LEGACY_GATE_CONTRACT:
+                fixture = fixture_for_language(scope.language_id)
+                if (
+                    fixture is None
+                    or fixture.exercise.required_capabilities != slot_capabilities
+                ):
+                    continue
+                exercise_version_id = self.ensure_curated_fixture(fixture, now=now)
+                exercise_key = fixture.exercise.exercise_key
+                exercise_version = fixture.exercise.version
+                execution_required = fixture.exercise.execution_required
+                pass_threshold = 0.8
+            else:
+                # Unknown assessment contracts are never mapped optimistically.
+                continue
             slot_hash = canonical_hash(
                 {
                     "gate_kind": str(slot["gate_kind"]),
-                    "assessment_contract_version": str(slot["assessment_contract_version"]),
-                    "required_capabilities": _string_list(slot.get("required_capabilities_json")),
+                    "assessment_contract_version": assessment,
+                    "required_capabilities": list(slot_capabilities),
                     "learner_prompt_hash": str(slot["learner_prompt_hash"]),
                 }
             )
             binding = LessonGateBinding(
                 gate_key=str(slot["gate_key"]),
-                exercise_key=fixture.exercise.exercise_key,
-                exercise_version=fixture.exercise.version,
+                exercise_key=exercise_key,
+                exercise_version=exercise_version,
                 requirement_kind=_requirement_kind(str(slot["gate_kind"])),
                 pass_policy_version=GATE_PASS_POLICY_VERSION,
-                pass_threshold=0.8,
-                execution_requirement=ExecutionRequirement.REQUIRED,
+                pass_threshold=pass_threshold,
+                execution_requirement=execution_requirement_for(execution_required),
                 slot_contract_hash=slot_hash,
             )
             inserted = self._conn.execute(
@@ -278,15 +353,8 @@ class PostgresExerciseGateRepository:
                 ),
             ).fetchone()
             if inserted is None:
-                inserted = self._conn.execute(
-                    """
-                    SELECT id, binding_contract_hash FROM tutor_lesson_gate_bindings
-                    WHERE document_id = %s AND gate_key = %s
-                    """,
-                    (scope.document_id, binding.gate_key),
-                ).fetchone()
-                if inserted is None or str(inserted["binding_contract_hash"]) != binding.binding_contract_hash:
-                    raise PracticeIdempotencyConflict("Lesson Gate binding conflicts with frozen authority")
+                # A concurrent immutable winner is left intact and checked on read.
+                continue
             self._conn.execute(
                 """
                 INSERT INTO tutor_lesson_gate_states (
@@ -306,16 +374,39 @@ class PostgresExerciseGateRepository:
             SELECT assignments.id AS assignment_id, assignments.user_id,
                    slots.gate_key, slots.gate_kind, slots.assessment_contract_version,
                    slots.required_capabilities_json AS slot_capabilities_json,
-                   slots.learner_prompt,
-                   bindings.id AS binding_id, bindings.requirement_kind,
+                   slots.learner_prompt, slots.learner_prompt_hash,
+                   bindings.id AS binding_id, bindings.knowledge_key AS binding_knowledge_key,
+                   bindings.requirement_kind,
                    bindings.pass_policy_version, bindings.pass_threshold,
                    bindings.execution_requirement, bindings.binding_contract_hash,
-                   versions.id AS exercise_version_id, versions.language_id,
+                   versions.id AS exercise_version_id,
+                   versions.language_id AS language_id,
+                   versions.language_id AS exercise_language_id,
                    versions.exercise_key, versions.exercise_type, versions.version AS exercise_version,
-                   versions.title AS exercise_title, versions.learner_prompt_json,
-                   versions.starter_artifact_json, versions.required_capabilities_json,
+                   versions.source_kind, versions.title AS exercise_title,
+                   versions.learner_prompt_json, versions.starter_artifact_json,
+                   versions.required_capabilities_json,
+                   versions.required_capabilities_json AS exercise_capabilities_json,
                    versions.runtime_profile_key, versions.execution_required,
                    versions.content_hash AS exercise_content_hash,
+                   rubrics.rubric_hash AS stored_rubric_hash,
+                   rubrics.reference_answer_json,
+                   rubrics.score_policy_json,
+                   materializations.version_id AS materialization_version_id,
+                   materializations.item_handle AS materialization_handle,
+                   materializations.content_hash AS materialization_content_hash,
+                   materializations.exercise_version_id AS materialization_exercise_version_id,
+                   materializations.exercise_key AS materialization_exercise_key,
+                   materializations.exercise_version AS materialization_exercise_version,
+                   materializations.exercise_content_hash AS materialization_exercise_content_hash,
+                   materializations.rubric_hash AS materialization_rubric_hash,
+                   items.handle AS item_handle, items.item_kind, items.purpose AS item_purpose,
+                   items.knowledge_key AS item_knowledge_key,
+                   items.language_id AS item_language_id,
+                   items.required_capabilities_json AS item_capabilities_json,
+                   items.content_hash AS item_content_hash,
+                   item_public.public_json AS item_public_json,
+                   publication.state AS latest_publication_state,
                    states.id AS gate_state_id, states.state AS gate_state,
                    states.attempt_count, states.best_score, states.latest_attempt_id,
                    states.passing_attempt_id, states.version AS gate_version, states.passed_at,
@@ -329,6 +420,20 @@ class PostgresExerciseGateRepository:
             LEFT JOIN tutor_lesson_gate_bindings AS bindings
               ON (bindings.document_id, bindings.gate_key) = (slots.document_id, slots.gate_key)
             LEFT JOIN tutor_exercise_versions AS versions ON versions.id = bindings.exercise_version_id
+            LEFT JOIN tutor_exercise_private_rubrics AS rubrics
+              ON rubrics.exercise_version_id = versions.id
+            LEFT JOIN tutor_learning_item_practice_materializations AS materializations
+              ON materializations.exercise_version_id = versions.id
+            LEFT JOIN tutor_learning_item_versions AS items
+              ON items.id = materializations.version_id
+            LEFT JOIN tutor_learning_item_public_contents AS item_public
+              ON item_public.version_id = items.id
+            LEFT JOIN LATERAL (
+              SELECT events.state
+              FROM tutor_learning_item_publication_events AS events
+              WHERE events.version_id = items.id
+              ORDER BY events.state_version DESC LIMIT 1
+            ) AS publication ON true
             LEFT JOIN tutor_lesson_gate_states AS states
               ON states.lesson_assignment_id = assignments.id AND states.gate_binding_id = bindings.id
             LEFT JOIN tutor_exercise_attempts AS attempts ON attempts.id = states.latest_attempt_id
@@ -338,7 +443,16 @@ class PostgresExerciseGateRepository:
             """,
             (scope.assignment_id,),
         ).fetchall()
-        return tuple(dict(row) for row in rows)
+        projected: list[dict[str, object]] = []
+        for row in rows:
+            item = dict(row)
+            item.update(
+                scope_language_id=scope.language_id,
+                scope_knowledge_key=scope.knowledge_key,
+                node_capabilities_json=list(scope.node_capabilities),
+            )
+            projected.append(item)
+        return tuple(projected)
 
     def read_gate(
         self,
@@ -352,21 +466,50 @@ class PostgresExerciseGateRepository:
         lock = " FOR UPDATE OF tracks, progress, assignments, states" if for_update else ""
         row = self._conn.execute(
             """
-            SELECT tracks.version AS track_version, active.revision_id AS plan_revision_id,
+            SELECT tracks.version AS track_version, tracks.language_id AS scope_language_id,
+                   active.revision_id AS plan_revision_id,
+                   progress.knowledge_key AS scope_knowledge_key,
                    progress.status AS progress_status, progress.version AS progress_version,
+                   nodes.required_capabilities_json AS node_capabilities_json,
                    assignments.id AS assignment_id, assignments.assignment_version,
                    assignments.started_at AS assignment_started_at,
                    assignments.document_id, slots.gate_key, slots.gate_kind,
-                   slots.assessment_contract_version, slots.required_capabilities_json AS slot_capabilities_json,
-                   slots.learner_prompt, bindings.id AS binding_id, bindings.requirement_kind,
+                   slots.assessment_contract_version,
+                   slots.required_capabilities_json AS slot_capabilities_json,
+                   slots.learner_prompt, slots.learner_prompt_hash,
+                   bindings.id AS binding_id,
+                   bindings.knowledge_key AS binding_knowledge_key,
+                   bindings.requirement_kind,
                    bindings.pass_policy_version, bindings.pass_threshold,
                    bindings.execution_requirement, bindings.binding_contract_hash,
-                   versions.id AS exercise_version_id, versions.language_id,
+                   versions.id AS exercise_version_id,
+                   versions.language_id AS language_id,
+                   versions.language_id AS exercise_language_id,
                    versions.exercise_key, versions.exercise_type, versions.version AS exercise_version,
-                   versions.title AS exercise_title, versions.learner_prompt_json,
-                   versions.starter_artifact_json, versions.required_capabilities_json,
+                   versions.source_kind, versions.title AS exercise_title,
+                   versions.learner_prompt_json, versions.starter_artifact_json,
+                   versions.required_capabilities_json,
+                   versions.required_capabilities_json AS exercise_capabilities_json,
                    versions.runtime_profile_key, versions.execution_required,
                    versions.content_hash AS exercise_content_hash,
+                   rubrics.rubric_hash AS stored_rubric_hash,
+                   rubrics.reference_answer_json,
+                   rubrics.score_policy_json,
+                   materializations.version_id AS materialization_version_id,
+                   materializations.item_handle AS materialization_handle,
+                   materializations.content_hash AS materialization_content_hash,
+                   materializations.exercise_version_id AS materialization_exercise_version_id,
+                   materializations.exercise_key AS materialization_exercise_key,
+                   materializations.exercise_version AS materialization_exercise_version,
+                   materializations.exercise_content_hash AS materialization_exercise_content_hash,
+                   materializations.rubric_hash AS materialization_rubric_hash,
+                   items.handle AS item_handle, items.item_kind, items.purpose AS item_purpose,
+                   items.knowledge_key AS item_knowledge_key,
+                   items.language_id AS item_language_id,
+                   items.required_capabilities_json AS item_capabilities_json,
+                   items.content_hash AS item_content_hash,
+                   item_public.public_json AS item_public_json,
+                   publication.state AS latest_publication_state,
                    states.id AS gate_state_id, states.state AS gate_state,
                    states.attempt_count, states.best_score, states.latest_attempt_id,
                    states.passing_attempt_id, states.version AS gate_version, states.passed_at
@@ -376,6 +519,9 @@ class PostgresExerciseGateRepository:
             JOIN tutor_track_node_progress AS progress
               ON (progress.track_id, progress.user_id) = (tracks.id, tracks.user_id)
              AND progress.knowledge_key = %s
+            JOIN tutor_track_plan_nodes AS nodes
+              ON (nodes.revision_id, nodes.track_id, nodes.user_id, nodes.knowledge_key) =
+                 (active.revision_id, tracks.id, tracks.user_id, progress.knowledge_key)
             JOIN tutor_lesson_assignments AS assignments
               ON (assignments.track_id, assignments.user_id, assignments.knowledge_key) =
                  (tracks.id, tracks.user_id, progress.knowledge_key)
@@ -384,6 +530,20 @@ class PostgresExerciseGateRepository:
             JOIN tutor_lesson_gate_bindings AS bindings
               ON (bindings.document_id, bindings.gate_key) = (slots.document_id, slots.gate_key)
             JOIN tutor_exercise_versions AS versions ON versions.id = bindings.exercise_version_id
+            JOIN tutor_exercise_private_rubrics AS rubrics
+              ON rubrics.exercise_version_id = versions.id
+            LEFT JOIN tutor_learning_item_practice_materializations AS materializations
+              ON materializations.exercise_version_id = versions.id
+            LEFT JOIN tutor_learning_item_versions AS items
+              ON items.id = materializations.version_id
+            LEFT JOIN tutor_learning_item_public_contents AS item_public
+              ON item_public.version_id = items.id
+            LEFT JOIN LATERAL (
+              SELECT events.state
+              FROM tutor_learning_item_publication_events AS events
+              WHERE events.version_id = items.id
+              ORDER BY events.state_version DESC LIMIT 1
+            ) AS publication ON true
             JOIN tutor_lesson_gate_states AS states
               ON states.lesson_assignment_id = assignments.id AND states.gate_binding_id = bindings.id
             WHERE tracks.id = %s AND tracks.user_id = %s AND slots.gate_key = %s
@@ -392,7 +552,29 @@ class PostgresExerciseGateRepository:
         ).fetchone()
         if row is None:
             raise PracticeNotFound("Lesson Gate was not found")
-        return dict(row)
+        gate = dict(row)
+        if for_update and gate.get("materialization_version_id") is not None:
+            version_id = str(gate["materialization_version_id"])
+            locked = self._conn.execute(
+                "SELECT id FROM tutor_learning_item_versions WHERE id = %s FOR UPDATE",
+                (version_id,),
+            ).fetchone()
+            publication = None
+            if locked is not None:
+                publication = self._conn.execute(
+                    """
+                    SELECT state
+                    FROM tutor_learning_item_publication_events
+                    WHERE version_id = %s
+                    ORDER BY state_version DESC
+                    LIMIT 1
+                    """,
+                    (version_id,),
+                ).fetchone()
+            gate["latest_publication_state"] = (
+                str(publication["state"]) if publication is not None else None
+            )
+        return gate
 
     def append_hint(
         self,
@@ -412,8 +594,6 @@ class PostgresExerciseGateRepository:
             gate_key=gate_key,
             for_update=True,
         )
-        if _int(gate["gate_version"]) != expected_gate_version:
-            raise PracticeVersionConflict("Lesson Gate version changed")
         existing = self._conn.execute(
             """
             SELECT * FROM tutor_exercise_hint_receipts
@@ -427,8 +607,13 @@ class PostgresExerciseGateRepository:
             if str(existing["request_hash"]) != request_hash:
                 raise PracticeIdempotencyConflict("hint idempotency key conflicts with stored request")
             replay = dict(existing)
+            replay["gate_version"] = expected_gate_version + 1
             replay["idempotent_replayed"] = True
             return replay
+        if _int(gate["gate_version"]) != expected_gate_version:
+            raise PracticeVersionConflict("Lesson Gate version changed")
+        if not gate_binding_compatibility(gate).actionable:
+            raise PracticeNotReady("Gate binding is incompatible with its assessment contract")
         count_row = self._conn.execute(
             """
             SELECT count(*)::int AS count FROM tutor_exercise_hint_receipts
@@ -474,6 +659,45 @@ class PostgresExerciseGateRepository:
         result["idempotent_replayed"] = False
         return result
 
+    def replay_gate_attempt(
+        self,
+        *,
+        user_id: str,
+        attempt_type: ExerciseAttemptType,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> dict[str, object] | None:
+        row = self._conn.execute(
+            """
+            SELECT attempts.*, submissions.id AS submission_id,
+                   results.outcome, results.score, results.safe_feedback_json,
+                   results.capability_scores_json,
+                   results.result_hash, results.terminal_at,
+                   links.execution_job_id, jobs.state AS execution_job_state
+            FROM tutor_exercise_attempts AS attempts
+            JOIN tutor_exercise_attempt_submissions AS submissions
+              ON submissions.attempt_id = attempts.id
+            LEFT JOIN tutor_exercise_attempt_results AS results
+              ON results.attempt_id = attempts.id
+            LEFT JOIN tutor_exercise_execution_links AS links
+              ON links.attempt_id = attempts.id
+            LEFT JOIN tutor_execution_jobs AS jobs ON jobs.id = links.execution_job_id
+            WHERE attempts.user_id = %s AND attempts.attempt_type = %s
+              AND attempts.idempotency_key = %s
+            FOR UPDATE OF attempts
+            """,
+            (user_id, attempt_type.value, idempotency_key),
+        ).fetchone()
+        if row is None:
+            return None
+        if str(row["request_hash"]) != request_hash:
+            raise PracticeIdempotencyConflict(
+                "Attempt idempotency key conflicts with stored request"
+            )
+        replay = dict(row)
+        replay["idempotent_replayed"] = True
+        return replay
+
     def create_gate_attempt(
         self,
         *,
@@ -500,6 +724,14 @@ class PostgresExerciseGateRepository:
             gate_key=gate_key,
             for_update=True,
         )
+        replay = self.replay_gate_attempt(
+            user_id=user_id,
+            attempt_type=attempt_type,
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
+        )
+        if replay is not None:
+            return replay
         if str(gate["progress_status"]) == "locked" or gate.get("assignment_started_at") is None:
             raise PracticeNotReady("Lesson must be started before attempting a Gate")
         if (
@@ -509,27 +741,13 @@ class PostgresExerciseGateRepository:
             or _int(gate["gate_version"]) != expected_gate_version
         ):
             raise PracticeVersionConflict("Gate Attempt scope version changed")
-        if str(gate["gate_state"]) == "passed":
-            raise PracticeNotReady("Passed Gate does not accept new Attempts")
         normalized = str(submission).replace("\r\n", "\n").replace("\r", "\n")
         if not normalized.strip() or len(normalized) > 48_000:
             raise PracticeRepositoryError("submission must contain 1..48000 characters")
-        existing = self._conn.execute(
-            """
-            SELECT attempts.*, submissions.id AS submission_id
-            FROM tutor_exercise_attempts AS attempts
-            JOIN tutor_exercise_attempt_submissions AS submissions ON submissions.attempt_id = attempts.id
-            WHERE attempts.user_id = %s AND attempts.attempt_type = %s AND attempts.idempotency_key = %s
-            FOR UPDATE OF attempts
-            """,
-            (user_id, attempt_type.value, idempotency_key),
-        ).fetchone()
-        if existing is not None:
-            if str(existing["request_hash"]) != request_hash:
-                raise PracticeIdempotencyConflict("Attempt idempotency key conflicts with stored request")
-            replay = dict(existing)
-            replay["idempotent_replayed"] = True
-            return replay
+        if not gate_binding_compatibility(gate).actionable:
+            raise PracticeNotReady("Gate binding is incompatible with its assessment contract")
+        if str(gate["gate_state"]) == "passed":
+            raise PracticeNotReady("Passed Gate does not accept new Attempts")
         hint_row = self._conn.execute(
             """
             SELECT count(*)::int AS count FROM tutor_exercise_hint_receipts

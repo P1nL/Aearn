@@ -106,7 +106,8 @@ source sequence 只用于 adapter 内部顺序与 receipt 审计；PostgreSQL、
 ## 2026-08-20 持久 thread 与 compaction 配置
 
 - 一个 `TutorConversation` 对应一个持久 App Server thread；fresh run 只创建新 turn。重启后执行 `thread/resume`，不能因 worker restart 创建第二个 conversation thread。
-- isolated config 必须同时包含 `model_context_window = 1000000`、`model_auto_compact_token_limit = 616000`、`model_auto_compact_token_limit_scope = "total"`。384000 output reserve 与 616000 input/auto-compact limit 从同一 capability 派生。
+- isolated config 必须同时包含 `model_context_window = 1000000`、`model_max_output_tokens = 61440`、`model_auto_compact_token_limit = 950000`、`model_auto_compact_token_limit_scope = "total"`。Codex 持久线程保留 1M 物理上下文，并在累计上下文达到 950K 时触发本地压缩；普通 `OpenAICompatibleClient` 的 128K 单次输入限制不套用到 Codex App Server 持久线程。
+- 950K 到 1M 仅余 50K，小于 60K 最大输出。因此 61,440 是全局允许的单次输出上限，不表示线程已达到 950K 时仍保证可生成满 60K；压缩应在后续生成前释放空间。
 - 当前 `aearn_deepseek` 只支持 local compaction；禁止配置或发送 remote compaction request。manual `thread/compact/start` 和 turn 内 `contextCompaction` 使用 fake App Server 验证。
 - owner-scoped raw reasoning/final answer 持久化在 PostgreSQL private runtime projection；public receipt 不含 raw text。commentary/summary 不显示。
 - 默认验证仍使用 fixture，不调用真实 provider。真实 provider smoke 继续要求新的明确批准，本任务没有授权调用。

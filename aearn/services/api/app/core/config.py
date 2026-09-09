@@ -8,7 +8,9 @@ from pydantic import BaseModel, Field, SecretStr, model_validator
 
 DEEPSEEK_V4_FLASH_MODEL = "deepseek-v4-flash"
 DEEPSEEK_V4_FLASH_CONTEXT_WINDOW_TOKENS = 1_000_000
-DEEPSEEK_V4_FLASH_MAX_OUTPUT_TOKENS = 384_000
+DEEPSEEK_V4_FLASH_INPUT_CONTEXT_TOKENS = 128 * 1_024
+DEEPSEEK_V4_FLASH_MAX_OUTPUT_TOKENS = 60 * 1_024
+DEEPSEEK_V4_FLASH_CODEX_AUTO_COMPACT_TOKENS = 950_000
 DEFAULT_TUTOR_CONTEXT_TOKEN_BUDGET = 512
 DEFAULT_TUTOR_MAX_OUTPUT_TOKENS = 1_200
 DEFAULT_TUTOR_DECISION_MAX_OUTPUT_TOKENS = 1_200
@@ -16,6 +18,11 @@ DEEPSEEK_V4_FLASH_TUTOR_DECISION_MAX_OUTPUT_TOKENS = 16_384
 DEFAULT_TUTOR_CONTEXT_WINDOW_TOKENS = 5_296
 DEFAULT_TUTOR_CONTEXT_PROTOCOL_RESERVE_TOKENS = 128
 DEFAULT_TUTOR_CONTEXT_SAFETY_MARGIN_TOKENS = 256
+DEEPSEEK_V4_FLASH_MAX_DYNAMIC_TARGET_TOKENS = (
+    DEEPSEEK_V4_FLASH_INPUT_CONTEXT_TOKENS
+    - DEFAULT_TUTOR_CONTEXT_PROTOCOL_RESERVE_TOKENS
+    - DEFAULT_TUTOR_CONTEXT_SAFETY_MARGIN_TOKENS
+)
 
 
 ROOT_DIR = Path(__file__).resolve().parents[4]
@@ -175,6 +182,14 @@ class Settings(BaseModel):
         ge=1,
         le=DEEPSEEK_V4_FLASH_CONTEXT_WINDOW_TOKENS,
     )
+    tutor_deepseek_v4_flash_input_limit_tokens: int = Field(
+        default_factory=lambda: _env_int(
+            "TUTOR_DEEPSEEK_V4_FLASH_INPUT_LIMIT_TOKENS",
+            str(DEEPSEEK_V4_FLASH_INPUT_CONTEXT_TOKENS),
+        ),
+        ge=1,
+        le=DEEPSEEK_V4_FLASH_INPUT_CONTEXT_TOKENS,
+    )
     tutor_deepseek_v4_flash_max_output_tokens: int = Field(
         default_factory=lambda: _env_int(
             "TUTOR_DEEPSEEK_V4_FLASH_MAX_OUTPUT_TOKENS",
@@ -241,10 +256,10 @@ class Settings(BaseModel):
     tutor_deepseek_v4_flash_max_dynamic_target_tokens: int = Field(
         default_factory=lambda: _env_int(
             "TUTOR_DEEPSEEK_V4_FLASH_MAX_DYNAMIC_TARGET_TOKENS",
-            "384000",
+            str(DEEPSEEK_V4_FLASH_MAX_DYNAMIC_TARGET_TOKENS),
         ),
         ge=1,
-        le=384_000,
+        le=DEEPSEEK_V4_FLASH_MAX_DYNAMIC_TARGET_TOKENS,
     )
     tutor_context_max_dynamic_target_tokens: int = Field(
         default_factory=lambda: _env_int("TUTOR_CONTEXT_MAX_DYNAMIC_TARGET_TOKENS", "512"),
@@ -259,11 +274,14 @@ class Settings(BaseModel):
         ge=1,
     )
     tutor_context_complex_target_tokens: int = Field(
-        default_factory=lambda: _env_int("TUTOR_CONTEXT_COMPLEX_TARGET_TOKENS", "192000"),
+        default_factory=lambda: _env_int("TUTOR_CONTEXT_COMPLEX_TARGET_TOKENS", "96000"),
         ge=1,
     )
     tutor_context_extended_target_tokens: int = Field(
-        default_factory=lambda: _env_int("TUTOR_CONTEXT_EXTENDED_TARGET_TOKENS", "384000"),
+        default_factory=lambda: _env_int(
+            "TUTOR_CONTEXT_EXTENDED_TARGET_TOKENS",
+            str(DEEPSEEK_V4_FLASH_MAX_DYNAMIC_TARGET_TOKENS),
+        ),
         ge=1,
     )
     tutor_context_warning_ratio: float = Field(
@@ -389,6 +407,12 @@ class Settings(BaseModel):
             >= self.tutor_deepseek_v4_flash_context_window_tokens
         ):
             raise ValueError("DeepSeek V4 Flash max output tokens must leave room within the context window")
+        if self.uses_deepseek_v4_flash_responses and (
+            self.tutor_deepseek_v4_flash_input_limit_tokens
+            + self.tutor_deepseek_v4_flash_max_output_tokens
+            > self.tutor_deepseek_v4_flash_context_window_tokens
+        ):
+            raise ValueError("DeepSeek V4 Flash request limits exceed the physical context window")
         if (
             self.tutor_deepseek_v4_flash_decision_max_output_tokens
             > self.tutor_deepseek_v4_flash_max_output_tokens
@@ -450,7 +474,10 @@ class Settings(BaseModel):
     @property
     def tutor_context_window_capacity_tokens(self) -> int:
         if self.uses_deepseek_v4_flash_responses:
-            return self.tutor_deepseek_v4_flash_context_window_tokens
+            return (
+                self.tutor_deepseek_v4_flash_input_limit_tokens
+                + self.tutor_deepseek_v4_flash_max_output_tokens
+            )
         return self.tutor_default_context_window_tokens
 
     @property
@@ -476,12 +503,9 @@ class Settings(BaseModel):
 
     @property
     def deepseek_v4_flash_input_hard_limit_tokens(self) -> int:
-        """Verified physical input budget shared by Tutor and Codex Runtime."""
+        """Application input limit within the larger physical model window."""
 
-        return (
-            self.tutor_deepseek_v4_flash_context_window_tokens
-            - self.tutor_deepseek_v4_flash_max_output_tokens
-        )
+        return self.tutor_deepseek_v4_flash_input_limit_tokens
 
     @property
     def tutor_max_output_tokens(self) -> int:

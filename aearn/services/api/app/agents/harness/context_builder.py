@@ -478,6 +478,17 @@ class TutorContextBuilder:
             sort_keys=True,
             separators=(",", ":"),
         )
+        if section is TutorContextSection.TEACHING_SESSION:
+            # Preserve the established character cap; the token estimator separately
+            # measures UTF-8 bytes. Do not silently tighten multilingual capacity.
+            # Keep JSON intact; build() rejects overflow instead of using a fragment.
+            return serialized, (
+                len(serialized) > self._config.max_source_characters
+                or _source_value_exceeds_limit(
+                    section=section, value=source.content,
+                    max_characters=self._config.max_source_characters,
+                )
+            )
         return (
             limit_text(serialized, self._config.max_source_characters),
             len(serialized) > self._config.max_source_characters

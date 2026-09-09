@@ -11,6 +11,7 @@ from typing import Protocol, cast
 from uuid import uuid4
 
 from psycopg import Connection
+from app.core.safe_diagnostics import log_safe_event
 
 from app.agents.harness.contracts import (
     TutorCheckpointReason,
@@ -76,6 +77,7 @@ logger = logging.getLogger(__name__)
 
 _DIRECTION_INTAKE_TIMEOUT_SECONDS = 45.0
 _DIRECTION_INTAKE_MAX_VISIBLE_TEXT_CHARS = 2_000
+_DIRECTION_INTAKE_MAX_REASONING_TEXT_CHARS = 16_000
 _DIRECTION_BOUND_CODES = frozenset(
     {
         "runtime_turn_time_exhausted",
@@ -83,6 +85,13 @@ _DIRECTION_BOUND_CODES = frozenset(
         "tool_deadline_exhausted",
         "tool_call_budget_exhausted",
         "tool_output_budget_exhausted",
+        "tool_repair_budget_exhausted",
+        "tool_conflict_budget_exhausted",
+        "runtime_tool_budget_exhausted",
+        "runtime_item_budget_exhausted",
+        "runtime_raw_notification_runaway",
+        "runtime_pending_bytes_exhausted",
+        "runtime_event_backpressure_exhausted",
     }
 )
 _DIRECTION_PROTOCOL_FATAL_CODES = frozenset(
@@ -94,7 +103,6 @@ _DIRECTION_PROTOCOL_FATAL_CODES = frozenset(
         "planning_direction_context_read_required",
         "planning_direction_intake_draft_forbidden",
         "planning_direction_protocol_invalid",
-        "tool_repair_budget_exhausted",
         "unknown_learning_plan_tool",
     }
 )
@@ -343,18 +351,13 @@ class CodexTutorRunDispatcher:
                         and event.phase in {None, "final_answer"}
                     ),
                 )
-                logger.info(
-                    "codex_runtime_projection",
-                    extra={
-                        "run_id": run_id,
-                        "runtime_event_kind": event.kind.value,
-                        "runtime_projection_sequence": receipt.projection_sequence,
-                        "runtime_source_delta_count": receipt.source_delta_count,
-                        "runtime_projection_duration_ms": max(
-                            0, round((perf_counter() - projection_started) * 1_000)
-                        ),
-                        "runtime_projection_status": receipt.projection_status.value,
-                    },
+                log_safe_event(
+                    logger, "codex_runtime_projection", level=logging.INFO,
+                    run_id=run_id, action_category=event.kind.value,
+                    projection_sequence=receipt.projection_sequence,
+                    source_delta_count=receipt.source_delta_count,
+                    duration_ms=max(0, round((perf_counter() - projection_started) * 1_000)),
+                    state=receipt.projection_status.value,
                 )
 
             result = self._host.run_turn(
@@ -377,6 +380,11 @@ class CodexTutorRunDispatcher:
                         if registry.intake_mode
                         else None
                     ),
+                    max_reasoning_text_chars=(
+                        _DIRECTION_INTAKE_MAX_REASONING_TEXT_CHARS
+                        if registry.intake_mode
+                        else None
+                    ),
                 ),
                 control_reader=control_reader.read,
                 initial_input_revision=leased.input_revision,
@@ -389,6 +397,21 @@ class CodexTutorRunDispatcher:
                 ),
             )
             result = _ensure_terminal_event(result)
+            log_safe_event(
+                logger, "codex_planning_runtime_result", level=logging.INFO,
+                run_id=run_id, conversation_id=leased.conversation_id,
+                code=result.safe_error_code, state=result.terminal_status.value,
+                termination_reason=result.metrics.termination_reason,
+                visible_chars=result.metrics.message_text_chars,
+                reasoning_chars=result.metrics.reasoning_text_chars,
+                total_text_chars=result.metrics.visible_text_chars,
+                effective_max_visible_chars=result.metrics.effective_max_visible_text_chars,
+                effective_max_reasoning_chars=result.metrics.effective_max_reasoning_text_chars,
+                effective_max_total_chars=result.metrics.effective_max_total_text_chars,
+                effective_timeout_seconds=result.metrics.effective_timeout_seconds,
+                tool_count=registry.call_count, tool_repair_count=registry.repair_count,
+                runtime_generation=thread.generation,
+            )
             terminal_event, terminal_sequence = _runtime_terminal_event(result)
             current = repository.load_snapshot(user_id=user_id, run_id=run_id)
             if current is None:
@@ -811,11 +834,6 @@ def _direction_fallback_source(
     registry: LearningPlanRuntimeToolRegistry,
     result: RuntimeTurnResult,
 ) -> str:
-    observed_codes = {item.code for item in registry.results}
-    if result.safe_error_code is not None:
-        observed_codes.add(result.safe_error_code)
-    if observed_codes & _DIRECTION_BOUND_CODES:
-        return "server_fallback_direction_bound"
     if registry.direction_protocol_invalid:
         return "server_fallback_invalid_direction"
     return "server_fallback_missing_direction"
@@ -825,13 +843,17 @@ def _direction_server_terminalization_allowed(
     registry: LearningPlanRuntimeToolRegistry,
     result: RuntimeTurnResult,
 ) -> bool:
+    if result.safe_error_code in _DIRECTION_BOUND_CODES:
+        return False
     if result.terminal_status is RuntimeTerminalStatus.INTERRUPTED:
         return False
     if result.terminal_status is RuntimeTerminalStatus.UNAVAILABLE:
-        return result.safe_error_code in _DIRECTION_BOUND_CODES
+        return False
     if result.terminal_status is RuntimeTerminalStatus.FAILED:
         return False
     for item in registry.results:
+        if item.code in _DIRECTION_BOUND_CODES:
+            return False
         if item.status in {
             LearningPlanToolStatus.CONFLICT,
             LearningPlanToolStatus.POLICY_BLOCKED,

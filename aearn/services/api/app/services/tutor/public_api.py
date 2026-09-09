@@ -17,6 +17,8 @@ from uuid import UUID
 
 from psycopg import Connection
 
+from app.services.tutor.terminal_error import terminal_error_code, terminal_error_message, terminal_is_recoverable
+
 from app.agents.harness.context_budget import build_tutor_context_budget_policy
 from app.agents.harness.contracts import TutorPolicySnapshot, TutorTerminalOutcome
 from app.core.config import Settings, get_settings
@@ -30,6 +32,7 @@ from app.services.learning.planning_facts import PlanningFactError, PostgresPlan
 from app.services.learning.planning_questions import PlanningQuestionCatalogError
 from app.services.learning.teaching_sessions import (
     TeachingSessionConflict,
+    TeachingSessionNotReady,
     TeachingSessionRepository,
 )
 from app.services.learning.track_repository import (
@@ -801,6 +804,9 @@ class TutorPublicService:
         idempotency_key: str,
     ) -> dict[str, object]:
         self._assert_user_exists(user_id)
+        self._prepare_teaching_admission(
+            user_id=user_id, conversation_id=None, learning_scope=learning_scope,
+        )
         now = datetime.now(UTC)
         try:
             catalog = compile_published_skill_catalog()
@@ -891,6 +897,9 @@ class TutorPublicService:
         idempotency_key: str,
     ) -> dict[str, object]:
         self._assert_user_exists(user_id)
+        self._prepare_teaching_admission(
+            user_id=user_id, conversation_id=conversation_id, learning_scope=learning_scope,
+        )
         now = datetime.now(UTC)
         try:
             catalog = compile_published_skill_catalog()
@@ -1642,6 +1651,13 @@ class TutorPublicService:
                         "public_message": public_message,
                     },
                 )
+            if terminal is TutorTerminalOutcome.CANCELLED and state.diagnostic_code != "legacy_continuation_requires_new_turn":
+                return TutorPublicSseEvent(
+                    sequence=event.event_sequence,
+                    event_type="run_state",
+                    terminal=True,
+                    data={**base, "status": state.snapshot.status.value, "terminal_outcome": terminal.value},
+                )
             code = _terminal_error_code(terminal, diagnostic_code=state.diagnostic_code)
             return TutorPublicSseEvent(
                 sequence=event.event_sequence,
@@ -1650,9 +1666,15 @@ class TutorPublicService:
                 data={
                     "error": {
                         "code": code,
-                        "message": _terminal_error_message(code),
+                        "message": terminal_error_message(
+                            code, recoverable=terminal_is_recoverable(
+                                terminal.value if terminal is not None else None, state.diagnostic_code,
+                            ),
+                        ),
                         "details": {"run_id": event.run_id},
-                        "recoverable": code in {"MODEL_UNAVAILABLE", "TUTOR_RUN_UNAVAILABLE", "TUTOR_LEGACY_CONTINUATION_REQUIRES_NEW_TURN"},
+                        "recoverable": terminal_is_recoverable(
+                            terminal.value if terminal is not None else None, state.diagnostic_code,
+                        ),
                     },
                     "public_message": public_message,
                 },
@@ -1667,6 +1689,32 @@ class TutorPublicService:
             },
             terminal=state.terminal_outcome is not None,
         )
+
+    def _prepare_teaching_admission(
+        self, *, user_id: str, conversation_id: str | None,
+        learning_scope: LearningScope | None,
+    ) -> None:
+        # No knowledge-bound task means the existing general track Q&A path,
+        # not a managed lesson. Never infer a teaching target from chat text.
+        if (
+            learning_scope is None
+            or learning_scope.scope_kind is not LearningScopeKind.LEARNING_TRACK
+            or learning_scope.task_kind is not LearningTaskKind.LESSON_TEACHING
+            or learning_scope.knowledge_key is None
+            or learning_scope.learning_track_id is None
+        ):
+            return
+        try:
+            self._teaching_sessions.prepare_learner_message_admission(
+                user_id=user_id, track_id=learning_scope.learning_track_id,
+                knowledge_key=learning_scope.knowledge_key, conversation_id=conversation_id,
+            )
+            # First-turn admission creates a new conversation, so it cannot bind
+            # an already prepared segment in the track's existing conversation.
+            if conversation_id is None:
+                raise TeachingSessionNotReady("use the prepared teaching conversation")
+        except TeachingSessionNotReady as exc:
+            raise _teaching_not_ready() from exc
 
     def _bind_teaching_scope(
         self, *, scope: ScopeSnapshot, run_id: str, message_id: str, input_revision: int,
@@ -1684,6 +1732,8 @@ class TutorPublicService:
                 track_id=scope.learning_track_id, knowledge_key=scope.knowledge_key,
                 message_id=message_id, input_revision=input_revision,
             )
+        except TeachingSessionNotReady as exc:
+            raise _teaching_not_ready() from exc
         except TeachingSessionConflict as exc:
             raise TutorPublicApiError(
                 "TEACHING_AUTHORITY_CONFLICT",
@@ -1936,7 +1986,7 @@ def _timeline_payload(item: TutorConversationTimelineRecord) -> dict[str, object
                 "id": item.item_id,
                 "turn_id": item.turn_id,
                 "code": item.error_code,
-                "message": "Tutor 暂时无法完成本轮处理，请重试。",
+                "message": terminal_error_message(item.error_code, recoverable=item.error_recoverable),
                 "recoverable": item.error_recoverable,
                 "created_at": _iso(item.created_at),
             }
@@ -2103,28 +2153,16 @@ def _terminal_error_code(
     *,
     diagnostic_code: str | None = None,
 ) -> str:
-    if diagnostic_code == "legacy_continuation_requires_new_turn":
-        return "TUTOR_LEGACY_CONTINUATION_REQUIRES_NEW_TURN"
-    if outcome is TutorTerminalOutcome.MODEL_UNAVAILABLE:
-        return "MODEL_UNAVAILABLE"
-    if outcome is TutorTerminalOutcome.BLOCKED_POLICY:
-        return "CAPABILITY_DENIED"
-    if outcome is TutorTerminalOutcome.CANCELLED:
-        return "RUN_NOT_ACTIVE"
-    if outcome is TutorTerminalOutcome.BUDGET_EXHAUSTED:
-        return "TUTOR_RUN_UNAVAILABLE"
-    return "TUTOR_RUN_FAILED"
+    return terminal_error_code(outcome.value if outcome is not None else None, diagnostic_code)
 
 
-def _terminal_error_message(code: str) -> str:
-    return {
-        "MODEL_UNAVAILABLE": "Tutor model service is unavailable; retry later.",
-        "CAPABILITY_DENIED": "Tutor policy did not allow this action.",
-        "RUN_NOT_ACTIVE": "Tutor run is no longer active.",
-        "TUTOR_RUN_UNAVAILABLE": "Tutor run reached a temporary limit.",
-        "TUTOR_RUN_FAILED": "Tutor run could not complete safely.",
-        "TUTOR_LEGACY_CONTINUATION_REQUIRES_NEW_TURN": "This legacy turn cannot continue; start a new Tutor turn.",
-    }[code]
+def _teaching_not_ready() -> TutorPublicApiError:
+    return TutorPublicApiError(
+        "TEACHING_NOT_READY",
+        "教学尚未准备就绪，请先准备课程并打开当前知识点的教学会话。",
+        status_code=409,
+        recoverable=True,
+    )
 
 
 def _idempotency_conflict() -> TutorPublicApiError:

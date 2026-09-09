@@ -6,6 +6,16 @@
 `.env.example`。
 **范围：** 正式实现只在 `aearn/` 下；仓库根目录用于 Git、Trellis 和文档。
 
+## 2026-09-08：真实课程测试前置与数据保留
+
+- 在 Windows 使用 PowerShell 7 (`pwsh`)，不得通过嵌套脚本回退到 Windows PowerShell 5.1。
+- 真实模型测试前先核对已应用的 schema；`tutor_lesson_authoring_attempt_receipts.diagnostic_json` 必须是非空 jsonb 对象、默认 `{}`。已有库先备份，再通过现有增量 schema 修复，不能通过清库绕过兼容问题。
+- 回归测试设置独立的 `DATABASE_URL`，先查询 `current_database()` 确认目标；不要让会 bootstrap/清理 fixture 的测试使用待检查的真实测试数据所在库。离线验证显式设置 `LLM_TYPE=disabled`。
+- Grounding 的 official 标签不等于真实抓取。新课程只准入带 `grounding_provenance_v1/http_fetch` 的、与来源/URL/正文哈希一致的片段。历史 metadata 缺失为 unknown，不自动升级为可信来源；fixture 只供显式测试 seam。
+- 网络抓取在数据库事务之外执行。仅在指定 source 的所有 seed 成功、所有片段来源校验通过后，将 `persist_grounding_reindex_report(..., mode="fetch")` 与 `replace_grounding_chunks(..., source_ids=(指定来源,))` 在同一事务提交。失败保留原索引。不要运行 fixture reindex 来修复真实课程。
+- Python tutorial 的 seed 包含目录、introduction 与 controlflow，避免仅抓目录却声称获得变量/控制流正文。新索引不会重写历史冻结 LessonDocument。
+- knowledge-bound `lesson_teaching` 输入必须已有当前 TeachingSession/checkpoint。准备未完成时返回 `409 TEACHING_NOT_READY`，不得先调用通用模型再等待工件出现；已有幂等输入依照原绑定回放。
+
 ## 1. 必需工具
 
 | 工具 | 需求 | 用途 |
@@ -84,8 +94,9 @@ fixture、日志或 Git。
 
 ```env
 TUTOR_DEEPSEEK_V4_FLASH_CONTEXT_WINDOW_TOKENS=1000000
-TUTOR_DEEPSEEK_V4_FLASH_MAX_OUTPUT_TOKENS=384000
-TUTOR_DEEPSEEK_V4_FLASH_MAX_DYNAMIC_TARGET_TOKENS=384000
+TUTOR_DEEPSEEK_V4_FLASH_INPUT_LIMIT_TOKENS=131072
+TUTOR_DEEPSEEK_V4_FLASH_MAX_OUTPUT_TOKENS=61440
+TUTOR_DEEPSEEK_V4_FLASH_MAX_DYNAMIC_TARGET_TOKENS=130688
 TUTOR_CONTEXT_WINDOW_TOKENS=5296
 TUTOR_CONTEXT_OUTPUT_RESERVE_TOKENS=1200
 TUTOR_CONTEXT_PROTOCOL_RESERVE_TOKENS=128
@@ -93,19 +104,22 @@ TUTOR_CONTEXT_SAFETY_MARGIN_TOKENS=256
 TUTOR_CONTEXT_MAX_DYNAMIC_TARGET_TOKENS=512
 TUTOR_CONTEXT_COMPACT_TARGET_TOKENS=16000
 TUTOR_CONTEXT_NORMAL_TARGET_TOKENS=64000
-TUTOR_CONTEXT_COMPLEX_TARGET_TOKENS=192000
-TUTOR_CONTEXT_EXTENDED_TARGET_TOKENS=384000
+TUTOR_CONTEXT_COMPLEX_TARGET_TOKENS=96000
+TUTOR_CONTEXT_EXTENDED_TARGET_TOKENS=130688
 TUTOR_CONTEXT_WARNING_RATIO=0.8
 TUTOR_CONTEXT_CRITICAL_RATIO=0.95
 TUTOR_CONTEXT_MAX_EXPANSIONS=1
 TUTOR_CONTEXT_FIXED_MODE=
 ```
 
-DeepSeek V4 Flash 的总窗口为 1M，输出 reserve 为 384K，物理输入 hard limit
-因此是 616K；616K 是能力上限，不是每轮填满目标。planner 以共享的确定性
+Aearn 保留 DeepSeek V4 Flash 的 1M（1,000,000 tokens）物理上下文能力，同时将
+普通单次模型请求的输入限制为 128K（131,072 tokens），输出限制为 60K
+（61,440 tokens）。Tutor 的预算 capability 为了复用“输入 + 输出 reserve”核算模型，
+内部记录 192,512；该值不是模型物理窗口。131,072 是普通请求输入能力上限，
+不是每轮填满目标。planner 以共享的确定性
 serializer dry-build 完整请求，覆盖 system/teaching policy、严格 JSON contract、
 current input、context、metadata、JSON envelope、protocol reserve 与 safety margin，
-然后只把剩余 optional budget 交给 ContextBuilder。16K/64K/192K/384K 是可配置
+然后只把剩余 optional budget 交给 ContextBuilder。16K/64K/96K/130,688 是可配置
 档位目标，仍会被 provider hard limit 和 dynamic cap 裁剪。精确
 `deepseek-v4-flash` 使用 `TUTOR_DEEPSEEK_V4_FLASH_MAX_DYNAMIC_TARGET_TOKENS`；
 其他模型默认使用保守的 `TUTOR_CONTEXT_MAX_DYNAMIC_TARGET_TOKENS=512`，但可以在

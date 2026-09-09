@@ -2,6 +2,8 @@
 # ruff: noqa: F403, F405
 from __future__ import annotations
 
+from app.services.tutor.terminal_error import terminal_error_code, terminal_is_recoverable
+
 from ._namespace import *
 from ._mixin import PersistenceMixin
 
@@ -542,6 +544,17 @@ class ConversationPersistenceMixin(PersistenceMixin):
               WHERE jobs.conversation_id = %s
                 AND jobs.user_id = %s
                 AND jobs.state = 'dead'
+                AND jobs.id = (
+                  SELECT first_job.id FROM tutor_interactive_dispatch_jobs AS first_job
+                  WHERE first_job.run_id = jobs.run_id AND first_job.user_id = jobs.user_id
+                    AND first_job.conversation_id = jobs.conversation_id AND first_job.state = 'dead'
+                  ORDER BY first_job.dead_at, first_job.id LIMIT 1
+                )
+                AND NOT EXISTS (
+                  SELECT 1 FROM tutor_runtime_public_errors AS existing_error
+                  WHERE existing_error.run_id = jobs.run_id AND existing_error.user_id = jobs.user_id
+                    AND existing_error.conversation_id = jobs.conversation_id
+                )
                 AND conversations.visibility = 'learner'
                 AND conversations.kind = 'interactive'
                 AND conversations.status = 'active'
@@ -565,15 +578,59 @@ class ConversationPersistenceMixin(PersistenceMixin):
               JOIN tutor_conversations AS conversations ON conversations.id = errors.conversation_id
               WHERE errors.conversation_id = %s
                 AND errors.user_id = %s
+                AND errors.id = (
+                  SELECT first_error.id FROM tutor_runtime_public_errors AS first_error
+                  WHERE first_error.run_id = errors.run_id AND first_error.user_id = errors.user_id
+                    AND first_error.conversation_id = errors.conversation_id
+                  ORDER BY first_error.created_at, first_error.id LIMIT 1
+                )
                 AND conversations.visibility = 'learner'
                 AND conversations.kind = 'interactive'
                 AND conversations.status = 'active'
             """
-            params.extend((conversation_id, user_id, conversation_id, user_id))
+            # Historical and new Harness failures share a read-only projection.
+            # A namespaced UUID is stable without backfill or a new public table.
+            timeline += """
+              UNION ALL
+              SELECT 'error'::text,
+                     md5('tutor-terminal-error-v1:' || runs.id::text)::uuid,
+                     COALESCE(runs.terminal_at, runs.created_at), 40,
+                     NULL::text, NULL::text, ''::text, '[]'::jsonb,
+                     NULL::uuid, runs.id, NULL::text, false,
+                     NULL::uuid, NULL::uuid
+              FROM tutor_runs AS runs
+              JOIN tutor_conversations AS conversations ON conversations.id = runs.conversation_id
+              WHERE runs.conversation_id = %s AND runs.user_id = %s
+                AND conversations.user_id = runs.user_id
+                AND conversations.visibility = 'learner'
+                AND conversations.kind = 'interactive' AND conversations.status = 'active'
+                AND runs.origin = 'interactive' AND runs.runtime_kind = 'harness_v1'
+                AND runs.terminal_outcome IN ('failed', 'model_unavailable', 'blocked_policy', 'budget_exhausted')
+                AND runs.cancelled_at IS NULL AND runs.superseded_by_run_id IS NULL
+                AND NOT EXISTS (
+                  SELECT 1 FROM tutor_interactive_dispatch_jobs AS jobs
+                  WHERE jobs.run_id = runs.id AND jobs.user_id = runs.user_id
+                    AND jobs.conversation_id = runs.conversation_id AND jobs.state = 'dead'
+                )
+                AND NOT EXISTS (
+                  SELECT 1 FROM tutor_runtime_public_errors AS errors
+                  WHERE errors.run_id = runs.id AND errors.user_id = runs.user_id
+                    AND errors.conversation_id = runs.conversation_id
+                )
+            """
+            params.extend((conversation_id, user_id, conversation_id, user_id, conversation_id, user_id))
         timeline += """
             )
-            SELECT * FROM timeline
+            SELECT * FROM (
+              SELECT timeline.*,
+                     authority.terminal_outcome, authority.terminal_diagnostic_code
+              FROM timeline
+              LEFT JOIN tutor_runs AS authority
+                ON timeline.kind = 'error' AND authority.id = timeline.turn_id
+                  AND authority.user_id = %s AND authority.conversation_id = %s
+            ) AS projected_timeline
         """
+        params.extend((user_id, conversation_id))
         if after is not None:
             timeline += """
             WHERE (
@@ -720,8 +777,14 @@ class ConversationPersistenceMixin(PersistenceMixin):
                         created_at=created_at,
                         sort_rank=_as_int(row.get("sort_rank"), 0),
                         turn_id=_optional_string(row.get("turn_id")),
-                        error_code=str(row.get("error_code") or "TUTOR_DISPATCH_FAILED"),
-                        error_recoverable=row.get("error_recoverable") is True,
+                        error_code=str(row.get("error_code") or terminal_error_code(
+                            _optional_string(row.get("terminal_outcome")),
+                            _optional_string(row.get("terminal_diagnostic_code")),
+                        )),
+                        error_recoverable=terminal_is_recoverable(
+                            _optional_string(row.get("terminal_outcome")),
+                            _optional_string(row.get("terminal_diagnostic_code")),
+                        ),
                     )
                 )
                 continue

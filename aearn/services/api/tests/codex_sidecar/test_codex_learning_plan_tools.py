@@ -326,7 +326,10 @@ async def test_language_hint_is_allowed_only_with_same_continue_action_after_rea
     ("calls", "expected_code"),
     [
         (
-            [(PLANNING_CONTEXT_TOOL_NAME, {"direction_action": "continue_mainline"})],
+            [
+                (PLANNING_CONTEXT_TOOL_NAME, {"direction_action": "continue_mainline"}),
+                (PLANNING_CONTEXT_TOOL_NAME, {"direction_action": "continue_mainline"}),
+            ],
             "planning_direction_context_read_required",
         ),
         (

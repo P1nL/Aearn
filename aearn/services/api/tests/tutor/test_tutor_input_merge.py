@@ -169,16 +169,16 @@ def test_interactive_turn_uses_deepseek_v4_flash_context_window_after_output_res
             (run_id, user_id),
         ).fetchone()
     assert row is not None
-    assert row["policy_json"]["context_token_budget"] == 616_000
+    assert row["policy_json"]["context_token_budget"] == 131_072
     budget_policy = row["policy_json"]["context_budget_policy"]
-    assert budget_policy["capability"]["context_window_tokens"] == 1_000_000
-    assert budget_policy["capability"]["max_output_reserve_tokens"] == 384_000
-    assert budget_policy["capability"]["capability_version"] == "deepseek-v4-flash-responses-v1"
+    assert budget_policy["capability"]["context_window_tokens"] == 192_512
+    assert budget_policy["capability"]["max_output_reserve_tokens"] == 61_440
+    assert budget_policy["capability"]["capability_version"] == "deepseek-v4-flash-responses-v2"
     assert budget_policy["mode_targets"] == {
         "compact": 16_000,
         "normal": 64_000,
-        "complex": 192_000,
-        "extended": 384_000,
+        "complex": 96_000,
+        "extended": 130_688,
     }
     assert budget_policy["max_expansions"] == 1
     assert budget_policy["estimator_version"] == "utf8_bytes_v1"

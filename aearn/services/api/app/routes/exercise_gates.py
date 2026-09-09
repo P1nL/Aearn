@@ -1,4 +1,5 @@
 """Verified-only Lesson Gate and module diagnostic HTTP routes."""
+
 from __future__ import annotations
 
 import json
@@ -19,8 +20,17 @@ from app.models.exercise_gates import (
     ModuleDiagnosticAttemptRequest,
     PrepareLessonGateRequest,
 )
-from app.services.learning.practice.model_review_authoring import dispatch_model_review_authoring_run
-from app.services.learning.practice.service import ExerciseGateService, ExerciseGateServiceError
+from app.services.learning.practice.model_review_authoring import (
+    dispatch_model_review_authoring_run,
+)
+from app.services.learning.practice.model_review_semantics import (
+    PrimarySemanticReviewer,
+    SemanticReviewUnavailable,
+)
+from app.services.learning.practice.service import (
+    ExerciseGateService,
+    ExerciseGateServiceError,
+)
 from app.services.tutor.cutover import runtime_gate_error
 
 
@@ -45,7 +55,9 @@ def read_lesson_gates(
     )
 
 
-@router.post("/{track_id}/lessons/{knowledge_key}/gates/{gate_key}/prepare", response_model=None)
+@router.post(
+    "/{track_id}/lessons/{knowledge_key}/gates/{gate_key}/prepare", response_model=None
+)
 def prepare_lesson_gate(
     track_id: str,
     knowledge_key: str,
@@ -79,12 +91,20 @@ def prepare_lesson_gate(
     if should_dispatch:
         run = body.get("review_authoring_run")
         if isinstance(run, dict) and isinstance(run.get("run_id"), str):
-            background_tasks.add_task(dispatch_model_review_authoring_run, run["run_id"])
-    code = status.HTTP_202_ACCEPTED if body.get("status") == "preparing" else response.status_code
+            background_tasks.add_task(
+                dispatch_model_review_authoring_run, run["run_id"]
+            )
+    code = (
+        status.HTTP_202_ACCEPTED
+        if body.get("status") == "preparing"
+        else response.status_code
+    )
     return JSONResponse(status_code=code, content=body)
 
 
-@router.post("/{track_id}/lessons/{knowledge_key}/gates/{gate_key}/hints", response_model=None)
+@router.post(
+    "/{track_id}/lessons/{knowledge_key}/gates/{gate_key}/hints", response_model=None
+)
 def request_lesson_gate_hint(
     track_id: str,
     knowledge_key: str,
@@ -106,7 +126,9 @@ def request_lesson_gate_hint(
     )
 
 
-@router.post("/{track_id}/lessons/{knowledge_key}/gates/{gate_key}/evidence", response_model=None)
+@router.post(
+    "/{track_id}/lessons/{knowledge_key}/gates/{gate_key}/evidence", response_model=None
+)
 def read_model_review_evidence(
     track_id: str,
     knowledge_key: str,
@@ -128,7 +150,9 @@ def read_model_review_evidence(
     )
 
 
-@router.post("/{track_id}/lessons/{knowledge_key}/gates/{gate_key}/attempts", response_model=None)
+@router.post(
+    "/{track_id}/lessons/{knowledge_key}/gates/{gate_key}/attempts", response_model=None
+)
 def create_lesson_gate_attempt(
     track_id: str,
     knowledge_key: str,
@@ -136,6 +160,76 @@ def create_lesson_gate_attempt(
     payload: LessonGateAttemptRequest,
     request: Request,
 ) -> JSONResponse:
+    unavailable = _require_verified(request, payload.user_id)
+    if unavailable is not None:
+        return unavailable
+    idempotency_key = _idempotency_key(request, payload.client_action_id)
+    if payload.review_submission is not None:
+        try:
+            with connect() as prepare_conn:
+                prepared = ExerciseGateService(
+                    prepare_conn
+                ).prepare_model_review_attempt(
+                    user_id=payload.user_id,
+                    track_id=track_id,
+                    knowledge_key=knowledge_key,
+                    gate_key=gate_key,
+                    review_submission=payload.review_submission.model_dump(mode="json"),
+                    expected_track_version=payload.expected_track_version,
+                    expected_progress_version=payload.expected_progress_version,
+                    expected_assignment_version=payload.expected_assignment_version,
+                    expected_gate_version=payload.expected_gate_version,
+                    idempotency_key=idempotency_key,
+                )
+                prepare_conn.rollback()
+            if prepared.replay is not None:
+                return JSONResponse(
+                    status_code=status.HTTP_200_OK,
+                    content=jsonable_encoder(prepared.replay),
+                )
+            semantic_receipt = PrimarySemanticReviewer().review(
+                prepared.semantic_request,
+                deterministic_pass=prepared.deterministic_result.outcome.value
+                == "passed",
+            )
+            with connect() as finalize_conn:
+                result = ExerciseGateService(finalize_conn).attempt_gate(
+                    user_id=payload.user_id,
+                    track_id=track_id,
+                    knowledge_key=knowledge_key,
+                    gate_key=gate_key,
+                    attempt_type=payload.attempt_type,
+                    submission=None,
+                    review_submission=payload.review_submission.model_dump(mode="json"),
+                    expected_track_version=payload.expected_track_version,
+                    expected_progress_version=payload.expected_progress_version,
+                    expected_assignment_version=payload.expected_assignment_version,
+                    expected_gate_version=payload.expected_gate_version,
+                    idempotency_key=idempotency_key,
+                    prepared_model_review=prepared,
+                    semantic_receipt=semantic_receipt,
+                )
+                finalize_conn.commit()
+            return JSONResponse(
+                status_code=status.HTTP_200_OK, content=jsonable_encoder(result)
+            )
+        except SemanticReviewUnavailable:
+            return error_response(
+                request,
+                code="MODEL_REVIEW_SEMANTIC_UNAVAILABLE",
+                message="语义审查暂时不可用，请稍后重试。",
+                status_code=503,
+                recoverable=True,
+            )
+        except ExerciseGateServiceError as exc:
+            return error_response(
+                request,
+                code=exc.code,
+                message=exc.message,
+                status_code=exc.status_code,
+                details=exc.details,
+                recoverable=exc.recoverable,
+            )
     return _write(
         request,
         payload.user_id,
@@ -146,20 +240,20 @@ def create_lesson_gate_attempt(
             gate_key=gate_key,
             attempt_type=payload.attempt_type,
             submission=payload.submission,
-            review_submission=payload.review_submission.model_dump(mode="json")
-            if payload.review_submission is not None
-            else None,
+            review_submission=None,
             expected_track_version=payload.expected_track_version,
             expected_progress_version=payload.expected_progress_version,
             expected_assignment_version=payload.expected_assignment_version,
             expected_gate_version=payload.expected_gate_version,
-            idempotency_key=_idempotency_key(request, payload.client_action_id),
+            idempotency_key=idempotency_key,
         ),
         accepted_if_pending=True,
     )
 
 
-@router.get("/{track_id}/lessons/{knowledge_key}/attempts/{attempt_id}", response_model=None)
+@router.get(
+    "/{track_id}/lessons/{knowledge_key}/attempts/{attempt_id}", response_model=None
+)
 def read_lesson_gate_attempt(
     track_id: str,
     knowledge_key: str,
@@ -199,7 +293,9 @@ def create_module_diagnostic(
     )
 
 
-@router.get("/{track_id}/modules/{module_key}/diagnostics/{session_id}", response_model=None)
+@router.get(
+    "/{track_id}/modules/{module_key}/diagnostics/{session_id}", response_model=None
+)
 def read_module_diagnostic(
     track_id: str,
     module_key: str,
@@ -249,7 +345,10 @@ def create_module_diagnostic_attempt(
     )
 
 
-@router.post("/{track_id}/modules/{module_key}/diagnostics/{session_id}/confirm-skip", response_model=None)
+@router.post(
+    "/{track_id}/modules/{module_key}/diagnostics/{session_id}/confirm-skip",
+    response_model=None,
+)
 def confirm_module_diagnostic_skip(
     track_id: str,
     module_key: str,
@@ -281,7 +380,11 @@ def _read(
     if unavailable is not None:
         return unavailable
     result = _call(request, action)
-    return result if isinstance(result, JSONResponse) else JSONResponse(status_code=200, content=jsonable_encoder(result))
+    return (
+        result
+        if isinstance(result, JSONResponse)
+        else JSONResponse(status_code=200, content=jsonable_encoder(result))
+    )
 
 
 def _write(
@@ -294,10 +397,14 @@ def _write(
     unavailable = _require_verified(request, user_id)
     if unavailable is not None:
         return unavailable
-    result = _call(request, action)
+    result = _call(request, action, commit=True)
     if isinstance(result, JSONResponse):
         return result
-    code = status.HTTP_202_ACCEPTED if accepted_if_pending and result.get("status") == "pending" else status.HTTP_200_OK
+    code = (
+        status.HTTP_202_ACCEPTED
+        if accepted_if_pending and result.get("status") == "pending"
+        else status.HTTP_200_OK
+    )
     return JSONResponse(status_code=code, content=jsonable_encoder(result))
 
 
@@ -318,11 +425,18 @@ def _require_verified(request: Request, user_id: str) -> JSONResponse | None:
 def _call(
     request: Request,
     action: Callable[[ExerciseGateService], dict[str, object]],
+    *,
+    commit: bool = False,
 ) -> dict[str, object] | JSONResponse:
     with connect() as conn:
         service = ExerciseGateService(conn)
         try:
-            return action(service)
+            result = action(service)
+            if commit:
+                # Preflight reads may already own an implicit outer transaction;
+                # nested service transaction blocks then release savepoints only.
+                conn.commit()
+            return result
         except ExerciseGateServiceError as exc:
             conn.rollback()
             return error_response(

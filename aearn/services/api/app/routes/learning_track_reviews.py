@@ -1,4 +1,5 @@
 """Verified-only HTTP routes for track-scoped ReviewSession."""
+
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -17,6 +18,10 @@ from app.models.review_sessions import (
     ReviewWarmupRequest,
 )
 from app.services.learning.reviews.service import ReviewService, ReviewServiceError
+from app.services.learning.practice.model_review_semantics import (
+    PrimarySemanticReviewer,
+    SemanticReviewUnavailable,
+)
 from app.services.tutor.cutover import runtime_gate_error
 
 
@@ -136,6 +141,67 @@ def create_review_attempt(
     payload: ReviewAttemptRequest,
     request: Request,
 ) -> JSONResponse:
+    unavailable = _require_verified(request, payload.user_id)
+    if unavailable is not None:
+        return unavailable
+    key = _idempotency_key(request, payload.client_action_id)
+    if payload.review_submission is not None:
+        try:
+            with connect() as prepare_conn:
+                prepared = ReviewService(prepare_conn).prepare_model_review_attempt(
+                    user_id=payload.user_id,
+                    track_id=track_id,
+                    session_id=session_id,
+                    item_id=item_id,
+                    review_submission=payload.review_submission.model_dump(mode="json"),
+                    expected_session_version=payload.expected_session_version,
+                    expected_item_version=payload.expected_item_version,
+                    idempotency_key=key,
+                )
+                prepare_conn.rollback()
+            if prepared.replay is not None:
+                return JSONResponse(
+                    status_code=200, content=jsonable_encoder(prepared.replay)
+                )
+            assert prepared.deterministic_result is not None
+            receipt = PrimarySemanticReviewer().review(
+                prepared.semantic_request,
+                deterministic_pass=prepared.deterministic_result.outcome.value
+                == "passed",
+            )
+            with connect() as finalize_conn:
+                result = ReviewService(finalize_conn).attempt_item(
+                    user_id=payload.user_id,
+                    track_id=track_id,
+                    session_id=session_id,
+                    item_id=item_id,
+                    submission=None,
+                    review_submission=payload.review_submission.model_dump(mode="json"),
+                    expected_session_version=payload.expected_session_version,
+                    expected_item_version=payload.expected_item_version,
+                    idempotency_key=key,
+                    prepared_model_review=prepared,
+                    semantic_receipt=receipt,
+                )
+                finalize_conn.commit()
+            return JSONResponse(status_code=200, content=jsonable_encoder(result))
+        except SemanticReviewUnavailable:
+            return error_response(
+                request,
+                code="MODEL_REVIEW_SEMANTIC_UNAVAILABLE",
+                message="语义审查暂时不可用，请稍后重试。",
+                status_code=503,
+                recoverable=True,
+            )
+        except ReviewServiceError as exc:
+            return error_response(
+                request,
+                code=exc.code,
+                message=exc.message,
+                status_code=exc.status_code,
+                details=exc.details,
+                recoverable=exc.recoverable,
+            )
     return _write(
         request,
         payload.user_id,
@@ -145,14 +211,10 @@ def create_review_attempt(
             session_id=session_id,
             item_id=item_id,
             submission=payload.submission,
-            review_submission=(
-                payload.review_submission.model_dump(mode="json")
-                if payload.review_submission is not None
-                else None
-            ),
+            review_submission=None,
             expected_session_version=payload.expected_session_version,
             expected_item_version=payload.expected_item_version,
-            idempotency_key=_idempotency_key(request, payload.client_action_id),
+            idempotency_key=key,
         ),
         accepted_if_pending=True,
     )
@@ -210,9 +272,13 @@ def _read(
     if unavailable is not None:
         return unavailable
     result = _call(request, action)
-    return result if isinstance(result, JSONResponse) else JSONResponse(
-        status_code=200,
-        content=jsonable_encoder(result),
+    return (
+        result
+        if isinstance(result, JSONResponse)
+        else JSONResponse(
+            status_code=200,
+            content=jsonable_encoder(result),
+        )
     )
 
 

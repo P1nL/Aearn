@@ -9,9 +9,9 @@ from app.services.learning.lesson_authoring_feedback import (
 from app.services.learning.lesson_authoring import (
     LessonAuthoringFailure, LessonAuthoringRequest, PrimaryLessonDocumentAuthor,
 )
-from app.core.config import get_settings
+from app.core.config import Settings
 from app.services.llm.llm_client import LLMInvalidResponseError, LLMInvalidResponseKind
-from app.services.llm.contracts import LLMUsage
+from app.services.llm.contracts import LLMResponseDiagnostics, LLMUsage
 
 
 def test_feedback_is_closed_bounded_and_hash_stable():
@@ -48,7 +48,11 @@ def test_primary_adapter_preserves_safe_invalid_metadata(kind, repairable):
     class Client:
         def complete_json(self, *args, **kwargs):
             raise LLMInvalidResponseError("SECRET RAW PROVIDER BODY", kind=kind, usage=usage, model="safe-model")
-    settings = get_settings().model_copy(update={"llm_provider_type": "deepseek", "llm_model": "deepseek-v4-flash"})
+    # Explicit real fields keep this injected-client test independent of LLM_TYPE.
+    settings = Settings(
+        llm_type="deepseek", deepseek_model="deepseek-v4-flash",
+        deepseek_api_key="fake-test-key", deepseek_base_url="https://provider.invalid",
+    )
     from app.services.learning.lesson_authoring import LessonAuthoringEvidence
     evidence = LessonAuthoringEvidence("S1", "Python", "Python", "official", "3", "rolling", (), "Evidence")
     request = LessonAuthoringRequest("standard", "python", "python.variables", "Variables", "Learn", "beginner", (), "unseen", 0, (evidence,))
@@ -95,3 +99,83 @@ def test_candidate_feedback_locations_do_not_echo_values(defect, stage, location
     feedback = LessonAuthorFeedback("standard", stage, 1, result.value.issues)
     assert "SECRET_PROVIDER_FIELD" not in json.dumps(feedback.payload())
     assert "secret.other-scope" not in json.dumps(feedback.payload())
+
+
+def test_private_diagnostic_v2_is_closed_and_preserves_unknown_usage():
+    metadata = LLMResponseDiagnostics(
+        response_status="incomplete", incomplete_reason="max_output_tokens",
+        requested_max_output_tokens=12000, requested_reasoning_effort="none", visible_output_chars=123,
+    )
+    value = attempt_diagnostic("standard", 1, response_diagnostics=metadata)
+    assert value["schema_version"] == "lesson_author_attempt_diagnostic_v2"
+    assert value["reasoning_tokens"] is None
+    assert validate_attempt_diagnostic(value) == value
+    measured = attempt_diagnostic("standard", 1, response_diagnostics=metadata,
+                                  usage=LLMUsage(input_tokens=4, output_tokens=10, reasoning_tokens=3))
+    assert measured["reasoning_tokens"] == 3
+    for bad in (-1, True, "secret"):
+        with pytest.raises(ValueError):
+            validate_attempt_diagnostic({**value, "reasoning_tokens": bad})
+    for field, bad in (("incomplete_reason", "PRIVATE_PROVIDER_TEXT"), ("response_status", []),
+                       ("requested_max_output_tokens", True), ("visible_output_chars", -1),
+                       ("requested_reasoning_effort", "PRIVATE_REASONING")):
+        with pytest.raises(ValueError):
+            validate_attempt_diagnostic({**value, "provider_response": {**value["provider_response"], field: bad}})
+    with pytest.raises(ValueError):
+        validate_attempt_diagnostic({**value, "provider_response": {**value["provider_response"], "raw_body": "secret"}})
+
+
+@pytest.mark.parametrize("model,expected", [("deepseek-v4-flash", "disabled"), ("deepseek-chat", None)])
+def test_lesson_thinking_override_is_scoped_to_exact_responses_model(model, expected):
+    from types import SimpleNamespace
+    from app.services.learning.lesson_authoring import LessonAuthoringEvidence
+    calls = []
+    class Client:
+        def complete_json(self, messages, **kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(content={}, model=model, usage=None)
+    settings = Settings(llm_type="deepseek", deepseek_model=model,
+                        deepseek_api_key="test", deepseek_base_url="https://provider.invalid")
+    evidence = LessonAuthoringEvidence("S1", "Python", "Python", "official", "3", "rolling", (), "Evidence")
+    request = LessonAuthoringRequest("standard", "python", "python.variables", "Variables", "Learn", "beginner", (), "unseen", 0, (evidence,))
+    PrimaryLessonDocumentAuthor(settings, client=Client()).author(request)
+    assert calls[0]["thinking_mode"] == expected
+    assert calls[0]["max_tokens"] == 12000
+
+
+@pytest.mark.parametrize("reason,repairable", [("max_output_tokens", True), ("content_filter", False),
+                                             ("context_length_exceeded", False), ("unknown", False)])
+def test_incomplete_diagnostic_cause_controls_lesson_repair(reason, repairable):
+    from app.services.learning.lesson_authoring import LessonAuthoringEvidence
+    metadata = LLMResponseDiagnostics(response_status="incomplete", incomplete_reason=reason)
+    class Client:
+        def complete_json(self, *args, **kwargs):
+            raise LLMInvalidResponseError("PRIVATE BODY", kind=LLMInvalidResponseKind.RESPONSE_INCOMPLETE,
+                                          response_diagnostics=metadata)
+    settings = Settings(llm_type="deepseek", deepseek_model="deepseek-v4-flash",
+                        deepseek_api_key="test", deepseek_base_url="https://provider.invalid")
+    evidence = LessonAuthoringEvidence("S1", "Python", "Python", "official", "3", "rolling", (), "Evidence")
+    request = LessonAuthoringRequest("standard", "python", "python.variables", "Variables", "Learn", "beginner", (), "unseen", 0, (evidence,))
+    with pytest.raises(LessonAuthoringFailure) as caught:
+        PrimaryLessonDocumentAuthor(settings, client=Client()).author(request)
+    failure = caught.value
+    assert failure.response_diagnostics == metadata
+    assert LessonAuthorFeedback("standard", failure.stage, 1, failure.issues).repairable is repairable
+
+
+@pytest.mark.parametrize("status", ["missing_terminal", "queued", "in_progress", "cancelled", "unknown"])
+def test_nonterminal_envelope_never_consumes_content_repair(status):
+    from app.services.learning.lesson_authoring import LessonAuthoringEvidence
+    metadata = LLMResponseDiagnostics(response_status=status)
+    class Client:
+        def complete_json(self, *args, **kwargs):
+            raise LLMInvalidResponseError("PRIVATE BODY", kind=LLMInvalidResponseKind.ENVELOPE_INVALID,
+                                          response_diagnostics=metadata)
+    settings = Settings(llm_type="deepseek", deepseek_model="deepseek-v4-flash",
+                        deepseek_api_key="test", deepseek_base_url="https://provider.invalid")
+    evidence = LessonAuthoringEvidence("S1", "Python", "Python", "official", "3", "rolling", (), "Evidence")
+    request = LessonAuthoringRequest("standard", "python", "python.variables", "Variables", "Learn", "beginner", (), "unseen", 0, (evidence,))
+    with pytest.raises(LessonAuthoringFailure) as caught:
+        PrimaryLessonDocumentAuthor(settings, client=Client()).author(request)
+    failure = caught.value
+    assert not LessonAuthorFeedback("standard", failure.stage, 1, failure.issues).repairable

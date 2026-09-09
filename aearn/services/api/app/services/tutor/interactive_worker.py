@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import socket
+from time import monotonic
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal, Protocol
@@ -10,6 +11,7 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 from app.core.config import Settings, get_settings
+from app.core.safe_diagnostics import log_safe_event
 from app.db.connection import connect
 from app.services.tutor.continuation import TutorContinuationDispatcher
 from app.services.tutor.interactive import TutorRunDispatcher, build_tutor_run_dispatcher
@@ -82,10 +84,17 @@ class TutorInteractiveWorker:
         if not claims:
             return {"status": "no_action", "processed": 0, "job_id": job_id}
         claim = claims[0]
+        started = monotonic()
         try:
             run_result = self._dispatcher.dispatch(user_id=claim.user_id, run_id=claim.run_id)
         except Exception as exc:  # noqa: BLE001 - boundary maps exceptions to a bounded safe code.
             error_code = _safe_dispatch_error_code(exc)
+            log_safe_event(
+                logger, "tutor_dispatch_failed", exception=exc, stage="dispatch",
+                code=error_code, job_id=claim.job_id, run_id=claim.run_id,
+                attempt=claim.attempt_count, lease_generation=claim.lease_generation,
+                runtime_kind=self._runtime_kind, duration_ms=(monotonic() - started) * 1000,
+            )
             failed_at = self._clock.now()
             with connect() as conn:
                 repository = PostgresTutorRepository(conn)
@@ -97,13 +106,10 @@ class TutorInteractiveWorker:
                     failed_at=failed_at,
                 )
             state = updated.state.value if updated is not None else "stale"
-            logger.warning(
-                "Tutor interactive dispatch deferred job_id=%s run_id=%s attempt=%s code=%s state=%s",
-                claim.job_id,
-                claim.run_id,
-                claim.attempt_count,
-                error_code,
-                state,
+            log_safe_event(
+                logger, "tutor_dispatch_deferred", stage="retry_receipt",
+                job_id=claim.job_id, run_id=claim.run_id, attempt=claim.attempt_count,
+                code=error_code, state=state,
             )
             return {
                 "status": state,
